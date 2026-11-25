@@ -1,0 +1,1006 @@
+// Cold-start replica restore (`--builder replica-restore`), 1:1 aligned with
+// `station/mb/src/replica/restore.mbt`.
+// Zero raw transaction SQL:
+// - `sql_db::Db::attach(wait_ms=30000)` + single `d.tx_err(...)` (`BEGIN IMMEDIATE`)
+// - Nested cross-connection `Folded::with_open` (`with_temp_write_tx`, COMMIT -> close -> unlink)
+// - Calls `station_conv::settle_conversation_in_tx` ONLY when merging into a non-empty DB
+// - Places files AFTER commit; partial failures return `FilesPending`, keeping `restore/` intact.
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "sql_db"
+import "station_conv"
+
+let NOT_EMPTY_WORDS : String = "this station has chats of its own: a copy is taken back only into a new one"
+
+enum RestoreError {
+  NotEmpty
+  FilesPending(Int, String)
+  Other(String)
+}
+
+fn restore_error_msg(e : RestoreError) -> String {
+  match e {
+    RestoreError::NotEmpty => NOT_EMPTY_WORDS
+    RestoreError::FilesPending(_, m) => m
+    RestoreError::Other(m) => m
+  }
+}
+
+pub fn gen_ok(g : String) -> Bool {
+  let b = g.to_bytes()
+  let dash = match str_find_byte(g, 45, 0) {
+    Some(i) => i
+    None => return false
+  }
+  if dash < 1 || dash > 16 || b.length() != dash + 9 {
+    return false
+  }
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    let digit = c >= 0x30 && c <= 0x39
+    let ok = if i < dash {
+      digit || (c >= 0x61 && c <= 0x7A)
+    } else if i == dash {
+      true
+    } else {
+      digit || (c >= 0x61 && c <= 0x66)
+    }
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+pub fn hash_ok(h : String) -> Bool {
+  let b = h.to_bytes()
+  if b.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    let c = b[i].to_int() & 0xFF
+    if !((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66)) {
+      return false
+    }
+  }
+  true
+}
+
+fn as_head(v : js_json::JValue) -> Option[js_json::JValue] {
+  match v {
+    js_json::JValue::Obj(_) => ()
+    _ => return None
+  }
+  match jval_get(v, "v") {
+    Some(js_json::JValue::Num(ver)) => if ver > REPLICA_VERSION.to_double() { return None }
+    _ => return None
+  }
+  match (jval_get(v, "origin"), jval_get(v, "workspace")) {
+    (Some(js_json::JValue::Str(_)), Some(js_json::JValue::Str(_))) => ()
+    _ => return None
+  }
+  match text_of(jval_get(v, "gen")) {
+    Some(g) => if !gen_ok(g) { return None }
+    None => return None
+  }
+  match jval_get(v, "to") {
+    Some(js_json::JValue::Num(to)) => {
+      if to != floor_double(to) || abs_double(to) > 9007199254740991.0 {
+        return None
+      }
+    }
+    _ => return None
+  }
+  match jval_get(v, "batches") {
+    Some(js_json::JValue::Arr(bs)) => {
+      for i in 0..<bs.length() {
+        match text_of(Some(bs[i])) {
+          Some(s) => {
+            match batch_span(s) {
+              Some(_) => ()
+              None => return None
+            }
+          }
+          None => return None
+        }
+      }
+    }
+    _ => return None
+  }
+  match jval_get(v, "files") {
+    Some(js_json::JValue::Obj(fs)) => {
+      for i in 0..<fs.length() {
+        if !hash_ok(js_json::sanitize_str(fs[i].0)) {
+          return None
+        }
+      }
+    }
+    _ => return None
+  }
+  match jval_get(v, "transcriptFiles") {
+    None => ()
+    Some(js_json::JValue::Obj(tfs)) => {
+      for i in 0..<tfs.length() {
+        if !hash_ok(js_json::sanitize_str(tfs[i].0)) {
+          return None
+        }
+      }
+    }
+    Some(_) => return None
+  }
+  match jval_get(v, "transcriptManifest") {
+    None => ()
+    Some(js_json::JValue::Str(u)) => {
+      if !hash_ok(js_json::sanitize_str(u)) {
+        return None
+      }
+    }
+    Some(_) => return None
+  }
+  match jval_get(v, "runs") {
+    Some(js_json::JValue::Arr(_)) => ()
+    _ => return None
+  }
+  Some(v)
+}
+
+fn shaped(files : Files, table : String, row : js_json::JValue, from : String, to : String) -> js_json::JValue {
+  let mut out = row
+  if table == "sessions" {
+    match text_of(jval_get(out, "workspace")) {
+      Some(w) => out = jval_set(out, "workspace", jval_str(moved(files, w, from, to)))
+      None => ()
+    }
+    match text_of(jval_get(out, "cwd")) {
+      Some(c) => out = jval_set(out, "cwd", jval_str(moved(files, c, from, to)))
+      None => ()
+    }
+    out = jval_set(out, "running", jval_num(0.0))
+  }
+  if table == "entries" || table == "letters" {
+    match text_of(jval_get(out, "attachments")) {
+      Some(a) => {
+        if a != "" {
+          match js_json::parse(a) {
+            Ok(js_json::JValue::Arr(list)) => {
+              let moved_list : Array[js_json::JValue] = []
+              for i in 0..<list.length() {
+                let x = list[i]
+                match text_of(jval_get(x, "path")) {
+                  Some(p) => moved_list.push(jval_set(x, "path", jval_str(moved(files, p, from, to))))
+                  None => moved_list.push(x)
+                }
+              }
+              out = jval_set(out, "attachments", jval_str(js_json::stringify(jval_arr(moved_list))))
+            }
+            _ => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+fn read_json(files : Files, path : String) -> Result[js_json::JValue, String] {
+  match files.read(path) {
+    Ok(Some(text)) => js_json::parse(text)
+    Ok(None) => Err("ENOENT: no such file or directory, open '" + path + "'")
+    Err(e) => Err(e)
+  }
+}
+
+fn restore_build(
+  files : Files,
+  db_path : String,
+  dir : String,
+  from_files : String,
+  data_dir : String,
+  now : Double,
+  merge : Bool,
+  connects : js_json::JValue,
+  ws : Option[js_json::JValue],
+) -> Result[(js_json::JValue, Int, Int), RestoreError] {
+  let head_raw = match read_json(files, files.join([dir, "head.json"])) {
+    Ok(v) => v
+    Err(e) => return Err(RestoreError::Other(e))
+  }
+  let head = match as_head(head_raw) {
+    Some(h) => h
+    None => return Err(RestoreError::Other("no copy here, or one of a newer station's"))
+  }
+  match text_of(jval_get(head, "transcriptManifest")) {
+    Some(root_hash) => {
+      match verify_manifest_dir(files, from_files, root_hash) {
+        Ok(_) => ()
+        Err(e) => return Err(RestoreError::Other(e))
+      }
+    }
+    None => ()
+  }
+  let origin = text_or(jval_get(head, "origin"), "")
+  let gen = text_or(jval_get(head, "gen"), "")
+  let head_dir = text_or(jval_get(head, "dataDir"), "")
+  let d = match sql_db::Db::attach(db_path, wait_ms=30000) {
+    Ok(db) => db
+    Err(e) => return Err(RestoreError::Other(e.message))
+  }
+  let res = restore_build_in_db(files, d, db_path, dir, from_files, data_dir, now, merge, connects, ws, head, origin, gen, head_dir)
+  d.close()
+  res
+}
+
+fn restore_build_in_db(
+  files : Files,
+  d : sql_db::Db,
+  db_path : String,
+  dir : String,
+  from_files : String,
+  data_dir : String,
+  now : Double,
+  merge : Bool,
+  connects : js_json::JValue,
+  ws : Option[js_json::JValue],
+  head : js_json::JValue,
+  origin : String,
+  gen : String,
+  head_dir : String,
+) -> Result[(js_json::JValue, Int, Int), RestoreError] {
+  match d.exec("CREATE TABLE IF NOT EXISTS replica_restored (origin TEXT NOT NULL, gen TEXT NOT NULL, at INTEGER NOT NULL, rows TEXT NOT NULL, PRIMARY KEY (origin, gen))") {
+    Ok(()) => ()
+    Err(e) => return Err(RestoreError::Other(e.message))
+  }
+  let prev = match d.all("SELECT rows FROM replica_restored WHERE origin = ? AND gen = ?", [base_codec::json_str(origin), base_codec::json_str(gen)]) {
+    Ok(rs) => rs
+    Err(e) => return Err(RestoreError::Other(e.message))
+  }
+  let rows = if prev.length() > 0 {
+    match js_json::parse(field_text(prev[0], "rows")) {
+      Ok(v) => v
+      Err(e) => return Err(RestoreError::Other(e))
+    }
+  } else {
+    match d.tx_err(
+      fn(tx_db : sql_db::Db) -> Result[js_json::JValue, RestoreError] {
+        let has = fn(t : String) -> Result[Bool, RestoreError] {
+          match tx_db.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [base_codec::json_str(t)]) {
+            Ok(rs) => Ok(rs.length() > 0)
+            Err(e) => Err(RestoreError::Other(e.message))
+          }
+        }
+        let has_threads = match has("threads") {
+          Ok(b) => b
+          Err(e) => return Err(e)
+        }
+        let has_sessions = match has("sessions") {
+          Ok(b) => b
+          Err(e) => return Err(e)
+        }
+        if !has_threads || !has_sessions {
+          return Err(RestoreError::Other("this station's database is not made yet"))
+        }
+        let t_any = match tx_db.all("SELECT 1 FROM threads LIMIT 1", []) {
+          Ok(rs) => rs.length() > 0
+          Err(e) => return Err(RestoreError::Other(e.message))
+        }
+        let s_any = match tx_db.all("SELECT 1 FROM sessions LIMIT 1", []) {
+          Ok(rs) => rs.length() > 0
+          Err(e) => return Err(RestoreError::Other(e.message))
+        }
+        let empty = !t_any && !s_any
+        if !empty && !merge {
+          return Err(RestoreError::NotEmpty)
+        }
+        let merging = !empty
+        let ids : Map[String, Double] = Map::new()
+        let id_vals : Array[Double] = []
+        let followed : Map[String, Bool] = Map::new()
+        let put_rows : Map[String, Double] = Map::new()
+        let columns : Map[String, Array[String]] = Map::new()
+        let columns_of = fn(table : String) -> Result[Array[String], String] {
+          match columns.get(table) {
+            Some(c) => return Ok(c)
+            None => ()
+          }
+          match tx_db.all("SELECT name FROM pragma_table_info('" + table + "')", []) {
+            Ok(rs) => {
+              let c : Array[String] = []
+              for i in 0..<rs.length() {
+                c.push(field_text(rs[i], "name"))
+              }
+              columns.set(table, c)
+              Ok(c)
+            }
+            Err(e) => Err(e.message)
+          }
+        }
+        match tx_db.exec("CREATE TEMP TABLE restore_files (path TEXT PRIMARY KEY, hash TEXT NOT NULL) WITHOUT ROWID") {
+          Ok(()) => ()
+          Err(e) => return Err(RestoreError::Other(e.message))
+        }
+        match tx_db.exec("CREATE TEMP TABLE restore_transcripts (path TEXT PRIMARY KEY, room TEXT, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL) WITHOUT ROWID") {
+          Ok(()) => ()
+          Err(e) => return Err(RestoreError::Other(e.message))
+        }
+        let work = db_path + ".restore-fold"
+        let own_names = former_own_names()
+        let own_logs = own_log_tables()
+        match Folded::with_open(files, work, fn(folded : Folded) -> Result[Unit, String] {
+          let batches = strings_of(jval_get(head, "batches"))
+          for bi in 0..<batches.length() {
+            let lines = match batch_lines(files, files.join([dir, "log", batches[bi]])) {
+              Ok(ls) => ls
+              Err(e) => return Err(e)
+            }
+            for li in 0..<lines.length() {
+              match folded.apply(lines[li]) {
+                Ok(()) => ()
+                Err(e) => return Err(e)
+              }
+            }
+          }
+          folded.records(fn(line : String) -> Result[Unit, String] {
+            let rec = match js_json::parse(line) {
+              Ok(v) => v
+              Err(e) => return Err(e)
+            }
+            match jval_get(rec, "r") {
+              Some(r) => {
+                let table = text_or(Some(r), "")
+                let table_ok = match has(table) {
+                  Ok(b) => b
+                  Err(e) => return Err(restore_error_msg(e))
+                }
+                if !table_ok {
+                  return Ok(())
+                }
+                let orig_row = match jval_get(rec, "row") {
+                  Some(v) => v
+                  None => jval_obj([])
+                }
+                let mut row = shaped(files, table, orig_row, head_dir, data_dir)
+                if table == "threads" {
+                  match text_of(jval_get(row, "surface")) {
+                    Some(sf) => {
+                      if arr_contains_str(own_names, sf) {
+                        row = jval_set(row, "surface", jval_str(STILLFAIL_SURFACE))
+                      }
+                    }
+                    None => ()
+                  }
+                }
+                if table == "sessions" || table == "thread_sessions" {
+                  match text_of(jval_get(row, "connect")) {
+                    Some(c) => {
+                      if arr_contains_str(own_names, c) {
+                        row = jval_set(row, "connect", jval_str(STILLFAIL_CONNECT))
+                      }
+                    }
+                    None => ()
+                  }
+                  match text_of(jval_get(row, "connect")) {
+                    Some(c) => {
+                      match jval_get(connects, c) {
+                        Some(js_json::JValue::Str(there)) => row = jval_set(row, "connect", js_json::JValue::Str(there))
+                        _ => ()
+                      }
+                    }
+                    None => ()
+                  }
+                }
+                if table == "sessions" && merge {
+                  match ws {
+                    Some(w) => row = jval_set(row, "ws", w)
+                    None => ()
+                  }
+                }
+                if merging {
+                  if table == "threads" {
+                    let was = num_of(jval_get(row, "id"))
+                    let was_k = js_json::num_text(was)
+                    let existing_t = match tx_db.all(
+                      "SELECT id FROM threads WHERE surface = ? AND channel = ? AND thread_ts = ?",
+                      [jval_param(jval_get(row, "surface")), jval_param(jval_get(row, "channel")), jval_param(jval_get(row, "thread_ts"))],
+                    ) {
+                      Ok(rs) => rs
+                      Err(e) => return Err(e.message)
+                    }
+                    if existing_t.length() > 0 {
+                      if !opt_str_is(text_of(jval_get(row, "surface")), STILLFAIL_SURFACE) {
+                        let here_id = field_num(existing_t[0], "id")
+                        ids.set(was_k, here_id)
+                        id_vals.push(here_id)
+                        followed.set(was_k, true)
+                        return Ok(())
+                      } else {
+                        let mut ts = bumped_ts(text_or(jval_get(row, "thread_ts"), ""))
+                        while true {
+                          let dup = match tx_db.all(
+                            "SELECT 1 FROM threads WHERE surface = ? AND channel = ? AND thread_ts = ?",
+                            [jval_param(jval_get(row, "surface")), jval_param(jval_get(row, "channel")), base_codec::json_str(ts)],
+                          ) {
+                            Ok(rs) => rs.length() > 0
+                            Err(e) => return Err(e.message)
+                          }
+                          if !dup {
+                            break
+                          }
+                          ts = bumped_ts(ts)
+                        }
+                        row = jval_set(row, "thread_ts", jval_str(ts))
+                      }
+                    }
+                    row = jval_without(row, "id")
+                  }
+                  match thread_column_of(table) {
+                    Some(column) => {
+                      match jval_get(row, column) {
+                        Some(js_json::JValue::Num(was)) => {
+                          let was_k = js_json::num_text(was)
+                          let id_opt = ids.get(was_k)
+                          let shared = match followed.get(was_k) {
+                            Some(true) => true
+                            _ => false
+                          }
+                          if table == "turns" {
+                            match id_opt {
+                              Some(i) => {
+                                if !shared {
+                                  row = jval_set(row, "about_thread", jval_num(i))
+                                } else {
+                                  row = jval_set(row, "about_thread", js_json::JValue::Null)
+                                  row = jval_set(row, "about_n", js_json::JValue::Null)
+                                }
+                              }
+                              None => {
+                                row = jval_set(row, "about_thread", js_json::JValue::Null)
+                                row = jval_set(row, "about_n", js_json::JValue::Null)
+                              }
+                            }
+                          } else {
+                            match id_opt {
+                              Some(i) => {
+                                if !(arr_contains_str(own_logs, table) && shared) {
+                                  row = jval_set(row, column, jval_num(i))
+                                } else {
+                                  return Ok(())
+                                }
+                              }
+                              None => return Ok(())
+                            }
+                          }
+                        }
+                        _ => ()
+                      }
+                    }
+                    None => ()
+                  }
+                }
+                let have = match columns_of(table) {
+                  Ok(c) => c
+                  Err(e) => return Err(e)
+                }
+                let rkeys = jval_keys(row)
+                let cols : Array[String] = []
+                let qms : Array[String] = []
+                let params : Array[base_codec::Json] = []
+                for i in 0..<rkeys.length() {
+                  let c = rkeys[i]
+                  if arr_contains_str(have, c) {
+                    cols.push(c)
+                    qms.push("?")
+                    params.push(jval_param(jval_get(row, c)))
+                  }
+                }
+                let sql = "INSERT" +
+                (if merging { " OR IGNORE" } else { "" }) +
+                " INTO " +
+                table +
+                " (" +
+                str_join(cols, ", ") +
+                ") VALUES (" +
+                str_join(qms, ", ") +
+                ")"
+                let changed = match tx_db.run(sql, params) {
+                  Ok(n) => n
+                  Err(e) => return Err(e.message)
+                }
+                if merging {
+                  let prev_c = match put_rows.get(table) {
+                    Some(v) => v
+                    None => 0.0
+                  }
+                  put_rows.set(table, prev_c + changed.to_double())
+                  if table == "threads" {
+                    match tx_db.all("SELECT last_insert_rowid() AS id", []) {
+                      Ok(rs) => {
+                        if rs.length() > 0 {
+                          let new_id = field_num(rs[0], "id")
+                          let orig_id = num_of(jval_get(orig_row, "id"))
+                          ids.set(js_json::num_text(orig_id), new_id)
+                          id_vals.push(new_id)
+                        }
+                      }
+                      Err(e) => return Err(e.message)
+                    }
+                  }
+                }
+                return Ok(())
+              }
+              None => ()
+            }
+            match jval_get(rec, "file") {
+              Some(f) => {
+                let path = text_or(jval_get(rec, "path"), "")
+                match tx_db.run(
+                  "INSERT OR REPLACE INTO restore_files (path, hash) VALUES (?, ?)",
+                  [base_codec::json_str(moved(files, path, head_dir, data_dir)), jval_param(Some(f))],
+                ) {
+                  Ok(_) => return Ok(())
+                  Err(e) => return Err(e.message)
+                }
+              }
+              None => ()
+            }
+            match jval_get(rec, "tr") {
+              Some(tr_path) => {
+                let path = text_or(Some(tr_path), "")
+                let room = jval_param(jval_get(rec, "room"))
+                let mode = num_of(jval_get(rec, "mode"))
+                let chunks_val = match jval_get(rec, "chunks") {
+                  Some(v) => v
+                  None => jval_arr([])
+                }
+                let chunks_json = js_json::stringify(chunks_val)
+                match tx_db.run(
+                  "INSERT OR REPLACE INTO restore_transcripts (path, room, mode, chunks_json) VALUES (?, ?, ?, ?)",
+                  [base_codec::json_str(path), room, sql_db::double_to_json(mode), base_codec::json_str(chunks_json)],
+                ) {
+                  Ok(_) => return Ok(())
+                  Err(e) => return Err(e.message)
+                }
+              }
+              None => ()
+            }
+            Ok(())
+          })
+        }) {
+          Ok(()) => ()
+          Err(e) => return Err(RestoreError::Other(e))
+        }
+        // Only settle conversations when merging into a non-empty DB (empty DB preserves original `conv`).
+        if merging {
+          let settled : Array[Double] = []
+          for i in 0..<id_vals.length() {
+            let tid = id_vals[i]
+            if !arr_contains_double(settled, tid) {
+              settled.push(tid)
+              match station_conv::settle_conversation_in_tx(tx_db, sql_db::double_to_json(tid), sql_db::double_to_json(now)) {
+                Ok(_) => ()
+                Err(e) => return Err(RestoreError::Other(e.message))
+              }
+            }
+          }
+        }
+        let counted : Array[(String, js_json::JValue)] = []
+        let ord = restore_order()
+        for i in 0..<ord.length() {
+          let table = ord[i]
+          let table_ok = match has(table) {
+            Ok(b) => b
+            Err(e) => return Err(e)
+          }
+          if table_ok {
+            let n = if merging {
+              match put_rows.get(table) {
+                Some(v) => v
+                None => 0.0
+              }
+            } else {
+              match tx_db.all("SELECT COUNT(*) AS n FROM " + table, []) {
+                Ok(rs) => if rs.length() > 0 { field_num(rs[0], "n") } else { 0.0 }
+                Err(e) => return Err(RestoreError::Other(e.message))
+              }
+            }
+            counted.push((table, jval_num(n)))
+          }
+        }
+        let rows_val = jval_obj(counted)
+        match tx_db.run(
+          "INSERT INTO replica_restored (origin, gen, at, rows) VALUES (?, ?, ?, ?)",
+          [base_codec::json_str(origin), base_codec::json_str(gen), sql_db::double_to_json(now), base_codec::json_str(js_json::stringify(rows_val))],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(RestoreError::Other(e.message))
+        }
+        match tx_db.exec("CREATE TABLE IF NOT EXISTS replica_restore_files (path TEXT PRIMARY KEY, hash TEXT NOT NULL) WITHOUT ROWID; INSERT OR REPLACE INTO replica_restore_files SELECT path, hash FROM temp.restore_files;") {
+          Ok(()) => ()
+          Err(e) => return Err(RestoreError::Other(e.message))
+        }
+        match tx_db.exec("CREATE TABLE IF NOT EXISTS replica_restore_transcripts (path TEXT PRIMARY KEY, room TEXT, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL) WITHOUT ROWID; INSERT OR REPLACE INTO replica_restore_transcripts SELECT path, room, mode, chunks_json FROM temp.restore_transcripts;") {
+          Ok(()) => ()
+          Err(e) => return Err(RestoreError::Other(e.message))
+        }
+        Ok(rows_val)
+      },
+      fn(e : sql_db::SqlError) -> RestoreError { RestoreError::Other(e.message) },
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+  }
+
+  // Place files AFTER the DB transaction has committed.
+  match d.exec("CREATE TABLE IF NOT EXISTS replica_restore_transcripts (path TEXT PRIMARY KEY, room TEXT, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL) WITHOUT ROWID") {
+    Ok(()) => ()
+    Err(e) => return Err(RestoreError::Other(e.message))
+  }
+  let mut placed = 0
+  let mut missing = 0
+  let named_files = match d.all("SELECT COUNT(*) AS n FROM replica_restore_files", []) {
+    Ok(rs) => if rs.length() > 0 { field_num(rs[0], "n").to_int() } else { 0 }
+    Err(e) => return Err(RestoreError::Other(e.message))
+  }
+  let named_tr = match d.all("SELECT COUNT(*) AS n FROM replica_restore_transcripts", []) {
+    Ok(rs) => if rs.length() > 0 { field_num(rs[0], "n").to_int() } else { 0 }
+    Err(e) => return Err(RestoreError::Other(e.message))
+  }
+  let named = named_files + named_tr
+
+  let place_res = place_restored_files(files, d, from_files, head_dir, data_dir, fn() -> Unit { placed = placed + 1 }, fn() -> Unit { missing = missing + 1 })
+  match place_res {
+    Ok(()) => ()
+    Err(msg) => {
+      let left = if named - placed - missing > 0 { named - placed - missing } else { 0 }
+      return Err(
+        RestoreError::FilesPending(
+          left,
+          "the chats are in; " + left.to_string() + " of their files not placed yet: " + msg,
+        ),
+      )
+    }
+  }
+
+  match d.exec("DELETE FROM replica_restore_files") {
+    Ok(()) => ()
+    Err(e) => return Err(RestoreError::Other(e.message))
+  }
+  match d.exec("DELETE FROM replica_restore_transcripts") {
+    Ok(()) => ()
+    Err(e) => return Err(RestoreError::Other(e.message))
+  }
+  Ok((rows, placed, missing))
+}
+
+fn place_restored_files(
+  files : Files,
+  d : sql_db::Db,
+  from_files : String,
+  head_dir : String,
+  data_dir : String,
+  inc_placed : () -> Unit,
+  inc_missing : () -> Unit,
+) -> Result[Unit, String] {
+  let att_tables = ["entries", "letters"]
+  for ti in 0..<att_tables.length() {
+    let table = att_tables[ti]
+    let mut after = 0.0
+    while true {
+      let page_rows = match d.all_ordered(
+        "SELECT rowid AS r, attachments FROM " + table + " WHERE rowid > ? AND attachments IS NOT NULL AND attachments <> '[]' ORDER BY rowid LIMIT 500",
+        [sql_db::double_to_json(after)],
+      ) {
+        Ok(rs) => rs
+        Err(e) => return Err(e.message)
+      }
+      for pi in 0..<page_rows.length() {
+        let row_j = row_of_ordered(page_rows[pi])
+        let paths = attached_paths(row_j)
+        for ai in 0..<paths.length() {
+          let path = paths[ai]
+          let f_rows = match d.all("SELECT hash FROM replica_restore_files WHERE path = ?", [base_codec::json_str(path)]) {
+            Ok(rs) => rs
+            Err(e) => return Err(e.message)
+          }
+          if f_rows.length() == 0 {
+            continue
+          }
+          if files.exists(path) {
+            inc_placed()
+            continue
+          }
+          let from = files.join([from_files, field_text(f_rows[0], "hash")])
+          if !files.exists(from) {
+            inc_missing()
+            continue
+          }
+          match files.mkdir(files.dirname(path)) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+          let tmp = path + ".restoring"
+          match files.copy(from, tmp) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+          match files.rename(tmp, path) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+          inc_placed()
+        }
+      }
+      if page_rows.length() < 500 {
+        break
+      }
+      after = num_of(jval_get(row_of_ordered(page_rows[page_rows.length() - 1]), "r"))
+    }
+  }
+
+  // Transcript files: remap path via carried_to, enforce whitelist, stream-decompress chunks into place.
+  let mut after_path = ""
+  while true {
+    let tr_rows = match d.all(
+      "SELECT path, room, mode, chunks_json FROM replica_restore_transcripts WHERE path > ? ORDER BY path LIMIT 500",
+      [base_codec::json_str(after_path)],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    for ri in 0..<tr_rows.length() {
+      let row = tr_rows[ri]
+      let orig_path = field_text(row, "path")
+      after_path = orig_path
+      let room_here : Option[String] = match field_str(row, "room") {
+        Some(r) => if r != "" { Some(moved(files, r, head_dir, data_dir)) } else { None }
+        None => None
+      }
+      let dest = carried_to(files, orig_path, head_dir, data_dir, room_here)
+      if !files.is_transcript_path(data_dir, dest) {
+        continue
+      }
+      if files.exists(dest) {
+        inc_placed()
+        continue
+      }
+      let chunks_parsed = match js_json::parse(field_text(row, "chunks_json")) {
+        Ok(v) => v
+        Err(_) => jval_arr([])
+      }
+      let chunks = strings_of(Some(chunks_parsed))
+      let mut all_present = true
+      for ci in 0..<chunks.length() {
+        let ch = chunks[ci]
+        if !hash_ok(ch) || !files.exists(files.join([from_files, ch])) {
+          all_present = false
+          break
+        }
+      }
+      if !all_present {
+        inc_missing()
+        continue
+      }
+      match files.mkdir(files.dirname(dest)) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      let tmp = dest + ".restoring"
+      match place_one_transcript(files, from_files, chunks, tmp, dest, field_num(row, "mode").to_int()) {
+        Ok(()) => inc_placed()
+        Err(e) => {
+          let _ = files.remove(tmp)
+          return Err(e)
+        }
+      }
+    }
+    if tr_rows.length() < 500 {
+      break
+    }
+  }
+  Ok(())
+}
+
+fn place_one_transcript(
+  files : Files,
+  from_files : String,
+  chunks : Array[String],
+  tmp : String,
+  dest : String,
+  raw_mode : Int,
+) -> Result[Unit, String] {
+  let empty = Bytes::new(0)
+  if chunks.length() == 0 {
+    let args = base_codec::json_obj([
+      ("path", base_codec::json_str(tmp)),
+      ("offset", base_codec::json_int(0)),
+      ("truncate", base_codec::json_bool(true)),
+      ("sync", base_codec::json_bool(true)),
+    ])
+    match files.client.shell_call_wait("fs.put", args, Some(empty)) {
+      Ok(_) => ()
+      Err(e) => return Err(e.message)
+    }
+  } else {
+    let mut offset = 0.0
+    for ci in 0..<chunks.length() {
+      let chunk_path = files.join([from_files, chunks[ci]])
+      let unpack_args = base_codec::json_obj([
+        ("path", base_codec::json_str(chunk_path)),
+        ("most", base_codec::json_num(67108864.0)),
+      ])
+      let plain = match files.client.shell_call_wait("zstd.unpack", unpack_args, None) {
+        Ok((_, Some(b))) => b
+        Ok((_, None)) => return Err("zstd.unpack returned no bytes")
+        Err(e) => return Err(e.message)
+      }
+      let put_args = base_codec::json_obj([
+        ("path", base_codec::json_str(tmp)),
+        ("offset", sql_db::double_to_json(offset)),
+      ])
+      match files.client.shell_call_wait("fs.put", put_args, Some(plain)) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      offset = offset + plain.length().to_double()
+    }
+    let fin_args = base_codec::json_obj([
+      ("path", base_codec::json_str(tmp)),
+      ("offset", sql_db::double_to_json(offset)),
+      ("truncate", base_codec::json_bool(true)),
+      ("sync", base_codec::json_bool(true)),
+    ])
+    match files.client.shell_call_wait("fs.put", fin_args, Some(empty)) {
+      Ok(_) => ()
+      Err(e) => return Err(e.message)
+    }
+  }
+  let safe_mode = if raw_mode > 0 { (raw_mode & 420) | 384 } else { 420 } // (raw & 0o644) | 0o600 else 0o644
+  match files.call("fs.chmod", base_codec::json_obj([("path", base_codec::json_str(tmp)), ("mode", base_codec::json_int(safe_mode))])) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  files.rename(tmp, dest)
+}
+
+fn add_formerly(files : Files, data : String, origin : String) -> Result[Unit, String] {
+  let file = files.join([data, "replica", "formerly.json"])
+  let list : Array[js_json::JValue] = match read_json(files, file) {
+    Ok(js_json::JValue::Arr(items)) => items
+    _ => []
+  }
+  let mut has_origin = false
+  for i in 0..<list.length() {
+    if opt_str_is(text_of(Some(list[i])), origin) {
+      has_origin = true
+      break
+    }
+  }
+  let out : Array[js_json::JValue] = []
+  for i in 0..<list.length() {
+    out.push(list[i])
+  }
+  if !has_origin {
+    out.push(jval_str(origin))
+  }
+  match files.mkdir(files.dirname(file)) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  files.write_beside(file, js_json::stringify(jval_arr(out)))
+}
+
+pub fn take_back(
+  client : builders_core::ShellClient,
+  sep : String,
+  data : String,
+  db : String,
+  now : Double,
+) -> Result[Option[js_json::JValue], String] {
+  let files = Files::new(client, sep)
+  let restore = files.join([data, "restore"])
+  let ready = match read_json(files, files.join([restore, "ready.json"])) {
+    Ok(r) => r
+    Err(_) => return Ok(None)
+  }
+  let dir = files.join([restore, "copy"])
+  let origin = text_or(jval_get(ready, "origin"), "")
+  let field = fn(k : String) -> js_json::JValue {
+    match jval_get(ready, k) {
+      Some(v) => v
+      None => js_json::JValue::Null
+    }
+  }
+  let mut outcome = jval_obj([
+    ("origin", field("origin")),
+    ("name", field("name")),
+    ("from", field("from")),
+    ("at", jval_num(now)),
+    ("rows", jval_obj([])),
+    ("files", jval_num(0.0)),
+    ("missing", jval_num(0.0)),
+    ("error", js_json::JValue::Null),
+    ("reason", js_json::JValue::Null),
+    ("pending", jval_bool(false)),
+    ("left", jval_num(0.0)),
+  ])
+  let gen = text_or(jval_get(ready, "gen"), "")
+  let merge = match jval_get(ready, "merge") {
+    Some(js_json::JValue::Bool(true)) => true
+    _ => false
+  }
+  let connects = match jval_get(ready, "connects") {
+    Some(v) => v
+    None => jval_obj([])
+  }
+  match restore_build(files, db, files.join([dir, gen]), files.join([dir, "files"]), data, now, merge, connects, jval_get(ready, "ws")) {
+    Ok((rows, placed, missing)) => {
+      match add_formerly(files, data, origin) {
+        Ok(()) => {
+          outcome = jval_set(outcome, "rows", rows)
+          outcome = jval_set(outcome, "files", jval_num(placed.to_double()))
+          outcome = jval_set(outcome, "missing", jval_num(missing.to_double()))
+        }
+        Err(msg) => {
+          outcome = jval_set(outcome, "error", jval_str(msg))
+          let lower = str_to_ascii_lower(msg)
+          let reason = if lower.contains("enospc") || lower.contains("disk is full") || lower.contains("no space left on device") {
+            "full"
+          } else {
+            "error"
+          }
+          outcome = jval_set(outcome, "reason", jval_str(reason))
+        }
+      }
+    }
+    Err(e) => {
+      let msg = restore_error_msg(e)
+      outcome = jval_set(outcome, "error", jval_str(msg))
+      let lower = str_to_ascii_lower(msg)
+      let reason = match e {
+        RestoreError::NotEmpty => "notEmpty"
+        _ => {
+          if lower.contains("enospc") || lower.contains("disk is full") || lower.contains("no space left on device") {
+            "full"
+          } else {
+            "error"
+          }
+        }
+      }
+      outcome = jval_set(outcome, "reason", jval_str(reason))
+      match e {
+        RestoreError::FilesPending(left, _) => {
+          match add_formerly(files, data, origin) {
+            Ok(()) => ()
+            Err(fe) => return Err(fe)
+          }
+          outcome = jval_set(outcome, "pending", jval_bool(true))
+          outcome = jval_set(outcome, "left", jval_num(left.to_double()))
+        }
+        _ => ()
+      }
+    }
+  }
+  let out = files.join([data, "replica", "restored.json"])
+  match files.mkdir(files.dirname(out)) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  match files.write_beside(out, js_json::stringify(outcome)) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  let is_pending = match jval_get(outcome, "pending") {
+    Some(js_json::JValue::Bool(true)) => true
+    _ => false
+  }
+  if !is_pending {
+    match files.remove(restore, recursive=true) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(Some(ready))
+}

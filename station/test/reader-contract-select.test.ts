@@ -56,6 +56,7 @@ test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt 
       "card-posts",
       "cc-index",
       "closed-cards",
+      "data",
       "footprint",
       "legacy-edits",
       "legacy-said",
@@ -67,6 +68,9 @@ test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt 
       "people-since",
       "post-blocks",
       "recent-chat",
+      "replica-carry",
+      "replica-export",
+      "replica-restore",
       "said",
       "search",
       "search-scope",
@@ -144,7 +148,7 @@ test("config.readers selects mb, pion, and shadow (for footprint)", () => {
   );
 
   // Unimplemented modes safely fall back to mb with reason "pion-mode-unimplemented".
-  const unimpl = resolveReaderEngine("data", { config: { readers: { data: "pion" } }, env: {}, hasPionBinary: true });
+  const unimpl = resolveReaderEngine("sessions", { config: { readers: { sessions: "pion" } }, env: {}, hasPionBinary: true });
   assert.equal(unimpl.engine, "mb");
   assert.equal(unimpl.requested, "pion");
   assert.equal(unimpl.source, "config");
@@ -191,9 +195,9 @@ test("environment variable STILLFAIL_READER_<UPPER_SNAKE_MODE> overrides config"
     fallback: false,
   });
 
-  const unimplEnv = resolveReaderEngine("replica-export", {
-    config: { readers: { "replica-export": "mb" } },
-    env: { STILLFAIL_READER_REPLICA_EXPORT: "pion" },
+  const unimplEnv = resolveReaderEngine("sessions", {
+    config: { readers: { sessions: "mb" } },
+    env: { STILLFAIL_READER_SESSIONS: "pion" },
     hasPionBinary: true,
   });
   assert.equal(unimplEnv.engine, "mb");
@@ -389,6 +393,7 @@ test("every mode with pionImplemented: true is explicitly wired to resolveReader
     "card-posts",
     "cc-index",
     "closed-cards",
+    "data",
     "footprint",
     "legacy-edits",
     "legacy-said",
@@ -400,6 +405,9 @@ test("every mode with pionImplemented: true is explicitly wired to resolveReader
     "people-since",
     "post-blocks",
     "recent-chat",
+    "replica-carry",
+    "replica-export",
+    "replica-restore",
     "said",
     "search",
     "search-scope",

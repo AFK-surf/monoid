@@ -2,7 +2,7 @@
 // (hosts/node-addon.ts), client/iroh-wasm in a browser (hosts/web.ts). Both have the same calls; this makes them the
 // core's Effects.
 import { Effect, Fiber } from "effect";
-import { accessOf } from "./iroh-access.ts";
+import { accessMapOf, relayUrlKey } from "./iroh-access.ts";
 export { accessOf } from "./iroh-access.ts";
 import { HostError } from "./error.ts";
 import type { BindOptions, CloseReason, Iroh, IrohAddr, IrohConnection, IrohEndpoint, IrohStream, IrohMeshScope, IrohMeshDescriptor, IrohLeafAttachment } from "./iroh.ts";
@@ -73,7 +73,7 @@ export function wrapIroh(bind: (o: BindOptions) => Promise<BoundEndpoint>, bytes
     reset: (code) => void Promise.resolve(s.reset?.(code)).catch(() => {}),
     ...(s.receiveMediaDatagrams && { receiveMediaDatagrams: (token: number) => call(() => s.receiveMediaDatagrams!(token)) }),
   });
-  const connection = (c: BoundConnection, e: BoundEndpoint): IrohConnection => ({
+  const connection = (c: BoundConnection, resolveRelay: (relay: string | null) => string | null): IrohConnection => ({
     remoteId: () => c.remoteId(),
     openBi: () => Effect.map(call(() => c.openBi()), stream),
     acceptBi: () => Effect.orElseSucceed(Effect.map(call(() => c.acceptBi()), (s) => (s === null ? null : stream(s))), () => null),
@@ -81,14 +81,27 @@ export function wrapIroh(bind: (o: BindOptions) => Promise<BoundEndpoint>, bytes
     close: (code, reason) => c.close(code, reason),
     closeReason: () => c.closeReason() ?? null,
     closed: () => Effect.promise(() => c.closedInfo()),
-    paths: () => {
-      const statuses = e.relayStatus();
-      return c.paths().map((p) => ({ id: p.id, selected: p.selected, relay: accessOf(p.relay ?? null, statuses), ip: p.ip ?? null, rttMs: p.rttMs ?? null, txPackets: p.txPackets, lostPackets: p.lostPackets }));
-    },
+    paths: () =>
+      c.paths().map((p) => ({ id: p.id, selected: p.selected, relay: resolveRelay(p.relay ?? null), ip: p.ip ?? null, rttMs: p.rttMs ?? null, txPackets: p.txPackets, lostPackets: p.lostPackets })),
     stats: () => c.stats(),
   });
   const endpoint = (e: BoundEndpoint): IrohEndpoint => {
     const accept = e.accept?.bind(e);
+    let accessMap: Map<string, string | undefined> | null = null;
+    const readRelayStatus = () => {
+      const statuses = e.relayStatus();
+      accessMap = accessMapOf(statuses);
+      return statuses;
+    };
+    const clearAccess = () => {
+      accessMap = null;
+    };
+    const resolveRelay = (relay: string | null): string | null => {
+      if (relay === null) return null;
+      const k = relayUrlKey(relay);
+      if (accessMap === null || !accessMap.has(k)) readRelayStatus();
+      return accessMap!.get(k) ?? relay;
+    };
     return {
       id: () => e.id(),
       ...(e.meshUseLeaf && { meshUseLeaf: (value: {scope: string; attachment: IrohLeafAttachment}) => call(() => e.meshUseLeaf!(value)) }),
@@ -107,19 +120,19 @@ export function wrapIroh(bind: (o: BindOptions) => Promise<BoundEndpoint>, bytes
               Effect.ensuring(told === null ? Effect.void : Fiber.interrupt(told)),
             );
           }),
-          (c) => connection(c, e),
+          (c) => connection(c, resolveRelay),
         ),
       // Only where the binding takes connections: a host without has no `accept` (iroh.ts).
       ...(accept && {
-        accept: () => Effect.orElseSucceed(Effect.map(call(accept), (c) => (c === null ? null : { connection: connection(c, e), alpn: view(c.alpn()) })), () => null),
+        accept: () => Effect.orElseSucceed(Effect.map(call(accept), (c) => (c === null ? null : { connection: connection(c, resolveRelay), alpn: view(c.alpn()) })), () => null),
       }),
       addAddr: (addr) => e.addAddr(addr),
-      networkChange: () => Effect.promise(() => e.networkChange()),
-      relayStatus: () => e.relayStatus(),
-      ...(e.setRelayEntries && { setRelayEntries: (entries: { entry: string; relay: string }[]) => call(() => e.setRelayEntries!(entries)) }),
+      networkChange: () => Effect.ensuring(Effect.promise(() => e.networkChange()), Effect.sync(clearAccess)),
+      relayStatus: readRelayStatus,
+      ...(e.setRelayEntries && { setRelayEntries: (entries: { entry: string; relay: string }[]) => Effect.ensuring(call(() => e.setRelayEntries!(entries)), Effect.sync(clearAccess)) }),
       ...(options.relayControls && e.setDisabledRelays && { setDisabledRelays: (id: string, relays: string[]) => call(() => e.setDisabledRelays!(id, relays)) }),
-      ...(options.relayControls && e.insertRelay && { insertRelay: (url: string) => call(() => e.insertRelay!(url)) }),
-      ...(options.relayControls && e.removeRelay && { removeRelay: (url: string) => call(() => e.removeRelay!(url)) }),
+      ...(options.relayControls && e.insertRelay && { insertRelay: (url: string) => Effect.ensuring(call(() => e.insertRelay!(url)), Effect.sync(clearAccess)) }),
+      ...(options.relayControls && e.removeRelay && { removeRelay: (url: string) => Effect.ensuring(call(() => e.removeRelay!(url)), Effect.sync(clearAccess)) }),
       ...(e.mediaDatagrams && { mediaDatagrams: () => e.mediaDatagrams!() }),
       close: () => Effect.promise(() => e.close()),
     };

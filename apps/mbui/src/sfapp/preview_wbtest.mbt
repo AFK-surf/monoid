@@ -975,7 +975,7 @@ fn zoom_in_middle(t : @ui.Tester) -> @motion.Zoom raise {
 
 ///|
 test "zoomed in, let go moving it goes on that way, slowing, to its edge; a finger on it stops it and taps nothing" {
-  let t = preview_tester("image")
+  let t = preview_tester("image", platform=2)
   let v = viewer.get().unwrap()
   let z = zoom_in_middle(t)
   // a quick move left (60 in 50 ms), let go: on after the finger, three of its moves' time later well on
@@ -1346,7 +1346,7 @@ test "a picture said not to decode: why, its glyphs drawn in the theme's muted i
 }
 
 ///|
-test "a tap on the picture closes the preview once a second tap would have come; two zoom it, open still" {
+test "a touch tap on the picture toggles bars once a second tap would have come; two zoom it, open still" {
   let t = preview_tester("image", platform=2)
   t.tap(195.0, 422.0)
   t.tap(195.0, 422.0)
@@ -1354,11 +1354,14 @@ test "a tap on the picture closes the preview once a second tap would have come;
   assert_true(viewer.get() is Some(_), msg="two taps: open")
   assert_true(viewer.get().unwrap().zoom.zoomed_at(t.time()), msg="two taps: zoomed in")
   let t = preview_tester("image", platform=2)
+  let v = viewer.get().unwrap()
+  assert_true(v.bars_shown(), msg="starts with bars shown")
   t.tap(195.0, 422.0)
   t.run_for(@ui.double_tap_ms / 2.0)
-  assert_true(viewer.get() is Some(_), msg="one tap: open till a second could have come")
+  assert_true(viewer.get() is Some(_) && v.bars_shown(), msg="one tap: unchanged till a second could have come")
   t.run_for(@ui.double_tap_ms)
-  assert_true(viewer.get() is None, msg="one tap: closed")
+  assert_true(viewer.get() is Some(_), msg="one tap: stays open")
+  assert_true(!v.bars_shown(), msg="one tap: bars toggled hidden")
 }
 
 ///|

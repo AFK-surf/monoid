@@ -50,6 +50,8 @@ import { platform } from "../platform/index.ts";
 import { Computer, computerTools } from "../tools/computer.ts";
 import { archiveTools } from "../tools/archive.ts";
 import { chatTools } from "../tools/chat.ts";
+import { projectTools } from "../tools/projects.ts";
+import { stationFeature } from "../features.ts";
 import { type AgentsDoor, type PeerRoute, openAgentsDoor } from "../tools/http.ts";
 import { jobTools } from "../tools/jobs.ts";
 import { forwardTools } from "../tools/forward.ts";
@@ -97,6 +99,7 @@ import { fromPeer, sender } from "./messages.ts";
 import { CREATE, CREATE_PRESET, CREATE_SPEED, CREATE_PRESET_SPEED, CREATE_PRESET_TUI, NOTICE, createForPeer, noticeForPeer } from "./opened.ts";
 import { ARCHIVE, archiveForPeer } from "./chat-archive.ts";
 import { CONFIGURE, configureForPeer } from "./chat-configure.ts";
+import { PROJECTS_NAMES, THREAD_CLASSIFY, classifyForPeer, projectNamesForPeer } from "./projects.ts";
 import { chatsTouched, forPeer, LIST, listForPeer, READ } from "./others.ts";
 import { FILE, fileForPeer, PUT, putForPeer } from "./peer-files.ts";
 import { reviewUndecided, startReview } from "./review.ts";
@@ -304,10 +307,18 @@ export const AgentsLive = (control: Control) =>
       const siteInstructions = yield* Effect.promise(() => readSiteInstructions());
       if (siteInstructions !== "") log.info("agents", "the deployment's instructions are told to every session", { path: process.env.STILLFAIL_SITE_INSTRUCTIONS, chars: siteInstructions.length });
       const meshSide = yield* MeshSide;
+      const projectsOn = () => stationFeature("projects", config.raw(), app);
       const hub = new Hub({
         config: settings,
         readers: readerConfig,
         siteInstructions,
+        projectsOn,
+        homeWorkspace: () => cloud.home(),
+        isRig: (ws) => {
+          const w = ws ?? cloud.home();
+          return w !== null && cloud.rigIn(w) !== null;
+        },
+        onProjectsChanged: (ws) => events.projectsChanged(ws),
         taking: () => control.taking(),
         store,
         previous,
@@ -504,6 +515,10 @@ export const AgentsLive = (control: Control) =>
             return archiveForPeer(hub, request, ws);
           case CONFIGURE:
             return configureForPeer(hub, request, ws, peer);
+          case PROJECTS_NAMES:
+            return projectNamesForPeer(hub, ws, typeof request?.check === "string" ? request.check : undefined);
+          case THREAD_CLASSIFY:
+            return classifyForPeer(hub, request, ws);
           case LIST:
             return listForPeer(hub, request, ws);
           case NOTICE:
@@ -638,7 +653,7 @@ export const AgentsLive = (control: Control) =>
       // that keeps tools back until its model searches for them is told which every turn needs (Claude Code).
       const mcp = new McpEndpoint(
         (token) => store.sessionKeyByToken(token) ?? undefined,
-        () => [...tools, ...parts.allTools()],
+        () => [...tools, ...(projectsOn() ? projectTools(hub) : []), ...parts.allTools()],
         (session) => (bound() && inItsWorkspace(session) ? undefined : UNBOUND_REFUSAL),
         (session) => {
           const row = store.getSession(session);
@@ -701,8 +716,14 @@ export const AgentsLive = (control: Control) =>
           const home = cloud.home();
           return { accept: config.raw()?.acceptAutoChats === true, tasksOnly: home !== null && cloud.rigIn(home) !== null };
         },
+        accountKey: (profileId) => hub.accounts.accountKeyOf(profileId),
+        accountCap: (profileId) => hub.accounts.accountMaxSessions(profileId),
+        accountProtection: (profileId) => hub.accounts.accountInProtection(profileId),
+        localActiveForAccount: (accountKey) => hub.localActiveForAccount(accountKey),
+        onSlotFreed: () => hub.drainCapQueue(),
         readers: readerConfig,
       });
+      hub.setSlotCoordinator(sharing);
       remote.setShares((peer, request, workspace) => sharing!.handle(peer, request, workspace));
       sharing.start();
       // (the program that reads its skills' files, idle, let go when the station is short of memory)
@@ -713,6 +734,10 @@ export const AgentsLive = (control: Control) =>
         ask: (station, workspace, request) => remote.ask(station, { workspace, ...request }),
         agentHome: () => settings().agentHome,
         readers: readerConfig,
+        onProjectsChanged: (ws) => {
+          events.projectsChanged(ws);
+          hub.invalidateProjectsCache(ws);
+        },
       });
       remote.setMemory((peer, request, workspace) => memorySync.handle(peer, request, workspace));
       // (its program, idle, let go when the station is short of memory)
@@ -1138,6 +1163,7 @@ export const AgentsLive = (control: Control) =>
           maxConcurrentTurns = cfg.maxConcurrentTurns;
           hub.setMaxConcurrentTurns(maxConcurrentTurns);
         }
+        sharing?.localActiveChanged();
         hub.drainCapQueue();
       });
       time.after(120_000, reviewing);

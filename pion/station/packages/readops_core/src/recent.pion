@@ -1,0 +1,238 @@
+// 1:1 port of `station/mb/src/readops/recent.mbt`.
+// Uses `builders_recent::page`, `builders_legacy::EditKey`, and `sql_db::Db::savepoint_swallow_err`.
+
+import "base_codec"
+import "builders_legacy"
+import "builders_recent"
+import "js_json"
+import "sql_db"
+
+pub let RECENT_CHAT_PENDING : String = "recent chat order is still being prepared"
+
+pub fn membership_json(r : Map[String, base_codec::Json]) -> base_codec::Json {
+  base_codec::json_obj([
+    ("thread", field(r, "thread")),
+    ("session", field(r, "session")),
+    ("connect", field(r, "connect")),
+    ("joinedAt", field(r, "joined_at")),
+    ("leftAt", or_null(col(r, "left_at"))),
+  ])
+}
+
+pub fn state_key(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  column : String,
+) -> Result[Option[String], ReadError] {
+  match one(db, "SELECT CAST(" + column + " AS TEXT) AS n FROM thread_state WHERE thread=?", [thread]) {
+    Ok(Some(r)) => {
+      match field(r, "n") {
+        base_codec::Json::Str(n) => Ok(Some(n))
+        _ => Ok(None)
+      }
+    }
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn last_said(db : sql_db::Db, thread : base_codec::Json) -> Result[base_codec::Json, ReadError] {
+  db.savepoint_swallow_err(
+    "last_said_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, ReadError] {
+      let ready = match builders_legacy::merged_read_ready(sp_db) {
+        Ok(b) => b
+        Err(e) => return Err(map_step_err(e))
+      }
+      if ready {
+        return match one(
+          sp_db,
+          "SELECT m.* FROM thread_state t JOIN merged m ON m.thread = t.thread AND m.n = t.said_n WHERE t.thread = ?",
+          [thread],
+        ) {
+          Ok(Some(r)) => Ok(to_message(r))
+          Ok(None) => Ok(base_codec::json_null())
+          Err(e) => Err(e)
+        }
+      }
+      match state_key(sp_db, thread, "said_n") {
+        Ok(Some(n)) => {
+          match merged_bounded(sp_db, thread, base_codec::json_str(n)) {
+            Ok(Some(m)) => Ok(m)
+            Ok(None) => Ok(base_codec::json_null())
+            Err(e) => Err(e)
+          }
+        }
+        Ok(None) => Ok(base_codec::json_null())
+        Err(e) => Err(e)
+      }
+    },
+    map_sql_err,
+  )
+}
+
+pub fn first_text(db : sql_db::Db, thread : base_codec::Json) -> Result[base_codec::Json, ReadError] {
+  db.savepoint_swallow_err(
+    "first_text_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, ReadError] {
+      let ready = match builders_legacy::merged_read_ready(sp_db) {
+        Ok(b) => b
+        Err(e) => return Err(map_step_err(e))
+      }
+      if ready {
+        return match one(
+          sp_db,
+          "SELECT substr(m.text, 1, 300) AS t FROM thread_state t JOIN merged m ON m.thread = t.thread AND m.n = t.person_n WHERE t.thread = ?",
+          [thread],
+        ) {
+          Ok(Some(r)) => Ok(field(r, "t"))
+          Ok(None) => Ok(base_codec::json_null())
+          Err(e) => Err(e)
+        }
+      }
+      let n = match state_key(sp_db, thread, "person_n") {
+        Ok(Some(k)) => k
+        Ok(None) => return Ok(base_codec::json_null())
+        Err(e) => return Err(e)
+      }
+      let edit = match builders_legacy::bounded_edit_key(sp_db, thread, base_codec::json_str(n)) {
+        Ok(builders_legacy::EditKey::Key(k)) => k
+        Ok(builders_legacy::EditKey::Unprepared) => return Err(edits_pending())
+        Err(e) => return Err(map_step_err(e))
+      }
+      let edit_param = match edit {
+        Some(k) => base_codec::json_str(k)
+        None => base_codec::json_null()
+      }
+      match one(
+        sp_db,
+        "SELECT substr(CASE WHEN e.n IS NULL THEN m.text ELSE e.text END,1,300) AS t\n      FROM entries m LEFT JOIN entries e ON e.thread=m.thread AND e.n=CAST(?3 AS INTEGER)\n      WHERE m.thread=?1 AND m.n=CAST(?2 AS INTEGER) AND m.kind='message'",
+        [thread, base_codec::json_str(n), edit_param],
+      ) {
+        Ok(Some(r)) => Ok(field(r, "t"))
+        Ok(None) => Ok(base_codec::json_null())
+        Err(e) => Err(e)
+      }
+    },
+    map_sql_err,
+  )
+}
+
+fn json_arr_has(arr : Array[base_codec::Json], v : base_codec::Json) -> Bool {
+  for i in 0..<arr.length() {
+    if base_codec::json_eq(arr[i], v) {
+      return true
+    }
+  }
+  false
+}
+
+pub fn recent_chat_list(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let opt_str = fn(v : Option[base_codec::Json]) -> Option[String] {
+    match v {
+      Some(base_codec::Json::Str(s)) => Some(s)
+      _ => None
+    }
+  }
+  let ws = opt_str(json_val(args, "ws"))
+  let home = opt_str(json_val(args, "home"))
+  let limit = match json_val(args, "limit") {
+    Some(base_codec::Json::Num(n, _)) => {
+      if js_json::is_safe_integer(n) && n >= 0.0 {
+        n.to_int()
+      } else {
+        return Err(refused(500, "recent chat page size must be nonnegative"))
+      }
+    }
+    _ => return Err(refused(500, "recent chat page size must be nonnegative"))
+  }
+  let (ids, total) = match builders_recent::page(db, ws, home, limit) {
+    Ok(Some(p)) => p
+    Ok(None) => return Err(refused(500, RECENT_CHAT_PENDING))
+    Err(e) => return Err(map_step_err(e))
+  }
+  let threads : Array[base_codec::Json] = []
+  let keys : Array[base_codec::Json] = []
+  for i in 0..<ids.length() {
+    let id = ids[i]
+    let t = match one(db, "SELECT * FROM threads WHERE id = ?", [id]) {
+      Ok(Some(row)) => row
+      Ok(None) => continue
+      Err(e) => return Err(e)
+    }
+    let members = match db.all(
+      "SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid",
+      [id],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(ReadError::Sql(e))
+    }
+    let mem_json : Array[base_codec::Json] = []
+    for j in 0..<members.length() {
+      let s_key = field(members[j], "session")
+      if !json_arr_has(keys, s_key) {
+        keys.push(s_key)
+      }
+      mem_json.push(membership_json(members[j]))
+    }
+    let unnamed = field(t, "title") is base_codec::Json::Null &&
+    field(t, "auto_title") is base_codec::Json::Null
+    let lm = match last_said(db, id) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let ft = if unnamed {
+      match first_text(db, id) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+    } else {
+      base_codec::json_null()
+    }
+    threads.push(
+      base_codec::json_obj([
+        ("thread", thread_json(t)),
+        ("sessions", base_codec::json_arr(mem_json)),
+        ("lastMessage", lm),
+        ("firstText", ft),
+      ]),
+    )
+  }
+  let sessions : Array[base_codec::Json] = []
+  for i in 0..<keys.length() {
+    match one(db, "SELECT * FROM sessions WHERE key = ?", [keys[i]]) {
+      Ok(Some(r)) => {
+        let running = match field(r, "running") {
+          base_codec::Json::Num(n, _) => base_codec::json_bool(n != 0.0)
+          base_codec::Json::Bool(true) => base_codec::json_bool(true)
+          _ => base_codec::json_bool(false)
+        }
+        sessions.push(
+          base_codec::json_obj([
+            ("key", field(r, "key")),
+            ("title", field(r, "title")),
+            ("archivedAt", field(r, "archived_at")),
+            ("ws", or_null(col(r, "ws"))),
+            ("runtime", field(r, "runtime")),
+            ("model", or_null(col(r, "model"))),
+            ("effort", or_null(col(r, "effort"))),
+            ("running", running),
+            ("createdBy", or_null(col(r, "created_by"))),
+          ]),
+        )
+      }
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(
+    base_codec::json_obj([
+      ("threads", base_codec::json_arr(threads)),
+      ("sessions", base_codec::json_arr(sessions)),
+      ("total", base_codec::json_num(total)),
+    ]),
+  )
+}

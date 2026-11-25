@@ -37,6 +37,8 @@ export const EVICT_AFTER_MS = 60_000;
 /// Topics of words typed (the `@` menu's, a search's): one let go of before the last of its kind is not made again till
 /// it is asked again (#flushOf).
 export const ASKED_BY_WORDS: ReadonlySet<string> = new Set(["chatSearch", "search", "chatSubchats"]);
+/// Expensive derived topics that should not recompute while idle during their eviction grace window (#flushOf).
+const LAZY_WHEN_IDLE: ReadonlySet<string> = new Set(["profilesOverview"]);
 /// A topic of words typed by its kind: its name and where it looks.
 function wordsKind(topic: Topic): string {
   if (topic.topic === "chatSubchats") return `${topic.topic}\u0001${String(topic.station ?? "")}\u0001${String(topic.thread ?? "")}\u0001${String(topic.session ?? "")}`;
@@ -419,7 +421,13 @@ export class Store {
     entry.watchers.push([id, onChange]);
     entry.idle = null;
     if (started) this.#start(topic);
-    else if (resumed) this.#source?.resume?.(topic);
+    else {
+      if (resumed) this.#source?.resume?.(topic);
+      if (entry.stale && !entry.emitScheduled) {
+        entry.emitScheduled = true;
+        this.#scheduleEmit(topic);
+      }
+    }
     return new Watch(this, topic, id);
   }
 
@@ -533,7 +541,15 @@ export class Store {
       const resumed = entry.idle !== null;
       entry.idle = null;
       if (started) untracked(() => this.#start(topic));
-      else if (resumed) untracked(() => this.#source?.resume?.(topic));
+      else if (resumed) {
+        untracked(() => {
+          this.#source?.resume?.(topic);
+          if (entry!.stale && !entry!.emitScheduled) {
+            entry!.emitScheduled = true;
+            this.#scheduleEmit(topic);
+          }
+        });
+      }
     }
     return entry;
   }
@@ -773,12 +789,13 @@ export class Store {
   #flushOf(topic: Topic): void {
     const entry = this.#topics.get(topicKey(topic));
     if (!entry) return;
-    if (entry.idle !== null && entry.stale && ASKED_BY_WORDS.has(topic.topic) && this.#wordsLetGo.get(wordsKind(topic)) !== topicKey(topic)) {
-      // Let go of, of words typed, other words let go of since: made again only as it is asked again (subscribe:
-      // outputDirty), never meanwhile; the words let go of last are kept as any topic is, for the page that comes back
-      // to them. Each letter typed in the `@` menu left a `chatSearch` of every workspace's chats, made again at every
-      // change of any chat for a minute, one after another on the core's one thread (in Hermes, at a workspace of
-      // thousands of chats, seconds a change: a new chat's send waited behind them, 2026-11-17).
+    if (entry.idle !== null && entry.stale && (LAZY_WHEN_IDLE.has(topic.topic) || (ASKED_BY_WORDS.has(topic.topic) && this.#wordsLetGo.get(wordsKind(topic)) !== topicKey(topic)))) {
+      // Let go of, of words typed, other words let go of since (or lazy-when-idle topics such as `profilesOverview`):
+      // made again only as it is asked again (subscribe: outputDirty / watch: resumed), never meanwhile; the words let
+      // go of last are kept as any topic is, for the page that comes back to them. Each letter typed in the `@` menu
+      // left a `chatSearch` of every workspace's chats, made again at every change of any chat for a minute, one after
+      // another on the core's one thread (in Hermes, at a workspace of thousands of chats, seconds a change: a new chat's
+      // send waited behind them, 2026-11-17).
       entry.emitScheduled = false;
       entry.outputDirty = true;
       return;

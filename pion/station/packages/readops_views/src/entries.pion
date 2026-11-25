@@ -1,0 +1,756 @@
+// 1:1 port of `station/mb/src/readops/entries.mbt`.
+// A chat's entries and its own log of letters as a device pages them
+// (station/src/read/views.ts `entries`, `letters`: GET /threads/:id/entries, /threads/:id/letters).
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "jscase"
+import "readops_chats"
+import "readops_core"
+import "sql_db"
+
+let I64_MAX : Int64 = (0x7FFFFFFF.to_int64() << 32.to_int64()) | (0xFFFF.to_int64() << 16.to_int64()) | 0xFFFF.to_int64()
+
+let I64_MIN : Int64 = -I64_MAX - 1.to_int64()
+
+fn is_ascii_digit(b : Int) -> Bool {
+  b >= 48 && b <= 57
+}
+
+fn is_nan_or_inf(d : Double) -> Bool {
+  d != d || d == (1.0 / 0.0) || d == (-1.0 / 0.0)
+}
+
+/// views.ts `parseF64`: Rust's `str::parse::<f64>` (no spaces, no hex, nothing empty), none where it does not read.
+pub fn parse_f64(text : String) -> Option[Double] {
+  let bs = text.to_bytes()
+  let n = bs.length()
+  let mut i = 0
+  let mut sign = 1.0
+  if i < n {
+    let b0 = bs[i].to_int() & 0xFF
+    if b0 == 43 || b0 == 45 {
+      if b0 == 45 {
+        sign = -1.0
+      }
+      i = i + 1
+    }
+  }
+  let body = readops_core::str_slice_bytes(text, i, n)
+  let lower = jscase::lower(body)
+  if lower == "inf" || lower == "infinity" {
+    return Some(sign * (1.0 / 0.0))
+  }
+  if lower == "nan" {
+    return Some(0.0 / 0.0)
+  }
+  // (\d+\.?\d*|\.\d+)([eE][+-]?\d+)?
+  let bb = body.to_bytes()
+  let bn = bb.length()
+  let mut j = 0
+  let int_start = j
+  while j < bn && is_ascii_digit(bb[j].to_int() & 0xFF) {
+    j = j + 1
+  }
+  let int_part = readops_core::str_slice_bytes(body, int_start, j)
+  let mut frac = ""
+  if j < bn && (bb[j].to_int() & 0xFF) == 46 {
+    j = j + 1
+    let f = j
+    while j < bn && is_ascii_digit(bb[j].to_int() & 0xFF) {
+      j = j + 1
+    }
+    frac = readops_core::str_slice_bytes(body, f, j)
+  }
+  if int_part == "" && frac == "" {
+    return None
+  }
+  let mut exp = ""
+  if j < bn {
+    let ej = bb[j].to_int() & 0xFF
+    if ej == 101 || ej == 69 {
+      j = j + 1
+      let e = j
+      if j < bn {
+        let sj = bb[j].to_int() & 0xFF
+        if sj == 43 || sj == 45 {
+          j = j + 1
+        }
+      }
+      let d = j
+      while j < bn && is_ascii_digit(bb[j].to_int() & 0xFF) {
+        j = j + 1
+      }
+      if j == d {
+        return None
+      }
+      exp = "e" + readops_core::str_slice_bytes(body, e, j)
+    }
+  }
+  if j != bn {
+    return None
+  }
+  let normal = (if int_part == "" { "0" } else { int_part }) + (if frac == "" { "" } else { "." + frac }) + exp
+  match base_codec::json_parse(normal) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Num(v, _)) => Some(sign * v)
+    // (a number beyond a double's range is infinite to Rust)
+    _ => Some(sign * (1.0 / 0.0))
+  }
+}
+
+/// views.ts `asI64`: Rust's `f64 as i64` (truncated, saturating, NaN 0).
+pub fn as_i64(n : Double) -> Int64 {
+  builders_core::double_to_i64_saturating(n)
+}
+
+/// A query's pairs, the first of a name counting (`[[k, v], ...]`), or a plain map of them.
+fn param_of(params : base_codec::Json, name : String) -> Option[String] {
+  match params {
+    base_codec::Json::Arr(pairs) => {
+      for i in 0..<pairs.length() {
+        match pairs[i] {
+          base_codec::Json::Arr(p) => {
+            if p.length() >= 2 {
+              match (p[0], p[1]) {
+                (base_codec::Json::Str(k), base_codec::Json::Str(v)) => {
+                  if k == name {
+                    return Some(v)
+                  }
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+      None
+    }
+    base_codec::Json::Obj(_) => {
+      match readops_core::json_val(params, name) {
+        Some(base_codec::Json::Str(v)) => Some(v)
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+fn int_text(n : Int64) -> base_codec::Json {
+  base_codec::json_str(n.to_string())
+}
+
+struct Paging {
+  after : Option[Int64]
+  before : Option[Int64]
+  from : Option[Int64]
+  to : Option[Int64]
+  limit_given : Bool
+  limit : Int
+}
+
+fn paging(args : base_codec::Json) -> Result[Paging, readops_core::ReadError] {
+  let params = readops_core::json_val_or_null(args, "params")
+  let read_number = fn(name : String) -> Result[Option[Int64], readops_core::ReadError] {
+    let v = match param_of(params, name) {
+      Some(s) => s
+      None => return Ok(None)
+    }
+    match parse_f64(v) {
+      Some(n) => {
+        if js_json::is_integer(n) && n >= 0.0 {
+          Ok(Some(as_i64(n)))
+        } else {
+          Err(readops_core::refused(400, name + " must be an integer"))
+        }
+      }
+      None => Err(readops_core::refused(400, name + " must be an integer"))
+    }
+  }
+  let after = match read_number("after") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let before = match read_number("before") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let from = match read_number("from") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let to = match read_number("to") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let asked = param_of(params, "limit")
+  let parsed_limit = match asked {
+    Some(a) => parse_f64(a)
+    None => None
+  }
+  let wanted = match parsed_limit {
+    None => 50.0
+    Some(n) => if n == 0.0 { 50.0 } else { n }
+  }
+  let limit = if wanted != wanted {
+    0
+  } else {
+    let c = if wanted < 1.0 {
+      1.0
+    } else if wanted > 500.0 {
+      500.0
+    } else {
+      wanted
+    }
+    builders_core::double_to_i64_saturating(c).to_int()
+  }
+  let has_from = match from {
+    Some(_) => true
+    None => false
+  }
+  let has_to = match to {
+    Some(_) => true
+    None => false
+  }
+  if has_from != has_to {
+    return Err(readops_core::refused(400, "Provide from and to together"))
+  }
+  let limit_given = match asked {
+    Some(_) => true
+    None => false
+  }
+  Ok(Paging::{ after: after, before: before, from: from, to: to, limit_given: limit_given, limit: limit })
+}
+
+/// rows.ts `withChange`'s reading of a notice's change: an object whose `was` and `now` are objects.
+fn change_of(v : base_codec::Json) -> Option[base_codec::Json] {
+  match readops_core::parsed(v) {
+    Some(c) => {
+      match c {
+        js_json::JValue::Obj(_) => {
+          match (readops_core::jget(Some(c), "was"), readops_core::jget(Some(c), "now")) {
+            (Some(js_json::JValue::Obj(_)), Some(js_json::JValue::Obj(_))) => Some(readops_core::to_json(c))
+            (Some(js_json::JValue::Obj(_)), Some(js_json::JValue::Arr(_))) => Some(readops_core::to_json(c))
+            (Some(js_json::JValue::Arr(_)), Some(js_json::JValue::Obj(_))) => Some(readops_core::to_json(c))
+            (Some(js_json::JValue::Arr(_)), Some(js_json::JValue::Arr(_))) => Some(readops_core::to_json(c))
+            _ => None
+          }
+        }
+        _ => None
+      }
+    }
+    None => None
+  }
+}
+
+/// rows.ts `letterOf`: a letter's way, title and link, none where it is not one.
+fn letter_of(v : base_codec::Json) -> Option[base_codec::Json] {
+  let out : Array[(String, base_codec::Json)] = []
+  readops_core::with_letter(out, v)
+  readops_chats::obj_get(out, "letter")
+}
+
+/// rows.ts `parseThreadTags`: forwarded from `readops_core::parsed_thread_tags`.
+pub fn parsed_thread_tags(v : base_codec::Json) -> Option[base_codec::Json] {
+  readops_core::parsed_thread_tags(v)
+}
+
+/// rows.ts `proposalOf`: forwarded from `readops_core::parsed_proposal`.
+pub fn parsed_proposal(v : base_codec::Json) -> Option[base_codec::Json] {
+  readops_core::parsed_proposal(v)
+}
+
+/// rows.ts `mergeProposalOutcome`: overlays a `proposal_outcomes` row onto an entry's immutable proposal.
+pub fn merge_proposal_outcome(p : base_codec::Json, outcome : Map[String, base_codec::Json]) -> base_codec::Json {
+  match p {
+    base_codec::Json::Obj(_) => ()
+    _ => return p
+  }
+  let status = match readops_core::field(outcome, "status") {
+    base_codec::Json::Str(s) => {
+      if s == "accepted" || s == "reassigned" || s == "dismissed" {
+        s
+      } else {
+        return p
+      }
+    }
+    _ => return p
+  }
+  let out : Array[(String, base_codec::Json)] = []
+  let keep = ["id", "name", "note", "refs", "proposer"]
+  for i in 0..<keep.length() {
+    let k = keep[i]
+    match readops_core::json_val(p, k) {
+      Some(v) => out.push((k, v))
+      None => ()
+    }
+  }
+  out.push(("status", base_codec::json_str(status)))
+  match readops_core::field(outcome, "project") {
+    base_codec::Json::Str(rp) => out.push(("resolvedProject", base_codec::json_str(rp)))
+    _ => ()
+  }
+  match readops_core::field(outcome, "resolved_by") {
+    base_codec::Json::Str(rb) => if rb != "" { out.push(("resolvedBy", base_codec::json_str(rb))) }
+    _ => ()
+  }
+  match readops_core::field(outcome, "resolved_at") {
+    base_codec::Json::Num(ra, _) => {
+      if !is_nan_or_inf(ra) {
+        out.push(("resolvedAt", base_codec::json_num(ra)))
+      }
+    }
+    _ => ()
+  }
+  base_codec::json_obj(out)
+}
+
+/// archive.ts `entryJson` of a row of entries (rows.ts `toEntry`), or of the letters' own log (`letterEntry`).
+fn entry_json(r : Map[String, base_codec::Json], letter_log : Bool) -> Array[(String, base_codec::Json)] {
+  let v : Array[(String, base_codec::Json)] = []
+  if !letter_log {
+    match readops_core::parsed(readops_core::field(r, "agent_identity")) {
+      Some(identity) => v.push(("agentIdentity", readops_core::to_json(identity)))
+      None => ()
+    }
+  }
+  v.push(("thread", readops_core::field(r, "thread")))
+  v.push(("n", readops_core::field(r, "n")))
+  let is_edit = !letter_log && readops_chats::mb_json_eq(readops_core::field(r, "kind"), base_codec::json_str("edit"))
+  v.push(("kind", base_codec::json_str(if is_edit { "edit" } else { "message" })))
+  v.push(("target", if letter_log { base_codec::json_null() } else { readops_core::field(r, "target") }))
+  v.push(("ts", readops_core::field(r, "ts")))
+  v.push(("authorKind", readops_core::author_kind(readops_core::field(r, "author_kind"))))
+  v.push(("author", readops_core::field(r, "author")))
+  v.push(("text", readops_core::field(r, "text")))
+  v.push(("attachments", readops_core::json_list(readops_core::field(r, "attachments"), readops_core::parse_attachment)))
+  v.push(
+    (
+      "quotes",
+      if letter_log {
+        base_codec::json_arr([])
+      } else {
+        readops_core::json_list(readops_core::field(r, "quotes"), readops_core::parse_quote)
+      },
+    ),
+  )
+  v.push(("declared", if letter_log { base_codec::json_null() } else { readops_core::field(r, "declared") }))
+  if !letter_log {
+    let opt_cols = ["client", "profile", "runtime"]
+    for i in 0..<opt_cols.length() {
+      let k = opt_cols[i]
+      let fv = readops_core::field(r, k)
+      match fv {
+        base_codec::Json::Null => ()
+        _ => v.push((k, fv))
+      }
+    }
+    match readops_core::parsed(readops_core::field(r, "options")) {
+      Some(o) => v.push(("options", readops_core::to_json(o)))
+      None => ()
+    }
+    match readops_core::parsed(readops_core::field(r, "card")) {
+      Some(c) => v.push(("card", readops_core::to_json(c)))
+      None => ()
+    }
+  }
+  v.push(("at", readops_core::field(r, "at")))
+  match letter_of(readops_core::field(r, "letter")) {
+    Some(l) => v.push(("letter", l))
+    None => ()
+  }
+  if !letter_log {
+    match change_of(readops_core::field(r, "change")) {
+      Some(c) => v.push(("change", c))
+      None => ()
+    }
+    match parsed_proposal(readops_core::field(r, "proposal")) {
+      Some(p) => v.push(("proposal", p))
+      None => ()
+    }
+  }
+  v
+}
+
+/// views.ts `entryViews`: entries with their authors' names, an agent's with its session's model and runtime.
+fn entry_views(
+  db : sql_db::Db,
+  known : readops_core::Known,
+  thread : base_codec::Json,
+  rows : Array[Map[String, base_codec::Json]],
+  letter_log : Bool,
+) -> Result[Array[base_codec::Json], readops_core::ReadError] {
+  let names = match known.author_names(db, thread) {
+    Ok(n) => n
+    Err(e) => return Err(e)
+  }
+  let sessions : Map[String, Option[Map[String, base_codec::Json]]] = Map::new()
+  let origins : Map[String, base_codec::Json] = Map::new()
+  let sidecar_proposals : Map[String, base_codec::Json] = Map::new()
+  let outcomes : Map[String, Map[String, base_codec::Json]] = Map::new()
+  if !letter_log {
+    let missing_ns : Array[base_codec::Json] = []
+    let proposal_ns : Array[base_codec::Json] = []
+    for i in 0..<rows.length() {
+      let r = rows[i]
+      match readops_core::field(r, "proposal") {
+        base_codec::Json::Null => missing_ns.push(readops_core::field(r, "n"))
+        _ => proposal_ns.push(readops_core::field(r, "n"))
+      }
+    }
+    if missing_ns.length() > 0 {
+      let has_ep = match readops_core::exists_in(db, "table", "entry_proposals") {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      if has_ep {
+        let ep_rows = match db.all(
+          "SELECT CAST(n AS TEXT) AS n, proposal FROM entry_proposals WHERE thread = ? AND n IN (SELECT value FROM json_each(?))",
+          [thread, readops_core::ids_json(missing_ns)],
+        ) {
+          Ok(rs) => rs
+          Err(e) => return Err(readops_core::ReadError::Sql(e))
+        }
+        for i in 0..<ep_rows.length() {
+          let ep = ep_rows[i]
+          match parsed_proposal(readops_core::field(ep, "proposal")) {
+            Some(p) => {
+              let ns = readops_core::js_text(readops_core::field(ep, "n"))
+              sidecar_proposals.set(ns, p)
+              proposal_ns.push(readops_core::field(ep, "n"))
+            }
+            None => ()
+          }
+        }
+      }
+    }
+    if proposal_ns.length() > 0 {
+      let has_po = match readops_core::exists_in(db, "table", "proposal_outcomes") {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      if has_po {
+        let po_rows = match db.all(
+          "SELECT CAST(n AS TEXT) AS n, status, project, resolved_by, resolved_at FROM proposal_outcomes WHERE thread = ? AND n IN (SELECT value FROM json_each(?))",
+          [thread, readops_core::ids_json(proposal_ns)],
+        ) {
+          Ok(rs) => rs
+          Err(e) => return Err(readops_core::ReadError::Sql(e))
+        }
+        for i in 0..<po_rows.length() {
+          let o = po_rows[i]
+          outcomes.set(readops_core::js_text(readops_core::field(o, "n")), o)
+        }
+      }
+    }
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let v = entry_json(r, letter_log)
+    if !letter_log {
+      let n_key = readops_core::js_text(readops_core::field(r, "n"))
+      if readops_chats::obj_get(v, "proposal") is None {
+        match sidecar_proposals.get(n_key) {
+          Some(sp) => readops_chats::obj_set(v, "proposal", sp)
+          None => ()
+        }
+      }
+      match readops_chats::obj_get(v, "proposal") {
+        Some(p) => {
+          match outcomes.get(n_key) {
+            Some(outcome) => readops_chats::obj_set(v, "proposal", merge_proposal_outcome(p, outcome))
+            None => ()
+          }
+        }
+        None => ()
+      }
+    }
+    let kind = readops_core::js_text(readops_core::or_null(readops_chats::obj_get(v, "authorKind")))
+    let author = readops_core::js_text(readops_core::field(r, "author"))
+    let author_name = match names.name(kind, author) {
+      Ok(nm) => nm
+      Err(e) => return Err(e)
+    }
+    readops_chats::obj_set(v, "authorName", author_name)
+    match names.picture(kind, author) {
+      Ok(Some(pic)) => readops_chats::obj_set(v, "authorPicture", base_codec::json_str(pic))
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+    if kind == "agent" {
+      let session = match sessions.get(author) {
+        Some(s) => s
+        None => {
+          let s = match readops_core::one(db, "SELECT * FROM sessions WHERE key = ?", [base_codec::json_str(author)]) {
+            Ok(row) => row
+            Err(e) => return Err(e)
+          }
+          sessions.set(author, s)
+          s
+        }
+      }
+      match session {
+        Some(s) => {
+          let identity = readops_chats::obj_get(v, "agentIdentity")
+          let id_runtime = match identity {
+            Some(id_obj) => {
+              match id_obj {
+                base_codec::Json::Obj(_) => {
+                  match readops_core::json_val(id_obj, "runtime") {
+                    Some(rt) => {
+                      match rt {
+                        base_codec::Json::Str(_) => Some(rt)
+                        _ => None
+                      }
+                    }
+                    None => None
+                  }
+                }
+                _ => None
+              }
+            }
+            None => None
+          }
+          let author_rt = match id_runtime {
+            Some(rt) => rt
+            None => {
+              let origin = match origins.get(author) {
+                Some(o) => o
+                None => {
+                  let o = match readops_core::original_runtime(db, base_codec::json_str(author)) {
+                    Ok(v0) => v0
+                    Err(e) => return Err(e)
+                  }
+                  origins.set(author, o)
+                  o
+                }
+              }
+              match origin {
+                base_codec::Json::Null => readops_core::field(s, "runtime")
+                _ => origin
+              }
+            }
+          }
+          readops_chats::obj_set(v, "authorRuntime", author_rt)
+          let model = match identity {
+            Some(id_val) => {
+              match id_val {
+                base_codec::Json::Null => {
+                  if readops_chats::mb_json_eq(author_rt, readops_core::field(s, "runtime")) {
+                    readops_core::field(s, "model")
+                  } else {
+                    base_codec::json_null()
+                  }
+                }
+                base_codec::Json::Obj(_) => readops_core::json_val_or_null(id_val, "model")
+                _ => base_codec::json_null()
+              }
+            }
+            None => {
+              if readops_chats::mb_json_eq(author_rt, readops_core::field(s, "runtime")) {
+                readops_core::field(s, "model")
+              } else {
+                base_codec::json_null()
+              }
+            }
+          }
+          match model {
+            base_codec::Json::Str(_) => readops_chats::obj_set(v, "authorModel", model)
+            _ => ()
+          }
+        }
+        None => ()
+      }
+    }
+    match readops_chats::obj_get(v, "declared") {
+      Some(base_codec::Json::Str(d)) => {
+        readops_chats::obj_set(v, "declared", base_codec::json_str(readops_core::said_before(d)))
+        readops_chats::obj_set(v, "ending", base_codec::json_str(readops_core::ending_of(d)))
+      }
+      _ => ()
+    }
+    match readops_chats::obj_get(v, "card") {
+      Some(_) => ()
+      None => {
+        match readops_chats::obj_get(v, "options") {
+          Some(o) => {
+            readops_chats::obj_set(
+              v,
+              "card",
+              base_codec::json_obj([("type", base_codec::json_str("options")), ("options", o)]),
+            )
+          }
+          None => ()
+        }
+      }
+    }
+    out.push(base_codec::json_obj(v))
+  }
+  Ok(out)
+}
+
+fn known_thread(db : sql_db::Db, thread : base_codec::Json) -> Result[Unit, readops_core::ReadError] {
+  match readops_core::one(db, "SELECT * FROM threads WHERE id = ?", [thread]) {
+    Ok(Some(_)) => Ok(())
+    Ok(None) => Err(readops_core::refused(404, "unknown thread " + readops_core::js_text(thread)))
+    Err(e) => Err(e)
+  }
+}
+
+pub fn max_n(db : sql_db::Db, sql : String, thread : base_codec::Json) -> Result[base_codec::Json, readops_core::ReadError] {
+  match readops_core::one(db, sql, [thread]) {
+    Ok(Some(r)) => {
+      match readops_core::field(r, "n") {
+        base_codec::Json::Null => Ok(base_codec::json_num(0.0))
+        v => Ok(v)
+      }
+    }
+    Ok(None) => Ok(base_codec::json_num(0.0))
+    Err(e) => Err(e)
+  }
+}
+
+fn wrap_add_one(a : Int64) -> Int64 {
+  if a == I64_MAX {
+    I64_MIN
+  } else {
+    a + 1.to_int64()
+  }
+}
+
+/// views.ts `entries`.
+pub fn thread_entries(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let known = readops_core::Known::of(client, data, sep, ask)
+  let thread = readops_core::json_val_or_null(args, "thread")
+  match known_thread(db, thread) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let p = match paging(args) {
+    Ok(pg) => pg
+    Err(e) => return Err(e)
+  }
+  let last = match max_n(db, "SELECT MAX(n) AS n FROM entries WHERE thread = ?", thread) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let between = "SELECT * FROM entries WHERE thread = ? AND n >= CAST(? AS INTEGER) AND n <= CAST(? AS INTEGER) ORDER BY n"
+  let rows = match (p.after, p.from, p.to) {
+    // (`n + 1` wraps at i64::MAX, as a release build's does)
+    (Some(a), _, _) => {
+      let next_a = wrap_add_one(a)
+      let res = if p.limit_given {
+        db.all(
+          between + " LIMIT ?",
+          [thread, int_text(next_a), int_text(I64_MAX), base_codec::json_num(p.limit.to_double())],
+        )
+      } else {
+        db.all(between, [thread, int_text(next_a), int_text(I64_MAX)])
+      }
+      match res {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::ReadError::Sql(e))
+      }
+    }
+    (None, Some(f), Some(t)) => {
+      match db.all(between, [thread, int_text(f), int_text(t)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::ReadError::Sql(e))
+      }
+    }
+    _ => {
+      let before_val = match p.before {
+        Some(b) => b
+        None => I64_MAX
+      }
+      match db.all(
+        "SELECT * FROM entries WHERE thread = ? AND n < CAST(? AS INTEGER) ORDER BY n DESC LIMIT ?",
+        [thread, int_text(before_val), base_codec::json_num(p.limit.to_double())],
+      ) {
+        Ok(rs) => readops_core::array_rev(rs)
+        Err(e) => return Err(readops_core::ReadError::Sql(e))
+      }
+    }
+  }
+  let views = match entry_views(db, known, thread, rows, false) {
+    Ok(vs) => vs
+    Err(e) => return Err(e)
+  }
+  Ok(base_codec::json_obj([("last", last), ("entries", base_codec::json_arr(views))]))
+}
+
+/// views.ts `letters`.
+pub fn thread_letters(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let known = readops_core::Known::of(client, data, sep, ask)
+  let thread = readops_core::json_val_or_null(args, "thread")
+  match known_thread(db, thread) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let p = match paging(args) {
+    Ok(pg) => pg
+    Err(e) => return Err(e)
+  }
+  let last = match max_n(db, "SELECT MAX(n) AS n FROM letters WHERE thread = ?", thread) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let between = "SELECT * FROM letters WHERE thread = ? AND n >= CAST(? AS INTEGER) AND n <= CAST(? AS INTEGER) ORDER BY n"
+  let rows = match (p.after, p.from, p.to) {
+    (Some(a), _, _) => {
+      let next_a = wrap_add_one(a)
+      let res = if p.limit_given {
+        db.all(
+          between + " LIMIT ?",
+          [thread, int_text(next_a), int_text(I64_MAX), base_codec::json_num(p.limit.to_double())],
+        )
+      } else {
+        db.all(between, [thread, int_text(next_a), int_text(I64_MAX)])
+      }
+      match res {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::ReadError::Sql(e))
+      }
+    }
+    (None, Some(f), Some(t)) => {
+      match db.all(between, [thread, int_text(f), int_text(t)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::ReadError::Sql(e))
+      }
+    }
+    _ => {
+      let before_val = match p.before {
+        Some(b) => b
+        None => I64_MAX
+      }
+      match db.all(
+        "SELECT * FROM letters WHERE thread = ? AND n < CAST(? AS INTEGER) ORDER BY n DESC LIMIT ?",
+        [thread, int_text(before_val), base_codec::json_num(p.limit.to_double())],
+      ) {
+        Ok(rs) => readops_core::array_rev(rs)
+        Err(e) => return Err(readops_core::ReadError::Sql(e))
+      }
+    }
+  }
+  let views = match entry_views(db, known, thread, rows, true) {
+    Ok(vs) => vs
+    Err(e) => return Err(e)
+  }
+  Ok(base_codec::json_obj([("last", last), ("letters", base_codec::json_arr(views))]))
+}

@@ -198,6 +198,8 @@ export class Attend {
 
   /// Told whether a page is in view each time the UIs say where they are (the store's `inView`).
   inView: (shown: boolean) => void = () => {};
+  /// Told whenever a UI's focus or workspace changes (after `inView`).
+  onFocus: () => void = () => {};
 
   #told(): void {
     this.inView(this.shown());
@@ -229,6 +231,11 @@ export class Attend {
   /// The workspaces the viewer is in; null while no UI says.
   current(): Set<string> | null {
     this.#seen.read("focus");
+    return this.currentWorkspaces();
+  }
+
+  /// The workspaces the viewer is in, without recording a reactive read; null while no UI says.
+  currentWorkspaces(): Set<string> | null {
     const ofUis = (inView: boolean) => new Set([...this.#focus.values()].filter((f) => f.visible || !inView).flatMap((f) => (workspaceOf(f) !== null ? [workspaceOf(f)!] : [])));
     const shown = ofUis(true);
     const all = shown.size === 0 ? ofUis(false) : shown;
@@ -254,6 +261,7 @@ export class Attend {
     if (call.workspace !== null) f.workspace = call.workspace;
     this.#endVisits();
     this.#told();
+    this.onFocus();
     this.#seen.touch("focus");
   }
 
@@ -262,6 +270,7 @@ export class Attend {
     this.#focus.delete(client);
     this.#endVisits();
     this.#told();
+    this.onFocus();
     this.#seen.touch("focus");
   }
 

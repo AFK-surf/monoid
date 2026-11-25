@@ -678,6 +678,7 @@
   "station.login.agyNoTerminal": "Antigravity CLI 登录需要终端，这台机器提供不了，请在别的 station 上登录",
   "station.login.agyCodeRefused": "用这个授权码没能完成登录，请重新开始登录，再贴新的授权码",
   "station.login.agyFailed": "Google 没能完成登录：{error}。请重新开始登录；仍不行时检查这个 Google Cloud 项目是否可用",
+  "station.login.agyStopped": "agy 已经接受了授权码，但没走完后面的设置，停在：「{screen}」。请重新开始登录；仍停在这里时，检查这个 Google Cloud 项目是否开通了 Gemini Enterprise 和计费",
   "station.context.busy": "当前任务运行中，停止后再试",
   "station.context.held": "此 station 当前无法运行 agent",
   "station.context.managersOnly": "只有 workspace 管理员能修改此设置",

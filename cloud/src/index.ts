@@ -113,7 +113,8 @@ async function answer(request: Request, env: Env, ctx: ExecutionContext): Promis
   } catch (error) {
     // (thrown on as before: the runtime answers it as it did; the line is what is left of it)
     console.error(`${request.method} ${route(path)}:`, error);
-    ctx.waitUntil(cloudLogToTelemetry(env, "ERROR", "http", "unhandled worker error", { method: request.method, path: route(path), error: errorMessage(error) }));
+    // (nor is telemetry's own failing here logged through it, as below)
+    if (!path.startsWith("/v1/telemetry/")) ctx.waitUntil(cloudLogToTelemetry(env, "ERROR", "http", "unhandled worker error", { method: request.method, path: route(path), error: errorMessage(error) }));
     throw error;
   }
   const ended = clock.now();

@@ -68,7 +68,7 @@ export function packetsSince(was: LinkNet["packets"], now: LinkNet["packets"]): 
   return { sent: now.sent - was.sent, lost: now.lost - was.lost };
 }
 
-const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationRates", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "terminalCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
+const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "hostLive", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationRates", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "terminalCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
 
 const u64 = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
 
@@ -111,7 +111,7 @@ export class StationTopics implements Owner {
   /// What runs for a topic while it is started (a drive folder kept as it is), by topic.
   readonly #samplers = new Map<string, Fiber.Fiber<void, never>>();
   /// Each station's connection sampler, while its `net` or `way` is started (which of the two are).
-  readonly #sampling = new Map<string, { fiber: Fiber.Fiber<void, never>; by: Set<string> }>();
+  readonly #sampling = new Map<string, { fiber: Fiber.Fiber<void, never>; by: Set<string>; sample: () => void }>();
   /// The stations sampled this run (a reading of each is in its link's memory: its `net`), and how each is reached by
   /// its reading (its `way`).
   readonly #sampled = new Set<string>();
@@ -134,8 +134,18 @@ export class StationTopics implements Owner {
   /// What the station topics shown want of each station's stream: host samples, the logs shown, open live sessions, and rates.
   #wanted(address: string): { host: boolean; logs: [string, number][]; logins: string[]; open: string[]; rates: boolean } {
     const topics = this.#core.store.liveTopics().filter((t) => t.station === address);
+    const liveHost =
+      this.#core.store.subscribed({ topic: "host", station: address }) ||
+      this.#core.store.inUse({ topic: "net", station: address }) ||
+      this.#core.store.inUse({ topic: "hostLive", station: address });
+    const link = this.#sync.link(address);
+    // Passive `stations` list readers only need an initial/recovered host reading when none is cached yet;
+    // continuous ?host=1 streaming runs only while a live host-meter view (`station`, `stationNet`, `fleet`) or direct `host` subscriber is open.
+    const needInitialHost =
+      topics.some((t) => t.topic === "host") &&
+      (link === undefined || !link.memory.has("host") || link.hostUnreadable);
     return {
-      host: topics.some((t) => t.topic === "host"),
+      host: liveHost || needInitialHost,
       logs: topics.filter((t) => t.topic === "jobLog").map((t) => [t.job as string, t.lines as number] as [string, number]),
       logins: [...new Set(topics.filter((t) => t.topic === "machineLoginScreen").map((t) => t.id as string))],
       open: [...new Set(topics.filter((t) => t.topic === "live" && this.#core.store.inUse(t)).map((t) => t.key as string))].sort(),
@@ -230,7 +240,7 @@ export class StationTopics implements Owner {
     this.resume(topic);
     // A job's log: what it is now read once; from then on the station says how it grows, on its stream.
     if (topic.topic === "jobLog") this.#sync.readLog(station, topic.job as string, topic.lines as number);
-    if (["host", "live", "jobLog", "machineLoginScreen", "stationRates"].includes(topic.topic)) this.#sync.openEvents(station, false);
+    if (["host", "hostLive", "net", "live", "jobLog", "machineLoginScreen", "stationRates"].includes(topic.topic)) this.#sync.openEvents(station, false);
   }
 
   /// Shown, as it starts or again while kept after the last showed it: what is read only while shown is brought up to
@@ -262,15 +272,15 @@ export class StationTopics implements Owner {
     // One message of a chat a link names: read each time its card shows, the same.
     if (topic.topic === "messagePeek") this.#sync.messagePeekShown(station, topic.thread as number, topic.seq as number);
     if (topic.topic === "live") {
-      if (this.#sync.isSparing()) this.#sync.channels.bring(transcriptOf(station, topic.key as string), Priority.shown, "latest");
+      if (this.#sync.isSparing(station)) this.#sync.channels.bring(transcriptOf(station, topic.key as string), Priority.shown, "latest");
       this.#sync.openEvents(station, false);
     }
-    if (topic.topic === "stationRates") this.#sync.openEvents(station, false);
+    if (topic.topic === "stationRates" || topic.topic === "hostLive" || topic.topic === "host" || topic.topic === "net") this.#sync.openEvents(station, false);
   }
 
   idle(topic: Topic): void {
     if (topic.topic === "stationSearch") this.#sync.searchPaused(topic);
-    if (topic.topic === "live" || topic.topic === "stationRates") {
+    if (topic.topic === "live" || topic.topic === "stationRates" || topic.topic === "hostLive" || topic.topic === "host" || topic.topic === "net") {
       const station = this.#stationOf(topic);
       if (station !== null) this.#sync.openEvents(station, false);
     }
@@ -297,7 +307,7 @@ export class StationTopics implements Owner {
       this.#core.runner.interrupt(sampler as Fiber.Fiber<unknown, unknown>);
       this.#samplers.delete(key);
     }
-    if (["host", "live", "jobLog", "machineLoginScreen", "stationRates"].includes(topic.topic)) this.#sync.openEvents(station, false);
+    if (["host", "hostLive", "net", "live", "jobLog", "machineLoginScreen", "stationRates"].includes(topic.topic)) this.#sync.openEvents(station, false);
   }
 
   /// Whether a topic with no value yet waits on its station for what it shows (store.ts `waits`): a chat's messages
@@ -352,6 +362,8 @@ export class StationTopics implements Owner {
         const v = link?.memory.get("host");
         return v === undefined ? undefined : { ok: v };
       }
+      case "hostLive":
+        return undefined;
       case "screens":
         seen.read(station, "screens");
         // As the station said them last (kept: there as the app opens again, while it is reached anew); none while it
@@ -1161,7 +1173,9 @@ export class StationTopics implements Owner {
   #sampleNet(station: string, by: string): void {
     const running = this.#sampling.get(station);
     if (running) {
+      const joiningNet = by === "net" && !running.by.has("net");
       running.by.add(by);
+      if (joiningNet) running.sample();
       return;
     }
     const core = this.#core;
@@ -1169,8 +1183,23 @@ export class StationTopics implements Owner {
     const way: Topic = { topic: "way", station };
     let last: [number, NonNullable<ReturnType<NonNullable<StationsSync["wire"]["net"]>>>] | null = null;
     let samples: unknown[] = [];
-    const sample = Effect.sync(() => {
+    const bySet = new Set([by]);
+    const sampleOnce = () => {
       const link = this.#sync.link(station);
+      if (!bySet.has("net") && this.#sync.wire.way) {
+        // Only `way` is shown (e.g. the stations list): read path/relay on the current link alone instead of polling
+        // byte stats, backup-way measurements, and daily totals every NET_EVERY_MS.
+        last = null;
+        samples = [];
+        const w = link ? (this.#sync.wire.way(link.addr) ?? null) : null;
+        const was = link?.memory.get("net") ?? null;
+        const reached = w !== null ? { path: w.path, relay: w.relay } : isObject(was) ? { path: was.path ?? null, relay: was.relay ?? null } : null;
+        if (!this.#ways.has(station) || !equal(this.#ways.get(station), reached)) {
+          this.#ways.set(station, reached);
+          core.store.invalidate(way);
+        }
+        return;
+      }
       const reading = link ? (this.#sync.wire.net?.(link.addr) ?? null) : null;
       const now = core.host.nowMs();
       const was = link?.memory.get("net") ?? null;
@@ -1203,13 +1232,14 @@ export class StationTopics implements Owner {
         this.#ways.set(station, reached);
         core.store.invalidate(way);
       }
-    });
+    };
+    const sample = Effect.sync(sampleOnce);
     // A measurement shown on screen: sampled while it is shown, the last reading kept to show from as the app opens
     // again (the station's card dimmed while it is reached anew). Not while the app is out of view: a phone
     // in a pocket samples nothing (it was most of what the core did there, 2026-10-19).
     const inView = Effect.suspend(() => core.attention?.attend.untilShown() ?? Effect.void);
     const fiber = core.runner.fork(Effect.forever(Effect.andThen(inView, Effect.andThen(sample, laterSleep(NET_EVERY_MS)))));
-    this.#sampling.set(station, { fiber, by: new Set([by]) });
+    this.#sampling.set(station, { fiber, by: bySet, sample: sampleOnce });
   }
 
   /// The station's `net` or `way` stopped: its sampler goes once neither is started.

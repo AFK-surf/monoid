@@ -65,10 +65,10 @@ function makeRecordingWrapper(dir: string, name: string, realBin: string, logFil
 }
 
 /// Recording wrapper for `$STILLFAIL_PION_READER` that logs every invocation to `logFile`,
-/// executes real `$BIN_PION` for `--version` and implemented modes (`live-locator`, etc.),
-/// and forwards the 5 not-yet-implemented Wave 6 modes (`search`, `usage-counter`,
-/// `replica-export`, `replica-carry`, `replica-restore`) to `$BIN_MB` ONLY AFTER recording
-/// the Pion spawn in `logFile` so tests prove production DI actually selected & spawned Pion.
+/// executes real `$BIN_PION` for `--version` and implemented modes (`live-locator`,
+/// `replica-export`, `replica-carry`, `replica-restore`, etc.), and forwards only the
+/// 2 not-yet-implemented Wave 6 modes (`search`, `usage-counter`) to `$BIN_MB` AFTER
+/// recording the Pion spawn in `logFile` so tests prove production DI actually selected & spawned Pion.
 function makePionForwardingWrapper(dir: string, name: string, realPion: string, realMb: string, logFile: string): string {
   const wrapper = join(dir, name);
   const sh = [
@@ -76,7 +76,7 @@ function makePionForwardingWrapper(dir: string, name: string, realPion: string, 
     `printf '%s %s\\n' "$$" "$*" >> ${JSON.stringify(logFile)}`,
     'if [ "${1:-}" = "--builder" ]; then',
     '  case "${2:-}" in',
-    "    search|usage-counter|replica-export|replica-carry|replica-restore)",
+    "    search|usage-counter)",
     `      exec ${JSON.stringify(realMb)} "$@"`,
     "      ;;",
     "  esac",
@@ -206,7 +206,6 @@ test("cold-start pending probe -> first spawn hits Pion wrapper & pending close/
   const restores = [
     setReaderModeImplementedForTest("search", true),
     setReaderModeImplementedForTest("usage-counter", true),
-    setReaderModeImplementedForTest("replica-export", true),
   ];
   await withEnv({ STILLFAIL_MB_READER: mbWrap, STILLFAIL_PION_READER: pionWrap }, async () => {
     const dbPath = join(dir, "stillfail.db");
@@ -399,7 +398,6 @@ test("resolveReaderSelectionAsync & carry: concurrent callers share pending prob
   const mbWrap = makeRecordingWrapper(dir, "mb-wrap.sh", mb, mbLog);
   const pionWrap = makePionForwardingWrapper(dir, "pion-wrap.sh", pion, mb, pionLog);
 
-  const restoreCarry = setReaderModeImplementedForTest("replica-carry", true);
   await withEnv({ STILLFAIL_MB_READER: mbWrap, STILLFAIL_PION_READER: pionWrap }, async () => {
     try {
       // 1. resolveReaderSelectionAsync shared probe + abort A without cancelling B
@@ -452,7 +450,6 @@ test("resolveReaderSelectionAsync & carry: concurrent callers share pending prob
         MbProcess.prototype.postMessage = origPost;
       }
     } finally {
-      restoreCarry();
       store.close();
       rmSync(dir, { recursive: true, force: true });
     }
@@ -516,10 +513,7 @@ test("dual-station MB vs Pion DI through real Retire (default & fallback preview
   const mbWrap = makeRecordingWrapper(dir, "mb-wrap.sh", mb, mbLog);
   const pionWrap = makePionForwardingWrapper(dir, "pion-wrap.sh", pion, mb, pionLog);
 
-  const restores = [
-    setReaderModeImplementedForTest("replica-carry", true),
-    setReaderModeImplementedForTest("replica-restore", true),
-  ];
+  const restores: Array<() => void> = [];
   await withEnv({ STILLFAIL_MB_READER: mbWrap, STILLFAIL_PION_READER: pionWrap }, async () => {
     setPionProbeRunnerForTest(async () => new Set(["footprint", "packed", "memory", "live-locator", "replica-carry", "replica-restore"]));
     const fibers1 = new Fibers("w6-st1");

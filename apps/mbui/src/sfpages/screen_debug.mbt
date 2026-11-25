@@ -81,16 +81,26 @@ fn screen_content_node(fill : @view.View, pg : ScreenPage, pair? : () -> Bool = 
       screen_stage_node(c, pg, pair~)
       return
     }
-    // (beside a chat, in its tab, as narrow whatever the window: there is the chat to read too)
+    // (beside a chat, in its tab, as narrow whatever the window; in 远程's workbench, by its pane's width)
     @sf.by_look_node(
       c,
-      fn() { if pg.in_tab { 0.0 } else { c.window_w() } },
+      fn() { pg.sim_width(c) },
       fn(w) {
-        d.by_device.set(true)
+        // Proposal C on mouse/keyboard wide panes (远程's workbench & standalone Viewer): pure full-bleed canvas with
+        // all device & quick-debug tools in the unified top bar and the right App / 日志 / 设备 drawer collapsed by
+        // default; touch tablets (Sideways/Native, no top bar) keep device controls beside/under the device.
+        let top_bar = !@sf.soft_keyboard() && !(!pg.in_tab && @sf.native_on())
+        d.by_device.set(!top_bar)
+        if top_bar {
+          debug_said_by(w, pg)
+        }
+        if !d.shown_set {
+          d.shown.set(!top_bar)
+        }
         w.reacts(fn() { flag(s.state_now(), "debug") }, fn(on) { d.beside.set(on) })
         w.row(Is(true)) |> ignore
         w.box(fn(body) {
-          @sf.style_node(body, fn() { debug_stage_body }, in_row=true)
+          @sf.style_node(body, fn() { if top_bar { debug_stage_wide_body } else { debug_stage_body } }, in_row=true)
           body.basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
           screen_stage_node(body, pg)
         })
@@ -216,7 +226,10 @@ fn debug_row_node(parent : @view.View, pg : ScreenPage, column : Bool) -> Unit {
         pg,
         fn() { if d.shown.get() { "shrink" } else { "expand" } },
         fn() { @sf.t(if d.shown.get() { "web-pages.screen.debug.paneHide" } else { "web-pages.screen.debug.paneShow" }) },
-        fn(_) { d.shown.set(!d.shown.untracked()) },
+        fn(_) {
+          d.shown_set = true
+          d.shown.set(!d.shown.untracked())
+        },
       )
       |> ignore
     })
@@ -413,14 +426,238 @@ fn debug_device_input(s : ScreenSess, name : String) -> Unit {
 }
 
 ///|
+/// Soft outside-only elevation shadow behind a simulator's device chassis (none in 全屏 theater).
+fn sim_device_shadow(u : ScreenUi) -> (Double, Double, Int64) {
+  if u.full.get() {
+    return (0.0, 0.0, 0L)
+  }
+  if @ui.tree_theme().dark {
+    (32.0, 14.0, @sf.alpha(0x000000FFL, 0.42))
+  } else {
+    (26.0, 12.0, @sf.alpha(0x000000FFL, 0.16))
+  }
+}
+
+///|
+/// A 32×32 round icon button inside a 36pt liquid glass pill (wide simulator top bar or narrow mouse bottom pill).
+fn sim_pill_icon_node(
+  parent : @view.View,
+  pg : ScreenPage,
+  icon : () -> String,
+  label : () -> String,
+  press : (@view.View) -> Unit,
+  lit? : () -> Bool = fn() { false },
+  danger? : Bool = false,
+) -> @view.View {
+  @sf.action_box_node(parent, label, on=lit, press, fn(v) {
+    @sf.style_node(v, fn() { sim_pill_btn }, in_row=true)
+    v.ground(By(fn() {
+      if !lit() {
+        0L
+      } else if danger {
+        @sf.theme().p.red_bg
+      } else {
+        @sf.alpha(@ui.tree_theme().color(Fg), 0.1)
+      }
+    }))
+    |> ignore
+    @sf.bar_pill_key_press_node(v)
+    @sf.icon_node(
+      v,
+      "",
+      round_bar_icon,
+      By(fn() { if danger && lit() { @sf.theme().p.red } else { @ui.tree_theme().color(Fg) } }),
+      name_now=icon,
+    )
+    |> ignore
+    @sf.tip_node(pg.tips, v, label) |> ignore
+  })
+}
+
+///|
+/// A vertical 1px hairline separator between button groups inside a liquid glass pill.
+fn sim_pill_sep_node(parent : @view.View) -> Unit {
+  parent.box(fn(sep) {
+    sep
+    .width(Is(Some(@sf.rule_w)))
+    .height(Is(Some(16.0)))
+    .margin(Is((2.0, 0.0, 2.0, 0.0)))
+    .shrink(Is(0.0))
+    .ground(By(@sf.rule_color))
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// The device's volume button inside a liquid glass pill (same panel as debug_volume_node).
+fn sim_volume_pill_node(v : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  sim_pill_icon_node(v, pg, fn() { "volume" }, fn() { @sf.t("web-pages.screen.debug.volume") }, fn(b) {
+    screen_panel_toggle(u, "volume", fn() {
+      if s.volume() is Some(_) {
+        s.input(s.src, Json::object({ "t": Json::string("volume") }))
+      }
+      @sf.panel_nodes(
+        @sf.t("web-pages.screen.debug.volume"),
+        fn(p, _) { debug_volume_panel_node(p, pg) },
+        from=Node(b),
+        fits=true,
+        heads_itself=true,
+        side=screen_panel_side(),
+        along=Middle,
+        focus=false,
+      )
+    })
+  }, lit=fn() {
+    screen_panel_on_now(u, "volume")
+  })
+  |> ignore
+}
+
+///|
+/// Unified center liquid glass tool capsule(s) in the wide simulator top bar (Proposal C):
+/// device keys (home, app switcher, keyboard, volume when uncased, rotate) | quick debug actions (screenshot, record,
+/// relaunch app), plus a compact Duo pose pill when the device folds.
+fn sim_bar_tools_node(parent : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  let d = u.logs
+  parent.show(at_once=true, fn() { s.driving_now() || flag(s.state_now(), "debug") }, fn(row) {
+    @sf.style_node(row, fn() { sim_bar_tools_group }, in_row=true)
+    row.shrink(Is(0.0)) |> ignore
+    @sf.bar_pill_group_node(row, height=36.0, pad=2.0, gap=2.0, fn(pill) {
+      pill.show(at_once=true, fn() { s.driving_now() }, fn(k) {
+        k.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(2.0)) |> ignore
+        k.each(at_once=true, fn() { device_combos(s, device_case_now(k, s, s.frame_size())) }, fn(c) { c.keys }, fn(slot, c) {
+          sim_pill_icon_node(slot, pg, fn() { c.get().icon }, fn() { c.get().name }, fn(_) { debug_press(s, c.untracked()) }) |> ignore
+        })
+        k.show(fn() { device_case_now(k, s, s.frame_size()) is None }, fn(v) { sim_volume_pill_node(v, pg) })
+        sim_pill_icon_node(k, pg, fn() { "screen-rotate" }, fn() { @sf.t("web-pages.screen.device.rotate") }, fn(_) {
+          debug_device_input(s, "rotate")
+        })
+        |> ignore
+      })
+      pill.show(at_once=true, fn() { s.driving_now() && flag(s.state_now(), "debug") }, fn(sep) {
+        sim_pill_sep_node(sep)
+      })
+      pill.show(at_once=true, fn() { flag(s.state_now(), "debug") }, fn(k) {
+        k.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(2.0)) |> ignore
+        sim_pill_icon_node(k, pg, fn() { "camera" }, fn() { @sf.t("web-pages.screen.device.shot") }, fn(_) { debug_shot(s, d) }) |> ignore
+        let going = fn() { debug_going(d) }
+        sim_pill_icon_node(
+          k,
+          pg,
+          fn() { if going() { "stop" } else { "play" } },
+          fn() { @sf.t(if going() { "web-pages.screen.debug.recordStop" } else { "web-pages.screen.debug.recordStart" }) },
+          fn(_) { debug_record_pressed(s, d, @signals.untracked(going)) },
+          lit=going,
+          danger=true,
+        )
+        |> ignore
+        sim_pill_icon_node(k, pg, fn() { "refresh" }, fn() { @sf.t("web-pages.screen.debug.relaunch") }, fn(b) {
+          match d.last_app.untracked() {
+            Some((id, name)) => debug_relaunch(s, d, id, name)
+            None => debug_apps_open(s, u, Node(b))
+          }
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+    row.show(at_once=true, fn() { s.driving_now() && flag(s.state_now(), "poses") }, fn(slot) {
+      @sf.bar_pill_group_node(slot, height=36.0, pad=2.0, gap=2.0, fn(pill) {
+        debug_poses_node(pill, pg, icons=true, pill=true)
+      })
+      |> ignore
+    })
+  })
+}
+
+///|
+/// 调试 drawer toggle button in the wide simulator top bar (32pt tall to match sibling bar controls):
+/// toggles the right-hand App / 日志 / 设备 pane. `corner`: when inside viewer_bar_node's right tools pill, follows its
+/// concentric corner radius with no extra inactive ground.
+fn sim_debug_toggle_node(parent : @view.View, pg : ScreenPage, corner? : @view.Live[Double]) -> Unit {
+  let d = pg.u.logs
+  let open = fn() { d.shown.get() }
+  let tip = fn() { @sf.t(if open() { "web-pages.screen.debug.paneHide" } else { "web-pages.screen.debug.paneShow" }) }
+  let in_pill = corner is Some(_)
+  let btn = @sf.action_box_node(parent, tip, on=open, fn(_) {
+    d.shown_set = true
+    d.shown.set(!d.shown.untracked())
+  }, fn(v) {
+    @sf.style_node(v, fn() { sim_debug_btn }, in_row=true)
+    v.shrink(Is(0.0)) |> ignore
+    match corner {
+      Some(r) => v.radius(r) |> ignore
+      None => ()
+    }
+    v.ground(By(fn() {
+      if open() {
+        @sf.theme().p.accent_bg
+      } else if in_pill {
+        0L
+      } else {
+        @sf.theme().p.neutral_bg
+      }
+    }))
+    |> ignore
+    @sf.hover_ground_node(v, lit=Some(fn() { v.pointed() || v.pressed() || v.focus_shown() }))
+    let ink = fn() { if open() { @sf.theme().p.accent_text } else { @ui.tree_theme().color(Fg) } }
+    @sf.icon_node(v, "", round_bar_icon, By(ink), name_now=fn() { if open() { "panel-close" } else { "panel-open" } }) |> ignore
+    let words = @sf.words_node(v, fn() { @sf.t("web-pages.screen.debug.pane") }, fn() { sim_debug_btn_words })
+    words.ink(By(ink)) |> ignore
+  })
+  @sf.tip_node(pg.tips, btn, tip) |> ignore
+}
+
+///|
 /// Under the picture on a narrow page, in `bar`: the device's buttons while it is driven, and what debugs an app for
 /// one who may: its picture, 重启 App (the app last started again, at one press: what is restarted over and over while
-/// debugging; another: App), and the panel of the rest.
+/// debugging; another: App), and the panel of the rest. On a mouse pointer (narrow workbench or side panel), grouped
+/// cleanly inside a single liquid glass pill; on touch, full 40pt finger targets.
 fn debug_tools_node(bar : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   let u = pg.u
   let d = u.logs
   debug_said_by(bar, pg)
+  if !@sf.soft_keyboard() {
+    bar.show(at_once=true, fn() { s.driving_now() || flag(s.state_now(), "debug") }, fn(slot) {
+      @sf.bar_pill_group_node(slot, height=36.0, pad=2.0, gap=2.0, fn(pill) {
+        pill.show(at_once=true, fn() { s.driving_now() }, fn(k) {
+          k.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(2.0)) |> ignore
+          k.each(at_once=true, fn() { device_combos(s, device_case_now(k, s, s.frame_size())) }, fn(c) { c.keys }, fn(sl, c) {
+            sim_pill_icon_node(sl, pg, fn() { c.get().icon }, fn() { c.get().name }, fn(_) { debug_press(s, c.untracked()) }) |> ignore
+          })
+          sim_pill_icon_node(k, pg, fn() { "screen-rotate" }, fn() { @sf.t("web-pages.screen.device.rotate") }, fn(_) {
+            debug_device_input(s, "rotate")
+          })
+          |> ignore
+          k.show(fn() { !flag(s.state_now(), "debug") && s.android() }, fn(v) { sim_volume_pill_node(v, pg) })
+        })
+        pill.show(at_once=true, fn() { s.driving_now() && flag(s.state_now(), "debug") }, fn(sep) { sim_pill_sep_node(sep) })
+        pill.show(at_once=true, fn() { flag(s.state_now(), "debug") }, fn(k) {
+          k.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(2.0)) |> ignore
+          sim_pill_icon_node(k, pg, fn() { "camera" }, fn() { @sf.t("web-pages.screen.device.shot") }, fn(_) { debug_shot(s, d) }) |> ignore
+          sim_pill_icon_node(k, pg, fn() { "refresh" }, fn() { @sf.t("web-pages.screen.debug.relaunch") }, fn(b) {
+            match d.last_app.untracked() {
+              Some((id, name)) => debug_relaunch(s, d, id, name)
+              None => debug_apps_open(s, u, Node(b))
+            }
+          })
+          |> ignore
+          sim_pill_icon_node(k, pg, fn() { "file-text" }, fn() { @sf.t("web-pages.screen.debug.logs") }, fn(b) {
+            debug_logs_open(s, u, Node(b))
+          })
+          |> ignore
+        })
+      })
+      |> ignore
+    })
+    return
+  }
   bar.show(at_once=true, fn() { s.driving_now() }, fn(k) {
     k.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S2.px())) |> ignore
     debug_device_keys_node(k, pg, beside=false)
@@ -445,8 +682,8 @@ fn debug_tools_node(bar : @view.View, pg : ScreenPage) -> Unit {
 ///|
 /// An iPhone Duo's hinge in `parent`: which it is as its picture says (the cover's is closed, the inner panel's half
 /// open only when asked for here, Device Hub's own being told by none), and each its press: a segmented row under the
-/// picture, or (`icons`) a round button each in the column by the device.
-fn debug_poses_node(parent : @view.View, pg : ScreenPage, icons~ : Bool) -> Unit {
+/// picture, or (`icons`) a round button each (`pill`: 32pt glass pill buttons in the top bar).
+fn debug_poses_node(parent : @view.View, pg : ScreenPage, icons~ : Bool, pill? : Bool = false) -> Unit {
   let s = pg.s
   let u = pg.u
   let names = ["closed", "book", "open"]
@@ -499,9 +736,13 @@ fn debug_poses_node(parent : @view.View, pg : ScreenPage, icons~ : Bool) -> Unit
     }
   }
   if icons {
-    // (each its own button, in a column of them)
+    // (each its own button, in a glass pill or a column of them)
     for i, icon in ["phone", "panel-open", "landscape"] {
-      screen_round_node(parent, pg, fn() { icon }, fn() { words()[i] }, fn(_) { picked(i) }, lit=fn() { chosen() == i }) |> ignore
+      if pill {
+        sim_pill_icon_node(parent, pg, fn() { icon }, fn() { words()[i] }, fn(_) { picked(i) }, lit=fn() { chosen() == i }) |> ignore
+      } else {
+        screen_round_node(parent, pg, fn() { icon }, fn() { words()[i] }, fn(_) { picked(i) }, lit=fn() { chosen() == i }) |> ignore
+      }
     }
   } else {
     parent.box(fn(k) {
@@ -554,6 +795,15 @@ fn device_body_node(f : @view.View, pg : ScreenPage, size : () -> (Int, Int)?) -
             Some((tl + sim_bezel, tr + sim_bezel, br + sim_bezel, bl + sim_bezel))
           }))
           .edge(Is((sim_bezel, device_body_ink)))
+          .ring(By(fn() {
+            if @ui.tree_theme().dark {
+              (1.0, 0.0, @sf.rule_color())
+            } else {
+              (0.0, 0.0, 0L)
+            }
+          }))
+          .shadow(By(fn() { sim_device_shadow(u) }))
+          .shadow_outside(Is(true))
           |> ignore
         })
         |> ignore
@@ -750,6 +1000,8 @@ priv struct DebugLogs {
   by_device : @signals.Signal[Bool]
   /// what is done with it shows beside the device, or is put away for the device to have the room
   shown : @signals.Signal[Bool]
+  /// whether the person (or a test) explicitly toggled `shown`, so entering a wide layout keeps their choice
+  mut shown_set : Bool
   /// the app 重启 App is for (id, name), once one was chosen
   last_app : @signals.Signal[(String, String)?]
   mut relaunch_said : String
@@ -844,7 +1096,8 @@ fn debug_logs_new() -> DebugLogs {
     settings_asked: false,
     beside: @signals.signal(false, same=fn(a, b) { a == b }),
     by_device: @signals.signal(false, same=fn(a, b) { a == b }),
-    shown: @signals.signal(true, same=fn(a, b) { a == b }),
+    shown: @signals.signal(false, same=fn(a, b) { a == b }),
+    shown_set: false,
     shot_said: false,
     told: @signals.signal(0),
     last_app: @signals.signal(None, same=fn(a, b) { a == b }),
@@ -1029,8 +1282,13 @@ fn debug_pane_node(k : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   let u = pg.u
   let d = u.logs
-  // (its slot in the row beside the device, the pane as tall as the row)
+  // (its slot in the row beside the device, a 1px vertical hairline separating the pane from the canvas)
   k.row(Is(true)) |> ignore
+  k.box(fn(rule) {
+    @sf.style_node(rule, fn() { debug_pane_rule }, in_row=true)
+    rule.shrink(Is(0.0)).ground(By(@sf.rule_color)) |> ignore
+  })
+  |> ignore
   k.box(fn(pane) {
     @sf.style_node(pane, fn() { debug_pane_box.then(@ui.css("h=Full")) }, in_row=true)
     pane.width(Is(Some(debug_pane_w))).min_height(Is(Some(0.0))) |> ignore

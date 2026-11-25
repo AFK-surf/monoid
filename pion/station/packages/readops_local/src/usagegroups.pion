@@ -1,0 +1,313 @@
+// 1:1 port of `station/mb/src/readops/usagegroups.mbt`.
+// 15-minute rollup usage query builder (`usage_15m_query`, `usage_15m_query_all`, `usage_groups`)
+// and shared Int64/Viewer/Group helpers consumed by L2 `readops_usage`.
+
+import "base_codec"
+import "builders_core"
+import "readops_core"
+import "sql_db"
+
+pub fn i64_top() -> Int64 {
+  (0x7FFFFFFF.to_int64() << 32.to_int64()) | (0xFFFF.to_int64() << 16.to_int64()) | 0xFFFF.to_int64()
+}
+
+pub fn quarter_ms() -> Int64 {
+  900000.to_int64()
+}
+
+/// An i64 as a statement's integer, preserving exact 64-bit repr for `sql_db`.
+pub fn i64_json(n : Int64) -> base_codec::Json {
+  base_codec::Json::Num(n.to_double(), n.to_string())
+}
+
+pub fn floor_div(n : Int64, d : Int64) -> Int64 {
+  if n >= 0.to_int64() {
+    n / d
+  } else {
+    (-1).to_int64() - ((-1).to_int64() - n) / d
+  }
+}
+
+/// The first whole quarter from `n` (ms) on.
+pub fn ceil_div(n : Int64, d : Int64) -> Int64 {
+  let q = n / d
+  if n % d != 0.to_int64() && n > 0.to_int64() {
+    q + 1.to_int64()
+  } else {
+    q
+  }
+}
+
+pub fn table_installed(
+  db : sql_db::Db,
+  name : String,
+) -> Result[Bool, readops_core::ReadError] {
+  match readops_core::one(db, "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [base_codec::json_str(name)]) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+/// Whose usage a read is of (rows.ts InWorkspace): a workspace, and whether it is the home one (`home !== false`).
+pub struct Viewer {
+  pub workspace : String
+  pub home : Bool
+}
+
+pub fn viewer_of(v : Option[base_codec::Json]) -> Option[Viewer] {
+  match v {
+    None => None
+    Some(base_codec::Json::Null) => None
+    Some(obj) => {
+      let ws = match builders_core::json_get_last(obj, "workspace") {
+        Some(base_codec::Json::Str(w)) => w
+        Some(w) => readops_core::js_text(w)
+        None => "undefined"
+      }
+      let home = match builders_core::json_get_last(obj, "home") {
+        Some(base_codec::Json::Bool(false)) => false
+        _ => true
+      }
+      Some(Viewer::{ workspace: ws, home: home })
+    }
+  }
+}
+
+fn row_num(r : Map[String, base_codec::Json], k : String) -> Double {
+  match readops_core::field(r, k) {
+    base_codec::Json::Num(n, _) => n
+    _ => 0.0
+  }
+}
+
+/// store/usage.ts `usageGroupOf`, of a row as a statement gives it.
+pub fn group_of(r : Map[String, base_codec::Json]) -> Group {
+  let day = match readops_core::field(r, "day") {
+    base_codec::Json::Str(d) => d
+    _ => ""
+  }
+  let fast = match readops_core::field(r, "fast") {
+    base_codec::Json::Null => false
+    base_codec::Json::Num(v, _) => v != 0.0
+    _ => true
+  }
+  Group::{
+    day: day,
+    session: readops_core::field(r, "session"),
+    thread: readops_core::field(r, "thread"),
+    person: readops_core::field(r, "person"),
+    profile: readops_core::field(r, "profile"),
+    runtime: readops_core::field(r, "runtime"),
+    model: readops_core::field(r, "model"),
+    fast: fast,
+    calls: row_num(r, "calls"),
+    input: row_num(r, "input"),
+    cache_read: row_num(r, "cache_read"),
+    cache_write: row_num(r, "cache_write"),
+    cache_write_long: row_num(r, "cache_write_long"),
+    output: row_num(r, "output"),
+  }
+}
+
+fn bind_arg(args : Array[base_codec::Json], value : base_codec::Json) -> String {
+  args.push(value)
+  "?" + args.length().to_string()
+}
+
+fn raw_usage_sql(off : String, pairs : String, low : String, high : String) -> String {
+  "SELECT strftime('%Y-%m-%d', (u.at + " +
+  off +
+  " * 60000) / 1000.0, 'unixepoch') AS day,\n" +
+  "      u.session, COALESCE(u.thread, 0) AS thread, COALESCE(u.person, '') AS person, COALESCE(u.profile, '') AS profile, u.runtime,\n" +
+  "      COALESCE(u.model, '') AS model, CASE WHEN u.fast != 0 THEN 1 ELSE 0 END AS fast, u.calls, u.input, u.cache_read, u.cache_write,\n" +
+  "      u.cache_write_long, u.output\n" +
+  "    FROM (" +
+  pairs +
+  ") e CROSS JOIN usage u INDEXED BY usage_session ON u.session = e.session AND u.at >= " +
+  low +
+  " AND u.at < " +
+  high +
+  "\n    WHERE u.rollup_counted = 1"
+}
+
+/// usage-15m.ts `usage15mQuery`: calls from `from` until `to` (ms; `to == i64_top()`: open end)
+/// grouped by local day at `offset` minutes east of UTC. Returns None for an empty span.
+pub fn usage_15m_query(
+  from : Int64,
+  to : Int64,
+  offset : Int64,
+  viewer : Option[Viewer],
+) -> Option[(String, Array[base_codec::Json])] {
+  if from >= to {
+    return None
+  }
+  let top = i64_top()
+  let qms = quarter_ms()
+  let args : Array[base_codec::Json] = []
+  let off = bind_arg(args, i64_json(offset))
+  let scope_sql = match viewer {
+    None => "1"
+    Some(v) => {
+      let ws_p = bind_arg(args, base_codec::json_str(v.workspace))
+      if v.home {
+        "c.scope IN (" + ws_p + ", '')"
+      } else {
+        "c.scope = " + ws_p
+      }
+    }
+  }
+  let index = match viewer {
+    None => " INDEXED BY usage_15m_quarter"
+    Some(_) => ""
+  }
+  let open = to == top
+  let first = ceil_div(from, qms)
+  let last = if open { floor_div(top, qms) + 1.to_int64() } else { floor_div(to, qms) }
+  let parts : Array[String] = []
+  let straddles : Option[String] = if offset * 60000.to_int64() % qms == 0.to_int64() {
+    None
+  } else {
+    Some("(((c.quarter * 900000 + " + off + " * 60000) % 86400000 + 86400000) % 86400000 > 85500000)")
+  }
+  if first < last {
+    let lo = bind_arg(args, i64_json(first))
+    let hi = bind_arg(args, i64_json(last))
+    let straddle_cond = match straddles {
+      None => ""
+      Some(st) => " AND NOT " + st
+    }
+    parts.push(
+      "SELECT strftime('%Y-%m-%d', c.quarter * 900 + " +
+      off +
+      " * 60, 'unixepoch') AS day, c.session, c.thread, c.person,\n" +
+      "      c.profile, c.runtime, c.model, c.fast, c.calls, c.input, c.cache_read, c.cache_write, c.cache_write_long, c.output\n" +
+      "      FROM usage_15m c" +
+      index +
+      " WHERE " +
+      scope_sql +
+      " AND c.quarter >= " +
+      lo +
+      " AND c.quarter < " +
+      hi +
+      straddle_cond,
+    )
+    match straddles {
+      Some(st) => {
+        parts.push(
+          raw_usage_sql(
+            off,
+            "SELECT DISTINCT c.session, c.quarter FROM usage_15m c" +
+            index +
+            "\n        WHERE " +
+            scope_sql +
+            " AND c.quarter >= " +
+            lo +
+            " AND c.quarter < " +
+            hi +
+            " AND " +
+            st,
+            "e.quarter * 900000",
+            "(e.quarter + 1) * 900000",
+          ),
+        )
+      }
+      None => ()
+    }
+  }
+  if first > last {
+    if from < to {
+      let qp = bind_arg(args, i64_json(last))
+      let lp = bind_arg(args, i64_json(from))
+      let hp = bind_arg(args, i64_json(to))
+      parts.push(
+        raw_usage_sql(
+          off,
+          "SELECT DISTINCT c.session FROM usage_15m c" + index + " WHERE " + scope_sql + " AND c.quarter = " + qp,
+          lp,
+          hp,
+        ),
+      )
+    }
+  } else {
+    let edge1_high = first * qms
+    if from < edge1_high {
+      let qp = bind_arg(args, i64_json(first - 1.to_int64()))
+      let lp = bind_arg(args, i64_json(from))
+      let hp = bind_arg(args, i64_json(edge1_high))
+      parts.push(
+        raw_usage_sql(
+          off,
+          "SELECT DISTINCT c.session FROM usage_15m c" + index + " WHERE " + scope_sql + " AND c.quarter = " + qp,
+          lp,
+          hp,
+        ),
+      )
+    }
+    if !open {
+      let edge2_low = last * qms
+      if edge2_low < to {
+        let qp = bind_arg(args, i64_json(last))
+        let lp = bind_arg(args, i64_json(edge2_low))
+        let hp = bind_arg(args, i64_json(to))
+        parts.push(
+          raw_usage_sql(
+            off,
+            "SELECT DISTINCT c.session FROM usage_15m c" + index + " WHERE " + scope_sql + " AND c.quarter = " + qp,
+            lp,
+            hp,
+          ),
+        )
+      }
+    }
+  }
+  if parts.length() == 0 {
+    return None
+  }
+  let sql = "WITH parts AS (" +
+  readops_core::join_strings(parts, "\n  UNION ALL\n  ") +
+  ")\n" +
+  "  SELECT day, session, NULLIF(thread, 0) AS thread, NULLIF(person, '') AS person, NULLIF(profile, '') AS profile, runtime,\n" +
+  "    NULLIF(model, '') AS model, fast, SUM(calls) AS calls, SUM(input) AS input, SUM(cache_read) AS cache_read,\n" +
+  "    SUM(cache_write) AS cache_write, SUM(cache_write_long) AS cache_write_long, SUM(output) AS output\n" +
+  "  FROM parts GROUP BY day, session, thread, person, profile, runtime, model, fast\n" +
+  "  ORDER BY day, session, thread, person, profile, runtime, model, fast"
+  Some((sql, args))
+}
+
+/// usage-15m.ts `usage15mQuery` for every workspace.
+pub fn usage_15m_query_all(
+  from : Int64,
+  to : Int64,
+  offset : Int64,
+) -> Option[(String, Array[base_codec::Json])] {
+  usage_15m_query(from, to, offset, None)
+}
+
+/// store/usage.ts `usageGroups` for a viewer (read/store.ts `usageGroups`).
+pub fn usage_groups(
+  db : sql_db::Db,
+  from : Int64,
+  to : Int64,
+  offset : Int64,
+  viewer : Option[Viewer],
+) -> Result[Array[Group], readops_core::ReadError] {
+  match usage_15m_query(from, to, offset, viewer) {
+    None => Ok([])
+    Some((sql, args)) => {
+      let rows = match db.all(sql, args) {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::ReadError::Sql(e))
+      }
+      let out : Array[Group] = []
+      for i in 0..<rows.length() {
+        out.push(group_of(rows[i]))
+      }
+      Ok(out)
+    }
+  }
+}
+
+pub fn utf8_order(a : String, b : String) -> Int {
+  readops_core::by_bytes(a, b)
+}

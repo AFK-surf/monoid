@@ -149,3 +149,31 @@ test("one missing for every list plan asks lists the release once and answers ea
     ...BRANCH.BRANCH_MAC_READER!, "shell-station:linux-x64", "shell-station:win32-x64", "reader:linux-x64"];
   assert.deepEqual(missing(...want), ["reader:linux-x64", "mesh:darwin-arm64", "shell-station:linux-x64"]);
 });
+
+test("plan.sh triggers station on pion-reader production inputs and ignores its tests and docs", { skip: process.platform === "win32" }, () => {
+  const cases: [string, boolean][] = [
+    ["pion/station/TOOLCHAIN", true],
+    ["pion/station/pion.toml", true],
+    ["pion/station/pion.lock", true],
+    ["pion/station/scripts/build.sh", true],
+    ["pion/station/scripts/ensure-pionc.sh", true],
+    ["pion/station/packages/smoke/src/main.pion", true],
+    ["pion/station/packages/readops_core/src/selftest.pion", true],
+    ["pion/base/packages/base_codec/src/lib.pion", true],
+    ["pion/station/packages/readops_chats/src/readops_chats_test.pion", false],
+    ["pion/station/packages/host_shim/native/host_shim_test.c", false],
+    ["pion/base/packages/base_codec/src/lib_test.pion", false],
+    ["pion/station/AGENTS.md", false],
+    ["pion/station/README.md", false],
+  ];
+  const script = `PLAN_SOURCE=1; . scripts/plan.sh; range=
+while IFS= read -r changed; do decide; echo "$changed $station"; done`;
+  const out = execFileSync("bash", ["-c", script], {
+    cwd: root,
+    input: cases.map(([p]) => p).join("\n") + "\n",
+    encoding: "utf8",
+  }).trim().split("\n");
+  for (const [i, [path, expected]] of cases.entries()) {
+    assert.equal(out[i], `${path} ${expected}`, path);
+  }
+});

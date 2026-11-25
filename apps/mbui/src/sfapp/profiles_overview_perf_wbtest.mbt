@@ -77,6 +77,7 @@ test "profiles overview perf: bounded kind 11/12 instances and layout passes on 
   println(
     "ov_perf phone: total=\{p_total} k0=\{p_k0} k10=\{p_k10} k11=\{p_k11} k12=\{p_k12} max_passes=\{p_passes} max_laid=\{p_laid}",
   )
+  assert_true(p_k10 <= 170, msg="phone kind 10 too high: \{p_k10}")
   assert_true(p_k11 <= 120, msg="phone kind 11 too high: \{p_k11}")
   assert_true(p_k12 <= 160, msg="phone kind 12 too high: \{p_k12}")
   assert_true(p_passes <= 2, msg="phone max layout passes too high: \{p_passes}")
@@ -95,6 +96,7 @@ test "profiles overview perf: bounded kind 11/12 instances and layout passes on 
   println(
     "ov_perf wide: total=\{w_total} k0=\{w_k0} k10=\{w_k10} k11=\{w_k11} k12=\{w_k12} max_passes=\{w_passes} max_laid=\{w_laid}",
   )
+  assert_true(w_k10 <= 170, msg="wide kind 10 too high: \{w_k10}")
   assert_true(w_k11 <= 160, msg="wide kind 11 too high: \{w_k11}")
   assert_true(w_k12 <= 420, msg="wide kind 12 too high: \{w_k12}")
   assert_true(w_passes <= 2, msg="wide max layout passes too high: \{w_passes}")

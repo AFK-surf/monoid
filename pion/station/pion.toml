@@ -17,7 +17,16 @@ members = [
   "packages/builders_legacy",
   "packages/builders_recent",
   "packages/builders_vault",
+  "packages/builders_replica",
   "packages/builders_usage",
+  "packages/readops_core",
+  "packages/readops_chats",
+  "packages/readops_local",
+  "packages/readops_views",
+  "packages/readops_usage",
+  "packages/front",
+  "packages/reader_data",
+  "packages/reader_serve",
   "packages/footprint",
   "packages/memory",
   "packages/packed",
@@ -46,7 +55,16 @@ builders_stateful = { path = "packages/builders_stateful" }
 builders_legacy = { path = "packages/builders_legacy" }
 builders_recent = { path = "packages/builders_recent" }
 builders_vault = { path = "packages/builders_vault" }
+builders_replica = { path = "packages/builders_replica" }
 builders_usage = { path = "packages/builders_usage" }
+readops_core = { path = "packages/readops_core" }
+readops_chats = { path = "packages/readops_chats" }
+readops_local = { path = "packages/readops_local" }
+readops_views = { path = "packages/readops_views" }
+readops_usage = { path = "packages/readops_usage" }
+front = { path = "packages/front" }
+reader_data = { path = "packages/reader_data" }
+reader_serve = { path = "packages/reader_serve" }
 footprint = { path = "packages/footprint" }
 memory = { path = "packages/memory" }
 packed = { path = "packages/packed" }

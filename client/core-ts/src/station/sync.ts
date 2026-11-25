@@ -49,9 +49,122 @@ import { timed } from "../spent.ts";
 import { MOVE_PAGE, moveLimit } from "../move.ts";
 import { isOwnSurface } from "../titles.ts";
 import { keepOs } from "../station-os.ts";
+import * as prefs from "../prefs.ts";
+import { ofAddress } from "../workspace.ts";
 
 export { HOST_KEY, LINK_KEY, LONG_MISSES, MISSES, OFFLINE_RETRY_MS, RECONNECT_MAX_MS, RECONNECT_MS, STREAM_IDLE_MS, STREAM_QUIET_MS, Link } from "./link.ts";
 export type { EventsFor, LiveView } from "./link.ts";
+
+export type MergePaceResult =
+  | { kind: "unchanged"; value: unknown; rev: string | null }
+  | { kind: "refetch" }
+  | { kind: "merged"; changed: boolean; value: unknown; rev: string | null };
+
+/// Merges a `GET /profiles/pace` (v1 or v2 full/unchanged/delta) answer into the previous cached PaceView,
+/// preserving unchanged profile and speed object references so downstream WeakMaps stay warm.
+export function mergePace(prev: unknown, said: unknown, prevRev: string | null): MergePaceResult {
+  if (isObject(said) && said.unchanged === true) {
+    if (prevRev !== null && prevRev !== "" && typeof said.rev === "string" && said.rev === prevRev && isObject(prev) && isObject(prev.profiles)) {
+      return { kind: "unchanged", value: prev, rev: prevRev };
+    }
+    return { kind: "refetch" };
+  }
+  if (isObject(said) && said.delta === true) {
+    if (
+      !isObject(prev) ||
+      !isObject(prev.profiles) ||
+      typeof said.base !== "string" ||
+      typeof said.rev !== "string" ||
+      said.rev === "" ||
+      said.rev === said.base ||
+      prevRev === null ||
+      prevRev === "" ||
+      said.base !== prevRev ||
+      !Array.isArray(said.keep) ||
+      !isObject(said.profiles)
+    ) {
+      return { kind: "refetch" };
+    }
+    const prevProfiles = prev.profiles as Record<string, unknown>;
+    const nextProfiles: Record<string, unknown> = {};
+    for (const id of said.keep) {
+      if (typeof id !== "string" || !(id in prevProfiles)) return { kind: "refetch" };
+      nextProfiles[id] = prevProfiles[id];
+    }
+    for (const [id, val] of Object.entries(said.profiles as Record<string, unknown>)) {
+      nextProfiles[id] = val;
+    }
+    const nextSpeedHours = "speedHours" in said ? said.speedHours : prev.speedHours;
+    const nextSpeedQuarters = "speedQuarters" in said ? said.speedQuarters : prev.speedQuarters;
+    const nextFromHour = "fromHour" in said ? said.fromHour : prev.fromHour;
+    const nextNowAt = "nowAt" in said ? said.nowAt : prev.nowAt;
+    const prevKeys = Object.keys(prevProfiles);
+    const nextKeys = Object.keys(nextProfiles);
+    let profilesSame = prevKeys.length === nextKeys.length;
+    if (profilesSame) {
+      for (const k of nextKeys) {
+        if (prevProfiles[k] !== nextProfiles[k]) { profilesSame = false; break; }
+      }
+    }
+    const same =
+      profilesSame &&
+      prev.fromHour === nextFromHour &&
+      prev.speedHours === nextSpeedHours &&
+      prev.speedQuarters === nextSpeedQuarters;
+    const rev = said.rev;
+    if (same) return { kind: "merged", changed: false, value: prev, rev };
+    const value: Record<string, unknown> = { profiles: nextProfiles };
+    if (nextNowAt !== undefined) value.nowAt = nextNowAt;
+    if (nextFromHour !== undefined) value.fromHour = nextFromHour;
+    if (nextSpeedHours !== undefined) value.speedHours = nextSpeedHours;
+    if (nextSpeedQuarters !== undefined) value.speedQuarters = nextSpeedQuarters;
+    return { kind: "merged", changed: true, value, rev };
+  }
+  if (!isObject(said) || !isObject(said.profiles)) {
+    return { kind: "refetch" };
+  }
+  const rev = typeof said.rev === "string" && said.rev !== "" ? said.rev : null;
+  const prevObj = isObject(prev) ? (prev as Record<string, unknown>) : null;
+  const prevProfiles = prevObj !== null && isObject(prevObj.profiles) ? (prevObj.profiles as Record<string, unknown>) : null;
+  const saidProfiles = said.profiles as Record<string, unknown>;
+  const nextProfiles: Record<string, unknown> = {};
+  let allProfilesRefSame = prevProfiles !== null && Object.keys(prevProfiles).length === Object.keys(saidProfiles).length;
+  for (const [id, nextP] of Object.entries(saidProfiles)) {
+    const prevP = prevProfiles?.[id];
+    if (isObject(prevP) && isObject(nextP)) {
+      const sameQuotas = equal(prevP.quotas, nextP.quotas);
+      const sameSpend = equal(prevP.spend, nextP.spend);
+      if (sameQuotas && sameSpend) {
+        nextProfiles[id] = prevP;
+        continue;
+      }
+      allProfilesRefSame = false;
+      nextProfiles[id] = {
+        ...nextP,
+        ...(sameQuotas ? { quotas: prevP.quotas } : {}),
+        ...(sameSpend ? { spend: prevP.spend } : {}),
+      };
+    } else {
+      allProfilesRefSame = false;
+      nextProfiles[id] = nextP;
+    }
+  }
+  const speedHours = prevObj !== null && equal(prevObj.speedHours, said.speedHours) ? prevObj.speedHours : said.speedHours;
+  const speedQuarters = prevObj !== null && equal(prevObj.speedQuarters, said.speedQuarters) ? prevObj.speedQuarters : said.speedQuarters;
+  const same =
+    prevObj !== null &&
+    allProfilesRefSame &&
+    prevObj.fromHour === said.fromHour &&
+    speedHours === prevObj.speedHours &&
+    speedQuarters === prevObj.speedQuarters;
+  if (same) return { kind: "merged", changed: false, value: prevObj, rev };
+  const value: Record<string, unknown> = { profiles: nextProfiles };
+  if (said.nowAt !== undefined) value.nowAt = said.nowAt;
+  if (said.fromHour !== undefined) value.fromHour = said.fromHour;
+  if (speedHours !== undefined) value.speedHours = speedHours;
+  if (speedQuarters !== undefined) value.speedQuarters = speedQuarters;
+  return { kind: "merged", changed: true, value, rev };
+}
 
 /// A burst of `thread` events becomes one read of each thread's summary.
 export const EVENTS_COALESCE_MS = 400;
@@ -178,6 +291,8 @@ export class StationsSync {
   readonly #usageReading = new Map<string, { link: Link; fiber: Fiber.Fiber<void, never> | null }>();
   /// Whether the device is on a cellular network and spares live events for chats not currently shown.
   #sparing = false;
+  /// Links whose streams are currently spared (cellular, phone device, or unfocused workspace).
+  readonly #sparedLinks = new Set<string>();
   /// The stations whose history is to be swept as they are next reached (`roomAgain`).
   readonly #sweepOwed = new Set<string>();
   /// What the station topics want of a stream beyond what the sync wants (host samples, logs, logins, open sessions, rates).
@@ -225,7 +340,10 @@ export class StationsSync {
     this.#links = new Links(core, this.requests, {
       wanted: (address) => {
         const w = this.wanted(address);
-        const spare = this.#sparing && !w.rates ? [...new Set(w.open ?? [])].sort() : null;
+        const sparing = this.isSparing(address);
+        if (sparing) this.#sparedLinks.add(address);
+        else this.#sparedLinks.delete(address);
+        const spare = sparing && !w.rates ? [...new Set(w.open ?? [])].sort() : null;
         return { host: w.host, logs: w.logs, logins: w.logins, spare };
       },
       afresh: (address, ctx) => this.snapshot(address, ctx),
@@ -240,7 +358,12 @@ export class StationsSync {
         link.ratesSupported = supported;
         this.seen.touch(address, "rates");
       },
-      gone: (address) => this.channels.forget(address),
+      gone: (address) => {
+        this.#sparedLinks.delete(address);
+        this.#sweepOwed.delete(address);
+        this.channels.forget(address);
+      },
+      links: (workspace) => this.#linksWorkspace(workspace),
     });
     // A thread caught up on brought its latest: one less to catch up on.
     core.data.onLogChange((table, station, id) => {
@@ -321,19 +444,64 @@ export class StationsSync {
     this.#links.openEvents(address, anew);
   }
 
-  /// Whether live events for unopened chats are spared (cellular network).
-  isSparing(): boolean {
-    return this.#sparing;
+  /// Whether live events for unopened chats are spared for `address` (cellular network, phone device, or a workspace
+  /// the viewer is not currently looking at).
+  isSparing(address?: string): boolean {
+    if (this.#sparing || prefs.devicePhone(this.#core.data)) return true;
+    if (address === undefined) return false;
+    const current = this.#core.attention?.attend.currentWorkspaces() ?? null;
+    return current !== null && !current.has(ofAddress(address));
+  }
+
+  /// Whether `workspace`'s stations are linked: every workspace's, unless the device follows only those in view
+  /// (`prefs.otherWorkspaces` off), then those the UIs show (the one last open while none says).
+  #linksWorkspace(workspace: string): boolean {
+    if (prefs.otherWorkspacesOn(this.#core.data)) return true;
+    const current = this.#core.attention?.attend.currentWorkspaces() ?? null;
+    if (current !== null) return current.has(workspace);
+    const last = prefs.lastWorkspace(this.#core.data);
+    return last === null || last === workspace;
+  }
+
+  /// The workspaces in view as links were last kept for them (`focusMoved`).
+  #linkedFor = "";
+
+  /// A UI's focus or workspace changed: where the device follows only the workspaces in view, the stations of one
+  /// switched to are linked and those of one left let go.
+  focusMoved(): void {
+    if (prefs.otherWorkspacesOn(this.#core.data)) {
+      this.#linkedFor = "";
+      return;
+    }
+    const current = this.#core.attention?.attend.currentWorkspaces() ?? null;
+    const key = current === null ? "" : [...current].sort().join("\u0001");
+    if (key === this.#linkedFor) return;
+    this.#linkedFor = key;
+    this.reconcile();
+  }
+
+  /// Re-evaluates sparing across open links after network, device, or workspace focus changes: seamlessly replaces
+  /// streams whose sparing flipped and sweeps lagging transcripts on links returning to full.
+  refreshSparing(): void {
+    for (const link of this.#links.values()) {
+      const now = this.isSparing(link.address);
+      const was = this.#sparedLinks.has(link.address);
+      if (now === was) continue;
+      if (now) this.#sparedLinks.add(link.address);
+      else this.#sparedLinks.delete(link.address);
+      this.openEvents(link.address, false);
+      if (!now) {
+        if (this.reachable(link.address)) this.#historyStart(link.address);
+        else this.#sweepOwed.add(link.address);
+      }
+    }
   }
 
   /// Switches cellular live-event sparing on or off, replacing open streams and sweeping transcripts on return to full.
   spare(on: boolean): void {
     if (this.#sparing === on) return;
     this.#sparing = on;
-    for (const link of this.#links.values()) {
-      this.openEvents(link.address, false);
-      if (!on && this.reachable(link.address)) this.#historyStart(link.address);
-    }
+    this.refreshSparing();
   }
 
   /// A database has room again (data.ts `onRoomAgain`): the transcripts of the stations kept in it that were left as
@@ -347,7 +515,7 @@ export class StationsSync {
   }
 
   #transcriptSpared(address: string, key: string): boolean {
-    return this.#sparing && !this.#core.store.inUse({ topic: "live", station: address, key });
+    return this.isSparing(address) && !this.#core.store.inUse({ topic: "live", station: address, key }) && !this.#core.data.transcriptRead(address, key);
   }
 
   #transcriptLetGo(address: string, key: string): boolean {
@@ -577,6 +745,7 @@ export class StationsSync {
       // at rest, so it would wait for ever.
       else if (topic.topic === "live") this.channels.bring(transcriptOf(address, String(topic.key)), Priority.shown, "latest");
       else if (topic.topic === "drive" && this.#core.store.inUse(topic)) this.driveShown(address, String(topic.root), String(topic.path));
+      else if (topic.topic === "profilePace" && this.#core.store.inUse(topic)) this.paceShown(address);
     }
   }
 
@@ -759,17 +928,28 @@ export class StationsSync {
     this.#enqueue(address, "profilePace", Priority.shown, this.#pace(address));
   }
 
-  #pace(address: string): Effect.Effect<void, CoreError> {
+  #pace(address: string, retry = false): Effect.Effect<void, CoreError> {
     const key = topicKey({ topic: "profilePace", station: address });
     return Effect.gen({ self: this }, function* () {
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return;
-      const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/profiles/pace", null, { quiet: true }));
+      const prev = link.memory.get(PACE);
+      const prevRev = !retry && prev !== undefined ? link.paceRev : null;
+      const path = prevRev !== null ? `/profiles/pace?v=2&sinceRev=${encodeURIComponent(prevRev)}` : "/profiles/pace?v=2";
+      const answer = yield* Effect.result(this.requests.call(link.addr, "GET", path, null, { quiet: true }));
+      if (this.#links.get(address) !== link) return;
       const said = answer._tag === "Success" ? answer.success : answer.failure.status === 404 ? { profiles: {} } : undefined;
       if (said === undefined) return;
       link.errors.delete(key);
-      if (equal(link.memory.get(PACE), said)) return;
-      link.memory.set(PACE, said);
+      const merged = mergePace(prev, said, prevRev);
+      if (merged.kind === "refetch") {
+        link.paceRev = null;
+        if (!retry) yield* this.#pace(address, true);
+        return;
+      }
+      link.paceRev = merged.rev;
+      if (merged.kind === "unchanged" || !merged.changed) return;
+      link.memory.set(PACE, merged.value);
       this.onChange(address, "log", key);
     });
   }
@@ -1953,6 +2133,8 @@ export class StationsSync {
       case "host": {
         const link = this.#links.get(address);
         if (link) {
+          const had = link.memory.has("host");
+          const wasUnreadable = link.hostUnreadable;
           link.memory.set("host", data);
           // (the system it runs on, kept: what shows it where it has no mark, station-os.ts)
           const at = address.lastIndexOf("/");
@@ -1963,6 +2145,8 @@ export class StationsSync {
             link.hostUnreadable = unreadable;
             this.onChange(address, "link");
           }
+          // Once an initial or recovered readable sample is cached, hand over back to ?host=0 if no live meter view is open.
+          if (!unreadable && (!had || wasUnreadable)) this.openEvents(address, false);
         }
         return;
       }

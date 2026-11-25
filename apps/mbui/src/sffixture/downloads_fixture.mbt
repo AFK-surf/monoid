@@ -43,10 +43,16 @@ pub let fix_saved : Map[String, String] = Map([])
 pub let fix_download_step_ms : Double = 200.0
 
 ///|
+/// How fast the made-up core says what comes comes (bytes a second), by its id (fix_download_id, fix_keeping_id): only
+/// while it comes, and only where a fixture says so (fix_every_transfer).
+pub let fix_rates : Map[String, Double] = Map([])
+
+///|
 /// A download as the core lists it (views/downloads.ts shown), its words as the core's (core-logic.download.*).
 pub fn fix_download_shown(d : FixDownload) -> Json {
   let percent = if d.size > 0.0 { (d.loaded / d.size * 100.0).floor().to_int() } else { 100 }
   let total = @sf.file_size(d.size)
+  let rate = if d.state == "going" { fix_rates.get(fix_download_id(d)).unwrap_or(0.0) } else { 0.0 }
   let o : Map[String, Json] = {
     "id": Json::string(fix_download_id(d)),
     "station": Json::string(d.station),
@@ -68,12 +74,16 @@ pub fn fix_download_shown(d : FixDownload) -> Json {
     "statusText": Json::string(
       match d.state {
         "going" if d.zip && d.size == 0.0 => "正在打包"
+        "going" if rate > 0.0 => "正在下载 \{percent}% · \{total} · \{@sf.file_size(rate)}/s"
         "going" => "正在下载 \{percent}% · \{total}"
         "saving" => "正在保存 · \{total}"
         _ => "已下载 · \{total}"
       },
     ),
     "startedAt": 0.0,
+  }
+  if rate > 0.0 {
+    o["rate"] = Json::number(rate)
   }
   if d.root == "" {
     o["key"] = Json::string(d.key)
@@ -122,6 +132,7 @@ let fix_fill : FixFill = { off: false, max: None }
 /// The made-up bringing as it starts: none, on, up to 1 GB.
 pub fn fix_keeping_reset() -> Unit {
   fix_keeping.clear()
+  fix_rates.clear()
   fix_fill.off = false
   fix_fill.max = None
 }
@@ -140,6 +151,9 @@ pub fn fix_keeping_id(k : FixKeeping) -> String {
 /// A file being brought as the core lists it (fill.ts shown), its words as the core's (core-logic.keeping.*).
 pub fn fix_keeping_shown(k : FixKeeping) -> Json {
   let percent = if k.size > 0.0 { (k.loaded / k.size * 100.0).floor().to_int() } else { 0 }
+  let total = @sf.file_size(k.size)
+  let rate = if k.state == "going" { fix_rates.get(fix_keeping_id(k)).unwrap_or(0.0) } else { 0.0 }
+  let speed = if rate > 0.0 { " · \{@sf.file_size(rate)}/s" } else { "" }
   let o : Map[String, Json] = {
     "id": Json::string(fix_keeping_id(k)),
     "station": Json::string(k.station),
@@ -151,13 +165,15 @@ pub fn fix_keeping_shown(k : FixKeeping) -> Json {
     "state": Json::string(k.state),
     "statusText": Json::string(
       match k.state {
-        _ if k.wanted && k.state != "waiting" => "正在加载 \{percent}% · \{@sf.file_size(k.size)}"
-        "going" => "后台缓存 \{percent}% · \{@sf.file_size(k.size)}"
-        "yielding" => "后台缓存暂停，正在看的优先 · \{percent}%"
-        "waiting" => "后台缓存等待连接 station · \{percent}%"
-        _ => "后台缓存排队中 · \{percent}%"
+        _ if k.wanted && k.state != "waiting" => "正在加载 \{percent}% · \{total}\{speed}"
+        "going" => "后台缓存 \{percent}% · \{total}\{speed}"
+        "waiting" => "等待连接 station · \{percent}% · \{total}"
+        _ => "后台缓存已暂停 · \{percent}% · \{total}"
       },
     ),
+  }
+  if rate > 0.0 {
+    o["rate"] = Json::number(rate)
   }
   if k.wanted {
     o["wanted"] = Json::boolean(true)
@@ -224,8 +240,11 @@ pub fn fix_keeping_message(station : String, key : String) -> Unit {
 ///|
 /// MBUI_FIXTURE=transfers, home-transfers, settings-kept-fill: what comes to this device in every way at once, as the transfers' list shows
 /// it: a chat's file downloading, a video and a recording opened and let go being brought (the video coming, the
-/// recording after it), a drive's video waiting for its station.
+/// recording after it, 已暂停), a drive's video waiting for its station; the download and the video saying how fast.
 pub fn fix_every_transfer(station : String, key : String, root : String) -> Unit {
+  let mb = 1024.0 * 1024.0
+  fix_rates[station + "|" + key + "|发布包.zip"] = 3.4 * mb
+  fix_rates["chat\n" + station + "\n" + key + "\n2026-10-24T21-59-13-dc7ed5-产品演示.mp4"] = 2.1 * mb
   fix_downloads.push({
     station,
     key,
@@ -363,6 +382,19 @@ pub fn fixture_downloads_call(f : Fixture, name : String, params : Json) -> Resu
         })
       }
       f.changed()
+      Some(Ok({}))
+    }
+    "fill.start" => {
+      // (given way, or after the others: from now on one asked to load, coming first)
+      let id = text(p, "id")
+      match fix_keeping.search_by(fn(k) { fix_keeping_id(k) == id && !k.wanted && (k.state == "queued" || k.state == "yielding") }) {
+        Some(at) => {
+          let k = fix_keeping.remove(at)
+          fix_keeping.insert(0, { ..k, state: "going", wanted: true })
+          f.changed()
+        }
+        None => ()
+      }
       Some(Ok({}))
     }
     "fill.stop" => {

@@ -4653,7 +4653,7 @@ test("a session from before a change is told it once, and a new one never", asyn
   const full = join(r.session(key).workspace, ".stillfail-instructions.md");
   assert.ok(prompts.at(-1)!.includes(full), "it says where today's instructions are");
   assert.equal(readFileSync(full, "utf8"), r.claude.last().options.instructions, "the file contains the full current instructions");
-  assert.equal(r.store.toldNotes(key), latest());
+  assert.equal(r.store.toldNotes(key), latest({ projectsOn: false }));
   await r.call(key, "chat_state", { kind: "all_done", done: "答完了它问的事" });
   r.claude.last().complete();
   await r.quiet();

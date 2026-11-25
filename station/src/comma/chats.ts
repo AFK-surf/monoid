@@ -5,7 +5,7 @@ import { say } from "../sessions/lifecycle.ts";
 import { wall } from "../ops/fibers.ts";
 import { MANUAL, MessageWriteBusy } from "../store/store.ts";
 import type { WorkspaceReads } from "./peer.ts";
-import { BUILD_DAYS, chatOf, type CommaStats } from "./stats.ts";
+import { BUILD_DAYS, chatOf, type CommaStats, validRequesterEmail } from "./stats.ts";
 
 type Json = any;
 type RouterWrite = { id: string; thread: number; n: number; pending: number };
@@ -30,6 +30,8 @@ export type RouterSay = {
   key: string;
   requester: string;
   connect: string;
+  connectScope?: string;
+  requesterEmail?: string;
   closeCard?: boolean;
   expectedCardSeq?: number;
 };
@@ -146,6 +148,16 @@ function routerSaysOnce(hub: Hub, stats: CommaStats, home: string | null, w: Rou
   // The Task index tells a chat the Router wrote in by this form of its author (read/outflow.ts routerWrote): durable
   // where comma_router_once is not, and for the writes without a key, which leave none.
   const author = `slack:${w.connect}:${w.requester}`;
+  const scopeKey = typeof w.connectScope === "string" && w.connectScope !== "" ? w.connectScope : w.connect;
+  const requesterEmail = validRequesterEmail(w.requesterEmail);
+  const recordConnect = (now: number) => {
+    db.prepare("INSERT INTO comma_router_connects (thread, connect, at) VALUES (?, ?, ?) ON CONFLICT (thread, connect) DO UPDATE SET at = excluded.at")
+      .run(w.thread, scopeKey, now);
+    if (requesterEmail !== undefined) {
+      db.prepare("INSERT INTO comma_task_participants (thread, connect, email, at) VALUES (?, ?, ?, ?) ON CONFLICT (thread, connect, email) DO UPDATE SET at = excluded.at")
+        .run(w.thread, scopeKey, requesterEmail, now);
+    }
+  };
   const assertExpectedCard = () => {
     if (w.expectedCardSeq === undefined) return;
     const current = typeof hub.store.pendingCardHeader === "function" ? hub.store.pendingCardHeader(w.thread) : null;
@@ -188,28 +200,25 @@ function routerSaysOnce(hub: Hub, stats: CommaStats, home: string | null, w: Rou
     return 0;
   }
   if (w.key === "") {
-    if (w.expectedCardSeq !== undefined) {
-      let targets: string[] = [];
-      return say(hub, w.thread, author, w.text, [], [], null, {
-        workspace: home,
-        before: () => {
-          const members = hub.store.threadSessions(w.thread);
-          if (members.length === 0) throw new Error("no such chat of the workspace");
-          targets = [];
-          for (const m of members) {
-            const session = hub.store.getSession(m.session);
-            if (session === null || hub.wsOf(session) !== home) throw new Error("no such chat of the workspace");
-            if (m.leftAt === null && session.archivedBy !== MANUAL) targets.push(m.session);
-          }
-          assertExpectedCard();
-        },
-        inserted: () => {},
-        targets: () => targets,
-      });
-    }
-    const members = hub.store.threadSessions(w.thread);
-    if (members.length === 0 || members.some((m) => (hub.wsOf(m.session) ?? null) !== home)) throw new Error("no such chat of the workspace");
-    return say(hub, w.thread, author, w.text);
+    let targets: string[] = [];
+    return say(hub, w.thread, author, w.text, [], [], null, {
+      workspace: home,
+      before: () => {
+        const members = hub.store.threadSessions(w.thread);
+        if (members.length === 0) throw new Error("no such chat of the workspace");
+        targets = [];
+        for (const m of members) {
+          const session = hub.store.getSession(m.session);
+          if (session === null || hub.wsOf(session) !== home) throw new Error("no such chat of the workspace");
+          if (m.leftAt === null && session.archivedBy !== MANUAL) targets.push(m.session);
+        }
+        assertExpectedCard();
+      },
+      inserted: () => {
+        recordConnect(wall.now());
+      },
+      targets: () => targets,
+    });
   }
   let encodedTargets = "[]";
   const insertedWrite: { value: RouterWrite | null } = { value: null };
@@ -249,6 +258,7 @@ function routerSaysOnce(hub: Hub, stats: CommaStats, home: string | null, w: Rou
         // Capture only the original members who were hearing at commit. Someone who rejoins or is unarchived before
         // a retry must not receive a message from before that change.
         db.prepare(ROUTER_TARGETS_INSERT).run(encodedTargets, w.key);
+        recordConnect(now);
       },
       targets: () => {
         const write = insertedWrite.value;

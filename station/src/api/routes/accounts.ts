@@ -1,7 +1,7 @@
 // The accounts' part of the admin API (admin/mod.rs): profiles made, edited,
 // checked, signed in and deleted; allowances read and reset; sign-ins for new profiles; the automatic decisions'
 // settings. Edits answer with the overview, as the Rust station's do.
-import { type Request, type Answer, error, segment, ok, input } from "../request.ts";
+import { type Request, type Answer, error, segment, ok, input, param } from "../request.ts";
 import type { Route } from "../admin.ts";
 import { type Accounts, Refusal } from "../../accounts/index.ts";
 import type { Sharing } from "../../share/index.ts";
@@ -142,7 +142,7 @@ export const routes = ({ accounts, sharing, overview, policies }: AccountsRouteD
       }),
     ),
     // Each account's last hours, as the Profile overview draws them (accounts/pace.ts): read as it is shown.
-    route("GET", /^\/*profiles\/+pace\/*$/, (r) => answer((a) => ok(a.paceView(r.viewer)))),
+    route("GET", /^\/*profiles\/+pace\/*$/, (r) => answer((a) => ok(a.paceResponse(r.viewer, { v: param(r, "v"), sinceRev: param(r, "sinceRev") })))),
     route("POST", /^\/*profiles\/+([^/]+)\/+check(?:\/.*)?$/, (r, [id]) => answer(async (a) => ok(await a.askedCheck(segment(id!), r.lang)))),
     route("GET", /^\/*profiles\/+([^/]+)\/+fusion(?:\/.*)?$/, (_r, [id]) => answer((a) => ok({ fusion: a.fusionView(segment(id!)) }))),
     route("POST", /^\/*profiles\/+([^/]+)\/+reset-quota(?:\/.*)?$/, (r, [id]) =>

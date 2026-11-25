@@ -1,0 +1,43 @@
+// Wave 7 L1 package `readops_chats`: 1:1 port of `archive`, `chatparts` (+ `last_turn_of`),
+// `notices`, `search_chats`, `shared`, `threads`, and `viewerrows`.
+// Depends strictly on `readops_core` and Wave 4-6 packages (strictly acyclic DAG).
+
+import "base_codec"
+import "readops_core"
+import "sql_db"
+
+/// Compile-time cross-package visibility check proving L0 `readops_core` helpers required by
+/// `W7-B/C/D/E` are exported `pub` and callable from outside `readops_core`.
+fn _verify_l0_exports(db : sql_db::Db, thread : base_codec::Json) -> Unit {
+  let _ = readops_core::messages_before(db, thread, base_codec::json_null(), None)
+  let _ = readops_core::said_page_state(db, thread)
+  let _ = readops_core::text_keys([])
+  let _ = readops_core::compare_int_text("1", "2")
+  let _ = readops_core::descending_keys([])
+  let _ = readops_core::take_strings([], 10)
+  let _ = readops_core::as_integer(base_codec::json_int(1))
+  let _ = readops_core::exists_in(db, "table", "sessions")
+  let _ = readops_core::has_legacy_said(db)
+  let _ = readops_core::state_key(db, thread, "last_said")
+  let _ = readops_core::first_text(db, thread)
+  let _ = readops_core::last_said(db, thread)
+  let _ = readops_core::json_list(base_codec::json_null(), readops_core::parse_attachment)
+  let _ = readops_core::json_list(base_codec::json_null(), readops_core::parse_quote)
+  let _ = readops_core::with_letter([], base_codec::json_null())
+  let _ = readops_core::merged(db, thread, base_codec::json_int(1))
+  let _ = readops_core::merged_bounded(db, thread, base_codec::json_int(1))
+  let _ = readops_core::author_kind(base_codec::json_str("user"))
+  let _ = readops_core::card_at(db, thread, base_codec::json_int(1))
+  let _ = readops_core::edits_pending()
+  let _ = readops_core::system_card_sql("card")
+  let _ = readops_core::reached_sql("t", "1")
+  let _ = readops_core::has_legacy_decision_time(db)
+  let _ = readops_core::safe_key("k")
+  let _ = readops_core::key_text(base_codec::json_str("k"))
+}
+
+/// Real-SQLite linked-binary self-test entrypoint invoked by `stillfail-pion --smoke-readops <temp-dir>`.
+pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
+  let _ = _verify_l0_exports
+  run_chats_selftest(temp_dir)
+}

@@ -3,19 +3,29 @@
 // the hand is on it) from the moment that changes, on a motion's way; pressed (its press let go on it), done then.
 
 ///|
+let viewer_steps_move_lent : @view.Lent[() -> Unit] = @view.Lent::new()
+
+///|
+/// Register a pointer-move callback on `parent` so moving over a visible step disc refreshes the viewer idle timer.
+pub fn viewer_steps_on_move(parent : @view.View, on_move : () -> Unit) -> Unit {
+  parent.lends(viewer_steps_move_lent, on_move) |> ignore
+}
+
+///|
 /// The ways to the picture before and after in `parent` (a layer over the viewer's, all of its room), as the web's
 /// fpStep has them: 40 discs of the canvas at 80% over a 12 blur, a shadow, 16 in from the sides (36 and 8 where `small`), in
-/// the middle, a chevron in the words' ink; each while `before` and `after` say there is one. There while `awake` (or
-/// the hand on it: a mouse's pointer over it, a press held on it), in over wake_ms and out over sleep_ms from where it
-/// is at the moment that changes (at once with motion reduced), as far in as `shown` says of the node as it is drawn
-/// (the viewer's fade); taking a press while any of it shows. Pressed (its press let go on it), `go` (-1 the one before,
-/// 1 the one after) at that moment. Their tips in `tips`. The row's node.
+/// the middle, a chevron in the words' ink; each while `before` and `after` say there is one. Each side shows while
+/// `awake_for(dir)` (-1 before, 1 after) holds (or the hand stays on a visible disc: a mouse's pointer over it while
+/// shown, or a press held on it), in over wake_ms and out over sleep_ms from where it is at the moment that changes
+/// (at once with motion reduced), as far in as `shown` says of the node as it is drawn (the viewer's fade); taking a
+/// press and readable by screen readers only while any of it shows (`takes`). Pressed (its press let go on it), `go`
+/// (-1 the one before, 1 the one after) at that moment. Their tips in `tips`. The row's node.
 #callsite(autofill(loc))
 pub fn viewer_steps_node(
   parent : @view.View,
   before : () -> Bool,
   after : () -> Bool,
-  awake : () -> Bool,
+  awake_for : (Int) -> Bool,
   shown : (@view.View) -> Double,
   small : () -> Bool,
   go : (Int) -> Unit,
@@ -41,7 +51,7 @@ pub fn viewer_steps_node(
       // (as wide where there is none, the other in its place)
       row.box(fn(slot) {
         slot.width(By(fn() { Some(disc()) })).height(By(fn() { Some(disc()) })) |> ignore
-        slot.show(there, fn(b) { step_disc(b, dir, icon, label, awake, shown, disc, go, tips) })
+        slot.show(there, fn(b) { step_disc(b, dir, icon, label, fn() { awake_for(dir) }, shown, disc, go, tips) })
       })
       |> ignore
     }
@@ -63,7 +73,7 @@ fn step_disc(
   tips : TipLayer,
   loc~ : SourceLoc,
 ) -> Unit {
-  // (mbui's headless button, its look this disc: pressed only while any of it shows)
+  // (mbui's headless button, its look this disc: pressed and read out only while any of it shows)
   let takes : Ref[() -> Bool] = Ref(fn() { false })
   @headless.button(made_for=loc, slot, fn() { t(label) }, fn(_) { go(dir) }, disabled=fn() { !(takes.val)() }, fn(b, _) {
     // (where the hand is on it, as a box's hovered look has it: its ground)
@@ -73,9 +83,9 @@ fn step_disc(
         Finger => b.pressed()
       }
     }
-    // (there while the bars are, or the hand is on it or holds it: a mouse's button held down on it and moved off it, it
-    // stays, as one lit or pressed does)
-    let woke = fn() { awake() || hot() || b.pressed() }
+    // (there while `awake` holds, or while still showing and the pointer stays on it, or while held down: a mouse's
+    // button held down on it and moved off it stays, while a fully hidden disc never bounces back on a still pointer)
+    let woke = fn() { awake() || ((takes.val)() && hot()) || b.pressed() }
     let seen = @motion.NodeWay::new(if @signals.untracked(woke) { 1.0 } else { 0.0 })
     b.reacts(woke, fn(on) { seen.go_ms(b, if on { 1.0 } else { 0.0 }, if on { wake_ms } else { sleep_ms }) })
     b
@@ -97,8 +107,19 @@ fn step_disc(
     .ground(By(fn() { if hot() { @ui.tree_theme().color(Hover) } else { 0L } }))
     .alpha(By(fn() { seen.shown(b) * shown(b) }))
     |> ignore
-    // (taking a press while any of it shows: on its way in, there, or on its way out)
+    // (taking a press and read out by screen readers only while any of it shows: on its way in, there, or on its way out)
     takes.val = fn() { seen.target() > 0.0 || seen.goes(b) }
+    b
+    .hides(By(fn() { !(takes.val)() }))
+    .on_pointer_moved(fn() {
+      if (takes.val)() {
+        match b.lent(viewer_steps_move_lent) {
+          Some(f) => f()
+          None => ()
+        }
+      }
+    })
+    |> ignore
     // (its chevron in its middle)
     b.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
     b.box(fn(i) {

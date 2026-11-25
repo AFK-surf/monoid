@@ -384,9 +384,9 @@ export class Way {
   /// "direct" (a path iroh punched).
   key(): string {
     if (this.link.pinned === LAN || this.link.pinned === TAILNET) return this.link.pinned;
-    const via = this.link.via();
-    if (via !== null) return relayKey(via);
-    if (this.link.path() === "direct") return "direct";
+    const p = this.link.chosenPath();
+    if (p?.relay != null) return relayKey(p.relay);
+    if (p !== undefined) return "direct";
     if (isFenced(this.link.pinned)) return "fenced";
     return this.link.pinned !== null ? relayKey(this.link.pinned) : "main";
   }
@@ -574,6 +574,48 @@ export class Link {
   opened: { onto: number; dialled: number; credential: number } | null = null;
   /// Device timestamp (`nowMs`) when this link's dial started (`HOT_SETTLE_MS`).
   openedAt = 0;
+  /// Short synchronous snapshot scope (`Mesh.#withSnap`) so one tick or `net()` call reads `paths`/`stats`/`closeReason`
+  /// across the native FFI boundary at most once per link instead of repeatedly in comparators and helpers.
+  #snapDepth = 0;
+  #pathsSnap: IrohPath[] | null = null;
+  #statsSnap: { rxBytes: number; txBytes: number } | null = null;
+  #closeSnap: CloseReason | null | undefined = undefined;
+
+  beginSnap(): void {
+    this.#snapDepth++;
+  }
+
+  endSnap(): void {
+    if (this.#snapDepth > 0 && --this.#snapDepth === 0) {
+      this.#pathsSnap = null;
+      this.#statsSnap = null;
+      this.#closeSnap = undefined;
+    }
+  }
+
+  connPaths(): IrohPath[] {
+    if (this.#snapDepth > 0) {
+      if (this.#pathsSnap === null) this.#pathsSnap = this.conn.paths();
+      return this.#pathsSnap;
+    }
+    return this.conn.paths();
+  }
+
+  connStats(): { rxBytes: number; txBytes: number } {
+    if (this.#snapDepth > 0) {
+      if (this.#statsSnap === null) this.#statsSnap = this.conn.stats();
+      return this.#statsSnap;
+    }
+    return this.conn.stats();
+  }
+
+  connCloseReason(): CloseReason | null {
+    if (this.#snapDepth > 0) {
+      if (this.#closeSnap === undefined) this.#closeSnap = this.conn.closeReason();
+      return this.#closeSnap;
+    }
+    return this.conn.closeReason();
+  }
 
   constructor(conn: IrohConnection, control: Control, credential: string, credentials: CredentialSource, pinned: string | null, endpoint?: IrohEndpoint) {
     this.conn = conn;
@@ -728,11 +770,12 @@ export class Link {
   }
 
   closed(): string | null {
-    const r = this.conn.closeReason();
+    const r = this.connCloseReason();
     return r === null ? null : closeMessage(r);
   }
 
   close(): void {
+    this.#closeSnap = undefined;
     this.conn.close(0, "closed");
   }
 
@@ -741,7 +784,7 @@ export class Link {
   /// machine's interfaces, leaves unmarked: Windows to Windows), the way its packets go, a direct one before a relay's
   /// and the busiest first; with none sent yet, the only way, or the first where the link is pinned to one kind of
   /// direct way (`LAN`, `TAILNET`) or every way is direct. None only where it may still be a relay's.
-  #chosen(paths: IrohPath[] = this.conn.paths()): IrohPath | undefined {
+  #chosen(paths: IrohPath[] = this.connPaths()): IrohPath | undefined {
     const selected = paths.find((p) => p.selected);
     if (selected !== undefined || paths.length === 0) return selected;
     let busiest: IrohPath | undefined;
@@ -752,6 +795,10 @@ export class Link {
     }
     if (busiest !== undefined) return busiest;
     return paths.length === 1 || this.pinned === LAN || this.pinned === TAILNET || paths.every((p) => p.relay === null) ? paths[0] : undefined;
+  }
+
+  chosenPath(): IrohPath | undefined {
+    return this.#chosen();
   }
 
   path(): string | null {
@@ -766,10 +813,10 @@ export class Link {
   /// Key under which this link's throughput is tracked, or null for LAN links and unknown paths.
   speedKey(): string | null {
     if (this.pinned === LAN) return null;
-    const via = this.via();
-    if (this.path() === "relay" && via !== null) return relayKey(via);
+    const p = this.#chosen();
+    if (p?.relay != null) return relayKey(p.relay);
     if (this.pinned === TAILNET) return TAILNET;
-    if (this.path() === "direct") return DIRECT;
+    if (p !== undefined) return DIRECT;
     return null;
   }
 
@@ -777,7 +824,7 @@ export class Link {
   /// way's address), its round trip, the packets sent and lost on it. What a phone's direct way was, and how it went,
   /// as requests moved off it (2026-10-17: gone 20–30 s after it was taken, on a phone alone).
   paths(): string {
-    const paths = this.conn.paths();
+    const paths = this.connPaths();
     const chosen = this.#chosen(paths);
     return paths
       .map((p) => `${p === chosen ? "*" : ""}${p.relay !== null ? relayHost(p.relay) : (p.ip ?? "direct")} ${p.rttMs === null ? "?" : `${Math.round(p.rttMs)}ms`} ${p.txPackets}/${p.lostPackets}`)
@@ -787,14 +834,24 @@ export class Link {
   /// Which ways iroh has for it, where each goes and the one chosen, without their counts: what changes as one opens, goes
   /// or is chosen.
   pathShape(): string {
-    const paths = this.conn.paths();
+    const paths = this.connPaths();
     const chosen = this.#chosen(paths);
     return paths.map((p) => `${p === chosen ? "*" : ""}${p.id}@${p.relay ?? p.ip ?? "direct"}`).join(",");
   }
 
+  /// How this link currently reaches its station (`path` and `relay` host), without reading byte/packet stats.
+  way(): { path: string | null; relay: string | null } {
+    const selected = this.#chosen();
+    const pinnedPath = this.pinned === TAILNET ? TAILNET : this.pinned === LAN ? "direct" : null;
+    return {
+      path: selected === undefined ? pinnedPath : selected.relay !== null ? "relay" : this.pinned === TAILNET ? TAILNET : "direct",
+      relay: selected?.relay ? relayHost(selected.relay) : null,
+    };
+  }
+
   net(): LinkNet {
     const selected = this.#chosen();
-    const stats = this.conn.stats();
+    const stats = this.connStats();
     // A link pinned to a direct way goes by none other, whatever its host marks.
     const pinnedPath = this.pinned === TAILNET ? TAILNET : this.pinned === LAN ? "direct" : null;
     return {
@@ -813,7 +870,7 @@ export class Link {
 
   /// What went over it, both ways, since this was last asked.
   uncounted(): [number, number] {
-    const stats = this.conn.stats();
+    const stats = this.connStats();
     const [wasRx, wasTx] = this.counted;
     this.counted = [stats.rxBytes, stats.txBytes];
     return [Math.max(stats.rxBytes - wasRx, 0), Math.max(stats.txBytes - wasTx, 0)];
@@ -852,7 +909,7 @@ export class Link {
   }
 
   usable(): boolean {
-    return this.conn.closeReason() === null && !this.renewalFailed;
+    return this.connCloseReason() === null && !this.renewalFailed;
   }
 }
 
@@ -1150,6 +1207,38 @@ export class Mesh {
   current(addr: string): Link | null {
     const o = this.#links.get(addr);
     return o?.result && "ok" in o.result ? o.result.ok : null;
+  }
+
+  /// Runs a synchronous read/decision step with per-link snapshots of `paths()`, `stats()`, and `closeReason()` so
+  /// repeated helpers inside one tick or `net()` reading cross the native FFI boundary at most once per link.
+  #withSnap<T>(addr: string, fn: () => T, includeSiblings = false): T {
+    const snapped = new Set<Link>();
+    const cur = this.current(addr);
+    if (cur !== null) snapped.add(cur);
+    const ways = this.#ways.get(addr);
+    if (ways !== undefined) for (const w of ways) snapped.add(w.link);
+    if (includeSiblings) {
+      const id = endpointId(addr);
+      for (const [a, o] of this.#links) if (endpointId(a) === id && o.result && "ok" in o.result) snapped.add(o.result.ok);
+    }
+    for (const l of snapped) l.beginSnap();
+    try {
+      return fn();
+    } finally {
+      for (const l of snapped) l.endSnap();
+    }
+  }
+
+  /// How the connection to `addr` runs now, snapping per-link FFI queries across `link.net()`, `measured()`, and `today()`.
+  net(addr: string): LinkNet | null {
+    const link = this.current(addr);
+    if (link === null) return null;
+    return this.#withSnap(addr, () => ({ ...link.net(), measured: this.measured(addr), today: this.today(addr), lan: this.lan(addr) }), true);
+  }
+
+  /// How `addr` is currently reached (`path` and `relay`), reading only the current link's paths.
+  way(addr: string): { path: string | null; relay: string | null } | null {
+    return this.current(addr)?.way() ?? null;
   }
 
   /// Where the station said it is on its LAN, none until it did.
@@ -2027,7 +2116,7 @@ export class Mesh {
       const allowedUrls = this.relaysFor(a);
       const allowed = new Set(allowedUrls.map(relayKey));
       const measuredByKey = new Map<string, { key: string; url: string; rttMs: number; selected: boolean }>();
-      for (const p of l.conn.paths()) {
+      for (const p of l.connPaths()) {
         if (p.relay === null || p.rttMs === null) continue;
         const k = this.#logicalRelay(p.relay);
         if (!allowed.has(k) || disconnectedOfficial.has(k)) continue;
@@ -2107,7 +2196,7 @@ export class Mesh {
     if (hot !== undefined) {
       const disconnectedOfficial = this.#disconnectedOfficialRelayKeys();
       const liveInHot = new Set<string>();
-      for (const p of cur.conn.paths()) {
+      for (const p of cur.connPaths()) {
         if (p.relay === null) continue;
         const k = this.#logicalRelay(p.relay);
         if (disconnectedOfficial.has(k)) continue;
@@ -2758,8 +2847,8 @@ export class Mesh {
   }
 
   /// Every way to the station pinged at once.
-  #sample(addr: string): Effect.Effect<void> {
-    return Effect.asVoid(Effect.all(this.#live(addr).map((w) => this.#ping(w)), { concurrency: "unbounded" }));
+  #sample(addr: string, ways: Way[] = this.#live(addr)): Effect.Effect<void> {
+    return Effect.asVoid(Effect.all(ways.map((w) => this.#ping(w)), { concurrency: "unbounded" }));
   }
 
   /// Moves the station's requests to the best way if it is clearly better than theirs (`clearlyBetter`) BETTER_TICKS
@@ -2945,9 +3034,9 @@ export class Mesh {
   #recordWays(addr: string): void {
     const parts: string[] = [];
     for (const w of this.#live(addr)) {
-      const stats = w.link.conn.stats();
+      const stats = w.link.connStats();
       const was = this.#recorded.get(w.link) ?? { rx: 0, tx: 0, paths: new Map<string, [number, number]>() };
-      const paths = w.link.conn.paths().map((p) => {
+      const paths = w.link.connPaths().map((p) => {
         const [tx0, lost0] = was.paths.get(p.id) ?? [0, 0];
         was.paths.set(p.id, [p.txPackets, p.lostPackets]);
         return `${p.selected ? "*" : ""}${p.relay !== null ? relayHost(p.relay) : (p.ip ?? "direct")} ${p.rttMs === null ? "?" : `${Math.round(p.rttMs)}ms`} +${p.txPackets - tx0}/${p.lostPackets - lost0}`;
@@ -2960,6 +3049,33 @@ export class Mesh {
     if (parts.length > 0) record(this.#env.host, "conn ways", () => `${stationTag(addr)} ${parts.join(" | ")}`);
   }
 
+  /// Synchronous post-hot decisions for one `#steer` tick (run inside `#withSnap`).
+  #afterHotOnTick(addr: string): void {
+    this.#suspect(addr);
+    this.#choose(addr, null);
+    this.#prune(addr);
+    // The way direct requests moved to stayed: one lost after this is not lost soon after.
+    if (this.#movedDirect.get(addr) === true && this.now() - (this.#movedAt.get(addr) ?? Infinity) >= MIN_STAY_MS) this.#directLosses.delete(addr);
+    const live = this.#live(addr);
+    if (live.some((w) => this.#isDirect(w))) this.#directAt.set(addr, this.now());
+    if (live.some((w) => w.link.pinned === LAN && w.missed === 0 && w.samples > 0)) this.#lanAt.set(addr, this.now());
+    if (live.some((w) => w.link.pinned === TAILNET && w.missed === 0 && w.samples > 0)) this.#tailnetAnswered.add(addr);
+    const credentials = (this.current(addr) ?? live[0]?.link)?.credentials;
+    // One connection on the main endpoint: no other ways to dial, compare or move to (iroh moves its packets).
+    if (credentials === undefined || this.#mainOn(addr)) return;
+    for (const kind of AT_ADDRESSES) this.#dialAtIf(addr, kind, credentials);
+    if (this.now() - (this.#exploredAt.get(addr) ?? 0) >= EXPLORE_MS) this.#env.runner.fork(this.#explore(addr, credentials));
+    else if (
+      this.#mainOn(addr) &&
+      !live.some((w) => w.link.pinned === null) &&
+      this.now() - (this.#directAt.get(addr) ?? -Infinity) < DIRECT_RECALL_MS &&
+      // Not for the punched path while the LAN endpoint reaches it: the requests keep off that (LAN_RECALL_MS).
+      this.now() - (this.#lanAt.get(addr) ?? -Infinity) >= LAN_RECALL_MS &&
+      this.now() - (this.#mainDialledAt.get(addr) ?? -Infinity) >= REDIAL_MAIN_MS
+    )
+      this.#env.runner.fork(this.#explore(addr, credentials, true));
+  }
+
   /// While the station has a way open: every TICK_MS each pinged, the requests moved to the best (`#choose`), the
   /// ways not worth keeping let go (`#prune`), and every EXPLORE_MS the others dialled again (`#explore`); the main
   /// endpoint's link, gone from a station reached direct within DIRECT_RECALL_MS, every REDIAL_MAIN_MS.
@@ -2969,36 +3085,24 @@ export class Mesh {
         yield* laterSleep(TICK_MS);
         if (this.#closed || !this.#links.has(addr)) break;
         const cur = this.current(addr);
-        if (this.#live(addr).length === 0 && (cur === null || !cur.usable())) break;
-        yield* this.#sample(addr);
-        this.#tellHealth(addr);
-        for (const w of this.#live(addr)) this.#watchPaths(addr, w);
-        if (recording(this.#env.host)) this.#recordWays(addr);
-        recordDht(this.#env.host, this.#endpoint, TICK_MS);
-        yield* this.#updateHotOnTick(addr);
-        this.#suspect(addr);
-        this.#choose(addr, null);
-        this.#prune(addr);
-        // The way direct requests moved to stayed: one lost after this is not lost soon after.
-        if (this.#movedDirect.get(addr) === true && this.now() - (this.#movedAt.get(addr) ?? Infinity) >= MIN_STAY_MS) this.#directLosses.delete(addr);
-        const live = this.#live(addr);
-        if (live.some((w) => this.#isDirect(w))) this.#directAt.set(addr, this.now());
-        if (live.some((w) => w.link.pinned === LAN && w.missed === 0 && w.samples > 0)) this.#lanAt.set(addr, this.now());
-        if (live.some((w) => w.link.pinned === TAILNET && w.missed === 0 && w.samples > 0)) this.#tailnetAnswered.add(addr);
-        const credentials = (this.current(addr) ?? live[0]?.link)?.credentials;
-        // One connection on the main endpoint: no other ways to dial, compare or move to (iroh moves its packets).
-        if (credentials === undefined || this.#mainOn(addr)) continue;
-        for (const kind of AT_ADDRESSES) this.#dialAtIf(addr, kind, credentials);
-        if (this.now() - (this.#exploredAt.get(addr) ?? 0) >= EXPLORE_MS) this.#env.runner.fork(this.#explore(addr, credentials));
-        else if (
-          this.#mainOn(addr) &&
-          !live.some((w) => w.link.pinned === null) &&
-          this.now() - (this.#directAt.get(addr) ?? -Infinity) < DIRECT_RECALL_MS &&
-          // Not for the punched path while the LAN endpoint reaches it: the requests keep off that (LAN_RECALL_MS).
-          this.now() - (this.#lanAt.get(addr) ?? -Infinity) >= LAN_RECALL_MS &&
-          this.now() - (this.#mainDialledAt.get(addr) ?? -Infinity) >= REDIAL_MAIN_MS
-        )
-          this.#env.runner.fork(this.#explore(addr, credentials, true));
+        const before = this.#live(addr);
+        if (before.length === 0 && (cur === null || !cur.usable())) break;
+        yield* this.#sample(addr, before);
+        const relax = this.#withSnap(addr, () => {
+          this.#tellHealth(addr);
+          for (const w of this.#live(addr)) this.#watchPaths(addr, w);
+          if (recording(this.#env.host)) this.#recordWays(addr);
+          recordDht(this.#env.host, this.#endpoint, TICK_MS);
+          const eff = this.#updateHotOnTick(addr);
+          if (eff !== Effect.void) return eff;
+          this.#afterHotOnTick(addr);
+          return null;
+        });
+        if (relax !== null) {
+          yield* relax;
+          if (this.#closed || !this.#links.has(addr)) break;
+          this.#withSnap(addr, () => this.#afterHotOnTick(addr));
+        }
       }
       this.#steering.delete(addr);
     });

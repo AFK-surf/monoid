@@ -948,7 +948,7 @@ test "home releases transfers while a chat covers it and reads current transfers
   guard client.peek_topic("driveTransfers", params~) is Some(first) else { fail("home did not subscribe to transfers") }
   client.receive_json({ "id": Json::number(first.id.to_double()), "value": { "transfers": [{ "active": true, "copied": 25, "total": 100 }] } })
   t.frame()
-  assert_true(t.query(Button, label="1 个传输 · 25%") is Some(_), msg="home shows the transfer")
+  assert_true(t.query(Button, label="1 个传输 · 25% · 100 B") is Some(_), msg="home shows the transfer")
   let covered_at = t.time()
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   t.frame()
@@ -969,10 +969,10 @@ test "home releases transfers while a chat covers it and reads current transfers
   assert_true(second.id != first.id)
   client.receive_json({ "id": Json::number(second.id.to_double()), "value": { "transfers": [{ "active": true, "copied": 60, "total": 100 }] } })
   t.frame()
-  assert_true(t.query(Button, label="1 个传输 · 60%") is Some(_), msg="home shows the current transfer")
+  assert_true(t.query(Button, label="1 个传输 · 60% · 100 B") is Some(_), msg="home shows the current transfer")
   client.receive_json({ "id": Json::number(second.id.to_double()), "delta": [{ "path": ["transfers", 0, "copied"], "set": 75 }] })
   t.frame()
-  assert_true(t.query(Button, label="1 个传输 · 75%") is Some(_), msg="home follows later transfer updates")
+  assert_true(t.query(Button, label="1 个传输 · 75% · 100 B") is Some(_), msg="home follows later transfer updates")
   @ui.run_let_go()
   assert_true(client.peek_topic("driveTransfers", params~) is None)
 }

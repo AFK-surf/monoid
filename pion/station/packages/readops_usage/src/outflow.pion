@@ -1,0 +1,837 @@
+// 1:1 port of `station/mb/src/readops/outflow.mbt`.
+// A chat's messages as the Router reads a Task through a Comma connect (`outflowMessages`, `task.read`).
+// All named SAVEPOINTs go through `sql_db::Db::savepoint_swallow_err` (zero raw transaction SQL).
+
+import "base_codec"
+import "builders_core"
+import "builders_stateful"
+import "js_json"
+import "readops_chats"
+import "readops_core"
+import "sql_db"
+
+/// read/store.ts PAGE_ORDINARY_KEYS_AFTER.
+let PAGE_ORDINARY_KEYS_AFTER_SQL : String = "SELECT CAST(p.n AS TEXT) AS n FROM (\n  SELECT n FROM entries INDEXED BY entries_said WHERE thread=?1 AND n>?2 AND kind='message' AND letter IS NULL\n  ORDER BY n LIMIT ?3) p ORDER BY p.n"
+
+/// read/store.ts LEGACY_PAGE_ORDINARY_KEYS_AFTER.
+let LEGACY_PAGE_ORDINARY_KEYS_AFTER_SQL : String = "SELECT CAST(p.n AS TEXT) AS n FROM (\n  SELECT n FROM legacy_said WHERE thread=?1 AND n>?2 ORDER BY n LIMIT ?3) p ORDER BY p.n"
+
+/// read/store.ts PAGE_LETTER_CANDIDATES_AFTER.
+let PAGE_LETTER_CANDIDATES_AFTER_SQL : String = "SELECT CAST(e.n AS TEXT) AS n,e.kind FROM entries e INDEXED BY entries_letters\n  WHERE e.thread=?1 AND e.n>?2 AND e.letter IS NOT NULL ORDER BY e.n LIMIT ?3"
+
+/// read/store.ts LEGACY_SAID_PAGE_HEAD.
+let LEGACY_SAID_PAGE_HEAD_SQL : String = "SELECT CAST(e.n AS TEXT) AS n,e.kind FROM entries e\n  WHERE e.thread=?1 AND e.n>?2 ORDER BY e.n LIMIT ?3"
+
+/// station/test/reference/backfill/page-letter-index.ts PAGE_LETTER_KEYS_AFTER.
+let PAGE_LETTER_KEYS_AFTER_SQL : String = "SELECT CAST(p.n AS TEXT) AS n FROM (\n    SELECT b.n FROM page_letter_rows b WHERE b.thread=?1 AND b.token=?2 AND b.n>CAST(?3 AS INTEGER)\n      AND NOT EXISTS (SELECT 1 FROM page_letter_dirty d WHERE d.thread=b.thread AND d.token=b.token AND d.n=b.n)\n    UNION ALL\n    SELECT e.n FROM page_letter_dirty d CROSS JOIN entries e ON e.thread=d.thread AND e.n=d.n\n      WHERE d.thread=?1 AND d.token=?2 AND d.n>CAST(?3 AS INTEGER) AND e.kind='message' AND e.letter IS NOT NULL\n    ORDER BY n LIMIT ?4\n  ) p ORDER BY p.n"
+
+/// store/rows.ts MESSAGE_PAGE_ENTRIES.
+let MESSAGE_PAGE_ENTRIES_SQL : String = "SELECT e.* FROM json_each(?2) j\n  CROSS JOIN entries e ON e.thread=?1 AND e.n=CAST(j.value AS INTEGER) ORDER BY e.n"
+
+fn abs_double(d : Double) -> Double {
+  if d < 0.0 { -d } else { d }
+}
+
+fn is_nan_or_inf(d : Double) -> Bool {
+  d != d || d == 1.0 / 0.0 || d == -1.0 / 0.0
+}
+
+fn nul_home() -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte(0 as Byte)
+  sb.write_string("home")
+  sb.to_string()
+}
+
+fn concat_strings(a : Array[String], b : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<a.length() {
+    out.push(a[i])
+  }
+  for i in 0..<b.length() {
+    out.push(b[i])
+  }
+  out
+}
+
+fn filter_message_rows(
+  rows : Array[Map[String, base_codec::Json]],
+) -> Array[Map[String, base_codec::Json]] {
+  let out : Array[Map[String, base_codec::Json]] = []
+  for i in 0..<rows.length() {
+    if readops_chats::mb_json_eq(readops_core::field(rows[i], "kind"), base_codec::json_str("message")) {
+      out.push(rows[i])
+    }
+  }
+  out
+}
+
+/// Text keys of integers in their order (store.ts `ascendingKeys`).
+fn ascending(keys : Array[String]) -> Array[String] {
+  readops_core::stable_sort(keys, readops_core::compare_int_text)
+}
+
+fn page_keys_after_head(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  after : base_codec::Json,
+  limit : Int,
+  pending_err : readops_core::ReadError,
+) -> Result[Array[String], readops_core::ReadError] {
+  let cap = limit + 64
+  let rows = match db.all(
+    LEGACY_SAID_PAGE_HEAD_SQL,
+    [thread, after, base_codec::json_num(cap.to_double())],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  let keys = readops_core::take_strings(readops_core::text_keys(filter_message_rows(rows)), limit)
+  if keys.length() < limit && rows.length() == cap {
+    return Err(pending_err)
+  }
+  Ok(keys)
+}
+
+/// store.ts `messagePageKeysAfter`: the keys of a thread's messages after `after`, at most `limit`.
+fn page_keys_after(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  after : base_codec::Json,
+  limit : Int,
+) -> Result[Array[String], readops_core::ReadError] {
+  let legacy = match readops_core::has_legacy_said(db) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  if legacy {
+    let (preparing, needs_drain) = match readops_core::said_page_state(db, thread) {
+      Ok(st) => st
+      Err(e) => return Err(e)
+    }
+    if preparing || needs_drain {
+      let pending_err = if preparing {
+        readops_core::refused(503, readops_core::LEGACY_SAID_PENDING)
+      } else {
+        readops_core::refused(
+          503,
+          readops_core::SAID_PENDING + sql_db::stringify_json(base_codec::json_arr([thread])),
+        )
+      }
+      return page_keys_after_head(db, thread, after, limit, pending_err)
+    }
+  }
+  let token = match builders_stateful::letters_ready_token(db, thread) {
+    Ok(t) => t
+    Err(e) => return Err(readops_core::map_step_err(e))
+  }
+  if token is None {
+    let has_letters_idx = match readops_core::exists_in(db, "index", "entries_letters") {
+      Ok(b) => b
+      Err(e) => return Err(e)
+    }
+    if !has_letters_idx {
+      let pending_err = readops_core::refused(
+        503,
+        readops_core::PAGE_LETTER_PENDING + sql_db::stringify_json(base_codec::json_arr([thread])),
+      )
+      return page_keys_after_head(db, thread, after, limit, pending_err)
+    }
+  }
+  let ord_sql = if legacy {
+    LEGACY_PAGE_ORDINARY_KEYS_AFTER_SQL
+  } else {
+    PAGE_ORDINARY_KEYS_AFTER_SQL
+  }
+  let ord_rows = match db.all(ord_sql, [thread, after, base_codec::json_num(limit.to_double())]) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  let ordinary = readops_core::text_keys(ord_rows)
+  match token {
+    Some(t) => {
+      let let_rows = match db.all(
+        PAGE_LETTER_KEYS_AFTER_SQL,
+        [thread, base_codec::json_str(t), after, base_codec::json_num(limit.to_double())],
+      ) {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::map_sql_err(e))
+      }
+      let letters = readops_core::text_keys(let_rows)
+      return Ok(readops_core::take_strings(ascending(concat_strings(ordinary, letters)), limit))
+    }
+    None => ()
+  }
+  let cap = limit + 64
+  let candidates = match db.all(
+    PAGE_LETTER_CANDIDATES_AFTER_SQL,
+    [thread, after, base_codec::json_num(cap.to_double())],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  let ceiling : Option[String] = if candidates.length() == cap {
+    match readops_core::field(candidates[candidates.length() - 1], "n") {
+      base_codec::Json::Str(c) => Some(c)
+      _ => None
+    }
+  } else {
+    None
+  }
+  let letters = readops_core::text_keys(filter_message_rows(candidates))
+  let known : Array[String] = match ceiling {
+    Some(c) => {
+      let filtered : Array[String] = []
+      for i in 0..<ordinary.length() {
+        if readops_core::compare_int_text(ordinary[i], c) <= 0 {
+          filtered.push(ordinary[i])
+        }
+      }
+      filtered
+    }
+    None => ordinary
+  }
+  let keys = ascending(concat_strings(known, letters))
+  if keys.length() < limit && ceiling is Some(_) {
+    return Err(
+      readops_core::refused(
+        503,
+        readops_core::PAGE_LETTER_PENDING + sql_db::stringify_json(base_codec::json_arr([thread])),
+      ),
+    )
+  }
+  Ok(readops_core::take_strings(keys, limit))
+}
+
+/// The workspace whose chats are read (outflow.ts `Of`): as another station asked, else the home one.
+pub fn outflow_of(ws : Option[base_codec::Json]) -> (base_codec::Json, Bool) {
+  match ws {
+    Some(o) => {
+      match readops_core::json_val(o, "workspace") {
+        Some(base_codec::Json::Str(w)) => {
+          let home = match readops_core::json_val(o, "home") {
+            Some(base_codec::Json::Bool(true)) => true
+            _ => false
+          }
+          (base_codec::json_str(w), home)
+        }
+        _ => (base_codec::json_str(nul_home()), true)
+      }
+    }
+    None => (base_codec::json_str(nul_home()), true)
+  }
+}
+
+fn sees_of(of : (base_codec::Json, Bool), ws : base_codec::Json) -> Bool {
+  if readops_chats::mb_json_eq(ws, of.0) {
+    return true
+  }
+  match ws {
+    base_codec::Json::Null => of.1
+    _ => false
+  }
+}
+
+/// store.ts `seesThread`: a chat of the workspace (one with no members, the home one's).
+fn sees_thread(
+  db : sql_db::Db,
+  of : (base_codec::Json, Bool),
+  thread : base_codec::Json,
+) -> Result[Bool, readops_core::ReadError] {
+  let members = match db.all(
+    "SELECT session FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid",
+    [thread],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  if members.length() == 0 {
+    return Ok(sees_of(of, base_codec::json_null()))
+  }
+  for i in 0..<members.length() {
+    let row = match readops_core::one(
+      db,
+      "SELECT ws FROM sessions WHERE key = ?",
+      [readops_core::field(members[i], "session")],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    match row {
+      Some(r) => {
+        if sees_of(of, readops_core::field(r, "ws")) {
+          return Ok(true)
+        }
+      }
+      None => ()
+    }
+  }
+  Ok(false)
+}
+
+/// A connect's place on its platform and the names book it is in (slack-known.ts `Team`).
+/// Keeps `id` as raw UTF-16 code units (`Array[Int]`) so lone surrogates never collide with `U+FFFD`.
+struct Team {
+  id : Array[Int]
+  book : String
+}
+
+/// Lazy cache for `teams(...)` avoiding closure capture cycles, keyed by raw UTF-16 code units.
+struct TeamsCache {
+  mut loaded : Option[Array[(Array[Int], Team)]]
+}
+
+fn TeamsCache::new() -> TeamsCache {
+  TeamsCache::{ loaded: None }
+}
+
+fn teams_set(out : Array[(Array[Int], Team)], key : Array[Int], team : Team) -> Unit {
+  for i in 0..<out.length() {
+    if js_json::units_eq(out[i].0, key) {
+      out[i] = (key, team)
+      return ()
+    }
+  }
+  out.push((key, team))
+}
+
+fn teams_get(entries : Array[(Array[Int], Team)], key : Array[Int]) -> Option[Team] {
+  for i in 0..<entries.length() {
+    if js_json::units_eq(entries[i].0, key) {
+      return Some(entries[i].1)
+    }
+  }
+  None
+}
+
+fn concat_units(parts : Array[Array[Int]]) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    for j in 0..<p.length() {
+      out.push(p[j])
+    }
+  }
+  out
+}
+
+fn slice_units(u : Array[Int], start : Int, end : Int) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in start..<end {
+    out.push(u[i])
+  }
+  out
+}
+
+fn find_unit(u : Array[Int], target : Int) -> Option[Int] {
+  for i in 0..<u.length() {
+    if u[i] == target {
+      return Some(i)
+    }
+  }
+  None
+}
+
+fn units_has_suffix(u : Array[Int], suffix : Array[Int]) -> Bool {
+  let n = u.length()
+  let m = suffix.length()
+  if m > n {
+    return false
+  }
+  let off = n - m
+  for i in 0..<m {
+    if u[off + i] != suffix[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn jval_raw_units(v : Option[js_json::JValue]) -> Option[Array[Int]] {
+  match v {
+    Some(js_json::JValue::Str(u)) => Some(u)
+    _ => None
+  }
+}
+
+/// slack-known.ts `teams`: each connect's Slack workspace, Feishu company or Comma group,
+/// this station's over those of other stations whose chats run here.
+/// Preserves raw UTF-16 code units for connect/team IDs so `\ud800` and `U+FFFD` stay distinct.
+fn teams(
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+) -> Result[Array[(Array[Int], Team)], readops_core::ReadError] {
+  let out : Array[(Array[Int], Team)] = []
+  let remote = match readops_core::read_json(
+    client,
+    readops_core::join_path(sep, data, "remote-connects.json"),
+  ) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  match remote {
+    js_json::JValue::Obj(entries) => {
+      for i in 0..<entries.length() {
+        let (ek_units, ev) = entries[i]
+        let d = readops_core::jget(Some(ev), "described")
+        match readops_core::str_of(readops_core::jget(d, "kind")) {
+          Some("feishu") => teams_set(out, ek_units, Team::{ id: ek_units, book: "feishu" })
+          Some("slack") => {
+            match jval_raw_units(readops_core::jget(d, "team")) {
+              Some(t_units) => {
+                if t_units.length() > 0 {
+                  teams_set(out, ek_units, Team::{ id: t_units, book: "slack" })
+                }
+              }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    js_json::JValue::Arr(items) => {
+      for i in 0..<items.length() {
+        let ek_units = js_json::utf16_units(i.to_string())
+        let d = readops_core::jget(Some(items[i]), "described")
+        match readops_core::str_of(readops_core::jget(d, "kind")) {
+          Some("feishu") => teams_set(out, ek_units, Team::{ id: ek_units, book: "feishu" })
+          Some("slack") => {
+            match jval_raw_units(readops_core::jget(d, "team")) {
+              Some(t_units) => {
+                if t_units.length() > 0 {
+                  teams_set(out, ek_units, Team::{ id: t_units, book: "slack" })
+                }
+              }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  let own = match readops_core::read_json(client, readops_core::join_path(sep, data, "config.json")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let connects = match readops_core::jget(Some(own), "connects") {
+    Some(js_json::JValue::Arr(cs)) => cs
+    _ => return Ok(out)
+  }
+  for i in 0..<connects.length() {
+    let c = connects[i]
+    let id_units = match jval_raw_units(readops_core::jget(Some(c), "id")) {
+      Some(u) => u
+      None => continue
+    }
+    match readops_core::str_of(readops_core::jget(Some(c), "kind")) {
+      Some("feishu") => teams_set(out, id_units, Team::{ id: id_units, book: "feishu" })
+      Some("comma") => teams_set(out, id_units, Team::{ id: id_units, book: "comma" })
+      Some("group") => teams_set(out, id_units, Team::{ id: id_units, book: "group" })
+      _ => {
+        match jval_raw_units(
+          readops_core::jget(readops_core::jget(readops_core::jget(Some(c), "slack"), "team"), "id"),
+        ) {
+          Some(t_units) => {
+            if t_units.length() > 0 {
+              teams_set(out, id_units, Team::{ id: t_units, book: "slack" })
+            }
+          }
+          None => ()
+        }
+      }
+    }
+  }
+  Ok(out)
+}
+
+fn teams_cached(
+  cache : TeamsCache,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+) -> Result[Array[(Array[Int], Team)], readops_core::ReadError] {
+  match cache.loaded {
+    Some(m) => Ok(m)
+    None => {
+      let m = match teams(client, data, sep) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      cache.loaded = Some(m)
+      Ok(m)
+    }
+  }
+}
+
+/// outflow.ts `person`: who a person reference is as far as known, with where they were heard.
+fn outflow_person(
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  cache : TeamsCache,
+  ref_str : String,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  if readops_core::str_has_prefix(ref_str, "slack:") {
+    let rest = readops_core::str_slice_bytes(ref_str, 6, ref_str.to_bytes().length())
+    let rest_len = rest.to_bytes().length()
+    match readops_core::str_find_byte(rest, 58) {
+      Some(colon) => {
+        if colon > 0 && colon < rest_len - 1 {
+          let connect = readops_core::str_slice_bytes(rest, 0, colon)
+          let user = readops_core::str_slice_bytes(rest, colon + 1, rest_len)
+          let connect_units = js_json::utf16_units(connect)
+          let ts = match teams_cached(cache, client, data, sep) {
+            Ok(m) => m
+            Err(e) => return Err(e)
+          }
+          let team : Option[Team] = match teams_get(ts, connect_units) {
+            Some(t) => Some(t)
+            None => {
+              match find_unit(connect_units, 64) {
+                Some(at) => {
+                  if at > 0 {
+                    teams_get(ts, slice_units(connect_units, 0, at))
+                  } else {
+                    None
+                  }
+                }
+                None => None
+              }
+            }
+          }
+          let book_file = match team {
+            Some(t) => {
+              if t.book == "feishu" {
+                "feishu-names.json"
+              } else if t.book == "comma" {
+                "comma-names.json"
+              } else if t.book == "group" {
+                "group-names.json"
+              } else {
+                "slack-names.json"
+              }
+            }
+            None => "slack-names.json"
+          }
+          let raw_names = match readops_core::read_json(
+            client,
+            readops_core::join_path(sep, data, book_file),
+          ) {
+            Ok(v) => v
+            Err(e) => return Err(e)
+          }
+          let place_units = match team {
+            Some(t) => t.id
+            None => js_json::utf16_units("?")
+          }
+          let lookup_units = concat_units([
+            js_json::utf16_units("u:"),
+            place_units,
+            js_json::utf16_units(":"),
+            js_json::utf16_units(user),
+          ])
+          let book_entry = match raw_names {
+            js_json::JValue::Obj(_) => raw_names.get_units(lookup_units)
+            _ => None
+          }
+          let known = readops_core::jget(book_entry, "person")
+          let (name_units, name, email) = match readops_core::jget(known, "name") {
+            Some(js_json::JValue::Str(nu)) => {
+              let n = js_json::sanitize_str(nu)
+              let e = match readops_core::jget(known, "email") {
+                Some(js_json::JValue::Str(eu)) => js_json::sanitize_str(eu)
+                _ => ""
+              }
+              (
+                if nu.length() > 0 { nu } else { js_json::utf16_units(user) },
+                if n != "" { n } else { user },
+                if e != "" { base_codec::json_str(e) } else { base_codec::json_null() },
+              )
+            }
+            _ => (js_json::utf16_units(user), user, base_codec::json_null())
+          }
+          let via = match team {
+            Some(t) => t.book
+            None => "slack"
+          }
+          let suffix_units = concat_units([js_json::utf16_units(":"), name_units])
+          let ref_units = js_json::utf16_units(ref_str)
+          let name_json = if units_has_suffix(ref_units, suffix_units) {
+            base_codec::json_null()
+          } else {
+            base_codec::json_str(name)
+          }
+          return Ok(
+            base_codec::json_obj([
+              ("name", name_json),
+              ("email", email),
+              ("via", base_codec::json_str(via)),
+            ]),
+          )
+        }
+      }
+      None => ()
+    }
+  }
+  if ref_str == "local" {
+    return Ok(
+      base_codec::json_obj([
+        ("name", base_codec::json_null()),
+        ("email", base_codec::json_null()),
+        ("via", base_codec::json_str("local")),
+      ]),
+    )
+  }
+  Ok(
+    base_codec::json_obj([
+      ("name", base_codec::json_null()),
+      ("email", base_codec::json_str(ref_str)),
+      ("via", base_codec::json_str("cloud")),
+    ]),
+  )
+}
+
+/// A whole number from the args (another station's may say anything), else 0 (ops-usage.ts `num`).
+pub fn whole(v : Option[base_codec::Json]) -> Double {
+  match v {
+    Some(base_codec::Json::Num(n, _)) => {
+      if js_json::is_integer(n) && abs_double(n) <= 9007199254740991.0 {
+        n
+      } else {
+        0.0
+      }
+    }
+    _ => 0.0
+  }
+}
+
+fn take_rows(
+  rows : Array[Map[String, base_codec::Json]],
+  limit : Int,
+) -> Array[Map[String, base_codec::Json]] {
+  if rows.length() <= limit {
+    return rows
+  }
+  let out : Array[Map[String, base_codec::Json]] = []
+  for i in 0..<limit {
+    out.push(rows[i])
+  }
+  out
+}
+
+/// outflow.ts `outflowMessages`: a chat's messages after its message `after`, at most `limit`,
+/// oldest first; null for a chat that is not the workspace's.
+pub fn outflow_messages(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let thread = base_codec::json_num(whole(readops_core::json_val(args, "thread")))
+  let after = whole(readops_core::json_val(args, "after"))
+  let l = whole(readops_core::json_val(args, "limit"))
+  let limit = if l < 1.0 {
+    1
+  } else if l > 500.0 {
+    500
+  } else {
+    builders_core::double_to_i64_saturating(l).to_int()
+  }
+  let of = outflow_of(readops_core::json_val(args, "ws"))
+  let messages_only = match readops_core::json_val(args, "messagesOnly") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  let thread_exists = match readops_core::one(db, "SELECT 1 AS x FROM threads WHERE id = ?", [thread]) {
+    Ok(Some(_)) => true
+    Ok(None) => false
+    Err(e) => return Err(e)
+  }
+  if !thread_exists {
+    return Ok(base_codec::json_null())
+  }
+  let visible = match sees_thread(db, of, thread) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  if !visible {
+    return Ok(base_codec::json_null())
+  }
+  let rows : Array[Map[String, base_codec::Json]] = if messages_only {
+    match db.savepoint_swallow_err(
+      "message_entries_after_read",
+      fn(sp_db : sql_db::Db) -> Result[Array[Map[String, base_codec::Json]], readops_core::ReadError] {
+        let keys = match page_keys_after(sp_db, thread, base_codec::json_num(after), limit + 1) {
+          Ok(ks) => ks
+          Err(e) => return Err(e)
+        }
+        if keys.length() == 0 {
+          return Ok([])
+        }
+        let jkeys : Array[base_codec::Json] = []
+        for i in 0..<keys.length() {
+          jkeys.push(base_codec::json_str(keys[i]))
+        }
+        match sp_db.all(
+          MESSAGE_PAGE_ENTRIES_SQL,
+          [thread, base_codec::json_str(sql_db::stringify_json(base_codec::json_arr(jkeys)))],
+        ) {
+          Ok(rs) => Ok(rs)
+          Err(e) => Err(readops_core::map_sql_err(e))
+        }
+      },
+      readops_core::map_sql_err,
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+  } else {
+    match db.all(
+      "SELECT * FROM entries WHERE thread = ? AND n >= ? AND n <= ? ORDER BY n LIMIT ?",
+      [
+        thread,
+        base_codec::json_num(after + 1.0),
+        readops_core::as_integer(base_codec::json_str(readops_core::I64_MAX_STR)),
+        base_codec::json_num((limit + 1).to_double()),
+      ],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(readops_core::map_sql_err(e))
+    }
+  }
+  let page = take_rows(rows, limit)
+  let cache = TeamsCache::new()
+  let people : Map[String, base_codec::Json] = Map::new()
+  let messages : Array[base_codec::Json] = []
+  for i in 0..<page.length() {
+    let e = page[i]
+    let kind_col = readops_core::field(e, "author_kind")
+    let author_kind = match kind_col {
+      base_codec::Json::Str("agent") => "agent"
+      base_codec::Json::Str("station") => "station"
+      base_codec::Json::Str("ember") => "station"
+      base_codec::Json::Str("stillfail") => "station"
+      _ => "person"
+    }
+    let entry_kind = readops_core::field(e, "kind")
+    let is_edit = readops_chats::mb_json_eq(entry_kind, base_codec::json_str("edit"))
+    let m : Array[(String, base_codec::Json)] = [
+      ("n", readops_core::field(e, "n")),
+      ("kind", base_codec::json_str(if is_edit { "edit" } else { "message" })),
+      ("target", readops_core::field(e, "target")),
+      ("authorKind", base_codec::json_str(author_kind)),
+      ("author", readops_core::field(e, "author")),
+      ("text", readops_core::field(e, "text")),
+      ("at", readops_core::field(e, "at")),
+    ]
+    if author_kind == "person" {
+      match readops_core::field(e, "author") {
+        base_codec::Json::Str(a) => {
+          let p = match people.get(a) {
+            Some(existing) => existing
+            None => {
+              let resolved = match outflow_person(client, data, sep, cache, a) {
+                Ok(v) => v
+                Err(err) => return Err(err)
+              }
+              people.set(a, resolved)
+              resolved
+            }
+          }
+          m.push(("person", p))
+        }
+        _ => ()
+      }
+    }
+    if !is_edit {
+      let maybe_card = outflow_card(
+        readops_core::card_of(readops_core::field(e, "card"), readops_core::field(e, "options")),
+      )
+      match maybe_card {
+        Some(card) => {
+          let n = readops_core::field(e, "n")
+          let enriched = match card {
+            base_codec::Json::Obj(card_fields) => {
+              let choice_row = match readops_core::one(
+                db,
+                "SELECT option FROM card_choices WHERE thread = ? AND n = ?",
+                [thread, n],
+              ) {
+                Ok(r) => r
+                Err(err) => return Err(err)
+              }
+              let choice : Option[String] = match choice_row {
+                Some(r) => {
+                  match readops_core::field(r, "option") {
+                    base_codec::Json::Str(opt) => {
+                      if !readops_chats::js_blank(opt) { Some(opt) } else { None }
+                    }
+                    _ => None
+                  }
+                }
+                None => None
+              }
+              let closed_row = if choice is Some(_) {
+                true
+              } else {
+                match readops_core::one(
+                  db,
+                  "SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?",
+                  [thread, n],
+                ) {
+                  Ok(Some(_)) => true
+                  Ok(None) => false
+                  Err(err) => return Err(err)
+                }
+              }
+              if closed_row {
+                let out_card : Array[(String, base_codec::Json)] = []
+                for j in 0..<card_fields.length() {
+                  out_card.push(card_fields[j])
+                }
+                out_card.push(("closed", base_codec::json_bool(true)))
+                match choice {
+                  Some(opt) => out_card.push(("choice", base_codec::json_str(opt)))
+                  None => ()
+                }
+                base_codec::json_obj(out_card)
+              } else {
+                card
+              }
+            }
+            other => other
+          }
+          m.push(("card", enriched))
+        }
+        None => ()
+      }
+    }
+    messages.push(base_codec::json_obj(m))
+  }
+  let last = match readops_core::one(db, "SELECT MAX(n) AS n FROM entries WHERE thread = ?", [thread]) {
+    Ok(Some(r)) => {
+      let lv = readops_core::field(r, "n")
+      match lv {
+        base_codec::Json::Null => base_codec::json_num(0.0)
+        _ => lv
+      }
+    }
+    Ok(None) => base_codec::json_num(0.0)
+    Err(e) => return Err(e)
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("thread", thread),
+    ("messages", base_codec::json_arr(messages)),
+    ("last", last),
+    ("more", base_codec::json_bool(rows.length() > page.length())),
+  ]
+  if messages_only {
+    out.push(("messagesOnly", base_codec::json_bool(true)))
+  }
+  Ok(base_codec::json_obj(out))
+}

@@ -278,7 +278,7 @@ static double drawn_for;
   // happens to fire and the link wakes after it: a step a frame or two late, by as much as the timer and the link's
   // wake fall, so a resident cycle's steps 75 to 108 ms apart, not 100); the ticks before it draw nothing
   if (!self.wantFrame && wake_for >= 0) {
-    if (l.targetTimestamp * 1000.0 < wake_for - 0.5) {
+    if (l.targetTimestamp * 1000.0 < wake_for) {
       last_target = -1;
       return;
     }
@@ -1194,6 +1194,7 @@ static volatile int perf_on_now;
 // the file written, its bytes, and every file's (-1 not counted yet): perf_q's
 static dispatch_queue_t perf_q;
 static NSString *perf_file;
+static NSString *perf_ident;
 static unsigned long long perf_file_bytes;
 static volatile double perf_total = -1;
 
@@ -1251,11 +1252,31 @@ static void perf_pick(const char *day) {
     bytes = [[fm attributesOfItemAtPath:path error:nil] fileSize];
     if (bytes < perf_file_most) break;
   }
+  BOOL rotated = (perf_file != nil);
   BOOL fresh = ![fm fileExistsAtPath:path];
   perf_file = path;
   perf_file_bytes = bytes;
   if (fresh) {
     [fm createFileAtPath:path contents:nil attributes:nil];
+    if (rotated && perf_ident) {
+      struct timeval tv;
+      gettimeofday(&tv, NULL);
+      struct tm tm;
+      localtime_r(&tv.tv_sec, &tm);
+      char at[40];
+      strftime(at, sizeof at, "%Y-%m-%d %H:%M:%S", &tm);
+      NSString *hdr = [NSString stringWithFormat:@"%s.%03d perf: continued %@ thermal=%ld lowpower=%d\n", at,
+                       (int)(tv.tv_usec / 1000), perf_ident, (long)NSProcessInfo.processInfo.thermalState,
+                       NSProcessInfo.processInfo.lowPowerModeEnabled ? 1 : 0];
+      const char *hbytes = hdr.UTF8String;
+      FILE *hf = fopen(path.fileSystemRepresentation, "a");
+      if (hf) {
+        size_t hn = strlen(hbytes);
+        fwrite(hbytes, 1, hn, hf);
+        fclose(hf);
+        perf_file_bytes = hn;
+      }
+    }
     NSArray<NSURL *> *files = perf_files();
     for (NSUInteger i = perf_files_kept; i < files.count; i++)
       if (![files[i].path isEqualToString:path]) [fm removeItemAtURL:files[i] error:nil];
@@ -1454,11 +1475,65 @@ static NSTimer *heat_timer;
 static BOOL heat_probe;
 static double heat_cpu, heat_at;
 
+typedef struct {
+  BOOL valid;
+  double user_ms, sys_ms;
+  BOOL has_pi, has_v2;
+  uint64_t idle_wkups, intr_wkups, tbin1, tbin2;
+  uint64_t gpu_ns;
+#if defined(__arm__) || defined(__arm64__)
+  uint64_t energy_nj;
+#endif
+} heat_power_snap;
+static heat_power_snap heat_power_prev;
+
+static heat_power_snap heat_power_read(void) {
+  heat_power_snap s = {0};
+  struct rusage u;
+  if (getrusage(RUSAGE_SELF, &u) == 0) {
+    s.valid = YES;
+    s.user_ms = u.ru_utime.tv_sec * 1000.0 + u.ru_utime.tv_usec / 1000.0;
+    s.sys_ms = u.ru_stime.tv_sec * 1000.0 + u.ru_stime.tv_usec / 1000.0;
+  }
+  task_power_info_v2_data_t pi2 = {0};
+  mach_msg_type_number_t cnt2 = TASK_POWER_INFO_V2_COUNT;
+  if (task_info(mach_task_self(), TASK_POWER_INFO_V2, (task_info_t)&pi2, &cnt2) == KERN_SUCCESS) {
+    s.valid = YES;
+    s.has_pi = YES;
+    s.has_v2 = YES;
+    s.idle_wkups = pi2.cpu_energy.task_platform_idle_wakeups;
+    s.intr_wkups = pi2.cpu_energy.task_interrupt_wakeups;
+    s.tbin1 = pi2.cpu_energy.task_timer_wakeups_bin_1;
+    s.tbin2 = pi2.cpu_energy.task_timer_wakeups_bin_2;
+    s.gpu_ns = pi2.gpu_energy.task_gpu_utilisation;
+#if defined(__arm__) || defined(__arm64__)
+    s.energy_nj = pi2.task_energy;
+#endif
+  } else {
+    task_power_info_data_t pi1 = {0};
+    mach_msg_type_number_t cnt1 = TASK_POWER_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_POWER_INFO, (task_info_t)&pi1, &cnt1) == KERN_SUCCESS) {
+      s.valid = YES;
+      s.has_pi = YES;
+      s.idle_wkups = pi1.task_platform_idle_wakeups;
+      s.intr_wkups = pi1.task_interrupt_wakeups;
+      s.tbin1 = pi1.task_timer_wakeups_bin_1;
+      s.tbin2 = pi1.task_timer_wakeups_bin_2;
+    }
+  }
+  return s;
+}
+
+static uint64_t heat_u64_delta(uint64_t cur, uint64_t prev) { return cur >= prev ? cur - prev : 0; }
+
 static void heat_tick(void) {
   double cpu = mb_host_cpu_ms(), at = mb_now_ms(), span = MAX(1, at - heat_at);
   double share = (cpu - heat_cpu) * 100.0 / span;
   long thermal = (long)NSProcessInfo.processInfo.thermalState;
   NSString *threads = probe_threads(span);
+  heat_power_snap pprev = heat_power_prev;
+  heat_power_snap pcur = heat_power_read();
+  heat_power_prev = pcur;
   heat_cpu = cpu;
   heat_at = at;
   if (heat_probe) {
@@ -1471,6 +1546,28 @@ static void heat_tick(void) {
              mb_host_mem_bytes() / 1048576.0, battery_said().UTF8String, NSProcessInfo.processInfo.lowPowerModeEnabled ? 1 : 0);
     mb_perf_note(line);
     mb_perf_note([@"threads:" stringByAppendingString:threads].UTF8String);
+    if (pcur.valid && pprev.valid) {
+      double upct = MAX(0.0, (pcur.user_ms - pprev.user_ms) * 100.0 / span);
+      double spct = MAX(0.0, (pcur.sys_ms - pprev.sys_ms) * 100.0 / span);
+      int pos = snprintf(line, sizeof line, "power: user=%.0f%% sys=%.0f%%", upct, spct);
+      if (pcur.has_pi && pprev.has_pi && pos > 0 && (size_t)pos < sizeof line) {
+        pos += snprintf(line + pos, sizeof line - pos, " wkups=%llu/%llu timers=%llu/%llu",
+                        (unsigned long long)heat_u64_delta(pcur.idle_wkups, pprev.idle_wkups),
+                        (unsigned long long)heat_u64_delta(pcur.intr_wkups, pprev.intr_wkups),
+                        (unsigned long long)heat_u64_delta(pcur.tbin1, pprev.tbin1),
+                        (unsigned long long)heat_u64_delta(pcur.tbin2, pprev.tbin2));
+      }
+      if (pcur.has_v2 && pprev.has_v2 && pos > 0 && (size_t)pos < sizeof line) {
+        double gpu_ms = heat_u64_delta(pcur.gpu_ns, pprev.gpu_ns) / 1e6;
+        if (gpu_ms >= 0.05) pos += snprintf(line + pos, sizeof line - pos, " gpu=%.1fms", gpu_ms);
+#if defined(__arm__) || defined(__arm64__)
+        double energy_mj = heat_u64_delta(pcur.energy_nj, pprev.energy_nj) / 1e6;
+        if (energy_mj >= 0.05 && pos > 0 && (size_t)pos < sizeof line)
+          pos += snprintf(line + pos, sizeof line - pos, " energy=%.1fmJ", energy_mj);
+#endif
+      }
+      mb_perf_note(line);
+    }
     char core[900];
     if (mb_core_perf_line(span, core, sizeof core) > 0) {
       snprintf(line, sizeof line, "core js: %s", core);
@@ -1490,6 +1587,7 @@ static void heat_timer_set(void) {
   if (want && !heat_timer) {
     heat_cpu = mb_host_cpu_ms();
     heat_at = mb_now_ms();
+    heat_power_prev = heat_power_read();
     probe_threads(1);
     if (perf_on_now) {
       char core[900];
@@ -1512,9 +1610,10 @@ static void perf_begin(NSString *why) {
   struct utsname u;
   uname(&u);
   NSDictionary *info = NSBundle.mainBundle.infoDictionary;
-  mb_perf_note([NSString stringWithFormat:@"perf: on (%@) device=%s %@ %@ app=%@ (%@) thermal=%ld lowpower=%d %@", why,
-                                          u.machine, d.systemName, d.systemVersion, info[@"CFBundleShortVersionString"],
-                                          info[@"CFBundleVersion"], (long)NSProcessInfo.processInfo.thermalState,
+  perf_ident = [NSString stringWithFormat:@"device=%s %@ %@ app=%@ (%@)", u.machine, d.systemName, d.systemVersion,
+                info[@"CFBundleShortVersionString"], info[@"CFBundleVersion"]];
+  mb_perf_note([NSString stringWithFormat:@"perf: on (%@) %@ thermal=%ld lowpower=%d %@", why, perf_ident,
+                                          (long)NSProcessInfo.processInfo.thermalState,
                                           NSProcessInfo.processInfo.lowPowerModeEnabled ? 1 : 0, battery_said()]
                    .UTF8String);
   heat_timer_set();
@@ -2530,6 +2629,10 @@ int32_t mb_host_a11y_on(void) {
   return UIAccessibilityIsVoiceOverRunning() || UIAccessibilityIsSwitchControlRunning() || getenv("MBUI_A11Y_SELFCHECK") ? 1 : 0;
 }
 
+int32_t mb_host_screen_reader_on(void) {
+  return mb_host_a11y_on();
+}
+
 // What the widgets are now (@hostapi.a11y_tree): an update of them (a11y.mbt's head: the nodes that changed, each whole,
 // and the focus), kept; one in nothing that holds it gone with what it holds; VoiceOver told what changed
 void mb_host_a11y_tree(moonbit_string_t s) {
@@ -2789,9 +2892,23 @@ void mb_host_set_dark(int32_t dark) {
 static NSMutableArray<NSArray<NSString *> *> *notices;
 static NSString *notice_opened = @"";
 static NSString *push_token = @"";
-// what the system allows: 0 not known yet, 1 granted, 2 denied, 3 not asked; the answer to an ask: -1 none, 0, 1
-static _Atomic int32_t notice_allowed = 0;
+// what the system allows: 5 pending initial refresh, 1 granted, 2 denied, 3 not asked; the answer to an ask: -1 none, 0, 1
+static _Atomic int32_t notice_allowed = 5;
 static _Atomic int32_t notice_answered = -1;
+// Only accessed on notice_queue().
+static uint64_t notice_perm_seq = 0;
+
+static dispatch_queue_t notice_queue(void) {
+  static dispatch_queue_t q;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_autorelease_frequency(
+        DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM);
+    attr = dispatch_queue_attr_make_with_qos_class(attr, QOS_CLASS_UTILITY, 0);
+    q = dispatch_queue_create("dev.mbui.notice", attr);
+  });
+  return q;
+}
 
 static void notice_drop(NSString *tag) {
   NSIndexSet *at = [notices indexesOfObjectsPassingTest:^BOOL(NSArray<NSString *> *n, NSUInteger i, BOOL *stop) {
@@ -2835,15 +2952,23 @@ static void notice_drop(NSString *tag) {
 
 // What the system allows, asked again (as the app comes to the front: it may have changed in the system's settings).
 static void notice_refresh(void) {
-  [[UNUserNotificationCenter currentNotificationCenter] getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *s) {
-    int32_t was = notice_allowed;
-    switch (s.authorizationStatus) {
-      case UNAuthorizationStatusNotDetermined: notice_allowed = 3; break;
-      case UNAuthorizationStatusDenied: notice_allowed = 2; break;
-      default: notice_allowed = 1; break;
-    }
-    if (was != notice_allowed) dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
-  }];
+  dispatch_async(notice_queue(), ^{
+    uint64_t seq = ++notice_perm_seq;
+    [[UNUserNotificationCenter currentNotificationCenter] getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *s) {
+      int32_t next;
+      switch (s.authorizationStatus) {
+        case UNAuthorizationStatusNotDetermined: next = 3; break;
+        case UNAuthorizationStatusDenied: next = 2; break;
+        default: next = 1; break;
+      }
+      dispatch_async(notice_queue(), ^{
+        if (seq != notice_perm_seq) return;
+        int32_t was = notice_allowed;
+        notice_allowed = next;
+        if (was != next) dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
+      });
+    }];
+  });
 }
 
 // As the app starts (MBAppDelegate): the center's delegate, and what it allows.
@@ -2950,12 +3075,18 @@ int32_t mb_host_notice_state(int32_t what) {
   if (what != 1) return 0;
   if (notice_allowed != 3) return 0;
   UNAuthorizationOptions o = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
-  [[UNUserNotificationCenter currentNotificationCenter] requestAuthorizationWithOptions:o
-                                                                      completionHandler:^(BOOL granted, NSError *e) {
-    notice_answered = granted ? 1 : 0;
-    notice_allowed = granted ? 1 : 2;
-    dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
-  }];
+  dispatch_async(notice_queue(), ^{
+    [[UNUserNotificationCenter currentNotificationCenter] requestAuthorizationWithOptions:o
+                                                                        completionHandler:^(BOOL granted, NSError *e) {
+      (void)e;
+      dispatch_async(notice_queue(), ^{
+        ++notice_perm_seq;
+        notice_answered = granted ? 1 : 0;
+        notice_allowed = granted ? 1 : 2;
+        dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
+      });
+    }];
+  });
   return 1;
 }
 

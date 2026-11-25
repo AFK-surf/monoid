@@ -30,7 +30,7 @@ import { PAGE_LETTER_KEYS, PAGE_LETTER_KEYS_AFTER, pageLetterReady } from "./bac
 import { legacyMergedReadReady } from "../../src/store/legacy-edits-build.ts";
 import { legacySaidPageState, legacySaidReadBoundary, legacySaidReadHead, legacySaidThreadNeedsDrain, LEGACY_HAS_UNREAD, LEGACY_SAID_SCAN, LEGACY_UNREAD } from "./backfill/legacy-said-build.ts";
 import { LEGACY_ASKED_DURING } from "../../src/store/legacy-agent-build.ts";
-import { ANSWER_AFTER, ANSWER_AT, ANSWER_BETWEEN, ASKED_LATEST, CONVERSATION_CARD_BEFORE, CONVERSATION_CARD_LATEST, SYSTEM_CARD_AT, SYSTEM_CARD_KEPT, SYSTEM_CARD_WAITING } from "../../src/store/card-kinds.ts";
+import { ANSWER_AFTER, ANSWER_AT, ANSWER_BETWEEN, ASKED_DURING_NO_PROPOSAL, ASKED_LATEST, ASKED_LATEST_NO_PROPOSAL, CARDED_OR_PROPOSAL_AT, CONVERSATION_CARD_BEFORE, CONVERSATION_CARD_LATEST, SYSTEM_CARD_AT, SYSTEM_CARD_KEPT, SYSTEM_CARD_WAITING } from "../../src/store/card-kinds.ts";
 import { TURN_COUNT_BATCH } from "./turn-state.ts";
 import { type UsageGroup, usageGroupOf } from "../../src/store/usage.ts";
 import * as rows from "../../src/store/rows.ts";
@@ -868,6 +868,38 @@ export function lastEntry(s: Store, thread: number): number {
   return one(s, "SELECT MAX(n) AS n FROM entries WHERE thread = ?", thread).n ?? 0;
 }
 
+function applyProposalOutcomes(s: Store, thread: number, entries: EntryRow[]): EntryRow[] {
+  let withSidecars = entries;
+  const missingNs = entries.filter((e) => e.proposal === undefined).map((e) => e.n);
+  if (missingNs.length > 0 && one(s, "SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'entry_proposals'") !== undefined) {
+    const sidecars = new Map<number, rows.ProjectProposal>();
+    for (const ep of all(s, "SELECT n, proposal FROM entry_proposals WHERE thread = ? AND n IN (SELECT value FROM json_each(?))", thread, JSON.stringify(missingNs))) {
+      const p = rows.proposalOf(ep.proposal);
+      if (p !== undefined) sidecars.set(Number(ep.n), p);
+    }
+    if (sidecars.size > 0) {
+      withSidecars = entries.map((e) => {
+        if (e.proposal !== undefined) return e;
+        const p = sidecars.get(e.n);
+        return p ? { ...e, proposal: p } : e;
+      });
+    }
+  }
+  const ns = withSidecars.filter((e) => e.proposal !== undefined).map((e) => e.n);
+  if (ns.length === 0) return withSidecars;
+  if (one(s, "SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'proposal_outcomes'") === undefined) return withSidecars;
+  const outcomes = new Map<number, Json>();
+  for (const o of all(s, "SELECT n, status, project, resolved_by, resolved_at FROM proposal_outcomes WHERE thread = ? AND n IN (SELECT value FROM json_each(?))", thread, JSON.stringify(ns))) {
+    outcomes.set(Number(o.n), o);
+  }
+  if (outcomes.size === 0) return withSidecars;
+  return withSidecars.map((e) => {
+    if (e.proposal === undefined) return e;
+    const o = outcomes.get(e.n);
+    return o ? { ...e, proposal: rows.mergeProposalOutcome(e.proposal, o) } : e;
+  });
+}
+
 /// Entries after n, up to `limit` when given (`n + 1` wraps at i64::MAX, as a release build's does).
 export function entriesAfter(s: Store, thread: number, n: bigint, limit?: number): EntryRow[] {
   return entriesBetween(s, thread, BigInt.asIntN(64, n + 1n), I64_MAX, limit);
@@ -876,13 +908,13 @@ export function entriesAfter(s: Store, thread: number, n: bigint, limit?: number
 /// The latest `limit` entries before n (the latest of all without it), oldest first.
 export function entriesBefore(s: Store, thread: number, n: bigint | null, limit: number): EntryRow[] {
   const before = n ?? I64_MAX;
-  return all(s, "SELECT * FROM entries WHERE thread = ? AND n < ? ORDER BY n DESC LIMIT ?", thread, before, limit).map(toEntry).reverse();
+  return applyProposalOutcomes(s, thread, all(s, "SELECT * FROM entries WHERE thread = ? AND n < ? ORDER BY n DESC LIMIT ?", thread, before, limit).map(toEntry).reverse());
 }
 
 /// Entries from n = `from` to n = `to`, both included: a gap, up to `limit` when given.
 export function entriesBetween(s: Store, thread: number, from: bigint, to: bigint, limit?: number): EntryRow[] {
   const sql = "SELECT * FROM entries WHERE thread = ? AND n >= ? AND n <= ? ORDER BY n";
-  return (limit === undefined ? all(s, sql, thread, from, to) : all(s, `${sql} LIMIT ?`, thread, from, to, limit)).map(toEntry);
+  return applyProposalOutcomes(s, thread, (limit === undefined ? all(s, sql, thread, from, to) : all(s, `${sql} LIMIT ?`, thread, from, to, limit)).map(toEntry));
 }
 
 // During old lookup preparation or a large changed-key backlog, the raw tail can still prove a page.
@@ -1310,13 +1342,25 @@ export const ASKED_DURING = "SELECT max(n) AS n FROM entries WHERE thread = ? AN
 /// The message an agent's need without a card asks with, while no person has written after it: the one its turn is
 /// about (`about`), else the agent's latest message during the turn; with the two messages before it.
 export function askingMessage(s: Store, thread: number, about: number | null, during: [number, number | bigint]): [MessageRow, MessageRow[]] | null {
+  const hasProposal = one(s, "SELECT 1 AS x FROM pragma_table_info('entries') WHERE name = 'proposal' LIMIT 1") !== undefined;
+  const duringSql = s.legacyAgent
+    ? LEGACY_ASKED_DURING
+    : hasProposal
+      ? ASKED_DURING_NO_PROPOSAL
+      : ASKED_DURING;
+  const latestSql = hasProposal
+    ? ASKED_LATEST_NO_PROPOSAL
+    : ASKED_LATEST;
   // With no message in its turn, the agent's latest before it ended (store/card-kinds.ts ASKED_LATEST).
-  const n: number | null = about ?? one(s, s.legacyAgent ? LEGACY_ASKED_DURING : ASKED_DURING, thread, during[0], during[1]).n ??
-    (s.legacyAgent ? null : one(s, ASKED_LATEST, thread, during[1])?.n ?? null);
+  const n: number | null = about ?? one(s, duringSql, thread, during[0], during[1]).n ??
+    (s.legacyAgent ? null : one(s, latestSql, thread, during[1])?.n ?? null);
   if (n === null) return null;
   const answered = one(s, ANSWER_AFTER, thread, n) !== undefined;
-  // A post with a card is pending_card's: one no longer pending was answered, closed or withdrawn.
-  const carded = one(s, "SELECT 1 FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)", thread, n) !== undefined;
+  // A post with a card or proposal is not a plain-text askingMessage.
+  const cardedSql = hasProposal
+    ? CARDED_OR_PROPOSAL_AT
+    : "SELECT 1 FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)";
+  const carded = one(s, cardedSql, thread, n) !== undefined;
   if (answered || carded) return null;
   const messages = messagesBefore(s, thread, n + 1, 3);
   const m = messages.pop();

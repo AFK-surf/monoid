@@ -3,7 +3,7 @@
 // those opened and let go being brought after everything else (client/core-ts fill.ts). On the files' bar its 传输,
 // and in the chats' sidebar's foot (how many go, how far); its list (each copy's way, how it stands, stopped, tried
 // again, its folder shown once done; each download, how far, stopped, tried again; each file being brought, how far
-// and how it stands, stopped).
+// and how it stands, stopped, or started at once where it was given way or waits after the others: 已暂停).
 
 ///|
 /// Whether the bar's 传输 has its list open, and the list as presented (@sf.last_presented; 0 none).
@@ -57,9 +57,24 @@ fn Coming::none(self : Coming) -> Bool {
 }
 
 ///|
-/// How many go (copies and downloads under way, the files being brought), how far they are in all (a percent), and
-/// whether one failed.
-fn Coming::going(self : Coming) -> (Int, Int, Bool) {
+/// How what goes stands in all (Coming::going).
+priv struct Going {
+  /// How many go: copies and downloads under way, the files being brought.
+  n : Int
+  /// How far they are in all, a percent.
+  percent : Int
+  /// Whether one failed.
+  failed : Bool
+  /// How big they are in all, and how fast what comes to this device comes now (bytes a second: the downloads' and
+  /// the files' being brought `rate`, as the core says it; a copy between stations says none).
+  total : Double
+  rate : Double
+}
+
+///|
+/// How many go (copies and downloads under way, the files being brought), how far they are in all, how big and how
+/// fast, and whether one failed.
+fn Coming::going(self : Coming) -> Going {
   let going = self.transfers.filter(fn(x) { flag(Some(x), "active") })
   let coming = self.downloads.filter(fn(d) { flag(Some(d), "active") })
   let failed = self.transfers.iter().any(fn(x) { text(Some(x), "state") == "failed" }) ||
@@ -68,16 +83,26 @@ fn Coming::going(self : Coming) -> (Int, Int, Bool) {
   let total = sizes(going, "total") + sizes(coming, "size") + sizes(self.keeping, "size")
   let copied = sizes(going, "copied") + sizes(coming, "loaded") + sizes(self.keeping, "loaded")
   let percent = if total > 0.0 { (copied / total * 100.0).floor().to_int() } else { 0 }
-  (going.length() + coming.length() + self.keeping.length(), percent, failed)
+  {
+    n: going.length() + coming.length() + self.keeping.length(),
+    percent,
+    failed,
+    total,
+    rate: sizes(coming, "rate") + sizes(self.keeping, "rate"),
+  }
 }
 
 ///|
-/// What their chip says: how many go and how far, else 传输.
-fn coming_words(n : Int, percent : Int) -> String {
-  if n > 0 {
-    @sf.t("web-pages.files.transfersGoing", args=[("n", n.to_string()), ("percent", percent.to_string())])
+/// What their chip says: how many go, how far, how big and how fast (once it is known), else 传输.
+fn coming_words(g : Going) -> String {
+  if g.n == 0 {
+    return @sf.t("web-pages.files.transfers")
+  }
+  let args = [("n", g.n.to_string()), ("percent", g.percent.to_string()), ("total", @sf.file_size(g.total))]
+  if g.rate > 0.0 {
+    @sf.t("web-pages.files.transfersGoingRate", args=[..args, ("rate", @sf.file_size(g.rate))])
   } else {
-    @sf.t("web-pages.files.transfers")
+    @sf.t("web-pages.files.transfersGoing", args~)
   }
 }
 
@@ -161,15 +186,12 @@ pub fn transfers_key_node(
       side,
       mark,
       "download",
+      fn() { coming_words(going()) },
       fn() {
-        let (n, percent, _) = going()
-        coming_words(n, percent)
+        let g = going()
+        if g.n > 0 { Some(g.percent.to_double() / 100.0) } else { None }
       },
-      fn() {
-        let (n, percent, _) = going()
-        if n > 0 { Some(percent.to_double() / 100.0) } else { None }
-      },
-      fn() { going().2 },
+      fn() { going().failed },
       fn() { ftransfers.open.set(!ftransfers.open.untracked()) },
     )
     // (its list: put up from the key as it is opened, closed as it is shut or once there is none)
@@ -275,13 +297,21 @@ fn transfer_bar(parent : @view.View, part : () -> Double) -> Unit {
 
 ///|
 /// A file opened and let go, being brought after everything else (fill.ts), in `row` as the core says it (`k`): its
-/// mark, what it is called, how far (a bar), how it stands (后台缓存 …); stopped by its ✕, what was kept of it let go.
+/// mark, what it is called, how far (a bar), how it stands (后台缓存 …); started at once by its ▶ while it is given way
+/// or waits after the others (已暂停: then one asked to load), stopped by its ✕, what was kept of it let go.
 fn keeping_row(row : @view.View, src : Source, k : @signals.Signal[Json]) -> Unit {
   let j = fn() { Some(k.get()) }
   let kid = text(Some(k.untracked()), "id")
+  let paused = fn() {
+    let state = text(j(), "state")
+    !flag(j(), "wanted") && (state == "queued" || state == "yielding")
+  }
   transfer_row_of(
     row,
-    fn(m) { @sf.icon_node(m, "download", transfer_icon, By(fn() { @sf.theme().p.muted })) |> ignore },
+    fn(m) {
+      @sf.icon_node(m, coming_mark(@signals.untracked(j)), transfer_icon, By(fn() { @sf.theme().p.muted }), name_now=fn() { coming_mark(j()) })
+      |> ignore
+    },
     fn(w) {
       // (its words say it is kept here as it comes: 后台缓存 …; pressed, it is opened again where it was)
       opened_title(w, j, None)
@@ -289,6 +319,10 @@ fn keeping_row(row : @view.View, src : Source, k : @signals.Signal[Json]) -> Uni
       transfer_words(w, fn() { text(j(), "statusText") }, fn() { ftransfer_status })
     },
     fn(a) {
+      a.show(paused, fn(s) {
+        @sf.icon_button_node(s, "play", fn() { @sf.t("web-pages.files.startKeeping") }, fn() { keeping_start(src, kid) }, tips?=@sf.panel_tips_of(s), size=transfer_tool_side, icon_size=@sf.panel_icon_size)
+        |> ignore
+      })
       @sf.icon_button_node(a, "close", fn() { @sf.t("web-pages.files.stopKeeping") }, fn() { keeping_stop(src, kid) }, tips?=@sf.panel_tips_of(a), size=transfer_tool_side, icon_size=@sf.panel_icon_size)
       |> ignore
     },
@@ -315,6 +349,18 @@ fn opened_title(parent : @view.View, j : () -> Json?, way : (() -> String)?) -> 
       }
     },
   )
+}
+
+///|
+/// What comes (a download, a file being brought) marked by what it is (a video's, a sound's, an archive's …), so rows
+/// that all come here tell apart at a glance: a folder zipped is an archive.
+fn coming_mark(j : Json?) -> String {
+  if flag(j, "zip") {
+    "file-zip"
+  } else {
+    let name = text(j, "name")
+    @sf.file_mark(if name != "" { name } else { text(j, "title") })
+  }
 }
 
 ///|
@@ -447,10 +493,10 @@ fn download_row(row : @view.View, src : Source, d : @signals.Signal[Json]) -> Un
     fn(m) {
       @sf.icon_node(
         m,
-        if @signals.untracked(failed) { "retry" } else { "download" },
+        if @signals.untracked(failed) { "retry" } else { coming_mark(@signals.untracked(j)) },
         transfer_icon,
         By(fn() { if failed() { @sf.theme().p.red } else { @sf.theme().p.muted } }),
-        name_now=fn() { if failed() { "retry" } else { "download" } },
+        name_now=fn() { if failed() { "retry" } else { coming_mark(j()) } },
       )
       |> ignore
     },
@@ -511,8 +557,10 @@ let ftransfer_status : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wr
 let ftransfer_failed : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, wrap=false)
 
 ///|
+/// A row's keys at its end, side by side: as wide as two tools (`transfer_tool_side`, 24 each) in every row (a file
+/// paused has ▶ and ✕, the rest one), so that every row's words and bar end at one line whichever keys it has.
 // kept across runs: a value (no field of it changes)
-let ftransfer_actions : @ui.Style = @ui.css("row gap=SPx align=ACenter")
+let ftransfer_actions : @ui.Style = @ui.css("row min_w=S12 align=ACenter justify=JEnd")
 
 ///|
 /// A row's mark (14).

@@ -2556,6 +2556,88 @@ test("a_chat_traces_its_multi_level_led_openers_chain_across_stations_with_cycle
   assert.deepEqual(u.value.openers.map((o: J) => o.session), ["n8", "n7", "n6", "n5", "n4", "n3", "n2", "n1"]);
 });
 
+test("an_archived_led_subagent_keeps_its_openers_breadcrumb_from_thread_or_archived_row", async () => {
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, chatTopic("ws/a", 7));
+  const now = t.host.nowMs();
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember", archivedAt: 42 })]);
+  t.set(overview("ws/a"), overviewOf([], []));
+  t.set(rows("ws/b"), [{ ...row("root", now - 2000), title: "根规划" }]);
+  // Active rows only contain the parent (`mid`); archived subagent `k` is not in `chatRows`.
+  t.set(rows("ws/a"), [
+    { ...row("mid", now - 1000), title: "接口重构", opener: { station: "b", session: "root", title: "旧根名", led: true } },
+  ]);
+
+  // 1. Thread carries `opener` directly (archivedRows not synced): full led ancestor chain renders without stale row state.
+  const archivedThread = { ...thread(7, ["k"], now), home: "k", hiddenAt: 42, opener: { session: "mid", title: "旧名", led: true } };
+  t.set(threads("ws/a"), [archivedThread]);
+  t.set(pageOf("ws/a", 7), page(1, ["原来的消息"], archivedThread));
+  await t.read(u, 1);
+  assert.equal(u.value.archived, true);
+  assert.deepEqual(u.value.openers, [
+    { station: "ws/b", session: "root", title: "根规划", text: "由「根规划」创建", led: true },
+    { station: "ws/a", session: "mid", title: "接口重构", text: "由「接口重构」创建", led: true },
+  ]);
+  assert.deepEqual(u.value.opener, u.value.openers[1]);
+  assert.equal(u.value.stateText, undefined);
+  assert.equal(u.value.archivable, undefined);
+  assert.deepEqual(u.value.asks, []);
+
+  // 2. Older station omits `thread.opener`, but `archivedRows` is cached locally: falls back to archived row for opener, openers and opened.
+  const legacyThread = { ...thread(7, ["k"], now), home: "k", hiddenAt: 42 };
+  t.set(threads("ws/a"), [legacyThread]);
+  t.set(pageOf("ws/a", 7), page(1, ["原来的消息"], legacyThread));
+  t.set({ topic: "archivedRows", station: "ws/a" }, [
+    {
+      ...row("k", now),
+      thread: 7,
+      archived: { at: 42, by: "manual" },
+      opener: { session: "mid", title: "旧名", led: true },
+      opened: [{ session: "child-1", title: "子任务", led: true }],
+      agents: [{ ...session("k"), lastTurn: { kind: "message", declared: "block", ending: "need_help", need: "归档前残留", outcome: "completed", startedAt: 1, endedAt: 2 } }],
+    },
+  ]);
+  await t.read(u, 1);
+  assert.equal(u.value.archived, true);
+  assert.deepEqual(u.value.openers.map((o: J) => o.session), ["root", "mid"]);
+  assert.deepEqual(u.value.opener, u.value.openers[1]);
+  assert.deepEqual(u.value.opened.map((o: J) => o.session), ["child-1"]);
+  // Archived fallback must not leak active row state or pending asks onto the archived chat page.
+  assert.equal(u.value.stateText, undefined);
+  assert.equal(u.value.archivable, undefined);
+  assert.deepEqual(u.value.asks, []);
+
+  // 3. Archived non-led opened chat: keeps `opener` for chat info, but `openers` breadcrumb stays empty.
+  const personThread = { ...thread(7, ["k"], now), home: "k", hiddenAt: 42, opener: { session: "mid", title: "旧名" } };
+  t.set(threads("ws/a"), [personThread]);
+  t.set(pageOf("ws/a", 7), page(1, ["原来的消息"], personThread));
+  await t.read(u, 1);
+  assert.deepEqual(u.value.opener, { station: "ws/a", session: "mid", title: "接口重构", text: "由「接口重构」创建" });
+  assert.deepEqual(u.value.openers, []);
+});
+
+test("an_archived_unchatted_led_subagent_keeps_its_openers_breadcrumb", async () => {
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, { topic: "chat", station: "ws/a", thread: null, session: "k" });
+  const now = t.host.nowMs();
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember", archivedAt: 42 })]);
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { connect: "ember", archivedAt: 42 }), threads: [], turns: [] });
+  t.set(threads("ws/a"), []);
+  t.set(overview("ws/a"), overviewOf([], []));
+  t.set(rows("ws/a"), [{ ...row("mid", now - 1000), title: "父会话" }]);
+  t.set({ topic: "archivedRows", station: "ws/a" }, [
+    { ...row("k", now), thread: null, archived: { at: 42, by: "manual" }, opener: { session: "mid", title: "旧名", led: true } },
+  ]);
+  await t.read(u, 1);
+  assert.equal(u.value.archived, true);
+  assert.deepEqual(u.value.openers, [
+    { station: "ws/a", session: "mid", title: "父会话", text: "由「父会话」创建", led: true },
+  ]);
+  assert.deepEqual(u.value.opener, u.value.openers[0]);
+});
+
 test("a_chat_whose_agent_opened_others_lists_them_each_where_it_stands", async () => {
   const t = setup();
   const u = ui();

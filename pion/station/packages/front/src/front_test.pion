@@ -1,0 +1,1194 @@
+// Pure-Pion unit tests for `front` (`forward` + `mesh`) using an in-memory mock `ShellMux`.
+// Covers `station/mb/src/front/mesh_wbtest.mbt` + full state machine invariants from Wave 7 §2.5.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+
+fn test_bytes_to_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+struct MockCall {
+  id : Int64
+  op : String
+  json : String
+  bytes : Option[Bytes]
+}
+
+struct MockEnv {
+  async_calls : Array[MockCall]
+  sync_calls : Array[(String, String)]
+  stdout_lines : Array[String]
+  notes : Array[String]
+  events : Array[host_shim::HostEvent]
+  mut event_head : Int
+  mut now : Int64
+  mut sync_handler : (String, String) -> String
+}
+
+fn MockEnv::new() -> MockEnv {
+  MockEnv::{
+    async_calls: [],
+    sync_calls: [],
+    stdout_lines: [],
+    notes: [],
+    events: [],
+    event_head: 0,
+    now: 1000.to_int64(),
+    sync_handler: fn(op : String, _json : String) -> String {
+      if op == "iroh.endpointId" {
+        "{\"value\":\"ep-id-1\"}"
+      } else if op == "iroh.sockets" {
+        "{\"value\":[\"127.0.0.1:4000\"]}"
+      } else if op == "conn.remoteId" {
+        "{\"value\":\"peer-1\"}"
+      } else if op == "conn.alpn" {
+        "{\"value\":\"6162\"}"
+      } else if op == "conn.via" {
+        "{\"value\":null}"
+      } else if op == "conn.paths" {
+        "{\"value\":[]}"
+      } else if op == "conn.stats" {
+        "{\"value\":{}}"
+      } else if op == "fetch.cancel" {
+        "{\"value\":true}"
+      } else {
+        "{\"value\":null}"
+      }
+    },
+  }
+}
+
+fn MockEnv::transport(self : MockEnv) -> builders_core::MuxTransport {
+  builders_core::MuxTransport::{
+    call_async: fn(id : Int64, op : String, json : String, bytes : Option[Bytes]) -> Unit {
+      self.async_calls.push(MockCall::{ id: id, op: op, json: json, bytes: bytes })
+    },
+    call_sync: fn(op : String, json : String) -> String {
+      self.sync_calls.push((op, json))
+      (self.sync_handler)(op, json)
+    },
+    write_stdout_line: fn(line : String) -> Bool {
+      self.stdout_lines.push(line)
+      true
+    },
+    write_stdout_frame: fn(_head : Array[(String, base_codec::Json)], _body : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { self.now },
+    wall_ms: fn() -> Int64 { 1700000000000.to_int64() },
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      if self.event_head < self.events.length() {
+        let ev = self.events[self.event_head]
+        self.event_head = self.event_head + 1
+        Some(ev)
+      } else {
+        None
+      }
+    },
+  }
+}
+
+fn MockEnv::push_done(
+  self : MockEnv,
+  id : Int64,
+  json : String,
+  error : String = "",
+  bytes : Option[Bytes] = None,
+) -> Unit {
+  self.events.push(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: id,
+      error: error,
+      json: json,
+      bytes: bytes,
+    }),
+  )
+}
+
+fn MockEnv::last_call(self : MockEnv) -> MockCall {
+  self.async_calls[self.async_calls.length() - 1]
+}
+
+fn MockEnv::find_last_op(self : MockEnv, op : String) -> Option[MockCall] {
+  let mut i = self.async_calls.length() - 1
+  while i >= 0 {
+    if self.async_calls[i].op == op {
+      return Some(self.async_calls[i])
+    }
+    i = i - 1
+  }
+  None
+}
+
+fn MockEnv::count_op(self : MockEnv, op : String) -> Int {
+  let mut n = 0
+  for i in 0..<self.async_calls.length() {
+    if self.async_calls[i].op == op {
+      n = n + 1
+    }
+  }
+  n
+}
+
+fn MockEnv::all_writes_text(self : MockEnv) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<self.async_calls.length() {
+    let c = self.async_calls[i]
+    if c.op == "tcp.write" {
+      match c.bytes {
+        Some(b) => out.push(test_bytes_to_str(b))
+        None => ()
+      }
+    }
+  }
+  out
+}
+
+fn drain_mesh(runner : MeshRunner, limit : Int = 64) -> Unit {
+  for _ in 0..<limit {
+    if !runner.is_running() {
+      break
+    }
+    if !runner.step(10.to_int64()) {
+      break
+    }
+  }
+}
+
+fn drain_fwd(runner : ForwardRunner, limit : Int = 64) -> Unit {
+  for _ in 0..<limit {
+    if !runner.is_running() {
+      break
+    }
+    if !runner.step(10.to_int64()) {
+      break
+    }
+  }
+}
+
+// ── 1:1 port of `station/mb/src/front/mesh_wbtest.mbt` ──
+
+test "mesh_wbtest: accept_ended_unbidden ends front only for current bound endpoint" {
+  let bound = base_codec::json_int(7)
+  assert(accept_ended_unbidden(Some(bound), base_codec::json_int(7)))
+  assert(!accept_ended_unbidden(Some(bound), base_codec::json_int(6)))
+  assert(!accept_ended_unbidden(None, base_codec::json_int(7)))
+}
+
+test "mesh_wbtest: foreign_key_bind refuses another key while endpoint is bound" {
+  let bound = base_codec::json_int(7)
+  assert(foreign_key_bind(Some(bound), "aa", "bb"))
+  assert(!foreign_key_bind(Some(bound), "aa", "aa"))
+  assert(!foreign_key_bind(None, "aa", "bb"))
+  assert(!foreign_key_bind(None, "", "bb"))
+  assert(!foreign_key_bind(Some(bound), "", "bb"))
+}
+
+// ── `forward` mock ShellMux tests ──
+
+test "forward: listen-port, pipe, unreachable target closes only that client, accept error exits directly" {
+  let env = MockEnv::new()
+  let mux = builders_core::ShellMux::new(env.transport(), start_stdin=false)
+  let runner = ForwardRunner::new(mux, None, 0, 9001, fn(m : String) -> Unit { env.notes.push(m) })
+  runner.start()
+  assert(env.async_calls.length() == 1)
+  assert(env.async_calls[0].op == "tcp.listen")
+  assert(str_contains(env.async_calls[0].json, "127.0.0.1"))
+
+  // Listen succeeds on port 12345
+  env.push_done(env.async_calls[0].id, "{\"id\":100,\"port\":12345}")
+  drain_fwd(runner)
+  assert(env.stdout_lines.length() == 1)
+  assert(env.stdout_lines[0] == "{\"listening\":12345}")
+  let accept1 = env.last_call()
+  assert(accept1.op == "tcp.accept")
+
+  // Stdin EOF is ignored when start_stdin=false
+  env.events.push(host_shim::HostEvent::StdinEof)
+  drain_fwd(runner)
+  assert(runner.is_running())
+
+  // Client 1 accepted -> tcp.open fails -> only client 1 closed, runner still alive
+  env.push_done(accept1.id, "{\"id\":201}")
+  drain_fwd(runner)
+  let accept2 = match env.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected next tcp.accept")
+  }
+  let open1 = match env.find_last_op("tcp.open") {
+    Some(c) => c
+    None => panic("expected tcp.open")
+  }
+  env.push_done(open1.id, "", error="connection refused")
+  drain_fwd(runner)
+  assert(runner.is_running())
+  assert(runner.opening_len() == 0)
+  let close1 = match env.find_last_op("tcp.close") {
+    Some(c) => c
+    None => panic("expected tcp.close on failed dial")
+  }
+  assert(str_contains(close1.json, "201"))
+
+  // Client 2 accepted -> tcp.open succeeds -> tcp.pipe([202, 302])
+  env.push_done(accept2.id, "{\"id\":202}")
+  drain_fwd(runner)
+  let accept3 = match env.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept3")
+  }
+  let open2 = match env.find_last_op("tcp.open") {
+    Some(c) => c
+    None => panic("expected open2")
+  }
+  env.push_done(open2.id, "{\"id\":302}")
+  drain_fwd(runner)
+  let pipe2 = match env.find_last_op("tcp.pipe") {
+    Some(c) => c
+    None => panic("expected tcp.pipe")
+  }
+  assert(str_contains(pipe2.json, "[202,302]"))
+
+  // Accept error exits directly (no retry)
+  env.push_done(accept3.id, "", error="socket closed")
+  drain_fwd(runner)
+  assert(!runner.is_running())
+  assert(runner.exit_code() == 1)
+}
+
+test "forward: listen-fd sends tcp.listen with fd" {
+  let env = MockEnv::new()
+  let mux = builders_core::ShellMux::new(env.transport(), start_stdin=false)
+  let runner = ForwardRunner::new(mux, Some(9), 0, 8080, fn(m : String) -> Unit { env.notes.push(m) })
+  runner.start()
+  assert(env.async_calls.length() == 1)
+  assert(env.async_calls[0].op == "tcp.listen")
+  assert(env.async_calls[0].json == "{\"fd\":9}")
+}
+
+// ── `mesh` mock ShellMux state machine tests ──
+
+fn boot_mesh(env : MockEnv, accept_ended_ref : Array[Bool]) -> (MeshRunner, Int64) {
+  let mux = builders_core::ShellMux::new(env.transport(), start_stdin=true)
+  let runner = MeshRunner::new(
+    mux,
+    "/tmp/test-mesh.sock",
+    fn(m : String) -> Unit { env.notes.push(m) },
+    fn() -> Unit { accept_ended_ref.push(true) },
+  )
+  runner.start()
+  let listen_call = env.async_calls[0]
+  assert(listen_call.op == "unix.listen")
+  env.push_done(listen_call.id, "{\"id\":10}")
+  drain_mesh(runner)
+  assert(env.stdout_lines.length() == 1)
+  assert(env.stdout_lines[0] == "{\"listening\":\"/tmp/test-mesh.sock\",\"streams\":8}")
+  let accept_call = match env.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected tcp.accept")
+  }
+  (runner, accept_call.id)
+}
+
+test "mesh: wrong-key refusal keeps endpoint alive; fixed_port rebind closes old first; old accept end silent" {
+  let env = MockEnv::new()
+  let ended : Array[Bool] = []
+  let (runner, accept_id) = boot_mesh(env, ended)
+
+  // Accept client 1 (sock 101)
+  env.push_done(accept_id, "{\"id\":101}")
+  drain_mesh(runner)
+  let read1 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected tcp.read")
+  }
+
+  // Client 1 binds with key aa..aa on fixed port 127.0.0.1:5555
+  let bind1_line = "{\"id\":1,\"op\":\"bind\",\"streams\":\"/tmp/s1.sock\",\"key\":\"aaaa\",\"options\":{\"bindAddr\":\"127.0.0.1:5555\",\"discovery\":false,\"alpns\":[\"61\"]}}\n"
+  env.push_done(read1.id, "{}", bytes=Some(bind1_line.to_bytes()))
+  drain_mesh(runner)
+  let ib1 = match env.find_last_op("iroh.bind") {
+    Some(c) => c
+    None => panic("expected iroh.bind")
+  }
+  env.push_done(ib1.id, "{\"id\":501}")
+  drain_mesh(runner)
+  let ep1_accept = match env.find_last_op("iroh.accept") {
+    Some(c) => c
+    None => panic("expected iroh.accept for ep 501")
+  }
+  let sub1 = match env.find_last_op("iroh.meshSubscribe") {
+    Some(c) => c
+    None => panic("expected iroh.meshSubscribe")
+  }
+  env.push_done(sub1.id, "{}")
+  drain_mesh(runner)
+  let w1 = match env.find_last_op("tcp.write") {
+    Some(c) => c
+    None => panic("expected bind reply")
+  }
+  env.push_done(w1.id, "{}")
+  drain_mesh(runner)
+
+  // Wrong key bind (bbbb) -> refused, endpoint 501 kept alive
+  let read1_next = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read1_next")
+  }
+  let wrong_key = "{\"id\":2,\"op\":\"bind\",\"streams\":\"/tmp/s1.sock\",\"key\":\"bbbb\",\"options\":{\"bindAddr\":\"127.0.0.1:5555\",\"discovery\":false,\"alpns\":[\"61\"]}}\n"
+  env.push_done(read1_next.id, "{}", bytes=Some(wrong_key.to_bytes()))
+  drain_mesh(runner)
+  let writes = env.all_writes_text()
+  assert(str_contains(writes[writes.length() - 1], "another station's key"))
+  let w2 = match env.find_last_op("tcp.write") {
+    Some(c) => c
+    None => panic("expected w2")
+  }
+  env.push_done(w2.id, "{}")
+  drain_mesh(runner)
+
+  // Same key, different identity (dscp: 10) with fixed_port -> MUST close 501 BEFORE iroh.bind!
+  let read1_rebind = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read1_rebind")
+  }
+  let rebind_line = "{\"id\":3,\"op\":\"bind\",\"streams\":\"/tmp/s1.sock\",\"key\":\"aaaa\",\"options\":{\"bindAddr\":\"127.0.0.1:5555\",\"discovery\":false,\"dscp\":10,\"alpns\":[\"61\"]}}\n"
+  let before_bind_count = env.count_op("iroh.bind")
+  env.push_done(read1_rebind.id, "{}", bytes=Some(rebind_line.to_bytes()))
+  drain_mesh(runner)
+  // iroh.bind MUST NOT have been called yet; iroh.close(501) must be in flight!
+  assert(env.count_op("iroh.bind") == before_bind_count)
+  let close_old = match env.find_last_op("iroh.close") {
+    Some(c) => c
+    None => panic("expected iroh.close before fixed_port rebind")
+  }
+  assert(str_contains(close_old.json, "501"))
+  // Old endpoint 501 accept ends while endpoint is None -> MUST be silent!
+  env.push_done(ep1_accept.id, "", error="no handle 501")
+  drain_mesh(runner)
+  assert(ended.length() == 0)
+
+  // Now close_old completes -> iroh.bind fires -> binds ep 502
+  env.push_done(close_old.id, "{}")
+  drain_mesh(runner)
+  assert(env.count_op("iroh.bind") == before_bind_count + 1)
+  let ib2 = match env.find_last_op("iroh.bind") {
+    Some(c) => c
+    None => panic("expected ib2")
+  }
+  env.push_done(ib2.id, "{\"id\":502}")
+  drain_mesh(runner)
+  let ep2_accept = match env.find_last_op("iroh.accept") {
+    Some(c) => c
+    None => panic("expected ep2_accept")
+  }
+  // Current endpoint 502 accept ends -> MUST call on_accept_end!
+  env.push_done(ep2_accept.id, "", error="driver ended")
+  drain_mesh(runner)
+  assert(ended.length() == 1)
+}
+
+test "mesh: bind_lock does not block online/probeRelay; connect late-exit and seen-failure forget; giveUp cancel" {
+  let env = MockEnv::new()
+  let ended : Array[Bool] = []
+  let (runner, accept_id) = boot_mesh(env, ended)
+
+  // Accept client 1 (sock 101)
+  env.push_done(accept_id, "{\"id\":101}")
+  drain_mesh(runner)
+  let r1 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r1")
+  }
+  // Bind client 1 on ep 601
+  let bind_req = "{\"id\":1,\"op\":\"bind\",\"streams\":\"/tmp/s1.sock\",\"key\":\"cc\",\"options\":{\"discovery\":false,\"alpns\":[\"61\"]}}\n"
+  env.push_done(r1.id, "{}", bytes=Some(bind_req.to_bytes()))
+  drain_mesh(runner)
+  let ib = match env.find_last_op("iroh.bind") {
+    Some(c) => c
+    None => panic("expected ib")
+  }
+  env.push_done(ib.id, "{\"id\":601}")
+  drain_mesh(runner)
+  let sub = match env.find_last_op("iroh.meshSubscribe") {
+    Some(c) => c
+    None => panic("expected sub")
+  }
+  env.push_done(sub.id, "{}")
+  drain_mesh(runner)
+  let w_bind = match env.find_last_op("tcp.write") {
+    Some(c) => c
+    None => panic("expected w_bind")
+  }
+  env.push_done(w_bind.id, "{}")
+  drain_mesh(runner)
+
+  // Start insertRelay (holds bind_lock) + online + probeRelay in one read:
+  // online and probeRelay MUST dispatch immediately without waiting for insertRelay!
+  let r2 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r2")
+  }
+  let burst = "{\"id\":10,\"op\":\"insertRelay\",\"args\":{\"url\":\"https://r1.example\"}}\n{\"id\":11,\"op\":\"online\"}\n{\"id\":12,\"op\":\"probeRelay\",\"args\":{\"url\":\"https://r1.example\"}}\n"
+  env.push_done(r2.id, "{}", bytes=Some(burst.to_bytes()))
+  drain_mesh(runner)
+  let ins_call = match env.find_last_op("iroh.insertRelay") {
+    Some(c) => c
+    None => panic("expected insertRelay")
+  }
+  assert(env.count_op("iroh.online") == 1)
+  assert(env.count_op("iroh.probeRelay") == 1)
+  // Finish insertRelay so bind_lock is released
+  env.push_done(ins_call.id, "{}")
+  drain_mesh(runner)
+
+  // Test connect + giveUp (sync fetch.cancel without deleting pending) + late completion
+  let r3 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r3")
+  }
+  let conn_req = "{\"id\":20,\"op\":\"connect\",\"alpn\":\"6162\",\"addr\":{\"id\":\"p\"}}\n{\"id\":21,\"op\":\"giveUp\",\"of\":20}\n"
+  env.push_done(r3.id, "{}", bytes=Some(conn_req.to_bytes()))
+  drain_mesh(runner)
+  let c_call = match env.find_last_op("iroh.connect") {
+    Some(c) => c
+    None => panic("expected iroh.connect")
+  }
+  // Verify fetch.cancel was called synchronously with c_call.id
+  let mut saw_cancel = false
+  for i in 0..<env.sync_calls.length() {
+    if env.sync_calls[i].0 == "fetch.cancel" && str_contains(env.sync_calls[i].1, c_call.id.to_string()) {
+      saw_cancel = true
+    }
+  }
+  assert(saw_cancel)
+  // Pending entry MUST still exist until ShellDone arrives
+  assert(runner.mux.has_pending(c_call.id))
+  env.push_done(c_call.id, "", error="cancelled")
+  drain_mesh(runner)
+  assert(!runner.mux.has_pending(c_call.id))
+
+  // Test connect where `seen` fails -> MUST call `forget(id, "")`
+  env.sync_handler = fn(op : String, _json : String) -> String {
+    if op == "conn.remoteId" {
+      "{\"error\":\"connection lost\"}"
+    } else {
+      "{\"value\":null}"
+    }
+  }
+  let r4 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r4")
+  }
+  let conn_seen_fail = "{\"id\":22,\"op\":\"connect\",\"alpn\":\"6162\",\"addr\":{\"id\":\"p\"}}\n"
+  env.push_done(r4.id, "{}", bytes=Some(conn_seen_fail.to_bytes()))
+  drain_mesh(runner)
+  let c_call2 = match env.find_last_op("iroh.connect") {
+    Some(c) => c
+    None => panic("expected c_call2")
+  }
+  let close_before = env.count_op("conn.close")
+  env.push_done(c_call2.id, "{\"id\":777}")
+  drain_mesh(runner)
+  assert(env.count_op("conn.close") == close_before + 1)
+  let forget_call = match env.find_last_op("conn.close") {
+    Some(c) => c
+    None => panic("expected forget conn.close")
+  }
+  assert(str_contains(forget_call.json, "777"))
+  assert(str_contains(forget_call.json, "\"forget\":true"))
+
+  // Test connect where client closes while connect is in flight -> self-forgets with "station stopping"
+  let r5 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r5")
+  }
+  let conn_then_close = "{\"id\":23,\"op\":\"connect\",\"alpn\":\"6162\",\"addr\":{\"id\":\"p\"}}\n{\"id\":24,\"op\":\"close\"}\n"
+  env.push_done(r5.id, "{}", bytes=Some(conn_then_close.to_bytes()))
+  drain_mesh(runner)
+  let c_call3 = match env.find_last_op("iroh.connect") {
+    Some(c) => c
+    None => panic("expected c_call3")
+  }
+  // Finish meshUnsubscribe so "close" reply is emitted
+  let unsub = match env.find_last_op("iroh.meshUnsubscribe") {
+    Some(c) => c
+    None => panic("expected meshUnsubscribe")
+  }
+  env.push_done(unsub.id, "{}")
+  drain_mesh(runner)
+  // Drain any pending SerialOutbox writes so close reply is flushed
+  for _ in 0..<8 {
+    match env.find_last_op("tcp.write") {
+      Some(wc) => {
+        if runner.mux.has_pending(wc.id) {
+          env.push_done(wc.id, "{}")
+          drain_mesh(runner)
+        }
+      }
+      None => ()
+    }
+  }
+  let all_w = env.all_writes_text()
+  let mut saw_close_ok = false
+  for i in 0..<all_w.length() {
+    if str_contains(all_w[i], "\"id\":24") && str_contains(all_w[i], "\"ok\":null") {
+      saw_close_ok = true
+    }
+  }
+  assert(saw_close_ok)
+
+  // Now in-flight connect completes after client is gone -> MUST forget 888 with "station stopping"
+  let close_before2 = env.count_op("conn.close")
+  env.push_done(c_call3.id, "{\"id\":888}")
+  drain_mesh(runner)
+  assert(env.count_op("conn.close") == close_before2 + 1)
+  let forget_call2 = match env.find_last_op("conn.close") {
+    Some(c) => c
+    None => panic("expected forget_call2")
+  }
+  assert(str_contains(forget_call2.json, "888"))
+  assert(str_contains(forget_call2.json, "station stopping"))
+}
+
+test "mesh: waiting queue caps at 256 dropping oldest; stdin EOF exits 0; transient accept retries at 100ms" {
+  let env = MockEnv::new()
+  let ended : Array[Bool] = []
+  let (runner, accept_id) = boot_mesh(env, ended)
+
+  // Transient accept error schedules retry at now + 100ms
+  env.push_done(accept_id, "", error="temporary EMFILE")
+  drain_mesh(runner)
+  assert(runner.is_running())
+  let accepts_before = env.count_op("tcp.accept")
+  env.now = env.now + 50.to_int64()
+  let _ = runner.step(10.to_int64())
+  assert(env.count_op("tcp.accept") == accepts_before)
+  env.now = env.now + 60.to_int64()
+  let _ = runner.step(10.to_int64())
+  assert(env.count_op("tcp.accept") == accepts_before + 1)
+
+  // Push 260 incoming connections while no client is bound -> waiting caps at 256, 4 oldest forgotten
+  for i in 0..<260 {
+    runner.give(base_codec::json_obj([("conn", base_codec::json_int(1000 + i))]))
+  }
+  assert(runner.waiting_len() == 256)
+  assert(env.count_op("conn.close") == 4)
+  assert(str_contains(env.async_calls[env.async_calls.length() - 4].json, "1000"))
+  assert(str_contains(env.async_calls[env.async_calls.length() - 1].json, "1003"))
+
+  // Stdin EOF exits cleanly with code 0
+  env.events.push(host_shim::HostEvent::StdinEof)
+  drain_mesh(runner)
+  assert(!runner.is_running())
+  assert(runner.exit_code() == 0)
+}
+
+// ── R1 regression tests (P1-1, P1-2, P1-3, P2-5, P2-6, P2-7, P2-8, P2-9) ──
+
+test "mesh P1-1: late meshSubscribe after control EOF still emits 2nd iroh.meshUnsubscribe and releases bind_lock" {
+  let env = MockEnv::new()
+  let ended : Array[Bool] = []
+  let (runner, accept_id) = boot_mesh(env, ended)
+
+  // Accept client 1 (sock 101) and client 2 (sock 102)
+  env.push_done(accept_id, "{\"id\":101}")
+  drain_mesh(runner)
+  let accept_id2 = match env.find_last_op("tcp.accept") {
+    Some(c) => c.id
+    None => panic("expected accept_id2")
+  }
+  let read1 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read1")
+  }
+  env.push_done(accept_id2, "{\"id\":102}")
+  drain_mesh(runner)
+  let read2 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read2")
+  }
+
+  // Client 1 starts bind -> iroh.bind -> iroh.meshSubscribe (in flight)
+  let bind1 = "{\"id\":1,\"op\":\"bind\",\"streams\":\"/tmp/s1.sock\",\"key\":\"aa\",\"options\":{\"discovery\":false,\"alpns\":[\"61\"]}}\n"
+  env.push_done(read1.id, "{}", bytes=Some(bind1.to_bytes()))
+  drain_mesh(runner)
+  let ib1 = match env.find_last_op("iroh.bind") {
+    Some(c) => c
+    None => panic("expected ib1")
+  }
+  env.push_done(ib1.id, "{\"id\":501}")
+  drain_mesh(runner)
+  let sub1 = match env.find_last_op("iroh.meshSubscribe") {
+    Some(c) => c
+    None => panic("expected sub1")
+  }
+  let read1_b = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read1_b")
+  }
+
+  // Client 2 queues a bind behind client 1's bind_lock
+  let bind2 = "{\"id\":2,\"op\":\"bind\",\"streams\":\"/tmp/s2.sock\",\"key\":\"aa\",\"options\":{\"discovery\":false,\"alpns\":[\"61\"]}}\n"
+  env.push_done(read2.id, "{}", bytes=Some(bind2.to_bytes()))
+  drain_mesh(runner)
+
+  // Client 1 hits control socket EOF while sub1 is still in flight -> part() emits 1st meshUnsubscribe and removes client 1
+  env.push_done(read1_b.id, "{\"end\":true}")
+  drain_mesh(runner)
+  assert(runner.client_count() == 1)
+  assert(env.count_op("iroh.meshUnsubscribe") == 1)
+
+  // Now sub1 completes -> check #3 MUST emit 2nd meshUnsubscribe for sock 101 even though client 1 was removed!
+  env.push_done(sub1.id, "{}")
+  drain_mesh(runner)
+  assert(env.count_op("iroh.meshUnsubscribe") == 2)
+  let unsub2 = match env.find_last_op("iroh.meshUnsubscribe") {
+    Some(c) => c
+    None => panic("expected unsub2")
+  }
+  assert(str_contains(unsub2.json, "101"))
+  assert(runner.bind_lock_busy())
+
+  // Complete 2nd meshUnsubscribe -> releases bind_lock and advances queued client 2 bind!
+  env.push_done(unsub2.id, "{}")
+  drain_mesh(runner)
+  let sub2 = match env.find_last_op("iroh.meshSubscribe") {
+    Some(c) => c
+    None => panic("expected sub2 for client 2")
+  }
+  assert(str_contains(sub2.json, "102"))
+  env.push_done(sub2.id, "{}")
+  drain_mesh(runner)
+  assert(!runner.bind_lock_busy())
+}
+
+test "mesh P1-1: late meshSubscribe after close ask also emits 2nd iroh.meshUnsubscribe" {
+  let env = MockEnv::new()
+  let ended : Array[Bool] = []
+  let (runner, accept_id) = boot_mesh(env, ended)
+
+  env.push_done(accept_id, "{\"id\":101}")
+  drain_mesh(runner)
+  let read1 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read1")
+  }
+  let bind1 = "{\"id\":1,\"op\":\"bind\",\"streams\":\"/tmp/s1.sock\",\"key\":\"aa\",\"options\":{\"discovery\":false,\"alpns\":[\"61\"]}}\n"
+  env.push_done(read1.id, "{}", bytes=Some(bind1.to_bytes()))
+  drain_mesh(runner)
+  let ib1 = match env.find_last_op("iroh.bind") {
+    Some(c) => c
+    None => panic("expected ib1")
+  }
+  env.push_done(ib1.id, "{\"id\":501}")
+  drain_mesh(runner)
+  let sub1 = match env.find_last_op("iroh.meshSubscribe") {
+    Some(c) => c
+    None => panic("expected sub1")
+  }
+  let read1_b = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read1_b")
+  }
+  // Client sends `close` while sub1 is in flight
+  env.push_done(read1_b.id, "{}", bytes=Some("{\"id\":2,\"op\":\"close\"}\n".to_bytes()))
+  drain_mesh(runner)
+  assert(env.count_op("iroh.meshUnsubscribe") == 1)
+  // sub1 completes -> check #3 emits 2nd meshUnsubscribe
+  env.push_done(sub1.id, "{}")
+  drain_mesh(runner)
+  assert(env.count_op("iroh.meshUnsubscribe") == 2)
+  let unsub2 = match env.find_last_op("iroh.meshUnsubscribe") {
+    Some(c) => c
+    None => panic("expected unsub2")
+  }
+  env.push_done(unsub2.id, "{}")
+  drain_mesh(runner)
+  assert(!runner.bind_lock_busy())
+}
+
+test "mesh P1-2: openBi and openUni late success after client EOF resets native stream IDs" {
+  let env = MockEnv::new()
+  let ended : Array[Bool] = []
+  let (runner, accept_id) = boot_mesh(env, ended)
+
+  env.push_done(accept_id, "{\"id\":101}")
+  drain_mesh(runner)
+  let read1 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read1")
+  }
+  let reqs = "{\"id\":1,\"op\":\"openBi\",\"conn\":900}\n{\"id\":2,\"op\":\"openUni\",\"conn\":900}\n"
+  env.push_done(read1.id, "{}", bytes=Some(reqs.to_bytes()))
+  drain_mesh(runner)
+  let bi_call = match env.find_last_op("conn.openBi") {
+    Some(c) => c
+    None => panic("expected conn.openBi")
+  }
+  let uni_call = match env.find_last_op("conn.openUni") {
+    Some(c) => c
+    None => panic("expected conn.openUni")
+  }
+  let read1_b = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read1_b")
+  }
+  // Client disconnects before openBi/openUni complete
+  env.push_done(read1_b.id, "{\"end\":true}")
+  drain_mesh(runner)
+  assert(runner.client_count() == 0)
+
+  // Both late completions MUST trigger istream.reset (zero leaked native stream IDs)
+  env.push_done(bi_call.id, "{\"id\":7001}")
+  env.push_done(uni_call.id, "{\"id\":7002}")
+  drain_mesh(runner)
+  assert(env.count_op("istream.reset") == 2)
+  assert(env.count_op("istream.hand") == 0)
+  assert(str_contains(env.async_calls[env.async_calls.length() - 2].json, "7001"))
+  assert(str_contains(env.async_calls[env.async_calls.length() - 1].json, "7002"))
+}
+
+test "mesh P1-3 & P2-7: lone surrogate line dropped, numeric 1.0/10.0 normalized, unhex UTF-16 pairs" {
+  // P2-7: mesh_unhex operates on UTF-16 code units matching mesh.mbt:723-729
+  // "41" -> 0x41; "中" is 1 UTF-16 unit (non-hex -> 0); "41中42" has 5 UTF-16 units -> 2 bytes: [0x41, 0x04]
+  let u1 = mesh_unhex("41中42")
+  assert(u1.length() == 2)
+  assert((u1[0].to_int() & 0xFF) == 0x41)
+  assert((u1[1].to_int() & 0xFF) == 0x04)
+  // Surrogate pair "😀" is 2 UTF-16 units (both non-hex -> 0x00), followed by "41" -> [0x00, 0x41]
+  let u2 = mesh_unhex("😀41")
+  assert(u2.length() == 2)
+  assert((u2[0].to_int() & 0xFF) == 0x00)
+  assert((u2[1].to_int() & 0xFF) == 0x41)
+
+  // P1-3: numeric normalization: dscp 10.0 == 10
+  let o1 = builders_core::parse_ask_line("{\"discovery\":false,\"dscp\":10}")
+  let o2 = builders_core::parse_ask_line("{\"discovery\":false,\"dscp\":10.0}")
+  assert(identity_of(o1, mesh_unhex("aa")) == identity_of(o2, mesh_unhex("aa")))
+  assert(mesh_stringify(o2) == "{\"discovery\":false,\"dscp\":10}")
+
+  // Control line with lone surrogate is dropped; following valid surrogate pair + numeric 1.0/1 giveUp works
+  let env = MockEnv::new()
+  let ended : Array[Bool] = []
+  let (runner, accept_id) = boot_mesh(env, ended)
+  env.push_done(accept_id, "{\"id\":101}")
+  drain_mesh(runner)
+  let r1 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r1")
+  }
+  let bind_req = "{\"id\":1,\"op\":\"bind\",\"streams\":\"/tmp/s1.sock\",\"key\":\"aa\",\"options\":{\"discovery\":false,\"dscp\":10.0,\"alpns\":[\"61\"]}}\n"
+  env.push_done(r1.id, "{}", bytes=Some(bind_req.to_bytes()))
+  drain_mesh(runner)
+  let ib = match env.find_last_op("iroh.bind") {
+    Some(c) => c
+    None => panic("expected ib")
+  }
+  // Verify dscp serialized as integer 10 (not 10.0)
+  assert(str_contains(ib.json, "\"dscp\":10"))
+  assert(!str_contains(ib.json, "10.0"))
+  env.push_done(ib.id, "{\"id\":501}")
+  drain_mesh(runner)
+  let sub = match env.find_last_op("iroh.meshSubscribe") {
+    Some(c) => c
+    None => panic("expected sub")
+  }
+  env.push_done(sub.id, "{}")
+  drain_mesh(runner)
+  let w_bind = match env.find_last_op("tcp.write") {
+    Some(c) => c
+    None => panic("expected w_bind")
+  }
+  env.push_done(w_bind.id, "{}")
+  drain_mesh(runner)
+
+  let r2 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r2")
+  }
+  // Line 1: lone surrogate (MUST be dropped); Line 2: valid surrogate pair route; Line 3: connect id=5.0 + giveUp of=5
+  let lines = "{\"id\":99,\"op\":\"relayStatus\",\"bad\":\"\\uD800\"}\n{\"id\":100,\"op\":\"route\",\"front\":[\"\\uD83D\\uDE00\"],\"routes\":[],\"alpn\":\"61\"}\n{\"id\":5.0,\"op\":\"connect\",\"alpn\":\"61\",\"addr\":{}}\n{\"id\":6,\"op\":\"giveUp\",\"of\":5}\n"
+  env.push_done(r2.id, "{}", bytes=Some(lines.to_bytes()))
+  drain_mesh(runner)
+  // Lone surrogate ask id 99 must never be answered; valid surrogate pair ask id 100 answered; fetch.cancel fired for id 5.0
+  let mut saw_cancel = false
+  for i in 0..<env.sync_calls.length() {
+    if env.sync_calls[i].0 == "fetch.cancel" {
+      saw_cancel = true
+    }
+  }
+  assert(saw_cancel)
+  // Drain outbox writes
+  for _ in 0..<8 {
+    match env.find_last_op("tcp.write") {
+      Some(wc) => {
+        if runner.mux.has_pending(wc.id) {
+          env.push_done(wc.id, "{}")
+          drain_mesh(runner)
+        }
+      }
+      None => ()
+    }
+  }
+  let all_w = env.all_writes_text()
+  let mut saw_99 = false
+  let mut saw_100 = false
+  for i in 0..<all_w.length() {
+    if str_contains(all_w[i], "\"id\":99") {
+      saw_99 = true
+    }
+    if str_contains(all_w[i], "\"id\":100") && str_contains(all_w[i], "\"ok\":null") {
+      saw_100 = true
+    }
+  }
+  assert(!saw_99)
+  assert(saw_100)
+}
+
+test "mesh P2-6: early stdin EOF before unix.listen preserves listen error and announces on ok" {
+  // Case 1: stdin EOF before unix.listen error -> must exit 1 (not 0)
+  let env1 = MockEnv::new()
+  let mux1 = builders_core::ShellMux::new(env1.transport(), start_stdin=true)
+  let r1 = MeshRunner::new(mux1, "/tmp/e1.sock", fn(m : String) -> Unit { env1.notes.push(m) }, fn() -> Unit {})
+  r1.start()
+  let l1 = env1.async_calls[0].id
+  env1.events.push(host_shim::HostEvent::StdinEof)
+  drain_mesh(r1)
+  assert(r1.is_running())
+  env1.push_done(l1, "", error="EACCES")
+  drain_mesh(r1)
+  assert(!r1.is_running())
+  assert(r1.exit_code() == 1)
+
+  // Case 2: stdin EOF before unix.listen ok -> announces listening line then exits 0
+  let env2 = MockEnv::new()
+  let mux2 = builders_core::ShellMux::new(env2.transport(), start_stdin=true)
+  let r2 = MeshRunner::new(mux2, "/tmp/e2.sock", fn(m : String) -> Unit { env2.notes.push(m) }, fn() -> Unit {})
+  r2.start()
+  let l2 = env2.async_calls[0].id
+  env2.events.push(host_shim::HostEvent::StdinEof)
+  drain_mesh(r2)
+  assert(r2.is_running())
+  env2.push_done(l2, "{\"id\":10}")
+  drain_mesh(r2)
+  assert(!r2.is_running())
+  assert(r2.exit_code() == 0)
+  assert(env2.stdout_lines.length() == 1)
+  assert(str_contains(env2.stdout_lines[0], "\"listening\":\"/tmp/e2.sock\""))
+}
+
+test "mesh P2-5, P2-8, P2-9: iterative bind_lock, non-fixed rebind order, setAlpns, istream.hand 17B, conn.close/closed, giveUp error, seen-fail wait" {
+  // Verify exact 17-byte istream.hand header (conn=0x0102030405060708, stream=0x1112131415161718, kind=1)
+  let hdr = make_istream_hand_header(base_codec::json_int(258), base_codec::json_int(515))
+  assert(hdr.length() == 17)
+  assert((hdr[6].to_int() & 0xFF) == 1 && (hdr[7].to_int() & 0xFF) == 2)
+  assert((hdr[14].to_int() & 0xFF) == 2 && (hdr[15].to_int() & 0xFF) == 3)
+  assert((hdr[16].to_int() & 0xFF) == 1)
+
+  let env = MockEnv::new()
+  let ended : Array[Bool] = []
+  let (runner, accept_id) = boot_mesh(env, ended)
+  env.push_done(accept_id, "{\"id\":101}")
+  drain_mesh(runner)
+  let r1 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r1")
+  }
+
+  // Initial bind (ep 501, alpns=["61"])
+  let b1 = "{\"id\":1,\"op\":\"bind\",\"streams\":\"/tmp/s1.sock\",\"key\":\"aa\",\"options\":{\"discovery\":false,\"alpns\":[\"61\"]}}\n"
+  env.push_done(r1.id, "{}", bytes=Some(b1.to_bytes()))
+  drain_mesh(runner)
+  let ib1 = match env.find_last_op("iroh.bind") {
+    Some(c) => c
+    None => panic("expected ib1")
+  }
+  env.push_done(ib1.id, "{\"id\":501}")
+  drain_mesh(runner)
+  let sub1 = match env.find_last_op("iroh.meshSubscribe") {
+    Some(c) => c
+    None => panic("expected sub1")
+  }
+  env.push_done(sub1.id, "{}")
+  drain_mesh(runner)
+  let w1 = match env.find_last_op("tcp.write") {
+    Some(c) => c
+    None => panic("expected w1")
+  }
+  env.push_done(w1.id, "{}")
+  drain_mesh(runner)
+
+  // Same identity with updated alpns -> reconciles via iroh.setAlpns without rebind
+  let r2 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r2")
+  }
+  let b_alpn = "{\"id\":2,\"op\":\"bind\",\"streams\":\"/tmp/s1.sock\",\"key\":\"aa\",\"options\":{\"discovery\":false,\"alpns\":[\"61\",\"62\"]}}\n"
+  env.push_done(r2.id, "{}", bytes=Some(b_alpn.to_bytes()))
+  drain_mesh(runner)
+  let set_alpn = match env.find_last_op("iroh.setAlpns") {
+    Some(c) => c
+    None => panic("expected iroh.setAlpns")
+  }
+  assert(env.count_op("iroh.bind") == 1)
+  env.push_done(set_alpn.id, "{}")
+  drain_mesh(runner)
+  let sub2 = match env.find_last_op("iroh.meshSubscribe") {
+    Some(c) => c
+    None => panic("expected sub2")
+  }
+  env.push_done(sub2.id, "{}")
+  drain_mesh(runner)
+  let w2 = match env.find_last_op("tcp.write") {
+    Some(c) => c
+    None => panic("expected w2")
+  }
+  env.push_done(w2.id, "{}")
+  drain_mesh(runner)
+
+  // Non-fixed-port rebind (dscp: 10): MUST bind new FIRST, then close old 501!
+  let r3 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r3")
+  }
+  let close_before = env.count_op("iroh.close")
+  let b_rebind = "{\"id\":3,\"op\":\"bind\",\"streams\":\"/tmp/s1.sock\",\"key\":\"aa\",\"options\":{\"discovery\":false,\"dscp\":10,\"alpns\":[\"61\",\"62\"]}}\n"
+  env.push_done(r3.id, "{}", bytes=Some(b_rebind.to_bytes()))
+  drain_mesh(runner)
+  assert(env.count_op("iroh.close") == close_before)
+  let ib2 = match env.find_last_op("iroh.bind") {
+    Some(c) => c
+    None => panic("expected ib2")
+  }
+  env.push_done(ib2.id, "{\"id\":502}")
+  drain_mesh(runner)
+  let close_old = match env.find_last_op("iroh.close") {
+    Some(c) => c
+    None => panic("expected close_old after non-fixed rebind")
+  }
+  assert(str_contains(close_old.json, "501"))
+  env.push_done(close_old.id, "{}")
+  drain_mesh(runner)
+  let sub3 = match env.find_last_op("iroh.meshSubscribe") {
+    Some(c) => c
+    None => panic("expected sub3")
+  }
+  env.push_done(sub3.id, "{}")
+  drain_mesh(runner)
+  let w3 = match env.find_last_op("tcp.write") {
+    Some(c) => c
+    None => panic("expected w3")
+  }
+  env.push_done(w3.id, "{}")
+  drain_mesh(runner)
+
+  // conn.close with "no handle 99" replies {} + conn.closed waits for forget before replying said
+  let r4 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r4")
+  }
+  let conn_ops = "{\"id\":4,\"op\":\"conn.close\",\"conn\":99,\"code\":0,\"reason\":\"\"}\n{\"id\":5,\"op\":\"conn.closed\",\"conn\":88}\n"
+  env.push_done(r4.id, "{}", bytes=Some(conn_ops.to_bytes()))
+  drain_mesh(runner)
+  let cc = match env.find_last_op("conn.close") {
+    Some(c) => c
+    None => panic("expected conn.close")
+  }
+  let ccd = match env.find_last_op("conn.closed") {
+    Some(c) => c
+    None => panic("expected conn.closed")
+  }
+  env.push_done(cc.id, "", error="no handle 99")
+  env.push_done(ccd.id, "{\"reason\":\"bye\"}")
+  drain_mesh(runner)
+  // conn.closed must NOT have replied yet until its forget conn.close finishes!
+  let w_mid = env.all_writes_text()
+  let mut replied_5_early = false
+  for i in 0..<w_mid.length() {
+    if str_contains(w_mid[i], "\"id\":5") {
+      replied_5_early = true
+    }
+  }
+  assert(!replied_5_early)
+  let forget_88 = match env.find_last_op("conn.close") {
+    Some(c) => c
+    None => panic("expected forget_88")
+  }
+  assert(str_contains(forget_88.json, "88") && str_contains(forget_88.json, "\"forget\":true"))
+  env.push_done(forget_88.id, "{}")
+  drain_mesh(runner)
+  for _ in 0..<4 {
+    match env.find_last_op("tcp.write") {
+      Some(wc) => {
+        if runner.mux.has_pending(wc.id) {
+          env.push_done(wc.id, "{}")
+          drain_mesh(runner)
+        }
+      }
+      None => ()
+    }
+  }
+  let w_after = env.all_writes_text()
+  let mut saw_4_empty = false
+  let mut saw_5_bye = false
+  for i in 0..<w_after.length() {
+    if str_contains(w_after[i], "\"id\":4") && str_contains(w_after[i], "\"ok\":{}") {
+      saw_4_empty = true
+    }
+    if str_contains(w_after[i], "\"id\":5") && str_contains(w_after[i], "\"reason\":\"bye\"") {
+      saw_5_bye = true
+    }
+  }
+  assert(saw_4_empty)
+  assert(saw_5_bye)
+
+  // giveUp propagates sync fetch.cancel error while keeping pending until ShellDone
+  env.sync_handler = fn(op : String, _json : String) -> String {
+    if op == "fetch.cancel" {
+      "{\"error\":\"cancel rejected\"}"
+    } else {
+      "{\"value\":null}"
+    }
+  }
+  let r5 = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r5")
+  }
+  env.push_done(
+    r5.id,
+    "{}",
+    bytes=Some("{\"id\":6,\"op\":\"connect\",\"alpn\":\"61\",\"addr\":{}}\n{\"id\":7,\"op\":\"giveUp\",\"of\":6}\n".to_bytes()),
+  )
+  drain_mesh(runner)
+  let c_call = match env.find_last_op("iroh.connect") {
+    Some(c) => c
+    None => panic("expected iroh.connect")
+  }
+  assert(runner.mux.has_pending(c_call.id))
+  for _ in 0..<4 {
+    match env.find_last_op("tcp.write") {
+      Some(wc) => {
+        if runner.mux.has_pending(wc.id) {
+          env.push_done(wc.id, "{}")
+          drain_mesh(runner)
+        }
+      }
+      None => ()
+    }
+  }
+  let w_cancel = env.all_writes_text()
+  let mut saw_cancel_err = false
+  for i in 0..<w_cancel.length() {
+    if str_contains(w_cancel[i], "\"id\":7") && str_contains(w_cancel[i], "cancel rejected") {
+      saw_cancel_err = true
+    }
+  }
+  assert(saw_cancel_err)
+  env.push_done(c_call.id, "", error="cancelled")
+  drain_mesh(runner)
+  assert(!runner.mux.has_pending(c_call.id))
+}
+
+test "mesh R2: deterministic part on EOF redistributes unclaimed coming conn ID to remaining bound holder" {
+  let env = MockEnv::new()
+  let ended : Array[Bool] = []
+  let (runner, accept_id) = boot_mesh(env, ended)
+
+  // Accept holder (client 1, sock 101) and rawA (client 2, sock 102)
+  env.push_done(accept_id, "{\"id\":101}")
+  drain_mesh(runner)
+  let accept_id2 = match env.find_last_op("tcp.accept") {
+    Some(c) => c.id
+    None => panic("expected accept_id2")
+  }
+  let r_holder = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r_holder")
+  }
+  env.push_done(accept_id2, "{\"id\":102}")
+  drain_mesh(runner)
+  let r_raw = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r_raw")
+  }
+
+  // Bind holder first (bound=1)
+  let bind_req = "{\"id\":1,\"op\":\"bind\",\"streams\":\"/tmp/h.sock\",\"key\":\"aa\",\"options\":{\"discovery\":false,\"alpns\":[\"61\"]}}\n"
+  env.push_done(r_holder.id, "{}", bytes=Some(bind_req.to_bytes()))
+  drain_mesh(runner)
+  let ib = match env.find_last_op("iroh.bind") {
+    Some(c) => c
+    None => panic("expected ib")
+  }
+  env.push_done(ib.id, "{\"id\":501}")
+  drain_mesh(runner)
+  let sub1 = match env.find_last_op("iroh.meshSubscribe") {
+    Some(c) => c
+    None => panic("expected sub1")
+  }
+  env.push_done(sub1.id, "{}")
+  drain_mesh(runner)
+  let w1 = match env.find_last_op("tcp.write") {
+    Some(c) => c
+    None => panic("expected w1")
+  }
+  env.push_done(w1.id, "{}")
+  drain_mesh(runner)
+
+  // Bind rawA second (bound=2 > holder.bound=1)
+  let bind_req2 = "{\"id\":2,\"op\":\"bind\",\"streams\":\"/tmp/r.sock\",\"key\":\"aa\",\"options\":{\"discovery\":false,\"alpns\":[\"61\"]}}\n"
+  env.push_done(r_raw.id, "{}", bytes=Some(bind_req2.to_bytes()))
+  drain_mesh(runner)
+  let sub2 = match env.find_last_op("iroh.meshSubscribe") {
+    Some(c) => c
+    None => panic("expected sub2")
+  }
+  env.push_done(sub2.id, "{}")
+  drain_mesh(runner)
+  let w2 = match env.find_last_op("tcp.write") {
+    Some(c) => c
+    None => panic("expected w2")
+  }
+  env.push_done(w2.id, "{}")
+  drain_mesh(runner)
+
+  // Find latest tcp.read for rawA (sock 102) and holder (sock 101)
+  let mut r_raw_next : Int64 = 0.to_int64()
+  let mut r_holder_next : Int64 = 0.to_int64()
+  for i in 0..<env.async_calls.length() {
+    let c = env.async_calls[i]
+    if c.op == "tcp.read" {
+      if str_contains(c.json, "102") {
+        r_raw_next = c.id
+      }
+      if str_contains(c.json, "101") {
+        r_holder_next = c.id
+      }
+    }
+  }
+  assert(r_raw_next > 0.to_int64() && r_holder_next > 0.to_int64())
+
+  // Push incoming conn 9901 -> goes into rawA.coming (since rawA has higher bound)
+  runner.give(base_codec::json_obj([("conn", base_codec::json_int(9901)), ("alpn", base_codec::json_str("61"))]))
+
+  // rawA hits control EOF -> part() redistributes unclaimed conn 9901 to holder!
+  env.push_done(r_raw_next, "{\"end\":true}")
+  drain_mesh(runner)
+
+  // holder asks `accept` -> MUST receive exact conn ID 9901!
+  env.push_done(r_holder_next, "{}", bytes=Some("{\"id\":3,\"op\":\"accept\"}\n".to_bytes()))
+  drain_mesh(runner)
+  let writes = env.all_writes_text()
+  assert(str_contains(writes[writes.length() - 1], "\"id\":3"))
+  assert(str_contains(writes[writes.length() - 1], "\"conn\":9901"))
+}

@@ -1,0 +1,608 @@
+// 1:1 port of `station/mb/src/readops/messages.mbt`.
+// Uses `builders_legacy::EditKey` and `sql_db::Db::savepoint_swallow_err` (zero raw transaction SQL).
+
+import "base_codec"
+import "builders_core"
+import "builders_legacy"
+import "js_json"
+import "sql_db"
+
+pub let LEGACY_EDITS_PENDING : String = "legacy edit lookup pending"
+
+pub fn jfield(v : js_json::JValue, k : String) -> Option[js_json::JValue] {
+  match v {
+    js_json::JValue::Obj(_) => v.get(k)
+    _ => None
+  }
+}
+
+pub fn jstr(v : Option[js_json::JValue]) -> Option[String] {
+  match v {
+    Some(js_json::JValue::Str(s)) => Some(js_json::sanitize_str(s))
+    _ => None
+  }
+}
+
+pub fn is_u64(v : Option[js_json::JValue]) -> Bool {
+  match v {
+    Some(js_json::JValue::Num(n)) => js_json::is_integer(n) && n >= 0.0
+    _ => false
+  }
+}
+
+fn is_absent_jv(v : Option[js_json::JValue]) -> Bool {
+  match v {
+    None => true
+    Some(js_json::JValue::Null) => true
+    _ => false
+  }
+}
+
+pub fn parse_attachment(a : js_json::JValue) -> Option[base_codec::Json] {
+  match a {
+    js_json::JValue::Obj(_) => ()
+    _ => return None
+  }
+  let name = match jstr(jfield(a, "name")) {
+    Some(s) => s
+    None => return None
+  }
+  let path = match jstr(jfield(a, "path")) {
+    Some(s) => s
+    None => return None
+  }
+  let size_v = jfield(a, "size")
+  if !is_u64(size_v) {
+    return None
+  }
+  let check_u32 = fn(v : Option[js_json::JValue]) -> Bool {
+    if is_absent_jv(v) {
+      return true
+    }
+    match v {
+      Some(js_json::JValue::Num(n)) => js_json::is_integer(n) && n >= 0.0 && n <= 4294967295.0
+      _ => false
+    }
+  }
+  let check_str = fn(v : Option[js_json::JValue]) -> Bool {
+    if is_absent_jv(v) {
+      return true
+    }
+    match v {
+      Some(js_json::JValue::Str(_)) => true
+      _ => false
+    }
+  }
+  if !check_u32(jfield(a, "width")) ||
+  !check_u32(jfield(a, "height")) ||
+  !check_str(jfield(a, "thumbhash")) ||
+  !(is_absent_jv(jfield(a, "duration")) || is_u64(jfield(a, "duration"))) ||
+  !check_u32(jfield(a, "frames")) {
+    return None
+  }
+  let size_json = match size_v {
+    Some(sv) => to_json(sv)
+    None => return None
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("name", base_codec::json_str(name)),
+    ("path", base_codec::json_str(path)),
+    ("size", size_json),
+  ]
+  let opt_keys = ["width", "height", "thumbhash", "duration", "frames"]
+  for i in 0..<opt_keys.length() {
+    let k = opt_keys[i]
+    match jfield(a, k) {
+      Some(js_json::JValue::Null) => ()
+      None => ()
+      Some(v) => out.push((k, to_json(v)))
+    }
+  }
+  Some(base_codec::json_obj(out))
+}
+
+pub fn parse_quote(q : js_json::JValue) -> Option[base_codec::Json] {
+  match q {
+    js_json::JValue::Obj(_) => ()
+    _ => return None
+  }
+  let author = match jstr(jfield(q, "author")) {
+    Some(s) => s
+    None => return None
+  }
+  let text = match jstr(jfield(q, "text")) {
+    Some(s) => s
+    None => return None
+  }
+  let comment = match jstr(jfield(q, "comment")) {
+    Some(s) => s
+    None => return None
+  }
+  let check_str = fn(v : Option[js_json::JValue]) -> Bool {
+    if is_absent_jv(v) {
+      return true
+    }
+    match v {
+      Some(js_json::JValue::Str(_)) => true
+      _ => false
+    }
+  }
+  if !check_str(jfield(q, "ts")) || !check_str(jfield(q, "role")) || !check_str(jfield(q, "file")) {
+    return None
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("author", base_codec::json_str(author)),
+    ("text", base_codec::json_str(text)),
+    ("comment", base_codec::json_str(comment)),
+  ]
+  let opt_keys = ["ts", "role", "file"]
+  for i in 0..<opt_keys.length() {
+    let k = opt_keys[i]
+    match jfield(q, k) {
+      Some(js_json::JValue::Null) => ()
+      None => ()
+      Some(v) => out.push((k, to_json(v)))
+    }
+  }
+  Some(base_codec::json_obj(out))
+}
+
+pub fn json_list(v : base_codec::Json, read : (js_json::JValue) -> Option[base_codec::Json]) -> base_codec::Json {
+  let items = match parsed(v) {
+    Some(js_json::JValue::Arr(xs)) => xs
+    _ => return base_codec::json_arr([])
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<items.length() {
+    match read(items[i]) {
+      Some(one_val) => out.push(one_val)
+      None => return base_codec::json_arr([])
+    }
+  }
+  base_codec::json_arr(out)
+}
+
+pub fn with_letter(out : Array[(String, base_codec::Json)], v : base_codec::Json) -> Unit {
+  let l = match parsed(v) {
+    Some(js_json::JValue::Obj(es)) => js_json::JValue::Obj(es)
+    Some(js_json::JValue::Arr(xs)) => js_json::JValue::Arr(xs)
+    _ => return ()
+  }
+  let way = match jstr(jfield(l, "way")) {
+    Some("in") => "in"
+    Some("out") => "out"
+    _ => return ()
+  }
+  let title = match jstr(jfield(l, "title")) {
+    Some(t) => t
+    None => return ()
+  }
+  let link = match jstr(jfield(l, "link")) {
+    Some(s) => base_codec::json_str(s)
+    None => base_codec::json_null()
+  }
+  out.push(
+    (
+      "letter",
+      base_codec::json_obj([
+        ("way", base_codec::json_str(way)),
+        ("title", base_codec::json_str(title)),
+        ("link", link),
+      ]),
+    ),
+  )
+}
+
+pub fn author_kind(v : base_codec::Json) -> base_codec::Json {
+  match v {
+    base_codec::Json::Str("agent") => base_codec::json_str("agent")
+    base_codec::Json::Str("station") => base_codec::json_str("station")
+    base_codec::Json::Str("ember") => base_codec::json_str("station")
+    base_codec::Json::Str("stillfail") => base_codec::json_str("station")
+    _ => base_codec::json_str("person")
+  }
+}
+
+pub fn to_message(r : Map[String, base_codec::Json]) -> base_codec::Json {
+  let agent_id = match parsed(field(r, "agent_identity")) {
+    Some(v) => to_json(v)
+    None => base_codec::json_null()
+  }
+  let ts = match field(r, "ts") {
+    base_codec::Json::Null => base_codec::json_str("")
+    t => t
+  }
+  let text = match field(r, "text") {
+    base_codec::Json::Null => base_codec::json_str("")
+    t => t
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("agentIdentity", agent_id),
+    ("thread", field(r, "thread")),
+    ("n", field(r, "n")),
+    ("ts", ts),
+    ("authorKind", author_kind(field(r, "author_kind"))),
+    ("author", field(r, "author")),
+    ("text", text),
+    ("attachments", json_list(field(r, "attachments"), parse_attachment)),
+    ("quotes", json_list(field(r, "quotes"), parse_quote)),
+    ("declared", field(r, "declared")),
+    ("client", field(r, "client")),
+    ("createdAt", field(r, "created_at")),
+    ("editedAt", field(r, "edited_at")),
+  ]
+  with_letter(out, field(r, "letter"))
+  base_codec::json_obj(out)
+}
+
+pub fn letter_message(r : Map[String, base_codec::Json]) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = [
+    ("agentIdentity", base_codec::json_null()),
+    ("thread", field(r, "thread")),
+    ("n", field(r, "n")),
+    ("ts", field(r, "ts")),
+    ("authorKind", author_kind(field(r, "author_kind"))),
+    ("author", field(r, "author")),
+    ("text", field(r, "text")),
+    ("attachments", json_list(field(r, "attachments"), parse_attachment)),
+    ("quotes", base_codec::json_arr([])),
+    ("declared", base_codec::json_null()),
+    ("client", base_codec::json_null()),
+    ("createdAt", field(r, "at")),
+    ("editedAt", base_codec::json_null()),
+  ]
+  with_letter(out, field(r, "letter"))
+  out.push(("apart", base_codec::json_bool(true)))
+  base_codec::json_obj(out)
+}
+
+pub fn edits_pending() -> ReadError {
+  refused(503, LEGACY_EDITS_PENDING)
+}
+
+pub fn merged_bounded(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  n : base_codec::Json,
+) -> Result[Option[base_codec::Json], ReadError] {
+  let edit = match builders_legacy::bounded_edit_key(db, thread, n) {
+    Ok(builders_legacy::EditKey::Key(k)) => k
+    Ok(builders_legacy::EditKey::Unprepared) => return Err(edits_pending())
+    Err(e) => return Err(map_step_err(e))
+  }
+  let edit_param = match edit {
+    Some(k) => base_codec::json_str(k)
+    None => base_codec::json_null()
+  }
+  let row = match one(
+    db,
+    "SELECT m.thread,m.n,m.ts,m.author_kind,m.author,\n    CASE WHEN e.n IS NULL THEN m.text ELSE e.text END AS text,\n    CASE WHEN e.n IS NULL THEN m.attachments ELSE e.attachments END AS attachments,\n    CASE WHEN e.n IS NULL THEN m.quotes ELSE e.quotes END AS quotes,\n    m.declared,m.client,m.agent_identity,m.at AS created_at,e.at AS edited_at,m.letter\n  FROM entries m LEFT JOIN entries e ON e.thread=m.thread AND e.n=CAST(?3 AS INTEGER)\n  WHERE m.thread=?1 AND m.n=CAST(?2 AS INTEGER) AND m.kind='message'",
+    [thread, n, edit_param],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  match row {
+    Some(r) => Ok(Some(to_message(r)))
+    None => Ok(None)
+  }
+}
+
+pub fn merged(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  n : base_codec::Json,
+) -> Result[Option[base_codec::Json], ReadError] {
+  let ready = match builders_legacy::merged_read_ready(db) {
+    Ok(b) => b
+    Err(e) => return Err(map_step_err(e))
+  }
+  if !ready {
+    return merged_bounded(db, thread, n)
+  }
+  match one(db, "SELECT * FROM merged WHERE thread = ? AND n = ?", [thread, n]) {
+    Ok(Some(m)) => Ok(Some(to_message(m)))
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn card_at(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  n : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  db.savepoint_swallow_err(
+    "card_at_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, ReadError] {
+      let asked = match one(
+        sp_db,
+        "SELECT card, options FROM entries WHERE thread = ? AND n = ?",
+        [thread, n],
+      ) {
+        Ok(Some(a)) => a
+        Ok(None) => return Ok(base_codec::json_null())
+        Err(e) => return Err(e)
+      }
+      match card_still_waits(sp_db, thread, n) {
+        Ok(true) => ()
+        Ok(false) => return Ok(base_codec::json_null())
+        Err(e) => return Err(e)
+      }
+      let card = match card_of(field(asked, "card"), field(asked, "options")) {
+        Some(c) => c
+        None => return Ok(base_codec::json_null())
+      }
+      match merged(sp_db, thread, n) {
+        Ok(Some(m)) => Ok(base_codec::json_arr([m, card]))
+        Ok(None) => Ok(base_codec::json_null())
+        Err(e) => Err(e)
+      }
+    },
+    map_sql_err,
+  )
+}
+
+pub fn review_pending_card(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let thread = json_val_or_null(args, "thread")
+  db.savepoint_swallow_err(
+    "pending_card_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, ReadError] {
+      match builders_core::cards_ready(sp_db, thread) {
+        Ok(true) => ()
+        Ok(false) => {
+          match has_cards(sp_db, thread) {
+            Ok(false) => return Ok(base_codec::json_null())
+            Ok(true) => return Err(pending_cards_err(thread))
+            Err(e) => return Err(e)
+          }
+        }
+        Err(e) => return Err(map_step_err(e))
+      }
+      let sys_row = match one(sp_db, SYSTEM_CARD_WAITING_SQL, [thread]) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      let asked = match n_of(sys_row) {
+        Some(n) => Some(n)
+        None => {
+          let conv_row = match one(sp_db, conversation_card_latest_sql(), [thread]) {
+            Ok(r) => r
+            Err(e) => return Err(e)
+          }
+          n_of(conv_row)
+        }
+      }
+      match asked {
+        Some(n) => card_at(sp_db, thread, n)
+        None => Ok(base_codec::json_null())
+      }
+    },
+    map_sql_err,
+  )
+}
+
+pub fn is_blank_json_str(v : base_codec::Json) -> Bool {
+  match v {
+    base_codec::Json::Str(s) => {
+      let units = js_json::utf16_units(s)
+      for i in 0..<units.length() {
+        if !js_json::is_js_space(units[i]) {
+          return false
+        }
+      }
+      true
+    }
+    _ => true
+  }
+}
+
+pub fn has_proposal_column(db : sql_db::Db) -> Result[Bool, ReadError] {
+  match one(db, "SELECT 1 AS x FROM pragma_table_info('entries') WHERE name = 'proposal' LIMIT 1", []) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn state_question(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let key = json_val_or_null(args, "key")
+  let ts = json_val_or_null(args, "ts")
+  let threads = match json_val(args, "threads") {
+    Some(base_codec::Json::Arr(ts_arr)) => ts_arr
+    _ => []
+  }
+  db.savepoint_swallow_err(
+    "state_question_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, ReadError] {
+      let has_prop = match has_proposal_column(sp_db) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let has_sidecar = match exists_in(sp_db, "table", "entry_proposals") {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let sql = if has_prop && has_sidecar {
+        "SELECT CAST(e.n AS TEXT) AS n, e.card, e.options, COALESCE(e.proposal, ep.proposal) AS proposal FROM entries e LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n WHERE e.thread = ? AND e.ts = ? AND e.kind = 'message'"
+      } else if has_prop {
+        "SELECT CAST(n AS TEXT) AS n, card, options, proposal FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'"
+      } else if has_sidecar {
+        "SELECT CAST(e.n AS TEXT) AS n, e.card, e.options, ep.proposal AS proposal FROM entries e LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n WHERE e.thread = ? AND e.ts = ? AND e.kind = 'message'"
+      } else {
+        "SELECT CAST(n AS TEXT) AS n, card, options FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'"
+      }
+      for i in 0..<threads.length() {
+        let thread = threads[i]
+        let entry = match one(
+          sp_db,
+          sql,
+          [thread, ts],
+        ) {
+          Ok(Some(e)) => e
+          Ok(None) => continue
+          Err(e) => return Err(e)
+        }
+        match builders_legacy::merged_needs_repair(sp_db) {
+          Ok(true) => return Err(edits_pending())
+          Ok(false) => ()
+          Err(e) => return Err(map_step_err(e))
+        }
+        if (has_prop || has_sidecar) && !(field(entry, "proposal") is base_codec::Json::Null) {
+          return Ok(base_codec::json_obj([("kind", base_codec::json_str("proposal"))]))
+        }
+        let n = number_of(field(entry, "n"))
+        let m = match merged(sp_db, thread, n) {
+          Ok(Some(mv)) => mv
+          Ok(None) => continue
+          Err(e) => return Err(e)
+        }
+        match m {
+          base_codec::Json::Obj(_) => ()
+          _ => continue
+        }
+        let ak = json_val_or_null(m, "authorKind")
+        let au = json_val_or_null(m, "author")
+        let txt = json_val_or_null(m, "text")
+        if !base_codec::json_eq(ak, base_codec::json_str("agent")) ||
+        !base_codec::json_eq(au, key) ||
+        is_blank_json_str(txt) {
+          return Ok(base_codec::json_obj([("kind", base_codec::json_str("invalid"))]))
+        }
+        let carded = !(field(entry, "card") is base_codec::Json::Null) ||
+        !(field(entry, "options") is base_codec::Json::Null)
+        let mn = json_val_or_null(m, "n")
+        let answered = if carded {
+          match card_waits(sp_db, thread, mn) {
+            Ok(w) => !w
+            Err(e) => return Err(e)
+          }
+        } else {
+          match one(sp_db, answer_after_sql(), [thread, mn]) {
+            Ok(Some(_)) => true
+            Ok(None) => false
+            Err(e) => return Err(e)
+          }
+        }
+        if answered {
+          return Ok(base_codec::json_obj([("kind", base_codec::json_str("answered"))]))
+        }
+        return Ok(
+          base_codec::json_obj([
+            ("kind", base_codec::json_str("found")),
+            (
+              "about",
+              base_codec::json_arr([
+                json_val_or_null(m, "thread"),
+                mn,
+                json_val_or_null(m, "ts"),
+              ]),
+            ),
+          ]),
+        )
+      }
+      Ok(base_codec::json_obj([("kind", base_codec::json_str("missing"))]))
+    },
+    map_sql_err,
+  )
+}
+
+pub fn created_at_num(v : base_codec::Json) -> Double {
+  match v {
+    base_codec::Json::Num(n, _) => n
+    _ => nan()
+  }
+}
+
+pub fn pending_deliveries(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let session = json_val_or_null(args, "key")
+  db.savepoint_swallow_err(
+    "pending_delivery_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, ReadError] {
+      let make_place = fn(r : Map[String, base_codec::Json], message : base_codec::Json) -> base_codec::Json {
+        base_codec::json_obj([
+          ("message", message),
+          ("surface", field(r, "surface")),
+          ("channel", field(r, "channel")),
+          ("threadTs", field(r, "thread_ts")),
+          ("connect", field(r, "connect")),
+        ])
+      }
+      let said : Array[(base_codec::Json, Double)] = []
+      let ready = match builders_legacy::merged_read_ready(sp_db) {
+        Ok(b) => b
+        Err(e) => return Err(map_step_err(e))
+      }
+      if ready {
+        let rows = match sp_db.all(
+          "SELECT m.*, t.surface, t.channel, t.thread_ts, ts.connect FROM deliveries d\n        JOIN merged m ON m.thread = d.thread AND m.n = d.n JOIN threads t ON t.id = d.thread\n        JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session\n        WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid",
+          [session],
+        ) {
+          Ok(rs) => rs
+          Err(e) => return Err(ReadError::Sql(e))
+        }
+        for i in 0..<rows.length() {
+          let r = rows[i]
+          said.push((make_place(r, to_message(r)), created_at_num(field(r, "created_at"))))
+        }
+      } else {
+        let rows = match sp_db.all(
+          "SELECT d.thread, CAST(d.n AS TEXT) AS n, t.surface, t.channel, t.thread_ts, ts.connect FROM deliveries d\n        JOIN entries e ON e.thread = d.thread AND e.n = d.n AND e.kind = 'message' JOIN threads t ON t.id = d.thread\n        JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session\n        WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid",
+          [session],
+        ) {
+          Ok(rs) => rs
+          Err(e) => return Err(ReadError::Sql(e))
+        }
+        for i in 0..<rows.length() {
+          let r = rows[i]
+          match merged_bounded(sp_db, field(r, "thread"), field(r, "n")) {
+            Ok(Some(m)) => {
+              let at = match m {
+                base_codec::Json::Obj(_) => created_at_num(json_val_or_null(m, "createdAt"))
+                _ => 0.0
+              }
+              said.push((make_place(r, m), at))
+            }
+            Ok(None) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      let letters : Array[(base_codec::Json, Double)] = []
+      let lrows = match sp_db.all(
+        "SELECT l.*, t.surface, t.channel, t.thread_ts, ts.connect FROM letter_deliveries d\n      JOIN letters l ON l.thread = d.thread AND l.n = d.n JOIN threads t ON t.id = d.thread\n      JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session\n      WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid",
+        [session],
+      ) {
+        Ok(rs) => rs
+        Err(e) => return Err(ReadError::Sql(e))
+      }
+      for i in 0..<lrows.length() {
+        let r = lrows[i]
+        letters.push((make_place(r, letter_message(r)), created_at_num(field(r, "at"))))
+      }
+      let out : Array[base_codec::Json] = []
+      let mut i = 0
+      let mut j = 0
+      while i < said.length() || j < letters.length() {
+        if j >= letters.length() || (i < said.length() && said[i].1 <= letters[j].1) {
+          out.push(said[i].0)
+          i = i + 1
+        } else {
+          out.push(letters[j].0)
+          j = j + 1
+        }
+      }
+      Ok(base_codec::json_arr(out))
+    },
+    map_sql_err,
+  )
+}

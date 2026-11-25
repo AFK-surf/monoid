@@ -737,6 +737,10 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
       people: people_,
     };
     row.ws = (all.get(key) ?? all.get(agents[0].key))?.ws ?? null;
+    const project = t.thread.project !== undefined ? t.thread.project : from?.thread.project;
+    if (project !== undefined) row.project = project;
+    const tags = t.thread.tags !== undefined && t.thread.tags.length > 0 ? t.thread.tags : from?.thread.tags;
+    if (tags !== undefined && tags.length > 0) row.tags = tags;
     row.named = named;
     row.mineOf = [creator_, ...people_, ...starters, ...agents.flatMap((a) => spoke.get(a.key) ?? [])].filter((p) => p !== null);
     row.said = said;
@@ -827,6 +831,8 @@ export function sharedChats(station: Store, archived: boolean, scope: Scope | nu
       creator: starter,
     };
     row.ws = x.ws;
+    if (from?.thread.project !== undefined) row.project = from.thread.project;
+    if (from?.thread.tags !== undefined && from.thread.tags.length > 0) row.tags = from.thread.tags;
     row.named = named;
     row.mineOf = mineOf.filter((p) => p !== null);
     if (archived) row.archived = archivedOf(x);

@@ -42,6 +42,10 @@ pub struct Finder {
   mut rollouts_keys : Array[String]
   mut said : Map[String, SaidById]
   mut said_ids : Array[String]
+  mut track_failed_dirs : Bool
+  mut failed_dirs : Map[String, Bool]
+  mut failed_dir_keys : Array[String]
+  mut readdir_err : Map[String, Bool]
 }
 
 pub fn Finder::new(client : builders_core::ShellClient, sep : String) -> Finder {
@@ -54,6 +58,38 @@ pub fn Finder::new(client : builders_core::ShellClient, sep : String) -> Finder 
     rollouts_keys: [],
     said: Map::new(),
     said_ids: [],
+    track_failed_dirs: false,
+    failed_dirs: Map::new(),
+    failed_dir_keys: [],
+    readdir_err: Map::new(),
+  }
+}
+
+/// Enable failed-directory tracking and optional test-fault `readdir_err` injection
+/// (aligned with `station/mb/src/locate/paths.mbt:31-43`).
+pub fn Finder::enable_failed_dir_tracking(self : Finder, readdir_err : Map[String, Bool]) -> Unit {
+  self.track_failed_dirs = true
+  self.readdir_err = readdir_err
+}
+
+/// Return and clear directories whose `fs.readdir` failed during discovery.
+pub fn Finder::take_failed_dirs(self : Finder) -> Array[String] {
+  let out = self.failed_dir_keys
+  self.failed_dirs = Map::new()
+  self.failed_dir_keys = []
+  out
+}
+
+fn Finder::record_failed_dir(self : Finder, dir : String) -> Unit {
+  if !self.track_failed_dirs {
+    return
+  }
+  match self.failed_dirs.get(dir) {
+    Some(true) => ()
+    _ => {
+      self.failed_dirs.set(dir, true)
+      self.failed_dir_keys.push(dir)
+    }
   }
 }
 
@@ -128,6 +164,13 @@ fn Finder::kept(self : Finder, path : String) -> Bool {
 }
 
 fn Finder::entries(self : Finder, dir : String) -> Option[Array[String]] {
+  match self.readdir_err.get(dir) {
+    Some(true) => {
+      self.record_failed_dir(dir)
+      return None
+    }
+    _ => ()
+  }
   match self.client.shell_sync_json("fs.readdir", base_codec::json_obj([("path", base_codec::json_str(dir))])) {
     Ok(base_codec::Json::Arr(names)) => {
       let out : Array[String] = []
@@ -139,11 +182,21 @@ fn Finder::entries(self : Finder, dir : String) -> Option[Array[String]] {
       }
       Some(out)
     }
-    _ => None
+    _ => {
+      self.record_failed_dir(dir)
+      None
+    }
   }
 }
 
 fn Finder::typed_entries(self : Finder, dir : String) -> Option[Array[(String, String)]] {
+  match self.readdir_err.get(dir) {
+    Some(true) => {
+      self.record_failed_dir(dir)
+      return None
+    }
+    _ => ()
+  }
   let args = base_codec::json_obj([
     ("path", base_codec::json_str(dir)),
     ("types", base_codec::json_bool(true)),
@@ -166,7 +219,10 @@ fn Finder::typed_entries(self : Finder, dir : String) -> Option[Array[(String, S
       }
       Some(out)
     }
-    _ => None
+    _ => {
+      self.record_failed_dir(dir)
+      None
+    }
   }
 }
 
@@ -427,7 +483,7 @@ fn Finder::transcript_in(
     }
     let projects = match self.entries(dir) {
       Some(ps) => ps
-      None => []
+      None => return None
     }
     for i in 0..<projects.length() {
       let path = self.join([dir, projects[i], id + ".jsonl"])

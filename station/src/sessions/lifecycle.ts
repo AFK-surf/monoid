@@ -1346,6 +1346,7 @@ export async function deleteSession(hub: Hub, key: string) {
       }
     }
   }
+  hub.clearProjectsTold(key);
   hub.store.deleteSession(key);
   hub.closed(key);
   await rm(transcriptCopy(hub, key), { force: true });

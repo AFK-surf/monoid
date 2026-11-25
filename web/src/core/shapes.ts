@@ -1941,6 +1941,11 @@ export interface PrefsView {
 	 */
 	dht?: string;
 	/**
+	 * Workspaces other than the one in view kept linked from this device: `off` (only the workspaces the apps
+	 * show are linked, the others when switched to), or none for on.
+	 */
+	otherWorkspaces?: string;
+	/**
 	 * This app keeping itself current on this device: `off` (a newer build is said, and downloaded and put in
 	 * place only at the person's word), or none for on (downloaded by itself, put in place while the app is not in use).
 	 */

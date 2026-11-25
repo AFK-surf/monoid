@@ -494,6 +494,7 @@ fn ScreenRig::key_in(self : ScreenRig, down : Bool, key : String, code : String,
     own_bar: None,
     lone: false,
     tab_pads: None,
+    pane_width: None,
     on_window: None,
   }
   screen_keys_in(pg, Key(down~, key~, code~, mods~))

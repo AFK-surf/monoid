@@ -16,7 +16,7 @@ import { makeComma } from "./index.ts";
 import { type CommaChats, OwnerActivity, workspaceMetaOf } from "./surface.ts";
 import { CHANGED, READ, SAY, type WorkspaceReads, answerText, peerRead, workspaceRead } from "./peer.ts";
 import { routerReads, routerSaysAfter } from "./chats.ts";
-import { CommaStats, FAST_SETTLE_MS, RevIndex, chatOf } from "./stats.ts";
+import { CommaStats, FAST_SETTLE_MS, RevIndex, chatOf, connectScope, validRequesterEmail } from "./stats.ts";
 import { workspaceIndex } from "./workspace-index.ts";
 
 type Json = any;
@@ -88,7 +88,7 @@ export const CommaLive = Layer.effectDiscard(
     // The general handover timeout can take sessions up before the older process really exits.
     const said = routerSaysAfter(agents.hub, legacy, previous.exited);
     // Another station of the workspace writing in one of this one's chats, for the Router of the Comma connect there.
-    bus.on(SAY, async (_peer: string, request: Json, workspace?: string) => {
+    bus.on(SAY, async (peer: string, request: Json, workspace?: string) => {
       if (typeof workspace !== "string" || !within(workspace)) throw new Error("not this workspace");
       const w = request?.say;
       if (typeof w?.thread !== "number" || typeof w?.text !== "string" || w.text.trim() === "") throw new Error("no such write");
@@ -99,13 +99,17 @@ export const CommaLive = Layer.effectDiscard(
         }
         expectedCardSeq = w.expectedCardSeq;
       }
+      const connect = String(w.connect ?? "comma");
+      const requesterEmail = validRequesterEmail(w.requesterEmail);
       return {
         seq: said(workspace, {
           thread: w.thread,
           text: w.text,
           key: String(w.key ?? ""),
           requester: String(w.requester ?? "Router"),
-          connect: String(w.connect ?? "comma"),
+          connect,
+          connectScope: connectScope(peer, connect),
+          ...(requesterEmail !== undefined ? { requesterEmail } : {}),
           ...(w.closeCard === true ? { closeCard: true } : {}),
           ...(expectedCardSeq !== undefined ? { expectedCardSeq } : {}),
         }),
@@ -184,20 +188,22 @@ export const CommaLive = Layer.effectDiscard(
       const index = workspaceIndex(data, workspace, () => within(workspace), () => scopeVersion, workspaceRead(reads), usage);
       const chats: CommaChats = {
         read: (ref, after, limit) => routerReads(index.stats, reads, ref, after, limit),
-        say: async (ref, text, key, requester, connect, closeCard, expectedCardSeq) => {
+        say: async (ref, text, key, requester, connect, closeCard, expectedCardSeq, requesterEmail) => {
           if (!within(workspace)) throw new Error("the workspace changed while writing");
           const chat = chatOf(ref);
           if (chat === null) throw new Error("no such chat");
+          const validEmail = validRequesterEmail(requesterEmail);
           const w = {
             thread: chat.thread,
             text,
             key: key === "" ? "" : `${connect}:${key}`,
             requester,
             connect,
+            ...(validEmail !== undefined ? { requesterEmail: validEmail } : {}),
             ...(closeCard === true ? { closeCard: true } : {}),
             ...(expectedCardSeq !== undefined ? { expectedCardSeq } : {}),
           };
-          if (chat.station === null) return { seq: said(workspace, w) };
+          if (chat.station === null) return { seq: said(workspace, { ...w, connectScope: connectScope(cloud.state?.station ?? "", connect) }) };
           const got = await bus.ask(chat.station, { method: SAY, workspace, say: w });
           return { seq: got?.seq };
         },
@@ -234,7 +240,8 @@ export const CommaLive = Layer.effectDiscard(
       },
       onWorkspaceMetaChange: (changed) => cloud.listen(() => changed()),
       ownerActiveAt: (_ws, owner) => activity.get(owner),
-      onOwnerActiveChange }), { kind: "comma", shown: (c, raw) => c.shown(raw), entry: commaEntry });
+      onOwnerActiveChange,
+      stationId: () => cloud.state?.station ?? null }), { kind: "comma", shown: (c, raw) => c.shown(raw), entry: commaEntry });
     // (what offers Comma as a platform in the connect wizard: a station from before says nothing)
     parts.overview("comma", () => true);
     parts.routes(

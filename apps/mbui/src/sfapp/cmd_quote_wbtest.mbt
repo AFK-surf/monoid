@@ -66,7 +66,7 @@ test "cmdQuote: off by default does not highlight or quote; turning it on draws 
   t.run_for(@ui.move_most_ms)
   let quotes = @sfbase.writing(src, draft).quotes.get()
   assert_eq(quotes.length(), 1, msg="one quote added on Cmd+click")
-  assert_eq(text(Some(quotes[0]), "text"), "高度先按 90 估，量过一次就记住。", msg="quoted the hovered sentence")
+  assert_eq(text(Some(quotes[0]), "text"), "高度先按 90 估", msg="quoted the hovered clause up to the comma")
 
   // Rapid second Cmd+click on the same sentence deduplicates.
   guard t.rect_of(para) is Some((rx2, ry2, _, _)) else {
@@ -102,7 +102,7 @@ test "cmdQuote: on Windows/Linux (platform=3), Ctrl triggers highlight and click
   t.run_for(@ui.move_most_ms)
   let quotes = @sfbase.writing(src, draft).quotes.get()
   assert_eq(quotes.length(), 1, msg="Ctrl+click quotes hovered sentence")
-  assert_eq(text(Some(quotes[0]), "text"), "高度先按 90 估，量过一次就记住。")
+  assert_eq(text(Some(quotes[0]), "text"), "高度先按 90 估")
 }
 
 ///|
@@ -151,3 +151,49 @@ test "cmdQuote: manually selected text shows underline when Cmd is pressed (even
 ///|
 /// A frame or two past a pointer move or a modifier change, for what it shows to be drawn.
 let cmd_quote_step_ms : Double = 50.0
+
+///|
+test "cmdQuote: a ⌘-drag picks whole words, the word under the press kept; with ⇧ as well, whole sentences" {
+  let (t, src) = exp_at("chat", 1280.0, 800.0, platform=0)
+  exp_set(t, src, ["cmdQuote"], true)
+  let para = "高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？"
+  guard t.rect_of(para) is Some((rx, ry, rw, _)) else {
+    fail("no target message drawn")
+  }
+  let y = ry + 8.0
+  let (x0, x1) = (rx + 30.0, rx + rw * 0.5)
+
+  // ⌘ alone: from inside one word into another, both ends on a word's edge
+  t.hold_mods(@ui.mod_cmd)
+  t.move_to(x0, y)
+  t.run_for(cmd_quote_step_ms)
+  t.press_at(x0, y)
+  t.move_to(x1, y)
+  t.run_for(cmd_quote_step_ms)
+  t.release(x1, y)
+  t.run_for(cmd_quote_step_ms)
+  let words = @ui.picked_words()
+  guard para.find(words) is Some(a) && words != "" else { fail("⌘-drag picked \{words}, not in the message") }
+  let b = a + words.length()
+  assert_eq(@ui.word_at(para, a).0, a, msg="the pick begins where a word does: \{words}")
+  assert_eq(@ui.word_at(para, b - 1).1, b, msg="the pick ends where a word does: \{words}")
+  t.hold_mods(0)
+  t.press_at(rx + rw / 2.0, ry + 200.0)
+  t.release(rx + rw / 2.0, ry + 200.0)
+  t.run_for(cmd_quote_step_ms)
+
+  // ⌘⇧: from inside the first sentence into the second (深色模式…, some 210 to 360 across), the two whole
+  let x2 = rx + 280.0
+  t.hold_mods(@ui.mod_cmd | @ui.mod_shift_key)
+  t.move_to(x0, y)
+  t.run_for(cmd_quote_step_ms)
+  t.press_at(x0, y)
+  t.move_to(x2, y)
+  t.run_for(cmd_quote_step_ms)
+  t.release(x2, y)
+  t.run_for(cmd_quote_step_ms)
+  assert_eq(@ui.picked_words(), "高度先按 90 估，量过一次就记住。深色模式我一起看。")
+  t.hold_mods(0)
+  t.run_for(cmd_quote_step_ms)
+  assert_eq(@sfbase.writing(src, "ws1/st1:s-c1").quotes.get().length(), 0, msg="a drag quotes nothing by itself")
+}

@@ -286,7 +286,7 @@ test "大屏: a picture's menu opens it beside; the whole window's 移到侧边 
 }
 
 ///|
-test "大屏: a tab closed lets go of its viewer; a chat opened with a file's tab kept shows it with nothing pressed; Escape with it in front closes nothing" {
+test "大屏: a tab closed lets go of its viewer; a chat opened with a file's tab kept shows it with nothing pressed" {
   let t = beside_tester(mode="chat-view-side")
   let tab = @sffixture.fixture_view_tab("chat-view-side")
   assert_true(shown_beside(t, "说明.md", "发布前要做的"), msg="shown as the chat opens")
@@ -294,14 +294,22 @@ test "大屏: a tab closed lets go of its viewer; a chat opened with a file's ta
   for f in t.audit() {
     println("audit kept: \{f}")
   }
-  t.key(@ui.key_escape)
-  t.run_for(@ui.move_most_ms)
-  assert_eq(view_tabs(t), [tab], msg="Escape closed nothing")
-  assert_true(shown_beside(t, "说明.md", "发布前要做的"))
   t.click(Button, label=@sf.t("web-pages.chat.close", args=[("name", "说明.md")]))
   t.run_for(@ui.move_most_ms)
   assert_eq(view_tabs(t).length(), 0)
   assert_true(!@sfbase.tab_viewer_held(beside_chat, tab), msg="its viewer let go")
+}
+
+///|
+test "大屏: Escape with a file's tab in front closes the side panel, as its close button and ⌘W do, its viewer let go" {
+  let t = beside_tester(mode="chat-view-side")
+  let tab = @sffixture.fixture_view_tab("chat-view-side")
+  assert_true(shown_beside(t, "说明.md", "发布前要做的"), msg="shown as the chat opens")
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(view_tabs(t), [], msg="Escape closed the panel")
+  assert_true(!@sfbase.tab_viewer_held(beside_chat, tab), msg="its viewer let go")
+  assert_eq(t.all(Toolbar, label="说明.md").length(), 0, msg="nothing of it shown")
 }
 
 ///|
@@ -925,7 +933,7 @@ test "大屏: the whole window's 移到侧边 with no tab of the film before: th
 }
 
 ///|
-test "大屏: a film's tab in front takes no keys: Space typed in the composer is a space, the player as it was; Escape closes nothing" {
+test "大屏: a film's tab in front takes no keys: Space typed in the composer is a space, the player as it was; Escape closes the panel, the player with it" {
   let t = beside_tester(mode="chat-view-side-video")
   let id = tab_player_view(t, beside_film)
   let told = t.views().length()
@@ -942,8 +950,8 @@ test "大屏: a film's tab in front takes no keys: Space typed in the composer i
   }
   t.key(@ui.key_escape)
   t.run_for(@ui.move_most_ms)
-  assert_eq(view_tabs(t), [@sffixture.fixture_view_tab("chat-view-side-video")], msg="Escape closed nothing")
-  assert_true(!t.views().contains("close \{id}"))
+  assert_eq(view_tabs(t), [], msg="Escape closed the panel")
+  assert_true(t.views().contains("close \{id}"), msg="its player closed with it")
 }
 
 ///|

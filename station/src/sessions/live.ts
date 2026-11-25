@@ -16,7 +16,8 @@ import { join } from "node:path";
 import type { BackgroundTask, LiveEvent, PlanItem } from "../agents/runtime.ts";
 import { liveClock } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { type Answer, MbReader, readerBinary } from "../read/mb-reader.ts";
+import { type Answer, MbReader, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import type { TailState, TimelineEntry, TranscriptRef } from "../read/transcript.ts";
 import { type SessionUsage, noUsage } from "../read/usage.ts";
 import type { RuntimeKind } from "../agents/runtime.ts";
@@ -481,9 +482,11 @@ const briefOfRead = (e: Json): TimelineEntry => e[BRIEF] ?? wholeOf(e);
 /// gained read there as the readers read it (`tailRead`), off the main thread. Started as it is asked, on a directory of
 /// its own with an empty database (it reads transcripts, nothing of the station's store), and ended as soon as nothing
 /// is asked of it: one left running would outlive what started it (a test that never closes its hub).
-class OwnReader {
+export class OwnReader {
   #dir: Promise<string> | null = null;
   #reader: MbReader | null = null;
+  #starting: Promise<MbReader> | null = null;
+  readonly #readers: ReaderSelectConfig | (() => ReaderSelectConfig) | undefined;
   /// What is asked and not answered yet, of which process.
   readonly #waiting = new Map<number, { reader: MbReader; resolve: (answer: Json) => void; reject: (error: Error) => void }>();
   #next = 0;
@@ -491,6 +494,10 @@ class OwnReader {
   /// Readers being ended and not gone yet (one ended as its last answer came): `close` waits for them before it takes
   /// their directory away, a database of theirs still open in it.
   readonly #ending = new Set<Promise<unknown>>();
+
+  constructor(readers?: ReaderSelectConfig | (() => ReaderSelectConfig)) {
+    this.#readers = readers;
+  }
 
   tailRead(runtime: RuntimeKind, state: TailState | { path: string; runtime?: RuntimeKind; entries?: false }): Promise<{ start: number; entries: Json[]; state: TailState }> {
     return this.#ask("tailRead", { runtime, state });
@@ -500,8 +507,9 @@ class OwnReader {
     if (this.#closed) throw new Error("the live view is closed");
     const dir = await (this.#dir ??= this.#made());
     if (this.#closed) throw new Error("the live view is closed");
+    const reader = this.#reader ?? (await (this.#starting ??= this.#startAsync(dir)));
+    if (this.#closed) throw new Error("the live view is closed");
     const id = ++this.#next;
-    const reader = (this.#reader ??= this.#start(dir));
     const answered = new Promise<Json>((resolve, reject) => this.#waiting.set(id, { reader, resolve, reject }));
     reader.postMessage({ id, op, args, lang: "zh", names: [], processes: [], clientKeys: [] });
     return answered;
@@ -513,11 +521,21 @@ class OwnReader {
     return dir;
   }
 
-  /// Where the program is, looked for once (`readerBinary` looks at the disk).
-  #binary: string | null = null;
+  async #startAsync(dir: string): Promise<MbReader> {
+    try {
+      const sel = await resolveReaderSelectionAsync("data", { config: this.#readers, logAt: "live" });
+      if (this.#closed) throw new Error("the live view is closed");
+      if (this.#reader !== null) return this.#reader;
+      const reader = this.#start(sel.primaryBinary, dir);
+      this.#reader = reader;
+      return reader;
+    } finally {
+      this.#starting = null;
+    }
+  }
 
-  #start(dir: string): MbReader {
-    const reader = new MbReader((this.#binary ??= readerBinary()), dir);
+  #start(binary: string, dir: string): MbReader {
+    const reader = new MbReader(binary, dir);
     const ended = (error: Error) => {
       if (this.#reader === reader) this.#reader = null;
       for (const [id, w] of this.#waiting) {

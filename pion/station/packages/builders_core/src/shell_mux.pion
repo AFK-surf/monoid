@@ -1,0 +1,433 @@
+// Zero-RC-cycle, single-owner async/sync shell multiplexer (`ShellMux`),
+// 1:1 aligned with Wave 7 §2.1 invariants:
+// - `pending` stores value-type `MuxToken` only (NEVER closures capturing stream/client/mux).
+// - Dual `MuxTransport` interface supporting both async `call_async` and sync `call_sync`,
+//   preserving `Option[Bytes]` `None` vs `Some(empty)` distinction.
+// - Re-entrancy safe: `ShellDone` removes `done.id` from `pending` BEFORE dispatching.
+// - Stdin framing (`start_stdin` optional, false for `forward`): at most 64 complete `\n`-terminated
+//   lines per tick; non-blocking `wait(0)` while `LineQueue` still holds complete lines; `StdinEof`
+//   NEVER flushes unterminated partial bytes and fires `on_stdin_eof` only after draining all complete lines.
+// - `fetch.cancel` is synchronous and NEVER removes `id` from `pending` (retired solely by `ShellDone`).
+// - Per-handle serial outbound queue (`SerialOutbox`) ensuring <= 1 in-flight write/zstd call per handle.
+
+import "base_codec"
+import "host_shim"
+import "sql_db"
+
+pub let MUX_MAX_STDIN_PER_TICK : Int = 64
+
+/// Value-type completion token stored in `ShellMux.pending`.
+/// Contains only primitive IDs/tags so Pion RC can never form reference cycles.
+pub enum MuxToken {
+  Accept(Int)
+  Read(Int)
+  Write(Int)
+  Connect(Int, Int64)
+  Close(Int)
+  Zstd(Int, Int)
+  Iroh(Int, Int, Int64)
+  Tagged(Int, Int, Int64)
+}
+
+/// Dual async + sync transport interface for `ShellMux`.
+/// Production uses `MuxTransport::host()`; unit tests inject an in-memory mock.
+pub struct MuxTransport {
+  pub call_async : (Int64, String, String, Option[Bytes]) -> Unit
+  pub call_sync : (String, String) -> String
+  pub write_stdout_line : (String) -> Bool
+  pub write_stdout_frame : (Array[(String, base_codec::Json)], Bytes) -> Bool
+  pub now_ms : () -> Int64
+  pub wall_ms : () -> Int64
+  pub wait : (Int64) -> Option[host_shim::HostEvent]
+}
+
+pub fn MuxTransport::host() -> MuxTransport {
+  MuxTransport::{
+    call_async: host_shim::shell_call,
+    call_sync: host_shim::shell_sync,
+    write_stdout_line: fn(line : String) -> Bool {
+      host_shim::write_stdout_line(escape_line_separators(line))
+    },
+    write_stdout_frame: host_shim::write_stdout_frame,
+    now_ms: host_shim::now_ms,
+    wall_ms: host_shim::wall_ms,
+    wait: host_shim::wait,
+  }
+}
+
+pub struct ShellMux {
+  pub transport : MuxTransport
+  pub start_stdin : Bool
+  pub queue : LineQueue
+  mut next_id : Int64
+  mut pending : Map[Int64, MuxToken]
+  mut stdin_eof_seen : Bool
+  mut stdin_eof_delivered : Bool
+}
+
+pub fn ShellMux::new(transport : MuxTransport, start_stdin : Bool = true) -> ShellMux {
+  ShellMux::{
+    transport: transport,
+    start_stdin: start_stdin,
+    queue: LineQueue::new(),
+    next_id: 0.to_int64(),
+    pending: Map::new(),
+    stdin_eof_seen: false,
+    stdin_eof_delivered: false,
+  }
+}
+
+/// Create a production `ShellMux` backed by `host_shim`.
+/// Callers MUST invoke `host_shim::start(shell_dir, start_stdin)` with the exact same `start_stdin` flag.
+pub fn ShellMux::host(start_stdin : Bool = true) -> ShellMux {
+  ShellMux::new(MuxTransport::host(), start_stdin=start_stdin)
+}
+
+pub fn ShellMux::pending_len(self : ShellMux) -> Int {
+  self.pending.length()
+}
+
+pub fn ShellMux::has_pending(self : ShellMux, id : Int64) -> Bool {
+  self.pending.contains(id)
+}
+
+pub fn ShellMux::stdin_eof_delivered(self : ShellMux) -> Bool {
+  self.stdin_eof_delivered
+}
+
+pub fn ShellMux::has_queued_lines(self : ShellMux) -> Bool {
+  self.queue.has_lines()
+}
+
+pub fn ShellMux::now_ms(self : ShellMux) -> Int64 {
+  (self.transport.now_ms)()
+}
+
+pub fn ShellMux::wall_ms(self : ShellMux) -> Int64 {
+  (self.transport.wall_ms)()
+}
+
+pub fn ShellMux::write_stdout_line(self : ShellMux, line : String) -> Bool {
+  (self.transport.write_stdout_line)(line)
+}
+
+pub fn ShellMux::write_stdout_frame(
+  self : ShellMux,
+  head_fields : Array[(String, base_codec::Json)],
+  body : Bytes,
+) -> Bool {
+  (self.transport.write_stdout_frame)(head_fields, body)
+}
+
+/// Issue an asynchronous shell call with pre-serialized JSON args and optional binary payload.
+/// Preserves `None` vs `Some(empty_bytes)`.
+pub fn ShellMux::call_async_raw(
+  self : ShellMux,
+  token : MuxToken,
+  op : String,
+  json_str : String,
+  payload : Option[Bytes],
+) -> Int64 {
+  self.next_id = self.next_id + 1.to_int64()
+  let id = self.next_id
+  self.pending.set(id, token)
+  (self.transport.call_async)(id, op, json_str, payload)
+  id
+}
+
+/// Issue an asynchronous shell call with JSON args and optional binary payload.
+pub fn ShellMux::call_async(
+  self : ShellMux,
+  token : MuxToken,
+  op : String,
+  args : base_codec::Json,
+  payload : Option[Bytes],
+) -> Int64 {
+  self.call_async_raw(token, op, sql_db::stringify_json(args), payload)
+}
+
+/// Issue a synchronous shell call returning raw JSON envelope text.
+pub fn ShellMux::call_sync_raw(self : ShellMux, op : String, json_str : String) -> String {
+  (self.transport.call_sync)(op, json_str)
+}
+
+/// Issue a synchronous shell call and parse its `{value}` / `{error}` JSON envelope.
+pub fn ShellMux::call_sync_json(
+  self : ShellMux,
+  op : String,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ShellError] {
+  let raw = (self.transport.call_sync)(op, sql_db::stringify_json(args))
+  parse_shell_sync_answer(raw)
+}
+
+/// Synchronously cancel a cancellable in-flight shell call (`fetch.cancel`).
+/// NEVER removes `call_id` from `self.pending`: every pending entry is retired solely
+/// when its matching `ShellDone` arrives (handles cancel/completion races cleanly).
+pub fn ShellMux::cancel(self : ShellMux, call_id : Int64) -> Result[base_codec::Json, ShellError] {
+  parse_shell_sync_answer(self.call_sync_raw("fetch.cancel", "{\"id\":" + call_id.to_string() + "}"))
+}
+
+fn ShellMux::drain_stdin_budget(
+  self : ShellMux,
+  max_lines : Int,
+  on_line : (String) -> Unit,
+  on_stdin_eof : () -> Unit,
+) -> Int {
+  if !self.start_stdin {
+    return 0
+  }
+  let mut delivered = 0
+  while delivered < max_lines {
+    match self.queue.pop_line() {
+      Some(line) => {
+        delivered = delivered + 1
+        on_line(line)
+      }
+      None => break
+    }
+  }
+  if !self.queue.has_lines() && self.stdin_eof_seen && !self.stdin_eof_delivered {
+    self.stdin_eof_delivered = true
+    on_stdin_eof()
+  }
+  delivered
+}
+
+/// Run one tick of the multiplexer event loop:
+/// - If `start_stdin` is true and `LineQueue` already has complete lines, uses `wait(0)` (non-blocking)
+///   so remaining stdin lines are never stranded waiting for an unrelated socket event.
+/// - Delivers at most 64 complete `\n`-terminated stdin lines per tick.
+/// - On `ShellDone`, removes `done.id` from `pending` BEFORE dispatching `on_done` (re-entrancy safe).
+/// - On `StdinEof`, never flushes unterminated partial bytes and fires `on_stdin_eof` only after all
+///   complete queued lines have been delivered.
+/// Returns `true` if any event, stdin line, or stdin EOF was processed in this tick.
+pub fn ShellMux::step(
+  self : ShellMux,
+  wait_ms : Int64,
+  on_line : (String) -> Unit,
+  on_stdin_eof : () -> Unit,
+  on_done : (MuxToken, host_shim::ShellDone) -> Unit,
+) -> Bool {
+  let mut progressed = false
+  let mut budget = MUX_MAX_STDIN_PER_TICK
+  let effective_wait = if self.start_stdin && self.queue.has_lines() {
+    0.to_int64()
+  } else {
+    wait_ms
+  }
+
+  match (self.transport.wait)(effective_wait) {
+    None => ()
+    Some(host_shim::HostEvent::StdinData(chunk)) => {
+      if self.start_stdin {
+        self.queue.enqueue_chunk(chunk)
+        progressed = true
+      }
+    }
+    Some(host_shim::HostEvent::StdinEof) => {
+      if self.start_stdin {
+        self.stdin_eof_seen = true
+        self.queue.stdin_eof = true
+        progressed = true
+      }
+    }
+    Some(host_shim::HostEvent::ShellDone(done)) => {
+      progressed = true
+      match self.pending.get(done.id) {
+        Some(tok) => {
+          // Remove BEFORE dispatching so re-entrant calls inside `on_done` see clean state.
+          self.pending.remove(done.id)
+          on_done(tok, done)
+        }
+        None => ()
+      }
+    }
+    Some(host_shim::HostEvent::Sys(_, _)) => {
+      progressed = true
+    }
+  }
+
+  if self.start_stdin {
+    let was_eof_delivered = self.stdin_eof_delivered
+    let n = self.drain_stdin_budget(budget, on_line, on_stdin_eof)
+    if n > 0 || (!was_eof_delivered && self.stdin_eof_delivered) {
+      progressed = true
+    }
+  }
+
+  progressed
+}
+
+/// Decode `ShellDone` payload into `(Option[Json], Option[Bytes])` preserving `None` vs `Some(empty)`.
+/// Returns `Err` on malformed JSON rather than silently substituting `null`.
+pub fn decode_shell_done(
+  done : host_shim::ShellDone,
+) -> Result[(Option[base_codec::Json], Option[Bytes]), ShellError] {
+  if done.error.length() > 0 {
+    return Err(shell_error(done.error))
+  }
+  let j_opt : Option[base_codec::Json] = if done.json.length() == 0 {
+    Some(base_codec::json_null())
+  } else {
+    match sql_db::parse_json(done.json) {
+      base_codec::JsonParseResult::Ok(j) => Some(j)
+      base_codec::JsonParseResult::Err(msg) => return Err(shell_error("invalid shell done json: " + msg))
+    }
+  }
+  Ok((j_opt, done.bytes))
+}
+
+// ── Per-handle serial outbound queue (<= 1 in-flight call per socket / zstd handle) ──
+
+pub struct OutboxCall {
+  pub token : MuxToken
+  pub op : String
+  pub json_str : String
+  pub payload : Option[Bytes]
+}
+
+struct HandleQueue {
+  mut items : Array[OutboxCall]
+  mut head : Int
+}
+
+fn HandleQueue::new() -> HandleQueue {
+  HandleQueue::{ items: [], head: 0 }
+}
+
+fn HandleQueue::push(self : HandleQueue, item : OutboxCall) -> Unit {
+  self.items.push(item)
+}
+
+fn HandleQueue::pop(self : HandleQueue) -> Option[OutboxCall] {
+  if self.head >= self.items.length() {
+    return None
+  }
+  let item = self.items[self.head]
+  self.head = self.head + 1
+  if self.head == self.items.length() {
+    self.items = []
+    self.head = 0
+  } else if self.head >= 32 && self.head * 2 >= self.items.length() {
+    let compacted : Array[OutboxCall] = []
+    for i in self.head..<self.items.length() {
+      compacted.push(self.items[i])
+    }
+    self.items = compacted
+    self.head = 0
+  }
+  Some(item)
+}
+
+fn HandleQueue::is_empty(self : HandleQueue) -> Bool {
+  self.head >= self.items.length()
+}
+
+/// Ensures at most 1 in-flight async call (`tcp.write`, `zstd.push`, etc.) per handle ID.
+pub struct SerialOutbox {
+  mut in_flight : Map[Int, Int64]
+  mut queues : Map[Int, HandleQueue]
+}
+
+pub fn SerialOutbox::new() -> SerialOutbox {
+  SerialOutbox::{ in_flight: Map::new(), queues: Map::new() }
+}
+
+pub fn SerialOutbox::in_flight_count(self : SerialOutbox) -> Int {
+  self.in_flight.length()
+}
+
+pub fn SerialOutbox::queued_handles(self : SerialOutbox) -> Int {
+  self.queues.length()
+}
+
+pub fn SerialOutbox::is_busy(self : SerialOutbox, handle_id : Int) -> Bool {
+  self.in_flight.contains(handle_id)
+}
+
+/// Enqueue an outbound async call for `handle_id`.
+/// If no call is currently in-flight for `handle_id`, dispatches immediately via `mux` and returns `Some(call_id)`.
+/// Otherwise queues FIFO and returns `None`.
+pub fn SerialOutbox::send(
+  self : SerialOutbox,
+  mux : ShellMux,
+  handle_id : Int,
+  token : MuxToken,
+  op : String,
+  args : base_codec::Json,
+  payload : Option[Bytes],
+) -> Option[Int64] {
+  self.send_raw(mux, handle_id, token, op, sql_db::stringify_json(args), payload)
+}
+
+pub fn SerialOutbox::send_raw(
+  self : SerialOutbox,
+  mux : ShellMux,
+  handle_id : Int,
+  token : MuxToken,
+  op : String,
+  json_str : String,
+  payload : Option[Bytes],
+) -> Option[Int64] {
+  if !self.in_flight.contains(handle_id) {
+    let id = mux.call_async_raw(token, op, json_str, payload)
+    self.in_flight.set(handle_id, id)
+    return Some(id)
+  }
+  let q = match self.queues.get(handle_id) {
+    Some(existing) => existing
+    None => {
+      let fresh = HandleQueue::new()
+      self.queues.set(handle_id, fresh)
+      fresh
+    }
+  }
+  q.push(OutboxCall::{ token: token, op: op, json_str: json_str, payload: payload })
+  None
+}
+
+/// Mark the current in-flight call (`call_id`) on `handle_id` complete and immediately dispatch the next queued
+/// call (if any) via `mux`. Verifies `in_flight[handle_id] == Some(call_id)` so stale/late completions
+/// after handle close or re-use never pop the queue. Returns `Some(next_call_id)` when a queued call was dispatched.
+pub fn SerialOutbox::on_complete(
+  self : SerialOutbox,
+  mux : ShellMux,
+  handle_id : Int,
+  call_id : Int64,
+) -> Option[Int64] {
+  match self.in_flight.get(handle_id) {
+    Some(cur_id) => {
+      if cur_id != call_id {
+        return None
+      }
+    }
+    None => return None
+  }
+  self.in_flight.remove(handle_id)
+  match self.queues.get(handle_id) {
+    Some(q) => {
+      match q.pop() {
+        Some(next) => {
+          if q.is_empty() {
+            self.queues.remove(handle_id)
+          }
+          let id = mux.call_async_raw(next.token, next.op, next.json_str, next.payload)
+          self.in_flight.set(handle_id, id)
+          Some(id)
+        }
+        None => {
+          self.queues.remove(handle_id)
+          None
+        }
+      }
+    }
+    None => None
+  }
+}
+
+/// Discard all queued and in-flight tracking for a closed handle (zero map retention).
+pub fn SerialOutbox::close_handle(self : SerialOutbox, handle_id : Int) -> Unit {
+  self.in_flight.remove(handle_id)
+  self.queues.remove(handle_id)
+}

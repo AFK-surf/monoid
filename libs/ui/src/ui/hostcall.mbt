@@ -232,6 +232,7 @@ struct FakeHost {
   /// something reading the widgets out (a11y_on), the last update it was told (a11y.mbt), what it has of them as the
   /// updates left it, and how many times the app had told it as the Tester last held that to what is read out
   mut a11y : Bool
+  mut screen_reader : Bool
   mut a11y_said : String
   a11y_told : A11yMirror
   mut a11y_held : Int
@@ -982,6 +983,11 @@ fn h_open_tab(url : String) -> Bool {
 ///|
 fn h_a11y_on() -> Bool {
   @hostapi.a11y_on()
+}
+
+///|
+fn h_screen_reader_on() -> Bool {
+  @hostapi.screen_reader_on()
 }
 
 ///|

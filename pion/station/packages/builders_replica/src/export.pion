@@ -1,0 +1,3832 @@
+// Incremental replica exporter (`--builder replica-export`), 1:1 aligned with
+// `station/mb/src/replica/export.mbt` (including bulk `transcript_chunks`, `tf_cache`,
+// O(1) `fold_gen` file dedup, and `--test-faults`).
+// Zero raw transaction SQL:
+// - Source `stillfail.db`: `sql_db::Db::attach(wait_ms=5000)` + `deferred_tx_err`
+// - State `export.db`: `sql_db::Db::create(wait_ms=5000)` + `tx_err`
+// - Temporary `Folded`: `Folded::with_open` (`with_temp_write_tx`)
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "locate"
+import "sql_db"
+import "transcript_io"
+
+let PASS_ROWS : Int = 5000
+let FOLD_RUN : Int = 4
+let FOLD_SMALL : Double = 1048576.0
+let RUNS_KEPT : Int = 512
+
+pub let CHUNK_PLAIN_BYTES : Int = 4194304
+pub let TRANSCRIPT_PASS_FILES : Int = 512
+pub let TRANSCRIPT_PASS_BYTES : Int = 33554432
+pub let TRANSCRIPT_PASS_DELETES : Int = 2000
+pub let CHUNK_GC_GRACE_MS : Double = 600000.0
+
+let STATE_SCHEMA : String = "CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS digests (ws TEXT NOT NULL, k TEXT NOT NULL, d TEXT NOT NULL, PRIMARY KEY (ws, k)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS threads (ws TEXT NOT NULL, thread INTEGER NOT NULL, PRIMARY KEY (ws, thread)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime INTEGER NOT NULL, hash TEXT NOT NULL) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS files_hash ON files (hash); CREATE TABLE IF NOT EXISTS sent (ws TEXT NOT NULL, path TEXT NOT NULL, PRIMARY KEY (ws, path)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS entering (ws TEXT NOT NULL, thread INTEGER NOT NULL, tbl TEXT NOT NULL, after INTEGER NOT NULL, upto INTEGER NOT NULL, PRIMARY KEY (ws, thread, tbl)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS transcript_files (ws TEXT NOT NULL, path TEXT NOT NULL, room TEXT, size INTEGER NOT NULL, mtime INTEGER NOT NULL, mode INTEGER NOT NULL, chunks_json TEXT NOT NULL, PRIMARY KEY (ws, path)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS transcript_chunks (plain_hash TEXT PRIMARY KEY, chunk_hash TEXT NOT NULL, comp_size INTEGER NOT NULL) WITHOUT ROWID; CREATE INDEX IF NOT EXISTS transcript_chunks_hash ON transcript_chunks (chunk_hash); CREATE TABLE IF NOT EXISTS transcript_chunk_gc (chunk_hash TEXT PRIMARY KEY, gone_at INTEGER NOT NULL) WITHOUT ROWID;"
+
+fn small_tables() -> Array[String] {
+  [
+    "sessions",
+    "threads",
+    "thread_sessions",
+    "runtime_sessions",
+    "closed_cards",
+    "entry_proposals",
+    "proposal_outcomes",
+    "reads",
+    "hidden_chats",
+    "muted_chats",
+    "kept_chats",
+    "dismissed",
+    "pins",
+    "opened_chats",
+  ]
+}
+
+fn thread_marks() -> Array[String] {
+  ["reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed"]
+}
+
+fn page_of(table : String) -> String {
+  "SELECT rowid AS _rowid, * FROM " + table + " WHERE rowid > ? ORDER BY rowid LIMIT ?"
+}
+
+fn marks_of(table : String, column : String) -> String {
+  "WITH RECURSIVE viewers(viewer) AS (\n  SELECT (SELECT viewer FROM " +
+  table +
+  " ORDER BY viewer LIMIT 1)\n  UNION ALL SELECT (SELECT viewer FROM " +
+  table +
+  " WHERE viewer > v.viewer ORDER BY viewer LIMIT 1) FROM viewers v WHERE v.viewer IS NOT NULL\n) SELECT m.* FROM viewers v CROSS JOIN " +
+  table +
+  " m ON m.viewer = v.viewer AND m." +
+  column +
+  " = ? WHERE v.viewer IS NOT NULL"
+}
+
+fn by_key(table : String, cols : Array[String]) -> String {
+  let parts : Array[String] = []
+  for i in 0..<cols.length() {
+    parts.push(cols[i] + " = ?")
+  }
+  "SELECT * FROM " + table + " WHERE " + str_join(parts, " AND ")
+}
+
+fn row_digest(row : js_json::JValue) -> String {
+  str_slice(sha1_hex(js_json::stringify(row)), 0, 16)
+}
+
+fn rec2(k1 : String, v1 : js_json::JValue, k2 : String, v2 : js_json::JValue) -> js_json::JValue {
+  jval_obj([(k1, v1), (k2, v2)])
+}
+
+fn parse_double_or(s : String, fallback : Double) -> Double {
+  match js_json::parse(js_json::trim_js(s)) {
+    Ok(js_json::JValue::Num(d)) => d
+    _ => fallback
+  }
+}
+
+fn utf8_ffff() -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte(0xEF as Byte)
+  sb.write_byte(0xBF as Byte)
+  sb.write_byte(0xBF as Byte)
+  sb.to_string()
+}
+
+/// Exact `floor(ln(max(sz, 4096) / 4096) / ln(4))` using exact IEEE-754 division by 4.0.
+pub fn fold_level_of(sz : Double) -> Int {
+  let mut r = if sz > 4096.0 { sz / 4096.0 } else { 1.0 }
+  let mut lvl = 0
+  while r >= 4.0 {
+    r = r / 4.0
+    lvl = lvl + 1
+  }
+  lvl
+}
+
+/// Base-36 timestamp + 8-hex random generation name (`genName`).
+pub fn gen_name(now : Double, random : String) -> String {
+  let mut v = floor_double(if now > 0.0 { now } else { 0.0 })
+  let digits = "0123456789abcdefghijklmnopqrstuvwxyz".to_bytes()
+  let rev : Array[Byte] = []
+  if v == 0.0 {
+    rev.push(48 as Byte)
+  }
+  while v >= 1.0 {
+    let q = floor_double(v / 36.0)
+    let d = (v - 36.0 * q).to_int()
+    rev.push(digits[d])
+    v = q
+  }
+  let sb = StringBuilder::new()
+  let mut i = rev.length() - 1
+  while i >= 0 {
+    sb.write_byte(rev[i])
+    i = i - 1
+  }
+  sb.write_byte(45 as Byte) // '-'
+  let rlen = random.to_bytes().length()
+  let take = if rlen < 8 { rlen } else { 8 }
+  sb.write_string(str_slice(random, 0, take))
+  sb.to_string()
+}
+
+struct Out {
+  mut head : js_json::JValue
+  lines : Array[String]
+  mut bytes : Int
+  files : Array[(String, Double)]
+  file_at : Map[String, Int]
+  mut gone : Bool
+  mut messages : Double
+}
+
+struct Places {
+  home : Option[String]
+  workspaces : Array[(String, js_json::JValue)]
+}
+
+pub struct TestFaults {
+  pub lstat_err : Map[String, Bool]
+  pub readdir_err : Map[String, Bool]
+  pub readdir_err_keys : Array[String]
+  pub finder_readdir_err : Map[String, Bool]
+  pub finder_readdir_err_keys : Array[String]
+  pub forbid_readdir : Map[String, Bool]
+  pub read_short : Map[String, Bool]
+  pub read_short_after_first : Map[String, Bool]
+  pub other_kind : Map[String, Bool]
+  pub other_kind_nonempty : Bool
+}
+
+fn map_from_jval_list(v : js_json::JValue, k : String) -> (Map[String, Bool], Array[String]) {
+  let m : Map[String, Bool] = Map::new()
+  let keys : Array[String] = []
+  let items = strings_of(jval_get(v, k))
+  for i in 0..<items.length() {
+    let s = items[i]
+    match m.get(s) {
+      Some(true) => ()
+      _ => {
+        m.set(s, true)
+        keys.push(s)
+      }
+    }
+  }
+  (m, keys)
+}
+
+pub fn TestFaults::from_jvalue(v : js_json::JValue) -> Option[TestFaults] {
+  match v {
+    js_json::JValue::Obj(_) => {
+      let (lstat_err, _) = map_from_jval_list(v, "lstat_err")
+      let (readdir_err, readdir_err_keys) = map_from_jval_list(v, "readdir_err")
+      let (finder_readdir_err, finder_readdir_err_keys) = map_from_jval_list(v, "finder_readdir_err")
+      let (forbid_readdir, _) = map_from_jval_list(v, "forbid_readdir")
+      let (read_short, _) = map_from_jval_list(v, "read_short")
+      let (read_short_after_first, _) = map_from_jval_list(v, "read_short_after_first")
+      let (other_kind, ok_keys) = map_from_jval_list(v, "other_kind")
+      Some(
+        TestFaults::{
+          lstat_err: lstat_err,
+          readdir_err: readdir_err,
+          readdir_err_keys: readdir_err_keys,
+          finder_readdir_err: finder_readdir_err,
+          finder_readdir_err_keys: finder_readdir_err_keys,
+          forbid_readdir: forbid_readdir,
+          read_short: read_short,
+          read_short_after_first: read_short_after_first,
+          other_kind: other_kind,
+          other_kind_nonempty: ok_keys.length() > 0,
+        },
+      )
+    }
+    _ => None
+  }
+}
+
+pub fn TestFaults::from_json(raw : String) -> Option[TestFaults] {
+  match js_json::parse(raw) {
+    Ok(v) => TestFaults::from_jvalue(v)
+    Err(_) => None
+  }
+}
+
+fn map_has(m : Map[String, Bool], k : String) -> Bool {
+  match m.get(k) {
+    Some(true) => true
+    _ => false
+  }
+}
+
+fn path_under_any_dir(path : String, dirs : Array[String], sep : String) -> Bool {
+  for i in 0..<dirs.length() {
+    let d = dirs[i]
+    let prefix = if str_has_suffix(d, sep) { d } else { d + sep }
+    if path == d || str_has_prefix(path, prefix) {
+      return true
+    }
+  }
+  false
+}
+
+pub struct Exporter {
+  files : Files
+  db : sql_db::Db
+  state : sql_db::Db
+  replica : String
+  data_dir : String
+  origin : String
+  most : Int
+  chunk_bytes : Int
+  transcript_pass_files : Int
+  transcript_pass_bytes : Int
+  transcript_pass_deletes : Int
+  chunk_gc_grace_ms : Double
+  fold : Bool
+  compact_heads : Bool
+  now : () -> Double
+  mut places : Places
+  mut known : Bool
+  mut transcripts_pending : Bool
+  mut tf_cache : Map[String, Array[(String, js_json::JValue)]]
+  mut transcript_cursor : Map[String, String]
+  mut transcript_cursor_keys : Array[String]
+  mut transcript_scan_done : Map[String, Bool]
+  mut transcript_scan_done_keys : Array[String]
+  mut transcript_ws_done : Map[String, Bool]
+  mut transcript_ws_done_keys : Array[String]
+  mut transcript_resweep : Bool
+  mut seen_head : Map[String, (String, Double)]
+  mut seen_head_keys : Array[String]
+  mut head_cache : Map[String, (String, Int64, Bool, js_json::JValue)]
+  mut manifest_cache : Map[String, (String, String, Array[String])]
+  mut manifest_live : Map[String, Bool]
+  mut manifest_live_keys : Array[String]
+  mut manifest_superseded_at : Map[String, Double]
+  mut manifest_superseded_keys : Array[String]
+  mut test_faults : Option[TestFaults]
+  run : String
+  mut read : Int
+}
+
+pub fn Exporter::new(
+  client : builders_core::ShellClient,
+  sep : String,
+  db_path : String,
+  replica : String,
+  data_dir : String,
+  origin : String,
+  now : () -> Double,
+  batch_bytes : Int = BATCH_BYTES,
+  chunk_bytes : Int = CHUNK_PLAIN_BYTES,
+  transcript_pass_files : Int = TRANSCRIPT_PASS_FILES,
+  transcript_pass_bytes : Int = TRANSCRIPT_PASS_BYTES,
+  transcript_pass_deletes : Int = TRANSCRIPT_PASS_DELETES,
+  chunk_gc_grace_ms : Double = CHUNK_GC_GRACE_MS,
+  fold : Bool = true,
+  compact_heads : Bool = false,
+  test_faults : Option[TestFaults] = None,
+) -> Result[Exporter, String] {
+  let files = Files::new(client, sep)
+  let reading = match sql_db::Db::attach(db_path, wait_ms=5000) {
+    Ok(d) => d
+    Err(e) => return Err(e.message)
+  }
+  match files.mkdir(replica) {
+    Ok(()) => ()
+    Err(e) => {
+      reading.close()
+      return Err(e)
+    }
+  }
+  let state = match sql_db::Db::create(files.join([replica, "export.db"]), wait_ms=5000) {
+    Ok(d) => d
+    Err(e) => {
+      reading.close()
+      return Err(e.message)
+    }
+  }
+  match state.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;") {
+    Ok(()) => ()
+    Err(e) => {
+      reading.close()
+      state.close()
+      return Err(e.message)
+    }
+  }
+  match state.exec(STATE_SCHEMA) {
+    Ok(()) => ()
+    Err(e) => {
+      reading.close()
+      state.close()
+      return Err(e.message)
+    }
+  }
+  let run_id = match files.random(4) {
+    Ok(r) => r
+    Err(e) => {
+      reading.close()
+      state.close()
+      return Err(e)
+    }
+  }
+  let e = Exporter::{
+    files: files,
+    db: reading,
+    state: state,
+    replica: replica,
+    data_dir: data_dir,
+    origin: origin,
+    most: batch_bytes,
+    chunk_bytes: if chunk_bytes > 0 { chunk_bytes } else { CHUNK_PLAIN_BYTES },
+    transcript_pass_files: if transcript_pass_files > 0 { transcript_pass_files } else { TRANSCRIPT_PASS_FILES },
+    transcript_pass_bytes: if transcript_pass_bytes > 0 { transcript_pass_bytes } else { TRANSCRIPT_PASS_BYTES },
+    transcript_pass_deletes: if transcript_pass_deletes > 0 { transcript_pass_deletes } else { TRANSCRIPT_PASS_DELETES },
+    chunk_gc_grace_ms: if chunk_gc_grace_ms >= 0.0 { chunk_gc_grace_ms } else { CHUNK_GC_GRACE_MS },
+    fold: fold,
+    compact_heads: compact_heads,
+    now: now,
+    places: Places::{ home: None, workspaces: [] },
+    known: false,
+    transcripts_pending: false,
+    tf_cache: Map::new(),
+    transcript_cursor: Map::new(),
+    transcript_cursor_keys: [],
+    transcript_scan_done: Map::new(),
+    transcript_scan_done_keys: [],
+    transcript_ws_done: Map::new(),
+    transcript_ws_done_keys: [],
+    transcript_resweep: false,
+    seen_head: Map::new(),
+    seen_head_keys: [],
+    head_cache: Map::new(),
+    manifest_cache: Map::new(),
+    manifest_live: Map::new(),
+    manifest_live_keys: [],
+    manifest_superseded_at: Map::new(),
+    manifest_superseded_keys: [],
+    test_faults: test_faults,
+    run: run_id,
+    read: 0,
+  }
+  // Check if source DB rolled back under its exporter.
+  let at = match e.meta("entries") {
+    Ok(v) => v
+    Err(err) => {
+      e.close()
+      return Err(err)
+    }
+  }
+  let max_row = match e.first("SELECT MAX(rowid) AS m FROM entries", []) {
+    Ok(v) => v
+    Err(err) => {
+      e.close()
+      return Err(err)
+    }
+  }
+  let max_v = match max_row {
+    Some(r) => num_of(jval_get(r, "m"))
+    None => 0.0
+  }
+  match at {
+    Some(a) => {
+      if parse_double_or(a, 0.0) > max_v {
+        match e.forget() {
+          Ok(()) => ()
+          Err(err) => {
+            e.close()
+            return Err(err)
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  Ok(e)
+}
+
+pub fn Exporter::set_test_faults(self : Exporter, faults : Option[TestFaults]) -> Unit {
+  self.test_faults = faults
+}
+
+pub fn Exporter::close(self : Exporter) -> Unit {
+  self.db.close()
+  self.state.close()
+}
+
+fn Exporter::first(self : Exporter, sql : String, params : Array[base_codec::Json]) -> Result[Option[js_json::JValue], String] {
+  match self.db.all_ordered(sql, params) {
+    Ok(rows) => if rows.length() > 0 { Ok(Some(row_of_ordered(rows[0]))) } else { Ok(None) }
+    Err(e) => Err(e.message)
+  }
+}
+
+fn Exporter::meta(self : Exporter, k : String) -> Result[Option[String], String] {
+  match self.state.all("SELECT v FROM meta WHERE k = ?", [base_codec::json_str(k)]) {
+    Ok(rows) => if rows.length() > 0 { Ok(Some(field_text(rows[0], "v"))) } else { Ok(None) }
+    Err(e) => Err(e.message)
+  }
+}
+
+fn Exporter::set_meta(self : Exporter, k : String, v : String) -> Result[Unit, String] {
+  match self.state.run(
+    "INSERT INTO meta (k, v) VALUES (?, ?) ON CONFLICT (k) DO UPDATE SET v = excluded.v",
+    [base_codec::json_str(k), base_codec::json_str(v)],
+  ) {
+    Ok(_) => Ok(())
+    Err(e) => Err(e.message)
+  }
+}
+
+fn Exporter::forget(self : Exporter) -> Result[Unit, String] {
+  match self.state.exec("DELETE FROM meta WHERE k <> 'after'; DELETE FROM digests; DELETE FROM threads; DELETE FROM sent; DELETE FROM entering; DELETE FROM transcript_files; DELETE FROM transcript_chunk_gc;") {
+    Ok(()) => ()
+    Err(e) => return Err(e.message)
+  }
+  self.known = false
+  self.transcripts_pending = false
+  self.forget_sweep()
+  self.seen_head = Map::new()
+  self.seen_head_keys = []
+  self.tf_cache = Map::new()
+  self.head_cache = Map::new()
+  self.manifest_cache = Map::new()
+  self.manifest_live = Map::new()
+  self.manifest_live_keys = []
+  self.manifest_superseded_at = Map::new()
+  self.manifest_superseded_keys = []
+  Ok(())
+}
+
+fn Exporter::forget_sweep(self : Exporter) -> Unit {
+  self.end_sweep()
+  self.transcript_resweep = false
+}
+
+fn Exporter::end_sweep(self : Exporter) -> Unit {
+  self.transcript_cursor = Map::new()
+  self.transcript_cursor_keys = []
+  self.transcript_scan_done = Map::new()
+  self.transcript_scan_done_keys = []
+  self.transcript_ws_done = Map::new()
+  self.transcript_ws_done_keys = []
+}
+
+fn Exporter::in_transcript_sweep(self : Exporter) -> Bool {
+  for i in 0..<self.transcript_cursor_keys.length() {
+    match self.transcript_cursor.get(self.transcript_cursor_keys[i]) {
+      Some(_) => return true
+      None => ()
+    }
+  }
+  for i in 0..<self.transcript_scan_done_keys.length() {
+    if map_has(self.transcript_scan_done, self.transcript_scan_done_keys[i]) {
+      return true
+    }
+  }
+  for i in 0..<self.transcript_ws_done_keys.length() {
+    if map_has(self.transcript_ws_done, self.transcript_ws_done_keys[i]) {
+      return true
+    }
+  }
+  false
+}
+
+pub fn Exporter::set_places(self : Exporter, places : js_json::JValue) -> Unit {
+  let home = text_of(jval_get(places, "home"))
+  let workspaces : Array[(String, js_json::JValue)] = []
+  let items = list_of(jval_get(places, "workspaces"))
+  for i in 0..<items.length() {
+    let w = items[i]
+    match text_of(jval_get(w, "workspace")) {
+      Some(ws) => {
+        let nm = match jval_get(w, "name") {
+          Some(v) => v
+          None => js_json::JValue::Null
+        }
+        workspaces.push((ws, nm))
+      }
+      None => ()
+    }
+  }
+  self.places = Places::{ home: home, workspaces: workspaces }
+}
+
+pub fn Exporter::new_generations(self : Exporter, after : Double) -> Result[Unit, String] {
+  match self.forget() {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  self.set_meta("after", js_json::stringify(jval_num(after)))
+}
+
+fn Exporter::root(self : Exporter) -> String {
+  self.files.join([self.replica, "own"])
+}
+
+fn Exporter::gen_dir(self : Exporter, ws : String, gen : String) -> String {
+  self.files.join([self.root(), ws, gen])
+}
+
+fn Exporter::head_identity_of(self : Exporter, ws : String, gen : String) -> String {
+  match self.head_cache.get(self.gen_dir(ws, gen)) {
+    Some((stamp, hash, _, _)) => if stamp != "" { stamp + ":" + hash.to_string() } else { "" }
+    None => ""
+  }
+}
+
+fn Exporter::read_head(self : Exporter, dir : String) -> Option[js_json::JValue] {
+  let path = self.files.join([dir, "head.json"])
+  let (st_rc, stamp) = c_file_stamp(path)
+  if st_rc == 1 || st_rc == 2 {
+    match self.head_cache.get(dir) {
+      Some((c_stamp, c_hash, was_racy, cached)) => {
+        if c_stamp == stamp {
+          if !was_racy && st_rc == 1 {
+            return Some(cached)
+          }
+          match c_file_fnv64(path) {
+            Some(actual) => {
+              if actual == c_hash {
+                if st_rc == 1 && was_racy {
+                  self.head_cache.set(dir, (c_stamp, c_hash, false, cached))
+                }
+                return Some(cached)
+              }
+            }
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let _ = self.head_cache.remove(dir)
+  match self.files.read(path) {
+    Ok(Some(t)) => {
+      match js_json::parse(t) {
+        Ok(js_json::JValue::Obj(es)) => {
+          let head = js_json::JValue::Obj(es)
+          if st_rc == 1 || st_rc == 2 {
+            self.head_cache.set(dir, (stamp, fnv64_utf8(t), st_rc == 2, head))
+          }
+          Some(head)
+        }
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+fn Exporter::has_ws_progress(self : Exporter, ws : String) -> Result[Bool, String] {
+  let tables = ["digests", "threads", "sent", "entering", "transcript_files"]
+  for i in 0..<tables.length() {
+    match self.state.all("SELECT 1 FROM " + tables[i] + " WHERE ws = ? LIMIT 1", [base_codec::json_str(ws)]) {
+      Ok(rows) => if rows.length() > 0 { return Ok(true) }
+      Err(e) => return Err(e.message)
+    }
+  }
+  Ok(false)
+}
+
+fn Exporter::read_committed_head_state(
+  self : Exporter,
+  ws : String,
+  gen : String,
+) -> Result[Option[(Int64, Array[String])], String] {
+  match self.meta("head_state:" + ws) {
+    Err(e) => Err(e)
+    Ok(None) => Ok(None)
+    Ok(Some(raw)) => {
+      match js_json::parse(raw) {
+        Ok(js_json::JValue::Obj(es)) => {
+          let v = js_json::JValue::Obj(es)
+          if !opt_str_is(text_of(jval_get(v, "gen")), gen) {
+            return Ok(None)
+          }
+          let to = num_of(jval_get(v, "to")).to_int64()
+          let bs = strings_of(jval_get(v, "batches"))
+          Ok(Some((to, bs)))
+        }
+        _ => Ok(None)
+      }
+    }
+  }
+}
+
+fn Exporter::save_committed_head_state(
+  self : Exporter,
+  ws : String,
+  head : js_json::JValue,
+) -> Result[Unit, String] {
+  let gen = text_or(jval_get(head, "gen"), "")
+  let to = num_of(jval_get(head, "to"))
+  let bs = strings_of(jval_get(head, "batches"))
+  let v = jval_obj([
+    ("gen", jval_str(gen)),
+    ("to", jval_num(to)),
+    ("batches", strs_jval(bs)),
+  ])
+  self.set_meta("head_state:" + ws, js_json::stringify(v))
+}
+
+fn str_arrays_eq(a : Array[String], b : Array[String]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+enum HeadCheck {
+  Fresh
+  Use(js_json::JValue, Bool)
+  RebuildLegacy
+}
+
+fn Exporter::read_head_checked(
+  self : Exporter,
+  ws : String,
+  gen : String,
+  dir : String,
+) -> Result[HeadCheck, String] {
+  let path = self.files.join([dir, "head.json"])
+  let log_dir = self.files.join([dir, "log"])
+  let committed = match self.read_committed_head_state(ws, gen) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let (st_rc, stamp) = c_file_stamp(path)
+  let mut cached_head : Option[js_json::JValue] = None
+  if st_rc == 1 || st_rc == 2 {
+    match self.head_cache.get(dir) {
+      Some((c_stamp, c_hash, was_racy, cached)) => {
+        if c_stamp == stamp {
+          if !was_racy && st_rc == 1 {
+            cached_head = Some(cached)
+          } else {
+            match c_file_fnv64(path) {
+              Some(actual) => {
+                if actual == c_hash {
+                  if st_rc == 1 && was_racy {
+                    self.head_cache.set(dir, (c_stamp, c_hash, false, cached))
+                  }
+                  cached_head = Some(cached)
+                }
+              }
+              None => ()
+            }
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let h = match cached_head {
+    Some(ch) => ch
+    None => {
+      let _ = self.head_cache.remove(dir)
+      let _ = self.manifest_cache.remove(ws)
+      let _ = self.tf_cache.remove(ws)
+      match self.files.read(path) {
+        Err(e) => return Err("cannot read " + path + ": " + e)
+        Ok(None) => {
+          if !c_missing(path, false) {
+            return Err("cannot read " + path)
+          }
+          let has_batches = match self.files.names(log_dir) {
+            Some(names) => names.length() > 0
+            None => !c_missing(log_dir, false)
+          }
+          if has_batches {
+            return Err("missing " + path + " for existing generation " + gen)
+          }
+          match committed {
+            Some(_) => return Err("missing " + path + " for existing generation " + gen)
+            None => ()
+          }
+          return match self.has_ws_progress(ws) {
+            Ok(true) => Err("missing " + path + " for existing generation " + gen)
+            Ok(false) => Ok(HeadCheck::Fresh)
+            Err(e) => Err(e)
+          }
+        }
+        Ok(Some(t)) => {
+          match js_json::parse(t) {
+            Ok(js_json::JValue::Obj(es)) => {
+              let parsed = js_json::JValue::Obj(es)
+              if st_rc == 1 || st_rc == 2 {
+                self.head_cache.set(dir, (stamp, fnv64_utf8(t), st_rc == 2, parsed))
+              }
+              parsed
+            }
+            Ok(_) => return Err("corrupted " + path + ": expected JSON object")
+            Err(e) => return Err("corrupted " + path + ": " + e)
+          }
+        }
+      }
+    }
+  }
+  if !opt_str_is(text_of(jval_get(h, "gen")), gen) ||
+  !opt_str_is(text_of(jval_get(h, "workspace")), ws) ||
+  !opt_str_is(text_of(jval_get(h, "origin")), self.origin) {
+    return Err("corrupted " + path + ": head identity mismatch")
+  }
+  let head_to_d = match jval_get(h, "to") {
+    Some(js_json::JValue::Num(d)) => {
+      if sql_db::is_nan_or_inf(d) || d < 0.0 || floor_double(d) != d {
+        return Err("corrupted " + path + ": invalid to")
+      }
+      d
+    }
+    _ => return Err("corrupted " + path + ": missing to")
+  }
+  let head_to = head_to_d.to_int64()
+  let bs = match jval_get(h, "batches") {
+    Some(js_json::JValue::Arr(arr)) => arr
+    _ => return Err("corrupted " + path + ": missing batches array")
+  }
+  let batch_names : Array[String] = []
+  let mut first_from : Int64 = 0.to_int64()
+  let mut prev_from : Int64 = 0.to_int64()
+  let mut prev_to : Int64 = 0.to_int64()
+  for i in 0..<bs.length() {
+    match text_of(Some(bs[i])) {
+      Some(name) => {
+        match batch_span(name) {
+          Some((from, to)) => {
+            if from <= 0.to_int64() || from > to {
+              return Err("corrupted " + path + ": non-contiguous batches")
+            }
+            if i == 0 {
+              first_from = from
+            } else {
+              if from < prev_from || from > prev_to + 1.to_int64() || to < prev_to {
+                return Err("corrupted " + path + ": non-contiguous batches")
+              }
+            }
+            prev_from = from
+            prev_to = to
+            batch_names.push(name)
+          }
+          None => return Err("corrupted " + path + ": invalid batch name")
+        }
+      }
+      None => return Err("corrupted " + path + ": invalid batch entry")
+    }
+  }
+  if batch_names.length() > 0 && prev_to != head_to {
+    return Err("corrupted " + path + ": non-contiguous batches")
+  }
+  match committed {
+    Some((c_to, c_batches)) => {
+      if batch_names.length() == 0 {
+        if head_to < c_to {
+          return Err("stale " + path + " for generation " + gen)
+        }
+        if head_to == c_to && c_batches.length() > 0 {
+          return Err("mismatched " + path + " for generation " + gen)
+        }
+        match self.files.names(log_dir) {
+          None => {
+            if !c_missing(log_dir, false) {
+              return Err("cannot read " + log_dir)
+            }
+          }
+          Some(names) => {
+            let mut has_old_batch = false
+            for i in 0..<names.length() {
+              match batch_span(names[i]) {
+                Some((_, b_to)) => {
+                  if b_to <= head_to {
+                    has_old_batch = true
+                    break
+                  }
+                }
+                None => ()
+              }
+            }
+            if has_old_batch {
+              if head_to > c_to {
+                return Ok(HeadCheck::RebuildLegacy)
+              }
+              return Err("corrupted " + path + ": non-contiguous batches")
+            }
+          }
+        }
+        return Ok(HeadCheck::Use(h, false))
+      }
+      let expected_first_from : Int64 = if c_batches.length() > 0 {
+        match batch_span(c_batches[0]) {
+          Some((cf, _)) => cf
+          None => 1.to_int64()
+        }
+      } else {
+        c_to + 1.to_int64()
+      }
+      if first_from != expected_first_from {
+        return Err("corrupted " + path + ": non-contiguous batches")
+      }
+      if head_to < c_to {
+        return Err("stale " + path + " for generation " + gen)
+      }
+      if head_to == c_to && !str_arrays_eq(batch_names, c_batches) {
+        return Err("mismatched " + path + " for generation " + gen)
+      }
+      Ok(HeadCheck::Use(h, false))
+    }
+    None => {
+      let named : Map[String, Bool] = Map::new()
+      for i in 0..<batch_names.length() {
+        named.set(batch_names[i], true)
+      }
+      match self.files.names(log_dir) {
+        None => {
+          if !c_missing(log_dir, false) {
+            return Err("cannot read " + log_dir)
+          }
+          if batch_names.length() > 0 {
+            return Ok(HeadCheck::RebuildLegacy)
+          }
+          Ok(HeadCheck::Use(h, true))
+        }
+        Some(names) => {
+          let disk_batches : Map[String, Bool] = Map::new()
+          for i in 0..<names.length() {
+            match batch_span(names[i]) {
+              Some(_) => {
+                if !map_has(named, names[i]) {
+                  return Ok(HeadCheck::RebuildLegacy)
+                }
+                disk_batches.set(names[i], true)
+              }
+              None => ()
+            }
+          }
+          for i in 0..<batch_names.length() {
+            if !map_has(disk_batches, batch_names[i]) {
+              return Ok(HeadCheck::RebuildLegacy)
+            }
+          }
+          Ok(HeadCheck::Use(h, true))
+        }
+      }
+    }
+  }
+}
+
+fn Exporter::gen_of(self : Exporter, ws : String) -> Result[String, String] {
+  let known = match self.meta("gen:" + ws) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  match known {
+    Some(g) => {
+      if self.files.exists(self.gen_dir(ws, g)) {
+        return Ok(g)
+      }
+      let _ = self.head_cache.remove(self.gen_dir(ws, g))
+    }
+    None => ()
+  }
+  let after = match self.meta("after") {
+    Ok(Some(a)) => parse_double_or(a, 0.0)
+    Ok(None) => 0.0
+    Err(e) => return Err(e)
+  }
+  let now = (self.now)()
+  let rand = match self.files.random(4) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let ts = if now > after + 1.0 { now } else { after + 1.0 }
+  let gen = gen_name(ts, rand)
+  match self.set_meta("gen:" + ws, gen) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  match self.state.run("DELETE FROM meta WHERE k = ?", [base_codec::json_str("head_state:" + ws)]) {
+    Ok(_) => ()
+    Err(e) => return Err(e.message)
+  }
+  let reset_tables = ["digests", "threads", "sent", "entering"]
+  for i in 0..<reset_tables.length() {
+    match self.state.run("DELETE FROM " + reset_tables[i] + " WHERE ws = ?", [base_codec::json_str(ws)]) {
+      Ok(_) => ()
+      Err(e) => return Err(e.message)
+    }
+  }
+  let dropped = match self.state.run("DELETE FROM transcript_files WHERE ws = ?", [base_codec::json_str(ws)]) {
+    Ok(n) => n
+    Err(e) => return Err(e.message)
+  }
+  let _ = self.tf_cache.remove(ws)
+  let _ = self.manifest_cache.remove(ws)
+  let _ = self.transcript_cursor.remove(ws)
+  let _ = self.transcript_scan_done.remove(ws)
+  let _ = self.transcript_ws_done.remove(ws)
+  if dropped > 0 {
+    self.transcripts_pending = true
+  }
+  Ok(gen)
+}
+
+pub fn Exporter::empty(self : Exporter) -> Result[Bool, String] {
+  let s_rows = match self.db.all("SELECT 1 FROM sessions LIMIT 1", []) {
+    Ok(r) => r
+    Err(e) => return Err(e.message)
+  }
+  if s_rows.length() > 0 {
+    return Ok(false)
+  }
+  let t_rows = match self.db.all("SELECT 1 FROM threads LIMIT 1", []) {
+    Ok(r) => r
+    Err(e) => return Err(e.message)
+  }
+  Ok(t_rows.length() == 0)
+}
+
+pub fn Exporter::pass(self : Exporter, told : js_json::JValue) -> Result[js_json::JValue, String] {
+  let home = match self.places.home {
+    Some(h) => {
+      if self.places.workspaces.length() == 0 {
+        let emp = match self.empty() {
+          Ok(b) => b
+          Err(e) => return Err(e)
+        }
+        return Ok(
+          jval_obj([
+            ("heads", jval_obj([])),
+            ("more", jval_bool(false)),
+            ("wrote", jval_num(0.0)),
+            ("read", jval_num(0.0)),
+            ("empty", jval_bool(emp)),
+          ]),
+        )
+      }
+      h
+    }
+    None => {
+      let emp = match self.empty() {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      return Ok(
+        jval_obj([
+          ("heads", jval_obj([])),
+          ("more", jval_bool(false)),
+          ("wrote", jval_num(0.0)),
+          ("read", jval_num(0.0)),
+          ("empty", jval_bool(emp)),
+        ]),
+      )
+    }
+  }
+  let prev_known = self.known
+  let prev_transcripts_pending = self.transcripts_pending
+  let prev_seen_head : Map[String, (String, Double)] = Map::new()
+  let prev_seen_head_keys : Array[String] = []
+  for i in 0..<self.seen_head_keys.length() {
+    let k = self.seen_head_keys[i]
+    match self.seen_head.get(k) {
+      Some(v) => {
+        match prev_seen_head.get(k) {
+          Some(_) => ()
+          None => prev_seen_head_keys.push(k)
+        }
+        prev_seen_head.set(k, v)
+      }
+      None => ()
+    }
+  }
+  let passed = match self.state.tx_err(
+    fn(_st : sql_db::Db) -> Result[js_json::JValue, String] {
+      self.pass_in(told, home)
+    },
+    fn(e : sql_db::SqlError) -> String { e.message },
+  ) {
+    Ok(p) => p
+    Err(e) => {
+      self.known = prev_known
+      self.transcripts_pending = prev_transcripts_pending
+      self.forget_sweep()
+      self.seen_head = prev_seen_head
+      self.seen_head_keys = prev_seen_head_keys
+      self.tf_cache = Map::new()
+      self.head_cache = Map::new()
+      self.manifest_cache = Map::new()
+      return Err(e)
+    }
+  }
+  let emp = match self.empty() {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  Ok(jval_set(passed, "empty", jval_bool(emp)))
+}
+
+fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> Result[js_json::JValue, String] {
+  let names = self.places.workspaces
+  let ws_of_session = fn(ws : Option[js_json::JValue]) -> String {
+    match text_of(ws) {
+      Some(s) => if s.length() > 0 { s } else { home }
+      None => home
+    }
+  }
+  let fresh_head = fn(ws : String, gen : String, w_name : js_json::JValue) -> js_json::JValue {
+    jval_obj([
+      ("v", jval_num(REPLICA_VERSION.to_double())),
+      ("origin", jval_str(self.origin)),
+      ("workspace", jval_str(ws)),
+      ("gen", jval_str(gen)),
+      (
+        "name",
+        match w_name {
+          js_json::JValue::Null => jval_str("")
+          v => v
+        },
+      ),
+      ("dataDir", jval_str(self.data_dir)),
+      ("made", jval_num(0.0)),
+      ("to", jval_num(0.0)),
+      ("batches", jval_arr([])),
+      ("files", jval_obj([])),
+      ("chats", jval_num(0.0)),
+      ("messages", jval_num(0.0)),
+      ("bytes", jval_num(0.0)),
+      ("runs", jval_arr([])),
+    ])
+  }
+  let mut outs : Map[String, Out] = Map::new()
+  let mut out_keys : Array[String] = []
+  let mut rebuild_legacy = false
+  for i in 0..<names.length() {
+    let (ws, w_name) = names[i]
+    let gen = match self.gen_of(ws) {
+      Ok(g) => g
+      Err(e) => return Err(e)
+    }
+    let dir = self.gen_dir(ws, gen)
+    match self.read_head_checked(ws, gen, dir) {
+      Err(e) => return Err(e)
+      Ok(HeadCheck::RebuildLegacy) => {
+        rebuild_legacy = true
+        break
+      }
+      Ok(HeadCheck::Use(head, need_save_state)) => {
+        if need_save_state {
+          match self.save_committed_head_state(ws, head) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        let cur_to = num_of(jval_get(head, "to"))
+        match self.seen_head.get(ws) {
+          Some((prev_gen, prev_to)) => {
+            if prev_gen != gen || prev_to != cur_to {
+              self.forget_sweep()
+              self.transcripts_pending = true
+            }
+          }
+          None => self.seen_head_keys.push(ws)
+        }
+        self.seen_head.set(ws, (gen, cur_to))
+        match outs.get(ws) {
+          Some(_) => ()
+          None => out_keys.push(ws)
+        }
+        outs.set(ws, Out::{ head: head, lines: [], bytes: 0, files: [], file_at: Map::new(), gone: false, messages: 0.0 })
+      }
+      Ok(HeadCheck::Fresh) => {
+        match self.seen_head.get(ws) {
+          Some((_, prev_to)) => {
+            if prev_to >= 0.0 {
+              self.forget_sweep()
+              self.transcripts_pending = true
+            }
+          }
+          None => self.seen_head_keys.push(ws)
+        }
+        self.seen_head.set(ws, (gen, -1.0))
+        let head = fresh_head(ws, gen, w_name)
+        match outs.get(ws) {
+          Some(_) => ()
+          None => out_keys.push(ws)
+        }
+        outs.set(ws, Out::{ head: head, lines: [], bytes: 0, files: [], file_at: Map::new(), gone: false, messages: 0.0 })
+      }
+    }
+  }
+  if rebuild_legacy {
+    let old_after = match self.meta("after") {
+      Ok(Some(a)) => parse_double_or(a, 0.0)
+      Ok(None) => 0.0
+      Err(e) => return Err(e)
+    }
+    let now = (self.now)()
+    let next_after = if old_after > now { old_after } else { now }
+    match self.forget() {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+    match self.set_meta("after", js_json::stringify(jval_num(next_after))) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+    outs = Map::new()
+    out_keys = []
+    for i in 0..<names.length() {
+      let (ws, w_name) = names[i]
+      let gen = match self.gen_of(ws) {
+        Ok(g) => g
+        Err(e) => return Err(e)
+      }
+      self.seen_head.set(ws, (gen, -1.0))
+      self.seen_head_keys.push(ws)
+      let head = fresh_head(ws, gen, w_name)
+      match outs.get(ws) {
+        Some(_) => ()
+        None => out_keys.push(ws)
+      }
+      outs.set(ws, Out::{ head: head, lines: [], bytes: 0, files: [], file_at: Map::new(), gone: false, messages: 0.0 })
+    }
+  }
+  let entries_meta = match self.meta("entries") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  match entries_meta {
+    None => {
+      let init_keys = ["entries", "letters", "turns"]
+      for i in 0..<init_keys.length() {
+        match self.set_meta(init_keys[i], "0") {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      match self.set_meta("ended", "[-1,0]") {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      self.known = false
+    }
+    Some(_) => ()
+  }
+  let say = fn(ws : String, rec : js_json::JValue) -> Unit {
+    let out = match outs.get(ws) {
+      Some(o) => o
+      None => return
+    }
+    let line = js_json::stringify(rec)
+    out.lines.push(line)
+    out.bytes = out.bytes + utf8_length(line) + 1
+    match jval_get(rec, "gone") {
+      Some(_) => out.gone = true
+      None => ()
+    }
+    match text_of(jval_get(rec, "file")) {
+      Some(h) => {
+        let size = num_of(jval_get(rec, "size"))
+        match out.file_at.get(h) {
+          Some(i) => out.files[i] = (h, size)
+          None => {
+            out.file_at.set(h, out.files.length())
+            out.files.push((h, size))
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let most = self.most
+  let enough = fn() -> Bool {
+    if self.read >= PASS_ROWS {
+      return true
+    }
+    for i in 0..<out_keys.length() {
+      match outs.get(out_keys[i]) {
+        Some(o) => if o.bytes >= most { return true }
+        None => ()
+      }
+    }
+    false
+  }
+  self.read = 0
+  let all = fn(sql : String, params : Array[base_codec::Json]) -> Result[Array[js_json::JValue], String] {
+    match self.db.all_ordered(sql, params) {
+      Ok(rows) => {
+        self.read = self.read + rows.length()
+        let out : Array[js_json::JValue] = []
+        for i in 0..<rows.length() {
+          out.push(row_of_ordered(rows[i]))
+        }
+        Ok(out)
+      }
+      Err(e) => Err(e.message)
+    }
+  }
+  let get_digest = fn(ws : String, k : String) -> Result[Option[String], String] {
+    match self.state.all("SELECT d FROM digests WHERE ws = ? AND k = ?", [base_codec::json_str(ws), base_codec::json_str(k)]) {
+      Ok(rows) => if rows.length() > 0 { Ok(Some(field_text(rows[0], "d"))) } else { Ok(None) }
+      Err(e) => Err(e.message)
+    }
+  }
+  let has_thread = fn(ws : String, thread : Double) -> Result[Bool, String] {
+    match self.state.all("SELECT 1 FROM threads WHERE ws = ? AND thread = ?", [base_codec::json_str(ws), sql_db::double_to_json(thread)]) {
+      Ok(rows) => Ok(rows.length() > 0)
+      Err(e) => Err(e.message)
+    }
+  }
+  let drop_thread = fn(ws : String, thread : Double) -> Result[Unit, String] {
+    match self.state.run("DELETE FROM threads WHERE ws = ? AND thread = ?", [base_codec::json_str(ws), sql_db::double_to_json(thread)]) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e.message)
+    }
+  }
+  let drop_digest = fn(ws : String, k : String) -> Result[Unit, String] {
+    match self.state.run("DELETE FROM digests WHERE ws = ? AND k = ?", [base_codec::json_str(ws), base_codec::json_str(k)]) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e.message)
+    }
+  }
+  let changed = fn(ws : String, table : String, row : js_json::JValue) -> Result[Unit, String] {
+    let clean = jval_without(row, "_rowid")
+    let key_str = match key_of(table, clean) {
+      Ok(ks) => ks
+      Err(e) => return Err(e)
+    }
+    let k = table + "|" + key_str
+    let d = row_digest(clean)
+    let prev = match get_digest(ws, k) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if opt_str_is(prev, d) {
+      return Ok(())
+    }
+    match self.state.run(
+      "INSERT INTO digests (ws, k, d) VALUES (?, ?, ?) ON CONFLICT (ws, k) DO UPDATE SET d = excluded.d",
+      [base_codec::json_str(ws), base_codec::json_str(k), base_codec::json_str(d)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e.message)
+    }
+    say(ws, rec2("r", jval_str(table), "row", clean))
+    Ok(())
+  }
+  let thread_ws : Map[String, Array[String]] = Map::new()
+  let ws_of_thread = fn(thread : Double) -> Result[Array[String], String] {
+    let tkey = js_json::num_text(thread)
+    match thread_ws.get(tkey) {
+      Some(w) => return Ok(w)
+      None => ()
+    }
+    let rows = match all(
+      "SELECT s.ws AS ws FROM thread_sessions ts JOIN sessions s ON s.key = ts.session WHERE ts.thread = ?",
+      [sql_db::double_to_json(thread)],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    let list : Array[String] = []
+    if rows.length() == 0 {
+      list.push(home)
+    } else {
+      for i in 0..<rows.length() {
+        let w = ws_of_session(jval_get(rows[i], "ws"))
+        arr_push_unique_str(list, w)
+      }
+    }
+    let kept : Array[String] = []
+    for i in 0..<list.length() {
+      match outs.get(list[i]) {
+        Some(_) => kept.push(list[i])
+        None => ()
+      }
+    }
+    thread_ws.set(tkey, kept)
+    Ok(kept)
+  }
+  let files_said : Array[(String, Array[String])] = []
+  let attached = fn(ws : String, row : js_json::JValue) -> Unit {
+    let paths = attached_paths(row)
+    for pi in 0..<paths.length() {
+      let path = paths[pi]
+      let mut found_idx = -1
+      for i in 0..<files_said.length() {
+        if files_said[i].0 == ws {
+          found_idx = i
+          break
+        }
+      }
+      if found_idx >= 0 {
+        arr_push_unique_str(files_said[found_idx].1, path)
+      } else {
+        files_said.push((ws, [path]))
+      }
+    }
+  }
+  let cursor_entries = match self.meta("entries") {
+    Ok(Some(v)) => parse_double_or(v, 0.0)
+    Ok(None) => 0.0
+    Err(e) => return Err(e)
+  }
+  let cursor_letters = match self.meta("letters") {
+    Ok(Some(v)) => parse_double_or(v, 0.0)
+    Ok(None) => 0.0
+    Err(e) => return Err(e)
+  }
+  let has_ep = match self.db.all_ordered("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entry_proposals'", []) {
+    Ok(rs) => rs.length() > 0
+    Err(_) => false
+  }
+  let has_po = match self.db.all_ordered("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'proposal_outcomes'", []) {
+    Ok(rs) => rs.length() > 0
+    Err(_) => false
+  }
+  let thread_rows = fn(ws : String, thread : Double) -> Result[Unit, String] {
+    let ts = match all("SELECT * FROM threads WHERE id = ?", [sql_db::double_to_json(thread)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    if ts.length() > 0 {
+      match changed(ws, "threads", ts[0]) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let tss = match all("SELECT * FROM thread_sessions WHERE thread = ?", [sql_db::double_to_json(thread)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    for i in 0..<tss.length() {
+      match changed(ws, "thread_sessions", tss[i]) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let ccs = match all("SELECT * FROM closed_cards WHERE thread = ?", [sql_db::double_to_json(thread)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    for i in 0..<ccs.length() {
+      match changed(ws, "closed_cards", ccs[i]) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    if has_ep {
+      let eps = match all("SELECT * FROM entry_proposals WHERE thread = ?", [sql_db::double_to_json(thread)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e)
+      }
+      for i in 0..<eps.length() {
+        match changed(ws, "entry_proposals", eps[i]) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    if has_po {
+      let pos = match all("SELECT * FROM proposal_outcomes WHERE thread = ?", [sql_db::double_to_json(thread)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e)
+      }
+      for i in 0..<pos.length() {
+        match changed(ws, "proposal_outcomes", pos[i]) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    let marks = thread_marks()
+    for mi in 0..<marks.length() {
+      let table = marks[mi]
+      let mrs = match all(marks_of(table, "thread"), [sql_db::double_to_json(thread)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e)
+      }
+      for i in 0..<mrs.length() {
+        match changed(ws, table, mrs[i]) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    Ok(())
+  }
+  let enter = fn(thread : Double) -> Result[Unit, String] {
+    let wss = match ws_of_thread(thread) {
+      Ok(w) => w
+      Err(e) => return Err(e)
+    }
+    for i in 0..<wss.length() {
+      let ws = wss[i]
+      let has_t = match has_thread(ws, thread) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      if has_t {
+        continue
+      }
+      match self.state.run("INSERT OR IGNORE INTO threads (ws, thread) VALUES (?, ?)", [base_codec::json_str(ws), sql_db::double_to_json(thread)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      match thread_rows(ws, thread) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      if cursor_entries > 0.0 {
+        match self.state.run(
+          "INSERT OR IGNORE INTO entering (ws, thread, tbl, after, upto) VALUES (?, ?, ?, 0, ?)",
+          [base_codec::json_str(ws), sql_db::double_to_json(thread), base_codec::json_str("entries"), sql_db::double_to_json(cursor_entries)],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e.message)
+        }
+      }
+      if cursor_letters > 0.0 {
+        match self.state.run(
+          "INSERT OR IGNORE INTO entering (ws, thread, tbl, after, upto) VALUES (?, ?, ?, 0, ?)",
+          [base_codec::json_str(ws), sql_db::double_to_json(thread), base_codec::json_str("letters"), sql_db::double_to_json(cursor_letters)],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e.message)
+        }
+      }
+    }
+    Ok(())
+  }
+  let count_message = fn(ws : String, table : String, r : js_json::JValue) -> Unit {
+    if table == "entries" && opt_str_is(text_of(jval_get(r, "kind")), "message") {
+      match outs.get(ws) {
+        Some(o) => o.messages = o.messages + 1.0
+        None => ()
+      }
+    }
+  }
+  let drain_entering = fn() -> Result[Bool, String] {
+    while true {
+      if enough() {
+        return Ok(true)
+      }
+      let next = match self.state.all("SELECT ws, thread, tbl, after, upto FROM entering LIMIT 1", []) {
+        Ok(rs) => rs
+        Err(e) => return Err(e.message)
+      }
+      if next.length() == 0 {
+        return Ok(false)
+      }
+      let e = next[0]
+      let ws = field_text(e, "ws")
+      let thread = field_num(e, "thread")
+      let tbl = field_text(e, "tbl")
+      let key = [base_codec::json_str(ws), sql_db::double_to_json(thread), base_codec::json_str(tbl)]
+      match outs.get(ws) {
+        None => {
+          match self.state.run("DELETE FROM entering WHERE ws = ? AND thread = ? AND tbl = ?", key) {
+            Ok(_) => ()
+            Err(err) => return Err(err.message)
+          }
+          continue
+        }
+        Some(_) => ()
+      }
+      let sql = if tbl == "entries" {
+        "SELECT rowid AS _rowid, * FROM entries WHERE thread = ? AND n > ? ORDER BY n LIMIT ?"
+      } else {
+        "SELECT rowid AS _rowid, * FROM letters WHERE thread = ? AND n > ? ORDER BY n LIMIT ?"
+      }
+      let rows = match all(sql, [sql_db::double_to_json(thread), sql_db::double_to_json(field_num(e, "after")), base_codec::json_int(PAGE_SIZE)]) {
+        Ok(rs) => rs
+        Err(err) => return Err(err)
+      }
+      let upto = field_num(e, "upto")
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        if num_of(jval_get(r, "_rowid")) > upto {
+          continue
+        }
+        say(ws, rec2("r", jval_str(tbl), "row", jval_without(r, "_rowid")))
+        attached(ws, r)
+        count_message(ws, tbl, r)
+      }
+      if rows.length() < PAGE_SIZE {
+        match self.state.run("DELETE FROM entering WHERE ws = ? AND thread = ? AND tbl = ?", key) {
+          Ok(_) => ()
+          Err(err) => return Err(err.message)
+        }
+      } else {
+        let last_n = num_of(jval_get(rows[rows.length() - 1], "n"))
+        match self.state.run(
+          "UPDATE entering SET after = ? WHERE ws = ? AND thread = ? AND tbl = ?",
+          [sql_db::double_to_json(last_n), key[0], key[1], key[2]],
+        ) {
+          Ok(_) => ()
+          Err(err) => return Err(err.message)
+        }
+      }
+    }
+    Ok(false)
+  }
+  let session_ws = fn(table : String, row : js_json::JValue) -> Result[Array[String], String] {
+    self.session_ws(table, row, ws_of_session)
+  }
+  let session_rows = fn(key : String) -> Result[Unit, String] {
+    let sess_list = match all("SELECT * FROM sessions WHERE key = ?", [base_codec::json_str(key)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    if sess_list.length() == 0 {
+      return Ok(())
+    }
+    let sess = sess_list[0]
+    let ws = ws_of_session(jval_get(sess, "ws"))
+    match outs.get(ws) {
+      None => return Ok(())
+      Some(_) => ()
+    }
+    match changed(ws, "sessions", sess) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+    let tss = match all("SELECT * FROM thread_sessions WHERE session = ?", [base_codec::json_str(key)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    for i in 0..<tss.length() {
+      match changed(ws, "thread_sessions", tss[i]) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      match enter(num_of(jval_get(tss[i], "thread"))) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let rts = match all("SELECT * FROM runtime_sessions WHERE session_key = ?", [base_codec::json_str(key)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    for i in 0..<rts.length() {
+      match changed(ws, "runtime_sessions", rts[i]) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let turns = match all("SELECT rowid AS _rowid, * FROM turns WHERE session_key = ? ORDER BY started_at DESC LIMIT 2", [base_codec::json_str(key)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    for i in 0..<turns.length() {
+      match changed(ws, "turns", turns[i]) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let opened = match all("SELECT * FROM opened_chats WHERE child_station = '' AND child = ?", [base_codec::json_str(key)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    for i in 0..<opened.length() {
+      match changed(ws, "opened_chats", opened[i]) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let pins = match all(marks_of("pins", "session"), [base_codec::json_str(key)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    for i in 0..<pins.length() {
+      match changed(ws, "pins", pins[i]) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    Ok(())
+  }
+  let mut more = false
+  let want_transcripts = match jval_get(told, "transcripts") {
+    Some(js_json::JValue::Bool(true)) => true
+    _ => false
+  }
+  let scan_transcripts = !self.known || want_transcripts || self.transcripts_pending
+  let sess_rows : Array[js_json::JValue] = []
+  let run_rows : Map[String, Array[js_json::JValue]] = Map::new()
+  let mut loaded_transcript_sessions = false
+
+  // Deferred read snapshot on source `stillfail.db` (never takes write lock; released before file IO).
+  match self.db.deferred_tx_err(
+    fn(e : sql_db::SqlError) -> String { e.message },
+    fn() -> Result[Unit, String] {
+      let rem_sess = list_of(jval_get(told, "removedSessions"))
+      for i in 0..<rem_sess.length() {
+        let r = rem_sess[i]
+        let key = text_or(jval_get(r, "key"), "")
+        let w = ws_of_session(jval_get(r, "ws"))
+        say(w, rec2("gone", jval_str("session"), "key", jval_str(key)))
+        let k = "sessions|" + js_json::stringify(jval_arr([jval_str(key)]))
+        match self.state.run(
+          "DELETE FROM digests WHERE ws = ? AND k >= ? AND k < ?",
+          [base_codec::json_str(w), base_codec::json_str(k), base_codec::json_str(k + utf8_ffff())],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e.message)
+        }
+      }
+      let rem_threads = list_of(jval_get(told, "removedThreads"))
+      for i in 0..<rem_threads.length() {
+        let r = rem_threads[i]
+        let id = num_of(jval_get(r, "id"))
+        let wss = match jval_get(r, "ws") {
+          None => out_keys
+          Some(js_json::JValue::Null) => out_keys
+          ws => [ws_of_session(ws)]
+        }
+        for wi in 0..<wss.length() {
+          let w = wss[wi]
+          let has_t = match has_thread(w, id) {
+            Ok(b) => b
+            Err(e) => return Err(e)
+          }
+          if !has_t {
+            continue
+          }
+          say(w, rec2("gone", jval_str("thread"), "id", jval_num(id)))
+          match drop_thread(w, id) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      if !self.known {
+        let seen : Map[String, Map[String, Bool]] = Map::new()
+        let sm_tables = small_tables()
+        for ti in 0..<sm_tables.length() {
+          let table = sm_tables[ti]
+          if (table == "entry_proposals" && !has_ep) || (table == "proposal_outcomes" && !has_po) {
+            continue
+          }
+          let mut after = 0.0
+          while true {
+            let rows = match all(page_of(table), [sql_db::double_to_json(after), base_codec::json_int(PAGE_SIZE)]) {
+              Ok(rs) => rs
+              Err(e) => return Err(e)
+            }
+            for ri in 0..<rows.length() {
+              let r = rows[ri]
+              if table == "sessions" {
+                sess_rows.push(r)
+              } else if table == "runtime_sessions" {
+                match text_of(jval_get(r, "session_key")) {
+                  Some(sk) => {
+                    match run_rows.get(sk) {
+                      Some(xs) => xs.push(r)
+                      None => run_rows.set(sk, [r])
+                    }
+                  }
+                  None => ()
+                }
+              }
+              let wss = if table == "sessions" || table == "runtime_sessions" || table == "pins" || table == "opened_chats" {
+                match session_ws(table, r) {
+                  Ok(w) => w
+                  Err(e) => return Err(e)
+                }
+              } else {
+                let col = if table == "threads" { "id" } else { "thread" }
+                match ws_of_thread(num_of(jval_get(r, col))) {
+                  Ok(w) => w
+                  Err(e) => return Err(e)
+                }
+              }
+              let k_str = match key_of(table, jval_without(r, "_rowid")) {
+                Ok(ks) => ks
+                Err(e) => return Err(e)
+              }
+              let full_k = table + "|" + k_str
+              for wi in 0..<wss.length() {
+                let ws = wss[wi]
+                match outs.get(ws) {
+                  None => continue
+                  Some(_) => ()
+                }
+                if table == "threads" {
+                  match enter(num_of(jval_get(r, "id"))) {
+                    Ok(()) => ()
+                    Err(e) => return Err(e)
+                  }
+                }
+                match changed(ws, table, r) {
+                  Ok(()) => ()
+                  Err(e) => return Err(e)
+                }
+                let sset = match seen.get(ws) {
+                  Some(x) => x
+                  None => {
+                    let x : Map[String, Bool] = Map::new()
+                    seen.set(ws, x)
+                    x
+                  }
+                }
+                sset.set(full_k, true)
+              }
+            }
+            if rows.length() < PAGE_SIZE {
+              break
+            }
+            after = num_of(jval_get(rows[rows.length() - 1], "_rowid"))
+          }
+        }
+        for wi in 0..<out_keys.length() {
+          let ws = out_keys[wi]
+          let sset = match seen.get(ws) {
+            Some(x) => x
+            None => Map::new()
+          }
+          let ds = match self.state.all("SELECT k FROM digests WHERE ws = ?", [base_codec::json_str(ws)]) {
+            Ok(rs) => rs
+            Err(e) => return Err(e.message)
+          }
+          for di in 0..<ds.length() {
+            let k = field_text(ds[di], "k")
+            if map_has(sset, k) || str_has_prefix(k, "turns|") {
+              continue
+            }
+            let bar = match str_find_byte(k, 124, 0) {
+              Some(b) => b
+              None => 0
+            }
+            let kb = k.to_bytes()
+            let table = slice_bytes(kb, 0, bar)
+            let rest = slice_bytes(kb, bar + 1, kb.length())
+            let key_items = match js_json::parse(rest) {
+              Ok(js_json::JValue::Arr(items)) => items
+              _ => []
+            }
+            match drop_digest(ws, k) {
+              Ok(()) => ()
+              Err(e) => return Err(e)
+            }
+            if table == "sessions" {
+              let v = if key_items.length() > 0 { key_items[0] } else { js_json::JValue::Null }
+              let key_txt = match v {
+                js_json::JValue::Str(u) => js_json::sanitize_str(u)
+                js_json::JValue::Null => "null"
+                x => js_json::stringify(x)
+              }
+              say(ws, rec2("gone", jval_str("session"), "key", jval_str(key_txt)))
+            } else if table == "threads" {
+              let id = if key_items.length() > 0 { num_of(Some(key_items[0])) } else { 0.0 }
+              say(ws, rec2("gone", jval_str("thread"), "id", jval_num(id)))
+              match drop_thread(ws, id) {
+                Ok(()) => ()
+                Err(e) => return Err(e)
+              }
+            } else {
+              let cols = match key_columns(table) {
+                Ok(c) => c
+                Err(e) => return Err(e)
+              }
+              let named : Array[(String, js_json::JValue)] = []
+              for ci in 0..<cols.length() {
+                let kv = if ci < key_items.length() { key_items[ci] } else { js_json::JValue::Null }
+                named.push((cols[ci], kv))
+              }
+              say(ws, rec2("del", jval_str(table), "key", jval_obj(named)))
+            }
+          }
+        }
+        self.known = true
+        loaded_transcript_sessions = true
+      }
+      // What changed in place, as told.
+      let told_sess = list_of(jval_get(told, "sessions"))
+      for i in 0..<told_sess.length() {
+        match text_of(Some(told_sess[i])) {
+          Some(key) => {
+            match session_rows(key) {
+              Ok(()) => ()
+              Err(e) => return Err(e)
+            }
+          }
+          None => ()
+        }
+      }
+      let told_threads = list_of(jval_get(told, "threads"))
+      for i in 0..<told_threads.length() {
+        let thread = num_of(Some(told_threads[i]))
+        match enter(thread) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+        let wss = match ws_of_thread(thread) {
+          Ok(w) => w
+          Err(e) => return Err(e)
+        }
+        for wi in 0..<wss.length() {
+          match thread_rows(wss[wi], thread) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      let told_marks = list_of(jval_get(told, "marks"))
+      for i in 0..<told_marks.length() {
+        let m = told_marks[i]
+        let table = text_or(jval_get(m, "table"), "")
+        let key = match jval_get(m, "key") {
+          Some(v) => v
+          None => jval_obj([])
+        }
+        let cols = match key_columns(table) {
+          Ok(c) => c
+          Err(e) => return Err(e)
+        }
+        let params : Array[base_codec::Json] = []
+        for ci in 0..<cols.length() {
+          params.push(jval_param(jval_get(key, cols[ci])))
+        }
+        let found_rows = match all(by_key(table, cols), params) {
+          Ok(rs) => rs
+          Err(e) => return Err(e)
+        }
+        let row_opt = if found_rows.length() > 0 { Some(found_rows[0]) } else { None }
+        let wss = if table == "pins" {
+          match session_ws("pins", key) {
+            Ok(w) => w
+            Err(e) => return Err(e)
+          }
+        } else {
+          match ws_of_thread(num_of(jval_get(key, "thread"))) {
+            Ok(w) => w
+            Err(e) => return Err(e)
+          }
+        }
+        let k_str = match key_of(table, key) {
+          Ok(ks) => ks
+          Err(e) => return Err(e)
+        }
+        let k = table + "|" + k_str
+        for wi in 0..<wss.length() {
+          let ws = wss[wi]
+          match row_opt {
+            Some(r) => {
+              match changed(ws, table, r) {
+                Ok(()) => ()
+                Err(e) => return Err(e)
+              }
+            }
+            None => {
+              let prev = match get_digest(ws, k) {
+                Ok(v) => v
+                Err(e) => return Err(e)
+              }
+              match prev {
+                Some(_) => {
+                  match drop_digest(ws, k) {
+                    Ok(()) => ()
+                    Err(e) => return Err(e)
+                  }
+                  say(ws, rec2("del", jval_str(table), "key", key))
+                }
+                None => ()
+              }
+            }
+          }
+        }
+      }
+      // Drain entering threads.
+      match drain_entering() {
+        Ok(true) => more = true
+        Ok(false) => ()
+        Err(e) => return Err(e)
+      }
+      // Append-only logs: entries, letters.
+      let log_pairs = [("entries", cursor_entries), ("letters", cursor_letters)]
+      for pi in 0..<log_pairs.length() {
+        let (table, start) = log_pairs[pi]
+        let mut at = start
+        while true {
+          if enough() {
+            more = true
+            break
+          }
+          let rows = match all(
+            "SELECT rowid AS _rowid, * FROM " + table + " WHERE rowid > ? ORDER BY rowid LIMIT ?",
+            [sql_db::double_to_json(at), base_codec::json_int(PAGE_SIZE)],
+          ) {
+            Ok(rs) => rs
+            Err(e) => return Err(e)
+          }
+          for ri in 0..<rows.length() {
+            let r = rows[ri]
+            let thread = num_of(jval_get(r, "thread"))
+            match enter(thread) {
+              Ok(()) => ()
+              Err(e) => return Err(e)
+            }
+            let wss = match ws_of_thread(thread) {
+              Ok(w) => w
+              Err(e) => return Err(e)
+            }
+            for wi in 0..<wss.length() {
+              let ws = wss[wi]
+              say(ws, rec2("r", jval_str(table), "row", jval_without(r, "_rowid")))
+              attached(ws, r)
+              count_message(ws, table, r)
+            }
+            at = num_of(jval_get(r, "_rowid"))
+          }
+          if rows.length() < PAGE_SIZE {
+            break
+          }
+        }
+        match self.set_meta(table, js_json::stringify(jval_num(at))) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      // Turns & ended turns.
+      let turn_keys = ["turns", "ended"]
+      for ki in 0..<turn_keys.length() {
+        let k = turn_keys[ki]
+        let mut at0 = 0.0
+        let mut at1 = 0.0
+        if k == "turns" {
+          at0 = match self.meta("turns") {
+            Ok(Some(v)) => parse_double_or(v, 0.0)
+            Ok(None) => 0.0
+            Err(e) => return Err(e)
+          }
+        } else {
+          let raw_ended = match self.meta("ended") {
+            Ok(Some(v)) => v
+            Ok(None) => "[-1,0]"
+            Err(e) => return Err(e)
+          }
+          match js_json::parse(raw_ended) {
+            Ok(js_json::JValue::Arr(xs)) => {
+              if xs.length() >= 2 {
+                at0 = num_of(Some(xs[0]))
+                at1 = num_of(Some(xs[1]))
+              } else {
+                at0 = -1.0
+                at1 = 0.0
+              }
+            }
+            _ => {
+              at0 = -1.0
+              at1 = 0.0
+            }
+          }
+        }
+        while true {
+          if enough() {
+            more = true
+            break
+          }
+          let rows = if k == "turns" {
+            match all(
+              "SELECT rowid AS _rowid, * FROM turns WHERE rowid > ? ORDER BY rowid LIMIT ?",
+              [sql_db::double_to_json(at0), base_codec::json_int(PAGE_SIZE)],
+            ) {
+              Ok(rs) => rs
+              Err(e) => return Err(e)
+            }
+          } else {
+            match all(
+              "SELECT rowid AS _rowid, * FROM turns INDEXED BY turns_ended WHERE ended_at > ?1 OR (ended_at = ?1 AND rowid > ?2) ORDER BY ended_at, rowid LIMIT ?3",
+              [sql_db::double_to_json(at0), sql_db::double_to_json(at1), base_codec::json_int(PAGE_SIZE)],
+            ) {
+              Ok(rs) => rs
+              Err(e) => return Err(e)
+            }
+          }
+          for ri in 0..<rows.length() {
+            let r = rows[ri]
+            let wss = match session_ws("turns", r) {
+              Ok(w) => w
+              Err(e) => return Err(e)
+            }
+            if wss.length() > 0 {
+              let ws = wss[0]
+              match outs.get(ws) {
+                Some(_) => {
+                  match changed(ws, "turns", r) {
+                    Ok(()) => ()
+                    Err(e) => return Err(e)
+                  }
+                }
+                None => ()
+              }
+            }
+            if k == "turns" {
+              at0 = num_of(jval_get(r, "_rowid"))
+              at1 = 0.0
+            } else {
+              at0 = num_of(jval_get(r, "ended_at"))
+              at1 = num_of(jval_get(r, "_rowid"))
+            }
+          }
+          if rows.length() < PAGE_SIZE {
+            break
+          }
+        }
+        let meta_val = if k == "turns" {
+          js_json::stringify(jval_num(at0))
+        } else {
+          js_json::stringify(jval_arr([jval_num(at0), jval_num(at1)]))
+        }
+        match self.set_meta(k, meta_val) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      Ok(())
+    },
+  ) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+
+  // Attachment files (after releasing source DB snapshot).
+  for fi in 0..<files_said.length() {
+    let (ws, paths) = files_said[fi]
+    for pi in 0..<paths.length() {
+      let path = paths[pi]
+      let already = match self.state.all("SELECT 1 FROM sent WHERE ws = ? AND path = ?", [base_codec::json_str(ws), base_codec::json_str(path)]) {
+        Ok(rs) => rs.length() > 0
+        Err(e) => return Err(e.message)
+      }
+      if already {
+        continue
+      }
+      let hashed_opt = match self.hashed(path) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      match hashed_opt {
+        Some((hash, size)) => {
+          match self.state.run("INSERT OR IGNORE INTO sent (ws, path) VALUES (?, ?)", [base_codec::json_str(ws), base_codec::json_str(path)]) {
+            Ok(_) => ()
+            Err(e) => return Err(e.message)
+          }
+          say(ws, jval_obj([("file", jval_str(hash)), ("size", jval_num(size)), ("path", jval_str(path))]))
+        }
+        None => ()
+      }
+    }
+  }
+
+  // Transcripts (after releasing source DB snapshot).
+  let mut sweep_completed = false
+  if scan_transcripts {
+    if want_transcripts && self.in_transcript_sweep() {
+      self.transcript_resweep = true
+    }
+    if more {
+      self.transcripts_pending = true
+    } else {
+      if !loaded_transcript_sessions {
+        match self.transcript_sessions(sess_rows, run_rows) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      let tr_more = match self.export_transcripts(out_keys, sess_rows, run_rows, ws_of_session, say) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      if tr_more {
+        self.transcripts_pending = true
+        more = true
+      } else {
+        sweep_completed = true
+        if self.transcript_resweep {
+          self.transcript_resweep = false
+          self.transcripts_pending = true
+          more = true
+        } else {
+          self.transcripts_pending = false
+        }
+      }
+    }
+  }
+
+  let mut wrote = 0
+  let heads : Array[(String, js_json::JValue)] = []
+  for i in 0..<names.length() {
+    let ws = names[i].0
+    let out = match outs.get(ws) {
+      Some(o) => o
+      None => continue
+    }
+    if out.lines.length() > 0 {
+      match self.write(ws, out) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      wrote = wrote + 1
+    }
+    let ipc_head = if self.compact_heads {
+      match self.compact_head(ws, out.head) {
+        Ok(ch) => ch
+        Err(e) => return Err(e)
+      }
+    } else {
+      out.head
+    }
+    heads.push((ws, ipc_head))
+  }
+
+  if self.compact_heads {
+    match self.gc_manifests(outs, out_keys) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+  }
+
+  if sweep_completed {
+    match self.gc_transcript_chunks() {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+  }
+
+  Ok(
+    jval_obj([
+      ("heads", jval_obj(heads)),
+      ("more", jval_bool(more)),
+      ("wrote", jval_num(wrote.to_double())),
+      ("read", jval_num(self.read.to_double())),
+    ]),
+  )
+}
+
+fn Exporter::session_ws(
+  self : Exporter,
+  table : String,
+  row : js_json::JValue,
+  ws_of : (Option[js_json::JValue]) -> String,
+) -> Result[Array[String], String] {
+  let key_col = if table == "sessions" {
+    "key"
+  } else if table == "pins" {
+    "session"
+  } else if table == "opened_chats" {
+    "child"
+  } else {
+    "session_key"
+  }
+  if table == "opened_chats" && !opt_str_is(text_of(jval_get(row, "child_station")), "") {
+    return Ok([])
+  }
+  if table == "sessions" {
+    return Ok([ws_of(jval_get(row, "ws"))])
+  }
+  let key = jval_get(row, key_col)
+  match self.db.all_ordered("SELECT ws FROM sessions WHERE key = ?", [jval_param(key)]) {
+    Ok(rows) => {
+      if rows.length() > 0 {
+        self.read = self.read + 1
+        Ok([ws_of(jval_get(row_of_ordered(rows[0]), "ws"))])
+      } else {
+        Ok([])
+      }
+    }
+    Err(e) => Err(e.message)
+  }
+}
+
+fn Exporter::hashed(self : Exporter, path : String) -> Result[Option[(String, Double)], String] {
+  if !opt_str_is(self.files.kind(path), "file") {
+    return Ok(None)
+  }
+  let (size, mtime) = match self.files.meta(path) {
+    Some(pair) => pair
+    None => return Ok(None)
+  }
+  match self.state.all("SELECT size, mtime, hash FROM files WHERE path = ?", [base_codec::json_str(path)]) {
+    Ok(rows) => {
+      if rows.length() > 0 && field_num(rows[0], "size") == size && field_num(rows[0], "mtime") == mtime {
+        return Ok(Some((field_text(rows[0], "hash"), size)))
+      }
+    }
+    Err(e) => return Err(e.message)
+  }
+  let hash = match self.files.hash(path) {
+    Ok(Some(h)) => h
+    Ok(None) => return Ok(None)
+    Err(e) => return Err(e)
+  }
+  match self.state.run(
+    "INSERT INTO files (path, size, mtime, hash) VALUES (?, ?, ?, ?) ON CONFLICT (path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, hash = excluded.hash",
+    [base_codec::json_str(path), sql_db::double_to_json(size), sql_db::double_to_json(mtime), base_codec::json_str(hash)],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e.message)
+  }
+  Ok(Some((hash, size)))
+}
+
+fn Exporter::write_batch(
+  self : Exporter,
+  dir : String,
+  gen : String,
+  from : Int64,
+  to : Int64,
+  made : Double,
+  lines : Array[String],
+) -> Result[String, String] {
+  let log = self.files.join([dir, "log"])
+  let writing = self.files.join([log, pad10(from) + "-" + pad10(to) + ".writing"])
+  let sha = match self.files.write(writing, batch_text(gen, from, to, made, lines), zstd=true) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  let name = batch_name(from, to, sha)
+  match self.files.rename(writing, self.files.join([log, name])) {
+    Ok(()) => Ok(name)
+    Err(e) => Err(e)
+  }
+}
+
+fn Exporter::write(self : Exporter, ws : String, out : Out) -> Result[Unit, String] {
+  let head = out.head
+  let gen = text_or(jval_get(head, "gen"), "")
+  let dir = self.gen_dir(ws, gen)
+  let made = (self.now)()
+  let mut n = num_of(jval_get(head, "to")).to_int64()
+  let names : Array[String] = []
+  let first = n + 1.to_int64()
+  let runs = Runs::new(self.most, fn(run : Array[String]) -> Result[Unit, String] {
+    n = n + 1.to_int64()
+    match self.write_batch(dir, gen, n, n, made, run) {
+      Ok(nm) => {
+        names.push(nm)
+        Ok(())
+      }
+      Err(e) => Err(e)
+    }
+  })
+  for i in 0..<out.lines.length() {
+    match runs.push(out.lines[i]) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  match runs.finish() {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  let orig_runs = list_of(jval_get(head, "runs"))
+  let last_run = if orig_runs.length() > 0 { text_of(jval_get(orig_runs[orig_runs.length() - 1], "run")) } else { None }
+  let runs_list : Array[js_json::JValue] = []
+  for i in 0..<orig_runs.length() {
+    runs_list.push(orig_runs[i])
+  }
+  if runs_list.length() == 0 || !opt_str_is(last_run, self.run) {
+    runs_list.push(jval_obj([("run", jval_str(self.run)), ("from", jval_num(first.to_double()))]))
+  }
+  let kept : Array[js_json::JValue] = []
+  let start_idx = if runs_list.length() > RUNS_KEPT { runs_list.length() - RUNS_KEPT } else { 0 }
+  for i in start_idx..<runs_list.length() {
+    kept.push(runs_list[i])
+  }
+  let file_pairs : Array[(String, js_json::JValue)] = []
+  for i in 0..<out.files.length() {
+    file_pairs.push((out.files[i].0, jval_num(out.files[i].1)))
+  }
+  let files_obj = jval_set_all(
+    match jval_get(head, "files") {
+      Some(v) => v
+      None => jval_obj([])
+    },
+    file_pairs,
+  )
+  let chats = match self.state.all("SELECT COUNT(*) AS n FROM threads WHERE ws = ?", [base_codec::json_str(ws)]) {
+    Ok(rows) => if rows.length() > 0 { field_num(rows[0], "n") } else { 0.0 }
+    Err(e) => return Err(e.message)
+  }
+  let prev_batches = strings_of(jval_get(head, "batches"))
+  let all_batches : Array[String] = []
+  for i in 0..<prev_batches.length() {
+    all_batches.push(prev_batches[i])
+  }
+  for i in 0..<names.length() {
+    all_batches.push(names[i])
+  }
+  let mut next = head
+  next = jval_set(next, "made", jval_num(made))
+  next = jval_set(next, "to", jval_num(n.to_double()))
+  next = jval_set(next, "batches", strs_jval(all_batches))
+  next = jval_set(next, "runs", jval_arr(kept))
+  next = jval_set(next, "files", files_obj)
+  let tf_entries = match self.tf_cache.get(ws) {
+    Some(cached) => cached
+    None => {
+      let entries = match self.transcript_files_map(ws) {
+        Ok(es) => es
+        Err(e) => return Err(e)
+      }
+      self.tf_cache.set(ws, entries)
+      entries
+    }
+  }
+  if tf_entries.length() > 0 {
+    next = jval_set(next, "transcriptFiles", jval_obj(tf_entries))
+  } else {
+    next = jval_without(next, "transcriptFiles")
+  }
+  next = jval_set(next, "chats", jval_num(chats))
+  next = jval_set(next, "messages", jval_num(num_of(jval_get(head, "messages")) + out.messages))
+  match self.fold_gen(dir, next, out.gone) {
+    Ok(h) => {
+      out.head = h
+      match self.save_committed_head_state(ws, h) {
+        Ok(()) => {
+          match self.seen_head.get(ws) {
+            Some(_) => ()
+            None => self.seen_head_keys.push(ws)
+          }
+          self.seen_head.set(ws, (text_or(jval_get(h, "gen"), ""), num_of(jval_get(h, "to"))))
+          Ok(())
+        }
+        Err(e) => Err(e)
+      }
+    }
+    Err(e) => Err(e)
+  }
+}
+
+fn Exporter::transcript_sessions(
+  self : Exporter,
+  sess_rows : Array[js_json::JValue],
+  run_rows : Map[String, Array[js_json::JValue]],
+) -> Result[Unit, String] {
+  self.db.deferred_tx_err(
+    fn(e : sql_db::SqlError) -> String { e.message },
+    fn() -> Result[Unit, String] {
+      let tr_tables = ["sessions", "runtime_sessions"]
+      for ti in 0..<tr_tables.length() {
+        let table = tr_tables[ti]
+        let mut after = 0.0
+        while true {
+          let rows = match self.db.all_ordered(page_of(table), [sql_db::double_to_json(after), base_codec::json_int(PAGE_SIZE)]) {
+            Ok(rs) => {
+              let out : Array[js_json::JValue] = []
+              for i in 0..<rs.length() {
+                out.push(row_of_ordered(rs[i]))
+              }
+              out
+            }
+            Err(e) => return Err(e.message)
+          }
+          for ri in 0..<rows.length() {
+            let r = rows[ri]
+            if table == "sessions" {
+              sess_rows.push(r)
+            } else {
+              match text_of(jval_get(r, "session_key")) {
+                Some(sk) => {
+                  match run_rows.get(sk) {
+                    Some(xs) => xs.push(r)
+                    None => run_rows.set(sk, [r])
+                  }
+                }
+                None => ()
+              }
+            }
+          }
+          if rows.length() < PAGE_SIZE {
+            break
+          }
+          after = num_of(jval_get(rows[rows.length() - 1], "_rowid"))
+        }
+      }
+      Ok(())
+    },
+  )
+}
+
+fn Exporter::write_head(self : Exporter, dir : String, head : js_json::JValue) -> Result[Unit, String] {
+  let path = self.files.join([dir, "head.json"])
+  let _ = self.head_cache.remove(dir)
+  let text = js_json::stringify_indent(head, 1)
+  match self.files.write(path, text) {
+    Ok(_) => {
+      let (st_rc, stamp) = c_file_stamp(path)
+      if st_rc == 1 || st_rc == 2 {
+        self.head_cache.set(dir, (stamp, fnv64_utf8(text), st_rc == 2, head))
+      }
+      Ok(())
+    }
+    Err(e) => Err(e)
+  }
+}
+
+fn Exporter::fold_gen(self : Exporter, dir : String, head : js_json::JValue, everything : Bool) -> Result[js_json::JValue, String] {
+  let log = self.files.join([dir, "log"])
+  let mut h = head
+  while self.fold {
+    let bs = strings_of(jval_get(h, "batches"))
+    let take : Array[String] = []
+    if everything {
+      if bs.length() == 0 {
+        break
+      }
+      for i in 0..<bs.length() {
+        take.push(bs[i])
+      }
+    } else {
+      if bs.length() < FOLD_RUN {
+        break
+      }
+      let start = bs.length() - FOLD_RUN
+      let sz0 = match self.files.size(self.files.join([log, bs[start]])) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let l = fold_level_of(sz0)
+      let mut same = true
+      let mut total = 0.0
+      for i in start..<bs.length() {
+        let sz = match self.files.size(self.files.join([log, bs[i]])) {
+          Ok(v) => v
+          Err(e) => return Err(e)
+        }
+        if fold_level_of(sz) != l {
+          same = false
+        }
+        total = total + sz
+        take.push(bs[i])
+      }
+      if !same || total >= FOLD_SMALL {
+        break
+      }
+    }
+    let work = self.files.join([self.replica, "fold.db"])
+    let cur_h = h
+    let next_h = match Folded::with_open(self.files, work, fn(folded : Folded) -> Result[js_json::JValue, String] {
+      for ti in 0..<take.length() {
+        let lines = match batch_lines(self.files, self.files.join([log, take[ti]])) {
+          Ok(ls) => ls
+          Err(e) => return Err(e)
+        }
+        for li in 0..<lines.length() {
+          match folded.apply(lines[li]) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      let (from, _) = match batch_span(take[0]) {
+        Some(p) => p
+        None => return Err("invalid batch name: " + take[0])
+      }
+      let (_, to) = match batch_span(take[take.length() - 1]) {
+        Some(p) => p
+        None => return Err("invalid batch name: " + take[take.length() - 1])
+      }
+      let whole = take.length() == bs.length()
+      let names : Array[String] = []
+      let gen = text_or(jval_get(cur_h, "gen"), "")
+      let made = num_of(jval_get(cur_h, "made"))
+      let runs = Runs::new(self.most, fn(run : Array[String]) -> Result[Unit, String] {
+        match self.write_batch(dir, gen, from, to, made, run) {
+          Ok(nm) => {
+            names.push(nm)
+            Ok(())
+          }
+          Err(e) => Err(e)
+        }
+      })
+      if whole {
+        match folded.records(fn(line : String) -> Result[Unit, String] { runs.push(line) }) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      } else {
+        match folded.partial(fn(line : String) -> Result[Unit, String] { runs.push(line) }) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      match runs.finish() {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      let kept_bs : Array[String] = []
+      for i in 0..<(bs.length() - take.length()) {
+        kept_bs.push(bs[i])
+      }
+      for i in 0..<names.length() {
+        kept_bs.push(names[i])
+      }
+      let mut next = cur_h
+      next = jval_set(next, "batches", strs_jval(kept_bs))
+      if whole {
+        let files_arr : Array[(String, js_json::JValue)] = []
+        let file_idx : Map[String, Int] = Map::new()
+        match folded.each_named_file(fn(_path : String, hash : String, sz : Double) -> Result[Unit, String] {
+          match file_idx.get(hash) {
+            Some(idx) => files_arr[idx] = (hash, jval_num(sz))
+            None => {
+              file_idx.set(hash, files_arr.length())
+              files_arr.push((hash, jval_num(sz)))
+            }
+          }
+          Ok(())
+        }) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+        next = jval_set(next, "files", jval_obj(files_arr))
+        let (chats, messages) = match folded.counts() {
+          Ok(p) => p
+          Err(e) => return Err(e)
+        }
+        next = jval_set(next, "chats", jval_num(chats))
+        next = jval_set(next, "messages", jval_num(messages))
+      } else {
+        next = jval_set(
+          next,
+          "files",
+          match jval_get(cur_h, "files") {
+            Some(v) => v
+            None => jval_obj([])
+          },
+        )
+        next = jval_set(
+          next,
+          "chats",
+          match jval_get(cur_h, "chats") {
+            Some(v) => v
+            None => js_json::JValue::Null
+          },
+        )
+        next = jval_set(
+          next,
+          "messages",
+          match jval_get(cur_h, "messages") {
+            Some(v) => v
+            None => js_json::JValue::Null
+          },
+        )
+      }
+      match self.write_head(dir, next) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      for ti in 0..<take.length() {
+        if !arr_contains_str(names, take[ti]) {
+          match self.files.remove(self.files.join([log, take[ti]])) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      Ok(next)
+    }) {
+      Ok(nh) => nh
+      Err(e) => return Err(e)
+    }
+    h = next_h
+    if everything || strings_of(jval_get(h, "batches")).length() >= bs.length() {
+      break
+    }
+  }
+  h = jval_set(h, "bytes", jval_num(self.bytes(dir, h)))
+  match self.write_head(dir, h) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  let named = strings_of(jval_get(h, "batches"))
+  match self.files.names(log) {
+    Some(on_disk) => {
+      for i in 0..<on_disk.length() {
+        if !arr_contains_str(named, on_disk[i]) {
+          match self.files.remove(self.files.join([log, on_disk[i]])) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  Ok(h)
+}
+
+fn Exporter::bytes(self : Exporter, dir : String, h : js_json::JValue) -> Double {
+  let mut n = 0.0
+  let bs = strings_of(jval_get(h, "batches"))
+  for i in 0..<bs.length() {
+    match self.files.meta(self.files.join([dir, "log", bs[i]])) {
+      Some((sz, _)) => n = n + sz
+      None => ()
+    }
+  }
+  let seen : Map[String, Bool] = Map::new()
+  match jval_get(h, "files") {
+    Some(js_json::JValue::Obj(entries)) => {
+      for i in 0..<entries.length() {
+        let k = js_json::sanitize_str(entries[i].0)
+        seen.set(k, true)
+        n = n + num_of(Some(entries[i].1))
+      }
+    }
+    _ => ()
+  }
+  match jval_get(h, "transcriptFiles") {
+    Some(js_json::JValue::Obj(entries)) => {
+      for i in 0..<entries.length() {
+        let k = js_json::sanitize_str(entries[i].0)
+        if !map_has(seen, k) {
+          seen.set(k, true)
+          n = n + num_of(Some(entries[i].1))
+        }
+      }
+    }
+    _ => ()
+  }
+  n
+}
+
+let SOURCES_POINT_MOST : Int = 32
+
+pub fn Exporter::sources(self : Exporter, hashes : Array[String]) -> Result[js_json::JValue, String] {
+  let by_hash : Option[Map[String, Array[String]]] = if hashes.length() > SOURCES_POINT_MOST {
+    let m : Map[String, Array[String]] = Map::new()
+    for hi in 0..<hashes.length() {
+      m.set(hashes[hi], [])
+    }
+    let rows = match self.state.all("SELECT hash, path FROM files ORDER BY path", []) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    for ri in 0..<rows.length() {
+      let h = field_text(rows[ri], "hash")
+      match m.get(h) {
+        Some(paths) => paths.push(field_text(rows[ri], "path"))
+        None => ()
+      }
+    }
+    Some(m)
+  } else {
+    None
+  }
+  let out : Array[(String, js_json::JValue)] = []
+  let seen : Map[String, Bool] = Map::new()
+  for hi in 0..<hashes.length() {
+    let h = hashes[hi]
+    if map_has(seen, h) {
+      continue
+    }
+    seen.set(h, true)
+    let paths : Array[String] = match by_hash {
+      Some(m) => {
+        match m.get(h) {
+          Some(ps) => ps
+          None => []
+        }
+      }
+      None => {
+        let rows = match self.state.all("SELECT path FROM files WHERE hash = ? ORDER BY path", [base_codec::json_str(h)]) {
+          Ok(rs) => rs
+          Err(e) => return Err(e.message)
+        }
+        let ps : Array[String] = []
+        for ri in 0..<rows.length() {
+          ps.push(field_text(rows[ri], "path"))
+        }
+        ps
+      }
+    }
+    let mut found = false
+    for pi in 0..<paths.length() {
+      let path = paths[pi]
+      if self.files.is_regular_file(path) {
+        out.push((h, jval_str(path)))
+        found = true
+        break
+      }
+    }
+    if !found {
+      let chunk = self.files.join([self.replica, "chunks", h])
+      if self.files.is_regular_file(chunk) {
+        out.push((h, jval_str(chunk)))
+      }
+    }
+  }
+  Ok(jval_obj(out))
+}
+
+fn Exporter::dir_unreadable_checked(self : Exporter, dir : String) -> Result[Bool, String] {
+  match self.test_faults {
+    Some(f) => {
+      if map_has(f.forbid_readdir, dir) {
+        return Err("BUG: descended into pruned directory " + dir)
+      }
+      if map_has(f.readdir_err, dir) {
+        return Ok(true)
+      }
+    }
+    None => ()
+  }
+  Ok(!c_dir_readable(dir))
+}
+
+fn Exporter::lstat_checked(self : Exporter, path : String) -> Result[Option[(String, Double, Int, Double)], Unit] {
+  match self.test_faults {
+    Some(f) => if map_has(f.lstat_err, path) { return Err(()) }
+    None => ()
+  }
+  match self.files.lstat(path) {
+    Some(st) => Ok(Some(st))
+    None => if c_missing(path, false) { Ok(None) } else { Err(()) }
+  }
+}
+
+fn Exporter::listing_checked(self : Exporter, dir : String) -> Result[Option[Array[(String, String)]], Option[String]] {
+  match self.test_faults {
+    Some(f) => {
+      if map_has(f.forbid_readdir, dir) {
+        return Err(Some("BUG: descended into pruned directory " + dir))
+      }
+      if map_has(f.readdir_err, dir) {
+        return Err(None)
+      }
+    }
+    None => ()
+  }
+  match self.files.listing(dir) {
+    Some(entries) => {
+      match self.test_faults {
+        Some(f) => {
+          if f.other_kind_nonempty {
+            let mapped : Array[(String, String)] = []
+            for i in 0..<entries.length() {
+              let (name, kind) = entries[i]
+              let path = self.files.join([dir, name])
+              if map_has(f.other_kind, path) {
+                mapped.push((name, "other"))
+              } else {
+                mapped.push((name, kind))
+              }
+            }
+            return Ok(Some(mapped))
+          }
+          Ok(Some(entries))
+        }
+        None => Ok(Some(entries))
+      }
+    }
+    None => if c_dir_missing(dir) { Ok(None) } else { Err(None) }
+  }
+}
+
+fn Exporter::walk_transcript_dir(
+  self : Exporter,
+  dir : String,
+  add : (String) -> Unit,
+  on_error : (String) -> Unit,
+  on_unreadable_path : (String) -> Unit,
+) -> Result[Unit, String] {
+  let entries = match self.listing_checked(dir) {
+    Ok(Some(es)) => es
+    Ok(None) => return Ok(())
+    Err(Some(bug)) => return Err(bug)
+    Err(None) => {
+      on_error(dir)
+      return Ok(())
+    }
+  }
+  for i in 0..<entries.length() {
+    let (name, kind) = entries[i]
+    let path = self.files.join([dir, name])
+    if kind == "dir" {
+      match self.walk_transcript_dir(path, add, on_error, on_unreadable_path) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    } else if kind == "file" {
+      add(path)
+    } else if kind == "other" {
+      match self.lstat_checked(path) {
+        Ok(Some((k, _, _, _))) => {
+          if k == "file" {
+            add(path)
+          } else if k == "dir" {
+            match self.walk_transcript_dir(path, add, on_error, on_unreadable_path) {
+              Ok(()) => ()
+              Err(e) => return Err(e)
+            }
+          }
+        }
+        Ok(None) => ()
+        Err(_) => {
+          on_unreadable_path(path)
+          on_error(path)
+        }
+      }
+    }
+  }
+  Ok(())
+}
+
+fn Exporter::walk_brain_dir(
+  self : Exporter,
+  dir : String,
+  rel_parts : Array[String],
+  add : (String) -> Unit,
+  on_error : (String) -> Unit,
+  on_unreadable_path : (String) -> Unit,
+) -> Result[Unit, String] {
+  if is_pruned_brain_rel(rel_parts) {
+    return Ok(())
+  }
+  let entries = match self.listing_checked(dir) {
+    Ok(Some(es)) => es
+    Ok(None) => return Ok(())
+    Err(Some(bug)) => return Err(bug)
+    Err(None) => {
+      on_error(dir)
+      return Ok(())
+    }
+  }
+  for i in 0..<entries.length() {
+    let (name, kind) = entries[i]
+    let path = self.files.join([dir, name])
+    if kind == "dir" {
+      let next_rel : Array[String] = []
+      for j in 0..<rel_parts.length() {
+        next_rel.push(rel_parts[j])
+      }
+      next_rel.push(name)
+      if is_pruned_brain_rel(next_rel) {
+        continue
+      }
+      match self.walk_brain_dir(path, next_rel, add, on_error, on_unreadable_path) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    } else if kind == "file" {
+      add(path)
+    } else if kind == "other" {
+      match self.lstat_checked(path) {
+        Ok(Some((k, _, _, _))) => {
+          if k == "file" {
+            add(path)
+          } else if k == "dir" {
+            let next_rel : Array[String] = []
+            for j in 0..<rel_parts.length() {
+              next_rel.push(rel_parts[j])
+            }
+            next_rel.push(name)
+            if !is_pruned_brain_rel(next_rel) {
+              match self.walk_brain_dir(path, next_rel, add, on_error, on_unreadable_path) {
+                Ok(()) => ()
+                Err(e) => return Err(e)
+              }
+            }
+          }
+        }
+        Ok(None) => ()
+        Err(_) => {
+          on_unreadable_path(path)
+          on_error(path)
+        }
+      }
+    }
+  }
+  Ok(())
+}
+
+struct WsTrState {
+  found : Map[String, Option[String]]
+  found_keys : Array[String]
+  unreadable_dirs : Array[String]
+  unreadable_paths : Map[String, Bool]
+}
+
+fn Exporter::export_transcripts(
+  self : Exporter,
+  out_keys : Array[String],
+  sess_rows : Array[js_json::JValue],
+  run_rows : Map[String, Array[js_json::JValue]],
+  ws_of_session : (Option[js_json::JValue]) -> String,
+  say : (String, js_json::JValue) -> Unit,
+) -> Result[Bool, String] {
+  let finder_readdir_err : Map[String, Bool] = Map::new()
+  match self.test_faults {
+    Some(f) => {
+      for i in 0..<f.readdir_err_keys.length() {
+        finder_readdir_err.set(f.readdir_err_keys[i], true)
+      }
+      for i in 0..<f.finder_readdir_err_keys.length() {
+        finder_readdir_err.set(f.finder_readdir_err_keys[i], true)
+      }
+    }
+    None => ()
+  }
+  let finder = locate::Finder::new(self.files.client, self.files.sep)
+  finder.enable_failed_dir_tracking(finder_readdir_err)
+
+  let by_ws : Map[String, WsTrState] = Map::new()
+  for i in 0..<out_keys.length() {
+    by_ws.set(
+      out_keys[i],
+      WsTrState::{ found: Map::new(), found_keys: [], unreadable_dirs: [], unreadable_paths: Map::new() },
+    )
+  }
+
+  for si in 0..<sess_rows.length() {
+    let sess = sess_rows[si]
+    let ws = ws_of_session(jval_get(sess, "ws"))
+    let ws_st = match by_ws.get(ws) {
+      Some(st) => st
+      None => continue
+    }
+    let add_unreadable_dir = fn(d : String) -> Unit { arr_push_unique_str(ws_st.unreadable_dirs, d) }
+    let add_unreadable_path = fn(p : String) -> Unit { ws_st.unreadable_paths.set(p, true) }
+    let key = text_or(jval_get(sess, "key"), "")
+    let s_runtime = text_or(jval_get(sess, "runtime"), "")
+    let orig_runtime = text_or(jval_get(sess, "original_runtime"), s_runtime)
+    let s_profile = text_of(jval_get(sess, "profile"))
+    let s_workspace = text_or(jval_get(sess, "workspace"), "")
+    let s_cwd = text_of(jval_get(sess, "cwd"))
+    let room : Option[String] = match s_cwd {
+      Some(c) => if c != "" { Some(c) } else if s_workspace != "" { Some(s_workspace) } else { None }
+      None => if s_workspace != "" { Some(s_workspace) } else { None }
+    }
+    let places : Array[String] = []
+    match s_cwd {
+      Some(c) => if c != "" && c != s_workspace { places.push(c) }
+      None => ()
+    }
+    if s_workspace != "" {
+      places.push(s_workspace)
+    }
+    let sources : Array[locate::Source] = []
+    let seen_ids : Map[String, Bool] = Map::new()
+    let r_list = match run_rows.get(key) {
+      Some(xs) => xs
+      None => []
+    }
+    for ri in 0..<r_list.length() {
+      let r = r_list[ri]
+      let id = text_or(jval_get(r, "id"), "")
+      if id == "" {
+        continue
+      }
+      let rt = text_or(jval_get(r, "runtime"), orig_runtime)
+      let prof = match text_of(jval_get(r, "profile")) {
+        Some(p) => Some(p)
+        None => s_profile
+      }
+      sources.push(locate::Source::{ id: id, runtime: rt, profile: prof })
+      seen_ids.set(id, true)
+    }
+    match text_of(jval_get(sess, "runtime_session_id")) {
+      Some(cid) => {
+        if cid != "" && !map_has(seen_ids, cid) {
+          sources.push(locate::Source::{ id: cid, runtime: s_runtime, profile: s_profile })
+        }
+      }
+      None => ()
+    }
+    if sources.length() == 0 {
+      continue
+    }
+    let add_path = fn(p : String) -> Unit {
+      if self.files.is_transcript_path(self.data_dir, p) {
+        match ws_st.found.get(p) {
+          Some(_) => ()
+          None => {
+            ws_st.found.set(p, room)
+            ws_st.found_keys.push(p)
+          }
+        }
+      }
+    }
+    let valid_sources : Array[locate::Source] = []
+    for i in 0..<sources.length() {
+      if locate::runtime_kind(sources[i].runtime) {
+        valid_sources.push(sources[i])
+      }
+    }
+    if valid_sources.length() > 0 {
+      let (located, _) = finder.sources(self.data_dir, [], valid_sources, places, anywhere=true)
+      let failed = finder.take_failed_dirs()
+      for fi in 0..<failed.length() {
+        let d = failed[fi]
+        if !c_dir_missing(d) {
+          add_unreadable_dir(d)
+        }
+      }
+      for li in 0..<located.length() {
+        let (path, kind) = located[li]
+        let actual = if self.files.exists(path) { path } else { path + ".zst" }
+        add_path(actual)
+        if kind == "claude" {
+          let sep_bytes = self.files.sep.to_bytes()
+          let sep_b = if sep_bytes.length() > 0 { sep_bytes[0].to_int() & 0xFF } else { 47 }
+          let cut = match str_rev_find_byte(path, sep_b) {
+            Some(i) => i + 1
+            None => 0
+          }
+          let name = str_slice(path, cut, path.to_bytes().length())
+          let id = if str_has_suffix(name, ".jsonl") {
+            str_slice(name, 0, name.to_bytes().length() - 6)
+          } else {
+            name
+          }
+          let sub = self.files.join([self.files.dir_of(path), id])
+          match self.lstat_checked(sub) {
+            Ok(Some(("dir", _, _, _))) => {
+              match self.walk_transcript_dir(sub, add_path, add_unreadable_dir, add_unreadable_path) {
+                Ok(()) => ()
+                Err(e) => return Err(e)
+              }
+            }
+            Ok(_) => ()
+            Err(_) => add_unreadable_dir(sub)
+          }
+        }
+      }
+    }
+    // AGY cli_kept
+    for i in 0..<sources.length() {
+      let r = sources[i]
+      if r.runtime != "agy" {
+        continue
+      }
+      let profile = match r.profile {
+        Some(p) => if one_segment(p) && one_segment(r.id) { p } else { continue }
+        None => continue
+      }
+      let cli = self.files.join([self.data_dir, "homes", profile, "agy", ".gemini", "antigravity-cli"])
+      add_path(self.files.join([cli, "conversations", r.id + ".db"]))
+      add_path(self.files.join([cli, "conversations", r.id + ".db-wal"]))
+      add_path(self.files.join([cli, "annotations", r.id + ".pbtxt"]))
+      let brain = self.files.join([cli, "brain", r.id])
+      match self.lstat_checked(brain) {
+        Ok(Some(("dir", _, _, _))) => {
+          match self.walk_brain_dir(brain, [], add_path, add_unreadable_dir, add_unreadable_path) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        Ok(_) => ()
+        Err(_) => add_unreadable_dir(brain)
+      }
+    }
+  }
+
+  let mut done_files = 0
+  let mut done_bytes = 0
+  let mut done_deletes = 0
+  let mut truncated = false
+  let parent_unreadable_cache : Map[String, Bool] = Map::new()
+  let ancestor_lstat_cache : Map[String, String] = Map::new()
+
+  let ws_order : Array[String] = []
+  for wi in 0..<out_keys.length() {
+    ws_order.push(out_keys[wi])
+  }
+  sort_strings_utf16(ws_order)
+
+  for wi in 0..<ws_order.length() {
+    if truncated {
+      break
+    }
+    let ws = ws_order[wi]
+    if map_has(self.transcript_ws_done, ws) {
+      continue
+    }
+    let ws_st = match by_ws.get(ws) {
+      Some(st) => st
+      None => continue
+    }
+    let paths = ws_st.found_keys
+    sort_strings_utf16(paths)
+    // Batch-load `transcript_files` for this workspace once instead of querying per path.
+    let existing_by_path : Map[String, (Option[String], Double, Double)] = Map::new()
+    let old_paths : Array[String] = []
+    let existing_rows = match self.state.all("SELECT path, room, size, mtime FROM transcript_files WHERE ws = ?", [base_codec::json_str(ws)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    for ri in 0..<existing_rows.length() {
+      let row = existing_rows[ri]
+      let p = field_text(row, "path")
+      let prev_room = field_str(row, "room")
+      existing_by_path.set(p, (prev_room, field_num(row, "size"), field_num(row, "mtime")))
+      old_paths.push(p)
+    }
+    sort_strings_utf16(old_paths)
+    let active : Map[String, Bool] = Map::new()
+    let mut ws_truncated = false
+    let scan_done = map_has(self.transcript_scan_done, ws)
+    let cursor = self.transcript_cursor.get(ws)
+    for pi in 0..<paths.length() {
+      let path = paths[pi]
+      let (kind, size, mode, mtime) = match self.lstat_checked(path) {
+        Ok(Some(st)) => st
+        Ok(None) => continue
+        Err(_) => {
+          ws_st.unreadable_paths.set(path, true)
+          continue
+        }
+      }
+      if kind != "file" {
+        continue
+      }
+      // Already scanned earlier in this sweep: keep as active without re-reading until next sweep.
+      let behind_cursor = match cursor {
+        Some(c) => js_json::js_compare(path, c) < 0
+        None => false
+      }
+      if scan_done || behind_cursor {
+        active.set(path, true)
+        continue
+      }
+      let room = match ws_st.found.get(path) {
+        Some(r) => r
+        None => None
+      }
+      let m = mode & 511 // 0o777
+      let mtime_ms = floor_double(mtime)
+      let unchanged = match existing_by_path.get(path) {
+        Some((prev_room, prev_size, prev_mtime)) => {
+          let room_eq = match (prev_room, room) {
+            (Some(a), Some(b)) => a == b
+            (None, None) => true
+            _ => false
+          }
+          prev_size == size && prev_mtime == mtime_ms && room_eq
+        }
+        None => false
+      }
+      if unchanged {
+        active.set(path, true)
+        continue
+      }
+      if done_files > 0 && (done_files >= self.transcript_pass_files || done_bytes >= self.transcript_pass_bytes) {
+        truncated = true
+        ws_truncated = true
+        self.transcript_cursor.set(ws, path)
+        self.transcript_cursor_keys.push(ws)
+        break
+      }
+      let chunks : Array[String] = []
+      let total = size.to_int()
+      let mut offset = 0
+      let mut read_failed = false
+      while offset < total {
+        let want = if total - offset < self.chunk_bytes { total - offset } else { self.chunk_bytes }
+        let injected_short = match self.test_faults {
+          Some(f) => map_has(f.read_short, path) || (offset > 0 && map_has(f.read_short_after_first, path))
+          None => false
+        }
+        let plain_opt = if injected_short {
+          None
+        } else {
+          match self.files.client.read_bytes_range(path, from=offset, length=want) {
+            Ok(v) => v
+            Err(_) => None
+          }
+        }
+        let plain = match plain_opt {
+          Some(p) => {
+            if p.length() == 0 {
+              read_failed = true
+              break
+            }
+            p
+          }
+          None => {
+            read_failed = true
+            break
+          }
+        }
+        let plain_hash = transcript_io::sha256_bytes_hex(plain)
+        let cached_ch = match self.state.all("SELECT chunk_hash FROM transcript_chunks WHERE plain_hash = ?", [base_codec::json_str(plain_hash)]) {
+          Ok(rows) => {
+            if rows.length() > 0 {
+              let ch = field_text(rows[0], "chunk_hash")
+              if opt_str_is(self.files.kind(self.files.join([self.replica, "chunks", ch])), "file") {
+                Some(ch)
+              } else {
+                None
+              }
+            } else {
+              None
+            }
+          }
+          Err(e) => return Err(e.message)
+        }
+        let ch = match cached_ch {
+          Some(c) => c
+          None => {
+            let zst_args = base_codec::json_obj([
+              ("level", base_codec::json_int(3)),
+              ("window", base_codec::json_int(20)),
+            ])
+            let zst = match self.files.client.shell_call_wait("zstd.compress", zst_args, Some(plain)) {
+              Ok((_, Some(b))) => b
+              Ok((_, None)) => return Err("zstd.compress returned no bytes")
+              Err(e) => return Err(e.message)
+            }
+            let h = transcript_io::sha256_bytes_hex(zst)
+            let comp_size = zst.length().to_double()
+            let chunk_path = self.files.join([self.replica, "chunks", h])
+            if !opt_str_is(self.files.kind(chunk_path), "file") {
+              match self.files.client.write_atomic(chunk_path, zst, mode=420, sync=false, mkdir=true, sep=self.files.sep) {
+                Ok(()) => ()
+                Err(e) => return Err(e.message)
+              }
+            }
+            match self.state.run(
+              "INSERT OR REPLACE INTO transcript_chunks (plain_hash, chunk_hash, comp_size) VALUES (?, ?, ?)",
+              [base_codec::json_str(plain_hash), base_codec::json_str(h), sql_db::double_to_json(comp_size)],
+            ) {
+              Ok(_) => ()
+              Err(e) => return Err(e.message)
+            }
+            h
+          }
+        }
+        chunks.push(ch)
+        offset = offset + plain.length()
+      }
+      if read_failed || offset != total {
+        ws_st.unreadable_paths.set(path, true)
+        continue
+      }
+      active.set(path, true)
+      let chunks_json = js_json::stringify(strs_jval(chunks))
+      let room_param = match room {
+        Some(r) => base_codec::json_str(r)
+        None => base_codec::json_null()
+      }
+      match self.state.run(
+        "INSERT OR REPLACE INTO transcript_files (ws, path, room, size, mtime, mode, chunks_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [
+          base_codec::json_str(ws),
+          base_codec::json_str(path),
+          room_param,
+          sql_db::double_to_json(size),
+          sql_db::double_to_json(mtime_ms),
+          base_codec::json_int(m),
+          base_codec::json_str(chunks_json),
+        ],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+      let _ = self.tf_cache.remove(ws)
+      let _ = self.manifest_cache.remove(ws)
+      say(
+        ws,
+        jval_obj([
+          ("tr", jval_str(path)),
+          ("room", jval_opt_str(room)),
+          ("size", jval_num(size)),
+          ("mtime", jval_num(mtime_ms)),
+          ("mode", jval_num(m.to_double())),
+          ("chunks", strs_jval(chunks)),
+        ]),
+      )
+      done_files = done_files + 1
+      done_bytes = done_bytes + offset
+    }
+    if ws_truncated {
+      // Drain pruned brain derived caches even when the sweep is cut short by pass budget.
+      let mut deleted_in_ws = false
+      for ri in 0..<old_paths.length() {
+        let old_path = old_paths[ri]
+        if map_has(active, old_path) || !self.files.is_pruned_brain_path(self.data_dir, old_path) {
+          continue
+        }
+        if done_deletes >= self.transcript_pass_deletes {
+          break
+        }
+        match self.state.run("DELETE FROM transcript_files WHERE ws = ? AND path = ?", [base_codec::json_str(ws), base_codec::json_str(old_path)]) {
+          Ok(_) => ()
+          Err(e) => return Err(e.message)
+        }
+        deleted_in_ws = true
+        say(ws, jval_obj([("tr_del", jval_str(old_path))]))
+        done_deletes = done_deletes + 1
+      }
+      if deleted_in_ws {
+        let _ = self.tf_cache.remove(ws)
+        let _ = self.manifest_cache.remove(ws)
+      }
+    } else {
+      let _ = self.transcript_cursor.remove(ws)
+      self.transcript_scan_done.set(ws, true)
+      self.transcript_scan_done_keys.push(ws)
+      let mut deleted_in_ws = false
+      let mut deletes_cut = false
+      for ri in 0..<old_paths.length() {
+        let old_path = old_paths[ri]
+        if map_has(active, old_path) || map_has(ws_st.unreadable_paths, old_path) || path_under_any_dir(old_path, ws_st.unreadable_dirs, self.files.sep) {
+          continue
+        }
+        if !self.files.is_pruned_brain_path(self.data_dir, old_path) {
+          match self.files.under_of(self.data_dir, old_path) {
+            Some(rel) => {
+              if rel != "" {
+                let parts = str_split_sep(rel, self.files.sep)
+                let ancestors : Array[String] = []
+                let mut cur = self.data_dir
+                let mut keep = false
+                let mut all_real_dirs = true
+                let mut i = 0
+                while i + 1 < parts.length() {
+                  cur = self.files.join([cur, parts[i]])
+                  let kind = match ancestor_lstat_cache.get(cur) {
+                    Some(k) => k
+                    None => {
+                      let k = match self.lstat_checked(cur) {
+                        Err(_) => "err"
+                        Ok(Some(("dir", _, _, _))) => "dir"
+                        Ok(_) => "other"
+                      }
+                      ancestor_lstat_cache.set(cur, k)
+                      k
+                    }
+                  }
+                  if kind == "err" {
+                    keep = true
+                    break
+                  } else if kind != "dir" {
+                    all_real_dirs = false
+                    break
+                  }
+                  ancestors.push(cur)
+                  i = i + 1
+                }
+                if keep {
+                  continue
+                }
+                if all_real_dirs {
+                  match self.lstat_checked(old_path) {
+                    Err(_) => continue
+                    Ok(None) => ()
+                    Ok(Some(_)) => {
+                      let mut ancestor_unreadable = false
+                      let check_dir = fn(d : String) -> Result[Bool, String] {
+                        match parent_unreadable_cache.get(d) {
+                          Some(b) => Ok(b)
+                          None => {
+                            let bad = match self.dir_unreadable_checked(d) {
+                              Ok(v) => v
+                              Err(e) => return Err(e)
+                            }
+                            parent_unreadable_cache.set(d, bad)
+                            Ok(bad)
+                          }
+                        }
+                      }
+                      let root_bad = match check_dir(self.data_dir) {
+                        Ok(b) => b
+                        Err(e) => return Err(e)
+                      }
+                      if root_bad {
+                        ancestor_unreadable = true
+                      } else {
+                        for ai in 0..<ancestors.length() {
+                          let ab = match check_dir(ancestors[ai]) {
+                            Ok(b) => b
+                            Err(e) => return Err(e)
+                          }
+                          if ab {
+                            ancestor_unreadable = true
+                            break
+                          }
+                        }
+                      }
+                      if ancestor_unreadable {
+                        continue
+                      }
+                    }
+                  }
+                }
+              }
+            }
+            None => ()
+          }
+        }
+        if done_deletes >= self.transcript_pass_deletes {
+          truncated = true
+          deletes_cut = true
+          break
+        }
+        match self.state.run("DELETE FROM transcript_files WHERE ws = ? AND path = ?", [base_codec::json_str(ws), base_codec::json_str(old_path)]) {
+          Ok(_) => ()
+          Err(e) => return Err(e.message)
+        }
+        deleted_in_ws = true
+        say(ws, jval_obj([("tr_del", jval_str(old_path))]))
+        done_deletes = done_deletes + 1
+      }
+      if deleted_in_ws {
+        let _ = self.tf_cache.remove(ws)
+        let _ = self.manifest_cache.remove(ws)
+      }
+      if !deletes_cut {
+        self.transcript_ws_done.set(ws, true)
+        self.transcript_ws_done_keys.push(ws)
+      }
+    }
+  }
+  if !truncated {
+    self.end_sweep()
+  }
+  Ok(truncated)
+}
+
+fn Exporter::transcript_files_map(self : Exporter, ws : String) -> Result[Array[(String, js_json::JValue)], String] {
+  let rows = match self.state.all("SELECT chunks_json FROM transcript_files WHERE ws = ?", [base_codec::json_str(ws)]) {
+    Ok(rs) => rs
+    Err(e) => return Err(e.message)
+  }
+  if rows.length() == 0 {
+    return Ok([])
+  }
+  let chunk_sizes : Map[String, Double] = Map::new()
+  let all_chunks = match self.state.all("SELECT chunk_hash, comp_size FROM transcript_chunks", []) {
+    Ok(rs) => rs
+    Err(e) => return Err(e.message)
+  }
+  for i in 0..<all_chunks.length() {
+    let ch = field_text(all_chunks[i], "chunk_hash")
+    match chunk_sizes.get(ch) {
+      Some(_) => ()
+      None => chunk_sizes.set(ch, field_num(all_chunks[i], "comp_size"))
+    }
+  }
+  let sizes : Map[String, Double] = Map::new()
+  let keys : Array[String] = []
+  for ri in 0..<rows.length() {
+    let parsed = match js_json::parse(field_text(rows[ri], "chunks_json")) {
+      Ok(v) => v
+      Err(_) => jval_arr([])
+    }
+    let chs = strings_of(Some(parsed))
+    for ci in 0..<chs.length() {
+      let ch = chs[ci]
+      match sizes.get(ch) {
+        Some(_) => continue
+        None => ()
+      }
+      let sz = match chunk_sizes.get(ch) {
+        Some(s) => s
+        None => {
+          match self.files.meta(self.files.join([self.replica, "chunks", ch])) {
+            Some((s, _)) => s
+            None => 0.0
+          }
+        }
+      }
+      sizes.set(ch, sz)
+      keys.push(ch)
+    }
+  }
+  sort_strings_utf16(keys)
+  let out : Array[(String, js_json::JValue)] = []
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    let sz = match sizes.get(k) {
+      Some(s) => s
+      None => 0.0
+    }
+    out.push((k, jval_num(sz)))
+  }
+  Ok(out)
+}
+
+fn Exporter::gc_transcript_chunks(self : Exporter) -> Result[Unit, String] {
+  let now = (self.now)()
+  let chunks_dir = self.files.join([self.replica, "chunks"])
+  let live : Map[String, Bool] = Map::new()
+  let tf_rows = match self.state.all("SELECT chunks_json FROM transcript_files", []) {
+    Ok(rs) => rs
+    Err(e) => return Err(e.message)
+  }
+  for ri in 0..<tf_rows.length() {
+    let parsed = match js_json::parse(field_text(tf_rows[ri], "chunks_json")) {
+      Ok(v) => v
+      Err(_) => jval_arr([])
+    }
+    let chs = strings_of(Some(parsed))
+    for ci in 0..<chs.length() {
+      live.set(chs[ci], true)
+    }
+  }
+  let pending : Map[String, Double] = Map::new()
+  let pending_keys : Array[String] = []
+  let gc_rows = match self.state.all("SELECT chunk_hash, gone_at FROM transcript_chunk_gc", []) {
+    Ok(rs) => rs
+    Err(e) => return Err(e.message)
+  }
+  for ri in 0..<gc_rows.length() {
+    let ch = field_text(gc_rows[ri], "chunk_hash")
+    pending.set(ch, field_num(gc_rows[ri], "gone_at"))
+    pending_keys.push(ch)
+  }
+  for i in 0..<pending_keys.length() {
+    let ch = pending_keys[i]
+    if map_has(live, ch) {
+      match self.state.run("DELETE FROM transcript_chunk_gc WHERE chunk_hash = ?", [base_codec::json_str(ch)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+    }
+  }
+  let kept_on_disk : Map[String, Bool] = Map::new()
+  match self.files.names(chunks_dir) {
+    Some(names) => {
+      for i in 0..<names.length() {
+        let name = names[i]
+        if map_has(live, name) {
+          continue
+        }
+        if self.chunk_gc_grace_ms <= 0.0 {
+          let _ = self.files.remove(self.files.join([chunks_dir, name]))
+          match pending.get(name) {
+            Some(_) => {
+              match self.state.run("DELETE FROM transcript_chunk_gc WHERE chunk_hash = ?", [base_codec::json_str(name)]) {
+                Ok(_) => ()
+                Err(e) => return Err(e.message)
+              }
+            }
+            None => ()
+          }
+          continue
+        }
+        match pending.get(name) {
+          None => {
+            match self.state.run(
+              "INSERT OR REPLACE INTO transcript_chunk_gc (chunk_hash, gone_at) VALUES (?, ?)",
+              [base_codec::json_str(name), sql_db::double_to_json(now)],
+            ) {
+              Ok(_) => ()
+              Err(e) => return Err(e.message)
+            }
+            kept_on_disk.set(name, true)
+          }
+          Some(gone_at) => {
+            if now - gone_at >= self.chunk_gc_grace_ms {
+              let _ = self.files.remove(self.files.join([chunks_dir, name]))
+              match self.state.run("DELETE FROM transcript_chunk_gc WHERE chunk_hash = ?", [base_codec::json_str(name)]) {
+                Ok(_) => ()
+                Err(e) => return Err(e.message)
+              }
+            } else {
+              kept_on_disk.set(name, true)
+            }
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  for i in 0..<pending_keys.length() {
+    let ch = pending_keys[i]
+    if !map_has(live, ch) && !map_has(kept_on_disk, ch) {
+      match self.state.run("DELETE FROM transcript_chunk_gc WHERE chunk_hash = ?", [base_codec::json_str(ch)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+    }
+  }
+  let tc_rows = match self.state.all("SELECT plain_hash, chunk_hash FROM transcript_chunks", []) {
+    Ok(rs) => rs
+    Err(e) => return Err(e.message)
+  }
+  for ri in 0..<tc_rows.length() {
+    let ch = field_text(tc_rows[ri], "chunk_hash")
+    if !map_has(live, ch) && !map_has(kept_on_disk, ch) {
+      match self.state.run("DELETE FROM transcript_chunks WHERE plain_hash = ?", [base_codec::json_str(field_text(tc_rows[ri], "plain_hash"))]) {
+        Ok(_) => ()
+        Err(e) => return Err(e.message)
+      }
+    }
+  }
+  Ok(())
+}
+
+/// Writes the canonical 2-level transcript manifest for `head` under `<replica>/manifests/<hash>`
+/// (atomic tmp + fsync + rename, skipping existing files) and returns the compact IPC head carrying
+/// `transcriptManifest` instead of inline `transcriptFiles`. Disk `own/<ws>/<gen>/head.json` keeps
+/// inline `transcriptFiles` unchanged (D72a invariant).
+fn Exporter::compact_head(self : Exporter, ws : String, head : js_json::JValue) -> Result[js_json::JValue, String] {
+  match jval_get(head, "transcriptFiles") {
+    Some(js_json::JValue::Obj(entries)) => {
+      if entries.length() == 0 {
+        let _ = self.manifest_cache.remove(ws)
+        return Ok(jval_without(head, "transcriptManifest"))
+      }
+      let manifests_dir = self.files.join([self.replica, "manifests"])
+      let gen = text_or(jval_get(head, "gen"), "")
+      let head_id = self.head_identity_of(ws, gen)
+      let cached_rh : Option[String] = match self.manifest_cache.get(ws) {
+        Some((cached_id, rh, _)) => {
+          if head_id != "" && cached_id == head_id {
+            match self.files.kind(self.files.join([manifests_dir, rh])) {
+              Some("file") => Some(rh)
+              _ => None
+            }
+          } else {
+            None
+          }
+        }
+        None => None
+      }
+      let root_hash = match cached_rh {
+        Some(rh) => rh
+        None => {
+          let pairs : Array[(String, Double)] = []
+          for i in 0..<entries.length() {
+            pairs.push((js_json::sanitize_str(entries[i].0), num_of(Some(entries[i].1))))
+          }
+          let enc = match encode_transcript_manifest(pairs) {
+            Ok(v) => v
+            Err(e) => return Err(e)
+          }
+          let leaf_hashes : Array[String] = []
+          for i in 0..<enc.leaves.length() {
+            let (_, lh, lbytes) = enc.leaves[i]
+            leaf_hashes.push(lh)
+            let lp = self.files.join([manifests_dir, lh])
+            let exists = match self.files.kind(lp) {
+              Some("file") => true
+              _ => false
+            }
+            if !exists {
+              match self.files.client.write_atomic(lp, lbytes, mode=420, sync=true, mkdir=true, sep=self.files.sep) {
+                Ok(()) => ()
+                Err(e) => return Err(e.message)
+              }
+            }
+          }
+          let rp = self.files.join([manifests_dir, enc.root_hash])
+          let r_exists = match self.files.kind(rp) {
+            Some("file") => true
+            _ => false
+          }
+          if !r_exists {
+            match self.files.client.write_atomic(rp, enc.root_bytes, mode=420, sync=true, mkdir=true, sep=self.files.sep) {
+              Ok(()) => ()
+              Err(e) => return Err(e.message)
+            }
+          }
+          self.manifest_cache.set(ws, (head_id, enc.root_hash, leaf_hashes))
+          enc.root_hash
+        }
+      }
+      Ok(jval_set(jval_without(head, "transcriptFiles"), "transcriptManifest", jval_str(root_hash)))
+    }
+    _ => {
+      let _ = self.manifest_cache.remove(ws)
+      Ok(jval_without(head, "transcriptManifest"))
+    }
+  }
+}
+
+/// Reclaims unreferenced manifest files under `<replica>/manifests/` after a 10-minute grace period
+/// measured from when a manifest hash leaves the live set, always preserving root + leaf hashes
+/// referenced by current `own` heads.
+fn Exporter::gc_manifests(self : Exporter, outs : Map[String, Out], out_keys : Array[String]) -> Result[Unit, String] {
+  let now = (self.now)()
+  let manifests_dir = self.files.join([self.replica, "manifests"])
+  let live : Map[String, Bool] = Map::new()
+  let live_keys : Array[String] = []
+  let add_live = fn(h : String) -> Unit {
+    if !map_has(live, h) {
+      live.set(h, true)
+      live_keys.push(h)
+    }
+  }
+  for i in 0..<out_keys.length() {
+    let ws = out_keys[i]
+    let out = match outs.get(ws) {
+      Some(o) => o
+      None => continue
+    }
+    let gen = text_or(jval_get(out.head, "gen"), "")
+    let head_id = self.head_identity_of(ws, gen)
+    let mut used_cache = false
+    match self.manifest_cache.get(ws) {
+      Some((cached_id, rh, leaves)) => {
+        if head_id != "" && cached_id == head_id {
+          add_live(rh)
+          for li in 0..<leaves.length() {
+            add_live(leaves[li])
+          }
+          used_cache = true
+        }
+      }
+      None => ()
+    }
+    if !used_cache {
+      match jval_get(out.head, "transcriptFiles") {
+        Some(js_json::JValue::Obj(entries)) => {
+          if entries.length() > 0 {
+            let pairs : Array[(String, Double)] = []
+            for ei in 0..<entries.length() {
+              pairs.push((js_json::sanitize_str(entries[ei].0), num_of(Some(entries[ei].1))))
+            }
+            let enc = match encode_transcript_manifest(pairs) {
+              Ok(v) => v
+              Err(e) => return Err(e)
+            }
+            add_live(enc.root_hash)
+            for li in 0..<enc.leaves.length() {
+              add_live(enc.leaves[li].1)
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  for i in 0..<live_keys.length() {
+    let _ = self.manifest_superseded_at.remove(live_keys[i])
+  }
+  for i in 0..<self.manifest_live_keys.length() {
+    let prev = self.manifest_live_keys[i]
+    if !map_has(live, prev) {
+      match self.manifest_superseded_at.get(prev) {
+        Some(_) => ()
+        None => {
+          self.manifest_superseded_at.set(prev, now)
+          self.manifest_superseded_keys.push(prev)
+        }
+      }
+    }
+  }
+  self.manifest_live = live
+  self.manifest_live_keys = live_keys
+  let on_disk : Map[String, Bool] = Map::new()
+  let names = match self.files.names(manifests_dir) {
+    Some(ns) => ns
+    None => return Ok(())
+  }
+  for i in 0..<names.length() {
+    let name = names[i]
+    on_disk.set(name, true)
+    if map_has(live, name) {
+      continue
+    }
+    match self.manifest_superseded_at.get(name) {
+      Some(superseded_at) => {
+        if now - superseded_at >= MANIFEST_GC_GRACE_MS {
+          let p = self.files.join([manifests_dir, name])
+          let _ = self.files.remove(p)
+          let _ = self.manifest_superseded_at.remove(name)
+        }
+      }
+      None => {
+        self.manifest_superseded_at.set(name, now)
+        self.manifest_superseded_keys.push(name)
+      }
+    }
+  }
+  let next_sup_keys : Array[String] = []
+  let seen_sup : Map[String, Bool] = Map::new()
+  for i in 0..<self.manifest_superseded_keys.length() {
+    let k = self.manifest_superseded_keys[i]
+    if map_has(seen_sup, k) {
+      continue
+    }
+    seen_sup.set(k, true)
+    if !map_has(on_disk, k) {
+      let _ = self.manifest_superseded_at.remove(k)
+    } else {
+      match self.manifest_superseded_at.get(k) {
+        Some(_) => next_sup_keys.push(k)
+        None => ()
+      }
+    }
+  }
+  self.manifest_superseded_keys = next_sup_keys
+  Ok(())
+}

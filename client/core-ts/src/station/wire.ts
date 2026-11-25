@@ -77,6 +77,8 @@ export interface StationWire {
   healthChange?(station: StationAddr, was: boolean): Effect.Effect<boolean>;
   /// How the connection to the station runs now; null where there is none of its own.
   net?(station: StationAddr): LinkNet | null;
+  /// How the station is currently reached (`path` and `relay`), without reading byte stats or backup-way measurements.
+  way?(station: StationAddr): { path: string | null; relay: string | null } | null;
   /// Number of fast bulk lanes available to the station for concurrent striped transfers.
   bulkLanes?(station: StationAddr): number;
   /// Local connection diagnostics for the station; null where there is no mesh.

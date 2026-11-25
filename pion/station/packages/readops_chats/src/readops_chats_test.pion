@@ -1,0 +1,181 @@
+// Pure Pion unit tests for `readops_chats` (run via `pionc test`, no C SQLite/shell linking required).
+
+import "base_codec"
+import "readops_core"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+test "archive session_json and turn_summary_json parity" {
+  let r : Map[String, base_codec::Json] = Map::new()
+  r.set("key", base_codec::json_str("s1"))
+  r.set("scope", base_codec::json_str("all"))
+  r.set("profile_pinned", base_codec::json_int(1))
+  r.set("fast", base_codec::json_int(0))
+  r.set("tui", base_codec::json_int(1))
+  r.set("speed", base_codec::json_str("fast"))
+  r.set("afresh", base_codec::json_null())
+  r.set("context", base_codec::json_int(200000))
+  r.set("compactions", base_codec::json_int(2))
+  r.set("running", base_codec::json_int(1))
+  r.set("conv", base_codec::json_str("c1"))
+  let sj = session_json(r)
+  assert(base_codec::json_eq(readops_core::json_val_or_null(sj, "scope"), base_codec::json_str("all")))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(sj, "profilePinned"), base_codec::json_bool(true)))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(sj, "fast"), base_codec::json_bool(false)))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(sj, "tui"), base_codec::json_bool(true)))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(sj, "speed"), base_codec::json_str("fast")))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(sj, "afresh"), base_codec::json_null()))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(sj, "running"), base_codec::json_bool(true)))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(sj, "conv"), base_codec::json_str("c1")))
+
+  let tr : Map[String, base_codec::Json] = Map::new()
+  tr.set("kind", base_codec::json_str("turn"))
+  tr.set("outcome", base_codec::json_str("ok"))
+  tr.set("declared", base_codec::json_str("need_decision"))
+  tr.set("about_thread", base_codec::json_int(10))
+  tr.set("about_n", base_codec::json_int(3))
+  tr.set("about_ts", base_codec::json_str("3.0"))
+  tr.set("wait_watch", base_codec::json_int(1))
+  tr.set("started_at", base_codec::json_int(100))
+  tr.set("ended_at", base_codec::json_int(200))
+  let tj = turn_summary_json(tr)
+  assert(base_codec::json_eq(readops_core::json_val_or_null(tj, "declared"), base_codec::json_str("block")))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(tj, "ending"), base_codec::json_str("need_help")))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(tj, "waitWatch"), base_codec::json_bool(true)))
+  let ab = readops_core::json_val_or_null(tj, "about")
+  assert(base_codec::json_eq(readops_core::json_val_or_null(ab, "seq"), base_codec::json_int(3)))
+}
+
+test "chatparts latest_turn and is_integer_json" {
+  let empty : Map[String, base_codec::Json] = Map::new()
+  empty.set("started_at", base_codec::json_null())
+  assert(base_codec::json_eq(latest_turn(empty), base_codec::json_null()))
+
+  let r : Map[String, base_codec::Json] = Map::new()
+  r.set("turn_id", base_codec::json_int(99))
+  r.set("kind", base_codec::json_str("user"))
+  r.set("outcome", base_codec::json_str("ok"))
+  r.set("declared", base_codec::json_str("all_done"))
+  r.set("need", base_codec::json_null())
+  r.set("about_thread", base_codec::json_null())
+  r.set("about_n", base_codec::json_null())
+  r.set("about_ts", base_codec::json_null())
+  r.set("wait_seconds", base_codec::json_null())
+  r.set("wait_for", base_codec::json_null())
+  r.set("wait_watch", base_codec::json_int(0))
+  r.set("detail", base_codec::json_str("done"))
+  r.set("started_at", base_codec::json_int(1000))
+  r.set("ended_at", base_codec::json_int(2000))
+  let lt = latest_turn(r)
+  assert(base_codec::json_eq(readops_core::json_val_or_null(lt, "id"), base_codec::json_int(99)))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(lt, "declared"), base_codec::json_str("final")))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(lt, "ending"), base_codec::json_str("all_done")))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(lt, "waitWatch"), base_codec::json_bool(false)))
+  match readops_core::json_val(lt, "need") {
+    None => ()
+    Some(_) => assert(false)
+  }
+
+  assert(is_integer_json(base_codec::json_num(42.0)))
+  assert(!is_integer_json(base_codec::json_num(42.5)))
+  assert(!is_integer_json(base_codec::json_str("42")))
+  assert(is_integer_json(base_codec::json_num(9007199254740992.0)))
+}
+
+test "notices turn_notice went_wrong and js_blank" {
+  assert(js_blank("  \t\n "))
+  assert(!js_blank(" a "))
+  match went_wrong("⚠️ crashed hard\n\nsecond paragraph") {
+    Some(s) => assert(s == "crashed hard")
+    None => assert(false)
+  }
+  match went_wrong("normal message") {
+    None => ()
+    Some(_) => assert(false)
+  }
+
+  let turn_done = base_codec::json_obj([
+    ("declared", base_codec::json_str("final")),
+    ("outcome", base_codec::json_str("ok")),
+    ("startedAt", base_codec::json_num(100.0)),
+  ])
+  let msg = base_codec::json_obj([
+    ("authorKind", base_codec::json_str("agent")),
+    ("author", base_codec::json_str("s1")),
+    ("createdAt", base_codec::json_num(150.0)),
+    ("text", base_codec::json_str("   ")),
+  ])
+  match turn_notice(turn_done, msg, "s1", "[file]", false) {
+    Some((k, t)) => {
+      assert(k == "done")
+      assert(t == "[file]")
+    }
+    None => assert(false)
+  }
+
+  let turn_block = base_codec::json_obj([
+    ("declared", base_codec::json_str("block")),
+    ("outcome", base_codec::json_str("ok")),
+    ("need", base_codec::json_str("need token")),
+    ("startedAt", base_codec::json_num(100.0)),
+  ])
+  match turn_notice(turn_block, msg, "s1", "[file]", true) {
+    Some((k, t)) => {
+      assert(k == "block")
+      assert(t == "need token")
+    }
+    None => assert(false)
+  }
+}
+
+test "shared take_chars utf8_less unique_keys sees given_title mb_json_eq" {
+  assert(take_chars("hello", 3) == "hel")
+  assert(take_chars("你好世界!", 2) == "你好")
+  assert(take_chars("a😀b", 2) == "a😀")
+  assert(take_chars("abc", 0) == "")
+  assert(utf8_less("a", "b"))
+  assert(!utf8_less("b", "a"))
+  assert(!utf8_less("a", "a"))
+  assert(utf8_less("a", "ab"))
+
+  let ukeys = unique_keys([["a", "b"], ["b", "c"]])
+  assert(ukeys.length() == 3)
+  assert(mb_json_eq(base_codec::Json::Num(9007199254740992.0, "9007199254740992"), base_codec::Json::Num(9007199254740992.0, "9007199254740993")))
+  assert(!mb_json_eq(base_codec::json_int(1), base_codec::json_int(2)))
+
+  let v_home = base_codec::json_obj([("workspace", base_codec::json_str("w1")), ("home", base_codec::json_bool(true))])
+  assert(sees(v_home, base_codec::json_str("w1")))
+  assert(sees(v_home, base_codec::json_null()))
+  assert(!sees(v_home, base_codec::json_str("w2")))
+  let v_no_home = base_codec::json_obj([("workspace", base_codec::json_str("w1")), ("home", base_codec::json_bool(false))])
+  assert(!sees(v_no_home, base_codec::json_null()))
+
+  let th : Map[String, base_codec::Json] = Map::new()
+  th.set("title", base_codec::json_str("   "))
+  th.set("auto_title", base_codec::json_str("Auto"))
+  assert(given_title(th))
+}
+
+test "viewerrows chat_title and js_number" {
+  let t_chat = base_codec::json_obj([("surface", base_codec::json_str("chat"))])
+  assert(chat_title(t_chat, base_codec::json_str("ignored"), base_codec::json_null(), "Untitled", "DM") == "Untitled")
+
+  let t_slack = base_codec::json_obj([("surface", base_codec::json_str("slack")), ("channel", base_codec::json_str("C123"))])
+  assert(chat_title(t_slack, base_codec::json_str("<@U123>  hello   world \nsecond"), base_codec::json_str("general"), "Untitled", "DM") == "hello world")
+  assert(chat_title(t_slack, base_codec::json_str("   "), base_codec::json_str("general"), "Untitled", "DM") == "#general")
+
+  let t_feishu = base_codec::json_obj([("surface", base_codec::json_str("feishu:oc_1")), ("channel", base_codec::json_str("oc_1"))])
+  assert(chat_title(t_feishu, base_codec::json_null(), base_codec::json_str("Design"), "Untitled", "DM") == "Design")
+
+  let t_dm = base_codec::json_obj([("surface", base_codec::json_str("slack")), ("channel", base_codec::json_str("D999"))])
+  assert(chat_title(t_dm, base_codec::json_null(), base_codec::json_null(), "Untitled", "DM") == "DM")
+
+  assert(js_number("12345") == 12345.0)
+  assert(js_number("  0x10 ") == 16.0)
+  let bad = js_number("not-a-num")
+  assert(bad != bad)
+}

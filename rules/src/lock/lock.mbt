@@ -243,6 +243,11 @@ fn device(v : Json?, at : Double, c : &Crypto) -> Device raise LockError {
         None => raise Refused("exp is unix seconds")
       }
   }
+  // (only a web page's device runs out: an app's that did would be judged out at one station and not at another, as
+  // each judges a signer by its own clock, step's signer; their chains would never come to one again)
+  if kind != "web" && exp is Some(_) {
+    raise Refused("only a web page's device runs out")
+  }
   if kind == "web" && at > 0.0 && (exp is None || exp.unwrap() > at + web_device_secs) {
     raise Refused("a web page's device lasts 30 days at most")
   }

@@ -1700,6 +1700,8 @@ fn chat_body_node(
         ks
       },
       est=chat_row_est,
+      est_by=fn() { chat_row_est * @sfbase.prose_text_scale() * @sfbase.prose_line_scale() },
+      heights_version=@sfbase.typography_version,
       bar=@ui.tree_scroll_bar(),
       // (what hides its top is the bar alone, as it is drawn: a message whose words start in the room under it is seen,
       // and held where it is (View::read_from). Its bar kept clear of the room too, where it was)

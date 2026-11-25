@@ -7,7 +7,7 @@
 // device was in the station's log of events (cursor.ts: what changed meanwhile is told first).
 import { type OwnHeld, type RowsMemo, rowsMemo } from "./rows-made.ts";
 import type { SharedMarkKind } from "../db/chats.ts";
-import { record, said, stationTag } from "../record.ts";
+import { record, recordInbound, recording, said, stationTag } from "../record.ts";
 import { Deferred, Effect, type Fiber } from "effect";
 import type { Inner } from "../core.ts";
 import { CoreError, asCoreError } from "../error.ts";
@@ -238,6 +238,8 @@ export class Link {
   sharedChangesRefused: number | null = null;
   /// Verified station build from the open stream's `stillfail-build` header (null if unknown).
   build: string | null = null;
+  /// Revision token of the last `GET /profiles/pace?v=2` response held in `memory` (in-memory only, never persisted).
+  paceRev: string | null = null;
   /// When the station said it has no POST /batch (one from before): its history is read a request a read a while.
   batchRefused: number | null = null;
   /// What is left of the sweep of its history under way (#history), and what the sweep asked (each read once).
@@ -285,6 +287,8 @@ export type Told = {
   ratesOpened(address: string, supported: boolean): void;
   /// A station is no longer linked.
   gone(address: string): void;
+  /// Whether the stations of `workspace` are linked now (all unless the device follows only the ones in view).
+  links(workspace: string): boolean;
 };
 
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
@@ -411,12 +415,13 @@ export class Links {
     return this.#links.get(address)?.state.state === "online";
   }
 
-  /// Every station of every workspace an account reaches, as the workspaces are held: those not linked yet are
-  /// linked, those no longer listed let go.
+  /// Every station of every workspace an account reaches, as the workspaces are held (only those in view where the
+  /// device follows no others, `Told.links`): those not linked yet are linked, those no longer listed let go.
   reconcile(): void {
     const core = this.#core;
     const wanted = new Set<string>();
     for (const [id] of core.workspaces.owned()) {
+      if (!this.#told.links(id)) continue;
       const workspace = core.data.shared({ topic: "workspace", workspace: id });
       for (const s of isObject(workspace) && Array.isArray(workspace.stations) ? workspace.stations : []) {
         if (isObject(s) && typeof s.id === "string") wanted.add(`${id}/${s.id}`);
@@ -814,6 +819,7 @@ export class Links {
               if (link.state.state === "reconnecting") self.setLink(address, { state: "online" });
               for (const [name, data, id] of parser.feed(chunk)) {
                 events++;
+                if (recording(core.host)) recordInbound(core.host, `${stationTag(address)} sse:${name || "ping"}`, data.length, 1);
                 // Where the station's log is: nothing to tell, the next stream goes on from it.
                 if (name === "") {
                   if (id !== undefined) link.cursor.heard(id);

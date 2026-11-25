@@ -70,12 +70,24 @@ static napi_value face(napi_env env, napi_callback_info info) {
   }
   [face_descs[face_id] addObject:(__bridge_transfer id)desc];
   [face_weights[face_id] addObject:@(weight)];
-  faces_changed();
+  face_changed(face_id);
   return integer(env, 1);
 }
 static napi_value face_clear(napi_env env, napi_callback_info info) {
   napi_value a[1]; args(env, info, 1, a);
   mb_host_face_clear((int)number(env, a[0]));
+  return undefined(env);
+}
+static napi_value face_set_ligatures(napi_env env, napi_callback_info info) {
+  napi_value a[2]; args(env, info, 2, a);
+  bool on = false; napi_get_value_bool(env, a[1], &on);
+  mb_host_face_set_ligatures((int32_t)number(env, a[0]), on ? 1 : 0);
+  return undefined(env);
+}
+static napi_value set_host_autospace(napi_env env, napi_callback_info info) {
+  napi_value a[1]; args(env, info, 1, a);
+  bool on = true; napi_get_value_bool(env, a[0], &on);
+  mb_host_set_host_autospace(on ? 1 : 0);
   return undefined(env);
 }
 static napi_value metrics(napi_env env, napi_callback_info info) {
@@ -105,7 +117,7 @@ static napi_value face_path(napi_env env, napi_callback_info info) {
   if (!face_descs[face_index]) { face_descs[face_index] = [NSMutableArray new]; face_weights[face_index] = [NSMutableArray new]; }
   [face_descs[face_index] addObject:(__bridge id)CFArrayGetValueAtIndex(ds, 0)];
   [face_weights[face_index] addObject:@((int)number(env, a[2]))];
-  CFRelease(ds); faces_changed(); return integer(env, 1);
+  CFRelease(ds); face_changed(face_index); return integer(env, 1);
 }
 static napi_value face_family(napi_env env, napi_callback_info info) {
   napi_value a[2]; args(env, info, 2, a);
@@ -127,7 +139,7 @@ static napi_value face_family(napi_env env, napi_callback_info info) {
   }
   CFRelease(ds);
   if (!descs.count) return integer(env, 0);
-  face_descs[face_index] = descs; face_weights[face_index] = weights; faces_changed();
+  face_descs[face_index] = descs; face_weights[face_index] = weights; face_changed(face_index);
   return integer(env, 1);
 }
 static napi_value image_load(napi_env env, napi_callback_info info) {
@@ -283,6 +295,8 @@ static napi_value setup_exports(napi_env env, napi_value exports) {
     {"facePath", NULL, face_path, NULL, NULL, NULL, napi_default, NULL},
     {"faceFamily", NULL, face_family, NULL, NULL, NULL, napi_default, NULL},
     {"faceClear", NULL, face_clear, NULL, NULL, NULL, napi_default, NULL},
+    {"faceSetLigatures", NULL, face_set_ligatures, NULL, NULL, NULL, napi_default, NULL},
+    {"setHostAutospace", NULL, set_host_autospace, NULL, NULL, NULL, napi_default, NULL},
     {"metrics", NULL, metrics, NULL, NULL, NULL, napi_default, NULL},
     {"shape", NULL, shape, NULL, NULL, NULL, napi_default, NULL},
     {"textKey", NULL, key, NULL, NULL, NULL, napi_default, NULL},

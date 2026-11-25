@@ -96,6 +96,11 @@ plant "the fork choice keeps the first child it was given" src/fork/fork.mbt "  
     }" "    if ahead(ws[i], rs[i], ts[i], hs[i], ws[b], rs[b], ts[b], hs[b]) {
       b = b
     }"
+plant "a keeper picks a child it holds that is not the one all pick" src/fork/fork.mbt "  proof_require: chosen(ws, rs, ts, hs, part[k]),
+" ""
+plant "a child another beats is picked" src/fork/fork.mbt "  proof_require: beats(ws, rs, ts, hs, c, x),
+" "  proof_require: two_in(ws.length(), x, c),
+"
 bad=0
 for d in "$work"/*; do
   name=$(cat "$d/name") verdict=$(cat "$d/verdict")

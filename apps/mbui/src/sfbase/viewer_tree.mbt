@@ -87,6 +87,10 @@ pub fn viewer_node(v : @view.View, src : Source, stage : () -> (Double, Double))
 ///|
 /// Viewer `vw`'s layer, node `n` (viewer_node's).
 fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double, Double)) -> Unit {
+  let root = n
+  let top_zone_ref : Ref[@view.View?] = Ref(None)
+  let left_zone_ref : Ref[@view.View?] = Ref(None)
+  let right_zone_ref : Ref[@view.View?] = Ref(None)
   // (over the pages, a modal layer: what is under it (the pages, the bar, what the shell draws round them) takes no key,
   // no wheel, no stop of Tab, and is read out none, as the old frame's modal overlay made it; what opens over all of it,
   // a menu, a sheet, its own)
@@ -121,21 +125,117 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     },
   )
   |> ignore
+  // Tab / Shift+Tab while the image viewer's bars are faded immediately wakes the top bar and arms 1800ms.
+  let can_wake_tab = fn() {
+    live() && !vw.closing && !marking.on && vw.shown_kind() == Some(KImage) && !@signals.untracked(fn() { vw.bars_shown() })
+  }
+  n
+  .key_context("Viewer")
+  .on_action(
+    "viewer.wake",
+    fn(_) {
+      if can_wake_tab() {
+        vw.wake()
+        if @sf.pointer_rests() {
+          vw.arm_idle(root, root.cause_at())
+        }
+        true
+      } else {
+        false
+      }
+    },
+    can=can_wake_tab,
+  )
+  |> ignore
   // (its layer made again for another tier of the window, this one let go of after it as what is shared in it is
-  // let go of as the change is committed: only the one it is in now says it is out of the tree)
+  // let go of as the change is committed: only the one it is in now owns shared timers and gesture handles; when a new
+  // layer takes over, end any in-flight trackpad pull from the old canvas without touching the new layer's idle timer)
+  if vw.tree_layers > 0 {
+    (vw.wheel_off)()
+    vw.wheel_off = fn() {  }
+    if vw.wheel_pulling {
+      vw.wheel_pulling = false
+      vw.pull_x = 0.0
+      vw.pull_y = 0.0
+      if !vw.closing {
+        vw.zoom.reset(at=n.cause_at())
+      }
+    }
+    if pv_strip.wheel.state == Paging {
+      pv_strip.wheel.reset()
+      pv_strip.way.put(0.0)
+    }
+  }
   vw.tree_layers += 1
   let layer = vw.tree_layers
   vw.in_tree = true
   n.owns(fn() {
     if vw.tree_layers == layer {
       vw.in_tree = false
+      vw.cancel_idle()
+      (vw.hold_off)()
+      vw.hold_off = fn() {  }
+      (vw.tap_off)()
+      vw.tap_off = fn() {  }
+      vw.tap_paused_idle = false
+      (vw.wheel_off)()
+      vw.wheel_off = fn() {  }
+      vw.fingers.clear()
     }
-    (vw.hold_off)()
-    (vw.tap_off)()
-    (vw.wheel_off)()
-    vw.fingers.clear()
   })
   |> ignore
+  // desktop pointer 1800ms auto-fade on the viewer root node (`later=true`), re-armed when the last lock clears and
+  // cleared immediately when the pointer leaves the window
+  if vw.shown_kind() == Some(KImage) {
+    if vw.awake && @sf.pointer_rests() {
+      vw.arm_idle(root, root.cause_at())
+    }
+    root.reacts(at_start=false, fn() { vw.bars_locked() }, fn(locked) {
+      vw.lock_epoch += 1
+      if locked {
+        vw.cancel_idle()
+      } else if @sf.pointer_rests() && !vw.closing && !vw.manual_hidden && !vw.pointer_left {
+        if !vw.awake {
+          vw.awake = true
+          vw.awake_said()
+        }
+        vw.arm_idle(root, root.cause_at())
+      }
+    })
+    root.reacts(at_start=false, fn() { root.pointer_within() && @sf.pointer_rests() }, fn(within) {
+      if within {
+        vw.pointer_left = false
+      } else if @sf.pointer_rests() {
+        vw.pointer_left = true
+        (vw.tap_off)()
+        vw.tap_off = fn() {  }
+        vw.tap_paused_idle = false
+        let mut changed = false
+        if vw.near_bar {
+          vw.near_bar = false
+          changed = true
+        }
+        if vw.near_left {
+          vw.near_left = false
+          changed = true
+        }
+        if vw.near_right {
+          vw.near_right = false
+          changed = true
+        }
+        if !@signals.untracked(fn() { vw.bars_locked() }) {
+          vw.cancel_idle()
+          if vw.awake {
+            vw.awake = false
+            changed = true
+          }
+        }
+        if changed {
+          vw.awake_said()
+        }
+      }
+    })
+  }
   // set out as it is made: the moment of what opened it
   vw.set_out(@ui.current(), n.cause_at())
   // (what marking stamps what it makes by: this source's clock, as the old view's said it each frame)
@@ -237,6 +337,21 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       vw.zoom.natural(nw, nh, at~)
     },
   )
+  // Zoomed pan clearance while marking (independent of fitted stage height and natural size)
+  n.reacts(
+    fn() {
+      marks_said()
+      let (w, _) = stage()
+      if marking.on {
+        (vw.bar_clear(w), marks_foot_taken.get())
+      } else {
+        (0.0, 0.0)
+      }
+    },
+    fn(pan) {
+      vw.zoom.pan_under_bars(pan.0, pan.1, at=n.cause_at())
+    },
+  )
   // lifted over the keyboard while marking, as far as keeps what is being written (or the open note's pin, its box
   // under it) 24 clear of it: its way said as the keyboard comes or goes or what is written moves, at that moment
   // (the same lift a finger on the picture is placed by: Viewer::marks_rect)
@@ -323,7 +438,59 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
           None => true
         }
       }))
-      .on_drag(fn(d) { vw.finger_on(canvas, src, d) }, fingers=2)
+      .on_drag(
+        fn(d) {
+          vw.finger_on(root, canvas, src, d, fn(dir) {
+            let z = if dir < 0 { left_zone_ref.val } else { right_zone_ref.val }
+            match z {
+              Some(node) => node.pointer_within()
+              None => false
+            }
+          })
+        },
+        fingers=2,
+      )
+      .on_pointer_moved(fn() {
+        if !@sf.pointer_rests() ||
+          vw.shown_kind() != Some(KImage) ||
+          vw.closing ||
+          marking.on ||
+          vw.held ||
+          !vw.fingers.is_empty() {
+          return
+        }
+        vw.pointer_left = false
+        let at = canvas.cause_at()
+        let in_left = match left_zone_ref.val {
+          Some(z) => z.pointer_within()
+          None => false
+        }
+        let in_right = match right_zone_ref.val {
+          Some(z) => z.pointer_within()
+          None => false
+        }
+        let in_top = match top_zone_ref.val {
+          Some(z) => z.pointer_within()
+          None => false
+        }
+        let mut changed = false
+        if vw.manual_hidden {
+          vw.manual_hidden = false
+          changed = true
+        }
+        if !in_left && !in_right && !in_top {
+          if !vw.awake {
+            vw.awake = true
+            changed = true
+          }
+          vw.arm_idle(root, at)
+        } else if vw.awake && !@signals.untracked(fn() { vw.bars_locked() }) {
+          vw.arm_idle(root, at)
+        }
+        if changed {
+          vw.awake_said()
+        }
+      })
       // (the pointer's secondary button on the picture: its menu, as a finger held still on it opens it)
       .on_menu(fn(m) { vw.menu_on(m) })
       // (a wheel over it, at its moment, where it is on the stage then: a trackpad's two fingers taking it down or
@@ -547,12 +714,13 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       marks_said()
       !marking.on && vw.shown_kind() == Some(KImage)
     },
-    fn(h) { image_steps(h, src, vw, stage) },
+    fn(h) { image_steps(h, root, src, vw, stage) },
   )
   // (a mouse's pointer along the top where the bar across it is: the bar shown while it is there, whatever is over it
   // then, the bar itself as it shows; as the pointer comes in or goes out)
   n.box(fn(top) {
-    top.over(Is(true)).height(Is(Some(@sf.viewer_bar_h))) |> ignore
+    top_zone_ref.val = Some(top)
+    top.over(Is(true)).height(By(fn() { Some(@sf.viewer_bar_h + (@sf.viewer_host().room)().0) })) |> ignore
     top.reacts(fn() { top.pointer_within() && @sf.pointer_rests() }, fn(near) {
       if vw.near_bar != near {
         vw.near_bar = near
@@ -561,6 +729,37 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
     })
   })
   |> ignore
+  // (desktop pointer side hot zones, 84 pt wide on each side: each lights only its own side's step arrow without
+  // waking the top bar or the opposite arrow)
+  if vw.shown_kind() == Some(KImage) {
+    n.box(fn(lz) {
+      left_zone_ref.val = Some(lz)
+      lz.over(Is(true)).width(Is(Some(viewer_step_zone_w))) |> ignore
+      lz.reacts(fn() { lz.pointer_within() && @sf.pointer_rests() }, fn(near) {
+        if vw.near_left != near {
+          vw.near_left = near
+          vw.awake_said()
+        }
+      })
+    })
+    |> ignore
+    n.box(fn(rz) {
+      rz.over(Is(true)).row(Is(true)) |> ignore
+      rz.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+      rz.box(fn(side) {
+        right_zone_ref.val = Some(side)
+        side.width(Is(Some(viewer_step_zone_w))).fills_across(Is(true)) |> ignore
+        side.reacts(fn() { side.pointer_within() && @sf.pointer_rests() }, fn(near) {
+          if vw.near_right != near {
+            vw.near_right = near
+            vw.awake_said()
+          }
+        })
+      })
+      |> ignore
+    })
+    |> ignore
+  }
 }
 
 ///|
@@ -728,7 +927,14 @@ struct NativeSaid {
 /// marking, one finger draws. Everything it decides is decided as things are at the event's moment (the picture's
 /// place, zoomed or not, its edges, the strip: by their ways, read there), whatever frames were drawn meanwhile; where
 /// on the stage, in the canvas's own terms; how far a finger went, in the window's.
-fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view.Drag) -> Unit {
+fn Viewer::finger_on(
+  self : Viewer,
+  root : @view.View,
+  canvas : @view.View,
+  src : Source,
+  d : @view.Drag,
+  in_side_zone : (Int) -> Bool,
+) -> Unit {
   let v = self
   let c = @ui.current()
   let z = v.zoom
@@ -743,9 +949,10 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
     Down => {
       v.fingers[d.finger] = (x, y)
       if v.fingers.length() == 1 {
-        // (a tap's close waited for called off: this press is a second tap, or a drag)
+        // (a tap's toggle waited for called off: this press is a second tap, or a drag)
         (v.tap_off)()
         v.tap_off = fn() {  }
+        v.down_pointer = @sf.pointer_rests()
         v.held = true
         v.down_x = x
         v.down_y = y
@@ -852,6 +1059,12 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
         }
         v.swiping = false
         v.held = false
+        if v.tap_paused_idle {
+          v.tap_paused_idle = false
+          if v.awake && @sf.pointer_rests() && !v.closing && !@signals.untracked(fn() { v.bars_locked() }) {
+            v.arm_idle(root, at)
+          }
+        }
         return
       }
       // where it was let go, and when, the last of its way: as a move of its own first (however far from the last
@@ -869,7 +1082,7 @@ fn Viewer::finger_on(self : Viewer, canvas : @view.View, src : Source, d : @view
         v.held = false
         return
       }
-      v.image_let_go(c, canvas, src, d, pinched)
+      v.image_let_go(c, root, canvas, src, d, pinched, in_side_zone)
     }
   }
 }
@@ -1022,10 +1235,12 @@ fn Viewer::pinch_now(self : Viewer) -> (Double, Double, Double) {
 fn Viewer::image_let_go(
   self : Viewer,
   c : @ui.Ctx,
+  root : @view.View,
   canvas : @view.View,
   src : Source,
   d : @view.Drag,
   pinched : Bool,
+  in_side_zone : (Int) -> Bool,
 ) -> Unit {
   let v = self
   let z = v.zoom
@@ -1034,8 +1249,21 @@ fn Viewer::image_let_go(
   let zoomed = z.zoomed_at(at)
   let (vx, vy) = v.speed.get_at(at)
   let s = strip.value_at(at)
+  let resume_paused_idle = fn() {
+    if v.tap_paused_idle {
+      v.tap_paused_idle = false
+      if v.awake && @sf.pointer_rests() && !v.closing && !@signals.untracked(fn() { v.bars_locked() }) {
+        v.arm_idle(root, at)
+      }
+    }
+  }
   if v.pulling {
     v.pull_let_go(c, d, vy)
+    if !v.closing {
+      resume_paused_idle()
+    } else {
+      v.tap_paused_idle = false
+    }
     return
   }
   if v.held && (v.swiping || s != 0.0) && (!zoomed || s != 0.0) {
@@ -1066,23 +1294,70 @@ fn Viewer::image_let_go(
   }
   // a tap (and a second of two, View::twice: zoomed in, or back)
   if held && v.moved <= tap_slop && !pinched && !v.caught {
-    let on_picture = match z.rect_at(at) {
+    let rect = z.rect_at(at)
+    let on_picture = match rect {
       Some((rx, ry, rw, rh)) => d.x >= rx && d.x < rx + rw && d.y >= ry && d.y < ry + rh
       None => false
     }
-    if (@sf.pointer_rests() || (!zoomed && @sf.native_able())) && !on_picture && !marking.on {
-      canvas.twice_forgot()
-      v.shut(c)
-    } else if canvas.twice(d) {
-      z.double_tap(d.x, d.y, at~)
-    } else if !marking.on {
-      // a tap closes it, once a second would have come (two zoom it: Viewer::finger_on's next press calls this off)
+    let schedule_toggle = fn(rearm_idle : Bool) {
+      let want_show = !@signals.untracked(fn() { v.bars_shown() })
+      let tap_epoch = v.lock_epoch
+      if rearm_idle {
+        v.cancel_idle()
+        v.tap_paused_idle = true
+      }
       let due = at + canvas.twice_ms()
-      v.tap_off = canvas.at_moment(due, fn() {
+      v.tap_off = viewer_at(canvas, due, fn() {
         v.tap_off = fn() {  }
-        v.shut_tree()
+        v.tap_paused_idle = false
+        if v.lock_epoch != tap_epoch {
+          return
+        }
+        if !v.closing && !marking.on && !(rearm_idle && want_show && v.pointer_left) {
+          v.set_bars_after_tap(want_show, desktop=rearm_idle)
+          if rearm_idle && v.awake {
+            v.arm_idle(root, due)
+          }
+        }
       })
     }
+    if v.down_pointer {
+      let (before_id, after_id) = v.near_ids(src)
+      let in_step_zone = !marking.on &&
+        !zoomed &&
+        ((before_id is Some(_) && in_side_zone(-1)) || (after_id is Some(_) && in_side_zone(1)))
+      if rect is Some(_) && !on_picture && !marking.on && !in_step_zone {
+        v.tap_paused_idle = false
+        canvas.twice_forgot()
+        v.shut(c)
+      } else if on_picture {
+        if canvas.twice(d) {
+          v.tap_paused_idle = false
+          z.double_tap(d.x, d.y, at~)
+          if v.awake && @sf.pointer_rests() {
+            v.arm_idle(root, at)
+          }
+        } else if !marking.on {
+          schedule_toggle(true)
+        } else {
+          resume_paused_idle()
+        }
+      } else {
+        // blank space inside an active side step hot zone, or unknown natural size: never mis-close
+        canvas.twice_forgot()
+        resume_paused_idle()
+      }
+    } else if canvas.twice(d) {
+      v.tap_paused_idle = false
+      z.double_tap(d.x, d.y, at~)
+    } else if !marking.on {
+      // touch (including iPhone Duo fitted view): single tap anywhere toggles bars & arrows after double-tap window
+      schedule_toggle(false)
+    } else {
+      resume_paused_idle()
+    }
+  } else {
+    resume_paused_idle()
   }
 }
 
@@ -1110,10 +1385,46 @@ fn Viewer::pull_let_go(self : Viewer, c : @ui.Ctx, d : @view.Drag, vy : Double) 
 }
 
 ///|
+/// Shared timer helper for viewer root/canvas deadlines (single `at_moment` callsite in `viewer_tree.mbt`).
+fn viewer_at(node : @view.View, due : Double, on_due : () -> Unit, later? : Bool = false) -> () -> Unit {
+  node.at_moment(due, on_due, later~)
+}
+
+///|
+/// Arm (or re-arm) the single desktop `image_idle_ms` auto-fade timer on the viewer root node `root` (`later=true`).
+fn Viewer::arm_idle(self : Viewer, root : @view.View, at : Double) -> Unit {
+  self.cancel_idle()
+  if self.shown_kind() != Some(KImage) || !@sf.pointer_rests() || self.closing {
+    return
+  }
+  if @signals.untracked(fn() { self.bars_locked() }) {
+    return
+  }
+  let gen = self.tree_layers
+  self.idle_off = viewer_at(
+    root,
+    at + image_idle_ms,
+    fn() {
+      if self.tree_layers != gen {
+        return
+      }
+      self.idle_off = fn() {  }
+      if !self.closing && @sf.pointer_rests() && !@signals.untracked(fn() { self.bars_locked() }) {
+        if self.awake {
+          self.awake = false
+          self.awake_said()
+        }
+      }
+    },
+    later=true,
+  )
+}
+
+///|
 /// Arm (or re-arm) the stillness timer shared by trackpad pull-to-close and trackpad horizontal paging.
 fn Viewer::wheel_arm(self : Viewer, canvas : @view.View, due : Double, on_rest : () -> Unit) -> Unit {
   (self.wheel_off)()
-  self.wheel_off = canvas.at_moment(due, fn() {
+  self.wheel_off = viewer_at(canvas, due, fn() {
     self.wheel_off = fn() {  }
     on_rest()
   })
@@ -1357,9 +1668,15 @@ pub fn bar_as_nodes(v : Viewer, w : Double) -> Bool {
 }
 
 ///|
-/// How much of the window's top its own bar takes, `w` wide, its picture fitted clear of it (none where it has no bar of
-/// its own). As each is told.
-fn Viewer::bar_over(self : Viewer, w : Double) -> Double {
+/// How much of the window's top its own bar takes: full-bleed image stage floats the top bar as an overlay without
+/// shrinking fitted image height (zuozijian, 2026-11-25).
+fn Viewer::bar_over(_self : Viewer, _w : Double) -> Double {
+  0.0
+}
+
+///|
+/// Top-bar clearance height used for zoomed pan bounds while marking (without shrinking fitted image height).
+fn Viewer::bar_clear(self : Viewer, w : Double) -> Double {
   if head_as_nodes(self, w) || bar_as_nodes(self, w) {
     @sf.viewer_bar_clear(w)
   } else {
@@ -1389,6 +1706,46 @@ fn Viewer::shown_on(self : Viewer, node : @view.View) -> Double {
 }
 
 ///|
+/// Track keyboard focus on a single bar control `v`, updating `vw.bar_focused` reactively.
+fn watch_bar_focus_node(v : @view.View, vw : Viewer, seen : Map[@view.NodeId, Bool]) -> Unit {
+  if seen.contains(v.id()) {
+    return
+  }
+  seen[v.id()] = true
+  let held = Ref(false)
+  let set = fn(on : Bool) {
+    if held.val == on {
+      return
+    }
+    held.val = on
+    vw.bar_focus_count += if on { 1 } else { -1 }
+    if vw.bar_focus_count < 0 {
+      vw.bar_focus_count = 0
+    }
+    let now = vw.bar_focus_count > 0
+    if vw.bar_focused != now {
+      vw.bar_focused = now
+      vw.awake_said()
+    }
+  }
+  v.reacts(fn() { v.focus_shown() }, set)
+  v.owns(fn() { set(false) }) |> ignore
+}
+
+///|
+/// Attach focus watchers to every currently focusable descendant inside `bar` (such as `back_node` and `close`).
+fn watch_bar_subtree_focus(bar : @view.View, vw : Viewer, seen : Map[@view.NodeId, Bool]) -> Unit {
+  for f in bar.tree.focus_order() {
+    if bar.tree.holds(bar.id(), f.id) {
+      match bar.tree.view_of(f.id) {
+        Some(v) => watch_bar_focus_node(v, vw, seen)
+        None => ()
+      }
+    }
+  }
+}
+
+///|
 /// Viewer `vw`'s floating bar as nodes in `h` (viewer_head_node): its file's name (its kind and
 /// size after it, wider than a phone), there while its bars are (Viewer::bars_shown), as far in as the viewer is
 /// (Viewer::shown_on); while its picture comes, how much of it has once the core has said (viewer_coming_node); its
@@ -1398,13 +1755,15 @@ fn image_head(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, 
   let ink = fn() { @sf.page_viewer_ink() }
   let tips_at : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() { tips_at.val })
+  let focus_seen : Map[@view.NodeId, Bool] = Map([])
+  let watch_focus = fn(v : @view.View) { watch_bar_focus_node(v, vw, focus_seen) }
   let whole = fn() { vw.bytes.get() is Some(_) }
   let dl = fn() { vw.download(src) }
   let marked = fn() {
     marks_said()
     marking.on
   }
-  @sf.viewer_head_node(
+  let head = @sf.viewer_head_node(
     h,
     fn() { vf_title(vw) },
     // (its kind and size after its name where the bar has room: wider than a phone, viewer_head_node)
@@ -1441,6 +1800,7 @@ fn image_head(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, 
               None
             }
           },
+          watch_focus~,
         )
       })
       row.show(marked, fn(r) { marks_actions_node_of(r, vw, ink, tips) })
@@ -1455,7 +1815,7 @@ fn image_head(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, 
     },
     tips=tips,
   )
-  |> ignore
+  watch_bar_subtree_focus(head, vw, focus_seen)
   // (its tips over all of it)
   tips_at.val = Some(h.box(fn(l) { l.over(Is(true)) |> ignore }))
 }
@@ -1473,7 +1833,10 @@ fn image_bar(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, D
   let ink = fn() { @sf.page_viewer_ink() }
   let tips_at : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() { tips_at.val })
-  @sf.viewer_bar_node(
+  let focus_seen : Map[@view.NodeId, Bool] = Map([])
+  let watch_focus = fn(v : @view.View) { watch_bar_focus_node(v, vw, focus_seen) }
+  @sf.viewer_bar_watch_back(h, watch_focus)
+  let bar = @sf.viewer_bar_node(
     h,
     fn() { vw.desk_back(src) },
     fn() { vf_title(vw) },
@@ -1497,7 +1860,7 @@ fn image_bar(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, D
       // (its tools; marking, marking's actions in their place)
       row.show(fn() { !marked() }, fn(r) {
         r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())) |> ignore
-        image_tools(r, src, vw, ink, corner, tips)
+        image_tools(r, src, vw, ink, corner, tips, watch_focus~)
       })
       row.show(marked, fn(r) { marks_actions_node_of(r, vw, ink, tips) })
     },
@@ -1506,24 +1869,44 @@ fn image_bar(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, D
     },
     tips,
   )
-  |> ignore
+  watch_bar_subtree_focus(bar, vw, focus_seen)
   tips_at.val = Some(h.box(fn(l) { l.over(Is(true)) |> ignore }))
 }
 
 ///|
 /// The ways to the pictures before and after viewer `vw`'s as nodes in `h` (viewer_steps_node):
-/// each while what is beside it says there is one (imageNear's, its folder's), there while its bars are
-/// (Viewer::bars_shown), as far in as the viewer is (Viewer::shown_on), a phone's sizes under 640; pressed, a step to
+/// each while what is beside it says there is one (imageNear's, its folder's) and not marking or zoomed;
+/// per-direction awake via `Viewer::step_shown(dir)` (left/right 84 pt hot zones light only their own arrow),
+/// as far in as the viewer is (Viewer::shown_on), a phone's sizes under 640; pressed, a step to
 /// that one at the press's moment (Viewer::go). Their tips in a layer of their own over all of it.
-fn image_steps(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, Double)) -> Unit {
+fn image_steps(h : @view.View, root : @view.View, src : Source, vw : Viewer, stage : () -> (Double, Double)) -> Unit {
   h.over(Is(true)) |> ignore
   let tips_at : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() { tips_at.val })
+  @sf.viewer_steps_on_move(h, fn() {
+    if !@sf.pointer_rests() || vw.closing || marking.on {
+      return
+    }
+    vw.pointer_left = false
+    if vw.manual_hidden {
+      vw.manual_hidden = false
+      vw.awake_said()
+    }
+    if vw.awake && !@signals.untracked(fn() { vw.bars_locked() }) {
+      vw.arm_idle(root, root.cause_at())
+    }
+  })
   @sf.viewer_steps_node(
     h,
-    fn() { vw.near_ids(src).0 is Some(_) },
-    fn() { vw.near_ids(src).1 is Some(_) },
-    fn() { vw.bars_shown() },
+    fn() {
+      marks_said()
+      !marking.on && !vw.zoomed_now() && vw.near_ids(src).0 is Some(_)
+    },
+    fn() {
+      marks_said()
+      !marking.on && !vw.zoomed_now() && vw.near_ids(src).1 is Some(_)
+    },
+    fn(dir) { vw.step_shown(dir) },
     fn(node) { vw.shown_on(node) },
     fn() { stage().0 <= @sf.viewer_small_w },
     fn(dir) { vw.go_tree(src, dir, 0.0) },
@@ -1546,6 +1929,7 @@ fn image_tools(
   corner : @view.Live[Double],
   tips : @sf.TipLayer,
   seg_most? : () -> Double? = fn() { None },
+  watch_focus? : (@view.View) -> Unit = fn(_) {  },
 ) -> Unit {
   let whole = fn() { vw.bytes.get() is Some(_) }
   let dl = fn() { vw.download(src) }
@@ -1554,7 +1938,7 @@ fn image_tools(
   row.show(fn() { whole() && vf_has_source(vw) }, fn(r) {
     // (giving way as it does where the bar is short of room: its track fitted to what there is)
     r.shrink(Is(1.0)).min_width(Is(Some(0.0))).max_width(By(seg_most)) |> ignore
-    @sf.seg_node(
+    let seg = @sf.seg_node(
       r,
       fn() { [@sf.t("web-main.preview.rendered"), @sf.t("web-main.preview.source")] },
       fn() {
@@ -1568,70 +1952,81 @@ fn image_tools(
       fn(k) { vw.set_source(k == 1) },
       item_w=vf_tabs_item,
     )
-    |> ignore
+    for f in seg.tree.focus_order() {
+      if seg.tree.holds(seg.id(), f.id) {
+        match seg.tree.view_of(f.id) {
+          Some(v) => watch_focus(v)
+          None => ()
+        }
+      }
+    }
   })
   // 标注图片: once its whole picture is here, a picture it shows
   row.show(fn() { whole() && vw.markable() }, fn(r) {
-    @sf.tool_node(
-      r,
-      fn() { { icon: "edit", label: @sf.t("web-main.annotate.image"), on: false, disabled: false } },
-      ink,
-      corner,
-      fn() { marks_start() },
-      tip=tips,
+    watch_focus(
+      @sf.tool_node(
+        r,
+        fn() { { icon: "edit", label: @sf.t("web-main.annotate.image"), on: false, disabled: false } },
+        ink,
+        corner,
+        fn() { marks_start() },
+        tip=tips,
+      ),
     )
-    |> ignore
   })
   // 复制: the whole picture on the clipboard, a check a moment after; one too big to show
   // too, once read
   row.show(fn() { whole() && vw.shown_kind() == Some(KImage) }, fn(r) {
-    @sf.copy_tool_node(r, ink, corner, fn() { vw.ask_copy() }, tip=tips) |> ignore
+    watch_focus(@sf.copy_tool_node(r, ink, corner, fn() { vw.ask_copy() }, tip=tips))
   })
   // 移到侧边: where the shell has a side panel for the page under it, a file that opens there (beside_offered): the
   // whole window closed for its tab
   row.show(fn() { beside_offered(vw.file.path, vw.file.name) }, fn(r) {
-    @sf.tool_node(
-      r,
-      fn() { { icon: "panel-open", label: @sf.t("web-main.preview.moveBeside"), on: false, disabled: false } },
-      ink,
-      corner,
-      fn() { vw.move_beside(src) },
-      tip=tips,
+    watch_focus(
+      @sf.tool_node(
+        r,
+        fn() { { icon: "panel-open", label: @sf.t("web-main.preview.moveBeside"), on: false, disabled: false } },
+        ink,
+        corner,
+        fn() { vw.move_beside(src) },
+        tip=tips,
+      ),
     )
-    |> ignore
   })
   let is_mini_app = fn() { vw.shown_kind() == Some(KMbui) || is_mbui_viz(vw.file.name) }
   // 分享 on a phone (shares_out): what is here handed to the system's share sheet; one told of, read whole first. Not
   // beside 预览 / 源码 (a table, a page) or for a `.mbui` mini-program: a phone's floating bar has no room for both with the name (words at 1.3)
   row.show(fn() { !is_mini_app() && shares_out() && !vw.coming() && !downloading(dl()) && (whole() || vw.told_of()) && !(whole() && vf_has_source(vw)) }, fn(r) {
-    @sf.tool_node(
-      r,
-      fn() {
-        let here = vw.bytes.get() is Some(_) || (vw.told_of() && !vw.asked_now())
-        { icon: "share", label: @sf.t("android-misc.drive.share"), on: false, disabled: !here }
-      },
-      ink,
-      corner,
-      fn() { vw.ask_share() },
-      tip=tips,
+    watch_focus(
+      @sf.tool_node(
+        r,
+        fn() {
+          let here = vw.bytes.get() is Some(_) || (vw.told_of() && !vw.asked_now())
+          { icon: "share", label: @sf.t("android-misc.drive.share"), on: false, disabled: !here }
+        },
+        ink,
+        corner,
+        fn() { vw.ask_share() },
+        tip=tips,
+      ),
     )
-    |> ignore
   })
   // download: what is here saved at once; one told of, read whole first; a ring while the core downloads it (none for a `.mbui` mini-program)
   row.show(fn() { !is_mini_app() && !vw.coming() }, fn(r) {
-    @sf.tool_node(
-      r,
-      fn() {
-        let saving = vw.bytes.get() is Some(_) || (vw.told_of() && !vw.asked_now())
-        { icon: "download", label: @sf.t("web-main.preview.download"), on: false, disabled: !saving }
-      },
-      ink,
-      corner,
-      fn() { vw.save_tree() },
-      tip=tips,
-      progress=fn() { if downloading(dl()) { Some(number(dl(), "progress")) } else { None } },
+    watch_focus(
+      @sf.tool_node(
+        r,
+        fn() {
+          let saving = vw.bytes.get() is Some(_) || (vw.told_of() && !vw.asked_now())
+          { icon: "download", label: @sf.t("web-main.preview.download"), on: false, disabled: !saving }
+        },
+        ink,
+        corner,
+        fn() { vw.save_tree() },
+        tip=tips,
+        progress=fn() { if downloading(dl()) { Some(number(dl(), "progress")) } else { None } },
+      ),
     )
-    |> ignore
   })
 }
 

@@ -1,0 +1,552 @@
+// 1:1 port of `station/mb/src/readops/pages.mbt`.
+// Uses `builders_stateful::letters_ready_token` and `sql_db::Db::savepoint_swallow_err` (zero raw tx SQL).
+
+import "base_codec"
+import "builders_legacy"
+import "builders_stateful"
+import "js_json"
+import "sql_db"
+
+pub let I64_MAX_STR : String = "9223372036854775807"
+
+pub let PAGE_LETTER_PENDING : String = "page letter lookup pending: "
+
+pub let SAID_PENDING : String = "sidebar said state pending: "
+
+pub let LEGACY_SAID_PENDING : String = "legacy said lookup pending"
+
+pub fn exists_in(db : sql_db::Db, kind : String, name : String) -> Result[Bool, ReadError] {
+  match one(
+    db,
+    "SELECT 1 AS x FROM sqlite_master WHERE type = ? AND name = ?",
+    [base_codec::json_str(kind), base_codec::json_str(name)],
+  ) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn has_legacy_said(db : sql_db::Db) -> Result[Bool, ReadError] {
+  match exists_in(db, "view", "legacy_said") {
+    Ok(false) => return Ok(false)
+    Ok(true) => ()
+    Err(e) => return Err(e)
+  }
+  match exists_in(db, "table", "legacy_said_meta") {
+    Ok(false) => return Err(ReadError::App("legacy said view has no metadata"))
+    Ok(true) => ()
+    Err(e) => return Err(e)
+  }
+  let m = match one(db, "SELECT version, scanned FROM legacy_said_meta WHERE id=1", []) {
+    Ok(Some(r)) => r
+    Ok(None) => return Err(ReadError::App("legacy said view has an unsupported version"))
+    Err(e) => return Err(e)
+  }
+  let ver_ok = match m.get("version") {
+    Some(base_codec::Json::Num(v, _)) => v == 1.0
+    _ => false
+  }
+  let scanned_ok = match m.get("scanned") {
+    Some(base_codec::Json::Num(v, _)) => v == 0.0 || v == 1.0
+    _ => false
+  }
+  if !ver_ok || !scanned_ok {
+    return Err(ReadError::App("legacy said view has an unsupported version"))
+  }
+  Ok(true)
+}
+
+pub fn said_page_state(db : sql_db::Db, thread : base_codec::Json) -> Result[(Bool, Bool), ReadError] {
+  let row = match one(
+    db,
+    "SELECT m.version,m.scanned,CASE WHEN m.scanned=1 THEN EXISTS (\n    SELECT 1 FROM legacy_said_dirty WHERE thread=?1 LIMIT 1 OFFSET 64) ELSE 0 END AS needs_drain\n  FROM legacy_said_meta m WHERE m.id=1",
+    [thread],
+  ) {
+    Ok(Some(r)) => r
+    Ok(None) => return Err(ReadError::App("legacy said lookup metadata is missing or invalid"))
+    Err(e) => return Err(e)
+  }
+  let ver_ok = match row.get("version") {
+    Some(base_codec::Json::Num(v, _)) => v == 1.0
+    _ => false
+  }
+  let scanned_ok = match row.get("scanned") {
+    Some(base_codec::Json::Num(v, _)) => v == 0.0 || v == 1.0
+    _ => false
+  }
+  if !ver_ok || !scanned_ok {
+    return Err(ReadError::App("legacy said lookup metadata is missing or invalid"))
+  }
+  let preparing = match row.get("scanned") {
+    Some(base_codec::Json::Num(v, _)) => v == 0.0
+    _ => false
+  }
+  let needs_drain = match row.get("needs_drain") {
+    Some(base_codec::Json::Num(v, _)) => v != 0.0
+    _ => true
+  }
+  Ok((preparing, needs_drain))
+}
+
+pub fn text_keys(rows : Array[Map[String, base_codec::Json]]) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<rows.length() {
+    match field(rows[i], "n") {
+      base_codec::Json::Str(s) => out.push(s)
+      _ => ()
+    }
+  }
+  out
+}
+
+pub fn compare_int_text(a : String, b : String) -> Int {
+  let neg_a = str_has_prefix(a, "-")
+  let neg_b = str_has_prefix(b, "-")
+  if neg_a != neg_b {
+    return if neg_a { -1 } else { 1 }
+  }
+  let c = if a.length() != b.length() {
+    a.length() - b.length()
+  } else {
+    by_bytes(a, b)
+  }
+  if neg_a { -c } else { c }
+}
+
+pub fn descending_keys(keys : Array[String]) -> Array[String] {
+  stable_sort(keys, fn(a : String, b : String) -> Int { compare_int_text(b, a) })
+}
+
+pub fn take_strings(keys : Array[String], limit : Int) -> Array[String] {
+  if keys.length() <= limit {
+    return keys
+  }
+  let out : Array[String] = []
+  for i in 0..<limit {
+    out.push(keys[i])
+  }
+  out
+}
+
+fn concat_strings(a : Array[String], b : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<a.length() {
+    out.push(a[i])
+  }
+  for i in 0..<b.length() {
+    out.push(b[i])
+  }
+  out
+}
+
+fn filter_message_rows(rows : Array[Map[String, base_codec::Json]]) -> Array[Map[String, base_codec::Json]] {
+  let out : Array[Map[String, base_codec::Json]] = []
+  for i in 0..<rows.length() {
+    if base_codec::json_eq(field(rows[i], "kind"), base_codec::json_str("message")) {
+      out.push(rows[i])
+    }
+  }
+  out
+}
+
+pub fn bounded_page_keys(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  before : base_codec::Json,
+  limit : Int,
+  legacy : Bool,
+) -> Result[Array[String], ReadError] {
+  let token = match builders_stateful::letters_ready_token(db, thread) {
+    Ok(t) => t
+    Err(e) => return Err(map_step_err(e))
+  }
+  let has_letters_idx = match exists_in(db, "index", "entries_letters") {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  if token is None && !has_letters_idx {
+    let cap = limit + 64
+    let tail = match db.all(
+      "SELECT CAST(e.n AS TEXT) AS n,e.kind FROM entries e\n  WHERE e.thread=?1 AND e.n<?2 ORDER BY e.n DESC LIMIT ?3",
+      [thread, before, base_codec::json_num(cap.to_double())],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(ReadError::Sql(e))
+    }
+    let keys = take_strings(text_keys(filter_message_rows(tail)), limit)
+    if keys.length() < limit && tail.length() == cap {
+      return Err(
+        refused(503, PAGE_LETTER_PENDING + sql_db::stringify_json(base_codec::json_arr([thread]))),
+      )
+    }
+    return Ok(keys)
+  }
+  let ord_sql = if legacy {
+    "SELECT CAST(p.n AS TEXT) AS n FROM (\n  SELECT n FROM legacy_said WHERE thread=?1 AND n<?2 ORDER BY n DESC LIMIT ?3) p ORDER BY p.n DESC"
+  } else {
+    "SELECT CAST(p.n AS TEXT) AS n FROM (\n  SELECT n FROM entries INDEXED BY entries_said WHERE thread=?1 AND n<?2 AND kind='message' AND letter IS NULL\n  ORDER BY n DESC LIMIT ?3) p ORDER BY p.n DESC"
+  }
+  let ord_rows = match db.all(ord_sql, [thread, before, base_codec::json_num(limit.to_double())]) {
+    Ok(rs) => rs
+    Err(e) => return Err(ReadError::Sql(e))
+  }
+  let ordinary = text_keys(ord_rows)
+  match token {
+    Some(t) => {
+      let let_rows = match db.all(
+        "SELECT CAST(p.n AS TEXT) AS n FROM (\n    SELECT b.n FROM page_letter_rows b WHERE b.thread=?1 AND b.token=?2 AND b.n<CAST(?3 AS INTEGER)\n      AND NOT EXISTS (SELECT 1 FROM page_letter_dirty d WHERE d.thread=b.thread AND d.token=b.token AND d.n=b.n)\n    UNION ALL\n    SELECT e.n FROM page_letter_dirty d CROSS JOIN entries e ON e.thread=d.thread AND e.n=d.n\n      WHERE d.thread=?1 AND d.token=?2 AND d.n<CAST(?3 AS INTEGER) AND e.kind='message' AND e.letter IS NOT NULL\n    ORDER BY n DESC LIMIT ?4\n  ) p ORDER BY p.n DESC",
+        [thread, base_codec::json_str(t), before, base_codec::json_num(limit.to_double())],
+      ) {
+        Ok(rs) => rs
+        Err(e) => return Err(ReadError::Sql(e))
+      }
+      let letters = text_keys(let_rows)
+      return Ok(take_strings(descending_keys(concat_strings(ordinary, letters)), limit))
+    }
+    None => ()
+  }
+  let cap = limit + 64
+  let candidates = match db.all(
+    "SELECT CAST(e.n AS TEXT) AS n,e.kind FROM entries e INDEXED BY entries_letters\n  WHERE e.thread=?1 AND e.n<?2 AND e.letter IS NOT NULL ORDER BY e.n DESC LIMIT ?3",
+    [thread, before, base_codec::json_num(cap.to_double())],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(ReadError::Sql(e))
+  }
+  let floor : Option[String] = if candidates.length() == cap {
+    match field(candidates[candidates.length() - 1], "n") {
+      base_codec::Json::Str(s) => Some(s)
+      _ => None
+    }
+  } else {
+    None
+  }
+  let letters = text_keys(filter_message_rows(candidates))
+  let known : Array[String] = match floor {
+    Some(f) => {
+      let kept : Array[String] = []
+      for i in 0..<ordinary.length() {
+        if compare_int_text(ordinary[i], f) >= 0 {
+          kept.push(ordinary[i])
+        }
+      }
+      kept
+    }
+    None => ordinary
+  }
+  let keys = descending_keys(concat_strings(known, letters))
+  if keys.length() < limit && floor is Some(_) {
+    return Err(
+      refused(503, PAGE_LETTER_PENDING + sql_db::stringify_json(base_codec::json_arr([thread]))),
+    )
+  }
+  Ok(take_strings(keys, limit))
+}
+
+pub fn unprepared_page_keys(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  before : base_codec::Json,
+  limit : Int,
+  preparing : Bool,
+  huge : Bool,
+) -> Result[Array[String], ReadError] {
+  let make_refuse = fn() -> ReadError {
+    if preparing {
+      refused(503, LEGACY_SAID_PENDING)
+    } else {
+      refused(503, SAID_PENDING + sql_db::stringify_json(base_codec::json_arr([thread])))
+    }
+  }
+  if huge {
+    return Err(make_refuse())
+  }
+  if limit == 0 {
+    return Ok([])
+  }
+  let cap = limit + 64
+  let tail = match db.all(
+    "SELECT CAST(e.n AS TEXT) AS n,e.kind FROM entries e\n  WHERE e.thread=?1 AND e.n<?2 ORDER BY e.n DESC LIMIT ?3",
+    [thread, before, base_codec::json_num(cap.to_double())],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(ReadError::Sql(e))
+  }
+  let keys = take_strings(text_keys(filter_message_rows(tail)), limit)
+  if keys.length() < limit && tail.length() == cap {
+    return Err(make_refuse())
+  }
+  Ok(keys)
+}
+
+fn keys_to_json_str(keys : Array[String]) -> base_codec::Json {
+  let items : Array[base_codec::Json] = []
+  for i in 0..<keys.length() {
+    items.push(base_codec::json_str(keys[i]))
+  }
+  base_codec::json_str(sql_db::stringify_json(base_codec::json_arr(items)))
+}
+
+pub fn merged_keys(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  keys : Array[String],
+) -> Result[Array[base_codec::Json], ReadError] {
+  let ready = match builders_legacy::merged_read_ready(db) {
+    Ok(b) => b
+    Err(e) => return Err(map_step_err(e))
+  }
+  if ready {
+    let rows = match db.all(
+      "SELECT * FROM merged WHERE thread=?1 AND n IN\n  (SELECT CAST(value AS INTEGER) FROM json_each(?2)) ORDER BY n DESC",
+      [thread, keys_to_json_str(keys)],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(ReadError::Sql(e))
+    }
+    let out : Array[base_codec::Json] = []
+    for i in 0..<rows.length() {
+      out.push(to_message(rows[i]))
+    }
+    return Ok(out)
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<keys.length() {
+    match merged_bounded(db, thread, base_codec::json_str(keys[i])) {
+      Ok(Some(m)) => out.push(m)
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(out)
+}
+
+pub fn page_limit(v : Option[base_codec::Json]) -> (Int, Bool) {
+  match v {
+    Some(base_codec::Json::Num(n, _)) => {
+      if js_json::is_integer(n) && n >= 0.0 && n <= 9007199254740927.0 {
+        let lim = if n > 2147483647.0 { 2147483647 } else { n.to_int() }
+        (lim, true)
+      } else if n != n {
+        (0, false)
+      } else if n < 0.0 {
+        (-1, false)
+      } else {
+        (2147483647, false)
+      }
+    }
+    _ => (0, false)
+  }
+}
+
+pub fn as_integer(v : base_codec::Json) -> base_codec::Json {
+  match v {
+    base_codec::Json::Str(s) => {
+      match sql_db::parse_json(s) {
+        base_codec::JsonParseResult::Ok(j) => j
+        base_codec::JsonParseResult::Err(_) => v
+      }
+    }
+    other => other
+  }
+}
+
+pub fn messages_before(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  before : base_codec::Json,
+  limit_v : Option[base_codec::Json],
+) -> Result[base_codec::Json, ReadError] {
+  let (limit, safe) = page_limit(limit_v)
+  db.savepoint_swallow_err(
+    "messages_before_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, ReadError] {
+      let legacy = match has_legacy_said(sp_db) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      if legacy {
+        let (preparing, drain) = match said_page_state(sp_db, thread) {
+          Ok(p) => p
+          Err(e) => return Err(e)
+        }
+        if preparing || drain {
+          let keys = match unprepared_page_keys(sp_db, thread, before, limit, preparing, !safe) {
+            Ok(ks) => ks
+            Err(e) => return Err(e)
+          }
+          let msgs = match merged_keys(sp_db, thread, keys) {
+            Ok(ms) => ms
+            Err(e) => return Err(e)
+          }
+          return Ok(base_codec::json_arr(array_rev(msgs)))
+        }
+      }
+      if !safe {
+        let lim = match limit_v {
+          Some(base_codec::Json::Num(n, _)) => base_codec::json_num(n)
+          _ => base_codec::json_null()
+        }
+        let keys_sql = if legacy {
+          "\n  SELECT n FROM legacy_said WHERE thread = ?1 AND n < ?2\n  UNION ALL\n  SELECT n FROM entries WHERE thread = ?1 AND n < ?2 AND kind = 'message' AND letter IS NOT NULL\n  ORDER BY n DESC LIMIT ?3"
+        } else {
+          "\n  SELECT n FROM entries INDEXED BY entries_said\n    WHERE thread = ?1 AND n < ?2 AND kind = 'message' AND letter IS NULL\n  UNION ALL\n  SELECT n FROM entries\n    WHERE thread = ?1 AND n < ?2 AND kind = 'message' AND letter IS NOT NULL\n  ORDER BY n DESC LIMIT ?3"
+        }
+        let ready = match builders_legacy::merged_read_ready(sp_db) {
+          Ok(b) => b
+          Err(e) => return Err(map_step_err(e))
+        }
+        if ready {
+          let rows = match sp_db.all(
+            "SELECT * FROM merged WHERE thread = ?1 AND n IN (" + keys_sql + ") ORDER BY n DESC",
+            [thread, before, lim],
+          ) {
+            Ok(rs) => rs
+            Err(e) => return Err(ReadError::Sql(e))
+          }
+          let msgs : Array[base_codec::Json] = []
+          for i in 0..<rows.length() {
+            msgs.push(to_message(rows[i]))
+          }
+          return Ok(base_codec::json_arr(array_rev(msgs)))
+        }
+        let page_rows = match sp_db.all(
+          "SELECT CAST(p.n AS TEXT) AS n FROM (" + keys_sql + ") p ORDER BY p.n DESC",
+          [thread, before, lim],
+        ) {
+          Ok(rs) => rs
+          Err(e) => return Err(ReadError::Sql(e))
+        }
+        let page = text_keys(page_rows)
+        let msgs : Array[base_codec::Json] = []
+        for i in 0..<page.length() {
+          match merged_bounded(sp_db, thread, base_codec::json_str(page[i])) {
+            Ok(Some(m)) => msgs.push(m)
+            Ok(None) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        return Ok(base_codec::json_arr(array_rev(msgs)))
+      }
+      if limit == 0 {
+        return Ok(base_codec::json_arr([]))
+      }
+      let page = match bounded_page_keys(sp_db, thread, before, limit, legacy) {
+        Ok(ks) => ks
+        Err(e) => return Err(e)
+      }
+      if page.length() == 0 {
+        return Ok(base_codec::json_arr([]))
+      }
+      let msgs = match merged_keys(sp_db, thread, page) {
+        Ok(ms) => ms
+        Err(e) => return Err(e)
+      }
+      Ok(base_codec::json_arr(array_rev(msgs)))
+    },
+    map_sql_err,
+  )
+}
+
+pub fn latest_messages(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  messages_before(
+    db,
+    json_val_or_null(args, "thread"),
+    as_integer(base_codec::json_str(I64_MAX_STR)),
+    json_val(args, "limit"),
+  )
+}
+
+pub fn chat_history_messages(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let thread = json_val_or_null(args, "thread")
+  db.savepoint_swallow_err(
+    "chat_history_messages_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, ReadError] {
+      let before = match json_val(args, "before") {
+        None => base_codec::json_str(I64_MAX_STR)
+        Some(base_codec::Json::Null) => base_codec::json_str(I64_MAX_STR)
+        Some(ts) => {
+          match one(
+            sp_db,
+            "SELECT CAST(n AS TEXT) AS n FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'",
+            [thread, ts],
+          ) {
+            Ok(Some(b)) => field(b, "n")
+            Ok(None) => return Ok(base_codec::json_null())
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      messages_before(sp_db, thread, as_integer(before), json_val(args, "limit"))
+    },
+    map_sql_err,
+  )
+}
+
+pub fn opened_chat_said(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let thread = json_val_or_null(args, "thread")
+  db.savepoint_swallow_err(
+    "opened_chat_said_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, ReadError] {
+      let before = as_integer(base_codec::json_str(I64_MAX_STR))
+      let legacy = match has_legacy_said(sp_db) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let keys = if legacy {
+        let (preparing, drain) = match said_page_state(sp_db, thread) {
+          Ok(p) => p
+          Err(e) => return Err(e)
+        }
+        if preparing || drain {
+          match unprepared_page_keys(sp_db, thread, before, 200, preparing, false) {
+            Ok(ks) => ks
+            Err(e) => return Err(e)
+          }
+        } else {
+          match bounded_page_keys(sp_db, thread, before, 200, legacy) {
+            Ok(ks) => ks
+            Err(e) => return Err(e)
+          }
+        }
+      } else {
+        match bounded_page_keys(sp_db, thread, before, 200, legacy) {
+          Ok(ks) => ks
+          Err(e) => return Err(e)
+        }
+      }
+      if keys.length() == 0 {
+        return Ok(base_codec::json_bool(false))
+      }
+      let agent_only = match json_val(args, "agentOnly") {
+        Some(base_codec::Json::Bool(true)) => true
+        _ => false
+      }
+      match one(
+        sp_db,
+        "SELECT 1 AS x FROM json_each(?2) j CROSS JOIN entries e\n      ON e.thread=?1 AND e.n=CAST(j.value AS INTEGER)\n      WHERE e.author=?3 AND (?4=0 OR e.author_kind='agent') LIMIT 1",
+        [
+          thread,
+          keys_to_json_str(keys),
+          json_val_or_null(args, "author"),
+          base_codec::json_num(if agent_only { 1.0 } else { 0.0 }),
+        ],
+      ) {
+        Ok(Some(_)) => Ok(base_codec::json_bool(true))
+        Ok(None) => Ok(base_codec::json_bool(false))
+        Err(e) => Err(e)
+      }
+    },
+    map_sql_err,
+  )
+}

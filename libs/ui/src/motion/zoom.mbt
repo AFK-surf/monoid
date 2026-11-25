@@ -20,6 +20,9 @@ pub struct Zoom {
   /// how much of the stage's top and of its foot bars over it take (Zoom::under_bars)
   mut bar : Double
   mut foot_bar : Double
+  /// extra top/foot pan clearance when zoomed (Zoom::pan_under_bars), without shrinking fitted stage height
+  mut pan_bar : Double
+  mut pan_foot_bar : Double
   mut scale : Double
   mut x : Double
   mut y : Double
@@ -145,6 +148,8 @@ pub fn Zoom::new(
     bh: 0.0,
     bar: 0.0,
     foot_bar: 0.0,
+    pan_bar: 0.0,
+    pan_foot_bar: 0.0,
     scale: 1.0,
     x: 0.0,
     y: 0.0,
@@ -230,11 +235,19 @@ fn Zoom::rest_y(self : Zoom) -> Double {
 /// at that room's edges.
 fn Zoom::y_range(self : Zoom, scale : Double) -> (Double, Double) {
   let h = self.nh * scale
-  if h <= self.bh - self.bar - self.foot_bar {
+  let top_clear = zmax(self.bar, self.pan_bar)
+  let foot_clear = zmax(self.foot_bar, self.pan_foot_bar)
+  let a = (self.bh - h) / 2.0 - foot_clear
+  let b = (h - self.bh) / 2.0 + top_clear
+  if h <= self.bh - top_clear - foot_clear {
     let y = self.rest_y()
-    (y, y)
+    if (self.pan_bar > 0.0 || self.pan_foot_bar > 0.0) && (y < b || y > a) {
+      (zmin(b, y), zmax(a, y))
+    } else {
+      (y, y)
+    }
   } else {
-    ((self.bh - h) / 2.0 - self.foot_bar, (h - self.bh) / 2.0 + self.bar)
+    (a, b)
   }
 }
 
@@ -321,6 +334,22 @@ pub fn Zoom::under_bars(self : Zoom, bar : Double, foot : Double, at~ : Double) 
     self.x = 0.0
     self.y = self.rest_y()
   } else {
+    self.clamp()
+  }
+  self.moved()
+}
+
+///|
+/// Extra top and foot clearance applied only to zoomed vertical pan bounds (`Zoom::y_range`), leaving fitted scale
+/// (`Zoom::fit`) and resting position (`Zoom::rest_y`) untouched so floating overlays cause zero image jump.
+pub fn Zoom::pan_under_bars(self : Zoom, bar : Double, foot : Double, at~ : Double) -> Unit {
+  if bar == self.pan_bar && foot == self.pan_foot_bar {
+    return
+  }
+  self.settle(at) |> ignore
+  self.pan_bar = bar
+  self.pan_foot_bar = foot
+  if !self.fitted {
     self.clamp()
   }
   self.moved()

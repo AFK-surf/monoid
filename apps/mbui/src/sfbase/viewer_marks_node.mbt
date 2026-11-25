@@ -95,13 +95,10 @@ fn marks_foot_node(h : @view.View, foot : () -> Double) -> Unit {
 let marks_foot_taken : @signals.Signal[Double] = @signals.signal(0.0)
 
 ///|
+/// Marking's foot floats over the full-bleed stage (zuozijian, 2026-11-25) without shrinking the fitted picture
+/// height, so entering and leaving marking never shifts the image or pin coordinates.
 pub fn marks_foot_over() -> Double {
-  marks_said()
-  if marking.on {
-    marks_foot_taken.get()
-  } else {
-    0.0
-  }
+  0.0
 }
 
 ///|

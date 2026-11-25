@@ -1358,7 +1358,7 @@ fn tab_picture_node(s : @view.View, src : Source, vw : Viewer, chat : String, ta
         h,
         fn() { !marked() && vw.near_ids(src).0 is Some(_) },
         fn() { !marked() && vw.near_ids(src).1 is Some(_) },
-        fn() { !@sf.pointer_rests() || stage.pointer_within() },
+        fn(_) { !@sf.pointer_rests() || stage.pointer_within() },
         fn(_) { 1.0 },
         fn() {
           z.told()
@@ -1506,6 +1506,7 @@ pub fn viewer_mbui_rendered(vw : Viewer) -> Bool {
 /// false in a side-panel tab under `tab_tools_node`).
 pub fn viewer_mbui_node(parent : @view.View, src : Source, vw : Viewer, bars? : Bool = false) -> Unit {
   parent.over(Is(true)) |> ignore
+  @ui.words_picked(parent)
   let session = vw.chat_session()
   let state_sig = viz_ensure_state(src, vw.station, vw.key, vw.file.path)
   let place = (if vw.beside { "beside/" } else { "viewer/" }) + vw.id()

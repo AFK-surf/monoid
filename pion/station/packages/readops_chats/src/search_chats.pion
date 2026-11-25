@@ -1,0 +1,349 @@
+// 1:1 port of `station/mb/src/readops/search_chats.mbt`.
+// Uses `builders_legacy::EditKey` and `sql_db::Db::savepoint_swallow_err` (zero raw tx SQL).
+
+import "base_codec"
+import "builders_legacy"
+import "jscase"
+import "readops_core"
+import "sql_db"
+
+let SEARCH_CHAT_LIST_SQL : String = "SELECT t.*, e.at AS said_at,\n    CASE WHEN e.n IS NULL THEN NULL ELSE COALESCE((SELECT m.text FROM merged m WHERE m.thread = t.id AND m.n = s.said_n), '') END AS said_text,\n    (SELECT substr(m.text, 1, 300) FROM merged m WHERE m.thread = t.id AND m.n = s.person_n) AS first_text,\n    (SELECT json_group_array(json_object('session', x.session, 'connect', x.connect, 'joinedAt', x.joined_at,\n       'title', x.title, 'archivedAt', x.archived_at, 'ws', x.ws, 'runtime', x.runtime, 'model', x.model, 'effort', x.effort,\n       'running', x.running, 'createdBy', x.created_by, 'present', x.present))\n     FROM (SELECT m.session, m.connect, m.joined_at, a.title, a.archived_at, a.ws, a.runtime, a.model, a.effort, a.running, a.created_by, a.key IS NOT NULL AS present\n       FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id\n       ORDER BY m.joined_at, m.rowid) x) AS members\n  FROM threads t\n  LEFT JOIN sessions h ON h.key = t.home\n  LEFT JOIN thread_state s ON s.thread = t.id\n  LEFT JOIN entries e ON e.thread = t.id AND e.n = s.said_n AND e.kind = 'message'\n  WHERE ?1 IS NULL OR CASE\n    WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?2) = ?1\n    WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?2 = ?1\n    ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session\n                 WHERE m.thread = t.id AND COALESCE(a.ws, ?2) = ?1)\n  END ORDER BY COALESCE(e.at, t.created_at) DESC, COALESCE(e.at, 0) DESC, t.created_at DESC, t.id DESC"
+
+let SEARCH_CHAT_LIST_KEYS_SQL : String = "SELECT t.*, e.at AS said_at, (SELECT json_group_array(json_object('session', x.session, 'connect', x.connect, 'joinedAt', x.joined_at,\n       'title', x.title, 'archivedAt', x.archived_at, 'ws', x.ws, 'runtime', x.runtime, 'model', x.model, 'effort', x.effort,\n       'running', x.running, 'createdBy', x.created_by, 'present', x.present))\n     FROM (SELECT m.session, m.connect, m.joined_at, a.title, a.archived_at, a.ws, a.runtime, a.model, a.effort, a.running, a.created_by, a.key IS NOT NULL AS present\n       FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id\n       ORDER BY m.joined_at, m.rowid) x) AS members\n  FROM threads t\n  LEFT JOIN sessions h ON h.key = t.home\n  LEFT JOIN thread_state s ON s.thread = t.id\n  LEFT JOIN entries e ON e.thread = t.id AND e.n = s.said_n AND e.kind = 'message'\n  WHERE ?1 IS NULL OR CASE\n    WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?2) = ?1\n    WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?2 = ?1\n    ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session\n                 WHERE m.thread = t.id AND COALESCE(a.ws, ?2) = ?1)\n  END ORDER BY COALESCE(e.at, t.created_at) DESC, COALESCE(e.at, 0) DESC, t.created_at DESC, t.id DESC"
+
+/// `store.ts` `lastSaidText`: the thread's latest said words, as edited.
+pub fn last_said_text(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  db.savepoint_swallow_err(
+    "last_said_text_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, readops_core::ReadError] {
+      let ready = match builders_legacy::merged_read_ready(sp_db) {
+        Ok(b) => b
+        Err(e) => return Err(readops_core::map_step_err(e))
+      }
+      if ready {
+        return match readops_core::one(
+          sp_db,
+          "SELECT m.text AS t FROM thread_state t JOIN merged m ON m.thread = t.thread AND m.n = t.said_n WHERE t.thread = ?",
+          [thread],
+        ) {
+          Ok(Some(r)) => Ok(readops_core::field(r, "t"))
+          Ok(None) => Ok(base_codec::json_null())
+          Err(e) => Err(e)
+        }
+      }
+      let n = match readops_core::state_key(sp_db, thread, "said_n") {
+        Ok(Some(s)) => s
+        Ok(None) => return Ok(base_codec::json_null())
+        Err(e) => return Err(e)
+      }
+      let edit = match builders_legacy::bounded_edit_key(sp_db, thread, base_codec::json_str(n)) {
+        Ok(builders_legacy::EditKey::Key(k)) => k
+        Ok(builders_legacy::EditKey::Unprepared) => return Err(readops_core::edits_pending())
+        Err(e) => return Err(readops_core::map_step_err(e))
+      }
+      let edit_param = match edit {
+        Some(k) => base_codec::json_str(k)
+        None => base_codec::json_null()
+      }
+      match readops_core::one(
+        sp_db,
+        "SELECT CASE WHEN e.n IS NULL THEN m.text ELSE e.text END AS t\n      FROM entries m LEFT JOIN entries e ON e.thread=m.thread AND e.n=CAST(?3 AS INTEGER)\n      WHERE m.thread=?1 AND m.n=CAST(?2 AS INTEGER) AND m.kind='message'",
+        [thread, base_codec::json_str(n), edit_param],
+      ) {
+        Ok(Some(r)) => Ok(readops_core::field(r, "t"))
+        Ok(None) => Ok(base_codec::json_null())
+        Err(e) => Err(e)
+      }
+    },
+    readops_core::map_sql_err,
+  )
+}
+
+/// `ops-sessions.ts` `searchChatList`.
+pub fn search_chat_list(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let limit = match readops_core::json_val(args, "limit") {
+    Some(base_codec::Json::Num(n, _)) => n
+    _ => readops_core::nan()
+  }
+  if limit == 0.0 {
+    return Ok(
+      base_codec::json_obj([
+        ("threads", base_codec::json_arr([])),
+        ("sessions", base_codec::json_arr([])),
+        ("total", base_codec::json_num(0.0)),
+      ]),
+    )
+  }
+  let query = readops_core::js_text(
+    match readops_core::json_val(args, "query") {
+      Some(v) => v
+      None => base_codec::json_str("undefined")
+    },
+  )
+  let filter_model = match readops_core::json_val(args, "model") {
+    Some(base_codec::Json::Str(s)) => if s != "" { Some(jscase::lower(s)) } else { None }
+    _ => None
+  }
+  let filter_creator = match readops_core::json_val(args, "createdBy") {
+    Some(base_codec::Json::Str(s)) => if s != "" { Some(jscase::lower(s)) } else { None }
+    _ => None
+  }
+  let filter_archived = match readops_core::json_val(args, "archived") {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+  let ws_scope = [
+    readops_core::json_val_or_null(args, "ws"),
+    readops_core::json_val_or_null(args, "home"),
+  ]
+  db.savepoint_swallow_err(
+    "search_chat_list_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, readops_core::ReadError] {
+      let ready = match builders_legacy::merged_read_ready(sp_db) {
+        Ok(b) => b
+        Err(e) => return Err(readops_core::map_step_err(e))
+      }
+      let summarized = !ready
+      let threads : Array[base_codec::Json] = []
+      let sessions : Map[String, base_codec::Json] = Map::new()
+      let session_order : Array[String] = []
+      let mut total = 0
+      let sql = if summarized { SEARCH_CHAT_LIST_KEYS_SQL } else { SEARCH_CHAT_LIST_SQL }
+      let rows = match sp_db.all(sql, ws_scope) {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::map_sql_err(e))
+      }
+      for i in 0..<rows.length() {
+        let row = rows[i]
+        let id = readops_core::field(row, "id")
+        let members : Array[base_codec::Json] = match readops_core::field(row, "members") {
+          base_codec::Json::Str(s) => {
+            match sql_db::parse_json(s) {
+              base_codec::JsonParseResult::Ok(base_codec::Json::Arr(ms)) => ms
+              _ => []
+            }
+          }
+          _ => []
+        }
+        let member = fn(m : base_codec::Json, k : String) -> base_codec::Json {
+          readops_core::json_val_or_null(m, k)
+        }
+        match filter_archived {
+          Some(want_archived) => {
+            let hidden = match readops_core::field(row, "hidden_at") {
+              base_codec::Json::Null => false
+              _ => true
+            }
+            let home_archived = match readops_core::field(row, "home") {
+              base_codec::Json::Str(h) => {
+                let mut found = false
+                for j in 0..<members.length() {
+                  let m = members[j]
+                  if readops_core::js_text(member(m, "session")) == h {
+                    match member(m, "archivedAt") {
+                      base_codec::Json::Null => ()
+                      _ => {
+                        found = true
+                        break
+                      }
+                    }
+                  }
+                }
+                found
+              }
+              _ => false
+            }
+            if (hidden || home_archived) != want_archived {
+              continue
+            }
+          }
+          None => ()
+        }
+        match filter_model {
+          Some(want_model) => {
+            let mut has_model = false
+            for j in 0..<members.length() {
+              if readops_core::str_contains_sub(jscase::lower(readops_core::js_text(member(members[j], "model"))), want_model) {
+                has_model = true
+                break
+              }
+            }
+            if !has_model {
+              continue
+            }
+          }
+          None => ()
+        }
+        match filter_creator {
+          Some(want_creator) => {
+            let thread_creator = jscase::lower(readops_core::js_text(readops_core::field(row, "created_by")))
+            let mut matches_creator = thread_creator != "" && readops_core::str_contains_sub(thread_creator, want_creator)
+            if !matches_creator {
+              for j in 0..<members.length() {
+                let c = jscase::lower(readops_core::js_text(member(members[j], "createdBy")))
+                if c != "" && readops_core::str_contains_sub(c, want_creator) {
+                  matches_creator = true
+                  break
+                }
+              }
+            }
+            if !matches_creator {
+              continue
+            }
+          }
+          None => ()
+        }
+        let mut first_words = base_codec::json_null()
+        if query != "" {
+          let (fw, said) = if summarized {
+            let f = match readops_core::first_text(sp_db, id) {
+              Ok(v) => v
+              Err(e) => return Err(e)
+            }
+            let s = match last_said_text(sp_db, id) {
+              Ok(v) => v
+              Err(e) => return Err(e)
+            }
+            (f, s)
+          } else {
+            (readops_core::field(row, "first_text"), readops_core::field(row, "said_text"))
+          }
+          first_words = fw
+          let title_parts : Array[String] = []
+          let base_titles = [readops_core::field(row, "title"), readops_core::field(row, "auto_title"), first_words]
+          for j in 0..<base_titles.length() {
+            match base_titles[j] {
+              base_codec::Json::Null => ()
+              t => title_parts.push(readops_core::js_text(t))
+            }
+          }
+          for j in 0..<members.length() {
+            let mt = member(members[j], "title")
+            match mt {
+              base_codec::Json::Null => ()
+              t => title_parts.push(readops_core::js_text(t))
+            }
+          }
+          let sess_parts : Array[String] = []
+          for j in 0..<members.length() {
+            sess_parts.push(readops_core::js_text(member(members[j], "session")))
+          }
+          let haystack = jscase::lower(
+            readops_core::join_strings(title_parts, " ") +
+            " " +
+            readops_core::js_text(said) +
+            " " +
+            readops_core::join_strings(sess_parts, " "),
+          )
+          if !readops_core::str_contains_sub(haystack, query) {
+            continue
+          }
+        }
+        total = total + 1
+        if threads.length().to_double() < limit {
+          let title_null = match readops_core::field(row, "title") {
+            base_codec::Json::Null => true
+            _ => false
+          }
+          let auto_null = match readops_core::field(row, "auto_title") {
+            base_codec::Json::Null => true
+            _ => false
+          }
+          if query == "" && title_null && auto_null {
+            first_words = if summarized {
+              match readops_core::first_text(sp_db, id) {
+                Ok(v) => v
+                Err(e) => return Err(e)
+              }
+            } else {
+              readops_core::field(row, "first_text")
+            }
+          }
+          for j in 0..<members.length() {
+            let m = members[j]
+            let present = match member(m, "present") {
+              base_codec::Json::Num(n, _) => n != 0.0
+              base_codec::Json::Null => false
+              base_codec::Json::Bool(b) => b
+              _ => true
+            }
+            if present {
+              let key = readops_core::js_text(member(m, "session"))
+              let running = match member(m, "running") {
+                base_codec::Json::Num(n, _) => base_codec::json_bool(n != 0.0)
+                base_codec::Json::Bool(true) => base_codec::json_bool(true)
+                _ => base_codec::json_bool(false)
+              }
+              let runtime = match member(m, "runtime") {
+                base_codec::Json::Str(s) => base_codec::json_str(s)
+                _ => base_codec::json_str("")
+              }
+              if !sessions.contains(key) {
+                session_order.push(key)
+              }
+              sessions.set(
+                key,
+                base_codec::json_obj([
+                  ("key", member(m, "session")),
+                  ("title", member(m, "title")),
+                  ("archivedAt", member(m, "archivedAt")),
+                  ("ws", member(m, "ws")),
+                  ("runtime", runtime),
+                  ("model", member(m, "model")),
+                  ("effort", member(m, "effort")),
+                  ("running", running),
+                  ("createdBy", member(m, "createdBy")),
+                ]),
+              )
+            }
+          }
+          let mem_objs : Array[base_codec::Json] = []
+          for j in 0..<members.length() {
+            let m = members[j]
+            mem_objs.push(
+              base_codec::json_obj([
+                ("thread", id),
+                ("session", member(m, "session")),
+                ("connect", member(m, "connect")),
+                ("joinedAt", member(m, "joinedAt")),
+              ]),
+            )
+          }
+          let lm = match readops_core::last_said(sp_db, id) {
+            Ok(v) => v
+            Err(e) => return Err(e)
+          }
+          threads.push(
+            base_codec::json_obj([
+              ("thread", readops_core::thread_json(row)),
+              ("sessions", base_codec::json_arr(mem_objs)),
+              ("lastMessage", lm),
+              ("firstText", first_words),
+            ]),
+          )
+        }
+      }
+      let sess_list : Array[base_codec::Json] = []
+      for i in 0..<session_order.length() {
+        match sessions.get(session_order[i]) {
+          Some(s) => sess_list.push(s)
+          None => ()
+        }
+      }
+      Ok(
+        base_codec::json_obj([
+          ("threads", base_codec::json_arr(threads)),
+          ("sessions", base_codec::json_arr(sess_list)),
+          ("total", base_codec::json_num(total.to_double())),
+        ]),
+      )
+    },
+    readops_core::map_sql_err,
+  )
+}

@@ -236,6 +236,16 @@ pub fn keymap_of(prefs : Json?) -> @view.Keymap {
     action: "viewer.escape",
     when: All([In("Viewer"), Not(In("Field"))]),
   })
+  bindings.push({
+    keys: [stroke(@ui.key_tab, 0)],
+    action: "viewer.wake",
+    when: All([In("Viewer"), Not(In("Field"))]),
+  })
+  bindings.push({
+    keys: [stroke(@ui.key_tab, @ui.mod_shift_key)],
+    action: "viewer.wake",
+    when: All([In("Viewer"), Not(In("Field"))]),
+  })
   for a in key_actions(prefs) {
     let action = text(Some(a), "action")
     let group : @view.KeyWhen = match text(Some(a), "group") {

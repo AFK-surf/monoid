@@ -1,0 +1,809 @@
+// 1:1 port of `station/mb/src/readops/memory.mbt`.
+// Reads of agent memory (`GET /memory`): global `MEMORY.md` and shared skills.
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "jscase"
+import "readops_core"
+
+let BUILTIN_SKILLS : Array[String] = [
+  "stillfail-chats",
+  "stillfail-jobs",
+  "stillfail-show",
+  "stillfail-viz",
+  "stillfail-browser",
+  "stillfail-login",
+  "stillfail-vault",
+  "stillfail-cron",
+  "stillfail-github-ci",
+  "stillfail-retire",
+  "stillfail-move",
+  "stillfail-leading",
+  "stillfail-projects",
+  "stillfail-feedback",
+]
+
+let PROJECT_PREFIX : String = "项目记忆："
+
+fn is_builtin_skill(name : String) -> Bool {
+  for i in 0..<BUILTIN_SKILLS.length() {
+    if BUILTIN_SKILLS[i] == name {
+      return true
+    }
+  }
+  false
+}
+
+fn is_line_terminator(c : Int) -> Bool {
+  c == 0x0A || c == 0x0D || c == 0x2028 || c == 0x2029
+}
+
+/// memory.ts `front`: a SKILL.md's frontmatter field (`key: value`), if it has one.
+pub fn front(text : String, key : String) -> Option[String] {
+  if !readops_core::str_has_prefix(text, "---\n") {
+    return None
+  }
+  let body = readops_core::str_slice_bytes(text, 4, text.to_bytes().length())
+  let end = match readops_core::str_find_sub(body, "\n---") {
+    Some(i) => i
+    None => return None
+  }
+  let header = readops_core::str_slice_bytes(body, 0, end)
+  let lines = readops_core::str_split_byte(header, 10)
+  let head = key + ":"
+  let head_len = head.to_bytes().length()
+  for i in 0..<lines.length() {
+    let raw = lines[i]
+    let line = if readops_core::str_has_suffix(raw, "\r") {
+      readops_core::str_slice_bytes(raw, 0, raw.to_bytes().length() - 1)
+    } else {
+      raw
+    }
+    if readops_core::str_has_prefix(line, head) {
+      let value = jscase::trim(readops_core::str_slice_bytes(line, head_len, line.to_bytes().length()))
+      let vb = value.to_bytes()
+      let mut a = 0
+      while a < vb.length() && (vb[a].to_int() & 0xFF) == 34 {
+        a = a + 1
+      }
+      let mut b = vb.length()
+      while b > a && (vb[b - 1].to_int() & 0xFF) == 34 {
+        b = b - 1
+      }
+      return Some(readops_core::str_slice_bytes(value, a, b))
+    }
+  }
+  None
+}
+
+/// `/^SKILL\.conflict-.*\.md$/` (rejecting JS line terminators U+000A, U+000D, U+2028, U+2029).
+pub fn is_conflict(name : String) -> Bool {
+  let head = "SKILL.conflict-"
+  if !readops_core::str_has_prefix(name, head) || !readops_core::str_has_suffix(name, ".md") {
+    return false
+  }
+  let units = js_json::utf16_units(name)
+  if units.length() < 18 {
+    return false
+  }
+  for i in 15..<(units.length() - 3) {
+    if is_line_terminator(units[i]) {
+      return false
+    }
+  }
+  true
+}
+
+/// `/\/share\/(sh-[0-9a-z]+)\/skill$/`
+pub fn share_of_link(target : String) -> Option[String] {
+  if !readops_core::str_has_suffix(target, "/skill") {
+    return None
+  }
+  let dir = readops_core::str_slice_bytes(target, 0, target.to_bytes().length() - 6)
+  let cut = match readops_core::str_rev_find_byte(dir, 47) {
+    Some(i) => i
+    None => return None
+  }
+  let id = readops_core::str_slice_bytes(dir, cut + 1, dir.to_bytes().length())
+  let idb = id.to_bytes()
+  if !readops_core::str_has_prefix(id, "sh-") || idb.length() <= 3 {
+    return None
+  }
+  for i in 3..<idb.length() {
+    let c = idb[i].to_int() & 0xFF
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 122)) {
+      return None
+    }
+  }
+  let before = readops_core::str_slice_bytes(dir, 0, cut)
+  if !readops_core::str_has_suffix(before, "/share") {
+    return None
+  }
+  Some(id)
+}
+
+fn array_or_null(v : Option[js_json::JValue]) -> base_codec::Json {
+  match v {
+    Some(js_json::JValue::Arr(xs)) => readops_core::to_json(js_json::JValue::Arr(xs))
+    _ => base_codec::json_null()
+  }
+}
+
+fn utf16_key(units : Array[Int]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<units.length() {
+    if i > 0 {
+      sb.write_byte(44.to_byte())
+    }
+    sb.write_string(units[i].to_string())
+  }
+  sb.to_string()
+}
+
+fn raw_entries_of(v : Option[js_json::JValue]) -> Array[(Array[Int], js_json::JValue)] {
+  match v {
+    Some(js_json::JValue::Obj(es)) => es
+    Some(js_json::JValue::Arr(xs)) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<xs.length() {
+        out.push((js_json::utf16_units(i.to_string()), xs[i]))
+      }
+      out
+    }
+    _ => []
+  }
+}
+
+fn jget_units(v : Option[js_json::JValue], key_units : Array[Int]) -> Option[js_json::JValue] {
+  match v {
+    Some(js_json::JValue::Obj(es)) => js_json::JValue::Obj(es).get_units(key_units)
+    _ => None
+  }
+}
+
+/// memory.ts `sharing`: shared from here (config.json `sharedSkills`), a copy of another station's
+/// (its link into `<data>/share/<id>/skill`), or neither.
+fn sharing(
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  raw : js_json::JValue,
+  dir : String,
+  name : String,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let hosted = readops_core::jget(readops_core::jget(Some(raw), "sharedSkills"), name)
+  let hosted_units : Option[Array[Int]] = match hosted {
+    Some(js_json::JValue::Str(u)) => Some(u)
+    _ => {
+      match readops_core::jget(hosted, "id") {
+        Some(js_json::JValue::Str(u)) => Some(u)
+        _ => None
+      }
+    }
+  }
+  match hosted_units {
+    Some(id_units) => {
+      let id = js_json::sanitize_str(id_units)
+      let cloud = match readops_core::read_json(client, readops_core::join_path(sep, data, "mesh/cloud.json")) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let station = match readops_core::jget(Some(cloud), "station") {
+        None => base_codec::json_str("")
+        Some(js_json::JValue::Null) => base_codec::json_str("")
+        Some(v) => readops_core::to_json(v)
+      }
+      let conflicts : Array[base_codec::Json] = match readops_core::read_dir(
+        client,
+        readops_core::join_path(sep, dir, name),
+      ) {
+        Ok(Some(names)) => {
+          let cs : Array[base_codec::Json] = []
+          for i in 0..<names.length() {
+            if is_conflict(names[i]) {
+              cs.push(base_codec::json_str(names[i]))
+            }
+          }
+          cs
+        }
+        Ok(None) => []
+        Err(e) => return Err(e)
+      }
+      let share_state = match readops_core::read_json(client, readops_core::join_path(sep, data, "share/state.json")) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let state = match jget_units(readops_core::jget(Some(share_state), "hosted"), id_units) {
+        None => js_json::JValue::Obj([])
+        Some(js_json::JValue::Null) => js_json::JValue::Obj([])
+        Some(v) => v
+      }
+      let missing_v : Option[js_json::JValue] = match readops_core::jget(Some(state), "missing") {
+        Some(js_json::JValue::Obj(es)) => Some(js_json::JValue::Obj(es))
+        Some(js_json::JValue::Arr(xs)) => Some(js_json::JValue::Arr(xs))
+        _ => None
+      }
+      let missing_entries = raw_entries_of(missing_v)
+      let missed : Map[String, Bool] = Map::new()
+      let missing_json : Array[base_codec::Json] = []
+      for i in 0..<missing_entries.length() {
+        let (st_units, ev) = missing_entries[i]
+        missed.set(utf16_key(st_units), true)
+        match ev {
+          js_json::JValue::Str(why) => {
+            missing_json.push(
+              base_codec::json_obj([
+                ("station", base_codec::json_str(js_json::sanitize_str(st_units))),
+                ("why", base_codec::json_str(js_json::sanitize_str(why))),
+              ]),
+            )
+          }
+          _ => ()
+        }
+      }
+      let told_v : Option[js_json::JValue] = match readops_core::jget(Some(state), "told") {
+        Some(js_json::JValue::Obj(es)) => Some(js_json::JValue::Obj(es))
+        Some(js_json::JValue::Arr(xs)) => Some(js_json::JValue::Arr(xs))
+        _ => None
+      }
+      let told_entries = raw_entries_of(told_v)
+      let users : Array[base_codec::Json] = []
+      for i in 0..<told_entries.length() {
+        let (st_units, ev) = told_entries[i]
+        match ev {
+          js_json::JValue::Num(v) => {
+            if v >= 0.0 && !missed.contains(utf16_key(st_units)) {
+              users.push(base_codec::json_str(js_json::sanitize_str(st_units)))
+            }
+          }
+          _ => ()
+        }
+      }
+      let out : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_str(id)),
+        ("role", base_codec::json_str("host")),
+        ("host", station),
+        ("allow", array_or_null(readops_core::jget(hosted, "allow"))),
+        ("conflicts", base_codec::json_arr(conflicts)),
+        ("users", base_codec::json_arr(users)),
+        ("missing", base_codec::json_arr(missing_json)),
+      ]
+      match readops_core::jget(Some(state), "unread") {
+        Some(js_json::JValue::Str(u)) => out.push(("unread", base_codec::json_str(js_json::sanitize_str(u))))
+        _ => ()
+      }
+      return Ok(base_codec::json_obj(out))
+    }
+    None => ()
+  }
+  let link = match client.shell_sync_json(
+    "fs.readlink",
+    base_codec::json_obj([("path", base_codec::json_str(readops_core::join_path(sep, dir, name)))]),
+  ) {
+    Ok(base_codec::Json::Str(t)) => t
+    Ok(_) => return Ok(base_codec::json_null())
+    Err(e) => return Err(readops_core::ReadError::App(e.message))
+  }
+  let id = match share_of_link(link) {
+    Some(i) => i
+    None => return Ok(base_codec::json_null())
+  }
+  let share_state = match readops_core::read_json(client, readops_core::join_path(sep, data, "share/state.json")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let had = readops_core::jget(readops_core::jget(Some(share_state), "borrowed"), id)
+  if !readops_core::truthy(had) {
+    return Ok(base_codec::json_null())
+  }
+  let host_v = match readops_core::jget(had, "host") {
+    None => base_codec::json_str("")
+    Some(js_json::JValue::Null) => base_codec::json_str("")
+    Some(v) => readops_core::to_json(v)
+  }
+  Ok(
+    base_codec::json_obj([
+      ("id", base_codec::json_str(id)),
+      ("role", base_codec::json_str("user")),
+      ("host", host_v),
+      ("allow", array_or_null(readops_core::jget(had, "allow"))),
+      ("conflicts", base_codec::json_arr([])),
+    ]),
+  )
+}
+
+/// memory.ts `skillFiles`: the Markdown files beside a SKILL.md excluding conflict files, sorted by UTF-8 bytes.
+fn skill_files(
+  client : builders_core::ShellClient,
+  sep : String,
+  dir : String,
+) -> Result[Array[base_codec::Json], readops_core::ReadError] {
+  let names = match readops_core::read_dir(client, dir) {
+    Ok(Some(ns)) => ns
+    Ok(None) => return Ok([])
+    Err(e) => return Err(e)
+  }
+  let picked : Array[String] = []
+  for i in 0..<names.length() {
+    let n = names[i]
+    if readops_core::str_has_suffix(n, ".md") && n != "SKILL.md" && !readops_core::str_has_prefix(n, "SKILL.conflict-") {
+      picked.push(n)
+    }
+  }
+  let sorted = readops_core::stable_sort(picked, readops_core::by_bytes)
+  let out : Array[base_codec::Json] = []
+  for i in 0..<sorted.length() {
+    let name = sorted[i]
+    match readops_core::read_text(client, readops_core::join_path(sep, dir, name), true) {
+      Ok(Some(text)) => {
+        out.push(
+          base_codec::json_obj([
+            ("name", base_codec::json_str(name)),
+            ("text", base_codec::json_str(text)),
+          ]),
+        )
+      }
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(out)
+}
+
+struct MemRec {
+  hash_units : Array[Int]
+  at : Double
+  by_units : Array[Int]
+  prev : Array[String]
+}
+
+fn next_code_point(units : Array[Int], i : Int) -> (Int, Int) {
+  let hi = units[i]
+  if hi >= 0xD800 && hi <= 0xDBFF && i + 1 < units.length() {
+    let lo = units[i + 1]
+    if lo >= 0xDC00 && lo <= 0xDFFF {
+      return (0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00), i + 2)
+    }
+  }
+  (hi, i + 1)
+}
+
+fn cmp_units_codepoint(a : Array[Int], b : Array[Int]) -> Int {
+  let mut i = 0
+  let mut j = 0
+  while i < a.length() && j < b.length() {
+    let (ca, ni) = next_code_point(a, i)
+    let (cb, nj) = next_code_point(b, j)
+    if ca != cb {
+      return if ca < cb { -1 } else { 1 }
+    }
+    i = ni
+    j = nj
+  }
+  if i < a.length() {
+    1
+  } else if j < b.length() {
+    -1
+  } else {
+    0
+  }
+}
+
+fn is_hex64(s : String) -> Bool {
+  let b = s.to_bytes()
+  if b.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    let c = b[i].to_int() & 0xFF
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
+fn rec_of(raw : Option[js_json::JValue]) -> Option[MemRec] {
+  match raw {
+    Some(js_json::JValue::Obj(_)) => ()
+    _ => return None
+  }
+  let hash_units = match readops_core::jget(raw, "hash") {
+    Some(js_json::JValue::Str(u)) => u
+    _ => return None
+  }
+  let at = match readops_core::jget(raw, "at") {
+    Some(js_json::JValue::Num(n)) => {
+      if js_json::is_integer(n) && n > 0.0 && n <= 9007199254740991.0 {
+        n
+      } else {
+        return None
+      }
+    }
+    _ => return None
+  }
+  let by_units = match readops_core::jget(raw, "by") {
+    Some(js_json::JValue::Str(u)) => if u.length() > 0 { u } else { return None }
+    _ => return None
+  }
+  let prev : Array[String] = match readops_core::jget(raw, "prev") {
+    Some(js_json::JValue::Arr(xs)) => {
+      let ps : Array[String] = []
+      for i in 0..<xs.length() {
+        match xs[i] {
+          js_json::JValue::Str(u) => {
+            let t = js_json::sanitize_str(u)
+            if is_hex64(t) {
+              ps.push(t)
+            }
+          }
+          _ => ()
+        }
+      }
+      ps
+    }
+    _ => return None
+  }
+  Some(MemRec::{ hash_units: hash_units, at: at, by_units: by_units, prev: prev })
+}
+
+fn newer_rec(a : MemRec, b : MemRec) -> Bool {
+  if a.at != b.at {
+    a.at > b.at
+  } else {
+    let c = cmp_units_codepoint(a.by_units, b.by_units)
+    if c != 0 {
+      c > 0
+    } else {
+      cmp_units_codepoint(a.hash_units, b.hash_units) > 0
+    }
+  }
+}
+
+fn peer_name_in(peers : Option[js_json::JValue], station_units : Array[Int]) -> Option[String] {
+  let xs = match peers {
+    Some(js_json::JValue::Arr(a)) => a
+    _ => return None
+  }
+  for i in 0..<xs.length() {
+    let x = xs[i]
+    match readops_core::jget(Some(x), "id") {
+      Some(js_json::JValue::Str(id_units)) => {
+        if js_json::units_eq(id_units, station_units) {
+          match readops_core::str_of(readops_core::jget(Some(x), "name")) {
+            Some(n) => {
+              let trimmed = jscase::trim(n)
+              if trimmed != "" {
+                return Some(trimmed)
+              }
+            }
+            None => ()
+          }
+          break
+        }
+      }
+      _ => ()
+    }
+  }
+  None
+}
+
+fn station_name_of(cloud : js_json::JValue, ws : Option[String], station_units : Array[Int]) -> String {
+  let self_units : Array[Int] = match readops_core::jget(Some(cloud), "station") {
+    Some(js_json::JValue::Str(u)) => u
+    _ => []
+  }
+  match (ws, readops_core::jget(Some(cloud), "joined")) {
+    (Some(w), Some(js_json::JValue::Arr(js))) => {
+      for i in 0..<js.length() {
+        let j = js[i]
+        match readops_core::str_of(readops_core::jget(Some(j), "workspace")) {
+          Some(jw) => {
+            if jw == w {
+              match peer_name_in(readops_core::jget(Some(j), "peers"), station_units) {
+                Some(n) => return n
+                None => ()
+              }
+              if js_json::units_eq(station_units, self_units) {
+                match readops_core::str_of(readops_core::jget(Some(j), "name")) {
+                  Some(sn) => {
+                    let trimmed = jscase::trim(sn)
+                    if trimmed != "" {
+                      return trimmed
+                    }
+                  }
+                  None => ()
+                }
+              }
+              break
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  match peer_name_in(readops_core::jget(Some(cloud), "peers"), station_units) {
+    Some(n) => return n
+    None => ()
+  }
+  if js_json::units_eq(station_units, self_units) {
+    match readops_core::str_of(readops_core::jget(Some(cloud), "name")) {
+      Some(sn) => {
+        let trimmed = jscase::trim(sn)
+        if trimmed != "" {
+          return trimmed
+        }
+      }
+      None => ()
+    }
+  }
+  if station_units.length() > 8 {
+    let head : Array[Int] = []
+    for i in 0..<8 {
+      head.push(station_units[i])
+    }
+    js_json::sanitize_str(head)
+  } else {
+    js_json::sanitize_str(station_units)
+  }
+}
+
+fn prev_blob(
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  rec : Option[MemRec],
+) -> Result[Option[String], readops_core::ReadError] {
+  match rec {
+    Some(r) => {
+      if r.prev.length() > 0 {
+        readops_core::read_text(client, readops_core::join_path(sep, data, "share/memory/blobs/" + r.prev[0]), true)
+      } else {
+        Ok(None)
+      }
+    }
+    None => Ok(None)
+  }
+}
+
+struct SkillSortItem {
+  name : String
+  builtin : Bool
+  project : Bool
+  json : base_codec::Json
+}
+
+fn cmp_skill(a : SkillSortItem, b : SkillSortItem) -> Int {
+  let ra = if a.builtin { 1 } else { 0 }
+  let rb = if b.builtin { 1 } else { 0 }
+  if ra != rb {
+    return ra - rb
+  }
+  let pa = if !a.project { 1 } else { 0 }
+  let pb = if !b.project { 1 } else { 0 }
+  if pa != pb {
+    return pa - pb
+  }
+  readops_core::by_bytes(a.name, b.name)
+}
+
+/// memory.ts `listSkills`; `shares`: whether its skills may be shared with other stations (home workspace only).
+fn list_skills(
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  raw : js_json::JValue,
+  cloud : js_json::JValue,
+  ws : Option[String],
+  kept_files : Option[js_json::JValue],
+  home : String,
+  shares : Bool,
+) -> Result[Array[base_codec::Json], readops_core::ReadError] {
+  let dir = readops_core::join_path(sep, home, "skills")
+  let names = match readops_core::read_dir(client, dir) {
+    Ok(Some(ns)) => ns
+    Ok(None) => return Ok([])
+    Err(e) => return Err(e)
+  }
+  let skills : Array[SkillSortItem] = []
+  for i in 0..<names.length() {
+    let name = names[i]
+    let skill_dir = readops_core::join_path(sep, dir, name)
+    let text = match readops_core::read_text(client, readops_core::join_path(sep, skill_dir, "SKILL.md"), true) {
+      Ok(Some(t)) => t
+      Ok(None) => continue
+      Err(e) => return Err(e)
+    }
+    let description = match front(text, "description") {
+      Some(d) => d
+      None => ""
+    }
+    let builtin = is_builtin_skill(name)
+    let project = readops_core::str_has_prefix(description, PROJECT_PREFIX)
+    let files = match skill_files(client, sep, skill_dir) {
+      Ok(fs) => fs
+      Err(e) => return Err(e)
+    }
+    let share = if builtin || !shares {
+      base_codec::json_null()
+    } else {
+      match sharing(client, data, sep, raw, dir, name) {
+        Ok(s) => s
+        Err(e) => return Err(e)
+      }
+    }
+    let skill_rec = if builtin { None } else { rec_of(readops_core::jget(kept_files, "skills/" + name + "/SKILL.md")) }
+    let mut latest = skill_rec
+    if !builtin {
+      for j in 0..<files.length() {
+        match builders_core::json_get_last(files[j], "name") {
+          Some(base_codec::Json::Str(fname)) => {
+            match rec_of(readops_core::jget(kept_files, "skills/" + name + "/" + fname)) {
+              Some(fr) => {
+                match latest {
+                  None => latest = Some(fr)
+                  Some(cur) => {
+                    if newer_rec(fr, cur) {
+                      latest = Some(fr)
+                    }
+                  }
+                }
+              }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    let prev = match prev_blob(client, data, sep, skill_rec) {
+      Ok(p) => p
+      Err(e) => return Err(e)
+    }
+    let obj : Array[(String, base_codec::Json)] = [
+      ("name", base_codec::json_str(name)),
+      ("description", base_codec::json_str(description)),
+      ("project", base_codec::json_bool(project)),
+      ("builtin", base_codec::json_bool(builtin)),
+      ("text", base_codec::json_str(text)),
+      ("files", base_codec::json_arr(files)),
+      ("share", share),
+    ]
+    match latest {
+      Some(lat) => {
+        obj.push(("at", base_codec::json_num(lat.at)))
+        obj.push(("by", base_codec::json_str(station_name_of(cloud, ws, lat.by_units))))
+        match prev {
+          Some(p) => obj.push(("prev", base_codec::json_str(p)))
+          None => ()
+        }
+      }
+      None => ()
+    }
+    skills.push(SkillSortItem::{ name: name, builtin: builtin, project: project, json: base_codec::json_obj(obj) })
+  }
+  let sorted = readops_core::stable_sort(skills, cmp_skill)
+  let out : Array[base_codec::Json] = []
+  for i in 0..<sorted.length() {
+    out.push(sorted[i].json)
+  }
+  Ok(out)
+}
+
+/// The workspace ids memory.ts takes (`/^[0-9A-Za-z_-]{1,128}$/`).
+pub fn workspace_id(ws : String) -> Bool {
+  let b = ws.to_bytes()
+  if b.length() < 1 || b.length() > 128 {
+    return false
+  }
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+/// GET /memory: the home workspace's, or with `workspace` that joined workspace's (none yet: empty).
+pub fn memory(
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let raw = match readops_core::read_json(client, readops_core::join_path(sep, data, "config.json")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let ws : Option[String] = match readops_core::json_val(args, "workspace") {
+    Some(base_codec::Json::Str(w)) => Some(w)
+    _ => None
+  }
+  match ws {
+    Some(w) => {
+      if !workspace_id(w) {
+        return Err(readops_core::refused(400, "not a workspace id"))
+      }
+    }
+    None => ()
+  }
+  let cloud = match readops_core::read_json(client, readops_core::join_path(sep, data, "mesh/cloud.json")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let ws_id = match ws {
+    Some(w) => w
+    None => {
+      match readops_core::str_of(readops_core::jget(Some(cloud), "workspace")) {
+        Some(s) => s
+        None => ""
+      }
+    }
+  }
+  let kept_files : Option[js_json::JValue] = if ws_id != "" && workspace_id(ws_id) {
+    let kept_doc = match readops_core::read_json(
+      client,
+      readops_core::join_path(sep, data, "share/memory/" + ws_id + ".json"),
+    ) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    readops_core::jget(Some(kept_doc), "files")
+  } else {
+    None
+  }
+  let agent_sub = match readops_core::str_of(readops_core::jget(Some(raw), "agentHome")) {
+    Some(h) => h
+    None => "agent"
+  }
+  let agent = readops_core::join_path(sep, data, agent_sub)
+  let home = match ws {
+    Some(w) => readops_core::join_path(sep, readops_core::join_path(sep, agent, "workspaces"), w)
+    None => agent
+  }
+  let path = readops_core::join_path(sep, home, "MEMORY.md")
+  let global_text = match readops_core::read_text(client, path, true) {
+    Ok(Some(t)) => t
+    Ok(None) => ""
+    Err(e) => return Err(e)
+  }
+  let global_obj : Array[(String, base_codec::Json)] = [
+    ("path", base_codec::json_str(path)),
+    ("text", base_codec::json_str(global_text)),
+  ]
+  let global_rec = rec_of(readops_core::jget(kept_files, "MEMORY.md"))
+  let global_prev = match prev_blob(client, data, sep, global_rec) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  match global_rec {
+    Some(gr) => {
+      global_obj.push(("at", base_codec::json_num(gr.at)))
+      global_obj.push(("by", base_codec::json_str(station_name_of(cloud, ws, gr.by_units))))
+      match global_prev {
+        Some(gp) => global_obj.push(("prev", base_codec::json_str(gp)))
+        None => ()
+      }
+    }
+    None => ()
+  }
+  let shares = match ws {
+    None => true
+    Some(_) => false
+  }
+  let skills = match list_skills(client, data, sep, raw, cloud, ws, kept_files, home, shares) {
+    Ok(ss) => ss
+    Err(e) => return Err(e)
+  }
+  Ok(
+    base_codec::json_obj([
+      ("global", base_codec::json_obj(global_obj)),
+      ("skills", base_codec::json_arr(skills)),
+    ]),
+  )
+}

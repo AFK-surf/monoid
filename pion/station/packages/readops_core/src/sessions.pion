@@ -1,0 +1,250 @@
+// 1:1 port of `station/mb/src/readops/sessions.mbt`.
+// Exports `session_row`, `source_of`, `profiles`, `widget_state`, `transcript_file`.
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "locate"
+import "nodepath"
+import "sql_db"
+
+pub fn session_row(
+  db : sql_db::Db,
+  key : base_codec::Json,
+) -> Result[Map[String, base_codec::Json], ReadError] {
+  match one(db, "SELECT * FROM sessions WHERE key = ?", [key]) {
+    Ok(Some(r)) => Ok(r)
+    Ok(None) => {
+      let kstr = match key {
+        base_codec::Json::Str(s) => s
+        other => sql_db::stringify_json(other)
+      }
+      Err(refused(404, "unknown session " + kstr))
+    }
+    Err(e) => Err(e)
+  }
+}
+
+pub fn widget_state(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let key = json_val_or_null(args, "key")
+  match session_row(db, key) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let path = match json_val(args, "path") {
+    Some(base_codec::Json::Str(p)) => base_codec::json_str(p)
+    Some(base_codec::Json::Null) => base_codec::json_str("")
+    None => base_codec::json_str("")
+    Some(p) => p
+  }
+  let state = match one(db, "SELECT state FROM widget_states WHERE session = ? AND path = ?", [key, path]) {
+    Ok(Some(r)) => {
+      match parsed(field(r, "state")) {
+        Some(v) => to_json(v)
+        None => base_codec::json_null()
+      }
+    }
+    Ok(None) => base_codec::json_null()
+    Err(e) => return Err(e)
+  }
+  Ok(base_codec::json_obj([("state", state)]))
+}
+
+pub fn safe_key(s : String) -> Bool {
+  !str_contains_sub(s, "\u{0}") && !str_contains_sub(s, "\u{FFFD}")
+}
+
+fn utf8_json_bytes(s : String) -> Array[base_codec::Json] {
+  let b = js_json::utf8_bytes(s)
+  let out : Array[base_codec::Json] = []
+  for i in 0..<b.length() {
+    out.push(base_codec::json_num((b[i].to_int() & 0xFF).to_double()))
+  }
+  out
+}
+
+pub fn source_of(
+  id : base_codec::Json,
+  runtime : base_codec::Json,
+  profile : base_codec::Json,
+) -> locate::Source {
+  locate::Source::{
+    id: match id {
+      base_codec::Json::Str(s) => s
+      _ => ""
+    },
+    runtime: match runtime {
+      base_codec::Json::Str(s) => s
+      _ => ""
+    },
+    profile: match profile {
+      base_codec::Json::Str(p) => Some(p)
+      _ => None
+    },
+  }
+}
+
+pub fn original_source(
+  db : sql_db::Db,
+  key : base_codec::Json,
+  id : String,
+) -> Result[Option[locate::Source], ReadError] {
+  let rows = match db.all(
+    "SELECT r.id, COALESCE(r.runtime, s.original_runtime, s.runtime) AS runtime, r.profile FROM sessions s CROSS JOIN runtime_sessions r ON r.session_key = s.key WHERE s.key = ? ORDER BY r.at, r.rowid",
+    [key],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(ReadError::Sql(e))
+  }
+  let target = base_codec::json_str(id)
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    if base_codec::json_eq(field(r, "id"), target) {
+      return Ok(Some(source_of(field(r, "id"), field(r, "runtime"), field(r, "profile"))))
+    }
+  }
+  Ok(None)
+}
+
+pub fn runtime_source(
+  db : sql_db::Db,
+  key : base_codec::Json,
+  id : String,
+) -> Result[Option[locate::Source], ReadError] {
+  if !safe_key(id) {
+    return original_source(db, key, id)
+  }
+  let bytes = utf8_json_bytes(id)
+  let lower : Array[base_codec::Json] = []
+  let upper : Array[base_codec::Json] = []
+  for i in 0..<bytes.length() {
+    lower.push(bytes[i])
+    upper.push(bytes[i])
+  }
+  lower.push(base_codec::json_num(0.0))
+  upper.push(base_codec::json_num(1.0))
+  let row = match one(
+    db,
+    "SELECT s.runtime_session_id AS current_id, s.runtime AS session_runtime, s.profile AS session_profile,\n      r.id AS source_id, COALESCE(r.runtime, s.original_runtime, s.runtime) AS source_runtime, r.profile AS source_profile,\n      EXISTS (SELECT 1 FROM runtime_sessions x WHERE x.session_key = s.key\n        AND x.id >= CAST(?3 AS TEXT) AND x.id < CAST(?4 AS TEXT)) AS ambiguous\n      FROM sessions s LEFT JOIN runtime_sessions r ON r.session_key = s.key AND r.id = ?2 WHERE s.key = ?1",
+    [key, base_codec::json_str(id), base_codec::json_arr(lower), base_codec::json_arr(upper)],
+  ) {
+    Ok(Some(r)) => r
+    Ok(None) => return Ok(None)
+    Err(e) => return Err(e)
+  }
+  let current = field(row, "current_id")
+  let ambiguous = match field(row, "ambiguous") {
+    base_codec::Json::Num(v, _) => v != 0.0
+    base_codec::Json::Null => false
+    _ => true
+  }
+  let current_unsafe = match current {
+    base_codec::Json::Str(c) => !safe_key(c)
+    _ => false
+  }
+  if ambiguous || current_unsafe {
+    return original_source(db, key, id)
+  }
+  let sid = field(row, "source_id")
+  if !(sid is base_codec::Json::Null) {
+    if !base_codec::json_eq(sid, base_codec::json_str(id)) {
+      return original_source(db, key, id)
+    }
+    return Ok(Some(source_of(sid, field(row, "source_runtime"), field(row, "source_profile"))))
+  }
+  if base_codec::json_eq(current, base_codec::json_str(id)) {
+    Ok(Some(source_of(base_codec::json_str(id), field(row, "session_runtime"), field(row, "session_profile"))))
+  } else {
+    Ok(None)
+  }
+}
+
+pub fn profiles(
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+) -> Array[(String, String)] {
+  let raw = match client.shell_sync_json(
+    "fs.read",
+    base_codec::json_obj([
+      ("path", base_codec::json_str(nodepath::join(sep, [data, "config.json"]))),
+      ("strict", base_codec::json_bool(false)),
+    ]),
+  ) {
+    Ok(base_codec::Json::Str(text)) => {
+      match js_json::parse(text) {
+        Ok(v) => v
+        Err(_) => js_json::JValue::Obj([])
+      }
+    }
+    _ => js_json::JValue::Obj([])
+  }
+  let out : Array[(String, String)] = []
+  let ps = match raw.get("profiles") {
+    Some(js_json::JValue::Arr(arr)) => arr
+    _ => return out
+  }
+  for i in 0..<ps.length() {
+    let p = ps[i]
+    let id = match jstr(jfield(p, "id")) {
+      Some(s) => s
+      None => continue
+    }
+    let home = match jstr(jfield(p, "home")) {
+      Some(s) => s
+      None => continue
+    }
+    let hb = home.to_bytes()
+    let absolute = str_has_prefix(home, "/") ||
+    (sep == "\\" && (str_has_prefix(home, "\\") || (hb.length() >= 2 && (hb[1].to_int() & 0xFF) == 58)))
+    out.push((id, if absolute { home } else { nodepath::join(sep, [data, home]) }))
+  }
+  out
+}
+
+pub fn transcript_file(
+  db : sql_db::Db,
+  state : ReaderState,
+  data : String,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let key = json_val_or_null(args, "key")
+  let row = match session_row(db, key) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let current = match field(row, "runtime_session_id") {
+    base_codec::Json::Str(s) => s
+    _ => return Ok(base_codec::json_obj([("path", base_codec::json_null())]))
+  }
+  let source = match runtime_source(db, key, current) {
+    Ok(Some(s)) => s
+    Ok(None) => return Ok(base_codec::json_obj([("path", base_codec::json_null())]))
+    Err(e) => return Err(e)
+  }
+  let cwd = field(row, "cwd")
+  let workspace = match field(row, "workspace") {
+    base_codec::Json::Str(w) => w
+    _ => ""
+  }
+  let places : Array[String] = match cwd {
+    base_codec::Json::Str(c) => if c != workspace { [c, workspace] } else { [workspace] }
+    _ => [workspace]
+  }
+  let (paths, found) = state.finder.sources(
+    data,
+    profiles(state.client, data, state.sep),
+    [source],
+    places,
+    anywhere=true,
+  )
+  let p_json = if found && paths.length() > 0 {
+    base_codec::json_str(paths[paths.length() - 1].0)
+  } else {
+    base_codec::json_null()
+  }
+  Ok(base_codec::json_obj([("path", p_json)]))
+}

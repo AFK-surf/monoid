@@ -477,7 +477,7 @@ test "downloads: the desk's files page lists the drive's downloads among its tra
   open_fixture_mode("drive-download")
   t.run_for(@ui.move_most_ms)
   // (the rail's key: what comes, how far)
-  let (x, y, w, h) = t.query(Button, label="2 个传输 · 40%").unwrap().rect
+  let (x, y, w, h) = t.query(Button, label="2 个传输 · 40% · 1000 B").unwrap().rect
   t.tap(x + w / 2.0, y + h / 2.0)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("到此设备") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))

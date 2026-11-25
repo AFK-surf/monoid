@@ -199,6 +199,10 @@ test "agy Verification Required is classified as auth failure even under load_re
   assert_eq(@acp.notice_failure("\u{26a0} Verification Required"), Some("auth"))
   assert_eq(@acp.notice_failure("partial text\n\u{26a0} Verification Required\n"), Some("auth"))
   assert_eq(
+    @acp.notice_failure("All 7 lines are still running.\n\u{26a0} Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h46m59s.\n"),
+    Some("rate_limit"),
+  )
+  assert_eq(
     @acp.notice_failure("\u{26a0} Permission 'aiplatform.endpoints.predict' denied on resource '//aiplatform.googleapis.com/projects/p/locations/global/publishers/google/models/gemini-4-carbon' (or it may not exist)."),
     Some("auth"),
   )

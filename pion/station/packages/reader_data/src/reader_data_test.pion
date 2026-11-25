@@ -1,0 +1,111 @@
+// Pure-Pion unit tests for `reader_data` (no native SQLite/shell linking required).
+
+import "base_codec"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+test "reader_data: moved covers all 53 moved ops and excludes checkpoint/unknown" {
+  let expected : Array[String] = [
+    "job",
+    "jobLog",
+    "historyPendingCard",
+    "statePendingCard",
+    "deliveryCardState",
+    "reviewPendingCard",
+    "stateQuestion",
+    "pendingDeliveries",
+    "latestMessages",
+    "chatHistoryMessages",
+    "openedChatSaid",
+    "widgetState",
+    "transcriptFile",
+    "memory",
+    "machineSessions",
+    "machineSession",
+    "sessionsAtWork",
+    "policyChecks",
+    "recentConnectPeople",
+    "usageTurns",
+    "usageCalls",
+    "outflowMessages",
+    "archiveLook",
+    "recentChatList",
+    "searchChatList",
+    "threadList",
+    "sharedOf",
+    "sharedChats",
+    "chatMarks",
+    "entries",
+    "letters",
+    "summary",
+    "sessions",
+    "session",
+    "threads",
+    "thread",
+    "turnNotices",
+    "saidNotices",
+    "chats",
+    "chatRows",
+    "outflowChats",
+    "openJobs",
+    "resourceChats",
+    "usage",
+    "outflowUsage",
+    "timeline",
+    "transcriptState",
+    "tailRead",
+    "sessionPlace",
+    "internalCardEditPage",
+    "internalCardMessagePage",
+    "internalMeshControl",
+    "changed",
+  ]
+  assert(expected.length() == 53)
+  for i in 0..<expected.length() {
+    assert(moved(expected[i]))
+  }
+  assert(!moved("checkpoint"))
+  assert(!moved("unknownOp"))
+  assert(!moved(""))
+}
+
+test "reader_data: classify_ask rejects invalid JSON, lone surrogates, missing op, and handles duplicate keys" {
+  match classify_ask("{bad json") {
+    AskKind::ErrStatus(base_codec::Json::Null, 400, msg) => assert(msg.length() > 0)
+    _ => panic("expected 400 on invalid JSON")
+  }
+  match classify_ask("{\"id\":1,\"op\":\"threadList\",\"x\":\"\\ud800\"}") {
+    AskKind::ErrStatus(base_codec::Json::Null, 400, msg) => assert(msg.length() > 0)
+    _ => panic("expected 400 on lone surrogate")
+  }
+  match classify_ask("{\"id\":7}") {
+    AskKind::ErrStatus(base_codec::Json::Num(n, _), 400, msg) => {
+      assert(n == 7.0)
+      assert(msg == "no op")
+    }
+    _ => panic("expected 400 no op")
+  }
+  // Duplicate keys: last wins.
+  match classify_ask("{\"id\":1,\"id\":2,\"op\":\"threadList\",\"op\":\"bogusOp\"}") {
+    AskKind::ErrStatus(base_codec::Json::Num(n, _), 500, msg) => {
+      assert(n == 2.0)
+      assert(msg == "no read bogusOp")
+    }
+    _ => panic("expected 500 no read bogusOp with id=2")
+  }
+  match classify_ask("{\"id\":3,\"op\":\"checkpoint\",\"args\":{\"hard\":true}}") {
+    AskKind::Checkpoint(base_codec::Json::Num(n, _), true) => assert(n == 3.0)
+    _ => panic("expected hard checkpoint")
+  }
+  match classify_ask("{\"id\":4,\"op\":\"threadList\",\"args\":{}}") {
+    AskKind::Moved(base_codec::Json::Num(n, _), op, _) => {
+      assert(n == 4.0)
+      assert(op == "threadList")
+    }
+    _ => panic("expected moved threadList")
+  }
+}

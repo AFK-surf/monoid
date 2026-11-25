@@ -1,0 +1,511 @@
+// 1:1 port of `station/mb/src/readops/cards.mbt`.
+// All named SAVEPOINTs go through `sql_db::Db::savepoint_swallow_err` (zero raw transaction SQL).
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "sql_db"
+
+pub let CARD_POSTS_PENDING : String = "card posts pending:"
+
+pub fn system_card_sql(col_name : String) -> String {
+  "(CASE WHEN " +
+  col_name +
+  " IS NULL OR NOT json_valid(" +
+  col_name +
+  ") THEN 0 ELSE COALESCE(json_extract(" +
+  col_name +
+  ", '$.type') = 'login' OR json_type(" +
+  col_name +
+  ", '$.vault') = 'object' OR json_type(" +
+  col_name +
+  ", '$.adb') = 'object' OR json_type(" +
+  col_name +
+  ", '$.rig') = 'object' OR json_type(" +
+  col_name +
+  ", '$.signin') = 'object', 0) END)"
+}
+
+pub fn reached_sql(thread : String, n : String) -> String {
+  "((SELECT surface FROM threads WHERE id = " +
+  thread +
+  ") = 'chat' OR EXISTS (SELECT 1 FROM deliveries d WHERE d.thread = " +
+  thread +
+  " AND d.n = " +
+  n +
+  "))"
+}
+
+pub fn answer_after_sql() -> String {
+  "SELECT 1 AS x FROM entries p WHERE p.thread = ?1 AND p.kind = 'message' AND p.author_kind = 'person' AND p.n > ?2 AND " +
+  reached_sql("?1", "p.n") +
+  " LIMIT 1"
+}
+
+pub fn answer_between_sql() -> String {
+  "SELECT 1 AS x FROM entries p WHERE p.thread = ?1 AND p.kind = 'message' AND p.author_kind = 'person' AND p.n > ?2 AND p.n < ?3 AND " +
+  reached_sql("?1", "p.n") +
+  " LIMIT 1"
+}
+
+pub fn answer_at_sql() -> String {
+  "SELECT 1 AS x FROM entries p WHERE p.thread = ?1 AND p.n = ?2 AND p.kind = 'message' AND p.author_kind = 'person' AND " +
+  reached_sql("?1", "?2")
+}
+
+pub fn conversation_card_before_sql() -> String {
+  "SELECT CAST(c.n AS TEXT) AS n FROM card_posts c JOIN entries e ON e.thread = c.thread AND e.n = c.n WHERE c.thread = ?1 AND c.n < ?2 AND NOT " +
+  system_card_sql("e.card") +
+  " ORDER BY c.n DESC LIMIT 1"
+}
+
+pub fn conversation_card_latest_sql() -> String {
+  "SELECT CAST(c.n AS TEXT) AS n FROM card_posts c JOIN entries e ON e.thread = c.thread AND e.n = c.n WHERE c.thread = ?1 AND NOT " +
+  system_card_sql("e.card") +
+  " ORDER BY c.n DESC LIMIT 1"
+}
+
+pub let SYSTEM_CARD_WAITING_SQL : String = "SELECT CAST(s.n AS TEXT) AS n FROM pending_system_cards s WHERE s.thread = ?1 AND NOT EXISTS (SELECT 1 FROM closed_cards c WHERE c.thread = s.thread AND c.n = s.n) ORDER BY s.n DESC LIMIT 1"
+
+pub let SYSTEM_CARDS_WAITING_SQL : String = "SELECT CAST(s.n AS TEXT) AS n FROM pending_system_cards s WHERE s.thread = ?1 AND NOT EXISTS (SELECT 1 FROM closed_cards c WHERE c.thread = s.thread AND c.n = s.n) ORDER BY s.n DESC LIMIT 16"
+
+pub fn system_card_at_sql() -> String {
+  "SELECT 1 AS x FROM entries e WHERE e.thread = ?1 AND e.n = ?2 AND e.kind = 'message' AND " +
+  system_card_sql("e.card")
+}
+
+pub let SYSTEM_CARD_KEPT_SQL : String = "SELECT 1 AS x FROM pending_system_cards WHERE thread = ?1 AND n = ?2"
+
+pub let ASKED_LATEST_SQL : String = "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND at <= ? ORDER BY at DESC LIMIT 1"
+
+pub fn number_of(n : base_codec::Json) -> base_codec::Json {
+  match n {
+    base_codec::Json::Str(s) => {
+      match sql_db::parse_json(s) {
+        base_codec::JsonParseResult::Ok(j) => j
+        base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+      }
+    }
+    v => v
+  }
+}
+
+pub fn n_of(row : Option[Map[String, base_codec::Json]]) -> Option[base_codec::Json] {
+  match row {
+    Some(r) => {
+      let fv = field(r, "n")
+      match fv {
+        base_codec::Json::Str(_) => Some(number_of(fv))
+        _ => None
+      }
+    }
+    None => None
+  }
+}
+
+pub fn parsed(v : base_codec::Json) -> Option[js_json::JValue] {
+  match v {
+    base_codec::Json::Str(s) => js_json::jval_try_parse(s)
+    _ => None
+  }
+}
+
+pub fn to_json(v : js_json::JValue) -> base_codec::Json {
+  v.to_json_lossy()
+}
+
+pub fn card_of(card : base_codec::Json, options : base_codec::Json) -> Option[base_codec::Json] {
+  match parsed(card) {
+    Some(c) => Some(to_json(c))
+    None => {
+      match parsed(options) {
+        Some(o) => {
+          Some(
+            base_codec::json_obj([
+              ("type", base_codec::json_str("options")),
+              ("options", to_json(o)),
+            ]),
+          )
+        }
+        None => None
+      }
+    }
+  }
+}
+
+pub fn pending_cards_err(thread : base_codec::Json) -> ReadError {
+  refused(503, CARD_POSTS_PENDING + sql_db::stringify_json(base_codec::json_arr([thread])))
+}
+
+pub fn has_cards(db : sql_db::Db, thread : base_codec::Json) -> Result[Bool, ReadError] {
+  match one(
+    db,
+    "SELECT 1 AS x FROM entries INDEXED BY entries_cards WHERE thread = ? AND card IS NOT NULL LIMIT 1",
+    [thread],
+  ) {
+    Ok(Some(_)) => return Ok(true)
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  match one(
+    db,
+    "SELECT 1 AS x FROM entries INDEXED BY entries_options WHERE thread = ? AND options IS NOT NULL LIMIT 1",
+    [thread],
+  ) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn asks_waiting(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[Array[base_codec::Json], ReadError] {
+  let out : Array[base_codec::Json] = []
+  let sys_rows = match db.all(SYSTEM_CARDS_WAITING_SQL, [thread]) {
+    Ok(r) => r
+    Err(e) => return Err(ReadError::Sql(e))
+  }
+  for i in 0..<sys_rows.length() {
+    match n_of(Some(sys_rows[i])) {
+      Some(n) => out.push(n)
+      None => ()
+    }
+  }
+  let conv_row = match one(db, conversation_card_latest_sql(), [thread]) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let n = match n_of(conv_row) {
+    Some(v) => v
+    None => return Ok(out)
+  }
+  match one(db, answer_after_sql(), [thread, n]) {
+    Ok(Some(_)) => return Ok(out)
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  match one(db, "SELECT 1 AS x FROM closed_cards WHERE thread = ? AND n = ?", [thread, n]) {
+    Ok(Some(_)) => return Ok(out)
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  out.push(n)
+  Ok(out)
+}
+
+pub fn card_still_waits(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  n : base_codec::Json,
+) -> Result[Bool, ReadError] {
+  match one(db, "SELECT 1 AS x FROM closed_cards WHERE thread = ? AND n = ?", [thread, n]) {
+    Ok(Some(_)) => return Ok(false)
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  match one(db, system_card_at_sql(), [thread, n]) {
+    Ok(Some(_)) => {
+      match one(db, SYSTEM_CARD_KEPT_SQL, [thread, n]) {
+        Ok(Some(_)) => return Ok(true)
+        Ok(None) => return Ok(false)
+        Err(e) => return Err(e)
+      }
+    }
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  match one(db, answer_after_sql(), [thread, n]) {
+    Ok(None) => Ok(true)
+    Ok(Some(_)) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn card_waits(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  n : base_codec::Json,
+) -> Result[Bool, ReadError] {
+  match one(db, "SELECT 1 AS x FROM closed_cards WHERE thread = ? AND n = ?", [thread, n]) {
+    Ok(Some(_)) => return Ok(false)
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  match one(db, system_card_at_sql(), [thread, n]) {
+    Ok(Some(_)) => {
+      match one(db, SYSTEM_CARD_KEPT_SQL, [thread, n]) {
+        Ok(Some(_)) => return Ok(true)
+        Ok(None) => return Ok(false)
+        Err(e) => return Err(e)
+      }
+    }
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  match builders_core::cards_ready(db, thread) {
+    Ok(true) => ()
+    Ok(false) => return Err(pending_cards_err(thread))
+    Err(e) => return Err(map_step_err(e))
+  }
+  let latest_row = match one(db, conversation_card_latest_sql(), [thread]) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  match n_of(latest_row) {
+    Some(latest) => {
+      if num(latest) != num(n) {
+        return Ok(false)
+      }
+    }
+    None => return Ok(false)
+  }
+  match one(db, answer_after_sql(), [thread, n]) {
+    Ok(None) => Ok(true)
+    Ok(Some(_)) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn pending_card_number(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  db.savepoint_swallow_err(
+    "pending_card_number_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, ReadError] {
+      match builders_core::cards_ready(sp_db, thread) {
+        Ok(true) => ()
+        Ok(false) => {
+          let idx_row = match one(
+            sp_db,
+            "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'index' AND name IN ('entries_cards', 'entries_options')",
+            [],
+          ) {
+            Ok(r) => r
+            Err(e) => return Err(e)
+          }
+          let indexed = match idx_row {
+            Some(r) => {
+              match r.get("n") {
+                Some(base_codec::Json::Num(v, _)) => v == 2.0
+                _ => false
+              }
+            }
+            None => false
+          }
+          if indexed {
+            match has_cards(sp_db, thread) {
+              Ok(false) => return Ok(base_codec::json_null())
+              Ok(true) => ()
+              Err(e) => return Err(e)
+            }
+          }
+          return Err(pending_cards_err(thread))
+        }
+        Err(e) => return Err(map_step_err(e))
+      }
+      let sys_row = match one(sp_db, SYSTEM_CARD_WAITING_SQL, [thread]) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      match n_of(sys_row) {
+        Some(system) => return Ok(system)
+        None => ()
+      }
+      let conv_row = match one(sp_db, conversation_card_latest_sql(), [thread]) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      let n = match n_of(conv_row) {
+        Some(v) => v
+        None => return Ok(base_codec::json_null())
+      }
+      let post = match one(
+        sp_db,
+        "SELECT card, options FROM entries WHERE thread = ? AND n = ? AND kind = 'message'",
+        [thread, n],
+      ) {
+        Ok(Some(p)) => p
+        Ok(None) => return Ok(base_codec::json_null())
+        Err(e) => return Err(e)
+      }
+      match card_of(field(post, "card"), field(post, "options")) {
+        Some(_) => ()
+        None => return Ok(base_codec::json_null())
+      }
+      match one(sp_db, answer_after_sql(), [thread, n]) {
+        Ok(Some(_)) => return Ok(base_codec::json_null())
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+      match one(sp_db, "SELECT 1 AS x FROM closed_cards WHERE thread = ? AND n = ?", [thread, n]) {
+        Ok(Some(_)) => return Ok(base_codec::json_null())
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+      Ok(n)
+    },
+    map_sql_err,
+  )
+}
+
+pub fn or_empty(v : base_codec::Json) -> base_codec::Json {
+  match v {
+    base_codec::Json::Null => base_codec::json_str("")
+    t => t
+  }
+}
+
+pub fn state_pending_card(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  db.savepoint_swallow_err(
+    "state_pending_card_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, ReadError] {
+      let threads = match json_val(args, "threads") {
+        Some(base_codec::Json::Arr(ts)) => ts
+        _ => []
+      }
+      let cards : Array[(base_codec::Json, base_codec::Json, base_codec::Json, Double)] = []
+      for i in 0..<threads.length() {
+        let thread = threads[i]
+        let n = match pending_card_number(sp_db, thread) {
+          Ok(v) => v
+          Err(e) => return Err(e)
+        }
+        match n {
+          base_codec::Json::Null => continue
+          _ => ()
+        }
+        match one(
+          sp_db,
+          "SELECT ts, at FROM entries WHERE thread = ? AND n = ? AND kind = 'message'",
+          [thread, n],
+        ) {
+          Ok(Some(row)) => {
+            let ts = or_empty(field(row, "ts"))
+            let at = match field(row, "at") {
+              base_codec::Json::Num(a, _) => a
+              _ => nan()
+            }
+            cards.push((thread, n, ts, at))
+          }
+          Ok(None) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      let sorted = stable_sort(
+        cards,
+        fn(
+          a : (base_codec::Json, base_codec::Json, base_codec::Json, Double),
+          b : (base_codec::Json, base_codec::Json, base_codec::Json, Double),
+        ) -> Int {
+          let d = a.3 - b.3
+          if d < 0.0 { -1 } else if d > 0.0 { 1 } else { 0 }
+        },
+      )
+      if sorted.length() == 0 {
+        Ok(base_codec::json_null())
+      } else {
+        let last = sorted[sorted.length() - 1]
+        Ok(base_codec::json_arr([last.0, last.1, last.2]))
+      }
+    },
+    map_sql_err,
+  )
+}
+
+pub fn delivery_card_state(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let thread = json_val_or_null(args, "thread")
+  let n = json_val_or_null(args, "n")
+  db.savepoint_swallow_err(
+    "delivery_card_state_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, ReadError] {
+      match one(sp_db, answer_at_sql(), [thread, n]) {
+        Ok(None) => return Ok(base_codec::json_null())
+        Ok(Some(_)) => ()
+        Err(e) => return Err(e)
+      }
+      match builders_core::cards_ready(sp_db, thread) {
+        Ok(true) => ()
+        Ok(false) => {
+          match has_cards(sp_db, thread) {
+            Ok(false) => return Ok(base_codec::json_null())
+            Ok(true) => return Err(pending_cards_err(thread))
+            Err(e) => return Err(e)
+          }
+        }
+        Err(e) => return Err(map_step_err(e))
+      }
+      let asked_row = match one(sp_db, conversation_card_before_sql(), [thread, n]) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      let asked = match n_of(asked_row) {
+        Some(v) => v
+        None => return Ok(base_codec::json_null())
+      }
+      match one(sp_db, answer_between_sql(), [thread, asked, n]) {
+        Ok(Some(_)) => return Ok(base_codec::json_null())
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+      match one(sp_db, "SELECT 1 AS x FROM closed_cards WHERE thread = ? AND n = ?", [thread, asked]) {
+        Ok(Some(_)) => return Ok(base_codec::json_null())
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+      let post = match one(
+        sp_db,
+        "SELECT ts, author, card, options FROM entries WHERE thread = ? AND n = ? AND kind = 'message'",
+        [thread, asked],
+      ) {
+        Ok(Some(p)) => p
+        Ok(None) => return Ok(base_codec::json_null())
+        Err(e) => return Err(e)
+      }
+      let card = match card_of(field(post, "card"), field(post, "options")) {
+        Some(c) => c
+        None => return Ok(base_codec::json_null())
+      }
+      let current_n = match pending_card_number(sp_db, thread) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let current = match current_n {
+        base_codec::Json::Null => base_codec::json_null()
+        _ => {
+          match one(
+            sp_db,
+            "SELECT ts FROM entries WHERE thread = ? AND n = ? AND kind = 'message'",
+            [thread, current_n],
+          ) {
+            Ok(Some(c)) => base_codec::json_obj([("ts", or_empty(field(c, "ts")))])
+            Ok(None) => base_codec::json_null()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      Ok(
+        base_codec::json_obj([
+          (
+            "ended",
+            base_codec::json_obj([
+              ("author", field(post, "author")),
+              ("ts", or_empty(field(post, "ts"))),
+            ]),
+          ),
+          ("card", card),
+          ("current", current),
+        ]),
+      )
+    },
+    map_sql_err,
+  )
+}

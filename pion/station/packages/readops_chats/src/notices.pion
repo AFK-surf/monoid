@@ -1,0 +1,815 @@
+// 1:1 port of `station/mb/src/readops/notices.mbt`.
+// Turn and message notices for the station's own chats (`turnNotices`, `saidNotices`).
+// All named SAVEPOINTs go through `sql_db::Db::savepoint_swallow_err`.
+
+import "base_codec"
+import "builders_core"
+import "jscase"
+import "readops_core"
+import "sql_db"
+
+pub let LAST_MESSAGE_PENDING : String = "last message pending: "
+
+let NOTICE_TEXT : Int = 400
+
+/// `archive-last.ts` `archiveLastKey`: a chat's latest message's key, if known (none for none), in one snapshot.
+fn archive_last_key(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[(Bool, base_codec::Json), readops_core::ReadError] {
+  match archive_last_installed(db) {
+    Ok(true) => ()
+    Ok(false) => return Ok((false, base_codec::json_null()))
+    Err(e) => return Err(e)
+  }
+  db.savepoint_swallow_err(
+    "archive_last_read",
+    fn(sp_db : sql_db::Db) -> Result[(Bool, base_codec::Json), readops_core::ReadError] {
+      let inner = fn() -> Result[(Bool, base_codec::Json), readops_core::ReadError] {
+        let meta = match readops_core::one(sp_db, "SELECT version FROM archive_last_meta WHERE id=1", []) {
+          Ok(Some(r)) => r
+          Ok(None) => return Ok((false, base_codec::json_null()))
+          Err(e) => return Err(e)
+        }
+        let ver = readops_core::field(meta, "version")
+        match ver {
+          base_codec::Json::Num(n, _) => {
+            if n != 1.0 {
+              return Err(readops_core::ReadError::App("archive last version " + readops_core::js_text(ver) + " is incompatible"))
+            }
+          }
+          _ => return Err(readops_core::ReadError::App("archive last version " + readops_core::js_text(ver) + " is incompatible"))
+        }
+        let first = match readops_core::one(sp_db, ARCHIVE_LAST_FIRST_SQL, [thread]) {
+          Ok(Some(r)) => r
+          Ok(None) => return Ok((true, base_codec::json_null()))
+          Err(e) => return Err(e)
+        }
+        match readops_core::field(first, "at") {
+          base_codec::Json::Null => ()
+          _ => return Ok((true, readops_core::field(first, "n")))
+        }
+        match readops_core::one(sp_db, ARCHIVE_LAST_GUARD_SQL, [thread]) {
+          Ok(Some(cached)) => {
+            let cat = readops_core::field(cached, "at")
+            let cn = readops_core::field(cached, "n")
+            let at_null = match cat {
+              base_codec::Json::Null => true
+              _ => false
+            }
+            let n_non_null = match cn {
+              base_codec::Json::Null => false
+              _ => true
+            }
+            if at_null || n_non_null {
+              return Ok((true, cn))
+            }
+          }
+          Ok(None) => ()
+          Err(e) => return Err(e)
+        }
+        let has_said = match readops_core::exists_in(sp_db, "index", "entries_said") {
+          Ok(b) => b
+          Err(e) => return Err(e)
+        }
+        let has_letters = if has_said {
+          match readops_core::exists_in(sp_db, "index", "entries_letters") {
+            Ok(b) => b
+            Err(e) => return Err(e)
+          }
+        } else {
+          false
+        }
+        if has_said && has_letters {
+          let said = match readops_core::one(
+            sp_db,
+            "SELECT CAST(e.n AS TEXT) AS n,e.at FROM entries e INDEXED BY entries_said\n  WHERE e.thread=? AND e.kind='message' AND e.letter IS NULL ORDER BY e.n DESC LIMIT 1",
+            [thread],
+          ) {
+            Ok(r) => r
+            Err(e) => return Err(e)
+          }
+          let letter = match said {
+            Some(s) => {
+              match readops_core::one(
+                sp_db,
+                "SELECT 1 FROM entries e INDEXED BY entries_letters\n  WHERE e.thread=?1 AND e.n>CAST(?2 AS INTEGER) AND e.letter IS NOT NULL ORDER BY e.n DESC LIMIT 1",
+                [thread, readops_core::field(s, "n")],
+              ) {
+                Ok(r) => r
+                Err(e) => return Err(e)
+              }
+            }
+            None => {
+              match readops_core::one(
+                sp_db,
+                "SELECT 1 FROM entries e INDEXED BY entries_letters\n  WHERE e.thread=? AND e.letter IS NOT NULL ORDER BY e.n DESC LIMIT 1",
+                [thread],
+              ) {
+                Ok(r) => r
+                Err(e) => return Err(e)
+              }
+            }
+          }
+          match letter {
+            None => {
+              let sn = match said {
+                Some(s) => readops_core::field(s, "n")
+                None => base_codec::json_null()
+              }
+              return Ok((true, sn))
+            }
+            Some(_) => ()
+          }
+        }
+        let tail = match readops_core::one(sp_db, ARCHIVE_LAST_TAIL_SQL, [thread]) {
+          Ok(Some(r)) => r
+          Ok(None) => return Ok((false, base_codec::json_null()))
+          Err(e) => return Err(e)
+        }
+        let has_at = match readops_core::field(tail, "at") {
+          base_codec::Json::Null => false
+          _ => true
+        }
+        if has_at || readops_core::num(readops_core::field(tail, "count")) < 65.0 {
+          return Ok((true, readops_core::field(tail, "n")))
+        }
+        Ok((false, base_codec::json_null()))
+      }
+      match inner() {
+        Ok(v) => Ok(v)
+        Err(e) => {
+          let m = readops_core::read_error_message(e)
+          if readops_core::str_contains_sub(m, "no such table: archive_last_meta") ||
+          readops_core::str_contains_sub(m, "no such table: archive_last_guard") {
+            Ok((false, base_codec::json_null()))
+          } else {
+            Err(e)
+          }
+        }
+      }
+    },
+    readops_core::map_sql_err,
+  )
+}
+
+/// `store.ts` `lastMessage`: a chat's latest message as merged; refused while its key is not known.
+pub fn last_message(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  db.savepoint_swallow_err(
+    "last_message_read",
+    fn(sp_db : sql_db::Db) -> Result[base_codec::Json, readops_core::ReadError] {
+      let (known, n) = match archive_last_key(sp_db, thread) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      if !known {
+        return Err(readops_core::refused(503, LAST_MESSAGE_PENDING + sql_db::stringify_json(base_codec::json_arr([thread]))))
+      }
+      match n {
+        base_codec::Json::Null => return Ok(base_codec::json_null())
+        _ => ()
+      }
+      match readops_core::merged(sp_db, thread, readops_core::number_of(n)) {
+        Ok(Some(m)) => Ok(m)
+        Ok(None) => Ok(base_codec::json_null())
+        Err(e) => Err(e)
+      }
+    },
+    readops_core::map_sql_err,
+  )
+}
+
+/// `store.ts` `blockedAsk`'s freshness.
+fn blocked_fresh(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  key : String,
+  turn : base_codec::Json,
+) -> Result[Bool, readops_core::ReadError] {
+  let about = readops_core::json_val_or_null(turn, "about")
+  let seq = match about {
+    base_codec::Json::Obj(_) => {
+      let ab_t = readops_core::json_val_or_null(about, "thread")
+      let ab_seq = readops_core::json_val_or_null(about, "seq")
+      if mb_json_eq(ab_t, thread) && is_integer_json(ab_seq) {
+        ab_seq
+      } else {
+        base_codec::json_null()
+      }
+    }
+    _ => base_codec::json_null()
+  }
+  let started = match readops_core::json_val(turn, "startedAt") {
+    Some(s) => if is_integer_json(s) { s } else { base_codec::json_num(0.0) }
+    None => base_codec::json_num(0.0)
+  }
+  let ended = match readops_core::json_val(turn, "endedAt") {
+    Some(e) => if is_integer_json(e) { e } else { readops_core::as_integer(base_codec::json_str(readops_core::I64_MAX_STR)) }
+    None => readops_core::as_integer(base_codec::json_str(readops_core::I64_MAX_STR))
+  }
+  let pending = match readops_core::review_pending_card(db, base_codec::json_obj([("thread", thread)])) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let asked : Option[base_codec::Json] = match pending {
+    base_codec::Json::Arr(xs) => {
+      if xs.length() == 2 {
+        Some(xs[0])
+      } else {
+        match asking_message(db, thread, seq, started, ended) {
+          Ok(Some((m, _))) => Some(m)
+          Ok(None) => None
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    _ => {
+      match asking_message(db, thread, seq, started, ended) {
+        Ok(Some((m, _))) => Some(m)
+        Ok(None) => None
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  let m = match asked {
+    Some(msg) => msg
+    None => return Ok(false)
+  }
+  match readops_core::one(
+    db,
+    "SELECT 1 AS x FROM turns WHERE session_key = ? AND ended_at >= ? AND ended_at < ? AND declared IN ('block', 'need_help', 'need_human', 'need_decision') LIMIT 1",
+    [base_codec::json_str(key), readops_core::json_val_or_null(m, "createdAt"), started],
+  ) {
+    Ok(None) => Ok(true)
+    Ok(Some(_)) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+/// `String.prototype.trim() === ""`.
+pub fn js_blank(s : String) -> Bool {
+  jscase::trim(s) == ""
+}
+
+/// `notices.ts` `turnNotice`: what a turn's end is worth telling its chat, `(kind, text)`.
+pub fn turn_notice(
+  turn : base_codec::Json,
+  last : base_codec::Json,
+  key : String,
+  file : String,
+  fresh : Bool,
+) -> Option[(String, String)] {
+  let theirs : Option[base_codec::Json] = match last {
+    base_codec::Json::Obj(_) => {
+      if base_codec::json_eq(readops_core::json_val_or_null(last, "authorKind"), base_codec::json_str("agent")) &&
+      base_codec::json_eq(readops_core::json_val_or_null(last, "author"), base_codec::json_str(key)) &&
+      readops_core::num(readops_core::json_val_or_null(last, "createdAt")) >= readops_core::num(readops_core::json_val_or_null(turn, "startedAt")) {
+        Some(last)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+  let text : Option[String] = match theirs {
+    Some(m) => {
+      match readops_core::json_val(m, "text") {
+        Some(base_codec::Json::Str(t)) => if !js_blank(t) { Some(t) } else { None }
+        _ => None
+      }
+    }
+    None => None
+  }
+  let declared = readops_core::json_val_or_null(turn, "declared")
+  if base_codec::json_eq(declared, base_codec::json_str("block")) && fresh {
+    let need = match readops_core::json_val(turn, "need") {
+      Some(base_codec::Json::Str(n)) => if !js_blank(n) { Some(n) } else { None }
+      _ => None
+    }
+    let body = match need {
+      Some(n) => n
+      None => match text {
+        Some(t) => t
+        None => ""
+      }
+    }
+    return Some(("block", body))
+  }
+  if base_codec::json_eq(readops_core::json_val_or_null(turn, "outcome"), base_codec::json_str("failed")) {
+    return None
+  }
+  if base_codec::json_eq(declared, base_codec::json_str("final")) ||
+  base_codec::json_eq(declared, base_codec::json_str("block")) {
+    return match theirs {
+      Some(_) => {
+        let body = match text {
+          Some(t) => t
+          None => file
+        }
+        Some(("done", body))
+      }
+      None => None
+    }
+  }
+  None
+}
+
+/// `notices.ts` `wentWrong`: the station's word that something went wrong (`⚠️` first), its first paragraph.
+pub fn went_wrong(text : String) -> Option[String] {
+  let prefix = "⚠️"
+  if !readops_core::str_has_prefix(text, prefix) {
+    return None
+  }
+  let rest = readops_core::str_slice_bytes(text, prefix.to_bytes().length(), text.to_bytes().length())
+  let first = match readops_core::str_find_sub(rest, "\n\n") {
+    Some(i) => readops_core::str_slice_bytes(rest, 0, i)
+    None => rest
+  }
+  Some(jscase::trim(first))
+}
+
+/// `notices.ts` `notice`: a notice of one of the station's chats, to its people but `except` and those who muted it.
+pub fn notice(
+  db : sql_db::Db,
+  known : readops_core::Known,
+  untitled : String,
+  thread : base_codec::Json,
+  seq : base_codec::Json,
+  session : base_codec::Json,
+  kind : String,
+  by : String,
+  text : String,
+  except : Option[String],
+  only : Option[String] = None,
+) -> Result[Option[base_codec::Json], readops_core::ReadError] {
+  let t = match readops_core::one(db, "SELECT * FROM threads WHERE id = ?", [thread]) {
+    Ok(Some(r)) => r
+    Ok(None) => return Ok(None)
+    Err(e) => return Err(e)
+  }
+  let ts_rows = match db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [thread]) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  let refs : Array[base_codec::Json] = []
+  let t_cb = readops_core::field(t, "created_by")
+  match t_cb {
+    base_codec::Json::Null => ()
+    _ => refs.push(t_cb)
+  }
+  let tp = match thread_people(db, thread, readops_core::field(t, "surface")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  match tp {
+    base_codec::Json::Arr(said) => {
+      for i in 0..<said.length() {
+        refs.push(said[i])
+      }
+    }
+    _ => ()
+  }
+  for i in 0..<ts_rows.length() {
+    let s = readops_core::field(ts_rows[i], "session")
+    match readops_core::one(db, "SELECT * FROM sessions WHERE key = ?", [s]) {
+      Ok(Some(r)) => {
+        let r_cb = readops_core::field(r, "created_by")
+        match r_cb {
+          base_codec::Json::Null => ()
+          _ => refs.push(r_cb)
+        }
+      }
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let not_lower = match except {
+    Some(e) => Some(jscase::lower(e))
+    None => None
+  }
+  let seen : Map[String, Bool] = Map::new()
+  let recipients : Array[String] = []
+  match only {
+    Some(o) => recipients.push(jscase::lower(o))
+    None => {
+      let people = match known.people(base_codec::json_arr(refs)) {
+        Ok(ps) => ps
+        Err(e) => return Err(e)
+      }
+      for i in 0..<people.length() {
+        let e = match readops_core::json_val(people[i], "email") {
+          Some(base_codec::Json::Str(s)) => jscase::lower(s)
+          _ => continue
+        }
+        let is_excluded = match not_lower {
+          Some(ne) => ne == e
+          None => false
+        }
+        if is_excluded || seen.contains(e) {
+          continue
+        }
+        seen.set(e, true)
+        recipients.push(e)
+      }
+    }
+  }
+  let muted : Map[String, Bool] = Map::new()
+  if recipients.length() > 0 {
+    let rec_js : Array[base_codec::Json] = []
+    for i in 0..<recipients.length() {
+      rec_js.push(base_codec::json_str(recipients[i]))
+    }
+    let m_rows = match db.all(
+      "SELECT viewer FROM muted_chats WHERE viewer IN (SELECT value FROM json_each(?1)) AND thread = ?2",
+      [readops_core::ids_json(rec_js), thread],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(readops_core::map_sql_err(e))
+    }
+    for i in 0..<m_rows.length() {
+      muted.set(readops_core::js_text(readops_core::field(m_rows[i], "viewer")), true)
+    }
+  }
+  let to : Array[base_codec::Json] = []
+  for i in 0..<recipients.length() {
+    if !muted.contains(recipients[i]) {
+      to.push(base_codec::json_str(recipients[i]))
+    }
+  }
+  if to.length() == 0 {
+    return Ok(None)
+  }
+  let given = jscase::trim_white(
+    match readops_core::field(t, "title") {
+      base_codec::Json::Str(s) => s
+      _ => ""
+    },
+  )
+  let auto = jscase::trim_white(
+    match readops_core::field(t, "auto_title") {
+      base_codec::Json::Str(s) => s
+      _ => ""
+    },
+  )
+  let title = if given != "" { given } else if auto != "" { auto } else { untitled }
+  Ok(
+    Some(
+      base_codec::json_obj([
+        ("to", base_codec::json_arr(to)),
+        ("kind", base_codec::json_str(kind)),
+        ("session", session),
+        ("thread", thread),
+        ("seq", seq),
+        ("title", base_codec::json_str(title)),
+        ("by", base_codec::json_str(by)),
+        ("text", base_codec::json_str(take_chars(text, NOTICE_TEXT))),
+        ("at", base_codec::json_num(known.now)),
+      ]),
+    ),
+  )
+}
+
+fn starter_of(
+  known : readops_core::Known,
+  t : Map[String, base_codec::Json],
+) -> Result[Option[String], readops_core::ReadError] {
+  let cb = readops_core::field(t, "created_by")
+  match cb {
+    base_codec::Json::Null => return Ok(None)
+    _ => ()
+  }
+  let people = match known.people(base_codec::json_arr([cb])) {
+    Ok(ps) => ps
+    Err(e) => return Err(e)
+  }
+  for i in 0..<people.length() {
+    match readops_core::json_val(people[i], "email") {
+      Some(base_codec::Json::Str(e)) => return Ok(Some(e))
+      _ => ()
+    }
+  }
+  Ok(None)
+}
+
+fn asked_of(
+  db : sql_db::Db,
+  known : readops_core::Known,
+  t : Map[String, base_codec::Json],
+  last : base_codec::Json,
+) -> Result[Option[String], readops_core::ReadError] {
+  let id = readops_core::field(t, "id")
+  let n = match readops_core::pending_card_number(db, id) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  match n {
+    base_codec::Json::Null => ()
+    _ => {
+      match readops_core::card_at(db, id, n) {
+        Ok(base_codec::Json::Arr(xs)) => {
+          if xs.length() == 2 {
+            match readops_core::json_val(xs[1], "assignee") {
+              Some(base_codec::Json::Str(a)) => {
+                if readops_core::str_contains_sub(a, "@") {
+                  return Ok(Some(a))
+                }
+                return starter_of(known, t)
+              }
+              _ => return starter_of(known, t)
+            }
+          }
+        }
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  match readops_core::one(db, readops_core::ASKER_BEFORE_SQL, [id, readops_core::json_val_or_null(last, "n")]) {
+    Ok(Some(r)) => {
+      match readops_core::field(r, "author") {
+        base_codec::Json::Str(a) => {
+          if readops_core::str_contains_sub(a, "@") {
+            return Ok(Some(a))
+          }
+        }
+        _ => ()
+      }
+    }
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  starter_of(known, t)
+}
+
+fn word_of(args : base_codec::Json, k : String) -> String {
+  match readops_core::json_val(args, "words") {
+    Some(w) => {
+      match readops_core::json_val(w, k) {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
+    }
+    None => ""
+  }
+}
+
+/// `notices.ts` `turnNotices`.
+pub fn turn_notices(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let known = readops_core::Known::of(client, data, sep, ask)
+  let key = readops_core::js_text(readops_core::json_val_or_null(args, "key"))
+  let since = readops_core::num(readops_core::json_val_or_null(args, "since"))
+  let ended = readops_core::json_val_or_null(args, "ended")
+  let turn = match last_turn_of(db, key) {
+    Ok(t) => t
+    Err(e) => return Err(e)
+  }
+  let at = readops_core::json_val_or_null(turn, "endedAt")
+  let turn_is_null = match turn {
+    base_codec::Json::Null => true
+    _ => false
+  }
+  let at_is_num = match at {
+    base_codec::Json::Num(_, _) => true
+    _ => false
+  }
+  if turn_is_null || !at_is_num || readops_core::num(at) < since || mb_json_eq(at, ended) {
+    return Ok(base_codec::json_obj([("ended", ended), ("notices", base_codec::json_arr([]))]))
+  }
+  match readops_core::one(
+    db,
+    "SELECT 1 AS x FROM opened_chats WHERE child_station = '' AND child = ? AND led = 1",
+    [base_codec::json_str(key)],
+  ) {
+    Ok(Some(_)) => return Ok(base_codec::json_obj([("ended", at), ("notices", base_codec::json_arr([]))]))
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  let missing : Array[base_codec::Json] = []
+  let found : Array[(Map[String, base_codec::Json], base_codec::Json)] = []
+  let t_rows = match db.all(
+    "SELECT t.* FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.surface = ? ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT ?",
+    [base_codec::json_str(key), base_codec::json_str("chat"), base_codec::json_num(-1.0)],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  for i in 0..<t_rows.length() {
+    let t = t_rows[i]
+    match readops_core::field(t, "hidden_at") {
+      base_codec::Json::Null => ()
+      _ => continue
+    }
+    let last = match last_message(db, readops_core::field(t, "id")) {
+      Ok(l) => Some(l)
+      Err(readops_core::ReadError::Refused(503, m)) => {
+        if readops_core::str_has_prefix(m, LAST_MESSAGE_PENDING) {
+          let tail = readops_core::str_slice_bytes(m, LAST_MESSAGE_PENDING.to_bytes().length(), m.to_bytes().length())
+          match sql_db::parse_json(tail) {
+            base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => {
+              for j in 0..<xs.length() {
+                missing.push(xs[j])
+              }
+            }
+            _ => ()
+          }
+          None
+        } else {
+          return Err(readops_core::ReadError::Refused(503, m))
+        }
+      }
+      Err(e) => return Err(e)
+    }
+    match last {
+      Some(l) => found.push((t, l))
+      None => ()
+    }
+  }
+  if missing.length() > 0 {
+    return Err(readops_core::refused(503, LAST_MESSAGE_PENDING + sql_db::stringify_json(base_codec::json_arr(unique_ids([missing])))))
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<found.length() {
+    let (t, last) = found[i]
+    let id = readops_core::field(t, "id")
+    let fresh = if base_codec::json_eq(readops_core::json_val_or_null(turn, "declared"), base_codec::json_str("block")) {
+      match blocked_fresh(db, id, key, turn) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+    } else {
+      false
+    }
+    let (kind, text) = match turn_notice(turn, last, key, word_of(args, "file"), fresh) {
+      Some(pair) => pair
+      None => continue
+    }
+    let names = match known.author_names(db, id) {
+      Ok(ns) => ns
+      Err(e) => return Err(e)
+    }
+    let by = match names.name("agent", key) {
+      Ok(base_codec::Json::Str(s)) => s
+      Ok(_) => ""
+      Err(e) => return Err(e)
+    }
+    let only = if kind == "block" {
+      match asked_of(db, known, t, last) {
+        Ok(o) => o
+        Err(e) => return Err(e)
+      }
+    } else {
+      None
+    }
+    match notice(
+      db,
+      known,
+      word_of(args, "untitled"),
+      id,
+      readops_core::json_val_or_null(last, "n"),
+      base_codec::json_str(key),
+      kind,
+      by,
+      text,
+      None,
+      only=only,
+    ) {
+      Ok(Some(n)) => out.push(n)
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(base_codec::json_obj([("ended", at), ("notices", base_codec::json_arr(out))]))
+}
+
+/// `notices.ts` `saidNotices`.
+pub fn said_notices(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let known = readops_core::Known::of(client, data, sep, ask)
+  let id = readops_core::json_val_or_null(args, "thread")
+  let since = readops_core::num(readops_core::json_val_or_null(args, "since"))
+  let entries = match readops_core::json_val(args, "entries") {
+    Some(base_codec::Json::Arr(es)) => es
+    _ => []
+  }
+  let mut person : Option[base_codec::Json] = None
+  let mut wrong : Option[(base_codec::Json, String)] = None
+  for i in 0..<entries.length() {
+    let e = entries[i]
+    if base_codec::json_eq(readops_core::json_val_or_null(e, "kind"), base_codec::json_str("message")) &&
+    readops_core::num(readops_core::json_val_or_null(e, "at")) >= since {
+      let ak = readops_core::json_val_or_null(e, "authorKind")
+      if base_codec::json_eq(ak, base_codec::json_str("person")) {
+        person = Some(e)
+      } else if base_codec::json_eq(ak, base_codec::json_str("station")) {
+        match readops_core::json_val(e, "text") {
+          Some(base_codec::Json::Str(t)) => {
+            match went_wrong(t) {
+              Some(w) => wrong = Some((readops_core::json_val_or_null(e, "n"), w))
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+  }
+  let no_person = match person {
+    None => true
+    Some(_) => false
+  }
+  let no_wrong = match wrong {
+    None => true
+    Some(_) => false
+  }
+  if no_person && no_wrong {
+    return Ok(base_codec::json_arr([]))
+  }
+  let t = match readops_core::one(db, "SELECT * FROM threads WHERE id = ?", [id]) {
+    Ok(Some(row)) => row
+    Ok(None) => return Ok(base_codec::json_arr([]))
+    Err(e) => return Err(e)
+  }
+  let hidden_null = match readops_core::field(t, "hidden_at") {
+    base_codec::Json::Null => true
+    _ => false
+  }
+  if !base_codec::json_eq(readops_core::field(t, "surface"), base_codec::json_str("chat")) || !hidden_null {
+    return Ok(base_codec::json_arr([]))
+  }
+  let first = match readops_core::one(db, "SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [id]) {
+    Ok(Some(row)) => row
+    Ok(None) => return Ok(base_codec::json_arr([]))
+    Err(e) => return Err(e)
+  }
+  let session = readops_core::field(first, "session")
+  let untitled = word_of(args, "untitled")
+  let out : Array[base_codec::Json] = []
+  match person {
+    Some(p) => {
+      let author = readops_core::js_text(readops_core::json_val_or_null(p, "author"))
+      let names = match known.author_names(db, id) {
+        Ok(ns) => ns
+        Err(e) => return Err(e)
+      }
+      let by = match names.name("person", author) {
+        Ok(base_codec::Json::Str(s)) => s
+        Ok(_) => author
+        Err(e) => return Err(e)
+      }
+      let text = match readops_core::json_val(p, "text") {
+        Some(base_codec::Json::Str(s)) => if !js_blank(s) { s } else { word_of(args, "file") }
+        _ => word_of(args, "file")
+      }
+      match notice(
+        db,
+        known,
+        untitled,
+        id,
+        readops_core::json_val_or_null(p, "n"),
+        session,
+        "message",
+        by,
+        text,
+        Some(author),
+      ) {
+        Ok(Some(n)) => out.push(n)
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    None => ()
+  }
+  match wrong {
+    Some((n, what)) => {
+      match starter_of(known, t) {
+        Ok(Some(starter)) => {
+          match notice(db, known, untitled, id, n, session, "failed", "", what, None, only=Some(starter)) {
+            Ok(Some(x)) => out.push(x)
+            Ok(None) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    None => ()
+  }
+  Ok(base_codec::json_arr(out))
+}

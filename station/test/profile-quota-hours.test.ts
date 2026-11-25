@@ -7,6 +7,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Accounts } from "../src/accounts/index.ts";
+import { learn as learnCatalog } from "../src/accounts/catalog.ts";
 import { checkConfig } from "../src/accounts/check.ts";
 import { agyAllowance, agyScopeForModel } from "../src/accounts/agy-quota.ts";
 import { paceView, spendScopes, spendWeight } from "../src/accounts/pace.ts";
@@ -347,6 +348,214 @@ describe("an account's last hours", () => {
       seen = await get();
       assert.deepEqual(asked, [["profileQuotaHoursFor", "cx", back]]);
       assert.equal(seen.profiles.cx, undefined);
+    } finally {
+      accounts.close();
+      store.close();
+    }
+  });
+
+  test("GET /profiles/pace?v=2 compresses safely, serves unchanged and profile-level deltas, and preserves v1 compatibility", async () => {
+    const data = temp("pace-v2");
+    const writeCfg = (profiles: unknown[]) => writeFileSync(join(data, "config.json"), JSON.stringify({ profiles, connects: [] }));
+    writeCfg([
+      { id: "cc", runtime: "claude", home: "homes/cc" },
+      { id: "cx", runtime: "codex", home: "homes/cx" },
+    ]);
+    const config = new ConfigFile(data);
+    config.check = checkConfig;
+    const H = 820_000;
+    const t0 = H * HOUR_MS + 10 * 60_000;
+    const { store, time, clock } = storeAt(t0);
+    const used = { cc: 40 };
+    const makeAccounts = () => {
+      const a = new Accounts({
+        data, store, config, loginCommands: { claude: "/bin/false", codex: "/bin/false" } as never, machine: null, checkOnStart: false, clock,
+        check: async () => ({ state: "ok", detail: "", models: [], checkedAt: 0 }),
+        quota: async () => quota(time.now, used.cc) as never,
+        discover: async (profile) => ({ state: "unsupported", detail: "", model: null, provider: null, models: [], fingerprint: fingerprint(profile) }),
+        workspaces: () => ["W1", "W2"],
+      });
+      a.start();
+      return a;
+    };
+    const accounts = makeAccounts();
+    const failing = new Set<string>();
+    const realFor = store.profileQuotaHoursFor.bind(store);
+    (store as any).profileQuotaHoursFor = (...args: [string, number]) => {
+      if (failing.delete("profileQuotaHoursFor")) throw new Error("database is locked");
+      return realFor(...args);
+    };
+    const table = routes({ accounts, overview: () => ({}) });
+    const home = { sub: "s", email: "o@example.com", name: "", role: "owner", workspace: "W1", device: "d" } as Request["viewer"];
+    const joined = { ...home, workspace: "W2", home: false } as Request["viewer"];
+    const get = async (viewer: Request["viewer"], query: [string, string][] = []): Promise<any> => {
+      const r: Request = { method: "GET", path: "/profiles/pace", query, headers: {}, body: Buffer.from(""), viewer, lang: "zh" };
+      for (const route of table) {
+        const found = route.method === "GET" ? route.pattern.exec(r.path) : null;
+        if (found) return JSON.parse(String((await route.handle(r, found.slice(1))).body));
+      }
+      throw new Error("no route");
+    };
+    const applyDelta = (base: any, delta: any) => {
+      assert.equal(delta.delta, true);
+      assert.equal(delta.base, base.rev);
+      const profiles: Record<string, any> = {};
+      for (const id of delta.keep) profiles[id] = base.profiles[id];
+      for (const [id, p] of Object.entries(delta.profiles)) profiles[id] = p;
+      return {
+        rev: delta.rev,
+        nowAt: delta.nowAt,
+        fromHour: delta.fromHour,
+        profiles,
+        speedHours: delta.speedHours ?? base.speedHours,
+        speedQuarters: delta.speedQuarters ?? base.speedQuarters,
+      };
+    };
+    try {
+      // Seed quotas including scope: null with "Weekly · Fable" and minutes: null.
+      store.setProfileQuota("cc", {
+        state: "ok", checkedAt: t0 - HOUR_MS, detail: null,
+        windows: [
+          { label: "5 小时", usedPercent: 10, resetsAt: t0 + 2 * HOUR_MS, minutes: 300 },
+          { label: "Weekly · Fable", usedPercent: 15, resetsAt: t0 + 50 * HOUR_MS, minutes: 10080 },
+          { label: "5 小时", usedPercent: 20, resetsAt: t0 + 2 * HOUR_MS, minutes: null },
+        ],
+        scoped: [{ label: "每周 · Fable", usedPercent: 25, resetsAt: t0 + 50 * HOUR_MS, minutes: 10080, scope: "Fable" }],
+      });
+      store.setProfileQuota("cx", quota(t0 - HOUR_MS, 20));
+      store.db.prepare(`INSERT INTO usage (id, at, session, profile, runtime, model, input, cache_read, cache_write, cache_write_long, output, gen_ms, gen_output)
+        VALUES ('sp1', ?, 's', 'cc', 'claude', 'claude-opus-5-5', 0, 0, 0, 0, 1000, 1000, 1000)`).run(t0 - HOUR_MS);
+
+      // v1 keeps all labels intact and is never mutated by v2.
+      const v1Before = await get(home);
+      const v2Full = await get(home, [["v", "2"]]);
+      const v1After = await get(home);
+      assert.deepEqual(v1After, v1Before);
+      assert.equal(v1After.profiles.cc.quotas[0].windows[0].label, "5 小时");
+      assert.equal(v1After.profiles.cc.quotas[0].windows[3].label, "每周 · Fable");
+
+      // v2 window compression rules:
+      const w = v2Full.profiles.cc.quotas[0].windows;
+      assert.equal("label" in w[0], false, "minutes!=null & scope=null & no ' · ' omits label");
+      assert.equal(w[1].label, "Weekly · Fable", "scope=null & ' · ' MUST keep label");
+      assert.equal(w[2].label, "5 小时", "minutes=null MUST keep label");
+      assert.equal("label" in w[3], false, "minutes!=null & non-empty scope omits label");
+      assert.equal(w[3].scope, "Fable");
+
+      // Same rev -> unchanged.
+      const unch = await get(home, [["v", "2"], ["sinceRev", v2Full.rev]]);
+      assert.deepEqual(unch, { unchanged: true, rev: v2Full.rev });
+
+      // nextMinute with no data change does NOT advance v2 rev, while legacy v1 nowAt still advances.
+      time.now += 60_000;
+      const unchMin = await get(home, [["v", "2"], ["sinceRev", v2Full.rev]]);
+      assert.deepEqual(unchMin, { unchanged: true, rev: v2Full.rev });
+      const v1NextMin = await get(home);
+      assert.equal(v1NextMin.nowAt, time.now, "legacy v1 nowAt advances on nextMinute");
+
+      // Legacy v1 reflects label-only changes even when v2 omits that label and keeps its rev.
+      store.setProfileQuota("cc", {
+        state: "ok", checkedAt: t0 - HOUR_MS, detail: null,
+        windows: [
+          { label: "5 Hours", usedPercent: 10, resetsAt: t0 + 2 * HOUR_MS, minutes: 300 },
+          { label: "Weekly · Fable", usedPercent: 15, resetsAt: t0 + 50 * HOUR_MS, minutes: 10080 },
+          { label: "5 小时", usedPercent: 20, resetsAt: t0 + 2 * HOUR_MS, minutes: null },
+        ],
+        scoped: [{ label: "每周 · Fable", usedPercent: 25, resetsAt: t0 + 50 * HOUR_MS, minutes: 10080, scope: "Fable" }],
+      });
+      time.now += 15 * 60_000;
+      const v1Relabeled = await get(home);
+      assert.equal(v1Relabeled.profiles.cc.quotas[0].windows[0].label, "5 Hours", "legacy v1 sees updated label");
+      const v2Relabeled = await get(home, [["v", "2"], ["sinceRev", v2Full.rev]]);
+      assert.deepEqual(v2Relabeled, { unchanged: true, rev: v2Full.rev }, "v2 rev stays unchanged when omitted label changes");
+
+      // Model catalog price update invalidates cached v2 spend weight and advances rev.
+      store.db.prepare(`INSERT INTO usage (id, at, session, profile, runtime, model, input, cache_read, cache_write, cache_write_long, output, gen_ms, gen_output)
+        VALUES ('sp_cat', ?, 's', 'cc', 'claude', 'custom-priced-model', 1000000, 0, 0, 0, 0, 0, 0)`).run(t0 - HOUR_MS);
+      try {
+        learnCatalog({ "custom-priced-model": { cost: { input: 1, output: 5 } } });
+        time.now += 15 * 60_000;
+        const cat1 = await get(home, [["v", "2"]]);
+        learnCatalog({ "custom-priced-model": { cost: { input: 10, output: 5 } } });
+        const cat2 = await get(home, [["v", "2"], ["sinceRev", cat1.rev]]);
+        assert.equal(cat2.unchanged, undefined, "catalog price change must invalidate cached v2 rev");
+        assert.equal(cat2.delta, true);
+        assert.ok(cat2.profiles.cc, "affected profile cc must be sent in delta");
+      } finally {
+        learnCatalog({});
+      }
+      const v2PreDirty = await get(home, [["v", "2"]]);
+
+      // DB read error does NOT advance rev or clear dirty quota profile.
+      time.now += 1_000;
+      used.cc = 55;
+      await accounts.refreshQuota("cc");
+      failing.add("profileQuotaHoursFor");
+      assert.throws(() => accounts.paceResponse(home, { v: "2", sinceRev: v2PreDirty.rev }), /database is locked/);
+
+      // Retry succeeds -> profile-level delta with cx in keep, cc in profiles.
+      const delta1 = await get(home, [["v", "2"], ["sinceRev", v2PreDirty.rev]]);
+      const full1 = await get(home, [["v", "2"]]);
+      assert.equal(delta1.delta, true);
+      assert.deepEqual(delta1.keep, ["cx"]);
+      assert.deepEqual(Object.keys(delta1.profiles), ["cc"]);
+      assert.equal("speedHours" in delta1, false);
+      assert.equal("speedQuarters" in delta1, false);
+      assert.deepEqual(applyDelta(v2PreDirty, delta1), full1);
+
+      // Delayed speedQuarters write within 8h triggers full speedQuarters replacement in delta.
+      store.db.prepare(`INSERT INTO usage (id, at, session, profile, runtime, model, input, cache_read, cache_write, cache_write_long, output, gen_ms, gen_output)
+        VALUES ('sp2', ?, 's', 'cx', 'codex', 'gpt-6.1-sol', 0, 0, 0, 0, 500, 500, 500)`).run(t0 - 3 * HOUR_MS);
+      time.now += 60_000;
+      const delta2 = await get(home, [["v", "2"], ["sinceRev", full1.rev]]);
+      const full2 = await get(home, [["v", "2"]]);
+      assert.equal(delta2.delta, true);
+      assert.ok(Array.isArray(delta2.speedQuarters) && delta2.speedQuarters.length >= 2);
+      assert.deepEqual(applyDelta(full1, delta2), full2);
+
+      // Joined workspace sees both, then withholding cc removes it via delta.
+      const jFull1 = await get(joined, [["v", "2"]]);
+      assert.deepEqual(Object.keys(jFull1.profiles).sort(), ["cc", "cx"]);
+      config.update((raw) => {
+        raw.profiles = [
+          { id: "cc", runtime: "claude", home: "homes/cc", withheld: ["W2"] },
+          { id: "cx", runtime: "codex", home: "homes/cx" },
+        ];
+      });
+      const jDelta = await get(joined, [["v", "2"], ["sinceRev", jFull1.rev]]);
+      const jFull2 = await get(joined, [["v", "2"]]);
+      assert.equal(jDelta.delta, true);
+      assert.deepEqual(jDelta.keep, ["cx"]);
+      assert.deepEqual(Object.keys(jDelta.profiles), []);
+      assert.deepEqual(applyDelta(jFull1, jDelta), jFull2);
+      assert.deepEqual(Object.keys(jFull2.profiles), ["cx"]);
+
+      // Unknown sinceRev falls back to full.
+      const unknownFallback = await get(home, [["v", "2"], ["sinceRev", "deadbeef:00000000:1"]]);
+      assert.equal(unknownFallback.delta, undefined);
+      assert.equal(unknownFallback.unchanged, undefined);
+      assert.deepEqual(unknownFallback, full2);
+
+      // Scope cache eviction past 16 workspaces allocates a strictly fresh rev on recreation.
+      const firstScope = await get({ ...home, workspace: "WE0", home: false } as Request["viewer"], [["v", "2"]]);
+      for (let i = 1; i <= 17; i++) {
+        await get({ ...home, workspace: `WE${i}`, home: false } as Request["viewer"], [["v", "2"]]);
+      }
+      const recreated = await get({ ...home, workspace: "WE0", home: false } as Request["viewer"], [["v", "2"], ["sinceRev", firstScope.rev]]);
+      assert.equal(recreated.unchanged, undefined, "evicted scope must fall back to full");
+      assert.equal(recreated.delta, undefined);
+      assert.notEqual(recreated.rev, firstScope.rev, "recreated scope must allocate a strictly new rev");
+
+      // New Accounts instance (new bootEpoch) falls back to full for old sinceRev.
+      const accounts2 = makeAccounts();
+      try {
+        const res2 = accounts2.paceResponse(home, { v: "2", sinceRev: full2.rev }) as any;
+        assert.equal(res2.delta, undefined);
+        assert.equal(res2.unchanged, undefined);
+        assert.notEqual(res2.rev.split(":")[0], full2.rev.split(":")[0]);
+      } finally {
+        accounts2.close();
+      }
     } finally {
       accounts.close();
       store.close();

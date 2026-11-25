@@ -751,6 +751,7 @@ fn tester_make(
     nav_able,
     nav_said: "",
     a11y: false,
+    screen_reader: false,
     a11y_said: "",
     a11y_told: A11yMirror::new(),
     a11y_held: 0,

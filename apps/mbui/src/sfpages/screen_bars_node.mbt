@@ -18,9 +18,10 @@ fn screen_round_node(
   press : (@view.View) -> Unit,
   lit? : () -> Bool = fn() { false },
   side? : Double = round_side,
+  in_bar? : Bool = false,
 ) -> @view.View {
   @sf.action_box_node(parent, label, on=lit, press, fn(v) {
-    let pane = pg.tab_pads is Some(_) && side == round_side
+    let pane = in_bar && pg.tab_pads is Some(_) && side == round_side
     let side = if pane { round_bar_side } else { side }
     v
     .width(Is(Some(side)))
@@ -64,10 +65,10 @@ fn screen_asked(from : @view.View, pg : ScreenPage, keys : Array[String], open :
 ///|
 /// 控制中心 as a round button (the bar's, the rail's, the folded tools') in `parent`: pressed, its panel beside it; or a
 /// simulator's 日志 or 重启 App where a fixture asked for them.
-fn center_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
+fn center_button_node(parent : @view.View, pg : ScreenPage, in_bar? : Bool = false) -> Unit {
   let b = screen_round_node(parent, pg, fn() { "sliders" }, fn() { @sf.t("web-pages.screen.panel") }, fn(b) {
     center_open(pg, Node(b), "center")
-  })
+  }, in_bar~)
   screen_asked(b, pg, ["center", "logs", "apps"], fn(asked) { center_open(pg, Node(b), asked) })
 }
 
@@ -144,12 +145,12 @@ fn keys_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
 /// 麦克风 as a round button in `parent`, lit while this device's microphone is shared into the screen's virtual one:
 /// there only while something on the screen records it or it is shared (ScreenSess::mic_bar_shown), so a bar says
 /// nothing of it otherwise (控制中心's tile switches it then); pressed, shared or no more.
-fn mic_button_node(parent : @view.View, pg : ScreenPage, along_row? : Bool = false) -> Unit {
+fn mic_button_node(parent : @view.View, pg : ScreenPage, along_row? : Bool = false, in_bar? : Bool = false) -> Unit {
   let s = pg.s
   parent.show(along_row~, fn() { s.mic_bar_shown() }, fn(k) {
     screen_round_node(k, pg, fn() { s.mic_icon() }, fn() { s.mic_label() }, fn(_) { s.toggle_mic() }, lit=fn() {
       s.mic_on.get()
-    })
+    }, in_bar~)
     |> ignore
   })
 }
@@ -304,13 +305,13 @@ fn screen_top_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
         m.show(at_once=true, fn() { @sf.soft_keyboard() && s.driving_now() && !s.simulator() }, fn(k) {
           screen_round_node(k, pg, fn() { "trackpad" }, fn() {
             @sf.t(if s.pad(s.src) { "web-pages.remote.touchPadShort" } else { "web-pages.remote.touchDirectShort" })
-          }, fn(_) { pad_chosen(s, u, !s.pad(s.src)) }, lit=fn() { s.pad(s.src) })
+          }, fn(_) { pad_chosen(s, u, !s.pad(s.src)) }, lit=fn() { s.pad(s.src) }, in_bar=true)
           |> ignore
         })
       }
     })
-    mic_button_node(bar, pg, along_row=true)
-    bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
+    mic_button_node(bar, pg, along_row=true, in_bar=true)
+    bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg, in_bar=true) })
     // (a panel's bar of its own: the panel's close at its end, beside what it closes, where the system has bars too:
     // among the chat's actions in them it read as another thing's; the user, 2026-11-06)
     if pg.own_bar is Some(_) {
@@ -321,9 +322,104 @@ fn screen_top_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
 }
 
 ///|
-/// With keyboard and mouse inside a chat's side panel in `p`: one row, no traffic-light indent, no `< 返回`, and (where
-/// the panel's tab row stands above) no name or close of its own: a browser's controls, or the desktop's line, its
-/// tabs, 组合键 while driving it; 控制中心. None while the view is not open, where the panel names it.
+/// Split a simulator's title ("ios-mbui-sf · iOS 27.2") into its display name and meta line ("iPhone 11 Pro · iOS 27.2 · 1125×2436"),
+/// avoiding repeating `model` when it is already part of the name, and folding extra presence notes without duplicating the mode pill.
+fn sim_title_parts(pg : ScreenPage) -> (String, String) {
+  let s = pg.s
+  let st = s.state_now()
+  let raw = pg.said_title()
+  let (name, runtime) = match raw.find(" · ") {
+    Some(i) => (raw.exact_view(end=i).to_owned(), raw.exact_view(start=i + 3).to_owned())
+    None => (raw, "")
+  }
+  let parts : Array[String] = []
+  let model = text(st, "model")
+  if model != "" && !name.to_lower().contains(model.to_lower()) {
+    parts.push(model)
+  }
+  if runtime != "" {
+    parts.push(runtime)
+  }
+  s.part_told.get() |> ignore
+  match s.frame_size() {
+    Some((w, h)) if w > 0 && h > 0 => parts.push("\{w}×\{h}")
+    _ => {
+      let (w, h) = (count(st, "width"), count(st, "height"))
+      if w > 0 && h > 0 {
+        parts.push("\{w}×\{h}")
+      }
+    }
+  }
+  if s.open_said() {
+    if s.can_take_over() {
+      parts.push(drives_words(s))
+    } else {
+      let line = text(st, "line")
+      let mode = @sf.t(if s.controlling() { "core-views.screen.control" } else { "core-views.screen.watch" })
+      let extra = if line == mode {
+        ""
+      } else if line.has_prefix(mode + " · ") {
+        line.exact_view(start=(mode + " · ").length()).to_owned()
+      } else {
+        line
+      }
+      if extra != "" {
+        parts.push(extra)
+      }
+    }
+  }
+  (name, parts.join(" · "))
+}
+
+///|
+/// Simulator top-bar title block (Proposal C): device name + compact 控制 / 只看 status pill on line 1,
+/// device model · runtime · resolution on line 2.
+fn sim_bar_title_node(parent : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  parent.box(fn(w) {
+    @sf.style_node(w, fn() { screen_bar_words }, in_row=true)
+    w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    w.box(fn(row) {
+      @sf.style_node(row, fn() { sim_title_line })
+      row.min_width(Is(Some(0.0))) |> ignore
+      let title = @sf.words_node(row, fn() { sim_title_parts(pg).0 }, fn() { screen_title_words })
+      title.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      row.show(at_once=true, fn() { s.open_said() }, fn(slot) {
+        slot.shrink(Is(0.0)) |> ignore
+        slot.box(fn(pill) {
+          let on = fn() {
+            s.said.get() |> ignore
+            s.controlling()
+          }
+          @sf.style_node(pill, fn() { sim_status_pill }, in_row=true)
+          pill.shrink(Is(0.0)).ground(By(fn() { if on() { @sf.theme().p.green_bg } else { @sf.theme().p.neutral_bg } })) |> ignore
+          pill.show(at_once=true, on, fn(d) {
+            @sf.style_node(d, fn() { sim_status_dot }, in_row=true)
+            d.ground(By(fn() { @sf.theme().p.online })) |> ignore
+          })
+          let label = @sf.words_node(
+            pill,
+            fn() { @sf.t(if on() { "core-views.screen.control" } else { "core-views.screen.watch" }) },
+            fn() { sim_status_words },
+          )
+          label.ink(By(fn() { if on() { @sf.theme().p.green_ink } else { @sf.theme().p.text } })) |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+    w.show(at_once=true, fn() { sim_title_parts(pg).1 != "" }, fn(l) {
+      @sf.words_node(l, fn() { sim_title_parts(pg).1 }, fn() { screen_line_words }) |> ignore
+    })
+  })
+  |> ignore
+}
+
+///|
+/// With keyboard and mouse inside a chat's side panel or 远程's workbench in `p`:
+/// in 远程's workbench on a simulator, shows the unified Proposal C top bar (device name + status pill + model/meta,
+/// centered glass tool capsule on wide panes, 调试 drawer toggle + 独立窗口 + 控制中心 on the right, over a 1px hairline);
+/// otherwise one compact row as before.
 fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   let u = pg.u
@@ -339,64 +435,148 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
   }
   p.show(at_once=true, fn() { s.open_said() || closing_gone() || pg.own_bar is Some(_) || pg.tab_pads is Some(_) }, fn(bar) {
     match (pg.own_bar, pg.tab_pads) {
-      (Some(own), _) => @sf.style_node(bar, fn() { own })
-      // (the pane's own bar (远程's): a page's height, its line's room under it, its keys as far in as the pane says,
-      // its empty part dragging the window)
       (None, Some(pads)) => {
-        @sf.style_node(bar, fn() { screen_pane_bar })
-        bar
-        .padding(By(fn() {
-          let (start, end) = pads()
-          (start, 0.0, end, 1.0)
-        }))
-        .moves_window(By(@ui.window_inset_now))
-        |> ignore
-      }
-      (None, None) =>
-        @sf.style_node(bar, fn() { if browser_shown_now(s) { screen_tab_browser_bar } else { screen_tab_status_bar } })
-    }
-    bar.pick(at_once=true, fn() { browser_shown_now(s) }, fn(m, browser) {
-      m.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(@ui.Space::S2.px())) |> ignore
-      if browser {
-        browser_seen(s)
-        m.box(fn(t) {
-          @sf.style_node(t, fn() { screen_bar_tools }, in_row=true)
-          browser_tools_node(t, pg, narrow~)
-        })
-        |> ignore
-      } else {
-        screen_bar_words_node(m, pg, pg.own_bar is Some(_))
-        tabs_count_node(m, pg)
-        // 组合键 while driving a desktop
-        m.show(at_once=true, fn() { s.driving_now() && !s.simulator() }, fn(k) {
-          let b = screen_round_node(k, pg, fn() { "keycap" }, fn() { @sf.t("web-pages.screen.combos") }, fn(b) {
-            keys_open(s, u, Node(b), combos_only=true)
-          }, lit=fn() {
-            screen_panel_on_now(u, "keys")
-          })
-          ignore(b)
-        })
-      }
-    })
-    mic_button_node(bar, pg, along_row=true)
-    // (a window of its own, where one takes it: beside 控制中心, as a chat's bar has it)
-    if pg.on_window is Some(handed) {
-      let page = fn() -> @sfbase.Page? { u.at.map(fn(at) { Screen(at) }) }
-      bar.show(at_once=true, fn() { page().map_or(false, @sfbase.window_opens_for) }, fn(k) {
-        screen_round_node(k, pg, fn() { "external" }, fn() { @sf.t("web-pages.chat.openInWindow") }, fn(_) {
-          match page() {
-            Some(p) => if @sfbase.open_window(p) { handed() }
-            None => ()
+        bar.pick(at_once=true, fn() { s.said.get() |> ignore; s.simulator() }, fn(slot, sim) {
+          if sim {
+            @sf.style_node(slot, fn() { sim_bar_wrap })
+            slot.box(fn(row) {
+              @sf.style_node(row, fn() { sim_bar_row })
+              row
+              .grow(Is(1.0))
+              .padding(By(fn() {
+                let (start, end) = pads()
+                (start, 0.0, end, 0.0)
+              }))
+              .moves_window(By(@ui.window_inset_now))
+              |> ignore
+              let wide = fn() { pg.sim_wide(row) }
+              row.box(fn(left) {
+                left.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+                sim_bar_title_node(left, pg)
+              })
+              |> ignore
+              row.show(at_once=true, wide, fn(mid) {
+                mid.row(Is(true)).lines_up(Is(Some(Middle))).shrink(Is(0.0)) |> ignore
+                sim_bar_tools_node(mid, pg)
+              })
+              row.box(fn(end) {
+                end
+                .row(Is(true))
+                .lines_up(Is(Some(Middle)))
+                .gap(Is(@ui.Space::S1.px()))
+                .grow(By(fn() { if wide() { 1.0 } else { 0.0 } }))
+                .shrink(By(fn() { if wide() { 1.0 } else { 0.0 } }))
+                .min_width(By(fn() { if wide() { Some(0.0) } else { None } }))
+                |> ignore
+                end.show(at_once=true, wide, fn(sp) { sp.grow(Is(1.0)).shrink(Is(10000.0)) |> ignore })
+                end.show(at_once=true, fn() { wide() && flag(s.state_now(), "debug") }, fn(k) {
+                  k.shrink(Is(0.0)) |> ignore
+                  sim_debug_toggle_node(k, pg)
+                })
+                mic_button_node(end, pg, along_row=true, in_bar=true)
+                if pg.on_window is Some(handed) {
+                  let page = fn() -> @sfbase.Page? { u.at.map(fn(at) { Screen(at) }) }
+                  end.show(at_once=true, fn() { page().map_or(false, @sfbase.window_opens_for) }, fn(k) {
+                    k.shrink(Is(0.0)) |> ignore
+                    screen_round_node(k, pg, fn() { "external" }, fn() { @sf.t("web-pages.chat.openInWindow") }, fn(_) {
+                      match page() {
+                        Some(p) => if @sfbase.open_window(p) { handed() }
+                        None => ()
+                      }
+                    }, in_bar=true)
+                    |> ignore
+                  })
+                }
+                end.show(at_once=true, fn() { s.open_said() }, fn(k) {
+                  k.shrink(Is(0.0)) |> ignore
+                  center_button_node(k, pg, in_bar=true)
+                })
+                end.show(at_once=true, fn() { wide() && s.taking_over_now() }, fn(k) {
+                  k.shrink(Is(0.0)) |> ignore
+                  take_over_node(k, pg, in_bar=true, placed=false)
+                })
+              })
+              |> ignore
+            })
+            |> ignore
+            slot.box(fn(rule) {
+              @sf.style_node(rule, fn() { sim_bar_hairline })
+              rule.ground(By(@sf.rule_color)) |> ignore
+            })
+            |> ignore
+            return
           }
+          // (the pane's own bar (远程's) for desktops and browser tabs: a page's height, its line's room under it,
+          // its keys as far in as the pane says, its empty part dragging the window)
+          @sf.style_node(slot, fn() { screen_pane_bar })
+          slot
+          .padding(By(fn() {
+            let (start, end) = pads()
+            (start, 0.0, end, 1.0)
+          }))
+          .moves_window(By(@ui.window_inset_now))
+          |> ignore
+          screen_tab_bar_inner(slot, pg, narrow)
         })
-        |> ignore
-      })
-    }
-    bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
-    if pg.own_bar is Some(_) {
-      close_button_node(bar, pg)
+      }
+      (Some(own), _) => {
+        @sf.style_node(bar, fn() { own })
+        screen_tab_bar_inner(bar, pg, narrow)
+      }
+      (None, None) => {
+        @sf.style_node(bar, fn() { if browser_shown_now(s) { screen_tab_browser_bar } else { screen_tab_status_bar } })
+        screen_tab_bar_inner(bar, pg, narrow)
+      }
     }
   })
+}
+
+///|
+/// Shared body of screen_tab_bar_node for non-simulator workbench panes and chat side panels.
+fn screen_tab_bar_inner(bar : @view.View, pg : ScreenPage, narrow : () -> Bool) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  bar.pick(at_once=true, fn() { browser_shown_now(s) }, fn(m, browser) {
+    m.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(@ui.Space::S2.px())) |> ignore
+    if browser {
+      browser_seen(s)
+      m.box(fn(t) {
+        @sf.style_node(t, fn() { screen_bar_tools }, in_row=true)
+        browser_tools_node(t, pg, narrow~)
+      })
+      |> ignore
+    } else {
+      screen_bar_words_node(m, pg, pg.own_bar is Some(_))
+      tabs_count_node(m, pg)
+      // 组合键 while driving a desktop
+      m.show(at_once=true, fn() { s.driving_now() && !s.simulator() }, fn(k) {
+        let b = screen_round_node(k, pg, fn() { "keycap" }, fn() { @sf.t("web-pages.screen.combos") }, fn(b) {
+          keys_open(s, u, Node(b), combos_only=true)
+        }, lit=fn() {
+          screen_panel_on_now(u, "keys")
+        }, in_bar=true)
+        ignore(b)
+      })
+    }
+  })
+  mic_button_node(bar, pg, along_row=true, in_bar=true)
+  // (a window of its own, where one takes it: beside 控制中心, as a chat's bar has it)
+  if pg.on_window is Some(handed) {
+    let page = fn() -> @sfbase.Page? { u.at.map(fn(at) { Screen(at) }) }
+    bar.show(at_once=true, fn() { page().map_or(false, @sfbase.window_opens_for) }, fn(k) {
+      screen_round_node(k, pg, fn() { "external" }, fn() { @sf.t("web-pages.chat.openInWindow") }, fn(_) {
+        match page() {
+          Some(p) => if @sfbase.open_window(p) { handed() }
+          None => ()
+        }
+      }, in_bar=true)
+      |> ignore
+    })
+  }
+  bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg, in_bar=true) })
+  if pg.own_bar is Some(_) {
+    close_button_node(bar, pg)
+  }
 }
 
 ///|
@@ -425,6 +605,14 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
       ""
     } else if s.can_take_over() {
       drives_words(s)
+    } else if s.simulator() {
+      let base = text(st, "line")
+      let model = text(st, "model")
+      if model != "" && !pg.said_title().to_lower().contains(model.to_lower()) {
+        if base != "" { model + " · " + base } else { model }
+      } else {
+        base
+      }
     } else {
       text(st, "line")
     }
@@ -433,6 +621,8 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
     s.said.get() |> ignore
     !view_tabs(s).0.is_empty() && !narrow()
   }
+  let sim_wide = fn() { pg.sim_wide(p) }
+  let middle_shown = fn() { tabs_shown() || sim_wide() }
   let ink = fn() { @sf.page_viewer_ink() }
   p.box(fn(room) {
     room.height(Is(Some(@sf.viewer_bar_h))) |> ignore
@@ -453,6 +643,8 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
         r.show(at_once=true, fn() { s.phase_now() == "live" && net_poor(s) }, fn(k) { net_chip_node(k, pg) })
         // narrow, the tabs folded into the button counting them (a browser's is by its address bar)
         r.show(at_once=true, fn() { narrow() && !browser_shown_now(s) && !view_tabs(s).0.is_empty() }, fn(k) { tabs_button_node(k, pg, side=@sf.tool_side) })
+        // 调试 drawer toggle for a wide simulator
+        r.show(at_once=true, fn() { sim_wide() && flag(s.state_now(), "debug") }, fn(k) { sim_debug_toggle_node(k, pg, corner~) })
         // (组合键 while driving: the keyboard has the rest)
         r.show(at_once=true, fn() { s.driving_now() && !s.simulator() }, fn(k) {
           let t = @sf.tool_node(k, fn() { { icon: "keycap", label: @sf.t("web-pages.screen.combos"), on: false, disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
@@ -481,8 +673,24 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
       fn() { (pg.close)() },
       pg.tips,
       capsule_now=fn() { s.taking_over_now() },
-      middle=fn(m) { tabs_row_node(m, pg) },
-      middle_shown=tabs_shown,
+      middle=fn(m) {
+        m.pick(at_once=true, sim_wide, fn(slot, is_sim) {
+          slot.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          if is_sim {
+            slot.height(Is(Some(@sf.viewer_bar_h))).gap(Is(@ui.Space::S2.px())).padding(Is((@ui.Space::S1.px(), 0.0, @ui.Space::S1.px(), 0.0))) |> ignore
+            slot.box(fn(left) {
+              left.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              sim_bar_title_node(left, pg)
+            })
+            |> ignore
+            sim_bar_tools_node(slot, pg)
+            slot.box(fn(sp) { sp.grow(Is(1.0)).shrink(Is(10000.0)) |> ignore }) |> ignore
+          } else {
+            tabs_row_node(slot, pg)
+          }
+        })
+      },
+      middle_shown=middle_shown,
     )
     |> ignore
   })

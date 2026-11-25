@@ -1,0 +1,626 @@
+// CLI entry points for `--builder replica-export`, `--builder replica-restore`,
+// and `--builder replica-carry`, 1:1 aligned with `station/mb/src/reader/main.mbt`.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "js_json"
+import "sql_db"
+
+fn flag_first(argv : Array[String], name : String) -> Option[String] {
+  for i in 1..<argv.length() {
+    if argv[i] == name && i + 1 < argv.length() {
+      return Some(argv[i + 1])
+    }
+  }
+  None
+}
+
+fn has_flag(argv : Array[String], name : String) -> Bool {
+  for i in 1..<argv.length() {
+    if argv[i] == name {
+      return true
+    }
+  }
+  false
+}
+
+/// Parse an Int32 matching MoonBit `@string.parse_int` lexical rules:
+/// no leading/trailing whitespace, optional `+`/`-`, optional `0x`/`0X`/`0o`/`0O`/`0b`/`0B`
+/// base prefix, single `_` digit separators (allowed right after a base prefix, never leading
+/// without prefix, never trailing, never consecutive `__`), and strict signed 32-bit range check.
+pub fn parse_int_flag(raw : Option[String], fallback : Int) -> Int {
+  let s = match raw {
+    Some(v) => v
+    None => return fallback
+  }
+  let b = s.to_bytes()
+  let n = b.length()
+  if n == 0 {
+    return fallback
+  }
+  let mut i = 0
+  let mut neg = false
+  let c0 = b[i].to_int() & 0xFF
+  if c0 == 43 {
+    i = i + 1
+  } else if c0 == 45 {
+    neg = true
+    i = i + 1
+  }
+  if i >= n {
+    return fallback
+  }
+  let mut base : Int64 = 10.to_int64()
+  let mut has_prefix = false
+  if (b[i].to_int() & 0xFF) == 48 && i + 1 < n {
+    let p = b[i + 1].to_int() & 0xFF
+    if p == 120 || p == 88 {
+      base = 16.to_int64()
+      has_prefix = true
+      i = i + 2
+    } else if p == 111 || p == 79 {
+      base = 8.to_int64()
+      has_prefix = true
+      i = i + 2
+    } else if p == 98 || p == 66 {
+      base = 2.to_int64()
+      has_prefix = true
+      i = i + 2
+    }
+  }
+  if i >= n {
+    return fallback
+  }
+  let max32 = 2147483647.to_int64()
+  let limit = if neg { max32 + 1.to_int64() } else { max32 }
+  let mut acc : Int64 = 0.to_int64()
+  let mut digits = 0
+  let mut prev_us = false
+  while i < n {
+    let c = b[i].to_int() & 0xFF
+    if c == 95 {
+      if prev_us || (digits == 0 && !has_prefix) {
+        return fallback
+      }
+      prev_us = true
+      i = i + 1
+      continue
+    }
+    let d = if c >= 48 && c <= 57 {
+      c - 48
+    } else if c >= 97 && c <= 102 {
+      c - 97 + 10
+    } else if c >= 65 && c <= 70 {
+      c - 65 + 10
+    } else {
+      return fallback
+    }
+    if d.to_int64() >= base {
+      return fallback
+    }
+    if acc > (limit - d.to_int64()) / base {
+      return fallback
+    }
+    acc = acc * base + d.to_int64()
+    digits = digits + 1
+    prev_us = false
+    i = i + 1
+  }
+  if digits == 0 || prev_us {
+    return fallback
+  }
+  if neg { (-acc).to_int() } else { acc.to_int() }
+}
+
+/// Normalize a MoonBit `@string.parse_double`-compatible finite numeric string into
+/// canonical JSON number syntax: NO leading/trailing whitespace, supports
+/// optional `+`/`-`, leading zeros (`0012.5`), strict single `_` between digits
+/// (`1_000.5`; rejects `1__2`, `1_`, `1_e2`, `1._2`, `1.2_`, `1e2_`), leading `.5`,
+/// trailing `5.`, and scientific notation.
+fn normalize_double_text(raw : String) -> Option[String] {
+  let b = raw.to_bytes()
+  let n = b.length()
+  if n == 0 {
+    return None
+  }
+  let mut i = 0
+  let mut neg = false
+  let first = b[i].to_int() & 0xFF
+  if first == 43 {
+    i = i + 1
+  } else if first == 45 {
+    neg = true
+    i = i + 1
+  }
+  if i >= n {
+    return None
+  }
+  let sb = StringBuilder::new()
+  if neg {
+    sb.write_byte(45 as Byte)
+  }
+  let int_digits : Array[Byte] = []
+  let mut prev_us = false
+  while i < n {
+    let c = b[i].to_int() & 0xFF
+    if c >= 48 && c <= 57 {
+      int_digits.push(b[i])
+      prev_us = false
+      i = i + 1
+    } else if c == 95 {
+      if int_digits.length() == 0 || prev_us {
+        return None
+      }
+      prev_us = true
+      i = i + 1
+    } else {
+      break
+    }
+  }
+  if prev_us {
+    return None
+  }
+  let has_int = int_digits.length() > 0
+  if has_int {
+    // Strip leading zeros for canonical JSON syntax (keep at least one '0').
+    let mut zi = 0
+    while zi + 1 < int_digits.length() && (int_digits[zi].to_int() & 0xFF) == 48 {
+      zi = zi + 1
+    }
+    for k in zi..<int_digits.length() {
+      sb.write_byte(int_digits[k])
+    }
+  }
+  let mut has_frac = false
+  if i < n && (b[i].to_int() & 0xFF) == 46 {
+    if !has_int {
+      sb.write_byte(48 as Byte)
+    }
+    sb.write_byte(46 as Byte)
+    i = i + 1
+    let mut frac_digits = 0
+    let mut frac_us = false
+    while i < n {
+      let c = b[i].to_int() & 0xFF
+      if c >= 48 && c <= 57 {
+        sb.write_byte(b[i])
+        frac_digits = frac_digits + 1
+        frac_us = false
+        i = i + 1
+      } else if c == 95 {
+        if frac_digits == 0 || frac_us {
+          return None
+        }
+        frac_us = true
+        i = i + 1
+      } else {
+        break
+      }
+    }
+    if frac_us {
+      return None
+    }
+    has_frac = frac_digits > 0
+    if !has_frac {
+      sb.write_byte(48 as Byte)
+    }
+  }
+  if !has_int && !has_frac {
+    return None
+  }
+  if i < n {
+    let ec = b[i].to_int() & 0xFF
+    if ec == 101 || ec == 69 {
+      sb.write_byte(b[i])
+      i = i + 1
+      if i < n {
+        let sc = b[i].to_int() & 0xFF
+        if sc == 43 || sc == 45 {
+          sb.write_byte(b[i])
+          i = i + 1
+        }
+      }
+      let mut exp_digits = 0
+      let mut exp_us = false
+      while i < n {
+        let c = b[i].to_int() & 0xFF
+        if c >= 48 && c <= 57 {
+          sb.write_byte(b[i])
+          exp_digits = exp_digits + 1
+          exp_us = false
+          i = i + 1
+        } else if c == 95 {
+          if exp_digits == 0 || exp_us {
+            return None
+          }
+          exp_us = true
+          i = i + 1
+        } else {
+          break
+        }
+      }
+      if exp_digits == 0 || exp_us {
+        return None
+      }
+    }
+  }
+  if i != n {
+    return None
+  }
+  Some(sb.to_string())
+}
+
+pub fn parse_double_flag(raw : Option[String], fallback : Double) -> Double {
+  let s = match raw {
+    Some(v) => v
+    None => return fallback
+  }
+  let b = s.to_bytes()
+  if b.length() > 0 {
+    let mut i = 0
+    let mut neg = false
+    let c0 = b[0].to_int() & 0xFF
+    if c0 == 43 {
+      i = 1
+    } else if c0 == 45 {
+      neg = true
+      i = 1
+    }
+    let lower = str_to_ascii_lower(slice_bytes(b, i, b.length()))
+    if lower == "infinity" || lower == "inf" {
+      return if neg { -1.0 / 0.0 } else { 1.0 / 0.0 }
+    }
+    if lower == "nan" {
+      return 0.0 / 0.0
+    }
+  }
+  let norm = match normalize_double_text(s) {
+    Some(v) => v
+    None => return fallback
+  }
+  match js_json::parse(norm) {
+    Ok(js_json::JValue::Num(d)) => if sql_db::is_nan_or_inf(d) { fallback } else { d }
+    _ => fallback
+  }
+}
+
+/// `--builder replica-export --db <file> [--replica <dir>] [--data-dir <dir>] [--origin <id>] [--sep <sep>] ...`
+/// 1:1 aligned with `station/mb/src/reader/main.mbt:650-762,1130-1138`.
+pub fn run_replica_export(argv : Array[String], db : String) -> Int {
+  let replica = match flag_first(argv, "--replica") {
+    Some(r) => r
+    None => builders_core::beside(db, "replica")
+  }
+  let data_dir = match flag_first(argv, "--data-dir") {
+    Some(d) => d
+    None => ""
+  }
+  let origin = match flag_first(argv, "--origin") {
+    Some(o) => o
+    None => ""
+  }
+  let sep = match flag_first(argv, "--sep") {
+    Some(s) => s
+    None => "/"
+  }
+  let batch_bytes = parse_int_flag(flag_first(argv, "--batch-bytes"), BATCH_BYTES)
+  let chunk_bytes = parse_int_flag(flag_first(argv, "--chunk-bytes"), CHUNK_PLAIN_BYTES)
+  let transcript_pass_files = parse_int_flag(flag_first(argv, "--transcript-pass-files"), TRANSCRIPT_PASS_FILES)
+  let transcript_pass_bytes = parse_int_flag(flag_first(argv, "--transcript-pass-bytes"), TRANSCRIPT_PASS_BYTES)
+  let transcript_pass_deletes = parse_int_flag(flag_first(argv, "--transcript-pass-deletes"), TRANSCRIPT_PASS_DELETES)
+  let chunk_gc_grace_ms = parse_double_flag(flag_first(argv, "--chunk-gc-grace-ms"), CHUNK_GC_GRACE_MS)
+  let fold = !has_flag(argv, "--no-fold")
+  let compact_heads = has_flag(argv, "--compact-heads")
+  let test_faults = match flag_first(argv, "--test-faults") {
+    Some(raw) => TestFaults::from_json(raw)
+    None => None
+  }
+
+  if !host_shim::start(builders_core::beside(db, "shell"), true) {
+    return 1
+  }
+  let client = builders_core::ShellClient::new()
+  let mut clock = 0.0
+  let exporter = match Exporter::new(
+    client,
+    sep,
+    db,
+    replica,
+    data_dir,
+    origin,
+    fn() -> Double { clock },
+    batch_bytes=batch_bytes,
+    chunk_bytes=chunk_bytes,
+    transcript_pass_files=transcript_pass_files,
+    transcript_pass_bytes=transcript_pass_bytes,
+    transcript_pass_deletes=transcript_pass_deletes,
+    chunk_gc_grace_ms=chunk_gc_grace_ms,
+    fold=fold,
+    compact_heads=compact_heads,
+    test_faults=test_faults,
+  ) {
+    Ok(e) => e
+    Err(msg) => {
+      let failed = base_codec::json_stringify(base_codec::json_obj([("failed", base_codec::json_str(msg))]))
+      let _ = client.say_line(failed)
+      host_shim::stop()
+      return 0
+    }
+  }
+
+  while true {
+    let line = match client.next_line() {
+      Some(l) => l
+      None => break
+    }
+    if line == "" {
+      continue
+    }
+    let ask = match js_json::parse(line) {
+      Ok(v) => v
+      Err(_) => js_json::JValue::Null
+    }
+    let id = match jval_get(ask, "id") {
+      Some(js_json::JValue::Num(n)) => n
+      _ => 0.0
+    }
+    match jval_get(ask, "now") {
+      Some(js_json::JValue::Num(now)) => clock = now
+      _ => ()
+    }
+    let kind = text_or(jval_get(ask, "type"), "")
+    if kind == "close" {
+      exporter.close()
+      let _ = client.say_line("{\"id\":" + js_json::stringify(jval_num(id)) + ",\"answer\":null}")
+      host_shim::stop()
+      return 0
+    }
+    let answer : Result[js_json::JValue, String] = if kind == "places" {
+      let pl = match jval_get(ask, "places") {
+        Some(v) => v
+        None => js_json::JValue::Null
+      }
+      exporter.set_places(pl)
+      Ok(js_json::JValue::Null)
+    } else if kind == "testFaults" {
+      let faults = match jval_get(ask, "faults") {
+        Some(v) => TestFaults::from_jvalue(v)
+        None => None
+      }
+      exporter.set_test_faults(faults)
+      Ok(js_json::JValue::Null)
+    } else if kind == "pass" {
+      let told = match jval_get(ask, "told") {
+        Some(v) => v
+        None => js_json::JValue::Null
+      }
+      exporter.pass(told)
+    } else if kind == "newGenerations" {
+      let after = match jval_get(ask, "after") {
+        Some(js_json::JValue::Num(a)) => a
+        _ => 0.0
+      }
+      match exporter.new_generations(after) {
+        Ok(()) => Ok(js_json::JValue::Null)
+        Err(e) => Err(e)
+      }
+    } else if kind == "sources" {
+      let hashes = strings_of(jval_get(ask, "hashes"))
+      exporter.sources(hashes)
+    } else {
+      Err("no such ask: " + kind)
+    }
+    match answer {
+      Ok(v) => {
+        let _ = client.say_line("{\"id\":" + js_json::stringify(jval_num(id)) + ",\"answer\":" + js_json::stringify(v) + "}")
+      }
+      Err(m) => {
+        let failed = base_codec::json_stringify(
+          base_codec::json_obj([("id", sql_db::double_to_json(id)), ("error", base_codec::json_str(m))]),
+        )
+        let _ = client.say_line(failed)
+      }
+    }
+  }
+  exporter.close()
+  host_shim::stop()
+  0
+}
+
+/// `--builder replica-restore --db <file> --data <dir> [--now <ms>] [--sep <sep>]`
+/// Does NOT read stdin; 1:1 aligned with `station/mb/src/reader/main.mbt:1139-1155`.
+pub fn run_replica_restore(argv : Array[String], db : String, data : String) -> Int {
+  let sep = match flag_first(argv, "--sep") {
+    Some(s) => s
+    None => "/"
+  }
+  let now = parse_double_flag(flag_first(argv, "--now"), 0.0)
+  if !host_shim::start(builders_core::beside(db, "shell"), false) {
+    return 1
+  }
+  let client = builders_core::ShellClient::new()
+  let line = match take_back(client, sep, data, db, now) {
+    Ok(Some(ready)) => "{\"ready\":" + js_json::stringify(ready) + "}"
+    Ok(None) => "{\"ready\":null}"
+    Err(e) => base_codec::json_stringify(base_codec::json_obj([("error", base_codec::json_str(e))]))
+  }
+  let _ = client.say_line(line)
+  host_shim::stop()
+  0
+}
+
+/// `--builder replica-carry [--shell-dir <dir>] [--sep <sep>]`
+/// Reads ONLY the first stdin line; 1:1 aligned with `station/mb/src/reader/main.mbt:768-866`.
+pub fn run_replica_carry(argv : Array[String]) -> Int {
+  let shell_dir = match flag_first(argv, "--shell-dir") {
+    Some(d) => d
+    None => "."
+  }
+  let sep = match flag_first(argv, "--sep") {
+    Some(s) => s
+    None => "/"
+  }
+  if !host_shim::start(shell_dir, true) {
+    return 1
+  }
+  let client = builders_core::ShellClient::new()
+  let line = match client.next_line() {
+    Some(l) => l
+    None => {
+      host_shim::stop()
+      return 0
+    }
+  }
+  let answer = handle_carry_line(client, sep, line)
+  match answer {
+    Ok(v) => {
+      let _ = client.say_line("{\"answer\":" + js_json::stringify(v) + "}")
+    }
+    Err(m) => {
+      let failed = base_codec::json_stringify(base_codec::json_obj([("error", base_codec::json_str(m))]))
+      let _ = client.say_line(failed)
+    }
+  }
+  host_shim::stop()
+  0
+}
+
+fn handle_carry_line(client : builders_core::ShellClient, sep : String, line : String) -> Result[js_json::JValue, String] {
+  let ask = match js_json::parse(line) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let files = Files::new(client, sep)
+  let text = fn(name : String) -> Option[String] { text_of(jval_get(ask, name)) }
+  let texts = fn(name : String) -> Option[Array[String]] {
+    match jval_get(ask, name) {
+      Some(js_json::JValue::Arr(items)) => {
+        let out : Array[String] = []
+        for i in 0..<items.length() {
+          match text_of(Some(items[i])) {
+            Some(s) => out.push(s)
+            None => ()
+          }
+        }
+        Some(out)
+      }
+      _ => None
+    }
+  }
+  let yes = fn(name : String) -> Bool {
+    match jval_get(ask, name) {
+      Some(js_json::JValue::Bool(true)) => true
+      _ => false
+    }
+  }
+  let need = fn(name : String) -> Result[String, String] {
+    match text(name) {
+      Some(t) => Ok(t)
+      None => Err(name + " is required")
+    }
+  }
+  if yes("count") {
+    files.enable_count_looks()
+  }
+  match text("op") {
+    Some("gather") => {
+      let data_dir = match need("dataDir") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let db = match need("db") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let scratch = match need("scratch") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let ws = match text("ws") {
+        Some(v) => v
+        None => ""
+      }
+      let own = match texts("own") {
+        Some(v) => v
+        None => []
+      }
+      carry_gather(files, data_dir, db, ws, yes("home"), scratch, text("agent"), texts("keys"), own)
+    }
+    Some("place") => {
+      let data_dir = match need("dataDir") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let index = match need("index") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let from = match need("from") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      carry_place(files, data_dir, index, from, text("made"), text("aside"), text("placed"), yes("projects"))
+    }
+    Some("preview") => {
+      let data_dir = match need("dataDir") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let db = match need("db") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let ws = match text("ws") {
+        Some(v) => v
+        None => ""
+      }
+      carry_preview(files, data_dir, db, ws, yes("home"))
+    }
+    Some("sizes") => {
+      let data_dir = match need("dataDir") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let sizing = jval_get(ask, "sizing")
+      let most = match sizing {
+        Some(o) => {
+          match jval_get(o, "most") {
+            Some(js_json::JValue::Num(n)) => n.to_int()
+            _ => 500000
+          }
+        }
+        None => 500000
+      }
+      let places : Option[Array[(String, Option[String], Array[String])]] = match sizing {
+        Some(o) => {
+          match jval_get(o, "places") {
+            Some(js_json::JValue::Arr(ps)) => {
+              let out : Array[(String, Option[String], Array[String])] = []
+              for i in 0..<ps.length() {
+                let p = ps[i]
+                let key = text_or(jval_get(p, "key"), "")
+                let room = text_of(jval_get(p, "room"))
+                let trs = strings_of(jval_get(p, "transcripts"))
+                out.push((key, room, trs))
+              }
+              Some(out)
+            }
+            _ => None
+          }
+        }
+        None => None
+      }
+      let db = match text("db") {
+        Some(v) => v
+        None => ""
+      }
+      let keys = match texts("keys") {
+        Some(v) => v
+        None => []
+      }
+      carry_sizes(files, data_dir, db, keys, most, places)
+    }
+    _ => Err("no such ask")
+  }
+}

@@ -36,18 +36,26 @@ pub fn notice_cancel(tag : String) -> Unit {
 }
 
 ///|
+/// What the system lets the app show, together with whether the host is still awaiting its first asynchronous
+/// permission read (`true` when `nt_state(0) == 5`, pending).
+pub fn notice_permission_state() -> (Bool, String) {
+  match nt_state(0) {
+    1 => (false, "granted")
+    2 => (false, "denied")
+    3 => (false, "ask")
+    4 => (false, "default")
+    5 => (true, "unknown")
+    _ => (false, "unknown")
+  }
+}
+
+///|
 /// What the system lets the app show: "granted", "denied", "ask" (not shown, and the system may never have been asked:
 /// Android 13 on, where the app knows whether it asked), "default" (not shown, never answered, and asking shows the
 /// system's prompt whenever it is asked, a prompt put away leaving it so: a browser's), or "unknown" (this host cannot
 /// tell).
 pub fn notice_permission() -> String {
-  match nt_state(0) {
-    1 => "granted"
-    2 => "denied"
-    3 => "ask"
-    4 => "default"
-    _ => "unknown"
-  }
+  notice_permission_state().1
 }
 
 ///|

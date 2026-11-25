@@ -81,6 +81,8 @@ pub fn attachment_of(@json.Json) -> Attachment
 
 pub fn attend(Source, String, Bool) -> Unit
 
+pub fn attention_workspace() -> String
+
 pub fn back_label(Page) -> String
 
 pub fn back_pop() -> Unit
@@ -1879,6 +1881,10 @@ pub fn viewer_node(@view.View, Source, () -> (Double, Double)) -> Unit
 
 pub fn viewer_place(Viewer, Source) -> (Int32, Int32)
 
+pub let viewer_step_zone_w : Double
+
+pub let image_idle_ms : Double
+
 pub fn viz_base_name(String) -> String
 
 pub let viz_bridge : String
@@ -2915,6 +2921,7 @@ pub(all) struct NoticeHost {
   show : (String, String, String, String) -> Unit
   cancel : (String) -> Unit
   permission : () -> String
+  permission_state : () -> (Bool, String)
   ask : () -> Bool
   answer : () -> Bool?
   opened : () -> String
@@ -2926,6 +2933,7 @@ pub(all) struct NoticeState {
   taken : Map[String, Bool]
   mut following : String
   mut told : Bool
+  mut last_told_perm : String
   mut asked_once : Bool
   mut from_switch : Bool
   mut synced : Bool
@@ -3729,6 +3737,17 @@ pub(all) struct Viewer {
   mut awake : Bool
   awake_told : @signals.Signal[Int32]
   mut near_bar : Bool
+  mut near_left : Bool
+  mut near_right : Bool
+  mut bar_focused : Bool
+  mut bar_focus_count : Int32
+  mut menu_open : Bool
+  mut manual_hidden : Bool
+  mut pointer_left : Bool
+  mut tap_paused_idle : Bool
+  mut lock_epoch : Int32
+  mut idle_off : () -> Unit
+  mut down_pointer : Bool
   zoom : @motion.Zoom
   vzoom : @motion.Zoom
   mut source : Bool
@@ -3791,6 +3810,7 @@ pub(all) struct Viewer {
 }
 pub fn Viewer::ask_install(Self, @ui.Ctx) -> Unit
 pub fn Viewer::ask_save(Self, @ui.Ctx) -> Unit
+pub fn Viewer::bars_locked(Self) -> Bool
 pub fn Viewer::bars_shown(Self) -> Bool
 pub fn Viewer::cancel_download(Self, @ui.Ctx, Source, @json.Json?) -> Unit
 pub fn Viewer::chat_file(Self) -> Bool
@@ -3845,6 +3865,7 @@ pub fn Viewer::shown_kind(Self) -> PKind?
 pub fn Viewer::shown_picture(Self, @ui.Ctx, Source, (Double, Double, Double, Double)) -> String
 pub fn Viewer::shut(Self, @ui.Ctx) -> Unit
 pub fn Viewer::stand_in(Self, Source) -> String
+pub fn Viewer::step_shown(Self, Int32) -> Bool
 pub fn Viewer::still(Self, Source) -> String
 pub fn Viewer::text_stage(Self, @ui.Ctx, PKind, Bytes, Int32) -> Unit
 pub fn Viewer::thumb_id(Self) -> String

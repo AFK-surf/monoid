@@ -86,3 +86,61 @@ export function recordDht(
   for (const line of lines) record(host, "dht", () => `${line.text} (${Math.max(0, Math.round(now - line.at))}ms before)`);
   if (dropped > 0) record(host, "dht", () => `${dropped} line(s) dropped for want of room`);
 }
+
+type InboundBucket = {
+  since: number;
+  bytes: number;
+  count: number;
+  by: Map<string, [number, number]>;
+};
+
+const inboundBuckets = new WeakMap<object, InboundBucket>();
+
+function fmtBytes(n: number): string {
+  return n >= 1024 ? `${(n / 1024).toFixed(1)}KB` : `${n}B`;
+}
+
+/// What came into the core from stations (SSE events and HTTP replies), tallied by station and stream/event kind while
+/// the performance record is on, flushed as one `core in:` line at most once every `every` ms (no timer: only as data
+/// arrives). Off: one check, nothing kept.
+export function recordInbound(
+  host: Recording & { nowMs(): number },
+  key: string,
+  bytes: number,
+  count = 1,
+  every = 5_000,
+): void {
+  if (!recording(host)) {
+    inboundBuckets.delete(host);
+    return;
+  }
+  const now = host.nowMs();
+  let bucket = inboundBuckets.get(host);
+  if (bucket === undefined) {
+    bucket = { since: now, bytes: 0, count: 0, by: new Map() };
+    inboundBuckets.set(host, bucket);
+  }
+  const size = Math.max(0, bytes);
+  bucket.bytes += size;
+  bucket.count += count;
+  const held = bucket.by.get(key);
+  if (held === undefined) bucket.by.set(key, [size, count]);
+  else {
+    held[0] += size;
+    held[1] += count;
+  }
+  if (now - bucket.since < every) return;
+  const span = Math.max(1, Math.round((now - bucket.since) / 1000));
+  const top = [...bucket.by.entries()]
+    .sort((a, b) => b[1][0] - a[1][0] || b[1][1] - a[1][1])
+    .slice(0, 6)
+    .map(([k, [b, c]]) => `${k}=${fmtBytes(b)}/${c}`)
+    .join(" | ");
+  const totalBytes = bucket.bytes;
+  const totalCount = bucket.count;
+  bucket.since = now;
+  bucket.bytes = 0;
+  bucket.count = 0;
+  bucket.by.clear();
+  record(host, "core in", () => `span=${span}s total=${fmtBytes(totalBytes)}/${totalCount} ${top}`);
+}

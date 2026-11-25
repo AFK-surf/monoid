@@ -68,6 +68,7 @@ pub fn open(db : @sql.Db, host : @host.Host, path : String, now : Int64, archive
   add_opener_title(db)
   add_led_column(db)
   add_left_column(db)
+  add_project_columns(db)
   add_usage_columns(db)
   install_usage_span(db)
   add_usage_totals(db)

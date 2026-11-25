@@ -16,6 +16,7 @@ import type { Hub } from "./hub.ts";
 import { configure } from "./lifecycle.ts";
 import { given, spokenIn, titleOf } from "../read/views.ts";
 import { elsewhere, fromBefore, linkedSession, named, peersOf, scopeOf, sessionThreadOf, threadIn } from "./others.ts";
+import { classifyChat, hasClassificationArgs, parseClassificationArgs } from "./projects.ts";
 
 type Json = any;
 
@@ -45,6 +46,12 @@ function describeRow(hub: Hub, row: SessionRow) {
   const opener = hub.store.openerOf(row.key);
   const led = opener?.led === true;
   const leader = led ? (opener.parentStation !== "" ? `${opener.parentStation}/${opener.parent}` : opener.parent) : null;
+  let thread = null;
+  try {
+    thread = sessionThreadOf(hub, row.key).thread;
+  } catch {
+    thread = hub.store.latestThread(row.key)?.thread ?? null;
+  }
   return {
     session: row.key,
     link: hub.link(row.key) ?? null,
@@ -60,6 +67,9 @@ function describeRow(hub: Hub, row: SessionRow) {
     created_by: row.createdBy,
     led,
     leader,
+    project: thread?.project ?? null,
+    project_locked: thread?.projectLocked === true,
+    tags: thread?.tags ?? [],
   };
 }
 
@@ -389,6 +399,14 @@ async function applyHere(
 export async function chatConfigure(hub: Hub, key: string, args: Args): Promise<string> {
   const ws = scopeOf(hub, key);
   const chat = typeof args.chat === "string" ? args.chat.trim() : "";
+  const hasClass = hasClassificationArgs(args);
+  const hasModelOrFor = args.for !== undefined || MODEL_CHANGE_KEYS.some((k) => args[k] !== undefined);
+  if (hasClass && hasModelOrFor) {
+    throw new Error("project/tags cannot be combined with runtime, model, preset, repick or for changes; call chat_configure separately");
+  }
+  if (hasClass) {
+    return classifyChat(hub, key, chat, parseClassificationArgs(args));
+  }
   const forMode = parseFor(args);
   const change = await parseChange(hub, ws, args);
   const self = chat === "" || chat.toLowerCase() === "self";

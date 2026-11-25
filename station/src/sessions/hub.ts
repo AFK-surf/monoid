@@ -28,6 +28,7 @@ import { liveClock, wall, within } from "../ops/fibers.ts";
 import { recordTracePayload, type Traces } from "../mesh/traces.ts";
 import { RUNTIME_KINDS, type AgentDriver, type AgentSession, type RuntimeKind } from "../agents/runtime.ts";
 import { billedPerUse } from "../agents/profiles.ts";
+import { formatWorkspaceProjectsDelta, hasProposalMarker, type ProjectsToldState } from "./projects.ts";
 import { endRunner, runnerId } from "../agents/process.ts";
 import { RUNNER_LEFT_MS, allLeft, isTerminalRunner, liveRunners, type RunnerInfo } from "../agents/runner.ts";
 import { log } from "../ops/log.ts";
@@ -44,7 +45,21 @@ import { isNotice, markNotice } from "./chat.ts";
 import { runShown } from "./run-change.ts";
 import type { PolicyChecks } from "./archive-policy.ts";
 import type { ChatListFilter, RecentChatList } from "../store/chat-list.ts";
-import { Accounts } from "./accounts.ts";
+import { AccountCapError, Accounts, type RunOn } from "./accounts.ts";
+import type { SlotClaimResult } from "../share/index.ts";
+
+/// Cross-station concurrency coordinator (`Sharing`) wired into `Hub`.
+export type SlotCoordinator = {
+  remoteActive(profileId: string): number;
+  remoteCap?(profileId: string): number | undefined;
+  needsRemoteSlot(profile: Profile): boolean;
+  claimBorrowedSlot(profile: Profile, session: string, force?: boolean): Promise<SlotClaimResult>;
+  adoptBorrowedSlot(profile: Profile, session: string): void;
+  hasBorrowedSlot(session: string): boolean;
+  releaseBorrowedSlot(session: string): void;
+  /// Local active sessions changed for these accounts (`Accounts.accountKeyOf`), or for any when none are given.
+  localActiveChanged(accountKeys?: Iterable<string>): void;
+};
 import { type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions } from "./actor.ts";
 import { ActorsProgram } from "./mb-actor.ts";
 import { Places } from "../ops/places.ts";
@@ -175,6 +190,14 @@ export type HubOptions = {
   siteInstructions?: string;
   /// Whether moving to another station is on here (every station's; a test's may say not); on where none is said.
   moveOn?: () => boolean;
+  /// Whether workspace project classification (`FEATURES.projects`) is on here; off by default in tests unless enabled.
+  projectsOn?: () => boolean;
+  /// Home workspace id from `cloud.home()` (falls back to `workspaces()[0]`).
+  homeWorkspace?: () => string | null;
+  /// Whether this station is a rig-only node in workspace `ws`.
+  isRig?: (ws: string | null) => boolean;
+  /// Fired whenever `PROJECTS.jsonl` changes locally so `/events` pushes `"projects"` to clients.
+  onProjectsChanged?: (ws: string | null) => void;
   /// Reader for `<data>/upkeep-state.json` (default: `ops/upkeep-state.ts` `readUpkeepState`).
   readUpkeepState?: (dataDir: string) => Promise<UpkeepState>;
   /// Called when a session automatically falls back to a pay-as-you-go profile while subscriptions exist.
@@ -360,6 +383,11 @@ export class Hub {
   private closedHook: ((key: string) => void) | null = null;
   private peersHook: ((station: string, request: Json) => Promise<Json>) | null = null;
   private outsideHook: ((ws: string | null) => OutsideChat[]) | null = null;
+  private slotCoordinator: SlotCoordinator | null = null;
+  /// In-flight turn opens/starts reserving a local concurrency slot before `processState()` becomes `"running"`.
+  private inFlightClaims = new Map<string, string>();
+  /// Profile of each session whose actor runs now, as last synced (`syncActiveSlots`): counted without a store read.
+  private runningProfiles = new Map<string, string>();
   onBilledFallback: ((info: BilledFallback) => void) | null = null;
   readonly deps: SessionDeps;
 
@@ -382,21 +410,14 @@ export class Hub {
       config: () => this.config(),
       store: this.store,
       running: (except) => [...this.actors.values()].filter((a) => a.key !== except && a.processState() !== "cold").flatMap((a) => this.store.getSession(a.key)?.profile ?? []),
-      active: (except) => [...this.actors.values()].filter((a) => a.key !== except && a.processState() === "running").flatMap((a) => this.store.getSession(a.key)?.profile ?? []),
+      active: (except) => this.activeProfileEntries(except).map(([, profile]) => profile),
+      remoteActive: (id) => this.slotCoordinator?.remoteActive(id) ?? 0,
+      remoteCap: (id) => this.slotCoordinator?.remoteCap?.(id),
       clock: this.clock,
       allows: (key, profile) => allowedIn(profile, this.wsOf(key), this.workspaces()[0] ?? null),
       // Moved to another account by the station (its allowance ran out, its login is over, its profile deleted): said in
       // its chat as a change by hand is (lifecycle.ts `configure`).
-      moved: (key, was) => {
-        const now = this.store.getSession(key);
-        // (one handed to another station as this one was retired says nothing here: it goes on there)
-        if (!now || this.handedOver(key)) return;
-        const named = (id: string) => {
-          const name = this.accounts.profile(id)?.name;
-          return typeof name === "string" ? name : null;
-        };
-        void this.actor(now).runChanged({ was: runShown(was, named), now: runShown(now, named) }).catch(() => {});
-      },
+      moved: (key, was) => this.notifyMoved(key, was),
       billedFallback: (info) => this.noteBilledFallback(info),
     });
     this.live = new LiveHub(
@@ -426,9 +447,23 @@ export class Hub {
           this.interruptedByRestart.delete(change.key);
           this.interruptedHook?.();
         }
+        // Only invalidate localProjectsCache when session membership/archive/ws actually changes (NOT on running/pending heartbeats).
+        const sig = row === null ? "" : `${row.ws ?? ""}\0${row.archivedAt ?? ""}`;
+        const prevSig = this.sessionProjectSig.get(change.key);
+        if (prevSig !== sig) {
+          this.sessionProjectSig.set(change.key, sig);
+          this.localProjectsCache.clear();
+        }
+        this.syncActiveSlots(change.key, row);
       } else if (change.type === "sessionRemoved") {
         this.live.running(change.key, false);
         if (this.interruptedByRestart.delete(change.key)) this.interruptedHook?.();
+        this.sessionProjectSig.delete(change.key);
+        this.localProjectsCache.clear();
+        this.syncActiveSlots(change.key, null);
+      } else if (change.type === "thread" && change.entries.length === 0) {
+        // Ordinary message appends (`entries.length > 0`) never alter project/tag classification; keep cache hot!
+        this.localProjectsCache.clear();
       }
     });
     this.deps = this.sessionDeps();
@@ -510,6 +545,108 @@ export class Hub {
 
   /// The workspaces whose chats this station hands to another as it is retired from them (replica/retire.ts).
   private readonly quieted = new Set<string>();
+  /// Per-session delivered `<workspace-projects>` state (cleaned up on session delete).
+  private readonly projectsTold = new Map<string, ProjectsToldState>();
+  /// Per-workspace cached online peer project names (60s TTL, invalidated on projects event / list / rename / merge).
+  private readonly peerProjectsCache = new Map<string, { at: number; names: string[] }>();
+  /// Per-workspace cached local workspace project/tag names + PROJECTS.jsonl stat/names + check timestamp (0-SQL / 0-stat hot path).
+  private readonly localProjectsCache = new Map<string, { projectNames: string[]; tagNames: string[]; infoMtime: number; infoSize: number; infoNames: string[]; infoCheckedAt: number }>();
+  /// Tracks `(ws, archivedAt)` per session key so ordinary running/pending heartbeats never invalidate `localProjectsCache`.
+  private readonly sessionProjectSig = new Map<string, string>();
+  /// Per-workspace deduplicated background peer refresh promises (keeps message delivery hot path non-blocking).
+  private readonly peerProjectsRefresh = new Map<string, Promise<void>>();
+  /// Deduplicates concurrent `project_manage(action="propose")` calls for the same (thread, session, project).
+  readonly inFlightProposals = new Map<string, Promise<string>>();
+  /// In-process receipt cache keyed by outbox `proposal.id` so a crash/error persisting `posted_ts` never double-posts externally.
+  readonly postedProposalsByOutboxId = new Map<string, string>();
+
+  /// This station's home workspace id (unified via `cloud.home()`, falling back to `workspaces()[0]`).
+  homeWorkspace(): string | null {
+    return this.options.homeWorkspace?.() ?? this.workspaces()[0] ?? null;
+  }
+
+  /// Whether workspace project classification is enabled on this station.
+  projectsOn(): boolean {
+    return this.options.projectsOn?.() ?? false;
+  }
+
+  /// Whether this station is a rig-only node in workspace `ws`.
+  isRigIn(ws: string | null): boolean {
+    return this.options.isRig?.(ws ?? this.homeWorkspace()) ?? false;
+  }
+
+  /// Whether session `key` is allowed to run workspace-level project actions here
+  /// (must be bound to at least one workspace, in its workspace, not quieted, and not a rig).
+  canActInWorkspace(key: string): boolean {
+    if (this.workspaces().length === 0) return false;
+    if (!this.inAWorkspace(key)) return false;
+    const ws = this.wsOf(key);
+    return !this.isRigIn(ws);
+  }
+
+  /// Peer RPC caller scoped to workspace `ws` without requiring a local session key (for `classifyForPeer` & background cache refresh).
+  peersInWorkspace(ws: string | null): ((station: string, request: Json) => Promise<Json>) | null {
+    const call = this.peersHook;
+    if (!call) return null;
+    const effective = ws ?? this.homeWorkspace();
+    return (station, request) => call(station, { ...(effective !== null ? { workspace: effective } : {}), ...request });
+  }
+
+  /// Triggers a deduplicated background refresh of peer project names for `wsKey` without blocking the caller.
+  triggerPeerProjectsRefresh(wsKey: string, fetcher: () => Promise<string[]>): void {
+    if (this.peerProjectsRefresh.has(wsKey)) return;
+    const work = fetcher()
+      .then((names) => {
+        this.peerProjectsCache.set(wsKey, { at: this.store.now(), names });
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (this.peerProjectsRefresh.get(wsKey) === work) this.peerProjectsRefresh.delete(wsKey);
+      });
+    this.peerProjectsRefresh.set(wsKey, work);
+    this.options.background?.(work);
+  }
+
+  /// Clears a deleted session's `<workspace-projects>` delivery state.
+  clearProjectsTold(key: string): void {
+    this.projectsTold.delete(key);
+  }
+
+  /// Invalidates cached peer & local project names for workspace `ws` (or all workspaces when omitted).
+  invalidateProjectsCache(ws?: string | null): void {
+    if (ws === undefined) {
+      this.peerProjectsCache.clear();
+      this.localProjectsCache.clear();
+      return;
+    }
+    const wsKey = ws ?? this.homeWorkspace() ?? "";
+    this.peerProjectsCache.delete(wsKey);
+    this.localProjectsCache.delete(wsKey);
+  }
+
+  getLocalProjectsCache(wsKey: string): { projectNames: string[]; tagNames: string[]; infoMtime: number; infoSize: number; infoNames: string[]; infoCheckedAt: number } | null {
+    return this.localProjectsCache.get(wsKey) ?? null;
+  }
+
+  setLocalProjectsCache(wsKey: string, val: { projectNames: string[]; tagNames: string[]; infoMtime: number; infoSize: number; infoNames: string[]; infoCheckedAt: number }): void {
+    this.localProjectsCache.set(wsKey, val);
+  }
+
+  /// Notifies connected clients and invalidates peer projects cache after a `PROJECTS.jsonl` mutation.
+  notifyProjectsChanged(ws: string | null): void {
+    this.invalidateProjectsCache(ws);
+    this.options.onProjectsChanged?.(ws);
+  }
+
+  getPeerProjectsCache(wsKey: string, now: number, ttlMs: number): string[] | null {
+    const hit = this.peerProjectsCache.get(wsKey);
+    if (!hit || now - hit.at >= ttlMs) return null;
+    return hit.names;
+  }
+
+  setPeerProjectsCache(wsKey: string, now: number, names: string[]): void {
+    this.peerProjectsCache.set(wsKey, { at: now, names });
+  }
 
   /// Whether session `key` is one of `ws`'s chats here: its workspace, a home one's saying none (as `inAWorkspace`
   /// reads it), or one put out of sight as the station was retired from `ws` (`retiredWs`).
@@ -897,6 +1034,7 @@ export class Hub {
       this.adopted.add(row.key);
       if (!snap.turn) this.idleNow(row.key);
     }
+    this.syncActiveSlots(row.key);
     if (snap.notices.length > 0) void actor.release();
   }
 
@@ -905,6 +1043,7 @@ export class Hub {
   /// Takes one event from a connect's platform. Resolves once it is durably recorded (or deliberately ignored).
   async receive(connectId: string, event: ChatEvent) {
     if (event.type === "message") return this.accept(connectId, event.message);
+    if (event.type === "ownNotice") return this.acceptOwnNotice(connectId, event.message);
     if (event.type === "loginCode") return this.enterCode(connectId, event);
     if (event.type === "stop") {
       const thread = this.store.threadAt(this.surface(connectId), event.channel, event.threadTs);
@@ -916,6 +1055,7 @@ export class Hub {
       }
       return;
     }
+    if (event.type !== "changed") return;
     const prepare = this.prepareLegacyEdits;
     if (prepare === null) {
       this.store.editMessage(this.surface(connectId), event.channel, event.threadTs, event.ts, event.text);
@@ -988,11 +1128,73 @@ export class Hub {
     return run;
   }
 
+  /// Accepts an `ownNotice` event (this station's own bot notice) inside the thread queue solely for proposal reconciliation.
+  private async acceptOwnNotice(connectId: string, message: InboundMessage) {
+    const at = `${this.surface(connectId)}\0${message.channel}\0${message.threadTs}`;
+    return this.inThread(at, async () => {
+      if (isNotice(message.text)) {
+        this.reconcileNoticeProposalEcho(connectId, message);
+      }
+    });
+  }
+
+  private reconcileNoticeProposalEcho(senderConnectId: string, message: InboundMessage): void {
+    if (!isNotice(message.text)) return;
+    let surface: string;
+    try {
+      surface = this.surface(senderConnectId);
+    } catch {
+      return;
+    }
+    const existing = this.store.threadAt(surface, message.channel, message.threadTs);
+    if (!existing) return;
+    const outboxes = this.store.sendingOutboxesForThread(existing.id);
+    if (outboxes.length === 0) return;
+    const stripped = message.text.trimEnd().replace(/\u2063+$/, "").trim();
+    const matches = outboxes.filter(
+      (o) => o.connect === senderConnectId && hasProposalMarker(message.text, o.id),
+    );
+    // Only reconcile when there is a single unambiguous proposal-ID match for the sender bot's connect.
+    if (matches.length !== 1) return;
+    const outbox = matches[0]!;
+    // Never attach a new proposal onto a pre-existing entry created at or before `outbox.baseN`.
+    const existingN = this.store.messageNumberAt(existing.id, message.ts);
+    if (existingN !== null && existingN <= outbox.baseN) return;
+    const [n, fresh] = this.store.insertMessage({
+      thread: existing.id,
+      ts: message.ts,
+      authorKind: "agent",
+      author: message.user || outbox.author,
+      text: stripped,
+      attachments: [],
+      proposal: outbox.payload,
+    });
+    if (!fresh) {
+      const stored = this.store.getEntry(existing.id, n);
+      if (stored?.proposal === undefined) {
+        this.store.attachEntryProposal(existing.id, n, outbox.payload);
+      }
+    }
+    const verified = this.store.getEntry(existing.id, n);
+    if (verified?.proposal?.id === outbox.payload.id) {
+      this.store.setPendingProposalPostedTs(existing.id, outbox.author, outbox.name, message.ts);
+      this.store.deletePendingProposalOutbox(existing.id, outbox.author, outbox.name);
+      this.postedProposalsByOutboxId.delete(outbox.payload.id);
+    }
+  }
+
   private async acceptInTurn(connectId: string, message: InboundMessage) {
     const config = this.config();
     // What a bot of this station posted is its agent's, recorded and handed to the thread as it was posted: Slack's
     // copy of it, seen through another connect, is not a message of its own.
-    if (this.ownBot(config, message.user)) return;
+    const senderConnects = this.ownBotConnectIds(config, message.user);
+    if (senderConnects.length > 0) {
+      // Only reconcile when the sender bot user uniquely identifies ONE connect of this station!
+      if (senderConnects.length === 1 && isNotice(message.text)) {
+        this.reconcileNoticeProposalEcho(senderConnects[0]!, message);
+      }
+      return;
+    }
     // (a notice of another station's, come back through another bot's connect: no person said it)
     if (this.stationNotice(config, message)) return;
     const connect = connectOf(config, connectId);
@@ -1897,12 +2099,20 @@ export class Hub {
     return false;
   }
 
+  /// Connects of this station whose bot user id matches `user`.
+  private ownBotConnectIds(config: HubConfig, user: string): string[] {
+    if (user === "") return [];
+    const out: string[] = [];
+    for (const c of config.connects) {
+      const bot = this.chatOf(c.id)?.botUserId() ?? "";
+      if (bot !== "" && bot === user) out.push(c.id);
+    }
+    return out;
+  }
+
   /// A Slack user that is one of this station's connects' bots.
   private ownBot(config: HubConfig, user: string): boolean {
-    return config.connects.some((c) => {
-      const bot = this.chatOf(c.id)?.botUserId() ?? "";
-      return bot !== "" && bot === user;
-    });
+    return this.ownBotConnectIds(config, user).length > 0;
   }
 
   private online(row: SessionRow): boolean {
@@ -2027,6 +2237,199 @@ export class Hub {
     this.actorsProgram?.drainCapQueue();
   }
 
+  /// Wires cross-station account concurrency coordination (`Sharing`).
+  setSlotCoordinator(coordinator: SlotCoordinator | null) {
+    this.slotCoordinator = coordinator;
+  }
+
+  private activeProfileEntries(except?: string): [string, string][] {
+    const out = new Map<string, string>();
+    for (const a of this.actors.values()) {
+      if (a.key === except || a.processState() !== "running") continue;
+      // (one that began running without telling the hub, its runtime busy alone, is read once)
+      let profile = this.runningProfiles.get(a.key);
+      if (profile === undefined) {
+        profile = this.store.getSession(a.key)?.profile ?? undefined;
+        if (profile) this.runningProfiles.set(a.key, profile);
+      }
+      if (profile) out.set(a.key, profile);
+    }
+    for (const [key, profile] of this.inFlightClaims) {
+      if (key === except || out.has(key)) continue;
+      out.set(key, profile);
+    }
+    return [...out.entries()];
+  }
+
+  /// Count of locally active sessions on this station whose profile maps to canonical `accountKey`.
+  localActiveForAccount(accountKey: string): number {
+    let count = 0;
+    for (const [, profile] of this.activeProfileEntries()) {
+      if (this.accounts.accountKeyOf(profile) === accountKey) count++;
+    }
+    return count;
+  }
+
+  private notifyMoved(key: string, was: SessionRow) {
+    const now = this.store.getSession(key);
+    // (one handed to another station as this one was retired says nothing here: it goes on there)
+    if (!now || this.handedOver(key)) return;
+    const named = (id: string) => {
+      const name = this.accounts.profile(id)?.name;
+      return typeof name === "string" ? name : null;
+    };
+    void this.actor(now).runChanged({ was: runShown(was, named), now: runShown(now, named) }).catch(() => {});
+  }
+
+  /// The profile `key` counts against now (running, else holding an in-flight claim).
+  private effectiveProfile(key: string): string | undefined {
+    return this.runningProfiles.get(key) ?? this.inFlightClaims.get(key);
+  }
+
+  /// Tells the coordinator of the accounts whose local active count `key` moved between (none when it did not).
+  private activeMoved(prev: string | undefined, next: string | undefined) {
+    if (prev === next || !this.slotCoordinator) return;
+    const keys = new Set<string>();
+    for (const p of [prev, next]) if (p !== undefined) keys.add(this.accounts.accountKeyOf(p));
+    this.slotCoordinator.localActiveChanged(keys);
+  }
+
+  /// Drops `key`'s in-flight claim (its open given up or refused), telling the coordinator if that moved a count.
+  private dropInFlight(key: string) {
+    const prev = this.effectiveProfile(key);
+    this.inFlightClaims.delete(key);
+    this.activeMoved(prev, this.effectiveProfile(key));
+  }
+
+  /// Releases any in-flight or borrowed concurrency slot for `key` when an open/start fails or aborts.
+  private releaseClaim(key: string) {
+    const prev = this.effectiveProfile(key);
+    this.inFlightClaims.delete(key);
+    const actor = this.actors.get(key);
+    const running = actor !== undefined && actor.processState() === "running";
+    if (!running) {
+      this.runningProfiles.delete(key);
+      this.slotCoordinator?.releaseBorrowedSlot(key);
+    }
+    this.activeMoved(prev, this.effectiveProfile(key));
+  }
+
+  /// Reconciles local in-flight claims, borrowed host slots, and hosted-profile pushes after an actor state change or a
+  /// change of its session's row (`knownRow`, as the store just said it: null once removed). Called for every session
+  /// write, so one that holds nothing returns at once, and the coordinator is told only when what `key` counts against
+  /// changed.
+  private syncActiveSlots(key: string, knownRow?: SessionRow | null) {
+    const actor = this.actors.get(key);
+    const running = actor !== undefined && actor.processState() === "running";
+    const prevRunning = this.runningProfiles.get(key);
+    const prevInFlight = this.inFlightClaims.get(key);
+    const hasBorrowed = this.slotCoordinator?.hasBorrowedSlot(key) ?? false;
+    if (!running && prevRunning === undefined && prevInFlight === undefined && !hasBorrowed) return;
+    const prev = prevRunning ?? prevInFlight;
+    const opening = actor !== undefined && actor.isOpening();
+    if (running) {
+      this.inFlightClaims.delete(key);
+      // (its profile changes only by a write of its row, which comes here as `knownRow`: read only the first time, and
+      // only for a coordinator, `activeProfileEntries` reading it otherwise as it is first counted)
+      const profileId = knownRow !== undefined ? knownRow?.profile || undefined : prevRunning ?? (this.slotCoordinator ? this.store.getSession(key)?.profile || undefined : undefined);
+      if (profileId) this.runningProfiles.set(key, profileId);
+      else this.runningProfiles.delete(key);
+      if (this.slotCoordinator && !hasBorrowed && profileId) {
+        const profile = this.config().profiles.find((p) => p.id === profileId);
+        if (profile && this.slotCoordinator.needsRemoteSlot(profile)) this.slotCoordinator.adoptBorrowedSlot(profile, key);
+      }
+    } else {
+      this.runningProfiles.delete(key);
+      if (!opening && (actor === undefined || actor.settled())) {
+        this.inFlightClaims.delete(key);
+        this.slotCoordinator?.releaseBorrowedSlot(key);
+      }
+    }
+    this.activeMoved(prev, this.effectiveProfile(key));
+  }
+
+  /// Selects the profile for session `key` and, when the chosen profile is a capped borrowed subscription, atomically
+  /// claims a cross-station concurrency slot on its host station; if the host reports it full, falls back to any other
+  /// uncapped account before throwing `AccountCapError`.
+  private async acquireRunOn(key: string, holding = false, across = false, forceCap = false): Promise<RunOn> {
+    const coord = this.slotCoordinator;
+    if (!coord) {
+      const profile = this.accounts.runOn(key, holding, false, across, forceCap);
+      if (!billedPerUse(profile) && this.accounts.accountMaxSessions(profile.id) !== undefined) {
+        this.inFlightClaims.set(key, profile.id);
+      }
+      return profile;
+    }
+    const initialRow = this.store.getSession(key);
+    if (!initialRow) throw new Error(`unknown session ${key}`);
+    const rejectedCapped = new Set<string>();
+    let lastReject: { profile: string; profileId: string; active: number; cap: number; protection: boolean } | null = null;
+    const restoreInitial = () => {
+      const cur = this.store.getSession(key);
+      if (!cur) return;
+      if (cur.runtime !== initialRow.runtime) {
+        this.store.setSessionRuntime(key, initialRow.runtime, initialRow.profile, initialRow.profilePinned, initialRow.model, initialRow.effort, initialRow.fast, initialRow.context, initialRow.profiles ?? null);
+        if (cur.runtimeSessionId !== initialRow.runtimeSessionId) this.store.setRuntimeSessionId(key, initialRow.runtimeSessionId);
+      } else if (cur.profile !== initialRow.profile || cur.profilePinned !== initialRow.profilePinned || JSON.stringify(cur.profiles ?? null) !== JSON.stringify(initialRow.profiles ?? null)) {
+        this.store.setSessionProfile(key, initialRow.profile, initialRow.profilePinned, initialRow.profiles ?? null);
+      }
+    };
+    const maxAttempts = Math.max(1, this.config().profiles.length) + 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      let profile: RunOn;
+      try {
+        profile = this.accounts.runOn(key, holding, true, across, forceCap, rejectedCapped.size > 0 ? rejectedCapped : undefined);
+      } catch (e) {
+        this.dropInFlight(key);
+        if (e instanceof AccountCapError && lastReject !== null && rejectedCapped.has(e.profileId) && e.active < lastReject.active) {
+          throw new AccountCapError(lastReject.profile, lastReject.profileId, lastReject.active, lastReject.cap, lastReject.protection);
+        }
+        throw e;
+      }
+      if (!coord.needsRemoteSlot(profile)) {
+        if (coord.hasBorrowedSlot(key)) coord.releaseBorrowedSlot(key);
+        if (!billedPerUse(profile) && this.accounts.accountMaxSessions(profile.id) !== undefined) {
+          const prev = this.effectiveProfile(key);
+          this.inFlightClaims.set(key, profile.id);
+          this.activeMoved(prev, this.effectiveProfile(key));
+        }
+        this.finishRunOnNotice(key, initialRow, profile);
+        return profile;
+      }
+      const force = forceCap || holding || initialRow.profilePinned;
+      this.inFlightClaims.set(key, profile.id);
+      let claimed: SlotClaimResult;
+      try {
+        claimed = await coord.claimBorrowedSlot(profile, key, force);
+      } catch (e) {
+        this.dropInFlight(key);
+        restoreInitial();
+        throw e;
+      }
+      if (claimed.ok) {
+        this.finishRunOnNotice(key, initialRow, profile);
+        return profile;
+      }
+      this.dropInFlight(key);
+      restoreInitial();
+      rejectedCapped.add(profile.id);
+      lastReject = { profile: profile.name, profileId: profile.id, active: claimed.active, cap: claimed.cap, protection: claimed.protection };
+    }
+    if (lastReject) throw new AccountCapError(lastReject.profile, lastReject.profileId, lastReject.active, lastReject.cap, lastReject.protection);
+    throw new Error(`session ${key}: could not acquire profile`);
+  }
+
+  private finishRunOnNotice(key: string, initialRow: SessionRow, next: RunOn) {
+    if (next.id === initialRow.profile) return;
+    this.notifyMoved(key, initialRow);
+    const profiles = this.config().profiles;
+    const prev = profiles.find((p) => p.id === initialRow.profile);
+    const runtime = runtimeNamed(this.store.getSession(key)?.runtime ?? initialRow.runtime);
+    if (runtime && billedPerUse(next) && (!prev || !billedPerUse(prev)) && profiles.some((p) => p.runtimes.includes(runtime) && !billedPerUse(p))) {
+      this.noteBilledFallback({ session: key, workspace: initialRow.ws ?? null, runtime, profile: next });
+    }
+  }
+
   /// The program its actors run in, the station's jobs too (jobs/jobs.ts), started for its first use (none: not built
   /// here).
   program(): ActorsProgram | null {
@@ -2045,7 +2448,7 @@ export class Hub {
     const program = this.program();
     // (the program is built for every system the station runs on: a checkout that did not build it cannot run a session)
     if (program === null) throw new Error("the station's MoonBit program is not built here (station/mb: build.sh): no session can run");
-    const actor = program.actor(row.key, runtime, this.deps);
+    const actor = program.actor(row.key, runtime, this.deps, () => this.syncActiveSlots(row.key));
     this.actors.set(row.key, actor);
     return actor;
   }
@@ -2057,6 +2460,11 @@ export class Hub {
     const deadline = this.deadlines.get(key);
     if (deadline) this.interrupt(deadline);
     this.deadlines.delete(key);
+    const prev = this.effectiveProfile(key);
+    this.inFlightClaims.delete(key);
+    this.runningProfiles.delete(key);
+    this.slotCoordinator?.releaseBorrowedSlot(key);
+    this.activeMoved(prev, undefined);
     return actor;
   }
 
@@ -2097,6 +2505,8 @@ export class Hub {
       chat: (connect) => this.chatOf(connect),
       driver: (runtime) => this.sessionDriver(runtime),
       runOn: (key, holding, across, forceCap) => this.accounts.runOn(key, holding, false, across, forceCap),
+      acquireRunOn: (key, holding, across, forceCap) => this.acquireRunOn(key, holding, across, forceCap),
+      releaseClaim: (key) => this.releaseClaim(key),
       spend: (key, ranOn, model) => this.accounts.spend(key, ranOn, model),
       refillsAt: (key) => this.accounts.refillsAt(key),
       recheck: (profile, force) => this.accounts.recheck(profile, force === true),
@@ -2107,6 +2517,8 @@ export class Hub {
       reposDir: () => this.reposDir(),
       siteInstructions: () => this.options.siteInstructions ?? "",
       moveOn: () => this.options.moveOn?.() ?? true,
+      projectsOn: () => this.projectsOn(),
+      untoldProjects: (key) => formatWorkspaceProjectsDelta(this, key, this.projectsTold),
       ownName: () => {
         const me = this.options.station?.() ?? null;
         return me === null ? "" : (this.options.stationName?.(me) ?? "");

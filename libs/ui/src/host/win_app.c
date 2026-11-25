@@ -124,6 +124,18 @@ typedef struct WinSlot {
 static WinSlot win_slots[MB_WINS] = {{.scale = 1, .window_content_zoom = 1.0, .last_begin = -1.0}};
 static WinSlot *ws = &win_slots[0];
 static int win_active;  // the window in place (0, the first, between frames and input)
+static int badge_now_app = 0;
+static int badge_worker_started = 0;
+static UINT taskbar_button_made = 0;
+static int win_has_taskbar_button(int wid, HWND h) {
+  if (!h) return 0;
+  if (wid >= 0 && wid < MB_WINS && win_slots[wid].clear) return 0;
+  if (GetWindowLongW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW) return 0;
+  return 1;
+}
+static void allow_taskbar_button_msg(HWND h) {
+  if (h && taskbar_button_made) ChangeWindowMessageFilterEx(h, taskbar_button_made, MSGFLT_ALLOW, NULL);
+}
 static void win_slot_fresh(WinSlot *w) {
   memset(w, 0, sizeof *w);
   w->scale = 1;
@@ -140,6 +152,7 @@ static int win_of(HWND h) {
   return -1;
 }
 void mb_host_request_frame(void);
+static void win_sr_invalidate(void);
 // Window `wid` put in place: its slot and its drawing.
 static void win_use(int wid) {
   if (wid == win_active || wid < 0 || wid >= MB_WINS || (wid > 0 && !win_slots[wid].h)) return;
@@ -963,10 +976,12 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     return taken;
   }
   // the taskbar's button made anew (the window shown again from its tray): its number put on it again
-  static UINT button_made;
-  if (!button_made) button_made = RegisterWindowMessageW(L"TaskbarButtonCreated");
-  if (msg == button_made) {
-    mb_win_badge_again(h);
+  if (taskbar_button_made && msg == taskbar_button_made) {
+    int k = win_of(h);
+    if (win_has_taskbar_button(k, h)) {
+      if (badge_now_app > 0) badge_worker_started = 1;
+      mb_win_badge_ready(h, badge_now_app);
+    }
     return 0;
   }
   switch (msg) {
@@ -1105,6 +1120,11 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       RECT *r = (RECT *)lp;
       SetWindowPos(h, NULL, r->left, r->top, r->right - r->left, r->bottom - r->top,
                    SWP_NOZORDER | SWP_NOACTIVATE);
+      int k = win_of(h);
+      if (badge_now_app > 0 && win_has_taskbar_button(k, h)) {
+        badge_worker_started = 1;
+        mb_win_badge_dpi(h, badge_now_app, (unsigned)HIWORD(wp));
+      }
       ws->want_frame = 1;
       return 0;
     }
@@ -1338,6 +1358,7 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   // (OLE's, for the drop target: COM's single-threaded apartment with it)
   OleInitialize(NULL);
+  taskbar_button_made = RegisterWindowMessageW(L"TaskbarButtonCreated");
 
   WCHAR *cls = win_class;
   window_class(cls, 300);
@@ -1369,6 +1390,7 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   hwnd = CreateWindowExW(0, cls, t, style, CW_USEDEFAULT, CW_USEDEFAULT, (int)ww, (int)wh, NULL, NULL,
                          wc.hInstance, NULL);
   win_making = -1;
+  allow_taskbar_button_msg(hwnd);
   win_slots[0].h = hwnd;
   // that client area at the monitor's scale
   UINT dpi = GetDpiForWindow(hwnd);
@@ -1530,11 +1552,13 @@ static const RECT *role_kept(const char *role) {
 
 static void win_closed(int wid) {
   if (wid <= 0 || wid >= MB_WINS || !win_slots[wid].h) return;
+  HWND closed_h = win_slots[wid].h;
   if (win_active == wid) win_use(0);
   role_keep(&win_slots[wid]);
   drop_stop(wid);
   mb_views_forget(wid);
   mb_render_forget(wid);
+  mb_win_badge_closed(closed_h);
   win_slot_fresh(&win_slots[wid]);
   // (a bare run whose first was hidden as it closed ends as the last window beside it closes: none is left to be seen)
   int beside = 0;
@@ -1661,6 +1685,7 @@ static int win_open(moonbit_string_t what) {
   }
   w->h = h;
   w->clear = clear;
+  if (!clear) allow_taskbar_button_msg(h);
   w->scale = GetDpiForWindow(h) / 96.0;
   // (an inset window's frame without the title bar, as the first's: WM_NCCALCSIZE)
   if (!clear) SetWindowPos(h, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
@@ -2253,7 +2278,16 @@ int32_t mb_host_window_snap_state(void) { return ws->snap_state; }
 
 // The pointer's shape (@hostapi.set_cursor), shown at once where it is over the window.
 // The number on the app's icon (@hostapi.set_badge): its taskbar button's overlay (win_notify.cpp).
-void mb_host_set_badge(int32_t n) { mb_win_badge(hwnd, n); }
+void mb_host_set_badge(int32_t n) {
+  int clamped = n > 0 ? n : 0;
+  badge_now_app = clamped;
+  if (clamped == 0 && !badge_worker_started) return;
+  badge_worker_started = 1;
+  for (int k = 0; k < MB_WINS; k++) {
+    HWND h = win_slots[k].h;
+    if (win_has_taskbar_button(k, h)) mb_win_badge(h, clamped);
+  }
+}
 // The keys held now (@hostapi.mods_held), as a key's are told.
 int32_t mb_host_mods_held(void) { return mods_now(); }
 
@@ -2277,6 +2311,153 @@ int32_t mb_host_increase_contrast(void) {
   HIGHCONTRASTW hc = {sizeof hc};
   if (!SystemParametersInfoW(SPI_GETHIGHCONTRAST, sizeof hc, &hc, 0)) return 0;
   return (hc.dwFlags & HCF_HIGHCONTRASTON) ? 1 : 0;
+}
+
+// Narrator registry watch & cached screen-reader state (zero per-frame syscalls when armed):
+// Level 0 = unarmed, 1 = HKCU\Software\Microsoft (NAME only, non-recursive),
+// 2 = HKCU\Software\Microsoft\Narrator (NAME|LAST_SET, subtree),
+// 3 = HKCU\Software\Microsoft\Narrator\NoRoam (NAME|LAST_SET, non-recursive).
+static HKEY win_narrator_key = NULL;
+static int win_narrator_level = 0;
+static int win_narrator_armed = 0;
+static int win_sr_cached = -1;
+static uintptr_t win_narrator_gen = 0;
+static HANDLE win_narrator_event = NULL;
+static HANDLE win_narrator_wait = NULL;
+
+static void win_sr_invalidate(void) { win_sr_cached = -1; }
+static void win_sr_refresh(int rearm_watch);
+
+static void win_sr_wake(void *arg) {
+  // Drop stale callbacks queued from a previously closed ancestor key generation.
+  if ((uintptr_t)arg != win_narrator_gen) return;
+  // One registry notification was consumed: re-arm watch and refresh cached state on the UI main thread.
+  win_narrator_armed = 0;
+  win_sr_refresh(1);
+  mb_host_request_frame();
+}
+
+static void CALLBACK win_narrator_cb(PVOID param, BOOLEAN timed_out) {
+  (void)timed_out;
+  mb_app_call(win_sr_wake, param);
+}
+
+static void win_narrator_close_key(void) {
+  win_narrator_gen++;
+  if (win_narrator_wait) {
+    UnregisterWaitEx(win_narrator_wait, INVALID_HANDLE_VALUE);
+    win_narrator_wait = NULL;
+  }
+  if (win_narrator_key) {
+    RegCloseKey(win_narrator_key);
+    win_narrator_key = NULL;
+  }
+  if (win_narrator_event) {
+    CloseHandle(win_narrator_event);
+    win_narrator_event = NULL;
+  }
+  win_narrator_level = 0;
+  win_narrator_armed = 0;
+}
+
+static int win_narrator_probe_key(HKEY *out_key) {
+  HKEY k = NULL;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Narrator\\NoRoam", 0, KEY_NOTIFY, &k) ==
+      ERROR_SUCCESS) {
+    *out_key = k;
+    return 3;
+  }
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Narrator", 0, KEY_NOTIFY, &k) == ERROR_SUCCESS) {
+    *out_key = k;
+    return 2;
+  }
+  if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft", 0, KEY_NOTIFY, &k) == ERROR_SUCCESS) {
+    *out_key = k;
+    return 1;
+  }
+  *out_key = NULL;
+  return 0;
+}
+
+// Always called on the persistent UI main thread (MSDN binds async RegNotifyChangeKeyValue to the calling thread).
+// Loops up to 4 steps to close any TOCTOU gap between probing and arming when Narrator keys are created mid-arm.
+static void win_narrator_arm_on_ui(void) {
+  for (int step = 0; step < 4; step++) {
+    HKEY cand = NULL;
+    int target_level = win_narrator_probe_key(&cand);
+    if (target_level == 0) {
+      win_narrator_close_key();
+      return;
+    }
+    if (!win_narrator_key || target_level != win_narrator_level) {
+      win_narrator_close_key();
+      win_narrator_key = cand;
+      win_narrator_level = target_level;
+    } else {
+      RegCloseKey(cand);
+    }
+    if (!win_narrator_event) {
+      win_narrator_event = CreateEventW(NULL, FALSE, FALSE, NULL);
+      if (!win_narrator_event) {
+        win_narrator_close_key();
+        return;
+      }
+    }
+    if (!win_narrator_wait) {
+      if (!RegisterWaitForSingleObject(&win_narrator_wait, win_narrator_event, win_narrator_cb,
+                                       (PVOID)win_narrator_gen, INFINITE, WT_EXECUTEDEFAULT)) {
+        win_narrator_wait = NULL;
+        win_narrator_close_key();
+        return;
+      }
+    }
+    BOOL subtree = (win_narrator_level == 2) ? TRUE : FALSE;
+    DWORD filter = (win_narrator_level == 1) ? REG_NOTIFY_CHANGE_NAME
+                                             : (REG_NOTIFY_CHANGE_LAST_SET | REG_NOTIFY_CHANGE_NAME);
+    if (RegNotifyChangeKeyValue(win_narrator_key, subtree, filter, win_narrator_event, TRUE) != ERROR_SUCCESS) {
+      win_narrator_close_key();
+      return;
+    }
+    // Re-probe immediately after arming to close any TOCTOU window where a deeper key appeared before arming.
+    if (win_narrator_level < 3) {
+      HKEY deeper = NULL;
+      int deeper_level = win_narrator_probe_key(&deeper);
+      if (deeper) RegCloseKey(deeper);
+      if (deeper_level > win_narrator_level) {
+        win_narrator_close_key();
+        continue;
+      }
+    }
+    win_narrator_armed = 1;
+    return;
+  }
+  win_narrator_armed = (win_narrator_key != NULL) ? 1 : 0;
+}
+
+static void win_sr_refresh(int rearm_watch) {
+  if (rearm_watch || !win_narrator_armed) {
+    win_narrator_arm_on_ui();
+  }
+  BOOL sr = FALSE;
+  if (SystemParametersInfoW(SPI_GETSCREENREADER, 0, &sr, 0) && sr) {
+    win_sr_cached = 1;
+    return;
+  }
+  DWORD running = 0, n = sizeof running;
+  if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Narrator\\NoRoam", L"RunningState", RRF_RT_REG_DWORD, NULL,
+                   &running, &n) == ERROR_SUCCESS &&
+      running != 0) {
+    win_sr_cached = 1;
+    return;
+  }
+  win_sr_cached = 0;
+}
+
+// Whether a Windows screen reader is active (@hostapi.screen_reader_on): checks SPI_GETSCREENREADER (NVDA/JAWS)
+// or Narrator's NoRoam\RunningState DWORD; cached for zero per-frame overhead when armed, with self-healing fallback.
+int32_t mb_host_screen_reader_on(void) {
+  if (!win_narrator_armed || win_sr_cached < 0) win_sr_refresh(0);
+  return win_sr_cached > 0 ? 1 : 0;
 }
 
 // (no heat of the machine Windows tells an app of: never slowed)

@@ -69,6 +69,8 @@ test("the MoonBit reader reads the chats a Comma connect sends as the worker doe
   turn("a1", "arch", 2000, 2050, "completed", "all_done");
   const router = chat("router", "Router", ["router"]);
   say(router, "person", "slack:team:R1", "do this", 2200);
+  db.prepare("INSERT INTO comma_router_connects (thread, connect, at) VALUES (?, 'st1/team', 2200)").run(router);
+  db.prepare("INSERT INTO comma_task_participants (thread, connect, email, at) VALUES (?, 'st1/team', 'alice@x', 2200)").run(router);
   db.prepare("INSERT INTO reads (viewer, thread, n, at) VALUES ('p@x', ?, 99, 1)").run(router);
   turn("r1", "router", 2200, 2300, "completed", "all_done");
   const slack = store.openThread("slack:T1", "C1", "1.1", null, null).id;
@@ -98,7 +100,7 @@ test("the MoonBit reader reads the chats a Comma connect sends as the worker doe
     assert.deepEqual(first, await all(worker));
     const said = JSON.stringify(first);
     for (const sign of ["\"state\":\"working\"", "\"kind\":\"done\"", "\"kind\":\"need\"", "\"waitsFor\":[\"boss@x\"]", "\"card\":\"options\"", "\"waitsFor\":[\"sec@x\"]", "\"card\":\"secret\"", "\"kind\":\"failed\"", "\"note\":\"it broke\"", "\"archived\":true",
-      "\"router\":true", "\"title\":\"first line\"", "\"url\":\"https://app.x/o/home ws/st1/", "a%20b%2F%C3%A9%3F", "\"more\":true", "\"next\":", "\"name\":\"Ann\"", "\"surface\":\"stillfail\""])
+      "\"router\":true", "\"routerConnects\":[\"st1/team\"]", "\"connectParticipants\":{\"st1/team\":[\"alice@x\"]}", "\"participants\":[\"p@x\",\"q@x\"]", "\"participants\":[\"ann@x\"]", "\"title\":\"first line\"", "\"url\":\"https://app.x/o/home ws/st1/", "a%20b%2F%C3%A9%3F", "\"more\":true", "\"next\":", "\"name\":\"Ann\"", "\"surface\":\"stillfail\""])
       assert.ok(said.includes(sign), sign);
   } finally {
     worker.close(); program.close();

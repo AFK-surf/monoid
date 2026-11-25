@@ -12,17 +12,26 @@ import "builders_core"
 import "builders_index"
 import "builders_legacy"
 import "builders_recent"
+import "builders_replica"
 import "builders_requested"
 import "builders_search"
 import "builders_stateful"
 import "builders_usage"
 import "builders_vault"
 import "footprint"
+import "front"
 import "host_shim"
 import "js_json"
 import "locate"
 import "memory"
 import "packed"
+import "reader_data"
+import "reader_serve"
+import "readops_chats"
+import "readops_core"
+import "readops_local"
+import "readops_usage"
+import "readops_views"
 import "sql_db"
 import "sqlite_ffi"
 
@@ -104,8 +113,14 @@ fn advertised_modes() -> Array[String] {
     "cc-index",
     "usage-check",
     "live-locator",
+    "replica-export",
+    "replica-restore",
+    "replica-carry",
     "usage-counter",
     "search",
+    "forward",
+    "mesh",
+    "data",
   ]
 }
 
@@ -1023,6 +1038,15 @@ fn flag_value(argv : Array[String], name : String) -> Option[String] {
   None
 }
 
+fn flag_present(argv : Array[String], name : String) -> Bool {
+  for i in 1..<argv.length() {
+    if argv[i] == name {
+      return true
+    }
+  }
+  false
+}
+
 fn run_smoke_sql_db(world : World, db_path : String) -> Unit {
   match sql_db::run_selftest(db_path) {
     Ok(_) => ()
@@ -1055,9 +1079,484 @@ fn run_smoke_sql_db(world : World, db_path : String) -> Unit {
   io_println(world, "{\"ok\":true,\"suite\":\"sql_db+js_json+builders_core+builders_stateful+builders_legacy+builders_recent+builders_vault\"}")
 }
 
+fn run_smoke_mux_churn(world : World, cycles : Int, shell_dir : String) -> Unit {
+  if !front::skeleton_ready() || !reader_data::skeleton_ready() || !reader_serve::skeleton_ready() {
+    let _ = host_shim::write_stderr_line("smoke-mux-churn: skeleton check failed")
+    host_shim::exit_process(1)
+  }
+  let events : Array[host_shim::HostEvent] = []
+  let mut ev_head = 0
+  let transport = builders_core::MuxTransport::{
+    call_async: fn(id : Int64, op : String, _json : String, _bytes : Option[Bytes]) -> Unit {
+      let err_text = if op == "iroh.connect" { "cancelled" } else { "" }
+      events.push(
+        host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+          id: id,
+          error: err_text,
+          json: if err_text.length() > 0 { "" } else { "{\"ok\":true}" },
+          bytes: if err_text.length() > 0 { None } else { Some("ok".to_bytes()) },
+        }),
+      )
+    },
+    call_sync: fn(_op : String, _json : String) -> String { "{\"value\":true}" },
+    write_stdout_line: fn(_line : String) -> Bool { true },
+    write_stdout_frame: fn(_head : Array[(String, base_codec::Json)], _body : Bytes) -> Bool { true },
+    now_ms: host_shim::now_ms,
+    wall_ms: host_shim::wall_ms,
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      if ev_head < events.length() {
+        let ev = events[ev_head]
+        ev_head = ev_head + 1
+        if ev_head == events.length() {
+          events.clear()
+          ev_head = 0
+        }
+        Some(ev)
+      } else {
+        None
+      }
+    },
+  }
+  let mux = builders_core::ShellMux::new(transport, start_stdin=false)
+  let outbox = builders_core::SerialOutbox::new()
+  let owners : Map[Int, Int] = Map::new()
+
+  let run_batch = fn(start_i : Int, count : Int) -> Unit {
+    for k in 0..<count {
+      let h = start_i + k
+      owners.set(h, h)
+      // Enqueue 2 writes on the SAME handle to exercise SerialOutbox queueing & FIFO drain.
+      let w1 = outbox.send(
+        mux,
+        h,
+        builders_core::MuxToken::Write(h),
+        "tcp.write",
+        base_codec::json_obj([("id", base_codec::json_int(h))]),
+        Some("payload-1".to_bytes()),
+      )
+      let w2 = outbox.send(
+        mux,
+        h,
+        builders_core::MuxToken::Write(h),
+        "tcp.write",
+        base_codec::json_obj([("id", base_codec::json_int(h))]),
+        Some("payload-2".to_bytes()),
+      )
+      if !(w1 is Some(_)) || !(w2 is None) {
+        let _ = host_shim::write_stderr_line("smoke-mux-churn: expected queued second write")
+        host_shim::exit_process(1)
+      }
+      // Step 1 completes w1 and dispatches queued w2; Step 2 completes w2 and retires handle.
+      let mut steps = 0
+      while owners.contains(h) && steps < 4 {
+        steps = steps + 1
+        let _ = mux.step(
+          0.to_int64(),
+          fn(_l : String) -> Unit {},
+          fn() -> Unit {},
+          fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+            match tok {
+              builders_core::MuxToken::Write(owner_h) => {
+                match outbox.on_complete(mux, owner_h, done.id) {
+                  Some(_) => ()
+                  None => {
+                    outbox.close_handle(owner_h)
+                    owners.remove(owner_h)
+                  }
+                }
+              }
+              _ => ()
+            }
+          },
+        )
+      }
+      // Exercise Connect -> sync cancel (pending kept) -> ShellDone(cancelled) retirement every 10th cycle.
+      if k % 10 == 0 {
+        let cid = mux.call_async(
+          builders_core::MuxToken::Connect(h, k.to_int64()),
+          "iroh.connect",
+          base_codec::json_obj([("id", base_codec::json_int(h))]),
+          None,
+        )
+        let _ = mux.cancel(cid)
+        if !mux.has_pending(cid) {
+          let _ = host_shim::write_stderr_line("smoke-mux-churn: cancel must not delete pending")
+          host_shim::exit_process(1)
+        }
+        let mut saw_cancel = false
+        let _ = mux.step(
+          0.to_int64(),
+          fn(_l : String) -> Unit {},
+          fn() -> Unit {},
+          fn(_tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+            if done.error == "cancelled" {
+              saw_cancel = true
+            }
+          },
+        )
+        if !saw_cancel || mux.has_pending(cid) {
+          let _ = host_shim::write_stderr_line("smoke-mux-churn: cancel completion failed")
+          host_shim::exit_process(1)
+        }
+      }
+    }
+  }
+
+  // Real native loopback TCP socket FD open/close churn through libstillfail_shell.a + ShellMux::host.
+  if !host_shim::start(shell_dir, false) {
+    let _ = host_shim::write_stderr_line("smoke-mux-churn: host_shim::start failed for " + shell_dir)
+    host_shim::exit_process(1)
+  }
+  let real_mux = builders_core::ShellMux::host(start_stdin=false)
+
+  let close_listener_best_effort = fn(lid : Int64) -> Unit {
+    if lid < 0.to_int64() {
+      return
+    }
+    let lc = real_mux.call_async(
+      builders_core::MuxToken::Close(-1),
+      "listen.close",
+      base_codec::json_obj([("id", sql_db::int64_to_json(lid))]),
+      None,
+    )
+    let mut guard_steps = 0
+    while real_mux.has_pending(lc) && guard_steps < 16 {
+      guard_steps = guard_steps + 1
+      let progressed = real_mux.step(
+        1000.to_int64(),
+        fn(_l : String) -> Unit {},
+        fn() -> Unit {},
+        fn(_tok : builders_core::MuxToken, _done : host_shim::ShellDone) -> Unit {},
+      )
+      if !progressed {
+        break
+      }
+    }
+  }
+
+  let run_native_tcp_churn = fn(n_iters : Int) -> Unit {
+    let l_id_call = real_mux.call_async(
+      builders_core::MuxToken::Tagged(1, 0, 0.to_int64()),
+      "tcp.listen",
+      base_codec::json_obj([("port", base_codec::json_int(0))]),
+      None,
+    )
+    let mut listener_id : Int64 = -1.to_int64()
+    let mut port_num : Int = 0
+    let mut listen_err = ""
+    while real_mux.has_pending(l_id_call) {
+      let progressed = real_mux.step(
+        5000.to_int64(),
+        fn(_l : String) -> Unit {},
+        fn() -> Unit {},
+        fn(_tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+          if done.error.length() > 0 {
+            listen_err = done.error
+            return
+          }
+          match builders_core::decode_shell_done(done) {
+            Ok((Some(j), _)) => {
+              match j {
+                base_codec::Json::Obj(fs) => {
+                  for fi in 0..<fs.length() {
+                    let (fk, fv) = fs[fi]
+                    if fk == "id" {
+                      match fv {
+                        base_codec::Json::Num(d, _) => listener_id = d.to_int64()
+                        _ => ()
+                      }
+                    } else if fk == "port" {
+                      match fv {
+                        base_codec::Json::Num(d, _) => port_num = d.to_int()
+                        _ => ()
+                      }
+                    }
+                  }
+                }
+                _ => ()
+              }
+            }
+            Err(e) => listen_err = e.message
+            _ => ()
+          }
+        },
+      )
+      if !progressed {
+        listen_err = "timed out waiting for tcp.listen"
+        break
+      }
+    }
+    if listen_err.length() > 0 || listener_id < 0.to_int64() || port_num <= 0 {
+      let _ = host_shim::write_stderr_line("smoke-mux-churn: tcp.listen failed: " + listen_err)
+      host_shim::stop()
+      host_shim::exit_process(1)
+    }
+    for iter in 0..<n_iters {
+      let acc_call = real_mux.call_async(
+        builders_core::MuxToken::Accept(iter),
+        "tcp.accept",
+        base_codec::json_obj([("id", sql_db::int64_to_json(listener_id))]),
+        None,
+      )
+      let open_call = real_mux.call_async(
+        builders_core::MuxToken::Connect(iter, 0.to_int64()),
+        "tcp.open",
+        base_codec::json_obj([("port", base_codec::json_int(port_num))]),
+        None,
+      )
+      let mut acc_conn : Int64 = -1.to_int64()
+      let mut cli_conn : Int64 = -1.to_int64()
+      let mut fail_msg = ""
+      while (real_mux.has_pending(acc_call) || real_mux.has_pending(open_call)) && fail_msg.length() == 0 {
+        let progressed = real_mux.step(
+          5000.to_int64(),
+          fn(_l : String) -> Unit {},
+          fn() -> Unit {},
+          fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+            let op_name = match tok {
+              builders_core::MuxToken::Accept(_) => "tcp.accept"
+              builders_core::MuxToken::Connect(_, _) => "tcp.open"
+              _ => "tcp.unknown"
+            }
+            if done.error.length() > 0 {
+              fail_msg = op_name + " failed at iter " + iter.to_string() + ": " + done.error
+              return
+            }
+            match builders_core::decode_shell_done(done) {
+              Ok((Some(base_codec::Json::Obj(fs)), _)) => {
+                for fi in 0..<fs.length() {
+                  let (fk, fv) = fs[fi]
+                  if fk == "id" {
+                    match fv {
+                      base_codec::Json::Num(d, _) => {
+                        match tok {
+                          builders_core::MuxToken::Accept(_) => acc_conn = d.to_int64()
+                          builders_core::MuxToken::Connect(_, _) => cli_conn = d.to_int64()
+                          _ => ()
+                        }
+                      }
+                      _ => ()
+                    }
+                  }
+                }
+              }
+              Err(e) => fail_msg = op_name + " decode failed at iter " + iter.to_string() + ": " + e.message
+              _ => fail_msg = op_name + " unexpected payload at iter " + iter.to_string()
+            }
+          },
+        )
+        if !progressed {
+          fail_msg = "timeout waiting for tcp.accept/tcp.open at iter " + iter.to_string()
+          break
+        }
+      }
+      if fail_msg.length() > 0 || acc_conn < 0.to_int64() || cli_conn < 0.to_int64() {
+        let _ = host_shim::write_stderr_line(
+          "smoke-mux-churn: " +
+          (if fail_msg.length() > 0 { fail_msg } else { "tcp.accept/open missing conn id at iter " + iter.to_string() }),
+        )
+        close_listener_best_effort(listener_id)
+        host_shim::stop()
+        host_shim::exit_process(1)
+      }
+      let c1 = real_mux.call_async(
+        builders_core::MuxToken::Close(iter * 2),
+        "tcp.close",
+        base_codec::json_obj([("id", sql_db::int64_to_json(cli_conn))]),
+        None,
+      )
+      let c2 = real_mux.call_async(
+        builders_core::MuxToken::Close(iter * 2 + 1),
+        "tcp.close",
+        base_codec::json_obj([("id", sql_db::int64_to_json(acc_conn))]),
+        None,
+      )
+      while real_mux.has_pending(c1) || real_mux.has_pending(c2) {
+        let _ = real_mux.step(
+          5000.to_int64(),
+          fn(_l : String) -> Unit {},
+          fn() -> Unit {},
+          fn(_tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+            if done.error.length() > 0 {
+              let _ = host_shim::write_stderr_line("smoke-mux-churn: tcp.close failed: " + done.error)
+              host_shim::stop()
+              host_shim::exit_process(1)
+            }
+          },
+        )
+      }
+    }
+    let lc = real_mux.call_async(
+      builders_core::MuxToken::Close(-1),
+      "listen.close",
+      base_codec::json_obj([("id", sql_db::int64_to_json(listener_id))]),
+      None,
+    )
+    while real_mux.has_pending(lc) {
+      let _ = real_mux.step(
+        5000.to_int64(),
+        fn(_l : String) -> Unit {},
+        fn() -> Unit {},
+        fn(_tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+          if done.error.length() > 0 {
+            let _ = host_shim::write_stderr_line("smoke-mux-churn: listen.close failed: " + done.error)
+            host_shim::stop()
+            host_shim::exit_process(1)
+          }
+        },
+      )
+    }
+  }
+
+  // Warmup both mock mux and real Tokio/shell runtime before baseline RSS/FD snapshot.
+  run_batch(0, 1000)
+  run_native_tcp_churn(5)
+  let rss_before = host_shim::rss_bytes()
+  let fd_before = host_shim::open_fd_count()
+  if rss_before <= 0.to_int64() || fd_before <= 0 {
+    let _ = host_shim::write_stderr_line(
+      "smoke-mux-churn: invalid baseline metrics rss_before=" +
+      rss_before.to_string() +
+      " fd_before=" +
+      fd_before.to_string(),
+    )
+    host_shim::stop()
+    host_shim::exit_process(1)
+  }
+
+  let native_fd_cycles = cycles
+  run_batch(1000, cycles)
+  run_native_tcp_churn(native_fd_cycles)
+
+  let rss_after = host_shim::rss_bytes()
+  let fd_after = host_shim::open_fd_count()
+  let rss_delta = rss_after - rss_before
+  let fd_delta = fd_after - fd_before
+  host_shim::stop()
+
+  if rss_after <= 0.to_int64() || fd_after <= 0 {
+    let _ = host_shim::write_stderr_line("smoke-mux-churn: invalid post-churn metrics")
+    host_shim::exit_process(1)
+  }
+  if mux.pending_len() != 0 ||
+  real_mux.pending_len() != 0 ||
+  outbox.in_flight_count() != 0 ||
+  outbox.queued_handles() != 0 ||
+  owners.length() != 0 {
+    let _ = host_shim::write_stderr_line(
+      "smoke-mux-churn: non-empty tables pending=" +
+      mux.pending_len().to_string() +
+      " real_pending=" +
+      real_mux.pending_len().to_string() +
+      " in_flight=" +
+      outbox.in_flight_count().to_string() +
+      " queued=" +
+      outbox.queued_handles().to_string() +
+      " owners=" +
+      owners.length().to_string(),
+    )
+    host_shim::exit_process(1)
+  }
+  if fd_delta != 0 {
+    let _ = host_shim::write_stderr_line("smoke-mux-churn: open fd delta must be 0, got " + fd_delta.to_string())
+    host_shim::exit_process(1)
+  }
+  let max_rss_delta : Int64 = (16 * 1024 * 1024).to_int64()
+  if rss_delta > max_rss_delta {
+    let _ = host_shim::write_stderr_line("smoke-mux-churn: rss grew by " + rss_delta.to_string())
+    host_shim::exit_process(1)
+  }
+  io_println(
+    world,
+    "{\"ok\":true,\"cycles\":" +
+    cycles.to_string() +
+    ",\"native_fd_cycles\":" +
+    native_fd_cycles.to_string() +
+    ",\"rss_delta\":" +
+    rss_delta.to_string() +
+    ",\"fd_delta\":" +
+    fd_delta.to_string() +
+    "}",
+  )
+}
+
+fn run_smoke_readops(world : World, temp_dir : String) -> Unit {
+  let c_core = match readops_core::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("readops_core selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  if c_core <= 0 {
+    let _ = host_shim::write_stderr_line("readops_core selftest executed 0 cases")
+    host_shim::exit_process(1)
+  }
+  let c_chats = match readops_chats::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("readops_chats selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  let c_local = match readops_local::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("readops_local selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  let c_views = match readops_views::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("readops_views selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  let c_usage = match readops_usage::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("readops_usage selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  let c_data = match reader_data::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("reader_data selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  let total = c_core + c_chats + c_local + c_views + c_usage + c_data
+  io_println(
+    world,
+    "{\"ok\":true,\"readops_core\":" +
+    c_core.to_string() +
+    ",\"readops_chats\":" +
+    c_chats.to_string() +
+    ",\"readops_local\":" +
+    c_local.to_string() +
+    ",\"readops_views\":" +
+    c_views.to_string() +
+    ",\"readops_usage\":" +
+    c_usage.to_string() +
+    ",\"reader_data\":" +
+    c_data.to_string() +
+    ",\"total\":" +
+    total.to_string() +
+    "}",
+  )
+}
+
 fn usage_exit() -> Unit {
   let _ = host_shim::write_stderr_line(
-    "usage: stillfail-pion [--version | --smoke-stdio | --smoke-sqlite <db> | --smoke-sql-db <db> | --smoke-shell [dir] | --smoke-rc-soak [iters] | --builder footprint [--sep <sep>] | --builder memory [--shell-dir <dir>] [--sep <sep>] | --builder packed [--shell-dir <dir>] | --builder archive-marks|session-bindings|session-counts|signin-save|post-blocks|usage-retire|widget-sources|card-posts|closed-cards|people-since|session-up-jobs|workspace-up-jobs|outflow-chats|search-scope|session-list|archive-last|page-letters|legacy-edits|legacy-said|session-backfill|recent-chat|vault-uses|turn-counts|said|cc-index|usage-check --db <file>]",
+    "usage: stillfail-pion [--version | --smoke-stdio | --smoke-sqlite <db> | --smoke-sql-db <db> | --smoke-shell [dir] | --smoke-rc-soak [iters] | --builder footprint [--sep <sep>] | --builder memory [--shell-dir <dir>] [--sep <sep>] | --builder packed [--shell-dir <dir>] | --builder replica-export --db <file> [--replica <dir>] [--data-dir <dir>] [--origin <id>] [--sep <sep>] | --builder replica-restore --db <file> --data <dir> [--now <ms>] [--sep <sep>] | --builder replica-carry [--sep <sep>] | --builder archive-marks|session-bindings|session-counts|signin-save|post-blocks|usage-retire|widget-sources|card-posts|closed-cards|people-since|session-up-jobs|workspace-up-jobs|outflow-chats|search-scope|session-list|archive-last|page-letters|legacy-edits|legacy-said|session-backfill|recent-chat|vault-uses|turn-counts|said|cc-index|usage-check|live-locator --db <file>]",
   )
   host_shim::exit_process(2)
 }
@@ -1089,6 +1588,19 @@ fn main(world : World) -> Unit {
   } else if cmd == "--smoke-rc-soak" {
     let iters = if argv.length() >= 3 { parse_positive_int(argv[2], 50000) } else { 50000 }
     run_smoke_rc_soak(world, iters)
+  } else if cmd == "--smoke-mux-churn" {
+    let cycles = if argv.length() >= 3 { parse_positive_int(argv[2], 10000) } else { 10000 }
+    let shell_dir = if argv.length() >= 4 {
+      argv[3]
+    } else {
+      "/tmp/stillfail-pion-mux-" + host_shim::pid().to_string()
+    }
+    run_smoke_mux_churn(world, cycles, shell_dir)
+  } else if cmd == "--smoke-readops" {
+    if argv.length() < 3 {
+      usage_exit()
+    }
+    run_smoke_readops(world, argv[2])
   } else if cmd == "--smoke-history-marks" {
     match (flag_value(argv, "--data"), flag_value(argv, "--path"), flag_value(argv, "--runtime")) {
       (Some(data_dir), Some(tpath), Some(rt)) => {
@@ -1295,6 +1807,21 @@ fn main(world : World) -> Unit {
           _ => usage_exit()
         }
       }
+      Some("replica-export") => {
+        match flag_value(argv, "--db") {
+          Some(db_path) => host_shim::exit_process(builders_replica::run_replica_export(argv, db_path))
+          None => usage_exit()
+        }
+      }
+      Some("replica-restore") => {
+        match (flag_value(argv, "--db"), flag_value(argv, "--data")) {
+          (Some(db_path), Some(data_dir)) => host_shim::exit_process(builders_replica::run_replica_restore(argv, db_path, data_dir))
+          _ => usage_exit()
+        }
+      }
+      Some("replica-carry") => {
+        host_shim::exit_process(builders_replica::run_replica_carry(argv))
+      }
       Some("usage-counter") => {
         match flag_value(argv, "--db") {
           Some(db_path) => {
@@ -1317,6 +1844,46 @@ fn main(world : World) -> Unit {
             host_shim::exit_process(builders_search::run_search(db_path, data_dir, sep))
           }
           _ => usage_exit()
+        }
+      }
+      Some("forward") => {
+        let shell_dir = match flag_value(argv, "--shell-dir") {
+          Some(d) => d
+          None => "."
+        }
+        let listen_fd : Option[Int] = match flag_value(argv, "--listen-fd") {
+          Some(fd_str) => Some(builders_replica::parse_int_flag(Some(fd_str), -1))
+          None => None
+        }
+        let listen_port = builders_replica::parse_int_flag(flag_value(argv, "--listen-port"), 0)
+        let to_port = builders_replica::parse_int_flag(flag_value(argv, "--to"), 0)
+        host_shim::exit_process(front::run_forward(shell_dir, listen_fd, listen_port, to_port))
+      }
+      Some("mesh") => {
+        let shell_dir = match flag_value(argv, "--shell-dir") {
+          Some(d) => d
+          None => "."
+        }
+        let socket_path = match flag_value(argv, "--socket") {
+          Some(s) => s
+          None => "mesh.sock"
+        }
+        host_shim::exit_process(front::run_mesh(shell_dir, socket_path, sql_db::stringify_json))
+      }
+      None => {
+        match flag_value(argv, "--data") {
+          Some(data_dir) => {
+            if flag_present(argv, "--sessions") || flag_present(argv, "--serve") {
+              usage_exit()
+            } else {
+              let sep = match flag_value(argv, "--sep") {
+                Some(s) => s
+                None => "/"
+              }
+              host_shim::exit_process(reader_data::run_data(data_dir, sep))
+            }
+          }
+          None => usage_exit()
         }
       }
       _ => usage_exit()

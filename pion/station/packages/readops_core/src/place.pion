@@ -1,0 +1,803 @@
+// 1:1 port of `station/mb/src/readops/place.mbt` (`session_place`, `real_outside_of`, `Protected`).
+// Caches (`listed` 60s TTL, `mounted` 2s TTL) live on `ReaderState.place_cache` (no global statics).
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "jscase"
+import "nodepath"
+import "sql_db"
+
+struct PlaceEnv {
+  client : builders_core::ShellClient
+  cache : PlaceCache
+  sep : String
+  home : String
+  homedir : String
+  mac : Bool
+  now : Double
+}
+
+fn PlaceEnv::win(self : PlaceEnv) -> Bool {
+  self.sep == "\\"
+}
+
+fn is_place_sep(env : PlaceEnv, c : Int) -> Bool {
+  c == 47 || (env.win() && c == 92)
+}
+
+fn place_is_abs(env : PlaceEnv, p : String) -> Bool {
+  let b = p.to_bytes()
+  if b.length() > 0 && is_place_sep(env, b[0].to_int() & 0xFF) {
+    return true
+  }
+  env.win() && b.length() >= 3 && (b[1].to_int() & 0xFF) == 58 && is_place_sep(env, b[2].to_int() & 0xFF)
+}
+
+fn clean_path(env : PlaceEnv, path : String) -> String {
+  if !env.win() {
+    let parts = str_split_byte(path, 47)
+    let out : Array[String] = []
+    for i in 0..<parts.length() {
+      let part = parts[i]
+      if part == "" || part == "." {
+        continue
+      }
+      if part == ".." {
+        if out.length() > 0 {
+          let _ = out.pop()
+        }
+      } else {
+        out.push(part)
+      }
+    }
+    return "/" + join_strings(out, "/")
+  }
+  let n = nodepath::join(env.sep, [if path == "" { "\\" } else { path }])
+  if n.length() > 3 && str_has_suffix(n, "\\") {
+    str_slice_bytes(n, 0, n.to_bytes().length() - 1)
+  } else {
+    n
+  }
+}
+
+fn clean_posix(env : PlaceEnv, path : String) -> String {
+  let b = path.to_bytes()
+  let out : Array[String] = []
+  let mut start = 0
+  for i in 0..<(b.length() + 1) {
+    if i < b.length() && !is_place_sep(env, b[i].to_int() & 0xFF) {
+      continue
+    }
+    let part = str_slice_bytes(path, start, i)
+    start = i + 1
+    if part == "" || part == "." {
+      continue
+    }
+    if part == ".." {
+      if out.length() > 0 {
+        let _ = out.pop()
+      }
+    } else {
+      out.push(part)
+    }
+  }
+  "/" + join_strings(out, "/")
+}
+
+fn within_dir(env : PlaceEnv, path : String, dir : String) -> Bool {
+  if !env.win() {
+    return dir == "/" || path == dir || str_has_prefix(path, dir + "/")
+  }
+  let p = jscase::lower(path)
+  let d = jscase::lower(dir)
+  let pref = if str_has_suffix(d, "\\") || str_has_suffix(d, "/") { d } else { d + "\\" }
+  p == d || str_has_prefix(p, pref)
+}
+
+fn place_name(env : PlaceEnv, path : String) -> String {
+  let b = path.to_bytes()
+  let mut end = b.length()
+  while end > 0 && is_place_sep(env, b[end - 1].to_int() & 0xFF) {
+    end = end - 1
+  }
+  let mut start = end
+  while start > 0 && !is_place_sep(env, b[start - 1].to_int() & 0xFF) {
+    start = start - 1
+  }
+  if env.win() && start == 0 && end >= 2 && (b[1].to_int() & 0xFF) == 58 {
+    start = 2
+  }
+  str_slice_bytes(path, start, end)
+}
+
+fn real_path(env : PlaceEnv, path : String) -> Option[String] {
+  match env.client.shell_sync_json("fs.realpath", base_codec::json_obj([("path", base_codec::json_str(path))])) {
+    Ok(base_codec::Json::Str(p)) => Some(p)
+    _ => None
+  }
+}
+
+fn meta_of(env : PlaceEnv, path : String) -> Option[base_codec::Json] {
+  match env.client.shell_sync_json("fs.meta", base_codec::json_obj([("path", base_codec::json_str(path))])) {
+    Ok(base_codec::Json::Obj(fs)) => Some(base_codec::Json::Obj(fs))
+    _ => None
+  }
+}
+
+fn mounts(env : PlaceEnv) -> Array[String] {
+  if !env.mac {
+    return []
+  }
+  match env.cache.mounted {
+    Some((at, points)) => {
+      if env.now - at <= 2000.0 {
+        return points
+      }
+    }
+    None => ()
+  }
+  let out = match env.client.shell_sync_json(
+    "proc.run",
+    base_codec::json_obj([
+      ("command", base_codec::json_str("/sbin/mount")),
+      ("args", base_codec::json_arr([])),
+      ("timeoutMs", base_codec::json_int(60000)),
+      ("maxBytes", base_codec::json_int(1048576)),
+    ]),
+  ) {
+    Ok(base_codec::Json::Str(text)) => text
+    _ => {
+      match env.cache.mounted {
+        Some((_, points)) => {
+          env.cache.mounted = Some((env.now, points))
+          return points
+        }
+        None => ""
+      }
+    }
+  }
+  let found : Array[String] = []
+  let lines = str_split_byte(out, 10)
+  for i in 0..<lines.length() {
+    let line = lines[i]
+    if !str_has_suffix(line, ")") {
+      continue
+    }
+    let open = match str_rev_find_byte(line, 40) {
+      Some(idx) => idx
+      None => continue
+    }
+    let lb = line.to_bytes()
+    if open < 1 || (lb[open - 1].to_int() & 0xFF) != 32 {
+      continue
+    }
+    let inner = str_slice_bytes(line, open + 1, lb.length() - 1)
+    if str_contains_sub(inner, ")") {
+      continue
+    }
+    let s = match str_find_sub(line, " on /") {
+      Some(idx) => idx
+      None => continue
+    }
+    if s + 5 > open - 1 {
+      continue
+    }
+    let at = str_slice_bytes(line, s + 4, open - 1)
+    if at == "/" || at == "/dev" || str_has_prefix(at, "/System/Volumes/") {
+      continue
+    }
+    found.push(at)
+  }
+  env.cache.mounted = Some((env.now, found))
+  found
+}
+
+pub struct Protected {
+  homes : Array[(String, String, String)]
+  mounts : Array[(String, String, String)]
+}
+
+pub fn Protected::new(sep : String, homedir : String, mount_list : Array[String]) -> Protected {
+  let names = ["Documents", "Desktop", "Downloads", "Library/Mobile Documents", "Library/CloudStorage"]
+  let homes : Array[(String, String, String)] = []
+  for i in 0..<names.length() {
+    let top = nodepath::join(sep, [homedir, names[i]])
+    let low = jscase::lower(top)
+    homes.push((top, low, low + "/"))
+  }
+  let ms : Array[(String, String, String)] = []
+  for i in 0..<mount_list.length() {
+    let top = mount_list[i]
+    let low = jscase::lower(top)
+    ms.push((top, low, low + "/"))
+  }
+  Protected::{ homes: homes, mounts: ms }
+}
+
+pub fn protected_known(prot : Protected, lower : String) -> Option[String] {
+  for i in 0..<prot.homes.length() {
+    let (top, low, pref) = prot.homes[i]
+    if lower == low || str_has_prefix(lower, pref) {
+      return Some(top)
+    }
+  }
+  let mut best : Option[String] = None
+  let mut best_len = 0
+  if !str_has_prefix(lower, "/volumes/") {
+    for i in 0..<prot.mounts.length() {
+      let (top, low, pref) = prot.mounts[i]
+      if (lower == low || str_has_prefix(lower, pref)) && top.length() > best_len {
+        best = Some(top)
+        best_len = top.length()
+      }
+    }
+  }
+  best
+}
+
+fn protected_of(env : PlaceEnv) -> Protected {
+  Protected::new(env.sep, env.homedir, mounts(env))
+}
+
+fn protected_place_with(env : PlaceEnv, prot : Protected, path : String) -> Option[String] {
+  let lower = jscase::lower(path)
+  match protected_known(prot, lower) {
+    Some(top) => return Some(top)
+    None => ()
+  }
+  let lb = lower.to_bytes()
+  if !str_has_prefix(lower, "/volumes/") || lb.length() <= 9 || (lb[9].to_int() & 0xFF) == 47 {
+    return None
+  }
+  let parts = str_split_byte(path, 47)
+  let seg = if parts.length() > 2 { parts[2] } else { "" }
+  let top = "/Volumes/" + seg
+  match env.client.shell_sync_json(
+    "fs.stat",
+    base_codec::json_obj([
+      ("path", base_codec::json_str(top)),
+      ("lstat", base_codec::json_bool(true)),
+    ]),
+  ) {
+    Ok(base_codec::Json::Str("link")) => None
+    Ok(base_codec::Json::Str(_)) => Some(top)
+    _ => None
+  }
+}
+
+fn protected_place(env : PlaceEnv, path : String) -> Option[String] {
+  protected_place_with(env, protected_of(env), path)
+}
+
+fn split_nonempty_parts(p : String) -> Array[String] {
+  let raw = str_split_byte(p, 47)
+  let out : Array[String] = []
+  for i in 0..<raw.length() {
+    if raw[i] != "" && raw[i] != "." {
+      out.push(raw[i])
+    }
+  }
+  out
+}
+
+fn follow(env : PlaceEnv, path : String) -> Result[String, Option[String]] {
+  let mut pending = split_nonempty_parts(clean_path(env, path))
+  let mut done : Array[String] = []
+  let mut hops = 0
+  let prot = protected_of(env)
+  while pending.length() > 0 {
+    let name = pending[0]
+    let rest : Array[String] = []
+    for i in 1..<pending.length() {
+      rest.push(pending[i])
+    }
+    pending = rest
+    if name == ".." {
+      if done.length() > 0 {
+        let _ = done.pop()
+      }
+      continue
+    }
+    let next : Array[String] = []
+    for i in 0..<done.length() {
+      next.push(done[i])
+    }
+    next.push(name)
+    let at = "/" + join_strings(next, "/")
+    match protected_place_with(env, prot, at) {
+      Some(_) => {
+        let full = concat_strings(next, pending)
+        return Err(Some("/" + join_strings(full, "/")))
+      }
+      None => ()
+    }
+    let link = match env.client.shell_sync_json(
+      "fs.stat",
+      base_codec::json_obj([
+        ("path", base_codec::json_str(at)),
+        ("lstat", base_codec::json_bool(true)),
+      ]),
+    ) {
+      Ok(base_codec::Json::Str(k)) => k == "link"
+      _ => return Err(None)
+    }
+    if !link {
+      done = next
+      continue
+    }
+    hops = hops + 1
+    if hops > 40 {
+      return Err(None)
+    }
+    let target = match env.client.shell_sync_json("fs.readlink", base_codec::json_obj([("path", base_codec::json_str(at))])) {
+      Ok(base_codec::Json::Str(t)) => t
+      _ => return Err(None)
+    }
+    if str_has_prefix(target, "/") {
+      done = []
+    }
+    pending = concat_strings(split_nonempty_parts(target), pending)
+  }
+  Ok("/" + join_strings(done, "/"))
+}
+
+fn real_outside(env : PlaceEnv, path : String) -> Option[String] {
+  if !env.mac {
+    return real_path(env, path)
+  }
+  match follow(env, path) {
+    Err(Some(p)) => Some(p)
+    Err(None) => None
+    Ok(real) => real_path(env, real)
+  }
+}
+
+fn named_from(parts : Array[String], f : String, fb : Bytes, i : Int, at : Int) -> Option[Int] {
+  let flen = fb.length()
+  if i == parts.length() {
+    return if at == flen || (fb[at].to_int() & 0xFF) == 47 { Some(at) } else { None }
+  }
+  let mut start = at
+  if i > 0 {
+    if at >= flen || (fb[at].to_int() & 0xFF) != 47 {
+      return None
+    }
+    start = at + 1
+  }
+  let p = parts[i]
+  if p == "..." || p == "…" {
+    let mut end = flen
+    while end > start {
+      match named_from(parts, f, fb, i + 1, end) {
+        Some(e) => return Some(e)
+        None => ()
+      }
+      end = end - 1
+    }
+    return None
+  }
+  let pb = p.to_bytes()
+  if flen - start < pb.length() {
+    return None
+  }
+  for k in 0..<pb.length() {
+    if fb[start + k] != pb[k] {
+      return None
+    }
+  }
+  named_from(parts, f, fb, i + 1, start + pb.length())
+}
+
+fn named_end(parts : Array[String], f : String) -> Option[Int] {
+  let fb = f.to_bytes()
+  for s in 0..<fb.length() {
+    if s == 0 {
+      match named_from(parts, f, fb, 0, 0) {
+        Some(e) => return Some(e)
+        None => ()
+      }
+    }
+    if (fb[s].to_int() & 0xFF) == 47 {
+      match named_from(parts, f, fb, 0, s + 1) {
+        Some(e) => return Some(e)
+        None => ()
+      }
+    }
+  }
+  None
+}
+
+fn touched(env : PlaceEnv, repo : String) -> Double {
+  let mut at = 0.0
+  let files = ["FETCH_HEAD", "HEAD", "index"]
+  for i in 0..<files.length() {
+    match meta_of(env, nodepath::join(env.sep, [repo, ".git", files[i]])) {
+      Some(m) => {
+        match json_val(m, "mtime") {
+          Some(base_codec::Json::Num(mt, _)) => {
+            if mt > at {
+              at = mt
+            }
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+  }
+  at
+}
+
+fn look_repos(env : PlaceEnv, repos : Array[String], dir : String, depth : Int) -> Unit {
+  match meta_of(env, nodepath::join(env.sep, [dir, ".git"])) {
+    Some(_) => {
+      for i in 0..<repos.length() {
+        if repos[i] == dir {
+          return ()
+        }
+      }
+      repos.push(dir)
+      return ()
+    }
+    None => ()
+  }
+  if depth == 0 {
+    return ()
+  }
+  let entries = match env.client.shell_sync_json(
+    "fs.readdir",
+    base_codec::json_obj([
+      ("path", base_codec::json_str(dir)),
+      ("types", base_codec::json_bool(true)),
+    ]),
+  ) {
+    Ok(base_codec::Json::Arr(es)) => es
+    _ => return ()
+  }
+  for i in 0..<entries.length() {
+    match entries[i] {
+      base_codec::Json::Arr(pair) => {
+        if pair.length() == 2 {
+          match (pair[0], pair[1]) {
+            (base_codec::Json::Str(name), base_codec::Json::Str("dir")) => {
+              if !str_has_prefix(name, ".") && name != "node_modules" {
+                look_repos(env, repos, nodepath::join(env.sep, [dir, name]), depth - 1)
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+}
+
+fn in_repositories(
+  env : PlaceEnv,
+  dirs : Array[Option[String]],
+  given : String,
+  latest : Bool = false,
+) -> Option[String] {
+  let cp = clean_posix(env, given)
+  let tail = str_slice_bytes(cp, 1, cp.to_bytes().length())
+  if tail == "" {
+    return None
+  }
+  let parts = str_split_byte(tail, 47)
+  let repos : Array[String] = []
+  for i in 0..<dirs.length() {
+    let d = match dirs[i] {
+      Some(s) => if s != "" { s } else { continue }
+      None => continue
+    }
+    if env.mac {
+      let check_p = match real_outside(env, d) {
+        Some(o) => o
+        None => d
+      }
+      match protected_place(env, check_p) {
+        Some(_) => continue
+        None => ()
+      }
+    }
+    look_repos(env, repos, d, 2)
+  }
+  let mut best : Option[String] = None
+  let mut best_at = -1.0
+  for i in 0..<repos.length() {
+    let repo = repos[i]
+    let files = match env.cache.listed.get(repo) {
+      Some((at, fs)) => {
+        if !(env.now - at > 60000.0) {
+          fs
+        } else {
+          let fresh = list_git_files(env, repo)
+          env.cache.listed.set(repo, (env.now, fresh))
+          fresh
+        }
+      }
+      None => {
+        let fresh = list_git_files(env, repo)
+        env.cache.listed.set(repo, (env.now, fresh))
+        fresh
+      }
+    }
+    let at = if latest { touched(env, repo) } else { 0.0 }
+    for j in 0..<files.length() {
+      let f = files[j]
+      match named_end(parts, f) {
+        Some(end) => {
+          let path = nodepath::join(env.sep, [repo, str_slice_bytes(f, 0, end)])
+          let take_it = match best {
+            None => true
+            Some(b) => at > best_at || (at == best_at && path.length() < b.length())
+          }
+          if take_it {
+            best = Some(path)
+            best_at = at
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  match best {
+    Some(b) => real_path(env, b)
+    None => None
+  }
+}
+
+fn list_git_files(env : PlaceEnv, repo : String) -> Array[String] {
+  match env.client.shell_sync_json(
+    "proc.run",
+    base_codec::json_obj([
+      ("command", base_codec::json_str("git")),
+      (
+        "args",
+        base_codec::json_arr([
+          base_codec::json_str("-C"),
+          base_codec::json_str(repo),
+          base_codec::json_str("ls-files"),
+          base_codec::json_str("-z"),
+        ]),
+      ),
+      ("timeoutMs", base_codec::json_int(5000)),
+      ("maxBytes", base_codec::json_int(67108864)),
+    ]),
+  ) {
+    Ok(base_codec::Json::Str(out)) => {
+      let raw = str_split_byte(out, 0)
+      let res : Array[String] = []
+      for i in 0..<raw.length() {
+        if raw[i] != "" {
+          res.push(raw[i])
+        }
+      }
+      res
+    }
+    _ => []
+  }
+}
+
+fn place_mime(env : PlaceEnv, path : String) -> String {
+  let name = place_name(env, path)
+  let dot = match str_rev_find_byte(name, 46) {
+    Some(idx) => idx
+    None => -1
+  }
+  if dot <= 0 {
+    return "application/octet-stream"
+  }
+  let ext = jscase::lower(str_slice_bytes(name, dot + 1, name.to_bytes().length()))
+  if ext == "png" {
+    "image/png"
+  } else if ext == "jpg" || ext == "jpeg" {
+    "image/jpeg"
+  } else if ext == "gif" {
+    "image/gif"
+  } else if ext == "webp" {
+    "image/webp"
+  } else if ext == "svg" {
+    "image/svg+xml"
+  } else if ext == "pdf" {
+    "application/pdf"
+  } else if ext == "txt" {
+    "text/plain; charset=utf-8"
+  } else if ext == "md" {
+    "text/markdown; charset=utf-8"
+  } else if ext == "json" {
+    "application/json"
+  } else {
+    "application/octet-stream"
+  }
+}
+
+fn js_round_double(d : Double) -> Double {
+  if sql_db::is_nan_or_inf(d) {
+    return d
+  }
+  if d >= -0.5 && d < 0.0 {
+    return -0.0
+  }
+  let tr = js_json::js_trunc(d)
+  let f = if d < tr { tr - 1.0 } else { tr }
+  if d - f >= 0.5 { f + 1.0 } else { f }
+}
+
+pub fn session_place(
+  db : sql_db::Db,
+  state : ReaderState,
+  data : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let args = json_val_or_null(ask, "args")
+  let word = fn(k : String) -> String { "station.files." + k }
+  let given = json_val_or_null(args, "env")
+  let env = PlaceEnv::{
+    client: state.client,
+    cache: state.place_cache,
+    sep: state.sep,
+    home: match json_val(given, "home") {
+      Some(base_codec::Json::Str(h)) => h
+      _ => ""
+    },
+    homedir: match json_val(given, "homedir") {
+      Some(base_codec::Json::Str(h)) => h
+      _ => ""
+    },
+    mac: match json_val(given, "mac") {
+      Some(base_codec::Json::Bool(true)) => true
+      _ => false
+    },
+    now: match json_val(args, "now") {
+      Some(base_codec::Json::Num(n, _)) => n
+      _ => 0.0
+    },
+  }
+  let row = match session_row(db, json_val_or_null(args, "key")) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let asked = match json_val(args, "path") {
+    Some(base_codec::Json::Str(p)) => jscase::trim(p)
+    None => ""
+    Some(base_codec::Json::Null) => ""
+    Some(_) => return Err(refused(500, "given.trim is not a function"))
+  }
+  if asked == "" || str_contains_sub(asked, "\u{0}") {
+    return Err(refused(404, word("notFound")))
+  }
+  let cwd : Option[String] = match field(row, "cwd") {
+    base_codec::Json::Str(c) => Some(c)
+    _ => None
+  }
+  let workspace = match field(row, "workspace") {
+    base_codec::Json::Str(w) => w
+    _ => ""
+  }
+  let base = match cwd {
+    Some(c) => c
+    None => workspace
+  }
+  let tilde = str_has_prefix(asked, "~/") && env.home != ""
+  let relative = !tilde && !place_is_abs(env, asked)
+  let full = if tilde {
+    nodepath::join(state.sep, [env.home, str_slice_bytes(asked, 2, asked.to_bytes().length())])
+  } else if relative {
+    nodepath::join(state.sep, [base, asked])
+  } else {
+    asked
+  }
+  let outside = real_outside(env, clean_path(env, full))
+  match outside {
+    Some(o) => {
+      if env.mac {
+        match protected_place(env, o) {
+          Some(_) => return Err(refused(403, word("protected")))
+          None => ()
+        }
+      }
+    }
+    None => ()
+  }
+  let path_opt = match outside {
+    Some(o) => Some(o)
+    None => {
+      if relative {
+        match in_repositories(env, [Some(workspace), cwd], asked) {
+          Some(p) => Some(p)
+          None => in_repositories(env, [Some(nodepath::join(state.sep, [data, "repos"]))], asked, latest=true)
+        }
+      } else {
+        None
+      }
+    }
+  }
+  let path = match path_opt {
+    Some(p) => p
+    None => return Err(refused(404, word("notFound")))
+  }
+  let raw = match read_json(state.client, join_path(state.sep, data, "config.json")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let agent_sub = match str_of(jget(Some(raw), "agentHome")) {
+    Some(h) => h
+    None => "agent"
+  }
+  let agent = join_path(state.sep, data, agent_sub)
+  let cand_roots : Array[Option[String]] = [
+    Some(workspace),
+    cwd,
+    Some(nodepath::join(state.sep, [data, "repos"])),
+    Some(agent),
+  ]
+  let mut allowed = false
+  for i in 0..<cand_roots.length() {
+    match cand_roots[i] {
+      Some(r) => {
+        if r != "" {
+          match real_outside(env, r) {
+            Some(rr) => {
+              if within_dir(env, path, rr) {
+                allowed = true
+                break
+              }
+            }
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  if !allowed {
+    return Err(refused(403, word("outside")))
+  }
+  let m = match meta_of(env, path) {
+    Some(meta) => meta
+    None => return Err(refused(404, word("notFound")))
+  }
+  let dir_v = match json_val(m, "dir") {
+    Some(v) => v
+    None => base_codec::json_bool(false)
+  }
+  let size_v = match json_val(m, "size") {
+    Some(v) => v
+    None => base_codec::json_num(0.0)
+  }
+  let mtime_v = match json_val(m, "mtime") {
+    Some(base_codec::Json::Num(t, _)) => base_codec::json_num(js_round_double(t))
+    _ => base_codec::json_null()
+  }
+  Ok(
+    base_codec::json_obj([
+      ("path", base_codec::json_str(path)),
+      ("name", base_codec::json_str(place_name(env, path))),
+      ("dir", dir_v),
+      ("size", size_v),
+      ("mtime", mtime_v),
+      ("contentType", base_codec::json_str(place_mime(env, path))),
+    ]),
+  )
+}
+
+pub fn real_outside_of(
+  state : ReaderState,
+  path : String,
+  home : String,
+  mac : Bool,
+) -> Option[String] {
+  let env = PlaceEnv::{
+    client: state.client,
+    cache: state.place_cache,
+    sep: "/",
+    home: home,
+    homedir: home,
+    mac: mac,
+    now: 0.0,
+  }
+  real_outside(env, path)
+}

@@ -66,15 +66,16 @@ test "desk: a chat's film says its size, length and rate in the bar as its messa
 }
 
 ///|
-test "desk: a chat's film fitted clear of the bar and the controls, never under them; ⌘ and the wheel zoom it" {
+test "desk: a chat's film fills the full-bleed stage (0, 0) with controls overlaid; ⌘ and the wheel zoom it" {
   let t = desk_tester("chat-preview-video")
   let key = viewer.get().unwrap().media.unwrap().key()
   let (top, foot) = @sf.player_room(1280.0)
+  assert_eq((top, foot), (0.0, 0.0))
   let (_, y, w, h) = @sf.player_picture_at(key).unwrap()
-  // 1280 × 720 in 1280 × (800 less the bar and the controls): as tall as that leaves, under the bar, over the controls
-  assert_true((y - top).abs() < 0.5, msg="\{y} \{top}")
-  assert_true((y + h - (800.0 - foot)).abs() < 0.5, msg="\{y + h} \{800.0 - foot}")
-  assert_true(w < 1280.0, msg="\{w}")
+  // 1280 × 720 in 1280 × 800 full-bleed stage: full width 1280, height 720, vertically centered at y = 40
+  assert_true((w - 1280.0).abs() < 0.5, msg="\{w}")
+  assert_true((h - 720.0).abs() < 0.5, msg="\{h}")
+  assert_true((y - 40.0).abs() < 0.5, msg="\{y}")
   t.wheel_with(640.0, 400.0, 0.0, -200.0, @ui.wheel_mod_cmd)
   t.run_for(@ui.move_most_ms)
   let (_, _, w2, _) = @sf.player_picture_at(key).unwrap()
@@ -95,43 +96,52 @@ test "desk: Esc closes a chat's film as it flies in, before its player is up" {
 }
 
 ///|
-test "desk: a click on the image closes the preview once a second would have come, two zoom it; one round it closes it at once" {
+test "desk: idle auto-fades after 1800ms, click on image toggles bars, double-click zooms, blank space closes" {
   let t = desk_tester("chat-preview-image")
   let v = viewer.get().unwrap()
-  // left alone, the bar stays
-  t.run_for(left_alone_ms)
+  // re-arm idle timer from a known cause moment, then verify 1799ms / 1800ms auto-fade
+  t.move_to(640.0, 400.0)
+  t.draw()
+  let tick_ms = 1.0
+  t.run_for(@sfbase.image_idle_ms - tick_ms)
   assert_true(v.bars_shown())
+  t.run_for(tick_ms)
+  assert_true(!v.bars_shown())
   // 600 × 400 in 1280 × 800, fitted 32 in: in the middle as it is; two clicks zoom it, open still
   t.tap(640.0, 400.0)
   t.tap(640.0, 400.0)
   t.run_for(@ui.double_click_ms)
   assert_true(viewer.get() is Some(_))
   assert_true(v.zoom.zoomed_at(t.time()))
-  assert_true(v.bars_shown())
-  // one click on it: closed once a second would have come, not before
+  // one click on the picture toggles bars back on (never closes the preview)
   t.tap(640.0, 400.0)
   t.run_for(@ui.double_click_ms / 2.0)
   assert_true(viewer.get() is Some(_))
   t.run_for(@ui.double_click_ms)
-  assert_true(viewer.get() is None)
-  // opened again, a click round it closes it at once
+  assert_true(viewer.get() is Some(_))
+  assert_true(v.bars_shown())
+  // opened again, a click in blank space outside the picture closes it at once
   let t = desk_tester("chat-preview-image")
   t.tap(150.0, 700.0)
   assert_true(viewer.get() is None)
 }
 
 ///|
-test "desk: the bar hidden by a click shows while the pointer is along the top, where it is, and hides again past it" {
+test "desk: the bar hidden by a click shows while the pointer is along the top, and hides when leaving the window" {
   let t = desk_tester("chat-preview-image")
   let v = viewer.get().unwrap()
-  // (an image's click closes it: its bars hidden as a click on another kind hides them)
   v.toggle()
   t.draw()
   assert_true(!v.bars_shown())
   t.move_to(640.0, 20.0)
   t.draw()
   assert_true(v.bars_shown())
+  // moving off the top onto the stage middle wakes bars with a fresh 1800ms idle timer
   t.move_to(640.0, 400.0)
+  t.draw()
+  assert_true(v.bars_shown())
+  // moving out of the window hides bars immediately
+  t.move_to(-1.0, -1.0)
   t.draw()
   assert_true(!v.bars_shown())
 }

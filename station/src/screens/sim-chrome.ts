@@ -59,6 +59,8 @@ export type ChromePanel = {
   width: number;
   height: number;
   frame: Size;
+  /// The device chassis inside `frame` (excluding side-button padding), for drop shadow placement.
+  body?: Rect;
   /// Where the picture goes in `frame`.
   screen: Rect;
   /// The panel's corners as sim-mask.ts has them: what a client covers of the picture's, outside the panel and under the case.
@@ -190,8 +192,8 @@ export async function chromeOf(display: ChromeDisplay, bundle: string, sensor: s
 
 /// What clients are told of a panel.
 export function toldOf(c: ChromeSource): ChromePanel {
-  const { key, width, height, frame, screen, corners, buttons } = c;
-  return { key, width, height, frame, screen, corners, buttons };
+  const { key, width, height, frame, body, screen, corners, buttons } = c;
+  return { key, width, height, frame, body, screen, corners, buttons };
 }
 
 /// Where a button rests. In chrome.json's `offsets`, from the side it is anchored to, the middle of its picture is: at `normal`

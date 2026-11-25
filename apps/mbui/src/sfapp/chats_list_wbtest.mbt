@@ -311,6 +311,19 @@ test "wide: a chat opened while settings are in view is opened in the chats; the
 }
 
 ///|
+test "wide: a chat under NewChat is not treated as open and clicking its row reopens it" {
+  let calls : Array[Made] = []
+  let t = lists_tester(calls, 1280.0, 0, false)
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  app.nav.replace_above(1, [Chat(r), NewChat])
+  t.draw()
+  assert_true(app.nav.top() is NewChat)
+  t.tap_text("整理发布清单")
+  t.draw()
+  assert_true(app.nav.pages() == [Home, Chat(r)])
+}
+
+///|
 test "a row asks its station to regenerate its title from both menu gestures" {
   for case in one_page_cases {
     let (w, platform, regular, _) = case

@@ -13,6 +13,7 @@ import { current, t } from "../i18n.ts";
 import { encode } from "../ops.ts";
 import { stationWhat } from "../status.ts";
 import { route } from "../route.ts";
+import { recordInbound, recording, stationTag } from "../record.ts";
 import { Kind, type Span, type SpanContext } from "../trace.ts";
 import { fromBase64, get, hex, isObject, parseJson, toJsonBytes } from "../util.ts";
 import type { StationAddr } from "./addr.ts";
@@ -291,6 +292,7 @@ export class Requests {
             }, give === undefined).pipe(Effect.onExit((exit) => Effect.sync(() => { if (exit._tag === "Success" || flushCut) hand(); })));
             span.set("http.response.body.size", came);
             if (came !== loaded) span.set("stillfail.body.decompressed", loaded);
+            if (recording(this.#core.host)) recordInbound(this.#core.host, `${stationTag(station.toString())} req:${route(path)}`, loaded || came, 1);
             const parsed = json ? timed("reply.parse", () => parseJson(bytes)) : undefined;
             if (json && parsed === undefined && reply.status >= 200 && reply.status < 300 && reply.status !== 204 && reply.status !== 205) {
               return yield* Effect.fail(new CoreError("bad_response", t("station.core.invalidReply")));
@@ -363,6 +365,7 @@ export class Requests {
             const tooOld = stationTooOld(reply.headers, "/batch");
             if (tooOld !== null) return yield* Effect.fail(tooOld);
             let came = 0;
+            let loaded = 0;
             const counted = { ...reply, body: { take: Effect.tap(within(reply.body.take, JSON_IDLE_MS), (chunk) => Effect.sync(() => chunk && ((came += chunk.length), status.received(null, chunk.length)))) } };
             const pull = yield* plain(this.#core.host, counted, false);
             if (reply.status < 200 || reply.status >= 300) {
@@ -389,6 +392,7 @@ export class Requests {
               for (;;) {
                 const chunk = yield* Effect.mapError(pull.take, asCoreError);
                 if (chunk === null) break;
+                loaded += chunk.length;
                 const piece = rest.length === 0 ? chunk : concat([rest, chunk]);
                 let from = 0;
                 for (let nl = piece.indexOf(10, from); nl >= 0; nl = piece.indexOf(10, from)) {
@@ -402,11 +406,13 @@ export class Requests {
             } else {
               // (a station from before streams, or one that answered whole JSON: all of them in one)
               const whole = yield* readAll(pull);
+              loaded += whole.length;
               const answers = get(timed("reply.parse", () => parseJson(whole)), "answers");
               if (!Array.isArray(answers) || answers.length !== gets.length) return yield* Effect.fail(bad());
               for (const a of answers) yield* take(asItem(a));
             }
             span.set("http.response.body.size", came);
+            if (recording(this.#core.host)) recordInbound(this.#core.host, `${stationTag(station.toString())} req:/batch`, loaded || came, gets.length);
             if (index !== gets.length) return yield* Effect.fail(bad());
             this.onAnswered(station);
             return out;

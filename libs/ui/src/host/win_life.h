@@ -264,7 +264,9 @@ static void tell_state(void) {
   // (| 4: the app goes on with its window not shown, as what comes from outside asks: win_app.c draw_frame)
   int s = (shown ? 1 : 0) | (front ? 2 : 0) | 4;
   if (s == state_told) return;
+  int prev = state_told;
   state_told = s;
+  if (prev >= 0 && ((!(prev & 1) && (s & 1)) || (!(prev & 2) && (s & 2)))) mb_win_notify_refresh();
   state_cb(s);
 }
 
@@ -1110,6 +1112,7 @@ static void life_start(const WCHAR *title) {
   const WCHAR *link = started_with();
   if (link) say_link(link, (int)wcslen(link));
   title_dark();
+  mb_win_notify_start();
   tell_state();
 }
 
@@ -1163,6 +1166,9 @@ static int life_message(UINT msg, WPARAM wp, LPARAM lp, LRESULT *r) {
       if (lp && !wcscmp((const WCHAR *)lp, L"ImmersiveColorSet")) {
         read_dark();
         ws->want_frame = 1;
+      } else if (wp == SPI_SETSCREENREADER || wp == SPI_SETHIGHCONTRAST) {
+        win_sr_invalidate();
+        mb_host_request_frame();
       }
       return 0;
     case WM_POWERBROADCAST:

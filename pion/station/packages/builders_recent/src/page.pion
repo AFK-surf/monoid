@@ -1,0 +1,204 @@
+// A page of the recent chats as `chat_list` reads it (`station/mb/src/recent/page.mbt`):
+// the station's, a workspace's, or the home workspace's (its default part and its own, joined),
+// each from its prepared index, `None` while it is being prepared.
+
+import "base_codec"
+import "builders_core"
+import "sql_db"
+
+let GLOBAL_PAGE_SQL : String = "SELECT thread FROM recent_chat_rows INDEXED BY recent_chat_order ORDER BY at DESC, said_at DESC, created_at DESC, thread DESC LIMIT ?"
+
+let WORKSPACE_PAGE_SQL : String = "SELECT thread FROM recent_scope_rows INDEXED BY recent_scope_order WHERE ws = ?\n  ORDER BY at DESC, said_at DESC, created_at DESC, thread DESC LIMIT ?"
+
+let HOME_ORDER_PAGE_SQL : String = "SELECT thread, at, said_at, created_at FROM recent_home_rows INDEXED BY recent_home_order\n  ORDER BY at DESC, said_at DESC, created_at DESC, thread DESC LIMIT ?"
+
+let HOME_WORKSPACE_ORDER_PAGE_SQL : String = "SELECT thread, at, said_at, created_at FROM recent_scope_rows INDEXED BY recent_scope_order\n  WHERE ws = ? ORDER BY at DESC, said_at DESC, created_at DESC, thread DESC LIMIT ?"
+
+fn page_threads_of(rows : Array[Map[String, base_codec::Json]]) -> Array[base_codec::Json] {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    out.push(sql_db::row_val(rows[i], "thread"))
+  }
+  out
+}
+
+fn page_total_of(row : Option[Map[String, base_codec::Json]]) -> Double {
+  match row {
+    Some(r) =>
+    match sql_db::row_val(r, "total") {
+      base_codec::Json::Num(n, _) => n
+      _ => 0.0
+    }
+    None => 0.0
+  }
+}
+
+fn page_number(row : Map[String, base_codec::Json], name : String) -> Double {
+  match sql_db::row_val(row, name) {
+    base_codec::Json::Num(n, _) => n
+    _ => 0.0
+  }
+}
+
+/// `chat-list-home-overlap.ts` `before`: whether `a` comes before `b` in the order (ties to the left).
+fn page_before(a : Map[String, base_codec::Json], b : Map[String, base_codec::Json]) -> Bool {
+  let cols = ["at", "said_at", "created_at"]
+  for i in 0..<cols.length() {
+    let name = cols[i]
+    let x = page_number(a, name)
+    let y = page_number(b, name)
+    if x != y {
+      return x > y
+    }
+  }
+  page_number(a, "thread") >= page_number(b, "thread")
+}
+
+fn json_array_contains(arr : Array[base_codec::Json], item : base_codec::Json) -> Bool {
+  for i in 0..<arr.length() {
+    if base_codec::json_eq(arr[i], item) {
+      return true
+    }
+  }
+  false
+}
+
+/// `recent-chat.ts` `recentChatPage`: the chats' ids, latest first, at most `limit`, and how many
+/// there are; `Ok(None)` while the index it reads is being prepared.
+pub fn page(
+  db : sql_db::Db,
+  ws : Option[String],
+  home : Option[String],
+  limit : Int,
+) -> Result[Option[(Array[base_codec::Json], Double)], builders_core::StepError] {
+  if limit == 0 {
+    return Ok(Some(([], 0.0)))
+  }
+  match ws {
+    None =>
+    snapshot(db, "recent_chat_page", fn(snap_db : sql_db::Db) -> Result[Option[(Array[base_codec::Json], Double)], builders_core::StepError] {
+      match installed(snap_db, "global") {
+        Ok(true) => ()
+        Ok(false) => return Ok(None)
+        Err(e) => return Err(e)
+      }
+      let meta = match one(snap_db, "SELECT total, complete FROM recent_chat_meta WHERE id = 1", []) {
+        Ok(m) => m
+        Err(e) => return Err(e)
+      }
+      if sql_db::row_int(meta, "complete") != 1 {
+        return Ok(None)
+      }
+      match exists(snap_db, "SELECT 1 FROM recent_chat_dirty LIMIT 1", []) {
+        Ok(true) => return Ok(None)
+        Ok(false) => ()
+        Err(e) => return Err(e)
+      }
+      let rows = match snap_db.all(GLOBAL_PAGE_SQL, [num(limit)]) {
+        Ok(r) => r
+        Err(e) => return Err(builders_core::StepError::Sql(e))
+      }
+      Ok(Some((page_threads_of(rows), page_total_of(Some(meta)))))
+    })
+    Some(w) => {
+      let is_home = match home {
+        Some(h) => w == h
+        None => false
+      }
+      if is_home {
+        snapshot(db, "recent_home_union", fn(snap_db : sql_db::Db) -> Result[Option[(Array[base_codec::Json], Double)], builders_core::StepError] {
+          match installed(snap_db, "overlap") {
+            Ok(true) => ()
+            Ok(false) => return Ok(None)
+            Err(e) => return Err(e)
+          }
+          let ov_meta = match one(snap_db, "SELECT scan_done FROM recent_home_overlap_meta WHERE id = 1", []) {
+            Ok(m) => m
+            Err(e) => return Err(e)
+          }
+          if sql_db::row_int(ov_meta, "scan_done") != 1 {
+            return Ok(None)
+          }
+          match exists(snap_db, "SELECT 1 FROM recent_home_overlap_dirty LIMIT 1", []) {
+            Ok(true) => return Ok(None)
+            Ok(false) => ()
+            Err(e) => return Err(e)
+          }
+          match default_home_ready(snap_db) {
+            Ok(true) => ()
+            Ok(false) => return Ok(None)
+            Err(e) => return Err(e)
+          }
+          match workspace_total_ready(snap_db, w) {
+            Ok(true) => ()
+            Ok(false) => return Ok(None)
+            Err(e) => return Err(e)
+          }
+          let defaults_row = match snap_db.first("SELECT total FROM recent_home_meta WHERE id = 1", []) {
+            Ok(r) => r
+            Err(e) => return Err(builders_core::StepError::Sql(e))
+          }
+          let workspace_row = match snap_db.first("SELECT total FROM recent_scope_tracked WHERE kind = 1 AND ws = ?", [text(w)]) {
+            Ok(r) => r
+            Err(e) => return Err(builders_core::StepError::Sql(e))
+          }
+          let overlap_row = match snap_db.first("SELECT total FROM recent_home_overlap_totals WHERE ws = ?", [text(w)]) {
+            Ok(r) => r
+            Err(e) => return Err(builders_core::StepError::Sql(e))
+          }
+          let defaults = page_total_of(defaults_row)
+          let workspace = page_total_of(workspace_row)
+          let overlap = page_total_of(overlap_row)
+          let left = match snap_db.all(HOME_ORDER_PAGE_SQL, [num(limit)]) {
+            Ok(r) => r
+            Err(e) => return Err(builders_core::StepError::Sql(e))
+          }
+          let right = match snap_db.all(HOME_WORKSPACE_ORDER_PAGE_SQL, [text(w), num(limit)]) {
+            Ok(r) => r
+            Err(e) => return Err(builders_core::StepError::Sql(e))
+          }
+          let ids : Array[base_codec::Json] = []
+          let seen : Array[base_codec::Json] = []
+          let mut i = 0
+          let mut j = 0
+          while ids.length() < limit && (i < left.length() || j < right.length()) {
+            let item = if j >= right.length() || (i < left.length() && page_before(left[i], right[j])) {
+              let x = left[i]
+              i = i + 1
+              x
+            } else {
+              let x = right[j]
+              j = j + 1
+              x
+            }
+            let thread = sql_db::row_val(item, "thread")
+            if json_array_contains(seen, thread) {
+              continue
+            }
+            seen.push(thread)
+            ids.push(thread)
+          }
+          Ok(Some((ids, defaults + workspace - overlap)))
+        })
+      } else {
+        snapshot(db, "recent_scope_page", fn(snap_db : sql_db::Db) -> Result[Option[(Array[base_codec::Json], Double)], builders_core::StepError] {
+          match workspace_total_ready(snap_db, w) {
+            Ok(true) => ()
+            Ok(false) => return Ok(None)
+            Err(e) => return Err(e)
+          }
+          let total_row = match snap_db.first("SELECT total FROM recent_scope_tracked WHERE kind = 1 AND ws = ?", [text(w)]) {
+            Ok(r) => r
+            Err(e) => return Err(builders_core::StepError::Sql(e))
+          }
+          let total = page_total_of(total_row)
+          let rows = match snap_db.all(WORKSPACE_PAGE_SQL, [text(w), num(limit)]) {
+            Ok(r) => r
+            Err(e) => return Err(builders_core::StepError::Sql(e))
+          }
+          Ok(Some((page_threads_of(rows), total)))
+        })
+      }
+    }
+  }
+}

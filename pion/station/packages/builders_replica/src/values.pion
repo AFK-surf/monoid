@@ -1,0 +1,1591 @@
+// Shared values, JValue helpers, C11 carry_fs FFI, and shell filesystem wrapper
+// for `builders_replica` (`replica-export`, `replica-restore`, `replica-carry`).
+// 1:1 aligned with `station/mb/src/replica/values.mbt` and path helpers in `carry.mbt`/`export.mbt`.
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "locate"
+import "nodepath"
+import "sql_db"
+import "transcript_io"
+
+// ── Cross-platform C11 filesystem shim (`native/carry_fs.c`) ──
+
+extern "C" fn sfc_open(path : Ptr, append : Int) -> Int
+extern "C" fn sfc_write(fd : Int, data : Ptr, byte_len : Int64) -> Int
+extern "C" fn sfc_close(fd : Int) -> Int
+extern "C" fn sfc_utimes(path : Ptr, secs : Double) -> Int
+extern "C" fn sfc_nlink(path : Ptr) -> Int
+extern "C" fn sfc_link(from : Ptr, to : Ptr) -> Int
+extern "C" fn sfc_denied(path : Ptr, dir : Int) -> Int
+extern "C" fn sfc_missing(path : Ptr, follow : Int) -> Int
+extern "C" fn sfc_dir_missing(path : Ptr) -> Int
+extern "C" fn sfc_dir_readable(path : Ptr) -> Int
+extern "C" fn sfc_is_file(path : Ptr) -> Int
+extern "C" fn sfc_file_stamp(path : Ptr, out_buf : Ptr, cap : Int) -> Int
+extern "C" fn sfc_file_fnv64(path : Ptr, out_hash : Ptr) -> Int
+
+pub fn c_open(path : String, append : Bool) -> Int {
+  let rc = sfc_open(path.as_cstr(), if append { 1 } else { 0 })
+  let _ = path.length()
+  rc
+}
+
+pub fn c_write(fd : Int, data : Bytes) -> Int {
+  let len = data.length().to_int64()
+  let rc = sfc_write(fd, bytes_data_ptr(data), len)
+  let _ = data.length()
+  rc
+}
+
+pub fn c_close(fd : Int) -> Int {
+  sfc_close(fd)
+}
+
+pub fn c_utimes(path : String, secs : Double) -> Int {
+  let rc = sfc_utimes(path.as_cstr(), secs)
+  let _ = path.length()
+  rc
+}
+
+pub fn c_nlink(path : String) -> Int {
+  let rc = sfc_nlink(path.as_cstr())
+  let _ = path.length()
+  rc
+}
+
+pub fn c_link(from : String, to : String) -> Int {
+  let rc = sfc_link(from.as_cstr(), to.as_cstr())
+  let _ = from.length()
+  let _ = to.length()
+  rc
+}
+
+pub fn c_denied(path : String, dir : Bool) -> Bool {
+  let rc = sfc_denied(path.as_cstr(), if dir { 1 } else { 0 })
+  let _ = path.length()
+  rc == 1
+}
+
+pub fn c_missing(path : String, follow : Bool) -> Bool {
+  let rc = sfc_missing(path.as_cstr(), if follow { 1 } else { 0 })
+  let _ = path.length()
+  rc == 1
+}
+
+pub fn c_dir_missing(path : String) -> Bool {
+  let rc = sfc_dir_missing(path.as_cstr())
+  let _ = path.length()
+  rc == 1
+}
+
+pub fn c_dir_readable(path : String) -> Bool {
+  let rc = sfc_dir_readable(path.as_cstr())
+  let _ = path.length()
+  rc == 1
+}
+
+pub fn c_is_file(path : String) -> Int {
+  let rc = sfc_is_file(path.as_cstr())
+  let _ = path.length()
+  rc
+}
+
+pub fn c_file_stamp(path : String) -> (Int, String) {
+  let buf = Bytes::new(256)
+  let rc = sfc_file_stamp(path.as_cstr(), bytes_data_ptr(buf), 256)
+  let _ = path.length()
+  if rc != 1 && rc != 2 {
+    return (rc, "")
+  }
+  let mut end = 0
+  while end < 256 && (buf[end].to_int() & 0xFF) != 0 {
+    end = end + 1
+  }
+  if end == 0 {
+    return (-1, "")
+  }
+  (rc, slice_bytes(buf, 0, end))
+}
+
+pub fn c_file_fnv64(path : String) -> Option[Int64] {
+  let buf = Bytes::new(8)
+  let rc = sfc_file_fnv64(path.as_cstr(), bytes_data_ptr(buf))
+  let _ = path.length()
+  if rc != 0 {
+    return None
+  }
+  let mut h : Int64 = 0.to_int64()
+  for i in 0..<8 {
+    let b = (buf[i].to_int() & 0xFF).to_int64()
+    h = h | (b << (i * 8).to_int64())
+  }
+  Some(h)
+}
+
+fn u64_from_16(a : Int, b : Int, c : Int, d : Int) -> Int64 {
+  let a64 = (a & 0xFFFF).to_int64()
+  let b64 = (b & 0xFFFF).to_int64()
+  let c64 = (c & 0xFFFF).to_int64()
+  let d64 = (d & 0xFFFF).to_int64()
+  (a64 << 48.to_int64()) | (b64 << 32.to_int64()) | (c64 << 16.to_int64()) | d64
+}
+
+pub fn fnv64_utf8(text : String) -> Int64 {
+  let bytes = js_json::utf8_bytes(text)
+  let mut h = u64_from_16(0xcbf2, 0x9ce4, 0x8422, 0x2325)
+  let prime = u64_from_16(0x0000, 0x0100, 0x0000, 0x01b3)
+  for i in 0..<bytes.length() {
+    h = (h ^ (bytes[i].to_int() & 0xFF).to_int64()) * prime
+  }
+  h
+}
+
+// ── String & Byte utilities ──
+
+pub fn str_has_prefix(s : String, prefix : String) -> Bool {
+  let sb = s.to_bytes()
+  let pb = prefix.to_bytes()
+  if pb.length() > sb.length() {
+    return false
+  }
+  for i in 0..<pb.length() {
+    if sb[i] != pb[i] {
+      return false
+    }
+  }
+  true
+}
+
+pub fn str_has_suffix(s : String, suffix : String) -> Bool {
+  let sb = s.to_bytes()
+  let pb = suffix.to_bytes()
+  if pb.length() > sb.length() {
+    return false
+  }
+  let off = sb.length() - pb.length()
+  for i in 0..<pb.length() {
+    if sb[off + i] != pb[i] {
+      return false
+    }
+  }
+  true
+}
+
+pub fn slice_bytes(b : Bytes, start : Int, end : Int) -> String {
+  if start >= end || start < 0 || end > b.length() {
+    return ""
+  }
+  let sb = StringBuilder::new()
+  for i in start..<end {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+pub fn str_slice(s : String, start : Int, end : Int) -> String {
+  slice_bytes(s.to_bytes(), start, end)
+}
+
+pub fn str_find_byte(s : String, target : Int, from : Int) -> Option[Int] {
+  let b = s.to_bytes()
+  let mut i = if from < 0 { 0 } else { from }
+  while i < b.length() {
+    if (b[i].to_int() & 0xFF) == target {
+      return Some(i)
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn str_rev_find_byte(s : String, target : Int) -> Option[Int] {
+  let b = s.to_bytes()
+  let mut i = b.length() - 1
+  while i >= 0 {
+    if (b[i].to_int() & 0xFF) == target {
+      return Some(i)
+    }
+    i = i - 1
+  }
+  None
+}
+
+pub fn str_to_ascii_lower(s : String) -> String {
+  let b = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(b[i])
+    }
+  }
+  sb.to_string()
+}
+
+pub fn str_split_sep(s : String, sep : String) -> Array[String] {
+  let sb = s.to_bytes()
+  let pb = sep.to_bytes()
+  let plen = pb.length()
+  if plen == 0 {
+    return [s]
+  }
+  let out : Array[String] = []
+  let mut start = 0
+  let mut i = 0
+  while i + plen <= sb.length() {
+    let mut matched = true
+    for j in 0..<plen {
+      if sb[i + j] != pb[j] {
+        matched = false
+        break
+      }
+    }
+    if matched {
+      out.push(slice_bytes(sb, start, i))
+      i = i + plen
+      start = i
+    } else {
+      i = i + 1
+    }
+  }
+  out.push(slice_bytes(sb, start, sb.length()))
+  out
+}
+
+pub fn str_join(parts : Array[String], sep : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<parts.length() {
+    if i > 0 {
+      sb.write_string(sep)
+    }
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
+pub fn arr_contains_str(arr : Array[String], target : String) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+pub fn arr_contains_int(arr : Array[Int], target : Int) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+pub fn arr_contains_double(arr : Array[Double], target : Double) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+pub fn arr_push_unique_str(arr : Array[String], v : String) -> Unit {
+  if !arr_contains_str(arr, v) {
+    arr.push(v)
+  }
+}
+
+pub fn floor_double(d : Double) -> Double {
+  let t = js_json::js_trunc(d)
+  if d < t { t - 1.0 } else { t }
+}
+
+pub fn abs_double(d : Double) -> Double {
+  if d < 0.0 { -d } else { d }
+}
+
+/// Iterative bottom-up merge sort for `Array[String]` by JS UTF-16 code-unit order.
+pub fn sort_strings_utf16(arr : Array[String]) -> Unit {
+  let n = arr.length()
+  if n <= 1 {
+    return ()
+  }
+  let mut tmp : Array[String] = []
+  for i in 0..<n {
+    tmp.push(arr[i])
+  }
+  let mut width = 1
+  while width < n {
+    let mut left = 0
+    while left < n {
+      let mid = if left + width < n { left + width } else { n }
+      let right = if left + 2 * width < n { left + 2 * width } else { n }
+      let mut i = left
+      let mut j = mid
+      let mut k = left
+      while i < mid && j < right {
+        if js_json::js_compare(arr[i], arr[j]) <= 0 {
+          tmp[k] = arr[i]
+          i = i + 1
+        } else {
+          tmp[k] = arr[j]
+          j = j + 1
+        }
+        k = k + 1
+      }
+      while i < mid {
+        tmp[k] = arr[i]
+        i = i + 1
+        k = k + 1
+      }
+      while j < right {
+        tmp[k] = arr[j]
+        j = j + 1
+        k = k + 1
+      }
+      left = left + 2 * width
+    }
+    for idx in 0..<n {
+      arr[idx] = tmp[idx]
+    }
+    width = width * 2
+  }
+}
+
+/// Iterative bottom-up merge sort for `Array[(String, String)]` by first element in UTF-16 order.
+pub fn sort_pairs_utf16(arr : Array[(String, String)]) -> Unit {
+  let n = arr.length()
+  if n <= 1 {
+    return ()
+  }
+  let mut tmp : Array[(String, String)] = []
+  for i in 0..<n {
+    tmp.push(arr[i])
+  }
+  let mut width = 1
+  while width < n {
+    let mut left = 0
+    while left < n {
+      let mid = if left + width < n { left + width } else { n }
+      let right = if left + 2 * width < n { left + 2 * width } else { n }
+      let mut i = left
+      let mut j = mid
+      let mut k = left
+      while i < mid && j < right {
+        if js_json::js_compare(arr[i].0, arr[j].0) <= 0 {
+          tmp[k] = arr[i]
+          i = i + 1
+        } else {
+          tmp[k] = arr[j]
+          j = j + 1
+        }
+        k = k + 1
+      }
+      while i < mid {
+        tmp[k] = arr[i]
+        i = i + 1
+        k = k + 1
+      }
+      while j < right {
+        tmp[k] = arr[j]
+        j = j + 1
+        k = k + 1
+      }
+      left = left + 2 * width
+    }
+    for idx in 0..<n {
+      arr[idx] = tmp[idx]
+    }
+    width = width * 2
+  }
+}
+
+// ── JValue helpers (`station/mb/src/replica/values.mbt`) ──
+
+pub fn jval_str(s : String) -> js_json::JValue {
+  js_json::JValue::Str(js_json::utf16_units(s))
+}
+
+pub fn jval_num(d : Double) -> js_json::JValue {
+  js_json::JValue::Num(d)
+}
+
+pub fn jval_bool(b : Bool) -> js_json::JValue {
+  js_json::JValue::Bool(b)
+}
+
+pub fn jval_null() -> js_json::JValue {
+  js_json::JValue::Null
+}
+
+pub fn jval_arr(items : Array[js_json::JValue]) -> js_json::JValue {
+  js_json::JValue::Arr(items)
+}
+
+pub fn jval_obj(entries : Array[(String, js_json::JValue)]) -> js_json::JValue {
+  let out : Array[(Array[Int], js_json::JValue)] = []
+  for i in 0..<entries.length() {
+    out.push((js_json::utf16_units(entries[i].0), entries[i].1))
+  }
+  js_json::JValue::Obj(out)
+}
+
+pub fn jval_opt_str(s : Option[String]) -> js_json::JValue {
+  match s {
+    Some(v) => jval_str(v)
+    None => js_json::JValue::Null
+  }
+}
+
+pub fn jval_of_json(j : base_codec::Json) -> js_json::JValue {
+  match j {
+    base_codec::Json::Null => js_json::JValue::Null
+    base_codec::Json::Bool(b) => js_json::JValue::Bool(b)
+    base_codec::Json::Num(d, _) => js_json::JValue::Num(d)
+    base_codec::Json::Str(s) => js_json::JValue::Str(js_json::utf16_units(s))
+    base_codec::Json::Arr(xs) => {
+      let out : Array[js_json::JValue] = []
+      for i in 0..<xs.length() {
+        out.push(jval_of_json(xs[i]))
+      }
+      js_json::JValue::Arr(out)
+    }
+    base_codec::Json::Obj(entries) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<entries.length() {
+        out.push((js_json::utf16_units(entries[i].0), jval_of_json(entries[i].1)))
+      }
+      js_json::JValue::Obj(out)
+    }
+  }
+}
+
+/// Convert an ordered SQL row (`sql_db::Db::all_ordered`) to `JValue::Obj` preserving exact SQL column order.
+pub fn row_of_ordered(cols : Array[(String, base_codec::Json)]) -> js_json::JValue {
+  let out : Array[(Array[Int], js_json::JValue)] = []
+  for i in 0..<cols.length() {
+    out.push((js_json::utf16_units(cols[i].0), jval_of_json(cols[i].1)))
+  }
+  js_json::JValue::Obj(out)
+}
+
+pub fn jval_param(v : Option[js_json::JValue]) -> base_codec::Json {
+  match v {
+    Some(js_json::JValue::Num(d)) => sql_db::double_to_json(d)
+    Some(js_json::JValue::Str(u)) => base_codec::json_str(js_json::sanitize_str(u))
+    Some(js_json::JValue::Bool(b)) => base_codec::json_bool(b)
+    Some(js_json::JValue::Null) => base_codec::json_null()
+    None => base_codec::json_null()
+    Some(other) => base_codec::json_str(js_json::stringify(other))
+  }
+}
+
+pub fn jval_get(v : js_json::JValue, name : String) -> Option[js_json::JValue] {
+  match v {
+    js_json::JValue::Obj(_) => v.get(name)
+    _ => None
+  }
+}
+
+pub fn jval_has_key(v : js_json::JValue, name : String) -> Bool {
+  match jval_get(v, name) {
+    Some(_) => true
+    None => false
+  }
+}
+
+pub fn num_of(v : Option[js_json::JValue]) -> Double {
+  match v {
+    Some(js_json::JValue::Num(d)) => d
+    _ => 0.0
+  }
+}
+
+pub fn text_of(v : Option[js_json::JValue]) -> Option[String] {
+  match v {
+    Some(js_json::JValue::Str(u)) => Some(js_json::sanitize_str(u))
+    _ => None
+  }
+}
+
+pub fn text_or(v : Option[js_json::JValue], fallback : String) -> String {
+  match text_of(v) {
+    Some(s) => s
+    None => fallback
+  }
+}
+
+pub fn list_of(v : Option[js_json::JValue]) -> Array[js_json::JValue] {
+  match v {
+    Some(js_json::JValue::Arr(items)) => items
+    _ => []
+  }
+}
+
+pub fn strings_of(v : Option[js_json::JValue]) -> Array[String] {
+  let items = list_of(v)
+  let out : Array[String] = []
+  for i in 0..<items.length() {
+    match text_of(Some(items[i])) {
+      Some(s) => out.push(s)
+      None => ()
+    }
+  }
+  out
+}
+
+pub fn strs_jval(list : Array[String]) -> js_json::JValue {
+  let out : Array[js_json::JValue] = []
+  for i in 0..<list.length() {
+    out.push(jval_str(list[i]))
+  }
+  js_json::JValue::Arr(out)
+}
+
+/// `o` with `name` set: in-place if present, else appended last (matching `{...o, [name]: v}`).
+pub fn jval_set(o : js_json::JValue, name : String, v : js_json::JValue) -> js_json::JValue {
+  let ku = js_json::utf16_units(name)
+  match o {
+    js_json::JValue::Obj(entries) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      let mut found = false
+      for i in 0..<entries.length() {
+        let (ek, ev) = entries[i]
+        if js_json::units_eq(ek, ku) {
+          if !found {
+            out.push((ku, v))
+            found = true
+          }
+        } else {
+          out.push((ek, ev))
+        }
+      }
+      if !found {
+        out.push((ku, v))
+      }
+      js_json::JValue::Obj(out)
+    }
+    _ => js_json::JValue::Obj([(ku, v)])
+  }
+}
+
+/// `o` with each of `pairs` set, as `jval_set` of each in turn gives, in one O(N+M) walk.
+pub fn jval_set_all(
+  o : js_json::JValue,
+  pairs : Array[(String, js_json::JValue)],
+) -> js_json::JValue {
+  let entries = match o {
+    js_json::JValue::Obj(es) => es
+    _ => if pairs.length() == 0 { return o } else { [] }
+  }
+  let n_pairs = pairs.length()
+  let at : Map[String, Int] = Map::new()
+  let pair_units : Array[Array[Int]] = []
+  let put : Array[Bool] = []
+  for i in 0..<n_pairs {
+    let (k, _) = pairs[i]
+    at.set(k, i)
+    pair_units.push(js_json::utf16_units(k))
+    put.push(false)
+  }
+  let out : Array[(Array[Int], js_json::JValue)] = []
+  for i in 0..<entries.length() {
+    let (ek, ev) = entries[i]
+    let sk = js_json::sanitize_str(ek)
+    match at.get(sk) {
+      Some(idx) => {
+        if js_json::units_eq(ek, pair_units[idx]) {
+          if !put[idx] {
+            out.push((pair_units[idx], pairs[idx].1))
+            put[idx] = true
+          }
+        } else {
+          out.push((ek, ev))
+        }
+      }
+      None => out.push((ek, ev))
+    }
+  }
+  for i in 0..<n_pairs {
+    if !put[i] {
+      out.push((pair_units[i], pairs[i].1))
+    }
+  }
+  js_json::JValue::Obj(out)
+}
+
+pub fn jval_without(o : js_json::JValue, name : String) -> js_json::JValue {
+  let ku = js_json::utf16_units(name)
+  match o {
+    js_json::JValue::Obj(entries) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<entries.length() {
+        let (ek, ev) = entries[i]
+        if !js_json::units_eq(ek, ku) {
+          out.push((ek, ev))
+        }
+      }
+      js_json::JValue::Obj(out)
+    }
+    _ => o
+  }
+}
+
+pub fn jval_keys(o : js_json::JValue) -> Array[String] {
+  match o {
+    js_json::JValue::Obj(entries) => {
+      let out : Array[String] = []
+      for i in 0..<entries.length() {
+        let k = js_json::sanitize_str(entries[i].0)
+        if !arr_contains_str(out, k) {
+          out.push(k)
+        }
+      }
+      out
+    }
+    _ => []
+  }
+}
+
+pub fn field_text(row : Map[String, base_codec::Json], name : String) -> String {
+  match row.get(name) {
+    Some(base_codec::Json::Str(x)) => x
+    _ => ""
+  }
+}
+
+pub fn field_str(row : Map[String, base_codec::Json], name : String) -> Option[String] {
+  match row.get(name) {
+    Some(base_codec::Json::Str(x)) => Some(x)
+    _ => None
+  }
+}
+
+pub fn field_num(row : Map[String, base_codec::Json], name : String) -> Double {
+  match row.get(name) {
+    Some(base_codec::Json::Num(x, _)) => x
+    _ => 0.0
+  }
+}
+
+pub fn utf8_length(s : String) -> Int {
+  js_json::js_utf8_len(s)
+}
+
+pub fn sha1_hex(s : String) -> String {
+  transcript_io::sha1_utf8_hex(s)
+}
+
+pub fn short_hash(text : String) -> String {
+  str_slice(transcript_io::sha256_utf8_hex(text), 0, 32)
+}
+
+// ── Filesystem wrapper over `builders_core::ShellClient` ──
+
+pub struct Files {
+  pub client : builders_core::ShellClient
+  pub sep : String
+  pub mut looked : Option[Array[(String, String)]]
+}
+
+pub fn Files::new(client : builders_core::ShellClient, sep : String) -> Files {
+  Files::{ client: client, sep: sep, looked: None }
+}
+
+pub fn Files::enable_count_looks(self : Files) -> Unit {
+  self.looked = Some([])
+}
+
+pub fn Files::call(self : Files, op : String, args : base_codec::Json) -> Result[base_codec::Json, String] {
+  match self.looked {
+    Some(seen) => {
+      match builders_core::json_get_last(args, "path") {
+        Some(base_codec::Json::Str(p)) => seen.push((op, p))
+        _ => ()
+      }
+    }
+    None => ()
+  }
+  match self.client.shell_sync_json(op, args) {
+    Ok(v) => Ok(v)
+    Err(e) => Err(e.message)
+  }
+}
+
+pub fn Files::join(self : Files, parts : Array[String]) -> String {
+  nodepath::join(self.sep, parts)
+}
+
+pub fn Files::dirname(self : Files, path : String) -> String {
+  let slash = match str_rev_find_byte(path, 47) {
+    Some(i) => i
+    None => -1
+  }
+  let back = if self.sep == "\\" {
+    match str_rev_find_byte(path, 92) {
+      Some(i) => i
+      None => -1
+    }
+  } else {
+    -1
+  }
+  let cut = if slash > back { slash } else { back }
+  if cut <= 0 {
+    if cut == 0 { self.sep } else { "." }
+  } else {
+    str_slice(path, 0, cut)
+  }
+}
+
+pub fn Files::exists(self : Files, path : String) -> Bool {
+  match self.call("fs.stat", base_codec::json_obj([("path", base_codec::json_str(path))])) {
+    Ok(base_codec::Json::Str(_)) => true
+    _ => false
+  }
+}
+
+pub fn Files::kind(self : Files, path : String) -> Option[String] {
+  match self.call("fs.stat", base_codec::json_obj([("path", base_codec::json_str(path))])) {
+    Ok(base_codec::Json::Str(k)) => Some(k)
+    _ => None
+  }
+}
+
+pub fn Files::is_regular_file(self : Files, path : String) -> Bool {
+  let rc = c_is_file(path)
+  if rc == 1 {
+    true
+  } else if rc == 0 {
+    false
+  } else {
+    opt_str_is(self.kind(path), "file")
+  }
+}
+
+pub fn Files::meta(self : Files, path : String) -> Option[(Double, Double)] {
+  match self.call("fs.meta", base_codec::json_obj([("path", base_codec::json_str(path))])) {
+    Ok(v) => {
+      match builders_core::json_get_last(v, "size") {
+        Some(base_codec::Json::Num(size, _)) => {
+          let mtime = match builders_core::json_get_last(v, "mtimeMs") {
+            Some(base_codec::Json::Num(m, _)) => m
+            _ => 0.0
+          }
+          Some((size, mtime))
+        }
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+pub fn Files::size(self : Files, path : String) -> Result[Double, String] {
+  match self.meta(path) {
+    Some((sz, _)) => Ok(sz)
+    None => Err("ENOENT: no such file or directory, stat '" + path + "'")
+  }
+}
+
+pub fn Files::read(self : Files, path : String, zstd : Bool = false) -> Result[Option[String], String] {
+  let args = base_codec::json_obj([
+    ("path", base_codec::json_str(path)),
+    ("zstd", base_codec::json_bool(zstd)),
+  ])
+  match self.call("fs.read", args) {
+    Ok(base_codec::Json::Str(s)) => Ok(Some(s))
+    Ok(_) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Files::write(self : Files, path : String, text : String, zstd : Bool = false) -> Result[String, String] {
+  let args = base_codec::json_obj([
+    ("path", base_codec::json_str(path)),
+    ("text", base_codec::json_str(text)),
+    ("zstd", base_codec::json_bool(zstd)),
+  ])
+  match self.call("fs.write", args) {
+    Ok(v) => {
+      match builders_core::json_get_last(v, "sha256") {
+        Some(base_codec::Json::Str(h)) => Ok(h)
+        _ => Err("the shell wrote nothing")
+      }
+    }
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Files::hash(self : Files, path : String) -> Result[Option[String], String] {
+  match self.call("fs.hash", base_codec::json_obj([("path", base_codec::json_str(path))])) {
+    Ok(base_codec::Json::Str(h)) => Ok(Some(h))
+    Ok(_) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Files::mkdir(self : Files, path : String) -> Result[Unit, String] {
+  match self.call("fs.mkdir", base_codec::json_obj([("path", base_codec::json_str(path))])) {
+    Ok(_) => Ok(())
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Files::remove(self : Files, path : String, recursive : Bool = false) -> Result[Unit, String] {
+  let args = base_codec::json_obj([
+    ("path", base_codec::json_str(path)),
+    ("recursive", base_codec::json_bool(recursive)),
+  ])
+  match self.call("fs.remove", args) {
+    Ok(_) => Ok(())
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Files::rename(self : Files, from : String, to : String) -> Result[Unit, String] {
+  let args = base_codec::json_obj([
+    ("from", base_codec::json_str(from)),
+    ("to", base_codec::json_str(to)),
+  ])
+  match self.call("fs.rename", args) {
+    Ok(_) => Ok(())
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Files::copy(self : Files, from : String, to : String) -> Result[Unit, String] {
+  let args = base_codec::json_obj([
+    ("from", base_codec::json_str(from)),
+    ("to", base_codec::json_str(to)),
+  ])
+  match self.call("fs.copy", args) {
+    Ok(_) => Ok(())
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Files::names(self : Files, path : String) -> Option[Array[String]] {
+  match self.call("fs.readdir", base_codec::json_obj([("path", base_codec::json_str(path))])) {
+    Ok(base_codec::Json::Arr(items)) => {
+      let out : Array[String] = []
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+      }
+      Some(out)
+    }
+    _ => None
+  }
+}
+
+pub fn Files::random(self : Files, n : Int) -> Result[String, String] {
+  match self.call("crypto.random", base_codec::json_obj([("bytes", base_codec::json_int(n))])) {
+    Ok(base_codec::Json::Str(h)) => Ok(h)
+    Ok(_) => Err("the shell gave no random bytes")
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Files::write_beside(self : Files, path : String, text : String) -> Result[Unit, String] {
+  let tmp = self.client.unique_tmp(path)
+  match self.write(tmp, text) {
+    Ok(_) => ()
+    Err(e) => {
+      let _ = self.remove(tmp)
+      return Err(e)
+    }
+  }
+  match self.rename(tmp, path) {
+    Ok(_) => Ok(())
+    Err(e) => {
+      let _ = self.remove(tmp)
+      Err(e)
+    }
+  }
+}
+
+// ── Path helpers shared across carry / export / restore ──
+
+pub fn Files::win(self : Files) -> Bool {
+  self.sep == "\\"
+}
+
+pub fn Files::is_sep_byte(self : Files, c : Int) -> Bool {
+  c == 47 || (self.win() && c == 92)
+}
+
+pub fn Files::absolute(self : Files, p : String) -> Bool {
+  let b = p.to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  if self.is_sep_byte(b[0].to_int() & 0xFF) {
+    return true
+  }
+  if !self.win() || b.length() < 3 {
+    return false
+  }
+  let c = b[0].to_int() & 0xFF
+  let is_alpha = (c >= 97 && c <= 122) || (c >= 65 && c <= 90)
+  is_alpha && (b[1].to_int() & 0xFF) == 58 && self.is_sep_byte(b[2].to_int() & 0xFF)
+}
+
+pub fn Files::root_of(self : Files, p : String) -> String {
+  let b = p.to_bytes()
+  if self.win() && b.length() >= 3 && (b[1].to_int() & 0xFF) == 58 && self.is_sep_byte(b[2].to_int() & 0xFF) {
+    slice_bytes(b, 0, 3)
+  } else if b.length() > 0 && self.is_sep_byte(b[0].to_int() & 0xFF) {
+    self.sep
+  } else {
+    ""
+  }
+}
+
+pub fn Files::resolve(self : Files, p : String) -> String {
+  let whole = if self.absolute(p) {
+    self.join([p])
+  } else {
+    let cwd = match self.call("fs.realpath", base_codec::json_obj([("path", base_codec::json_str("."))])) {
+      Ok(base_codec::Json::Str(c)) => c
+      _ => self.sep
+    }
+    self.join([cwd, p])
+  }
+  let root = self.root_of(whole)
+  let wb = whole.to_bytes()
+  let rb = root.to_bytes()
+  if wb.length() > rb.length() && self.is_sep_byte(wb[wb.length() - 1].to_int() & 0xFF) {
+    slice_bytes(wb, 0, wb.length() - 1)
+  } else {
+    whole
+  }
+}
+
+pub fn Files::resolve_in(self : Files, dir : String, p : String) -> String {
+  if self.absolute(p) {
+    self.resolve(p)
+  } else {
+    self.resolve(self.join([dir, p]))
+  }
+}
+
+pub fn Files::dir_of(self : Files, p : String) -> String {
+  let root = self.root_of(p)
+  let b = p.to_bytes()
+  let rlen = root.to_bytes().length()
+  let mut end = b.length()
+  while end > rlen && self.is_sep_byte(b[end - 1].to_int() & 0xFF) {
+    end = end - 1
+  }
+  let mut i = end - 1
+  while i >= rlen && !self.is_sep_byte(b[i].to_int() & 0xFF) {
+    i = i - 1
+  }
+  if i < rlen {
+    return if root == "" { "." } else { root }
+  }
+  let mut cut = i
+  while cut > rlen && self.is_sep_byte(b[cut - 1].to_int() & 0xFF) {
+    cut = cut - 1
+  }
+  if cut <= rlen {
+    root
+  } else {
+    slice_bytes(b, 0, cut)
+  }
+}
+
+pub fn Files::base_of(self : Files, p : String) -> String {
+  let b = p.to_bytes()
+  let mut end = b.length()
+  while end > 0 && self.is_sep_byte(b[end - 1].to_int() & 0xFF) {
+    end = end - 1
+  }
+  let mut i = end - 1
+  while i >= 0 && !self.is_sep_byte(b[i].to_int() & 0xFF) {
+    i = i - 1
+  }
+  slice_bytes(b, i + 1, end)
+}
+
+pub fn Files::key(self : Files, p : String) -> String {
+  if self.win() { str_to_ascii_lower(p) } else { p }
+}
+
+pub fn Files::within(self : Files, path : String, dir : String) -> Bool {
+  if !self.win() {
+    return dir == "/" || path == dir || str_has_prefix(path, dir + "/")
+  }
+  let p = self.key(path)
+  let d = self.key(dir)
+  let db = d.to_bytes()
+  let prefix = if db.length() > 0 && self.is_sep_byte(db[db.length() - 1].to_int() & 0xFF) {
+    d
+  } else {
+    d + "\\"
+  }
+  p == d || str_has_prefix(p, prefix)
+}
+
+pub fn Files::segments(self : Files, p : String) -> Array[String] {
+  let b = p.to_bytes()
+  let out : Array[String] = []
+  let mut start = 0
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 47 || (self.win() && c == 92) {
+      out.push(slice_bytes(b, start, i))
+      start = i + 1
+    }
+  }
+  out.push(slice_bytes(b, start, b.length()))
+  out
+}
+
+pub fn Files::file_name(self : Files, p : String) -> Option[String] {
+  let raw = self.segments(p)
+  let parts : Array[String] = []
+  for i in 0..<raw.length() {
+    if raw[i] != "" && raw[i] != "." {
+      parts.push(raw[i])
+    }
+  }
+  if parts.length() == 0 {
+    return None
+  }
+  let last = parts[parts.length() - 1]
+  if last == ".." {
+    return None
+  }
+  let lb = last.to_bytes()
+  if self.win() && parts.length() == 1 && lb.length() == 2 && (lb[1].to_int() & 0xFF) == 58 {
+    let c = lb[0].to_int() & 0xFF
+    if (c >= 97 && c <= 122) || (c >= 65 && c <= 90) {
+      return None
+    }
+  }
+  Some(last)
+}
+
+pub fn Files::under_of(self : Files, dir : String, path : String) -> Option[String] {
+  let d = self.resolve(dir)
+  let p = self.resolve(path)
+  if self.key(d) == self.key(p) {
+    return Some("")
+  }
+  let db = d.to_bytes()
+  let prefix = if db.length() > 0 && self.is_sep_byte(db[db.length() - 1].to_int() & 0xFF) {
+    d
+  } else {
+    d + self.sep
+  }
+  if str_has_prefix(self.key(p), self.key(prefix)) {
+    let pb = p.to_bytes()
+    Some(slice_bytes(pb, prefix.to_bytes().length(), pb.length()))
+  } else {
+    None
+  }
+}
+
+pub fn cli_kept(parts : Array[String]) -> Bool {
+  parts.length() >= 7 &&
+  parts[0] == "homes" &&
+  parts[2] == "agy" &&
+  parts[3] == ".gemini" &&
+  parts[4] == "antigravity-cli" &&
+  (parts[5] == "conversations" || parts[5] == "brain" || parts[5] == "annotations")
+}
+
+pub fn one_segment(s : String) -> Bool {
+  let b = s.to_bytes()
+  if b.length() == 0 || (b[0].to_int() & 0xFF) == 46 {
+    return false
+  }
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    let ok = (c >= 97 && c <= 122) ||
+    (c >= 65 && c <= 90) ||
+    (c >= 48 && c <= 57) ||
+    c == 95 ||
+    c == 46 ||
+    c == 64 ||
+    c == 43 ||
+    c == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+pub fn Files::carried_place(self : Files, data : String, path : String) -> Bool {
+  let rel = match self.under_of(data, path) {
+    Some(r) => if r != "" { r } else { return false }
+    None => return false
+  }
+  let parts = str_split_sep(rel, self.sep)
+  parts.length() > 1 && (parts[0] == "sessions" || str_has_prefix(parts[0], "transcripts") || cli_kept(parts))
+}
+
+pub fn Files::is_transcript_path(self : Files, data : String, path : String) -> Bool {
+  let rel = match self.under_of(data, path) {
+    Some(r) => if r != "" { r } else { return false }
+    None => return false
+  }
+  let parts = str_split_sep(rel, self.sep)
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    if p == "" || p == "." || p == ".." {
+      return false
+    }
+  }
+  parts.length() > 1 && (str_has_prefix(parts[0], "transcripts") || cli_kept(parts))
+}
+
+pub fn is_pruned_brain_rel(rel_parts : Array[String]) -> Bool {
+  if rel_parts.length() == 1 && rel_parts[0] == "scratch" {
+    return true
+  }
+  if rel_parts.length() == 2 && rel_parts[0] == ".system_generated" && rel_parts[1] == "steps" {
+    return true
+  }
+  if rel_parts.length() == 3 && rel_parts[0] == ".system_generated" && rel_parts[1] == "logs" && rel_parts[2] == "chunks" {
+    return true
+  }
+  false
+}
+
+pub fn Files::is_pruned_brain_path(self : Files, data : String, path : String) -> Bool {
+  let rel = match self.under_of(data, path) {
+    Some(r) => if r != "" { r } else { return false }
+    None => return false
+  }
+  let parts = str_split_sep(rel, self.sep)
+  if !(parts.length() >= 8 &&
+    parts[0] == "homes" &&
+    one_segment(parts[1]) &&
+    parts[2] == "agy" &&
+    parts[3] == ".gemini" &&
+    parts[4] == "antigravity-cli" &&
+    parts[5] == "brain" &&
+    one_segment(parts[6])) {
+    return false
+  }
+  if parts[7] == "scratch" {
+    return true
+  }
+  if parts.length() >= 9 && parts[7] == ".system_generated" && parts[8] == "steps" {
+    return true
+  }
+  if parts.length() >= 10 && parts[7] == ".system_generated" && parts[8] == "logs" && parts[9] == "chunks" {
+    return true
+  }
+  false
+}
+
+pub fn Files::inside(self : Files, path : String, dir : String) -> Bool {
+  let prefix = if str_has_suffix(dir, self.sep) { dir } else { dir + self.sep }
+  path == dir || str_has_prefix(path, prefix)
+}
+
+pub fn Files::real(self : Files, p : String) -> Option[String] {
+  match self.call("fs.realpath", base_codec::json_obj([("path", base_codec::json_str(p))])) {
+    Ok(base_codec::Json::Str(r)) => Some(r)
+    _ => None
+  }
+}
+
+pub fn Files::real_of(self : Files, path : String) -> String {
+  let rest : Array[String] = []
+  let mut at = path
+  while true {
+    match self.real(at) {
+      Some(r) => {
+        let parts : Array[String] = [r]
+        let mut i = rest.length() - 1
+        while i >= 0 {
+          parts.push(rest[i])
+          i = i - 1
+        }
+        return self.join(parts)
+      }
+      None => ()
+    }
+    let up = self.dir_of(at)
+    if up == at {
+      return path
+    }
+    rest.push(self.base_of(at))
+    at = up
+  }
+  path
+}
+
+pub fn Files::lstat(self : Files, p : String) -> Option[(String, Double, Int, Double)] {
+  match self.call("fs.lstat", base_codec::json_obj([("path", base_codec::json_str(p))])) {
+    Ok(v) => {
+      match (
+        builders_core::json_get_last(v, "kind"),
+        builders_core::json_get_last(v, "size"),
+        builders_core::json_get_last(v, "mode"),
+        builders_core::json_get_last(v, "mtimeMs"),
+      ) {
+        (
+          Some(base_codec::Json::Str(kind)),
+          Some(base_codec::Json::Num(size, _)),
+          Some(base_codec::Json::Num(mode, _)),
+          Some(base_codec::Json::Num(mtime, _)),
+        ) => Some((kind, size, mode.to_int(), mtime))
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+pub fn Files::listing(self : Files, dir : String) -> Option[Array[(String, String)]] {
+  let args = base_codec::json_obj([
+    ("path", base_codec::json_str(dir)),
+    ("types", base_codec::json_bool(true)),
+  ])
+  match self.call("fs.readdir", args) {
+    Ok(base_codec::Json::Arr(entries)) => {
+      let out : Array[(String, String)] = []
+      for i in 0..<entries.length() {
+        match entries[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() == 2 {
+              match (pair[0], pair[1]) {
+                (base_codec::Json::Str(name), base_codec::Json::Str(kind)) => out.push((name, kind))
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+      sort_pairs_utf16(out)
+      Some(out)
+    }
+    _ => None
+  }
+}
+
+pub fn Files::read_link(self : Files, p : String) -> Result[String, String] {
+  match self.call("fs.readlink", base_codec::json_obj([("path", base_codec::json_str(p))])) {
+    Ok(base_codec::Json::Str(t)) => Ok(t)
+    Ok(_) => Err("EINVAL: invalid argument, readlink '" + p + "'")
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Files::each_line(self : Files, path : String, f : (String) -> Result[Unit, String]) -> Result[Unit, String] {
+  let opened = match self.call(
+    "text.open",
+    base_codec::json_obj([("path", base_codec::json_str(path)), ("lines", base_codec::json_bool(true))]),
+  ) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let id = match builders_core::json_get_last(opened, "id") {
+    Some(v) => v
+    None => return Ok(())
+  }
+  let mut err : Option[String] = None
+  while true {
+    match self.call("text.next", base_codec::json_obj([("id", id)])) {
+      Ok(base_codec::Json::Str(part)) => {
+        let lines = str_split_sep(part, "\n")
+        for i in 0..<lines.length() {
+          if lines[i].length() > 0 {
+            match f(lines[i]) {
+              Ok(()) => ()
+              Err(e) => {
+                err = Some(e)
+                break
+              }
+            }
+          }
+        }
+        match err {
+          Some(_) => break
+          None => ()
+        }
+      }
+      Ok(_) => break
+      Err(e) => {
+        err = Some(e)
+        break
+      }
+    }
+  }
+  let _ = self.call("text.close", base_codec::json_obj([("id", id)]))
+  match err {
+    Some(e) => Err(e)
+    None => Ok(())
+  }
+}
+
+pub fn moved(files : Files, path : String, from : String, to : String) -> String {
+  if from == "" || from == to {
+    return path
+  }
+  let f = if str_has_suffix(from, files.sep) {
+    str_slice(from, 0, from.to_bytes().length() - files.sep.to_bytes().length())
+  } else {
+    from
+  }
+  if path == f {
+    return to
+  }
+  if str_has_prefix(path, f + files.sep) || str_has_prefix(path, f + "/") {
+    let pb = path.to_bytes()
+    files.join([to, slice_bytes(pb, f.to_bytes().length() + 1, pb.length())])
+  } else {
+    path
+  }
+}
+
+pub fn carried_to(files : Files, path : String, from : String, to : String, room : Option[String]) -> String {
+  let at = moved(files, path, from, to)
+  let project = match room {
+    Some(r) => locate::claude_project(r)
+    None => None
+  }
+  let p = match project {
+    Some(v) => v
+    None => return at
+  }
+  if from == "" || at == path {
+    return at
+  }
+  let t = if str_has_suffix(to, files.sep) {
+    str_slice(to, 0, to.to_bytes().length() - files.sep.to_bytes().length())
+  } else {
+    to
+  }
+  let atb = at.to_bytes()
+  let tb = t.to_bytes()
+  if atb.length() <= tb.length() + 1 {
+    return at
+  }
+  let rest = slice_bytes(atb, tb.length() + 1, atb.length())
+  let rb = rest.to_bytes()
+  let parts : Array[String] = []
+  let mut start = 0
+  for i in 0..<rb.length() {
+    let c = rb[i].to_int() & 0xFF
+    if c == 47 || c == 92 {
+      parts.push(slice_bytes(rb, start, i))
+      start = i + 1
+    }
+  }
+  parts.push(slice_bytes(rb, start, rb.length()))
+  if parts.length() < 4 || !str_has_prefix(parts[0], "transcripts") || parts[1] != "claude" {
+    return at
+  }
+  parts[2] = p
+  let all : Array[String] = [t]
+  for i in 0..<parts.length() {
+    all.push(parts[i])
+  }
+  files.join(all)
+}
+
+pub fn Files::rebuildable(self : Files, dir : String) -> Bool {
+  let name = match self.file_name(dir) {
+    Some(n) => n
+    None => return false
+  }
+  let beside = fn(file : String) -> Bool { self.exists(self.join([self.dir_of(dir), file])) }
+  if name == "node_modules" || name == ".next" || name == ".turbo" || name == "__pycache__" {
+    true
+  } else if name == "target" {
+    beside("Cargo.toml")
+  } else if name == ".gradle" {
+    beside("settings.gradle") || beside("settings.gradle.kts") || beside("build.gradle") || beside("build.gradle.kts")
+  } else if name == "build" {
+    beside("build.gradle") || beside("build.gradle.kts")
+  } else {
+    false
+  }
+}
+
+pub fn rebuilt_by_name(name : String, beside : Map[String, Bool]) -> Int {
+  let has = fn(k : String) -> Bool {
+    match beside.get(k) {
+      Some(true) => true
+      _ => false
+    }
+  }
+  if name == "node_modules" || name == ".next" || name == ".turbo" || name == "__pycache__" {
+    1
+  } else if name == "target" {
+    if has("Cargo.toml") { 1 } else { 0 }
+  } else if name == ".gradle" {
+    if has("settings.gradle") || has("settings.gradle.kts") || has("build.gradle") || has("build.gradle.kts") {
+      1
+    } else {
+      0
+    }
+  } else if name == "build" {
+    if has("build.gradle") || has("build.gradle.kts") { 1 } else { 0 }
+  } else if name == "_build" {
+    if has("mix.exs") || has("moon.mod.json") || has("moon.mod") || has("moon.work") || has("moon.pkg.json") || has("moon.pkg") {
+      2
+    } else {
+      0
+    }
+  } else if name == "deps" {
+    if has("mix.exs") { 2 } else { 0 }
+  } else if name == ".mooncakes" {
+    if has("moon.mod.json") || has("moon.mod") || has("moon.work") { 2 } else { 0 }
+  } else {
+    0
+  }
+}
+
+pub fn names_of(entries : Array[(String, String)]) -> Map[String, Bool] {
+  let out : Map[String, Bool] = Map::new()
+  for i in 0..<entries.length() {
+    out.set(entries[i].0, true)
+  }
+  out
+}
+
+pub let ANY_NAME_DEPTH : Int = 3
+
+let CARGO_TAG_1 : String = "Signature: 8a477f597d28d172789f06886806bc55"
+let CARGO_TAG_2 : String = "# This file is a cache directory tag created by cargo."
+
+pub fn opt_str_is(v : Option[String], want : String) -> Bool {
+  match v {
+    Some(s) => s == want
+    None => false
+  }
+}
+
+pub fn Files::rebuilt_of_any_name(self : Files, dir : String, names : Array[(String, String)]) -> Bool {
+  let has = fn(n : String) -> Bool {
+    for i in 0..<names.length() {
+      if names[i].0 == n {
+        return true
+      }
+    }
+    false
+  }
+  if has("Build") &&
+  opt_str_is(self.kind(self.join([dir, "Build", "Products"])), "dir") &&
+  opt_str_is(self.kind(self.join([dir, "Build", "Intermediates.noindex"])), "dir") {
+    return true
+  }
+  if !has("CACHEDIR.TAG") {
+    return false
+  }
+  let tag = match self.read(self.join([dir, "CACHEDIR.TAG"])) {
+    Ok(Some(t)) => t
+    _ => return false
+  }
+  let pieces = str_split_sep(tag, "\n")
+  let mut has1 = false
+  let mut has2 = false
+  for k in 0..<pieces.length() {
+    let t = pieces[k]
+    let line = if k < pieces.length() - 1 && str_has_suffix(t, "\r") {
+      str_slice(t, 0, t.to_bytes().length() - 1)
+    } else {
+      t
+    }
+    if line == CARGO_TAG_1 {
+      has1 = true
+    }
+    if line == CARGO_TAG_2 {
+      has2 = true
+    }
+  }
+  if !has1 || !has2 {
+    return false
+  }
+  if has(".rustc_info.json") {
+    return true
+  }
+  let profiles = ["debug", "release"]
+  let owns = ["deps", ".fingerprint"]
+  for pi in 0..<profiles.length() {
+    let profile = profiles[pi]
+    if has(profile) {
+      for oi in 0..<owns.length() {
+        if opt_str_is(self.kind(self.join([dir, profile, owns[oi]])), "dir") {
+          return true
+        }
+      }
+    }
+  }
+  false
+}
+
+pub fn Files::room_of(self : Files, data : String, workspace : String) -> Option[String] {
+  let sessions = match self.real(self.join([data, "sessions"])) {
+    Some(s) => s
+    None => return None
+  }
+  let path = match self.real(workspace) {
+    Some(p) => Some(p)
+    None => {
+      if opt_str_is(self.file_name(workspace), "workspace") {
+        match self.real(self.dir_of(workspace)) {
+          Some(parent) => Some(self.join([parent, "workspace"]))
+          None => None
+        }
+      } else {
+        None
+      }
+    }
+  }
+  let p = match path {
+    Some(v) => v
+    None => return None
+  }
+  if !self.within(p, sessions) || self.key(p) == self.key(sessions) {
+    return None
+  }
+  let pb = p.to_bytes()
+  let tail = slice_bytes(pb, sessions.to_bytes().length(), pb.length())
+  let raw_segs = self.segments(tail)
+  let rel : Array[String] = []
+  for i in 0..<raw_segs.length() {
+    if raw_segs[i] != "" {
+      rel.push(raw_segs[i])
+    }
+  }
+  if rel.length() != 3 || !opt_str_is(self.file_name(p), "workspace") {
+    return None
+  }
+  Some(self.dir_of(p))
+}
+
+pub fn Files::room_for(self : Files, data : String, real_data : String, workspace : String) -> Option[String] {
+  let real = match self.room_of(data, workspace) {
+    Some(r) => r
+    None => return None
+  }
+  if !self.within(real, real_data) {
+    return None
+  }
+  let rest = if self.key(real) == self.key(real_data) {
+    ""
+  } else {
+    let rdl = real_data.to_bytes().length()
+    let cut = if str_has_suffix(real_data, self.sep) { rdl } else { rdl + 1 }
+    let rb = real.to_bytes()
+    slice_bytes(rb, cut, rb.length())
+  }
+  Some(self.join([data, rest]))
+}

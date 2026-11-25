@@ -1,0 +1,874 @@
+// 1:1 port of `station/mb/src/readops/threadviews.mbt`.
+// A session's page and the threads as a viewer reads them (station/src/read/sessions.ts
+// `session`, `threads`, `thread`, `threadView`: GET /sessions/:key, GET /threads, GET /threads/:id).
+// Uses `js_json::json_js_str`, `ReadSignals.prepare_up_jobs`, and `sql_db::Db::savepoint_swallow_err`.
+
+import "base_codec"
+import "builders_core"
+import "builders_requested"
+import "js_json"
+import "readops_chats"
+import "readops_core"
+import "readops_local"
+import "sql_db"
+
+pub let CC_SESSIONS_PENDING : String = "copy destination sessions pending:"
+
+/// A thread as listed for a viewer (store.ts `ThreadSummary`).
+struct ThreadSummary {
+  thread : Map[String, base_codec::Json]
+  sessions : Array[Map[String, base_codec::Json]]
+  last : base_codec::Json
+  last_message : base_codec::Json
+  read : base_codec::Json
+  unread : base_codec::Json
+  people : base_codec::Json
+  first_text : base_codec::Json
+  letters : Double
+  letters_last : Double
+  said_at : Double
+}
+
+/// store.ts `listThreads(s, viewer, session, thread, "count", visibleTo)`: of one thread, of one session's, or all.
+fn list_threads(
+  db : sql_db::Db,
+  viewer : String,
+  session : Option[String],
+  thread : Option[base_codec::Json],
+  visible_to : Option[base_codec::Json],
+) -> Result[Array[ThreadSummary], readops_core::ReadError] {
+  let base = "SELECT t.*, COALESCE(r.n, 0) AS read_n FROM threads t LEFT JOIN reads r ON r.thread = t.id AND r.viewer = ?1"
+  let where_ : Array[String] = []
+  let args : Array[base_codec::Json] = [base_codec::json_str(viewer)]
+  match (thread, session) {
+    (Some(t), _) => {
+      where_.push("t.id = ?2")
+      args.push(t)
+    }
+    (None, Some(s)) => {
+      where_.push("t.id IN (SELECT thread FROM thread_sessions WHERE session = ?2)")
+      args.push(base_codec::json_str(s))
+    }
+    _ => ()
+  }
+  let selected = if where_.length() == 0 {
+    base
+  } else {
+    base + " WHERE " + readops_core::join_strings(where_, " AND ")
+  }
+  let and_ = if where_.length() == 0 { " WHERE " } else { " AND " }
+  let rows = match visible_to {
+    Some(v) => {
+      let n = args.length()
+      let scope_sql = "EXISTS (SELECT 1 FROM thread_sessions visible_member\n      LEFT JOIN sessions visible_session ON visible_session.key = visible_member.session\n      WHERE visible_member.thread = t.id AND (visible_session.ws = ?" +
+      (n + 1).to_string() +
+      "\n        OR (?" +
+      (n + 2).to_string() +
+      " AND visible_session.ws IS NULL)))"
+      let home = !readops_chats::mb_json_eq(
+        readops_core::json_val_or_null(v, "home"),
+        base_codec::json_bool(false),
+      )
+      let vis_args : Array[base_codec::Json] = []
+      for i in 0..<args.length() {
+        vis_args.push(args[i])
+      }
+      vis_args.push(readops_core::json_val_or_null(v, "workspace"))
+      vis_args.push(base_codec::json_num(if home { 1.0 } else { 0.0 }))
+      match db.all(selected + and_ + scope_sql, vis_args) {
+        Ok(rs) => rs
+        Err(e) => {
+          if readops_core::str_contains_sub(e.message, "no such column: visible_session.ws") {
+            if !home {
+              return Ok([])
+            }
+            match db.all(
+              selected + and_ + "EXISTS (SELECT 1 FROM thread_sessions visible_member WHERE visible_member.thread = t.id)",
+              args,
+            ) {
+              Ok(rs) => rs
+              Err(e2) => return Err(readops_core::ReadError::Sql(e2))
+            }
+          } else {
+            return Err(readops_core::ReadError::Sql(e))
+          }
+        }
+      }
+    }
+    None => {
+      match db.all(selected, args) {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::ReadError::Sql(e))
+      }
+    }
+  }
+  if rows.length() == 0 {
+    return Ok([])
+  }
+  let id_rows = match db.all("SELECT slack_user FROM identities WHERE viewer = ? ORDER BY at", [base_codec::json_str(viewer)]) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::ReadError::Sql(e))
+  }
+  let slack : Array[base_codec::Json] = [base_codec::json_str(viewer)]
+  for i in 0..<id_rows.length() {
+    slack.push(readops_core::field(id_rows[i], "slack_user"))
+  }
+  let own = base_codec::json_str(sql_db::stringify_json(base_codec::json_arr([base_codec::json_str(viewer)])))
+  let slack_selves = base_codec::json_str(sql_db::stringify_json(base_codec::json_arr(slack)))
+  let legacy = match readops_core::has_legacy_said(db) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let out : Array[ThreadSummary] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let id = readops_core::field(r, "id")
+    let sessions = match db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [id]) {
+      Ok(rs) => rs
+      Err(e) => return Err(readops_core::ReadError::Sql(e))
+    }
+    let last = match readops_chats::last_entry(db, id) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let last_message = match readops_core::last_said(db, id) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let read = readops_core::field(r, "read_n")
+    let is_chat = readops_chats::mb_json_eq(readops_core::field(r, "surface"), base_codec::json_str("chat"))
+    let selves = if !is_chat { slack_selves } else { own }
+    let unread = match readops_core::one(
+      db,
+      if legacy { readops_core::LEGACY_UNREAD_SQL } else { readops_core::UNREAD_SQL },
+      [id, read, selves],
+    ) {
+      Ok(Some(u)) => readops_core::field(u, "c")
+      Ok(None) => base_codec::json_num(0.0)
+      Err(e) => return Err(e)
+    }
+    let people = match readops_chats::thread_people(db, id, readops_core::field(r, "surface")) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let ft = match readops_core::first_text(db, id) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let ll_j = match max_n(db, "SELECT MAX(n) AS n FROM letters WHERE thread = ?", id) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let letters_last = readops_core::num(ll_j)
+    let kept_letters = match readops_core::one(db, "SELECT letters FROM thread_state WHERE thread = ?", [id]) {
+      Ok(Some(s)) => {
+        match readops_core::field(s, "letters") {
+          base_codec::Json::Null => 0.0
+          v => readops_core::num(v)
+        }
+      }
+      Ok(None) => 0.0
+      Err(e) => return Err(e)
+    }
+    let said_at = match readops_core::json_val(last_message, "createdAt") {
+      Some(base_codec::Json::Num(n, _)) => n
+      _ => 0.0
+    }
+    out.push(ThreadSummary::{
+      thread: r,
+      sessions: sessions,
+      last: last,
+      last_message: last_message,
+      read: read,
+      unread: unread,
+      people: people,
+      first_text: ft,
+      letters: letters_last + kept_letters,
+      letters_last: letters_last,
+      said_at: said_at,
+    })
+  }
+  Ok(
+    readops_core::stable_sort(out, fn(a : ThreadSummary, b : ThreadSummary) -> Int {
+      if a.said_at != b.said_at {
+        return if b.said_at > a.said_at { 1 } else { -1 }
+      }
+      let ca = readops_core::num(readops_core::field(a.thread, "created_at"))
+      let cb = readops_core::num(readops_core::field(b.thread, "created_at"))
+      if ca != cb {
+        return if cb > ca { 1 } else { -1 }
+      }
+      let ia = readops_core::num(readops_core::field(a.thread, "id"))
+      let ib = readops_core::num(readops_core::field(b.thread, "id"))
+      if ia != ib {
+        return if ib > ia { 1 } else { -1 }
+      }
+      0
+    }),
+  )
+}
+
+/// JavaScript's `String(v)` of a value JSON.parse made.
+pub fn js_string(v : base_codec::Json) -> String {
+  js_json::json_js_str(Some(v))
+}
+
+/// store.ts `chatShares` of some sessions, whole: each workspace it is still shared with and its
+/// name, whether they may write, who shared it and when.
+fn shares_of(
+  db : sql_db::Db,
+  ids : Array[String],
+  now : Double,
+) -> Map[String, base_codec::Json] {
+  let out : Map[String, base_codec::Json] = Map::new()
+  let rows = match db.all(readops_core::SHARES_OF_SQL, [readops_core::ids_json(str_array_to_json(ids))]) {
+    Ok(rs) => rs
+    Err(_) => return out
+  }
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let to = match readops_core::parsed(readops_core::field(r, "shared")) {
+      Some(js_json::JValue::Arr(xs)) => xs
+      _ => []
+    }
+    let live : Array[base_codec::Json] = []
+    for j in 0..<to.length() {
+      let t = to[j]
+      let ws = match readops_core::jget(Some(t), "workspace") {
+        Some(js_json::JValue::Str(u)) => u
+        _ => continue
+      }
+      let used = match readops_core::jget(Some(t), "used") {
+        Some(js_json::JValue::Num(u)) => u
+        _ => readops_core::num(readops_core::field(r, "at"))
+      }
+      if now - used < 6.0 * 3600000.0 {
+        let name = match readops_core::jget(Some(t), "name") {
+          None => js_json::sanitize_str(ws)
+          Some(js_json::JValue::Null) => js_json::sanitize_str(ws)
+          Some(js_json::JValue::Str(n)) => js_json::sanitize_str(n)
+          Some(other) => js_string(readops_core::to_json(other))
+        }
+        live.push(
+          base_codec::json_obj([
+            ("workspace", base_codec::json_str(js_json::sanitize_str(ws))),
+            ("name", base_codec::json_str(name)),
+          ]),
+        )
+      }
+    }
+    if live.length() > 0 {
+      out.set(
+        readops_core::js_text(readops_core::field(r, "session")),
+        base_codec::json_obj([
+          ("to", base_codec::json_arr(live)),
+          ("write", base_codec::json_bool(readops_chats::mb_json_eq(readops_core::field(r, "write"), base_codec::json_num(1.0)))),
+          ("by", readops_core::field(r, "by")),
+          ("at", readops_core::field(r, "at")),
+        ]),
+      )
+    }
+  }
+  out
+}
+
+/// The session a thread's link names: its home, else its first session's.
+fn share_key(t : ThreadSummary) -> String {
+  match readops_core::field(t.thread, "home") {
+    base_codec::Json::Str(h) => h
+    _ => {
+      if t.sessions.length() > 0 {
+        readops_core::js_text(readops_core::field(t.sessions[0], "session"))
+      } else {
+        ""
+      }
+    }
+  }
+}
+
+/// cc-thread-index.ts `indexedCcThreads`: the Slack and Feishu threads a still.fail chat copies to,
+/// with the connect posting in each; refused while one of its sessions' destinations is prepared.
+fn cc_threads(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[Array[Map[String, base_codec::Json]], readops_core::ReadError] {
+  db.savepoint_swallow_err(
+    "cc_threads_read",
+    fn(db2 : sql_db::Db) -> Result[Array[Map[String, base_codec::Json]], readops_core::ReadError] {
+      let s_rows = match db2.all("SELECT session FROM thread_sessions WHERE thread=? ORDER BY session", [thread]) {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::ReadError::Sql(e))
+      }
+      let sessions : Array[base_codec::Json] = []
+      for i in 0..<s_rows.length() {
+        sessions.push(readops_core::field(s_rows[i], "session"))
+      }
+      let missing : Array[base_codec::Json] = []
+      for i in 0..<sessions.length() {
+        let s = sessions[i]
+        let rdy = match builders_requested::cc_ready(db2, s) {
+          Ok(b) => b
+          Err(e) => return Err(readops_core::map_step_err(e))
+        }
+        if !rdy {
+          missing.push(s)
+        }
+      }
+      if missing.length() > 0 {
+        return Err(
+          readops_core::refused(503, CC_SESSIONS_PENDING + sql_db::stringify_json(base_codec::json_arr(missing))),
+        )
+      }
+      let candidates : Array[base_codec::Json] = []
+      let seen : Map[String, Bool] = Map::new()
+      for i in 0..<sessions.length() {
+        let s = sessions[i]
+        let c_rows = match db2.all(readops_core::CC_SESSION_KEYS_SQL, [s]) {
+          Ok(rs) => rs
+          Err(e) => return Err(readops_core::ReadError::Sql(e))
+        }
+        for j in 0..<c_rows.length() {
+          let t = readops_core::field(c_rows[j], "thread")
+          let tk = readops_core::js_text(t)
+          if !seen.contains(tk) {
+            seen.set(tk, true)
+            candidates.push(base_codec::json_arr([t, s]))
+          }
+        }
+      }
+      if candidates.length() == 0 {
+        return Ok([])
+      }
+      match db2.all(
+        readops_core::CC_INDEXED_THREADS_SQL,
+        [base_codec::json_str(sql_db::stringify_json(base_codec::json_arr(candidates)))],
+      ) {
+        Ok(rs) => Ok(rs)
+        Err(e) => Err(readops_core::ReadError::Sql(e))
+      }
+    },
+    readops_core::map_sql_err,
+  )
+}
+
+/// sessions.ts `threadJson`: auto_title, home, hidden_at, hidden_by and shown_at left out when none.
+fn listed_thread_json(t : Map[String, base_codec::Json]) -> Array[(String, base_codec::Json)] {
+  let v : Array[(String, base_codec::Json)] = [
+    ("id", readops_core::field(t, "id")),
+    ("surface", readops_core::field(t, "surface")),
+    ("channel", readops_core::field(t, "channel")),
+    ("threadTs", readops_core::field(t, "thread_ts")),
+    ("title", readops_core::field(t, "title")),
+  ]
+  match readops_core::field(t, "auto_title") {
+    base_codec::Json::Null => ()
+    at_v => v.push(("autoTitle", at_v))
+  }
+  v.push(("createdBy", readops_core::field(t, "created_by")))
+  v.push(("createdAt", readops_core::field(t, "created_at")))
+  let opt_pairs : Array[(String, String)] = [
+    ("home", "home"),
+    ("hiddenAt", "hidden_at"),
+    ("hiddenBy", "hidden_by"),
+    ("shownAt", "shown_at"),
+  ]
+  for i in 0..<opt_pairs.length() {
+    let (out_k, col_k) = opt_pairs[i]
+    let fv = readops_core::field(t, col_k)
+    match fv {
+      base_codec::Json::Null => ()
+      _ => v.push((out_k, fv))
+    }
+  }
+  match readops_core::parsed_thread_links(readops_core::field(t, "links")) {
+    Some(l) => v.push(("links", l))
+    None => ()
+  }
+  match readops_core::field(t, "project") {
+    base_codec::Json::Str(p) => v.push(("project", base_codec::json_str(p)))
+    _ => ()
+  }
+  match readops_core::field(t, "project_locked") {
+    base_codec::Json::Num(n, _) => if n == 1.0 { v.push(("projectLocked", base_codec::json_bool(true))) }
+    _ => ()
+  }
+  match parsed_thread_tags(readops_core::field(t, "tags")) {
+    Some(ts) => v.push(("tags", ts))
+    None => ()
+  }
+  v
+}
+
+/// sessions.ts `threadView`.
+fn thread_view(
+  db : sql_db::Db,
+  known : readops_core::Known,
+  t : ThreadSummary,
+  shares : Map[String, base_codec::Json],
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let id = readops_core::field(t.thread, "id")
+  let names = match known.author_names(db, id) {
+    Ok(n) => n
+    Err(e) => return Err(e)
+  }
+  let v = listed_thread_json(t.thread)
+  let sess_arr : Array[base_codec::Json] = []
+  for i in 0..<t.sessions.length() {
+    let m = t.sessions[i]
+    sess_arr.push(
+      base_codec::json_obj([
+        ("thread", readops_core::field(m, "thread")),
+        ("session", readops_core::field(m, "session")),
+        ("connect", readops_core::field(m, "connect")),
+        ("joinedAt", readops_core::field(m, "joined_at")),
+      ]),
+    )
+  }
+  v.push(("sessions", base_codec::json_arr(sess_arr)))
+  v.push(("last", t.last))
+  let last_msg = match t.last_message {
+    base_codec::Json::Null => base_codec::json_null()
+    m => {
+      match readops_core::message_view(db, m, names) {
+        Ok(mv) => mv
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  v.push(("lastMessage", last_msg))
+  v.push(("read", t.read))
+  v.push(("unread", t.unread))
+  let people = match known.people(t.people) {
+    Ok(ps) => ps
+    Err(e) => return Err(e)
+  }
+  v.push(("people", base_codec::json_arr(people)))
+  v.push(("firstText", t.first_text))
+  if t.letters > 0.0 {
+    v.push(("letters", base_codec::json_num(t.letters)))
+  }
+  if t.letters_last > 0.0 {
+    v.push(("lettersLast", base_codec::json_num(t.letters_last)))
+  }
+  let own = readops_chats::mb_json_eq(readops_core::field(t.thread, "surface"), base_codec::json_str("chat"))
+  let ch_name = if own {
+    base_codec::json_null()
+  } else {
+    match known.channel(readops_core::slack_connect_of(t.sessions), readops_core::field(t.thread, "channel")) {
+      Ok(ch) => ch
+      Err(e) => return Err(e)
+    }
+  }
+  v.push(("channelName", ch_name))
+  let creator = match known.creator(readops_core::field(t.thread, "created_by")) {
+    Ok(c) => c
+    Err(e) => return Err(e)
+  }
+  v.push(("creator", creator))
+  if own {
+    let to = match cc_threads(db, id) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    if to.length() > 0 {
+      let cc : Array[base_codec::Json] = []
+      for i in 0..<to.length() {
+        let o = to[i]
+        let conn = match readops_core::field(o, "connect") {
+          base_codec::Json::Str(c) => Some(c)
+          _ => None
+        }
+        let o_ch = match known.channel(conn, readops_core::field(o, "channel")) {
+          Ok(ch) => ch
+          Err(e) => return Err(e)
+        }
+        cc.push(
+          base_codec::json_obj([
+            ("thread", readops_core::field(o, "id")),
+            ("surface", readops_core::field(o, "surface")),
+            ("channel", readops_core::field(o, "channel")),
+            ("threadTs", readops_core::field(o, "thread_ts")),
+            ("channelName", o_ch),
+          ]),
+        )
+      }
+      v.push(("cc", base_codec::json_arr(cc)))
+    }
+  }
+  v.push(("xshare", readops_core::or_null(shares.get(share_key(t)))))
+  Ok(base_codec::json_obj(v))
+}
+
+/// sessions.ts `threadViews`: the threads of the viewer's workspace (of one session).
+fn thread_views(
+  db : sql_db::Db,
+  known : readops_core::Known,
+  viewer : base_codec::Json,
+  session : Option[String],
+) -> Result[Array[base_codec::Json], readops_core::ReadError] {
+  let email = match readops_core::json_val(viewer, "email") {
+    Some(base_codec::Json::Str(e)) => e
+    _ => ""
+  }
+  let visible = match list_threads(db, email, session, None, Some(viewer)) {
+    Ok(vs) => vs
+    Err(e) => return Err(e)
+  }
+  // store.ts `requireCcSessions`
+  let wanted : Array[base_codec::Json] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<visible.length() {
+    let t = visible[i]
+    if readops_chats::mb_json_eq(readops_core::field(t.thread, "surface"), base_codec::json_str("chat")) {
+      for j in 0..<t.sessions.length() {
+        let s_val = readops_core::field(t.sessions[j], "session")
+        let s = readops_core::js_text(s_val)
+        if !seen.contains(s) {
+          seen.set(s, true)
+          wanted.push(s_val)
+        }
+      }
+    }
+  }
+  let missing : Array[base_codec::Json] = []
+  for i in 0..<wanted.length() {
+    let s = wanted[i]
+    let rdy = match builders_requested::cc_ready(db, s) {
+      Ok(b) => b
+      Err(e) => return Err(readops_core::map_step_err(e))
+    }
+    if !rdy {
+      missing.push(s)
+    }
+  }
+  if missing.length() > 0 {
+    return Err(
+      readops_core::refused(503, CC_SESSIONS_PENDING + sql_db::stringify_json(base_codec::json_arr(missing))),
+    )
+  }
+  let share_keys : Array[String] = []
+  for i in 0..<visible.length() {
+    share_keys.push(share_key(visible[i]))
+  }
+  let shares = shares_of(db, share_keys, known.now)
+  let out : Array[base_codec::Json] = []
+  for i in 0..<visible.length() {
+    match thread_view(db, known, visible[i], shares) {
+      Ok(tv) => out.push(tv)
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(out)
+}
+
+/// sessions.ts `threads` (GET /threads?session=).
+pub fn thread_list_of(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let session = match readops_core::json_val(args, "session") {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+  let views = match thread_views(
+    db,
+    readops_core::Known::of(client, data, sep, ask),
+    readops_core::json_val_or_null(args, "viewer"),
+    session,
+  ) {
+    Ok(vs) => vs
+    Err(e) => return Err(e)
+  }
+  Ok(base_codec::json_arr(views))
+}
+
+/// sessions.ts `parseI64`: digits with a sign at most, within an i64.
+pub fn parse_i64(text : String) -> Option[base_codec::Json] {
+  let bs = text.to_bytes()
+  let n = bs.length()
+  if n == 0 {
+    return None
+  }
+  let b0 = bs[0].to_int() & 0xFF
+  let start = if b0 == 43 || b0 == 45 { 1 } else { 0 }
+  if n == start {
+    return None
+  }
+  for i in start..<n {
+    if !is_ascii_digit(bs[i].to_int() & 0xFF) {
+      return None
+    }
+  }
+  let neg = b0 == 45
+  let mut trim_start = start
+  while trim_start < n - 1 && (bs[trim_start].to_int() & 0xFF) == 48 {
+    trim_start = trim_start + 1
+  }
+  let trimmed = readops_core::str_slice_bytes(text, trim_start, n)
+  let limit = if neg { "9223372036854775808" } else { "9223372036854775807" }
+  let tlen = trimmed.to_bytes().length()
+  if tlen > 19 || (tlen == 19 && readops_core::by_bytes(trimmed, limit) > 0) {
+    return None
+  }
+  match base_codec::json_parse(trimmed) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Num(v, _)) => Some(base_codec::json_num(if neg { -v } else { v }))
+    _ => None
+  }
+}
+
+/// store.ts `seesThread`.
+pub fn sees_thread_of(
+  db : sql_db::Db,
+  viewer : base_codec::Json,
+  thread : base_codec::Json,
+) -> Result[Bool, readops_core::ReadError] {
+  let members = match db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [thread]) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::ReadError::Sql(e))
+  }
+  if members.length() == 0 {
+    return Ok(readops_chats::sees(viewer, base_codec::json_null()))
+  }
+  for i in 0..<members.length() {
+    match readops_core::one(db, "SELECT * FROM sessions WHERE key = ?", [readops_core::field(members[i], "session")]) {
+      Ok(Some(s)) => {
+        if readops_chats::sees(viewer, readops_core::field(s, "ws")) {
+          return Ok(true)
+        }
+      }
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(false)
+}
+
+/// sessions.ts `thread` (GET /threads/:id).
+pub fn thread_of(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let viewer = readops_core::json_val_or_null(args, "viewer")
+  let id = readops_core::js_text(readops_core::json_val_or_null(args, "id"))
+  let n = match parse_i64(id) {
+    Some(v) => v
+    None => return Err(readops_core::refused(404, "unknown thread " + id))
+  }
+  let exists = match readops_core::one(db, "SELECT * FROM threads WHERE id = ?", [n]) {
+    Ok(Some(_)) => true
+    Ok(None) => false
+    Err(e) => return Err(e)
+  }
+  if !exists {
+    return Err(readops_core::refused(404, "unknown thread " + id))
+  }
+  let visible = match sees_thread_of(db, viewer, n) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  if !visible {
+    return Err(readops_core::refused(404, "unknown thread " + id))
+  }
+  let email = match readops_core::json_val(viewer, "email") {
+    Some(base_codec::Json::Str(e)) => e
+    _ => ""
+  }
+  let listed = match list_threads(db, email, None, Some(n), None) {
+    Ok(ls) => ls
+    Err(e) => return Err(e)
+  }
+  if listed.length() == 0 {
+    return Err(readops_core::refused(404, "unknown thread " + readops_core::js_text(n)))
+  }
+  let found = listed[0]
+  let known = readops_core::Known::of(client, data, sep, ask)
+  thread_view(db, known, found, shares_of(db, [share_key(found)], known.now))
+}
+
+/// store.ts `jobsNow`: a session's latest jobs and those of it still up.
+fn jobs_now(
+  db : sql_db::Db,
+  session : String,
+  signals : readops_core::ReadSignals,
+) -> Result[Array[Map[String, base_codec::Json]], readops_core::ReadError] {
+  let key = base_codec::json_str(session)
+  let by_start = fn(rows : Array[Map[String, base_codec::Json]]) -> Array[Map[String, base_codec::Json]] {
+    readops_core::stable_sort(rows, fn(a : Map[String, base_codec::Json], b : Map[String, base_codec::Json]) -> Int {
+      let d = readops_core::num(readops_core::field(b, "started_at")) - readops_core::num(readops_core::field(a, "started_at"))
+      if d < 0.0 {
+        -1
+      } else if d > 0.0 {
+        1
+      } else {
+        0
+      }
+    })
+  }
+  let latest = match db.all(readops_core::LATEST_JOBS_SQL, [key, base_codec::json_num(51.0)]) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::ReadError::Sql(e))
+  }
+  if latest.length() <= 50 {
+    return Ok(by_start(latest))
+  }
+  let ready = match readops_chats::session_up_jobs_ready(db, key) {
+    Ok(r) => {
+      if !r {
+        signals.prepare_up_jobs = Some(session)
+      }
+      r
+    }
+    Err(e) => {
+      if readops_core::str_contains_sub(readops_core::read_error_message(e), "no such table: session_up_job_meta") {
+        false
+      } else {
+        return Err(e)
+      }
+    }
+  }
+  let up_rows = match db.all(
+    if ready { readops_core::PREPARED_UP_JOBS_OF_SQL } else { readops_core::UP_JOBS_OF_SQL },
+    [key],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::ReadError::Sql(e))
+  }
+  let by_id : Map[String, Map[String, base_codec::Json]] = Map::new()
+  let id_order : Array[String] = []
+  for i in 0..<50 {
+    let r = latest[i]
+    let id = readops_core::js_text(readops_core::field(r, "id"))
+    if !by_id.contains(id) {
+      id_order.push(id)
+    }
+    by_id.set(id, r)
+  }
+  for i in 0..<up_rows.length() {
+    let r = up_rows[i]
+    let id = readops_core::js_text(readops_core::field(r, "id"))
+    if !by_id.contains(id) {
+      id_order.push(id)
+    }
+    by_id.set(id, r)
+  }
+  let merged : Array[Map[String, base_codec::Json]] = []
+  for i in 0..<id_order.length() {
+    match by_id.get(id_order[i]) {
+      Some(r) => merged.push(r)
+      None => ()
+    }
+  }
+  Ok(by_start(merged))
+}
+
+/// sessions.ts `session` (GET /sessions/:key): the session, its threads, turns and jobs (newest first).
+pub fn session_page(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  signals : readops_core::ReadSignals,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let viewer = readops_core::json_val_or_null(args, "viewer")
+  let key = readops_core::js_text(readops_core::json_val_or_null(args, "key"))
+  match readops_core::one(db, "SELECT * FROM sessions WHERE key = ?", [base_codec::json_str(key)]) {
+    Ok(Some(row)) => {
+      if !readops_chats::sees(viewer, readops_core::field(row, "ws")) {
+        return Err(readops_core::refused(404, "unknown session " + key))
+      }
+    }
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  // (`?turns=`: how many of its latest, ops-sessions.ts `latest`)
+  let last_turns_limit : Option[base_codec::Json] = match readops_core::json_val(args, "turns") {
+    Some(base_codec::Json::Str(t)) => {
+      let bs = t.to_bytes()
+      let mut all_digits = bs.length() >= 1 && bs.length() <= 6
+      for i in 0..<bs.length() {
+        if !is_ascii_digit(bs[i].to_int() & 0xFF) {
+          all_digits = false
+          break
+        }
+      }
+      if all_digits {
+        match sql_db::parse_json(t) {
+          base_codec::JsonParseResult::Ok(v) => Some(v)
+          _ => Some(base_codec::json_null())
+        }
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+  let turn_rows = match last_turns_limit {
+    None => {
+      match db.all("SELECT * FROM turns WHERE session_key = ? ORDER BY started_at", [base_codec::json_str(key)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::ReadError::Sql(e))
+      }
+    }
+    Some(n) => {
+      match db.all(readops_core::LATEST_TURNS_SQL, [base_codec::json_str(key), n]) {
+        Ok(rs) => readops_core::array_rev(rs)
+        Err(e) => return Err(readops_core::ReadError::Sql(e))
+      }
+    }
+  }
+  let turns : Array[base_codec::Json] = []
+  for i in 0..<turn_rows.length() {
+    let r = turn_rows[i]
+    r.set("turn_id", readops_core::field(r, "id"))
+    turns.push(readops_chats::latest_turn(r))
+  }
+  let job_rows = if readops_chats::mb_json_eq(readops_core::json_val_or_null(args, "jobs"), base_codec::json_str("now")) {
+    match jobs_now(db, key, signals) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+  } else {
+    match db.all(readops_core::SESSION_JOBS_SQL, [base_codec::json_str(key)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(readops_core::ReadError::Sql(e))
+    }
+  }
+  let jobs : Array[base_codec::Json] = []
+  for i in 0..<job_rows.length() {
+    match readops_local::shown(db, client, job_rows[i]) {
+      Ok(j) => jobs.push(j)
+      Err(e) => return Err(e)
+    }
+  }
+  let known = readops_core::Known::of(client, data, sep, ask)
+  let lists = match lists_of(db, [key]) {
+    Ok(l) => l
+    Err(e) => return Err(e)
+  }
+  let summary = match summary_with(db, known, key, lists) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let threads = match thread_views(db, known, viewer, Some(key)) {
+    Ok(ts) => ts
+    Err(e) => return Err(e)
+  }
+  Ok(
+    base_codec::json_obj([
+      ("session", summary),
+      ("threads", base_codec::json_arr(threads)),
+      ("turns", base_codec::json_arr(turns)),
+      ("jobs", base_codec::json_arr(jobs)),
+    ]),
+  )
+}

@@ -1,0 +1,307 @@
+// Linked-binary real-SQLite self-test for `readops_core` and W7-0 read-side helpers
+// (`sql_db::members_of`, `sql_db::Db::read_snapshot_err`, `builders_recent::page`,
+// `builders_core::cards_ready`, `builders_stateful::letters_ready_token`, `builders_legacy::EditKey`).
+// Invoked by `stillfail-pion --smoke-readops <temp-dir>` in `build-linux` CI.
+
+import "base_codec"
+import "builders_core"
+import "builders_legacy"
+import "builders_recent"
+import "builders_stateful"
+import "sql_db"
+
+pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
+  let db_path = temp_dir + "/readops_core_selftest.db"
+  let db = match sql_db::Db::create(db_path) {
+    Ok(d) => d
+    Err(e) => return Err("open selftest db failed: " + e.message)
+  }
+  let mut passed = 0
+
+  // 1. Setup schema subset covering sessions, threads, entries, card_posts, page_letters, recent_chat, mesh_directory
+  let schema_sql = "CREATE TABLE sessions(key TEXT PRIMARY KEY, conv TEXT, ws TEXT, title TEXT, runtime TEXT, model TEXT, effort TEXT, running INTEGER DEFAULT 0, created_by TEXT, archived_at INTEGER, last_active_at INTEGER, workspace TEXT, cwd TEXT, connect TEXT, runtime_session_id TEXT, original_runtime TEXT, profile TEXT);" +
+  "CREATE TABLE threads(id INTEGER PRIMARY KEY, surface TEXT, channel TEXT, thread_ts TEXT, title TEXT, auto_title TEXT, created_by TEXT, created_at INTEGER, home TEXT, hidden_at INTEGER, hidden_by TEXT, shown_at INTEGER, links TEXT);" +
+  "CREATE TABLE thread_sessions(thread INTEGER, session TEXT, connect TEXT, joined_at INTEGER, left_at INTEGER);" +
+  "CREATE TABLE entries(thread INTEGER, n INTEGER, kind TEXT, author_kind TEXT, author TEXT, ts TEXT, at INTEGER, text TEXT, attachments TEXT, quotes TEXT, declared TEXT, client TEXT, agent_identity TEXT, letter TEXT, card TEXT, options TEXT, target INTEGER, PRIMARY KEY(thread, n));" +
+  "CREATE INDEX entries_said ON entries(thread, n) WHERE kind='message' AND letter IS NULL;" +
+  "CREATE INDEX entries_cards ON entries(thread, n) WHERE card IS NOT NULL;" +
+  "CREATE INDEX entries_options ON entries(thread, n) WHERE options IS NOT NULL;" +
+  "CREATE INDEX entries_letters ON entries(thread, n) WHERE letter IS NOT NULL;" +
+  "CREATE TABLE thread_state(thread INTEGER PRIMARY KEY, said_n INTEGER, person_n INTEGER, last_n INTEGER);" +
+  "CREATE TABLE card_post_meta(id INTEGER PRIMARY KEY, version INTEGER);" +
+  "CREATE TABLE card_post_scopes(thread INTEGER PRIMARY KEY, last_n INTEGER, end_n INTEGER, phase INTEGER);" +
+  "CREATE TABLE card_posts(thread INTEGER, n INTEGER, PRIMARY KEY(thread, n));" +
+  "CREATE TABLE pending_system_cards(thread INTEGER, n INTEGER, PRIMARY KEY(thread, n));" +
+  "CREATE TABLE closed_cards(thread INTEGER, n INTEGER, viewer TEXT, at INTEGER, PRIMARY KEY(thread, n));" +
+  "CREATE TABLE deliveries(thread INTEGER, n INTEGER, session TEXT, delivered_at INTEGER);" +
+  "CREATE TABLE letter_deliveries(thread INTEGER, n INTEGER, session TEXT, delivered_at INTEGER);" +
+  "CREATE TABLE letters(thread INTEGER, n INTEGER, ts TEXT, author_kind TEXT, author TEXT, text TEXT, attachments TEXT, at INTEGER, letter TEXT);" +
+  "CREATE TABLE widget_states(session TEXT, path TEXT, state TEXT, PRIMARY KEY(session, path));" +
+  "CREATE TABLE mesh_announcements(scope TEXT, node TEXT, body TEXT, signature TEXT, PRIMARY KEY(scope, node));" +
+  "CREATE TABLE mesh_relay_records(scope TEXT, node TEXT, body TEXT, signature TEXT, PRIMARY KEY(scope, node));" +
+  "CREATE TABLE mesh_relay_registrations(scope TEXT, node TEXT, issuer TEXT, generation INTEGER, name TEXT, made_by TEXT, revoked INTEGER);" +
+  "CREATE VIEW merged AS SELECT m.thread,m.n,m.ts,m.author_kind,m.author,m.text,m.attachments,m.quotes,m.declared,m.client,m.agent_identity,m.at AS created_at,NULL AS edited_at,m.letter FROM entries m WHERE m.kind='message';"
+
+  match db.exec(schema_sql) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("schema setup failed: " + e.message)
+    }
+  }
+
+  // 2. Test sql_db::members_of (owned vs handed:/coming: filtering + limit)
+  match db.exec(
+    "INSERT INTO sessions(key, conv, ws, title, runtime, workspace) VALUES " +
+    "('s1', NULL, NULL, 'Anchor', 'claude', '/w1')," +
+    "('s2', 's1', 'ws-a', 'Member', 'codex', '/w2')," +
+    "('s3', 's1', 'handed:other', 'Handed', 'claude', '/w3')," +
+    "('s4', 's1', 'coming:other', 'Coming', 'claude', '/w4');",
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("seed sessions failed: " + e.message)
+    }
+  }
+  match sql_db::members_of(db, "s1") {
+    Ok(ms) => {
+      if ms.length() != 2 {
+        db.close()
+        return Err("members_of expected 2 owned members, got " + ms.length().to_string())
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("members_of failed: " + e.message)
+    }
+  }
+  match sql_db::members_of(db, "s1", limit=Some(1)) {
+    Ok(ms) => {
+      if ms.length() != 1 {
+        db.close()
+        return Err("members_of(limit=1) expected 1, got " + ms.length().to_string())
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("members_of(limit=1) failed: " + e.message)
+    }
+  }
+
+  // 3. Test sql_db::Db::read_snapshot_err (Ok path + Err path + autocommit restored)
+  let snap_ok = db.read_snapshot_err(
+    map_sql_err,
+    fn() -> Result[Int, ReadError] { Ok(42) },
+  )
+  match snap_ok {
+    Ok(42) => {
+      if !db.autocommit() {
+        db.close()
+        return Err("read_snapshot_err left transaction open on Ok")
+      }
+      passed = passed + 1
+    }
+    _ => {
+      db.close()
+      return Err("read_snapshot_err Ok path failed")
+    }
+  }
+  let snap_err : Result[Int, ReadError] = db.read_snapshot_err(
+    map_sql_err,
+    fn() -> Result[Int, ReadError] { Err(refused(418, "teapot")) },
+  )
+  match snap_err {
+    Err(ReadError::Refused(418, "teapot")) => {
+      if !db.autocommit() {
+        db.close()
+        return Err("read_snapshot_err left transaction open on Err")
+      }
+      passed = passed + 1
+    }
+    _ => {
+      db.close()
+      return Err("read_snapshot_err did not propagate callback error")
+    }
+  }
+
+  // 4. Test builders_core::cards_ready + readops_core::pending_card_number
+  match db.exec(
+    "INSERT INTO threads(id, surface, created_at) VALUES (10, 'chat', 1000);" +
+    "INSERT INTO card_post_meta(id, version) VALUES (1, 1);" +
+    "INSERT INTO card_post_scopes(thread, last_n, end_n, phase) VALUES (10, 1, 1, 2);" +
+    "INSERT INTO entries(thread, n, kind, author_kind, author, ts, at, text, card) VALUES (10, 1, 'message', 'agent', 's1', '1.0', 1001, 'Pick one', '{\"type\":\"options\",\"options\":[]}');" +
+    "INSERT INTO card_posts(thread, n) VALUES (10, 1);",
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("seed cards failed: " + e.message)
+    }
+  }
+  match builders_core::cards_ready(db, base_codec::json_int(10)) {
+    Ok(true) => passed = passed + 1
+    _ => {
+      db.close()
+      return Err("cards_ready expected Ok(true)")
+    }
+  }
+  match pending_card_number(db, base_codec::json_int(10)) {
+    Ok(base_codec::Json::Num(n, _)) => {
+      if n != 1.0 {
+        db.close()
+        return Err("pending_card_number expected 1")
+      }
+      passed = passed + 1
+    }
+    _ => {
+      db.close()
+      return Err("pending_card_number failed")
+    }
+  }
+
+  // 5. Test builders_stateful::letters_ready_token (not installed -> Ok(None))
+  match builders_stateful::letters_ready_token(db, base_codec::json_int(10)) {
+    Ok(None) => passed = passed + 1
+    _ => {
+      db.close()
+      return Err("letters_ready_token expected Ok(None) when tables absent")
+    }
+  }
+
+  // 6. Test builders_recent::page (limit=0 -> Ok(Some(([], 0.0))), uninstalled -> Ok(None))
+  match builders_recent::page(db, None, None, 0) {
+    Ok(Some((ids, total))) => {
+      if ids.length() != 0 || total != 0.0 {
+        db.close()
+        return Err("builders_recent::page(limit=0) mismatch")
+      }
+      passed = passed + 1
+    }
+    _ => {
+      db.close()
+      return Err("builders_recent::page(limit=0) failed")
+    }
+  }
+  match builders_recent::page(db, None, None, 10) {
+    Ok(None) => passed = passed + 1
+    _ => {
+      db.close()
+      return Err("builders_recent::page(uninstalled) expected Ok(None)")
+    }
+  }
+
+  // 7. Test builders_legacy::bounded_edit_key returning EditKey::Key(None)
+  match builders_legacy::bounded_edit_key(db, base_codec::json_int(10), base_codec::json_str("1")) {
+    Ok(builders_legacy::EditKey::Key(None)) => passed = passed + 1
+    _ => {
+      db.close()
+      return Err("bounded_edit_key expected EditKey::Key(None)")
+    }
+  }
+
+  // 8. Test readops_core L0 ops: latest_messages, widget_state, mesh_control_read, card_message_page
+  match latest_messages(
+    db,
+    base_codec::json_obj([
+      ("thread", base_codec::json_int(10)),
+      ("limit", base_codec::json_int(10)),
+    ]),
+  ) {
+    Ok(base_codec::Json::Arr(msgs)) => {
+      if msgs.length() != 1 {
+        db.close()
+        return Err("latest_messages expected 1 message, got " + msgs.length().to_string())
+      }
+      passed = passed + 1
+    }
+    Ok(_) => {
+      db.close()
+      return Err("latest_messages returned non-array")
+    }
+    Err(e) => {
+      db.close()
+      return Err("latest_messages failed: " + read_error_message(e))
+    }
+  }
+
+  match db.exec("INSERT INTO widget_states(session, path, state) VALUES ('s1', 'w.mbui', '{\"v\":7}');") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("seed widget_states failed: " + e.message)
+    }
+  }
+  match widget_state(
+    db,
+    base_codec::json_obj([
+      ("key", base_codec::json_str("s1")),
+      ("path", base_codec::json_str("w.mbui")),
+    ]),
+  ) {
+    Ok(res) => {
+      if sql_db::stringify_json(res) != "{\"state\":{\"v\":7}}" {
+        db.close()
+        return Err("widget_state mismatch: " + sql_db::stringify_json(res))
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("widget_state failed: " + read_error_message(e))
+    }
+  }
+
+  match db.exec("INSERT INTO mesh_announcements(scope, node, body, signature) VALUES ('sc1', 'n1', '{}', 'sig1');") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("seed mesh_announcements failed: " + e.message)
+    }
+  }
+  match mesh_control_read(
+    db,
+    base_codec::json_obj([
+      ("kind", base_codec::json_str("announcements")),
+      ("scope", base_codec::json_str("sc1")),
+      ("nodes", base_codec::json_arr([base_codec::json_str("n1")])),
+    ]),
+  ) {
+    Ok(base_codec::Json::Arr(rows)) => {
+      if rows.length() != 1 {
+        db.close()
+        return Err("mesh_control_read expected 1 row")
+      }
+      passed = passed + 1
+    }
+    _ => {
+      db.close()
+      return Err("mesh_control_read failed")
+    }
+  }
+
+  match card_message_page(
+    db,
+    base_codec::json_obj([
+      ("thread", base_codec::json_int(10)),
+      ("target", base_codec::json_str("1")),
+    ]),
+  ) {
+    Ok(res) => {
+      if sql_db::stringify_json(res) != "{\"kind\":\"end\"}" {
+        db.close()
+        return Err("card_message_page mismatch: " + sql_db::stringify_json(res))
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("card_message_page failed: " + read_error_message(e))
+    }
+  }
+
+  db.close()
+  Ok(passed)
+}

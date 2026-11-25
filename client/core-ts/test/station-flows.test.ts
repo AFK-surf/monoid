@@ -2222,6 +2222,139 @@ test("the_stations_list_goes_out_again_as_the_way_to_a_station_changes_not_with_
   core.close();
 });
 
+test("stations_list_uses_lightweight_wire_way_when_stationNet_is_not_open", async () => {
+  let wayReading: { path: string | null; relay: string | null } = { path: "relay", relay: "r1.test" };
+  let netReading: LinkNet = { path: "relay", relay: "r1.test", rttMs: 42, measured: null, today: null, rxBytes: 1000, txBytes: 100, packets: null };
+  let wayCalls = 0;
+  let netCalls = 0;
+  const { host, core } = await started(base(), 0, (h) =>
+    Object.assign(new HostWire(h), {
+      way: () => ((wayCalls += 1), wayReading),
+      net: () => ((netCalls += 1), netReading),
+    }),
+  );
+  const ui = core.connect();
+  const values = new Map<number, J>();
+  const read = async (ms = NET_EVERY_MS) => {
+    await host.time.pass(ms, 100);
+    for (const [, m] of host.takeEmitted()) {
+      const id = (m as { id: number }).id;
+      if ("value" in m) values.set(id, m.value);
+      else if ("delta" in m) values.set(id, applyOps(values.get(id), m.delta as Op[]));
+    }
+  };
+  const station = () => (values.get(1) as J[]).find((s) => s.station === ST);
+  try {
+    // Subscribing only to `stations` (`way` without `net`) polls `wire.way` and never calls `wire.net`.
+    subscribe(core, ui, 1, { topic: "stations", scope: "ws" });
+    await read();
+    await read();
+    assert.ok(wayCalls >= 2, `expected way calls, got ${wayCalls}`);
+    assert.equal(netCalls, 0, "stations list must not trigger full wire.net() sampling");
+    assert.deepEqual(station().way, { path: "中继 r1.test", via: "relay" });
+
+    // Way changes still propagate through `wire.way`.
+    wayReading = { path: "direct", relay: null };
+    netReading = { ...netReading, path: "direct", relay: null };
+    await read();
+    await read();
+    assert.deepEqual(station().way, { path: "直连", via: "direct" });
+    assert.equal(netCalls, 0);
+
+    // Opening `stationNet` switches immediately to `wire.net()` and populates the card.
+    subscribe(core, ui, 2, { topic: "stationNet", station: ST });
+    await read(200);
+    assert.ok(netCalls >= 1, "subscribing stationNet immediately samples wire.net()");
+    assert.equal(values.get(2)?.rtt?.text, "42 ms");
+
+    // Closing `stationNet` returns to lightweight `wire.way()` once both `stationNet` and its watched `net` evict.
+    core.receive(ui, { kind: "unsubscribe", id: 2, unsubscribe: true });
+    await host.time.pass(2 * EVICT_AFTER_MS + 500, 500);
+    const netAfterStop = netCalls;
+    const wayBefore = wayCalls;
+    wayReading = { path: "relay", relay: "r2.test" };
+    await read();
+    await read();
+    assert.equal(netCalls, netAfterStop, "wire.net() must stop once stationNet unsubscribes");
+    assert.ok(wayCalls > wayBefore, "wire.way() resumes for stations list");
+    assert.deepEqual(station().way, { path: "中继 r2.test", via: "relay" });
+  } finally {
+    core.close();
+  }
+});
+
+test("stations_list_drops_host_stream_after_initial_sample_until_a_live_meter_view_opens", async () => {
+  const { host, core, push, streams } = await started();
+  const ui = core.connect();
+  const values = new Map<number, J>();
+  const open = () => streams.filter((s) => !s.closed).map((s) => s.path);
+  const sample = (load: number) => ({
+    hostname: "studio",
+    os: "macOS 26",
+    arch: "arm64",
+    cpus: 8,
+    cpuModel: "M4",
+    load,
+    uptimeSec: 100,
+    memory: { totalBytes: 1024, usedBytes: 512, swapUsedBytes: null },
+    disk: { path: "/", totalBytes: 1024, freeBytes: 512 },
+    stationRssBytes: 10,
+    checkedAt: 1,
+  });
+  const station = () => (values.get(1) as J[]).find((s) => s.station === ST);
+  try {
+    // Subscribing `stations` when no host sample is cached yet requests ?host=1 for the initial sample.
+    subscribe(core, ui, 1, { topic: "stations", scope: "ws" });
+    await host.settle();
+    await host.settle();
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&host=1"]);
+
+    // Once the first readable host sample arrives and is cached, the stream hands over back to ?host=0 (no overview refetch).
+    push("host", sample(0.2));
+    await host.settle();
+    await host.settle();
+    apply(host, values);
+    assert.equal(station()?.host?.os, "macOS 26");
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+    assert.equal(gets(host, "/admin/api/overview"), 1);
+
+    // Opening `stationNet` (Station tab / picker / peek) hands over to ?host=1 for live meter updates.
+    subscribe(core, ui, 2, { topic: "stationNet", station: ST });
+    await host.settle();
+    await host.settle();
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&host=1"]);
+    push("host", sample(0.8));
+    await host.settle();
+    apply(host, values);
+    assert.equal(station()?.host?.os, "macOS 26");
+
+    // Closing `stationNet` hands back to ?host=0 after grace while `stations` keeps its cached host reading.
+    core.receive(ui, { kind: "unsubscribe", id: 2, unsubscribe: true });
+    await host.time.pass(2 * EVICT_AFTER_MS + 500, 500);
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+    assert.equal(station()?.host?.os, "macOS 26");
+
+    // Opening single-station detail (`station`) also turns on live ?host=1.
+    subscribe(core, ui, 3, { topic: "station", scope: "ws", station: ST });
+    await host.settle();
+    await host.settle();
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1&host=1"]);
+    core.receive(ui, { kind: "unsubscribe", id: 3, unsubscribe: true });
+    await host.time.pass(2 * EVICT_AFTER_MS + 500, 500);
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+
+    // Re-subscribing `stations` when host is already cached never reopens ?host=1.
+    core.receive(ui, { kind: "unsubscribe", id: 1, unsubscribe: true });
+    await host.time.pass(2 * EVICT_AFTER_MS + 500, 500);
+    subscribe(core, ui, 4, { topic: "stations", scope: "ws" });
+    await host.settle();
+    await host.settle();
+    assert.deepEqual(open(), ["/events?running=1&views=1&rows=1&shared=1"]);
+  } finally {
+    core.close();
+  }
+});
+
 test("a_stream_taking_over_asks_for_what_came_after_the_last_event_its_predecessor_gave", async () => {
   const { host, core, streams } = await started();
   const ui = core.connect();

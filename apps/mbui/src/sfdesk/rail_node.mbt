@@ -754,10 +754,7 @@ fn rail_transfers_node(
     tips,
     at,
     fn() { ftransfers.open.get() },
-    fn() {
-      let (n, percent, _) = going()
-      coming_words(n, percent)
-    },
+    fn() { coming_words(going()) },
     // (pressed and let go: its list opened beside where it is then, or closed)
     fn() {
       let open = !ftransfers.open.get()
@@ -767,8 +764,8 @@ fn rail_transfers_node(
       ftransfers.open.set(open)
     },
     fn(k) {
-      @sf.coming_mark_node(k.sq, fn() { going().1.to_double() / 100.0 }, rail_icon_size, k.ink)
-      k.sq.show(fn() { going().2 }, fn(m) {
+      @sf.coming_mark_node(k.sq, fn() { going().percent.to_double() / 100.0 }, rail_icon_size, k.ink)
+      k.sq.show(fn() { going().failed }, fn(m) {
         m.over(Is(true)) |> ignore
         rail_hung_node(m, at, fn() { 1.0 }, fn(ring) { @sfpages.chat_mark_node(ring, fn() { "alert" }) }, under?)
       })

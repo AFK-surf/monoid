@@ -39,7 +39,8 @@ import { OUTFLOW_CHATS_PENDING } from "./outflow.ts";
 import { LAST_MESSAGE_PENDING, LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_LETTER_PENDING, REMOTE_RUNS_PENDING, SAID_PENDING, TURN_COUNT_PENDING, USAGE_CHATS_PENDING } from "./store.ts";
 import { HttpError } from "./views.ts";
 import { repairMergedEditLookup } from "../store/schema.ts";
-import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, readerBinary, resolveReaderSelection } from "./mb-reader.ts";
+import { EventEmitter } from "node:events";
+import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "./mb-reader.ts";
 import { wall } from "../ops/fibers.ts";
 import { roots as machineRoots } from "./machine.ts";
 import { platform } from "../platform/index.ts";
@@ -58,7 +59,74 @@ export const READS_PENDING = [LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_LE
 const SLOW_MS = 2_000;
 
 /// `held`: the read it is answering, if any.
-type Slot = { worker: ReaderLike; held: Asked | null; idle?: () => void; retiring?: boolean; catalogVersion: number };
+/// `binary`: the resolved binary path spawned for this slot (used to retire idle slots on hot config change).
+type Slot = { worker: ReaderLike; held: Asked | null; idle?: () => void; retiring?: boolean; catalogVersion: number; binary?: string };
+
+/// Deferred `ReaderLike` handle that reserves a pool `Slot` while a cold Pion `--version`
+/// capability probe is in flight, without calling `readerBinary()` synchronously.
+/// Handles `postMessage` queueing, `terminate()` during probe (zero orphan spawn), and probe failure.
+class DeferredMbReader extends EventEmitter implements ReaderLike {
+  #inner: MbReader | null = null;
+  #queued: Ask[] = [];
+  #terminated = false;
+  #exited = false;
+  readonly #onSpawned: (binary: string) => void;
+
+  constructor(data: string, resolveSelection: () => Promise<string>, onSpawned: (binary: string) => void) {
+    super();
+    this.#onSpawned = onSpawned;
+    void resolveSelection().then(
+      (binary) => {
+        if (this.#terminated || this.#exited) return;
+        let child: MbReader;
+        try {
+          child = new MbReader(binary, data);
+        } catch (err) {
+          this.#exited = true;
+          this.emit("error", err instanceof Error ? err : new Error(String(err)));
+          this.emit("exit", 1);
+          return;
+        }
+        this.#inner = child;
+        this.#onSpawned(binary);
+        child.on("message", (msg) => this.emit("message", msg));
+        child.on("error", (err) => this.emit("error", err));
+        child.on("exit", (code) => {
+          this.#exited = true;
+          this.emit("exit", code);
+        });
+        for (const ask of this.#queued.splice(0)) child.postMessage(ask);
+      },
+      (err) => {
+        if (this.#terminated || this.#exited) return;
+        this.#exited = true;
+        this.emit("error", err instanceof Error ? err : new Error(String(err)));
+        this.emit("exit", 1);
+      },
+    );
+  }
+
+  postMessage(ask: Ask): void {
+    if (this.#terminated || this.#exited) return;
+    if (this.#inner !== null) this.#inner.postMessage(ask);
+    else this.#queued.push(ask);
+  }
+
+  terminate(): Promise<number> {
+    if (this.#inner !== null) return this.#inner.terminate();
+    this.#terminated = true;
+    this.#queued.length = 0;
+    if (!this.#exited) {
+      this.#exited = true;
+      queueMicrotask(() => this.emit("exit", 0));
+    }
+    return Promise.resolve(0);
+  }
+
+  getHeapStatistics(): Promise<{ used_heap_size: number }> {
+    return this.#inner !== null ? this.#inner.getHeapStatistics() : Promise.resolve({ used_heap_size: 0 });
+  }
+}
 
 /// A read in line or being answered: when it was asked and when a reader took it, and the reader it is best read in (a
 /// session's history, where its reading stands in memory).
@@ -220,8 +288,26 @@ export class Readers {
   private readonly backfill: BackfillOptions;
   /// People's names as their credentials say them (the admin API's `deps.names`), given to every read.
   readonly names = new Map<string, string>();
-  /// The MoonBit reader's program (read/mb-reader.ts); none where a test's reference answers instead (`reference`).
-  mbReader: string | null;
+  /// Explicit `mbReader` binary override set by tests (`Object.assign(new Readers(...), { mbReader: mb })`).
+  /// When set, `start()` ALWAYS spawns `#explicitBinary` and never auto-selects.
+  #explicitOverride = false;
+  #explicitBinary: string | null = null;
+  /// The MoonBit/Pion reader's program (read/mb-reader.ts); `null` where a test's reference answers instead (`reference`).
+  /// In auto-selection mode, returns a stable non-null identity `"auto"` with zero disk probes on the main thread.
+  get mbReader(): string | null {
+    if (this.#explicitOverride) return this.#explicitBinary;
+    if (this.reference !== undefined) return null;
+    return "auto";
+  }
+  set mbReader(v: string | null) {
+    this.#explicitOverride = true;
+    this.#explicitBinary = v;
+  }
+  /// Non-null ONLY when an explicit `mbReader` override was assigned (distinguishes explicit test overrides
+  /// from auto-selection mode in `mesh.ts`).
+  get explicitMbReader(): string | null {
+    return this.#explicitOverride ? this.#explicitBinary : null;
+  }
   /// The store's schema repaired by the station's writer, where a builder leaves it to it (`prepareLegacyEdits`: the
   /// merged view, an index under it dropped by an older station): store/schema.ts `repairMergedEditLookup` on the main
   /// connection, waiting for no lock (services.ts); one found busy is tried again after a pause. None given: on a
@@ -235,7 +321,6 @@ export class Readers {
   constructor(data: string, size = Number(process.env.STILLFAIL_READERS) || Math.min(2, Math.max(1, availableParallelism() - 1)), reference?: (data: string) => ReaderLike, tellers = 1, backfill: BackfillOptions = {}) {
     this.data = data;
     this.reference = reference;
-    this.mbReader = reference === undefined ? readerBinary() : null;
     this.backfill = backfill;
     this.asked = { told: false, size, room: true, slots: [], waiting: [] };
     // Two: one a background page (a history brought on, a stretch filled) may hold, one left for a page someone waits on.
@@ -252,9 +337,80 @@ export class Readers {
     this.minutes.start();
   }
 
-  private start(line: Line): Slot {
-    const worker: ReaderLike = this.mbReader !== null ? new MbReader(this.mbReader, this.data) : this.reference!(this.data);
-    const slot: Slot = { worker, held: null, catalogVersion: 0 };
+  /// Current synchronous auto-selection state (`bypass` for explicit/reference, `binary`, `pending`, or `unavailable`).
+  #currentAutoSelection():
+    | { kind: "bypass" }
+    | { kind: "pending" }
+    | { kind: "unavailable" }
+    | { kind: "binary"; binary: string } {
+    if (this.#explicitOverride || this.reference !== undefined) return { kind: "bypass" };
+    try {
+      const sel = resolveReaderSelectionOrPending("data", { config: this.backfill.readers, logAt: "readers" });
+      return sel.pending ? { kind: "pending" } : { kind: "binary", binary: sel.primaryBinary };
+    } catch {
+      return { kind: "unavailable" };
+    }
+  }
+
+  /// Retire idle slots (including idle `kept` slots) whose spawned binary no longer matches the current
+  /// live `"data"` reader selection, or ALL idle slots when hot-switched to an unavailable/pending target.
+  /// In-flight slots finish cleanly; once idle they will be retired on the next pump before serving new reads.
+  retireMismatchedIdle(targetLine?: Line): number {
+    if (this.closed) return 0;
+    const cur = this.#currentAutoSelection();
+    if (cur.kind === "bypass") return 0;
+    let retired = 0;
+    const lines = targetLine !== undefined ? [targetLine] : [this.asked, this.told, this.pages, this.log, this.moved];
+    for (const line of lines) {
+      for (const slot of line.slots.filter((s) => {
+        if (s.held !== null || s.retiring) return false;
+        if (cur.kind === "unavailable") return true;
+        if (cur.kind === "pending") return s.binary !== undefined;
+        return s.binary !== undefined && s.binary !== cur.binary;
+      })) {
+        slot.idle?.();
+        slot.idle = undefined;
+        slot.retiring = true;
+        line.slots = line.slots.filter((s) => s !== slot);
+        void slot.worker.terminate();
+        retired++;
+      }
+    }
+    return retired;
+  }
+
+  private start(line: Line): { slot: Slot } | { error: Error } {
+    let worker: ReaderLike;
+    let spawnedBinary: string | undefined;
+    if (this.#explicitOverride) {
+      if (this.#explicitBinary !== null) {
+        spawnedBinary = this.#explicitBinary;
+        worker = new MbReader(this.#explicitBinary, this.data);
+      } else if (this.reference !== undefined) {
+        worker = this.reference(this.data);
+      } else {
+        return { error: new Error("reader binary is disabled") };
+      }
+    } else if (this.reference !== undefined) {
+      worker = this.reference(this.data);
+    } else {
+      try {
+        const sel = resolveReaderSelectionOrPending("data", { config: this.backfill.readers, logAt: "readers" });
+        if (sel.pending) {
+          worker = new DeferredMbReader(
+            this.data,
+            () => resolveReaderSelectionAsync("data", { config: this.backfill.readers, logAt: "readers" }).then((r) => r.primaryBinary),
+            (bin) => { slot.binary = bin; },
+          );
+        } else {
+          spawnedBinary = sel.primaryBinary;
+          worker = new MbReader(sel.primaryBinary, this.data);
+        }
+      } catch (err) {
+        return { error: err instanceof Error ? err : new Error(String(err)) };
+      }
+    }
+    const slot: Slot = { worker, held: null, catalogVersion: 0, binary: spawnedBinary };
     const begun = wall.now();
     worker.on("message", (answer: Answer | Ready) => {
       // How long a reader took to start: a read given it as it starts waits on that (one read of 1.9 s took 18 s on
@@ -305,7 +461,7 @@ export class Readers {
       this.pump(line);
     });
     line.slots.push(slot);
-    return slot;
+    return { slot };
   }
 
   /// A reader with nothing to do goes after IDLE_MS, but not the one someone waits on first (`kept`): one started for a
@@ -336,10 +492,21 @@ export class Readers {
   warm() {
     if (this.closed) return;
     if (this.mbReader !== null) {
-      if (this.moved.slots.length === 0) this.start(this.moved);
+      if (this.moved.slots.length === 0) {
+        const started = this.start(this.moved);
+        if ("error" in started) log.warn("readers", "warm reader start failed", { error: started.error.message });
+      }
       return;
     }
-    for (const line of [this.asked, this.told]) while (!this.closed && line.slots.length < line.size) this.start(line);
+    for (const line of [this.asked, this.told]) {
+      while (!this.closed && line.slots.length < line.size) {
+        const started = this.start(line);
+        if ("error" in started) {
+          log.warn("readers", "warm reader start failed", { error: started.error.message });
+          break;
+        }
+      }
+    }
   }
 
   /// `trim` called by `trimIdle` too: what it let go of that answers nothing, a count.
@@ -737,6 +904,7 @@ export class Readers {
   /// read passes a waiting bulk read to the one left.
   private pump(line: Line) {
     if (this.closed) return;
+    this.retireMismatchedIdle(line);
     while (line.waiting.length > 0) {
       const bulkHeld = line.slots.filter((s) => s.held !== null && !interactive(s.held) && !s.held.background).length;
       const limited = line.room && line.size > 1 && bulkHeld >= line.size - 1;
@@ -761,7 +929,21 @@ export class Readers {
       }
       const asked = line.waiting[at]!;
       const home = asked.home !== null && asked.home.held === null && line.slots.includes(asked.home) ? asked.home : null;
-      const slot = home ?? line.slots.find((s) => s.held === null) ?? (line.slots.length < line.size ? this.start(line) : null);
+      let slot: Slot | null = home ?? line.slots.find((s) => s.held === null) ?? null;
+      if (slot === null && line.slots.length < line.size) {
+        const started = this.start(line);
+        if ("error" in started) {
+          // Never throw uncaught inside exit/timer/pump callbacks.
+          // If any non-retiring busy slot exists on this line, leave queued waiters in the queue so the busy
+          // slot can take them once free (or retire on mismatch and reject cleanly then).
+          if (line.slots.some((s) => !s.retiring)) break;
+          line.waiting.splice(at, 1);
+          asked.reject(new HttpError(500, started.error.message));
+          for (const w of line.waiting.splice(0)) w.reject(new HttpError(500, started.error.message));
+          break;
+        }
+        slot = started.slot;
+      }
       if (slot === null) break;
       line.waiting.splice(at, 1);
       this.give(slot, asked);

@@ -397,7 +397,7 @@ export async function harness(
   const fetchWorker = async (name: string, url: string, init?: RequestInit) => ((await mf.getWorker(name)) as unknown as { fetch(url: string, init?: RequestInit): Promise<Response> }).fetch(url, init);
   /** One of the API's Durable Objects, by its binding and name, with the test hooks test/worker.ts gives it. */
   // deno-lint-ignore no-explicit-any
-  const object = async (binding: "DIRECTORY" | "ACCOUNTS" | "STATIONS", name: string): Promise<any> => {
+  const object = async (binding: "DIRECTORY" | "ACCOUNTS" | "STATIONS" | "TELEMETRY_LIMITS", name: string): Promise<any> => {
     const namespace: any = await mf.getDurableObjectNamespace(binding, "api");
     return namespace.get(namespace.idFromName(name));
   };

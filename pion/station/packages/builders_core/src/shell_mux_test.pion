@@ -1,0 +1,332 @@
+// Pure-Pion unit tests for `ShellMux` and `SerialOutbox` using an in-memory mock `MuxTransport`.
+
+import "base_codec"
+import "host_shim"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+struct MockAsyncCall {
+  id : Int64
+  op : String
+  json : String
+  bytes : Option[Bytes]
+}
+
+struct MockMuxState {
+  async_calls : Array[MockAsyncCall]
+  sync_calls : Array[(String, String)]
+  wait_timeouts : Array[Int64]
+  events : Array[host_shim::HostEvent]
+  mut event_head : Int
+  mut sync_reply : String
+}
+
+fn MockMuxState::new() -> MockMuxState {
+  MockMuxState::{
+    async_calls: [],
+    sync_calls: [],
+    wait_timeouts: [],
+    events: [],
+    event_head: 0,
+    sync_reply: "{\"value\":true}",
+  }
+}
+
+fn MockMuxState::push_event(self : MockMuxState, ev : host_shim::HostEvent) -> Unit {
+  self.events.push(ev)
+}
+
+fn MockMuxState::transport(self : MockMuxState) -> MuxTransport {
+  MuxTransport::{
+    call_async: fn(id : Int64, op : String, json : String, bytes : Option[Bytes]) -> Unit {
+      self.async_calls.push(MockAsyncCall::{ id: id, op: op, json: json, bytes: bytes })
+    },
+    call_sync: fn(op : String, json : String) -> String {
+      self.sync_calls.push((op, json))
+      self.sync_reply
+    },
+    write_stdout_line: fn(_line : String) -> Bool { true },
+    write_stdout_frame: fn(_head : Array[(String, base_codec::Json)], _body : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { 1000.to_int64() },
+    wall_ms: fn() -> Int64 { 1700000000000.to_int64() },
+    wait: fn(ms : Int64) -> Option[host_shim::HostEvent] {
+      self.wait_timeouts.push(ms)
+      if self.event_head < self.events.length() {
+        let ev = self.events[self.event_head]
+        self.event_head = self.event_head + 1
+        Some(ev)
+      } else {
+        None
+      }
+    },
+  }
+}
+
+test "shell_mux: re-entrancy removes pending before dispatch and preserves Option[Bytes]" {
+  let st = MockMuxState::new()
+  let mux = ShellMux::new(st.transport(), start_stdin=false)
+  let id1 = mux.call_async_raw(MuxToken::Read(1), "tcp.read", "{}", None)
+  let id2 = mux.call_async_raw(MuxToken::Write(1), "tcp.write", "{}", Some(Bytes::new(0)))
+  assert(mux.pending_len() == 2)
+  assert(st.async_calls.length() == 2)
+  // Verify None vs Some(empty) preserved on outbound call
+  match st.async_calls[0].bytes {
+    None => ()
+    Some(_) => panic("expected None bytes")
+  }
+  match st.async_calls[1].bytes {
+    Some(b) => assert(b.length() == 0)
+    None => panic("expected Some(empty) bytes")
+  }
+
+  st.push_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: id1,
+      error: "",
+      json: "{\"ok\":true}",
+      bytes: Some(Bytes::new(0)),
+    }),
+  )
+  let mut saw_pending_during_cb = true
+  let mut id3 : Int64 = 0.to_int64()
+  let mut saw_empty_some = false
+  let _ = mux.step(
+    100.to_int64(),
+    fn(_line : String) -> Unit {},
+    fn() -> Unit {},
+    fn(tok : MuxToken, done : host_shim::ShellDone) -> Unit {
+      saw_pending_during_cb = mux.has_pending(id1)
+      match tok {
+        MuxToken::Read(owner) => assert(owner == 1)
+        _ => panic("wrong token")
+      }
+      match done.bytes {
+        Some(b) => saw_empty_some = b.length() == 0
+        None => ()
+      }
+      // Re-entrant call inside callback
+      id3 = mux.call_async_raw(MuxToken::Close(1), "tcp.close", "{}", None)
+    },
+  )
+  assert(!saw_pending_during_cb)
+  assert(saw_empty_some)
+  assert(!mux.has_pending(id1))
+  assert(mux.has_pending(id2))
+  assert(mux.has_pending(id3))
+  assert(mux.pending_len() == 2)
+}
+
+test "shell_mux: 64-line burst uses wait(0) until drained and EOF drops partial" {
+  let st = MockMuxState::new()
+  let mux = ShellMux::new(st.transport(), start_stdin=true)
+  let sb = StringBuilder::new()
+  for i in 0..<130 {
+    sb.write_string("L")
+    sb.write_string(i.to_string())
+    sb.write_string("\n")
+  }
+  sb.write_string("unterminated-partial")
+  st.push_event(host_shim::HostEvent::StdinData(sb.to_string().to_bytes()))
+  st.push_event(host_shim::HostEvent::StdinEof)
+
+  let got : Array[String] = []
+  let mut eof_count = 0
+  let mut eof_at_len = -1
+
+  // Tick 1: receives StdinData, delivers 64 lines, 66 remain
+  let _ = mux.step(
+    5000.to_int64(),
+    fn(line : String) -> Unit { got.push(line) },
+    fn() -> Unit {
+      eof_count = eof_count + 1
+      eof_at_len = got.length()
+    },
+    fn(_tok : MuxToken, _done : host_shim::ShellDone) -> Unit {},
+  )
+  assert(st.wait_timeouts[0] == 5000.to_int64())
+  assert(got.length() == 64)
+  assert(mux.has_queued_lines())
+  assert(eof_count == 0)
+
+  // Tick 2: queue has lines -> MUST call wait(0)! Receives StdinEof, delivers next 64 lines (total 128), 2 remain, EOF not yet fired
+  let _ = mux.step(
+    5000.to_int64(),
+    fn(line : String) -> Unit { got.push(line) },
+    fn() -> Unit {
+      eof_count = eof_count + 1
+      eof_at_len = got.length()
+    },
+    fn(_tok : MuxToken, _done : host_shim::ShellDone) -> Unit {},
+  )
+  assert(st.wait_timeouts[1] == 0.to_int64())
+  assert(got.length() == 128)
+  assert(mux.has_queued_lines())
+  assert(eof_count == 0)
+
+  // Tick 3: queue has 2 lines -> wait(0), delivers 2 lines (total 130), partial NOT flushed, EOF fires now
+  let _ = mux.step(
+    5000.to_int64(),
+    fn(line : String) -> Unit { got.push(line) },
+    fn() -> Unit {
+      eof_count = eof_count + 1
+      eof_at_len = got.length()
+    },
+    fn(_tok : MuxToken, _done : host_shim::ShellDone) -> Unit {},
+  )
+  assert(st.wait_timeouts[2] == 0.to_int64())
+  assert(got.length() == 130)
+  assert(got[0] == "L0")
+  assert(got[129] == "L129")
+  assert(!mux.has_queued_lines())
+  assert(eof_count == 1)
+  assert(eof_at_len == 130)
+}
+
+test "shell_mux: late cancel is sync and keeps pending until ShellDone arrives" {
+  let st = MockMuxState::new()
+  let mux = ShellMux::new(st.transport(), start_stdin=false)
+  let id = mux.call_async_raw(MuxToken::Connect(7, 42.to_int64()), "iroh.connect", "{}", None)
+  assert(mux.has_pending(id))
+
+  match mux.cancel(id) {
+    Ok(_) => ()
+    Err(e) => panic("cancel failed: " + e.message)
+  }
+  assert(st.sync_calls.length() == 1)
+  assert(st.sync_calls[0].0 == "fetch.cancel")
+  // MUST NOT remove pending on cancel!
+  assert(mux.has_pending(id))
+  assert(mux.pending_len() == 1)
+
+  // Now ShellDone arrives (even if it won the race or says cancelled)
+  st.push_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: id,
+      error: "cancelled",
+      json: "",
+      bytes: None,
+    }),
+  )
+  let mut seen_err = ""
+  let _ = mux.step(
+    10.to_int64(),
+    fn(_l : String) -> Unit {},
+    fn() -> Unit {},
+    fn(_t : MuxToken, done : host_shim::ShellDone) -> Unit { seen_err = done.error },
+  )
+  assert(seen_err == "cancelled")
+  assert(mux.pending_len() == 0)
+}
+
+test "shell_mux: SerialOutbox serializes writes per handle and cleans up on close" {
+  let st = MockMuxState::new()
+  let mux = ShellMux::new(st.transport(), start_stdin=false)
+  let outbox = SerialOutbox::new()
+
+  let c1 = outbox.send_raw(mux, 10, MuxToken::Write(10), "tcp.write", "{}", Some("a".to_bytes()))
+  let c2 = outbox.send_raw(mux, 10, MuxToken::Write(10), "tcp.write", "{}", Some("b".to_bytes()))
+  let c3 = outbox.send_raw(mux, 20, MuxToken::Write(20), "tcp.write", "{}", Some("c".to_bytes()))
+  let c1_id = match c1 {
+    Some(id) => id
+    None => panic("expected c1")
+  }
+  assert(c2 is None)
+  assert(c3 is Some(_))
+  assert(st.async_calls.length() == 2)
+  assert(outbox.in_flight_count() == 2)
+  assert(outbox.queued_handles() == 1)
+
+  // Stale/wrong call_id must NOT pop the queue or clear in_flight
+  assert(outbox.on_complete(mux, 10, c1_id + 999.to_int64()) is None)
+  assert(outbox.is_busy(10))
+  assert(outbox.queued_handles() == 1)
+
+  let c2_id = match outbox.on_complete(mux, 10, c1_id) {
+    Some(id) => id
+    None => panic("expected c2 dispatched")
+  }
+  assert(st.async_calls.length() == 3)
+  assert(outbox.queued_handles() == 0)
+
+  let none_left = outbox.on_complete(mux, 10, c2_id)
+  assert(none_left is None)
+  assert(!outbox.is_busy(10))
+  outbox.close_handle(20)
+  assert(outbox.in_flight_count() == 0)
+  assert(outbox.queued_handles() == 0)
+}
+
+test "shell_mux: decode_shell_done rejects malformed JSON and step returns false after EOF already delivered" {
+  let bad = host_shim::ShellDone::{ id: 1.to_int64(), error: "", json: "{not-json", bytes: None }
+  match decode_shell_done(bad) {
+    Err(e) => assert(e.message.length() > 0)
+    Ok(_) => panic("expected Err on malformed shell done json")
+  }
+  let st = MockMuxState::new()
+  let mux = ShellMux::new(st.transport(), start_stdin=true)
+  st.push_event(host_shim::HostEvent::StdinEof)
+  let mut eof_n = 0
+  let p1 = mux.step(
+    10.to_int64(),
+    fn(_l : String) -> Unit {},
+    fn() -> Unit { eof_n = eof_n + 1 },
+    fn(_t : MuxToken, _d : host_shim::ShellDone) -> Unit {},
+  )
+  assert(p1)
+  assert(eof_n == 1)
+  // Subsequent idle step after EOF already delivered must return false (no progress)
+  let p2 = mux.step(
+    10.to_int64(),
+    fn(_l : String) -> Unit {},
+    fn() -> Unit { eof_n = eof_n + 1 },
+    fn(_t : MuxToken, _d : host_shim::ShellDone) -> Unit {},
+  )
+  assert(!p2)
+  assert(eof_n == 1)
+}
+
+test "shell_mux: 10000-cycle connect/stream churn leaves pending and owner maps empty" {
+  let st = MockMuxState::new()
+  let mux = ShellMux::new(st.transport(), start_stdin=false)
+  let outbox = SerialOutbox::new()
+  let owners : Map[Int, Int] = Map::new()
+
+  for i in 0..<10000 {
+    owners.set(i, i)
+    let id = match outbox.send_raw(mux, i, MuxToken::Write(i), "tcp.write", "{}", None) {
+      Some(cid) => cid
+      None => panic("expected immediate dispatch")
+    }
+    st.push_event(
+      host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+        id: id,
+        error: "",
+        json: "{}",
+        bytes: None,
+      }),
+    )
+    let _ = mux.step(
+      0.to_int64(),
+      fn(_l : String) -> Unit {},
+      fn() -> Unit {},
+      fn(tok : MuxToken, done : host_shim::ShellDone) -> Unit {
+        match tok {
+          MuxToken::Write(h) => {
+            let _ = outbox.on_complete(mux, h, done.id)
+            outbox.close_handle(h)
+            owners.remove(h)
+          }
+          _ => ()
+        }
+      },
+    )
+  }
+  assert(mux.pending_len() == 0)
+  assert(outbox.in_flight_count() == 0)
+  assert(outbox.queued_handles() == 0)
+  assert(owners.length() == 0)
+}

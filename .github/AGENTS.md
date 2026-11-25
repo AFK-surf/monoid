@@ -36,7 +36,7 @@
   `missing_win_list`, `missing_mac_list`, `missing_mac_reader_list`, `missing_harness_list`). On
   `ci-1` the readers keep `mbc`'s 768 KB package units and `MBC_DATA_LAYOUTS` (never `MBC_INIT_SPLIT=0`, which turns
   the layouts off, so that a changed type compiles all of `moonbit_init` again). A branch missing only
-  `reader:linux-x64` builds `natives` on `ubuntu-24.04`, and `natives-win-reader` there whenever `shell-station` is
+  `reader:linux-x64` or `pion-reader:linux-{x64,arm64}` (included only when `station=true`) builds `natives` on `ubuntu-24.04`, and `natives-win-reader` (`reader:win32-x64`, `pion-reader:win32-x64`) there whenever `shell-station` is
   published (plan's `natives_runner`, `natives_win_runner`), side by side, with no `natives-main`: on GitHub's runners
   a branch's reader's C is compiled at -O0 in units of 8 MB with `moonbit_init` one unit on every core
   (`MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0`, cold in 71 s where 2 MB's took 105; zig cc's UBSan off), its units kept in the

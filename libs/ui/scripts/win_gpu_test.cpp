@@ -320,16 +320,16 @@ static void test_p0_liquid_glass_vectors(void) {
     const uint8_t *rgb = px + ((size_t)64 * 128u + 64u) * 4u;
     printf("win_gpu: p0 %s -> rgb(%u, %u, %u)\n", cases[i].name, rgb[0], rgb[1], rgb[2]);
     if (i == 0) {
-      CHECK(rgb[0] >= 26 && rgb[0] <= 34 && rgb[1] >= 26 && rgb[1] <= 34 && rgb[2] >= 26 && rgb[2] <= 34);
+      CHECK(rgb[0] >= 30 && rgb[0] <= 38 && rgb[1] >= 30 && rgb[1] <= 38 && rgb[2] >= 30 && rgb[2] <= 38);
     } else if (i == 1) {
-      CHECK(rgb[0] >= 41 && rgb[0] <= 51 && rgb[1] >= 42 && rgb[1] <= 52 && rgb[2] >= 45 && rgb[2] <= 55);
+      CHECK(rgb[0] >= 53 && rgb[0] <= 63 && rgb[1] >= 54 && rgb[1] <= 64 && rgb[2] >= 57 && rgb[2] <= 67);
     } else if (i == 2) {
-      CHECK(rgb[0] >= 85 && rgb[0] <= 101 && rgb[1] >= 85 && rgb[1] <= 101 && rgb[2] >= 85 && rgb[2] <= 101);
+      CHECK(rgb[0] >= 166 && rgb[0] <= 182 && rgb[1] >= 166 && rgb[1] <= 182 && rgb[2] >= 166 && rgb[2] <= 182);
     } else if (i == 3) {
       double mx = (double)(rgb[0] > rgb[1] ? (rgb[0] > rgb[2] ? rgb[0] : rgb[2]) : (rgb[1] > rgb[2] ? rgb[1] : rgb[2]));
       double mn = (double)(rgb[0] < rgb[1] ? (rgb[0] < rgb[2] ? rgb[0] : rgb[2]) : (rgb[1] < rgb[2] ? rgb[1] : rgb[2]));
       double sat = mx > 0.0 ? (mx - mn) / mx : 0.0;
-      CHECK(rgb[0] >= 27 && rgb[0] <= 51 && rgb[1] >= 142 && rgb[1] <= 166 && rgb[2] >= 243 && sat >= 0.80);
+      CHECK(rgb[0] >= 76 && rgb[0] <= 100 && rgb[1] >= 193 && rgb[1] <= 217 && rgb[2] >= 243 && sat >= 0.62);
     } else if (i == 4) {
       CHECK(rgb[0] <= 8 && rgb[1] >= 247 && rgb[2] >= 56 && rgb[2] <= 72);
     } else if (i == 5) {
@@ -366,7 +366,7 @@ static void test_p0_liquid_glass_vectors(void) {
     CHECK(read_ad_bright_t(&frame0_t) == 1);
     CHECK(read_offscreen_pixel_rgb(64, 64, rgb0) == 1);
     CHECK(frame0_t >= 0.98);
-    CHECK(rgb0[0] >= 85 && rgb0[0] <= 101 && rgb0[1] >= 85 && rgb0[1] <= 101 && rgb0[2] >= 85 && rgb0[2] <= 101);
+    CHECK(rgb0[0] >= 166 && rgb0[0] <= 182 && rgb0[1] >= 166 && rgb0[1] <= 182 && rgb0[2] >= 166 && rgb0[2] <= 182);
 
     // Flip backdrop from white -> black and advance rw->ad_frame_serial++ with deterministic dt = 1/60s.
     fill_p0_rect(inst, 0.0, 0.0, 128.0, 128.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0);
@@ -385,7 +385,7 @@ static void test_p0_liquid_glass_vectors(void) {
            frame0_t, mid_frame3_t, final_t, final_rgb[0], final_rgb[1], final_rgb[2]);
     CHECK(mid_frame3_t > 0.25 && mid_frame3_t < 0.75);
     CHECK(final_t <= 0.02);
-    CHECK(final_rgb[0] >= 26 && final_rgb[0] <= 34 && final_rgb[1] >= 26 && final_rgb[1] <= 34 && final_rgb[2] >= 26 && final_rgb[2] <= 34);
+    CHECK(final_rgb[0] >= 30 && final_rgb[0] <= 38 && final_rgb[1] >= 30 && final_rgb[1] <= 38 && final_rgb[2] >= 30 && final_rgb[2] <= 38);
     ad_cur_dt = 0.0;
     glass_free();
   }
@@ -934,9 +934,18 @@ static void test_v8_v9_droplet_roi_gates(void) {
         double L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
         if (L < side_lmin) side_lmin = L;
       }
-      printf("win_gpu: v10_reg_light_2x max_d2=%.2f side_lmin=%.2f\n", max_d2, side_lmin);
+      uint8_t *lc_outer_top = W_PX(px, AW2, 80 * 2, 10 * 2);
+      uint8_t *lc_top = W_PX(px, AW2, 80 * 2, 10 * 2 + 1);
+      uint8_t *lc_mid = W_PX(px, AW2, 80 * 2, 40 * 2);
+      double light_outer_top_L = 0.2126 * lc_outer_top[0] + 0.7152 * lc_outer_top[1] + 0.0722 * lc_outer_top[2];
+      double light_top_L = 0.2126 * lc_top[0] + 0.7152 * lc_top[1] + 0.0722 * lc_top[2];
+      double light_mid_L = 0.2126 * lc_mid[0] + 0.7152 * lc_mid[1] + 0.0722 * lc_mid[2];
+      printf("win_gpu: v10_reg_light_2x max_d2=%.2f side_lmin=%.2f outer_top_L=%.1f top_L=%.1f mid_L=%.1f\n",
+             max_d2, side_lmin, light_outer_top_L, light_top_L, light_mid_L);
       CHECK(max_d2 <= 14.0);
-      CHECK(side_lmin >= 212.0 && side_lmin <= 232.0);
+      CHECK(side_lmin >= 150.0 && side_lmin <= 176.0);
+      CHECK(light_outer_top_L <= light_mid_L - 15.0);
+      CHECK(light_top_L >= light_mid_L);
       free(px);
     }
     double rgd[2 * MB_INST];
@@ -969,10 +978,36 @@ static void test_v8_v9_droplet_roi_gates(void) {
         }
       }
       printf("win_gpu: v10_reg_dark_2x top=%.1f mid=%.1f side=%.1f roi_fnv1a=0x%016llx\n", l_top, l_mid, l_side, (unsigned long long)dh);
-      CHECK(dh == 0x80e02702612bc2bbULL);
-      CHECK(l_top > l_mid + 5.0);
-      CHECK(l_side >= l_mid - 6.0 && l_side <= l_mid + 20.0);
+      CHECK(dh == 0x507dd95ec0324b75ULL);
+      CHECK(l_top > l_mid + 20.0);
+      CHECK(l_side <= 14.0 && l_side < l_mid - 40.0);
       free(pxd);
+    }
+    // V12-AntiSmear: Regular Light blur=1.2pt at 3x over 2pt alternating dark/light strokes must preserve contrast
+    {
+      double sm[7 * MB_INST];
+      fill_p0_rect(sm, 0, 0, VW, VH, 0, 244.0 / 255.0, 241.0 / 255.0, 234.0 / 255.0, 1.0, 0);
+      for (int si = 0; si < 5; si++) {
+        fill_p0_rect(sm + (si + 1) * MB_INST, 20, 30 + si * 4, 120, 2, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 1.0, 0);
+      }
+      fill_p0_rect(sm + 6 * MB_INST, 20, 10, 120, 60, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x67 / 255.0, -711.0);
+      sm[6 * MB_INST + 4] = 24.0; sm[6 * MB_INST + 6] = 1.0; sm[6 * MB_INST + 7] = 1.2;
+      sm[6 * MB_INST + 12] = 0.6; sm[6 * MB_INST + 13] = 20.0; sm[6 * MB_INST + 15] = 1.0;
+      sm[6 * MB_INST + 21] = 28.0; sm[6 * MB_INST + 22] = 0.06;
+      uint8_t *pxs = render_rgba_pixels_of(sm, 7, 244.0 / 255.0, 241.0 / 255.0, 234.0 / 255.0, 3.0, AW3, AH3);
+      CHECK(pxs != NULL);
+      if (pxs) {
+        double sm_min = 1e9, sm_max = -1.0;
+        for (int py = 34 * 3; py <= 42 * 3; py++) {
+          uint8_t *c = W_PX(pxs, AW3, 80 * 3, py);
+          double L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+          if (L < sm_min) sm_min = L;
+          if (L > sm_max) sm_max = L;
+        }
+        printf("win_gpu: v12_reg_antismear_3x min_L=%.1f max_L=%.1f delta=%.1f\n", sm_min, sm_max, sm_max - sm_min);
+        CHECK(sm_max - sm_min >= 4.0 && sm_min >= 170.0);
+        free(pxs);
+      }
     }
   }
 

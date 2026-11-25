@@ -2302,7 +2302,7 @@ test("D75: more sessions than PASS_ROWS no longer starve the logs and transcript
   if (roundsBy.mb !== undefined) assert.equal(roundsBy.mb, roundsBy.ts, "MoonBit and the TS reference take the same passes");
 });
 
-test("D75: MoonBit exporter parses head.json again only when its size or mtime changed, and never across generations", { skip: skipMb }, async () => {
+test("D75: MoonBit exporter validates head.json by content hash, never serves stale cache on same-size/mtime edit, and never across generations", { skip: skipMb }, async () => {
   const s = makeAgyBrainStation();
   closing.push(async () => s.store.close());
   let now = 1_700_000_000_000;
@@ -2317,32 +2317,33 @@ test("D75: MoonBit exporter parses head.json again only when its size or mtime c
   const quiet = async () => (await mb.pass(nothingTold(), (now += 1_000))).heads[HOME];
   assert.deepEqual(await quiet(), JSON.parse(written), "a quiet pass answers the head as written");
 
-  // The same size and mtime: the head kept is answered, the file is not parsed again.
+  // Same content with a moved mtime: still answers the valid cached head.
   const at = new Date(1_700_000_100_000);
   utimesSync(headPath, at, at);
-  assert.equal((await quiet()).name, "src", "a changed mtime reads the file again");
+  assert.equal((await quiet()).name, "src", "unchanged content answers the head");
+
+  // Same size and exact same mtime, but modified content: content hash detects the edit immediately.
   const changed = written.replace(/"name":(\s*)"src"/, '"name":$1"srX"');
   assert.notEqual(changed, written);
   assert.equal(Buffer.byteLength(changed), Buffer.byteLength(written));
   writeFileSync(headPath, changed);
   utimesSync(headPath, at, at);
-  assert.equal((await quiet()).name, "src", "same size and mtime: answered from the head kept");
+  assert.equal((await quiet()).name, "srX", "same size and mtime with changed content must re-parse immediately");
 
-  // Its mtime moved: read again, as it is on disk now.
+  // Its mtime moved with unchanged content: still answers the updated head.
   const later = new Date(1_700_000_200_000);
   utimesSync(headPath, later, later);
-  assert.equal((await quiet()).name, "srX", "a moved mtime reads the file again");
+  assert.equal((await quiet()).name, "srX", "a moved mtime answers the current file");
   // A different size at the same mtime: read again.
   const longer = written.replace(/"name":(\s*)"src"/, '"name":$1"srcXY"');
   writeFileSync(headPath, longer);
   utimesSync(headPath, later, later);
   assert.equal((await quiet()).name, "srcXY", "a changed size reads the file again");
 
-  // Gone: the head starts again from nothing rather than from the one kept.
+  // Gone: a removed head.json is not answered from memory; the exporter detects
+  // the missing head.json on disk for the existing generation and fails fast.
   rmSync(headPath);
-  const fresh = await quiet();
-  assert.equal(fresh.to, 0, "a removed head.json is not answered from memory");
-  assert.deepEqual(fresh.batches, []);
+  await assert.rejects(quiet, /missing .*head\.json for existing generation/, "a removed head.json is not answered from memory");
 
   // A new generation never answers the old one's head.
   await mb.newGenerations(now, now);

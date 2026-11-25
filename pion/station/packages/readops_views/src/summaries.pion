@@ -1,0 +1,659 @@
+// 1:1 port of `station/mb/src/readops/summaries.mbt`.
+// A session as lists and events show it (station/src/read/sessions.ts `summary`, `sessions`: GET /sessions,
+// and each session's summary told as it changes).
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "readops_chats"
+import "readops_core"
+import "sql_db"
+
+pub let TURN_COUNT_PENDING : String = "turn count pending: "
+
+/// rows.ts `parseProfiles`: the profiles it may run on, its pinned one alone, or none.
+fn profiles_of(r : Map[String, base_codec::Json]) -> base_codec::Json {
+  match readops_core::field(r, "profiles") {
+    base_codec::Json::Str(raw) => {
+      if raw != "" {
+        match js_json::parse(raw) {
+          Ok(js_json::JValue::Arr(xs)) => {
+            let list : Array[base_codec::Json] = []
+            for i in 0..<xs.length() {
+              match xs[i] {
+                js_json::JValue::Str(s) => {
+                  let clean = js_json::sanitize_str(s)
+                  if clean != "" {
+                    list.push(base_codec::json_str(clean))
+                  }
+                }
+                _ => ()
+              }
+            }
+            if list.length() > 0 {
+              return base_codec::json_arr(list)
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  if readops_chats::mb_json_eq(readops_core::field(r, "profile_pinned"), base_codec::json_num(1.0)) {
+    base_codec::json_arr([readops_core::field(r, "profile")])
+  } else {
+    base_codec::json_null()
+  }
+}
+
+/// sessions.ts `sessionJson` of rows.ts `toSession`: the token skipped, `cwd`, `profiles`, `context`,
+/// `contextBefore`, `compactions` left out when none.
+fn summary_session_json(r : Map[String, base_codec::Json]) -> Array[(String, base_codec::Json)] {
+  let flag = fn(k : String) -> base_codec::Json {
+    match readops_core::field(r, k) {
+      base_codec::Json::Null => base_codec::json_null()
+      base_codec::Json::Num(n, _) => base_codec::json_bool(n != 0.0)
+      _ => base_codec::json_bool(true)
+    }
+  }
+  let scope_str = if readops_chats::mb_json_eq(readops_core::field(r, "scope"), base_codec::json_str("all")) {
+    "all"
+  } else {
+    "thread"
+  }
+  let v : Array[(String, base_codec::Json)] = [
+    ("key", readops_core::field(r, "key")),
+    ("connect", readops_core::field(r, "connect")),
+    ("scope", base_codec::json_str(scope_str)),
+    ("title", readops_core::field(r, "title")),
+    ("createdBy", readops_core::field(r, "created_by")),
+    ("runtime", readops_core::field(r, "runtime")),
+    ("profile", readops_core::field(r, "profile")),
+    (
+      "profilePinned",
+      base_codec::json_bool(
+        readops_chats::mb_json_eq(readops_core::field(r, "profile_pinned"), base_codec::json_num(1.0)),
+      ),
+    ),
+    ("model", readops_core::field(r, "model")),
+    ("effort", readops_core::field(r, "effort")),
+    ("fast", flag("fast")),
+    ("afresh", flag("afresh")),
+    ("runtimeSessionId", readops_core::field(r, "runtime_session_id")),
+    ("workspace", readops_core::field(r, "workspace")),
+  ]
+  if readops_chats::mb_json_eq(readops_core::field(r, "tui"), base_codec::json_num(1.0)) {
+    v.push(("tui", base_codec::json_bool(true)))
+  }
+  let speed_v = readops_core::field(r, "speed")
+  match speed_v {
+    base_codec::Json::Str(_) => v.push(("speed", speed_v))
+    _ => ()
+  }
+  let cwd_v = readops_core::field(r, "cwd")
+  match cwd_v {
+    base_codec::Json::Null => ()
+    _ => v.push(("cwd", cwd_v))
+  }
+  let profs_v = profiles_of(r)
+  match profs_v {
+    base_codec::Json::Arr(_) => v.push(("profiles", profs_v))
+    _ => ()
+  }
+  let ctx_v = readops_core::field(r, "context")
+  match ctx_v {
+    base_codec::Json::Num(_, _) => v.push(("context", ctx_v))
+    _ => ()
+  }
+  let ctx_b_v = readops_core::field(r, "context_before")
+  match ctx_b_v {
+    base_codec::Json::Num(_, _) => v.push(("contextBefore", ctx_b_v))
+    _ => ()
+  }
+  let comp_v = readops_core::field(r, "compactions")
+  match comp_v {
+    base_codec::Json::Num(n, _) => {
+      if n > 0.0 {
+        v.push(("compactions", comp_v))
+      }
+    }
+    _ => ()
+  }
+  v.push(
+    ("running", base_codec::json_bool(readops_chats::mb_json_eq(readops_core::field(r, "running"), base_codec::json_num(1.0)))),
+  )
+  v.push(("createdAt", readops_core::field(r, "created_at")))
+  v.push(("lastActiveAt", readops_core::field(r, "last_active_at")))
+  v.push(("archivedAt", readops_core::field(r, "archived_at")))
+  v.push(("archivedBy", readops_core::field(r, "archived_by")))
+  v.push(("shownAt", readops_core::field(r, "shown_at")))
+  // Handed here from another station (replica/handover.ts)
+  match readops_core::field(r, "came_from") {
+    base_codec::Json::Str(from) => if from != "" { v.push(("from", base_codec::json_str(from))) }
+    _ => ()
+  }
+  match readops_core::field(r, "conv") {
+    base_codec::Json::Str(conv) => {
+      if conv != "" && !readops_chats::mb_json_eq(base_codec::json_str(conv), readops_core::field(r, "key")) {
+        v.push(("conv", base_codec::json_str(conv)))
+      }
+    }
+    _ => ()
+  }
+  v
+}
+
+/// What `summary` and `sessions` read for some sessions at once (sessions.ts `Lists`).
+pub struct Lists {
+  pub stats : Map[String, Map[String, base_codec::Json]]
+  pub bindings : Map[String, Array[base_codec::Json]]
+  pub participants : Map[String, Array[base_codec::Json]]
+  pub watches : Map[String, base_codec::Json]
+  pub lengths : Map[String, base_codec::Json]
+  pub usages : Map[String, base_codec::Json]
+}
+
+fn str_array_to_json(xs : Array[String]) -> Array[base_codec::Json] {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<xs.length() {
+    out.push(base_codec::json_str(xs[i]))
+  }
+  out
+}
+
+/// store.ts `sessionStats` of some sessions: refused naming those whose turns are not counted yet.
+fn session_stats(
+  db : sql_db::Db,
+  keys : Array[String],
+) -> Result[Map[String, Map[String, base_codec::Json]], readops_core::ReadError] {
+  let out : Map[String, Map[String, base_codec::Json]] = Map::new()
+  if keys.length() == 0 {
+    return Ok(out)
+  }
+  let rows = match db.all(
+    SESSION_STATS_SQL + " WHERE s.key IN (SELECT value FROM json_each(?))",
+    [readops_core::ids_json(str_array_to_json(keys))],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::ReadError::Sql(e))
+  }
+  let unknown : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    match readops_core::field(r, "turns") {
+      base_codec::Json::Null => unknown.push(readops_core::field(r, "key"))
+      _ => ()
+    }
+  }
+  if unknown.length() > 0 {
+    return Err(
+      readops_core::refused(503, TURN_COUNT_PENDING + sql_db::stringify_json(base_codec::json_arr(unknown))),
+    )
+  }
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    out.set(readops_core::js_text(readops_core::field(r, "key")), r)
+  }
+  Ok(out)
+}
+
+/// store.ts `listBindings` of some sessions: the connects each is bound to.
+fn list_bindings(
+  db : sql_db::Db,
+  keys : Array[String],
+) -> Result[Map[String, Array[base_codec::Json]], readops_core::ReadError] {
+  let out : Map[String, Array[base_codec::Json]] = Map::new()
+  if keys.length() == 0 {
+    return Ok(out)
+  }
+  let ready = match readops_chats::session_bindings_ready(db) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  if !ready {
+    return Err(readops_core::ReadError::App("session binding index is still being prepared"))
+  }
+  let uniq = readops_chats::unique_keys([keys])
+  let rows = match db.all(SESSION_BINDINGS_SELECTED_SQL, [readops_core::ids_json(str_array_to_json(uniq))]) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::ReadError::Sql(e))
+  }
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let k = readops_core::js_text(readops_core::field(r, "session"))
+    let c = readops_core::field(r, "connect")
+    match out.get(k) {
+      Some(a) => a.push(c)
+      None => out.set(k, [c])
+    }
+  }
+  Ok(out)
+}
+
+/// store.ts `participants` of some sessions: each person once a session, at the first time they wrote
+/// in any of its threads, in their references' byte order and then (stably) by when.
+fn participants_of(
+  db : sql_db::Db,
+  keys : Array[String],
+) -> Result[Map[String, Array[base_codec::Json]], readops_core::ReadError] {
+  let out : Map[String, Array[base_codec::Json]] = Map::new()
+  if keys.length() == 0 {
+    return Ok(out)
+  }
+  let firsts : Map[String, Map[String, Double]] = Map::new()
+  let order : Array[String] = []
+  let rows = match db.all(
+    "SELECT ts.session, ts.connect, t.id, t.surface FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session IN (SELECT value FROM json_each(?))",
+    [readops_core::ids_json(str_array_to_json(keys))],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::ReadError::Sql(e))
+  }
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let key = readops_core::js_text(readops_core::field(r, "session"))
+    let refs = match firsts.get(key) {
+      Some(m) => m
+      None => {
+        let m : Map[String, Double] = Map::new()
+        firsts.set(key, m)
+        order.push(key)
+        m
+      }
+    }
+    let people_rows = match db.all(PEOPLE_AT_SQL, [readops_core::field(r, "id")]) {
+      Ok(ps) => ps
+      Err(e) => return Err(readops_core::ReadError::Sql(e))
+    }
+    let is_chat = readops_chats::mb_json_eq(readops_core::field(r, "surface"), base_codec::json_str("chat"))
+    let conn_str = readops_core::js_text(readops_core::field(r, "connect"))
+    for j in 0..<people_rows.length() {
+      let a = people_rows[j]
+      let author = readops_core::js_text(readops_core::field(a, "author"))
+      let reference = if is_chat { author } else { "slack:" + conn_str + ":" + author }
+      let at = readops_core::num(readops_core::field(a, "at"))
+      match refs.get(reference) {
+        Some(first) => if at < first { refs.set(reference, at) }
+        None => refs.set(reference, at)
+      }
+    }
+  }
+  for i in 0..<order.length() {
+    let key = order[i]
+    let refs = match firsts.get(key) {
+      Some(m) => m
+      None => continue
+    }
+    let ref_keys = refs.keys()
+    if ref_keys.length() == 0 {
+      continue
+    }
+    let pairs : Array[(String, Double)] = []
+    for j in 0..<ref_keys.length() {
+      let rk = ref_keys[j]
+      match refs.get(rk) {
+        Some(at) => pairs.push((rk, at))
+        None => ()
+      }
+    }
+    let by_ref = readops_core::stable_sort(pairs, fn(a : (String, Double), b : (String, Double)) -> Int {
+      readops_core::by_bytes(a.0, b.0)
+    })
+    let sorted = readops_core::stable_sort(by_ref, fn(a : (String, Double), b : (String, Double)) -> Int {
+      if a.1 < b.1 {
+        -1
+      } else if a.1 > b.1 {
+        1
+      } else {
+        0
+      }
+    })
+    let items : Array[base_codec::Json] = []
+    for j in 0..<sorted.length() {
+      items.push(base_codec::json_str(sorted[j].0))
+    }
+    out.set(key, items)
+  }
+  Ok(out)
+}
+
+/// store.ts `transcriptLengths` and `sessionUsages` of some sessions; none where the store keeps none.
+fn lengths_and_usages(
+  db : sql_db::Db,
+  keys : Array[String],
+) -> (Map[String, base_codec::Json], Map[String, base_codec::Json]) {
+  let lengths : Map[String, base_codec::Json] = Map::new()
+  let usages : Map[String, base_codec::Json] = Map::new()
+  if keys.length() == 0 {
+    return (lengths, usages)
+  }
+  let list = [readops_core::ids_json(str_array_to_json(keys))]
+  match db.all("SELECT session, n FROM transcript_lengths WHERE session IN (SELECT value FROM json_each(?))", list) {
+    Ok(rows) => {
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        lengths.set(readops_core::js_text(readops_core::field(r, "session")), readops_core::field(r, "n"))
+      }
+    }
+    Err(_) => ()
+  }
+  // (one usage that does not read is none of them, as JSON.parse throwing in the map makes it)
+  let read_usages = fn() -> Option[Array[(String, base_codec::Json)]] {
+    let incremental = match readops_core::one(
+      db,
+      "SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = 'usage_totals_incremental'",
+      [],
+    ) {
+      Ok(Some(_)) => true
+      Ok(None) => false
+      Err(_) => return None
+    }
+    let source = if incremental {
+      "session_usage u JOIN usage_totals_source_sessions c ON c.session = u.session AND c.done = 1"
+    } else {
+      "session_usage u"
+    }
+    let rows = match db.all("SELECT u.session, u.usage FROM " + source + " WHERE u.session IN (SELECT value FROM json_each(?))", list) {
+      Ok(rs) => rs
+      Err(_) => return None
+    }
+    let found : Array[(String, base_codec::Json)] = []
+    for i in 0..<rows.length() {
+      let r = rows[i]
+      match readops_core::field(r, "usage") {
+        base_codec::Json::Str(u) => {
+          match js_json::parse(u) {
+            Ok(jv) => found.push((readops_core::js_text(readops_core::field(r, "session")), readops_core::to_json(jv)))
+            Err(_) => return None
+          }
+        }
+        _ => return None
+      }
+    }
+    Some(found)
+  }
+  match read_usages() {
+    Some(found) => {
+      for i in 0..<found.length() {
+        let (k, v) = found[i]
+        usages.set(k, v)
+      }
+    }
+    None => ()
+  }
+  (lengths, usages)
+}
+
+pub fn lists_of(db : sql_db::Db, keys : Array[String]) -> Result[Lists, readops_core::ReadError] {
+  let bindings = match list_bindings(db, keys) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let stats = match session_stats(db, keys) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let participants = match participants_of(db, keys) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let watches = match readops_chats::watching(db, Some(keys)) {
+    Ok(w) => w
+    Err(e) => return Err(e)
+  }
+  let (lengths, usages) = lengths_and_usages(db, keys)
+  Ok(Lists::{
+    stats: stats,
+    bindings: bindings,
+    participants: participants,
+    watches: watches,
+    lengths: lengths,
+    usages: usages,
+  })
+}
+
+/// sessions.ts `summaryWith`.
+pub fn summary_with(
+  db : sql_db::Db,
+  known : readops_core::Known,
+  key : String,
+  l : Lists,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let row = match readops_core::one(db, "SELECT * FROM sessions WHERE key = ?", [base_codec::json_str(key)]) {
+    Ok(Some(r)) => r
+    Ok(None) => return Err(readops_core::refused(404, "unknown session " + key))
+    Err(e) => return Err(e)
+  }
+  let v = summary_session_json(row)
+  let bound = match l.bindings.get(key) {
+    Some(bs) => bs
+    None => []
+  }
+  readops_chats::obj_set(v, "boundTo", base_codec::json_arr(bound))
+  let process = match known.processes.get(key) {
+    Some(p) => p
+    None => "cold"
+  }
+  let shown_proc = if process == "warmFailed" {
+    "warm"
+  } else if process == "coldFailed" {
+    "cold"
+  } else {
+    process
+  }
+  readops_chats::obj_set(v, "process", base_codec::json_str(shown_proc))
+  if process == "warmFailed" || process == "coldFailed" {
+    readops_chats::obj_set(v, "startFailed", base_codec::json_bool(true))
+  }
+  let stat = l.stats.get(key)
+  let stat_field = fn(k : String, none : base_codec::Json) -> base_codec::Json {
+    match stat {
+      Some(r) => readops_core::field(r, k)
+      None => none
+    }
+  }
+  readops_chats::obj_set(v, "turns", stat_field("turns", base_codec::json_num(0.0)))
+  readops_chats::obj_set(v, "workMs", stat_field("work_ms", base_codec::json_null()))
+  readops_chats::obj_set(v, "pending", stat_field("pending", base_codec::json_num(0.0)))
+  readops_chats::obj_set(v, "firstText", stat_field("first_text", base_codec::json_null()))
+  let last_turn = match stat {
+    Some(r) => readops_chats::latest_turn(r)
+    None => base_codec::json_null()
+  }
+  readops_chats::obj_set(v, "lastTurn", last_turn)
+  let creator = match known.creator(readops_core::field(row, "created_by")) {
+    Ok(c) => c
+    Err(e) => return Err(e)
+  }
+  readops_chats::obj_set(v, "creator", creator)
+  let part_refs = match l.participants.get(key) {
+    Some(ps) => ps
+    None => []
+  }
+  let people = match known.people(base_codec::json_arr(part_refs)) {
+    Ok(ps) => ps
+    Err(e) => return Err(e)
+  }
+  readops_chats::obj_set(v, "participants", base_codec::json_arr(people))
+  let rt = readops_core::field(row, "runtime")
+  let ctx_actions = if readops_chats::mb_json_eq(rt, base_codec::json_str("claude")) ||
+  readops_chats::mb_json_eq(rt, base_codec::json_str("codex")) {
+    base_codec::json_arr([base_codec::json_str("compact"), base_codec::json_str("clear")])
+  } else {
+    base_codec::json_arr([base_codec::json_str("clear")])
+  }
+  readops_chats::obj_set(v, "contextActions", ctx_actions)
+  match l.watches.get(key) {
+    Some(w) => readops_chats::obj_set(v, "watch", w)
+    None => ()
+  }
+  match l.lengths.get(key) {
+    Some(n) => readops_chats::obj_set(v, "transcriptLength", n)
+    None => ()
+  }
+  match l.usages.get(key) {
+    Some(u) => readops_chats::obj_set(v, "usage", u)
+    None => ()
+  }
+  Ok(base_codec::json_obj(v))
+}
+
+/// sessions.ts `summary`: one session's.
+pub fn session_summary(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let key = readops_core::js_text(readops_core::json_val_or_null(args, "key"))
+  let l = match lists_of(db, [key]) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  summary_with(db, readops_core::Known::of(client, data, sep, ask), key, l)
+}
+
+/// session-list-index.ts `sessionListReady`.
+fn session_list_ready(db : sql_db::Db) -> Result[Bool, readops_core::ReadError] {
+  let m = match readops_core::one(db, "SELECT version, complete FROM session_list_meta WHERE id = 1", []) {
+    Ok(Some(row)) => row
+    Ok(None) => return Err(readops_core::ReadError::App("session list index version marker is missing"))
+    Err(e) => return Err(e)
+  }
+  match readops_core::field(m, "version") {
+    base_codec::Json::Num(v, _) => {
+      if v != 1.0 {
+        return Err(
+          readops_core::ReadError::App(
+            "session list index version " + readops_core::js_text(readops_core::field(m, "version")) + " is incompatible with 1",
+          ),
+        )
+      }
+    }
+    _ => {
+      return Err(
+        readops_core::ReadError::App(
+          "session list index version " + readops_core::js_text(readops_core::field(m, "version")) + " is incompatible with 1",
+        ),
+      )
+    }
+  }
+  let complete = match readops_core::field(m, "complete") {
+    base_codec::Json::Num(c, _) => c == 1.0
+    _ => false
+  }
+  Ok(complete)
+}
+
+/// sessions.ts `sessions` (GET /sessions): the sessions shown in lists, or the archived ones;
+/// of one connect; of the viewer's workspace (every one for a read made for no one).
+pub fn session_list(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let known = readops_core::Known::of(client, data, sep, ask)
+  let connect = match readops_core::json_val(args, "connect") {
+    Some(base_codec::Json::Str(c)) => Some(c)
+    _ => None
+  }
+  let archived = match readops_core::json_val(args, "archived") {
+    Some(base_codec::Json::Bool(true)) => true
+    Some(base_codec::Json::Num(n, _)) => n != 0.0 && n == n
+    Some(base_codec::Json::Str(s)) => s != ""
+    Some(base_codec::Json::Arr(_)) => true
+    Some(base_codec::Json::Obj(_)) => true
+    _ => false
+  }
+  let viewer = match readops_core::json_val(args, "viewer") {
+    Some(v) => {
+      match v {
+        base_codec::Json::Obj(_) => Some(v)
+        _ => None
+      }
+    }
+    None => None
+  }
+  let rows = match (viewer, connect) {
+    (None, None) => {
+      let (index, where_) = if archived {
+        ("sessions_put_away", "archived_at IS NOT NULL")
+      } else {
+        ("sessions_live", "archived_at IS NULL")
+      }
+      match db.all("SELECT * FROM sessions INDEXED BY " + index + " WHERE " + where_ + " ORDER BY last_active_at DESC, rowid ASC", []) {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::ReadError::Sql(e))
+      }
+    }
+    _ => {
+      let ready = match session_list_ready(db) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      if !ready {
+        return Err(readops_core::ReadError::App("session list index is still being prepared"))
+      }
+      let arch_num = base_codec::json_num(if archived { 1.0 } else { 0.0 })
+      match viewer {
+        None => {
+          let c = match connect {
+            Some(s) => s
+            None => ""
+          }
+          match db.all(SESSION_LIST_CONNECT_SQL, [arch_num, base_codec::json_str(c)]) {
+            Ok(rs) => rs
+            Err(e) => return Err(readops_core::ReadError::Sql(e))
+          }
+        }
+        Some(v) => {
+          let home_val = if readops_chats::mb_json_eq(readops_core::json_val_or_null(v, "home"), base_codec::json_bool(false)) {
+            0.0
+          } else {
+            1.0
+          }
+          let ws_val = readops_core::json_val_or_null(v, "workspace")
+          match connect {
+            None => {
+              match db.all(SESSION_LIST_SCOPE_SQL, [ws_val, base_codec::json_num(home_val), arch_num]) {
+                Ok(rs) => rs
+                Err(e) => return Err(readops_core::ReadError::Sql(e))
+              }
+            }
+            Some(c) => {
+              match db.all(
+                SESSION_LIST_SCOPE_CONNECT_SQL,
+                [ws_val, base_codec::json_num(home_val), arch_num, base_codec::json_str(c)],
+              ) {
+                Ok(rs) => rs
+                Err(e) => return Err(readops_core::ReadError::Sql(e))
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  let keys : Array[String] = []
+  for i in 0..<rows.length() {
+    keys.push(readops_core::js_text(readops_core::field(rows[i], "key")))
+  }
+  let l = match lists_of(db, keys) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<keys.length() {
+    match summary_with(db, known, keys[i], l) {
+      Ok(item) => out.push(item)
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(base_codec::json_arr(out))
+}

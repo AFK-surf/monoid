@@ -1,0 +1,416 @@
+// Pure Pion unit tests for `builders_replica` helpers (run under `pionc test`).
+
+import "builders_core"
+import "transcript_io"
+
+fn expect_true(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+fn expect_str(got : String, want : String) -> Unit {
+  if got != want {
+    panic("expected `" + want + "`, got `" + got + "`")
+  }
+}
+
+fn expect_int(got : Int, want : Int) -> Unit {
+  if got != want {
+    panic("expected " + want.to_string() + ", got " + got.to_string())
+  }
+}
+
+fn expect_int64(got : Int64, want : Int64) -> Unit {
+  if got != want {
+    panic("expected " + want.to_string() + ", got " + got.to_string())
+  }
+}
+
+fn expect_double(got : Double, want : Double) -> Unit {
+  if got != want {
+    panic("expected " + want.to_string() + ", got " + got.to_string())
+  }
+}
+
+test "bumped_ts increments trailing digits or appends 1" {
+  expect_str(bumped_ts("1700.000001"), "1700.000002")
+  expect_str(bumped_ts("1700.999"), "1700.1000")
+  expect_str(bumped_ts("abc"), "abc1")
+  expect_str(bumped_ts("99"), "100")
+  expect_str(bumped_ts(""), "1")
+}
+
+test "batch_span and batch_name round-trip" {
+  let name = batch_name(1.to_int64(), 42.to_int64(), "0a1b2c3d4e5f6789")
+  expect_str(name, "0000000001-0000000042-0a1b2c3d.ndjson.zst")
+  match batch_span(name) {
+    Some((f, t)) => {
+      expect_int64(f, 1.to_int64())
+      expect_int64(t, 42.to_int64())
+    }
+    None => panic("expected Some batch_span")
+  }
+  match batch_span("bad.ndjson.zst") {
+    None => ()
+    Some(_) => panic("expected None batch_span")
+  }
+}
+
+test "gen_ok and hash_ok validation" {
+  expect_true(gen_ok("1a2b3c-0123abcd"), "gen_ok 1")
+  expect_true(gen_ok("0-00000000"), "gen_ok 2")
+  expect_true(!gen_ok("-0123abcd"), "gen_ok 3")
+  expect_true(!gen_ok("1a-0123abcg"), "gen_ok 4")
+  expect_true(hash_ok("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"), "hash_ok 1")
+  expect_true(!hash_ok("0123456789abcdef"), "hash_ok 2")
+  expect_true(!hash_ok("0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef"), "hash_ok 3")
+}
+
+test "gen_name base36 encoding" {
+  expect_str(gen_name(0.0, "deadbeefcafe"), "0-deadbeef")
+  expect_str(gen_name(36.0, "1234567890"), "10-12345678")
+}
+
+test "fold_level_of matches floor(log4(max(sz, 4096) / 4096))" {
+  expect_int(fold_level_of(0.0), 0)
+  expect_int(fold_level_of(4096.0), 0)
+  expect_int(fold_level_of(16383.0), 0)
+  expect_int(fold_level_of(16384.0), 1)
+  expect_int(fold_level_of(65535.0), 1)
+  expect_int(fold_level_of(65536.0), 2)
+  expect_int(fold_level_of(262144.0), 3)
+}
+
+test "cli_kept, one_segment, is_pruned_brain_rel" {
+  expect_true(cli_kept(["homes", "p1", "agy", ".gemini", "antigravity-cli", "brain", "cid"]), "cli_kept 1")
+  expect_true(cli_kept(["homes", "p1", "agy", ".gemini", "antigravity-cli", "conversations", "cid.db"]), "cli_kept 2")
+  expect_true(!cli_kept(["homes", "p1", "agy", ".gemini", "antigravity-cli", "other", "cid"]), "cli_kept 3")
+  expect_true(one_segment("abc-123_@+.x"), "one_segment 1")
+  expect_true(!one_segment(""), "one_segment 2")
+  expect_true(!one_segment(".hidden"), "one_segment 3")
+  expect_true(!one_segment("a/b"), "one_segment 4")
+  expect_true(is_pruned_brain_rel(["scratch"]), "pruned 1")
+  expect_true(is_pruned_brain_rel([".system_generated", "steps"]), "pruned 2")
+  expect_true(is_pruned_brain_rel([".system_generated", "logs", "chunks"]), "pruned 3")
+  expect_true(!is_pruned_brain_rel([".system_generated", "logs"]), "pruned 4")
+}
+
+test "moved and carried_to path remapping" {
+  let client = builders_core::ShellClient::new()
+  let files = Files::new(client, "/")
+  expect_str(moved(files, "/old/data/sessions/a/b", "/old/data", "/new/data"), "/new/data/sessions/a/b")
+  expect_str(moved(files, "/elsewhere/file", "/old/data", "/new/data"), "/elsewhere/file")
+  expect_str(
+    carried_to(files, "/old/data/transcripts/claude/-old-ws/id.jsonl", "/old/data", "/new/data", Some("/new/ws")),
+    "/new/data/transcripts/claude/-new-ws/id.jsonl",
+  )
+}
+
+test "utf16 sorting puts non-BMP emoji before BMP U+E000" {
+  let xs = ["\u{E000}.txt", "😀.txt", "a.txt", "Z.txt"]
+  sort_strings_utf16(xs)
+  expect_str(xs[0], "Z.txt")
+  expect_str(xs[1], "a.txt")
+  expect_str(xs[2], "😀.txt")
+  expect_str(xs[3], "\u{E000}.txt")
+}
+
+test "parse_int_flag and parse_double_flag match MoonBit lexical rules" {
+  expect_int(parse_int_flag(Some("42"), 7), 42)
+  expect_int(parse_int_flag(Some("+0"), 7), 0)
+  expect_int(parse_int_flag(Some("00"), 7), 0)
+  expect_int(parse_int_flag(Some("0x0"), 7), 0)
+  expect_int(parse_int_flag(Some("0X0"), 7), 0)
+  expect_int(parse_int_flag(Some("-0x0"), 7), 0)
+  expect_int(parse_int_flag(Some("0_0"), 7), 0)
+  expect_int(parse_int_flag(Some("0x_0"), 7), 0)
+  expect_int(parse_int_flag(Some("0o_0"), 7), 0)
+  expect_int(parse_int_flag(Some("0b_0"), 7), 0)
+  expect_int(parse_int_flag(Some("0x1_0"), 7), 16)
+  expect_int(parse_int_flag(Some("0o10"), 7), 8)
+  expect_int(parse_int_flag(Some("0b101"), 7), 5)
+  expect_int(parse_int_flag(Some("2147483647"), 7), 2147483647)
+  expect_int(parse_int_flag(Some("4294967296"), 7), 7)
+  expect_int(parse_int_flag(Some("-2147483649"), 7), 7)
+  expect_int(parse_int_flag(Some("0_"), 7), 7)
+  expect_int(parse_int_flag(Some("0__0"), 7), 7)
+  expect_int(parse_int_flag(Some("_0"), 7), 7)
+  expect_int(parse_int_flag(Some("0x__0"), 7), 7)
+  expect_int(parse_int_flag(Some("0x_"), 7), 7)
+  expect_int(parse_int_flag(Some(" 42 "), 7), 7)
+  expect_int(parse_int_flag(Some("nope"), 7), 7)
+  expect_int(parse_int_flag(None, 7), 7)
+
+  expect_double(parse_double_flag(Some("12.5"), 1.0), 12.5)
+  expect_double(parse_double_flag(Some("+1"), 0.0), 1.0)
+  expect_double(parse_double_flag(Some("01"), 0.0), 1.0)
+  expect_double(parse_double_flag(Some("0012.5"), 0.0), 12.5)
+  expect_double(parse_double_flag(Some("1_000.5"), 0.0), 1000.5)
+  expect_double(parse_double_flag(Some("1e2"), 0.0), 100.0)
+  expect_double(parse_double_flag(Some("5."), 0.0), 5.0)
+  expect_double(parse_double_flag(Some(".5"), 0.0), 0.5)
+  expect_double(parse_double_flag(Some("-2.5e1"), 0.0), -25.0)
+  expect_double(parse_double_flag(Some(" 12.5 "), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1__2"), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1_"), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1_e2"), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1._2"), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1.2_"), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1e2_"), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("1e309"), 0.0), 0.0)
+  expect_double(parse_double_flag(Some("bad"), 1.0), 1.0)
+  let pos_inf = parse_double_flag(Some("Infinity"), 0.0)
+  if !(pos_inf > 1.0e308) {
+    panic("expected +Infinity")
+  }
+  let neg_inf = parse_double_flag(Some("-inf"), 0.0)
+  if !(neg_inf < -1.0e308) {
+    panic("expected -inf")
+  }
+  let nan_v = parse_double_flag(Some("NaN"), 0.0)
+  if nan_v == nan_v {
+    panic("expected NaN")
+  }
+}
+
+test "jval_set_all matches sequential jval_set" {
+  let base = jval_obj([("a", jval_num(1.0)), ("b", jval_num(2.0)), ("c", jval_num(4.0))])
+  let pairs = [("a", jval_num(9.0)), ("d", jval_num(5.0)), ("c", jval_num(8.0))]
+  let mut seq = base
+  for i in 0..<pairs.length() {
+    seq = jval_set(seq, pairs[i].0, pairs[i].1)
+  }
+  let got = jval_set_all(base, pairs)
+  let got_keys = jval_keys(got)
+  let seq_keys = jval_keys(seq)
+  expect_int(got_keys.length(), seq_keys.length())
+  for i in 0..<seq_keys.length() {
+    expect_str(got_keys[i], seq_keys[i])
+    expect_double(num_of(jval_get(got, seq_keys[i])), num_of(jval_get(seq, seq_keys[i])))
+  }
+}
+
+fn make_hex(prefix : String, fill : Byte) -> String {
+  let sb = StringBuilder::new()
+  sb.write_string(prefix)
+  let rem = 64 - prefix.length()
+  for _ in 0..<rem {
+    sb.write_byte(fill)
+  }
+  sb.to_string()
+}
+
+fn bytes_to_str(b : Bytes) -> String {
+  slice_bytes(b, 0, b.length())
+}
+
+test "encode_transcript_manifest: empty set canonical JSON and roundtrip" {
+  let enc = match encode_transcript_manifest([]) {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  expect_str(bytes_to_str(enc.root_bytes), "{\"v\":1,\"buckets\":{}}")
+  expect_int(enc.buckets.length(), 0)
+  expect_int(enc.leaves.length(), 0)
+  let budget = IntRef::new(0)
+  let parsed = match parse_root_manifest(enc.root_bytes, enc.root_hash, budget) {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  expect_int(parsed.length(), 0)
+  expect_int(budget.n, enc.root_bytes.length())
+}
+
+test "encode_transcript_manifest: 256-bucket sorting and canonical leaf formatting" {
+  let h_ff_2 = make_hex("ff", 0x32 as Byte)
+  let h_ff_1 = make_hex("ff", 0x31 as Byte)
+  let h_00_b = make_hex("00", 0x62 as Byte)
+  let h_00_a = make_hex("00", 0x61 as Byte)
+  let h_7a_0 = make_hex("7a", 0x30 as Byte)
+  let enc = match encode_transcript_manifest([
+    (h_ff_2, 200.0),
+    (h_00_b, 42.0),
+    (h_7a_0, 0.0),
+    (h_ff_1, 100.0),
+    (h_00_a, 10.0),
+  ]) {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  expect_int(enc.buckets.length(), 3)
+  expect_str(enc.buckets[0].0, "00")
+  expect_str(enc.buckets[1].0, "7a")
+  expect_str(enc.buckets[2].0, "ff")
+  expect_int(enc.leaves.length(), 3)
+  let leaf00 = enc.leaves[0]
+  expect_str(leaf00.0, "00")
+  expect_str(bytes_to_str(leaf00.2), "{\"v\":1,\"files\":{\"" + h_00_a + "\":10,\"" + h_00_b + "\":42}}")
+  let budget_b = IntRef::new(0)
+  let budget_e = IntRef::new(0)
+  let root = match parse_root_manifest(enc.root_bytes, enc.root_hash, budget_b) {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  expect_int(root.length(), 3)
+  for i in 0..<enc.leaves.length() {
+    let leaf = enc.leaves[i]
+    let parsed = match parse_leaf_manifest(leaf.2, leaf.1, leaf.0, budget_b, budget_e) {
+      Ok(v) => v
+      Err(e) => panic(e)
+    }
+    expect_true(parsed.length() >= 1, "leaf parsed non-empty")
+  }
+  expect_int(budget_e.n, 5)
+}
+
+test "parse_root_manifest & parse_leaf_manifest: adversarial inputs rejected" {
+  let h_0a = make_hex("0a", 0x31 as Byte)
+  let h_0b = make_hex("0b", 0x32 as Byte)
+  let leaf_ok = ("{\"v\":1,\"files\":{\"" + h_0a + "\":123}}").to_bytes()
+  let leaf_ok_hash = transcript_io::sha256_bytes_hex(leaf_ok)
+
+  // 1. Tampered sha256
+  let tampered_hash = make_hex("ff", 0x66 as Byte)
+  expect_true(
+    match parse_leaf_manifest(leaf_ok, tampered_hash, "0a", IntRef::new(0), IntRef::new(0)) {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "tampered sha256 must fail",
+  )
+
+  // 2. Wrong version v=2
+  let bad_v = "{\"v\":2,\"buckets\":{}}".to_bytes()
+  let bad_v_h = transcript_io::sha256_bytes_hex(bad_v)
+  expect_true(
+    match parse_root_manifest(bad_v, bad_v_h, IntRef::new(0)) {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "bad version must fail",
+  )
+
+  // 3. Extra top-level key
+  let extra_k = "{\"v\":1,\"buckets\":{},\"extra\":1}".to_bytes()
+  let extra_k_h = transcript_io::sha256_bytes_hex(extra_k)
+  expect_true(
+    match parse_root_manifest(extra_k, extra_k_h, IntRef::new(0)) {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "extra key must fail",
+  )
+
+  // 4. Duplicate JSON key (top-level including \u0076 escape, and nested)
+  let dup_top = "{\"v\":1,\"\\u0076\":1,\"buckets\":{}}".to_bytes()
+  let dup_top_h = transcript_io::sha256_bytes_hex(dup_top)
+  expect_true(
+    match parse_root_manifest(dup_top, dup_top_h, IntRef::new(0)) {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "duplicate top key must fail",
+  )
+  let dup_nested = ("{\"v\":1,\"files\":{\"" + h_0a + "\":1,\"" + h_0a + "\":2}}").to_bytes()
+  let dup_nested_h = transcript_io::sha256_bytes_hex(dup_nested)
+  expect_true(
+    match parse_leaf_manifest(dup_nested, dup_nested_h, "0a", IntRef::new(0), IntRef::new(0)) {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "duplicate nested key must fail",
+  )
+
+  // 5. Invalid bucket key ("0G", "0", "000")
+  let bad_bs = ["0G", "0", "000"]
+  for i in 0..<bad_bs.length() {
+    let raw = ("{\"v\":1,\"buckets\":{\"" + bad_bs[i] + "\":\"" + leaf_ok_hash + "\"}}").to_bytes()
+    let rh = transcript_io::sha256_bytes_hex(raw)
+    expect_true(
+      match parse_root_manifest(raw, rh, IntRef::new(0)) {
+        Err(_) => true
+        Ok(_) => false
+      },
+      "invalid bucket key must fail",
+    )
+  }
+
+  // 6. Bucket prefix mismatch
+  let mismatch = ("{\"v\":1,\"files\":{\"" + h_0b + "\":10}}").to_bytes()
+  let mismatch_h = transcript_io::sha256_bytes_hex(mismatch)
+  expect_true(
+    match parse_leaf_manifest(mismatch, mismatch_h, "0a", IntRef::new(0), IntRef::new(0)) {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "bucket mismatch must fail",
+  )
+
+  // 7. Invalid compSize
+  let bad_szs = ["-1", "-0", "1.5", "1.0", "1e0", "1E2", "01", "9007199254740992", "99999999999999999999"]
+  for i in 0..<bad_szs.length() {
+    let raw = ("{\"v\":1,\"files\":{\"" + h_0a + "\":" + bad_szs[i] + "}}").to_bytes()
+    let rh = transcript_io::sha256_bytes_hex(raw)
+    expect_true(
+      match parse_leaf_manifest(raw, rh, "0a", IntRef::new(0), IntRef::new(0)) {
+        Err(_) => true
+        Ok(_) => false
+      },
+      "bad size must fail: " + bad_szs[i],
+    )
+  }
+
+  // 7b. Encoder rejects -0.0 and accepts MAX_SAFE_INTEGER
+  expect_true(
+    match encode_transcript_manifest([(h_0a, -0.0)]) {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "-0.0 must fail",
+  )
+  let max_safe_enc = match encode_transcript_manifest([(h_0a, 9007199254740991.0)]) {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  let max_safe_leaf = max_safe_enc.leaves[0]
+  let max_safe_parsed = match parse_leaf_manifest(max_safe_leaf.2, max_safe_leaf.1, max_safe_leaf.0, IntRef::new(0), IntRef::new(0)) {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  expect_int(max_safe_parsed.length(), 1)
+  expect_double(max_safe_parsed[0].1, 9007199254740991.0)
+
+  // 8. Budget bombs: byte cap & entry cap
+  expect_true(
+    match parse_leaf_manifest(leaf_ok, leaf_ok_hash, "0a", IntRef::new(MANIFEST_MAX_BYTES), IntRef::new(0)) {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "byte cap bomb must fail",
+  )
+  expect_true(
+    match parse_leaf_manifest(leaf_ok, leaf_ok_hash, "0a", IntRef::new(0), IntRef::new(MANIFEST_MAX_ENTRIES)) {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "entry cap bomb must fail",
+  )
+  let h_0a_2 = make_hex("0a", 0x32 as Byte)
+  let two_entries = ("{\"v\":1,\"files\":{\"" + h_0a + "\":1,\"" + h_0a_2 + "\":2}}").to_bytes()
+  let two_entries_h = transcript_io::sha256_bytes_hex(two_entries)
+  expect_true(
+    match parse_leaf_manifest(two_entries, two_entries_h, "0a", IntRef::new(0), IntRef::new(MANIFEST_MAX_ENTRIES - 1)) {
+      Err(_) => true
+      Ok(_) => false
+    },
+    "entry cap during parse must fail",
+  )
+}
+
+test "fnv64_utf8 matches IETF 64-bit FNV-1a test vectors" {
+  let empty_want = u64_from_16(0xcbf2, 0x9ce4, 0x8422, 0x2325)
+  let foobar_want = u64_from_16(0x8594, 0x4171, 0xf739, 0x67e8)
+  expect_int64(fnv64_utf8(""), empty_want)
+  expect_int64(fnv64_utf8("foobar"), foobar_want)
+}

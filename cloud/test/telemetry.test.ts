@@ -570,3 +570,158 @@ test("telemetry's own calls refused, failing or slow are never a trace or a line
     await h.close();
   }
 });
+
+const logBatch = () => JSON.stringify({ resourceLogs: [{ resource: { attributes: [] }, scopeLogs: [{ scope: { name: "stillfail-station" }, logRecords: [{ timeUnixNano: "1", severityText: "INFO", body: { stringValue: "client connected" } }] }] }] });
+
+/** Every way a batch comes (a client's spans, a station's spans, its log): how one is sent, the sender its budget is kept by, the object that says who it is. */
+async function senders(h: Harness) {
+  const tokens = await h.login("alice");
+  const { sub } = JSON.parse(Buffer.from(tokens.access_token.split(".")[1]!, "base64url").toString());
+  const station = await enrolled(h);
+  return [
+    { limiter: `account:${sub}`, object: ["ACCOUNTS", sub] as const, send: () => post(h, batch(), { authorization: `Bearer ${tokens.access_token}` }) },
+    { limiter: `station:${station.id}`, object: ["STATIONS", station.id] as const, send: async () => post(h, batch(), await signed(h, station, batch())) },
+    {
+      limiter: `station:${station.id}`,
+      object: ["STATIONS", station.id] as const,
+      send: async () => {
+        const body = logBatch();
+        return h.fetch("/v1/telemetry/logs", { method: "POST", headers: { "content-type": "application/json", ...(await signed(h, station, body)) }, body });
+      },
+    },
+  ];
+}
+
+test("Google not reached: a batch is refused (502), never an unhandled error logged through telemetry", async () => {
+  const google = fakeGoogle();
+  const h = await harness({ telemetry: google.answer });
+  const cut = async (on: boolean) => ((await (await h.fetch("/__test/cut-google", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cut: on }) })).json()) as any).fetches as number;
+  try {
+    const both = await senders(h);
+    await cut(true);
+    for (const { send } of both) {
+      const response = await send();
+      assert.equal(response.status, 502);
+      assert.deepEqual(await response.json(), { error: "telemetry_unavailable" });
+    }
+    assert.equal(await cut(false), both.length, "each batch tried once, and no line of the failure");
+    assert.equal(google.got.length, 0);
+    for (const { send } of both) assert.equal((await send()).status, 202);
+    assert.deepEqual(google.got.map((g) => g.url), ["traces", "traces", "logs"].map((kind) => `https://telemetry.googleapis.com/v1/${kind}`));
+  } finally {
+    await h.close();
+  }
+});
+
+test("a sender's budget not reached is asked for once more, then let through; a spent one stays refused", async () => {
+  const google = fakeGoogle();
+  const h = await harness({ telemetry: google.answer });
+  try {
+    const [client, , log] = await senders(h);
+    for (const { limiter, send } of [client!, log!]) {
+      const budget = await h.object("TELEMETRY_LIMITS", limiter);
+      // Lost once: the second answer counts.
+      await budget.lose(1);
+      assert.equal((await send()).status, 202);
+      assert.equal(await budget.askedSince(), 2);
+      // Lost twice: let through, and not asked a third time.
+      await budget.lose(2);
+      assert.equal((await send()).status, 202);
+      assert.equal(await budget.askedSince(), 2);
+      // Overloaded: let through without asking again.
+      await budget.lose(1, true);
+      assert.equal((await send()).status, 202);
+      assert.equal(await budget.askedSince(), 1);
+      // Only the first of those three was counted.
+      for (let i = 1; i < BATCHES_PER_MINUTE; i++) assert.equal(await budget.consume(), true);
+      // Spent: refused at the first answer, and at the second when the first was lost.
+      await budget.lose(0);
+      const spent = await send();
+      assert.equal(spent.status, 429);
+      assert.equal(spent.headers.get("retry-after"), "60");
+      assert.deepEqual(await spent.json(), { error: "rate_limited" });
+      assert.equal(await budget.askedSince(), 1);
+      await budget.lose(1);
+      assert.equal((await send()).status, 429);
+      assert.equal(await budget.askedSince(), 2);
+    }
+    assert.equal(google.got.length, 6);
+  } finally {
+    await h.close();
+  }
+});
+
+test("who sends a batch not reached is asked once more, then answered 503: never refused as signed out, never let through", async () => {
+  const google = fakeGoogle();
+  const h = await harness({ telemetry: google.answer });
+  const check = async (object: any, send: () => Promise<{ status: number; headers: { get(name: string): string | null }; json(): Promise<unknown> }>) => {
+    const before = google.got.length;
+    // Lost once: the second answer counts.
+    await object.lose(1);
+    assert.equal((await send()).status, 202);
+    assert.equal(await object.askedSince(), 2);
+    assert.equal(google.got.length, before + 1);
+    // Lost twice, or overloaded (not asked again).
+    for (const [times, overloaded, asked] of [[2, false, 2], [1, true, 1]] as const) {
+      await object.lose(times, overloaded);
+      const response = await send();
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get("retry-after"), "5");
+      assert.deepEqual(await response.json(), { error: "telemetry_unavailable" });
+      assert.equal(await object.askedSince(), asked);
+    }
+    assert.equal(google.got.length, before + 1);
+    await object.lose(0);
+  };
+  try {
+    const all = await senders(h);
+    for (const { object, send } of all) await check(await h.object(object[0], object[1]), send);
+    // The sockets put back on the Directory: it says whether a station is enrolled.
+    await h.fetch("/__test/sockets", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ where: "primary" }) });
+    for (const { send } of all.slice(1)) await check(await h.object("DIRECTORY", "primary"), send);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a signed-out client's and a removed station's batch stay refused (401) when the second asking says so", async () => {
+  const google = fakeGoogle();
+  const h = await harness({ telemetry: google.answer });
+  try {
+    const tokens = await h.login("alice");
+    const { sub } = JSON.parse(Buffer.from(tokens.access_token.split(".")[1]!, "base64url").toString());
+    assert.ok((await h.fetch("/v1/auth/logout", { method: "POST", headers: { authorization: `Bearer ${tokens.refresh_token}`, "content-type": "application/json" }, body: JSON.stringify({ all: false }) })).ok);
+    const account = await h.object("ACCOUNTS", sub);
+    await account.lose(1);
+    assert.equal((await post(h, batch(), { authorization: `Bearer ${tokens.access_token}` })).status, 401);
+    assert.equal(await account.askedSince(), 2);
+    const stranger = await key();
+    const object = await h.object("STATIONS", stranger.id);
+    await object.lose(1);
+    assert.equal((await post(h, batch(), await signed(h, stranger, batch()))).status, 401);
+    assert.equal(await object.askedSince(), 2);
+    assert.equal(google.got.length, 0);
+  } finally {
+    await h.close();
+  }
+});
+
+test("an error thrown out of telemetry's own call is never a line through it; another call's is", async () => {
+  const google = fakeGoogle();
+  const h = await harness({ telemetry: google.answer });
+  try {
+    const tokens = await h.login("alice");
+    const { sub } = JSON.parse(Buffer.from(tokens.access_token.split(".")[1]!, "base64url").toString());
+    const account = await h.object("ACCOUNTS", sub);
+    // (the test channel's check, which throws on when the account's object is lost)
+    const headers = { authorization: `Bearer ${tokens.access_token}`, "x-stillfail-channel": "beta" };
+    await account.lose(1);
+    assert.equal((await post(h, batch(), headers)).status, 500);
+    await account.lose(1);
+    assert.equal((await h.fetch("/v1/me", { headers })).status, 500);
+    await google.until((got) => ownLines(got, "unhandled worker error")[0]);
+    assert.deepEqual(ownLines(google.got, "unhandled worker error").map((l: any) => l.at["log.path"]), ["/v1/me"]);
+  } finally {
+    await h.close();
+  }
+});

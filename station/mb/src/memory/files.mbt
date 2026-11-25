@@ -296,6 +296,14 @@ async fn scan(blobs : Blobs, ask : Scan) -> Json {
       held.push(Json::string("MEMORY.md"))
     }
   }
+  let projects = ask.dir + sep + "PROJECTS.jsonl"
+  if lstat(host, projects) is Some(st) && st.kind == "file" {
+    if own(st.mode) || st.size > ask.file_most {
+      held.push(Json::string("PROJECTS.jsonl"))
+    } else if found_json(blobs, ask, { path: "PROJECTS.jsonl", full: projects, st }) is Some(j) {
+      out.push(j)
+    }
+  }
   let skills_dir = ask.dir + sep + "skills"
   for entry in readdir(host, skills_dir).unwrap_or([]) {
     let (name, kind) = entry

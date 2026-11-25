@@ -236,9 +236,7 @@ pub fn CommaLive::reads_for(self : CommaLive, workspace : String) -> WorkspaceRe
 }
 
 ///|
-/// Another station of the workspace writing in one of this one's chats, for the Router of the Comma connect there.
-pub async fn CommaLive::say_handler(self : CommaLive, _peer : String, request : J, workspace : String?) -> J {
-  guard workspace is Some(ws) && self.within(ws) else { raise fail_("not this workspace") }
+fn parse_peer_say(peer : String, request : J) -> RouterSay raise {
   let w = prop(Some(request), "say")
   let thread = match prop(w, "thread") {
     Some(Num(n)) => n
@@ -248,15 +246,52 @@ pub async fn CommaLive::say_handler(self : CommaLive, _peer : String, request : 
     Some(Str(u)) if js_trim(u) != "" => u
     _ => raise fail_("no such write")
   }
+  let expected_card_seq : Double? = match prop(w, "expectedCardSeq") {
+    None | Some(Null) => None
+    Some(Num(n)) as v if safe_int(v) && n > 0.0 => Some(n)
+    _ => raise fail_("no such write")
+  }
   let field = (key : String, default : String) => js_text(or_null(nullish(prop(w, key), Some(jstr(default)))))
-  let seq = (self.said)(Some(ws), {
+  let connect = field("connect", "comma")
+  {
     thread,
     text,
     key: field("key", ""),
     requester: field("requester", "Router"),
-    connect: field("connect", "comma"),
+    connect,
+    connect_scope: Some(connect_scope(if peer == "" { None } else { Some(peer) }, connect)),
+    requester_email: valid_requester_email(prop(w, "requesterEmail")),
     close_card: prop(w, "closeCard") is Some(Bool(true)),
-  })
+    expected_card_seq,
+  }
+}
+
+///|
+fn peer_say_request(workspace : String, w : RouterSay) -> J {
+  jobj([
+    ("method", jstr(say_method)),
+    ("workspace", jstr(workspace)),
+    (
+      "say",
+      jo([
+        ("thread", Some(Num(w.thread))),
+        ("text", Some(jstr(w.text))),
+        ("key", Some(jstr(w.key))),
+        ("requester", Some(jstr(w.requester))),
+        ("connect", Some(jstr(w.connect))),
+        ("requesterEmail", w.requester_email.map(jstr)),
+        ("closeCard", if w.close_card { Some(Bool(true)) } else { None }),
+        ("expectedCardSeq", w.expected_card_seq.map(v => Num(v))),
+      ]),
+    ),
+  ])
+}
+
+///|
+/// Another station of the workspace writing in one of this one's chats, for the Router of the Comma connect there.
+pub async fn CommaLive::say_handler(self : CommaLive, peer : String, request : J, workspace : String?) -> J {
+  guard workspace is Some(ws) && self.within(ws) else { raise fail_("not this workspace") }
+  let seq = (self.said)(Some(ws), parse_peer_say(peer, request))
   jobj([("seq", Num(seq))])
 }
 
@@ -311,7 +346,7 @@ pub fn CommaLive::scope(self : CommaLive, workspace : String) -> (CommaIndexes, 
   )
   let chats : CommaChats = {
     read: async fn(ref_, after, limit) { router_reads(stats, reads, ref_, after, limit) },
-    say: async fn(ref_, text, key, requester, connect, close_card) {
+    say: async fn(ref_, text, key, requester, connect, close_card, expected_card_seq, requester_email) {
       if !self.within(workspace) {
         raise fail_("the workspace changed while writing")
       }
@@ -319,35 +354,26 @@ pub fn CommaLive::scope(self : CommaLive, workspace : String) -> (CommaIndexes, 
         Some(c) => c
         None => raise fail_("no such chat")
       }
+      let valid_email = valid_requester_email(requester_email.map(jstr))
       let w : RouterSay = {
         thread,
         text,
         key: if key == "" { "" } else { "\{connect}:\{key}" },
         requester,
         connect,
+        connect_scope: None,
+        requester_email: valid_email,
         close_card,
+        expected_card_seq,
       }
       match station {
-        None => jobj([("seq", Num((self.said)(Some(workspace), w)))])
+        None => {
+          let here = (self.deps.station)()
+          let local_w = { ..w, connect_scope: Some(connect_scope(if here == "" { None } else { Some(here) }, connect)) }
+          jobj([("seq", Num((self.said)(Some(workspace), local_w)))])
+        }
         Some(s) => {
-          let got = (self.deps.ask)(
-            s,
-            jobj([
-              ("method", jstr(say_method)),
-              ("workspace", jstr(workspace)),
-              (
-                "say",
-                jo([
-                  ("thread", Some(Num(w.thread))),
-                  ("text", Some(jstr(w.text))),
-                  ("key", Some(jstr(w.key))),
-                  ("requester", Some(jstr(w.requester))),
-                  ("connect", Some(jstr(w.connect))),
-                  ("closeCard", if w.close_card { Some(Bool(true)) } else { None }),
-                ]),
-              ),
-            ]),
-          )
+          let got = (self.deps.ask)(s, peer_say_request(workspace, w))
           jo([("seq", prop(Some(got), "seq"))])
         }
       }
@@ -441,6 +467,10 @@ pub fn CommaLive::make_comma(
         self.next_active_listener += 1
         self.active_listeners[id] = changed
         () => self.active_listeners.remove(id)
+      }),
+      station_id: Some(() => {
+        let s = (self.deps.station)()
+        if s == "" { None } else { Some(s) }
       }),
       reconcile,
       close_connects,

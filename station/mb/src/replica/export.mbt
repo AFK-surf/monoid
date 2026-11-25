@@ -58,7 +58,7 @@ let state_schema : String =
 
 ///|
 let small_tables : Array[String] = [
-  "sessions", "threads", "thread_sessions", "runtime_sessions", "closed_cards", "reads", "hidden_chats", "muted_chats",
+  "sessions", "threads", "thread_sessions", "runtime_sessions", "closed_cards", "entry_proposals", "proposal_outcomes", "reads", "hidden_chats", "muted_chats",
   "kept_chats", "dismissed", "pins", "opened_chats",
 ]
 
@@ -189,10 +189,12 @@ pub struct Exporter {
   /// A pass told of transcripts while a sweep was under way: what it told of may lie behind the cursor, so another
   /// sweep follows this one.
   priv mut transcript_resweep : Bool
-  /// Each generation's `head.json` as last read or written, by its directory, with the size and mtime it had on disk:
-  /// a head of many transcripts is megabytes of JSON, parsed again only when the file changed.
-  priv head_cache : Map[String, (Double, Double, JValue)]
-  priv manifest_cache : Map[String, (String, Array[String])]
+  /// Last observed `(gen, to)` per workspace (`-1.0` for `Fresh`): detects external exporter advancement.
+  priv mut seen_head : Map[String, (String, Double)]
+  /// Each generation's `head.json` as last read or written, by its directory, keyed by racy-git
+  /// `(meta_stamp, content_fnv64, was_racy)`: zero disk read / zero JSON parse on quiet passes after the 50ms racy window.
+  priv head_cache : Map[String, (String, Int64, Bool, JValue)]
+  priv manifest_cache : Map[String, (String, String, Array[String])]
   priv mut manifest_live : Set[String]
   priv manifest_superseded_at : Map[String, Double]
   priv mut test_faults : TestFaults?
@@ -251,6 +253,7 @@ pub fn Exporter::new(
     transcript_scan_done: Set([]),
     transcript_ws_done: Set([]),
     transcript_resweep: false,
+    seen_head: Map([]),
     head_cache: Map([]),
     manifest_cache: Map([]),
     manifest_live: Set([]),
@@ -307,6 +310,7 @@ fn Exporter::forget(self : Exporter) -> Unit raise {
   self.known = false
   self.transcripts_pending = false
   self.forget_sweep()
+  self.seen_head.clear()
   self.tf_cache.clear()
   self.head_cache.clear()
   self.manifest_cache.clear()
@@ -367,25 +371,282 @@ fn Exporter::gen_dir(self : Exporter, ws : String, gen : String) -> String {
 }
 
 ///|
+fn Exporter::head_identity_of(self : Exporter, ws : String, gen : String) -> String {
+  match self.head_cache.get(self.gen_dir(ws, gen)) {
+    Some((stamp, hash, _, _)) if stamp != "" => "\{stamp}:\{hash}"
+    _ => ""
+  }
+}
+
+///|
 fn Exporter::read_head(self : Exporter, dir : String) -> JValue? {
   let path = self.files.join([dir, "head.json"])
-  guard self.files.meta(path) is Some((size, mtime)) else {
-    self.head_cache.remove(dir)
-    return None
+  let (st_rc, stamp) = file_stamp(path)
+  if st_rc == 1 || st_rc == 2 {
+    if self.head_cache.get(dir) is Some((c_stamp, c_hash, was_racy, cached)) && c_stamp == stamp {
+      if !was_racy && st_rc == 1 {
+        return Some(cached)
+      }
+      if file_fnv64(path) == Some(c_hash) {
+        if st_rc == 1 && was_racy {
+          self.head_cache[dir] = (c_stamp, c_hash, false, cached)
+        }
+        return Some(cached)
+      }
+    }
   }
-  if self.head_cache.get(dir) is Some((c_size, c_mtime, cached)) && c_size == size && c_mtime == mtime {
-    return Some(cached)
-  }
+  self.head_cache.remove(dir)
   let text = (try { self.files.read(path) } catch { _ => None })
-  let parsed = match text {
-    Some(t) => Some(@jsjson.parse(t)) catch { _ => None }
+  match text {
     None => None
+    Some(t) =>
+      match (@jsjson.parse(t) catch { _ => Null }) {
+        Obj(_) as head => {
+          if st_rc == 1 || st_rc == 2 {
+            self.head_cache[dir] = (stamp, fnv64_utf8(t), st_rc == 2, head)
+          }
+          Some(head)
+        }
+        _ => None
+      }
   }
-  match parsed {
-    Some(head) => self.head_cache[dir] = (size, mtime, head)
-    None => self.head_cache.remove(dir)
+}
+
+///|
+fn Exporter::has_ws_progress(self : Exporter, ws : String) -> Bool raise {
+  for t in ["digests", "threads", "sent", "entering", "transcript_files"] {
+    if self.state.all("SELECT 1 FROM \{t} WHERE ws = ? LIMIT 1", [s(ws)]).length() > 0 {
+      return true
+    }
   }
-  parsed
+  false
+}
+
+///|
+fn Exporter::read_committed_head_state(self : Exporter, ws : String, gen : String) -> (Int64, Array[String])? raise {
+  match self.meta("head_state:\{ws}") {
+    None => None
+    Some(raw) =>
+      match (@jsjson.parse(raw) catch { _ => Null }) {
+        Obj(_) as v => {
+          if text_of(get(v, "gen")) != Some(gen) {
+            return None
+          }
+          Some((num(get(v, "to")).to_int64(), strings_of(get(v, "batches"))))
+        }
+        _ => None
+      }
+  }
+}
+
+///|
+fn Exporter::save_committed_head_state(self : Exporter, ws : String, head : JValue) -> Unit raise {
+  let gen = text_of(get(head, "gen")).unwrap_or("")
+  let to = num(get(head, "to"))
+  let bs = strings_of(get(head, "batches"))
+  let v : JValue = Obj([("gen", str(gen)), ("to", Num(to)), ("batches", strs(bs))])
+  self.set_meta("head_state:\{ws}", @jsjson.stringify(v))
+}
+
+///|
+priv enum HeadCheck {
+  Fresh
+  Use(JValue, Bool)
+  RebuildLegacy
+}
+
+///|
+fn Exporter::read_head_checked(self : Exporter, ws : String, gen : String, dir : String) -> HeadCheck raise {
+  let path = self.files.join([dir, "head.json"])
+  let log_dir = self.files.join([dir, "log"])
+  let committed = self.read_committed_head_state(ws, gen)
+  let (st_rc, stamp) = file_stamp(path)
+  let mut cached_head : JValue? = None
+  if st_rc == 1 || st_rc == 2 {
+    if self.head_cache.get(dir) is Some((c_stamp, c_hash, was_racy, cached)) && c_stamp == stamp {
+      if !was_racy && st_rc == 1 {
+        cached_head = Some(cached)
+      } else if file_fnv64(path) == Some(c_hash) {
+        if st_rc == 1 && was_racy {
+          self.head_cache[dir] = (c_stamp, c_hash, false, cached)
+        }
+        cached_head = Some(cached)
+      }
+    }
+  }
+  let v = match cached_head {
+    Some(ch) => ch
+    None => {
+      self.head_cache.remove(dir)
+      self.manifest_cache.remove(ws)
+      self.tf_cache.remove(ws)
+      match self.files.read(path) {
+        None => {
+          if self.files.exists(path) || self.files.lstat(path) is Some(_) {
+            fail("cannot read \{path}")
+          }
+          let has_log = match self.files.names(log_dir) {
+            Some(names) => names.length() > 0
+            None => self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_)
+          }
+          if has_log || committed is Some(_) || self.has_ws_progress(ws) {
+            fail("missing \{path} for existing generation \{gen}")
+          }
+          return Fresh
+        }
+        Some(t) =>
+          match (@jsjson.parse(t) catch { e => fail("corrupted \{path}: \{e}") }) {
+            Obj(_) as obj => {
+              if st_rc == 1 || st_rc == 2 {
+                self.head_cache[dir] = (stamp, fnv64_utf8(t), st_rc == 2, obj)
+              }
+              obj
+            }
+            _ => fail("corrupted \{path}: expected JSON object")
+          }
+      }
+    }
+  }
+  if text_of(get(v, "gen")) != Some(gen) ||
+    text_of(get(v, "workspace")) != Some(ws) ||
+    text_of(get(v, "origin")) != Some(self.origin) {
+    fail("corrupted \{path}: head identity mismatch")
+  }
+  let head_to_d = match get(v, "to") {
+    Some(Num(d)) => {
+      if d != d || d - d != 0.0 || d < 0.0 || @math.floor(d) != d {
+        fail("corrupted \{path}: invalid to")
+      }
+      d
+    }
+    _ => fail("corrupted \{path}: missing to")
+  }
+  let head_to = head_to_d.to_int64()
+  let bs = match get(v, "batches") {
+    Some(Arr(arr)) => arr
+    _ => fail("corrupted \{path}: missing batches array")
+  }
+  let batch_names : Array[String] = []
+  let mut first_from = 0L
+  let mut prev_from = 0L
+  let mut prev_to = 0L
+  for i, item in bs {
+    match text_of(Some(item)) {
+      Some(name) =>
+        match batch_span(name) {
+          Some((from, to)) => {
+            if from <= 0L || from > to {
+              fail("corrupted \{path}: non-contiguous batches")
+            }
+            if i == 0 {
+              first_from = from
+            } else {
+              if from < prev_from || from > prev_to + 1L || to < prev_to {
+                fail("corrupted \{path}: non-contiguous batches")
+              }
+            }
+            prev_from = from
+            prev_to = to
+            batch_names.push(name)
+          }
+          None => fail("corrupted \{path}: invalid batch name")
+        }
+      None => fail("corrupted \{path}: invalid batch entry")
+    }
+  }
+  if batch_names.length() > 0 && prev_to != head_to {
+    fail("corrupted \{path}: non-contiguous batches")
+  }
+  match committed {
+    Some((c_to, c_batches)) => {
+      if batch_names.length() == 0 {
+        if head_to < c_to {
+          fail("stale \{path} for generation \{gen}")
+        }
+        if head_to == c_to && c_batches.length() > 0 {
+          fail("mismatched \{path} for generation \{gen}")
+        }
+        match self.files.names(log_dir) {
+          None =>
+            if self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_) {
+              fail("cannot read \{log_dir}")
+            }
+          Some(names) => {
+            let mut has_old_batch = false
+            for nm in names {
+              match batch_span(nm) {
+                Some((_, b_to)) =>
+                  if b_to <= head_to {
+                    has_old_batch = true
+                    break
+                  }
+                None => ()
+              }
+            }
+            if has_old_batch {
+              if head_to > c_to {
+                return RebuildLegacy
+              }
+              fail("corrupted \{path}: non-contiguous batches")
+            }
+          }
+        }
+        return Use(v, false)
+      }
+      let expected_first_from : Int64 = if c_batches.length() > 0 {
+        match batch_span(c_batches[0]) {
+          Some((cf, _)) => cf
+          None => 1L
+        }
+      } else {
+        c_to + 1L
+      }
+      if first_from != expected_first_from {
+        fail("corrupted \{path}: non-contiguous batches")
+      }
+      if head_to < c_to {
+        fail("stale \{path} for generation \{gen}")
+      }
+      if head_to == c_to && batch_names != c_batches {
+        fail("mismatched \{path} for generation \{gen}")
+      }
+      Use(v, false)
+    }
+    None => {
+      let named : Set[String] = Set([])
+      for b in batch_names {
+        named.add(b)
+      }
+      match self.files.names(log_dir) {
+        None => {
+          if self.files.exists(log_dir) || self.files.lstat(log_dir) is Some(_) {
+            fail("cannot read \{log_dir}")
+          }
+          if batch_names.length() > 0 {
+            return RebuildLegacy
+          }
+          Use(v, true)
+        }
+        Some(names) => {
+          let disk_batches : Set[String] = Set([])
+          for nm in names {
+            if batch_span(nm) is Some(_) {
+              if !named.contains(nm) {
+                return RebuildLegacy
+              }
+              disk_batches.add(nm)
+            }
+          }
+          for b in batch_names {
+            if !disk_batches.contains(b) {
+              return RebuildLegacy
+            }
+          }
+          Use(v, true)
+        }
+      }
+    }
+  }
 }
 
 ///|
@@ -423,6 +684,7 @@ fn Exporter::gen_of(self : Exporter, ws : String) -> String raise {
   let now = (self.now)()
   let gen = gen_name(if now > after + 1.0 { now } else { after + 1.0 }, self.files.random(4))
   self.set_meta("gen:\{ws}", gen)
+  ignore(self.state.run("DELETE FROM meta WHERE k = ?", [s("head_state:\{ws}")]))
   for t in ["digests", "threads", "sent", "entering"] {
     ignore(self.state.run("DELETE FROM \{t} WHERE ws = ?", [s(ws)]))
   }
@@ -459,7 +721,12 @@ pub fn Exporter::heads(self : Exporter) -> JValue raise {
 
 ///|
 /// A pass failed: `export.db` goes back to before it, and what is kept of it in memory goes too.
-fn Exporter::roll_back(self : Exporter, known : Bool, pending : Bool) -> Unit {
+fn Exporter::roll_back(
+  self : Exporter,
+  known : Bool,
+  pending : Bool,
+  prev_seen_head : Map[String, (String, Double)],
+) -> Unit {
   self.state.exec("ROLLBACK") catch {
     _ => ()
   }
@@ -467,6 +734,7 @@ fn Exporter::roll_back(self : Exporter, known : Bool, pending : Bool) -> Unit {
   self.head_cache.clear()
   self.manifest_cache.clear()
   self.forget_sweep()
+  self.seen_head = prev_seen_head
   self.known = known
   self.transcripts_pending = pending
 }
@@ -487,16 +755,20 @@ pub async fn Exporter::pass(self : Exporter, told : JValue) -> JValue {
   // A pass that fails leaves what it was to do as it found it: it may have said the transcripts were done.
   let known = self.known
   let pending = self.transcripts_pending
+  let prev_seen_head : Map[String, (String, Double)] = Map([])
+  for k, v in self.seen_head {
+    prev_seen_head[k] = v
+  }
   self.state.exec("BEGIN IMMEDIATE")
   let passed = self.pass_in(told, home) catch {
     e => {
-      self.roll_back(known, pending)
+      self.roll_back(known, pending, prev_seen_head)
       raise e
     }
   }
   self.state.exec("COMMIT") catch {
     e => {
-      self.roll_back(known, pending)
+      self.roll_back(known, pending, prev_seen_head)
       raise e
     }
   }
@@ -518,32 +790,73 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
     Some(Str(u)) if u.length() > 0 => @jsjson.sanitize_str(u)
     _ => home
   }
+  let fresh_head = fn(ws : String, gen : String, w_name : JValue) -> JValue {
+    Obj([
+      ("v", Num(version.to_double())),
+      ("origin", str(self.origin)),
+      ("workspace", str(ws)),
+      ("gen", str(gen)),
+      ("name", match w_name { Null => str(""); v => v }),
+      ("dataDir", str(self.data_dir)),
+      ("made", Num(0.0)),
+      ("to", Num(0.0)),
+      ("batches", Arr([])),
+      ("files", Obj([])),
+      ("chats", Num(0.0)),
+      ("messages", Num(0.0)),
+      ("bytes", Num(0.0)),
+      ("runs", Arr([])),
+    ])
+  }
   let outs : Map[String, Out] = Map([])
+  let mut rebuild_legacy = false
   for w in names {
     let ws = w.0
     let gen = self.gen_of(ws)
     let dir = self.gen_dir(ws, gen)
-    let head = match self.read_head(dir) {
-      Some(h) => h
-      None =>
-        Obj([
-          ("v", Num(version.to_double())),
-          ("origin", str(self.origin)),
-          ("workspace", str(ws)),
-          ("gen", str(gen)),
-          ("name", match w.1 { Null => str(""); v => v }),
-          ("dataDir", str(self.data_dir)),
-          ("made", Num(0.0)),
-          ("to", Num(0.0)),
-          ("batches", Arr([])),
-          ("files", Obj([])),
-          ("chats", Num(0.0)),
-          ("messages", Num(0.0)),
-          ("bytes", Num(0.0)),
-          ("runs", Arr([])),
-        ])
+    match self.read_head_checked(ws, gen, dir) {
+      RebuildLegacy => {
+        rebuild_legacy = true
+        break
+      }
+      Use(head, need_save_state) => {
+        if need_save_state {
+          self.save_committed_head_state(ws, head)
+        }
+        let cur_to = num(get(head, "to"))
+        if self.seen_head.get(ws) is Some((prev_gen, prev_to)) && (prev_gen != gen || prev_to != cur_to) {
+          self.forget_sweep()
+          self.transcripts_pending = true
+        }
+        self.seen_head[ws] = (gen, cur_to)
+        outs[ws] = { head, lines: [], bytes: 0, files: [], file_at: Map([]), gone: false, messages: 0.0 }
+      }
+      Fresh => {
+        if self.seen_head.get(ws) is Some((_, prev_to)) && prev_to >= 0.0 {
+          self.forget_sweep()
+          self.transcripts_pending = true
+        }
+        self.seen_head[ws] = (gen, -1.0)
+        outs[ws] = { head: fresh_head(ws, gen, w.1), lines: [], bytes: 0, files: [], file_at: Map([]), gone: false, messages: 0.0 }
+      }
     }
-    outs[ws] = { head, lines: [], bytes: 0, files: [], file_at: Map([]), gone: false, messages: 0.0 }
+  }
+  if rebuild_legacy {
+    let old_after = match self.meta("after") {
+      Some(a) => @string.parse_double(a) catch { _ => 0.0 }
+      None => 0.0
+    }
+    let now = (self.now)()
+    let next_after = if old_after > now { old_after } else { now }
+    self.forget()
+    self.set_meta("after", @jsjson.stringify(Num(next_after)))
+    outs.clear()
+    for w in names {
+      let ws = w.0
+      let gen = self.gen_of(ws)
+      self.seen_head[ws] = (gen, -1.0)
+      outs[ws] = { head: fresh_head(ws, gen, w.1), lines: [], bytes: 0, files: [], file_at: Map([]), gone: false, messages: 0.0 }
+    }
   }
   if self.meta("entries") is None {
     for k in ["entries", "letters", "turns"] {
@@ -639,6 +952,8 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
   }
   let cursor_entries = @string.parse_double(self.meta("entries").unwrap_or("0")) catch { _ => 0.0 }
   let cursor_letters = @string.parse_double(self.meta("letters").unwrap_or("0")) catch { _ => 0.0 }
+  let has_entry_proposals = self.db.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entry_proposals'", []).length() > 0
+  let has_proposal_outcomes = self.db.all("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'proposal_outcomes'", []).length() > 0
   let thread_rows = (ws : String, thread : Double) => {
     match all("SELECT * FROM threads WHERE id = ?", [Json::number(thread)]) {
       [t, ..] => changed(ws, "threads", t)
@@ -649,6 +964,16 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
     }
     for r in all("SELECT * FROM closed_cards WHERE thread = ?", [Json::number(thread)]) {
       changed(ws, "closed_cards", r)
+    }
+    if has_entry_proposals {
+      for r in all("SELECT * FROM entry_proposals WHERE thread = ?", [Json::number(thread)]) {
+        changed(ws, "entry_proposals", r)
+      }
+    }
+    if has_proposal_outcomes {
+      for r in all("SELECT * FROM proposal_outcomes WHERE thread = ?", [Json::number(thread)]) {
+        changed(ws, "proposal_outcomes", r)
+      }
     }
     for table in thread_marks {
       for r in all(marks_of(table, "thread"), [Json::number(thread)]) {
@@ -1181,16 +1506,19 @@ fn Exporter::write(self : Exporter, ws : String, out : Out) -> Unit raise {
   next = set(next, "chats", Num(chats))
   next = set(next, "messages", Num(num(get(head, "messages")) + out.messages))
   out.head = self.fold_gen(dir, next, out.gone)
+  self.save_committed_head_state(ws, out.head)
+  self.seen_head[ws] = (text_of(get(out.head, "gen")).unwrap_or(""), num(get(out.head, "to")))
 }
 
 ///|
 fn Exporter::write_head(self : Exporter, dir : String, head : JValue) -> Unit raise {
   let path = self.files.join([dir, "head.json"])
   self.head_cache.remove(dir)
-  ignore(self.files.write(path, @jsjson.stringify_indent(head, 1)))
-  match self.files.meta(path) {
-    Some((size, mtime)) => self.head_cache[dir] = (size, mtime, head)
-    None => ()
+  let text = @jsjson.stringify_indent(head, 1)
+  ignore(self.files.write(path, text))
+  let (st_rc, stamp) = file_stamp(path)
+  if st_rc == 1 || st_rc == 2 {
+    self.head_cache[dir] = (stamp, fnv64_utf8(text), st_rc == 2, head)
   }
 }
 
@@ -1436,6 +1764,58 @@ extern "C" fn dir_readable_ffi(path : Bytes) -> Int = "sfc_dir_readable"
 ///|
 #borrow(path)
 extern "C" fn is_file_ffi(path : Bytes) -> Int = "sfc_is_file"
+
+///|
+#borrow(path)
+extern "C" fn file_stamp_ffi(path : Bytes) -> Bytes = "sfc_file_stamp"
+
+///|
+#borrow(path)
+extern "C" fn file_fnv64_ffi(path : Bytes) -> Bytes = "sfc_file_fnv64"
+
+///|
+fn file_stamp(path : String) -> (Int, String) {
+  let raw = file_stamp_ffi(c_path(path))
+  if raw.length() == 0 {
+    return (-1, "")
+  }
+  let rc = raw[0].to_int()
+  if rc == 0 {
+    return (0, "")
+  }
+  if rc != 1 && rc != 2 {
+    return (-1, "")
+  }
+  let s = @utf8.decode(raw[1:]) catch { _ => "" }
+  if s == "" {
+    (-1, "")
+  } else {
+    (rc, s)
+  }
+}
+
+///|
+fn file_fnv64(path : String) -> Int64? {
+  let raw = file_fnv64_ffi(c_path(path))
+  if raw.length() != 8 {
+    return None
+  }
+  let mut h : UInt64 = 0UL
+  for i in 0..<8 {
+    h = h | (raw[i].to_uint64() << (i * 8))
+  }
+  Some(h.reinterpret_as_int64())
+}
+
+///|
+fn fnv64_utf8(text : String) -> Int64 {
+  let bytes = @utf8.encode(text)
+  let mut h : UInt64 = 14695981039346656037UL
+  for b in bytes {
+    h = (h ^ b.to_uint64()) * 1099511628211UL
+  }
+  h.reinterpret_as_int64()
+}
 
 ///|
 /// Whether `path` is a regular file, links followed (`kind(path) is Some("file")`), asked of the shell only where the
@@ -2209,8 +2589,12 @@ async fn Exporter::compact_head(self : Exporter, ws : String, head : JValue) -> 
   match get(head, "transcriptFiles") {
     Some(Obj(entries)) if entries.length() > 0 => {
       let manifests_dir = self.files.join([self.replica, "manifests"])
+      let gen = text_of(get(head, "gen")).unwrap_or("")
+      let head_id = self.head_identity_of(ws, gen)
       let root_hash = match self.manifest_cache.get(ws) {
-        Some((rh, _)) if self.files.kind(self.files.join([manifests_dir, rh])) is Some("file") => rh
+        Some((cached_id, rh, _)) if head_id != "" &&
+          cached_id == head_id &&
+          self.files.kind(self.files.join([manifests_dir, rh])) is Some("file") => rh
         _ => {
           let pairs : Array[(String, Double)] = entries.map(e => (@jsjson.sanitize_str(e.0), num(Some(e.1))))
           let enc = encode_transcript_manifest(pairs)
@@ -2227,7 +2611,7 @@ async fn Exporter::compact_head(self : Exporter, ws : String, head : JValue) -> 
           if !(self.files.kind(rp) is Some("file")) {
             self.host.write_atomic(rp, enc.root_bytes, mode=0o644, sync=true, mkdir=true, sep=self.files.sep)
           }
-          self.manifest_cache[ws] = (enc.root_hash, leaf_hashes)
+          self.manifest_cache[ws] = (head_id, enc.root_hash, leaf_hashes)
           enc.root_hash
         }
       }
@@ -2249,14 +2633,16 @@ fn Exporter::gc_manifests(self : Exporter, outs : Map[String, Out]) -> Unit rais
   let manifests_dir = self.files.join([self.replica, "manifests"])
   let live : Set[String] = Set([])
   for ws, out in outs {
+    let gen = text_of(get(out.head, "gen")).unwrap_or("")
+    let head_id = self.head_identity_of(ws, gen)
     match self.manifest_cache.get(ws) {
-      Some((rh, leaves)) => {
+      Some((cached_id, rh, leaves)) if head_id != "" && cached_id == head_id => {
         live.add(rh)
         for lh in leaves {
           live.add(lh)
         }
       }
-      None =>
+      _ =>
         match get(out.head, "transcriptFiles") {
           Some(Obj(entries)) if entries.length() > 0 => {
             let pairs : Array[(String, Double)] = entries.map(e => (@jsjson.sanitize_str(e.0), num(Some(e.1))))

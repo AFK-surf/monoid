@@ -126,10 +126,136 @@ export function writeWhole(path: string, bytes: Uint8Array | string, sync = true
 
 export function readHead(dir: string): Head | null {
   try {
-    return JSON.parse(readFileSync(headFile(dir), "utf8")) as Head; // sync: in the export's own thread (worker.ts)
+    const parsed = JSON.parse(readFileSync(headFile(dir), "utf8")); // sync: in the export's own thread (worker.ts)
+    return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Head) : null;
   } catch {
     return null;
   }
+}
+
+export type HeadCheck = { kind: "fresh" } | { kind: "use"; head: Head; needSaveState: boolean } | { kind: "rebuildLegacy" };
+
+export function readHeadChecked(
+  dir: string,
+  ws?: string,
+  gen?: string,
+  origin?: string,
+  hasProgress = false,
+  committed?: { to: number; batches: string[] } | null,
+): HeadCheck {
+  const path = headFile(dir);
+  const logDir = join(dir, "log");
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8"); // sync: in the export's own thread (worker.ts)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") {
+      let hasBatches = false;
+      try {
+        hasBatches = readdirSync(logDir).length > 0;
+      } catch (re) {
+        hasBatches = !isMissingError(re);
+      }
+      if (hasBatches || committed != null || hasProgress) {
+        throw new Error(`missing ${path} for existing generation ${gen ?? ""}`);
+      }
+      return { kind: "fresh" };
+    }
+    throw e;
+  }
+  const parsed = JSON.parse(text);
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`corrupted ${path}: expected JSON object`);
+  }
+  const h = parsed as Record<string, unknown>;
+  if ((gen !== undefined && h.gen !== gen) || (ws !== undefined && h.workspace !== ws) || (origin !== undefined && h.origin !== origin)) {
+    throw new Error(`corrupted ${path}: head identity mismatch`);
+  }
+  if (typeof h.to !== "number" || !Number.isInteger(h.to) || h.to < 0) {
+    throw new Error(`corrupted ${path}: invalid or missing to`);
+  }
+  if (!Array.isArray(h.batches)) {
+    throw new Error(`corrupted ${path}: missing batches array`);
+  }
+  const batchNames: string[] = [];
+  let firstFrom = 0;
+  let prevFrom = 0;
+  let prevTo = 0;
+  for (let i = 0; i < h.batches.length; i++) {
+    const b = h.batches[i];
+    if (typeof b !== "string") throw new Error(`corrupted ${path}: invalid batch entry`);
+    const span = batchSpan(b);
+    if (span === null) throw new Error(`corrupted ${path}: invalid batch name`);
+    if (span.from <= 0 || span.from > span.to) throw new Error(`corrupted ${path}: non-contiguous batches`);
+    if (i === 0) {
+      firstFrom = span.from;
+    } else {
+      if (span.from < prevFrom || span.from > prevTo + 1 || span.to < prevTo) {
+        throw new Error(`corrupted ${path}: non-contiguous batches`);
+      }
+    }
+    prevFrom = span.from;
+    prevTo = span.to;
+    batchNames.push(b);
+  }
+  if (batchNames.length > 0 && prevTo !== h.to) {
+    throw new Error(`corrupted ${path}: non-contiguous batches`);
+  }
+  if (committed != null) {
+    if (batchNames.length === 0) {
+      if (h.to < committed.to) throw new Error(`stale ${path} for generation ${gen ?? ""}`);
+      if (h.to === committed.to && committed.batches.length > 0) {
+        throw new Error(`mismatched ${path} for generation ${gen ?? ""}`);
+      }
+      let onDisk: string[] | null = null;
+      try {
+        onDisk = readdirSync(logDir);
+      } catch (re) {
+        if (!isMissingError(re)) throw new Error(`cannot read ${logDir}`);
+      }
+      if (onDisk !== null) {
+        const hasOldBatch = onDisk.some((nm) => {
+          const sp = batchSpan(nm);
+          return sp !== null && sp.to <= (h.to as number);
+        });
+        if (hasOldBatch) {
+          if (h.to > committed.to) return { kind: "rebuildLegacy" };
+          throw new Error(`corrupted ${path}: non-contiguous batches`);
+        }
+      }
+      return { kind: "use", head: parsed as Head, needSaveState: false };
+    }
+    const expectedFirstFrom =
+      committed.batches.length > 0 ? (batchSpan(committed.batches[0]!)?.from ?? 1) : committed.to + 1;
+    if (firstFrom !== expectedFirstFrom) throw new Error(`corrupted ${path}: non-contiguous batches`);
+    if (h.to < committed.to) throw new Error(`stale ${path} for generation ${gen ?? ""}`);
+    if (h.to === committed.to && (batchNames.length !== committed.batches.length || batchNames.some((b, i) => b !== committed.batches[i]))) {
+      throw new Error(`mismatched ${path} for generation ${gen ?? ""}`);
+    }
+    return { kind: "use", head: parsed as Head, needSaveState: false };
+  }
+  const named = new Set(batchNames);
+  let onDisk: string[] | null = null;
+  try {
+    onDisk = readdirSync(logDir);
+  } catch (re) {
+    if (!isMissingError(re)) throw new Error(`cannot read ${logDir}`);
+  }
+  if (onDisk === null) {
+    if (batchNames.length > 0) return { kind: "rebuildLegacy" };
+    return { kind: "use", head: parsed as Head, needSaveState: true };
+  }
+  const diskBatches = new Set<string>();
+  for (const nm of onDisk) {
+    if (batchSpan(nm) !== null) {
+      if (!named.has(nm)) return { kind: "rebuildLegacy" };
+      diskBatches.add(nm);
+    }
+  }
+  for (const b of batchNames) {
+    if (!diskBatches.has(b)) return { kind: "rebuildLegacy" };
+  }
+  return { kind: "use", head: parsed as Head, needSaveState: true };
 }
 
 const STATE = `
@@ -164,12 +290,14 @@ export const READS = {
   thread: "SELECT * FROM threads WHERE id = ?",
   threadSessions: "SELECT * FROM thread_sessions WHERE thread = ?",
   threadCards: "SELECT * FROM closed_cards WHERE thread = ?",
+  threadEntryProposals: "SELECT * FROM entry_proposals WHERE thread = ?",
+  threadProposals: "SELECT * FROM proposal_outcomes WHERE thread = ?",
   threadEntries: "SELECT rowid AS _rowid, * FROM entries WHERE thread = ? AND n > ? ORDER BY n LIMIT ?",
   threadLetters: "SELECT rowid AS _rowid, * FROM letters WHERE thread = ? AND n > ? ORDER BY n LIMIT ?",
 } as const;
 
 /// The small tables read whole as the exporter starts, a page at a time by rowid.
-export const SMALL = ["sessions", "threads", "thread_sessions", "runtime_sessions", "closed_cards", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats"] as const;
+export const SMALL = ["sessions", "threads", "thread_sessions", "runtime_sessions", "closed_cards", "entry_proposals", "proposal_outcomes", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats"] as const;
 export const pageOf = (table: string) => `SELECT rowid AS _rowid, * FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT ?`;
 /// A viewer's marks of one thread (or pins of one session): the table's viewers one by one (a few), each its row by key.
 export const marksOf = (table: string, column: string) => `WITH RECURSIVE viewers(viewer) AS (
@@ -250,6 +378,8 @@ export class Exporter {
   /// A pass told of transcripts while a sweep was under way: what it told of may lie behind the cursor, so another
   /// sweep follows this one.
   #transcriptResweep = false;
+  /// Last observed `(gen, to)` per workspace (`-1` for `Fresh`): detects external exporter advancement.
+  #seenHead = new Map<string, { gen: string; to: number }>();
   readonly #manifestCache = new Map<string, { rootHash: string; leafHashes: string[] }>();
   #manifestLive = new Set<string>();
   readonly #manifestSupersededAt = new Map<string, number>();
@@ -318,6 +448,7 @@ export class Exporter {
     this.#known = false;
     this.#transcriptsPending = false;
     this.#forgetSweep();
+    this.#seenHead.clear();
     this.#tfCache.clear();
     this.#manifestCache.clear();
     this.#manifestLive.clear();
@@ -362,6 +493,7 @@ export class Exporter {
     if (known !== null && existsSync(genDir(this.#root(), ws, known))) return known; // sync: in the export's own thread (worker.ts)
     const gen = genName(Math.max(this.#o.now(), Number(this.#meta("after") ?? 0) + 1), randomBytes(4).toString("hex"));
     this.#setMeta(`gen:${ws}`, gen);
+    this.#state.prepare("DELETE FROM meta WHERE k = ?").run(`head_state:${ws}`);
     // (what was written of this workspace before belongs to another generation)
     this.#state.prepare("DELETE FROM digests WHERE ws = ?").run(ws);
     this.#state.prepare("DELETE FROM threads WHERE ws = ?").run(ws);
@@ -401,35 +533,96 @@ export class Exporter {
     // A pass that fails leaves what it was to do as it found it: it may have said the transcripts were done.
     const known = this.#known;
     const pending = this.#transcriptsPending;
+    const prevSeenHead = new Map(this.#seenHead);
     this.#state.exec("BEGIN IMMEDIATE");
     try {
       const passed = this.#pass(told, home, workspaces);
       this.#state.exec("COMMIT");
       return passed;
     } catch (e) {
-      this.#state.exec("ROLLBACK");
+      try {
+        this.#state.exec("ROLLBACK");
+      } catch {}
       this.#tfCache.clear();
       this.#manifestCache.clear();
       this.#forgetSweep();
+      this.#seenHead = prevSeenHead;
       this.#known = known;
       this.#transcriptsPending = pending;
       throw e;
     }
   }
 
+  #hasWsProgress(ws: string): boolean {
+    for (const t of ["digests", "threads", "sent", "entering", "transcript_files"]) {
+      if (this.#state.prepare(`SELECT 1 FROM ${t} WHERE ws = ? LIMIT 1`).get(ws) !== undefined) return true;
+    }
+    return false;
+  }
+
+  #readCommittedHeadState(ws: string, gen: string): { to: number; batches: string[] } | null {
+    const raw = this.#meta(`head_state:${ws}`);
+    if (raw === null) return null;
+    try {
+      const parsed = JSON.parse(raw) as { gen?: unknown; to?: unknown; batches?: unknown };
+      if (parsed.gen !== gen || typeof parsed.to !== "number" || !Array.isArray(parsed.batches)) return null;
+      return { to: parsed.to, batches: parsed.batches.filter((b): b is string => typeof b === "string") };
+    } catch {
+      return null;
+    }
+  }
+
+  #saveCommittedHeadState(ws: string, head: Head): void {
+    this.#setMeta(`head_state:${ws}`, JSON.stringify({ gen: head.gen, to: head.to, batches: head.batches }));
+  }
+
   #pass(told: Told, home: string, workspaces: Places["workspaces"]): Passed {
     const names = new Map(workspaces.map((w) => [w.workspace, w.name]));
     const wsOfSession = (ws: unknown) => (typeof ws === "string" && ws !== "" ? ws : home);
     // Brought up to date before anything is read: a generation begun now has nothing of before, and is read whole.
+    const freshHead = (ws: string, gen: string): Head => ({
+      v: VERSION, origin: this.#o.origin, workspace: ws, gen, name: names.get(ws) ?? "", dataDir: this.#o.dataDir, made: 0, to: 0,
+      batches: [], files: {}, chats: 0, messages: 0, bytes: 0, runs: [],
+    });
     const outs = new Map<string, Out>();
+    let rebuildLegacy = false;
     for (const ws of names.keys()) {
       const gen = this.#genOf(ws);
       const dir = genDir(this.#root(), ws, gen);
-      const head: Head = readHead(dir) ?? {
-        v: VERSION, origin: this.#o.origin, workspace: ws, gen, name: names.get(ws) ?? "", dataDir: this.#o.dataDir, made: 0, to: 0,
-        batches: [], files: {}, chats: 0, messages: 0, bytes: 0, runs: [],
-      };
+      const check = readHeadChecked(dir, ws, gen, this.#o.origin, this.#hasWsProgress(ws), this.#readCommittedHeadState(ws, gen));
+      if (check.kind === "rebuildLegacy") {
+        rebuildLegacy = true;
+        break;
+      }
+      if (check.kind === "use" && check.needSaveState) {
+        this.#saveCommittedHeadState(ws, check.head);
+      }
+      const curTo = check.kind === "use" ? check.head.to : -1;
+      const prevSeen = this.#seenHead.get(ws);
+      const advanced =
+        prevSeen !== undefined &&
+        (curTo >= 0 ? prevSeen.gen !== gen || prevSeen.to !== curTo : prevSeen.to >= 0);
+      if (advanced) {
+        this.#tfCache.delete(ws);
+        this.#manifestCache.delete(ws);
+        this.#forgetSweep();
+        this.#transcriptsPending = true;
+      }
+      this.#seenHead.set(ws, { gen, to: curTo });
+      const head: Head = check.kind === "use" ? check.head : freshHead(ws, gen);
       outs.set(ws, { head, lines: [], bytes: 0, files: {}, gone: false, messages: 0 });
+    }
+    if (rebuildLegacy) {
+      const oldAfter = Number(this.#meta("after") ?? 0);
+      const nextAfter = Math.max(Number.isFinite(oldAfter) ? oldAfter : 0, this.#o.now());
+      this.#forget();
+      this.#setMeta("after", String(nextAfter));
+      outs.clear();
+      for (const ws of names.keys()) {
+        const gen = this.#genOf(ws);
+        this.#seenHead.set(ws, { gen, to: -1 });
+        outs.set(ws, { head: freshHead(ws, gen), lines: [], bytes: 0, files: {}, gone: false, messages: 0 });
+      }
     }
     if (this.#meta("entries") === null) {
       // (a generation begun: everything again, from the start)
@@ -497,6 +690,12 @@ export class Exporter {
       if (t !== undefined) changed(ws, "threads", t);
       for (const r of all(READS.threadSessions, thread)) changed(ws, "thread_sessions", r);
       for (const r of all(READS.threadCards, thread)) changed(ws, "closed_cards", r);
+      if (this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entry_proposals'").get() !== undefined) {
+        for (const r of all(READS.threadEntryProposals, thread)) changed(ws, "entry_proposals", r);
+      }
+      if (this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'proposal_outcomes'").get() !== undefined) {
+        for (const r of all(READS.threadProposals, thread)) changed(ws, "proposal_outcomes", r);
+      }
       for (const table of THREAD_MARKS) for (const r of all(marksOf(table, "thread"), thread)) changed(ws, table, r);
     };
     // (its logs up to there a page at a time, in this pass and those after it, as a batch has room: `entering`)
@@ -838,6 +1037,8 @@ export class Exporter {
     if (hasTf) next.transcriptFiles = tf;
     else delete next.transcriptFiles;
     out.head = this.#fold(dir, next, out.gone);
+    this.#saveCommittedHeadState(ws, out.head);
+    this.#seenHead.set(ws, { gen: out.head.gen, to: out.head.to });
   }
 
   /// The generation's batches folded where they built up: all of them where something was deleted (so a deletion

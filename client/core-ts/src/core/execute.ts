@@ -154,6 +154,18 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
           span.end();
           return Effect.succeed(null);
         }
+        // (the app's first page shown, how long from its splash: app.first_page, beside core.start)
+        if (call.metricKind === "first_page") {
+          const span = inner.tracer.always("app.first_page", Kind.Internal);
+          span.set("stillfail.duration_ms", Math.round(call.durationMs));
+          for (const [k, v] of Object.entries(call.attrs)) span.set(`stillfail.${k}`, v);
+          // (from the core's own first step to now, the page shown just before, this told behind whatever the core was
+          // doing then: duration_ms less it is about the splash's time before the core, below 0 where the core began
+          // before the splash, and longer by a core started again before the page)
+          if (inner.startedAt >= 0) span.set("stillfail.since_core_ms", Math.round(inner.host.monotonicMs() - inner.startedAt));
+          span.end();
+          return Effect.succeed(null);
+        }
         const stalls = typeof call.attrs.stalls === "number" ? call.attrs.stalls : 0;
         const hangs = typeof call.attrs.hangs === "number" ? call.attrs.hangs : 0;
         if (stalls > 0 || hangs >= 3) {
@@ -238,6 +250,8 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
             if (isObject(call.patch) && ("fillOff" in call.patch || "fillMax" in call.patch)) inner.fill?.poke();
             // (the DHT turned on or off: the mesh's endpoint bound anew as it now says, mesh-wire.ts `meshEnv`)
             if (isObject(call.patch) && "dht" in call.patch) inner.meshNow()?.relook();
+            // (other workspaces followed or not: the links of the stations kept as it now says, sync.ts `links`)
+            if (isObject(call.patch) && "otherWorkspaces" in call.patch) inner.stations.reconcile();
             return null;
           },
           catch: asCoreError,
@@ -255,6 +269,7 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
         return Effect.try({
           try: () => {
             prefs.device(inner.data, call.facts);
+            inner.stations.refreshSparing();
             const app = isObject(call.facts) ? call.facts.app : undefined;
             if (typeof app === "string") inner.deviceApp = app;
             inner.adb.deviceTold();

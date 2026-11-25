@@ -378,12 +378,35 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   bench.held = false
   looks_left(c, held)
   if c.wants_frame || c.took_input || bench.mode > 0 || held || paint_left() || layout_left() || glyphs_short_owed() {
+    prev_frame_wake.val = if c.took_input {
+      "took_input"
+    } else if paint_left() {
+      "paint_left"
+    } else if layout_left() {
+      "layout_left"
+    } else if glyphs_short_owed() {
+      "glyphs_short_owed"
+    } else if c.wants_frame {
+      match c.frame_by {
+        Some(loc) => "wants_frame at " + loc.to_string()
+        None => "wants_frame"
+      }
+    } else {
+      "held"
+    }
     pace_none()
     h_request_frame()
   } else if c.motion_left || c.cycling || c.fiber_frame {
     // what moves on (a motion, a fiber stepping a frame at a time) is drawn as the clock goes, on the host's next
     // frame: no frame is owed at this moment (a Tester's draw draws none for it; its run_for does, as its time goes);
     // a motion as often as it needs where it is seen (frame_pace.mbt), a fiber every frame
+    prev_frame_wake.val = if c.fiber_frame {
+      "fiber"
+    } else if c.motion_left {
+      "motion"
+    } else {
+      "cycling"
+    }
     c.wants_frame = true
     let pace = if c.fiber_frame {
       pace_none()
@@ -399,7 +422,14 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   } else {
     pace_none()
     if c.wake_at > 0.0 {
+      prev_frame_wake.val = if wake_at_loc.val != "" {
+        "wake at " + wake_at_loc.val
+      } else {
+        "wake"
+      }
       h_wake_after(dmax(c.wake_at - t, 1.0))
+    } else {
+      prev_frame_wake.val = "host"
     }
   }
   // what is still awaited from the host (an image decoding, a view loading): a run to a declared moment keeps its
@@ -515,6 +545,7 @@ fn frame_body(c : Ctx, w : Double, h : Double, scale : Double, t : Double, tell?
   looks_frame_start()
   c.wants_frame = false
   c.wake_at = -1.0
+  wake_at_loc.val = ""
   c.wake_waited = -1.0
   c.frame_by = None
   c.wake_by = None
@@ -3279,11 +3310,25 @@ fn probe_said(c : Ctx, t : Double, recording : Bool) -> Unit {
 }
 
 ///|
-/// What a frame of the looks alone was for: the cycles it drew (Ctx::cycle_look, where each was said), else the
-/// motions' looks.
+/// Where the soonest `c.wake_at` of this frame was asked (wake_at_time, tree.wake, kept_due, paint_base): cleared each
+/// frame, named in `prev_frame_wake` so a subsequent empty `looks` frame says who asked for it.
+let wake_at_loc : Ref[String] = { val: "" }
+
+///|
+/// Why the previous frame asked the host for the next frame (`wake at …`, `motion`, `wants_frame`, or `host` when the
+/// previous frame asked for none).
+let prev_frame_wake : Ref[String] = { val: "" }
+
+///|
+/// What a frame of the looks alone was for: the cycles it drew (Ctx::cycle_look, where each was said), else why the
+/// previous frame asked for this one (or `host` if none did).
 fn looks_why() -> String {
   if cycle_frame.is_empty() {
-    return "looks"
+    return if prev_frame_wake.val != "" {
+      "looks (" + prev_frame_wake.val + ")"
+    } else {
+      "looks"
+    }
   }
   let at : Array[String] = []
   cycle_frame.each(fn(_, cy) {

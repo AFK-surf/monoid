@@ -81,7 +81,10 @@ fn composing_node_reset() -> Unit {
 ///|
 /// The line a composer's field is laid out on at the system's size of words `scale` (field_line's, a node's).
 fn node_field_line(scale : Double) -> Double {
-  @ui.sp_at(scale, @ui.style_words(@sf.theme().t.words).line)
+  let base_line = @ui.style_words(@sf.theme().t.words).line
+  let ps = @sfbase.prose_text_scale()
+  let ls = @sfbase.prose_line_scale()
+  @ui.sp_at(scale, if ps == 1.0 && ls == 1.0 { base_line } else { base_line * ps * ls })
 }
 
 ///|
@@ -2150,7 +2153,17 @@ fn composer_field_node(
       said
     }
   }
-  let wl = @signals.untracked(fn() { @ui.style_words(@sf.theme().t.words) })
+  let wl_now = fn() -> @view.WordsLook {
+    let base = @ui.style_words(@sf.theme().t.words)
+    let ps = @sfbase.prose_text_scale()
+    let ls = @sfbase.prose_line_scale()
+    if ps == 1.0 && ls == 1.0 {
+      base
+    } else {
+      { ..base, size: base.size * ps, line: base.line * ps * ls }
+    }
+  }
+  let wl = @signals.untracked(wl_now)
   // (how many lines it shows at most as the system's size of words and the window are now: followed, not as made)
   let live_max_lines = fn() { node_text_lines(scale(), words.window_h()) }
   // (its lines as shown, what the input method composes in them counted: a line more or fewer as it composes, or as
@@ -2167,7 +2180,7 @@ fn composer_field_node(
   let before_edit : Ref[(String, String)?] = Ref(None)
   let sync_height = fn(was : String, now : String) {
     let max_lines = @signals.untracked(live_max_lines)
-    match field_comes_other(w.field, wl, max_lines, was, now) {
+    match field_comes_other(w.field, @signals.untracked(wl_now), max_lines, was, now) {
       Some(by) => regrow(by)
       None => ()
     }
@@ -2178,6 +2191,8 @@ fn composer_field_node(
     placeholder_by=hint,
     font_size=wl.size,
     line=wl.line,
+    size_by=fn() { wl_now().size },
+    line_by=fn() { wl_now().line },
     trim=true,
     max_lines_by=live_max_lines,
     words=true,

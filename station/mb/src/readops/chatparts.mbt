@@ -292,15 +292,33 @@ fn require_card_posts(db : @sql.Db, threads : Array[Json]) -> Unit raise {
 /// store.ts `askingMessage`: the message an agent's need without a card asks with, while no person has written after
 /// it, with the two before it.
 fn asking_message(db : @sql.Db, thread : Json, about : Json, from : Json, to : Json) -> (Json, Array[Json])? raise {
+  let has_prop = has_proposal_column(db)
+  let has_sidecar = exists_in(db, "table", "entry_proposals")
   let n = match about {
     Null =>
       {
         let legacy = @legacy.has_legacy_agent(db)
-        match one(db, if legacy { legacy_asked_during_sql } else { asked_during_sql }, [thread, from, to]) {
+        let during_sql = if legacy {
+          legacy_asked_during_sql
+        } else if has_prop && has_sidecar {
+          "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND NOT EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n) AND at >= ? AND at <= ?"
+        } else if has_prop {
+          "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND at >= ? AND at <= ?"
+        } else {
+          asked_during_sql
+        }
+        let latest_sql = if has_prop && has_sidecar {
+          "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND NOT EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n) AND at <= ? ORDER BY at DESC LIMIT 1"
+        } else if has_prop {
+          "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND at <= ? ORDER BY at DESC LIMIT 1"
+        } else {
+          asked_latest_sql
+        }
+        match one(db, during_sql, [thread, from, to]) {
           Some(r) if !(field(r, "n") is Null) => field(r, "n")
           // (none in its turn: the agent's latest before it ended, card-kinds.ts ASKED_LATEST)
           _ if !legacy =>
-            match one(db, asked_latest_sql, [thread, to]) {
+            match one(db, latest_sql, [thread, to]) {
               Some(r) => field(r, "n")
               None => Json::null()
             }
@@ -313,7 +331,14 @@ fn asking_message(db : @sql.Db, thread : Json, about : Json, from : Json, to : J
     return None
   }
   let answered = one(db, answer_after_sql, [thread, n]) is Some(_)
-  let carded = one(db, "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)", [thread, n]) is Some(_)
+  let carded_sql = if has_prop && has_sidecar {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL OR proposal IS NOT NULL OR EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n))"
+  } else if has_prop {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL OR proposal IS NOT NULL)"
+  } else {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)"
+  }
+  let carded = one(db, carded_sql, [thread, n]) is Some(_)
   if answered || carded {
     return None
   }
@@ -788,14 +813,15 @@ fn opened_named(station : Json, session : Json, title : Json, led~ : Bool = fals
 }
 
 ///|
-/// store.ts `openers` and `openedChats` of some sessions (none: of all): by session, the chat it was opened from and
-/// those it opened, the first first; none on a database from before.
-fn openers_opened(db : @sql.Db, ids : Array[String]?) -> (Map[String, Json], Map[String, Array[Json]]) raise {
+/// store.ts `openers` of some sessions (none: of all): by session, the chat it was opened from; none on a database from
+/// before.
+fn openers_of(db : @sql.Db, ids : Array[String]?) -> Map[String, Json] raise {
   let openers : Map[String, Json] = Map([])
-  let opened : Map[String, Array[Json]] = Map([])
+  if ids is Some([]) {
+    return openers
+  }
   let list = match ids { Some(i) => [ids_json(i.map(Json::string))]; None => [] }
   let base_openers = "SELECT o.child, o.parent_station, o.parent, o.opener_title, o.led, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent"
-  let base_opened = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child"
   let station = (v : Json) => if v == Json::string("") { Json::null() } else { v }
   let or_else = (a : Json, b : Json) => if a is Null { b } else { a }
   let rows = try {
@@ -809,6 +835,22 @@ fn openers_opened(db : @sql.Db, ids : Array[String]?) -> (Map[String, Json], Map
       openers[js_text(field(r, "child"))] = opened_named(station(field(r, "parent_station")), field(r, "parent"), or_else(field(r, "opener_title"), field(r, "parent_title")), led~)
     }
   }
+  openers
+}
+
+///|
+/// store.ts `openers` and `openedChats` of some sessions (none: of all): by session, the chat it was opened from and
+/// those it opened, the first first; none on a database from before.
+fn openers_opened(db : @sql.Db, ids : Array[String]?) -> (Map[String, Json], Map[String, Array[Json]]) raise {
+  let openers = openers_of(db, ids)
+  let opened : Map[String, Array[Json]] = Map([])
+  if ids is Some([]) {
+    return (openers, opened)
+  }
+  let list = match ids { Some(i) => [ids_json(i.map(Json::string))]; None => [] }
+  let base_opened = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child"
+  let station = (v : Json) => if v == Json::string("") { Json::null() } else { v }
+  let or_else = (a : Json, b : Json) => if a is Null { b } else { a }
   let rows = try {
     Some(db.all(if ids is Some(_) { opened_of_sql } else { "\{base_opened} WHERE o.parent_station = '' ORDER BY o.created_at, o.rowid" }, list))
   } catch {

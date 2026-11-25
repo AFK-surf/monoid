@@ -70,8 +70,8 @@ test("the_graduated_chat_page_switch_is_no_feature", () => {
   // 试用新对话页 graduated: neither its older prefs field nor its switch turns anything on
   assert.deepEqual(experimentalOf({ chatPage: "nodes" }), {});
   assert.deepEqual(experimentalOf({ chatPage: "nodes", experimental: { chatPage: true, board: true } }), { board: true });
-  assert.deepEqual(Object.keys(FEATURES), ["board", "selectionIntent", "cmdQuote", "terminal"]);
-  assert.deepEqual(stationFeatureIds(), ["terminal"]);
+  assert.deepEqual(Object.keys(FEATURES), ["board", "selectionIntent", "cmdQuote", "terminal", "projects"]);
+  assert.deepEqual(stationFeatureIds(), ["terminal", "projects"]);
 });
 
 test("the_switches_are_kept_on_the_device_and_shown_with_the_prefs", async () => {

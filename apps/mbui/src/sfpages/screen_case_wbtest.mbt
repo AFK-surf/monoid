@@ -43,7 +43,7 @@ fn case_panel() -> Json {
 fn case_rig(turn : Int) -> ScreenRig {
   let r = screen_rig(w=1280.0, h=900.0)
   let pictures = Json::object({
-    "body": Json::string(tiny_png),
+    "body": Json::string(body_png),
     "buttons": Json::object({
       "volume-up": Json::object({ "up": Json::string(tiny_png), "down": Json::string(tiny_png) }),
       "power": Json::object({ "up": Json::string(tiny_png) }),
@@ -68,6 +68,10 @@ fn case_rig(turn : Int) -> ScreenRig {
 ///|
 /// One white pixel.
 let tiny_png : String = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4//8/AwAI/AL+hc2rNAAAAABJRU5ErkJggg=="
+
+///|
+/// A distinct 2×2 white PNG (different byte length from tiny_png so tests can distinguish body vs button decodes).
+let body_png : String = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR4nGP4z8DAwMDAwAAHAAkIAQET+s73AAAAAElFTkSuQmCC"
 
 ///|
 test "a rect and a way turned with the frame" {
@@ -126,6 +130,13 @@ test "a device's case: round the picture once its pictures have come, its button
   assert_eq(field(Some(sent[0]), "down"), Some(Json::boolean(true)))
   assert_eq(field(Some(sent[1]), "down"), Some(Json::boolean(false)))
   assert_eq(r.inputs().filter(fn(i) { text(Some(i), "t") == "pointer" }).length(), 0)
+  // regression: the case body must decode at full retina size, never clamped to 256px by max_px=0
+  let body_tag = "bytes:\{@codec.from_base64_exact(body_png).unwrap().length()}"
+  let body_loads = r.t.image_loads().filter(fn(e) { e.0 == body_tag })
+  assert_true(!body_loads.is_empty(), msg="expected body image decode for \{body_tag}")
+  for load in body_loads {
+    assert_true(load.1 > 256, msg="case body decode was clamped to \{load.1}px: \{load.0}")
+  }
   screen_done(r.t)
 }
 

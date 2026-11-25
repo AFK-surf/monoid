@@ -9,7 +9,7 @@ import { Store, newMessage } from "../src/store/store.ts";
 import { installOutflowChatIndex, outflowChatIndexStep, outflowChatScopes } from "./reference/backfill/outflow-index.ts";
 import type { InWorkspace } from "../src/store/rows.ts";
 import * as read from "./reference/store.ts";
-import { ROUTER_WROTE, outflowChats, outflowMessages, outflowUsage } from "./reference/outflow.ts";
+import { PARTICIPANTS_OF, ROUTER_WROTE, outflowChats, outflowMessages, outflowUsage } from "./reference/outflow.ts";
 import { usageOps } from "./reference/ops-usage.ts";
 import { peerRead, textOf } from "../src/comma/peer.ts";
 import { bytesOf } from "../src/mesh/bus.ts";
@@ -346,9 +346,11 @@ test("a chat a Comma Router wrote in says so, by one keyed lookup of who wrote i
     const reader = read.makeStore(store.db, ".");
     const db = reader.db;
     let lookups = 0;
+    let participantLookups = 0;
     const traced = new Proxy(db, { get(target, property) {
       if (property === "prepare") return (sql: string) => {
         if (sql === ROUTER_WROTE) lookups++;
+        else if (sql === PARTICIPANTS_OF) participantLookups++;
         else if (sql.includes("thread_people")) throw new Error("went through who wrote in a chat");
         return target.prepare(sql);
       };
@@ -363,9 +365,15 @@ test("a chat a Comma Router wrote in says so, by one keyed lookup of who wrote i
     assert.equal(by.get(routed).router, true);
     assert.equal("router" in by.get(people), false);
     assert.equal("router" in by.get(slack.id), false);
+    assert.deepEqual(by.get(routed).participants, ["ann@x"], "Router excluded from human participants");
+    assert.deepEqual(by.get(people).participants, ["ann@x", "bob@x"]);
+    assert.equal("participants" in by.get(slack.id), false, "unknown Slack user without email omitted");
     assert.equal(lookups, 2, "one for each still.fail chat");
+    assert.equal(participantLookups, 3, "one bounded lookup per chat");
     const plan = (store.db.prepare(`EXPLAIN QUERY PLAN ${ROUTER_WROTE}`).all(routed) as { detail: string }[]).map((r) => r.detail).join(" ");
     assert.match(plan, /SEARCH thread_people USING PRIMARY KEY \(thread=\? AND author>\? AND author<\?\)/);
+    const participantsPlan = (store.db.prepare(`EXPLAIN QUERY PLAN ${PARTICIPANTS_OF}`).all(people) as { detail: string }[]).map((r) => r.detail).join(" ");
+    assert.match(participantsPlan, /SEARCH thread_people USING PRIMARY KEY \(thread=\?\)/);
   } finally { store.close(); }
 });
 

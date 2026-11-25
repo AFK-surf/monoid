@@ -38,6 +38,8 @@ export type BackupConfig = {
   stations?: "auto" | string[];
   acceptOthers?: boolean;
   s3?: S3TargetConfig[];
+  /// The most every backup upload together may take of the uplink, in megabits a second (0: no limit).
+  uploadMbps?: number;
 };
 
 export type NormalizedBackupConfig = {
@@ -45,6 +47,8 @@ export type NormalizedBackupConfig = {
   stations: string[];
   acceptOthers: boolean;
   s3: NormalizedS3Target[];
+  /// `readBackupConfig` always sets it (DEFAULT_UPLOAD_MBPS unless configured).
+  uploadMbps?: number;
 };
 
 export type S3TargetStatus = {
@@ -91,6 +95,10 @@ export const ENC_KEY = /^[0-9a-f]{64}$/;
 export const S3_BUCKET = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 export const DEFAULT_PREFIX = "stillfail-backup";
 export const DEFAULT_REGION = "auto";
+/// What backups take of the uplink unless set: a first copy of many GB must not fill a home line (replica/pace.ts).
+export const DEFAULT_UPLOAD_MBPS = 8;
+
+const isMbps = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
 
 const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 
@@ -172,6 +180,9 @@ export function checkBackupConfig(raw: unknown): void {
   if (raw.acceptOthers !== undefined && raw.acceptOthers !== null && typeof raw.acceptOthers !== "boolean") {
     throw new Error("backup.acceptOthers must be a boolean");
   }
+  if (raw.uploadMbps !== undefined && raw.uploadMbps !== null && !isMbps(raw.uploadMbps)) {
+    throw new Error("backup.uploadMbps must be a non-negative number (0: no limit)");
+  }
   if (raw.s3 !== undefined && raw.s3 !== null) {
     if (!Array.isArray(raw.s3)) throw new Error("backup.s3 must be an array");
     const seen = new Set<string>();
@@ -186,7 +197,7 @@ export function checkBackupConfig(raw: unknown): void {
 /// Reads and normalizes `backup` from a raw config object (tolerating absent or partial fields safely).
 export function readBackupConfig(rawConfig: unknown): NormalizedBackupConfig {
   const b = isObject(rawConfig) && isObject(rawConfig.backup) ? rawConfig.backup : null;
-  if (b === null) return { mode: "auto", stations: [], acceptOthers: true, s3: [] };
+  if (b === null) return { mode: "auto", stations: [], acceptOthers: true, s3: [], uploadMbps: DEFAULT_UPLOAD_MBPS };
   const isManual = Array.isArray(b.stations);
   const stations = isManual
     ? [...new Set((b.stations as unknown[]).filter((s): s is string => typeof s === "string" && STATION.test(s)))]
@@ -207,7 +218,8 @@ export function readBackupConfig(rawConfig: unknown): NormalizedBackupConfig {
       }
     }
   }
-  return { mode: isManual ? "manual" : "auto", stations, acceptOthers, s3 };
+  const uploadMbps = isMbps(b.uploadMbps) ? b.uploadMbps : DEFAULT_UPLOAD_MBPS;
+  return { mode: isManual ? "manual" : "auto", stations, acceptOthers, s3, uploadMbps };
 }
 
 /// Applies a `PUT /copies/settings` payload onto the existing backup config.
@@ -240,6 +252,12 @@ export function applyBackupUpdate(
   if (input.acceptOthers !== undefined) {
     if (typeof input.acceptOthers !== "boolean") throw new Error("acceptOthers must be a boolean");
     acceptOthers = input.acceptOthers;
+  }
+
+  let uploadMbps = cur.uploadMbps ?? DEFAULT_UPLOAD_MBPS;
+  if (input.uploadMbps !== undefined) {
+    if (!isMbps(input.uploadMbps)) throw new Error("uploadMbps must be a non-negative number (0: no limit)");
+    uploadMbps = input.uploadMbps;
   }
 
   const generatedKeys: Record<string, string> = {};
@@ -301,6 +319,7 @@ export function applyBackupUpdate(
     stations: mode === "manual" ? stations : "auto",
     acceptOthers,
     s3,
+    ...(uploadMbps !== DEFAULT_UPLOAD_MBPS ? { uploadMbps } : {}),
   };
   return { backup, generatedKeys };
 }

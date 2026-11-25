@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { SILENT_SUBAGENTS, SUBAGENT_HOOK } from "../src/agents/claude.ts";
 import { chatTools } from "../src/tools/chat.ts";
+import { projectTools } from "../src/tools/projects.ts";
 import { SLACK_SPOKEN, SPEAKS, isSlackWrite, speaksInSlack } from "../src/tools/mcp.ts";
 
 const COMMAND = SILENT_SUBAGENTS.PreToolUse[0]!.hooks[0]!.command;
@@ -121,7 +122,7 @@ test("a command line from before it was told Slack's writes still refuses what i
 });
 
 test("the tools a session speaks by are tools the station has", () => {
-  const names = chatTools({} as any).map((t) => t.name);
+  const names = [...chatTools({} as any), ...projectTools({} as any)].map((t) => t.name);
   for (const tool of SPEAKS) assert.ok(names.includes(tool), tool);
-  assert.deepEqual(SPEAKS, ["chat_post", "chat_state", "session_send", "chat_create", "chat_leave", "chat_archive", "chat_configure"]);
+  assert.deepEqual(SPEAKS, ["chat_post", "chat_state", "session_send", "chat_create", "chat_leave", "chat_archive", "chat_configure", "project_manage"]);
 });

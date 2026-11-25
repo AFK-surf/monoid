@@ -109,11 +109,129 @@ export type NewSession = {
 /// External links stored on a thread (e.g. a Comma Task's web page and app deep link).
 export type ThreadLinks = { web?: string; app?: string };
 
+/// Status of an inline project-creation proposal attached to an agent message (`entries.proposal`).
+export type ProjectProposalStatus = "pending" | "accepted" | "reassigned" | "dismissed";
+
+/// Lightweight project-creation proposal carried on a normal message entry (never `entries.card`).
+export type ProjectProposal = {
+  id: string;
+  name: string;
+  note?: string;
+  refs?: string[];
+  proposer?: string;
+  status: ProjectProposalStatus;
+  resolvedProject?: string;
+  resolvedBy?: string;
+  resolvedAt?: number;
+};
+
+/// Maximum number of tags on a thread.
+export const MAX_THREAD_TAGS = 3;
+/// Maximum length of a project name or a single tag (characters).
+export const MAX_PROJECT_NAME = 80;
+export const MAX_TAG_LENGTH = 48;
+
+const FORBIDDEN_LABEL_CHAR = /[\x00-\x1f\x7f,]/;
+
+/// Normalizes a project name: trims whitespace, preserves "" (explicit cross-project), rejects control chars, commas, and overlong values.
+export function normalizeProject(raw: string): string {
+  const s = raw.trim();
+  if (s.length > MAX_PROJECT_NAME) throw new Error(`project name must be at most ${MAX_PROJECT_NAME} characters`);
+  if (FORBIDDEN_LABEL_CHAR.test(s)) throw new Error("project name must not contain control characters or commas");
+  return s;
+}
+
+/// Normalizes a list of tags: trims, drops empty strings, deduplicates preserving first occurrence, caps at MAX_THREAD_TAGS.
+/// When `strict` is true, rejects non-strings, overlong tags, forbidden characters, and more than MAX_THREAD_TAGS unique tags.
+export function normalizeTags(raw: readonly unknown[], strict = false): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== "string") {
+      if (strict) throw new Error("tags must be strings");
+      continue;
+    }
+    const t = item.trim();
+    if (t === "") continue;
+    if (t.length > MAX_TAG_LENGTH) {
+      if (strict) throw new Error(`tag must be at most ${MAX_TAG_LENGTH} characters: ${t}`);
+      continue;
+    }
+    if (FORBIDDEN_LABEL_CHAR.test(t)) {
+      if (strict) throw new Error(`tag must not contain control characters or commas: ${t}`);
+      continue;
+    }
+    if (seen.has(t)) continue;
+    if (out.length >= MAX_THREAD_TAGS) {
+      if (strict) throw new Error(`at most ${MAX_THREAD_TAGS} tags are allowed`);
+      break;
+    }
+    seen.add(t);
+    out.push(t);
+  }
+  return out;
+}
+
+/// Parses a stored `threads.tags` JSON column into a normalized list (undefined when empty/invalid).
+export function parseThreadTags(raw: unknown): string[] | undefined {
+  const v = typeof raw === "string" ? parsed(raw) : raw;
+  if (!Array.isArray(v)) return undefined;
+  const tags = normalizeTags(v, false);
+  return tags.length > 0 ? tags : undefined;
+}
+
+/// Parses an entry's `proposal` JSON column into a validated ProjectProposal (undefined when absent/invalid).
+export function proposalOf(v: unknown): ProjectProposal | undefined {
+  const p = typeof v === "string" ? parsed(v) : v;
+  if (p === null || p === undefined || typeof p !== "object" || Array.isArray(p)) return undefined;
+  if (typeof p.id !== "string" || p.id === "" || typeof p.name !== "string" || p.name === "") return undefined;
+  if (p.status !== "pending" && p.status !== "accepted" && p.status !== "reassigned" && p.status !== "dismissed") return undefined;
+  const out: ProjectProposal = { id: p.id, name: p.name, status: p.status };
+  if (typeof p.note === "string" && p.note !== "") out.note = p.note;
+  if (Array.isArray(p.refs)) {
+    const refs = p.refs.filter((r: unknown): r is string => typeof r === "string" && r.trim() !== "").map((r: string) => r.trim());
+    if (refs.length > 0) out.refs = refs;
+  }
+  if (typeof p.resolvedProject === "string") out.resolvedProject = p.resolvedProject;
+  if (typeof p.proposer === "string" && p.proposer !== "") out.proposer = p.proposer;
+  if (typeof p.resolvedBy === "string" && p.resolvedBy !== "") out.resolvedBy = p.resolvedBy;
+  if (typeof p.resolvedAt === "number" && Number.isFinite(p.resolvedAt)) out.resolvedAt = p.resolvedAt;
+  return out;
+}
+
+/// Overlays a `proposal_outcomes` row onto an entry's immutable `proposal` payload.
+export function mergeProposalOutcome(
+  p: ProjectProposal,
+  outcome: { status?: unknown; project?: unknown; resolved_by?: unknown; resolved_at?: unknown } | null | undefined,
+): ProjectProposal {
+  if (!outcome) return p;
+  const st = outcome.status;
+  if (st !== "accepted" && st !== "reassigned" && st !== "dismissed") return p;
+  const out: ProjectProposal = {
+    id: p.id,
+    name: p.name,
+    ...(p.note !== undefined ? { note: p.note } : {}),
+    ...(p.refs !== undefined ? { refs: p.refs } : {}),
+    ...(p.proposer !== undefined ? { proposer: p.proposer } : {}),
+    status: st,
+  };
+  if (typeof outcome.project === "string") out.resolvedProject = outcome.project;
+  if (typeof outcome.resolved_by === "string" && outcome.resolved_by !== "") out.resolvedBy = outcome.resolved_by;
+  if (typeof outcome.resolved_at === "number" && Number.isFinite(outcome.resolved_at)) out.resolvedAt = outcome.resolved_at;
+  return out;
+}
+
 /// A place people talk: a Slack thread, or a chat on the station's page.
 export type ThreadRow = {
   id: number; surface: string; channel: string; threadTs: string; title: string | null; autoTitle: string | null;
   createdBy: string | null; createdAt: number; home: string | null; hiddenAt: number | null; hiddenBy: string | null;
   shownAt: number | null; links?: ThreadLinks | null;
+  /// Absent when unclassified (NULL); "" when explicitly cross-project/misc; project name otherwise.
+  project?: string;
+  /// True when a human explicitly set or confirmed the project (agents must not overwrite).
+  projectLocked?: boolean;
+  /// Up to 3 short tags (omitted when empty).
+  tags?: string[];
 };
 
 /// The name a chat's agent gave it (Store::autoTitle).
@@ -149,6 +267,8 @@ export type EntryRow = {
   /// The station's notice that a session's run changed (sessions/lifecycle.ts `configure`): how it ran before and how it
   /// runs from its next turn on. Absent on every other entry.
   change?: RunChange;
+  /// Inline project-creation proposal (entries.proposal): never triggers pending_cards. Absent on every other entry.
+  proposal?: ProjectProposal;
 };
 
 /// How a session runs, as a notice of its change says it: its runtime, model, effort, speed, account (`profile`, its
@@ -267,7 +387,7 @@ export type NewMessage = {
   thread: number; ts: string; authorKind: AuthorKind; author: string; text: string; attachments?: Attachment[];
   quotes?: Quote[]; declared?: string | null; client?: string | null; profile?: string | null; runtime?: string | null; card?: Json | null;
   options?: Json | null; at?: number | null; letter?: Letter;
-  agentIdentity?: Json; change?: RunChange;
+  agentIdentity?: Json; change?: RunChange; proposal?: ProjectProposal;
 };
 
 export const newMessage = (thread: number, ts: string, authorKind: AuthorKind, author: string, text: string): NewMessage => ({
@@ -309,7 +429,8 @@ export type StoreChange =
   /// whose card was closed or withdrawn without a message (closed_cards).
   /// `answered`: a person's message handed to a session in a platform's thread that settled the conversational card
   /// waiting there (store/card-kinds.ts; in a still.fail chat it is settled as it is written).
-  | { type: "thread"; id: number; entries: EntryRow[]; closed?: number; answered?: { n: number; author: string; ts: string } }
+  /// `proposalResolved`: entry whose inline project proposal outcome was recorded in `proposal_outcomes`.
+  | { type: "thread"; id: number; entries: EntryRow[]; closed?: number; answered?: { n: number; author: string; ts: string }; proposalResolved?: EntryRow }
   /// Letters were kept in its own log of them (schema.ts LETTERS; contiguous, in order).
   | { type: "letters"; id: number; letters: EntryRow[] }
   /// It went, with every entry it had; `ws` as its session's.
@@ -542,10 +663,14 @@ function parseThreadLinks(raw: unknown): ThreadLinks | null {
 
 export function toThread(r: Json): ThreadRow {
   const links = parseThreadLinks(r.links);
+  const tags = parseThreadTags(r.tags);
   return {
     id: r.id, surface: r.surface, channel: r.channel, threadTs: r.thread_ts, title: r.title, autoTitle: r.auto_title,
     createdBy: r.created_by, createdAt: r.created_at, home: r.home, hiddenAt: r.hidden_at, hiddenBy: r.hidden_by,
     shownAt: r.shown_at, ...(links !== null ? { links } : {}),
+    ...(typeof r.project === "string" ? { project: r.project } : {}),
+    ...(r.project_locked === 1 ? { projectLocked: true } : {}),
+    ...(tags !== undefined ? { tags } : {}),
   };
 }
 
@@ -562,6 +687,7 @@ export function entryColumns(e: EntryRow): Json {
     card: e.card === undefined ? null : JSON.stringify(e.card), at: e.at,
     agent_identity: e.agentIdentity === undefined ? null : JSON.stringify(e.agentIdentity), letter: e.letter === undefined ? null : JSON.stringify(e.letter),
     change: e.change === undefined ? null : JSON.stringify(e.change),
+    proposal: e.proposal === undefined ? null : JSON.stringify(e.proposal),
   };
 }
 
@@ -574,9 +700,15 @@ export function toEntry(r: Json): EntryRow {
     target: r.target, ts: r.ts, authorKind: authorKind(r.author_kind), author: r.author, text: r.text,
     attachments: fromJsonList(r.attachments, attachment), quotes: fromJsonList(r.quotes, quote), declared: r.declared,
     client: r.client, profile: r.profile, runtime: r.runtime ?? null, options: parsed(r.options), card: parsed(r.card), at: r.at,
-    ...withLetter(r.letter), ...withChange(r.change),
+    ...withLetter(r.letter), ...withChange(r.change), ...withProposal(r.proposal),
   };
 }
+
+/// `proposal` when there is one (proposalOf), to spread into a row.
+export const withProposal = (v: unknown): { proposal?: ProjectProposal } => {
+  const proposal = proposalOf(v);
+  return proposal === undefined ? {} : { proposal };
+};
 
 /// `letter` when there is one (letterOf), to spread into a row.
 export const withLetter = (v: unknown): { letter?: Letter } => {
@@ -775,8 +907,9 @@ export const MESSAGES_BEFORE = `SELECT * FROM merged WHERE thread = ?1 AND n IN 
 export const LEGACY_MESSAGES_BEFORE = `SELECT * FROM merged WHERE thread = ?1 AND n IN (${LEGACY_MESSAGE_KEYS_BEFORE}) ORDER BY n DESC`;
 
 /// The entries belonging to a page of messages, without reading the other entries between them.
-export const MESSAGE_PAGE_ENTRIES = `SELECT e.* FROM json_each(?2) j
-  CROSS JOIN entries e ON e.thread=?1 AND e.n=CAST(j.value AS INTEGER) ORDER BY e.n`;
+export const MESSAGE_PAGE_ENTRIES = `SELECT e.*, COALESCE(e.proposal, ep.proposal) AS proposal FROM json_each(?2) j
+  CROSS JOIN entries e ON e.thread=?1 AND e.n=CAST(j.value AS INTEGER)
+  LEFT JOIN entry_proposals ep ON ep.thread=e.thread AND ep.n=e.n ORDER BY e.n`;
 
 /// A context falling under half of what the call before sent (at least this much), on the same account and model, was
 /// compacted (sessions/pool.ts; what schema.ts USAGE_COMPACTIONS keeps).

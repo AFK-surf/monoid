@@ -1,0 +1,238 @@
+// Pure Pion unit tests for `readops_local` (runs under `pionc test` without C SQLite/shell linking).
+
+import "base_codec"
+import "builders_core"
+import "readops_core"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+test "jobs parse_usize and rust_lines" {
+  match parse_usize(Some(base_codec::json_str("42"))) {
+    Ok(Some(v)) => assert(v == 42.0)
+    _ => assert(false)
+  }
+  match parse_usize(Some(base_codec::json_str("+0007"))) {
+    Ok(Some(v)) => assert(v == 7.0)
+    _ => assert(false)
+  }
+  match parse_usize(Some(base_codec::json_str("18446744073709551615"))) {
+    Ok(Some(v)) => assert(v > 1.8e19)
+    _ => assert(false)
+  }
+  match parse_usize(Some(base_codec::json_str("18446744073709551616"))) {
+    Ok(None) => ()
+    _ => assert(false)
+  }
+  match parse_usize(Some(base_codec::json_num(10.0))) {
+    Err(readops_core::ReadError::Refused(500, msg)) => assert(msg == "text.replace is not a function")
+    _ => assert(false)
+  }
+  match parse_usize(Some(base_codec::json_num(-1.0))) {
+    Ok(None) => ()
+    _ => assert(false)
+  }
+  assert(rust_lines("").length() == 0)
+  let ls = rust_lines("a\r\nb\nc\r")
+  assert(ls.length() == 3)
+  assert(ls[0] == "a")
+  assert(ls[1] == "b")
+  assert(ls[2] == "c\r")
+  let ls2 = rust_lines("a\r\nb\r\n")
+  assert(ls2.length() == 2)
+  assert(ls2[1] == "b")
+}
+
+test "jobs_sql constants" {
+  assert(CC_INDEX_VERSION == 1.0)
+  assert(JOB_NAME_FIRST_PENDING == "job name first member pending: ")
+  assert(HAS_NAMING_ORIGIN_SQL.length() > 20)
+  assert(WORKSPACE_UP_JOBS_SQL.length() > 100)
+  assert(JOBS_UP_IN_WORKSPACE_SQL.length() > 100)
+  assert(JOBS_UP_SQL.length() > 50)
+}
+
+test "models model_key split_agy_tier and ReaderState catalog" {
+  assert(model_key("anthropic/claude-opus-5.5") == "claude-opus-5-5")
+  assert(model_key("claude-opus-5-5") == "claude-opus-5-5")
+  assert(model_key("gpt-5.1") == "gpt-5.1")
+  assert(model_key("us.anthropic.claude-sonnet-4-6-20260101-v1:0[1m]") == "claude-sonnet-4-6[1m]")
+  assert(model_key("claude-opus-4-6-2026-02-01") == "claude-opus-4-6")
+  assert(model_key("fusion-claude-opus-5-high-sidekick-mini") == "fusion-claude-opus-5-sidekick-mini")
+  match split_agy_tier("gemini-4-neon-medium") {
+    Some(m) => assert(m == "gemini-4-neon")
+    None => assert(false)
+  }
+  match split_agy_tier("plain-model") {
+    None => ()
+    Some(_) => assert(false)
+  }
+
+  let state = readops_core::ReaderState::new(builders_core::ShellClient::new(), "/")
+  let p0 = match price(state, "claude-opus-5-5") {
+    Some(p) => p
+    None => {
+      assert(false)
+      Price::{ input: 0.0, output: 0.0, cache_read: 0.0 }
+    }
+  }
+  assert(p0.input == 4.0)
+  assert(p0.output == 20.0)
+  assert(p0.cache_read == 0.2)
+
+  learn_catalog(
+    state,
+    base_codec::json_obj([
+      (
+        "custom-model",
+        base_codec::json_obj([
+          (
+            "cost",
+            base_codec::json_obj([
+              ("input", base_codec::json_num(3.0)),
+              ("output", base_codec::json_num(15.0)),
+            ]),
+          ),
+        ]),
+      ),
+    ]),
+  )
+  let pc = match price(state, "custom-model-high") {
+    Some(p) => p
+    None => {
+      assert(false)
+      Price::{ input: 0.0, output: 0.0, cache_read: 0.0 }
+    }
+  }
+  assert(pc.input == 3.0)
+  assert(pc.output == 15.0)
+  assert(pc.cache_read == 3.0)
+
+  let g = Group::{
+    day: "2026-11-25",
+    session: base_codec::json_str("s1"),
+    thread: base_codec::json_null(),
+    person: base_codec::json_null(),
+    profile: base_codec::json_null(),
+    runtime: base_codec::json_str("claude"),
+    model: base_codec::json_str("claude-opus-5-5"),
+    fast: true,
+    calls: 1.0,
+    input: 1000000.0,
+    cache_read: 0.0,
+    cache_write: 0.0,
+    cache_write_long: 0.0,
+    output: 0.0,
+  }
+  match cost(state, g) {
+    base_codec::Json::Num(c, _) => assert(c == 8.0)
+    _ => assert(false)
+  }
+  let pt = price_table(state, [base_codec::json_str("custom-model")])
+  match builders_core::json_get_last(pt, "rows") {
+    Some(base_codec::Json::Arr(rows)) => assert(rows.length() > 20)
+    _ => assert(false)
+  }
+}
+
+test "usage big_of and sees_ws" {
+  match big_of_with(Some(base_codec::json_str("0")), base_codec::json_stringify) {
+    Ok(v) => assert(v == 0.to_int64())
+    Err(_) => assert(false)
+  }
+  match big_of_with(Some(base_codec::json_str("  +12345  ")), base_codec::json_stringify) {
+    Ok(v) => assert(v == 12345.to_int64())
+    Err(_) => assert(false)
+  }
+  match big_of_with(Some(base_codec::json_str("-9223372036854775808")), base_codec::json_stringify) {
+    Ok(v) => assert(v.to_string() == "-9223372036854775808")
+    Err(_) => assert(false)
+  }
+  match big_of_with(Some(base_codec::json_str("9223372036854775807")), base_codec::json_stringify) {
+    Ok(v) => assert(v.to_string() == "9223372036854775807")
+    Err(_) => assert(false)
+  }
+  match big_of_with(Some(base_codec::json_str("9223372036854775808")), base_codec::json_stringify) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  match big_of_with(Some(base_codec::json_str("abc")), base_codec::json_stringify) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  let home_viewer = base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws1")),
+    ("home", base_codec::json_bool(true)),
+  ])
+  assert(sees_ws(home_viewer, base_codec::json_str("ws1")))
+  assert(sees_ws(home_viewer, base_codec::json_null()))
+  assert(!sees_ws(home_viewer, base_codec::json_str("ws2")))
+  let non_home = base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws1")),
+    ("home", base_codec::json_bool(false)),
+  ])
+  assert(!sees_ws(non_home, base_codec::json_null()))
+}
+
+test "usagegroups math viewer_of and query builder" {
+  assert(floor_div(900001.to_int64(), 900000.to_int64()) == 1.to_int64())
+  assert(floor_div((-1).to_int64(), 900000.to_int64()) == (-1).to_int64())
+  assert(ceil_div(1.to_int64(), 900000.to_int64()) == 1.to_int64())
+  assert(ceil_div(0.to_int64(), 900000.to_int64()) == 0.to_int64())
+  assert(ceil_div((-1).to_int64(), 900000.to_int64()) == 0.to_int64())
+
+  match usage_15m_query_all(1000.to_int64(), 1000.to_int64(), 0.to_int64()) {
+    None => ()
+    Some(_) => assert(false)
+  }
+  match usage_15m_query_all(0.to_int64(), 1800000.to_int64(), 330.to_int64()) {
+    Some((sql, args)) => {
+      assert(readops_core::str_contains_sub(sql, "INDEXED BY usage_15m_quarter"))
+      assert(readops_core::str_contains_sub(sql, "usage_15m c"))
+      assert(args.length() == 3)
+    }
+    None => assert(false)
+  }
+  assert(utf8_order("a", "b") < 0)
+  assert(utf8_order("b", "a") > 0)
+  assert(utf8_order("a", "a") == 0)
+}
+
+test "memory helpers and machine helpers" {
+  let md = "---\nname: demo\ndescription: \"项目记忆：测试\"\n---\nbody"
+  match front(md, "description") {
+    Some(d) => assert(d == "项目记忆：测试")
+    None => assert(false)
+  }
+  match front(md, "missing") {
+    None => ()
+    Some(_) => assert(false)
+  }
+  assert(is_conflict("SKILL.conflict-station1.md"))
+  assert(!is_conflict("SKILL.conflict-a\u{2028}b.md"))
+  match share_of_link("/data/share/sh-abc123/skill") {
+    Some(id) => assert(id == "sh-abc123")
+    None => assert(false)
+  }
+  match share_of_link("/data/other/sh-abc123/skill") {
+    None => ()
+    Some(_) => assert(false)
+  }
+  assert(workspace_id("ws_01-AZ"))
+  assert(!workspace_id("bad/ws"))
+
+  assert(clip_to("  hello   world\n\tfoo  ", 8) == "hello wo…")
+  assert(clip_to("short", 10) == "short")
+  assert(said_limit(Some(base_codec::json_str("0"))) == 1)
+  assert(said_limit(Some(base_codec::json_str("5000"))) == 1000)
+  assert(said_limit(Some(base_codec::json_str("18446744073709551615"))) == 1000)
+  assert(said_limit(Some(base_codec::json_str("18446744073709551616"))) == 200)
+  assert(said_limit(None) == 200)
+  match parse_iso("2026-11-25T00:00:00.000Z") {
+    Some(ms) => assert(ms > 1.7e12)
+    None => assert(false)
+  }
+}

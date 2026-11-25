@@ -25,6 +25,10 @@ fn face_add_family_host(face : Int) -> Bool = "probe" "faceAddFamily"
 ///|
 fn face_clear_host(face : Int) -> Unit = "probe" "faceClear"
 ///|
+fn face_set_ligatures_host(face : Int, on : Bool) -> Unit = "probe" "faceSetLigatures"
+///|
+fn set_host_autospace_host(on : Bool) -> Unit = "probe" "setHostAutospace"
+///|
 fn option_length(key : Int) -> Int = "probe" "optionLength"
 ///|
 fn option_point(key : Int, i : Int) -> Int = "probe" "optionPoint"
@@ -113,6 +117,8 @@ fn make_wasm_host() -> @hostapi.Host {
     face_add_family_host(face)
   }
   h.face_clear = fn(face) { face_clear_host(face) }
+  h.face_set_ligatures = fn(face, on) { face_set_ligatures_host(face, on) }
+  h.set_host_autospace = fn(on) { set_host_autospace_host(on) }
   h.image_load = fn(src, max_px) {
     host_text.val = src
     image_load_host(max_px)
@@ -228,8 +234,32 @@ pub fn draw() -> Int {
   if [0, 3, 5].contains(option_number(3).to_int()) { t.set_reveals(true) }
   if option_number(9) > 0.0 { t.set_font_scale(option_number(9)) }
   if option(8) != "" { t.set_app_said("local_station", option(8)) }
-  // (the font families installed here, as a host lists them: MBUI_FILM_LOCAL_FONTS)
+  // (the font families installed here, as a host lists them: MBUI_FILM_LOCAL_FONTS / MBUI_FILM_LOCAL_FONT_INFO)
   if option(22) != "" { t.set_local_fonts(option(22)) }
+  if option(25) != "" {
+    t.set_local_font_info(option(25))
+    if option(22) == "" {
+      match (@json.parse(option(25)) catch { _ => Json::null() }) {
+        Array(arr) => {
+          let names : Array[Json] = []
+          for item in arr {
+            match item {
+              Object(m) =>
+                match m.get("name") {
+                  Some(String(s)) if s != "" => names.push(Json::string(s))
+                  _ => ()
+                }
+              _ => ()
+            }
+          }
+          if names.length() > 0 {
+            t.set_local_fonts(Json::array(names).stringify())
+          }
+        }
+        _ => ()
+      }
+    }
+  }
   let prepare = option(3)
   let script = option(4)
   let max = option_number(7).to_int()

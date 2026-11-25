@@ -428,6 +428,12 @@ pub fn journal_shown() -> String {
 }
 
 ///|
+/// The layout class and window size (points) the app last told the journal (journal_arranged; `("", 0, 0)` before any).
+pub fn journal_arranged_now() -> (String, Double, Double) {
+  arranged_said.val
+}
+
+///|
 fn shown_name(slot : Int) -> String {
   if slot == 0 {
     ""

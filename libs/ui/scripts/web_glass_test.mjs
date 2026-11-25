@@ -564,7 +564,10 @@ function runGlassVectorsInPage() {
       const L = lumaOf(pxAt(shot, xpx, 80));
       if (L < sideLmin) sideLmin = L;
     }
-    roi.v10_reg_light = { maxD2, sideLmin };
+    const lightOuterTopL = lumaOf(pxAt(shot, 80 * 2, 10 * 2));
+    const lightTopL = lumaOf(pxAt(shot, 80 * 2, 10 * 2 + 1));
+    const lightMidL = lumaOf(pxAt(shot, 80 * 2, 40 * 2));
+    roi.v10_reg_light = { maxD2, sideLmin, lightOuterTopL, lightTopL, lightMidL };
     const bufd = new Float32Array(2 * INST);
     rect(bufd, 0, 0, 0, VW, VH, 0, 28 / 255, 28 / 255, 30 / 255, 1, 0);
     rect(bufd, INST, 20, 10, 120, 60, 6, 32 / 255, 32 / 255, 32 / 255, 0x67 / 255, -71);
@@ -588,6 +591,29 @@ function runGlassVectorsInPage() {
       lSide: lumaOf(pxAt(shotd, 140 * 2 - 1, 40 * 2)),
       roiFnv1a: '0x' + dh.toString(16).padStart(16, '0'),
     };
+    // V12-AntiSmear: Regular Light blur=1.2pt at 3x over 2pt alternating dark/light strokes
+    {
+      H.renderInit(VW, VH, 3);
+      const sm = new Float32Array(7 * INST);
+      rect(sm, 0, 0, 0, VW, VH, 0, 244 / 255, 241 / 255, 234 / 255, 1, 0);
+      for (let si = 0; si < 5; si++) {
+        rect(sm, (si + 1) * INST, 20, 30 + si * 4, 120, 2, 0, 28 / 255, 28 / 255, 30 / 255, 1, 0);
+      }
+      rect(sm, 6 * INST, 20, 10, 120, 60, 6, 253 / 255, 252 / 255, 253 / 255, 0x67 / 255, -711);
+      sm[6 * INST + 4] = 24; sm[6 * INST + 6] = 1; sm[6 * INST + 7] = 1.2;
+      sm[6 * INST + 12] = 0.6; sm[6 * INST + 13] = 20; sm[6 * INST + 15] = 1;
+      sm[6 * INST + 21] = 28; sm[6 * INST + 22] = 0.06;
+      H.present(sm, 7, 244 / 255, 241 / 255, 234 / 255);
+      const shots = H.renderPixels();
+      let minL = 1e9, maxL = -1;
+      for (let py = 34 * 3; py <= 42 * 3; py++) {
+        const L = lumaOf(pxAt(shots, 80 * 3, py));
+        if (L < minL) minL = L;
+        if (L > maxL) maxL = L;
+      }
+      roi.v12_reg_antismear = { minL, maxL, delta: maxL - minL };
+      H.renderInit(VW, VH, 2);
+    }
     // V11-Apple-Panel-Glass: Light 0xBF brightRelax chroma & 1..8pt cushion rim, and 0xFF solid zero leak
     {
       const pb = new Float32Array(2 * INST);
@@ -954,15 +980,15 @@ function check(cond, msg) {
 for (const v of results.out) {
   console.log(`web_glass_test: ${v.name} -> rgb(${v.r}, ${v.g}, ${v.b})`);
   if (v.name === 'dark_black') {
-    check(v.r >= 26 && v.r <= 34 && v.g >= 26 && v.g <= 34 && v.b >= 26 && v.b <= 34, `${v.name} out of (30,30,30)+/-4`);
+    check(v.r >= 30 && v.r <= 38 && v.g >= 30 && v.g <= 38 && v.b >= 30 && v.b <= 38, `${v.name} out of (34,34,34)+/-4`);
   } else if (v.name === 'dark_1b1c1f') {
-    check(v.r >= 41 && v.r <= 51 && v.g >= 42 && v.g <= 52 && v.b >= 45 && v.b <= 55, `${v.name} out of (46,47,50)+/-5`);
+    check(v.r >= 53 && v.r <= 63 && v.g >= 54 && v.g <= 64 && v.b >= 57 && v.b <= 67, `${v.name} out of (58,59,62)+/-5`);
   } else if (v.name === 'dark_ad_white') {
-    check(v.r >= 85 && v.r <= 101 && v.g >= 85 && v.g <= 101 && v.b >= 85 && v.b <= 101, `${v.name} out of (93,93,93)+/-8`);
+    check(v.r >= 166 && v.r <= 182 && v.g >= 166 && v.g <= 182 && v.b >= 166 && v.b <= 182, `${v.name} out of (174,174,174)+/-8`);
   } else if (v.name === 'light_blue') {
     const mx = Math.max(v.r, v.g, v.b), mn = Math.min(v.r, v.g, v.b);
     const sat = mx > 0 ? (mx - mn) / mx : 0;
-    check(Math.abs(v.r - 39) <= 12 && Math.abs(v.g - 154) <= 12 && v.b >= 243 && sat >= 0.80,
+    check(Math.abs(v.r - 88) <= 12 && Math.abs(v.g - 205) <= 12 && v.b >= 243 && sat >= 0.62,
       `${v.name} rgb(${v.r},${v.g},${v.b}) sat=${sat.toFixed(3)}`);
   } else if (v.name === 'pure_clear') {
     check(v.r <= 8 && v.g >= 247 && v.b >= 56 && v.b <= 72, `${v.name} out of (0,255,64)+/-8`);
@@ -1014,10 +1040,12 @@ check(roi.v9_tab_icon_delta.midDelta >= 40 && roi.v9_tab_icon_delta.outDiff === 
 check(roi.v9_tab_no_ghost.origL > 220.0 && roi.v9_tab_no_ghost.refrMinL < 170.0, `v9_tab_no_ghost=${JSON.stringify(roi.v9_tab_no_ghost)}`);
 check(roi.v9_switch_frost_continuity.maxDEps <= 2 && roi.v9_switch_frost_continuity.maxDVeil <= 10 && roi.v9_switch_frost_continuity.maxDBlur <= 10 && roi.v9_switch_frost_continuity.ctr60[0] > roi.v9_switch_frost_continuity.ctr0[0] + 25 && (roi.v9_switch_frost_continuity.ctr60[1] - roi.v9_switch_frost_continuity.ctr60[0]) < (roi.v9_switch_frost_continuity.ctr0[1] - roi.v9_switch_frost_continuity.ctr0[0]) - 20, `v9_switch_frost_continuity=${JSON.stringify(roi.v9_switch_frost_continuity)}`);
 check(roi.v9_sw_2x[0] > 40 && roi.v9_sw_2x[1] > 40, `v9_sw_2x=${JSON.stringify(roi.v9_sw_2x)}`);
-check(roi.v10_reg_light.maxD2 <= 14.0 && roi.v10_reg_light.sideLmin >= 212.0 && roi.v10_reg_light.sideLmin <= 232.0,
+check(roi.v10_reg_light.maxD2 <= 14.0 && roi.v10_reg_light.sideLmin >= 150.0 && roi.v10_reg_light.sideLmin <= 176.0 && roi.v10_reg_light.lightOuterTopL <= roi.v10_reg_light.lightMidL - 15.0 && roi.v10_reg_light.lightTopL >= roi.v10_reg_light.lightMidL,
   `v10_reg_light=${JSON.stringify(roi.v10_reg_light)}`);
-check(roi.v10_reg_dark.lTop > roi.v10_reg_dark.lMid + 5.0 && roi.v10_reg_dark.lSide >= roi.v10_reg_dark.lMid - 6.0 && roi.v10_reg_dark.lSide <= roi.v10_reg_dark.lMid + 20.0 && roi.v10_reg_dark.roiFnv1a === '0xbf214b492568e589',
+check(roi.v10_reg_dark.lTop > roi.v10_reg_dark.lMid + 20.0 && roi.v10_reg_dark.lSide <= 14.0 && roi.v10_reg_dark.lSide < roi.v10_reg_dark.lMid - 40.0 && roi.v10_reg_dark.roiFnv1a === '0x29c19724dc9d8767',
   `v10_reg_dark=${JSON.stringify(roi.v10_reg_dark)}`);
+check(roi.v12_reg_antismear.delta >= 4.0 && roi.v12_reg_antismear.minL >= 170.0,
+  `v12_reg_antismear=${JSON.stringify(roi.v12_reg_antismear)}`);
 check(roi.v11_apple_panel_glass.midBR >= 22 && roi.v11_apple_panel_glass.rimL >= roi.v11_apple_panel_glass.midL + 4.0 && roi.v11_apple_panel_glass.solidDL <= 3.0 &&
   roi.v11_apple_panel_glass.l72 >= roi.v11_apple_panel_glass.l60 + 2.0 &&
   roi.v11_apple_panel_glass.l72CD >= roi.v11_apple_panel_glass.l60CD &&

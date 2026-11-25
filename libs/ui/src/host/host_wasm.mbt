@@ -340,6 +340,9 @@ fn ffi_keyboard() -> Int = "mbhost" "mb_host_keyboard"
 fn ffi_a11y_on() -> Int = "mbhost" "mb_host_a11y_on"
 
 ///|
+fn ffi_screen_reader_on() -> Int = "mbhost" "mb_host_screen_reader_on"
+
+///|
 fn mbw_mb_host_a11y_tree(s : Int) = "mbhost" "mb_host_a11y_tree"
 
 ///|
@@ -1256,6 +1259,11 @@ fn keyboard() -> Int {
 ///|
 fn a11y_on() -> Bool {
   ffi_a11y_on() != 0
+}
+
+///|
+fn screen_reader_on() -> Bool {
+  ffi_screen_reader_on() != 0
 }
 
 ///|

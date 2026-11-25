@@ -1,11 +1,48 @@
 // Only the test bundler imports this entry. Production exports no fixture routes.
-import worker, { Account as ProductionAccount, Directory as ProductionDirectory, LoginAttempt as ProductionLoginAttempt, LoginLimiter, RelayLoad as ProductionRelayLoad, ServiceStatus, Station as ProductionStation, TelemetryLimiter } from "../src/index";
+import worker, { Account as ProductionAccount, Directory as ProductionDirectory, LoginAttempt as ProductionLoginAttempt, LoginLimiter, RelayLoad as ProductionRelayLoad, ServiceStatus, Station as ProductionStation, TelemetryLimiter as ProductionTelemetryLimiter } from "../src/index";
 import { probeLines, relaySamples, seedConsole, SEED_RELAYS } from "./console-seed.ts";
 import { clock, signToken, nowSeconds, reply, readJson } from "../src/auth";
 import { sockets, type Delivery } from "../src/directory";
 import type { Env } from "../src/env";
 import type { MailMessage } from "../src/mail";
-export { LoginLimiter, ServiceStatus, TelemetryLimiter };
+export { LoginLimiter, ServiceStatus };
+
+/** Calls to an object that fail as Cloudflare's do when it moved the object, or says it is overloaded. */
+class Losing {
+  #asked = 0;
+  #losing = 0;
+  #overloaded = false;
+  /** The next `times` calls fail. */
+  lose(times: number, overloaded = false) {
+    this.#losing = times;
+    this.#overloaded = overloaded;
+    this.#asked = 0;
+  }
+  /** How often it was called since `lose`. */
+  askedSince() {
+    return this.#asked;
+  }
+  call() {
+    this.#asked++;
+    if (this.#losing === 0) return;
+    this.#losing--;
+    throw this.#overloaded ? Object.assign(new Error("Durable Object is overloaded. Too many requests queued."), { overloaded: true }) : new Error("Network connection lost.");
+  }
+}
+
+export class TelemetryLimiter extends ProductionTelemetryLimiter {
+  #losing = new Losing();
+  lose(times: number, overloaded?: boolean) {
+    this.#losing.lose(times, overloaded);
+  }
+  askedSince() {
+    return this.#losing.askedSince();
+  }
+  override consume(): boolean {
+    this.#losing.call();
+    return super.consume();
+  }
+}
 
 export class RelayLoad extends ProductionRelayLoad {
   /** A day of the console's seeded relays' counters and what the probes found of them (dev.ts SEED=console). */
@@ -84,6 +121,18 @@ class Saying {
 }
 
 export class Directory extends ProductionDirectory {
+  #losing = new Losing();
+  /** The next calls of `isStation` fail. */
+  lose(times: number, overloaded?: boolean) {
+    this.#losing.lose(times, overloaded);
+  }
+  askedSince() {
+    return this.#losing.askedSince();
+  }
+  override isStation(station: string): boolean {
+    this.#losing.call();
+    return super.isStation(station);
+  }
   /** The console's made-up cloud in use (console-seed.ts), its admin the account given. */
   seedConsole(admin: { sub: string; email: string }) {
     this.ctx.storage.transactionSync(() => seedConsole(this.ctx.storage.sql, nowSeconds(), admin));
@@ -358,6 +407,18 @@ function socketsAt(where: "objects" | "primary") {
 }
 
 export class Station extends ProductionStation {
+  #losing = new Losing();
+  /** The next calls of `isStation` fail. */
+  lose(times: number, overloaded?: boolean) {
+    this.#losing.lose(times, overloaded);
+  }
+  askedSince() {
+    return this.#losing.askedSince();
+  }
+  override async isStation(station: string): Promise<boolean> {
+    this.#losing.call();
+    return super.isStation(station);
+  }
   /** The presence alarm's check, as if it ran at `ms`. */
   sweepAt(ms: number) {
     return this.sweep(ms);
@@ -413,6 +474,22 @@ export class Station extends ProductionStation {
 }
 
 export class Account extends ProductionAccount {
+  #losing = new Losing();
+  /** The next calls of `signedIn` and `live` fail. */
+  lose(times: number, overloaded?: boolean) {
+    this.#losing.lose(times, overloaded);
+  }
+  askedSince() {
+    return this.#losing.askedSince();
+  }
+  override async live(...args: Parameters<ProductionAccount["live"]>) {
+    this.#losing.call();
+    return super.live(...args);
+  }
+  override signedIn(claims: { sub: string; sid: string }): boolean {
+    this.#losing.call();
+    return super.signedIn(claims);
+  }
   /** What the constructor does as a deploy that rolls the sockets back starts it. */
   handBackNow() {
     this.handBack();
@@ -503,6 +580,11 @@ export default {
       later += Number((await readJson(request)).seconds) * 1000;
       return reply({ now: nowSeconds() });
     }
+    if (path === "/__test/cut-google") {
+      // Google Cloud's Telemetry API not reached (the fetch itself throws, which an outbound service cannot do), or again; answers the fetches cut so far.
+      googleCut = Boolean((await readJson(request)).cut);
+      return reply({ fetches: googleFetchesCut });
+    }
     if (path === "/__test/offline") {
       offline = !offline;
       return reply({ offline });
@@ -546,5 +628,16 @@ export default {
 };
 let offline = false;
 let loseRefreshResponse = false;
+
+let googleCut = false;
+let googleFetchesCut = 0;
+const networkFetch = globalThis.fetch;
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  if (googleCut && String(input instanceof Request ? input.url : input).startsWith("https://telemetry.googleapis.com/")) {
+    googleFetchesCut++;
+    return Promise.reject(new Error("Network connection lost."));
+  }
+  return networkFetch(input as RequestInfo, init);
+}) as typeof fetch;
 
 const deviceRequests: string[] = [];

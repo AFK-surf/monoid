@@ -1,0 +1,1629 @@
+// 1:1 port of `station/mb/src/readops/usagepage.mbt`.
+// What the agents spent, as the usage page reads it (`usage`, GET /usage) and as a Comma
+// connect sends it (`outflowUsage`).
+//
+// Lossless `JValue` serialization: user-keyed `profiles` stays in `js_json::JValue` (raw UTF-16
+// `Array[Int]`) through `usage_answer_jval` and serializes via `js_json::stringify` without
+// passing through `base_codec::Json` (preserving lone surrogates, JS integer-index key ordering,
+// duplicate-key last-wins at first-seen position, and non-finite numbers -> `null`).
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "jscase"
+import "readops_chats"
+import "readops_core"
+import "readops_local"
+import "sql_db"
+
+/// MoonBit `String::compare` semantics: shortlex on UTF-16 code units
+/// (shorter UTF-16 length first; equal length compared by UTF-16 code unit order `js_compare`).
+pub fn shortlex_compare(a : String, b : String) -> Int {
+  let la = js_json::utf16_len(a)
+  let lb = js_json::utf16_len(b)
+  if la != lb {
+    return if la < lb { -1 } else { 1 }
+  }
+  js_json::js_compare(a, b)
+}
+
+/// Trim JS whitespace (`jscase::is_space`) on raw UTF-16 code units, preserving lone surrogates.
+pub fn trim_units(units : Array[Int]) -> Array[Int] {
+  let n = units.length()
+  let mut start = 0
+  while start < n && jscase::is_space(units[start]) {
+    start = start + 1
+  }
+  let mut end = n
+  while end > start && jscase::is_space(units[end - 1]) {
+    end = end - 1
+  }
+  let out : Array[Int] = []
+  for i in start..<end {
+    out.push(units[i])
+  }
+  out
+}
+
+/// Deduplicate `JValue::Obj` keys by exact UTF-16 code units (`units_eq`): last-wins preserving
+/// first-seen position, recursing into nested arrays/objects (1:1 MB `jvalue_ops.mbt:26-44`).
+pub fn normalize_jval(v : js_json::JValue) -> js_json::JValue {
+  match v {
+    js_json::JValue::Null => js_json::JValue::Null
+    js_json::JValue::Bool(b) => js_json::JValue::Bool(b)
+    js_json::JValue::Num(d) => {
+      if is_nan_or_inf(d) { js_json::JValue::Null } else { js_json::JValue::Num(d) }
+    }
+    js_json::JValue::Str(u) => js_json::JValue::Str(u)
+    js_json::JValue::Arr(items) => {
+      let out : Array[js_json::JValue] = []
+      for i in 0..<items.length() {
+        out.push(normalize_jval(items[i]))
+      }
+      js_json::JValue::Arr(out)
+    }
+    js_json::JValue::Obj(entries) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<entries.length() {
+        let (k, ev) = entries[i]
+        let nv = normalize_jval(ev)
+        let mut found = -1
+        for j in 0..<out.length() {
+          if js_json::units_eq(out[j].0, k) {
+            found = j
+            break
+          }
+        }
+        if found >= 0 {
+          out[found] = (k, nv)
+        } else {
+          out.push((k, nv))
+        }
+      }
+      js_json::JValue::Obj(out)
+    }
+  }
+}
+
+/// Convert `base_codec::Json` into `js_json::JValue` losslessly.
+pub fn json_to_jval(j : base_codec::Json) -> js_json::JValue {
+  match j {
+    base_codec::Json::Null => js_json::JValue::Null
+    base_codec::Json::Bool(b) => js_json::JValue::Bool(b)
+    base_codec::Json::Num(d, _) => {
+      if is_nan_or_inf(d) { js_json::JValue::Null } else { js_json::JValue::Num(d) }
+    }
+    base_codec::Json::Str(s) => js_json::JValue::Str(js_json::utf16_units(s))
+    base_codec::Json::Arr(items) => {
+      let out : Array[js_json::JValue] = []
+      for i in 0..<items.length() {
+        out.push(json_to_jval(items[i]))
+      }
+      js_json::JValue::Arr(out)
+    }
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        out.push((js_json::utf16_units(k), json_to_jval(v)))
+      }
+      js_json::JValue::Obj(out)
+    }
+  }
+}
+
+fn jv_key(s : String) -> Array[Int] {
+  js_json::utf16_units(s)
+}
+
+fn jv_str(s : String) -> js_json::JValue {
+  js_json::JValue::Str(js_json::utf16_units(s))
+}
+
+/// usage-15m.ts `usage15mSince`: from when every call is counted (ms); null, from the first.
+fn detail_since(db : sql_db::Db) -> Result[base_codec::Json, readops_core::ReadError] {
+  match readops_core::one(db, "SELECT since FROM usage_15m_meta WHERE id = 1", []) {
+    Ok(Some(r)) => Ok(readops_core::field(r, "since"))
+    Ok(None) => Ok(base_codec::json_null())
+    Err(e) => Err(e)
+  }
+}
+
+fn usage_number(v : base_codec::Json) -> Double {
+  match v {
+    base_codec::Json::Num(n, _) => n
+    _ => 0.0
+  }
+}
+
+/// store/usage.ts `usageSince`: the earliest call's time, or from when quarters hold every call.
+fn usage_since(db : sql_db::Db) -> Result[base_codec::Json, readops_core::ReadError] {
+  let first = match readops_core::one(db, "SELECT first_at FROM usage_span WHERE id = 1", []) {
+    Ok(Some(span)) => readops_core::field(span, "first_at")
+    Ok(None) => base_codec::json_null()
+    Err(e) => return Err(e)
+  }
+  let since = match detail_since(db) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match since {
+    base_codec::Json::Null => return Ok(first)
+    _ => ()
+  }
+  let first_null = match first {
+    base_codec::Json::Null => true
+    _ => false
+  }
+  if first_null || usage_number(since) >= usage_number(first) {
+    Ok(since)
+  } else {
+    Ok(first)
+  }
+}
+
+// ── the accounts of the config (usage.ts `configProfiles`, agents/profiles.ts `profileRuntimes`) ──
+
+/// What a provider speaks (agents/providers.ts SOURCES). Distinct from `locate::Source`.
+pub struct Source {
+  pub id : String
+  pub chat : Bool
+  pub responses : Bool
+  pub anthropic : Bool
+  pub at_address : Bool
+  pub protocols : Array[String]
+}
+
+fn mk_source(
+  id : String,
+  chat : Bool,
+  responses : Bool,
+  anthropic : Bool,
+  at_address : Bool,
+  protocols : Array[String],
+) -> Source {
+  Source::{
+    id: id,
+    chat: chat,
+    responses: responses,
+    anthropic: anthropic,
+    at_address: at_address,
+    protocols: protocols,
+  }
+}
+
+pub fn provider_sources() -> Array[Source] {
+  [
+    mk_source("openai", false, true, false, false, []),
+    mk_source("anthropic", false, false, true, false, []),
+    mk_source("google", true, false, false, false, []),
+    mk_source("google-vertex", false, false, false, false, []),
+    mk_source("xai", false, true, false, false, []),
+    mk_source("mistral", true, false, false, false, []),
+    mk_source("deepseek", true, false, false, false, []),
+    mk_source("qwen", true, false, false, false, []),
+    mk_source("moonshotai", true, false, false, false, []),
+    mk_source("kimi-code", true, false, true, false, []),
+    mk_source("zai", true, false, false, false, []),
+    mk_source("minimax", false, false, true, false, []),
+    mk_source("xiaomi", true, false, false, false, []),
+    mk_source("ant-ling", true, false, false, false, []),
+    mk_source("jev", false, false, false, false, []),
+    mk_source("qwen-cn", true, false, false, false, []),
+    mk_source("moonshotai-cn", true, false, false, false, []),
+    mk_source("zai-coding-cn", true, false, false, false, []),
+    mk_source("minimax-cn", false, false, true, false, []),
+    mk_source("openrouter", true, false, true, false, []),
+    mk_source("vercel-ai-gateway", false, false, true, false, []),
+    mk_source("opencode", true, true, true, false, []),
+    mk_source("opencode-go", true, true, true, false, []),
+    mk_source("command-code", true, true, true, false, []),
+    mk_source("open-design", true, true, true, false, []),
+    mk_source("cloudflare-ai-gateway", false, false, false, true, ["chat_completions", "responses", "anthropic"]),
+    mk_source("azure-openai", false, false, false, true, ["responses"]),
+    mk_source("groq", true, false, false, false, []),
+    mk_source("together", true, false, false, false, []),
+    mk_source("fireworks", true, false, true, false, []),
+    mk_source("cerebras", true, false, false, false, []),
+    mk_source("huggingface", true, false, false, false, []),
+    mk_source("nvidia", true, false, false, false, []),
+    mk_source("baseten", true, false, false, false, []),
+    mk_source("cloudflare-workers-ai", false, false, false, true, ["chat_completions"]),
+    mk_source("ollama", false, false, false, true, ["chat_completions"]),
+    mk_source("custom", false, false, false, true, ["chat_completions", "responses", "anthropic"]),
+  ]
+}
+
+fn str_arr_contains(arr : Array[String], needle : String) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == needle {
+      return true
+    }
+  }
+  false
+}
+
+fn is_runtime_kind(s : String) -> Bool {
+  s == "claude" ||
+  s == "codex" ||
+  s == "dsh" ||
+  s == "grok" ||
+  s == "cursor" ||
+  s == "devin" ||
+  s == "hermes" ||
+  s == "agy" ||
+  s == "pi"
+}
+
+/// providers.ts `cleanEndpoint`: an address trimmed, without a trailing slash; none unless http(s).
+/// A value that is no string errors (`text.trim is not a function`).
+pub fn clean_endpoint(v : js_json::JValue) -> Result[Option[String], readops_core::ReadError] {
+  let s = match v {
+    js_json::JValue::Str(u) => js_json::sanitize_str(u)
+    _ => return Err(readops_core::ReadError::App("text.trim is not a function"))
+  }
+  let mut trimmed = jscase::trim(s)
+  while readops_core::str_has_suffix(trimmed, "/") {
+    trimmed = readops_core::str_slice_bytes(trimmed, 0, trimmed.to_bytes().length() - 1)
+  }
+  let rest : Option[String] = if readops_core::str_has_prefix(trimmed, "https://") {
+    Some(readops_core::str_slice_bytes(trimmed, 8, trimmed.to_bytes().length()))
+  } else if readops_core::str_has_prefix(trimmed, "http://") {
+    Some(readops_core::str_slice_bytes(trimmed, 7, trimmed.to_bytes().length()))
+  } else {
+    None
+  }
+  match rest {
+    Some(r) => {
+      if r == "" {
+        return Ok(None)
+      }
+      let units = js_json::utf16_units(r)
+      for i in 0..<units.length() {
+        if jscase::is_space(units[i]) {
+          return Ok(None)
+        }
+      }
+      Ok(Some(trimmed))
+    }
+    None => Ok(None)
+  }
+}
+
+/// What an address-speaking source answers there (providers.ts `endpoints`): (chat, responses, anthropic).
+pub fn endpoints_of(
+  source : Source,
+  endpoint : Option[String],
+  protocol : Option[String],
+) -> Result[Option[(Bool, Bool, Bool)], readops_core::ReadError] {
+  if !source.at_address {
+    return Ok(Some((source.chat, source.responses, source.anthropic)))
+  }
+  let base = match endpoint {
+    Some(e) => {
+      match clean_endpoint(jv_str(e)) {
+        Ok(Some(b)) => b
+        Ok(None) => return Ok(None)
+        Err(err) => return Err(err)
+      }
+    }
+    None => return Ok(None)
+  }
+  let chosen : Option[String] = match protocol {
+    Some(p) => {
+      if p == "chat_completions" || p == "responses" || p == "anthropic" {
+        Some(p)
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+  match chosen {
+    Some(c) => {
+      if !str_arr_contains(source.protocols, c) {
+        return Ok(None)
+      }
+    }
+    None => ()
+  }
+  if source.id == "cloudflare-ai-gateway" {
+    match chosen {
+      None => return Ok(Some((true, true, true)))
+      Some(c) => return Ok(Some((c == "chat_completions", c == "responses", c == "anthropic")))
+    }
+  }
+  if source.id == "azure-openai" {
+    return Ok(Some((false, true, false)))
+  }
+  if source.id == "cloudflare-workers-ai" || source.id == "ollama" {
+    return Ok(Some((true, false, false)))
+  }
+  match chosen {
+    Some("chat_completions") => Ok(Some((true, false, false)))
+    Some("responses") => Ok(Some((false, true, false)))
+    Some(_) => Ok(Some((false, false, true)))
+    None => Ok(Some((true, true, readops_core::str_has_suffix(base, "/v1"))))
+  }
+}
+
+fn opt_str_eq(v : Option[String], expected : String) -> Bool {
+  match v {
+    Some(s) => s == expected
+    None => false
+  }
+}
+
+/// The first runtime an account of config.json runs (profiles.ts `profileRuntimes`).
+pub fn first_runtime(p : js_json::JValue) -> Result[String, readops_core::ReadError] {
+  let access : Option[js_json::JValue] = match readops_core::jget(Some(p), "access") {
+    Some(a) => {
+      match a {
+        js_json::JValue::Obj(_) => Some(a)
+        js_json::JValue::Arr(_) => Some(a)
+        _ => None
+      }
+    }
+    None => None
+  }
+  let text = fn(v : Option[js_json::JValue]) -> Option[String] {
+    match v {
+      Some(js_json::JValue::Str(u)) => Some(js_json::sanitize_str(u))
+      _ => None
+    }
+  }
+  let non_empty_str = fn(v : Option[js_json::JValue]) -> Option[String] {
+    match text(v) {
+      Some(s) => if s != "" { Some(s) } else { None }
+      None => None
+    }
+  }
+  let kind : Option[String] = match readops_core::jget(access, "kind") {
+    None => Some("env")
+    Some(js_json::JValue::Null) => Some("env")
+    v => text(v)
+  }
+  if opt_str_eq(kind, "api-provider") {
+    let provider = non_empty_str(readops_core::jget(access, "provider"))
+    let endpoint = match readops_core::jget(access, "endpoint") {
+      None => None
+      Some(e) => {
+        match clean_endpoint(e) {
+          Ok(res) => res
+          Err(err) => return Err(err)
+        }
+      }
+    }
+    let protocol = non_empty_str(readops_core::jget(access, "protocol"))
+    let id = match provider {
+      Some(s) => s
+      None => return Ok("claude")
+    }
+    let srcs = provider_sources()
+    let mut found : Option[Source] = None
+    for i in 0..<srcs.length() {
+      if srcs[i].id == id {
+        found = Some(srcs[i])
+        break
+      }
+    }
+    let source = match found {
+      Some(s) => s
+      None => return Ok("claude")
+    }
+    let (chat, responses, anthropic) = match endpoints_of(source, endpoint, protocol) {
+      Ok(Some(t)) => t
+      Ok(None) => return Ok("claude")
+      Err(err) => return Err(err)
+    }
+    if id == "kimi-code" {
+      match readops_core::jget(access, "login") {
+        Some(js_json::JValue::Bool(true)) => return Ok("claude")
+        _ => ()
+      }
+    }
+    if anthropic {
+      return Ok("claude")
+    } else if responses {
+      return Ok("codex")
+    } else if chat {
+      return Ok("dsh")
+    } else if id == "xai" {
+      return Ok("grok")
+    } else if id == "google" || id == "google-vertex" {
+      return Ok("agy")
+    } else {
+      return Ok("claude")
+    }
+  }
+  if opt_str_eq(kind, "opencode-go") || opt_str_eq(kind, "anthropic-api") {
+    return Ok("claude")
+  }
+  match text(readops_core::jget(Some(p), "runtime")) {
+    Some(own) => {
+      if is_runtime_kind(own) {
+        if (own == "dsh" || own == "pi") && opt_str_eq(kind, "subscription") {
+          Ok("claude")
+        } else {
+          Ok(own)
+        }
+      } else {
+        Ok("claude")
+      }
+    }
+    None => Ok("claude")
+  }
+}
+
+/// Lossless `config_profiles` returning raw UTF-16 `js_json::JValue::Obj` (preserving lone
+/// surrogates in profile IDs/names, duplicate-key last-wins at first-seen position, and
+/// JS integer-index key ordering upon `js_json::stringify`).
+pub fn config_profiles_from_jvals(
+  raw : js_json::JValue,
+  known : js_json::JValue,
+) -> Result[js_json::JValue, readops_core::ReadError] {
+  let out : Array[(Array[Int], js_json::JValue)] = []
+  match readops_core::jget(Some(raw), "profiles") {
+    Some(js_json::JValue::Arr(profiles)) => {
+      for i in 0..<profiles.length() {
+        let p = profiles[i]
+        let id_units = match readops_core::jget(Some(p), "id") {
+          Some(js_json::JValue::Str(u)) => u
+          _ => continue
+        }
+        let runtime = match first_runtime(p) {
+          Ok(r) => r
+          Err(e) => return Err(e)
+        }
+        let name_units = match readops_core::jget(Some(p), "name") {
+          Some(js_json::JValue::Str(nu)) => {
+            let trimmed = trim_units(nu)
+            if trimmed.length() > 0 { trimmed } else { id_units }
+          }
+          _ => id_units
+        }
+        let value = js_json::JValue::Obj([
+          (jv_key("name"), js_json::JValue::Str(name_units)),
+          (jv_key("runtime"), jv_str(runtime)),
+        ])
+        let mut found = -1
+        for j in 0..<out.length() {
+          if js_json::units_eq(out[j].0, id_units) {
+            found = j
+            break
+          }
+        }
+        if found >= 0 {
+          out[found] = (id_units, value)
+        } else {
+          out.push((id_units, value))
+        }
+      }
+    }
+    _ => ()
+  }
+  match known {
+    js_json::JValue::Obj(entries) => {
+      for i in 0..<entries.length() {
+        let (id_units, k) = entries[i]
+        let mut exists = false
+        for j in 0..<out.length() {
+          if js_json::units_eq(out[j].0, id_units) {
+            exists = true
+            break
+          }
+        }
+        if exists {
+          continue
+        }
+        match k {
+          js_json::JValue::Obj(_) => ()
+          _ => continue
+        }
+        let name_units = match readops_core::jget(Some(k), "name") {
+          Some(js_json::JValue::Str(nu)) => {
+            let trimmed = trim_units(nu)
+            if trimmed.length() > 0 { trimmed } else { continue }
+          }
+          _ => continue
+        }
+        let runtime_units = match readops_core::jget(Some(k), "runtime") {
+          Some(js_json::JValue::Str(ru)) => {
+            if ru.length() > 0 { ru } else { jv_key("claude") }
+          }
+          _ => jv_key("claude")
+        }
+        out.push(
+          (
+            id_units,
+            js_json::JValue::Obj([
+              (jv_key("name"), js_json::JValue::Str(name_units)),
+              (jv_key("runtime"), js_json::JValue::Str(runtime_units)),
+            ]),
+          ),
+        )
+      }
+    }
+    _ => ()
+  }
+  Ok(normalize_jval(js_json::JValue::Obj(out)))
+}
+
+/// usage.ts `configProfiles`: lossless `js_json::JValue` version reading `config.json` and
+/// `move/accounts-known.json`.
+fn config_profiles_jval(
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+) -> Result[js_json::JValue, readops_core::ReadError] {
+  let raw = match readops_core::read_text(client, readops_core::join_path(sep, data, "config.json"), false) {
+    Ok(Some(t)) => {
+      match js_json::parse(t) {
+        Ok(v) => v
+        Err(_) => return Ok(js_json::JValue::Obj([]))
+      }
+    }
+    Ok(None) => return Ok(js_json::JValue::Obj([]))
+    Err(e) => return Err(e)
+  }
+  let known = match readops_core::read_text(
+    client,
+    readops_core::join_path(sep, readops_core::join_path(sep, data, "move"), "accounts-known.json"),
+    false,
+  ) {
+    Ok(Some(t)) => {
+      match js_json::parse(t) {
+        Ok(v) => v
+        Err(_) => js_json::JValue::Null
+      }
+    }
+    Ok(None) => js_json::JValue::Null
+    Err(e) => return Err(e)
+  }
+  config_profiles_from_jvals(raw, known)
+}
+
+// ── the page's year (usage.ts `usageHistory`) ──
+
+pub let HISTORY_PENDING_CHATS : String = "usage chat statistics are still being filled"
+
+pub let REMOTE_RUNS_PENDING : String = "remote task statistics are still being filled"
+
+fn remote_runs_ready(db : sql_db::Db) -> Result[Unit, readops_core::ReadError] {
+  match readops_core::one(db, "SELECT done FROM remote_run_progress WHERE id = 1", []) {
+    Ok(Some(r)) => {
+      if readops_chats::mb_json_eq(readops_core::field(r, "done"), base_codec::json_num(1.0)) {
+        Ok(())
+      } else {
+        Err(readops_core::ReadError::App(REMOTE_RUNS_PENDING))
+      }
+    }
+    Ok(None) => Err(readops_core::ReadError::App(REMOTE_RUNS_PENDING))
+    Err(e) => Err(e)
+  }
+}
+
+fn is_pending(e : readops_core::ReadError, message : String) -> Bool {
+  match e {
+    readops_core::ReadError::App(m) => m == message
+    _ => false
+  }
+}
+
+fn chat_stats_ready(
+  db : sql_db::Db,
+  viewer : Option[readops_local::Viewer],
+) -> Result[Bool, readops_core::ReadError] {
+  let done = match readops_core::one(db, "SELECT done FROM usage_chat_progress WHERE id = 1", []) {
+    Ok(Some(r)) => readops_chats::mb_json_eq(readops_core::field(r, "done"), base_codec::json_num(1.0))
+    Ok(None) => false
+    Err(e) => return Err(e)
+  }
+  if !done {
+    return Ok(false)
+  }
+  match viewer {
+    None => {
+      match readops_core::one(db, "SELECT 1 FROM usage_chat_dirty LIMIT 1", []) {
+        Ok(None) => Ok(true)
+        Ok(Some(_)) => Ok(false)
+        Err(e) => Err(e)
+      }
+    }
+    Some(v) => {
+      match readops_core::one(
+        db,
+        "SELECT 1 FROM usage_chat_dirty_scope WHERE kind = 2 AND ws = ? LIMIT 1",
+        [base_codec::json_str(v.workspace)],
+      ) {
+        Ok(Some(_)) => return Ok(false)
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+      if !v.home {
+        return Ok(true)
+      }
+      match readops_core::one(
+        db,
+        "SELECT 1 FROM usage_chat_dirty_scope WHERE kind = 1 AND ws = '' LIMIT 1",
+        [],
+      ) {
+        Ok(None) => Ok(true)
+        Ok(Some(_)) => Ok(false)
+        Err(e) => Err(e)
+      }
+    }
+  }
+}
+
+fn chat_totals(
+  db : sql_db::Db,
+  viewer : Option[readops_local::Viewer],
+) -> Result[(Array[(String, Double)], Double, Double, Double), readops_core::ReadError] {
+  let ready = match chat_stats_ready(db, viewer) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  if !ready {
+    return Err(readops_core::ReadError::App(HISTORY_PENDING_CHATS))
+  }
+  let places : Array[(String, Double)] = []
+  let mut archived = 0.0
+  let mut cards = 0.0
+  let mut picked = 0.0
+  let scopes : Array[(Int, String, Double)] = match viewer {
+    None => [(0, "", 1.0)]
+    Some(v) => {
+      if v.home {
+        [(1, "", 1.0), (2, v.workspace, 1.0), (3, v.workspace, -1.0)]
+      } else {
+        [(2, v.workspace, 1.0)]
+      }
+    }
+  }
+  for i in 0..<scopes.length() {
+    let (kind, workspace, sign) = scopes[i]
+    let rows = match db.all(
+      "SELECT place, chats, archived, cards, picked FROM usage_chat_totals WHERE kind = ? AND ws = ?",
+      [base_codec::json_num(kind.to_double()), base_codec::json_str(workspace)],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(readops_core::map_sql_err(e))
+    }
+    for j in 0..<rows.length() {
+      let row = rows[j]
+      let place = readops_core::js_text(readops_core::field(row, "place"))
+      let n = sign * usage_number(readops_core::field(row, "chats"))
+      let mut found = -1
+      for k in 0..<places.length() {
+        if places[k].0 == place {
+          found = k
+          break
+        }
+      }
+      if found >= 0 {
+        places[found] = (place, places[found].1 + n)
+      } else {
+        places.push((place, 0.0 + n))
+      }
+      archived = archived + sign * usage_number(readops_core::field(row, "archived"))
+      cards = cards + sign * usage_number(readops_core::field(row, "cards"))
+      picked = picked + sign * usage_number(readops_core::field(row, "picked"))
+    }
+  }
+  let non_zero : Array[(String, Double)] = []
+  for i in 0..<places.length() {
+    if places[i].1 != 0.0 {
+      non_zero.push(places[i])
+    }
+  }
+  Ok((non_zero, archived, cards, picked))
+}
+
+fn quarter_of(at : Int64) -> Int64 {
+  readops_local::floor_div(at, 900000.to_int64())
+}
+
+/// usage.ts `validHistoryRange`.
+pub fn valid_history_range(range : Option[(Int64, Int64)], offset : Int64) -> Bool {
+  let day = 86400000.to_int64()
+  let minute = 60000.to_int64()
+  let max_ms = 86400000.to_int64() * 100000000.to_int64()
+  let (from, to) = match range {
+    Some(p) => p
+    None => return false
+  }
+  let local = to + offset * minute
+  from <= to &&
+  to - from <= 370.to_int64() * day &&
+  from % minute == 0.to_int64() &&
+  to % minute == 0.to_int64() &&
+  local % day == 0.to_int64() &&
+  local >= -max_ms &&
+  local <= max_ms
+}
+
+fn usage_history(
+  db : sql_db::Db,
+  offset : Int64,
+  viewer : Option[readops_local::Viewer],
+  requested : Option[(Int64, Int64)],
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let installed = match readops_local::table_installed(db, "usage_15m_meta") {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  if !installed {
+    return Ok(base_codec::json_null())
+  }
+  let range = if valid_history_range(requested, offset) { requested } else { None }
+  let scopes : Array[String] = match viewer {
+    None => {
+      let rs = match db.all("SELECT scope, tokens FROM usage_scope_totals ORDER BY scope", []) {
+        Ok(rows) => rows
+        Err(e) => return Err(readops_core::map_sql_err(e))
+      }
+      let out : Array[String] = []
+      for i in 0..<rs.length() {
+        out.push(readops_core::js_text(readops_core::field(rs[i], "scope")))
+      }
+      out
+    }
+    Some(v) => if v.home { [v.workspace, ""] } else { [v.workspace] }
+  }
+  let big_bound = 1.to_int64() << 62
+  let (from, to) = match range {
+    Some((f, t)) => (quarter_of(f), quarter_of(t))
+    None => (-big_bound, big_bound)
+  }
+  let days : Array[(base_codec::Json, Double, Double)] = []
+  let mut tokens = 0.0
+  for i in 0..<scopes.length() {
+    let sc = scopes[i]
+    let rows = match db.all(
+      "SELECT strftime('%Y-%m-%d', quarter * 900 + ?4 * 60, 'unixepoch') AS day, SUM(calls) AS calls, SUM(tokens) AS tokens\n  FROM usage_quarter_totals WHERE scope = ?1 AND quarter >= ?2 AND quarter < ?3 GROUP BY day",
+      [
+        base_codec::json_str(sc),
+        readops_local::i64_json(from),
+        readops_local::i64_json(to),
+        readops_local::i64_json(offset),
+      ],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(readops_core::map_sql_err(e))
+    }
+    for j in 0..<rows.length() {
+      let r = rows[j]
+      let day = readops_core::field(r, "day")
+      let mut found = -1
+      for k in 0..<days.length() {
+        if readops_chats::mb_json_eq(days[k].0, day) {
+          found = k
+          break
+        }
+      }
+      if found >= 0 {
+        days[found] = (
+          day,
+          days[found].1 + usage_number(readops_core::field(r, "tokens")),
+          days[found].2 + usage_number(readops_core::field(r, "calls")),
+        )
+      } else {
+        days.push(
+          (
+            day,
+            0.0 + usage_number(readops_core::field(r, "tokens")),
+            0.0 + usage_number(readops_core::field(r, "calls")),
+          ),
+        )
+      }
+    }
+    if range is Some(_) {
+      let total = match readops_core::one(
+        db,
+        "SELECT tokens FROM usage_scope_totals WHERE scope = ?1",
+        [base_codec::json_str(sc)],
+      ) {
+        Ok(Some(r)) => usage_number(readops_core::field(r, "tokens"))
+        Ok(None) => 0.0
+        Err(e) => return Err(e)
+      }
+      let after = match readops_core::one(
+        db,
+        "SELECT SUM(tokens) AS tokens FROM usage_quarter_totals WHERE scope = ?1 AND quarter >= ?2",
+        [base_codec::json_str(sc), readops_local::i64_json(to)],
+      ) {
+        Ok(Some(r)) => usage_number(readops_core::field(r, "tokens"))
+        Ok(None) => 0.0
+        Err(e) => return Err(e)
+      }
+      tokens = tokens + (total - after)
+    }
+  }
+  let since = match detail_since(db) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let chats : Option[(Array[(String, Double)], Double, Double, Double)] = match chat_totals(db, viewer) {
+    Ok(v) => Some(v)
+    Err(e) => {
+      if is_pending(e, HISTORY_PENDING_CHATS) { None } else { return Err(e) }
+    }
+  }
+  let remote : Option[Double] = match remote_runs_ready(db) {
+    Ok(_) => {
+      let n_res = match viewer {
+        None => {
+          match readops_core::one(db, "SELECT n FROM remote_run_total WHERE id = 1", []) {
+            Ok(Some(r)) => {
+              let fv = readops_core::field(r, "n")
+              match fv {
+                base_codec::Json::Null => Ok(0.0)
+                _ => Ok(usage_number(fv))
+              }
+            }
+            Ok(None) => Ok(0.0)
+            Err(e) => Err(e)
+          }
+        }
+        Some(v) => {
+          match readops_core::one(
+            db,
+            "SELECT n FROM remote_run_counts WHERE ws = ?",
+            [base_codec::json_str(v.workspace)],
+          ) {
+            Ok(Some(r)) => {
+              let fv = readops_core::field(r, "n")
+              match fv {
+                base_codec::Json::Null => Ok(0.0)
+                _ => Ok(usage_number(fv))
+              }
+            }
+            Ok(None) => Ok(0.0)
+            Err(e) => Err(e)
+          }
+        }
+      }
+      match n_res {
+        Ok(v) => Some(v)
+        Err(e) => return Err(e)
+      }
+    }
+    Err(e) => {
+      if is_pending(e, REMOTE_RUNS_PENDING) { None } else { return Err(e) }
+    }
+  }
+  // Exact 1:1 MB `usagepage.mbt:789` `x.compare(y)` -> MoonBit shortlex on UTF-16 code units!
+  let sorted = readops_core::stable_sort(
+    days,
+    fn(a : (base_codec::Json, Double, Double), b : (base_codec::Json, Double, Double)) -> Int {
+      match (a.0, b.0) {
+        (base_codec::Json::Str(x), base_codec::Json::Str(y)) => shortlex_compare(x, y)
+        _ => 0
+      }
+    },
+  )
+  let day_objs : Array[base_codec::Json] = []
+  for i in 0..<sorted.length() {
+    let d = sorted[i]
+    day_objs.push(
+      base_codec::json_obj([
+        ("day", d.0),
+        ("runtime", base_codec::json_str("")),
+        ("model", base_codec::json_null()),
+        ("tokens", base_codec::json_num(d.1)),
+        ("calls", base_codec::json_num(d.2)),
+      ]),
+    )
+  }
+  let out : Array[(String, base_codec::Json)] = [("days", base_codec::json_arr(day_objs))]
+  match range {
+    Some((_, t)) => {
+      out.push(("tokens", base_codec::json_num(tokens)))
+      let iso = js_json::format_iso_ms(t + offset * 60000.to_int64())
+      out.push(("beforeDay", base_codec::json_str(readops_core::str_slice_bytes(iso, 0, 10))))
+    }
+    None => ()
+  }
+  match since {
+    base_codec::Json::Null => ()
+    _ => out.push(("since", since))
+  }
+  match chats {
+    Some((_, _, cards, picked)) => {
+      let cards_incomplete = match readops_local::table_installed(db, "card_outcomes_incomplete") {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      if !cards_incomplete {
+        out.push(("cards", base_codec::json_num(cards)))
+        out.push(("picked", base_codec::json_num(picked)))
+      } else {
+        out.push(("cardsIncomplete", base_codec::json_bool(true)))
+      }
+    }
+    None => out.push(("cardsIncomplete", base_codec::json_bool(true)))
+  }
+  match chats {
+    None => {
+      out.push(("chatsIncomplete", base_codec::json_bool(true)))
+      out.push(("places", base_codec::json_obj([])))
+    }
+    Some((places, archived, _, _)) => {
+      let m : Array[(String, base_codec::Json)] = []
+      for i in 0..<places.length() {
+        m.push((places[i].0, base_codec::json_num(places[i].1)))
+      }
+      out.push(("places", base_codec::json_obj(m)))
+      out.push(("archived", base_codec::json_num(archived)))
+    }
+  }
+  match remote {
+    Some(n) => out.push(("remoteRuns", base_codec::json_num(n)))
+    None => ()
+  }
+  Ok(base_codec::json_obj(out))
+}
+
+// ── the page ──
+
+struct Asked {
+  from : Int64
+  to : Int64
+  offset : Int64
+  reading : Bool
+  viewer : Option[base_codec::Json]
+  history : Bool
+  history_range : Option[(Int64, Int64)]
+  remote_from : Int64
+  remote_runs : Bool
+  metadata : Bool
+}
+
+fn remote_runs_since(
+  db : sql_db::Db,
+  from : Int64,
+  to : Int64,
+  offset : Int64,
+  viewer : Option[readops_local::Viewer],
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  match remote_runs_ready(db) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let rows = match viewer {
+    None => {
+      match db.all(
+        "SELECT MAX(at) AS at, session, COUNT(*) AS n FROM remote_run_by_time WHERE at >= ?1 AND at < ?2\n  GROUP BY strftime('%Y-%m-%d', (at + ?3 * 60000) / 1000.0, 'unixepoch'), session ORDER BY at, session",
+        [
+          readops_local::i64_json(from),
+          readops_local::i64_json(to),
+          readops_local::i64_json(offset),
+        ],
+      ) {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::map_sql_err(e))
+      }
+    }
+    Some(v) => {
+      match db.all(
+        "SELECT MAX(at) AS at, session, COUNT(*) AS n FROM remote_run_lookup WHERE ws = ?1 AND at >= ?2 AND at < ?3\n  GROUP BY strftime('%Y-%m-%d', (at + ?4 * 60000) / 1000.0, 'unixepoch'), session ORDER BY at, session",
+        [
+          base_codec::json_str(v.workspace),
+          readops_local::i64_json(from),
+          readops_local::i64_json(to),
+          readops_local::i64_json(offset),
+        ],
+      ) {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::map_sql_err(e))
+      }
+    }
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let n = usage_number(readops_core::field(r, "n"))
+    let run : Array[(String, base_codec::Json)] = [
+      ("at", base_codec::json_num(usage_number(readops_core::field(r, "at")))),
+      ("session", base_codec::json_str(readops_core::js_text(readops_core::field(r, "session")))),
+    ]
+    if n > 1.0 {
+      run.push(("count", base_codec::json_num(n)))
+    }
+    out.push(base_codec::json_obj(run))
+  }
+  Ok(base_codec::json_arr(out))
+}
+
+fn wanted_contains(xs : Array[base_codec::Json], target : base_codec::Json) -> Bool {
+  for i in 0..<xs.length() {
+    if readops_chats::mb_json_eq(xs[i], target) {
+      return true
+    }
+  }
+  false
+}
+
+/// Split usage answer: ordinary fields stay in `base_codec::Json` (preserving exact `i64_json`
+/// decimal `repr` and insertion key order for `history.places`/`prices`/`threads`/`people`),
+/// while user-keyed `profiles` stays in lossless UTF-16 `js_json::JValue`.
+pub struct UsageAnswer {
+  pub fields : Array[(String, base_codec::Json)]
+  pub profiles : Option[js_json::JValue]
+}
+
+/// Serialize a `UsageAnswer` with exact MB insertion order: ordinary fields use `stringify_base`
+/// (preserving `repr` and Map insertion order), and `"profiles"` is spliced right after `"people"`
+/// using `stringify_jv(normalize_jval(profs))`.
+pub fn serialize_usage_answer_with(
+  ans : UsageAnswer,
+  stringify_base : (base_codec::Json) -> String,
+  stringify_jv : (js_json::JValue) -> String,
+) -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte(0x7B as Byte) // '{'
+  let mut first = true
+  let mut emitted_profiles = false
+  for i in 0..<ans.fields.length() {
+    let (k, v) = ans.fields[i]
+    if !first {
+      sb.write_byte(0x2C as Byte) // ','
+    }
+    first = false
+    sb.write_string(stringify_base(base_codec::json_str(k)))
+    sb.write_byte(0x3A as Byte) // ':'
+    sb.write_string(stringify_base(v))
+    if k == "people" {
+      match ans.profiles {
+        Some(profs) => {
+          sb.write_string(",\"profiles\":")
+          sb.write_string(stringify_jv(normalize_jval(profs)))
+          emitted_profiles = true
+        }
+        None => ()
+      }
+    }
+  }
+  if !emitted_profiles {
+    match ans.profiles {
+      Some(profs) => {
+        if !first {
+          sb.write_byte(0x2C as Byte)
+        }
+        sb.write_string("\"profiles\":")
+        sb.write_string(stringify_jv(normalize_jval(profs)))
+      }
+      None => ()
+    }
+  }
+  sb.write_byte(0x7D as Byte) // '}'
+  sb.to_string()
+}
+
+/// Core `usage_answer` keeping ordinary fields in `base_codec::Json` and `profiles` in lossless `JValue`.
+fn usage_answer_parts(
+  db : sql_db::Db,
+  state : readops_core::ReaderState,
+  known : readops_core::Known,
+  a : Asked,
+  words : base_codec::Json,
+) -> Result[UsageAnswer, readops_core::ReadError] {
+  let viewer = readops_local::viewer_of(a.viewer)
+  let visible = match readops_local::usage_groups(db, a.from, a.to, a.offset, viewer) {
+    Ok(gs) => gs
+    Err(e) => return Err(e)
+  }
+  let rows : Array[base_codec::Json] = []
+  for i in 0..<visible.length() {
+    let g = visible[i]
+    rows.push(
+      base_codec::json_obj([
+        ("day", base_codec::json_str(g.day)),
+        ("session", g.session),
+        ("thread", g.thread),
+        ("person", g.person),
+        ("profile", g.profile),
+        ("runtime", g.runtime),
+        ("model", g.model),
+        ("calls", base_codec::json_num(g.calls)),
+        ("input", base_codec::json_num(g.input)),
+        ("cacheRead", base_codec::json_num(g.cache_read)),
+        ("cacheWrite", base_codec::json_num(g.cache_write + g.cache_write_long)),
+        ("output", base_codec::json_num(g.output)),
+        ("cost", readops_local::cost(state, g)),
+      ]),
+    )
+  }
+  let word = fn(k : String) -> String {
+    match readops_core::json_val(words, k) {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+  }
+  let threads : Array[(String, base_codec::Json)] = []
+  let people : Array[(String, base_codec::Json)] = []
+  if a.metadata {
+    let wanted : Array[base_codec::Json] = []
+    for i in 0..<visible.length() {
+      let th = visible[i].thread
+      match th {
+        base_codec::Json::Num(_, _) => {
+          if !wanted_contains(wanted, th) {
+            wanted.push(th)
+          }
+        }
+        _ => ()
+      }
+    }
+    let sorted_wanted = readops_core::stable_sort(
+      wanted,
+      fn(x : base_codec::Json, y : base_codec::Json) -> Int {
+        let dx = usage_number(x)
+        let dy = usage_number(y)
+        if dx < dy { -1 } else if dx > dy { 1 } else { 0 }
+      },
+    )
+    for i in 0..<sorted_wanted.length() {
+      let id = sorted_wanted[i]
+      let t = match readops_core::one(db, "SELECT * FROM threads WHERE id = ?", [id]) {
+        Ok(Some(row)) => row
+        Ok(None) => continue
+        Err(e) => return Err(e)
+      }
+      let own = readops_chats::mb_json_eq(readops_core::field(t, "surface"), base_codec::json_str("chat"))
+      let title_null = match readops_core::field(t, "title") {
+        base_codec::Json::Null => true
+        _ => false
+      }
+      let auto_null = match readops_core::field(t, "auto_title") {
+        base_codec::Json::Null => true
+        _ => false
+      }
+      let first = if !own && title_null && auto_null {
+        match readops_core::first_text(db, id) {
+          Ok(v) => v
+          Err(_) => base_codec::json_null()
+        }
+      } else {
+        base_codec::json_null()
+      }
+      let channel = if own {
+        base_codec::json_null()
+      } else {
+        let connect : Option[String] = match readops_core::one(
+          db,
+          "SELECT connect FROM thread_sessions WHERE thread = ? AND connect != 'chat' ORDER BY joined_at, rowid LIMIT 1",
+          [id],
+        ) {
+          Ok(Some(r)) => {
+            match readops_core::field(r, "connect") {
+              base_codec::Json::Str(c) => Some(c)
+              _ => None
+            }
+          }
+          Ok(None) => None
+          Err(e) => return Err(e)
+        }
+        match known.channel(connect, readops_core::field(t, "channel")) {
+          Ok(ch) => ch
+          Err(e) => return Err(e)
+        }
+      }
+      let hidden = match readops_core::field(t, "hidden_at") {
+        base_codec::Json::Null => false
+        _ => true
+      }
+      threads.push(
+        (
+          readops_core::js_text(id),
+          base_codec::json_obj([
+            (
+              "title",
+              base_codec::json_str(
+                readops_chats::chat_title(
+                  readops_core::thread_json(t),
+                  first,
+                  channel,
+                  word("untitled"),
+                  word("directMessage"),
+                ),
+              ),
+            ),
+            ("surface", readops_core::field(t, "surface")),
+            ("home", readops_core::field(t, "home")),
+            ("archived", base_codec::json_bool(hidden)),
+          ]),
+        ),
+      )
+    }
+    let refs : Array[String] = []
+    for i in 0..<visible.length() {
+      match visible[i].person {
+        base_codec::Json::Str(p) => {
+          if !str_arr_contains(refs, p) {
+            refs.push(p)
+          }
+        }
+        _ => ()
+      }
+    }
+    let sorted_refs = readops_core::stable_sort(refs, readops_local::utf8_order)
+    for i in 0..<sorted_refs.length() {
+      let r = sorted_refs[i]
+      let c = match known.creator(base_codec::json_str(r)) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      people.push((r, c))
+    }
+  }
+  let since = match usage_since(db) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let detail = if a.metadata {
+    match detail_since(db) {
+      Ok(d) => d
+      Err(e) => return Err(e)
+    }
+  } else {
+    base_codec::json_null()
+  }
+  let prices : Option[base_codec::Json] = if a.metadata {
+    let models : Array[base_codec::Json] = []
+    for i in 0..<visible.length() {
+      models.push(visible[i].model)
+    }
+    Some(readops_local::price_table(state, models))
+  } else {
+    None
+  }
+  let profiles : Option[js_json::JValue] = if a.metadata {
+    match config_profiles_jval(known.client, known.data, known.sep) {
+      Ok(p) => Some(p)
+      Err(e) => return Err(e)
+    }
+  } else {
+    None
+  }
+  let remote : Option[base_codec::Json] = if a.remote_runs {
+    match remote_runs_since(db, a.remote_from, a.to, a.offset, viewer) {
+      Ok(r) => Some(r)
+      Err(e) => if is_pending(e, REMOTE_RUNS_PENDING) { None } else { return Err(e) }
+    }
+  } else {
+    Some(base_codec::json_arr([]))
+  }
+  let history : Option[base_codec::Json] = if a.history {
+    match usage_history(db, a.offset, viewer, a.history_range) {
+      Ok(h) => Some(h)
+      Err(e) => return Err(e)
+    }
+  } else {
+    None
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("from", readops_local::i64_json(a.from)),
+    ("to", readops_local::i64_json(a.to)),
+    ("since", since),
+  ]
+  match detail {
+    base_codec::Json::Null => ()
+    _ => fields.push(("detailSince", detail))
+  }
+  fields.push(("reading", base_codec::json_bool(a.reading)))
+  match prices {
+    Some(p) => fields.push(("prices", p))
+    None => ()
+  }
+  fields.push(("rows", base_codec::json_arr(rows)))
+  if a.metadata {
+    fields.push(("threads", base_codec::json_obj(threads)))
+    fields.push(("people", base_codec::json_obj(people)))
+  }
+  match remote {
+    Some(r) => fields.push(("remoteRuns", r))
+    None => ()
+  }
+  match history {
+    Some(base_codec::Json::Null) => fields.push(("historyUnavailable", base_codec::json_bool(true)))
+    Some(h) => fields.push(("history", h))
+    None => ()
+  }
+  let prof_opt = if a.metadata {
+    match profiles {
+      Some(p) => Some(p)
+      None => Some(js_json::JValue::Obj([]))
+    }
+  } else {
+    None
+  }
+  Ok(UsageAnswer::{ fields: fields, profiles: prof_opt })
+}
+
+fn format_non_int_double_with(n : Double, fmt_num : (Double) -> String) -> String {
+  if n != n {
+    "NaN"
+  } else if n == 1.0 / 0.0 {
+    "Infinity"
+  } else if n == -1.0 / 0.0 {
+    "-Infinity"
+  } else {
+    fmt_num(n)
+  }
+}
+
+/// BigInt(v) with caller-supplied formatters (enables pure-Pion unit tests).
+/// Matches MB `usagepage.mbt:1066`: `n != n.floor()` (NaN and finite non-integers trigger the
+/// non-integer error, whereas ±Infinity / `1e400` fall through to `big_of_with` preserving raw repr).
+pub fn big_given_with(
+  v : Option[base_codec::Json],
+  fmt_num : (Double) -> String,
+  stringify : (base_codec::Json) -> String,
+) -> Result[Int64, readops_core::ReadError] {
+  match v {
+    None => Err(readops_core::ReadError::App("Cannot convert undefined to a BigInt"))
+    Some(base_codec::Json::Null) => Err(readops_core::ReadError::App("Cannot convert null to a BigInt"))
+    Some(base_codec::Json::Num(n, _)) => {
+      if n != n || (!is_nan_or_inf(n) && !js_json::is_integer(n)) {
+        Err(
+          readops_core::ReadError::App(
+            "The number " +
+            format_non_int_double_with(n, fmt_num) +
+            " cannot be converted to a BigInt because it is not an integer",
+          ),
+        )
+      } else {
+        readops_local::big_of_with(v, stringify)
+      }
+    }
+    Some(base_codec::Json::Bool(true)) => Ok(1.to_int64())
+    Some(base_codec::Json::Bool(false)) => Ok(0.to_int64())
+    _ => readops_local::big_of_with(v, stringify)
+  }
+}
+
+/// BigInt(v) of what is given: undefined/null/non-integer refused, as BigInt refuses them.
+pub fn big_given(v : Option[base_codec::Json]) -> Result[Int64, readops_core::ReadError] {
+  big_given_with(
+    v,
+    fn(n : Double) -> String { sql_db::stringify_json(base_codec::json_num(n)) },
+    sql_db::stringify_json,
+  )
+}
+
+/// ops-usage.ts `usage` (GET /usage): internal split assembly.
+fn usage_page_parts(
+  db : sql_db::Db,
+  state : readops_core::ReaderState,
+  data : String,
+  ask : base_codec::Json,
+) -> Result[UsageAnswer, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let viewer = match readops_core::json_val(args, "viewer") {
+    None => None
+    Some(base_codec::Json::Null) => None
+    v => v
+  }
+  let from = match big_given(readops_core::json_val(args, "from")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let to = match big_given(readops_core::json_val(args, "to")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let offset = match big_given(readops_core::json_val(args, "tz")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let history_range : Option[(Int64, Int64)] = match readops_core::json_val(args, "historyRange") {
+    None => None
+    Some(base_codec::Json::Null) => None
+    Some(base_codec::Json::Bool(false)) => None
+    Some(base_codec::Json::Str("")) => None
+    Some(base_codec::Json::Num(n, _)) => {
+      if n == 0.0 {
+        None
+      } else {
+        let hf = match big_given(None) {
+          Ok(v) => v
+          Err(e) => return Err(e)
+        }
+        let ht = match big_given(None) {
+          Ok(v) => v
+          Err(e) => return Err(e)
+        }
+        Some((hf, ht))
+      }
+    }
+    Some(r) => {
+      let hf = match big_given(readops_core::json_val(r, "from")) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let ht = match big_given(readops_core::json_val(r, "to")) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      Some((hf, ht))
+    }
+  }
+  let remote_from = match readops_core::json_val(args, "remoteFrom") {
+    None => from
+    Some(base_codec::Json::Null) => from
+    v => {
+      match big_given(v) {
+        Ok(rv) => rv
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  let reading = match readops_core::json_val(args, "reading") {
+    Some(base_codec::Json::Bool(true)) => true
+    Some(base_codec::Json::Bool(false)) => false
+    _ => true
+  }
+  let history = match readops_core::json_val(args, "history") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  let asked = Asked::{
+    from: from,
+    to: to,
+    offset: offset,
+    reading: reading,
+    viewer: viewer,
+    history: history,
+    history_range: history_range,
+    remote_from: remote_from,
+    remote_runs: true,
+    metadata: true,
+  }
+  usage_answer_parts(
+    db,
+    state,
+    readops_core::Known::of(state.client, data, state.sep, ask),
+    asked,
+    readops_core::json_val_or_null(args, "words"),
+  )
+}
+
+/// Lossless pre-serialized JSON string entrypoint for `W7-F` (`reader_data` `say_answer`).
+/// Serializes ordinary fields via `sql_db::stringify_json` (preserving exact `i64_json` decimal
+/// `repr` and insertion key order) and splices `"profiles"` via `js_json::stringify(normalize_jval(...))`
+/// (preserving lone surrogates `\ud800` vs `U+FFFD`, JS integer-index reordering, duplicate-key
+/// last-wins at first position, and non-finite -> `null`).
+pub fn usage_page_json_str(
+  db : sql_db::Db,
+  state : readops_core::ReaderState,
+  data : String,
+  ask : base_codec::Json,
+) -> Result[String, readops_core::ReadError] {
+  match usage_page_parts(db, state, data, ask) {
+    Ok(ans) => Ok(serialize_usage_answer_with(ans, sql_db::stringify_json, js_json::stringify))
+    Err(e) => Err(e)
+  }
+}
+
+/// A span of usage read at once, at most (ops-usage.ts SPAN_MAX_MS).
+let SPAN_MAX_MS : Double = 31.0 * 24.0 * 60.0 * 60000.0
+
+/// outflow.ts `outflowUsage` (`outflow.read` v1 `usage`).
+pub fn outflow_usage(
+  db : sql_db::Db,
+  state : readops_core::ReaderState,
+  data : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let from = whole(readops_core::json_val(args, "from"))
+  let asked_to = whole(readops_core::json_val(args, "to"))
+  let to = if asked_to < from + SPAN_MAX_MS { asked_to } else { from + SPAN_MAX_MS }
+  let asked_tz = whole(readops_core::json_val(args, "tz"))
+  let tz = if asked_tz < -1440.0 {
+    -1440.0
+  } else if asked_tz > 1440.0 {
+    1440.0
+  } else {
+    asked_tz
+  }
+  let of = outflow_of(readops_core::json_val(args, "ws"))
+  let from_i64 = builders_core::double_to_i64_saturating(from)
+  let to_i64 = builders_core::double_to_i64_saturating(to)
+  let tz_i64 = builders_core::double_to_i64_saturating(tz)
+  let asked = Asked::{
+    from: from_i64,
+    to: to_i64,
+    offset: tz_i64,
+    reading: false,
+    viewer: Some(
+      base_codec::json_obj([
+        ("workspace", of.0),
+        ("home", base_codec::json_bool(of.1)),
+      ]),
+    ),
+    history: false,
+    history_range: None,
+    remote_from: from_i64,
+    remote_runs: false,
+    metadata: false,
+  }
+  let read_parts = match usage_answer_parts(
+    db,
+    state,
+    readops_core::Known::of(state.client, data, state.sep, ask),
+    asked,
+    base_codec::json_null(),
+  ) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  // Consume `base_codec::Json` directly (zero JValue round-trip, preserving exact `since` repr).
+  let read = base_codec::json_obj(read_parts.fields)
+  let cache = TeamsCache::new()
+  let rows : Array[base_codec::Json] = []
+  let people_keys : Array[String] = []
+  let people_map : Map[String, base_codec::Json] = Map::new()
+  match readops_core::json_val(read, "rows") {
+    Some(base_codec::Json::Arr(rs)) => {
+      for i in 0..<rs.length() {
+        let r = rs[i]
+        let get = fn(k : String) -> base_codec::Json {
+          readops_core::json_val_or_null(r, k)
+        }
+        let person_v = get("person")
+        rows.push(
+          base_codec::json_obj([
+            ("day", get("day")),
+            ("thread", get("thread")),
+            ("session", get("session")),
+            ("person", person_v),
+            ("account", get("profile")),
+            ("runtime", get("runtime")),
+            ("model", get("model")),
+            ("calls", get("calls")),
+            ("input", get("input")),
+            ("cacheRead", get("cacheRead")),
+            ("cacheWrite", get("cacheWrite")),
+            ("output", get("output")),
+            ("cost", get("cost")),
+          ]),
+        )
+        match person_v {
+          base_codec::Json::Str(p) => {
+            if !people_map.contains(p) {
+              let resolved = match outflow_person(state.client, data, state.sep, cache, p) {
+                Ok(v) => v
+                Err(e) => return Err(e)
+              }
+              people_keys.push(p)
+              people_map.set(p, resolved)
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  let people_fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<people_keys.length() {
+    let k = people_keys[i]
+    match people_map.get(k) {
+      Some(v) => people_fields.push((k, v))
+      None => ()
+    }
+  }
+  Ok(
+    base_codec::json_obj([
+      ("from", base_codec::json_num(from)),
+      ("to", base_codec::json_num(to)),
+      ("tz", base_codec::json_num(tz)),
+      ("since", readops_core::json_val_or_null(read, "since")),
+      ("rows", base_codec::json_arr(rows)),
+      ("people", base_codec::json_obj(people_fields)),
+    ]),
+  )
+}

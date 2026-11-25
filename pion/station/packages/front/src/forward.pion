@@ -1,0 +1,275 @@
+// `--builder forward` over `builders_core::ShellMux`:
+// 1:1 port of `station/mb/src/front/forward.mbt` and `station/mb/src/reader/main.mbt:1116-1127`.
+// - Supports `--listen-fd` (`tcp.listen({fd})`) and `--listen-port` (`tcp.listen({host: "127.0.0.1", port})`).
+// - Emits `{"listening": port}` on stdout once bound.
+// - `start_stdin = false` (never reads stdin; stdin EOF does not exit).
+// - Exits directly on `tcp.accept` error (no 100ms retry).
+// - Dial failure (`tcp.open({port: to})`) logs to stderr and closes only that client socket.
+// - Connected pairs are piped by the shell via `tcp.pipe({ids: [client_id, server_id]})`.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+
+let FWD_TOK_LISTEN : Int = 1
+let FWD_TOK_ACCEPT : Int = 2
+let FWD_TOK_OPEN : Int = 3
+let FWD_TOK_PIPE : Int = 4
+let FWD_TOK_CLOSE : Int = 5
+
+fn fwd_field(o : base_codec::Json, k : String) -> base_codec::Json {
+  match builders_core::json_get_last(o, k) {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+}
+
+fn fwd_is_null(v : base_codec::Json) -> Bool {
+  match v {
+    base_codec::Json::Null => true
+    _ => false
+  }
+}
+
+fn fwd_int_field(o : base_codec::Json, k : String, fallback : Int) -> Int {
+  match fwd_field(o, k) {
+    base_codec::Json::Num(n, _) => n.to_int()
+    _ => fallback
+  }
+}
+
+pub struct ForwardRunner {
+  mux : builders_core::ShellMux
+  listen_fd : Option[Int]
+  listen_port : Int
+  to_port : Int
+  note : (String) -> Unit
+  mut listen_id : Option[base_codec::Json]
+  mut next_conn_seq : Int
+  opening : Map[Int, base_codec::Json]
+  mut running : Bool
+  mut exit_code : Int
+}
+
+pub fn ForwardRunner::new(
+  mux : builders_core::ShellMux,
+  listen_fd : Option[Int],
+  listen_port : Int,
+  to_port : Int,
+  note : (String) -> Unit,
+) -> ForwardRunner {
+  ForwardRunner::{
+    mux: mux,
+    listen_fd: listen_fd,
+    listen_port: listen_port,
+    to_port: to_port,
+    note: note,
+    listen_id: None,
+    next_conn_seq: 0,
+    opening: Map::new(),
+    running: true,
+    exit_code: 0,
+  }
+}
+
+pub fn ForwardRunner::start(self : ForwardRunner) -> Unit {
+  let args = match self.listen_fd {
+    Some(fd) => base_codec::json_obj([("fd", base_codec::json_int(fd))])
+    None => base_codec::json_obj([("host", base_codec::json_str("127.0.0.1")), ("port", base_codec::json_int(self.listen_port))])
+  }
+  let _ = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(0, FWD_TOK_LISTEN, 0.to_int64()),
+    "tcp.listen",
+    base_codec::json_stringify(args),
+    None,
+  )
+}
+
+pub fn ForwardRunner::step(self : ForwardRunner, wait_ms : Int64) -> Bool {
+  if !self.running {
+    return false
+  }
+  self.mux.step(
+    wait_ms,
+    fn(_line : String) -> Unit {},
+    fn() -> Unit {},
+    fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+      self.on_done(tok, done)
+    },
+  )
+}
+
+pub fn ForwardRunner::is_running(self : ForwardRunner) -> Bool {
+  self.running
+}
+
+pub fn ForwardRunner::exit_code(self : ForwardRunner) -> Int {
+  self.exit_code
+}
+
+pub fn ForwardRunner::opening_len(self : ForwardRunner) -> Int {
+  self.opening.length()
+}
+
+fn ForwardRunner::start_accept(self : ForwardRunner, listen_id : base_codec::Json) -> Unit {
+  let _ = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(0, FWD_TOK_ACCEPT, 0.to_int64()),
+    "tcp.accept",
+    base_codec::json_stringify(base_codec::json_obj([("id", listen_id)])),
+    None,
+  )
+}
+
+fn ForwardRunner::close_conn(self : ForwardRunner, conn_id : base_codec::Json) -> Unit {
+  let _ = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(0, FWD_TOK_CLOSE, 0.to_int64()),
+    "tcp.close",
+    base_codec::json_stringify(base_codec::json_obj([("id", conn_id)])),
+    None,
+  )
+}
+
+fn ForwardRunner::on_done(
+  self : ForwardRunner,
+  tok : builders_core::MuxToken,
+  done : host_shim::ShellDone,
+) -> Unit {
+  match tok {
+    builders_core::MuxToken::Tagged(owner_id, kind, _) => {
+      if kind == FWD_TOK_LISTEN {
+        match builders_core::decode_shell_done(done) {
+          Err(e) => {
+            (self.note)("forward: listen failed: " + e.message)
+            self.running = false
+            self.exit_code = 1
+          }
+          Ok((j_opt, _)) => {
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let id = fwd_field(said, "id")
+            if fwd_is_null(id) {
+              (self.note)("forward: the shell gave no listening socket")
+              self.running = false
+              self.exit_code = 1
+              return
+            }
+            let port = fwd_int_field(said, "port", 0)
+            self.listen_id = Some(id)
+            let line = base_codec::json_stringify(base_codec::json_obj([("listening", base_codec::json_int(port))]))
+            let _ = self.mux.write_stdout_line(line)
+            self.start_accept(id)
+          }
+        }
+      } else if kind == FWD_TOK_ACCEPT {
+        match builders_core::decode_shell_done(done) {
+          Err(e) => {
+            (self.note)("forward: accept failed: " + e.message)
+            self.running = false
+            self.exit_code = 1
+          }
+          Ok((j_opt, _)) => {
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let client_id = fwd_field(said, "id")
+            if fwd_is_null(client_id) {
+              (self.note)("forward: the shell gave no connection")
+              self.running = false
+              self.exit_code = 1
+              return
+            }
+            match self.listen_id {
+              Some(lid) => self.start_accept(lid)
+              None => ()
+            }
+            self.next_conn_seq = self.next_conn_seq + 1
+            let seq = self.next_conn_seq
+            self.opening.set(seq, client_id)
+            let _ = self.mux.call_async_raw(
+              builders_core::MuxToken::Tagged(seq, FWD_TOK_OPEN, 0.to_int64()),
+              "tcp.open",
+              base_codec::json_stringify(base_codec::json_obj([("port", base_codec::json_int(self.to_port))])),
+              None,
+            )
+          }
+        }
+      } else if kind == FWD_TOK_OPEN {
+        let client_id = match self.opening.get(owner_id) {
+          Some(cid) => {
+            self.opening.remove(owner_id)
+            cid
+          }
+          None => return
+        }
+        match builders_core::decode_shell_done(done) {
+          Err(e) => {
+            (self.note)(
+              "forward: 127.0.0.1:" + self.to_port.to_string() + " not reached: " + e.message,
+            )
+            self.close_conn(client_id)
+          }
+          Ok((j_opt, _)) => {
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let server_id = fwd_field(said, "id")
+            if fwd_is_null(server_id) {
+              (self.note)(
+                "forward: 127.0.0.1:" + self.to_port.to_string() + " not reached: no socket",
+              )
+              self.close_conn(client_id)
+              return
+            }
+            let _ = self.mux.call_async_raw(
+              builders_core::MuxToken::Tagged(owner_id, FWD_TOK_PIPE, 0.to_int64()),
+              "tcp.pipe",
+              base_codec::json_stringify(base_codec::json_obj([("ids", base_codec::json_arr([client_id, server_id]))])),
+              None,
+            )
+          }
+        }
+      } else if kind == FWD_TOK_PIPE {
+        match builders_core::decode_shell_done(done) {
+          Err(e) => (self.note)("forward: a connection failed: " + e.message)
+          Ok(_) => ()
+        }
+      } else if kind == FWD_TOK_CLOSE {
+        ()
+      }
+    }
+    _ => ()
+  }
+}
+
+pub fn run_forward(
+  shell_dir : String,
+  listen_fd : Option[Int],
+  listen_port : Int,
+  to_port : Int,
+) -> Int {
+  if !host_shim::start(shell_dir, false) {
+    let _ = host_shim::write_stderr_line("forward: shell start failed")
+    return 1
+  }
+  let mux = builders_core::ShellMux::host(start_stdin=false)
+  let runner = ForwardRunner::new(
+    mux,
+    listen_fd,
+    listen_port,
+    to_port,
+    fn(msg : String) -> Unit {
+      let _ = host_shim::write_stderr_line(msg)
+    },
+  )
+  runner.start()
+  while runner.is_running() {
+    let _ = runner.step(5000.to_int64())
+  }
+  let code = runner.exit_code()
+  host_shim::stop()
+  code
+}

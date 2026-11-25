@@ -44,6 +44,7 @@ fn open_chat() -> ChatRef? {
   for k = pages.length() - 1; k >= 0; k = k - 1 {
     match pages[k] {
       Chat(r) => return Some(r)
+      NewChat => return None
       _ => ()
     }
   }

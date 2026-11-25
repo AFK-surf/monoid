@@ -1,0 +1,1216 @@
+// 1:1 port of `station/mb/src/readops/openjobs.mbt`.
+// The jobs up of the viewer's workspace (station/src/read/jobs.ts `openJobs`: GET /jobs),
+// each as the pages show it, and (unless `chats` is false) the chat each is in.
+// Passes `Known` explicitly (no global Ref), sets `ReadSignals.prepare_workspace_up_jobs`,
+// and uses `sql_db::Db::savepoint_swallow_err` for all SAVEPOINTs.
+
+import "base_codec"
+import "builders_core"
+import "builders_requested"
+import "js_json"
+import "jscase"
+import "readops_chats"
+import "readops_core"
+import "readops_local"
+import "sql_db"
+
+fn double_to_int_saturating(d : Double) -> Int {
+  let i64 = builders_core::double_to_i64_saturating(d)
+  let max_i32 = 2147483647.to_int64()
+  let min_i32 = -2147483647.to_int64() - 1.to_int64()
+  if i64 > max_i32 {
+    2147483647
+  } else if i64 < min_i32 {
+    -2147483647 - 1
+  } else {
+    i64.to_int()
+  }
+}
+
+fn is_ascii_printable_str(s : String) -> Bool {
+  let bs = s.to_bytes()
+  for i in 0..<bs.length() {
+    let b = bs[i].to_int() & 0xFF
+    if b < 0x20 || b > 0x7e {
+      return false
+    }
+  }
+  true
+}
+
+/// store.ts `upJobs`: the jobs up a viewer may see, newest first (a superset, `seenBy` decides).
+fn up_jobs(
+  db : sql_db::Db,
+  viewer : base_codec::Json,
+  signals : readops_core::ReadSignals,
+) -> Result[Array[Map[String, base_codec::Json]], readops_core::ReadError] {
+  let ws = match readops_core::json_val(viewer, "workspace") {
+    Some(base_codec::Json::Str(w)) => w
+    _ => ""
+  }
+  if !is_ascii_printable_str(ws) {
+    return match db.all(readops_local::JOBS_UP_SQL, []) {
+      Ok(rs) => Ok(rs)
+      Err(e) => Err(readops_core::ReadError::Sql(e))
+    }
+  }
+  let is_home = !readops_chats::mb_json_eq(
+    readops_core::json_val_or_null(viewer, "home"),
+    base_codec::json_bool(false),
+  )
+  let home = base_codec::json_num(if is_home { 1.0 } else { 0.0 })
+  let ready : Option[Bool] = match readops_core::one(db, "SELECT version,ready FROM workspace_up_meta WHERE id=1", []) {
+    Ok(Some(m)) => {
+      if readops_chats::mb_json_eq(readops_core::field(m, "version"), base_codec::json_num(1.0)) {
+        Some(readops_chats::mb_json_eq(readops_core::field(m, "ready"), base_codec::json_num(1.0)))
+      } else {
+        return Err(
+          readops_core::ReadError::App(
+            "workspace up jobs index version " + readops_core::js_text(readops_core::field(m, "version")) + " is incompatible with 1",
+          ),
+        )
+      }
+    }
+    Ok(None) => {
+      return Err(readops_core::ReadError::App("workspace up jobs index version missing is incompatible with 1"))
+    }
+    Err(e) => {
+      if readops_core::str_contains_sub(readops_core::read_error_message(e), "no such table: workspace_up_meta") {
+        None
+      } else {
+        return Err(e)
+      }
+    }
+  }
+  match ready {
+    Some(true) => {
+      return match db.all(readops_local::WORKSPACE_UP_JOBS_SQL, [base_codec::json_str(ws), home]) {
+        Ok(rs) => Ok(rs)
+        Err(e) => Err(readops_core::ReadError::Sql(e))
+      }
+    }
+    Some(false) => signals.prepare_workspace_up_jobs = true
+    None => ()
+  }
+  match db.all(readops_local::JOBS_UP_IN_WORKSPACE_SQL, [base_codec::json_str(ws), home]) {
+    Ok(rs) => Ok(rs)
+    Err(e) => {
+      if readops_core::str_contains_sub(e.message, "no such column: s.ws") {
+        if is_home {
+          match db.all(readops_local::JOBS_UP_SQL, []) {
+            Ok(rs) => Ok(rs)
+            Err(e2) => Err(readops_core::ReadError::Sql(e2))
+          }
+        } else {
+          Ok([])
+        }
+      } else {
+        Err(readops_core::ReadError::Sql(e))
+      }
+    }
+  }
+}
+
+/// store.ts `seenBy` of some sessions: which a viewer sees (a missing one counts as the home
+/// workspace's, but another station's task as its workspace's: rows.ts `seesMissing`).
+fn seen_by(
+  db : sql_db::Db,
+  viewer : base_codec::Json,
+  keys : Array[String],
+) -> Result[Map[String, Bool], readops_core::ReadError] {
+  let wanted : Map[String, Bool] = Map::new()
+  for i in 0..<keys.length() {
+    wanted.set(keys[i], true)
+  }
+  let ws : Map[String, base_codec::Json] = Map::new()
+  if keys.length() > 0 {
+    let list = [readops_core::ids_json(str_array_to_json(keys))]
+    let rows = match db.all(
+      "SELECT key, ws FROM sessions INDEXED BY sessions_ws WHERE key IN (SELECT value FROM json_each(?))",
+      list,
+    ) {
+      Ok(rs) => rs
+      // (a database from before has no `ws`: every chat its home workspace's)
+      Err(_) => {
+        match db.all("SELECT * FROM sessions WHERE key IN (SELECT value FROM json_each(?))", list) {
+          Ok(rs) => rs
+          Err(e) => return Err(readops_core::ReadError::Sql(e))
+        }
+      }
+    }
+    for i in 0..<rows.length() {
+      let r = rows[i]
+      ws.set(readops_core::js_text(readops_core::field(r, "key")), readops_core::field(r, "ws"))
+    }
+  }
+  let allowed : Map[String, Bool] = Map::new()
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    if wanted.contains(k) {
+      let ok = match ws.get(k) {
+        Some(w) => readops_chats::sees(viewer, w)
+        None => sees_missing(viewer, k)
+      }
+      if ok {
+        allowed.set(k, true)
+      }
+    }
+  }
+  Ok(allowed)
+}
+
+/// rows.ts `seesMissing`: whether `viewer` sees what names a session not here (another station's
+/// task: its workspace's; anything else: the home one's).
+pub fn sees_missing(viewer : base_codec::Json, key : String) -> Bool {
+  match remote_ws(key) {
+    Some(w) => {
+      match viewer {
+        base_codec::Json::Obj(_) => {
+          match readops_core::json_val(viewer, "workspace") {
+            Some(base_codec::Json::Str(vw)) => vw == w
+            _ => false
+          }
+        }
+        _ => false
+      }
+    }
+    None => readops_chats::sees(viewer, base_codec::json_null())
+  }
+}
+
+/// store/rows.ts `remoteWs`: the workspace another station's task runs for, by its job's session key
+/// (`remote:<workspace>:<station>:<session>`, as `/^remote:([^:/]+):[^:/]+:.+$/` reads it), none for any other key.
+pub fn remote_ws(key : String) -> Option[String] {
+  if !readops_core::str_has_prefix(key, "remote:") {
+    return None
+  }
+  // remote, the workspace's id, the station's, then the session's key (with colons of its own)
+  let parts = readops_core::str_split_byte(key, 58)
+  if parts.length() < 4 {
+    return None
+  }
+  let ws = parts[1]
+  let station = parts[2]
+  if ws == "" || station == "" || readops_core::str_contains_sub(ws, "/") || readops_core::str_contains_sub(station, "/") {
+    return None
+  }
+  let from_byte = 7 + ws.to_bytes().length() + 1 + station.to_bytes().length() + 1
+  let total_bytes = key.to_bytes().length()
+  if from_byte >= total_bytes {
+    return None
+  }
+  let rem = readops_core::str_slice_bytes(key, from_byte, total_bytes)
+  let units = js_json::utf16_units(rem)
+  for i in 0..<units.length() {
+    let c = units[i]
+    // (a regular expression's `.` takes no line's end)
+    if c == 0x0a || c == 0x0d || c == 0x2028 || c == 0x2029 {
+      return None
+    }
+  }
+  Some(ws)
+}
+
+/// store.ts `missingOriginIndex`.
+fn missing_origin_index(e : readops_core::ReadError) -> Bool {
+  let m = readops_core::read_error_message(e)
+  let names = [
+    "cc_index_meta",
+    "cc_sessions",
+    "cc_session_rows",
+    "cc_session_dirty",
+    "cc_order_dispatch",
+    "cc_session_order",
+    "thread_sessions_session",
+  ]
+  let kinds = ["table", "index"]
+  for i in 0..<names.length() {
+    for j in 0..<kinds.length() {
+      let name = names[i]
+      let kind = kinds[j]
+      if m == "no such " + kind + ": " + name || m == "no such " + kind + ": main." + name {
+        return true
+      }
+    }
+  }
+  false
+}
+
+/// store.ts `preparedOriginIndexAvailable`.
+fn prepared_origin_index(db : sql_db::Db) -> Result[Bool, readops_core::ReadError] {
+  match readops_core::one(db, "SELECT \"notnull\" AS required FROM pragma_table_info('threads') WHERE name = 'surface'", []) {
+    Ok(Some(r)) => {
+      if !readops_chats::mb_json_eq(readops_core::field(r, "required"), base_codec::json_num(1.0)) {
+        return Ok(false)
+      }
+    }
+    Ok(None) => return Ok(false)
+    Err(e) => return Err(e)
+  }
+  match readops_core::one(db, "SELECT version FROM cc_index_meta WHERE id = 1", []) {
+    Ok(Some(r)) => Ok(readops_chats::mb_json_eq(readops_core::field(r, "version"), base_codec::json_num(readops_local::CC_INDEX_VERSION)))
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+/// store.ts `namingOriginProbe`: whether a member has an external thread visible to the shared reader.
+fn naming_origin(
+  db : sql_db::Db,
+  session : String,
+  prepared_ok : Bool,
+) -> Result[Bool, readops_core::ReadError] {
+  let original_with = fn(db_in : sql_db::Db) -> Result[Bool, readops_core::ReadError] {
+    match readops_core::one(
+      db_in,
+      readops_local::HAS_NAMING_ORIGIN_SQL,
+      [base_codec::json_str(session), base_codec::json_str("chat")],
+    ) {
+      Ok(Some(_)) => Ok(true)
+      Ok(None) => Ok(false)
+      Err(e) => Err(e)
+    }
+  }
+  if !prepared_ok {
+    return original_with(db)
+  }
+  let possible = fn() -> Result[Bool, readops_core::ReadError] {
+    match readops_core::one(db, readops_local::HAS_NAMING_ORIGIN_POSSIBLE_SQL, [base_codec::json_str(session)]) {
+      Ok(Some(_)) => Ok(true)
+      Ok(None) => Ok(false)
+      Err(e) => Err(e)
+    }
+  }
+  let first = match possible() {
+    Ok(b) => Some(b)
+    Err(e) => {
+      if missing_origin_index(e) {
+        None
+      } else {
+        return Err(e)
+      }
+    }
+  }
+  match first {
+    Some(true) => ()
+    _ => return original_with(db)
+  }
+  db.savepoint_swallow_err(
+    "naming_origin_probe",
+    fn(db2 : sql_db::Db) -> Result[Bool, readops_core::ReadError] {
+      let inner = fn() -> Result[Option[Bool], readops_core::ReadError] {
+        let p = match readops_core::one(db2, readops_local::HAS_NAMING_ORIGIN_POSSIBLE_SQL, [base_codec::json_str(session)]) {
+          Ok(Some(_)) => true
+          Ok(None) => false
+          Err(e) => return Err(e)
+        }
+        if !p {
+          return Ok(None)
+        }
+        let rdy = match builders_requested::cc_ready(db2, base_codec::json_str(session)) {
+          Ok(b) => b
+          Err(e) => return Err(readops_core::map_step_err(e))
+        }
+        if !rdy {
+          return Ok(None)
+        }
+        match readops_core::one(db2, readops_local::HAS_NAMING_ORIGIN_PREPARED_SQL, [base_codec::json_str(session)]) {
+          Ok(Some(_)) => Ok(Some(true))
+          Ok(None) => Ok(Some(false))
+          Err(e) => Err(e)
+        }
+      }
+      let answer = match inner() {
+        Ok(v) => v
+        Err(e) => {
+          if missing_origin_index(e) || readops_core::str_has_prefix(readops_core::read_error_message(e), "copy destination index version ") {
+            None
+          } else {
+            return Err(e)
+          }
+        }
+      }
+      match answer {
+        Some(a) => Ok(a)
+        None => original_with(db2)
+      }
+    },
+    readops_core::map_sql_err,
+  )
+}
+
+/// store.ts `latestNamingOrigins`: each session's latest external origin, as threadsForChatNames orders them.
+fn latest_naming_origins(
+  db : sql_db::Db,
+  sessions : Array[String],
+) -> Result[Array[base_codec::Json], readops_core::ReadError] {
+  if sessions.length() == 0 {
+    return Ok([])
+  }
+  let original = fn(db2 : sql_db::Db, keys : Array[String]) -> Result[Array[base_codec::Json], readops_core::ReadError] {
+    match db2.all(
+      readops_local::LATEST_NAMING_ORIGIN_SQL,
+      [readops_core::ids_json(str_array_to_json(keys)), base_codec::json_str("chat")],
+    ) {
+      Ok(rs) => {
+        let out : Array[base_codec::Json] = []
+        for i in 0..<rs.length() {
+          out.push(readops_core::field(rs[i], "id"))
+        }
+        Ok(out)
+      }
+      Err(e) => Err(readops_core::ReadError::Sql(e))
+    }
+  }
+  let found = match db.savepoint_swallow_err(
+    "latest_naming_origins",
+    fn(db2 : sql_db::Db) -> Result[Array[base_codec::Json], readops_core::ReadError] {
+      let inner = fn() -> Result[Array[base_codec::Json], readops_core::ReadError] {
+        let prep_ok = match prepared_origin_index(db2) {
+          Ok(b) => b
+          Err(e) => return Err(e)
+        }
+        if !prep_ok {
+          return original(db2, sessions)
+        }
+        let possible : Map[Int, Bool] = Map::new()
+        let poss_rows = match db2.all(
+          readops_local::LATEST_NAMING_ORIGIN_POSSIBLE_SQL,
+          [readops_core::ids_json(str_array_to_json(sessions))],
+        ) {
+          Ok(rs) => rs
+          Err(e) => return Err(readops_core::ReadError::Sql(e))
+        }
+        for i in 0..<poss_rows.length() {
+          possible.set(double_to_int_saturating(readops_core::num(readops_core::field(poss_rows[i], "ordinal"))), true)
+        }
+        let ids : Array[base_codec::Json] = []
+        for _ in 0..<sessions.length() {
+          ids.push(base_codec::json_null())
+        }
+        let pending : Array[String] = []
+        let positions : Array[Int] = []
+        for i in 0..<sessions.length() {
+          let session = sessions[i]
+          let mut handled = false
+          if possible.contains(i) {
+            let rdy = match builders_requested::cc_ready(db2, base_codec::json_str(session)) {
+              Ok(b) => b
+              Err(e) => return Err(readops_core::map_step_err(e))
+            }
+            if rdy {
+              match readops_core::one(db2, readops_local::LATEST_NAMING_ORIGIN_PREPARED_SQL, [base_codec::json_str(session)]) {
+                Ok(Some(c)) => {
+                  if readops_core::num(readops_core::field(c, "count")) < 9.0 {
+                    ids[i] = readops_core::field(c, "id")
+                    handled = true
+                  }
+                }
+                Ok(None) => ()
+                Err(e) => return Err(e)
+              }
+            }
+          }
+          if !handled {
+            pending.push(session)
+            positions.push(i)
+          }
+        }
+        if pending.length() > 0 {
+          let fallback_ids = match original(db2, pending) {
+            Ok(fs) => fs
+            Err(e) => return Err(e)
+          }
+          for i in 0..<fallback_ids.length() {
+            ids[positions[i]] = fallback_ids[i]
+          }
+        }
+        Ok(ids)
+      }
+      match inner() {
+        Ok(v) => Ok(v)
+        Err(e) => {
+          if missing_origin_index(e) || readops_core::str_has_prefix(readops_core::read_error_message(e), "copy destination index version ") {
+            original(db2, sessions)
+          } else {
+            Err(e)
+          }
+        }
+      }
+    },
+    readops_core::map_sql_err,
+  ) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<found.length() {
+    match found[i] {
+      base_codec::Json::Null => ()
+      id => out.push(id)
+    }
+  }
+  Ok(out)
+}
+
+/// store.ts `jobNameFirstMembers`: a large named own chat of the only job session, its first member
+/// alone where that is the session; none to read its members as ever; refused while its lookup is prepared.
+fn job_name_first_members(
+  db : sql_db::Db,
+  owner : String,
+  thread : base_codec::Json,
+) -> Result[Option[Array[Map[String, base_codec::Json]]], readops_core::ReadError] {
+  match readops_core::one(db, readops_local::JOB_NAME_FIRST_LARGE_SQL, [thread]) {
+    Ok(Some(_)) => ()
+    Ok(None) => return Ok(None)
+    Err(e) => return Err(e)
+  }
+  let pending = fn() -> readops_core::ReadError {
+    readops_core::refused(
+      503,
+      readops_local::JOB_NAME_FIRST_PENDING + sql_db::stringify_json(base_codec::json_arr([base_codec::json_str(owner), thread])),
+    )
+  }
+  let answer = fn() -> Result[Option[Array[Map[String, base_codec::Json]]], readops_core::ReadError] {
+    match readops_core::one(db, "SELECT version FROM job_name_first_meta WHERE id=1", []) {
+      Ok(Some(r)) => {
+        if !readops_chats::mb_json_eq(readops_core::field(r, "version"), base_codec::json_num(1.0)) {
+          return Err(
+            readops_core::ReadError::App(
+              "job name first index version " + readops_core::js_text(readops_core::field(r, "version")) + " is incompatible with 1",
+            ),
+          )
+        }
+      }
+      Ok(None) => {
+        return Err(readops_core::ReadError::App("job name first index version missing is incompatible with 1"))
+      }
+      Err(e) => return Err(e)
+    }
+    match readops_core::one(db, "SELECT thread,ready,restart FROM job_name_first WHERE owner=?", [base_codec::json_str(owner)]) {
+      Ok(Some(sc)) => {
+        if !readops_chats::mb_json_eq(readops_core::field(sc, "thread"), thread) {
+          return Ok(None)
+        }
+        if !readops_chats::mb_json_eq(readops_core::field(sc, "ready"), base_codec::json_num(1.0)) ||
+        !readops_chats::mb_json_eq(readops_core::field(sc, "restart"), base_codec::json_num(0.0)) {
+          return Err(pending())
+        }
+        match readops_core::one(db, readops_local::JOB_NAME_FIRST_ROW_SQL, [base_codec::json_str(owner), thread]) {
+          Ok(Some(first)) => {
+            if readops_chats::mb_json_eq(readops_core::field(first, "session"), base_codec::json_str(owner)) {
+              Ok(Some([first]))
+            } else {
+              Ok(None)
+            }
+          }
+          Ok(None) => Ok(None)
+          Err(e) => Err(e)
+        }
+      }
+      Ok(None) => {
+        let has_t = match readops_core::one(db, "SELECT 1 AS x FROM job_name_first WHERE thread=?", [thread]) {
+          Ok(Some(_)) => true
+          Ok(None) => false
+          Err(e) => return Err(e)
+        }
+        if has_t {
+          return Ok(None)
+        }
+        let has_up = match readops_core::one(
+          db,
+          "SELECT 1 AS x FROM session_up_job_rows WHERE session=? LIMIT 1",
+          [base_codec::json_str(owner)],
+        ) {
+          Ok(Some(_)) => true
+          Ok(None) => false
+          Err(e) => return Err(e)
+        }
+        if !has_up {
+          return Ok(None)
+        }
+        Err(pending())
+      }
+      Err(e) => Err(e)
+    }
+  }
+  match answer() {
+    Ok(v) => Ok(v)
+    Err(readops_core::ReadError::Refused(st, msg)) => Err(readops_core::ReadError::Refused(st, msg))
+    Err(e) => {
+      let m = readops_core::read_error_message(e)
+      let missing_tables = ["job_name_first_meta", "job_name_first", "session_up_job_rows"]
+      for i in 0..<missing_tables.length() {
+        let t = missing_tables[i]
+        if m == "no such table: " + t || m == "no such table: main." + t {
+          return Ok(None)
+        }
+      }
+      Err(e)
+    }
+  }
+}
+
+/// What names a job's chat (views.ts `Scope` of `scopeOfJobNames`).
+struct JobScope {
+  rows : Array[String]
+  agents : Array[String]
+  threads : Array[base_codec::Json]
+  members : Map[String, Array[Map[String, base_codec::Json]]]
+}
+
+/// views.ts `scopeOfJobNames`.
+fn scope_of_job_names(db : sql_db::Db, keys : Array[String]) -> Result[JobScope, readops_core::ReadError] {
+  let rows = readops_chats::unique_keys([keys])
+  let rows_seen : Map[String, Bool] = Map::new()
+  let agents : Array[String] = []
+  let agents_seen : Map[String, Bool] = Map::new()
+  for i in 0..<rows.length() {
+    rows_seen.set(rows[i], true)
+    agents.push(rows[i])
+    agents_seen.set(rows[i], true)
+  }
+  let origins : Array[String] = []
+  let origins_seen : Map[String, Bool] = Map::new()
+  let has_chat : Map[String, Bool] = Map::new()
+  let members_of : Map[String, Array[Map[String, base_codec::Json]]] = Map::new()
+  let target : Map[String, Option[Map[String, base_codec::Json]]] = Map::new()
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    let s = match readops_core::one(db, "SELECT * FROM sessions WHERE key = ?", [base_codec::json_str(k)]) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    target.set(k, s)
+  }
+  let owner : Option[String] = if keys.length() == 1 { Some(keys[0]) } else { None }
+  let chats : Array[base_codec::Json] = if keys.length() == 0 {
+    []
+  } else {
+    let rows_c = match db.all(
+      "SELECT DISTINCT t.id FROM thread_sessions m CROSS JOIN threads t ON t.id = m.thread\n    WHERE m.session IN (SELECT value FROM json_each(?1)) AND t.surface = ?2",
+      [readops_core::ids_json(str_array_to_json(keys)), base_codec::json_str("chat")],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(readops_core::ReadError::Sql(e))
+    }
+    let out : Array[base_codec::Json] = []
+    for i in 0..<rows_c.length() {
+      out.push(readops_core::field(rows_c[i], "id"))
+    }
+    out
+  }
+  let checked : Map[String, Bool] = Map::new()
+  let mut prepared_ok : Option[Bool] = None
+  for i in 0..<chats.length() {
+    let id = chats[i]
+    let thread = match readops_core::one(db, "SELECT * FROM threads WHERE id = ?", [id]) {
+      Ok(Some(r)) => r
+      Ok(None) => continue
+      Err(e) => return Err(e)
+    }
+    let given = readops_chats::given_title(thread)
+    let hidden_null = match readops_core::field(thread, "hidden_at") {
+      base_codec::Json::Null => true
+      _ => false
+    }
+    let own = match owner {
+      Some(o) => {
+        let home_match = readops_chats::mb_json_eq(readops_core::field(thread, "home"), base_codec::json_str(o))
+        let target_live = match target.get(o) {
+          Some(Some(s)) => {
+            match readops_core::field(s, "archived_at") {
+              base_codec::Json::Null => true
+              _ => false
+            }
+          }
+          _ => false
+        }
+        home_match && hidden_null && given && target_live
+      }
+      None => false
+    }
+    let first_m = if own {
+      match owner {
+        Some(o) => {
+          match job_name_first_members(db, o, id) {
+            Ok(m) => m
+            Err(e) => return Err(e)
+          }
+        }
+        None => None
+      }
+    } else {
+      None
+    }
+    let members = match first_m {
+      Some(m) => m
+      None => {
+        match db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [id]) {
+          Ok(rs) => rs
+          Err(e) => return Err(readops_core::ReadError::Sql(e))
+        }
+      }
+    }
+    members_of.set(readops_core::js_text(id), members)
+    for j in 0..<members.length() {
+      let s = readops_core::js_text(readops_core::field(members[j], "session"))
+      readops_chats::push_new(rows, rows_seen, s)
+      readops_chats::push_new(agents, agents_seen, s)
+      match target.get(s) {
+        Some(Some(session)) => {
+          let arch_null = match readops_core::field(session, "archived_at") {
+            base_codec::Json::Null => true
+            _ => false
+          }
+          if (!hidden_null) == (!arch_null) {
+            has_chat.set(s, true)
+          }
+        }
+        _ => ()
+      }
+    }
+    if !given {
+      for j in 0..<members.length() {
+        let s = readops_core::js_text(readops_core::field(members[j], "session"))
+        let found = match checked.get(s) {
+          Some(f) => f
+          None => {
+            let ok = match prepared_ok {
+              Some(b) => b
+              None => {
+                let b = match prepared_origin_index(db) {
+                  Ok(v) => v
+                  Err(e) => {
+                    if missing_origin_index(e) {
+                      false
+                    } else {
+                      return Err(e)
+                    }
+                  }
+                }
+                prepared_ok = Some(b)
+                b
+              }
+            }
+            let f = match naming_origin(db, s, ok) {
+              Ok(v) => v
+              Err(e) => return Err(e)
+            }
+            checked.set(s, f)
+            f
+          }
+        }
+        if found {
+          readops_chats::push_new(origins, origins_seen, s)
+          break
+        }
+      }
+    }
+  }
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    match target.get(k) {
+      Some(Some(session)) => {
+        let title = match readops_core::field(session, "title") {
+          base_codec::Json::Str(t) => jscase::trim_white(t)
+          _ => ""
+        }
+        if title == "" && !has_chat.contains(k) {
+          readops_chats::push_new(origins, origins_seen, k)
+        }
+      }
+      _ => ()
+    }
+  }
+  let ext_raw = match latest_naming_origins(db, origins) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let external = readops_chats::unique_ids([ext_raw])
+  for i in 0..<external.length() {
+    let id = external[i]
+    let members = match db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [id]) {
+      Ok(rs) => rs
+      Err(e) => return Err(readops_core::ReadError::Sql(e))
+    }
+    members_of.set(readops_core::js_text(id), members)
+    for j in 0..<members.length() {
+      readops_chats::push_new(agents, agents_seen, readops_core::js_text(readops_core::field(members[j], "session")))
+    }
+  }
+  let all_threads : Array[base_codec::Json] = []
+  for i in 0..<chats.length() {
+    all_threads.push(chats[i])
+  }
+  for i in 0..<external.length() {
+    all_threads.push(external[i])
+  }
+  Ok(JobScope::{ rows: rows, agents: agents, threads: all_threads, members: members_of })
+}
+
+/// The channel's name of a Slack thread, as `origin` gives it, for its title.
+fn channel_of(
+  known : readops_core::Known,
+  thread : Map[String, base_codec::Json],
+  members : Array[Map[String, base_codec::Json]],
+) -> base_codec::Json {
+  match known.channel(readops_core::slack_connect_of(members), readops_core::field(thread, "channel")) {
+    Ok(ch) => ch
+    Err(_) => base_codec::json_null()
+  }
+}
+
+/// views.ts `chats(station, viewer, archived, scope, titlesOnly)` as `openJobs` reads it:
+/// each item's id, session, title and agents' keys, of the viewer's workspace.
+fn job_name_items(
+  db : sql_db::Db,
+  known : readops_core::Known,
+  viewer : base_codec::Json,
+  words : base_codec::Json,
+  archived : Bool,
+  job_scope : JobScope,
+) -> Result[Array[(base_codec::Json, String, String, Array[String])], readops_core::ReadError] {
+  let word = fn(k : String) -> String {
+    match readops_core::json_val(words, k) {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+  }
+  let sessions : Array[Map[String, base_codec::Json]] = []
+  for i in 0..<job_scope.agents.length() {
+    match readops_core::one(db, "SELECT * FROM sessions WHERE key = ?", [base_codec::json_str(job_scope.agents[i])]) {
+      Ok(Some(s)) => sessions.push(s)
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let sorted = readops_core::stable_sort(sessions, fn(a : Map[String, base_codec::Json], b : Map[String, base_codec::Json]) -> Int {
+    let d = readops_core::num(readops_core::field(b, "last_active_at")) - readops_core::num(readops_core::field(a, "last_active_at"))
+    if d < 0.0 {
+      -1
+    } else if d > 0.0 {
+      1
+    } else {
+      0
+    }
+  })
+  let in_rows : Map[String, Bool] = Map::new()
+  for i in 0..<job_scope.rows.length() {
+    in_rows.set(job_scope.rows[i], true)
+  }
+  let shown : Map[String, Map[String, base_codec::Json]] = Map::new()
+  let all : Map[String, Map[String, base_codec::Json]] = Map::new()
+  let order : Array[String] = []
+  for i in 0..<sorted.length() {
+    let x = sorted[i]
+    let key = readops_core::js_text(readops_core::field(x, "key"))
+    all.set(key, x)
+    let is_arch = match readops_core::field(x, "archived_at") {
+      base_codec::Json::Null => false
+      _ => true
+    }
+    if is_arch == archived {
+      shown.set(key, x)
+      if in_rows.contains(key) {
+        order.push(key)
+      }
+    }
+  }
+  let listed = fn(t : Map[String, base_codec::Json]) -> Bool {
+    let is_hidden = match readops_core::field(t, "hidden_at") {
+      base_codec::Json::Null => false
+      _ => true
+    }
+    is_hidden == archived
+  }
+  // store.ts `threadsForChatNames`, of the scope's threads with the members it found
+  let selected : Array[(Map[String, base_codec::Json], Array[Map[String, base_codec::Json]], Double)] = []
+  if job_scope.threads.length() > 0 {
+    let marks : Array[String] = []
+    for _ in 0..<job_scope.threads.length() {
+      marks.push("?")
+    }
+    let t_rows = match db.all("SELECT * FROM threads WHERE id IN (" + readops_core::join_strings(marks, ", ") + ")", job_scope.threads) {
+      Ok(rs) => rs
+      Err(e) => return Err(readops_core::ReadError::Sql(e))
+    }
+    for i in 0..<t_rows.length() {
+      let t = t_rows[i]
+      let id = readops_core::field(t, "id")
+      let members = match job_scope.members.get(readops_core::js_text(id)) {
+        Some(m) => m
+        None => {
+          match db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [id]) {
+            Ok(rs) => rs
+            Err(e) => return Err(readops_core::ReadError::Sql(e))
+          }
+        }
+      }
+      let at = match readops_core::one(
+        db,
+        "SELECT e.at FROM thread_state t JOIN entries e ON e.thread = t.thread AND e.n = t.said_n AND e.kind = 'message' WHERE t.thread = ?",
+        [id],
+      ) {
+        Ok(Some(r)) => {
+          match readops_core::field(r, "at") {
+            base_codec::Json::Num(n, _) => n
+            _ => 0.0
+          }
+        }
+        Ok(None) => 0.0
+        Err(e) => return Err(e)
+      }
+      selected.push((t, members, at))
+    }
+  }
+  let ordered = readops_core::stable_sort(
+    selected,
+    fn(
+      a : (Map[String, base_codec::Json], Array[Map[String, base_codec::Json]], Double),
+      b : (Map[String, base_codec::Json], Array[Map[String, base_codec::Json]], Double),
+    ) -> Int {
+      if a.2 != b.2 {
+        return if b.2 > a.2 { 1 } else { -1 }
+      }
+      let ca = readops_core::num(readops_core::field(a.0, "created_at"))
+      let cb = readops_core::num(readops_core::field(b.0, "created_at"))
+      if ca != cb {
+        return if cb > ca { 1 } else { -1 }
+      }
+      let ia = readops_core::num(readops_core::field(a.0, "id"))
+      let ib = readops_core::num(readops_core::field(b.0, "id"))
+      if ia != ib {
+        return if ib > ia { 1 } else { -1 }
+      }
+      0
+    },
+  )
+  let threads : Array[(Map[String, base_codec::Json], Array[Map[String, base_codec::Json]], Double)] = []
+  for i in 0..<ordered.length() {
+    let t = ordered[i]
+    let mut has_any = false
+    for j in 0..<t.1.length() {
+      if all.contains(readops_core::js_text(readops_core::field(t.1[j], "session"))) {
+        has_any = true
+        break
+      }
+    }
+    if has_any {
+      threads.push(t)
+    }
+  }
+  let first_texts : Map[String, base_codec::Json] = Map::new()
+  let name_text = fn(t : Map[String, base_codec::Json]) -> Result[base_codec::Json, readops_core::ReadError] {
+    let surface = readops_core::field(t, "surface")
+    let own_surf = match surface {
+      base_codec::Json::Str(s) => s == "chat" || s == "ember" || s == "stillfail"
+      _ => false
+    }
+    if readops_chats::given_title(t) || own_surf {
+      return Ok(base_codec::json_null())
+    }
+    let k = readops_core::js_text(readops_core::field(t, "id"))
+    match first_texts.get(k) {
+      Some(f) => Ok(f)
+      None => {
+        let f = match readops_core::first_text(db, readops_core::field(t, "id")) {
+          Ok(v) => v
+          Err(e) => return Err(e)
+        }
+        first_texts.set(k, f)
+        Ok(f)
+      }
+    }
+  }
+  let origins : Map[String, (Map[String, base_codec::Json], Array[Map[String, base_codec::Json]])] = Map::new()
+  let chatted : Map[String, Bool] = Map::new()
+  for i in 0..<threads.length() {
+    let t = threads[i]
+    let own = readops_chats::mb_json_eq(readops_core::field(t.0, "surface"), base_codec::json_str("chat"))
+    for j in 0..<t.1.length() {
+      let s = readops_core::js_text(readops_core::field(t.1[j], "session"))
+      if own {
+        if listed(t.0) {
+          chatted.set(s, true)
+        }
+      } else if !origins.contains(s) {
+        origins.set(s, (t.0, t.1))
+      }
+    }
+  }
+  let in_chat = fn(t : Map[String, base_codec::Json], members : Array[Map[String, base_codec::Json]]) -> Array[String] {
+    let home_null = match readops_core::field(t, "home") {
+      base_codec::Json::Null => true
+      _ => false
+    }
+    let alone = archived && home_null
+    let pool = if alone { all } else { shown }
+    let out : Array[String] = []
+    for i in 0..<members.length() {
+      let s = readops_core::js_text(readops_core::field(members[i], "session"))
+      if pool.contains(s) {
+        out.push(s)
+      }
+    }
+    out
+  }
+  let out : Array[(base_codec::Json, String, String, Array[String])] = []
+  let push_item = fn(key : String, title : String, agents : Array[String]) -> Unit {
+    let ws = match all.get(key) {
+      Some(x) => readops_core::field(x, "ws")
+      None => base_codec::json_null()
+    }
+    if in_rows.contains(key) && readops_chats::sees(viewer, ws) {
+      out.push((base_codec::json_str(key), key, title, agents))
+    }
+  }
+  for i in 0..<threads.length() {
+    let t = threads[i]
+    if !readops_chats::mb_json_eq(readops_core::field(t.0, "surface"), base_codec::json_str("chat")) || !listed(t.0) {
+      continue
+    }
+    let agents = in_chat(t.0, t.1)
+    if agents.length() == 0 {
+      continue
+    }
+    let mut from_opt : Option[(Map[String, base_codec::Json], Array[Map[String, base_codec::Json]])] = None
+    for j in 0..<t.1.length() {
+      match origins.get(readops_core::js_text(readops_core::field(t.1[j], "session"))) {
+        Some(f) => {
+          from_opt = Some(f)
+          break
+        }
+        None => ()
+      }
+    }
+    let title = match from_opt {
+      Some(f) => {
+        if !readops_chats::given_title(t.0) {
+          let nt = match name_text(f.0) {
+            Ok(v) => v
+            Err(e) => return Err(e)
+          }
+          readops_chats::chat_title(
+            readops_core::thread_json(f.0),
+            nt,
+            channel_of(known, f.0, f.1),
+            word("untitled"),
+            word("directMessage"),
+          )
+        } else {
+          let nt = match name_text(t.0) {
+            Ok(v) => v
+            Err(e) => return Err(e)
+          }
+          readops_chats::chat_title(
+            readops_core::thread_json(t.0),
+            nt,
+            base_codec::json_null(),
+            word("untitled"),
+            word("directMessage"),
+          )
+        }
+      }
+      None => {
+        let nt = match name_text(t.0) {
+          Ok(v) => v
+          Err(e) => return Err(e)
+        }
+        readops_chats::chat_title(
+          readops_core::thread_json(t.0),
+          nt,
+          base_codec::json_null(),
+          word("untitled"),
+          word("directMessage"),
+        )
+      }
+    }
+    push_item(agents[0], title, agents)
+  }
+  for i in 0..<order.length() {
+    let key = order[i]
+    if chatted.contains(key) {
+      continue
+    }
+    let x = match shown.get(key) {
+      Some(r) => r
+      None => continue
+    }
+    let own_t = match readops_core::field(x, "title") {
+      base_codec::Json::Str(s) => jscase::trim_white(s)
+      _ => ""
+    }
+    let title = if own_t != "" {
+      own_t
+    } else {
+      match origins.get(key) {
+        Some(f) => {
+          let nt = match name_text(f.0) {
+            Ok(v) => v
+            Err(e) => return Err(e)
+          }
+          readops_chats::chat_title(
+            readops_core::thread_json(f.0),
+            nt,
+            channel_of(known, f.0, f.1),
+            word("untitled"),
+            word("directMessage"),
+          )
+        }
+        None => word("untitled")
+      }
+    }
+    push_item(key, title, [key])
+  }
+  Ok(out)
+}
+
+/// jobs.ts `openJobs`.
+pub fn open_jobs(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  signals : readops_core::ReadSignals,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let viewer = readops_core::json_val_or_null(args, "viewer")
+  let up = match up_jobs(db, viewer, signals) {
+    Ok(rs) => rs
+    Err(e) => return Err(e)
+  }
+  let up_keys : Array[String] = []
+  for i in 0..<up.length() {
+    up_keys.push(readops_core::js_text(readops_core::field(up[i], "session_key")))
+  }
+  let allowed = match seen_by(db, viewer, up_keys) {
+    Ok(m) => m
+    Err(e) => return Err(e)
+  }
+  let open : Array[Map[String, base_codec::Json]] = []
+  for i in 0..<up.length() {
+    let k = readops_core::js_text(readops_core::field(up[i], "session_key"))
+    if allowed.contains(k) {
+      open.push(up[i])
+    }
+  }
+  if open.length() == 0 {
+    return Ok(base_codec::json_arr([]))
+  }
+  if readops_chats::mb_json_eq(readops_core::json_val_or_null(args, "chats"), base_codec::json_bool(false)) {
+    let out : Array[base_codec::Json] = []
+    for i in 0..<open.length() {
+      match readops_local::shown(db, client, open[i]) {
+        Ok(item) => out.push(item)
+        Err(e) => return Err(e)
+      }
+    }
+    return Ok(base_codec::json_arr(out))
+  }
+  let known = readops_core::Known::of(client, data, sep, ask)
+  let words = readops_core::json_val_or_null(args, "words")
+  let open_keys : Array[String] = []
+  for i in 0..<open.length() {
+    open_keys.push(readops_core::js_text(readops_core::field(open[i], "session_key")))
+  }
+  let keys = readops_chats::unique_keys([open_keys])
+  let wanted : Map[String, Bool] = Map::new()
+  for i in 0..<keys.length() {
+    wanted.set(keys[i], true)
+  }
+  let job_scope = match scope_of_job_names(db, keys) {
+    Ok(sc) => sc
+    Err(e) => return Err(e)
+  }
+  let scan = fn(archived : Bool) -> Result[(Map[String, base_codec::Json], Map[String, base_codec::Json]), readops_core::ReadError] {
+    let own : Map[String, base_codec::Json] = Map::new()
+    let any : Map[String, base_codec::Json] = Map::new()
+    let items = match job_name_items(db, known, viewer, words, archived, job_scope) {
+      Ok(xs) => xs
+      Err(e) => return Err(e)
+    }
+    for i in 0..<items.length() {
+      let (id, session, title, agents) = items[i]
+      let shown_chat = base_codec::json_obj([
+        ("id", id),
+        ("title", base_codec::json_str(title)),
+        ("archived", base_codec::json_bool(archived)),
+      ])
+      for j in 0..<agents.length() {
+        let key = agents[j]
+        if !wanted.contains(key) {
+          continue
+        }
+        any.set(key, shown_chat)
+        if session == key {
+          own.set(key, shown_chat)
+        }
+      }
+    }
+    Ok((own, any))
+  }
+  let listed = match scan(false) {
+    Ok(pair) => pair
+    Err(e) => return Err(e)
+  }
+  let mut missing_own = false
+  for i in 0..<keys.length() {
+    if !listed.0.contains(keys[i]) {
+      missing_own = true
+      break
+    }
+  }
+  let archived_opt = if missing_own {
+    match scan(true) {
+      Ok(pair) => Some(pair)
+      Err(e) => return Err(e)
+    }
+  } else {
+    None
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<open.length() {
+    let j = open[i]
+    let shown_j = match readops_local::shown(db, client, j) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    match shown_j {
+      base_codec::Json::Obj(_) => ()
+      _ => continue
+    }
+    let v = readops_chats::obj_entries(shown_j)
+    let k = readops_core::js_text(readops_core::field(j, "session_key"))
+    let chat = match listed.0.get(k) {
+      Some(c) => Some(c)
+      None => {
+        let from_arch_own = match archived_opt {
+          Some((a_own, _)) => a_own.get(k)
+          None => None
+        }
+        match from_arch_own {
+          Some(c) => Some(c)
+          None => {
+            match listed.1.get(k) {
+              Some(c) => Some(c)
+              None => {
+                match archived_opt {
+                  Some((_, a_any)) => a_any.get(k)
+                  None => None
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    match chat {
+      Some(c) => readops_chats::obj_set(v, "chat", c)
+      None => ()
+    }
+    out.push(base_codec::json_obj(v))
+  }
+  Ok(base_codec::json_arr(out))
+}

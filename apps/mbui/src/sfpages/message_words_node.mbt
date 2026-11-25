@@ -62,7 +62,15 @@ fn person_words_node(
     .sets_together(
       fn() {
         let t = @sf.theme()
-        (@ui.style_words(t.t.words), { ..@view.runs_plain, link: t.p.blue, words: true }, @ui.style_ink(t.t.words))
+        let base = @ui.style_words(t.t.words)
+        let ps = @sfbase.prose_text_scale()
+        let ls = @sfbase.prose_line_scale()
+        let look = if ps == 1.0 && ls == 1.0 {
+          base
+        } else {
+          { ..base, size: base.size * ps, line: base.line * ps * ls }
+        }
+        (look, { ..@view.runs_plain, link: t.p.blue, words: true }, @ui.style_ink(t.t.words))
       },
       fn(s) { w.words_look(Is(s.0)).runs_look(Is(s.1)).ink(Is(s.2)) |> ignore },
     )

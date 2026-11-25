@@ -47,6 +47,7 @@ using @sfbase {
   fresh_reset,
   count,
   coming_of,
+  keeping_start,
   keeping_stop,
   download_cancel,
   download_retry,

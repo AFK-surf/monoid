@@ -1,0 +1,6 @@
+// Pure-Pion `front` package (`--builder forward` and `--builder mesh`) over `builders_core::ShellMux`,
+// 1:1 aligned with `station/mb/src/front/{forward,mesh}.mbt` and Wave 7 §2.5.
+
+pub fn skeleton_ready() -> Bool {
+  true
+}

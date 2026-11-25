@@ -64,7 +64,7 @@ export async function agentHomes(agentHome: string): Promise<string[]> {
 
 /// The skills the station brings, by directory name: about its own tools, so they are rewritten at every start and
 /// change with the station (the team's own skills sit beside them).
-export const BUILTIN_SKILLS = ["stillfail-chats", "stillfail-jobs", "stillfail-show", "stillfail-viz", "stillfail-browser", "stillfail-login", "stillfail-vault", "stillfail-cron", "stillfail-github-ci", "stillfail-move", "stillfail-leading"];
+export const BUILTIN_SKILLS = ["stillfail-chats", "stillfail-jobs", "stillfail-show", "stillfail-viz", "stillfail-browser", "stillfail-login", "stillfail-vault", "stillfail-cron", "stillfail-github-ci", "stillfail-move", "stillfail-leading", "stillfail-projects"];
 /// Skills the station brought before and brings no longer: stillfail-retire (its tool, station_retire, is switched
 /// off and hidden; station_move took its place). A copy left untouched (its SKILL.md alone) is taken away at every
 /// start, one someone added to stays; the names stay among the station's own for the shared memory (share/memory.ts

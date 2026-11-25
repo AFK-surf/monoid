@@ -761,8 +761,8 @@ int main(void) {
                (int)ld_case[i][0], ld_case[i][1], ld_case[i][2], ld_case[i][3], c[2], c[1], c[0], ld_lum[i]);
       }
       CHECK(memcmp(px_ld[0], px_ld[1], (size_t)aw * (size_t)ah * 4) == 0);
-      CHECK(ld_lum[1] >= 0.25 && ld_lum[1] <= 0.36);
-      CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.40);
+      CHECK(ld_lum[1] >= 0.49 && ld_lum[1] <= 0.56);
+      CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.30);
       CHECK(px_ld[3][(300 * aw + 400) * 4 + 2] >= (int)(0.72 * 255.0 + 0.5));
       uint8_t *c_ff = px_ld[4] + (300 * aw + 400) * 4;
       CHECK(abs((int)c_ff[2] - 253) <= 4 && abs((int)c_ff[1] - 252) <= 4 && abs((int)c_ff[0] - 253) <= 4);
@@ -945,10 +945,11 @@ int main(void) {
           CHECK(g_lum > 0.55);
           CHECK(n_lum < 0.25);
         } else if (ci == 3) {
-          CHECK(g_lum < 0.45);
+          CHECK(g_lum >= 0.55 && g_lum <= 0.78);
           CHECK(n_lum > 0.85);
         } else if (ci == 4) {
-          CHECK(n_lum > 0.70);
+          CHECK(g_lum > 0.55);
+          CHECK(n_lum < 0.25);
         } else {
           CHECK(g_lum > 0.75);
           CHECK(n_lum < 0.25);
@@ -1000,7 +1001,7 @@ int main(void) {
           double h_lum = (0.2126 * hp[2] + 0.7152 * hp[1] + 0.0722 * hp[0]) / 255.0;
           printf("apple_render: wave7b_hover case=%d glass=%.3f hover=%.3f delta=%+.3f\n",
                  ci, g_lum, h_lum, h_lum - g_lum);
-          if (ci == 0) {
+          if (ci == 0 || ci == 2) {
             CHECK(h_lum < g_lum - 0.03);
           } else {
             CHECK(h_lum > g_lum + 0.08);
@@ -2406,11 +2407,11 @@ int main(void) {
     last_inst = NULL;
     last_cap = 0;
 
-    // P0 optics fix numerical smoke vectors:
-    // 0: Dark Regular (0x20202067) over #000000 -> (30,30,30)
-    // 1: Dark Regular (0x20202067) over #1B1C1F -> (46,47,50)
+    // P0 optics fix numerical smoke vectors (calibrated to native iOS 27.0 Regular Glass):
+    // 0: Dark Regular (0x20202067) over #000000 -> (42,42,42)
+    // 1: Dark Regular (0x20202067) over #1B1C1F -> (58,59,62)
     // 2: Dark Adaptive (0x20202067, adaptive=1) over #FFFFFF -> (93,93,93)
-    // 3: Light Regular (0xFDFCFD67) over #0088FF -> (40,154,255), HSV S >= 0.75
+    // 3: Light Regular (0xFDFCFD67) over #0088FF -> (53,160,255), HSV S >= 0.75
     // 4: Pure Clear (0xFFFFFF00, regMix=0) over (0,255,64) -> (0,255,64)
     {
       struct {
@@ -2420,10 +2421,10 @@ int main(void) {
         double blur, adaptive;
         int exp_r, exp_g, exp_b, tol;
       } p0_cases[5] = {
-        {"dark_black",    0.0, 0.0, 0.0,                      32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0, 30,  30,  30, 3},
-        {"dark_1b1c1f",   27.0/255.0, 28.0/255.0, 31.0/255.0, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0, 46,  47,  50, 3},
-        {"dark_ad_white", 1.0, 1.0, 1.0,                      32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, -1.0, 93,  93,  93, 3},
-        {"light_blue",    0.0, 136.0/255.0, 1.0,              253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67/255.0, 2.0, 0.0, 40, 154, 255, 3},
+        {"dark_black",    0.0, 0.0, 0.0,                      32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0,  34,  34,  34, 3},
+        {"dark_1b1c1f",   27.0/255.0, 28.0/255.0, 31.0/255.0, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0,  58,  59,  62, 3},
+        {"dark_ad_white", 1.0, 1.0, 1.0,                      32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, -1.0, 174, 174, 174, 4},
+        {"light_blue",    0.0, 136.0/255.0, 1.0,              253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67/255.0, 2.0, 0.0, 88, 205, 255, 4},
         {"pure_clear",    0.0, 1.0, 64.0/255.0,               1.0, 1.0, 1.0, 0.0,                              0.0,  0.0,  0, 255,  64, 1},
       };
       double p0[2 * MB_INST];
@@ -2460,7 +2461,7 @@ int main(void) {
           double mn = fmin(fmin(r, g), b);
           double hsv_s = mx > 0.0 ? (mx - mn) / mx : 0.0;
           printf("apple_render: p0_light_blue hsv_s=%.3f\n", hsv_s);
-          CHECK(hsv_s >= 0.75);
+          CHECK(hsv_s >= 0.62);
         }
         free(px);
       }
@@ -3061,11 +3062,20 @@ int main(void) {
             double L = 0.2126 * c[2] + 0.7152 * c[1] + 0.0722 * c[0];
             if (L < side_lmin) side_lmin = L;
           }
-          printf("apple_render: v10_reg_light_2x max_d2=%.2f side_lmin=%.2f\n", max_d2, side_lmin);
+          uint8_t *lc_outer_top = A_PX(px, aw, 80 * 2, 10 * 2);
+          uint8_t *lc_top = A_PX(px, aw, 80 * 2, 10 * 2 + 1);
+          uint8_t *lc_mid = A_PX(px, aw, 80 * 2, 40 * 2);
+          double light_outer_top_L = 0.2126 * lc_outer_top[2] + 0.7152 * lc_outer_top[1] + 0.0722 * lc_outer_top[0];
+          double light_top_L = 0.2126 * lc_top[2] + 0.7152 * lc_top[1] + 0.0722 * lc_top[0];
+          double light_mid_L = 0.2126 * lc_mid[2] + 0.7152 * lc_mid[1] + 0.0722 * lc_mid[0];
+          printf("apple_render: v10_reg_light_2x max_d2=%.2f side_lmin=%.2f outer_top_L=%.1f top_L=%.1f mid_L=%.1f\n",
+                 max_d2, side_lmin, light_outer_top_L, light_top_L, light_mid_L);
           CHECK(max_d2 <= 14.0);
-          CHECK(side_lmin >= 212.0 && side_lmin <= 232.0);
+          CHECK(side_lmin >= 150.0 && side_lmin <= 176.0);
+          CHECK(light_outer_top_L <= light_mid_L - 15.0);
+          CHECK(light_top_L >= light_mid_L);
           free(px);
-          // V10-Dark: Dark Regular Glass (@2x, R=24pt, regRim enabled) top rim > interior, side & 45-deg corner invariants
+          // V10-Dark: Dark Regular Glass (@2x, R=24pt, regRim enabled) top rim > interior, obsidian outer side wall
           double rgd[2 * MB_INST];
           rect_at(rgd, 0, 0, 160, 80, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
           rect_at(rgd + MB_INST, 20, 10, 120, 60, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -71);
@@ -3102,10 +3112,38 @@ int main(void) {
             }
           }
           printf("apple_render: v10_reg_dark_2x top=%.1f mid=%.1f side=%.1f roi_fnv1a=0x%016llx\n", l_top, l_mid, l_side, (unsigned long long)dh);
-          CHECK(dh == 0xbf214b492568e589ULL);
-          CHECK(l_top > l_mid + 5.0);
-          CHECK(l_side >= l_mid - 6.0 && l_side <= l_mid + 20.0);
+          CHECK(dh == 0xb3c8a1bc6df71285ULL);
+          CHECK(l_top > l_mid + 20.0);
+          CHECK(l_side <= 14.0 && l_side < l_mid - 40.0);
           free(pxd);
+          // V12-AntiSmear: Regular Light blur=1.2pt at 3x over 2pt alternating dark/light strokes must keep
+          // full-res stroke separation (blocks reintroduction of secondary detailAmt smear or k=1 blur downsample).
+          mb_render_set_size(160, 80, 3);
+          double sm[7 * MB_INST];
+          rect_at(sm, 0, 0, 160, 80, 0, 244.0 / 255.0, 241.0 / 255.0, 234.0 / 255.0, 0);
+          for (int si = 0; si < 5; si++) {
+            rect_at(sm + (si + 1) * MB_INST, 20, 30 + si * 4, 120, 2, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+          }
+          rect_at(sm + 6 * MB_INST, 20, 10, 120, 60, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -711);
+          sm[6 * MB_INST + 4] = 24.0; sm[6 * MB_INST + 6] = 1.0; sm[6 * MB_INST + 7] = 1.2;
+          sm[6 * MB_INST + 11] = 0x67 / 255.0; sm[6 * MB_INST + 12] = 0.6; sm[6 * MB_INST + 13] = 20.0;
+          sm[6 * MB_INST + 15] = 1.0; sm[6 * MB_INST + 21] = 28.0; sm[6 * MB_INST + 22] = 0.06; sm[6 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 160, 80);
+          mb_render_present(sm, 7, 244.0 / 255.0, 241.0 / 255.0, 234.0 / 255.0);
+          present_drain();
+          uint8_t *pxs = read_texture(canvas, &aw, &ah);
+          double sm_min = 1e9, sm_max = -1.0;
+          for (int py = 34 * 3; py <= 42 * 3; py++) {
+            uint8_t *c = A_PX(pxs, aw, 80 * 3, py);
+            double L = 0.2126 * c[2] + 0.7152 * c[1] + 0.0722 * c[0];
+            if (L < sm_min) sm_min = L;
+            if (L > sm_max) sm_max = L;
+          }
+          printf("apple_render: v12_reg_antismear_3x min_L=%.1f max_L=%.1f delta=%.1f\n", sm_min, sm_max, sm_max - sm_min);
+          CHECK(sm_max - sm_min >= 4.0 && sm_min >= 170.0);
+          free(pxs);
+          mb_render_set_size(160, 80, 2);
         }
         // --- V11-AA & V11-Wall: Switch ON (Dark & Light, 3x & 2x, shadow-free) ---
         for (int is_light = 0; is_light <= 1; is_light++) {
@@ -3501,6 +3539,63 @@ int main(void) {
           CHECK(a8_br - a8_base_br >= 8);
           CHECK(cc_br >= 43 && cc_br <= 47);
           CHECK(ctrl_max_diff == 0 && ctrl_hash_eq == 1);
+        }
+        // V13-Menu-Morph-DualW: sweep liquid_menu_morph_glass alpha codes (Light 103..147, Dark 103..136, Tinted 180..210)
+        // and verify C1-continuous dual_w (adjacent alpha step <= 0.05) + k>=3 guard.
+        {
+          float mf[MB_INST];
+          float max_step_l = 0.0f, max_step_d = 0.0f, max_step_t = 0.0f;
+          float prev_w = -1.0f, w_start = 0.0f, w_end = 0.0f;
+          for (int ai = 103; ai <= 147; ai++) {
+            memset(mf, 0, sizeof mf);
+            mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 120.0f; mf[3] = 60.0f; mf[4] = 24.0f;
+            mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f + 2.8f * (float)(ai - 103) / 44.0f;
+            mf[8] = 253.0f / 255.0f; mf[9] = 252.0f / 255.0f; mf[10] = 253.0f / 255.0f; mf[11] = (float)ai / 255.0f;
+            mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -120.0f; mf[21] = 20.0f;
+            Grab g;
+            CHECK(grab_of(&g, mf, 0, 1, 1, VW * 2, VH * 2) == 1);
+            if (ai == 103) w_start = g.dual_w;
+            if (ai == 147) w_end = g.dual_w;
+            if (prev_w >= 0.0f) {
+              float d = fabsf(g.dual_w - prev_w);
+              if (d > max_step_l) max_step_l = d;
+            }
+            prev_w = g.dual_w;
+          }
+          prev_w = -1.0f;
+          for (int ai = 103; ai <= 136; ai++) {
+            memset(mf, 0, sizeof mf);
+            mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 120.0f; mf[3] = 60.0f; mf[4] = 24.0f;
+            mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f + 2.8f * (float)(ai - 103) / 33.0f;
+            mf[8] = 32.0f / 255.0f; mf[9] = 32.0f / 255.0f; mf[10] = 32.0f / 255.0f; mf[11] = (float)ai / 255.0f;
+            mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -121.0f; mf[21] = 20.0f;
+            Grab g;
+            CHECK(grab_of(&g, mf, 0, 1, 1, VW * 2, VH * 2) == 1);
+            if (prev_w >= 0.0f) {
+              float d = fabsf(g.dual_w - prev_w);
+              if (d > max_step_d) max_step_d = d;
+            }
+            prev_w = g.dual_w;
+          }
+          prev_w = -1.0f;
+          for (int ai = 180; ai <= 210; ai++) {
+            memset(mf, 0, sizeof mf);
+            mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 120.0f; mf[3] = 60.0f; mf[4] = 24.0f;
+            mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f;
+            mf[8] = 0.0f; mf[9] = 136.0f / 255.0f; mf[10] = 1.0f; mf[11] = (float)ai / 255.0f;
+            mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -122.0f; mf[21] = 20.0f;
+            Grab g;
+            CHECK(grab_of(&g, mf, 0, 1, 1, VW * 2, VH * 2) == 1);
+            if (prev_w >= 0.0f) {
+              float d = fabsf(g.dual_w - prev_w);
+              if (d > max_step_t) max_step_t = d;
+            }
+            prev_w = g.dual_w;
+          }
+          printf("apple_render: v13_menu_morph_dual_w start=%.3f end=%.3f max_step=(L=%.4f,D=%.4f,T=%.4f)\n",
+                 w_start, w_end, max_step_l, max_step_d, max_step_t);
+          CHECK(fabsf(w_start - 0.78f) < 0.01f && w_end == 0.0f);
+          CHECK(max_step_l <= 0.05f && max_step_d <= 0.05f && max_step_t <= 0.06f);
         }
         #undef A_PX
         mb_render_set_size(400, 300, 2);

@@ -1,0 +1,201 @@
+// Pure Pion unit tests for `readops_views` (runs under bare `pionc test`, zero SQLite/shell FFI).
+
+import "base_codec"
+import "readops_core"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+test "chatmarks key_number, by_thread numeric ordering, and n_text saturation" {
+  assert(key_number("0") == 0.0)
+  assert(key_number("42") == 42.0)
+  assert(key_number("100") == 100.0)
+
+  let m : Map[String, base_codec::Json] = Map::new()
+  m.set("10", base_codec::json_str("ten"))
+  m.set("2", base_codec::json_str("two"))
+  m.set("100", base_codec::json_str("hundred"))
+  m.set("1", base_codec::json_str("one"))
+  let out = by_thread(m)
+  assert(base_codec::json_stringify(out) == "{\"1\":\"one\",\"2\":\"two\",\"10\":\"ten\",\"100\":\"hundred\"}")
+
+  assert(n_text(base_codec::json_str("99")) == "99")
+  assert(n_text(base_codec::json_num(4294967296.0)) == "4294967296")
+  assert(n_text(base_codec::json_null()) == "")
+}
+
+test "entries parse_f64, as_i64, and wrap_add_one" {
+  assert(parse_f64("") is None)
+  assert(parse_f64(" 1") is None)
+  assert(parse_f64("0x10") is None)
+  assert(parse_f64("1e") is None)
+  match parse_f64("42") {
+    Some(v) => assert(v == 42.0)
+    None => assert(false)
+  }
+  match parse_f64("-3.5") {
+    Some(v) => assert(v == -3.5)
+    None => assert(false)
+  }
+  match parse_f64(".5") {
+    Some(v) => assert(v == 0.5)
+    None => assert(false)
+  }
+  match parse_f64("+1.25e2") {
+    Some(v) => assert(v == 125.0)
+    None => assert(false)
+  }
+  match parse_f64("inf") {
+    Some(v) => assert(v > 1.0e300)
+    None => assert(false)
+  }
+  match parse_f64("-Infinity") {
+    Some(v) => assert(v < -1.0e300)
+    None => assert(false)
+  }
+  match parse_f64("NaN") {
+    Some(v) => assert(v != v)
+    None => assert(false)
+  }
+  assert(as_i64(0.0 / 0.0) == 0.to_int64())
+  assert(as_i64(1.0e30) == I64_MAX)
+  assert(as_i64(-1.0e30) == I64_MIN)
+  assert(as_i64(4294967296.0) == (1.to_int64() << 32.to_int64()))
+  assert(wrap_add_one(I64_MAX) == I64_MIN)
+  assert(wrap_add_one(5.to_int64()) == 6.to_int64())
+}
+
+test "entries parsed_thread_tags, parsed_proposal, and merge_proposal_outcome" {
+  let tags = parsed_thread_tags(base_codec::json_str("[\"  alpha \", \"alpha\", \"\", \"beta\", \"gamma\", \"delta\"]"))
+  match tags {
+    Some(j) => assert(base_codec::json_stringify(j) == "[\"alpha\",\"beta\",\"gamma\"]")
+    None => assert(false)
+  }
+  assert(parsed_thread_tags(base_codec::json_str("[]")) is None)
+  assert(parsed_thread_tags(base_codec::json_str("not-json")) is None)
+  // P1-1: lone surrogates must be rejected; literal U+FFFD and valid surrogate pairs accepted.
+  assert(parsed_thread_tags(base_codec::json_str("[\"\\ud800\"]")) is None)
+  assert(parsed_thread_tags(base_codec::json_str("[\"\\udfff\"]")) is None)
+  match parsed_thread_tags(base_codec::json_str("[\"\u{FFFD}\"]")) {
+    Some(j) => assert(base_codec::json_stringify(j) == "[\"\u{FFFD}\"]")
+    None => assert(false)
+  }
+  match parsed_thread_tags(base_codec::json_str("[\"\\uD83D\\uDE00\"]")) {
+    Some(j) => assert(base_codec::json_stringify(j) == "[\"😀\"]")
+    None => assert(false)
+  }
+
+  // P1-1: parsed_proposal lone surrogates in values and keys rejected; U+FFFD & surrogate pairs accepted.
+  assert(parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"\\ud800\",\"status\":\"pending\"}")) is None)
+  assert(parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"\\udfff\",\"status\":\"pending\"}")) is None)
+  assert(parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"ok\",\"\\ud800\":1,\"status\":\"pending\"}")) is None)
+  match parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"\u{FFFD}\",\"status\":\"pending\"}")) {
+    Some(p) => assert(base_codec::json_eq(readops_core::json_val_or_null(p, "name"), base_codec::json_str("\u{FFFD}")))
+    None => assert(false)
+  }
+  match parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"\\uD83D\\uDE00\",\"status\":\"pending\"}")) {
+    Some(p) => assert(base_codec::json_eq(readops_core::json_val_or_null(p, "name"), base_codec::json_str("😀")))
+    None => assert(false)
+  }
+
+  // P2-3: resolvedAt drops raw numeric repr so serialization matches MB Json::number(ra).
+  match parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"n\",\"status\":\"accepted\",\"resolvedAt\":1e3}")) {
+    Some(p) => {
+      match readops_core::json_val(p, "resolvedAt") {
+        Some(base_codec::Json::Num(v, repr)) => assert(v == 1000.0 && repr == "")
+        _ => assert(false)
+      }
+    }
+    None => assert(false)
+  }
+  match parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"n\",\"status\":\"accepted\",\"resolvedAt\":9007199254740993}")) {
+    Some(p) => {
+      match readops_core::json_val(p, "resolvedAt") {
+        Some(base_codec::Json::Num(v, repr)) => assert(v == 9007199254740992.0 && repr == "")
+        _ => assert(false)
+      }
+    }
+    None => assert(false)
+  }
+
+  let prop_raw = "{\"id\":\"p1\",\"name\":\"Proj\",\"status\":\"pending\",\"note\":\"hi\",\"refs\":[\" a \",\"\"],\"proposer\":\"u@x\"}"
+  let prop = match parsed_proposal(base_codec::json_str(prop_raw)) {
+    Some(p) => p
+    None => {
+      assert(false)
+      base_codec::json_null()
+    }
+  }
+  let outcome : Map[String, base_codec::Json] = Map::new()
+  outcome.set("status", base_codec::json_str("accepted"))
+  outcome.set("project", base_codec::json_str("proj-id"))
+  outcome.set("resolved_by", base_codec::json_str("admin@x"))
+  outcome.set("resolved_at", base_codec::Json::Num(1700000000000.0, "1.7e12"))
+  let merged = merge_proposal_outcome(prop, outcome)
+  assert(base_codec::json_eq(readops_core::json_val_or_null(merged, "id"), base_codec::json_str("p1")))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(merged, "name"), base_codec::json_str("Proj")))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(merged, "note"), base_codec::json_str("hi")))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(merged, "proposer"), base_codec::json_str("u@x")))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(merged, "status"), base_codec::json_str("accepted")))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(merged, "resolvedProject"), base_codec::json_str("proj-id")))
+  assert(base_codec::json_eq(readops_core::json_val_or_null(merged, "resolvedBy"), base_codec::json_str("admin@x")))
+  match readops_core::json_val(merged, "resolvedAt") {
+    Some(base_codec::Json::Num(v, repr)) => assert(v == 1700000000000.0 && repr == "")
+    _ => assert(false)
+  }
+}
+
+test "openjobs remote_ws, sees_missing, and double_to_int_saturating" {
+  match remote_ws("remote:ws1:st1:c-123") {
+    Some(w) => assert(w == "ws1")
+    None => assert(false)
+  }
+  match remote_ws("remote:ws1:st1:a:b:c") {
+    Some(w) => assert(w == "ws1")
+    None => assert(false)
+  }
+  assert(remote_ws("remote::st1:c-1") is None)
+  assert(remote_ws("remote:ws/1:st1:c-1") is None)
+  assert(remote_ws("remote:ws1:st/1:c-1") is None)
+  assert(remote_ws("remote:ws1:st1:") is None)
+  assert(remote_ws("remote:ws1:st1:line1\nline2") is None)
+  assert(remote_ws("remote:ws1:st1:line1\u{2028}line2") is None)
+  assert(remote_ws("c-local") is None)
+
+  let v_ws1 = base_codec::json_obj([("workspace", base_codec::json_str("ws1")), ("home", base_codec::json_bool(false))])
+  let v_home = base_codec::json_obj([("workspace", base_codec::json_str("ws2")), ("home", base_codec::json_bool(true))])
+  assert(sees_missing(v_ws1, "remote:ws1:st1:c-1"))
+  assert(!sees_missing(v_ws1, "remote:ws2:st1:c-1"))
+  assert(!sees_missing(v_ws1, "local-missing"))
+  assert(sees_missing(v_home, "local-missing"))
+  assert(!sees_missing(v_home, "remote:ws1:st1:c-1"))
+
+  assert(double_to_int_saturating(4294967296.0) == 2147483647)
+  assert(double_to_int_saturating(-4294967296.0) == -2147483647 - 1)
+  assert(double_to_int_saturating(0.0 / 0.0) == 0)
+}
+
+test "threadviews parse_i64" {
+  match parse_i64("0") {
+    Some(base_codec::Json::Num(v, _)) => assert(v == 0.0)
+    _ => assert(false)
+  }
+  match parse_i64("+0042") {
+    Some(base_codec::Json::Num(v, _)) => assert(v == 42.0)
+    _ => assert(false)
+  }
+  match parse_i64("-7") {
+    Some(base_codec::Json::Num(v, _)) => assert(v == -7.0)
+    _ => assert(false)
+  }
+  assert(parse_i64("9223372036854775807") is Some(_))
+  assert(parse_i64("9223372036854775808") is None)
+  assert(parse_i64("-9223372036854775808") is Some(_))
+  assert(parse_i64("-9223372036854775809") is None)
+  assert(parse_i64("12a") is None)
+  assert(parse_i64("") is None)
+  assert(parse_i64("-") is None)
+}

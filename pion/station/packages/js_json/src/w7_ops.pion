@@ -1,0 +1,325 @@
+// Wave 7 `js_json` additions (1:1 aligned with `station/mb/src/jsjson/{jv,jvalue_ops}.mbt`):
+// - `jval_truthy` (`jvalue_ops.mbt:192`)
+// - `js_number_parse` (`jv.mbt:334`)
+// - `json_js_str` / `json_js_str_with` (`jvalue_ops.mbt:624`)
+// - `is_integer` (`jv.mbt:274`, distinct from `is_safe_integer` at `|d| > 2^53`)
+// - `chars` (`jv.mbt:487-505` on UTF-16 `Array[Int]`)
+// - `JValue::to_json` (bounded lossy conversion for proven surrogate-free structures)
+
+import "base_codec"
+import "sqlite_ffi"
+
+/// JavaScript `!!v` (`None` / undefined is false).
+pub fn jval_truthy(v : Option[JValue]) -> Bool {
+  match v {
+    None => false
+    Some(JValue::Null) => false
+    Some(JValue::Bool(false)) => false
+    Some(JValue::Num(n)) => n != 0.0 && n == n
+    Some(JValue::Str(s)) => s.length() > 0
+    Some(_) => true
+  }
+}
+
+/// JavaScript `Number.isInteger(d)`: finite and exact integer (unlike `is_safe_integer`,
+/// returns `true` for finite integers with `|d| > 2^53 - 1`, e.g. `2^53` and `1e20`).
+pub fn is_integer(d : Double) -> Bool {
+  if is_nan_or_inf(d) {
+    return false
+  }
+  // In IEEE-754 binary64, every finite value with |d| >= 2^52 has ULP >= 1 so has no fractional part.
+  if d >= 4503599627370496.0 || d <= -4503599627370496.0 {
+    return true
+  }
+  d.to_int64().to_double() == d
+}
+
+/// `[...s].slice(0, max)` on UTF-16 code units: surrogate pairs count as 1, lone surrogates count as 1.
+pub fn chars(units : Array[Int], max : Int) -> Array[Int] {
+  let out : Array[Int] = []
+  let len = units.length()
+  let mut i = 0
+  let mut n = 0
+  while i < len && n < max {
+    let c = units[i]
+    if c >= 0xD800 && c <= 0xDBFF && i + 1 < len {
+      let d = units[i + 1]
+      if d >= 0xDC00 && d <= 0xDFFF {
+        out.push(c)
+        out.push(d)
+        i = i + 2
+        n = n + 1
+        continue
+      }
+    }
+    out.push(c)
+    i = i + 1
+    n = n + 1
+  }
+  out
+}
+
+/// JavaScript `Number(s)` string parser (`jv.mbt:334-451`): trims JS whitespace, `"" -> 0.0`,
+/// `Infinity`/`+Infinity`/`-Infinity`, `0x`/`0o`/`0b`, decimal `[+-]digits[.digits][e[+-]digits]`; else NaN.
+pub fn js_number_parse(s : String) -> Double {
+  let t = trim_js(s)
+  if t == "" {
+    return 0.0
+  }
+  if t == "Infinity" || t == "+Infinity" {
+    return 1.0 / 0.0
+  }
+  if t == "-Infinity" {
+    return -1.0 / 0.0
+  }
+  let raw = t.to_bytes()
+  let len = raw.length()
+  if len > 2 && (raw[0].to_int() & 0xFF) == 48 {
+    let c1 = raw[1].to_int() & 0xFF
+    let base = if c1 == 120 || c1 == 88 {
+      16
+    } else if c1 == 111 || c1 == 79 {
+      8
+    } else if c1 == 98 || c1 == 66 {
+      2
+    } else {
+      0
+    }
+    if base > 0 {
+      let mut n = 0.0
+      for i in 2..<len {
+        let c = raw[i].to_int() & 0xFF
+        let d = if c >= 48 && c <= 57 {
+          c - 48
+        } else if c >= 97 && c <= 122 {
+          c - 97 + 10
+        } else if c >= 65 && c <= 90 {
+          c - 65 + 10
+        } else {
+          99
+        }
+        if d >= base {
+          return 0.0 / 0.0
+        }
+        n = n * base.to_double() + d.to_double()
+      }
+      return n
+    }
+  }
+  let mut i = 0
+  let first = raw[0].to_int() & 0xFF
+  let neg = first == 45
+  if first == 43 || first == 45 {
+    i = 1
+  }
+  let mut seen = false
+  while i < len {
+    let c = raw[i].to_int() & 0xFF
+    if c >= 48 && c <= 57 {
+      i = i + 1
+      seen = true
+    } else {
+      break
+    }
+  }
+  if i < len && (raw[i].to_int() & 0xFF) == 46 {
+    i = i + 1
+    while i < len {
+      let c = raw[i].to_int() & 0xFF
+      if c >= 48 && c <= 57 {
+        i = i + 1
+        seen = true
+      } else {
+        break
+      }
+    }
+  }
+  if !seen {
+    return 0.0 / 0.0
+  }
+  if i < len {
+    let ec = raw[i].to_int() & 0xFF
+    if ec == 101 || ec == 69 {
+      let mut j = i + 1
+      if j < len {
+        let sc = raw[j].to_int() & 0xFF
+        if sc == 43 || sc == 45 {
+          j = j + 1
+        }
+      }
+      let from = j
+      while j < len {
+        let c = raw[j].to_int() & 0xFF
+        if c >= 48 && c <= 57 {
+          j = j + 1
+        } else {
+          break
+        }
+      }
+      if j == from {
+        return 0.0 / 0.0
+      }
+      i = j
+    }
+  }
+  if i != len {
+    return 0.0 / 0.0
+  }
+  // Normalize into strict JSON decimal syntax (strip leading '+', leading zeros, bare '.' before/after digits).
+  let start = if first == 43 || first == 45 { 1 } else { 0 }
+  let body_sb = StringBuilder::new()
+  let mut k = start
+  if k < len && (raw[k].to_int() & 0xFF) == 46 {
+    body_sb.write_byte(48 as Byte)
+  } else {
+    while k + 1 < len && (raw[k].to_int() & 0xFF) == 48 {
+      let nxt = raw[k + 1].to_int() & 0xFF
+      if nxt >= 48 && nxt <= 57 {
+        k = k + 1
+      } else {
+        break
+      }
+    }
+  }
+  while k < len {
+    let c = raw[k].to_int() & 0xFF
+    body_sb.write_byte(c as Byte)
+    if c == 46 {
+      let need_zero = if k + 1 >= len {
+        true
+      } else {
+        let nxt = raw[k + 1].to_int() & 0xFF
+        nxt == 101 || nxt == 69
+      }
+      if need_zero {
+        body_sb.write_byte(48 as Byte)
+      }
+    }
+    k = k + 1
+  }
+  let v = match parse(body_sb.to_string()) {
+    Ok(JValue::Num(n)) => n
+    _ => 0.0 / 0.0
+  }
+  if neg { -v } else { v }
+}
+
+/// `String(v)` on `Option[base_codec::Json]` with custom number formatter (`jvalue_ops.mbt:624`).
+pub fn json_js_str_with(v : Option[base_codec::Json], fmt_num : (Double) -> String) -> String {
+  match v {
+    None => "undefined"
+    Some(base_codec::Json::Null) => "null"
+    Some(base_codec::Json::Bool(true)) => "true"
+    Some(base_codec::Json::Bool(false)) => "false"
+    Some(base_codec::Json::Num(d, _)) => num_text_with(d, fmt_num)
+    Some(base_codec::Json::Str(s)) => s
+    Some(base_codec::Json::Arr(items)) => {
+      let sb = StringBuilder::new()
+      for i in 0..<items.length() {
+        if i > 0 {
+          sb.write_byte(44 as Byte)
+        }
+        match items[i] {
+          base_codec::Json::Null => ()
+          other => sb.write_string(json_js_str_with(Some(other), fmt_num))
+        }
+      }
+      sb.to_string()
+    }
+    Some(base_codec::Json::Obj(_)) => "[object Object]"
+  }
+}
+
+/// `String(v)` on `Option[base_codec::Json]` (`jvalue_ops.mbt:624`).
+pub fn json_js_str(v : Option[base_codec::Json]) -> String {
+  json_js_str_with(v, sqlite_ffi::format_js_double)
+}
+
+/// Convert `JValue` to `base_codec::Json` in insertion order with well-formed strings (`sanitize_str`),
+/// deduplicating colliding sanitized keys (last-wins, preserving first-seen key position), and keeping
+/// numbers as given (1:1 `jvalue_ops.mbt:203-219`).
+pub fn JValue::to_json_lossy(self : JValue) -> base_codec::Json {
+  match self {
+    JValue::Null => base_codec::json_null()
+    JValue::Bool(b) => base_codec::json_bool(b)
+    JValue::Num(d) => base_codec::json_num(d)
+    JValue::Str(u) => base_codec::json_str(sanitize_str(u))
+    JValue::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        out.push(items[i].to_json_lossy())
+      }
+      base_codec::json_arr(out)
+    }
+    JValue::Obj(entries) => {
+      let order : Array[String] = []
+      let latest : Map[String, base_codec::Json] = Map::new()
+      for i in 0..<entries.length() {
+        let (k, v) = entries[i]
+        let sk = sanitize_str(k)
+        if !latest.contains(sk) {
+          order.push(sk)
+        }
+        latest.set(sk, v.to_json_lossy())
+      }
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<order.length() {
+        let sk = order[i]
+        match latest.get(sk) {
+          Some(v) => out.push((sk, v))
+          None => ()
+        }
+      }
+      base_codec::json_obj(out)
+    }
+  }
+}
+
+/// Convert `JValue` to `base_codec::Json` (reordering integer-index keys, deduplicating sanitized keys
+/// last-wins, non-finite numbers -> `Null`).
+/// PRECONDITION: Only use on proven surrogate-free structures; lone surrogates are replaced with
+/// `U+FFFD` via `sanitize_str`. User-keyed outputs that may contain lone surrogates MUST remain
+/// in `JValue` and serialize losslessly via `js_json::stringify`.
+pub fn JValue::to_json(self : JValue) -> base_codec::Json {
+  match self {
+    JValue::Null => base_codec::json_null()
+    JValue::Bool(b) => base_codec::json_bool(b)
+    JValue::Num(d) => {
+      if is_nan_or_inf(d) {
+        base_codec::json_null()
+      } else {
+        base_codec::json_num(d)
+      }
+    }
+    JValue::Str(u) => base_codec::json_str(sanitize_str(u))
+    JValue::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        out.push(items[i].to_json())
+      }
+      base_codec::json_arr(out)
+    }
+    JValue::Obj(entries) => {
+      let ord = ordered_entries(entries)
+      let order : Array[String] = []
+      let latest : Map[String, base_codec::Json] = Map::new()
+      for i in 0..<ord.length() {
+        let (k, v) = ord[i]
+        let sk = sanitize_str(k)
+        if !latest.contains(sk) {
+          order.push(sk)
+        }
+        latest.set(sk, v.to_json())
+      }
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<order.length() {
+        let sk = order[i]
+        match latest.get(sk) {
+          Some(v) => out.push((sk, v))
+          None => ()
+        }
+      }
+      base_codec::json_obj(out)
+    }
+  }
+}

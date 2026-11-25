@@ -1084,7 +1084,7 @@ export class Data {
   keepStationMemory(station: string, key: string, value: unknown): void {
     const db = this.of(station);
     if (!db) return;
-    if (value !== undefined) db.putStationDoc(station, `${MEMORY}${key}`, value, this.#host.nowMs(), null);
+    if (value !== undefined) db.putStationDoc(station, `${MEMORY}${key}`, value, this.#host.nowMs(), null, false);
     else if (db.stationDoc(station, `${MEMORY}${key}`) !== undefined) db.dropStationDoc(station, `${MEMORY}${key}`, null);
   }
 
@@ -1771,6 +1771,10 @@ export class Data {
 
   /// Whether something reads a session's transcript now: its history is shown, or a query reads its items or what it
   /// said in Slack (a chat's page shows that of its agents without their histories open).
+  transcriptRead(station: string, id: string): boolean {
+    return this.#transcriptRead(station, id);
+  }
+
   #transcriptRead(station: string, id: string): boolean {
     return this.#shown.has(`transcript\u0001${station}\u0001${id}`) ||
       this.#queryReads.has(topicKey({ topic: "$log", table: "transcript", station, id })) ||

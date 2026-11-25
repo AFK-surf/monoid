@@ -43,7 +43,7 @@ export const READER_MODES = {
   // Stateful / DB-attaching / cache-writing / FS-mutating / network-binding modes (shadow strictly forbidden)
   data: {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Query pool process with WAL checkpoints and timeline marks cache writes (--data)",
   },
@@ -91,19 +91,19 @@ export const READER_MODES = {
   },
   "replica-export": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-fs",
     note: "Replica chunk export and state mutation (--builder replica-export)",
   },
   "replica-restore": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Replica restore into SQLite and data dir (--builder replica-restore)",
   },
   "replica-carry": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-fs",
     note: "Migration file gather/place operations (--builder replica-carry)",
   },

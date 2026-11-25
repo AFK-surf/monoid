@@ -40,3 +40,33 @@ predicate before_upto(ws : FixedArray[Int], rs : FixedArray[Bool], ts : FixedArr
 predicate chosen(ws : FixedArray[Int], rs : FixedArray[Bool], ts : FixedArray[Int], hs : FixedArray[Int], b : Int) {
   in_range(ws.length(), b) && before_upto(ws, rs, ts, hs, b, ws.length())
 }
+
+// A part of the children (`at`: their indices among all, distinct): what a keeper holding only some of them weighs.
+
+predicate in_part(n : Int, part : FixedArray[Int]) {
+  ∀ k : Int, in_range(part.length(), k) → in_range(n, part[k])
+}
+
+predicate distinct_part(part : FixedArray[Int]) {
+  ∀ i : Int, ∀ j : Int, two_of(part.length(), i, j) → part[i] != part[j]
+}
+
+predicate before_part(ws : FixedArray[Int], rs : FixedArray[Bool], ts : FixedArray[Int], hs : FixedArray[Int], part : FixedArray[Int], k : Int) {
+  ∀ j : Int, other(part.length(), k, j) → before_at(ws, rs, ts, hs, part[k], part[j])
+}
+
+predicate chosen_in_part(ws : FixedArray[Int], rs : FixedArray[Bool], ts : FixedArray[Int], hs : FixedArray[Int], part : FixedArray[Int], k : Int) {
+  in_range(part.length(), k) && before_part(ws, rs, ts, hs, part, k)
+}
+
+predicate beats(ws : FixedArray[Int], rs : FixedArray[Bool], ts : FixedArray[Int], hs : FixedArray[Int], c : Int, x : Int) {
+  ahead(ws[c], rs[c], ts[c], hs[c], ws[x], rs[x], ts[x], hs[x])
+}
+
+predicate two_in(n : Int, c : Int, x : Int) {
+  in_range(n, c) && in_range(n, x)
+}
+
+predicate not_chosen(ws : FixedArray[Int], rs : FixedArray[Bool], ts : FixedArray[Int], hs : FixedArray[Int], x : Int) {
+  !chosen(ws, rs, ts, hs, x)
+}

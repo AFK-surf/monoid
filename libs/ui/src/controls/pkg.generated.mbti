@@ -2065,7 +2065,7 @@ pub let pill_h : Double
 pub let pill_in : Double
 
 #callsite(autofill(loc))
-pub fn pill_node(@view.View, () -> String, tone? : PillTone, icon? : String, loc~ : SourceLoc) -> @view.View
+pub fn pill_node(@view.View, () -> String, tone? : PillTone, icon? : String, read? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub let pin_raised : Raised
 
@@ -2279,6 +2279,9 @@ pub fn rainbow_hue_now() -> Int32
 pub fn rainbow_hue_of_seed(Int64) -> Int32
 
 pub fn raised(Double, ambient? : Double, spot? : Double) -> Raised
+
+#callsite(autofill(loc))
+pub fn read_words_node(@view.View, () -> String, () -> @ui.TextStyle, loc~ : SourceLoc) -> @view.View
 
 pub let reader_bars_ms : Double
 
@@ -3164,6 +3167,8 @@ pub fn viewer_bar_start_in(Double, @paint.CornerRoots) -> Double
 
 pub fn viewer_bar_under() -> Double
 
+pub fn viewer_bar_watch_back(@view.View, (@view.View) -> Unit) -> Unit
+
 #callsite(autofill(loc))
 pub fn viewer_coming_node(@view.View, () -> (Double, Double?)?, () -> Double, () -> ViewerInk, lead? : Bool, track? : Double, loc~ : SourceLoc) -> @view.View
 
@@ -3188,7 +3193,9 @@ pub fn viewer_reset() -> Unit
 pub let viewer_small_w : Double
 
 #callsite(autofill(loc))
-pub fn viewer_steps_node(@view.View, () -> Bool, () -> Bool, () -> Bool, (@view.View) -> Double, () -> Bool, (Int32) -> Unit, TipLayer, loc~ : SourceLoc) -> @view.View
+pub fn viewer_steps_node(@view.View, () -> Bool, () -> Bool, (Int32) -> Bool, (@view.View) -> Double, () -> Bool, (Int32) -> Unit, TipLayer, loc~ : SourceLoc) -> @view.View
+
+pub fn viewer_steps_on_move(@view.View, () -> Unit) -> Unit
 
 pub let viewer_tool_icon : Double
 

@@ -303,6 +303,8 @@
   "android-chat.video.reading": "Loading frames",
   "android-chat.video.saveFrame": "Save frame",
   "android-chat.video.saveFrame.failed": "Couldn't save frame",
+  "android-chat.video.scrubFine": "Fine",
+  "android-chat.video.scrubFrame": "Frame",
   "android-chat.web.badBody": "Invalid request body",
   "android-chat.web.badRedirect": "Redirected to an unreadable address: {location}",
   "android-chat.web.badRequest": "Invalid request",

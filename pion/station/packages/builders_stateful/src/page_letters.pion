@@ -575,6 +575,47 @@ pub fn run_gc_selftest() -> Result[Unit, String] {
   Ok(())
 }
 
+/// `page-letter-index.ts` `pageLetterReady` (`letters.mbt:269`): the chat's prepared letter keys'
+/// token, `Ok(None)` while they are not ready or the index's triggers are not current.
+pub fn letters_ready_token(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[Option[String], builders_core::StepError] {
+  match page_letter_current(db) {
+    Ok(true) => ()
+    Ok(false) => return Ok(None)
+    Err(e) => return Err(e)
+  }
+  let s = match page_letter_scope_of(db, thread) {
+    Ok(Some(row)) => row
+    Ok(None) => return Ok(None)
+    Err(e) => return Err(e)
+  }
+  let epoch = match db.first("SELECT epoch FROM page_letter_meta WHERE id=1", []) {
+    Ok(Some(m)) => sql_db::row_val(m, "epoch")
+    Ok(None) => base_codec::json_null()
+    Err(e) => return Err(builders_core::StepError::Sql(e))
+  }
+  let same_epoch = base_codec::json_eq(sql_db::row_val(s, "epoch"), epoch)
+  let is_complete = match sql_db::row_val(s, "complete") {
+    base_codec::Json::Num(n, _) => n == 1.0
+    _ => false
+  }
+  let tok_val = sql_db::row_val(s, "token")
+  let tok_str = match tok_val {
+    base_codec::Json::Str(t) => t
+    _ => return Ok(None)
+  }
+  if !same_epoch || !is_complete {
+    return Ok(None)
+  }
+  match page_letter_dirty_overflow(db, thread, tok_val) {
+    Ok(true) => Ok(None)
+    Ok(false) => Ok(Some(tok_str))
+    Err(e) => Err(e)
+  }
+}
+
 struct LettersCell {
   mut state : Option[Letters]
 }

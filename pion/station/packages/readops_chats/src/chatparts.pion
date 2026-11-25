@@ -1,0 +1,1727 @@
+// 1:1 port of `station/mb/src/readops/chatparts.mbt` + `last_turn_of` (from `chatmarks.mbt:34-41`).
+// All named SAVEPOINTs go through `sql_db::Db::savepoint_swallow_err` (conditional for `said_of`).
+
+import "base_codec"
+import "builders_core"
+import "builders_legacy"
+import "js_json"
+import "readops_core"
+import "sql_db"
+
+pub let CLOSED_CARDS_PENDING : String = "closed cards pending:"
+
+pub let PEOPLE_TIME_PENDING : String = "people time pending:"
+
+let ANSWER_CARD_SAMPLE : Int = 65
+
+let SAMPLE_LIMIT : Double = 65.0
+
+/// Whether a JSON number is an integer (JS `Number.isInteger`).
+pub fn is_integer_json(v : base_codec::Json) -> Bool {
+  match v {
+    base_codec::Json::Num(n, _) => js_json::is_integer(n)
+    _ => false
+  }
+}
+
+// ── where a chat's latest message stands ──
+
+/// `legacy-said-build.ts` `legacySaidReadHead`: `(known, head_row)`.
+pub fn legacy_said_head(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[(Bool, Option[Map[String, base_codec::Json]]), readops_core::ReadError] {
+  let first = match readops_core::one(db, readops_core::LEGACY_SAID_HEAD_FIRST_SQL, [thread]) {
+    Ok(Some(r)) => r
+    Ok(None) => return Ok((true, None))
+    Err(e) => return Err(e)
+  }
+  match readops_core::field(first, "n") {
+    base_codec::Json::Null => ()
+    _ => return Ok((true, Some(first)))
+  }
+  match readops_core::one(db, readops_core::LEGACY_SAID_NEEDS_DRAIN_SQL, [thread]) {
+    Ok(None) => {
+      return match readops_core::one(db, readops_core::LEGACY_SAID_LATEST_SQL, [thread]) {
+        Ok(r) => Ok((true, r))
+        Err(e) => Err(e)
+      }
+    }
+    Ok(Some(_)) => ()
+    Err(e) => return Err(e)
+  }
+  let tail = match readops_core::one(db, readops_core::LEGACY_SAID_HEAD_TAIL_SQL, [thread]) {
+    Ok(Some(r)) => r
+    Ok(None) => return Ok((true, None))
+    Err(e) => return Err(e)
+  }
+  match readops_core::field(tail, "n") {
+    base_codec::Json::Null => ()
+    _ => return Ok((true, Some(tail)))
+  }
+  Ok((readops_core::num(readops_core::field(tail, "count")) < 65.0, None))
+}
+
+fn said_of_body(
+  db : sql_db::Db,
+  legacy : Bool,
+  thread : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let (known, head) = if legacy {
+    match legacy_said_head(db, thread) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+  } else {
+    match readops_core::one(db, readops_core::SAID_LATEST_SQL, [thread]) {
+      Ok(r) => (true, r)
+      Err(e) => return Err(e)
+    }
+  }
+  if !known {
+    return Err(readops_core::refused(503, readops_core::SAID_PENDING + sql_db::stringify_json(base_codec::json_arr([thread]))))
+  }
+  let r = match head {
+    Some(row) => row
+    None => return Ok(base_codec::json_null())
+  }
+  let r_n = readops_core::field(r, "n")
+  let r_ak = readops_core::field(r, "author_kind")
+  let r_author = readops_core::field(r, "author")
+  let person = base_codec::json_eq(r_ak, base_codec::json_str("person"))
+  let state = if person {
+    match readops_core::one(db, readops_core::SAID_STATE_SQL, [thread]) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+  } else {
+    None
+  }
+  let (bknown, bother) = if !person {
+    (true, r_n)
+  } else {
+    match state {
+      Some(s) => {
+        if mb_json_eq(readops_core::field(s, "said_n"), r_n) &&
+        mb_json_eq(readops_core::field(s, "said_other_known"), base_codec::json_num(1.0)) {
+          (true, readops_core::field(s, "said_other_n"))
+        } else if mb_json_eq(readops_core::field(s, "guard_ready"), base_codec::json_num(1.0)) &&
+        mb_json_eq(readops_core::field(s, "guard_author"), r_author) {
+          (true, readops_core::field(s, "guard_other_n"))
+        } else {
+          (false, base_codec::json_null())
+        }
+      }
+      None => (false, base_codec::json_null())
+    }
+  }
+  let mut other = bother
+  if !bknown {
+    let needs_drain = if legacy {
+      match readops_core::one(db, readops_core::LEGACY_SAID_NEEDS_DRAIN_SQL, [thread]) {
+        Ok(Some(_)) => true
+        Ok(None) => false
+        Err(e) => return Err(e)
+      }
+    } else {
+      false
+    }
+    if needs_drain {
+      let near = match readops_core::one(db, readops_core::LEGACY_SAID_BOUNDARY_TAIL_SQL, [thread, r_n, r_author]) {
+        Ok(Some(row)) => row
+        Ok(None) => return Err(readops_core::refused(503, readops_core::SAID_PENDING + sql_db::stringify_json(base_codec::json_arr([thread]))))
+        Err(e) => return Err(e)
+      }
+      let near_n = readops_core::field(near, "n")
+      match near_n {
+        base_codec::Json::Null => {
+          if readops_core::num(readops_core::field(near, "count")) >= 65.0 {
+            return Err(readops_core::refused(503, readops_core::SAID_PENDING + sql_db::stringify_json(base_codec::json_arr([thread]))))
+          }
+        }
+        _ => ()
+      }
+      other = near_n
+    } else {
+      let scan_sql = if legacy { readops_core::LEGACY_SAID_SCAN_SQL } else { readops_core::SAID_SCAN_SQL }
+      let nearby = match db.all(scan_sql, [thread, r_n, base_codec::json_num(64.0)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::map_sql_err(e))
+      }
+      let mut found_idx = -1
+      for i in 0..<nearby.length() {
+        let p = nearby[i]
+        if !base_codec::json_eq(readops_core::field(p, "author_kind"), base_codec::json_str("person")) ||
+        !base_codec::json_eq(readops_core::field(p, "author"), r_author) {
+          found_idx = i
+          break
+        }
+      }
+      if found_idx >= 0 {
+        other = readops_core::field(nearby[found_idx], "n")
+      } else if nearby.length() == 64 {
+        return Err(readops_core::refused(503, readops_core::SAID_PENDING + sql_db::stringify_json(base_codec::json_arr([thread]))))
+      }
+    }
+  }
+  Ok(
+    base_codec::json_obj([
+      ("n", r_n),
+      ("authorKind", r_ak),
+      ("author", r_author),
+      ("other", other),
+    ]),
+  )
+}
+
+/// `store.ts` `saidOf`: a chat's latest message that counts as unread and the latest before it its author did not write.
+/// Preserves conditional legacy-only SAVEPOINT (`chatparts.mbt:61-64`).
+pub fn said_of(
+  db : sql_db::Db,
+  legacy : Bool,
+  thread : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  if legacy {
+    db.savepoint_swallow_err(
+      "said_read",
+      fn(sp_db : sql_db::Db) -> Result[base_codec::Json, readops_core::ReadError] {
+        said_of_body(sp_db, true, thread)
+      },
+      readops_core::map_sql_err,
+    )
+  } else {
+    said_of_body(db, false, thread)
+  }
+}
+
+/// Batched `said_of` for non-legacy stores.
+pub fn said_of_batch(
+  db : sql_db::Db,
+  threads : Array[base_codec::Json],
+) -> Result[(Map[String, base_codec::Json], Array[base_codec::Json]), readops_core::ReadError] {
+  let out : Map[String, base_codec::Json] = Map::new()
+  let need : Array[base_codec::Json] = []
+  if threads.length() == 0 {
+    return Ok((out, need))
+  }
+  let rows = match db.all(readops_core::SAID_BATCH_SQL, [readops_core::ids_json(threads)]) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let r_n = readops_core::field(r, "n")
+    match r_n {
+      base_codec::Json::Null => continue
+      _ => ()
+    }
+    let thread = readops_core::field(r, "thread")
+    let r_ak = readops_core::field(r, "author_kind")
+    let r_author = readops_core::field(r, "author")
+    let person = base_codec::json_eq(r_ak, base_codec::json_str("person"))
+    let (bknown, bother) = if !person {
+      (true, r_n)
+    } else if mb_json_eq(readops_core::field(r, "said_n"), r_n) &&
+    mb_json_eq(readops_core::field(r, "said_other_known"), base_codec::json_num(1.0)) {
+      (true, readops_core::field(r, "said_other_n"))
+    } else if mb_json_eq(readops_core::field(r, "guard_ready"), base_codec::json_num(1.0)) &&
+    mb_json_eq(readops_core::field(r, "guard_author"), r_author) {
+      (true, readops_core::field(r, "guard_other_n"))
+    } else {
+      (false, base_codec::json_null())
+    }
+    let mut other = bother
+    let mut skip = false
+    if !bknown {
+      let nearby = match db.all(readops_core::SAID_SCAN_SQL, [thread, r_n, base_codec::json_num(64.0)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(readops_core::map_sql_err(e))
+      }
+      let mut found_idx = -1
+      for j in 0..<nearby.length() {
+        let p = nearby[j]
+        if !base_codec::json_eq(readops_core::field(p, "author_kind"), base_codec::json_str("person")) ||
+        !base_codec::json_eq(readops_core::field(p, "author"), r_author) {
+          found_idx = j
+          break
+        }
+      }
+      if found_idx >= 0 {
+        other = readops_core::field(nearby[found_idx], "n")
+      } else if nearby.length() == 64 {
+        need.push(thread)
+        skip = true
+      }
+    }
+    if !skip {
+      out.set(
+        sql_db::stringify_json(thread),
+        base_codec::json_obj([
+          ("n", r_n),
+          ("authorKind", r_ak),
+          ("author", r_author),
+          ("other", other),
+        ]),
+      )
+    }
+  }
+  Ok((out, need))
+}
+
+// ── sessions' turns and watches ──
+
+/// `store.ts` `turnSummary` with the turn's id (`latestTurn`): null for a session with no turn.
+pub fn latest_turn(r : Map[String, base_codec::Json]) -> base_codec::Json {
+  match readops_core::field(r, "started_at") {
+    base_codec::Json::Null => return base_codec::json_null()
+    _ => ()
+  }
+  let declared = readops_core::field(r, "declared")
+  let decl_val = match declared {
+    base_codec::Json::Str(d) => base_codec::json_str(readops_core::said_before(d))
+    _ => base_codec::json_null()
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("kind", readops_core::field(r, "kind")),
+    ("outcome", readops_core::field(r, "outcome")),
+    ("declared", decl_val),
+  ]
+  match declared {
+    base_codec::Json::Str(d) => out.push(("ending", base_codec::json_str(readops_core::ending_of(d))))
+    _ => ()
+  }
+  let need = readops_core::field(r, "need")
+  match need {
+    base_codec::Json::Null => ()
+    _ => out.push(("need", need))
+  }
+  let at = readops_core::field(r, "about_thread")
+  let an = readops_core::field(r, "about_n")
+  let ats = readops_core::field(r, "about_ts")
+  if !base_codec::json_eq(at, base_codec::json_null()) &&
+  !base_codec::json_eq(an, base_codec::json_null()) &&
+  !base_codec::json_eq(ats, base_codec::json_null()) {
+    out.push(("about", base_codec::json_obj([("thread", at), ("seq", an), ("ts", ats)])))
+  }
+  let ws = readops_core::field(r, "wait_seconds")
+  match ws {
+    base_codec::Json::Null => ()
+    _ => out.push(("waitSeconds", ws))
+  }
+  let wf = readops_core::field(r, "wait_for")
+  match wf {
+    base_codec::Json::Null => ()
+    _ => out.push(("waitFor", wf))
+  }
+  let ww = readops_core::field(r, "wait_watch")
+  match ww {
+    base_codec::Json::Null => ()
+    _ => out.push(("waitWatch", base_codec::json_bool(mb_json_eq(ww, base_codec::json_num(1.0)))))
+  }
+  out.push(("detail", readops_core::field(r, "detail")))
+  out.push(("startedAt", readops_core::field(r, "started_at")))
+  out.push(("endedAt", readops_core::field(r, "ended_at")))
+  out.push(("id", readops_core::field(r, "turn_id")))
+  base_codec::json_obj(out)
+}
+
+/// `store.ts` `lastTurn` (from `chatmarks.mbt:34-42`): a session's latest turn with its id.
+pub fn last_turn_of(
+  db : sql_db::Db,
+  key : String,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  match readops_core::one(
+    db,
+    "SELECT * FROM turns WHERE session_key = ? ORDER BY started_at DESC LIMIT 1",
+    [base_codec::json_str(key)],
+  ) {
+    Ok(Some(r)) => {
+      r.set("turn_id", readops_core::field(r, "id"))
+      Ok(latest_turn(r))
+    }
+    Ok(None) => Ok(base_codec::json_null())
+    Err(e) => Err(e)
+  }
+}
+
+/// `store.ts` `sessionActivity` of some sessions.
+pub fn session_activity(
+  db : sql_db::Db,
+  keys : Array[String],
+) -> Result[Map[String, (base_codec::Json, base_codec::Json)], readops_core::ReadError] {
+  let out : Map[String, (base_codec::Json, base_codec::Json)] = Map::new()
+  if keys.length() == 0 {
+    return Ok(out)
+  }
+  let jkeys : Array[base_codec::Json] = []
+  for i in 0..<keys.length() {
+    jkeys.push(base_codec::json_str(keys[i]))
+  }
+  let rows = match db.all(
+    readops_core::SESSION_ACTIVITY_SQL + " WHERE s.key IN (SELECT value FROM json_each(?))",
+    [readops_core::ids_json(jkeys)],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    out.set(readops_core::js_text(readops_core::field(r, "key")), (readops_core::field(r, "pending"), latest_turn(r)))
+  }
+  Ok(out)
+}
+
+/// `store.ts` `sessionActivity(s, null)`: every session's.
+pub fn session_activity_all(
+  db : sql_db::Db,
+) -> Result[Map[String, (base_codec::Json, base_codec::Json)], readops_core::ReadError] {
+  let out : Map[String, (base_codec::Json, base_codec::Json)] = Map::new()
+  let rows = match db.all(readops_core::SESSION_ACTIVITY_SQL, []) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    out.set(readops_core::js_text(readops_core::field(r, "key")), (readops_core::field(r, "pending"), latest_turn(r)))
+  }
+  Ok(out)
+}
+
+/// `store.ts` `watching`: sessions keeping watch, each with its watches' names, since when, and when one last said something.
+pub fn watching(
+  db : sql_db::Db,
+  sessions : Option[Array[String]],
+) -> Result[Map[String, base_codec::Json], readops_core::ReadError] {
+  let out : Map[String, base_codec::Json] = Map::new()
+  match sessions {
+    Some(s) => {
+      if s.length() == 0 {
+        return Ok(out)
+      }
+    }
+    None => ()
+  }
+  let list : Array[base_codec::Json] = match sessions {
+    Some(s) => {
+      let arr : Array[base_codec::Json] = []
+      for i in 0..<s.length() {
+        arr.push(base_codec::json_str(s[i]))
+      }
+      [readops_core::ids_json(arr)]
+    }
+    None => []
+  }
+  let has_sessions = match sessions {
+    Some(_) => true
+    None => false
+  }
+  let primary_sql = if has_sessions { readops_core::WATCHING_OF_SQL } else { readops_core::WATCHING_ALL_SQL }
+  let running = match db.all(primary_sql, list) {
+    Ok(rs) => rs
+    Err(e) => {
+      if readops_core::str_contains_sub(e.message, "no such table: active_watch_jobs") {
+        let fb_sql = if has_sessions { readops_core::RUNNING_OF_SQL } else { readops_core::JOBS_RUNNING_SQL }
+        match db.all(fb_sql, list) {
+          Ok(rs2) => rs2
+          Err(e2) => return Err(readops_core::map_sql_err(e2))
+        }
+      } else {
+        return Err(readops_core::map_sql_err(e))
+      }
+    }
+  }
+  let by : Map[String, Array[Map[String, base_codec::Json]]] = Map::new()
+  for i in 0..<running.length() {
+    let j = running[i]
+    if mb_json_eq(readops_core::field(j, "watch"), base_codec::json_num(0.0)) {
+      continue
+    }
+    let key = readops_core::js_text(readops_core::field(j, "session_key"))
+    match by.get(key) {
+      Some(a) => a.push(j)
+      None => by.set(key, [j])
+    }
+  }
+  let keys = by.keys()
+  for i in 0..<keys.length() {
+    let key = keys[i]
+    match by.get(key) {
+      Some(jobs) => {
+        let sorted = readops_core::stable_sort(jobs, fn(a : Map[String, base_codec::Json], b : Map[String, base_codec::Json]) -> Int {
+          let x = readops_core::num(readops_core::field(a, "started_at"))
+          let y = readops_core::num(readops_core::field(b, "started_at"))
+          if x < y { -1 } else if x > y { 1 } else { 0 }
+        })
+        let mut at = -1.0 / 0.0
+        let names : Array[base_codec::Json] = []
+        for k in 0..<sorted.length() {
+          let j = sorted[k]
+          names.push(readops_core::field(j, "name"))
+          let started = readops_core::num(readops_core::field(j, "started_at"))
+          let said = match readops_core::one(
+            db,
+            "SELECT at, text FROM job_notices WHERE job_id = ? ORDER BY at DESC, rowid DESC LIMIT ?",
+            [readops_core::field(j, "id"), base_codec::json_num(1.0)],
+          ) {
+            Ok(Some(n)) => readops_core::num(readops_core::field(n, "at"))
+            Ok(None) => started
+            Err(e) => return Err(e)
+          }
+          let one_at = if said > started { said } else { started }
+          if one_at > at {
+            at = one_at
+          }
+        }
+        out.set(
+          key,
+          base_codec::json_obj([
+            ("names", base_codec::json_arr(names)),
+            ("since", readops_core::field(sorted[0], "started_at")),
+            ("at", base_codec::json_num(at)),
+          ]),
+        )
+      }
+      None => ()
+    }
+  }
+  Ok(out)
+}
+
+// ── cards ──
+
+/// `store.ts` `threadsWithCards`.
+pub fn threads_with_cards(
+  db : sql_db::Db,
+  threads : Array[base_codec::Json],
+) -> Result[Array[base_codec::Json], readops_core::ReadError] {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<threads.length() {
+    let t = threads[i]
+    match readops_core::has_cards(db, t) {
+      Ok(true) => out.push(t)
+      Ok(false) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(out)
+}
+
+/// `store.ts` `requireCardPosts`.
+pub fn require_card_posts(
+  db : sql_db::Db,
+  threads : Array[base_codec::Json],
+) -> Result[Unit, readops_core::ReadError] {
+  let seen : Map[String, Bool] = Map::new()
+  let missing : Array[base_codec::Json] = []
+  for i in 0..<threads.length() {
+    let t = threads[i]
+    let k = sql_db::stringify_json(t)
+    if seen.contains(k) {
+      continue
+    }
+    seen.set(k, true)
+    match builders_core::cards_ready(db, t) {
+      Ok(true) => ()
+      Ok(false) => missing.push(t)
+      Err(e) => return Err(readops_core::map_step_err(e))
+    }
+  }
+  if missing.length() > 0 {
+    return Err(readops_core::refused(503, readops_core::CARD_POSTS_PENDING + sql_db::stringify_json(base_codec::json_arr(missing))))
+  }
+  Ok(())
+}
+
+/// `store.ts` `askingMessage`.
+pub fn asking_message(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  about : base_codec::Json,
+  from : base_codec::Json,
+  to : base_codec::Json,
+) -> Result[Option[(base_codec::Json, Array[base_codec::Json])], readops_core::ReadError] {
+  let has_prop = match readops_core::has_proposal_column(db) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let has_sidecar = match readops_core::exists_in(db, "table", "entry_proposals") {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let n = match about {
+    base_codec::Json::Null => {
+      let legacy = match builders_legacy::has_legacy_agent(db) {
+        Ok(b) => b
+        Err(e) => return Err(readops_core::map_step_err(e))
+      }
+      let during_sql = if legacy {
+        readops_core::LEGACY_ASKED_DURING_SQL
+      } else if has_prop && has_sidecar {
+        "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND NOT EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n) AND at >= ? AND at <= ?"
+      } else if has_prop {
+        "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND at >= ? AND at <= ?"
+      } else {
+        readops_core::ASKED_DURING_SQL
+      }
+      let latest_sql = if has_prop && has_sidecar {
+        "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND NOT EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n) AND at <= ? ORDER BY at DESC LIMIT 1"
+      } else if has_prop {
+        "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND at <= ? ORDER BY at DESC LIMIT 1"
+      } else {
+        readops_core::ASKED_LATEST_SQL
+      }
+      let during = match readops_core::one(db, during_sql, [thread, from, to]) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      match during {
+        Some(r) => {
+          let rn = readops_core::field(r, "n")
+          match rn {
+            base_codec::Json::Null => {
+              if !legacy {
+                match readops_core::one(db, latest_sql, [thread, to]) {
+                  Ok(Some(r2)) => readops_core::field(r2, "n")
+                  Ok(None) => base_codec::json_null()
+                  Err(e) => return Err(e)
+                }
+              } else {
+                base_codec::json_null()
+              }
+            }
+            _ => rn
+          }
+        }
+        None => {
+          if !legacy {
+            match readops_core::one(db, latest_sql, [thread, to]) {
+              Ok(Some(r2)) => readops_core::field(r2, "n")
+              Ok(None) => base_codec::json_null()
+              Err(e) => return Err(e)
+            }
+          } else {
+            base_codec::json_null()
+          }
+        }
+      }
+    }
+    other => other
+  }
+  match n {
+    base_codec::Json::Null => return Ok(None)
+    _ => ()
+  }
+  let answered = match readops_core::one(db, readops_core::answer_after_sql(), [thread, n]) {
+    Ok(Some(_)) => true
+    Ok(None) => false
+    Err(e) => return Err(e)
+  }
+  let carded_sql = if has_prop && has_sidecar {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL OR proposal IS NOT NULL OR EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n))"
+  } else if has_prop {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL OR proposal IS NOT NULL)"
+  } else {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)"
+  }
+  let carded = match readops_core::one(db, carded_sql, [thread, n]) {
+    Ok(Some(_)) => true
+    Ok(None) => false
+    Err(e) => return Err(e)
+  }
+  if answered || carded {
+    return Ok(None)
+  }
+  let msgs_json = match readops_core::messages_before(
+    db,
+    thread,
+    base_codec::json_num(readops_core::num(n) + 1.0),
+    Some(base_codec::json_num(3.0)),
+  ) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let messages = match msgs_json {
+    base_codec::Json::Arr(xs) => xs
+    _ => return Ok(None)
+  }
+  if messages.length() == 0 {
+    return Ok(None)
+  }
+  let m = messages[messages.length() - 1]
+  let earlier : Array[base_codec::Json] = []
+  for i in 0..<(messages.length() - 1) {
+    earlier.push(messages[i])
+  }
+  let m_n = readops_core::json_val_or_null(m, "n")
+  let m_ak = readops_core::json_val_or_null(m, "authorKind")
+  if mb_json_eq(m_n, n) && base_codec::json_eq(m_ak, base_codec::json_str("agent")) {
+    Ok(Some((m, earlier)))
+  } else {
+    Ok(None)
+  }
+}
+
+// ── cards answered lately ──
+
+fn exists_index(db : sql_db::Db, name : String) -> Result[Bool, readops_core::ReadError] {
+  readops_core::exists_in(db, "index", name)
+}
+
+fn has_legacy_closed(db : sql_db::Db) -> Result[Bool, readops_core::ReadError] {
+  match readops_core::exists_in(db, "table", "legacy_closed_meta") {
+    Ok(false) => return Ok(false)
+    Ok(true) => ()
+    Err(e) => return Err(e)
+  }
+  match readops_core::one(db, "SELECT version FROM legacy_closed_meta WHERE id=1", []) {
+    Ok(Some(r)) => {
+      if mb_json_eq(readops_core::field(r, "version"), base_codec::json_num(1.0)) {
+        Ok(true)
+      } else {
+        Err(readops_core::ReadError::App("legacy closed-card lookup has an unsupported version"))
+      }
+    }
+    Ok(None) => Err(readops_core::ReadError::App("legacy closed-card lookup has an unsupported version"))
+    Err(e) => Err(e)
+  }
+}
+
+fn closed_ready(db : sql_db::Db, thread : base_codec::Json) -> Result[Bool, readops_core::ReadError] {
+  match exists_index(db, "closed_cards_thread_at") {
+    Ok(true) => return Ok(true)
+    Ok(false) => ()
+    Err(e) => return Err(e)
+  }
+  let has_leg = match has_legacy_closed(db) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  if has_leg {
+    match readops_core::one(
+      db,
+      "SELECT CAST(last_n AS TEXT) AS last_n,\n  CAST(end_n AS TEXT) AS end_n,complete FROM legacy_closed_scopes WHERE thread=?",
+      [thread],
+    ) {
+      Ok(Some(s)) => return Ok(mb_json_eq(readops_core::field(s, "complete"), base_codec::json_num(1.0)))
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  match readops_core::one(db, "SELECT 1 AS x FROM closed_cards WHERE thread=? LIMIT 1", [thread]) {
+    Ok(None) => Ok(true)
+    Ok(Some(_)) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+fn has_legacy_people(db : sql_db::Db) -> Result[Bool, readops_core::ReadError] {
+  match readops_core::exists_in(db, "table", "legacy_people_time_meta") {
+    Ok(false) => return Ok(false)
+    Ok(true) => ()
+    Err(e) => return Err(e)
+  }
+  match readops_core::one(db, "SELECT version FROM legacy_people_time_meta WHERE id=1", []) {
+    Ok(Some(r)) => {
+      if mb_json_eq(readops_core::field(r, "version"), base_codec::json_num(1.0)) {
+        Ok(true)
+      } else {
+        Err(readops_core::ReadError::App("legacy people-time lookup has an unsupported version"))
+      }
+    }
+    Ok(None) => Err(readops_core::ReadError::App("legacy people-time lookup has an unsupported version"))
+    Err(e) => Err(e)
+  }
+}
+
+fn people_ready(db : sql_db::Db, thread : base_codec::Json) -> Result[Bool, readops_core::ReadError] {
+  match exists_index(db, "entries_people_since") {
+    Ok(true) => return Ok(true)
+    Ok(false) => ()
+    Err(e) => return Err(e)
+  }
+  match has_legacy_people(db) {
+    Ok(false) => return Ok(false)
+    Ok(true) => ()
+    Err(e) => return Err(e)
+  }
+  match readops_core::one(
+    db,
+    "SELECT CAST(last_n AS TEXT) AS last_n,\n  CAST(end_n AS TEXT) AS end_n,complete FROM legacy_people_time_scopes WHERE thread=?",
+    [thread],
+  ) {
+    Ok(Some(s)) => Ok(mb_json_eq(readops_core::field(s, "complete"), base_codec::json_num(1.0)))
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+fn people_pending(threads : Array[base_codec::Json]) -> readops_core::ReadError {
+  readops_core::refused(503, PEOPLE_TIME_PENDING + sql_db::stringify_json(base_codec::json_arr(threads)))
+}
+
+fn small_people(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  since : base_codec::Json,
+) -> Result[Map[String, base_codec::Json], readops_core::ReadError] {
+  let row = match readops_core::one(db, readops_core::SMALL_PEOPLE_HAS_SQL, [thread, since]) {
+    Ok(Some(r)) => r
+    Ok(None) => return Err(readops_core::ReadError::App("no sample"))
+    Err(e) => return Err(e)
+  }
+  if readops_core::num(readops_core::field(row, "seen")) >= SAMPLE_LIMIT {
+    return Err(people_pending([thread]))
+  }
+  Ok(row)
+}
+
+fn has_recent_people(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  since : base_codec::Json,
+  mode : String,
+) -> Result[Bool, readops_core::ReadError] {
+  if mode == "small" {
+    return match small_people(db, thread, since) {
+      Ok(row) => Ok(mb_json_eq(readops_core::field(row, "yes"), base_codec::json_num(1.0)))
+      Err(e) => Err(e)
+    }
+  }
+  let sql = if mode == "native" {
+    readops_core::HAS_ANSWER_PEOPLE_SINCE_SQL
+  } else {
+    readops_core::LEGACY_HAS_PEOPLE_SINCE_SQL
+  }
+  match readops_core::one(db, sql, [thread, since]) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+fn first_recent_person(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  since : base_codec::Json,
+  mode : String,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let sql = if mode == "native" {
+    readops_core::FIRST_ANSWER_PERSON_SINCE_SQL
+  } else if mode == "legacy" {
+    readops_core::LEGACY_FIRST_PERSON_SINCE_SQL
+  } else {
+    readops_core::SMALL_PEOPLE_FIRST_SQL
+  }
+  let row = match readops_core::one(db, sql, [thread, since]) {
+    Ok(Some(r)) => r
+    Ok(None) => return Ok(base_codec::json_null())
+    Err(e) => return Err(e)
+  }
+  if mode == "small" && readops_core::num(readops_core::field(row, "seen")) >= SAMPLE_LIMIT {
+    return Err(people_pending([thread]))
+  }
+  Ok(readops_core::field(row, "n"))
+}
+
+fn people_after(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  since : base_codec::Json,
+  n : base_codec::Json,
+  mode : String,
+) -> Result[Array[(base_codec::Json, base_codec::Json)], readops_core::ReadError] {
+  let sql = if mode == "native" {
+    readops_core::ANSWER_PEOPLE_AFTER_SQL
+  } else if mode == "legacy" {
+    readops_core::LEGACY_PEOPLE_AFTER_SQL
+  } else {
+    readops_core::SMALL_PEOPLE_AFTER_SQL
+  }
+  let result = match db.all(sql, [thread, since, n]) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  if mode == "small" {
+    for i in 0..<result.length() {
+      if readops_core::num(readops_core::field(result[i], "seen")) >= SAMPLE_LIMIT {
+        return Err(people_pending([thread]))
+      }
+    }
+  }
+  let out : Array[(base_codec::Json, base_codec::Json)] = []
+  for i in 0..<result.length() {
+    let r = result[i]
+    let rn = readops_core::field(r, "n")
+    match rn {
+      base_codec::Json::Null => ()
+      _ => out.push((readops_core::field(r, "thread"), rn))
+    }
+  }
+  Ok(out)
+}
+
+fn answers_of(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  since : base_codec::Json,
+  mode : String,
+) -> Result[Array[(base_codec::Json, base_codec::Json)], readops_core::ReadError] {
+  if mode != "cards" {
+    match has_recent_people(db, thread, since, mode) {
+      Ok(false) => return Ok([])
+      Ok(true) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let card_rows = match db.all(readops_core::CARD_POST_SAMPLE_SQL, [thread]) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  if card_rows.length() >= ANSWER_CARD_SAMPLE {
+    if mode == "cards" {
+      return Err(people_pending([thread]))
+    }
+    let time_mode = mode
+    let next_card = fn(n : base_codec::Json) -> Result[base_codec::Json, readops_core::ReadError] {
+      match readops_core::one(db, readops_core::CARD_POST_NEXT_SQL, [thread, n]) {
+        Ok(Some(r)) => Ok(readops_core::field(r, "n"))
+        Ok(None) => Ok(base_codec::json_null())
+        Err(e) => Err(e)
+      }
+    }
+    let first_card = match next_card(base_codec::json_num(0.0)) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    match first_card {
+      base_codec::Json::Null => return Ok([])
+      _ => ()
+    }
+    let first_person = match readops_core::one(db, readops_core::ANSWER_NEXT_PERSON_SQL, [thread, first_card]) {
+      Ok(Some(r)) => r
+      Ok(None) => return Ok([])
+      Err(e) => return Err(e)
+    }
+    let first = if readops_core::num(readops_core::field(first_person, "at")) >= readops_core::num(since) {
+      readops_core::field(first_person, "n")
+    } else {
+      match first_recent_person(db, thread, since, time_mode) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+    }
+    match first {
+      base_codec::Json::Null => return Ok([])
+      _ => ()
+    }
+    let out : Array[(base_codec::Json, base_codec::Json)] = [(thread, first)]
+    let mut n = first
+    let mut older = 0
+    while true {
+      let card = match next_card(n) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      match card {
+        base_codec::Json::Null => return Ok(out)
+        _ => ()
+      }
+      let person = match readops_core::one(db, readops_core::ANSWER_NEXT_PERSON_SQL, [thread, card]) {
+        Ok(Some(r)) => r
+        Ok(None) => return Ok(out)
+        Err(e) => return Err(e)
+      }
+      n = readops_core::field(person, "n")
+      if readops_core::num(readops_core::field(person, "at")) >= readops_core::num(since) {
+        out.push((thread, n))
+      } else {
+        older = older + 1
+        if older >= ANSWER_CARD_SAMPLE {
+          let rest = match people_after(db, thread, since, n, time_mode) {
+            Ok(rs) => rs
+            Err(e) => return Err(e)
+          }
+          for j in 0..<rest.length() {
+            out.push(rest[j])
+          }
+          return Ok(out)
+        }
+      }
+    }
+    return Ok(out)
+  }
+  let cards : Array[base_codec::Json] = []
+  for i in 0..<card_rows.length() {
+    cards.push(readops_core::field(card_rows[i], "n"))
+  }
+  let out : Array[(base_codec::Json, base_codec::Json)] = []
+  for i in 0..<cards.length() {
+    let card = cards[i]
+    let next = match readops_core::one(
+      db,
+      "SELECT n, at FROM entries WHERE thread = ? AND author_kind = 'person' AND kind = 'message' AND n > ? ORDER BY n LIMIT 1",
+      [thread, card],
+    ) {
+      Ok(Some(r)) => r
+      Ok(None) => continue
+      Err(e) => return Err(e)
+    }
+    if readops_core::num(readops_core::field(next, "at")) < readops_core::num(since) {
+      continue
+    }
+    let next_n = readops_core::field(next, "n")
+    if i + 1 < cards.length() && readops_core::num(cards[i + 1]) < readops_core::num(next_n) {
+      continue
+    }
+    out.push((thread, next_n))
+  }
+  Ok(out)
+}
+
+/// A card answered (`store/rows.ts` `CardAnswer`).
+pub struct Answer {
+  pub question : base_codec::Json
+  pub card : base_codec::Json
+  pub by : base_codec::Json
+  pub at : base_codec::Json
+  pub answer : base_codec::Json
+}
+
+/// `store.ts` `answersSince`: the cards of `threads` answered since `since` (ms), whoever answered them.
+pub fn answers_since(
+  db : sql_db::Db,
+  since : base_codec::Json,
+  threads : Array[base_codec::Json],
+) -> Result[Array[Answer], readops_core::ReadError] {
+  if threads.length() == 0 {
+    return Ok([])
+  }
+  db.savepoint_swallow_err(
+    "answers_since_read",
+    fn(sp_db : sql_db::Db) -> Result[Array[Answer], readops_core::ReadError] {
+      let out : Array[Answer] = []
+      let sc_threads : Array[base_codec::Json] = []
+      let seen : Map[String, Bool] = Map::new()
+      for i in 0..<threads.length() {
+        let t = threads[i]
+        let k = sql_db::stringify_json(t)
+        if !seen.contains(k) {
+          seen.set(k, true)
+          sc_threads.push(t)
+        }
+      }
+      let native_closed = match exists_index(sp_db, "closed_cards_thread_at") {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let legacy_closed = if !native_closed {
+        match has_legacy_closed(sp_db) {
+          Ok(b) => b
+          Err(e) => return Err(e)
+        }
+      } else {
+        false
+      }
+      let small_closed : Map[String, Array[Map[String, base_codec::Json]]] = Map::new()
+      let mut recent_closed : Option[Array[Map[String, base_codec::Json]]] = None
+      if !native_closed {
+        let missing : Array[base_codec::Json] = []
+        for i in 0..<sc_threads.length() {
+          match closed_ready(sp_db, sc_threads[i]) {
+            Ok(true) => ()
+            Ok(false) => missing.push(sc_threads[i])
+            Err(e) => return Err(e)
+          }
+        }
+        let has_closed_at = if missing.length() > 0 {
+          match exists_index(sp_db, "closed_cards_at") {
+            Ok(b) => b
+            Err(e) => return Err(e)
+          }
+        } else {
+          false
+        }
+        if missing.length() > 0 && has_closed_at {
+          let recent = match sp_db.all(readops_core::CLOSED_TIME_SAMPLE_SQL, [since, readops_core::ids_json(sc_threads)]) {
+            Ok(rs) => Some(rs)
+            Err(e) => {
+              if readops_core::str_contains_sub(e.message, "no such index: closed_cards_at") {
+                None
+              } else {
+                return Err(readops_core::map_sql_err(e))
+              }
+            }
+          }
+          match recent {
+            Some(rs) => {
+              if rs.length().to_double() < SAMPLE_LIMIT {
+                let by : Map[String, Array[Map[String, base_codec::Json]]] = Map::new()
+                for i in 0..<rs.length() {
+                  let row = rs[i]
+                  let k = sql_db::stringify_json(readops_core::field(row, "thread"))
+                  if seen.contains(k) {
+                    match by.get(k) {
+                      Some(a) => a.push(row)
+                      None => by.set(k, [row])
+                    }
+                  }
+                }
+                let all : Array[Map[String, base_codec::Json]] = []
+                for i in 0..<sc_threads.length() {
+                  match by.get(sql_db::stringify_json(sc_threads[i])) {
+                    Some(a) => {
+                      for j in 0..<a.length() {
+                        all.push(a[j])
+                      }
+                    }
+                    None => ()
+                  }
+                }
+                recent_closed = Some(all)
+              }
+            }
+            None => ()
+          }
+        }
+        match recent_closed {
+          None => {
+            let waiting : Array[base_codec::Json] = []
+            for i in 0..<missing.length() {
+              let t = missing[i]
+              let sample = match sp_db.all(readops_core::CLOSED_CHAT_SAMPLE_SQL, [t, since]) {
+                Ok(rs) => rs
+                Err(e) => return Err(readops_core::map_sql_err(e))
+              }
+              if sample.length().to_double() < SAMPLE_LIMIT {
+                let non_null : Array[Map[String, base_codec::Json]] = []
+                for j in 0..<sample.length() {
+                  match readops_core::field(sample[j], "n") {
+                    base_codec::Json::Null => ()
+                    _ => non_null.push(sample[j])
+                  }
+                }
+                small_closed.set(sql_db::stringify_json(t), non_null)
+              } else {
+                waiting.push(t)
+              }
+            }
+            if waiting.length() > 0 {
+              return Err(readops_core::refused(503, CLOSED_CARDS_PENDING + sql_db::stringify_json(base_codec::json_arr(waiting))))
+            }
+          }
+          Some(_) => ()
+        }
+      }
+      let native_people = match exists_index(sp_db, "entries_people_since") {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let modes : Map[String, String] = Map::new()
+      let collect_said = fn() -> Result[Array[(base_codec::Json, base_codec::Json)], readops_core::ReadError] {
+        let relevant : Array[base_codec::Json] = []
+        if native_people {
+          let with_people : Array[base_codec::Json] = []
+          for i in 0..<sc_threads.length() {
+            match has_recent_people(sp_db, sc_threads[i], since, "native") {
+              Ok(true) => with_people.push(sc_threads[i])
+              Ok(false) => ()
+              Err(e) => return Err(e)
+            }
+          }
+          let carded_threads = match threads_with_cards(sp_db, with_people) {
+            Ok(cs) => cs
+            Err(e) => return Err(e)
+          }
+          let carded_map : Map[String, Bool] = Map::new()
+          for i in 0..<carded_threads.length() {
+            carded_map.set(sql_db::stringify_json(carded_threads[i]), true)
+          }
+          for i in 0..<with_people.length() {
+            let t = with_people[i]
+            let tk = sql_db::stringify_json(t)
+            if carded_map.contains(tk) {
+              relevant.push(t)
+              modes.set(tk, "native")
+            }
+          }
+        } else {
+          let waiting : Array[base_codec::Json] = []
+          let carded_scope = match threads_with_cards(sp_db, sc_threads) {
+            Ok(cs) => cs
+            Err(e) => return Err(e)
+          }
+          for i in 0..<carded_scope.length() {
+            let t = carded_scope[i]
+            let tk = sql_db::stringify_json(t)
+            let c_ready = match builders_core::cards_ready(sp_db, t) {
+              Ok(b) => b
+              Err(e) => return Err(readops_core::map_step_err(e))
+            }
+            if c_ready {
+              let sample = match sp_db.all(readops_core::CARD_POST_SAMPLE_SQL, [t]) {
+                Ok(rs) => rs
+                Err(e) => return Err(readops_core::map_sql_err(e))
+              }
+              if sample.length() < ANSWER_CARD_SAMPLE {
+                modes.set(tk, "cards")
+                relevant.push(t)
+                continue
+              }
+            }
+            let has_lp = match has_legacy_people(sp_db) {
+              Ok(b) => b
+              Err(e) => return Err(e)
+            }
+            let p_ready = if has_lp {
+              match people_ready(sp_db, t) {
+                Ok(b) => b
+                Err(e) => return Err(e)
+              }
+            } else {
+              false
+            }
+            let mode = if has_lp && p_ready { "legacy" } else { "small" }
+            if mode == "small" {
+              let probe = match readops_core::one(sp_db, readops_core::SMALL_PEOPLE_HAS_SQL, [t, since]) {
+                Ok(Some(p)) => p
+                Ok(None) => continue
+                Err(e) => return Err(e)
+              }
+              if readops_core::num(readops_core::field(probe, "seen")) >= SAMPLE_LIMIT {
+                waiting.push(t)
+                continue
+              }
+              if !mb_json_eq(readops_core::field(probe, "yes"), base_codec::json_num(1.0)) {
+                continue
+              }
+            } else {
+              match has_recent_people(sp_db, t, since, mode) {
+                Ok(false) => continue
+                Ok(true) => ()
+                Err(e) => return Err(e)
+              }
+            }
+            modes.set(tk, mode)
+            relevant.push(t)
+          }
+          if waiting.length() > 0 {
+            return Err(people_pending(waiting))
+          }
+        }
+        match require_card_posts(sp_db, relevant) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        let all : Array[(base_codec::Json, base_codec::Json)] = []
+        for i in 0..<relevant.length() {
+          let t = relevant[i]
+          let m = match modes.get(sql_db::stringify_json(t)) {
+            Some(x) => x
+            None => "small"
+          }
+          let part = match answers_of(sp_db, t, since, m) {
+            Ok(ps) => ps
+            Err(e) => return Err(e)
+          }
+          for j in 0..<part.length() {
+            all.push(part[j])
+          }
+        }
+        Ok(all)
+      }
+      let said = match collect_said() {
+        Ok(s) => s
+        Err(e) => {
+          if native_people && readops_core::str_contains_sub(readops_core::read_error_message(e), "no such index: entries_people_since") {
+            return Err(people_pending(sc_threads))
+          }
+          return Err(e)
+        }
+      }
+      let card_at_n = fn(thread : base_codec::Json, n : base_codec::Json) -> Result[Option[(base_codec::Json, base_codec::Json)], readops_core::ReadError] {
+        let row = match readops_core::one(sp_db, "SELECT card, options FROM entries WHERE thread = ? AND n = ?", [thread, n]) {
+          Ok(Some(r)) => r
+          Ok(None) => return Ok(None)
+          Err(e) => return Err(e)
+        }
+        let card = match readops_core::card_of(readops_core::field(row, "card"), readops_core::field(row, "options")) {
+          Some(c) => c
+          None => return Ok(None)
+        }
+        match readops_core::merged(sp_db, thread, n) {
+          Ok(Some(m)) => Ok(Some((m, card)))
+          Ok(None) => Ok(None)
+          Err(e) => Err(e)
+        }
+      }
+      for i in 0..<said.length() {
+        let (thread, n) = said[i]
+        match readops_core::one(sp_db, readops_core::answer_at_sql(), [thread, n]) {
+          Ok(None) => continue
+          Ok(Some(_)) => ()
+          Err(e) => return Err(e)
+        }
+        let asked_row = match readops_core::one(sp_db, readops_core::conversation_card_before_sql(), [thread, n]) {
+          Ok(r) => r
+          Err(e) => return Err(e)
+        }
+        let asked = match readops_core::n_of(asked_row) {
+          Some(a) => a
+          None => continue
+        }
+        let earlier = match readops_core::one(sp_db, readops_core::answer_between_sql(), [thread, asked, n]) {
+          Ok(Some(_)) => true
+          Ok(None) => false
+          Err(e) => return Err(e)
+        }
+        let closed = match readops_core::one(sp_db, "SELECT 1 AS x FROM closed_cards WHERE thread = ? AND n = ?", [thread, asked]) {
+          Ok(Some(_)) => true
+          Ok(None) => false
+          Err(e) => return Err(e)
+        }
+        if earlier || closed {
+          continue
+        }
+        let (question, card) = match card_at_n(thread, asked) {
+          Ok(Some(pair)) => pair
+          Ok(None) => continue
+          Err(e) => return Err(e)
+        }
+        let answer = match readops_core::merged(sp_db, thread, n) {
+          Ok(Some(a)) => a
+          Ok(None) => continue
+          Err(e) => return Err(e)
+        }
+        out.push(
+          Answer::{
+            question: question,
+            card: card,
+            by: readops_core::json_val_or_null(answer, "author"),
+            at: readops_core::json_val_or_null(answer, "createdAt"),
+            answer: answer,
+          },
+        )
+      }
+      let closed_rows : Array[Map[String, base_codec::Json]] = match recent_closed {
+        Some(r) => r
+        None => {
+          let rows : Array[Map[String, base_codec::Json]] = []
+          for i in 0..<sc_threads.length() {
+            let t = sc_threads[i]
+            if native_closed {
+              let got = match sp_db.all(readops_core::CLOSED_CARDS_INDEXED_SQL, [t, since]) {
+                Ok(rs) => rs
+                Err(e) => {
+                  if readops_core::str_contains_sub(e.message, "no such index: closed_cards_thread_at") {
+                    return Err(readops_core::refused(503, CLOSED_CARDS_PENDING + sql_db::stringify_json(base_codec::json_arr(sc_threads))))
+                  }
+                  return Err(readops_core::map_sql_err(e))
+                }
+              }
+              for j in 0..<got.length() {
+                rows.push(got[j])
+              }
+            } else {
+              match small_closed.get(sql_db::stringify_json(t)) {
+                Some(s) => {
+                  for j in 0..<s.length() {
+                    rows.push(s[j])
+                  }
+                }
+                None => {
+                  if legacy_closed {
+                    let got = match sp_db.all(readops_core::LEGACY_CLOSED_CARDS_SQL, [t, since]) {
+                      Ok(rs) => rs
+                      Err(e) => return Err(readops_core::map_sql_err(e))
+                    }
+                    for j in 0..<got.length() {
+                      rows.push(got[j])
+                    }
+                  }
+                }
+              }
+            }
+          }
+          rows
+        }
+      }
+      let sorted = readops_core::stable_sort(closed_rows, fn(a : Map[String, base_codec::Json], b : Map[String, base_codec::Json]) -> Int {
+        let d0 = readops_core::num(readops_core::field(a, "at")) - readops_core::num(readops_core::field(b, "at"))
+        let d = if d0 != 0.0 {
+          d0
+        } else {
+          readops_core::num(readops_core::field(a, "ordering")) - readops_core::num(readops_core::field(b, "ordering"))
+        }
+        if d < 0.0 { -1 } else if d > 0.0 { 1 } else { 0 }
+      })
+      for i in 0..<sorted.length() {
+        let row = sorted[i]
+        let (question, card) = match card_at_n(readops_core::field(row, "thread"), readops_core::field(row, "n")) {
+          Ok(Some(pair)) => pair
+          Ok(None) => continue
+          Err(e) => return Err(e)
+        }
+        let viewer = readops_core::field(row, "viewer")
+        match readops_core::json_val(question, "author") {
+          Some(qa) => {
+            if base_codec::json_eq(qa, viewer) {
+              continue
+            }
+          }
+          None => ()
+        }
+        out.push(
+          Answer::{
+            question: question,
+            card: card,
+            by: viewer,
+            at: readops_core::field(row, "at"),
+            answer: base_codec::json_null(),
+          },
+        )
+      }
+      Ok(out)
+    },
+    readops_core::map_sql_err,
+  )
+}
+
+// ── the archive review, chats opened and shared ──
+
+pub fn last_entry(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  match readops_core::one(db, "SELECT MAX(n) AS n FROM entries WHERE thread = ?", [thread]) {
+    Ok(Some(r)) => {
+      let n = readops_core::field(r, "n")
+      match n {
+        base_codec::Json::Null => Ok(base_codec::json_num(0.0))
+        _ => Ok(n)
+      }
+    }
+    Ok(None) => Ok(base_codec::json_num(0.0))
+    Err(e) => Err(e)
+  }
+}
+
+/// `store.ts` `archiveSuggested`.
+pub fn archive_suggested(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[Bool, readops_core::ReadError] {
+  match readops_core::one(db, "SELECT version FROM archive_suggestions WHERE thread = ?", [thread]) {
+    Ok(Some(r)) => {
+      let ver = readops_core::field(r, "version")
+      match ver {
+        base_codec::Json::Null => Ok(false)
+        _ => {
+          match last_entry(db, thread) {
+            Ok(le) => Ok(mb_json_eq(ver, le))
+            Err(e) => Err(e)
+          }
+        }
+      }
+    }
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+/// `store.ts` `archiveVerdict`: what the latest review found, while the chat stands as it was then.
+pub fn archive_verdict(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let r = match readops_core::one(db, "SELECT version, at, verdict FROM archive_verdicts WHERE thread = ?", [thread]) {
+    Ok(Some(row)) => row
+    Ok(None) => return Ok(base_codec::json_null())
+    Err(e) => return Err(e)
+  }
+  let le = match last_entry(db, thread) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !mb_json_eq(readops_core::field(r, "version"), le) {
+    return Ok(base_codec::json_null())
+  }
+  let at = readops_core::field(r, "at")
+  match readops_core::parsed(readops_core::field(r, "verdict")) {
+    Some(js_json::JValue::Obj(pairs)) => {
+      let j = readops_core::to_json(js_json::JValue::Obj(pairs))
+      match j {
+        base_codec::Json::Obj(fields) => {
+          let out : Array[(String, base_codec::Json)] = []
+          let mut replaced = false
+          for i in 0..<fields.length() {
+            let (k, v) = fields[i]
+            if k == "at" {
+              out.push(("at", at))
+              replaced = true
+            } else {
+              out.push((k, v))
+            }
+          }
+          if !replaced {
+            out.push(("at", at))
+          }
+          Ok(base_codec::json_obj(out))
+        }
+        _ => Ok(base_codec::json_null())
+      }
+    }
+    Some(js_json::JValue::Arr(xs)) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<xs.length() {
+        out.push((i.to_string(), readops_core::to_json(xs[i])))
+      }
+      out.push(("at", at))
+      Ok(base_codec::json_obj(out))
+    }
+    _ => Ok(base_codec::json_null())
+  }
+}
+
+fn opened_named(
+  station : base_codec::Json,
+  session : base_codec::Json,
+  title : base_codec::Json,
+  led : Bool = false,
+  active : Bool = false,
+  asks : Bool = false,
+) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = []
+  match station {
+    base_codec::Json::Null => ()
+    _ => out.push(("station", station))
+  }
+  out.push(("session", session))
+  match title {
+    base_codec::Json::Null => ()
+    _ => out.push(("title", title))
+  }
+  if led {
+    out.push(("led", base_codec::json_bool(true)))
+  }
+  if active {
+    out.push(("active", base_codec::json_bool(true)))
+  }
+  if asks {
+    out.push(("asks", base_codec::json_bool(true)))
+  }
+  base_codec::json_obj(out)
+}
+
+/// `store.ts` `openers` and `openedChats` of some sessions (none: of all).
+pub fn openers_opened_ordered(
+  db : sql_db::Db,
+  ids : Option[Array[String]],
+) -> Result[(Array[(String, base_codec::Json)], Array[(String, Array[base_codec::Json])]), readops_core::ReadError] {
+  let openers : Array[(String, base_codec::Json)] = []
+  let openers_idx : Map[String, Int] = Map::new()
+  let opened : Array[(String, Array[base_codec::Json])] = []
+  let opened_idx : Map[String, Int] = Map::new()
+  let list : Array[base_codec::Json] = match ids {
+    Some(arr) => {
+      let js : Array[base_codec::Json] = []
+      for i in 0..<arr.length() {
+        js.push(base_codec::json_str(arr[i]))
+      }
+      [readops_core::ids_json(js)]
+    }
+    None => []
+  }
+  let has_ids = match ids {
+    Some(_) => true
+    None => false
+  }
+  let base_openers = "SELECT o.child, o.parent_station, o.parent, o.opener_title, o.led, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent"
+  let base_opened = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child"
+  let station_of = fn(v : base_codec::Json) -> base_codec::Json {
+    if base_codec::json_eq(v, base_codec::json_str("")) {
+      base_codec::json_null()
+    } else {
+      v
+    }
+  }
+  let op_sql = if has_ids { readops_core::OPENERS_OF_SQL } else { base_openers + " WHERE o.child_station = ''" }
+  match db.all(op_sql, list) {
+    Ok(rows) => {
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        let led = match readops_core::field(r, "led") {
+          base_codec::Json::Num(n, _) => n == 1.0
+          _ => false
+        }
+        let k = readops_core::js_text(readops_core::field(r, "child"))
+        let v = opened_named(
+          station_of(readops_core::field(r, "parent_station")),
+          readops_core::field(r, "parent"),
+          readops_core::or_else(readops_core::field(r, "opener_title"), readops_core::field(r, "parent_title")),
+          led=led,
+        )
+        match openers_idx.get(k) {
+          Some(idx) => openers[idx] = (k, v)
+          None => {
+            openers_idx.set(k, openers.length())
+            openers.push((k, v))
+          }
+        }
+      }
+    }
+    Err(_) => ()
+  }
+  let od_sql = if has_ids {
+    readops_core::OPENED_OF_SQL
+  } else {
+    base_opened + " WHERE o.parent_station = '' ORDER BY o.created_at, o.rowid"
+  }
+  match db.all(od_sql, list) {
+    Ok(rows) => {
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        let led = match readops_core::field(r, "led") {
+          base_codec::Json::Num(n, _) => n == 1.0
+          _ => false
+        }
+        let state = readops_core::field(r, "state")
+        let child_arch_null = match readops_core::field(r, "child_archived") {
+          base_codec::Json::Null => true
+          _ => false
+        }
+        let active = led &&
+        child_arch_null &&
+        !base_codec::json_eq(state, base_codec::json_str("all_done")) &&
+        !base_codec::json_eq(state, base_codec::json_str("stopped"))
+        let asks = active &&
+        (base_codec::json_eq(state, base_codec::json_str("need_human")) ||
+          base_codec::json_eq(state, base_codec::json_str("failed")))
+        let item = opened_named(
+          station_of(readops_core::field(r, "child_station")),
+          readops_core::field(r, "child"),
+          readops_core::or_else(readops_core::field(r, "title"), readops_core::field(r, "child_title")),
+          led=led,
+          active=active,
+          asks=asks,
+        )
+        let key = readops_core::js_text(readops_core::field(r, "parent"))
+        match opened_idx.get(key) {
+          Some(idx) => {
+            let (_, arr) = opened[idx]
+            arr.push(item)
+          }
+          None => {
+            opened_idx.set(key, opened.length())
+            opened.push((key, [item]))
+          }
+        }
+      }
+    }
+    Err(_) => ()
+  }
+  Ok((openers, opened))
+}
+
+pub fn openers_opened(
+  db : sql_db::Db,
+  ids : Option[Array[String]],
+) -> Result[(Map[String, base_codec::Json], Map[String, Array[base_codec::Json]]), readops_core::ReadError] {
+  let (openers_arr, opened_arr) = match openers_opened_ordered(db, ids) {
+    Ok(pair) => pair
+    Err(e) => return Err(e)
+  }
+  let openers : Map[String, base_codec::Json] = Map::new()
+  for i in 0..<openers_arr.length() {
+    let (k, v) = openers_arr[i]
+    openers.set(k, v)
+  }
+  let opened : Map[String, Array[base_codec::Json]] = Map::new()
+  for i in 0..<opened_arr.length() {
+    let (k, v) = opened_arr[i]
+    opened.set(k, v)
+  }
+  Ok((openers, opened))
+}
+
+/// `store.ts` `chatShares` of some sessions (none: of all), preserving SQL first-seen key order.
+pub fn chat_shares_ordered(
+  db : sql_db::Db,
+  ids : Option[Array[String]],
+  now : Double,
+) -> Result[Array[(String, base_codec::Json)], readops_core::ReadError] {
+  let out : Array[(String, base_codec::Json)] = []
+  let out_idx : Map[String, Int] = Map::new()
+  let rows = match ids {
+    Some(arr) => {
+      let js : Array[base_codec::Json] = []
+      for i in 0..<arr.length() {
+        js.push(base_codec::json_str(arr[i]))
+      }
+      match db.all(readops_core::SHARES_OF_SQL, [readops_core::ids_json(js)]) {
+        Ok(rs) => rs
+        Err(_) => return Ok(out)
+      }
+    }
+    None => {
+      match db.all("SELECT * FROM chat_shares", []) {
+        Ok(rs) => rs
+        Err(_) => return Ok(out)
+      }
+    }
+  }
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let to = match readops_core::parsed(readops_core::field(r, "shared")) {
+      Some(js_json::JValue::Arr(xs)) => xs
+      _ => []
+    }
+    let live : Array[base_codec::Json] = []
+    for j in 0..<to.length() {
+      let t = to[j]
+      let ws = match readops_core::jget(Some(t), "workspace") {
+        Some(js_json::JValue::Str(u)) => u
+        _ => continue
+      }
+      let used = match readops_core::jget(Some(t), "used") {
+        Some(js_json::JValue::Num(u)) => u
+        _ => readops_core::num(readops_core::field(r, "at"))
+      }
+      if now - used < 6.0 * 3600000.0 {
+        live.push(base_codec::json_str(js_json::sanitize_str(ws)))
+      }
+    }
+    if live.length() > 0 {
+      let k = readops_core::js_text(readops_core::field(r, "session"))
+      let v = base_codec::json_obj([
+        ("to", base_codec::json_arr(live)),
+        ("write", base_codec::json_bool(mb_json_eq(readops_core::field(r, "write"), base_codec::json_num(1.0)))),
+      ])
+      match out_idx.get(k) {
+        Some(idx) => out[idx] = (k, v)
+        None => {
+          out_idx.set(k, out.length())
+          out.push((k, v))
+        }
+      }
+    }
+  }
+  Ok(out)
+}
+
+/// `store.ts` `chatShares` of some sessions (none: of all).
+pub fn chat_shares(
+  db : sql_db::Db,
+  ids : Option[Array[String]],
+  now : Double,
+) -> Result[Map[String, base_codec::Json], readops_core::ReadError] {
+  let arr = match chat_shares_ordered(db, ids, now) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let out : Map[String, base_codec::Json] = Map::new()
+  for i in 0..<arr.length() {
+    let (k, v) = arr[i]
+    out.set(k, v)
+  }
+  Ok(out)
+}

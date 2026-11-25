@@ -3,6 +3,7 @@ name: pion-station
 on:
   push:
     paths:
+      - "client/shell/**"
       - "pion/station/**"
       - "pion/base/**"
       - "station/mb/src/activity/**"
@@ -12,6 +13,7 @@ on:
       - "station/mb/src/cc/**"
       - "station/mb/src/counts/**"
       - "station/mb/src/footprint/**"
+      - "station/mb/src/front/**"
       - "station/mb/src/history/**"
       - "station/mb/src/host/**"
       - "station/mb/src/jobs/**"
@@ -28,11 +30,8 @@ on:
       - "station/mb/src/packed/**"
       - "station/mb/src/posts/**"
       - "station/mb/src/reader/main.mbt"
-      - "station/mb/src/readops/chatparts.mbt"
-      - "station/mb/src/readops/machine.mbt"
-      - "station/mb/src/readops/pages.mbt"
-      - "station/mb/src/readops/shared_sql.mbt"
-      - "station/mb/src/readops/usage.mbt"
+      - "station/mb/src/reader/serve.mbt"
+      - "station/mb/src/readops/**"
       - "station/mb/src/recent/**"
       - "station/mb/src/replica/**"
       - "station/mb/src/said/**"
@@ -51,12 +50,14 @@ on:
       - "station/mb/src/wire/**"
       - "station/src/jobs/process-jobs-builder.ts"
       - "station/src/main.ts"
+      - "station/src/mesh/**"
       - "station/src/move/live.ts"
       - "station/src/move/station.ts"
       - "station/src/ops/paths.ts"
       - "station/src/read/**"
       - "station/src/replica/carry.ts"
       - "station/src/replica/handover.ts"
+      - "station/src/replica/manifest.ts"
       - "station/src/replica/module.ts"
       - "station/src/replica/restore.ts"
       - "station/src/replica/retire.ts"
@@ -69,6 +70,7 @@ on:
       - "station/src/sessions/agents.ts"
       - "station/src/sessions/footprint.ts"
       - "station/src/sessions/hub.ts"
+      - "station/src/sessions/live.ts"
       - "station/src/sessions/live-location-protocol.ts"
       - "station/src/sessions/live-locator.ts"
       - "station/src/sessions/packed-mb.ts"
@@ -124,12 +126,14 @@ on:
       - "station/test/builders-legacy-pion-switch.test.ts"
       - "station/test/builders-locate-pion-switch.test.ts"
       - "station/test/builders-recent-pion-switch.test.ts"
+      - "station/test/builders-replica-pion-switch.test.ts"
       - "station/test/builders-requested-pion-switch.test.ts"
       - "station/test/builders-search-pion-switch.test.ts"
       - "station/test/builders-stateful-pion-switch.test.ts"
       - "station/test/builders-usage-pion-switch.test.ts"
       - "station/test/builders-vault-pion-switch.test.ts"
       - "station/test/carry-reference.ts"
+      - "station/test/carry-walk-bounded.test.ts"
       - "station/test/footprint-mounts.ts"
       - "station/test/footprint-pion-switch.test.ts"
       - "station/test/footprint-reference.ts"
@@ -148,12 +152,20 @@ on:
       - "station/test/mb-outflow-chats.test.ts"
       - "station/test/mb-packed.test.ts"
       - "station/test/mb-replica-carry.test.ts"
+      - "station/test/mb-replica.test.ts"
+      - "station/test/replica-manifest.test.ts"
+      - "station/test/replica-retire.test.ts"
+      - "station/test/replica-transcript.test.ts"
       - "station/test/reference/transcript-paths.ts"
       - "station/test/workers/live-locator-worker.ts"
+      - "station/test/live-reader-close.test.ts"
       - "station/test/mb-page-letters.test.ts"
       - "station/test/mb-post-blocks.test.ts"
       - "station/test/mb-process-jobs.test.ts"
+      - "station/test/mb-reader.test.ts"
+      - "station/test/mb-reader-*.test.ts"
       - "station/test/mb-recent-chat.test.ts"
+      - "station/test/read-tail.test.ts"
       - "station/test/mb-said.test.ts"
       - "station/test/mb-sandbox-names.test.ts"
       - "station/test/mb-search-history.test.ts"
@@ -181,12 +193,15 @@ on:
       - "station/test/reader-contract-memory.test.ts"
       - "station/test/reader-contract-packed.test.ts"
       - "station/test/reader-contract-select.test.ts"
+      - "station/test/reader-contract-stdio.test.ts"
+      - "station/test/reader-data-pion-switch.test.ts"
       - "station/test/usage-counter-reference.ts"
       - "station/test/usage-counter.test.ts"
       - "station/test/usage-timing-bounded.test.ts"
       - "station/test/vault-use-ambiguity.test.ts"
       - "station/test/w5-foundation.test.ts"
       - "station/test/w6-selection-coldstart.test.ts"
+      - "station/test/w7-foundation.test.ts"
       - "station/test/reference/backfill/archive-last.ts"
       - "station/test/reference/backfill/archive-mark-index.ts"
       - "station/test/reference/backfill/archive-policy-index.ts"
@@ -313,6 +328,24 @@ jobs:
             -o "$RUNNER_TEMP/footprint_fs_test_tsan"
           "$RUNNER_TEMP/footprint_fs_test_tsan"
 
+          cc -std=c11 -O2 -Wall -Wextra -Werror -DNDEBUG \
+            pion/station/packages/builders_replica/native/carry_fs.c \
+            pion/station/packages/builders_replica/native/carry_fs_test.c \
+            -o "$RUNNER_TEMP/carry_fs_test"
+          "$RUNNER_TEMP/carry_fs_test"
+
+          cc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=address,undefined -fno-omit-frame-pointer \
+            pion/station/packages/builders_replica/native/carry_fs.c \
+            pion/station/packages/builders_replica/native/carry_fs_test.c \
+            -o "$RUNNER_TEMP/carry_fs_test_asan"
+          "$RUNNER_TEMP/carry_fs_test_asan"
+
+          cc -std=c11 -O1 -g -Wall -Wextra -Werror -fsanitize=thread -fno-omit-frame-pointer \
+            pion/station/packages/builders_replica/native/carry_fs.c \
+            pion/station/packages/builders_replica/native/carry_fs_test.c \
+            -o "$RUNNER_TEMP/carry_fs_test_tsan"
+          "$RUNNER_TEMP/carry_fs_test_tsan"
+
           # Verify _WIN32 compilation path on every CI run with pinned Zig 0.16.0.
           zbase="$HOME/.cache/pion-station-zig/0.16.0"
           zbin="$zbase/zig-x86_64-linux-0.16.0/zig"
@@ -331,6 +364,8 @@ jobs:
             pion/station/packages/sqlite_ffi/native/station_sqlite.c -o "$RUNNER_TEMP/station_sqlite_win.o"
           "$zbin" cc -target x86_64-windows-gnu -std=c11 -O2 -Wall -Wextra -Werror -c \
             pion/station/packages/footprint/native/footprint_fs.c -o "$RUNNER_TEMP/footprint_fs_win.o"
+          "$zbin" cc -target x86_64-windows-gnu -std=c11 -O2 -Wall -Wextra -Werror -c \
+            pion/station/packages/builders_replica/native/carry_fs.c -o "$RUNNER_TEMP/carry_fs_win.o"
 
   pion-unit:
     runs-on: ubuntu-24.04
@@ -519,6 +554,10 @@ jobs:
           "$BIN_PION" --smoke-sql-db "$RUNNER_TEMP/smoke-sql-db.db"
           "$BIN_PION" --smoke-shell "$RUNNER_TEMP/shell-dir"
           "$BIN_PION" --smoke-rc-soak 50000
+          mkdir -p "$RUNNER_TEMP/mux-smoke"
+          "$BIN_PION" --smoke-mux-churn 10000 "$RUNNER_TEMP/mux-smoke"
+          mkdir -p "$RUNNER_TEMP/smoke-readops"
+          "$BIN_PION" --smoke-readops "$RUNNER_TEMP/smoke-readops"
 
           # Acquire this SHA's real MoonBit stillfail-reader-linux-x64 once for all downstream gate jobs.
           if [ "${{ steps.reader.outputs.missing }}" = "true" ]; then
@@ -855,20 +894,337 @@ jobs:
           chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
 
-      - name: Verify Wave 6 replica baseline placeholder (W6-B will take over)
+      - name: Run Wave 6 replica gates (Pion forced 6 suites + dual-engine switch)
         run: |
           set -euo pipefail
           BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
           BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           pnpm --dir station install --frozen-lockfile --prefer-offline
 
-          "$BIN_PION" --version | grep -q 'live-locator'
-          STILLFAIL_MB_READER="$BIN_MB" node --test station/test/mb-replica-carry.test.ts
+          echo "BIN_PION=$BIN_PION"
+          VER_OUT="$("$BIN_PION" --version)"
+          printf '%s\n' "$VER_OUT"
+          MODES_CSV="$(printf '%s\n' "$VER_OUT" | sed -n 's/.*modes:\([^[:space:]]*\).*/\1/p')"
+          for m in replica-export replica-restore replica-carry; do
+            printf ',%s,\n' "$MODES_CSV" | grep -Fq ",$m," || { echo "FAIL: missing exact mode $m in $MODES_CSV" >&2; exit 1; }
+          done
+
+          for suite in \
+            station/test/mb-replica.test.ts \
+            station/test/mb-replica-carry.test.ts \
+            station/test/replica-manifest.test.ts \
+            station/test/replica-transcript.test.ts \
+            station/test/carry-walk-bounded.test.ts; do
+            echo "=== Forced Pion suite: $suite ==="
+            if ! OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap "$suite" 2>&1)"; then
+              printf '%s\n' "$OUT"
+              exit 1
+            fi
+            printf '%s\n' "$OUT"
+            printf '%s\n' "$OUT" | grep -qE '^# tests [1-9]'
+            printf '%s\n' "$OUT" | grep -qE '^# skipped 0$'
+          done
+
+          echo "=== Pion replica-carry in Retire suite: station/test/replica-retire.test.ts ==="
+          # Wrap BIN_PION to prove replica-carry spawns genuinely executed Pion (never silently fell back to MB).
+          RETIRE_LOG="$RUNNER_TEMP/retire-pion-spawns.log"
+          RETIRE_PION_WRAP="$RUNNER_TEMP/retire-pion-wrap.sh"
+          rm -f "$RETIRE_LOG"
+          cat > "$RETIRE_PION_WRAP" <<EOF
+          #!/bin/sh
+          printf '%s\n' "\$*" >> "$RETIRE_LOG"
+          exec "$BIN_PION" "\$@"
+          EOF
+          chmod +x "$RETIRE_PION_WRAP"
+          if ! RET_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$RETIRE_PION_WRAP" STILLFAIL_READER_ENGINE=pion \
+            node --test --test-reporter=tap station/test/replica-retire.test.ts 2>&1)"; then
+            printf '%s\n' "$RET_OUT"
+            exit 1
+          fi
+          printf '%s\n' "$RET_OUT"
+          printf '%s\n' "$RET_OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$RET_OUT" | grep -qE '^# skipped 0$'
+          CARRY_SPAWNS="$(grep -c -- '--builder replica-carry' "$RETIRE_LOG" || true)"
+          echo "replica-retire Pion replica-carry spawns: $CARRY_SPAWNS"
+          test "${CARRY_SPAWNS:-0}" -gt 0
+
+          echo "=== Dual-engine switch suite: station/test/builders-replica-pion-switch.test.ts ==="
+          if ! SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap station/test/builders-replica-pion-switch.test.ts 2>&1)"; then
+            printf '%s\n' "$SW_OUT"
+            exit 1
+          fi
+          printf '%s\n' "$SW_OUT"
+          printf '%s\n' "$SW_OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$SW_OUT" | grep -qE '^# skipped 0$'
+
+  gate-w7-front:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: build-linux
+    if: needs.build-linux.result == 'success'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup
+
+      - name: Download and verify Linux binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/download-artifact.sh "$GITHUB_RUN_ID" pion-station-linux-bins "$RUNNER_TEMP/bins"
+          (cd "$RUNNER_TEMP/bins" && sha256sum -c SHA256SUMS)
+          chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
+
+      - name: Run Wave 7 front gate (W7-A forced Pion + dual-engine switch + foundation strict TAP)
+        run: |
+          set -euo pipefail
+          BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
+          BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          pnpm --dir station install --frozen-lockfile --prefer-offline
+
+          VER_OUT="$("$BIN_PION" --version)"
+          printf '%s\n' "$VER_OUT"
+          MODES_CSV="$(printf '%s\n' "$VER_OUT" | sed -n 's/.*modes:\([^[:space:]]*\).*/\1/p')"
+          for m in forward mesh; do
+            printf ',%s,\n' "$MODES_CSV" | grep -Fq ",$m," || { echo "FAIL: missing exact mode $m in $MODES_CSV" >&2; exit 1; }
+          done
+
+          check_tap_strict() {
+            local label="$1"
+            local out="$2"
+            printf '%s\n' "$out"
+            local t_count p_count
+            t_count="$(printf '%s\n' "$out" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            p_count="$(printf '%s\n' "$out" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            if ! test -n "$t_count" || ! test "$t_count" -ge 1 || ! test "$p_count" = "$t_count"; then
+              echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
+              exit 1
+            fi
+            printf '%s\n' "$out" | grep -qE '^# fail 0$'
+            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
+            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
+            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+          }
+
+          if ! OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
+            node --test --test-reporter=tap station/test/w7-foundation.test.ts 2>&1)"; then
+            printf '%s\n' "$OUT"
+            exit 1
+          fi
+          check_tap_strict "w7-foundation.test.ts" "$OUT"
+
+          if ! FRONT_OUT="$(STILLFAIL_MB_READER="$BIN_PION" \
+            node --test --test-reporter=tap station/test/front-alpns.test.ts station/test/front-bind-race.test.ts 2>&1)"; then
+            printf '%s\n' "$FRONT_OUT"
+            exit 1
+          fi
+          check_tap_strict "front-alpns + front-bind-race (forced Pion)" "$FRONT_OUT"
+
+          if ! SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap station/test/builders-front-pion-switch.test.ts 2>&1)"; then
+            printf '%s\n' "$SW_OUT"
+            exit 1
+          fi
+          check_tap_strict "builders-front-pion-switch.test.ts" "$SW_OUT"
+
+  gate-w7-data-1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: build-linux
+    if: needs.build-linux.result == 'success'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup
+
+      - name: Download and verify Linux binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/download-artifact.sh "$GITHUB_RUN_ID" pion-station-linux-bins "$RUNNER_TEMP/bins"
+          (cd "$RUNNER_TEMP/bins" && sha256sum -c SHA256SUMS)
+          chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
+
+      - name: Run Wave 7 data-1 gate (stdio contract + mb-reader + first 17 mb-reader-* suites + idle/close forced Pion)
+        run: |
+          set -euo pipefail
+          BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
+          BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          pnpm --dir station install --frozen-lockfile --prefer-offline
+
+          VER_OUT="$("$BIN_PION" --version)"
+          printf '%s\n' "$VER_OUT"
+          MODES_CSV="$(printf '%s\n' "$VER_OUT" | sed -n 's/.*modes:\([^[:space:]]*\).*/\1/p')"
+          printf ',%s,\n' "$MODES_CSV" | grep -Fq ",data," || { echo "FAIL: missing exact mode data in $MODES_CSV" >&2; exit 1; }
+
+          check_tap_strict() {
+            local label="$1"
+            local out="$2"
+            printf '%s\n' "$out"
+            local t_count p_count
+            t_count="$(printf '%s\n' "$out" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            p_count="$(printf '%s\n' "$out" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            if ! test -n "$t_count" || ! test "$t_count" -ge 1 || ! test "$p_count" = "$t_count"; then
+              echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
+              exit 1
+            fi
+            printf '%s\n' "$out" | grep -qE '^# fail 0$'
+            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
+            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
+            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+          }
+
+          if ! STDIO_OUT="$(STILLFAIL_READER_CANDIDATE="$BIN_PION" \
+            node --test --test-reporter=tap station/test/reader-contract-stdio.test.ts 2>&1)"; then
+            printf '%s\n' "$STDIO_OUT"
+            exit 1
+          fi
+          check_tap_strict "reader-contract-stdio.test.ts" "$STDIO_OUT"
+
+          if ! DATA1_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap \
+            station/test/mb-reader.test.ts \
+            station/test/mb-reader-archive-look.test.ts \
+            station/test/mb-reader-background.test.ts \
+            station/test/mb-reader-card-pages.test.ts \
+            station/test/mb-reader-cards.test.ts \
+            station/test/mb-reader-changed.test.ts \
+            station/test/mb-reader-entries.test.ts \
+            station/test/mb-reader-jobs.test.ts \
+            station/test/mb-reader-line-separators.test.ts \
+            station/test/mb-reader-machine.test.ts \
+            station/test/mb-reader-mesh.test.ts \
+            station/test/mb-reader-messages.test.ts \
+            station/test/mb-reader-notices.test.ts \
+            station/test/mb-reader-open-jobs.test.ts \
+            station/test/mb-reader-outflow-chats.test.ts \
+            station/test/mb-reader-shared-chats.test.ts \
+            station/test/mb-reader-shared-rows-perf.test.ts \
+            station/test/mb-reader-timeline.test.ts \
+            station/test/mb-idle-programs.test.ts \
+            station/test/live-reader-close.test.ts 2>&1)"; then
+            printf '%s\n' "$DATA1_OUT"
+            exit 1
+          fi
+          check_tap_strict "gate-w7-data-1 forced Pion suites" "$DATA1_OUT"
+
+  gate-w7-data-2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: build-linux
+    if: needs.build-linux.result == 'success'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup
+
+      - name: Download and verify Linux binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/download-artifact.sh "$GITHUB_RUN_ID" pion-station-linux-bins "$RUNNER_TEMP/bins"
+          (cd "$RUNNER_TEMP/bins" && sha256sum -c SHA256SUMS)
+          chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
+
+      - name: Run Wave 7 data-2 gate (remaining 11 mb-reader-* suites forced Pion + dual-engine switch/foundation/tail)
+        run: |
+          set -euo pipefail
+          BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
+          BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          pnpm --dir station install --frozen-lockfile --prefer-offline
+
+          check_tap_strict() {
+            local label="$1"
+            local out="$2"
+            printf '%s\n' "$out"
+            local t_count p_count
+            t_count="$(printf '%s\n' "$out" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            p_count="$(printf '%s\n' "$out" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            if ! test -n "$t_count" || ! test "$t_count" -ge 1 || ! test "$p_count" = "$t_count"; then
+              echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
+              exit 1
+            fi
+            printf '%s\n' "$out" | grep -qE '^# fail 0$'
+            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
+            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
+            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+          }
+
+          if ! DATA2_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap \
+            station/test/mb-reader-usage-page.test.ts \
+            station/test/mb-reader-outflow.test.ts \
+            station/test/mb-reader-pages.test.ts \
+            station/test/mb-reader-recent-chats.test.ts \
+            station/test/mb-reader-search-chats.test.ts \
+            station/test/mb-reader-session-files.test.ts \
+            station/test/mb-reader-session-place.test.ts \
+            station/test/mb-reader-sessions.test.ts \
+            station/test/mb-reader-thread-list.test.ts \
+            station/test/mb-reader-threads.test.ts \
+            station/test/mb-reader-usage.test.ts 2>&1)"; then
+            printf '%s\n' "$DATA2_OUT"
+            exit 1
+          fi
+          check_tap_strict "gate-w7-data-2 forced Pion suites" "$DATA2_OUT"
+
+          if ! DUAL_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap \
+            station/test/w7-foundation.test.ts \
+            station/test/reader-contract-select.test.ts \
+            station/test/reader-data-pion-switch.test.ts \
+            station/test/read-tail.test.ts 2>&1)"; then
+            printf '%s\n' "$DUAL_OUT"
+            exit 1
+          fi
+          check_tap_strict "gate-w7-data-2 dual-engine suites" "$DUAL_OUT"
+
+  gate-w7-serve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: build-linux
+    if: needs.build-linux.result == 'success'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup
+
+      - name: Download and verify Linux binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/download-artifact.sh "$GITHUB_RUN_ID" pion-station-linux-bins "$RUNNER_TEMP/bins"
+          (cd "$RUNNER_TEMP/bins" && sha256sum -c SHA256SUMS)
+          chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
+
+      - name: Run Wave 7 serve gate (W7-0 foundation strict TAP)
+        run: |
+          set -euo pipefail
+          BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
+          BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          pnpm --dir station install --frozen-lockfile --prefer-offline
+          OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
+            node --test --test-reporter=tap station/test/w7-foundation.test.ts 2>&1)"
+          printf '%s\n' "$OUT"
+          T_COUNT="$(printf '%s\n' "$OUT" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+          P_COUNT="$(printf '%s\n' "$OUT" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+          test -n "$T_COUNT" && test "$T_COUNT" -ge 1 && test "$P_COUNT" = "$T_COUNT"
+          printf '%s\n' "$OUT" | grep -qE '^# fail 0$'
+          printf '%s\n' "$OUT" | grep -qE '^# cancelled 0$'
+          printf '%s\n' "$OUT" | grep -qE '^# skipped 0$'
+          printf '%s\n' "$OUT" | grep -qE '^# todo 0$'
 
   verify-linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [c-shims, pion-unit, build-linux, gate-workers, gate-sqlite-w14, gate-sqlite-w5, gate-w6-locate-search, gate-w6-usage, gate-w6-replica]
+    needs: [c-shims, pion-unit, build-linux, gate-workers, gate-sqlite-w14, gate-sqlite-w5, gate-w6-locate-search, gate-w6-usage, gate-w6-replica, gate-w7-front, gate-w7-data-1, gate-w7-data-2, gate-w7-serve]
     if: always()
     steps:
       - name: Require all upstream jobs to succeed
@@ -882,10 +1238,14 @@ jobs:
           R_W6_LOCATE_SEARCH: ${{ needs.gate-w6-locate-search.result }}
           R_W6_USAGE: ${{ needs.gate-w6-usage.result }}
           R_W6_REPLICA: ${{ needs.gate-w6-replica.result }}
+          R_W7_FRONT: ${{ needs.gate-w7-front.result }}
+          R_W7_DATA_1: ${{ needs.gate-w7-data-1.result }}
+          R_W7_DATA_2: ${{ needs.gate-w7-data-2.result }}
+          R_W7_SERVE: ${{ needs.gate-w7-serve.result }}
         run: |
           set -euo pipefail
-          echo "c-shims=$R_CSHIMS pion-unit=$R_UNIT build-linux=$R_BUILD gate-workers=$R_WORKERS gate-sqlite-w14=$R_W14 gate-sqlite-w5=$R_W5 gate-w6-locate-search=$R_W6_LOCATE_SEARCH gate-w6-usage=$R_W6_USAGE gate-w6-replica=$R_W6_REPLICA"
-          for r in "$R_CSHIMS" "$R_UNIT" "$R_BUILD" "$R_WORKERS" "$R_W14" "$R_W5" "$R_W6_LOCATE_SEARCH" "$R_W6_USAGE" "$R_W6_REPLICA"; do
+          echo "c-shims=$R_CSHIMS pion-unit=$R_UNIT build-linux=$R_BUILD gate-workers=$R_WORKERS gate-sqlite-w14=$R_W14 gate-sqlite-w5=$R_W5 gate-w6-locate-search=$R_W6_LOCATE_SEARCH gate-w6-usage=$R_W6_USAGE gate-w6-replica=$R_W6_REPLICA gate-w7-front=$R_W7_FRONT gate-w7-data-1=$R_W7_DATA_1 gate-w7-data-2=$R_W7_DATA_2 gate-w7-serve=$R_W7_SERVE"
+          for r in "$R_CSHIMS" "$R_UNIT" "$R_BUILD" "$R_WORKERS" "$R_W14" "$R_W5" "$R_W6_LOCATE_SEARCH" "$R_W6_USAGE" "$R_W6_REPLICA" "$R_W7_FRONT" "$R_W7_DATA_1" "$R_W7_DATA_2" "$R_W7_SERVE"; do
             if [ "$r" != "success" ]; then
               echo "FAIL: upstream job result is '$r' (expected 'success')" >&2
               exit 1

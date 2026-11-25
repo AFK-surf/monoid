@@ -527,7 +527,7 @@ jobs:
       contents: write # the release native-artifacts' assets
     env:
       WANT: >-
-        reader:linux-x64 launcher:linux-x64 mesh:linux-x64 runner:linux-x64 screen-linux:linux-x64 launcher:win32-x64
+        reader:linux-x64 pion-reader:linux-x64 launcher:linux-x64 mesh:linux-x64 runner:linux-x64 screen-linux:linux-x64 launcher:win32-x64
         mesh:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
     steps: &station-natives-linux-steps
       - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
@@ -562,6 +562,11 @@ jobs:
       - if: steps.missing.outputs.list != ''
         uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc' }
+      - if: steps.missing.outputs.list != '' && runner.environment != 'self-hosted'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pion-station-toolchain
+          key: pion-station-toolchain-linux-x64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
       - name: Zig 0.16.0 (the reader's cc on GitHub's Linux)
         if: steps.missing.outputs.list != '' && runner.environment != 'self-hosted'
         run: |
@@ -602,7 +607,7 @@ jobs:
     permissions:
       contents: write # the release native-artifacts' assets
     env:
-      WANT: reader:linux-arm64 launcher:linux-arm64 mesh:linux-arm64 runner:linux-arm64 screen-linux:linux-arm64
+      WANT: reader:linux-arm64 pion-reader:linux-arm64 launcher:linux-arm64 mesh:linux-arm64 runner:linux-arm64 screen-linux:linux-arm64
     steps: *station-natives-linux-steps
 
   station-natives-win:
@@ -613,7 +618,7 @@ jobs:
     permissions:
       contents: write # the release native-artifacts' assets
     env:
-      WANT: reader:win32-x64
+      WANT: reader:win32-x64 pion-reader:win32-x64
     steps: *station-natives-linux-steps
 
   station-natives-mac:
@@ -623,7 +628,7 @@ jobs:
     permissions:
       contents: write # the release native-artifacts' assets
     env:
-      WANT: reader:darwin-arm64 launcher:darwin-arm64 mesh:darwin-arm64 runner:darwin-arm64 helper:darwin-arm64
+      WANT: reader:darwin-arm64 pion-reader:darwin-arm64 launcher:darwin-arm64 mesh:darwin-arm64 runner:darwin-arm64 helper:darwin-arm64
     steps:
       - uses: actions/checkout@v5
         with: { ref: '${{ needs.plan.outputs.sha }}' }

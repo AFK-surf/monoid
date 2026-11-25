@@ -1,0 +1,135 @@
+// 1:1 port of `station/mb/src/readops/resourcechats.mbt`.
+// The chats of the resources page (station/src/read/usage.ts `resourceChats`: GET /resources):
+// each session's latest thread and its title (by the one rule, in the words the pool gives);
+// none for a session of another workspace.
+
+import "base_codec"
+import "builders_core"
+import "readops_chats"
+import "readops_core"
+import "sql_db"
+
+/// usage.ts `resourceChats`.
+pub fn resource_chats(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let known = readops_core::Known::of(client, data, sep, ask)
+  let viewer = match readops_core::json_val(args, "viewer") {
+    Some(v) => {
+      match v {
+        base_codec::Json::Obj(_) => Some(v)
+        _ => None
+      }
+    }
+    None => None
+  }
+  let words = readops_core::json_val_or_null(args, "words")
+  let word = fn(k : String) -> String {
+    match readops_core::json_val(words, k) {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+  }
+  let out : Array[(String, base_codec::Json)] = []
+  let sessions = match readops_core::json_val(args, "sessions") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+  for i in 0..<sessions.length() {
+    let s = sessions[i]
+    let key = readops_core::js_text(s)
+    match viewer {
+      Some(v) => {
+        let ws = match readops_core::one(db, "SELECT ws FROM sessions WHERE key = ?", [s]) {
+          Ok(Some(r)) => readops_core::field(r, "ws")
+          Ok(None) => base_codec::json_null()
+          Err(e) => return Err(e)
+        }
+        if !readops_chats::sees(v, ws) {
+          readops_chats::obj_set(out, key, base_codec::json_null())
+          continue
+        }
+      }
+      None => ()
+    }
+    let thread = match readops_core::one(
+      db,
+      "SELECT t.* FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT ?",
+      [s, base_codec::json_num(1.0)],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    match thread {
+      None => {
+        readops_chats::obj_set(
+          out,
+          key,
+          base_codec::json_obj([("thread", base_codec::json_null()), ("title", base_codec::json_null())]),
+        )
+      }
+      Some(t) => {
+        let id = readops_core::field(t, "id")
+        let own = readops_chats::mb_json_eq(readops_core::field(t, "surface"), base_codec::json_str("chat"))
+        // store.ts `usageThreads`: a thread's first words where it has no name and is not one of the station's own
+        let title_null = match readops_core::field(t, "title") {
+          base_codec::Json::Null => true
+          _ => false
+        }
+        let auto_null = match readops_core::field(t, "auto_title") {
+          base_codec::Json::Null => true
+          _ => false
+        }
+        let first = if !own && title_null && auto_null {
+          match readops_core::first_text(db, id) {
+            Ok(ft) => ft
+            Err(_) => base_codec::json_null()
+          }
+        } else {
+          base_codec::json_null()
+        }
+        // usage.ts `threadConnect`: the first of its sessions' connects that is not the station's own
+        let connect = match readops_core::one(
+          db,
+          "SELECT connect FROM thread_sessions WHERE thread = ? AND connect != 'chat' ORDER BY joined_at, rowid LIMIT 1",
+          [id],
+        ) {
+          Ok(Some(r)) => {
+            match readops_core::field(r, "connect") {
+              base_codec::Json::Str(c) => Some(c)
+              _ => None
+            }
+          }
+          Ok(None) => None
+          Err(e) => return Err(e)
+        }
+        let channel = if own {
+          base_codec::json_null()
+        } else {
+          match known.channel(connect, readops_core::field(t, "channel")) {
+            Ok(ch) => ch
+            Err(e) => return Err(e)
+          }
+        }
+        let title = readops_chats::chat_title(
+          readops_core::thread_json(t),
+          first,
+          channel,
+          word("untitled"),
+          word("directMessage"),
+        )
+        readops_chats::obj_set(
+          out,
+          key,
+          base_codec::json_obj([("thread", id), ("title", base_codec::json_str(title))]),
+        )
+      }
+    }
+  }
+  Ok(base_codec::json_obj(out))
+}

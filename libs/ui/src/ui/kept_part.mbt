@@ -300,6 +300,7 @@ fn dues_wake(c : Ctx) -> Unit {
     if d.at > c.clock && d.asks {
       if c.wake_at < 0.0 || d.at < c.wake_at {
         c.wake_at = d.at
+        wake_at_loc.val = "kept_due"
       }
       if !d.later && (c.wake_waited < 0.0 || d.at < c.wake_waited) {
         c.wake_waited = d.at

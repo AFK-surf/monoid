@@ -190,19 +190,35 @@ export const NOTES: [number, string][] = [
   [183, "station_version now supports action: \"wait\" (until: [\"pr:N\", \"fix:FB-N\", \"commit:SHA\", \"version:0.1.N\", \"after:0.1.N\"], or clear: true) to auto-update once a release contains specified fixes; list also reports overridden, overrideBase, overrideKind, overrideNote, autoWhen and autoHeld when applicable."],
   [184, "Post brief progress updates with chat_post during long multi-step waits instead of looping silently; when a turn stays open after declaring waiting (such as a background command in agy), the station now wakes it once its waiting timer runs out."],
   [185, "chat_post now takes kind waiting with for and seconds: a post saying what you started can end the turn itself. A need that says nothing is needed (无需操作) is refused: use waiting for your own running work."],
+  [186, "chat_configure now takes project (\"\" for cross-project) and tags/tags_add/tags_remove (max 3) to silently classify chats; new tool project_manage (read skill stillfail-projects first) lists, proposes new projects (never end need_human for a proposal), updates shared project info, renames, merges, or bulk reclassifies."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only
 /// the notes from it on, not a pile of changes to instructions it no longer has.
 export const REWRITTEN = 121;
 
+/// Migration notes gated behind a feature flag: hidden while the feature is off, and delivered once enabled
+/// regardless of whether higher-numbered notes have already been added.
+const GATED_NOTES = new Map<number, "projects">([[186, "projects"]]);
+
+function noteVisible(n: number, opts?: { projectsOn?: boolean }): boolean {
+  const gate = GATED_NOTES.get(n);
+  if (gate === "projects") return opts?.projectsOn !== false;
+  return true;
+}
+
 /// The latest note's number: what a session that knows everything has been told.
-export const latest = () => NOTES.at(-1)?.[0] ?? 0;
+export const latest = (opts?: { projectsOn?: boolean }) => {
+  for (let i = NOTES.length - 1; i >= 0; i--) {
+    if (noteVisible(NOTES[i]![0], opts)) return NOTES[i]![0];
+  }
+  return 0;
+};
 
 /// The notes a session told up to `told` has yet to hear, as one block before its messages, and where today's whole
 /// instructions are (`full`); empty when there are none.
-export function untold(told: number, full: string): string {
-  const notes = NOTES.filter(([n]) => n > told && n >= REWRITTEN).map(([, note]) => `- ${note}`);
+export function untold(told: number, full: string, opts?: { projectsOn?: boolean }): string {
+  const notes = NOTES.filter(([n]) => n > told && n >= REWRITTEN && noteVisible(n, opts)).map(([, note]) => `- ${note}`);
   if (notes.length === 0) return "";
   return `[still.fail changed how you work since this session began]\n${notes.join("\n")}\nToday's whole instructions, tool parameters included, are in ${full}: read them when you need the details (your tool list may not show the new parameters; pass them anyway).`;
 }

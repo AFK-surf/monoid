@@ -1,0 +1,248 @@
+// 1:1 port of `station/mb/src/readops/usage.mbt`.
+// Pure synchronous SQLite reads (`usage_turns`, `usage_calls`) + shared helpers (`big_of`, `big_param`, `sees_ws`, `text_arg`).
+// Never calls any blocking shell wait helper from `builders_usage`.
+
+import "base_codec"
+import "builders_core"
+import "builders_usage"
+import "js_json"
+import "jscase"
+import "readops_core"
+import "sql_db"
+
+let USAGE_CALLS_SAME_SQL : String = "SELECT CAST(rowid AS TEXT) AS seq, id, CAST(at AS TEXT) AS at, session, turn, thread, person, profile, runtime, model, subagent, fast,\n" +
+"  input, cache_read, cache_write, cache_write_long, output, calls, context, context_window FROM usage INDEXED BY usage_session WHERE session = ?1 AND at = ?2 AND rowid < ?3 ORDER BY rowid DESC LIMIT ?4"
+
+let USAGE_CALLS_EARLIER_SQL : String = "SELECT CAST(rowid AS TEXT) AS seq, id, CAST(at AS TEXT) AS at, session, turn, thread, person, profile, runtime, model, subagent, fast,\n" +
+"  input, cache_read, cache_write, cache_write_long, output, calls, context, context_window FROM usage INDEXED BY usage_session WHERE session = ?1 AND at >= ?2 AND at < ?3 ORDER BY usage.at DESC, rowid DESC LIMIT ?4"
+
+let MAX_SAFE : Double = 9007199254740991.0
+
+pub fn text_arg(v : Option[base_codec::Json]) -> String {
+  builders_usage::text_arg(v)
+}
+
+/// store/usage.ts `usageTurns`: delegates to pure-SQLite `builders_usage::usage_turns`.
+pub fn usage_turns(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  match builders_usage::usage_turns(db, args) {
+    Ok(v) => Ok(v)
+    Err(msg) => Err(readops_core::ReadError::App(msg))
+  }
+}
+
+/// BigInt(text): an integer as written, refused otherwise (injectable stringifier for pure unit tests).
+pub fn big_of_with(
+  v : Option[base_codec::Json],
+  stringify : (base_codec::Json) -> String,
+) -> Result[Int64, readops_core::ReadError] {
+  let s = jscase::trim(builders_usage::text_arg_with(v, stringify))
+  if s == "" {
+    return Ok(0.to_int64())
+  }
+  let (neg, digits) = if readops_core::str_has_prefix(s, "-") {
+    (true, readops_core::str_slice_bytes(s, 1, s.to_bytes().length()))
+  } else if readops_core::str_has_prefix(s, "+") {
+    (false, readops_core::str_slice_bytes(s, 1, s.to_bytes().length()))
+  } else {
+    (false, s)
+  }
+  let db = digits.to_bytes()
+  if db.length() == 0 {
+    return Err(readops_core::ReadError::App("Cannot convert " + s + " to a BigInt"))
+  }
+  for i in 0..<db.length() {
+    let c = db[i].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      return Err(readops_core::ReadError::App("Cannot convert " + s + " to a BigInt"))
+    }
+  }
+  let max64 = (0x7FFFFFFF.to_int64() << 32.to_int64()) | (0xFFFF.to_int64() << 16.to_int64()) | 0xFFFF.to_int64()
+  let min64 = -max64 - 1.to_int64()
+  let ten = 10.to_int64()
+  let mut n = 0.to_int64()
+  for i in 0..<db.length() {
+    let d = ((db[i].to_int() & 0xFF) - 48).to_int64()
+    if n < (min64 + d) / ten {
+      return Err(readops_core::ReadError::App(s + " is beyond what the statements take"))
+    }
+    n = n * ten - d
+  }
+  if neg {
+    Ok(n)
+  } else {
+    if n == min64 {
+      return Err(readops_core::ReadError::App(s + " is beyond what the statements take"))
+    }
+    Ok(-n)
+  }
+}
+
+/// BigInt(text): an integer as written (using JS-accurate `text_arg`), refused otherwise.
+pub fn big_of(v : Option[base_codec::Json]) -> Result[Int64, readops_core::ReadError] {
+  big_of_with(v, sql_db::stringify_json)
+}
+
+/// An i64 as a statement's integer (matching MB `usage.mbt:208`).
+pub fn big_param(n : Int64) -> base_codec::Json {
+  base_codec::json_num(n.to_double())
+}
+
+pub fn sees_ws(viewer : base_codec::Json, ws : base_codec::Json) -> Bool {
+  let workspace = readops_core::json_val_or_null(viewer, "workspace")
+  if base_codec::json_eq(ws, workspace) {
+    return true
+  }
+  match ws {
+    base_codec::Json::Null => {
+      match builders_core::json_get_last(viewer, "home") {
+        Some(base_codec::Json::Bool(false)) => false
+        _ => true
+      }
+    }
+    _ => false
+  }
+}
+
+fn abs_d(d : Double) -> Double {
+  if d < 0.0 { -d } else { d }
+}
+
+fn usage_row_num(v : base_codec::Json) -> base_codec::Json {
+  match v {
+    base_codec::Json::Num(d, r) => base_codec::Json::Num(d, r)
+    base_codec::Json::Str(s) => readops_core::parsed_number(s)
+    base_codec::Json::Null => base_codec::json_num(0.0)
+    _ => base_codec::json_num(readops_core::nan())
+  }
+}
+
+/// read/store.ts `usageCallsPage`: a session's calls from `from` until `to`, latest first,
+/// before `(beforeAt, beforeSeq)`, at most `limit`; empty for a viewer of another workspace.
+pub fn usage_calls(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let session = base_codec::json_str(text_arg(readops_core::json_val(args, "session")))
+  let from = match big_of(readops_core::json_val(args, "from")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let to = match big_of(readops_core::json_val(args, "to")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let before_at = match big_of(readops_core::json_val(args, "beforeAt")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let before_seq = match big_of(readops_core::json_val(args, "beforeSeq")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let limit = match readops_core::json_val(args, "limit") {
+    Some(base_codec::Json::Num(n, _)) => {
+      if js_json::is_integer(n) && abs_d(n) <= MAX_SAFE {
+        n
+      } else {
+        0.0
+      }
+    }
+    _ => 0.0
+  }
+  let viewer : Option[base_codec::Json] = match readops_core::json_val(args, "viewer") {
+    None => None
+    Some(base_codec::Json::Null) => None
+    Some(v) => Some(v)
+  }
+  match viewer {
+    Some(v) => {
+      match readops_core::one(db, "SELECT ws FROM sessions WHERE key = ?", [session]) {
+        Ok(Some(r)) => {
+          if !sees_ws(v, readops_core::field(r, "ws")) {
+            return Ok(base_codec::json_obj([("rows", base_codec::json_arr([])), ("next", base_codec::json_null())]))
+          }
+        }
+        Ok(None) => {
+          return Ok(base_codec::json_obj([("rows", base_codec::json_arr([])), ("next", base_codec::json_null())]))
+        }
+        Err(e) => return Err(e)
+      }
+    }
+    None => ()
+  }
+  let size = if limit < 1.0 { 1 } else if limit > 200.0 { 200 } else { limit.to_int() }
+  let page : Array[Map[String, base_codec::Json]] = []
+  if before_at >= from && before_at < to {
+    let same = match db.all(
+      USAGE_CALLS_SAME_SQL,
+      [session, big_param(before_at), big_param(before_seq), base_codec::json_num(size.to_double())],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(readops_core::ReadError::Sql(e))
+    }
+    for i in 0..<same.length() {
+      page.push(same[i])
+    }
+  }
+  let end = if before_at < to { before_at } else { to }
+  if page.length() < size && end > from {
+    let earlier = match db.all(
+      USAGE_CALLS_EARLIER_SQL,
+      [session, big_param(from), big_param(end), base_codec::json_num((size - page.length()).to_double())],
+    ) {
+      Ok(rs) => rs
+      Err(e) => return Err(readops_core::ReadError::Sql(e))
+    }
+    for i in 0..<earlier.length() {
+      page.push(earlier[i])
+    }
+  }
+  let rows : Array[base_codec::Json] = []
+  for i in 0..<page.length() {
+    let r = page[i]
+    let subagent = match readops_core::field(r, "subagent") {
+      base_codec::Json::Num(v, _) => v != 0.0
+      _ => true
+    }
+    let fast = match readops_core::field(r, "fast") {
+      base_codec::Json::Num(v, _) => v != 0.0
+      _ => true
+    }
+    rows.push(
+      base_codec::json_obj([
+        ("id", readops_core::field(r, "id")),
+        ("at", usage_row_num(readops_core::field(r, "at"))),
+        ("session", readops_core::field(r, "session")),
+        ("turn", readops_core::field(r, "turn")),
+        ("thread", readops_core::field(r, "thread")),
+        ("person", readops_core::field(r, "person")),
+        ("profile", readops_core::field(r, "profile")),
+        ("runtime", readops_core::field(r, "runtime")),
+        ("model", readops_core::field(r, "model")),
+        ("subagent", base_codec::json_bool(subagent)),
+        ("fast", base_codec::json_bool(fast)),
+        ("input", usage_row_num(readops_core::field(r, "input"))),
+        ("cacheRead", usage_row_num(readops_core::field(r, "cache_read"))),
+        ("cacheWrite", usage_row_num(readops_core::field(r, "cache_write"))),
+        ("cacheWriteLong", usage_row_num(readops_core::field(r, "cache_write_long"))),
+        ("output", usage_row_num(readops_core::field(r, "output"))),
+        ("calls", usage_row_num(readops_core::field(r, "calls"))),
+        ("context", readops_core::field(r, "context")),
+        ("contextWindow", readops_core::field(r, "context_window")),
+      ]),
+    )
+  }
+  let next = if page.length() == 0 || page.length() < size {
+    base_codec::json_null()
+  } else {
+    let last = page[page.length() - 1]
+    base_codec::json_obj([
+      ("at", readops_core::field(last, "at")),
+      ("seq", readops_core::field(last, "seq")),
+    ])
+  }
+  Ok(base_codec::json_obj([("rows", base_codec::json_arr(rows)), ("next", next)]))
+}

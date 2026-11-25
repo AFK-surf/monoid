@@ -1,0 +1,458 @@
+// 1:1 port of `station/mb/src/readops/background.mbt`.
+
+import "base_codec"
+import "js_json"
+import "sql_db"
+
+let SESSIONS_AT_WORK_SQL : String = "SELECT s.key, s.workspace FROM (SELECT rowid AS rid, key, workspace, running, last_active_at\n  FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL ORDER BY last_active_at DESC, rowid DESC LIMIT ?2) s\n  WHERE s.running = 1 OR s.key IN (SELECT value FROM json_each(?1)) OR EXISTS (SELECT 1 FROM active_watch_jobs INDEXED BY active_watch_jobs_session WHERE session = s.key)\n    OR EXISTS (SELECT 1 FROM active_other_jobs WHERE session = s.key)\n    OR (SELECT declared FROM turns INDEXED BY turns_by_session WHERE session_key = s.key ORDER BY started_at DESC, rowid DESC LIMIT 1) = 'waiting'\n  ORDER BY s.last_active_at DESC, s.rid DESC"
+
+let SESSIONS_AT_WORK_BEFORE_UPGRADE_SQL : String = "SELECT s.key, s.workspace FROM (SELECT rowid AS rid, key, workspace, running, last_active_at\n  FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL ORDER BY last_active_at DESC, rowid DESC LIMIT ?2) s\n  WHERE s.running = 1 OR s.key IN (SELECT value FROM json_each(?1)) OR EXISTS (SELECT 1 FROM jobs INDEXED BY jobs_by_session WHERE session_key = s.key AND state = 'running')\n    OR (SELECT declared FROM turns INDEXED BY turns_by_session WHERE session_key = s.key ORDER BY started_at DESC, rowid DESC LIMIT 1) = 'waiting'\n  ORDER BY s.last_active_at DESC, s.rid DESC"
+
+pub let LATEST_DECISIONS_SCOPED_SQL : String = "WITH RECURSIVE\n\n\nrecent AS MATERIALIZED (\n  SELECT id FROM decision_checks INDEXED BY decision_checks_lately WHERE ?3 = 0 AND created_at >= ?1 LIMIT 65\n),\n\nconnects(connect, n) AS (\n  SELECT (SELECT connect FROM sessions INDEXED BY sessions_by_connect ORDER BY connect LIMIT 1), 1\n  WHERE (SELECT COUNT(*) FROM recent) = 65\n  UNION ALL\n  SELECT (SELECT connect FROM sessions INDEXED BY sessions_by_connect WHERE connect > c.connect ORDER BY connect LIMIT 1), n + 1\n  FROM connects c WHERE c.connect IS NOT NULL AND n < 65\n),\nchosen AS MATERIALIZED (\n  SELECT s.key FROM connects c CROSS JOIN sessions s INDEXED BY sessions_by_connect\n  WHERE c.connect IS NOT NULL AND s.connect = c.connect AND s.ws = ?2 LIMIT 65\n),\nlookups AS MATERIALIZED (\n  SELECT c.key, (SELECT id FROM (\n    SELECT id, created_at FROM decision_checks INDEXED BY decision_checks_session WHERE session = c.key ORDER BY id DESC LIMIT 65\n  ) WHERE created_at >= ?1 ORDER BY id DESC LIMIT 1) AS id\n  FROM chosen c WHERE (SELECT COUNT(connect) FROM connects) <= 64 AND (SELECT COUNT(*) FROM chosen) <= 64\n),\nmode AS MATERIALIZED (\n  SELECT (SELECT COUNT(*) FROM recent) < 65 OR (SELECT COUNT(connect) FROM connects) > 64\n    OR (SELECT COUNT(*) FROM chosen) > 64 OR EXISTS (\n      SELECT 1 FROM lookups l WHERE l.id IS NULL AND EXISTS (\n        SELECT 1 FROM decision_checks INDEXED BY decision_checks_session WHERE session = l.key ORDER BY id DESC LIMIT 1 OFFSET 64\n      )\n    ) AS use_global\n),\nlatest AS MATERIALIZED (\n  SELECT MAX(id) AS id, session FROM mode CROSS JOIN decision_checks WHERE use_global AND created_at >= ?1 GROUP BY +session\n  UNION ALL\n  SELECT id, key AS session FROM lookups WHERE id IS NOT NULL AND NOT (SELECT use_global FROM mode)\n)\nSELECT d.id, d.session, d.created_at, d.result FROM latest l\nLEFT JOIN sessions s ON s.key = l.session\nCROSS JOIN decision_checks d ON d.id = l.id\nWHERE s.ws = ?2 OR (?3 AND s.ws IS NULL)\nORDER BY d.created_at, d.id"
+
+pub let LATEST_DECISIONS_SCOPED_FALLBACK_SQL : String = "WITH latest AS MATERIALIZED (\n  SELECT MAX(id) AS id, session FROM decision_checks WHERE created_at >= ?1 GROUP BY +session\n)\nSELECT d.id, d.session, d.created_at, d.result FROM latest l\nLEFT JOIN sessions s ON s.key = l.session\nCROSS JOIN decision_checks d ON d.id = l.id\nWHERE s.ws = ?2 OR (?3 AND s.ws IS NULL)\nORDER BY d.created_at, d.id"
+
+pub let RECENT_CONNECT_THREADS_SQL : String = "WITH recent AS MATERIALIZED (\n  SELECT t.id, t.surface, t.created_at, COALESCE(e.at, 0) AS said_at\n  FROM threads t LEFT JOIN thread_state s ON s.thread = t.id\n  LEFT JOIN entries e ON e.thread = t.id AND e.n = s.said_n AND e.kind = 'message'\n  ORDER BY said_at DESC, t.created_at DESC, t.id DESC LIMIT ?1\n) SELECT r.id, r.surface FROM recent r\n  WHERE EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = r.id AND m.connect = ?2)\n  ORDER BY r.said_at DESC, r.created_at DESC, r.id DESC"
+
+let MEASURED_MOST : Int = 1000
+
+let VIEW_CHATS : Int = 20
+
+pub fn sessions_at_work(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let processes = match json_val(args, "processes") {
+    Some(p) => p
+    None => base_codec::json_arr([])
+  }
+  let params = [
+    base_codec::json_str(sql_db::stringify_json(processes)),
+    base_codec::json_num(MEASURED_MOST.to_double()),
+  ]
+  let rows = match db.all(SESSIONS_AT_WORK_SQL, params) {
+    Ok(rs) => rs
+    Err(e) => {
+      if str_contains_sub(e.message, "no such table: active_watch_jobs") ||
+      str_contains_sub(e.message, "no such table: active_other_jobs") {
+        match db.all(SESSIONS_AT_WORK_BEFORE_UPGRADE_SQL, params) {
+          Ok(rs2) => rs2
+          Err(e2) => return Err(ReadError::Sql(e2))
+        }
+      } else {
+        return Err(ReadError::Sql(e))
+      }
+    }
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    out.push(
+      base_codec::json_obj([
+        ("key", field(r, "key")),
+        ("workspace", field(r, "workspace")),
+      ]),
+    )
+  }
+  Ok(base_codec::json_arr(out))
+}
+
+pub fn has_legacy_decision_time(db : sql_db::Db) -> Result[Bool, ReadError] {
+  match exists_in(db, "table", "legacy_decision_time_meta") {
+    Ok(false) => return Ok(false)
+    Ok(true) => ()
+    Err(e) => return Err(e)
+  }
+  match exists_in(db, "table", "legacy_decision_time") {
+    Ok(false) => return Err(ReadError::App("legacy decision-time metadata has no lookup"))
+    Ok(true) => ()
+    Err(e) => return Err(e)
+  }
+  let r = match one(db, "SELECT version,complete FROM legacy_decision_time_meta WHERE id=1", []) {
+    Ok(Some(row)) => row
+    Ok(None) => return Err(ReadError::App("legacy decision-time lookup has an unsupported version"))
+    Err(e) => return Err(e)
+  }
+  let ver_ok = match field(r, "version") {
+    base_codec::Json::Num(v, _) => v == 1.0
+    _ => false
+  }
+  let comp_ok = match field(r, "complete") {
+    base_codec::Json::Num(v, _) => v == 0.0 || v == 1.0
+    _ => false
+  }
+  if !ver_ok || !comp_ok {
+    return Err(ReadError::App("legacy decision-time lookup has an unsupported version"))
+  }
+  Ok(true)
+}
+
+fn policy_checks_rows(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[Option[(Int, Array[(String, base_codec::Json, Option[js_json::JValue])])], ReadError] {
+  match has_legacy_decision_time(db) {
+    Ok(true) => return Ok(None)
+    Ok(false) => ()
+    Err(e) => return Err(e)
+  }
+  match exists_in(db, "index", "decision_checks_lately") {
+    Ok(false) => return Ok(None)
+    Ok(true) => ()
+    Err(e) => return Err(e)
+  }
+  match exists_in(db, "index", "decision_checks_session") {
+    Ok(false) => return Ok(None)
+    Ok(true) => ()
+    Err(e) => return Err(e)
+  }
+  let viewer = json_val_or_null(args, "viewer")
+  let home = match json_val(viewer, "home") {
+    Some(base_codec::Json::Bool(false)) => false
+    _ => true
+  }
+  let params = [
+    json_val_or_null(args, "since"),
+    json_val_or_null(viewer, "workspace"),
+    base_codec::json_num(if home { 1.0 } else { 0.0 }),
+  ]
+  let sql = if home { LATEST_DECISIONS_SCOPED_FALLBACK_SQL } else { LATEST_DECISIONS_SCOPED_SQL }
+  let rows = match db.all(sql, params) {
+    Ok(rs) => rs
+    Err(e) => {
+      if str_contains_sub(e.message, "no such index") || str_contains_sub(e.message, "no such table") {
+        return Ok(None)
+      }
+      return Err(ReadError::Sql(e))
+    }
+  }
+  let order : Array[String] = []
+  let latest : Map[String, (base_codec::Json, Option[js_json::JValue])] = Map::new()
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    match field(r, "session") {
+      base_codec::Json::Str(session) => {
+        if !latest.contains(session) {
+          order.push(session)
+        }
+        latest.set(session, (field(r, "created_at"), parsed(field(r, "result"))))
+      }
+      _ => ()
+    }
+  }
+  let rev_order = array_rev(order)
+  let rev_entries : Array[(String, base_codec::Json, Option[js_json::JValue])] = []
+  for i in 0..<rev_order.length() {
+    let session = rev_order[i]
+    match latest.get(session) {
+      Some((at, detail)) => rev_entries.push((session, at, detail))
+      None => ()
+    }
+  }
+  Ok(Some((order.length(), rev_entries)))
+}
+
+pub fn policy_checks_jval(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[js_json::JValue, ReadError] {
+  match policy_checks_rows(db, args) {
+    Ok(None) => Ok(js_json::JValue::Null)
+    Ok(Some((checked, rev_entries))) => {
+      let (failed, options_jv) = tally_background_selected_jval(rev_entries)
+      Ok(
+        js_json::JValue::Obj([
+          (js_json::utf16_units("checked"), js_json::JValue::Num(checked.to_double())),
+          (js_json::utf16_units("failed"), js_json::JValue::Num(failed.to_double())),
+          (js_json::utf16_units("options"), options_jv),
+        ]),
+      )
+    }
+    Err(e) => Err(e)
+  }
+}
+
+/// Pure lossless `policyChecks` wire serializer: preserves exact `picks` insertion order (never
+/// reorders pure-numeric option keys like `["10","2","1"]`), preserves raw UTF-16 lone surrogates
+/// in option keys, and formats `chats[].at` via `fmt_json` (in production `sql_db::stringify_json`)
+/// to keep exact Int64 `repr` (e.g. `9007199254740993`).
+pub fn tally_background_selected_json_str_with(
+  checked : Int,
+  rev_entries : Array[(String, base_codec::Json, Option[js_json::JValue])],
+  fmt_json : (base_codec::Json) -> String,
+) -> String {
+  let options : Map[String, (Int, Array[(String, base_codec::Json, Bool)], Array[Int])] = Map::new()
+  let picks : Array[String] = []
+  let mut failed = 0
+  for i in 0..<rev_entries.length() {
+    let (session, at, detail) = rev_entries[i]
+    let picked_units = match jget(jget(detail, "result"), "selected") {
+      Some(js_json::JValue::Str(u)) => u
+      _ => {
+        failed = failed + 1
+        continue
+      }
+    }
+    let raw_key = utf16_units_map_key(picked_units)
+    let (count, chats, raw_units) = match options.get(raw_key) {
+      Some(o) => o
+      None => {
+        picks.push(raw_key)
+        (0, [], picked_units)
+      }
+    }
+    if chats.length() < VIEW_CHATS {
+      let rec = match jget(detail, "accepted") {
+        Some(js_json::JValue::Bool(true)) => true
+        _ => false
+      }
+      chats.push((session, at, rec))
+    }
+    options.set(raw_key, (count + 1, chats, raw_units))
+  }
+  let sb = StringBuilder::new()
+  sb.write_string("{\"checked\":")
+  sb.write_string(checked.to_string())
+  sb.write_string(",\"failed\":")
+  sb.write_string(failed.to_string())
+  sb.write_string(",\"options\":{")
+  let mut first_opt = true
+  for i in 0..<picks.length() {
+    let raw_key = picks[i]
+    match options.get(raw_key) {
+      Some((count, chats, raw_units)) => {
+        if !first_opt {
+          sb.write_string(",")
+        }
+        first_opt = false
+        sb.write_string(
+          js_json::stringify_with_num(js_json::JValue::Str(raw_units), fn(d : Double) -> String {
+            d.to_string()
+          }),
+        )
+        sb.write_string(":{\"count\":")
+        sb.write_string(count.to_string())
+        sb.write_string(",\"chats\":[")
+        for j in 0..<chats.length() {
+          if j > 0 {
+            sb.write_string(",")
+          }
+          let (sess, at, rec) = chats[j]
+          sb.write_string("{\"session\":")
+          sb.write_string(fmt_json(base_codec::json_str(sess)))
+          sb.write_string(",\"at\":")
+          sb.write_string(fmt_json(at))
+          sb.write_string(",\"recommended\":")
+          sb.write_string(if rec { "true" } else { "false" })
+          sb.write_string("}")
+        }
+        sb.write_string("]}")
+      }
+      None => ()
+    }
+  }
+  sb.write_string("}}")
+  sb.to_string()
+}
+
+pub fn tally_background_selected_json_str(
+  checked : Int,
+  rev_entries : Array[(String, base_codec::Json, Option[js_json::JValue])],
+) -> String {
+  tally_background_selected_json_str_with(checked, rev_entries, sql_db::stringify_json)
+}
+
+/// Lossless `policyChecks` wire JSON string (preserves exact insertion order for numeric option
+/// keys, lone UTF-16 surrogates in option keys, and exact `chats[].at` decimal `repr`).
+pub fn policy_checks_json_str(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[String, ReadError] {
+  match policy_checks_rows(db, args) {
+    Ok(None) => Ok("null")
+    Ok(Some((checked, rev_entries))) => Ok(tally_background_selected_json_str(checked, rev_entries))
+    Err(e) => Err(e)
+  }
+}
+
+/// `policyChecks` as `base_codec::Json` (for callers that do not need raw lone-surrogate keys;
+/// production wire responses MUST use `policy_checks_jval` / `policy_checks_json_str`).
+pub fn policy_checks(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  match policy_checks_jval(db, args) {
+    Ok(jv) => Ok(jv.to_json_lossy())
+    Err(e) => Err(e)
+  }
+}
+
+fn json_to_jval(v : base_codec::Json) -> js_json::JValue {
+  match v {
+    base_codec::Json::Null => js_json::JValue::Null
+    base_codec::Json::Bool(b) => js_json::JValue::Bool(b)
+    base_codec::Json::Num(d, _) => js_json::JValue::Num(d)
+    base_codec::Json::Str(s) => js_json::JValue::Str(js_json::utf16_units(s))
+    base_codec::Json::Arr(xs) => {
+      let out : Array[js_json::JValue] = []
+      for i in 0..<xs.length() {
+        out.push(json_to_jval(xs[i]))
+      }
+      js_json::JValue::Arr(out)
+    }
+    base_codec::Json::Obj(fs) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<fs.length() {
+        let (k, fv) = fs[i]
+        out.push((js_json::utf16_units(k), json_to_jval(fv)))
+      }
+      js_json::JValue::Obj(out)
+    }
+  }
+}
+
+fn utf16_units_map_key(units : Array[Int]) -> String {
+  let hex = "0123456789abcdef".to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<units.length() {
+    let u = units[i] & 0xFFFF
+    sb.write_byte(hex[(u >> 12) & 0xF])
+    sb.write_byte(hex[(u >> 8) & 0xF])
+    sb.write_byte(hex[(u >> 4) & 0xF])
+    sb.write_byte(hex[u & 0xF])
+  }
+  sb.to_string()
+}
+
+/// Pure lossless tally helper grouping `selected` by raw UTF-16 code units and returning a
+/// `js_json::JValue::Obj` with raw UTF-16 `Array[Int]` keys so escaped lone surrogates (`\uD800`)
+/// and literal `U+FFFD` serialize as two distinct JSON keys (1:1 MB `background.mbt:176-202`).
+pub fn tally_background_selected_jval(
+  rev_entries : Array[(String, base_codec::Json, Option[js_json::JValue])],
+) -> (Int, js_json::JValue) {
+  let options : Map[String, (Int, Array[js_json::JValue], Array[Int])] = Map::new()
+  let picks : Array[String] = []
+  let mut failed = 0
+  let k_session = js_json::utf16_units("session")
+  let k_at = js_json::utf16_units("at")
+  let k_recommended = js_json::utf16_units("recommended")
+  let k_count = js_json::utf16_units("count")
+  let k_chats = js_json::utf16_units("chats")
+  for i in 0..<rev_entries.length() {
+    let (session, at, detail) = rev_entries[i]
+    let picked_units = match jget(jget(detail, "result"), "selected") {
+      Some(js_json::JValue::Str(u)) => u
+      _ => {
+        failed = failed + 1
+        continue
+      }
+    }
+    let raw_key = utf16_units_map_key(picked_units)
+    let (count, chats, raw_units) = match options.get(raw_key) {
+      Some(o) => o
+      None => {
+        picks.push(raw_key)
+        (0, [], picked_units)
+      }
+    }
+    if chats.length() < VIEW_CHATS {
+      let rec = match jget(detail, "accepted") {
+        Some(js_json::JValue::Bool(true)) => true
+        _ => false
+      }
+      chats.push(
+        js_json::JValue::Obj([
+          (k_session, js_json::JValue::Str(js_json::utf16_units(session))),
+          (k_at, json_to_jval(at)),
+          (k_recommended, js_json::JValue::Bool(rec)),
+        ]),
+      )
+    }
+    options.set(raw_key, (count + 1, chats, raw_units))
+  }
+  let shown : Array[(Array[Int], js_json::JValue)] = []
+  for i in 0..<picks.length() {
+    let raw_key = picks[i]
+    match options.get(raw_key) {
+      Some((count, chats, raw_units)) => {
+        shown.push(
+          (
+            raw_units,
+            js_json::JValue::Obj([
+              (k_count, js_json::JValue::Num(count.to_double())),
+              (k_chats, js_json::JValue::Arr(chats)),
+            ]),
+          ),
+        )
+      }
+      None => ()
+    }
+  }
+  (failed, js_json::JValue::Obj(shown))
+}
+
+pub fn recent_connect_people(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let connect = json_val_or_null(args, "connect")
+  let connect_str = match connect {
+    base_codec::Json::Str(c) => c
+    other => sql_db::stringify_json(other)
+  }
+  let prefix = "slack:" + connect_str + ":"
+  let prefix_len = prefix.to_bytes().length()
+  let rows = match db.all(RECENT_CONNECT_THREADS_SQL, [json_val_or_null(args, "limit"), connect]) {
+    Ok(rs) => rs
+    Err(e) => return Err(ReadError::Sql(e))
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let thread = field(r, "id")
+    let first = match one(db, "SELECT MIN(connect) AS c FROM thread_sessions WHERE thread = ?", [thread]) {
+      Ok(Some(row)) => field(row, "c")
+      Ok(None) => base_codec::json_null()
+      Err(e) => return Err(e)
+    }
+    let author_rows = match db.all("SELECT author FROM thread_people WHERE thread = ? ORDER BY first_n", [thread]) {
+      Ok(rs) => rs
+      Err(e) => return Err(ReadError::Sql(e))
+    }
+    let authors : Array[String] = []
+    for j in 0..<author_rows.length() {
+      match field(author_rows[j], "author") {
+        base_codec::Json::Str(s) => authors.push(s)
+        _ => ()
+      }
+    }
+    let people : Array[String] = if base_codec::json_eq(field(r, "surface"), base_codec::json_str("chat")) {
+      authors
+    } else {
+      match first {
+        base_codec::Json::Str(c) => {
+          let ps : Array[String] = []
+          for j in 0..<authors.length() {
+            ps.push("slack:" + c + ":" + authors[j])
+          }
+          ps
+        }
+        _ => []
+      }
+    }
+    let stripped : Array[base_codec::Json] = []
+    for j in 0..<people.length() {
+      let p = people[j]
+      if str_has_prefix(p, prefix) {
+        stripped.push(base_codec::json_str(str_slice_bytes(p, prefix_len, p.to_bytes().length())))
+      }
+    }
+    out.push(
+      base_codec::json_obj([
+        ("thread", thread),
+        ("people", base_codec::json_arr(stripped)),
+      ]),
+    )
+  }
+  Ok(base_codec::json_arr(out))
+}

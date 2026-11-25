@@ -65,6 +65,10 @@ export type AccountsDeps = {
   /// The profiles of sessions actively running a turn now (`processState() === "running"`), `except`'s left out.
   /// Falls back to `running(except)` when omitted.
   active?(except?: string): string[];
+  /// Active sessions on other stations sharing `id`'s underlying account (cross-station concurrency).
+  remoteActive?(id: string): number;
+  /// Host-reported effective concurrency cap for a borrowed profile `id` (when known and stricter than local config).
+  remoteCap?(id: string): number | undefined;
   /// Its time.
   clock: Clock.Clock;
   /// Whether session `key` may run on a profile: one allowed in its workspace; absent: any.
@@ -176,6 +180,11 @@ export class Accounts {
   /// Several profiles can spend the same account's allowance. An unknown account keeps its own profile's identity.
   private accountKey(id: string, health = this.health(id)): string {
     return typeof health.account === "string" && health.account !== "" ? `account:${health.account}` : `profile:${id}`;
+  }
+
+  /// Canonical account key for `id` (shared by cross-station concurrency coordination).
+  accountKeyOf(id: string): string {
+    return this.accountKey(id);
   }
 
   /// Profiles can be different logins to the same account, whose allowance they share.
@@ -324,9 +333,10 @@ export class Accounts {
     let minCap: number | undefined;
     for (const p of this.deps.config().profiles) {
       if (this.accountKey(p.id) !== key) continue;
-      const cap = p.maxConcurrentSessions;
-      if (typeof cap === "number" && Number.isInteger(cap) && cap > 0) {
-        if (minCap === undefined || cap < minCap) minCap = cap;
+      for (const cap of [p.maxConcurrentSessions, this.deps.remoteCap?.(p.id)]) {
+        if (typeof cap === "number" && Number.isInteger(cap) && cap > 0) {
+          if (minCap === undefined || cap < minCap) minCap = cap;
+        }
       }
     }
     return minCap;
@@ -353,18 +363,33 @@ export class Accounts {
     return counts;
   }
 
+  private addRemoteActive(counts: Map<string, number>): Map<string, number> {
+    if (!this.deps.remoteActive) return counts;
+    const remoteByKey = new Map<string, number>();
+    for (const p of this.deps.config().profiles) {
+      const n = this.deps.remoteActive(p.id);
+      if (n > 0) {
+        const key = this.accountKey(p.id);
+        const prev = remoteByKey.get(key) ?? 0;
+        if (n > prev) remoteByKey.set(key, n);
+      }
+    }
+    for (const [key, n] of remoteByKey) counts.set(key, (counts.get(key) ?? 0) + n);
+    return counts;
+  }
+
   private loadMap(except?: string): Map<string, number> {
-    return this.countByAccount(this.deps.running(except));
+    return this.addRemoteActive(this.countByAccount(this.deps.running(except)));
   }
 
   private activeMap(except?: string): Map<string, number> {
     const list = this.deps.active ? this.deps.active(except) : this.deps.running(except);
-    return this.countByAccount(list);
+    return this.addRemoteActive(this.countByAccount(list));
   }
 
   /// Chooses the profile a session runs on (pool.ts); `except`: the session it is chosen for, whose own process is not
   /// counted.
-  pick(candidates: Profile[], model: string | null | undefined, strict: boolean, except?: string): Profile {
+  pick(candidates: Profile[], model: string | null | undefined, strict: boolean, except?: string, excludeCapped?: ReadonlySet<string>): Profile {
     const load = this.loadMap(except);
     const active = this.activeMap(except);
     const profile = pickProfile(
@@ -373,7 +398,14 @@ export class Accounts {
       {
         health: (id) => this.healthFor(id, model),
         load: (id) => load.get(this.accountKey(id)) ?? 0,
-        active: (id) => active.get(this.accountKey(id)) ?? 0,
+        active: (id) => {
+          const base = active.get(this.accountKey(id)) ?? 0;
+          if (excludeCapped?.has(id)) {
+            const cap = this.accountMaxSessions(id);
+            if (cap !== undefined) return Math.max(base, cap);
+          }
+          return base;
+        },
         lastPicked: (id) => this.picked.get(this.accountKey(id)) ?? 0,
         now: () => this.deps.clock.currentTimeMillisUnsafe(),
         maxSessions: (id) => this.accountMaxSessions(id),
@@ -401,7 +433,7 @@ export class Accounts {
   /// goes on on another runtime's that runs its model and can, as `spend` moves it when a turn ran into the allowance
   /// (`takeAcross`), rather than first running a turn into a limit it knows of. `forceCap`: bypasses account
   /// concurrency caps after the user explicitly starts a queued chat.
-  runOn(key: string, holding = false, quiet = false, across = false, forceCap = false): RunOn {
+  runOn(key: string, holding = false, quiet = false, across = false, forceCap = false, excludeCapped?: ReadonlySet<string>): RunOn {
     const { store } = this.deps;
     const row = store.getSession(key);
     if (!row) throw new Error(`unknown session ${key}`);
@@ -412,7 +444,7 @@ export class Accounts {
     // Left to the station, none of its runtime's able to run its model now: one of another runtime's that can.
     const elsewhere = (kept: string[] | null, onlyPaid = false, avoidCrowdedCapped = false): RunOn | null => {
       if (!across || row.profilePinned || kept !== null || row.model === null) return null;
-      const next = this.takeAcross(key, row, null, "session taken on by another runtime's profile", quiet, onlyPaid, forceCap, avoidCrowdedCapped);
+      const next = this.takeAcross(key, row, null, "session taken on by another runtime's profile", quiet, onlyPaid, forceCap, avoidCrowdedCapped, excludeCapped);
       return next ? withSpelling(next) : null;
     };
     if (workspaceCandidates.length === 0) {
@@ -432,7 +464,7 @@ export class Accounts {
     const active = this.activeMap(key);
     const activeOf = (p: Profile) => active.get(this.accountKey(p.id)) ?? 0;
     const capOf = (p: Profile) => (billedPerUse(p) ? undefined : this.accountMaxSessions(p.id));
-    const capped = (p: Profile) => isSessionCapped(p, capOf(p), activeOf(p));
+    const capped = (p: Profile) => !billedPerUse(p) && (excludeCapped?.has(p.id) === true || isSessionCapped(p, capOf(p), activeOf(p)));
     // Of the windows that weigh on its model alone (an Antigravity account's Claude / GPT ones do not on Gemini).
     const crowded = (p: Profile) => urgency(this.healthFor(p.id, row.model).quota, now).crowded;
     // (Its model counts only where one of them has it enabled, as in `spend` and the pool: else each call would move it
@@ -495,13 +527,13 @@ export class Accounts {
         if (usablePaid.length > 0 && usablePaid.every(capped)) {
           const moved = elsewhere(keptProfiles, true);
           if (moved) return moved;
-          const chosen = this.pick(usablePaid, row.model, false, key);
-          throw new AccountCapError(chosen.name, chosen.id, activeOf(chosen), capOf(chosen)!, this.accountInProtection(chosen.id));
+          const chosen = this.pick(usablePaid, row.model, false, key, excludeCapped);
+          throw new AccountCapError(chosen.name, chosen.id, activeOf(chosen), capOf(chosen) ?? 1, this.accountInProtection(chosen.id));
         }
       }
     }
     if (candidates.length === 0) throw new Error(`session ${key}: no profile runs ${row.runtime}`);
-    const next = this.pick(among, row.model, false, key);
+    const next = this.pick(among, row.model, false, key, excludeCapped);
     if (next.id !== row.profile || keptProfiles !== (row.profiles ?? null)) {
       store.setSessionProfile(key, next.id, false, keptProfiles);
       if (next.id !== row.profile) {
@@ -632,7 +664,7 @@ export class Accounts {
   /// profile taken; null when none can.
   /// `avoidCrowdedCapped`: none with a concurrency cap whose windows for the model are crowded, as `runOn` leaves for
   /// one paid for only then.
-  private takeAcross(key: string, row: SessionRow, left: string | null, said: string, quiet: boolean, onlyPaid = false, forceCap = false, avoidCrowdedCapped = false): Profile | null {
+  private takeAcross(key: string, row: SessionRow, left: string | null, said: string, quiet: boolean, onlyPaid = false, forceCap = false, avoidCrowdedCapped = false, excludeCapped?: ReadonlySet<string>): Profile | null {
     const runtime = runtimeNamed(row.runtime);
     const model = row.model;
     if (!runtime || model === null || row.speed === "ultrafast") return null;
@@ -644,12 +676,12 @@ export class Accounts {
     );
     if (matching.length === 0) return null;
     const active = forceCap ? null : this.activeMap(key);
-    const capped = (p: Profile) => active !== null && isSessionCapped(p, this.accountMaxSessions(p.id), active.get(this.accountKey(p.id)) ?? 0);
+    const capped = (p: Profile) => active !== null && !billedPerUse(p) && (excludeCapped?.has(p.id) === true || isSessionCapped(p, this.accountMaxSessions(p.id), active.get(this.accountKey(p.id)) ?? 0));
     const now = this.deps.clock.currentTimeMillisUnsafe();
     const crowdedCapped = (p: Profile) => avoidCrowdedCapped && this.accountMaxSessions(p.id) !== undefined && urgency(this.healthFor(p.id, model).quota, now).crowded;
     const candidates = matching.filter((p) => !capped(p) && !crowdedCapped(p));
     if (candidates.length === 0) return null;
-    const next = this.pick(candidates, model, true, key);
+    const next = this.pick(candidates, model, true, key, excludeCapped);
     const target = next.runtimes.find((r) => r !== runtime && runs(next, model));
     if (!target) return null;
     const effort = row.effort !== null && this.modelEfforts(target, model, null, (p) => this.allows(key, p)).includes(row.effort) ? row.effort : null;

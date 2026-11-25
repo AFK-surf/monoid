@@ -41,6 +41,8 @@ let test_words : Map[String, String] = {
   "android-misc.drive.player.nextOne": "下一个：{name}",
   "android-misc.drive.player.ended": "播放结束",
   "android-chat.video.frames": "{at} / {n} 帧",
+  "android-chat.video.scrubFrame": "逐帧",
+  "android-chat.video.scrubFine": "微调",
   "common.cancel": "取消",
 }
 
@@ -291,8 +293,9 @@ test "a phone's song: its mark and name in the middle, on the page's colours, th
 }
 
 ///|
-test "a desktop's: a double click in the middle of the film plays it, as a phone's double tap; a click alone does not" {
+test "a desktop's: a pointer click immediately plays or pauses it; a genuine double click swallows the second Up" {
   let t = player_tester(false, "E1.mp4", [], [], [])
+  t.host_says_finger(Some(false))
   t.draw()
   // (what the player has been told to do: a play is op 1, a pause op 2)
   let plays = fn() {
@@ -302,10 +305,10 @@ test "a desktop's: a double click in the middle of the film plays it, as a phone
     }).length()
   }
   let before = plays()
+  // Single click: 0ms immediate play/pause
   t.tap(640.0, 400.0)
-  t.run_for(@player.media_note_ms)
-  assert_eq(plays(), before)
-  t.tap(640.0, 400.0)
+  assert_eq(plays(), before + 1)
+  // Rapid second click at the same spot within double-click window: swallowed (0 reversal)
   t.advance(@ui.double_tap_ms / 2.0)
   t.tap(640.0, 400.0)
   t.draw()

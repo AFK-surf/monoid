@@ -124,6 +124,63 @@ test "rows as the indexes keep them" {
 }
 
 ///|
+test "task_rows_of and task_wire normalize participants, cap at 32, omit empty/absent" {
+  let many : Array[J] = []
+  for i = 0; i < 40; i = i + 1 {
+    many.push(jstr("User\{i}@Example.COM"))
+  }
+  let long_email = String::make(200, 'x') + "@x"
+  let rows = task_rows_of({
+    station: None,
+    usage: Null,
+    chats: [
+      jobj([
+        ("thread", ji(1)),
+        ("title", jstr("A")),
+        (
+          "participants",
+          Arr([
+            jstr("  Ann@X "),
+            jstr("ann@x"),
+            jstr("Bob@Y"),
+            jstr("not an email"),
+            jstr("local"),
+            jstr("slack:cm:Router"),
+            jstr("a@b@c"),
+            jstr(long_email),
+            ji(42),
+            Null,
+            jstr(""),
+          ]),
+        ),
+      ]),
+      jobj([("thread", ji(2)), ("title", jstr("Cap")), ("participants", Arr(many))]),
+      jobj([("thread", ji(3)), ("title", jstr("Empty")), ("participants", Arr([]))]),
+      jobj([("thread", ji(4)), ("title", jstr("Invalid")), ("participants", Arr([jstr("bad"), jstr("local")]))]),
+      jobj([("thread", ji(5)), ("title", jstr("Legacy"))]),
+    ],
+  })
+
+  let row1 = rows.get("1").unwrap().1
+  let w1 = task_wire({ key: "1", source: "stillfail", kind: "task", rev: 1.0, removed: false, json: row1 }).unwrap()
+  assert_eq(prop(Some(w1), "participants").map(stringify), Some("[\"ann@x\",\"bob@y\"]"))
+
+  let row2 = rows.get("2").unwrap().1
+  let w2 = task_wire({ key: "2", source: "stillfail", kind: "task", rev: 2.0, removed: false, json: row2 }).unwrap()
+  let ps2 = arr_of(prop(Some(w2), "participants")).unwrap()
+  assert_eq(ps2.length(), 32)
+  assert_eq(str_of(Some(ps2[0])), Some("user0@example.com"))
+  assert_eq(str_of(Some(ps2[31])), Some("user31@example.com"))
+
+  for key in ["3", "4", "5"] {
+    let raw = rows.get(key).unwrap().1
+    assert_true(prop(Some(parse_json(raw)), "participants") is None)
+    let w = task_wire({ key, source: "stillfail", kind: "task", rev: 3.0, removed: false, json: raw }).unwrap()
+    assert_true(prop(Some(w), "participants") is None)
+  }
+}
+
+///|
 test "a question card" {
   let card = @jsjson.parse("{\"type\":\"options\",\"options\":[{\"label\":\" a \"},{\"label\":\"b\",\"recommended\":true}]}")
   assert_eq(
@@ -397,6 +454,7 @@ test "CommaSurface sends stillfail_workspace on connect, pushes deduped updates,
       }),
       owner_active_at: None,
       on_owner_active_change: None,
+      station_id: None,
     },
     io,
     rt,
@@ -461,6 +519,7 @@ test "CommaSurface sends stillfail_workspace on connect, pushes deduped updates,
       }),
       owner_active_at: None,
       on_owner_active_change: None,
+      station_id: None,
     },
     io,
     rt,
@@ -512,6 +571,7 @@ test "CommaSurface quantizes stillfail_owner_active_at to 30s buckets and pushes
           unsubscribed.val += 1
         }
       }),
+      station_id: None,
     },
     io,
     rt,
@@ -580,11 +640,11 @@ test "OwnerActivity merges cross-station peer reads monotonically without re-gos
 }
 
 ///|
-test "CommaSurface forwards close_card flag from task.say to CommaChats.say" {
+test "CommaSurface advertises task_say_cas when chats enabled, validates expected_card_seq, and forwards flags" {
   let rt = @effect.Runtime::new()
   let io = test_io()
   let tasks = CommaTasks::new("/tmp/comma-tasks-closecard-wbtest.json", io, rt)
-  let calls : Array[(String, String, Bool)] = []
+  let calls : Array[(String, String, Bool, Double?, String?)] = []
   let sent : Array[J] = []
   let sock : Socket = { id: 1, send: text => sent.push(parse_json(text)), on_close: _ => () => () }
   let surface = CommaSurface::new(
@@ -602,8 +662,8 @@ test "CommaSurface forwards close_card flag from task.say to CommaChats.say" {
       stats: None,
       chats: Some({
         read: async fn(_, _, _) { Null },
-        say: async fn(ref_, text, _, _, _, close_card) {
-          calls.push((ref_, text, close_card))
+        say: async fn(ref_, text, _, _, _, close_card, expected_card_seq, requester_email) {
+          calls.push((ref_, text, close_card, expected_card_seq, requester_email))
           jobj([("seq", ji(0))])
         },
       }),
@@ -613,17 +673,50 @@ test "CommaSurface forwards close_card flag from task.say to CommaChats.say" {
       on_workspace_meta_change: None,
       owner_active_at: None,
       on_owner_active_change: None,
+      station_id: None,
     },
     io,
     rt,
   )
+  // Capabilities include task_say_cas: 1 when chats is Some(_).
+  assert_eq(num_of(prop(Some(surface.capabilities()), "task_say_cas")), Some(1.0))
+
+  // Capabilities omit task_say_cas when chats is None.
+  let no_chats = CommaSurface::new(
+    {
+      connect: "cm-no-chats",
+      server: "http://127.0.0.1",
+      token: "salix_conn_test123",
+      name: "Alpha · mac-1",
+      workspace: Some("ws_1"),
+      owner_email: None,
+      tasks,
+      store: test_store(),
+      models: () => [],
+      lang: Some("en"),
+      stats: None,
+      chats: None,
+      previous_exited: async fn() { () },
+      in_scope: () => true,
+      workspace_meta: None,
+      on_workspace_meta_change: None,
+      owner_active_at: None,
+      on_owner_active_change: None,
+      station_id: None,
+    },
+    io,
+    rt,
+  )
+  assert_true(prop(Some(no_chats.capabilities()), "task_say_cas") is None)
+
+  let errors : Array[String] = []
   let fiber = rt.fork(async fn() {
     surface.socket_ = Some(sock)
     ignore(
       surface.handle(
         "task.say",
         @jsjson.parse(
-          "{\"task\":\"5\",\"text\":\"Skip deploy\",\"key\":\"k1\",\"requester\":\"Router\",\"close_card\":true}",
+          "{\"task\":\"5\",\"text\":\"Skip deploy\",\"key\":\"k1\",\"requester\":\"Router\",\"close_card\":true,\"expected_card_seq\":9}",
         ),
       ),
     )
@@ -631,10 +724,35 @@ test "CommaSurface forwards close_card flag from task.say to CommaChats.say" {
       surface.handle(
         "task.say",
         @jsjson.parse(
-          "{\"task\":\"5\",\"text\":\"Proceed\",\"key\":\"k2\",\"requester\":\"Router\"}",
+          "{\"task\":\"5\",\"text\":\"Proceed\",\"key\":\"k2\",\"requester\":\"Router\",\"requester_email\":\"  Alice@Example.COM \",\"expected_card_seq\":null}",
         ),
       ),
     )
+    ignore(
+      surface.handle(
+        "task.say",
+        @jsjson.parse(
+          "{\"task\":\"5\",\"text\":\"Plain\",\"key\":\"k3\",\"requester\":\"Router\",\"requester_email\":\"not:valid@x\"}",
+        ),
+      ),
+    )
+    let bad_values = ["0", "-1", "1.5", "\"9\"", "true", "9007199254740992"]
+    for bad in bad_values {
+      let res = try {
+        Ok(
+          surface.handle(
+            "task.say",
+            @jsjson.parse("{\"task\":\"5\",\"text\":\"Proceed\",\"expected_card_seq\":\{bad}}"),
+          ),
+        )
+      } catch {
+        e => Err(message_of(e))
+      }
+      match res {
+        Err(msg) => errors.push(msg)
+        Ok(_) => errors.push("unexpected ok for \{bad}")
+      }
+    }
   })
   ignore(rt.run_ready())
   match fiber.poll() {
@@ -642,7 +760,435 @@ test "CommaSurface forwards close_card flag from task.say to CommaChats.say" {
     Some(Failed(e)) => fail("task.say failed: \{e}")
     _ => fail("task.say did not finish")
   }
-  assert_eq(calls, [("5", "Skip deploy", true), ("5", "Proceed", false)])
+  assert_eq(
+    calls,
+    [
+      ("5", "Skip deploy", true, Some(9.0), None),
+      ("5", "Proceed", false, None, Some("alice@example.com")),
+      ("5", "Plain", false, None, None),
+    ],
+  )
+  assert_eq(errors.length(), 6)
+  for msg in errors {
+    assert_eq(msg, "expected_card_seq must be a positive integer")
+  }
+}
+
+///|
+test "router_says_with enforces expected_card_seq CAS for replies, silent closes, and idempotent retries" {
+  let rt = @effect.Runtime::new()
+  let io = test_io()
+  let card_body = @jsjson.parse(
+    "{\"type\":\"options\",\"assignee\":\"ann@x\",\"options\":[{\"label\":\"Proceed\",\"action\":\"reply\"},{\"label\":\"Skip deploy\",\"action\":\"close\"}]}",
+  )
+  let pending_card : Ref[(Double, J)?] = Ref(Some((1.0, card_body)))
+  let next_seq = Ref(1.0)
+  let appended : Array[(Double, String)] = []
+  let closed_calls : Array[(Double, String)] = []
+  let close_succeeds = Ref(true)
+  let once_rows : Map[String, (String, Double, Double, Double)] = {}
+  let next_once_id = Ref(0)
+  let remembered : Map[String, Double] = {}
+
+  let hub : RouterHub = {
+    get: async fn(sql, args) {
+      if sql.contains("FROM comma_router_once WHERE key = ?") {
+        let key = str_of(args.get(0)).unwrap_or("")
+        match once_rows.get(key) {
+          Some((id, thread, n, pending)) =>
+            jobj([("id", jstr(id)), ("thread", Num(thread)), ("n", Num(n)), ("pending", Num(pending))])
+          None => Null
+        }
+      } else if sql.contains("INSERT INTO comma_router_once") {
+        next_once_id.val += 1
+        let id = next_once_id.val.to_string()
+        let key = str_of(args.get(0)).unwrap_or("")
+        let thread = num_of(args.get(1)).unwrap_or(0.0)
+        let n = num_of(args.get(2)).unwrap_or(0.0)
+        once_rows[key] = (id, thread, n, 1.0)
+        jobj([("id", jstr(id))])
+      } else {
+        Null
+      }
+    },
+    all: async fn(sql, args) {
+      if sql.contains("FROM comma_router_once o") {
+        let key = str_of(args.get(1)).unwrap_or("")
+        match once_rows.get(key) {
+          Some((_, _, _, pending)) => [jobj([("pending", Num(pending)), ("session", Null)])]
+          None => []
+        }
+      } else {
+        []
+      }
+    },
+    run: async fn(_, _) { () },
+    thread_sessions: async fn(_) { [jobj([("session", jstr("a")), ("leftAt", Null)])] },
+    get_session: async fn(key) { jobj([("key", jstr(key)), ("ws", jstr("ws_1"))]) },
+    ws_of: async fn(_) { Some("ws_1") },
+    deliver: async fn(_, _, _, _, _) { () },
+    complete_router_write: async fn(id) {
+      for k, v in once_rows {
+        if v.0 == id {
+          once_rows[k] = (v.0, v.1, v.2, 0.0)
+          return true
+        }
+      }
+      false
+    },
+    pending_card_header: async fn(_) {
+      match pending_card.val {
+        Some((n, card)) => Arr([jobj([("n", Num(n)), ("ts", jstr("\{n}.0"))]), card])
+        None => Null
+      }
+    },
+    close_card: async fn(_, _, n, option) {
+      if !close_succeeds.val {
+        return false
+      }
+      closed_calls.push((n, option))
+      pending_card.val = None
+      true
+    },
+    say: async fn(_, _, text, hooks) {
+      match hooks {
+        Some(h) => {
+          (h.before)()
+          next_seq.val += 1.0
+          let n = next_seq.val
+          appended.push((n, text))
+          pending_card.val = None
+          (h.inserted)(n)
+          n
+        }
+        None => {
+          next_seq.val += 1.0
+          let n = next_seq.val
+          appended.push((n, text))
+          pending_card.val = None
+          n
+        }
+      }
+    },
+  }
+
+  let run_say = async fn(w : RouterSay) -> Result[Double, String] {
+    try {
+      Ok(router_says_with(hub, k => remembered.get(k), (k, n) => remembered[k] = n, Some("ws_1"), w, io))
+    } catch {
+      e => Err(message_of(e))
+    }
+  }
+
+  let results : Array[Result[Double, String]] = []
+  let fiber = rt.fork(async fn() {
+    // 0: wrong seq fails with stale_card without appending
+    results.push(
+      run_say({
+        thread: 10.0,
+        text: "Proceed",
+        key: "cm:wrong",
+        requester: "Router",
+        connect: "cm",
+        connect_scope: None,
+        requester_email: None,
+        close_card: false,
+        expected_card_seq: Some(99.0),
+      }),
+    )
+    // 1: matching seq keyed reply succeeds and clears pending card
+    results.push(
+      run_say({
+        thread: 10.0,
+        text: "Proceed",
+        key: "cm:reply-1",
+        requester: "Router",
+        connect: "cm",
+        connect_scope: None,
+        requester_email: None,
+        close_card: false,
+        expected_card_seq: Some(1.0),
+      }),
+    )
+    // 2: idempotent retry with same key succeeds even after card is no longer pending
+    results.push(
+      run_say({
+        thread: 10.0,
+        text: "Proceed",
+        key: "cm:reply-1",
+        requester: "Router",
+        connect: "cm",
+        connect_scope: None,
+        requester_email: None,
+        close_card: false,
+        expected_card_seq: Some(1.0),
+      }),
+    )
+    // 3: new key targeting already-answered card1 fails with stale_card
+    results.push(
+      run_say({
+        thread: 10.0,
+        text: "Proceed",
+        key: "cm:reply-2",
+        requester: "Router",
+        connect: "cm",
+        connect_scope: None,
+        requester_email: None,
+        close_card: false,
+        expected_card_seq: Some(1.0),
+      }),
+    )
+    // 4: unkeyed reply targeting missing pending card fails with stale_card
+    results.push(
+      run_say({
+        thread: 10.0,
+        text: "Proceed",
+        key: "",
+        requester: "Router",
+        connect: "cm",
+        connect_scope: None,
+        requester_email: None,
+        close_card: false,
+        expected_card_seq: Some(1.0),
+      }),
+    )
+    // Post card2 (seq 5), test unkeyed matching reply and card replacement
+    pending_card.val = Some((5.0, card_body))
+    // 5: unkeyed reply with matching seq succeeds
+    results.push(
+      run_say({
+        thread: 10.0,
+        text: "Unkeyed ok",
+        key: "",
+        requester: "Router",
+        connect: "cm",
+        connect_scope: None,
+        requester_email: None,
+        close_card: false,
+        expected_card_seq: Some(5.0),
+      }),
+    )
+    // Post card3 (seq 8) for silent-close CAS tests
+    pending_card.val = Some((8.0, card_body))
+    // 6: stale card seq on close_card fails without closing card3
+    results.push(
+      run_say({
+        thread: 10.0,
+        text: "Skip deploy",
+        key: "cm:close-stale",
+        requester: "Router",
+        connect: "cm",
+        connect_scope: None,
+        requester_email: None,
+        close_card: true,
+        expected_card_seq: Some(1.0),
+      }),
+    )
+    // 7: matching seq on close_card with non-close choice fails with choice mismatch
+    results.push(
+      run_say({
+        thread: 10.0,
+        text: "Proceed",
+        key: "cm:close-mismatch",
+        requester: "Router",
+        connect: "cm",
+        connect_scope: None,
+        requester_email: None,
+        close_card: true,
+        expected_card_seq: Some(8.0),
+      }),
+    )
+    // 8: raced close_card (store returns false) fails with stale_card
+    close_succeeds.val = false
+    results.push(
+      run_say({
+        thread: 10.0,
+        text: "Skip deploy",
+        key: "cm:close-raced",
+        requester: "Router",
+        connect: "cm",
+        connect_scope: None,
+        requester_email: None,
+        close_card: true,
+        expected_card_seq: Some(8.0),
+      }),
+    )
+    close_succeeds.val = true
+    // 9: matching seq + matching close choice closes card3 silently
+    results.push(
+      run_say({
+        thread: 10.0,
+        text: "Skip deploy",
+        key: "cm:close-ok",
+        requester: "Router",
+        connect: "cm",
+        connect_scope: None,
+        requester_email: None,
+        close_card: true,
+        expected_card_seq: Some(8.0),
+      }),
+    )
+    // 10: idempotent retry of close_card with same key returns card3 seq
+    results.push(
+      run_say({
+        thread: 10.0,
+        text: "Skip deploy",
+        key: "cm:close-ok",
+        requester: "Router",
+        connect: "cm",
+        connect_scope: None,
+        requester_email: None,
+        close_card: true,
+        expected_card_seq: Some(8.0),
+      }),
+    )
+    // 11: new key targeting closed card3 fails with stale_card
+    results.push(
+      run_say({
+        thread: 10.0,
+        text: "Skip deploy",
+        key: "cm:close-after",
+        requester: "Router",
+        connect: "cm",
+        connect_scope: None,
+        requester_email: None,
+        close_card: true,
+        expected_card_seq: Some(8.0),
+      }),
+    )
+    // 12: without expected_card_seq, close_card on non-pending card preserves backward-compat 0.0
+    results.push(
+      run_say({
+        thread: 10.0,
+        text: "Skip deploy",
+        key: "cm:legacy-close",
+        requester: "Router",
+        connect: "cm",
+        connect_scope: None,
+        requester_email: None,
+        close_card: true,
+        expected_card_seq: None,
+      }),
+    )
+  })
+  ignore(rt.run_ready())
+  match fiber.poll() {
+    Some(Succeeded(_)) => ()
+    Some(Failed(e)) => fail("router_says_with test failed: \{e}")
+    _ => fail("router_says_with test did not finish")
+  }
+  assert_eq(results[0], Err("stale_card: the card is no longer pending"))
+  assert_eq(results[1], Ok(2.0))
+  assert_eq(results[2], Ok(2.0))
+  assert_eq(results[3], Err("stale_card: the card is no longer pending"))
+  assert_eq(results[4], Err("stale_card: the card is no longer pending"))
+  assert_eq(results[5], Ok(3.0))
+  assert_eq(results[6], Err("stale_card: the card is no longer pending"))
+  assert_eq(results[7], Err("stale_card: choice does not match pending card"))
+  assert_eq(results[8], Err("stale_card: the card is no longer pending"))
+  assert_eq(results[9], Ok(8.0))
+  assert_eq(results[10], Ok(8.0))
+  assert_eq(results[11], Err("stale_card: the card is no longer pending"))
+  assert_eq(results[12], Ok(0.0))
+  assert_eq(appended, [(2.0, "Proceed"), (3.0, "Unkeyed ok")])
+  assert_eq(closed_calls, [(8.0, "Skip deploy")])
+}
+
+///|
+test "mesh peer SAY serializes, validates, and propagates expectedCardSeq and stale_card" {
+  let req = peer_say_request("ws_1", {
+    thread: 7.0,
+    text: "Proceed",
+    key: "cm:k1",
+    requester: "Router",
+    connect: "cm",
+    connect_scope: None,
+    requester_email: Some("alice@example.com"),
+    close_card: false,
+    expected_card_seq: Some(42.0),
+  })
+  assert_eq(num_of(prop(prop(Some(req), "say"), "expectedCardSeq")), Some(42.0))
+  assert_eq(str_of(prop(prop(Some(req), "say"), "requesterEmail")), Some("alice@example.com"))
+  let parsed = parse_peer_say("st-a", req)
+  assert_eq(parsed.thread, 7.0)
+  assert_eq(parsed.text, "Proceed")
+  assert_eq(parsed.key, "cm:k1")
+  assert_eq(parsed.connect_scope, Some("st-a/cm"))
+  assert_eq(parsed.requester_email, Some("alice@example.com"))
+  assert_eq(parsed.close_card, false)
+  assert_eq(parsed.expected_card_seq, Some(42.0))
+
+  // Omitted when expected_card_seq is None.
+  let req_none = peer_say_request("ws_1", {
+    thread: 7.0,
+    text: "Proceed",
+    key: "",
+    requester: "Router",
+    connect: "cm",
+    connect_scope: None,
+    requester_email: None,
+    close_card: true,
+    expected_card_seq: None,
+  })
+  assert_true(prop(prop(Some(req_none), "say"), "expectedCardSeq") is None)
+  let parsed_none = parse_peer_say("", req_none)
+  assert_eq(parsed_none.connect_scope, Some("cm"))
+  assert_eq(parsed_none.requester_email, None)
+  assert_eq(parsed_none.close_card, true)
+  assert_eq(parsed_none.expected_card_seq, None)
+
+  // Invalid expectedCardSeq values are rejected with "no such write".
+  for bad in ["0", "-2", "1.5", "\"42\"", "true", "9007199254740992"] {
+    let raw = @jsjson.parse("{\"say\":{\"thread\":7,\"text\":\"Proceed\",\"expectedCardSeq\":\{bad}}}")
+    let err = try {
+      ignore(parse_peer_say("st-a", raw))
+      None
+    } catch {
+      e => Some(message_of(e))
+    }
+    assert_eq(err, Some("no such write"))
+  }
+
+  // Remote receiver returns stale_card when parsed expectedCardSeq does not match pending card.
+  let rt = @effect.Runtime::new()
+  let io = test_io()
+  let hub : RouterHub = {
+    get: async fn(_, _) { Null },
+    all: async fn(_, _) { [] },
+    run: async fn(_, _) { () },
+    thread_sessions: async fn(_) { [jobj([("session", jstr("a")), ("leftAt", Null)])] },
+    get_session: async fn(key) { jobj([("key", jstr(key))]) },
+    ws_of: async fn(_) { Some("ws_1") },
+    deliver: async fn(_, _, _, _, _) { () },
+    complete_router_write: async fn(_) { true },
+    pending_card_header: async fn(_) { Null },
+    close_card: async fn(_, _, _, _) { false },
+    say: async fn(_, _, _, hooks) {
+      match hooks {
+        Some(h) => (h.before)()
+        None => ()
+      }
+      99.0
+    },
+  }
+  let remote_err : Ref[String?] = Ref(None)
+  let fiber = rt.fork(async fn() {
+    ignore(
+      router_says_with(hub, _ => None, (_, _) => (), Some("ws_1"), parsed, io) catch {
+        e => {
+          remote_err.val = Some(message_of(e))
+          0.0
+        }
+      },
+    )
+  })
+  ignore(rt.run_ready())
+  match fiber.poll() {
+    Some(Succeeded(_)) => ()
+    Some(Failed(e)) => fail("remote peer SAY test failed: \{e}")
+    _ => fail("remote peer SAY test did not finish")
+  }
+  assert_eq(remote_err.val, Some("stale_card: the card is no longer pending"))
 }
 
 ///|
@@ -672,4 +1218,68 @@ test "valid_task_links validates Comma web and app URLs and rejects untrusted sc
   )
   assert_true(valid_task_links(Some(@jsjson.parse("{\"app\":\"comma://task\"}"))) is None)
   assert_true(valid_task_links(Some(@jsjson.parse("{\"app\":\"comma://task?x=1#frag\"}"))) is None)
+}
+
+///|
+test "connect_scope, connect_matches, task_rows_of, and task_wire_for isolate router and participants per connect" {
+  assert_eq(connect_scope(Some("stA"), "comma"), "stA/comma")
+  assert_eq(connect_scope(Some(""), "comma"), "comma")
+  assert_eq(connect_scope(None, "comma"), "comma")
+
+  assert_true(connect_matches("stA/comma", "comma", Some("stA")))
+  assert_false(connect_matches("stA/comma", "comma", Some("stB")))
+  assert_false(connect_matches("stA/comma", "comma", None))
+  assert_true(connect_matches("comma", "comma", Some("stA")))
+  assert_true(connect_matches("comma", "comma", None))
+  assert_false(connect_matches("comma", "comma-2", Some("stA")))
+
+  let rows = task_rows_of({
+    station: None,
+    usage: Null,
+    chats: [
+      jobj([
+        ("thread", ji(10)),
+        ("title", jstr("Scoped")),
+        ("router", Bool(true)),
+        ("routerConnects", Arr([jstr("stA/comma"), jstr("comma-legacy")])),
+        ("participants", Arr([jstr("direct@x")])),
+        (
+          "connectParticipants",
+          jobj([
+            ("stA/comma", Arr([jstr("Alice@X"), jstr("direct@x"), jstr("bad:email@x")])),
+            ("stB/comma", Arr([jstr("bob@x")])),
+            ("comma-legacy", Arr([jstr("carol@x")])),
+          ]),
+        ),
+      ]),
+      // Legacy peer without routerConnects still falls back to router: true.
+      jobj([("thread", ji(11)), ("title", jstr("OldPeer")), ("router", Bool(true))]),
+    ],
+  })
+  let raw10 = rows.get("10").unwrap().1
+  let idx10 : IndexRow = { key: "10", source: "stillfail", kind: "task", rev: 1.0, removed: false, json: raw10 }
+
+  let w_a = task_wire_for(idx10, "comma", Some("stA")).unwrap()
+  assert_true(prop(Some(w_a), "router") is Some(Bool(true)))
+  assert_eq(prop(Some(w_a), "participants").map(stringify), Some("[\"direct@x\",\"alice@x\"]"))
+
+  let w_b = task_wire_for(idx10, "comma", Some("stB")).unwrap()
+  assert_true(prop(Some(w_b), "router") is None)
+  assert_eq(prop(Some(w_b), "participants").map(stringify), Some("[\"direct@x\",\"bob@x\"]"))
+
+  let w_legacy = task_wire_for(idx10, "comma-legacy", Some("stB")).unwrap()
+  assert_true(prop(Some(w_legacy), "router") is Some(Bool(true)))
+  assert_eq(prop(Some(w_legacy), "participants").map(stringify), Some("[\"direct@x\",\"carol@x\"]"))
+
+  let w_other = task_wire_for(idx10, "comma-other", Some("stA")).unwrap()
+  assert_true(prop(Some(w_other), "router") is None)
+  assert_eq(prop(Some(w_other), "participants").map(stringify), Some("[\"direct@x\"]"))
+
+  let raw11 = rows.get("11").unwrap().1
+  let idx11 : IndexRow = { key: "11", source: "stillfail", kind: "task", rev: 2.0, removed: false, json: raw11 }
+  let w11 = task_wire_for(idx11, "comma", Some("stB")).unwrap()
+  assert_true(prop(Some(w11), "router") is Some(Bool(true)))
+
+  // Wire::TaskWireFor is recognized as built_in (omits removed bodies & uses adaptive paging).
+  assert_true(Wire::TaskWireFor("comma", Some("stA")).built_in())
 }

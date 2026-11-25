@@ -11,7 +11,8 @@ import { closePeerRelays } from "./peer-relays.ts";
 import { Cause, Effect, FiberSet, Layer, Option, Schedule, Scope, Stream } from "effect";
 import { log } from "../ops/log.ts";
 import { stationLog } from "../ops/log-export.ts";
-import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, RigSide, ScreenRegistry, StationConfig, Store, Up } from "../services.ts";
+import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, ReaderConfig, RigSide, ScreenRegistry, StationConfig, Store, Up } from "../services.ts";
+import { resolveReaderSelectionAsync } from "../read/mb-reader.ts";
 import { DeviceTools, accessOf } from "../device/tools.ts";
 import { TOOLS_ALPN, adminSessions, presenceTools, serveTools } from "./tools.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, STOPPING, peerCall, servePeer } from "./peer.ts";
@@ -53,6 +54,7 @@ export const MeshLive = Layer.effectDiscard(
     const peers = yield* Peers;
     const parts = yield* Parts;
     const config = yield* StationConfig;
+    const readerConfig = yield* ReaderConfig;
     const screens = yield* ScreenRegistry;
     const events = yield* Events;
     const rigSide = yield* RigSide;
@@ -200,36 +202,55 @@ export const MeshLive = Layer.effectDiscard(
       // here: the front hands it their streams, and this process only who each connection's member is.
       const route = endpoint.route?.bind(endpoint);
       // (no admin API: a test's mesh alone)
-      const binary = admin?.readers?.mbReader ?? null;
-      if (route !== undefined && binary !== null) {
-        const served = yield* Effect.acquireRelease(
-          Effect.sync(() => new Served(binary, admin.readers.data,
-            (viewer, head, body) => handledGiven(members, viewer, head, body),
-            (viewer, build) => void sawBuild(cloud.state, viewer, build === null ? {} : { [BUILD_HEADER]: String(build) }),
-            (viewer, head, body) => answerGiven(members, viewer, head, body))),
-          (served) => Effect.promise(() => served.close()),
-        );
-        members.served = served;
-        served.changed = (changes, titled) => {
-          for (const thread of titled) store?.retitled(thread);
-          store?.told(changes);
-        };
-        served.says = { claim: (viewer, path, key, lang) => admin.claimSay(viewer, path, key, lang), said: (thread, n, text, row) => admin.saidElsewhere(thread, n, text, row) };
-        // (a program that ended taken off the routes the connections taken from then on go by, and put back once its
-        // next one listens)
-        served.onRoutes = (paths) => void route(ALPN, paths, SERVED_ROUTES).catch(() => {});
-        // Routed before the first connection is taken (the front gives a connection the routes said by the time this
-        // process takes it): one taken before would have every request of its handed to this process, a device's
-        // events stream too, for as long as it stays. Not started, this process answers them all.
-        yield* Effect.promise(async () => {
-          try {
-            const paths = await served.start();
-            if (!(await route(ALPN, paths, SERVED_ROUTES))) log.info("mesh", "the front routes nothing (one from before); every request is this process's");
-            else log.info("mesh", "requests routed to the MoonBit program", { routes: SERVED_ROUTES });
-          } catch (e) {
-            log.warn("mesh", "the MoonBit program that answers requests did not start", { error: (e as Error).message });
+      const readers = admin?.readers;
+      if (route !== undefined && readers != null && readers.mbReader !== null) {
+        const explicitBinary = readers.explicitMbReader;
+        let serveBinary: string | null = explicitBinary;
+        let resolveServeBinary: (() => Promise<string>) | undefined;
+        if (serveBinary === null) {
+          const resolved = yield* Effect.promise(() =>
+            resolveReaderSelectionAsync("serve", { config: readerConfig, logAt: "mesh" }).catch((e) => {
+              log.warn("mesh", "the serving reader binary could not be resolved; answering requests in Node", { error: (e as Error).message });
+              return null;
+            }),
+          );
+          if (resolved !== null) {
+            serveBinary = resolved.primaryBinary;
+            resolveServeBinary = () => resolveReaderSelectionAsync("serve", { config: readerConfig, logAt: "mesh" }).then((r) => r.primaryBinary);
           }
-        });
+        }
+        if (serveBinary !== null) {
+          const binary = serveBinary;
+          const served = yield* Effect.acquireRelease(
+            Effect.sync(() => new Served(binary, readers.data,
+              (viewer, head, body) => handledGiven(members, viewer, head, body),
+              (viewer, build) => void sawBuild(cloud.state, viewer, build === null ? {} : { [BUILD_HEADER]: String(build) }),
+              (viewer, head, body) => answerGiven(members, viewer, head, body),
+              resolveServeBinary !== undefined ? { resolveBinary: resolveServeBinary } : {})),
+            (served) => Effect.promise(() => served.close()),
+          );
+          members.served = served;
+          served.changed = (changes, titled) => {
+            for (const thread of titled) store?.retitled(thread);
+            store?.told(changes);
+          };
+          served.says = { claim: (viewer, path, key, lang) => admin.claimSay(viewer, path, key, lang), said: (thread, n, text, row) => admin.saidElsewhere(thread, n, text, row) };
+          // (a program that ended taken off the routes the connections taken from then on go by, and put back once its
+          // next one listens)
+          served.onRoutes = (paths) => void route(ALPN, paths, SERVED_ROUTES).catch(() => {});
+          // Routed before the first connection is taken (the front gives a connection the routes said by the time this
+          // process takes it): one taken before would have every request of its handed to this process, a device's
+          // events stream too, for as long as it stays. Not started, this process answers them all.
+          yield* Effect.promise(async () => {
+            try {
+              const paths = await served.start();
+              if (!(await route(ALPN, paths, SERVED_ROUTES))) log.info("mesh", "the front routes nothing (one from before); every request is this process's");
+              else log.info("mesh", "requests routed to the MoonBit program", { routes: SERVED_ROUTES });
+            } catch (e) {
+              log.warn("mesh", "the MoonBit program that answers requests did not start", { error: (e as Error).message });
+            }
+          });
+        }
       }
       // The control plane's gateways: the device tools, as far as the station's own setting lets them.
       const device = yield* Effect.acquireRelease(

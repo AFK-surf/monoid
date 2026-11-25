@@ -2417,10 +2417,11 @@ fn FakeHost::nt_state(self : FakeHost, what : Int) -> Int {
         "denied" => 2
         "ask" => 3
         "default" => 4
+        "pending" => 5
         _ => 0
       }
     1 => {
-      if self.notice_perm == "granted" || self.notice_perm == "unknown" {
+      if self.notice_perm == "granted" || self.notice_perm == "unknown" || self.notice_perm == "pending" {
         return 0
       }
       self.notice_asks += 1
@@ -3203,6 +3204,7 @@ fn FakeHost::as_host(self : FakeHost) -> @hostapi.Host {
   h.back_enabled = fn(a0) { self.back_enabled(a0) }
   h.wheel_kept = fn(a0) { self.wheel_kept(a0) }
   h.a11y_on = fn() { self.a11y_on() }
+  h.screen_reader_on = fn() { self.screen_reader }
   h.a11y_tree = fn(a0) { self.a11y_tree(a0) }
   h.log = fn(a0) { self.log(a0) }
   h.image_load = fn(a0, a1) { self.image_load(a0, a1) }

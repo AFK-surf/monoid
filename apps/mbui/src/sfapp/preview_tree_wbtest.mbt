@@ -2254,7 +2254,7 @@ test "viewer on the tree, a wide window, a mouse: the way to the one after gone 
   let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   t.touch(0, rx + rw / 2.0, ry + rh / 2.0)
   t.touch(2, rx + rw / 2.0, ry + rh / 2.0)
-  t.run_for(@sf.sleep_ms * 2.0)
+  t.run_for(@ui.double_click_ms + @sf.sleep_ms * 2.0)
   assert_eq(after_disc(t).unwrap_or(0.0), 0.0, msg="gone whole")
   t.touch(0, x + w / 2.0, y + h / 2.0)
   t.touch(2, x + w / 2.0, y + h / 2.0)
@@ -3037,9 +3037,12 @@ test "viewer on a phone's width, a mouse: its bars hidden, shown by the pointer 
   assert_eq(head_drawn(), 1.0, msg="marking: shown")
   t.key(@ui.key_escape)
   assert_true(!marking.on, msg="Escape: marking left")
+  // Leaving an in-window interaction lock restores a full 1800ms grace period before auto-fading
   t.run_for(@sf.sleep_ms * 2.0)
   assert_true(!v.near_bar, msg="the pointer not back along the top")
-  assert_eq(head_drawn(), 0.0, msg="marking left, the bars asleep: gone")
+  assert_true(v.bars_shown(), msg="marking left: bars stay shown for full 1800ms grace period")
+  t.run_for(@sfbase.image_idle_ms + @sf.sleep_ms * 2.0)
+  assert_eq(head_drawn(), 0.0, msg="marking left, past 1800ms idle: gone")
 }
 
 ///|
@@ -3563,8 +3566,8 @@ test "viewer on the tree: the strip put aside and still (no way going): the pict
   assert_true(nodes_of(main).length() == 1 && at_rect(nodes_of(main)[0], x - 50.0, y, w, h), msg="put aside: the node's, 50 aside: \{Repr(nodes_of(main))}")
   let shown = drawn_of(t, main)
   assert_true(shown.length() == 1 && at_rect(shown[0], x - 50.0, y, w, h), msg="drawn 50 aside, once: \{Repr(shown)}")
-  // (the one after: fitted to the stage, 390 + 24 to the right of it, 50 aside)
-  let (nx, ny, nw, nh) = @sfbase.fitted_rect(400.0, 560.0, 390.0, 844.0, bar=@sf.viewer_bar_clear(390.0)).unwrap()
+  // (the one after: fitted full-bleed to the stage, 390 + 24 to the right of it, 50 aside)
+  let (nx, ny, nw, nh) = @sfbase.fitted_rect(400.0, 560.0, 390.0, 844.0, bar=0.0).unwrap()
   let nx = nx - 50.0 + 390.0 + @sfbase.slide_gap
   assert_true(nodes_of(next).length() == 1 && at_rect(nodes_of(next)[0], nx, ny, nw, nh), msg="the one beside it a node's: \{Repr(nodes_of(next))}")
   let beside = drawn_of(t, next)
@@ -4281,32 +4284,29 @@ test "viewer on the tree, marking on a phone and on a wide window, words being w
 }
 
 ///|
-test "viewer on the tree, wide: a tall picture fitted whole under the bar across the top; marking it, clear of its tools too" {
+test "viewer on the tree, wide: a tall picture fits full-bleed; entering and leaving marking never shifts its rect" {
   let t = preview_tester("image", w=1400.0, platform=0)
   let v = viewer.get().unwrap()
   v.zoom.natural(880.0, 1280.0, at=t.ctx().moment())
   t.draw()
-  let (_, y, _, h) = v.zoom.rect_at(t.time()).unwrap()
-  assert_true(y >= @sf.viewer_bar_h, msg="clear of the bar: \{y}")
-  assert_true(y + h <= 844.0, msg="whole: \{y + h}")
+  let r0 = v.zoom.rect_at(t.time()).unwrap()
+  assert_true(r0.1 >= 0.0 && r0.1 + r0.3 <= 844.0, msg="full-bleed whole: \{Repr(r0)}")
   pressed(t, Button, @sf.t("web-main.annotate.image"))
   assert_true(marking.on)
   t.draw()
-  let foot = @sfbase.marks_foot_over()
-  assert_true(foot >= 44.0, msg="the tools' room: \{foot}")
-  let (_, y, _, h) = v.zoom.rect_at(t.time()).unwrap()
-  assert_true(y >= @sf.viewer_bar_h, msg="marking, clear of the bar: \{y}")
-  assert_true(y + h <= 844.0 - foot, msg="marking, clear of the tools: \{y + h} over \{844.0 - foot}")
+  assert_eq(@sfbase.marks_foot_over(), 0.0, msg="marking foot floats over the stage")
+  let r1 = v.zoom.rect_at(t.time()).unwrap()
+  assert_eq(r1, r0, msg="entering marking keeps exact image rect: before=\{Repr(r0)} after=\{Repr(r1)}")
 }
 
 ///|
-test "viewer on the tree, narrow: a phone's tall picture fitted clear of the bar floating over it" {
+test "viewer on the tree, narrow: a phone's tall picture fits full-bleed under the floating bar overlay" {
   let t = preview_tester("image", platform=1)
   let v = viewer.get().unwrap()
   v.zoom.natural(390.0, 844.0, at=t.ctx().moment())
   t.draw()
-  let (_, y, _, _) = v.zoom.rect_at(t.time()).unwrap()
-  assert_true(y >= @sf.viewer_bar_clear(390.0), msg="clear of the bar: \{y}")
+  let (_, y, _, h) = v.zoom.rect_at(t.time()).unwrap()
+  assert_true(y >= 0.0 && y < @sf.viewer_bar_clear(390.0) && y + h <= 844.0, msg="full-bleed: y=\{y} h=\{h}")
 }
 
 ///|

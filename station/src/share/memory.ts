@@ -28,6 +28,7 @@ import { Fibers } from "../ops/fibers.ts";
 import { PrivateFile, writePrivateSoon } from "../ops/files.ts";
 import { FollowedTree, type Watch } from "../ops/follow.ts";
 import { log } from "../ops/log.ts";
+import { PROJECTS_INFO_FILE, PROJECTS_INFO_MAX_BYTES, withProjectsFileLock } from "../projects/info.ts";
 import { portableName } from "../ops/paths.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL, RETIRED_SKILLS, workspaceAgentHome } from "../sessions/agent-home.ts";
 import { MemoryProgram } from "./memory-mb.ts";
@@ -44,7 +45,8 @@ type Kept = { clock: number; files: Record<string, Rec> };
 
 /// A file is shared up to this size, a skill up to SKILL_MOST bytes and SKILL_FILES files: past them it is kept here
 /// as it is and not sent (its copies elsewhere stay as they were).
-const FILE_MOST = 512 * 1024;
+export const FILE_MOST = PROJECTS_INFO_MAX_BYTES;
+export const PROJECTS_INFO_PATH = PROJECTS_INFO_FILE;
 const SKILL_MOST = 4 * 1024 * 1024;
 const SKILL_FILES = 200;
 /// A request carries at most this many bytes of content (the station transport takes 1 MB a request, base64 inflating).
@@ -75,7 +77,7 @@ const own = (m: number) => (m & 0o077) === 0;
 /// one's), each component a portable name and none hidden.
 export function memoryPath(path: unknown): path is string {
   if (typeof path !== "string" || path.length > 512) return false;
-  if (path === "MEMORY.md") return true;
+  if (path === "MEMORY.md" || path === PROJECTS_INFO_PATH) return true;
   const parts = path.split("/");
   if (parts.length < 3 || parts[0] !== "skills" || BUILTIN.has(parts[1]!)) return false;
   return parts.slice(1).every((p) => portableName(p) && !SKIPPED.has(p));
@@ -120,6 +122,8 @@ export type MemoryDeps = {
   binary?: string;
   /// Live `config.json` `readers` snapshot getter for `--builder memory`.
   readers?: () => ReaderSelectConfig;
+  /// Called whenever `PROJECTS.jsonl` changes locally or is updated from a peer in workspace `ws`.
+  onProjectsChanged?: (ws: string) => void;
 };
 
 /// Whether the agents' home's directory at `rel` is followed: skills/ and what is shared of each skill in it, of the home
@@ -297,6 +301,7 @@ export class MemorySync {
     const { files, held } = await this.#read(await this.#home(ws), kept.files);
     const isHeld = (path: string) => held.has(path) || [...held].some((h) => h.endsWith("/") && path.startsWith(h));
     let changed = false;
+    let projectsChanged = false;
     for (const [path, f] of files) {
       const hash = f.hash;
       const rec = kept.files[path];
@@ -307,14 +312,17 @@ export class MemorySync {
       const at = origin ? this.#tick(ws, f.mtime) : this.#tick(ws);
       kept.files[path] = { hash, at, by: me, prev: rec === undefined ? [] : after(rec, []), size: f.size, mode: f.mode, ...(origin ? { origin: true as const } : {}) };
       changed = true;
+      if (path === PROJECTS_INFO_PATH && !origin) projectsChanged = true;
     }
     for (const [path, rec] of Object.entries(kept.files)) {
       if (rec.hash === "" || files.has(path) || isHeld(path)) continue;
       kept.files[path] = { hash: "", at: this.#tick(ws), by: me, prev: after(rec, []), size: 0, mode: rec.mode };
       changed = true;
+      if (path === PROJECTS_INFO_PATH) projectsChanged = true;
     }
     if (await this.#mend(ws)) changed = true;
     if (changed || state.fresh) this.#save(ws);
+    if (projectsChanged) this.#deps.onProjectsChanged?.(ws);
     return changed;
   }
 
@@ -380,44 +388,55 @@ export class MemorySync {
   /// `rec`'s version of `path` written in `ws`'s files (deleted where it is), unless the file changed since the last look
   /// (an edit not yet looked at: it is looked at first, and merged). Whether it was.
   async #write(ws: string, path: string, rec: Rec, content: Buffer | null): Promise<boolean> {
-    const kept = this.#kept.get(ws)!;
     const dir = await this.#home(ws);
     const full = join(dir, ...path.split("/"));
-    const parts = path.split("/");
-    // A skill this station has as a link (a deployment's, one borrowed from a share) stays as it is: the record is kept.
-    if (parts[0] === "skills") {
-      try {
-        if ((await lstat(join(dir, "skills", parts[1]!))).isSymbolicLink()) {
-          kept.files[path] = rec;
-          return true;
-        }
-      } catch {}
-    }
-    const nowHash = (await this.#program.ask<{ hash: string | null }>("hash", { path: full })).hash ?? "";
-    const was = kept.files[path];
-    // (a MEMORY.md of nothing yet is read only where it may be one: no record of it, something there)
-    const empty = async () => EMPTY.has(((await readFile(full).catch(() => null))?.toString("utf8") ?? "\0").trim());
-    if (nowHash !== (was?.hash ?? "") && !(was === undefined && path === "MEMORY.md" && nowHash !== "" && (await empty()))) {
-      // Edited here since it was looked at: looked at again (and merged, made beside it) before anything is written.
-      this.#again(ws);
-      return false;
-    }
-    if (content === null) {
-      await unlink(full).catch(() => undefined);
-      // Its directories, emptied, go too (up to the skill's).
-      for (let d = dirname(full); parts[0] === "skills" && d.length > join(dir, "skills").length; d = dirname(d)) {
-        if (!(await rmdir(d).then(() => true, () => false))) break;
+    const run = async (): Promise<boolean> => {
+      const kept = this.#kept.get(ws)!;
+      const parts = path.split("/");
+      // A skill this station has as a link (a deployment's, one borrowed from a share) stays as it is: the record is kept.
+      if (parts[0] === "skills") {
+        try {
+          if ((await lstat(join(dir, "skills", parts[1]!))).isSymbolicLink()) {
+            kept.files[path] = rec;
+            return true;
+          }
+        } catch {}
       }
-    } else {
-      await mkdir(dirname(full), { recursive: true });
-      const tmp = `${full}.${process.pid}.memory-tmp`;
-      await writeFile(tmp, content, { mode: rec.mode });
-      await chmod(tmp, rec.mode);
-      await rename(tmp, full);
-      await this.#keepBlob(rec.hash, content);
-    }
-    kept.files[path] = rec;
-    return true;
+      // Never overwrite or delete a file that is currently owner-only private (0600/0700), even if it was shared earlier.
+      // Exempt MEMORY.md so legacy 0600 MEMORY.md continues to merge and widen to 0644 as before.
+      if (path !== "MEMORY.md") {
+        const curStat = await lstat(full).catch(() => null);
+        if (curStat !== null && curStat.isFile() && own(curStat.mode)) {
+          return false;
+        }
+      }
+      const nowHash = (await this.#program.ask<{ hash: string | null }>("hash", { path: full })).hash ?? "";
+      const was = kept.files[path];
+      // (a MEMORY.md of nothing yet is read only where it may be one: no record of it, something there)
+      const empty = async () => EMPTY.has(((await readFile(full).catch(() => null))?.toString("utf8") ?? "\0").trim());
+      if (nowHash !== (was?.hash ?? "") && !(was === undefined && path === "MEMORY.md" && nowHash !== "" && (await empty()))) {
+        // Edited here since it was looked at: looked at again (and merged, made beside it) before anything is written.
+        this.#again(ws);
+        return false;
+      }
+      if (content === null) {
+        await unlink(full).catch(() => undefined);
+        // Its directories, emptied, go too (up to the skill's).
+        for (let d = dirname(full); parts[0] === "skills" && d.length > join(dir, "skills").length; d = dirname(d)) {
+          if (!(await rmdir(d).then(() => true, () => false))) break;
+        }
+      } else {
+        await mkdir(dirname(full), { recursive: true });
+        const tmp = `${full}.${process.pid}.memory-tmp`;
+        await writeFile(tmp, content, { mode: rec.mode });
+        await chmod(tmp, rec.mode);
+        await rename(tmp, full);
+        await this.#keepBlob(rec.hash, content);
+      }
+      kept.files[path] = rec;
+      return true;
+    };
+    return path === PROJECTS_INFO_PATH ? withProjectsFileLock(full, run) : run();
   }
 
   /// What another station said of `ws`'s files taken here: each version that comes after this one's written, each made
@@ -425,6 +444,7 @@ export class MemorySync {
   async #take(ws: string, theirs: Record<string, Rec>, given: Map<string, Buffer>): Promise<boolean> {
     const kept = this.#kept.get(ws)!;
     let changed = await this.#apart(ws, theirs, given);
+    let projectsUpdated = false;
     for (const [path, rec] of Object.entries(theirs)) {
       const mine = kept.files[path];
       // What it brought of the versions this decision may read (the rest are blobs/'s), and the stations' names.
@@ -444,6 +464,7 @@ export class MemorySync {
         else if (!(await this.#write(ws, path, rec, content))) continue;
         kept.clock = Math.max(kept.clock, rec.at);
         changed = true;
+        if (path === PROJECTS_INFO_PATH) projectsUpdated = true;
         continue;
       }
       const content = await this.#bytes(outcome.rec.hash, given);
@@ -457,8 +478,10 @@ export class MemorySync {
       }
       log.info("memory", "a file of the memory made apart merged", { workspace: ws, path, beside: beside?.path ?? null });
       changed = true;
+      if (path === PROJECTS_INFO_PATH) projectsUpdated = true;
     }
     if (changed) this.#save(ws);
+    if (projectsUpdated) this.#deps.onProjectsChanged?.(ws);
     return changed;
   }
 
@@ -567,7 +590,7 @@ export class MemorySync {
       case "memory.get":
         return this.#lane(ws, async () => {
           await this.#look(ws);
-          return { files: this.#kept.get(ws)!.files };
+          return { files: this.#kept.get(ws)!.files, supports: [PROJECTS_INFO_PATH] };
         });
       case "memory.blobs": {
         const out: Record<string, string> = {};
@@ -587,7 +610,9 @@ export class MemorySync {
           const theirs: Record<string, Rec> = {};
           for (const [path, raw] of Object.entries(isObject(request.files) ? request.files : {})) {
             const rec = recOf(raw);
-            if (rec === null || !memoryPath(path)) throw new Error("a malformed record of the memory");
+            if (rec === null) throw new Error("a malformed record of the memory");
+            // Gracefully skip unknown future extension paths so newer peers do not stall sync.
+            if (!memoryPath(path)) continue;
             theirs[path] = rec;
           }
           const given = new Map<string, Buffer>();
@@ -646,8 +671,14 @@ export class MemorySync {
       }
       await this.#take(ws, theirs, given);
       // What it lacks of this station's, to give it, and their word: read in the lane, before another look changes them.
+      // Only send PROJECTS.jsonl to peers that advertise support (or already carry it) so older stations keep syncing MEMORY.md & skills.
+      const peerSupportsProjects = (Array.isArray(got?.supports) && got.supports.includes(PROJECTS_INFO_PATH)) || Object.prototype.hasOwnProperty.call(theirs, PROJECTS_INFO_PATH);
       const files = this.#kept.get(ws)!.files;
-      const give: [string, Rec][] = Object.entries(files).filter(([path, r]) => theirs[path]?.hash !== r.hash && !theirs[path]?.prev.includes(r.hash));
+      const give: [string, Rec][] = Object.entries(files).filter(([path, r]) => {
+        if (r.size > FILE_MOST) return false;
+        if (path === PROJECTS_INFO_PATH && !peerSupportsProjects) return false;
+        return theirs[path]?.hash !== r.hash && !theirs[path]?.prev.includes(r.hash);
+      });
       return { give, synced: this.#word(ws) };
     });
     for (let i = 0; i < give.length;) {
@@ -790,7 +821,7 @@ export class MemorySync {
     const what = parts[0] === "workspaces" ? parts[2] : parts[0];
     // workspaces/<id> made: followed from now on
     if (parts[0] === "workspaces" && parts.length <= 2) return this.#settleScan();
-    if (!ws || (what !== "MEMORY.md" && what !== "skills")) return;
+    if (!ws || (what !== "MEMORY.md" && what !== PROJECTS_INFO_PATH && what !== "skills")) return;
     this.#settle.get(ws)?.();
     this.#settle.set(ws, this.#time.after(SETTLE_MS, () => { // timer: a debounce of a burst
       this.#settle.delete(ws);

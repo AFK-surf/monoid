@@ -11324,6 +11324,12 @@ function _M0FP39stillfail5rules4lock6device(v, at, c) {
                 return new _M0DTPC16result6ResultGRP39stillfail5rules4lock6DeviceRP39stillfail5rules4lock9LockErrorE3Err(new _M0DTPC15error5Error46stillfail_2frules_2flock_2eLockError_2eRefused("exp is unix seconds"));
               }
             }
+            const _p$2 = "web";
+            if (!(_kind === _p$2)) {
+              if (exp.$tag === 1) {
+                return new _M0DTPC16result6ResultGRP39stillfail5rules4lock6DeviceRP39stillfail5rules4lock9LockErrorE3Err(new _M0DTPC15error5Error46stillfail_2frules_2flock_2eLockError_2eRefused("only a web page's device runs out"));
+              }
+            }
             if (_kind === "web") {
               if (at > 0) {
                 _L$4: {
@@ -11341,13 +11347,13 @@ function _M0FP39stillfail5rules4lock6device(v, at, c) {
                 }
               }
             }
-            const _p$2 = _M0FP39stillfail5rules4lock8text__of(id);
+            const _p$3 = _M0FP39stillfail5rules4lock8text__of(id);
             let _tmp;
-            if (_p$2 === undefined) {
+            if (_p$3 === undefined) {
               _tmp = $panic();
             } else {
-              const _p$3 = _p$2;
-              _tmp = _p$3;
+              const _p$4 = _p$3;
+              _tmp = _p$4;
             }
             return new _M0DTPC16result6ResultGRP39stillfail5rules4lock6DeviceRP39stillfail5rules4lock9LockErrorE2Ok(new _M0TP39stillfail5rules4lock6Device(_tmp, _sub, _kind, label, sign_key, endpoints, exp, undefined, false));
           }

@@ -451,7 +451,7 @@ export const CHAT_ARCHIVE = {
 export const CHAT_CONFIGURE = {
   name: "chat_configure",
   description:
-    "Read or change a session's runtime, model, effort, speed, context, preset or ownership (for), on this station or another station of the workspace. Omit change fields to inspect its current config; omit chat (or pass \"self\") for your own session. Changes take effect on the next turn (or once the running turn ends) and post a notice in that chat. Skill stillfail-chats says more.",
+    "Read or change a session's runtime, model, effort, speed, context, preset, ownership (for), or project/tags, on this station or another workspace station. Omit change fields to inspect; omit chat (or \"self\") for your own. Model/for changes apply next turn and post a notice; project/tags are silent. Skill stillfail-chats says more.",
   inputSchema: {
     type: "object",
     properties: {
@@ -465,6 +465,10 @@ export const CHAT_CONFIGURE = {
       preset: { type: "string", description: "Apply a preset's model config from this station by name or id (cannot combine with runtime/model/effort/speed/fast/context)." },
       repick: { type: "boolean", description: "Hand account selection back to the station and repick now." },
       for: { type: "string", enum: ["me", "person"], description: "Change ownership: \"me\" to lead this chat as your sub-chat, \"person\" to hand it back to people." },
+      project: { type: "string", description: "Set chat project name (\"\" for cross-project). Silent; cannot combine with model/for changes." },
+      tags: { type: "array", items: { type: "string" }, description: "Replace chat tags (max 3)." },
+      tags_add: { type: "array", items: { type: "string" }, description: "Add tags (max 3 total)." },
+      tags_remove: { type: "array", items: { type: "string" }, description: "Remove tags." },
     },
     additionalProperties: false,
   },

@@ -27,6 +27,9 @@ export class LogsStore {
   readonly #slack: SlackSaidStore;
   /// Whether what was said can be found (`said` is there; it could not be made without room).
   #said = false;
+  /// SQLite `PRAGMA page_size` (immutable for an opened database) and last measured `used()` bytes, cleared on write/commit/vacuum.
+  #pageSize: number | null = null;
+  #used: number | null = null;
   /// The logs let go for room (`log_use`), by K(kind, station, id).
   readonly #evicted = new Set<string>();
   readonly #logCache = new Cache(8192);
@@ -80,11 +83,16 @@ export class LogsStore {
   }
 
   onRollback(): void {
+    this.#used = null;
     this.#saidRev++;
     this.#logCache.clear();
     this.#logIndices.clear();
     this.#logSpans.clear();
     this.logPutsForgotten();
+  }
+
+  invalidateUsed(): void {
+    this.#used = null;
   }
 
   clearLogCache(): void {
@@ -213,10 +221,19 @@ export class LogsStore {
 
   // ── what is kept within the device's room ──
 
-  /// How much of the database is in use (its pages less the free ones), in bytes.
-  used(): number {
+  /// How much of the database is in use (its pages less the free ones), in bytes. Cached until the next write, commit,
+  /// rollback, or incremental vacuum so repeated room checks (`transcriptOverBudget`) avoid redundant PRAGMA calls.
+  used(readOnly = false): number {
+    if (!readOnly && this.#used !== null) return this.#used;
     const n = (q: string) => Number(this.#env.sql.all(q)[0]?.[0] ?? 0);
-    return (n("PRAGMA page_count") - n("PRAGMA freelist_count")) * n("PRAGMA page_size");
+    if (this.#pageSize === null) {
+      const size = n("PRAGMA page_size");
+      if (size <= 0) return 0;
+      this.#pageSize = size;
+    }
+    const bytes = (n("PRAGMA page_count") - n("PRAGMA freelist_count")) * this.#pageSize;
+    if (!readOnly) this.#used = bytes;
+    return bytes;
   }
 
   /// Whether a log's items were let go for room (and not brought back since).

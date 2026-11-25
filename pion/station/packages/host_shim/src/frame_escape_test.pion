@@ -1,0 +1,42 @@
+// Unit tests for `host_shim::format_stdout_frame_header` U+2028/U+2029 escaping.
+
+import "base_codec"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn bytes_contain_seq(hay : Bytes, b0 : Int, b1 : Int, b2 : Int) -> Bool {
+  let mut i = 0
+  while i + 2 < hay.length() {
+    if (hay[i].to_int() & 0xFF) == b0 &&
+    (hay[i + 1].to_int() & 0xFF) == b1 &&
+    (hay[i + 2].to_int() & 0xFF) == b2 {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+test "host_shim: format_stdout_frame_header escapes U+2028 and U+2029 in id" {
+  let id_str = "req\u{2028}mid\u{2029}end"
+  let body_str = "raw\u{2028}body\u{2029}"
+  let body = body_str.to_bytes()
+  let header = format_stdout_frame_header(
+    [
+      ("id", base_codec::json_str(id_str)),
+      ("ok", base_codec::json_bool(true)),
+    ],
+    body.length(),
+  )
+  let hbytes = header.to_bytes()
+  assert(!bytes_contain_seq(hbytes, 0xE2, 0x80, 0xA8))
+  assert(!bytes_contain_seq(hbytes, 0xE2, 0x80, 0xA9))
+  assert(header == "{\"id\":\"req\\u2028mid\\u2029end\",\"ok\":true,\"bytes\":" + body.length().to_string() + "}\n")
+  // Raw body bytes stay completely untouched (still contain raw UTF-8 U+2028 and U+2029)
+  assert(bytes_contain_seq(body, 0xE2, 0x80, 0xA8))
+  assert(bytes_contain_seq(body, 0xE2, 0x80, 0xA9))
+}

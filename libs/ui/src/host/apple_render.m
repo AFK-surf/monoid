@@ -362,7 +362,7 @@ static NSString *shader_src = @
 "  capCenter = ac;\n"
 "  capHalf = float2(0.0);\n"
 "  float bgL = mb_backdrop_luma_rect(bd, g, ac, float2(max(fallback_r, 1.0)));\n"
-"  return float2(1.0 - smoothstep(0.30, 0.42, bgL), bgL);\n"
+"  return float2(1.0 - smoothstep(0.12, 0.21, bgL), bgL);\n"
 "}\n"
 "static float mb_srgb_to_lin(float c) {\n"
 "  return c <= 0.04045 ? (c / 12.92) : pow(max((c + 0.055) / 1.055, 0.0), 2.4);\n"
@@ -609,7 +609,7 @@ MB_CORNER_SL
 "    }\n"
 "  }\n"
 "  float bgL = mb_backdrop_luma_rect(bd, g, ac, float2(max(fallback_r, 1.0)));\n"
-"  return is_dark_glass ? smoothstep(0.35, 0.85, bgL) : (1.0 - smoothstep(0.30, 0.42, bgL));\n"
+"  return is_dark_glass ? smoothstep(0.35, 0.85, bgL) : (1.0 - smoothstep(0.12, 0.21, bgL));\n"
 "}\n"
 "// how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth\n"
 "// each is), its edge covered as a box's own (0.5 - d * scale), so what it cuts meets the ground of the box that cuts it\n"
@@ -891,15 +891,18 @@ MB_CORNER_SL
 "    bool hasLightEm = false;\n"
 "    float colChroma = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
 "    float applePanelGate = smoothstep(0.005, 0.02, abs(I.pad.z)) * (1.0 - smoothstep(0.035, 0.05, abs(I.pad.z))) * (1.0 - smoothstep(0.04, 0.08, colChroma));\n"
+"    float regCtrl = max(1.0 - smoothstep(0.405, 0.50, col.a), smoothstep(0.08, 0.16, colChroma) * (1.0 - smoothstep(0.75, 0.90, col.a)));\n"
+"    float lightCtrlW = 0.0;\n"
+"    float lightDensSaved = 0.30;\n"
 "    if (is_clear) {\n"
 "      // iOS 27 clear liquid glass: col.a == 0.0 keeps crystal-clear zero-veil optical lens\n"
 "      // (lifted tab-bar / toggle / slider thumb & loupe), while Glass::clear() (col.a ~ 0.102)\n"
-"      // blends smoothly into the +0.126 translucent micro-veil over media.\n"
-"      emission = float3(1.0, 1.0, 1.0) * (0.126 * clearVeil);\n"
-"      transmittance = mix(1.0, 0.90, clearVeil);\n"
-"      lift = mix(0.0, 0.10, clearVeil);\n"
+"      // blends smoothly into the +32/255 translucent micro-veil with unified bevel wall.\n"
+"      emission = float3(1.0, 1.0, 1.0) * (0.1255 * clearVeil);\n"
+"      transmittance = mix(1.0, 0.96, clearVeil);\n"
+"      lift = mix(0.0, 0.04, clearVeil);\n"
 "      chromaGain = mix(1.08, 1.0, clearVeil);\n"
-"      contourStr = 0.25 * clearVeil;\n"
+"      contourStr = 0.0;\n"
 "      contourDirAmt = mix(0.32, 0.77, clearVeil);\n"
 "      bevelShadowStr = 0.04 * clearVeil;\n"
 "      glintLum = mix(1.85, 1.35, clearVeil);\n"
@@ -913,27 +916,31 @@ MB_CORNER_SL
 "      if (is_dark) {\n"
 "        float brightT = val;\n"
 "        fogT = brightT;\n"
-"        float dens = max(baseDens, mix(baseDens, 0.64, brightT));\n"
+"        float dens = max(baseDens, mix(baseDens, mix(0.64, 0.34, regCtrl), brightT));\n"
 "        float extra = clamp((dens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
-"        emission = mix(float3(30.0 / 255.0), float3(24.0 / 255.0), extra);\n"
-"        transmittance = mix(0.50, 0.0, extra);\n"
-"        lift = mix(0.24, 0.0, extra);\n"
+"        float ctrlW = (1.0 - smoothstep(0.0, 0.45, extra)) * regCtrl;\n"
+"        emission = mix(float3((30.0 + 4.0 * ctrlW) / 255.0), float3(24.0 / 255.0), extra);\n"
+"        transmittance = mix(0.50 + 0.09 * ctrlW, 0.0, extra);\n"
+"        lift = mix(0.24 + 0.31 * ctrlW, 0.0, extra);\n"
 "        chromaGain = mix(1.05, 0.0, extra);\n"
 "        contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;\n"
 "        glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
 "      } else {\n"
 "        float darkMix = val;\n"
 "        fogT = darkMix;\n"
+"        float lightBaseDens = mix(mix(0.44, 0.525, regCtrl), col.a, smoothstep(0.405, 0.50, col.a));\n"
 "        float extra = clamp((baseDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
+"        float ctrlW = (1.0 - smoothstep(0.0, 0.45, extra)) * regCtrl;\n"
 "        float darkDens = max(baseDens, mix(baseDens, 0.52, darkMix));\n"
 "        float darkExtra = clamp((darkDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
-"        float3 lightEm = float3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * baseDens;\n"
-"        float3 darkEm = mix(float3(30.0 / 255.0), float3(24.0 / 255.0), darkExtra);\n"
+"        float darkCtrlW = (1.0 - smoothstep(0.0, 0.45, darkExtra)) * regCtrl;\n"
+"        float3 lightEm = float3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * lightBaseDens;\n"
+"        float3 darkEm = mix(float3((30.0 + 4.0 * darkCtrlW) / 255.0), float3(24.0 / 255.0), darkExtra);\n"
 "        lightEmSaved = lightEm; darkEmSaved = darkEm; darkMixSaved = darkMix; lightExtra = extra; hasLightEm = true;\n"
 "        emission = mix(lightEm, darkEm, darkMix);\n"
-"        transmittance = mix(mix(0.70, 0.0, extra), mix(0.50, 0.0, darkExtra), darkMix);\n"
-"        lift = mix(mix(0.16, 0.0, extra), mix(0.24, 0.0, darkExtra), darkMix);\n"
-"        chromaGain = mix(mix(1.18, 0.0, extra), mix(1.05, 0.0, darkExtra), darkMix);\n"
+"        transmittance = mix(1.0 - lightBaseDens, mix(0.50 + 0.09 * darkCtrlW, 0.0, darkExtra), darkMix);\n"
+"        lift = mix(mix(mix(0.16, 0.04, ctrlW), 0.0, extra), mix(0.24 + 0.31 * darkCtrlW, 0.0, darkExtra), darkMix);\n"
+"        chromaGain = mix(mix(mix(1.18, 1.00, ctrlW), 0.0, extra), mix(1.05, 0.0, darkExtra), darkMix);\n"
 "        contourStr = mix(0.43, 0.88, darkMix);\n"
 "        contourDirAmt = mix(0.77, 1.0, darkMix);\n"
 "        bevelShadowStr = 0.036;\n"
@@ -942,21 +949,25 @@ MB_CORNER_SL
 "    } else if (is_dark) {\n"
 "      float darkDens = mix(0.30, col.a, smoothstep(0.405, 0.50, col.a));\n"
 "      float extra = clamp((darkDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
-"      emission = mix(float3(30.0 / 255.0), float3(24.0 / 255.0), extra);\n"
-"      transmittance = mix(0.50, 0.0, extra);\n"
-"      lift = mix(0.24, 0.0, extra);\n"
+"      float ctrlW = (1.0 - smoothstep(0.0, 0.45, extra)) * regCtrl;\n"
+"      emission = mix(float3((30.0 + 4.0 * ctrlW) / 255.0), float3(24.0 / 255.0), extra);\n"
+"      transmittance = mix(0.50 + 0.09 * ctrlW, 0.0, extra);\n"
+"      lift = mix(0.24 + 0.31 * ctrlW, 0.0, extra);\n"
 "      float darkChromaFloor = 0.45 * (1.0 - smoothstep(0.72, 0.84, col.a)) * applePanelGate;\n"
 "      chromaGain = mix(1.05, darkChromaFloor, extra);\n"
 "      contourStr = 0.88; contourDirAmt = 1.0; bevelShadowStr = 0.036;\n"
 "      glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
 "    } else {\n"
-"      float lightDens = mix(0.30, col.a, smoothstep(0.405, 0.50, col.a));\n"
-"      float extra = clamp((lightDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
+"      float baseDens = mix(0.30, col.a, smoothstep(0.405, 0.50, col.a));\n"
+"      float lightDens = mix(mix(0.44, 0.525, regCtrl), col.a, smoothstep(0.405, 0.50, col.a));\n"
+"      float extra = clamp((baseDens - 0.30) / (1.0 - 0.30), 0.0, 1.0);\n"
+"      float ctrlW = (1.0 - smoothstep(0.0, 0.45, extra)) * regCtrl;\n"
+"      lightCtrlW = ctrlW; lightDensSaved = lightDens;\n"
 "      emission = float3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * lightDens;\n"
 "      lightEmSaved = emission; lightExtra = extra; hasLightEm = true;\n"
-"      transmittance = mix(0.70, 0.0, extra);\n"
-"      lift = mix(0.16, 0.0, extra);\n"
-"      chromaGain = mix(1.18, 0.0, extra);\n"
+"      transmittance = 1.0 - lightDens;\n"
+"      lift = mix(mix(0.16, 0.04, ctrlW), 0.0, extra);\n"
+"      chromaGain = mix(mix(1.18, 1.00, ctrlW), 0.0, extra);\n"
 "      contourStr = 0.43; contourDirAmt = 0.77; bevelShadowStr = 0.036;\n"
 "      glintLum = 1.6; glintFaceGain = 0.0; glintVib = 2.85;\n"
 "    }\n"
@@ -970,13 +981,7 @@ MB_CORNER_SL
 "      float3 s4 = backdrop(bd, g, fc + float2(-rD, -rD));\n"
 "      lowC = (refractColor * 2.0 + s1 + s2 + s3 + s4) * (1.0 / 6.0);\n"
 "      float interior = (bevel > 0.001) ? smoothstep(0.30 * bevel, 0.85 * bevel, inward) : 1.0;\n"
-"      float y0 = luma(refractColor), y1 = luma(s1), y2 = luma(s2), y3 = luma(s3), y4 = luma(s4);\n"
-"      float yMean = (y0 * 2.0 + y1 + y2 + y3 + y4) * (1.0 / 6.0);\n"
-"      float yVar = ((y0 - yMean) * (y0 - yMean) * 2.0\n"
-"                  + (y1 - yMean) * (y1 - yMean) + (y2 - yMean) * (y2 - yMean)\n"
-"                  + (y3 - yMean) * (y3 - yMean) + (y4 - yMean) * (y4 - yMean)) * (1.0 / 6.0);\n"
-"      float detailAmt = smoothstep(0.020, 0.095, sqrt(max(yVar, 0.0)));\n"
-"      float dampW = interior * max(detailAmt * 0.65, fogT * 0.72) * regMix;\n"
+"      float dampW = interior * (fogT * 0.72) * regMix;\n"
 "      refractColor = mix(refractColor, lowC, dampW);\n"
 "    }\n"
 "    if (hasLightEm) {\n"
@@ -984,24 +989,24 @@ MB_CORNER_SL
 "        float brightRelax = smoothstep(0.55, 1.00, luma(lowC)) * (1.0 - smoothstep(0.80, 0.95, col.a)) * applePanelGate;\n"
 "        if (brightRelax > 0.001) {\n"
 "          float effExtra = lightExtra * mix(1.0, 0.45, brightRelax);\n"
-"          float effDens = 0.30 + 0.70 * effExtra;\n"
+"          float effDens = clamp(lightDensSaved - 0.70 * (lightExtra - effExtra), 0.30, 1.0);\n"
 "          lightEmSaved = float3(253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0) * effDens;\n"
 "          lightExtra = effExtra;\n"
-"          transmittance = mix(0.70, 0.0, effExtra);\n"
-"          lift = mix(0.16, 0.0, effExtra);\n"
-"          chromaGain = mix(1.18, 0.0, effExtra);\n"
+"          transmittance = 1.0 - effDens;\n"
+"          lift = mix(mix(0.16, 0.04, lightCtrlW), 0.0, effExtra);\n"
+"          chromaGain = mix(mix(1.18, 1.00, lightCtrlW), 0.0, effExtra);\n"
 "        }\n"
 "      }\n"
 "      float bgChroma = max(lowC.r, max(lowC.g, lowC.b)) - min(lowC.r, min(lowC.g, lowC.b));\n"
-"      float lightVeilScale = mix(1.0, 0.65, smoothstep(0.08, 0.40, bgChroma) * regMix * (1.0 - lightExtra));\n"
+"      float lightVeilScale = mix(1.0, 0.65, smoothstep(0.08, 0.40, bgChroma) * regMix * (1.0 - lightExtra) * (1.0 - regCtrl));\n"
 "      emission = mix(lightEmSaved * lightVeilScale, darkEmSaved, darkMixSaved);\n"
 "    }\n"
 "    if (regMix > 0.0 && regMix < 1.0) {\n"
-"      emission = mix(float3(0.126, 0.126, 0.126), emission, regMix);\n"
-"      transmittance = mix(0.90, transmittance, regMix);\n"
-"      lift = mix(0.10, lift, regMix);\n"
+"      emission = mix(float3(0.1255, 0.1255, 0.1255), emission, regMix);\n"
+"      transmittance = mix(0.96, transmittance, regMix);\n"
+"      lift = mix(0.04, lift, regMix);\n"
 "      chromaGain = mix(1.0, chromaGain, regMix);\n"
-"      contourStr = mix(0.25, contourStr, regMix);\n"
+"      contourStr = mix(0.0, contourStr, regMix);\n"
 "      contourDirAmt = mix(0.77, contourDirAmt, regMix);\n"
 "      bevelShadowStr = mix(0.04, bevelShadowStr, regMix);\n"
 "      glintLum = mix(1.35, glintLum, regMix);\n"
@@ -1036,13 +1041,14 @@ MB_CORNER_SL
 "      if (dC.b > 0.0001) s = min(s, (1.0 - lumR) / dC.b);\n"
 "      else if (dC.b < -0.0001) s = min(s, lumR / (-dC.b));\n"
 "      float3 regProjected = clamp(float3(lumR) + dC * clamp(s, 0.0, 1.0), 0.0, 1.0);\n"
-"      baseColor = mix(legacyBase, regProjected, regMix);\n"
+"      float3 regMapped = mix(clamp(rawBase, float3(0.0), float3(1.0)), regProjected, mix(1.0, 0.25, regCtrl));\n"
+"      baseColor = mix(legacyBase, regMapped, regMix);\n"
 "    }\n"
 "    // Honor explicit chromatic tints (non-neutral) if a caller requests colored liquid glass\n"
 "    if (colChroma > 0.08 && col.a > 0.001) {\n"
-"      float tintW = col.a <= 0.45\n"
-"        ? col.a * 0.5\n"
-"        : mix(0.225, 0.86, smoothstep(0.45, 0.80, col.a));\n"
+"      float tintW = col.a <= 0.40\n"
+"        ? col.a * 1.15\n"
+"        : mix(0.46, 0.98, smoothstep(0.40, 0.58, col.a));\n"
 "      baseColor = mix(baseColor, col.rgb, tintW);\n"
 "    }\n"
 "    float spot = 0.0;\n"
@@ -1078,46 +1084,89 @@ MB_CORNER_SL
 "      float bevelShadow = clamp(bevelLeading * bevelFalloff * bevelDir * bevelShadowStr, 0.0, 1.0);\n"
 "      result = max(result - transmittedColor * bevelShadow, float3(0.0));\n"
 "    }\n"
-"    // (b) Glint (clear glass diagonal glint + Native iOS 27 vertical 1pt rimLight & 0.5pt inner hairline for Regular Glass)\n"
-"    if (I.c2.x > 0.01 && inward < 4.8 && regMix < 0.999) {\n"
-"      float glintProfile = clamp(1.0 - inward / 1.2, 0.0, 1.0)\n"
-"                         + 0.21 * clamp(1.0 - inward / 4.8, 0.0, 1.0);\n"
-"      float dirLobe = pow(max(1.0 - tangency, 0.0), 0.85);\n"
-"      float lobe = mix(is_clear ? 0.30 : 0.18, 1.0, dirLobe);\n"
-"      float glintGain = is_clear ? (0.34 * clearVeil) : 0.28;\n"
+"    // (b) Glint (clear glass top/bottom specular rim + unified bevel wall for Glass::clear)\n"
+"    float clearVeilC = smoothstep(0.005, 0.102, col.a);\n"
+"    if (I.c2.x > 0.01 && inward < 6.0 && regMix < 0.999) {\n"
+"      float glintProfile = mix(\n"
+"                         clamp(1.0 - inward / 1.2, 0.0, 1.0) + 0.21 * clamp(1.0 - inward / 4.8, 0.0, 1.0),\n"
+"                         clamp(1.0 - inward / 1.35, 0.0, 1.0) + 0.24 * clamp(1.0 - inward / 5.5, 0.0, 1.0),\n"
+"                         clearVeilC);\n"
+"      float dirLobe = pow(max(1.0 - tangency, 0.0), mix(0.85, 1.35, clearVeilC));\n"
+"      float lobe = mix(mix(0.30, 0.08, clearVeilC), 1.0, dirLobe);\n"
+"      float glintGain = 0.58 * clearVeilC;\n"
 "      float glint = clamp(I.c2.x * glintGain * lobe * glintProfile + spot * 0.08 * glintProfile, 0.0, 1.0) * (1.0 - regMix);\n"
 "      float resLum = luma(result);\n"
 "      float3 glintTarget = float3(glintLum) + result * glintFaceGain + (result - float3(resLum)) * glintVib;\n"
 "      result = clamp(mix(result, glintTarget, glint), 0.0, 1.0);\n"
 "    }\n"
+"    float clrWallW = clearVeilC * (1.0 - regMix);\n"
+"    if (clrWallW > 0.001) {\n"
+"      float clrAcross = pow(max(1.0 - rn.y * rn.y, 0.0), 1.6);\n"
+"      float clrInvS = 1.0 / max(u.scale, 1.0);\n"
+"      float clrW0 = mix(max(0.42, 1.05 * clrInvS), max(0.50, 1.80 * clrInvS), clrAcross);\n"
+"      float clrL  = mix(0.07, 0.16, clrAcross);\n"
+"      float clrCov = mb_bevel_cov(sd_px, u.scale, clrW0, clrL);\n"
+"      float clrHair = clamp(clrCov / max(materialAlpha, 0.001), 0.0, 1.0) * clrAcross * clrWallW;\n"
+"      if (clrHair > 0.001) {\n"
+"        float3 clrEnv = backdrop(bd, g, p + surfaceNormal * 1.2);\n"
+"        float3 clrWall = pow(max(clrEnv, float3(1e-6)), float3(1.75)) * 0.695;\n"
+"        result = mix(result, clrWall, clrHair);\n"
+"      }\n"
+"    }\n"
 "    if (regMix > 0.001) {\n"
-"      float regHairline;\n"
+"      float regDark = is_dark ? 1.0 : darkMixSaved;\n"
+"      float regAcross = pow(max(1.0 - rn.y * rn.y, 0.0), mix(1.75, 1.6, regCtrl));\n"
+"      float regHairOld;\n"
 "      if (is_dark) {\n"
 "        float regHw = min(0.50, 1.15 / max(u.scale, 1.0));\n"
-"        regHairline = (1.0 - smoothstep(regHw * 0.35, regHw, inward)) * materialAlpha * regMix;\n"
+"        regHairOld = (1.0 - smoothstep(regHw * 0.35, regHw, inward)) * materialAlpha * regMix;\n"
 "      } else {\n"
 "        float regHairWpx = max(0.85 * u.scale, 1.70);\n"
 "        float regA = clamp(sd_px - 0.5, 0.0, regHairWpx);\n"
 "        float regB = clamp(sd_px + 0.5, 0.0, regHairWpx);\n"
 "        float regBandCov = mb_para_int(regB, regHairWpx) - mb_para_int(regA, regHairWpx);\n"
-"        regHairline = clamp(regBandCov / max(materialAlpha, 0.001), 0.0, 1.0) * regMix;\n"
+"        regHairOld = clamp(regBandCov / max(materialAlpha, 0.001), 0.0, 1.0) * regMix;\n"
 "      }\n"
-"      float regAcross = pow(max(1.0 - rn.y * rn.y, 0.0), 1.75);\n"
-"      float regShadeMask = is_dark ? regAcross : mix(0.28, 1.0, regAcross);\n"
+"      float regInvS = 1.0 / max(u.scale, 1.0);\n"
+"      float regW0 = mix(max(0.42, 1.05 * regInvS), max(0.50, 1.80 * regInvS), regAcross);\n"
+"      float regL  = mix(0.07, 0.16, regAcross);\n"
+"      float regWallCov = mb_bevel_cov(sd_px, u.scale, regW0, regL);\n"
+"      float regHairNew = clamp(regWallCov / max(materialAlpha, 0.001), 0.0, 1.0) * regMix;\n"
+"      float regHairline = mix(regHairOld, regHairNew, regCtrl);\n"
+"      float regShadeMaskOld = is_dark ? regAcross : mix(0.28, 1.0, regAcross);\n"
+"      float regShadeMaskNew = mix(mix(0.34, 1.0, regAcross), regAcross, regDark);\n"
+"      float regShadeMask = mix(regShadeMaskOld, regShadeMaskNew, regCtrl);\n"
 "      if (I.c2.x > 0.01 && inward < 12.0) {\n"
-"        float along = is_dark ? rn.y : -rn.y;\n"
+"        float along = is_dark ? mix(rn.y, -rn.y, regCtrl) : -rn.y;\n"
 "        float lit = max(along, 0.0);\n"
 "        float opp = max(-along, 0.0);\n"
 "        float lit2 = lit * lit;\n"
 "        float opp2 = opp * opp;\n"
 "        float diag = abs(rn.x * rn.y) * 2.0;\n"
-"        float regLobe = 1.0 * (lit2 * lit2) + (is_dark ? 0.80 : 0.85) * (opp2 * opp2) + 0.10 * (diag * diag * diag) + 0.03;\n"
-"        float regInset = max(0.0, inward - 0.30);\n"
-"        float regCore = exp(-regInset / 0.55);\n"
-"        float regTail = exp(-inward / 2.0);\n"
-"        float regEase = pow(max(1.0 - luma(result), 0.0), 0.3);\n"
+"        float diagPos = max(rn.x * rn.y, 0.0) * 2.0;\n"
+"        float diagNeg = max(-rn.x * rn.y, 0.0) * 2.0;\n"
+"        float regLobeOld = 1.0 * (lit2 * lit2) + (is_dark ? 0.80 : 0.85) * (opp2 * opp2) + 0.10 * (diag * diag * diag) + 0.03;\n"
+"        float regLobeNew = 1.0 * (lit2 * lit2) + mix(0.96, 0.94, regDark) * (opp2 * opp2) + mix(0.22, 0.28, regDark) * (diagPos * diagPos) + mix(0.18, 0.22, regDark) * (diagNeg * diagNeg) + 0.02 * regDark;\n"
+"        float regLobe = mix(regLobeOld, regLobeNew, regCtrl);\n"
+"        float regInsetOld = max(0.0, inward - 0.30);\n"
+"        float regCoreOld = exp(-regInsetOld / 0.55);\n"
+"        float regTailOld = exp(-inward / 2.0);\n"
+"        float regCoreLight = smoothstep(0.35, 0.65, inward) * exp(-max(0.0, inward - 0.85) / 0.55);\n"
+"        float regCoreDark  = exp(-max(0.0, inward - 0.15) / 0.55);\n"
+"        float regTailLight = smoothstep(0.40, 0.80, inward) * exp(-max(0.0, inward - 0.75) / 2.6);\n"
+"        float regTailDark  = exp(-inward / 3.8);\n"
+"        float regCore = mix(regCoreOld, mix(regCoreLight, regCoreDark, regDark), regCtrl);\n"
+"        float regTail = mix(regTailOld, mix(regTailLight, regTailDark, regDark), regCtrl);\n"
+"        float regEaseOld = pow(max(1.0 - luma(result), 0.0), 0.3);\n"
+"        float regEaseNew = mix(1.0, pow(max(1.0 - luma(result), 0.0), 0.25), regDark);\n"
+"        float regEase = mix(regEaseOld, regEaseNew, regCtrl);\n"
 "        float regRimGain = 1.0 * clamp(I.c2.x / 0.6, 0.0, 1.5);\n"
-"        float regRim = (regRimGain * regLobe * regEase * (0.185 * regCore + 0.020 * regTail) * (1.0 - regHairline * regShadeMask) + spot * 0.10 * regCore) * regMix;\n"
+"        float tintRimScale = mix(1.0, 0.22, smoothstep(0.08, 0.16, colChroma));\n"
+"        float regCoreW = mix(0.185, mix(1.15, 0.34, regDark) * tintRimScale, regCtrl);\n"
+"        float regTailW = mix(0.020, mix(0.22, 0.055, regDark) * tintRimScale, regCtrl);\n"
+"        float regRimMaskNew = mix(1.0 - regHairline, 1.0 - regHairline * regShadeMask, regDark);\n"
+"        float regRimMask = mix(1.0 - regHairline * regShadeMask, regRimMaskNew, regCtrl);\n"
+"        float regRim = (regRimGain * regLobe * regEase * (regCoreW * regCore + regTailW * regTail) * regRimMask + spot * 0.10 * regCoreOld) * regMix;\n"
 "        float3 rimTarget = clamp(float3(1.0) + (refractColor - float3(Y)) * 1.0, 0.0, 1.0);\n"
 "        result = mix(result, rimTarget, clamp(regRim, 0.0, 1.0));\n"
 "        float panelRimGate = smoothstep(0.48, 0.65, col.a) * (1.0 - smoothstep(0.85, 0.98, col.a)) * applePanelGate;\n"
@@ -1129,8 +1178,14 @@ MB_CORNER_SL
 "        }\n"
 "      }\n"
 "      if (regHairline > 0.001) {\n"
-"        float regShade = (is_dark ? 0.0 : 0.13) * regShadeMask;\n"
-"        result *= (1.0 - regShade * regHairline);\n"
+"        float3 oldRes = result * (1.0 - (is_dark ? 0.0 : 0.13) * regShadeMaskOld * regHairOld);\n"
+"        float3 envBg = backdrop(bd, g, p + surfaceNormal * 1.2);\n"
+"        float envY = luma(envBg);\n"
+"        float3 physWall = pow(max(envBg, float3(1e-6)), float3(1.75)) * 0.695;\n"
+"        physWall *= mix(1.0, 0.56, smoothstep(0.65, 1.0, envY) * regDark);\n"
+"        if (colChroma > 0.08) physWall = min(physWall, result * 0.82);\n"
+"        float3 newRes = mix(result, physWall, regHairNew * regShadeMaskNew);\n"
+"        result = mix(oldRes, newRes, regCtrl);\n"
 "      }\n"
 "    }\n"
 "    if (isModernDrop) {\n"
@@ -1418,6 +1473,11 @@ MB_CORNER_SL
 "  constexpr sampler s(filter::linear, address::clamp_to_edge);\n"
 "  float2 ts = u.a.xy;\n"
 "  float2 lo = ts * 0.5, hi = u.b.xy;\n"
+"  if (u.a.z > 4.5) {\n"
+"    float4 cSharp = src.sample(s, clamp(pos.xy * ts, lo, hi));\n"
+"    float4 cWide = lv3.sample(s, clamp(pos.xy * u.rs.xy, u.rs.zw * 0.5, u.rc.xy));\n"
+"    return mix(cWide, cSharp, u.a.w);\n"
+"  }\n"
 "  if (u.a.z > 3.5) {\n"
 "    float2 p = u.map.xy + pos.xy * u.map.zw;\n"
 "    float ramp = 1.0;\n"
@@ -1569,9 +1629,9 @@ MB_CORNER_SL
 "    target = smoothstep(0.35, 0.85, bgL);\n"
 "    latch = target;\n"
 "  } else {\n"
-"    if (is_new > 0.5) latch = (bgL < 0.36) ? 1.0 : 0.0;\n"
-"    else if (prev.b > 0.5) latch = (bgL > 0.46) ? 0.0 : 1.0;\n"
-"    else latch = (bgL < 0.36) ? 1.0 : 0.0;\n"
+"    if (is_new > 0.5) latch = (bgL < 0.14) ? 1.0 : 0.0;\n"
+"    else if (prev.b > 0.5) latch = (bgL > 0.21) ? 0.0 : 1.0;\n"
+"    else latch = (bgL < 0.14) ? 1.0 : 0.0;\n"
 "    target = latch;\n"
 "  }\n"
 "  float nextT;\n"
@@ -1826,7 +1886,7 @@ static void post_pass(id<MTLCommandBuffer> cb, id<MTLTexture> src, int sw, int s
   [e setFragmentTexture:src atIndex:0];
   [e setFragmentTexture:(mode == 4 ? lv[1] : src) atIndex:1];
   [e setFragmentTexture:(mode == 4 ? lv[2] : src) atIndex:2];
-  [e setFragmentTexture:(mode == 4 ? lv[3] : src) atIndex:3];
+  [e setFragmentTexture:((mode == 4 || mode == 5) ? lv[3] : src) atIndex:3];
   [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
   [e endEncoding];
 }
@@ -1918,9 +1978,9 @@ static int glass_through(const float *f, int32_t count) {
 // many times it is halved (k, at most 3) and the Gaussian left after (sg), and the glass's own numbers (gu's but map
 // and uvc, which follow from these and the level's size). Zeroed whole first, so two of the same compare the same.
 typedef struct {
-  int px0, py0, w, h, k, contained, progressive;
+  int px0, py0, w, h, k, contained, progressive, dual_scale;
   int vis_x, vis_y, vis_w, vis_h;
-  float sg, sp;
+  float sg, sp, dual_w;
   float fade[4], fadex[4];
   GU g;
   MBContained edge;
@@ -1935,7 +1995,28 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   int kind = (int)(a[5] + 0.5f);
   int is_contained = (kind == 5 && a[7] < 0.0f);
   int is_progressive = (kind == 5 && a[22] < -0.5f);
-  float blur = (kind == 6 && a[7] < 0.0f) ? 0.0f : fabsf(a[7]);
+  float raw_blur = (kind == 6 && a[7] < 0.0f) ? 0.0f : fabsf(a[7]);
+  int is_clear_liq = (kind == 6 && a[7] >= -0.001f && a[7] <= 0.1f && a[11] < 0.12f);
+  float col_ch = fmaxf(fmaxf(a[8], a[9]), a[10]) - fminf(fminf(a[8], a[9]), a[10]);
+  // iOS 27 Clear glass (col.a ~ 0.102, non-droplet a[7] >= 0) uses a silky 1.2pt Gaussian blur;
+  // iOS 27 Regular controls use C1-continuous dual-scale blur (sharp optical refraction + 14pt wide ambient frost).
+  float blur = (is_clear_liq && a[11] > 0.01f && raw_blur < 0.1f) ? 1.2f : raw_blur;
+  float g_lo = fminf(fmaxf((a[11] - 0.02f) / 0.085f, 0.0f), 1.0f);
+  g_lo = g_lo * g_lo * (3.0f - 2.0f * g_lo);
+  float g_neu = fminf(fmaxf((a[11] - 0.405f) / 0.095f, 0.0f), 1.0f);
+  g_neu = 1.0f - g_neu * g_neu * (3.0f - 2.0f * g_neu);
+  float g_ch = fminf(fmaxf((col_ch - 0.08f) / 0.08f, 0.0f), 1.0f);
+  g_ch = g_ch * g_ch * (3.0f - 2.0f * g_ch);
+  float g_ta = fminf(fmaxf((a[11] - 0.72f) / 0.08f, 0.0f), 1.0f);
+  g_ta = 1.0f - g_ta * g_ta * (3.0f - 2.0f * g_ta);
+  float dual_b = fminf(fmaxf((blur - 0.2f) / 0.7f, 0.0f), 1.0f);
+  dual_b = dual_b * dual_b * (3.0f - 2.0f * dual_b);
+  float dual_hi = fminf(fmaxf((blur - 3.5f) / 1.0f, 0.0f), 1.0f);
+  dual_hi = 1.0f - dual_hi * dual_hi * (3.0f - 2.0f * dual_hi);
+  float dual_sz = fminf(fmaxf((fminf(a[2], a[3]) - 16.0f) / 12.0f, 0.0f), 1.0f);
+  dual_sz = dual_sz * dual_sz * (3.0f - 2.0f * dual_sz);
+  float dual_w = (kind == 6 && !is_clear_liq) ? (0.78f * dual_b * dual_hi * dual_sz * g_lo * fmaxf(g_neu, g_ch * g_ta)) : 0.0f;
+  int is_dual = (dual_w > 0.005f);
   int merged_liquid = (kind == 6 && a[23] > 0.0f);
   int unmerged_liquid = (kind == 6 && !merged_liquid);
   float margin = is_contained ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
@@ -2007,6 +2088,8 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   m->px0 = px0; m->py0 = py0; m->w = px1 - px0; m->h = py1 - py0;
   m->contained = is_contained ? mb_contained_make(&m->edge, a, px0 / sc, py0 / sc, 1.0f / sc, 1.0f / sc) : 0;
   m->progressive = is_progressive;
+  m->dual_scale = is_dual;
+  m->dual_w = dual_w;
   if (is_progressive) {
     for (int i = 0; i < 4; i++) {
       m->fade[i] = a[52 + i];
@@ -2034,6 +2117,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   float sk = sp / (float)(1 << k);
   float pre = k > 0 ? 0.75f * (1.0f - powf(0.25f, (float)k)) / 3.0f + 1.0f / 6.0f : 0.0f;
   m->k = k;
+  if (k >= 3) { m->dual_scale = 0; m->dual_w = 0.0f; }
   m->sg = sqrtf(fmaxf(sk * sk - pre, 0.0f));
   return 1;
 }
@@ -2079,7 +2163,7 @@ static void show_blur(const Grab *m, id<MTLTexture> bt) {
 }
 
 // The level a grab's blur is left in.
-static id<MTLTexture> grab_blurred(const Grab *m) { return (m->progressive || (m->contained && m->k == 0)) ? ltmp : lv[m->k]; }
+static id<MTLTexture> grab_blurred(const Grab *m) { return (m->progressive || m->dual_scale || (m->contained && m->k == 0)) ? ltmp : lv[m->k]; }
 
 // A grab of target blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
 // Gaussian left (passes of their own, the target's pass ended before; grab_blurred). The levels are shared by every
@@ -2098,6 +2182,33 @@ static void blur(id<MTLCommandBuffer> cb, id<MTLTexture> target, const Grab *m) 
   int lw[4], lh[4];
   grab_levels(m, lw, lh);
   int k = m->k;
+  if (m->dual_scale) {
+    for (int j = 1; j <= 3; j++) {
+      post_pass(cb, lv[j - 1], lw[j - 1], lh[j - 1], lv[j], lw[j], lh[j], 1, 0, 0, 0, NULL, NULL);
+    }
+    float wsp = 14.0f * (float)at_scale;
+    float wsk = wsp / 8.0f;
+    float wpre = 0.75f * (1.0f - 1.0f / 64.0f) / 3.0f + 1.0f / 6.0f;
+    float wsg = sqrtf(fmaxf(wsk * wsk - wpre, 0.0f));
+    if (wsg > 0.3f) {
+      post_pass(cb, lv[3], lw[3], lh[3], ltmp, lw[3], lh[3], 2, wsg, 1, 0, NULL, NULL);
+      post_pass(cb, ltmp, lw[3], lh[3], lv[3], lw[3], lh[3], 2, wsg, 0, 1, NULL, NULL);
+    }
+    if (m->sg > 0.3f) {
+      post_pass(cb, lv[k], lw[k], lh[k], ltmp, lw[k], lh[k], 2, m->sg, 1, 0, NULL, NULL);
+      post_pass(cb, ltmp, lw[k], lh[k], lv[k], lw[k], lh[k], 2, m->sg, 0, 1, NULL, NULL);
+    }
+    MBContained dual;
+    memset(&dual, 0, sizeof dual);
+    float d3 = (float)(1 << (3 - k));
+    float tw3 = (float)lv[3].width, th3 = (float)lv[3].height;
+    dual.rs[0] = 1.0f / (d3 * tw3); dual.rs[1] = 1.0f / (d3 * th3);
+    dual.rs[2] = 1.0f / tw3;        dual.rs[3] = 1.0f / th3;
+    dual.rc[0] = ((float)lw[3] - 0.5f) / tw3;
+    dual.rc[1] = ((float)lh[3] - 0.5f) / th3;
+    post_pass(cb, lv[k], lw[k], lh[k], ltmp, lw[k], lh[k], 5, 1.0f - m->dual_w, 0, 0, &dual, NULL);
+    return;
+  }
   if (m->progressive) {
     float prev_var = 0.0f;
     for (int j = 1; j <= k; j++) {
@@ -2748,7 +2859,7 @@ static void slots_evict_budget(int keep_idx, unsigned frame_clock, int allow_fra
 // (zero GPU blit) when the level is close to the grab's size, or copying only the grab's active top-left region
 // into a compact 64-px-aligned slot texture when the shared level is much larger than the grab.
 static int slot_fill(id<MTLCommandBuffer> cb, const Grab *m, unsigned frame_clock) {
-  id<MTLTexture> __strong *Lp = (m->progressive || (m->contained && m->k == 0)) ? &ltmp : &lv[m->k];
+  id<MTLTexture> __strong *Lp = (m->progressive || m->dual_scale || (m->contained && m->k == 0)) ? &ltmp : &lv[m->k];
   id<MTLTexture> L = *Lp;
   int lw[4], lh[4];
   grab_levels(m, lw, lh);

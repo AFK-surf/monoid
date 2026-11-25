@@ -78,6 +78,7 @@ export type Described = {
   botNameSaid?: string;
   bind: { runtime: string; model?: string; effort?: string };
   botUserId: string;
+  botId?: string;
   botName: string;
   identity: BotIdentity | null;
   platform: string | null;
@@ -97,7 +98,7 @@ export type Described = {
 };
 
 /// The optional calls of a surface a remote one has only where the connect's has them (the hub tells by their absence).
-const OPTIONAL = ["cardEnded", "download", "userName", "working", "standsAt", "api", "userEmail", "userOf", "channelName", "places", "peopleIn", "begin", "edit", "history"] as const;
+const OPTIONAL = ["cardEnded", "download", "userName", "working", "standsAt", "api", "userEmail", "userOf", "channelName", "places", "peopleIn", "begin", "edit", "history", "findNoticeInHistory"] as const;
 /// What a station a chat runs on may call of a connect's surface here: those, and the names of people and channels.
 const CALLS = new Set<string>(["post", "person", "channel", ...OPTIONAL]);
 
@@ -105,6 +106,7 @@ const CALLS = new Set<string>(["post", "person", "channel", ...OPTIONAL]);
 export function describe(connect: Connect, workspace: string, surface: ChatSurface): Described {
   const mention = surface.mention?.("\u0001") ?? "<@\u0001>";
   const at = mention.indexOf("\u0001");
+  const botId = surface.botId?.() ?? "";
   return {
     kind: connect.kind,
     workspace,
@@ -113,6 +115,7 @@ export function describe(connect: Connect, workspace: string, surface: ChatSurfa
     ...(connect.slack.botName ? { botNameSaid: connect.slack.botName } : {}),
     bind: { runtime: connect.bind.runtime, ...(connect.bind.model ? { model: connect.bind.model } : {}), ...(connect.bind.effort ? { effort: connect.bind.effort } : {}) },
     botUserId: surface.botUserId(),
+    ...(botId !== "" ? { botId } : {}),
     botName: surface.botName?.() ?? "",
     identity: surface.identity?.() ?? null,
     platform: surface.platform?.() ?? null,
@@ -121,7 +124,10 @@ export function describe(connect: Connect, workspace: string, surface: ChatSurfa
     loginCards: surface.loginCards === true,
     mention: at < 0 ? ["<@", ">"] : [mention.slice(0, at), mention.slice(at + 1)],
     link: surface.sessionLink ? surface.sessionLink("\u0001", "\u0002") : "<\u0001|\u0002>",
-    has: OPTIONAL.filter((name) => typeof (surface as any)[name] === "function"),
+    has: [
+      ...OPTIONAL.filter((name) => typeof (surface as any)[name] === "function"),
+      ...(typeof surface.findNoticeInHistory === "function" ? ["findNoticeInHistoryV2"] : []),
+    ],
     ...(typeof surface.begin === "function" ? { beginPost: true as const } : {}),
   };
 }
@@ -204,6 +210,9 @@ export class RemoteSurface implements ChatSurface {
 
   botUserId(): string {
     return this.d.botUserId;
+  }
+  botId(): string {
+    return this.d.botId || this.d.identity?.botId || "";
   }
   botName(): string {
     return this.d.botName;
@@ -319,6 +328,15 @@ export class RemoteSurface implements ChatSurface {
   }
   history(thread: ThreadRef, before: string, limit: number): Promise<ChatMessage[]> {
     return this.call("history", [thread, before, limit]);
+  }
+  findNoticeInHistory(
+    thread: ThreadRef,
+    opts: { proposalId?: string; marker?: string; sinceSec: number; cursor: string | null; maxPages: number },
+  ): Promise<{ ts: string | null; cursor: string | null; done: boolean }> {
+    return this.call("findNoticeInHistory", [thread, opts]);
+  }
+  supportsFindNoticeV2(): boolean {
+    return this.d.has.includes("findNoticeInHistoryV2");
   }
   working(thread: ThreadRef, messageTs: string | null, status: string, page?: string | null): void {
     this.told("working", [thread, messageTs, status, page ?? null]);
@@ -520,4 +538,4 @@ export async function readRemote(data: string): Promise<Record<string, Remote>> 
 }
 
 /// The thread an event is of.
-export const threadOfEvent = (event: ChatEvent): ThreadRef => (event.type === "message" ? { channel: event.message.channel, threadTs: event.message.threadTs } : { channel: event.channel, threadTs: event.threadTs });
+export const threadOfEvent = (event: ChatEvent): ThreadRef => (event.type === "message" || event.type === "ownNotice" ? { channel: event.message.channel, threadTs: event.message.threadTs } : { channel: event.channel, threadTs: event.threadTs });

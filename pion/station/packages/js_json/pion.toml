@@ -3,4 +3,5 @@ name = "js_json"
 version = "0.1.0"
 
 [dependencies]
+base_codec = { workspace = true }
 sqlite_ffi = { workspace = true }

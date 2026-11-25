@@ -37,6 +37,7 @@ fn use_system(s : FakeSystem) -> Unit {
     show: fn(tag, title, body, opens) { s.shown.push((tag, title, body, opens)) },
     cancel: fn(tag) { s.cancelled.push(tag) },
     permission: fn() { s.permission },
+    permission_state: fn() { (false, s.permission) },
     ask: fn() {
       s.asks += 1
       true
@@ -720,4 +721,180 @@ test "pushes: a token come after the start registered then, a new one again; the
   let reg = named(calls, "push.register")
   assert_eq(reg.length(), 2)
   assert_true(reg[1].params.stringify().contains("\"token\":\"tok-2\""))
+}
+
+///|
+/// Home over the fixture wired to the real `@ui` host (`host_notices()`) on an async-permission platform (default
+/// macOS `platform=0`), so `Tester::set_notice_permission` / `set_notice_reply` exercise `@ui.notice_permission_state`
+/// and `perm_tick`.
+fn notify_host_core(
+  calls : Array[Made],
+  platform? : Int = 0,
+  notify? : @signals.Signal[Json] = @signals.signal({ "on": true, "asked": true, "push": true, "show": [] }),
+  answered? : @signals.Signal[Bool] = @signals.signal(false),
+) -> @ui.Tester {
+  new_run()
+  notice_host.val = host_notices()
+  let base = fixture("home")
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      match name {
+        "notify" =>
+          if params.contains("workspace") {
+            { value: Some({ "show": Json::array([]) }), error: None, version: 0 }
+          } else if answered.get() {
+            { value: Some(notify.get()), error: None, version: 1 }
+          } else {
+            { value: None, error: None, version: -1 }
+          }
+        _ => base.topic(name, params).get().snapshot()
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      match name {
+        "notify.set" | "notify.permission" | "push.register" | "push.unregister" => ()
+        _ => (base.call)(name, params, done)
+      }
+    },
+  }
+  @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform~)
+}
+
+///|
+test "async host permission: pending defers notify.permission until granted arrives, then reports once" {
+  let calls : Array[Made] = []
+  let answered = @signals.signal(false)
+  let t = notify_host_core(calls, platform=0, answered~)
+  t.set_notice_permission("pending")
+  t.frame()
+  answered.set(true)
+  assert_eq(named(calls, "notify.permission").length(), 0)
+  t.frame()
+  assert_eq(named(calls, "notify.permission").length(), 0)
+  // First async refresh lands with "granted": next frame reports once, subsequent frames do not repeat.
+  t.set_notice_permission("granted")
+  t.frame()
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 1)
+  assert_eq(told[0].params, { "state": "granted" })
+  t.frame()
+  assert_eq(named(calls, "notify.permission").length(), 1)
+}
+
+///|
+test "async host permission: pending defers ask and notify.set(asked) until ask arrives, then asks once" {
+  let calls : Array[Made] = []
+  let answered = @signals.signal(false)
+  let notify : @signals.Signal[Json] = @signals.signal({ "on": true, "asked": false, "push": true, "show": [] })
+  let t = notify_host_core(calls, platform=0, notify~, answered~)
+  t.set_notice_permission("pending")
+  t.set_notice_reply(None)
+  t.frame()
+  answered.set(true)
+  assert_eq(named(calls, "notify.permission").length(), 0)
+  assert_eq(named(calls, "notify.set").length(), 0)
+  assert_eq(t.notice_asks(), 0)
+  // First async refresh lands with "ask": reports "default", writes asked:true, and asks once.
+  t.set_notice_permission("ask")
+  t.frame()
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 1)
+  assert_eq(told[0].params, { "state": "default" })
+  let sets = named(calls, "notify.set")
+  assert_eq(sets.length(), 1)
+  assert_eq(sets[0].params, { "asked": true })
+  assert_eq(t.notice_asks(), 1)
+  t.frame()
+  assert_eq(named(calls, "notify.permission").length(), 1)
+  assert_eq(named(calls, "notify.set").length(), 1)
+  assert_eq(t.notice_asks(), 1)
+}
+
+///|
+test "async host permission: granted -> denied -> granted while visible re-reports each change once" {
+  let calls : Array[Made] = []
+  let answered = @signals.signal(false)
+  let t = notify_host_core(calls, platform=3, answered~)
+  t.set_notice_permission("granted")
+  t.frame()
+  answered.set(true)
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 1)
+  assert_eq(told[0].params, { "state": "granted" })
+  // Changed in system settings without hiding the app: denied, then granted again.
+  t.set_notice_permission("denied")
+  t.frame()
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 2)
+  assert_eq(told[1].params, { "state": "denied" })
+  t.frame()
+  assert_eq(named(calls, "notify.permission").length(), 2)
+  t.set_notice_permission("granted")
+  t.frame()
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 3)
+  assert_eq(told[2].params, { "state": "granted" })
+  t.frame()
+  assert_eq(named(calls, "notify.permission").length(), 3)
+}
+
+///|
+test "async host permission: permanent unknown reports once immediately and does not repeat" {
+  let calls : Array[Made] = []
+  let answered = @signals.signal(false)
+  let t = notify_host_core(calls, platform=0, answered~)
+  t.set_notice_permission("unknown")
+  t.frame()
+  answered.set(true)
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 1)
+  assert_eq(told[0].params, { "state": "unknown" })
+  t.frame()
+  assert_eq(named(calls, "notify.permission").length(), 1)
+}
+
+///|
+test "async host permission: ask answer and permission change in the same frame report granted once" {
+  let calls : Array[Made] = []
+  let answered = @signals.signal(false)
+  let notify : @signals.Signal[Json] = @signals.signal({ "on": true, "asked": false, "push": true, "show": [] })
+  let t = notify_host_core(calls, platform=0, notify~, answered~)
+  t.set_notice_permission("ask")
+  t.set_notice_reply(Some(true))
+  t.frame()
+  answered.set(true)
+  assert_eq(t.notice_asks(), 1)
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 1)
+  assert_eq(told[0].params, { "state": "default" })
+  // Next frame delivers both answer=Some(true) and permission="granted" in notices_arrive(): must emit "granted" once.
+  t.frame()
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 2)
+  assert_eq(told[1].params, { "state": "granted" })
+  t.frame()
+  assert_eq(named(calls, "notify.permission").length(), 2)
+}
+
+///|
+test "async host permission: between-frame live read and ABA flip back still notify on next frame" {
+  let calls : Array[Made] = []
+  let answered = @signals.signal(false)
+  let t = notify_host_core(calls, platform=0, answered~)
+  t.set_notice_permission("granted")
+  t.frame()
+  // Host flips to "denied" between frames before notices_arrive() runs: live read sees "denied" immediately and marks saw_other.
+  t.set_notice_permission("denied")
+  answered.set(true)
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 1)
+  assert_eq(told[0].params, { "state": "denied" })
+  // Host flips back to "granted" (same as last_arrived) before the next frame: saw_other ensures notices_arrive() still wakes and reports "granted".
+  t.set_notice_permission("granted")
+  t.frame()
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 2)
+  assert_eq(told[1].params, { "state": "granted" })
 }

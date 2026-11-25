@@ -10,6 +10,7 @@ import { Output } from "../src/output.ts";
 import type { Topic } from "../src/protocol.ts";
 import { Runner } from "../src/runtime.ts";
 import { COALESCE_MS, EVICT_AFTER_MS, KEPT_PER_CLIENT, Store, type Source, type Value } from "../src/store.ts";
+import { observe } from "../src/reactive.ts";
 import { FakeHost, flush } from "../src/testing.ts";
 import { token, version } from "../src/digest.ts";
 import { work } from "../src/work.ts";
@@ -1481,4 +1482,83 @@ test("a_page_let_go_of_whose_words_about_time_moved_on_is_sent_them_fresh", asyn
   assert.deepEqual(host.takeEmitted(), []);
   await pass(COALESCE_MS * 2);
   assert.notEqual(ago(host.takeEmitted()), second);
+});
+
+test("profilesOverview_is_lazy_when_idle_and_computes_on_resubscribe_or_watch_resume", async () => {
+  const t = setup();
+  const { host, store, pass } = t;
+  const dep: Topic = { topic: "profilePace", station: "ws/s1" };
+  const ov: Topic = { topic: "profilesOverview", scope: "ws" };
+  let computes = 0;
+  store.setSource({
+    start(topic) {
+      if (topic.topic === "profilesOverview") store.invalidate(ov);
+    },
+    stop() {},
+    compute(topic) {
+      if (topic.topic !== "profilesOverview") return undefined;
+      computes++;
+      const d = store.get(dep) as { n: number } | undefined;
+      return d === undefined ? undefined : { ok: { n: d.n } };
+    },
+  });
+  const wDep = store.watch(dep, () => {});
+  store.set(dep, { ok: { n: 1 } });
+  store.subscribe(1, 1, ov);
+  await pass(COALESCE_MS * 2);
+  assert.equal(computes, 1);
+  assert.deepEqual(host.takeEmitted(), [[1, value(1, { n: 1 })]]);
+
+  // Unsubscribe -> enters 60s idle grace. No upstream change -> resubscribe hits entry.sent cache.
+  store.unsubscribe(1, 1);
+  await pass(COALESCE_MS * 2);
+  store.subscribe(1, 2, ov);
+  await pass(COALESCE_MS * 2);
+  assert.equal(computes, 1, "unchanged idle topic reuses cached sent value without recompute");
+  assert.deepEqual(host.takeEmitted(), [[1, value(2, { n: 1 })]]);
+
+  // Unsubscribe again -> upstream changes multiple times while idle: zero recomputes.
+  store.unsubscribe(1, 2);
+  store.set(dep, { ok: { n: 2 } });
+  await pass(COALESCE_MS * 2);
+  store.set(dep, { ok: { n: 3 } });
+  await pass(COALESCE_MS * 2);
+  assert.equal(computes, 1, "idle profilesOverview does not recompute on upstream updates");
+
+  // Re-subscribe within 60s -> computes once on demand and emits latest value.
+  store.subscribe(1, 3, ov);
+  assert.deepEqual(host.takeEmitted(), [], "stale cached sent is not emitted before recompute");
+  await pass(COALESCE_MS * 2);
+  assert.equal(computes, 2);
+  assert.deepEqual(host.takeEmitted(), [[1, value(3, { n: 3 })]]);
+
+  // Unsubscribe, change upstream while idle, then resume via internal watch() -> computes and notifies watcher.
+  store.unsubscribe(1, 3);
+  store.set(dep, { ok: { n: 4 } });
+  await pass(COALESCE_MS * 2);
+  assert.equal(computes, 2);
+  let watched = 0;
+  const w = store.watch(ov, () => { watched++; });
+  await pass(COALESCE_MS * 2);
+  assert.equal(computes, 3);
+  assert.equal(watched, 1);
+  assert.deepEqual(store.value(ov), { ok: { n: 4 } });
+  // Unsubscribe, change upstream while idle, resume via tracked value() first, then attach watch() -> watcher MUST still fire on subsequent updates.
+  w.drop();
+  store.set(dep, { ok: { n: 5 } });
+  await pass(COALESCE_MS * 2);
+  let trackedRead: unknown;
+  const stopObs = observe(() => { trackedRead = store.value(ov); }, () => {});
+  assert.deepEqual(trackedRead, { ok: { n: 5 } });
+  let watchedAfterTracked = 0;
+  const w2 = store.watch(ov, () => { watchedAfterTracked++; });
+  await pass(COALESCE_MS * 2);
+  watchedAfterTracked = 0;
+  store.set(dep, { ok: { n: 6 } });
+  await pass(COALESCE_MS * 2);
+  assert.equal(watchedAfterTracked, 1, "watcher attached after tracked value() resume must receive subsequent updates");
+  assert.deepEqual(store.value(ov), { ok: { n: 6 } });
+  w2.drop();
+  stopObs();
+  wDep.drop();
 });

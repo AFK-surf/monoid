@@ -152,7 +152,11 @@ export async function agyNotedEmail(home: string): Promise<string | null> {
 /// with the first one's quota; on Linux the moved file also left the profile appearing signed out). Where it thinks it
 /// is in an SSH session it keeps the sign-in in the file alone ("Using file-based token storage because SSH session
 /// detected", 1.5.9), so the station's processes are given that (`agyEnv`, agy-quota.ts, `agyRenew`, accounts/login.ts).
-export const AGY_FILE_TOKENS = { SSH_CLIENT: "127.0.0.1 0 0" };
+/// From 1.5.17 an SSH session on macOS uses the login keychain again whenever it is unlocked, so a profile's process
+/// read and ran on the machine's last account and its own file went into the keychain (2026-11-25); its own switch
+/// `AGY_CLI_FORCE_FILE_TOKEN_STORAGE` is checked before the SSH session and keeps the file alone. `SSH_CLIENT` stays
+/// for versions before it.
+export const AGY_FILE_TOKENS = { AGY_CLI_FORCE_FILE_TOKEN_STORAGE: "1", SSH_CLIENT: "127.0.0.1 0 0" };
 
 type KeyringExecResult = { error: (Error & { code?: string | number | null }) | null; stdout: string };
 type KeyringExec = (file: string, args: readonly string[], env: NodeJS.ProcessEnv) => Promise<KeyringExecResult>;
@@ -439,6 +443,7 @@ export function noticeFailure(said: string): FailureReason | null {
   }
   if (lower.startsWith(AGY_UNAUTHENTICATED)) return "auth";
   if (lower.startsWith(AGY_VERIFICATION_REQUIRED)) return "auth";
+  if (lower.startsWith(AGY_QUOTA_REACHED)) return classifyFailure(last);
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
   if (lower.startsWith(AGY_PERMISSION_DENIED) && lower.includes("denied")) return "auth";
   if (lower.startsWith(AGY_UNABLE_TO_SUBMIT)) return "other";
@@ -451,6 +456,9 @@ const AGY_TERMINATED = "⚠ agent execution terminated due to error.";
 const AGY_EXECUTOR_ERROR = "⚠ agent executor error:";
 const AGY_UNAUTHENTICATED = "⚠ unauthenticated (code 401):";
 const AGY_VERIFICATION_REQUIRED = "⚠ verification required";
+/// Its spent quota, even after the turn's own text (2026-11-24: "…\n⚠ Individual quota reached. … Resets in 4h46m59s."
+/// ended a turn as finished, the session kept the spent account, and the process stopped answering).
+const AGY_QUOTA_REACHED = "⚠ individual quota reached";
 const AGY_PERMISSION_DENIED = "⚠ permission '";
 const AGY_UNABLE_TO_SUBMIT = "⚠ unable to submit request";
 

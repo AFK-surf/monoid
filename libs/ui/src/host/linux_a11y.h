@@ -303,6 +303,10 @@ int32_t mb_host_a11y_on(void) {
   return on;
 }
 
+int32_t mb_host_screen_reader_on(void) {
+  return mb_host_a11y_on();
+}
+
 // MBUI_A11Y_SELFCHECK (see above): the canvas's accessibles walked as AT-SPI walks them, each said
 static void a11y_walk(GtkAccessible *a, int depth, int *press) {
   for (GtkAccessible *c = gtk_accessible_get_first_accessible_child(a); c;) {

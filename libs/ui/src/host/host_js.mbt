@@ -632,6 +632,11 @@ fn a11y_on() -> Bool {
 }
 
 ///|
+fn screen_reader_on() -> Bool {
+  false
+}
+
+///|
 fn a11y_tree(_s : String) -> Unit {
   ()
 }

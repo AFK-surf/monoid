@@ -1106,6 +1106,12 @@ export class Views implements Owner {
   #daysZone: number | null = null;
   /// What parts of a view were last made with, by the view (`#steady`).
   readonly #steadied = new Map<string, unknown>();
+  /// Memoized `workspaceProfiles` output for `profilesOverview` per workspace scope.
+  readonly #profilesOverviewListed = new Map<string, {
+    key: string;
+    inputs: { station: string; id: string; name: string; online: boolean; joined: boolean; overview: unknown }[];
+    listed: ReturnType<typeof workspaceProfiles>;
+  }>();
   readonly #core: ViewsEnv;
   readonly local: Local;
   /// The device's data, as the views read it (archive.ts).
@@ -1259,6 +1265,7 @@ export class Views implements Owner {
     this.#views.delete(key);
     // (nothing holds the list any more: told again as it is asked again)
     if (view.topic === "chats") this.#windows.delete(windowKey(view));
+    if (view.topic === "profilesOverview") this.#profilesOverviewListed.delete(String(view.scope));
     // (nor the chat: its page tells its first window again before it asks it again)
     if (view.topic === "chat") this.#chatWindows.delete(chatWindowKey(String(view.station), u64(view.thread), str(view.session) ?? null));
     if (view.topic === "chat" || view.topic === "chatOutline") {
@@ -1409,7 +1416,7 @@ export class Views implements Owner {
         break;
       case "station":
         scope = view.scope as string;
-        perStation = (s) => (s === view.station ? [{ topic: "link", station: s }, { topic: "overview", station: s }, { topic: "host", station: s }, { topic: "way", station: s }] : []);
+        perStation = (s) => (s === view.station ? [{ topic: "link", station: s }, { topic: "overview", station: s }, { topic: "host", station: s }, { topic: "hostLive", station: s }, { topic: "way", station: s }] : []);
         break;
       case "stationPart":
         scope = view.scope as string;
@@ -1464,7 +1471,7 @@ export class Views implements Owner {
       case "fleet":
         // (the card shared of the agents at work: views/fleet.ts)
         scope = view.scope as string;
-        perStation = (s) => [{ topic: "chatRows", station: s }, { topic: "archivedRows", station: s }, { topic: "jobs", station: s }, { topic: "overview", station: s }, { topic: "link", station: s }, { topic: "host", station: s }, { topic: "way", station: s }, { topic: "stationUsage", station: s }];
+        perStation = (s) => [{ topic: "chatRows", station: s }, { topic: "archivedRows", station: s }, { topic: "jobs", station: s }, { topic: "overview", station: s }, { topic: "link", station: s }, { topic: "host", station: s }, { topic: "hostLive", station: s }, { topic: "way", station: s }, { topic: "stationUsage", station: s }];
         break;
       case "railCard": {
         // (the cards over the rail's places: views/rail-cards.ts) what the place's card is made of
@@ -2102,10 +2109,35 @@ export class Views implements Owner {
         // window's percent left and its refill's moment: no overview decorated whole) and their stations' hours, made
         // again as either changes and at each quarter hour (its hours, and its models' speed a quarter apart, are the
         // clock's).
-        const stations0 = this.#stationsOr(view.scope as string);
+        const scope = view.scope as string;
+        const stations0 = this.#stationsOr(scope);
         if (stations0 === undefined || !Array.isArray(stations0)) return stations0 as Value | undefined;
         const key = profileRowKey();
-        const listed = workspaceProfiles(stations0.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, overview: this.#profileRowsOfStation(s.address, key) })));
+        // Read every reactive dependency unconditionally inside the tracking scope before checking the memo.
+        const inputs = stations0.map((s) => ({
+          station: s.address,
+          id: s.id,
+          name: s.name,
+          online: s.online,
+          joined: s.joined,
+          overview: this.#profileRowsOfStation(s.address, key),
+        }));
+        const prev = this.#profilesOverviewListed.get(scope);
+        let listed: ReturnType<typeof workspaceProfiles>;
+        if (
+          prev !== undefined &&
+          prev.key === key &&
+          prev.inputs.length === inputs.length &&
+          prev.inputs.every((p, i) => {
+            const c = inputs[i]!;
+            return p.station === c.station && p.id === c.id && p.name === c.name && p.online === c.online && p.joined === c.joined && p.overview === c.overview;
+          })
+        ) {
+          listed = prev.listed;
+        } else {
+          listed = workspaceProfiles(inputs);
+          this.#profilesOverviewListed.set(scope, { key, inputs, listed });
+        }
         const now = this.#core.host.nowMs();
         this.#againIn(HOUR / 4 - (now % (HOUR / 4)));
         const stations = new Map(stations0.map((s) => [s.address, s.online]));
@@ -3607,6 +3639,46 @@ export class Views implements Owner {
     return chain.reverse();
   }
 
+  /// Cached archived row matching a thread (home session first, then members), skipping rows bound to a different thread.
+  #archivedRow(station: string, thread: J): J | undefined {
+    const data = this.#core.data;
+    const tid = u64(get(thread, "id"));
+    const home = str(get(thread, "home"));
+    const seen = new Set<string>();
+    const keys: string[] = [];
+    if (home !== null && home !== "") {
+      seen.add(home);
+      keys.push(home);
+    }
+    for (const key of members(thread)) {
+      if (key !== "" && !seen.has(key)) {
+        seen.add(key);
+        keys.push(key);
+      }
+    }
+    for (const key of keys) {
+      const hit = data.chatNamed(station, key);
+      if (hit?.archived !== true || !isObject(hit.row)) continue;
+      const rowThread = u64(get(hit.row, "thread"));
+      if (rowThread !== null && tid !== null && rowThread !== tid) continue;
+      return hit.row;
+    }
+    return undefined;
+  }
+
+  /// Source record for a chat's opener and led parent chain: active row first, else the thread's own `opener`
+  /// (available even when `archivedRows` is not synced), else the cached archived row (older stations).
+  #lineageRow(thread: J, row: J | undefined, archivedRow: J | undefined): J | undefined {
+    if (row !== undefined) return row;
+    const threadOpener = get(thread, "opener");
+    if (isObject(threadOpener)) {
+      const id = str(get(archivedRow, "id")) ?? str(get(thread, "home")) ?? members(thread)[0] ?? null;
+      const session = str(get(archivedRow, "session")) ?? id;
+      return { ...(id !== null ? { id } : {}), ...(session !== null ? { session } : {}), opener: threadOpener };
+    }
+    return archivedRow;
+  }
+
   /// A row whose chat has a message sent here that did not go: marked red, its second line saying which (`unsent`: drawn
   /// in red), before
   /// anything its agents do (the message waits in the chat to be sent again or dropped). Else, a chat made here (the
@@ -4347,12 +4419,15 @@ export class Views implements Owner {
     const archived = this.local.archivedChanging(station, id, null);
     if (archived !== null) view.archived = archived;
     if (row !== undefined && row.pinned !== undefined) view.pinned = typeof row.pinned === "number";
-    const opener = row !== undefined ? this.#opener(station, row) : null;
+    const archivedRow = found === null ? this.#archivedRow(station, thread) : undefined;
+    const lineage = this.#lineageRow(thread, row, archivedRow);
+    const opener = lineage !== undefined ? this.#opener(station, lineage) : null;
     if (opener !== null) view.opener = opener;
-    const openers = row !== undefined ? this.#openers(station, row) : [];
+    const openers = lineage !== undefined ? this.#openers(station, lineage) : [];
     if (openers.length > 0) view.openers = openers;
     // the chats it opened, each where it stands, for its bar's list of them
-    const opened = row !== undefined ? this.#opened(station, row) : [];
+    const openedRow = row ?? archivedRow;
+    const opened = openedRow !== undefined ? this.#opened(station, openedRow) : [];
     if (opened.length > 0) {
       view.opened = opened;
       view.openedText = t("core-views.opened", { n: opened.length });
@@ -5191,6 +5266,9 @@ export class Views implements Owner {
     const primaryConnect = agents.find((a) => isObject(a.connect))?.connect;
     const surface = isObject(origin) && isObject(primaryConnect) ? `${strOf(primaryConnect, "kind")}:${strOf(primaryConnect, "id")}` : "";
     const where = isObject(origin) ? this.#whereIn(station, agents, surface, strOf(origin, "channel"), strOf(origin, "channelName"), strOf(origin, "threadTs"), undefined, get(origin, "links")) : null;
+    const opener = row !== undefined ? this.#opener(station, row) : null;
+    const openers = row !== undefined ? this.#openers(station, row) : [];
+    const opened = row !== undefined ? this.#opened(station, row) : [];
     return {
       ok: {
         me: this.me(ofAddress(station)),
@@ -5203,6 +5281,9 @@ export class Views implements Owner {
         title: row !== undefined && row.title !== undefined ? row.title : t("core-views.new_chat"),
         people: [],
         archived,
+        ...(opener !== null ? { opener } : {}),
+        ...(openers.length > 0 ? { openers } : {}),
+        ...(opened.length > 0 ? { opened, openedText: t("core-views.opened", { n: opened.length }) } : {}),
         agents,
         messages: [],
         elsewhere,

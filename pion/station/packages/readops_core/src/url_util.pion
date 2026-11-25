@@ -1,0 +1,78 @@
+// URL percent-encoding / lossy decoding helpers, 1:1 aligned with `libs/base/src/url/url.mbt`.
+
+import "base_codec"
+import "sql_db"
+
+fn is_uri_component_unreserved(c : Int) -> Bool {
+  (c >= 65 && c <= 90) ||
+  (c >= 97 && c <= 122) ||
+  (c >= 48 && c <= 57) ||
+  c == 45 || // '-'
+  c == 95 || // '_'
+  c == 46 || // '.'
+  c == 33 || // '!'
+  c == 126 || // '~'
+  c == 42 || // '*'
+  c == 39 || // '\''
+  c == 40 || // '('
+  c == 41 // ')'
+}
+
+fn hex_upper_byte(v : Int) -> Byte {
+  if v < 10 { (48 + v) as Byte } else { (55 + v) as Byte }
+}
+
+/// ECMA-262 `encodeURIComponent` (replaces ill-formed UTF-8 with U+FFFD `%EF%BF%BD`).
+pub fn encode_uri_component(s : String) -> String {
+  let clean = sql_db::decode_utf8_lossy_bytes(s.to_bytes())
+  let raw = clean.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b < 128 && is_uri_component_unreserved(b) {
+      sb.write_byte(b as Byte)
+    } else {
+      sb.write_byte(37 as Byte) // '%'
+      sb.write_byte(hex_upper_byte((b >> 4) & 0xF))
+      sb.write_byte(hex_upper_byte(b & 0xF))
+    }
+  }
+  sb.to_string()
+}
+
+/// Percent-decode `%XX` sequences (and optionally `+` -> space when `plus_space=true`),
+/// preserving invalid `%` sequences verbatim and decoding resulting bytes as WHATWG lossy UTF-8.
+pub fn percent_decode_lossy(s : String, plus_space : Bool = false) -> String {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let out : Array[Byte] = []
+  let mut i = 0
+  while i < n {
+    let b = raw[i].to_int() & 0xFF
+    if b == 37 && i + 2 < n {
+      match (
+        base_codec::hex_digit(raw[i + 1].to_int() & 0xFF),
+        base_codec::hex_digit(raw[i + 2].to_int() & 0xFF),
+      ) {
+        (Some(hi), Some(lo)) => {
+          out.push(((hi << 4) | lo) as Byte)
+          i = i + 3
+          continue
+        }
+        _ => ()
+      }
+    }
+    if plus_space && b == 43 {
+      out.push(32 as Byte)
+      i = i + 1
+      continue
+    }
+    out.push(b as Byte)
+    i = i + 1
+  }
+  let buf = Bytes::new(out.length())
+  for j in 0..<out.length() {
+    buf[j] = out[j]
+  }
+  sql_db::decode_utf8_lossy_bytes(buf)
+}

@@ -560,6 +560,7 @@ export class AndroidScreen implements ScreenSource {
   /// A preview opens as any view does, without turning its screen on.
   readonly peek = true;
   readonly panels: Panel[];
+  readonly model?: string;
   readonly #title: string;
   readonly #adb: Adb;
   readonly #file: string;
@@ -571,13 +572,14 @@ export class AndroidScreen implements ScreenSource {
   #size: { width: number; height: number };
   readonly discard?: () => Promise<void>;
 
-  constructor(o: { id: string; title: string; size: { width: number; height: number }; panels: Panel[]; adb: Adb; file: string; changed: () => void; peeks?: PeekCount; emulator?: { since: number } }) {
+  constructor(o: { id: string; title: string; model?: string; size: { width: number; height: number }; panels: Panel[]; adb: Adb; file: string; changed: () => void; peeks?: PeekCount; emulator?: { since: number } }) {
     this.id = o.id;
     this.#since = o.emulator?.since;
     // An emulator is closed from a person's app (one left running, the core's `longJobs`): it leaves adb, and the list.
     if (o.emulator) this.discard = async () => void (await o.adb.run(["emu", "kill"]));
     this.#peeks = o.peeks ?? new PeekCount();
     this.panels = o.panels;
+    if (o.model) this.model = o.model;
     this.#title = o.title;
     this.#size = o.size;
     this.#adb = o.adb;
@@ -822,6 +824,7 @@ export class AndroidScreens {
     return new AndroidScreen({
       id,
       title: `${name} · Android ${release}`,
+      ...(model ? { model } : {}),
       size: sizeOf(await adb.run(["shell", "wm size"])),
       panels: panelsOf(await adb.run(["shell", "dumpsys display"]).catch(() => "")),
       adb,

@@ -544,7 +544,7 @@ async fn Handover::begin(self : Handover, origin : String, ws : String, id : Str
     _ => (None, None)
   }
   let git = (self.d.has_git)() catch { _ => false }
-  jo([("ok", jb(true)), ("free", opt_num(free)), ("total", opt_num(total)), ("git", jb(git)), ("usage", jb(true)), ("rows", js("batched"))])
+  jo([("ok", jb(true)), ("free", opt_num(free)), ("total", opt_num(total)), ("git", jb(git)), ("usage", jb(true)), ("rows", js("batched")), ("projects", jb(true))])
 }
 
 ///|

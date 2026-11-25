@@ -1,0 +1,1703 @@
+// Migration file carry worker (`--builder replica-carry`), 1:1 aligned with
+// `station/mb/src/replica/carry.mbt`.
+// Uses `native/carry_fs.c` (`sfc_*`) for streaming list writes, nanosecond utimes,
+// nlink/hard-link with 0/1/2 error classification, and EACCES/EPERM detection.
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "locate"
+import "sql_db"
+
+enum CarryError {
+  Cut
+  Other(String)
+}
+
+fn carry_err_msg(e : CarryError) -> String {
+  match e {
+    CarryError::Cut => "the sizing's walk passed its bound"
+    CarryError::Other(m) => m
+  }
+}
+
+struct Writer {
+  fd : Int
+  path : String
+}
+
+fn Writer::open(path : String, append : Bool) -> Result[Writer, String] {
+  let fd = c_open(path, append)
+  if fd < 0 {
+    return Err("cannot open '" + path + "' to write")
+  }
+  Ok(Writer::{ fd: fd, path: path })
+}
+
+fn Writer::put(self : Writer, text : String) -> Result[Unit, String] {
+  if c_write(self.fd, js_json::utf8_bytes(text)) != 0 {
+    return Err("cannot write '" + self.path + "'")
+  }
+  Ok(())
+}
+
+fn Writer::close(self : Writer) -> Unit {
+  let _ = c_close(self.fd)
+}
+
+struct ListFile {
+  out : Writer
+  path : String
+  tmp : String
+  mut files : Int
+  mut bytes : Double
+}
+
+fn ListFile::open(path : String) -> Result[ListFile, String] {
+  let tmp = path + ".writing"
+  let out = match Writer::open(tmp, false) {
+    Ok(w) => w
+    Err(e) => return Err(e)
+  }
+  Ok(ListFile::{ out: out, path: path, tmp: tmp, files: 0, bytes: 0.0 })
+}
+
+fn ListFile::add(self : ListFile, f : js_json::JValue, size : Option[Double]) -> Result[Unit, String] {
+  match self.out.put(js_json::stringify(f) + "\n") {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  match size {
+    Some(n) => {
+      self.files = self.files + 1
+      self.bytes = self.bytes + n
+    }
+    None => ()
+  }
+  Ok(())
+}
+
+fn ListFile::close(self : ListFile, files : Files) -> Result[String, String] {
+  self.out.close()
+  let h = match files.hash(self.tmp) {
+    Ok(Some(v)) => v
+    Ok(None) => return Err("ENOENT: no such file or directory, open '" + self.tmp + "'")
+    Err(e) => return Err(e)
+  }
+  match files.rename(self.tmp, self.path) {
+    Ok(()) => Ok(h)
+    Err(e) => Err(e)
+  }
+}
+
+enum Under {
+  Data
+  Home(String)
+}
+
+struct Tally {
+  mut files : Int
+  mut bytes : Double
+}
+
+struct Gathering {
+  files : Files
+  data : String
+  scratch : String
+  gits : Array[js_json::JValue]
+  bundles : Map[String, String]
+  bundle_keys : Array[String]
+  fetched : Map[String, Bool]
+  own_gits : Array[String]
+  mut bytes : Double
+  mut before : Map[String, (Double, Double, String)]
+  mut seen : Map[String, Bool]
+  mut list : Option[ListFile]
+  mut under : Under
+  unreadable : Array[String]
+  mut unreadable_count : Int
+  mut tally : Option[Tally]
+  most : Option[Int]
+  mut walked : Int
+}
+
+fn Gathering::step(self : Gathering) -> Result[Unit, CarryError] {
+  match self.most {
+    Some(most) => {
+      self.walked = self.walked + 1
+      if self.walked > most {
+        return Err(CarryError::Cut)
+      }
+      Ok(())
+    }
+    None => Ok(())
+  }
+}
+
+fn Gathering::cannot_read(self : Gathering, path : String) -> Unit {
+  self.unreadable_count = self.unreadable_count + 1
+  if self.unreadable.length() < 5 {
+    self.unreadable.push(path)
+  }
+}
+
+fn Gathering::allowed(self : Gathering, path : String) -> Bool {
+  match self.under {
+    Under::Data => self.files.carried_place(self.data, path)
+    Under::Home(dir) => self.files.inside(path, dir) && path != dir
+  }
+}
+
+fn Gathering::add(self : Gathering, path : String) -> Result[Unit, CarryError] {
+  match (self.list, self.tally) {
+    (None, None) => return Ok(())
+    _ => ()
+  }
+  if map_has(self.seen, path) || !self.allowed(path) {
+    return Ok(())
+  }
+  self.seen.set(path, true)
+  match self.step() {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  let (kind, size, mode, mtime) = match self.files.lstat(path) {
+    Some(st) => st
+    None => return Ok(())
+  }
+  match self.tally {
+    Some(t) => {
+      if kind == "file" {
+        t.files = t.files + 1
+        t.bytes = t.bytes + size
+      }
+      return Ok(())
+    }
+    None => ()
+  }
+  let list = match self.list {
+    Some(l) => l
+    None => return Ok(())
+  }
+  if kind == "link" {
+    let target = match self.files.read_link(path) {
+      Ok(t) => t
+      Err(e) => return Err(CarryError::Other(e))
+    }
+    match list.add(jval_obj([("path", jval_str(path)), ("link", jval_str(target))]), None) {
+      Ok(()) => return Ok(())
+      Err(e) => return Err(CarryError::Other(e))
+    }
+  }
+  if kind != "file" {
+    return Ok(())
+  }
+  let hash = match self.before.get(path) {
+    Some((s, m, h)) => {
+      if s == size && m == mtime {
+        Some(h)
+      } else {
+        match self.files.hash(path) {
+          Ok(v) => v
+          Err(_) => None
+        }
+      }
+    }
+    None => {
+      match self.files.hash(path) {
+        Ok(v) => v
+        Err(_) => None
+      }
+    }
+  }
+  let h = match hash {
+    Some(v) => v
+    None => {
+      if c_denied(path, false) {
+        self.cannot_read(path)
+      }
+      return Ok(())
+    }
+  }
+  match list.add(
+    jval_obj([
+      ("path", jval_str(path)),
+      ("hash", jval_str(h)),
+      ("size", jval_num(size)),
+      ("mode", jval_num((mode & 511).to_double())),
+      ("mtimeMs", jval_num(mtime)),
+    ]),
+    Some(size),
+  ) {
+    Ok(()) => Ok(())
+    Err(e) => Err(CarryError::Other(e))
+  }
+}
+
+fn Gathering::whole(self : Gathering, dir : String) -> Result[Unit, CarryError] {
+  match self.step() {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  let entries = match self.files.listing(dir) {
+    Some(es) => es
+    None => {
+      if c_denied(dir, true) {
+        self.cannot_read(dir)
+      }
+      return Ok(())
+    }
+  }
+  for i in 0..<entries.length() {
+    let path = self.files.join([dir, entries[i].0])
+    if entries[i].1 == "dir" {
+      match self.whole(path) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    } else {
+      match self.add(path) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  Ok(())
+}
+
+fn Gathering::cli_kept_of(self : Gathering, ids : Array[locate::Source]) -> Result[Unit, CarryError] {
+  for i in 0..<ids.length() {
+    let r = ids[i]
+    if r.runtime != "agy" {
+      continue
+    }
+    let profile = match r.profile {
+      Some(p) => if one_segment(p) && one_segment(r.id) { p } else { continue }
+      None => continue
+    }
+    let cli = self.files.join([self.data, "homes", profile, "agy", ".gemini", "antigravity-cli"])
+    match self.add(self.files.join([cli, "conversations", r.id + ".db"])) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+    match self.add(self.files.join([cli, "conversations", r.id + ".db-wal"])) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+    match self.add(self.files.join([cli, "annotations", r.id + ".pbtxt"])) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+    let brain = self.files.join([cli, "brain", r.id])
+    if self.files.exists(brain) {
+      match self.whole(brain) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  Ok(())
+}
+
+fn Gathering::git(self : Gathering, dir : String, args : Array[String], timeout : Option[Double] = None) -> Option[String] {
+  let all : Array[base_codec::Json] = [base_codec::json_str("-C"), base_codec::json_str(dir)]
+  for i in 0..<args.length() {
+    all.push(base_codec::json_str(args[i]))
+  }
+  let tms = match timeout {
+    Some(t) => t
+    None => 1000000000000.0
+  }
+  let asked = base_codec::json_obj([
+    ("command", base_codec::json_str("git")),
+    ("args", base_codec::json_arr(all)),
+    (
+      "env",
+      base_codec::json_obj([
+        ("GIT_TERMINAL_PROMPT", base_codec::json_str("0")),
+        ("GIT_SSH_COMMAND", base_codec::json_str("ssh -o BatchMode=yes")),
+      ]),
+    ),
+    ("maxBytes", base_codec::json_num(268435456.0)),
+    ("timeoutMs", base_codec::json_num(tms)),
+  ])
+  match self.files.call("proc.run", asked) {
+    Ok(base_codec::Json::Str(out)) => Some(js_json::trim_js(out))
+    _ => None
+  }
+}
+
+fn Gathering::linked(self : Gathering, dir : String) -> Result[Option[js_json::JValue], CarryError] {
+  match self.tally {
+    Some(_) => return Ok(None)
+    None => ()
+  }
+  let r = match self.git(dir, ["remote", "get-url", "origin"]) {
+    Some(v) => if v != "" { v } else { return Ok(None) }
+    None => return Ok(None)
+  }
+  let h = match self.git(dir, ["rev-parse", "--verify", "-q", "HEAD"]) {
+    Some(v) => if v != "" { v } else { return Ok(None) }
+    None => return Ok(None)
+  }
+  let common = self.git(dir, ["rev-parse", "--git-common-dir"])
+  let repo = match common {
+    Some(c) => self.files.resolve_in(dir, c)
+    None => dir
+  }
+  if !map_has(self.fetched, repo) {
+    self.fetched.set(repo, true)
+    let _ = self.git(dir, ["fetch", "-q", "--no-write-fetch-head", "--prune", "origin"], timeout=Some(120000.0))
+  }
+  let branch = self.git(dir, ["symbolic-ref", "--short", "-q", "HEAD"])
+  let bundle = self.files.join([self.scratch, self.gits.length().to_string() + ".bundle"])
+  match self.files.remove(bundle) {
+    Ok(()) => ()
+    Err(e) => return Err(CarryError::Other(e))
+  }
+  let mut hash : Option[String] = None
+  match self.git(dir, ["bundle", "create", "-q", bundle, "HEAD", "--not", "--remotes"]) {
+    Some(_) => {
+      if self.files.exists(bundle) {
+        let b = match self.files.hash(bundle) {
+          Ok(Some(v)) => v
+          Ok(None) => return Err(CarryError::Other("ENOENT: no such file or directory, open '" + bundle + "'"))
+          Err(e) => return Err(CarryError::Other(e))
+        }
+        hash = Some(b)
+        match self.bundles.get(b) {
+          Some(_) => ()
+          None => self.bundle_keys.push(b)
+        }
+        self.bundles.set(b, bundle)
+        match self.files.lstat(bundle) {
+          Some((_, size, _, _)) => self.bytes = self.bytes + size
+          None => return Err(CarryError::Other("ENOENT: no such file or directory, lstat '" + bundle + "'"))
+        }
+      }
+    }
+    None => ()
+  }
+  let branch_val = match branch {
+    Some(b) => if b != "" { jval_str(b) } else { js_json::JValue::Null }
+    None => js_json::JValue::Null
+  }
+  Ok(
+    Some(
+      jval_obj([
+        ("dir", jval_str(dir)),
+        ("remote", jval_str(r)),
+        ("branch", branch_val),
+        ("head", jval_str(h)),
+        ("bundle", jval_opt_str(hash)),
+      ]),
+    ),
+  )
+}
+
+fn Gathering::checkout(self : Gathering, dir : String, depth : Int) -> Result[Bool, CarryError] {
+  let dotgit = self.files.join([dir, ".git"])
+  let kind = match self.files.lstat(dotgit) {
+    Some((k, _, _, _)) => k
+    None => return Ok(false)
+  }
+  let listed = match self.git(dir, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]) {
+    Some(l) => l
+    None => return Ok(false)
+  }
+  let made : Map[String, Bool] = Map::new()
+  let rebuilt = fn(f : String) -> Bool {
+    let parts = str_split_sep(f, "/")
+    let mut i = 1
+    while i < parts.length() {
+      let sub : Array[String] = []
+      for j in 0..<i {
+        sub.push(parts[j])
+      }
+      let at = str_join(sub, "/")
+      let r = match made.get(at) {
+        Some(v) => v
+        None => {
+          let v = self.files.rebuildable(self.files.join([dir, at]))
+          made.set(at, v)
+          v
+        }
+      }
+      if r {
+        return true
+      }
+      i = i + 1
+    }
+    false
+  }
+  let entries : Array[String] = []
+  let unique : Map[String, Bool] = Map::new()
+  let lb = listed.to_bytes()
+  let mut start = 0
+  for i in 0..<(lb.length() + 1) {
+    let at_end = i == lb.length()
+    if at_end || (lb[i].to_int() & 0xFF) == 0 {
+      let mut end = i
+      while end > start && (lb[end - 1].to_int() & 0xFF) == 47 {
+        end = end - 1
+      }
+      if end > start {
+        let f = slice_bytes(lb, start, end)
+        if !rebuilt(f) && !map_has(unique, f) {
+          unique.set(f, true)
+          entries.push(f)
+        }
+      }
+      start = i + 1
+    }
+  }
+  let take = fn() -> Result[Unit, CarryError] {
+    for i in 0..<entries.length() {
+      let path = self.files.join([dir, entries[i]])
+      let k = match self.files.lstat(path) {
+        Some((kv, _, _, _)) => kv
+        None => continue
+      }
+      if k == "dir" {
+        if !self.files.rebuildable(path) {
+          let next_depth = if depth + 1 > ANY_NAME_DEPTH { depth + 1 } else { ANY_NAME_DEPTH + 1 }
+          match self.tree(path, next_depth) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      } else {
+        match self.add(path) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    Ok(())
+  }
+  if kind == "dir" {
+    match self.tally {
+      Some(_) => {
+        match self.whole(dotgit) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      None => self.own_gits.push(dotgit)
+    }
+    match take() {
+      Ok(()) => return Ok(true)
+      Err(e) => return Err(e)
+    }
+  }
+  if kind != "file" {
+    return Ok(false)
+  }
+  let said = match self.files.read(dotgit) {
+    Ok(Some(t)) => js_json::trim_js(t)
+    _ => ""
+  }
+  let gitdir = if str_has_prefix(said, "gitdir:") {
+    Some(js_json::trim_js(str_slice(said, 7, said.to_bytes().length())))
+  } else {
+    None
+  }
+  let worktree = match gitdir {
+    Some(g) => {
+      if self.files.absolute(g) {
+        match self.linked(dir) {
+          Ok(w) => w
+          Err(e) => return Err(e)
+        }
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+  match worktree {
+    None => {
+      match self.add(dotgit) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    Some(w) => self.gits.push(w)
+  }
+  match take() {
+    Ok(()) => Ok(true)
+    Err(e) => Err(e)
+  }
+}
+
+fn Gathering::tree(self : Gathering, dir : String, depth : Int) -> Result[Unit, CarryError] {
+  match self.step() {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  let entries = match self.files.listing(dir) {
+    Some(es) => es
+    None => {
+      if c_denied(dir, true) {
+        self.cannot_read(dir)
+      }
+      return Ok(())
+    }
+  }
+  let mut has_dotgit = false
+  for i in 0..<entries.length() {
+    if entries[i].0 == ".git" {
+      has_dotgit = true
+      break
+    }
+  }
+  if has_dotgit {
+    match self.checkout(dir, depth) {
+      Ok(true) => return Ok(())
+      Ok(false) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  if depth <= ANY_NAME_DEPTH && self.files.rebuilt_of_any_name(dir, entries) {
+    return Ok(())
+  }
+  let here = names_of(entries)
+  for i in 0..<entries.length() {
+    let path = self.files.join([dir, entries[i].0])
+    if entries[i].1 == "dir" {
+      if entries[i].0 == ".git" || rebuilt_by_name(entries[i].0, here) == 0 {
+        match self.tree(path, depth + 1) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    } else {
+      match self.add(path) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  Ok(())
+}
+
+fn Gathering::room_walk(self : Gathering, dir : String) -> Result[Unit, CarryError] {
+  let entries = match self.files.listing(dir) {
+    Some(es) => es
+    None => []
+  }
+  let here = names_of(entries)
+  for i in 0..<entries.length() {
+    let name = entries[i].0
+    if name == "archive.lock" || str_has_suffix(name, ".writing") {
+      continue
+    }
+    let path = self.files.join([dir, name])
+    if entries[i].1 == "dir" {
+      if rebuilt_by_name(name, here) == 0 {
+        match self.tree(path, 1) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    } else {
+      match self.add(path) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  Ok(())
+}
+
+fn Gathering::read_before(self : Gathering, at : String) -> Result[Unit, String] {
+  self.before = Map::new()
+  if !self.files.exists(at) {
+    return Ok(())
+  }
+  self.files.each_line(at, fn(line : String) -> Result[Unit, String] {
+    let f = match js_json::parse(line) {
+      Ok(v) => v
+      Err(_) => return Ok(())
+    }
+    match (text_of(jval_get(f, "hash")), text_of(jval_get(f, "path"))) {
+      (Some(h), Some(p)) => self.before.set(p, (num_of(jval_get(f, "size")), num_of(jval_get(f, "mtimeMs")), h))
+      _ => ()
+    }
+    Ok(())
+  })
+}
+
+fn sessions_in_sql(home : Bool, keys : Bool) -> String {
+  if keys {
+    "SELECT key, workspace, cwd, runtime, profile, runtime_session_id, archived_at FROM sessions WHERE key IN (SELECT value FROM json_each(?)) ORDER BY key"
+  } else {
+    let which = if home { "(ws = ? OR ws IS NULL)" } else { "ws = ?" }
+    "SELECT key, workspace, cwd, runtime, profile, runtime_session_id, archived_at FROM sessions WHERE " + which + " ORDER BY key"
+  }
+}
+
+fn list_file(files : Files, scratch : String, key : String) -> String {
+  files.join([scratch, "lists", short_hash(key) + ".jsonl"])
+}
+
+fn session_places(cwd : Option[String], workspace : String) -> Array[String] {
+  match cwd {
+    Some(c) => if c != workspace { [c, workspace] } else { [workspace] }
+    None => [workspace]
+  }
+}
+
+fn walk_home_dir(files : Files, dir : String, each : (String) -> Result[Unit, String]) -> Result[Unit, String] {
+  let entries = match files.listing(dir) {
+    Some(es) => es
+    None => []
+  }
+  let here = names_of(entries)
+  for i in 0..<entries.length() {
+    let path = files.join([dir, entries[i].0])
+    if entries[i].1 == "dir" {
+      if rebuilt_by_name(entries[i].0, here) == 0 {
+        match walk_home_dir(files, path, each) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    } else if entries[i].1 == "file" {
+      match each(path) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  Ok(())
+}
+
+fn home_files(files : Files, agent : String, own : Array[String], each : (String) -> Result[Unit, String]) -> Result[Unit, String] {
+  let check_file = fn(path : String) -> Result[Unit, String] {
+    match files.lstat(path) {
+      Some(("file", _, _, _)) => each(path)
+      _ => Ok(())
+    }
+  }
+  match check_file(files.join([agent, "MEMORY.md"])) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  match check_file(files.join([agent, "presets.json"])) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  let skills = files.join([agent, "skills"])
+  let entries = match files.listing(skills) {
+    Some(es) => es
+    None => []
+  }
+  for i in 0..<entries.length() {
+    let name = entries[i].0
+    if str_has_prefix(name, ".") || name == "synced" || arr_contains_str(own, name) || entries[i].1 != "dir" {
+      continue
+    }
+    match walk_home_dir(files, files.join([skills, name]), each) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(())
+}
+
+pub fn carry_gather(
+  files : Files,
+  data : String,
+  db_path : String,
+  ws : String,
+  home : Bool,
+  scratch : String,
+  agent : Option[String],
+  keys : Option[Array[String]],
+  own : Array[String],
+) -> Result[js_json::JValue, String] {
+  let db = match sql_db::Db::attach(db_path, wait_ms=30000) {
+    Ok(d) => d
+    Err(e) => return Err(e.message)
+  }
+  let res = carry_gather_in(files, db, data, ws, home, scratch, agent, keys, own)
+  db.close()
+  res
+}
+
+fn carry_gather_in(
+  files : Files,
+  db : sql_db::Db,
+  data : String,
+  ws : String,
+  home : Bool,
+  scratch : String,
+  agent : Option[String],
+  keys : Option[Array[String]],
+  own : Array[String],
+) -> Result[js_json::JValue, String] {
+  let g = Gathering::{
+    files: files,
+    data: data,
+    scratch: scratch,
+    gits: [],
+    bundles: Map::new(),
+    bundle_keys: [],
+    fetched: Map::new(),
+    own_gits: [],
+    bytes: 0.0,
+    before: Map::new(),
+    seen: Map::new(),
+    list: None,
+    under: Under::Data,
+    unreadable: [],
+    unreadable_count: 0,
+    tally: None,
+    most: None,
+    walked: 0,
+  }
+  match files.mkdir(files.join([scratch, "lists"])) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  let sessions : Array[js_json::JValue] = []
+  let skipped : Array[js_json::JValue] = []
+  let mut total_files = 0
+  let mut total_bytes = 0.0
+  let real_data = match files.real(data) {
+    Some(r) => r
+    None => data
+  }
+  let rows = match keys {
+    Some(k) => {
+      match db.all(sessions_in_sql(home, true), [base_codec::json_str(js_json::stringify(strs_jval(k)))]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e.message)
+      }
+    }
+    None => {
+      match db.all(sessions_in_sql(home, false), [base_codec::json_str(ws)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e.message)
+      }
+    }
+  }
+  let finder = locate::Finder::new(files.client, files.sep)
+  let sep_bytes = files.sep.to_bytes()
+  let sep_b = if sep_bytes.length() > 0 { sep_bytes[0].to_int() & 0xFF } else { 47 }
+  for si in 0..<rows.length() {
+    let s = rows[si]
+    let key = field_text(s, "key")
+    let workspace = field_text(s, "workspace")
+    let runtime = field_text(s, "runtime")
+    let at = list_file(files, scratch, key)
+    match g.read_before(at) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+    g.seen = Map::new()
+    while g.own_gits.length() > 0 {
+      let _ = g.own_gits.pop()
+    }
+    let list = match ListFile::open(at) {
+      Ok(l) => l
+      Err(e) => return Err(e)
+    }
+    g.list = Some(list)
+    let ids : Array[locate::Source] = []
+    let r_rows = match db.all("SELECT id, profile, runtime FROM runtime_sessions WHERE session_key = ? ORDER BY at", [base_codec::json_str(key)]) {
+      Ok(rs) => rs
+      Err(e) => {
+        list.out.close()
+        return Err(e.message)
+      }
+    }
+    for ri in 0..<r_rows.length() {
+      let r = r_rows[ri]
+      let rt = match field_str(r, "runtime") {
+        Some(v) => v
+        None => runtime
+      }
+      ids.push(locate::Source::{ id: field_text(r, "id"), profile: field_str(r, "profile"), runtime: rt })
+    }
+    match field_str(s, "runtime_session_id") {
+      Some(rsid) => {
+        let mut has_id = false
+        for i in 0..<ids.length() {
+          if ids[i].id == rsid {
+            has_id = true
+            break
+          }
+        }
+        if !has_id {
+          ids.push(locate::Source::{ id: rsid, profile: field_str(s, "profile"), runtime: runtime })
+        }
+      }
+      None => ()
+    }
+    let places = session_places(field_str(s, "cwd"), workspace)
+    let looked : Array[String] = []
+    for i in 0..<places.length() {
+      arr_push_unique_str(looked, files.real_of(places[i]))
+    }
+    for i in 0..<places.length() {
+      arr_push_unique_str(looked, places[i])
+    }
+    let valid_ids : Array[locate::Source] = []
+    for i in 0..<ids.length() {
+      if locate::runtime_kind(ids[i].runtime) {
+        valid_ids.push(ids[i])
+      }
+    }
+    let (found, _) = finder.sources(data, [], valid_ids, looked, anywhere=true)
+    for fi in 0..<found.length() {
+      let (path, kind) = found[fi]
+      let actual = if files.exists(path) { path } else { path + ".zst" }
+      match g.add(actual) {
+        Ok(()) => ()
+        Err(e) => {
+          list.out.close()
+          return Err(carry_err_msg(e))
+        }
+      }
+      if kind == "claude" {
+        let cut = match str_rev_find_byte(path, sep_b) {
+          Some(idx) => idx + 1
+          None => 0
+        }
+        let name = str_slice(path, cut, path.to_bytes().length())
+        let id = if str_has_suffix(name, ".jsonl") {
+          str_slice(name, 0, name.to_bytes().length() - 6)
+        } else {
+          name
+        }
+        match g.whole(files.join([files.dir_of(path), id])) {
+          Ok(()) => ()
+          Err(e) => {
+            list.out.close()
+            return Err(carry_err_msg(e))
+          }
+        }
+      }
+    }
+    match g.cli_kept_of(ids) {
+      Ok(()) => ()
+      Err(e) => {
+        list.out.close()
+        return Err(carry_err_msg(e))
+      }
+    }
+    let room = files.room_for(data, real_data, workspace)
+    match room {
+      None => skipped.push(jval_str(key))
+      Some(dir) => {
+        match g.room_walk(dir) {
+          Ok(()) => ()
+          Err(e) => {
+            list.out.close()
+            return Err(carry_err_msg(e))
+          }
+        }
+      }
+    }
+    for gi in 0..<g.own_gits.length() {
+      match g.whole(g.own_gits[gi]) {
+        Ok(()) => ()
+        Err(e) => {
+          list.out.close()
+          return Err(carry_err_msg(e))
+        }
+      }
+    }
+    g.list = None
+    let hash = match list.close(files) {
+      Ok(h) => h
+      Err(e) => return Err(e)
+    }
+    sessions.push(
+      jval_obj([
+        ("key", jval_str(key)),
+        ("workspace", jval_str(workspace)),
+        ("room", jval_opt_str(room)),
+        ("list", jval_str(hash)),
+        ("files", jval_num(list.files.to_double())),
+        ("bytes", jval_num(list.bytes)),
+        ("at", jval_str(at)),
+      ]),
+    )
+    total_files = total_files + list.files
+    total_bytes = total_bytes + list.bytes
+  }
+
+  let mut carried_home = js_json::JValue::Null
+  match agent {
+    Some(dir) => {
+      if files.exists(dir) {
+        let at = files.join([scratch, "lists", "agent-home.jsonl"])
+        match g.read_before(at) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+        g.seen = Map::new()
+        let list = match ListFile::open(at) {
+          Ok(l) => l
+          Err(e) => return Err(e)
+        }
+        g.list = Some(list)
+        g.under = Under::Home(dir)
+        match home_files(files, dir, own, fn(p : String) -> Result[Unit, String] {
+          match g.add(p) {
+            Ok(()) => Ok(())
+            Err(e) => Err(carry_err_msg(e))
+          }
+        }) {
+          Ok(()) => ()
+          Err(e) => {
+            list.out.close()
+            return Err(e)
+          }
+        }
+        g.list = None
+        let hash = match list.close(files) {
+          Ok(h) => h
+          Err(e) => return Err(e)
+        }
+        carried_home = jval_obj([
+          ("dir", jval_str(dir)),
+          ("list", jval_str(hash)),
+          ("files", jval_num(list.files.to_double())),
+          ("bytes", jval_num(list.bytes)),
+          ("at", jval_str(at)),
+        ])
+        total_files = total_files + list.files
+        total_bytes = total_bytes + list.bytes
+      }
+    }
+    None => ()
+  }
+
+  total_bytes = total_bytes + g.bytes
+  let bundles_arr : Array[(String, js_json::JValue)] = []
+  for i in 0..<g.bundle_keys.length() {
+    let h = g.bundle_keys[i]
+    match g.bundles.get(h) {
+      Some(p) => bundles_arr.push((h, jval_str(p)))
+      None => ()
+    }
+  }
+  let index = jval_obj([
+    ("v", jval_num(2.0)),
+    ("dataDir", jval_str(data)),
+    ("sessions", jval_arr(sessions)),
+    ("gits", jval_arr(g.gits)),
+    ("skipped", jval_arr(skipped)),
+    ("jobs", jval_arr([])),
+    ("bundles", jval_obj(bundles_arr)),
+    ("files", jval_num(total_files.to_double())),
+    ("bytes", jval_num(total_bytes)),
+    ("agent", carried_home),
+  ])
+  let path = files.join([scratch, "index.json"])
+  match files.write(path, js_json::stringify(index)) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let answer : Array[(String, js_json::JValue)] = [
+    ("index", jval_str(path)),
+    ("files", jval_num(total_files.to_double())),
+    ("bytes", jval_num(total_bytes)),
+    ("gits", jval_num(g.gits.length().to_double())),
+    ("skipped", jval_num(skipped.length().to_double())),
+  ]
+  if g.unreadable_count > 0 {
+    answer.push(("unreadable", strs_jval(g.unreadable)))
+    answer.push(("unreadableCount", jval_num(g.unreadable_count.to_double())))
+  }
+  match files.looked {
+    Some(seen) => {
+      let looked_arr : Array[js_json::JValue] = []
+      for i in 0..<seen.length() {
+        looked_arr.push(jval_arr([jval_str(seen[i].0), jval_str(seen[i].1)]))
+      }
+      answer.push(("looked", jval_arr(looked_arr)))
+    }
+    None => ()
+  }
+  Ok(jval_obj(answer))
+}
+
+pub fn carry_sizes(
+  files : Files,
+  data : String,
+  db_path : String,
+  keys : Array[String],
+  most : Int,
+  places : Option[Array[(String, Option[String], Array[String])]],
+) -> Result[js_json::JValue, String] {
+  let g = Gathering::{
+    files: files,
+    data: data,
+    scratch: "",
+    gits: [],
+    bundles: Map::new(),
+    bundle_keys: [],
+    fetched: Map::new(),
+    own_gits: [],
+    bytes: 0.0,
+    before: Map::new(),
+    seen: Map::new(),
+    list: None,
+    under: Under::Data,
+    unreadable: [],
+    unreadable_count: 0,
+    tally: None,
+    most: Some(most),
+    walked: 0,
+  }
+  let out : Array[js_json::JValue] = []
+  let sized = fn(key : String, room : Option[String], tplaces : Array[String], t : Tally, complete : Bool) -> js_json::JValue {
+    jval_obj([
+      ("key", jval_str(key)),
+      ("room", jval_opt_str(room)),
+      ("transcripts", strs_jval(tplaces)),
+      ("bytes", jval_num(t.bytes)),
+      ("files", jval_num(t.files.to_double())),
+      ("complete", jval_bool(complete)),
+    ])
+  }
+  match places {
+    Some(ps) => {
+      for pi in 0..<ps.length() {
+        let (key, room, transcripts) = ps[pi]
+        g.seen = Map::new()
+        g.walked = 0
+        let t = Tally::{ files: 0, bytes: 0.0 }
+        g.tally = Some(t)
+        let mut complete = true
+        let mut hard_err : Option[String] = None
+        for i in 0..<transcripts.length() {
+          if i >= 64 {
+            break
+          }
+          let at = transcripts[i]
+          match files.lstat(at) {
+            Some(("dir", _, _, _)) => {
+              match g.whole(at) {
+                Ok(()) => ()
+                Err(CarryError::Cut) => {
+                  complete = false
+                  break
+                }
+                Err(CarryError::Other(e)) => {
+                  hard_err = Some(e)
+                  break
+                }
+              }
+            }
+            Some(_) => {
+              match g.add(at) {
+                Ok(()) => ()
+                Err(CarryError::Cut) => {
+                  complete = false
+                  break
+                }
+                Err(CarryError::Other(e)) => {
+                  hard_err = Some(e)
+                  break
+                }
+              }
+            }
+            None => ()
+          }
+        }
+        match hard_err {
+          Some(e) => return Err(e)
+          None => ()
+        }
+        if complete {
+          match room {
+            Some(r) => {
+              match g.room_walk(r) {
+                Ok(()) => ()
+                Err(CarryError::Cut) => complete = false
+                Err(CarryError::Other(e)) => return Err(e)
+              }
+            }
+            None => ()
+          }
+        }
+        g.tally = None
+        out.push(sized(key, room, transcripts, t, complete))
+      }
+      return Ok(jval_arr(out))
+    }
+    None => ()
+  }
+  let db = match sql_db::Db::attach(db_path, wait_ms=30000) {
+    Ok(d) => d
+    Err(e) => return Err(e.message)
+  }
+  let res = carry_sizes_in_db(files, db, g, data, keys, sized, out)
+  db.close()
+  res
+}
+
+fn carry_sizes_in_db(
+  files : Files,
+  db : sql_db::Db,
+  g : Gathering,
+  data : String,
+  keys : Array[String],
+  sized : (String, Option[String], Array[String], Tally, Bool) -> js_json::JValue,
+  out : Array[js_json::JValue],
+) -> Result[js_json::JValue, String] {
+  let real_data = match files.real(data) {
+    Some(r) => r
+    None => data
+  }
+  let finder = locate::Finder::new(files.client, files.sep)
+  let rows = match db.all(sessions_in_sql(false, true), [base_codec::json_str(js_json::stringify(strs_jval(keys)))]) {
+    Ok(rs) => rs
+    Err(e) => return Err(e.message)
+  }
+  let sep_bytes = files.sep.to_bytes()
+  let sep_b = if sep_bytes.length() > 0 { sep_bytes[0].to_int() & 0xFF } else { 47 }
+  for si in 0..<rows.length() {
+    let s = rows[si]
+    let key = field_text(s, "key")
+    let workspace = field_text(s, "workspace")
+    let runtime = field_text(s, "runtime")
+    g.seen = Map::new()
+    g.walked = 0
+    let t = Tally::{ files: 0, bytes: 0.0 }
+    g.tally = Some(t)
+    let tplaces : Array[String] = []
+    let mut complete = true
+    let ids : Array[locate::Source] = []
+    let r_rows = match db.all("SELECT id, profile, runtime FROM runtime_sessions WHERE session_key = ? ORDER BY at", [base_codec::json_str(key)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e.message)
+    }
+    for ri in 0..<r_rows.length() {
+      let r = r_rows[ri]
+      let rt = match field_str(r, "runtime") {
+        Some(v) => v
+        None => runtime
+      }
+      ids.push(locate::Source::{ id: field_text(r, "id"), profile: field_str(r, "profile"), runtime: rt })
+    }
+    match field_str(s, "runtime_session_id") {
+      Some(rsid) => {
+        let mut has_id = false
+        for i in 0..<ids.length() {
+          if ids[i].id == rsid {
+            has_id = true
+            break
+          }
+        }
+        if !has_id {
+          ids.push(locate::Source::{ id: rsid, profile: field_str(s, "profile"), runtime: runtime })
+        }
+      }
+      None => ()
+    }
+    let places = session_places(field_str(s, "cwd"), workspace)
+    let looked : Array[String] = []
+    for i in 0..<places.length() {
+      arr_push_unique_str(looked, files.real_of(places[i]))
+    }
+    for i in 0..<places.length() {
+      arr_push_unique_str(looked, places[i])
+    }
+    let valid_ids : Array[locate::Source] = []
+    for i in 0..<ids.length() {
+      if locate::runtime_kind(ids[i].runtime) {
+        valid_ids.push(ids[i])
+      }
+    }
+    let (found, _) = finder.sources(data, [], valid_ids, looked, anywhere=true)
+    for fi in 0..<found.length() {
+      let (path, kind) = found[fi]
+      let at = if files.exists(path) { path } else { path + ".zst" }
+      match g.add(at) {
+        Ok(()) => ()
+        Err(CarryError::Cut) => {
+          complete = false
+          break
+        }
+        Err(CarryError::Other(e)) => return Err(e)
+      }
+      if tplaces.length() < 64 {
+        tplaces.push(at)
+      }
+      if kind == "claude" {
+        let cut = match str_rev_find_byte(path, sep_b) {
+          Some(idx) => idx + 1
+          None => 0
+        }
+        let name = str_slice(path, cut, path.to_bytes().length())
+        let id = if str_has_suffix(name, ".jsonl") {
+          str_slice(name, 0, name.to_bytes().length() - 6)
+        } else {
+          name
+        }
+        let sub = files.join([files.dir_of(path), id])
+        match g.whole(sub) {
+          Ok(()) => ()
+          Err(CarryError::Cut) => {
+            complete = false
+            break
+          }
+          Err(CarryError::Other(e)) => return Err(e)
+        }
+        if tplaces.length() < 64 {
+          tplaces.push(sub)
+        }
+      }
+    }
+    if complete {
+      match g.cli_kept_of(ids) {
+        Ok(()) => ()
+        Err(CarryError::Cut) => complete = false
+        Err(CarryError::Other(e)) => return Err(e)
+      }
+    }
+    if complete {
+      match files.room_for(data, real_data, workspace) {
+        Some(dir) => {
+          match g.room_walk(dir) {
+            Ok(()) => ()
+            Err(CarryError::Cut) => complete = false
+            Err(CarryError::Other(e)) => return Err(e)
+          }
+        }
+        None => ()
+      }
+    }
+    g.tally = None
+    out.push(sized(key, files.room_for(data, real_data, workspace), tplaces, t, complete))
+  }
+  Ok(jval_arr(out))
+}
+
+pub fn carry_preview(
+  files : Files,
+  data : String,
+  db_path : String,
+  ws : String,
+  home : Bool,
+) -> Result[js_json::JValue, String] {
+  let db = match sql_db::Db::attach(db_path, wait_ms=30000) {
+    Ok(d) => d
+    Err(e) => return Err(e.message)
+  }
+  let rows = match db.all(sessions_in_sql(home, false), [base_codec::json_str(ws)]) {
+    Ok(rs) => rs
+    Err(e) => {
+      db.close()
+      return Err(e.message)
+    }
+  }
+  db.close()
+  let real_data = match files.real(data) {
+    Some(r) => r
+    None => data
+  }
+  let mut chats = 0
+  let mut archived = 0
+  let mut outside = 0
+  for i in 0..<rows.length() {
+    let s = rows[i]
+    match s.get("archived_at") {
+      Some(base_codec::Json::Null) => chats = chats + 1
+      None => chats = chats + 1
+      _ => archived = archived + 1
+    }
+    match files.room_for(data, real_data, field_text(s, "workspace")) {
+      None => outside = outside + 1
+      Some(_) => ()
+    }
+  }
+  Ok(
+    jval_obj([
+      ("chats", jval_num(chats.to_double())),
+      ("archived", jval_num(archived.to_double())),
+      ("outside", jval_num(outside.to_double())),
+    ]),
+  )
+}
+
+fn put_file(files : Files, blob : String, tmp : String) -> Result[Unit, String] {
+  let links = c_nlink(blob)
+  if links < 0 {
+    return Err("ENOENT: no such file or directory, lstat '" + blob + "'")
+  }
+  if links == 1 {
+    let rc = c_link(blob, tmp)
+    if rc == 0 {
+      return Ok(())
+    } else if rc != 1 {
+      return Err("cannot link '" + blob + "' -> '" + tmp + "'")
+    }
+  }
+  files.copy(blob, tmp)
+}
+
+struct Placing {
+  files : Files
+  ours : Map[String, Bool]
+  known : Map[String, String]
+  placed_out : Option[Writer]
+  made_out : Option[Writer]
+  aside : Option[String]
+}
+
+pub fn same_of(hash : String, size : Double, mtime : Double) -> String {
+  hash + "\t" + js_json::stringify(jval_num(size)) + "\t" + js_json::stringify(jval_num(js_json::js_trunc(mtime)))
+}
+
+fn Placing::fresh(self : Placing, path : String) -> Result[Unit, String] {
+  self.ours.set(path, true)
+  match self.made_out {
+    Some(w) => w.put(path + "\n")
+    None => Ok(())
+  }
+}
+
+fn Placing::away(self : Placing, path : String) -> Result[Unit, String] {
+  let aside = match self.aside {
+    Some(a) => if !map_has(self.ours, path) { a } else { return self.files.remove(path, recursive=true) }
+    None => return self.files.remove(path, recursive=true)
+  }
+  match self.files.mkdir(aside) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  let rand = match self.files.random(4) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let name = short_hash(path) + "-" + rand
+  match self.files.rename(path, self.files.join([aside, name])) {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  let w = match Writer::open(self.files.join([aside, "list.txt"]), true) {
+    Ok(wr) => wr
+    Err(e) => return Err(e)
+  }
+  let put_res = w.put(path + "\t" + name + "\n")
+  w.close()
+  match put_res {
+    Ok(()) => ()
+    Err(e) => return Err(e)
+  }
+  self.ours.set(path, true)
+  Ok(())
+}
+
+fn Placing::now(self : Placing, path : String, same : String) -> Result[Unit, String] {
+  match self.placed_out {
+    Some(w) => {
+      if !opt_str_is(self.known.get(path), same) {
+        return w.put(path + "\t" + same + "\n")
+      }
+      Ok(())
+    }
+    None => Ok(())
+  }
+}
+
+pub fn carry_place(
+  files : Files,
+  data : String,
+  index_path : String,
+  from : String,
+  made : Option[String],
+  aside : Option[String],
+  placed : Option[String],
+  projects : Bool,
+) -> Result[js_json::JValue, String] {
+  let text = match files.read(index_path) {
+    Ok(Some(t)) => t
+    Ok(None) => return Err("ENOENT: no such file or directory, open '" + index_path + "'")
+    Err(e) => return Err(e)
+  }
+  let index = match js_json::parse(text) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let ours : Map[String, Bool] = Map::new()
+  let aside_list = match aside {
+    Some(a) => Some(files.join([a, "list.txt"]))
+    None => None
+  }
+  let ours_paths = [made, aside_list]
+  for i in 0..<ours_paths.length() {
+    match ours_paths[i] {
+      Some(p) => {
+        if files.exists(p) {
+          match files.each_line(p, fn(line : String) -> Result[Unit, String] {
+            let cut = match str_find_byte(line, 9, 0) {
+              Some(t) => t
+              None => line.to_bytes().length()
+            }
+            ours.set(str_slice(line, 0, cut), true)
+            Ok(())
+          }) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let known : Map[String, String] = Map::new()
+  match placed {
+    Some(p) => {
+      if files.exists(p) {
+        match files.each_line(p, fn(line : String) -> Result[Unit, String] {
+          match str_find_byte(line, 9, 0) {
+            Some(tab) => {
+              if tab > 0 {
+                let lb = line.to_bytes()
+                known.set(slice_bytes(lb, 0, tab), slice_bytes(lb, tab + 1, lb.length()))
+              }
+            }
+            None => ()
+          }
+          Ok(())
+        }) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    None => ()
+  }
+  let placed_out = match placed {
+    Some(p) => {
+      match Writer::open(p, true) {
+        Ok(w) => Some(w)
+        Err(e) => return Err(e)
+      }
+    }
+    None => None
+  }
+  let made_out = match made {
+    Some(p) => {
+      match Writer::open(p, true) {
+        Ok(w) => Some(w)
+        Err(e) => {
+          match placed_out {
+            Some(pw) => pw.close()
+            None => ()
+          }
+          return Err(e)
+        }
+      }
+    }
+    None => None
+  }
+  let placing = Placing::{
+    files: files,
+    ours: ours,
+    known: known,
+    placed_out: placed_out,
+    made_out: made_out,
+    aside: aside,
+  }
+  let res = carry_place_body(placing, data, index, from, projects)
+  match made_out {
+    Some(w) => w.close()
+    None => ()
+  }
+  match placed_out {
+    Some(w) => w.close()
+    None => ()
+  }
+  res
+}
+
+fn carry_place_body(
+  p : Placing,
+  data : String,
+  index : js_json::JValue,
+  from : String,
+  projects : Bool,
+) -> Result[js_json::JValue, String] {
+  let files = p.files
+  let mut n_placed = 0
+  let mut missing = 0
+  let mut kept = 0
+  let root = files.resolve(data)
+  let was = text_or(jval_get(index, "dataDir"), "")
+  let sessions = list_of(jval_get(index, "sessions"))
+  for si in 0..<sessions.length() {
+    let s = sessions[si]
+    let list = files.join([from, text_or(jval_get(s, "list"), "")])
+    let room : Option[String] = if projects {
+      Some(files.real_of(moved(files, text_or(jval_get(s, "workspace"), ""), was, data)))
+    } else {
+      None
+    }
+    if !files.exists(list) {
+      missing = missing + num_of(jval_get(s, "files")).to_int()
+      continue
+    }
+    match files.each_line(list, fn(line : String) -> Result[Unit, String] {
+      let f = match js_json::parse(line) {
+        Ok(v) => v
+        Err(_) => return Ok(())
+      }
+      let given = text_or(jval_get(f, "path"), "")
+      let raw_dest = if projects { carried_to(files, given, was, data, room) } else { moved(files, given, was, data) }
+      let path = files.resolve(raw_dest)
+      if !files.carried_place(root, path) {
+        return Ok(())
+      }
+      let is_link = jval_has_key(f, "link")
+      let hash = text_or(jval_get(f, "hash"), "")
+      let size = num_of(jval_get(f, "size"))
+      let mtime = num_of(jval_get(f, "mtimeMs"))
+      let same = same_of(hash, size, mtime)
+      if !is_link && opt_str_is(p.known.get(path), same) {
+        kept = kept + 1
+        return Ok(())
+      }
+      let there = files.lstat(path)
+      if is_link {
+        let given_link = text_or(jval_get(f, "link"), "")
+        let target = if files.absolute(given_link) { moved(files, given_link, was, data) } else { given_link }
+        match there {
+          Some((kind, _, _, _)) => {
+            if kind == "link" {
+              match files.read_link(path) {
+                Ok(cur) => {
+                  if cur == target {
+                    kept = kept + 1
+                    return Ok(())
+                  }
+                }
+                Err(e) => return Err(e)
+              }
+            }
+            match p.away(path) {
+              Ok(()) => ()
+              Err(e) => return Err(e)
+            }
+          }
+          None => ()
+        }
+        match files.mkdir(files.dir_of(path)) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+        match files.call("fs.symlink", base_codec::json_obj([("target", base_codec::json_str(target)), ("path", base_codec::json_str(path))])) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match there {
+          None => {
+            match p.fresh(path) {
+              Ok(()) => ()
+              Err(e) => return Err(e)
+            }
+          }
+          Some(_) => ()
+        }
+        n_placed = n_placed + 1
+        return Ok(())
+      }
+      match there {
+        Some((kind, tsize, _, tmtime)) => {
+          if kind == "file" && tsize == size {
+            let same_mtime = js_json::js_trunc(tmtime) == js_json::js_trunc(mtime)
+            let same_hash = if same_mtime {
+              true
+            } else {
+              match files.hash(path) {
+                Ok(Some(h)) => h == hash
+                _ => false
+              }
+            }
+            if same_hash {
+              match p.now(path, same) {
+                Ok(()) => ()
+                Err(e) => return Err(e)
+              }
+              kept = kept + 1
+              return Ok(())
+            }
+          }
+        }
+        None => ()
+      }
+      let blob = files.join([from, hash])
+      if !files.exists(blob) {
+        missing = missing + 1
+        return Ok(())
+      }
+      match files.mkdir(files.dir_of(path)) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      let rand = match files.random(4) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+      let tmp = path + "." + rand + ".carrying"
+      match put_file(files, blob, tmp) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      match files.call("fs.chmod", base_codec::json_obj([("path", base_codec::json_str(tmp)), ("mode", sql_db::double_to_json(num_of(jval_get(f, "mode"))))])) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      if c_utimes(tmp, mtime / 1000.0) != 0 {
+        return Err("cannot set the times of '" + tmp + "'")
+      }
+      match there {
+        Some(_) => {
+          match p.away(path) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        None => ()
+      }
+      match files.rename(tmp, path) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      match there {
+        None => {
+          match p.fresh(path) {
+            Ok(()) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        Some(_) => ()
+      }
+      match p.now(path, same) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+      n_placed = n_placed + 1
+      Ok(())
+    }) {
+      Ok(()) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(
+    jval_obj([
+      ("placed", jval_num(n_placed.to_double())),
+      ("missing", jval_num(missing.to_double())),
+      ("kept", jval_num(kept.to_double())),
+    ]),
+  )
+}

@@ -1,0 +1,341 @@
+// 1:1 port of `station/mb/src/readops/changed.mbt` (`digest`, `canonical`, `cyrb53`, `base36`, `changed_of`).
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+
+pub fn runtime_list(
+  op : String,
+  value : base_codec::Json,
+  runtimes : Option[Array[String]],
+) -> base_codec::Json {
+  let supported = match runtimes {
+    Some(s) => s
+    None => return value
+  }
+  let is_unsupported = fn(v : Option[base_codec::Json]) -> Bool {
+    match v {
+      Some(base_codec::Json::Str(r)) => {
+        for i in 0..<supported.length() {
+          if supported[i] == r {
+            return false
+          }
+        }
+        true
+      }
+      _ => false
+    }
+  }
+  if op == "sessions" {
+    match value {
+      base_codec::Json::Arr(rows) => {
+        let out : Array[base_codec::Json] = []
+        for i in 0..<rows.length() {
+          let r = rows[i]
+          match r {
+            base_codec::Json::Obj(_) => {
+              if !is_unsupported(builders_core::json_get_last(r, "runtime")) {
+                out.push(r)
+              }
+            }
+            _ => out.push(r)
+          }
+        }
+        base_codec::json_arr(out)
+      }
+      _ => value
+    }
+  } else if op == "chats" || op == "sharedChats" {
+    match value {
+      base_codec::Json::Arr(rows) => {
+        let out : Array[base_codec::Json] = []
+        for i in 0..<rows.length() {
+          let r = rows[i]
+          match r {
+            base_codec::Json::Obj(fields) => {
+              match builders_core::json_get_last(r, "agents") {
+                Some(base_codec::Json::Arr(agents)) => {
+                  let kept : Array[base_codec::Json] = []
+                  for j in 0..<agents.length() {
+                    let a = agents[j]
+                    match a {
+                      base_codec::Json::Obj(_) => {
+                        if !is_unsupported(builders_core::json_get_last(a, "runtime")) {
+                          kept.push(a)
+                        }
+                      }
+                      _ => kept.push(a)
+                    }
+                  }
+                  let next_fields : Array[(String, base_codec::Json)] = []
+                  for j in 0..<fields.length() {
+                    let (k, v) = fields[j]
+                    if k == "agents" {
+                      next_fields.push((k, base_codec::json_arr(kept)))
+                    } else {
+                      next_fields.push((k, v))
+                    }
+                  }
+                  out.push(base_codec::json_obj(next_fields))
+                }
+                _ => out.push(r)
+              }
+            }
+            _ => out.push(r)
+          }
+        }
+        base_codec::json_arr(out)
+      }
+      _ => value
+    }
+  } else if op == "threads" {
+    match value {
+      base_codec::Json::Arr(rows) => {
+        let out : Array[base_codec::Json] = []
+        for i in 0..<rows.length() {
+          let r = rows[i]
+          match r {
+            base_codec::Json::Obj(fields) => {
+              match builders_core::json_get_last(r, "lastMessage") {
+                Some(base_codec::Json::Obj(msg_fields)) => {
+                  let lm = base_codec::json_obj(msg_fields)
+                  if is_unsupported(builders_core::json_get_last(lm, "authorRuntime")) {
+                    let next_msg : Array[(String, base_codec::Json)] = []
+                    for j in 0..<msg_fields.length() {
+                      let (mk, mv) = msg_fields[j]
+                      if mk != "authorRuntime" {
+                        next_msg.push((mk, mv))
+                      }
+                    }
+                    let next_fields : Array[(String, base_codec::Json)] = []
+                    for j in 0..<fields.length() {
+                      let (k, v) = fields[j]
+                      if k == "lastMessage" {
+                        next_fields.push((k, base_codec::json_obj(next_msg)))
+                      } else {
+                        next_fields.push((k, v))
+                      }
+                    }
+                    out.push(base_codec::json_obj(next_fields))
+                  } else {
+                    out.push(r)
+                  }
+                }
+                _ => out.push(r)
+              }
+            }
+            _ => out.push(r)
+          }
+        }
+        base_codec::json_arr(out)
+      }
+      _ => value
+    }
+  } else {
+    value
+  }
+}
+
+fn json_text_with(v : base_codec::Json, fmt_num : (Double) -> String) -> String {
+  match v {
+    base_codec::Json::Str(s) => js_json::stringify_with_num(js_json::JValue::Str(js_json::utf16_units(s)), fmt_num)
+    base_codec::Json::Num(n, _) => js_json::stringify_with_num(js_json::JValue::Num(n), fmt_num)
+    base_codec::Json::Bool(true) => "true"
+    base_codec::Json::Bool(false) => "false"
+    _ => "null"
+  }
+}
+
+/// `digest.ts` `canonical`: JSON with every object's keys sorted in JS UTF-16 code-unit order.
+pub fn canonical_with(out : StringBuilder, v : base_codec::Json, fmt_num : (Double) -> String) -> Unit {
+  match v {
+    base_codec::Json::Arr(xs) => {
+      out.write_byte(91 as Byte)
+      for i in 0..<xs.length() {
+        if i > 0 {
+          out.write_byte(44 as Byte)
+        }
+        canonical_with(out, xs[i], fmt_num)
+      }
+      out.write_byte(93 as Byte)
+    }
+    base_codec::Json::Obj(fields) => {
+      // Deduplicate last-wins then sort keys by UTF-16 code units.
+      let m : Map[String, base_codec::Json] = Map::new()
+      let raw_keys : Array[String] = []
+      for i in 0..<fields.length() {
+        let (k, fv) = fields[i]
+        if !m.contains(k) {
+          raw_keys.push(k)
+        }
+        m.set(k, fv)
+      }
+      let keys = stable_sort(raw_keys, js_json::js_compare)
+      out.write_byte(123 as Byte)
+      for i in 0..<keys.length() {
+        if i > 0 {
+          out.write_byte(44 as Byte)
+        }
+        let k = keys[i]
+        out.write_string(json_text_with(base_codec::json_str(k), fmt_num))
+        out.write_byte(58 as Byte)
+        match m.get(k) {
+          Some(fv) => canonical_with(out, fv, fmt_num)
+          None => out.write_string("null")
+        }
+      }
+      out.write_byte(125 as Byte)
+    }
+    other => out.write_string(json_text_with(other, fmt_num))
+  }
+}
+
+pub fn canonical(out : StringBuilder, v : base_codec::Json) -> Unit {
+  canonical_with(out, v, fn(d : Double) -> String { js_json::stringify(js_json::JValue::Num(d)) })
+}
+
+fn u32_pair(hi : Int, lo : Int) -> Int64 {
+  ((hi.to_int64() & 0xFFFF.to_int64()) << 16.to_int64()) | (lo.to_int64() & 0xFFFF.to_int64())
+}
+
+fn u32_mask(x : Int64) -> Int64 {
+  x & u32_pair(0xFFFF, 0xFFFF)
+}
+
+fn imul32(a : Int64, b : Int64) -> Int64 {
+  u32_mask(u32_mask(a) * u32_mask(b))
+}
+
+/// `digest.ts` `hash`: cyrb53, 53 bits of a string's UTF-16 code units with exact 32-bit `imul` wraparound.
+pub fn cyrb53(s : String) -> Int64 {
+  let units = js_json::utf16_units(s)
+  let mut h1 : Int64 = u32_pair(0xDEAD, 0xBEEF)
+  let mut h2 : Int64 = u32_pair(0x41C6, 0xCE57)
+  let c1 : Int64 = u32_pair(0x9E37, 0x79B1)
+  let c2 : Int64 = u32_pair(0x5F35, 0x6495)
+  for i in 0..<units.length() {
+    let c = units[i].to_int64()
+    h1 = imul32(h1 ^ c, c1)
+    h2 = imul32(h2 ^ c, c2)
+  }
+  let m1 : Int64 = u32_pair(0x85EB, 0xCA6B)
+  let m2 : Int64 = u32_pair(0xC2B2, 0xAE35)
+  h1 = imul32(h1 ^ (h1 >> 16.to_int64()), m1)
+  h1 = u32_mask(h1 ^ imul32(h2 ^ (h2 >> 13.to_int64()), m2))
+  h2 = imul32(h2 ^ (h2 >> 16.to_int64()), m1)
+  h2 = u32_mask(h2 ^ imul32(h1 ^ (h1 >> 13.to_int64()), m2))
+  ((2097151.to_int64() & h2) << 32.to_int64()) + u32_mask(h1)
+}
+
+pub fn base36(n : Int64) -> String {
+  if n == 0.to_int64() {
+    return "0"
+  }
+  let digits = "0123456789abcdefghijklmnopqrstuvwxyz".to_bytes()
+  let out : Array[Byte] = []
+  let mut m = n
+  let b36 = 36.to_int64()
+  while m > 0.to_int64() {
+    out.push(digits[(m % b36).to_int()])
+    m = m / b36
+  }
+  let sb = StringBuilder::new()
+  let mut i = out.length() - 1
+  while i >= 0 {
+    sb.write_byte(out[i])
+    i = i - 1
+  }
+  sb.to_string()
+}
+
+pub fn digest_with(v : base_codec::Json, fmt_num : (Double) -> String) -> String {
+  let sb = StringBuilder::new()
+  canonical_with(sb, v, fmt_num)
+  base36(cyrb53(sb.to_string()))
+}
+
+/// `digest.ts` `digest`: a row's canonical JSON hashed, in base 36.
+pub fn digest(v : base_codec::Json) -> String {
+  let sb = StringBuilder::new()
+  canonical(sb, v)
+  base36(cyrb53(sb.to_string()))
+}
+
+pub fn key_text(v : base_codec::Json) -> String {
+  match v {
+    base_codec::Json::Str(s) => s
+    base_codec::Json::Arr(_) => ""
+    base_codec::Json::Obj(_) => "[object Object]"
+    base_codec::Json::Num(n, _) => js_json::stringify(js_json::JValue::Num(n))
+    base_codec::Json::Bool(true) => "true"
+    base_codec::Json::Bool(false) => "false"
+    base_codec::Json::Null => "null"
+  }
+}
+
+/// `digest.ts` `changedOf`: `list` filtered by `runtimes`, its `order` of ids, and rows whose digest changed.
+pub fn changed_of(
+  op : String,
+  list : base_codec::Json,
+  args : base_codec::Json,
+) -> base_codec::Json {
+  let id_key = match json_val(args, "id") {
+    Some(base_codec::Json::Str(i)) => i
+    _ => ""
+  }
+  let runtimes : Option[Array[String]] = match json_val(args, "runtimes") {
+    Some(base_codec::Json::Arr(rs)) => {
+      let arr : Array[String] = []
+      for i in 0..<rs.length() {
+        match rs[i] {
+          base_codec::Json::Str(s) => arr.push(s)
+          _ => ()
+        }
+      }
+      Some(arr)
+    }
+    _ => None
+  }
+  let have : Map[String, base_codec::Json] = Map::new()
+  match json_val(args, "held") {
+    Some(base_codec::Json::Obj(fields)) => {
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        have.set(k, v)
+      }
+    }
+    _ => ()
+  }
+  let rows = match runtime_list(op, list, runtimes) {
+    base_codec::Json::Arr(rs) => rs
+    _ => []
+  }
+  let order : Array[base_codec::Json] = []
+  let out : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    let row = rows[i]
+    let key = match row {
+      base_codec::Json::Obj(_) => builders_core::json_get_last(row, id_key)
+      _ => None
+    }
+    order.push(or_null(key))
+    match key {
+      None => out.push(row)
+      Some(base_codec::Json::Null) => out.push(row)
+      Some(k) => {
+        match have.get(key_text(k)) {
+          Some(base_codec::Json::Str(d)) => {
+            if d != digest(row) {
+              out.push(row)
+            }
+          }
+          _ => out.push(row)
+        }
+      }
+    }
+  }
+  base_codec::json_obj([
+    ("order", base_codec::json_arr(order)),
+    ("rows", base_codec::json_arr(out)),
+  ])
+}

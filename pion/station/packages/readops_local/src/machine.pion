@@ -1,0 +1,1241 @@
+// 1:1 port of `station/mb/src/readops/machine.mbt`.
+// Reads of this machine's own Claude Code and Codex sessions (`machine_sessions`, `machine_session`).
+// Keeps `MachineSession` and `named` private per spec.
+
+import "base_codec"
+import "builders_core"
+import "builders_search"
+import "js_json"
+import "jscase"
+import "nodepath"
+import "readops_core"
+import "sql_db"
+
+let FIRST : Int = 200
+
+let HEAD_RECORDS : Int = 400
+
+let TAIL : Int = 262144
+
+let LINE_LIMIT : Int = 262144
+
+struct MachineSession {
+  runtime : String
+  id : String
+  raw_id : String
+  cwd : String
+  mut title : Option[String]
+  first : String
+  model : Option[String]
+  updated_at : Double
+  size : Double
+  mut session : Option[String]
+  path : String
+}
+
+struct Roots {
+  claude : String
+  codex : String
+}
+
+struct SaidEntry {
+  person : Bool
+  text : String
+  at : Option[Double]
+}
+
+struct FileCandidate {
+  runtime : String
+  path : String
+  at : Double
+  size : Double
+}
+
+struct PathStamp {
+  path : String
+  at : Double
+}
+
+/// Re-export `parse_iso` (delegating to `readops_core::parse_iso`).
+pub fn parse_iso(at : String) -> Option[Double] {
+  readops_core::parse_iso(at)
+}
+
+fn is_text(v : Option[js_json::JValue], text : String) -> Bool {
+  match readops_core::str_of(v) {
+    Some(s) => s == text
+    None => false
+  }
+}
+
+fn white_trim(s : String) -> String {
+  jscase::trim_white(s)
+}
+
+fn white_trim_start(s : String) -> String {
+  jscase::trim_start_white(s)
+}
+
+fn parse_record(line : String) -> Option[js_json::JValue] {
+  match js_json::parse(line) {
+    Ok(v) => Some(v)
+    Err(_) => None
+  }
+}
+
+fn records_of(
+  client : builders_core::ShellClient,
+  path : String,
+  limit : Option[Int] = None,
+) -> Result[Array[js_json::JValue], readops_core::ReadError] {
+  let args : Array[(String, base_codec::Json)] = [
+    ("path", base_codec::json_str(path)),
+    ("max", base_codec::json_num(LINE_LIMIT.to_double())),
+  ]
+  match limit {
+    Some(n) => args.push(("limit", base_codec::json_num(n.to_double())))
+    None => ()
+  }
+  let res = match client.shell_sync_json("fs.lines", base_codec::json_obj(args)) {
+    Ok(v) => v
+    Err(e) => return Err(readops_core::ReadError::App(e.message))
+  }
+  let out : Array[js_json::JValue] = []
+  match res {
+    base_codec::Json::Arr(lines) => {
+      for i in 0..<lines.length() {
+        match lines[i] {
+          base_codec::Json::Str(s) => {
+            match parse_record(s) {
+              Some(v) => out.push(v)
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  Ok(out)
+}
+
+fn first_code_point(s : String) -> Option[Int] {
+  let u = js_json::utf16_units(s)
+  if u.length() == 0 {
+    return None
+  }
+  let hi = u[0]
+  if hi >= 0xD800 && hi <= 0xDBFF && u.length() >= 2 {
+    let lo = u[1]
+    if lo >= 0xDC00 && lo <= 0xDFFF {
+      return Some(0x10000 + ((hi - 0xD800) << 10) + (lo - 0xDC00))
+    }
+  }
+  Some(hi)
+}
+
+/// machine.ts `injected`: context Codex adds as a person's message under a tag of its own.
+fn injected(text : String) -> Bool {
+  let t = white_trim_start(text)
+  let tags : Array[String] = [
+    "environment_context",
+    "user_instructions",
+    "permissions",
+    "skills_instructions",
+    "collaboration_mode",
+  ]
+  for i in 0..<tags.length() {
+    let tag = tags[i]
+    let pref = "<" + tag
+    if !readops_core::str_has_prefix(t, pref) {
+      continue
+    }
+    let after = readops_core::str_slice_bytes(t, pref.to_bytes().length(), t.to_bytes().length())
+    match first_code_point(after) {
+      None => return true
+      Some(cp) => return !builders_search::is_alphanumeric(cp) && cp != 95
+    }
+  }
+  false
+}
+
+/// machine.ts `notSaid`: what the runtime keeps as a person's message though it is not what they said.
+fn not_said(text : String) -> Bool {
+  let t = white_trim_start(text)
+  if t == "" {
+    return true
+  }
+  let prefixes : Array[String] = [
+    "<command-",
+    "<local-command",
+    "<system-reminder>",
+    "<bash-",
+    "<user-memory-input>",
+    "Caveat: ",
+    "This session is being continued from a previous conversation",
+  ]
+  for i in 0..<prefixes.length() {
+    if readops_core::str_has_prefix(t, prefixes[i]) {
+      return true
+    }
+  }
+  false
+}
+
+fn str_rev_find_sub(haystack : String, needle : String) -> Option[Int] {
+  let h = haystack.to_bytes()
+  let n = needle.to_bytes()
+  if n.length() == 0 {
+    return Some(h.length())
+  }
+  if n.length() > h.length() {
+    return None
+  }
+  let mut i = h.length() - n.length()
+  while i >= 0 {
+    let mut ok = true
+    for j in 0..<n.length() {
+      if h[i + j] != n[j] {
+        ok = false
+        break
+      }
+    }
+    if ok {
+      return Some(i)
+    }
+    i = i - 1
+  }
+  None
+}
+
+/// machine.ts `typed`: what the person typed in a part of a Codex user message.
+fn typed(text : String) -> Option[String] {
+  let t = white_trim_start(text)
+  if readops_core::str_has_prefix(t, "# AGENTS.md instructions") {
+    return None
+  }
+  if !readops_core::str_has_prefix(t, "#") {
+    return Some(text)
+  }
+  let marks : Array[String] = ["## My request for Codex:", "## My request:"]
+  for i in 0..<marks.length() {
+    let mark = marks[i]
+    match str_rev_find_sub(t, mark) {
+      Some(at) => {
+        let rest = readops_core::str_slice_bytes(t, at + mark.to_bytes().length(), t.to_bytes().length())
+        return Some(white_trim(rest))
+      }
+      None => ()
+    }
+  }
+  Some(text)
+}
+
+/// machine.ts `wrapped`: context Codex adds as a person's message, one tag around all of it.
+fn wrapped(text : String) -> Bool {
+  let t = white_trim(text)
+  if !readops_core::str_has_prefix(t, "<") {
+    return false
+  }
+  let rest = readops_core::str_slice_bytes(t, 1, t.to_bytes().length())
+  let close = match readops_core::str_find_byte(rest, 62) {
+    Some(c) => c
+    None => return false
+  }
+  let name = readops_core::str_slice_bytes(t, 1, 1 + close)
+  let nb = name.to_bytes()
+  if nb.length() == 0 {
+    return false
+  }
+  for i in 0..<nb.length() {
+    let c = nb[i].to_int() & 0xFF
+    let ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 45
+    if !ok {
+      return false
+    }
+  }
+  readops_core::str_has_suffix(t, "</" + name + ">")
+}
+
+fn texts_of(content : Option[js_json::JValue]) -> Array[String] {
+  let out : Array[String] = []
+  match content {
+    Some(js_json::JValue::Arr(parts)) => {
+      for i in 0..<parts.length() {
+        match readops_core::str_of(readops_core::jget(Some(parts[i]), "text")) {
+          Some(t) => out.push(t)
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn claude_said(r : js_json::JValue) -> Array[(Bool, String)] {
+  let kind = match readops_core::str_of(readops_core::jget(Some(r), "type")) {
+    Some(k) => k
+    None => ""
+  }
+  let flags : Array[String] = ["isMeta", "isSidechain", "isCompactSummary", "isApiErrorMessage"]
+  let mut flagged = false
+  for i in 0..<flags.length() {
+    match readops_core::jget(Some(r), flags[i]) {
+      Some(js_json::JValue::Bool(true)) => {
+        flagged = true
+        break
+      }
+      _ => ()
+    }
+  }
+  if (kind != "user" && kind != "assistant") || flagged {
+    return []
+  }
+  let person = kind == "user"
+  let content = readops_core::jget(readops_core::jget(Some(r), "message"), "content")
+  let texts : Array[String] = []
+  match content {
+    Some(js_json::JValue::Str(u)) => texts.push(js_json::sanitize_str(u))
+    Some(js_json::JValue::Arr(parts)) => {
+      for i in 0..<parts.length() {
+        let b = parts[i]
+        if is_text(readops_core::jget(Some(b), "type"), "text") {
+          match readops_core::str_of(readops_core::jget(Some(b), "text")) {
+            Some(t) => texts.push(t)
+            None => ()
+          }
+        }
+      }
+    }
+    _ => ()
+  }
+  let out : Array[(Bool, String)] = []
+  for i in 0..<texts.length() {
+    let t = texts[i]
+    let trimmed = white_trim(t)
+    if trimmed != "" && !(person && not_said(t)) {
+      out.push((person, trimmed))
+    }
+  }
+  out
+}
+
+fn codex_said(r : js_json::JValue) -> Array[(Bool, String)] {
+  let p = readops_core::jget(Some(r), "payload")
+  if !is_text(readops_core::jget(Some(r), "type"), "response_item") || !is_text(readops_core::jget(p, "type"), "message") {
+    return []
+  }
+  let role = readops_core::str_of(readops_core::jget(p, "role"))
+  let person = match role {
+    Some("user") => true
+    Some("assistant") => false
+    _ => return []
+  }
+  let raw_texts = texts_of(readops_core::jget(p, "content"))
+  let kept : Array[String] = []
+  for i in 0..<raw_texts.length() {
+    let t_opt = if person { typed(raw_texts[i]) } else { Some(raw_texts[i]) }
+    match t_opt {
+      Some(t) => {
+        if white_trim(t) != "" && !(person && (injected(t) || wrapped(t) || not_said(t))) {
+          kept.push(t)
+        }
+      }
+      None => ()
+    }
+  }
+  let joined = white_trim(readops_core::join_strings(kept, "\n"))
+  if joined == "" {
+    []
+  } else {
+    [(person, joined)]
+  }
+}
+
+fn codex_event_said(r : js_json::JValue) -> Array[(Bool, String)] {
+  if !is_text(readops_core::jget(Some(r), "type"), "event_msg") {
+    return []
+  }
+  let p = readops_core::jget(Some(r), "payload")
+  let (person, text_opt) = match readops_core::str_of(readops_core::jget(p, "type")) {
+    Some("user_message") => {
+      let m = match readops_core::str_of(readops_core::jget(p, "message")) {
+        Some(s) => typed(s)
+        None => None
+      }
+      (true, m)
+    }
+    Some("agent_message") => (false, readops_core::str_of(readops_core::jget(p, "message")))
+    Some("item_completed") => {
+      let item = readops_core::jget(p, "item")
+      let is_person = match readops_core::str_of(readops_core::jget(item, "type")) {
+        Some("UserMessage") => true
+        Some("AgentMessage") => false
+        _ => return []
+      }
+      let parts = texts_of(readops_core::jget(item, "content"))
+      let kept : Array[String] = []
+      for i in 0..<parts.length() {
+        let t_opt = if is_person { typed(parts[i]) } else { Some(parts[i]) }
+        match t_opt {
+          Some(t) => kept.push(t)
+          None => ()
+        }
+      }
+      (is_person, Some(readops_core::join_strings(kept, "\n")))
+    }
+    _ => return []
+  }
+  let text = match text_opt {
+    Some(s) => s
+    None => return []
+  }
+  let t = white_trim(text)
+  if t != "" && !(person && (wrapped(t) || not_said(t))) {
+    [(person, t)]
+  } else {
+    []
+  }
+}
+
+fn has_codex_events(records : Array[js_json::JValue]) -> Bool {
+  for i in 0..<records.length() {
+    let said = codex_event_said(records[i])
+    for j in 0..<said.length() {
+      if said[j].0 {
+        return true
+      }
+    }
+  }
+  false
+}
+
+fn said_in(runtime : String, events : Bool, r : js_json::JValue) -> Array[(Bool, String)] {
+  if runtime == "claude" {
+    claude_said(r)
+  } else if events {
+    codex_event_said(r)
+  } else {
+    codex_said(r)
+  }
+}
+
+fn conversation(
+  client : builders_core::ShellClient,
+  runtime : String,
+  path : String,
+) -> Result[Array[SaidEntry], readops_core::ReadError] {
+  let records = match records_of(client, path) {
+    Ok(rs) => rs
+    Err(e) => return Err(e)
+  }
+  let events = runtime == "codex" && has_codex_events(records)
+  let out : Array[SaidEntry] = []
+  for i in 0..<records.length() {
+    let r = records[i]
+    let at = match readops_core::str_of(readops_core::jget(Some(r), "timestamp")) {
+      Some(ts) => readops_core::parse_iso(ts)
+      None => None
+    }
+    let said = said_in(runtime, events, r)
+    for j in 0..<said.length() {
+      let (person, text) = said[j]
+      if out.length() > 0 && !person && !out[out.length() - 1].person {
+        let last = out[out.length() - 1]
+        out[out.length() - 1] = SaidEntry::{ person: last.person, text: last.text + "\n\n" + text, at: last.at }
+      } else {
+        out.push(SaidEntry::{ person: person, text: text, at: at })
+      }
+    }
+  }
+  Ok(out)
+}
+
+fn stamp(
+  client : builders_core::ShellClient,
+  path : String,
+) -> Result[Option[(Double, Double)], readops_core::ReadError] {
+  let res = match client.shell_sync_json("fs.meta", base_codec::json_obj([("path", base_codec::json_str(path))])) {
+    Ok(v) => v
+    Err(e) => return Err(readops_core::ReadError::App(e.message))
+  }
+  match builders_core::json_get_last(res, "size") {
+    Some(base_codec::Json::Num(size, _)) => {
+      let at = match builders_core::json_get_last(res, "mtimeMs") {
+        Some(base_codec::Json::Num(a, _)) => a
+        _ => 0.0
+      }
+      Ok(Some((at, size)))
+    }
+    _ => Ok(None)
+  }
+}
+
+fn extension(name : String) -> Option[String] {
+  match readops_core::str_rev_find_byte(name, 46) {
+    Some(dot) => {
+      if dot > 0 {
+        Some(readops_core::str_slice_bytes(name, dot + 1, name.to_bytes().length()))
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+fn opt_str_is(v : Option[String], expected : String) -> Bool {
+  match v {
+    Some(s) => s == expected
+    None => false
+  }
+}
+
+fn rollouts_in(
+  client : builders_core::ShellClient,
+  sep : String,
+  dir : String,
+  out : Array[String],
+) -> Result[Unit, readops_core::ReadError] {
+  let names = match readops_core::read_dir(client, dir, disk=true) {
+    Ok(Some(ns)) => ns
+    Ok(None) => return Ok(())
+    Err(e) => return Err(e)
+  }
+  for i in 0..<names.length() {
+    let name = names[i]
+    let path = nodepath::join(sep, [dir, name])
+    let kind = match readops_core::kind_of(client, path) {
+      Ok(k) => k
+      Err(e) => return Err(e)
+    }
+    if opt_str_is(kind, "dir") {
+      match rollouts_in(client, sep, path, out) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    } else if readops_core::str_has_prefix(name, "rollout-") && opt_str_is(extension(name), "jsonl") {
+      out.push(path)
+    }
+  }
+  Ok(())
+}
+
+fn rollout_of(sep : String, path : String, id : String) -> Bool {
+  let name = nodepath::basename(sep, path)
+  readops_core::str_has_suffix(name, "-" + id + ".jsonl") || readops_core::str_contains_sub(name, "-" + id + "_")
+}
+
+fn tail_records(
+  client : builders_core::ShellClient,
+  path : String,
+  size : Double,
+) -> Result[Array[js_json::JValue], readops_core::ReadError] {
+  let from = if size > TAIL.to_double() { size - TAIL.to_double() } else { 0.0 }
+  let res = match client.shell_sync_json(
+    "fs.from",
+    base_codec::json_obj([
+      ("path", base_codec::json_str(path)),
+      ("from", base_codec::json_num(from)),
+    ]),
+  ) {
+    Ok(v) => v
+    Err(e) => return Err(readops_core::ReadError::App(e.message))
+  }
+  let text = match res {
+    base_codec::Json::Str(s) => s
+    _ => return Ok([])
+  }
+  let whole = if from > 0.0 {
+    match readops_core::str_find_byte(text, 10) {
+      Some(nl) => readops_core::str_slice_bytes(text, nl + 1, text.to_bytes().length())
+      None => ""
+    }
+  } else {
+    text
+  }
+  let raw_lines = readops_core::str_split_byte(whole, 10)
+  let lines : Array[String] = []
+  for i in 0..<raw_lines.length() {
+    let l = raw_lines[i]
+    if readops_core::str_has_suffix(l, "\r") {
+      lines.push(readops_core::str_slice_bytes(l, 0, l.to_bytes().length() - 1))
+    } else {
+      lines.push(l)
+    }
+  }
+  if (readops_core::str_has_suffix(whole, "\n") || whole == "") && lines.length() > 0 {
+    let _ = lines.pop()
+  }
+  let out : Array[js_json::JValue] = []
+  for i in 0..<lines.length() {
+    match parse_record(lines[i]) {
+      Some(v) => out.push(v)
+      None => ()
+    }
+  }
+  Ok(out)
+}
+
+fn latest_claude_field(records : Array[js_json::JValue], kind : String, key : String) -> Option[String] {
+  let mut i = records.length() - 1
+  while i >= 0 {
+    let r = records[i]
+    if is_text(readops_core::jget(Some(r), "type"), kind) {
+      match readops_core::str_of(readops_core::jget(Some(r), key)) {
+        Some(t) => {
+          let trimmed = white_trim(t)
+          if trimmed != "" {
+            return Some(trimmed)
+          }
+        }
+        None => ()
+      }
+      return None
+    }
+    i = i - 1
+  }
+  None
+}
+
+fn claude_title(records : Array[js_json::JValue]) -> Option[String] {
+  match latest_claude_field(records, "custom-title", "customTitle") {
+    Some(t) => Some(t)
+    None => {
+      match latest_claude_field(records, "ai-title", "aiTitle") {
+        Some(t) => Some(t)
+        None => latest_claude_field(records, "summary", "summary")
+      }
+    }
+  }
+}
+
+/// machine.ts `clip`: whitespace collapsed, at most `max` characters (and an ellipsis past them).
+pub fn clip_to(text : String, max : Int) -> String {
+  let parts = jscase::split_by(text, jscase::is_white_space)
+  let words : Array[String] = []
+  for i in 0..<parts.length() {
+    if parts[i] != "" {
+      words.push(parts[i])
+    }
+  }
+  let line = readops_core::join_strings(words, " ")
+  let cps = js_json::points(line)
+  if cps.length() <= max {
+    return line
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<max {
+    sb.write_string(cps[i])
+  }
+  sb.write_string("…")
+  sb.to_string()
+}
+
+fn raw_str_of(v : Option[js_json::JValue]) -> Option[Array[Int]] {
+  match v {
+    Some(js_json::JValue::Str(u)) => Some(u)
+    _ => None
+  }
+}
+
+fn machine_utf16_key(units : Array[Int]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<units.length() {
+    if i > 0 {
+      sb.write_byte(44.to_byte())
+    }
+    sb.write_string(units[i].to_string())
+  }
+  sb.to_string()
+}
+
+fn read_session(
+  client : builders_core::ShellClient,
+  sep : String,
+  runtime : String,
+  path : String,
+  updated_at : Double,
+  size : Double,
+) -> Result[Option[MachineSession], readops_core::ReadError] {
+  let head = match records_of(client, path, limit=Some(HEAD_RECORDS)) {
+    Ok(rs) => rs
+    Err(e) => return Err(e)
+  }
+  let events = runtime == "codex" && has_codex_events(head)
+  let mut first_said : Option[String] = None
+  for i in 0..<head.length() {
+    let said = said_in(runtime, events, head[i])
+    let mut found_here = false
+    for j in 0..<said.length() {
+      if said[j].0 {
+        first_said = Some(said[j].1)
+        found_here = true
+        break
+      }
+    }
+    if found_here {
+      break
+    }
+  }
+  let said_text = match first_said {
+    Some(s) => s
+    None => return Ok(None)
+  }
+  let first = clip_to(said_text, FIRST)
+  let (id_opt, raw_id_opt, cwd_opt) = if runtime == "claude" {
+    let name = nodepath::basename(sep, path)
+    let id = match readops_core::str_rev_find_byte(name, 46) {
+      Some(dot) => if dot > 0 { readops_core::str_slice_bytes(name, 0, dot) } else { name }
+      None => name
+    }
+    let mut cwd_found : Option[String] = None
+    for i in 0..<head.length() {
+      match readops_core::str_of(readops_core::jget(Some(head[i]), "cwd")) {
+        Some(c) => {
+          cwd_found = Some(c)
+          break
+        }
+        None => ()
+      }
+    }
+    (Some(id), Some(machine_utf16_key(js_json::utf16_units(id))), cwd_found)
+  } else {
+    let mut meta_found : Option[js_json::JValue] = None
+    for i in 0..<head.length() {
+      if is_text(readops_core::jget(Some(head[i]), "type"), "session_meta") {
+        meta_found = readops_core::jget(Some(head[i]), "payload")
+        break
+      }
+    }
+    match meta_found {
+      Some(meta) => {
+        match raw_str_of(readops_core::jget(Some(meta), "id")) {
+          Some(id_units) => (
+            Some(js_json::sanitize_str(id_units)),
+            Some(machine_utf16_key(id_units)),
+            readops_core::str_of(readops_core::jget(Some(meta), "cwd")),
+          )
+          None => (None, None, readops_core::str_of(readops_core::jget(Some(meta), "cwd")))
+        }
+      }
+      None => return Ok(None)
+    }
+  }
+  let (id, raw_id, cwd) = match (id_opt, raw_id_opt, cwd_opt) {
+    (Some(i), Some(ri), Some(c)) => (i, ri, c)
+    _ => return Ok(None)
+  }
+  let tail = match tail_records(client, path, size) {
+    Ok(rs) => rs
+    Err(e) => return Err(e)
+  }
+  let records : Array[js_json::JValue] = []
+  for i in 0..<head.length() {
+    records.push(head[i])
+  }
+  for i in 0..<tail.length() {
+    records.push(tail[i])
+  }
+  let title = if runtime == "claude" { claude_title(records) } else { None }
+  let mut model : Option[String] = None
+  let mut ri = records.length() - 1
+  while ri >= 0 {
+    let r = records[ri]
+    let m = if runtime == "claude" {
+      if is_text(readops_core::jget(Some(r), "type"), "assistant") {
+        readops_core::jget(readops_core::jget(Some(r), "message"), "model")
+      } else {
+        None
+      }
+    } else if is_text(readops_core::jget(Some(r), "type"), "turn_context") {
+      readops_core::jget(readops_core::jget(Some(r), "payload"), "model")
+    } else {
+      None
+    }
+    match readops_core::str_of(m) {
+      Some(name) => {
+        if !readops_core::str_has_prefix(name, "<") {
+          model = Some(name)
+          break
+        }
+      }
+      None => ()
+    }
+    ri = ri - 1
+  }
+  Ok(
+    Some(
+      MachineSession::{
+        runtime: runtime,
+        id: id,
+        raw_id: raw_id,
+        cwd: cwd,
+        title: title,
+        first: first,
+        model: model,
+        updated_at: updated_at,
+        size: size,
+        session: None,
+        path: path,
+      },
+    ),
+  )
+}
+
+fn codex_names(
+  client : builders_core::ShellClient,
+  sep : String,
+  r : Roots,
+) -> Result[Map[String, String], readops_core::ReadError] {
+  let idx_path = nodepath::join(sep, [nodepath::dirname(sep, r.codex), "session_index.jsonl"])
+  let records = match records_of(client, idx_path) {
+    Ok(rs) => rs
+    Err(e) => return Err(e)
+  }
+  let names : Map[String, String] = Map::new()
+  for i in 0..<records.length() {
+    let v = records[i]
+    match (raw_str_of(readops_core::jget(Some(v), "id")), readops_core::str_of(readops_core::jget(Some(v), "thread_name"))) {
+      (Some(id_units), Some(name)) => {
+        let trimmed = white_trim(name)
+        if trimmed != "" {
+          names.set(machine_utf16_key(id_units), trimmed)
+        }
+      }
+      _ => ()
+    }
+  }
+  Ok(names)
+}
+
+fn named(s : MachineSession, names : Map[String, String]) -> MachineSession {
+  match s.title {
+    None => s.title = names.get(s.raw_id)
+    Some(_) => ()
+  }
+  s
+}
+
+fn cmp_file_newest(a : FileCandidate, b : FileCandidate) -> Int {
+  if a.at > b.at {
+    -1
+  } else if a.at < b.at {
+    1
+  } else {
+    0
+  }
+}
+
+fn cmp_path_newest(a : PathStamp, b : PathStamp) -> Int {
+  if a.at > b.at {
+    -1
+  } else if a.at < b.at {
+    1
+  } else {
+    0
+  }
+}
+
+fn list_sessions(
+  client : builders_core::ShellClient,
+  sep : String,
+  r : Roots,
+  limit : Int,
+) -> Result[Array[MachineSession], readops_core::ReadError] {
+  let files : Array[FileCandidate] = []
+  let claude_dirs = match readops_core::read_dir(client, r.claude, disk=true) {
+    Ok(Some(ds)) => ds
+    Ok(None) => []
+    Err(e) => return Err(e)
+  }
+  for i in 0..<claude_dirs.length() {
+    let d = nodepath::join(sep, [r.claude, claude_dirs[i]])
+    let entries = match readops_core::read_dir(client, d, disk=true) {
+      Ok(Some(es)) => es
+      Ok(None) => []
+      Err(e) => return Err(e)
+    }
+    for j in 0..<entries.length() {
+      let file = entries[j]
+      if !opt_str_is(extension(file), "jsonl") {
+        continue
+      }
+      let path = nodepath::join(sep, [d, file])
+      match stamp(client, path) {
+        Ok(Some((at, size))) => files.push(FileCandidate::{ runtime: "claude", path: path, at: at, size: size })
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  let rollouts : Array[String] = []
+  match rollouts_in(client, sep, r.codex, rollouts) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  for i in 0..<rollouts.length() {
+    let path = rollouts[i]
+    match stamp(client, path) {
+      Ok(Some((at, size))) => files.push(FileCandidate::{ runtime: "codex", path: path, at: at, size: size })
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let sorted = readops_core::stable_sort(files, cmp_file_newest)
+  let names = match codex_names(client, sep, r) {
+    Ok(ns) => ns
+    Err(e) => return Err(e)
+  }
+  let seen : Map[String, Bool] = Map::new()
+  let out : Array[MachineSession] = []
+  for i in 0..<sorted.length() {
+    if out.length() >= limit {
+      break
+    }
+    let f = sorted[i]
+    let s = match read_session(client, sep, f.runtime, f.path, f.at, f.size) {
+      Ok(Some(sess)) => sess
+      Ok(None) => continue
+      Err(e) => return Err(e)
+    }
+    let key = s.runtime + "\u{0}" + s.raw_id
+    if seen.contains(key) {
+      continue
+    }
+    seen.set(key, true)
+    out.push(named(s, names))
+  }
+  Ok(out)
+}
+
+fn valid_machine_id(id : String) -> Bool {
+  let b = id.to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    let ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+fn find_session(
+  client : builders_core::ShellClient,
+  sep : String,
+  r : Roots,
+  runtime : String,
+  id : String,
+) -> Result[Option[MachineSession], readops_core::ReadError] {
+  if !valid_machine_id(id) {
+    return Ok(None)
+  }
+  let mut path : Option[String] = None
+  if runtime == "claude" {
+    let dirs = match readops_core::read_dir(client, r.claude, disk=true) {
+      Ok(Some(ds)) => ds
+      Ok(None) => []
+      Err(e) => return Err(e)
+    }
+    for i in 0..<dirs.length() {
+      let p = nodepath::join(sep, [r.claude, dirs[i], id + ".jsonl"])
+      let k = match readops_core::kind_of(client, p) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      if opt_str_is(k, "file") {
+        path = Some(p)
+        break
+      }
+    }
+  } else {
+    let rollouts : Array[String] = []
+    match rollouts_in(client, sep, r.codex, rollouts) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    let mine : Array[PathStamp] = []
+    for i in 0..<rollouts.length() {
+      let p = rollouts[i]
+      if rollout_of(sep, p, id) {
+        match stamp(client, p) {
+          Ok(Some((at, _))) => mine.push(PathStamp::{ path: p, at: at })
+          Ok(None) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    let sorted = readops_core::stable_sort(mine, cmp_path_newest)
+    for i in 0..<sorted.length() {
+      let p = sorted[i].path
+      match stamp(client, p) {
+        Ok(Some((at, size))) => {
+          match read_session(client, sep, runtime, p, at, size) {
+            Ok(Some(s)) => {
+              if s.id == id {
+                path = Some(p)
+                break
+              }
+            }
+            Ok(None) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  let found_path = match path {
+    Some(p) => p
+    None => return Ok(None)
+  }
+  let (at, size) = match stamp(client, found_path) {
+    Ok(Some(st)) => st
+    Ok(None) => return Ok(None)
+    Err(e) => return Err(e)
+  }
+  match read_session(client, sep, runtime, found_path, at, size) {
+    Ok(Some(s)) => {
+      if s.id == id {
+        let names = match codex_names(client, sep, r) {
+          Ok(ns) => ns
+          Err(e) => return Err(e)
+        }
+        Ok(Some(named(s, names)))
+      } else {
+        Ok(None)
+      }
+    }
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+fn text_or_null(s : Option[String]) -> base_codec::Json {
+  match s {
+    Some(t) => base_codec::json_str(t)
+    None => base_codec::json_null()
+  }
+}
+
+fn shown_machine_fields(s : MachineSession) -> Array[(String, base_codec::Json)] {
+  [
+    ("runtime", base_codec::json_str(s.runtime)),
+    ("id", base_codec::json_str(s.id)),
+    ("cwd", base_codec::json_str(s.cwd)),
+    ("title", text_or_null(s.title)),
+    ("first", base_codec::json_str(s.first)),
+    ("model", text_or_null(s.model)),
+    ("updatedAt", base_codec::json_num(s.updated_at)),
+    ("size", base_codec::json_num(s.size)),
+    ("session", text_or_null(s.session)),
+  ]
+}
+
+fn shown_machine(s : MachineSession) -> base_codec::Json {
+  base_codec::json_obj(shown_machine_fields(s))
+}
+
+fn roots_of(args : base_codec::Json) -> Result[Roots, readops_core::ReadError] {
+  match readops_core::json_val(args, "roots") {
+    Some(r) => {
+      match (builders_core::json_get_last(r, "claude"), builders_core::json_get_last(r, "codex")) {
+        (Some(base_codec::Json::Str(claude)), Some(base_codec::Json::Str(codex))) => {
+          Ok(Roots::{ claude: claude, codex: codex })
+        }
+        _ => Err(readops_core::ReadError::App("no roots for the machine's sessions"))
+      }
+    }
+    None => Err(readops_core::ReadError::App("no roots for the machine's sessions"))
+  }
+}
+
+fn session_of_runtime(
+  db : sql_db::Db,
+  runtime : String,
+  id : String,
+) -> Result[Option[String], readops_core::ReadError] {
+  let sql = "SELECT key FROM (\n" +
+  "    SELECT key, last_active_at FROM sessions s WHERE runtime_session_id = ?2 AND runtime = ?1\n" +
+  "      AND NOT EXISTS (SELECT 1 FROM runtime_sessions r WHERE r.session_key = s.key AND r.id = ?2 AND COALESCE(r.runtime, s.original_runtime, s.runtime) != ?1)\n" +
+  "    UNION ALL SELECT s.key, s.last_active_at FROM runtime_sessions r JOIN sessions s ON s.key = r.session_key WHERE r.id = ?2 AND COALESCE(r.runtime, s.original_runtime, s.runtime) = ?1\n" +
+  "  ) ORDER BY last_active_at DESC LIMIT 1"
+  match readops_core::one(db, sql, [base_codec::json_str(runtime), base_codec::json_str(id)]) {
+    Ok(Some(row)) => {
+      match readops_core::field(row, "key") {
+        base_codec::Json::Str(k) => Ok(Some(k))
+        _ => Ok(None)
+      }
+    }
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+/// GET /machine-sessions: the machine's latest 100, each with the station's session already going on with it.
+pub fn machine_sessions(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  sep : String,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let roots = match roots_of(args) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let found = match list_sessions(client, sep, roots, 100) {
+    Ok(fs) => fs
+    Err(e) => return Err(e)
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<found.length() {
+    let m = found[i]
+    match session_of_runtime(db, m.runtime, m.id) {
+      Ok(sk) => m.session = sk
+      Err(e) => return Err(e)
+    }
+    out.push(shown_machine(m))
+  }
+  Ok(base_codec::json_obj([("sessions", base_codec::json_arr(out))]))
+}
+
+/// The `limit` of GET /machine-sessions/:runtime/:id (1..1000, default 200).
+pub fn said_limit(v : Option[base_codec::Json]) -> Int {
+  let text = match v {
+    Some(base_codec::Json::Str(s)) => s
+    Some(base_codec::Json::Num(n, _)) => {
+      if n >= 0.0 && js_json::is_integer(n) && n < 1.0e21 {
+        builders_core::double_to_i64_saturating(n).to_string()
+      } else {
+        return 200
+      }
+    }
+    _ => return 200
+  }
+  let digits = if readops_core::str_has_prefix(text, "+") {
+    readops_core::str_slice_bytes(text, 1, text.to_bytes().length())
+  } else {
+    text
+  }
+  let db = digits.to_bytes()
+  if db.length() == 0 {
+    return 200
+  }
+  for i in 0..<db.length() {
+    let c = db[i].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      return 200
+    }
+  }
+  let mut i = 0
+  while i < db.length() - 1 && (db[i].to_int() & 0xFF) == 48 {
+    i = i + 1
+  }
+  let bare = readops_core::str_slice_bytes(digits, i, db.length())
+  let bb = bare.to_bytes()
+  if bb.length() > 20 {
+    return 200
+  }
+  if bb.length() == 20 && readops_core::by_bytes(bare, "18446744073709551615") > 0 {
+    return 200
+  }
+  if bb.length() > 4 {
+    return 1000
+  }
+  let mut n = 0
+  for j in 0..<bb.length() {
+    n = n * 10 + ((bb[j].to_int() & 0xFF) - 48)
+  }
+  if n < 1 {
+    1
+  } else if n > 1000 {
+    1000
+  } else {
+    n
+  }
+}
+
+/// GET /machine-sessions/:runtime/:id.
+pub fn machine_session(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  sep : String,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let runtime = match readops_core::json_val(args, "runtime") {
+    Some(base_codec::Json::Str(r)) => r
+    Some(v) => sql_db::stringify_json(v)
+    None => "undefined"
+  }
+  if runtime != "claude" && runtime != "codex" {
+    return Err(readops_core::refused(404, "no runtime " + runtime))
+  }
+  let id = match readops_core::json_val(args, "id") {
+    Some(base_codec::Json::Str(i)) => i
+    _ => ""
+  }
+  let limit = said_limit(readops_core::json_val(args, "limit"))
+  let roots = match roots_of(args) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let found = match find_session(client, sep, roots, runtime, id) {
+    Ok(Some(f)) => f
+    Ok(None) => {
+      let en = match readops_core::json_val(args, "lang") {
+        Some(base_codec::Json::Str("en")) => true
+        _ => false
+      }
+      let msg = if en { "No such local session: " + id } else { "本机没有这个会话：" + id }
+      return Err(readops_core::refused(404, msg))
+    }
+    Err(e) => return Err(e)
+  }
+  match readops_core::json_val(args, "found") {
+    Some(base_codec::Json::Bool(true)) => {
+      let fields = shown_machine_fields(found)
+      fields.push(("path", base_codec::json_str(found.path)))
+      return Ok(base_codec::json_obj([("session", base_codec::json_obj(fields))]))
+    }
+    _ => ()
+  }
+  let said = match conversation(client, runtime, found.path) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match session_of_runtime(db, runtime, found.id) {
+    Ok(sk) => found.session = sk
+    Err(e) => return Err(e)
+  }
+  let total = said.length()
+  let from = if total > limit { total - limit } else { 0 }
+  let said_json : Array[base_codec::Json] = []
+  for i in from..<total {
+    let s = said[i]
+    let at_json = match s.at {
+      Some(t) => base_codec::json_num(t)
+      None => base_codec::json_null()
+    }
+    said_json.push(
+      base_codec::json_obj([
+        ("person", base_codec::json_bool(s.person)),
+        ("text", base_codec::json_str(s.text)),
+        ("at", at_json),
+      ]),
+    )
+  }
+  Ok(
+    base_codec::json_obj([
+      ("session", shown_machine(found)),
+      ("total", base_codec::json_num(total.to_double())),
+      ("said", base_codec::json_arr(said_json)),
+    ]),
+  )
+}

@@ -567,6 +567,69 @@ let debug_row_place : @ui.Style = @ui.css("row w=Full justify=JCenter")
 let debug_stage_body : @ui.Style = @ui.style(w=@sf.grow, h=@sf.grow, p=S3)
 
 ///|
+/// Wide simulator pure canvas: generous uniform margin round the device chassis and its soft elevation shadow.
+// kept across runs: a value (no field of it changes)
+let debug_stage_wide_body : @ui.Style = @ui.style(w=@sf.grow, h=@sf.grow, px=S6, py=S5)
+
+///|
+/// Simulator workbench top bar wrapper (45pt tall: 44pt content row over a 1px bottom hairline).
+// kept across runs: a value (no field of it changes)
+let sim_bar_wrap : @ui.Style = @ui.style(w=Full, h=@sf.wide_bar_h_size)
+
+///|
+/// Simulator top bar content row: three-zone horizontal row (left title/meta, center glass capsule, right actions).
+// kept across runs: a value (no field of it changes)
+let sim_bar_row : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
+
+///|
+/// First line of a simulator top bar title: device name beside its compact status pill.
+// kept across runs: a value (no field of it changes)
+let sim_title_line : @ui.Style = @ui.css("row w=Full gap=S1_5 align=ACenter")
+
+///|
+/// Compact status pill beside a simulator's title (控制 / 只看).
+// kept across runs: a value (no field of it changes)
+let sim_status_pill : @ui.Style = @ui.css("row min_h=S4_5 px=S1_5 gap=S1 radius=Full align=ACenter")
+
+///|
+/// Status indicator dot inside the 控制 pill.
+// kept across runs: a value (no field of it changes)
+let sim_status_dot : @ui.Style = @ui.css("w=S1_5 h=S1_5 radius=Full")
+
+///|
+// kept across runs: a value (no field of it changes)
+let sim_status_words : @ui.TextStyle = @ui.text_style(size=Caption, leading=L4, weight=Medium, color=Fg, wrap=false)
+
+///|
+/// Center tool capsules row inside the wide simulator top bar (main tool pill + optional Duo pose pill).
+// kept across runs: a value (no field of it changes)
+let sim_bar_tools_group : @ui.Style = @ui.css("row gap=S2 align=ACenter")
+
+///|
+/// A 32×32 round icon button inside a 36pt liquid glass pill (concentric 16pt radius).
+// kept across runs: a value (no field of it changes)
+let sim_pill_btn : @ui.Style = @ui.css("w=S8 h=S8 radius=Full align=ACenter justify=JCenter")
+
+///|
+/// 32pt-tall 调试 drawer toggle button in the wide simulator top bar (same height as adjacent 32pt bar keys).
+// kept across runs: a value (no field of it changes)
+let sim_debug_btn : @ui.Style = @ui.css("row h=S8 px=S2_5 gap=S1 radius=Full align=ACenter justify=JCenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let sim_debug_btn_words : @ui.TextStyle = @ui.text_style(size=Caption, leading=L4, weight=Medium, color=Fg, wrap=false)
+
+///|
+/// 1px bottom hairline under the simulator workbench top bar.
+// kept across runs: a value (no field of it changes)
+let sim_bar_hairline : @ui.Style = @ui.css("w=Full h=SPx")
+
+///|
+/// 1px vertical hairline separating the pure simulator canvas from the collapsible right debug drawer.
+// kept across runs: a value (no field of it changes)
+let debug_pane_rule : @ui.Style = @ui.css("w=SPx h=Full")
+
+///|
 /// The device's buttons in a row over or under the picture, as near it as they can be.
 // kept across runs: a value (no field of it changes)
 let debug_tools_bar : @ui.Style = @ui.css("row w=Full py=S2 gap=S2 justify=JCenter align=ACenter")

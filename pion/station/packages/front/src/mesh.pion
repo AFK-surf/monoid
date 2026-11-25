@@ -1,0 +1,2339 @@
+// `--builder mesh` over `builders_core::ShellMux` + `builders_core::SerialOutbox`:
+// 1:1 port of `station/mb/src/front/mesh.mbt` and `station/mb/src/reader/main.mbt:1128-1131`.
+// Zero RC reference cycles: `ShellMux.pending` stores only value-type `MuxToken`; all clients,
+// pending asks, and endpoint accept loops live in flat ID maps cleaned up on completion/close.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "js_json"
+
+pub let MESH_WAITING_MOST : Int = 256
+pub let MESH_DEFAULT_CONGESTION : String = "cubic"
+let MESH_ACCEPT_RETRY_MS : Int64 = 100.to_int64()
+
+fn mesh_end_key() -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte(101 as Byte)
+  sb.write_byte(110 as Byte)
+  sb.write_byte(100 as Byte)
+  sb.to_string()
+}
+
+// MuxToken::Tagged(owner_id, kind, extra) tags:
+let TOK_UNIX_LISTEN : Int = 10
+let TOK_TCP_ACCEPT : Int = 11
+let TOK_TCP_READ : Int = 12
+let TOK_IROH_ACCEPT : Int = 13
+let TOK_CONN_HAND : Int = 14
+let TOK_CONNECT : Int = 15
+let TOK_OPEN_STREAM : Int = 16
+let TOK_SIMPLE_ASK : Int = 17
+let TOK_CONN_CLOSE : Int = 18
+let TOK_CONN_CLOSED : Int = 19
+let TOK_CONN_CLOSED_FORGET : Int = 20
+let TOK_BIND_STEP : Int = 21
+let TOK_RELAY_OP : Int = 22
+let TOK_PART_STEP : Int = 23
+let TOK_IGNORE : Int = 24
+let TOK_CONNECT_SEEN_FORGET : Int = 25
+
+// Bind state machine phases:
+let BIND_PHASE_INSERT_RELAY : Int = 1
+let BIND_PHASE_REMOVE_RELAY : Int = 2
+let BIND_PHASE_SET_CONGESTION : Int = 3
+let BIND_PHASE_SET_ALPNS : Int = 4
+let BIND_PHASE_FIXED_CLOSE_OLD : Int = 5
+let BIND_PHASE_IROH_BIND : Int = 6
+let BIND_PHASE_CLOSE_OLD_AFTER : Int = 7
+let BIND_PHASE_SUBSCRIBE : Int = 8
+let BIND_PHASE_UNSUBSCRIBE_GONE : Int = 9
+let BIND_PHASE_CLOSE_FAILED_NEW : Int = 10
+
+// ── Pure helpers (matching `station/mb/src/front/mesh.mbt`) ──
+
+fn mesh_field(o : base_codec::Json, k : String) -> base_codec::Json {
+  match builders_core::json_get_last(o, k) {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+}
+
+fn mesh_is_null(v : base_codec::Json) -> Bool {
+  match v {
+    base_codec::Json::Null => true
+    _ => false
+  }
+}
+
+/// Normalize numeric representations (e.g. `1.0` -> `1`, `10.0` -> `10`, `-0.0` -> `0`)
+/// in pure Pion (no C FFI) so identity comparison, ask/call map keys, and shell JSON
+/// arguments match MoonBit `@json.parse` + `Json::stringify` and Rust `as_u64`.
+pub fn normalize_json(j : base_codec::Json) -> base_codec::Json {
+  match j {
+    base_codec::Json::Num(v, repr) => {
+      if js_json::is_safe_integer(v) {
+        let i64 = v.to_int64()
+        base_codec::json_int64(i64)
+      } else {
+        base_codec::Json::Num(v, repr)
+      }
+    }
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        out.push(normalize_json(items[i]))
+      }
+      base_codec::json_arr(out)
+    }
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        out.push((k, normalize_json(v)))
+      }
+      base_codec::json_obj(out)
+    }
+    _ => j
+  }
+}
+
+pub fn mesh_stringify(j : base_codec::Json) -> String {
+  base_codec::json_stringify(normalize_json(j))
+}
+
+fn str_contains(hay : String, needle : String) -> Bool {
+  let hb = hay.to_bytes()
+  let nb = needle.to_bytes()
+  let hn = hb.length()
+  let nn = nb.length()
+  if nn == 0 {
+    return true
+  }
+  if nn > hn {
+    return false
+  }
+  let mut i = 0
+  while i + nn <= hn {
+    let mut ok = true
+    for j in 0..<nn {
+      if hb[i + j] != nb[j] {
+        ok = false
+        break
+      }
+    }
+    if ok {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn str_starts_with(s : String, prefix : String) -> Bool {
+  let sb = s.to_bytes()
+  let pb = prefix.to_bytes()
+  if pb.length() > sb.length() {
+    return false
+  }
+  for i in 0..<pb.length() {
+    if sb[i] != pb[i] {
+      return false
+    }
+  }
+  true
+}
+
+pub fn listener_gone_msg(msg : String) -> Bool {
+  str_contains(msg, "no handle") || str_contains(msg, "not a listening socket")
+}
+
+/// Whether an endpoint that gives no more connections ended unbidden:
+/// it is the one bound now, not one let go after another was bound in its place.
+pub fn accept_ended_unbidden(bound : Option[base_codec::Json], endpoint : base_codec::Json) -> Bool {
+  match bound {
+    Some(e) => base_codec::json_eq(e, endpoint)
+    None => false
+  }
+}
+
+/// Whether a bind with `key` (its hex) would take the endpoint bound now from the key that holds it.
+pub fn foreign_key_bind(
+  bound : Option[base_codec::Json],
+  bound_key : String,
+  key : String,
+) -> Bool {
+  match bound {
+    Some(_) => bound_key.length() > 0 && bound_key != key
+    None => false
+  }
+}
+
+/// Pairwise UTF-16 code-unit hex decode matching MoonBit `station/mb/src/front/mesh.mbt:723-729`.
+pub fn mesh_unhex(s : String) -> Bytes {
+  let units = js_json::utf16_units(s)
+  let n = units.length() / 2
+  let out = Bytes::new(n)
+  for i in 0..<n {
+    let hi = match base_codec::hex_digit(units[2 * i]) {
+      Some(v) => v
+      None => 0
+    }
+    let lo = match base_codec::hex_digit(units[2 * i + 1]) {
+      Some(v) => v
+      None => 0
+    }
+    out[i] = ((hi * 16) + lo) as Byte
+  }
+  out
+}
+
+pub fn identity_of_with(
+  options : base_codec::Json,
+  key : Bytes,
+  stringify : (base_codec::Json) -> String,
+) -> String {
+  let parts : Array[base_codec::Json] = [
+    base_codec::json_str(base_codec::hex_encode(key)),
+    mesh_field(options, "discovery"),
+    mesh_field(options, "dht"),
+    mesh_field(options, "bindAddr"),
+    mesh_field(options, "relayOnly"),
+    mesh_field(options, "dscp"),
+  ]
+  stringify(base_codec::json_arr(parts))
+}
+
+pub fn identity_of(options : base_codec::Json, key : Bytes) -> String {
+  identity_of_with(options, key, mesh_stringify)
+}
+
+pub fn bare_url(url : String) -> String {
+  let b = url.to_bytes()
+  let mut end = b.length()
+  while end > 0 && (b[end - 1].to_int() & 0xFF) == 47 {
+    end = end - 1
+  }
+  if end == b.length() {
+    return url
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<end {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+pub fn relays_of(options : base_codec::Json) -> Array[String] {
+  let out : Array[String] = []
+  match mesh_field(options, "relayUrls") {
+    base_codec::Json::Arr(urls) => {
+      for i in 0..<urls.length() {
+        match urls[i] {
+          base_codec::Json::Str(u) => out.push(u)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+pub fn has_relay(urls : Array[String], url : String) -> Bool {
+  let want = bare_url(url)
+  for i in 0..<urls.length() {
+    if bare_url(urls[i]) == want {
+      return true
+    }
+  }
+  false
+}
+
+pub fn congestion_of(options : base_codec::Json) -> String {
+  match mesh_field(options, "congestion") {
+    base_codec::Json::Str(c) => if c.length() > 0 { c } else { MESH_DEFAULT_CONGESTION }
+    _ => MESH_DEFAULT_CONGESTION
+  }
+}
+
+pub fn fixed_port(options : base_codec::Json) -> Bool {
+  let addr = match mesh_field(options, "bindAddr") {
+    base_codec::Json::Str(a) => a
+    _ => return false
+  }
+  let b = addr.to_bytes()
+  let mut at = -1
+  let mut i = b.length() - 1
+  while i >= 0 {
+    if (b[i].to_int() & 0xFF) == 58 {
+      at = i
+      break
+    }
+    i = i - 1
+  }
+  if at < 0 {
+    return false
+  }
+  let mut n = 0
+  let mut j = at + 1
+  while j < b.length() {
+    let c = b[j].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      return false
+    }
+    n = n * 10 + (c - 48)
+    if n > 0 {
+      return true
+    }
+    j = j + 1
+  }
+  false
+}
+
+fn asked_args_with_id(asked : base_codec::Json, endpoint : base_codec::Json) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = []
+  match mesh_field(asked, "args") {
+    base_codec::Json::Obj(raw_fields) => {
+      for i in 0..<raw_fields.length() {
+        let (k, v) = raw_fields[i]
+        if k != "id" {
+          fields.push((k, v))
+        }
+      }
+    }
+    _ => ()
+  }
+  fields.push(("id", endpoint))
+  base_codec::json_obj(fields)
+}
+
+pub fn make_istream_hand_header(conn : base_codec::Json, stream_id : base_codec::Json) -> Bytes {
+  let head = Bytes::new(17)
+  let c_num : Int64 = match conn {
+    base_codec::Json::Num(n, _) => n.to_int64()
+    _ => 0.to_int64()
+  }
+  let s_num : Int64 = match stream_id {
+    base_codec::Json::Num(n, _) => n.to_int64()
+    _ => 0.to_int64()
+  }
+  for i in 0..<8 {
+    let shift = (8 * (7 - i)).to_int64()
+    head[i] = ((c_num >> shift) & 0xFF.to_int64()).to_int() as Byte
+    head[8 + i] = ((s_num >> shift) & 0xFF.to_int64()).to_int() as Byte
+  }
+  head[16] = 1 as Byte
+  head
+}
+
+// ── State structs (flat ID maps, zero RC cycles) ──
+
+struct MeshClient {
+  id : Int
+  sock_id : base_codec::Json
+  mut bound : Int
+  mut streams : String
+  mut front : base_codec::Json
+  mut routes : base_codec::Json
+  mut alpn : base_codec::Json
+  lines : builders_core::RawLines
+  mut coming : Array[base_codec::Json]
+  mut coming_head : Int
+  mut accept_waiters : Array[base_codec::Json]
+  mut accept_head : Int
+  conns : Map[String, base_codec::Json]
+  calls : Map[String, Int64]
+  mut gone : Bool
+  mut read_closed : Bool
+}
+
+fn MeshClient::new(id : Int, sock_id : base_codec::Json) -> MeshClient {
+  MeshClient::{
+    id: id,
+    sock_id: sock_id,
+    bound: 0,
+    streams: "",
+    front: base_codec::json_arr([]),
+    routes: base_codec::json_arr([]),
+    alpn: base_codec::json_null(),
+    lines: builders_core::RawLines::new(),
+    coming: [],
+    coming_head: 0,
+    accept_waiters: [],
+    accept_head: 0,
+    conns: Map::new(),
+    calls: Map::new(),
+    gone: false,
+    read_closed: false,
+  }
+}
+
+fn MeshClient::push_coming(self : MeshClient, conn : base_codec::Json) -> Unit {
+  self.coming.push(conn)
+}
+
+fn MeshClient::pop_coming(self : MeshClient) -> Option[base_codec::Json] {
+  if self.coming_head >= self.coming.length() {
+    return None
+  }
+  let item = self.coming[self.coming_head]
+  self.coming_head = self.coming_head + 1
+  if self.coming_head == self.coming.length() {
+    self.coming = []
+    self.coming_head = 0
+  } else if self.coming_head >= 32 && self.coming_head * 2 >= self.coming.length() {
+    let next : Array[base_codec::Json] = []
+    for i in self.coming_head..<self.coming.length() {
+      next.push(self.coming[i])
+    }
+    self.coming = next
+    self.coming_head = 0
+  }
+  Some(item)
+}
+
+fn MeshClient::push_accept_waiter(self : MeshClient, ask_id : base_codec::Json) -> Unit {
+  self.accept_waiters.push(ask_id)
+}
+
+fn MeshClient::pop_accept_waiter(self : MeshClient) -> Option[base_codec::Json] {
+  if self.accept_head >= self.accept_waiters.length() {
+    return None
+  }
+  let item = self.accept_waiters[self.accept_head]
+  self.accept_head = self.accept_head + 1
+  if self.accept_head == self.accept_waiters.length() {
+    self.accept_waiters = []
+    self.accept_head = 0
+  } else if self.accept_head >= 32 && self.accept_head * 2 >= self.accept_waiters.length() {
+    let next : Array[base_codec::Json] = []
+    for i in self.accept_head..<self.accept_waiters.length() {
+      next.push(self.accept_waiters[i])
+    }
+    self.accept_waiters = next
+    self.accept_head = 0
+  }
+  Some(item)
+}
+
+enum BindLockItem {
+  Empty
+  Bind(Int, base_codec::Json, String, Bytes, base_codec::Json)
+  RelayOp(Int, base_codec::Json, String, base_codec::Json)
+}
+
+struct ActiveBind {
+  client_id : Int
+  sock_id : base_codec::Json
+  ask_id : base_codec::Json
+  streams : String
+  key_bytes : Bytes
+  key_hex : String
+  identity : String
+  options : base_codec::Json
+  mut phase : Int
+  mut target_relays : Array[String]
+  mut to_insert : Array[String]
+  mut insert_idx : Int
+  mut to_remove : Array[String]
+  mut remove_idx : Int
+  mut old_endpoint : Option[base_codec::Json]
+  mut new_endpoint : Option[base_codec::Json]
+  mut subscribe_ep : Option[base_codec::Json]
+  mut fail_msg : String
+}
+
+struct ActiveRelayOp {
+  client_id : Int
+  ask_id : base_codec::Json
+  op : String
+  args : base_codec::Json
+}
+
+struct PendingAsk {
+  client_id : Int
+  ask_id : base_codec::Json
+  op : String
+  ask_key : String
+  conn : base_codec::Json
+  said : base_codec::Json
+  err_msg : String
+}
+
+struct PendingCloseReply {
+  client_id : Int
+  ask_id : base_codec::Json
+  mut remaining : Int
+}
+
+pub struct MeshRunner {
+  mux : builders_core::ShellMux
+  outbox : builders_core::SerialOutbox
+  socket_path : String
+  note : (String) -> Unit
+  on_accept_end : () -> Unit
+  stringify : (base_codec::Json) -> String
+  mut listen_id : Option[base_codec::Json]
+  mut listen_ready : Bool
+  mut pending_stdin_eof : Bool
+  mut accept_retry_at : Option[Int64]
+  mut endpoint : Option[base_codec::Json]
+  mut identity : String
+  mut bound_key : String
+  mut bound_relays : Array[String]
+  mut bound_congestion : String
+  mut bound_alpns : String
+  mut said : base_codec::Json
+  mut waiting : Array[base_codec::Json]
+  clients : Map[Int, MeshClient]
+  mut next_client_id : Int
+  mut binds : Int
+  mut bind_busy : Bool
+  mut bind_queue : Array[BindLockItem]
+  mut bind_queue_head : Int
+  mut active_bind : Option[ActiveBind]
+  mut active_relay : Option[ActiveRelayOp]
+  mut next_ep_seq : Int
+  accepting_eps : Map[Int, base_codec::Json]
+  mut next_req_seq : Int
+  pending_asks : Map[Int, PendingAsk]
+  handing : Map[Int, (Int, String)]
+  close_waiters : Map[Int, PendingCloseReply]
+  mut running : Bool
+  mut exit_code : Int
+}
+
+pub fn MeshRunner::new(
+  mux : builders_core::ShellMux,
+  socket_path : String,
+  note : (String) -> Unit,
+  on_accept_end : () -> Unit,
+  stringify : (base_codec::Json) -> String = mesh_stringify,
+) -> MeshRunner {
+  MeshRunner::{
+    mux: mux,
+    outbox: builders_core::SerialOutbox::new(),
+    socket_path: socket_path,
+    note: note,
+    on_accept_end: on_accept_end,
+    stringify: stringify,
+    listen_id: None,
+    listen_ready: false,
+    pending_stdin_eof: false,
+    accept_retry_at: None,
+    endpoint: None,
+    identity: "",
+    bound_key: "",
+    bound_relays: [],
+    bound_congestion: MESH_DEFAULT_CONGESTION,
+    bound_alpns: "",
+    said: base_codec::json_null(),
+    waiting: [],
+    clients: Map::new(),
+    next_client_id: 0,
+    binds: 0,
+    bind_busy: false,
+    bind_queue: [],
+    bind_queue_head: 0,
+    active_bind: None,
+    active_relay: None,
+    next_ep_seq: 0,
+    accepting_eps: Map::new(),
+    next_req_seq: 0,
+    pending_asks: Map::new(),
+    handing: Map::new(),
+    close_waiters: Map::new(),
+    running: true,
+    exit_code: 0,
+  }
+}
+
+pub fn MeshRunner::start(self : MeshRunner) -> Unit {
+  let _ = self.call_async(
+    builders_core::MuxToken::Tagged(0, TOK_UNIX_LISTEN, 0.to_int64()),
+    "unix.listen",
+    base_codec::json_obj([("path", base_codec::json_str(self.socket_path))]),
+    None,
+  )
+}
+
+pub fn MeshRunner::is_running(self : MeshRunner) -> Bool {
+  self.running
+}
+
+pub fn MeshRunner::exit_code(self : MeshRunner) -> Int {
+  self.exit_code
+}
+
+pub fn MeshRunner::stop_with(self : MeshRunner, code : Int) -> Unit {
+  self.running = false
+  self.exit_code = code
+}
+
+pub fn MeshRunner::waiting_len(self : MeshRunner) -> Int {
+  self.waiting.length()
+}
+
+pub fn MeshRunner::client_count(self : MeshRunner) -> Int {
+  self.clients.length()
+}
+
+pub fn MeshRunner::pending_asks_len(self : MeshRunner) -> Int {
+  self.pending_asks.length()
+}
+
+pub fn MeshRunner::bind_lock_busy(self : MeshRunner) -> Bool {
+  self.bind_busy
+}
+
+pub fn MeshRunner::step(self : MeshRunner, max_wait_ms : Int64) -> Bool {
+  if !self.running {
+    return false
+  }
+  let mut wait_ms = max_wait_ms
+  match self.accept_retry_at {
+    Some(due) => {
+      let now = self.mux.now_ms()
+      if now >= due {
+        self.accept_retry_at = None
+        match self.listen_id {
+          Some(lid) => self.start_tcp_accept(lid)
+          None => ()
+        }
+        wait_ms = 0.to_int64()
+      } else {
+        let rem = due - now
+        if rem < wait_ms {
+          wait_ms = rem
+        }
+      }
+    }
+    None => ()
+  }
+  let progressed = self.mux.step(
+    wait_ms,
+    fn(_line : String) -> Unit {},
+    fn() -> Unit {
+      if self.listen_ready {
+        self.running = false
+        self.exit_code = 0
+      } else {
+        self.pending_stdin_eof = true
+      }
+    },
+    fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+      self.on_done(tok, done)
+    },
+  )
+  match self.accept_retry_at {
+    Some(due) => {
+      if self.running && self.mux.now_ms() >= due {
+        self.accept_retry_at = None
+        match self.listen_id {
+          Some(lid) => self.start_tcp_accept(lid)
+          None => ()
+        }
+      }
+    }
+    None => ()
+  }
+  progressed
+}
+
+fn MeshRunner::alloc_req_seq(self : MeshRunner) -> Int {
+  self.next_req_seq = self.next_req_seq + 1
+  self.next_req_seq
+}
+
+fn MeshRunner::call_async(
+  self : MeshRunner,
+  token : builders_core::MuxToken,
+  op : String,
+  args : base_codec::Json,
+  payload : Option[Bytes],
+) -> Int64 {
+  self.mux.call_async_raw(token, op, (self.stringify)(args), payload)
+}
+
+fn MeshRunner::call_sync(
+  self : MeshRunner,
+  op : String,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, builders_core::ShellError] {
+  builders_core::parse_shell_sync_answer(self.mux.call_sync_raw(op, (self.stringify)(args)))
+}
+
+fn MeshRunner::start_tcp_accept(self : MeshRunner, lid : base_codec::Json) -> Unit {
+  let _ = self.call_async(
+    builders_core::MuxToken::Tagged(0, TOK_TCP_ACCEPT, 0.to_int64()),
+    "tcp.accept",
+    base_codec::json_obj([("id", lid)]),
+    None,
+  )
+}
+
+fn MeshRunner::start_tcp_read(self : MeshRunner, client_id : Int, sock_id : base_codec::Json) -> Unit {
+  let _ = self.call_async(
+    builders_core::MuxToken::Tagged(client_id, TOK_TCP_READ, 0.to_int64()),
+    "tcp.read",
+    base_codec::json_obj([("id", sock_id)]),
+    None,
+  )
+}
+
+fn MeshRunner::reply(
+  self : MeshRunner,
+  client_id : Int,
+  ask_id : base_codec::Json,
+  op : String,
+  res : Result[base_codec::Json, String],
+) -> Unit {
+  let client = match self.clients.get(client_id) {
+    Some(c) => c
+    None => return
+  }
+  if client.gone && op != "close" {
+    return
+  }
+  if client.read_closed {
+    return
+  }
+  let line_json = match res {
+    Ok(v) => base_codec::json_obj([("id", ask_id), ("ok", v)])
+    Err(msg) => base_codec::json_obj([("id", ask_id), ("error", base_codec::json_str(msg))])
+  }
+  let raw = ((self.stringify)(line_json) + "\n").to_bytes()
+  let _ = self.outbox.send_raw(
+    self.mux,
+    client_id,
+    builders_core::MuxToken::Write(client_id),
+    "tcp.write",
+    (self.stringify)(base_codec::json_obj([("id", client.sock_id)])),
+    Some(raw),
+  )
+}
+
+fn MeshRunner::forget(self : MeshRunner, conn : base_codec::Json, reason : String) -> Unit {
+  let _ = self.call_async(
+    builders_core::MuxToken::Tagged(0, TOK_IGNORE, 0.to_int64()),
+    "conn.close",
+    base_codec::json_obj([
+      ("id", conn),
+      ("code", base_codec::json_int(0)),
+      ("reason", base_codec::json_str(reason)),
+      ("forget", base_codec::json_bool(true)),
+    ]),
+    None,
+  )
+}
+
+fn MeshRunner::seen(
+  self : MeshRunner,
+  id : base_codec::Json,
+) -> Result[base_codec::Json, builders_core::ShellError] {
+  let args = base_codec::json_obj([("id", id)])
+  let remote = match self.call_sync("conn.remoteId", args) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let alpn = match self.call_sync("conn.alpn", args) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let via = match self.call_sync("conn.via", args) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let paths = match self.call_sync("conn.paths", args) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let stats = match self.call_sync("conn.stats", args) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  Ok(
+    base_codec::json_obj([
+      ("conn", id),
+      ("remote", remote),
+      ("alpn", alpn),
+      ("via", via),
+      ("paths", paths),
+      ("stats", stats),
+    ]),
+  )
+}
+
+fn MeshRunner::taking(
+  self : MeshRunner,
+  client : MeshClient,
+  conn : base_codec::Json,
+  alpn : base_codec::Json,
+) -> Unit {
+  let routed = base_codec::json_eq(alpn, client.alpn)
+  let asked = base_codec::json_obj([
+    ("id", conn),
+    ("path", base_codec::json_str(client.streams)),
+    ("front", if routed { client.front } else { base_codec::json_arr([]) }),
+    ("routes", if routed { client.routes } else { base_codec::json_arr([]) }),
+  ])
+  let seq = self.alloc_req_seq()
+  self.handing.set(seq, (client.id, (self.stringify)(conn)))
+  let _ = self.call_async(
+    builders_core::MuxToken::Tagged(seq, TOK_CONN_HAND, 0.to_int64()),
+    "conn.hand",
+    asked,
+    None,
+  )
+}
+
+fn MeshRunner::hand(
+  self : MeshRunner,
+  client : MeshClient,
+  conn : base_codec::Json,
+  stream_id : base_codec::Json,
+) -> Unit {
+  let head = make_istream_hand_header(conn, stream_id)
+  let _ = self.call_async(
+    builders_core::MuxToken::Tagged(0, TOK_IGNORE, 0.to_int64()),
+    "istream.hand",
+    base_codec::json_obj([
+      ("id", stream_id),
+      ("path", base_codec::json_str(client.streams)),
+    ]),
+    Some(head),
+  )
+}
+
+fn MeshRunner::deliver_accepted_conn(
+  self : MeshRunner,
+  client : MeshClient,
+  ask_id : base_codec::Json,
+  conn : base_codec::Json,
+) -> Unit {
+  let id = mesh_field(conn, "conn")
+  if !mesh_is_null(id) {
+    client.conns.set((self.stringify)(id), id)
+    self.taking(client, id, mesh_field(conn, "alpn"))
+  }
+  self.reply(client.id, ask_id, "accept", Ok(conn))
+}
+
+fn MeshRunner::give(self : MeshRunner, conn : base_codec::Json) -> Unit {
+  let mut best_id : Option[Int] = None
+  let mut best_bound = 0
+  let cids = self.clients.keys()
+  for i in 0..<cids.length() {
+    match self.clients.get(cids[i]) {
+      Some(c) => {
+        if !c.gone && c.bound > 0 && (best_id is None || c.bound > best_bound) {
+          best_id = Some(c.id)
+          best_bound = c.bound
+        }
+      }
+      None => ()
+    }
+  }
+  match best_id {
+    Some(cid) => {
+      match self.clients.get(cid) {
+        Some(c) => {
+          match c.pop_accept_waiter() {
+            Some(ask_id) => self.deliver_accepted_conn(c, ask_id, conn)
+            None => c.push_coming(conn)
+          }
+        }
+        None => ()
+      }
+    }
+    None => {
+      if self.waiting.length() >= MESH_WAITING_MOST {
+        let dropped = self.waiting[0]
+        let next : Array[base_codec::Json] = []
+        for i in 1..<self.waiting.length() {
+          next.push(self.waiting[i])
+        }
+        self.waiting = next
+        let drop_id = mesh_field(dropped, "conn")
+        if !mesh_is_null(drop_id) {
+          self.forget(drop_id, "station starting")
+        }
+      }
+      self.waiting.push(conn)
+    }
+  }
+}
+
+fn MeshRunner::part(
+  self : MeshRunner,
+  client_id : Int,
+  close_ask : Option[base_codec::Json],
+) -> Unit {
+  let client = match self.clients.get(client_id) {
+    Some(c) => c
+    None => return
+  }
+  if client.gone {
+    match close_ask {
+      Some(ask_id) => self.reply(client_id, ask_id, "close", Ok(base_codec::json_null()))
+      None => ()
+    }
+    return
+  }
+  client.gone = true
+  client.bound = 0
+
+  let left : Array[base_codec::Json] = []
+  while true {
+    match client.pop_coming() {
+      Some(c) => left.push(c)
+      None => break
+    }
+  }
+  // Pending `accept` waiters are dropped since `client.gone` is now true.
+  client.accept_waiters = []
+  client.accept_head = 0
+
+  let owned : Array[base_codec::Json] = []
+  let ckeys = client.conns.keys()
+  for i in 0..<ckeys.length() {
+    match client.conns.get(ckeys[i]) {
+      Some(conn) => owned.push(conn)
+      None => ()
+    }
+  }
+  client.conns.clear()
+
+  let mut waiter_seq = 0
+  let mut pending_steps = 0
+  if self.endpoint is Some(_) {
+    pending_steps = pending_steps + 1
+  }
+  pending_steps = pending_steps + owned.length()
+
+  match close_ask {
+    Some(ask_id) => {
+      if pending_steps == 0 {
+        self.reply(client_id, ask_id, "close", Ok(base_codec::json_null()))
+      } else {
+        waiter_seq = self.alloc_req_seq()
+        self.close_waiters.set(
+          waiter_seq,
+          PendingCloseReply::{ client_id: client_id, ask_id: ask_id, remaining: pending_steps },
+        )
+      }
+    }
+    None => ()
+  }
+
+  let tok = if waiter_seq > 0 {
+    builders_core::MuxToken::Tagged(waiter_seq, TOK_PART_STEP, 0.to_int64())
+  } else {
+    builders_core::MuxToken::Tagged(0, TOK_IGNORE, 0.to_int64())
+  }
+
+  match self.endpoint {
+    Some(ep) => {
+      let _ = self.call_async(
+        tok,
+        "iroh.meshUnsubscribe",
+        base_codec::json_obj([("id", ep), ("socket", client.sock_id)]),
+        None,
+      )
+    }
+    None => ()
+  }
+  for i in 0..<owned.length() {
+    let _ = self.call_async(
+      tok,
+      "conn.close",
+      base_codec::json_obj([
+        ("id", owned[i]),
+        ("code", base_codec::json_int(0)),
+        ("reason", base_codec::json_str("station stopping")),
+        ("forget", base_codec::json_bool(true)),
+      ]),
+      None,
+    )
+  }
+  for i in 0..<left.length() {
+    self.give(left[i])
+  }
+}
+
+fn MeshRunner::start_iroh_accept(self : MeshRunner, ep : base_codec::Json) -> Unit {
+  self.next_ep_seq = self.next_ep_seq + 1
+  let seq = self.next_ep_seq
+  self.accepting_eps.set(seq, ep)
+  let _ = self.call_async(
+    builders_core::MuxToken::Tagged(seq, TOK_IROH_ACCEPT, 0.to_int64()),
+    "iroh.accept",
+    base_codec::json_obj([("id", ep)]),
+    None,
+  )
+}
+
+// ── Iterative `bind_lock` queue and multi-step `bind` state machine ──
+
+fn MeshRunner::pop_bind_queue(self : MeshRunner) -> Option[BindLockItem] {
+  if self.bind_queue_head >= self.bind_queue.length() {
+    self.bind_queue = []
+    self.bind_queue_head = 0
+    return None
+  }
+  let item = self.bind_queue[self.bind_queue_head]
+  // Clear popped slot immediately so queued key_bytes/options are not retained.
+  self.bind_queue[self.bind_queue_head] = BindLockItem::Empty
+  self.bind_queue_head = self.bind_queue_head + 1
+  if self.bind_queue_head == self.bind_queue.length() {
+    self.bind_queue = []
+    self.bind_queue_head = 0
+  } else if self.bind_queue_head >= 16 && self.bind_queue_head * 2 >= self.bind_queue.length() {
+    let next : Array[BindLockItem] = []
+    for i in self.bind_queue_head..<self.bind_queue.length() {
+      next.push(self.bind_queue[i])
+    }
+    self.bind_queue = next
+    self.bind_queue_head = 0
+  }
+  Some(item)
+}
+
+fn MeshRunner::enqueue_bind_lock(self : MeshRunner, item : BindLockItem) -> Unit {
+  self.bind_queue.push(item)
+  if !self.bind_busy {
+    self.pump_bind_lock()
+  }
+}
+
+fn MeshRunner::release_bind_lock(self : MeshRunner) -> Unit {
+  self.active_bind = None
+  self.active_relay = None
+  self.pump_bind_lock()
+}
+
+/// Iteratively drains `bind_queue` without recursion: stops as soon as an item
+/// starts async work (`run_bind_lock_item` returns `true`) or the queue is empty.
+fn MeshRunner::pump_bind_lock(self : MeshRunner) -> Unit {
+  while true {
+    match self.pop_bind_queue() {
+      None => {
+        self.bind_busy = false
+        return
+      }
+      Some(BindLockItem::Empty) => continue
+      Some(item) => {
+        self.bind_busy = true
+        if self.run_bind_lock_item(item) {
+          return
+        }
+        self.active_bind = None
+        self.active_relay = None
+      }
+    }
+  }
+}
+
+fn MeshRunner::client_is_gone(self : MeshRunner, client_id : Int) -> Bool {
+  match self.clients.get(client_id) {
+    Some(c) => c.gone
+    None => true
+  }
+}
+
+/// Returns `true` if async shell work was started (lock remains held), or `false` if completed synchronously.
+fn MeshRunner::run_bind_lock_item(self : MeshRunner, item : BindLockItem) -> Bool {
+  match item {
+    BindLockItem::Empty => false
+    BindLockItem::Bind(client_id, ask_id, streams, key_bytes, options) => {
+      self.start_bind(client_id, ask_id, streams, key_bytes, options)
+    }
+    BindLockItem::RelayOp(client_id, ask_id, op, asked) => {
+      let ep = match self.endpoint {
+        Some(e) => e
+        None => {
+          self.reply(client_id, ask_id, op, Err("no endpoint bound"))
+          return false
+        }
+      }
+      let args = asked_args_with_id(asked, ep)
+      self.active_relay = Some(ActiveRelayOp::{
+        client_id: client_id,
+        ask_id: ask_id,
+        op: op,
+        args: args,
+      })
+      let _ = self.call_async(
+        builders_core::MuxToken::Tagged(0, TOK_RELAY_OP, 0.to_int64()),
+        "iroh." + op,
+        args,
+        None,
+      )
+      true
+    }
+  }
+}
+
+/// Returns `true` if async shell work is now in flight, `false` if completed synchronously.
+fn MeshRunner::start_bind(
+  self : MeshRunner,
+  client_id : Int,
+  ask_id : base_codec::Json,
+  streams : String,
+  key_bytes : Bytes,
+  options : base_codec::Json,
+) -> Bool {
+  // Check #1: client gone while waiting for `bind_lock`.
+  let sock_id = match self.clients.get(client_id) {
+    Some(c) => {
+      if c.gone {
+        self.reply(client_id, ask_id, "bind", Err("the endpoint is closed"))
+        return false
+      }
+      c.sock_id
+    }
+    None => return false
+  }
+  let key_hex = base_codec::hex_encode(key_bytes)
+  if foreign_key_bind(self.endpoint, self.bound_key, key_hex) {
+    (self.note)("mesh: refused bind for another key")
+    self.reply(
+      client_id,
+      ask_id,
+      "bind",
+      Err("another station's key: front already holds an endpoint"),
+    )
+    return false
+  }
+  let identity = identity_of_with(options, key_bytes, self.stringify)
+  let st = ActiveBind::{
+    client_id: client_id,
+    sock_id: sock_id,
+    ask_id: ask_id,
+    streams: streams,
+    key_bytes: key_bytes,
+    key_hex: key_hex,
+    identity: identity,
+    options: options,
+    phase: 0,
+    target_relays: relays_of(options),
+    to_insert: [],
+    insert_idx: 0,
+    to_remove: [],
+    remove_idx: 0,
+    old_endpoint: self.endpoint,
+    new_endpoint: None,
+    subscribe_ep: None,
+    fail_msg: "",
+  }
+  match self.endpoint {
+    Some(ep) => {
+      if self.identity == identity {
+        // Same identity: reconcile relays, congestion, alpns in place.
+        for i in 0..<st.target_relays.length() {
+          let u = st.target_relays[i]
+          if !has_relay(self.bound_relays, u) {
+            st.to_insert.push(u)
+          }
+        }
+        for i in 0..<self.bound_relays.length() {
+          let u = self.bound_relays[i]
+          if !has_relay(st.target_relays, u) {
+            st.to_remove.push(u)
+          }
+        }
+        self.active_bind = Some(st)
+        return self.advance_reconcile(ep)
+      }
+      // Different identity, same key: rebind.
+      if fixed_port(options) {
+        self.endpoint = None
+        st.old_endpoint = None
+        st.phase = BIND_PHASE_FIXED_CLOSE_OLD
+        self.active_bind = Some(st)
+        let _ = self.call_async(
+          builders_core::MuxToken::Tagged(0, TOK_BIND_STEP, 0.to_int64()),
+          "iroh.close",
+          base_codec::json_obj([("id", ep), ("forget", base_codec::json_bool(true))]),
+          None,
+        )
+        return true
+      }
+    }
+    None => ()
+  }
+  // Fresh bind or non-fixed-port rebind (bind new first, then let_go old).
+  st.phase = BIND_PHASE_IROH_BIND
+  self.active_bind = Some(st)
+  let _ = self.call_async(
+    builders_core::MuxToken::Tagged(0, TOK_BIND_STEP, 0.to_int64()),
+    "iroh.bind",
+    options,
+    Some(key_bytes),
+  )
+  true
+}
+
+fn MeshRunner::advance_reconcile(self : MeshRunner, ep : base_codec::Json) -> Bool {
+  let st = match self.active_bind {
+    Some(s) => s
+    None => return false
+  }
+  if st.insert_idx < st.to_insert.length() {
+    let url = st.to_insert[st.insert_idx]
+    st.phase = BIND_PHASE_INSERT_RELAY
+    let _ = self.call_async(
+      builders_core::MuxToken::Tagged(0, TOK_BIND_STEP, 0.to_int64()),
+      "iroh.insertRelay",
+      base_codec::json_obj([("id", ep), ("url", base_codec::json_str(url))]),
+      None,
+    )
+    return true
+  }
+  if st.remove_idx < st.to_remove.length() {
+    let url = st.to_remove[st.remove_idx]
+    st.phase = BIND_PHASE_REMOVE_RELAY
+    let _ = self.call_async(
+      builders_core::MuxToken::Tagged(0, TOK_BIND_STEP, 0.to_int64()),
+      "iroh.removeRelay",
+      base_codec::json_obj([("id", ep), ("url", base_codec::json_str(url))]),
+      None,
+    )
+    return true
+  }
+  self.bound_relays = st.target_relays
+  self.advance_reconcile_congestion(ep)
+}
+
+fn MeshRunner::advance_reconcile_congestion(self : MeshRunner, ep : base_codec::Json) -> Bool {
+  let st = match self.active_bind {
+    Some(s) => s
+    None => return false
+  }
+  let congestion = congestion_of(st.options)
+  if congestion != self.bound_congestion {
+    st.phase = BIND_PHASE_SET_CONGESTION
+    let _ = self.call_async(
+      builders_core::MuxToken::Tagged(0, TOK_BIND_STEP, 0.to_int64()),
+      "iroh.setCongestion",
+      base_codec::json_obj([("id", ep), ("congestion", base_codec::json_str(congestion))]),
+      None,
+    )
+    return true
+  }
+  self.advance_reconcile_alpns(ep)
+}
+
+fn MeshRunner::advance_reconcile_alpns(self : MeshRunner, ep : base_codec::Json) -> Bool {
+  let st = match self.active_bind {
+    Some(s) => s
+    None => return false
+  }
+  let alpns_val = mesh_field(st.options, "alpns")
+  let alpns_str = (self.stringify)(alpns_val)
+  if alpns_str != self.bound_alpns {
+    st.phase = BIND_PHASE_SET_ALPNS
+    let _ = self.call_async(
+      builders_core::MuxToken::Tagged(0, TOK_BIND_STEP, 0.to_int64()),
+      "iroh.setAlpns",
+      base_codec::json_obj([("id", ep), ("alpns", alpns_val)]),
+      None,
+    )
+    return true
+  }
+  self.after_bind_ready()
+}
+
+fn MeshRunner::abort_failed_new_endpoint(
+  self : MeshRunner,
+  st : ActiveBind,
+  ep : base_codec::Json,
+  msg : String,
+) -> Bool {
+  self.endpoint = None
+  self.identity = ""
+  self.bound_key = ""
+  self.bound_relays = []
+  self.bound_congestion = MESH_DEFAULT_CONGESTION
+  self.bound_alpns = ""
+  self.said = base_codec::json_null()
+  st.fail_msg = msg
+  st.phase = BIND_PHASE_CLOSE_FAILED_NEW
+  let _ = self.call_async(
+    builders_core::MuxToken::Tagged(0, TOK_BIND_STEP, 0.to_int64()),
+    "iroh.close",
+    base_codec::json_obj([("id", ep), ("forget", base_codec::json_bool(true))]),
+    None,
+  )
+  true
+}
+
+fn MeshRunner::finish_new_endpoint_setup(self : MeshRunner, ep : base_codec::Json) -> Bool {
+  let st = match self.active_bind {
+    Some(s) => s
+    None => return false
+  }
+  let id_args = base_codec::json_obj([("id", ep)])
+  let ep_id = match self.call_sync("iroh.endpointId", id_args) {
+    Ok(v) => v
+    Err(e) => return self.abort_failed_new_endpoint(st, ep, e.message)
+  }
+  let sockets = match self.call_sync("iroh.sockets", id_args) {
+    Ok(v) => v
+    Err(e) => return self.abort_failed_new_endpoint(st, ep, e.message)
+  }
+  self.identity = st.identity
+  self.bound_key = st.key_hex
+  self.bound_relays = st.target_relays
+  self.bound_congestion = congestion_of(st.options)
+  self.bound_alpns = (self.stringify)(mesh_field(st.options, "alpns"))
+  self.said = base_codec::json_obj([("id", ep_id), ("sockets", sockets)])
+  self.start_iroh_accept(ep)
+  self.after_bind_ready()
+}
+
+fn MeshRunner::after_bind_ready(self : MeshRunner) -> Bool {
+  let st = match self.active_bind {
+    Some(s) => s
+    None => return false
+  }
+  // Check #2: client gone after `iroh.bind` / reconciliation.
+  if self.client_is_gone(st.client_id) {
+    self.reply(st.client_id, st.ask_id, "bind", Err("the endpoint is closed"))
+    return false
+  }
+  match self.endpoint {
+    Some(ep) => {
+      st.subscribe_ep = Some(ep)
+      st.phase = BIND_PHASE_SUBSCRIBE
+      let _ = self.call_async(
+        builders_core::MuxToken::Tagged(0, TOK_BIND_STEP, 0.to_int64()),
+        "iroh.meshSubscribe",
+        base_codec::json_obj([("id", ep), ("socket", st.sock_id)]),
+        None,
+      )
+      true
+    }
+    None => {
+      self.finalize_bind_success()
+      false
+    }
+  }
+}
+
+fn MeshRunner::finalize_bind_success(self : MeshRunner) -> Unit {
+  let st = match self.active_bind {
+    Some(s) => s
+    None => return
+  }
+  match self.clients.get(st.client_id) {
+    Some(client) => {
+      client.streams = st.streams
+      self.binds = self.binds + 1
+      client.bound = self.binds
+      let waited = self.waiting
+      self.waiting = []
+      for i in 0..<waited.length() {
+        self.give(waited[i])
+      }
+      self.reply(st.client_id, st.ask_id, "bind", Ok(self.said))
+    }
+    None => ()
+  }
+}
+
+fn MeshRunner::on_bind_step_done(self : MeshRunner, done : host_shim::ShellDone) -> Unit {
+  let st = match self.active_bind {
+    Some(s) => s
+    None => {
+      (self.note)("mesh: unexpected bind step completion with no active bind")
+      return
+    }
+  }
+  let res = builders_core::decode_shell_done(done)
+  if st.phase == BIND_PHASE_INSERT_RELAY {
+    let url = st.to_insert[st.insert_idx]
+    st.insert_idx = st.insert_idx + 1
+    match res {
+      Ok(_) => (self.note)("mesh: relay " + url + " added as a Node bound")
+      Err(e) => (self.note)("mesh: relay " + url + " not added: " + e.message)
+    }
+    match self.endpoint {
+      Some(ep) => {
+        if !self.advance_reconcile(ep) {
+          self.release_bind_lock()
+        }
+      }
+      None => {
+        self.reply(st.client_id, st.ask_id, "bind", Err("no endpoint bound"))
+        self.release_bind_lock()
+      }
+    }
+  } else if st.phase == BIND_PHASE_REMOVE_RELAY {
+    let url = st.to_remove[st.remove_idx]
+    st.remove_idx = st.remove_idx + 1
+    match res {
+      Ok(_) => (self.note)("mesh: relay " + url + " removed as a Node bound")
+      Err(e) => (self.note)("mesh: relay " + url + " not removed: " + e.message)
+    }
+    match self.endpoint {
+      Some(ep) => {
+        if !self.advance_reconcile(ep) {
+          self.release_bind_lock()
+        }
+      }
+      None => {
+        self.reply(st.client_id, st.ask_id, "bind", Err("no endpoint bound"))
+        self.release_bind_lock()
+      }
+    }
+  } else if st.phase == BIND_PHASE_SET_CONGESTION {
+    match res {
+      Ok(_) => ()
+      Err(e) => (self.note)("mesh: congestion controller not changed: " + e.message)
+    }
+    self.bound_congestion = congestion_of(st.options)
+    match self.endpoint {
+      Some(ep) => {
+        if !self.advance_reconcile_alpns(ep) {
+          self.release_bind_lock()
+        }
+      }
+      None => {
+        self.reply(st.client_id, st.ask_id, "bind", Err("no endpoint bound"))
+        self.release_bind_lock()
+      }
+    }
+  } else if st.phase == BIND_PHASE_SET_ALPNS {
+    match res {
+      Ok(_) => self.bound_alpns = (self.stringify)(mesh_field(st.options, "alpns"))
+      Err(e) => (self.note)("mesh: protocols not changed: " + e.message)
+    }
+    if !self.after_bind_ready() {
+      self.release_bind_lock()
+    }
+  } else if st.phase == BIND_PHASE_FIXED_CLOSE_OLD {
+    // Old fixed-port endpoint closed; now bind new endpoint.
+    st.phase = BIND_PHASE_IROH_BIND
+    let _ = self.call_async(
+      builders_core::MuxToken::Tagged(0, TOK_BIND_STEP, 0.to_int64()),
+      "iroh.bind",
+      st.options,
+      Some(st.key_bytes),
+    )
+  } else if st.phase == BIND_PHASE_IROH_BIND {
+    match res {
+      Err(e) => {
+        self.reply(st.client_id, st.ask_id, "bind", Err(e.message))
+        self.release_bind_lock()
+      }
+      Ok((j_opt, _)) => {
+        let bound = match j_opt {
+          Some(j) => j
+          None => base_codec::json_null()
+        }
+        let ep = mesh_field(bound, "id")
+        if mesh_is_null(ep) {
+          self.reply(st.client_id, st.ask_id, "bind", Err("the shell bound no endpoint"))
+          self.release_bind_lock()
+          return
+        }
+        // Set new endpoint BEFORE letting go of old so old accept loop ends silently.
+        self.endpoint = Some(ep)
+        st.new_endpoint = Some(ep)
+        match st.old_endpoint {
+          Some(old_ep) => {
+            st.phase = BIND_PHASE_CLOSE_OLD_AFTER
+            let _ = self.call_async(
+              builders_core::MuxToken::Tagged(0, TOK_BIND_STEP, 0.to_int64()),
+              "iroh.close",
+              base_codec::json_obj([("id", old_ep), ("forget", base_codec::json_bool(true))]),
+              None,
+            )
+          }
+          None => {
+            if !self.finish_new_endpoint_setup(ep) {
+              self.release_bind_lock()
+            }
+          }
+        }
+      }
+    }
+  } else if st.phase == BIND_PHASE_CLOSE_OLD_AFTER {
+    match st.new_endpoint {
+      Some(ep) => {
+        if !self.finish_new_endpoint_setup(ep) {
+          self.release_bind_lock()
+        }
+      }
+      None => {
+        self.reply(st.client_id, st.ask_id, "bind", Err("no endpoint bound"))
+        self.release_bind_lock()
+      }
+    }
+  } else if st.phase == BIND_PHASE_CLOSE_FAILED_NEW {
+    self.reply(st.client_id, st.ask_id, "bind", Err(st.fail_msg))
+    self.release_bind_lock()
+  } else if st.phase == BIND_PHASE_SUBSCRIBE {
+    match res {
+      Err(e) => {
+        self.reply(st.client_id, st.ask_id, "bind", Err(e.message))
+        self.release_bind_lock()
+      }
+      Ok(_) => {
+        // Check #3: client gone after `iroh.meshSubscribe`.
+        // Always unsubscribe using saved `(subscribe_ep, sock_id)` even if control EOF removed `client`.
+        if self.client_is_gone(st.client_id) {
+          match st.subscribe_ep {
+            Some(ep) => {
+              st.phase = BIND_PHASE_UNSUBSCRIBE_GONE
+              let _ = self.call_async(
+                builders_core::MuxToken::Tagged(0, TOK_BIND_STEP, 0.to_int64()),
+                "iroh.meshUnsubscribe",
+                base_codec::json_obj([("id", ep), ("socket", st.sock_id)]),
+                None,
+              )
+            }
+            None => {
+              self.reply(st.client_id, st.ask_id, "bind", Err("the endpoint is closed"))
+              self.release_bind_lock()
+            }
+          }
+          return
+        }
+        self.finalize_bind_success()
+        self.release_bind_lock()
+      }
+    }
+  } else if st.phase == BIND_PHASE_UNSUBSCRIBE_GONE {
+    self.reply(st.client_id, st.ask_id, "bind", Err("the endpoint is closed"))
+    self.release_bind_lock()
+  }
+}
+
+// ── Ask dispatch (all 32 ops from `mesh.mbt:532-705`) ──
+
+fn MeshRunner::dispatch_ask(self : MeshRunner, client_id : Int, asked : base_codec::Json) -> Unit {
+  let ask_id = match builders_core::json_get_last(asked, "id") {
+    Some(v) => v
+    None => return
+  }
+  let op = match builders_core::json_get_last(asked, "op") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return
+  }
+  let client = match self.clients.get(client_id) {
+    Some(c) => c
+    None => return
+  }
+  let ask_key = (self.stringify)(ask_id)
+
+  if op == "bind" {
+    let streams = match mesh_field(asked, "streams") {
+      base_codec::Json::Str(s) => s
+      _ => {
+        self.reply(client_id, ask_id, op, Err("no streams"))
+        return
+      }
+    }
+    let key = match mesh_field(asked, "key") {
+      base_codec::Json::Str(s) => s
+      _ => {
+        self.reply(client_id, ask_id, op, Err("no key"))
+        return
+      }
+    }
+    let options = mesh_field(asked, "options")
+    match options {
+      base_codec::Json::Obj(_) => ()
+      _ => {
+        self.reply(client_id, ask_id, op, Err("no options"))
+        return
+      }
+    }
+    let key_bytes = mesh_unhex(key)
+    self.enqueue_bind_lock(BindLockItem::Bind(client_id, ask_id, streams, key_bytes, options))
+  } else if op == "route" {
+    client.front = mesh_field(asked, "front")
+    client.routes = mesh_field(asked, "routes")
+    client.alpn = mesh_field(asked, "alpn")
+    self.reply(client_id, ask_id, op, Ok(base_codec::json_null()))
+  } else if op == "accept" {
+    if client.gone {
+      self.reply(client_id, ask_id, op, Ok(base_codec::json_obj([(mesh_end_key(), base_codec::json_bool(true))])))
+      return
+    }
+    match client.pop_coming() {
+      Some(conn) => self.deliver_accepted_conn(client, ask_id, conn)
+      None => client.push_accept_waiter(ask_id)
+    }
+  } else if op == "close" {
+    self.part(client_id, Some(ask_id))
+  } else if op == "connect" {
+    let alpn = match mesh_field(asked, "alpn") {
+      base_codec::Json::Str(s) => s
+      _ => {
+        self.reply(client_id, ask_id, op, Err("no alpn"))
+        return
+      }
+    }
+    let ep = match self.endpoint {
+      Some(e) => e
+      None => {
+        self.reply(client_id, ask_id, op, Err("no endpoint bound"))
+        return
+      }
+    }
+    let seq = self.alloc_req_seq()
+    self.pending_asks.set(
+      seq,
+      PendingAsk::{
+        client_id: client_id,
+        ask_id: ask_id,
+        op: op,
+        ask_key: ask_key,
+        conn: base_codec::json_null(),
+        said: base_codec::json_null(),
+        err_msg: "",
+      },
+    )
+    let call_id = self.call_async(
+      builders_core::MuxToken::Tagged(seq, TOK_CONNECT, 0.to_int64()),
+      "iroh.connect",
+      base_codec::json_obj([
+        ("id", ep),
+        ("addr", mesh_field(asked, "addr")),
+        ("additional", mesh_field(asked, "additional")),
+      ]),
+      Some(mesh_unhex(alpn)),
+    )
+    client.calls.set(ask_key, call_id)
+  } else if op == "giveUp" {
+    let of_key = (self.stringify)(mesh_field(asked, "of"))
+    match client.calls.get(of_key) {
+      Some(call_id) => {
+        match self.mux.cancel(call_id) {
+          Ok(_) => self.reply(client_id, ask_id, op, Ok(base_codec::json_null()))
+          Err(e) => self.reply(client_id, ask_id, op, Err(e.message))
+        }
+      }
+      None => self.reply(client_id, ask_id, op, Ok(base_codec::json_null()))
+    }
+  } else if op == "openBi" || op == "openUni" {
+    let conn = mesh_field(asked, "conn")
+    let seq = self.alloc_req_seq()
+    self.pending_asks.set(
+      seq,
+      PendingAsk::{
+        client_id: client_id,
+        ask_id: ask_id,
+        op: op,
+        ask_key: ask_key,
+        conn: conn,
+        said: base_codec::json_null(),
+        err_msg: "",
+      },
+    )
+    let _ = self.call_async(
+      builders_core::MuxToken::Tagged(seq, TOK_OPEN_STREAM, 0.to_int64()),
+      "conn." + op,
+      base_codec::json_obj([("id", conn)]),
+      None,
+    )
+  } else if op == "stopped" {
+    self.start_simple_ask(
+      client_id,
+      ask_id,
+      op,
+      "istream.stopped",
+      base_codec::json_obj([("id", mesh_field(asked, "stream"))]),
+    )
+  } else if op == "reset" {
+    self.start_simple_ask(
+      client_id,
+      ask_id,
+      op,
+      "istream.reset",
+      base_codec::json_obj([
+        ("id", mesh_field(asked, "stream")),
+        ("code", mesh_field(asked, "code")),
+      ]),
+    )
+  } else if op == "mediaDatagrams" {
+    self.start_simple_ask(
+      client_id,
+      ask_id,
+      op,
+      "istream.mediaDatagrams",
+      base_codec::json_obj([
+        ("id", mesh_field(asked, "stream")),
+        ("token", mesh_field(asked, "token")),
+      ]),
+    )
+  } else if op == "conn.close" {
+    let conn = mesh_field(asked, "conn")
+    client.conns.remove((self.stringify)(conn))
+    let seq = self.alloc_req_seq()
+    self.pending_asks.set(
+      seq,
+      PendingAsk::{
+        client_id: client_id,
+        ask_id: ask_id,
+        op: op,
+        ask_key: ask_key,
+        conn: conn,
+        said: base_codec::json_null(),
+        err_msg: "",
+      },
+    )
+    let _ = self.call_async(
+      builders_core::MuxToken::Tagged(seq, TOK_CONN_CLOSE, 0.to_int64()),
+      "conn.close",
+      base_codec::json_obj([
+        ("id", conn),
+        ("code", mesh_field(asked, "code")),
+        ("reason", mesh_field(asked, "reason")),
+      ]),
+      None,
+    )
+  } else if op == "conn.closed" {
+    let conn = mesh_field(asked, "conn")
+    let seq = self.alloc_req_seq()
+    self.pending_asks.set(
+      seq,
+      PendingAsk::{
+        client_id: client_id,
+        ask_id: ask_id,
+        op: op,
+        ask_key: ask_key,
+        conn: conn,
+        said: base_codec::json_null(),
+        err_msg: "",
+      },
+    )
+    let _ = self.call_async(
+      builders_core::MuxToken::Tagged(seq, TOK_CONN_CLOSED, 0.to_int64()),
+      "conn.closed",
+      base_codec::json_obj([("id", conn)]),
+      None,
+    )
+  } else if op == "conn.answers" {
+    self.start_simple_ask(
+      client_id,
+      ask_id,
+      op,
+      "conn.answers",
+      base_codec::json_obj([
+        ("id", mesh_field(asked, "conn")),
+        ("within", mesh_field(asked, "within")),
+      ]),
+    )
+  } else if op == "conn.seen" {
+    match self.seen(mesh_field(asked, "conn")) {
+      Ok(v) => self.reply(client_id, ask_id, op, Ok(v))
+      Err(e) => self.reply(client_id, ask_id, op, Err(e.message))
+    }
+  } else if op == "insertRelay" || op == "removeRelay" || op == "setCongestion" {
+    self.enqueue_bind_lock(BindLockItem::RelayOp(client_id, ask_id, op, asked))
+  } else if op == "online" ||
+  op == "publicRelays" ||
+  op == "keep" ||
+  op == "holdIncoming" ||
+  op == "setRelayEntries" ||
+  op == "networkChange" ||
+  op == "disabledRelays" ||
+  op == "probeRelay" ||
+  op == "meshConfigure" ||
+  op == "meshRemove" ||
+  op == "meshAttachLeaf" ||
+  op == "meshDetachLeaf" {
+    let ep = match self.endpoint {
+      Some(e) => e
+      None => {
+        self.reply(client_id, ask_id, op, Err("no endpoint bound"))
+        return
+      }
+    }
+    let args = asked_args_with_id(asked, ep)
+    self.start_simple_ask(client_id, ask_id, op, "iroh." + op, args)
+  } else if op == "addAddr" {
+    let ep = match self.endpoint {
+      Some(e) => e
+      None => {
+        self.reply(client_id, ask_id, op, Err("no endpoint bound"))
+        return
+      }
+    }
+    match self.call_sync(
+      "iroh.addAddr",
+      base_codec::json_obj([("id", ep), ("addr", mesh_field(asked, "addr"))]),
+    ) {
+      Ok(v) => self.reply(client_id, ask_id, op, Ok(v))
+      Err(e) => self.reply(client_id, ask_id, op, Err(e.message))
+    }
+  } else if op == "relayStatus" {
+    let ep = match self.endpoint {
+      Some(e) => e
+      None => {
+        self.reply(client_id, ask_id, op, Err("no endpoint bound"))
+        return
+      }
+    }
+    match self.call_sync("iroh.relayStatus", base_codec::json_obj([("id", ep)])) {
+      Ok(v) => self.reply(client_id, ask_id, op, Ok(v))
+      Err(e) => self.reply(client_id, ask_id, op, Err(e.message))
+    }
+  } else {
+    self.reply(client_id, ask_id, op, Err("no operation " + op))
+  }
+}
+
+fn MeshRunner::start_simple_ask(
+  self : MeshRunner,
+  client_id : Int,
+  ask_id : base_codec::Json,
+  op : String,
+  shell_op : String,
+  args : base_codec::Json,
+) -> Unit {
+  let seq = self.alloc_req_seq()
+  self.pending_asks.set(
+    seq,
+    PendingAsk::{
+      client_id: client_id,
+      ask_id: ask_id,
+      op: op,
+      ask_key: "",
+      conn: base_codec::json_null(),
+      said: base_codec::json_null(),
+      err_msg: "",
+    },
+  )
+  let _ = self.call_async(
+    builders_core::MuxToken::Tagged(seq, TOK_SIMPLE_ASK, 0.to_int64()),
+    shell_op,
+    args,
+    None,
+  )
+}
+
+// ── Completion handler ──
+
+fn MeshRunner::on_done(
+  self : MeshRunner,
+  tok : builders_core::MuxToken,
+  done : host_shim::ShellDone,
+) -> Unit {
+  match tok {
+    builders_core::MuxToken::Write(client_id) => {
+      let _ = self.outbox.on_complete(self.mux, client_id, done.id)
+    }
+    builders_core::MuxToken::Tagged(owner_id, kind, _) => {
+      if kind == TOK_UNIX_LISTEN {
+        match builders_core::decode_shell_done(done) {
+          Err(e) => {
+            (self.note)("mesh: listen failed: " + e.message)
+            self.running = false
+            self.exit_code = 1
+          }
+          Ok((j_opt, _)) => {
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let id = mesh_field(said, "id")
+            if mesh_is_null(id) {
+              (self.note)("mesh: the shell gave no listening socket")
+              self.running = false
+              self.exit_code = 1
+              return
+            }
+            self.listen_id = Some(id)
+            self.listen_ready = true
+            let line = (self.stringify)(
+              base_codec::json_obj([
+                ("listening", base_codec::json_str(self.socket_path)),
+                ("streams", base_codec::json_int(8)),
+              ]),
+            )
+            let _ = self.mux.write_stdout_line(line)
+            if self.pending_stdin_eof {
+              self.running = false
+              self.exit_code = 0
+              return
+            }
+            self.start_tcp_accept(id)
+          }
+        }
+      } else if kind == TOK_TCP_ACCEPT {
+        match builders_core::decode_shell_done(done) {
+          Err(e) => {
+            (self.note)("mesh: accept failed: " + e.message)
+            if listener_gone_msg(e.message) {
+              self.running = false
+              self.exit_code = 0
+            } else {
+              self.accept_retry_at = Some(self.mux.now_ms() + MESH_ACCEPT_RETRY_MS)
+            }
+          }
+          Ok((j_opt, _)) => {
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let sock_id = mesh_field(said, "id")
+            match self.listen_id {
+              Some(lid) => self.start_tcp_accept(lid)
+              None => ()
+            }
+            if !mesh_is_null(sock_id) {
+              self.next_client_id = self.next_client_id + 1
+              let cid = self.next_client_id
+              let client = MeshClient::new(cid, sock_id)
+              self.clients.set(cid, client)
+              self.start_tcp_read(cid, sock_id)
+            }
+          }
+        }
+      } else if kind == TOK_TCP_READ {
+        let client = match self.clients.get(owner_id) {
+          Some(c) => c
+          None => return
+        }
+        let chunk_opt : Option[Bytes] = match builders_core::decode_shell_done(done) {
+          Err(_) => None
+          Ok((j_opt, bytes_opt)) => {
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let is_end = match mesh_field(said, mesh_end_key()) {
+              base_codec::Json::Bool(true) => true
+              _ => false
+            }
+            if is_end { None } else { bytes_opt }
+          }
+        }
+        match chunk_opt {
+          Some(bytes) => {
+            let lines = client.lines.push(bytes)
+            for i in 0..<lines.length() {
+              // Strictly reject lone surrogates and invalid JSON (matching MB `@json.parse`).
+              let asked = builders_core::parse_ask_line(lines[i])
+              if !mesh_is_null(asked) {
+                self.dispatch_ask(owner_id, asked)
+              }
+            }
+            // Keep reading until socket ends (even if `client.gone` was set by `close`).
+            if self.clients.contains(owner_id) {
+              self.start_tcp_read(owner_id, client.sock_id)
+            }
+          }
+          None => {
+            self.part(owner_id, None)
+            client.read_closed = true
+            let sock_id = client.sock_id
+            self.outbox.close_handle(owner_id)
+            self.clients.remove(owner_id)
+            let _ = self.call_async(
+              builders_core::MuxToken::Tagged(0, TOK_IGNORE, 0.to_int64()),
+              "tcp.close",
+              base_codec::json_obj([("id", sock_id)]),
+              None,
+            )
+          }
+        }
+      } else if kind == TOK_IROH_ACCEPT {
+        let ep = match self.accepting_eps.get(owner_id) {
+          Some(e) => e
+          None => return
+        }
+        match builders_core::decode_shell_done(done) {
+          Err(_) => {
+            self.accepting_eps.remove(owner_id)
+            if accept_ended_unbidden(self.endpoint, ep) {
+              (self.note)("mesh endpoint accept ended; exiting front")
+              (self.on_accept_end)()
+            }
+          }
+          Ok((j_opt, _)) => {
+            let got = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let id = mesh_field(got, "id")
+            if mesh_is_null(id) {
+              self.accepting_eps.remove(owner_id)
+              if accept_ended_unbidden(self.endpoint, ep) {
+                (self.note)("mesh endpoint accept ended; exiting front")
+                (self.on_accept_end)()
+              }
+              return
+            }
+            match self.seen(id) {
+              Ok(seen) => self.give(seen)
+              Err(_) => self.forget(id, "")
+            }
+            // Continue accepting on the same endpoint.
+            let _ = self.call_async(
+              builders_core::MuxToken::Tagged(owner_id, TOK_IROH_ACCEPT, 0.to_int64()),
+              "iroh.accept",
+              base_codec::json_obj([("id", ep)]),
+              None,
+            )
+          }
+        }
+      } else if kind == TOK_CONN_HAND {
+        match self.handing.get(owner_id) {
+          Some((cid, conn_key)) => {
+            self.handing.remove(owner_id)
+            match self.clients.get(cid) {
+              Some(c) => {
+                c.conns.remove(conn_key)
+              }
+              None => ()
+            }
+          }
+          None => ()
+        }
+      } else if kind == TOK_CONNECT {
+        let req = match self.pending_asks.get(owner_id) {
+          Some(r) => {
+            self.pending_asks.remove(owner_id)
+            r
+          }
+          None => return
+        }
+        match self.clients.get(req.client_id) {
+          Some(c) => {
+            c.calls.remove(req.ask_key)
+          }
+          None => ()
+        }
+        match builders_core::decode_shell_done(done) {
+          Err(e) => self.reply(req.client_id, req.ask_id, req.op, Err(e.message))
+          Ok((j_opt, _)) => {
+            let made = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let id = mesh_field(made, "id")
+            if mesh_is_null(id) {
+              self.reply(req.client_id, req.ask_id, req.op, Err("no connection"))
+              return
+            }
+            if self.client_is_gone(req.client_id) {
+              self.forget(id, "station stopping")
+              self.reply(req.client_id, req.ask_id, req.op, Err("the endpoint is closed"))
+              return
+            }
+            match self.seen(id) {
+              Err(e) => {
+                // Wait for `forget(id, "")` to complete before replying error (1:1 `mesh.mbt:613-619`).
+                let fseq = self.alloc_req_seq()
+                self.pending_asks.set(
+                  fseq,
+                  PendingAsk::{
+                    client_id: req.client_id,
+                    ask_id: req.ask_id,
+                    op: req.op,
+                    ask_key: "",
+                    conn: id,
+                    said: base_codec::json_null(),
+                    err_msg: e.message,
+                  },
+                )
+                let _ = self.call_async(
+                  builders_core::MuxToken::Tagged(fseq, TOK_CONNECT_SEEN_FORGET, 0.to_int64()),
+                  "conn.close",
+                  base_codec::json_obj([
+                    ("id", id),
+                    ("code", base_codec::json_int(0)),
+                    ("reason", base_codec::json_str("")),
+                    ("forget", base_codec::json_bool(true)),
+                  ]),
+                  None,
+                )
+              }
+              Ok(seen) => {
+                match self.clients.get(req.client_id) {
+                  Some(c) => {
+                    c.conns.set((self.stringify)(id), id)
+                    self.taking(c, id, mesh_field(seen, "alpn"))
+                    self.reply(req.client_id, req.ask_id, req.op, Ok(seen))
+                  }
+                  None => self.forget(id, "station stopping")
+                }
+              }
+            }
+          }
+        }
+      } else if kind == TOK_CONNECT_SEEN_FORGET {
+        let req = match self.pending_asks.get(owner_id) {
+          Some(r) => {
+            self.pending_asks.remove(owner_id)
+            r
+          }
+          None => return
+        }
+        self.reply(req.client_id, req.ask_id, req.op, Err(req.err_msg))
+      } else if kind == TOK_OPEN_STREAM {
+        let req = match self.pending_asks.get(owner_id) {
+          Some(r) => {
+            self.pending_asks.remove(owner_id)
+            r
+          }
+          None => return
+        }
+        match builders_core::decode_shell_done(done) {
+          Err(e) => self.reply(req.client_id, req.ask_id, req.op, Err(e.message))
+          Ok((j_opt, _)) => {
+            let got = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            let stream_id = mesh_field(got, "id")
+            if !mesh_is_null(stream_id) {
+              match self.clients.get(req.client_id) {
+                Some(c) => {
+                  if c.gone {
+                    let _ = self.call_async(
+                      builders_core::MuxToken::Tagged(0, TOK_IGNORE, 0.to_int64()),
+                      "istream.reset",
+                      base_codec::json_obj([
+                        ("id", stream_id),
+                        ("code", base_codec::json_int(0)),
+                      ]),
+                      None,
+                    )
+                  } else {
+                    self.hand(c, req.conn, stream_id)
+                    self.reply(
+                      req.client_id,
+                      req.ask_id,
+                      req.op,
+                      Ok(base_codec::json_obj([("stream", stream_id)])),
+                    )
+                  }
+                }
+                None => {
+                  let _ = self.call_async(
+                    builders_core::MuxToken::Tagged(0, TOK_IGNORE, 0.to_int64()),
+                    "istream.reset",
+                    base_codec::json_obj([
+                      ("id", stream_id),
+                      ("code", base_codec::json_int(0)),
+                    ]),
+                    None,
+                  )
+                }
+              }
+            } else {
+              self.reply(
+                req.client_id,
+                req.ask_id,
+                req.op,
+                Ok(base_codec::json_obj([(mesh_end_key(), base_codec::json_bool(true))])),
+              )
+            }
+          }
+        }
+      } else if kind == TOK_SIMPLE_ASK {
+        let req = match self.pending_asks.get(owner_id) {
+          Some(r) => {
+            self.pending_asks.remove(owner_id)
+            r
+          }
+          None => return
+        }
+        match builders_core::decode_shell_done(done) {
+          Err(e) => self.reply(req.client_id, req.ask_id, req.op, Err(e.message))
+          Ok((j_opt, _)) => {
+            let v = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            self.reply(req.client_id, req.ask_id, req.op, Ok(v))
+          }
+        }
+      } else if kind == TOK_CONN_CLOSE {
+        let req = match self.pending_asks.get(owner_id) {
+          Some(r) => {
+            self.pending_asks.remove(owner_id)
+            r
+          }
+          None => return
+        }
+        match builders_core::decode_shell_done(done) {
+          Err(e) => {
+            if str_starts_with(e.message, "no handle ") {
+              self.reply(req.client_id, req.ask_id, req.op, Ok(base_codec::json_obj([])))
+            } else {
+              self.reply(req.client_id, req.ask_id, req.op, Err(e.message))
+            }
+          }
+          Ok((j_opt, _)) => {
+            let v = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            self.reply(req.client_id, req.ask_id, req.op, Ok(v))
+          }
+        }
+      } else if kind == TOK_CONN_CLOSED {
+        let req = match self.pending_asks.get(owner_id) {
+          Some(r) => {
+            self.pending_asks.remove(owner_id)
+            r
+          }
+          None => return
+        }
+        match builders_core::decode_shell_done(done) {
+          Err(e) => self.reply(req.client_id, req.ask_id, req.op, Err(e.message))
+          Ok((j_opt, _)) => {
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            match self.clients.get(req.client_id) {
+              Some(c) => {
+                c.conns.remove((self.stringify)(req.conn))
+              }
+              None => ()
+            }
+            // Wait for `forget` to finish before replying `said`, matching `mesh.mbt:662-663`.
+            let fseq = self.alloc_req_seq()
+            self.pending_asks.set(
+              fseq,
+              PendingAsk::{
+                client_id: req.client_id,
+                ask_id: req.ask_id,
+                op: req.op,
+                ask_key: "",
+                conn: req.conn,
+                said: said,
+                err_msg: "",
+              },
+            )
+            let _ = self.call_async(
+              builders_core::MuxToken::Tagged(fseq, TOK_CONN_CLOSED_FORGET, 0.to_int64()),
+              "conn.close",
+              base_codec::json_obj([
+                ("id", req.conn),
+                ("code", base_codec::json_int(0)),
+                ("reason", base_codec::json_str("")),
+                ("forget", base_codec::json_bool(true)),
+              ]),
+              None,
+            )
+          }
+        }
+      } else if kind == TOK_CONN_CLOSED_FORGET {
+        let req = match self.pending_asks.get(owner_id) {
+          Some(r) => {
+            self.pending_asks.remove(owner_id)
+            r
+          }
+          None => return
+        }
+        self.reply(req.client_id, req.ask_id, req.op, Ok(req.said))
+      } else if kind == TOK_BIND_STEP {
+        self.on_bind_step_done(done)
+      } else if kind == TOK_RELAY_OP {
+        let r = match self.active_relay {
+          Some(a) => a
+          None => {
+            self.release_bind_lock()
+            return
+          }
+        }
+        match builders_core::decode_shell_done(done) {
+          Err(e) => self.reply(r.client_id, r.ask_id, r.op, Err(e.message))
+          Ok((j_opt, _)) => {
+            let said = match j_opt {
+              Some(j) => j
+              None => base_codec::json_null()
+            }
+            if r.op == "setCongestion" {
+              match mesh_field(r.args, "congestion") {
+                base_codec::Json::Str(c) => self.bound_congestion = c
+                _ => ()
+              }
+            } else if r.op == "insertRelay" {
+              match mesh_field(r.args, "url") {
+                base_codec::Json::Str(url) => {
+                  if !has_relay(self.bound_relays, url) {
+                    self.bound_relays.push(url)
+                  }
+                }
+                _ => ()
+              }
+            } else if r.op == "removeRelay" {
+              match mesh_field(r.args, "url") {
+                base_codec::Json::Str(url) => {
+                  let target = bare_url(url)
+                  let next : Array[String] = []
+                  for i in 0..<self.bound_relays.length() {
+                    if bare_url(self.bound_relays[i]) != target {
+                      next.push(self.bound_relays[i])
+                    }
+                  }
+                  self.bound_relays = next
+                }
+                _ => ()
+              }
+            }
+            self.reply(r.client_id, r.ask_id, r.op, Ok(said))
+          }
+        }
+        self.release_bind_lock()
+      } else if kind == TOK_PART_STEP {
+        match self.close_waiters.get(owner_id) {
+          Some(w) => {
+            w.remaining = w.remaining - 1
+            if w.remaining <= 0 {
+              self.close_waiters.remove(owner_id)
+              self.reply(w.client_id, w.ask_id, "close", Ok(base_codec::json_null()))
+            }
+          }
+          None => ()
+        }
+      } else if kind == TOK_IGNORE {
+        ()
+      }
+    }
+    _ => ()
+  }
+}
+
+pub fn run_mesh(
+  shell_dir : String,
+  socket_path : String,
+  stringify : (base_codec::Json) -> String = mesh_stringify,
+) -> Int {
+  if !host_shim::start(shell_dir, true) {
+    let _ = host_shim::write_stderr_line("mesh: shell start failed")
+    return 1
+  }
+  let mux = builders_core::ShellMux::host(start_stdin=true)
+  let mut accept_ended = false
+  let runner = MeshRunner::new(
+    mux,
+    socket_path,
+    fn(msg : String) -> Unit {
+      let _ = host_shim::write_stderr_line(msg)
+    },
+    fn() -> Unit {
+      accept_ended = true
+    },
+    stringify=stringify,
+  )
+  runner.start()
+  while runner.is_running() && !accept_ended {
+    let _ = runner.step(5000.to_int64())
+  }
+  let code = if accept_ended { 1 } else { runner.exit_code() }
+  host_shim::stop()
+  code
+}
