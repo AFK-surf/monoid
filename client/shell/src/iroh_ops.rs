@@ -42,8 +42,9 @@ pub(crate) struct Kept {
     /// wanted there once it is kept on it again, unless it is inserted again first, home again).
     pub(crate) bound: Vec<RelayUrl>,
     pub(crate) homes: Mutex<Vec<RelayUrl>>,
-    /// Latest forwarding entrances (`(entry, relay)`), re-applied whenever `iroh.insertRelay` re-adds a relay.
-    pub(crate) entries: Mutex<Vec<(RelayUrl, RelayUrl)>>,
+    /// Latest forwarding entrances (`(entry, relay)`), serialized across `iroh.setRelayEntries` and `iroh.insertRelay`
+    /// so concurrent calls cannot overwrite newer entries with a stale `RelayConfig`.
+    pub(crate) entries: tokio::sync::Mutex<Vec<(RelayUrl, RelayUrl)>>,
     pub(crate) held: Mutex<(u32, Vec<iroh::endpoint::Incoming>)>,
     /// Relay URLs permitted in DHT/mDNS address lookup responses for `lookup: true` client endpoints.
     pub(crate) lookup_relays: Option<Arc<RwLock<BTreeSet<RelayUrl>>>>,
@@ -347,7 +348,7 @@ impl Inner {
         }));
         let alpns: Vec<Vec<u8>> = a.get("alpns").and_then(Value::as_array).into_iter().flatten().map(|x| hex::decode(x.as_str().unwrap_or_default()).map_err(err)).collect::<Result<_, _>>()?;
         mark_with_dscp(a.get("dscp"))?;
-        let kept = Arc::new(Kept { homes: Mutex::new(relays.clone()), bound: relays.clone(), entries: Mutex::new(entries.clone()), lookup_relays: lookup_relays.clone(), ..Kept::default() });
+        let kept = Arc::new(Kept { homes: Mutex::new(relays.clone()), bound: relays.clone(), entries: tokio::sync::Mutex::new(entries.clone()), lookup_relays: lookup_relays.clone(), ..Kept::default() });
         let mut builder = Endpoint::builder(Minimal)
             .add_custom_transport(kept.mesh.hub.clone())
             .path_selector(Arc::new(mesh_transport::selection::Selector::new(kept.mesh.hub.clone())))
@@ -528,8 +529,9 @@ impl Inner {
                         guard.extend(list.iter().cloned());
                     }
                 }
-                *kept.entries.lock().unwrap() = pairs;
+                let mut kept_entries = kept.entries.lock().await;
                 endpoint.set_relay_entries(entries.into_iter().collect()).await;
+                *kept_entries = pairs;
                 Ok(Answer::json(json!({})))
             }
             "iroh.networkChange" => {
@@ -692,16 +694,16 @@ impl Inner {
                     "iroh.online" => endpoint.online().await,
                     "iroh.insertRelay" => {
                         let url = relay_url(str_of(a, "url")?)?;
-                        let matching: Vec<RelayUrl> = kept
-                            .entries
-                            .lock()
-                            .unwrap()
-                            .iter()
-                            .filter(|(_, target)| target == &url)
-                            .map(|(entry, _)| entry.clone())
-                            .collect();
-                        let config = iroh::RelayConfig::from(url.clone()).with_entries(matching);
-                        endpoint.insert_relay(url.clone(), Arc::new(config)).await;
+                        {
+                            let kept_entries = kept.entries.lock().await;
+                            let matching: Vec<RelayUrl> = kept_entries
+                                .iter()
+                                .filter(|(_, target)| target == &url)
+                                .map(|(entry, _)| entry.clone())
+                                .collect();
+                            let config = iroh::RelayConfig::from(url.clone()).with_entries(matching);
+                            endpoint.insert_relay(url.clone(), Arc::new(config)).await;
+                        }
                         let mut homes = kept.homes.lock().unwrap();
                         if kept.bound.contains(&url) && !homes.contains(&url) {
                             homes.push(url);

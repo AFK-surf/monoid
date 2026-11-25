@@ -2064,13 +2064,18 @@ fn iroh_insert_relay_preserves_entries_and_disabled_relays_applies() {
         None,
     );
 
-    let kept_entries = match shell.inner.handles.lock().unwrap().get(&ep) {
-        Some(Handle::Endpoint(_, kept)) => kept.entries.lock().unwrap().clone(),
+    let (endpoint, kept) = match shell.inner.handles.lock().unwrap().get(&ep) {
+        Some(Handle::Endpoint(endpoint, kept)) => (endpoint.clone(), kept.clone()),
         _ => panic!("expected endpoint handle"),
     };
+    let kept_entries = shell.runtime.block_on(async { kept.entries.lock().await.clone() });
     assert_eq!(kept_entries.len(), 1);
     assert_eq!(kept_entries[0].0.to_string(), entry2);
     assert_eq!(kept_entries[0].1.to_string(), r1);
+    let r1_url: iroh::RelayUrl = r1.parse().unwrap();
+    let removed = shell.runtime.block_on(endpoint.remove_relay(&r1_url)).expect("r1 should be present after insertRelay");
+    assert_eq!(removed.entries.len(), 1);
+    assert_eq!(removed.entries[0].to_string(), entry2);
 
     call(97_107, "iroh.close", json!({ "id": ep, "forget": true }), None);
 }

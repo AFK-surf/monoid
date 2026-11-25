@@ -337,27 +337,45 @@ static jstring JNICALL profile_shell_stats(JNIEnv *env, jclass cls) {
 // before any iroh endpoint binds, so n0-dns-resolver reads the active network's DNS servers through ConnectivityManager
 // instead of falling back to public DoH resolvers. Resolved dynamically so older shell libraries remain compatible.
 static void init_shell_android(JNIEnv *env) {
+  static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
   static int done;
-  if (done) return;
+  pthread_mutex_lock(&lock);
+  if (done) {
+    pthread_mutex_unlock(&lock);
+    return;
+  }
   jmethodID get_ctx = (*env)->GetStaticMethodID(env, A.core_host, "context", "()Landroid/content/Context;");
-  if (cleared(env) || !get_ctx) return;
+  if (cleared(env) || !get_ctx) {
+    CORE_LOG("core: Android DNS init skipped: CoreHost.context() not found");
+    pthread_mutex_unlock(&lock);
+    return;
+  }
   jobject local = (*env)->CallStaticObjectMethod(env, A.core_host, get_ctx);
-  if (cleared(env) || !local) return;
+  if (cleared(env) || !local) {
+    CORE_LOG("core: Android DNS init skipped: CoreHost.context() returned null");
+    pthread_mutex_unlock(&lock);
+    return;
+  }
   void (*init_fn)(void *, void *) = (void (*)(void *, void *))dlsym(RTLD_DEFAULT, "sf_shell_init_android");
   void *lib = NULL;
   if (!init_fn) {
     lib = dlopen("libstillfail_shell.so", RTLD_LAZY | RTLD_NOLOAD);
     if (lib) init_fn = (void (*)(void *, void *))dlsym(lib, "sf_shell_init_android");
   }
-  if (init_fn) {
+  if (!init_fn) {
+    CORE_LOG("core: Android DNS init skipped: sf_shell_init_android not exported");
+  } else {
     jobject global = (*env)->NewGlobalRef(env, local);
-    if (global) {
+    if (!global) {
+      CORE_LOG("core: Android DNS init skipped: NewGlobalRef failed");
+    } else {
       init_fn((void *)mb_android_vm(), (void *)global);
       done = 1;
     }
   }
   if (lib) dlclose(lib);
   (*env)->DeleteLocalRef(env, local);
+  pthread_mutex_unlock(&lock);
 }
 
 // The classes and methods, once, from the UI's thread (a thread of the app's, whose class loader finds dev.mbui.*).
