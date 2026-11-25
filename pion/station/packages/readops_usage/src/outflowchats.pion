@@ -206,7 +206,7 @@ fn unread_by(
     Err(e) => return Err(e)
   }
   let author = readops_core::js_text(readops_core::field(said, "author"))
-  if mb_json_eq(readops_core::field(said, "author_kind"), base_codec::json_str("person")) &&
+  if readops_chats::mb_json_eq(readops_core::field(said, "author_kind"), base_codec::json_str("person")) &&
   (author == ref_str || jscase::lower(author) == email) {
     return Ok(false)
   }
@@ -261,7 +261,7 @@ fn attention_of(
     Some(e) => [base_codec::json_str(jscase::lower(e))]
     None => []
   }
-  if mb_json_eq(said, base_codec::json_str("need_human")) {
+  if readops_chats::mb_json_eq(said, base_codec::json_str("need_human")) {
     let mut info : (Option[String], Option[String]) = match readops_core::json_val(latest, "about") {
       Some(about) => {
         match about {
@@ -319,10 +319,10 @@ fn attention_of(
     }
     return Ok(Some(base_codec::json_obj(out)))
   }
-  if mb_json_eq(said, base_codec::json_str("all_done")) {
+  if readops_chats::mb_json_eq(said, base_codec::json_str("all_done")) {
     let (e, c) = match (email, creator) {
       (Some(ev), Some(cv)) => {
-        if mb_json_eq(readops_core::field(thread, "surface"), base_codec::json_str("chat")) {
+        if readops_chats::mb_json_eq(readops_core::field(thread, "surface"), base_codec::json_str("chat")) {
           (ev, cv)
         } else {
           return Ok(None)
@@ -463,7 +463,7 @@ pub fn outflow_chats(
   let mut ready = false
   if has_progress {
     let done = match readops_core::one(db, "SELECT done FROM outflow_chat_progress WHERE id = 1", []) {
-      Ok(Some(r)) => mb_json_eq(readops_core::field(r, "done"), base_codec::json_num(1.0))
+      Ok(Some(r)) => readops_chats::mb_json_eq(readops_core::field(r, "done"), base_codec::json_num(1.0))
       Ok(None) => false
       Err(e) => return Err(e)
     }
@@ -743,7 +743,7 @@ pub fn outflow_chats(
         Err(e) => return Err(e)
       }
     }
-    let surface_out = if mb_json_eq(surf_col, base_codec::json_str("chat")) {
+    let surface_out = if readops_chats::mb_json_eq(surf_col, base_codec::json_str("chat")) {
       base_codec::json_str("stillfail")
     } else {
       surf_col
@@ -782,7 +782,7 @@ pub fn outflow_chats(
       Some(u) => chat.push(("url", base_codec::json_str(u)))
       None => ()
     }
-    if mb_json_eq(surf_col, base_codec::json_str("chat")) {
+    if readops_chats::mb_json_eq(surf_col, base_codec::json_str("chat")) {
       let has_router = match readops_core::one(
         db,
         "SELECT 1 AS x FROM thread_people WHERE thread = ? AND author >= 'slack:' AND author < 'slack;' LIMIT 1",

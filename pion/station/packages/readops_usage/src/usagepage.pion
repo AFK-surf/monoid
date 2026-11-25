@@ -592,7 +592,7 @@ pub let REMOTE_RUNS_PENDING : String = "remote task statistics are still being f
 fn remote_runs_ready(db : sql_db::Db) -> Result[Unit, readops_core::ReadError] {
   match readops_core::one(db, "SELECT done FROM remote_run_progress WHERE id = 1", []) {
     Ok(Some(r)) => {
-      if mb_json_eq(readops_core::field(r, "done"), base_codec::json_num(1.0)) {
+      if readops_chats::mb_json_eq(readops_core::field(r, "done"), base_codec::json_num(1.0)) {
         Ok(())
       } else {
         Err(readops_core::ReadError::App(REMOTE_RUNS_PENDING))
@@ -615,7 +615,7 @@ fn chat_stats_ready(
   viewer : Option[readops_local::Viewer],
 ) -> Result[Bool, readops_core::ReadError] {
   let done = match readops_core::one(db, "SELECT done FROM usage_chat_progress WHERE id = 1", []) {
-    Ok(Some(r)) => mb_json_eq(readops_core::field(r, "done"), base_codec::json_num(1.0))
+    Ok(Some(r)) => readops_chats::mb_json_eq(readops_core::field(r, "done"), base_codec::json_num(1.0))
     Ok(None) => false
     Err(e) => return Err(e)
   }
@@ -797,7 +797,7 @@ fn usage_history(
       let day = readops_core::field(r, "day")
       let mut found = -1
       for k in 0..<days.length() {
-        if mb_json_eq(days[k].0, day) {
+        if readops_chats::mb_json_eq(days[k].0, day) {
           found = k
           break
         }
@@ -929,12 +929,12 @@ fn usage_history(
     base_codec::Json::Null => ()
     _ => out.push(("since", since))
   }
-  let cards_incomplete = match readops_local::table_installed(db, "card_outcomes_incomplete") {
-    Ok(b) => b
-    Err(e) => return Err(e)
-  }
   match chats {
     Some((_, _, cards, picked)) => {
+      let cards_incomplete = match readops_local::table_installed(db, "card_outcomes_incomplete") {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
       if !cards_incomplete {
         out.push(("cards", base_codec::json_num(cards)))
         out.push(("picked", base_codec::json_num(picked)))
@@ -1038,22 +1038,77 @@ fn remote_runs_since(
 
 fn wanted_contains(xs : Array[base_codec::Json], target : base_codec::Json) -> Bool {
   for i in 0..<xs.length() {
-    if mb_json_eq(xs[i], target) {
+    if readops_chats::mb_json_eq(xs[i], target) {
       return true
     }
   }
   false
 }
 
-/// Core `usage_answer` assembling directly into lossless `js_json::JValue` so user-keyed
-/// `profiles` never passes through `base_codec::Json`.
-fn usage_answer_jval(
+/// Split usage answer: ordinary fields stay in `base_codec::Json` (preserving exact `i64_json`
+/// decimal `repr` and insertion key order for `history.places`/`prices`/`threads`/`people`),
+/// while user-keyed `profiles` stays in lossless UTF-16 `js_json::JValue`.
+pub struct UsageAnswer {
+  pub fields : Array[(String, base_codec::Json)]
+  pub profiles : Option[js_json::JValue]
+}
+
+/// Serialize a `UsageAnswer` with exact MB insertion order: ordinary fields use `stringify_base`
+/// (preserving `repr` and Map insertion order), and `"profiles"` is spliced right after `"people"`
+/// using `stringify_jv(normalize_jval(profs))`.
+pub fn serialize_usage_answer_with(
+  ans : UsageAnswer,
+  stringify_base : (base_codec::Json) -> String,
+  stringify_jv : (js_json::JValue) -> String,
+) -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte(0x7B as Byte) // '{'
+  let mut first = true
+  let mut emitted_profiles = false
+  for i in 0..<ans.fields.length() {
+    let (k, v) = ans.fields[i]
+    if !first {
+      sb.write_byte(0x2C as Byte) // ','
+    }
+    first = false
+    sb.write_string(stringify_base(base_codec::json_str(k)))
+    sb.write_byte(0x3A as Byte) // ':'
+    sb.write_string(stringify_base(v))
+    if k == "people" {
+      match ans.profiles {
+        Some(profs) => {
+          sb.write_string(",\"profiles\":")
+          sb.write_string(stringify_jv(normalize_jval(profs)))
+          emitted_profiles = true
+        }
+        None => ()
+      }
+    }
+  }
+  if !emitted_profiles {
+    match ans.profiles {
+      Some(profs) => {
+        if !first {
+          sb.write_byte(0x2C as Byte)
+        }
+        sb.write_string("\"profiles\":")
+        sb.write_string(stringify_jv(normalize_jval(profs)))
+      }
+      None => ()
+    }
+  }
+  sb.write_byte(0x7D as Byte) // '}'
+  sb.to_string()
+}
+
+/// Core `usage_answer` keeping ordinary fields in `base_codec::Json` and `profiles` in lossless `JValue`.
+fn usage_answer_parts(
   db : sql_db::Db,
   state : readops_core::ReaderState,
   known : readops_core::Known,
   a : Asked,
   words : base_codec::Json,
-) -> Result[js_json::JValue, readops_core::ReadError] {
+) -> Result[UsageAnswer, readops_core::ReadError] {
   let viewer = readops_local::viewer_of(a.viewer)
   let visible = match readops_local::usage_groups(db, a.from, a.to, a.offset, viewer) {
     Ok(gs) => gs
@@ -1116,7 +1171,7 @@ fn usage_answer_jval(
         Ok(None) => continue
         Err(e) => return Err(e)
       }
-      let own = mb_json_eq(readops_core::field(t, "surface"), base_codec::json_str("chat"))
+      let own = readops_chats::mb_json_eq(readops_core::field(t, "surface"), base_codec::json_str("chat"))
       let title_null = match readops_core::field(t, "title") {
         base_codec::Json::Null => true
         _ => false
@@ -1248,39 +1303,43 @@ fn usage_answer_jval(
   } else {
     None
   }
-  let out : Array[(Array[Int], js_json::JValue)] = [
-    (jv_key("from"), json_to_jval(readops_local::i64_json(a.from))),
-    (jv_key("to"), json_to_jval(readops_local::i64_json(a.to))),
-    (jv_key("since"), json_to_jval(since)),
+  let fields : Array[(String, base_codec::Json)] = [
+    ("from", readops_local::i64_json(a.from)),
+    ("to", readops_local::i64_json(a.to)),
+    ("since", since),
   ]
   match detail {
     base_codec::Json::Null => ()
-    _ => out.push((jv_key("detailSince"), json_to_jval(detail)))
+    _ => fields.push(("detailSince", detail))
   }
-  out.push((jv_key("reading"), js_json::JValue::Bool(a.reading)))
+  fields.push(("reading", base_codec::json_bool(a.reading)))
   match prices {
-    Some(p) => out.push((jv_key("prices"), json_to_jval(p)))
+    Some(p) => fields.push(("prices", p))
     None => ()
   }
-  out.push((jv_key("rows"), json_to_jval(base_codec::json_arr(rows))))
+  fields.push(("rows", base_codec::json_arr(rows)))
   if a.metadata {
-    out.push((jv_key("threads"), json_to_jval(base_codec::json_obj(threads))))
-    out.push((jv_key("people"), json_to_jval(base_codec::json_obj(people))))
-    match profiles {
-      Some(p) => out.push((jv_key("profiles"), p))
-      None => out.push((jv_key("profiles"), js_json::JValue::Obj([])))
-    }
+    fields.push(("threads", base_codec::json_obj(threads)))
+    fields.push(("people", base_codec::json_obj(people)))
   }
   match remote {
-    Some(r) => out.push((jv_key("remoteRuns"), json_to_jval(r)))
+    Some(r) => fields.push(("remoteRuns", r))
     None => ()
   }
   match history {
-    Some(base_codec::Json::Null) => out.push((jv_key("historyUnavailable"), js_json::JValue::Bool(true)))
-    Some(h) => out.push((jv_key("history"), json_to_jval(h)))
+    Some(base_codec::Json::Null) => fields.push(("historyUnavailable", base_codec::json_bool(true)))
+    Some(h) => fields.push(("history", h))
     None => ()
   }
-  Ok(js_json::JValue::Obj(out))
+  let prof_opt = if a.metadata {
+    match profiles {
+      Some(p) => Some(p)
+      None => Some(js_json::JValue::Obj([]))
+    }
+  } else {
+    None
+  }
+  Ok(UsageAnswer::{ fields: fields, profiles: prof_opt })
 }
 
 fn format_non_int_double_with(n : Double, fmt_num : (Double) -> String) -> String {
@@ -1296,6 +1355,8 @@ fn format_non_int_double_with(n : Double, fmt_num : (Double) -> String) -> Strin
 }
 
 /// BigInt(v) with caller-supplied formatters (enables pure-Pion unit tests).
+/// Matches MB `usagepage.mbt:1066`: `n != n.floor()` (NaN and finite non-integers trigger the
+/// non-integer error, whereas ±Infinity / `1e400` fall through to `big_of_with` preserving raw repr).
 pub fn big_given_with(
   v : Option[base_codec::Json],
   fmt_num : (Double) -> String,
@@ -1305,7 +1366,7 @@ pub fn big_given_with(
     None => Err(readops_core::ReadError::App("Cannot convert undefined to a BigInt"))
     Some(base_codec::Json::Null) => Err(readops_core::ReadError::App("Cannot convert null to a BigInt"))
     Some(base_codec::Json::Num(n, _)) => {
-      if !js_json::is_integer(n) {
+      if n != n || (!is_nan_or_inf(n) && !js_json::is_integer(n)) {
         Err(
           readops_core::ReadError::App(
             "The number " +
@@ -1332,13 +1393,13 @@ pub fn big_given(v : Option[base_codec::Json]) -> Result[Int64, readops_core::Re
   )
 }
 
-/// ops-usage.ts `usage` (GET /usage), returning lossless `js_json::JValue` (UTF-16 `Array[Int]`).
-pub fn usage_page_jval(
+/// ops-usage.ts `usage` (GET /usage): internal split assembly.
+fn usage_page_parts(
   db : sql_db::Db,
   state : readops_core::ReaderState,
   data : String,
   ask : base_codec::Json,
-) -> Result[js_json::JValue, readops_core::ReadError] {
+) -> Result[UsageAnswer, readops_core::ReadError] {
   let args = readops_core::json_val_or_null(ask, "args")
   let viewer = match readops_core::json_val(args, "viewer") {
     None => None
@@ -1420,7 +1481,7 @@ pub fn usage_page_jval(
     remote_runs: true,
     metadata: true,
   }
-  usage_answer_jval(
+  usage_answer_parts(
     db,
     state,
     readops_core::Known::of(state.client, data, state.sep, ask),
@@ -1430,31 +1491,18 @@ pub fn usage_page_jval(
 }
 
 /// Lossless pre-serialized JSON string entrypoint for `W7-F` (`reader_data` `say_answer`).
-/// Preserves lone surrogates (`\ud800` vs `U+FFFD` as distinct keys), JS integer-index key
-/// reordering, duplicate-key last-wins at first-seen position, and non-finite -> `null`.
+/// Serializes ordinary fields via `sql_db::stringify_json` (preserving exact `i64_json` decimal
+/// `repr` and insertion key order) and splices `"profiles"` via `js_json::stringify(normalize_jval(...))`
+/// (preserving lone surrogates `\ud800` vs `U+FFFD`, JS integer-index reordering, duplicate-key
+/// last-wins at first position, and non-finite -> `null`).
 pub fn usage_page_json_str(
   db : sql_db::Db,
   state : readops_core::ReaderState,
   data : String,
   ask : base_codec::Json,
 ) -> Result[String, readops_core::ReadError] {
-  match usage_page_jval(db, state, data, ask) {
-    Ok(jv) => Ok(js_json::stringify(normalize_jval(jv)))
-    Err(e) => Err(e)
-  }
-}
-
-/// Convenience `base_codec::Json` wrapper for `usage_page`.
-/// NOTE: For lossless wire output (lone surrogates in `profiles`), `W7-F` MUST use
-/// `usage_page_json_str` or `usage_page_jval` + `js_json::stringify`.
-pub fn usage_page(
-  db : sql_db::Db,
-  state : readops_core::ReaderState,
-  data : String,
-  ask : base_codec::Json,
-) -> Result[base_codec::Json, readops_core::ReadError] {
-  match usage_page_jval(db, state, data, ask) {
-    Ok(jv) => Ok(normalize_jval(jv).to_json())
+  match usage_page_parts(db, state, data, ask) {
+    Ok(ans) => Ok(serialize_usage_answer_with(ans, sql_db::stringify_json, js_json::stringify))
     Err(e) => Err(e)
   }
 }
@@ -1502,7 +1550,7 @@ pub fn outflow_usage(
     remote_runs: false,
     metadata: false,
   }
-  let read_jv = match usage_answer_jval(
+  let read_parts = match usage_answer_parts(
     db,
     state,
     readops_core::Known::of(state.client, data, state.sep, ask),
@@ -1512,8 +1560,8 @@ pub fn outflow_usage(
     Ok(v) => v
     Err(e) => return Err(e)
   }
-  // `metadata: false` guarantees no user-keyed `profiles` are present.
-  let read = read_jv.to_json()
+  // Consume `base_codec::Json` directly (zero JValue round-trip, preserving exact `since` repr).
+  let read = base_codec::json_obj(read_parts.fields)
   let cache = TeamsCache::new()
   let rows : Array[base_codec::Json] = []
   let people_keys : Array[String] = []

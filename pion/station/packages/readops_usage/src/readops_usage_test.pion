@@ -2,7 +2,9 @@
 
 import "base_codec"
 import "js_json"
+import "readops_chats"
 import "readops_core"
+import "readops_local"
 
 fn assert(cond : Bool) -> Unit {
   if !cond {
@@ -11,14 +13,47 @@ fn assert(cond : Bool) -> Unit {
 }
 
 fn test_fmt_num(d : Double) -> String {
-  sql_db_fmt_int_or_num(d)
-}
-
-fn sql_db_fmt_int_or_num(d : Double) -> String {
   if js_json::is_integer(d) && d >= -9007199254740991.0 && d <= 9007199254740991.0 {
     d.to_int64().to_string()
   } else {
     d.to_string()
+  }
+}
+
+fn test_stringify_base(j : base_codec::Json) -> String {
+  match j {
+    base_codec::Json::Null => "null"
+    base_codec::Json::Bool(true) => "true"
+    base_codec::Json::Bool(false) => "false"
+    base_codec::Json::Num(d, repr) => if repr != "" { repr } else { test_fmt_num(d) }
+    base_codec::Json::Str(s) => js_json::stringify_with_num(js_json::JValue::Str(js_json::utf16_units(s)), test_fmt_num)
+    base_codec::Json::Arr(items) => {
+      let sb = StringBuilder::new()
+      sb.write_byte(0x5B as Byte)
+      for i in 0..<items.length() {
+        if i > 0 {
+          sb.write_byte(0x2C as Byte)
+        }
+        sb.write_string(test_stringify_base(items[i]))
+      }
+      sb.write_byte(0x5D as Byte)
+      sb.to_string()
+    }
+    base_codec::Json::Obj(fields) => {
+      let sb = StringBuilder::new()
+      sb.write_byte(0x7B as Byte)
+      for i in 0..<fields.length() {
+        if i > 0 {
+          sb.write_byte(0x2C as Byte)
+        }
+        let (k, v) = fields[i]
+        sb.write_string(test_stringify_base(base_codec::json_str(k)))
+        sb.write_byte(0x3A as Byte)
+        sb.write_string(test_stringify_base(v))
+      }
+      sb.write_byte(0x7D as Byte)
+      sb.to_string()
+    }
   }
 }
 
@@ -88,7 +123,7 @@ test "provider_sources table completeness and endpoints_of/first_runtime" {
   }
 }
 
-test "lossless JValue config_profiles: lone surrogates, integer-index reorder, duplicate last-wins, non-finite" {
+test "lossless JValue config_profiles & split UsageAnswer serialization (P1-1)" {
   let raw_str = "{\"profiles\":[" +
   "{\"id\":\"10\",\"name\":\"Ten\",\"runtime\":\"codex\"}," +
   "{\"id\":\"2\",\"name\":\"Two\",\"runtime\":\"claude\"}," +
@@ -120,7 +155,6 @@ test "lossless JValue config_profiles: lone surrogates, integer-index reorder, d
     }
   }
   let wire = js_json::stringify_with_num(profs, test_fmt_num)
-  // Integer index keys ordered numerically first: "0", "2", "10", then insertion order: "dup" (at first-seen pos!), "\ud800", U+FFFD
   let expected = "{\"0\":{\"name\":\"Zero\",\"runtime\":\"pi\"}," +
   "\"2\":{\"name\":\"Two\",\"runtime\":\"claude\"}," +
   "\"10\":{\"name\":\"Ten\",\"runtime\":\"codex\"}," +
@@ -128,6 +162,39 @@ test "lossless JValue config_profiles: lone surrogates, integer-index reorder, d
   "\"\\ud800\":{\"name\":\"\\ud800Name\",\"runtime\":\"agy\"}," +
   "\"\u{FFFD}\":{\"name\":\"FFFDName\",\"runtime\":\"dsh\"}}"
   assert(wire == expected)
+
+  // Split UsageAnswer preserves exact i64_json repr (> 2^53) AND ordinary Map insertion order
+  // (history.places = ["chat","10","2"]), while splicing lossless profiles right after people!
+  let big_i64 = 900719925.to_int64() * 10000000.to_int64() + 4740993.to_int64()
+  let ans = UsageAnswer::{
+    fields: [
+      ("from", readops_local::i64_json(big_i64)),
+      ("to", readops_local::i64_json(big_i64)),
+      ("people", base_codec::json_obj([])),
+      (
+        "history",
+        base_codec::json_obj([
+          (
+            "places",
+            base_codec::json_obj([
+              ("chat", base_codec::json_num(3.0)),
+              ("10", base_codec::json_num(1.0)),
+              ("2", base_codec::json_num(2.0)),
+            ]),
+          ),
+        ]),
+      ),
+    ],
+    profiles: Some(profs),
+  }
+  let full_wire = serialize_usage_answer_with(
+    ans,
+    test_stringify_base,
+    fn(jv : js_json::JValue) -> String { js_json::stringify_with_num(jv, test_fmt_num) },
+  )
+  assert(readops_core::str_contains_sub(full_wire, "\"from\":9007199254740993,\"to\":9007199254740993"))
+  assert(readops_core::str_contains_sub(full_wire, "\"places\":{\"chat\":3,\"10\":1,\"2\":2}"))
+  assert(readops_core::str_contains_sub(full_wire, "\"people\":{},\"profiles\":" + expected + ",\"history\":"))
 
   // Duplicate keys + non-finite numbers via normalize_jval
   let dup_obj = js_json::JValue::Obj([
@@ -141,7 +208,7 @@ test "lossless JValue config_profiles: lone surrogates, integer-index reorder, d
   assert(norm_wire == "{\"0\":9,\"b\":2,\"a\":null,\"inf\":null}")
 }
 
-test "whole, outflow_of, outflow_state, outflow_card, valid_history_range, big_given" {
+test "whole, outflow_of, outflow_state, outflow_card, valid_history_range, big_given (incl. 1e400)" {
   assert(whole(Some(base_codec::json_num(42.0))) == 42.0)
   assert(whole(Some(base_codec::json_num(42.5))) == 0.0)
   assert(whole(Some(base_codec::json_num(9007199254740992.0))) == 0.0)
@@ -155,13 +222,13 @@ test "whole, outflow_of, outflow_state, outflow_card, valid_history_range, big_g
   }
 
   assert(
-    mb_json_eq(
+    readops_chats::mb_json_eq(
       outflow_state(base_codec::json_obj([("outcome", base_codec::json_null())])),
       base_codec::json_str("working"),
     ),
   )
   assert(
-    mb_json_eq(
+    readops_chats::mb_json_eq(
       outflow_state(
         base_codec::json_obj([
           ("outcome", base_codec::json_str("ok")),
@@ -172,7 +239,7 @@ test "whole, outflow_of, outflow_state, outflow_card, valid_history_range, big_g
     ),
   )
   assert(
-    mb_json_eq(
+    readops_chats::mb_json_eq(
       outflow_state(
         base_codec::json_obj([
           ("outcome", base_codec::json_str("ok")),
@@ -193,7 +260,7 @@ test "whole, outflow_of, outflow_state, outflow_card, valid_history_range, big_g
   )
   match card {
     Some(c) => {
-      assert(mb_json_eq(readops_core::json_val_or_null(c, "placeholder"), base_codec::json_str("enter key")))
+      assert(readops_chats::mb_json_eq(readops_core::json_val_or_null(c, "placeholder"), base_codec::json_str("enter key")))
     }
     None => assert(false)
   }
@@ -203,24 +270,26 @@ test "whole, outflow_of, outflow_state, outflow_card, valid_history_range, big_g
   assert(!valid_history_range(Some((day, 0.to_int64())), 0.to_int64()))
   assert(!valid_history_range(Some((0.to_int64(), day + 1.to_int64())), 0.to_int64()))
 
-  let test_stringify = fn(j : base_codec::Json) -> String {
-    js_json::stringify_with_num(json_to_jval(j), test_fmt_num)
-  }
-  match big_given_with(None, test_fmt_num, test_stringify) {
+  match big_given_with(None, test_fmt_num, test_stringify_base) {
     Err(readops_core::ReadError::App(m)) => assert(m == "Cannot convert undefined to a BigInt")
     _ => assert(false)
   }
-  match big_given_with(Some(base_codec::json_num(1.5)), test_fmt_num, test_stringify) {
+  match big_given_with(Some(base_codec::json_num(1.5)), test_fmt_num, test_stringify_base) {
     Err(readops_core::ReadError::App(m)) => {
       assert(readops_core::str_contains_sub(m, "cannot be converted to a BigInt because it is not an integer"))
     }
     _ => assert(false)
   }
-  match big_given_with(Some(base_codec::json_bool(true)), test_fmt_num, test_stringify) {
+  // P2-3: 1e400 (+Inf with raw repr) falls through `n != n.floor()` to `big_of_with` -> exact MB message
+  match big_given_with(Some(base_codec::Json::Num(1.0 / 0.0, "1e400")), test_fmt_num, test_stringify_base) {
+    Err(readops_core::ReadError::App(m)) => assert(m == "Cannot convert 1e400 to a BigInt")
+    _ => assert(false)
+  }
+  match big_given_with(Some(base_codec::json_bool(true)), test_fmt_num, test_stringify_base) {
     Ok(v) => assert(v == 1.to_int64())
     _ => assert(false)
   }
-  match big_given_with(Some(base_codec::json_str("1234567890123")), test_fmt_num, test_stringify) {
+  match big_given_with(Some(base_codec::json_str("1234567890123")), test_fmt_num, test_stringify_base) {
     Ok(v) => assert(v == 1234567.to_int64() * 1000000.to_int64() + 890123.to_int64())
     _ => assert(false)
   }

@@ -28,41 +28,6 @@ let PAGE_LETTER_KEYS_AFTER_SQL : String = "SELECT CAST(p.n AS TEXT) AS n FROM (\
 /// store/rows.ts MESSAGE_PAGE_ENTRIES.
 let MESSAGE_PAGE_ENTRIES_SQL : String = "SELECT e.* FROM json_each(?2) j\n  CROSS JOIN entries e ON e.thread=?1 AND e.n=CAST(j.value AS INTEGER) ORDER BY e.n"
 
-/// MB `@json.Json == @json.Json` semantics: compares numbers by `Double` value (ignoring raw repr).
-fn mb_json_eq(a : base_codec::Json, b : base_codec::Json) -> Bool {
-  match (a, b) {
-    (base_codec::Json::Null, base_codec::Json::Null) => true
-    (base_codec::Json::Bool(x), base_codec::Json::Bool(y)) => x == y
-    (base_codec::Json::Num(x, _), base_codec::Json::Num(y, _)) => x == y
-    (base_codec::Json::Str(x), base_codec::Json::Str(y)) => x == y
-    (base_codec::Json::Arr(xs), base_codec::Json::Arr(ys)) => {
-      if xs.length() != ys.length() {
-        return false
-      }
-      for i in 0..<xs.length() {
-        if !mb_json_eq(xs[i], ys[i]) {
-          return false
-        }
-      }
-      true
-    }
-    (base_codec::Json::Obj(xs), base_codec::Json::Obj(ys)) => {
-      if xs.length() != ys.length() {
-        return false
-      }
-      for i in 0..<xs.length() {
-        let (kx, vx) = xs[i]
-        let (ky, vy) = ys[i]
-        if kx != ky || !mb_json_eq(vx, vy) {
-          return false
-        }
-      }
-      true
-    }
-    _ => false
-  }
-}
-
 fn abs_double(d : Double) -> Double {
   if d < 0.0 { -d } else { d }
 }
@@ -94,7 +59,7 @@ fn filter_message_rows(
 ) -> Array[Map[String, base_codec::Json]] {
   let out : Array[Map[String, base_codec::Json]] = []
   for i in 0..<rows.length() {
-    if mb_json_eq(readops_core::field(rows[i], "kind"), base_codec::json_str("message")) {
+    if readops_chats::mb_json_eq(readops_core::field(rows[i], "kind"), base_codec::json_str("message")) {
       out.push(rows[i])
     }
   }
@@ -160,16 +125,18 @@ fn page_keys_after(
     Ok(t) => t
     Err(e) => return Err(readops_core::map_step_err(e))
   }
-  let has_letters_idx = match readops_core::exists_in(db, "index", "entries_letters") {
-    Ok(b) => b
-    Err(e) => return Err(e)
-  }
-  if token is None && !has_letters_idx {
-    let pending_err = readops_core::refused(
-      503,
-      readops_core::PAGE_LETTER_PENDING + sql_db::stringify_json(base_codec::json_arr([thread])),
-    )
-    return page_keys_after_head(db, thread, after, limit, pending_err)
+  if token is None {
+    let has_letters_idx = match readops_core::exists_in(db, "index", "entries_letters") {
+      Ok(b) => b
+      Err(e) => return Err(e)
+    }
+    if !has_letters_idx {
+      let pending_err = readops_core::refused(
+        503,
+        readops_core::PAGE_LETTER_PENDING + sql_db::stringify_json(base_codec::json_arr([thread])),
+      )
+      return page_keys_after_head(db, thread, after, limit, pending_err)
+    }
   }
   let ord_sql = if legacy {
     LEGACY_PAGE_ORDINARY_KEYS_AFTER_SQL
@@ -256,7 +223,7 @@ pub fn outflow_of(ws : Option[base_codec::Json]) -> (base_codec::Json, Bool) {
 }
 
 fn sees_of(of : (base_codec::Json, Bool), ws : base_codec::Json) -> Bool {
-  if mb_json_eq(ws, of.0) {
+  if readops_chats::mb_json_eq(ws, of.0) {
     return true
   }
   match ws {
@@ -303,28 +270,84 @@ fn sees_thread(
 }
 
 /// A connect's place on its platform and the names book it is in (slack-known.ts `Team`).
+/// Keeps `id` as raw UTF-16 code units (`Array[Int]`) so lone surrogates never collide with `U+FFFD`.
 struct Team {
-  id : String
+  id : Array[Int]
   book : String
 }
 
-/// Lazy cache for `teams(...)` avoiding closure capture cycles.
+/// Lazy cache for `teams(...)` avoiding closure capture cycles, keyed by raw UTF-16 code units.
 struct TeamsCache {
-  mut loaded : Option[Map[String, Team]]
+  mut loaded : Option[Array[(Array[Int], Team)]]
 }
 
 fn TeamsCache::new() -> TeamsCache {
   TeamsCache::{ loaded: None }
 }
 
+fn teams_set(out : Array[(Array[Int], Team)], key : Array[Int], team : Team) -> Unit {
+  for i in 0..<out.length() {
+    if js_json::units_eq(out[i].0, key) {
+      out[i] = (key, team)
+      return ()
+    }
+  }
+  out.push((key, team))
+}
+
+fn teams_get(entries : Array[(Array[Int], Team)], key : Array[Int]) -> Option[Team] {
+  for i in 0..<entries.length() {
+    if js_json::units_eq(entries[i].0, key) {
+      return Some(entries[i].1)
+    }
+  }
+  None
+}
+
+fn concat_units(parts : Array[Array[Int]]) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    for j in 0..<p.length() {
+      out.push(p[j])
+    }
+  }
+  out
+}
+
+fn slice_units(u : Array[Int], start : Int, end : Int) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in start..<end {
+    out.push(u[i])
+  }
+  out
+}
+
+fn find_unit(u : Array[Int], target : Int) -> Option[Int] {
+  for i in 0..<u.length() {
+    if u[i] == target {
+      return Some(i)
+    }
+  }
+  None
+}
+
+fn jval_raw_units(v : Option[js_json::JValue]) -> Option[Array[Int]] {
+  match v {
+    Some(js_json::JValue::Str(u)) => Some(u)
+    _ => None
+  }
+}
+
 /// slack-known.ts `teams`: each connect's Slack workspace, Feishu company or Comma group,
 /// this station's over those of other stations whose chats run here.
+/// Preserves raw UTF-16 code units for connect/team IDs so `\ud800` and `U+FFFD` stay distinct.
 fn teams(
   client : builders_core::ShellClient,
   data : String,
   sep : String,
-) -> Result[Map[String, Team], readops_core::ReadError] {
-  let out : Map[String, Team] = Map::new()
+) -> Result[Array[(Array[Int], Team)], readops_core::ReadError] {
+  let out : Array[(Array[Int], Team)] = []
   let remote = match readops_core::read_json(
     client,
     readops_core::join_path(sep, data, "remote-connects.json"),
@@ -332,24 +355,48 @@ fn teams(
     Ok(v) => v
     Err(e) => return Err(e)
   }
-  let entries = readops_core::entries_of(Some(remote))
-  for i in 0..<entries.length() {
-    let (ek, ev) = entries[i]
-    let d = readops_core::jget(Some(ev), "described")
-    match readops_core::str_of(readops_core::jget(d, "kind")) {
-      Some("feishu") => out.set(ek, Team::{ id: ek, book: "feishu" })
-      Some("slack") => {
-        match readops_core::str_of(readops_core::jget(d, "team")) {
-          Some(t) => {
-            if t != "" {
-              out.set(ek, Team::{ id: t, book: "slack" })
+  match remote {
+    js_json::JValue::Obj(entries) => {
+      for i in 0..<entries.length() {
+        let (ek_units, ev) = entries[i]
+        let d = readops_core::jget(Some(ev), "described")
+        match readops_core::str_of(readops_core::jget(d, "kind")) {
+          Some("feishu") => teams_set(out, ek_units, Team::{ id: ek_units, book: "feishu" })
+          Some("slack") => {
+            match jval_raw_units(readops_core::jget(d, "team")) {
+              Some(t_units) => {
+                if t_units.length() > 0 {
+                  teams_set(out, ek_units, Team::{ id: t_units, book: "slack" })
+                }
+              }
+              None => ()
             }
           }
-          None => ()
+          _ => ()
         }
       }
-      _ => ()
     }
+    js_json::JValue::Arr(items) => {
+      for i in 0..<items.length() {
+        let ek_units = js_json::utf16_units(i.to_string())
+        let d = readops_core::jget(Some(items[i]), "described")
+        match readops_core::str_of(readops_core::jget(d, "kind")) {
+          Some("feishu") => teams_set(out, ek_units, Team::{ id: ek_units, book: "feishu" })
+          Some("slack") => {
+            match jval_raw_units(readops_core::jget(d, "team")) {
+              Some(t_units) => {
+                if t_units.length() > 0 {
+                  teams_set(out, ek_units, Team::{ id: t_units, book: "slack" })
+                }
+              }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
   }
   let own = match readops_core::read_json(client, readops_core::join_path(sep, data, "config.json")) {
     Ok(v) => v
@@ -361,21 +408,21 @@ fn teams(
   }
   for i in 0..<connects.length() {
     let c = connects[i]
-    let id = match readops_core::str_of(readops_core::jget(Some(c), "id")) {
-      Some(s) => s
+    let id_units = match jval_raw_units(readops_core::jget(Some(c), "id")) {
+      Some(u) => u
       None => continue
     }
     match readops_core::str_of(readops_core::jget(Some(c), "kind")) {
-      Some("feishu") => out.set(id, Team::{ id: id, book: "feishu" })
-      Some("comma") => out.set(id, Team::{ id: id, book: "comma" })
-      Some("group") => out.set(id, Team::{ id: id, book: "group" })
+      Some("feishu") => teams_set(out, id_units, Team::{ id: id_units, book: "feishu" })
+      Some("comma") => teams_set(out, id_units, Team::{ id: id_units, book: "comma" })
+      Some("group") => teams_set(out, id_units, Team::{ id: id_units, book: "group" })
       _ => {
-        match readops_core::str_of(
+        match jval_raw_units(
           readops_core::jget(readops_core::jget(readops_core::jget(Some(c), "slack"), "team"), "id"),
         ) {
-          Some(t) => {
-            if t != "" {
-              out.set(id, Team::{ id: t, book: "slack" })
+          Some(t_units) => {
+            if t_units.length() > 0 {
+              teams_set(out, id_units, Team::{ id: t_units, book: "slack" })
             }
           }
           None => ()
@@ -391,7 +438,7 @@ fn teams_cached(
   client : builders_core::ShellClient,
   data : String,
   sep : String,
-) -> Result[Map[String, Team], readops_core::ReadError] {
+) -> Result[Array[(Array[Int], Team)], readops_core::ReadError] {
   match cache.loaded {
     Some(m) => Ok(m)
     None => {
@@ -421,17 +468,18 @@ fn outflow_person(
         if colon > 0 && colon < rest_len - 1 {
           let connect = readops_core::str_slice_bytes(rest, 0, colon)
           let user = readops_core::str_slice_bytes(rest, colon + 1, rest_len)
+          let connect_units = js_json::utf16_units(connect)
           let ts = match teams_cached(cache, client, data, sep) {
             Ok(m) => m
             Err(e) => return Err(e)
           }
-          let team : Option[Team] = match ts.get(connect) {
+          let team : Option[Team] = match teams_get(ts, connect_units) {
             Some(t) => Some(t)
             None => {
-              match readops_core::str_find_byte(connect, 64) {
+              match find_unit(connect_units, 64) {
                 Some(at) => {
                   if at > 0 {
-                    ts.get(readops_core::str_slice_bytes(connect, 0, at))
+                    teams_get(ts, slice_units(connect_units, 0, at))
                   } else {
                     None
                   }
@@ -461,18 +509,21 @@ fn outflow_person(
             Ok(v) => v
             Err(e) => return Err(e)
           }
-          let names = match raw_names {
-            js_json::JValue::Obj(_) => Some(raw_names)
+          let place_units = match team {
+            Some(t) => t.id
+            None => js_json::utf16_units("?")
+          }
+          let lookup_units = concat_units([
+            js_json::utf16_units("u:"),
+            place_units,
+            js_json::utf16_units(":"),
+            js_json::utf16_units(user),
+          ])
+          let book_entry = match raw_names {
+            js_json::JValue::Obj(_) => raw_names.get_units(lookup_units)
             _ => None
           }
-          let place = match team {
-            Some(t) => t.id
-            None => "?"
-          }
-          let known = readops_core::jget(
-            readops_core::jget(names, "u:" + place + ":" + user),
-            "person",
-          )
+          let known = readops_core::jget(book_entry, "person")
           let (name, email) = match readops_core::jget(known, "name") {
             Some(js_json::JValue::Str(nu)) => {
               let n = js_json::sanitize_str(nu)
@@ -650,7 +701,7 @@ pub fn outflow_messages(
       _ => "person"
     }
     let entry_kind = readops_core::field(e, "kind")
-    let is_edit = mb_json_eq(entry_kind, base_codec::json_str("edit"))
+    let is_edit = readops_chats::mb_json_eq(entry_kind, base_codec::json_str("edit"))
     let m : Array[(String, base_codec::Json)] = [
       ("n", readops_core::field(e, "n")),
       ("kind", base_codec::json_str(if is_edit { "edit" } else { "message" })),

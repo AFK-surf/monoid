@@ -1,11 +1,12 @@
 // Linked-binary real-SQLite + real-shell self-test for `readops_usage` (W7-E: outflow,
-// outflowchats, usagepage + lossless JValue serialization + shortlex ordering).
+// outflowchats, usagepage + lossless JValue serialization + shortlex ordering + R1 regressions).
 // Invoked by `stillfail-pion --smoke-readops <temp-dir>` in `build-linux` CI.
 
 import "base_codec"
 import "builders_core"
 import "host_shim"
 import "js_json"
+import "readops_chats"
 import "readops_core"
 import "sql_db"
 
@@ -71,11 +72,14 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Err(e) => return Err(e)
   }
 
-  // Write config.json with lone-surrogate key (\ud800) vs U+FFFD (\ufffd), integer-index keys ("10", "2"),
-  // duplicate profile ID (last-wins preserving first position), and api-provider runtime derivation.
+  // config.json includes:
+  // - P1-2 regression: Feishu connect with U+FFFD (\ufffd) followed by Group connect with lone surrogate (\ud800)
+  // - P1-1 regression: profiles with lone surrogate (\ud800) vs U+FFFD (\ufffd), integer-index keys ("10", "2"),
+  //   duplicate profile ID (last-wins at first position), and api-provider runtime derivation.
   let config_json = "{\"connects\":[" +
   "{\"id\":\"c-slack\",\"kind\":\"slack\",\"slack\":{\"team\":{\"id\":\"T1\",\"name\":\"Acme\"}}}," +
-  "{\"id\":\"c-fs\",\"kind\":\"feishu\"}" +
+  "{\"id\":\"\\ufffd\",\"kind\":\"feishu\"}," +
+  "{\"id\":\"\\ud800\",\"kind\":\"group\"}" +
   "],\"profiles\":[" +
   "{\"id\":\"10\",\"name\":\"Ten\",\"runtime\":\"codex\"}," +
   "{\"id\":\"2\",\"name\":\"Two\",\"runtime\":\"claude\"}," +
@@ -101,6 +105,11 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   }
   let slack_names = "{\"u:T1:U1\":{\"person\":{\"name\":\"Alice\",\"email\":\"alice@acme.com\"}},\"c:T1:C1\":{\"channel\":\"general\"}}"
   match write_sync(client, root + "/slack-names.json", slack_names) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let feishu_names = "{\"u:\\ufffd:U9\":{\"person\":{\"name\":\"FeishuUser\",\"email\":\"fu@acme.com\"}}}"
+  match write_sync(client, root + "/feishu-names.json", feishu_names) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
@@ -151,8 +160,8 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     }
   }
 
-  // Seed threads, sessions, entries, cards, turns, outflow index, usage_15m, history, remote runs.
   let seeds : Array[(String, Array[base_codec::Json])] = [
+    // Thread 10: need_decision + card + router + session key needing URI encoding ("chat:s1/a")
     (
       "INSERT INTO threads(id, surface, channel, title, created_by, created_at, home) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [
@@ -165,6 +174,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
         base_codec::json_str("ws1"),
       ],
     ),
+    // Thread 20: foreign workspace ws2
     (
       "INSERT INTO threads(id, surface, channel, title, created_by, created_at, home) VALUES (?, ?, ?, ?, ?, ?, ?)",
       [
@@ -177,10 +187,36 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
         base_codec::json_str("ws2"),
       ],
     ),
+    // Thread 30: all_done unread chat in ws1
+    (
+      "INSERT INTO threads(id, surface, channel, title, created_by, created_at, home) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_num(30.0),
+        base_codec::json_str("chat"),
+        base_codec::json_str("C3"),
+        base_codec::json_str("Done Chat"),
+        base_codec::json_str("alice@acme.com"),
+        base_codec::json_num(900.0),
+        base_codec::json_str("ws1"),
+      ],
+    ),
+    // Thread 40: failed turn with declared=null in ws1
+    (
+      "INSERT INTO threads(id, surface, channel, title, created_by, created_at, home) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_num(40.0),
+        base_codec::json_str("chat"),
+        base_codec::json_str("C4"),
+        base_codec::json_str("Failed Chat"),
+        base_codec::json_str("alice@acme.com"),
+        base_codec::json_num(800.0),
+        base_codec::json_str("ws1"),
+      ],
+    ),
     (
       "INSERT INTO sessions(key, ws, runtime, model, created_by) VALUES (?, ?, ?, ?, ?)",
       [
-        base_codec::json_str("s1"),
+        base_codec::json_str("chat:s1/a"),
         base_codec::json_str("ws1"),
         base_codec::json_str("claude"),
         base_codec::json_str("claude-opus-5-5"),
@@ -198,13 +234,42 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       ],
     ),
     (
+      "INSERT INTO sessions(key, ws, runtime, model, created_by) VALUES (?, ?, ?, ?, ?)",
+      [
+        base_codec::json_str("s3"),
+        base_codec::json_str("ws1"),
+        base_codec::json_str("claude"),
+        base_codec::json_str("claude-opus-5-5"),
+        base_codec::json_str("alice@acme.com"),
+      ],
+    ),
+    (
+      "INSERT INTO sessions(key, ws, runtime, model, created_by) VALUES (?, ?, ?, ?, ?)",
+      [
+        base_codec::json_str("s4"),
+        base_codec::json_str("ws1"),
+        base_codec::json_str("claude"),
+        base_codec::json_str("claude-opus-5-5"),
+        base_codec::json_str("alice@acme.com"),
+      ],
+    ),
+    (
       "INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES (?, ?, ?, ?)",
-      [base_codec::json_num(10.0), base_codec::json_str("s1"), base_codec::json_str("chat"), base_codec::json_num(1000.0)],
+      [base_codec::json_num(10.0), base_codec::json_str("chat:s1/a"), base_codec::json_str("chat"), base_codec::json_num(1000.0)],
     ),
     (
       "INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES (?, ?, ?, ?)",
       [base_codec::json_num(20.0), base_codec::json_str("s2"), base_codec::json_str("c-slack"), base_codec::json_num(2000.0)],
     ),
+    (
+      "INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES (?, ?, ?, ?)",
+      [base_codec::json_num(30.0), base_codec::json_str("s3"), base_codec::json_str("chat"), base_codec::json_num(900.0)],
+    ),
+    (
+      "INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES (?, ?, ?, ?)",
+      [base_codec::json_num(40.0), base_codec::json_str("s4"), base_codec::json_str("chat"), base_codec::json_num(800.0)],
+    ),
+    // Thread 10 entries: msg 1 (slack person), msg 2 (agent card), edit 3, msg 4 (U+FFFD Feishu person for P1-2)
     (
       "INSERT INTO entries(thread, n, kind, author_kind, author, text, at, card) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       [
@@ -225,7 +290,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
         base_codec::json_num(2.0),
         base_codec::json_str("message"),
         base_codec::json_str("agent"),
-        base_codec::json_str("s1"),
+        base_codec::json_str("chat:s1/a"),
         base_codec::json_str("pick one"),
         base_codec::json_num(1002.0),
         base_codec::json_str("{\"type\":\"options\",\"assignee\":\"Alice@Acme.com\",\"options\":[{\"label\":\"Yes\",\"recommended\":true}]}"),
@@ -239,9 +304,35 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
         base_codec::json_str("edit"),
         base_codec::json_num(2.0),
         base_codec::json_str("agent"),
-        base_codec::json_str("s1"),
+        base_codec::json_str("chat:s1/a"),
         base_codec::json_str("pick one edited"),
         base_codec::json_num(1003.0),
+      ],
+    ),
+    (
+      "INSERT INTO entries(thread, n, kind, author_kind, author, text, at, card) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_num(10.0),
+        base_codec::json_num(4.0),
+        base_codec::json_str("message"),
+        base_codec::json_str("person"),
+        base_codec::json_str("slack:\u{FFFD}:U9"),
+        base_codec::json_str("from feishu"),
+        base_codec::json_num(1004.0),
+        base_codec::json_null(),
+      ],
+    ),
+    // Thread 30 entry (agent message at n=5, unread by alice)
+    (
+      "INSERT INTO entries(thread, n, kind, author_kind, author, text, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_num(30.0),
+        base_codec::json_num(5.0),
+        base_codec::json_str("message"),
+        base_codec::json_str("agent"),
+        base_codec::json_str("s3"),
+        base_codec::json_str("all finished"),
+        base_codec::json_num(905.0),
       ],
     ),
     (
@@ -257,10 +348,14 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       [base_codec::json_num(10.0), base_codec::json_num(2.0)],
     ),
     (
+      "INSERT INTO thread_state(thread, said_n) VALUES (?, ?)",
+      [base_codec::json_num(30.0), base_codec::json_num(5.0)],
+    ),
+    (
       "INSERT INTO turns(id, session_key, outcome, declared, need, about_thread, about_n, about_ts, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         base_codec::json_num(1.0),
-        base_codec::json_str("s1"),
+        base_codec::json_str("chat:s1/a"),
         base_codec::json_str("ok"),
         base_codec::json_str("need_decision"),
         base_codec::json_str("  approve deploy  "),
@@ -271,20 +366,51 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
         base_codec::json_num(1005.0),
       ],
     ),
+    (
+      "INSERT INTO turns(id, session_key, outcome, declared, need, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_num(2.0),
+        base_codec::json_str("s3"),
+        base_codec::json_str("ok"),
+        base_codec::json_str("all_done"),
+        base_codec::json_str("  shipped  "),
+        base_codec::json_num(905.0),
+        base_codec::json_num(910.0),
+      ],
+    ),
+    (
+      "INSERT INTO turns(id, session_key, outcome, declared, detail, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_num(3.0),
+        base_codec::json_str("s4"),
+        base_codec::json_str("failed"),
+        base_codec::json_null(),
+        base_codec::json_str("  boom first line\nsecond line  "),
+        base_codec::json_num(805.0),
+        base_codec::json_num(810.0),
+      ],
+    ),
     ("INSERT INTO outflow_chat_progress(id, done) VALUES (1, 1)", []),
     (
       "INSERT INTO outflow_chat_order(scope, thread, at, dirty) VALUES (?, ?, ?, 0)",
       [base_codec::json_str("Wws1"), base_codec::json_num(10.0), base_codec::json_num(1005.0)],
     ),
+    (
+      "INSERT INTO outflow_chat_order(scope, thread, at, dirty) VALUES (?, ?, ?, 0)",
+      [base_codec::json_str("Wws1"), base_codec::json_num(30.0), base_codec::json_num(910.0)],
+    ),
+    (
+      "INSERT INTO outflow_chat_order(scope, thread, at, dirty) VALUES (?, ?, ?, 0)",
+      [base_codec::json_str("Wws1"), base_codec::json_num(40.0), base_codec::json_num(810.0)],
+    ),
     ("INSERT INTO usage_15m_meta(id, since) VALUES (1, 1704067200000)", []),
     ("INSERT INTO usage_span(id, first_at) VALUES (1, 1704067200000)", []),
-    // 2024-01-01T00:00:00Z = 1704067200000 ms -> quarter = 1893408
     (
       "INSERT INTO usage_15m(scope, quarter, session, thread, person, profile, runtime, model, fast, calls, input, cache_read, cache_write, cache_write_long, output) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         base_codec::json_str("ws1"),
         base_codec::json_num(1893408.0),
-        base_codec::json_str("s1"),
+        base_codec::json_str("chat:s1/a"),
         base_codec::json_num(10.0),
         base_codec::json_str("slack:c-slack:U1"),
         base_codec::json_str("dup"),
@@ -308,21 +434,15 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       [base_codec::json_str("ws1"), base_codec::json_num(1893408.0), base_codec::json_num(2.0), base_codec::json_num(2100.0)],
     ),
     ("INSERT INTO usage_chat_progress(id, done) VALUES (1, 1)", []),
-    (
-      "INSERT INTO usage_chat_totals(kind, ws, place, chats, archived, cards, picked) VALUES (2, 'ws1', 'chat', 3, 1, 2, 1)",
-      [],
-    ),
+    // P1-1 regression: insert places in order "chat", "10", "2" to verify insertion order is NOT reordered!
+    ("INSERT INTO usage_chat_totals(kind, ws, place, chats, archived, cards, picked) VALUES (2, 'ws1', 'chat', 3, 1, 2, 1)", []),
+    ("INSERT INTO usage_chat_totals(kind, ws, place, chats, archived, cards, picked) VALUES (2, 'ws1', '10', 4, 0, 0, 0)", []),
+    ("INSERT INTO usage_chat_totals(kind, ws, place, chats, archived, cards, picked) VALUES (2, 'ws1', '2', 5, 0, 0, 0)", []),
     ("INSERT INTO remote_run_progress(id, done) VALUES (1, 1)", []),
     ("INSERT INTO remote_run_total(id, n) VALUES (1, 4)", []),
     ("INSERT INTO remote_run_counts(ws, n) VALUES ('ws1', 2)", []),
-    (
-      "INSERT INTO remote_run_lookup(ws, at, session) VALUES ('ws1', 1704067201000, 's1')",
-      [],
-    ),
-    (
-      "INSERT INTO remote_run_lookup(ws, at, session) VALUES ('ws1', 1704067205000, 's1')",
-      [],
-    ),
+    ("INSERT INTO remote_run_lookup(ws, at, session) VALUES ('ws1', 1704067201000, 'chat:s1/a')", []),
+    ("INSERT INTO remote_run_lookup(ws, at, session) VALUES ('ws1', 1704067205000, 'chat:s1/a')", []),
   ]
   for i in 0..<seeds.length() {
     match db_exec_ok(db, seeds[i].0, seeds[i].1) {
@@ -331,7 +451,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     }
   }
 
-  // 1-4: outflow_messages (all entries, messagesOnly via savepoint_swallow_err, card enrichment, hidden ws -> null)
+  // 1-6: outflow_messages (all entries, P1-2 U+FFFD Feishu vs \ud800 Group, card enrichment, messagesOnly, foreign ws)
   let om_all = match outflow_messages(
     db,
     client,
@@ -351,7 +471,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Some(base_codec::Json::Arr(xs)) => xs
     _ => []
   }
-  match check(om_msgs.length() == 3, "outflow_messages all count == 3", passed) {
+  match check(om_msgs.length() == 4, "outflow_messages all count == 4", passed) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
@@ -364,6 +484,20 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     "outflow_messages resolved slack person email",
     passed,
   ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // P1-2 regression: author "slack:\u{FFFD}:U9" MUST match Feishu U+FFFD connect (via: "feishu", email: "fu@acme.com"),
+  // NOT the later Group \ud800 connect!
+  let p3_ok = match readops_core::json_val(om_msgs[3], "person") {
+    Some(p) => {
+      readops_chats::mb_json_eq(readops_core::json_val_or_null(p, "via"), base_codec::json_str("feishu")) &&
+      readops_chats::mb_json_eq(readops_core::json_val_or_null(p, "name"), base_codec::json_str("FeishuUser")) &&
+      readops_chats::mb_json_eq(readops_core::json_val_or_null(p, "email"), base_codec::json_str("fu@acme.com"))
+    }
+    None => false
+  }
+  match check(p3_ok, "P1-2: Feishu U+FFFD connect not clobbered by Group \\ud800 connect", passed) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
@@ -400,7 +534,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Some(base_codec::Json::Arr(xs)) => xs
     _ => []
   }
-  match check(om_only_msgs.length() == 2, "outflow_messages messagesOnly excludes edit via savepoint", passed) {
+  match check(om_only_msgs.length() == 3, "outflow_messages messagesOnly excludes edit via savepoint", passed) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
@@ -428,8 +562,8 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Err(e) => return Err(e)
   }
 
-  // 6-9: outflow_chats (last_turn_of, state=need_human, attention card+assignee, router=true, url encoding)
-  let oc = match outflow_chats(
+  // 7-13: outflow_chats (URL encoding, before/more/next pagination, need_human card, all_done unread, failed first-line)
+  let oc_page1 = match outflow_chats(
     db,
     client,
     root,
@@ -439,7 +573,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
         "args",
         base_codec::json_obj([
           ("since", base_codec::json_num(0.0)),
-          ("limit", base_codec::json_num(10.0)),
+          ("limit", base_codec::json_num(2.0)),
           ("ws", base_codec::json_obj([("workspace", base_codec::json_str("ws1")), ("home", base_codec::json_bool(false))])),
           (
             "pages",
@@ -454,49 +588,117 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     ]),
   ) {
     Ok(v) => v
-    Err(e) => return Err("outflow_chats failed: " + readops_core::read_error_message(e))
+    Err(e) => return Err("outflow_chats page1 failed: " + readops_core::read_error_message(e))
   }
-  let oc_list = match readops_core::json_val(oc, "chats") {
+  let oc_list1 = match readops_core::json_val(oc_page1, "chats") {
     Some(base_codec::Json::Arr(xs)) => xs
     _ => []
   }
-  match check(oc_list.length() == 1, "outflow_chats returns 1 chat for ws1", passed) {
+  let oc_next1 = readops_core::json_val_or_null(oc_page1, "next")
+  match check(
+    oc_list1.length() == 2 &&
+    readops_chats::mb_json_eq(readops_core::json_val_or_null(oc_page1, "more"), base_codec::json_bool(true)) &&
+    readops_chats::mb_json_eq(oc_next1, base_codec::json_str("910.30")),
+    "outflow_chats page1 returns 2 chats with more=true and next=910.30",
+    passed,
+  ) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
-  let c0 = oc_list[0]
+  let c0 = oc_list1[0]
   match check(
-    mb_json_eq(readops_core::json_val_or_null(c0, "state"), base_codec::json_str("need_human")),
+    readops_chats::mb_json_eq(readops_core::json_val_or_null(c0, "state"), base_codec::json_str("need_human")),
     "outflow_chats maps need_decision -> need_human via last_turn_of",
     passed,
   ) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
-  let att_ok = match readops_core::json_val(c0, "attention") {
+  match check(
+    readops_chats::mb_json_eq(
+      readops_core::json_val_or_null(c0, "url"),
+      base_codec::json_str("https://app.test/o/ws1/st1/chat%3As1%2Fa"),
+    ),
+    "outflow_chats encodes session key in url with encode_uri_component",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let att0_ok = match readops_core::json_val(c0, "attention") {
     Some(att) => {
-      mb_json_eq(readops_core::json_val_or_null(att, "kind"), base_codec::json_str("need")) &&
-      mb_json_eq(readops_core::json_val_or_null(att, "card"), base_codec::json_str("options")) &&
-      mb_json_eq(readops_core::json_val_or_null(att, "note"), base_codec::json_str("approve deploy"))
+      readops_chats::mb_json_eq(readops_core::json_val_or_null(att, "kind"), base_codec::json_str("need")) &&
+      readops_chats::mb_json_eq(readops_core::json_val_or_null(att, "card"), base_codec::json_str("options")) &&
+      readops_chats::mb_json_eq(readops_core::json_val_or_null(att, "note"), base_codec::json_str("approve deploy"))
     }
     None => false
   }
-  match check(att_ok, "outflow_chats attention card & trimmed note", passed) {
+  match check(att0_ok, "outflow_chats attention card & trimmed note", passed) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
   match check(
-    mb_json_eq(readops_core::json_val_or_null(c0, "router"), base_codec::json_bool(true)) &&
-    mb_json_eq(readops_core::json_val_or_null(c0, "surface"), base_codec::json_str("stillfail")),
+    readops_chats::mb_json_eq(readops_core::json_val_or_null(c0, "router"), base_codec::json_bool(true)) &&
+    readops_chats::mb_json_eq(readops_core::json_val_or_null(c0, "surface"), base_codec::json_str("stillfail")),
     "outflow_chats router flag & chat->stillfail surface",
     passed,
   ) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
+  let c1 = oc_list1[1]
+  let att1_ok = match readops_core::json_val(c1, "attention") {
+    Some(att) => {
+      readops_chats::mb_json_eq(readops_core::json_val_or_null(att, "kind"), base_codec::json_str("done")) &&
+      readops_chats::mb_json_eq(readops_core::json_val_or_null(att, "note"), base_codec::json_str("shipped"))
+    }
+    None => false
+  }
+  match check(att1_ok, "outflow_chats attention all_done unread branch", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // Page 2 using `before: "910.30"` -> returns thread 40 (failed turn, first line of detail) with more=false, next=null
+  let oc_page2 = match outflow_chats(
+    db,
+    client,
+    root,
+    "/",
+    base_codec::json_obj([
+      (
+        "args",
+        base_codec::json_obj([
+          ("since", base_codec::json_num(0.0)),
+          ("limit", base_codec::json_num(2.0)),
+          ("before", oc_next1),
+          ("ws", base_codec::json_obj([("workspace", base_codec::json_str("ws1")), ("home", base_codec::json_bool(false))])),
+        ]),
+      ),
+    ]),
+  ) {
+    Ok(v) => v
+    Err(e) => return Err("outflow_chats page2 failed: " + readops_core::read_error_message(e))
+  }
+  let oc_list2 = match readops_core::json_val(oc_page2, "chats") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+  let page2_ok = oc_list2.length() == 1 &&
+  readops_chats::mb_json_eq(readops_core::json_val_or_null(oc_page2, "more"), base_codec::json_bool(false)) &&
+  readops_chats::mb_json_eq(readops_core::json_val_or_null(oc_page2, "next"), base_codec::json_null()) &&
+  match readops_core::json_val(oc_list2[0], "attention") {
+    Some(att) => {
+      readops_chats::mb_json_eq(readops_core::json_val_or_null(att, "kind"), base_codec::json_str("failed")) &&
+      readops_chats::mb_json_eq(readops_core::json_val_or_null(att, "note"), base_codec::json_str("boom first line"))
+    }
+    None => false
+  }
+  match check(page2_ok, "outflow_chats page2 cursor pagination & failed attention first-line note", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
 
-  // 10-16: usage_page_json_str (real SQLite + lossless JValue serialization of lone surrogates,
-  // integer-index key reordering, duplicate-key last-wins, history, remoteRuns count=2)
+  // 14-21: usage_page_json_str (P1-1 exact i64_json repr + history.places order + lossless profiles)
   let usage_ask = base_codec::json_obj([
     (
       "args",
@@ -520,7 +722,6 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Ok(s) => s
     Err(e) => return Err("usage_page_json_str failed: " + readops_core::read_error_message(e))
   }
-  // Verify lone surrogate \ud800 is preserved as escaped \ud800 AND distinct from U+FFFD!
   match check(
     readops_core::str_contains_sub(usage_wire, "\"\\ud800\":{\"name\":\"Lone\\ud800\",\"runtime\":\"agy\"}"),
     "usage_page_json_str preserves lone surrogate key and trimmed value losslessly",
@@ -529,7 +730,51 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
-  // Verify integer-index key ordering in profiles: "0" < "2" < "10" < "dup" < "\ud800" < U+FFFD < "gw" < "moved-1"
+  // P1-1: history.places MUST preserve insertion order ["chat","10","2"] (NOT reordered to ["2","10","chat"])!
+  match check(
+    readops_core::str_contains_sub(usage_wire, "\"places\":{\"chat\":3,\"10\":4,\"2\":5}"),
+    "P1-1: history.places preserves MB insertion order [chat, 10, 2]",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // P1-1: from=to="9007199254740993" MUST emit exact decimal digits without Double precision loss!
+  let big_ask = base_codec::json_obj([
+    (
+      "args",
+      base_codec::json_obj([
+        ("from", base_codec::json_str("9007199254740993")),
+        ("to", base_codec::json_str("9007199254740993")),
+        ("tz", base_codec::json_num(0.0)),
+      ]),
+    ),
+  ])
+  let big_wire = match usage_page_json_str(db, state, root, big_ask) {
+    Ok(s) => s
+    Err(e) => return Err("usage_page_json_str big i64 failed: " + readops_core::read_error_message(e))
+  }
+  match check(
+    readops_core::str_contains_sub(big_wire, "\"from\":9007199254740993,\"to\":9007199254740993"),
+    "P1-1: exact i64 decimal repr 9007199254740993 preserved in raw wire JSON",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // P2-3: 1e400 parsed via sql_db::parse_json returns exact MB error "Cannot convert 1e400 to a BigInt"
+  let inf_ask = match sql_db::parse_json("{\"args\":{\"from\":1e400,\"to\":0,\"tz\":0}}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => return Err("parse 1e400 ask failed: " + e)
+  }
+  let inf_ok = match usage_page_json_str(db, state, root, inf_ask) {
+    Err(readops_core::ReadError::App(m)) => m == "Cannot convert 1e400 to a BigInt"
+    _ => false
+  }
+  match check(inf_ok, "P2-3: 1e400 returns exact 'Cannot convert 1e400 to a BigInt'", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
   let idx_0 = readops_core::str_find_sub(usage_wire, "\"0\":{\"name\":\"ZeroMoved\"")
   let idx_2 = readops_core::str_find_sub(usage_wire, "\"2\":{\"name\":\"Two\"")
   let idx_10 = readops_core::str_find_sub(usage_wire, "\"10\":{\"name\":\"Ten\"")
@@ -544,7 +789,6 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
-  // Verify round-trip parse via js_json::parse keeps both \ud800 and \ufffd as two distinct keys in profiles!
   let parsed_wire = match js_json::parse(usage_wire) {
     Ok(v) => v
     Err(e) => return Err("js_json::parse(usage_wire) failed: " + e)
@@ -559,31 +803,17 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Err(e) => return Err(e)
   }
   match check(
-    readops_core::str_contains_sub(usage_wire, "\"beforeDay\":\"2024-01-02\""),
-    "usage_page history beforeDay == 2024-01-02",
-    passed,
-  ) {
-    Ok(_) => ()
-    Err(e) => return Err(e)
-  }
-  match check(
-    readops_core::str_contains_sub(usage_wire, "\"remoteRuns\":[{\"at\":1704067205000,\"session\":\"s1\",\"count\":2}]"),
-    "usage_page remoteRuns aggregates count=2",
-    passed,
-  ) {
-    Ok(_) => ()
-    Err(e) => return Err(e)
-  }
-  match check(
+    readops_core::str_contains_sub(usage_wire, "\"beforeDay\":\"2024-01-02\"") &&
+    readops_core::str_contains_sub(usage_wire, "\"remoteRuns\":[{\"at\":1704067205000,\"session\":\"chat:s1/a\",\"count\":2}]") &&
     readops_core::str_contains_sub(usage_wire, "\"cards\":2,\"picked\":1"),
-    "usage_page history chat_totals cards & picked",
+    "usage_page history beforeDay, remoteRuns count=2, and cards/picked",
     passed,
   ) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
 
-  // 16-18: outflow_usage (renames profile -> account, resolves people, clamps tz/span)
+  // 22-24: outflow_usage (renames profile -> account, resolves people, clamps tz/span)
   let ou = match outflow_usage(
     db,
     state,
@@ -604,7 +834,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Err(e) => return Err("outflow_usage failed: " + readops_core::read_error_message(e))
   }
   match check(
-    mb_json_eq(readops_core::json_val_or_null(ou, "tz"), base_codec::json_num(1440.0)),
+    readops_chats::mb_json_eq(readops_core::json_val_or_null(ou, "tz"), base_codec::json_num(1440.0)),
     "outflow_usage clamps tz to 1440",
     passed,
   ) {
@@ -617,7 +847,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   }
   match check(
     ou_rows.length() == 1 &&
-    mb_json_eq(readops_core::json_val_or_null(ou_rows[0], "account"), base_codec::json_str("dup")),
+    readops_chats::mb_json_eq(readops_core::json_val_or_null(ou_rows[0], "account"), base_codec::json_str("dup")),
     "outflow_usage maps profile -> account",
     passed,
   ) {
@@ -627,7 +857,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   let ou_person_ok = match readops_core::json_val(ou, "people") {
     Some(ps) => {
       match readops_core::json_val(ps, "slack:c-slack:U1") {
-        Some(p) => mb_json_eq(readops_core::json_val_or_null(p, "email"), base_codec::json_str("alice@acme.com"))
+        Some(p) => readops_chats::mb_json_eq(readops_core::json_val_or_null(p, "email"), base_codec::json_str("alice@acme.com"))
         None => false
       }
     }
@@ -638,7 +868,111 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Err(e) => return Err(e)
   }
 
-  // 19-20: Non-finite float -> null & shortlex ordering sanity on linked binary
+  // 25-27: cardsIncomplete, chatsIncomplete, and SAVEPOINT 503 swallow-error recovery
+  match db_exec_ok(db, "CREATE TABLE card_outcomes_incomplete(id INTEGER)", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let cards_inc_wire = match usage_page_json_str(db, state, root, usage_ask) {
+    Ok(s) => s
+    Err(e) => return Err("cardsIncomplete usage_page failed: " + readops_core::read_error_message(e))
+  }
+  match check(
+    readops_core::str_contains_sub(cards_inc_wire, "\"cardsIncomplete\":true"),
+    "usage_history sets cardsIncomplete when card_outcomes_incomplete exists",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match db_exec_ok(db, "UPDATE usage_chat_progress SET done = 0 WHERE id = 1", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let chats_inc_wire = match usage_page_json_str(db, state, root, usage_ask) {
+    Ok(s) => s
+    Err(e) => return Err("chatsIncomplete usage_page failed: " + readops_core::read_error_message(e))
+  }
+  match check(
+    readops_core::str_contains_sub(chats_inc_wire, "\"chatsIncomplete\":true") &&
+    readops_core::str_contains_sub(chats_inc_wire, "\"places\":{}"),
+    "usage_history sets chatsIncomplete and empty places when chat stats pending",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // Drop entries_letters index and seed 70 edit rows on thread 10 to trigger 503 PAGE_LETTER_PENDING
+  // inside `savepoint_swallow_err("message_entries_after_read", ...)`, then verify DB remains usable!
+  match db_exec_ok(db, "DROP INDEX entries_letters", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  for k in 0..<70 {
+    match db_exec_ok(
+      db,
+      "INSERT INTO entries(thread, n, kind, target, author_kind, author, text, at) VALUES (?, ?, 'edit', 1, 'agent', 'chat:s1/a', 'e', ?)",
+      [base_codec::json_num(10.0), base_codec::json_num((100 + k).to_double()), base_codec::json_num((2000 + k).to_double())],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let sp_503 = match outflow_messages(
+    db,
+    client,
+    root,
+    "/",
+    base_codec::json_obj([
+      ("thread", base_codec::json_num(10.0)),
+      ("after", base_codec::json_num(50.0)),
+      ("limit", base_codec::json_num(2.0)),
+      ("messagesOnly", base_codec::json_bool(true)),
+      ("ws", base_codec::json_obj([("workspace", base_codec::json_str("ws1")), ("home", base_codec::json_bool(false))])),
+    ]),
+  ) {
+    Err(readops_core::ReadError::Refused(503, m)) => readops_core::str_has_prefix(m, readops_core::PAGE_LETTER_PENDING)
+    _ => false
+  }
+  let still_usable = match readops_core::one(db, "SELECT 1 AS x FROM threads WHERE id = 10", []) {
+    Ok(Some(_)) => true
+    _ => false
+  }
+  match check(sp_503 && still_usable, "page_keys_after 503 + savepoint_swallow_err leaves db usable", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+
+  // 28: historyUnavailable on a DB without usage_15m_meta
+  let db2 = match sql_db::Db::create(root + "/no_history.db") {
+    Ok(d) => d
+    Err(e) => return Err("open no_history db failed: " + e.message)
+  }
+  let min_stmts : Array[String] = [
+    "CREATE TABLE usage_span(id INTEGER PRIMARY KEY, first_at INTEGER)",
+    "CREATE TABLE usage_15m_meta_unused(id INTEGER)",
+    "CREATE TABLE usage_15m(scope TEXT, quarter INTEGER, session TEXT, thread INTEGER, person TEXT, profile TEXT, runtime TEXT, model TEXT, fast INTEGER, calls INTEGER, input INTEGER, cache_read INTEGER, cache_write INTEGER, cache_write_long INTEGER, output INTEGER)",
+    "CREATE TABLE remote_run_progress(id INTEGER PRIMARY KEY, done INTEGER)",
+  ]
+  for i in 0..<min_stmts.length() {
+    match db_exec_ok(db2, min_stmts[i], []) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  // Note: usage_page_json_str calls detail_since which queries usage_15m_meta unless metadata=false;
+  // check usage_history directly returns Null when usage_15m_meta is absent!
+  let hist_unavail = match usage_history(db2, 0.to_int64(), None, None) {
+    Ok(base_codec::Json::Null) => true
+    _ => false
+  }
+  match check(hist_unavail, "usage_history returns Null (historyUnavailable) when usage_15m_meta absent", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let _ = db2.close()
+
+  // 29-30: Non-finite float -> null & shortlex ordering sanity on linked binary
   let nf_str = js_json::stringify(
     normalize_jval(
       js_json::JValue::Obj([
