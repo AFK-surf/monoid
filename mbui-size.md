@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [349bfc261](https://github.com/AFK-surf/monoid/commit/349bfc26181b0a0352576c81b8d3ae11c5653caa) fix(ci): hand stable monoid Android through compan | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [4ae5e6995](https://github.com/AFK-surf/monoid/commit/4ae5e699587c2008dec7ea2d17c2d52aca6d5fec) fix(ci): recognize git fetch RPC transport failure | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [436044f40](https://github.com/AFK-surf/monoid/commit/436044f4002efe8787fdf72f2b3734abdbdaf07f) feat(station): manage third-party MCP servers in s | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [9fb941213](https://github.com/AFK-surf/monoid/commit/9fb94121389408c2413c934767841767cb4d1c2e) fix(ci): split stable Mac signing and notarization | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [95367d01d](https://github.com/AFK-surf/monoid/commit/95367d01d6d1c86ddce0fbc15cc0fac82deb1292) feat(core,station): add carried /preset-projects,  | 2.54 | 3.44 | 14.21 | 36.81 | 55.6 | 32.15 | 65 | 100.73 | 130.67 |
 | [3c721caa7](https://github.com/AFK-surf/monoid/commit/3c721caa78fac2cd3fe647d833878c1c16895b6d) feat(station,app): set the backup upload limit in  | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.12 | 65 | 100.75 | 129.12 |
 | [9b4644fec](https://github.com/AFK-surf/monoid/commit/9b4644fec99fec4d2fe14c41cd42420405580047) perf(mbui): move desktop URL and file launches off | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.12 | 65 | 100.75 | 129.12 |
-| [1a4f2bb4f](https://github.com/AFK-surf/monoid/commit/1a4f2bb4fff0c4a60902d952dd0c4ba1601ec59c) fix(station): take the archive-marks busy test's l | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.12 | 65 | 100.75 | 129.12 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [349bfc261](https://github.com/AFK-surf/monoid/commit/349bfc26181b0a0352576c81b8d3ae11c5653caa) fix(ci): hand stable monoid Android through compan | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.9 |
 | [4ae5e6995](https://github.com/AFK-surf/monoid/commit/4ae5e699587c2008dec7ea2d17c2d52aca6d5fec) fix(ci): recognize git fetch RPC transport failure | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.9 |
 | [436044f40](https://github.com/AFK-surf/monoid/commit/436044f4002efe8787fdf72f2b3734abdbdaf07f) feat(station): manage third-party MCP servers in s | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.64 |
 | [9fb941213](https://github.com/AFK-surf/monoid/commit/9fb94121389408c2413c934767841767cb4d1c2e) fix(ci): split stable Mac signing and notarization | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.35 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [95367d01d](https://github.com/AFK-surf/monoid/commit/95367d01d6d1c86ddce0fbc15cc0fac82deb1292) feat(core,station): add carried /preset-projects,  | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.39 |
 | [3c721caa7](https://github.com/AFK-surf/monoid/commit/3c721caa78fac2cd3fe647d833878c1c16895b6d) feat(station,app): set the backup upload limit in  | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.3 |
 | [9b4644fec](https://github.com/AFK-surf/monoid/commit/9b4644fec99fec4d2fe14c41cd42420405580047) perf(mbui): move desktop URL and file launches off | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.25 |
-| [1a4f2bb4f](https://github.com/AFK-surf/monoid/commit/1a4f2bb4fff0c4a60902d952dd0c4ba1601ec59c) fix(station): take the archive-marks busy test's l | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.64 |
