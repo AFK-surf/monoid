@@ -30,9 +30,11 @@ import { AdbActivity, KEEP_LENDING, KEEP_TCP, TCP_PORT } from "./activity.ts";
 
 type Json = any;
 
+export type PortRange = { start: number; end: number };
+
 /// Where a phone's port is looked for first: the same phone gets the same one while it is free, so what an agent
 /// wrote down of it (`adb -s 127.0.0.1:37xxx`) holds across offers.
-export const PORTS = { start: 37000, end: 38000 };
+export const PORTS: PortRange = { start: 37000, end: 38000 };
 /// How long the phone has to take a tunnel stream and reach its adbd.
 const TUNNEL_OPEN = 10_000;
 /// How long adb has to answer: a look at its state, and what reaches the phone (`connect`, `pair`, `shell`).
@@ -74,6 +76,8 @@ export type SharesOptions = {
   stated?: (email: string, state: AdbState | null) => void;
   /// Actual commands or data on a grant's adb transport; not an automatic connection or maintenance.
   used?: (grant: string, force: boolean) => void;
+  /// Port range `bind` picks a phone's usual port from (default: `PORTS`).
+  ports?: PortRange;
 };
 
 let nextOffer = 1;
@@ -377,7 +381,7 @@ async function offer(shares: Shares, conn: Connection, viewer: Viewer, device: s
     share.lang = asked;
     share.offer = number;
   } else {
-    const server = await bind(device);
+    const server = await bind(device, shares.options.ports);
     share = new Share(server, viewer, info, conn, asked, number);
     share.onSet = (state) => shares.options.stated?.(viewer.email, state);
     // Another offer of the same phone may have come while this one bound its port: the first in keeps it.
@@ -508,14 +512,15 @@ function about(conn: Connection): Record<string, string> {
 }
 
 /// The port a phone asks for first, even when a listener already holds it.
-export function usualPort(device: string): number {
+export function usualPort(device: string, ports: PortRange = PORTS): number {
+  if (ports.end <= ports.start) throw new RangeError(`invalid port range: ${ports.start}..${ports.end}`);
   const hash = createHash("sha256").update(device).digest();
-  return PORTS.start + (((hash[0] << 8) | hash[1]) % (PORTS.end - PORTS.start));
+  return ports.start + (((hash[0] << 8) | hash[1]) % (ports.end - ports.start));
 }
 
 /// A port of the phone's own: its usual one if free, else any.
-export async function bind(device: string): Promise<net.Server> {
-  const usual = usualPort(device);
+export async function bind(device: string, ports: PortRange = PORTS): Promise<net.Server> {
+  const usual = usualPort(device, ports);
   // An offer from before (the station handed over to a new one) may hold it a moment yet: tried 5 times, each miss
   // waited 500 ms after.
   // (on `wall`, as the program's `bind` waits on its world's clock: a test's time moves both the same)

@@ -24,15 +24,20 @@ const viewer: Viewer = { sub: "u1", email: "pat@example.com", name: "Pat", role:
 // tests at once on this machine would otherwise share, each one's adb and tunnels reaching the other's.
 const PHONE = randomBytes(32).toString("hex");
 
-/// A phone of this run's own whose usual port nothing on this machine holds now: other test processes' ephemeral ports
-/// fall in `PORTS` too (Linux gives 32768-60999), and `bind` then waits 5 x 500 ms and takes a port outside it.
-async function freePhone(): Promise<string> {
+/// Outside both Linux (32768-60999) and macOS (49152-65535) ephemeral port ranges so parallel test processes'
+/// outgoing sockets or `listen(0)` servers cannot steal a phone's usual port between `freePhone` and `bind`.
+const TEST_PORTS = { start: 27000, end: 28000 };
+const testShares = (options: ConstructorParameters<typeof Shares>[0] = {}) => new Shares({ ports: TEST_PORTS, ...options });
+
+/// A phone of this run's own whose usual port in `ports` nothing on this machine holds now.
+/// Pass `prefix` (`"${viewer.sub}/"`) when `answerAdb` will hash `key(viewer, conn, ask)` instead of raw `phone`.
+async function freePhone(ports = TEST_PORTS, prefix = ""): Promise<string> {
   for (let i = 0; i < 64; i++) {
     const candidate = randomBytes(32).toString("hex");
     const server = net.createServer();
     const free = await new Promise<boolean>((resolve) => {
       server.once("error", () => resolve(false));
-      server.listen({ host: "127.0.0.1", port: usualPort(candidate), exclusive: true }, () => resolve(true));
+      server.listen({ host: "127.0.0.1", port: usualPort(`${prefix}${candidate}`, ports), exclusive: true }, () => resolve(true));
     });
     if (free) {
       await new Promise((r) => server.close(r));
@@ -137,7 +142,7 @@ const nowhere = { remoteId: () => "ef".repeat(32), closed: () => new Promise<str
 const asking = (adb: any, headers: Record<string, string> = {}) => ({ method: "POST", path: "/admin/api/adb", headers, adb });
 
 test("station handover closes a phone's live TCP tunnels without waiting for adb to disconnect", async () => {
-  const shares = new Shares({ adb: () => null });
+  const shares = testShares({ adb: () => null });
   const mesh = await link(shares);
   let socket: net.Socket | undefined;
   let accepted: net.Socket | undefined;
@@ -181,13 +186,15 @@ test("takes only plain package names", () => {
 
 test("gives a phone its usual port while it is free", async () => {
   // A phone of this run's own whose usual port is free (another run at once would hold the same usual port).
-  const phone = await freePhone();
-  const first = await bind(phone);
+  const phone = await freePhone(TEST_PORTS);
+  const prodPort = usualPort(phone);
+  assert.ok(prodPort >= PORTS.start && prodPort < PORTS.end);
+  const first = await bind(phone, TEST_PORTS);
   const port = (first.address() as net.AddressInfo).port;
-  assert.equal(port, usualPort(phone));
-  assert.ok(port >= PORTS.start && port < PORTS.end);
+  assert.equal(port, usualPort(phone, TEST_PORTS));
+  assert.ok(port >= TEST_PORTS.start && port < TEST_PORTS.end);
   await new Promise((r) => first.close(r));
-  const again = await bind(phone);
+  const again = await bind(phone, TEST_PORTS);
   assert.equal((again.address() as net.AddressInfo).port, port);
   again.close();
 });
@@ -199,7 +206,7 @@ test("says of itself only one short line", () => {
 });
 
 test("an ask about no offer, or an unknown one, is answered in the asker's language", async () => {
-  const shares = new Shares();
+  const shares = testShares();
   const unknown = new Memory();
   await answerAdb(shares, nowhere, viewer, asking({ op: "what" }), unknown as unknown as Stream);
   assert.deepEqual(unknown.lines(), [{ status: 400, headers: { "content-type": "application/json" } }, { message: "无法识别的 adb 请求" }]);
@@ -211,7 +218,7 @@ test("an ask about no offer, or an unknown one, is answered in the asker's langu
 
 test("without adb the offer says missing; a phone the station cannot reach says why", async () => {
   const time = testClock();
-  const missing = new Shares({ adb: () => null, clock: time.clock });
+  const missing = testShares({ adb: () => null, clock: time.clock });
   const stream = new Memory();
   const offered = answerAdb(missing, nowhere, viewer, asking({ op: "share", phone: PHONE, device: "Pixel 8" }), stream as unknown as Stream);
   const said = await until(() => stream.lines().find((l) => l.adb === "missing"));
@@ -228,7 +235,7 @@ test("without adb the offer says missing; a phone the station cannot reach says 
 
   // Its tunnel refused (here: no stream on the connection), adb not getting in is put down to that.
   const adb = fakeAdb();
-  const shares = new Shares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
+  const shares = testShares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
   const failing = new Memory();
   const offer = answerAdb(shares, nowhere, viewer, asking({ op: "share", phone: PHONE }), failing as unknown as Stream);
   // The tunnel turned down: no use waiting SETTLE out, and adb is let go of (it would go on dialling).
@@ -253,7 +260,7 @@ test("without adb the offer says missing; a phone the station cannot reach says 
 
 test("a phone whose connection answers nothing for SILENT_MS is let go; one that answers is kept", async () => {
   const time = testClock();
-  const shares = new Shares({ adb: () => null, clock: time.clock });
+  const shares = testShares({ adb: () => null, clock: time.clock });
   let answering = true;
   const quiet = { ...nowhere, isClosed: () => false, answers: async () => answering } as unknown as Connection;
   const stream = new Memory();
@@ -280,7 +287,7 @@ test("a phone whose connection answers nothing for SILENT_MS is let go; one that
 test("Wireless debugging off: adb is not left trying, and the offer says so", async () => {
   const adb = fakeAdb();
   const time = testClock();
-  const shares = new Shares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
+  const shares = testShares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
   const stream = new Memory();
   const offer = answerAdb(shares, nowhere, viewer, asking({ op: "share", phone: PHONE, adbd: false }, { "stillfail-lang": "en-US" }), stream as unknown as Stream);
   const off = await until(() => stream.lines().find((l) => l.adb === "off"));
@@ -295,7 +302,7 @@ test("Wireless debugging off: adb is not left trying, and the offer says so", as
 
 test("a newer offer of the same phone takes the older's place, its port and all", async () => {
   const time = testClock();
-  const shares = new Shares({ adb: () => null, clock: time.clock });
+  const shares = testShares({ adb: () => null, clock: time.clock });
   const first = new Memory();
   const second = new Memory();
   const one = answerAdb(shares, nowhere, viewer, asking({ op: "share", phone: PHONE, device: "A" }), first as unknown as Stream);
@@ -330,7 +337,7 @@ test("a newer offer of the same phone takes the older's place, its port and all"
 test("offers again as the phone's link moves: adb is asked again only when Wireless debugging changes", async () => {
   const adb = fakeAdb();
   const time = testClock();
-  const shares = new Shares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
+  const shares = testShares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
   const mesh = await link(shares);
   const connects = () => adb.calls().filter((c) => c[0] === "connect").length;
   const reaches = async (reader: { line(): Promise<any> }, adbState: string) => {
@@ -376,7 +383,7 @@ test("the station removed from its workspace ends offers at once", async () => {
   let removed = false;
   const listeners = new Set<() => void>();
   const time = testClock();
-  const shares = new Shares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock, cloud: { removed: () => removed, listen: (f) => (listeners.add(f), () => listeners.delete(f)) } });
+  const shares = testShares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock, cloud: { removed: () => removed, listen: (f) => (listeners.add(f), () => listeners.delete(f)) } });
   const stream = new Memory();
   const offer = answerAdb(shares, nowhere, viewer, asking({ op: "share", phone: PHONE }), stream as unknown as Stream);
   await until(() => stream.lines().find((l) => l.adb === "failed"));
@@ -555,9 +562,9 @@ function through(port: number, line: string): Promise<string> {
 test("a phone offered over the mesh: adb connects through its tunnel, asks reach it, and it goes after GRACE", async () => {
   const adb = fakeAdb();
   const time = testClock();
-  const shares = new Shares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
+  const shares = testShares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
   const mesh = await link(shares);
-  const phone = await freePhone();
+  const phone = await freePhone(TEST_PORTS, `${viewer.sub}/`);
   try {
     const offer = { op: "share", phone, device: "Pixel\n8", android: "14", package: "fail.still.android", adbd: true, pair: true };
     const { stream: offered, reader } = await mesh.ask(offer);
@@ -568,7 +575,7 @@ test("a phone offered over the mesh: adb connects through its tunnel, asks reach
     assert.deepEqual(Object.keys(state), ["serial", "adb", "message"]);
     const serial: string = state.serial;
     const port = Number(serial.split(":")[1]);
-    assert.ok(serial.startsWith("127.0.0.1:") && port >= PORTS.start && port < PORTS.end, `serial ${serial}`);
+    assert.ok(serial.startsWith("127.0.0.1:") && port === usualPort(`${viewer.sub}/${phone}`, TEST_PORTS) && port >= TEST_PORTS.start && port < TEST_PORTS.end, `serial ${serial}`);
     // adb was told, and its connection reached the phone as a tunnel stream, bytes both ways.
     assert.deepEqual(adb.calls().slice(0, 3), [["-s", serial, "get-state"], ["disconnect", serial], ["connect", serial]]);
     assert.deepEqual(adb.dialed(), ["phone:CNXN"]);
@@ -640,7 +647,7 @@ test("a phone offered over the mesh: adb connects through its tunnel, asks reach
 test("over the mesh: a phone adb is not paired with, or whose adbd turned the tunnel down", async () => {
   const adb = fakeAdb({ "on-connect": "offline" });
   const time = testClock();
-  const shares = new Shares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
+  const shares = testShares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
   const mesh = await link(shares);
   try {
     const { stream, reader } = await mesh.ask({ op: "share", phone: PHONE }, { "stillfail-lang": "en", "stillfail-build": "0.1.0" });
@@ -679,7 +686,7 @@ test("over the mesh: a phone adb is not paired with, or whose adbd turned the tu
 test("over the mesh: a phone pairing itself says it is not paired yet, in its own words", async () => {
   const adb = fakeAdb({ "on-connect": "offline" });
   const time = testClock();
-  const shares = new Shares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
+  const shares = testShares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
   const mesh = await link(shares);
   try {
     mesh.phoneSide.refuse = "这台手机还没有配对：在共享调试页用配对码配对一次";
@@ -701,7 +708,7 @@ test("over the mesh: a phone pairing itself says it is not paired yet, in its ow
 test("a phone paired with its own adb is connected when it offers itself again", async () => {
   const adb = fakeAdb();
   const time = testClock();
-  const shares = new Shares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
+  const shares = testShares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
   const mesh = await link(shares);
   try {
     mesh.phoneSide.refuse = "not paired on the phone";
@@ -737,7 +744,7 @@ test("a phone paired with its own adb is connected when it offers itself again",
 test("a phone paired while the previous connection is pending is tried again", async () => {
   const adb = fakeAdb();
   const time = testClock();
-  const shares = new Shares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
+  const shares = testShares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
   const mesh = await link(shares);
   const release = Promise.withResolvers<void>();
   try {
@@ -773,7 +780,7 @@ test("a phone paired while the previous connection is pending is tried again", a
 
 test("adbd's plain port is asked for once a boot, and not where the phone is held on it already", async () => {
   const adb = fakeAdb({ "tcp-kept": "no" });
-  const shares = new Shares({ adb: () => adb.path, limits: UNLIMITED });
+  const shares = testShares({ adb: () => adb.path, limits: UNLIMITED });
   const share = { info: { connect: 40001 }, serial: () => "127.0.0.1:7000", conn: {} } as any;
   const tcpips = () => adb.calls().filter((c) => c[2] === "tcpip").length;
   try {

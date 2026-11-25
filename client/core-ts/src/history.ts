@@ -1797,6 +1797,7 @@ export function activity(live: J, stations?: ReadonlyMap<string, string>): J {
     if (s(e, "kind") === "user") turn = i;
   });
   let call: [string, string, boolean] | null = null;
+  let loading = false;
   let replying = false;
   const known: Known = { stations, tasks: tasksOf(timeline), agents: agentsOf(timeline) };
   for (const st of pair(timeline).steps) {
@@ -1806,8 +1807,15 @@ export function activity(live: J, stations?: ReadonlyMap<string, string>): J {
     if (name === "chat_post") replying = true;
     else if (name !== "chat_state") {
       const important = importantCall(s(e, "tool"), s(e, "text"));
+      // Loading tools takes no time: when it waits it waits on a call before it in the same batch (Claude Code runs a
+      // command first and gives their results together), so it never hides that call.
+      const load = name === "ToolSearch" || name === "search_tool";
+      if (load && call !== null) continue;
       // Of simultaneous steps, keep the most consequential; among equals, show the latest.
-      if (call === null || important || !call[2]) call = [s(e, "callId") || `call:${st.call}`, doing(s(e, "tool"), s(e, "text"), known), important];
+      if (call === null || loading || important || !call[2]) {
+        call = [s(e, "callId") || `call:${st.call}`, doing(s(e, "tool"), s(e, "text"), known), important];
+        loading = load;
+      }
     }
   }
   const { liveSteps, phase } = pushed(live, "");

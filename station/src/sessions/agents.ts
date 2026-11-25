@@ -24,6 +24,7 @@ import { PiDriver } from "../agents/pi.ts";
 import { AGY_TOOL_BUDGET, AgyDriver, agyRenew } from "../agents/agy.ts";
 import { type RuntimeKind, runtimeKind } from "../agents/runtime.ts";
 import { DevinDriver } from "../agents/devin.ts";
+import { CopilotDriver } from "../agents/copilot.ts";
 import { Jobs, notifyEndpoint, screenEndpoint } from "../jobs/jobs.ts";
 import { liveMemory } from "../jobs/memory.ts";
 import { WorkspaceWatch, workspaceWorking, type WorkspaceReading } from "../jobs/workspace-size.ts";
@@ -272,6 +273,7 @@ export const AgentsLive = (control: Control) =>
       // What other stations of the workspace share with this one, and what it shares (made below, once the accounts are).
       let sharing: Sharing | null = null;
       const borrowed = (p: unknown) => sharing?.borrowedSubscription(p) === true;
+      const copilot = new CopilotDriver({ data });
       const hermes = new HermesDriver({ data });
       const agy = new AgyDriver({ data, lent: { borrowed: (p) => borrowed(p), write: (p) => sharing!.lendAgy(p) } });
       // What the station before this one left, taken up (`start`): until then the codex app-servers its runners keep are
@@ -343,6 +345,7 @@ export const AgentsLive = (control: Control) =>
           new GrokDriver({ data }),
           new CursorDriver({ data }),
           new DevinDriver({ data }),
+          copilot,
           hermes,
           agy,
           new PiDriver({ data }),
@@ -672,7 +675,7 @@ export const AgentsLive = (control: Control) =>
       let loginLost: ((lost: LoginLost) => void) | null = null;
       let loginBack: ((id: string) => void) | null = null;
       const accounts: Accounts = makeAccounts({
-        data, store, config, hub, reviewUndecided: () => startReview(hub), codex: () => codex as any, hermes: () => hermes, agy: () => agy, following: () => events.inUse() || hub.anyRunning(), checkOnStart: true,
+        data, store, config, hub, reviewUndecided: () => startReview(hub), codex: () => codex as any, hermes: () => hermes, agy: () => agy, copilot: () => copilot, following: () => events.inUse() || hub.anyRunning(), checkOnStart: true,
         workspaces: () => hub.workspaces(),
         claudeVersion: () => updates.get().find((v) => v.id === "claude")?.version ?? null,
         loginLost: (lost) => loginLost?.(lost),

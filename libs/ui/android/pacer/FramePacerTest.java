@@ -1840,6 +1840,148 @@ public final class FramePacerTest {
                 "inPaced=" + inPaced + ", liftedEarly=" + liftedEarly + ", ok1=" + ok1 + ", ok2=" + ok2);
     }
 
+    /** 25. Perf-47: fireWake exact boundary across 60/90/120 Hz, pacedOnly false/true, LTPO 60->120 & 120->20, jitter, ahead, and postDelayed truncation. */
+    static void fireWakeExactBoundaryCase() {
+        // (a) Strict boundary (at - 0.49 ms, at - 0.25 ms, at - 1 ns => return 1, 0 renders; at == vsync & > at => return 2, 1 frame, now >= at)
+        //     across 60/90/120 Hz and pacedOnly = false / true.
+        double[] freqs = {60.0, 90.0, 120.0};
+        boolean boundaryOk = true;
+        for (double hz : freqs) {
+            for (boolean pacedOnly : new boolean[] {false, true}) {
+                Phone ph = new Phone(hz, 3, true, 200_000);
+                double atMs = 200.0;
+                long atNs = 200_000_000L;
+                FramePacer.WakeReq req = ph.pacer.scheduleWake(atMs, pacedOnly);
+                int r1 = ph.pacer.fireWake(req, atNs - 490_000L, atNs + 2 * ph.period);
+                int r2 = ph.pacer.fireWake(req, atNs - 250_000L, atNs + 2 * ph.period);
+                int r3 = ph.pacer.fireWake(req, atNs - 1L, atNs + 2 * ph.period);
+                int reqsBefore = ph.renderRequests;
+                boolean stillCurrent = ph.pacer.isWakeCurrent(req);
+                int rExact = ph.pacer.fireWake(req, atNs, atNs + 2 * ph.period);
+                int reqsAfter = ph.renderRequests;
+                int rStale = ph.pacer.fireWake(req, atNs + ph.period, atNs + 3 * ph.period);
+                FramePacer.Taken tk = ph.pacer.takeRender();
+                FramePacer.Begun b = ph.pacer.begin(tk.vsyncAt, atNs + 100_000L, tk.external);
+                boolean exactOk = r1 == 1 && r2 == 1 && r3 == 1 && reqsBefore == 0 && stillCurrent
+                        && rExact == 2 && reqsAfter == 1 && rStale == 0 && b.now >= atMs;
+
+                // First vsync strictly past atMs also fires once with now >= atMs.
+                FramePacer.WakeReq req2 = ph.pacer.scheduleWake(atMs + 50.0, pacedOnly);
+                long afterNs = 250_000_000L + 1_234_567L;
+                int rPast = ph.pacer.fireWake(req2, afterNs, afterNs + 2 * ph.period);
+                FramePacer.Taken tk2 = ph.pacer.takeRender();
+                FramePacer.Begun b2 = ph.pacer.begin(tk2.vsyncAt, afterNs + 100_000L, tk2.external);
+                boolean pastOk = rPast == 2 && b2.now >= atMs + 50.0;
+                if (!exactOk || !pastOk) boundaryOk = false;
+            }
+        }
+
+        // (b) LTPO 60 -> 120 Hz counterexample: framePeriod = 16.667 ms, T = 100 ms, at = 115 ms;
+        //     actual next vsyncs at 108.333 ms (display switched to 120 Hz) and 116.667 ms.
+        //     108.333 ms must NOT render (0 renders), 116.667 ms renders exactly 1 frame.
+        Phone ltpoUp = new Phone(120, 3, true, 200_000);
+        ltpoUp.pacer.framePeriod = 16_666_667L;
+        FramePacer.WakeReq upReq = ltpoUp.pacer.scheduleWake(115.0, false);
+        int r100 = ltpoUp.pacer.fireWake(upReq, 100_000_000L, 133_333_334L);
+        int r108 = ltpoUp.pacer.fireWake(upReq, 108_333_333L, 125_000_000L);
+        int rendersBeforeDue = ltpoUp.renderRequests;
+        int r116 = ltpoUp.pacer.fireWake(upReq, 116_666_667L, 133_333_334L);
+        boolean ltpo60To120Ok = r100 == 1 && r108 == 1 && rendersBeforeDue == 0
+                && r116 == 2 && ltpoUp.renderRequests == 1 && ltpoUp.pacer.vsyncAt()[0] == 116_666_667L;
+
+        // (c) LTPO 120 <-> 20 Hz switch: framePeriod = 50 ms, T = 100 ms, at = 140 ms;
+        //     vsync at 100 ms (50 ms away) returns 1 (no pre-arming via framePeriod), 150 ms returns 2.
+        Phone ltpoDown = new Phone(120, 3, true, 200_000);
+        ltpoDown.pacer.framePeriod = 50_000_000L;
+        FramePacer.WakeReq downReq = ltpoDown.pacer.scheduleWake(140.0, true);
+        int d100 = ltpoDown.pacer.fireWake(downReq, 100_000_000L, 200_000_000L);
+        int d139 = ltpoDown.pacer.fireWake(downReq, 139_600_000L, 239_600_000L);
+        int dRendersBefore = ltpoDown.renderRequests;
+        int d150 = ltpoDown.pacer.fireWake(downReq, 150_000_000L, 250_000_000L);
+        boolean ltpo120To20Ok = d100 == 1 && d139 == 1 && dRendersBefore == 0
+                && d150 == 2 && ltpoDown.renderRequests == 1;
+
+        // (d) 120 Hz +/- 50 us jitter running 1 s steady clock (wakeAfter(100.0)): bounded 130-vsync simulation,
+        //     asserting every vsync before firstDueNs returns 1 with 0 renders, and firstDueNs returns 2 with
+        //     +1 renderRequest and begin(...).now >= targetMs.
+        Phone jitter = new Phone(120, 3, true, 200_000);
+        long[] vsyncGrid = new long[130];
+        for (int i = 0; i < vsyncGrid.length; i++) {
+            long idx = 13L + i;
+            long jitterNs = ((idx % 3) - 1) * 50_000L; // -50us, 0, +50us
+            vsyncGrid[i] = idx * jitter.period + jitterNs;
+        }
+        double baseMs = 100.0;
+        int steps = 10;
+        boolean jitterOk = true;
+        int cursor = 0;
+        for (int s = 0; s < steps; s++) {
+            double targetMs = baseMs + (s + 1) * 100.0;
+            // Independently find the first vsync in the bounded grid with vNs / 1e6 >= targetMs.
+            int firstDueIdx = -1;
+            for (int k = cursor; k < vsyncGrid.length; k++) {
+                if (vsyncGrid[k] / 1e6 >= targetMs) {
+                    firstDueIdx = k;
+                    break;
+                }
+            }
+            if (firstDueIdx < 0) {
+                jitterOk = false;
+                break;
+            }
+            FramePacer.WakeReq req = jitter.pacer.scheduleWake(targetMs, false);
+            int prevRenders = jitter.renderRequests;
+            for (int k = cursor; k < firstDueIdx; k++) {
+                long vNs = vsyncGrid[k];
+                int res = jitter.pacer.fireWake(req, vNs, vNs + 2 * jitter.period);
+                if (res != 1 || jitter.renderRequests != prevRenders) jitterOk = false;
+            }
+            long dueNs = vsyncGrid[firstDueIdx];
+            int dueRes = jitter.pacer.fireWake(req, dueNs, dueNs + 2 * jitter.period);
+            if (dueRes != 2 || jitter.renderRequests != prevRenders + 1) jitterOk = false;
+            FramePacer.Taken tk = jitter.pacer.takeRender();
+            FramePacer.Begun b = jitter.pacer.begin(tk.vsyncAt, dueNs + 100_000L, tk.external);
+            if (!tk.app || b.now < targetMs) jitterOk = false;
+            cursor = firstDueIdx + 1;
+        }
+
+        // (e) ahead == true when fireWake(req, T < at) returns 1 must NOT steal current vsync.
+        Phone aheadPh = new Phone(120, 3, true, 200_000);
+        long tAhead = 12 * aheadPh.period;
+        aheadPh.pacer.vsyncCame(tAhead, tAhead + 2 * aheadPh.period); // sets ahead = true (no appWanted)
+        FramePacer.WakeReq aheadReq = aheadPh.pacer.scheduleWake(tAhead / 1e6 + 0.3, false);
+        int rAheadEarly = aheadPh.pacer.fireWake(aheadReq, tAhead, tAhead + 2 * aheadPh.period);
+        boolean aheadNoSteal = rAheadEarly == 1 && aheadPh.renderRequests == 0 && aheadPh.pacer.isWakeCurrent(aheadReq);
+        long tNext = 13 * aheadPh.period;
+        int rAheadDue = aheadPh.pacer.fireWake(aheadReq, tNext, tNext + 2 * aheadPh.period);
+        boolean aheadOk = aheadNoSteal && rAheadDue == 2 && aheadPh.renderRequests == 1;
+
+        // (f) Token replacement, same-deadline paced -> external upgrade, same-T dual callback order,
+        //     and postDelayed integer-ms truncation boundary (lead truncated down by < 1 ms).
+        Phone edge = new Phone(120, 3, true, 200_000);
+        FramePacer.WakeReq w1 = edge.pacer.scheduleWake(300.0, true);
+        // Same-deadline upgrade paced -> external mutates w1 in place and returns null.
+        FramePacer.WakeReq wUpgrade = edge.pacer.scheduleWake(300.0, false);
+        // Earlier deadline replaces w1.
+        FramePacer.WakeReq wEarlier = edge.pacer.scheduleWake(290.0, false);
+        int staleW1 = edge.pacer.fireWake(w1, 290_000_000L, 306_666_666L);
+        // postDelayed integer-ms truncation: e.g. at = 290.8 ms, callback wakes at vsync 290.0 ms (< 290.8) -> returns 1,
+        // then next vsync 298.333 ms (>= 290.8) -> returns 2.
+        FramePacer.WakeReq truncReq = edge.pacer.scheduleWake(289.8, false);
+        int truncBefore = edge.pacer.fireWake(truncReq, 289_000_000L, 305_666_666L);
+        int truncAt = edge.pacer.fireWake(truncReq, 290_000_000L, 306_666_666L);
+        // Same-T dual callback order: second fireWake at same T returns 0 (stale).
+        int truncDup = edge.pacer.fireWake(truncReq, 290_000_000L, 306_666_666L);
+        boolean edgeOk = w1 != null && wUpgrade == null && !w1.isPacedOnly()
+                && wEarlier != null && staleW1 == 0
+                && truncBefore == 1 && truncAt == 2 && truncDup == 0;
+
+        check("fireWake exact boundary across 60/90/120 Hz, LTPO 60->120 & 120->20, jitter, ahead, and truncation",
+                boundaryOk && ltpo60To120Ok && ltpo120To20Ok && jitterOk && aheadOk && edgeOk,
+                "boundary=" + boundaryOk + ", ltpo60To120=" + ltpo60To120Ok + ", ltpo120To20=" + ltpo120To20Ok
+                        + ", jitter=" + jitterOk + ", ahead=" + aheadOk + ", edge=" + edgeOk);
+    }
+
     public static void main(String[] args) throws IOException {
         motionCase("a motion of 1 ms CPU and 1 ms GPU a frame shows a new frame at every refresh", 1, 1, true);
         motionCase("a motion of 0.5 ms CPU and 7 ms GPU a frame (the GPU under a refresh) shows a new frame at every refresh", 0.5, 7, true);
@@ -1881,6 +2023,7 @@ public final class FramePacerTest {
         cpuDeltaAndGlWorkNanosCase();
         adpfTargetNanosAndTouchBoostCase();
         picturedPacedSurvivesEarlyRecheckCase();
+        fireWakeExactBoundaryCase();
         if (args.length > 0) {
             replay(args[0], 1);
             replay(args[0], 7);

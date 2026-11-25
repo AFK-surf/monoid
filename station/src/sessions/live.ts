@@ -14,9 +14,10 @@ import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BackgroundTask, LiveEvent, PlanItem } from "../agents/runtime.ts";
-import { liveClock } from "../ops/fibers.ts";
+import { liveClock, wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { type Answer, MbReader, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
+import { type Answer, MbReader, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
+import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import type { TailState, TimelineEntry, TranscriptRef } from "../read/transcript.ts";
 import { type SessionUsage, noUsage } from "../read/usage.ts";
@@ -488,7 +489,7 @@ export class OwnReader {
   #starting: Promise<MbReader> | null = null;
   readonly #readers: ReaderSelectConfig | (() => ReaderSelectConfig) | undefined;
   /// What is asked and not answered yet, of which process.
-  readonly #waiting = new Map<number, { reader: MbReader; resolve: (answer: Json) => void; reject: (error: Error) => void }>();
+  readonly #waiting = new Map<number, { reader: MbReader; resolve: (answer: Json) => void; reject: (error: Error) => void; at: number }>();
   #next = 0;
   #closed = false;
   /// Readers being ended and not gone yet (one ended as its last answer came): `close` waits for them before it takes
@@ -510,7 +511,8 @@ export class OwnReader {
     const reader = this.#reader ?? (await (this.#starting ??= this.#startAsync(dir)));
     if (this.#closed) throw new Error("the live view is closed");
     const id = ++this.#next;
-    const answered = new Promise<Json>((resolve, reject) => this.#waiting.set(id, { reader, resolve, reject }));
+    const at = wall.now();
+    const answered = new Promise<Json>((resolve, reject) => this.#waiting.set(id, { reader, resolve, reject, at }));
     reader.postMessage({ id, op, args, lang: "zh", names: [], processes: [], clientKeys: [] });
     return answered;
   }
@@ -526,7 +528,7 @@ export class OwnReader {
       const sel = await resolveReaderSelectionAsync("data", { config: this.#readers, logAt: "live" });
       if (this.#closed) throw new Error("the live view is closed");
       if (this.#reader !== null) return this.#reader;
-      const reader = this.#start(sel.primaryBinary, dir);
+      const reader = this.#start(sel.primaryBinary, dir, engineOfSelection(sel), fallbackModeOf(sel.selection));
       this.#reader = reader;
       return reader;
     } finally {
@@ -534,13 +536,15 @@ export class OwnReader {
     }
   }
 
-  #start(binary: string, dir: string): MbReader {
-    const reader = new MbReader(binary, dir);
+  #start(binary: string, dir: string, engine?: TelemetryEngine, fallbackMode?: string): MbReader {
+    const reader = new MbReader(binary, dir, { engine, fallbackMode });
     const ended = (error: Error) => {
       if (this.#reader === reader) this.#reader = null;
+      const now = wall.now();
       for (const [id, w] of this.#waiting) {
         if (w.reader !== reader) continue;
         this.#waiting.delete(id);
+        if (!this.#closed) readerTelemetry.recordCall(reader.engine, reader.mode, now - w.at, false);
         w.reject(error);
       }
     };
@@ -554,11 +558,16 @@ export class OwnReader {
         this.#reader = null;
         this.#end(reader);
       }
-      if (said.error !== undefined) waiting.reject(new Error(said.error));
-      else {
+      if (said.error !== undefined) {
+        readerTelemetry.recordCall(reader.engine, reader.mode, wall.now() - waiting.at, false);
+        waiting.reject(new Error(said.error));
+      } else {
         try {
-          waiting.resolve(JSON.parse(said.body !== undefined ? said.body.toString("utf8") : (said.text ?? "null")));
+          const parsed = JSON.parse(said.body !== undefined ? said.body.toString("utf8") : (said.text ?? "null"));
+          readerTelemetry.recordCall(reader.engine, reader.mode, wall.now() - waiting.at, true);
+          waiting.resolve(parsed);
         } catch (error) {
+          readerTelemetry.recordCall(reader.engine, reader.mode, wall.now() - waiting.at, false);
           waiting.reject(error as Error);
         }
       }

@@ -251,6 +251,8 @@ pub fn transcript_dir(runtime : String) -> String {
     "agy/sessions"
   } else if runtime == "pi" {
     "pi/sessions"
+  } else if runtime == "copilot" {
+    "copilot/sessions"
   } else {
     "dsh-sessions"
   }
@@ -266,7 +268,8 @@ pub fn runtime_kind(runtime : String) -> Bool {
   runtime == "devin" ||
   runtime == "hermes" ||
   runtime == "agy" ||
-  runtime == "pi"
+  runtime == "pi" ||
+  runtime == "copilot"
 }
 
 /// `transcript.ts` `claudeProject`: each UTF-16 code unit other than ASCII letter/digit becomes `-`,
@@ -467,7 +470,7 @@ fn Finder::transcript_in(
   if runtime == "grok" {
     return self.grok(dir, id)
   }
-  if runtime == "cursor" || runtime == "devin" || runtime == "hermes" || runtime == "agy" || runtime == "pi" {
+  if runtime == "cursor" || runtime == "devin" || runtime == "hermes" || runtime == "agy" || runtime == "pi" || runtime == "copilot" {
     let path = self.join([dir, id + ".jsonl"])
     return if self.kept(path) { Some(path) } else { None }
   }

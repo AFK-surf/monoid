@@ -40,7 +40,8 @@ import { LAST_MESSAGE_PENDING, LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_L
 import { HttpError } from "./views.ts";
 import { repairMergedEditLookup } from "../store/schema.ts";
 import { EventEmitter } from "node:events";
-import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "./mb-reader.ts";
+import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "./mb-reader.ts";
+import { type TelemetryEngine, readerTelemetry } from "./reader-telemetry.ts";
 import { wall } from "../ops/fibers.ts";
 import { roots as machineRoots } from "./machine.ts";
 import { platform } from "../platform/index.ts";
@@ -60,7 +61,7 @@ const SLOW_MS = 2_000;
 
 /// `held`: the read it is answering, if any.
 /// `binary`: the resolved binary path spawned for this slot (used to retire idle slots on hot config change).
-type Slot = { worker: ReaderLike; held: Asked | null; idle?: () => void; retiring?: boolean; catalogVersion: number; binary?: string };
+type Slot = { worker: ReaderLike; held: Asked | null; idle?: () => void; retiring?: boolean; catalogVersion: number; binary?: string; engine?: TelemetryEngine; spawnedAt?: number };
 
 /// Deferred `ReaderLike` handle that reserves a pool `Slot` while a cold Pion `--version`
 /// capability probe is in flight, without calling `readerBinary()` synchronously.
@@ -70,17 +71,19 @@ class DeferredMbReader extends EventEmitter implements ReaderLike {
   #queued: Ask[] = [];
   #terminated = false;
   #exited = false;
-  readonly #onSpawned: (binary: string) => void;
+  readonly #onSpawned: (binary: string, engine: TelemetryEngine, spawnedAt: number) => void;
 
-  constructor(data: string, resolveSelection: () => Promise<string>, onSpawned: (binary: string) => void) {
+  constructor(data: string, resolveSelection: () => Promise<ResolvedReaderSelection>, onSpawned: (binary: string, engine: TelemetryEngine, spawnedAt: number) => void) {
     super();
     this.#onSpawned = onSpawned;
     void resolveSelection().then(
-      (binary) => {
+      (resolved) => {
         if (this.#terminated || this.#exited) return;
         let child: MbReader;
+        const engine = engineOfSelection(resolved);
+        const spawnedAt = wall.now();
         try {
-          child = new MbReader(binary, data);
+          child = new MbReader(resolved.primaryBinary, data, { engine, fallbackMode: fallbackModeOf(resolved.selection) });
         } catch (err) {
           this.#exited = true;
           this.emit("error", err instanceof Error ? err : new Error(String(err)));
@@ -88,7 +91,7 @@ class DeferredMbReader extends EventEmitter implements ReaderLike {
           return;
         }
         this.#inner = child;
-        this.#onSpawned(binary);
+        this.#onSpawned(resolved.primaryBinary, child.engine, spawnedAt);
         child.on("message", (msg) => this.emit("message", msg));
         child.on("error", (err) => this.emit("error", err));
         child.on("exit", (code) => {
@@ -382,10 +385,15 @@ export class Readers {
   private start(line: Line): { slot: Slot } | { error: Error } {
     let worker: ReaderLike;
     let spawnedBinary: string | undefined;
+    let spawnedEngine: TelemetryEngine | undefined;
+    let spawnedAt: number | undefined;
     if (this.#explicitOverride) {
       if (this.#explicitBinary !== null) {
         spawnedBinary = this.#explicitBinary;
-        worker = new MbReader(this.#explicitBinary, this.data);
+        spawnedAt = wall.now();
+        const reader = new MbReader(this.#explicitBinary, this.data);
+        spawnedEngine = reader.engine;
+        worker = reader;
       } else if (this.reference !== undefined) {
         worker = this.reference(this.data);
       } else {
@@ -399,25 +407,31 @@ export class Readers {
         if (sel.pending) {
           worker = new DeferredMbReader(
             this.data,
-            () => resolveReaderSelectionAsync("data", { config: this.backfill.readers, logAt: "readers" }).then((r) => r.primaryBinary),
-            (bin) => { slot.binary = bin; },
+            () => resolveReaderSelectionAsync("data", { config: this.backfill.readers, logAt: "readers" }),
+            (bin, eng, at) => { slot.binary = bin; slot.engine = eng; slot.spawnedAt = at; },
           );
         } else {
           spawnedBinary = sel.primaryBinary;
-          worker = new MbReader(sel.primaryBinary, this.data);
+          spawnedAt = wall.now();
+          const reader = new MbReader(sel.primaryBinary, this.data, { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
+          spawnedEngine = reader.engine;
+          worker = reader;
         }
       } catch (err) {
         return { error: err instanceof Error ? err : new Error(String(err)) };
       }
     }
-    const slot: Slot = { worker, held: null, catalogVersion: 0, binary: spawnedBinary };
+    const slot: Slot = { worker, held: null, catalogVersion: 0, binary: spawnedBinary, engine: spawnedEngine, spawnedAt };
+    const slotEngine = (): TelemetryEngine | null => slot.engine ?? (slot.worker instanceof MbReader ? slot.worker.engine : null);
     const begun = wall.now();
     worker.on("message", (answer: Answer | Ready) => {
       // How long a reader took to start: a read given it as it starts waits on that (one read of 1.9 s took 18 s on
       // a station short of memory, 2026-11-03, a reader started for it).
-      if ("ready" in answer) {
-        const ms = wall.now() - begun;
-        if (ms >= 1_000) log.warn("readers", "a reader started slowly", { ms, line: line === this.asked ? "asked" : line === this.pages ? "pages" : line === this.log ? "log" : line === this.moved ? "moved" : "told", ...answer.ready });
+      if (answer !== null && typeof answer === "object" && "ready" in answer) {
+        const ms = wall.now() - (slot.spawnedAt ?? begun);
+        const engine = slotEngine();
+        const ready = answer.ready !== null && typeof answer.ready === "object" ? (answer.ready as Record<string, unknown>) : null;
+        if (ms >= 1_000) log.warn("readers", "a reader started slowly", { ...(engine !== null ? { engine } : {}), mode: "data", ms, line: line === this.asked ? "asked" : line === this.pages ? "pages" : line === this.log ? "log" : line === this.moved ? "moved" : "told", ...(ready ?? {}) });
         return;
       }
       // An abandoned read may finish while its reader is being stopped. Do not give that reader another read until it exits.
@@ -426,12 +440,15 @@ export class Readers {
       slot.held = null;
       if (asked !== null && asked.ask.id === answer.id) {
         const now = wall.now();
-        if (now - asked.at > SLOW_MS) log.warn("readers", "a read went slowly", { op: asked.ask.op, told: line.told, waitedMs: asked.took - asked.at, ms: now - asked.took });
+        const execMs = now - asked.took;
+        const engine = slotEngine();
+        const text = answer.body ?? answer.text;
+        if (engine !== null) readerTelemetry.recordCall(engine, "data", execMs, text !== undefined);
+        if (now - asked.at > SLOW_MS) log.warn("readers", "a read went slowly", { ...(engine !== null ? { engine } : {}), mode: "data", op: asked.ask.op, told: line.told, waitedMs: asked.took - asked.at, ms: execMs });
         // A background read rests its line as long as it took before the next: one after another, a history brought on
         // read 40 MB of a transcript in 10 s on a station short of memory (2026-11-03), every write and read waiting on the
         // disk meanwhile.
-        if (asked.background) line.rested = now + (now - asked.took);
-        const text = answer.body ?? answer.text;
+        if (asked.background) line.rested = now + execMs;
         if (text !== undefined) {
           const session = answer.prepareUpJobs;
           if (session !== undefined && !this.preparingUpJobs.has(session)) {
@@ -452,12 +469,21 @@ export class Readers {
       }
       this.pump(line);
     });
-    worker.on("error", (error) => log.error("readers", "a reader failed", { error: error.message, reading: slot.held?.ask.op ?? null }));
+    worker.on("error", (error) => {
+      const engine = slotEngine();
+      log.error("readers", "a reader failed", { ...(engine !== null ? { engine } : {}), mode: "data", error: error.message, reading: slot.held?.ask.op ?? null });
+    });
     worker.on("exit", (code) => {
       slot.idle?.();
       line.slots = line.slots.filter((s) => s !== slot);
-      slot.held?.reject(new HttpError(500, `the reader stopped (exit ${code})`));
-      slot.held = null;
+      if (slot.held !== null) {
+        if (!slot.retiring && !this.closed) {
+          const engine = slotEngine();
+          if (engine !== null) readerTelemetry.recordCall(engine, "data", wall.now() - slot.held.took, false);
+        }
+        slot.held.reject(new HttpError(500, `the reader stopped (exit ${code})`));
+        slot.held = null;
+      }
       this.pump(line);
     });
     line.slots.push(slot);
@@ -494,7 +520,7 @@ export class Readers {
     if (this.mbReader !== null) {
       if (this.moved.slots.length === 0) {
         const started = this.start(this.moved);
-        if ("error" in started) log.warn("readers", "warm reader start failed", { error: started.error.message });
+        if ("error" in started) log.warn("readers", "warm reader start failed", { mode: "data", error: started.error.message });
       }
       return;
     }
@@ -502,7 +528,7 @@ export class Readers {
       while (!this.closed && line.slots.length < line.size) {
         const started = this.start(line);
         if ("error" in started) {
-          log.warn("readers", "warm reader start failed", { error: started.error.message });
+          log.warn("readers", "warm reader start failed", { mode: "data", error: started.error.message });
           break;
         }
       }
@@ -549,7 +575,7 @@ export class Readers {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
     // (by the MoonBit builder, station/mb's src/archivelast)
     const path = join(this.data, "stillfail.db");
-    this.archiveLast ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("archive-last", { config: this.backfill.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "archive-last", "--db", path] },
+    this.archiveLast ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("archive-last", { config: this.backfill.readers, logAt: "readers" }), args: ["--builder", "archive-last", "--db", path] },
       "thread", "archive last message", (thread, cancel) => ({ thread, archiveLast: true, cancel }));
     return this.covered(this.archiveLast.ready(threads, signal), signal);
   }
@@ -560,7 +586,7 @@ export class Readers {
     // (by the MoonBit builder, station/mb's src/legacy; a store whose merged view must be switched first repaired by
     // the station's writer, `repairEdits`, and asked again)
     const path = join(this.data, "stillfail.db");
-    this.legacyEdits ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("legacy-edits", { config: this.backfill.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "legacy-edits", "--db", path],
+    this.legacyEdits ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("legacy-edits", { config: this.backfill.readers, logAt: "readers" }), args: ["--builder", "legacy-edits", "--db", path],
       repair: () => {
         if (this.repairEdits !== null) return this.repairEdits();
         // (readers given no writer, a test's: a connection of its own for the repair, waiting for no lock)
@@ -584,7 +610,7 @@ export class Readers {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
     // (by the MoonBit builder, station/mb's src/legacy)
     const path = join(this.data, "stillfail.db");
-    this.legacySaid ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("legacy-said", { config: this.backfill.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "legacy-said", "--db", path] },
+    this.legacySaid ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("legacy-said", { config: this.backfill.readers, logAt: "readers" }), args: ["--builder", "legacy-said", "--db", path] },
       "thread", "legacy said", (thread, cancel) => ({ thread, legacySaid: true, cancel }));
     return this.covered(this.legacySaid.ready([0], signal), signal);
   }
@@ -594,7 +620,7 @@ export class Readers {
     if (this.closed) return Promise.reject(new HttpError(502, "station stopping"));
     // (by the MoonBit builder, station/mb's src/letters)
     const path = join(this.data, "stillfail.db");
-    this.pageLetters ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("page-letters", { config: this.backfill.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "page-letters", "--db", path] },
+    this.pageLetters ??= new RequestedBuilder(this.backfill, { binary: () => resolveReaderSelection("page-letters", { config: this.backfill.readers, logAt: "readers" }), args: ["--builder", "page-letters", "--db", path] },
       "thread", "old page letters", (thread, cancel) => ({ thread, pageLetters: true, cancel }));
     return this.covered(this.pageLetters.ready(threads, signal), signal);
   }

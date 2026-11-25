@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { wall } from "../ops/fibers.ts";
 import type { Lang } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
-import { platform } from "../platform/index.ts";
+import { isBackgroundWrapperExecFailure, isBackgroundWrapperStderrLine, platform } from "../platform/index.ts";
 import { giveBackfill, takeBackfill } from "../store/backfill.ts";
 import {
   READER_MODES,
@@ -22,6 +22,7 @@ import {
   type ReaderSelection,
   resolveReaderEngine,
 } from "./reader-select.ts";
+import { type TelemetryEngine, classifyProgram, readerTelemetry } from "./reader-telemetry.ts";
 
 /// A read asked of a reader (main.mbt `answer`).
 export type Ask = { id: number; op: string; args: any; lang: Lang; names: [string, string][]; processes: [string, string][]; clientKeys: [string, string][]; catalog?: Record<string, unknown> };
@@ -263,6 +264,38 @@ function warnReaderFallbackOnce(logAt: string, selection: ReaderSelection): void
     reason: selection.reason,
     detail: selection.detail,
   });
+}
+
+/// Telemetry engine of the primary binary returned by `resolveReaderSelection`.
+/// Returns `undefined` for explicit binary overrides so `MbProcess` classifies the explicit path itself.
+export function engineOfSelection(resolved: ResolvedReaderSelection): TelemetryEngine | undefined {
+  if (resolved.selection.source === "explicit") return undefined;
+  return resolved.engine === "pion" ? "pion" : "mb";
+}
+
+/// Return the fallback telemetry mode when `selection` fell back from `"pion"` or `"shadow"` to `"mb"`.
+export function fallbackModeOf(selection: ReaderSelection, modeOverride?: string): string | undefined {
+  if (selection.fallback && (selection.requested === "pion" || selection.requested === "shadow")) {
+    return modeOverride ?? selection.mode;
+  }
+  return undefined;
+}
+
+/// Record a fallback counter ONLY when an actual MB process is spawned after requesting `"pion"` or `"shadow"`.
+export function recordFallbackSpawn(selection: ReaderSelection, modeOverride?: string): void {
+  const mode = fallbackModeOf(selection, modeOverride);
+  if (mode !== undefined) readerTelemetry.recordFallback(mode);
+}
+
+/// Infer `"pion"` without extra disk I/O when `binary` matches `STILLFAIL_PION_READER` or the cached `pionBinary()`.
+function isKnownPionBinary(binary: string): boolean {
+  const target = resolve(binary);
+  const explicitRaw = process.env.STILLFAIL_PION_READER?.trim();
+  if (explicitRaw !== undefined && explicitRaw !== "") {
+    if (target === resolve(explicitRaw)) return true;
+  }
+  const cached = foundPionBinary.get("");
+  return cached !== undefined && cached !== null && target === resolve(cached);
 }
 
 /// Unified reader/builder binary & engine selector for single-engine and `shadow` modes.
@@ -560,7 +593,7 @@ export const STDIN_MOST = 64 * 1024 * 1024;
 export const STDIN_BEHIND = 8 * 1024 * 1024;
 
 /// A program's process that runs, as the station's watch over its own memory counts them (ops/self-memory.ts).
-export type LiveProgram = { pid: number; binary: string; args: readonly string[]; background: boolean; startedAt: number };
+export type LiveProgram = { pid: number; binary: string; args: readonly string[]; background: boolean; startedAt: number; engine?: TelemetryEngine; mode?: string };
 
 /// The program's process, a line of JSON each way: told its lines as "message"s, its end as "exit".
 export class MbProcess extends EventEmitter {
@@ -569,28 +602,82 @@ export class MbProcess extends EventEmitter {
   /// Those running now, by their pids, arguments and since when.
   static live(): ReadonlyArray<LiveProgram> { return [...MbProcess.#live.values()]; }
 
+  readonly engine: TelemetryEngine;
+  readonly mode: string;
   readonly #child: ChildProcess;
   readonly #args: readonly string[];
   readonly #stdinMost: number;
+  readonly #wrapped: boolean;
+  readonly #spawnFallbackMode: string | undefined;
+  #spawned = false;
+  #pendingWrappedSpawn = false;
+  #pendingStderrCount = 0;
+  #sawStdout = false;
+  readonly #wrapperStderr: string[] = [];
   #exited = false;
   #stalled = false;
+  #intentionalStop = false;
   /// All written to its stdin, and where it stood when it was last found behind (STDIN_BEHIND, `postLine`).
   #written = 0;
   #behind: { at: number; written: number; unread: number } | null = null;
 
+  #commitWrappedSpawn(): void {
+    if (!this.#pendingWrappedSpawn) return;
+    this.#pendingWrappedSpawn = false;
+    this.#wrapperStderr.length = 0;
+    readerTelemetry.recordSpawn(this.engine, this.mode);
+    if (this.#spawnFallbackMode !== undefined) readerTelemetry.recordFallback(this.#spawnFallbackMode);
+    for (let i = 0; i < this.#pendingStderrCount; i++) {
+      readerTelemetry.recordStderr(this.engine, this.mode);
+    }
+    this.#pendingStderrCount = 0;
+  }
+
   /// `options.background`: whether it runs as the system's background work (mbSpawned), else as its args say;
-  /// `stdinMost`: STDIN_MOST but in tests.
-  constructor(binary: string, args: string[], options: { background?: boolean; stdinMost?: number } = {}) {
+  /// `stdinMost`: STDIN_MOST but in tests; `engine`/`mode`: explicit telemetry identity when known at spawn;
+  /// `fallbackMode`: when set, records one fallback once the OS child actually emits `"spawn"` (for wrapped
+  /// background spawns, deferred until target execution is confirmed).
+  constructor(binary: string, args: string[], options: { background?: boolean; stdinMost?: number; engine?: TelemetryEngine; mode?: string; fallbackMode?: string } = {}) {
     super();
+    const identity = classifyProgram(binary, args);
+    this.engine = options.engine ?? (isKnownPionBinary(binary) ? "pion" : identity.engine);
+    this.mode = options.mode ?? identity.mode;
     const background = options.background ?? backgroundByDefault(args);
     const [command, given] = mbSpawned(binary, args, { background });
+    this.#wrapped = command !== binary;
+    this.#spawnFallbackMode = options.fallbackMode;
     this.#args = args;
     this.#stdinMost = options.stdinMost ?? STDIN_MOST;
     this.#child = spawn(command, given, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, binary, args, background, startedAt: wall.now() });
+    this.#child.once("spawn", () => {
+      this.#spawned = true;
+      if (this.#wrapped) {
+        this.#pendingWrappedSpawn = true;
+      } else {
+        readerTelemetry.recordSpawn(this.engine, this.mode);
+        if (this.#spawnFallbackMode !== undefined) readerTelemetry.recordFallback(this.#spawnFallbackMode);
+      }
+    });
+    if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, binary, args, background, startedAt: wall.now(), engine: this.engine, mode: this.mode });
     const said = new Said((answer) => this.emit("message", answer));
-    this.#child.stdout!.on("data", (bytes: Buffer) => said.push(bytes));
-    createInterface({ input: this.#child.stderr! }).on("line", (line) => log.warn("readers", "a MoonBit reader said", { line }));
+    this.#child.stdout!.on("data", (bytes: Buffer) => {
+      if (bytes.length > 0 && !this.#sawStdout) {
+        this.#sawStdout = true;
+        this.#wrapperStderr.length = 0;
+        this.#commitWrappedSpawn();
+      }
+      said.push(bytes);
+    });
+    createInterface({ input: this.#child.stderr! }).on("line", (line) => {
+      if (this.#wrapped && this.#pendingWrappedSpawn && !this.#sawStdout && isBackgroundWrapperStderrLine(command, line)) {
+        this.#pendingStderrCount++;
+        if (this.#wrapperStderr.length < 8) this.#wrapperStderr.push(line);
+      } else {
+        this.#commitWrappedSpawn();
+        readerTelemetry.recordStderr(this.engine, this.mode);
+      }
+      log.warn("readers", "a MoonBit reader said", { line, engine: this.engine, mode: this.mode });
+    });
     // (a failed write is the process gone, told by its exit)
     this.#child.stdin!.on("error", () => {});
     // All it was given read, with nothing written meanwhile: no longer behind (else the next time it is would be told
@@ -605,6 +692,23 @@ export class MbProcess extends EventEmitter {
     this.#child.on("close", (code, signal) => {
       this.#exited = true;
       MbProcess.#live.delete(this);
+      if (
+        this.#spawned &&
+        this.#wrapped &&
+        this.#pendingWrappedSpawn &&
+        !this.#sawStdout &&
+        !this.#intentionalStop &&
+        isBackgroundWrapperExecFailure(command, code, signal, this.#wrapperStderr)
+      ) {
+        this.#pendingWrappedSpawn = false;
+        this.#pendingStderrCount = 0;
+        this.#wrapperStderr.length = 0;
+      } else {
+        this.#commitWrappedSpawn();
+        if (this.#spawned && !this.#intentionalStop && !this.#stalled && (code !== 0 || signal !== null)) {
+          readerTelemetry.recordUnexpectedExit(this.engine, this.mode);
+        }
+      }
       this.emit("exit", code ?? (signal !== null ? 1 : 0));
     });
   }
@@ -625,14 +729,15 @@ export class MbProcess extends EventEmitter {
     const unread = stdin.writableLength;
     if (unread > STDIN_BEHIND && this.#behind === null) {
       this.#behind = { at: wall.now(), written: this.#written, unread };
-      log.warn("readers", "a MoonBit program is behind what it is asked", { args: this.#args.slice(0, 6), pid: this.#child.pid ?? null, unreadBytes: unread });
+      log.warn("readers", "a MoonBit program is behind what it is asked", { engine: this.engine, mode: this.mode, args: this.#args.slice(0, 6), pid: this.#child.pid ?? null, unreadBytes: unread });
     } else if (unread <= STDIN_BEHIND / 2) this.#behind = null;
     if (unread <= this.#stdinMost) return;
     this.#stalled = true;
+    readerTelemetry.recordStall(this.engine, this.mode);
     // Since it was found behind: how long, and what it read of what it was given (next to nothing, it stopped reading).
     const behind = this.#behind;
     const since = behind === null ? {} : { behindMs: wall.now() - behind.at, readBytes: this.#written - behind.written - (unread - behind.unread) };
-    log.error("readers", "a MoonBit program stopped reading what it is asked; ending it", { args: this.#args.slice(0, 6), pid: this.#child.pid ?? null, unreadBytes: unread, ...since });
+    log.error("readers", "a MoonBit program stopped reading what it is asked; ending it", { engine: this.engine, mode: this.mode, args: this.#args.slice(0, 6), pid: this.#child.pid ?? null, unreadBytes: unread, ...since });
     this.#child.kill("SIGKILL");
   }
 
@@ -650,10 +755,12 @@ export class MbProcess extends EventEmitter {
 
   /// Ends it now, not waiting for its end (the station's process is ending).
   kill() {
+    this.#intentionalStop = true;
     if (!this.#exited) this.#child.kill("SIGKILL");
   }
 
   terminate(): Promise<number> {
+    this.#intentionalStop = true;
     if (this.#exited) return Promise.resolve(this.#child.exitCode ?? 1);
     this.ref(true);
     return new Promise((resolve) => {
@@ -672,8 +779,23 @@ export class MbProcess extends EventEmitter {
 }
 
 /// The reader, started on the station's data directory `data`.
+/// Captures the one-shot `ready` handshake at spawn so both `ReaderPool` and direct callers (`OwnReader`) record
+/// cold-start latency without double-counting.
 export class MbReader extends MbProcess implements ReaderLike {
-  constructor(binary: string, data: string) { super(binary, ["--data", data, "--sep", sep]); }
+  constructor(binary: string, data: string, options?: { engine?: TelemetryEngine; fallbackMode?: string }) {
+    super(binary, ["--data", data, "--sep", sep], options);
+    const startedAt = wall.now();
+    let readyRecorded = false;
+    this.on("message", (msg: unknown) => {
+      if (readyRecorded || msg === null || typeof msg !== "object" || !("ready" in msg)) return;
+      readyRecorded = true;
+      const ready = (msg as { ready?: unknown }).ready;
+      const r = ready !== null && typeof ready === "object" ? (ready as Record<string, unknown>) : null;
+      const loadedMs = typeof r?.loadedMs === "number" && Number.isFinite(r.loadedMs) ? r.loadedMs : undefined;
+      const openedMs = typeof r?.openedMs === "number" && Number.isFinite(r.openedMs) ? r.openedMs : undefined;
+      readerTelemetry.recordReady(this.engine, this.mode, wall.now() - startedAt, loadedMs, openedMs);
+    });
+  }
   override postMessage(ask: Ask) { super.postMessage(ask); }
 }
 
@@ -691,20 +813,33 @@ export class MbBackfill extends EventEmitter {
   readonly #pauseMs: number;
   #holding = false;
   #exited = false;
+  #askedAt = 0;
 
-  constructor(binary: string, args: string[], priority: SharedArrayBuffer | undefined, pauseMs: number) {
+  constructor(binary: string | ResolvedReaderSelection, args: string[], priority: SharedArrayBuffer | undefined, pauseMs: number) {
     super();
     this.#priority = priority instanceof SharedArrayBuffer ? new Int32Array(priority) : null;
     this.#pauseMs = pauseMs;
     // (a backfill is the station's own, nobody waiting on it: the system's background work, whatever its kind)
-    this.#process = new MbProcess(binary, args, { background: true });
+    const bin = typeof binary === "string" ? binary : binary.primaryBinary;
+    const opts = typeof binary === "string"
+      ? { background: true }
+      : { background: true, engine: engineOfSelection(binary), fallbackMode: fallbackModeOf(binary.selection) };
+    this.#process = new MbProcess(bin, args, opts);
     this.#process.on("message", (result: { done: boolean; error?: string }) => {
+      if (this.#askedAt > 0) {
+        readerTelemetry.recordCall(this.#process.engine, this.#process.mode, wall.now() - this.#askedAt, !result.error);
+        this.#askedAt = 0;
+      }
       this.#give();
       if (!result.done && !result.error) this.#later(result);
       else this.emit("message", result);
     });
     this.#process.on("error", (error) => this.emit("error", error));
     this.#process.on("exit", (code) => {
+      if (this.#askedAt > 0) {
+        readerTelemetry.recordCall(this.#process.engine, this.#process.mode, wall.now() - this.#askedAt, false);
+        this.#askedAt = 0;
+      }
       this.#give();
       this.#exited = true;
       this.emit("exit", code);
@@ -724,6 +859,7 @@ export class MbBackfill extends EventEmitter {
     if (this.#exited) return;
     if (!takeBackfill(this.#priority, this.threadId)) return void this.#later({ done: false });
     this.#holding = true;
+    this.#askedAt = wall.now();
     this.#process.postMessage(message);
   }
 

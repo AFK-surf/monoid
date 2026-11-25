@@ -8,7 +8,7 @@ export class SaidBuilder extends RequestedBuilder<number> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("said", { binary, config: options.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "said", "--db", path], lazy: true },
+      { binary: () => resolveReaderSelection("said", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "said", "--db", path], lazy: true },
       "thread",
       "sidebar said state",
     );

@@ -48,7 +48,6 @@ priv struct PlayerNode {
   pl : PlayList
   mut root : @view.View?
   mut idle_off : () -> Unit
-  mut forgot_twice : () -> Unit
   mut ui_scrubs : Int
   mut lock_epoch : Int
   focused_controls : Map[@view.NodeId, Unit]
@@ -111,7 +110,6 @@ fn PlayerNode::new(p : @player.Media, v : PlayerView, embedded : Bool, inset : D
     pl,
     root: None,
     idle_off: fn() {  },
-    forgot_twice: fn() {  },
     ui_scrubs: 0,
     lock_epoch: 0,
     focused_controls: Map([]),
@@ -375,11 +373,10 @@ fn PlayerNode::play_pause_quiet(self : PlayerNode) -> Unit {
 }
 
 ///|
-/// Clean up transient timers, double-click memory, temporary 2× held speed, and any active `AlongTime` scrub
+/// Clean up transient timers, a tap waiting for its second, temporary 2× held speed, and any active `AlongTime` scrub
 /// (on episode switch or unmount).
 fn PlayerNode::reset_transient(self : PlayerNode) -> Unit {
   self.cancel_idle()
-  (self.forgot_twice)()
   (self.single)()
   self.single = fn() {  }
   self.pending = false
@@ -401,9 +398,25 @@ fn PlayerNode::reset_transient(self : PlayerNode) -> Unit {
 }
 
 ///|
+/// A tap waiting for its second (PlayerNode::tapped) forgotten, doing nothing: the idle fade it held off armed again.
+fn PlayerNode::tap_forgot(self : PlayerNode) -> Unit {
+  let was_pending = self.pending
+  (self.single)()
+  self.single = fn() {  }
+  self.pending = false
+  if was_pending && self.awake.untracked() {
+    match self.root {
+      Some(r) => self.bump_idle(r)
+      None => ()
+    }
+  }
+}
+
+///|
 /// Clean up any in-flight stage gesture when the stage node unmounts (e.g. crossing the wide/narrow layout breakpoint):
-/// pairs `scrub_done()` once for active `AlongTime`, restores 2× held speed, clears active fingers/drag state, and forgets twice.
-fn PlayerNode::cancel_stage_gesture(self : PlayerNode, s : @view.View) -> Unit {
+/// pairs `scrub_done()` once for active `AlongTime`, restores 2× held speed, clears active fingers/drag state and a tap
+/// waiting for its second.
+fn PlayerNode::cancel_stage_gesture(self : PlayerNode) -> Unit {
   (self.hold_end)()
   self.hold_end = fn() {  }
   let was_pending = self.pending
@@ -433,7 +446,6 @@ fn PlayerNode::cancel_stage_gesture(self : PlayerNode, s : @view.View) -> Unit {
   self.down = (0.0, 0.0)
   self.last = (0.0, 0.0)
   self.pinch = (0.0, 0.0, 0.0)
-  s.twice_forgot()
   if was_pending && self.awake.untracked() {
     match self.root {
       Some(r) => self.bump_idle(r)
@@ -2049,12 +2061,7 @@ fn desk_player_node(
       }
     }
     n.box(fn(s) {
-      pn.forgot_twice = fn() { s.twice_forgot() }
-      s.owns(fn() {
-        pn.cancel_stage_gesture(s)
-        pn.forgot_twice = fn() {  }
-      })
-      |> ignore
+      s.owns(fn() { pn.cancel_stage_gesture() }) |> ignore
       s
       .over(Is(true))
       .presses(By(fn() { !flying() }))
@@ -2065,7 +2072,8 @@ fn desk_player_node(
       .height(By(fn() { if embedded { Some(dmax(0.0, stage().1 - room().1 - pn.inset)) } else { None } }))
       .clips(Is(embedded))
       .on_pointer_moved(fn() {
-        if pointer_rests() {
+        // (a click waiting for its second stands: the hand moving on after it never calls it off)
+        if pointer_rests() && !pn.pending {
           pn.wake()
         }
       })
@@ -2100,7 +2108,7 @@ fn desk_player_node(
       .width(By(fn() { Some(dmax(0.0, stage().0 - panel())) }))
       .height(By(fn() { if embedded { Some(dmax(0.0, stage().1 - room().1)) } else { None } }))
       |> ignore
-      // (what a double tap or quiet click/Space did, or 2× held, said a moment in its middle)
+      // (what a double tap or click or quiet Space did, or 2× held, said a moment in its middle)
       middle_node(mid, pn, file.name, fn() {
         match (pn.note.get(), pn.held.get() >= 0.0) {
           (_, true) => t("web-pages.drive.player.held")
@@ -2752,12 +2760,7 @@ fn phone_player_node(
     })
     n.box(fn(s) {
       let z = pn.v.zoom
-      pn.forgot_twice = fn() { s.twice_forgot() }
-      s.owns(fn() {
-        pn.cancel_stage_gesture(s)
-        pn.forgot_twice = fn() {  }
-      })
-      |> ignore
+      s.owns(fn() { pn.cancel_stage_gesture() }) |> ignore
       s
       .over(Is(true))
       .presses(By(fn() { !flying() }))
@@ -2766,7 +2769,8 @@ fn phone_player_node(
       .height(By(hand_h))
       .clips(Is(embedded))
       .on_pointer_moved(fn() {
-        if pointer_rests() {
+        // (a click waiting for its second stands: the hand moving on after it never calls it off)
+        if pointer_rests() && !pn.pending {
           pn.wake()
         }
       })
@@ -3319,9 +3323,9 @@ fn along_time_step(pn : PlayerNode, x : Double, y : Double, stage_w : Double) ->
 
 ///|
 /// Unified stage gesture handler for both wide and narrow layouts: records `pointer_rests()` on `Down` and dispatches
-/// to either desktop pointer semantics (pan when zoomed; 0 ms click play/pause via `View::twice` swallowing genuine
-/// double-click second Up; overlay dismissal without toggling) or touch semantics (single-tap toggle awake in both
-/// Playing and Paused; double-tap ±15 s / silent play-pause; long-press 2×; `AlongTime` precise 3-gear frame scrub
+/// to either desktop pointer semantics (pan when zoomed; clicks as taps, PlayerNode::tapped; overlay dismissal without
+/// toggling) or touch semantics (single-tap toggle awake in both Playing and Paused; double-tap ±15 s / silent
+/// play-pause; long-press 2×; `AlongTime` precise 3-gear frame scrub
 /// without waking bottom chrome; safe second-finger handoff to `MoveZoom` pinch; `DownClose` swipe down).
 fn stage_gesture(
   s : @view.View,
@@ -3381,16 +3385,17 @@ fn stage_gesture(
             if pn.listing.untracked() {
               pn.list_open(false)
             }
-            s.twice_forgot()
-          } else if !s.twice(d) {
-            pn.play_pause_quiet()
+            pn.tap_forgot()
+          } else {
+            // (a click as a finger's tap: alone its controls shown or hidden, a second within a double tap's time
+            // back, on or played/paused, PlayerNode::tapped)
+            pn.tapped(s, d.x, d.w)
           }
         }
       }
       Off => {
         pn.fingers.remove(d.finger)
         pn.had_overlay = false
-        s.twice_forgot()
       }
     }
     return

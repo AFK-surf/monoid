@@ -58,6 +58,8 @@ export type BrowserOptions = {
   /// The session whose chat's context a browser context is (browsers.ts): a tab in it is that session's.
   contextOwner?: (browserContextId: string | undefined) => string | undefined;
   usedTab?: (session: string, targetId: string) => void;
+  /// A tab of `session`'s crashed (tabs.ts `crashed`): where it was, and Chrome's word for how it ended.
+  crashedTab?: (session: string, tab: { url: string; status: string }) => void;
   /// macOS still.fail Helper for hardware H.264 browser encoding (`frames.encode`).
   helper?: HelperApp | null;
 };
@@ -476,6 +478,11 @@ export class StationBrowser implements ScreenBrowser {
         return ctx !== undefined && keys.has(ctx, rpId);
       },
       usedTab: (session, targetId) => this.#o.usedTab?.(session, targetId),
+      crashed: (targetId, status) => {
+        const session = tabs.ownerOf(targetId);
+        log.warn("browser", "a tab crashed", { targetId, status, session: session ?? null });
+        if (session !== undefined) this.#o.crashedTab?.(session, { url: tabs.urlOf(targetId) ?? "", status });
+      },
       userTabs: this.#userTabs,
       helper: this.#helper,
     });

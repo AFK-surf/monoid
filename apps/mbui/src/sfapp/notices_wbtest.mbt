@@ -380,6 +380,7 @@ test "the system told what it allows; asked once when it never was, with notific
   assert_eq(set.length(), 1)
   assert_true(set[0].params.stringify().contains("\"asked\":true"))
   // allowed: told so
+  sys.permission = "granted"
   sys.answer.set(Some(true))
   t.frame()
   let after = named(calls, "notify.permission")
@@ -567,6 +568,7 @@ test "settings: notifications switched off on 通知's page, the core keeps it; 
   // refused by the system: a toast says where to allow them
   (on[on.length() - 1].done)(Err({ "code": "x", "message": "坏了" }))
   assert_eq(app.toast.get().words, "无法开启通知：坏了")
+  sys.permission = "ask"
   sys.answer.set(Some(false))
   t.frame()
   assert_eq(app.toast.get().words, "在系统设置里允许 still.fail 发通知")
@@ -897,4 +899,219 @@ test "async host permission: between-frame live read and ABA flip back still not
   let told = named(calls, "notify.permission")
   assert_eq(told.length(), 2)
   assert_eq(told[1].params, { "state": "granted" })
+}
+
+///|
+test "Android (platform=2) async host permission: pending -> granted and pending -> ask defer ask/notify.set until settled" {
+  // (a) pending -> granted reports notify.permission once.
+  let calls : Array[Made] = []
+  let answered = @signals.signal(false)
+  let t = notify_host_core(calls, platform=2, answered~)
+  t.set_notice_permission("pending")
+  t.frame()
+  answered.set(true)
+  assert_eq(named(calls, "notify.permission").length(), 0)
+  t.frame()
+  assert_eq(named(calls, "notify.permission").length(), 0)
+  t.set_notice_permission("granted")
+  t.frame()
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 1)
+  assert_eq(told[0].params, { "state": "granted" })
+  t.frame()
+  assert_eq(named(calls, "notify.permission").length(), 1)
+
+  // (b) pending -> ask with asked=false defers asked_once and notify.set until leaving pending.
+  let calls2 : Array[Made] = []
+  let answered2 = @signals.signal(false)
+  let notify2 : @signals.Signal[Json] = @signals.signal({ "on": true, "asked": false, "push": true, "show": [] })
+  let t2 = notify_host_core(calls2, platform=2, notify=notify2, answered=answered2)
+  t2.set_notice_permission("pending")
+  t2.set_notice_reply(None)
+  t2.frame()
+  answered2.set(true)
+  assert_eq(named(calls2, "notify.permission").length(), 0)
+  assert_eq(named(calls2, "notify.set").length(), 0)
+  assert_eq(t2.notice_asks(), 0)
+  t2.set_notice_permission("ask")
+  t2.frame()
+  let told2 = named(calls2, "notify.permission")
+  assert_eq(told2.length(), 1)
+  assert_eq(told2[0].params, { "state": "default" })
+  let sets2 = named(calls2, "notify.set")
+  assert_eq(sets2.length(), 1)
+  assert_eq(sets2[0].params, { "asked": true })
+  assert_eq(t2.notice_asks(), 1)
+  t2.frame()
+  assert_eq(named(calls2, "notify.permission").length(), 1)
+  assert_eq(named(calls2, "notify.set").length(), 1)
+  assert_eq(t2.notice_asks(), 1)
+}
+
+///|
+test "Android 13+ (platform=2) same-frame raw=3 (ask) + answer=false with asked=true emits denied once; browser consecutive default preserved" {
+  // Wrap @hostapi.host() so nt_state(2) does NOT mutate nt_state(0): guarantees nt_state(0)==3 ("ask") AND
+  // nt_state(2)==0 (Some(false)) arrive in the exact same notices_arrive() call.
+  let calls : Array[Made] = []
+  let answered = @signals.signal(false)
+  let notify : @signals.Signal[Json] = @signals.signal({ "on": true, "asked": true, "push": true, "show": [] })
+  let t = notify_host_core(calls, platform=2, notify~, answered~)
+  let base_host = @hostapi.host()
+  let raw_perm = Ref(5) // pending
+  let pending_ans = Ref(-1) // none
+  @hostapi.set_host({
+    ..base_host,
+    nt_state: fn(what) {
+      match what {
+        0 => raw_perm.val
+        1 => 1
+        2 => {
+          let r = pending_ans.val
+          pending_ans.val = -1
+          r
+        }
+        _ => (base_host.nt_state)(what)
+      }
+    },
+  })
+  t.frame()
+  answered.set(true)
+  assert_eq(named(calls, "notify.permission").length(), 0)
+  // Same frame delivers raw=3 ("ask") and answer=0 (Some(false)) while asked=true: must emit "denied" once (not twice).
+  raw_perm.val = 3
+  pending_ans.val = 0
+  t.frame()
+  t.frame()
+  @hostapi.set_host(base_host)
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 1)
+  assert_eq(told[0].params, { "state": "denied" })
+
+  // Browser (platform=4): consecutive "default" reports on dismissed prompt are preserved.
+  let calls_web : Array[Made] = []
+  let answered_web = @signals.signal(false)
+  let notify_web : @signals.Signal[Json] = @signals.signal({ "on": true, "asked": true, "push": true, "show": [] })
+  let tw = notify_host_core(calls_web, platform=4, notify=notify_web, answered=answered_web)
+  tw.set_notice_permission("default")
+  tw.set_notice_reply(Some(false))
+  tw.frame()
+  answered_web.set(true)
+  assert_eq(named(calls_web, "notify.permission").length(), 1)
+  assert_eq(named(calls_web, "notify.permission")[0].params, { "state": "default" })
+  assert_true((notice_host.val.ask)())
+  tw.frame()
+  let told_web = named(calls_web, "notify.permission")
+  assert_eq(told_web.length(), 2)
+  assert_eq(told_web[1].params, { "state": "default" })
+}
+
+///|
+test "Android (platform=2) OEM split-toggle calibrated answer and cancelled dialog never emit wrong state or toast" {
+  // (a) OEM split-toggle: user clicked Allow, but runRefresh calibrated raw_perm=3 ("ask") and pending_ans=0 (false).
+  //     Core must receive "denied" (not "granted") and show the settings toast when from_switch=true.
+  let calls : Array[Made] = []
+  let answered = @signals.signal(false)
+  let notify : @signals.Signal[Json] = @signals.signal({ "on": true, "asked": true, "push": true, "show": [] })
+  let t = notify_host_core(calls, platform=2, notify~, answered~)
+  let base_host = @hostapi.host()
+  let raw_perm = Ref(5)
+  let pending_ans = Ref(-1)
+  @hostapi.set_host({
+    ..base_host,
+    nt_state: fn(what) {
+      match what {
+        0 => raw_perm.val
+        2 => {
+          let r = pending_ans.val
+          pending_ans.val = -1
+          r
+        }
+        _ => (base_host.nt_state)(what)
+      }
+    },
+  })
+  t.frame()
+  answered.set(true)
+  notice_state.from_switch = true
+  raw_perm.val = 3
+  pending_ans.val = 0
+  t.frame()
+  @hostapi.set_host(base_host)
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 1)
+  assert_eq(told[0].params, { "state": "denied" })
+  assert_eq(app.toast.get().words, "在系统设置里允许 still.fail 发通知")
+
+  // (b) Cancelled permission dialog (no answer emitted, ground truth settles to "granted"):
+  //     core receives "granted" and from_switch does NOT emit the refusal toast.
+  let calls2 : Array[Made] = []
+  let answered2 = @signals.signal(false)
+  let notify2 : @signals.Signal[Json] = @signals.signal({ "on": true, "asked": true, "push": true, "show": [] })
+  let t2 = notify_host_core(calls2, platform=2, notify=notify2, answered=answered2)
+  let base_host2 = @hostapi.host()
+  let raw_perm2 = Ref(5)
+  @hostapi.set_host({
+    ..base_host2,
+    nt_state: fn(what) {
+      match what {
+        0 => raw_perm2.val
+        2 => -1
+        _ => (base_host2.nt_state)(what)
+      }
+    },
+  })
+  t2.frame()
+  answered2.set(true)
+  let toast_before = app.toast.get().words
+  notice_state.from_switch = true
+  raw_perm2.val = 1 // granted
+  t2.frame()
+  @hostapi.set_host(base_host2)
+  let told2 = named(calls2, "notify.permission")
+  assert_eq(told2.length(), 1)
+  assert_eq(told2[0].params, { "state": "granted" })
+  assert_eq(app.toast.get().words, toast_before)
+}
+
+///|
+test "Android (platform=2) cross-boundary stale answer=true after worker refreshes raw=3 (ask) never overwrites core with granted" {
+  // Previous frame already reported "denied" (platform=2, asked=true, raw=3).
+  // Next frame: notices_arrive() reads nt_state(2)==1 (stale Allow answer) AND worker flips/keeps nt_state(0)==3 ("ask")
+  // before nt_state(0) is read. Core must NEVER receive "granted" on this frame or the following frame.
+  let calls : Array[Made] = []
+  let answered = @signals.signal(false)
+  let notify : @signals.Signal[Json] = @signals.signal({ "on": true, "asked": true, "push": true, "show": [] })
+  let t = notify_host_core(calls, platform=2, notify~, answered~)
+  let base_host = @hostapi.host()
+  let raw_perm = Ref(3) // ask -> resolves to "denied" when asked=true
+  let pending_ans = Ref(-1)
+  @hostapi.set_host({
+    ..base_host,
+    nt_state: fn(what) {
+      match what {
+        0 => raw_perm.val
+        2 => {
+          let r = pending_ans.val
+          pending_ans.val = -1
+          // Simulate worker refresh landing right after takeAnswer() with ground truth still PERM_ASK (3).
+          if r == 1 {
+            raw_perm.val = 3
+          }
+          r
+        }
+        _ => (base_host.nt_state)(what)
+      }
+    },
+  })
+  t.frame()
+  answered.set(true)
+  t.frame()
+  // Now deliver stale Allow answer=1 while raw_perm settles at 3 ("ask") before nt_state(0) is read.
+  pending_ans.val = 1
+  t.frame()
+  t.frame()
+  @hostapi.set_host(base_host)
+  let told = named(calls, "notify.permission")
+  assert_eq(told.length(), 1)
+  assert_eq(told[0].params, { "state": "denied" })
 }

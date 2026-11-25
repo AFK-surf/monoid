@@ -1297,6 +1297,62 @@ fn run_all_checks(
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
+  // #8651: thread 10 has home='s2' which has opener s1 (title='Alpha', led=true) in opened_chats.
+  let mut found_t10_opener = false
+  for i in 0..<tlist_res.length() {
+    if readops_core::js_text(readops_core::json_val_or_null(tlist_res[i], "id")) == "10" {
+      let op = readops_core::json_val_or_null(tlist_res[i], "opener")
+      if readops_core::js_text(readops_core::json_val_or_null(op, "session")) == "s1" &&
+      readops_core::js_text(readops_core::json_val_or_null(op, "title")) == "Alpha" &&
+      sql_db::stringify_json(readops_core::json_val_or_null(op, "led")) == "true" {
+        found_t10_opener = true
+      }
+    }
+  }
+  match assert_true(found_t10_opener, "thread_list_of includes opener on thread 10 (#8651)") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  // #8651 R1: thread 20 has home=NULL and sessions [s1, s2] -> falls back to sessions and picks s2's opener s1.
+  let ask_t20 = base_codec::json_obj([
+    ("args", base_codec::json_obj([("viewer", viewer), ("id", base_codec::json_str("20")), ("now", base_codec::json_num(now_ms))])),
+  ])
+  let t20_res = match thread_of(db, client, data_dir, "/", ask_t20) {
+    Ok(v) => v
+    Err(e) => return Err("thread_of(20) failed: " + readops_core::read_error_message(e))
+  }
+  let t20_op = readops_core::json_val_or_null(t20_res, "opener")
+  match assert_true(
+    readops_core::js_text(readops_core::json_val_or_null(t20_op, "session")) == "s1" &&
+    readops_core::js_text(readops_core::json_val_or_null(t20_op, "title")) == "Alpha",
+    "thread_of(20) without home falls back to sessions for opener (#8651)",
+  ) {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  // #8651 R1: thread 50 has home='s1' (no opener) plus s2 (has opener) in thread_sessions -> must NOT fall back to s2's opener.
+  match run_sql(db, "INSERT INTO threads(id, surface, channel, thread_ts, title, created_by, created_at, home) VALUES(50, 'chat', 'CHAT', 't50', 'HomeOnly', 'alice@example.com', 2500, 's1')", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES(50, 's1', 'chat', 2500), (50, 's2', 'chat', 2501)", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let ask_t50 = base_codec::json_obj([
+    ("args", base_codec::json_obj([("viewer", viewer), ("id", base_codec::json_str("50")), ("now", base_codec::json_num(now_ms))])),
+  ])
+  let t50_res = match thread_of(db, client, data_dir, "/", ask_t50) {
+    Ok(v) => v
+    Err(e) => return Err("thread_of(50) failed: " + readops_core::read_error_message(e))
+  }
+  match assert_true(
+    readops_core::json_val(t50_res, "opener") is None,
+    "thread_of(50) with home='s1' does not fall back to co-member s2's opener (#8651)",
+  ) {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
   // Refused(503) copy destination sessions pending: s2 not ready in cc_sessions
   match run_sql(db, "UPDATE cc_sessions SET complete = 0 WHERE session = 's2'", []) {
     Ok(_) => ()

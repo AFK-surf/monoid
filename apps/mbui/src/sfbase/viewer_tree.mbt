@@ -88,6 +88,10 @@ pub fn viewer_node(v : @view.View, src : Source, stage : () -> (Double, Double))
 /// Viewer `vw`'s layer, node `n` (viewer_node's).
 fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double, Double)) -> Unit {
   let root = n
+  // (a picture's bars and the ways beside it, shown or hidden by a tap, there or gone at once at its moment)
+  @sf.viewer_bars_at_once_lend(n, fn(at) {
+    at == vw.bars_tapped_at && @signals.untracked(fn() { vw.shown_kind() }) == Some(KImage)
+  })
   let top_zone_ref : Ref[@view.View?] = Ref(None)
   let left_zone_ref : Ref[@view.View?] = Ref(None)
   let right_zone_ref : Ref[@view.View?] = Ref(None)
@@ -175,9 +179,6 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       vw.cancel_idle()
       (vw.hold_off)()
       vw.hold_off = fn() {  }
-      (vw.tap_off)()
-      vw.tap_off = fn() {  }
-      vw.tap_paused_idle = false
       (vw.wheel_off)()
       vw.wheel_off = fn() {  }
       vw.fingers.clear()
@@ -191,7 +192,6 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
       vw.arm_idle(root, root.cause_at())
     }
     root.reacts(at_start=false, fn() { vw.bars_locked() }, fn(locked) {
-      vw.lock_epoch += 1
       if locked {
         vw.cancel_idle()
       } else if @sf.pointer_rests() && !vw.closing && !vw.manual_hidden && !vw.pointer_left {
@@ -207,9 +207,6 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
         vw.pointer_left = false
       } else if @sf.pointer_rests() {
         vw.pointer_left = true
-        (vw.tap_off)()
-        vw.tap_off = fn() {  }
-        vw.tap_paused_idle = false
         let mut changed = false
         if vw.near_bar {
           vw.near_bar = false
@@ -949,9 +946,6 @@ fn Viewer::finger_on(
     Down => {
       v.fingers[d.finger] = (x, y)
       if v.fingers.length() == 1 {
-        // (a tap's toggle waited for called off: this press is a second tap, or a drag)
-        (v.tap_off)()
-        v.tap_off = fn() {  }
         v.down_pointer = @sf.pointer_rests()
         v.held = true
         v.down_x = x
@@ -1059,12 +1053,6 @@ fn Viewer::finger_on(
         }
         v.swiping = false
         v.held = false
-        if v.tap_paused_idle {
-          v.tap_paused_idle = false
-          if v.awake && @sf.pointer_rests() && !v.closing && !@signals.untracked(fn() { v.bars_locked() }) {
-            v.arm_idle(root, at)
-          }
-        }
         return
       }
       // where it was let go, and when, the last of its way: as a move of its own first (however far from the last
@@ -1249,21 +1237,8 @@ fn Viewer::image_let_go(
   let zoomed = z.zoomed_at(at)
   let (vx, vy) = v.speed.get_at(at)
   let s = strip.value_at(at)
-  let resume_paused_idle = fn() {
-    if v.tap_paused_idle {
-      v.tap_paused_idle = false
-      if v.awake && @sf.pointer_rests() && !v.closing && !@signals.untracked(fn() { v.bars_locked() }) {
-        v.arm_idle(root, at)
-      }
-    }
-  }
   if v.pulling {
     v.pull_let_go(c, d, vy)
-    if !v.closing {
-      resume_paused_idle()
-    } else {
-      v.tap_paused_idle = false
-    }
     return
   }
   if v.held && (v.swiping || s != 0.0) && (!zoomed || s != 0.0) {
@@ -1299,27 +1274,20 @@ fn Viewer::image_let_go(
       Some((rx, ry, rw, rh)) => d.x >= rx && d.x < rx + rw && d.y >= ry && d.y < ry + rh
       None => false
     }
-    let schedule_toggle = fn(rearm_idle : Bool) {
+    // (alone, its bars and the ways beside it shown or hidden at once, at its moment: never waiting to see whether a
+    // second comes, which zooms; a mouse's click that shows them starts the idle fade's time again)
+    let toggle = fn(desktop : Bool) {
       let want_show = !@signals.untracked(fn() { v.bars_shown() })
-      let tap_epoch = v.lock_epoch
-      if rearm_idle {
+      if desktop {
         v.cancel_idle()
-        v.tap_paused_idle = true
       }
-      let due = at + canvas.twice_ms()
-      v.tap_off = viewer_at(canvas, due, fn() {
-        v.tap_off = fn() {  }
-        v.tap_paused_idle = false
-        if v.lock_epoch != tap_epoch {
-          return
-        }
-        if !v.closing && !marking.on && !(rearm_idle && want_show && v.pointer_left) {
-          v.set_bars_after_tap(want_show, desktop=rearm_idle)
-          if rearm_idle && v.awake {
-            v.arm_idle(root, due)
-          }
-        }
-      })
+      if !v.closing {
+        // (the change's own moment, what the bars' reactions are told it at: viewer_bars_at_once)
+        v.set_bars_after_tap(want_show, desktop~, at=canvas.cause_at())
+      }
+      if desktop && v.awake {
+        v.arm_idle(root, at)
+      }
     }
     if v.down_pointer {
       let (before_id, after_id) = v.near_ids(src)
@@ -1327,37 +1295,27 @@ fn Viewer::image_let_go(
         !zoomed &&
         ((before_id is Some(_) && in_side_zone(-1)) || (after_id is Some(_) && in_side_zone(1)))
       if rect is Some(_) && !on_picture && !marking.on && !in_step_zone {
-        v.tap_paused_idle = false
         canvas.twice_forgot()
         v.shut(c)
       } else if on_picture {
         if canvas.twice(d) {
-          v.tap_paused_idle = false
           z.double_tap(d.x, d.y, at~)
           if v.awake && @sf.pointer_rests() {
             v.arm_idle(root, at)
           }
         } else if !marking.on {
-          schedule_toggle(true)
-        } else {
-          resume_paused_idle()
+          toggle(true)
         }
       } else {
         // blank space inside an active side step hot zone, or unknown natural size: never mis-close
         canvas.twice_forgot()
-        resume_paused_idle()
       }
     } else if canvas.twice(d) {
-      v.tap_paused_idle = false
       z.double_tap(d.x, d.y, at~)
     } else if !marking.on {
-      // touch (including iPhone Duo fitted view): single tap anywhere toggles bars & arrows after double-tap window
-      schedule_toggle(false)
-    } else {
-      resume_paused_idle()
+      // touch (including iPhone Duo fitted view): single tap anywhere toggles bars & arrows at once
+      toggle(false)
     }
-  } else {
-    resume_paused_idle()
   }
 }
 

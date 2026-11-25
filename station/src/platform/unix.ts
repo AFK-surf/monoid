@@ -83,6 +83,35 @@ export function backgroundedOn(how: Background, program: string, args: string[])
   }
 }
 
+/// Whether a stderr line looks like a diagnostic from a background wrapper (`taskpolicy`, `nice`, `ionice`).
+export function isBackgroundWrapperStderrLine(command: string, line: string): boolean {
+  if (/(?:^|\/)taskpolicy$/.test(command)) return /^taskpolicy:\s+posix_spawn:/.test(line);
+  if (/(?:^|\/)nice$/.test(command)) return /^(?:.*\/)?nice:\s/.test(line);
+  if (/(?:^|\/)ionice$/.test(command)) return /^(?:.*\/)?(?:ionice|nice):\s/.test(line);
+  return false;
+}
+
+/// Whether a backgrounded wrapper (`taskpolicy`, `nice`, `ionice`) failed to exec the target binary
+/// (missing file, bad shebang, permission denied), rather than the target running and returning an exit code.
+export function isBackgroundWrapperExecFailure(
+  command: string,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  stderrLines: readonly string[],
+): boolean {
+  if (signal !== null || code === null || code === 0) return false;
+  if (/(?:^|\/)taskpolicy$/.test(command)) {
+    return stderrLines.some((l) => isBackgroundWrapperStderrLine(command, l));
+  }
+  if (/(?:^|\/)nice$/.test(command)) {
+    return (code === 126 || code === 127) && stderrLines.some((l) => isBackgroundWrapperStderrLine(command, l));
+  }
+  if (/(?:^|\/)ionice$/.test(command)) {
+    return (code === 126 || code === 127 || code === 1) && stderrLines.some((l) => isBackgroundWrapperStderrLine(command, l));
+  }
+  return false;
+}
+
 /// files.rs `clean` on Unix: the path absolute (a leading `/`), `.` and `..` worked out lexically.
 function clean(path: string): string {
   const out: string[] = [];

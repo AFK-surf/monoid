@@ -169,7 +169,7 @@ pub fn timeline_of(runtime : String, record : @jsjson.JValue, state : ReadState,
     "claude" => claude(record, out)
     "dsh" => dsh(record, out)
     "grok" => grok(record, out)
-    "cursor" | "devin" | "hermes" | "agy" => cursor(record, out)
+    "cursor" | "devin" | "hermes" | "agy" | "copilot" => cursor(record, out)
     "pi" => pi(record, out)
     _ => codex(record, state, out)
   }
