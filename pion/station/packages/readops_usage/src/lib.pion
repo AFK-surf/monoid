@@ -1,6 +1,662 @@
-// Zero-conflict W7-0 skeleton for `readops_usage` (L2, implemented in W7-E).
+// Linked-binary real-SQLite + real-shell self-test for `readops_usage` (W7-E: outflow,
+// outflowchats, usagepage + lossless JValue serialization + shortlex ordering).
+// Invoked by `stillfail-pion --smoke-readops <temp-dir>` in `build-linux` CI.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "js_json"
+import "readops_core"
+import "sql_db"
+
+fn mkdir_sync(client : builders_core::ShellClient, path : String) -> Result[Unit, String] {
+  match client.shell_sync_json("fs.mkdir", base_codec::json_obj([("path", base_codec::json_str(path))])) {
+    Ok(_) => Ok(())
+    Err(e) => Err("fs.mkdir " + path + " failed: " + e.message)
+  }
+}
+
+fn write_sync(client : builders_core::ShellClient, path : String, text : String) -> Result[Unit, String] {
+  match client.shell_sync_json(
+    "fs.write",
+    base_codec::json_obj([("path", base_codec::json_str(path)), ("text", base_codec::json_str(text))]),
+  ) {
+    Ok(_) => Ok(())
+    Err(e) => Err("fs.write " + path + " failed: " + e.message)
+  }
+}
+
+fn db_exec_ok(db : sql_db::Db, sql : String, params : Array[base_codec::Json]) -> Result[Unit, String] {
+  match db.run(sql, params) {
+    Ok(_) => Ok(())
+    Err(e) => Err("sql failed (" + sql + "): " + e.message)
+  }
+}
+
+fn check(cond : Bool, msg : String, passed : Array[Int]) -> Result[Unit, String] {
+  if !cond {
+    return Err("readops_usage selftest failed: " + msg)
+  }
+  passed[0] = passed[0] + 1
+  Ok(())
+}
 
 pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
-  let _ = temp_dir
-  Ok(0)
+  let started_shell = if !host_shim::shell_active() {
+    if !host_shim::start(temp_dir, false) {
+      return Err("host_shim::start failed")
+    }
+    true
+  } else {
+    false
+  }
+  let res = run_selftest_inner(temp_dir)
+  if started_shell {
+    host_shim::stop()
+  }
+  res
+}
+
+fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
+  let root = temp_dir + "/w7e_readops_usage"
+  let move_dir = root + "/move"
+  let client = builders_core::ShellClient::new()
+  let state = readops_core::ReaderState::new(client, "/")
+  match mkdir_sync(client, root) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match mkdir_sync(client, move_dir) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+
+  // Write config.json with lone-surrogate key (\ud800) vs U+FFFD (\ufffd), integer-index keys ("10", "2"),
+  // duplicate profile ID (last-wins preserving first position), and api-provider runtime derivation.
+  let config_json = "{\"connects\":[" +
+  "{\"id\":\"c-slack\",\"kind\":\"slack\",\"slack\":{\"team\":{\"id\":\"T1\",\"name\":\"Acme\"}}}," +
+  "{\"id\":\"c-fs\",\"kind\":\"feishu\"}" +
+  "],\"profiles\":[" +
+  "{\"id\":\"10\",\"name\":\"Ten\",\"runtime\":\"codex\"}," +
+  "{\"id\":\"2\",\"name\":\"Two\",\"runtime\":\"claude\"}," +
+  "{\"id\":\"dup\",\"name\":\"First\",\"runtime\":\"claude\"}," +
+  "{\"id\":\"\\ud800\",\"name\":\"  Lone\\ud800  \",\"runtime\":\"agy\"}," +
+  "{\"id\":\"\\ufffd\",\"name\":\"Replacement\",\"runtime\":\"dsh\"}," +
+  "{\"id\":\"dup\",\"name\":\"Second\",\"access\":{\"kind\":\"api-provider\",\"provider\":\"xai\"}}," +
+  "{\"id\":\"gw\",\"name\":\"GW\",\"access\":{\"kind\":\"api-provider\",\"provider\":\"cloudflare-ai-gateway\",\"endpoint\":\"https://gw.example/v1/\",\"protocol\":\"responses\"}}" +
+  "]}"
+  match write_sync(client, root + "/config.json", config_json) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let accounts_known = "{\"dup\":{\"name\":\"ShouldNotOverride\",\"runtime\":\"pi\"},\"moved-1\":{\"name\":\"  Moved One  \",\"runtime\":\"grok\"},\"0\":{\"name\":\"ZeroMoved\"}}"
+  match write_sync(client, move_dir + "/accounts-known.json", accounts_known) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let remote_connects = "{\"c-rem\":{\"described\":{\"kind\":\"slack\",\"team\":\"T2\"}}}"
+  match write_sync(client, root + "/remote-connects.json", remote_connects) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let slack_names = "{\"u:T1:U1\":{\"person\":{\"name\":\"Alice\",\"email\":\"alice@acme.com\"}},\"c:T1:C1\":{\"channel\":\"general\"}}"
+  match write_sync(client, root + "/slack-names.json", slack_names) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+
+  let db_path = root + "/readops_usage_selftest.db"
+  let db = match sql_db::Db::create(db_path) {
+    Ok(d) => d
+    Err(e) => return Err("open selftest db failed: " + e.message)
+  }
+  let passed : Array[Int] = [0]
+
+  let schema_stmts : Array[String] = [
+    "CREATE TABLE threads(id INTEGER PRIMARY KEY, surface TEXT, channel TEXT, thread_ts TEXT, title TEXT, auto_title TEXT, created_by TEXT, created_at INTEGER, home TEXT, hidden_at INTEGER, hidden_by TEXT, shown_at INTEGER, links TEXT)",
+    "CREATE TABLE sessions(key TEXT PRIMARY KEY, ws TEXT, runtime TEXT, model TEXT, created_by TEXT)",
+    "CREATE TABLE thread_sessions(thread INTEGER, session TEXT, connect TEXT, joined_at INTEGER)",
+    "CREATE TABLE entries(thread INTEGER, n INTEGER, kind TEXT, target INTEGER, author_kind TEXT, author TEXT, text TEXT, at INTEGER, card TEXT, options TEXT, letter TEXT)",
+    "CREATE INDEX entries_said ON entries(thread, n) WHERE kind='message' AND letter IS NULL",
+    "CREATE INDEX entries_letters ON entries(thread, n) WHERE letter IS NOT NULL",
+    "CREATE TABLE card_choices(thread INTEGER, n INTEGER, option TEXT)",
+    "CREATE TABLE closed_cards(thread INTEGER, n INTEGER)",
+    "CREATE TABLE pending_system_cards(thread INTEGER, n INTEGER)",
+    "CREATE TABLE thread_state(thread INTEGER PRIMARY KEY, said_n INTEGER)",
+    "CREATE TABLE reads(viewer TEXT, thread INTEGER, n INTEGER)",
+    "CREATE TABLE thread_people(thread INTEGER, author TEXT)",
+    "CREATE TABLE turns(id INTEGER PRIMARY KEY, session_key TEXT, outcome TEXT, declared TEXT, need TEXT, detail TEXT, about_thread INTEGER, about_n INTEGER, about_ts TEXT, started_at INTEGER, ended_at INTEGER)",
+    "CREATE TABLE outflow_chat_progress(id INTEGER PRIMARY KEY, done INTEGER)",
+    "CREATE TABLE outflow_chat_order(scope TEXT, thread INTEGER, at INTEGER, dirty INTEGER)",
+    "CREATE INDEX outflow_chat_scope_order ON outflow_chat_order(scope, dirty, at DESC, thread DESC)",
+    "CREATE TABLE usage_15m_meta(id INTEGER PRIMARY KEY, since INTEGER)",
+    "CREATE TABLE usage_span(id INTEGER PRIMARY KEY, first_at INTEGER)",
+    "CREATE TABLE usage_15m(scope TEXT, quarter INTEGER, session TEXT, thread INTEGER, person TEXT, profile TEXT, runtime TEXT, model TEXT, fast INTEGER, calls INTEGER, input INTEGER, cache_read INTEGER, cache_write INTEGER, cache_write_long INTEGER, output INTEGER)",
+    "CREATE TABLE usage_scope_totals(scope TEXT PRIMARY KEY, tokens INTEGER)",
+    "CREATE TABLE usage_quarter_totals(scope TEXT, quarter INTEGER, calls INTEGER, tokens INTEGER)",
+    "CREATE TABLE usage_chat_progress(id INTEGER PRIMARY KEY, done INTEGER)",
+    "CREATE TABLE usage_chat_dirty(thread INTEGER)",
+    "CREATE TABLE usage_chat_dirty_scope(kind INTEGER, ws TEXT)",
+    "CREATE TABLE usage_chat_totals(kind INTEGER, ws TEXT, place TEXT, chats INTEGER, archived INTEGER, cards INTEGER, picked INTEGER)",
+    "CREATE TABLE remote_run_progress(id INTEGER PRIMARY KEY, done INTEGER)",
+    "CREATE TABLE remote_run_total(id INTEGER PRIMARY KEY, n INTEGER)",
+    "CREATE TABLE remote_run_counts(ws TEXT PRIMARY KEY, n INTEGER)",
+    "CREATE TABLE remote_run_by_time(at INTEGER, session TEXT)",
+    "CREATE TABLE remote_run_lookup(ws TEXT, at INTEGER, session TEXT)",
+  ]
+  for i in 0..<schema_stmts.length() {
+    match db_exec_ok(db, schema_stmts[i], []) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+
+  // Seed threads, sessions, entries, cards, turns, outflow index, usage_15m, history, remote runs.
+  let seeds : Array[(String, Array[base_codec::Json])] = [
+    (
+      "INSERT INTO threads(id, surface, channel, title, created_by, created_at, home) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_num(10.0),
+        base_codec::json_str("chat"),
+        base_codec::json_str("C1"),
+        base_codec::json_str("Alpha Chat"),
+        base_codec::json_str("slack:c-slack:U1"),
+        base_codec::json_num(1000.0),
+        base_codec::json_str("ws1"),
+      ],
+    ),
+    (
+      "INSERT INTO threads(id, surface, channel, title, created_by, created_at, home) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_num(20.0),
+        base_codec::json_str("slack"),
+        base_codec::json_str("C1"),
+        base_codec::json_null(),
+        base_codec::json_str("bob@acme.com"),
+        base_codec::json_num(2000.0),
+        base_codec::json_str("ws2"),
+      ],
+    ),
+    (
+      "INSERT INTO sessions(key, ws, runtime, model, created_by) VALUES (?, ?, ?, ?, ?)",
+      [
+        base_codec::json_str("s1"),
+        base_codec::json_str("ws1"),
+        base_codec::json_str("claude"),
+        base_codec::json_str("claude-opus-5-5"),
+        base_codec::json_str("slack:c-slack:U1"),
+      ],
+    ),
+    (
+      "INSERT INTO sessions(key, ws, runtime, model, created_by) VALUES (?, ?, ?, ?, ?)",
+      [
+        base_codec::json_str("s2"),
+        base_codec::json_str("ws2"),
+        base_codec::json_str("codex"),
+        base_codec::json_str("gpt-5.1"),
+        base_codec::json_str("bob@acme.com"),
+      ],
+    ),
+    (
+      "INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES (?, ?, ?, ?)",
+      [base_codec::json_num(10.0), base_codec::json_str("s1"), base_codec::json_str("chat"), base_codec::json_num(1000.0)],
+    ),
+    (
+      "INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES (?, ?, ?, ?)",
+      [base_codec::json_num(20.0), base_codec::json_str("s2"), base_codec::json_str("c-slack"), base_codec::json_num(2000.0)],
+    ),
+    (
+      "INSERT INTO entries(thread, n, kind, author_kind, author, text, at, card) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_num(10.0),
+        base_codec::json_num(1.0),
+        base_codec::json_str("message"),
+        base_codec::json_str("person"),
+        base_codec::json_str("slack:c-slack:U1"),
+        base_codec::json_str("hello"),
+        base_codec::json_num(1001.0),
+        base_codec::json_null(),
+      ],
+    ),
+    (
+      "INSERT INTO entries(thread, n, kind, author_kind, author, text, at, card) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_num(10.0),
+        base_codec::json_num(2.0),
+        base_codec::json_str("message"),
+        base_codec::json_str("agent"),
+        base_codec::json_str("s1"),
+        base_codec::json_str("pick one"),
+        base_codec::json_num(1002.0),
+        base_codec::json_str("{\"type\":\"options\",\"assignee\":\"Alice@Acme.com\",\"options\":[{\"label\":\"Yes\",\"recommended\":true}]}"),
+      ],
+    ),
+    (
+      "INSERT INTO entries(thread, n, kind, target, author_kind, author, text, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_num(10.0),
+        base_codec::json_num(3.0),
+        base_codec::json_str("edit"),
+        base_codec::json_num(2.0),
+        base_codec::json_str("agent"),
+        base_codec::json_str("s1"),
+        base_codec::json_str("pick one edited"),
+        base_codec::json_num(1003.0),
+      ],
+    ),
+    (
+      "INSERT INTO card_choices(thread, n, option) VALUES (?, ?, ?)",
+      [base_codec::json_num(10.0), base_codec::json_num(2.0), base_codec::json_str("Yes")],
+    ),
+    (
+      "INSERT INTO thread_people(thread, author) VALUES (?, ?)",
+      [base_codec::json_num(10.0), base_codec::json_str("slack:c-slack:U1")],
+    ),
+    (
+      "INSERT INTO thread_state(thread, said_n) VALUES (?, ?)",
+      [base_codec::json_num(10.0), base_codec::json_num(2.0)],
+    ),
+    (
+      "INSERT INTO turns(id, session_key, outcome, declared, need, about_thread, about_n, about_ts, started_at, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_num(1.0),
+        base_codec::json_str("s1"),
+        base_codec::json_str("ok"),
+        base_codec::json_str("need_decision"),
+        base_codec::json_str("  approve deploy  "),
+        base_codec::json_num(10.0),
+        base_codec::json_num(2.0),
+        base_codec::json_str("1002.0"),
+        base_codec::json_num(1002.0),
+        base_codec::json_num(1005.0),
+      ],
+    ),
+    ("INSERT INTO outflow_chat_progress(id, done) VALUES (1, 1)", []),
+    (
+      "INSERT INTO outflow_chat_order(scope, thread, at, dirty) VALUES (?, ?, ?, 0)",
+      [base_codec::json_str("Wws1"), base_codec::json_num(10.0), base_codec::json_num(1005.0)],
+    ),
+    ("INSERT INTO usage_15m_meta(id, since) VALUES (1, 1704067200000)", []),
+    ("INSERT INTO usage_span(id, first_at) VALUES (1, 1704067200000)", []),
+    // 2024-01-01T00:00:00Z = 1704067200000 ms -> quarter = 1893408
+    (
+      "INSERT INTO usage_15m(scope, quarter, session, thread, person, profile, runtime, model, fast, calls, input, cache_read, cache_write, cache_write_long, output) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_str("ws1"),
+        base_codec::json_num(1893408.0),
+        base_codec::json_str("s1"),
+        base_codec::json_num(10.0),
+        base_codec::json_str("slack:c-slack:U1"),
+        base_codec::json_str("dup"),
+        base_codec::json_str("claude"),
+        base_codec::json_str("claude-opus-5-5"),
+        base_codec::json_num(0.0),
+        base_codec::json_num(2.0),
+        base_codec::json_num(1000.0),
+        base_codec::json_num(500.0),
+        base_codec::json_num(200.0),
+        base_codec::json_num(100.0),
+        base_codec::json_num(300.0),
+      ],
+    ),
+    (
+      "INSERT INTO usage_scope_totals(scope, tokens) VALUES (?, ?)",
+      [base_codec::json_str("ws1"), base_codec::json_num(2100.0)],
+    ),
+    (
+      "INSERT INTO usage_quarter_totals(scope, quarter, calls, tokens) VALUES (?, ?, ?, ?)",
+      [base_codec::json_str("ws1"), base_codec::json_num(1893408.0), base_codec::json_num(2.0), base_codec::json_num(2100.0)],
+    ),
+    ("INSERT INTO usage_chat_progress(id, done) VALUES (1, 1)", []),
+    (
+      "INSERT INTO usage_chat_totals(kind, ws, place, chats, archived, cards, picked) VALUES (2, 'ws1', 'chat', 3, 1, 2, 1)",
+      [],
+    ),
+    ("INSERT INTO remote_run_progress(id, done) VALUES (1, 1)", []),
+    ("INSERT INTO remote_run_total(id, n) VALUES (1, 4)", []),
+    ("INSERT INTO remote_run_counts(ws, n) VALUES ('ws1', 2)", []),
+    (
+      "INSERT INTO remote_run_lookup(ws, at, session) VALUES ('ws1', 1704067201000, 's1')",
+      [],
+    ),
+    (
+      "INSERT INTO remote_run_lookup(ws, at, session) VALUES ('ws1', 1704067205000, 's1')",
+      [],
+    ),
+  ]
+  for i in 0..<seeds.length() {
+    match db_exec_ok(db, seeds[i].0, seeds[i].1) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+
+  // 1-4: outflow_messages (all entries, messagesOnly via savepoint_swallow_err, card enrichment, hidden ws -> null)
+  let om_all = match outflow_messages(
+    db,
+    client,
+    root,
+    "/",
+    base_codec::json_obj([
+      ("thread", base_codec::json_num(10.0)),
+      ("after", base_codec::json_num(0.0)),
+      ("limit", base_codec::json_num(10.0)),
+      ("ws", base_codec::json_obj([("workspace", base_codec::json_str("ws1")), ("home", base_codec::json_bool(false))])),
+    ]),
+  ) {
+    Ok(v) => v
+    Err(e) => return Err("outflow_messages all failed: " + readops_core::read_error_message(e))
+  }
+  let om_msgs = match readops_core::json_val(om_all, "messages") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+  match check(om_msgs.length() == 3, "outflow_messages all count == 3", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let p0_email = match readops_core::json_val(om_msgs[0], "person") {
+    Some(p) => readops_core::json_val(p, "email")
+    None => None
+  }
+  match check(
+    match p0_email { Some(base_codec::Json::Str("alice@acme.com")) => true; _ => false },
+    "outflow_messages resolved slack person email",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let card_closed = match readops_core::json_val(om_msgs[1], "card") {
+    Some(c) => {
+      match (readops_core::json_val(c, "closed"), readops_core::json_val(c, "choice")) {
+        (Some(base_codec::Json::Bool(true)), Some(base_codec::Json::Str("Yes"))) => true
+        _ => false
+      }
+    }
+    None => false
+  }
+  match check(card_closed, "outflow_messages enriched closed card + choice", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let om_only = match outflow_messages(
+    db,
+    client,
+    root,
+    "/",
+    base_codec::json_obj([
+      ("thread", base_codec::json_num(10.0)),
+      ("after", base_codec::json_num(0.0)),
+      ("limit", base_codec::json_num(10.0)),
+      ("messagesOnly", base_codec::json_bool(true)),
+      ("ws", base_codec::json_obj([("workspace", base_codec::json_str("ws1")), ("home", base_codec::json_bool(false))])),
+    ]),
+  ) {
+    Ok(v) => v
+    Err(e) => return Err("outflow_messages messagesOnly failed: " + readops_core::read_error_message(e))
+  }
+  let om_only_msgs = match readops_core::json_val(om_only, "messages") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+  match check(om_only_msgs.length() == 2, "outflow_messages messagesOnly excludes edit via savepoint", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let om_other_ws = match outflow_messages(
+    db,
+    client,
+    root,
+    "/",
+    base_codec::json_obj([
+      ("thread", base_codec::json_num(20.0)),
+      ("after", base_codec::json_num(0.0)),
+      ("limit", base_codec::json_num(10.0)),
+      ("ws", base_codec::json_obj([("workspace", base_codec::json_str("ws1")), ("home", base_codec::json_bool(false))])),
+    ]),
+  ) {
+    Ok(v) => v
+    Err(e) => return Err("outflow_messages other ws failed: " + readops_core::read_error_message(e))
+  }
+  match check(
+    match om_other_ws { base_codec::Json::Null => true; _ => false },
+    "outflow_messages foreign workspace returns null",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+
+  // 6-9: outflow_chats (last_turn_of, state=need_human, attention card+assignee, router=true, url encoding)
+  let oc = match outflow_chats(
+    db,
+    client,
+    root,
+    "/",
+    base_codec::json_obj([
+      (
+        "args",
+        base_codec::json_obj([
+          ("since", base_codec::json_num(0.0)),
+          ("limit", base_codec::json_num(10.0)),
+          ("ws", base_codec::json_obj([("workspace", base_codec::json_str("ws1")), ("home", base_codec::json_bool(false))])),
+          (
+            "pages",
+            base_codec::json_obj([
+              ("origin", base_codec::json_str("https://app.test")),
+              ("workspace", base_codec::json_str("ws1")),
+              ("station", base_codec::json_str("st1")),
+            ]),
+          ),
+        ]),
+      ),
+    ]),
+  ) {
+    Ok(v) => v
+    Err(e) => return Err("outflow_chats failed: " + readops_core::read_error_message(e))
+  }
+  let oc_list = match readops_core::json_val(oc, "chats") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+  match check(oc_list.length() == 1, "outflow_chats returns 1 chat for ws1", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let c0 = oc_list[0]
+  match check(
+    mb_json_eq(readops_core::json_val_or_null(c0, "state"), base_codec::json_str("need_human")),
+    "outflow_chats maps need_decision -> need_human via last_turn_of",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let att_ok = match readops_core::json_val(c0, "attention") {
+    Some(att) => {
+      mb_json_eq(readops_core::json_val_or_null(att, "kind"), base_codec::json_str("need")) &&
+      mb_json_eq(readops_core::json_val_or_null(att, "card"), base_codec::json_str("options")) &&
+      mb_json_eq(readops_core::json_val_or_null(att, "note"), base_codec::json_str("approve deploy"))
+    }
+    None => false
+  }
+  match check(att_ok, "outflow_chats attention card & trimmed note", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match check(
+    mb_json_eq(readops_core::json_val_or_null(c0, "router"), base_codec::json_bool(true)) &&
+    mb_json_eq(readops_core::json_val_or_null(c0, "surface"), base_codec::json_str("stillfail")),
+    "outflow_chats router flag & chat->stillfail surface",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+
+  // 10-16: usage_page_json_str (real SQLite + lossless JValue serialization of lone surrogates,
+  // integer-index key reordering, duplicate-key last-wins, history, remoteRuns count=2)
+  let usage_ask = base_codec::json_obj([
+    (
+      "args",
+      base_codec::json_obj([
+        ("from", base_codec::json_num(1704067200000.0)),
+        ("to", base_codec::json_num(1704153600000.0)),
+        ("tz", base_codec::json_num(0.0)),
+        ("history", base_codec::json_bool(true)),
+        (
+          "historyRange",
+          base_codec::json_obj([
+            ("from", base_codec::json_num(1704067200000.0)),
+            ("to", base_codec::json_num(1704153600000.0)),
+          ]),
+        ),
+        ("viewer", base_codec::json_obj([("workspace", base_codec::json_str("ws1")), ("home", base_codec::json_bool(false))])),
+      ]),
+    ),
+  ])
+  let usage_wire = match usage_page_json_str(db, state, root, usage_ask) {
+    Ok(s) => s
+    Err(e) => return Err("usage_page_json_str failed: " + readops_core::read_error_message(e))
+  }
+  // Verify lone surrogate \ud800 is preserved as escaped \ud800 AND distinct from U+FFFD!
+  match check(
+    readops_core::str_contains_sub(usage_wire, "\"\\ud800\":{\"name\":\"Lone\\ud800\",\"runtime\":\"agy\"}"),
+    "usage_page_json_str preserves lone surrogate key and trimmed value losslessly",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // Verify integer-index key ordering in profiles: "0" < "2" < "10" < "dup" < "\ud800" < U+FFFD < "gw" < "moved-1"
+  let idx_0 = readops_core::str_find_sub(usage_wire, "\"0\":{\"name\":\"ZeroMoved\"")
+  let idx_2 = readops_core::str_find_sub(usage_wire, "\"2\":{\"name\":\"Two\"")
+  let idx_10 = readops_core::str_find_sub(usage_wire, "\"10\":{\"name\":\"Ten\"")
+  let idx_dup = readops_core::str_find_sub(usage_wire, "\"dup\":{\"name\":\"Second\",\"runtime\":\"codex\"}")
+  let idx_gw = readops_core::str_find_sub(usage_wire, "\"gw\":{\"name\":\"GW\",\"runtime\":\"codex\"}")
+  let idx_moved = readops_core::str_find_sub(usage_wire, "\"moved-1\":{\"name\":\"Moved One\",\"runtime\":\"grok\"}")
+  let order_ok = match (idx_0, idx_2, idx_10, idx_dup, idx_gw, idx_moved) {
+    (Some(a), Some(b), Some(c), Some(d), Some(e), Some(f)) => a < b && b < c && c < d && d < e && e < f
+    _ => false
+  }
+  match check(order_ok, "usage_page_json_str integer-index key reorder & dup last-wins at first pos", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // Verify round-trip parse via js_json::parse keeps both \ud800 and \ufffd as two distinct keys in profiles!
+  let parsed_wire = match js_json::parse(usage_wire) {
+    Ok(v) => v
+    Err(e) => return Err("js_json::parse(usage_wire) failed: " + e)
+  }
+  let prof_obj = readops_core::jget(Some(parsed_wire), "profiles")
+  let prof_count = match prof_obj {
+    Some(js_json::JValue::Obj(es)) => es.length()
+    _ => 0
+  }
+  match check(prof_count == 8, "profiles has 8 distinct keys (0, 2, 10, dup, \\ud800, U+FFFD, gw, moved-1)", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match check(
+    readops_core::str_contains_sub(usage_wire, "\"beforeDay\":\"2024-01-02\""),
+    "usage_page history beforeDay == 2024-01-02",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match check(
+    readops_core::str_contains_sub(usage_wire, "\"remoteRuns\":[{\"at\":1704067205000,\"session\":\"s1\",\"count\":2}]"),
+    "usage_page remoteRuns aggregates count=2",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match check(
+    readops_core::str_contains_sub(usage_wire, "\"cards\":2,\"picked\":1"),
+    "usage_page history chat_totals cards & picked",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+
+  // 16-18: outflow_usage (renames profile -> account, resolves people, clamps tz/span)
+  let ou = match outflow_usage(
+    db,
+    state,
+    root,
+    base_codec::json_obj([
+      (
+        "args",
+        base_codec::json_obj([
+          ("from", base_codec::json_num(1704067200000.0)),
+          ("to", base_codec::json_num(1704153600000.0)),
+          ("tz", base_codec::json_num(2000.0)),
+          ("ws", base_codec::json_obj([("workspace", base_codec::json_str("ws1")), ("home", base_codec::json_bool(false))])),
+        ]),
+      ),
+    ]),
+  ) {
+    Ok(v) => v
+    Err(e) => return Err("outflow_usage failed: " + readops_core::read_error_message(e))
+  }
+  match check(
+    mb_json_eq(readops_core::json_val_or_null(ou, "tz"), base_codec::json_num(1440.0)),
+    "outflow_usage clamps tz to 1440",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let ou_rows = match readops_core::json_val(ou, "rows") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+  match check(
+    ou_rows.length() == 1 &&
+    mb_json_eq(readops_core::json_val_or_null(ou_rows[0], "account"), base_codec::json_str("dup")),
+    "outflow_usage maps profile -> account",
+    passed,
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let ou_person_ok = match readops_core::json_val(ou, "people") {
+    Some(ps) => {
+      match readops_core::json_val(ps, "slack:c-slack:U1") {
+        Some(p) => mb_json_eq(readops_core::json_val_or_null(p, "email"), base_codec::json_str("alice@acme.com"))
+        None => false
+      }
+    }
+    None => false
+  }
+  match check(ou_person_ok, "outflow_usage resolves people map", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+
+  // 19-20: Non-finite float -> null & shortlex ordering sanity on linked binary
+  let nf_str = js_json::stringify(
+    normalize_jval(
+      js_json::JValue::Obj([
+        (js_json::utf16_units("nan"), js_json::JValue::Num(0.0 / 0.0)),
+        (js_json::utf16_units("inf"), js_json::JValue::Num(1.0 / 0.0)),
+        (js_json::utf16_units("ok"), js_json::JValue::Num(42.0)),
+      ]),
+    ),
+  )
+  match check(nf_str == "{\"nan\":null,\"inf\":null,\"ok\":42}", "non-finite floats serialize as null", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match check(shortlex_compare("z", "aa") < 0 && shortlex_compare("2024-01-02", "2024-01-10") < 0, "shortlex_compare parity", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+
+  let _ = db.close()
+  Ok(passed[0])
 }
