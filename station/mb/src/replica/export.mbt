@@ -819,9 +819,7 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
         }
         let cur_to = num(get(head, "to"))
         if self.seen_head.get(ws) is Some((prev_gen, prev_to)) && (prev_gen != gen || prev_to != cur_to) {
-          self.transcript_cursor.remove(ws)
-          self.transcript_scan_done.remove(ws)
-          self.transcript_ws_done.remove(ws)
+          self.forget_sweep()
           self.transcripts_pending = true
         }
         self.seen_head[ws] = (gen, cur_to)
@@ -829,9 +827,7 @@ async fn Exporter::pass_in(self : Exporter, told : JValue, home : String) -> JVa
       }
       Fresh => {
         if self.seen_head.get(ws) is Some((_, prev_to)) && prev_to >= 0.0 {
-          self.transcript_cursor.remove(ws)
-          self.transcript_scan_done.remove(ws)
-          self.transcript_ws_done.remove(ws)
+          self.forget_sweep()
           self.transcripts_pending = true
         }
         self.seen_head[ws] = (gen, -1.0)

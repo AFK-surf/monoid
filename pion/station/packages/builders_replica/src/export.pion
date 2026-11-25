@@ -1091,9 +1091,7 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
         match self.seen_head.get(ws) {
           Some((prev_gen, prev_to)) => {
             if prev_gen != gen || prev_to != cur_to {
-              let _ = self.transcript_cursor.remove(ws)
-              let _ = self.transcript_scan_done.remove(ws)
-              let _ = self.transcript_ws_done.remove(ws)
+              self.forget_sweep()
               self.transcripts_pending = true
             }
           }
@@ -1110,9 +1108,7 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
         match self.seen_head.get(ws) {
           Some((_, prev_to)) => {
             if prev_to >= 0.0 {
-              let _ = self.transcript_cursor.remove(ws)
-              let _ = self.transcript_scan_done.remove(ws)
-              let _ = self.transcript_ws_done.remove(ws)
+              self.forget_sweep()
               self.transcripts_pending = true
             }
           }

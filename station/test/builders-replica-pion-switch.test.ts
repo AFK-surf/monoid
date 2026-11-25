@@ -2075,3 +2075,117 @@ test("dual-exporter same-gen paginated transcript sweep handover restores all 4/
     }
   }
 });
+
+test("dual-exporter multi-workspace (w, z) paginated sweep handover resets z cursor when B only advances w (MB->Pion->MB & Pion->MB->Pion)", async (t) => {
+  const bins = resolveDualBinaries(t);
+  if (!bins) return;
+
+  for (const [labelA, binA, labelB, binB] of [
+    ["mb", bins.mb, "pion", bins.pion],
+    ["pion", bins.pion, "mb", bins.mb],
+  ] as const) {
+    const made = station();
+    cleanupDirs.push(made.data);
+    const wDir = join(made.data, "homes", "p1", "agy", ".gemini", "antigravity-cli", "brain", "cid-mw-w");
+    const zDir = join(made.data, "homes", "p1", "agy", ".gemini", "antigravity-cli", "brain", "cid-mw-z");
+    mkdirSync(wDir, { recursive: true });
+    mkdirSync(zDir, { recursive: true });
+
+    const wFile = join(wDir, "w1.md");
+    const zNames = ["z1.md", "z2.md", "z3.md"] as const;
+    writeFileSync(wFile, `mw-v1-w-${labelA}-${labelB}-` + "a".repeat(1600));
+    for (const name of zNames) {
+      writeFileSync(join(zDir, name), `mw-v1-z-${labelA}-${labelB}-${name}-` + "b".repeat(1600));
+    }
+    made.store.db
+      .prepare("INSERT INTO runtime_sessions (session_key, id, profile, at, runtime) VALUES (?, ?, ?, ?, ?)")
+      .run("chat:a", "cid-mw-w", "p1", NOW, "agy");
+    made.store.db
+      .prepare("INSERT INTO runtime_sessions (session_key, id, profile, at, runtime) VALUES (?, ?, ?, ?, ?)")
+      .run("chat:o", "cid-mw-z", "p1", NOW, "agy");
+
+    const rep = join(made.data, `replica-mw-sweep-${labelA}-${labelB}`);
+    const flags = ["--compact-heads", "--chunk-bytes", "1024", "--transcript-pass-files", "1"];
+
+    // 1. Exporter A scans w (1/1) + z (2/3), stopping mid-sweep on z with cursor past z1/z2, and stays alive.
+    const expA = new ExportClient(binA, made.db, rep, made.data, flags);
+    await expA.ask({ type: "places", places: PLACES });
+    let pA: any;
+    for (let i = 0; i < 3; i++) {
+      expA.now = NOW + i * 1000;
+      pA = await expA.ask({ type: "pass", told: nothingTold() });
+      assert.equal(pA.more, true, `${labelA}: pass ${i + 1}/3 must have more=true`);
+    }
+    const prevWTo = Number(pA.heads[HOME].to);
+    const prevZTo = Number(pA.heads[OTHER].to);
+
+    // 2. Update ALL files in both w and z on disk; Exporter B runs 1 pass with budget 1 (advances only w, leaves z untouched) and exits.
+    const v2Time = new Date(NOW + 15_000);
+    writeFileSync(wFile, `mw-v2-w-${labelA}-${labelB}-` + "c".repeat(1800));
+    utimesSync(wFile, v2Time, v2Time);
+    const zV2Payloads: Record<string, string> = {};
+    for (const name of zNames) {
+      const body = `mw-v2-z-${labelA}-${labelB}-${name}-` + "d".repeat(1800);
+      zV2Payloads[name] = body;
+      const fp = join(zDir, name);
+      writeFileSync(fp, body);
+      utimesSync(fp, v2Time, v2Time);
+    }
+
+    const expB = new ExportClient(binB, made.db, rep, made.data, flags);
+    expB.now = NOW + 15_000;
+    await expB.ask({ type: "places", places: PLACES });
+    const pB1 = await expB.ask({ type: "pass", told: nothingTold() });
+    assert.equal(pB1.more, true, `${labelB}: multi-ws page 1 must have more=true`);
+    assert.ok(Number(pB1.heads[HOME].to) > prevWTo, `${labelB}: must advance w head.to`);
+    assert.equal(Number(pB1.heads[OTHER].to), prevZTo, `${labelB}: must leave z head.to untouched`);
+    await expB.close();
+
+    // 3. Exporter A resumes with empty told until more=false: seeing w advance MUST forget_sweep() so z is fully re-scanned!
+    let steps = 0;
+    do {
+      expA.now = NOW + 25_000 + steps * 1000;
+      pA = await expA.ask({ type: "pass", told: nothingTold() });
+      steps++;
+      assert.ok(steps <= 12, `${labelA}->${labelB}->${labelA}: multi-ws sweep must converge within 12 passes`);
+    } while (pA.more);
+
+    const finalZHead = pA.heads[OTHER] as Record<string, any>;
+    const genZ = String(finalZHead.gen);
+    const rootHash = String(finalZHead.transcriptManifest);
+    const manifestsDir = join(rep, "manifests");
+    const rootObj = JSON.parse(readFileSync(join(manifestsDir, rootHash), "utf8")) as { v: number; buckets: Record<string, string> };
+    const leafHashes = Object.values(rootObj.buckets);
+    const chunkHashes: string[] = [];
+    for (const lh of leafHashes) {
+      const leafObj = JSON.parse(readFileSync(join(manifestsDir, lh), "utf8")) as { v: number; files: Record<string, number> };
+      chunkHashes.push(...Object.keys(leafObj.files));
+    }
+    const sources = (await expA.ask({ type: "sources", hashes: [...Object.keys(finalZHead.files ?? {}), ...chunkHashes] })) as Record<string, string>;
+    await expA.close();
+
+    // 4. Restore z from A's final z head and assert all 3/3 updated z files are byte-identical (files=3, missing=0, error=null).
+    const dest = tempDir(`w6b-mw-sweep-dest-${labelA}-${labelB}-`);
+    const destDb = join(dest, "stillfail.db");
+    Store.open(destDb).close();
+    stageRestoreCopy(rep, made.data, OTHER, genZ, dest, sources);
+    writeFileSync(join(dest, "restore", "copy", genZ, "head.json"), JSON.stringify(finalZHead, null, 1));
+    const copyFiles = join(dest, "restore", "copy", "files");
+    cpSync(join(manifestsDir, rootHash), join(copyFiles, rootHash));
+    for (const lh of leafHashes) cpSync(join(manifestsDir, lh), join(copyFiles, lh));
+
+    await takeBackSoon(dest, destDb, NOW + 45_000, binA);
+    const outcome = JSON.parse(readFileSync(join(dest, "replica", "restored.json"), "utf8")) as {
+      error: string | null;
+      missing: number;
+      files: number;
+    };
+    assert.equal(outcome.error, null, `${labelA}->${labelB}->${labelA}: multi-ws z restore error`);
+    assert.equal(outcome.missing, 0, `${labelA}->${labelB}->${labelA}: multi-ws z restore missing`);
+    assert.equal(outcome.files, 3, `${labelA}->${labelB}->${labelA}: multi-ws z restore must place all 3/3 files`);
+    for (const name of zNames) {
+      const got = readFileSync(join(dest, "homes", "p1", "agy", ".gemini", "antigravity-cli", "brain", "cid-mw-z", name), "utf8");
+      assert.equal(got, zV2Payloads[name], `${labelA}->${labelB}->${labelA}: z/${name} updated content byte-identical`);
+    }
+  }
+});

@@ -601,9 +601,9 @@ export class Exporter {
         prevSeen !== undefined &&
         (curTo >= 0 ? prevSeen.gen !== gen || prevSeen.to !== curTo : prevSeen.to >= 0);
       if (advanced) {
-        this.#transcriptCursor.delete(ws);
-        this.#transcriptScanDone.delete(ws);
-        this.#transcriptWsDone.delete(ws);
+        this.#tfCache.delete(ws);
+        this.#manifestCache.delete(ws);
+        this.#forgetSweep();
         this.#transcriptsPending = true;
       }
       this.#seenHead.set(ws, { gen, to: curTo });
