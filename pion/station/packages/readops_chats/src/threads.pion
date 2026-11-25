@@ -1,0 +1,151 @@
+// 1:1 port of `station/mb/src/readops/threads.mbt`.
+// Every thread as `chat_list` has it, with no viewer's unread count (`threadList`, `threadPeople`).
+
+import "base_codec"
+import "readops_core"
+import "sql_db"
+
+/// `store.ts` `threadPeople`: who wrote in a thread, a platform's people named `slack:<connect>:<user>`.
+pub fn thread_people(
+  db : sql_db::Db,
+  thread : base_codec::Json,
+  surface : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let connect = match readops_core::one(db, "SELECT MIN(connect) AS c FROM thread_sessions WHERE thread = ?", [thread]) {
+    Ok(Some(r)) => readops_core::field(r, "c")
+    Ok(None) => base_codec::json_null()
+    Err(e) => return Err(e)
+  }
+  let author_rows = match db.all("SELECT author FROM thread_people WHERE thread = ? ORDER BY first_n", [thread]) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  let authors : Array[base_codec::Json] = []
+  for i in 0..<author_rows.length() {
+    authors.push(readops_core::field(author_rows[i], "author"))
+  }
+  if base_codec::json_eq(surface, base_codec::json_str("chat")) {
+    return Ok(base_codec::json_arr(authors))
+  }
+  match connect {
+    base_codec::Json::Str(c) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<authors.length() {
+        out.push(base_codec::json_str("slack:" + c + ":" + readops_core::js_text(authors[i])))
+      }
+      Ok(base_codec::json_arr(out))
+    }
+    _ => Ok(base_codec::json_arr([]))
+  }
+}
+
+fn count_of(
+  db : sql_db::Db,
+  sql : String,
+  thread : base_codec::Json,
+  name : String,
+) -> Result[Double, readops_core::ReadError] {
+  match readops_core::one(db, sql, [thread]) {
+    Ok(Some(r)) => {
+      match readops_core::field(r, name) {
+        base_codec::Json::Num(n, _) => Ok(n)
+        _ => Ok(0.0)
+      }
+    }
+    Ok(None) => Ok(0.0)
+    Err(e) => Err(e)
+  }
+}
+
+/// `ops-sessions.ts` `threadList`.
+pub fn thread_list(db : sql_db::Db) -> Result[base_codec::Json, readops_core::ReadError] {
+  let rows = match db.all(
+    "SELECT t.*, COALESCE(r.n, 0) AS read_n FROM threads t LEFT JOIN reads r ON r.thread = t.id AND r.viewer = ?1",
+    [base_codec::json_str("")],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  let summaries : Array[(Double, Double, Double, base_codec::Json)] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let id = readops_core::field(r, "id")
+    let last_letter = match count_of(db, "SELECT MAX(n) AS n FROM letters WHERE thread = ?", id, "n") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let last_message = match readops_core::last_said(db, id) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let said_at = match readops_core::json_val(last_message, "createdAt") {
+      Some(base_codec::Json::Num(n, _)) => n
+      _ => 0.0
+    }
+    let ts_rows = match db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [id]) {
+      Ok(rs) => rs
+      Err(e) => return Err(readops_core::map_sql_err(e))
+    }
+    let sessions : Array[base_codec::Json] = []
+    for j in 0..<ts_rows.length() {
+      sessions.push(readops_core::membership_json(ts_rows[j]))
+    }
+    let last_entry_n = match count_of(db, "SELECT MAX(n) AS n FROM entries WHERE thread = ?", id, "n") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let people = match thread_people(db, id, readops_core::field(r, "surface")) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let ft = match readops_core::first_text(db, id) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let state_letters = match count_of(db, "SELECT letters FROM thread_state WHERE thread = ?", id, "letters") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let summary = base_codec::json_obj([
+      ("sessions", base_codec::json_arr(sessions)),
+      ("last", base_codec::json_num(last_entry_n)),
+      ("lastMessage", last_message),
+      ("read", readops_core::field(r, "read_n")),
+      ("unread", base_codec::json_num(0.0)),
+      ("people", people),
+      ("firstText", ft),
+      ("letters", base_codec::json_num(last_letter + state_letters)),
+      ("lettersLast", base_codec::json_num(last_letter)),
+      ("thread", readops_core::thread_json(r)),
+    ])
+    let created = match readops_core::field(r, "created_at") {
+      base_codec::Json::Num(n, _) => n
+      _ => 0.0
+    }
+    let id_num = match id {
+      base_codec::Json::Num(n, _) => n
+      _ => 0.0
+    }
+    summaries.push((said_at, created, id_num, summary))
+  }
+  let sorted = readops_core::stable_sort(
+    summaries,
+    fn(a : (Double, Double, Double, base_codec::Json), b : (Double, Double, Double, base_codec::Json)) -> Int {
+      if a.0 != b.0 {
+        return if b.0 > a.0 { 1 } else { -1 }
+      }
+      if a.1 != b.1 {
+        return if b.1 > a.1 { 1 } else { -1 }
+      }
+      if a.2 != b.2 {
+        return if b.2 > a.2 { 1 } else { -1 }
+      }
+      0
+    },
+  )
+  let out : Array[base_codec::Json] = []
+  for i in 0..<sorted.length() {
+    out.push(sorted[i].3)
+  }
+  Ok(base_codec::json_arr(out))
+}

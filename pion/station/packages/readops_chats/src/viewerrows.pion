@@ -1,0 +1,627 @@
+// 1:1 port of `station/mb/src/readops/viewerrows.mbt`.
+// The chat list as one viewer has it (`viewerChatList`, `viewerChatRows`, `chatTitle`, `jsNumber`).
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "jscase"
+import "readops_core"
+import "sql_db"
+
+let ARCHIVE_PAGE : Int = 50
+
+fn u_ffff_str() -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte(0xEF.to_byte())
+  sb.write_byte(0xBF.to_byte())
+  sb.write_byte(0xBF.to_byte())
+  sb.to_string()
+}
+
+/// `titles.ts` `withoutMentions`: text without Slack's `<@U123>` mentions.
+fn without_mentions(text : String) -> String {
+  js_json::without_mentions(text)
+}
+
+/// `titles.ts` `chatTitle`: what a chat is called.
+pub fn chat_title(
+  t : base_codec::Json,
+  first_text : base_codec::Json,
+  channel_name : base_codec::Json,
+  untitled : String,
+  direct : String,
+) -> String {
+  let text = fn(k : String) -> String {
+    match readops_core::json_val(t, k) {
+      Some(base_codec::Json::Str(s)) => jscase::trim_white(s)
+      _ => ""
+    }
+  }
+  let t_title = text("title")
+  let given = if t_title != "" { t_title } else { text("autoTitle") }
+  if given != "" {
+    return given
+  }
+  let surface = match readops_core::json_val(t, "surface") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  if surface == "chat" || surface == "ember" || surface == "stillfail" {
+    return untitled
+  }
+  let first = without_mentions(
+    match first_text {
+      base_codec::Json::Str(s) => s
+      _ => ""
+    },
+  )
+  let lines = readops_core::str_split_byte(first, 10)
+  for i in 0..<lines.length() {
+    let raw_words = jscase::split_by(lines[i], jscase::is_white_space)
+    let words : Array[String] = []
+    for j in 0..<raw_words.length() {
+      if raw_words[j] != "" {
+        words.push(raw_words[j])
+      }
+    }
+    let joined = readops_core::join_strings(words, " ")
+    if joined != "" {
+      return joined
+    }
+  }
+  let name = jscase::trim_white(
+    match channel_name {
+      base_codec::Json::Str(s) => s
+      _ => ""
+    },
+  )
+  if name != "" {
+    if readops_core::str_has_prefix(surface, "feishu:") || readops_core::str_has_prefix(surface, "group:") {
+      return name
+    } else {
+      return "#" + name
+    }
+  }
+  if readops_core::str_has_prefix(text("channel"), "D") {
+    return direct
+  }
+  untitled
+}
+
+struct Own {
+  email : String
+  slack : Array[String]
+  reads : Map[String, base_codec::Json]
+  dismissed : Map[String, Bool]
+  kept : Map[String, Bool]
+  hidden : Map[String, Bool]
+  muted : Map[String, Bool]
+  pins : Map[String, base_codec::Json]
+}
+
+fn row_for(shared : base_codec::Json, own : Own, words : base_codec::Json) -> base_codec::Json {
+  match shared {
+    base_codec::Json::Obj(_) => ()
+    _ => return shared
+  }
+  let word = fn(k : String) -> String {
+    match readops_core::json_val(words, k) {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+  }
+  let mut row = obj_entries(shared)
+  let mine_of = obj_get(row, "mineOf")
+  let said = match obj_get(row, "said") {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+  let answered_by = obj_get(row, "answeredBy")
+  row = obj_remove(row, "mineOf")
+  row = obj_remove(row, "said")
+  row = obj_remove(row, "answeredBy")
+  row = obj_remove(row, "ws")
+  let worded = match readops_core::json_val(words, "untitled") {
+    Some(base_codec::Json::Str(_)) => true
+    _ => false
+  }
+  if worded {
+    match obj_get(row, "named") {
+      Some(named) => {
+        row = obj_remove(row, "named")
+        obj_set(
+          row,
+          "title",
+          base_codec::json_str(
+            chat_title(
+              readops_core::json_val_or_null(named, "thread"),
+              readops_core::json_val_or_null(named, "firstText"),
+              readops_core::json_val_or_null(named, "channelName"),
+              word("untitled"),
+              word("directMessage"),
+            ),
+          ),
+        )
+      }
+      None => ()
+    }
+    match obj_get(row, "last") {
+      Some(base_codec::Json::Obj(l)) => {
+        if match obj_get(l, "quotedOnly") {
+          Some(base_codec::Json::Bool(true)) => true
+          _ => false
+        } {
+          let mut last = obj_entries(base_codec::Json::Obj(l))
+          last = obj_remove(last, "quotedOnly")
+          obj_set(last, "text", base_codec::json_str(word("quotedOnly")))
+          obj_set(row, "last", base_codec::json_obj(last))
+        }
+      }
+      _ => ()
+    }
+  }
+  let mine = fn(p : base_codec::Json) -> Bool {
+    readops_core::is_mine(own.email, own.slack, p)
+  }
+  let thread : Option[base_codec::Json] = match obj_get(row, "thread") {
+    Some(base_codec::Json::Num(n, raw)) => Some(base_codec::Json::Num(n, raw))
+    _ => None
+  }
+  let unread = match thread {
+    Some(t) => {
+      match said {
+        base_codec::Json::Obj(_) => {
+          let s_author = readops_core::json_val_or_null(said, "author")
+          let by_viewer = base_codec::json_eq(readops_core::json_val_or_null(said, "authorKind"), base_codec::json_str("person")) &&
+          mine(base_codec::json_obj([("id", s_author), ("email", s_author)]))
+          let n = if by_viewer {
+            readops_core::json_val(said, "other")
+          } else {
+            readops_core::json_val(said, "n")
+          }
+          let read = readops_core::num(
+            match own.reads.get(readops_core::js_text(t)) {
+              Some(v) => v
+              None => base_codec::json_num(0.0)
+            },
+          )
+          match n {
+            Some(base_codec::Json::Num(x, _)) => x > read
+            _ => false
+          }
+        }
+        _ => false
+      }
+    }
+    None => false
+  }
+  obj_set(row, "unread", base_codec::json_bool(unread))
+  let is_mine_row = match mine_of {
+    Some(base_codec::Json::Arr(ps)) => {
+      let mut hit = false
+      for i in 0..<ps.length() {
+        if mine(ps[i]) {
+          hit = true
+          break
+        }
+      }
+      hit
+    }
+    _ => false
+  }
+  obj_set(row, "mine", base_codec::json_bool(is_mine_row))
+  match thread {
+    Some(t) => {
+      let k = readops_core::js_text(t)
+      obj_set(row, "archiveReminderDismissed", base_codec::json_bool(own.kept.contains(k)))
+      obj_set(row, "hidden", base_codec::json_bool(own.hidden.contains(k)))
+      obj_set(row, "muted", base_codec::json_bool(own.muted.contains(k)))
+      let which_list = ["card", "need", "decision"]
+      for i in 0..<which_list.length() {
+        let which = which_list[i]
+        match obj_get(row, which) {
+          Some(base_codec::Json::Obj(c)) => {
+            let c_seq = match obj_get(c, "seq") {
+              Some(v) => v
+              None => base_codec::json_null()
+            }
+            if own.dismissed.contains(k + ":" + readops_core::js_text(c_seq)) {
+              let d = obj_entries(base_codec::Json::Obj(c))
+              obj_set(d, "dismissed", base_codec::json_bool(true))
+              obj_set(row, which, base_codec::json_obj(d))
+            }
+          }
+          _ => ()
+        }
+      }
+      let answered : Array[base_codec::Json] = []
+      match answered_by {
+        Some(base_codec::Json::Arr(xs)) => {
+          for i in 0..<xs.length() {
+            match xs[i] {
+              base_codec::Json::Obj(m) => {
+                let by_val = match obj_get(m, "by") {
+                  Some(v) => v
+                  None => base_codec::json_null()
+                }
+                if mine(by_val) {
+                  let v = obj_remove(obj_entries(base_codec::Json::Obj(m)), "by")
+                  answered.push(base_codec::json_obj(v))
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+      if answered.length() > 0 {
+        obj_set(row, "answered", base_codec::json_arr(answered))
+      }
+    }
+    None => ()
+  }
+  let pinned = match obj_get(row, "id") {
+    Some(base_codec::Json::Str(id)) => {
+      match own.pins.get(id) {
+        Some(v) => v
+        None => base_codec::json_null()
+      }
+    }
+    _ => base_codec::json_null()
+  }
+  obj_set(row, "pinned", pinned)
+  base_codec::json_obj(row)
+}
+
+/// JavaScript's `Number(text)`.
+pub fn js_number(text : String) -> Double {
+  js_json::js_number_parse(text)
+}
+
+fn viewer_chats(
+  db : sql_db::Db,
+  known : readops_core::Known,
+  viewer : base_codec::Json,
+  words : base_codec::Json,
+  archived : Bool,
+  chat_scope : Option[ChatScope],
+) -> Result[Array[base_codec::Json], readops_core::ReadError] {
+  let raw_rows = match shared_rows(db, known, chat_scope, archived=archived) {
+    Ok(rs) => rs
+    Err(e) => return Err(e)
+  }
+  let rows : Array[base_codec::Json] = []
+  for i in 0..<raw_rows.length() {
+    if sees(viewer, readops_core::json_val_or_null(raw_rows[i], "ws")) {
+      rows.push(raw_rows[i])
+    }
+  }
+  let email = match readops_core::json_val(viewer, "email") {
+    Some(base_codec::Json::Str(e)) => e
+    _ => ""
+  }
+  let threads : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    match readops_core::json_val(rows[i], "thread") {
+      Some(base_codec::Json::Num(n, raw)) => threads.push(base_codec::Json::Num(n, raw))
+      _ => ()
+    }
+  }
+  let set_of = fn(sql : String, params : Array[base_codec::Json]) -> Result[Map[String, Bool], readops_core::ReadError] {
+    let out : Map[String, Bool] = Map::new()
+    let rs = match db.all(sql, params) {
+      Ok(v) => v
+      Err(e) => return Err(readops_core::map_sql_err(e))
+    }
+    for i in 0..<rs.length() {
+      out.set(readops_core::js_text(readops_core::field(rs[i], "thread")), true)
+    }
+    Ok(out)
+  }
+  let reads : Map[String, base_codec::Json] = Map::new()
+  if threads.length() > 0 {
+    let r_rows = match db.all(
+      "SELECT thread, n FROM reads WHERE viewer = ?1 AND thread IN (SELECT value FROM json_each(?2))",
+      [base_codec::json_str(email), readops_core::ids_json(threads)],
+    ) {
+      Ok(v) => v
+      Err(e) => return Err(readops_core::map_sql_err(e))
+    }
+    for i in 0..<r_rows.length() {
+      reads.set(readops_core::js_text(readops_core::field(r_rows[i], "thread")), readops_core::field(r_rows[i], "n"))
+    }
+  }
+  let dismissed : Map[String, Bool] = Map::new()
+  let kept : Map[String, Bool] = Map::new()
+  match chat_scope {
+    None => {
+      let d_rows = match db.all("SELECT thread, n FROM dismissed WHERE viewer = ?", [base_codec::json_str(email)]) {
+        Ok(v) => v
+        Err(e) => return Err(readops_core::map_sql_err(e))
+      }
+      for i in 0..<d_rows.length() {
+        let r = d_rows[i]
+        dismissed.set(
+          readops_core::js_text(readops_core::field(r, "thread")) + ":" + readops_core::js_text(readops_core::field(r, "n")),
+          true,
+        )
+      }
+      let k_rows = match db.all("SELECT thread FROM kept_chats WHERE viewer = ?1", [base_codec::json_str(email)]) {
+        Ok(v) => v
+        Err(e) => return Err(readops_core::map_sql_err(e))
+      }
+      for i in 0..<k_rows.length() {
+        kept.set(readops_core::js_text(readops_core::field(k_rows[i], "thread")), true)
+      }
+    }
+    Some(sc) => {
+      let uthreads = unique_ids([sc.threads])
+      for i in 0..<uthreads.length() {
+        let t = uthreads[i]
+        let d_rows = match db.all("SELECT thread, n FROM dismissed WHERE viewer = ? AND thread = ?", [base_codec::json_str(email), t]) {
+          Ok(v) => v
+          Err(e) => return Err(readops_core::map_sql_err(e))
+        }
+        for j in 0..<d_rows.length() {
+          let r = d_rows[j]
+          dismissed.set(
+            readops_core::js_text(readops_core::field(r, "thread")) + ":" + readops_core::js_text(readops_core::field(r, "n")),
+            true,
+          )
+        }
+        let k_rows = match db.all("SELECT thread FROM kept_chats WHERE viewer = ? AND thread = ?", [base_codec::json_str(email), t]) {
+          Ok(v) => v
+          Err(e) => return Err(readops_core::map_sql_err(e))
+        }
+        for j in 0..<k_rows.length() {
+          kept.set(readops_core::js_text(readops_core::field(k_rows[j], "thread")), true)
+        }
+      }
+    }
+  }
+  let hidden = if threads.length() == 0 {
+    Map::new()
+  } else {
+    match set_of(
+      "SELECT thread FROM hidden_chats WHERE viewer = ?1 AND thread IN (SELECT value FROM json_each(?2))",
+      [base_codec::json_str(email), readops_core::ids_json(threads)],
+    ) {
+      Ok(m) => m
+      Err(e) => return Err(e)
+    }
+  }
+  let muted = if threads.length() == 0 {
+    Map::new()
+  } else {
+    match set_of(
+      "SELECT thread FROM muted_chats WHERE viewer = ?1 AND thread IN (SELECT value FROM json_each(?2))",
+      [base_codec::json_str(jscase::lower(email)), readops_core::ids_json(threads)],
+    ) {
+      Ok(m) => m
+      Err(e) => return Err(e)
+    }
+  }
+  let pins : Map[String, base_codec::Json] = Map::new()
+  let pin_rows = match chat_scope {
+    None => {
+      match db.all("SELECT session, at FROM pins WHERE viewer = ?", [base_codec::json_str(email)]) {
+        Ok(v) => v
+        Err(e) => return Err(readops_core::map_sql_err(e))
+      }
+    }
+    Some(_) => {
+      let pin_keys : Array[String] = []
+      let seen_pk : Map[String, Bool] = Map::new()
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        match readops_core::json_val(r, "id") {
+          Some(base_codec::Json::Str(id)) => push_new(pin_keys, seen_pk, id)
+          _ => ()
+        }
+        match readops_core::json_val(r, "agents") {
+          Some(base_codec::Json::Arr(ags)) => {
+            for j in 0..<ags.length() {
+              match readops_core::json_val(ags[j], "key") {
+                Some(base_codec::Json::Str(ak)) => push_new(pin_keys, seen_pk, ak)
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+      if pin_keys.length() == 0 {
+        []
+      } else {
+        let js : Array[base_codec::Json] = []
+        for i in 0..<pin_keys.length() {
+          js.push(base_codec::json_str(pin_keys[i]))
+        }
+        match db.all(
+          "SELECT session, at FROM pins WHERE viewer = ?1 AND session IN (SELECT value FROM json_each(?2))",
+          [base_codec::json_str(email), readops_core::ids_json(js)],
+        ) {
+          Ok(v) => v
+          Err(e) => return Err(readops_core::map_sql_err(e))
+        }
+      }
+    }
+  }
+  for i in 0..<pin_rows.length() {
+    let r = pin_rows[i]
+    let raw_key = readops_core::js_text(readops_core::field(r, "session"))
+    let anchor = match sql_db::conversation_of(db, raw_key) {
+      Ok(a) => a
+      Err(e) => return Err(readops_core::map_sql_err(e))
+    }
+    let at = readops_core::field(r, "at")
+    match pins.get(anchor) {
+      None => pins.set(anchor, at)
+      Some(prev) => {
+        if readops_core::num(at) < readops_core::num(prev) {
+          pins.set(anchor, at)
+        }
+      }
+    }
+  }
+  let slack_rows = match db.all("SELECT slack_user FROM identities WHERE viewer = ? ORDER BY at", [base_codec::json_str(email)]) {
+    Ok(v) => v
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  let slack : Array[String] = []
+  for i in 0..<slack_rows.length() {
+    slack.push(readops_core::js_text(readops_core::field(slack_rows[i], "slack_user")))
+  }
+  let own = Own::{
+    email: email,
+    slack: slack,
+    reads: reads,
+    dismissed: dismissed,
+    kept: kept,
+    hidden: hidden,
+    muted: muted,
+    pins: pins,
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    out.push(row_for(rows[i], own, words))
+  }
+  Ok(out)
+}
+
+/// `ops.ts` `chats`: a page of the archive (`archived` with `page`), else the viewer's list or the archive's whole.
+pub fn viewer_chat_list(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let known = readops_core::Known::of(client, data, sep, ask)
+  let viewer = readops_core::json_val_or_null(args, "viewer")
+  let words = readops_core::json_val_or_null(args, "words")
+  let archived = match readops_core::json_val(args, "archived") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  let page_opt = if archived {
+    match readops_core::json_val(args, "page") {
+      Some(base_codec::Json::Str(p)) => Some(p)
+      _ => None
+    }
+  } else {
+    None
+  }
+  let page = match page_opt {
+    Some(p) => p
+    None => {
+      return match viewer_chats(db, known, viewer, words, archived, None) {
+        Ok(rs) => Ok(base_codec::json_arr(rs))
+        Err(e) => Err(e)
+      }
+    }
+  }
+  let default_cursor = (base_codec::json_num(9007199254740991.0), base_codec::json_str(u_ffff_str()))
+  let (when, id) = match readops_core::str_find_byte(page, 58) {
+    Some(at) => {
+      if at > 0 {
+        let prefix = readops_core::str_slice_bytes(page, 0, at)
+        let n = js_number(prefix)
+        if js_json::is_safe_integer(n) {
+          (
+            base_codec::json_num(n),
+            base_codec::json_str(readops_core::str_slice_bytes(page, at + 1, page.to_bytes().length())),
+          )
+        } else {
+          default_cursor
+        }
+      } else {
+        default_cursor
+      }
+    }
+    None => default_cursor
+  }
+  let items = match db.all(
+    "SELECT kind, id, at FROM (\n    SELECT 's' AS kind, key AS id, archived_at AS at FROM sessions INDEXED BY sessions_put_away WHERE archived_at IS NOT NULL AND (conv IS NULL OR conv = key) AND (archived_at < ?1 OR (archived_at = ?1 AND key < ?2))\n    UNION ALL\n    SELECT 't' AS kind, CAST(id AS TEXT) AS id, hidden_at AS at FROM threads INDEXED BY threads_put_away WHERE hidden_at IS NOT NULL AND (hidden_at < ?1 OR (hidden_at = ?1 AND CAST(id AS TEXT) < ?2))\n  ) ORDER BY at DESC, id DESC LIMIT ?3",
+    [when, id, base_codec::json_num(ARCHIVE_PAGE.to_double())],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  let sessions : Array[String] = []
+  let threads : Array[base_codec::Json] = []
+  for i in 0..<items.length() {
+    let item = items[i]
+    let kind = readops_core::field(item, "kind")
+    if base_codec::json_eq(kind, base_codec::json_str("s")) {
+      sessions.push(readops_core::js_text(readops_core::field(item, "id")))
+    } else if base_codec::json_eq(kind, base_codec::json_str("t")) {
+      let tid = match sql_db::parse_json(readops_core::js_text(readops_core::field(item, "id"))) {
+        base_codec::JsonParseResult::Ok(j) => j
+        _ => base_codec::json_null()
+      }
+      threads.push(tid)
+    }
+  }
+  let rows : Array[base_codec::Json] = if items.length() == 0 {
+    []
+  } else {
+    let sc = match scope_of(db, sessions, threads) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    match viewer_chats(db, known, viewer, words, true, Some(sc)) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+  }
+  let next = if items.length() >= ARCHIVE_PAGE {
+    let last = items[items.length() - 1]
+    base_codec::json_str(readops_core::js_text(readops_core::field(last, "at")) + ":" + readops_core::js_text(readops_core::field(last, "id")))
+  } else {
+    base_codec::json_null()
+  }
+  Ok(base_codec::json_obj([("rows", base_codec::json_arr(rows)), ("next", next)]))
+}
+
+/// `views.ts` `chatRows`: the viewer's rows a change of some sessions and threads can touch, and the ids of those.
+pub fn viewer_chat_rows(
+  db : sql_db::Db,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  ask : base_codec::Json,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  let args = readops_core::json_val_or_null(ask, "args")
+  let known = readops_core::Known::of(client, data, sep, ask)
+  let sessions = match keys_arg(readops_core::json_val(args, "sessions")) {
+    Some(xs) => xs
+    None => []
+  }
+  let threads = match readops_core::json_val(args, "threads") {
+    Some(base_codec::Json::Arr(t)) => t
+    _ => []
+  }
+  let chat_scope = match scope_of(db, sessions, threads) {
+    Ok(sc) => sc
+    Err(e) => return Err(e)
+  }
+  let rows = match viewer_chats(
+    db,
+    known,
+    readops_core::json_val_or_null(args, "viewer"),
+    readops_core::json_val_or_null(args, "words"),
+    false,
+    Some(chat_scope),
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(e)
+  }
+  let scope_js : Array[base_codec::Json] = []
+  for i in 0..<chat_scope.rows.length() {
+    scope_js.push(base_codec::json_str(chat_scope.rows[i]))
+  }
+  Ok(base_codec::json_obj([("rows", base_codec::json_arr(rows)), ("scope", base_codec::json_arr(scope_js))]))
+}
