@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import StillfailHelper
 
@@ -28,4 +29,22 @@ func aSetsFlagsSayPasteAndTheMark() {
   #expect(Clipboard.flags(1 | (1 << 1)) == (true, 1))
   #expect(Clipboard.flags(2 << 1) == (false, 2))
   #expect(Clipboard.flags(0xff) == (true, 3))
+}
+
+@Test
+func lockScreenTextPasteTypesDirectlyWithoutUsingClipboard() {
+  let body = Data("s3cr3t!".utf8)
+  #expect(Clipboard.lockedPasteText(paste: true, type: 1, body: body, locked: true) == "s3cr3t!")
+  #expect(Clipboard.lockedPasteText(paste: true, type: 1, body: body, locked: false) == nil)
+  #expect(Clipboard.lockedPasteText(paste: false, type: 1, body: body, locked: true) == nil)
+  #expect(Clipboard.lockedPasteText(paste: true, type: 2, body: body, locked: true) == nil)
+  #expect(Clipboard.lockedPasteText(paste: true, type: 1, body: Data([0xff, 0xfe]), locked: true) == nil)
+}
+
+@Test
+func lockScreenTextChunksAreOneCharacterPerEventWithoutNewlines() {
+  let chunks = ScreenInput.lockedTextChunks("aB1!\r\n🔑x\n")
+  let decoded = chunks.map { String(utf16CodeUnits: $0, count: $0.count) }
+  #expect(decoded == ["a", "B", "1", "!", "🔑", "x"])
+  #expect(chunks[4].count == 2)
 }

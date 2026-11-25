@@ -3,10 +3,28 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import IOKit
 
 enum Status {
   static func inputAllowed() -> Bool {
     CGPreflightPostEventAccess() || AXIsProcessTrusted()
+  }
+
+  /// Whether this Mac is showing its lock screen: its password field ignores ⌘V and shares no pasteboard.
+  static func screenLocked() -> Bool {
+    if let session = CGSessionCopyCurrentDictionary() as? [String: Any],
+       (session["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue == true {
+      return true
+    }
+    let root = IORegistryGetRootEntry(kIOMainPortDefault)
+    if root != 0 {
+      defer { IOObjectRelease(root) }
+      if let locked = IORegistryEntryCreateCFProperty(root, "IOConsoleLocked" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool,
+         locked {
+        return true
+      }
+    }
+    return false
   }
 
   /// This process's grants as macOS has them now, the main display, and who macOS asks about.

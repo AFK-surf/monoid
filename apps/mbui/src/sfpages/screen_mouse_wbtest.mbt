@@ -479,6 +479,19 @@ test "a window of its own driven: the keyboard the screen's at once, no press on
   r.live(others=[])
   assert_false(r.t.key_catching())
   mouse_done(r)
+  // 远程's workbench pane (in_tab with tab_pads, no chat field beside it): takes the keyboard at once so ⌘V works
+  let r = screen_rig(w=1024.0, h=756.0, platform=0, in_tab=true, tab_pads=true)
+  r.t.run_for(@sf.later_ms)
+  r.live(others=[], clipboard=["text"])
+  assert_true(r.t.key_catching())
+  r.t.clipboard_gives("lock-pass")
+  r.t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  r.t.draw()
+  let asked = r.told("screen.clipboard")
+  assert_eq(asked.length(), 1)
+  assert_eq(text(Some(asked[0]), "text"), "lock-pass")
+  assert_eq(field(Some(asked[0]), "paste"), Some(Json::boolean(true)))
+  mouse_done(r)
 }
 
 ///|

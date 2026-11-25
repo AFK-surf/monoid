@@ -630,14 +630,18 @@ fn screen_catcher_node(root : @view.View, pg : ScreenPage) -> Unit {
       u.down_with.clear()
       u.typing.set(false)
     } else {
-      // driving it on a page of its own with a keyboard (a window's, not a tab beside a chat's, whose field it would
-      // take; no soft keyboard brought up unasked): the keys go to the screen straight away, so a shortcut or what a
-      // voice input types lands there without a press on the picture first; never over the address bar asked for
+      // driving it on a page of its own with a keyboard (a window's, or 远程's workbench pane where no chat field sits
+      // beside it; not a tab beside a chat's, whose field it would take; no soft keyboard brought up unasked): the keys
+      // go to the screen straight away, so a shortcut or what a voice input types lands there without a press on the
+      // picture first; never over the address bar asked for
       let addr_focused = match u.address_field {
         Some(f) => @signals.untracked(fn() { f.focused() })
         None => false
       }
-      if !pg.in_tab && !@sf.soft_keyboard() && u.address_asked.untracked() == 0 && !addr_focused {
+      if (!pg.in_tab || pg.tab_pads is Some(_)) &&
+        !@sf.soft_keyboard() &&
+        u.address_asked.untracked() == 0 &&
+        !addr_focused {
         match u.catcher {
           Some(k) => @ui.key_catcher_focus_set(k, true)
           None => ()
