@@ -4381,8 +4381,8 @@ static void notice_perm_finish_refresh(uint64_t seq, int32_t next) {
 
 static void notice_perm_finish_auth(BOOL granted) {
   ++notice_perm_seq;
-  notice_answered = granted ? 1 : 0;
   notice_allowed = granted ? 1 : 2;
+  notice_answered = granted ? 1 : 0;
   dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
 }
 

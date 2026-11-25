@@ -234,32 +234,20 @@ final class FramePacer {
 
     /**
      * Evaluates a scheduled wake at Choreographer {@code doFrame(vsyncNs)} / {@code onVsync(vsyncNs, shows)} (main thread):
-     * 0 = stale/replaced, 1 = not yet due (re-post next vsync), 2 = delivered on this vsync, 3 = requested for next vsync.
+     * 0 = stale/replaced, 1 = not yet due (re-post next vsync), 2 = delivered on this vsync.
+     * Fires strictly on the first vsync with {@code vsyncNs / 1e6 >= req.at}, avoiding early-tolerance or
+     * predicted-period pre-arming that would render a wasted early frame near a boundary or across LTPO rate changes.
      */
     int fireWake(WakeReq req, long vsyncNs, long shows) {
-        int action;
         boolean pacedOnly;
         synchronized (wakeLock) {
             if (req == null || wakeReq != req) return 0;
-            if (vsyncNs / 1e6 >= req.at - 0.5) {
-                wakeReq = null;
-                pacedOnly = req.pacedOnly;
-                action = 2;
-            } else if ((vsyncNs + framePeriod) / 1e6 >= req.at - 0.5) {
-                wakeReq = null;
-                pacedOnly = req.pacedOnly;
-                action = 3;
-            } else {
-                return 1;
-            }
+            if (vsyncNs / 1e6 < req.at) return 1;
+            wakeReq = null;
+            pacedOnly = req.pacedOnly;
         }
-        if (action == 2) {
-            wakeFrameNow(vsyncNs, shows, pacedOnly);
-        } else {
-            if (pacedOnly) wantPacedFrame();
-            else wantFrame();
-        }
-        return action;
+        wakeFrameNow(vsyncNs, shows, pacedOnly);
+        return 2;
     }
 
     private double lastFrame;
