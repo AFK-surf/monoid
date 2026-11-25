@@ -103,10 +103,10 @@ pub enum ReadTicketState {
   Cancelled
 }
 
+/// Pure-value leaf ticket for `in_read_k` serialization (ZERO `Deferred` or closure refs).
 pub struct LReadTicket {
   pub id : Int
   pub mut state : ReadTicketState
-  pub turn : effect::Deferred[Unit]
 }
 
 /// Pure-value timer actions for `#live` (ZERO closures, ZERO `host.hub_timers` cycles).
@@ -164,6 +164,8 @@ pub struct LiveState {
   pub timer_actions : Map[Int, (Int, LiveTimerAction)]
   pub length_told : Map[String, Int]
   pub ends : Map[Int, effect::Deferred[Unit]]
+  /// Wakeup handles for queued `in_read_k` tickets (`ticket_id -> Deferred`), removed immediately on wake/cancel/reset.
+  pub read_turns : Map[Int, effect::Deferred[Unit]]
   pub mut pending : Int
 }
 
@@ -192,6 +194,7 @@ pub fn LiveState::new() -> LiveState {
     timer_actions: Map::new(),
     length_told: Map::new(),
     ends: Map::new(),
+    read_turns: Map::new(),
     pending: 0,
   }
 }
@@ -1994,10 +1997,19 @@ fn LiveCtx::handoff_next_reader(self : LiveCtx, w : LWatched) -> Bool {
         if !self.gen.counters.sealed {
           self.gen.counters.active = self.gen.counters.active + 1
         }
-        let _ = ticket.turn.succeed(())
+        let maybe_turn = self.state.read_turns.get(ticket.id)
+        let _ = self.state.read_turns.remove(ticket.id)
+        match maybe_turn {
+          Some(turn) => {
+            let _ = turn.succeed(())
+          }
+          None => ()
+        }
         return true
       }
-      _ => ()
+      _ => {
+        let _ = self.state.read_turns.remove(ticket.id)
+      }
     }
   }
   w.read_held = false
@@ -2013,6 +2025,9 @@ fn LiveCtx::cleanup_watch(self : LiveCtx, w : LWatched) -> Unit {
   w.following = 0
   w.follow_again = false
   if self.gen.counters.sealed {
+    for i in 0..<w.read_queue.length() {
+      let _ = self.state.read_turns.remove(w.read_queue[i].id)
+    }
     w.read_queue.clear()
     w.read_held = false
     return
@@ -2023,20 +2038,29 @@ fn LiveCtx::cleanup_watch(self : LiveCtx, w : LWatched) -> Unit {
       ReadTicketState::Queued => {
         ticket.state = ReadTicketState::Handed
         self.gen.counters.active = self.gen.counters.active + 1
-        let _ = ticket.turn.succeed(())
+        let maybe_turn = self.state.read_turns.get(ticket.id)
+        let _ = self.state.read_turns.remove(ticket.id)
+        match maybe_turn {
+          Some(turn) => {
+            let _ = turn.succeed(())
+          }
+          None => ()
+        }
       }
-      _ => ()
+      _ => {
+        let _ = self.state.read_turns.remove(ticket.id)
+      }
     }
   }
 }
 
 /// Serialize reads of `(key, watch_n)` (`live.mbt:1088-1108`) with ticket-based single-reader
-/// cancellation & handoff safety (ZERO `w <-> read_queue` continuation capture):
-/// - Queuing: `active -= 1; quiet()` before `ticket.turn.wait_k`.
-/// - Handing off: `active += 1` before `ticket.turn.succeed(())`.
-/// - Single-reader cancel while `Queued`: removes ticket, preserves `active`, propagates `Interrupted`.
-/// - Single-reader cancel after `Handed` before resume: undoes `active += 1`, hands off to next live
-///   ticket (or releases `read_held = false` + `quiet()`), propagates `Interrupted`.
+/// cancellation & handoff safety (ZERO `ticket <-> Deferred` cycle; `Deferred` lives in `read_turns`):
+/// - Queuing: `active -= 1; quiet()` before `turn.wait_k`.
+/// - Handing off: `active += 1` before `turn.succeed(())` (and removes `tid` from `read_turns`).
+/// - Single-reader cancel while `Queued`: removes ticket & turn, preserves `active`, propagates `Interrupted`.
+/// - Single-reader cancel after `Handed` before resume: undoes `active += 1` regardless of watch replacement,
+///   hands off to next live ticket only if `cur.n == watch_n` (otherwise emits `quiet()`), propagates `Interrupted`.
 fn LiveCtx::in_read_k(
   self : LiveCtx,
   key : String,
@@ -2082,13 +2106,15 @@ fn LiveCtx::in_read_k(
   if w.read_held {
     let tid = self.alloc_tag()
     let turn : effect::Deferred[Unit] = effect::Deferred::new()
-    let ticket = LReadTicket::{ id: tid, state: ReadTicketState::Queued, turn: turn }
+    let ticket = LReadTicket::{ id: tid, state: ReadTicketState::Queued }
     w.read_queue.push(ticket)
+    self.state.read_turns.set(tid, turn)
     if !self.gen.counters.sealed {
       self.gen.counters.active = self.gen.counters.active - 1
       self.gen.quiet()
     }
     turn.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+      let _ = self.state.read_turns.remove(tid)
       match ex {
         effect::Exit::Succeeded(_) => {
           match ticket.state {
@@ -2102,39 +2128,57 @@ fn LiveCtx::in_read_k(
             _ => false
           }
           ticket.state = ReadTicketState::Cancelled
+          let mut same_watch : Option[LWatched] = None
           match self.state.watched.get(key) {
             Some(cur) => {
               if cur.n == watch_n {
                 remove_read_ticket(cur.read_queue, tid)
-                if was_handed {
-                  if !self.gen.counters.sealed {
-                    self.gen.counters.active = self.gen.counters.active - 1
-                  }
-                  let handed = self.handoff_next_reader(cur)
-                  if !handed && !self.gen.counters.sealed {
-                    self.gen.quiet()
-                  }
-                }
+                same_watch = Some(cur)
               }
             }
-            None => {
-              if was_handed && !self.gen.counters.sealed {
-                self.gen.counters.active = self.gen.counters.active - 1
-                self.gen.quiet()
-              }
+            None => ()
+          }
+          if was_handed {
+            if !self.gen.counters.sealed {
+              self.gen.counters.active = self.gen.counters.active - 1
+            }
+            let handed = match same_watch {
+              Some(cur) => self.handoff_next_reader(cur)
+              None => false
+            }
+            if !handed && !self.gen.counters.sealed {
+              self.gen.quiet()
             }
           }
           k(effect::Exit::Interrupted)
         }
         other => {
+          let was_handed = match ticket.state {
+            ReadTicketState::Handed => true
+            _ => false
+          }
           ticket.state = ReadTicketState::Cancelled
+          let mut same_watch : Option[LWatched] = None
           match self.state.watched.get(key) {
             Some(cur) => {
               if cur.n == watch_n {
                 remove_read_ticket(cur.read_queue, tid)
+                same_watch = Some(cur)
               }
             }
             None => ()
+          }
+          if was_handed {
+            if !self.gen.counters.sealed {
+              self.gen.counters.active = self.gen.counters.active - 1
+            }
+            let handed = match same_watch {
+              Some(cur) => self.handoff_next_reader(cur)
+              None => false
+            }
+            if !handed && !self.gen.counters.sealed {
+              self.gen.quiet()
+            }
           }
           k(other)
         }
@@ -2662,6 +2706,9 @@ fn LiveCtx::lgone(self : LiveCtx, key : String) -> Unit {
       order_remove(self.state.watched_order, key)
       w.take_up = None
       if self.gen.counters.sealed {
+        for i in 0..<w.read_queue.length() {
+          let _ = self.state.read_turns.remove(w.read_queue[i].id)
+        }
         w.read_queue.clear()
         w.read_held = false
         return
@@ -2672,9 +2719,18 @@ fn LiveCtx::lgone(self : LiveCtx, key : String) -> Unit {
           ReadTicketState::Queued => {
             ticket.state = ReadTicketState::Handed
             self.gen.counters.active = self.gen.counters.active + 1
-            let _ = ticket.turn.succeed(())
+            let maybe_turn = self.state.read_turns.get(ticket.id)
+            let _ = self.state.read_turns.remove(ticket.id)
+            match maybe_turn {
+              Some(turn) => {
+                let _ = turn.succeed(())
+              }
+              None => ()
+            }
           }
-          _ => ()
+          _ => {
+            let _ = self.state.read_turns.remove(ticket.id)
+          }
         }
       }
     }
@@ -3346,6 +3402,7 @@ pub fn LiveCtx::reset(self : LiveCtx) -> Unit {
     }
   }
   l.ends.clear()
+  l.read_turns.clear()
   l.pending = 0
 }
 
