@@ -4442,7 +4442,7 @@ sim("a_missed_ping_race_cleans_up_when_the_new_link_closes_or_the_place_is_dropp
 
 /// Back from a short while away (`Wake.checksConnections`), the app's keepalives frozen meanwhile: a link that no longer
 /// answers is replaced now, not at its next ping, and one that answers is kept with nothing dialled.
-for (const [net, ms, within] of [["good", 40, 1_000], ["weak", 200, 2_000]] as const) for (const phase of [0, 1_000, 2_500, 4_000]) {
+for (const [net, ms, within] of [["good", 40, 1_000], ["weak", 200, 2_000]] as const) for (const phase of [0, 1_000, 2_500, 4_000]) for (const away of [10_000, 120_000]) {
   const shortlyAway = async (s: Sim, dead: boolean) => {
     const a = s.relay("https://a.relay.test/", { device: { ms: ms / 2 }, station: { ms: ms / 2 } });
     const b = s.relay("https://b.relay.test/", { device: { ms: ms / 2 + 10 }, station: { ms: ms / 2 + 10 } });
@@ -4456,19 +4456,19 @@ for (const [net, ms, within] of [["good", 40, 1_000], ["weak", 200, 2_000]] as c
     const dialled = station.conns.length;
     if (dead) station.deadBelow = dialled;
     const woken = s.time.now();
-    s.wakes.wake(new Wake(woken, 10_000, false, false));
+    s.wakes.wake(new Wake(woken, away, false, false));
     assert.equal(await s.settle(ask(), 60_000), 200);
     const took = s.time.now() - woken;
     const more = station.conns.length - dialled;
     await close(s, station, mesh);
     return { took, more };
   };
-  sim(`a_link_gone_while_the_app_was_away_a_short_while_is_replaced_as_it_comes_back_on_a_${net}_network_${phase}ms_into_its_pings`, async (s) => {
+  sim(`a_link_gone_while_the_app_was_away_${away / 1000}s_is_replaced_as_it_comes_back_on_a_${net}_network_${phase}ms_into_its_pings`, async (s) => {
     const { took, more } = await shortlyAway(s, true);
     assert.ok(took < within, `answered ${took} ms after the wake`);
     assert.equal(more, 1);
   });
-  sim(`a_link_that_still_answers_as_the_app_comes_back_is_kept_on_a_${net}_network_${phase}ms_into_its_pings`, async (s) => {
+  sim(`a_link_that_still_answers_as_the_app_comes_back_after_${away / 1000}s_is_kept_on_a_${net}_network_${phase}ms_into_its_pings`, async (s) => {
     const { took, more } = await shortlyAway(s, false);
     assert.ok(took < within, `answered ${took} ms after the wake`);
     assert.equal(more, 0);
