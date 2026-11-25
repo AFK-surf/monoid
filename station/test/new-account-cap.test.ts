@@ -695,3 +695,74 @@ test("cross-station TOCTOU fallback: when host rejects borrowed profile claim as
     await r.close();
   }
 });
+
+test("cross-station concurrency: the hub tells the coordinator only when what a session counts against changes, and counts without store reads", async () => {
+  const time = testClock();
+  const r = new Rig({ clock: time.clock });
+  try {
+    r.edit((raw) => {
+      raw.profiles[0].id = "sub-one";
+      raw.profiles[0].access = { kind: "subscription" };
+      raw.profiles[0].maxConcurrentSessions = 5;
+      raw.profiles[0].models = ["opus"];
+      raw.profiles.push({ id: "sub-two", name: "Two", runtime: "claude", access: { kind: "subscription" }, home: "homes/sub-two", models: ["opus"], maxConcurrentSessions: 5 });
+    });
+    const one = r.hub.accounts.accountKeyOf("sub-one");
+    const two = r.hub.accounts.accountKeyOf("sub-two");
+    const told: string[][] = [];
+    r.hub.setSlotCoordinator({
+      remoteActive: () => 0,
+      needsRemoteSlot: () => false,
+      claimBorrowedSlot: async () => ({ ok: true }),
+      adoptBorrowedSlot: () => {},
+      hasBorrowedSlot: () => false,
+      releaseBorrowedSlot: () => {},
+      localActiveChanged: (keys) => { told.push(keys === undefined ? ["*"] : [...keys].sort()); },
+    });
+    const store = r.hub.store as unknown as { getSession: (key: string) => unknown };
+    const getSession = store.getSession.bind(store);
+    let reads = 0;
+    store.getSession = (key) => (reads++, getSession(key));
+
+    // Two at work and one whose turn ended.
+    for (const n of [1, 2, 3]) await r.accept(message({ ts: `${n}.0`, threadTs: `${n}00.1`, text: `start ${n}` }));
+    await settle();
+    assert.equal(r.claude.sessions.length, 3);
+    const [s1, s2, s3] = r.claude.sessions.map((s) => s.options.route as string);
+    for (const k of [s1, s2, s3]) r.hub.store.setSessionProfile(k!, "sub-one", true);
+    await settle();
+    await r.call(s3!, "chat_post", { to: "C1/300.1", text: "done", kind: "all_done", done: "finished 3" });
+    r.claude.sessions[2]!.complete();
+    await settle();
+    assert.ok(told.some((k) => k.includes(one)), "the turn that ended told its account");
+    const active = r.hub.localActiveForAccount(one);
+    assert.ok(active >= 2, `two at work counted, saw ${active}`);
+
+    // Writes to idle sessions' rows (usage repriced, a title, a heartbeat) tell nothing and read nothing for slots.
+    told.length = 0;
+    for (let i = 0; i < 100; i++) r.hub.store.setSessionUsage(s3!, { costUsd: i });
+    await settle();
+    assert.deepEqual(told as string[][], [], "an idle session's writes move no count");
+
+    // Counting reads no session row.
+    reads = 0;
+    for (let i = 0; i < 50; i++) assert.equal(r.hub.localActiveForAccount(one), active);
+    assert.equal(reads, 0, "running sessions' profiles are kept, not read");
+
+    // A running session moved to another account tells both.
+    told.length = 0;
+    r.hub.store.setSessionProfile(s2!, "sub-two", true);
+    assert.deepEqual(told as string[][], [[one, two].sort()]);
+    assert.equal(r.hub.localActiveForAccount(two), 1);
+    assert.equal(r.hub.localActiveForAccount(one), active - 1);
+
+    // Its turn ending tells its account.
+    told.length = 0;
+    await r.call(s1!, "chat_post", { to: "C1/100.1", text: "done", kind: "all_done", done: "finished 1" });
+    r.claude.sessions[0]!.complete();
+    await settle();
+    assert.ok(told.length > 0 && told.every((k) => k.length === 1), `told per account: ${JSON.stringify(told)}`);
+  } finally {
+    await r.close();
+  }
+});

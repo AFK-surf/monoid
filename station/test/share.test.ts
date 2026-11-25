@@ -1429,6 +1429,41 @@ test("cross-station concurrency slots: host enforces account-wide cap across sta
   await c.sharing.close();
 });
 
+test("cross-station concurrency slots: a local change reads the local count once per account, not once per borrower", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const calls = new Map<string, number>();
+  const ids = Array.from({ length: 8 }, (_, i) => `max${i}`);
+  const a = station(cloud, A, () => all, ids.map((id) => ({ ...SUB, id, name: id, home: `homes/${id}`, maxConcurrentSessions: 2 })), undefined, {
+    accountKey: (id) => `account:${id}`,
+    localActiveForAccount: (key) => (calls.set(key, (calls.get(key) ?? 0) + 1), 1),
+  });
+  all.set(A, a);
+  for (const id of ids) await a.sharing.shareProfile(id, true, null);
+  await settle(a);
+  const internals = a.sharing as unknown as { readState(): { hosted: Record<string, { told: Record<string, number> }> }; lastToldSlots: Map<string, string> };
+  const shareOf = (id: string) => a.config.raw().profiles.find((p: any) => p.id === id).share.id as string;
+  // Twenty borrowers told of each share (none reachable: what was pushed stays recorded until its refusal comes).
+  for (const id of ids) for (let n = 0; n < 20; n++) internals.readState().hosted[shareOf(id)]!.told[`peer-${n}`] = 0;
+
+  calls.clear();
+  a.sharing.localActiveChanged(["account:max0"]);
+  assert.deepEqual([...calls], [["account:max0", 1]], "only the changed account, its count read once");
+  const pushed = [...internals.lastToldSlots.keys()].filter((k) => k.startsWith(`${shareOf("max0")}\0`));
+  assert.equal(pushed.length, 20, "every borrower of it is still pushed its count");
+  assert.equal(internals.lastToldSlots.get(`${shareOf("max0")}\0peer-0`), "1:2");
+
+  calls.clear();
+  a.sharing.localActiveChanged([]);
+  assert.equal(calls.size, 0, "no account named: nothing read");
+
+  await settle(a);
+  calls.clear();
+  a.sharing.localActiveChanged();
+  assert.deepEqual([...calls].sort(), ids.map((id) => [`account:${id}`, 1]).sort(), "a reload reads each hosted account once");
+  await a.sharing.close();
+});
+
 test("cross-station concurrency slots: long-turn lease renewal keeps slot alive, crashed borrower expires after 5m, cold restart clears immediately, and host restart re-syncs", async () => {
   const C = "c".repeat(64);
   const cloud = new FakeCloud();

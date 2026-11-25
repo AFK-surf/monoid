@@ -408,9 +408,12 @@ export class MbActor {
   mirrored(state: Mirror) {
     if (state.seen < this.#readAt) state = { ...state, unread: [] };
     const prev = this.processState();
+    const prevSettled = this.settled();
     this.#mirror = state;
     this.runtime = state.runtime;
-    if (this.processState() !== prev || state.queued === 0) this.#onStateChange?.();
+    // Only a change of what holds a concurrency slot is told (`Hub.syncActiveSlots`): every mirror would query the
+    // store and push to each borrower for nothing (0.1.11459: a million queries and an 8.7 s stall).
+    if (this.processState() !== prev || this.settled() !== prevSettled) this.#onStateChange?.();
   }
 
   isOpening(): boolean {

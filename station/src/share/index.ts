@@ -1801,18 +1801,39 @@ export class Sharing {
     return (this.deps.localActiveForAccount?.(accountKey) ?? 0) + this.hostedRemoteActive(accountKey, peer);
   }
 
-  private broadcastSlotsForAccount(accountKey: string, skipPeer?: string): void {
+  /// The subscription profiles this station hosts a share of, by share id (what `shares()` holds of profiles, without
+  /// its skills or automatic allow lists: the slot pushes read only these).
+  private hostedProfileShares(): Array<{ id: string; profile: Json }> {
+    const out: Array<{ id: string; profile: Json }> = [];
+    for (const p of this.profiles()) {
+      if (!isObject(p.share) || p.share.borrowed === true || typeof p.share.id !== "string") continue;
+      out.push({ id: p.share.id, profile: p });
+    }
+    return out;
+  }
+
+  /// Pushes each borrower of `accountKey`'s hosted shares its `otherActive` count if it changed. Its local count is read
+  /// once and the remote slots walked once, whatever the number of shares and peers (`hosted`: those shares, when the
+  /// caller has them).
+  private broadcastSlotsForAccount(accountKey: string, skipPeer?: string, hosted?: Array<{ id: string; profile: Json }>): void {
     if (this.closed) return;
     const state = this.readState();
-    for (const [id, own] of this.shares()) {
-      if (own.kind !== "profile" || !own.profile) continue;
-      if (this.resolveAccountKey(own.profile) !== accountKey) continue;
-      const hosted = state.hosted[id];
-      if (!hosted) continue;
-      const cap = this.resolveAccountCap(own.profile) ?? null;
-      for (const peer of Object.keys(hosted.told)) {
+    const shares = (hosted ?? this.hostedProfileShares()).filter(({ id, profile }) => state.hosted[id] !== undefined && (hosted !== undefined || this.resolveAccountKey(profile) === accountKey));
+    if (shares.length === 0) return;
+    const localActive = this.deps.localActiveForAccount?.(accountKey) ?? 0;
+    const now = this.time.now();
+    let remoteTotal = 0;
+    const remoteByPeer = new Map<string, number>();
+    for (const entry of this.hostedSlots.values()) {
+      if (entry.accountKey !== accountKey || entry.expiresAt <= now) continue;
+      remoteTotal++;
+      remoteByPeer.set(entry.peer, (remoteByPeer.get(entry.peer) ?? 0) + 1);
+    }
+    for (const { id, profile } of shares) {
+      const cap = this.resolveAccountCap(profile) ?? null;
+      for (const peer of Object.keys(state.hosted[id]!.told)) {
         if (peer === skipPeer || this.deps.itself?.(peer) === true) continue;
-        const otherActive = this.hostOtherActiveFor(accountKey, peer);
+        const otherActive = localActive + remoteTotal - (remoteByPeer.get(peer) ?? 0);
         const sig = `${otherActive}:${cap ?? ""}`;
         const key = `${id}\0${peer}`;
         if (this.lastToldSlots.get(key) === sig) continue;
@@ -1843,18 +1864,26 @@ export class Sharing {
   }
 
   /// Called by the hub when local active sessions or profile caps change: pushes updated `otherActive` counts to
-  /// borrowers of hosted subscription profiles (deduplicated per peer, zero traffic when unchanged).
-  localActiveChanged(): void {
+  /// borrowers of hosted subscription profiles (deduplicated per peer, zero traffic when unchanged), of the accounts
+  /// `onlyAccountKeys` names (every hosted one when not given: a config reload).
+  localActiveChanged(onlyAccountKeys?: Iterable<string>): void {
     if (this.closed) return;
-    const keys = new Set<string>();
-    for (const [id, own] of this.shares()) {
-      if (own.kind !== "profile" || !own.profile) continue;
-      const cap = this.resolveAccountCap(own.profile);
-      const hasTold = [...this.lastToldSlots.keys()].some((k) => k.startsWith(`${id}\0`));
-      const accountKey = this.resolveAccountKey(own.profile);
-      if (cap !== undefined || hasTold || this.hostedRemoteActive(accountKey) > 0) keys.add(accountKey);
+    const only = onlyAccountKeys === undefined ? null : new Set(onlyAccountKeys);
+    if (only !== null && only.size === 0) return;
+    const toldShares = new Set<string>();
+    for (const k of this.lastToldSlots.keys()) toldShares.add(k.slice(0, k.indexOf("\0")));
+    const byAccount = new Map<string, Array<{ id: string; profile: Json }>>();
+    for (const share of this.hostedProfileShares()) {
+      const accountKey = this.resolveAccountKey(share.profile);
+      if (only !== null && !only.has(accountKey)) continue;
+      let list = byAccount.get(accountKey);
+      if (!list) byAccount.set(accountKey, (list = []));
+      list.push(share);
     }
-    for (const key of keys) this.broadcastSlotsForAccount(key);
+    for (const [accountKey, shares] of byAccount) {
+      const wanted = shares.some(({ id, profile }) => this.resolveAccountCap(profile) !== undefined || toldShares.has(id)) || this.hostedRemoteActive(accountKey) > 0;
+      if (wanted) this.broadcastSlotsForAccount(accountKey, undefined, shares);
+    }
   }
 
   /// Active sessions on other stations sharing `profileId`'s underlying account:

@@ -57,7 +57,8 @@ export type SlotCoordinator = {
   adoptBorrowedSlot(profile: Profile, session: string): void;
   hasBorrowedSlot(session: string): boolean;
   releaseBorrowedSlot(session: string): void;
-  localActiveChanged(): void;
+  /// Local active sessions changed for these accounts (`Accounts.accountKeyOf`), or for any when none are given.
+  localActiveChanged(accountKeys?: Iterable<string>): void;
 };
 import { type Actor, type SessionDeps, type Snapshot, linkSkills, openOptions } from "./actor.ts";
 import { ActorsProgram } from "./mb-actor.ts";
@@ -385,6 +386,8 @@ export class Hub {
   private slotCoordinator: SlotCoordinator | null = null;
   /// In-flight turn opens/starts reserving a local concurrency slot before `processState()` becomes `"running"`.
   private inFlightClaims = new Map<string, string>();
+  /// Profile of each session whose actor runs now, as last synced (`syncActiveSlots`): counted without a store read.
+  private runningProfiles = new Map<string, string>();
   onBilledFallback: ((info: BilledFallback) => void) | null = null;
   readonly deps: SessionDeps;
 
@@ -451,13 +454,13 @@ export class Hub {
           this.sessionProjectSig.set(change.key, sig);
           this.localProjectsCache.clear();
         }
-        this.syncActiveSlots(change.key);
+        this.syncActiveSlots(change.key, row);
       } else if (change.type === "sessionRemoved") {
         this.live.running(change.key, false);
         if (this.interruptedByRestart.delete(change.key)) this.interruptedHook?.();
         this.sessionProjectSig.delete(change.key);
         this.localProjectsCache.clear();
-        this.syncActiveSlots(change.key);
+        this.syncActiveSlots(change.key, null);
       } else if (change.type === "thread" && change.entries.length === 0) {
         // Ordinary message appends (`entries.length > 0`) never alter project/tag classification; keep cache hot!
         this.localProjectsCache.clear();
@@ -2243,7 +2246,12 @@ export class Hub {
     const out = new Map<string, string>();
     for (const a of this.actors.values()) {
       if (a.key === except || a.processState() !== "running") continue;
-      const profile = this.store.getSession(a.key)?.profile;
+      // (one that began running without telling the hub, its runtime busy alone, is read once)
+      let profile = this.runningProfiles.get(a.key);
+      if (profile === undefined) {
+        profile = this.store.getSession(a.key)?.profile ?? undefined;
+        if (profile) this.runningProfiles.set(a.key, profile);
+      }
       if (profile) out.set(a.key, profile);
     }
     for (const [key, profile] of this.inFlightClaims) {
@@ -2273,34 +2281,70 @@ export class Hub {
     void this.actor(now).runChanged({ was: runShown(was, named), now: runShown(now, named) }).catch(() => {});
   }
 
-  /// Releases any in-flight or borrowed concurrency slot for `key` when an open/start fails or aborts.
-  private releaseClaim(key: string) {
-    const hadInFlight = this.inFlightClaims.delete(key);
-    const actor = this.actors.get(key);
-    const running = actor !== undefined && actor.processState() === "running";
-    if (!running) this.slotCoordinator?.releaseBorrowedSlot(key);
-    if (hadInFlight || !running) this.slotCoordinator?.localActiveChanged();
+  /// The profile `key` counts against now (running, else holding an in-flight claim).
+  private effectiveProfile(key: string): string | undefined {
+    return this.runningProfiles.get(key) ?? this.inFlightClaims.get(key);
   }
 
-  /// Reconciles local in-flight claims, borrowed host slots, and hosted-profile pushes after an actor state change.
-  private syncActiveSlots(key: string) {
+  /// Tells the coordinator of the accounts whose local active count `key` moved between (none when it did not).
+  private activeMoved(prev: string | undefined, next: string | undefined) {
+    if (prev === next || !this.slotCoordinator) return;
+    const keys = new Set<string>();
+    for (const p of [prev, next]) if (p !== undefined) keys.add(this.accounts.accountKeyOf(p));
+    this.slotCoordinator.localActiveChanged(keys);
+  }
+
+  /// Drops `key`'s in-flight claim (its open given up or refused), telling the coordinator if that moved a count.
+  private dropInFlight(key: string) {
+    const prev = this.effectiveProfile(key);
+    this.inFlightClaims.delete(key);
+    this.activeMoved(prev, this.effectiveProfile(key));
+  }
+
+  /// Releases any in-flight or borrowed concurrency slot for `key` when an open/start fails or aborts.
+  private releaseClaim(key: string) {
+    const prev = this.effectiveProfile(key);
+    this.inFlightClaims.delete(key);
     const actor = this.actors.get(key);
     const running = actor !== undefined && actor.processState() === "running";
+    if (!running) {
+      this.runningProfiles.delete(key);
+      this.slotCoordinator?.releaseBorrowedSlot(key);
+    }
+    this.activeMoved(prev, this.effectiveProfile(key));
+  }
+
+  /// Reconciles local in-flight claims, borrowed host slots, and hosted-profile pushes after an actor state change or a
+  /// change of its session's row (`knownRow`, as the store just said it: null once removed). Called for every session
+  /// write, so one that holds nothing returns at once, and the coordinator is told only when what `key` counts against
+  /// changed.
+  private syncActiveSlots(key: string, knownRow?: SessionRow | null) {
+    const actor = this.actors.get(key);
+    const running = actor !== undefined && actor.processState() === "running";
+    const prevRunning = this.runningProfiles.get(key);
+    const prevInFlight = this.inFlightClaims.get(key);
+    const hasBorrowed = this.slotCoordinator?.hasBorrowedSlot(key) ?? false;
+    if (!running && prevRunning === undefined && prevInFlight === undefined && !hasBorrowed) return;
+    const prev = prevRunning ?? prevInFlight;
     const opening = actor !== undefined && actor.isOpening();
     if (running) {
       this.inFlightClaims.delete(key);
-      if (this.slotCoordinator && !this.slotCoordinator.hasBorrowedSlot(key)) {
-        const row = this.store.getSession(key);
-        const profile = row ? this.config().profiles.find((p) => p.id === row.profile) : undefined;
-        if (profile && this.slotCoordinator.needsRemoteSlot(profile)) {
-          this.slotCoordinator.adoptBorrowedSlot(profile, key);
-        }
+      // (its profile changes only by a write of its row, which comes here as `knownRow`: read only the first time)
+      const profileId = knownRow !== undefined ? knownRow?.profile || undefined : prevRunning ?? (this.store.getSession(key)?.profile || undefined);
+      if (profileId) this.runningProfiles.set(key, profileId);
+      else this.runningProfiles.delete(key);
+      if (this.slotCoordinator && !hasBorrowed && profileId) {
+        const profile = this.config().profiles.find((p) => p.id === profileId);
+        if (profile && this.slotCoordinator.needsRemoteSlot(profile)) this.slotCoordinator.adoptBorrowedSlot(profile, key);
       }
-    } else if (!opening && (actor === undefined || actor.settled())) {
-      this.inFlightClaims.delete(key);
-      this.slotCoordinator?.releaseBorrowedSlot(key);
+    } else {
+      this.runningProfiles.delete(key);
+      if (!opening && (actor === undefined || actor.settled())) {
+        this.inFlightClaims.delete(key);
+        this.slotCoordinator?.releaseBorrowedSlot(key);
+      }
     }
-    this.slotCoordinator?.localActiveChanged();
+    this.activeMoved(prev, this.effectiveProfile(key));
   }
 
   /// Selects the profile for session `key` and, when the chosen profile is a capped borrowed subscription, atomically
@@ -2335,7 +2379,7 @@ export class Hub {
       try {
         profile = this.accounts.runOn(key, holding, true, across, forceCap, rejectedCapped.size > 0 ? rejectedCapped : undefined);
       } catch (e) {
-        this.inFlightClaims.delete(key);
+        this.dropInFlight(key);
         if (e instanceof AccountCapError && lastReject !== null && rejectedCapped.has(e.profileId) && e.active < lastReject.active) {
           throw new AccountCapError(lastReject.profile, lastReject.profileId, lastReject.active, lastReject.cap, lastReject.protection);
         }
@@ -2344,8 +2388,9 @@ export class Hub {
       if (!coord.needsRemoteSlot(profile)) {
         if (coord.hasBorrowedSlot(key)) coord.releaseBorrowedSlot(key);
         if (!billedPerUse(profile) && this.accounts.accountMaxSessions(profile.id) !== undefined) {
+          const prev = this.effectiveProfile(key);
           this.inFlightClaims.set(key, profile.id);
-          coord.localActiveChanged();
+          this.activeMoved(prev, this.effectiveProfile(key));
         }
         this.finishRunOnNotice(key, initialRow, profile);
         return profile;
@@ -2356,7 +2401,7 @@ export class Hub {
       try {
         claimed = await coord.claimBorrowedSlot(profile, key, force);
       } catch (e) {
-        this.inFlightClaims.delete(key);
+        this.dropInFlight(key);
         restoreInitial();
         throw e;
       }
@@ -2364,7 +2409,7 @@ export class Hub {
         this.finishRunOnNotice(key, initialRow, profile);
         return profile;
       }
-      this.inFlightClaims.delete(key);
+      this.dropInFlight(key);
       restoreInitial();
       rejectedCapped.add(profile.id);
       lastReject = { profile: profile.name, profileId: profile.id, active: claimed.active, cap: claimed.cap, protection: claimed.protection };
@@ -2414,9 +2459,11 @@ export class Hub {
     const deadline = this.deadlines.get(key);
     if (deadline) this.interrupt(deadline);
     this.deadlines.delete(key);
+    const prev = this.effectiveProfile(key);
     this.inFlightClaims.delete(key);
+    this.runningProfiles.delete(key);
     this.slotCoordinator?.releaseBorrowedSlot(key);
-    this.slotCoordinator?.localActiveChanged();
+    this.activeMoved(prev, undefined);
     return actor;
   }
 
