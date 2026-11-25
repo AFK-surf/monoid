@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d65877bfe](https://github.com/AFK-surf/monoid/commit/d65877bfe98afbab2532bf32245e9b9adf464835) fix(app): make the text in interactive cards selec | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.63 | 123.13 |
 | [3a47d3fd0](https://github.com/AFK-surf/monoid/commit/3a47d3fd021c0e9289b201a998f7afcb9549c025) fix(install): keep the station running when the ke | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.66 | 126.4 |
 | [fcc12b2f2](https://github.com/AFK-surf/monoid/commit/fcc12b2f238fe55cf3c32f73730ad693f7c3c981) feat(ui): calibrate Regular Liquid Glass controls  | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.66 | 126.4 |
 | [918c06c90](https://github.com/AFK-surf/monoid/commit/918c06c90111e3e415bf6c5f41f1c6302ef52555) build(station): bundle stillfail-pion native reade | 2.54 | 3.44 | 14.21 | 36.75 | 55.59 | 32.11 | 64.99 | 100.93 | 123.13 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bf66c2dbb](https://github.com/AFK-surf/monoid/commit/bf66c2dbbc04fa1067f02629b964b5462bb085bc) feat(pion): Wave 7.1 front (--builder forward and  | 2.52 | 3.41 | 14.07 | 36.61 | 55.08 | 31.97 | 64.57 | 100.83 | 125.74 |
 | [04f23f8f2](https://github.com/AFK-surf/monoid/commit/04f23f8f28d20778832cc3a30277cd4de3ea7487) perf(ui): keep the macOS menu bar in place and ope | 2.52 | 3.4 | 14.07 | 36.61 | 55.08 | 31.97 | 64.57 | 100.76 | 120.32 |
 | [af836a0fc](https://github.com/AFK-surf/monoid/commit/af836a0fcee54d4fa05d9fe02fce27cb9e6b6374) feat(ui): stop Cmd-click quick-pick at commas (#86 | 2.52 | 3.4 | 14.07 | 36.61 | 55.08 | 31.97 | 64.57 | 100.86 | 129.86 |
-| [3142ff413](https://github.com/AFK-surf/monoid/commit/3142ff4130b8045ec4942e14d0e2753673a17ce9) feat(pion-station): port W7-C readops_local L1 pac | 2.52 | 3.4 | 14.07 | 36.6 | 55.08 | 31.97 | 64.57 | 101.07 | 124.6 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d65877bfe](https://github.com/AFK-surf/monoid/commit/d65877bfe98afbab2532bf32245e9b9adf464835) fix(app): make the text in interactive cards selec | 0.56 | 0.74 | 2.86 | 3.9 | 7.15 | 2.12 | 5.96 | 56.9 |
 | [3a47d3fd0](https://github.com/AFK-surf/monoid/commit/3a47d3fd021c0e9289b201a998f7afcb9549c025) fix(install): keep the station running when the ke | 0.56 | 0.74 | 2.86 | 3.9 | 7.15 | 2.12 | 5.96 | 57.46 |
 | [fcc12b2f2](https://github.com/AFK-surf/monoid/commit/fcc12b2f238fe55cf3c32f73730ad693f7c3c981) feat(ui): calibrate Regular Liquid Glass controls  | 0.56 | 0.74 | 2.86 | 3.9 | 7.15 | 2.12 | 5.96 | 57.21 |
 | [918c06c90](https://github.com/AFK-surf/monoid/commit/918c06c90111e3e415bf6c5f41f1c6302ef52555) build(station): bundle stillfail-pion native reade | 0.56 | 0.74 | 2.86 | 3.9 | 7.15 | 2.12 | 5.96 | 57.36 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bf66c2dbb](https://github.com/AFK-surf/monoid/commit/bf66c2dbbc04fa1067f02629b964b5462bb085bc) feat(pion): Wave 7.1 front (--builder forward and  | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.51 |
 | [04f23f8f2](https://github.com/AFK-surf/monoid/commit/04f23f8f28d20778832cc3a30277cd4de3ea7487) perf(ui): keep the macOS menu bar in place and ope | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.69 |
 | [af836a0fc](https://github.com/AFK-surf/monoid/commit/af836a0fcee54d4fa05d9fe02fce27cb9e6b6374) feat(ui): stop Cmd-click quick-pick at commas (#86 | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.74 |
-| [3142ff413](https://github.com/AFK-surf/monoid/commit/3142ff4130b8045ec4942e14d0e2753673a17ce9) feat(pion-station): port W7-C readops_local L1 pac | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.36 |
