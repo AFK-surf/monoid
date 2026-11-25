@@ -1282,6 +1282,7 @@ fn Viewer::image_let_go(
         v.cancel_idle()
       }
       if !v.closing {
+        // (the change's own moment, what the bars' reactions are told it at: viewer_bars_at_once)
         v.set_bars_after_tap(want_show, desktop~, at=canvas.cause_at())
       }
       if desktop && v.awake {

@@ -373,7 +373,7 @@ fn PlayerNode::play_pause_quiet(self : PlayerNode) -> Unit {
 }
 
 ///|
-/// Clean up transient timers, double-click memory, temporary 2× held speed, and any active `AlongTime` scrub
+/// Clean up transient timers, a tap waiting for its second, temporary 2× held speed, and any active `AlongTime` scrub
 /// (on episode switch or unmount).
 fn PlayerNode::reset_transient(self : PlayerNode) -> Unit {
   self.cancel_idle()
@@ -2072,7 +2072,8 @@ fn desk_player_node(
       .height(By(fn() { if embedded { Some(dmax(0.0, stage().1 - room().1 - pn.inset)) } else { None } }))
       .clips(Is(embedded))
       .on_pointer_moved(fn() {
-        if pointer_rests() {
+        // (a click waiting for its second stands: the hand moving on after it never calls it off)
+        if pointer_rests() && !pn.pending {
           pn.wake()
         }
       })
@@ -2768,7 +2769,8 @@ fn phone_player_node(
       .height(By(hand_h))
       .clips(Is(embedded))
       .on_pointer_moved(fn() {
-        if pointer_rests() {
+        // (a click waiting for its second stands: the hand moving on after it never calls it off)
+        if pointer_rests() && !pn.pending {
           pn.wake()
         }
       })

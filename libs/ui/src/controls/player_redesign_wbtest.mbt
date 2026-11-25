@@ -989,3 +989,41 @@ test "wave27 R1: sparse Up slop, single diagonal haptic, wide DownClose hides ba
   assert_true(has_safe_bar, msg="3pt progress line must clear bottom safe area 34 + S2")
   ts.release(130.0, 300.0)
 }
+
+///|
+test "wave27 V5: desktop click hides the controls though the pointer moves on within a double click's time; a double click on a side jumps back or on" {
+  let sleep_ms = @player.media_sleep_ms
+  let double_ms = @ui.double_tap_ms
+  let tt = player_tester(false, "a.mp4", [], [], [], pin=pinned(20000.0))
+  tt.host_says_finger(Some(false))
+  tt.draw()
+  tt.move_to(640.0, 400.0)
+  tt.draw()
+  assert_true(tt.query(Slider, label="web-pages.drive.player.position") is Some(_), msg="controls shown")
+  // A click, then the hand moving on within a double click's time: the click still hides them
+  tt.tap(640.0, 400.0)
+  tt.advance(double_ms / 4.0)
+  tt.move_to(660.0, 400.0)
+  tt.run_for(double_ms + sleep_ms + 10.0)
+  assert_true(tt.query(Slider, label="web-pages.drive.player.position") is None, msg="the click hid the controls")
+  // A double click on the left third: back by its nudge; on the right third: on by it
+  let back = t(
+    "android-misc.drive.player.back",
+    args=[("n", (playing_for("k").media.nudge_ms() / 1000.0).to_int().to_string())],
+  )
+  tt.tap(200.0, 400.0)
+  tt.advance(double_ms / 4.0)
+  tt.tap(200.0, 400.0)
+  tt.draw()
+  assert_true(tt.find(back) is Some(_), msg="double click on the left: \{back}")
+  tt.run_for(@player.media_note_ms + double_ms)
+  let ahead = t(
+    "android-misc.drive.player.ahead",
+    args=[("n", (playing_for("k").media.nudge_ms() / 1000.0).to_int().to_string())],
+  )
+  tt.tap(1100.0, 400.0)
+  tt.advance(double_ms / 4.0)
+  tt.tap(1100.0, 400.0)
+  tt.draw()
+  assert_true(tt.find(ahead) is Some(_), msg="double click on the right: \{ahead}")
+}
