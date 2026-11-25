@@ -44,10 +44,11 @@ export const weight = (t: Tool) => Buffer.byteLength(JSON.stringify(declared(t))
 export const CORE = ["chat_post", "chat_state", "chat_history", "chat_read", "job_start", "job_log", "job_list", "job_stop", "station_task", "station_file", "skill_read"];
 
 /// Declared next when a runtime budgets its tools (`fitted`), in this order, before sorting the remaining tools by size:
-/// everyday collaboration, discovery and session/device tools that should not pay an extra station_tool round-trip.
+/// everyday discovery (first, so `agy` can find workspace skills omitted from `.agent/skills` without an extra
+/// station_tool round-trip), collaboration, and session/device tools.
 export const PRIORITY = [
-  "chat_list", "chat_create", "session_send", "chat_configure", "chat_archive", "session_history",
-  "search", "station_list", "device_list", "device_use", "browser", "screen", "secret_list", "secret_use", "secret_run",
+  "search", "chat_list", "chat_create", "session_send", "chat_configure", "chat_archive", "session_history",
+  "station_list", "device_list", "device_use", "browser", "screen", "secret_list", "secret_use", "secret_run",
 ];
 
 /// Superseded tools kept callable for sessions begun before they were retired, but omitted from tools/list and

@@ -207,9 +207,10 @@ test(
     const declared = new Set<string>((mainReqs[0].tools ?? []).flatMap((t: any) => t.functionDeclarations ?? []).map((f: any) => f.name));
     const listed: any = await mcp.handle("POST", "Bearer tok", JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }));
     const names: string[] = listed.body.result.tools.map((t: any) => t.name);
-    for (const name of [...CORE, INDIRECT]) assert.ok(names.includes(name), `${name} is not listed`);
+    for (const name of [...CORE, "search", INDIRECT]) assert.ok(names.includes(name), `${name} is not listed`);
     const dropped = names.filter((name) => !declared.has(`mcp_stillfail_${name}`));
     assert.deepEqual(dropped, [], `real agy dropped ${dropped.join(", ")}; it declared ${[...declared].join(", ")}`);
-    assert.match(sys, /project-skill-35/);
+    assert.match(sys, /project-skill-00/);
+    assert.match(sys, /additional workspace skills? (?:was|were) omitted from \.agent\/skills[\s\S]*search with kinds=\[\\"skill\\"\]/);
   },
 );

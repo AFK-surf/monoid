@@ -191,6 +191,7 @@ export const NOTES: [number, string][] = [
   [184, "Post brief progress updates with chat_post during long multi-step waits instead of looping silently; when a turn stays open after declaring waiting (such as a background command in agy), the station now wakes it once its waiting timer runs out."],
   [185, "chat_post now takes kind waiting with for and seconds: a post saying what you started can end the turn itself. A need that says nothing is needed (无需操作) is refused: use waiting for your own running work."],
   [186, "chat_configure now takes project (\"\" for cross-project) and tags/tags_add/tags_remove (max 3) to silently classify chats; new tool project_manage (read skill stillfail-projects first) lists, proposes new projects (never end need_human for a proposal), updates shared project info, renames, merges, or bulk reclassifies."],
+  [187, "In Antigravity CLI, search is now declared directly alongside skill_read; when a workspace has more skills than fit .agent/skills, the omitted ones stay searchable with search (kinds=[\"skill\"]) and readable with skill_read."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only
