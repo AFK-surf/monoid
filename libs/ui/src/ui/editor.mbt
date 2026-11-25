@@ -1835,17 +1835,28 @@ fn Ctx::sync_ime(self : Ctx) -> Unit {
     self.focus_returned = false
   }
   let focus = if held { 0 } else { raw }
-  // a key catcher's focus (device.mbt): the host told so before its input method is, with no text
-  let catching = self.dev.catchers.contains(focus)
-  if catching != self.ime_sig.has_prefix("catch ") {
-    h_key_catch(catching)
-    if !catching {
+  // a key catcher's focus (device.mbt): the host told so before its input method is, with no text (1: normal, 2: also keeps ⌘W)
+  let catch_mode = match self.dev.catchers.get(focus) {
+    Some(st) => if st.catch_close { 2 } else { 1 }
+    None => 0
+  }
+  let was_mode = if self.ime_sig.has_prefix("catch2 ") {
+    2
+  } else if self.ime_sig.has_prefix("catch ") {
+    1
+  } else {
+    0
+  }
+  if catch_mode != was_mode {
+    h_key_catch_mode(catch_mode)
+    if catch_mode == 0 {
       self.ime_sig = "-"
     }
   }
-  if catching {
+  if catch_mode > 0 {
     let (x, y, h) = self.dev.catchers.get(focus).unwrap().place.unwrap_or((0.0, self.height, 1.0))
-    let sig = "catch \{focus} \{x} \{y} \{h}"
+    let tag = if catch_mode == 2 { "catch2" } else { "catch" }
+    let sig = "\{tag} \{focus} \{x} \{y} \{h}"
     if sig != self.ime_sig {
       self.ime_sig = sig
       h_set_ime(true, x, y, 1.0, h, "", 0, 0)

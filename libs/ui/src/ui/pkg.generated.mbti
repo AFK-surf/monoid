@@ -391,9 +391,13 @@ pub fn key_catcher_focus_set(@view.View, Bool) -> Unit
 pub fn key_catcher_focused(@view.View) -> Bool
 
 #callsite(autofill(loc))
-pub fn key_catcher_node(@view.View, String, (KeyIn) -> Unit, (@view.View) -> Unit, on? : @view.Live[Bool], paste? : (String) -> Unit, loc~ : SourceLoc) -> @view.View
+pub fn key_catcher_node(@view.View, String, (KeyIn) -> Unit, (@view.View) -> Unit, on? : @view.Live[Bool], paste? : (String) -> Unit, catch_close? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub fn key_catcher_place(@view.View, Double, Double, Double) -> Unit
+
+pub fn key_catching() -> Bool
+
+pub fn key_catching_close() -> Bool
 
 pub let key_code_backspace : Int32
 
@@ -421,7 +425,33 @@ pub let key_code_end : Int32
 
 pub let key_code_enter : Int32
 
+pub let key_code_f1 : Int32
+
+pub let key_code_f10 : Int32
+
+pub let key_code_f11 : Int32
+
+pub let key_code_f12 : Int32
+
+pub let key_code_f2 : Int32
+
+pub let key_code_f3 : Int32
+
+pub let key_code_f4 : Int32
+
+pub let key_code_f5 : Int32
+
+pub let key_code_f6 : Int32
+
+pub let key_code_f7 : Int32
+
+pub let key_code_f8 : Int32
+
+pub let key_code_f9 : Int32
+
 pub let key_code_home : Int32
+
+pub let key_code_insert : Int32
 
 pub let key_code_left : Int32
 
@@ -755,6 +785,8 @@ pub fn runtime() -> @effect.Runtime
 
 pub let same_moment_ms : Double
 
+pub fn screen_reader_on() -> Bool
+
 pub let scroll_bar_clear : Double
 
 pub let scroll_bar_inset : Double
@@ -770,8 +802,6 @@ pub let scroll_bar_size : Double
 pub let scrollbar_fade_ms : Double
 
 pub let scrollbar_hold_ms : Double
-
-pub fn screen_reader_on() -> Bool
 
 pub fn sd_box(Double, Double, Double, Double, Double) -> Double
 

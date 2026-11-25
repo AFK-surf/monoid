@@ -145,8 +145,9 @@ fn screen_mouse_buttons(_stage : @view.View, pg : ScreenPage, b : @view.Buttons)
         None => ()
       }
       if m.held() == 0 {
-        m.mods = mods_of_held(@ui.mods_held()) &
+        let raw = mods_of_held(@ui.mods_held()) &
           (if b.button == 2 { mod_ctrl.lnot() } else { (0).lnot() })
+        m.mods = screen_remap_mods(s, raw)
         mods_round(send, m.mods, "down")
       }
       screen_lock_take(s, m)

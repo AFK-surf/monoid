@@ -20,7 +20,7 @@ fn is_allowed_pref_field(f : String) -> Bool {
   f == "rowPicture" || f == "absoluteTime" || f == "language" || f == "keys" ||
   f == "workspace" || f == "lastChat" || f == "chatTabs" || f == "dropFiles" ||
   f == "dropAs" || f == "archiveHint" || f == "screenTouch" || f == "screenQuality" ||
-  f == "screenFps" || f == "screenCodec" || f == "screenMouse" || f == "driveViews" ||
+  f == "screenFps" || f == "screenCodec" || f == "screenMouse" || f == "screenKeyMap" || f == "screenKeepCtrl" || f == "driveViews" ||
   f == "filesTabs" || f == "remoteTabs" || f == "driveFavorites" ||
   f == "driveFavoritesHidden" || f == "resume" || f == "invite" || f == "badge" ||
   f == "badgeKinds" || f == "reader" || f == "lockNotice" || f == "rail" ||
@@ -759,6 +759,16 @@ pub fn apply_prefs_patch(
   match prefs.get("screenMouse") {
     Some(base_codec::Json::Str("off")) => ()
     Some(_) => return Err("invalid:screenMouse")
+    None => ()
+  }
+  match prefs.get("screenKeyMap") {
+    Some(base_codec::Json::Str("off")) => ()
+    Some(_) => return Err("invalid:screenKeyMap")
+    None => ()
+  }
+  match prefs.get("screenKeepCtrl") {
+    Some(base_codec::Json::Str("off")) => ()
+    Some(_) => return Err("invalid:screenKeepCtrl")
     None => ()
   }
   match prefs.get("fillOff") {

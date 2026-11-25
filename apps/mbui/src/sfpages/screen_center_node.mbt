@@ -300,6 +300,35 @@ fn center_node(
         !s.controlling()
       }, fn(on) { control_chosen(s, u, !on) })
     })
+    // 跨系统快捷键映射: shown when driving across Apple ↔ Windows/Linux/Android with a hardware keyboard (default on)
+    g.show(fn() { state() |> ignore; !@sf.soft_keyboard() && s.driving() && screen_cross_os(s) }, fn(m) {
+      @sf.panel_switch_row_node(
+        m,
+        fn() { @sf.t("web-pages.screen.keyMap") },
+        fn() { screen_key_map_on(src) },
+        fn(on) { prefs_chosen(s, "screenKeyMap", if on { "" } else { "off" }) },
+        note=fn() {
+          @sf.t(if screen_local_apple() == Some(true) { "web-pages.screen.keyMapNoteMac" } else { "web-pages.screen.keyMapNote" })
+        },
+      )
+    })
+    // ⌃ 保留为 Ctrl: shown on Mac/iPad driving Windows/Linux/Android while cross-OS shortcuts are on (default on so
+    // terminal ⌃C/⌃D stay Ctrl instead of triggering Win; off maps ⌃ → Win)
+    g.show(
+      fn() {
+        state() |> ignore
+        !@sf.soft_keyboard() && s.driving() && screen_swaps_ctrl_meta(s) && screen_local_apple() == Some(true)
+      },
+      fn(m) {
+        @sf.panel_switch_row_node(
+          m,
+          fn() { @sf.t("web-pages.screen.keepCtrl") },
+          fn() { screen_keep_ctrl_on(src) },
+          fn(on) { prefs_chosen(s, "screenKeepCtrl", if on { "" } else { "off" }) },
+          note=fn() { @sf.t("web-pages.screen.keepCtrlNote") },
+        )
+      },
+    )
     // how the view goes: live, its round trip and how long it has been seen; pressed, its figures a step further in;
     // who else is on it, as the core says it, its note
     g.show(fn() { state() |> ignore; s.phase() == "live" }, fn(l) {

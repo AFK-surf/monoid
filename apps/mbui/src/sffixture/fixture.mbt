@@ -1896,9 +1896,15 @@ fn fixture_answer(f : Fixture, name : String, params : Map[String, Json], versio
   }
   let value = match name {
     "stations" =>
-      match wholes() {
-        Some(Array(a)) => Some(Json::array(a.map(@settings.station_row)))
-        v => v
+      if text(Some(Json::object(params)), "scope") == "ws-1" &&
+        (f.mode.has_prefix("screen-center") || f.mode.has_prefix("screen-stats") || f.mode.has_prefix("screen-keys")) {
+        let row : Json = { "station": "ws-1/st-1", "name": "Windows", "online": true, "host": { "os": "Windows 11 Pro" } }
+        Some(Json::array([row]))
+      } else {
+        match wholes() {
+          Some(Array(a)) => Some(Json::array(a.map(@settings.station_row)))
+          v => v
+        }
       }
     "station" => @settings.station_said(wholes(), text(Some(Json::object(params)), "station"), "")
     "terminals" => Some(fixture_terminals(text(Some(Json::object(params)), "station"), f.mode))
@@ -2312,6 +2318,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "terminalZoom": if f_terminal_zoom(f) == "" { Json::null() } else { Json::string(f_terminal_zoom(f)) },
         "screenQuality": f_screen_prefs(f).get("screenQuality").unwrap_or(Json::null()),
         "screenFps": f_screen_prefs(f).get("screenFps").unwrap_or(Json::null()),
+        "screenKeyMap": f_screen_prefs(f).get("screenKeyMap").unwrap_or(Json::null()),
+        "screenKeepCtrl": f_screen_prefs(f).get("screenKeepCtrl").unwrap_or(Json::null()),
         "appearance": Json::string(f.appearance),
         "windowZoom": Json::string(f.window_zoom),
         "motion": Json::string(f.motion),
@@ -3611,8 +3619,8 @@ pub fn fixture(mode : String) -> Source {
             Some(Null) => fixture_terminal_zooms.remove(fixture_id(f))
             _ => ()
           }
-          // a screen's 画质 and 帧率 (null: 自动)
-          for k in ["screenQuality", "screenFps"] {
+          // a screen's 画质, 帧率 and 跨系统快捷键映射 (null: default)
+          for k in ["screenQuality", "screenFps", "screenKeyMap", "screenKeepCtrl"] {
             match field(Some(params), k) {
               Some(Null) => f_screen_prefs(f).remove(k)
               Some(v) => f_screen_prefs(f)[k] = v

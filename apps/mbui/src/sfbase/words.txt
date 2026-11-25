@@ -2685,6 +2685,11 @@ web-pages.screen.micMute
 web-pages.screen.micAsked
 web-pages.screen.paste
 web-pages.screen.keysPanel
+web-pages.screen.keyMap
+web-pages.screen.keyMapNote
+web-pages.screen.keyMapNoteMac
+web-pages.screen.keepCtrl
+web-pages.screen.keepCtrlNote
 web-pages.screen.quick
 web-pages.screen.picture
 web-pages.screen.quality

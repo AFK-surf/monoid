@@ -72,6 +72,7 @@ typedef struct WinSlot {
   // the input method: a field taking it, its caret (x, y, w, h in points, from set_ime), what is composed, a key's
   // first half
   int ime_active;
+  int key_catching;
   double caret[4];
   int marked_len;
   WCHAR high_surrogate;
@@ -457,14 +458,13 @@ static int frames_round(void) {
 // ---- input method ----
 
 static void ime_compose(const WCHAR *s, int n, int cursor);
-static int key_catching;  // (win_keys.h: a key catcher has the focus, whatever field had it before)
 
 // The system's input method given the window while a field takes the keys, but one of digits (a code) or a secret (a
 // password; @hostapi.ime_action_number, ime_action_secret): an input method there catches the digits and letters
 // typed (a Chinese one, on by default, turned 1 into a candidate), and a secret's words would go through it. Without
 // one the keys still come as WM_CHAR, as a keyboard's own. Taken away, what it was composing is let go.
 static void ime_sync(void) {
-  int want = ws->ime_active && (key_catching || (ws->ime_action != 3 && ws->ime_action != 4));
+  int want = ws->ime_active && (ws->key_catching || (ws->ime_action != 3 && ws->ime_action != 4));
   if (want == ws->ime_associated) return;
   if (want) {
     ImmAssociateContextEx(ws->h, NULL, IACE_DEFAULT);
@@ -588,8 +588,15 @@ static int keys_typing(HWND h) {
   int k = win_of(h);
   return k >= 0 && win_slots[k].ime_active && !win_slots[k].marked_len;
 }
+static int keys_catching(HWND h) {
+  int k = win_of(h);
+  return k >= 0 && win_slots[k].key_catching;
+}
+static void keys_set_catching(int on) { ws->key_catching = on != 0; }
 #define KEYS_OURS(h) (win_of(h) >= 0)
 #define KEYS_TYPING(h) keys_typing(h)
+#define KEYS_CATCHING(h) keys_catching(h)
+#define KEYS_SET_CATCHING(on) keys_set_catching(on)
 // (its frame the window in place's, as a test of it has its one)
 #define want_frame ws->want_frame
 #include "win_device.h"
@@ -616,7 +623,7 @@ static void paste_key(int mods) {
 
 static void key_down(WPARAM vk) {
   // a key catcher's focus (win_device.h): its keys (a composition under way keeps them)
-  if (key_catching && ws->ime_active && ws->marked_len == 0 && catch_vk(vk)) return;
+  if (ws->key_catching && ws->ime_active && ws->marked_len == 0 && catch_vk(vk)) return;
   int mods = mods_now(), code = 0;
   // Shift+Insert: the system's other key for a paste, what a clipboard manager may press for one (Raycast does): as
   // Ctrl+V
@@ -1208,7 +1215,7 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SYSKEYDOWN:
       if (wp == VK_SHIFT || wp == VK_CONTROL || wp == VK_MENU) mb_cb.key(0, mods_now());
       // Alt with a key: a key catcher's shortcut (win_device.h)
-      if (key_catching && ws->ime_active && catch_vk(wp)) return 0;
+      if (ws->key_catching && ws->ime_active && ws->marked_len == 0 && catch_vk(wp)) return 0;
       if (wp == VK_LEFT && go_back()) return 0;
       // Alt+Right: forward, the app's key (key_forward)
       if (wp == VK_RIGHT) {
