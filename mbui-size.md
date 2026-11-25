@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [af836a0fc](https://github.com/AFK-surf/monoid/commit/af836a0fcee54d4fa05d9fe02fce27cb9e6b6374) feat(ui): stop Cmd-click quick-pick at commas (#86 | 2.52 | 3.4 | 14.07 | 36.61 | 55.08 | 31.97 | 64.57 | 100.86 | 129.86 |
 | [3142ff413](https://github.com/AFK-surf/monoid/commit/3142ff4130b8045ec4942e14d0e2753673a17ce9) feat(pion-station): port W7-C readops_local L1 pac | 2.52 | 3.4 | 14.07 | 36.6 | 55.08 | 31.97 | 64.57 | 101.07 | 124.6 |
 | [4add66765](https://github.com/AFK-surf/monoid/commit/4add66765d1d397ba8a187600457f348d1573124) feat(station): add workspace chat project & tag cl | 2.52 | 3.4 | 14.07 | 36.6 | 55.08 | 31.97 | 64.57 | 101.07 | 124.6 |
 | [a6e44a136](https://github.com/AFK-surf/monoid/commit/a6e44a136433173fe51df5157718e92ec2489054) fix(app): let a board draft with files move to ano | 2.52 | 3.4 | 14.07 | 36.6 | 55.08 | 31.97 | 64.57 | 100.76 | 126.05 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f959ec7ab](https://github.com/AFK-surf/monoid/commit/f959ec7ab6b37494a74a93eee9c1ac90fac526fa) fix(core-ts): show the chats a search finds before | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 101.21 | 121.83 |
 | [ce96d772e](https://github.com/AFK-surf/monoid/commit/ce96d772e6a0b25621062d194ab5fa39266bd657) docs(releases): 0.1.11216 stable notes (#8531) | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 101.21 | 121.83 |
 | [2ee61943a](https://github.com/AFK-surf/monoid/commit/2ee61943a73dd8befe837c9fbd73efa7b2400f7b) perf(station): fix O(N^2) Exporter::sources and he | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 101.21 | 121.83 |
-| [cec55a581](https://github.com/AFK-surf/monoid/commit/cec55a5814431a92ad98f30d8045c6058ee9ff75) perf(core): trace each step of a start and when th | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 101.21 | 121.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [af836a0fc](https://github.com/AFK-surf/monoid/commit/af836a0fcee54d4fa05d9fe02fce27cb9e6b6374) feat(ui): stop Cmd-click quick-pick at commas (#86 | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.74 |
 | [3142ff413](https://github.com/AFK-surf/monoid/commit/3142ff4130b8045ec4942e14d0e2753673a17ce9) feat(pion-station): port W7-C readops_local L1 pac | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.36 |
 | [4add66765](https://github.com/AFK-surf/monoid/commit/4add66765d1d397ba8a187600457f348d1573124) feat(station): add workspace chat project & tag cl | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.39 |
 | [a6e44a136](https://github.com/AFK-surf/monoid/commit/a6e44a136433173fe51df5157718e92ec2489054) fix(app): let a board draft with files move to ano | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.75 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f959ec7ab](https://github.com/AFK-surf/monoid/commit/f959ec7ab6b37494a74a93eee9c1ac90fac526fa) fix(core-ts): show the chats a search finds before | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.82 |
 | [ce96d772e](https://github.com/AFK-surf/monoid/commit/ce96d772e6a0b25621062d194ab5fa39266bd657) docs(releases): 0.1.11216 stable notes (#8531) | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.66 |
 | [2ee61943a](https://github.com/AFK-surf/monoid/commit/2ee61943a73dd8befe837c9fbd73efa7b2400f7b) perf(station): fix O(N^2) Exporter::sources and he | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.56 |
-| [cec55a581](https://github.com/AFK-surf/monoid/commit/cec55a5814431a92ad98f30d8045c6058ee9ff75) perf(core): trace each step of a start and when th | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.79 |
