@@ -5169,6 +5169,12 @@ int main(void) {
 
           int pw = 0, ph = 0;
           donor_force_off = 0;
+          mb_render_present(tx, 10, 0.05, 0.05, 0.05); present_drain();
+          uint8_t *px_bg = read_texture(canvas, &pw, &ph);
+
+          glass_forget();
+          shown_ok = 0;
+          donor_force_off = 0;
           mb_render_present(tx, 11, 0.05, 0.05, 0.05); present_drain();
           CHECK(donor_delegated_count == 1);
           uint8_t *px_on = read_texture(canvas, &pw, &ph);
@@ -5191,16 +5197,20 @@ int main(void) {
               }
             }
           }
-          uint8_t *c_on = px_on + ((size_t)(46 * 2) * pw + 124 * 2) * 4;
-          uint8_t *c_off = px_off + ((size_t)(46 * 2) * pw + 124 * 2) * 4;
-          double y_bg = wcag_luma_u8(13, 13, 13);
+          size_t ctr_off = ((size_t)(46 * 2) * pw + 124 * 2) * 4;
+          uint8_t *c_bg = px_bg + ctr_off;
+          uint8_t *c_on = px_on + ctr_off;
+          uint8_t *c_off = px_off + ctr_off;
+          double y_bg = wcag_luma_u8(c_bg[2], c_bg[1], c_bg[0]);
           double y_on = wcag_luma_u8(c_on[2], c_on[1], c_on[0]);
           double y_off = wcag_luma_u8(c_off[2], c_off[1], c_off[0]);
           double cr_on = (fmax(y_on, y_bg) + 0.05) / (fmin(y_on, y_bg) + 0.05);
           double cr_off = (fmax(y_off, y_bg) + 0.05) / (fmin(y_off, y_bg) + 0.05);
-          printf("apple_render: perf-51 textured parity cr_on=%.2f cr_off=%.2f max_ch_diff=%d\n", cr_on, cr_off, max_ch_diff);
+          printf("apple_render: perf-51 textured parity cr_on=%.2f cr_off=%.2f max_ch_diff=%d bg=(%u,%u,%u)\n",
+                 cr_on, cr_off, max_ch_diff, c_bg[2], c_bg[1], c_bg[0]);
+          CHECK(max_ch_diff <= 1);
           CHECK(cr_on >= 4.5 && cr_off >= 4.5);
-          free(px_on); free(px_off);
+          free(px_bg); free(px_on); free(px_off);
         }
 
         // 4. Lens subtree counterexample

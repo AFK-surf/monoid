@@ -164,6 +164,7 @@ struct RenderWin {
   int clear;
   level ad_tex[2];
   int ad_cur;
+  uint32_t ad_cur_mask;
   MBAdSlot ad_slots[MB_ADAPTIVE_MAX];
   double ad_last_time;
   uint64_t ad_frame_serial;
@@ -278,39 +279,48 @@ static const char *shader_src =
     "  float lo = floor(saturate(rg.y) * 255.0 + 0.5);\n"
     "  return (hi * 256.0 + lo) / 65535.0;\n"
     "}\n"
-    "float3 ad_sample_ink(float2 ac, float fallback_r, bool prefer_dark, out float2 capCenter, out float2 capHalf) {\n"
+    "float3 ad_sample_ink(float2 ac, float2 self_c, float fallback_r, bool prefer_dark, out float2 capCenter, out float2 capHalf) {\n"
     "  int ad_n = int(gad_meta.x + 0.5);\n"
+    "  int ad_cur = int(gad_meta.y + 0.5);\n"
     "  [branch] if (ad_n > 0) {\n"
-    "    int best_pref = -1, best_any = -1;\n"
-    "    float best_pref_d = 1e9, best_any_d = 1e9;\n"
+    "    int best = -1, best_score = -1;\n"
+    "    float best_d = 1e9;\n"
     "    [loop] for (int i = 0; i < 16; i++) {\n"
     "      if (i >= ad_n) break;\n"
-    "      float d = length(ac - gad_box[i].xy);\n"
+    "      float4 box = gad_box[i];\n"
+    "      float d = length(ac - box.xy);\n"
     "      if (d <= 2.0) {\n"
     "        float4 px = ad_tex.Load(int3(i, 0, 0));\n"
     "        int code = int(floor(saturate(px.b) * 255.0 + 0.5));\n"
     "        bool slot_dark = (code >= 48 && code <= 208);\n"
-    "        if (slot_dark == prefer_dark && d < best_pref_d) { best_pref = i; best_pref_d = d; }\n"
-    "        if (d < best_any_d) { best_any = i; best_any_d = d; }\n"
+    "        bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);\n"
+    "        bool in_cur = ((ad_cur & (1 << i)) != 0);\n"
+    "        int score = (in_box ? 4 : 0) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);\n"
+    "        if (score > best_score || (score == best_score && d < best_d)) {\n"
+    "          best = i; best_score = score; best_d = d;\n"
+    "        }\n"
     "      }\n"
     "    }\n"
-    "    int best = (best_pref >= 0) ? best_pref : best_any;\n"
     "    if (best < 0) {\n"
-    "      best_pref = -1; best_any = -1;\n"
-    "      best_pref_d = 1e9; best_any_d = 1e9;\n"
+    "      best_score = -1;\n"
+    "      best_d = 1e9;\n"
     "      [loop] for (int i = 0; i < 16; i++) {\n"
     "        if (i >= ad_n) break;\n"
-    "        float2 diff = abs(ac - gad_box[i].xy);\n"
-    "        if (diff.x <= gad_box[i].z + 2.0 && diff.y <= gad_box[i].w + 2.0) {\n"
+    "        float4 box = gad_box[i];\n"
+    "        float2 diff = abs(ac - box.xy);\n"
+    "        if (diff.x <= box.z + 2.0 && diff.y <= box.w + 2.0) {\n"
     "          float d = length(diff);\n"
     "          float4 px = ad_tex.Load(int3(i, 0, 0));\n"
     "          int code = int(floor(saturate(px.b) * 255.0 + 0.5));\n"
     "          bool slot_dark = (code >= 48 && code <= 208);\n"
-    "          if (slot_dark == prefer_dark && d < best_pref_d) { best_pref = i; best_pref_d = d; }\n"
-    "          if (d < best_any_d) { best_any = i; best_any_d = d; }\n"
+    "          bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);\n"
+    "          bool in_cur = ((ad_cur & (1 << i)) != 0);\n"
+    "          int score = (in_box ? 4 : 0) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);\n"
+    "          if (score > best_score || (score == best_score && d < best_d)) {\n"
+    "            best = i; best_score = score; best_d = d;\n"
+    "          }\n"
     "        }\n"
     "      }\n"
-    "      best = (best_pref >= 0) ? best_pref : best_any;\n"
     "    }\n"
     "    if (best >= 0) {\n"
     "      float4 px = ad_tex.Load(int3(best, 0, 0));\n"
@@ -378,7 +388,7 @@ static const char *shader_src =
     "  float origL = luma(rgb);\n"
     "  if (ch > 0.08) return rgb;\n"
     "  float2 capCenter, capHalf;\n"
-    "  float3 cap = ad_sample_ink(ac, fallback_r, origL >= 0.5, capCenter, capHalf);\n"
+    "  float3 cap = ad_sample_ink(ac, rect.xy + rect.zw * 0.5, fallback_r, origL >= 0.5, capCenter, capHalf);\n"
     "  float capsuleDarkT = cap.x;\n"
     "  float capsuleBgL = cap.y;\n"
     "  float capsuleLatch = cap.z;\n"
@@ -490,7 +500,7 @@ static const char *shader_src =
     "    } else if (kind == 0 && I.pd.w < 0.0) {\n"
     "      float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
     "      float2 capCenter, capHalf;\n"
-    "      float darkT = ad_sample_ink(I.pd.yz, -I.pd.w * 0.5, false, capCenter, capHalf).x;\n"
+    "      float darkT = ad_sample_ink(I.pd.yz, I.rect.xy + I.rect.zw * 0.5, -I.pd.w * 0.5, false, capCenter, capHalf).x;\n"
     "      if (ch <= 0.08 && luma(col.rgb) < 0.5) {\n"
     "        col.rgb = lerp(col.rgb, float3(1.0, 1.0, 1.0), darkT);\n"
     "        col.a = lerp(col.a, min(col.a * 1.45, 0.28), darkT);\n"
@@ -2610,6 +2620,7 @@ static void ad_forget(RenderWin *w) {
   if (!w) return;
   memset(w->ad_slots, 0, sizeof w->ad_slots);
   w->ad_last_time = 0.0;
+  w->ad_cur_mask = 0;
   w->ad_settling = 0;
 }
 
@@ -2627,6 +2638,7 @@ static int ensure_ad_tex(RenderWin *w) {
 static void ad_fill_gu(RenderWin *w) {
   if (!w || ad_mode < 0) {
     gu.ad_meta[0] = 0.0f;
+    gu.ad_meta[1] = 0.0f;
     return;
   }
   int max_active = 0;
@@ -2645,6 +2657,7 @@ static void ad_fill_gu(RenderWin *w) {
     }
   }
   gu.ad_meta[0] = (float)max_active;
+  gu.ad_meta[1] = (float)w->ad_cur_mask;
 }
 
 struct WinAdPend {
@@ -2692,6 +2705,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
     }
   }
   int n_upd = 0;
+  uint32_t run_mask = 0;
   for (int k = 0; k < ni; k++) {
     int sid = -1, is_new = 0, mode_changed = 0;
     for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
@@ -2740,6 +2754,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       w->ad_slots[sid].seen_serial = serial;
     }
     MBAdSlot *s = &w->ad_slots[sid];
+    run_mask |= (1u << sid);
     if (!is_new && !mode_changed && s->updated_serial == serial) continue;
     int slot_changed = backdrop_changed || mode_changed || (s->last_bd != cur_bd);
     int need = is_new || slot_changed || s->settle_left > 0.0;
@@ -2757,6 +2772,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       out[n_upd++] = {sid, is_new, s->is_dark, s->cx, s->cy, s->hx, s->hy};
     }
   }
+  if (ni > 0) w->ad_cur_mask = run_mask;
   return n_upd;
 }
 
@@ -3450,8 +3466,13 @@ static int donor_elig_tids[MB_MAX_DONORS];
 static int donor_elig_n;
 static int donor_delegated_count;
 static int donor_plan_ready;
+static int donor_plan_ok;
 static uint32_t donor_slot_mask;
 static int last_captured_slot = -1;
+
+static const int *active_donor_of(void) {
+  return (donor_plan_ok && donor_delegated_count > 0) ? donor_of_buf : NULL;
+}
 
 static int is_donor_elig_tid(int tid) {
   for (int i = 0; i < donor_elig_n; i++) {
@@ -3461,6 +3482,7 @@ static int is_donor_elig_tid(int tid) {
 }
 
 static int compute_donor_plan(const float *f, int32_t count, float vp_w, float vp_h, float sc) {
+  donor_plan_ok = 0;
   donor_elig_n = 0;
   donor_delegated_count = 0;
   if (count <= 0 || !f) return 0;
@@ -3472,8 +3494,9 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
   }
   if (!donor_of_buf) return 0;
   memset(donor_of_buf, 0, (size_t)count * sizeof(int));
-  int neg_tids[64];
-  int neg_cnts[64];
+  // Cap at 256 distinct negative tids; >256 safely falls back to no delegation (unlike Web's unbounded Map).
+  int neg_tids[256];
+  int neg_cnts[256];
   int neg_n = 0;
   int neg_overflow = 0;
   for (int32_t k = 0; k < count; ) {
@@ -3497,7 +3520,7 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
         }
       }
       if (!found) {
-        if (neg_n < 64) {
+        if (neg_n < 256) {
           neg_tids[neg_n] = t;
           neg_cnts[neg_n] = 1;
           neg_n++;
@@ -3661,6 +3684,7 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
     i++;
   }
   donor_elig_n = n_elig;
+  donor_plan_ok = 1;
   return donor_delegated_count;
 }
 
@@ -4018,6 +4042,7 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
   struct { float vp[2]; float scale; float pad; float origin[2]; float pad2[2]; } u = {{(float)vw, (float)vh}, (float)vscale, 0, {0, 0}, {0, 0}};
   ctx->UpdateSubresource(ubuf, 0, NULL, &u, 0, 0);
   memset(&gu, 0, sizeof gu);
+  if (rw) rw->ad_cur_mask = 0;
   ad_fill_gu(rw);
   gsrv = NULL;
   segs_upload(f, count);
@@ -4033,7 +4058,7 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
     compute_donor_plan(f, count, (float)(vw > 0 ? vw : (double)pw / (vscale > 0.0 ? vscale : 1.0)),
                        (float)(vh > 0 ? vh : (double)ph / (vscale > 0.0 ? vscale : 1.0)), (float)vscale);
   }
-  const int *donor_of = (count > 0 && donor_of_buf) ? donor_of_buf : NULL;
+  const int *donor_of = active_donor_of();
   WinDonorLive donors[MB_MAX_DONORS];
   int n_donors = 0;
   donor_slot_mask = 0;
@@ -4607,7 +4632,7 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
   donor_plan_ready = 1;
   if (adaptive_damage && !dirty_whole &&
       !mb_glass_damage_expand(last_inst, count, dirty, &dirty_n, fb_w / vscale, fb_h / vscale, vscale,
-                              count > 0 ? donor_of_buf : NULL)) dirty_whole = 1;
+                              active_donor_of())) dirty_whole = 1;
   int np = take_parts(fb_w, fb_h, *kept, parts);
   int missing = 0;
   if (np < 0) {
@@ -4787,7 +4812,7 @@ int mb_render_adaptive_step(int wid) {
   donor_plan_ready = 1;
   if (!dirty_whole && !mb_glass_damage_expand(last_inst, last_count, dirty, &dirty_n,
                                                fb_w / vscale, fb_h / vscale, vscale,
-                                               last_count > 0 ? donor_of_buf : NULL)) dirty_whole = 1;
+                                               active_donor_of())) dirty_whole = 1;
   ad_mode = 1;
   ad_cur_dt = ad_next_dt(rw);
   rw->ad_frame_serial++;

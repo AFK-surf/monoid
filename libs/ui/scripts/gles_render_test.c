@@ -5908,40 +5908,56 @@ int main(void) {
       }
 
       // Concentric light+dark adaptive slot polarity matching in BOTH draw orders (light-then-dark & dark-then-light):
-      // while light slot is actively settling (dt=1/60), dark glass & its light ink must snap immediately on frame 1
+      // while light slot is actively settling (dt=1/60), dark glass, light ink, dark neutral ink, and kind==0 selection
+      // highlight on the exposed dark capsule region must all snap immediately on frame 1 (<= 1 LSB vs frame 30).
       for (int order = 0; order < 2; order++) {
         glass_forget();
-        double cc[4 * MB_INST];
+        double cc[6 * MB_INST];
         // 0: backdrop (white initially)
         rect_at(cc, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);
         int l_idx = (order == 0) ? 1 : 2;
         int d_idx = (order == 0) ? 2 : 1;
-        // Narrower concentric light glass (center 50,30) + wider concentric dark glass (center 50,30)
-        // so both share exact center (50,30) while x=16..28 exposes dark glass + light ink cleanly in both orders.
+        // Narrower concentric light glass (x=34..66, center 50,30) + wider concentric dark glass (x=10..90, center 50,30)
+        // so both share exact center (50,30) while x=10..34 and x=66..90 expose dark glass cleanly in both orders.
         rect_at(cc + l_idx * MB_INST, 34, 10, 32, 40, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -58);
         cc[l_idx * MB_INST + 4] = 16.0; cc[l_idx * MB_INST + 6] = 1.0; cc[l_idx * MB_INST + 7] = 1.0;
         cc[l_idx * MB_INST + 11] = 0x67 / 255.0; cc[l_idx * MB_INST + 13] = 4.0; cc[l_idx * MB_INST + 14] = -1.0; cc[l_idx * MB_INST + 15] = 1.0;
         rect_at(cc + d_idx * MB_INST, 10, 10, 80, 40, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -59);
         cc[d_idx * MB_INST + 4] = 16.0; cc[d_idx * MB_INST + 6] = 1.0; cc[d_idx * MB_INST + 7] = 1.0;
         cc[d_idx * MB_INST + 11] = 0x67 / 255.0; cc[d_idx * MB_INST + 13] = 4.0; cc[d_idx * MB_INST + 14] = -1.0; cc[d_idx * MB_INST + 15] = 1.0;
-        // 3: light neutral ink glyph inside dark glass (pad.yz = 50,30 concentric center)
+        // 3: light neutral ink glyph inside left exposed dark glass (pad.yz = 50,30 concentric center)
         rect_at(cc + 3 * MB_INST, 14, 24, 10, 12, 7, 0.93, 0.93, 0.93, 0);
         cc[3 * MB_INST + 14] = 4.0 / MB_ATLAS; cc[3 * MB_INST + 15] = 4.0 / MB_ATLAS;
         cc[3 * MB_INST + 21] = 50.0; cc[3 * MB_INST + 22] = 30.0; cc[3 * MB_INST + 23] = 40.0;
+        // 4: dark neutral ink glyph inside right exposed dark glass (pad.yz = 50,30, pad.w = 40)
+        rect_at(cc + 4 * MB_INST, 70, 24, 10, 12, 7, 0.20, 0.20, 0.20, 0);
+        cc[4 * MB_INST + 14] = 4.0 / MB_ATLAS; cc[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
+        cc[4 * MB_INST + 21] = 50.0; cc[4 * MB_INST + 22] = 30.0; cc[4 * MB_INST + 23] = 40.0;
+        // 5: kind == 0 selection highlight inside right exposed dark glass (pad.yz = 50,30, pad.w = -40)
+        rect_at(cc + 5 * MB_INST, 80, 22, 8, 16, 0, 0.15, 0.15, 0.15, 0);
+        cc[5 * MB_INST + 11] = 0.20;
+        cc[5 * MB_INST + 21] = 50.0; cc[5 * MB_INST + 22] = 30.0; cc[5 * MB_INST + 23] = -40.0;
         // Frame 0: white backdrop
-        gl_present(cc, 4, 1.0, 1.0, 1.0);
-        // Frame 1 (dt = 1/60): flip backdrop to black -> light slot is mid-settle, dark glass & ink must snap immediately!
+        gl_present(cc, 6, 1.0, 1.0, 1.0);
+        // Frame 1 (dt = 1/60): flip backdrop to black -> light slot is mid-settle, dark glass & all 3 elements must snap!
         rect_at(cc, 0, 0, W, H, 0, 0.0, 0.0, 0.0, 0);
-        gl_present(cc, 4, 0.0, 0.0, 0.0);
+        gl_present(cc, 6, 0.0, 0.0, 0.0);
         unsigned char *px1 = pixels_of_fb(surface);
-        for (int k = 0; k < 30; k++) gl_present(cc, 4, 0.0, 0.0, 0.0);
+        for (int k = 0; k < 30; k++) gl_present(cc, 6, 0.0, 0.0, 0.0);
         unsigned char *px30 = pixels_of_fb(surface);
-        // Dark glass sample at (28, 30) and light ink sample at (19, 30)
+        // Sample dark glass (28,30), light ink (19,30), dark neutral ink (75,30), selection highlight (84,30)
         size_t dg_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 28 * S) * 4;
         size_t in_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 19 * S) * 4;
+        size_t dn_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 75 * S) * 4;
+        size_t hl_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 84 * S) * 4;
         CHECK(px1[dg_off] < 70 && px1[in_off] > 200);
+        // Dark slot over black backdrop has target=0.0 (latch=64), whereas light slot settles toward 1.0:
+        // dark neutral ink & kind==0 highlight on exposed dark region must stay unlifted (<90) and <=1 LSB vs frame 30.
+        CHECK(px1[dn_off] < 90 && px1[hl_off] < 90);
         CHECK(abs((int)px1[dg_off] - (int)px30[dg_off]) <= 1);
         CHECK(abs((int)px1[in_off] - (int)px30[in_off]) <= 1);
+        CHECK(abs((int)px1[dn_off] - (int)px30[dn_off]) <= 1);
+        CHECK(abs((int)px1[hl_off] - (int)px30[hl_off]) <= 1);
         free(px1); free(px30);
       }
       gl_set_fixed_dt(0.0);
@@ -6085,6 +6101,11 @@ int main(void) {
       tx[8 * MB_INST + 23] = -12.0;
 
       donor_force_off = 0;
+      gl_present(tx, 8, 0.05, 0.05, 0.05);
+      unsigned char *px_bg = pixels_of_fb(surface);
+
+      glass_forget();
+      donor_force_off = 0;
       gl_present(tx, 9, 0.05, 0.05, 0.05);
       CHECK(donor_delegated_count == 1);
       unsigned char *px_on = pixels_of_fb(surface);
@@ -6106,16 +6127,61 @@ int main(void) {
           }
         }
       }
-      unsigned char *c_on = px_on + ((size_t)(fb_h - 1 - 22 * S) * fb_w + 48 * S) * 4;
-      unsigned char *c_off = px_off + ((size_t)(fb_h - 1 - 22 * S) * fb_w + 48 * S) * 4;
-      double y_bg = wcag_luma_u8(13, 13, 13);
+      size_t ctr_off = ((size_t)(fb_h - 1 - 22 * S) * fb_w + 48 * S) * 4;
+      unsigned char *c_bg = px_bg + ctr_off;
+      unsigned char *c_on = px_on + ctr_off;
+      unsigned char *c_off = px_off + ctr_off;
+      double y_bg = wcag_luma_u8(c_bg[0], c_bg[1], c_bg[2]);
       double y_on = wcag_luma_u8(c_on[0], c_on[1], c_on[2]);
       double y_off = wcag_luma_u8(c_off[0], c_off[1], c_off[2]);
       double cr_on = (fmax(y_on, y_bg) + 0.05) / (fmin(y_on, y_bg) + 0.05);
       double cr_off = (fmax(y_off, y_bg) + 0.05) / (fmin(y_off, y_bg) + 0.05);
-      printf("gles_render: perf-51 textured parity cr_on=%.2f cr_off=%.2f max_ch_diff=%d\n", cr_on, cr_off, max_ch_diff);
+      printf("gles_render: perf-51 textured parity cr_on=%.2f cr_off=%.2f max_ch_diff=%d bg=(%u,%u,%u)\n",
+             cr_on, cr_off, max_ch_diff, c_bg[0], c_bg[1], c_bg[2]);
+      CHECK(max_ch_diff <= 1);
       CHECK(cr_on >= 4.5 && cr_off >= 4.5);
-      free(px_on); free(px_off);
+      free(px_bg); free(px_on); free(px_off);
+
+      // Scrolling bright-card flip scenario (CHAT_SCROLL_12F): bright card (0.85) under blur=8.5 progressive top bar,
+      // 40x40 back pill (blur=1.4) on left, bare adaptive title in middle -> verify real composited background CR >= 4.5
+      {
+        glass_forget();
+        double bc[5 * MB_INST];
+        rect_at(bc, 0, 0, W, H, 0, 0.06, 0.06, 0.06, 0);
+        rect_at(bc + MB_INST, 48, 0, W - 48, H, 0, 0.85, 0.85, 0.85, 0);
+        // Progressive blur=8.5 top bar donor
+        rect_at(bc + 2 * MB_INST, 0, 0, W, 56, 5, 0, 0, 0, -146);
+        bc[2 * MB_INST + 6] = 1.0; bc[2 * MB_INST + 7] = 8.5; bc[2 * MB_INST + 11] = 0.0; bc[2 * MB_INST + 15] = 1.0;
+        bc[2 * MB_INST + 22] = -1.0; bc[2 * MB_INST + 54] = 56.0; bc[2 * MB_INST + 55] = 28.0;
+        // 40x40 back pill (blur=1.4) on left
+        rect_at(bc + 3 * MB_INST, 4, 8, 40, 40, 6, 0.14, 0.14, 0.15, -147);
+        bc[3 * MB_INST + 4] = 20.0; bc[3 * MB_INST + 6] = 1.0; bc[3 * MB_INST + 7] = 1.4;
+        bc[3 * MB_INST + 11] = 0.4; bc[3 * MB_INST + 14] = -1.0; bc[3 * MB_INST + 15] = 1.0;
+        bc[3 * MB_INST + 21] = 4.0; bc[3 * MB_INST + 23] = 2.0;
+        // Bare adaptive light title glyph over bright card (x=64..80, y=18..32 -> center 72,25)
+        rect_at(bc + 4 * MB_INST, 64, 18, 16, 14, 7, 0.93, 0.93, 0.93, 0);
+        bc[4 * MB_INST + 14] = 4.0 / MB_ATLAS; bc[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
+        bc[4 * MB_INST + 23] = -12.0;
+
+        donor_force_off = 0;
+        gl_present(bc, 4, 0.06, 0.06, 0.06);
+        unsigned char *bc_bg = pixels_of_fb(surface);
+
+        glass_forget();
+        gl_present(bc, 5, 0.06, 0.06, 0.06);
+        CHECK(donor_delegated_count == 1);
+        unsigned char *bc_on = pixels_of_fb(surface);
+
+        size_t boff = ((size_t)(fb_h - 1 - 25 * S) * fb_w + 72 * S) * 4;
+        double by_bg = wcag_luma_u8(bc_bg[boff + 0], bc_bg[boff + 1], bc_bg[boff + 2]);
+        double by_on = wcag_luma_u8(bc_on[boff + 0], bc_on[boff + 1], bc_on[boff + 2]);
+        double bcr_on = (fmax(by_on, by_bg) + 0.05) / (fmin(by_on, by_bg) + 0.05);
+        printf("gles_render: perf-51 bright-card flip cr_on=%.2f bg=(%u,%u,%u) fg=(%u,%u,%u)\n",
+               bcr_on, bc_bg[boff + 0], bc_bg[boff + 1], bc_bg[boff + 2],
+               bc_on[boff + 0], bc_on[boff + 1], bc_on[boff + 2]);
+        CHECK(bcr_on >= 4.5);
+        free(bc_bg); free(bc_on);
+      }
 
       // Occlusion margin: bright patch between donor and pill outside sr by 4pt but inside cur_glass blur+refract margin (~12pt)
       glass_forget();

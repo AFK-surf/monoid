@@ -484,6 +484,7 @@
   uniform highp sampler2D u_ad;
   uniform vec4 u_ad_box[16];
   uniform int u_ad_n;
+  uniform int u_ad_cur;
   vec3 vs_backdrop(vec2 p) {
     return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0).rgb;
   }
@@ -510,38 +511,46 @@
     float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);
     return (hi * 256.0 + lo) / 65535.0;
   }
-  vec3 vs_ad_sample_ink(vec2 ac, float fallback_r, bool prefer_dark, out vec2 capCenter, out vec2 capHalf) {
+  vec3 vs_ad_sample_ink(vec2 ac, vec2 self_c, float fallback_r, bool prefer_dark, out vec2 capCenter, out vec2 capHalf) {
     if (u_ad_n > 0) {
-      int best_pref = -1, best_any = -1;
-      float best_pref_d = 1e9, best_any_d = 1e9;
+      int best = -1, best_score = -1;
+      float best_d = 1e9;
       for (int i = 0; i < 16; i++) {
         if (i >= u_ad_n) break;
-        float d = length(ac - u_ad_box[i].xy);
+        vec4 box = u_ad_box[i];
+        float d = length(ac - box.xy);
         if (d <= 2.0) {
           vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);
           int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
           bool slot_dark = (code >= 48 && code <= 208);
-          if (slot_dark == prefer_dark && d < best_pref_d) { best_pref = i; best_pref_d = d; }
-          if (d < best_any_d) { best_any = i; best_any_d = d; }
+          bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);
+          bool in_cur = ((u_ad_cur & (1 << i)) != 0);
+          int score = (in_box ? 4 : 0) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);
+          if (score > best_score || (score == best_score && d < best_d)) {
+            best = i; best_score = score; best_d = d;
+          }
         }
       }
-      int best = (best_pref >= 0) ? best_pref : best_any;
       if (best < 0) {
-        best_pref = -1; best_any = -1;
-        best_pref_d = 1e9; best_any_d = 1e9;
+        best_score = -1;
+        best_d = 1e9;
         for (int i = 0; i < 16; i++) {
           if (i >= u_ad_n) break;
-          vec2 diff = abs(ac - u_ad_box[i].xy);
-          if (diff.x <= u_ad_box[i].z + 2.0 && diff.y <= u_ad_box[i].w + 2.0) {
+          vec4 box = u_ad_box[i];
+          vec2 diff = abs(ac - box.xy);
+          if (diff.x <= box.z + 2.0 && diff.y <= box.w + 2.0) {
             float d = length(diff);
             vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);
             int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));
             bool slot_dark = (code >= 48 && code <= 208);
-            if (slot_dark == prefer_dark && d < best_pref_d) { best_pref = i; best_pref_d = d; }
-            if (d < best_any_d) { best_any = i; best_any_d = d; }
+            bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);
+            bool in_cur = ((u_ad_cur & (1 << i)) != 0);
+            int score = (in_box ? 4 : 0) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);
+            if (score > best_score || (score == best_score && d < best_d)) {
+              best = i; best_score = score; best_d = d;
+            }
           }
         }
-        best = (best_pref >= 0) ? best_pref : best_any;
       }
       if (best >= 0) {
         vec4 px = texelFetch(u_ad, ivec2(best, 0), 0);
@@ -609,7 +618,7 @@
     float origL = vs_luma(rgb);
     if (ch > 0.08) return rgb;
     vec2 capCenter, capHalf;
-    vec3 cap = vs_ad_sample_ink(ac, fallback_r, origL >= 0.5, capCenter, capHalf);
+    vec3 cap = vs_ad_sample_ink(ac, rect.xy + rect.zw * 0.5, fallback_r, origL >= 0.5, capCenter, capHalf);
     float capsuleDarkT = cap.x;
     float capsuleBgL = cap.y;
     float capsuleLatch = cap.z;
@@ -725,7 +734,7 @@
       } else if (kind == 0 && a_pad.w < 0.0) {
         float ch = max(max(a_color.r, a_color.g), a_color.b) - min(min(a_color.r, a_color.g), a_color.b);
         vec2 capCenter, capHalf;
-        float darkT = vs_ad_sample_ink(a_pad.yz, -a_pad.w * 0.5, false, capCenter, capHalf).x;
+        float darkT = vs_ad_sample_ink(a_pad.yz, a_rect.xy + a_rect.zw * 0.5, -a_pad.w * 0.5, false, capCenter, capHalf).x;
         if (ch <= 0.08 && vs_luma(a_color.rgb) < 0.5) {
           v_color.rgb = mix(a_color.rgb, vec3(1.0), darkT);
           v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.28), darkT);
@@ -2508,7 +2517,7 @@
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
     gl.deleteShader(fs);
     const u = {};
-    for (const n of ['u_vp', 'u_origin', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_glight', 'u_segs', 'u_ad', 'u_ad_box', 'u_ad_n']) {
+    for (const n of ['u_vp', 'u_origin', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_glight', 'u_segs', 'u_ad', 'u_ad_box', 'u_ad_n', 'u_ad_cur']) {
       u[n] = gl.getUniformLocation(p, n);
     }
     progNow = p;
@@ -2552,6 +2561,7 @@
     if (u.u_glight) gl.uniform2f(u.u_glight, Math.cos(glassLightAngle), Math.sin(glassLightAngle));
     if (u.u_ad_box) gl.uniform4fv(u.u_ad_box, gadBox);
     if (u.u_ad_n) gl.uniform1i(u.u_ad_n, gadN);
+    if (u.u_ad_cur) gl.uniform1i(u.u_ad_cur, adCurMask);
   }
 
   function setupGL() {
@@ -2655,14 +2665,14 @@
   let adCurDt = 0, adMode = 1;
   let lastN = 0, lastR = 0, lastG = 0, lastB = 0, lastF32 = null;
   const gadBox = new Float32Array(AD_MAX * 4);
-  let gadN = 0;
+  let gadN = 0, adCurMask = 0;
   let glassIdle = 0, glassDrawn = false;
   function adForget() {
     for (let i = 0; i < AD_MAX; i++) {
       const s = adSlots[i];
       s.active = false; s.settleLeft = 0; s.updatedSerial = 0; s.seenSerial = 0;
     }
-    adLastTime = 0; adSettling = false; gadN = 0;
+    adLastTime = 0; adSettling = false; gadN = 0; adCurMask = 0;
   }
   function ensureAdTex() {
     if (adTex[0]) return;
@@ -2731,6 +2741,7 @@
       }
     }
     const pend = [];
+    let runMask = 0;
     for (const it of items) {
       let sid = -1, isNew = 0, modeChanged = false;
       for (let i = 0; i < AD_MAX; i++) {
@@ -2771,6 +2782,7 @@
         s.cx = it.cx; s.cy = it.cy; s.hx = it.hx; s.hy = it.hy; s.seenSerial = serial;
       }
       const s = adSlots[sid];
+      runMask |= (1 << sid);
       if (!isNew && !modeChanged && s.updatedSerial === serial) continue;
       const slotChanged = backdropChanged || modeChanged || (s.lastBd !== curBd);
       if (isNew || slotChanged || s.settleLeft > 0) {
@@ -2782,6 +2794,7 @@
         pend.push({ sid, isNew, isDark: s.isDark, cx: s.cx, cy: s.cy, hx: s.hx, hy: s.hy });
       }
     }
+    if (items.length > 0) adCurMask = runMask;
     return pend;
   }
   function adRunUpdates(pend, dt) {
@@ -4197,6 +4210,7 @@
     }
     bdTex = null;
     gmap.fill(0); guvc.fill(0); ggb.fill(0); gn = 0;
+    adCurMask = 0;
     adFillUniforms();
     gl.bindVertexArray(vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);

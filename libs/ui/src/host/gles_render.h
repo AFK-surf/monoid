@@ -65,6 +65,7 @@ static const char *VS =
     "uniform highp sampler2D u_ad;\n"
     "uniform vec4 u_ad_box[16];\n"
     "uniform int u_ad_n;\n"
+    "uniform int u_ad_cur;\n"
     "vec3 vs_backdrop(vec2 p) {\n"
     "  return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0).rgb;\n"
     "}\n"
@@ -91,38 +92,46 @@ static const char *VS =
     "  float lo = floor(clamp(rg.y, 0.0, 1.0) * 255.0 + 0.5);\n"
     "  return (hi * 256.0 + lo) / 65535.0;\n"
     "}\n"
-    "vec3 vs_ad_sample_ink(vec2 ac, float fallback_r, bool prefer_dark, out vec2 capCenter, out vec2 capHalf) {\n"
+    "vec3 vs_ad_sample_ink(vec2 ac, vec2 self_c, float fallback_r, bool prefer_dark, out vec2 capCenter, out vec2 capHalf) {\n"
     "  if (u_ad_n > 0) {\n"
-    "    int best_pref = -1, best_any = -1;\n"
-    "    float best_pref_d = 1e9, best_any_d = 1e9;\n"
+    "    int best = -1, best_score = -1;\n"
+    "    float best_d = 1e9;\n"
     "    for (int i = 0; i < 16; i++) {\n"
     "      if (i >= u_ad_n) break;\n"
-    "      float d = length(ac - u_ad_box[i].xy);\n"
+    "      vec4 box = u_ad_box[i];\n"
+    "      float d = length(ac - box.xy);\n"
     "      if (d <= 2.0) {\n"
     "        vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);\n"
     "        int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));\n"
     "        bool slot_dark = (code >= 48 && code <= 208);\n"
-    "        if (slot_dark == prefer_dark && d < best_pref_d) { best_pref = i; best_pref_d = d; }\n"
-    "        if (d < best_any_d) { best_any = i; best_any_d = d; }\n"
+    "        bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);\n"
+    "        bool in_cur = ((u_ad_cur & (1 << i)) != 0);\n"
+    "        int score = (in_box ? 4 : 0) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);\n"
+    "        if (score > best_score || (score == best_score && d < best_d)) {\n"
+    "          best = i; best_score = score; best_d = d;\n"
+    "        }\n"
     "      }\n"
     "    }\n"
-    "    int best = (best_pref >= 0) ? best_pref : best_any;\n"
     "    if (best < 0) {\n"
-    "      best_pref = -1; best_any = -1;\n"
-    "      best_pref_d = 1e9; best_any_d = 1e9;\n"
+    "      best_score = -1;\n"
+    "      best_d = 1e9;\n"
     "      for (int i = 0; i < 16; i++) {\n"
     "        if (i >= u_ad_n) break;\n"
-    "        vec2 diff = abs(ac - u_ad_box[i].xy);\n"
-    "        if (diff.x <= u_ad_box[i].z + 2.0 && diff.y <= u_ad_box[i].w + 2.0) {\n"
+    "        vec4 box = u_ad_box[i];\n"
+    "        vec2 diff = abs(ac - box.xy);\n"
+    "        if (diff.x <= box.z + 2.0 && diff.y <= box.w + 2.0) {\n"
     "          float d = length(diff);\n"
     "          vec4 px = texelFetch(u_ad, ivec2(i, 0), 0);\n"
     "          int code = int(floor(clamp(px.b, 0.0, 1.0) * 255.0 + 0.5));\n"
     "          bool slot_dark = (code >= 48 && code <= 208);\n"
-    "          if (slot_dark == prefer_dark && d < best_pref_d) { best_pref = i; best_pref_d = d; }\n"
-    "          if (d < best_any_d) { best_any = i; best_any_d = d; }\n"
+    "          bool in_box = (abs(self_c.x - box.x) <= box.z + 2.0 && abs(self_c.y - box.y) <= box.w + 2.0);\n"
+    "          bool in_cur = ((u_ad_cur & (1 << i)) != 0);\n"
+    "          int score = (in_box ? 4 : 0) + (in_cur ? 2 : 0) + (slot_dark == prefer_dark ? 1 : 0);\n"
+    "          if (score > best_score || (score == best_score && d < best_d)) {\n"
+    "            best = i; best_score = score; best_d = d;\n"
+    "          }\n"
     "        }\n"
     "      }\n"
-    "      best = (best_pref >= 0) ? best_pref : best_any;\n"
     "    }\n"
     "    if (best >= 0) {\n"
     "      vec4 px = texelFetch(u_ad, ivec2(best, 0), 0);\n"
@@ -190,7 +199,7 @@ static const char *VS =
     "  float origL = vs_luma(rgb);\n"
     "  if (ch > 0.08) return rgb;\n"
     "  vec2 capCenter, capHalf;\n"
-    "  vec3 cap = vs_ad_sample_ink(ac, fallback_r, origL >= 0.5, capCenter, capHalf);\n"
+    "  vec3 cap = vs_ad_sample_ink(ac, rect.xy + rect.zw * 0.5, fallback_r, origL >= 0.5, capCenter, capHalf);\n"
     "  float capsuleDarkT = cap.x;\n"
     "  float capsuleBgL = cap.y;\n"
     "  float capsuleLatch = cap.z;\n"
@@ -306,7 +315,7 @@ static const char *VS =
     "    } else if (kind == 0 && a_pad.w < 0.0) {\n"
     "      float ch = max(max(a_color.r, a_color.g), a_color.b) - min(min(a_color.r, a_color.g), a_color.b);\n"
     "      vec2 capCenter, capHalf;\n"
-    "      float darkT = vs_ad_sample_ink(a_pad.yz, -a_pad.w * 0.5, false, capCenter, capHalf).x;\n"
+    "      float darkT = vs_ad_sample_ink(a_pad.yz, a_rect.xy + a_rect.zw * 0.5, -a_pad.w * 0.5, false, capCenter, capHalf).x;\n"
     "      if (ch <= 0.08 && vs_luma(a_color.rgb) < 0.5) {\n"
     "        v_color.rgb = mix(a_color.rgb, vec3(1.0), darkT);\n"
     "        v_color.a = mix(a_color.a, min(a_color.a * 1.45, 0.28), darkT);\n"
@@ -1798,7 +1807,7 @@ static int prog_group_of(int kind, float pad_w) {
 
 typedef struct {
   GLuint p;
-  GLint vp, origin, scale, map, uvc, gb, shape, rad, n, glight, ad_box, ad_n;
+  GLint vp, origin, scale, map, uvc, gb, shape, rad, n, glight, ad_box, ad_n, ad_cur;
   unsigned gen;
 } kprog;
 static kprog progs[MB_PROGS];
@@ -2319,6 +2328,7 @@ static kprog make_prog_impl(int group, int cache_only) {
   k.glight = glGetUniformLocation(k.p, "u_glight");
   k.ad_box = glGetUniformLocation(k.p, "u_ad_box");
   k.ad_n = glGetUniformLocation(k.p, "u_ad_n");
+  k.ad_cur = glGetUniformLocation(k.p, "u_ad_cur");
   k.gen = prog_gen - 1;
   prog_now = k.p;
   glUseProgram(k.p);
@@ -3177,6 +3187,7 @@ static int ad_mode = 1;
 static double ad_cur_dt = 0.0;
 static float gad_box[MB_ADAPTIVE_MAX * 4];
 static int gad_n;
+static uint32_t ad_cur_mask;
 
 static void ad_forget(void) {
   memset(ad_slots, 0, sizeof ad_slots);
@@ -3188,6 +3199,7 @@ static void ad_forget(void) {
   ad_last_time = 0.0;
   __atomic_store_n(&ad_settling, 0, __ATOMIC_RELEASE);
   gad_n = 0;
+  ad_cur_mask = 0;
 }
 
 static void ensure_ad_tex(void) {
@@ -3319,6 +3331,7 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
     }
   }
   int n_upd = 0;
+  uint32_t run_mask = 0;
   for (int k = 0; k < ni; k++) {
     int sid = -1, is_new = 0, mode_changed = 0;
     for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
@@ -3367,6 +3380,7 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
       ad_slots[sid].seen_serial = serial;
     }
     mb_ad_slot *s = &ad_slots[sid];
+    run_mask |= (1u << sid);
     if (!is_new && !mode_changed && s->updated_serial == serial) continue;
     int slot_changed = backdrop_changed || mode_changed || (s->last_bd != cur_bd);
     if (!is_new && !slot_changed && s->settle_left > 0.0 && ad_conv_serial[sid] >= s->settle_serial) {
@@ -3395,6 +3409,7 @@ static int ad_collect_and_match(const float *f, int32_t start, int32_t end, int3
       out[n_upd++] = (gl_ad_pend){sid, is_new, s->is_dark, track_rb, s->cx, s->cy, s->hx, s->hy};
     }
   }
+  if (ni > 0) ad_cur_mask = run_mask;
   return n_upd;
 }
 
@@ -3848,9 +3863,14 @@ static int donor_elig_tids[MB_MAX_DONORS];
 static int donor_elig_n;
 static int donor_delegated_count;
 static int donor_plan_ready;
+static int donor_plan_ok;
 static int donor_force_off;
 static uint32_t donor_slot_mask;
 static glass_slot *last_captured_slot;
+
+static const int *active_donor_of(void) {
+  return (donor_plan_ok && donor_delegated_count > 0) ? donor_of_buf : NULL;
+}
 
 static int is_donor_elig_tid(int tid) {
   for (int i = 0; i < donor_elig_n; i++) {
@@ -3860,6 +3880,7 @@ static int is_donor_elig_tid(int tid) {
 }
 
 static int compute_donor_plan(const float *f, int32_t count, float vp_w, float vp_h, float sc) {
+  donor_plan_ok = 0;
   donor_elig_n = 0;
   donor_delegated_count = 0;
   if (count <= 0 || !f) return 0;
@@ -3872,8 +3893,9 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
   if (!donor_of_buf) return 0;
   memset(donor_of_buf, 0, (size_t)count * sizeof(int));
   if (donor_force_off) return 0;
-  int neg_tids[64];
-  int neg_cnts[64];
+  // Cap at 256 distinct negative tids; >256 safely falls back to no delegation (unlike Web's unbounded Map).
+  int neg_tids[256];
+  int neg_cnts[256];
   int neg_n = 0;
   int neg_overflow = 0;
   for (int32_t k = 0; k < count; ) {
@@ -3897,7 +3919,7 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
         }
       }
       if (!found) {
-        if (neg_n < 64) {
+        if (neg_n < 256) {
           neg_tids[neg_n] = t;
           neg_cnts[neg_n] = 1;
           neg_n++;
@@ -4061,6 +4083,7 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
     i++;
   }
   donor_elig_n = n_elig;
+  donor_plan_ok = 1;
   return donor_delegated_count;
 }
 
@@ -4296,6 +4319,7 @@ static void use_prog(int group) {
   }
   if (k->ad_box >= 0) glUniform4fv(k->ad_box, MB_ADAPTIVE_MAX, gad_box);
   if (k->ad_n >= 0) glUniform1i(k->ad_n, gad_n);
+  if (k->ad_cur >= 0) glUniform1i(k->ad_cur, (int)ad_cur_mask);
 }
 
 // the main programs' state (after the passes)
@@ -4427,7 +4451,7 @@ static void gl_present_kept(int32_t count, double r, double g, double b) {
                      ad_slots[i].hx * 2.0 + 8.0, ad_slots[i].hy * 2.0 + 8.0);
     }
     if (!dirty_whole && !mb_glass_damage_expand(fbuf, count, dirty, &dirty_n, fb_w / cur_scale, fb_h / cur_scale,
-                                                 cur_scale, count > 0 ? donor_of_buf : NULL)) dirty_whole = 1;
+                                                 cur_scale, active_donor_of())) dirty_whole = 1;
   }
   gl_present_drawn(count, r, g, b);
   donor_plan_ready = 0;
@@ -4757,7 +4781,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
     compute_donor_plan(fbuf, count, (float)(cur_w > 0.0 ? cur_w : fb_w / (cur_scale > 0.0 ? cur_scale : 1.0)),
                        (float)(cur_h > 0.0 ? cur_h : fb_h / (cur_scale > 0.0 ? cur_scale : 1.0)), (float)cur_scale);
   }
-  const int *donor_of = (count > 0 && donor_of_buf) ? donor_of_buf : NULL;
+  const int *donor_of = active_donor_of();
   // Pre-scan glass captures once per frame (covering all dirty rects when partial): size blur levels once, and batch
   // adaptive updates for blur-cache-hit groups into a single pass so tile-based GPUs do not split the main FBO pass.
   int levels_sized = 0;
@@ -4896,6 +4920,7 @@ static void draw_into_rects(GLuint fb, const int (*rects)[4], int n_rects) {
     memset(guvc, 0, sizeof guvc);
     memset(ggb, 0, sizeof ggb);
     gn = 0;
+    ad_cur_mask = 0;
     ad_fill_uniforms();
     main_state();
     if (cut_on) {
