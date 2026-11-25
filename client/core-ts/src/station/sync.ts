@@ -32,7 +32,7 @@ import { digest } from "../digest.ts";
 import { logged } from "../log-lines.ts";
 import { type Channel, Channels } from "../channels/channels.ts";
 import { ENTRIES, LETTERS, PAGE, TRANSCRIPT, TRANSCRIPT_PAGE, entriesOf, heldIn, lettersOf, transcriptOf } from "./channel-kinds.ts";
-import { type HistoryRead, type Link, Links, type LiveView, MEMORY, RECONNECT_MAX_MS, PRESETS, PACE, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
+import { type HistoryRead, type Link, Links, type LiveView, MEMORY, RECONNECT_MAX_MS, PRESETS, PACE, PROJECTS_INFO, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
 import { concat, readAll, replyHeader, type StationWire } from "./wire.ts";
 import { SseParser } from "../sse.ts";
 import * as logins from "./machine-logins.ts";
@@ -777,6 +777,37 @@ export class StationsSync {
   /// The accounts' hours as the station said them last; undefined while it has not.
   pace(address: string): unknown {
     return this.#links.get(address)?.memory.get(PACE);
+  }
+
+  /// Workspace project metadata (`GET /projects/info`, the `projectsInfo` topic), read while the projects view is shown
+  /// and refreshed on the `"projects"` SSE event or after `project.setInfo`. A station from before (404) answers empty
+  /// with `supported: false`.
+  projectsInfoShown(address: string): void {
+    this.#enqueue(address, "projectsInfo", Priority.shown, this.#projectsInfo(address));
+  }
+
+  #projectsInfo(address: string): Effect.Effect<void, CoreError> {
+    const key = topicKey({ topic: "projectsInfo", station: address });
+    return Effect.gen({ self: this }, function* () {
+      const link = this.#links.get(address);
+      if (!link || !this.reachable(address)) return;
+      const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/projects/info", null, { quiet: true }));
+      const said = answer._tag === "Success"
+        ? { projects: isObject(get(answer.success, "projects")) ? get(answer.success, "projects") : {}, supported: true }
+        : answer.failure.status === 404
+          ? { projects: {}, supported: false }
+          : undefined;
+      if (said === undefined) return;
+      link.errors.delete(key);
+      if (equal(link.memory.get(PROJECTS_INFO), said)) return;
+      link.memory.set(PROJECTS_INFO, said);
+      this.onChange(address, "log", key);
+    });
+  }
+
+  /// The workspace project metadata as the station said it last; undefined while it has not.
+  projectsInfo(address: string): unknown {
+    return this.#links.get(address)?.memory.get(PROJECTS_INFO);
   }
 
   #presets(address: string): Effect.Effect<void, CoreError> {
@@ -1997,6 +2028,9 @@ export class StationsSync {
         // (and the person's records carried again: views/presets.ts)
         for (const part of this.also) part.event(address, name, data);
         return;
+      case "projects":
+        if (this.#core.store.inUse({ topic: "projectsInfo", station: address }) || this.#links.get(address)?.memory.has(PROJECTS_INFO)) this.projectsInfoShown(address);
+        return;
       // A login's terminal as it changes (while one is shown).
       case "login-screen": {
         const link = this.#links.get(address);
@@ -3028,6 +3062,11 @@ export class StationsSync {
           break;
         case "presets":
           reads.push(["presets", this.#presets(address)]);
+          break;
+        case "projects":
+          if (this.#core.store.inUse({ topic: "projectsInfo", station: address }) || this.#links.get(address)?.memory.has(PROJECTS_INFO)) {
+            reads.push(["projectsInfo", this.#projectsInfo(address)]);
+          }
           break;
         // A move or a move back asked: what it stands at read again where shown (its station tells the rest as it goes).
         case "move":

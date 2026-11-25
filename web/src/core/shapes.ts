@@ -1935,6 +1935,10 @@ export interface PrefsView {
 	 * chat open in front coming to need the viewer).
 	 */
 	haptics?: string;
+	/** Sidebar chat list grouped into collapsible project/folder drawers on this device: `on`, or none for by date. */
+	chatDrawers?: string;
+	/** Collapsed project drawer keys on this device, by workspace (JSON string array of drawer keys). */
+	drawerCollapsed?: Record<string, string>;
 	/**
 	 * Stations looked up in the Mainline DHT from this device: `off` (on the LAN alone, where a company's filter
 	 * marks the DHT as risky), or none for on.

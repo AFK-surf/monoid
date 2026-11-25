@@ -35,7 +35,8 @@ import { noProfileHere, type Profile, type Runtime, runs, runtimeNamed, runtimeT
 import { billedPerUse, FAST_RUNTIMES } from "../agents/profiles.ts";
 import { CLIENT_KEY_KEPT_MS, type Hub, connectOf, newChatKey, newSingleSessionKey, newToken } from "./hub.ts";
 import { INTERNAL_CHANNEL, INTERNAL_CONNECT, chatKey, chatWorkspace } from "./internal.ts";
-import { STATION_AUTHOR } from "../store/rows.ts";
+import { STATION_AUTHOR, normalizeProject } from "../store/rows.ts";
+import { ensureProjectRegistered } from "../projects/info.ts";
 
 /// A session of its own, talked to in the station's chat.
 export type NewChat = {
@@ -59,6 +60,8 @@ export type NewChat = {
   /// the app read it there (`presetCopy`).
   preset?: string | null;
   presetCopy?: PresetCopy | null;
+  /// Optional initial project classification ("" for cross-project/misc, non-empty string for a named project).
+  project?: string | null;
 };
 
 function checkSpeed(runtime: string, speed: ModelSpeed | null | undefined, supportsUltrafast: boolean, lang: Lang): void {
@@ -201,6 +204,20 @@ function oneByKey<T>(hub: Hub, key: string, f: () => Promise<T>): Promise<T> {
 
 async function sessionMade(hub: Hub, key: string, client: string | null, options: NewChat, lang: Lang): Promise<[string, ThreadRow]> {
   const config = hub.config();
+  const project = options.project === undefined || options.project === null ? null : normalizeProject(options.project);
+  const applyInitialProject = async (thread: ThreadRow, now: number): Promise<ThreadRow> => {
+    if (project === null) return thread;
+    const { thread: classified } = hub.store.setThreadClassification(thread.id, { project, lock: true, force: true });
+    if (project !== "" && typeof config.agentHome === "string" && config.agentHome !== "") {
+      try {
+        const reg = await ensureProjectRegistered(config.agentHome, options.ws ?? null, hub.homeWorkspace(), { name: project, now });
+        if (reg.changed) hub.notifyProjectsChanged(options.ws ?? null);
+      } catch (e) {
+        log.warn("hub", "registering initial project failed", { session: key, project, error: (e as Error).message });
+      }
+    }
+    return classified;
+  };
   const made = (): [string, ThreadRow] | null => {
     const existing = hub.store.getSession(key);
     if (existing === null) return null;
@@ -210,7 +227,12 @@ async function sessionMade(hub: Hub, key: string, client: string | null, options
     return [key, thread];
   };
   const before = made();
-  if (before !== null) return before;
+  if (before !== null) {
+    if (project !== null && before[1].project === undefined && !before[1].projectLocked) {
+      return [before[0], await applyInitialProject(before[1], hub.now())];
+    }
+    return before;
+  }
   const runtime = options.runtime;
   const all = config.profiles.filter((p) => p.runtimes.includes(runtime));
   if (all.length === 0) throw new Error(`no ${runtime} profile configured`);
@@ -303,7 +325,8 @@ async function sessionMade(hub: Hub, key: string, client: string | null, options
   if (wantedProfiles?.length !== 1 && billedPerUse(profile) && candidatePool.some((p) => !billedPerUse(p))) {
     hub.noteBilledFallback({ session: key, workspace: options.ws ?? null, runtime, profile });
   }
-  return [key, openChat(hub, key, options.createdBy, title)];
+  const chat = await applyInitialProject(openChat(hub, key, options.createdBy, title), now);
+  return [key, chat];
 }
 
 /// Changes how a session runs from its next turn on: another profile of its runtime (another account, say), another

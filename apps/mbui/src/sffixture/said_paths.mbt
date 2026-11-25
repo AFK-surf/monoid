@@ -1050,6 +1050,11 @@ pub let said_paths : Map[String, Array[String]] = {
     "machineLogins.*.logins.*.email",
     "machineLogins.*.logins.*.quota.detail",
   ],
+  "projects": [
+    "projects.*.name",
+    "projects.*.note",
+    "projects.*.refs.*",
+  ],
   "railCard": [
     "rows.*.name",
   ],

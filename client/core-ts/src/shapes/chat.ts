@@ -56,6 +56,8 @@ const CHAT_ITEM: Parameters<typeof struct>[0] = [
   ["stage", opt("BoardStage"), { doc: "Its column on the board for the viewer (chat-stage.ts boardStageOf): wait (it needs them: a card or need\nthey decide, it went wrong for them, a message of theirs did not go), watch (a watch kept), run (at work, or asking\na colleague). Absent: done, ended (待收口)." }],
   ["subchats", opt("String"), { said: true, doc: "The chats it leads (chat_create for me) still at work, in words (1 个子会话进行中). Absent when none is." }],
   ["archiveRead", opt("bool"), { doc: "Ended with nothing left in it, read, and started by the viewer (chat-stage.ts archiveRead): 待收口's 归档已读\nputs it away with the others so. Absent otherwise." }],
+  ["project", opt("String"), { doc: "Workspace project name: `\"\"` for explicit cross-project/misc, non-empty string for a named project; absent when unclassified or from an older station." }],
+  ["projectLocked", opt("bool"), { doc: "Whether a member explicitly set or locked this chat's project (`chatRow`). Absent otherwise." }],
   ["outside", opt("String"), { said: true, doc: "Another workspace's chat, its name: the `@` menu's `elsewhere` lists them after the workspace's own. Absent for\nthe workspace's own." }],
   ["outsideEmoji", opt("String"), { doc: "With `outside`: that workspace's mark (as a station's), shown before its name; none when none." }],
   ["outsideIcon", opt("String"), { doc: "With `outside`: as a station's icon, shown before the emoji." }],
@@ -70,7 +72,7 @@ export const LISTED_CHAT: readonly string[] = [
   "id", "session", "thread", "clientKey", "station", "stationName", "stationEmoji", "stationIcon", "title", "unread", "hidden",
   "settled", "tone", "state", "connect", "originKind", "originText", "opener", "stateText", "stateLead", "stateLeadText",
   "stateRest", "stateAbout", "unsent", "last", "agents", "people", "creator", "peopleText", "pinned", "pending", "swipeArchive",
-  "stage", "subchats", "archiveRead",
+  "stage", "subchats", "archiveRead", "project",
 ];
 
 export const CHAT_SHAPES: Record<string, Shape> = {
@@ -143,6 +145,15 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["chats", vec("InterruptedChat")],
   ], { doc: "A station's chats cut off by a non-update restart awaiting manual resume or dismissal." }),
   Lead: words(["agents","people"], { doc: "Whose pictures lead the rows of a list (`ChatsView::leading`)." }),
+  ProjectItem: struct([
+    ["name", "String", { said: true }],
+    ["note", opt("String"), { said: true }],
+    ["refs", opt(vec("String")), { said: true }],
+  ], { doc: "One workspace project registered in PROJECTS.jsonl: its name, optional description, and optional reference directories or links." }),
+  ProjectsView: struct([
+    ["projects", vec("ProjectItem")],
+    ["supported", "bool", { doc: "Whether at least one online station in the workspace supports workspace projects." }],
+  ], { doc: "Workspace project metadata merged from online stations' PROJECTS.jsonl (the `projects` topic), capped at PROJECTS_MAX entries." }),
   Attachment: struct([
     ["name", "String", { said: true }],
     ["path", "String"],

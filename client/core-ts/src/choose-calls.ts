@@ -79,6 +79,7 @@ export function installChoose(inner: Inner): Choose {
             const station = field("station");
             yield* attempt(() => choose.assertCreateStation(station, of));
             const ask = yield* attempt(() => choose.create(station, of));
+            if (typeof params.project === "string") ask.project = params.project;
             // (by the key the page named it by as its first words were sent: the topic's `next`)
             const key = field("key");
             const made = yield* handlers.chatCreate!(inner, { kind: "chatCreate", station, ask, ...(key !== "" ? { key } : {}) }, progress, at, ctx);

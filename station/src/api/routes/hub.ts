@@ -498,6 +498,9 @@ export const routes = (tools: Tools): Route[] => {
               : Array.isArray(i.profiles) && i.profiles.every((x) => typeof x === "string")
                 ? i.profiles
                 : (() => { throw new Refused(400, "profiles must be a list of profile ids or null"); })();
+          if (i.project !== undefined && i.project !== null && typeof i.project !== "string") {
+            throw new Refused(400, "project must be a string or null");
+          }
           const [key, chat] = await as(400, () =>
             newSession(
               a.hub,
@@ -517,6 +520,7 @@ export const routes = (tools: Tools): Route[] => {
                 ws: r.viewer.workspace || null,
                 preset: given("preset"),
                 presetCopy: i.presetCopy !== undefined && i.presetCopy !== null ? presetCopyInput(i.presetCopy) : null,
+                project: typeof i.project === "string" ? i.project : null,
               },
               r.lang,
             ),

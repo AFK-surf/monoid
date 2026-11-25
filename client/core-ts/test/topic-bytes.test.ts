@@ -98,7 +98,7 @@ const UNBOUNDED = "nothing in the core bounds it (to weigh)";
 const NOT_MEASURED: Record<string, string> = {
   link: RAW, overview: RAW, sessions: RAW, session: RAW, host: RAW, memory: RAW, net: RAW, way: RAW, threads: RAW, thread: RAW, letters: RAW, chatRows: RAW,
   slackApp: RAW, jobs: RAW, machineLogins: RAW, machineLogin: RAW, machineLoginScreen: RAW, archivedRows: RAW, stationUsage: RAW, stationResources: RAW,
-  stationSearch: RAW, profilePace: RAW, stationRates: RAW,
+  stationSearch: RAW, profilePace: RAW, projectsInfo: RAW, stationRates: RAW,
   slackTokens: FORM, connectFlow: FORM, decisionForm: FORM, policyForm: FORM, agentEnvForm: FORM, profileFlow: FORM, lockDraft: FORM,
   adbCard: "four fields, its line a word of the core's or the phone's message (adb.ts card)", releases: "one number (core.ts `told`)",
   fonts: "the fonts of a fixed catalogue, by id (font-files.ts, fonts.ids, SHARE_LOOKS_FILES)", drivePlace: "three fields (DrivePlace)",
@@ -113,6 +113,7 @@ const NOT_MEASURED: Record<string, string> = {
   shareIn: "30 chats (share-in.ts LISTED) and the workspace's stations, 64 at most (client/limits.ts STATIONS_PER_WORKSPACE)",
   chatFeedback: UNBOUNDED,
   preset: "one preset whole, as the `presets` topic weighed sends each: its name, instructions and folders held to preset-records.ts NAME_MAX, INSTRUCTIONS_MAX, DIRS_MAX",
+  projects: "workspace project metadata from PROJECTS.jsonl, capped at 200 projects and 16 refs each (views/views.ts #projectsView)",
 };
 
 /// What a topic's value as the fixture makes it holds nothing of, though its shape declares it (a list, a map), by the

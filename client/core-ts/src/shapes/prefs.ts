@@ -51,6 +51,8 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["motion", opt("String"), { doc: "Motion on this device's pages: `reduce` (what moves only fades or is there at once), `full`, or none to\nfollow the system's setting." }],
     ["glassFrost", opt("String"), { default: true, doc: "Liquid glass frost level on this device, 0 to 100 (100 draws solid surfaces); none means 0 (default clear)." }],
     ["haptics", opt("String"), { doc: "Haptics on this device: `off`, or none for on (a long press taken, a card answered, what is copied, a\nchat open in front coming to need the viewer)." }],
+    ["chatDrawers", opt("String"), { default: true, doc: "Sidebar chat list grouped into collapsible project/folder drawers on this device: `on`, or none for by date." }],
+    ["drawerCollapsed", map("String"), { default: true, doc: "Collapsed project drawer keys on this device, by workspace (JSON string array of drawer keys)." }],
     ["dht", opt("String"), { doc: "Stations looked up in the Mainline DHT from this device: `off` (on the LAN alone, where a company's filter\nmarks the DHT as risky), or none for on." }],
     ["appUpdate", opt("String"), { doc: "This app keeping itself current on this device: `off` (a newer build is said, and downloaded and put in\nplace only at the person's word), or none for on (downloaded by itself, put in place while the app is not in use)." }],
     ["rowPicture", "RowPictureSetting", { default: true }],

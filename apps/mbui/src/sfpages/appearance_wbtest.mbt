@@ -96,6 +96,34 @@ test "外观's 震动 switch is at the end of its row and turns haptics off and 
 }
 
 ///|
+test "外观's 按项目分区抽屉 switch defaults off and toggles prefs.chatDrawers at each width" {
+  for (w, platform) in [(390.0, 1), (720.0, 0), (1280.0, 0)] {
+    let sets : Array[Json] = []
+    let t = setting_tester(Appearance, w, platform~, h=2400.0, over=fn(s) {
+      { ..s, call: fn(name, params, done) { if name == "prefs.set" { sets.push(params) }; (s.call)(name, params, done) } }
+    })
+    let at = "\{w} platform \{platform}"
+    assert_true(t.find("按项目分区抽屉") is Some(_), msg=at)
+    assert_eq(t.get(Switch, label="按项目分区抽屉").check, Some(Off), msg=at)
+    t.click(Switch, label="按项目分区抽屉")
+    t.draw()
+    assert_eq(sets.length(), 1, msg=at)
+    assert_eq(text(Some(sets[0]), "chatDrawers"), "on", msg=at)
+    assert_eq(t.get(Switch, label="按项目分区抽屉").check, Some(On), msg=at)
+    t.click(Switch, label="按项目分区抽屉")
+    t.draw()
+    assert_eq(sets.length(), 2, msg=at)
+    assert_true(field(Some(sets[1]), "chatDrawers") is Some(Null), msg=at)
+    assert_eq(t.get(Switch, label="按项目分区抽屉").check, Some(Off), msg=at)
+    t.run_for(@ui.move_most_ms)
+    if w != 720.0 {
+      let faults = t.audit()
+      assert_eq(faults, [], msg="\{at}: \{Repr(faults)}")
+    }
+  }
+}
+
+///|
 test "外观: 液态玻璃 slider reads and writes glassFrost and restores default clear at 0" {
   for (w, platform) in [(390.0, 2), (1280.0, 0)] {
     let at = "\{w} platform \{platform}"

@@ -51,7 +51,7 @@ export type Call =
   | { kind: "op"; op: ops.Request }
   | { kind: "profileModels"; op: ops.Request; id: string; models: unknown }
   | { kind: "chatArchive"; op: ops.Request; thread: number | null; session: string; archived: boolean }
-  | { kind: "chatChange"; op: ops.Request; thread: number | null; session: string; title: string | null; pinned: boolean | null; keep: boolean | null; hidden: boolean | null; muted: boolean | null }
+  | { kind: "chatChange"; op: ops.Request; thread: number | null; session: string; title: string | null; pinned: boolean | null; keep: boolean | null; hidden: boolean | null; muted: boolean | null; project?: string | null }
   | { kind: "widgetState"; op: ops.Request; key: string; path: string; state: unknown | undefined }
   | { kind: "chatXshare"; station: string; workspace: string | null; session: string; thread: number | null; to: string[]; write: boolean }
   | { kind: "stationJoin"; workspace: string; station: string; name: string | null; mode?: "full" | "tasks" }
@@ -1370,13 +1370,16 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
     const op = ops.request(name, p)!;
     return { kind: "decisionDismiss", op, station: "station" in op.target ? op.target.station : "", thread: get(p, "thread") as number, seq: get(p, "seq") as number };
   }
-  if (name === "chat.rename" || name === "chat.pin" || name === "chat.keep" || name === "chat.hide" || name === "chat.mute") {
+  if (name === "chat.rename" || name === "chat.pin" || name === "chat.keep" || name === "chat.hide" || name === "chat.mute" || name === "chat.classify") {
     const p = orEmpty(params);
     const op = ops.request(name, p)!;
     const session = get(p, "session");
     const thread = get(p, "thread");
     const rawTitle = get(p, "title");
     const title = name === "chat.rename" ? (typeof rawTitle === "string" ? rawTitle : "").trim() : "";
+    const project = name === "chat.classify"
+      ? (get(p, "clearProject") === true || get(p, "project") === null ? null : typeof get(p, "project") === "string" ? (get(p, "project") as string).trim() : undefined)
+      : undefined;
     return {
       kind: "chatChange",
       op,
@@ -1387,6 +1390,7 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
       keep: name === "chat.keep" ? get(p, "kept") !== false : null,
       hidden: name === "chat.hide" ? get(p, "hidden") === true : null,
       muted: name === "chat.mute" ? get(p, "muted") === true : null,
+      ...(project !== undefined ? { project } : {}),
     };
   }
   const p = orEmpty(params);

@@ -1196,6 +1196,8 @@ web-pages.appearance.archive.offHint
 web-pages.appearance.archive.reviewed
 web-pages.appearance.archive.reviewedHint
 web-pages.appearance.archive.title
+web-pages.appearance.drawers.description
+web-pages.appearance.drawers.title
 web-pages.appearance.drop.description
 web-pages.appearance.drop.file
 web-pages.appearance.drop.path

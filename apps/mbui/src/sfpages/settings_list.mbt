@@ -605,6 +605,7 @@ fn settings_children_of(
         ("glass", @sf.t("web-pages.appearance.glass.title"), Appearance, "液态玻璃 玻璃 磨砂 透明 清晰度 liquid glass frost"),
         ("motion", @sf.t("web-pages.appearance.motion.title"), Appearance, "动效 动画 减弱动态效果 过渡 animation motion reduce"),
         ("haptics", @sf.t("web-pages.appearance.haptics.title"), Appearance, "触感 震动 振动 反馈 haptic vibration"),
+        ("drawers", @sf.t("web-pages.appearance.drawers.title"), Appearance, "项目抽屉 分区抽屉 文件夹 侧边栏 分组 project drawer folder group sidebar"),
         ("language", @sf.t("common.language"), Appearance, "中文 英文 English 多语言 界面语言 language locale zh en"),
       ]
       if @ui.window_zoom_supported() {
@@ -796,7 +797,7 @@ let settings_words_backup : String = "备份 恢复 互备 r2 s3 对象存储 ba
 let settings_words_usage : String = "费用 开销 花费 账单 统计 Token 成本 usage cost spend billing token"
 
 ///|
-let settings_words_appearance : String = "深色 浅色 暗色 亮色 夜间 界面 样式 动效 玻璃 appearance dark light mode look ui style"
+let settings_words_appearance : String = "深色 浅色 暗色 亮色 夜间 界面 样式 动效 玻璃 抽屉 项目 文件夹 appearance dark light mode look ui style drawer project folder"
 
 ///|
 let settings_words_notifications : String = "消息提醒 推送 横幅 角标 声音 勿扰 notification push banner badge sound alert"

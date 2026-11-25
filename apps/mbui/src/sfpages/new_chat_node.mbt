@@ -843,6 +843,7 @@ fn new_head_node(c : @view.View, on : NewOn, wide : () -> Bool) -> Unit {
     })
   })
   |> ignore
+  new_chat_project_pill_node(c, on.w.id, on.tips)
 }
 
 ///|

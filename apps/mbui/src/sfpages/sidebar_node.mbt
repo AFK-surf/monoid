@@ -201,12 +201,19 @@ fn chats_pane_node(
   let ordered : @signals.Signal[Array[ChatDay]] = @signals.signal([])
   // (by name, each row told only as its own chat changes, comes or goes: one row's words changed wake no other row)
   let rows : @signals.KeyedList[String, ChatItem] = @signals.keyed_list(same=fn(a, b) { physical_equal(a, b) || a == b })
-  // (its days' lines by their keys, told only as a row or a day comes, goes or moves: not as a row's words change)
+  // (when project drawers are enabled: each drawer section by `"d/" + section.key`, told only as that drawer changes)
+  let drawers : @signals.KeyedList[String, DrawerSection] = @signals.keyed_list(same=fn(a, b) { physical_equal(a, b) || a == b })
+  let drawer_all_keys : Ref[Array[String]] = Ref([])
+  let drawers_on = fn() { @sfbase.chat_drawers_on(src) }
+  // (its days' or drawers' lines by their keys, told only as a row, day or drawer comes, goes or moves)
   let day_lines : @signals.Signal[Array[String]] = @signals.signal([])
   // (how many times the order shown has been said: what follows it told as it changes)
   let revision : @signals.Signal[Int] = @signals.signal(0)
   let seen : Ref[Array[ChatDay]] = Ref([])
   let stamp = Ref(0)
+  let seen_projects : Ref[Array[@sfbase.ProjectInfo]] = Ref([])
+  let seen_collapsed : Ref[Set[String]] = Ref(Set([]))
+  let drawers_stamp = Ref(0)
   // A count alone helps diagnose the work of opening a list, without recording any chat's name or contents.
   let recorded_rows = Ref(-1)
   // what of its rows and days comes, goes and goes ahead of others as the list changes while it is watched (ListRows'):
@@ -217,6 +224,8 @@ fn chats_pane_node(
   // place quietly, RowsMotion::said)
   let said_stamp = Ref(-1)
   let said_hold = Ref(false)
+  let said_drawers = Ref(false)
+  let said_drawers_stamp = Ref(-1)
   v.reacts(
     fn() {
       // (the core's days, a new array each time they change: told by a number as they do)
@@ -229,26 +238,42 @@ fn chats_pane_node(
         seen.val = days
         stamp.val += 1
       }
+      let mode_drawers = drawers_on()
+      if mode_drawers {
+        let projects = @sfbase.projects_of(src, id).projects
+        let collapsed = @sfbase.drawer_collapsed_of(src, id)
+        if projects != seen_projects.val || collapsed != seen_collapsed.val {
+          seen_projects.val = projects
+          seen_collapsed.val = collapsed
+          drawers_stamp.val += 1
+        }
+      }
       // (and its page's stay on top: what changed while it was off the top said as it is put back there, RowsMotion::said;
       // and whether it is the core's answer now or what it said before it was let go of: chats_live)
-      (stamp.val, held(), stint(), @sfbase.chats_live(src, id, filter), syncing)
+      (stamp.val, held(), stint(), @sfbase.chats_live(src, id, filter), syncing, mode_drawers, drawers_stamp.val)
     },
     fn(at) {
       let days = seen.val
       let hold = at.1 && !@sfbase.viewer_moved(key, days)
+      let mode_drawers = at.5
+      let mode_changed = mode_drawers != said_drawers.val
+      let drawers_changed = mode_changed || (mode_drawers && at.6 != said_drawers_stamp.val)
       // (only whether it is still catching up changed: nothing of its rows to say again, what comes next told by it)
       if at.0 == said_stamp.val &&
         hold == said_hold.val &&
         at.2 == motion.stint &&
+        !drawers_changed &&
         (!at.3 || motion.had) {
         motion.syncing = at.4
         return
       }
       // (the hand let go of the list (gone to the chat beside it) with nothing come meanwhile: the order it held back
       // put in place quietly, no row seen to run off and back for the hand leaving; what comes while it is away, as ever)
-      let let_go = at.0 == said_stamp.val && said_hold.val && !hold
+      let let_go = at.0 == said_stamp.val && !drawers_changed && said_hold.val && !hold
       said_stamp.val = at.0
       said_hold.val = hold
+      said_drawers.val = mode_drawers
+      said_drawers_stamp.val = at.6
       let shown = @sfbase.held_order(key, days, hold)
       let by_name : Map[String, ChatItem] = Map([])
       let names : Array[String] = []
@@ -261,7 +286,23 @@ fn chats_pane_node(
           by_name[name] = item
         }
       }
-      let lines = day_keys(shown)
+      let drawer_by_key : Map[String, DrawerSection] = Map([])
+      let drawer_key_list : Array[String] = []
+      let lines = if mode_drawers {
+        let sections = group_into_drawers(shown, seen_projects.val, filter == "all" && !shown.is_empty())
+        let raw_keys : Array[String] = []
+        for s in sections {
+          let dk = "d/" + s.key
+          raw_keys.push(s.key)
+          drawer_key_list.push(dk)
+          drawer_by_key[dk] = s
+        }
+        drawer_all_keys.val = raw_keys
+        drawer_keys(sections, seen_collapsed.val)
+      } else {
+        drawer_all_keys.val = []
+        day_keys(shown)
+      }
       if @hostapi.perf_recording() && by_name.length() != recorded_rows.val {
         recorded_rows.val = by_name.length()
         @hostapi.perf_line("chat-list: filter=\{filter} rows=\{recorded_rows.val}")
@@ -271,7 +312,7 @@ fn chats_pane_node(
         lines,
         by_name,
         @signals.untracked(current),
-        @signals.untracked(current) && @signals.untracked(frame.watched) && !let_go,
+        @signals.untracked(current) && @signals.untracked(frame.watched) && !let_go && !mode_changed,
         at.2,
         @sfbase.chats_window_asked(id, filter),
         at.3,
@@ -280,6 +321,7 @@ fn chats_pane_node(
       let apply = fn() {
         ordered.set(shown)
         rows.reset(names, by_name)
+        drawers.reset(drawer_key_list, drawer_by_key)
         day_lines.set(lines)
         revision.set(revision.untracked() + 1)
       }
@@ -583,6 +625,24 @@ fn chats_pane_node(
     )
     |> ignore
   }
+  let drawer_line = fn(line : @view.View, key : () -> String) {
+    let first = match @signals.untracked(fn() { drawers.get(key()) }) {
+      Some(s) => s
+      None => return
+    }
+    let now = @signals.computed(
+      fn(was : DrawerSection?) {
+        match drawers.get(key()) {
+          Some(s) => s
+          None => was.unwrap_or(first)
+        }
+      },
+      same=fn(a, b) { physical_equal(a, b) || a == b },
+    )
+    let section = fn() { now.get() }
+    let is_collapsed = fn() { @sfbase.drawer_collapsed_of(src, id).contains(section().key) }
+    drawer_header_node(line, src, id, section, is_collapsed, fn() { drawer_all_keys.val }, frame.at, tips)
+  }
   // (an archive's 撤销 over, or another's said: the line of the one before leaves)
   v.reacts(fn() { archived_here.get().map(fn(a) { a.n }) }, fn(_) { motion.undo_over(v, archived_here.untracked()) }, at_start=false)
   // (its bar along its right, clear of what is over its top and at its foot: the band, the bars)
@@ -665,19 +725,22 @@ fn chats_pane_node(
           }
         }
         _ if k.has_prefix("h/") => @sf.list_heading_node(line, fn() { k.exact_view(start=2).to_owned() }, frame.at)
+        _ if k.has_prefix("d/") => drawer_line(line, fn() { k })
         // (a row of the list's, or one archived from it whose line is kept, its 撤销 there)
         _ => row_line(line, fn() { k })
       }
     })
     |> ignore
   },
-    // (a chat's row, and a day's heading, as it no more shows, taken by the next of its kind to come to show: its key
-    // that one's, not made and let go as the list is scrolled; one gone, as it was, not)
+    // (a chat's row, a day's heading, and a project drawer header, as they no more show, taken by the next of their
+    // kind to come to show: its key that one's, not made and let go as the list is scrolled; one gone, as it was, not)
     reused=fn(k) {
       if k.has_prefix("r/") && motion.gone_item(k) is None {
         Some(0)
       } else if k.has_prefix("h/") {
         Some(1)
+      } else if k.has_prefix("d/") {
+        Some(2)
       } else {
         None
       }
@@ -687,6 +750,8 @@ fn chats_pane_node(
         @sf.style_node(line, fn() { @sf.list_line(frame.at) })
         if b.reused_kind() == Some(1) {
           @sf.list_heading_node(line, fn() { key().exact_view(start=2).to_owned() }, frame.at)
+        } else if b.reused_kind() == Some(2) {
+          drawer_line(line, key)
         } else {
           row_line(line, key)
         }
@@ -926,7 +991,7 @@ fn day_keys(days : Array[ChatDay]) -> Array[String] {
 /// list's lines (its room, the search, what the frame puts in it, its states) there and gone at once, as they were,
 /// but for a part the frame puts in it going by a person's act (the list's `goes`).
 fn day_line(key : String) -> Bool {
-  key.has_prefix("r/") || key.has_prefix("h/")
+  key.has_prefix("r/") || key.has_prefix("h/") || key.has_prefix("d/")
 }
 
 ///|
