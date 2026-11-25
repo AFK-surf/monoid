@@ -66,7 +66,7 @@ test "cmdQuote: off by default does not highlight or quote; turning it on draws 
   t.run_for(@ui.move_most_ms)
   let quotes = @sfbase.writing(src, draft).quotes.get()
   assert_eq(quotes.length(), 1, msg="one quote added on Cmd+click")
-  assert_eq(text(Some(quotes[0]), "text"), "高度先按 90 估，量过一次就记住。", msg="quoted the hovered sentence")
+  assert_eq(text(Some(quotes[0]), "text"), "高度先按 90 估", msg="quoted the hovered clause up to the comma")
 
   // Rapid second Cmd+click on the same sentence deduplicates.
   guard t.rect_of(para) is Some((rx2, ry2, _, _)) else {
@@ -102,7 +102,7 @@ test "cmdQuote: on Windows/Linux (platform=3), Ctrl triggers highlight and click
   t.run_for(@ui.move_most_ms)
   let quotes = @sfbase.writing(src, draft).quotes.get()
   assert_eq(quotes.length(), 1, msg="Ctrl+click quotes hovered sentence")
-  assert_eq(text(Some(quotes[0]), "text"), "高度先按 90 估，量过一次就记住。")
+  assert_eq(text(Some(quotes[0]), "text"), "高度先按 90 估")
 }
 
 ///|

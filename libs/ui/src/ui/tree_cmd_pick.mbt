@@ -1,6 +1,6 @@
 // Quick-pick over selectable tree words while the command modifier (⌘ on macOS, Ctrl elsewhere) is held:
 // a `words_picked` scope opts in via `words_cmd_pick(v, enabled, accent, on_click)`. While `enabled()` is true and the
-// command modifier is held, hovering over any `picked_of` words node highlights and underlines the sentence (or active
+// command modifier is held, hovering over any `picked_of` words node highlights and underlines the clause (or active
 // selection) under the pointer with a pointing-hand cursor, and clicking it invokes `on_click(of, text)` instead of
 // starting a text selection. Zero work runs when no scope is enabled or the command modifier is not held.
 
@@ -45,7 +45,7 @@ let cmd_sel_underline : Ref[(@view.NodeId, Int64)?] = Ref(None)
 ///|
 /// Register a `words_picked` scope `v` for Cmd-hover quick-pick: while `enabled()` is true and the command modifier
 /// (`mod_cmd` on macOS, `mod_ctrl` elsewhere) is held, hovering over any `picked_of` words node in `v`'s selection
-/// scope highlights and underlines the sentence under the pointer (or the active selection if the pointer is over it),
+/// scope highlights and underlines the clause under the pointer (or the active selection if the pointer is over it),
 /// and clicking it invokes `on_click(of, text)`.
 pub fn words_cmd_pick(
   v : @view.View,
@@ -232,6 +232,18 @@ fn cmd_pick_is_stop(text : String, i : Int, line_end : Int) -> Bool {
 }
 
 ///|
+/// Whether index `i` in `text` (within `[line_start, line_end)`) is a clause comma: `，` anywhere, or `,` before
+/// whitespace or EOL (so numbers like `1,000` and lists like `a,b` stay intact). A comma ends the picked clause
+/// without being part of it.
+fn cmd_pick_is_comma(text : String, i : Int, line_end : Int) -> Bool {
+  let u = text.code_unit_at(i).to_int()
+  if u == 0xFF0C {
+    return true
+  }
+  u == 0x2C && (i + 1 >= line_end || cmd_pick_space(text.code_unit_at(i + 1).to_int()))
+}
+
+///|
 /// Trim leading and trailing whitespace from UTF-16 range `[a, b)` in `text`.
 fn cmd_pick_trim(text : String, a : Int, b : Int) -> (Int, Int) {
   let mut s = a
@@ -246,7 +258,8 @@ fn cmd_pick_trim(text : String, a : Int, b : Int) -> (Int, Int) {
 }
 
 ///|
-/// Find the sentence (or single line) containing UTF-16 offset `off` in `text`.
+/// Find the clause (between sentence terminators or commas, or a single line) containing UTF-16 offset `off` in
+/// `text`. A sentence terminator stays in the clause; a comma does not.
 fn cmd_pick_sentence(text : String, off : Int) -> (Int, Int) {
   let n = text.length()
   if n == 0 {
@@ -266,13 +279,16 @@ fn cmd_pick_sentence(text : String, off : Int) -> (Int, Int) {
   }
   let mut s = p
   while s > line_start {
-    if cmd_pick_is_stop(text, s - 1, line_end) {
+    if cmd_pick_is_stop(text, s - 1, line_end) || cmd_pick_is_comma(text, s - 1, line_end) {
       break
     }
     s = s - 1
   }
   let mut e = p
   while e < line_end {
+    if cmd_pick_is_comma(text, e, line_end) {
+      break
+    }
     if cmd_pick_is_stop(text, e, line_end) {
       e = e + 1
       if e < line_end {
