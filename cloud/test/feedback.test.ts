@@ -293,7 +293,7 @@ test("the changelog is anyone's to read, with what each part has out on the host
   }
 });
 
-test("a changelog whose read fails once is read again; failing twice, it is answered without, and not kept", async () => {
+test("a changelog whose read fails once is read again; failing twice, it is unavailable, not empty", async () => {
   const h = await harness();
   try {
     const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
@@ -309,13 +309,31 @@ test("a changelog whose read fails once is read again; failing twice, it is answ
     await h.failBucket({ get: 6 });
     assert.deepEqual(await get(), { entries: 1, web: 1340, cache: "public, max-age=300" });
     assert.equal((await h.failBucket({ get: 12 })).length, 12);
-    assert.deepEqual(await get(), { entries: 0, web: null, cache: "no-store" });
+    const unavailable = async (answer: Awaited<ReturnType<typeof h.fetch>>) => {
+      assert.deepEqual([answer.status, answer.headers.get("retry-after"), answer.headers.get("cache-control")], [503, "5", "no-store"]);
+      assert.deepEqual(await answer.json(), { error: "release_unavailable" });
+    };
+    await unavailable(await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } }));
     assert.equal((await h.failBucket()).length, 12);
     // Back: whole again, and what is not there is read once.
     assert.deepEqual(await get(), { entries: 1, web: 1340, cache: "public, max-age=300" });
-    assert.equal((await h.failBucket()).length, 6);
+    assert.equal((await h.failBucket({ get: 12 })).length, 6);
+    // The stable channel's failing is not there being none: the test channel's is not read in its place.
+    await unavailable(await h.fetch("/v1/changelog"));
+    const calls = await h.failBucket();
+    assert.equal(calls.filter((call) => call === "get changelog-stable.json").length, 2);
+    assert.ok(!calls.includes("get changelog.json"), calls.join(", "));
   } finally {
     await h.close();
+  }
+  // Another cloud's releases answering a 5xx are unavailable too; its 404 is an answer.
+  for (const [status, answered] of [[502, 503], [404, 200]] as const) {
+    const other = await harness({ upstream: () => ({ status, body: "" }) });
+    try {
+      assert.equal((await other.fetch("/v1/changelog")).status, answered, `upstream ${status}`);
+    } finally {
+      await other.close();
+    }
   }
 });
 
