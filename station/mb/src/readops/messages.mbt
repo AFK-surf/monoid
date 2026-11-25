@@ -247,6 +247,11 @@ fn is_js_space(c : Int) -> Bool {
 }
 
 ///|
+fn has_proposal_column(db : @sql.Db) -> Bool raise {
+  one(db, "SELECT 1 AS x FROM pragma_table_info('entries') WHERE name = 'proposal' LIMIT 1", []) is Some(_)
+}
+
+///|
 /// read/store.ts `stateQuestion`: the question a need names (`ts` in one of `threads`), and whether it is still asked.
 pub fn state_question(db : @sql.Db, args : Json) -> Json raise {
   let key = args.value("key").unwrap_or(Json::null())
@@ -257,12 +262,26 @@ pub fn state_question(db : @sql.Db, args : Json) -> Json raise {
   }
   db.exec("SAVEPOINT state_question_read")
   defer (db.exec("RELEASE state_question_read") catch { _ => () })
+  let has_prop = has_proposal_column(db)
+  let has_sidecar = exists_in(db, "table", "entry_proposals")
+  let sql = if has_prop && has_sidecar {
+    "SELECT CAST(e.n AS TEXT) AS n, e.card, e.options, COALESCE(e.proposal, ep.proposal) AS proposal FROM entries e LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n WHERE e.thread = ? AND e.ts = ? AND e.kind = 'message'"
+  } else if has_prop {
+    "SELECT CAST(n AS TEXT) AS n, card, options, proposal FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'"
+  } else if has_sidecar {
+    "SELECT CAST(e.n AS TEXT) AS n, e.card, e.options, ep.proposal AS proposal FROM entries e LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n WHERE e.thread = ? AND e.ts = ? AND e.kind = 'message'"
+  } else {
+    "SELECT CAST(n AS TEXT) AS n, card, options FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'"
+  }
   for thread in threads {
-    guard one(db, "SELECT CAST(n AS TEXT) AS n, card, options FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'", [thread, ts]) is Some(entry) else {
+    guard one(db, sql, [thread, ts]) is Some(entry) else {
       continue
     }
     if @legacy.merged_needs_repair(db) {
       raise edits_pending()
+    }
+    if (has_prop || has_sidecar) && !(field(entry, "proposal") is Null) {
+      return { "kind": "proposal" }
     }
     let n = number_of(field(entry, "n"))
     guard merged(db, thread, n) is Some(m) else { continue }

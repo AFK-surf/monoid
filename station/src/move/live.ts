@@ -99,7 +99,7 @@ export const MovesLive = Layer.effectDiscard(
       changed: () => changed(),
       config: agents.config,
       keptSends: (threads) => admin.keptSends(threads),
-      keepSends: (sends) => admin.keepSends(sends),
+      keepSends: (sends, ws) => admin.keepSends(sends, ws),
       vault: {
         owners: (ws) => [...new Set([
           ...(store.db.prepare("SELECT DISTINCT owner FROM vault_plain WHERE ws = ? LIMIT 500").all(ws) as { owner: string }[]).map((r) => r.owner),

@@ -38,7 +38,7 @@ let follow_most : Int = 1000
 /// those it brought before (`RETIRED_SKILLS`: a copy left of one is never synced as a team skill).
 pub let builtin_skills : Array[String] = [
   "stillfail-chats", "stillfail-jobs", "stillfail-show", "stillfail-viz", "stillfail-browser", "stillfail-login", "stillfail-vault",
-  "stillfail-cron", "stillfail-github-ci", "stillfail-retire", "stillfail-move", "stillfail-leading", "stillfail-feedback",
+  "stillfail-cron", "stillfail-github-ci", "stillfail-retire", "stillfail-move", "stillfail-leading", "stillfail-projects", "stillfail-feedback",
 ]
 
 ///|
@@ -55,7 +55,7 @@ fn safe_int(d : Double) -> Bool {
 /// Whether `path` names a file of the memory: MEMORY.md, or a file under skills/<name>/ of a team's skill.
 pub fn memory_path(path : Json?) -> Bool {
   guard path is Some(String(p)) && p.length() <= 512 else { return false }
-  if p == "MEMORY.md" {
+  if p == "MEMORY.md" || p == "PROJECTS.jsonl" {
     return true
   }
   let parts = p.split("/").map(x => x.to_string()).collect()
@@ -678,6 +678,11 @@ async fn MemorySync::write(self : MemorySync, ws : String, path : String, r : Js
       return true
     }
   }
+  // Never overwrite or delete a file that is currently owner-only private (0600/0700), even if it was shared earlier.
+  // Exempt MEMORY.md so legacy 0600 MEMORY.md continues to merge and widen to 0644 as before.
+  if path != "MEMORY.md" && self.files.lstat(full) is Some(st) && st.kind == "file" && own_mode(st.mode) {
+    return false
+  }
   let now_hash = match get(Some(self.program.ask("hash", [("path", jstr(full))])), "hash") {
     Some(String(h)) => h
     _ => ""
@@ -1027,7 +1032,7 @@ pub async fn MemorySync::handle(self : MemorySync, _peer : String, request : Jso
     Some(String("memory.get")) =>
       self.lane(w, async fn() {
         ignore(self.look(w))
-        jobj([("files", Json::object(self.kept[w].files))])
+        jobj([("files", Json::object(self.kept[w].files)), ("supports", jstrs(["PROJECTS.jsonl"]))])
       })
     Some(String("memory.blobs")) => {
       let out : Map[String, Json] = Map([])
@@ -1059,8 +1064,11 @@ pub async fn MemorySync::handle(self : MemorySync, _peer : String, request : Jso
         let theirs : Map[String, Json] = Map([])
         if get(Some(request), "files") is Some(Object(fs)) {
           for path in js_keys(fs) {
-            guard rec_of_peer(Some(fs[path])) is Some(r) && memory_path(Some(jstr(path))) else {
+            guard rec_of_peer(Some(fs[path])) is Some(r) else {
               raise Failed("a malformed record of the memory")
+            }
+            if !memory_path(Some(jstr(path))) {
+              continue
             }
             theirs[path] = r
           }
@@ -1161,10 +1169,21 @@ async fn MemorySync::level(self : MemorySync, peer : String, ws : String) -> Str
     }
     ignore(self.take(ws, theirs, given))
     // What it lacks of this station's, to give it, and their word: read in the lane, before another look changes them.
+    let peer_supports_projects_cap = match get(Some(got), "supports") {
+      Some(Array(xs)) => xs.iter().any(x => x == jstr("PROJECTS.jsonl"))
+      _ => false
+    }
+    let peer_supports_projects = peer_supports_projects_cap || theirs.contains("PROJECTS.jsonl")
     let kept = self.kept[ws]
     let give : Array[(String, Json)] = []
     for path in js_keys(kept.files) {
+      if path == "PROJECTS.jsonl" && !peer_supports_projects {
+        continue
+      }
       let r = kept.files[path]
+      if rec_num(r, "size") > file_most {
+        continue
+      }
       let t = theirs.get(path)
       let has = match t {
         Some(x) => rec_hash(x) == rec_hash(r) || rec_prev(x).contains(rec_hash(r))
@@ -1403,7 +1422,7 @@ fn MemorySync::changed(self : MemorySync, rel : String) -> Unit {
     self.settle_scan()
     return
   }
-  guard ws is Some(w) && w != "" && what is Some("MEMORY.md" | "skills") else { return }
+  guard ws is Some(w) && w != "" && what is Some("MEMORY.md" | "PROJECTS.jsonl" | "skills") else { return }
   if self.settle.get(w) is Some(off) {
     off()
   }

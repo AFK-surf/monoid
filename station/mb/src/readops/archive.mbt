@@ -143,6 +143,129 @@ fn parsed_thread_links(v : Json) -> Json? {
 }
 
 ///|
+/// rows.ts `parseThreadTags`: JSON string array, trimmed, deduplicated, at most 3 tags.
+fn parsed_thread_tags(v : Json) -> Json? {
+  let raw = match v {
+    String(s) if s != "" =>
+      match (try { Some(@json.parse(s)) } catch { _ => None }) {
+        Some(Array(xs)) => xs
+        _ => return None
+      }
+    Array(xs) => xs
+    _ => return None
+  }
+  let out : Array[Json] = []
+  let seen : Array[String] = []
+  for item in raw {
+    guard item is String(s) else { continue }
+    let t = @jscase.trim_white(s)
+    if t == "" || t.length() > 48 || seen.contains(t) {
+      continue
+    }
+    seen.push(t)
+    out.push(Json::string(t))
+    if out.length() >= 3 {
+      break
+    }
+  }
+  if out.is_empty() { None } else { Some(Json::array(out)) }
+}
+
+///|
+/// rows.ts `proposalOf`: inline project-creation proposal JSON on an entry.
+fn parsed_proposal(v : Json) -> Json? {
+  let obj = match v {
+    String(s) if s != "" =>
+      match (try { Some(@json.parse(s)) } catch { _ => None }) {
+        Some(Object(m)) => m
+        _ => return None
+      }
+    Object(m) => m
+    _ => return None
+  }
+  let id = match obj.get("id") { Some(String(s)) if s != "" => s; _ => return None }
+  let name = match obj.get("name") { Some(String(s)) if s != "" => s; _ => return None }
+  let status = match obj.get("status") {
+    Some(String(s)) if s == "pending" || s == "accepted" || s == "reassigned" || s == "dismissed" => s
+    _ => return None
+  }
+  let out : Map[String, Json] = {
+    "id": Json::string(id),
+    "name": Json::string(name),
+    "status": Json::string(status),
+  }
+  match obj.get("note") {
+    Some(String(n)) if n != "" => out["note"] = Json::string(n)
+    _ => ()
+  }
+  match obj.get("refs") {
+    Some(Array(rs)) => {
+      let refs : Array[Json] = []
+      for r in rs {
+        if r is String(s) {
+          let t = @jscase.trim_white(s)
+          if t != "" {
+            refs.push(Json::string(t))
+          }
+        }
+      }
+      if !refs.is_empty() {
+        out["refs"] = Json::array(refs)
+      }
+    }
+    _ => ()
+  }
+  match obj.get("proposer") {
+    Some(String(pr)) if pr != "" => out["proposer"] = Json::string(pr)
+    _ => ()
+  }
+  match obj.get("resolvedProject") {
+    Some(String(rp)) => out["resolvedProject"] = Json::string(rp)
+    _ => ()
+  }
+  match obj.get("resolvedBy") {
+    Some(String(rb)) if rb != "" => out["resolvedBy"] = Json::string(rb)
+    _ => ()
+  }
+  match obj.get("resolvedAt") {
+    Some(Number(ra, ..)) if !ra.is_nan() && !ra.is_inf() => out["resolvedAt"] = Json::number(ra)
+    _ => ()
+  }
+  Some(Json::object(out))
+}
+
+///|
+/// rows.ts `mergeProposalOutcome`: overlays a `proposal_outcomes` row onto an entry's immutable proposal.
+fn merge_proposal_outcome(p : Json, outcome : Map[String, Json]) -> Json {
+  guard p is Object(obj) else { return p }
+  let status = match field(outcome, "status") {
+    String(s) if s == "accepted" || s == "reassigned" || s == "dismissed" => s
+    _ => return p
+  }
+  let out : Map[String, Json] = Map([])
+  for k in ["id", "name", "note", "refs", "proposer"] {
+    match obj.get(k) {
+      Some(v) => out[k] = v
+      None => ()
+    }
+  }
+  out["status"] = Json::string(status)
+  match field(outcome, "project") {
+    String(rp) => out["resolvedProject"] = Json::string(rp)
+    _ => ()
+  }
+  match field(outcome, "resolved_by") {
+    String(rb) if rb != "" => out["resolvedBy"] = Json::string(rb)
+    _ => ()
+  }
+  match field(outcome, "resolved_at") {
+    Number(ra, ..) if !ra.is_nan() && !ra.is_inf() => out["resolvedAt"] = Json::number(ra)
+    _ => ()
+  }
+  Json::object(out)
+}
+
+///|
 fn thread_json(r : Map[String, Json]) -> Json {
   let out : Map[String, Json] = Map([])
   for pair in [
@@ -156,6 +279,22 @@ fn thread_json(r : Map[String, Json]) -> Json {
     Some(v) =>
       match parsed_thread_links(v) {
         Some(l) => out["links"] = l
+        None => ()
+      }
+    None => ()
+  }
+  match col(r, "project") {
+    Some(String(p)) => out["project"] = Json::string(p)
+    _ => ()
+  }
+  match col(r, "project_locked") {
+    Some(Number(n, ..)) if n == 1.0 => out["projectLocked"] = Json::boolean(true)
+    _ => ()
+  }
+  match col(r, "tags") {
+    Some(v) =>
+      match parsed_thread_tags(v) {
+        Some(ts) => out["tags"] = ts
         None => ()
       }
     None => ()

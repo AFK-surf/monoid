@@ -667,6 +667,7 @@ pub fn Store::delete_session(self : Store, key : String) -> Unit raise {
       self.delete_marks(delete_viewer_marks("pins", "session"), k)
       run("DELETE FROM transcript_lengths WHERE session = ?")
       run("DELETE FROM session_usage WHERE session = ?")
+      run("DELETE FROM pending_proposals WHERE author = ?")
       run("DELETE FROM sessions WHERE key = ?")
       self.ws_of.remove(key)
       let tokens = []
@@ -699,6 +700,10 @@ pub fn Store::delete_session(self : Store, key : String) -> Unit raise {
         self.delete_marks(delete_viewer_marks("reads", "thread"), thread)
         self.delete_marks(delete_viewer_marks("dismissed", "thread"), thread)
         of("DELETE FROM closed_cards WHERE thread = ?")
+        of("DELETE FROM entry_proposals WHERE thread = ?")
+        of("DELETE FROM proposal_outcomes WHERE thread = ?")
+        of("DELETE FROM open_proposals WHERE thread = ?")
+        of("DELETE FROM pending_proposals WHERE thread = ?")
         of("DELETE FROM card_choices WHERE thread = ?")
         self.delete_marks(delete_viewer_marks("kept_chats", "thread"), thread)
         self.delete_marks(delete_viewer_marks("hidden_chats", "thread"), thread)

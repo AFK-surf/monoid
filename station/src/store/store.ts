@@ -23,11 +23,11 @@ import {
   type Attachment, type AutoTitle, type ChatShare, type EntryRow, type JobNotice, type JobRow, type Json, type Membership,
   type MessageRow, type NewMessage, type NewSession, type Opened, type PendingMessage, type Handed, type HandedChat, type Letter, type AuthorKind, type ProcessRow, type ProfileStatus,
   type SessionBusy, type SessionRow, type SessionStats, type SessionThread, type StoreChange, type ThreadRow, type ThreadSummary,
-  type CardChoice, type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, type InWorkspace, AUTO, XSHARE_IDLE_MS, I64_MAX, MANUAL, STATION_AUTHOR, STILLFAIL_SURFACE, ownName, attachment, handedWs,
-  byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, optionsCard, parsed, stored, takeChars, toEntry, toJob, toMembership,
+  type CardChoice, type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, type InWorkspace, type ProjectProposal, AUTO, XSHARE_IDLE_MS, I64_MAX, MANUAL, STATION_AUTHOR, STILLFAIL_SURFACE, ownName, attachment, handedWs,
+  byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, mergeProposalOutcome, normalizeProject, normalizeTags, optionsCard, parseThreadTags, parsed, proposalOf, stored, takeChars, toEntry, toJob, toMembership,
   LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, LAST_JOBS_OF, LIVE_ON_PROFILE, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
 } from "./rows.ts";
-import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addConvColumn, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addPendingSystemCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addThreadLinksColumn, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn, renameOwnChats } from "./schema.ts";
+import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addConvColumn, addProjectColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addPendingSystemCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addThreadLinksColumn, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn, renameOwnChats } from "./schema.ts";
 import { OWNED_WS_SQL, activeConversationMembers, birthThreadsOf, conversationOf, membersOf, reanchorOnDeleteInTx, repairConversations, settleConversationInTx } from "./conversations.ts";
 import { installUsageCompactions, usageCompactionsReady } from "./usage-compactions.ts";
 import { installPeopleSinceIndex } from "./legacy-people-since.ts";
@@ -67,7 +67,7 @@ import { indexedCcThreads, installCcIndex } from "./cc-thread-index.ts";
 import { indexedSessionChat, installSessionChatIndex, SESSION_CHAT_SMALL, SESSION_CHAT_VERSION, SessionChatUnavailable } from "./session-chat-index.ts";
 import { installLatestThreadIndex, LATEST_THREAD_ATTEMPT, LATEST_THREADS_INDEXED, LATEST_THREAD_VERSION } from "./latest-thread-index.ts";
 import { cardPostsReady, installCardPosts } from "./card-post-index.ts";
-import { ANSWER_AFTER, ANSWER_AT, ANSWER_BETWEEN, ASKED_LATEST, CONVERSATION_CARD_BEFORE, CONVERSATION_CARD_LATEST, SYSTEM_CARD_AT, SYSTEM_CARD_KEPT, SYSTEM_CARD_WAITING, systemCardSql } from "./card-kinds.ts";
+import { ANSWER_AFTER, ANSWER_AT, ANSWER_BETWEEN, ASKED_DURING_NO_PROPOSAL, ASKED_LATEST, ASKED_LATEST_NO_PROPOSAL, CARDED_OR_PROPOSAL_AT, CONVERSATION_CARD_BEFORE, CONVERSATION_CARD_LATEST, SYSTEM_CARD_AT, SYSTEM_CARD_KEPT, SYSTEM_CARD_WAITING, systemCardSql } from "./card-kinds.ts";
 import { installClosedCardsIndex } from "./legacy-closed-cards.ts";
 import { installSaidState, SAID_BATCH_SIZE, SAID_LATEST, SAID_SCAN, SAID_STATE, saidBoundary } from "./said-state.ts";
 import { archiveLastRead, installArchiveLast } from "./archive-last.ts";
@@ -836,6 +836,7 @@ export class Store {
       addOpenerTitle(db);
       addLedColumn(db);
       addLeftColumn(db);
+      addProjectColumns(db);
       addUsageColumns(db);
       installUsageSpan(db);
       addUsageTotals(db);
@@ -1981,6 +1982,7 @@ export class Store {
         this.#deleteMarks(PIN_MARKS, key);
         this.#run("DELETE FROM transcript_lengths WHERE session = ?", key);
         this.#run("DELETE FROM session_usage WHERE session = ?", key);
+        this.#run("DELETE FROM pending_proposals WHERE author = ?", key);
         this.#run("DELETE FROM sessions WHERE key = ?", key);
         this.#wsOf.delete(key);
         for (const [token, of] of this.#tokenKey) if (of === key) this.#tokenKey.delete(token);
@@ -1999,6 +2001,10 @@ export class Store {
           this.#deleteMarks(READ_MARKS, thread);
           this.#deleteMarks(DISMISSED_MARKS, thread);
           this.#run("DELETE FROM closed_cards WHERE thread = ?", thread);
+          this.#run("DELETE FROM entry_proposals WHERE thread = ?", thread);
+          this.#run("DELETE FROM proposal_outcomes WHERE thread = ?", thread);
+          this.#run("DELETE FROM open_proposals WHERE thread = ?", thread);
+          this.#run("DELETE FROM pending_proposals WHERE thread = ?", thread);
           this.#run("DELETE FROM card_choices WHERE thread = ?", thread);
           this.#deleteMarks(KEPT_MARKS, thread);
           this.#deleteMarks(HIDDEN_MARKS, thread);
@@ -2468,7 +2474,10 @@ export class Store {
   leaveThread(thread: number, session: string): boolean {
     return this.#with((changes) => {
       const left = this.#run("UPDATE thread_sessions SET left_at = ? WHERE thread = ? AND session = ? AND left_at IS NULL", this.now(), thread, session) > 0;
-      if (left) changes.push({ type: "session", key: session });
+      if (left) {
+        changes.push({ type: "session", key: session });
+        changes.push({ type: "thread", id: thread, entries: [] });
+      }
       return left;
     });
   }
@@ -2745,6 +2754,7 @@ export class Store {
           at: m.at ?? this.now(),
           ...(m.letter !== undefined ? { letter: m.letter } : {}),
           ...(m.change !== undefined ? { change: m.change } : {}),
+          ...(m.proposal !== undefined ? { proposal: m.proposal } : {}),
         },
         changes,
         before,
@@ -3062,6 +3072,37 @@ export class Store {
     return this.#one("SELECT MAX(n) AS n FROM entries WHERE thread = ?", thread).n ?? 0;
   }
 
+  /// Overlays `proposal_outcomes` rows onto entries that carry an inline or sidecar (`entry_proposals`) project proposal.
+  /// Sidecar proposals are joined inline in the entry SELECT (`COALESCE(e.proposal, ep.proposal) AS proposal`), so ordinary
+  /// entries with no proposal incur 0 extra SQL statements.
+  #applyProposalOutcomes(thread: number, entries: EntryRow[]): EntryRow[] {
+    const ns = entries.filter((e) => e.proposal !== undefined).map((e) => e.n);
+    if (ns.length === 0) return entries;
+    const outcomes = new Map<number, Json>();
+    for (const o of this.#all(
+      "SELECT n, status, project, resolved_by, resolved_at FROM proposal_outcomes WHERE thread = ? AND n IN (SELECT value FROM json_each(?))",
+      thread, JSON.stringify(ns),
+    )) {
+      outcomes.set(Number(o.n), o);
+    }
+    if (outcomes.size === 0) return entries;
+    return entries.map((e) => {
+      if (e.proposal === undefined) return e;
+      const o = outcomes.get(e.n);
+      return o ? { ...e, proposal: mergeProposalOutcome(e.proposal, o) } : e;
+    });
+  }
+
+  /// A single entry by `(thread, n)`, with any `entry_proposals` sidecar and `proposal_outcomes` overlaid.
+  getEntry(thread: number, n: number): EntryRow | null {
+    const row = this.#one(
+      "SELECT e.*, COALESCE(e.proposal, ep.proposal) AS proposal FROM entries e LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n WHERE e.thread = ? AND e.n = ?",
+      thread, n,
+    );
+    if (!row) return null;
+    return this.#applyProposalOutcomes(thread, [toEntry(row)])[0]!;
+  }
+
   /// Entries after n: what came since.
   entriesAfter(thread: number, n: number): EntryRow[] {
     return this.entriesBetween(thread, n + 1, I64_MAX);
@@ -3070,12 +3111,24 @@ export class Store {
   /// The latest `limit` entries before n (the latest of all without it), oldest first.
   entriesBefore(thread: number, n: number | null, limit: number): EntryRow[] {
     const before = n ?? I64_MAX;
-    return this.#all("SELECT * FROM entries WHERE thread = ? AND n < ? ORDER BY n DESC LIMIT ?", thread, before, limit).map(toEntry).reverse();
+    return this.#applyProposalOutcomes(
+      thread,
+      this.#all(
+        "SELECT e.*, COALESCE(e.proposal, ep.proposal) AS proposal FROM entries e LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n WHERE e.thread = ? AND e.n < ? ORDER BY e.n DESC LIMIT ?",
+        thread, before, limit,
+      ).map(toEntry).reverse(),
+    );
   }
 
   /// Entries from n = `from` to n = `to`, both included: a gap.
   entriesBetween(thread: number, from: number | bigint, to: number | bigint): EntryRow[] {
-    return this.#all("SELECT * FROM entries WHERE thread = ? AND n >= ? AND n <= ? ORDER BY n", thread, from, to).map(toEntry);
+    return this.#applyProposalOutcomes(
+      thread,
+      this.#all(
+        "SELECT e.*, COALESCE(e.proposal, ep.proposal) AS proposal FROM entries e LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n WHERE e.thread = ? AND e.n >= ? AND e.n <= ? ORDER BY e.n",
+        thread, from, to,
+      ).map(toEntry),
+    );
   }
 
   /// The entries for a message page, oldest first, without reading events between the page's messages.
@@ -3085,7 +3138,7 @@ export class Store {
     const first = numbers[0]!;
     if (Number.isSafeInteger(first) && numbers.every((n, i) => Number.isSafeInteger(n) && n === first + i))
       return this.entriesBetween(thread, first, numbers.at(-1)!);
-    return this.#all(MESSAGE_PAGE_ENTRIES, thread, JSON.stringify(numbers)).map(toEntry);
+    return this.#applyProposalOutcomes(thread, this.#all(MESSAGE_PAGE_ENTRIES, thread, JSON.stringify(numbers)).map(toEntry));
   }
 
   /// A message of the thread by its platform id, as merged.
@@ -3652,12 +3705,12 @@ export class Store {
   askingMessage(thread: number, about: number | null, during: [number, number]): [MessageRow, MessageRow[]] | null {
     const n: number | null =
       about ??
-      this.#one(this.#legacyAgent ? LEGACY_ASKED_DURING : "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND at >= ? AND at <= ?", thread, during[0], during[1]).n ??
-      (this.#legacyAgent ? null : this.#one(ASKED_LATEST, thread, during[1])?.n ?? null);
+      this.#one(this.#legacyAgent ? LEGACY_ASKED_DURING : ASKED_DURING_NO_PROPOSAL, thread, during[0], during[1]).n ??
+      (this.#legacyAgent ? null : this.#one(ASKED_LATEST_NO_PROPOSAL, thread, during[1])?.n ?? null);
     if (n === null) return null;
     const answered = this.#one(ANSWER_AFTER, thread, n) !== undefined;
-    // A post with a card is pendingCard's: one no longer pending was answered, closed or withdrawn.
-    const carded = this.#one("SELECT 1 FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)", thread, n) !== undefined;
+    // A post with a card or proposal is not a plain-text askingMessage.
+    const carded = this.#one(CARDED_OR_PROPOSAL_AT, thread, n) !== undefined;
     if (answered || carded) return null;
     const messages = this.messagesBefore(thread, n + 1, 3);
     const m = messages.pop();
@@ -4985,10 +5038,585 @@ export class Store {
   #insertEntry(e: EntryRow): void {
     const c = entryColumns(e);
     this.#run(
-      "INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, runtime, options, card, at, agent_identity, letter, change) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, declared, client, profile, runtime, options, card, at, agent_identity, letter, change, proposal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       c.thread, c.n, c.kind, c.target, c.ts, c.author_kind, c.author, c.text, c.attachments, c.quotes, c.declared, c.client, c.profile, c.runtime,
-      c.options, c.card, c.at, c.agent_identity, c.letter, c.change,
+      c.options, c.card, c.at, c.agent_identity, c.letter, c.change, c.proposal,
     );
+  }
+
+  /// Sets a thread's `project`, `project_locked` and/or `tags` in one BEGIN IMMEDIATE transaction.
+  /// When `force` is false (agent call) and `project_locked = 1`, changing `project` or `tags` throws.
+  setThreadClassification(
+    threadId: number,
+    change: { project?: string | null; tags?: readonly string[] | null; lock?: boolean; force?: boolean },
+  ): { thread: ThreadRow; changed: boolean } {
+    return this.#with((changes) => {
+      const pending: StoreChange[] = [];
+      const result = this.#tx(() => {
+        const row = this.#one("SELECT * FROM threads WHERE id = ?", threadId);
+        if (row == null) throw new Error(`unknown thread ${threadId}`);
+        const curProject = typeof row.project === "string" ? row.project : null;
+        const curLocked = row.project_locked === 1;
+        const curTags = parseThreadTags(row.tags) ?? [];
+
+        let nextProject = curProject;
+        if (change.project !== undefined) {
+          nextProject = change.project === null ? null : normalizeProject(change.project);
+          if (!change.force && curLocked && nextProject !== curProject) {
+            throw new Error("this chat's classification is locked by a member: agents cannot overwrite it (ask the member to change it in the header, or propose a new project)");
+          }
+        }
+        const nextLocked = change.lock === true ? 1 : (curLocked ? 1 : 0);
+        let nextTags = curTags;
+        if (change.tags !== undefined) {
+          nextTags = change.tags === null ? [] : normalizeTags(change.tags, true);
+        }
+        const nextTagsJson = nextTags.length > 0 ? JSON.stringify(nextTags) : null;
+        const curTagsJson = curTags.length > 0 ? JSON.stringify(curTags) : null;
+        if (!change.force && curLocked && change.tags !== undefined && nextTagsJson !== curTagsJson) {
+          throw new Error("this chat's classification is locked by a member: agents cannot overwrite tags");
+        }
+
+        const changed = nextProject !== curProject || nextLocked !== (curLocked ? 1 : 0) || nextTagsJson !== curTagsJson;
+        if (changed) {
+          this.#run(
+            "UPDATE threads SET project = ?, project_locked = ?, tags = ? WHERE id = ?",
+            nextProject, nextLocked, nextTagsJson, threadId,
+          );
+          pending.push({ type: "thread", id: threadId, entries: [] });
+        }
+        const updated = this.#one("SELECT * FROM threads WHERE id = ?", threadId);
+        return { thread: toThread(updated!), changed };
+      });
+      changes.push(...pending);
+      return result;
+    });
+  }
+
+  /// Resolves a project-creation proposal on `(threadId, entryN)` in one idempotent BEGIN IMMEDIATE transaction.
+  /// Records the outcome and PROJECTS.jsonl persistence intent in `proposal_outcomes` without mutating `entries`.
+  /// If already resolved, returns the existing terminal proposal and its persisted `infoSync` state.
+  resolveProposal(
+    threadId: number,
+    entryN: number,
+    input: {
+      action: "accept" | "reassign" | "dismiss";
+      name?: string;
+      target?: string;
+      note?: string | null;
+      refs?: string[] | null;
+      markCross?: boolean;
+      resolvedBy: string;
+    },
+  ): {
+    proposal: ProjectProposal;
+    thread: ThreadRow;
+    entry: EntryRow;
+    alreadyResolved: boolean;
+    infoSync: { needed: boolean; note?: string | null; refs?: string[] | null };
+  } {
+    // Tri-state decoding for proposal_outcomes:
+    // - info_note: NULL -> undefined (omitted), "" -> null (explicit clear), non-empty -> string
+    // - info_refs: NULL -> undefined (omitted), "[]" -> null (explicit clear), non-empty JSON array -> string[]
+    const decodeInfoNote = (raw: unknown): string | null | undefined => {
+      if (raw === null || raw === undefined) return undefined;
+      if (typeof raw !== "string") return undefined;
+      return raw === "" ? null : raw;
+    };
+    const decodeInfoRefs = (raw: unknown): string[] | null | undefined => {
+      if (raw === null || raw === undefined) return undefined;
+      if (typeof raw !== "string") return undefined;
+      try {
+        const v = JSON.parse(raw);
+        if (!Array.isArray(v)) return undefined;
+        const out = v.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim());
+        return out.length === 0 ? null : out;
+      } catch {
+        return undefined;
+      }
+    };
+    return this.#with((changes) => {
+      const pending: StoreChange[] = [];
+      const result = this.#tx(() => {
+        const threadRow = this.#one("SELECT * FROM threads WHERE id = ?", threadId);
+        if (threadRow == null) throw new Error(`unknown thread ${threadId}`);
+        const entryRow = this.#one(
+          "SELECT e.*, COALESCE(e.proposal, ep.proposal) AS eff_proposal FROM entries e LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n WHERE e.thread = ? AND e.n = ?",
+          threadId, entryN,
+        );
+        if (entryRow == null) throw new Error(`unknown entry ${threadId}:${entryN}`);
+        const cur = proposalOf(entryRow.eff_proposal);
+        if (cur === undefined) throw new Error(`entry ${threadId}:${entryN} has no project proposal`);
+
+        const existingOutcome = this.#one(
+          "SELECT status, project, resolved_by, resolved_at, info_note, info_refs, info_synced FROM proposal_outcomes WHERE thread = ? AND n = ?",
+          threadId, entryN,
+        );
+        if (existingOutcome != null) {
+          const merged = mergeProposalOutcome(cur, existingOutcome);
+          const needed = Number(existingOutcome.info_synced ?? 1) === 0 && typeof merged.resolvedProject === "string" && merged.resolvedProject !== "";
+          const savedNote = decodeInfoNote(existingOutcome.info_note);
+          const savedRefs = decodeInfoRefs(existingOutcome.info_refs);
+          return {
+            proposal: merged,
+            thread: toThread(threadRow),
+            entry: { ...toEntry(entryRow), proposal: merged },
+            alreadyResolved: true,
+            infoSync: {
+              needed,
+              ...(savedNote !== undefined ? { note: savedNote } : {}),
+              ...(savedRefs !== undefined ? { refs: savedRefs } : {}),
+            },
+          };
+        }
+        if (cur.status !== "pending") {
+          return {
+            proposal: cur,
+            thread: toThread(threadRow),
+            entry: { ...toEntry(entryRow), proposal: cur },
+            alreadyResolved: true,
+            infoSync: { needed: false },
+          };
+        }
+
+        let status: "accepted" | "reassigned" | "dismissed";
+        let resolvedProject: string | null = null;
+        // Tri-state DB storage: NULL = omitted, "" / "[]" = explicit clear, non-empty = value
+        let dbInfoNote: string | null = null;
+        let dbInfoRefs: string | null = null;
+        let outInfoNote: string | null | undefined = undefined;
+        let outInfoRefs: string[] | null | undefined = undefined;
+        if (input.action === "accept") {
+          const finalName = normalizeProject(input.name ?? cur.name);
+          if (finalName === "") throw new Error("project name is required to accept a proposal");
+          status = "accepted";
+          resolvedProject = finalName;
+          if (input.note === undefined) {
+            if (cur.note !== undefined && cur.note.trim() !== "") {
+              dbInfoNote = cur.note.trim();
+              outInfoNote = dbInfoNote;
+            }
+          } else if (input.note === null || input.note.trim() === "") {
+            dbInfoNote = "";
+            outInfoNote = null;
+          } else {
+            dbInfoNote = input.note.trim();
+            outInfoNote = dbInfoNote;
+          }
+          if (input.refs === undefined) {
+            if (Array.isArray(cur.refs) && cur.refs.length > 0) {
+              const clean = cur.refs.map((r) => r.trim()).filter((r) => r !== "");
+              if (clean.length > 0) {
+                dbInfoRefs = JSON.stringify(clean);
+                outInfoRefs = clean;
+              }
+            }
+          } else if (input.refs === null || input.refs.length === 0) {
+            dbInfoRefs = "[]";
+            outInfoRefs = null;
+          } else {
+            const clean = input.refs.map((r) => r.trim()).filter((r) => r !== "");
+            dbInfoRefs = JSON.stringify(clean);
+            outInfoRefs = clean.length > 0 ? clean : null;
+          }
+          this.#run("UPDATE threads SET project = ?, project_locked = 1 WHERE id = ?", finalName, threadId);
+        } else if (input.action === "reassign") {
+          const target = normalizeProject(input.target ?? input.name ?? "");
+          if (target === "") throw new Error("target project name is required to reassign");
+          status = "reassigned";
+          resolvedProject = target;
+          if (input.note !== undefined) {
+            if (input.note === null || input.note.trim() === "") {
+              dbInfoNote = "";
+              outInfoNote = null;
+            } else {
+              dbInfoNote = input.note.trim();
+              outInfoNote = dbInfoNote;
+            }
+          }
+          if (input.refs !== undefined) {
+            if (input.refs === null || input.refs.length === 0) {
+              dbInfoRefs = "[]";
+              outInfoRefs = null;
+            } else {
+              const clean = input.refs.map((r) => r.trim()).filter((r) => r !== "");
+              dbInfoRefs = JSON.stringify(clean);
+              outInfoRefs = clean.length > 0 ? clean : null;
+            }
+          }
+          this.#run("UPDATE threads SET project = ?, project_locked = 1 WHERE id = ?", target, threadId);
+        } else {
+          status = "dismissed";
+          if (input.markCross === true) {
+            resolvedProject = "";
+            this.#run("UPDATE threads SET project = '', project_locked = 1 WHERE id = ?", threadId);
+          }
+        }
+
+        const resolvedAt = this.now();
+        const infoSynced = status === "dismissed" ? 1 : 0;
+        this.#run(
+          "INSERT INTO proposal_outcomes (thread, n, status, project, resolved_by, resolved_at, info_note, info_refs, info_synced) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          threadId, entryN, status, resolvedProject, input.resolvedBy, resolvedAt, dbInfoNote, dbInfoRefs, infoSynced,
+        );
+        const resolved = mergeProposalOutcome(cur, {
+          status,
+          project: resolvedProject,
+          resolved_by: input.resolvedBy,
+          resolved_at: resolvedAt,
+        });
+        const updatedEntry: EntryRow = { ...toEntry(entryRow), proposal: resolved };
+        const updatedThread = toThread(this.#one("SELECT * FROM threads WHERE id = ?", threadId)!);
+        pending.push({ type: "thread", id: threadId, entries: [], proposalResolved: updatedEntry });
+        return {
+          proposal: resolved,
+          thread: updatedThread,
+          entry: updatedEntry,
+          alreadyResolved: false,
+          infoSync: {
+            needed: infoSynced === 0,
+            ...(outInfoNote !== undefined ? { note: outInfoNote } : {}),
+            ...(outInfoRefs !== undefined ? { refs: outInfoRefs } : {}),
+          },
+        };
+      });
+      for (const c of pending) changes.push(c);
+      return result;
+    });
+  }
+
+  /// Marks a resolved proposal's `PROJECTS.jsonl` sync intent as completed (`info_synced = 1`).
+  markProposalInfoSynced(threadId: number, entryN: number): void {
+    this.#tx(() => {
+      this.#run("UPDATE proposal_outcomes SET info_synced = 1 WHERE thread = ? AND n = ?", threadId, entryN);
+    });
+  }
+
+  /// Returns the thread most recently delivered to `sessionKey` (via `deliveries`), if the session is still a member.
+  latestDeliveredThread(sessionKey: string): ThreadRow | null {
+    const row = this.#one(
+      `SELECT t.*
+       FROM deliveries d
+       JOIN thread_sessions m ON m.thread = d.thread AND m.session = d.session AND m.left_at IS NULL
+       JOIN threads t ON t.id = d.thread
+       WHERE d.session = ? AND d.delivered_at IS NOT NULL
+       ORDER BY d.delivered_at DESC, d.n DESC
+       LIMIT 1`,
+      sessionKey,
+    );
+    return row ? toThread(row) : null;
+  }
+
+  /// Attaches a proposal onto an existing message entry via the append-only `entry_proposals` sidecar table
+  /// (never mutates `entries`). Emits a thread change so live clients see the attached proposal bar.
+  attachEntryProposal(threadId: number, entryN: number, proposal: ProjectProposal): boolean {
+    return this.#with((changes) => {
+      const inserted = this.#tx(() => {
+        const res = this.#run(
+          "INSERT OR IGNORE INTO entry_proposals (thread, n, proposal) VALUES (?, ?, ?)",
+          threadId, entryN, JSON.stringify(proposal),
+        );
+        return res > 0;
+      });
+      if (inserted) {
+        const entry = this.getEntry(threadId, entryN);
+        if (entry !== null) changes.push({ type: "thread", id: threadId, entries: [], proposalResolved: entry });
+      }
+      return inserted;
+    });
+  }
+
+  /// Finds an existing unresolved pending proposal by `proposer` for project `name` in `threadId`
+  /// in O(log N) via the local derived `open_proposals` table (`LIMIT 1`, zero `entries` scan).
+  findPendingProposal(threadId: number, proposer: string, name: string): { n: number; ts: string; proposal: ProjectProposal } | null {
+    const r = this.#one(
+      `SELECT o.n, e.ts, COALESCE(e.proposal, ep.proposal) AS proposal
+       FROM open_proposals o
+       JOIN entries e ON e.thread = o.thread AND e.n = o.n
+       LEFT JOIN entry_proposals ep ON ep.thread = o.thread AND ep.n = o.n
+       LEFT JOIN proposal_outcomes po ON po.thread = o.thread AND po.n = o.n
+       WHERE o.thread = ? AND o.proposer = ? AND o.name = ? AND po.thread IS NULL
+       ORDER BY o.n DESC
+       LIMIT 1`,
+      threadId, proposer, name,
+    );
+    if (!r) return null;
+    const p = proposalOf(r.proposal);
+    if (!p || p.name !== name || p.status !== "pending") return null;
+    return { n: Number(r.n), ts: String(r.ts ?? ""), proposal: p };
+  }
+
+  /// Scans recent entries after `baseN` (bounded LIMIT 50) to reconcile an external proposal echo whose `posted_ts` wasn't saved before crash.
+  /// Never matches plain messages without trailing `NOTICE_MARK` (`\u2063`), person-authored messages, or entries without this proposal's marker.
+  findEchoEntryAfter(threadId: number, baseN: number, _expectedText: string, proposalId: string): { n: number; ts: string } | null {
+    const rows = this.#all(
+      `SELECT e.n, e.ts, e.author_kind, e.text, COALESCE(e.proposal, ep.proposal) AS eff_proposal
+       FROM entries e
+       LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n
+       WHERE e.thread = ? AND e.n > ? AND e.kind = 'message'
+       ORDER BY e.n DESC
+       LIMIT 50`,
+      threadId, baseN,
+    );
+    const linkMarker = `#proposal=${encodeURIComponent(proposalId)}`;
+    const plainMarker = `[#${proposalId}]`;
+    for (const r of rows) {
+      const p = proposalOf(r.eff_proposal);
+      if (p?.id === proposalId) return { n: Number(r.n), ts: String(r.ts ?? "") };
+      if (p !== undefined) continue;
+      if (r.author_kind === "person") continue;
+      if (typeof r.text !== "string") continue;
+      const trimmedEnd = r.text.trimEnd();
+      if (!trimmedEnd.endsWith("\u2063")) continue;
+      if (trimmedEnd.includes(linkMarker) || trimmedEnd.includes(plainMarker)) {
+        return { n: Number(r.n), ts: String(r.ts ?? "") };
+      }
+    }
+    return null;
+  }
+
+  /// Persistent local outbox helpers for external proposal delivery (`pending_proposals`).
+  getPendingProposalOutbox(
+    threadId: number,
+    author: string,
+    name: string,
+  ): { id: string; payload: ProjectProposal; postedTs: string | null; baseN: number; sending: boolean; connect: string; historyCursor: string | null; createdAt: number } | null {
+    const row = this.#one(
+      "SELECT id, payload, posted_ts, base_n, sending, connect, history_cursor, created_at FROM pending_proposals WHERE thread = ? AND author = ? AND name = ?",
+      threadId, author, name,
+    );
+    if (!row) return null;
+    const payload = proposalOf(row.payload);
+    if (!payload) return null;
+    return {
+      id: String(row.id),
+      payload,
+      postedTs: typeof row.posted_ts === "string" && row.posted_ts !== "" ? row.posted_ts : null,
+      baseN: Number(row.base_n ?? 0),
+      sending: Number(row.sending ?? 0) === 1,
+      connect: String(row.connect ?? ""),
+      historyCursor: typeof row.history_cursor === "string" && row.history_cursor !== "" ? row.history_cursor : null,
+      createdAt: Number(row.created_at ?? 0),
+    };
+  }
+
+  sendingOutboxesForThread(threadId: number): { author: string; name: string; id: string; connect: string; baseN: number; payload: ProjectProposal }[] {
+    const rows = this.#all(
+      "SELECT author, name, id, connect, base_n, payload FROM pending_proposals WHERE thread = ? AND sending = 1 AND posted_ts IS NULL",
+      threadId,
+    );
+    const out: { author: string; name: string; id: string; connect: string; baseN: number; payload: ProjectProposal }[] = [];
+    for (const row of rows) {
+      const payload = proposalOf(row.payload);
+      if (!payload) continue;
+      out.push({
+        author: String(row.author ?? ""),
+        name: String(row.name ?? ""),
+        id: String(row.id ?? ""),
+        connect: String(row.connect ?? ""),
+        baseN: Number(row.base_n ?? 0),
+        payload,
+      });
+    }
+    return out;
+  }
+
+  putPendingProposalOutbox(threadId: number, author: string, name: string, proposal: ProjectProposal, baseN = 0, connect = ""): void {
+    this.#tx(() => {
+      this.#run(
+        "INSERT OR IGNORE INTO pending_proposals (thread, author, name, id, payload, posted_ts, base_n, sending, connect, created_at) VALUES (?, ?, ?, ?, ?, NULL, ?, 0, ?, ?)",
+        threadId, author, name, proposal.id, JSON.stringify(proposal), baseN, connect, this.now(),
+      );
+    });
+  }
+
+  markPendingProposalSending(threadId: number, author: string, name: string): void {
+    this.#tx(() => {
+      this.#run(
+        "UPDATE pending_proposals SET sending = 1 WHERE thread = ? AND author = ? AND name = ?",
+        threadId, author, name,
+      );
+    });
+  }
+
+  setPendingProposalHistoryCursor(threadId: number, author: string, name: string, cursor: string | null): void {
+    this.#tx(() => {
+      this.#run(
+        "UPDATE pending_proposals SET history_cursor = ? WHERE thread = ? AND author = ? AND name = ?",
+        cursor !== null && cursor !== "" ? cursor : null, threadId, author, name,
+      );
+    });
+  }
+
+  setPendingProposalPostedTs(threadId: number, author: string, name: string, postedTs: string): void {
+    this.#tx(() => {
+      this.#run(
+        "UPDATE pending_proposals SET posted_ts = ?, sending = 1, history_cursor = NULL WHERE thread = ? AND author = ? AND name = ?",
+        postedTs, threadId, author, name,
+      );
+    });
+  }
+
+  deletePendingProposalOutbox(threadId: number, author: string, name: string): void {
+    this.#tx(() => {
+      this.#run(
+        "DELETE FROM pending_proposals WHERE thread = ? AND author = ? AND name = ?",
+        threadId, author, name,
+      );
+    });
+  }
+
+  /// Workspace key values in `active_thread_index` / `active_thread_tags` (home workspace matches both "" and `home`).
+  #wsValues(ws: string | null, home: string | null): string[] {
+    const isHome = ws === null || home === null || ws === home;
+    if (isHome) return home !== null && home !== "" ? ["", home] : [""];
+    return [ws!];
+  }
+
+  /// O(log N) single index seek on `active_thread_index_project`: zero archived scan, zero cross-workspace false negatives.
+  hasActiveProjectInWorkspace(ws: string | null, home: string | null, name: string): boolean {
+    if (name === "") return false;
+    for (const w of this.#wsValues(ws, home)) {
+      if (this.#one(
+        "SELECT 1 AS x FROM active_thread_index INDEXED BY active_thread_index_project WHERE ws = ? AND project = ? LIMIT 1",
+        w, name,
+      ) !== undefined) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Bounded O(log N)-per-item aggregation of active project names and tags in workspace `ws` via derived tables
+  /// `active_thread_index_project` and `active_thread_tags` (exact counts up to 10,000; capped with `countCapped: true` above).
+  workspaceProjectNames(
+    ws: string | null,
+    home: string | null,
+    limit = 200,
+  ): {
+    projects: { name: string; count: number; countCapped?: boolean }[];
+    tags: { name: string; count: number; countCapped?: boolean }[];
+  } {
+    const cap = Math.max(1, Math.min(limit, 500));
+    const wsVals = this.#wsValues(ws, home);
+    const wsPh = wsVals.map(() => "?").join(", ");
+
+    const projectSet = new Set<string>();
+    for (const w of wsVals) {
+      let cursor = "";
+      for (let step = 0; step < cap; step++) {
+        const next = this.#one(
+          "SELECT project FROM active_thread_index INDEXED BY active_thread_index_project WHERE ws = ? AND project > ? ORDER BY project LIMIT 1",
+          w, cursor,
+        );
+        if (next == null || typeof next.project !== "string") break;
+        cursor = next.project;
+        projectSet.add(cursor);
+      }
+    }
+    const projects: { name: string; count: number; countCapped?: boolean }[] = [];
+    for (const name of projectSet) {
+      const cntRow = this.#one(
+        `SELECT COUNT(*) AS c FROM (
+           SELECT DISTINCT thread
+           FROM active_thread_index INDEXED BY active_thread_index_project
+           WHERE ws IN (${wsPh}) AND project = ?
+           LIMIT 10001
+         )`,
+        ...wsVals, name,
+      );
+      const raw = Number(cntRow?.c ?? 0);
+      if (raw > 10000) projects.push({ name, count: 10000, countCapped: true });
+      else if (raw > 0) projects.push({ name, count: raw });
+    }
+
+    const tagSet = new Set<string>();
+    for (const w of wsVals) {
+      let cursor = "";
+      for (let step = 0; step < cap; step++) {
+        const next = this.#one(
+          "SELECT tag FROM active_thread_tags WHERE ws = ? AND tag > ? ORDER BY tag LIMIT 1",
+          w, cursor,
+        );
+        if (next == null || typeof next.tag !== "string") break;
+        cursor = next.tag;
+        tagSet.add(cursor);
+      }
+    }
+    const tags: { name: string; count: number; countCapped?: boolean }[] = [];
+    for (const tag of tagSet) {
+      const cntRow = this.#one(
+        `SELECT COUNT(*) AS c FROM (
+           SELECT DISTINCT thread
+           FROM active_thread_tags
+           WHERE ws IN (${wsPh}) AND tag = ?
+           LIMIT 10001
+         )`,
+        ...wsVals, tag,
+      );
+      const raw = Number(cntRow?.c ?? 0);
+      if (raw > 10000) tags.push({ name: tag, count: 10000, countCapped: true });
+      else if (raw > 0) tags.push({ name: tag, count: raw });
+    }
+
+    projects.sort((a, b) => b.count - a.count || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    tags.sort((a, b) => b.count - a.count || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    return { projects: projects.slice(0, cap), tags: tags.slice(0, cap) };
+  }
+
+  /// Bulk renames/merges `threads.project = from` -> `to` within workspace `ws` in one BEGIN IMMEDIATE transaction.
+  /// Updates `project_locked = 1` threads as well while preserving their lock so no dangling project names remain.
+  renameProjectInWorkspace(
+    ws: string | null,
+    home: string | null,
+    fromRaw: string,
+    toRaw: string,
+    batchLimit = 500,
+  ): { updated: number; skippedLocked: number } {
+    const from = normalizeProject(fromRaw);
+    const to = normalizeProject(toRaw);
+    if (from === "") throw new Error("source project name is required");
+    if (from === to) return { updated: 0, skippedLocked: 0 };
+    const page = Math.max(1, Math.min(batchLimit, 1000));
+    const isHome = ws === null || home === null || ws === home;
+    const wsCond = isHome
+      ? (home !== null ? "(s.ws IS NULL OR s.ws = ?)" : "s.ws IS NULL")
+      : "s.ws = ?";
+    const wsArgs: (string | number)[] = isHome ? (home !== null ? [home] : []) : [ws!];
+
+    return this.#with((changes) => {
+      const pending: StoreChange[] = [];
+      const result = this.#tx(() => {
+        let updated = 0;
+        let lastId = 0;
+        for (;;) {
+          const rows = this.#all(
+            `SELECT t.id
+             FROM threads t INDEXED BY threads_project
+             WHERE t.project = ? AND t.project IS NOT NULL AND t.project != '' AND t.id > ?
+               AND EXISTS (
+                 SELECT 1 FROM thread_sessions m JOIN sessions s ON s.key = m.session
+                 WHERE m.thread = t.id AND ${wsCond}
+               )
+             ORDER BY t.id
+             LIMIT ?`,
+            from, lastId, ...wsArgs, page,
+          );
+          if (rows.length === 0) break;
+          for (const r of rows) {
+            const id = Number(r.id);
+            lastId = id;
+            this.#run("UPDATE threads SET project = ? WHERE id = ?", to, id);
+            pending.push({ type: "thread", id, entries: [] });
+            updated++;
+          }
+          if (rows.length < page) break;
+        }
+        return { updated, skippedLocked: 0 };
+      });
+      for (const c of pending) changes.push(c);
+      return result;
+    });
   }
 }
 

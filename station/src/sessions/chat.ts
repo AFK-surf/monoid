@@ -19,6 +19,34 @@ export const NOTICE_MARK = "\u2063";
 export const markNotice = (text: string) => (text.endsWith(NOTICE_MARK) ? text : `${text}${NOTICE_MARK}`);
 export const isNotice = (text: string) => text.trimEnd().endsWith(NOTICE_MARK);
 
+/// Checks whether a message text carries the stable proposal ID marker embedded by `renderProposalText`
+/// (either `#proposal=<encoded-id>` on a still.fail link or `[#<id>]` in plain-text fallback).
+export function hasProposalMarker(text: string, proposalId: string): boolean {
+  if (proposalId === "") return false;
+  return text.includes(`#proposal=${encodeURIComponent(proposalId)}`) || text.includes(`[#${proposalId}]`);
+}
+
+/// Matches a station notice body against `findNoticeInHistory` options (supports both V2 `proposalId` dual-marker
+/// matching and V1 `marker` — extracting the proposal ID from `#proposal=<id>` or `[#<id>]` to match both encodings).
+export function matchesProposalNotice(body: string, opts: { proposalId?: string; marker?: string }): boolean {
+  if (typeof opts.proposalId === "string" && opts.proposalId !== "" && hasProposalMarker(body, opts.proposalId)) return true;
+  if (typeof opts.marker === "string" && opts.marker !== "") {
+    const linkMatch = /^#proposal=(.+)$/.exec(opts.marker);
+    if (linkMatch) {
+      try {
+        const extracted = decodeURIComponent(linkMatch[1]!);
+        if (extracted !== "" && hasProposalMarker(body, extracted)) return true;
+      } catch {
+        // Fall through to raw substring match.
+      }
+    }
+    const plainMatch = /^\[#([^\]]+)\]$/.exec(opts.marker);
+    if (plainMatch && plainMatch[1] !== "" && hasProposalMarker(body, plainMatch[1]!)) return true;
+    if (body.includes(opts.marker)) return true;
+  }
+  return false;
+}
+
 export type InboundMessage = {
   channel: string;
   threadTs: string;
@@ -47,6 +75,9 @@ export type InboundFile = { id: string; name: string; size: number; url: string 
 /// taken: the station keeps what was said).
 export type ChatEvent =
   | { type: "message"; message: InboundMessage }
+  /// This connect's own bot station notice (`NOTICE_MARK`), used solely for in-flight proposal echo reconciliation
+  /// without entering `heard()`, `knownPerson()`, or agent delivery.
+  | { type: "ownNotice"; message: InboundMessage }
   | { type: "changed"; channel: string; threadTs: string; ts: string; text: string }
   | { type: "stop"; channel: string; threadTs: string; ts: string; localAt?: number | null }
   /// A login card's field answered (Slack): what its page gave (a code), for the login the card at `ts` is of. Never a
@@ -73,6 +104,8 @@ export type Handler = (event: ChatEvent) => Promise<void>;
 export interface ChatSurface {
   /// The bot's own user id, once started.
   botUserId(): string;
+  /// The bot's own app/bot id (e.g. Slack's `B…` bot_id), once started; empty where it has none.
+  botId?(): string;
   /// The bot's name on the platform (what people there call the agent), once started; empty where it has none.
   botName?(): string;
   /// Who its bot is and where (connects/connections.ts), once started: absent where it has none (the station's chats).
@@ -154,6 +187,14 @@ export interface ChatSurface {
   /// Messages in the thread strictly before `before`, oldest first, at most `limit`: what was said before the station
   /// joined a thread. Undefined where the platform cannot say (the station cannot join late there).
   history?(thread: ThreadRef, before: string, limit: number): Promise<ChatMessage[]> | undefined;
+  /// Scans thread history natively (e.g. Slack `conversations.replies`, Feishu `im/v1/messages`, group `eventsAfter`)
+  /// for a station notice matching `opts.proposalId` / `opts.marker`, scanning at most `opts.maxPages` pages per call.
+  findNoticeInHistory?(
+    thread: ThreadRef,
+    opts: { proposalId?: string; marker?: string; sinceSec: number; cursor: string | null; maxPages: number },
+  ): Promise<{ ts: string | null; cursor: string | null; done: boolean }>;
+  /// Remote capability flag: true when a remote connect's `findNoticeInHistory` supports V2 `proposalId` dual-marker matching.
+  supportsFindNoticeV2?(): boolean;
   /// The message a reply quotes (`InboundMessage.quoted`), its words and files; null where it cannot be read or is a
   /// bot's (the agent's own answers are in its context already). Never throws.
   quoted?(thread: ThreadRef, ts: string): Promise<ChatMessage | null>;

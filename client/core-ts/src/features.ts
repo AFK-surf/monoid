@@ -26,6 +26,7 @@ export const FEATURES = {
   selectionIntent: { stage: "experimental" },
   cmdQuote: { stage: "experimental" },
   terminal: { stage: "beta", station: true },
+  projects: { stage: "beta", station: true },
 } as const satisfies Record<string, FeatureSpec>;
 
 export type FeatureId = keyof typeof FEATURES;

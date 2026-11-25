@@ -31,7 +31,7 @@ pub fn Files::workspace_agent_home_path(self : Files, agent_home : String, ws : 
 ///|
 pub let builtin_skills : Array[String] = [
   "stillfail-chats", "stillfail-jobs", "stillfail-show", "stillfail-viz", "stillfail-browser", "stillfail-login", "stillfail-vault",
-  "stillfail-cron", "stillfail-github-ci", "stillfail-move", "stillfail-leading",
+  "stillfail-cron", "stillfail-github-ci", "stillfail-move", "stillfail-leading", "stillfail-projects",
 ]
 
 ///|

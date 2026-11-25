@@ -34,7 +34,7 @@ import { Reader, writeLine } from "../mesh/wire.ts";
 import { wall } from "../ops/fibers.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
-import { type ChatMessage, type Handler, type InboundFile, type Member, type Person, type Place, type ThreadRef, splitForSlack } from "../sessions/chat.ts";
+import { type ChatMessage, type Handler, type InboundFile, type Member, type Person, type Place, type ThreadRef, isNotice, matchesProposalNotice, splitForSlack } from "../sessions/chat.ts";
 import type { Attachment } from "../store/store.ts";
 import { Hlc, LOBBY, type Stamped, deviceOfKey, eventId, signEvent, signingKey, stampedOf } from "./event.ts";
 import { GroupLink, GroupUnreached, SseLines } from "./link.ts";
@@ -952,6 +952,36 @@ export class GroupSurface extends ConnectedSurface {
     return (Array.isArray(got) ? got : []).map(stampedOf).filter((s): s is Stamped => s !== null);
   }
 
+  /// Scans space events forward from the persisted `aseq` cursor for an own-bot station notice in `thread`,
+  /// distinguishing budget exhaustion (`done: false, cursor: String(after)`) from end-of-space (`done: true`).
+  async findNoticeInHistory(
+    thread: ThreadRef,
+    opts: { proposalId?: string; marker?: string; sinceSec: number; cursor: string | null; maxPages: number },
+  ): Promise<{ ts: string | null; cursor: string | null; done: boolean }> {
+    const { space, topic } = streamOf(thread);
+    const bot = this.botUserId();
+    if (bot === "") return { ts: null, cursor: null, done: true };
+    const parsedAfter = opts.cursor && opts.cursor !== "" ? Number(opts.cursor) : 0;
+    let after = Number.isSafeInteger(parsedAfter) && parsedAfter >= 0 ? parsedAfter : 0;
+    const maxPages = Math.max(1, Math.floor(opts.maxPages));
+    for (let page = 0; page < maxPages; page++) {
+      const got = await this.eventsAfter(space, after);
+      if (got.length === 0) return { ts: null, cursor: null, done: true };
+      const prevAfter = after;
+      for (const s of got) {
+        if (s.aseq > after) after = s.aseq;
+        const e = s.event;
+        if ((e.kind !== "msg.post" && e.kind !== "decision.ask") || e.topic !== topic || e.author !== bot) continue;
+        const body = text(e.body?.text);
+        if (isNotice(body) && matchesProposalNotice(body, opts)) {
+          return { ts: String(s.aseq), cursor: null, done: true };
+        }
+      }
+      if (after <= prevAfter) return { ts: null, cursor: null, done: true };
+    }
+    return { ts: null, cursor: String(after), done: false };
+  }
+
   /// What a stream said before `before` (an event's place), its last `limit` (where a topic was branched from is its
   /// first message's quote: `toHub`). Of what is kept where the station heard the space from its first event, else
   /// read of the anchor.
@@ -961,7 +991,7 @@ export class GroupSurface extends ConnectedSurface {
       const key = streamKey(space, topic);
       const b = Number.isFinite(Number(before)) && Number(before) > 0 ? Math.ceil(Number(before)) : Number.POSITIVE_INFINITY;
       const most = Math.max(1, Math.min(TAIL_MOST, Math.trunc(limit)));
-      const kept = (this.tails.get(key) ?? []).filter((m) => m.aseq < b);
+      const kept = (this.tails.get(key) ?? []).filter((m) => m.aseq < b && !m.deleted);
       let said: Said[];
       if (kept.length >= most || (this.whole.has(space) && !this.cut.has(key))) said = kept;
       else {
@@ -976,12 +1006,15 @@ export class GroupSurface extends ConnectedSurface {
             const e = s.event;
             const target = edits.get(text(e.body?.target));
             if (e.kind === "msg.edit" && target && target.author === e.author) target.text = text(e.body?.text);
-            if (e.kind === "msg.unsend" && target && target.author === e.author) target.deleted = true;
+            if (e.kind === "msg.unsend" && target && target.author === e.author) {
+              target.deleted = true;
+              const idx = said.indexOf(target);
+              if (idx >= 0) said.splice(idx, 1);
+            }
             if ((e.kind !== "msg.post" && e.kind !== "decision.ask") || e.topic !== topic) continue;
             const m: Said = { id: s.id, space, topic, aseq: s.aseq, kind: e.kind, author: e.author, text: text(e.body?.text), files: filesOf(e.body?.files), replyTo: text(e.body?.reply_to), deleted: false };
             edits.set(m.id, m);
             said.push(m);
-            if (said.length > most) said.shift();
           }
         }
       }

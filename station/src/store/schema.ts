@@ -100,6 +100,9 @@ CREATE TABLE IF NOT EXISTS threads (
   auto_title_n INTEGER,
   auto_title_changes INTEGER NOT NULL DEFAULT 0,
   links TEXT,
+  project TEXT,
+  project_locked INTEGER NOT NULL DEFAULT 0,
+  tags TEXT,
   UNIQUE (surface, channel, thread_ts)
 );
 CREATE TABLE IF NOT EXISTS thread_sessions (
@@ -141,6 +144,19 @@ CREATE TABLE IF NOT EXISTS entries (
   runtime TEXT,
   options TEXT,
   card TEXT,
+  proposal TEXT,
+  PRIMARY KEY (thread, n)
+);
+CREATE TABLE IF NOT EXISTS proposal_outcomes (
+  thread INTEGER NOT NULL,
+  n INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  project TEXT,
+  resolved_by TEXT NOT NULL,
+  resolved_at INTEGER NOT NULL,
+  info_note TEXT,
+  info_refs TEXT,
+  info_synced INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (thread, n)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS entries_ts ON entries (thread, ts) WHERE ts IS NOT NULL;
@@ -1493,6 +1509,280 @@ export function addConvColumn(db: DatabaseSync): void {
   db.exec(`CREATE INDEX IF NOT EXISTS sessions_conv ON sessions (conv, key);
     CREATE INDEX IF NOT EXISTS sessions_conv_todo ON sessions (key) WHERE scope = 'thread' AND conv IS NULL;
     CREATE INDEX IF NOT EXISTS sessions_conv_grouped ON sessions (conv, key) WHERE conv IS NOT NULL AND conv != key;`);
+}
+
+/// Chat classification columns (`threads.project`, `threads.project_locked`, `threads.tags`) and
+/// non-blocking project creation proposals (`entries.proposal`), plus partial indexes for bounded lookups.
+export function addProjectColumns(db: DatabaseSync): void {
+  if (!has(db, "threads", "project")) db.exec("ALTER TABLE threads ADD COLUMN project TEXT");
+  if (!has(db, "threads", "project_locked")) db.exec("ALTER TABLE threads ADD COLUMN project_locked INTEGER NOT NULL DEFAULT 0");
+  if (!has(db, "threads", "tags")) db.exec("ALTER TABLE threads ADD COLUMN tags TEXT");
+  if (!has(db, "entries", "proposal")) db.exec("ALTER TABLE entries ADD COLUMN proposal TEXT");
+  db.exec(`CREATE TABLE IF NOT EXISTS proposal_outcomes (
+    thread INTEGER NOT NULL,
+    n INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    project TEXT,
+    resolved_by TEXT NOT NULL,
+    resolved_at INTEGER NOT NULL,
+    info_note TEXT,
+    info_refs TEXT,
+    info_synced INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (thread, n)
+  );
+  CREATE INDEX IF NOT EXISTS threads_project ON threads (project, id) WHERE project IS NOT NULL AND project != '';
+  CREATE INDEX IF NOT EXISTS threads_tags ON threads (id) WHERE tags IS NOT NULL;`);
+  if (!has(db, "proposal_outcomes", "info_note")) db.exec("ALTER TABLE proposal_outcomes ADD COLUMN info_note TEXT");
+  if (!has(db, "proposal_outcomes", "info_refs")) db.exec("ALTER TABLE proposal_outcomes ADD COLUMN info_refs TEXT");
+  // Existing resolved outcomes from older schemas default to 1 so an upgrade never resurrects deleted projects.
+  if (!has(db, "proposal_outcomes", "info_synced")) db.exec("ALTER TABLE proposal_outcomes ADD COLUMN info_synced INTEGER NOT NULL DEFAULT 1");
+
+  // Append-only sidecar table for proposals attached when external echo landed before insertMessage (replicated with CHAT_TABLES).
+  db.exec(`CREATE TABLE IF NOT EXISTS entry_proposals (
+    thread INTEGER NOT NULL,
+    n INTEGER NOT NULL,
+    proposal TEXT NOT NULL,
+    PRIMARY KEY (thread, n)
+  );`);
+
+  // Local-only persistent outbox for external proposal delivery (never exported in CHAT_TABLES).
+  db.exec(`CREATE TABLE IF NOT EXISTS pending_proposals (
+    thread INTEGER NOT NULL,
+    author TEXT NOT NULL,
+    name TEXT NOT NULL,
+    id TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    posted_ts TEXT,
+    base_n INTEGER NOT NULL DEFAULT 0,
+    sending INTEGER NOT NULL DEFAULT 0,
+    connect TEXT NOT NULL DEFAULT '',
+    history_cursor TEXT,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (thread, author, name)
+  );`);
+  if (!has(db, "pending_proposals", "base_n")) db.exec("ALTER TABLE pending_proposals ADD COLUMN base_n INTEGER NOT NULL DEFAULT 0");
+  if (!has(db, "pending_proposals", "sending")) db.exec("ALTER TABLE pending_proposals ADD COLUMN sending INTEGER NOT NULL DEFAULT 0");
+  if (!has(db, "pending_proposals", "connect")) db.exec("ALTER TABLE pending_proposals ADD COLUMN connect TEXT NOT NULL DEFAULT ''");
+  if (!has(db, "pending_proposals", "history_cursor")) db.exec("ALTER TABLE pending_proposals ADD COLUMN history_cursor TEXT");
+
+  // Local-only derived table for O(log N) unresolved proposal deduplication (0-row upgrade scan on entries; never exported in CHAT_TABLES).
+  db.exec(`CREATE TABLE IF NOT EXISTS open_proposals (
+    thread INTEGER NOT NULL,
+    proposer TEXT NOT NULL,
+    name TEXT NOT NULL,
+    n INTEGER NOT NULL,
+    PRIMARY KEY (thread, proposer, name, n)
+  );
+  CREATE INDEX IF NOT EXISTS open_proposals_thread_n ON open_proposals (thread, n);`);
+
+  // Local-only derived index tables for O(log N) workspace project/tag queries (never exported in CHAT_TABLES).
+  db.exec(`CREATE TABLE IF NOT EXISTS _project_index_meta (
+    key TEXT PRIMARY KEY,
+    val TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS active_thread_index (
+    ws TEXT NOT NULL,
+    thread INTEGER NOT NULL,
+    project TEXT,
+    tags TEXT,
+    PRIMARY KEY (ws, thread)
+  );
+  CREATE INDEX IF NOT EXISTS active_thread_index_project
+    ON active_thread_index (ws, project, thread)
+    WHERE project IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS active_thread_index_thread
+    ON active_thread_index (thread, ws);
+  CREATE TABLE IF NOT EXISTS active_thread_tags (
+    ws TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    thread INTEGER NOT NULL,
+    PRIMARY KEY (ws, tag, thread)
+  );
+  CREATE INDEX IF NOT EXISTS active_thread_tags_thread
+    ON active_thread_tags (ws, thread);`);
+
+  const hasSessions = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get() !== undefined
+    && db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'thread_sessions'").get() !== undefined;
+  if (hasSessions) {
+    const indexed = db.prepare("SELECT val FROM _project_index_meta WHERE key = 'active_idx_v1'").get() as { val: string } | undefined;
+    if (indexed?.val !== "1") {
+      const recomputeThread = (ref: string) => `DELETE FROM active_thread_index WHERE thread = ${ref};
+        INSERT OR IGNORE INTO active_thread_index (ws, thread, project, tags)
+        SELECT DISTINCT COALESCE(s.ws, ''), t.id, NULLIF(t.project, ''), t.tags
+        FROM threads t
+        JOIN thread_sessions m ON m.thread = t.id AND m.left_at IS NULL
+        JOIN sessions s ON s.key = m.session AND s.archived_at IS NULL
+        WHERE t.id = ${ref} AND t.hidden_at IS NULL
+          AND (NULLIF(t.project, '') IS NOT NULL OR t.tags IS NOT NULL);`;
+      const recomputeSession = (ref: string) => `DELETE FROM active_thread_index WHERE thread IN (SELECT thread FROM thread_sessions WHERE session = ${ref});
+        INSERT OR IGNORE INTO active_thread_index (ws, thread, project, tags)
+        SELECT DISTINCT COALESCE(s.ws, ''), t.id, NULLIF(t.project, ''), t.tags
+        FROM threads t
+        JOIN thread_sessions m ON m.thread = t.id AND m.left_at IS NULL
+        JOIN sessions s ON s.key = m.session AND s.archived_at IS NULL
+        WHERE t.id IN (SELECT thread FROM thread_sessions WHERE session = ${ref})
+          AND t.hidden_at IS NULL
+          AND (NULLIF(t.project, '') IS NOT NULL OR t.tags IS NOT NULL);`;
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        db.exec(`
+          DROP TRIGGER IF EXISTS active_thread_index_ad;
+          DROP TRIGGER IF EXISTS active_thread_index_ai;
+          DROP TRIGGER IF EXISTS active_thread_threads_ai;
+          DROP TRIGGER IF EXISTS active_thread_threads_au;
+          DROP TRIGGER IF EXISTS active_thread_threads_ad;
+          DROP TRIGGER IF EXISTS active_thread_ts_ai;
+          DROP TRIGGER IF EXISTS active_thread_ts_au;
+          DROP TRIGGER IF EXISTS active_thread_ts_ad;
+          DROP TRIGGER IF EXISTS active_thread_sessions_ai;
+          DROP TRIGGER IF EXISTS active_thread_sessions_au;
+          DROP TRIGGER IF EXISTS active_thread_sessions_ad;
+          CREATE TRIGGER active_thread_index_ad AFTER DELETE ON active_thread_index BEGIN
+            DELETE FROM active_thread_tags WHERE ws = OLD.ws AND thread = OLD.thread;
+          END;
+          CREATE TRIGGER active_thread_index_ai AFTER INSERT ON active_thread_index
+          WHEN NEW.tags IS NOT NULL AND json_valid(NEW.tags) AND json_type(NEW.tags) = 'array' BEGIN
+            INSERT OR IGNORE INTO active_thread_tags (ws, tag, thread)
+            SELECT NEW.ws, j.value, NEW.thread
+            FROM json_each(NEW.tags) j
+            WHERE j.type = 'text' AND j.value != '';
+          END;
+          CREATE TRIGGER active_thread_threads_ai AFTER INSERT ON threads
+          WHEN NEW.hidden_at IS NULL AND (NULLIF(NEW.project, '') IS NOT NULL OR NEW.tags IS NOT NULL) BEGIN
+            ${recomputeThread("NEW.id")}
+          END;
+          CREATE TRIGGER active_thread_threads_au AFTER UPDATE OF project, tags, hidden_at ON threads
+          WHEN (OLD.project IS NOT NEW.project OR OLD.tags IS NOT NEW.tags OR OLD.hidden_at IS NOT NEW.hidden_at)
+            AND (NULLIF(OLD.project, '') IS NOT NULL OR OLD.tags IS NOT NULL OR NULLIF(NEW.project, '') IS NOT NULL OR NEW.tags IS NOT NULL) BEGIN
+            ${recomputeThread("NEW.id")}
+          END;
+          CREATE TRIGGER active_thread_threads_ad AFTER DELETE ON threads
+          WHEN NULLIF(OLD.project, '') IS NOT NULL OR OLD.tags IS NOT NULL BEGIN
+            DELETE FROM active_thread_index WHERE thread = OLD.id;
+          END;
+          CREATE TRIGGER active_thread_ts_ai AFTER INSERT ON thread_sessions BEGIN
+            ${recomputeThread("NEW.thread")}
+          END;
+          CREATE TRIGGER active_thread_ts_au AFTER UPDATE OF left_at ON thread_sessions BEGIN
+            ${recomputeThread("NEW.thread")}
+          END;
+          CREATE TRIGGER active_thread_ts_ad AFTER DELETE ON thread_sessions BEGIN
+            ${recomputeThread("OLD.thread")}
+          END;
+          CREATE TRIGGER active_thread_sessions_ai AFTER INSERT ON sessions BEGIN
+            ${recomputeSession("NEW.key")}
+          END;
+          CREATE TRIGGER active_thread_sessions_au AFTER UPDATE OF archived_at, ws ON sessions
+          WHEN OLD.archived_at IS NOT NEW.archived_at OR OLD.ws IS NOT NEW.ws BEGIN
+            ${recomputeSession("NEW.key")}
+          END;
+          CREATE TRIGGER active_thread_sessions_ad AFTER DELETE ON sessions BEGIN
+            ${recomputeSession("OLD.key")}
+          END;
+          DELETE FROM active_thread_index;
+          DELETE FROM active_thread_tags;
+          INSERT OR IGNORE INTO active_thread_index (ws, thread, project, tags)
+          SELECT DISTINCT COALESCE(s.ws, ''), t.id, NULLIF(t.project, ''), t.tags
+          FROM threads t
+          JOIN thread_sessions m ON m.thread = t.id AND m.left_at IS NULL
+          JOIN sessions s ON s.key = m.session AND s.archived_at IS NULL
+          WHERE t.hidden_at IS NULL
+            AND (NULLIF(t.project, '') IS NOT NULL OR t.tags IS NOT NULL);
+          INSERT OR REPLACE INTO _project_index_meta (key, val) VALUES ('active_idx_v1', '1');
+        `);
+        db.exec("COMMIT");
+      } catch (e) {
+        db.exec("ROLLBACK");
+        throw e;
+      }
+    }
+  }
+
+  const openProposalsReady = db.prepare("SELECT val FROM _project_index_meta WHERE key = 'open_proposals_v2'").get() as { val: string } | undefined;
+  if (openProposalsReady?.val !== "1") {
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec(`
+        DROP TRIGGER IF EXISTS open_proposals_entries_ai;
+        DROP TRIGGER IF EXISTS open_proposals_sidecar_ai;
+        DROP TRIGGER IF EXISTS open_proposals_sidecar_ad;
+        DROP TRIGGER IF EXISTS open_proposals_outcomes_ai;
+        DROP TRIGGER IF EXISTS open_proposals_outcomes_ad;
+        DROP TRIGGER IF EXISTS open_proposals_entries_ad;
+        CREATE TRIGGER open_proposals_entries_ai AFTER INSERT ON entries
+        WHEN NEW.proposal IS NOT NULL AND json_valid(NEW.proposal) AND json_extract(NEW.proposal, '$.status') = 'pending' BEGIN
+          INSERT OR IGNORE INTO open_proposals (thread, proposer, name, n)
+          VALUES (
+            NEW.thread,
+            COALESCE(NULLIF(json_extract(NEW.proposal, '$.proposer'), ''), NEW.author),
+            COALESCE(json_extract(NEW.proposal, '$.name'), ''),
+            NEW.n
+          );
+        END;
+        CREATE TRIGGER open_proposals_sidecar_ai AFTER INSERT ON entry_proposals
+        WHEN json_valid(NEW.proposal) AND json_extract(NEW.proposal, '$.status') = 'pending' BEGIN
+          INSERT OR IGNORE INTO open_proposals (thread, proposer, name, n)
+          SELECT
+            NEW.thread,
+            COALESCE(NULLIF(json_extract(NEW.proposal, '$.proposer'), ''), COALESCE((SELECT author FROM entries WHERE thread = NEW.thread AND n = NEW.n), '')),
+            COALESCE(json_extract(NEW.proposal, '$.name'), ''),
+            NEW.n
+          WHERE NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE thread = NEW.thread AND n = NEW.n);
+        END;
+        CREATE TRIGGER open_proposals_sidecar_ad AFTER DELETE ON entry_proposals BEGIN
+          DELETE FROM open_proposals WHERE thread = OLD.thread AND n = OLD.n;
+          INSERT OR IGNORE INTO open_proposals (thread, proposer, name, n)
+          SELECT
+            e.thread,
+            COALESCE(NULLIF(json_extract(e.proposal, '$.proposer'), ''), e.author),
+            COALESCE(json_extract(e.proposal, '$.name'), ''),
+            e.n
+          FROM entries e
+          WHERE e.thread = OLD.thread AND e.n = OLD.n
+            AND e.proposal IS NOT NULL AND json_valid(e.proposal)
+            AND json_extract(e.proposal, '$.status') = 'pending'
+            AND NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE thread = OLD.thread AND n = OLD.n);
+        END;
+        CREATE TRIGGER open_proposals_outcomes_ai AFTER INSERT ON proposal_outcomes BEGIN
+          DELETE FROM open_proposals WHERE thread = NEW.thread AND n = NEW.n;
+        END;
+        CREATE TRIGGER open_proposals_outcomes_ad AFTER DELETE ON proposal_outcomes BEGIN
+          INSERT OR IGNORE INTO open_proposals (thread, proposer, name, n)
+          SELECT
+            e.thread,
+            COALESCE(NULLIF(json_extract(COALESCE(e.proposal, ep.proposal), '$.proposer'), ''), e.author),
+            COALESCE(json_extract(COALESCE(e.proposal, ep.proposal), '$.name'), ''),
+            e.n
+          FROM entries e
+          LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n
+          WHERE e.thread = OLD.thread AND e.n = OLD.n
+            AND COALESCE(e.proposal, ep.proposal) IS NOT NULL
+            AND json_valid(COALESCE(e.proposal, ep.proposal))
+            AND json_extract(COALESCE(e.proposal, ep.proposal), '$.status') = 'pending'
+            AND NOT EXISTS (SELECT 1 FROM proposal_outcomes WHERE thread = OLD.thread AND n = OLD.n);
+        END;
+        CREATE TRIGGER open_proposals_entries_ad AFTER DELETE ON entries
+        WHEN EXISTS (SELECT 1 FROM open_proposals WHERE thread = OLD.thread AND n = OLD.n) BEGIN
+          DELETE FROM open_proposals WHERE thread = OLD.thread AND n = OLD.n;
+        END;
+        INSERT OR IGNORE INTO open_proposals (thread, proposer, name, n)
+        SELECT
+          ep.thread,
+          COALESCE(NULLIF(json_extract(ep.proposal, '$.proposer'), ''), COALESCE(e.author, '')),
+          COALESCE(json_extract(ep.proposal, '$.name'), ''),
+          ep.n
+        FROM entry_proposals ep
+        LEFT JOIN entries e ON e.thread = ep.thread AND e.n = ep.n
+        LEFT JOIN proposal_outcomes po ON po.thread = ep.thread AND po.n = ep.n
+        WHERE po.thread IS NULL AND json_valid(ep.proposal) AND json_extract(ep.proposal, '$.status') = 'pending';
+        INSERT OR REPLACE INTO _project_index_meta (key, val) VALUES ('open_proposals_v2', '1');
+      `);
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+  }
 }
 
 /// The station's own chats as their names are now (rows.ts STILLFAIL_SURFACE, STILLFAIL_CONNECT): what stations wrote

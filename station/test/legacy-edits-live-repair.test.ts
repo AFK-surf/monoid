@@ -118,7 +118,7 @@ test("an index removed after a question snapshot is still usable in that snapsho
     const observed = new Proxy(store.db, { get(target, property) {
       if (property === "prepare") return (sql: string) => {
         const statement = target.prepare(sql);
-        if (sql === "SELECT n, card, options FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'") {
+        if (sql.includes("FROM entries") && sql.includes("ts = ?") && sql.includes("kind = 'message'")) {
           return new Proxy(statement, { get(stmt, member) {
             if (member === "get") return (...args: Parameters<typeof stmt.get>) => {
               const row = stmt.get(...args);

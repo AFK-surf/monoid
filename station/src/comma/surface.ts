@@ -30,7 +30,7 @@ import { personKey } from "../connects/keys.ts";
 import type { NameBook } from "../connects/names.ts";
 import { StatusLine } from "../connects/status.ts";
 import { ConnectedSurface } from "../connects/surface.ts";
-import type { Handler, InboundFile, ModelChoice, Person, ThreadRef } from "../sessions/chat.ts";
+import { type Handler, type InboundFile, type ModelChoice, type Person, type ThreadRef, isNotice } from "../sessions/chat.ts";
 import { sessionKey } from "../sessions/hub.ts";
 import type { Attachment, Store } from "../store/store.ts";
 import { type CommaStats, type IndexRow, type RevIndex, IndexSync, heldFrom, probePage, statsWire, taskWire } from "./stats.ts";
@@ -552,7 +552,11 @@ export class CommaSurface extends ConnectedSurface {
 
   /// Asks Comma: its answer, or why not (not connected, refused, no answer in time).
   private ask(method: string, params: Json, ms = REQUEST_MS): Promise<Json> {
-    if (this.socket_ === null) return Promise.reject(new Error(tr(this.lang, "station.comma.notConnected")));
+    if (this.socket_ === null) {
+      const err = new Error(tr(this.lang, "station.comma.notConnected")) as Error & { notSent?: boolean };
+      err.notSent = true;
+      return Promise.reject(err);
+    }
     const id = randomUUID();
     return new Promise((resolve, reject) => {
       this.waiting.set(id, { resolve, reject });
@@ -789,9 +793,19 @@ export class CommaSurface extends ConnectedSurface {
     const messages = (Array.isArray(params?.messages) ? (params.messages as TaskMessage[]) : []).filter((m) => count(m?.seq) !== null).sort((a, b) => a.seq - b.seq);
     let first = this.store.getSession(session) === null;
     for (const m of messages) {
-      // What the session here said, and what it answered already, is not heard again.
-      if (m.seq <= answered || typeof m.author?.session === "string") continue;
       const said = typeof m.text === "string" ? m.text : "";
+      if (typeof m.author?.session === "string") {
+        // Replayed own-session station notices reconcile in-flight proposal outboxes without waking the agent.
+        if (m.author.session === session && isNotice(said) && this.handler) {
+          await this.handler({
+            type: "ownNotice",
+            message: { channel: TASK_CHANNEL, threadTs: t.threadTs, ts: seqTs(m.seq), user: this.botUserId(), text: said, addressed: false },
+          });
+        }
+        continue;
+      }
+      // What the session here answered already is not heard again.
+      if (m.seq <= answered) continue;
       const files: InboundFile[] = (Array.isArray(m.files) ? m.files : [])
         .filter((f) => count(f?.index) !== null && typeof f?.name === "string" && f.name !== "" && count(f?.size) !== null)
         .map((f) => {

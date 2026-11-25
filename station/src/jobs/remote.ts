@@ -920,6 +920,7 @@ export class Remote {
       "session.message", "session.read", "session.file", "session.put",
       "session.create", "session.create.preset", "session.create.speed", "session.create.preset.speed", "session.create.preset.tui",
       "session.archive", "session.configure", "session.list", "session.notice",
+      "projects.names", "thread.classify",
     ], inbox);
   }
 

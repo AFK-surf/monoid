@@ -37,7 +37,7 @@ pub fn floor_of(total : Double?) -> Double {
 
 ///|
 pub let chat_tables : Array[String] = [
-  "threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions", "closed_cards", "reads", "hidden_chats",
+  "threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions", "closed_cards", "entry_proposals", "proposal_outcomes", "reads", "hidden_chats",
   "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats", "deliveries", "usage", "usage_files", "session_usage",
 ]
 
@@ -55,7 +55,7 @@ let after_shown : Array[String] = ["entries", "letters", "deliveries", "usage", 
 pub fn after_of(table : String, row : J) -> J {
   let f = (k : String) => at(row, k).unwrap_or(Null)
   match table {
-    "entries" | "letters" | "closed_cards" => f("n")
+    "entries" | "letters" | "closed_cards" | "entry_proposals" | "proposal_outcomes" => f("n")
     "reads" | "hidden_chats" | "muted_chats" | "kept_chats" | "pins" => f("viewer")
     "dismissed" => ja([f("viewer"), f("n")])
     "turns" => ja([f("started_at"), f("id")])
@@ -1370,6 +1370,7 @@ pub async fn Handover::hand_over(
     o.set("usage", jb(at(begun, "usage") is Some(Bool(true))))
     // (several tables' pages in one request, where that station takes them so: handover.ts `batched`)
     o.set("batched", jb(at(begun, "rows") is Some(Str("batched"))))
+    o.set("projects", jb(at(begun, "projects") is Some(Bool(true))))
     self.mark(o, "first")
     self.files(o, begun, progress, false)
     self.mark(o, "turn")
@@ -1960,7 +1961,8 @@ async fn Handover::send_rows(self : Handover, o : Rec, from : J?) -> Counted {
       }
       o.set("sent", set(sent_now, tid, jo([("entries", jn(e)), ("letters", jn(l))])))
       if from is None {
-        for table in ["closed_cards", ..marks_tables] {
+        let extra = if o.b("projects") { ["closed_cards", "entry_proposals", "proposal_outcomes", ..marks_tables] } else { ["closed_cards", ..marks_tables] }
+        for table in extra {
           ignore(pages(table, t, Null))
         }
       }

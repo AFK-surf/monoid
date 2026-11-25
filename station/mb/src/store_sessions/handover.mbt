@@ -9,7 +9,7 @@
 /// handover.ts CHAT_TABLES.
 pub let chat_tables : Array[String] = [
   "threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions",
-  "closed_cards", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed",
+  "closed_cards", "entry_proposals", "proposal_outcomes", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed",
   "pins", "opened_chats", "deliveries", "usage", "usage_files", "session_usage",
 ]
 
@@ -69,7 +69,7 @@ pub fn chat_page(
         "SELECT * FROM thread_sessions WHERE thread = ? AND session IN (SELECT value FROM json_each(?))",
         [of, jstr(js(strings(keys)))],
       )
-    "entries" | "letters" | "closed_cards" =>
+    "entries" | "letters" | "closed_cards" | "entry_proposals" | "proposal_outcomes" =>
       all(
         "SELECT * FROM \{table} WHERE thread = ? AND n > ? ORDER BY n LIMIT ?",
         [of, or_else(after, jnum(-1.0)), lim],
@@ -140,7 +140,7 @@ pub fn chat_page(
 pub fn after_of(table : String, row : Json) -> Json {
   let get = (k : String) => nullish(field(row, k))
   match table {
-    "entries" | "letters" | "closed_cards" => get("n")
+    "entries" | "letters" | "closed_cards" | "entry_proposals" | "proposal_outcomes" => get("n")
     "reads" | "hidden_chats" | "muted_chats" | "kept_chats" | "pins" =>
       get("viewer")
     "dismissed" => Json::array([get("viewer"), get("n")])
@@ -484,6 +484,12 @@ fn import_page(
           "entries": [],
           "closed": k("n"),
         })
+      "entry_proposals" | "proposal_outcomes" =>
+        told({
+          "type": "thread",
+          "id": k("thread"),
+          "entries": [],
+        })
       "turns" | "runtime_sessions" =>
         touched.session(js_string(or_else(k("session_key"), jstr(""))))
       _ => ()
@@ -501,6 +507,60 @@ fn import_page(
       "threads" => {
         let was = num_of(get("id")).unwrap_or(0.0)
         r.remove("id")
+        let was_key = key_of(jnum(was))
+        if threads.get(was_key) is Some(Object(already)) {
+          // Catch-up re-send: preserve existing `ctx.threads[was]` (id, fresh, linear, lettersLinear, ns, ls, preLocked)!
+          // Skip if target was already locked before round 1 (`preLocked`), OR if a target member newly locked/changed
+          // classification during handover (`cur_locked == 1` and differs from our post-round-1 snapshot).
+          let aid = nullish(already.get("id"))
+          let pre_locked = already.get("preLocked") is Some(True)
+          let is_fresh = already.get("fresh") is Some(True)
+          if !pre_locked {
+            match db.all("SELECT * FROM threads WHERE id = ?", [aid]) {
+              [cur, ..] => {
+                let cur_locked = if col(cur, "project_locked") == jnum(1.0) { jnum(1.0) } else { jnum(0.0) }
+                let cur_proj = col(cur, "project")
+                let cur_tags = match col(cur, "tags") {
+                  String(s) if s != "" => jstr(s)
+                  _ => Json::null()
+                }
+                let last_proj = nullish(already.get("lastProject"))
+                let last_locked = match already.get("lastLocked") {
+                  Some(Number(n, ..)) => jnum(n)
+                  _ => jnum(0.0)
+                }
+                let last_tags = nullish(already.get("lastTags"))
+                let target_locked_during_move = cur_locked == jnum(1.0) &&
+                  (cur_proj != last_proj || cur_locked != last_locked || cur_tags != last_tags)
+                if !target_locked_during_move {
+                  let in_locked = if get("project_locked") == jnum(1.0) { jnum(1.0) } else { jnum(0.0) }
+                  let in_proj = get("project")
+                  let in_tags = match get("tags") {
+                    String(s) if s != "" => jstr(s)
+                    _ => Json::null()
+                  }
+                  if in_proj != cur_proj || in_locked != cur_locked || in_tags != cur_tags {
+                    if !is_fresh {
+                      made_before(ctx, "threads", "id", row_json(cur))
+                    }
+                    ignore(
+                      db.run(
+                        "UPDATE threads SET project = ?, project_locked = ?, tags = ? WHERE id = ?",
+                        [in_proj, in_locked, in_tags, aid],
+                      ),
+                    )
+                  }
+                  already["lastProject"] = in_proj
+                  already["lastLocked"] = in_locked
+                  already["lastTags"] = in_tags
+                }
+              }
+              _ => ()
+            }
+          }
+          touched.thread(aid)
+          continue
+        }
         r["surface"] = jstr(surface_here(js_string(get("surface")), connects))
         let at = (ts : Json) => {
           db.all(
@@ -526,10 +586,63 @@ fn import_page(
           here = None
         }
         let id = match here {
-          Some(h) => (col(h, "id"), false)
+          Some(h) => {
+            let hid = col(h, "id")
+            let mut pre_locked = false
+            let mut last_proj = Json::null()
+            let mut last_locked = jnum(0.0)
+            let mut last_tags = Json::null()
+            // Merge classification columns on an existing thread: `project_locked = 1` wins whole (including NULL tags).
+            match db.all("SELECT * FROM threads WHERE id = ?", [hid]) {
+              [cur, ..] => {
+                let cur_locked = col(cur, "project_locked") == jnum(1.0)
+                pre_locked = cur_locked
+                let in_locked = get("project_locked") == jnum(1.0)
+                let cur_proj = col(cur, "project")
+                let in_proj = get("project")
+                let cur_tags = match col(cur, "tags") {
+                  String(s) if s != "" => jstr(s)
+                  _ => Json::null()
+                }
+                let in_tags = match get("tags") {
+                  String(s) if s != "" => jstr(s)
+                  _ => Json::null()
+                }
+                let (next_proj, next_locked, next_tags) = if cur_locked {
+                  (cur_proj, jnum(1.0), cur_tags)
+                } else if in_locked {
+                  (in_proj, jnum(1.0), in_tags)
+                } else {
+                  let np = if !(cur_proj is Null) { cur_proj } else { in_proj }
+                  let nt = if !(cur_tags is Null) { cur_tags } else { in_tags }
+                  (np, jnum(0.0), nt)
+                }
+                if next_proj != cur_proj || next_locked != col(cur, "project_locked") || next_tags != cur_tags {
+                  made_before(ctx, "threads", "id", row_json(cur))
+                  ignore(
+                    db.run(
+                      "UPDATE threads SET project = ?, project_locked = ?, tags = ? WHERE id = ?",
+                      [next_proj, next_locked, next_tags, hid],
+                    ),
+                  )
+                }
+                last_proj = next_proj
+                last_locked = next_locked
+                last_tags = next_tags
+              }
+              _ => ()
+            }
+            (hid, false, pre_locked, last_proj, last_locked, last_tags)
+          }
           None => {
             let (_, id) = insert_row(db, "threads", r, "")
-            (id, true)
+            let lp = get("project")
+            let ll = if get("project_locked") == jnum(1.0) { jnum(1.0) } else { jnum(0.0) }
+            let lt = match get("tags") {
+              String(s) if s != "" => jstr(s)
+              _ => Json::null()
+            }
+            (id, true, false, lp, ll, lt)
           }
         }
         let there : Json = {
@@ -537,10 +650,14 @@ fn import_page(
           "fresh": jbool(id.1),
           "linear": true,
           "lettersLinear": true,
+          "preLocked": jbool(id.2),
+          "lastProject": id.3,
+          "lastLocked": id.4,
+          "lastTags": id.5,
           "ns": Json::object(Map([])),
           "ls": Json::object(Map([])),
         }
-        threads[key_of(jnum(was))] = there
+        threads[was_key] = there
         touched.thread(id.0)
       }
       "sessions" => {
@@ -819,7 +936,7 @@ fn import_page(
           count_up(count_rows, "runtime_sessions")
         }
       }
-      "closed_cards" | "dismissed" => {
+      "closed_cards" | "entry_proposals" | "proposal_outcomes" | "dismissed" => {
         let t = thread(get("thread"))
         guard t is Some(t) else { continue }
         r["thread"] = nullish(field(t, "id"))
@@ -837,6 +954,24 @@ fn import_page(
             },
           )
         } else {
+          if table == "proposal_outcomes" && get("info_synced") == jnum(1.0) && columns_of(db, "proposal_outcomes").contains("info_synced") {
+            match db.all("SELECT * FROM proposal_outcomes WHERE thread = ? AND n = ?", [get("thread"), get("n")]) {
+              [existing, ..] => {
+                if col(existing, "info_synced") == jnum(0.0) &&
+                  col(existing, "status") == get("status") &&
+                  col(existing, "project") == get("project") {
+                  made_before_keys(ctx, "proposal_outcomes", ["thread", "n"], row_json(existing))
+                  ignore(
+                    db.run(
+                      "UPDATE proposal_outcomes SET info_synced = 1 WHERE thread = ? AND n = ? AND info_synced = 0",
+                      [get("thread"), get("n")],
+                    ),
+                  )
+                }
+              }
+              _ => ()
+            }
+          }
           count_up(count_rows, table)
         }
       }
@@ -977,11 +1112,15 @@ fn import_page(
 ///|
 /// handover.ts `madeBefore`.
 fn made_before(ctx : Json, table : String, key : String, was : Json) -> Unit {
+  made_before_keys(ctx, table, [key], was)
+}
+
+fn made_before_keys(ctx : Json, table : String, keys : Array[String], was : Json) -> Unit {
   let made = obj(nullish(field(ctx, "made")))
   let ours = (rows : Json?) => {
     match rows {
       Some(Array(rows)) =>
-        rows.iter().any(x => field(x, key) == field(was, key))
+        rows.iter().any(x => keys.iter().all(k => field(x, k) == field(was, k)))
       _ => false
     }
   }
@@ -1113,6 +1252,53 @@ fn drop_import_rows(db : @sql.Db, ctx : Json) -> Array[String] raise {
   for table, rows in obj(nullish(field(made, "before"))) {
     for row in arr(rows) {
       let have = columns_of(db, table)
+      if table == "threads" &&
+        have.contains("project") &&
+        have.contains("project_locked") &&
+        have.contains("tags") {
+        let rid = nullish(field(row, "id"))
+        let mut meta : Map[String, Json]? = None
+        for _, v in obj(nullish(field(ctx, "threads"))) {
+          if v is Object(o) && nullish(o.get("id")) == rid {
+            meta = Some(o)
+            break
+          }
+        }
+        match (db.all("SELECT * FROM threads WHERE id = ?", [rid]), meta) {
+          ([cur, ..], Some(m)) => {
+            let cur_proj = col(cur, "project")
+            let cur_locked = if col(cur, "project_locked") == jnum(1.0) { jnum(1.0) } else { jnum(0.0) }
+            let cur_tags = match col(cur, "tags") {
+              String(s) if s != "" => jstr(s)
+              _ => Json::null()
+            }
+            let last_proj = nullish(m.get("lastProject"))
+            let last_locked = match m.get("lastLocked") {
+              Some(Number(n, ..)) => jnum(n)
+              _ => jnum(0.0)
+            }
+            let last_tags = nullish(m.get("lastTags"))
+            if cur_proj == last_proj && cur_locked == last_locked && cur_tags == last_tags {
+              ignore(
+                db.run(
+                  "UPDATE threads SET project = ?, project_locked = ?, tags = ? WHERE id = ?",
+                  [
+                    nullish(field(row, "project")),
+                    match field(row, "project_locked") {
+                      Some(Number(n, ..)) => jnum(n)
+                      _ => jnum(0.0)
+                    },
+                    nullish(field(row, "tags")),
+                    rid,
+                  ],
+                ),
+              )
+            }
+            continue
+          }
+          _ => ()
+        }
+      }
       let cols = []
       for k, _ in obj(row) {
         if have.contains(k) {
@@ -1164,7 +1350,7 @@ fn drop_empty_threads(db : @sql.Db, ctx : Json) -> Array[Json] raise {
       0 {
       continue
     }
-    for table in ["entries", "letters", "closed_cards", "deliveries"] {
+    for table in ["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes", "deliveries"] {
       ignore(db.run("DELETE FROM \{table} WHERE thread = ?", [id]))
     }
     ignore(db.run("DELETE FROM threads WHERE id = ?", [id]))

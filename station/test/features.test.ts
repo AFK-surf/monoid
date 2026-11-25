@@ -35,7 +35,7 @@ test("the_overview_says_what_is_on_and_moving_graduated_on_every_channel_for_app
   const beta = app("beta");
   const stable = app("stable");
   assert.deepEqual(GRADUATED_SAID, ["stationMove"]);
-  assert.deepEqual(stationFeatures({}, beta), ["terminal", "stationMove"]);
+  assert.deepEqual(stationFeatures({}, beta), ["terminal", "projects", "stationMove"]);
   assert.deepEqual(stationFeatures({}, stable), ["stationMove"]);
-  assert.deepEqual(stationFeatures({ updateChannel: "beta" }, stable), ["terminal", "stationMove"]);
+  assert.deepEqual(stationFeatures({ updateChannel: "beta" }, stable), ["terminal", "projects", "stationMove"]);
 });

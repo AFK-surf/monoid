@@ -11,6 +11,7 @@ import { rigTools } from "../src/rigs/tool.ts";
 import { searchTools } from "../src/search/tool.ts";
 import { archiveTools } from "../src/tools/archive.ts";
 import { chatTools } from "../src/tools/chat.ts";
+import { projectTools } from "../src/tools/projects.ts";
 import { computerTools } from "../src/tools/computer.ts";
 import { feedbackTools } from "../src/tools/feedback.ts";
 import { forwardTools } from "../src/tools/forward.ts";
@@ -33,6 +34,7 @@ export function stationTools(): Tool[] {
   const none = {} as any;
   return [
     ...chatTools(none),
+    ...projectTools(none),
     ...archiveTools(none),
     ...remoteTools(none),
     ...workspaceSizeTools(none, none),

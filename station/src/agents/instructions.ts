@@ -11,13 +11,17 @@ import { STATION_AUTHOR } from "../store/rows.ts";
 /// What points an agent at moving a station's things, said only where moving is on (move/station.ts `on`).
 export const MOVE_LINE = " To move chats, or a whole station, to another station, skill stillfail-move.";
 
+/// Concise always-on project & tag classification rules, included only when `FEATURES.projects` is active on this station.
+export const PROJECTS_BLOCK = `\n- Once the chat's topic is clear, silently classify it with chat_configure into an existing project (or "" for cross-project/misc) and up to 3 reusable short tags; wait if the opening is vague.\n- To create a new project (even if a person asks), call project_manage with action="propose" to post a silent confirmation bar — a proposal is not a blocking question, never end need_human for it.\n- Before managing projects or tags (listing all, editing notes/paths/GitHub links, renaming, merging, bulk reclassifying, cleaning tags), read skill stillfail-projects.`;
+
 /// `project`: the directory the runtime runs in, for a session begun outside still.fail (in a terminal) and continued here.
 /// `memory`: the workspace's memory as it is now (`readMemory`). `site`: what the deployment adds (`readSiteInstructions`).
 /// `station`: this station's name ("" where it has none). `move`: whether moving to another station is on here (every
-/// station's since 2026-11-21; a test's may say not): where it is not, its skill is not named.
-export function sessionInstructions(workspace: string, project: string | null, repos_dir: string, memory_path: string, memory: string, site = "", station = "", move = true): string {
+/// station's since 2026-11-21; a test's may say not): where it is not, its skill is not named. `projects`: whether
+/// workspace project classification (`FEATURES.projects`) is on here.
+export function sessionInstructions(workspace: string, project: string | null, repos_dir: string, memory_path: string, memory: string, site = "", station = "", move = true, projects = false): string {
   const projectLine = project === null ? "" : `- Project directory: ${project}. This session began outside still.fail (in a terminal on this machine) and goes on here: you run in that directory and keep working on it as before. The session workspace below is for scratch files only.\n`;
-  const told = instructions(projectLine, workspace, repos_dir, memory_path, station);
+  const told = instructions(projectLine, workspace, repos_dir, memory_path, station, projects);
   return (move ? told : told.replace(MOVE_LINE, "")) + (site === "" ? "" : `\n\n${site}`) + (memory === "" ? "" : `\n\n<memory path="${memory_path}">\n${memory}\n</memory>`);
 }
 
@@ -83,7 +87,7 @@ export function overgrown(files: [string, string][]): string {
   return `[still.fail: this memory has grown past what an agent can use: condense a file you touch before you add to it]\n${said.join("\n")}\nKeep the lasting rules and facts, one line each; drop progress, status and handover notes (they belong in a chat's own workspace); keep one of what is said twice and the newest of what contradicts.`;
 }
 
-const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string, station: string) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats, group (IM) chats and Comma Tasks.
+const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string, station: string, projects: boolean) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats, group (IM) chats and Comma Tasks.
 
 Messages:
 - Each message comes as <message via="web|slack|feishu|group|comma" thread="…" from="…" ts="…">: thread is the conversation to answer in. sent_at is the message's time in UTC; recorded_at is when the station recorded it if its identifier does not encode a time. ts is the original message identifier. A delivery says when it was handed to you in UTC. via="station" is a notice (a job ended): act on it and tell whoever asked for the work.
@@ -97,7 +101,7 @@ Messages:
 Answering:
 - Only chat_post reaches people; your ordinary output reaches nobody. chat_post to=<the message's thread>.
 - A subagent you start says nothing itself: it hands its result back to you, and you post what people need. Never have one post to the chat, end the turn, write to another chat's agent or write to Slack.
-- Give the chat a title (a few words) with your first post once its topic is clear: what the whole chat is for, never the step you are on.
+- Give the chat a title (a few words) with your first post once its topic is clear: what the whole chat is for, never the step you are on.${projects ? PROJECTS_BLOCK : ""}
 - Post the answer, results and questions; when a request or change will take more than a couple of minutes, reply briefly first with the cause and plan rather than staying silent until the end, and post brief progress updates during long multi-step waits.
 - Ask only when a real choice blocks the work. When people would answer by picking or confirming, attach an options card (card.assignee: the deciding person's email, from their message's from; an email your runtime calls its user's is the account you run on, not a person here); when they must type a value, a text card. Do not ask about what is already decided or authorized.
 - Where people gave a principle, decide by it yourself: do not bring them the steps or small choices; ask only what it does not settle and cannot be undone, or only they can decide. Anything that makes someone wait is a decision: ask it plainly.

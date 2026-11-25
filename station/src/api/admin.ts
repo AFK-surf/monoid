@@ -16,6 +16,7 @@ import { HttpError } from "../read/views.ts";
 import { toEntry } from "../store/rows.ts";
 import { type Answer, type Request, error, json, queryPairs } from "./request.ts";
 import { routes as chats } from "./routes/chats.ts";
+import { routes as projectRoutes } from "./routes/projects.ts";
 import { routes as usage } from "./routes/usage.ts";
 import { routes as sessions } from "./routes/sessions.ts";
 import { routes as events } from "./routes/events.ts";
@@ -132,7 +133,7 @@ const ONCE_KEEP_MS = 10 * 60_000;
 type Kept = { status: number; headers: Record<string, string>; body: Buffer };
 /// A message's write kept under its key, as a hand-over carries it to the station its chat went to (`keptSends`):
 /// whose key, the thread there, the key, when it was kept, and its answer (the body in base64).
-export type KeptSend = { viewer: string; thread: number; key: string; at: number; status: number; headers: Record<string, string>; body: string };
+export type KeptSend = { viewer: string; thread: number; key: string; at: number; status: number; headers: Record<string, string>; body: string; workspace?: string };
 /// A person's message in a chat (routes/hub.ts): the thread it is written to.
 const SEND_PATH = /^\/*threads\/+([^/]+)\/+messages(?:\/.*)?$/;
 /// A key's first write: its answer once there (none: not kept), and when it was kept.
@@ -182,7 +183,7 @@ export class Admin {
       packed: deps.packed,
     };
     this.tools = tools;
-    this.routes = [...chats(tools), ...usage(tools), ...sessions(tools), ...events(tools), ...marks(tools), ...hub(tools),
+    this.routes = [...chats(tools), ...projectRoutes(tools, cloud), ...usage(tools), ...sessions(tools), ...events(tools), ...marks(tools), ...hub(tools),
       ...(config ? networkSettings({ config, changed: () => deps.events?.overviewChanged(), ...(data !== undefined ? { restart: pageRestart(data, deps.restartFront) } : {}) }) : []),
       ...(config ? deviceTools({ config, changed: () => deps.events?.overviewChanged() }) : []),
       ...(cloud && data !== undefined ? workspaces({ cloud, data, changed: () => deps.events?.overviewChanged() }) : []),
@@ -274,12 +275,32 @@ export class Admin {
   async handle(r: Request): Promise<Answer> {
     // Who asks is remembered by name, as the cloud's names (`deps.names`): what chats show of people who wrote.
     if (r.viewer.name !== "") this.readers.names.set(r.viewer.email, r.viewer.name);
-    // A write with a key is done once, however often it is asked; the key is the viewer's own.
+    // Check read-only before idempotency replay so a revoked/read-only viewer never replays a previously cached write.
+    if (readOnly(r.viewer) && !readOnlyMay(r) && this.deps.parts?.mayView(r) !== true) {
+      const denied = error(403, "read-only members cannot change this station");
+      denied.headers["stillfail-idempotent"] = "1";
+      denied.headers[BUILD_HEADER] = stationBuild();
+      return runtimeCompatible(r, denied);
+    }
+    // Check workspace ownership BEFORE idempotency replay so another workspace can never replay a handed-over KeptSend.
+    const hidden = this.deps.store ? elsewhere(this.deps.store, r.path, r.viewer) : null;
+    if (hidden !== null) {
+      const there = r.method === "GET" || r.method === "HEAD" ? null : went(this.deps.store!, r.path, r.viewer);
+      const denied = there !== null ? json(409, JSON.stringify({ error: tr(r.lang, "station.move.movedThere"), moved: there })) : error(404, hidden);
+      denied.headers["stillfail-idempotent"] = "1";
+      denied.headers[BUILD_HEADER] = stationBuild();
+      return runtimeCompatible(r, denied);
+    }
+    // A write with a key is done once, however often it is asked; the key is isolated by viewer, workspace, method, and path.
     const key = Object.entries(r.headers).find(([k]) => k.toLowerCase() === ONCE_KEY)?.[1];
     // (not a read that sends what the client holds, or several reads in one: a retry reads again, and an answer as it
     // comes is never held whole to be kept)
     const keyed = key !== undefined && key !== "" && key.length <= 200 && r.method !== "GET" && r.method !== "HEAD" && !READS.test(r.path);
-    const answer = keyed ? await this.once(`${r.viewer.email}\0${r.path}\0${key}`, () => this.answer(r)) : await this.answer(r);
+    const slotKey = `${r.viewer.email}\0${r.viewer.workspace ?? ""}\0${r.method}\0${r.path}\0${key}`;
+    const legacySendKey = r.method === "POST" && SEND_PATH.test(r.path) ? `${r.viewer.email}\0\0POST\0${r.path}\0${key}` : null;
+    const answer = keyed
+      ? await this.once(legacySendKey !== null && this.slots.has(legacySendKey) ? legacySendKey : slotKey, () => this.answer(r))
+      : await this.answer(r);
     // Every answer says this station keeps writes to once, and its build (api/oldest.ts).
     answer.headers["stillfail-idempotent"] = "1";
     answer.headers[BUILD_HEADER] = stationBuild();
@@ -293,13 +314,24 @@ export class Admin {
     const out: KeptSend[] = [];
     for (const [k, slot] of this.slots) {
       if (slot.at === null) continue;
-      const [viewer, path, key] = k.split("\0");
+      const parts = k.split("\0");
+      const [viewer, ws, method, path, key] = parts.length >= 5 ? parts : [parts[0], "", "POST", parts[1], parts[2]];
+      if (method !== "POST") continue;
       const thread = path === undefined ? undefined : SEND_PATH.exec(path)?.[1];
       const there = thread === undefined ? undefined : threads.get(Number(decodeURIComponent(thread)));
       if (there === undefined || key === undefined) continue;
       const kept = this.#settled.get(slot);
       if (kept === undefined || kept.status < 200 || kept.status >= 300) continue;
-      out.push({ viewer: viewer!, thread: there, key, at: slot.at, status: kept.status, headers: kept.headers, body: kept.body.toString("base64") });
+      out.push({
+        viewer: viewer!,
+        thread: there,
+        key,
+        at: slot.at,
+        status: kept.status,
+        headers: kept.headers,
+        body: kept.body.toString("base64"),
+        ...(ws ? { workspace: ws } : {}),
+      });
     }
     return out;
   }
@@ -307,9 +339,10 @@ export class Admin {
   /// What another station kept of the messages of a chat it handed here (`keptSends` there), kept here as if written
   /// here, for the rest of their time: over a refusal kept meanwhile (the chat was not shown here yet), never over a
   /// write of this station's own.
-  keepSends(sends: readonly KeptSend[]): void {
+  keepSends(sends: readonly KeptSend[], ws?: string | null): void {
     for (const s of sends) {
-      const k = `${s.viewer}\0/threads/${s.thread}/messages\0${s.key}`;
+      const boundWs = ws ?? s.workspace ?? "";
+      const k = `${s.viewer}\0${boundWs}\0POST\0/threads/${s.thread}/messages\0${s.key}`;
       const had = this.slots.get(k);
       if (had !== undefined && (had.at === null || ((this.#settled.get(had)?.status ?? 0) >= 200 && (this.#settled.get(had)?.status ?? 0) < 300))) continue;
       const kept: Kept = { status: s.status, headers: s.headers, body: Buffer.from(s.body, "base64") };
@@ -336,7 +369,8 @@ export class Admin {
     const moved = thread === undefined || !/^\d+$/.test(decodeURIComponent(thread)) ? null : movedAnswer(store, Number(decodeURIComponent(thread)), lang);
     if (moved !== null) return { refused: moved as Kept };
     if (key === null || key === "" || key.length > 200) return { ts: agents.hub.nextTs(), settle: () => {} };
-    const slotKey = `${viewer.email}\0${path}\0${key}`;
+    const legacySendKey = `${viewer.email}\0\0POST\0${path}\0${key}`;
+    const slotKey = this.slots.has(legacySendKey) ? legacySendKey : `${viewer.email}\0${viewer.workspace ?? ""}\0POST\0${path}\0${key}`;
     const now = (this.deps.clock ?? liveClock).currentTimeMillisUnsafe();
     for (const [k, slot] of this.slots) if (slot.at !== null && now - slot.at >= ONCE_KEEP_MS) this.slots.delete(k);
     for (;;) {
@@ -393,8 +427,10 @@ export class Admin {
     const slot: Slot = { at: null, answer: new Promise<Kept | null>((resolve) => (settle = resolve)) };
     this.slots.set(key, slot);
     let kept: Kept;
+    let noCache = false;
     try {
       const answer = await write();
+      noCache = answer.noCache === true;
       const parts: Buffer[] = [];
       if (Buffer.isBuffer(answer.body)) parts.push(answer.body);
       else for await (const chunk of answer.body) parts.push(Buffer.from(chunk));
@@ -404,7 +440,7 @@ export class Admin {
       this.slots.delete(key);
       throw e;
     }
-    if (kept.status < 500) {
+    if (kept.status < 500 && !noCache) {
       slot.at = (this.deps.clock ?? liveClock).currentTimeMillisUnsafe();
       this.#settled.set(slot, kept);
       settle(kept);

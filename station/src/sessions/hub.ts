@@ -28,6 +28,7 @@ import { liveClock, wall, within } from "../ops/fibers.ts";
 import { recordTracePayload, type Traces } from "../mesh/traces.ts";
 import { RUNTIME_KINDS, type AgentDriver, type AgentSession, type RuntimeKind } from "../agents/runtime.ts";
 import { billedPerUse } from "../agents/profiles.ts";
+import { formatWorkspaceProjectsDelta, hasProposalMarker, type ProjectsToldState } from "./projects.ts";
 import { endRunner, runnerId } from "../agents/process.ts";
 import { RUNNER_LEFT_MS, allLeft, isTerminalRunner, liveRunners, type RunnerInfo } from "../agents/runner.ts";
 import { log } from "../ops/log.ts";
@@ -175,6 +176,14 @@ export type HubOptions = {
   siteInstructions?: string;
   /// Whether moving to another station is on here (every station's; a test's may say not); on where none is said.
   moveOn?: () => boolean;
+  /// Whether workspace project classification (`FEATURES.projects`) is on here; off by default in tests unless enabled.
+  projectsOn?: () => boolean;
+  /// Home workspace id from `cloud.home()` (falls back to `workspaces()[0]`).
+  homeWorkspace?: () => string | null;
+  /// Whether this station is a rig-only node in workspace `ws`.
+  isRig?: (ws: string | null) => boolean;
+  /// Fired whenever `PROJECTS.jsonl` changes locally so `/events` pushes `"projects"` to clients.
+  onProjectsChanged?: (ws: string | null) => void;
   /// Reader for `<data>/upkeep-state.json` (default: `ops/upkeep-state.ts` `readUpkeepState`).
   readUpkeepState?: (dataDir: string) => Promise<UpkeepState>;
   /// Called when a session automatically falls back to a pay-as-you-go profile while subscriptions exist.
@@ -426,9 +435,21 @@ export class Hub {
           this.interruptedByRestart.delete(change.key);
           this.interruptedHook?.();
         }
+        // Only invalidate localProjectsCache when session membership/archive/ws actually changes (NOT on running/pending heartbeats).
+        const sig = row === null ? "" : `${row.ws ?? ""}\0${row.archivedAt ?? ""}`;
+        const prevSig = this.sessionProjectSig.get(change.key);
+        if (prevSig !== sig) {
+          this.sessionProjectSig.set(change.key, sig);
+          this.localProjectsCache.clear();
+        }
       } else if (change.type === "sessionRemoved") {
         this.live.running(change.key, false);
         if (this.interruptedByRestart.delete(change.key)) this.interruptedHook?.();
+        this.sessionProjectSig.delete(change.key);
+        this.localProjectsCache.clear();
+      } else if (change.type === "thread" && change.entries.length === 0) {
+        // Ordinary message appends (`entries.length > 0`) never alter project/tag classification; keep cache hot!
+        this.localProjectsCache.clear();
       }
     });
     this.deps = this.sessionDeps();
@@ -510,6 +531,108 @@ export class Hub {
 
   /// The workspaces whose chats this station hands to another as it is retired from them (replica/retire.ts).
   private readonly quieted = new Set<string>();
+  /// Per-session delivered `<workspace-projects>` state (cleaned up on session delete).
+  private readonly projectsTold = new Map<string, ProjectsToldState>();
+  /// Per-workspace cached online peer project names (60s TTL, invalidated on projects event / list / rename / merge).
+  private readonly peerProjectsCache = new Map<string, { at: number; names: string[] }>();
+  /// Per-workspace cached local workspace project/tag names + PROJECTS.jsonl stat/names + check timestamp (0-SQL / 0-stat hot path).
+  private readonly localProjectsCache = new Map<string, { projectNames: string[]; tagNames: string[]; infoMtime: number; infoSize: number; infoNames: string[]; infoCheckedAt: number }>();
+  /// Tracks `(ws, archivedAt)` per session key so ordinary running/pending heartbeats never invalidate `localProjectsCache`.
+  private readonly sessionProjectSig = new Map<string, string>();
+  /// Per-workspace deduplicated background peer refresh promises (keeps message delivery hot path non-blocking).
+  private readonly peerProjectsRefresh = new Map<string, Promise<void>>();
+  /// Deduplicates concurrent `project_manage(action="propose")` calls for the same (thread, session, project).
+  readonly inFlightProposals = new Map<string, Promise<string>>();
+  /// In-process receipt cache keyed by outbox `proposal.id` so a crash/error persisting `posted_ts` never double-posts externally.
+  readonly postedProposalsByOutboxId = new Map<string, string>();
+
+  /// This station's home workspace id (unified via `cloud.home()`, falling back to `workspaces()[0]`).
+  homeWorkspace(): string | null {
+    return this.options.homeWorkspace?.() ?? this.workspaces()[0] ?? null;
+  }
+
+  /// Whether workspace project classification is enabled on this station.
+  projectsOn(): boolean {
+    return this.options.projectsOn?.() ?? false;
+  }
+
+  /// Whether this station is a rig-only node in workspace `ws`.
+  isRigIn(ws: string | null): boolean {
+    return this.options.isRig?.(ws ?? this.homeWorkspace()) ?? false;
+  }
+
+  /// Whether session `key` is allowed to run workspace-level project actions here
+  /// (must be bound to at least one workspace, in its workspace, not quieted, and not a rig).
+  canActInWorkspace(key: string): boolean {
+    if (this.workspaces().length === 0) return false;
+    if (!this.inAWorkspace(key)) return false;
+    const ws = this.wsOf(key);
+    return !this.isRigIn(ws);
+  }
+
+  /// Peer RPC caller scoped to workspace `ws` without requiring a local session key (for `classifyForPeer` & background cache refresh).
+  peersInWorkspace(ws: string | null): ((station: string, request: Json) => Promise<Json>) | null {
+    const call = this.peersHook;
+    if (!call) return null;
+    const effective = ws ?? this.homeWorkspace();
+    return (station, request) => call(station, { ...(effective !== null ? { workspace: effective } : {}), ...request });
+  }
+
+  /// Triggers a deduplicated background refresh of peer project names for `wsKey` without blocking the caller.
+  triggerPeerProjectsRefresh(wsKey: string, fetcher: () => Promise<string[]>): void {
+    if (this.peerProjectsRefresh.has(wsKey)) return;
+    const work = fetcher()
+      .then((names) => {
+        this.peerProjectsCache.set(wsKey, { at: this.store.now(), names });
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (this.peerProjectsRefresh.get(wsKey) === work) this.peerProjectsRefresh.delete(wsKey);
+      });
+    this.peerProjectsRefresh.set(wsKey, work);
+    this.options.background?.(work);
+  }
+
+  /// Clears a deleted session's `<workspace-projects>` delivery state.
+  clearProjectsTold(key: string): void {
+    this.projectsTold.delete(key);
+  }
+
+  /// Invalidates cached peer & local project names for workspace `ws` (or all workspaces when omitted).
+  invalidateProjectsCache(ws?: string | null): void {
+    if (ws === undefined) {
+      this.peerProjectsCache.clear();
+      this.localProjectsCache.clear();
+      return;
+    }
+    const wsKey = ws ?? this.homeWorkspace() ?? "";
+    this.peerProjectsCache.delete(wsKey);
+    this.localProjectsCache.delete(wsKey);
+  }
+
+  getLocalProjectsCache(wsKey: string): { projectNames: string[]; tagNames: string[]; infoMtime: number; infoSize: number; infoNames: string[]; infoCheckedAt: number } | null {
+    return this.localProjectsCache.get(wsKey) ?? null;
+  }
+
+  setLocalProjectsCache(wsKey: string, val: { projectNames: string[]; tagNames: string[]; infoMtime: number; infoSize: number; infoNames: string[]; infoCheckedAt: number }): void {
+    this.localProjectsCache.set(wsKey, val);
+  }
+
+  /// Notifies connected clients and invalidates peer projects cache after a `PROJECTS.jsonl` mutation.
+  notifyProjectsChanged(ws: string | null): void {
+    this.invalidateProjectsCache(ws);
+    this.options.onProjectsChanged?.(ws);
+  }
+
+  getPeerProjectsCache(wsKey: string, now: number, ttlMs: number): string[] | null {
+    const hit = this.peerProjectsCache.get(wsKey);
+    if (!hit || now - hit.at >= ttlMs) return null;
+    return hit.names;
+  }
+
+  setPeerProjectsCache(wsKey: string, now: number, names: string[]): void {
+    this.peerProjectsCache.set(wsKey, { at: now, names });
+  }
 
   /// Whether session `key` is one of `ws`'s chats here: its workspace, a home one's saying none (as `inAWorkspace`
   /// reads it), or one put out of sight as the station was retired from `ws` (`retiredWs`).
@@ -905,6 +1028,7 @@ export class Hub {
   /// Takes one event from a connect's platform. Resolves once it is durably recorded (or deliberately ignored).
   async receive(connectId: string, event: ChatEvent) {
     if (event.type === "message") return this.accept(connectId, event.message);
+    if (event.type === "ownNotice") return this.acceptOwnNotice(connectId, event.message);
     if (event.type === "loginCode") return this.enterCode(connectId, event);
     if (event.type === "stop") {
       const thread = this.store.threadAt(this.surface(connectId), event.channel, event.threadTs);
@@ -916,6 +1040,7 @@ export class Hub {
       }
       return;
     }
+    if (event.type !== "changed") return;
     const prepare = this.prepareLegacyEdits;
     if (prepare === null) {
       this.store.editMessage(this.surface(connectId), event.channel, event.threadTs, event.ts, event.text);
@@ -988,11 +1113,73 @@ export class Hub {
     return run;
   }
 
+  /// Accepts an `ownNotice` event (this station's own bot notice) inside the thread queue solely for proposal reconciliation.
+  private async acceptOwnNotice(connectId: string, message: InboundMessage) {
+    const at = `${this.surface(connectId)}\0${message.channel}\0${message.threadTs}`;
+    return this.inThread(at, async () => {
+      if (isNotice(message.text)) {
+        this.reconcileNoticeProposalEcho(connectId, message);
+      }
+    });
+  }
+
+  private reconcileNoticeProposalEcho(senderConnectId: string, message: InboundMessage): void {
+    if (!isNotice(message.text)) return;
+    let surface: string;
+    try {
+      surface = this.surface(senderConnectId);
+    } catch {
+      return;
+    }
+    const existing = this.store.threadAt(surface, message.channel, message.threadTs);
+    if (!existing) return;
+    const outboxes = this.store.sendingOutboxesForThread(existing.id);
+    if (outboxes.length === 0) return;
+    const stripped = message.text.trimEnd().replace(/\u2063+$/, "").trim();
+    const matches = outboxes.filter(
+      (o) => o.connect === senderConnectId && hasProposalMarker(message.text, o.id),
+    );
+    // Only reconcile when there is a single unambiguous proposal-ID match for the sender bot's connect.
+    if (matches.length !== 1) return;
+    const outbox = matches[0]!;
+    // Never attach a new proposal onto a pre-existing entry created at or before `outbox.baseN`.
+    const existingN = this.store.messageNumberAt(existing.id, message.ts);
+    if (existingN !== null && existingN <= outbox.baseN) return;
+    const [n, fresh] = this.store.insertMessage({
+      thread: existing.id,
+      ts: message.ts,
+      authorKind: "agent",
+      author: message.user || outbox.author,
+      text: stripped,
+      attachments: [],
+      proposal: outbox.payload,
+    });
+    if (!fresh) {
+      const stored = this.store.getEntry(existing.id, n);
+      if (stored?.proposal === undefined) {
+        this.store.attachEntryProposal(existing.id, n, outbox.payload);
+      }
+    }
+    const verified = this.store.getEntry(existing.id, n);
+    if (verified?.proposal?.id === outbox.payload.id) {
+      this.store.setPendingProposalPostedTs(existing.id, outbox.author, outbox.name, message.ts);
+      this.store.deletePendingProposalOutbox(existing.id, outbox.author, outbox.name);
+      this.postedProposalsByOutboxId.delete(outbox.payload.id);
+    }
+  }
+
   private async acceptInTurn(connectId: string, message: InboundMessage) {
     const config = this.config();
     // What a bot of this station posted is its agent's, recorded and handed to the thread as it was posted: Slack's
     // copy of it, seen through another connect, is not a message of its own.
-    if (this.ownBot(config, message.user)) return;
+    const senderConnects = this.ownBotConnectIds(config, message.user);
+    if (senderConnects.length > 0) {
+      // Only reconcile when the sender bot user uniquely identifies ONE connect of this station!
+      if (senderConnects.length === 1 && isNotice(message.text)) {
+        this.reconcileNoticeProposalEcho(senderConnects[0]!, message);
+      }
+      return;
+    }
     // (a notice of another station's, come back through another bot's connect: no person said it)
     if (this.stationNotice(config, message)) return;
     const connect = connectOf(config, connectId);
@@ -1897,12 +2084,20 @@ export class Hub {
     return false;
   }
 
+  /// Connects of this station whose bot user id matches `user`.
+  private ownBotConnectIds(config: HubConfig, user: string): string[] {
+    if (user === "") return [];
+    const out: string[] = [];
+    for (const c of config.connects) {
+      const bot = this.chatOf(c.id)?.botUserId() ?? "";
+      if (bot !== "" && bot === user) out.push(c.id);
+    }
+    return out;
+  }
+
   /// A Slack user that is one of this station's connects' bots.
   private ownBot(config: HubConfig, user: string): boolean {
-    return config.connects.some((c) => {
-      const bot = this.chatOf(c.id)?.botUserId() ?? "";
-      return bot !== "" && bot === user;
-    });
+    return this.ownBotConnectIds(config, user).length > 0;
   }
 
   private online(row: SessionRow): boolean {
@@ -2107,6 +2302,8 @@ export class Hub {
       reposDir: () => this.reposDir(),
       siteInstructions: () => this.options.siteInstructions ?? "",
       moveOn: () => this.options.moveOn?.() ?? true,
+      projectsOn: () => this.projectsOn(),
+      untoldProjects: (key) => formatWorkspaceProjectsDelta(this, key, this.projectsTold),
       ownName: () => {
         const me = this.options.station?.() ?? null;
         return me === null ? "" : (this.options.stationName?.(me) ?? "");

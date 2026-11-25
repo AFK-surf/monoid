@@ -240,7 +240,7 @@ export function world(ids: string[] = [A, B], o: { answerMs?: boolean; packMost?
           return () => void (gone || ((gone = true), st.holds--));
         },
         keptSends: (threads) => st.admin.keptSends(threads),
-        keepSends: (sends) => st.admin.keepSends(sends),
+        keepSends: (sends, ws) => st.admin.keepSends(sends, ws),
         vault: {
           owners: (ws) => (rig.store.db.prepare("SELECT DISTINCT owner FROM vault_plain WHERE ws = ?").all(ws) as { owner: string }[]).map((r) => r.owner),
           grantOwners: () => new Map(),
