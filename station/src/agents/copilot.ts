@@ -15,7 +15,9 @@
 // - its home (COPILOT_HOME, the SDK's `baseDirectory`) is in the shared sessions (cursor/sessions/home's like), so a
 //   session resumes on whichever profile takes it up; the transcript beside it, <sessions>/<session id>.jsonl;
 // - the station's instructions are appended to Copilot's system message; its tools an HTTP MCP server named
-//   `stillfail` (the model sees them as stillfail-<tool>); the workspace's skills a skills directory;
+//   `stillfail` (the model sees them as stillfail-<tool>); the workspace's skills a skills directory; and the profile's own
+//   MCP servers and skills, in the Copilot CLI's shapes in its Copilot directory (mcp-config.json, skills/), read by the
+//   bridge (`ownConfig`): a profile is given what it was given, never the machine's own ~/.copilot;
 // - every tool runs without approvals, but a subagent's call of a speaking tool (tools/mcp.ts `SPEAKS`, slack_api's
 //   writes), refused by the SDK's pre-tool hook on the `agentId` the runtime gives it.
 import { access, mkdir, readFile } from "node:fs/promises";
@@ -213,6 +215,7 @@ export class CopilotDriver extends OwnProcessDriver<CopilotSession> {
         mcpUrl: options.mcpUrl,
         instructions: copilotRules(options.instructions),
         ...(options.skills !== undefined ? { skills: options.skills } : {}),
+        own: copilotHome(options.profile.home),
         sessions,
         silent: SILENT,
         ...this.extra,
