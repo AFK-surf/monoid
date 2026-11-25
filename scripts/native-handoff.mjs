@@ -4,9 +4,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Resolver } from "node:dns/promises";
 import { createReadStream, realpathSync } from "node:fs";
-import { open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
@@ -169,20 +169,43 @@ export async function fetchHandoff(at, init = {}, options = {}) {
 }
 
 const getTimeoutsMs = [20_000, 30_000, 45_000, 60_000];
+// Direct routes (STILLFAIL_DIRECT_DNS on Shanghai/Mini1 runners) already abort stalled sockets in idleMs (8 s);
+// a healthy 4 MB chunk over evening international egress can stream steadily for 25-40 s, so routeMs starts at 60 s
+// instead of aborting healthy streams at 20 s and 30 s (#45632883823).
+const directGetTimeoutsMs = [60_000, 60_000, 90_000];
 const writeTimeoutsMs = [60_000, 60_000, 60_000];
 const knownTargets = [
   "ios-sim-arm64", "android-arm64", "darwin-arm64", "darwin-x64",
   "linux-arm64", "linux-x64", "win32-arm64", "win32-x64", "ios-arm64", "wasm32",
 ];
 
-/** The target triple encoded in a native archive filename, or null when unrecognized. */
-export function archiveTarget(name) {
-  const stem = name.replace(/-[a-f0-9]{24}\.tar\.gz$/, "");
-  if (stem === name) return null;
+/** The `{ part, target, key }` encoded in a native archive filename, or null when unrecognized. */
+export function archiveMeta(name) {
+  const match = /^([a-z0-9-]+)-([a-f0-9]{24})\.tar\.gz$/.exec(name);
+  if (!match) return null;
+  const [, stem, key] = match;
   for (const target of knownTargets) {
-    if (stem.endsWith("-" + target)) return target;
+    if (stem.endsWith("-" + target) && stem.length > target.length + 1) {
+      return { part: stem.slice(0, -(target.length + 1)), target, key };
+    }
   }
   return null;
+}
+
+/** The target triple encoded in a native archive filename, or null when unrecognized. */
+export function archiveTarget(name) {
+  return archiveMeta(name)?.target ?? null;
+}
+
+function resolvePartSet(spec) {
+  if (!spec) return null;
+  const raw = typeof spec === "string" ? spec.split(",") : Array.from(spec);
+  const parts = new Set();
+  for (const item of raw) {
+    const trimmed = String(item).trim();
+    if (trimmed) parts.add(trimmed);
+  }
+  return parts.size ? parts : null;
 }
 
 /** Allowed targets for `restore`, or null to download every archive in the manifests. */
@@ -206,7 +229,7 @@ export function resolveTargets(spec, host = `${process.platform}-${process.arch}
 async function transfer(url, options, consume, policy = {}) {
   const direct = directDns(new URL(url));
   const method = options.method ?? "GET";
-  const timeouts = policy.timeoutsMs ?? (method === "GET" ? getTimeoutsMs : writeTimeoutsMs);
+  const timeouts = policy.timeoutsMs ?? (method === "GET" ? (direct ? directGetTimeoutsMs : getTimeoutsMs) : writeTimeoutsMs);
   const maxAttempts = timeouts.length;
   const backoffMs = policy.backoffMs ?? ((attempt) => attempt * 1000);
   const callerSignal = options.signal;
@@ -336,6 +359,8 @@ function receiptLocation(key) {
 export async function restore(dir, sha, options = {}) {
   if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Missing source commit for native artifacts");
   const allowed = resolveTargets(options.targets, options.host);
+  const excludedParts = resolvePartSet(options.excludeParts);
+  const cacheDir = options.cacheDir !== undefined ? String(options.cacheDir) : (process.env.STILLFAIL_NATIVE_CACHE ?? "");
   const rawConcurrency = options.concurrency ?? 4;
   const concurrency = Number.isFinite(rawConcurrency) ? Math.max(1, Math.floor(rawConcurrency)) : 4;
   const policy = {
@@ -350,11 +375,22 @@ export async function restore(dir, sha, options = {}) {
     for (const { name, sha256, chunks } of entries) {
       if (!asset.test(name) || !/^[a-f0-9]{64}$/.test(sha256) || !Array.isArray(chunks) || !chunks.length ||
           !chunks.every((key) => typeof key === "string" && receipt.exec(receiptLocation(key).receipt)?.[1] === sha)) throw new Error("Invalid native manifest");
-      if (allowed) {
-        const target = archiveTarget(name);
-        if (target && !allowed.has(target)) continue;
-      }
+      const meta = archiveMeta(name);
+      if (allowed && meta && !allowed.has(meta.target)) continue;
+      if (excludedParts && meta && excludedParts.has(meta.part)) continue;
       if (restored.has(name)) continue;
+      // On shared self-hosted runners (ci-1, Mini1), STILLFAIL_NATIVE_CACHE holds parts built by natives* jobs on the
+      // same NVMe disk; scripts/native.ts checks the cache before STILLFAIL_NATIVE_INBOX, so skip re-downloading via R2.
+      if (cacheDir && meta) {
+        const cachedManifest = join(cacheDir, meta.part, `${meta.target}-${meta.key}`, "manifest.json");
+        if ((await stat(cachedManifest).catch(() => null))?.isFile()) {
+          const access = join(cacheDir, ".access", meta.part, `${meta.target}-${meta.key}`);
+          await mkdir(dirname(access), { recursive: true }).then(() => writeFile(access, "")).catch(() => {});
+          restored.add(name);
+          console.log("Already in native cache: " + name);
+          continue;
+        }
+      }
       const results = new Array(chunks.length);
       let next = 0;
       let firstError = null;
@@ -407,11 +443,12 @@ if (isMain()) {
   const [op, dir, arg, ...rest] = process.argv.slice(2);
   if (op === "put" && rest.length === 0) await put(dir, arg);
   else if (op === "get") {
-    let targets;
+    let targets, excludeParts;
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === "--targets" && i + 1 < rest.length) targets = rest[++i];
-      else throw new Error("Usage: native-handoff.mjs put DIR MANIFEST | get DIR COMMIT [--targets SPEC]");
+      else if (rest[i] === "--exclude-parts" && i + 1 < rest.length) excludeParts = rest[++i];
+      else throw new Error("Usage: native-handoff.mjs put DIR MANIFEST | get DIR COMMIT [--targets SPEC] [--exclude-parts PARTS]");
     }
-    await restore(dir, arg, { targets });
-  } else throw new Error("Usage: native-handoff.mjs put DIR MANIFEST | get DIR COMMIT [--targets SPEC]");
+    await restore(dir, arg, { targets, excludeParts });
+  } else throw new Error("Usage: native-handoff.mjs put DIR MANIFEST | get DIR COMMIT [--targets SPEC] [--exclude-parts PARTS]");
 }

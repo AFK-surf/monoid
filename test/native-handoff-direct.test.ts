@@ -479,3 +479,101 @@ test("restore escalates direct routeMs across retries when STILLFAIL_DIRECT_DNS 
   assert.deepEqual(seenRouteMs, [120, 240]);
   assert.equal(readFileSync(join(dir, name), "utf8"), payload.toString("utf8"));
 });
+
+test("restore skips archives already in STILLFAIL_NATIVE_CACHE, excludes parts, and gives direct GETs a 60s route deadline", async (t) => {
+  const { createHash } = await import("node:crypto");
+  const { existsSync } = await import("node:fs");
+  const { archiveMeta, restore } = await import(pathToFileURL(script).href);
+
+  assert.deepEqual(archiveMeta(`reader-harness-linux-x64-${"a".repeat(24)}.tar.gz`), {
+    part: "reader-harness",
+    target: "linux-x64",
+    key: "a".repeat(24),
+  });
+  assert.deepEqual(archiveMeta(`shell-ios-sim-arm64-${"b".repeat(24)}.tar.gz`), {
+    part: "shell",
+    target: "ios-sim-arm64",
+    key: "b".repeat(24),
+  });
+  assert.equal(archiveMeta(`linux-x64-${"c".repeat(24)}.tar.gz`), null);
+  assert.equal(archiveMeta(`custom-blob-${"d".repeat(24)}.tar.gz`), null);
+
+  const dir = mkdtempSync(join(tmpdir(), "native-handoff-cache-"));
+  const cacheDir = join(dir, "cache");
+  const inbox = join(dir, "inbox");
+  mkdirSync(inbox);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const sha = "d".repeat(40);
+  const mkReceipt = (n: number) => `1700000000-${sha}/00000000-0000-4000-8000-00000000001${n}`;
+  const cachedKey = "1".repeat(24);
+  const partialKey = "2".repeat(24);
+  const harnessKey = "3".repeat(24);
+  const cachedName = `reader-linux-x64-${cachedKey}.tar.gz`;
+  const partialName = `pion-reader-linux-x64-${partialKey}.tar.gz`;
+  const harnessName = `reader-harness-linux-x64-${harnessKey}.tar.gz`;
+
+  // Populate a complete cache entry (with manifest.json) and an incomplete directory (without manifest.json).
+  mkdirSync(join(cacheDir, "reader", `linux-x64-${cachedKey}`), { recursive: true });
+  writeFileSync(join(cacheDir, "reader", `linux-x64-${cachedKey}`, "manifest.json"), "{}\n");
+  mkdirSync(join(cacheDir, "pion-reader", `linux-x64-${partialKey}`), { recursive: true });
+
+  const partialBytes = Buffer.from("pion-reader-bytes");
+  const partialSha = createHash("sha256").update(partialBytes).digest("hex");
+  const dummySha = createHash("sha256").update("unused").digest("hex");
+  writeFileSync(join(inbox, "natives.r2.json"), JSON.stringify([
+    { name: cachedName, sha256: dummySha, chunks: [mkReceipt(0)] },
+    { name: partialName, sha256: partialSha, chunks: [mkReceipt(1)] },
+  ]));
+  writeFileSync(join(inbox, "natives-harness.r2.json"), JSON.stringify([
+    { name: harnessName, sha256: dummySha, chunks: [mkReceipt(2)] },
+  ]));
+
+  const prevDns = process.env.STILLFAIL_DIRECT_DNS;
+  process.env.STILLFAIL_DIRECT_DNS = "223.5.5.5";
+  t.after(() => {
+    if (prevDns === undefined) delete process.env.STILLFAIL_DIRECT_DNS;
+    else process.env.STILLFAIL_DIRECT_DNS = prevDns;
+  });
+
+  const fetched: { path: string; routeMs: number | undefined }[] = [];
+  await restore(inbox, sha, {
+    targets: "host",
+    host: "linux-x64",
+    excludeParts: "reader-harness",
+    cacheDir,
+    backoffMs: () => 1,
+    fetcher: async (at: string | URL, _init?: RequestInit, opts?: { routeMs?: number }) => {
+      const path = new URL(String(at)).pathname;
+      fetched.push({ path, routeMs: opts?.routeMs });
+      if (path.endsWith("000000000010")) throw new Error("cached archive should not be fetched");
+      if (path.endsWith("000000000012")) throw new Error("excluded reader-harness should not be fetched");
+      if (fetched.length <= 2) {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      }
+      return new Response(partialBytes);
+    },
+  });
+
+  // Default direct GET deadlines are [60_000, 60_000, 90_000] so healthy slow streams are not aborted at 20s/30s.
+  assert.deepEqual(fetched.map((f) => f.routeMs), [60_000, 60_000, 90_000]);
+  assert.equal(readFileSync(join(inbox, partialName), "utf8"), "pion-reader-bytes");
+  assert.throws(() => readFileSync(join(inbox, cachedName)), { code: "ENOENT" });
+  assert.throws(() => readFileSync(join(inbox, harnessName)), { code: "ENOENT" });
+  assert.equal(existsSync(join(cacheDir, ".access", "reader", `linux-x64-${cachedKey}`)), true);
+
+  // CLI --exclude-parts flag works end-to-end.
+  const cliInbox = join(dir, "cli-inbox");
+  mkdirSync(cliInbox);
+  writeFileSync(join(cliInbox, "natives-harness.r2.json"), JSON.stringify([
+    { name: harnessName, sha256: dummySha, chunks: [mkReceipt(2)] },
+  ]));
+  const cliMock = `globalThis.fetch = async (at) => { throw new Error("unexpected fetch " + at); };`;
+  const cliRes = spawnSync(
+    process.execPath,
+    ["--import", "data:text/javascript," + encodeURIComponent(cliMock), script, "get", cliInbox, sha, "--targets", "all", "--exclude-parts", "reader-harness"],
+    { encoding: "utf8", env: { ...process.env, STILLFAIL_DIRECT_DNS: "", STILLFAIL_NATIVE_CACHE: "" }, timeout: 10_000 },
+  );
+  assert.equal(cliRes.status, 0, cliRes.stderr);
+  assert.throws(() => readFileSync(join(cliInbox, harnessName)), { code: "ENOENT" });
+});

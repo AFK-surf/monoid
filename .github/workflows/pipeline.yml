@@ -1248,6 +1248,7 @@ jobs:
         with: { fetch-depth: 0, filter: "blob:none" }
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/natives
+        with: { harness: 'true' }
       # (the footprint tests mount a tmpfs in a user namespace, which Ubuntu 24.04's AppArmor keeps from a user's)
       - run: sudo -n sysctl -qw kernel.apparmor_restrict_unprivileged_userns=0 || true
       - name: The station's tests, slice ${{ matrix.shard }} of 6
@@ -1282,6 +1283,7 @@ jobs:
         with: { fetch-depth: 0, filter: "blob:none" }
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/natives
+        with: { harness: 'true' }
       - name: The core's tests, slice ${{ matrix.shard }} of 3
         run: |
           range='${{ needs.plan.outputs.range }}'
