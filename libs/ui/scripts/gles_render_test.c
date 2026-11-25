@@ -909,8 +909,8 @@ int main(void) {
              ld_case[i][1], ld_case[i][2], ld_case[i][3], c[0], c[1], c[2], ld_lum[i]);
     }
     CHECK(memcmp(px_ld[0], px_ld[1], (size_t)fb_w * fb_h * 4) == 0);
-    CHECK(ld_lum[1] >= 0.25 && ld_lum[1] <= 0.36);
-    CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.40);
+    CHECK(ld_lum[1] >= 0.39 && ld_lum[1] <= 0.48);
+    CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.35);
     CHECK(px_ld[3][((fb_h - 1 - 70) * fb_w + 100) * 4 + 0] >= (int)(0.72 * 255.0 + 0.5));
     unsigned char *c_ff = px_ld[4] + ((fb_h - 1 - 70) * fb_w + 100) * 4;
     CHECK(abs((int)c_ff[0] - 253) <= 4 && abs((int)c_ff[1] - 252) <= 4 && abs((int)c_ff[2] - 253) <= 4);
@@ -3121,10 +3121,10 @@ int main(void) {
       double blur, adaptive;
       int exp_r, exp_g, exp_b, tol;
     } p0_cases[5] = {
-      {"dark_black",    0.0, 0.0, 0.0,                   32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0, 30,  30,  30, 3},
-      {"dark_1b1c1f",   27.0/255.0, 28.0/255.0, 31.0/255.0, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, 0.0, 46,  47,  50, 3},
+      {"dark_black",    0.0, 0.0, 0.0,                   32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0, 42,  42,  42, 3},
+      {"dark_1b1c1f",   27.0/255.0, 28.0/255.0, 31.0/255.0, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, 0.0, 58,  59,  62, 3},
       {"dark_ad_white", 1.0, 1.0, 1.0,                   32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, -1.0, 93,  93,  93, 3},
-      {"light_blue",    0.0, 136.0/255.0, 1.0,           253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67/255.0, 2.0, 0.0, 40, 154, 255, 3},
+      {"light_blue",    0.0, 136.0/255.0, 1.0,           253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67/255.0, 2.0, 0.0, 53, 160, 255, 3},
       {"pure_clear",    0.0, 1.0, 64.0/255.0,            1.0, 1.0, 1.0, 0.0,                              0.0,  0.0,  0, 255,  64, 1},
     };
     double p0[2 * MB_INST];
@@ -3740,9 +3740,15 @@ int main(void) {
         double L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
         if (L < side_lmin) side_lmin = L;
       }
-      printf("gles_render: v10_reg_light_2x max_d2=%.2f side_lmin=%.2f\n", max_d2, side_lmin);
+      unsigned char *lc_top = V_PX(px, 80 * 2, 10 * 2 + 1);
+      unsigned char *lc_mid = V_PX(px, 80 * 2, 40 * 2);
+      double light_top_L = 0.2126 * lc_top[0] + 0.7152 * lc_top[1] + 0.0722 * lc_top[2];
+      double light_mid_L = 0.2126 * lc_mid[0] + 0.7152 * lc_mid[1] + 0.0722 * lc_mid[2];
+      printf("gles_render: v10_reg_light_2x max_d2=%.2f side_lmin=%.2f top_L=%.1f mid_L=%.1f\n",
+             max_d2, side_lmin, light_top_L, light_mid_L);
       CHECK(max_d2 <= 14.0);
-      CHECK(side_lmin >= 212.0 && side_lmin <= 232.0);
+      CHECK(side_lmin >= 198.0 && side_lmin <= 222.0);
+      CHECK(light_top_L >= light_mid_L);
       free(px);
       double rgd[2 * MB_INST];
       V_RECT(rgd, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
@@ -3777,10 +3783,35 @@ int main(void) {
         }
       }
       printf(" roi_fnv1a=0x%016llx\n", (unsigned long long)dh);
-      CHECK(dh == 0x80e02702612bc2bbULL);
-      CHECK(l_top > l_mid + 5.0);
-      CHECK(l_side >= l_mid - 6.0 && l_side <= l_mid + 20.0);
+      CHECK(dh == 0x73596824341629a5ULL);
+      CHECK(l_top > l_mid + 20.0);
+      CHECK(l_side < l_mid - 10.0 && l_side >= 18.0);
       free(pxd);
+      // V12-AntiSmear: Regular Light blur=1.2pt at 3x over 2pt alternating dark/light strokes must preserve contrast
+      V_SETUP(3);
+      double sm[7 * MB_INST];
+      V_RECT(sm, 0, 0, VW, VH, 0, 244.0 / 255.0, 241.0 / 255.0, 234.0 / 255.0, 0);
+      for (int si = 0; si < 5; si++) {
+        V_RECT(sm + (si + 1) * MB_INST, 20, 30 + si * 4, 120, 2, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+      }
+      V_RECT(sm + 6 * MB_INST, 20, 10, 120, 60, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -711);
+      sm[6 * MB_INST + 4] = 24.0; sm[6 * MB_INST + 6] = 1.0; sm[6 * MB_INST + 7] = 1.2;
+      sm[6 * MB_INST + 11] = 0x67 / 255.0; sm[6 * MB_INST + 12] = 0.6; sm[6 * MB_INST + 13] = 20.0;
+      sm[6 * MB_INST + 15] = 1.0; sm[6 * MB_INST + 21] = 28.0; sm[6 * MB_INST + 22] = 0.06; sm[6 * MB_INST + 23] = 0.0;
+      glass_forget();
+      gl_present(sm, 7, 244.0 / 255.0, 241.0 / 255.0, 234.0 / 255.0);
+      unsigned char *pxs = pixels_of_fb(vfb);
+      double sm_min = 1e9, sm_max = -1.0;
+      for (int py = 34 * 3; py <= 42 * 3; py++) {
+        unsigned char *c = V_PX(pxs, 80 * 3, py);
+        double L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        if (L < sm_min) sm_min = L;
+        if (L > sm_max) sm_max = L;
+      }
+      printf("gles_render: v12_reg_antismear_3x min_L=%.1f max_L=%.1f delta=%.1f\n", sm_min, sm_max, sm_max - sm_min);
+      CHECK(sm_max - sm_min >= 12.0 && sm_min >= 170.0);
+      free(pxs);
+      V_SETUP(2);
     }
 
     // --- V11-AA & V11-Wall: Switch ON (Dark & Light, 3x & 2x, shadow-free) ---

@@ -761,8 +761,8 @@ int main(void) {
                (int)ld_case[i][0], ld_case[i][1], ld_case[i][2], ld_case[i][3], c[2], c[1], c[0], ld_lum[i]);
       }
       CHECK(memcmp(px_ld[0], px_ld[1], (size_t)aw * (size_t)ah * 4) == 0);
-      CHECK(ld_lum[1] >= 0.25 && ld_lum[1] <= 0.36);
-      CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.40);
+      CHECK(ld_lum[1] >= 0.39 && ld_lum[1] <= 0.48);
+      CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.35);
       CHECK(px_ld[3][(300 * aw + 400) * 4 + 2] >= (int)(0.72 * 255.0 + 0.5));
       uint8_t *c_ff = px_ld[4] + (300 * aw + 400) * 4;
       CHECK(abs((int)c_ff[2] - 253) <= 4 && abs((int)c_ff[1] - 252) <= 4 && abs((int)c_ff[0] - 253) <= 4);
@@ -2406,11 +2406,11 @@ int main(void) {
     last_inst = NULL;
     last_cap = 0;
 
-    // P0 optics fix numerical smoke vectors:
-    // 0: Dark Regular (0x20202067) over #000000 -> (30,30,30)
-    // 1: Dark Regular (0x20202067) over #1B1C1F -> (46,47,50)
+    // P0 optics fix numerical smoke vectors (calibrated to native iOS 27.0 Regular Glass):
+    // 0: Dark Regular (0x20202067) over #000000 -> (42,42,42)
+    // 1: Dark Regular (0x20202067) over #1B1C1F -> (58,59,62)
     // 2: Dark Adaptive (0x20202067, adaptive=1) over #FFFFFF -> (93,93,93)
-    // 3: Light Regular (0xFDFCFD67) over #0088FF -> (40,154,255), HSV S >= 0.75
+    // 3: Light Regular (0xFDFCFD67) over #0088FF -> (53,160,255), HSV S >= 0.75
     // 4: Pure Clear (0xFFFFFF00, regMix=0) over (0,255,64) -> (0,255,64)
     {
       struct {
@@ -2420,10 +2420,10 @@ int main(void) {
         double blur, adaptive;
         int exp_r, exp_g, exp_b, tol;
       } p0_cases[5] = {
-        {"dark_black",    0.0, 0.0, 0.0,                      32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0, 30,  30,  30, 3},
-        {"dark_1b1c1f",   27.0/255.0, 28.0/255.0, 31.0/255.0, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0, 46,  47,  50, 3},
+        {"dark_black",    0.0, 0.0, 0.0,                      32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0, 42,  42,  42, 3},
+        {"dark_1b1c1f",   27.0/255.0, 28.0/255.0, 31.0/255.0, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0, 58,  59,  62, 3},
         {"dark_ad_white", 1.0, 1.0, 1.0,                      32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, -1.0, 93,  93,  93, 3},
-        {"light_blue",    0.0, 136.0/255.0, 1.0,              253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67/255.0, 2.0, 0.0, 40, 154, 255, 3},
+        {"light_blue",    0.0, 136.0/255.0, 1.0,              253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67/255.0, 2.0, 0.0, 53, 160, 255, 3},
         {"pure_clear",    0.0, 1.0, 64.0/255.0,               1.0, 1.0, 1.0, 0.0,                              0.0,  0.0,  0, 255,  64, 1},
       };
       double p0[2 * MB_INST];
@@ -3061,11 +3061,17 @@ int main(void) {
             double L = 0.2126 * c[2] + 0.7152 * c[1] + 0.0722 * c[0];
             if (L < side_lmin) side_lmin = L;
           }
-          printf("apple_render: v10_reg_light_2x max_d2=%.2f side_lmin=%.2f\n", max_d2, side_lmin);
+          uint8_t *lc_top = A_PX(px, aw, 80 * 2, 10 * 2 + 1);
+          uint8_t *lc_mid = A_PX(px, aw, 80 * 2, 40 * 2);
+          double light_top_L = 0.2126 * lc_top[2] + 0.7152 * lc_top[1] + 0.0722 * lc_top[0];
+          double light_mid_L = 0.2126 * lc_mid[2] + 0.7152 * lc_mid[1] + 0.0722 * lc_mid[0];
+          printf("apple_render: v10_reg_light_2x max_d2=%.2f side_lmin=%.2f top_L=%.1f mid_L=%.1f\n",
+                 max_d2, side_lmin, light_top_L, light_mid_L);
           CHECK(max_d2 <= 14.0);
-          CHECK(side_lmin >= 212.0 && side_lmin <= 232.0);
+          CHECK(side_lmin >= 198.0 && side_lmin <= 222.0);
+          CHECK(light_top_L >= light_mid_L);
           free(px);
-          // V10-Dark: Dark Regular Glass (@2x, R=24pt, regRim enabled) top rim > interior, side & 45-deg corner invariants
+          // V10-Dark: Dark Regular Glass (@2x, R=24pt, regRim enabled) top rim > interior, crisp dark side contour
           double rgd[2 * MB_INST];
           rect_at(rgd, 0, 0, 160, 80, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
           rect_at(rgd + MB_INST, 20, 10, 120, 60, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -71);
@@ -3102,10 +3108,38 @@ int main(void) {
             }
           }
           printf("apple_render: v10_reg_dark_2x top=%.1f mid=%.1f side=%.1f roi_fnv1a=0x%016llx\n", l_top, l_mid, l_side, (unsigned long long)dh);
-          CHECK(dh == 0xbf214b492568e589ULL);
-          CHECK(l_top > l_mid + 5.0);
-          CHECK(l_side >= l_mid - 6.0 && l_side <= l_mid + 20.0);
+          CHECK(dh == 0x3283f4dee71ecbf2ULL);
+          CHECK(l_top > l_mid + 20.0);
+          CHECK(l_side < l_mid - 10.0 && l_side >= 18.0);
           free(pxd);
+          // V12-AntiSmear: Regular Light blur=1.2pt at 3x over 2pt alternating dark/light strokes must keep
+          // full-res stroke separation (blocks reintroduction of secondary detailAmt smear or k=1 blur downsample).
+          mb_render_set_size(160, 80, 3);
+          double sm[7 * MB_INST];
+          rect_at(sm, 0, 0, 160, 80, 0, 244.0 / 255.0, 241.0 / 255.0, 234.0 / 255.0, 0);
+          for (int si = 0; si < 5; si++) {
+            rect_at(sm + (si + 1) * MB_INST, 20, 30 + si * 4, 120, 2, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
+          }
+          rect_at(sm + 6 * MB_INST, 20, 10, 120, 60, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -711);
+          sm[6 * MB_INST + 4] = 24.0; sm[6 * MB_INST + 6] = 1.0; sm[6 * MB_INST + 7] = 1.2;
+          sm[6 * MB_INST + 11] = 0x67 / 255.0; sm[6 * MB_INST + 12] = 0.6; sm[6 * MB_INST + 13] = 20.0;
+          sm[6 * MB_INST + 15] = 1.0; sm[6 * MB_INST + 21] = 28.0; sm[6 * MB_INST + 22] = 0.06; sm[6 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 160, 80);
+          mb_render_present(sm, 7, 244.0 / 255.0, 241.0 / 255.0, 234.0 / 255.0);
+          present_drain();
+          uint8_t *pxs = read_texture(canvas, &aw, &ah);
+          double sm_min = 1e9, sm_max = -1.0;
+          for (int py = 34 * 3; py <= 42 * 3; py++) {
+            uint8_t *c = A_PX(pxs, aw, 80 * 3, py);
+            double L = 0.2126 * c[2] + 0.7152 * c[1] + 0.0722 * c[0];
+            if (L < sm_min) sm_min = L;
+            if (L > sm_max) sm_max = L;
+          }
+          printf("apple_render: v12_reg_antismear_3x min_L=%.1f max_L=%.1f delta=%.1f\n", sm_min, sm_max, sm_max - sm_min);
+          CHECK(sm_max - sm_min >= 12.0 && sm_min >= 170.0);
+          free(pxs);
+          mb_render_set_size(160, 80, 2);
         }
         // --- V11-AA & V11-Wall: Switch ON (Dark & Light, 3x & 2x, shadow-free) ---
         for (int is_light = 0; is_light <= 1; is_light++) {
