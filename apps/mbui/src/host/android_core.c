@@ -27,6 +27,7 @@
 // too as it is made (StillfailApp coreAhead), off the UI's thread and before the window's surface: the app takes it as
 // it starts.
 #include <jni.h>
+#include <dlfcn.h>
 #include <pthread.h>
 #include <android/log.h>
 #include <errno.h>
@@ -332,6 +333,33 @@ static jstring JNICALL profile_shell_stats(JNIEnv *env, jclass cls) {
   return s;
 }
 
+// Hands Android's JavaVM and a process-lifetime global ref to the Application context to libstillfail_shell.so once
+// before any iroh endpoint binds, so n0-dns-resolver reads the active network's DNS servers through ConnectivityManager
+// instead of falling back to public DoH resolvers. Resolved dynamically so older shell libraries remain compatible.
+static void init_shell_android(JNIEnv *env) {
+  static int done;
+  if (done) return;
+  jmethodID get_ctx = (*env)->GetStaticMethodID(env, A.core_host, "context", "()Landroid/content/Context;");
+  if (cleared(env) || !get_ctx) return;
+  jobject local = (*env)->CallStaticObjectMethod(env, A.core_host, get_ctx);
+  if (cleared(env) || !local) return;
+  void (*init_fn)(void *, void *) = (void (*)(void *, void *))dlsym(RTLD_DEFAULT, "sf_shell_init_android");
+  void *lib = NULL;
+  if (!init_fn) {
+    lib = dlopen("libstillfail_shell.so", RTLD_LAZY | RTLD_NOLOAD);
+    if (lib) init_fn = (void (*)(void *, void *))dlsym(lib, "sf_shell_init_android");
+  }
+  if (init_fn) {
+    jobject global = (*env)->NewGlobalRef(env, local);
+    if (global) {
+      init_fn((void *)mb_android_vm(), (void *)global);
+      done = 1;
+    }
+  }
+  if (lib) dlclose(lib);
+  (*env)->DeleteLocalRef(env, local);
+}
+
 // The classes and methods, once, from the UI's thread (a thread of the app's, whose class loader finds dev.mbui.*).
 static int core_init(JNIEnv *env) {
   if (A.ready) return 1;
@@ -340,6 +368,7 @@ static int core_init(JNIEnv *env) {
   if (cleared(env) || !host || !ch) return 0;
   A.host = (*env)->NewGlobalRef(env, host);
   A.core_host = (*env)->NewGlobalRef(env, ch);
+  init_shell_android(env);
   A.string = (*env)->NewGlobalRef(env, (*env)->FindClass(env, "java/lang/String"));
   A.string_init = (*env)->GetMethodID(env, A.string, "<init>", "([BLjava/lang/String;)V");
   A.utf8_name = (*env)->NewGlobalRef(env, (*env)->NewStringUTF(env, "UTF-8"));
