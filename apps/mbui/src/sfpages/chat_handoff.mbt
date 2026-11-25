@@ -125,7 +125,7 @@ fn handoff_confirm(src : Source, r : ChatRef, thread : Double, to : @sfbase.Stat
         |> ignore
       })
       v.show(fn() { refused.get() != "" && !running.get() }, fn(n) {
-        @sf.words_node(n, fn() { refused.get() }, fn() { st_problem_bad }) |> ignore
+        @sf.words_node(n, fn() { refused.get() }, fn() { handoff_refused_words }) |> ignore
       })
     },
     fn(v, shut) {
@@ -162,3 +162,9 @@ pub fn open_chat_handoff_step(src : Source, r : ChatRef, step : String, to : Str
       }
   }
 }
+
+///|
+/// The station's refusal under the dialog's words: in the words' own ink, not Danger's red, which a dialog's glass on
+/// a tablet does not keep readable over a warm page under it (4.31 to 1 in the dark); what it says is the next step.
+// kept across runs: a value (no field of it changes)
+let handoff_refused_words : @ui.TextStyle = st_problem.then(@ui.text_style(color=Fg))
