@@ -1,0 +1,8 @@
+[package]
+name = "parse_cursor"
+version = "0.1.0"
+
+[dependencies]
+js_json = { workspace = true }
+live_wire = { workspace = true }
+parse_claude = { workspace = true }
