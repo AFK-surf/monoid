@@ -397,6 +397,8 @@ pub fn notify_node(@view.View, @settings.Core, () -> @settings.Here, on_back~ : 
 
 pub fn offered_image() -> String
 
+pub fn open_chat_handoff_step(@sfbase.Source, @sfbase.ChatRef, String, String, from~ : @sf.Beside) -> Unit
+
 pub fn open_chat_menu(@sfbase.Source, String, @sfbase.ChatRef, Array[@sf.MenuItem?], from~ : @sf.Beside, along? : @view.Along) -> Unit
 
 pub fn open_context_actions(@sfbase.Source, String, String, @json.Json?, @sf.Beside) -> Unit

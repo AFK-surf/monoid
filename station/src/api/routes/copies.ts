@@ -1,12 +1,14 @@
 // The copies of this station's chats (replica/copies.ts), as its settings ask of them: on a station with no chat of its
 // own, one of the lost stations' copies the overview's `copies.restorable` offers taken back (POST /copies/restore
-// `{station, gen, from: {station}}`). The workspace's owners and admins.
+// `{station, gen, from: {station}}`), by the workspace's owners and admins. And one chat of a station that does not
+// answer gone on with here from its copy (POST /copies/handoff `{origin, thread}`, replica/handoff.ts), by any member.
 import { type Request, error, json, param } from "../request.ts";
 import type { Route } from "../admin.ts";
 import { managesStation } from "../../mesh/credential.ts";
 import type { ConfigFile } from "../../ops/config.ts";
 import type { Copies, RestoreFrom } from "../../replica/copies.ts";
 import type { Retire } from "../../replica/retire.ts";
+import { type HandedOff, type HandoffAsk, HandoffRefused } from "../../replica/handoff.ts";
 import { applyBackupUpdate, normalizeS3Target, readBackupConfig } from "../../replica/backup-config.ts";
 import { S3Client } from "../../replica/s3.ts";
 import { Refused } from "../../mesh/bus.ts";
@@ -28,12 +30,17 @@ export const routes = ({
   starts,
   config,
   changed,
+  handoff,
+  quiet,
 }: {
   copies: Copies;
   retire: Retire;
   starts: boolean;
   config?: Pick<ConfigFile, "raw" | "updateSoon">;
   changed?: () => void;
+  handoff?: (a: HandoffAsk) => Promise<HandedOff>;
+  /// Whether this station hands workspace `ws`'s chats to another now (replica/retire.ts): no chat is opened there then.
+  quiet?: (ws: string) => boolean;
 }): Route[] => [
   // This station retired from the asker's workspace: its chats there go on on `to` (replica/retire.ts). The
   // workspace's owners and admins; GET /retire/preview says what it would move; DELETE calls it off (refused, in words, where it cannot be), POST /retire/again tries
@@ -176,6 +183,28 @@ export const routes = ({
         return json(200, JSON.stringify({ ok: true }));
       } catch (e) {
         return json(200, JSON.stringify({ ok: false, error: (e as Error).message }));
+      }
+    },
+  },
+  // Chat `thread` of station `origin` (one of the asker's workspace that does not answer) gone on with in a new chat of
+  // the asker's here, its first message a handoff prompt read from the copy a station keeps of it: `{session, thread}`
+  // of the chat opened; asked again with the same `key`, the same chat. Refused in words where that station answers (the chat goes on there), where no station keeps a
+  // copy of it, or where the copy does not hold the chat. Refused too while this station hands the asker's workspace's
+  // chats to another, as POST /sessions is.
+  {
+    method: "POST",
+    pattern: /^\/copies\/handoff$/,
+    handle: async (r: Request) => {
+      if (handoff === undefined) return error(404, `no route ${r.method} ${r.path}`);
+      if (r.viewer.workspace !== null && quiet?.(r.viewer.workspace) === true) return error(503, tr(r.lang, "station.retire.moving"));
+      const b = body(r);
+      if (typeof b?.origin !== "string" || typeof b?.thread !== "number") return error(400, "origin (the station's id) and thread (its chat's id) are needed");
+      const named = (v: unknown) => (typeof v === "string" && v.trim() !== "" ? v.trim().slice(0, 200) : null);
+      try {
+        const done = await handoff({ ws: r.viewer.workspace, origin: b.origin, thread: b.thread, by: r.viewer.email, lang: r.lang, runtime: named(b.runtime), model: named(b.model), key: named(b.key) });
+        return json(200, JSON.stringify(done));
+      } catch (e) {
+        return error(e instanceof HandoffRefused ? e.status : 500, (e as Error).message);
       }
     },
   },

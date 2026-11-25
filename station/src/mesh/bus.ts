@@ -90,6 +90,11 @@ export class PeerBus {
     for (const f of this.onAttach.splice(0)) f();
   }
 
+  /// Whether the transport is there: off it, no other station can be asked.
+  isAttached(): boolean {
+    return this.call !== null;
+  }
+
   /// `f` once the transport is there (at once if it is).
   whenAttached(f: () => void): void {
     if (this.call) f();

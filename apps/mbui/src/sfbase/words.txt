@@ -1985,6 +1985,16 @@ web-pages.chat.closeTab
 web-pages.chat.closeOtherTabs
 web-pages.chat.closeRightTabs
 web-pages.chat.closeAllTabs
+web-pages.chat.handoff.action
+web-pages.chat.handoff.backup
+web-pages.chat.handoff.doing
+web-pages.chat.handoff.files
+web-pages.chat.handoff.made
+web-pages.chat.handoff.menu
+web-pages.chat.handoff.open
+web-pages.chat.handoff.pick
+web-pages.chat.handoff.running
+web-pages.chat.handoff.title
 web-pages.chat.reopenTab
 web-pages.chat.moreTabs
 web-pages.chat.compact

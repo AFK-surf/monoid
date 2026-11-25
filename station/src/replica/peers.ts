@@ -7,6 +7,7 @@ import { type Bytes, Refused, bytesOf, withBytes } from "../mesh/bus.ts";
 import { fileBytes, oneBytes, readBytes, stopBytes } from "../mesh/files.ts";
 import { BATCH, GEN, HASH, STATION, WORKSPACE } from "./format.ts";
 import { type FolderPlace, type Held, type Place, nothingHeld } from "./places.ts";
+import { CHAT_MOST, type ChatReading, asChatCopy } from "./chat.ts";
 
 type Json = any;
 
@@ -75,6 +76,19 @@ export class PeerPlace implements Place {
     return Array.isArray(list) ? list : [];
   }
 
+  /// The chat `thread` of `origin`'s copy it keeps in `ws`, read from that copy's newest generation (chat.ts): "none"
+  /// where it keeps no copy of `origin`, "newer" where that copy is of a format newer than it reads. Anything else that
+  /// goes wrong is thrown: the station is not taken for one that keeps nothing.
+  async chat(ws: string, origin: string, thread: number): Promise<ChatReading> {
+    const got = await this.ask(this.station, { method: "replica.chat", workspace: ws, origin, thread, whole: true });
+    if (got?.kept === false) return got?.newer === true ? "newer" : "none";
+    const bytes = bytesOf(got);
+    if (bytes === null) throw new Error(`${this.station} sent nothing of the chat`);
+    const chat = asChatCopy(JSON.parse((await readBytes(bytes, CHAT_MOST)).toString("utf8")));
+    if (chat === null || chat.origin !== origin) throw new Error(`${this.station} sent no chat of that copy`);
+    return chat;
+  }
+
   /// A batch, a head (`gen` its generation) or a file (`gen` null) it keeps, whole.
   async read(ws: string, origin: string, gen: string | null, name: string): Promise<Bytes> {
     const got = await this.ask(this.station, { method: "replica.get", workspace: ws, origin, gen, name, whole: true });
@@ -87,13 +101,15 @@ export class PeerPlace implements Place {
 /// What a station answers of the copies it keeps, as `place` (<data>/replicas) holds them. `inWorkspace`: whether
 /// `peer` and this station are of `ws` now (the transport said so as it took the request; asked again as an answer's
 /// bytes go). `heard`: another station said what it once was (`formerly`); `hello`: another station is up and asks
-/// for what it keeps of this one.
+/// for what it keeps of this one; `chat`: one chat of a copy it keeps, read for a handoff (null: no copy of that station
+/// kept here).
 export type Serving = {
   place: FolderPlace;
   inWorkspace: (peer: string, ws: string) => boolean;
   hello: (peer: string, ws: string, formerly: string[], acceptCopies: boolean) => string[];
   acceptOthers?: () => boolean;
   guardWrite?: <T>(ws: string, origin: string, fn: () => Promise<T>) => Promise<T>;
+  chat?: (ws: string, origin: string, thread: number) => Promise<ChatReading>;
 };
 
 export function serve(s: Serving) {
@@ -132,6 +148,18 @@ export function serve(s: Serving) {
           if (path === null) throw new Refused(`${name} is not kept here`);
           const size = (await stat(path)).size;
           return withBytes({ size }, fileBytes(path, 0, size));
+        }
+        case "replica.chat": {
+          // (any station of the workspace may ask, as it may for the batches themselves: every member reads every chat)
+          if (!STATION.test(origin)) throw new Refused("not a station");
+          const thread = request.thread;
+          if (!Number.isSafeInteger(thread) || thread <= 0) throw new Refused("not a chat's id");
+          if (s.chat === undefined) throw new Refused("no such replica request");
+          const chat = await s.chat(ws, origin, thread);
+          if (chat === "none") return { kept: false };
+          if (chat === "newer") return { kept: false, newer: true };
+          const text = Buffer.from(JSON.stringify(chat));
+          return withBytes({ kept: true, size: text.length }, oneBytes(text));
         }
         case "replica.put": {
           if (s.acceptOthers !== undefined && !s.acceptOthers()) throw new Refused("not accepting copies");

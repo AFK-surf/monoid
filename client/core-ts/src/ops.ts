@@ -82,6 +82,7 @@ export const PARAMS: Record<string, string> = {
   "copies.testS3": "id?:string endpoint?:string region?:string bucket?:string prefix?:string forcePathStyle?:boolean accessKeyId?:string secretAccessKey?:string encryptionKey?:string",
   "copies.restore": "origin:string gen:string fromStation?:string fromS3?:string",
   "copies.history": "limit?:number",
+  "copies.handoff": "origin:string thread:number key?:string runtime?:string model?:string",
   "copies.retire": "to:string",
   "copies.retireCancel": "",
   "copies.retireAgain": "",
@@ -390,6 +391,13 @@ function stationOp(name: string, params: unknown): Request | null {
         : { station: p.str("fromStation") };
       return op("POST", () => "/copies/restore", { station: p.str("origin"), gen: p.str("gen"), from }, OVERVIEW);
     }
+    // Chat `thread` of station `origin` (one of the workspace that does not answer) gone on with on this station, by any
+    // member: a new chat of theirs here, its first message a handoff prompt read from the backup a station keeps of that
+    // one (its station's replica/handoff.ts). Answered `{session, thread}` of the chat opened, or refused in words (that
+    // station answers, no backup of it is kept, or the backup does not hold the chat). The two chats go on apart.
+    // `key`: one the UI made for this handoff, the same when it asks again, so the station opens one chat for it.
+    case "copies.handoff":
+      return op("POST", () => "/copies/handoff", { origin: p.str("origin"), thread: p.u64("thread"), ...p.pick(["key", "runtime", "model"]) }, { kind: "session", key: null });
     // Recent backup sync and restore records recorded on the station.
     case "copies.history": {
       const raw = p.v.limit;

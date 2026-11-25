@@ -576,8 +576,9 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_cache_cold(with_message(rich_chat(f.older), screens_answer))
           } else if f.mode == "chat-archived" {
             with_flag(rich_chat(f.older), "archived")
-          } else if f.mode == "chat-held" {
-            // its station not reached: what is sent is held till it is (looks.ts offlineNote)
+          } else if f.mode == "chat-held" || f.mode.has_prefix("chat-handoff") {
+            // its station not reached: what is sent is held till it is (looks.ts offlineNote); chat-handoff…: so gone
+            // on with on Maple (chat_handoff.mbt)
             match with_flag(rich_chat(f.older), "offline") {
               Object(m) => {
                 let o = m.copy()
@@ -688,7 +689,7 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
           "stateBusy": true,
           "problems": [],
           "version": "0.1.4765",
-          "online": true,
+          "online": !f.mode.has_prefix("chat-handoff"),
           // its machine and network as its card (settings/station_peek.mbt) and its page (src/sfdesk
           // station_page.mbt) show them
           "host": {
@@ -745,9 +746,10 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
           "id": "st2",
           "name": "Maple",
           "icon": "glyph:laptop:teal",
-          "stateText": "3 小时前在线",
-          "problems": [{ "key": "away", "level": "red", "text": "离线：在该机器上打开 still.fail 即可重新连接" }],
-          "online": false,
+          // (up in the chat-handoff modes, the station to go on with Willow's chat on)
+          "stateText": if f.mode.has_prefix("chat-handoff") { "" } else { "3 小时前在线" },
+          "problems": if f.mode.has_prefix("chat-handoff") { [] } else { [{ "key": "away", "level": "red", "text": "离线：在该机器上打开 still.fail 即可重新连接" }] },
+          "online": f.mode.has_prefix("chat-handoff"),
           "overview": fixture_station_drive(false),
         },
       ])
@@ -1174,6 +1176,27 @@ pub fn fix_pace_said(pace : String, core : String) -> Unit {
 /// yet (or a summary read before it took them said so).
 // kept across runs: put back as a fixture is made (made.mbt)
 pub let fix_working_status : Ref[String] = Ref("running")
+
+///|
+/// `copies.handoff` asked in fixture mode `mode` (chat_handoff.mbt, 在其他 station 接着做): Willow's chat gone on with on
+/// Maple, its new chat answered a while later, as a backup read on another station takes; chat-handoff-refused: refused
+/// in the station's words (or while fix_handoff_refused says so); chat-handoff-busy: never answered, its dialog at work.
+pub fn fix_handoff_call(mode : String, params : Json, done : (Result[Json, Json]) -> Unit) -> Unit {
+  if mode == "chat-handoff-busy" {
+    return
+  }
+  let p = Some(params)
+  if mode == "chat-handoff-refused" || fix_handoff_refused.val || text(p, "station") != "ws1/st2" || text(p, "origin") != "st1" {
+    done(Err({ "code": "http_404", "message": "没有 station 保存着 Willow 的对话备份，所以不能从备份继续：等 Willow 重新上线后，在那里打开这个对话" }))
+    return
+  }
+  fix_later(1500.0, fn() { done(Ok({ "session": "s-h1", "thread": 41, "title": "整理发布清单", "keptBy": "st2" })) })
+}
+
+///|
+/// Whether copies.handoff is refused now whatever the mode (fix_handoff_call): a test's, one refusal then an answer.
+// kept across runs: put back as a fixture is made (made.mbt)
+pub let fix_handoff_refused : Ref[Bool] = Ref(false)
 
 ///|
 pub fn fix_later(ms : Double, f : () -> Unit) -> Unit {
