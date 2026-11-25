@@ -168,7 +168,7 @@ export async function fetchHandoff(at, init = {}, options = {}) {
   return response;
 }
 
-const getTimeoutsMs = [20_000, 30_000, 45_000, 60_000];
+const getTimeoutsMs = [60_000, 60_000, 60_000];
 const writeTimeoutsMs = [60_000, 60_000, 60_000];
 const knownTargets = [
   "ios-sim-arm64", "android-arm64", "darwin-arm64", "darwin-x64",
