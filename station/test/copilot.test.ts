@@ -163,7 +163,21 @@ describe("the Copilot driver", { concurrency: true }, () => {
     assert.equal(open.instructions, copilotRules("be brief"));
     assert.equal(open.skills, o.skills);
     assert.equal(open.own, copilotHome(o.profile.home), "the profile's own Copilot directory, not the machine's");
+    assert.deepEqual(open.servers, {}, "no servers of its own: none");
     assert.equal(open.sessions, join(copilotHome(o.profile.home), "sessions"));
+    await session.dispose();
+  });
+
+  test("a profile's own MCP servers are given to the bridge in the SDK's shapes; one turned off is not", async () => {
+    const o = options();
+    o.profile.mcp = { ado: { command: "npx", args: ["ado"] }, remote: { type: "http", url: "https://mcp.example.test/mcp", headers: { "X-Key": "k" } }, off: { command: "x", enabled: false } };
+    const d = driver({ dump: o.dump }, envBridge, data);
+    const session = await d.open(o, listen().push);
+    const [{ open }] = readFileSync(o.dump, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    assert.deepEqual(open.servers, {
+      ado: { type: "stdio", command: "npx", args: ["ado"], tools: ["*"] },
+      remote: { type: "http", url: "https://mcp.example.test/mcp", headers: { "X-Key": "k" }, tools: ["*"] },
+    });
     await session.dispose();
   });
 

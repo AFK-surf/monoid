@@ -423,6 +423,30 @@ describe("the Codex driver", { concurrency: true }, () => {
     await session.dispose();
   });
 
+  test("a profile's own MCP servers go into its thread's config beside the station's; an SSE one is left out", async () => {
+    const d = driver();
+    const p = profile();
+    p.mcp = {
+      ado: { command: "npx", args: ["ado"], env: { ADO_TOKEN: "t" } },
+      remote: { type: "http", url: "https://mcp.example.test/mcp", headers: { "X-Key": "k" } },
+      old: { type: "sse", url: "https://sse.example.test/sse" },
+      off: { command: "x", enabled: false },
+    };
+    const session = await d.open(options(p), listen().push);
+    const config = stdin(p.dump).find((m) => m.method === "thread/start").params.config;
+    const servers = Object.fromEntries(Object.entries(config).filter(([k]) => k.startsWith("mcp_servers.")));
+    assert.deepEqual(servers, {
+      "mcp_servers.stillfail.url": "http://127.0.0.1:4750/mcp",
+      "mcp_servers.stillfail.http_headers": { Authorization: "Bearer tok" },
+      "mcp_servers.ado.command": "npx",
+      "mcp_servers.ado.args": ["ado"],
+      "mcp_servers.ado.env": { ADO_TOKEN: "t" },
+      "mcp_servers.remote.url": "https://mcp.example.test/mcp",
+      "mcp_servers.remote.http_headers": { "X-Key": "k" },
+    });
+    await session.dispose();
+  });
+
   test("another model and effort go with the next turn/start; back to a default takes a new start", async () => {
     const d = driver();
     const p = profile();

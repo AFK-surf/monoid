@@ -35,6 +35,7 @@ import { TOOL_SERVERS, cleanEnv, unreachable, uuid, type BackgroundTask, type Op
 import { keepLocal } from "../ops/agent-env.ts";
 import { wall } from "../ops/fibers.ts";
 import { peerHttpBase } from "../tools/http.ts";
+import { claudeServers, profileMcp } from "./profile-mcp.ts";
 import { Said, stationLang, tr } from "../ops/i18n.ts";
 
 type Json = any;
@@ -323,7 +324,9 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
       await bringTranscript(home, options.resume, options.cwd, found);
     }
     const sessionId = options.resume ?? uuid();
-    const mcpConfig = options.textOnly ? { mcpServers: {} } : { mcpServers: { stillfail: { type: "http", url: options.mcpUrl, headers: { Authorization: `Bearer \${${MCP_TOKEN_VAR}}` } } } };
+    // The profile's own servers before the station's (./profile-mcp.ts), their values in variables (`mcpValues`).
+    const mcpValues: Record<string, string> = {};
+    const mcpConfig = options.textOnly ? { mcpServers: {} } : { mcpServers: { ...claudeServers(profileMcp(options.profile), mcpValues), stillfail: { type: "http", url: options.mcpUrl, headers: { Authorization: `Bearer \${${MCP_TOKEN_VAR}}` } } } };
     const model = options.model ?? profileModel(options.profile);
     const env = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "claude"), options.route) });
     const tui = !options.textOnly && options.tui === true;
@@ -361,6 +364,7 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
     // and exits before the turn begins; IS_SANDBOX=1 is its own way to say the machine is the agent's to run as root.
     if (!options.textOnly && process.getuid?.() === 0) env.IS_SANDBOX = "1";
     env[MCP_TOKEN_VAR] = options.mcpToken;
+    Object.assign(env, mcpValues);
     // Web services of the workspace's other stations: <this>/<station>/<port>/<path> (mesh/peer-http.ts).
     env.STILLFAIL_PEER_HTTP = peerHttpBase(options.mcpUrl);
     // Lets the agent name its own transcript, e.g. for an independent reviewer (codex has CODEX_THREAD_ID).

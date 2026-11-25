@@ -32,6 +32,7 @@ import { type AccessKind, accessKind, KIMI_CODE, kimiSignedIn, profileVia, type 
 import { cleanEndpoint, endpoints, find, groupOf, LEGACY, SOURCES } from "../agents/providers.ts";
 import { type Viewer, managesStation } from "../mesh/credential.ts";
 import { maskValue, startEnv } from "../ops/agent-env.ts";
+import { edited as editedMcp, mcpView } from "../agents/profile-mcp.ts";
 import type { ConfigFile } from "../ops/config.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
@@ -646,7 +647,7 @@ export class Accounts {
       const existing: Json | undefined = list.find((p) => p?.id === id);
       const machine = existing?.machine === true;
       // One on the machine's login is the machine's: only which of its models are used, and how it runs, are chosen.
-      const get = (key: string): unknown => (machine && !["model", "models", "backgroundOnMessage", "fast", "maxConcurrentSessions", "newAccountProtection", "directQuota"].includes(key) ? undefined : given[key]);
+      const get = (key: string): unknown => (machine && !["model", "models", "backgroundOnMessage", "fast", "maxConcurrentSessions", "newAccountProtection", "directQuota", "mcp"].includes(key) ? undefined : given[key]);
       // env: a string sets the value; null removes the key; an omitted key keeps it (so masked secrets survive edits).
       const env: Record<string, string> = isObject(existing?.env) ? { ...existing.env } : {};
       const givenEnv = get("env");
@@ -657,6 +658,8 @@ export class Accounts {
           else if (typeof value === "string") env[key] = value;
         }
       }
+      // Its own MCP servers (agents/profile-mcp.ts): those named set or removed, the others kept.
+      const mcp = editedMcp(existing?.mcp, get("mcp"));
       const access = get("access");
       const oldAccess = isObject(existing?.access) ? existing.access : undefined;
       const kind = accessKindOf(isObject(access) ? access.kind : undefined) ?? accessKindOf(oldAccess?.kind);
@@ -756,6 +759,7 @@ export class Accounts {
       }
       next.home = home;
       next.env = env;
+      if (mcp !== undefined) next.mcp = mcp;
       if (model !== undefined) next.model = model;
       if (models !== undefined) next.models = models;
       if (machine) next.machine = true;
@@ -2212,6 +2216,8 @@ export class Accounts {
         // What it runs, and of those what config.json names (by hand where its provider lists none: those can be taken off).
         models: p.models, named: p.named,
         env,
+        // Its own MCP servers, their variables' and headers' values masked.
+        mcp: mcpView(p.mcp),
         // Connects whose sessions can run on it: of its runtime, and its models have theirs.
         usedBy: p.enabled === false ? [] : config.connects.filter((c) => p.runtimes.includes(c.bind.runtime) && serves(p, c.bind.model)).map((c) => c.id),
         loginCommand: kind === "subscription" ? loginCommand(p.runtime, p.home, p.machine === true) : "",

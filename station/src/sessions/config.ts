@@ -8,6 +8,7 @@ import { agyBaseModel } from "../agents/agy.ts";
 import { devinFusionBase, splitDevinFusion } from "../agents/devin.ts";
 import { runtimeKind, runtimeLabel, type Profile as RuntimeProfile } from "../agents/runtime.ts";
 import { profileRuntimes, profileService, type Runtime } from "../agents/profiles.ts";
+import type { McpServer } from "../agents/profile-mcp.ts";
 import { modelKey } from "../read/usage.ts";
 import { tr, type Lang } from "../ops/i18n.ts";
 
@@ -34,6 +35,8 @@ export type Profile = RuntimeProfile & {
   enabled?: boolean;
   /// The joined workspaces kept from it: every workspace the station is in runs on it but these.
   withheld?: string[];
+  /// Its own MCP servers by name (agents/profile-mcp.ts), given to its sessions beside the station's.
+  mcp?: Record<string, McpServer>;
   /// Optional active-session concurrency cap for this profile (positive integer; absent/0: unlimited).
   maxConcurrentSessions?: number;
   /// Whether this profile is currently in new-account protection (auto-set on new subscription sign-in).

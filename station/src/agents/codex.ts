@@ -25,6 +25,7 @@ import type { Clock } from "effect";
 import { Said, stationLang, tr } from "../ops/i18n.ts";
 import { findCommandSoon, run } from "../updates/runtimes.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
+import { codexServers, profileMcp } from "./profile-mcp.ts";
 import { versionIn } from "../updates/versions.ts";
 import { findMissingCodexHost } from "../updates/codex-repair.ts";
 
@@ -1235,6 +1236,12 @@ export class CodexDriver implements AgentDriver {
       } catch {
         throw new Error("cannot open a text-only Codex session");
       }
+    }
+    if (!options.textOnly) {
+      // The profile's own servers beside the station's (./profile-mcp.ts); an SSE one Codex cannot speak to, said.
+      const own = codexServers(profileMcp(options.profile));
+      for (const [k, v] of Object.entries(own.config)) if (!k.startsWith("mcp_servers.stillfail.")) config[k] = v;
+      if (own.skipped.length > 0) log.warn("agents::codex", "a profile's SSE MCP servers are left out: Codex takes streamable HTTP", { profile: options.profile.id, servers: own.skipped });
     }
     if (options.effort !== undefined) config.model_reasoning_effort = options.effort;
     // The most context it runs with: it compacts on its own at it.

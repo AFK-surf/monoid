@@ -29,6 +29,7 @@ import { peerHttpBase } from "../tools/http.ts";
 import { SLACK_SPOKEN, SPEAKS } from "../tools/mcp.ts";
 import { type Events, type Replayed, OwnProcessDriver, OwnProcessSession, type TurnState, parseLine } from "./own-process.ts";
 import { expandRoute, profileEnv, profileModel } from "./profiles.ts";
+import { copilotServers, profileMcp } from "./profile-mcp.ts";
 import { CommandMissing, type RunnerInfo } from "./runner.ts";
 import { cleanEnv, uuid, type OpenOptions } from "./runtime.ts";
 import type { CursorLiveState } from "./cursor.ts";
@@ -216,6 +217,8 @@ export class CopilotDriver extends OwnProcessDriver<CopilotSession> {
         instructions: copilotRules(options.instructions),
         ...(options.skills !== undefined ? { skills: options.skills } : {}),
         own: copilotHome(options.profile.home),
+        // Its MCP servers as config.json has them (./profile-mcp.ts), beside those its own directory has.
+        servers: copilotServers(profileMcp(options.profile)),
         sessions,
         silent: SILENT,
         ...this.extra,

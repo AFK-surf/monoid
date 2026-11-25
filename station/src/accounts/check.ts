@@ -126,6 +126,8 @@ export function checkConfig(raw: any, _data: string, services: ServiceRegistry =
     if (p.models !== undefined && p.models !== null && (!Array.isArray(p.models) || p.models.some((m: unknown) => typeof m !== "string"))) {
       throw new Error("invalid type: expected a sequence of strings");
     }
+    // Its own MCP servers (agents/profile-mcp.ts): one that does not read as a server is left out where they are given.
+    if (p.mcp !== undefined && p.mcp !== null && !isObject(p.mcp)) throw new Error("mcp: a map of servers by name");
     if (p.env !== undefined && p.env !== null && (!isObject(p.env) || Object.values(p.env).some((v) => typeof v !== "string"))) {
       throw new Error("invalid type: expected a map of strings");
     }

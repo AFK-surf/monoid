@@ -176,6 +176,31 @@ describe("the Claude Code driver", { concurrency: true }, () => {
     await session.dispose();
   });
 
+  test("a profile's own MCP servers go beside the station's, their values in variables, none on the command line", async () => {
+    const d = driver();
+    const o = options();
+    o.profile.mcp = {
+      ado: { type: "stdio", command: "npx", args: ["-y", "ado-mcp"], env: { ADO_TOKEN: "secret-env" } },
+      remote: { type: "http", url: "https://mcp.example.test/mcp", headers: { Authorization: "Bearer secret-header" } },
+      off: { type: "stdio", command: "nope", enabled: false },
+    };
+    const session = await d.open(o, listen().push);
+    await eventually(() => existsSync(o.dump) && readFileSync(o.dump, "utf8").endsWith("\n"));
+    const started = JSON.parse(readFileSync(o.dump, "utf8").trim());
+    const args = started.argv as string[];
+    const servers = JSON.parse(args[args.indexOf("--mcp-config") + 1]!).mcpServers;
+    assert.deepEqual(Object.keys(servers), ["ado", "remote", "stillfail"]);
+    assert.ok(!args.includes("--strict-mcp-config"), "what its home configures is still read");
+    assert.ok(!args.join(" ").includes("secret-"), "no value on the command line");
+    const named = (v: string) => started.env[/^\$\{(\w+)\}$/.exec(v)?.[1] ?? ""];
+    assert.equal(servers.ado.command, "npx");
+    assert.deepEqual(servers.ado.args, ["-y", "ado-mcp"]);
+    assert.equal(named(servers.ado.env.ADO_TOKEN), "secret-env");
+    assert.equal(servers.remote.url, "https://mcp.example.test/mcp");
+    assert.equal(named(servers.remote.headers.Authorization), "Bearer secret-header");
+    await session.dispose();
+  });
+
   test("a turn completes, from a process started with the flags and environment of claude.rs", async () => {
     const d = driver();
     const o = options({ model: "m1", effort: "high" });

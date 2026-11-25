@@ -3,7 +3,7 @@
 // on the profile's GitHub token alone. It speaks to the station as Cursor's driver does (cursor-bridge.mjs), its messages
 // in Cursor's shapes, so the station's program reads both alike (mb/src/cursor). One line of JSON per message on stdin
 // and stdout, for the one session of the process:
-//   in:  {id, op: "open", cwd, resume?, model?, effort?, mcpUrl, instructions, skills?, own?, sessions, silent}
+//   in:  {id, op: "open", cwd, resume?, model?, effort?, mcpUrl, instructions, skills?, own?, servers?, sessions, silent}
 //                                          → {id, session} | {id, error}
 //        {id, op: "prompt", text, model?}  starts a turn: → {id} once the runtime took it, {id, error} when it did not
 //        {id, op: "steer", text}           into the running turn (the SDK's `immediate` mode): → {id, delivered}
@@ -277,6 +277,8 @@ async function main() {
       model = chosen
       // (the profile's own servers and skills read first: a file that is not JSON fails the open before a runtime is made)
       const own = ownConfig(message.own)
+      // The profile's servers as the station keeps them (agents/profile-mcp.ts), never one by the station's name.
+      const given = Object.fromEntries(Object.entries(message.servers !== null && typeof message.servers === 'object' ? message.servers : {}).filter(([name]) => name.toLowerCase() !== SERVER && !name.toLowerCase().startsWith(`${SERVER}-`)))
       const skills = [message.skills, own.skills].filter((d) => typeof d === 'string' && d !== '')
       mkdirSync(message.sessions, { recursive: true })
       const home = join(message.sessions, 'home')
@@ -300,7 +302,7 @@ async function main() {
         systemMessage: { mode: 'append', content: String(message.instructions ?? '') },
         // The profile's own skills and MCP servers beside them (`ownConfig`).
         ...(skills.length > 0 ? { skills: { directories: skills } } : {}),
-        mcp: { servers: { ...own.servers, [SERVER]: { type: 'http', url: message.mcpUrl, headers: { Authorization: `Bearer ${process.env.STILLFAIL_MCP_TOKEN ?? ''}` }, tools: ['*'] } } },
+        mcp: { servers: { ...own.servers, ...given, [SERVER]: { type: 'http', url: message.mcpUrl, headers: { Authorization: `Bearer ${process.env.STILLFAIL_MCP_TOKEN ?? ''}` }, tools: ['*'] } } },
         // No approvals, as the station's other runtimes run (the station's tools are its own to refuse).
         permissions: { onRequest: () => ({ kind: 'approve-once' }) },
         hooks: { handlers: { onPreToolUse: (input) => {
