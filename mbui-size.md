@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fd72c2b59](https://github.com/AFK-surf/monoid/commit/fd72c2b59ac70c6fe5f6487ae97093859c30a2cf) fix(station): leave an unknown runtime's agentIden | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
 | [6ff926ec7](https://github.com/AFK-surf/monoid/commit/6ff926ec7c14626fc283d5ad79a3c410b1fc045d) fix(ci): filter native-handoff get by host target, | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
 | [794c6d87e](https://github.com/AFK-surf/monoid/commit/794c6d87ed75741aa65ac8c0c9afa57c51358c57) fix(core-ts): stop lock reads from dialing unlinke | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
 | [230e58f54](https://github.com/AFK-surf/monoid/commit/230e58f54d94eb5bba7b1b7d76054061ce616aac) fix(station): await async readFile in agy pastWait | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.53 | 129.08 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c5360f5d9](https://github.com/AFK-surf/monoid/commit/c5360f5d9310088fb6c4f26c96eb29f88f76bdbc) fix(rules): only a web page's device runs out (#86 | 2.54 | 3.43 | 14.18 | 36.72 | 55.47 | 32.07 | 64.89 | 101.01 | 125.52 |
 | [05f2d897f](https://github.com/AFK-surf/monoid/commit/05f2d897fca75d83bab1c4d2f36022735633c2fa) perf(station): eliminate cross-station slot sync S | 2.54 | 3.43 | 14.18 | 36.72 | 55.47 | 32.07 | 64.89 | 100.91 | 130.84 |
 | [bf6c0b0b1](https://github.com/AFK-surf/monoid/commit/bf6c0b0b1ef743dcb270744775fbcb57298959c0) fix(mbui): part the stations sidebar's cards and g | 2.54 | 3.43 | 14.18 | 36.72 | 55.47 | 32.07 | 64.89 | 100.91 | 130.84 |
-| [217b8c948](https://github.com/AFK-surf/monoid/commit/217b8c9486c48d3b5b1ce73b70896b9ffd4737d5) feat(pion-station): port readops_usage (W7-E) with | 2.54 | 3.43 | 14.17 | 36.71 | 55.44 | 32.06 | 64.85 | 100.84 | 131.87 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fd72c2b59](https://github.com/AFK-surf/monoid/commit/fd72c2b59ac70c6fe5f6487ae97093859c30a2cf) fix(station): leave an unknown runtime's agentIden | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57 |
 | [6ff926ec7](https://github.com/AFK-surf/monoid/commit/6ff926ec7c14626fc283d5ad79a3c410b1fc045d) fix(ci): filter native-handoff get by host target, | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.18 |
 | [794c6d87e](https://github.com/AFK-surf/monoid/commit/794c6d87ed75741aa65ac8c0c9afa57c51358c57) fix(core-ts): stop lock reads from dialing unlinke | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.2 |
 | [230e58f54](https://github.com/AFK-surf/monoid/commit/230e58f54d94eb5bba7b1b7d76054061ce616aac) fix(station): await async readFile in agy pastWait | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c5360f5d9](https://github.com/AFK-surf/monoid/commit/c5360f5d9310088fb6c4f26c96eb29f88f76bdbc) fix(rules): only a web page's device runs out (#86 | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.95 |
 | [05f2d897f](https://github.com/AFK-surf/monoid/commit/05f2d897fca75d83bab1c4d2f36022735633c2fa) perf(station): eliminate cross-station slot sync S | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.13 |
 | [bf6c0b0b1](https://github.com/AFK-surf/monoid/commit/bf6c0b0b1ef743dcb270744775fbcb57298959c0) fix(mbui): part the stations sidebar's cards and g | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 58.03 |
-| [217b8c948](https://github.com/AFK-surf/monoid/commit/217b8c9486c48d3b5b1ce73b70896b9ffd4737d5) feat(pion-station): port readops_usage (W7-E) with | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 58.02 |
