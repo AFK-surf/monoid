@@ -252,6 +252,8 @@
   "web-pages.about.network": "Network",
   "web-pages.about.dht.title": "Find stations through the DHT",
   "web-pages.about.dht.note": "Looks up which relay a station is on in the Mainline DHT. Turn it off where a company network flags the DHT as risky; finding stations on the local network keeps working",
+  "web-pages.about.otherWorkspaces.title": "Sync all workspaces",
+  "web-pages.about.otherWorkspaces.note": "When off, only the workspace you are in syncs; others sync once you switch to them, saving battery and data. Push notifications still arrive",
   "web-pages.appearance.theme.description": "Light, dark, or match the system. These settings apply to this device only",
   "web-pages.appearance.theme.title": "Theme",
   "web-pages.appearance.accent.title": "Accent color",

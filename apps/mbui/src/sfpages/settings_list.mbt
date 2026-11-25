@@ -666,6 +666,7 @@ fn settings_children_of(
       if @ui.platform() != 4 {
         a.push(("dht", @sf.t("web-pages.about.dht.title"), About, "DHT 网络 查找 Station 中继 公司网络 防火墙 network relay lookup firewall"))
       }
+      a.push(("otherWorkspaces", @sf.t("web-pages.about.otherWorkspaces.title"), About, "同步 workspace 工作区 省电 耗电 流量 sync battery data workspaces"))
       a
     }
     _ => []

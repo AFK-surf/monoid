@@ -52,6 +52,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["glassFrost", opt("String"), { default: true, doc: "Liquid glass frost level on this device, 0 to 100 (100 draws solid surfaces); none means 0 (default clear)." }],
     ["haptics", opt("String"), { doc: "Haptics on this device: `off`, or none for on (a long press taken, a card answered, what is copied, a\nchat open in front coming to need the viewer)." }],
     ["dht", opt("String"), { doc: "Stations looked up in the Mainline DHT from this device: `off` (on the LAN alone, where a company's filter\nmarks the DHT as risky), or none for on." }],
+    ["otherWorkspaces", opt("String"), { doc: "Workspaces other than the one in view kept linked from this device: `off` (only the workspaces the apps\nshow are linked, the others when switched to), or none for on." }],
     ["appUpdate", opt("String"), { doc: "This app keeping itself current on this device: `off` (a newer build is said, and downloaded and put in\nplace only at the person's word), or none for on (downloaded by itself, put in place while the app is not in use)." }],
     ["rowPicture", "RowPictureSetting", { default: true }],
     ["absoluteTime", "bool", { default: true, doc: "Times are shown as dates rather than \"3 分钟前\"." }],
