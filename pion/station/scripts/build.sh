@@ -32,6 +32,44 @@ ENV_OUT="$(sh "$SCRIPT_DIR/ensure-pionc.sh" --print-env)" || exit $?
 eval "$ENV_OUT"
 PION_SHA="$PION_BUILD_SHA"
 
+# Serialize concurrent invocations sharing a cache or workspace directory using kernel-managed flock.
+with_lock() {
+  local lock_file="$1"
+  shift
+  mkdir -p "$(dirname "$lock_file")"
+  if command -v flock >/dev/null 2>&1; then
+    (
+      exec 9>"$lock_file"
+      flock 9
+      "$@"
+    )
+  elif command -v perl >/dev/null 2>&1; then
+    perl -MFcntl=:flock -e '
+      my $lf = shift @ARGV;
+      open my $fh, ">>", $lf or die "open $lf: $!";
+      flock($fh, LOCK_EX) or die "flock $lf: $!";
+      my $rc = system(@ARGV);
+      if ($rc == -1) { die "exec $ARGV[0]: $!"; }
+      if ($rc & 127) { kill($rc & 127, $$); exit(128 + ($rc & 127)); }
+      exit($rc >> 8);
+    ' "$lock_file" "$@"
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import fcntl, os, subprocess, sys
+fd = os.open(sys.argv[1], os.O_CREAT | os.O_RDWR, 0o666)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    rc = subprocess.call(sys.argv[2:])
+    sys.exit(rc)
+finally:
+    os.close(fd)
+' "$lock_file" "$@"
+  else
+    echo "build.sh: flock, perl, or python3 is required to serialize shared build steps" >&2
+    exit 1
+  fi
+}
+
 ensure_zig() {
   if [ -n "${ZIG_BIN:-}" ] && [ -x "$ZIG_BIN" ]; then
     printf '%s\n' "$ZIG_BIN"
@@ -48,16 +86,24 @@ ensure_zig() {
   local zver="0.16.0"
   local zsha="70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
   local zbase="${XDG_CACHE_HOME:-$HOME/.cache}/pion-station-zig/$zver"
-  local zbin="$zbase/zig-x86_64-linux-$zver/zig"
+  local zdir="$zbase/zig-x86_64-linux-$zver"
+  local zbin="$zdir/zig"
   if [ ! -x "$zbin" ]; then
-    mkdir -p "$zbase"
-    local tmp="$zbase/zig.tar.xz.$$"
-    echo "build.sh: downloading zig $zver..." >&2
-    curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 \
-      -o "$tmp" "https://ziglang.org/download/$zver/zig-x86_64-linux-$zver.tar.xz"
-    echo "$zsha  $tmp" | sha256sum -c --quiet
-    tar -xf "$tmp" -C "$zbase"
-    rm -f "$tmp"
+    with_lock "$zbase.flock" bash -euo pipefail -c '
+      zver="$1"; zsha="$2"; zbase="$3"; zdir="$4"; zbin="$5"
+      if [ -x "$zbin" ]; then exit 0; fi
+      mkdir -p "$zbase"
+      stage="$(mktemp -d "$zbase/.stage.XXXXXX")"
+      trap '\''rm -rf "$stage"'\'' EXIT
+      tmp="$stage/zig.tar.xz"
+      echo "build.sh: downloading zig $zver..." >&2
+      curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 \
+        -o "$tmp" "https://ziglang.org/download/$zver/zig-x86_64-linux-$zver.tar.xz"
+      echo "$zsha  $tmp" | sha256sum -c --quiet
+      tar -xf "$tmp" -C "$stage"
+      rm -rf "$zdir"
+      mv "$stage/zig-x86_64-linux-$zver" "$zdir"
+    ' _ "$zver" "$zsha" "$zbase" "$zdir" "$zbin"
   fi
   printf '%s\n' "$zbin"
 }
@@ -124,7 +170,10 @@ EOF
 chmod +x "$work/target-cc.sh"
 
 # Build all Pion packages in the workspace into a single target staticlib (skips final link).
-CC="$work/target-cc.sh" "$PIONC" build --release --target "$qbe_target" \
+# Serialize pionc build so concurrent cross-target builds (scripts/native.ts ensure) never race on
+# shared ~/.cache/pion dependency fetches or workspace build directories.
+PION_BUILD_LOCK="${XDG_CACHE_HOME:-$HOME/.cache}/pion-station-build.flock"
+with_lock "$PION_BUILD_LOCK" env CC="$work/target-cc.sh" "$PIONC" build --release --target "$qbe_target" \
   --emit-staticlib "$work/libsmoke.a" \
   "$STATION_DIR/packages/smoke"
 
