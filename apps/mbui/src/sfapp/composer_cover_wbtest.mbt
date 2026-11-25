@@ -257,8 +257,8 @@ test "composer adaptive glass shows its backdrop fade only when expanded and kee
 }
 
 ///|
-test "tall multiline composer on a tall viewport stays covered to its bottom edge by its backdrop blur" {
-  let (t, src) = composer_cover_tester_src(h=1200.0)
+test "tall multiline composer taller than the viewport stays covered to its bottom edge by its backdrop blur" {
+  let (t, src) = composer_cover_tester_src(h=600.0)
   let (lx, ly) = composer_cover_line_hit(t)
   t.tap(lx, ly)
   t.run_for(@ui.move_most_ms)
@@ -269,27 +269,29 @@ test "tall multiline composer on a tall viewport stays covered to its bottom edg
     buf.write_string("这是一段很长的输入，需要在键盘弹出时仍能看到发送按钮。\n")
   }
   t.type_text(buf.to_string())
+  t.run_for(@ui.move_most_ms)
   let draft = @sfbase.writing(src, "ws1/st1:s-c1")
-  for i in 0..<5 {
+  for i in 0..<10 {
     @sfbase.writing_quote(src, draft, {
       "author": "Claude",
       "text": "其余的行按估计的高度占位",
       "ts": Json::string("ts\{i}"),
     })
+    t.run_for(@ui.move_most_ms)
   }
-  t.run_for(@ui.move_most_ms)
   let (_, gy, _, gh) = composer_cover_glass_box(t)
   guard composer_cover_backdrop(t) is [a, ..] else {
     fail("expected backdrop blur behind tall multiline composer")
   }
   assert_true(gh > 620.0, msg="expected tall composer (>620pt), got \{gh}")
+  assert_true(gy < 0.0, msg="expected composer top above viewport (<0), got \{gy}")
   assert_true(
     a[1] + a[3] >= gy + gh,
     msg="expected backdrop bottom (\{a[1] + a[3]}) >= composer bottom (\{gy + gh})",
   )
   assert_true(
-    a[1] + a[3] >= 1200.0,
-    msg="expected backdrop bottom (\{a[1] + a[3]}) to reach viewport bottom (1200)",
+    a[1] + a[3] >= 600.0,
+    msg="expected backdrop bottom (\{a[1] + a[3]}) to reach viewport bottom (600)",
   )
 }
 
