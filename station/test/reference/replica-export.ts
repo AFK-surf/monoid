@@ -398,8 +398,9 @@ export class Exporter {
   pass(told: Told): Passed {
     const { home, workspaces } = this.#places;
     if (home === null || workspaces.length === 0) return { heads: {}, more: false, wrote: 0, read: 0 };
-    // A pass that would scan transcripts and fails leaves them to scan: it may have said they were done.
-    const scanning = !this.#known || this.#transcriptsPending || told.transcripts === true;
+    // A pass that fails leaves what it was to do as it found it: it may have said the transcripts were done.
+    const known = this.#known;
+    const pending = this.#transcriptsPending;
     this.#state.exec("BEGIN IMMEDIATE");
     try {
       const passed = this.#pass(told, home, workspaces);
@@ -410,7 +411,8 @@ export class Exporter {
       this.#tfCache.clear();
       this.#manifestCache.clear();
       this.#forgetSweep();
-      if (scanning) this.#transcriptsPending = true;
+      this.#known = known;
+      this.#transcriptsPending = pending;
       throw e;
     }
   }

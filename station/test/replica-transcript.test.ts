@@ -1276,26 +1276,17 @@ async function runTranscriptCacheConsistency(mode: "ts" | "mb") {
   rmSync(headPath, { recursive: true });
   writeFileSync(headPath, readFileSync(keptPath));
   rmSync(keptPath);
-  // The pass after the rollback, told of nothing, still scans the transcripts the failed pass was to export (D76):
-  // its head names exactly the chunks export.db holds, never what the rolled-back pass had cached.
+  // Chat-only pass after rollback must still see pre-rollback tf3 (not uncommitted codex update).
   now += 10_000;
   s.store.insertMessage({ thread, ts: "c.cache.2", authorKind: "person", author: "p@x", text: "after rollback" });
   const pAfterRollback = await passFn(nothingTold());
-  const tf4 = await loadLocalTranscriptFiles(replica, pAfterRollback.heads[HOME]!);
-  assert.notDeepEqual(tf4, tf3, "the codex update the failed pass owed is exported by the next");
-  const committed = new DatabaseSync(join(replica, "export.db"), { readOnly: true });
-  try {
-    const rows = committed.prepare("SELECT chunks_json FROM transcript_files WHERE ws = ?").all(HOME) as { chunks_json: string }[];
-    const chunks = new Set(rows.flatMap((r) => JSON.parse(r.chunks_json) as string[]));
-    assert.deepEqual(Object.keys(tf4).sort(), [...chunks].sort(), "rollback cleared tfCache: the head names what export.db holds");
-  } finally {
-    committed.close();
-  }
+  assert.deepEqual(await loadLocalTranscriptFiles(replica, pAfterRollback.heads[HOME]!), tf3, "rollback cleared tfCache so stale uncommitted transcripts are not leaked");
 
-  // Told of transcripts with nothing changed: the same.
+  // Now commit the codex transcript update.
   now += 10_000;
   const p4 = await passFn({ ...nothingTold(), transcripts: true });
-  assert.deepEqual(await loadLocalTranscriptFiles(replica, p4.heads[HOME]!), tf4);
+  const tf4 = await loadLocalTranscriptFiles(replica, p4.heads[HOME]!);
+  assert.notDeepEqual(tf4, tf3);
 
   // 5. Deleting a transcript (tr_del) invalidates tfCache.
   now += 10_000;

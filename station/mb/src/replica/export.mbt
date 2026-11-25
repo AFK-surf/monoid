@@ -453,7 +453,7 @@ pub fn Exporter::heads(self : Exporter) -> JValue raise {
 
 ///|
 /// A pass failed: `export.db` goes back to before it, and what is kept of it in memory goes too.
-fn Exporter::roll_back(self : Exporter, scanning : Bool) -> Unit {
+fn Exporter::roll_back(self : Exporter, known : Bool, pending : Bool) -> Unit {
   self.state.exec("ROLLBACK") catch {
     _ => ()
   }
@@ -461,9 +461,8 @@ fn Exporter::roll_back(self : Exporter, scanning : Bool) -> Unit {
   self.head_cache.clear()
   self.manifest_cache.clear()
   self.forget_sweep()
-  if scanning {
-    self.transcripts_pending = true
-  }
+  self.known = known
+  self.transcripts_pending = pending
 }
 
 ///|
@@ -479,18 +478,19 @@ pub async fn Exporter::pass(self : Exporter, told : JValue) -> JValue {
       ("empty", Bool(self.empty())),
     ])
   }
-  // A pass that would scan transcripts and fails leaves them to scan: it may have said they were done.
-  let scanning = !self.known || self.transcripts_pending || (get(told, "transcripts") is Some(Bool(true)))
+  // A pass that fails leaves what it was to do as it found it: it may have said the transcripts were done.
+  let known = self.known
+  let pending = self.transcripts_pending
   self.state.exec("BEGIN IMMEDIATE")
   let passed = self.pass_in(told, home) catch {
     e => {
-      self.roll_back(scanning)
+      self.roll_back(known, pending)
       raise e
     }
   }
   self.state.exec("COMMIT") catch {
     e => {
-      self.roll_back(scanning)
+      self.roll_back(known, pending)
       raise e
     }
   }
