@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a647c8cd8](https://github.com/AFK-surf/monoid/commit/a647c8cd8653efc189f682ac138fb23ced025571) feat(core-ts): show size and speed of downloads, a | 2.54 | 3.43 | 14.19 | 36.72 | 55.5 | 32.08 | 64.92 | 101.06 | 127.43 |
 | [df9dbe4c8](https://github.com/AFK-surf/monoid/commit/df9dbe4c8d749328665885f9f9c66b82e6626cdb) fix(pion-ui): sync icon_data.pion after #8643 and  | 2.54 | 3.43 | 14.18 | 36.72 | 55.49 | 32.08 | 64.9 | 101.06 | 120.08 |
 | [1d04c4a24](https://github.com/AFK-surf/monoid/commit/1d04c4a24094b5c869979a84acf1391ceb812f66) fix(station): pace backup uploads so they no longe | 2.54 | 3.43 | 14.18 | 36.72 | 55.49 | 32.08 | 64.9 | 101.06 | 120.08 |
 | [89a9d560b](https://github.com/AFK-surf/monoid/commit/89a9d560baa71e07c964dcd6a734f712eeebb5f1) perf(ios,core,mbui): enrich perf record with power | 2.54 | 3.43 | 14.18 | 36.72 | 55.49 | 32.08 | 64.9 | 101.06 | 120.08 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0fd9c17df](https://github.com/AFK-surf/monoid/commit/0fd9c17df87abfac1853e2557473c03520413733) feat(rules): prove the fork choice of a keeper tha | 2.52 | 3.4 | 14.07 | 36.6 | 55.08 | 31.97 | 64.57 | 101.01 | 116.62 |
 | [ca9d66655](https://github.com/AFK-surf/monoid/commit/ca9d66655aa6811022cfd8af83d0ddeb03b23303) fix(signals): preserve PENDING in check_dirty when | 2.52 | 3.4 | 14.07 | 36.6 | 55.08 | 31.97 | 64.57 | 101.01 | 116.62 |
 | [bfc382a17](https://github.com/AFK-surf/monoid/commit/bfc382a1792aa28b6e1e224db14c8c3f2f681eaa) fix(mbui): allow reopening a chat sitting under Ne | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 100.7 | 130.21 |
-| [a442e5fad](https://github.com/AFK-surf/monoid/commit/a442e5fad2c3f279cac7d0c06ded11cb44aa6c72) feat(pion): Wave 7.0 foundation, readops_core, TS  | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [a647c8cd8](https://github.com/AFK-surf/monoid/commit/a647c8cd8653efc189f682ac138fb23ced025571) feat(core-ts): show size and speed of downloads, a | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.67 |
 | [df9dbe4c8](https://github.com/AFK-surf/monoid/commit/df9dbe4c8d749328665885f9f9c66b82e6626cdb) fix(pion-ui): sync icon_data.pion after #8643 and  | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.87 |
 | [1d04c4a24](https://github.com/AFK-surf/monoid/commit/1d04c4a24094b5c869979a84acf1391ceb812f66) fix(station): pace backup uploads so they no longe | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.71 |
 | [89a9d560b](https://github.com/AFK-surf/monoid/commit/89a9d560baa71e07c964dcd6a734f712eeebb5f1) perf(ios,core,mbui): enrich perf record with power | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.57 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0fd9c17df](https://github.com/AFK-surf/monoid/commit/0fd9c17df87abfac1853e2557473c03520413733) feat(rules): prove the fork choice of a keeper tha | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.43 |
 | [ca9d66655](https://github.com/AFK-surf/monoid/commit/ca9d66655aa6811022cfd8af83d0ddeb03b23303) fix(signals): preserve PENDING in check_dirty when | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.59 |
 | [bfc382a17](https://github.com/AFK-surf/monoid/commit/bfc382a1792aa28b6e1e224db14c8c3f2f681eaa) fix(mbui): allow reopening a chat sitting under Ne | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.93 |
-| [a442e5fad](https://github.com/AFK-surf/monoid/commit/a442e5fad2c3f279cac7d0c06ded11cb44aa6c72) feat(pion): Wave 7.0 foundation, readops_core, TS  | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.48 |
