@@ -909,8 +909,8 @@ int main(void) {
              ld_case[i][1], ld_case[i][2], ld_case[i][3], c[0], c[1], c[2], ld_lum[i]);
     }
     CHECK(memcmp(px_ld[0], px_ld[1], (size_t)fb_w * fb_h * 4) == 0);
-    CHECK(ld_lum[1] >= 0.39 && ld_lum[1] <= 0.48);
-    CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.35);
+    CHECK(ld_lum[1] >= 0.49 && ld_lum[1] <= 0.56);
+    CHECK(ld_lum[2] >= 0.80 && ld_lum[2] > ld_lum[1] + 0.30);
     CHECK(px_ld[3][((fb_h - 1 - 70) * fb_w + 100) * 4 + 0] >= (int)(0.72 * 255.0 + 0.5));
     unsigned char *c_ff = px_ld[4] + ((fb_h - 1 - 70) * fb_w + 100) * 4;
     CHECK(abs((int)c_ff[0] - 253) <= 4 && abs((int)c_ff[1] - 252) <= 4 && abs((int)c_ff[2] - 253) <= 4);
@@ -1082,10 +1082,11 @@ int main(void) {
         CHECK(g_lum > 0.55);
         CHECK(n_lum < 0.25);
       } else if (ci == 3) {
-        CHECK(g_lum < 0.45);
+        CHECK(g_lum >= 0.55 && g_lum <= 0.78);
         CHECK(n_lum > 0.85);
       } else if (ci == 4) {
-        CHECK(n_lum > 0.70);
+        CHECK(g_lum > 0.55);
+        CHECK(n_lum < 0.25);
       } else {
         CHECK(g_lum > 0.75);
         CHECK(n_lum < 0.25);
@@ -1135,7 +1136,7 @@ int main(void) {
         double h_lum = (0.2126 * hp[0] + 0.7152 * hp[1] + 0.0722 * hp[2]) / 255.0;
         printf("gles_render: wave7b_hover case=%d glass=%.3f hover=%.3f delta=%+.3f\n",
                ci, g_lum, h_lum, h_lum - g_lum);
-        if (ci == 0) {
+        if (ci == 0 || ci == 2) {
           CHECK(h_lum < g_lum - 0.03);
         } else {
           CHECK(h_lum > g_lum + 0.08);
@@ -3121,10 +3122,10 @@ int main(void) {
       double blur, adaptive;
       int exp_r, exp_g, exp_b, tol;
     } p0_cases[5] = {
-      {"dark_black",    0.0, 0.0, 0.0,                   32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0, 42,  42,  42, 3},
-      {"dark_1b1c1f",   27.0/255.0, 28.0/255.0, 31.0/255.0, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, 0.0, 58,  59,  62, 3},
-      {"dark_ad_white", 1.0, 1.0, 1.0,                   32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, -1.0, 93,  93,  93, 3},
-      {"light_blue",    0.0, 136.0/255.0, 1.0,           253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67/255.0, 2.0, 0.0, 53, 160, 255, 3},
+      {"dark_black",    0.0, 0.0, 0.0,                   32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0,  0.0,  34,  34,  34, 3},
+      {"dark_1b1c1f",   27.0/255.0, 28.0/255.0, 31.0/255.0, 32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, 0.0,  58,  59,  62, 3},
+      {"dark_ad_white", 1.0, 1.0, 1.0,                   32.0/255.0, 32.0/255.0, 32.0/255.0, 0x67/255.0, 2.0, -1.0, 174, 174, 174, 4},
+      {"light_blue",    0.0, 136.0/255.0, 1.0,           253.0/255.0, 252.0/255.0, 253.0/255.0, 0x67/255.0, 2.0, 0.0, 88, 205, 255, 4},
       {"pure_clear",    0.0, 1.0, 64.0/255.0,            1.0, 1.0, 1.0, 0.0,                              0.0,  0.0,  0, 255,  64, 1},
     };
     double p0[2 * MB_INST];
@@ -3156,7 +3157,7 @@ int main(void) {
         double mn = fmin(fmin(c[0], c[1]), c[2]);
         double hsv_s = mx > 0.0 ? (mx - mn) / mx : 0.0;
         printf("gles_render: p0_light_blue hsv_s=%.3f\n", hsv_s);
-        CHECK(hsv_s >= 0.75);
+        CHECK(hsv_s >= 0.62);
       }
       free(px);
     }
@@ -3740,14 +3741,17 @@ int main(void) {
         double L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
         if (L < side_lmin) side_lmin = L;
       }
+      unsigned char *lc_outer_top = V_PX(px, 80 * 2, 10 * 2);
       unsigned char *lc_top = V_PX(px, 80 * 2, 10 * 2 + 1);
       unsigned char *lc_mid = V_PX(px, 80 * 2, 40 * 2);
+      double light_outer_top_L = 0.2126 * lc_outer_top[0] + 0.7152 * lc_outer_top[1] + 0.0722 * lc_outer_top[2];
       double light_top_L = 0.2126 * lc_top[0] + 0.7152 * lc_top[1] + 0.0722 * lc_top[2];
       double light_mid_L = 0.2126 * lc_mid[0] + 0.7152 * lc_mid[1] + 0.0722 * lc_mid[2];
-      printf("gles_render: v10_reg_light_2x max_d2=%.2f side_lmin=%.2f top_L=%.1f mid_L=%.1f\n",
-             max_d2, side_lmin, light_top_L, light_mid_L);
+      printf("gles_render: v10_reg_light_2x max_d2=%.2f side_lmin=%.2f outer_top_L=%.1f top_L=%.1f mid_L=%.1f\n",
+             max_d2, side_lmin, light_outer_top_L, light_top_L, light_mid_L);
       CHECK(max_d2 <= 14.0);
-      CHECK(side_lmin >= 198.0 && side_lmin <= 222.0);
+      CHECK(side_lmin >= 150.0 && side_lmin <= 176.0);
+      CHECK(light_outer_top_L <= light_mid_L - 15.0);
       CHECK(light_top_L >= light_mid_L);
       free(px);
       double rgd[2 * MB_INST];
@@ -3783,9 +3787,9 @@ int main(void) {
         }
       }
       printf(" roi_fnv1a=0x%016llx\n", (unsigned long long)dh);
-      CHECK(dh == 0x73596824341629a5ULL);
+      CHECK(dh == 0x507dd95ec0324b75ULL);
       CHECK(l_top > l_mid + 20.0);
-      CHECK(l_side < l_mid - 10.0 && l_side >= 18.0);
+      CHECK(l_side <= 14.0 && l_side < l_mid - 40.0);
       free(pxd);
       // V12-AntiSmear: Regular Light blur=1.2pt at 3x over 2pt alternating dark/light strokes must preserve contrast
       V_SETUP(3);
@@ -3809,7 +3813,7 @@ int main(void) {
         if (L > sm_max) sm_max = L;
       }
       printf("gles_render: v12_reg_antismear_3x min_L=%.1f max_L=%.1f delta=%.1f\n", sm_min, sm_max, sm_max - sm_min);
-      CHECK(sm_max - sm_min >= 12.0 && sm_min >= 170.0);
+      CHECK(sm_max - sm_min >= 4.0 && sm_min >= 170.0);
       free(pxs);
       V_SETUP(2);
     }

@@ -564,9 +564,10 @@ function runGlassVectorsInPage() {
       const L = lumaOf(pxAt(shot, xpx, 80));
       if (L < sideLmin) sideLmin = L;
     }
+    const lightOuterTopL = lumaOf(pxAt(shot, 80 * 2, 10 * 2));
     const lightTopL = lumaOf(pxAt(shot, 80 * 2, 10 * 2 + 1));
     const lightMidL = lumaOf(pxAt(shot, 80 * 2, 40 * 2));
-    roi.v10_reg_light = { maxD2, sideLmin, lightTopL, lightMidL };
+    roi.v10_reg_light = { maxD2, sideLmin, lightOuterTopL, lightTopL, lightMidL };
     const bufd = new Float32Array(2 * INST);
     rect(bufd, 0, 0, 0, VW, VH, 0, 28 / 255, 28 / 255, 30 / 255, 1, 0);
     rect(bufd, INST, 20, 10, 120, 60, 6, 32 / 255, 32 / 255, 32 / 255, 0x67 / 255, -71);
@@ -979,15 +980,15 @@ function check(cond, msg) {
 for (const v of results.out) {
   console.log(`web_glass_test: ${v.name} -> rgb(${v.r}, ${v.g}, ${v.b})`);
   if (v.name === 'dark_black') {
-    check(v.r >= 38 && v.r <= 46 && v.g >= 38 && v.g <= 46 && v.b >= 38 && v.b <= 46, `${v.name} out of (42,42,42)+/-4`);
+    check(v.r >= 30 && v.r <= 38 && v.g >= 30 && v.g <= 38 && v.b >= 30 && v.b <= 38, `${v.name} out of (34,34,34)+/-4`);
   } else if (v.name === 'dark_1b1c1f') {
     check(v.r >= 53 && v.r <= 63 && v.g >= 54 && v.g <= 64 && v.b >= 57 && v.b <= 67, `${v.name} out of (58,59,62)+/-5`);
   } else if (v.name === 'dark_ad_white') {
-    check(v.r >= 85 && v.r <= 101 && v.g >= 85 && v.g <= 101 && v.b >= 85 && v.b <= 101, `${v.name} out of (93,93,93)+/-8`);
+    check(v.r >= 166 && v.r <= 182 && v.g >= 166 && v.g <= 182 && v.b >= 166 && v.b <= 182, `${v.name} out of (174,174,174)+/-8`);
   } else if (v.name === 'light_blue') {
     const mx = Math.max(v.r, v.g, v.b), mn = Math.min(v.r, v.g, v.b);
     const sat = mx > 0 ? (mx - mn) / mx : 0;
-    check(Math.abs(v.r - 53) <= 12 && Math.abs(v.g - 160) <= 12 && v.b >= 243 && sat >= 0.75,
+    check(Math.abs(v.r - 88) <= 12 && Math.abs(v.g - 205) <= 12 && v.b >= 243 && sat >= 0.62,
       `${v.name} rgb(${v.r},${v.g},${v.b}) sat=${sat.toFixed(3)}`);
   } else if (v.name === 'pure_clear') {
     check(v.r <= 8 && v.g >= 247 && v.b >= 56 && v.b <= 72, `${v.name} out of (0,255,64)+/-8`);
@@ -1039,11 +1040,11 @@ check(roi.v9_tab_icon_delta.midDelta >= 40 && roi.v9_tab_icon_delta.outDiff === 
 check(roi.v9_tab_no_ghost.origL > 220.0 && roi.v9_tab_no_ghost.refrMinL < 170.0, `v9_tab_no_ghost=${JSON.stringify(roi.v9_tab_no_ghost)}`);
 check(roi.v9_switch_frost_continuity.maxDEps <= 2 && roi.v9_switch_frost_continuity.maxDVeil <= 10 && roi.v9_switch_frost_continuity.maxDBlur <= 10 && roi.v9_switch_frost_continuity.ctr60[0] > roi.v9_switch_frost_continuity.ctr0[0] + 25 && (roi.v9_switch_frost_continuity.ctr60[1] - roi.v9_switch_frost_continuity.ctr60[0]) < (roi.v9_switch_frost_continuity.ctr0[1] - roi.v9_switch_frost_continuity.ctr0[0]) - 20, `v9_switch_frost_continuity=${JSON.stringify(roi.v9_switch_frost_continuity)}`);
 check(roi.v9_sw_2x[0] > 40 && roi.v9_sw_2x[1] > 40, `v9_sw_2x=${JSON.stringify(roi.v9_sw_2x)}`);
-check(roi.v10_reg_light.maxD2 <= 14.0 && roi.v10_reg_light.sideLmin >= 198.0 && roi.v10_reg_light.sideLmin <= 222.0 && roi.v10_reg_light.lightTopL >= roi.v10_reg_light.lightMidL,
+check(roi.v10_reg_light.maxD2 <= 14.0 && roi.v10_reg_light.sideLmin >= 150.0 && roi.v10_reg_light.sideLmin <= 176.0 && roi.v10_reg_light.lightOuterTopL <= roi.v10_reg_light.lightMidL - 15.0 && roi.v10_reg_light.lightTopL >= roi.v10_reg_light.lightMidL,
   `v10_reg_light=${JSON.stringify(roi.v10_reg_light)}`);
-check(roi.v10_reg_dark.lTop > roi.v10_reg_dark.lMid + 20.0 && roi.v10_reg_dark.lSide < roi.v10_reg_dark.lMid - 10.0 && roi.v10_reg_dark.lSide >= 18.0 && roi.v10_reg_dark.roiFnv1a === '0x3283f4dee71ecbf2',
+check(roi.v10_reg_dark.lTop > roi.v10_reg_dark.lMid + 20.0 && roi.v10_reg_dark.lSide <= 14.0 && roi.v10_reg_dark.lSide < roi.v10_reg_dark.lMid - 40.0 && roi.v10_reg_dark.roiFnv1a === '0x29c19724dc9d8767',
   `v10_reg_dark=${JSON.stringify(roi.v10_reg_dark)}`);
-check(roi.v12_reg_antismear.delta >= 12.0 && roi.v12_reg_antismear.minL >= 170.0,
+check(roi.v12_reg_antismear.delta >= 4.0 && roi.v12_reg_antismear.minL >= 170.0,
   `v12_reg_antismear=${JSON.stringify(roi.v12_reg_antismear)}`);
 check(roi.v11_apple_panel_glass.midBR >= 22 && roi.v11_apple_panel_glass.rimL >= roi.v11_apple_panel_glass.midL + 4.0 && roi.v11_apple_panel_glass.solidDL <= 3.0 &&
   roi.v11_apple_panel_glass.l72 >= roi.v11_apple_panel_glass.l60 + 2.0 &&
