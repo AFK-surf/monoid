@@ -417,16 +417,20 @@ fn Exporter::gen_of(self : Exporter, ws : String) -> String raise {
   let now = (self.now)()
   let gen = gen_name(if now > after + 1.0 { now } else { after + 1.0 }, self.files.random(4))
   self.set_meta("gen:\{ws}", gen)
-  for t in ["digests", "threads", "sent", "entering", "transcript_files"] {
+  for t in ["digests", "threads", "sent", "entering"] {
     ignore(self.state.run("DELETE FROM \{t} WHERE ws = ?", [s(ws)]))
   }
+  let dropped = self.state.run("DELETE FROM transcript_files WHERE ws = ?", [s(ws)])
   self.tf_cache.remove(ws)
   self.manifest_cache.remove(ws)
-  // Its transcripts are written again, all of them: none is behind a cursor of the generation before.
+  // Its transcripts are written again, all of them: none is behind a cursor of the generation before. A workspace
+  // with none exported (one with nothing written has no generation directory, so comes here every pass) asks for no scan.
   self.transcript_cursor.remove(ws)
   self.transcript_scan_done.remove(ws)
   self.transcript_ws_done.remove(ws)
-  self.transcripts_pending = true
+  if dropped > 0 {
+    self.transcripts_pending = true
+  }
   gen
 }
 
@@ -449,7 +453,7 @@ pub fn Exporter::heads(self : Exporter) -> JValue raise {
 
 ///|
 /// A pass failed: `export.db` goes back to before it, and what is kept of it in memory goes too.
-fn Exporter::roll_back(self : Exporter) -> Unit {
+fn Exporter::roll_back(self : Exporter, scanning : Bool) -> Unit {
   self.state.exec("ROLLBACK") catch {
     _ => ()
   }
@@ -457,6 +461,9 @@ fn Exporter::roll_back(self : Exporter) -> Unit {
   self.head_cache.clear()
   self.manifest_cache.clear()
   self.forget_sweep()
+  if scanning {
+    self.transcripts_pending = true
+  }
 }
 
 ///|
@@ -472,16 +479,18 @@ pub async fn Exporter::pass(self : Exporter, told : JValue) -> JValue {
       ("empty", Bool(self.empty())),
     ])
   }
+  // A pass that would scan transcripts and fails leaves them to scan: it may have said they were done.
+  let scanning = !self.known || self.transcripts_pending || (get(told, "transcripts") is Some(Bool(true)))
   self.state.exec("BEGIN IMMEDIATE")
   let passed = self.pass_in(told, home) catch {
     e => {
-      self.roll_back()
+      self.roll_back(scanning)
       raise e
     }
   }
   self.state.exec("COMMIT") catch {
     e => {
-      self.roll_back()
+      self.roll_back(scanning)
       raise e
     }
   }

@@ -1276,17 +1276,26 @@ async function runTranscriptCacheConsistency(mode: "ts" | "mb") {
   rmSync(headPath, { recursive: true });
   writeFileSync(headPath, readFileSync(keptPath));
   rmSync(keptPath);
-  // Chat-only pass after rollback must still see pre-rollback tf3 (not uncommitted codex update).
+  // The pass after the rollback, told of nothing, still scans the transcripts the failed pass was to export (D76):
+  // its head names exactly the chunks export.db holds, never what the rolled-back pass had cached.
   now += 10_000;
   s.store.insertMessage({ thread, ts: "c.cache.2", authorKind: "person", author: "p@x", text: "after rollback" });
   const pAfterRollback = await passFn(nothingTold());
-  assert.deepEqual(await loadLocalTranscriptFiles(replica, pAfterRollback.heads[HOME]!), tf3, "rollback cleared tfCache so stale uncommitted transcripts are not leaked");
+  const tf4 = await loadLocalTranscriptFiles(replica, pAfterRollback.heads[HOME]!);
+  assert.notDeepEqual(tf4, tf3, "the codex update the failed pass owed is exported by the next");
+  const committed = new DatabaseSync(join(replica, "export.db"), { readOnly: true });
+  try {
+    const rows = committed.prepare("SELECT chunks_json FROM transcript_files WHERE ws = ?").all(HOME) as { chunks_json: string }[];
+    const chunks = new Set(rows.flatMap((r) => JSON.parse(r.chunks_json) as string[]));
+    assert.deepEqual(Object.keys(tf4).sort(), [...chunks].sort(), "rollback cleared tfCache: the head names what export.db holds");
+  } finally {
+    committed.close();
+  }
 
-  // Now commit the codex transcript update.
+  // Told of transcripts with nothing changed: the same.
   now += 10_000;
   const p4 = await passFn({ ...nothingTold(), transcripts: true });
-  const tf4 = await loadLocalTranscriptFiles(replica, p4.heads[HOME]!);
-  assert.notDeepEqual(tf4, tf3);
+  assert.deepEqual(await loadLocalTranscriptFiles(replica, p4.heads[HOME]!), tf4);
 
   // 5. Deleting a transcript (tr_del) invalidates tfCache.
   now += 10_000;
@@ -2757,6 +2766,97 @@ test("D76: a generation lost in the middle of a sweep is written again whole (TS
       await e.close();
     }
     byMode[mode] = passes;
+  }
+  if (byMode.mb !== undefined) assert.equal(byMode.mb, byMode.ts, "MoonBit and the TS reference take the same passes");
+});
+
+test("D76: an empty workspace's generation, made again each pass, asks for no transcript scan (TS + MoonBit)", async () => {
+  const s = makeAgyBrainStation();
+  closing.push(async () => s.store.close());
+  const modes: ("ts" | "mb")[] = binary !== null ? ["ts", "mb"] : ["ts"];
+  const workspaces = [
+    { workspace: HOME, name: "home" },
+    { workspace: OTHER, name: "empty" },
+  ];
+  const written = join(s.brain, "task.md");
+  const byMode: Record<string, D76Pass[]> = {};
+  for (const mode of modes) {
+    const replica = join(s.data, `replica-d76-empty-${mode}`);
+    const clock = { now: 1_700_000_000_000 };
+    const e = await d76Exporter(mode, s, replica, clock, workspaces);
+    const passes: D76Pass[] = [];
+    try {
+      let p = await e.pass(nothingTold());
+      for (let i = 0; i < 5 && p.more; i++) p = await e.pass(nothingTold());
+      assert.equal(p.more, false, `${mode}: caught up`);
+      assert.ok(!existsSync(join(replica, "own", OTHER)), `${mode}: the empty workspace has no generation directory`);
+      const seen = new Set<string>();
+      d76Records(replica, HOME, seen);
+      for (let i = 1; i <= 4; i++) {
+        writeFileSync(written, `written ${i}\n`.repeat(i));
+        clock.now += 1_000;
+        const q = await e.pass(nothingTold());
+        passes.push({ ...d76Records(replica, HOME, seen), more: q.more });
+      }
+    } finally {
+      await e.close();
+    }
+    assert.deepEqual(passes, Array(4).fill({ tr: [], trDel: [], more: false }), `${mode}: chat passes scan no transcript`);
+    assert.ok(!existsSync(join(replica, "own", OTHER)), `${mode}: nothing written for the empty workspace`);
+    byMode[mode] = passes;
+  }
+  if (byMode.mb !== undefined) assert.deepEqual(byMode.mb, byMode.ts, "MoonBit and the TS reference pass for pass");
+});
+
+test("D76: a sweep's last pass failing to write leaves the transcripts to scan, and the retry exports them (TS + MoonBit)", {
+  skip: process.getuid?.() === 0 ? "root writes into a read-only directory" : false,
+}, async () => {
+  const s = makeAgyBrainStation();
+  closing.push(async () => s.store.close());
+  const modes: ("ts" | "mb")[] = binary !== null ? ["ts", "mb"] : ["ts"];
+  const a = join(s.cli, "annotations", `${s.agyId}.pbtxt`);
+  const z = join(s.cli, "conversations", `${s.agyId}.db`);
+  const byMode: Record<string, number> = {};
+  for (const mode of modes) {
+    const replica = join(s.data, `replica-d76-failed-${mode}`);
+    const clock = { now: 1_700_000_000_000 };
+    writeFileSync(a, "a\n");
+    writeFileSync(z, "z\n");
+    await d76CaughtUp(mode, s, replica, clock);
+    writeFileSync(a, "a".repeat(777));
+    writeFileSync(z, "z".repeat(888));
+    const e = await d76Exporter(mode, s, replica, clock, [{ workspace: HOME, name: "src" }], { files: 1 });
+    let retries = 0;
+    try {
+      clock.now += 10_000;
+      assert.equal((await e.pass({ ...nothingTold(), transcripts: true })).more, true, `${mode}: cut after the first transcript`);
+      assert.equal(d76Row(replica, HOME, a)!.size, 777);
+      const state = new DatabaseSync(join(replica, "export.db"), { readOnly: true });
+      let gen: string;
+      try {
+        gen = String((state.prepare("SELECT v FROM meta WHERE k = ?").get(`gen:${HOME}`) as { v: string }).v);
+      } finally {
+        state.close();
+      }
+      const logDir = join(replica, "own", HOME, gen, "log");
+      chmodSync(logDir, 0o555);
+      try {
+        clock.now += 10_000;
+        await assert.rejects(e.pass(nothingTold()), `${mode}: the sweep's last pass fails to write its batch`);
+      } finally {
+        chmodSync(logDir, 0o755);
+      }
+      assert.equal(d76Row(replica, HOME, z)!.size, 2, `${mode}: what it said of the transcript rolled back`);
+      for (let more = true; more; retries++) {
+        assert.ok(retries < 5, `${mode}: the retry catches up`);
+        clock.now += 10_000;
+        more = (await e.pass(nothingTold())).more;
+      }
+    } finally {
+      await e.close();
+    }
+    assert.equal(d76Row(replica, HOME, z)!.size, 888, `${mode}: the last transcript is in the copy after the retry`);
+    byMode[mode] = retries;
   }
   if (byMode.mb !== undefined) assert.equal(byMode.mb, byMode.ts, "MoonBit and the TS reference take the same passes");
 });

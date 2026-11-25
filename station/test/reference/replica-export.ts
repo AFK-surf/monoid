@@ -367,14 +367,15 @@ export class Exporter {
     this.#state.prepare("DELETE FROM threads WHERE ws = ?").run(ws);
     this.#state.prepare("DELETE FROM sent WHERE ws = ?").run(ws);
     this.#state.prepare("DELETE FROM entering WHERE ws = ?").run(ws);
-    this.#state.prepare("DELETE FROM transcript_files WHERE ws = ?").run(ws);
+    const dropped = Number(this.#state.prepare("DELETE FROM transcript_files WHERE ws = ?").run(ws).changes);
     this.#tfCache.delete(ws);
     this.#manifestCache.delete(ws);
-    // Its transcripts are written again, all of them: none is behind a cursor of the generation before.
+    // Its transcripts are written again, all of them: none is behind a cursor of the generation before. A workspace
+    // with none exported (one with nothing written has no generation directory, so comes here every pass) asks for no scan.
     this.#transcriptCursor.delete(ws);
     this.#transcriptScanDone.delete(ws);
     this.#transcriptWsDone.delete(ws);
-    this.#transcriptsPending = true;
+    if (dropped > 0) this.#transcriptsPending = true;
     return gen;
   }
 
@@ -397,6 +398,8 @@ export class Exporter {
   pass(told: Told): Passed {
     const { home, workspaces } = this.#places;
     if (home === null || workspaces.length === 0) return { heads: {}, more: false, wrote: 0, read: 0 };
+    // A pass that would scan transcripts and fails leaves them to scan: it may have said they were done.
+    const scanning = !this.#known || this.#transcriptsPending || told.transcripts === true;
     this.#state.exec("BEGIN IMMEDIATE");
     try {
       const passed = this.#pass(told, home, workspaces);
@@ -407,6 +410,7 @@ export class Exporter {
       this.#tfCache.clear();
       this.#manifestCache.clear();
       this.#forgetSweep();
+      if (scanning) this.#transcriptsPending = true;
       throw e;
     }
   }
