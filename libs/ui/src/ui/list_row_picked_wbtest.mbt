@@ -213,3 +213,127 @@ test "table inside scrolls_window with nested each and two 4-row slices: survive
   assert_eq(t.ctx().selected_text(), said)
   assert_true(picked_drawn(t).length() >= 8, msg="re-highlighted after scroll back: \{picked_drawn(t).length()}")
 }
+
+///|
+test "words picked in a page's list with reused blocks: picked_now and quote pill hide when scrolled away and recycled, selected_text stays intact, and scrolling back restores highlight, picked_now, and quote pill" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0)
+  t.check_looks(false)
+  let s = @view.Scroll::list()
+  let pill : Ref[@view.NodeId?] = Ref(None)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.height(Is(Some(200.0))).width(Is(Some(300.0))) |> ignore
+      words_picked(page)
+      page.scrolls_window(
+        s,
+        fn() { Array::makei(40, fn(i) { i }) },
+        est=22.0,
+        fn(_, _) { @halt.saying("every block is reused") },
+        reused=fn(_) { Some(0) },
+        make_reused=fn(b, key) {
+          b.reacts(key, fn(k) { picked_of(b, "msg-\{k}", whole=true) |> ignore })
+          b.box(fn(w) {
+            w.words_runs(By(fn() { [plain("第 \{key()} 段 "), bold("hello")] }), ink=0x333333FFL, look~) |> ignore
+          })
+          |> ignore
+        },
+      )
+      |> ignore
+      page.pick(fn() { picked_now().map(fn(p) { (p.made, p.ends_in) }) }, fn(holds, cur) {
+        guard cur is Some(_) && @signals.untracked(picked_now) is Some(p) else {
+          pill.val = None
+          return
+        }
+        holds.box(fn(b) {
+          pill.val = Some(b.id())
+          keeps_picked(b)
+          .width(Is(Some(40.0)))
+          .height(Is(Some(20.0)))
+          .ground(Is(0x112233FFL))
+          .beside(p.ends_in, side=Top, offset=4.0, piece=picked_end_piece(p), while_seen=true)
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  let tree = view_app.val.unwrap()
+  let next = dragged_at(t, 1.0, 11.0, 299.0, 11.0, t.time(), true)
+  t.frame_at(next)
+  let said = t.ctx().selected_text()
+  assert_true(said.contains("第 0 段"), msg="selected: \{said}")
+  let drawn = picked_drawn(t)
+  assert_true(drawn.length() >= 1, msg="drawn picked: \{Repr(drawn)}")
+  guard picked_now() is Some(p0) else { fail("expected picked_now after drag") }
+  assert_eq(p0.of, ["msg-0"])
+  assert_true(pill.val.bind(fn(id) { tree.drawn_of(id) }) is Some(_), msg="pill drawn initially")
+  // Scroll 3 screens down so row 0's block is recycled for incoming rows
+  t.wheel(150.0, 100.0, 600.0)
+  t.run_for(move_most_ms)
+  assert_eq(picked_now(), None, msg="picked_now hidden while row 0 is recycled off-screen")
+  assert_eq(picked_drawn(t), [], msg="no ghost highlight on recycled rows")
+  assert_true(pill.val.bind(fn(id) { tree.drawn_of(id) }) is None, msg="pill hidden while off-screen")
+  assert_eq(t.ctx().selected_text(), said, msg="selected_text preserved while scrolled away")
+  // Scroll back to top: selection, highlight, picked_now, and pill all return
+  t.wheel(150.0, 100.0, -600.0)
+  t.run_for(move_most_ms)
+  assert_eq(t.ctx().selected_text(), said)
+  assert_eq(picked_drawn(t), drawn)
+  guard picked_now() is Some(p1) else { fail("picked_now did not restore after scrolling back") }
+  assert_eq((p1.text, p1.of), (said, ["msg-0"]))
+  assert_true(pill.val.bind(fn(id) { tree.drawn_of(id) }) is Some(_), msg="pill restored after scrolling back")
+}
+
+///|
+test "finger pick in a picked_bar list scrolled away and back: system text menu stays suppressed, selected_text kept, and picked_now restores" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0, platform=2, pointing=Finger)
+  t.check_looks(false)
+  let s = @view.Scroll::list()
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.height(Is(Some(200.0))).width(Is(Some(300.0))) |> ignore
+      words_picked(page)
+      picked_bar(page) |> ignore
+      page.scrolls_window(
+        s,
+        fn() { Array::makei(40, fn(i) { i }) },
+        est=22.0,
+        fn(_, _) { @halt.saying("every block is reused") },
+        reused=fn(_) { Some(0) },
+        make_reused=fn(b, key) {
+          b.reacts(key, fn(k) { picked_of(b, "msg-\{k}", whole=true) |> ignore })
+          b.box(fn(w) {
+            w.words_runs(By(fn() { [plain("row\{key()} alpha beta")] }), ink=0x333333FFL, look~) |> ignore
+          })
+          |> ignore
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  t.press_at(10.0, 11.0)
+  t.run_for(long_press_ms)
+  t.release(10.0, 11.0)
+  t.draw()
+  guard picked_now() is Some(p0) else { fail("expected finger pick") }
+  assert_true(p0.finger && p0.text != "", msg="finger pick: \{Repr(p0)}")
+  assert_false(t.text_menu().0, msg="system menu suppressed by picked_bar")
+  t.wheel(150.0, 100.0, 600.0)
+  t.run_for(move_most_ms)
+  assert_eq(picked_now(), None)
+  assert_eq(t.ctx().selected_text(), p0.text)
+  assert_false(t.text_menu().0, msg="system menu still suppressed while scrolled away")
+  t.wheel(150.0, 100.0, -600.0)
+  t.run_for(move_most_ms)
+  assert_eq(t.ctx().selected_text(), p0.text)
+  assert_eq(picked_now().map(fn(p) { (p.text, p.finger) }), Some((p0.text, true)))
+  assert_false(t.text_menu().0)
+}

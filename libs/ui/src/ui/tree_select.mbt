@@ -74,26 +74,43 @@ fn tree_scope_live(scope_id : @view.NodeId) -> Bool {
 ///|
 /// If the current tree selection belongs to a scope that was destroyed or hidden (`shown_nowhere`), stop any active
 /// drag and drop `picked_now` while keeping the released selection snapshot for ⌘C copy until a press elsewhere. The
-/// scope alive, the words what is picked ends in (`ends_in`) let go of or shown nowhere (a step folded away, what holds
-/// them put by): `picked_now` worked out again the same way, so none stands beside words that show nowhere.
-fn sync_picked_scope_live() -> Unit {
+/// scope alive, sync `picked_now` whenever the words what is picked ends in (`ends_in`) leave or return to view (a
+/// virtualized row scrolled out, parked, recycled, or scrolled back; a step folded or unfolded). Returns whether
+/// `picked_now` changed.
+fn sync_picked_scope_live() -> Bool {
+  let before = picked_now_said.val.untracked()
   match picked.layer {
     TreeScope(_, scope_id) if !tree_scope_live(scope_id) => {
       if picked.dragging {
         picked.dragging = false
         tree_edge_stop()
       }
-      if picked_now_said.val.untracked() is Some(_) {
+      if before is Some(_) {
         picked_now_tell()
       }
     }
-    TreeScope(_, _) =>
-      match picked_now_said.val.untracked() {
-        Some(p) if !tree_scope_live(p.ends_in) => picked_now_tell()
+    TreeScope(_, scope_id) if !picked.dragging =>
+      match before {
+        Some(p) =>
+          match picked_in_order() {
+            Some((_, end)) if picked_end_live(p.ends_in, end, scope_id) => ()
+            _ => picked_now_tell()
+          }
+        None if !picked.spans.is_empty() =>
+          match picked_in_order() {
+            Some((_, end)) =>
+              match picked_shown.get(end) {
+                Some((ends_in, _, end_scope)) if end_scope == scope_id &&
+                  picked_end_live(ends_in, end, scope_id) => picked_now_tell()
+                _ => ()
+              }
+            None => ()
+          }
         _ => ()
       }
     _ => ()
   }
+  picked_now_said.val.untracked() != before
 }
 
 ///|
@@ -269,7 +286,11 @@ fn words_picked_span(v : @view.View) -> @view.Live[(Int, Int)] {
         s
       }
     }
-    s.get()
+    let span = s.get()
+    if span.0 < span.1 {
+      picked_shown_node(k, v)
+    }
+    span
   })
 }
 

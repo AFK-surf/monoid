@@ -107,6 +107,35 @@ fn picked_shown_by(base : SelKey, v : @view.View, scope_id : @view.NodeId) -> Un
 }
 
 ///|
+/// Record that node `v` currently displays selected paragraph `base` (e.g. after a virtualized list row remounts or
+/// recycles back into view), preserving any previously snapshotted `picked_of` owner.
+fn picked_shown_node(base : SelKey, v : @view.View) -> Unit {
+  guard v.lent(words_picks) is Some(scope_id) else { return }
+  let owner = match picked_shown.get(base) {
+    Some((_, Some(prev_of), _)) => Some(prev_of)
+    _ => v.lent(picked_ofs)
+  }
+  picked_shown[base] = (v.id(), owner, scope_id)
+}
+
+///|
+/// Whether `ends_in` is alive, visible, belongs to `within`, and still represents paragraph `end` (not recycled for
+/// another row in a `scrolls_window`).
+fn picked_end_live(ends_in : @view.NodeId, end : SelKey, within : @view.NodeId) -> Bool {
+  match view_app.val {
+    Some(tree) =>
+      match tree.view_of(ends_in) {
+        Some(end_v) =>
+          !end_v.shown_nowhere() &&
+          end_v.lent(words_picks) == Some(within) &&
+          @signals.untracked(fn() { tree_key(end_v) }) == end
+        None => false
+      }
+    None => false
+  }
+}
+
+///|
 /// What is picked of each paragraph (those of which some is), in the page's order, and the paragraph it ends in (where
 /// the pointer let it go: dragged down, the last; dragged up, the first); None where none is.
 fn picked_in_order() -> (Array[(SelKey, SelSpan)], SelKey)? {
@@ -206,8 +235,7 @@ fn picked_now_worked() -> WordsPicked? {
   guard tree_scope_live(within) else { return None }
   guard picked_in_order() is Some((spans, end)) else { return None }
   guard picked_shown.get(end) is Some((ends_in, _, end_scope)) && end_scope == within else { return None }
-  guard view_app.val is Some(tree) else { return None }
-  guard tree.view_of(ends_in) is Some(end_v) && !end_v.shown_nowhere() && end_v.lent(words_picks) == Some(within) else { return None }
+  guard picked_end_live(ends_in, end, within) else { return None }
   let of : Array[String] = []
   let mut strays = 0
   for e in spans {
@@ -324,11 +352,25 @@ pub fn picked_bar(v : @view.View) -> @view.View {
 }
 
 ///|
-/// Whether words a finger picked of the tree's, let go of, end in what draws its own bar over them (picked_bar).
+/// Whether words a finger picked of the tree's, let go of, belong to what draws its own bar over them (picked_bar).
 fn picked_bar_own() -> Bool {
-  guard picked.finger && picked_now_worked() is Some(p) && view_app.val is Some(tree) else { return false }
-  guard tree.view_of(p.ends_in) is Some(v) else { return false }
-  v.lent(picked_bars) == Some(true)
+  guard picked.finger && view_app.val is Some(tree) else { return false }
+  match picked_now_worked() {
+    Some(p) =>
+      match tree.view_of(p.ends_in) {
+        Some(v) => v.lent(picked_bars) == Some(true)
+        None => false
+      }
+    None =>
+      match picked.layer {
+        TreeScope(_, within) =>
+          match tree.view_of(within) {
+            Some(v) => v.lent(picked_bars) == Some(true)
+            None => false
+          }
+        OldLayer(_) => false
+      }
+  }
 }
 
 ///|
