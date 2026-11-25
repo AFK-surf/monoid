@@ -61,7 +61,7 @@ import { type Boot, Core } from "../core.ts";
 import { FileSource } from "../file-source.ts";
 import { HostError } from "../error.ts";
 import type { CloseReason, Iroh, IrohAddr, IrohConnection, IrohEndpoint, IrohPath, IrohStream } from "../iroh.ts";
-import { accessMapOf, relayUrlKey } from "../iroh-access.ts";
+import { createAccessCache } from "../iroh-access.ts";
 import { SOCKET_PING, SOCKET_PING_MS, type DbRange, type Host, type HttpRequest, type HttpResponse, type LoopbackRequest, type Pull, type Sql, type SqlRow, type SqlValue, type StreamResponse, type TcpConnection, type SqlError, type Unzstd, sqlError } from "../host.ts";
 import type { ClientId, CoreMessage } from "../protocol.ts";
 import { t } from "../i18n.ts";
@@ -508,7 +508,8 @@ export class BridgeSql implements Sql {
 }
 
 /// The shell's iroh as the core's (iroh.ts).
-export function bridgeIroh(bridge: Bridge): Iroh {
+/// `now` reads the clock the relay access cache ages by (a test holds it).
+export function bridgeIroh(bridge: Bridge, now?: () => number): Iroh {
   const handle = (a: Answer) => (a.json as J).id as number;
   const stream = (id: number): IrohStream => ({
     read: () => Effect.map(bridge.call("istream.read", { id }), (a) => ((a.json as J)?.end === true ? null : (a.bytes ?? new Uint8Array(0)))),
@@ -532,22 +533,14 @@ export function bridgeIroh(bridge: Bridge): Iroh {
     stats: () => bridge.sync("conn.stats", { id }) as ReturnType<IrohConnection["stats"]>,
   });
   const endpoint = (id: number): IrohEndpoint => {
-    // Cache logical relay URL -> access URL per endpoint so `conn.paths()` does not issue a redundant sync
-    // `iroh.relayStatus` FFI call on every invocation. Cleared on relay/network changes and refreshed on unknown URLs.
-    let accessMap: Map<string, string | undefined> | null = null;
-    const readRelayStatus = (): { url: string; connected: boolean; access?: string }[] => {
-      const statuses = (bridge.sync("iroh.relayStatus", { id }) as { url: string; connected: boolean; access?: string }[]) ?? [];
-      accessMap = accessMapOf(statuses);
-      return statuses;
-    };
-    const clearAccess = () => {
-      accessMap = null;
-    };
+    // Logical relay URL -> access URL per endpoint, so `conn.paths()` does not issue a sync `iroh.relayStatus` FFI call
+    // each time; read again after `ACCESS_CACHE_MS` (iroh switches entrance in the background), on unknown URLs, and
+    // after relay/network changes.
+    const access = createAccessCache(() => (bridge.sync("iroh.relayStatus", { id }) as { url: string; connected: boolean; access?: string }[]) ?? [], { ...(now && { now }) });
     const mapPaths = (paths: IrohPath[]): IrohPath[] => {
       if (!paths.some((p) => p.relay !== null)) return paths;
-      if (accessMap === null) readRelayStatus();
-      if (paths.some((p) => p.relay !== null && !accessMap!.has(relayUrlKey(p.relay)))) readRelayStatus();
-      return paths.map((p) => (p.relay === null ? p : { ...p, relay: accessMap!.get(relayUrlKey(p.relay)) ?? p.relay }));
+      const relays = access.resolveAll(paths.map((p) => p.relay));
+      return paths.map((p, i) => (p.relay === null ? p : { ...p, relay: relays[i]! }));
     };
     return {
       id: () => String(bridge.sync("iroh.endpointId", { id })),
@@ -558,17 +551,17 @@ export function bridgeIroh(bridge: Bridge): Iroh {
           () => null,
         ),
       addAddr: (addr) => void bridge.sync("iroh.addAddr", { id, addr }),
-      networkChange: () => Effect.ensuring(Effect.ignore(bridge.call("iroh.networkChange", { id }), { log: "Unhandled", message: "network change told" }), Effect.sync(clearAccess)),
-      relayStatus: readRelayStatus,
+      networkChange: () => Effect.ensuring(Effect.ignore(bridge.call("iroh.networkChange", { id }), { log: "Unhandled", message: "network change told" }), Effect.sync(access.clear)),
+      relayStatus: access.readStatus,
       dhtSaid: (keep) => (bridge.sync("dht.said", { keep }) as ReturnType<NonNullable<IrohEndpoint["dhtSaid"]>> | null) ?? { lines: [], dropped: 0 },
       meshUseLeaf: (value) => Effect.asVoid(bridge.call("iroh.meshUseLeaf", {id,...value})),
       meshDetachLeaf: (value) => Effect.asVoid(bridge.call("iroh.meshDetachLeaf", {id,...value})),
       meshConfigure: (scope) => Effect.map(bridge.call("iroh.meshConfigure", { id, ...scope }), (a) => a.json as import("../iroh.ts").IrohMeshDescriptor),
       meshRemove: (scope) => Effect.asVoid(bridge.call("iroh.meshRemove", { id, scope })),
-      setRelayEntries: (entries) => Effect.ensuring(Effect.asVoid(bridge.call("iroh.setRelayEntries", { id, entries })), Effect.sync(clearAccess)),
+      setRelayEntries: (entries) => Effect.ensuring(Effect.asVoid(bridge.call("iroh.setRelayEntries", { id, entries })), Effect.sync(access.clear)),
       setDisabledRelays: (peer, relays) => Effect.asVoid(bridge.call("iroh.disabledRelays", { id, peer, relays })),
-      insertRelay: (url) => Effect.ensuring(Effect.asVoid(bridge.call("iroh.insertRelay", { id, url })), Effect.sync(clearAccess)),
-      removeRelay: (url) => Effect.ensuring(Effect.asVoid(bridge.call("iroh.removeRelay", { id, url })), Effect.sync(clearAccess)),
+      insertRelay: (url) => Effect.ensuring(Effect.asVoid(bridge.call("iroh.insertRelay", { id, url })), Effect.sync(access.clear)),
+      removeRelay: (url) => Effect.ensuring(Effect.asVoid(bridge.call("iroh.removeRelay", { id, url })), Effect.sync(access.clear)),
       // (a shell from before says no such op: PCM)
       opus: () => {
         try {
