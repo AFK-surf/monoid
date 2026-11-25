@@ -286,6 +286,96 @@ fn share_key(t : ThreadSummary) -> String {
   }
 }
 
+/// The session keys a thread's `opened_chats` opener is matched by: its home alone (another chat's agent taking part
+/// in it brings no opener of its own), else its sessions.
+fn thread_keys(t : ThreadSummary) -> Array[String] {
+  match readops_core::field(t.thread, "home") {
+    base_codec::Json::Str(h) => {
+      if h != "" {
+        return [h]
+      }
+    }
+    _ => ()
+  }
+  let out : Array[String] = []
+  for i in 0..<t.sessions.length() {
+    let s = readops_core::js_text(readops_core::field(t.sessions[i], "session"))
+    if s != "" {
+      let mut found = false
+      for j in 0..<out.length() {
+        if out[j] == s {
+          found = true
+          break
+        }
+      }
+      if !found {
+        out.push(s)
+      }
+    }
+  }
+  out
+}
+
+fn opener_named(
+  station : base_codec::Json,
+  session : base_codec::Json,
+  title : base_codec::Json,
+  led : Bool,
+) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = []
+  match station {
+    base_codec::Json::Null => ()
+    _ => out.push(("station", station))
+  }
+  out.push(("session", session))
+  match title {
+    base_codec::Json::Null => ()
+    _ => out.push(("title", title))
+  }
+  if led {
+    out.push(("led", base_codec::json_bool(true)))
+  }
+  base_codec::json_obj(out)
+}
+
+/// store.ts `openers` of some sessions: by session, the chat it was opened from;
+/// none on a database from before.
+fn openers_of(
+  db : sql_db::Db,
+  ids : Array[String],
+) -> Map[String, base_codec::Json] {
+  let openers : Map[String, base_codec::Json] = Map::new()
+  if ids.length() == 0 {
+    return openers
+  }
+  let rows = match db.all(readops_core::OPENERS_OF_SQL, [readops_core::ids_json(str_array_to_json(ids))]) {
+    Ok(rs) => rs
+    Err(_) => return openers
+  }
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let led = match readops_core::field(r, "led") {
+      base_codec::Json::Num(n, _) => n == 1.0
+      _ => false
+    }
+    let ps = readops_core::field(r, "parent_station")
+    let station = if base_codec::json_eq(ps, base_codec::json_str("")) {
+      base_codec::json_null()
+    } else {
+      ps
+    }
+    let title = readops_core::or_else(
+      readops_core::field(r, "opener_title"),
+      readops_core::field(r, "parent_title"),
+    )
+    openers.set(
+      readops_core::js_text(readops_core::field(r, "child")),
+      opener_named(station, readops_core::field(r, "parent"), title, led),
+    )
+  }
+  openers
+}
+
 /// cc-thread-index.ts `indexedCcThreads`: the Slack and Feishu threads a still.fail chat copies to,
 /// with the connect posting in each; refused while one of its sessions' destinations is prepared.
 fn cc_threads(
@@ -405,6 +495,7 @@ fn thread_view(
   known : readops_core::Known,
   t : ThreadSummary,
   shares : Map[String, base_codec::Json],
+  openers : Map[String, base_codec::Json],
 ) -> Result[base_codec::Json, readops_core::ReadError] {
   let id = readops_core::field(t.thread, "id")
   let names = match known.author_names(db, id) {
@@ -496,6 +587,16 @@ fn thread_view(
     }
   }
   v.push(("xshare", readops_core::or_null(shares.get(share_key(t)))))
+  let keys = thread_keys(t)
+  for i in 0..<keys.length() {
+    match openers.get(keys[i]) {
+      Some(op) => {
+        v.push(("opener", op))
+        break
+      }
+      None => ()
+    }
+  }
   Ok(base_codec::json_obj(v))
 }
 
@@ -551,9 +652,22 @@ fn thread_views(
     share_keys.push(share_key(visible[i]))
   }
   let shares = shares_of(db, share_keys, known.now)
+  let opener_keys : Array[String] = []
+  let opener_seen : Map[String, Bool] = Map::new()
+  for i in 0..<visible.length() {
+    let ks = thread_keys(visible[i])
+    for j in 0..<ks.length() {
+      let k = ks[j]
+      if !opener_seen.contains(k) {
+        opener_seen.set(k, true)
+        opener_keys.push(k)
+      }
+    }
+  }
+  let openers = openers_of(db, opener_keys)
   let out : Array[base_codec::Json] = []
   for i in 0..<visible.length() {
-    match thread_view(db, known, visible[i], shares) {
+    match thread_view(db, known, visible[i], shares, openers) {
       Ok(tv) => out.push(tv)
       Err(e) => return Err(e)
     }
@@ -690,7 +804,7 @@ pub fn thread_of(
   }
   let found = listed[0]
   let known = readops_core::Known::of(client, data, sep, ask)
-  thread_view(db, known, found, shares_of(db, [share_key(found)], known.now))
+  thread_view(db, known, found, shares_of(db, [share_key(found)], known.now), openers_of(db, thread_keys(found)))
 }
 
 /// store.ts `jobsNow`: a session's latest jobs and those of it still up.

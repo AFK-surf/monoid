@@ -294,3 +294,22 @@ test "whole, outflow_of, outflow_state, outflow_card, valid_history_range, big_g
     _ => assert(false)
   }
 }
+
+test "participant_email_like and legacy_router_connect (#8625)" {
+  assert(participant_email_like("a@b"))
+  assert(participant_email_like("alice@example.com"))
+  assert(!participant_email_like(""))
+  assert(!participant_email_like("@b"))
+  assert(!participant_email_like("a@"))
+  assert(!participant_email_like("a@b@c"))
+  assert(!participant_email_like("a b@c"))
+  assert(!participant_email_like("a@b\u{00A0}c"))
+
+  match legacy_router_connect("slack:team:R1") {
+    Some(c) => assert(c == "team")
+    None => assert(false)
+  }
+  assert(legacy_router_connect("slack::R1") is None)
+  assert(legacy_router_connect("slack:team") is None)
+  assert(legacy_router_connect("other:team:R1") is None)
+}

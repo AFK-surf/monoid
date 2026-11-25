@@ -707,8 +707,10 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   }
   match check(
     readops_chats::mb_json_eq(readops_core::json_val_or_null(c0, "router"), base_codec::json_bool(true)) &&
-    readops_chats::mb_json_eq(readops_core::json_val_or_null(c0, "surface"), base_codec::json_str("stillfail")),
-    "outflow_chats router flag & chat->stillfail surface",
+    readops_chats::mb_json_eq(readops_core::json_val_or_null(c0, "surface"), base_codec::json_str("stillfail")) &&
+    sql_db::stringify_json(readops_core::json_val_or_null(c0, "routerConnects")) == "[\"c-slack\"]" &&
+    sql_db::stringify_json(readops_core::json_val_or_null(c0, "participants")) == "[\"alice@acme.com\"]",
+    "outflow_chats router flag, routerConnects, participants & chat->stillfail surface",
     passed,
   ) {
     Ok(_) => ()

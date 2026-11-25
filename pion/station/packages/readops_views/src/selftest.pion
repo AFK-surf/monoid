@@ -1297,6 +1297,22 @@ fn run_all_checks(
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
+  // #8651: thread 10 has home='s2' which has opener s1 (title='Alpha', led=true) in opened_chats.
+  let mut found_t10_opener = false
+  for i in 0..<tlist_res.length() {
+    if readops_core::js_text(readops_core::json_val_or_null(tlist_res[i], "id")) == "10" {
+      let op = readops_core::json_val_or_null(tlist_res[i], "opener")
+      if readops_core::js_text(readops_core::json_val_or_null(op, "session")) == "s1" &&
+      readops_core::js_text(readops_core::json_val_or_null(op, "title")) == "Alpha" &&
+      sql_db::stringify_json(readops_core::json_val_or_null(op, "led")) == "true" {
+        found_t10_opener = true
+      }
+    }
+  }
+  match assert_true(found_t10_opener, "thread_list_of includes opener on thread 10 (#8651)") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
   // Refused(503) copy destination sessions pending: s2 not ready in cc_sessions
   match run_sql(db, "UPDATE cc_sessions SET complete = 0 WHERE session = 's2'", []) {
     Ok(_) => ()
