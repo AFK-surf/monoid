@@ -300,47 +300,35 @@ test('a face\'s CJK companion narrow among Latin letters as its face is (pwid), 
     'the one before gone, the new narrow too');
 });
 
-test('faceSetLigatures(face, false) matches style_no_ligatures shaping before or after load and restores on true without reloading FontFaces', async () => {
-  const ligMeasure = (s) => {
-    const widths = { f: 18, i: 16.9, ff: 34, ffi: 50.1, 'f\u200Cf': 36, 'f\u200Cf\u200Ci': 52.9 };
-    return { fontBoundingBoxAscent: 12, fontBoundingBoxDescent: 4, width: widths[s] ?? s.length * 10 };
-  };
-  const shapeTotal = (b, style) => {
-    const out = new Float64Array(32);
-    const n = b.H.shape('ffi', 16, 400, style, out);
-    let sum = 0;
-    for (let i = 0; i < n; i++) sum += out[i * 4 + 2];
-    return Math.round(sum * 100) / 100;
-  };
-  // Control: style_no_ligatures (bit 8)
-  const bc = browser({ measureText: ligMeasure });
-  await task();
-  bc.H.faceAddBytes(3, new Uint8Array(4), 400);
-  await task();
-  const refNoLig = shapeTotal(bc, (3 << 8) | 8);
-  const refLig = shapeTotal(bc, 3 << 8);
-  assert.equal(refNoLig, 52.9);
-  assert.equal(refLig, 50.1);
+test('faceSetLigatures(3, false) sets calt/liga/clig=0 on mbface3 and mbface3n before/after load without ZWNJ Arabic breakage, and restores on true', async () => {
+  const seen = [];
+  const recMeasure = (s) => { seen.push(s); return { fontBoundingBoxAscent: 12, fontBoundingBoxDescent: 4, width: s.length * 10 }; };
   // Before load: faceSetLigatures(3, false) then faceAddBytes
-  const b1 = browser({ measureText: ligMeasure });
+  const b1 = browser({ measureText: recMeasure });
   await task();
   b1.H.faceSetLigatures(3, false);
   b1.H.faceAddBytes(3, new Uint8Array(4), 400);
   await task();
-  assert.equal(shapeTotal(b1, 3 << 8), refNoLig, 'before-load faceSetLigatures(false) matches style_no_ligatures');
-  // After load: faceAddBytes then faceSetLigatures(3, false), then re-enable true
-  const b2 = browser({ measureText: ligMeasure });
+  assert.ok([...b1.fonts].some((f) => f.family === 'mbface3' && f.featureSettings === '"calt" 0, "liga" 0, "clig" 0'));
+  // Arabic shaping must NOT insert ZWNJ (\u200c) when faceSetLigatures(3, false) is active
+  seen.length = 0;
+  b1.H.shape('سلام', 16, 400, 3 << 8, new Float64Array(32));
+  assert.equal(seen.some((s) => s.includes('\u200C')), false, 'faceSetLigatures(false) must not inject ZWNJ into Arabic shaping');
+  // After load: regular + narrow mbface3n reloaded with calt/liga/clig=0, then cleared on true
+  const b2 = browser();
   await task();
   b2.H.faceAddBytes(3, new Uint8Array(4), 400);
   await task();
-  const fontsBefore = [...b2.fonts];
-  assert.equal(shapeTotal(b2, 3 << 8), refLig, 'ligatures on by default');
+  fontOf(b2, (3 << 8) | 64);
+  await task();
   b2.H.faceSetLigatures(3, false);
-  assert.equal(shapeTotal(b2, 3 << 8), refNoLig, 'after-load faceSetLigatures(false) matches style_no_ligatures');
-  assert.deepEqual([...b2.fonts], fontsBefore, 'document.fonts untouched on toggle off');
+  await task();
+  assert.ok([...b2.fonts].some((f) => f.family === 'mbface3' && f.featureSettings === '"calt" 0, "liga" 0, "clig" 0'));
+  assert.ok([...b2.fonts].some((f) => f.family === 'mbface3n' && f.featureSettings === '"calt" 0, "liga" 0, "clig" 0, "pwid" 1'));
   b2.H.faceSetLigatures(3, true);
-  assert.equal(shapeTotal(b2, 3 << 8), refLig, 'faceSetLigatures(true) restores ligature shaping');
-  assert.deepEqual([...b2.fonts], fontsBefore, 'document.fonts untouched on toggle on');
+  await task();
+  assert.ok([...b2.fonts].some((f) => f.family === 'mbface3' && f.featureSettings === undefined));
+  assert.ok([...b2.fonts].some((f) => f.family === 'mbface3n' && f.featureSettings === '"pwid" 1'));
 });
 
 test('style_serif | style_words stays serif even when face_text (slot 2) is loaded', async () => {
@@ -399,11 +387,17 @@ test('faceSetLigatures preserves document.fonts order and CJK companions, and in
   assert.ok(frames >= 1, 'in-flight narrow CJK completion requests a frame');
   const snapshotBefore = [...b.fonts];
   assert.ok(snapshotBefore.filter((f) => f.unicodeRange === CJK_RANGE).length >= 2, 'regular and narrow CJK companion loaded');
-  // Toggling ligatures must not delete, reload, or reorder already-loaded FontFaces.
+  // Toggling ligatures must re-pin CJK companions strictly after same-family primary FontFaces (CSS last-wins).
   b.H.faceSetLigatures(3, true);
+  await task();
   b.H.faceSetLigatures(3, false);
   await task();
-  assert.deepEqual([...b.fonts], snapshotBefore, 'document.fonts entries and order unchanged by faceSetLigatures');
+  const list = [...b.fonts];
+  for (const fam of ['mbface3', 'mbface3n']) {
+    const lastPrimary = list.reduce((m, f, idx) => (f.family === fam && !f.unicodeRange ? idx : m), -1);
+    const firstCjk = list.findIndex((f) => f.family === fam && f.unicodeRange === CJK_RANGE);
+    assert.ok(lastPrimary >= 0 && firstCjk > lastPrimary, `${fam}: CJK companion (${firstCjk}) must come after primary (${lastPrimary})`);
+  }
 });
 
 test('stale multi-weight narrowFace batch cancelled by faceClear does not bump atlasGeneration or pollute narrowFaces', async () => {
