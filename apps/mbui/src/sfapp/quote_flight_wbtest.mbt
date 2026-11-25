@@ -492,7 +492,7 @@ test "two quotes sent together each dissolve into particles on their way, not th
   let tree = @ui.view_tree().unwrap()
   let seen : Array[String] = []
   while t.time() < sent_at + flight_ms {
-    t.frame()
+    t.frame_as_host() |> ignore
     for d in tree.drawn() {
       for q in [quote_passage, "第二段引用的文字"] {
         if d.words.contains(q) && tree.in_particle_flight(d.id) && !seen.contains(q) {
