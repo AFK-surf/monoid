@@ -17,6 +17,7 @@ import { Kind, type SpanContext } from "../trace.ts";
 import { laterSleep, type Scoped } from "../runtime.ts";
 import { equal, get, isObject, parseJson } from "../util.ts";
 import { GONE, NETWORK } from "../wake.ts";
+import { ofAddress } from "../workspace.ts";
 import { StationAddr } from "./addr.ts";
 import { Back, BACK_AWAY_MS, BACK_WATCH_MS } from "./back.ts";
 import { Cursor, upTo } from "./cursor.ts";
@@ -434,6 +435,15 @@ export class Links {
       core.runner.close(link.scoped);
       this.#told.gone(address);
       core.scheduler.drop(address, new CoreError("gone", t("station.core.localGone")));
+    }
+    const mesh = core.meshNow();
+    if (mesh?.linkAddresses) {
+      const owned = new Set(core.workspaces.owned().map(([id]) => id));
+      for (const address of mesh.linkAddresses()) {
+        if (wanted.has(address)) continue;
+        const ws = ofAddress(address);
+        if (owned.has(ws) && !this.#told.links(ws)) mesh.dropLink(address);
+      }
     }
     for (const address of wanted) if (!this.#links.has(address)) this.#start(address);
     this.recause();

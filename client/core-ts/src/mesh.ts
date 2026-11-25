@@ -2387,6 +2387,12 @@ export class Mesh {
     this.#ways.delete(addr);
     this.#tellHealth(addr);
     this.#relaxStation(endpointId(addr));
+    this.#env.runner.fork(this.#letGo());
+  }
+
+  /// Addresses with an open or opening link or live ways on this mesh.
+  linkAddresses(): string[] {
+    return [...new Set([...this.#links.keys(), ...this.#ways.keys()])];
   }
 
   /// Takes one way to the peer at `addr` for gone: `link` (what a stream that went silent came on), or the link

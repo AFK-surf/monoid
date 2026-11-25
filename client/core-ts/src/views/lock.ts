@@ -767,13 +767,18 @@ function readSaid(inner: Inner, ws: string, says: string): void {
   pairs.reading(inner, ws);
 }
 
+/// Whether `ws`'s stations are followed by this device (`StationsSync.linksWorkspace`; true in tests without sync).
+function workspaceLinked(inner: Inner, ws: string): boolean {
+  return inner.stations?.linksWorkspace ? inner.stations.linksWorkspace(ws) : true;
+}
+
 /// The lock and the devices that came, read from the workspace's stations and held (from the cloud only when none of
 /// them answers: older ones, offline, or refusing this device; the root AGENTS.md, The cloud is the account system); a
 /// lock that moved on lets the stations that refused this device be tried again.
 export function read(inner: Inner, ws: string): Effect.Effect<void, CoreError> {
   // What changed while it read is read again: an ask made meanwhile under the same key was folded into this one.
   return Effect.gen(function* () {
-    if (inner.provider.kind === "stillfail") {
+    if (inner.provider.kind === "stillfail" && workspaceLinked(inner, ws)) {
       const said = { refused: false };
       if (yield* readLockOf(inner, ws, lockStations(inner, ws), said)) return;
       // Refused by the stations it reached, a lock held: each refusal tells the lock's last entries (refusedFor), so
@@ -1748,7 +1753,7 @@ export function bindPerson(inner: Inner, ws: string): Effect.Effect<void> {
     const sub = inner.workspaces.owner(ws);
     const h = held(inner, ws);
     const signer = signerOf(inner);
-    if (sub === null || !h?.head || signer === null || !inner.host.appKeys || movedHere(inner, ws)) return;
+    if (sub === null || !h?.head || signer === null || !inner.host.appKeys || movedHere(inner, ws) || !workspaceLinked(inner, ws)) return;
     const personal = inner.adb.personal();
     const root = personal.root(sub);
     const f = fold(h.entries);
@@ -2300,7 +2305,7 @@ function ownLockOnce(inner: Inner, sub: string): Effect.Effect<void, CoreError> 
 export function tellStations(inner: Inner, sub: string, chain: Entry[]): void {
   for (const [ws, owner] of inner.workspaces.owned()) {
     const h = held(inner, ws);
-    if (owner !== sub || !h?.head) continue;
+    if (owner !== sub || !h?.head || !workspaceLinked(inner, ws)) continue;
     const f = stateOf(inner, ws, h.entries);
     if (!f.persons.has(sub)) continue;
     for (const id of f.stations.keys())
@@ -2342,11 +2347,11 @@ function heardTail(inner: Inner, ws: string, raw: unknown): void {
   inner.runner.fork(hold(inner, ws, sub, { seq: last.seq, hash: entryHash(last), genesis: was.head.genesis }, entries, was.seen ?? null));
 }
 
-/// The stations of `sub`'s workspaces here, each once (one in two of them is asked in the first).
+/// The stations of `sub`'s linked workspaces here, each once (one in two of them is asked in the first).
 export function personStations(inner: Inner, sub: string): StationAddr[] {
   const out = new Map<string, StationAddr>();
   for (const [ws, owner] of inner.workspaces.owned()) {
-    if (owner !== sub) continue;
+    if (owner !== sub || !workspaceLinked(inner, ws)) continue;
     for (const s of arr(get(view(inner, ws), "stations"))) if (typeof s?.id === "string" && !out.has(s.id)) out.set(s.id, new StationAddr(ws, s.id));
   }
   return [...out.values()];
