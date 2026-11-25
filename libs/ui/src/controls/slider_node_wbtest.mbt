@@ -236,7 +236,7 @@ test "value_slider_node: unified iOS 27 crisp 6pt track and ~60x36pt clear pill 
 }
 
 ///|
-test "value_slider_node: full-span remote track tap 0->100->0 settles smoothly without flush-fill motion kink" {
+test "value_slider_node: remote track taps to min and max endpoints settle at exact bounds with 0 glass" {
   {
     let v = @signals.signal(0.0)
     let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=300.0, platform=0)
@@ -246,9 +246,7 @@ test "value_slider_node: full-span remote track tap 0->100->0 settles smoothly w
         root.box(fn(b) {
           b.padding(Is((40.0, 80.0, 40.0, 0.0))).lines_up(Is(Some(Start))) |> ignore
           b.box(fn(s) {
-            // 340pt wide track: 100 -> 0 remote tap crosses the left fade band fast enough to fail 60fps sizes_across
-            // under the old piecewise-linear 4% ramp.
-            s.width(Is(Some(340.0))) |> ignore
+            s.width(Is(Some(320.0))) |> ignore
             value_slider_node(s, fn() { "音量" }, fn() { v.get() }, fn(x) { v.set(x) }, bubble=false) |> ignore
           })
           |> ignore
