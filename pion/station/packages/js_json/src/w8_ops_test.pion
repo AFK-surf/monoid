@@ -1,5 +1,5 @@
 // Pure-Pion unit tests for Wave 8 `js_json` additions (`write_utf8_with_num`, `js_string_with`,
-// `jval_from_json`, and `js_compare` UTF-16 ordering parity with `search.compare_units`).
+// `js_string_u16_with`, `jval_from_json`, and `js_compare` UTF-16 ordering parity).
 
 import "base_codec"
 
@@ -13,22 +13,28 @@ fn w8_fmt_num(d : Double) -> String {
   }
 }
 
-test "js_json: write_utf8_with_num escapes U+2028/U+2029 and preserves lone surrogates" {
+test "js_json: write_utf8_with_num escapes U+2028/U+2029, controls, surrogates, and preserves non-ASCII BMP" {
   let sb = StringBuilder::new()
   sb.write_string("{\"lines\":1,\"events\":[")
-  // String with U+2028, U+2029, surrogate pair (U+1F600), lone high surrogate (0xD800), control char (0x01)
-  let units : Array[Int] = [0x61, 0x2028, 0x62, 0x2029, 0xD83D, 0xDE00, 0xD800, 0x01]
+  // String with U+2028, U+2029, surrogate pair (U+1F600), lone high (0xD800), control (0x01),
+  // \b \f \r \t, lone low (0xDC00), non-ASCII BMP (中文é), and trailing lone high (0xDBFF).
+  let units : Array[Int] = [
+    0x61, 0x2028, 0x62, 0x2029, 0xD83D, 0xDE00, 0xD800, 0x01,
+    0x08, 0x0C, 0x0D, 0x09, 0xDC00, 0x4E2D, 0x6587, 0x00E9, 0xDBFF,
+  ]
+  let key_with_ls : Array[Int] = [0x6B, 0x2028]
   let jv = JValue::Obj([
     (utf16_units("b"), JValue::Num(1.0)),
     (utf16_units("2"), JValue::Str(units)),
     (utf16_units("0"), JValue::Null),
+    (key_with_ls, JValue::Bool(true)),
     (utf16_units("nan"), JValue::Num(0.0 / 0.0)),
     (utf16_units("inf"), JValue::Num(1.0 / 0.0)),
   ])
   write_utf8_with_num(sb, jv, w8_fmt_num)
   sb.write_string("]}")
   let got = sb.to_string()
-  let want = "{\"lines\":1,\"events\":[{\"0\":null,\"2\":\"a\\u2028b\\u2029😀\\ud800\\u0001\",\"b\":1,\"nan\":null,\"inf\":null}]}"
+  let want = "{\"lines\":1,\"events\":[{\"0\":null,\"2\":\"a\\u2028b\\u2029😀\\ud800\\u0001\\b\\f\\r\\t\\udc00中文é\\udbff\",\"b\":1,\"k\\u2028\":true,\"nan\":null,\"inf\":null}]}"
   assert(got == want)
 }
 
@@ -42,7 +48,7 @@ test "js_json: write_utf8_with_num streams multiple values into one buffer" {
   assert(sb.to_string() == "true,false,[42,\"ok\\n\\\"\\\\\"]")
 }
 
-test "js_json: js_string_with matches JS String(v)" {
+test "js_json: js_string_with and lossless js_string_u16_with match JS String(v)" {
   assert(js_string_with(JValue::Null, w8_fmt_num) == "null")
   assert(js_string_with(JValue::Bool(true), w8_fmt_num) == "true")
   assert(js_string_with(JValue::Num(42.0), w8_fmt_num) == "42")
@@ -52,16 +58,26 @@ test "js_json: js_string_with matches JS String(v)" {
     js_string_with(JValue::Arr([JValue::Num(1.0), JValue::Null, JValue::Str(utf16_units("a"))]), w8_fmt_num) ==
     "1,,a",
   )
+  // Lossless UTF-16 variant preserves lone high/low surrogates
+  let u = js_string_u16_with(
+    JValue::Arr([JValue::Str([0xD800]), JValue::Str([0xDC00])]),
+    w8_fmt_num,
+  )
+  assert(u.length() == 3)
+  assert(u[0] == 0xD800)
+  assert(u[1] == 0x2C)
+  assert(u[2] == 0xDC00)
 }
 
-test "js_json: jval_from_json round-trip" {
+test "js_json: jval_from_json round-trip and last-write-wins duplicate keys" {
   let j = base_codec::json_obj([
     ("b", base_codec::json_int(2)),
     ("0", base_codec::json_str("first")),
+    ("b", base_codec::json_int(9)),
     ("arr", base_codec::json_arr([base_codec::json_bool(true), base_codec::json_null()])),
   ])
   let jv = jval_from_json(j)
-  assert(stringify_with_num(jv, w8_fmt_num) == "{\"0\":\"first\",\"b\":2,\"arr\":[true,null]}")
+  assert(stringify_with_num(jv, w8_fmt_num) == "{\"0\":\"first\",\"b\":9,\"arr\":[true,null]}")
 }
 
 test "js_json: js_compare matches UTF-16 code-unit order (non-BMP < U+E000)" {

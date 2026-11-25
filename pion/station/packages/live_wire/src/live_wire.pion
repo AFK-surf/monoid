@@ -6,6 +6,22 @@ pub fn jstr(s : String) -> js_json::JValue {
   js_json::JValue::Str(js_json::utf16_units(s))
 }
 
+pub fn jstr_u16(u : Array[Int]) -> js_json::JValue {
+  js_json::JValue::Str(u)
+}
+
+pub fn u16_eq(a : Array[Int], b : Array[Int]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
 pub fn obj(fields : Array[(String, js_json::JValue)]) -> js_json::JValue {
   let out : Array[(Array[Int], js_json::JValue)] = []
   for i in 0..<fields.length() {
@@ -19,6 +35,22 @@ pub fn obj(fields : Array[(String, js_json::JValue)]) -> js_json::JValue {
 pub fn field(v : Option[js_json::JValue], name : String) -> Option[js_json::JValue] {
   match v {
     Some(o) => o.get(name)
+    None => None
+  }
+}
+
+/// Lossless UTF-16 `str(v)`: preserves lone surrogates verbatim without `sanitize_str`.
+pub fn str_u16(v : Option[js_json::JValue]) -> Option[Array[Int]] {
+  match v {
+    Some(js_json::JValue::Str(u)) => Some(u)
+    _ => None
+  }
+}
+
+/// Lossless UTF-16 `nonEmpty(v)`.
+pub fn non_empty_u16(v : Option[js_json::JValue]) -> Option[Array[Int]] {
+  match str_u16(v) {
+    Some(u) => if u.length() > 0 { Some(u) } else { None }
     None => None
   }
 }
@@ -326,5 +358,126 @@ pub fn content_text(content : Option[js_json::JValue], allow_str : Bool = true) 
       joined(parts, "\n")
     }
     _ => ""
+  }
+}
+
+/// Lossless UTF-16 live event builders & entry helpers (preserve lone surrogates verbatim).
+pub fn start_u16(
+  id : Array[Int],
+  step : String,
+  tool : Option[Array[Int]],
+  input : Option[Array[Int]],
+) -> js_json::JValue {
+  let fields : Array[(String, js_json::JValue)] = [
+    ("kind", jstr("start")),
+    ("id", jstr_u16(id)),
+    ("step", jstr(step)),
+  ]
+  match tool {
+    Some(t) => fields.push(("tool", jstr_u16(t)))
+    None => ()
+  }
+  match input {
+    Some(inp) => fields.push(("input", jstr_u16(inp)))
+    None => ()
+  }
+  obj(fields)
+}
+
+pub fn delta_u16(id : Array[Int], field_name : String, text : Array[Int]) -> js_json::JValue {
+  obj([
+    ("kind", jstr("delta")),
+    ("id", jstr_u16(id)),
+    ("field", jstr(field_name)),
+    ("text", jstr_u16(text)),
+  ])
+}
+
+pub fn end_event_u16(id : Array[Int]) -> js_json::JValue {
+  obj([("kind", jstr("end")), ("id", jstr_u16(id))])
+}
+
+pub fn find_entry_u16(entries : Array[(Array[Int], Array[Int])], key : Array[Int]) -> Option[Int] {
+  for i in 0..<entries.length() {
+    let (k, _) = entries[i]
+    if u16_eq(k, key) {
+      return Some(i)
+    }
+  }
+  None
+}
+
+pub fn set_entry_u16(
+  entries : Array[(Array[Int], Array[Int])],
+  key : Array[Int],
+  value : Array[Int],
+) -> Unit {
+  match find_entry_u16(entries, key) {
+    Some(i) => entries[i] = (key, value)
+    None => entries.push((key, value))
+  }
+}
+
+pub fn load_entries_u16(
+  state : js_json::JValue,
+  key : String,
+  entries : Array[(Array[Int], Array[Int])],
+) -> Unit {
+  match state.get(key) {
+    Some(js_json::JValue::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          js_json::JValue::Arr(pair) => {
+            if pair.length() >= 2 {
+              match (pair[0], pair[1]) {
+                (js_json::JValue::Str(ku), js_json::JValue::Str(vu)) => {
+                  set_entry_u16(entries, ku, vu)
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+}
+
+pub fn entries_json_u16(entries : Array[(Array[Int], Array[Int])]) -> js_json::JValue {
+  let out : Array[js_json::JValue] = []
+  for i in 0..<entries.length() {
+    let (k, v) = entries[i]
+    out.push(js_json::JValue::Arr([jstr_u16(k), jstr_u16(v)]))
+  }
+  js_json::JValue::Arr(out)
+}
+
+pub fn content_text_u16(content : Option[js_json::JValue], allow_str : Bool = true) -> Array[Int] {
+  match content {
+    Some(js_json::JValue::Str(u)) => if allow_str { u } else { [] }
+    Some(js_json::JValue::Arr(items)) => {
+      let out : Array[Int] = []
+      let mut wrote = false
+      for i in 0..<items.length() {
+        match str_u16(field(Some(items[i]), "text")) {
+          Some(t) => {
+            if t.length() > 0 {
+              if wrote {
+                out.push(0x0A)
+              }
+              for j in 0..<t.length() {
+                out.push(t[j])
+              }
+              wrote = true
+            }
+          }
+          None => ()
+        }
+      }
+      out
+    }
+    _ => []
   }
 }

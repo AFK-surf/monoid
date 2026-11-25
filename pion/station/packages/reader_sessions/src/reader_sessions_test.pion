@@ -45,6 +45,7 @@ test "reader_sessions: non-actor lines route to agents_told without emitting qui
     jstore_get_job_k: stub.jstore_get_job_k,
     remote_called_k: stub.remote_called_k,
     remote_changed_k: stub.remote_changed_k,
+    queue_of_locked_k: stub.queue_of_locked_k,
     agents_told: fn(line : String) -> Unit { seen_agents.push(line) },
     agents_take: stub.agents_take,
     is_stub: true,

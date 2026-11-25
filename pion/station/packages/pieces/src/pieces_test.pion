@@ -49,8 +49,8 @@ fn concat_bytes(a : Bytes, b : Bytes) -> Bytes {
 
 test "pieces: multi-chunk line assembly, boundaries, and partial rest" {
   let p = Pieces::new()
-  let piece = 4096
-  let count = 32
+  let piece = 65536
+  let count = 544
   let ends : Array[Int64] = []
   let lines : Array[Bytes] = []
   let mut at : Int64 = 0.to_int64()

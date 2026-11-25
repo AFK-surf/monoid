@@ -264,14 +264,6 @@ test("the pseudo-actors' matcher fails a jnode whose prefix is no longer node.",
 
 // ── Pion `--sessions` RPC/tell/store/deps/agent contract framework (Wave 8 §2.5.4) ──
 
-const PION_SESSIONS_PACKAGES = [
-  "sessions_actors",
-  "sessions_jobs_live",
-  "sessions_remote",
-  "sessions_agents",
-  "reader_sessions",
-] as const;
-
 function pionSessionsSources(): Sources {
   const out: Sources = {
     "src/sessions/mb-actor.ts": read(join(station, "src", "sessions", "mb-actor.ts")),
@@ -282,11 +274,15 @@ function pionSessionsSources(): Sources {
     "src/sessions/live.ts": read(join(station, "src", "sessions", "live.ts")),
     "src/jobs/remote.ts": read(join(station, "src", "jobs", "remote.ts")),
   };
-  for (const pkg of PION_SESSIONS_PACKAGES) {
-    const srcDir = join(pionStationPkgs, pkg, "src");
-    if (!existsSync(srcDir)) continue;
-    for (const f of readdirSync(srcDir).filter((n) => n.endsWith(".pion") && !n.endsWith("_test.pion")).sort()) {
-      out[`pion/${pkg}/${f}`] = read(join(srcDir, f));
+  if (existsSync(pionStationPkgs)) {
+    for (const entry of readdirSync(pionStationPkgs, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!entry.isDirectory()) continue;
+      if (!entry.name.startsWith("sessions_") && entry.name !== "reader_sessions") continue;
+      const srcDir = join(pionStationPkgs, entry.name, "src");
+      if (!existsSync(srcDir)) continue;
+      for (const f of readdirSync(srcDir).filter((n) => n.endsWith(".pion") && !n.endsWith("_test.pion")).sort()) {
+        out[`pion/${entry.name}/${f}`] = read(join(srcDir, f));
+      }
     }
   }
   return out;
@@ -318,8 +314,24 @@ function pionSessionsWrong(s: Sources): string[] {
 
   const wrong: string[] = [];
 
-  // 1. Actor `rpc_k(key, "node.xxx" | "t", ...)`
-  for (const [f, where] of literals(s, pionFiles, /\brpc_k\(\s*[^,]+,\s*"([^"]+)"\s*,/g)) {
+  // 1. Actor `gen.rpc_k(host, key, "node.xxx" | "t", ...)` (3-arg) AND `rpc_k(key, "node.xxx" | "t", ...)` (2-arg).
+  //    Using negative lookahead `(?!\s*")` on the 3rd arg of the 2-arg pattern ensures a literal key in
+  //    `gen.rpc_k(host, "s1", "node.xxx", ...)` is NEVER misread as `f`.
+  const rpcCalls = new Map<string, string>();
+  for (const name of pionFiles) {
+    const text = s[name]!;
+    for (const m of text.matchAll(/\brpc_k\(\s*[^,]+,\s*[^,]+,\s*"([^"]+)"\s*,/g)) {
+      const f = m[1]!;
+      const line = text.slice(0, m.index!).split("\n").length;
+      if (!rpcCalls.has(f)) rpcCalls.set(f, `${name}:${line}`);
+    }
+    for (const m of text.matchAll(/\brpc_k\(\s*[^,]+,\s*"([^"]+)"\s*,(?!\s*")/g)) {
+      const f = m[1]!;
+      const line = text.slice(0, m.index!).split("\n").length;
+      if (!rpcCalls.has(f)) rpcCalls.set(f, `${name}:${line}`);
+    }
+  }
+  for (const [f, where] of rpcCalls) {
     if (f === "t") {
       if (!tAnswered) wrong.push(`${where} asks "t", which mb-actor.ts asked() no longer answers`);
     } else if (f.startsWith("node.")) {
@@ -353,7 +365,7 @@ function pionSessionsWrong(s: Sources): string[] {
     }
   }
 
-  // 5. Pseudo-actors `jnode_k`/`jstore_k`, `lnode_k`, `rnode_k`/`rstore_k`, and `tell(key, "xxx", ...)`
+  // 5. Pseudo-actors `jnode_k`/`jstore_k`, `lnode_k`, `rnode_k`/`rstore_k`, and `tell` (both 2-arg and 3-arg forms)
   const pionPseudo = [
     { key: "jobs_key", node: "jnode_k", store: "jstore_k", prefix: "node.", ts: "src/jobs/jobs.ts", asked: "  private async asked(f: string", told: "  private told(f: string" },
     { key: "live_key", node: "lnode_k", store: null, prefix: "", ts: "src/sessions/live.ts", asked: "  async #asked(f: string", told: "  #tellOf(f: string" },
@@ -383,20 +395,24 @@ function pionSessionsWrong(s: Sources): string[] {
     }
   }
 
+  const checkTell = (name: string, index: number, text: string, keyExpr: string, verb: string) => {
+    const line = text.slice(0, index).split("\n").length;
+    const where = `${name}:${line}`;
+    if (pseudoToldByKey.has(keyExpr)) {
+      if (!pseudoToldByKey.get(keyExpr)!.has(verb)) {
+        wrong.push(`${where} tells ${keyExpr} "${verb}", which its TS handler does not handle`);
+      }
+    } else if (!toldCases.has(verb)) {
+      wrong.push(`${where} tells "${verb}", which mb-actor.ts told() does not handle`);
+    }
+  };
   for (const name of pionFiles) {
     const text = s[name]!;
-    for (const m of text.matchAll(/\btell\(\s*([^,]+),\s*"([^"]+)"/g)) {
-      const keyExpr = m[1]!.trim();
-      const verb = m[2]!;
-      const line = text.slice(0, m.index!).split("\n").length;
-      const where = `${name}:${line}`;
-      if (pseudoToldByKey.has(keyExpr)) {
-        if (!pseudoToldByKey.get(keyExpr)!.has(verb)) {
-          wrong.push(`${where} tells ${keyExpr} "${verb}", which its TS handler does not handle`);
-        }
-      } else if (!toldCases.has(verb)) {
-        wrong.push(`${where} tells "${verb}", which mb-actor.ts told() does not handle`);
-      }
+    for (const m of text.matchAll(/\btell\(\s*[^,]+,\s*([^,]+),\s*"([^"]+)"\s*,/g)) {
+      checkTell(name, m.index!, text, m[1]!.trim(), m[2]!);
+    }
+    for (const m of text.matchAll(/\btell\(\s*([^,]+),\s*"([^"]+)"\s*,(?!\s*")/g)) {
+      checkTell(name, m.index!, text, m[1]!.trim(), m[2]!);
     }
   }
 
@@ -408,11 +424,20 @@ test("every Pion --sessions RPC, store, deps, agent_do and tell is handled in No
   assert.deepEqual(wrong, [], wrong.join("\n"));
 });
 
-test("Pion --sessions matcher negative 1: catches node.* only in agent block and missing \"t\"", () => {
+test("Pion --sessions matcher negative 1: catches real gen.rpc_k(host, key, ...) and 2-arg rpc_k for agent-only node.* and missing \"t\"", () => {
   const base = pionSessionsSources();
-  const s1: Sources = { ...base, "pion/sessions_actors/synth.pion": 'rpc_k(a.key, "node.holding", [])\nrpc_k(a.key, "t", [])\n' };
+  const s1: Sources = {
+    ...base,
+    "pion/sessions_actors/synth.pion": [
+      'gen.rpc_k(host, a.key, "node.noSuchMethod", [], mirror, k)',
+      'gen.rpc_k(host, "literal-key", "node.holding", [], mirror, k)',
+      'rpc_k(a.key, "t", [])',
+    ].join("\n"),
+  };
   const wrong1 = pionSessionsWrong(s1);
+  assert.ok(wrong1.some((w) => w.includes('"node.noSuchMethod"')), wrong1.join("\n"));
   assert.ok(wrong1.some((w) => w.includes('"node.holding"') && w.includes("only its agent block")), wrong1.join("\n"));
+  assert.ok(!wrong1.some((w) => w.includes('"literal-key"')), `literal key must not be misparsed as RPC fn: ${wrong1.join("\n")}`);
   const mbActor = base["src/sessions/mb-actor.ts"]!;
   const wrong2 = pionSessionsWrong({ ...s1, "src/sessions/mb-actor.ts": mbActor.replace(/^ {4}if \(f === "t"\) return .*\n/m, "") });
   assert.ok(wrong2.some((w) => w.includes('asks "t"')), wrong2.join("\n"));
@@ -444,15 +469,20 @@ test("Pion --sessions matcher negative 3: catches unknown jnode_k/jstore_k/lnode
   assert.ok(wrong.some((w) => w.includes('"store.noSuchRemoteStore"')), wrong.join("\n"));
 });
 
-test("Pion --sessions matcher negative 4: catches unknown actor and pseudo-actor tells", () => {
+test("Pion --sessions matcher negative 4: catches unknown actor and pseudo-actor tells (2-arg and 3-arg)", () => {
   const base = pionSessionsSources();
   const s: Sources = {
     ...base,
-    "pion/sessions_actors/synth.pion": 'tell(a.key, "noSuchActorTell", [])\ntell(jobs_key, "noSuchJobTell", [])\n',
+    "pion/sessions_actors/synth.pion": [
+      'gen.tell(host, a.key, "noSuchActorTell", [])',
+      'gen.tell(host, jobs_key, "noSuchJobTell", [])',
+      'tell(a.key, "noSuchShortTell", [])',
+    ].join("\n"),
   };
   const wrong = pionSessionsWrong(s);
   assert.ok(wrong.some((w) => w.includes('tells "noSuchActorTell"')), wrong.join("\n"));
   assert.ok(wrong.some((w) => w.includes('tells jobs_key "noSuchJobTell"')), wrong.join("\n"));
+  assert.ok(wrong.some((w) => w.includes('tells "noSuchShortTell"')), wrong.join("\n"));
 });
 
 // ── Agents stdout protocol contract (`lines`/`exit`/`closed`/`left`/`frozen`/`ended`/`replayed`/`ownReplayed`) ──

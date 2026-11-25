@@ -349,7 +349,10 @@ export class SessionsProgram {
     this.#pendingAbort = null;
     this.#pendingMessages = [];
     this.#end();
-    for (const user of [...this.#users]) user.exited(1);
+    const users = [...this.#users];
+    queueMicrotask(() => {
+      for (const user of users) user.exited(1);
+    });
   }
 
   get ended() {

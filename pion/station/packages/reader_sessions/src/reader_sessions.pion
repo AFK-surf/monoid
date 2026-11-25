@@ -33,13 +33,13 @@ pub fn SessionsApp::has_stubs(self : SessionsApp) -> Bool {
 
 /// Handle one actors-routed JSON line (`actors.mbt:793-953` skeleton).
 pub fn SessionsApp::heard(self : SessionsApp, line : String) -> Unit {
-  self.gen.seen = self.gen.seen + 1
+  self.gen.counters.seen = self.gen.counters.seen + 1
   let said = match sessions_core::parse_json_strict(line) {
     Ok(j) => j
     Err(_) => return
   }
   match sessions_core::num_of(sessions_core::jget(said, "now")) {
-    Some(now) => self.gen.now = now
+    Some(now) => self.gen.counters.now = now
     None => ()
   }
   match sessions_core::jget(said, "db") {
@@ -51,8 +51,10 @@ pub fn SessionsApp::heard(self : SessionsApp, line : String) -> Unit {
   }
   match sessions_core::num_of(sessions_core::jget(said, "maxConcurrentTurns")) {
     Some(n) => {
-      let next = if n != n || n <= 0.0 { 0 } else { n.to_int() }
-      self.gen.max_concurrent_turns = next
+      let pos_inf = 1.0 / 0.0
+      let neg_inf = -1.0 / 0.0
+      let next = if n != n || n == pos_inf || n == neg_inf || n <= 0.0 { 0 } else { n.to_int() }
+      self.gen.counters.max_concurrent_turns = next
       return
     }
     None => ()
@@ -66,7 +68,7 @@ pub fn SessionsApp::heard(self : SessionsApp, line : String) -> Unit {
   }
   match sessions_core::jget(said, "due") {
     Some(base_codec::Json::Num(id, _)) => {
-      self.gen.handle_due(self.host, id.to_int())
+      self.gen.handle_due(id.to_int())
       return
     }
     _ => ()
@@ -90,7 +92,7 @@ pub fn serve_sessions_k(
           effect::Exit::Succeeded(Some(line)) => {
             if sessions_core::actors_line(line) {
               app.heard(line)
-              app.gen.quiet(app.host)
+              app.gen.quiet()
             } else {
               (app.dispatch.agents_told)(line)
             }
@@ -123,7 +125,7 @@ pub fn run_sessions_with_host(
 
 /// Production `--sessions <n> --data <dir> [--sep <sep>]` entrypoint (`reader/main.mbt:1252-1253`).
 pub fn run_sessions(data_dir : String, sep : String) -> Int {
-  let shell_dir = data_dir + "/shell"
+  let shell_dir = sessions_core::rjoin(sep, [data_dir, "shell"])
   if !host_shim::start(shell_dir, true) {
     let _ = host_shim::write_stderr_line("the shell did not start")
     return 1

@@ -120,6 +120,56 @@ test "sessions_core: iter_sync_k 10000 synchronous steps without stack overflow"
   assert(finished)
 }
 
+test "sessions_core: virtual clock 200ms sleep_k fires and host.exit preserves exit code" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let mut woke_at : Int64 = (-1).to_int64()
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    effect::sleep_k(200, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          woke_at = (h.transport.now_ms)()
+          h.exit(42)
+          k(effect::Exit::Succeeded(()))
+        }
+        other => k(other)
+      }
+    })
+  })
+  assert(woke_at == 200.to_int64())
+  assert(code == 42)
+  assert(mem.exit_codes.length() == 1)
+  assert(mem.exit_codes[0] == 42)
+}
+
+test "sessions_core: spurious empty wakeup before deadline keeps looping in production mode" {
+  let mem = MemHostTransport::new()
+  // Production mode (`stop_on_empty_wait = false`): 3 spurious empty wakeups before timer fires.
+  mem.stop_on_empty_wait = false
+  mem.spurious_nones = 3
+  let host = SessionHost::for_test(mem)
+  let mut woke = false
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    effect::sleep_k(200, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          woke = true
+          h.exit(0)
+          k(effect::Exit::Succeeded(()))
+        }
+        other => k(other)
+      }
+    })
+  })
+  assert(code == 0)
+  assert(woke)
+  assert(mem.now == 200.to_int64())
+  // 3 spurious waits + 1 wait that advanced virtual clock to 200ms.
+  assert(mem.wait_log.length() == 4)
+  assert(mem.wait_log[0] == 200.to_int64())
+  assert(mem.wait_log[3] == 200.to_int64())
+}
+
 test "sessions_core: 65+ lines in single stdin chunk are all enqueued and processed" {
   let mem = MemHostTransport::new()
   let sb = StringBuilder::new()
@@ -160,7 +210,7 @@ test "sessions_core: 65+ lines in single stdin chunk are all enqueued and proces
   assert(mem.exit_codes[0] == 0)
 }
 
-test "sessions_core: 65 consecutive host events drain across two outer rounds (64 + 1)" {
+test "sessions_core: 65 consecutive host events drain across two outer rounds (64 + 1) with tick in between" {
   let mem = MemHostTransport::new()
   for i in 0..<65 {
     mem.push_stdin("ev-" + i.to_string() + "\n")
@@ -169,6 +219,7 @@ test "sessions_core: 65 consecutive host events drain across two outer rounds (6
 
   let host = SessionHost::for_test(mem)
   let seen : Array[String] = []
+  let mut ready_ran_after_count = -1
   let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
     iter_sync_k(
       fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
@@ -176,6 +227,9 @@ test "sessions_core: 65 consecutive host events drain across two outer rounds (6
           match ex {
             effect::Exit::Succeeded(Some(line)) => {
               seen.push(line)
+              if seen.length() == 64 {
+                ready_ran_after_count = mem.event_head
+              }
               sk(effect::Exit::Succeeded(IterStep::Continue))
             }
             effect::Exit::Succeeded(None) => {
@@ -194,17 +248,34 @@ test "sessions_core: 65 consecutive host events drain across two outer rounds (6
   assert(seen.length() == 65)
   assert(seen[0] == "ev-0")
   assert(seen[64] == "ev-64")
+  // Round 1 drained exactly 64 events, then `rt.tick()` ran `main` (processing ev-0..ev-63)
+  // BEFORE Round 2 pulled ev-64 + EOF. Without the 64-event cap, `event_head` would be 66 here!
+  assert(ready_ran_after_count == 64)
+  // wait_log: round 1 = wait(-1) + 63 * wait(0) = 64 waits; round 2 = wait(-1) + wait(0) (EOF) + wait(0) (None) = 3 waits.
+  assert(mem.wait_log.length() == 67)
+  assert(mem.wait_log[0] == (-1).to_int64())
+  assert(mem.wait_log[63] == 0.to_int64())
+  assert(mem.wait_log[64] == (-1).to_int64())
 }
 
-test "sessions_core: HubGen rotation with delayed finalizer keeps main unblocked and retires once" {
+test "sessions_core: HubGen rotation with delayed finalizer keeps main unblocked until later event releases gate" {
   let mem = MemHostTransport::new()
-  mem.push_stdin("{\"db\":null}\n{\"afterDb\":1}\n")
+  // Separate host events: (1) db rotation, (2) work line processed WHILE finalizer is still blocked,
+  // (3) release line that opens fin_gate, (4) EOF.
+  mem.push_stdin("{\"db\":null}\n")
+  mem.push_stdin("{\"afterDb\":1}\n")
+  mem.push_stdin("{\"releaseFin\":1}\n")
   mem.push_eof()
 
   let host = SessionHost::for_test(mem)
   let mut gen = HubGen::new(host, 0)
   let old_res = gen.resources
+  let mut mock_db_closed = 0
+  old_res.add_retire_hook(fn() -> Unit {
+    mock_db_closed = mock_db_closed + 1
+  })
   let mut delayed_fin_ran = false
+  let mut saw_unblocked_before_release = false
   let fin_gate : effect::Deferred[Unit] = effect::Deferred::new()
 
   gen.fibers.add_finalizer(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
@@ -214,8 +285,9 @@ test "sessions_core: HubGen rotation with delayed finalizer keeps main unblocked
     })
   })
 
-  gen.spawn_work(host, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
-    gen.rpc_k(host, "s1", "node.test", [], fn(_k : String) -> Unit { () }, fn(_r : effect::Exit[base_codec::Json]) -> Unit {
+  let old_gen_ref = gen
+  gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    old_gen_ref.rpc_k(host, "s1", "node.test", [], fn(_k : String) -> Unit { () }, fn(_r : effect::Exit[base_codec::Json]) -> Unit {
       wk(effect::Exit::Succeeded(()))
     })
   })
@@ -229,9 +301,16 @@ test "sessions_core: HubGen rotation with delayed finalizer keeps main unblocked
             effect::Exit::Succeeded(Some(line)) => {
               if line.starts_with("{\"db\":") {
                 gen = rotate_hub_gen(h, gen, base_codec::json_null())
-                gen.quiet(h)
-              } else {
+                gen.quiet()
+              } else if line.starts_with("{\"afterDb\":") {
+                // Main MUST process this line while delayed finalizer is still pending!
                 processed.push(line)
+                assert(!old_res.retired)
+                assert(old_res.retire_count == 0)
+                assert(mock_db_closed == 0)
+                assert(!delayed_fin_ran)
+                saw_unblocked_before_release = true
+              } else if line.starts_with("{\"releaseFin\":") {
                 let _ = fin_gate.succeed(())
               }
               sk(effect::Exit::Succeeded(IterStep::Continue))
@@ -248,14 +327,16 @@ test "sessions_core: HubGen rotation with delayed finalizer keeps main unblocked
   host.rt.tick()
 
   assert(code == 0)
+  assert(saw_unblocked_before_release)
   assert(processed.length() == 1)
   assert(processed[0] == "{\"afterDb\":1}")
   assert(delayed_fin_ran)
   assert(old_res.retired)
   assert(old_res.retire_count == 1)
+  assert(mock_db_closed == 1)
   assert(mem.stderr_lines.length() == 0)
-  assert(gen.active >= 0)
-  assert(gen.epoch == 1)
+  assert(gen.counters.active >= 0)
+  assert(gen.counters.epoch == 1)
 }
 
 test "sessions_core: two consecutive db rotations in one chunk preserve next counter and zero stderr" {
@@ -278,10 +359,10 @@ test "sessions_core: two consecutive db rotations in one chunk preserve next cou
             effect::Exit::Succeeded(Some(line)) => {
               if line.starts_with("{\"db\":") {
                 gen = rotate_hub_gen(h, gen, base_codec::json_null())
-                if gen.epoch == 1 {
+                if gen.counters.epoch == 1 {
                   res1_opt = Some(gen.resources)
                 }
-                gen.quiet(h)
+                gen.quiet()
               }
               sk(effect::Exit::Succeeded(IterStep::Continue))
             }
@@ -297,7 +378,7 @@ test "sessions_core: two consecutive db rotations in one chunk preserve next cou
   host.rt.tick()
 
   assert(code == 0)
-  assert(gen.epoch == 2)
+  assert(gen.counters.epoch == 2)
   assert(res0.retire_count == 1)
   match res1_opt {
     Some(res1) => assert(res1.retire_count == 1)
@@ -313,8 +394,9 @@ test "sessions_core: late unix.open completion after abandonment emits exactly o
   let mut gen = HubGen::new(host, 0)
 
   let mut opened_shell_id : Int64 = 0.to_int64()
-  gen.spawn_work(host, fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
-    gen.shell_k(
+  let g0 = gen
+  gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    g0.shell_k(
       host,
       "unix.open",
       base_codec::json_obj([("path", jstr("/tmp/test.sock"))]),
@@ -346,6 +428,8 @@ test "sessions_core: late unix.open completion after abandonment emits exactly o
   assert(mem.shell_calls.length() == 2)
   assert(mem.shell_calls[1].op == "tcp.close")
   assert(mem.shell_calls[1].json == "{\"id\":99}")
+  assert(host.shell_waiters.length() == 0)
+  assert(host.abandoned_ops.length() == 0)
 
   host.dispatch_event(
     host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
@@ -356,6 +440,176 @@ test "sessions_core: late unix.open completion after abandonment emits exactly o
     }),
   )
   assert(mem.shell_calls.length() == 2)
+}
+
+test "sessions_core: unix.open ShellDone followed by interrupt before fiber resumes emits exactly one tcp.close" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let mut gen = HubGen::new(host, 0)
+
+  let mut opened_shell_id : Int64 = 0.to_int64()
+  let g0 = gen
+  gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    g0.shell_k(
+      host,
+      "unix.open",
+      base_codec::json_obj([("path", jstr("/tmp/race.sock"))]),
+      None,
+      Some(AbandonedOp::CloseTcpHandle),
+      Some(fn(id : Int64) -> Unit { opened_shell_id = id }),
+      fn(_res : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        wk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+
+  host.rt.tick()
+  assert(opened_shell_id > 0.to_int64())
+  assert(mem.shell_calls.length() == 1)
+
+  // Step 1: ShellDone arrives and settles Deferred (removes waiter from shell_waiters) BEFORE tick!
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: opened_shell_id,
+      error: "",
+      json: "{\"id\":77}",
+      bytes: None,
+    }),
+  )
+  assert(host.shell_waiters.length() == 0)
+
+  // Step 2: Before the fiber resumes, rotate_hub_gen interrupts the generation's scope!
+  gen = rotate_hub_gen(host, gen, base_codec::json_null())
+
+  // Step 3: Tick runs the interrupted continuation -> MUST emit exactly one tcp.close for handle 77!
+  host.rt.tick()
+  assert(mem.shell_calls.length() == 2)
+  assert(mem.shell_calls[1].op == "tcp.close")
+  assert(mem.shell_calls[1].json == "{\"id\":77}")
+  assert(host.shell_waiters.length() == 0)
+  assert(host.abandoned_ops.length() == 0)
+  assert(gen.counters.epoch == 1)
+}
+
+test "sessions_core: spawn_work Failed routes to daemon handler without decrementing active (actors.mbt:333)" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let gen = HubGen::new(host, 0)
+
+  gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    wk(effect::Exit::Failed(effect::EffectError::IoError("boom")))
+  })
+  assert(gen.counters.active == 1)
+  host.rt.tick()
+  // Failed work must NOT decrement `active` or emit `quiet`, and must log via daemon handler.
+  assert(gen.counters.active == 1)
+  assert(mem.stdout_lines.length() == 0)
+  assert(mem.stderr_lines.length() == 1)
+  assert(mem.stderr_lines[0].contains("actor work failed"))
+}
+
+test "sessions_core: same-chunk answer + due and freeze + routed frame sequences" {
+  // (a) Same-chunk answer + due: work issues RPC -> active=0; answer arrives -> active=1;
+  //     due arrives in same chunk -> timer fires with active=2->1; work finishes -> active=0 + quiet.
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let gen = HubGen::new(host, 0)
+  let order : Array[String] = []
+
+  let timer_id = host.alloc_id()
+  gen.resources.timers.set(timer_id, fn() -> Unit {
+    order.push("due")
+  })
+
+  gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    gen.rpc_k(host, "s1", "node.ping", [], fn(_k : String) -> Unit { () }, fn(res : effect::Exit[base_codec::Json]) -> Unit {
+      match res {
+        effect::Exit::Succeeded(_) => order.push("answer")
+        _ => ()
+      }
+      wk(effect::Exit::Succeeded(()))
+    })
+  })
+  host.rt.tick()
+  assert(gen.counters.active == 0)
+  assert(mem.stdout_lines.length() == 1)
+  assert(mem.stdout_lines[0].contains("\"rpc\":2"))
+
+  // Both answer and due arrive in one stdin chunk.
+  mem.push_stdin("{\"answer\":2,\"value\":true}\n{\"due\":1}\n")
+  mem.push_eof()
+
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    iter_sync_k(
+      fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
+        h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(Some(line)) => {
+              gen.counters.seen = gen.counters.seen + 1
+              match parse_json_strict(line) {
+                Ok(j) => {
+                  match jget(j, "answer") {
+                    Some(base_codec::Json::Num(id, _)) => gen.handle_answer(id.to_int(), j)
+                    _ => ()
+                  }
+                  match jget(j, "due") {
+                    Some(base_codec::Json::Num(id, _)) => gen.handle_due(id.to_int())
+                    _ => ()
+                  }
+                }
+                Err(_) => ()
+              }
+              sk(effect::Exit::Succeeded(IterStep::Continue))
+            }
+            effect::Exit::Succeeded(None) => sk(effect::Exit::Succeeded(IterStep::Stop))
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      k,
+    )
+  })
+  assert(code == 0)
+  assert(order.length() == 2)
+  assert(order[0] == "due")
+  assert(order[1] == "answer")
+  assert(gen.counters.active == 0)
+  assert(mem.stdout_lines.length() == 2)
+  assert(mem.stdout_lines[1] == "{\"quiet\":true,\"active\":0,\"seen\":2}")
+
+  // (b) Same-chunk freeze + routed: actors_line routes `routed` to actors and `freeze` to agents in exact order.
+  let mem2 = MemHostTransport::new()
+  mem2.push_stdin("{\"freeze\":[1]}\n{\"routed\":\"s1\",\"id\":\"m1\"}\n")
+  mem2.push_eof()
+  let host2 = SessionHost::for_test(mem2)
+  let routed_log : Array[String] = []
+  let code2 = run_host_loop(host2, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    iter_sync_k(
+      fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
+        h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(Some(line)) => {
+              if actors_line(line) {
+                routed_log.push("actors:" + line)
+              } else {
+                routed_log.push("agents:" + line)
+              }
+              sk(effect::Exit::Succeeded(IterStep::Continue))
+            }
+            effect::Exit::Succeeded(None) => sk(effect::Exit::Succeeded(IterStep::Stop))
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      k,
+    )
+  })
+  assert(code2 == 0)
+  assert(routed_log.length() == 2)
+  assert(routed_log[0] == "agents:{\"freeze\":[1]}")
+  assert(routed_log[1] == "actors:{\"routed\":\"s1\",\"id\":\"m1\"}")
 }
 
 test "sessions_core: Process-scoped shell waiters survive HubGen rotation" {
@@ -399,5 +653,5 @@ test "sessions_core: Process-scoped shell waiters survive HubGen rotation" {
   )
   host.rt.tick()
   assert(proc_done)
-  assert(gen.epoch == 1)
+  assert(gen.counters.epoch == 1)
 }

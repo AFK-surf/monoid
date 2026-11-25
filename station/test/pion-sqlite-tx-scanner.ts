@@ -100,7 +100,22 @@ function tokenizeSql(sql: string): SqlTok[] {
 export function findRawTxControlViolations(filename: string, source: string): string[] {
   const violations: string[] = [];
   const forbiddenHeads = new Set(["BEGIN", "COMMIT", "END", "SAVEPOINT", "RELEASE", "ROLLBACK"]);
-  const lines = source.split("\n");
+  // Collapse string-literal concatenations (`"ROLL" + "BACK"`, including across newlines) while
+  // preserving line numbers so split-literal raw transaction SQL cannot bypass the guard.
+  const normalized = source.replace(/"((?:\\.|[^"\\])*)"(\s*\+\s*)"((?:\\.|[^"\\])*)"/g, (_m, a: string, sep: string, b: string) => {
+    const nlCount = (sep.match(/\n/g) ?? []).length;
+    return `"${a}${b}"${"\n".repeat(nlCount)}`;
+  });
+  let collapsed = normalized;
+  for (;;) {
+    const next = collapsed.replace(/"((?:\\.|[^"\\])*)"(\s*\+\s*)"((?:\\.|[^"\\])*)"/g, (_m, a: string, sep: string, b: string) => {
+      const nlCount = (sep.match(/\n/g) ?? []).length;
+      return `"${a}${b}"${"\n".repeat(nlCount)}`;
+    });
+    if (next === collapsed) break;
+    collapsed = next;
+  }
+  const lines = collapsed.split("\n");
   let inTriggerHeader = false;
   let inTriggerBody = false;
   let atTriggerStmtStart = false;
@@ -229,8 +244,11 @@ export function findRawTxControlViolations(filename: string, source: string): st
 }
 
 /// Scan all non-test `.pion` files in `srcDir` for forbidden raw SQLite transaction SQL.
+/// Throws if `srcDir` does not exist so callers never get a false-green empty result.
 export function scanPionDirForRawTxControl(srcDir: string): string[] {
-  if (!existsSync(srcDir)) return [];
+  if (!existsSync(srcDir)) {
+    throw new Error(`scanPionDirForRawTxControl: directory does not exist: ${srcDir}`);
+  }
   const files = readdirSync(srcDir).filter((f) => f.endsWith(".pion") && !f.endsWith("_test.pion")).sort();
   const violations: string[] = [];
   for (const file of files) {

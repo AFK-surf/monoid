@@ -1,17 +1,19 @@
-// Wave 8 W8-0 Foundation tests:
+// Wave 8 W8-0 Foundation tests (100% event/promise-driven, zero `setTimeout` polling):
 // - `config.readers.sessions` selection & `STILLFAIL_READER_SESSIONS` > `config` > `STILLFAIL_READER_ENGINE` > `mb`
 // - MB + Pion dual-install cold-start pending buffering (`post`, `hold`, single spawn, ready telemetry)
 // - Pion-only cold-start (`mbReaderBinary() === null`)
 // - Old Pion without `sessions` in `--version` `modes:` falls back to MB and records fallback exactly once
-// - Concurrent two users on same `data` (actor+agent sharing vs dual-actor hub isolation)
+// - `STILLFAIL_REQUIRE_PION_SESSIONS=1` refuses both sync fallback and async cold-probe old capability set (0 MB spawns, `user.exited(1)`)
+// - Concurrent two users on same `data` (actor+agent sharing vs dual-actor hub isolation with two distinct ready PIDs)
 // - `release()` during pending probe aborts cleanly with 0 spawned processes
-// - `STILLFAIL_REQUIRE_PION_SESSIONS=1` throws on fallback / non-Pion / missing binary
 // - Real built `stillfail-pion --sessions 1 --data <tmp>` walking skeleton handshake (`ready`, `db:null`, `quiet`, EOF 0)
+// - Shared `pion-sqlite-tx-scanner.ts` concatenated raw-tx SQL detection & missing-directory throw
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Readable, Writable } from "node:stream";
 import { after, test } from "node:test";
 import {
   SessionsProgram,
@@ -30,6 +32,7 @@ import {
 } from "../src/read/mb-reader.ts";
 import { setReaderModeImplementedForTest } from "../src/read/reader-select.ts";
 import { readerTelemetry } from "../src/read/reader-telemetry.ts";
+import { findRawTxControlViolations, scanPionDirForRawTxControl } from "./pion-sqlite-tx-scanner.ts";
 
 const tempDirs: string[] = [];
 function makeTmp(prefix: string): string {
@@ -46,33 +49,111 @@ after(() => {
   }
 });
 
-function waitFor<T>(fn: () => T | undefined, timeoutMs = 5_000): Promise<T> {
-  return new Promise((resolveWait, rejectWait) => {
-    const start = Date.now();
-    const check = () => {
-      const v = fn();
-      if (v !== undefined) return resolveWait(v);
-      if (Date.now() - start > timeoutMs) return rejectWait(new Error("timed out waiting for condition"));
-      setTimeout(check, 10);
-    };
-    check();
+/// Event-driven line reader over a child stdout stream (zero `setTimeout` polling).
+function createLineReader(child: ChildProcessByStdio<Writable, Readable, Readable>) {
+  let carry = "";
+  const lines: string[] = [];
+  const waiters: Array<(line: string) => void> = [];
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    carry += chunk;
+    for (let idx = carry.indexOf("\n"); idx >= 0; idx = carry.indexOf("\n")) {
+      const line = carry.slice(0, idx);
+      carry = carry.slice(idx + 1);
+      const next = waiters.shift();
+      if (next) next(line);
+      else lines.push(line);
+    }
   });
+  return {
+    nextLine(): Promise<string> {
+      const existing = lines.shift();
+      if (existing !== undefined) return Promise.resolve(existing);
+      return new Promise((res) => waiters.push(res));
+    },
+  };
 }
+
+/// Event-driven `ProgramUser` with promise-based `waitSaid` and `waitExited` (zero `setTimeout`).
+function createUser(actors: boolean) {
+  const messages: any[] = [];
+  const saidWaiters: Array<{ pred: (m: any) => boolean; resolve: (m: any) => void }> = [];
+  let exitedCode: number | null = null;
+  const exitWaiters: Array<(code: number) => void> = [];
+  const user: ProgramUser = {
+    actors,
+    said(m) {
+      messages.push(m);
+      for (let i = saidWaiters.length - 1; i >= 0; i--) {
+        if (saidWaiters[i]!.pred(m)) {
+          const w = saidWaiters.splice(i, 1)[0]!;
+          w.resolve(m);
+        }
+      }
+    },
+    exited(code) {
+      exitedCode = code;
+      while (exitWaiters.length > 0) exitWaiters.shift()!(code);
+    },
+  };
+  return {
+    user,
+    messages,
+    waitSaid(pred: (m: any) => boolean): Promise<any> {
+      const hit = messages.find(pred);
+      if (hit !== undefined) return Promise.resolve(hit);
+      return new Promise((resolve) => saidWaiters.push({ pred, resolve }));
+    },
+    waitExited(): Promise<number> {
+      if (exitedCode !== null) return Promise.resolve(exitedCode);
+      return new Promise((resolve) => exitWaiters.push(resolve));
+    },
+  };
+}
+
+/// Event-driven spawn observer with promise-based `waitCount` (zero `setTimeout`).
+function createSpawnTracker() {
+  const events: SessionsSpawnEvent[] = [];
+  const waiters: Array<{ pred: (evs: SessionsSpawnEvent[]) => boolean; resolve: () => void }> = [];
+  setSessionsSpawnObserverForTest((ev) => {
+    events.push(ev);
+    for (let i = waiters.length - 1; i >= 0; i--) {
+      if (waiters[i]!.pred(events)) {
+        waiters.splice(i, 1)[0]!.resolve();
+      }
+    }
+  });
+  return {
+    events,
+    waitUntil(pred: (evs: SessionsSpawnEvent[]) => boolean): Promise<void> {
+      if (pred(events)) return Promise.resolve();
+      return new Promise((resolve) => waiters.push({ pred, resolve }));
+    },
+  };
+}
+
+test("W8-0: pion-sqlite-tx-scanner catches concatenated raw tx SQL and throws on missing dir", () => {
+  const concatHits = findRawTxControlViolations("concat.pion", 'let _ = tx_db.exec("ROLL" + "BACK")');
+  assert.equal(concatHits.length, 1, `expected concatenated ROLLBACK violation, got: ${concatHits.join("; ")}`);
+  const multilineHits = findRawTxControlViolations("multiline.pion", 'let _ = tx_db.exec("COM" +\n  "MIT")');
+  assert.equal(multilineHits.length, 1, `expected multiline COMMIT violation, got: ${multilineHits.join("; ")}`);
+  assert.throws(
+    () => scanPionDirForRawTxControl(join(tmpdir(), "definitely-nonexistent-pion-dir-w8-0")),
+    /does not exist/,
+  );
+});
 
 test("W8-0: STILLFAIL_REQUIRE_PION_SESSIONS=1 throws when Pion is unimplemented, fallback, or missing", () => {
   resetReaderSelectionStateForTest();
   const data = makeTmp("sf-w8-req-");
-  // Default `pionImplemented` is false in W8-0 -> MUST throw under STILLFAIL_REQUIRE_PION_SESSIONS=1
   assert.throws(
     () => SessionsProgram.of(data, true, { env: { STILLFAIL_REQUIRE_PION_SESSIONS: "1", STILLFAIL_READER_SESSIONS: "pion" } }),
     /STILLFAIL_REQUIRE_PION_SESSIONS=1/,
   );
-  // Explicitly requesting "mb" -> MUST throw under STILLFAIL_REQUIRE_PION_SESSIONS=1
   assert.throws(
     () => SessionsProgram.of(data, true, { env: { STILLFAIL_REQUIRE_PION_SESSIONS: "1", STILLFAIL_READER_SESSIONS: "mb" }, pionImplemented: true }),
     /STILLFAIL_REQUIRE_PION_SESSIONS=1/,
   );
-  // Missing Pion binary -> MUST throw under STILLFAIL_REQUIRE_PION_SESSIONS=1
   const prevPionEnv = process.env.STILLFAIL_PION_READER;
   try {
     process.env.STILLFAIL_PION_READER = join(data, "does-not-exist-pion");
@@ -96,24 +177,21 @@ test("W8-0: real stillfail-pion --sessions walking skeleton handshake (ready, db
   }
   const data = makeTmp("sf-w8-skel-");
   const child = spawn(pion, ["--sessions", "1", "--data", data, "--sep", "/"], { stdio: ["pipe", "pipe", "pipe"] });
-  let stdout = "";
   let stderr = "";
-  child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => { stdout += chunk; });
   child.stderr.on("data", (chunk: string) => { stderr += chunk; });
 
+  const reader = createLineReader(child);
   const exited = new Promise<number | null>((res) => child.once("close", (code) => res(code)));
-  await waitFor(() => stdout.includes("\n") ? true : undefined);
-  const firstLine = stdout.split("\n")[0]!;
+
+  const firstLine = await reader.nextLine();
   const readyMsg = JSON.parse(firstLine);
   assert.deepStrictEqual(readyMsg, { ready: true });
   assert.equal("active" in readyMsg, false);
   assert.equal("seen" in readyMsg, false);
 
   child.stdin.write('{"db":null}\n');
-  await waitFor(() => stdout.split("\n").filter((l) => l.length > 0).length >= 2 ? true : undefined);
-  const secondLine = stdout.split("\n").filter((l) => l.length > 0)[1]!;
+  const secondLine = await reader.nextLine();
   assert.deepStrictEqual(JSON.parse(secondLine), { quiet: true, active: 0, seen: 1 });
 
   child.stdin.end();
@@ -122,7 +200,7 @@ test("W8-0: real stillfail-pion --sessions walking skeleton handshake (ready, db
   assert.equal(stderr, "");
 });
 
-test("W8-0: config.readers.sessions, env precedence, MB+Pion pending cold start, Pion-only cold start, and release-during-pending", async (t) => {
+test("W8-0: config.readers.sessions, env precedence, pending cold starts, dual-hub isolation, and require-pion async refusal", async (t) => {
   const pion = pionBinary();
   if (pion === null) {
     t.skip("stillfail-pion binary not built");
@@ -134,33 +212,29 @@ test("W8-0: config.readers.sessions, env precedence, MB+Pion pending cold start,
     // 1. MB+Pion dual-install pending cold start via config.readers.sessions
     resetReaderSelectionStateForTest();
     readerTelemetry.resetForTest();
-    const events1: SessionsSpawnEvent[] = [];
-    setSessionsSpawnObserverForTest((ev) => events1.push(ev));
+    const tracker1 = createSpawnTracker();
 
     let resolveProbe1!: (modes: ReadonlySet<string> | null) => void;
     setPionProbeRunnerForTest(() => new Promise((r) => { resolveProbe1 = r; }));
 
     const data1 = makeTmp("sf-w8-dual-");
     const unregister1 = registerSessionsReaderConfig(data1, () => ({ readers: { sessions: "pion" } }));
-    const received1: any[] = [];
-    const user1: ProgramUser = { actors: true, said: (m) => received1.push(m), exited: () => {} };
+    const u1 = createUser(true);
     const prog1 = SessionsProgram.of(data1, true)!;
     assert.ok(prog1 !== null);
-    prog1.use(user1);
-    prog1.hold(user1, true);
-    // Buffer a message BEFORE the probe resolves
+    prog1.use(u1.user);
+    prog1.hold(u1.user, true);
     prog1.post({ db: null });
-    assert.equal(events1.length, 0, "must not spawn before pending probe resolves");
+    assert.equal(tracker1.events.length, 0, "must not spawn before pending probe resolves");
 
-    // Resolve probe advertising "sessions" -> single Pion spawn, buffered message flushed
     resolveProbe1(new Set(["footprint", "packed", "memory", "sessions"]));
-    await waitFor(() => received1.find((m) => m.quiet === true));
-    assert.equal(events1.filter((e) => !e.ready).length, 1);
-    assert.equal(events1.filter((e) => e.ready).length, 1);
-    assert.equal(events1[0]!.engine, "pion");
-    assert.equal(events1[0]!.fallback, false);
-    assert.ok(events1[0]!.pid !== null && events1[0]!.pid > 0);
-    await prog1.release(user1);
+    await u1.waitSaid((m) => m.quiet === true);
+    assert.equal(tracker1.events.filter((e) => !e.ready).length, 1);
+    assert.equal(tracker1.events.filter((e) => e.ready).length, 1);
+    assert.equal(tracker1.events[0]!.engine, "pion");
+    assert.equal(tracker1.events[0]!.fallback, false);
+    assert.ok(tracker1.events[0]!.pid !== null && tracker1.events[0]!.pid > 0);
+    await prog1.release(u1.user);
     unregister1();
 
     // 2. Pion-only cold start (`mbReaderBinary() === null`)
@@ -168,110 +242,131 @@ test("W8-0: config.readers.sessions, env precedence, MB+Pion pending cold start,
     setMbReaderBinaryOverrideForTest(() => null);
     let resolveProbe2!: (modes: ReadonlySet<string> | null) => void;
     setPionProbeRunnerForTest(() => new Promise((r) => { resolveProbe2 = r; }));
-    const events2: SessionsSpawnEvent[] = [];
-    setSessionsSpawnObserverForTest((ev) => events2.push(ev));
+    const tracker2 = createSpawnTracker();
 
     const data2 = makeTmp("sf-w8-piononly-");
     const unregister2 = registerSessionsReaderConfig(data2, () => ({ readers: { sessions: "pion" } }));
     assert.equal(sessionsBinaryAvailable(data2), true);
-    const received2: any[] = [];
-    const user2: ProgramUser = { actors: true, said: (m) => received2.push(m), exited: () => {} };
+    const u2 = createUser(true);
     const prog2 = SessionsProgram.of(data2, true)!;
     assert.ok(prog2 !== null);
-    prog2.use(user2);
+    prog2.use(u2.user);
     prog2.post({ db: null });
     resolveProbe2(new Set(["footprint", "packed", "memory", "sessions"]));
-    await waitFor(() => received2.find((m) => m.quiet === true));
-    assert.equal(events2.filter((e) => e.ready && e.engine === "pion").length, 1);
-    await prog2.release(user2);
+    await u2.waitSaid((m) => m.quiet === true);
+    assert.equal(tracker2.events.filter((e) => e.ready && e.engine === "pion").length, 1);
+    await prog2.release(u2.user);
     unregister2();
 
-    // 3. Release during pending probe -> 0 processes spawned
+    // 3. Release during pending probe -> 0 processes spawned (promise-driven, zero setTimeout)
     resetReaderSelectionStateForTest();
     let resolveProbe3!: (modes: ReadonlySet<string> | null) => void;
-    setPionProbeRunnerForTest(() => new Promise((r) => { resolveProbe3 = r; }));
-    const events3: SessionsSpawnEvent[] = [];
-    setSessionsSpawnObserverForTest((ev) => events3.push(ev));
+    const probePromise3 = new Promise<ReadonlySet<string> | null>((r) => { resolveProbe3 = r; });
+    setPionProbeRunnerForTest(() => probePromise3);
+    const tracker3 = createSpawnTracker();
 
     const data3 = makeTmp("sf-w8-relpend-");
     const unregister3 = registerSessionsReaderConfig(data3, () => ({ readers: { sessions: "pion" } }));
-    const user3: ProgramUser = { actors: true, said: () => {}, exited: () => {} };
+    const u3 = createUser(true);
     const prog3 = SessionsProgram.of(data3, true)!;
-    prog3.use(user3);
+    prog3.use(u3.user);
     prog3.post({ db: null });
-    await prog3.release(user3);
+    await prog3.release(u3.user);
     resolveProbe3(new Set(["footprint", "packed", "memory", "sessions"]));
-    await new Promise((r) => setTimeout(r, 30));
-    assert.equal(events3.length, 0, "released pending SessionsProgram must spawn 0 processes");
+    await probePromise3;
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(tracker3.events.length, 0, "released pending SessionsProgram must spawn 0 processes");
     unregister3();
 
-    // 4. Concurrent sharing (actor + agent share 1 process) vs dual-actor isolation (2 processes)
+    // 4. STILLFAIL_REQUIRE_PION_SESSIONS=1 async cold probe returning old capability set -> refuses fallback, 0 MB spawns, notifies user.exited(1)
+    resetReaderSelectionStateForTest();
+    let resolveProbeReq!: (modes: ReadonlySet<string> | null) => void;
+    setPionProbeRunnerForTest(() => new Promise((r) => { resolveProbeReq = r; }));
+    const trackerReq = createSpawnTracker();
+    const dataReq = makeTmp("sf-w8-req-async-");
+    const uReq = createUser(true);
+    const progReq = SessionsProgram.of(dataReq, true, {
+      env: { STILLFAIL_REQUIRE_PION_SESSIONS: "1", STILLFAIL_READER_SESSIONS: "pion" },
+      pionImplemented: true,
+    })!;
+    progReq.use(uReq.user);
+    resolveProbeReq(new Set(["footprint", "packed", "memory"]));
+    const exitCodeReq = await uReq.waitExited();
+    assert.equal(exitCodeReq, 1, "async old-capability refusal must notify user.exited(1)");
+    assert.equal(trackerReq.events.length, 0, "STILLFAIL_REQUIRE_PION_SESSIONS=1 must spawn 0 MB fallback processes");
+    assert.equal(progReq.ended, true);
+
+    // 5. Concurrent sharing (actor + agent share 1 process) vs dual-actor isolation (2 distinct ready PIDs)
     resetReaderSelectionStateForTest();
     setPionProbeRunnerForTest(async () => new Set(["footprint", "packed", "memory", "sessions"]));
+    const tracker4 = createSpawnTracker();
     const data4 = makeTmp("sf-w8-share-");
     const unregister4 = registerSessionsReaderConfig(data4, () => ({ readers: { sessions: "pion" } }));
-    const uActor1: ProgramUser = { actors: true, said: () => {}, exited: () => {} };
-    const uAgent1: ProgramUser = { actors: false, said: () => {}, exited: () => {} };
-    const uActor2: ProgramUser = { actors: true, said: () => {}, exited: () => {} };
+    const uActor1 = createUser(true);
+    const uAgent1 = createUser(false);
+    const uActor2 = createUser(true);
     const pA1 = SessionsProgram.of(data4, true)!;
-    pA1.use(uActor1);
+    pA1.use(uActor1.user);
     const pAg = SessionsProgram.of(data4, false)!;
     assert.equal(pAg, pA1, "actor and agent on same data share one SessionsProgram");
-    pAg.use(uAgent1);
+    pAg.use(uAgent1.user);
     const pA2 = SessionsProgram.of(data4, true)!;
     assert.notEqual(pA2, pA1, "second actors hub on same data gets an isolated SessionsProgram");
-    pA2.use(uActor2);
-    await pA1.release(uActor1);
-    await pAg.release(uAgent1);
-    await pA2.release(uActor2);
+    pA2.use(uActor2.user);
+    await tracker4.waitUntil((evs) => evs.filter((e) => e.ready).length === 2);
+    const readyEvs = tracker4.events.filter((e) => e.ready);
+    assert.equal(readyEvs.length, 2);
+    assert.ok(readyEvs[0]!.pid !== null && readyEvs[0]!.pid > 0);
+    assert.ok(readyEvs[1]!.pid !== null && readyEvs[1]!.pid > 0);
+    assert.notEqual(readyEvs[0]!.pid, readyEvs[1]!.pid, "two isolated hubs must run in two distinct child PIDs");
+    await pA1.release(uActor1.user);
+    await pAg.release(uAgent1.user);
+    await pA2.release(uActor2.user);
     unregister4();
 
-    // 5. Old Pion without "sessions" falls back to MB and records fallback exactly once
+    // 6. Old Pion without "sessions" falls back to MB and records fallback exactly once
     if (mbReaderBinary() !== null) {
       resetReaderSelectionStateForTest();
       readerTelemetry.resetForTest();
       setPionProbeRunnerForTest(async () => new Set(["footprint", "packed", "memory"]));
-      const events5: SessionsSpawnEvent[] = [];
-      setSessionsSpawnObserverForTest((ev) => events5.push(ev));
+      const tracker5 = createSpawnTracker();
 
       const data5 = makeTmp("sf-w8-oldpion-");
-      const received5: any[] = [];
-      const user5: ProgramUser = { actors: true, said: (m) => received5.push(m), exited: () => {} };
+      const u5 = createUser(true);
       const prog5 = SessionsProgram.of(data5, true, {
         env: { STILLFAIL_READER_SESSIONS: "pion" },
         pionImplemented: true,
       })!;
-      prog5.use(user5);
+      prog5.use(u5.user);
       prog5.post({ db: null });
-      await waitFor(() => received5.find((m) => m.quiet === true));
-      assert.equal(events5.filter((e) => !e.ready).length, 1);
-      assert.equal(events5[0]!.engine, "mb");
-      assert.equal(events5[0]!.fallback, true);
+      await u5.waitSaid((m) => m.quiet === true);
+      assert.equal(tracker5.events.filter((e) => !e.ready).length, 1);
+      assert.equal(tracker5.events[0]!.engine, "mb");
+      assert.equal(tracker5.events[0]!.fallback, true);
       const summaries = readerTelemetry.flushWindow();
       const pionSessions = summaries.find((s) => s.engine === "pion" && s.mode === "sessions");
       assert.equal(pionSessions?.fallbacks, 1, "unsupported-mode fallback must be recorded exactly once");
-      await prog5.release(user5);
+      await prog5.release(u5.user);
     }
 
-    // 6. Env precedence: STILLFAIL_READER_SESSIONS=mb overrides config.readers.sessions=pion
+    // 7. Env precedence: STILLFAIL_READER_SESSIONS=mb overrides config.readers.sessions=pion
     if (mbReaderBinary() !== null) {
       resetReaderSelectionStateForTest();
-      const events6: SessionsSpawnEvent[] = [];
-      setSessionsSpawnObserverForTest((ev) => events6.push(ev));
+      const tracker6 = createSpawnTracker();
       const data6 = makeTmp("sf-w8-prec-");
-      const received6: any[] = [];
-      const user6: ProgramUser = { actors: true, said: (m) => received6.push(m), exited: () => {} };
+      const u6 = createUser(true);
       const prog6 = SessionsProgram.of(data6, true, {
         config: { readers: { sessions: "pion" } },
         env: { STILLFAIL_READER_SESSIONS: "mb", STILLFAIL_READER_ENGINE: "pion" },
         pionImplemented: true,
       })!;
-      prog6.use(user6);
+      prog6.use(u6.user);
       prog6.post({ db: null });
-      await waitFor(() => received6.find((m) => m.quiet === true));
-      assert.equal(events6[0]!.engine, "mb");
-      assert.equal(events6[0]!.fallback, false);
-      await prog6.release(user6);
+      await u6.waitSaid((m) => m.quiet === true);
+      assert.equal(tracker6.events[0]!.engine, "mb");
+      assert.equal(tracker6.events[0]!.fallback, false);
+      await prog6.release(u6.user);
     }
   } finally {
     restoreImpl();
