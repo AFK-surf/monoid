@@ -974,7 +974,7 @@ function runGlassVectorsInPage() {
         let ordDiff = 0;
         for (let i = 0; i < sord[0].length; i++) ordDiff = Math.max(ordDiff, Math.abs(sord[0][i] - sord[1][i]));
 
-        let darkMonoOk = true, prevDl = -1, darkMidL = 0, darkWtL2 = 0;
+        let darkMonoOk = true, prevDl = -1, darkY20L = 0, darkY40L = 0, darkMidL = 0, darkWtL2 = 0;
         for (let gi = 0; gi <= 20; gi++) {
           const gv = gi / 20;
           rect(fg, 0, 0, 0, 160, 80, 0, gv, gv, gv, 1, 0);
@@ -985,11 +985,13 @@ function runGlassVectorsInPage() {
           const dl = lumaOf(pxAt(H.renderPixels(), 80 * 2, 40 * 2));
           if (prevDl >= 0 && dl < prevDl - 0.1) darkMonoOk = false;
           prevDl = dl;
+          if (gi === 4) darkY20L = dl;
+          if (gi === 8) darkY40L = dl;
           if (gi === 11) darkMidL = dl;
           if (gi === 20) darkWtL2 = dl;
         }
 
-        let lightMonoOk = true, prevLl = -1, lightBlkL = 0;
+        let lightMonoOk = true, prevLl = -1, lightBlkL = 0, lightY60L = 0, lightY80L = 0;
         for (let gi = 0; gi <= 20; gi++) {
           const gv = gi / 20;
           rect(fg, 0, 0, 0, 160, 80, 0, gv, gv, gv, 1, 0);
@@ -1001,6 +1003,27 @@ function runGlassVectorsInPage() {
           if (prevLl >= 0 && ll < prevLl - 0.1) lightMonoOk = false;
           prevLl = ll;
           if (gi === 0) lightBlkL = ll;
+          if (gi === 12) lightY60L = ll;
+          if (gi === 16) lightY80L = ll;
+        }
+
+        const linSrgb = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+        const accL = 0.2126 * linSrgb(0x98 / 255) + 0.7152 * linSrgb(0x2E / 255) + 0.0722 * linSrgb(0x01 / 255);
+        let chkCrBlk = 0, chkCrBlu = 0;
+        const rowB = new Float32Array(3 * INST);
+        for (let bi = 0; bi < 2; bi++) {
+          const br = 0, bg = bi ? 0x7A / 255 : 0, bb = bi ? 1 : 0;
+          rect(rowB, 0, 0, 0, 160, 80, 0, br, bg, bb, 1, 0);
+          rect(rowB, INST, 14, 9, 132, 62, 6, 253 / 255, 252 / 255, 253 / 255, 0x80 / 255, -230 - bi);
+          rowB[INST + 4] = 24; rowB[INST + 6] = 1; rowB[INST + 7] = 14;
+          rowB[INST + 12] = 0.6; rowB[INST + 13] = 20; rowB[INST + 14] = 0; rowB[INST + 15] = 1; rowB[INST + 21] = 16;
+          rect(rowB, 2 * INST, 24, 22, 112, 36, 0, 0x24 / 255, 0x27 / 255, 0x2B / 255, 0x0F / 255, 0);
+          rowB[2 * INST + 4] = 14;
+          H.present(rowB, 3, br, bg, bb);
+          const crp = pxAt(H.renderPixels(), 80 * 2, 40 * 2);
+          const rowL = 0.2126 * linSrgb(crp[0] / 255) + 0.7152 * linSrgb(crp[1] / 255) + 0.0722 * linSrgb(crp[2] / 255);
+          const crv = (Math.max(rowL, accL) + 0.05) / (Math.min(rowL, accL) + 0.05);
+          if (bi === 0) chkCrBlk = crv; else chkCrBlu = crv;
         }
 
         H.renderInit(200, 160, 3);
@@ -1024,7 +1047,7 @@ function runGlassVectorsInPage() {
           if (shPrev >= 0 && (sl - shPrev) > shMaxJump) shMaxJump = sl - shPrev;
           shPrev = sl;
         }
-        roi.v15_unified_v9 = { k2G, darkBarG, adDiff, ordDiff, darkMonoOk, darkMidL, darkWtL2, lightMonoOk, lightBlkL, shMaxJump };
+        roi.v15_unified_v9 = { k2G, darkBarG, adDiff, ordDiff, darkMonoOk, darkY20L, darkY40L, darkMidL, darkWtL2, lightMonoOk, lightBlkL, lightY60L, lightY80L, chkCrBlk, chkCrBlu, shMaxJump };
       }
       H.renderInit(VW, VH, 2);
     }
@@ -1415,7 +1438,12 @@ check(Math.abs(roi.v15_unified_v9.k2G - 195) <= 2 &&
   roi.v15_unified_v9.adDiff <= 1 &&
   roi.v15_unified_v9.ordDiff === 0 &&
   roi.v15_unified_v9.darkMonoOk && roi.v15_unified_v9.darkWtL2 <= 102.0 &&
+  (roi.v15_unified_v9.darkWtL2 - roi.v15_unified_v9.darkY40L) >= 6.0 &&
+  (roi.v15_unified_v9.darkWtL2 - roi.v15_unified_v9.darkY20L) >= 24.0 &&
   roi.v15_unified_v9.lightMonoOk && roi.v15_unified_v9.lightBlkL >= 198.0 &&
+  (roi.v15_unified_v9.lightY60L - roi.v15_unified_v9.lightBlkL) >= 10.0 &&
+  (roi.v15_unified_v9.lightY80L - roi.v15_unified_v9.lightBlkL) >= 26.0 &&
+  roi.v15_unified_v9.chkCrBlk >= 3.0 && roi.v15_unified_v9.chkCrBlu >= 3.0 &&
   roi.v15_unified_v9.shMaxJump < 2.5,
   `v15_unified_v9=${JSON.stringify(roi.v15_unified_v9)}`);
 for (const a of roi.v11_aa) {

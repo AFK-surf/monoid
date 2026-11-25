@@ -345,7 +345,11 @@ pub fn panel_content_row_node(
   loc~ : SourceLoc,
 ) -> Unit {
   @headless.button(made_for=loc, parent, label, press, fn(row, _) {
-    hover_ground_node(row, lit=Some(fn() { highlighted(row) }))
+    hover_ground_node(
+      row,
+      lit=Some(fn() { highlighted(row) }),
+      color=fn() { if theme().dark { 0x00000028L } else { @ui.tree_theme().color(Hover) } },
+    )
     content(row)
   })
   |> ignore

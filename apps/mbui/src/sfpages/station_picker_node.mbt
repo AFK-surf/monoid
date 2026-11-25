@@ -1150,7 +1150,14 @@ let sp_cell_warn : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=W
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sp_cell_danger : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Danger, wrap=false, w=Hug)
+let sp_cell_danger : @ui.TextStyle = @ui.text_style(
+  size=Meta,
+  leading=L5,
+  color=Danger,
+  dark=@ui.text_patch(color=Over(Danger, A(Fg, O25))),
+  wrap=false,
+  w=Hug,
+)
 
 ///|
 // kept across runs: a value (no field of it changes)

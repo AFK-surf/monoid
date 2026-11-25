@@ -491,10 +491,9 @@ fn liquid_glass_ground(bg : Rgb, tint : Rgb, col_a : Double, vis_a : Double, sat
       (1.0 - contrast_smoothstep(0.22, 0.38, extra))
     let em0 = (34.0 + dark_bump) / 255.0
     let ep = @dmath.pow(extra, 1.5)
-    let dark_drop = 10.0 / 255.0 * (1.0 - extra) * overlay_knee
-    let er = contrast_max(em0 + (tint.r - em0) * ep - dark_drop, 0.0)
-    let eg = contrast_max(em0 + (tint.g - em0) * ep - dark_drop, 0.0)
-    let eb = contrast_max(em0 + (tint.b - em0) * ep - dark_drop, 0.0)
+    let er = contrast_max(em0 + (tint.r - em0) * ep, 0.0)
+    let eg = contrast_max(em0 + (tint.g - em0) * ep, 0.0)
+    let eb = contrast_max(em0 + (tint.b - em0) * ep, 0.0)
     let tr = 0.59 * (1.0 - extra)
     let lf = 0.55 * (1.0 - extra)
     let cg = 1.05 * (1.0 - @dmath.pow(extra, 1.05))
@@ -516,7 +515,7 @@ fn liquid_glass_ground(bg : Rgb, tint : Rgb, col_a : Double, vis_a : Double, sat
   let trans_lum = (y * (1.0 + lift * (1.0 - y))).clamp(min=0.0, max=1.0)
   let lt = (trans_lum * trans).clamp(min=0.0, max=1.0)
   let (base_lum, knee_scale) = if is_dark {
-    let kt = trans_lum * 5.6
+    let kt = trans_lum * 2.0
     let kt2 = kt * kt
     let k_denom = 1.0 + kt2 * kt2
     let lc = lt * @dmath.pow(k_denom, -0.25)
@@ -525,7 +524,7 @@ fn liquid_glass_ground(bg : Rgb, tint : Rgb, col_a : Double, vis_a : Double, sat
     (bl, ks)
   } else {
     let d = contrast_max(trans - lt, 0.0)
-    let dt = d / 0.102
+    let dt = d / 0.205
     let dt2 = dt * dt
     let d_inv = @dmath.pow(1.0 + dt2 * dt2, -0.25)
     let dc = d * d_inv

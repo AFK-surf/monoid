@@ -3934,9 +3934,9 @@ int main(void) {
               int ord_diff = 0;
               for (int i = 0; i < aw * ah * 4; i++) { int d = abs((int)sord[0][i] - (int)sord[1][i]); if (d > ord_diff) ord_diff = d; }
               free(sord[0]); free(sord[1]);
-              // (5) Dark 0x80 grayscale sweep Y=0..1 (21 steps): strictly monotonic (no mid-grey inversion) & white <= 96
+              // (5) Dark 0x80 grayscale sweep Y=0..1 (21 steps): strictly monotonic, white <= 102, and non-flatline slope
               int dark_mono_ok = 1;
-              double prev_dl = -1.0, dark_mid_L = 0.0, dark_wt_L2 = 0.0;
+              double prev_dl = -1.0, dark_y20_L = 0.0, dark_y40_L = 0.0, dark_mid_L = 0.0, dark_wt_L2 = 0.0;
               for (int gi = 0; gi <= 20; gi++) {
                 double gv = (double)gi / 20.0;
                 rect_at(fg, 0, 0, 160, 80, 0, gv, gv, gv, 0);
@@ -3951,13 +3951,15 @@ int main(void) {
                 double dl = 0.2126 * cd[2] + 0.7152 * cd[1] + 0.0722 * cd[0];
                 if (prev_dl >= 0.0 && dl < prev_dl - 0.1) dark_mono_ok = 0;
                 prev_dl = dl;
+                if (gi == 4) dark_y20_L = dl;
+                if (gi == 8) dark_y40_L = dl;
                 if (gi == 11) dark_mid_L = dl;
                 if (gi == 20) dark_wt_L2 = dl;
                 free(pd);
               }
-              // (5b) Light 0x80 grayscale sweep Y=0..1 (21 steps): strictly monotonic & pure black floor >= 198 (muted CR >= 4.5:1)
+              // (5b) Light 0x80 grayscale sweep Y=0..1 (21 steps): strictly monotonic, black >= 198, and non-flatline slope
               int light_mono_ok = 1;
-              double prev_ll = -1.0, light_blk_L = 0.0;
+              double prev_ll = -1.0, light_blk_L = 0.0, light_y60_L = 0.0, light_y80_L = 0.0;
               for (int gi = 0; gi <= 20; gi++) {
                 double gv = (double)gi / 20.0;
                 rect_at(fg, 0, 0, 160, 80, 0, gv, gv, gv, 0);
@@ -3973,7 +3975,40 @@ int main(void) {
                 if (prev_ll >= 0.0 && ll < prev_ll - 0.1) light_mono_ok = 0;
                 prev_ll = ll;
                 if (gi == 0) light_blk_L = ll;
+                if (gi == 12) light_y60_L = ll;
+                if (gi == 16) light_y80_L = ll;
                 free(pl);
+              }
+              // (5c) Light 0x80 selected-row Hover (#24272B0F) over pure black & vivid blue (#007AFF): accent_text (#982E01) WCAG >= 3.0:1
+              double chk_cr_blk = 0.0, chk_cr_blu = 0.0;
+              {
+                double row_b[3 * MB_INST];
+                double acc_l = 0.2126 * pow((0x98/255.0 + 0.055)/1.055, 2.4)
+                             + 0.7152 * pow((0x2E/255.0 + 0.055)/1.055, 2.4)
+                             + 0.0722 * ((0x01/255.0) / 12.92);
+                for (int bi = 0; bi < 2; bi++) {
+                  double br = 0.0, bg = bi ? (0x7A/255.0) : 0.0, bb = bi ? 1.0 : 0.0;
+                  rect_at(row_b, 0, 0, 160, 80, 0, br, bg, bb, 0);
+                  rect_at(row_b + MB_INST, 14, 9, 132, 62, 6, 253.0/255.0, 252.0/255.0, 253.0/255.0, -230 - bi);
+                  row_b[MB_INST + 4] = 24.0; row_b[MB_INST + 6] = 1.0; row_b[MB_INST + 7] = 14.0;
+                  row_b[MB_INST + 11] = 0x80 / 255.0; row_b[MB_INST + 12] = 0.6; row_b[MB_INST + 13] = 20.0;
+                  row_b[MB_INST + 14] = 0.0; row_b[MB_INST + 15] = 1.0; row_b[MB_INST + 21] = 16.0;
+                  rect_at(row_b + 2 * MB_INST, 24, 22, 112, 36, 0, 0x24/255.0, 0x27/255.0, 0x2B/255.0, 0);
+                  row_b[2 * MB_INST + 4] = 14.0; row_b[2 * MB_INST + 11] = 0x0F / 255.0;
+                  glass_forget(); mb_host_render_dirty(0, 0, 160, 80);
+                  mb_render_present(row_b, 3, br, bg, bb); present_drain();
+                  uint8_t *pr = read_texture(canvas, &aw, &ah);
+                  uint8_t *crp = A_PX(pr, aw, 80 * 2, 40 * 2);
+                  double cr_r = crp[2] / 255.0, cr_g = crp[1] / 255.0, cr_b = crp[0] / 255.0;
+                  double lr = (cr_r <= 0.04045) ? cr_r / 12.92 : pow((cr_r + 0.055) / 1.055, 2.4);
+                  double lg = (cr_g <= 0.04045) ? cr_g / 12.92 : pow((cr_g + 0.055) / 1.055, 2.4);
+                  double lb = (cr_b <= 0.04045) ? cr_b / 12.92 : pow((cr_b + 0.055) / 1.055, 2.4);
+                  double row_l = 0.2126 * lr + 0.7152 * lg + 0.0722 * lb;
+                  double hi = row_l > acc_l ? row_l : acc_l, lo = row_l > acc_l ? acc_l : row_l;
+                  double crv = (hi + 0.05) / (lo + 0.05);
+                  if (bi == 0) chk_cr_blk = crv; else chk_cr_blu = crv;
+                  free(pr);
+                }
               }
               // (6) Overlay outside-shadow top-edge vertical profile: smooth monotonic ramp, zero >=3 LSB cutout gap
               mb_render_set_size(200, 160, 3);
@@ -4001,14 +4036,15 @@ int main(void) {
                 sh_prev = sl;
               }
               free(psh);
-              printf("apple_render: v15_unified_v9 k2_g=%d dark_bar_g=%d ad_ff_diff=%d ord_diff=%d dark_mono=%d mid55=%.1f wt=%.1f light_mono=%d blk=%.1f sh_jump=%.2f\n",
-                     k2_g, dark_bar_g, ad_diff, ord_diff, dark_mono_ok, dark_mid_L, dark_wt_L2, light_mono_ok, light_blk_L, sh_max_jump);
+              printf("apple_render: v15_unified_v9 k2_g=%d dark_bar_g=%d ad_ff_diff=%d ord_diff=%d dark_mono=%d d20=%.1f d40=%.1f mid55=%.1f wt=%.1f light_mono=%d blk=%.1f l60=%.1f l80=%.1f chk_blk=%.2f chk_blu=%.2f sh_jump=%.2f\n",
+                     k2_g, dark_bar_g, ad_diff, ord_diff, dark_mono_ok, dark_y20_L, dark_y40_L, dark_mid_L, dark_wt_L2, light_mono_ok, light_blk_L, light_y60_L, light_y80_L, chk_cr_blk, chk_cr_blu, sh_max_jump);
               CHECK(abs(k2_g - 195) <= 2);
               CHECK(dark_bar_g <= 150);
               CHECK(ad_diff <= 1);
               CHECK(ord_diff == 0);
-              CHECK(dark_mono_ok == 1 && dark_wt_L2 <= 102.0);
-              CHECK(light_mono_ok == 1 && light_blk_L >= 198.0);
+              CHECK(dark_mono_ok == 1 && dark_wt_L2 <= 102.0 && (dark_wt_L2 - dark_y40_L) >= 6.0 && (dark_wt_L2 - dark_y20_L) >= 24.0);
+              CHECK(light_mono_ok == 1 && light_blk_L >= 198.0 && (light_y60_L - light_blk_L) >= 10.0 && (light_y80_L - light_blk_L) >= 26.0);
+              CHECK(chk_cr_blk >= 3.0 && chk_cr_blu >= 3.0);
               CHECK(sh_max_jump < 2.5);
             }
             mb_render_set_size(160, 80, 2);

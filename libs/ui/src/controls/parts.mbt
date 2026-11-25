@@ -624,7 +624,12 @@ let field_label : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Med
 
 ///|
 // kept across runs: a value (no field of it changes)
-let field_error : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Danger)
+let field_error : @ui.TextStyle = @ui.text_style(
+  size=Meta,
+  leading=L5,
+  color=Danger,
+  dark=@ui.text_patch(color=Over(Danger, A(Fg, O25))),
+)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -786,8 +791,8 @@ let panel_title : @ui.TextStyle = @ui.text_style(size=Ui, leading=L6, weight=Sem
 ///|
 // kept across runs: a value (no field of it changes)
 ///|
-/// Secondary muted ink on floating liquid glass overlays: muted in the light, three quarters of the way to `Fg` in the
-/// dark (`#DFE0E2`) so secondary notes keep >= 4.5:1 over bright backdrops under 50% dark glass.
+/// Secondary muted ink on floating liquid glass overlays: slightly deeper muted in the light (`#474A4E`) and near-fg
+/// in the dark (`#E7E7E9`) so secondary notes keep >= 4.5:1 over vivid or dark backdrops under 50% liquid glass.
 fn overlay_muted_ink() -> Int64 {
   @ui.style_ink(panel_note_words)
 }
@@ -796,8 +801,8 @@ fn overlay_muted_ink() -> Int64 {
 let panel_note_words : @ui.TextStyle = @ui.text_style(
   size=Meta,
   leading=L5,
-  color=Muted,
-  dark=@ui.text_patch(color=Over(Muted, A(Fg, O75))),
+  color=Over(Muted, A(Fg, O25)),
+  dark=@ui.text_patch(color=Over(Muted, A(Fg, O90))),
 )
 
 ///|

@@ -954,10 +954,18 @@ fn ws_way_row_node(
 fn ws_way_label_node(parent : @view.View, words : () -> String) -> Unit {
   parent.box(fn(l) {
     @sf.style_node(l, fn() { @sf.panel_words_in_node(l).then(ws_way_label_at) })
-    @sf.words_node(l, words, fn() { @sf.meta }) |> ignore
+    @sf.words_node(l, words, fn() { ws_way_label_words }) |> ignore
   })
   |> ignore
 }
+
+///|
+// kept across runs: a value (no field of it changes)
+let ws_way_label_words : @ui.TextStyle = @ui.text_style(
+  size=Meta,
+  color=Muted,
+  dark=@ui.text_patch(color=Over(Muted, A(Fg, O75))),
+)
 
 ///|
 // kept across runs: a value (no field of it changes)

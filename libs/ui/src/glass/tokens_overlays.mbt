@@ -107,13 +107,14 @@ pub fn liquid_dialog_glass(solid? : Int64 = clear) -> @paint.Glass {
 
 ///|
 /// Liquid glass material for detached floating sheets and action sheets.
-/// Symmetric 60% liquid glass (`0xFDFCFD99L` light / `0x20202099L` dark), `blur=14.0`, `20/20` bevel refraction, no
-/// dispersion: a step denser than the 50% panels for the rows of words a sheet holds.
+/// Symmetric 80% dense liquid glass (`0xFDFCFDCCL` light / `0x202020CCL` dark), `blur=14.0`, `20/20` bevel refraction,
+/// no dispersion: dense enough for multi-line forms and reading surfaces over vivid content while sharing the unified
+/// overlay optical pipeline.
 pub fn liquid_sheet_glass(solid? : Int64 = clear) -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
     blur=14.0,
-    tint=if d { 0x20202099L } else { 0xFDFCFD99L },
+    tint=if d { 0x202020CCL } else { 0xFDFCFDCCL },
     solid=if solid != clear { solid } else if d { 0x1C1C1EFFL } else { 0xF7F7FAFFL },
     saturation=1.0,
     rim=0.6,
@@ -127,13 +128,13 @@ pub fn liquid_sheet_glass(solid? : Int64 = clear) -> @paint.Glass {
 
 ///|
 /// Liquid glass material for floating island side drawers (`r=28pt`, 10pt outer margin).
-/// Symmetric 60% liquid glass (`0xFDFCFD99L` light / `0x20202099L` dark), `blur=14.0`, `22/22` bevel refraction, no
-/// dispersion.
+/// Symmetric 80% dense liquid glass (`0xFDFCFDCCL` light / `0x202020CCL` dark), `blur=14.0`, `22/22` bevel refraction,
+/// no dispersion.
 pub fn liquid_drawer_glass(solid? : Int64 = clear) -> @paint.Glass {
   let d = is_dark()
   @paint.Glass::liquid(
     blur=14.0,
-    tint=if d { 0x20202099L } else { 0xFDFCFD99L },
+    tint=if d { 0x202020CCL } else { 0xFDFCFDCCL },
     solid=if solid != clear { solid } else if d { 0x1C1C1EFFL } else { 0xF7F7FAFFL },
     saturation=1.0,
     rim=0.6,

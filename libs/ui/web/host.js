@@ -1577,22 +1577,20 @@
       float regDarkOpt = is_dark ? 1.0 : darkMixSaved;
       float transLum = clamp(Y * (1.0 + lift * (1.0 - Y)), 0.0, 1.0);
       float Lt = clamp(transLum * transmittance, 0.0, 1.0);
-      // Symmetric monotonic p=4 hard-knee for non-adaptive Regular overlays (extra > 0.09, e.g. 0x80 Menu/Alert, 0x99 Sheet/Drawer):
-      // - Dark overlays (regDarkOpt=1): anchors dark base emission near iOS 27 elevated #1C1C1E and caps Lt at Lcap=0.088 -> pure white <= 52/255 (all dark semantic inks >= 5.1:1) while softer chroma knee keeps vivid blue bleed (d80_br >= 95).
-      // - Light overlays (regDarkOpt=0): floors darkness D=max(transmittance-Lt,0) at Dcap=0.108 -> pure black >= 225/255 (muted/accent on hover >= 4.5:1 / 3.0:1).
-      // Branchless C1 blend: strictly monotonic in Y everywhere, zero change to 0x67 controls or adaptive glass, >96% identity on vivid iOS 27.0 colors.
+      // Symmetric monotonic p=4 gentle-knee for non-adaptive Regular overlays (extra > 0.09, e.g. 0x80 Menu/Alert, 0x99 Sheet/Drawer):
+      // - Dark overlays (regDarkOpt=1): caps Lt at Lcap=0.295*(1-regExtra) (0x80 Lcap=0.247 -> pure white ~99/255, gray97 ~89/255 vs native 86) while softer chroma knee preserves vivid iOS 27.0 color bleed.
+      // - Light overlays (regDarkOpt=0): floors darkness D=max(transmittance-Lt,0) at Dcap=0.205 -> pure black ~202/255 with continuous grayscale translucency.
+      // Branchless C1 blend: strictly monotonic in Y and col.a, zero change to 0x67 controls (at frost=0, normal contrast) or adaptive glass.
       float overlayKnee = smoothstep(0.09, 0.16, regExtra) * regMix * (is_adaptive ? 0.0 : 1.0);
       float darkKneeW = overlayKnee * regDarkOpt;
       float lightKneeW = overlayKnee * (1.0 - regDarkOpt);
-      float darkEmDrop = (10.0 / 255.0) * (1.0 - regExtra) * darkKneeW;
-      emission = max(emission - vec3(darkEmDrop), vec3(0.0));
-      float kt = transLum * 5.6;
+      float kt = transLum * 2.0;
       float kt2 = kt * kt;
       float kDenom = 1.0 + kt2 * kt2;
       float kInv = pow(kDenom, -0.25);
       float Lc = Lt * kInv;
       float D = max(transmittance - Lt, 0.0);
-      float dt = D / 0.102;
+      float dt = D / 0.205;
       float dt2 = dt * dt;
       float dInv = pow(1.0 + dt2 * dt2, -0.25);
       float Dc = D * dInv;

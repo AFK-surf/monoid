@@ -147,8 +147,8 @@ let sheet_under : Double = pane_corner
 pub let sheet_scrim : Int64 = 0x00000047L
 
 ///|
-/// A sheet over the page: single-layer symmetric 60% liquid glass (`@glass.liquid_sheet_glass`: `0xFDFCFD99` in
-/// Light, `0x20202099` in Dark; `blur=14`, `bezel=20`, `refraction=20`, no dispersion). Degrades to opaque `t.p.bg`
+/// A sheet over the page: single-layer symmetric 80% dense liquid glass (`@glass.liquid_sheet_glass`: `0xFDFCFDCC` in
+/// Light, `0x202020CC` in Dark; `blur=14`, `bezel=20`, `refraction=20`, no dispersion). Degrades to opaque `t.p.bg`
 /// under `MBUI_GLASS=solid`.
 pub fn glass_sheet() -> @ui.Glass {
   @glass.liquid_sheet_glass(solid=theme().p.bg)
