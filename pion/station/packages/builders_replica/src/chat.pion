@@ -31,17 +31,22 @@ let chat_attached_most : Int = 65536
 /// not 70, and a text that holds those words holds them with its quotes escaped); every row of `sessions` (the chat's
 /// are found by their keys after), every deletion of a row, of a session or of a thread, and every line not known so.
 fn chat_takes(line : String, id : String) -> Bool {
-  if str_has_prefix(line, "{\"file\":") || str_has_prefix(line, "{\"tr\":") || str_has_prefix(line, "{\"tr_del\":") {
+  // (the line's bytes taken once: every line of every batch passes here)
+  let b = line.to_bytes()
+  if bytes_begin(b, "{\"file\":") || bytes_begin(b, "{\"tr\":") || bytes_begin(b, "{\"tr_del\":") {
     return false
   }
-  if !str_has_prefix(line, "{\"r\":\"") {
+  if !bytes_begin(b, "{\"r\":\"") {
     return true
   }
-  let end = match str_find_byte(line, 34, 6) {
-    Some(e) => e
-    None => return true
+  let mut end = 6
+  while end < b.length() && (b[end].to_int() & 0xFF) != 34 {
+    end = end + 1
   }
-  let table = str_slice(line, 6, end)
+  if end >= b.length() {
+    return true
+  }
+  let table = slice_bytes(b, 6, end)
   if table == "threads" {
     says(line, "\"id\":" + id)
   } else if table == "entries" || table == "thread_sessions" {
@@ -51,6 +56,20 @@ fn chat_takes(line : String, id : String) -> Bool {
   } else {
     false
   }
+}
+
+/// Whether bytes `b` begin with `prefix`.
+fn bytes_begin(b : Bytes, prefix : String) -> Bool {
+  let p = prefix.to_bytes()
+  if p.length() > b.length() {
+    return false
+  }
+  for i in 0..<p.length() {
+    if b[i] != p[i] {
+      return false
+    }
+  }
+  true
 }
 
 /// Whether `line` holds `pair` (`"key":value`) as a whole key and value of an object.
@@ -68,7 +87,7 @@ fn cut_to(s : String, most : Int) -> (String, Bool) {
   while at < b.length() {
     let lead = b[at].to_int() & 0xFF
     let n = if lead < 0x80 { 1 } else if lead >= 0xF0 { 4 } else if lead >= 0xE0 { 3 } else if lead >= 0xC0 { 2 } else { 1 }
-    if at + n > most {
+    if at + n > most || at + n > b.length() {
       break
     }
     at = at + n

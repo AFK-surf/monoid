@@ -1325,10 +1325,28 @@ test("W8-F R3 P1: AgentsHost session IDs remain monotonic across SessionsProgram
   host.use(driver);
   const origUse = SessionsProgram.prototype.use;
   const capturedAgentUsers: ProgramUser[] = [];
-  SessionsProgram.prototype.use = function (user: ProgramUser) {
-    if (!user.actors) capturedAgentUsers.push(user);
+  // (every end of a SessionsProgram the agents' user hears, by program: after the one this test kills, any other is a
+  // restart that failed, which fails the test at once instead of waiting on a re-attach that never comes)
+  const ends: Array<{ program: SessionsProgram; code: number }> = [];
+  let endHeard: () => void = () => {};
+  const watched = new WeakSet<ProgramUser>();
+  SessionsProgram.prototype.use = function (this: SessionsProgram, user: ProgramUser) {
+    if (!user.actors) {
+      capturedAgentUsers.push(user);
+      if (!watched.has(user)) {
+        watched.add(user);
+        const exited = user.exited.bind(user);
+        const program = this;
+        user.exited = (code: number) => {
+          ends.push({ program, code });
+          endHeard();
+          exited(code);
+        };
+      }
+    }
     return origUse.call(this, user);
   };
+  const spawns = createSpawnTracker();
   try {
     // 1. Attach live session A (id `a`) with only agents using the SessionsProgram.
     const heardA: any[] = [];
@@ -1365,11 +1383,29 @@ test("W8-F R3 P1: AgentsHost session IDs remain monotonic across SessionsProgram
     assert.equal(attachedA, 1, "A attached once to the first SessionsProgram");
     const firstProg = host.program();
     assert.ok(firstProg !== null, "first SessionsProgram must be active");
+    // (the first generation really running: its Pion `--sessions` process said ready, past the `--version` probe, so
+    // the kill below ends a process rather than calling off a pending start)
+    const readies = () => spawns.events.filter((e) => e.ready);
+    await spawns.waitUntil(() => readies().length >= 1);
+    const first = readies()[0]!;
+    assert.equal(first.engine, "pion", "the first generation is stillfail-pion");
+    assert.ok(first.pid !== null, "the first generation has a process");
 
     // 2. Kill the underlying SessionsProgram so AgentsHost.#exited triggers a restart and re-attaches A with idA.
+    const restartFailed = new Promise<never>((_, reject) => {
+      endHeard = () => {
+        const other = ends.find((e) => e.program !== firstProg);
+        if (other !== undefined) reject(new Error(`the restarted SessionsProgram ended (${other.code}) before A was re-attached`));
+      };
+    });
     firstProg.kill();
-    await secondAttachSeen;
+    await Promise.race([Promise.all([secondAttachSeen, spawns.waitUntil(() => readies().length >= 2)]), restartFailed]);
+    endHeard = () => {};
     assert.equal(attachedA, 2, "A re-attached exactly once after the restart");
+    assert.deepEqual(ends.map((e) => e.program === firstProg), [true], "only the killed generation ended");
+    const second = readies()[1]!;
+    assert.equal(second.engine, "pion", "the second generation is stillfail-pion");
+    assert.ok(second.pid !== null && second.pid !== first.pid, `a second --sessions process (${second.pid}) beside the killed one (${first.pid})`);
     const secondProg = host.program();
     assert.ok(secondProg !== null && secondProg !== firstProg, "AgentsHost must restart a fresh SessionsProgram");
     const agentUser = capturedAgentUsers.at(-1);
@@ -1393,6 +1429,7 @@ test("W8-F R3 P1: AgentsHost session IDs remain monotonic across SessionsProgram
     host.forget(procA as any);
     host.forget(procB as any);
   } finally {
+    setSessionsSpawnObserverForTest(null);
     SessionsProgram.prototype.use = origUse;
     await host.close(driver);
     if (prev === undefined) delete process.env.STILLFAIL_READER_SESSIONS;

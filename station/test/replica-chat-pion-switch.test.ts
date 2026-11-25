@@ -9,7 +9,9 @@ import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { after, test } from "node:test";
-import { mbReaderBinary, pionBinary, resetReaderSelectionStateForTest } from "../src/read/mb-reader.ts";
+import { DatabaseSync } from "node:sqlite";
+import { mbReaderBinary, pionBinary, resetReaderSelectionStateForTest, resolveReaderSelectionAsync } from "../src/read/mb-reader.ts";
+import { readerTelemetry } from "../src/read/reader-telemetry.ts";
 import { CHAT_BYTES, CHAT_ENTRIES, CHAT_SESSIONS, CHAT_TEXT, readChatSoon } from "../src/replica/chat.ts";
 import { nothingTold } from "../src/replica/export.ts";
 import { Store } from "../src/store/store.ts";
@@ -22,9 +24,12 @@ after(() => {
   for (const d of cleanup) rmSync(d, { recursive: true, force: true });
 });
 
-/// MoonBit's `fail` says where it failed before what (`src/…mbt:l:c-l:c@pkg FAILED: `); Pion says only what.
+/// MoonBit's `fail()` puts where in its source it failed before what (`src/…mbt:l:c-l:c@pkg FAILED: `), a prefix of
+/// MoonBit's own; Pion says only what, and does not make up `.mbt` places. So Pion's errors are held to the contract's
+/// words exactly, and MoonBit's to the same words once that prefix is taken out.
 const MB_FAIL_PREFIX = /^\S+:\d+:\d+-\d+:\d+@\S+ FAILED: /;
-const said = (e: unknown) => (e instanceof Error ? e.message : String(e)).replace(MB_FAIL_PREFIX, "");
+const MB_FAIL_IN_LINE = /"error":"\S+:\d+:\d+-\d+:\d+@\S+ FAILED: /;
+const messageOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 function binaries(t: { skip: (msg: string) => void }): { mb: string; pion: string } | null {
   const requireDual = process.env.STILLFAIL_REQUIRE_DUAL_READER === "1";
@@ -50,7 +55,7 @@ function binaries(t: { skip: (msg: string) => void }): { mb: string; pion: strin
 /// A copy of HOME as the export writes it: a big chat (texts of three and four bytes a character far longer than
 /// CHAT_TEXT, station notices among them, an edit, attached files, more sessions than CHAT_SESSIONS, one left), chats whose
 /// numbers begin as another's does, and an archived one. Its generation's directory, and the chats.
-async function copied(): Promise<{ data: string; dir: string; big: number; small: number[]; archived: number }> {
+async function copied(): Promise<{ data: string; dir: string; big: number; small: number[]; archived: number; odd: number }> {
   const data = dataDir("chatsw");
   cleanup.push(data);
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
@@ -75,6 +80,15 @@ async function copied(): Promise<{ data: string; dir: string; big: number; small
   for (let i = 1; i <= 11; i++) small.push(chat(store, data, `chat:n${i}`, null, 3));
   const archived = chat(store, data, "chat:arch", null, 4);
   store.setArchived("chat:arch", true, "p@x");
+  // (a chat whose entry's attachments are no JSON, and that names a session the copy has no row of)
+  const odd = chat(store, data, "chat:odd", null, 2);
+  const raw = new DatabaseSync(join(data, "stillfail.db"));
+  try {
+    raw.prepare("UPDATE entries SET attachments = ? WHERE thread = ?").run('[{"name":"half', odd);
+    raw.prepare("INSERT INTO thread_sessions (thread, session, connect, joined_at, left_at) VALUES (?, ?, 'chat', 5, NULL)").run(odd, "chat:ghost");
+  } finally {
+    raw.close();
+  }
   const runner = new InlineRunner({ db: join(data, "stillfail.db"), replica: join(data, "replica"), dataDir: data, origin: ORIGIN, now: () => 1_700_000_000_000 });
   await runner.places({ home: HOME, workspaces: [{ workspace: HOME, name: "大站 😀" }] });
   for (let i = 0; i < 20; i++) {
@@ -86,20 +100,36 @@ async function copied(): Promise<{ data: string; dir: string; big: number; small
   const own = join(data, "replica", "own", HOME);
   const gens = readdirSync(own).filter((g) => existsSync(join(own, g, "head.json")));
   assert.equal(gens.length, 1, "one generation of the copy");
-  return { data, dir: join(own, gens[0]!), big, small, archived };
+  return { data, dir: join(own, gens[0]!), big, small, archived, odd };
 }
 
-/// What each program writes for chat `thread` of the copy, as it writes it (readChatSoon's arguments; MoonBit's `fail`
-/// prefix taken out), each removing its fold.
-function raw(bins: { mb: string; pion: string }, c: { data: string; dir: string }, thread: string): { mb: string; pion: string } {
+type Bounds = { entries: number; text: number; bytes: number };
+const ASKED: Bounds = { entries: CHAT_ENTRIES, text: CHAT_TEXT, bytes: CHAT_BYTES };
+
+/// What each program writes for chat `thread` of the copy, as it writes it (readChatSoon's arguments, or `bounds`),
+/// each removing its fold.
+function raw(bins: { mb: string; pion: string }, c: { data: string; dir: string }, thread: string, bounds: Bounds = ASKED): { mb: string; pion: string } {
   const out: Record<string, string> = {};
   for (const [engine, binary] of [["mb", bins.mb], ["pion", bins.pion]] as const) {
     const work = join(c.data, "replica", `chat-raw-${engine}.db`);
-    const args = ["--builder", "replica-chat", "--dir", c.dir, "--work", work, "--thread", thread, "--entries", String(CHAT_ENTRIES), "--text", String(CHAT_TEXT), "--bytes", String(CHAT_BYTES), "--sep", sep, "--shell-dir", join(c.data, "shell")];
-    out[engine] = execFileSync(binary, args, { encoding: "utf8", maxBuffer: 64 << 20 }).replace(/"error":"\S+:\d+:\d+-\d+:\d+@\S+ FAILED: /, '"error":"');
+    const args = ["--builder", "replica-chat", "--dir", c.dir, "--work", work, "--thread", thread, "--entries", String(bounds.entries), "--text", String(bounds.text), "--bytes", String(bounds.bytes), "--sep", sep, "--shell-dir", join(c.data, "shell")];
+    out[engine] = execFileSync(binary, args, { encoding: "utf8", maxBuffer: 64 << 20 });
     assert.equal(existsSync(work), false, `${engine}: the fold is gone after`);
   }
   return { mb: out.mb!, pion: out.pion! };
+}
+
+/// The same lines from both, or, where they say an error, Pion's the contract's words exactly and MoonBit's the same
+/// once its `fail()` prefix is out.
+function sameLines(r: { mb: string; pion: string }, what: string, error?: string) {
+  if (error === undefined) {
+    assert.equal(r.pion, r.mb, `${what}: the programs' lines 0-diff`);
+    assert.ok(r.pion.includes('{"chat":'), `${what}: ${r.pion.slice(0, 200)}`);
+    return;
+  }
+  assert.ok(r.pion.includes(JSON.stringify({ error })), `${what}: Pion says exactly ${JSON.stringify(error)}: ${r.pion}`);
+  assert.ok(!MB_FAIL_IN_LINE.test(r.pion), `${what}: Pion makes up no MoonBit source place`);
+  assert.equal(r.mb.replace(MB_FAIL_IN_LINE, '"error":"'), r.pion, `${what}: MoonBit's line, its fail() prefix out, is Pion's`);
 }
 
 async function readBoth(bins: { mb: string; pion: string }, o: { data: string; dir: string; thread: number }): Promise<{ mb: Json; pion: Json }> {
@@ -108,11 +138,21 @@ async function readBoth(bins: { mb: string; pion: string }, o: { data: string; d
     const work = join(o.data, "replica", `chat-${engine}.db`);
     out[engine] = await readChatSoon({ dir: o.dir, work, thread: o.thread, shellDir: join(o.data, "shell"), binary }).then(
       (chat) => ({ chat }),
-      (e) => ({ error: said(e) }),
+      (e) => ({ error: messageOf(e) }),
     );
     assert.equal(existsSync(work), false, `${engine}: the fold is gone after`);
   }
   return { mb: out.mb, pion: out.pion };
+}
+
+/// Both refused alike: Pion's error the contract's words (`error`, or matching `pattern`), MoonBit's the same once its
+/// `fail()` prefix is out.
+function sameRefusal(r: { mb: Json; pion: Json }, what: string, error: string | RegExp) {
+  assert.equal(typeof r.pion.error, "string", `${what}: Pion refused: ${JSON.stringify(r.pion)}`);
+  if (typeof error === "string") assert.equal(r.pion.error, error, `${what}: Pion's words exactly`);
+  else assert.match(r.pion.error, error, what);
+  assert.ok(!MB_FAIL_PREFIX.test(r.pion.error), `${what}: Pion makes up no MoonBit source place`);
+  assert.equal(String(r.mb.error).replace(MB_FAIL_PREFIX, ""), r.pion.error, `${what}: MoonBit's, its fail() prefix out, is Pion's`);
 }
 
 test("replica-chat: MoonBit and Pion read every chat of a copy to the same JSON (0-diff)", async (t) => {
@@ -121,11 +161,18 @@ test("replica-chat: MoonBit and Pion read every chat of a copy to the same JSON 
   const c = await copied();
 
   // (what the programs write, byte for byte, before the station reads it)
-  for (const thread of [c.big, c.small[0]!, c.small[9]!, 987_654]) {
-    const r = raw(bins, c, String(thread));
-    assert.equal(r.pion, r.mb, `chat ${thread}: the programs' lines 0-diff`);
-    assert.ok(r.mb.includes('{"chat":'), r.mb.slice(0, 200));
+  for (const thread of [c.big, c.small[0]!, c.small[9]!, c.odd, 987_654]) sameLines(raw(bins, c, String(thread)), `chat ${thread}`);
+  // (bounds asked below the least: each held to its least, as both clamp)
+  sameLines(raw(bins, c, String(c.big), { entries: 0, text: 5, bytes: 10 }), "the big chat, bounds below the least");
+  sameLines(raw(bins, c, String(c.big), { entries: 100_000, text: 10_000_000, bytes: 100_000_000 }), "the big chat, bounds past the most");
+  // (`--thread` as both read a number: a negative one, an infinity, not a number; and one that is none)
+  for (const thread of ["-1", "1e309", "nan"]) {
+    const r = raw(bins, c, thread);
+    if (r.pion.includes('"error"')) sameLines(r, `--thread ${thread}`, "--thread is a chat's id");
+    else sameLines(r, `--thread ${thread}`);
   }
+  sameLines(raw(bins, c, "seven"), "--thread seven", "--thread is a chat's id");
+  sameLines(raw(bins, c, ""), "--thread empty", "--thread is a chat's id");
   const big = await readBoth(bins, { ...c, thread: c.big });
   assert.equal(JSON.stringify(big.pion), JSON.stringify(big.mb), "the big chat: 0-diff");
   const read = big.mb.chat;
@@ -153,6 +200,13 @@ test("replica-chat: MoonBit and Pion read every chat of a copy to the same JSON 
     assert.equal(one.mb.chat?.entries.length, id === c.archived ? 4 : 3);
   }
 
+  // (attachments that are no JSON: no files; a session the copy has no row of: its key alone)
+  const odd = await readBoth(bins, { ...c, thread: c.odd });
+  assert.equal(JSON.stringify(odd.pion), JSON.stringify(odd.mb), "the odd chat: 0-diff");
+  assert.ok(odd.mb.chat.entries.length === 2 && odd.mb.chat.entries.every((e: Json) => e.files.length === 0), JSON.stringify(odd.mb.chat.entries));
+  const ghost = odd.mb.chat.sessions.find((x: Json) => x.key === "chat:ghost");
+  assert.deepEqual(ghost, { key: "chat:ghost", runtime: null, model: null, effort: null, title: null, cwd: null, workspace: null, archived_at: null, left_at: null });
+
   // (a chat the copy does not hold: the copy, no thread)
   const none = await readBoth(bins, { ...c, thread: 987_654 });
   assert.equal(JSON.stringify(none.pion), JSON.stringify(none.mb), "a missing chat: 0-diff");
@@ -163,42 +217,56 @@ test("replica-chat: MoonBit and Pion read every chat of a copy to the same JSON 
   const empty = join(c.data, "no-copy");
   mkdirSync(empty, { recursive: true });
   writeFileSync(join(empty, "head.json"), JSON.stringify({ v: 1, origin: ORIGIN }));
-  const notHead = await readBoth(bins, { data: c.data, dir: empty, thread: c.big });
-  assert.deepEqual(notHead.pion, notHead.mb);
-  assert.deepEqual(notHead.mb, { error: "no copy here, or one of a newer station's" });
-  const missing = await readBoth(bins, { data: c.data, dir: join(c.data, "nowhere"), thread: c.big });
-  assert.deepEqual(missing.pion, missing.mb, "a head that is not there: the same error");
-  assert.match(missing.mb.error, /^ENOENT/);
-
-  // (a `--thread` that is no number: the same line)
-  const bad = raw(bins, c, "seven");
-  assert.equal(bad.pion, bad.mb);
-  assert.ok(bad.mb.includes(JSON.stringify({ error: "--thread is a chat's id" })), bad.mb);
+  sameRefusal(await readBoth(bins, { data: c.data, dir: empty, thread: c.big }), "a head that is none", "no copy here, or one of a newer station's");
+  sameRefusal(await readBoth(bins, { data: c.data, dir: join(c.data, "nowhere"), thread: c.big }), "no head there", /^ENOENT: no such file or directory, open '.*head\.json'$/);
 });
 
 test("replica-chat: STILLFAIL_READER_REPLICA_CHAT=pion spawns stillfail-pion through the reader selection", async (t) => {
   const bins = binaries(t);
   if (bins === null) return;
   const c = await copied();
-  const log = join(c.data, "pion-spawns.log");
-  const wrapper = join(c.data, "pion-wrap.sh");
-  writeFileSync(wrapper, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nexec ${JSON.stringify(bins.pion)} "$@"\n`);
-  chmodSync(wrapper, 0o755);
   const names = ["STILLFAIL_PION_READER", "STILLFAIL_MB_READER", "STILLFAIL_READER_REPLICA_CHAT", "STILLFAIL_READER_ENGINE"] as const;
   const saved = names.map((k) => [k, process.env[k]] as const);
-  process.env.STILLFAIL_PION_READER = wrapper;
-  process.env.STILLFAIL_MB_READER = bins.mb;
-  process.env.STILLFAIL_READER_REPLICA_CHAT = "pion";
-  delete process.env.STILLFAIL_READER_ENGINE;
-  resetReaderSelectionStateForTest();
+  const use = (pion: string) => {
+    process.env.STILLFAIL_PION_READER = pion;
+    process.env.STILLFAIL_MB_READER = bins.mb;
+    process.env.STILLFAIL_READER_REPLICA_CHAT = "pion";
+    delete process.env.STILLFAIL_READER_ENGINE;
+    resetReaderSelectionStateForTest();
+  };
+  const work = join(c.data, "replica", "chat-selected.db");
+  const read = () => readChatSoon({ dir: c.dir, work, thread: c.big, shellDir: join(c.data, "shell") });
   try {
-    const work = join(c.data, "replica", "chat-selected.db");
-    const selected = await readChatSoon({ dir: c.dir, work, thread: c.big, shellDir: join(c.data, "shell") });
-    assert.equal(existsSync(work), false, "the fold is gone after");
-    const spawns = existsSync(log) ? readFileSync(log, "utf8").split("\n").filter((l) => l.includes("--builder replica-chat")) : [];
-    assert.equal(spawns.length, 1, `one Pion replica-chat spawn: ${spawns.join(" | ")}`);
     const mb = await readChatSoon({ dir: c.dir, work, thread: c.big, shellDir: join(c.data, "shell"), binary: bins.mb });
+    // (on every platform: the selection names the Pion program, and the reading is one spawn of it, none of MoonBit's,
+    // no fallback, by the readers' own counts)
+    use(bins.pion);
+    const chosen = await resolveReaderSelectionAsync("replica-chat", { logAt: "replica" });
+    assert.equal(chosen.engine, "pion");
+    assert.equal(chosen.selection.fallback, false);
+    assert.equal(realpathSync(chosen.primaryBinary), realpathSync(bins.pion));
+    readerTelemetry.flushWindow();
+    const selected = await read();
+    const counted = readerTelemetry.flushWindow().filter((b) => b.mode === "replica-chat");
+    const count = (engine: string, k: "spawns" | "fallbacks") => counted.filter((b) => b.engine === engine).reduce((n, b) => n + b[k], 0);
+    assert.equal(count("pion", "spawns"), 1, `one Pion spawn: ${JSON.stringify(counted)}`);
+    assert.equal(count("mb", "spawns"), 0, "no MoonBit spawn");
+    assert.equal(count("pion", "fallbacks") + count("mb", "fallbacks"), 0, "no fallback");
+    assert.equal(existsSync(work), false, "the fold is gone after");
     assert.equal(JSON.stringify(selected), JSON.stringify(mb), "the selected Pion reading is MoonBit's");
+    // (where a shell script runs: the very arguments it was spawned with)
+    if (process.platform !== "win32") {
+      const log = join(c.data, "pion-spawns.log");
+      const wrapper = join(c.data, "pion-wrap.sh");
+      writeFileSync(wrapper, `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(log)}\nexec ${JSON.stringify(bins.pion)} "$@"\n`);
+      chmodSync(wrapper, 0o755);
+      use(wrapper);
+      assert.equal(JSON.stringify(await read()), JSON.stringify(mb), "through the wrapper: the same reading");
+      const spawns = readFileSync(log, "utf8").split("\n").filter((l) => l.includes("--builder replica-chat"));
+      assert.deepEqual(spawns, [
+        `--builder replica-chat --dir ${c.dir} --work ${work} --thread ${c.big} --entries ${CHAT_ENTRIES} --text ${CHAT_TEXT} --bytes ${CHAT_BYTES} --sep ${sep} --shell-dir ${join(c.data, "shell")}`,
+      ]);
+    }
   } finally {
     for (const [k, v] of saved) {
       if (v === undefined) delete process.env[k];
