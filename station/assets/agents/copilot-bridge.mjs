@@ -275,6 +275,9 @@ async function main() {
       if (session !== null) throw new Error('a session is open')
       chosen = typeof message.model === 'string' && message.model !== '' ? message.model : null
       model = chosen
+      // (the profile's own servers and skills read first: a file that is not JSON fails the open before a runtime is made)
+      const own = ownConfig(message.own)
+      const skills = [message.skills, own.skills].filter((d) => typeof d === 'string' && d !== '')
       mkdirSync(message.sessions, { recursive: true })
       const home = join(message.sessions, 'home')
       mkdirSync(home, { recursive: true })
@@ -288,8 +291,6 @@ async function main() {
         github: { useLoggedInUser: false, ...(token !== '' ? { token } : {}) },
         clientInfo: { applicationName: 'still.fail' },
       })
-      const own = ownConfig(message.own)
-      const skills = [message.skills, own.skills].filter((d) => typeof d === 'string' && d !== '')
       const silent = { tools: Array.isArray(message.silent?.tools) ? message.silent.tools : [], slackWrites: Array.isArray(message.silent?.slackWrites) ? message.silent.slackWrites : [] }
       const options = {
         ...(chosen !== null ? { model: chosen } : {}),
