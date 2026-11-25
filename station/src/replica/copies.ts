@@ -15,7 +15,8 @@ import { GEN, type Head, STATION, WORKSPACE, genMade } from "./format.ts";
 import { loadLocalTranscriptFiles, loadTranscriptManifest, readStreamBounded } from "./manifest.ts";
 import { FolderPlace, type Held, type Known, type Levelled, type Place, handOver, holdsAllLogical, level } from "./places.ts";
 import { type Ask, COPIES, MOST, PeerPlace, keepers, ranked, serve } from "./peers.ts";
-import { Refused } from "../mesh/bus.ts";
+import { Refused, bytesOf, withBytes } from "../mesh/bus.ts";
+import { Pace, bytesPerSecond } from "./pace.ts";
 import { readBytes } from "../mesh/files.ts";
 import type { Traces } from "../mesh/traces.ts";
 import { NotEmpty, type Outcome, type Ready, copyDir, outcomeFile, readyFile } from "./restore.ts";
@@ -302,8 +303,21 @@ export class Copies {
   /// The stations this one took the place of (formerlyOf, read once).
   readonly #was: string[];
 
+  /// The one rate every upload of a backup shares, to keepers and S3/R2 alike (pace.ts).
+  readonly #pace: Pace;
+  /// `ask`, the bytes a request sends at that rate.
+  readonly #ask: Ask = (station, request) => {
+    const bytes = bytesOf(request);
+    return this.#d.ask(station, bytes === null ? request : withBytes({ ...request }, this.#pace.paced(bytes)));
+  };
+
   constructor(d: CopiesDeps) {
     this.#d = d;
+    this.#pace = new Pace({
+      now: () => d.fibers.now(),
+      sleep: (ms) => d.fibers.sleep(ms),
+      rate: () => bytesPerSecond(this.#backup().uploadMbps ?? 0),
+    });
     this.kept = new FolderPlace(keptDir(d.data));
     let restored: Outcome | null = null;
     try {
@@ -534,7 +548,7 @@ export class Copies {
     const sig = this.#s3Sig(t);
     const cur = this.#s3Places.get(t.id);
     if (cur !== undefined && cur.sig === sig) return cur.place;
-    const place = new S3Place(t, this.#d.s3ClientOptions);
+    const place = new S3Place(t, { ...this.#d.s3ClientOptions, pace: this.#pace });
     this.#s3Places.set(t.id, { sig, place });
     return place;
   }
@@ -775,7 +789,7 @@ export class Copies {
       const traces = this.#d.traces?.() ?? null;
       const span = traces?.startRoot() ?? null;
       try {
-        const place = new PeerPlace(peer, this.#d.ask);
+        const place = new PeerPlace(peer, this.#ask);
         let { head: syncedHead, done } = await levelNewest(
           head,
           (cur) => this.#newestHead(ws, cur),
@@ -1168,7 +1182,7 @@ export class Copies {
         let all = should.length > 0;
         for (const peer of should) {
           try {
-            if (!(await handOver(this.kept, new PeerPlace(peer, this.#d.ask), ws, origin))) all = false;
+            if (!(await handOver(this.kept, new PeerPlace(peer, this.#ask), ws, origin))) all = false;
           } catch {
             all = false;
           }
@@ -1178,7 +1192,7 @@ export class Copies {
           const readMine = (hash: string, maxBytes: number) => this.kept.readBounded(ws, origin, null, hash, maxBytes);
           const still = await Promise.all(
             should.map(async (p) => {
-              const peerPlace = new PeerPlace(p, this.#d.ask);
+              const peerPlace = new PeerPlace(p, this.#ask);
               try {
                 const h = await peerPlace.held(ws, origin);
                 const readTheirs = async (hash: string, maxBytes: number) => {
@@ -1419,7 +1433,7 @@ export class Copies {
           const said = Array.isArray(answer?.formerly) ? answer.formerly.filter((f: unknown): f is string => typeof f === "string") : [];
           this.#heardFormerly(ws, s.id, said);
           for (const f of said) taken.add(f);
-          for (const o of await new PeerPlace(s.id, this.#d.ask).origins(ws)) {
+          for (const o of await new PeerPlace(s.id, this.#ask).origins(ws)) {
             for (const h of o.heads as Head[]) add(h, { key: `station:${s.id}`, item: { station: s.id, name: names.get(s.id) ?? "" } });
           }
         } catch {}
@@ -1463,7 +1477,7 @@ export class Copies {
     await this.settleExport();
     const head = this.#passed?.heads[ws];
     if (head === undefined) throw new Error("no copy of this workspace's chats");
-    const done = await level(new PeerPlace(peer, this.#d.ask), ws, this.#own(head));
+    const done = await level(new PeerPlace(peer, this.#ask), ws, this.#own(head));
     if (done.behind) throw new Error("that station keeps more of this station's chats than it has");
     return head.gen;
   }
@@ -1523,7 +1537,7 @@ export class Copies {
       held = await place.held(ws, origin);
       stream = async (g, name) => place.stream(ws, origin, g, name);
     } else {
-      const place = new PeerPlace(from.station, this.#d.ask);
+      const place = new PeerPlace(from.station, this.#ask);
       held = await place.held(ws, origin);
       stream = (g, name) => place.read(ws, origin, g, name);
     }
