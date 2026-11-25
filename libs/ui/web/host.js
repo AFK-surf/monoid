@@ -1577,16 +1577,28 @@
       float regDarkOpt = is_dark ? 1.0 : darkMixSaved;
       float transLum = clamp(Y * (1.0 + lift * (1.0 - Y)), 0.0, 1.0);
       float Lt = clamp(transLum * transmittance, 0.0, 1.0);
-      // Monotonic p=4 hard-knee ceiling for Dark overlays (extra > 0.09, e.g. 0x80 Menu/Alert): strictly increasing in Y
-      // (dLc/dLt = (1 + (Lt/Lcap)^4)^(-5/4) > 0, zero mid-grey inversion), near-identity for normal dark/mid tones (preserves
-      // vivid iOS 27.0 color bleed & adaptive flipped dark controls), while holding pure white <= 99/255 (CR >= 4.9:1).
-      float darkKneeW = smoothstep(0.09, 0.16, regExtra) * regDarkOpt * regMix;
-      float Lcap = 0.245;
-      float kt = Lt / Lcap;
+      // Symmetric monotonic p=4 hard-knee for non-adaptive Regular overlays (extra > 0.09, e.g. 0x80 Menu/Alert, 0x99 Sheet/Drawer):
+      // - Dark overlays (regDarkOpt=1): anchors dark base emission near iOS 27 elevated #1C1C1E and caps Lt at Lcap=0.088 -> pure white <= 52/255 (all dark semantic inks >= 5.1:1) while softer chroma knee keeps vivid blue bleed (d80_br >= 95).
+      // - Light overlays (regDarkOpt=0): floors darkness D=max(transmittance-Lt,0) at Dcap=0.108 -> pure black >= 225/255 (muted/accent on hover >= 4.5:1 / 3.0:1).
+      // Branchless C1 blend: strictly monotonic in Y everywhere, zero change to 0x67 controls or adaptive glass, >96% identity on vivid iOS 27.0 colors.
+      float overlayKnee = smoothstep(0.09, 0.16, regExtra) * regMix * (is_adaptive ? 0.0 : 1.0);
+      float darkKneeW = overlayKnee * regDarkOpt;
+      float lightKneeW = overlayKnee * (1.0 - regDarkOpt);
+      float darkEmDrop = (10.0 / 255.0) * (1.0 - regExtra) * darkKneeW;
+      emission = max(emission - vec3(darkEmDrop), vec3(0.0));
+      float kt = transLum * 5.6;
       float kt2 = kt * kt;
-      float Lc = Lt / pow(1.0 + kt2 * kt2, 0.25);
-      float baseLum = mix(Lt, Lc, darkKneeW);
-      float kneeScale = (Lt > 0.0001) ? (baseLum / Lt) : 1.0;
+      float kDenom = 1.0 + kt2 * kt2;
+      float kInv = pow(kDenom, -0.25);
+      float Lc = Lt * kInv;
+      float D = max(transmittance - Lt, 0.0);
+      float dt = D / 0.102;
+      float dt2 = dt * dt;
+      float dInv = pow(1.0 + dt2 * dt2, -0.25);
+      float Dc = D * dInv;
+      float baseLum = Lt + (Lc - Lt) * darkKneeW + (max(transmittance - Dc, 0.0) - Lt) * lightKneeW;
+      float darkKS = pow(kDenom, -0.075);
+      float kneeScale = 1.0 + (darkKS - 1.0) * darkKneeW + (dInv - 1.0) * lightKneeW;
       vec3 chromaVec = (refractColor - vec3(Y)) * (chromaGain * v_p.z * kneeScale);
       vec3 transmittedColor = vec3(baseLum) + chromaVec;
       vec3 rawBase = emission + transmittedColor;

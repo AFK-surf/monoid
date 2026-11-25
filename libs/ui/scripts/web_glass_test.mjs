@@ -989,6 +989,20 @@ function runGlassVectorsInPage() {
           if (gi === 20) darkWtL2 = dl;
         }
 
+        let lightMonoOk = true, prevLl = -1, lightBlkL = 0;
+        for (let gi = 0; gi <= 20; gi++) {
+          const gv = gi / 20;
+          rect(fg, 0, 0, 0, 160, 80, 0, gv, gv, gv, 1, 0);
+          rect(fg, INST, 14, 9, 132, 62, 6, 253 / 255, 252 / 255, 253 / 255, 0x80 / 255, -200 - gi);
+          fg[INST + 4] = 24; fg[INST + 6] = 1; fg[INST + 7] = 14;
+          fg[INST + 12] = 0.6; fg[INST + 13] = 20; fg[INST + 14] = 0; fg[INST + 15] = 1; fg[INST + 21] = 16;
+          H.present(fg, 2, gv, gv, gv);
+          const ll = lumaOf(pxAt(H.renderPixels(), 80 * 2, 40 * 2));
+          if (prevLl >= 0 && ll < prevLl - 0.1) lightMonoOk = false;
+          prevLl = ll;
+          if (gi === 0) lightBlkL = ll;
+        }
+
         H.renderInit(200, 160, 3);
         const sh = new Float32Array(3 * INST);
         rect(sh, 0, 0, 0, 200, 160, 0, 244 / 255, 241 / 255, 234 / 255, 1, 0);
@@ -1010,7 +1024,7 @@ function runGlassVectorsInPage() {
           if (shPrev >= 0 && (sl - shPrev) > shMaxJump) shMaxJump = sl - shPrev;
           shPrev = sl;
         }
-        roi.v15_unified_v9 = { k2G, darkBarG, adDiff, ordDiff, darkMonoOk, darkMidL, darkWtL2, shMaxJump };
+        roi.v15_unified_v9 = { k2G, darkBarG, adDiff, ordDiff, darkMonoOk, darkMidL, darkWtL2, lightMonoOk, lightBlkL, shMaxJump };
       }
       H.renderInit(VW, VH, 2);
     }
@@ -1401,6 +1415,7 @@ check(Math.abs(roi.v15_unified_v9.k2G - 195) <= 2 &&
   roi.v15_unified_v9.adDiff <= 1 &&
   roi.v15_unified_v9.ordDiff === 0 &&
   roi.v15_unified_v9.darkMonoOk && roi.v15_unified_v9.darkWtL2 <= 102.0 &&
+  roi.v15_unified_v9.lightMonoOk && roi.v15_unified_v9.lightBlkL >= 198.0 &&
   roi.v15_unified_v9.shMaxJump < 2.5,
   `v15_unified_v9=${JSON.stringify(roi.v15_unified_v9)}`);
 for (const a of roi.v11_aa) {

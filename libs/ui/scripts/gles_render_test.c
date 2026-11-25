@@ -4594,6 +4594,25 @@ int main(void) {
             free(pd);
           }
 
+          int light_mono_ok = 1;
+          double prev_ll = -1.0, light_blk_L = 0.0;
+          for (int gi = 0; gi <= 20; gi++) {
+            double gv = (double)gi / 20.0;
+            V_RECT(fg, 0, 0, 160, 80, 0, gv, gv, gv, 0);
+            V_RECT(fg + MB_INST, 14, 9, 132, 62, 6, 253.0/255.0, 252.0/255.0, 253.0/255.0, -200 - gi);
+            fg[MB_INST + 4] = 24.0; fg[MB_INST + 6] = 1.0; fg[MB_INST + 7] = 14.0;
+            fg[MB_INST + 11] = 0x80 / 255.0; fg[MB_INST + 12] = 0.6; fg[MB_INST + 13] = 20.0;
+            fg[MB_INST + 14] = 0.0; fg[MB_INST + 15] = 1.0; fg[MB_INST + 21] = 16.0;
+            glass_forget(); gl_present(fg, 2, gv, gv, gv);
+            unsigned char *pl = pixels_of_fb(vfb);
+            unsigned char *cl = V_PX(pl, 80 * 2, 40 * 2);
+            double ll = 0.2126 * cl[0] + 0.7152 * cl[1] + 0.0722 * cl[2];
+            if (prev_ll >= 0.0 && ll < prev_ll - 0.1) light_mono_ok = 0;
+            prev_ll = ll;
+            if (gi == 0) light_blk_L = ll;
+            free(pl);
+          }
+
           VW = 200; VH = 160;
           V_SETUP(3);
           double sh[3 * MB_INST];
@@ -4619,13 +4638,14 @@ int main(void) {
           }
           free(psh);
           VW = 160; VH = 80;
-          printf("gles_render: v15_unified_v9 k2_g=%d dark_bar_g=%d ad_ff_diff=%d ord_diff=%d dark_mono=%d mid55=%.1f wt=%.1f sh_jump=%.2f\n",
-                 k2_g, dark_bar_g, ad_diff, ord_diff, dark_mono_ok, dark_mid_L, dark_wt_L2, sh_max_jump);
+          printf("gles_render: v15_unified_v9 k2_g=%d dark_bar_g=%d ad_ff_diff=%d ord_diff=%d dark_mono=%d mid55=%.1f wt=%.1f light_mono=%d blk=%.1f sh_jump=%.2f\n",
+                 k2_g, dark_bar_g, ad_diff, ord_diff, dark_mono_ok, dark_mid_L, dark_wt_L2, light_mono_ok, light_blk_L, sh_max_jump);
           CHECK(abs(k2_g - 195) <= 2);
           CHECK(dark_bar_g <= 150);
           CHECK(ad_diff <= 1);
           CHECK(ord_diff == 0);
           CHECK(dark_mono_ok == 1 && dark_wt_L2 <= 102.0);
+          CHECK(light_mono_ok == 1 && light_blk_L >= 198.0);
           CHECK(sh_max_jump < 2.5);
         }
         V_SETUP(2);

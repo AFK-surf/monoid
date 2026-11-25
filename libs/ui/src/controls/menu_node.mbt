@@ -760,7 +760,7 @@ fn menu_row_node(
         into.box(fn(w) {
           w
           .words(Is(extra.value), look=toast_words_look(Meta, L5, 400, false))
-          .ink(By(fn() { @ui.tree_theme().color(Muted) }))
+          .ink(By(overlay_muted_ink))
           |> ignore
         })
         |> ignore
@@ -813,7 +813,7 @@ fn menu_row_node(
           u.box(fn(w) {
             w
             .words(Is(extra.note), look=toast_words_look(Meta, L5, 400, true))
-            .ink(By(fn() { @ui.tree_theme().color(Muted) }))
+            .ink(By(overlay_muted_ink))
             |> ignore
           })
           |> ignore
@@ -913,12 +913,12 @@ fn menu_heading_node(
         w
         .words_runs(By(fn() { title_runs(label(), theme().p.accent_text) }))
         .words_look(Is(toast_words_look(Meta, L4_75, 400, false)))
-        .ink(By(fn() { @ui.tree_theme().color(Muted) }))
+        .ink(By(overlay_muted_ink))
         |> ignore
       } else {
         w
         .words(By(label), look=toast_words_look(Meta, L4_75, 400, false))
-        .ink(By(fn() { @ui.tree_theme().color(Muted) }))
+        .ink(By(overlay_muted_ink))
         |> ignore
       }
     })
