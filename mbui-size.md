@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5badca1bd](https://github.com/AFK-surf/monoid/commit/5badca1bd3f3f096a6fad209c44fe240c15059d7) feat(comma): report human participants in task.ind | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.76 | 122.81 |
 | [54be19794](https://github.com/AFK-surf/monoid/commit/54be1979418e710aa221906c6d5197ff178a6f8a) fix(mbui): hide the empty "who can use" section of | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.76 | 122.81 |
 | [ccfa67f6e](https://github.com/AFK-surf/monoid/commit/ccfa67f6e2da9a315fb547f49c47827bd4070c5c) fix(station): finish agy 1.5.14 company sign-ins p | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.81 | 122.81 |
 | [3c6d60e59](https://github.com/AFK-surf/monoid/commit/3c6d60e594fbed10d7bc0dcc249f77a8cb1109d8) fix(mbui): keep the remote rail dot steady during  | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.96 | 123.35 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fcf19b573](https://github.com/AFK-surf/monoid/commit/fcf19b573d6c375e05e29263e071f0addc2bc6ae) ci(desktop): eliminate Post setup pnpm-cache cance | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [9ac4cc360](https://github.com/AFK-surf/monoid/commit/9ac4cc3602b75a392d517890ca3552be1beb94c4) fix(station): fail agy turns that end on a quota n | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [319706ddc](https://github.com/AFK-surf/monoid/commit/319706ddcfdcd108923f94bf64740972bb43afb6) feat(pion/station): add builders_replica (replica- | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
-| [13f57314c](https://github.com/AFK-surf/monoid/commit/13f57314c446843de910d2c106d81ec2faf1ab88) perf(ui): fix host glyph pre-warming and Android p | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5badca1bd](https://github.com/AFK-surf/monoid/commit/5badca1bd3f3f096a6fad209c44fe240c15059d7) feat(comma): report human participants in task.ind | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.82 |
 | [54be19794](https://github.com/AFK-surf/monoid/commit/54be1979418e710aa221906c6d5197ff178a6f8a) fix(mbui): hide the empty "who can use" section of | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.59 |
 | [ccfa67f6e](https://github.com/AFK-surf/monoid/commit/ccfa67f6e2da9a315fb547f49c47827bd4070c5c) fix(station): finish agy 1.5.14 company sign-ins p | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.57 |
 | [3c6d60e59](https://github.com/AFK-surf/monoid/commit/3c6d60e594fbed10d7bc0dcc249f77a8cb1109d8) fix(mbui): keep the remote rail dot steady during  | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.71 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fcf19b573](https://github.com/AFK-surf/monoid/commit/fcf19b573d6c375e05e29263e071f0addc2bc6ae) ci(desktop): eliminate Post setup pnpm-cache cance | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.46 |
 | [9ac4cc360](https://github.com/AFK-surf/monoid/commit/9ac4cc3602b75a392d517890ca3552be1beb94c4) fix(station): fail agy turns that end on a quota n | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.51 |
 | [319706ddc](https://github.com/AFK-surf/monoid/commit/319706ddcfdcd108923f94bf64740972bb43afb6) feat(pion/station): add builders_replica (replica- | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.46 |
-| [13f57314c](https://github.com/AFK-surf/monoid/commit/13f57314c446843de910d2c106d81ec2faf1ab88) perf(ui): fix host glyph pre-warming and Android p | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.69 |
