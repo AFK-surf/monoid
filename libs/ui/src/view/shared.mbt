@@ -2151,9 +2151,17 @@ fn Tree::pairs_now(self : Tree) -> Unit {
   if early {
     self.incoming_carry(incoming, ends, leads)
   }
+  // (what each old copy was let go of with, let go of once every pair is set flying: two cards let go of in one box
+  // (a composer's quotes sent together) each keep their copy, never the first letting go of the second's with the box)
+  let held_go : Array[NodeId] = []
   for p in pairs {
-    if self.paired(p.0, p.1, leads) is Some(_) {
+    if self.paired(p.0, p.1, leads, held_go) is Some(_) {
       flown.push(p.0.held)
+    }
+  }
+  for h in held_go {
+    if self.alive_id(h) {
+      self.handle(h.at).let_go()
     }
   }
   // (one that moves let go of and another made in the same change, by other ids, is one in the other's place (a
@@ -2233,19 +2241,20 @@ fn Tree::top_node_of(self : Tree, at : Int) -> Int {
 
 ///|
 /// Departure `d` and node `to` made in the same change paired: `to` set flying from where `d`'s was drawn, `d`'s node
-/// kept as its old copy on the same way (what it was let go of with let go of now, all but it). Its old copy, where it
-/// flies.
+/// kept as its old copy on the same way (what it was let go of with put in `held_go`, all but it, for the caller to let
+/// go of once every pair of the change has taken its copy out of it). Its old copy, where it flies.
 fn Tree::paired(
   self : Tree,
   d : Departure,
   to : NodeId,
   leads : Array[(Flight, NodeId, (Double, (Double) -> Double))],
+  held_go : Array[NodeId],
 ) -> NodeId? {
   guard self.alive_id(d.node) && self.alive_id(d.held) else { return None }
   let ghost = d.node.at
   let held = d.held.at
-  // (leaving: none of it leaves now, it is let go of as the flight takes its place)
-  if d.leaving {
+  // (leaving: none of it leaves now, it is let go of as the flight takes its place; once, for all it was let go of with)
+  if d.leaving && !held_go.contains(d.held) {
     let h = self.nodes[held]
     h.left_at = -1.0
     h.back_at = -1.0
@@ -2271,7 +2280,9 @@ fn Tree::paired(
       }
     }
     g.parent = -1
-    self.handle(held).let_go()
+    if !held_go.contains(d.held) {
+      held_go.push(d.held)
+    }
   }
   let g = self.nodes[ghost]
   // (taking nothing, read out as nothing, its id none of the living's: what of it reads whether it takes input told so,
