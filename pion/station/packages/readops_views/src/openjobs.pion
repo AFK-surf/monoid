@@ -260,9 +260,9 @@ fn naming_origin(
   session : String,
   prepared_ok : Bool,
 ) -> Result[Bool, readops_core::ReadError] {
-  let original = fn() -> Result[Bool, readops_core::ReadError] {
+  let original_with = fn(db_in : sql_db::Db) -> Result[Bool, readops_core::ReadError] {
     match readops_core::one(
-      db,
+      db_in,
       readops_local::HAS_NAMING_ORIGIN_SQL,
       [base_codec::json_str(session), base_codec::json_str("chat")],
     ) {
@@ -272,7 +272,7 @@ fn naming_origin(
     }
   }
   if !prepared_ok {
-    return original()
+    return original_with(db)
   }
   let possible = fn() -> Result[Bool, readops_core::ReadError] {
     match readops_core::one(db, readops_local::HAS_NAMING_ORIGIN_POSSIBLE_SQL, [base_codec::json_str(session)]) {
@@ -293,11 +293,11 @@ fn naming_origin(
   }
   match first {
     Some(true) => ()
-    _ => return original()
+    _ => return original_with(db)
   }
-  let answer = match db.savepoint_swallow_err(
+  db.savepoint_swallow_err(
     "naming_origin_probe",
-    fn(db2 : sql_db::Db) -> Result[Option[Bool], readops_core::ReadError] {
+    fn(db2 : sql_db::Db) -> Result[Bool, readops_core::ReadError] {
       let inner = fn() -> Result[Option[Bool], readops_core::ReadError] {
         let p = match readops_core::one(db2, readops_local::HAS_NAMING_ORIGIN_POSSIBLE_SQL, [base_codec::json_str(session)]) {
           Ok(Some(_)) => true
@@ -320,26 +320,23 @@ fn naming_origin(
           Err(e) => Err(e)
         }
       }
-      match inner() {
-        Ok(v) => Ok(v)
+      let answer = match inner() {
+        Ok(v) => v
         Err(e) => {
           if missing_origin_index(e) || readops_core::str_has_prefix(readops_core::read_error_message(e), "copy destination index version ") {
-            Ok(None)
+            None
           } else {
-            Err(e)
+            return Err(e)
           }
         }
       }
+      match answer {
+        Some(a) => Ok(a)
+        None => original_with(db2)
+      }
     },
     readops_core::map_sql_err,
-  ) {
-    Ok(v) => v
-    Err(e) => return Err(e)
-  }
-  match answer {
-    Some(a) => Ok(a)
-    None => original()
-  }
+  )
 }
 
 /// store.ts `latestNamingOrigins`: each session's latest external origin, as threadsForChatNames orders them.

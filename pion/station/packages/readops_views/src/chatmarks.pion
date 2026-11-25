@@ -44,11 +44,32 @@ pub fn by_thread(m : Map[String, base_codec::Json]) -> base_codec::Json {
   base_codec::json_obj(out)
 }
 
-fn map_to_json_obj(m : Map[String, base_codec::Json]) -> base_codec::Json {
-  let keys = m.keys()
+fn map_to_json_obj_ordered(m : Map[String, base_codec::Json], order : Array[String]) -> base_codec::Json {
   let out : Array[(String, base_codec::Json)] = []
-  for i in 0..<keys.length() {
-    let k = keys[i]
+  let emitted : Map[String, Bool] = Map::new()
+  for i in 0..<order.length() {
+    let k = order[i]
+    if !emitted.contains(k) {
+      match m.get(k) {
+        Some(v) => {
+          emitted.set(k, true)
+          out.push((k, v))
+        }
+        None => ()
+      }
+    }
+  }
+  let rest : Array[String] = []
+  let all_keys = m.keys()
+  for i in 0..<all_keys.length() {
+    let k = all_keys[i]
+    if !emitted.contains(k) {
+      rest.push(k)
+    }
+  }
+  let sorted_rest = readops_core::stable_sort(rest, readops_core::by_bytes)
+  for i in 0..<sorted_rest.length() {
+    let k = sorted_rest[i]
     match m.get(k) {
       Some(v) => out.push((k, v))
       None => ()
@@ -399,7 +420,7 @@ pub fn chat_marks(
       }
     }
   }
-  let pins : Map[String, base_codec::Json] = Map::new()
+  let pins : Array[(String, base_codec::Json)] = []
   let pin_rows = match scope_opt {
     None => {
       match db.all("SELECT session, at FROM pins WHERE viewer = ?", [base_codec::json_str(email)]) {
@@ -451,11 +472,11 @@ pub fn chat_marks(
       continue
     }
     let at = readops_core::field(r, "at")
-    match pins.get(anchor) {
-      None => pins.set(anchor, at)
+    match readops_chats::obj_get(pins, anchor) {
+      None => readops_chats::obj_set(pins, anchor, at)
       Some(prev) => {
         if readops_core::num(at) < readops_core::num(prev) {
-          pins.set(anchor, at)
+          readops_chats::obj_set(pins, anchor, at)
         }
       }
     }
@@ -510,7 +531,7 @@ pub fn chat_marks(
         ("kept", base_codec::json_arr(kept_list)),
         ("hidden", base_codec::json_arr(hidden)),
         ("muted", base_codec::json_arr(muted)),
-        ("pins", map_to_json_obj(pins)),
+        ("pins", base_codec::json_obj(pins)),
         ("selves", base_codec::json_arr(selves_json)),
         ("dismissed", base_codec::json_arr(dismissed_list)),
         ("reads", by_thread(reads)),
@@ -764,10 +785,10 @@ pub fn chat_marks(
       ("kept", base_codec::json_arr(kept_list)),
       ("hidden", base_codec::json_arr(hidden)),
       ("muted", base_codec::json_arr(muted)),
-      ("pins", map_to_json_obj(pins)),
-      ("openers", map_to_json_obj(openers)),
-      ("opened", map_to_json_obj(opened)),
-      ("shares", map_to_json_obj(shares)),
+      ("pins", base_codec::json_obj(pins)),
+      ("openers", map_to_json_obj_ordered(openers, keys)),
+      ("opened", map_to_json_obj_ordered(opened, keys)),
+      ("shares", map_to_json_obj_ordered(shares, keys)),
       ("clientKeys", base_codec::json_obj(client_keys)),
       ("teams", base_codec::json_obj(teams)),
       ("selves", base_codec::json_arr(selves_json)),

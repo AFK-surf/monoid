@@ -76,6 +76,50 @@ test "entries parsed_thread_tags, parsed_proposal, and merge_proposal_outcome" {
   }
   assert(parsed_thread_tags(base_codec::json_str("[]")) is None)
   assert(parsed_thread_tags(base_codec::json_str("not-json")) is None)
+  // P1-1: lone surrogates must be rejected; literal U+FFFD and valid surrogate pairs accepted.
+  assert(parsed_thread_tags(base_codec::json_str("[\"\\ud800\"]")) is None)
+  assert(parsed_thread_tags(base_codec::json_str("[\"\\udfff\"]")) is None)
+  match parsed_thread_tags(base_codec::json_str("[\"\u{FFFD}\"]")) {
+    Some(j) => assert(base_codec::json_stringify(j) == "[\"\u{FFFD}\"]")
+    None => assert(false)
+  }
+  match parsed_thread_tags(base_codec::json_str("[\"\\uD83D\\uDE00\"]")) {
+    Some(j) => assert(base_codec::json_stringify(j) == "[\"😀\"]")
+    None => assert(false)
+  }
+
+  // P1-1: parsed_proposal lone surrogates in values and keys rejected; U+FFFD & surrogate pairs accepted.
+  assert(parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"\\ud800\",\"status\":\"pending\"}")) is None)
+  assert(parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"\\udfff\",\"status\":\"pending\"}")) is None)
+  assert(parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"ok\",\"\\ud800\":1,\"status\":\"pending\"}")) is None)
+  match parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"\u{FFFD}\",\"status\":\"pending\"}")) {
+    Some(p) => assert(base_codec::json_eq(readops_core::json_val_or_null(p, "name"), base_codec::json_str("\u{FFFD}")))
+    None => assert(false)
+  }
+  match parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"\\uD83D\\uDE00\",\"status\":\"pending\"}")) {
+    Some(p) => assert(base_codec::json_eq(readops_core::json_val_or_null(p, "name"), base_codec::json_str("😀")))
+    None => assert(false)
+  }
+
+  // P2-3: resolvedAt drops raw numeric repr so serialization matches MB Json::number(ra).
+  match parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"n\",\"status\":\"accepted\",\"resolvedAt\":1e3}")) {
+    Some(p) => {
+      match readops_core::json_val(p, "resolvedAt") {
+        Some(base_codec::Json::Num(v, repr)) => assert(v == 1000.0 && repr == "")
+        _ => assert(false)
+      }
+    }
+    None => assert(false)
+  }
+  match parsed_proposal(base_codec::json_str("{\"id\":\"p\",\"name\":\"n\",\"status\":\"accepted\",\"resolvedAt\":9007199254740993}")) {
+    Some(p) => {
+      match readops_core::json_val(p, "resolvedAt") {
+        Some(base_codec::Json::Num(v, repr)) => assert(v == 9007199254740992.0 && repr == "")
+        _ => assert(false)
+      }
+    }
+    None => assert(false)
+  }
 
   let prop_raw = "{\"id\":\"p1\",\"name\":\"Proj\",\"status\":\"pending\",\"note\":\"hi\",\"refs\":[\" a \",\"\"],\"proposer\":\"u@x\"}"
   let prop = match parsed_proposal(base_codec::json_str(prop_raw)) {
@@ -89,7 +133,7 @@ test "entries parsed_thread_tags, parsed_proposal, and merge_proposal_outcome" {
   outcome.set("status", base_codec::json_str("accepted"))
   outcome.set("project", base_codec::json_str("proj-id"))
   outcome.set("resolved_by", base_codec::json_str("admin@x"))
-  outcome.set("resolved_at", base_codec::json_num(1700000000000.0))
+  outcome.set("resolved_at", base_codec::Json::Num(1700000000000.0, "1.7e12"))
   let merged = merge_proposal_outcome(prop, outcome)
   assert(base_codec::json_eq(readops_core::json_val_or_null(merged, "id"), base_codec::json_str("p1")))
   assert(base_codec::json_eq(readops_core::json_val_or_null(merged, "name"), base_codec::json_str("Proj")))
@@ -99,7 +143,7 @@ test "entries parsed_thread_tags, parsed_proposal, and merge_proposal_outcome" {
   assert(base_codec::json_eq(readops_core::json_val_or_null(merged, "resolvedProject"), base_codec::json_str("proj-id")))
   assert(base_codec::json_eq(readops_core::json_val_or_null(merged, "resolvedBy"), base_codec::json_str("admin@x")))
   match readops_core::json_val(merged, "resolvedAt") {
-    Some(base_codec::Json::Num(v, _)) => assert(v == 1700000000000.0)
+    Some(base_codec::Json::Num(v, repr)) => assert(v == 1700000000000.0 && repr == "")
     _ => assert(false)
   }
 }

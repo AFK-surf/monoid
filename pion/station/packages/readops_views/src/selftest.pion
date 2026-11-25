@@ -70,7 +70,7 @@ pub fn run_views_selftest(temp_dir : String) -> Result[Int, String] {
 }
 
 fn run_views_selftest_inner(temp_dir : String) -> Result[Int, String] {
-  let data_dir = temp_dir + "/w7d_views_data"
+  let data_dir = temp_dir + "/w7d_O'Brien_data"
   let client = builders_core::ShellClient::new()
   match mkdir_sync(client, data_dir) {
     Ok(_) => ()
@@ -158,7 +158,8 @@ fn run_all_checks(
   "CREATE TABLE active_watch_jobs(job TEXT PRIMARY KEY, session TEXT);" +
   "CREATE INDEX active_watch_jobs_session ON active_watch_jobs(session);" +
   "CREATE TABLE workspace_up_meta(id INTEGER PRIMARY KEY, version INTEGER, ready INTEGER);" +
-  "CREATE TABLE workspace_up_job_rows(kind INTEGER, ws TEXT, job_rowid INTEGER, started_at INTEGER);" +
+  "CREATE TABLE workspace_up_sessions(scope INTEGER, ws TEXT, session TEXT);" +
+  "CREATE INDEX workspace_up_sessions_scope ON workspace_up_sessions(scope, ws, session);" +
   "CREATE TABLE session_up_job_meta(id INTEGER PRIMARY KEY, version INTEGER, fresh INTEGER);" +
   "CREATE TABLE session_up_job_scopes(session TEXT PRIMARY KEY, complete INTEGER);" +
   "CREATE TABLE session_up_job_rows(session TEXT, job_rowid INTEGER);" +
@@ -252,6 +253,46 @@ fn run_all_checks(
     (
       "INSERT INTO sessions(key, conv, ws, title, connect, scope, created_by, runtime, profile, profile_pinned, model, running, created_at, last_active_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
+        base_codec::json_str("s_pin2"),
+        base_codec::json_str("s_pin2"),
+        base_codec::json_str("ws1"),
+        base_codec::json_str("PinTwo"),
+        base_codec::json_str("chat"),
+        base_codec::json_str("thread"),
+        base_codec::json_str("alice@example.com"),
+        base_codec::json_str("claude"),
+        base_codec::json_str("p1"),
+        base_codec::json_num(0.0),
+        base_codec::json_str("claude-opus"),
+        base_codec::json_num(0.0),
+        base_codec::json_num(2500.0),
+        base_codec::json_num(3500.0),
+      ],
+    ),
+    (
+      "INSERT INTO sessions(key, conv, ws, title, connect, scope, created_by, runtime, profile, profile_pinned, model, running, created_at, last_active_at, archived_at, archived_by) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_str("s_arch"),
+        base_codec::json_str("s_arch"),
+        base_codec::json_str("ws1"),
+        base_codec::json_str("Archived Chat"),
+        base_codec::json_str("chat"),
+        base_codec::json_str("thread"),
+        base_codec::json_str("alice@example.com"),
+        base_codec::json_str("claude"),
+        base_codec::json_str("p1"),
+        base_codec::json_num(0.0),
+        base_codec::json_str("claude-opus"),
+        base_codec::json_num(0.0),
+        base_codec::json_num(1000.0),
+        base_codec::json_num(2000.0),
+        base_codec::json_num(2500.0),
+        base_codec::json_str("alice@example.com"),
+      ],
+    ),
+    (
+      "INSERT INTO sessions(key, conv, ws, title, connect, scope, created_by, runtime, profile, profile_pinned, model, running, created_at, last_active_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
         base_codec::json_str("s_other"),
         base_codec::json_str("s_other"),
         base_codec::json_str("ws2"),
@@ -335,7 +376,7 @@ fn run_all_checks(
       [],
     ),
     (
-      "INSERT INTO entries(thread, n, kind, author_kind, author, ts, at, text, declared, card, change) VALUES(2, 3, 'message', 'agent', 's1', '1003', 1003, 'bob check', 'all_done', '{\"type\":\"options\",\"assignee\":\"bob@example.com\",\"options\":[{\"label\":\"Ok\"}]}', '{\"was\":{\"a\":1},\"now\":{\"a\":2}}')",
+      "INSERT INTO entries(thread, n, kind, author_kind, author, ts, at, text, declared, card, change, proposal) VALUES(2, 3, 'message', 'agent', 's1', '1003', 1003, 'bob check', 'all_done', '{\"type\":\"options\",\"assignee\":\"bob@example.com\",\"options\":[{\"label\":\"Ok\"}]}', '{\"was\":{\"a\":1},\"now\":{\"a\":2}}', '{\"id\":\"pr3\",\"name\":\"InlineProp\",\"status\":\"accepted\",\"resolvedAt\":1e3}')",
       [],
     ),
     (
@@ -344,6 +385,10 @@ fn run_all_checks(
     ),
     (
       "INSERT INTO proposal_outcomes(thread, n, status, project, resolved_by, resolved_at) VALUES(2, 1, 'accepted', 'new-proj', 'alice@example.com', 1050)",
+      [],
+    ),
+    (
+      "INSERT INTO entries(thread, n, kind, author_kind, author, ts, at, text, card) VALUES(10, 0, 'message', 'agent', 's2', '2000', 2000, 'closed prompt', '{\"type\":\"options\",\"assignee\":\"alice@example.com\",\"options\":[{\"label\":\"Done\"}]}')",
       [],
     ),
     (
@@ -371,6 +416,10 @@ fn run_all_checks(
       [],
     ),
     (
+      "INSERT INTO turns(id, session_key, kind, outcome, declared, started_at, ended_at) VALUES(3, 's1', 'run', 'ok', 'all_done', 1500, 1600)",
+      [],
+    ),
+    (
       "INSERT INTO turns(id, session_key, kind, outcome, declared, need, about_thread, about_n, started_at, ended_at) VALUES(2, 's2', 'run', 'ok', 'need_help', 'need API key', 10, 1, 2000, 2100)",
       [],
     ),
@@ -380,6 +429,7 @@ fn run_all_checks(
     ("INSERT INTO session_list_meta(id, version, complete) VALUES(1, 1, 1)", []),
     ("INSERT INTO session_list_rows(kind, ws, archived, connect, session) VALUES(1, 'ws1', 0, 'chat', 's1')", []),
     ("INSERT INTO session_list_rows(kind, ws, archived, connect, session) VALUES(1, 'ws1', 0, 'slack-1', 's2')", []),
+    ("INSERT INTO session_list_rows(kind, ws, archived, connect, session) VALUES(1, 'ws1', 1, 'chat', 's_arch')", []),
     ("INSERT INTO transcript_lengths(session, n) VALUES('s1', 77)", []),
     ("INSERT INTO session_usage(session, usage) VALUES('s1', '{\"in\":10,\"out\":5}')", []),
     ("INSERT INTO reads(viewer, thread, n) VALUES('alice@example.com', 10, 1)", []),
@@ -388,6 +438,7 @@ fn run_all_checks(
     ("INSERT INTO kept_chats(viewer, thread) VALUES('alice@example.com', 2)", []),
     ("INSERT INTO hidden_chats(viewer, thread) VALUES('alice@example.com', 10)", []),
     ("INSERT INTO muted_chats(viewer, thread) VALUES('alice@example.com', 10)", []),
+    ("INSERT INTO pins(viewer, session, at) VALUES('alice@example.com', 's_pin2', 500)", []),
     ("INSERT INTO pins(viewer, session, at) VALUES('alice@example.com', 's1', 300)", []),
     ("INSERT INTO pins(viewer, session, at) VALUES('alice@example.com', 's2', 100)", []),
     ("INSERT INTO identities(viewer, slack_user, at) VALUES('alice@example.com', 'U1', 50)", []),
@@ -395,10 +446,13 @@ fn run_all_checks(
     ("INSERT INTO pending_cards(thread, n) VALUES(2, 3)", []),
     ("INSERT INTO pending_system_cards(thread, n) VALUES(2, 2)", []),
     ("INSERT INTO pending_system_cards(thread, n) VALUES(2, 3)", []),
+    ("INSERT INTO closed_cards(thread, n, viewer, at) VALUES(10, 0, 'alice@example.com', 1699999999000)", []),
     ("INSERT INTO card_post_meta(id, version) VALUES(1, 1)", []),
     ("INSERT INTO card_post_scopes(thread, last_n, end_n, phase) VALUES(2, 3, 3, 2)", []),
+    ("INSERT INTO card_post_scopes(thread, last_n, end_n, phase) VALUES(10, 1, 1, 2)", []),
     ("INSERT INTO card_posts(thread, n) VALUES(2, 2)", []),
     ("INSERT INTO card_posts(thread, n) VALUES(2, 3)", []),
+    ("INSERT INTO card_posts(thread, n) VALUES(10, 0)", []),
     ("INSERT INTO archive_suggestions(thread, version) VALUES(2, 3)", []),
     ("INSERT INTO archive_verdicts(thread, version, at, verdict) VALUES(2, 3, 1050, '{\"archive\":true,\"reason\":\"done\"}')", []),
     ("INSERT INTO opened_chats(parent_station, parent, child_station, child, opener_title, title, led, state, created_at) VALUES('', 's1', '', 's2', 'Alpha', 'Beta', 1, 'working', 1500)", []),
@@ -463,7 +517,7 @@ fn run_all_checks(
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
-  match assert_eq_str(sql_db::stringify_json(readops_core::json_val_or_null(marks_own, "pins")), "{\"s1\":100}", "chat_marks own pins conversation collapse") {
+  match assert_eq_str(sql_db::stringify_json(readops_core::json_val_or_null(marks_own, "pins")), "{\"s_pin2\":500,\"s1\":100}", "chat_marks own pins conversation collapse & first-seen order") {
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
@@ -472,7 +526,7 @@ fn run_all_checks(
     Err(e) => return Err(e)
   }
 
-  // ── 2. chatmarks: full mode (Known::config, mine_first + kept + dismissed, need_view, teams, clientKeys, openers/opened) ──
+  // ── 2. chatmarks: full mode (Known::config, mine_first + kept + dismissed, need_view, teams, clientKeys, openers/opened, suggested, verdicts, answered, scope, before) ──
   let ask_marks_full = base_codec::json_obj([
     ("args", base_codec::json_obj([("viewer", viewer), ("now", base_codec::json_num(now_ms))])),
     ("clientKeys", base_codec::json_arr([base_codec::json_arr([base_codec::json_str("s1"), base_codec::json_str("ck-1")])])),
@@ -481,7 +535,8 @@ fn run_all_checks(
     Ok(v) => v
     Err(e) => return Err("chat_marks(full) failed: " + readops_core::read_error_message(e))
   }
-  // pending_cards points thread 2 to n=3 (bob), but mine_first must pick alice's waiting card at n=2, and mark dismissed=true!
+  // pending_cards points thread 2 to n=3 (bob) and pending_system_cards has both n=2 (alice) and n=3 (bob);
+  // mine_first picks alice's waiting card at n=2 and marks dismissed=true.
   let card2 = readops_core::json_val_or_null(readops_core::json_val_or_null(marks_full, "card"), "2")
   match assert_eq_str(readops_core::js_text(readops_core::json_val_or_null(card2, "seq")), "2", "chat_marks mine_first picked alice card n=2") {
     Ok(_) => passed = passed + 1
@@ -511,6 +566,83 @@ fn run_all_checks(
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
+  match assert_eq_str(sql_db::stringify_json(readops_core::json_val_or_null(marks_full, "suggested")), "[2]", "chat_marks suggested=[2]") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  let v2 = readops_core::json_val_or_null(readops_core::json_val_or_null(marks_full, "verdicts"), "2")
+  match assert_eq_str(sql_db::stringify_json(readops_core::json_val_or_null(v2, "archive")), "true", "chat_marks verdicts[2].archive=true") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  let ans10 = match readops_core::json_val(readops_core::json_val_or_null(marks_full, "answered"), "10") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => return Err("chat_marks answered[10] array missing")
+  }
+  match assert_true(ans10.length() == 1, "chat_marks answered[10] has 1 recent answer") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  // chat_marks with explicit scope={sessions, threads}
+  let ask_marks_scoped = base_codec::json_obj([
+    (
+      "args",
+      base_codec::json_obj([
+        ("viewer", viewer),
+        ("now", base_codec::json_num(now_ms)),
+        (
+          "scope",
+          base_codec::json_obj([
+            ("sessions", base_codec::json_arr([base_codec::json_str("s1")])),
+            ("threads", base_codec::json_arr([base_codec::json_num(2.0)])),
+          ]),
+        ),
+      ]),
+    ),
+  ])
+  let marks_scoped = match chat_marks(db, client, data_dir, "/", ask_marks_scoped) {
+    Ok(v) => v
+    Err(e) => return Err("chat_marks(scoped) failed: " + readops_core::read_error_message(e))
+  }
+  let sc_card2 = readops_core::json_val_or_null(readops_core::json_val_or_null(marks_scoped, "card"), "2")
+  match assert_eq_str(readops_core::js_text(readops_core::json_val_or_null(sc_card2, "seq")), "2", "chat_marks scoped card[2].seq=2") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  // chat_marks pending_cards `before` fallback path (thread 2 not in pending_cards/pending_system_cards, entry <= pending_cards_from)
+  match run_sql(db, "DELETE FROM pending_cards WHERE thread = 2", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "DELETE FROM pending_system_cards WHERE thread = 2", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "UPDATE pending_cards_from SET entry = 999999 WHERE id = 1", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let marks_before = match chat_marks(db, client, data_dir, "/", ask_marks_scoped) {
+    Ok(v) => v
+    Err(e) => return Err("chat_marks(before) failed: " + readops_core::read_error_message(e))
+  }
+  let bf_card2 = readops_core::json_val_or_null(readops_core::json_val_or_null(marks_before, "card"), "2")
+  match assert_eq_str(readops_core::js_text(readops_core::json_val_or_null(bf_card2, "seq")), "3", "chat_marks before fallback kept=None scans entries and finds card 3") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "UPDATE pending_cards_from SET entry = 0 WHERE id = 1", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "INSERT INTO pending_cards(thread, n) VALUES(2, 3)", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "INSERT INTO pending_system_cards(thread, n) VALUES(2, 2), (2, 3)", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
 
   // ── 3. entries & letters ──
   let ask_entries = base_codec::json_obj([
@@ -537,6 +669,24 @@ fn run_all_checks(
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
+  match assert_eq_str(sql_db::stringify_json(readops_core::json_val_or_null(e1_prop, "resolvedAt")), "1050", "entries merge_proposal_outcome resolvedAt serialized") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  let e3_prop = readops_core::json_val_or_null(ent_arr[2], "proposal")
+  match assert_eq_str(sql_db::stringify_json(readops_core::json_val_or_null(e3_prop, "resolvedAt")), "1000", "entries inline proposal resolvedAt 1e3 -> 1000") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  match parsed_proposal(base_codec::json_str("{\"id\":\"pr4\",\"name\":\"Big\",\"status\":\"accepted\",\"resolvedAt\":9007199254740993}")) {
+    Some(p) => {
+      match assert_eq_str(sql_db::stringify_json(readops_core::json_val_or_null(p, "resolvedAt")), "9007199254740992", "entries parsed_proposal resolvedAt 9007199254740993 -> 9007199254740992") {
+        Ok(_) => passed = passed + 1
+        Err(e) => return Err(e)
+      }
+    }
+    None => return Err("parsed_proposal 9007199254740993 returned None")
+  }
   let e2 = ent_arr[1]
   match assert_eq_str(readops_core::js_text(readops_core::json_val_or_null(e2, "declared")), "block", "entries said_before(need_decision)=block") {
     Ok(_) => passed = passed + 1
@@ -547,6 +697,52 @@ fn run_all_checks(
     Err(e) => return Err(e)
   }
   match assert_eq_str(readops_core::js_text(readops_core::json_val_or_null(e2, "authorModel")), "claude-opus", "entries authorModel from agentIdentity") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  // entries before / from+to / default page modes
+  let ask_ent_before = base_codec::json_obj([
+    ("args", base_codec::json_obj([("thread", base_codec::json_num(2.0)), ("params", base_codec::json_obj([("before", base_codec::json_str("3")), ("limit", base_codec::json_str("2"))]))])),
+  ])
+  let ent_before = match thread_entries(db, client, data_dir, "/", ask_ent_before) {
+    Ok(v) => v
+    Err(e) => return Err("thread_entries(before) failed: " + readops_core::read_error_message(e))
+  }
+  let ent_before_arr = match readops_core::json_val(ent_before, "entries") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => return Err("entries(before) array missing")
+  }
+  match assert_true(ent_before_arr.length() == 2 && readops_core::js_text(readops_core::json_val_or_null(ent_before_arr[1], "n")) == "2", "entries(before=3,limit=2) returns [1,2]") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  let ask_ent_range = base_codec::json_obj([
+    ("args", base_codec::json_obj([("thread", base_codec::json_num(2.0)), ("params", base_codec::json_obj([("from", base_codec::json_str("1")), ("to", base_codec::json_str("2"))]))])),
+  ])
+  let ent_range = match thread_entries(db, client, data_dir, "/", ask_ent_range) {
+    Ok(v) => v
+    Err(e) => return Err("thread_entries(from..to) failed: " + readops_core::read_error_message(e))
+  }
+  let ent_range_arr = match readops_core::json_val(ent_range, "entries") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => return Err("entries(from..to) array missing")
+  }
+  match assert_true(ent_range_arr.length() == 2 && readops_core::js_text(readops_core::json_val_or_null(ent_range_arr[0], "n")) == "1", "entries(from=1,to=2) returns [1,2]") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  let ask_ent_def = base_codec::json_obj([
+    ("args", base_codec::json_obj([("thread", base_codec::json_num(2.0)), ("params", base_codec::json_obj([]))])),
+  ])
+  let ent_def = match thread_entries(db, client, data_dir, "/", ask_ent_def) {
+    Ok(v) => v
+    Err(e) => return Err("thread_entries(default) failed: " + readops_core::read_error_message(e))
+  }
+  let ent_def_arr = match readops_core::json_val(ent_def, "entries") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => return Err("entries(default) array missing")
+  }
+  match assert_true(ent_def_arr.length() == 3 && readops_core::js_text(readops_core::json_val_or_null(ent_def_arr[2], "n")) == "3", "entries(default) returns [1,2,3]") {
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
@@ -618,6 +814,123 @@ fn run_all_checks(
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
+  // open_jobs with workspace_up_meta.ready = 1
+  match run_sql(db, "INSERT INTO workspace_up_sessions(scope, ws, session) VALUES(0, 'ws1', 's1')", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "INSERT INTO session_up_job_rows(session, job_rowid) SELECT 's1', rowid FROM jobs WHERE id = 'j1'", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "UPDATE workspace_up_meta SET ready = 1 WHERE id = 1", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let sig_ready = readops_core::ReadSignals::new()
+  let oj_ready = match open_jobs(db, client, data_dir, "/", sig_ready, ask_open_jobs) {
+    Ok(v) => v
+    Err(e) => return Err("open_jobs(ready=1) failed: " + readops_core::read_error_message(e))
+  }
+  let oj_ready_arr = match oj_ready {
+    base_codec::Json::Arr(xs) => xs
+    _ => return Err("open_jobs(ready=1) expected array")
+  }
+  match assert_true(!sig_ready.prepare_workspace_up_jobs && oj_ready_arr.length() == 1, "open_jobs(ready=1) uses workspace_up_sessions") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "UPDATE workspace_up_meta SET ready = 0 WHERE id = 1", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "DELETE FROM session_up_job_rows WHERE session = 's1'", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // P1-2: open_jobs SAVEPOINT paths (naming_origin_probe for untitled chat s_un, latest_naming_origins for no-chat s_nochat)
+  let p12_stmts : Array[(String, Array[base_codec::Json])] = [
+    ("INSERT INTO sessions(key, conv, ws, title, connect, scope, created_by, runtime, profile, profile_pinned, model, running, created_at, last_active_at) VALUES('s_un', 's_un', 'ws1', NULL, 'chat', 'thread', 'alice@example.com', 'claude', 'p1', 0, 'claude-opus', 0, 3000, 3000)", []),
+    ("INSERT INTO sessions(key, conv, ws, title, connect, scope, created_by, runtime, profile, profile_pinned, model, running, created_at, last_active_at) VALUES('s_nochat', 's_nochat', 'ws1', NULL, 'slack-1', 'thread', 'alice@example.com', 'claude', 'p1', 0, 'claude-opus', 0, 3100, 3100)", []),
+    ("INSERT INTO threads(id, surface, channel, thread_ts, title, auto_title, created_by, created_at, home) VALUES(30, 'chat', 'CHAT', 't30', NULL, NULL, 'alice@example.com', 3000, 's_un')", []),
+    ("INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES(30, 's_un', 'chat', 3000)", []),
+    ("INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES(20, 's_un', 'slack-1', 3001)", []),
+    ("INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES(20, 's_nochat', 'slack-1', 3100)", []),
+    ("INSERT INTO cc_sessions(session, complete) VALUES('s_un', 1)", []),
+    ("INSERT INTO cc_sessions(session, complete) VALUES('s_nochat', 1)", []),
+    ("INSERT INTO cc_session_rows(session, thread, surface, last_at, created_at) VALUES('s_un', 20, 'slack', 1501, 1500)", []),
+    ("INSERT INTO cc_session_rows(session, thread, surface, last_at, created_at) VALUES('s_nochat', 20, 'slack', 1501, 1500)", []),
+    ("INSERT INTO jobs(id, session_key, name, command, cwd, state, started_at, log, watch) VALUES('j_un', 's_un', 'un', 'true', ?, 'running', 9100, ?, 0)", [base_codec::json_str(data_dir), base_codec::json_str(job_log_path)]),
+    ("INSERT INTO jobs(id, session_key, name, command, cwd, state, started_at, log, watch) VALUES('j_nochat', 's_nochat', 'nc', 'true', ?, 'running', 9200, ?, 0)", [base_codec::json_str(data_dir), base_codec::json_str(job_log_path)]),
+  ]
+  for i in 0..<p12_stmts.length() {
+    let (sql, params) = p12_stmts[i]
+    match run_sql(db, sql, params) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let sig_p12 = readops_core::ReadSignals::new()
+  let oj_p12 = match open_jobs(db, client, data_dir, "/", sig_p12, ask_open_jobs) {
+    Ok(v) => v
+    Err(e) => return Err("open_jobs(savepoints) failed: " + readops_core::read_error_message(e))
+  }
+  match check_autocommit(db, "after open_jobs savepoints") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  let oj_p12_arr = match oj_p12 {
+    base_codec::Json::Arr(xs) => xs
+    _ => return Err("open_jobs(savepoints) expected array")
+  }
+  let mut found_un = false
+  let mut found_nochat = false
+  for i in 0..<oj_p12_arr.length() {
+    let item = oj_p12_arr[i]
+    let jid = readops_core::js_text(readops_core::json_val_or_null(item, "id"))
+    let title = readops_core::js_text(readops_core::json_val_or_null(readops_core::json_val_or_null(item, "chat"), "title"))
+    if jid == "j_un" && title == "slack opener text" {
+      found_un = true
+    }
+    if jid == "j_nochat" && title == "slack opener text" {
+      found_nochat = true
+    }
+  }
+  match assert_true(found_un && found_nochat, "open_jobs naming_origin_probe & latest_naming_origins resolved Slack title") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  // P1-2: cc_index_meta version mismatch fallback inside naming_origin & latest_naming_origins SAVEPOINTs
+  match run_sql(db, "UPDATE cc_index_meta SET version = 2 WHERE id = 1", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match naming_origin(db, "s_un", true) {
+    Ok(true) => passed = passed + 1
+    Ok(false) => return Err("naming_origin(version=2) expected Ok(true)")
+    Err(e) => return Err("naming_origin(version=2) failed: " + readops_core::read_error_message(e))
+  }
+  match check_autocommit(db, "after naming_origin(version=2)") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  match latest_naming_origins(db, ["s_nochat"]) {
+    Ok(xs) => {
+      match assert_true(xs.length() == 1 && readops_core::js_text(xs[0]) == "20", "latest_naming_origins(version=2) fallback=[20]") {
+        Ok(_) => passed = passed + 1
+        Err(e) => return Err(e)
+      }
+    }
+    Err(e) => return Err("latest_naming_origins(version=2) failed: " + readops_core::read_error_message(e))
+  }
+  match check_autocommit(db, "after latest_naming_origins(version=2)") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "UPDATE cc_index_meta SET version = 1 WHERE id = 1", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
 
   // ── 5. resourcechats ──
   let ask_res_chats = base_codec::json_obj([
@@ -643,9 +956,9 @@ fn run_all_checks(
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
-  match assert_eq_str(sql_db::stringify_json(readops_core::json_val_or_null(rc_res, "s_other")), "null", "resource_chats cross-ws filtered to null") {
-    Ok(_) => passed = passed + 1
-    Err(e) => return Err(e)
+  match readops_core::json_val(rc_res, "s_other") {
+    Some(base_codec::Json::Null) => passed = passed + 1
+    _ => return Err("resource_chats cross-ws expected explicit Some(Null)")
   }
 
   // ── 6. summaries (session_summary + session_list) ──
@@ -695,6 +1008,58 @@ fn run_all_checks(
   match assert_true(list_arr.length() == 2 && readops_core::js_text(readops_core::json_val_or_null(list_arr[0], "key")) == "s1", "session_list ws1 ordered [s1, s2]") {
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
+  }
+  // session_list archived: true & connect: "slack-1"
+  let ask_list_arch = base_codec::json_obj([
+    ("args", base_codec::json_obj([("viewer", viewer), ("archived", base_codec::json_bool(true))])),
+  ])
+  let list_arch = match session_list(db, client, data_dir, "/", ask_list_arch) {
+    Ok(base_codec::Json::Arr(xs)) => xs
+    Ok(_) => return Err("session_list(archived=true) expected array")
+    Err(e) => return Err("session_list(archived=true) failed: " + readops_core::read_error_message(e))
+  }
+  match assert_true(list_arch.length() == 1 && readops_core::js_text(readops_core::json_val_or_null(list_arch[0], "key")) == "s_arch", "session_list(archived=true) returns [s_arch]") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  let ask_list_conn = base_codec::json_obj([
+    ("args", base_codec::json_obj([("viewer", viewer), ("archived", base_codec::json_bool(false)), ("connect", base_codec::json_str("slack-1"))])),
+  ])
+  let list_conn = match session_list(db, client, data_dir, "/", ask_list_conn) {
+    Ok(base_codec::Json::Arr(xs)) => xs
+    Ok(_) => return Err("session_list(connect=slack-1) expected array")
+    Err(e) => return Err("session_list(connect=slack-1) failed: " + readops_core::read_error_message(e))
+  }
+  match assert_true(list_conn.length() == 1 && readops_core::js_text(readops_core::json_val_or_null(list_conn[0], "key")) == "s2", "session_list(connect=slack-1) returns [s2]") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  // Refused(503) turn count pending: session with 65 turns and no session_turns row
+  match run_sql(db, "INSERT INTO sessions(key, conv, ws, title, connect, scope, created_by, runtime, profile, profile_pinned, model, running, created_at, last_active_at) VALUES('s_many_turns', 's_many_turns', 'ws1', 'Many Turns', 'chat', 'thread', 'alice@example.com', 'claude', 'p1', 0, 'claude-opus', 0, 4000, 4000)", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  for idx in 100..<165 {
+    match run_sql(
+      db,
+      "INSERT INTO turns(id, session_key, kind, outcome, declared, started_at, ended_at) VALUES(?, 's_many_turns', 'run', 'ok', 'all_done', ?, ?)",
+      [base_codec::json_num(idx.to_double()), base_codec::json_num(idx.to_double()), base_codec::json_num((idx + 1).to_double())],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let ask_many_turns = base_codec::json_obj([
+    ("args", base_codec::json_obj([("key", base_codec::json_str("s_many_turns"))])),
+  ])
+  match session_summary(db, client, data_dir, "/", ask_many_turns) {
+    Err(readops_core::ReadError::Refused(503, msg)) => {
+      match assert_true(readops_core::str_has_prefix(msg, "turn count pending:"), "session_summary Refused(503) turn count pending") {
+        Ok(_) => passed = passed + 1
+        Err(e) => return Err(e)
+      }
+    }
+    _ => return Err("expected Refused(503) turn count pending for s_many_turns")
   }
 
   // ── 7. threadviews (thread_of, thread_list_of, cc_threads savepoint, xshare json_js_str, session_page + prepare_up_jobs) ──
@@ -784,7 +1149,68 @@ fn run_all_checks(
     Some(base_codec::Json::Arr(xs)) => xs
     _ => return Err("session_page turns missing")
   }
-  match assert_true(page_turns.length() == 1, "session_page(turns=1) returned 1 turn") {
+  match assert_true(page_turns.length() == 1 && readops_core::js_text(readops_core::json_val_or_null(page_turns[0], "id")) == "3", "session_page(turns=1) returned latest turn id=3") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  // thread_list_of direct call (mark s2 ready first so cc_threads succeeds)
+  match run_sql(db, "INSERT INTO cc_sessions(session, complete) VALUES('s2', 1)", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let ask_tlist = base_codec::json_obj([
+    ("args", base_codec::json_obj([("viewer", viewer), ("now", base_codec::json_num(now_ms))])),
+  ])
+  let tlist_res = match thread_list_of(db, client, data_dir, "/", ask_tlist) {
+    Ok(base_codec::Json::Arr(xs)) => xs
+    Ok(_) => return Err("thread_list_of expected array")
+    Err(e) => return Err("thread_list_of failed: " + readops_core::read_error_message(e))
+  }
+  match assert_true(tlist_res.length() >= 2, "thread_list_of returned visible threads") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  // Refused(503) copy destination sessions pending: s2 not ready in cc_sessions
+  match run_sql(db, "UPDATE cc_sessions SET complete = 0 WHERE session = 's2'", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let ask_t10 = base_codec::json_obj([
+    ("args", base_codec::json_obj([("viewer", viewer), ("id", base_codec::json_str("10")), ("now", base_codec::json_num(now_ms))])),
+  ])
+  match thread_of(db, client, data_dir, "/", ask_t10) {
+    Err(readops_core::ReadError::Refused(503, msg)) => {
+      match assert_true(readops_core::str_has_prefix(msg, CC_SESSIONS_PENDING), "thread_of(10) Refused(503) cc sessions pending") {
+        Ok(_) => passed = passed + 1
+        Err(e) => return Err(e)
+      }
+    }
+    _ => return Err("expected Refused(503) copy destination sessions pending for thread 10")
+  }
+  // P1-2: missing table fallback (DROP TABLE cc_session_rows) inside naming_origin & latest_naming_origins
+  match run_sql(db, "DROP TABLE cc_session_rows", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match naming_origin(db, "s_un", true) {
+    Ok(true) => passed = passed + 1
+    Ok(false) => return Err("naming_origin(missing table) expected Ok(true)")
+    Err(e) => return Err("naming_origin(missing table) failed: " + readops_core::read_error_message(e))
+  }
+  match check_autocommit(db, "after naming_origin(missing table)") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  match latest_naming_origins(db, ["s_nochat"]) {
+    Ok(xs) => {
+      match assert_true(xs.length() == 1 && readops_core::js_text(xs[0]) == "20", "latest_naming_origins(missing table) fallback=[20]") {
+        Ok(_) => passed = passed + 1
+        Err(e) => return Err(e)
+      }
+    }
+    Err(e) => return Err("latest_naming_origins(missing table) failed: " + readops_core::read_error_message(e))
+  }
+  match check_autocommit(db, "after latest_naming_origins(missing table)") {
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }

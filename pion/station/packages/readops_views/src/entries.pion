@@ -255,10 +255,10 @@ fn letter_of(v : base_codec::Json) -> Option[base_codec::Json] {
 pub fn parsed_thread_tags(v : base_codec::Json) -> Option[base_codec::Json] {
   let raw = match v {
     base_codec::Json::Str(s) => {
-      if s == "" {
+      if s == "" || builders_core::has_lone_surrogate(s) {
         return None
       }
-      match base_codec::json_parse(s) {
+      match sql_db::parse_json(s) {
         base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => xs
         _ => return None
       }
@@ -295,10 +295,10 @@ pub fn parsed_thread_tags(v : base_codec::Json) -> Option[base_codec::Json] {
 pub fn parsed_proposal(v : base_codec::Json) -> Option[base_codec::Json] {
   let obj = match v {
     base_codec::Json::Str(s) => {
-      if s == "" {
+      if s == "" || builders_core::has_lone_surrogate(s) {
         return None
       }
-      match base_codec::json_parse(s) {
+      match sql_db::parse_json(s) {
         base_codec::JsonParseResult::Ok(parsed_j) => {
           match parsed_j {
             base_codec::Json::Obj(_) => parsed_j
@@ -371,9 +371,9 @@ pub fn parsed_proposal(v : base_codec::Json) -> Option[base_codec::Json] {
     _ => ()
   }
   match readops_core::json_val(obj, "resolvedAt") {
-    Some(base_codec::Json::Num(ra, r)) => {
+    Some(base_codec::Json::Num(ra, _)) => {
       if !is_nan_or_inf(ra) {
-        out.push(("resolvedAt", base_codec::Json::Num(ra, r)))
+        out.push(("resolvedAt", base_codec::json_num(ra)))
       }
     }
     _ => ()
@@ -416,9 +416,9 @@ pub fn merge_proposal_outcome(p : base_codec::Json, outcome : Map[String, base_c
     _ => ()
   }
   match readops_core::field(outcome, "resolved_at") {
-    base_codec::Json::Num(ra, r) => {
+    base_codec::Json::Num(ra, _) => {
       if !is_nan_or_inf(ra) {
-        out.push(("resolvedAt", base_codec::Json::Num(ra, r)))
+        out.push(("resolvedAt", base_codec::json_num(ra)))
       }
     }
     _ => ()
