@@ -105,6 +105,14 @@ type Outcome = { kind: "keep" } | { kind: "take"; content: boolean } | { kind: "
 /// blobs/ where it changed), size, shared mode and mtime; `empty`: a MEMORY.md of nothing yet, not kept.
 type Found = { path: string; hash: string; size: number; mode: number; mtime: number; empty?: true };
 
+/// Summary emitted after `#look` (when changed or fresh) or `#take` (when changed) settles on disk.
+export type MemorySettledEvent = {
+  workspace: string;
+  dir: string;
+  conflictMerged: boolean;
+  files: Record<string, { hash: string; size: number }>;
+};
+
 export type MemoryDeps = {
   data: string;
   /// Which stations are in each of the station's workspaces, and this one's id and name.
@@ -124,6 +132,8 @@ export type MemoryDeps = {
   readers?: () => ReaderSelectConfig;
   /// Called whenever `PROJECTS.jsonl` changes locally or is updated from a peer in workspace `ws`.
   onProjectsChanged?: (ws: string) => void;
+  /// Called after `#look` (when changed or fresh) or `#take` (when changed) settles on disk.
+  onSettled?: (event: MemorySettledEvent) => void;
 };
 
 /// Whether the agents' home's directory at `rel` is followed: skills/ and what is shared of each skill in it, of the home
@@ -292,13 +302,29 @@ export class MemorySync {
     return { files: new Map(answer.files.map((f) => [f.path, f])), held: new Set(answer.held) };
   }
 
+  #emitSettled(ws: string, dir: string, conflictMerged: boolean): void {
+    const cb = this.#deps.onSettled;
+    if (!cb || this.#stopped) return;
+    const kept = this.#kept.get(ws);
+    const files: Record<string, { hash: string; size: number }> = {};
+    for (const [path, rec] of Object.entries(kept?.files ?? {})) {
+      if (rec.hash !== "") files[path] = { hash: rec.hash, size: rec.size };
+    }
+    try {
+      cb({ workspace: ws, dir, conflictMerged, files });
+    } catch (e) {
+      log.warn("memory", "onSettled callback failed", { workspace: ws, error: (e as Error)?.message ?? String(e) });
+    }
+  }
+
   /// Records made of what changed in `ws`'s files since the last look (whether any did).
   async #look(ws: string): Promise<boolean> {
     const state = await this.#state(ws);
     const kept = this.#kept.get(ws)!;
     const me = this.#me;
     if (me === "") return false;
-    const { files, held } = await this.#read(await this.#home(ws), kept.files);
+    const dir = await this.#home(ws);
+    const { files, held } = await this.#read(dir, kept.files);
     const isHeld = (path: string) => held.has(path) || [...held].some((h) => h.endsWith("/") && path.startsWith(h));
     let changed = false;
     let projectsChanged = false;
@@ -323,6 +349,7 @@ export class MemorySync {
     if (await this.#mend(ws)) changed = true;
     if (changed || state.fresh) this.#save(ws);
     if (projectsChanged) this.#deps.onProjectsChanged?.(ws);
+    if (changed || state.fresh) this.#emitSettled(ws, dir, false);
     return changed;
   }
 
@@ -443,7 +470,9 @@ export class MemorySync {
   /// beside it merged. `given`: the versions' content it brought. Whether anything here changed.
   async #take(ws: string, theirs: Record<string, Rec>, given: Map<string, Buffer>): Promise<boolean> {
     const kept = this.#kept.get(ws)!;
-    let changed = await this.#apart(ws, theirs, given);
+    const apartChanged = await this.#apart(ws, theirs, given);
+    let changed = apartChanged;
+    let conflictMerged = apartChanged;
     let projectsUpdated = false;
     for (const [path, rec] of Object.entries(theirs)) {
       const mine = kept.files[path];
@@ -478,10 +507,12 @@ export class MemorySync {
       }
       log.info("memory", "a file of the memory made apart merged", { workspace: ws, path, beside: beside?.path ?? null });
       changed = true;
+      conflictMerged = true;
       if (path === PROJECTS_INFO_PATH) projectsUpdated = true;
     }
     if (changed) this.#save(ws);
     if (projectsUpdated) this.#deps.onProjectsChanged?.(ws);
+    if (changed) this.#emitSettled(ws, await this.#home(ws), conflictMerged);
     return changed;
   }
 

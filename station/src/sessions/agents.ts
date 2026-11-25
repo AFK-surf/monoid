@@ -67,6 +67,7 @@ import { waysOf } from "../mesh/ways.ts";
 import { type Accounts, checkConfig, type LoginLost, makeAccounts } from "../accounts/index.ts";
 import { Sharing } from "../share/index.ts";
 import { MemorySync } from "../share/memory.ts";
+import { MemoryGardener, canCompactInWorkspace, createHubCompactor } from "../share/memory-gardener.ts";
 import { ChatShares } from "../xshare/index.ts";
 import { ChatShareIndexBuilder } from "../xshare/index-builder.ts";
 import { overview } from "../api/overview.ts";
@@ -729,7 +730,13 @@ export const AgentsLive = (control: Control) =>
       sharing.start();
       // (the program that reads its skills' files, idle, let go when the station is short of memory)
       readers.onTrim(() => sharing!.trimIdle());
-      // The agents' memory, the same on every station of a workspace (share/memory.ts).
+      // The agents' memory, the same on every station of a workspace (share/memory.ts), paired with the autonomous
+      // background gardener (share/memory-gardener.ts) that silently compacts overgrown or conflicted memory files.
+      const memoryGardener = new MemoryGardener({
+        cloud,
+        compact: createHubCompactor(hub, cloud),
+        canCompact: (ws) => canCompactInWorkspace(hub, cloud, ws),
+      });
       const memorySync = new MemorySync({
         data, cloud,
         ask: (station, workspace, request) => remote.ask(station, { workspace, ...request }),
@@ -739,12 +746,14 @@ export const AgentsLive = (control: Control) =>
           events.projectsChanged(ws);
           hub.invalidateProjectsCache(ws);
         },
+        onSettled: (event) => memoryGardener.onSettled(event),
       });
       remote.setMemory((peer, request, workspace) => memorySync.handle(peer, request, workspace));
       // (its program, idle, let go when the station is short of memory)
       readers.onTrim(() => memorySync.trimIdle());
       memorySync.start();
       yield* Effect.addFinalizer(() => Effect.promise(() => memorySync.stop()));
+      yield* Effect.addFinalizer(() => Effect.promise(() => memoryGardener.stop()));
       xshare.start();
       const platformView = (viewer: Viewer, lang: Lang) => overview({ store, hub, cloud, config: () => config.raw(), accounts, updates, connectKinds, rootView: (p) => rootViewThrough(p, helperFiles), builtAt, ...(grants ? { permissions: (v: Viewer) => permissionsView(grants, v) } : {}) }, viewer, lang);
       // And the fields the station's parts add (parts.ts).
