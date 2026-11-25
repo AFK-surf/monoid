@@ -44,40 +44,6 @@ pub fn by_thread(m : Map[String, base_codec::Json]) -> base_codec::Json {
   base_codec::json_obj(out)
 }
 
-fn map_to_json_obj_ordered(m : Map[String, base_codec::Json], order : Array[String]) -> base_codec::Json {
-  let out : Array[(String, base_codec::Json)] = []
-  let emitted : Map[String, Bool] = Map::new()
-  for i in 0..<order.length() {
-    let k = order[i]
-    if !emitted.contains(k) {
-      match m.get(k) {
-        Some(v) => {
-          emitted.set(k, true)
-          out.push((k, v))
-        }
-        None => ()
-      }
-    }
-  }
-  let rest : Array[String] = []
-  let all_keys = m.keys()
-  for i in 0..<all_keys.length() {
-    let k = all_keys[i]
-    if !emitted.contains(k) {
-      rest.push(k)
-    }
-  }
-  let sorted_rest = readops_core::stable_sort(rest, readops_core::by_bytes)
-  for i in 0..<sorted_rest.length() {
-    let k = sorted_rest[i]
-    match m.get(k) {
-      Some(v) => out.push((k, v))
-      None => ()
-    }
-  }
-  base_codec::json_obj(out)
-}
-
 /// store.ts `pendingCards`: the cards these chats wait on as kept (by thread, the post's entry),
 /// and those with a card posted before they were kept; none where the store keeps none.
 fn pending_cards(
@@ -737,20 +703,16 @@ pub fn chat_marks(
       None => ()
     }
   }
-  let (openers, opened_by) = match readops_chats::openers_opened(db, Some(keys)) {
+  let (openers, opened_by) = match readops_chats::openers_opened_ordered(db, Some(keys)) {
     Ok(pair) => pair
     Err(e) => return Err(e)
   }
-  let opened : Map[String, base_codec::Json] = Map::new()
-  let op_keys = opened_by.keys()
-  for i in 0..<op_keys.length() {
-    let k = op_keys[i]
-    match opened_by.get(k) {
-      Some(l) => opened.set(k, base_codec::json_arr(l))
-      None => ()
-    }
+  let opened : Array[(String, base_codec::Json)] = []
+  for i in 0..<opened_by.length() {
+    let (k, l) = opened_by[i]
+    opened.push((k, base_codec::json_arr(l)))
   }
-  let shares = match readops_chats::chat_shares(db, Some(keys), known.now) {
+  let shares = match readops_chats::chat_shares_ordered(db, Some(keys), known.now) {
     Ok(s) => s
     Err(e) => return Err(e)
   }
@@ -786,9 +748,9 @@ pub fn chat_marks(
       ("hidden", base_codec::json_arr(hidden)),
       ("muted", base_codec::json_arr(muted)),
       ("pins", base_codec::json_obj(pins)),
-      ("openers", map_to_json_obj_ordered(openers, keys)),
-      ("opened", map_to_json_obj_ordered(opened, keys)),
-      ("shares", map_to_json_obj_ordered(shares, keys)),
+      ("openers", base_codec::json_obj(openers)),
+      ("opened", base_codec::json_obj(opened)),
+      ("shares", base_codec::json_obj(shares)),
       ("clientKeys", base_codec::json_obj(client_keys)),
       ("teams", base_codec::json_obj(teams)),
       ("selves", base_codec::json_arr(selves_json)),

@@ -1487,12 +1487,13 @@ fn opened_named(
 }
 
 /// `store.ts` `openers` and `openedChats` of some sessions (none: of all).
-pub fn openers_opened(
+pub fn openers_opened_ordered(
   db : sql_db::Db,
   ids : Option[Array[String]],
-) -> Result[(Map[String, base_codec::Json], Map[String, Array[base_codec::Json]]), readops_core::ReadError] {
-  let openers : Map[String, base_codec::Json] = Map::new()
-  let opened : Map[String, Array[base_codec::Json]] = Map::new()
+) -> Result[(Array[(String, base_codec::Json)], Array[(String, Array[base_codec::Json])]), readops_core::ReadError] {
+  let openers : Array[(String, base_codec::Json)] = []
+  let opened : Array[(String, Array[base_codec::Json])] = []
+  let opened_idx : Map[String, Int] = Map::new()
   let list : Array[base_codec::Json] = match ids {
     Some(arr) => {
       let js : Array[base_codec::Json] = []
@@ -1525,7 +1526,8 @@ pub fn openers_opened(
           base_codec::Json::Num(n, _) => n == 1.0
           _ => false
         }
-        openers.set(
+        obj_set(
+          openers,
           readops_core::js_text(readops_core::field(r, "child")),
           opened_named(
             station_of(readops_core::field(r, "parent_station")),
@@ -1572,9 +1574,15 @@ pub fn openers_opened(
           asks=asks,
         )
         let key = readops_core::js_text(readops_core::field(r, "parent"))
-        match opened.get(key) {
-          Some(a) => a.push(item)
-          None => opened.set(key, [item])
+        match opened_idx.get(key) {
+          Some(idx) => {
+            let (_, arr) = opened[idx]
+            arr.push(item)
+          }
+          None => {
+            opened_idx.set(key, opened.length())
+            opened.push((key, [item]))
+          }
         }
       }
     }
@@ -1583,13 +1591,34 @@ pub fn openers_opened(
   Ok((openers, opened))
 }
 
-/// `store.ts` `chatShares` of some sessions (none: of all).
-pub fn chat_shares(
+pub fn openers_opened(
+  db : sql_db::Db,
+  ids : Option[Array[String]],
+) -> Result[(Map[String, base_codec::Json], Map[String, Array[base_codec::Json]]), readops_core::ReadError] {
+  let (openers_arr, opened_arr) = match openers_opened_ordered(db, ids) {
+    Ok(pair) => pair
+    Err(e) => return Err(e)
+  }
+  let openers : Map[String, base_codec::Json] = Map::new()
+  for i in 0..<openers_arr.length() {
+    let (k, v) = openers_arr[i]
+    openers.set(k, v)
+  }
+  let opened : Map[String, Array[base_codec::Json]] = Map::new()
+  for i in 0..<opened_arr.length() {
+    let (k, v) = opened_arr[i]
+    opened.set(k, v)
+  }
+  Ok((openers, opened))
+}
+
+/// `store.ts` `chatShares` of some sessions (none: of all), preserving SQL first-seen key order.
+pub fn chat_shares_ordered(
   db : sql_db::Db,
   ids : Option[Array[String]],
   now : Double,
-) -> Result[Map[String, base_codec::Json], readops_core::ReadError] {
-  let out : Map[String, base_codec::Json] = Map::new()
+) -> Result[Array[(String, base_codec::Json)], readops_core::ReadError] {
+  let out : Array[(String, base_codec::Json)] = []
   let rows = match ids {
     Some(arr) => {
       let js : Array[base_codec::Json] = []
@@ -1630,7 +1659,8 @@ pub fn chat_shares(
       }
     }
     if live.length() > 0 {
-      out.set(
+      obj_set(
+        out,
         readops_core::js_text(readops_core::field(r, "session")),
         base_codec::json_obj([
           ("to", base_codec::json_arr(live)),
@@ -1638,6 +1668,24 @@ pub fn chat_shares(
         ]),
       )
     }
+  }
+  Ok(out)
+}
+
+/// `store.ts` `chatShares` of some sessions (none: of all).
+pub fn chat_shares(
+  db : sql_db::Db,
+  ids : Option[Array[String]],
+  now : Double,
+) -> Result[Map[String, base_codec::Json], readops_core::ReadError] {
+  let arr = match chat_shares_ordered(db, ids, now) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let out : Map[String, base_codec::Json] = Map::new()
+  for i in 0..<arr.length() {
+    let (k, v) = arr[i]
+    out.set(k, v)
   }
   Ok(out)
 }

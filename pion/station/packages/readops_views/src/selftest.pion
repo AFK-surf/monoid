@@ -455,6 +455,7 @@ fn run_all_checks(
     ("INSERT INTO card_posts(thread, n) VALUES(10, 0)", []),
     ("INSERT INTO archive_suggestions(thread, version) VALUES(2, 3)", []),
     ("INSERT INTO archive_verdicts(thread, version, at, verdict) VALUES(2, 3, 1050, '{\"archive\":true,\"reason\":\"done\"}')", []),
+    ("INSERT INTO opened_chats(parent_station, parent, child_station, child, opener_title, title, led, state, created_at) VALUES('', 's2', '', 's_pin2', 'Beta', 'PinTwo', 1, 'working', 1400)", []),
     ("INSERT INTO opened_chats(parent_station, parent, child_station, child, opener_title, title, led, state, created_at) VALUES('', 's1', '', 's2', 'Alpha', 'Beta', 1, 'working', 1500)", []),
     (
       "INSERT INTO chat_shares(session, shared, at, write, by) VALUES(?, ?, ?, ?, ?)",
@@ -464,6 +465,16 @@ fn run_all_checks(
         base_codec::json_num(now_ms),
         base_codec::json_num(1.0),
         base_codec::json_str("alice@example.com"),
+      ],
+    ),
+    (
+      "INSERT INTO chat_shares(session, shared, at, write, by) VALUES(?, ?, ?, ?, ?)",
+      [
+        base_codec::json_str("s2"),
+        base_codec::json_str("[{\"workspace\":\"ws-ext2\",\"name\":\"n2\",\"used\":1699999999000}]"),
+        base_codec::json_num(now_ms),
+        base_codec::json_num(0.0),
+        base_codec::json_str("bob@example.com"),
       ],
     ),
     ("INSERT INTO cc_index_meta(id, version) VALUES(1, 1)", []),
@@ -580,6 +591,51 @@ fn run_all_checks(
     _ => return Err("chat_marks answered[10] array missing")
   }
   match assert_true(ans10.length() == 1, "chat_marks answered[10] has 1 recent answer") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  // P2 (R2): openers/opened/shares preserve SQL first-seen key order even when opposite to session activity order (keys = [s1, s2, s_pin2]).
+  let opened_raw = sql_db::stringify_json(readops_core::json_val_or_null(marks_full, "opened"))
+  match assert_true(
+    readops_core::str_has_prefix(opened_raw, "{\"s2\":") && readops_core::str_contains_sub(opened_raw, ",\"s1\":["),
+    "chat_marks opened preserves SQL ORDER BY created_at order [s2, s1] opposite to activity order [s1, s2]",
+  ) {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  let openers_raw = sql_db::stringify_json(readops_core::json_val_or_null(marks_full, "openers"))
+  match assert_true(
+    readops_core::str_has_prefix(openers_raw, "{\"s_pin2\":") && readops_core::str_contains_sub(openers_raw, ",\"s2\":{"),
+    "chat_marks openers preserves SQL first-seen order [s_pin2, s2] opposite to activity order [s1, s2, s_pin2]",
+  ) {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  let ask_shares_rev = base_codec::json_obj([
+    (
+      "args",
+      base_codec::json_obj([
+        ("viewer", viewer),
+        ("now", base_codec::json_num(now_ms)),
+        (
+          "scope",
+          base_codec::json_obj([
+            ("sessions", base_codec::json_arr([base_codec::json_str("s2"), base_codec::json_str("s1")])),
+            ("threads", base_codec::json_arr([base_codec::json_num(2.0)])),
+          ]),
+        ),
+      ]),
+    ),
+  ])
+  let marks_shares_rev = match chat_marks(db, client, data_dir, "/", ask_shares_rev) {
+    Ok(v) => v
+    Err(e) => return Err("chat_marks(shares rev) failed: " + readops_core::read_error_message(e))
+  }
+  let shares_rev_raw = sql_db::stringify_json(readops_core::json_val_or_null(marks_shares_rev, "shares"))
+  match assert_true(
+    readops_core::str_has_prefix(shares_rev_raw, "{\"s1\":") && readops_core::str_contains_sub(shares_rev_raw, ",\"s2\":{"),
+    "chat_marks shares preserves SQL return order [s1, s2] opposite to scope keys [s2, s1]",
+  ) {
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
@@ -848,7 +904,9 @@ fn run_all_checks(
     Ok(_) => ()
     Err(e) => return Err(e)
   }
-  // P1-2: open_jobs SAVEPOINT paths (naming_origin_probe for untitled chat s_un, latest_naming_origins for no-chat s_nochat)
+  // P1-2 (R2 discriminative >=9-row fixture):
+  // Add Slack threads 40..47 (8 threads, created_at < 1500, no thread_state) to s_un (total 10) and s_nochat (total 9)
+  // so HAS_NAMING_ORIGIN_POSSIBLE_SQL & LATEST_NAMING_ORIGIN_POSSIBLE_SQL (LIMIT 1 OFFSET 8) actually enter the SAVEPOINTs.
   let p12_stmts : Array[(String, Array[base_codec::Json])] = [
     ("INSERT INTO sessions(key, conv, ws, title, connect, scope, created_by, runtime, profile, profile_pinned, model, running, created_at, last_active_at) VALUES('s_un', 's_un', 'ws1', NULL, 'chat', 'thread', 'alice@example.com', 'claude', 'p1', 0, 'claude-opus', 0, 3000, 3000)", []),
     ("INSERT INTO sessions(key, conv, ws, title, connect, scope, created_by, runtime, profile, profile_pinned, model, running, created_at, last_active_at) VALUES('s_nochat', 's_nochat', 'ws1', NULL, 'slack-1', 'thread', 'alice@example.com', 'claude', 'p1', 0, 'claude-opus', 0, 3100, 3100)", []),
@@ -866,6 +924,34 @@ fn run_all_checks(
   for i in 0..<p12_stmts.length() {
     let (sql, params) = p12_stmts[i]
     match run_sql(db, sql, params) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  for tid in 40..<48 {
+    let created = (1400 + (tid - 40)).to_double()
+    let ts_str = "1400." + tid.to_string()
+    match run_sql(
+      db,
+      "INSERT INTO threads(id, surface, channel, thread_ts, title, created_by, created_at) VALUES(?, 'slack', 'C2', ?, NULL, 'U1', ?)",
+      [base_codec::json_num(tid.to_double()), base_codec::json_str(ts_str), base_codec::json_num(created)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match run_sql(
+      db,
+      "INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES(?, 's_un', 'slack-1', ?)",
+      [base_codec::json_num(tid.to_double()), base_codec::json_num(created)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match run_sql(
+      db,
+      "INSERT INTO thread_sessions(thread, session, connect, joined_at) VALUES(?, 's_nochat', 'slack-1', ?)",
+      [base_codec::json_num(tid.to_double()), base_codec::json_num(created)],
+    ) {
       Ok(_) => ()
       Err(e) => return Err(e)
     }
@@ -900,14 +986,28 @@ fn run_all_checks(
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
-  // P1-2: cc_index_meta version mismatch fallback inside naming_origin & latest_naming_origins SAVEPOINTs
+  // Discriminative proof 1: DELETE s_un's cc_session_rows -> naming_origin_probe prepared path returns Ok(false) (original would be Ok(true))
+  match run_sql(db, "DELETE FROM cc_session_rows WHERE session = 's_un'", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match naming_origin(db, "s_un", true) {
+    Ok(false) => passed = passed + 1
+    Ok(true) => return Err("naming_origin(prepared empty cc_session_rows) expected Ok(false), got Ok(true) (did not enter prepared path!)")
+    Err(e) => return Err("naming_origin(prepared empty) failed: " + readops_core::read_error_message(e))
+  }
+  match check_autocommit(db, "after naming_origin(prepared empty)") {
+    Ok(_) => passed = passed + 1
+    Err(e) => return Err(e)
+  }
+  // Discriminative proof 2: keep s_un's cc_session_rows deleted + version=2 -> "copy destination index version " prefix fallback returns Ok(true)
   match run_sql(db, "UPDATE cc_index_meta SET version = 2 WHERE id = 1", []) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
   match naming_origin(db, "s_un", true) {
     Ok(true) => passed = passed + 1
-    Ok(false) => return Err("naming_origin(version=2) expected Ok(true)")
+    Ok(false) => return Err("naming_origin(version=2) expected Ok(true) via fallback")
     Err(e) => return Err("naming_origin(version=2) failed: " + readops_core::read_error_message(e))
   }
   match check_autocommit(db, "after naming_origin(version=2)") {
@@ -929,6 +1029,28 @@ fn run_all_checks(
   }
   match run_sql(db, "UPDATE cc_index_meta SET version = 1 WHERE id = 1", []) {
     Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match run_sql(db, "INSERT INTO cc_session_rows(session, thread, surface, last_at, created_at) VALUES('s_un', 20, 'slack', 1501, 1500)", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // Discriminative proof 3: point s_nochat's cc_session_rows to thread 40 -> latest_naming_origins prepared path returns [40] (original would be [20])
+  match run_sql(db, "UPDATE cc_session_rows SET thread = 40 WHERE session = 's_nochat'", []) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match latest_naming_origins(db, ["s_nochat"]) {
+    Ok(xs) => {
+      match assert_true(xs.length() == 1 && readops_core::js_text(xs[0]) == "40", "latest_naming_origins(prepared) returns [40] (distinct from original [20])") {
+        Ok(_) => passed = passed + 1
+        Err(e) => return Err(e)
+      }
+    }
+    Err(e) => return Err("latest_naming_origins(prepared) failed: " + readops_core::read_error_message(e))
+  }
+  match check_autocommit(db, "after latest_naming_origins(prepared)") {
+    Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
 
@@ -1005,7 +1127,12 @@ fn run_all_checks(
     base_codec::Json::Arr(xs) => xs
     _ => return Err("session_list expected array")
   }
-  match assert_true(list_arr.length() == 2 && readops_core::js_text(readops_core::json_val_or_null(list_arr[0], "key")) == "s1", "session_list ws1 ordered [s1, s2]") {
+  match assert_true(
+    list_arr.length() == 2 &&
+    readops_core::js_text(readops_core::json_val_or_null(list_arr[0], "key")) == "s1" &&
+    readops_core::js_text(readops_core::json_val_or_null(list_arr[1], "key")) == "s2",
+    "session_list ws1 ordered [s1, s2]",
+  ) {
     Ok(_) => passed = passed + 1
     Err(e) => return Err(e)
   }
