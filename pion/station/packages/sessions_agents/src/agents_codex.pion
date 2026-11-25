@@ -1,0 +1,587 @@
+// Codex app-server output reader (1:1 port of `station/mb/src/reader/agents_codex.mbt`).
+//
+// Uses lossless injective UTF-16 key encoding (`u16_key`) for all thread identity maps
+// (`threads`, `orphans`, `pending`, `groups`, `replays`) so lone surrogates never collide,
+// and always serializes raw `Array[Int]` UTF-16 code units in insertion order.
+
+import "js_json"
+import "live_wire"
+import "parse_codex"
+
+struct CodexThread {
+  key : String
+  id_u16 : Array[Int]
+  live : parse_codex::Live
+  mut routed : Bool
+}
+
+struct Codex {
+  threads : Map[String, CodexThread]
+  thread_order : Array[String]
+  /// Notifications held for threads not yet claimed (`orphans`), keyed by `u16_key`.
+  mut orphans : Option[Map[String, Array[(Bytes, Int64, Int64)]]]
+  /// Coalesced deltas per thread (`DELTAS_MS`), insertion-ordered by `u16_key`.
+  pending : OrderedGroups
+}
+
+fn Codex::new() -> Codex {
+  Codex::{
+    threads: Map::new(),
+    thread_order: [],
+    orphans: None,
+    pending: OrderedGroups::new(),
+  }
+}
+
+/// Each thread's live steps as they stand (`freeze`), in deterministic insertion order.
+fn Codex::states(self : Codex) -> js_json::JValue {
+  let entries : Array[(Array[Int], js_json::JValue)] = []
+  for i in 0..<self.thread_order.length() {
+    let k = self.thread_order[i]
+    match self.threads.get(k) {
+      Some(t) => entries.push((t.id_u16, t.live.state()))
+      None => ()
+    }
+  }
+  js_json::JValue::Obj(entries)
+}
+
+/// Maximum buffered orphan notifications per unclaimed thread (`agents_codex.mbt:52`).
+let ORPHANS_MOST : Int = 10000
+
+/// Prefix of `turn/diff/updated` lines dropped before JSON parsing (`agents_codex.mbt:57`).
+let DIFF_PREFIX : String = "{\"method\":\"turn/diff/updated\""
+
+enum CodexLine {
+  Node
+  Drop
+  Notice(String, js_json::JValue, String, Array[Int])
+}
+
+fn has_bytes_prefix(line : Bytes, prefix : Bytes) -> Bool {
+  let plen = prefix.length()
+  if line.length() < plen {
+    return false
+  }
+  for i in 0..<plen {
+    if line[i] != prefix[i] {
+      return false
+    }
+  }
+  true
+}
+
+fn is_json_integer(d : Double) -> Bool {
+  js_json::is_integer(d)
+}
+
+/// Classify a Codex app-server output line (`agents_codex.mbt:72-91`).
+fn codex_line(line : Bytes) -> CodexLine {
+  let v = match js_json::parse(decode_utf8_lossy_bytes(line)) {
+    Ok(parsed) => parsed
+    Err(_) => return CodexLine::Node
+  }
+  let id = v.get("id")
+  let method = match v.get("method") {
+    Some(js_json::JValue::Str(u)) => js_json::sanitize_str(u)
+    _ => {
+      return match id {
+        Some(js_json::JValue::Num(d)) => {
+          if is_json_integer(d) {
+            CodexLine::Node
+          } else {
+            CodexLine::Drop
+          }
+        }
+        _ => CodexLine::Drop
+      }
+    }
+  }
+  match id {
+    Some(js_json::JValue::Null) => ()
+    Some(_) => return CodexLine::Node
+    None => ()
+  }
+  let params = match v.get("params") {
+    Some(p) => p
+    None => js_json::JValue::Null
+  }
+  let (thread_key, thread_u16) = match params.get("threadId") {
+    Some(js_json::JValue::Str(u)) => (u16_key(u), u)
+    _ => return CodexLine::Drop
+  }
+  if method == "error" && !jval_is_true(params, "willRetry") {
+    return CodexLine::Node
+  }
+  CodexLine::Notice(method, params, thread_key, thread_u16)
+}
+
+fn codex_events(
+  t : CodexThread,
+  method : String,
+  params : js_json::JValue,
+  at : Option[(Int64, Int64)],
+  fmt_num : (Double) -> String,
+) -> Array[js_json::JValue] {
+  let events = parse_codex::events_with(t.live, method, params, fmt_num)
+  let (from, to) = match at {
+    Some(pair) => pair
+    None => return events
+  }
+  let out : Array[js_json::JValue] = []
+  for i in 0..<events.length() {
+    let e = events[i]
+    match e {
+      js_json::JValue::Obj(fields) => {
+        if live_wire::is_str(e.get("type"), "turnStarted") ||
+        live_wire::is_str(e.get("type"), "turnEnded") {
+          let next : Array[(Array[Int], js_json::JValue)] = []
+          for j in 0..<fields.length() {
+            next.push(fields[j])
+          }
+          next.push((js_json::utf16_units("from"), js_json::JValue::Num(from.to_double())))
+          next.push((js_json::utf16_units("to"), js_json::JValue::Num(to.to_double())))
+          out.push(js_json::JValue::Obj(next))
+        } else {
+          out.push(e)
+        }
+      }
+      _ => out.push(e)
+    }
+  }
+  out
+}
+
+fn strip_cr_bytes(line : Bytes) -> Bytes {
+  let n = line.length()
+  if n > 0 && (line[n - 1].to_int() & 0xFF) == 13 {
+    copy_bytes_slice(line, 0, n - 1)
+  } else {
+    line
+  }
+}
+
+fn all_groups_deltas(groups : OrderedGroups) -> Bool {
+  for i in 0..<groups.order.length() {
+    match groups.get(groups.order[i]) {
+      Some(events) => {
+        if !all_deltas(events) {
+          return false
+        }
+      }
+      None => ()
+    }
+  }
+  true
+}
+
+fn AgentsState::codex_heard(self : AgentsState, h : Hosted, lines : Array[(Bytes, Int64)]) -> Unit {
+  let c = h.codex
+  let (_, end) = lines[lines.length() - 1]
+  let node : Array[(Bytes, Int64, Int64)] = []
+  let marks : Array[js_json::JValue] = []
+  let fresh = OrderedGroups::new()
+  let diff_bytes = DIFF_PREFIX.to_bytes()
+  for i in 0..<lines.length() {
+    let (raw_line, line_end) = lines[i]
+    let line = strip_cr_bytes(raw_line)
+    let from = line_end - (raw_line.length() + 1).to_int64()
+    if has_bytes_prefix(line, diff_bytes) {
+      continue
+    }
+    match codex_line(line) {
+      CodexLine::Node => node.push((line, from, line_end))
+      CodexLine::Drop => ()
+      CodexLine::Notice(method, params, key, thread_u16) => {
+        match c.threads.get(key) {
+          Some(t) => {
+            let events = codex_events(t, method, params, Some((from, line_end)), self.fmt_num)
+            if events.length() > 0 {
+              match fresh.get(key) {
+                Some(all) => {
+                  for j in 0..<events.length() {
+                    all.push(events[j])
+                  }
+                }
+                None => fresh.set(key, events)
+              }
+            }
+          }
+          None => {
+            if method == "turn/started" || method == "turn/completed" {
+              marks.push(
+                js_json::JValue::Arr([
+                  live_wire::jstr_u16(thread_u16),
+                  js_json::JValue::Num(if method == "turn/started" { 1.0 } else { 0.0 }),
+                  js_json::JValue::Num(from.to_double()),
+                  js_json::JValue::Num(line_end.to_double()),
+                ]),
+              )
+            }
+            match c.orphans {
+              Some(o) => {
+                match o.get(key) {
+                  Some(held) => {
+                    if held.length() < ORPHANS_MOST {
+                      held.push((line, from, line_end))
+                    }
+                  }
+                  None => o.set(key, [(line, from, line_end)])
+                }
+              }
+              None => ()
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if node.length() == 0 && marks.length() == 0 && fresh.length() == 0 {
+    if c.pending.length() > 0 {
+      h.pending_to = end
+      h.told = end
+      return
+    }
+    if h.told <= h.acked_out {
+      h.acked_out = end
+      h.acked_to = end
+      h.told = end
+      h.told_out = end
+      self.ack(h)
+      return
+    }
+  } else if node.length() == 0 && marks.length() == 0 && all_groups_deltas(fresh) {
+    for i in 0..<fresh.order.length() {
+      let k = fresh.order[i]
+      match fresh.get(k) {
+        Some(events) => {
+          match c.pending.get(k) {
+            Some(held) => merge_into(held, events)
+            None => {
+              let held : Array[js_json::JValue] = []
+              merge_into(held, events)
+              c.pending.set(k, held)
+            }
+          }
+          h.pending_units = h.pending_units + units_of(events)
+        }
+        None => ()
+      }
+    }
+    h.pending_to = end
+    h.told = end
+    if h.pending_units >= DELTAS_MOST {
+      self.codex_flush(h)
+    } else {
+      self.soon(h)
+    }
+    return
+  }
+
+  let groups = self.held_out(h)
+  for i in 0..<fresh.order.length() {
+    let k = fresh.order[i]
+    match fresh.get(k) {
+      Some(events) => {
+        match groups.get(k) {
+          Some(held) => merge_into(held, events)
+          None => {
+            let all : Array[js_json::JValue] = []
+            merge_into(all, events)
+            groups.set(k, all)
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  h.told = end
+  self.codex_tell(h, end, node, marks, groups)
+}
+
+fn AgentsState::held_out(self : AgentsState, h : Hosted) -> OrderedGroups {
+  let _ = self
+  let groups = OrderedGroups::new()
+  for i in 0..<h.codex.pending.order.length() {
+    let k = h.codex.pending.order[i]
+    match h.codex.pending.get(k) {
+      Some(events) => groups.set(k, events)
+      None => ()
+    }
+  }
+  h.codex.pending.clear()
+  h.pending_units = 0
+  groups
+}
+
+fn AgentsState::codex_flush(self : AgentsState, h : Hosted) -> Unit {
+  if h.codex.pending.length() == 0 || h.left {
+    return
+  }
+  let groups = self.held_out(h)
+  self.codex_tell(h, h.pending_to, [], [], groups)
+}
+
+/// Codex frame (`agents_codex.mbt:239-277`):
+/// Always writes `at`, `bytes`, `marks`, `threads` (when `node` is empty, `"at":[],"bytes":0`
+/// and 0 body bytes).
+fn AgentsState::codex_tell(
+  self : AgentsState,
+  h : Hosted,
+  to : Int64,
+  node : Array[(Bytes, Int64, Int64)],
+  marks : Array[js_json::JValue],
+  groups : OrderedGroups,
+) -> Unit {
+  let body_parts : Array[Bytes] = []
+  let at_sb = StringBuilder::new()
+  for i in 0..<node.length() {
+    let (lbytes, lfrom, lto) = node[i]
+    if i > 0 {
+      at_sb.write_string(",")
+    }
+    at_sb.write_string("[")
+    at_sb.write_string(lfrom.to_string())
+    at_sb.write_string(",")
+    at_sb.write_string(lto.to_string())
+    at_sb.write_string(",")
+    at_sb.write_string(lbytes.length().to_string())
+    at_sb.write_string("]")
+    body_parts.push(lbytes)
+  }
+  let threads : Array[js_json::JValue] = []
+  for i in 0..<groups.order.length() {
+    let k = groups.order[i]
+    match (h.codex.threads.get(k), groups.get(k)) {
+      (Some(t), Some(events)) => {
+        if events.length() == 0 {
+          continue
+        }
+        let fields : Array[(String, js_json::JValue)] = [
+          ("thread", live_wire::jstr_u16(t.id_u16)),
+          ("events", js_json::JValue::Arr(events)),
+          ("live", t.live.state()),
+        ]
+        if t.routed {
+          let b = self.keep_batch(h, events, to, Some(k))
+          fields.push(("batch", js_json::JValue::Num(b.to_double())))
+        }
+        threads.push(live_wire::obj(fields))
+      }
+      _ => ()
+    }
+  }
+  h.told_out = to
+  let body = concat_bytes(body_parts)
+  let line = StringBuilder::new()
+  line.write_string("{\"lines\":")
+  line.write_string(h.n.to_string())
+  line.write_string(",\"to\":")
+  line.write_string(to.to_string())
+  line.write_string(",\"at\":[")
+  line.write_string(at_sb.to_string())
+  line.write_string("],\"bytes\":")
+  line.write_string(body.length().to_string())
+  line.write_string(",\"marks\":")
+  js_json::write_utf8_with_num(line, js_json::JValue::Arr(marks), self.fmt_num)
+  line.write_string(",\"threads\":")
+  js_json::write_utf8_with_num(line, js_json::JValue::Arr(threads), self.fmt_num)
+  line.write_string("}")
+  self.host.say_bytes(line.to_string().to_bytes())
+  if body.length() > 0 {
+    self.host.out(body)
+  }
+}
+
+fn AgentsState::add_thread(
+  self : AgentsState,
+  h : Hosted,
+  thread_key : String,
+  thread_u16 : Array[Int],
+  state : Option[js_json::JValue],
+  routed : Bool,
+) -> Unit {
+  let live = match state {
+    Some(js_json::JValue::Null) => parse_codex::Live::new()
+    None => parse_codex::Live::new()
+    Some(s) => parse_codex::Live::of_state(s)
+  }
+  let t = CodexThread::{ key: thread_key, id_u16: thread_u16, live: live, routed: routed }
+  match h.codex.threads.get(thread_key) {
+    None => h.codex.thread_order.push(thread_key)
+    Some(_) => ()
+  }
+  h.codex.threads.set(thread_key, t)
+  let held = match h.codex.orphans {
+    Some(o) => {
+      match o.get(thread_key) {
+        Some(list) => {
+          let _ = o.remove(thread_key)
+          list
+        }
+        None => return
+      }
+    }
+    None => return
+  }
+  let events : Array[js_json::JValue] = []
+  for i in 0..<held.length() {
+    let (lbytes, _, _) = held[i]
+    match codex_line(lbytes) {
+      CodexLine::Notice(method, params, _, _) => {
+        let evs = codex_events(t, method, params, None, self.fmt_num)
+        for j in 0..<evs.length() {
+          events.push(evs[j])
+        }
+      }
+      _ => ()
+    }
+  }
+  if events.length() == 0 {
+    return
+  }
+  let groups = self.held_out(h)
+  match groups.get(thread_key) {
+    Some(all) => merge_into(all, events)
+    None => {
+      let all : Array[js_json::JValue] = []
+      merge_into(all, events)
+      groups.set(thread_key, all)
+    }
+  }
+  self.codex_tell(h, h.told, [], [], groups)
+}
+
+fn AgentsState::drop_thread(self : AgentsState, h : Hosted, thread_key : String) -> Unit {
+  self.route_thread(h, thread_key, false)
+  let _ = h.codex.threads.remove(thread_key)
+  remove_str_first(h.codex.thread_order, thread_key)
+  h.codex.pending.remove(thread_key)
+}
+
+fn AgentsState::route_thread(self : AgentsState, h : Hosted, thread_key : String, on : Bool) -> Unit {
+  match h.codex.threads.get(thread_key) {
+    Some(t) => t.routed = on
+    None => ()
+  }
+  if !on {
+    let inst = h.instance_id
+    self.partition_session_batches(h.n, fn(b : PublishedBatch) -> Bool {
+      if b.instance_id != inst {
+        return false
+      }
+      match b.thread_key {
+        Some(th) => th == thread_key
+        None => false
+      }
+    })
+    self.advance_ack(h)
+  }
+}
+
+fn AgentsState::orphans_off(self : AgentsState, h : Hosted) -> Unit {
+  let o = match h.codex.orphans {
+    Some(m) => m
+    None => return
+  }
+  h.codex.orphans = None
+  let keys = o.keys()
+  let mut dropped = 0
+  for i in 0..<keys.length() {
+    match o.get(keys[i]) {
+      Some(held) => dropped = dropped + held.length()
+      None => ()
+    }
+  }
+  if dropped > 0 {
+    self.host.note(
+      "agents::codex: notifications for threads nobody took up, dropped: " +
+      o.length().to_string() +
+      " threads, " +
+      dropped.to_string() +
+      " notifications",
+    )
+  }
+}
+
+fn AgentsState::replay(self : AgentsState, id : Int, notices : Array[js_json::JValue]) -> Unit {
+  let st = match self.replays.get(id) {
+    Some(existing) => existing
+    None => {
+      let created = CodexReplayState::{ order: [], keys_u16: Map::new(), threads: Map::new() }
+      self.replays.set(id, created)
+      self.replay_order.push(id)
+      created
+    }
+  }
+  for i in 0..<notices.length() {
+    match notices[i] {
+      js_json::JValue::Arr(parts) => {
+        if parts.length() < 2 {
+          continue
+        }
+        let method = match parts[0] {
+          js_json::JValue::Str(u) => js_json::sanitize_str(u)
+          _ => continue
+        }
+        let (thread_key, thread_u16) = match parts[1] {
+          js_json::JValue::Str(u) => (u16_key(u), u)
+          _ => continue
+        }
+        let params : Array[(String, js_json::JValue)] = [
+          ("threadId", live_wire::jstr_u16(thread_u16)),
+        ]
+        if parts.length() >= 4 {
+          let item : Array[(String, js_json::JValue)] = []
+          match parts[2] {
+            js_json::JValue::Str(s) => item.push(("type", live_wire::jstr_u16(s)))
+            js_json::JValue::Num(d) => item.push(("type", js_json::JValue::Num(d)))
+            _ => ()
+          }
+          match parts[3] {
+            js_json::JValue::Str(s) => item.push(("id", live_wire::jstr_u16(s)))
+            js_json::JValue::Num(d) => item.push(("id", js_json::JValue::Num(d)))
+            _ => ()
+          }
+          params.push(("item", live_wire::obj(item)))
+        }
+        let live = match st.threads.get(thread_key) {
+          Some(l) => l
+          None => {
+            let l = parse_codex::Live::new()
+            st.order.push(thread_key)
+            st.keys_u16.set(thread_key, thread_u16)
+            st.threads.set(thread_key, l)
+            l
+          }
+        }
+        let _ = live.feed_with(method, live_wire::obj(params), self.fmt_num)
+      }
+      _ => ()
+    }
+  }
+}
+
+fn AgentsState::replayed(self : AgentsState, id : Int) -> Unit {
+  let entries : Array[(Array[Int], js_json::JValue)] = []
+  match self.replays.get(id) {
+    Some(st) => {
+      for i in 0..<st.order.length() {
+        let k = st.order[i]
+        match (st.keys_u16.get(k), st.threads.get(k)) {
+          (Some(raw_u16), Some(live)) => entries.push((raw_u16, live.state()))
+          _ => ()
+        }
+      }
+    }
+    None => ()
+  }
+  let _ = self.replays.remove(id)
+  remove_int_first(self.replay_order, id)
+  let out = live_wire::obj([
+    ("replayed", js_json::JValue::Num(id.to_double())),
+    ("live", js_json::JValue::Obj(entries)),
+  ])
+  self.host.say(js_json::stringify_with_num(out, self.fmt_num))
+}

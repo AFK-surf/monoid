@@ -1,0 +1,2245 @@
+// Process-scoped agent runner reader (1:1 port of `station/mb/src/reader/agents.mbt`).
+//
+// Strict acyclic ownership DAG (zero open-lifetime or closed-lifetime RC cycles):
+//   Agents (outer owner: `state` + fiber tables; NEVER captured by any fiber/callback)
+//     ├──► AgentsState (inner state: active `Hosted`s, detached `PublishedBatch`es,
+//     │                 pure-value `pending_deltas`, Codex `replays`; ZERO `Fiber` handles)
+//     └──► Fibers (`attach`, `writer`, `delta`, `ownReplay`) ──► AgentsState / leaf host only
+//
+// Invariants:
+// - Zero blocking `shell_sync` (`OutItem::Interrupt` flows in strict FIFO order through the
+//   single writer fiber so `done`/`detach`/writes can never overtake an interrupt).
+// - Detached `PublishedBatch` table survives same-`n` re-attach (isolated by `instance_id`)
+//   and lets abnormally closed `Hosted` instances (queues, parser state, `held`, `stderr`,
+//   `live`) drop and reclaim immediately on EOF.
+// - `DELTAS_MS = 200` timers use unified in-process `DeltaTimers` keyed by `instance_id`
+//   (at most 1 entry per active connection) with pure-value `(session_n, instance_id, epoch)`
+//   tokens, preserving existing deadlines across `flush`/`freeze`/`thaw` (cancelled on exit).
+// - `Agents::close()` interrupts all active `attach`/`writer`/`delta`/`ownReplay` fibers,
+//   clears all tables, and emits zero fake `ownReplayed`/`replayed` success frames.
+
+import "base64"
+import "base_codec"
+import "builders_core"
+import "effect"
+import "js_json"
+import "jscase"
+import "live_wire"
+import "parse_claude"
+import "parse_codex"
+import "pieces"
+import "sessions_core"
+
+/// Maximum UTF-16 code units of delta text held before immediate flush (`agents.mbt:677`).
+pub let DELTAS_MOST : Int = 65536
+
+/// How long step deltas are coalesced before telling Node (`agents.mbt:694`).
+pub let DELTAS_MS : Int = 200
+
+/// Ordered outbound item for a runner's single FIFO writer fiber.
+enum OutItem {
+  Raw(Bytes)
+  Interrupt
+  End
+}
+
+/// Detached published batch kept independently of active `Hosted` lifetime.
+struct PublishedBatch {
+  batch_id : Int
+  session_n : Int
+  instance_id : Int
+  events : Array[js_json::JValue]
+  to : Int64
+  before : Int64
+  thread_key : Option[String]
+}
+
+/// Pure-value descriptor for a pending `DELTAS_MS = 200` flush timer.
+struct PendingDeltaTimer {
+  session_n : Int
+  instance_id : Int
+  epoch : Int
+}
+
+/// Ordered `(String, Array[js_json::JValue])` map preserving exact insertion order.
+struct OrderedGroups {
+  order : Array[String]
+  items : Map[String, Array[js_json::JValue]]
+}
+
+fn OrderedGroups::new() -> OrderedGroups {
+  OrderedGroups::{ order: [], items: Map::new() }
+}
+
+fn OrderedGroups::length(self : OrderedGroups) -> Int {
+  self.order.length()
+}
+
+fn OrderedGroups::get(self : OrderedGroups, k : String) -> Option[Array[js_json::JValue]] {
+  self.items.get(k)
+}
+
+fn OrderedGroups::set(self : OrderedGroups, k : String, v : Array[js_json::JValue]) -> Unit {
+  match self.items.get(k) {
+    None => self.order.push(k)
+    Some(_) => ()
+  }
+  self.items.set(k, v)
+}
+
+fn OrderedGroups::remove(self : OrderedGroups, k : String) -> Unit {
+  match self.items.get(k) {
+    Some(_) => {
+      let _ = self.items.remove(k)
+      remove_str_first(self.order, k)
+    }
+    None => ()
+  }
+}
+
+fn OrderedGroups::clear(self : OrderedGroups) -> Unit {
+  self.order.clear()
+  self.items.clear()
+}
+
+struct Hosted {
+  n : Int
+  instance_id : Int
+  mut conn : base_codec::Json
+  /// Written to the runner in strict FIFO order (`Interrupt` resolves `crypto.random` in order;
+  /// `End` closes the write half after draining).
+  outq : effect::Queue[OutItem]
+  turn : parse_claude::Turn
+  live : parse_claude::Live
+  calls : Array[Array[Int]]
+  /// Partial line buffers for stdout/stderr.
+  out_part : pieces::Pieces
+  err_part : pieces::Pieces
+  /// Start byte offset of next line on each stream (`-1` until first chunk).
+  mut out_at : Int64
+  mut err_at : Int64
+  mut acked_out : Int64
+  /// Up to where Node took what it was told; runner is acked once no earlier batch waits.
+  mut acked_to : Int64
+  /// End offset of last frame told Node (where the next batch begins).
+  mut told_out : Int64
+  mut acked_err : Int64
+  /// End offset of last stdout line processed.
+  mut told : Int64
+  /// `"claude"`, `"codex"`, `"dsh"`, `"cursor"`, `"acp"`, or `"pi"`.
+  kind : String
+  codex : Codex
+  mut own : Option[Own]
+  mut keep : Option[Int64]
+  /// Lines held while frozen, each `(line_bytes, end_offset)`.
+  held : Array[(Bytes, Int64)]
+  mut frozen : Bool
+  /// Coalesced step deltas awaiting `DELTAS_MS` or non-delta event.
+  mut pending : Array[js_json::JValue]
+  mut pending_to : Int64
+  mut pending_units : Int
+  /// Value-only timer state (zero `Fiber` stored on `Hosted`).
+  mut later : Bool
+  mut deltas_epoch : Int
+  mut delta_timer_token : Option[Int]
+  mut left : Bool
+  mut exited : Bool
+  /// Read loop has exited and `tcp.close` is in flight (no new delta timers may be armed).
+  mut closing : Bool
+  /// Replaced by a newer `attach` for the same `n` or torn down by `Agents::close`.
+  mut retired : Bool
+  /// Last 3 stderr lines as raw UTF-16 code units (preserving lone surrogates at 300-unit clip).
+  stderr : Array[Array[Int]]
+  mut routed : Bool
+}
+
+struct CodexReplayState {
+  order : Array[String]
+  keys_u16 : Map[String, Array[Int]]
+  threads : Map[String, parse_codex::Live]
+}
+
+/// Inner state captured by fibers; holds ZERO `Fiber` handles and ZERO reference to `Agents`.
+struct AgentsState {
+  host : sessions_core::SessionHost
+  fmt_num : (Double) -> String
+  /// Active connections ONLY (removed immediately upon EOF/error/close/left/ended).
+  sessions : Map[Int, Hosted]
+  session_order : Array[Int]
+  /// Detached published batches surviving close and same-`n` replacement.
+  batches : Map[Int, PublishedBatch]
+  session_batches : Map[Int, Array[Int]]
+  /// Pure-value pending `DELTAS_MS = 200` timers keyed by monotonic `timer_token`.
+  pending_deltas : Map[Int, PendingDeltaTimer]
+  /// Newly queued delta timer tokens waiting for outer `Agents` / `attach_k` to arm.
+  delta_arm_queue : Array[(Int, Int)]
+  /// Completed fiber tokens queued for lazy cleanup by outer `Agents` / `DeltaTimers`.
+  finished_attach : Array[Int]
+  finished_deltas : Array[(Int, Int)]
+  finished_replays : Array[Int]
+  /// Wall clock anchor from Node `{"wall": ...}` and monotonic host timestamp then.
+  mut wall : Double
+  mut at : Int64
+  mut next_batch : Int
+  mut next_instance : Int
+  mut next_timer_token : Int
+  mut next_replay_token : Int
+  /// Codex crash replays (`codexReplay` / `codexReplayed`) with deterministic order.
+  replays : Map[Int, CodexReplayState]
+  replay_order : Array[Int]
+}
+
+/// Unified per-instance `DELTAS_MS = 200` timer table (at most 1 entry per active connection).
+/// Never captured by `sleep_k` callbacks (only `(AgentsState, inst_id, tok)` are captured),
+/// forming a strict acyclic DAG: `Agents -> attach_fibers -> DeltaTimers -> timer_fibers -> AgentsState`.
+struct DeltaTimers {
+  by_inst : Map[Int, (Int, effect::Fiber[Unit])]
+}
+
+fn DeltaTimers::new() -> DeltaTimers {
+  DeltaTimers::{ by_inst: Map::new() }
+}
+
+fn DeltaTimers::sweep(self : DeltaTimers, st : AgentsState) -> Unit {
+  for i in 0..<st.finished_deltas.length() {
+    let (inst, tok) = st.finished_deltas[i]
+    match self.by_inst.get(inst) {
+      Some((cur_tok, _)) => {
+        if cur_tok == tok {
+          let _ = self.by_inst.remove(inst)
+        }
+      }
+      None => ()
+    }
+  }
+  st.finished_deltas.clear()
+}
+
+fn DeltaTimers::arm_queued(self : DeltaTimers, st : AgentsState) -> Unit {
+  self.sweep(st)
+  if st.delta_arm_queue.length() == 0 {
+    return
+  }
+  let queued : Array[(Int, Int)] = []
+  for i in 0..<st.delta_arm_queue.length() {
+    queued.push(st.delta_arm_queue[i])
+  }
+  st.delta_arm_queue.clear()
+  let host = st.host
+  for i in 0..<queued.length() {
+    let (tok, inst) = queued[i]
+    match self.by_inst.get(inst) {
+      Some((_, prev_f)) => {
+        let _ = self.by_inst.remove(inst)
+        prev_f.interrupt()
+      }
+      None => ()
+    }
+    // Captures ONLY `(st, inst, tok)` — NEVER `Agents` or `DeltaTimers`.
+    let f = host.rt.fork_daemon(
+      "agent deltas",
+      fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+        effect::sleep_k(DELTAS_MS, fn(ex : effect::Exit[Unit]) -> Unit {
+          st.finished_deltas.push((inst, tok))
+          match ex {
+            effect::Exit::Succeeded(_) => {
+              st.fire_delta_timer(tok)
+              k(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Failed(e) => {
+              st.clear_delta_timer_on_abort(tok)
+              k(effect::Exit::Failed(e))
+            }
+            effect::Exit::Interrupted => {
+              st.clear_delta_timer_on_abort(tok)
+              k(effect::Exit::Interrupted)
+            }
+          }
+        })
+      },
+      fn(e : effect::EffectError) -> Unit {
+        st.finished_deltas.push((inst, tok))
+        host.note("agent deltas failed: " + effect::effect_error_to_string(e))
+      },
+    )
+    self.by_inst.set(inst, (tok, f))
+  }
+}
+
+fn DeltaTimers::cancel(self : DeltaTimers, st : AgentsState, h : Hosted) -> Unit {
+  self.sweep(st)
+  let _ = st.invalidate_delta_timer(h)
+  match self.by_inst.get(h.instance_id) {
+    Some((_, f)) => {
+      let _ = self.by_inst.remove(h.instance_id)
+      f.interrupt()
+    }
+    None => ()
+  }
+}
+
+fn DeltaTimers::cancel_all(self : DeltaTimers, st : AgentsState) -> Unit {
+  self.sweep(st)
+  let keys = self.by_inst.keys()
+  for i in 0..<keys.length() {
+    match self.by_inst.get(keys[i]) {
+      Some((_, f)) => f.interrupt()
+      None => ()
+    }
+  }
+  self.by_inst.clear()
+  st.pending_deltas.clear()
+  st.delta_arm_queue.clear()
+  st.finished_deltas.clear()
+}
+
+/// Outer process-scoped owner (NEVER captured by any fiber or callback closure).
+pub struct Agents {
+  state : AgentsState
+  attach_fibers : Map[Int, effect::Fiber[Unit]]
+  deltas : DeltaTimers
+  replay_fibers : Map[Int, effect::Fiber[Unit]]
+}
+
+pub fn Agents::new(host : sessions_core::SessionHost) -> Agents {
+  Agents::new_with(host, js_json::num_text)
+}
+
+pub fn Agents::new_with(
+  host : sessions_core::SessionHost,
+  fmt_num : (Double) -> String,
+) -> Agents {
+  let st = AgentsState::{
+    host: host,
+    fmt_num: fmt_num,
+    sessions: Map::new(),
+    session_order: [],
+    batches: Map::new(),
+    session_batches: Map::new(),
+    pending_deltas: Map::new(),
+    delta_arm_queue: [],
+    finished_attach: [],
+    finished_deltas: [],
+    finished_replays: [],
+    wall: 0.0,
+    at: (host.transport.now_ms)(),
+    next_batch: 0,
+    next_instance: 0,
+    next_timer_token: 0,
+    next_replay_token: 0,
+    replays: Map::new(),
+    replay_order: [],
+  }
+  Agents::{
+    state: st,
+    attach_fibers: Map::new(),
+    deltas: DeltaTimers::new(),
+    replay_fibers: Map::new(),
+  }
+}
+
+pub fn Agents::now(self : Agents) -> Double {
+  self.state.now()
+}
+
+pub fn Agents::session_count(self : Agents) -> Int {
+  self.state.sessions.length()
+}
+
+pub fn Agents::pending_batch_count(self : Agents) -> Int {
+  self.state.batches.length()
+}
+
+pub fn Agents::replay_count(self : Agents) -> Int {
+  self.state.replays.length()
+}
+
+pub fn Agents::delta_timer_count(self : Agents) -> Int {
+  self.deltas.sweep(self.state)
+  self.deltas.by_inst.length()
+}
+
+pub fn Agents::take(self : Agents, n : Int, k : Int) -> Option[(Array[js_json::JValue], Int64)] {
+  self.sweep_finished_fibers()
+  self.state.take(n, k)
+}
+
+/// Tear down all active sessions, in-flight `ownReplay` fibers, delta timers, and pending replays.
+/// Emits ZERO fake `ownReplayed`/`replayed` success frames.
+pub fn Agents::close(self : Agents) -> Unit {
+  self.sweep_finished_fibers()
+  let st = self.state
+  let order_copy : Array[Int] = []
+  for i in 0..<st.session_order.length() {
+    order_copy.push(st.session_order[i])
+  }
+  for i in 0..<order_copy.length() {
+    match st.sessions.get(order_copy[i]) {
+      Some(h) => self.retire_hosted(h)
+      None => ()
+    }
+  }
+  let a_keys = self.attach_fibers.keys()
+  for i in 0..<a_keys.length() {
+    match self.attach_fibers.get(a_keys[i]) {
+      Some(f) => f.interrupt()
+      None => ()
+    }
+  }
+  self.attach_fibers.clear()
+  self.deltas.cancel_all(st)
+  let r_keys = self.replay_fibers.keys()
+  for i in 0..<r_keys.length() {
+    match self.replay_fibers.get(r_keys[i]) {
+      Some(f) => f.interrupt()
+      None => ()
+    }
+  }
+  self.replay_fibers.clear()
+  st.host.drain_cancelled_waiters()
+
+  st.sessions.clear()
+  st.session_order.clear()
+  st.batches.clear()
+  st.session_batches.clear()
+  st.finished_attach.clear()
+  st.finished_replays.clear()
+  st.replays.clear()
+  st.replay_order.clear()
+}
+
+fn Agents::sweep_finished_fibers(self : Agents) -> Unit {
+  let st = self.state
+  for i in 0..<st.finished_attach.length() {
+    let _ = self.attach_fibers.remove(st.finished_attach[i])
+  }
+  st.finished_attach.clear()
+  self.deltas.sweep(st)
+  for i in 0..<st.finished_replays.length() {
+    let _ = self.replay_fibers.remove(st.finished_replays[i])
+  }
+  st.finished_replays.clear()
+}
+
+fn Agents::cancel_deltas_timer(self : Agents, h : Hosted) -> Unit {
+  self.deltas.cancel(self.state, h)
+}
+
+fn Agents::retire_hosted(self : Agents, h : Hosted) -> Unit {
+  h.retired = true
+  self.deltas.cancel(self.state, h)
+  h.outq.shutdown()
+  match self.attach_fibers.get(h.instance_id) {
+    Some(f) => {
+      let _ = self.attach_fibers.remove(h.instance_id)
+      f.interrupt()
+    }
+    None => ()
+  }
+  self.state.host.drain_cancelled_waiters()
+}
+
+fn Agents::put_session(self : Agents, h : Hosted) -> Unit {
+  let st = self.state
+  match st.sessions.get(h.n) {
+    Some(prev) => {
+      // Retire old active connection ONLY; detached `st.batches` are preserved for `take()`.
+      self.retire_hosted(prev)
+    }
+    None => st.session_order.push(h.n)
+  }
+  st.sessions.set(h.n, h)
+}
+
+fn Agents::drain_delta_arms(self : Agents) -> Unit {
+  self.deltas.arm_queued(self.state)
+}
+
+// ── AgentsState core helpers ──
+
+fn AgentsState::now(self : AgentsState) -> Double {
+  self.wall + ((self.host.transport.now_ms)() - self.at).to_double()
+}
+
+fn AgentsState::is_current(self : AgentsState, h : Hosted) -> Bool {
+  if h.retired {
+    return false
+  }
+  match self.sessions.get(h.n) {
+    Some(cur) => cur.instance_id == h.instance_id
+    None => false
+  }
+}
+
+fn AgentsState::remove_session_if_same(self : AgentsState, h : Hosted) -> Unit {
+  match self.sessions.get(h.n) {
+    Some(cur) => {
+      if cur.instance_id == h.instance_id {
+        let _ = self.sessions.remove(h.n)
+        remove_int_first(self.session_order, h.n)
+      }
+    }
+    None => ()
+  }
+}
+
+fn AgentsState::invalidate_delta_timer(self : AgentsState, h : Hosted) -> Option[Int] {
+  h.deltas_epoch = h.deltas_epoch + 1
+  h.later = false
+  let tok_opt = h.delta_timer_token
+  h.delta_timer_token = None
+  match tok_opt {
+    Some(tok) => {
+      let _ = self.pending_deltas.remove(tok)
+    }
+    None => ()
+  }
+  tok_opt
+}
+
+fn AgentsState::fire_delta_timer(self : AgentsState, tok : Int) -> Unit {
+  let entry = match self.pending_deltas.get(tok) {
+    Some(e) => {
+      let _ = self.pending_deltas.remove(tok)
+      e
+    }
+    None => return
+  }
+  match self.sessions.get(entry.session_n) {
+    Some(cur) => {
+      if cur.instance_id == entry.instance_id && cur.deltas_epoch == entry.epoch && !cur.retired {
+        cur.later = false
+        cur.delta_timer_token = None
+        self.flush(cur)
+      }
+    }
+    None => ()
+  }
+}
+
+fn AgentsState::clear_delta_timer_on_abort(self : AgentsState, tok : Int) -> Unit {
+  let entry = match self.pending_deltas.get(tok) {
+    Some(e) => {
+      let _ = self.pending_deltas.remove(tok)
+      e
+    }
+    None => return
+  }
+  match self.sessions.get(entry.session_n) {
+    Some(cur) => {
+      if cur.instance_id == entry.instance_id && cur.deltas_epoch == entry.epoch {
+        cur.later = false
+        cur.delta_timer_token = None
+      }
+    }
+    None => ()
+  }
+}
+
+/// Pure-data timer registration: allocates a monotonic `timer_token`, records the pure value
+/// `PendingDeltaTimer`, and queues `(tok, instance_id)` for `DeltaTimers::arm_queued`.
+/// If the connection is already `closing`, flushes immediately without arming a new timer.
+fn AgentsState::soon(self : AgentsState, h : Hosted) -> Unit {
+  if h.closing {
+    self.flush(h)
+    return
+  }
+  if h.later {
+    return
+  }
+  h.later = true
+  h.deltas_epoch = h.deltas_epoch + 1
+  self.next_timer_token = self.next_timer_token + 1
+  let tok = self.next_timer_token
+  h.delta_timer_token = Some(tok)
+  self.pending_deltas.set(
+    tok,
+    PendingDeltaTimer::{
+      session_n: h.n,
+      instance_id: h.instance_id,
+      epoch: h.deltas_epoch,
+    },
+  )
+  self.delta_arm_queue.push((tok, h.instance_id))
+}
+
+// ── Pure helpers ──
+
+fn remove_int_first(arr : Array[Int], target : Int) -> Unit {
+  for i in 0..<arr.length() {
+    if arr[i] == target {
+      let mut j = i
+      while j + 1 < arr.length() {
+        arr[j] = arr[j + 1]
+        j = j + 1
+      }
+      let _ = arr.pop()
+      return
+    }
+  }
+}
+
+fn remove_str_first(arr : Array[String], target : String) -> Unit {
+  for i in 0..<arr.length() {
+    if arr[i] == target {
+      let mut j = i
+      while j + 1 < arr.length() {
+        arr[j] = arr[j + 1]
+        j = j + 1
+      }
+      let _ = arr.pop()
+      return
+    }
+  }
+}
+
+fn contains_int(arr : Array[Int], target : Int) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+/// Lossless injective string key for arbitrary UTF-16 code unit sequences (including lone surrogates).
+/// Printable ASCII except `\` passes through verbatim; all other code units encode as `\xHHHH`.
+fn u16_key(units : Array[Int]) -> String {
+  let digits = "0123456789abcdef"
+  let sb = StringBuilder::new()
+  for i in 0..<units.length() {
+    let u = units[i] & 0xFFFF
+    if u >= 0x20 && u <= 0x7E && u != 0x5C {
+      sb.write_byte(u.to_byte())
+    } else {
+      sb.write_string("\\x")
+      sb.write_byte(digits.code_unit_at((u >> 12) & 0xF).to_byte())
+      sb.write_byte(digits.code_unit_at((u >> 8) & 0xF).to_byte())
+      sb.write_byte(digits.code_unit_at((u >> 4) & 0xF).to_byte())
+      sb.write_byte(digits.code_unit_at(u & 0xF).to_byte())
+    }
+  }
+  sb.to_string()
+}
+
+fn decode_utf8_lossy_bytes(b : Bytes) -> String {
+  let arr : Array[Byte] = []
+  let n = b.length()
+  for i in 0..<n {
+    arr.push(b[i])
+  }
+  builders_core::decode_utf8_lossy_arr(arr)
+}
+
+fn copy_bytes_slice(src : Bytes, from : Int, len : Int) -> Bytes {
+  if len <= 0 {
+    return Bytes::new(0)
+  }
+  let out = Bytes::new(len)
+  for i in 0..<len {
+    out[i] = src[from + i]
+  }
+  out
+}
+
+fn concat_bytes(parts : Array[Bytes]) -> Bytes {
+  let mut total = 0
+  for i in 0..<parts.length() {
+    total = total + parts[i].length()
+  }
+  if total == 0 {
+    return Bytes::new(0)
+  }
+  let out = Bytes::new(total)
+  let mut off = 0
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    let plen = p.length()
+    for k in 0..<plen {
+      out[off + k] = p[k]
+    }
+    off = off + plen
+  }
+  out
+}
+
+fn u16_concat(a : Array[Int], b : Array[Int]) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in 0..<a.length() {
+    out.push(a[i])
+  }
+  for i in 0..<b.length() {
+    out.push(b[i])
+  }
+  out
+}
+
+fn join_u16_lines(lines : Array[Array[Int]]) -> Array[Int] {
+  let out : Array[Int] = []
+  for i in 0..<lines.length() {
+    if i > 0 {
+      out.push(0x0A)
+    }
+    let part = lines[i]
+    for j in 0..<part.length() {
+      out.push(part[j])
+    }
+  }
+  out
+}
+
+fn jval_num(v : js_json::JValue, key : String) -> Option[Double] {
+  match v.get(key) {
+    Some(js_json::JValue::Num(d)) => Some(d)
+    _ => None
+  }
+}
+
+fn jval_str(v : js_json::JValue, key : String) -> Option[String] {
+  match v.get(key) {
+    Some(js_json::JValue::Str(u)) => Some(js_json::sanitize_str(u))
+    _ => None
+  }
+}
+
+fn jval_str_u16(v : js_json::JValue, key : String) -> Option[Array[Int]] {
+  match v.get(key) {
+    Some(js_json::JValue::Str(u)) => Some(u)
+    _ => None
+  }
+}
+
+fn jval_is_true(v : js_json::JValue, key : String) -> Bool {
+  match v.get(key) {
+    Some(js_json::JValue::Bool(true)) => true
+    _ => false
+  }
+}
+
+fn jval_is_false(v : js_json::JValue, key : String) -> Bool {
+  match v.get(key) {
+    Some(js_json::JValue::Bool(false)) => true
+    _ => false
+  }
+}
+
+fn jval_flag(v : js_json::JValue, key : String) -> Option[Bool] {
+  match v.get(key) {
+    Some(js_json::JValue::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+// ── Stdin dispatch (`Agents::told`) ──
+
+pub fn Agents::told(self : Agents, line : String) -> Unit {
+  self.sweep_finished_fibers()
+  let st = self.state
+  let said = match js_json::parse(line) {
+    Ok(v) => v
+    Err(_) => return
+  }
+  match said {
+    js_json::JValue::Obj(_) => ()
+    _ => return
+  }
+  match jval_num(said, "wall") {
+    Some(w) => {
+      st.wall = w
+      st.at = (st.host.transport.now_ms)()
+    }
+    None => ()
+  }
+  match jval_num(said, "codexReplay") {
+    Some(id) => {
+      match said.get("notices") {
+        Some(js_json::JValue::Arr(notices)) => st.replay(id.to_int(), notices)
+        _ => ()
+      }
+      return
+    }
+    None => ()
+  }
+  match jval_num(said, "codexReplayed") {
+    Some(id) => {
+      st.replayed(id.to_int())
+      return
+    }
+    None => ()
+  }
+  match (jval_num(said, "attach"), jval_str(said, "socket")) {
+    (Some(n), Some(socket)) => {
+      let kind = match jval_str(said, "kind") {
+        Some("codex") => "codex"
+        Some("dsh") => "dsh"
+        Some("cursor") => "cursor"
+        Some("acp") => "acp"
+        Some("pi") => "pi"
+        _ => "claude"
+      }
+      let turn = if kind == "claude" {
+        turn_of(said.get("turn"))
+      } else {
+        parse_claude::Turn::new()
+      }
+      let live = if kind == "claude" {
+        match said.get("live") {
+          Some(js_json::JValue::Null) => parse_claude::Live::new()
+          None => parse_claude::Live::new()
+          Some(state) => parse_claude::Live::of_state(state)
+        }
+      } else {
+        parse_claude::Live::new()
+      }
+      st.next_instance = st.next_instance + 1
+      let inst = st.next_instance
+      let h = hosted(n.to_int(), inst, turn, live, kind)
+      h.routed = jval_is_true(said, "routed")
+      h.own = own_of(kind, said)
+      if jval_is_true(said, "orphans") {
+        h.codex.orphans = Some(Map::new())
+      }
+      self.put_session(h)
+      let host = st.host
+      let deltas = self.deltas
+      // Closure captures ONLY `(st : AgentsState, deltas : DeltaTimers)` — NEVER `self : Agents`.
+      let af = host.rt.fork_daemon(
+        "agent",
+        fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+          st.attach_k(h, socket, deltas, fn(ex : effect::Exit[Unit]) -> Unit {
+            st.finished_attach.push(inst)
+            k(ex)
+          })
+        },
+        fn(e : effect::EffectError) -> Unit {
+          st.finished_attach.push(inst)
+          host.note("agent failed: " + effect::effect_error_to_string(e))
+        },
+      )
+      self.attach_fibers.set(inst, af)
+    }
+    _ => ()
+  }
+  match jval_num(said, "freeze") {
+    Some(id) => {
+      let only : Array[Int] = []
+      match said.get("only") {
+        Some(js_json::JValue::Arr(ns)) => {
+          for i in 0..<ns.length() {
+            match ns[i] {
+              js_json::JValue::Num(k) => only.push(k.to_int())
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+      let states : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<st.session_order.length() {
+        let k = st.session_order[i]
+        if !contains_int(only, k) {
+          continue
+        }
+        match st.sessions.get(k) {
+          Some(h) => {
+            match h.own {
+              Some(Own::Acp(s)) => {
+                st.own_now(h, Own::Acp(s), s.flush_staged_events())
+              }
+              _ => ()
+            }
+            st.flush(h)
+            h.frozen = true
+            let state_val = if h.kind == "codex" {
+              live_wire::obj([("threads", h.codex.states())])
+            } else {
+              match h.own {
+                Some(own) => live_wire::obj([("turn", own.turn()), ("live", own.state())])
+                None => live_wire::obj([("turn", turn_json_js(h.turn)), ("live", h.live.state())])
+              }
+            }
+            states.push((js_json::utf16_units(k.to_string()), state_val))
+          }
+          None => ()
+        }
+      }
+      let out = live_wire::obj([
+        ("frozen", js_json::JValue::Num(id)),
+        ("states", js_json::JValue::Obj(states)),
+      ])
+      st.host.say(js_json::stringify_with_num(out, st.fmt_num))
+      return
+    }
+    None => ()
+  }
+  match jval_num(said, "ownReplay") {
+    Some(id) => {
+      let at = match jval_num(said, "at") {
+        Some(v) => v.to_int64()
+        None => 0.to_int64()
+      }
+      let path = match jval_str(said, "path") {
+        Some(p) => p
+        None => ""
+      }
+      let kind = match jval_str(said, "kind") {
+        Some(k) => k
+        None => "claude"
+      }
+      st.next_replay_token = st.next_replay_token + 1
+      let rtok = st.next_replay_token
+      let host = st.host
+      // Tracked in `self.replay_fibers`; closure captures ONLY `st` (NEVER `self`).
+      let rf = host.rt.fork_daemon(
+        "agent replay",
+        fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+          st.own_replay_k(id.to_int(), kind, path, at, said, fn(ex : effect::Exit[Unit]) -> Unit {
+            st.finished_replays.push(rtok)
+            k(ex)
+          })
+        },
+        fn(e : effect::EffectError) -> Unit {
+          st.finished_replays.push(rtok)
+          host.note("agent replay failed: " + effect::effect_error_to_string(e))
+        },
+      )
+      self.replay_fibers.set(rtok, rf)
+      return
+    }
+    None => ()
+  }
+
+  let ops : Array[String] = [
+    "ack", "write", "signal", "begin", "aborting", "renewed", "done", "detach",
+    "thaw", "keep", "route", "codexThread", "codexDrop", "orphans",
+    "acpSession", "acpOpened", "acpPrompt", "acpInject",
+  ]
+  let mut found_op : Option[String] = None
+  let mut found_n : Int = 0
+  for i in 0..<ops.length() {
+    match jval_num(said, ops[i]) {
+      Some(v) => {
+        found_op = Some(ops[i])
+        found_n = v.to_int()
+        break
+      }
+      None => ()
+    }
+  }
+  let op = match found_op {
+    Some(o) => o
+    None => return
+  }
+
+  // If no active session exists for `found_n`, it may have detached pending batches from a
+  // previously closed connection: allow `done`, `detach`, `ack`, `route`, and `codexDrop`
+  // to clean them up, and reject `thaw` and all other ops.
+  let h = match st.sessions.get(found_n) {
+    Some(sess) => sess
+    None => {
+      if op == "done" || op == "detach" {
+        st.clear_session_batches(found_n, None)
+      } else if op == "ack" {
+        match jval_num(said, "to") {
+          Some(to) => st.drop_batches_up_to(found_n, to.to_int64())
+          None => ()
+        }
+      } else if op == "route" {
+        let on = jval_is_true(said, "on")
+        if !on {
+          match jval_str_u16(said, "thread") {
+            Some(thread_u16) => st.drop_thread_batches(found_n, u16_key(thread_u16))
+            None => st.clear_session_batches(found_n, None)
+          }
+        }
+      } else if op == "codexDrop" {
+        match jval_str_u16(said, "id") {
+          Some(thread_u16) => st.drop_thread_batches(found_n, u16_key(thread_u16))
+          None => ()
+        }
+      }
+      return
+    }
+  }
+
+  if op == "ack" {
+    match jval_num(said, "to") {
+      Some(to) => st.acked(h, to.to_int64())
+      None => ()
+    }
+  } else if op == "route" {
+    let on = jval_is_true(said, "on")
+    match jval_str_u16(said, "thread") {
+      Some(thread_u16) => st.route_thread(h, u16_key(thread_u16), on)
+      None => {
+        h.routed = on
+        if !h.routed {
+          st.clear_session_batches(h.n, Some(h.instance_id))
+          st.advance_ack(h)
+        }
+      }
+    }
+  } else if op == "codexThread" {
+    match jval_str_u16(said, "id") {
+      Some(thread_u16) => {
+        st.add_thread(h, u16_key(thread_u16), thread_u16, said.get("live"), jval_is_true(said, "routed"))
+      }
+      None => ()
+    }
+  } else if op == "codexDrop" {
+    match jval_str_u16(said, "id") {
+      Some(thread_u16) => st.drop_thread(h, u16_key(thread_u16))
+      None => ()
+    }
+  } else if op == "orphans" {
+    if jval_is_false(said, "on") {
+      st.orphans_off(h)
+    }
+  } else if op == "write" {
+    match jval_str(said, "line") {
+      Some(t) => st.write(h, t)
+      None => ()
+    }
+  } else if op == "signal" {
+    match jval_str(said, "name") {
+      Some(sig) => {
+        st.send(
+          h,
+          base_codec::json_obj([
+            ("op", sessions_core::jstr("signal")),
+            ("signal", sessions_core::jstr(sig)),
+            ("group", sessions_core::jbool(true)),
+          ]),
+        )
+      }
+      None => ()
+    }
+  } else if op == "begin" {
+    match h.own {
+      Some(own) => st.own_begin(h, own)
+      None => {
+        h.turn.renewed = Some(false)
+        h.turn.busy = true
+        if jval_is_true(said, "compact") {
+          h.turn.compacting = Some(true)
+          h.turn.compact_error = None
+        }
+      }
+    }
+  } else if op == "acpSession" || op == "acpOpened" || op == "acpPrompt" || op == "acpInject" {
+    st.acp_told(h, op, said)
+  } else if op == "aborting" {
+    match h.own {
+      Some(own) => own.aborting()
+      None => h.turn.aborting = true
+    }
+  } else if op == "renewed" {
+    h.turn.renewed = Some(true)
+  } else if op == "keep" {
+    match jval_num(said, "at") {
+      Some(at) => h.keep = Some(at.to_int64())
+      None => ()
+    }
+  } else if op == "done" {
+    st.send(h, base_codec::json_obj([("op", sessions_core::jstr("done"))]))
+    st.end(h)
+  } else if op == "detach" {
+    h.frozen = true
+    h.left = true
+    h.held.clear()
+    self.cancel_deltas_timer(h)
+    if jval_is_true(said, "leave") {
+      st.send(h, base_codec::json_obj([("op", sessions_core::jstr("leave"))]))
+    }
+    st.end(h)
+  } else if op == "thaw" {
+    h.frozen = false
+    let held : Array[(Bytes, Int64)] = []
+    for i in 0..<h.held.length() {
+      held.push(h.held[i])
+    }
+    h.held.clear()
+    if held.length() > 0 {
+      st.heard(h, held)
+    }
+  }
+  self.drain_delta_arms()
+}
+
+// ── Detached batch & ack management (single-pass O(N) partition) ──
+
+fn AgentsState::remove_batch_id(self : AgentsState, session_n : Int, batch_id : Int) -> Unit {
+  let _ = self.batches.remove(batch_id)
+  match self.session_batches.get(session_n) {
+    Some(ids) => {
+      remove_int_first(ids, batch_id)
+      if ids.length() == 0 {
+        let _ = self.session_batches.remove(session_n)
+      }
+    }
+    None => ()
+  }
+}
+
+fn AgentsState::partition_session_batches(
+  self : AgentsState,
+  session_n : Int,
+  should_drop : (PublishedBatch) -> Bool,
+) -> Unit {
+  let ids = match self.session_batches.get(session_n) {
+    Some(list) => list
+    None => return
+  }
+  let kept : Array[Int] = []
+  for i in 0..<ids.length() {
+    let bid = ids[i]
+    match self.batches.get(bid) {
+      Some(b) => {
+        if should_drop(b) {
+          let _ = self.batches.remove(bid)
+        } else {
+          kept.push(bid)
+        }
+      }
+      None => ()
+    }
+  }
+  if kept.length() == 0 {
+    let _ = self.session_batches.remove(session_n)
+  } else {
+    self.session_batches.set(session_n, kept)
+  }
+}
+
+fn AgentsState::clear_session_batches(
+  self : AgentsState,
+  session_n : Int,
+  only_instance : Option[Int],
+) -> Unit {
+  self.partition_session_batches(session_n, fn(b : PublishedBatch) -> Bool {
+    match only_instance {
+      None => true
+      Some(inst) => b.instance_id == inst
+    }
+  })
+}
+
+fn AgentsState::drop_batches_up_to(self : AgentsState, session_n : Int, to : Int64) -> Unit {
+  self.partition_session_batches(session_n, fn(b : PublishedBatch) -> Bool {
+    b.to <= to
+  })
+}
+
+fn AgentsState::drop_thread_batches(
+  self : AgentsState,
+  session_n : Int,
+  thread_key : String,
+) -> Unit {
+  self.partition_session_batches(session_n, fn(b : PublishedBatch) -> Bool {
+    match b.thread_key {
+      Some(th) => th == thread_key
+      None => false
+    }
+  })
+}
+
+fn AgentsState::acked(self : AgentsState, h : Hosted, to : Int64) -> Unit {
+  let inst = h.instance_id
+  self.partition_session_batches(h.n, fn(b : PublishedBatch) -> Bool {
+    b.instance_id == inst && b.to <= to
+  })
+  if to > h.acked_to {
+    h.acked_to = to
+  }
+  self.advance_ack(h)
+}
+
+fn AgentsState::advance_ack(self : AgentsState, h : Hosted) -> Unit {
+  let mut limit = h.acked_to
+  match self.session_batches.get(h.n) {
+    Some(ids) => {
+      for i in 0..<ids.length() {
+        match self.batches.get(ids[i]) {
+          Some(b) => {
+            if b.instance_id == h.instance_id && b.before < limit {
+              limit = b.before
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    None => ()
+  }
+  if limit > h.acked_out {
+    h.acked_out = limit
+    self.ack(h)
+  }
+}
+
+fn AgentsState::keep_batch(
+  self : AgentsState,
+  h : Hosted,
+  events : Array[js_json::JValue],
+  to : Int64,
+  thread_key : Option[String],
+) -> Int {
+  let k = self.next_batch
+  self.next_batch = self.next_batch + 1
+  self.batches.set(
+    k,
+    PublishedBatch::{
+      batch_id: k,
+      session_n: h.n,
+      instance_id: h.instance_id,
+      events: events,
+      to: to,
+      before: h.told_out,
+      thread_key: thread_key,
+    },
+  )
+  match self.session_batches.get(h.n) {
+    Some(ids) => ids.push(k)
+    None => self.session_batches.set(h.n, [k])
+  }
+  k
+}
+
+/// Take batch `k` of process `n` (`routed` from Node); survives close & same-`n` re-attach.
+fn AgentsState::take(self : AgentsState, n : Int, k : Int) -> Option[(Array[js_json::JValue], Int64)] {
+  let b = match self.batches.get(k) {
+    Some(found) => found
+    None => return None
+  }
+  if b.session_n != n {
+    return None
+  }
+  self.remove_batch_id(n, k)
+  // Only advance ack if the batch's originating `instance_id` is still the active session!
+  match self.sessions.get(n) {
+    Some(h) => {
+      if h.instance_id == b.instance_id {
+        if b.to > h.acked_to {
+          h.acked_to = b.to
+        }
+        self.advance_ack(h)
+      }
+    }
+    None => ()
+  }
+  Some((b.events, b.to))
+}
+
+// ── Runner outbox & socket I/O ──
+
+fn AgentsState::send(self : AgentsState, h : Hosted, message : base_codec::Json) -> Unit {
+  let _ = self
+  let line = base_codec::json_stringify(builders_core::normalize_json(message)) + "\n"
+  let _ = h.outq.try_offer(OutItem::Raw(line.to_bytes()))
+}
+
+fn AgentsState::end(self : AgentsState, h : Hosted) -> Unit {
+  let _ = self
+  let _ = h.outq.try_offer(OutItem::End)
+}
+
+fn encode_write_line(text : String) -> Bytes {
+  let line = text.to_bytes()
+  let sb = StringBuilder::new()
+  sb.write_string("{\"op\":\"write\",\"data\":\"")
+  let tail = if text.ends_with("\n") { Bytes::new(0) } else { "\n".to_bytes() }
+  pieces::base64_into(sb, line, tail)
+  sb.write_string("\"}\n")
+  sb.to_string().to_bytes()
+}
+
+fn AgentsState::write(self : AgentsState, h : Hosted, text : String) -> Unit {
+  let _ = self
+  let _ = h.outq.try_offer(OutItem::Raw(encode_write_line(text)))
+}
+
+fn AgentsState::ack(self : AgentsState, h : Hosted) -> Unit {
+  if h.left || h.retired {
+    return
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("op", sessions_core::jstr("ack")),
+    ("out", base_codec::json_int64(h.acked_out)),
+    ("err", base_codec::json_int64(h.acked_err)),
+  ]
+  match h.keep {
+    Some(k) => fields.push(("keep", base_codec::json_int64(k)))
+    None => ()
+  }
+  self.send(h, base_codec::json_obj(fields))
+}
+
+fn hosted(
+  n : Int,
+  instance_id : Int,
+  turn : parse_claude::Turn,
+  live : parse_claude::Live,
+  kind : String,
+) -> Hosted {
+  Hosted::{
+    n: n,
+    instance_id: instance_id,
+    conn: base_codec::json_null(),
+    outq: effect::Queue::unbounded(),
+    turn: turn,
+    live: live,
+    calls: [],
+    out_part: pieces::Pieces::new(),
+    err_part: pieces::Pieces::new(),
+    out_at: (-1).to_int64(),
+    err_at: (-1).to_int64(),
+    acked_out: 0.to_int64(),
+    acked_to: 0.to_int64(),
+    told_out: 0.to_int64(),
+    acked_err: 0.to_int64(),
+    told: 0.to_int64(),
+    kind: kind,
+    codex: Codex::new(),
+    own: None,
+    keep: None,
+    held: [],
+    frozen: false,
+    pending: [],
+    pending_to: 0.to_int64(),
+    pending_units: 0,
+    later: false,
+    deltas_epoch: 0,
+    delta_timer_token: None,
+    left: false,
+    exited: false,
+    closing: false,
+    retired: false,
+    stderr: [],
+    routed: false,
+  }
+}
+
+fn extract_conn_id(said : base_codec::Json) -> Option[base_codec::Json] {
+  match sessions_core::jget(said, "id") {
+    Some(base_codec::Json::Null) => None
+    Some(id) => Some(id)
+    None => None
+  }
+}
+
+/// Fork the single FIFO writer fiber for one runner connection.
+/// Captures ONLY leaf `(host, conn_id, outq)` — ZERO reference to `Agents`, `AgentsState`, or `Hosted`.
+fn start_writer_fiber(
+  host : sessions_core::SessionHost,
+  conn_id : base_codec::Json,
+  outq : effect::Queue[OutItem],
+) -> effect::Fiber[Unit] {
+  host.rt.fork_daemon(
+    "agent write",
+    fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      let attach_msg = "{\"op\":\"attach\"}\n".to_bytes()
+      host.shell_k(
+        sessions_core::ShellOwner::Process,
+        "tcp.write",
+        base_codec::json_obj([("id", conn_id)]),
+        Some(attach_msg),
+        None,
+        None,
+        fn(attach_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+          match attach_ex {
+            effect::Exit::Interrupted => {
+              k(effect::Exit::Interrupted)
+              return
+            }
+            _ => ()
+          }
+          sessions_core::iter_sync_k(
+            fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+              outq.take_k(fn(take_ex : effect::Exit[OutItem]) -> Unit {
+                match take_ex {
+                  effect::Exit::Succeeded(OutItem::Raw(bytes)) => {
+                    host.shell_k(
+                      sessions_core::ShellOwner::Process,
+                      "tcp.write",
+                      base_codec::json_obj([("id", conn_id)]),
+                      Some(bytes),
+                      None,
+                      None,
+                      fn(w_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+                        match w_ex {
+                          effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                          _ => sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                        }
+                      },
+                    )
+                  }
+                  effect::Exit::Succeeded(OutItem::Interrupt) => {
+                    host.shell_k(
+                      sessions_core::ShellOwner::Process,
+                      "crypto.random",
+                      base_codec::json_obj([("bytes", sessions_core::jint(16))]),
+                      None,
+                      None,
+                      None,
+                      fn(r_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+                        let bytes = match r_ex {
+                          effect::Exit::Succeeded((j, _)) => encode_write_line(format_interrupt_request(Some(j)))
+                          effect::Exit::Failed(_) => encode_write_line(format_interrupt_request(None))
+                          effect::Exit::Interrupted => {
+                            sk(effect::Exit::Interrupted)
+                            return
+                          }
+                        }
+                        host.shell_k(
+                          sessions_core::ShellOwner::Process,
+                          "tcp.write",
+                          base_codec::json_obj([("id", conn_id)]),
+                          Some(bytes),
+                          None,
+                          None,
+                          fn(w_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+                            match w_ex {
+                              effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                              _ => sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                            }
+                          },
+                        )
+                      },
+                    )
+                  }
+                  effect::Exit::Succeeded(OutItem::End) => {
+                    host.shell_k(
+                      sessions_core::ShellOwner::Process,
+                      "tcp.end",
+                      base_codec::json_obj([("id", conn_id)]),
+                      None,
+                      None,
+                      None,
+                      fn(e_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+                        match e_ex {
+                          effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                          _ => sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                        }
+                      },
+                    )
+                  }
+                  effect::Exit::Failed(effect::EffectError::QueueShutdown) => {
+                    sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                  }
+                  effect::Exit::Failed(_) => {
+                    sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                  }
+                  effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                }
+              })
+            },
+            k,
+          )
+        },
+      )
+    },
+    fn(_e : effect::EffectError) -> Unit { () },
+  )
+}
+
+fn AgentsState::attach_k(
+  self : AgentsState,
+  h : Hosted,
+  socket_path : String,
+  deltas : DeltaTimers,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let n = h.n
+  let host = self.host
+  host.shell_k(
+    sessions_core::ShellOwner::Process,
+    "unix.open",
+    base_codec::json_obj([("path", sessions_core::jstr(socket_path))]),
+    None,
+    Some(sessions_core::AbandonedOp::CloseTcpHandle),
+    None,
+    fn(open_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+      let conn_id = match open_ex {
+        effect::Exit::Succeeded((said, _)) => {
+          match extract_conn_id(said) {
+            Some(id) => {
+              if !self.is_current(h) {
+                host.sender.close_abandoned_tcp_handle_json(id)
+                deltas.cancel(self, h)
+                h.outq.shutdown()
+                k(effect::Exit::Succeeded(()))
+                return
+              }
+              id
+            }
+            None => {
+              deltas.cancel(self, h)
+              h.outq.shutdown()
+              if self.is_current(h) {
+                self.remove_session_if_same(h)
+                host.say("{\"closed\":" + n.to_string() + "}")
+              }
+              k(effect::Exit::Succeeded(()))
+              return
+            }
+          }
+        }
+        effect::Exit::Failed(_) => {
+          deltas.cancel(self, h)
+          h.outq.shutdown()
+          if self.is_current(h) {
+            self.remove_session_if_same(h)
+            host.say("{\"closed\":" + n.to_string() + "}")
+          }
+          k(effect::Exit::Succeeded(()))
+          return
+        }
+        effect::Exit::Interrupted => {
+          deltas.cancel(self, h)
+          h.outq.shutdown()
+          self.remove_session_if_same(h)
+          k(effect::Exit::Interrupted)
+          return
+        }
+      }
+      h.conn = conn_id
+      let wf = start_writer_fiber(host, conn_id, h.outq)
+
+      let carry = pieces::Pieces::new()
+      sessions_core::iter_sync_k(
+        fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+          host.shell_k(
+            sessions_core::ShellOwner::Process,
+            "tcp.read",
+            base_codec::json_obj([("id", conn_id)]),
+            None,
+            None,
+            None,
+            fn(read_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+              match read_ex {
+                effect::Exit::Succeeded((said, bytes_opt)) => {
+                  if !self.is_current(h) {
+                    sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                    return
+                  }
+                  let is_end = match sessions_core::jget(said, "end") {
+                    Some(base_codec::Json::Bool(true)) => true
+                    _ => false
+                  }
+                  if is_end {
+                    sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                    return
+                  }
+                  match bytes_opt {
+                    Some(bytes) => {
+                      if bytes.length() == 0 {
+                        sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                        return
+                      }
+                      let lines = carry.lines(bytes)
+                      for i in 0..<lines.length() {
+                        let msg = match js_json::parse(decode_utf8_lossy_bytes(lines[i])) {
+                          Ok(v) => v
+                          Err(_) => js_json::JValue::Null
+                        }
+                        if !h.left && self.is_current(h) {
+                          self.message(h, msg)
+                          deltas.arm_queued(self)
+                        }
+                      }
+                      sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                    }
+                    None => sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                  }
+                }
+                effect::Exit::Failed(_) => {
+                  sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                }
+                effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+              }
+            },
+          )
+        },
+        fn(loop_ex : effect::Exit[Unit]) -> Unit {
+          // Unconditionally mark `closing`, cancel the unified delta timer, shut down outbox,
+          // and cancel any in-flight writer (`tcp.write`/`crypto.random`) on EVERY exit path.
+          h.closing = true
+          deltas.cancel(self, h)
+          h.outq.shutdown()
+          wf.interrupt()
+          host.drain_cancelled_waiters()
+          match loop_ex {
+            effect::Exit::Interrupted => {
+              host.sender.close_abandoned_tcp_handle_json(conn_id)
+              self.remove_session_if_same(h)
+              k(effect::Exit::Interrupted)
+              return
+            }
+            _ => ()
+          }
+          // Close the runner socket handle cleanly once before emitting final status.
+          host.shell_k(
+            sessions_core::ShellOwner::Process,
+            "tcp.close",
+            base_codec::json_obj([("id", conn_id)]),
+            None,
+            None,
+            None,
+            fn(close_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+              match close_ex {
+                effect::Exit::Interrupted => {
+                  deltas.cancel(self, h)
+                  self.remove_session_if_same(h)
+                  k(effect::Exit::Interrupted)
+                  return
+                }
+                _ => ()
+              }
+              if !self.is_current(h) {
+                k(effect::Exit::Succeeded(()))
+                return
+              }
+              // Defensively cancel any delta timer and remove active `Hosted` on ALL exit paths;
+              // release this instance's published batches on orderly `left`/`ended`, retaining
+              // them ONLY on abnormal `closed`.
+              deltas.cancel(self, h)
+              self.remove_session_if_same(h)
+              if h.left {
+                self.clear_session_batches(n, Some(h.instance_id))
+                host.say("{\"left\":" + n.to_string() + "}")
+              } else if !h.exited {
+                if !h.frozen {
+                  self.flush(h)
+                  self.cut_short(h)
+                }
+                stderr_rest(h)
+                let closed_msg = live_wire::obj([
+                  ("closed", js_json::JValue::Num(n.to_double())),
+                  ("stderr", live_wire::jstr_u16(join_u16_lines(h.stderr))),
+                ])
+                host.say(js_json::stringify_with_num(closed_msg, self.fmt_num))
+              } else {
+                self.clear_session_batches(n, Some(h.instance_id))
+                host.say("{\"ended\":" + n.to_string() + "}")
+              }
+              k(effect::Exit::Succeeded(()))
+            },
+          )
+        },
+      )
+    },
+  )
+}
+
+// ── Runner message handling ──
+
+fn AgentsState::message(self : AgentsState, h : Hosted, message : js_json::JValue) -> Unit {
+  let op = match jval_str(message, "op") {
+    Some(o) => o
+    None => return
+  }
+  if op == "out" {
+    let stream = match jval_str(message, "stream") {
+      Some(s) => s
+      None => return
+    }
+    let at = match jval_num(message, "at") {
+      Some(a) => a
+      None => return
+    }
+    let data = match jval_str(message, "data") {
+      Some(d) => d
+      None => return
+    }
+    let bytes = match base64::decode(data) {
+      Ok(b) => b
+      Err(_) => return
+    }
+    let is_err = stream == "err"
+    if is_err && h.err_at < 0.to_int64() {
+      h.err_at = at.to_int64()
+    } else if !is_err && h.out_at < 0.to_int64() {
+      h.out_at = at.to_int64()
+    }
+    let raw_lines = if is_err { h.err_part.lines(bytes) } else { h.out_part.lines(bytes) }
+    let lines : Array[(Bytes, Int64)] = []
+    for i in 0..<raw_lines.length() {
+      let line = raw_lines[i]
+      if is_err {
+        h.err_at = h.err_at + (line.length() + 1).to_int64()
+        lines.push((line, h.err_at))
+      } else {
+        h.out_at = h.out_at + (line.length() + 1).to_int64()
+        lines.push((line, h.out_at))
+      }
+    }
+    if is_err {
+      for i in 0..<lines.length() {
+        let (lbytes, lend) = lines[i]
+        said_on_stderr(h, lbytes)
+        h.acked_err = lend
+      }
+      if lines.length() > 0 && h.told <= h.acked_out {
+        self.ack(h)
+      }
+    } else {
+      if lines.length() == 0 {
+        return
+      }
+      if h.frozen {
+        for i in 0..<lines.length() {
+          h.held.push(lines[i])
+        }
+      } else {
+        self.heard(h, lines)
+      }
+    }
+  } else if op == "exit" {
+    self.flush(h)
+    self.cut_short(h)
+    stderr_rest(h)
+    h.exited = true
+    let code_v = match message.get("code") {
+      Some(c) => c
+      None => js_json::JValue::Null
+    }
+    let sig_v = match message.get("signal") {
+      Some(s) => s
+      None => js_json::JValue::Null
+    }
+    let out = live_wire::obj([
+      ("exit", js_json::JValue::Num(h.n.to_double())),
+      ("code", code_v),
+      ("signal", sig_v),
+      ("stderr", live_wire::jstr_u16(join_u16_lines(h.stderr))),
+    ])
+    self.host.say(js_json::stringify_with_num(out, self.fmt_num))
+  }
+}
+
+/// Keep the last 3 non-empty trimmed stderr lines as raw UTF-16 code units,
+/// each truncated to 300 UTF-16 code units (preserving lone surrogates, 1:1 `agents.mbt:550`).
+fn said_on_stderr(h : Hosted, line : Bytes) -> Unit {
+  let text = jscase::trim(strip_cr(decode_utf8_lossy_bytes(line)))
+  if text != "" {
+    let units = js_json::utf16_units(text)
+    let clipped : Array[Int] = if units.length() > 300 {
+      let out : Array[Int] = []
+      for i in 0..<300 {
+        out.push(units[i])
+      }
+      out
+    } else {
+      units
+    }
+    h.stderr.push(clipped)
+    while h.stderr.length() > 3 {
+      let mut j = 0
+      while j + 1 < h.stderr.length() {
+        h.stderr[j] = h.stderr[j + 1]
+        j = j + 1
+      }
+      let _ = h.stderr.pop()
+    }
+  }
+}
+
+fn stderr_rest(h : Hosted) -> Unit {
+  match h.err_part.rest() {
+    Some(line) => said_on_stderr(h, line)
+    None => ()
+  }
+}
+
+fn AgentsState::cut_short(self : AgentsState, h : Hosted) -> Unit {
+  if h.left {
+    return
+  }
+  match h.own {
+    Some(own) => {
+      let events = own.cut_short()
+      if events.length() > 0 {
+        self.tell(h, h.told, own.turn(), events, [])
+      }
+    }
+    None => ()
+  }
+}
+
+fn strip_cr(s : String) -> String {
+  if s.ends_with("\r") {
+    s.slice(0, s.length() - 1)
+  } else {
+    s
+  }
+}
+
+// ── Claude Code stdout parsing & delta coalescing ──
+
+fn AgentsState::heard(self : AgentsState, h : Hosted, lines : Array[(Bytes, Int64)]) -> Unit {
+  if h.kind == "codex" {
+    self.codex_heard(h, lines)
+    return
+  }
+  match h.own {
+    Some(own) => {
+      self.own_heard(h, own, lines)
+      return
+    }
+    None => ()
+  }
+  let before = js_json::stringify_with_num(turn_json_js(h.turn), self.fmt_num)
+  let events : Array[js_json::JValue] = []
+  let now_fn = fn() -> Double { self.now() }
+  let host = self.host
+  let outq = h.outq
+  let interrupt_fn = fn() -> Unit {
+    let _ = outq.try_offer(OutItem::Interrupt)
+  }
+  let note_fn = fn(m : String) -> Unit { host.note("agents: " + m) }
+  for i in 0..<lines.length() {
+    let (lbytes, _) = lines[i]
+    let text = strip_cr(decode_utf8_lossy_bytes(lbytes))
+    let frame = match js_json::parse(text) {
+      Ok(v) => v
+      Err(_) => continue
+    }
+    let fed = h.live.feed_with(frame, now_fn, self.fmt_num)
+    for j in 0..<fed.length() {
+      events.push(live_wire::live(fed[j]))
+    }
+    match parse_claude::tools_lost_in(frame, h.calls) {
+      Some(why) => {
+        events.push(
+          live_wire::obj([
+            ("type", live_wire::jstr("toolsLost")),
+            ("why", live_wire::jstr_u16(why)),
+          ]),
+        )
+      }
+      None => ()
+    }
+    match renew_asked(frame, self.fmt_num) {
+      Some(id) => {
+        events.push(
+          live_wire::obj([
+            ("type", live_wire::jstr("renew")),
+            ("requestId", live_wire::jstr_u16(id)),
+          ]),
+        )
+      }
+      None => ()
+    }
+    parse_claude::on_frame_with(
+      frame,
+      h.turn,
+      fn(e : js_json::JValue) -> Unit {
+        events.push(with_turn(e, turn_json_js(h.turn)))
+      },
+      interrupt_fn,
+      now_fn,
+      note_fn,
+      self.fmt_num,
+    )
+  }
+  let (_, end) = lines[lines.length() - 1]
+  let turn = turn_json_js(h.turn)
+  self.deliver_heard(
+    h,
+    end,
+    turn,
+    js_json::stringify_with_num(turn, self.fmt_num) == before,
+    events,
+    [],
+  )
+}
+
+fn all_deltas(events : Array[js_json::JValue]) -> Bool {
+  for i in 0..<events.length() {
+    if !is_delta(events[i]) {
+      return false
+    }
+  }
+  true
+}
+
+fn AgentsState::deliver_heard(
+  self : AgentsState,
+  h : Hosted,
+  end : Int64,
+  turn : js_json::JValue,
+  same : Bool,
+  events : Array[js_json::JValue],
+  node : Array[(Bytes, Int64, Int64)],
+) -> Unit {
+  if same && events.length() > 0 && all_deltas(events) {
+    merge_into(h.pending, events)
+    h.pending_units = h.pending_units + units_of(events)
+    h.pending_to = end
+    h.told = end
+    if h.pending_units >= DELTAS_MOST {
+      self.flush(h)
+    } else {
+      self.soon(h)
+    }
+    return
+  }
+  if same && events.length() == 0 {
+    if h.pending.length() > 0 {
+      h.pending_to = end
+      h.told = end
+      return
+    }
+    if h.told <= h.acked_out {
+      h.acked_out = end
+      h.acked_to = end
+      h.told = end
+      h.told_out = end
+      self.ack(h)
+      return
+    }
+  }
+  let all = h.pending
+  h.pending = []
+  h.pending_units = 0
+  merge_into(all, events)
+  h.told = end
+  self.tell(h, end, turn, all, node)
+}
+
+fn units_of(events : Array[js_json::JValue]) -> Int {
+  let mut n = 0
+  for i in 0..<events.length() {
+    match events[i].get("event") {
+      Some(ev) => {
+        match ev.get("text") {
+          Some(js_json::JValue::Str(t)) => n = n + t.length()
+          _ => ()
+        }
+      }
+      None => ()
+    }
+  }
+  n
+}
+
+/// Normal agent frame (`agents.mbt:697-732`):
+/// `{"lines":N,"to":T,"turn":...,"events":[...][,"at":[...],"bytes":B][,"batch":K]}`
+/// followed by raw `body` bytes ONLY when `node.length() > 0`.
+fn AgentsState::tell(
+  self : AgentsState,
+  h : Hosted,
+  to : Int64,
+  turn : js_json::JValue,
+  events : Array[js_json::JValue],
+  node : Array[(Bytes, Int64, Int64)],
+) -> Unit {
+  let batch = if h.routed && events.length() > 0 {
+    ",\"batch\":" + self.keep_batch(h, events, to, None).to_string()
+  } else {
+    ""
+  }
+  h.told_out = to
+  let line = StringBuilder::new()
+  line.write_string("{\"lines\":")
+  line.write_string(h.n.to_string())
+  line.write_string(",\"to\":")
+  line.write_string(to.to_string())
+  line.write_string(",\"turn\":")
+  js_json::write_utf8_with_num(line, turn, self.fmt_num)
+  line.write_string(",\"events\":")
+  js_json::write_utf8_with_num(line, js_json::JValue::Arr(events), self.fmt_num)
+  let body_parts : Array[Bytes] = []
+  if node.length() > 0 {
+    let at_sb = StringBuilder::new()
+    for i in 0..<node.length() {
+      let (lbytes, lfrom, lto) = node[i]
+      if i > 0 {
+        at_sb.write_string(",")
+      }
+      at_sb.write_string("[")
+      at_sb.write_string(lfrom.to_string())
+      at_sb.write_string(",")
+      at_sb.write_string(lto.to_string())
+      at_sb.write_string(",")
+      at_sb.write_string(lbytes.length().to_string())
+      at_sb.write_string("]")
+      body_parts.push(lbytes)
+    }
+    let body = concat_bytes(body_parts)
+    line.write_string(",\"at\":[")
+    line.write_string(at_sb.to_string())
+    line.write_string("],\"bytes\":")
+    line.write_string(body.length().to_string())
+    line.write_string(batch)
+    line.write_string("}")
+    self.host.say_bytes(line.to_string().to_bytes())
+    self.host.out(body)
+  } else {
+    line.write_string(batch)
+    line.write_string("}")
+    self.host.say_bytes(line.to_string().to_bytes())
+  }
+}
+
+fn AgentsState::flush(self : AgentsState, h : Hosted) -> Unit {
+  if h.kind == "codex" {
+    self.codex_flush(h)
+    return
+  }
+  if h.pending.length() == 0 || h.left {
+    return
+  }
+  let all = h.pending
+  h.pending = []
+  h.pending_units = 0
+  let turn = match h.own {
+    Some(own) => own.turn()
+    None => turn_json_js(h.turn)
+  }
+  self.tell(h, h.pending_to, turn, all, [])
+}
+
+fn is_delta(e : js_json::JValue) -> Bool {
+  if !live_wire::is_str(e.get("type"), "live") {
+    return false
+  }
+  match e.get("event") {
+    Some(ev) => live_wire::is_str(ev.get("kind"), "delta")
+    None => false
+  }
+}
+
+fn merge_into(out : Array[js_json::JValue], events : Array[js_json::JValue]) -> Unit {
+  for i in 0..<events.length() {
+    let e = events[i]
+    if is_delta(e) && out.length() > 0 && is_delta(out[out.length() - 1]) {
+      let last = out[out.length() - 1]
+      match (last.get("event"), e.get("event")) {
+        (Some(a), Some(b)) => {
+          let ta = match a.get("text") {
+            Some(js_json::JValue::Str(u)) => u
+            _ => []
+          }
+          let tb = match b.get("text") {
+            Some(js_json::JValue::Str(u)) => u
+            _ => []
+          }
+          let same_step = match (a.get("id"), b.get("id"), a.get("field"), b.get("field")) {
+            (
+              Some(js_json::JValue::Str(x)),
+              Some(js_json::JValue::Str(y)),
+              Some(js_json::JValue::Str(f)),
+              Some(js_json::JValue::Str(g)),
+            ) => live_wire::u16_eq(x, y) && live_wire::u16_eq(f, g) && ta.length() + tb.length() <= DELTAS_MOST
+            _ => false
+          }
+          if same_step {
+            let tok_a = match a.get("tokens") {
+              Some(js_json::JValue::Num(n)) => Some(n)
+              _ => None
+            }
+            let tok_b = match b.get("tokens") {
+              Some(js_json::JValue::Num(n)) => Some(n)
+              _ => None
+            }
+            let id_v = match a.get("id") {
+              Some(v) => v
+              None => live_wire::jstr("")
+            }
+            let field_v = match a.get("field") {
+              Some(v) => v
+              None => live_wire::jstr("")
+            }
+            match (tok_a, tok_b) {
+              (None, None) => {
+                out[out.length() - 1] = live_wire::live(
+                  live_wire::obj([
+                    ("kind", live_wire::jstr("delta")),
+                    ("id", id_v),
+                    ("field", field_v),
+                    ("text", live_wire::jstr_u16(u16_concat(ta, tb))),
+                  ]),
+                )
+                continue
+              }
+              (Some(x), Some(y)) => {
+                if ta.length() == 0 && tb.length() == 0 {
+                  out[out.length() - 1] = live_wire::live(
+                    live_wire::obj([
+                      ("kind", live_wire::jstr("delta")),
+                      ("id", id_v),
+                      ("field", field_v),
+                      ("text", live_wire::jstr("")),
+                      ("tokens", js_json::JValue::Num(x + y)),
+                    ]),
+                  )
+                  continue
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+    out.push(e)
+  }
+}
+
+fn renew_asked(frame : js_json::JValue, fmt_num : (Double) -> String) -> Option[Array[Int]] {
+  if !live_wire::is_str(frame.get("type"), "control_request") {
+    return None
+  }
+  match frame.get("request") {
+    Some(r) => {
+      if !live_wire::is_str(r.get("subtype"), "oauth_token_refresh") {
+        return None
+      }
+    }
+    None => return None
+  }
+  match frame.get("request_id") {
+    None => Some([])
+    Some(js_json::JValue::Null) => Some([])
+    Some(js_json::JValue::Str(s)) => Some(s)
+    Some(v) => Some(js_json::utf16_units(js_json::stringify_with_num(v, fmt_num)))
+  }
+}
+
+fn format_interrupt_request(answered : Option[base_codec::Json]) -> String {
+  let raw_hex = match answered {
+    Some(base_codec::Json::Str(h)) => if h.length() == 32 { h } else { "00000000000000000000000000000000" }
+    Some(j) => {
+      match sessions_core::jget(j, "value") {
+        Some(base_codec::Json::Str(h)) => if h.length() == 32 { h } else { "00000000000000000000000000000000" }
+        _ => "00000000000000000000000000000000"
+      }
+    }
+    None => "00000000000000000000000000000000"
+  }
+  let id = raw_hex.slice(0, 8) + "-" + raw_hex.slice(8, 12) + "-" + raw_hex.slice(12, 16) + "-" + raw_hex.slice(16, 20) + "-" + raw_hex.slice(20, 32)
+  let msg = base_codec::json_obj([
+    ("type", sessions_core::jstr("control_request")),
+    ("request_id", sessions_core::jstr("interrupt-" + id)),
+    ("request", base_codec::json_obj([("subtype", sessions_core::jstr("interrupt"))])),
+  ])
+  base_codec::json_stringify(msg)
+}
+
+// ── Claude Turn lossless JSON conversion ──
+
+fn turn_json_js(t : parse_claude::Turn) -> js_json::JValue {
+  let fields : Array[(String, js_json::JValue)] = [
+    ("busy", js_json::JValue::Bool(t.busy)),
+    ("aborting", js_json::JValue::Bool(t.aborting)),
+    ("authFailure", live_wire::opt_str_json_u16(t.auth_failure)),
+  ]
+  match t.renews {
+    Some(r) => fields.push(("renews", js_json::JValue::Bool(r)))
+    None => ()
+  }
+  match t.renewed {
+    Some(r) => fields.push(("renewed", js_json::JValue::Bool(r)))
+    None => ()
+  }
+  match t.tasks {
+    Some(tasks) => {
+      let entries : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<tasks.length() {
+        let (key_u16, k) = tasks[i]
+        let task_fields : Array[(String, js_json::JValue)] = [
+          ("id", live_wire::jstr_u16(k.id)),
+          ("kind", live_wire::jstr(k.kind)),
+          ("description", live_wire::jstr_u16(k.description)),
+          ("background", js_json::JValue::Bool(k.background)),
+        ]
+        match k.started_at {
+          Some(at) => task_fields.push(("startedAt", js_json::JValue::Num(at)))
+          None => ()
+        }
+        entries.push((key_u16, live_wire::obj(task_fields)))
+      }
+      fields.push(("tasks", js_json::JValue::Obj(entries)))
+    }
+    None => ()
+  }
+  match t.compacting {
+    Some(c) => fields.push(("compacting", js_json::JValue::Bool(c)))
+    None => ()
+  }
+  match t.compact_error {
+    Some(e) => fields.push(("compactError", live_wire::jstr_u16(e)))
+    None => {
+      match t.compacting {
+        Some(_) => fields.push(("compactError", js_json::JValue::Null))
+        None => ()
+      }
+    }
+  }
+  live_wire::obj(fields)
+}
+
+fn turn_of(v : Option[js_json::JValue]) -> parse_claude::Turn {
+  let t = parse_claude::Turn::new()
+  let obj = match v {
+    Some(js_json::JValue::Obj(entries)) => js_json::JValue::Obj(entries)
+    _ => return t
+  }
+  t.busy = match jval_flag(obj, "busy") {
+    Some(b) => b
+    None => false
+  }
+  t.aborting = match jval_flag(obj, "aborting") {
+    Some(b) => b
+    None => false
+  }
+  t.auth_failure = jval_str_u16(obj, "authFailure")
+  t.renews = jval_flag(obj, "renews")
+  t.renewed = jval_flag(obj, "renewed")
+  t.compacting = jval_flag(obj, "compacting")
+  t.compact_error = jval_str_u16(obj, "compactError")
+  match obj.get("tasks") {
+    Some(js_json::JValue::Obj(tasks)) => {
+      let kept : Array[(Array[Int], parse_claude::Task)] = []
+      for i in 0..<tasks.length() {
+        let (id_u16, task_v) = tasks[i]
+        match task_v {
+          js_json::JValue::Obj(_) => {
+            let tid = match jval_str_u16(task_v, "id") {
+              Some(s) => s
+              None => id_u16
+            }
+            let tkind = match jval_str(task_v, "kind") {
+              Some("agent") => "agent"
+              _ => "command"
+            }
+            let tdesc = match jval_str_u16(task_v, "description") {
+              Some(s) => s
+              None => []
+            }
+            let tbg = jval_is_true(task_v, "background")
+            let tstart = jval_num(task_v, "startedAt")
+            kept.push(
+              (
+                id_u16,
+                parse_claude::Task::{
+                  id: tid,
+                  kind: tkind,
+                  description: tdesc,
+                  background: tbg,
+                  started_at: tstart,
+                },
+              ),
+            )
+          }
+          _ => ()
+        }
+      }
+      t.tasks = Some(kept)
+    }
+    _ => ()
+  }
+  t
+}

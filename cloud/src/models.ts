@@ -127,6 +127,29 @@ export function catalog(canonical: Json, providers: Json): Record<string, Facts>
     }
     out[key] = { ...f, ...CORRECTIONS[key] };
   }
+  // A name a maker sells one of its own models by that no canonical entry has (DeepSeek's deepseek-flash, of
+  // deepseek-v4.1-flash-1017): the model's facts, at that entry's prices. Sessions record the name they were sold
+  // under, and without it showed no price at all. Another lab's model a maker resells is that maker's price, not its.
+  const canonicalKeys = new Set(Object.keys(out));
+  for (const maker of [...new Set(Object.keys(canonical).map((id) => id.slice(0, Math.max(id.indexOf("/"), 0))))].sort()) {
+    const offered = providers?.[maker]?.models;
+    if (maker === "" || !isObject(offered)) continue;
+    for (const [own, m] of Object.entries(offered)) {
+      const key = own.trim().toLowerCase();
+      if (!isObject(m) || key === "" || key.includes("/") || key in out || typeof m.canonical_model_id !== "string") continue;
+      const target = m.canonical_model_id.trim().toLowerCase();
+      if (!target.startsWith(`${maker}/`)) continue;
+      const of = target.slice(maker.length + 1);
+      if (!canonicalKeys.has(of)) continue;
+      const { cost: _, efforts: __, ...facts } = out[of]!;
+      const f: Facts = { ...facts };
+      const efforts = effortsOf(m.reasoning_options);
+      if (efforts) f.efforts = efforts;
+      const cost = costOf(m.cost);
+      if (cost) f.cost = cost;
+      out[key] = { ...f, ...CORRECTIONS[key] };
+    }
+  }
   return out;
 }
 

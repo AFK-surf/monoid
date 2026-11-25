@@ -1188,7 +1188,7 @@ jobs:
                   case "$win_reader_state" in
                     "completed success") ;;
                     "completed skipped")
-                      # (with vars.CI_1 == 'off', natives builds reader:win32-x64 itself)
+                      # Older pipelines could build the Windows reader in the combined natives job.
                       case "$natives_state" in
                         "completed success") ;;
                         completed*) echo "::error::the pipeline's natives job ended $natives_state (run $run)"; exit 1 ;;
@@ -1217,7 +1217,8 @@ jobs:
           if [ "$GITHUB_REF" != refs/heads/main ]; then
             mkdir -p "$RUNNER_TEMP/natives"
             if [ "$need_natives" = 1 ] || [ "$win_reader_state" = "completed skipped" ]; then
-              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"
+              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-win32-x64-$GITHUB_SHA" -D "$RUNNER_TEMP/natives" ||
+                gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"
             fi
             if [ "$need_win_reader" = 1 ] && [ "$win_reader_state" = "completed success" ]; then
               gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-win-reader-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"

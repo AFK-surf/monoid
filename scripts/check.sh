@@ -24,7 +24,8 @@
 # it took (the end of its output when it failed). A run takes as long as its longest step, not all of them.
 #
 # STILLFAIL_SKIP_RUST_TESTS=1 leaves out the native parts' Rust tests (station/native's, the mesh transport's, client/'s):
-# CI's check where none of that Rust changed (scripts/plan.sh's check_rust), on a runner without ci-1's sccache.
+# CI runs those tests separately. STILLFAIL_CHECK_PART=rust runs the Rust tests alone. STILLFAIL_RUST_CRATE names
+# one of launcher, runner, mesh, screen, screen-linux, mesh-transport or client for a CI shard.
 #
 # STILLFAIL_SKIP_CHECKS=1 skips it all (git's --no-verify does too); say why when you do.
 set -eu
@@ -211,6 +212,8 @@ report() {
 later() { if [ $full = 1 ]; then failed="$failed $1(no toolchain)"; fi; }
 has() { command -v "$1" > /dev/null 2>&1; }
 rust_tests() { [ "${STILLFAIL_SKIP_RUST_TESTS:-}" != 1 ]; }
+rust_part() { [ "${STILLFAIL_CHECK_PART:-}" = rust ] || part "$1"; }
+rust_crate() { [ -z "${STILLFAIL_RUST_CRATE:-}" ] || [ "$STILLFAIL_RUST_CRATE" = "$1" ]; }
 
 # node_modules as the lockfile says: a fresh worktree has none, an old checkout may miss what was added since.
 # pnpm links from its store, and does nothing when all is there: quick either way.
@@ -654,7 +657,7 @@ if [ $full = 1 ]; then
   # STILLFAIL_SKIP_RUST_TESTS leaves these and the core's Rust below out).
   for crate in launcher runner mesh screen screen-linux; do
     also='^$'; [ $crate = mesh ] && also='^vendor/'
-    if part station && rust_tests && { touches "^station/native/$crate/" || touches "$also"; }; then
+    if rust_part station && rust_tests && rust_crate "$crate" && { touches "^station/native/$crate/" || touches "$also"; }; then
       inputs="station/native/$crate"; [ $crate = mesh ] && inputs="$inputs vendor"; [ $crate = launcher ] && inputs="$inputs .node-version"
       if has cargo; then remembered "Rust: station/native/$crate" "$inputs" heavy cargo_test "station/native/$crate" --locked -q; else later "Rust: station/native/$crate"; fi
     fi
@@ -666,11 +669,11 @@ if [ $full = 1 ]; then
   if [ "$(uname -s)" = Darwin ] && touches '^apps/mbui/(src/host/apple_reports\.m|scripts/ios-reports-test\.sh|scripts/ios_reports_test\.m)$' && has xcrun; then
     step "iOS crash reports" bash apps/mbui/scripts/ios-reports-test.sh
   fi
-  if part core && rust_tests && touches '^libs/mesh-transport/'; then
+  if rust_part core && rust_tests && rust_crate mesh-transport && touches '^libs/mesh-transport/'; then
     if has cargo; then remembered "Rust: mesh transport" "libs/mesh-transport vendor/noq-udp" heavy cargo_test libs/mesh-transport --lib -q; else later "Rust: mesh transport"; fi
   fi
   # The core's native shells (client/shell for Android, client/iroh-wasm for the web).
-  if part core && rust_tests && touches '^client/(shell|iroh-wasm)/|^libs/mesh-transport/|^client/Cargo\.(toml|lock)$|^vendor/'; then
+  if rust_part core && rust_tests && rust_crate client && touches '^client/(shell|iroh-wasm)/|^libs/mesh-transport/|^client/Cargo\.(toml|lock)$|^vendor/'; then
     if has cargo; then remembered "Rust: client" "client libs/mesh-transport vendor" heavy cargo_test client --workspace -q; else later "Rust: client"; fi
   fi
 fi
