@@ -1508,6 +1508,7 @@ test "sessions_actors: R3 pure-value ActorTimerAction dispatches via on_timer_k 
     ) -> Unit {
       let tag = match action {
         ActorTimerAction::Named(t, payload) => t + ":" + sessions_core::text_of(payload, "tag")
+        _ => "other"
       }
       fired.push(a.key + "/" + name + "/" + tag)
       k(effect::Exit::Succeeded(()))

@@ -7,6 +7,26 @@
 import "base_codec"
 import "effect"
 
+/// Pure-callback bridge from `sessions_actors` to `#live` (`live_event`, `live_turn_end`, `live_ended`),
+/// holding zero back-references to `Actors` or `ActorsGen`.
+pub struct ActorLiveHooks {
+  pub live_event : (String, base_codec::Json) -> Unit
+  pub live_turn_end_k : (String, (effect::Exit[Unit]) -> Unit) -> Unit
+  pub live_ended_k : (Int, (effect::Exit[Unit]) -> Unit) -> Unit
+}
+
+pub fn ActorLiveHooks::noop() -> ActorLiveHooks {
+  ActorLiveHooks::{
+    live_event: fn(_key : String, _ev : base_codec::Json) -> Unit { () },
+    live_turn_end_k: fn(_key : String, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    },
+    live_ended_k: fn(_n : Int, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    },
+  }
+}
+
 pub struct ActorRunHandlers {
   pub on_event_k : (
     ActorsGen,
@@ -98,4 +118,73 @@ pub fn ActorRunHandlers::stub() -> ActorRunHandlers {
     },
     is_stub: true,
   }
+}
+
+/// Assemble real production `ActorRunHandlers` (`is_stub: false`) with `#live` hooks.
+pub fn ActorRunHandlers::real_with_live(live : ActorLiveHooks) -> ActorRunHandlers {
+  ActorRunHandlers::{
+    on_event_k: fn(
+      ctx : ActorsGen,
+      a : Actor,
+      generation : Int,
+      event : base_codec::Json,
+      read : base_codec::Json,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      ctx.live = live
+      ctx.on_event_k(a, generation, event, read, k)
+    },
+    called_k: fn(
+      ctx : ActorsGen,
+      a : Actor,
+      method : String,
+      args : Array[base_codec::Json],
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      ctx.live = live
+      ctx.called_k(a, method, args, k)
+    },
+    wake_queued_k: fn(
+      ctx : ActorsGen,
+      a : Actor,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      ctx.live = live
+      ctx.wake_queued_k(a, k)
+    },
+    wake_cap_queued_k: fn(
+      ctx : ActorsGen,
+      a : Actor,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      ctx.live = live
+      ctx.wake_cap_queued_k(a, k)
+    },
+    codex_updated_k: fn(
+      ctx : ActorsGen,
+      a : Actor,
+      id : Int,
+      why : Option[String],
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      ctx.live = live
+      ctx.codex_updated_k(a, id, why, k)
+    },
+    on_timer_k: fn(
+      ctx : ActorsGen,
+      a : Actor,
+      name : String,
+      action : ActorTimerAction,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      ctx.live = live
+      ctx.on_timer_k(a, name, action, k)
+    },
+    is_stub: false,
+  }
+}
+
+/// Assemble real production `ActorRunHandlers` (`is_stub: false`) with default no-op `#live` hooks.
+pub fn ActorRunHandlers::real() -> ActorRunHandlers {
+  ActorRunHandlers::real_with_live(ActorLiveHooks::noop())
 }

@@ -79,6 +79,11 @@ pub struct ActorTimerRef {
 /// eliminating any `ActorsGen -> actor_timers -> closure -> ActorsGen` RC cycle).
 pub enum ActorTimerAction {
   Named(String, base_codec::Json)
+  FireWait(Int, Double)
+  FireMidWait(Int, String, Double)
+  FireRefill(Int)
+  FireToolsRetry(Int)
+  OpenTimeout(Int)
 }
 
 /// Generation-scoped actor timer entry stored in `ActorsGen.actor_timers` (never in `host.hub_timers`).
@@ -211,6 +216,7 @@ pub struct ActorsGen {
   pub actors : Map[String, Actor]
   pub store_db : Option[StoreDb]
   pub actor_timers : Map[Int, PendingActorTimer]
+  pub mut live : ActorLiveHooks
 }
 
 pub fn ActorsGen::new_with_store(
@@ -228,6 +234,7 @@ pub fn ActorsGen::new_with_store(
     actors: Map::new(),
     store_db: store_db,
     actor_timers: Map::new(),
+    live: ActorLiveHooks::noop(),
   }
 }
 
@@ -458,6 +465,7 @@ pub fn ActorsGen::arm_actor_timer(
           ActorTimerAction::Named(tag, payload)
         }
       }
+      other => other
     }
     a.timers.set(name, ActorTimerRef::{ timer_id: tid, gen: my_gen })
     self.actor_timers.set(
@@ -470,6 +478,35 @@ pub fn ActorsGen::arm_actor_timer(
       },
     )
   }
+}
+
+/// Arm a pure-value open-timeout timer for `rpc_open_k` (FB-34).
+/// Fires immediately on `handle_due_id` (NOT queued behind `a`'s serial pump, avoiding deadlock)
+/// with zero closures capturing `ActorsGen` or `Actor`.
+pub fn ActorsGen::arm_open_timeout_timer(
+  self : ActorsGen,
+  a : Actor,
+  ms : Double,
+  rpc_id : Int,
+) -> Int {
+  if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
+    return 0
+  }
+  a.timer_gen = a.timer_gen + 1
+  let my_gen = a.timer_gen
+  let tid = self.after_id(ms, noop_timer, None)
+  if tid > 0 {
+    self.actor_timers.set(
+      tid,
+      PendingActorTimer::{
+        actor_key: a.key,
+        name: "__open_timeout",
+        gen: my_gen,
+        action: ActorTimerAction::OpenTimeout(rpc_id),
+      },
+    )
+  }
+  tid
 }
 
 /// Spawn a generation-scoped work fiber counted in `self.gen.counters.active`.
@@ -1451,24 +1488,48 @@ fn ActorsGen::handle_due_id(self : ActorsGen, id : Int) -> Unit {
       counters.active = counters.active + 1
       match self.actors.get(entry.actor_key) {
         Some(a) => {
-          match a.timers.get(entry.name) {
-            Some(cur) => {
-              if cur.timer_id == id && cur.gen == entry.gen {
-                let _ = a.timers.remove(entry.name)
-                let timer_name = entry.name
-                let timer_action = entry.action
-                self.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-                  self.enqueue_k(
-                    a,
-                    fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
-                      (self.handlers.on_timer_k)(self, a, timer_name, timer_action, tk)
-                    },
-                    k,
-                  )
-                })
+          match entry.action {
+            ActorTimerAction::OpenTimeout(rpc_id) => {
+              if a.gen_epoch == counters.epoch &&
+              self.cancel_rpc(
+                rpc_id,
+                base_codec::json_obj([
+                  ("openTimeout", sessions_core::jbool(true)),
+                  ("message", sessions_core::jstr("agent startup timed out")),
+                ]),
+              ) {
+                match a.opening_rpc {
+                  Some(cur) => {
+                    if cur == rpc_id {
+                      a.opening_rpc = None
+                    }
+                  }
+                  None => ()
+                }
+                self.tell(a.key, "node.cancelOpen", [sessions_core::jint(rpc_id)])
               }
             }
-            None => ()
+            _ => {
+              match a.timers.get(entry.name) {
+                Some(cur) => {
+                  if cur.timer_id == id && cur.gen == entry.gen {
+                    let _ = a.timers.remove(entry.name)
+                    let timer_name = entry.name
+                    let timer_action = entry.action
+                    self.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      self.enqueue_k(
+                        a,
+                        fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                          (self.handlers.on_timer_k)(self, a, timer_name, timer_action, tk)
+                        },
+                        k,
+                      )
+                    })
+                  }
+                }
+                None => ()
+              }
+            }
           }
         }
         None => ()
