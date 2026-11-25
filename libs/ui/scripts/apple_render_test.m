@@ -73,7 +73,29 @@ static void gr_free(uint8_t *px) {
   if (px) free((struct moonbit_object *)px - 1);
 }
 #define GR_KEYS_CHECKED 1
+#define GR_HOT_FRAMES 1
 #include "glass_reflect_cases.h"
+
+// A frame of glass_reflect_cases.h's hot-frame case drawn as the window draws it (its canvas read back, RGBA).
+static uint8_t *gr_window_frame(const double *inst, int n_inst, const double bg[3], const double (*rects)[4], int n) {
+  // (all of it anew: no capture kept, no canvas held, nothing taken as already shown)
+  if (!n) glass_forget(), canvas_ok = 0, shown_ok = 0, mb_host_render_dirty(0, 0, 320, 300);
+  for (int i = 0; i < n; i++) mb_host_render_dirty(rects[i][0], rects[i][1], rects[i][2], rects[i][3]);
+  mb_render_present(inst, n_inst, bg[0], bg[1], bg[2]);
+  present_drain();
+  int aw = 0, ah = 0;
+  uint8_t *px = read_texture(canvas, &aw, &ah);
+  if (!px || aw != 320 * GR_S || ah != 300 * GR_S) {
+    free(px);
+    return NULL;
+  }
+  size_t bytes = (size_t)aw * ah * 4;
+  struct moonbit_object *o = calloc(1, sizeof *o + bytes);
+  uint8_t *out = (uint8_t *)(o + 1);
+  for (size_t i = 0; i < bytes; i += 4) out[i] = px[i + 2], out[i + 1] = px[i + 1], out[i + 2] = px[i], out[i + 3] = px[i + 3];
+  free(px);
+  return out;
+}
 
 // The canvas the window's frames were drawn into the same to the byte as its last frame drawn whole again.
 static int canvas_as_whole(void) {
@@ -5302,6 +5324,8 @@ int main(void) {
   @autoreleasepool {
     // the reflection of what is outside liquid glass (glass_reflect_cases.h)
     glass_reflect_cases();
+    mb_render_set_size(320, 300, 2);
+    gr_hot_frame_case(gr_window_frame);
   }
   if (!failed) printf("apple_render: ok\n");
   return failed;

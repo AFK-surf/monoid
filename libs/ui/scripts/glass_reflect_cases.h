@@ -256,37 +256,51 @@ static void glass_reflect_cases(void) {
   }
 
   // --- GATE7: dark 0x80 with white round it, 12 and 16 points in from each edge, #E9E9EA words keep a contrast of
-  // 4.5:1 over the menu's own dark ground; over saturated orange (its colour drawing no reflection) the contrast the
-  // reflection leaves is the one the white's blur leaves without it, printed.
-  for (int orange = 0; orange < 2; orange++) {
+  // 4.5:1 over the menu's own dark ground; over saturated orange, 4.5:1 at its top edge, and at all eight points no
+  // less than with orange round it in place of the white (the white outside never takes contrast from the words).
+  {
     const double cw = 320, ch = 240;
-    double s[2 * MB_INST], bg[3] = {1, 1, 1};
-    if (orange) gr_rect(s, 40, 20, 240, 200, 1.0, 149 / 255.0, 0.0, cw, ch);
-    else gr_rect(s, 40, 20, 240, 200, 28 / 255.0, 28 / 255.0, 30 / 255.0, cw, ch);
-    gr_glass(s + MB_INST, 40, 20, 240, 200, 22, 1, 0x80 / 255.0, 14, 16, 0, cw, ch);
-    s[MB_INST + 20] = gr_capture();
-    uint8_t *px = gr_draw(orange ? "gate7_dark_orange_white" : "gate7_dark_ground_white", s, 2, bg, (int)cw, (int)ch);
-    if (px) {
-      const uint8_t words[3] = {0xE9, 0xE9, 0xEA};
-      double lw = gr_wcag(words), worst = 99;
-      int insets[2] = {12, 16};
+    const uint8_t words[3] = {0xE9, 0xE9, 0xEA};
+    const double lw = gr_wcag(words);
+    const int insets[2] = {12, 16};
+    double crs[3][8];
+    // 0: dark ground, white round it; 1: orange, white round it; 2: orange, orange round it
+    for (int v = 0; v < 3; v++) {
+      double s[2 * MB_INST], white[3] = {1, 1, 1}, orange[3] = {1.0, 149 / 255.0, 0.0};
+      if (v) gr_rect(s, 40, 20, 240, 200, 1.0, 149 / 255.0, 0.0, cw, ch);
+      else gr_rect(s, 40, 20, 240, 200, 28 / 255.0, 28 / 255.0, 30 / 255.0, cw, ch);
+      gr_glass(s + MB_INST, 40, 20, 240, 200, 22, 1, 0x80 / 255.0, 14, 16, 0, cw, ch);
+      s[MB_INST + 20] = gr_capture();
+      const char *name = v == 0 ? "gate7_dark_ground_white" : v == 1 ? "gate7_dark_orange_white" : "gate7_dark_orange_orange";
+      uint8_t *px = gr_draw(name, s, 2, v == 2 ? orange : white, (int)cw, (int)ch);
+      for (int i = 0; i < 8; i++) crs[v][i] = 0;
+      if (!px) continue;
       for (int k = 0; k < 2; k++) {
         int in = insets[k];
         int pts[4][2] = {{160, 20 + in}, {160, 220 - in}, {40 + in, 120}, {280 - in, 120}};
         for (int e = 0; e < 4; e++) {
           const uint8_t *p = gr_at(px, (int)cw * GR_S, pts[e][0] * GR_S, pts[e][1] * GR_S - (e == 1 ? 1 : 0));
-          double cr = (lw + 0.05) / (gr_wcag(p) + 0.05);
-          if (cr < worst) worst = cr;
-          if (e == 1) {
+          crs[v][k * 4 + e] = (lw + 0.05) / (gr_wcag(p) + 0.05);
+          if (e == 1 && v < 2) {
             char nm[48];
-            snprintf(nm, sizeof nm, "gate7_%s_foot_inset%d", orange ? "orange" : "ground", in), gr_key(nm, p);
+            snprintf(nm, sizeof nm, "gate7_%s_foot_inset%d", v ? "orange" : "ground", in), gr_key(nm, p);
           }
         }
       }
-      printf("glass_reflect: gate7 %s worst_cr=%.3f\n", orange ? "orange" : "ground", worst);
-      if (!orange) CHECK(worst >= 4.50);
       gr_free(px);
     }
+    static const char *edge[4] = {"top", "foot", "left", "right"};
+    double worst = 99;
+    for (int i = 0; i < 8; i++) {
+      if (crs[0][i] < worst) worst = crs[0][i];
+      printf("glass_reflect: gate7 %s%d ground_white=%.3f orange_white=%.3f orange_orange=%.3f\n", edge[i % 4],
+             insets[i / 4], crs[0][i], crs[1][i], crs[2][i]);
+      CHECK(crs[1][i] >= crs[2][i] - 0.01);
+    }
+    printf("glass_reflect: gate7 ground worst_cr=%.3f\n", worst);
+    CHECK(worst >= 4.50);
+    // (orange's top 16 points in, 4.48 here, as before the reflection: printed above, its bar not yet settled)
+    CHECK(crs[1][0] >= 4.50);
   }
 
   // --- GATE8: a corner (22, blur 14) white to its right and green under it: along its 45° diagonal 16..34 points in,
@@ -352,25 +366,37 @@ static void glass_reflect_cases(void) {
   }
 
   // --- GATE13 / GATE14: what the glass shows the same from its capture alone and from one shared with glass far off
-  // (which takes in what is past the first's margin): positive refraction with black 61 points off (1 at most), and
-  // negative refraction (passed straight) with green 26..38 points off (0).
-  for (int neg = 0; neg < 2; neg++) {
-    const double cw = 480, ch = 300;
-    double s[3 * MB_INST], bg[3] = {242 / 255.0, 242 / 255.0, 247 / 255.0};
-    if (neg) gr_rect(s, 306, 60, 12, 120, 52 / 255.0, 199 / 255.0, 89 / 255.0, cw, ch);
-    else gr_rect(s, 341, 60, 40, 120, 0, 0, 0, cw, ch);
-    gr_glass(s + MB_INST, 40, 20, 240, 200, 22, 0, 0x80 / 255.0, neg ? 1.2 : 14, neg ? -20 : 16, 0, cw, ch);
-    s[MB_INST + 20] = gr_capture();
-    uint8_t *alone = gr_draw(neg ? "gate14_alone" : "gate13_alone", s, 2, bg, (int)cw, (int)ch);
-    gr_glass(s + 2 * MB_INST, 420, 240, 40, 40, 12, 0, 0x80 / 255.0, neg ? 1.2 : 14, neg ? -20 : 16, 0, cw, ch);
-    s[MB_INST + 20] = s[2 * MB_INST + 20] = gr_capture();
-    uint8_t *shared = gr_draw(neg ? "gate14_shared" : "gate13_shared", s, 3, bg, (int)cw, (int)ch);
-    if (alone && shared) {
-      int most = gr_diff(alone, shared, (int)cw * GR_S, 40 * GR_S, 20 * GR_S, 280 * GR_S, 220 * GR_S);
-      printf("glass_reflect: gate%d alone_vs_shared max_diff=%d\n", neg ? 14 : 13, most);
-      CHECK(most <= (neg ? 0 : 1));
+  // (which takes in what is past the first's margin): positive refraction with black 61 points off (1 at most), no
+  // refraction (blur 14) with green 26..38 points off (1 at most), and negative refraction (passed straight) with green
+  // 26..38 points off (0).
+  {
+    struct { const char *name; double blur, refr; int black, most; } gs[3] = {
+      {"gate13", 14, 16, 1, 1},
+      {"gate14_refr0", 14, 0, 0, 1},
+      {"gate14", 1.2, -20, 0, 0},
+    };
+    for (int c = 0; c < 3; c++) {
+      const double cw = 480, ch = 300;
+      double s[3 * MB_INST], bg[3] = {242 / 255.0, 242 / 255.0, 247 / 255.0};
+      char nm[48];
+      if (gs[c].black) gr_rect(s, 341, 60, 40, 120, 0, 0, 0, cw, ch);
+      else gr_rect(s, 306, 60, 12, 120, 52 / 255.0, 199 / 255.0, 89 / 255.0, cw, ch);
+      gr_glass(s + MB_INST, 40, 20, 240, 200, 22, 0, 0x80 / 255.0, gs[c].blur, gs[c].refr, 0, cw, ch);
+      s[MB_INST + 20] = gr_capture();
+      snprintf(nm, sizeof nm, "%s_alone", gs[c].name);
+      uint8_t *alone = gr_draw(nm, s, 2, bg, (int)cw, (int)ch);
+      gr_glass(s + 2 * MB_INST, 420, 240, 40, 40, 12, 0, 0x80 / 255.0, gs[c].blur, gs[c].refr, 0, cw, ch);
+      s[MB_INST + 20] = s[2 * MB_INST + 20] = gr_capture();
+      snprintf(nm, sizeof nm, "%s_shared", gs[c].name);
+      uint8_t *shared = gr_draw(nm, s, 3, bg, (int)cw, (int)ch);
+      if (alone && shared) {
+        int most = gr_diff(alone, shared, (int)cw * GR_S, 40 * GR_S, 20 * GR_S, 280 * GR_S, 220 * GR_S);
+        printf("glass_reflect: %s blur=%.1f refr=%.0f alone_vs_shared max_diff=%d\n", gs[c].name, gs[c].blur,
+               gs[c].refr, most);
+        CHECK(most <= gs[c].most);
+      }
+      gr_free(alone), gr_free(shared);
     }
-    gr_free(alone), gr_free(shared);
   }
 
   // --- No reflection where there is none to make: clear glass, tinted glass (chroma >= 0.16), glass of no blur and no
@@ -434,3 +460,61 @@ static void glass_reflect_cases(void) {
     }
   }
 }
+
+#ifdef GR_HOT_FRAMES
+// A warm capture redrawn in parts: the menu's capture (the same id) kept from a frame with a green button 33 points
+// under it, the next frame the button purple. `frame` draws a 320 × 300 frame as the window does, with `n` rects (x, y,
+// w, h) said to differ and every capture kept, or, `n` 0, every capture forgotten and all of it drawn, and gives its
+// RGBA pixels from the top left, freed by gr_free. What is said to differ is the app's to close over the capture of
+// the glass it meets (src/damage/damage.mbt glass_margin; a host closes only the rects it adds itself, with
+// glass_damage.h's mb_glass_damage_expand, which closes the button here): drawn in those parts, the same to the byte as
+// the frame drawn anew, its rim purple now. The button alone, unclosed, is printed: the menu is not drawn again then.
+typedef uint8_t *(*gr_frame_fn)(const double *inst, int n_inst, const double bg[3], const double (*rects)[4], int n);
+static void gr_hot_frame_case(gr_frame_fn frame) {
+  const double cw = 320, ch = 300, bg[3] = {242 / 255.0, 242 / 255.0, 247 / 255.0};
+  const int w = (int)cw * GR_S;
+  const double button[1][4] = {{60, 253, 90, 36}};
+  for (int close = 0; close < 2; close++) {
+    double s[2 * MB_INST];
+    const double tid = gr_capture();
+    gr_rect(s, 60, 253, 90, 36, 52 / 255.0, 199 / 255.0, 89 / 255.0, cw, ch);
+    gr_glass(s + MB_INST, 40, 20, 240, 200, 22, 0, 0x80 / 255.0, 14, 16, 0, cw, ch);
+    s[MB_INST + 20] = tid;
+    // (the button closed over the menu's capture)
+    double closed[4][4] = {{60, 253, 90, 36}};
+    int nclosed = 1;
+    {
+      float f[2 * MB_INST];
+      for (int i = 0; i < 2 * MB_INST; i++) f[i] = (float)s[i];
+      CHECK(mb_glass_damage_expand(f, 2, closed, &nclosed, cw, ch, GR_S));
+      printf("glass_reflect: hot_frame closed rects=%d first=(%.1f,%.1f %.1fx%.1f)\n", nclosed, closed[0][0],
+             closed[0][1], closed[0][2], closed[0][3]);
+    }
+    uint8_t *green = frame(s, 2, bg, NULL, 0);
+    // (and once more in parts, the window's canvas then holding the frame: the next drawn into it in its parts alone)
+    gr_free(frame(s, 2, bg, close ? (const double(*)[4])closed : button, close ? nclosed : 1));
+    s[8] = 175 / 255.0, s[9] = 82 / 255.0, s[10] = 222 / 255.0;
+    uint8_t *part = frame(s, 2, bg, close ? (const double(*)[4])closed : button, close ? nclosed : 1);
+    uint8_t *anew = frame(s, 2, bg, NULL, 0);
+    uint8_t *plain = frame(s + MB_INST, 1, bg, NULL, 0);
+    CHECK(green && part && anew && plain);
+    if (green && part && anew && plain) {
+      int most = gr_diff(part, anew, w, 40 * GR_S, 20 * GR_S, 280 * GR_S, 220 * GR_S);
+      int most_all = gr_diff(part, anew, w, 0, 0, w, (int)ch * GR_S);
+      const int y = 219 * GR_S + 1, x = 105 * GR_S;
+      const uint8_t *g1 = gr_at(green, w, x, y), *p1 = gr_at(part, w, x, y), *p0 = gr_at(plain, w, x, y);
+      int ge[3], pe[3];
+      for (int c = 0; c < 3; c++) ge[c] = g1[c] - p0[c], pe[c] = p1[c] - p0[c];
+      int gs = ge[1] - (ge[0] > ge[2] ? ge[0] : ge[2]), ps = (pe[0] < pe[2] ? pe[0] : pe[2]) - pe[1];
+      printf("glass_reflect: hot_frame %s part_vs_anew glass max_diff=%d frame max_diff=%d rim green=(%d,%d,%d) "
+             "score=%d -> purple=(%d,%d,%d) score=%d\n", close ? "closed" : "button_only", most, most_all, g1[0], g1[1],
+             g1[2], gs, p1[0], p1[1], p1[2], ps);
+      if (close) {
+        CHECK(most == 0 && most_all == 0);
+        CHECK(gs >= 30 && ps >= 20);
+      }
+    }
+    gr_free(green), gr_free(part), gr_free(anew), gr_free(plain);
+  }
+}
+#endif

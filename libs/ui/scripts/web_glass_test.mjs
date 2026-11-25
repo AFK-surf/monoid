@@ -1211,19 +1211,69 @@ function runGlassVectorsInPage() {
       }
       roi.reflect.gate15 = most;
     }
+    // GATE13 / GATE14: the glass the same from its capture alone and from one shared with glass far off: positive
+    // refraction with black 61 points off, no refraction with green 26..38 off (1 at most), negative refraction (0).
     {
       const bg = [242 / 255, 242 / 255, 247 / 255];
+      const black = (b, o) => rect(b, o, 341, 60, 40, 120, 0, 0, 0, 0, 1, 0);
       const green = (b, o) => rect(b, o, 306, 60, 12, 120, 0, 52 / 255, 199 / 255, 89 / 255, 1, 0);
-      const t1 = tid--, t2 = tid--;
-      const alone = shotOf(480, 300, [green, (b, o) => glass(b, o, 40, 20, 240, 200, 22, false, 1.2, -20, t1)], bg);
-      const shared = shotOf(480, 300, [green, (b, o) => glass(b, o, 40, 20, 240, 200, 22, false, 1.2, -20, t2),
-        (b, o) => glass(b, o, 420, 240, 40, 40, 12, false, 1.2, -20, t2)], bg);
-      let most = 0;
-      for (let y = 40; y < 440; y++) for (let x = 80; x < 560; x++) {
-        const a = pxAt(alone, x, y), c = pxAt(shared, x, y);
-        for (let i = 0; i < 3; i++) most = Math.max(most, Math.abs(a[i] - c[i]));
+      const cases = [['gate13', black, 14, 16], ['gate14_refr0', green, 14, 0], ['gate14', green, 1.2, -20]];
+      for (const [name, beside, blur, refr] of cases) {
+        const t1 = tid--, t2 = tid--;
+        const alone = shotOf(480, 300, [beside, (b, o) => glass(b, o, 40, 20, 240, 200, 22, false, blur, refr, t1)], bg);
+        const shared = shotOf(480, 300, [beside, (b, o) => glass(b, o, 40, 20, 240, 200, 22, false, blur, refr, t2),
+          (b, o) => glass(b, o, 420, 240, 40, 40, 12, false, blur, refr, t2)], bg);
+        let most = 0;
+        for (let y = 40; y < 440; y++) for (let x = 80; x < 560; x++) {
+          const a = pxAt(alone, x, y), c = pxAt(shared, x, y);
+          for (let i = 0; i < 3; i++) most = Math.max(most, Math.abs(a[i] - c[i]));
+        }
+        roi.reflect[name] = most;
       }
-      roi.reflect.gate14 = most;
+    }
+    // A warm capture redrawn in parts: green under the menu, drawn whole and once more in parts (the canvas then
+    // holding it); then purple, against the same frame drawn anew. What is said to differ is the app's to close over
+    // the capture of the glass it meets (src/damage/damage.mbt glass_margin); the button alone, unclosed, is printed.
+    roi.reflect.hot = {};
+    for (const close of [false, true]) {
+      const bg = [242 / 255, 242 / 255, 247 / 255];
+      const t = tid--;
+      const buf = new Float32Array(2 * INST);
+      const fill = (r, g, b) => {
+        rect(buf, 0, 60, 253, 90, 36, 0, r, g, b, 1, 0);
+        glass(buf, INST, 40, 20, 240, 200, 22, false, 14, 16, t);
+      };
+      // (closed: the button grown over the menu's capture, its rect 61 points round it as glass_damage.h has it, 3 ×
+      // blur + refraction + 2 + a pixel, in the window: 0, 0 to 320, 289)
+      const say = () => {
+        if (close) H.renderDirty(0, 0, 320, 289);
+        else H.renderDirty(60, 253, 90, 36);
+      };
+      H.renderInit(320, 300, 2);
+      fill(52 / 255, 199 / 255, 89 / 255);
+      H.present(buf, 2, bg[0], bg[1], bg[2]);
+      const green = H.renderPixels();
+      say();
+      H.present(buf, 2, bg[0], bg[1], bg[2]);
+      fill(175 / 255, 82 / 255, 222 / 255);
+      say();
+      H.present(buf, 2, bg[0], bg[1], bg[2]);
+      const part = H.renderPixels();
+      const anew = shotOf(320, 300, [(b, o) => rect(b, o, 60, 253, 90, 36, 0, 175 / 255, 82 / 255, 222 / 255, 1, 0),
+        (b, o) => glass(b, o, 40, 20, 240, 200, 22, false, 14, 16, tid--)], bg);
+      const plain = shotOf(320, 300, [(b, o) => glass(b, o, 40, 20, 240, 200, 22, false, 14, 16, tid--)], bg);
+      let most = 0, mostAll = 0;
+      for (let y = 0; y < 600; y++) for (let x = 0; x < 640; x++) {
+        const a = pxAt(part, x, y), c = pxAt(anew, x, y);
+        for (let i = 0; i < 3; i++) {
+          const d = Math.abs(a[i] - c[i]);
+          mostAll = Math.max(mostAll, d);
+          if (x >= 80 && x < 560 && y >= 40 && y < 440) most = Math.max(most, d);
+        }
+      }
+      const p0 = pxAt(plain, 210, 439), g1 = pxAt(green, 210, 439), p1 = pxAt(part, 210, 439);
+      const ge = g1.map((v, i) => v - p0[i]), pe = p1.map((v, i) => v - p0[i]);
+      roi.reflect.hot[close ? 'closed' : 'button_only'] = { most, mostAll, g1, p1, gs: ge[1] - Math.max(ge[0], ge[2]), ps: Math.min(pe[0], pe[2]) - pe[1] };
     }
   }
   return { gl: H.renderInfo(), out, roi };
@@ -1562,9 +1612,15 @@ for (const t of roi.v11_top) {
       }
     }
   }
-  console.log(`web_glass_test: reflect gate15 max_step=${roi.reflect.gate15} gate14 max_diff=${roi.reflect.gate14}`);
+  console.log(`web_glass_test: reflect gate15 max_step=${roi.reflect.gate15} gate13 max_diff=${roi.reflect.gate13} gate14_refr0 max_diff=${roi.reflect.gate14_refr0} gate14 max_diff=${roi.reflect.gate14}`);
   check(roi.reflect.gate15 <= 3, `reflect_gate15=${roi.reflect.gate15}`);
+  check(roi.reflect.gate13 <= 1, `reflect_gate13=${roi.reflect.gate13}`);
+  check(roi.reflect.gate14_refr0 <= 1, `reflect_gate14_refr0=${roi.reflect.gate14_refr0}`);
   check(roi.reflect.gate14 === 0, `reflect_gate14=${roi.reflect.gate14}`);
+  for (const [k, hot] of Object.entries(roi.reflect.hot)) {
+    console.log(`web_glass_test: reflect hot_frame ${k} part_vs_anew glass max_diff=${hot.most} frame max_diff=${hot.mostAll} rim green=${hot.g1} score=${hot.gs} -> purple=${hot.p1} score=${hot.ps}`);
+    if (k === 'closed') check(hot.most === 0 && hot.mostAll === 0 && hot.gs >= 30 && hot.ps >= 20, `reflect_hot_frame=${JSON.stringify(hot)}`);
+  }
 }
 if (failed) process.exit(1);
 console.log('web_glass_test: ok');
