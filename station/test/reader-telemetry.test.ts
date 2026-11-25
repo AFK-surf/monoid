@@ -1,10 +1,20 @@
 // Unit and OTel log-export integration tests for `station/src/read/reader-telemetry.ts`.
 import assert from "node:assert/strict";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { record } from "../src/ops/log-export.ts";
 import { type Line, hearLines } from "../src/ops/log.ts";
 import type { ProcessInfo } from "../src/platform/index.ts";
-import { type LiveProgram, MbProcess } from "../src/read/mb-reader.ts";
+import {
+  type LiveProgram,
+  MbProcess,
+  MbReader,
+  resetReaderSelectionStateForTest,
+  setMbReaderBinaryOverrideForTest,
+} from "../src/read/mb-reader.ts";
+import { Readers } from "../src/read/pool.ts";
 import {
   DEFAULT_MAX_SAMPLES,
   ReaderTelemetry,
@@ -12,10 +22,34 @@ import {
   programsByEngineMode,
   readerTelemetry,
 } from "../src/read/reader-telemetry.ts";
+import {
+  measured,
+  triggerShadowDeadlineForTest,
+  waitForShadowMeasures,
+} from "../src/sessions/footprint.ts";
+import { MinuteReader } from "../src/usage/minute-reader.ts";
 
+const KiB = 1024;
 const MiB = 1024 * 1024;
+const unix = process.platform !== "win32";
 const attrsOf = (r: ReturnType<typeof record>) =>
   Object.fromEntries(r.attributes.map((a) => [a.key, Object.values(a.value)[0]]));
+const rawAttrsOf = (r: ReturnType<typeof record>) =>
+  Object.fromEntries(r.attributes.map((a) => [a.key, a.value]));
+
+function makeFakeExecutable(dir: string, filename: string, jsBody: string): string {
+  const scriptPath = join(dir, `${filename}.mjs`);
+  writeFileSync(scriptPath, jsBody);
+  if (unix) {
+    const binPath = join(dir, filename);
+    writeFileSync(binPath, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)} "$@"\n`);
+    chmodSync(binPath, 0o755);
+    return binPath;
+  }
+  const cmdPath = join(dir, `${filename}.cmd`);
+  writeFileSync(cmdPath, `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`);
+  return cmdPath;
+}
 
 test("classifyProgram classifies Unix/Windows paths, .exe, pion vs mb, and all modes", () => {
   assert.deepEqual(
@@ -55,7 +89,6 @@ test("classifyProgram classifies Unix/Windows paths, .exe, pion vs mb, and all m
 test("ReaderTelemetry computes p50/p95/max/avg, bounds sample memory at 512, and resets on flushWindow", () => {
   const t = new ReaderTelemetry({ nowMs: 1_000 });
 
-  // Push 5,000 samples (1..5000 ms) into pion/data and verify bounded reservoir + reasonable quantiles.
   for (let i = 1; i <= 5_000; i++) {
     t.recordCall("pion", "data", i, i % 100 !== 0);
   }
@@ -84,6 +117,8 @@ test("ReaderTelemetry computes p50/p95/max/avg, bounds sample memory at 512, and
   assert.equal(dataSummary.readyMaxMs, 200);
   assert.equal(dataSummary.loadedP50Ms, 40);
   assert.equal(dataSummary.openedP50Ms, 80);
+  assert.equal(dataSummary.engineRssKb, null);
+  assert.equal(dataSummary.enginePeakRssKb, null);
 
   const searchSummary = summaries.find((s) => s.engine === "pion" && s.mode === "search")!;
   assert.ok(searchSummary);
@@ -91,11 +126,10 @@ test("ReaderTelemetry computes p50/p95/max/avg, bounds sample memory at 512, and
   assert.equal(searchSummary.p50Ms, undefined);
   assert.equal(searchSummary.readyP50Ms, undefined);
 
-  // Subsequent flush with no activity and no live processes produces nothing.
   assert.deepEqual(t.flushWindow(1_201_000), []);
 });
 
-test("programsByEngineMode attributes descendant trees without double counting and tracks peak RSS", () => {
+test("programsByEngineMode attributes descendant trees without double counting, tracks peak KiB RSS, and preserves null when table is null", () => {
   const table: ProcessInfo[] = [
     { pid: 1, ppid: 0, pgid: 1, bytes: 300 * MiB, command: "node" },
     { pid: 10, ppid: 1, pgid: 10, bytes: 12 * MiB, command: "stillfail-pion" },
@@ -115,6 +149,8 @@ test("programsByEngineMode attributes descendant trees without double counting a
   ];
 
   const snap = programsByEngineMode(table, live);
+  assert.equal(snap.totalBytes, (12 + 3 + 8 + 45 + 5 + 10) * MiB);
+  assert.equal(snap.totalCount, 4);
   assert.equal(snap.pionRssBytes, (12 + 3 + 8) * MiB);
   assert.equal(snap.mbRssBytes, (45 + 5 + 10) * MiB);
   assert.equal(snap.pionProcs, 2);
@@ -127,12 +163,23 @@ test("programsByEngineMode attributes descendant trees without double counting a
   assert.deepEqual(pionMem, { engine: "pion", mode: "memory", liveCount: 1, rssBytes: 8 * MiB });
   assert.deepEqual(mbData, { engine: "mb", mode: "data", liveCount: 2, rssBytes: 60 * MiB });
 
-  // Null process table preserves process counts with zero RSS.
+  // table === null preserves liveCount > 0 and keeps RSS null (distinct from real 0).
   const nullSnap = programsByEngineMode(null, live);
-  assert.equal(nullSnap.pionRssBytes, 0);
-  assert.equal(nullSnap.mbRssBytes, 0);
+  assert.equal(nullSnap.pionRssBytes, null);
+  assert.equal(nullSnap.mbRssBytes, null);
   assert.equal(nullSnap.pionProcs, 2);
   assert.equal(nullSnap.mbProcs, 2);
+  assert.equal(nullSnap.byEngineMode[0]!.rssBytes, null);
+
+  const nullTel = new ReaderTelemetry({ nowMs: 1_000 });
+  nullTel.recordRssSnapshot(null, live, 2_000);
+  const nullFlushed = nullTel.flushWindow(61_000);
+  assert.equal(nullFlushed.length, 3);
+  for (const s of nullFlushed) {
+    assert.ok(s.liveCount > 0);
+    assert.equal(s.engineRssKb, null);
+    assert.equal(s.enginePeakRssKb, null);
+  }
 
   // Peak RSS captures transient spike across snapshots in the same window and resets after flush.
   const t = new ReaderTelemetry({ nowMs: 1_000 });
@@ -149,18 +196,53 @@ test("programsByEngineMode attributes descendant trees without double counting a
   t.recordRssSnapshot(lowTable, oneLive, 3_000);
   const flushed1 = t.flushWindow(61_000);
   assert.equal(flushed1.length, 1);
-  assert.equal(flushed1[0]!.rssMb, 10);
-  assert.equal(flushed1[0]!.peakRssMb, 42);
+  assert.equal(flushed1[0]!.engineRssKb, 10 * KiB);
+  assert.equal(flushed1[0]!.enginePeakRssKb, 42 * KiB);
   assert.equal(flushed1[0]!.liveCount, 1);
 
-  // Next window sees low RSS as peak too (old 42 MB peak was reset).
   t.recordRssSnapshot(lowTable, oneLive, 62_000);
   const flushed2 = t.flushWindow(121_000);
-  assert.equal(flushed2[0]!.rssMb, 10);
-  assert.equal(flushed2[0]!.peakRssMb, 10);
+  assert.equal(flushed2[0]!.engineRssKb, 10 * KiB);
+  assert.equal(flushed2[0]!.enginePeakRssKb, 10 * KiB);
 });
 
-test("MbProcess lifecycle records spawns, stderrLines, and distinguishes terminate vs unexpected exit", async () => {
+test("arbitrary filename STILLFAIL_PION_READER is classified as pion on MbProcess and programsByEngineMode", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pion-custom-bin-"));
+  const prevPion = process.env.STILLFAIL_PION_READER;
+  readerTelemetry.resetForTest(1_000);
+  resetReaderSelectionStateForTest();
+  try {
+    const customBin = makeFakeExecutable(dir, "my-custom-engine-bin", "setInterval(() => {}, 1000);");
+    process.env.STILLFAIL_PION_READER = customBin;
+    const p = new MbProcess(customBin, ["--builder", "custom-test"]);
+    try {
+      assert.equal(p.engine, "pion");
+      assert.equal(p.mode, "custom-test");
+      const liveEntry = MbProcess.live().find((l) => l.mode === "custom-test");
+      assert.ok(liveEntry);
+      assert.equal(liveEntry.engine, "pion");
+
+      const breakdown = programsByEngineMode(
+        [{ pid: liveEntry.pid, ppid: process.pid, pgid: liveEntry.pid, bytes: 15 * MiB, command: "node" }],
+        [liveEntry],
+      );
+      assert.equal(breakdown.pionProcs, 1);
+      assert.equal(breakdown.mbProcs, 0);
+      assert.equal(breakdown.pionRssBytes, 15 * MiB);
+      assert.equal(breakdown.byEngineMode[0]!.engine, "pion");
+    } finally {
+      await p.terminate();
+    }
+  } finally {
+    if (prevPion === undefined) delete process.env.STILLFAIL_PION_READER;
+    else process.env.STILLFAIL_PION_READER = prevPion;
+    resetReaderSelectionStateForTest();
+    readerTelemetry.resetForTest();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("MbProcess lifecycle records spawns, stderrLines, STDIN_MOST stall without unexpectedExits, and distinguishes terminate vs crash", async () => {
   readerTelemetry.resetForTest(1_000);
   const stderrLogs: Line[] = [];
   hearLines((l) => {
@@ -186,24 +268,36 @@ test("MbProcess lifecycle records spawns, stderrLines, and distinguishes termina
     ]);
     await new Promise<void>((resolve) => p3.once("exit", () => resolve()));
 
+    // 4. STDIN_MOST stall: MUST count stalls === 1 and unexpectedExits === 0.
+    const p4 = new MbProcess(
+      process.execPath,
+      ["-e", "process.stdin.pause(); setInterval(() => {}, 1000);", "--", "--builder", "telemetry-stall"],
+      { stdinMost: 64 * KiB },
+    );
+    const stallExited = new Promise<void>((resolve) => p4.once("exit", () => resolve()));
+    p4.postLine("x".repeat(256 * KiB));
+    await stallExited;
+
     const flushed = readerTelemetry.flushWindow(11_000);
 
     const term = flushed.find((s) => s.mode === "telemetry-term")!;
-    assert.ok(term);
     assert.equal(term.engine, "mb");
     assert.equal(term.spawns, 1);
     assert.equal(term.unexpectedExits, 0);
 
     const zero = flushed.find((s) => s.mode === "telemetry-zero")!;
-    assert.ok(zero);
     assert.equal(zero.spawns, 1);
     assert.equal(zero.unexpectedExits, 0);
 
     const crash = flushed.find((s) => s.mode === "telemetry-crash")!;
-    assert.ok(crash);
     assert.equal(crash.spawns, 1);
     assert.equal(crash.unexpectedExits, 1);
     assert.equal(crash.stderrLines, 2);
+
+    const stall = flushed.find((s) => s.mode === "telemetry-stall")!;
+    assert.equal(stall.spawns, 1);
+    assert.equal(stall.stalls, 1);
+    assert.equal(stall.unexpectedExits, 0);
 
     const crashLogs = stderrLogs.filter((l) => l.fields.mode === "telemetry-crash");
     assert.equal(crashLogs.length, 2);
@@ -214,7 +308,168 @@ test("MbProcess lifecycle records spawns, stderrLines, and distinguishes termina
   }
 });
 
-test("OTel log-export preserves all engine summary and memory now telemetry attributes without scrubbing", () => {
+test("ReaderPool counts fallback once across multiple pumps, ignores abort/close in errors, and tolerates malformed ready:null", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "pool-telemetry-"));
+  const prevPion = process.env.STILLFAIL_PION_READER;
+  const prevData = process.env.STILLFAIL_READER_DATA;
+  readerTelemetry.resetForTest(1_000);
+  resetReaderSelectionStateForTest();
+
+  try {
+    // Fake MB reader that emits malformed `{"ready":null}` first, replies to normal reads, and hangs when `args.hang` is set.
+    const fakeMb = makeFakeExecutable(
+      dir,
+      "stillfail-reader",
+      `import { createInterface } from "node:readline";
+process.stdout.write(JSON.stringify({ ready: null }) + "\\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const msg = JSON.parse(line);
+  if (msg.args?.hang) return;
+  process.stdout.write(JSON.stringify({ id: msg.id, text: JSON.stringify({ ok: msg.op }) }) + "\\n");
+});`,
+    );
+    // Point STILLFAIL_PION_READER to a missing path so requesting pion falls back to fakeMb.
+    process.env.STILLFAIL_PION_READER = join(dir, "does-not-exist-pion");
+    process.env.STILLFAIL_READER_DATA = "pion";
+    setMbReaderBinaryOverrideForTest(() => fakeMb);
+
+    const pool = new Readers(dir, 1);
+    try {
+      // Multiple reads pump the same single fallback-spawned worker -> fallbacks must stay 1.
+      assert.equal(await pool.read("thread", {}, "en"), JSON.stringify({ ok: "thread" }));
+      assert.equal(await pool.read("chats", {}, "en"), JSON.stringify({ ok: "chats" }));
+      assert.equal(await pool.read("summary", {}, "en"), JSON.stringify({ ok: "summary" }));
+
+      // Client abort on an in-flight read must NOT increment errors.
+      const ac = new AbortController();
+      const hanging = pool.read("job", { hang: true }, "en", { signal: ac.signal });
+      setTimeout(() => ac.abort(), 30);
+      await assert.rejects(hanging, /read cancelled/);
+
+      // Wait briefly for retiring worker exit to settle.
+      await new Promise((r) => setTimeout(r, 80));
+
+      // Station close() while another read is in flight must NOT increment errors.
+      const closingRead = pool.read("job", { hang: true }, "en");
+      setTimeout(() => pool.close(), 30);
+      await assert.rejects(closingRead);
+      await new Promise((r) => setTimeout(r, 80));
+    } finally {
+      pool.close();
+    }
+
+    const flushed = readerTelemetry.flushWindow(61_000);
+    const pionData = flushed.find((s) => s.engine === "pion" && s.mode === "data");
+    const mbData = flushed.find((s) => s.engine === "mb" && s.mode === "data");
+    assert.ok(pionData, "fallback counter recorded under pion/data");
+    assert.ok(mbData, "actual MB worker traffic recorded under mb/data");
+    // 1 fallback for the first worker + 1 fallback for the second worker after abort retired the first;
+    // the 3 sequential pumps on the first worker did NOT inflate fallbacks.
+    assert.equal(pionData.fallbacks, 2);
+    assert.equal(mbData.spawns, 2);
+    assert.equal(mbData.ops, 3);
+    assert.equal(mbData.errors, 0, "aborted and closed reads must not pollute errors");
+    assert.ok(mbData.readyCount >= 1, "malformed ready:null handled without throwing");
+    assert.equal(mbData.loadedP50Ms, undefined);
+    assert.equal(mbData.openedP50Ms, undefined);
+  } finally {
+    if (prevPion === undefined) delete process.env.STILLFAIL_PION_READER;
+    else process.env.STILLFAIL_PION_READER = prevPion;
+    if (prevData === undefined) delete process.env.STILLFAIL_READER_DATA;
+    else process.env.STILLFAIL_READER_DATA = prevData;
+    resetReaderSelectionStateForTest();
+    readerTelemetry.resetForTest();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("footprint shadow internal deadline timeout records ops=1, errors=1 once without double counting on exit", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "footprint-shadow-tel-"));
+  const prevPion = process.env.STILLFAIL_PION_READER;
+  const prevFoot = process.env.STILLFAIL_READER_FOOTPRINT;
+  readerTelemetry.resetForTest(1_000);
+  resetReaderSelectionStateForTest();
+
+  try {
+    const fakeMb = makeFakeExecutable(
+      dir,
+      "stillfail-reader",
+      `import { createInterface } from "node:readline";
+createInterface({ input: process.stdin }).once("line", () => {
+  process.stdout.write(JSON.stringify({ size: 123, complete: true }) + "\\n");
+  process.exit(0);
+});`,
+    );
+    const hangingPion = makeFakeExecutable(
+      dir,
+      "custom-shadow-pion",
+      "process.stdin.resume(); setInterval(() => {}, 1000);",
+    );
+    setMbReaderBinaryOverrideForTest(() => fakeMb);
+    process.env.STILLFAIL_PION_READER = hangingPion;
+    process.env.STILLFAIL_READER_FOOTPRINT = "shadow";
+
+    const bytes = await measured(dir, undefined, { maxDurationMs: 60_000 });
+    assert.equal(bytes, 123);
+
+    // Wait for shadow deadline arming, then trigger it immediately.
+    for (let i = 0; i < 50 && !triggerShadowDeadlineForTest(); i++) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await waitForShadowMeasures();
+
+    const flushed = readerTelemetry.flushWindow(61_000);
+    const mbFoot = flushed.find((s) => s.engine === "mb" && s.mode === "footprint")!;
+    const pionFoot = flushed.find((s) => s.engine === "pion" && s.mode === "footprint")!;
+    assert.ok(mbFoot);
+    assert.ok(pionFoot);
+    assert.equal(mbFoot.ops, 1);
+    assert.equal(mbFoot.errors, 0);
+    assert.equal(pionFoot.ops, 1);
+    assert.equal(pionFoot.errors, 1);
+  } finally {
+    if (prevPion === undefined) delete process.env.STILLFAIL_PION_READER;
+    else process.env.STILLFAIL_PION_READER = prevPion;
+    if (prevFoot === undefined) delete process.env.STILLFAIL_READER_FOOTPRINT;
+    else process.env.STILLFAIL_READER_FOOTPRINT = prevFoot;
+    resetReaderSelectionStateForTest();
+    readerTelemetry.resetForTest();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("MinuteReader (usage-check) error response records ops=1, errors=1", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "minute-reader-tel-"));
+  readerTelemetry.resetForTest(1_000);
+  try {
+    const fakeCheck = makeFakeExecutable(
+      dir,
+      "stillfail-pion",
+      `import { createInterface } from "node:readline";
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const req = JSON.parse(line);
+  process.stdout.write(JSON.stringify({ id: req.id, error: "simulated usage-check failure" }) + "\\n");
+});`,
+    );
+    const reader = new MinuteReader(join(dir, "stillfail.db"), {}, fakeCheck);
+    try {
+      await assert.rejects(reader.readyRemote(), /simulated usage-check failure/);
+    } finally {
+      await reader.close();
+    }
+
+    const flushed = readerTelemetry.flushWindow(61_000);
+    const check = flushed.find((s) => s.engine === "pion" && s.mode === "usage-check")!;
+    assert.ok(check);
+    assert.equal(check.ops, 1);
+    assert.equal(check.errors, 1);
+  } finally {
+    readerTelemetry.resetForTest();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("OTel log-export preserves all updated telemetry fields without scrubbing and emits stable intValue types", () => {
   const t = new ReaderTelemetry({ nowMs: 1_000 });
   t.recordSpawn("pion", "replica-export");
   t.recordUnexpectedExit("pion", "replica-export");
@@ -226,12 +481,12 @@ test("OTel log-export preserves all engine summary and memory now telemetry attr
   t.recordCall("pion", "replica-export", 48, false);
   const rss = t.recordRssSnapshot(
     [
-      { pid: 100, ppid: 1, pgid: 100, bytes: 18 * MiB, command: "stillfail-pion" },
+      { pid: 100, ppid: 1, pgid: 100, bytes: 18 * MiB + 512 * KiB, command: "stillfail-pion" },
       { pid: 200, ppid: 1, pgid: 200, bytes: 64 * MiB, command: "stillfail-reader" },
     ],
     [
-      { pid: 100, binary: "/opt/stillfail-pion", args: ["--builder", "replica-export"], background: true, startedAt: 1 },
-      { pid: 200, binary: "/opt/stillfail-reader", args: ["--data", "/d"], background: false, startedAt: 1 },
+      { pid: 100, binary: "/opt/stillfail-pion", args: ["--builder", "replica-export"], background: true, startedAt: 1, engine: "pion", mode: "replica-export" },
+      { pid: 200, binary: "/opt/stillfail-reader", args: ["--data", "/d"], background: false, startedAt: 1, engine: "mb", mode: "data" },
     ],
     10_000,
   );
@@ -243,29 +498,23 @@ test("OTel log-export preserves all engine summary and memory now telemetry attr
     "/Users/alice",
   );
   const sAttrs = attrsOf(summaryRecord);
+  const sRaw = rawAttrsOf(summaryRecord);
   assert.equal(sAttrs["log.target"], "readers");
   assert.equal(sAttrs["log.engine"], "pion");
   assert.equal(sAttrs["log.mode"], "replica-export");
-  assert.equal(sAttrs["log.windowSec"], "600");
-  assert.equal(sAttrs["log.spawns"], "1");
-  assert.equal(sAttrs["log.unexpectedExits"], "1");
-  assert.equal(sAttrs["log.stalls"], "1");
-  assert.equal(sAttrs["log.stderrLines"], "1");
-  assert.equal(sAttrs["log.fallbacks"], "1");
-  assert.equal(sAttrs["log.ops"], "2");
-  assert.equal(sAttrs["log.errors"], "1");
-  assert.equal(sAttrs["log.p50Ms"], "12");
-  assert.equal(sAttrs["log.p95Ms"], "48");
-  assert.equal(sAttrs["log.maxMs"], "48");
-  assert.equal(sAttrs["log.avgMs"], "30");
-  assert.equal(sAttrs["log.readyCount"], "1");
-  assert.equal(sAttrs["log.readyP50Ms"], "85");
-  assert.equal(sAttrs["log.readyMaxMs"], "85");
-  assert.equal(sAttrs["log.loadedP50Ms"], "25");
-  assert.equal(sAttrs["log.openedP50Ms"], "60");
-  assert.equal(sAttrs["log.liveCount"], "1");
-  assert.equal(sAttrs["log.rssMb"], "18");
-  assert.equal(sAttrs["log.peakRssMb"], "18");
+  assert.equal(sAttrs["log.engineRssKb"], String(18 * KiB + 512));
+  assert.equal(sAttrs["log.enginePeakRssKb"], String(18 * KiB + 512));
+
+  // Verify every numeric metric is serialized as stable OTLP `intValue` (never `doubleValue`).
+  const intKeys = [
+    "log.windowSec", "log.spawns", "log.unexpectedExits", "log.stalls", "log.stderrLines",
+    "log.fallbacks", "log.ops", "log.errors", "log.p50Ms", "log.p95Ms", "log.maxMs", "log.avgMs",
+    "log.readyCount", "log.readyP50Ms", "log.readyMaxMs", "log.loadedP50Ms", "log.openedP50Ms",
+    "log.liveCount", "log.engineRssKb", "log.enginePeakRssKb",
+  ];
+  for (const key of intKeys) {
+    assert.ok("intValue" in sRaw[key]!, `${key} must be OTLP intValue, got ${JSON.stringify(sRaw[key])}`);
+  }
   for (const [k, v] of Object.entries(sAttrs)) {
     assert.notEqual(v, "…", `attribute ${k} must not be scrubbed`);
   }
@@ -278,8 +527,8 @@ test("OTel log-export preserves all engine summary and memory now telemetry attr
       message: "now",
       fields: {
         rssMb: 210,
-        pionRssMb: Math.round(rss.pionRssBytes / MiB),
-        mbRssMb: Math.round(rss.mbRssBytes / MiB),
+        pionRssMb: Math.round(rss.pionRssBytes! / MiB),
+        mbRssMb: Math.round(rss.mbRssBytes! / MiB),
         pionProcs: rss.pionProcs,
         mbProcs: rss.mbProcs,
       },
@@ -287,9 +536,43 @@ test("OTel log-export preserves all engine summary and memory now telemetry attr
     "/Users/alice",
   );
   const mAttrs = attrsOf(memRecord);
+  const mRaw = rawAttrsOf(memRecord);
   assert.equal(mAttrs["log.target"], "memory");
-  assert.equal(mAttrs["log.pionRssMb"], "18");
+  assert.equal(mAttrs["log.pionRssMb"], "19");
   assert.equal(mAttrs["log.mbRssMb"], "64");
   assert.equal(mAttrs["log.pionProcs"], "1");
   assert.equal(mAttrs["log.mbProcs"], "1");
+  for (const key of ["log.pionRssMb", "log.mbRssMb", "log.pionProcs", "log.mbProcs"]) {
+    assert.ok("intValue" in mRaw[key]!, `${key} must be OTLP intValue`);
+  }
+});
+
+// Keep MbReader import referenced in case direct MbReader ready-frame test is expanded.
+test("direct MbReader captures ready handshake once without pool", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mb-reader-direct-"));
+  readerTelemetry.resetForTest(1_000);
+  try {
+    const fakeReader = makeFakeExecutable(
+      dir,
+      "stillfail-pion",
+      `process.stdout.write(JSON.stringify({ ready: { loadedMs: 11, openedMs: 22 } }) + "\\n");
+setInterval(() => {}, 1000);`,
+    );
+    const r = new MbReader(fakeReader, dir, { engine: "pion" });
+    try {
+      await new Promise<void>((resolve) => r.once("message", () => resolve()));
+    } finally {
+      await r.terminate();
+    }
+    const [summary] = readerTelemetry.flushWindow(61_000);
+    assert.ok(summary);
+    assert.equal(summary.engine, "pion");
+    assert.equal(summary.mode, "data");
+    assert.equal(summary.readyCount, 1);
+    assert.equal(summary.loadedP50Ms, 11);
+    assert.equal(summary.openedP50Ms, 22);
+  } finally {
+    readerTelemetry.resetForTest();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

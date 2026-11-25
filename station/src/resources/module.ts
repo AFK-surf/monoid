@@ -123,8 +123,12 @@ export const ResourcesLive = Layer.effectDiscard(
           children: async () => {
             const snap = await (table = platform.processTable(false));
             const live = MbProcess.live();
-            readerTelemetry.recordRssSnapshot(snap, live, wall.now());
-            return programsIn(snap, live.map((p) => p.pid));
+            try {
+              const breakdown = readerTelemetry.recordRssSnapshot(snap, live, wall.now());
+              return { bytes: breakdown.totalBytes, count: breakdown.totalCount };
+            } catch {
+              return programsIn(snap, live.map((p) => p.pid));
+            }
           },
           front: async () => {
             // (let go once read: the machine's table is not kept between samples)

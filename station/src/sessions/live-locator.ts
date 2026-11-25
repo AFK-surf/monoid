@@ -5,7 +5,7 @@
 import { join, sep } from "node:path";
 import type { Clock } from "effect";
 import { Fibers, wall } from "../ops/fibers.ts";
-import { MbProcess, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, engineOfSelection, recordFallbackSpawn, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { onTranscriptHintsChanged, transcriptLocationHints } from "../read/transcript.ts";
@@ -109,10 +109,11 @@ export class LiveLocator {
     else request.resolve(value);
   }
 
-  private start(binary?: string): Locating {
+  private start(resolved?: ResolvedReaderSelection): Locating {
     if (this.reference !== undefined) return this.listen(this.reference(this.data));
-    const bin = binary ?? resolveReaderSelection("live-locator", { config: this.readers, logAt: "live-locator" }).primaryBinary;
-    return this.listen(new MbProcess(bin, ["--builder", "live-locator", "--db", join(this.data, "stillfail.db"), "--data", this.data, "--sep", sep]));
+    const sel = resolved ?? resolveReaderSelection("live-locator", { config: this.readers, logAt: "live-locator" });
+    recordFallbackSpawn(sel.selection);
+    return this.listen(new MbProcess(sel.primaryBinary, ["--builder", "live-locator", "--db", join(this.data, "stillfail.db"), "--data", this.data, "--sep", sep], { engine: engineOfSelection(sel) }));
   }
 
   private listen(worker: Locating): Locating {
@@ -150,7 +151,7 @@ export class LiveLocator {
         return;
       }
       try {
-        this.start(sel.primaryBinary);
+        this.start(sel);
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         for (const req of this.waiting.splice(0)) this.finish(req, err);
@@ -182,7 +183,7 @@ export class LiveLocator {
       const worker = this.worker ?? this.start();
       if (worker instanceof MbProcess) {
         request.engine = worker.engine;
-        request.askedAt = wall.now();
+        request.askedAt ??= wall.now();
       }
       worker.postMessage({ type: "locate", id: request.id, key: request.key, profiles: request.profiles } satisfies LocateRequest);
       return true;

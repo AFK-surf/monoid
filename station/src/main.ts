@@ -412,15 +412,17 @@ function run() {
     }));
     // With how the process is (as health.json says it) and what ops/forewarn.ts looks at: its descriptors, the data
     // directory's disk and the database's log.
+    const rssNow = async () => {
+      const live = MbProcess.live();
+      if (live.length === 0) return readerTelemetry.recordRssSnapshot(null, live, wall.now());
+      const now = wall.now();
+      if (readerTelemetry.lastRssAgeMs(now) <= 60_000) return readerTelemetry.lastRss();
+      const table = await platform.processTable(false).catch(() => null);
+      return readerTelemetry.recordRssSnapshot(table, live, wall.now());
+    };
     timers.push(wall.every(process.env.STILLFAIL_MEMLOG ? 10_000 : 600_000, () => {
       const m = process.memoryUsage();
       const mb = (v: number) => Math.round(v / 1048576);
-      const rssNow = async () => {
-        const now = wall.now();
-        if (readerTelemetry.lastRssAgeMs(now) <= 60_000) return readerTelemetry.lastRss();
-        const table = await platform.processTable(false).catch(() => null);
-        return readerTelemetry.recordRssSnapshot(table, MbProcess.live(), wall.now());
-      };
       void Promise.all([readers.heaps(), lookAt(data, mesh.relayConflict?.() === true), rssNow()]).then(([heaps, l, rss]) => {
         log.info("memory", "now", {
           ...Object.fromEntries(Object.entries(m).map(([k, v]) => [k, mb(v)])), readers: heaps.map(mb),
@@ -428,9 +430,15 @@ function run() {
           front: mesh.frontLink?.() ?? "direct", presenceOnline: plane.state.reached, relayConflict: l.relayConflict,
           ...(l.diskFree !== null && l.diskTotal !== null ? { diskFreeMb: mb(l.diskFree), diskTotalMb: mb(l.diskTotal) } : {}),
           walBytes: l.walBytes,
-          pionRssMb: mb(rss.pionRssBytes), mbRssMb: mb(rss.mbRssBytes),
+          ...(rss.pionRssBytes !== null ? { pionRssMb: mb(rss.pionRssBytes) } : {}),
+          ...(rss.mbRssBytes !== null ? { mbRssMb: mb(rss.mbRssBytes) } : {}),
           pionProcs: rss.pionProcs, mbProcs: rss.mbProcs,
         });
+      });
+    }));
+    const telemetryMs = Math.max(1_000, Number(process.env.STILLFAIL_TELEMETRY_MS) || 600_000);
+    timers.push(wall.every(telemetryMs, () => { // timer: a sample of this machine (reader engine telemetry summary)
+      void rssNow().then(() => {
         for (const summary of readerTelemetry.flushWindow(wall.now())) {
           log.info("readers", "engine summary", summary);
         }

@@ -5,8 +5,8 @@ import { basename, dirname, join, normalize, sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { fileName, samePath, segments, within } from "../ops/paths.ts";
-import { MbProcess, resolveReaderSelection } from "../read/mb-reader.ts";
-import { readerTelemetry } from "../read/reader-telemetry.ts";
+import { MbProcess, engineOfSelection, recordFallbackSpawn, resolveReaderSelection } from "../read/mb-reader.ts";
+import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 /// Path::starts_with: `path` is `dir` or under it.
@@ -261,18 +261,21 @@ function spawnMeasureBinary(
   ask: Ask,
   budget: MeasureBudget,
   signal?: AbortSignal,
-): { result: Promise<Measured>; closed: Promise<void>; kill: () => void } {
+  engine?: TelemetryEngine,
+): { result: Promise<Measured>; closed: Promise<void>; kill: () => void; timeout: (error: Error) => void } {
   if (signal?.aborted) {
     return {
       result: Promise.reject(signal.reason),
       closed: Promise.resolve(),
       kill: () => {},
+      timeout: () => {},
     };
   }
   const startedAt = wall.now();
-  const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true });
+  const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true, engine });
   let resolveClosed!: () => void;
   const closed = new Promise<void>((r) => { resolveClosed = r; });
+  let onTimeout!: (error: Error) => void;
 
   const result = new Promise<Measured>((resolve, reject) => {
     let settled = false;
@@ -286,6 +289,10 @@ function spawnMeasureBinary(
     const stop = () => {
       p.kill();
       settle(() => reject(signal!.reason));
+    };
+    onTimeout = (error: Error) => {
+      p.kill();
+      settle(() => reject(error), false);
     };
     const markClosed = () => {
       if (exited) return;
@@ -318,7 +325,7 @@ function spawnMeasureBinary(
     });
   });
 
-  return { result, closed, kill: () => p.kill() };
+  return { result, closed, kill: () => p.kill(), timeout: onTimeout };
 }
 
 type ShadowSnapshot =
@@ -394,7 +401,7 @@ async function runShadowComparison(
   callerSignal?.addEventListener("abort", forwardAbort, { once: true });
 
   const hardTimeoutMs = Math.max(0, budget.maxDurationMs ?? MEASURE_ROOM.maxDurationMs) + SHADOW_HARD_TIMEOUT_PAD_MS;
-  const spawned = spawnMeasureBinary(pionBin, path, ask, budget, shadowAc.signal);
+  const spawned = spawnMeasureBinary(pionBin, path, ask, budget, shadowAc.signal, "pion");
   lastShadowPid = MbProcess.live().at(-1)?.pid ?? null;
   // Prevent unhandledRejection if shadow rejects before we await it.
   spawned.result.catch(() => {});
@@ -403,8 +410,9 @@ async function runShadowComparison(
   const onDeadline = () => {
     if (timedOut) return;
     timedOut = true;
-    shadowAc.abort(new Error(`shadow footprint timed out after ${hardTimeoutMs}ms`));
-    spawned.kill();
+    const err = new Error(`shadow footprint timed out after ${hardTimeoutMs}ms`);
+    spawned.timeout(err);
+    shadowAc.abort(err);
   };
   activeShadowDeadline = onDeadline;
   const stopTimer = wall.after(hardTimeoutMs, onDeadline); // timer: timeout/deadline for shadow footprint process
@@ -473,9 +481,10 @@ function measure(
   if (signal?.aborted) return Promise.reject(signal.reason);
   const resolved = resolveReaderSelection("footprint", { config: readers, logAt: "footprint" });
   if (resolved.engine === "pion") {
-    return spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal).result;
+    return spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal, "pion").result;
   }
-  const primary = spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal).result;
+  recordFallbackSpawn(resolved.selection);
+  const primary = spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal, engineOfSelection(resolved)).result;
   const pionBin = resolved.pionBinary;
   if (resolved.engine !== "shadow" || pionBin === null) {
     return primary;

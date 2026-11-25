@@ -18,7 +18,7 @@ export type Told = { type: "query"; id: number; query: string; asker: Asker; kin
 export type Answered = { id: number; groups?: Group[]; error?: string } | { scopePending: true } | { sessionListPending: true };
 import { SearchScopeBuilder } from "./scope-builder.ts";
 import { SessionListBuilder } from "../read/session-list-builder.ts";
-import { type BackfillOptions, MbProcess, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { type BackfillOptions, MbProcess, type ResolvedReaderSelection, engineOfSelection, recordFallbackSpawn, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
@@ -116,10 +116,11 @@ export class Search {
     return looker;
   }
 
-  #spawnLooker(binary: string): Looker | null {
+  #spawnLooker(resolved: ResolvedReaderSelection): Looker | null {
     if (this.#closed) return null;
     if (this.#looker !== null) return this.#looker;
-    const looker = new MbProcess(binary, ["--builder", "search", "--db", join(this.#data, "stillfail.db"), "--data", this.#data, "--sep", sep]);
+    recordFallbackSpawn(resolved.selection);
+    const looker = new MbProcess(resolved.primaryBinary, ["--builder", "search", "--db", join(this.#data, "stillfail.db"), "--data", this.#data, "--sep", sep], { engine: engineOfSelection(resolved) });
     return this.#spawnWith(looker);
   }
 
@@ -135,10 +136,10 @@ export class Search {
         return Promise.reject(e);
       }
       if (!sync.pending) {
-        return this.#ask(this.#spawnLooker(sync.primaryBinary), query, asker, options);
+        return this.#ask(this.#spawnLooker(sync), query, asker, options);
       }
       const pending = resolveReaderSelectionAsync("search", { config: this.#readers, logAt: "search" }).then(
-        (resolved) => this.#spawnLooker(resolved.primaryBinary),
+        (resolved) => this.#spawnLooker(resolved),
       ).finally(() => {
         if (this.#spawning === pending) this.#spawning = null;
       });

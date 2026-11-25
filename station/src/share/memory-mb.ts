@@ -10,7 +10,7 @@
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, resolveReaderSelection } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, engineOfSelection, recordFallbackSpawn, resolveReaderSelection } from "../read/mb-reader.ts";
 import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
@@ -115,17 +115,19 @@ export class MemoryProgram {
     });
   }
 
-  #resolveBinary(): string {
+  #resolveSelection(): ResolvedReaderSelection {
     return resolveReaderSelection("memory", {
       binary: this.#binary,
       config: this.#readers,
       logAt: "memory",
-    }).primaryBinary;
+    });
   }
 
   #start(): MbProcess {
     if (this.#process !== null) return this.#process;
-    const child = new MbProcess(this.#resolveBinary(), ["--builder", "memory", "--sep", sep, "--shell-dir", this.#shellDir]);
+    const sel = this.#resolveSelection();
+    recordFallbackSpawn(sel.selection);
+    const child = new MbProcess(sel.primaryBinary, ["--builder", "memory", "--sep", sep, "--shell-dir", this.#shellDir], { engine: engineOfSelection(sel) });
     this.started++;
     this.#process = child;
     child.on("message", (answer: Json) => {

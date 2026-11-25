@@ -12,7 +12,7 @@
 import { tmpdir } from "node:os";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, resolveReaderSelection } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, engineOfSelection, recordFallbackSpawn, resolveReaderSelection } from "../read/mb-reader.ts";
 import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
@@ -22,8 +22,8 @@ export const IDLE_MS = 60_000;
 /// Resolve the binary for `--builder packed` (`mb` by default; `pion` via `STILLFAIL_READER_PACKED` /
 /// `config.json` `readers.packed` / `STILLFAIL_READER_ENGINE`; `shadow` is forbidden by
 /// `READER_MODES.packed.allowShadow === false`).
-function resolvePackedBinary(explicit?: string | null, readers?: () => ReaderSelectConfig): string {
-  return resolveReaderSelection("packed", { binary: explicit, config: readers, logAt: "archive" }).primaryBinary;
+function resolvePackedSelection(explicit?: string | null, readers?: () => ReaderSelectConfig): ResolvedReaderSelection {
+  return resolveReaderSelection("packed", { binary: explicit, config: readers, logAt: "archive" });
 }
 
 type Json = any;
@@ -46,10 +46,12 @@ export function runPackedOnce<A = Json>(
   if (signal?.aborted) return Promise.reject(new PackAborted("workspace packing aborted"));
   return new Promise((resolve, reject) => {
     const startedAt = wall.now();
+    const sel = resolvePackedSelection(options?.binary, options?.readers);
+    recordFallbackSpawn(sel.selection);
     const p = new MbProcess(
-      resolvePackedBinary(options?.binary, options?.readers),
+      sel.primaryBinary,
       ["--builder", "packed", "--shell-dir", options?.shellDir ?? tmpdir()],
-      { background: options?.background },
+      { background: options?.background, engine: engineOfSelection(sel), mode: "packed-once" },
     );
     let settled = false;
     let aborted = false;
@@ -159,7 +161,9 @@ export class PackedProgram {
 
   #start(): MbProcess {
     if (this.#process !== null) return this.#process;
-    const child = new MbProcess(resolvePackedBinary(this.#binary, this.#readers), ["--builder", "packed", "--shell-dir", this.#shellDir]);
+    const sel = resolvePackedSelection(this.#binary, this.#readers);
+    recordFallbackSpawn(sel.selection);
+    const child = new MbProcess(sel.primaryBinary, ["--builder", "packed", "--shell-dir", this.#shellDir], { engine: engineOfSelection(sel) });
     this.started++;
     this.#process = child;
     child.on("message", (answer: Json) => {

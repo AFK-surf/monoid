@@ -253,7 +253,6 @@ export type ResolvedReaderSelection = {
 
 function warnReaderFallbackOnce(logAt: string, selection: ReaderSelection): void {
   if (!selection.fallback) return;
-  readerTelemetry.recordFallback(selection.mode);
   const dedupKey = `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
   if (warnedReaderFallbacks.has(dedupKey)) return;
   warnedReaderFallbacks.add(dedupKey);
@@ -265,6 +264,31 @@ function warnReaderFallbackOnce(logAt: string, selection: ReaderSelection): void
     reason: selection.reason,
     detail: selection.detail,
   });
+}
+
+/// Telemetry engine of the primary binary returned by `resolveReaderSelection`.
+/// Returns `undefined` for explicit binary overrides so `MbProcess` classifies the explicit path itself.
+export function engineOfSelection(resolved: ResolvedReaderSelection): TelemetryEngine | undefined {
+  if (resolved.selection.source === "explicit") return undefined;
+  return resolved.engine === "pion" ? "pion" : "mb";
+}
+
+/// Record a fallback counter ONLY when an actual MB process is spawned after requesting `"pion"`.
+export function recordFallbackSpawn(selection: ReaderSelection): void {
+  if (selection.fallback && selection.requested === "pion") {
+    readerTelemetry.recordFallback(selection.mode);
+  }
+}
+
+/// Infer `"pion"` without extra disk I/O when `binary` matches `STILLFAIL_PION_READER` or the cached `pionBinary()`.
+function isKnownPionBinary(binary: string): boolean {
+  const target = resolve(binary);
+  const explicitRaw = process.env.STILLFAIL_PION_READER?.trim();
+  if (explicitRaw !== undefined && explicitRaw !== "") {
+    if (target === resolve(explicitRaw)) return true;
+  }
+  const cached = foundPionBinary.get("");
+  return cached !== undefined && cached !== null && target === resolve(cached);
 }
 
 /// Unified reader/builder binary & engine selector for single-engine and `shadow` modes.
@@ -562,7 +586,7 @@ export const STDIN_MOST = 64 * 1024 * 1024;
 export const STDIN_BEHIND = 8 * 1024 * 1024;
 
 /// A program's process that runs, as the station's watch over its own memory counts them (ops/self-memory.ts).
-export type LiveProgram = { pid: number; binary: string; args: readonly string[]; background: boolean; startedAt: number };
+export type LiveProgram = { pid: number; binary: string; args: readonly string[]; background: boolean; startedAt: number; engine?: TelemetryEngine; mode?: string };
 
 /// The program's process, a line of JSON each way: told its lines as "message"s, its end as "exit".
 export class MbProcess extends EventEmitter {
@@ -584,19 +608,19 @@ export class MbProcess extends EventEmitter {
   #behind: { at: number; written: number; unread: number } | null = null;
 
   /// `options.background`: whether it runs as the system's background work (mbSpawned), else as its args say;
-  /// `stdinMost`: STDIN_MOST but in tests.
-  constructor(binary: string, args: string[], options: { background?: boolean; stdinMost?: number } = {}) {
+  /// `stdinMost`: STDIN_MOST but in tests; `engine`/`mode`: explicit telemetry identity when known at spawn.
+  constructor(binary: string, args: string[], options: { background?: boolean; stdinMost?: number; engine?: TelemetryEngine; mode?: string } = {}) {
     super();
     const identity = classifyProgram(binary, args);
-    this.engine = identity.engine;
-    this.mode = identity.mode;
-    readerTelemetry.recordSpawn(this.engine, this.mode);
+    this.engine = options.engine ?? (isKnownPionBinary(binary) ? "pion" : identity.engine);
+    this.mode = options.mode ?? identity.mode;
     const background = options.background ?? backgroundByDefault(args);
     const [command, given] = mbSpawned(binary, args, { background });
     this.#args = args;
     this.#stdinMost = options.stdinMost ?? STDIN_MOST;
     this.#child = spawn(command, given, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, binary, args, background, startedAt: wall.now() });
+    readerTelemetry.recordSpawn(this.engine, this.mode);
+    if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, binary, args, background, startedAt: wall.now(), engine: this.engine, mode: this.mode });
     const said = new Said((answer) => this.emit("message", answer));
     this.#child.stdout!.on("data", (bytes: Buffer) => said.push(bytes));
     createInterface({ input: this.#child.stderr! }).on("line", (line) => {
@@ -690,8 +714,23 @@ export class MbProcess extends EventEmitter {
 }
 
 /// The reader, started on the station's data directory `data`.
+/// Captures the one-shot `ready` handshake at spawn so both `ReaderPool` and direct callers (`OwnReader`) record
+/// cold-start latency without double-counting.
 export class MbReader extends MbProcess implements ReaderLike {
-  constructor(binary: string, data: string) { super(binary, ["--data", data, "--sep", sep]); }
+  constructor(binary: string, data: string, options?: { engine?: TelemetryEngine }) {
+    super(binary, ["--data", data, "--sep", sep], options);
+    const startedAt = wall.now();
+    let readyRecorded = false;
+    this.on("message", (msg: unknown) => {
+      if (readyRecorded || msg === null || typeof msg !== "object" || !("ready" in msg)) return;
+      readyRecorded = true;
+      const ready = (msg as { ready?: unknown }).ready;
+      const r = ready !== null && typeof ready === "object" ? (ready as Record<string, unknown>) : null;
+      const loadedMs = typeof r?.loadedMs === "number" && Number.isFinite(r.loadedMs) ? r.loadedMs : undefined;
+      const openedMs = typeof r?.openedMs === "number" && Number.isFinite(r.openedMs) ? r.openedMs : undefined;
+      readerTelemetry.recordReady(this.engine, this.mode, wall.now() - startedAt, loadedMs, openedMs);
+    });
+  }
   override postMessage(ask: Ask) { super.postMessage(ask); }
 }
 

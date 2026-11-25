@@ -21,13 +21,15 @@ export type EngineModeRss = {
   readonly engine: TelemetryEngine;
   readonly mode: string;
   readonly liveCount: number;
-  readonly rssBytes: number;
+  readonly rssBytes: number | null;
 };
 
 export type RssBreakdown = {
   readonly byEngineMode: ReadonlyArray<EngineModeRss>;
-  readonly pionRssBytes: number;
-  readonly mbRssBytes: number;
+  readonly totalBytes: number;
+  readonly totalCount: number;
+  readonly pionRssBytes: number | null;
+  readonly mbRssBytes: number | null;
   readonly pionProcs: number;
   readonly mbProcs: number;
 };
@@ -53,15 +55,14 @@ export type EngineModeSummary = {
   readonly loadedP50Ms?: number;
   readonly openedP50Ms?: number;
   readonly liveCount: number;
-  readonly rssMb: number;
-  readonly peakRssMb: number;
+  readonly engineRssKb: number | null;
+  readonly enginePeakRssKb: number | null;
 };
 
-const MiB = 1024 * 1024;
+const KiB = 1024;
 export const DEFAULT_MAX_SAMPLES = 512;
 
-const round1 = (v: number): number => Math.round(v * 10) / 10;
-const bytesToMb1 = (bytes: number): number => round1(bytes / MiB);
+const bytesToKb = (bytes: number | null): number | null => (bytes === null ? null : Math.round(bytes / KiB));
 
 /// Classify a spawned reader/builder binary and args into `(engine, mode)`.
 /// Handles both Unix (`/`) and Windows (`\`) paths and optional `.exe` suffix.
@@ -169,35 +170,42 @@ type Bucket = {
   readonly readyLoaded: BoundedSamples;
   readonly readyOpened: BoundedSamples;
   liveCount: number;
-  rssBytes: number;
-  peakRssBytes: number;
+  rssBytes: number | null;
+  peakRssBytes: number | null;
 };
 
 /// Compute RSS breakdown across `(engine, mode)` and top-level `pion` vs `mb` totals
-/// from a process table snapshot, reusing `treeOf(table)` so each process and its
-/// descendants are counted at most once (matching `resources/module.ts` `programsIn`).
+/// from a process table snapshot, reusing a single `treeOf(table)` pass so each process
+/// and its descendants are counted at most once (matching `resources/module.ts` `programsIn`).
+/// When `table === null` and `live.length > 0`, RSS values are `null` (unavailable) rather than `0`.
 export function programsByEngineMode(
   table: readonly ProcessInfo[] | null,
   live: readonly LiveProgram[],
 ): RssBreakdown {
+  if (live.length === 0) {
+    return EMPTY_RSS;
+  }
   const tree = table !== null ? treeOf(table) : null;
   const seen = new Set<number>();
-  const grouped = new Map<string, { engine: TelemetryEngine; mode: string; liveCount: number; rssBytes: number }>();
-  let pionRssBytes = 0;
-  let mbRssBytes = 0;
+  const grouped = new Map<string, { engine: TelemetryEngine; mode: string; liveCount: number; rssBytes: number | null }>();
+  let totalBytes = 0;
+  let pionRssBytes: number | null = tree !== null ? 0 : null;
+  let mbRssBytes: number | null = tree !== null ? 0 : null;
   let pionProcs = 0;
   let mbProcs = 0;
 
   for (const prog of live) {
-    const { engine, mode } = classifyProgram(prog.binary, prog.args);
-    const key = `${engine}:${mode}`;
+    const id = prog.engine !== undefined && prog.mode !== undefined
+      ? { engine: prog.engine, mode: prog.mode }
+      : classifyProgram(prog.binary, prog.args);
+    const key = `${id.engine}:${id.mode}`;
     let entry = grouped.get(key);
     if (entry === undefined) {
-      entry = { engine, mode, liveCount: 0, rssBytes: 0 };
+      entry = { engine: id.engine, mode: id.mode, liveCount: 0, rssBytes: tree !== null ? 0 : null };
       grouped.set(key, entry);
     }
     entry.liveCount++;
-    if (engine === "pion") pionProcs++;
+    if (id.engine === "pion") pionProcs++;
     else mbProcs++;
 
     if (tree !== null) {
@@ -210,14 +218,17 @@ export function programsByEngineMode(
         const kids = tree.children.get(pid);
         if (kids !== undefined) queue.push(...kids);
       }
-      entry.rssBytes += bytes;
-      if (engine === "pion") pionRssBytes += bytes;
-      else mbRssBytes += bytes;
+      totalBytes += bytes;
+      entry.rssBytes = (entry.rssBytes ?? 0) + bytes;
+      if (id.engine === "pion") pionRssBytes = (pionRssBytes ?? 0) + bytes;
+      else mbRssBytes = (mbRssBytes ?? 0) + bytes;
     }
   }
 
   return {
     byEngineMode: [...grouped.values()],
+    totalBytes,
+    totalCount: live.length,
     pionRssBytes,
     mbRssBytes,
     pionProcs,
@@ -227,6 +238,8 @@ export function programsByEngineMode(
 
 const EMPTY_RSS: RssBreakdown = {
   byEngineMode: [],
+  totalBytes: 0,
+  totalCount: 0,
   pionRssBytes: 0,
   mbRssBytes: 0,
   pionProcs: 0,
@@ -265,8 +278,8 @@ export class ReaderTelemetry {
         readyLoaded: new BoundedSamples(this.#maxSamples),
         readyOpened: new BoundedSamples(this.#maxSamples),
         liveCount: 0,
-        rssBytes: 0,
-        peakRssBytes: 0,
+        rssBytes: null,
+        peakRssBytes: null,
       };
       this.#buckets.set(key, b);
     }
@@ -289,17 +302,17 @@ export class ReaderTelemetry {
     this.#bucket(engine, mode).stderrLines++;
   }
 
-  /// Record a fallback from requested `pion`/`shadow` back to `mb` for `mode`.
+  /// Record a fallback from requested `pion` back to `mb` when an MB process is actually spawned.
   recordFallback(mode: string): void {
     this.#bucket("pion", mode).fallbacks++;
   }
 
-  recordReady(engine: TelemetryEngine, mode: string, wallMs: number, loadedMs: number, openedMs: number): void {
+  recordReady(engine: TelemetryEngine, mode: string, wallMs: number, loadedMs?: number, openedMs?: number): void {
     const b = this.#bucket(engine, mode);
     b.readyCount++;
     b.readyTotal.add(wallMs);
-    b.readyLoaded.add(loadedMs);
-    b.readyOpened.add(openedMs);
+    if (loadedMs !== undefined && Number.isFinite(loadedMs)) b.readyLoaded.add(loadedMs);
+    if (openedMs !== undefined && Number.isFinite(openedMs)) b.readyOpened.add(openedMs);
   }
 
   recordCall(engine: TelemetryEngine, mode: string, ms: number, ok: boolean): void {
@@ -317,13 +330,17 @@ export class ReaderTelemetry {
     const breakdown = programsByEngineMode(table, live);
     for (const b of this.#buckets.values()) {
       b.liveCount = 0;
-      b.rssBytes = 0;
+      b.rssBytes = table !== null || live.length === 0 ? 0 : null;
     }
     for (const item of breakdown.byEngineMode) {
       const b = this.#bucket(item.engine, item.mode);
       b.liveCount = item.liveCount;
       b.rssBytes = item.rssBytes;
-      if (item.rssBytes > b.peakRssBytes) b.peakRssBytes = item.rssBytes;
+      if (item.rssBytes !== null) {
+        if (b.peakRssBytes === null || item.rssBytes > b.peakRssBytes) {
+          b.peakRssBytes = item.rssBytes;
+        }
+      }
     }
     this.#lastRss = breakdown;
     this.#lastRssAt = nowMs;
@@ -362,14 +379,16 @@ export class ReaderTelemetry {
         b.stderrLines > 0 ||
         b.readyCount > 0 ||
         b.liveCount > 0 ||
-        b.peakRssBytes > 0;
+        (b.peakRssBytes !== null && b.peakRssBytes > 0);
 
       if (active) {
         const lat = b.latency.stats();
         const readyTotal = b.readyTotal.stats();
         const readyLoaded = b.readyLoaded.stats();
         const readyOpened = b.readyOpened.stats();
-        const peakBytes = Math.max(b.peakRssBytes, b.rssBytes);
+        const peakBytes =
+          b.peakRssBytes !== null && b.rssBytes !== null ? Math.max(b.peakRssBytes, b.rssBytes)
+            : b.peakRssBytes ?? b.rssBytes;
 
         out.push({
           windowSec,
@@ -388,8 +407,8 @@ export class ReaderTelemetry {
           ...(readyLoaded !== null ? { loadedP50Ms: readyLoaded.p50 } : {}),
           ...(readyOpened !== null ? { openedP50Ms: readyOpened.p50 } : {}),
           liveCount: b.liveCount,
-          rssMb: bytesToMb1(b.rssBytes),
-          peakRssMb: bytesToMb1(peakBytes),
+          engineRssKb: bytesToKb(b.rssBytes),
+          enginePeakRssKb: bytesToKb(peakBytes),
         });
       }
 
@@ -406,7 +425,7 @@ export class ReaderTelemetry {
       b.readyTotal.reset();
       b.readyLoaded.reset();
       b.readyOpened.reset();
-      b.peakRssBytes = 0;
+      b.peakRssBytes = null;
 
       if (b.liveCount === 0) {
         this.#buckets.delete(key);

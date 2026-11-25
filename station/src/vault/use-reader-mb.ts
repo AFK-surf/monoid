@@ -5,6 +5,7 @@ import { EventEmitter } from "node:events";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { MbProcess } from "../read/mb-reader.ts";
+import { readerTelemetry } from "../read/reader-telemetry.ts";
 import { BACKFILL_PAUSE_MS, REQUEST_BACKFILL_PAUSE_MS, giveBackfill, takeBackfill } from "../store/backfill.ts";
 import type { PendingPrepare, UseAnswer, UseRead } from "./use-index.ts";
 
@@ -17,7 +18,7 @@ export class MbUseReader extends EventEmitter {
   readonly threadId = nextOwner++;
   readonly #process: MbProcess;
   readonly #priority: Int32Array | null;
-  readonly #replies: ((reply: Reply) => void)[] = [];
+  readonly #replies: { resolve: (reply: Reply) => void; at: number }[] = [];
   readonly #waiting: (UseRead | PendingPrepare)[] = [];
   #backgroundComplete = false;
   #reboxComplete = false;
@@ -26,6 +27,7 @@ export class MbUseReader extends EventEmitter {
   #foregroundWaiting = false;
   #stepping = false;
   #exited = false;
+  #terminated = false;
 
   /// `known`: what of the background an earlier one of these found done (`settled`), not asked again: one let go
   /// while idle (use-index.ts `trimIdle`) is followed by another, which goes on where the database says (its progress
@@ -36,11 +38,20 @@ export class MbUseReader extends EventEmitter {
     this.#reboxComplete = known.rebox === true;
     this.#priority = priority instanceof SharedArrayBuffer ? new Int32Array(priority) : null;
     this.#process = new MbProcess(binary, ["--builder", "vault-uses", "--db", path]);
-    this.#process.on("message", (reply: Reply) => this.#replies.shift()?.(reply));
+    this.#process.on("message", (reply: Reply) => {
+      const entry = this.#replies.shift();
+      if (entry === undefined) return;
+      readerTelemetry.recordCall(this.#process.engine, this.#process.mode, wall.now() - entry.at, reply.error === undefined);
+      entry.resolve(reply);
+    });
     this.#process.on("error", (error) => this.emit("error", error));
     this.#process.on("exit", (code) => {
       this.#exited = true;
-      for (const resolve of this.#replies.splice(0)) resolve({ error: `the vault use program stopped (exit ${code})` });
+      const now = wall.now();
+      for (const entry of this.#replies.splice(0)) {
+        if (!this.#terminated) readerTelemetry.recordCall(this.#process.engine, this.#process.mode, now - entry.at, false);
+        entry.resolve({ error: `the vault use program stopped (exit ${code})` });
+      }
       this.emit("exit", code);
     });
     this.#schedule();
@@ -48,7 +59,8 @@ export class MbUseReader extends EventEmitter {
 
   #ask(op: string, q?: UseRead | PendingPrepare): Promise<Reply> {
     if (this.#exited) return Promise.resolve({ error: "the vault use program stopped" });
-    return new Promise((resolve) => { this.#replies.push(resolve); this.#process.postMessage({ op, ...(q ? { q } : {}) }); });
+    const at = wall.now();
+    return new Promise((resolve) => { this.#replies.push({ resolve, at }); this.#process.postMessage({ op, ...(q ? { q } : {}) }); });
   }
 
   /// A ready answer is a read: no permit, no pause.
@@ -151,5 +163,8 @@ export class MbUseReader extends EventEmitter {
 
   unref() {}
 
-  terminate(): Promise<number> { return this.#process.terminate(); }
+  terminate(): Promise<number> {
+    this.#terminated = true;
+    return this.#process.terminate();
+  }
 }

@@ -3,7 +3,7 @@
 // to line by line in the test's thread in tests (test/reference/replica-work.ts `InlineRunner`).
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
-import { MbProcess, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, engineOfSelection, recordFallbackSpawn, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import type { Passed, Places, Told } from "./export.ts";
@@ -51,15 +51,19 @@ type Thread = {
 };
 
 /// The work in the MoonBit/Pion program (`--builder replica-export`).
-export function exportThread(o: RunnerOptions, binary?: string): Thread {
+export function exportThread(o: RunnerOptions, binary?: string | ResolvedReaderSelection): Thread {
   const args = ["--builder", "replica-export", "--db", o.db, "--replica", o.replica, "--data-dir", o.dataDir, "--origin", o.origin, "--sep", sep, "--compact-heads"];
   if (o.chunkBytes !== undefined) args.push("--chunk-bytes", String(o.chunkBytes));
   if (o.transcriptPassFiles !== undefined) args.push("--transcript-pass-files", String(o.transcriptPassFiles));
   if (o.transcriptPassBytes !== undefined) args.push("--transcript-pass-bytes", String(o.transcriptPassBytes));
   if (o.transcriptPassDeletes !== undefined) args.push("--transcript-pass-deletes", String(o.transcriptPassDeletes));
   if (o.chunkGcGraceMs !== undefined) args.push("--chunk-gc-grace-ms", String(o.chunkGcGraceMs));
-  const bin = binary ?? resolveReaderSelection("replica-export", { config: o.readers, logAt: "replica" }).primaryBinary;
-  return new MbProcess(bin, args);
+  if (typeof binary === "string") {
+    return new MbProcess(binary, args);
+  }
+  const sel = binary ?? resolveReaderSelection("replica-export", { config: o.readers, logAt: "replica" });
+  recordFallbackSpawn(sel.selection);
+  return new MbProcess(sel.primaryBinary, args, { engine: engineOfSelection(sel) });
 }
 
 /// The work in a process of its own, started again (told the workspaces again) at the next thing asked once
@@ -67,7 +71,7 @@ export function exportThread(o: RunnerOptions, binary?: string): Thread {
 /// the time (`now`): the program's clock is the station's.
 export class ProgramRunner implements Runner {
   readonly #o: RunnerOptions;
-  readonly #start: (o: RunnerOptions, binary?: string) => Thread;
+  readonly #start: (o: RunnerOptions, binary?: string | ResolvedReaderSelection) => Thread;
   readonly #isDefaultStart: boolean;
   readonly #closeGraceMs: number;
   #worker: Thread | null = null;
@@ -85,13 +89,13 @@ export class ProgramRunner implements Runner {
     this.#closeGraceMs = closeGraceMs;
   }
 
-  #begin(binary?: string): Thread {
+  #begin(resolved?: ResolvedReaderSelection): Thread {
     if (this.#worker !== null) return this.#worker;
-    const worker = this.#isDefaultStart ? exportThread(this.#o, binary) : this.#start(this.#o);
+    const worker = this.#isDefaultStart ? exportThread(this.#o, resolved) : this.#start(this.#o);
     worker.on("message", (m: { id: number; answer?: unknown; error?: string }) => {
       const w = this.#waiting.get(m.id);
       this.#waiting.delete(m.id);
-      if (w !== undefined && worker instanceof MbProcess) {
+      if (w !== undefined && worker instanceof MbProcess && this.#closing !== worker) {
         readerTelemetry.recordCall(worker.engine, worker.mode, wall.now() - w.at, m.error === undefined);
       }
       if (m.error !== undefined) w?.reject(new Error(m.error));
@@ -139,12 +143,12 @@ export class ProgramRunner implements Runner {
         return Promise.reject(e);
       }
       if (!sync.pending) {
-        return this.#sendAsk(this.#begin(sync.primaryBinary), m);
+        return this.#sendAsk(this.#begin(sync), m);
       }
       const pending = resolveReaderSelectionAsync("replica-export", { config: this.#o.readers, logAt: "replica" }).then(
         (resolved) => {
           if (this.#closed) throw new Error("the copies' thread is closed");
-          return this.#begin(resolved.primaryBinary);
+          return this.#begin(resolved);
         },
       ).finally(() => {
         if (this.#starting === pending) this.#starting = null;

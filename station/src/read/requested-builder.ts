@@ -2,7 +2,7 @@ import { setMaxListeners } from "node:events";
 import { Fibers, wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { REQUEST_BACKFILL_PAUSE_MS, giveBackfill, releaseStoppedBackfill, takeBackfill } from "../store/backfill.ts";
-import { type BackfillOptions, MbProcess } from "./mb-reader.ts";
+import { type BackfillOptions, MbProcess, type ResolvedReaderSelection, engineOfSelection, recordFallbackSpawn } from "./mb-reader.ts";
 import { classifyProgram, readerTelemetry } from "./reader-telemetry.ts";
 
 /// A builder in MoonBit or Pion (read/mb-reader.ts): its program (resolved on each spawn when given as a getter)
@@ -13,7 +13,7 @@ import { classifyProgram, readerTelemetry } from "./reader-telemetry.ts";
 /// answers `{"fallback": true}` (a store whose schema the station's writer must repair first: the merged view, as an
 /// older station dropped an index under it) has `repair` called, and the batch asked again (after a pause where the
 /// repair found the database busy: `repair` waits for no lock).
-export type MbBuilder = { binary: string | (() => string); args: string[]; lazy?: boolean; repair?: () => void };
+export type MbBuilder = { binary: string | (() => string | ResolvedReaderSelection); args: string[]; lazy?: boolean; repair?: () => void };
 /// What stands for a MoonBit builder in the permit: never a thread's.
 let nextOwner = 0x40000000;
 
@@ -186,8 +186,13 @@ export class RequestedBuilder<K extends number | string> {
     if (this.#worker === null) {
       let mb: MbProcess;
       try {
-        const binary = typeof this.#mb.binary === "function" ? this.#mb.binary() : this.#mb.binary;
-        mb = new MbProcess(binary, this.#mb.args);
+        const resolved = typeof this.#mb.binary === "function" ? this.#mb.binary() : this.#mb.binary;
+        if (typeof resolved === "string") {
+          mb = new MbProcess(resolved, this.#mb.args);
+        } else {
+          recordFallbackSpawn(resolved.selection);
+          mb = new MbProcess(resolved.primaryBinary, this.#mb.args, { engine: engineOfSelection(resolved) });
+        }
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         const mode = classifyProgram("", this.#mb.args).mode;
