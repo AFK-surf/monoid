@@ -61,7 +61,7 @@ import { Core } from "../core.ts";
 import { FileSource } from "../file-source.ts";
 import { HostError } from "../error.ts";
 import type { CloseReason, Iroh, IrohAddr, IrohConnection, IrohEndpoint, IrohPath, IrohStream } from "../iroh.ts";
-import { accessOf } from "../iroh-access.ts";
+import { accessMapOf, relayUrlKey } from "../iroh-access.ts";
 import { SOCKET_PING, SOCKET_PING_MS, type DbRange, type Host, type HttpRequest, type HttpResponse, type LoopbackRequest, type Pull, type Sql, type SqlRow, type SqlValue, type StreamResponse, type TcpConnection, type SqlError, type Unzstd, sqlError } from "../host.ts";
 import type { ClientId, CoreMessage } from "../protocol.ts";
 import { t } from "../i18n.ts";
@@ -520,7 +520,7 @@ export function bridgeIroh(bridge: Bridge): Iroh {
       Effect.map(bridge.call("istream.tap", { id, call, ...(cursor ? { cursor: true } : {}) }, prefix), (a) => ((a.json as J)?.tapped !== true ? false : (a.json as J)?.cursor === true ? ("cursor" as const) : true)),
     receiveMediaDatagrams: (token) => Effect.map(bridge.call("istream.receiveMediaDatagrams", { id, token }), (a) => a.json === true),
   });
-  const connection = (id: number, endpointId: number): IrohConnection => ({
+  const connection = (id: number, mapPaths: (paths: IrohPath[]) => IrohPath[]): IrohConnection => ({
     remoteId: () => String(bridge.sync("conn.remoteId", { id })),
     openBi: () => Effect.map(bridge.call("conn.openBi", { id }), (a) => stream(handle(a))),
     acceptBi: () => Effect.orElseSucceed(Effect.map(bridge.call("conn.acceptBi", { id }), (a) => ((a.json as J)?.end === true ? null : stream(handle(a)))), () => null),
@@ -528,48 +528,63 @@ export function bridgeIroh(bridge: Bridge): Iroh {
     close: (code, reason) => void Effect.runFork(Effect.ignore(bridge.call("conn.close", { id, code, reason }))),
     closeReason: () => (bridge.sync("conn.closeReason", { id }) as CloseReason | null) ?? null,
     closed: () => Effect.orElseSucceed(Effect.map(bridge.call("conn.closed", { id }), (a) => a.json as CloseReason), () => ({ kind: "other", reason: "" }) as CloseReason),
-    paths: () => {
-      const paths = (bridge.sync("conn.paths", { id }) as IrohPath[]) ?? [];
-      const statuses = (bridge.sync("iroh.relayStatus", { id: endpointId }) as { url: string; access?: string }[]) ?? [];
-      return paths.map((p) => ({ ...p, relay: accessOf(p.relay, statuses) }));
-    },
+    paths: () => mapPaths((bridge.sync("conn.paths", { id }) as IrohPath[]) ?? []),
     stats: () => bridge.sync("conn.stats", { id }) as ReturnType<IrohConnection["stats"]>,
   });
-  const endpoint = (id: number): IrohEndpoint => ({
-    id: () => String(bridge.sync("iroh.endpointId", { id })),
-    connect: (addr: IrohAddr, alpn, additional, givenUp) => Effect.map(bridge.call("iroh.connect", { id, addr, additional: additional.map(hex) }, alpn, givenUp), (a) => connection(handle(a), id)),
-    accept: () =>
-      Effect.orElseSucceed(
-        Effect.map(bridge.call("iroh.accept", { id }), (a) => ((a.json as J)?.end === true ? null : { connection: connection(handle(a), id), alpn: unhex(String((a.json as J).alpn)) })),
-        () => null,
-      ),
-    addAddr: (addr) => void bridge.sync("iroh.addAddr", { id, addr }),
-    networkChange: () => Effect.ignore(bridge.call("iroh.networkChange", { id }), { log: "Unhandled", message: "network change told" }),
-    relayStatus: () => (bridge.sync("iroh.relayStatus", { id }) as { url: string; connected: boolean }[]) ?? [],
-    dhtSaid: (keep) => (bridge.sync("dht.said", { keep }) as ReturnType<NonNullable<IrohEndpoint["dhtSaid"]>> | null) ?? { lines: [], dropped: 0 },
-    meshUseLeaf: (value) => Effect.asVoid(bridge.call("iroh.meshUseLeaf", {id,...value})),
-    meshDetachLeaf: (value) => Effect.asVoid(bridge.call("iroh.meshDetachLeaf", {id,...value})),
-    meshConfigure: (scope) => Effect.map(bridge.call("iroh.meshConfigure", { id, ...scope }), (a) => a.json as import("../iroh.ts").IrohMeshDescriptor),
-    meshRemove: (scope) => Effect.asVoid(bridge.call("iroh.meshRemove", { id, scope })),
-    setRelayEntries: (entries) => Effect.asVoid(bridge.call("iroh.setRelayEntries", { id, entries })),
-    // (a shell from before says no such op: PCM)
-    opus: () => {
-      try {
-        return bridge.sync("tap.opus", {}) === true;
-      } catch {
-        return false;
-      }
-    },
-    // (a shell from before says no such op: none)
-    mediaDatagrams: () => {
-      try {
-        return bridge.sync("istream.datagrams", {}) === true;
-      } catch {
-        return false;
-      }
-    },
-    close: () => Effect.ignore(bridge.call("iroh.close", { id }), { log: "Unhandled", message: "endpoint closed" }),
-  });
+  const endpoint = (id: number): IrohEndpoint => {
+    // Cache logical relay URL -> access URL per endpoint so `conn.paths()` does not issue a redundant sync
+    // `iroh.relayStatus` FFI call on every invocation. Cleared on relay/network changes and refreshed on unknown URLs.
+    let accessMap: Map<string, string | undefined> | null = null;
+    const readRelayStatus = (): { url: string; connected: boolean; access?: string }[] => {
+      const statuses = (bridge.sync("iroh.relayStatus", { id }) as { url: string; connected: boolean; access?: string }[]) ?? [];
+      accessMap = accessMapOf(statuses);
+      return statuses;
+    };
+    const clearAccess = () => {
+      accessMap = null;
+    };
+    const mapPaths = (paths: IrohPath[]): IrohPath[] => {
+      if (!paths.some((p) => p.relay !== null)) return paths;
+      if (accessMap === null) readRelayStatus();
+      if (paths.some((p) => p.relay !== null && !accessMap!.has(relayUrlKey(p.relay)))) readRelayStatus();
+      return paths.map((p) => (p.relay === null ? p : { ...p, relay: accessMap!.get(relayUrlKey(p.relay)) ?? p.relay }));
+    };
+    return {
+      id: () => String(bridge.sync("iroh.endpointId", { id })),
+      connect: (addr: IrohAddr, alpn, additional, givenUp) => Effect.map(bridge.call("iroh.connect", { id, addr, additional: additional.map(hex) }, alpn, givenUp), (a) => connection(handle(a), mapPaths)),
+      accept: () =>
+        Effect.orElseSucceed(
+          Effect.map(bridge.call("iroh.accept", { id }), (a) => ((a.json as J)?.end === true ? null : { connection: connection(handle(a), mapPaths), alpn: unhex(String((a.json as J).alpn)) })),
+          () => null,
+        ),
+      addAddr: (addr) => void bridge.sync("iroh.addAddr", { id, addr }),
+      networkChange: () => Effect.ensuring(Effect.ignore(bridge.call("iroh.networkChange", { id }), { log: "Unhandled", message: "network change told" }), Effect.sync(clearAccess)),
+      relayStatus: readRelayStatus,
+      dhtSaid: (keep) => (bridge.sync("dht.said", { keep }) as ReturnType<NonNullable<IrohEndpoint["dhtSaid"]>> | null) ?? { lines: [], dropped: 0 },
+      meshUseLeaf: (value) => Effect.asVoid(bridge.call("iroh.meshUseLeaf", {id,...value})),
+      meshDetachLeaf: (value) => Effect.asVoid(bridge.call("iroh.meshDetachLeaf", {id,...value})),
+      meshConfigure: (scope) => Effect.map(bridge.call("iroh.meshConfigure", { id, ...scope }), (a) => a.json as import("../iroh.ts").IrohMeshDescriptor),
+      meshRemove: (scope) => Effect.asVoid(bridge.call("iroh.meshRemove", { id, scope })),
+      setRelayEntries: (entries) => Effect.ensuring(Effect.asVoid(bridge.call("iroh.setRelayEntries", { id, entries })), Effect.sync(clearAccess)),
+      // (a shell from before says no such op: PCM)
+      opus: () => {
+        try {
+          return bridge.sync("tap.opus", {}) === true;
+        } catch {
+          return false;
+        }
+      },
+      // (a shell from before says no such op: none)
+      mediaDatagrams: () => {
+        try {
+          return bridge.sync("istream.datagrams", {}) === true;
+        } catch {
+          return false;
+        }
+      },
+      close: () => Effect.ignore(bridge.call("iroh.close", { id }), { log: "Unhandled", message: "endpoint closed" }),
+    };
+  };
   return {
     bind: (o) =>
       Effect.map(

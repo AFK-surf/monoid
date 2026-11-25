@@ -346,11 +346,11 @@ export class MeshWire implements StationWire {
   }
 
   net(station: StationAddr): LinkNet | null {
-    const mesh = this.#env.meshNow();
-    const key = station.toString();
-    const link = mesh?.current(key) ?? null;
-    if (mesh === null || link === null) return null;
-    return { ...link.net(), measured: mesh.measured(key), today: mesh.today(key), lan: mesh.lan(key) };
+    return this.#env.meshNow()?.net(station.toString()) ?? null;
+  }
+
+  way(station: StationAddr): { path: string | null; relay: string | null } | null {
+    return this.#env.meshNow()?.way(station.toString()) ?? null;
   }
 
   bulkLanes(station: StationAddr): number {

@@ -4675,6 +4675,61 @@ sim("concurrent_onARelay_waiters_share_a_single_poll_loop_and_wake_together", as
   assert.ok(wakeLooks <= 10, `expected <= 10 relayStatus calls before connecting, got ${wakeLooks}`);
 });
 
+sim("steer_ticks_and_net_way_reads_deduplicate_sync_connection_ffi_calls", async (s) => {
+  const a = s.relay("https://a.relay.test/");
+  const b = s.relay("https://b.relay.test/");
+  const c = s.relay("https://c.relay.test/");
+  const station = await s.stationOn(a, [b, c]);
+  const counts = { paths: 0, stats: 0, closeReason: 0 };
+  const wrapConn = (conn: import("../src/iroh.ts").IrohConnection): import("../src/iroh.ts").IrohConnection => ({
+    ...conn,
+    paths: () => ((counts.paths += 1), conn.paths()),
+    stats: () => ((counts.stats += 1), conn.stats()),
+    closeReason: () => ((counts.closeReason += 1), conn.closeReason()),
+  });
+  const baseIroh = s.iroh;
+  const countedIroh: Iroh = {
+    bind: (opts) =>
+      Effect.map(baseIroh.bind(opts), (ep) => ({
+        ...ep,
+        connect: (addr, alpn, additional, givenUp) => Effect.map(ep.connect(addr, alpn, additional, givenUp), wrapConn),
+      })),
+  };
+  const mesh = await s.run(Mesh.make({ ...env(s), iroh: countedIroh }, [a, b, c]));
+  try {
+    mesh.addAddr(station.addr());
+    const addr = `ws/${station.id()}`;
+    await s.run(mesh.link(addr, grants("ok", { n: 0 })), 20_000);
+    // Dial backup ways so steering evaluates multiple ways on each tick.
+    await s.run(mesh.remeasure(addr), 20_000);
+    const ways = mesh.ways(addr).length;
+    assert.ok(ways >= 2, `expected multi-way steering, got ${ways}`);
+
+    // Measure one full steady-state `#steer` tick: at most 1 paths() + 2 closeReason() per way (before + inside snap).
+    counts.paths = counts.stats = counts.closeReason = 0;
+    await s.time.pass(TICK_MS);
+    assert.ok(counts.paths <= ways + 1, `expected <= ${ways + 1} conn.paths() per tick for ${ways} ways, got ${counts.paths}`);
+    assert.ok(counts.closeReason <= ways * 2 + 2, `expected <= ${ways * 2 + 2} conn.closeReason() per tick for ${ways} ways, got ${counts.closeReason}`);
+
+    // `mesh.way(addr)` touches only the current link's `paths()` (0 stats, 0 closeReason).
+    counts.paths = counts.stats = counts.closeReason = 0;
+    const way = mesh.way(addr);
+    assert.ok(way !== null);
+    assert.deepEqual(counts, { paths: 1, stats: 0, closeReason: 0 });
+
+    // `mesh.net(addr)` snapshots across `link.net()`, `measured()`, and `today()`: at most 1 call per link for each.
+    counts.paths = counts.stats = counts.closeReason = 0;
+    const net = mesh.net(addr);
+    assert.ok(net !== null);
+    assert.ok(counts.paths <= ways, `expected <= ${ways} conn.paths() in mesh.net(), got ${counts.paths}`);
+    assert.ok(counts.stats <= 1, `expected <= 1 conn.stats() in mesh.net(), got ${counts.stats}`);
+    assert.ok(counts.closeReason <= ways, `expected <= ${ways} conn.closeReason() in mesh.net(), got ${counts.closeReason}`);
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await station.close();
+  }
+});
+
 suite("mesh", { concurrency: true }, () => {
   for (const [name, options, body] of tests) register(name, options, body);
 });

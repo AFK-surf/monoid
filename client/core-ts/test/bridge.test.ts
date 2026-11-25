@@ -335,3 +335,66 @@ test("the_mesh_goes_through_the_bridges_iroh", { skip }, async () => {
   native.host.close();
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("bridgeIroh_caches_relay_access_map_across_conn_paths_and_invalidates_on_relay_or_network_change", async () => {
+  let relayStatusCalls = 0;
+  let statuses: { url: string; connected: boolean; access?: string }[] = [
+    { url: "https://r1.test/", connected: true, access: "https://e1.test/" },
+  ];
+  let rawPaths: { id: string; selected: boolean; relay: string | null; ip: string | null; rttMs: number | null; txPackets: number; lostPackets: number }[] = [
+    { id: "p-direct", selected: true, relay: null, ip: "10.0.0.2:1234", rttMs: 2, txPackets: 5, lostPackets: 0 },
+  ];
+  const fakeBridge = {
+    sync(op: string) {
+      if (op === "iroh.relayStatus") {
+        relayStatusCalls++;
+        return statuses;
+      }
+      if (op === "conn.paths") return rawPaths;
+      if (op === "iroh.endpointId") return "ep-1";
+      return null;
+    },
+    call(op: string) {
+      if (op === "iroh.bind") return Effect.succeed({ json: { id: 1 } });
+      if (op === "iroh.connect") return Effect.succeed({ json: { id: 2 } });
+      return Effect.succeed({ json: {} });
+    },
+  } as unknown as Parameters<typeof bridgeIroh>[0];
+
+  const iroh = bridgeIroh(fakeBridge);
+  const runner = new Runner();
+  try {
+    const ep = await runner.run(iroh.bind({ secretKey: new Uint8Array(32), relayUrls: ["https://r1.test/"], lookup: false, relayOnly: false }));
+    const conn = await runner.run(ep.connect({ id: "peer", relays: [], ips: [] }, new Uint8Array(), []));
+
+    // Direct-only paths never query `iroh.relayStatus`.
+    for (let i = 0; i < 10; i++) assert.equal(conn.paths()[0]!.relay, null);
+    assert.equal(relayStatusCalls, 0);
+
+    // Repeated relay paths query `iroh.relayStatus` once and reuse the cached `url -> access` map.
+    rawPaths = [{ id: "p-r1", selected: true, relay: "https://r1.test", ip: null, rttMs: 25, txPackets: 10, lostPackets: 0 }];
+    for (let i = 0; i < 50; i++) assert.equal(conn.paths()[0]!.relay, "https://e1.test/");
+    assert.equal(relayStatusCalls, 1);
+
+    // A previously unseen relay URL triggers one refresh.
+    statuses = [...statuses, { url: "https://r2.test/", connected: true, access: "https://e2.test/" }];
+    rawPaths = [{ id: "p-r2", selected: true, relay: "https://r2.test", ip: null, rttMs: 30, txPackets: 1, lostPackets: 0 }];
+    assert.equal(conn.paths()[0]!.relay, "https://e2.test/");
+    assert.equal(conn.paths()[0]!.relay, "https://e2.test/");
+    assert.equal(relayStatusCalls, 2);
+
+    // `setRelayEntries` invalidates the cached map so updated access URLs take effect immediately.
+    statuses = [{ url: "https://r2.test/", connected: true, access: "https://e2-new.test/" }];
+    await runner.run(ep.setRelayEntries!([{ entry: "https://e2-new.test/", relay: "https://r2.test/" }]));
+    assert.equal(conn.paths()[0]!.relay, "https://e2-new.test/");
+    assert.equal(relayStatusCalls, 3);
+
+    // `networkChange` also invalidates the cached map.
+    statuses = [{ url: "https://r2.test/", connected: true, access: "https://e2-net.test/" }];
+    await runner.run(ep.networkChange());
+    assert.equal(conn.paths()[0]!.relay, "https://e2-net.test/");
+    assert.equal(relayStatusCalls, 4);
+  } finally {
+    runner.shutdown();
+  }
+});

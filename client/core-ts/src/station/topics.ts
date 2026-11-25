@@ -111,7 +111,7 @@ export class StationTopics implements Owner {
   /// What runs for a topic while it is started (a drive folder kept as it is), by topic.
   readonly #samplers = new Map<string, Fiber.Fiber<void, never>>();
   /// Each station's connection sampler, while its `net` or `way` is started (which of the two are).
-  readonly #sampling = new Map<string, { fiber: Fiber.Fiber<void, never>; by: Set<string> }>();
+  readonly #sampling = new Map<string, { fiber: Fiber.Fiber<void, never>; by: Set<string>; sample: () => void }>();
   /// The stations sampled this run (a reading of each is in its link's memory: its `net`), and how each is reached by
   /// its reading (its `way`).
   readonly #sampled = new Set<string>();
@@ -1161,7 +1161,9 @@ export class StationTopics implements Owner {
   #sampleNet(station: string, by: string): void {
     const running = this.#sampling.get(station);
     if (running) {
+      const joiningNet = by === "net" && !running.by.has("net");
       running.by.add(by);
+      if (joiningNet) running.sample();
       return;
     }
     const core = this.#core;
@@ -1169,8 +1171,23 @@ export class StationTopics implements Owner {
     const way: Topic = { topic: "way", station };
     let last: [number, NonNullable<ReturnType<NonNullable<StationsSync["wire"]["net"]>>>] | null = null;
     let samples: unknown[] = [];
-    const sample = Effect.sync(() => {
+    const bySet = new Set([by]);
+    const sampleOnce = () => {
       const link = this.#sync.link(station);
+      if (!bySet.has("net") && this.#sync.wire.way) {
+        // Only `way` is shown (e.g. the stations list): read path/relay on the current link alone instead of polling
+        // byte stats, backup-way measurements, and daily totals every NET_EVERY_MS.
+        last = null;
+        samples = [];
+        const w = link ? (this.#sync.wire.way(link.addr) ?? null) : null;
+        const was = link?.memory.get("net") ?? null;
+        const reached = w !== null ? { path: w.path, relay: w.relay } : isObject(was) ? { path: was.path ?? null, relay: was.relay ?? null } : null;
+        if (!this.#ways.has(station) || !equal(this.#ways.get(station), reached)) {
+          this.#ways.set(station, reached);
+          core.store.invalidate(way);
+        }
+        return;
+      }
       const reading = link ? (this.#sync.wire.net?.(link.addr) ?? null) : null;
       const now = core.host.nowMs();
       const was = link?.memory.get("net") ?? null;
@@ -1203,13 +1220,14 @@ export class StationTopics implements Owner {
         this.#ways.set(station, reached);
         core.store.invalidate(way);
       }
-    });
+    };
+    const sample = Effect.sync(sampleOnce);
     // A measurement shown on screen: sampled while it is shown, the last reading kept to show from as the app opens
     // again (the station's card dimmed while it is reached anew). Not while the app is out of view: a phone
     // in a pocket samples nothing (it was most of what the core did there, 2026-10-19).
     const inView = Effect.suspend(() => core.attention?.attend.untilShown() ?? Effect.void);
     const fiber = core.runner.fork(Effect.forever(Effect.andThen(inView, Effect.andThen(sample, laterSleep(NET_EVERY_MS)))));
-    this.#sampling.set(station, { fiber, by: new Set([by]) });
+    this.#sampling.set(station, { fiber, by: bySet, sample: sampleOnce });
   }
 
   /// The station's `net` or `way` stopped: its sampler goes once neither is started.
