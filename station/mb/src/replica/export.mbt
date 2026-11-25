@@ -121,6 +121,8 @@ pub struct TestFaults {
   read_short : Set[String]
   read_short_after_first : Set[String]
   other_kind : Set[String]
+  /// The most a pass's transcript finder may ask the shell (`Finder::asked`): more fails the pass.
+  finder_asked_most : Int?
 }
 
 ///|
@@ -141,6 +143,10 @@ pub fn TestFaults::from_jvalue(v : JValue) -> TestFaults? {
     read_short: set_of("read_short"),
     read_short_after_first: set_of("read_short_after_first"),
     other_kind: set_of("other_kind"),
+    finder_asked_most: match get(v, "finder_asked_most") {
+      Some(Num(n)) => Some(n.to_int())
+      _ => None
+    },
   })
 }
 
@@ -1601,18 +1607,16 @@ fn Exporter::walk_transcript_dir(
 ///|
 /// Dedicated walker for AGY `brain/<id>/` that prunes the three derived cache subtrees by exact relative path segments
 /// before descending (never enters or reads pruned directories).
+/// `dir` is a transcript path (`Files::is_transcript_path`), so is each path under it made of a name of its own: `add`
+/// is given those without asking again. `rel_parts` is `dir`'s place under the brain, given back as it came.
 fn Exporter::walk_brain_dir(
   self : Exporter,
-  brain_root : String,
   dir : String,
   rel_parts : Array[String],
   add : (String) -> Unit,
   on_error : (String) -> Unit,
   on_unreadable_path : (String) -> Unit,
 ) -> Unit raise {
-  if is_pruned_brain_rel(rel_parts) {
-    return
-  }
   let entries = match self.listing_checked(dir) {
     Ok(Some(es)) => es
     Ok(None) => return
@@ -1621,26 +1625,27 @@ fn Exporter::walk_brain_dir(
       return
     }
   }
+  fn descend(path : String, name : String) -> Unit raise {
+    rel_parts.push(name)
+    defer ignore(rel_parts.pop())
+    if !is_pruned_brain_rel(rel_parts) {
+      self.walk_brain_dir(path, rel_parts, add, on_error, on_unreadable_path)
+    }
+  }
   for e in entries {
     let (name, kind) = e
+    if name == "" || name == "." || name == ".." || name.contains(self.files.sep) {
+      continue
+    }
     let path = self.files.join([dir, name])
     if kind == "dir" {
-      let next_rel = rel_parts + [name]
-      if is_pruned_brain_rel(next_rel) {
-        continue
-      }
-      self.walk_brain_dir(brain_root, path, next_rel, add, on_error, on_unreadable_path)
+      descend(path, name)
     } else if kind == "file" {
       add(path)
     } else if kind == "other" {
       match self.lstat_checked(path) {
         Ok(Some(("file", _, _, _))) => add(path)
-        Ok(Some(("dir", _, _, _))) => {
-          let next_rel = rel_parts + [name]
-          if !is_pruned_brain_rel(next_rel) {
-            self.walk_brain_dir(brain_root, path, next_rel, add, on_error, on_unreadable_path)
-          }
-        }
+        Ok(Some(("dir", _, _, _))) => descend(path, name)
         Ok(_) => ()
         Err(_) => {
           on_unreadable_path(path)
@@ -1671,7 +1676,15 @@ async fn Exporter::export_transcripts(
       finder_readdir_err.add(d)
     }
   }
-  let finder = @locate.Finder::new(self.host, self.files.sep, track_failed_dirs=true, readdir_err=finder_readdir_err)
+  // One finder for the pass, keeping what each directory holds: each session's look through every Claude project or
+  // Codex day reads them once in the pass, not once a session.
+  let finder = @locate.Finder::new(
+    self.host,
+    self.files.sep,
+    track_failed_dirs=true,
+    readdir_err=finder_readdir_err,
+    cache_dirs=true,
+  )
   let by_ws : Map[String, Map[String, String?]] = Map([])
   let unreadable_dirs_by_ws : Map[String, Set[String]] = Map([])
   let unreadable_paths_by_ws : Map[String, Set[String]] = Map([])
@@ -1680,9 +1693,15 @@ async fn Exporter::export_transcripts(
     unreadable_dirs_by_ws[ws] = Set([])
     unreadable_paths_by_ws[ws] = Set([])
   }
+  // The brains walked in each workspace: sessions of one workspace sharing a brain walk it once.
+  let walked_brains : Map[String, Set[String]] = Map([])
   for sess in sess_rows {
     let ws = ws_of_session(get(sess, "ws"))
     guard by_ws.get(ws) is Some(found_map) else { continue }
+    // A workspace whose transcripts are all exported this sweep is not looked at again until the next one.
+    if self.transcript_ws_done.contains(ws) {
+      continue
+    }
     let unreadable_dirs = unreadable_dirs_by_ws.get(ws).unwrap_or(Set([]))
     let unreadable_paths_ws = unreadable_paths_by_ws.get(ws).unwrap_or(Set([]))
     let add_unreadable_dir = (d : String) => unreadable_dirs.add(d)
@@ -1762,12 +1781,31 @@ async fn Exporter::export_transcripts(
       add_path(self.files.join([cli, "conversations", r.id + ".db-wal"]))
       add_path(self.files.join([cli, "annotations", r.id + ".pbtxt"]))
       let brain = self.files.join([cli, "brain", r.id])
+      let walked = match walked_brains.get(ws) {
+        Some(w) => w
+        None => {
+          let w : Set[String] = Set([])
+          walked_brains[ws] = w
+          w
+        }
+      }
+      if walked.contains(brain) {
+        continue
+      }
+      walked.add(brain)
+      let add_found = (p : String) => if !found_map.contains(p) { found_map[p] = room }
       match self.lstat_checked(brain) {
-        Ok(Some(("dir", _, _, _))) => self.walk_brain_dir(brain, brain, [], add_path, add_unreadable_dir, add_unreadable_path)
+        Ok(Some(("dir", _, _, _))) =>
+          if self.files.is_transcript_path(self.data_dir, brain) {
+            self.walk_brain_dir(brain, [], add_found, add_unreadable_dir, add_unreadable_path)
+          }
         Ok(_) => ()
         Err(_) => add_unreadable_dir(brain)
       }
     }
+  }
+  if self.test_faults is Some({ finder_asked_most: Some(most), .. }) && finder.asked() > most {
+    fail("BUG: the transcript finder asked the shell \{finder.asked()} times in a pass, more than \{most}")
   }
   let mut done_files = 0
   let mut done_bytes = 0

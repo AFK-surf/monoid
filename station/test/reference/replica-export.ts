@@ -1128,10 +1128,14 @@ export class Exporter {
       unreadableDirsByWs.set(ws, new Set());
       unreadablePathsByWs.set(ws, new Set());
     }
+    // The brains walked in each workspace: sessions of one workspace sharing a brain walk it once.
+    const walkedBrains = new Map<string, Set<string>>();
     for (const sess of sessRows) {
       const ws = wsOfSession(sess.ws);
       const foundMap = byWs.get(ws);
       if (foundMap === undefined) continue;
+      // A workspace whose transcripts are all exported this sweep is not looked at again until the next one.
+      if (this.#transcriptWsDone.has(ws)) continue;
       const unreadableDirs = unreadableDirsByWs.get(ws)!;
       const unreadablePathsWs = unreadablePathsByWs.get(ws)!;
       const addUnreadableDir = (d: string) => {
@@ -1195,6 +1199,10 @@ export class Exporter {
         addPath(join(cli, "conversations", `${r.id}.db-wal`));
         addPath(join(cli, "annotations", `${r.id}.pbtxt`));
         const brain = join(cli, "brain", r.id);
+        let walked = walkedBrains.get(ws);
+        if (walked === undefined) walkedBrains.set(ws, (walked = new Set()));
+        if (walked.has(brain)) continue;
+        walked.add(brain);
         try {
           if (this.#lstatPath(brain).isDirectory()) this.#walkBrainDir(brain, brain, [], addPath, addUnreadableDir, addUnreadablePath);
         } catch (e) {

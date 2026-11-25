@@ -2851,3 +2851,137 @@ test("D76: a sweep's last pass failing to write leaves the transcripts to scan, 
   }
   if (byMode.mb !== undefined) assert.equal(byMode.mb, byMode.ts, "MoonBit and the TS reference take the same passes");
 });
+
+test("D77: a pass reads each Claude project and Codex day once, finding what the TS reference finds (TS + MoonBit)", async () => {
+  const data = dataDir("d77-finder");
+  const db = join(data, "stillfail.db");
+  const store = Store.open(db, join(data, "archive"));
+  closing.push(async () => store.close());
+  const now = 1_700_000_000_000;
+  const put = (p: string) => {
+    mkdirSync(join(p, ".."), { recursive: true });
+    writeFileSync(p, `content:${p}\n`);
+    utimesSync(p, new Date(now), new Date(now));
+  };
+  const session = (key: string, runtime: string, id: string, ws: string | null) => {
+    const room = join(data, "sessions", "chat", key, "workspace");
+    mkdirSync(room, { recursive: true });
+    store.insertSession({ key, connect: "chat", runtime, profile: "p", workspace: room, token: `tok-${key}`, createdAt: 1, lastActiveAt: 1, ws });
+    store.setRuntimeSessionId(key, id);
+    store.joinThread(store.openThread("chat", "C", `ts-${key}`, key, "p@x").id, key, "chat");
+    return room;
+  };
+  // 160 Claude projects of rooms no session is in, and a file beside them that is no project.
+  const claudeRoot = join(data, "transcripts", "claude");
+  const projects = Array.from({ length: 160 }, (_, i) => join(claudeRoot, `-elsewhere-${String(i).padStart(3, "0")}`));
+  for (const [i, p] of projects.entries()) put(join(p, `other-${String(i).padStart(4, "0")}.jsonl`));
+  writeFileSync(join(claudeRoot, ".DS_Store"), "x");
+  const expected = new Set<string>();
+  // 30 Claude sessions, each a kind of where its transcript is.
+  for (let i = 0; i < 30; i++) {
+    const id = `cl-${String(i).padStart(4, "0")}`;
+    const ws = i % 2 === 0 ? null : OTHER;
+    const room = session(`chat:d77-cl-${i}`, "claude", id, ws);
+    const project = projects[(i * 5) % projects.length]!;
+    const inWs = (p: string) => expected.add(`${ws ?? HOME}\0${p}`);
+    switch (i % 5) {
+      case 0: // in another project, with a subagent's transcript beside it
+        put(join(project, `${id}.jsonl`));
+        put(join(project, id, "sub-1.jsonl"));
+        inWs(join(project, `${id}.jsonl`));
+        inWs(join(project, id, "sub-1.jsonl"));
+        break;
+      case 1: // in another project, put away
+        put(join(project, `${id}.jsonl.zst`));
+        inWs(join(project, `${id}.jsonl.zst`));
+        break;
+      case 2: // nowhere
+        break;
+      case 3: // a directory named as the transcript is none, its `.zst` beside it not looked at
+        mkdirSync(join(project, `${id}.jsonl`), { recursive: true });
+        put(join(project, `${id}.jsonl.zst`));
+        break;
+      case 4: // in its own room's project
+        put(join(claudeRoot, claudeProject(room)!, `${id}.jsonl`));
+        inWs(join(claudeRoot, claudeProject(room)!, `${id}.jsonl`));
+        break;
+    }
+  }
+  // 20 Codex days and 30 Codex sessions over two workspaces: found, put away, or nowhere.
+  const codexRoot = join(data, "transcripts", "codex");
+  const days = Array.from({ length: 20 }, (_, i) => join(codexRoot, "2026", "11", String(i + 1).padStart(2, "0")));
+  for (const d of days) put(join(d, "notes.txt"));
+  for (let i = 0; i < 30; i++) {
+    const id = `cx-${String(i).padStart(4, "0")}`;
+    const ws = i % 2 === 0 ? null : OTHER;
+    session(`chat:d77-cx-${i}`, "codex", id, ws);
+    const day = days[Math.floor(i / 2) % days.length]!;
+    if (i % 3 === 0) {
+      put(join(day, `rollout-2026-11-01T00-00-00-${id}.jsonl`));
+      expected.add(`${ws ?? HOME}\0${join(day, `rollout-2026-11-01T00-00-00-${id}.jsonl`)}`);
+    } else if (i % 3 === 1) {
+      put(join(day, `rollout-2026-11-01T00-00-00-${id}.jsonl.zst`));
+      expected.add(`${ws ?? HOME}\0${join(day, `rollout-2026-11-01T00-00-00-${id}.jsonl.zst`)}`);
+    }
+  }
+  const twoWs = [
+    { workspace: HOME, name: "src" },
+    { workspace: OTHER, name: "other" },
+  ];
+  const rows = (replica: string) => {
+    const d = new DatabaseSync(join(replica, "export.db"), { readOnly: true });
+    try {
+      return new Set((d.prepare("SELECT ws, path FROM transcript_files").all() as { ws: string; path: string }[]).map((r) => `${r.ws}\0${r.path}`));
+    } finally {
+      d.close();
+    }
+  };
+  // Where each mode's transcripts are once caught up, then with a Claude project and a Codex day unreadable.
+  // The Codex day holds rollouts of both workspaces: the one looked at second is told it unreadable from what was kept.
+  const unreadable = [projects[0]!, days[0]!];
+  const mkErr = (code: string): NodeJS.ErrnoException => Object.assign(new Error(`${code}: injected`), { code });
+  const run = async (mode: "ts" | "mb") => {
+    const replica = join(data, `replica-d77-${mode}`);
+    let faults: { finder_readdir_err?: string[] } = {};
+    let pass: (told: ReturnType<typeof nothingTold>) => Promise<{ more: boolean; wrote: number }>;
+    let setFaults: (f: { finder_readdir_err?: string[] }) => Promise<void>;
+    if (mode === "ts") {
+      const exporter = new Exporter({
+        db,
+        replica,
+        dataDir: data,
+        origin: sid("a"),
+        now: () => now,
+        chunkBytes: 4096,
+        testFaults: { finderReaddirError: (d) => (faults.finder_readdir_err?.includes(d) ? mkErr("EIO") : null) },
+      });
+      closing.push(async () => exporter.close());
+      exporter.setPlaces({ home: HOME, workspaces: twoWs });
+      pass = async (told) => exporter.pass(told);
+      setFaults = async (f) => {
+        faults = f;
+      };
+    } else {
+      const mb = await makeMbExportHelper(db, replica, data, sid("a"), 4096);
+      await mb.places(now, twoWs);
+      // Each pass's finder asks the shell about each directory once: 60 sessions over 160 projects and 20 days ask
+      // 280 times, where a look through every project for each session not found asked 6,151.
+      setFaults = async (f) => {
+        await mb.testFaults({ ...f, finder_asked_most: 1000 } as unknown as Record<string, string[]>, now);
+      };
+      await setFaults({});
+      pass = (told) => mb.pass(told, now);
+    }
+    for (let i = 0; i < 10; i++) if (!(await pass(nothingTold())).more) break;
+    const caughtUp = rows(replica);
+    await setFaults({ finder_readdir_err: unreadable });
+    const cut = await pass({ ...nothingTold(), transcripts: true });
+    assert.equal(cut.wrote, 0, `${mode}: an unreadable project or day drops none of the transcripts in it`);
+    assert.deepEqual(rows(replica), caughtUp, `${mode}: rows kept while unreadable`);
+    await setFaults({});
+    return caughtUp;
+  };
+  const ts = await run("ts");
+  assert.deepEqual([...ts].sort(), [...expected].sort(), "TS reference finds each transcript where it is");
+  if (binary !== null) assert.deepEqual([...(await run("mb"))].sort(), [...ts].sort(), "MoonBit finds what the TS reference finds");
+});
