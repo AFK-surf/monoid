@@ -196,8 +196,9 @@ export const applyApart: Applier = (app, delta, out, signal) => {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, args, { stdio: ["ignore", "ignore", "pipe"], signal, windowsHide: true });
     let said = "";
-    child.stderr!.on("data", (b: Buffer) => (said = (said + b.toString("utf8")).slice(-2000)));
+    // (heard before its stderr: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     child.on("error", reject);
+    child.stderr?.on("data", (b: Buffer) => (said = (said + b.toString("utf8")).slice(-2000)));
     child.on("close", (code, sig) => (code === 0 ? resolve() : reject(new Error(said.trim().split("\n").at(-1) || `the applier ended (${code ?? sig})`))));
   });
 };

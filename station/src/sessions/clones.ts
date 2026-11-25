@@ -48,10 +48,6 @@ const TEMP = ".cloning-";
 export const runGit: GitRun = (args, env) => {
   const child = spawn("git", args, { env, stdio: ["ignore", "ignore", "pipe"] });
   let stderr = "";
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (d: string) => {
-    stderr = (stderr + d).slice(-STDERR_HELD);
-  });
   let late = false;
   // timer: a deadline to a process (git given CLONE_MOST_MS at most)
   const stop = wall.after(CLONE_MOST_MS, () => {
@@ -62,6 +58,11 @@ export const runGit: GitRun = (args, env) => {
     child.on("error", (e) => resolve({ ok: false, stderr: `${stderr}\n${e.message}` }));
     child.on("close", (code) => resolve({ ok: code === 0, stderr: late ? `${stderr}\ngit clone took longer than ${CLONE_MOST_MS / 60_000} minutes and was stopped` : stderr }));
   }).finally(stop);
+  // (after its error is heard: one not started (ENFILE, EMFILE) has no stderr, and its error told to none ends the station)
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (d: string) => {
+    stderr = (stderr + d).slice(-STDERR_HELD);
+  });
   return { done, kill: () => void child.kill("SIGKILL") };
 };
 

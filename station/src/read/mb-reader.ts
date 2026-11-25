@@ -649,40 +649,8 @@ export class MbProcess extends EventEmitter {
     this.#args = args;
     this.#stdinMost = options.stdinMost ?? STDIN_MOST;
     this.#child = spawn(command, given, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    this.#child.once("spawn", () => {
-      this.#spawned = true;
-      if (this.#wrapped) {
-        this.#pendingWrappedSpawn = true;
-      } else {
-        readerTelemetry.recordSpawn(this.engine, this.mode);
-        if (this.#spawnFallbackMode !== undefined) readerTelemetry.recordFallback(this.#spawnFallbackMode);
-      }
-    });
-    if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, binary, args, background, startedAt: wall.now(), engine: this.engine, mode: this.mode });
-    const said = new Said((answer) => this.emit("message", answer));
-    this.#child.stdout!.on("data", (bytes: Buffer) => {
-      if (bytes.length > 0 && !this.#sawStdout) {
-        this.#sawStdout = true;
-        this.#wrapperStderr.length = 0;
-        this.#commitWrappedSpawn();
-      }
-      said.push(bytes);
-    });
-    createInterface({ input: this.#child.stderr! }).on("line", (line) => {
-      if (this.#wrapped && this.#pendingWrappedSpawn && !this.#sawStdout && isBackgroundWrapperStderrLine(command, line)) {
-        this.#pendingStderrCount++;
-        if (this.#wrapperStderr.length < 8) this.#wrapperStderr.push(line);
-      } else {
-        this.#commitWrappedSpawn();
-        readerTelemetry.recordStderr(this.engine, this.mode);
-      }
-      log.warn("readers", "a MoonBit reader said", { line, engine: this.engine, mode: this.mode });
-    });
-    // (a failed write is the process gone, told by its exit)
-    this.#child.stdin!.on("error", () => {});
-    // All it was given read, with nothing written meanwhile: no longer behind (else the next time it is would be told
-    // from where it stood before).
-    this.#child.stdin!.on("drain", () => void (this.#behind = null));
+    // Its failure to start (ENFILE, EMFILE, ENOENT) is told on the next tick, with no pid and none of its streams: heard
+    // before anything here could throw, else told to none and the station's process ends (D80).
     this.#child.on("error", (error) => {
       if (this.#child.pid === undefined) MbProcess.#live.delete(this);
       this.emit("error", error);
@@ -711,6 +679,40 @@ export class MbProcess extends EventEmitter {
       }
       this.emit("exit", code ?? (signal !== null ? 1 : 0));
     });
+    this.#child.once("spawn", () => {
+      this.#spawned = true;
+      if (this.#wrapped) {
+        this.#pendingWrappedSpawn = true;
+      } else {
+        readerTelemetry.recordSpawn(this.engine, this.mode);
+        if (this.#spawnFallbackMode !== undefined) readerTelemetry.recordFallback(this.#spawnFallbackMode);
+      }
+    });
+    if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, binary, args, background, startedAt: wall.now(), engine: this.engine, mode: this.mode });
+    const said = new Said((answer) => this.emit("message", answer));
+    this.#child.stdout?.on("data", (bytes: Buffer) => {
+      if (bytes.length > 0 && !this.#sawStdout) {
+        this.#sawStdout = true;
+        this.#wrapperStderr.length = 0;
+        this.#commitWrappedSpawn();
+      }
+      said.push(bytes);
+    });
+    if (this.#child.stderr) createInterface({ input: this.#child.stderr }).on("line", (line) => {
+      if (this.#wrapped && this.#pendingWrappedSpawn && !this.#sawStdout && isBackgroundWrapperStderrLine(command, line)) {
+        this.#pendingStderrCount++;
+        if (this.#wrapperStderr.length < 8) this.#wrapperStderr.push(line);
+      } else {
+        this.#commitWrappedSpawn();
+        readerTelemetry.recordStderr(this.engine, this.mode);
+      }
+      log.warn("readers", "a MoonBit reader said", { line, engine: this.engine, mode: this.mode });
+    });
+    // (a failed write is the process gone, told by its exit)
+    this.#child.stdin?.on("error", () => {});
+    // All it was given read, with nothing written meanwhile: no longer behind (else the next time it is would be told
+    // from where it stood before).
+    this.#child.stdin?.on("drain", () => void (this.#behind = null));
   }
 
   /// (a bigint said as its digits)
@@ -723,7 +725,9 @@ export class MbProcess extends EventEmitter {
   /// Write an already-serialized JSON line to stdin, sharing `postMessage`'s backpressure and `SIGKILL` guard.
   postLine(line: string) {
     if (this.#stalled || this.#exited) return;
-    const stdin = this.#child.stdin!;
+    // (none: it never started, its end told on the next tick)
+    const stdin = this.#child.stdin;
+    if (!stdin) return;
     stdin.write(`${line}\n`);
     this.#written += line.length + 1;
     const unread = stdin.writableLength;
