@@ -424,6 +424,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -507,12 +508,17 @@ jobs:
             echo "shell-station:linux-x64 not published yet; checking same-SHA pipeline natives"
             api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
             t0=$SECONDS run="" natives_state=""
-            deadline=$(( $(date +%s) + 180 ))
+            # Leave >= 85 s after the wait for pion build + smoke (~35 s) and artifact upload.
+            wait_cap=$(( $(date +%s) + 150 ))
+            budget_cap=$(( JOB_END - 85 ))
+            deadline=$wait_cap
+            if [ "$budget_cap" -lt "$deadline" ]; then deadline=$budget_cap; fi
             while :; do
               if [ "$GITHUB_REF" = refs/heads/main ]; then
                 missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
-                if [ -z "$missing_shell" ]; then
-                  echo "(shell-station:linux-x64 published after $((SECONDS - t0)) s)"
+                missing_reader="$(node scripts/native.ts missing reader:linux-x64)"
+                if [ -z "$missing_shell" ] && [ -z "$missing_reader" ]; then
+                  echo "(shell-station and reader published after $((SECONDS - t0)) s)"
                   break
                 fi
               fi
@@ -524,25 +530,32 @@ jobs:
                     "completed success")
                       echo "(pipeline natives done after $((SECONDS - t0)) s: run $run)"
                       mkdir -p "$RUNNER_TEMP/natives"
-                      if gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"; then
-                        node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA" --targets linux-x64
+                      if gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$RUNNER_TEMP/natives" && \
+                         node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA" --targets linux-x64; then
                         echo "STILLFAIL_NATIVE_INBOX=$RUNNER_TEMP/natives" >> "$GITHUB_ENV"
+                      else
+                        echo "warning: failed to restore natives-$GITHUB_SHA from run $run"
                       fi
                       break ;;
                     completed*)
-                      echo "pipeline natives ended '$natives_state' (run $run); falling back to local build"
+                      echo "pipeline natives ended '$natives_state' (run $run)"
                       break ;;
                   esac
                 else
                   case "$natives_state" in
-                    "completed failure")
-                      echo "pipeline natives failed (run $run); falling back to local build"
+                    completed*)
+                      missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
+                      missing_reader="$(node scripts/native.ts missing reader:linux-x64)"
+                      echo "pipeline natives ended '$natives_state' (run $run) after $((SECONDS - t0)) s"
                       break ;;
                   esac
                 fi
+              elif [ $((SECONDS - t0)) -ge 25 ]; then
+                echo "no same-SHA pipeline run found after $((SECONDS - t0)) s (e.g. workflow_dispatch); proceeding without wait"
+                break
               fi
               if [ "$(date +%s)" -ge "$deadline" ]; then
-                echo "pipeline natives not ready after $((SECONDS - t0)) s (run=${run:-none}, state=${natives_state:-none}); falling back to local build"
+                echo "pipeline natives not ready after $((SECONDS - t0)) s (run=${run:-none}, state=${natives_state:-none})"
                 break
               fi
               sleep 5
@@ -553,6 +566,13 @@ jobs:
 
           if [ -f "$RUNNER_TEMP/natives/$shell_asset" ]; then missing_shell=""; fi
           if [ -f "$RUNNER_TEMP/natives/$reader_asset" ]; then missing_reader=""; fi
+          if [ -n "$missing_shell" ]; then
+            left=$(( JOB_END - $(date +%s) ))
+            if [ "$left" -lt 120 ]; then
+              echo "::error::shell-station:linux-x64 ($shell_key) still missing after waiting for pipeline natives (run=${run:-none}, state=${natives_state:-none}); only ${left} s left in 5m job, not enough for a cold Rust cross-build"
+              exit 1
+            fi
+          fi
           echo "shell_missing=$([ -n "$missing_shell" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "missing=$([ -n "$missing_reader" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "shell_missing=$([ -n "$missing_shell" ] && echo true || echo false) reader_missing=$([ -n "$missing_reader" ] && echo true || echo false)"
@@ -593,10 +613,11 @@ jobs:
               czt="$RUNNER_TEMP/cargo-zigbuild.tar.xz"
               curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 -o "$czt" https://github.com/rust-cross/cargo-zigbuild/releases/download/v0.24.1/cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz
               echo "f09b180a517af0e4dd4bffc921bb88e5ab705452a9dd948c61e489b3020c68c2  $czt" | sha256sum -c --quiet
-              tar -xf "$czt" -C "$czbase"
+              tar -xf "$czt" -C "$czbase" --strip-components=1
               rm -f "$czt"
             fi
             chmod +x "$czbase/cargo-zigbuild"
+            "$czbase/cargo-zigbuild" --version
             echo "$d" >> "$GITHUB_PATH"
             echo "$czbase" >> "$GITHUB_PATH"
           fi
