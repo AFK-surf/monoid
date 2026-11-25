@@ -724,15 +724,24 @@ test("cross-station concurrency: the hub tells the coordinator only when what a 
     let reads = 0;
     store.getSession = (key) => (reads++, getSession(key));
 
-    // Two at work and one whose turn ended.
+    // Two at work and one whose turn ended. Resolve each session by its thread rather than
+    // r.claude.sessions insertion order, since concurrent accepts can finish opening in any order.
     for (const n of [1, 2, 3]) await r.accept(message({ ts: `${n}.0`, threadTs: `${n}00.1`, text: `start ${n}` }));
     await settle();
     assert.equal(r.claude.sessions.length, 3);
-    const [s1, s2, s3] = r.claude.sessions.map((s) => s.options.route as string);
+    const sessionFor = (threadTs: string) => {
+      const s = r.claude.sessions.find((x) => (x.options.route as string).endsWith(threadTs));
+      assert.ok(s, `expected session for thread ${threadTs}, got ${r.claude.sessions.map((x) => x.options.route).join(", ")}`);
+      return s;
+    };
+    const a1 = sessionFor("100.1");
+    const a2 = sessionFor("200.1");
+    const a3 = sessionFor("300.1");
+    const [s1, s2, s3] = [a1, a2, a3].map((s) => s.options.route as string);
     for (const k of [s1, s2, s3]) r.hub.store.setSessionProfile(k!, "sub-one", true);
     await settle();
     await r.call(s3!, "chat_post", { to: "C1/300.1", text: "done", kind: "all_done", done: "finished 3" });
-    r.claude.sessions[2]!.complete();
+    a3.complete();
     await settle();
     assert.ok(told.some((k) => k.includes(one)), "the turn that ended told its account");
     const active = r.hub.localActiveForAccount(one);
@@ -759,7 +768,7 @@ test("cross-station concurrency: the hub tells the coordinator only when what a 
     // Its turn ending tells its account.
     told.length = 0;
     await r.call(s1!, "chat_post", { to: "C1/100.1", text: "done", kind: "all_done", done: "finished 1" });
-    r.claude.sessions[0]!.complete();
+    a1.complete();
     await settle();
     assert.ok(told.length > 0 && told.every((k) => k.length === 1), `told per account: ${JSON.stringify(told)}`);
   } finally {
