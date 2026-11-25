@@ -49,7 +49,7 @@ use ffi::Ctx;
 use fs_ops::TextReader;
 use iroh_ops::Kept;
 use istream::Halves;
-use net::{Listener, SocketRead, SocketWrite, WsFrame, http_client, tls_config};
+use net::{Listener, SocketClose, SocketRead, SocketWrite, WsFrame, http_client, tls_config};
 use screen_tap::Tell;
 use sql::{DbHandle, open_wait};
 use zstd_ops::Unzstd;
@@ -88,7 +88,7 @@ pub(crate) enum Handle {
     Response(Arc<tokio::sync::Mutex<reqwest::Response>>),
     Ws { incoming: Arc<tokio::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<Result<WsFrame, String>>>>, outgoing: tokio::sync::mpsc::UnboundedSender<WsFrame> },
     /// A socket to the device's own port, or a station's session on the phone's adb (`adb.open`).
-    Tcp { read: SocketRead, write: SocketWrite },
+    Tcp { read: SocketRead, write: SocketWrite, close: Arc<SocketClose> },
     Endpoint(Endpoint, Arc<Kept>),
     Conn(Connection),
     /// A connection that closed, let go (its state, its streams), with what the core may still ask of it; `conn.close`
@@ -111,6 +111,18 @@ pub(crate) enum Handle {
 }
 
 impl Handle {
+    pub(crate) fn tcp<R, W>(read: R, write: W) -> Handle
+    where
+        R: tokio::io::AsyncRead + Send + Unpin + 'static,
+        W: tokio::io::AsyncWrite + Send + Unpin + 'static,
+    {
+        Handle::Tcp {
+            read: Arc::new(tokio::sync::Mutex::new(Box::new(read))),
+            write: Arc::new(tokio::sync::Mutex::new(Box::new(write))),
+            close: SocketClose::new(),
+        }
+    }
+
     fn kind(&self) -> &'static str {
         match self {
             Handle::Response(_) => "response",
@@ -265,7 +277,22 @@ impl Inner {
 
     pub(crate) async fn run(self: &Arc<Self>, op: &str, a: Value, bytes: Option<Vec<u8>>) -> Done {
         match op {
-            "stream.close" | "ws.close" | "tcp.close" | "zstd.close" | "listen.close" | "pack.close" => {
+            "tcp.close" => {
+                // Signal cancellation before removing the handle so any in-flight `tcp.read` / `tcp.write`
+                // wakes and returns immediately. Only explicit `tcp.close` triggers this signal (never
+                // `drop_handle` ownership transfer in `tcp.pipe` / `istream.pipe`).
+                let id = id_of(&a)?;
+                let removed = {
+                    let mut handles = self.handles.lock().unwrap();
+                    if let Some(Handle::Tcp { close, .. }) = handles.get(&id) {
+                        close.close();
+                    }
+                    handles.remove(&id)
+                };
+                drop(removed);
+                Ok(Answer::json(json!({})))
+            }
+            "stream.close" | "ws.close" | "zstd.close" | "listen.close" | "pack.close" => {
                 // Dropping the response, the socket's sender (its task ends) or the halves closes it.
                 self.drop_handle(id_of(&a)?);
                 Ok(Answer::json(json!({})))

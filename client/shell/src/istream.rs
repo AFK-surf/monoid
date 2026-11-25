@@ -857,7 +857,7 @@ impl Inner {
                 let id = id_of(a)?;
                 let Handle::IStream(halves) = self.handle(id)? else { return Err("not a stream".into()) };
                 let to = a.get("to").and_then(Value::as_u64).ok_or("missing to")?;
-                let Some(Handle::Tcp { read, write }) = self.drop_handle(to) else { return Err("not a socket".into()) };
+                let Some(Handle::Tcp { read, write, .. }) = self.drop_handle(to) else { return Err("not a socket".into()) };
                 self.pipe(id, halves, read, write).await;
                 Ok(Answer::json(json!({})))
             }

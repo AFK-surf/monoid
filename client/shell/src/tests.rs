@@ -876,7 +876,7 @@ fn pipes_a_stream_into_a_socket_in_frames() {
         let stream = inner.run("conn.openBi", json!({ "id": id }), None).await.unwrap().json["id"].as_u64().unwrap();
         let (ours, node) = tokio::net::UnixStream::pair().unwrap();
         let (read, write) = ours.into_split();
-        let socket = inner.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
+        let socket = inner.keep(Handle::tcp(read, write));
         let piping = {
             let inner = inner.clone();
             tokio::spawn(async move { inner.run("istream.pipe", json!({ "id": stream, "to": socket }), None).await })
@@ -908,7 +908,7 @@ fn pipes_a_stream_into_a_socket_in_frames() {
         let stream = inner.run("conn.openBi", json!({ "id": id }), None).await.unwrap().json["id"].as_u64().unwrap();
         let (ours, node) = tokio::net::UnixStream::pair().unwrap();
         let (read, write) = ours.into_split();
-        let socket = inner.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
+        let socket = inner.keep(Handle::tcp(read, write));
         let piping = {
             let inner = inner.clone();
             tokio::spawn(async move { inner.run("istream.pipe", json!({ "id": stream, "to": socket }), None).await })
@@ -1375,7 +1375,7 @@ fn closing_a_connection_stops_a_half_open_piped_socket() {
         let stream = inner.run("conn.openBi", json!({ "id": id }), None).await.unwrap().json["id"].as_u64().unwrap();
         let (ours, node) = tokio::net::UnixStream::pair().unwrap();
         let (read, write) = ours.into_split();
-        let socket = inner.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
+        let socket = inner.keep(Handle::tcp(read, write));
         let piping = {
             let inner = inner.clone();
             tokio::spawn(async move { inner.run("istream.pipe", json!({ "id": stream, "to": socket }), None).await })
@@ -2078,4 +2078,229 @@ fn iroh_insert_relay_preserves_entries_and_disabled_relays_applies() {
     assert_eq!(removed.entries[0].to_string(), entry2);
 
     call(97_107, "iroh.close", json!({ "id": ep, "forget": true }), None);
+}
+
+#[test]
+fn tcp_close_aborts_blocked_tcp_read() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let opened = inner.run("tcp.open", json!({ "port": port }), None).await.unwrap().json;
+        let conn = opened["id"].as_u64().unwrap();
+        let (_peer, _) = listener.accept().await.unwrap();
+        let Handle::Tcp { read, .. } = inner.handle(conn).unwrap() else { panic!("expected tcp handle") };
+
+        let reader = {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("tcp.read", json!({ "id": conn }), None).await })
+        };
+        while read.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        tokio::task::yield_now().await;
+        assert!(!reader.is_finished(), "tcp.read should stay blocked while peer sends nothing");
+
+        inner.run("tcp.close", json!({ "id": conn }), None).await.unwrap();
+        let err = reader.await.unwrap().err().expect("tcp.read should fail on tcp.close");
+        assert!(err.contains("closed"), "unexpected error: {err}");
+
+        // Repeated tcp.close is idempotent and subsequent tcp.read fails with unknown handle.
+        inner.run("tcp.close", json!({ "id": conn }), None).await.unwrap();
+        let after = inner.run("tcp.read", json!({ "id": conn }), None).await.err().unwrap();
+        assert!(after.contains("no handle"), "unexpected error after close: {after}");
+    });
+}
+
+#[test]
+fn tcp_close_aborts_backpressured_tcp_write() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let opened = inner.run("tcp.open", json!({ "port": port }), None).await.unwrap().json;
+        let conn = opened["id"].as_u64().unwrap();
+        let (_peer, _) = listener.accept().await.unwrap();
+        let Handle::Tcp { write, .. } = inner.handle(conn).unwrap() else { panic!("expected tcp handle") };
+
+        let payload = vec![0x5au8; 32 * 1024 * 1024];
+        let writer = {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("tcp.write", json!({ "id": conn }), Some(payload)).await })
+        };
+        while write.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        tokio::task::yield_now().await;
+        assert!(!writer.is_finished(), "tcp.write should block on backpressure while peer does not read");
+
+        inner.run("tcp.close", json!({ "id": conn }), None).await.unwrap();
+        let err = writer.await.unwrap().err().expect("tcp.write should fail on tcp.close");
+        assert!(err.contains("closed"), "unexpected error: {err}");
+    });
+}
+
+#[test]
+fn tcp_close_aborts_queued_tcp_read_and_write_on_mutex_lock() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        // Queued tcp.read waiting on the read mutex lock.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let conn = inner.run("tcp.open", json!({ "port": port }), None).await.unwrap().json["id"].as_u64().unwrap();
+        let (_peer, _) = listener.accept().await.unwrap();
+        let Handle::Tcp { read, .. } = inner.handle(conn).unwrap() else { panic!("expected tcp handle") };
+
+        let r1 = {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("tcp.read", json!({ "id": conn }), None).await })
+        };
+        while read.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        let r2 = {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("tcp.read", json!({ "id": conn }), None).await })
+        };
+        // Wait until r2 has cloned the handle (table + test + r1 + r2 = 4) and queued on `read.lock()`.
+        while Arc::strong_count(&read) < 4 {
+            tokio::task::yield_now().await;
+        }
+        tokio::task::yield_now().await;
+        assert!(!r1.is_finished() && !r2.is_finished());
+
+        inner.run("tcp.close", json!({ "id": conn }), None).await.unwrap();
+        let e1 = r1.await.unwrap().err().expect("first tcp.read should fail on tcp.close");
+        let e2 = r2.await.unwrap().err().expect("queued tcp.read should fail on tcp.close");
+        assert!(e1.contains("closed"), "unexpected r1 error: {e1}");
+        assert!(e2.contains("closed"), "unexpected r2 error: {e2}");
+
+        // Queued tcp.write waiting on the write mutex lock.
+        let conn_w = inner.run("tcp.open", json!({ "port": port }), None).await.unwrap().json["id"].as_u64().unwrap();
+        let (_peer_w, _) = listener.accept().await.unwrap();
+        let Handle::Tcp { write, .. } = inner.handle(conn_w).unwrap() else { panic!("expected tcp handle") };
+
+        let w1 = {
+            let inner = inner.clone();
+            let payload = vec![0xa5u8; 32 * 1024 * 1024];
+            tokio::spawn(async move { inner.run("tcp.write", json!({ "id": conn_w }), Some(payload)).await })
+        };
+        while write.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        let w2 = {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("tcp.write", json!({ "id": conn_w }), Some(b"queued".to_vec())).await })
+        };
+        // Wait until w2 has cloned the handle (table + test + w1 + w2 = 4) and queued on `write.lock()`.
+        while Arc::strong_count(&write) < 4 {
+            tokio::task::yield_now().await;
+        }
+        tokio::task::yield_now().await;
+        assert!(!w1.is_finished() && !w2.is_finished());
+
+        inner.run("tcp.close", json!({ "id": conn_w }), None).await.unwrap();
+        let e1 = w1.await.unwrap().err().expect("first tcp.write should fail on tcp.close");
+        let e2 = w2.await.unwrap().err().expect("queued tcp.write should fail on tcp.close");
+        assert!(e1.contains("closed"), "unexpected w1 error: {e1}");
+        assert!(e2.contains("closed"), "unexpected w2 error: {e2}");
+    });
+}
+
+#[test]
+fn tcp_end_preserves_half_close_for_in_flight_tcp_read() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let conn = inner.run("tcp.open", json!({ "port": port }), None).await.unwrap().json["id"].as_u64().unwrap();
+        let (peer, _) = listener.accept().await.unwrap();
+        let (mut peer_read, mut peer_write) = peer.into_split();
+        let Handle::Tcp { read, .. } = inner.handle(conn).unwrap() else { panic!("expected tcp handle") };
+
+        let reader = {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("tcp.read", json!({ "id": conn }), None).await })
+        };
+        while read.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        tokio::task::yield_now().await;
+
+        // Half-close write side; peer observes EOF, while in-flight tcp.read stays open.
+        inner.run("tcp.end", json!({ "id": conn }), None).await.unwrap();
+        let mut peer_eof = Vec::new();
+        assert_eq!(peer_read.read_to_end(&mut peer_eof).await.unwrap(), 0);
+        assert!(!reader.is_finished(), "tcp.end must not cancel in-flight tcp.read");
+
+        peer_write.write_all(b"after-half-close").await.unwrap();
+        drop(peer_write);
+        let answer = reader.await.unwrap().unwrap();
+        assert_eq!(answer.bytes.as_deref(), Some(&b"after-half-close"[..]));
+
+        let eof = inner.run("tcp.read", json!({ "id": conn }), None).await.unwrap();
+        assert_eq!(eof.json, json!({ "end": true }));
+        inner.run("tcp.close", json!({ "id": conn }), None).await.unwrap();
+    });
+}
+
+#[test]
+fn tcp_pipe_transfers_ownership_without_cancelling_stream() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let front = inner.run("tcp.listen", json!({ "port": 0 }), None).await.unwrap().json;
+        let front_port = front["port"].as_u64().unwrap() as u16;
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_port = target.local_addr().unwrap().port();
+
+        let client = tokio::net::TcpStream::connect(("127.0.0.1", front_port)).await.unwrap();
+        let accepted = inner.run("tcp.accept", json!({ "id": front["id"] }), None).await.unwrap().json["id"].as_u64().unwrap();
+        let opened = inner.run("tcp.open", json!({ "port": target_port }), None).await.unwrap().json["id"].as_u64().unwrap();
+        let (server, _) = target.accept().await.unwrap();
+
+        let piping = {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("tcp.pipe", json!({ "ids": [accepted, opened] }), None).await })
+        };
+
+        let (mut client_read, mut client_write) = client.into_split();
+        let (mut server_read, mut server_write) = server.into_split();
+        let forward: Vec<u8> = (0..262_144u32).map(|i| (i % 251) as u8).collect();
+        let backward: Vec<u8> = (0..131_072u32).map(|i| ((i * 7) % 251) as u8).collect();
+
+        let forward_expected = forward.clone();
+        let send_forward = tokio::spawn(async move {
+            client_write.write_all(&forward).await.unwrap();
+            client_write.shutdown().await.unwrap();
+        });
+        let mut got_forward = Vec::new();
+        server_read.read_to_end(&mut got_forward).await.unwrap();
+        send_forward.await.unwrap();
+        assert_eq!(got_forward, forward_expected);
+
+        let backward_expected = backward.clone();
+        let send_backward = tokio::spawn(async move {
+            server_write.write_all(&backward).await.unwrap();
+            server_write.shutdown().await.unwrap();
+        });
+        let mut got_backward = Vec::new();
+        client_read.read_to_end(&mut got_backward).await.unwrap();
+        send_backward.await.unwrap();
+        assert_eq!(got_backward, backward_expected);
+
+        let piped = piping.await.unwrap().unwrap().json;
+        assert_eq!(piped, json!({ "there": 262_144, "back": 131_072 }));
+        assert!(inner.run("tcp.read", json!({ "id": accepted }), None).await.is_err());
+        assert!(inner.run("tcp.read", json!({ "id": opened }), None).await.is_err());
+    });
 }
