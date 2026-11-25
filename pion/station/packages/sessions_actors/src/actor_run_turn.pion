@@ -154,6 +154,9 @@ pub fn ActorsGen::undeclare_k(
   self.declare_turn_k(a, t.id, None, k)
 }
 
+/// Format queued notices with a fresh timestamp (`actor_run.mbt:1401-1411`).
+/// Intentionally snapshots `notices` before awaiting `deps.nextTs` so concurrent pushes
+/// during the RPC cannot desynchronize the formatted batch from `drain_notices(a, n)`.
 pub fn ActorsGen::format_notices_k(
   self : ActorsGen,
   a : Actor,
@@ -1183,7 +1186,23 @@ fn ActorsGen::pump_steer_k(
                             match ex_tm {
                               effect::Exit::Interrupted => {
                                 unsteer()
-                                k(effect::Exit::Interrupted)
+                                if !self.gen.counters.sealed && marked.length() > 0 {
+                                  sessions_core::try_k(
+                                    fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                                      self.store_k(
+                                        a,
+                                        "markUndelivered",
+                                        [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
+                                        tk,
+                                      )
+                                    },
+                                    fn(_ex_u : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                                      k(effect::Exit::Interrupted)
+                                    },
+                                  )
+                                } else {
+                                  k(effect::Exit::Interrupted)
+                                }
                               }
                               effect::Exit::Failed(e) => {
                                 unsteer()
@@ -1197,8 +1216,11 @@ fn ActorsGen::pump_steer_k(
                                         tk,
                                       )
                                     },
-                                    fn(_ex_u : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
-                                      k(effect::Exit::Failed(e))
+                                    fn(ex_u : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                                      match ex_u {
+                                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                        _ => k(effect::Exit::Failed(e))
+                                      }
                                     },
                                   )
                                 } else {
@@ -1229,8 +1251,11 @@ fn ActorsGen::pump_steer_k(
                                                 tk,
                                               )
                                             },
-                                            fn(_ex_u : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
-                                              k(effect::Exit::Failed(e))
+                                            fn(ex_u : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                                              match ex_u {
+                                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                _ => k(effect::Exit::Failed(e))
+                                              }
                                             },
                                           )
                                         } else {
@@ -1427,7 +1452,7 @@ pub fn ActorsGen::warm_waited_on_k(
                                       self.t_k(
                                         a,
                                         "station.notice.cannotStart",
-                                        base_codec::json_obj([]),
+                                        base_codec::json_null(),
                                         fn(ex_cs : effect::Exit[String]) -> Unit {
                                           match ex_cs {
                                             effect::Exit::Interrupted => k(effect::Exit::Interrupted)
@@ -1781,6 +1806,10 @@ pub fn ActorsGen::start_turn_k(
                   effect::Exit::Failed(e) => {
                     let turn = a.turn
                     a.turn = None
+                    if a.phase == "closed" {
+                      finish(effect::Exit::Interrupted)
+                      return
+                    }
                     match open_abort_reason(e) {
                       Some(why) => {
                         if why == "closed" {
@@ -1848,10 +1877,19 @@ pub fn ActorsGen::start_turn_k(
                           }
                         }
                         if why == "stopped" {
-                          let _ = drain_notices(a, notices_taken)
+                          let after_deliv = fn(ex_sd : effect::Exit[Unit]) -> Unit {
+                            match ex_sd {
+                              effect::Exit::Succeeded(_) => {
+                                let _ = drain_notices(a, notices_taken)
+                                after_stop_delivery(effect::Exit::Succeeded(()))
+                              }
+                              effect::Exit::Failed(e2) => after_stop_delivery(effect::Exit::Failed(e2))
+                              effect::Exit::Interrupted => after_stop_delivery(effect::Exit::Interrupted)
+                            }
+                          }
                           match delivery {
-                            Some(d) => self.delivered_k(a, d, after_stop_delivery)
-                            None => after_stop_delivery(effect::Exit::Succeeded(()))
+                            Some(d) => self.delivered_k(a, d, after_deliv)
+                            None => after_deliv(effect::Exit::Succeeded(()))
                           }
                         } else {
                           after_stop_delivery(effect::Exit::Succeeded(()))
@@ -1880,7 +1918,8 @@ pub fn ActorsGen::start_turn_k(
                           fn(ex_pc : effect::Exit[Unit]) -> Unit {
                             match ex_pc {
                               effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
-                              _ => finish(effect::Exit::Failed(e))
+                              effect::Exit::Failed(e2) => finish(effect::Exit::Failed(e2))
+                              effect::Exit::Succeeded(_) => finish(effect::Exit::Failed(e))
                             }
                           },
                         )
@@ -1964,7 +2003,7 @@ fn ActorsGen::start_turn_handle_error_k(
                                 self.t_k(
                                   a,
                                   "station.notice.cannotStart",
-                                  base_codec::json_obj([]),
+                                  base_codec::json_null(),
                                   fn(ex_cs : effect::Exit[String]) -> Unit {
                                     match ex_cs {
                                       effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
@@ -3506,7 +3545,7 @@ pub fn ActorsGen::give_up_k(
   let said = if a.posted { "" } else { a.last_said }
   a.last_said = ""
   if said == "" {
-    self.t_k(a, "station.notice.noResult", base_codec::json_obj([]), fn(
+    self.t_k(a, "station.notice.noResult", base_codec::json_null(), fn(
       ex_t : effect::Exit[String],
     ) -> Unit {
       match ex_t {
@@ -3537,7 +3576,7 @@ pub fn ActorsGen::give_up_k(
       effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
       effect::Exit::Succeeded(qv) => {
         let quoted = str_or(sessions_core::str_of(Some(qv)), "")
-        self.t_k(a, "station.notice.noResultSaid", base_codec::json_obj([]), fn(
+        self.t_k(a, "station.notice.noResultSaid", base_codec::json_null(), fn(
           ex_t : effect::Exit[String],
         ) -> Unit {
           match ex_t {
@@ -4176,7 +4215,7 @@ fn ActorsGen::on_turn_ended_record_k(
                     effect::Exit::Failed(e) => after_end_turn(effect::Exit::Failed(e))
                     effect::Exit::Succeeded(_) => {
                       if is_some(retry) {
-                        self.t_k(a, "station.wait.overloaded", base_codec::json_obj([]), fn(
+                        self.t_k(a, "station.wait.overloaded", base_codec::json_null(), fn(
                           ex_t : effect::Exit[String],
                         ) -> Unit {
                           match ex_t {
@@ -4729,7 +4768,7 @@ fn ActorsGen::on_turn_ended_codex_auth_k(
                         a.codex_update = Some(update)
                         self.set_agent(a, None)
                         a.nudges = 0
-                        self.t_k(a, "station.notice.codexUpdating", base_codec::json_obj([]), fn(
+                        self.t_k(a, "station.notice.codexUpdating", base_codec::json_null(), fn(
                           ex_t : effect::Exit[String],
                         ) -> Unit {
                           match ex_t {
@@ -4928,13 +4967,13 @@ fn ActorsGen::on_turn_ended_notices_k(
                                 ("to", to_v),
                               ])
                               a.refill = None
-                              self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
-                                match ex_hp {
-                                  effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
-                                  effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
-                                  effect::Exit::Succeeded(has_p) => {
-                                    if self.gen.counters.max_concurrent_turns > 0 &&
-                                    self.active_turn_slots() > self.gen.counters.max_concurrent_turns {
+                              if self.gen.counters.max_concurrent_turns > 0 &&
+                              self.active_turn_slots() > self.gen.counters.max_concurrent_turns {
+                                self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
+                                  match ex_hp {
+                                    effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                    effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                    effect::Exit::Succeeded(has_p) => {
                                       if !has_p {
                                         self.words_k(a, "GO_ON_AFTER_SPENT", [], fn(
                                           ex_w : effect::Exit[String],
@@ -4958,33 +4997,38 @@ fn ActorsGen::on_turn_ended_notices_k(
                                         self.enqueue_turn_wait(a)
                                         finish(effect::Exit::Succeeded(()))
                                       }
-                                      return
                                     }
-                                    if has_p {
-                                      self.pump_k(a, -1, finish)
-                                    } else {
-                                      self.words_k(a, "GO_ON_AFTER_SPENT", [], fn(
-                                        ex_w : effect::Exit[String],
-                                      ) -> Unit {
-                                        match ex_w {
-                                          effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
-                                          effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
-                                          effect::Exit::Succeeded(words) => {
-                                            self.start_turn_k(
-                                              a,
-                                              "resume",
-                                              words,
-                                              turn_for_nobody(),
-                                              None,
-                                              false,
-                                              0,
-                                              false,
-                                              finish,
-                                            )
-                                          }
+                                  }
+                                })
+                                return
+                              }
+                              self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
+                                match ex_hp {
+                                  effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                  effect::Exit::Succeeded(true) => self.pump_k(a, -1, finish)
+                                  effect::Exit::Succeeded(false) => {
+                                    self.words_k(a, "GO_ON_AFTER_SPENT", [], fn(
+                                      ex_w : effect::Exit[String],
+                                    ) -> Unit {
+                                      match ex_w {
+                                        effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                        effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                        effect::Exit::Succeeded(words) => {
+                                          self.start_turn_k(
+                                            a,
+                                            "resume",
+                                            words,
+                                            turn_for_nobody(),
+                                            None,
+                                            false,
+                                            0,
+                                            false,
+                                            finish,
+                                          )
                                         }
-                                      })
-                                    }
+                                      }
+                                    })
                                   }
                                 }
                               })
@@ -5212,7 +5256,7 @@ fn ActorsGen::on_turn_ended_notices_k(
               effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
               effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
               effect::Exit::Succeeded(latest) => {
-                self.t_k(a, "station.notice.overloaded", base_codec::json_obj([]), fn(
+                self.t_k(a, "station.notice.overloaded", base_codec::json_null(), fn(
                   ex_t : effect::Exit[String],
                 ) -> Unit {
                   match ex_t {
@@ -5348,7 +5392,7 @@ fn ActorsGen::on_turn_ended_notices_k(
           effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
           effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
           effect::Exit::Succeeded(_) => {
-            self.t_k(a, "station.notice.stopped", base_codec::json_obj([]), fn(
+            self.t_k(a, "station.notice.stopped", base_codec::json_null(), fn(
               ex_t : effect::Exit[String],
             ) -> Unit {
               match ex_t {

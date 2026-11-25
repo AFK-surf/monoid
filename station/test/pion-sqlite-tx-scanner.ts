@@ -19,7 +19,7 @@ function unescapePionString(raw: string): string {
   return out;
 }
 
-type SqlTok = { kind: "word"; upper: string } | { kind: "semi" } | { kind: "other" };
+type SqlTok = { kind: "word"; upper: string } | { kind: "ident" } | { kind: "str" } | { kind: "semi" } | { kind: "other" };
 
 function isSqlIdentStart(c: number): boolean {
   return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c >= 0x80;
@@ -62,14 +62,14 @@ function tokenizeSql(sql: string): SqlTok[] {
         }
         i++;
       }
-      tokens.push({ kind: "other" });
+      tokens.push({ kind: quote === "'" ? "str" : "ident" });
       continue;
     }
     if (ch === "[") {
       i++;
       while (i < n && sql[i] !== "]") i++;
       if (i < n) i++;
-      tokens.push({ kind: "other" });
+      tokens.push({ kind: "ident" });
       continue;
     }
     if (ch === ";") {
@@ -172,6 +172,14 @@ export function findRawTxControlViolations(filename: string, source: string): st
           if (!argStmtStart) continue;
           argStmtStart = false;
           if (tok.kind === "word" && forbiddenHeads.has(tok.upper)) {
+            if (
+              (tok.upper === "RELEASE" || tok.upper === "SAVEPOINT") &&
+              tokens[t + 1]?.kind !== "word" &&
+              tokens[t + 1]?.kind !== "ident" &&
+              tokens[t + 1]?.kind !== "str"
+            ) {
+              continue;
+            }
             violations.push(`${filename}:${idx + 1}: forbidden raw transaction SQL "${tok.upper}" in literal "${literal}"`);
           }
         }
@@ -230,6 +238,16 @@ export function findRawTxControlViolations(filename: string, source: string): st
             const next = tokens[t + 1];
             const isTxEnd = next === undefined || next.kind === "semi" || (next.kind === "word" && next.upper === "TRANSACTION");
             if (!isTxEnd) continue;
+          }
+          // SQLite `SAVEPOINT <name>` / `RELEASE [SAVEPOINT] <name>` require a following identifier;
+          // allow standalone non-SQL literals like `"release"` (aligned with `w5-foundation.test.ts`).
+          if (
+            (tok.upper === "RELEASE" || tok.upper === "SAVEPOINT") &&
+            tokens[t + 1]?.kind !== "word" &&
+            tokens[t + 1]?.kind !== "ident" &&
+            tokens[t + 1]?.kind !== "str"
+          ) {
+            continue;
           }
           violations.push(`${filename}:${idx + 1}: forbidden raw transaction SQL "${tok.upper}" in literal "${literal}"`);
         }

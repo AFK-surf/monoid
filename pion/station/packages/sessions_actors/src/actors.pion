@@ -200,6 +200,8 @@ pub struct Actor {
   pub mut force_session_cap : Bool
   pub mut cap_wait_notified : Bool
   pub mut opening_rpc : Option[Int]
+  /// Plain IDs of in-flight non-open RPCs for this actor (value-only; zero RC cycles).
+  pub rpc_ids : Array[Int]
   /// Value-only timer references by name (`(timer_id, gen)` — NEVER closures capturing `Actor`).
   pub timers : Map[String, ActorTimerRef]
   pub mut timer_gen : Int
@@ -317,7 +319,23 @@ pub fn ActorsGen::mirror_by_key(self : ActorsGen, key : String) -> Unit {
   }
 }
 
+fn remove_int(arr : Array[Int], target : Int) -> Unit {
+  for i in 0..<arr.length() {
+    if arr[i] == target {
+      let mut j = i
+      while j + 1 < arr.length() {
+        arr[j] = arr[j + 1]
+        j = j + 1
+      }
+      let _ = arr.pop()
+      return
+    }
+  }
+}
+
 /// Ask Node `f` with `args` (`actors.mbt:264-280`), mirroring `key` first and decrementing `active`.
+/// Tracks `id` on `Actor.rpc_ids` (value-only) so same-generation `close(a)` cancels in-flight RPCs
+/// immediately and never resumes a closed actor's continuation.
 pub fn ActorsGen::rpc_k(
   self : ActorsGen,
   key : String,
@@ -329,20 +347,89 @@ pub fn ActorsGen::rpc_k(
     k(effect::Exit::Interrupted)
     return
   }
-  self.gen.rpc_k(
-    self.host,
-    key,
-    f,
-    args,
-    fn(k_actor : String) -> Unit { self.mirror_by_key(k_actor) },
-    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
-      if self.gen.counters.sealed {
+  let actor_opt = self.actors.get(key)
+  match actor_opt {
+    Some(a) => {
+      if a.phase == "closed" {
         k(effect::Exit::Interrupted)
-      } else {
-        k(ex)
+        return
       }
-    },
-  )
+    }
+    None => ()
+  }
+  let id = self.host.alloc_id()
+  let d : effect::Deferred[base_codec::Json] = effect::Deferred::new()
+  let epoch = self.gen.counters.epoch
+  self.host.hub_asked.set(id, sessions_core::HubAskedEntry::{ epoch: epoch, deferred: d })
+  match actor_opt {
+    Some(a) => a.rpc_ids.push(id)
+    None => ()
+  }
+  self.mirror_by_key(key)
+  self.gen.counters.active = self.gen.counters.active - 1
+  self.gen.counters.say_node([
+    ("rpc", sessions_core::jint(id)),
+    ("actor", sessions_core::jstr(key)),
+    ("fn", sessions_core::jstr(f)),
+    ("args", base_codec::json_arr(args)),
+  ])
+  let counters = self.gen.counters
+  let hub_asked = self.host.hub_asked
+  d.wait_k(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match actor_opt {
+      Some(a) => remove_int(a.rpc_ids, id)
+      None => ()
+    }
+    let closed_now = match actor_opt {
+      Some(a) => a.phase == "closed"
+      None => false
+    }
+    match ex {
+      effect::Exit::Interrupted => {
+        match hub_asked.get(id) {
+          Some(entry) => {
+            if entry.epoch == epoch {
+              let _ = hub_asked.remove(id)
+              if !counters.sealed {
+                counters.active = counters.active + 1
+              }
+            }
+          }
+          None => ()
+        }
+        k(effect::Exit::Interrupted)
+      }
+      effect::Exit::Failed(e) => {
+        if counters.sealed || closed_now {
+          k(effect::Exit::Interrupted)
+        } else {
+          k(effect::Exit::Failed(e))
+        }
+      }
+      effect::Exit::Succeeded(answer) => {
+        if counters.sealed {
+          k(effect::Exit::Interrupted)
+          return
+        }
+        match sessions_core::jget(answer, "error") {
+          Some(err) => {
+            if closed_now && !is_some(sessions_core::str_of(sessions_core::jget(err, "openAbort"))) {
+              k(effect::Exit::Interrupted)
+            } else {
+              k(effect::Exit::Failed(sessions_core::AskedError::new(err).to_effect_error()))
+            }
+          }
+          None => {
+            if closed_now {
+              k(effect::Exit::Interrupted)
+            } else {
+              k(effect::Exit::Succeeded(sessions_core::field_of(answer, "value")))
+            }
+          }
+        }
+      }
+    }
+  })
 }
 
 /// Cancel an in-flight RPC (`actors.mbt:285-295`), restoring `active` before waking the waiter.
@@ -630,6 +717,7 @@ pub fn ActorsGen::actor(self : ActorsGen, key : String, runtime : String) -> Act
         force_session_cap: false,
         cap_wait_notified: false,
         opening_rpc: None,
+        rpc_ids: [],
         timers: Map::new(),
         timer_gen: 0,
         mirrored: "",
@@ -787,6 +875,7 @@ fn ActorsGen::drain_retire_actor(self : ActorsGen, a : Actor) -> Unit {
     }
   }
   a.task_running = false
+  a.rpc_ids.clear()
   a.timers.clear()
 }
 
@@ -865,9 +954,13 @@ fn ActorsGen::start_actor_pump(self : ActorsGen, a : Actor) -> Unit {
                 sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
               }
               effect::Exit::Interrupted => {
-                // Single task interrupted while generation is still live: settle this item as
-                // `Interrupted` (never `Ran`), keep `task_running = true`, and continue pumping!
-                self.settle_task(a, item, TaskOutcome::Interrupted)
+                // If closed in-generation, settle as `SkippedClosed` so the caller returns `null`
+                // and remaining queued tasks drain cleanly; otherwise propagate `Interrupted`.
+                if a.phase == "closed" {
+                  self.settle_task(a, item, TaskOutcome::SkippedClosed)
+                } else {
+                  self.settle_task(a, item, TaskOutcome::Interrupted)
+                }
                 sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
               }
             }
@@ -973,6 +1066,20 @@ pub fn ActorsGen::close(self : ActorsGen, a : Actor) -> Unit {
   let had_slot = is_some(a.turn) || a.starting_turn
   let _ = self.abort_open(a, "closed")
   a.phase = "closed"
+  let pending_rpcs : Array[Int] = []
+  for i in 0..<a.rpc_ids.length() {
+    pending_rpcs.push(a.rpc_ids[i])
+  }
+  a.rpc_ids.clear()
+  for i in 0..<pending_rpcs.length() {
+    let _ = self.cancel_rpc(
+      pending_rpcs[i],
+      base_codec::json_obj([
+        ("actorClosed", sessions_core::jbool(true)),
+        ("message", sessions_core::jstr("actor closed")),
+      ]),
+    )
+  }
   a.turn = None
   a.warm = false
   a.deferred_end = None

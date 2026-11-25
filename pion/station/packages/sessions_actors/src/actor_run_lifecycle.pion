@@ -23,8 +23,10 @@ pub fn about_is(
   match sessions_core::jget(last, "about") {
     Some(base_codec::Json::Obj(_)) => {
       let ab = sessions_core::field_of(last, "about")
-      json_eq(sessions_core::field_of(ab, "thread"), thread) &&
-      json_eq(sessions_core::field_of(ab, "seq"), seq)
+      match (sessions_core::jget(ab, "thread"), sessions_core::jget(ab, "seq")) {
+        (Some(t), Some(s)) => json_eq(t, thread) && json_eq(s, seq)
+        _ => false
+      }
     }
     _ => false
   }
@@ -164,7 +166,7 @@ pub fn ActorsGen::stop_k(
                   effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
                   effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
                   effect::Exit::Succeeded(_) => {
-                    self.t_k(a, "station.notice.stopped", base_codec::json_obj([]), fn(
+                    self.t_k(a, "station.notice.stopped", base_codec::json_null(), fn(
                       ex_t : effect::Exit[String],
                     ) -> Unit {
                       match ex_t {
@@ -225,7 +227,7 @@ pub fn ActorsGen::stop_k(
                       effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
                       effect::Exit::Succeeded(stopped_wait) => {
                         if stop_starting && !stopped_wait {
-                          self.t_k(a, "station.notice.stopped", base_codec::json_obj([]), fn(
+                          self.t_k(a, "station.notice.stopped", base_codec::json_null(), fn(
                             ex_t : effect::Exit[String],
                           ) -> Unit {
                             match ex_t {
@@ -439,10 +441,7 @@ pub fn ActorsGen::stop_from_slack_k(
                   self.last_turn_k(a, fn(ex_lt : effect::Exit[base_codec::Json]) -> Unit {
                     match ex_lt {
                       effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
-                      effect::Exit::Failed(e) => {
-                        failure = Some(e)
-                        tk(effect::Exit::Succeeded(()))
-                      }
+                      effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
                       effect::Exit::Succeeded(lt) => {
                         with_since(num_or(sessions_core::num_of(sessions_core::jget(lt, "startedAt")), 0.0))
                       }
@@ -523,7 +522,7 @@ pub fn ActorsGen::cut_off_by_restart_k(
                                   effect::Exit::Succeeded(latest) => {
                                     let summary = sessions_core::field_of(latest, "summary")
                                     if cut_off_by_restart(summary) {
-                                      self.t_k(a, "station.notice.cutOffRestart", base_codec::json_obj([]), fn(
+                                      self.t_k(a, "station.notice.cutOffRestart", base_codec::json_null(), fn(
                                         ex_t : effect::Exit[String],
                                       ) -> Unit {
                                         match ex_t {
@@ -877,6 +876,10 @@ pub fn ActorsGen::release_k(
                           effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
                           effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
                           effect::Exit::Succeeded(false) => {
+                            if is_some(a.turn) || !a.tools_retry_deferred {
+                              tk(effect::Exit::Succeeded(()))
+                              return
+                            }
                             a.tools_retry_deferred = false
                             self.mirror(a)
                             self.archived_k(a, fn(ex_ar : effect::Exit[Bool]) -> Unit {
@@ -914,15 +917,20 @@ pub fn ActorsGen::release_k(
                       tk(effect::Exit::Succeeded(()))
                     }
                   }
-                  if !is_some(a.turn) {
-                    match a.deferred_end {
-                      Some(d) => {
-                        self.held_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
-                          match ex_h {
-                            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
-                            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
-                            effect::Exit::Succeeded(true) => check_tools_retry()
-                            effect::Exit::Succeeded(false) => {
+                  if !is_some(a.turn) && is_some(a.deferred_end) {
+                    self.held_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
+                      match ex_h {
+                        effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(true) => check_tools_retry()
+                        effect::Exit::Succeeded(false) => {
+                          if is_some(a.turn) {
+                            check_tools_retry()
+                            return
+                          }
+                          match a.deferred_end {
+                            None => check_tools_retry()
+                            Some(d) => {
                               let was_warm = a.warm
                               a.deferred_end = None
                               self.mirror(a)
@@ -960,11 +968,10 @@ pub fn ActorsGen::release_k(
                               })
                             }
                           }
-                        })
-                        return
+                        }
                       }
-                      None => ()
-                    }
+                    })
+                    return
                   }
                   check_tools_retry()
                 }
@@ -1082,7 +1089,7 @@ pub fn ActorsGen::begin_compacting_k(
 ) -> Unit {
   let check_busy = fn(is_busy : Bool) -> Unit {
     if is_some(a.turn) || is_some(a.codex_update) || a.compacting || is_busy {
-      self.t_k(a, "station.context.busy", base_codec::json_obj([]), fn(ex : effect::Exit[String]) -> Unit {
+      self.t_k(a, "station.context.busy", base_codec::json_null(), fn(ex : effect::Exit[String]) -> Unit {
         match ex {
           effect::Exit::Succeeded(s) => k(effect::Exit::Succeeded(Some(s)))
           effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
@@ -1096,7 +1103,7 @@ pub fn ActorsGen::begin_compacting_k(
         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
         effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
         effect::Exit::Succeeded(true) => {
-          self.t_k(a, "station.context.held", base_codec::json_obj([]), fn(ex : effect::Exit[String]) -> Unit {
+          self.t_k(a, "station.context.held", base_codec::json_null(), fn(ex : effect::Exit[String]) -> Unit {
             match ex {
               effect::Exit::Succeeded(s) => k(effect::Exit::Succeeded(Some(s)))
               effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
@@ -1113,7 +1120,7 @@ pub fn ActorsGen::begin_compacting_k(
               effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
               effect::Exit::Succeeded(row) => {
                 if !sessions_core::truthy(sessions_core::field_of(row, "runtimeSessionId")) {
-                  self.t_k(a, "station.context.empty", base_codec::json_obj([]), fn(
+                  self.t_k(a, "station.context.empty", base_codec::json_null(), fn(
                     ex : effect::Exit[String],
                   ) -> Unit {
                     match ex {
@@ -1142,7 +1149,7 @@ pub fn ActorsGen::begin_compacting_k(
                     }
                     effect::Exit::Succeeded(agent) => {
                       if is_some(a.afresh) {
-                        self.t_k(a, "station.context.empty", base_codec::json_obj([]), fn(
+                        self.t_k(a, "station.context.empty", base_codec::json_null(), fn(
                           ex : effect::Exit[String],
                         ) -> Unit {
                           match ex {
@@ -1365,7 +1372,7 @@ pub fn ActorsGen::compacted_k(
                         }
                       }
                       if kind == "completed" {
-                        self.t_k(a, "station.notice.compacted", base_codec::json_obj([]), fn(
+                        self.t_k(a, "station.notice.compacted", base_codec::json_null(), fn(
                           ex_t : effect::Exit[String],
                         ) -> Unit {
                           match ex_t {
@@ -1421,7 +1428,7 @@ pub fn ActorsGen::compacted_k(
                           },
                         )
                       } else if stop_requested {
-                        self.t_k(a, "station.notice.stopped", base_codec::json_obj([]), fn(
+                        self.t_k(a, "station.notice.stopped", base_codec::json_null(), fn(
                           ex_t : effect::Exit[String],
                         ) -> Unit {
                           match ex_t {
@@ -1467,7 +1474,7 @@ pub fn ActorsGen::clear_now_k(
 ) -> Unit {
   let check_busy = fn(is_busy : Bool) -> Unit {
     if is_some(a.turn) || is_some(a.codex_update) || a.compacting || is_busy {
-      self.t_k(a, "station.context.busy", base_codec::json_obj([]), fn(ex : effect::Exit[String]) -> Unit {
+      self.t_k(a, "station.context.busy", base_codec::json_null(), fn(ex : effect::Exit[String]) -> Unit {
         match ex {
           effect::Exit::Succeeded(s) => k(effect::Exit::Succeeded(Some(s)))
           effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
@@ -1485,7 +1492,7 @@ pub fn ActorsGen::clear_now_k(
         effect::Exit::Succeeded(row) => {
           let left = sessions_core::field_of(row, "runtimeSessionId")
           if !sessions_core::truthy(left) {
-            self.t_k(a, "station.context.empty", base_codec::json_obj([]), fn(
+            self.t_k(a, "station.context.empty", base_codec::json_null(), fn(
               ex : effect::Exit[String],
             ) -> Unit {
               match ex {
@@ -1552,7 +1559,7 @@ pub fn ActorsGen::clear_now_k(
                                             effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                                             effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                                             effect::Exit::Succeeded(_) => {
-                                              self.t_k(a, said, base_codec::json_obj([]), fn(
+                                              self.t_k(a, said, base_codec::json_null(), fn(
                                                 ex_t : effect::Exit[String],
                                               ) -> Unit {
                                                 match ex_t {
@@ -1739,7 +1746,9 @@ pub fn ActorsGen::suspend_k(
                                               effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
                                               effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
                                               effect::Exit::Succeeded(_) => {
-                                                a.phase = "idle"
+                                                if a.phase != "closed" {
+                                                  a.phase = "idle"
+                                                }
                                                 finish(effect::Exit::Succeeded(()))
                                               }
                                             }
@@ -2185,7 +2194,7 @@ pub fn ActorsGen::stop_waiting_k(
                           effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                           effect::Exit::Succeeded(_) => {
                             if say {
-                              self.t_k(a, "station.notice.stopped", base_codec::json_obj([]), fn(
+                              self.t_k(a, "station.notice.stopped", base_codec::json_null(), fn(
                                 ex_t : effect::Exit[String],
                               ) -> Unit {
                                 match ex_t {
@@ -2677,7 +2686,7 @@ pub fn ActorsGen::called_k(
                         effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
                         effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
                         effect::Exit::Succeeded(_) => {
-                          self.t_k(a, "station.notice.retryCanceled", base_codec::json_obj([]), fn(
+                          self.t_k(a, "station.notice.retryCanceled", base_codec::json_null(), fn(
                             ex_t : effect::Exit[String],
                           ) -> Unit {
                             match ex_t {
@@ -3025,7 +3034,7 @@ pub fn ActorsGen::called_k(
     )
     return
   }
-  if method == "release_".slice(0, 7) {
+  if method == "release" {
     self.release_k(a, k)
     return
   }

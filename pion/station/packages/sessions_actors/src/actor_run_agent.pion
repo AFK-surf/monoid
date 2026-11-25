@@ -288,7 +288,7 @@ pub fn ActorsGen::rpc_open_k(
   args : Array[base_codec::Json],
   k : (effect::Exit[base_codec::Json]) -> Unit,
 ) -> Unit {
-  if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
+  if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch || a.phase == "closed" {
     k(effect::Exit::Interrupted)
     return
   }
@@ -315,10 +315,12 @@ pub fn ActorsGen::rpc_open_k(
   let hub_asked = self.host.hub_asked
   d.wait_k(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
     let _ = self.cancel_timer(timer_id)
+    let mut was_opening = false
     match a.opening_rpc {
       Some(cur) => {
         if cur == id {
           a.opening_rpc = None
+          was_opening = true
         }
       }
       None => ()
@@ -336,11 +338,14 @@ pub fn ActorsGen::rpc_open_k(
           }
           None => ()
         }
+        if !counters.sealed && was_opening {
+          self.tell(a.key, "node.cancelOpen", [sessions_core::jint(id)])
+        }
         k(effect::Exit::Interrupted)
       }
       effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
       effect::Exit::Succeeded(answer) => {
-        if counters.sealed {
+        if counters.sealed || a.phase == "closed" {
           k(effect::Exit::Interrupted)
           return
         }
@@ -356,6 +361,10 @@ pub fn ActorsGen::rpc_open_k(
                     effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                     effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                     effect::Exit::Succeeded(row_res) => {
+                      if counters.sealed || a.phase == "closed" {
+                        k(effect::Exit::Interrupted)
+                        return
+                      }
                       match row_res {
                         Ok(row) => {
                           match sessions_core::str_of(sessions_core::jget(row, "runtime")) {
@@ -375,7 +384,7 @@ pub fn ActorsGen::rpc_open_k(
                       self.t_k(
                         a,
                         "station.notice.openTimedOut",
-                        base_codec::json_obj([]),
+                        base_codec::json_null(),
                         fn(ex_t : effect::Exit[String]) -> Unit {
                           match ex_t {
                             effect::Exit::Interrupted => k(effect::Exit::Interrupted)
@@ -713,67 +722,67 @@ pub fn ActorsGen::ensure_agent_k(
                 effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
                 effect::Exit::Succeeded(true) => after_stale_check()
                 effect::Exit::Succeeded(false) => {
-                  self.holding_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
-                    match ex_h {
-                      effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
-                      effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
-                      effect::Exit::Succeeded(h) => {
-                        sessions_core::try_k(
-                          fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                  sessions_core::try_k(
+                    fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                      self.holding_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
+                        match ex_h {
+                          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                          effect::Exit::Succeeded(h) => {
                             self.rpc_k(
                               a.key,
                               "node.profileId",
                               [sessions_core::jbool(h), sessions_core::jbool(a.force_session_cap)],
                               tk,
                             )
-                          },
-                          fn(ex_pid : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
-                            match ex_pid {
-                              effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
-                              effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
-                              effect::Exit::Succeeded(res) => {
-                                let on = match res {
-                                  Ok(v) => v
-                                  Err(e) => {
-                                    if is_some(session_cap_info(e)) {
-                                      sk(effect::Exit::Failed(e))
-                                      return
+                          }
+                        }
+                      })
+                    },
+                    fn(ex_pid : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                      match ex_pid {
+                        effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(res) => {
+                          let on = match res {
+                            Ok(v) => v
+                            Err(e) => {
+                              if is_some(session_cap_info(e)) {
+                                sk(effect::Exit::Failed(e))
+                                return
+                              }
+                              base_codec::json_null()
+                            }
+                          }
+                          if !is_json_null(on) && !json_eq(on, a.profile) {
+                            a.stale = true
+                          }
+                          if !a.stale {
+                            sessions_core::try_k(
+                              fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                                self.rpc_k(a.key, "node.outlived", [sessions_core::jint(g.handle)], tk)
+                              },
+                              fn(ex_ol : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                                match ex_ol {
+                                  effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                  effect::Exit::Succeeded(ol_res) => {
+                                    match ol_res {
+                                      Ok(base_codec::Json::Bool(true)) => a.stale = true
+                                      _ => ()
                                     }
-                                    base_codec::json_null()
+                                    after_stale_check()
                                   }
                                 }
-                                if !is_json_null(on) && !json_eq(on, a.profile) {
-                                  a.stale = true
-                                }
-                                if !a.stale {
-                                  sessions_core::try_k(
-                                    fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
-                                      self.rpc_k(a.key, "node.outlived", [sessions_core::jint(g.handle)], tk)
-                                    },
-                                    fn(ex_ol : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
-                                      match ex_ol {
-                                        effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
-                                        effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
-                                        effect::Exit::Succeeded(ol_res) => {
-                                          match ol_res {
-                                            Ok(base_codec::Json::Bool(true)) => a.stale = true
-                                            _ => ()
-                                          }
-                                          after_stale_check()
-                                        }
-                                      }
-                                    },
-                                  )
-                                } else {
-                                  after_stale_check()
-                                }
-                              }
-                            }
-                          },
-                        )
+                              },
+                            )
+                          } else {
+                            after_stale_check()
+                          }
+                        }
                       }
-                    }
-                  })
+                    },
+                  )
                 }
               }
             })
@@ -1518,7 +1527,7 @@ pub fn ActorsGen::reassign_k(
                                           } else {
                                             "station.notice.reassignNone"
                                           }
-                                          self.t_k(a, key_msg, base_codec::json_obj([]), fn(
+                                          self.t_k(a, key_msg, base_codec::json_null(), fn(
                                             ex_t : effect::Exit[String],
                                           ) -> Unit {
                                             match ex_t {

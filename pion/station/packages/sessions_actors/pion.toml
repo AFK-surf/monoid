@@ -7,5 +7,6 @@ base_codec = { workspace = true }
 builders_core = { workspace = true }
 effect = { workspace = true }
 js_json = { workspace = true }
+live_wire = { workspace = true }
 sessions_core = { workspace = true }
 sql_db = { workspace = true }

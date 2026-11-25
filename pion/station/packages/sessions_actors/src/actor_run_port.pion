@@ -184,7 +184,17 @@ pub fn ActorRunHandlers::real_with_live(live : ActorLiveHooks) -> ActorRunHandle
   }
 }
 
-/// Assemble real production `ActorRunHandlers` (`is_stub: false`) with default no-op `#live` hooks.
+/// Assemble `ActorRunHandlers` without live hooks (for unit tests; `is_stub: true` because
+/// `#live` hooks are no-op stubs — production assembly must use `real_with_live`).
 pub fn ActorRunHandlers::real() -> ActorRunHandlers {
-  ActorRunHandlers::real_with_live(ActorLiveHooks::noop())
+  let h = ActorRunHandlers::real_with_live(ActorLiveHooks::noop())
+  ActorRunHandlers::{
+    on_event_k: h.on_event_k,
+    called_k: h.called_k,
+    wake_queued_k: h.wake_queued_k,
+    wake_cap_queued_k: h.wake_cap_queued_k,
+    codex_updated_k: h.codex_updated_k,
+    on_timer_k: h.on_timer_k,
+    is_stub: true,
+  }
 }

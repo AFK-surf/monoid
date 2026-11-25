@@ -137,6 +137,31 @@ test("W8-0: pion-sqlite-tx-scanner catches concatenated raw tx SQL and throws on
   assert.equal(concatHits.length, 1, `expected concatenated ROLLBACK violation, got: ${concatHits.join("; ")}`);
   const multilineHits = findRawTxControlViolations("multiline.pion", 'let _ = tx_db.exec("COM" +\n  "MIT")');
   assert.equal(multilineHits.length, 1, `expected multiline COMMIT violation, got: ${multilineHits.join("; ")}`);
+  assert.equal(
+    findRawTxControlViolations("method.pion", 'if method == "release" || method == "savepoint" { () }').length,
+    0,
+    "standalone release/savepoint method names without a following identifier must not false-positive",
+  );
+  assert.equal(
+    findRawTxControlViolations("sp1.pion", 'let _ = db.exec("RELEASE sp1")').length,
+    1,
+    "RELEASE <ident> must be caught",
+  );
+  assert.equal(
+    findRawTxControlViolations("sp2.pion", 'let _ = db.exec("RELEASE \\"sp1\\"")').length,
+    1,
+    "RELEASE with double-quoted identifier must be caught",
+  );
+  assert.equal(
+    findRawTxControlViolations("sp3.pion", 'let _ = db.exec("RELEASE [sp1]")').length,
+    1,
+    "RELEASE with bracketed identifier must be caught",
+  );
+  assert.equal(
+    findRawTxControlViolations("sp4.pion", 'let _ = db.exec("SAVEPOINT sp1")').length,
+    1,
+    "SAVEPOINT <ident> must be caught",
+  );
   assert.throws(
     () => scanPionDirForRawTxControl(join(tmpdir(), "definitely-nonexistent-pion-dir-w8-0")),
     /does not exist/,

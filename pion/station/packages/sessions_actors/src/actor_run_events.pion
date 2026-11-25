@@ -3,6 +3,7 @@
 
 import "base_codec"
 import "effect"
+import "live_wire"
 import "sessions_core"
 
 /// Whether `a`'s current runtime session matches `generation` (`actor_run.mbt:2549-2552`).
@@ -117,7 +118,7 @@ pub fn ActorsGen::on_live(self : ActorsGen, a : Actor, event : base_codec::Json)
       }
       None => return
     }
-  } else if kind == "end_".slice(0, 3) {
+  } else if kind == live_wire::KIND_END {
     let kept : Array[(String, String)] = []
     for i in 0..<a.tools.length() {
       let (tid, tname) = a.tools[i]
@@ -377,7 +378,9 @@ pub fn ActorsGen::on_event_k(
     return
   }
   if ev_type == "turnEnded" {
-    self.done_working(a)
+    if self.is_current(a, generation) {
+      self.done_working(a)
+    }
     let outcome = sessions_core::field_of(event, "outcome")
     self.enqueue_k(
       a,
@@ -407,12 +410,16 @@ pub fn ActorsGen::on_event_k(
     return
   }
   if ev_type == "live" {
+    if !self.is_current(a, generation) {
+      k(effect::Exit::Succeeded(()))
+      return
+    }
     let ev = sessions_core::field_of(event, "event")
     let finish_live = fn() -> Unit {
       if self.is_current(a, generation) {
         self.hear_words(a, ev)
+        self.on_live(a, ev)
       }
-      self.on_live(a, ev)
       k(effect::Exit::Succeeded(()))
     }
     if opt_str_is(sessions_core::str_of(sessions_core::jget(ev, "kind")), "phase") &&
