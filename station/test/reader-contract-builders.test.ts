@@ -364,10 +364,12 @@ test("archive-marks: deterministic SQLITE_BUSY returns {done:false} without erro
   const { dir, seedPath } = createSeedSnapshot();
   const copy = cloneSeedDb(dir, seedPath, "busy");
   const locker = new DatabaseSync(copy.path);
+  // The lock is taken before the builder starts: taken after, it raced the builder's opening of the database and
+  // was refused (no busy wait on this connection) as often as the builder was first.
+  locker.exec("BEGIN IMMEDIATE");
   const proc = new BuilderProcess(candidate(), ["--builder", "archive-marks", "--db", copy.path]);
   let failed = true;
   try {
-    locker.exec("BEGIN IMMEDIATE");
     const busyRes = await proc.ask(JSON.stringify({ scope: "all" }));
     assert.deepStrictEqual(busyRes, { done: false }, `expected {done:false} with no error field, got ${JSON.stringify(busyRes)}`);
     assert.deepStrictEqual(Object.keys(busyRes), ["done"]);
