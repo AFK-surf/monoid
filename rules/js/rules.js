@@ -11963,7 +11963,7 @@ function _M0FP39stillfail5rules4lock4stepN4needS7183(ok, why) {
     return new _M0DTPC16result6ResultGuRP39stillfail5rules4lock9LockErrorE2Ok(undefined);
   }
 }
-function _M0FP39stillfail5rules4lock4step(prev, e, now, c, in_place) {
+function _M0FP39stillfail5rules4lock4step(prev, e, _now, c, in_place) {
   _M0FP39stillfail5rules4lock7stepped.val = _M0FP39stillfail5rules4lock7stepped.val + 1 | 0;
   const v = e;
   const _bind = prev.moved;
@@ -12034,7 +12034,7 @@ function _M0FP39stillfail5rules4lock4step(prev, e, now, c, in_place) {
   } else {
     return _bind$4;
   }
-  const _bind$5 = _M0FP39stillfail5rules4lock6signer(prev, _M0FP39stillfail5rules4lock8sig__key(e), now);
+  const _bind$5 = _M0FP39stillfail5rules4lock6signer(prev, _M0FP39stillfail5rules4lock8sig__key(e), new _M0DTPC16option6OptionGdE4Some(at));
   if (_bind$5 === undefined) {
     return new _M0DTPC16result6ResultGRP39stillfail5rules4lock9LockStateRP39stillfail5rules4lock9LockErrorE3Err(new _M0DTPC15error5Error46stillfail_2frules_2flock_2eLockError_2eRefused("not signed by a device or passkey in the lock"));
   } else {

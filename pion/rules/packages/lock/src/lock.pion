@@ -725,7 +725,8 @@ fn step_hashed(
       }
     }
   }
-  let by = match signer(prev, sig_key(e), now) {
+  // (a signing device that ran out is judged at the entry's own `at`, as rules/src/lock/lock.mbt `step` does)
+  let by = match signer(prev, sig_key(e), Some(at)) {
     Some(w) => w
     None => return Err(LockError::Refused("not signed by a device or passkey in the lock"))
   }

@@ -510,9 +510,12 @@ fn safe_num(v : Json?) -> Double? {
 }
 
 ///|
-/// The lock with one more entry; raises why the entry does not follow. `now`: the station's time (unix seconds), for
-/// signing devices that ran out; none for entries taken before (kept in lock.json). `prev` stays as it was: the fork
-/// choice applies to one parent's state for each of its children, and a station keeps the state it applied to.
+/// The lock with one more entry; raises why the entry does not follow. A signing device that ran out is judged at the
+/// entry's own `at`, as the genesis is, never at a station's clock: whether an entry follows is the entry's and its
+/// parent's alone, so every station that has both decides the same, whenever the entry reaches it (a station's clock
+/// would take it at one station and refuse it for good at another, the chains never coming to one). `now` is taken
+/// and not read, for callers from before. `prev` stays as it was: the fork choice applies to one parent's state for
+/// each of its children, and a station keeps the state it applied to.
 pub fn apply(prev : LockState, e : Json, now : Double?, c : &Crypto) -> LockState raise LockError {
   step(prev, e, now, c, false)
 }
@@ -522,7 +525,7 @@ pub fn apply(prev : LockState, e : Json, now : Double?, c : &Crypto) -> LockStat
 /// entry is taken into its maps rather than into copies of them; a refusal then leaves them part-changed, which only
 /// such a caller sees, and it gives up the state with the refusal. An entry that takes no effect (its signer's device
 /// put in under its name by someone else) has its checks made on copies either way, so `prev` stays as it was.
-fn step(prev : LockState, e : Json, now : Double?, c : &Crypto, in_place : Bool) -> LockState raise LockError {
+fn step(prev : LockState, e : Json, _now : Double?, c : &Crypto, in_place : Bool) -> LockState raise LockError {
   stepped.val += 1
   let v = Some(e)
   if prev.moved is Some(_) {
@@ -546,7 +549,7 @@ fn step(prev : LockState, e : Json, now : Double?, c : &Crypto, in_place : Bool)
   }
   let at = safe_int(field(v, "at")).unwrap()
   let hash = entry_hash(e, c)
-  guard signer(prev, sig_key(e), now) is Some(by) else {
+  guard signer(prev, sig_key(e), Some(at)) is Some(by) else {
     raise Refused("not signed by a device or passkey in the lock")
   }
   if !c.sig_valid(sig_of(e), hash, prev.origins, prev.rp_id, by.passkey) {

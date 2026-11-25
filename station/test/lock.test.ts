@@ -122,6 +122,19 @@ test("who may sign what: admins manage, members add only their own devices, owne
   assert.throws(() => apply(off, signed(after(off, "member", { sub: "x", email: "x", role: "member" }), w.alice.signer), 2000), /turned off/);
 });
 
+test("a signing device that runs out is judged at the entry's own time, so every station decides the same", () => {
+  const w = workspace();
+  // An app device of carol's own that runs out at 3000.
+  const tablet = { signer: ed(), base: ed() };
+  const s = apply(w.state, signed(after(w.state, "device", { id: tablet.base.hex, sub: "carol", kind: "app", label: "tablet", sign_key: tablet.signer.id, exp: 3000 }), w.carol.signer), 2000);
+  const before = signed(after(s, "device", { id: ed().hex, sub: "carol", kind: "app", label: "phone" }, 2500), tablet.signer);
+  const late = signed(after(s, "device", { id: ed().hex, sub: "carol", kind: "app", label: "phone" }, 3500), tablet.signer);
+  // Signed before it ran out: taken at a station that hears of it then, and at one that hears of it long after.
+  for (const now of [2600, 9000, null]) assert.equal(apply(s, before, now).seq, s.seq + 1, `taken at ${now}`);
+  // Signed after: refused at every station, whenever it comes.
+  for (const now of [2600, 9000, null]) assert.throws(() => apply(s, late, now), /not signed by a device/, `refused at ${now}`);
+});
+
 test("a person's own devices: an admin puts in only their first; one put in under someone else's name signs nothing", () => {
   const w = workspace();
   let s = w.state;
