@@ -32,8 +32,8 @@
   artifact per target for the rest of that run. `natives` combines the status for the pipeline and Windows preview.
   `natives-win-reader` and `natives-harness` take their static shell from that run when it changed.
   The Linux reader jobs use 8 MB C units with one `moonbit_init` unit, and keep compiled units in the Actions cache.
-  Branch readers and the tests' harness use -O0, and main's shipped readers retain optimization. The Rust checks
-  use separate Cargo targets for their crates and run only when `plan.sh` finds a change to their inputs.
+  Branch readers and the tests' harness use -O0, and main's shipped readers retain optimization. Each Rust check
+  shard uses its own GitHub runner and Cargo target. `plan.sh` selects Rust checks when their inputs changed.
 - Keep the Apple native jobs and Xcode or simulator tasks on their existing Mac pools. A branch's `check-mac`
   runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`). A branch plans `natives-mac` only when a
   job uses those parts, and `natives-mac-reader` only for `check-mac` and `mac-build`. Android release builds

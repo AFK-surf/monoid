@@ -120,12 +120,9 @@ decide() {
   # own files changed.
   check_mac=false
   if has '^(station/native/helper/|station/native/launcher/|vendor/(PermissionFlow|serve-sim)/|apps/mbui/(src/host/apple_reports\.m|scripts/ios[_-]reports)|\.github/(mac-release-prebuild|test_mac_release_prebuild)\.sh$|(apps/mbui|libs/ui)/scripts/mac\.sh$)' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$|cache-prune\.yml$|side\.yml$)'; then check_mac=true; fi
-  # Whether `check` tests the native parts' Rust (scripts/check.sh's cargo tests: the station's launcher, runner, mesh
-  # and screen, the mesh transport, the client's shells), on ci-1, whose sccache keeps their builds short: only when
-  # that Rust, what it vendors or ci-1's own setup changed. Otherwise check runs on GitHub's runners without them
-  # (STILLFAIL_SKIP_RUST_TESTS), and needs no ci-1 to be up.
+  # Queue the Rust test shards when their sources, vendored crates or build setup changed.
   check_rust=false
-  if has '^(station/native/(launcher|runner|mesh|screen|screen-linux)/|libs/mesh-transport/|client/(shell|iroh-wasm)/|client/Cargo\.(toml|lock)$|vendor/|\.github/actions/setup-(linux|mac)/)'; then check_rust=true; fi
+  if has '^(station/native/(launcher|runner|mesh|screen|screen-linux)/|libs/mesh-transport/|client/(shell|iroh-wasm)/|client/Cargo\.(toml|lock)$|vendor/|\.github/actions/setup-(native-linux|linux|mac)/)'; then check_rust=true; fi
 }
 
 print() {

@@ -702,7 +702,7 @@ jobs:
   # The full check (scripts/check.sh) in four: station typecheck/MoonBit/Rust and client Rust (check), the few checks
   # that need macOS/Xcode on macos-ci only when their inputs changed (check-mac), the station's tests in slices on Linux
   # runners of their own (check-station), and the rest beside them on Linux (check-linux).
-  check:
+  check-base:
     needs: [plan, natives]
     if: ${{ !cancelled() && needs.plan.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.natives.result) }}
     runs-on: ubuntu-24.04
@@ -713,7 +713,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
       STILLFAIL_CHECK_PART: station core
-      STILLFAIL_SKIP_RUST_TESTS: ${{ needs.plan.outputs.check_rust != 'true' && '1' || '' }}
+      STILLFAIL_SKIP_RUST_TESTS: '1'
     steps:
       # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
       - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
@@ -721,19 +721,6 @@ jobs:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
       - uses: ./.github/actions/setup
-      - if: needs.plan.outputs.check_rust == 'true'
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: check-rust-ubuntu-24.04-${{ hashFiles('client/Cargo.lock', 'station/native/*/Cargo.lock', 'libs/mesh-transport/Cargo.lock') }}
-          restore-keys: check-rust-ubuntu-24.04-
-      - if: needs.plan.outputs.check_rust == 'true'
-        run: |
-          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/check-rust" >> "$GITHUB_ENV"
-          echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
-          echo "CARGO_PROFILE_TEST_DEBUG=0" >> "$GITHUB_ENV"
       # (the station's programs in MoonBit: station/mb)
       - uses: ./.github/actions/mbui-moonbit
       # Use the reader built by natives so this test job does not repeat its cold build.
@@ -782,6 +769,57 @@ jobs:
             if wait $undone; then echo "· undoes nothing on main … ok"; else echo "· undoes nothing on main … FAILED"; sed 's/^/    /' "$RUNNER_TEMP/undone.log"; status=1; fi
           fi
           exit $status
+
+  # Rust checks have their own runners so several cold Cargo builds cannot exhaust one job's five minutes.
+  check-rust:
+    needs: plan
+    if: needs.plan.outputs.check_rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { crate: launcher, dir: station/native/launcher }
+          - { crate: runner, dir: station/native/runner }
+          - { crate: mesh, dir: station/native/mesh }
+          - { crate: screen, dir: station/native/screen }
+          - { crate: screen-linux, dir: station/native/screen-linux }
+          - { crate: mesh-transport, dir: libs/mesh-transport }
+          - { crate: client, dir: client }
+    env:
+      STILLFAIL_CHECK_PART: rust
+      STILLFAIL_RUST_CRATE: ${{ matrix.crate }}
+      RANGE: ${{ needs.plan.outputs.range }}
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0, filter: blob:none }
+      - uses: ./.github/actions/node
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: check-rust-ubuntu-24.04-${{ matrix.crate }}-${{ hashFiles(format('{0}/Cargo.lock', matrix.dir)) }}
+          restore-keys: check-rust-ubuntu-24.04-${{ matrix.crate }}-
+      - run: |
+          if [ "$RANGE" = all ] || git diff --name-only "$(git merge-base origin/main HEAD)" HEAD | grep -qE '^\.github/actions/setup-(native-linux|linux|mac)/'; then
+            exec sh scripts/check.sh all
+          fi
+          exec sh scripts/check.sh full "$RANGE"
+
+  check:
+    needs: [check-base, check-rust]
+    if: ${{ !cancelled() && needs.check-base.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - env:
+          BASE: ${{ needs.check-base.result }}
+          RUST: ${{ needs.check-rust.result }}
+        run: test "$BASE" = success && { test "$RUST" = success || test "$RUST" = skipped; }
 
   # The few checks only a Mac can run (Swift's still.fail Helper, the iOS crash reports' Objective-C test, and the Mac
   # release prebuild's Mach-O symbol check), run only when one of them or CI's own files changed: main's on macos-ci, a
@@ -1129,7 +1167,7 @@ jobs:
   # 2026-10-22): every job a branch runs, one skipped as passing, one failed or cancelled failing it. Its list
   # is the branch's jobs: a job added to them goes here too, or the protection does not wait for it.
   gate:
-    needs: [plan, natives-build, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, windows-natives, launcher-windows, ui-windows, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
+    needs: [plan, natives-build, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, windows-natives, launcher-windows, ui-windows, check-base, check-rust, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
     if: always() && github.ref != 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 2
