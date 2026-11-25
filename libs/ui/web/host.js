@@ -2119,6 +2119,14 @@
           wsum += 2.0 * w;
         }
         cSharp = o_sum / wsum;
+      } else if (u_c[4].w > 0.001) {
+        vec2 uv = gl_FragCoord.xy * ts;
+        vec2 ox = vec2(u_c[4].w, 0.0) * ts;
+        vec2 oy = vec2(0.0, u_c[4].w) * ts;
+        cSharp = (texture(u_src, clamp(uv - ox - oy, lo, hi)) +
+                  texture(u_src, clamp(uv + ox - oy, lo, hi)) +
+                  texture(u_src, clamp(uv - ox + oy, lo, hi)) +
+                  texture(u_src, clamp(uv + ox + oy, lo, hi))) * 0.25;
       } else {
         cSharp = texture(u_src, clamp(gl_FragCoord.xy * ts, lo, hi));
       }
@@ -2899,7 +2907,7 @@
     let dualWsp = isDual ? (14.0 + 10.0 * tallT) : 0.0;
     const mergedLiquid = kind === 6 && f32[a + 23] > 0;
     const unmergedLiquid = kind === 6 && !mergedLiquid;
-    const clearRefractScale = (isClearLiq && f32[a + 11] > 0.01) ? 2.20 : 1.0;
+    const clearRefractScale = (kind === 6 && Math.abs(f32[a + 7]) < 0.01 && f32[a + 11] > 0.005 && f32[a + 11] < 0.31) ? 2.20 : 1.0;
     let margin = isContained ? 0 : 3 * blur + (kind === 6 ? f32[a + 21] * clearRefractScale * (1 + Math.abs(f32[a + 22])) + Math.max(f32[a + 23], 0) : 0) + 2;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     let mN = 0;
@@ -2979,16 +2987,17 @@
     }
     let sharpFade = Math.min(Math.max((blur - 1.5) / 1.5, 0), 1);
     sharpFade = sharpFade * sharpFade * (3 - 2 * sharpFade);
-    const sp = (isDual ? (blur * sharpFade) : blur) * sc;
+    const crisp = Math.min(dualW / 0.10, 1.0);
+    const sp = blur * (1.0 - crisp * (1.0 - sharpFade)) * sc;
     let k = 0;
     if (sp >= 2.4) k = 1;
     while (k < 3 && sp / (1 << (k + 1)) >= 2) k++;
-    if (isDual && sp <= 0.3 && sc >= 2.0) k = 1;
+    if (isDual && k === 0 && sc >= 2.0) k = 1;
     if (isProgressive && k === 0 && sp > 0.5) k = 1;
     if (k >= 3) { isDual = false; dualW = 0; dualWsp = 0; }
     const sk = sp / (1 << k);
     const pre = k > 0 ? 0.75 * (1 - Math.pow(0.25, k)) / 3 + 1 / 6 : 0;
-    const sg = (isDual && sp <= 0.3) ? 0 : Math.sqrt(Math.max(sk * sk - pre, 0));
+    const sg = Math.sqrt(Math.max(sk * sk - pre, 0));
     const fade = isProgressive ? [f32[a + 52], f32[a + 53], f32[a + 54], f32[a + 55]] : null;
     const fadex = isProgressive ? [f32[a + 56], f32[a + 57], f32[a + 58], f32[a + 59]] : null;
     return {
@@ -3059,7 +3068,8 @@
   }
 
   function grabBlurred(m) {
-    return (m.progressive || (m.dualScale && m.sg <= 0.3) || (m.contained && m.k === 0)) ? lv[4] : lv[m.k];
+    const dualCut = m.k > 0 ? 0.55 : 0.3;
+    return (m.progressive || (m.dualScale && m.sg <= dualCut) || (m.contained && m.k === 0)) ? lv[4] : lv[m.k];
   }
 
   function showBlur(m, bt, bw, bh) {
@@ -3107,9 +3117,11 @@
       dual[16] = (lw[3] - 0.5) / tw3;
       dual[17] = (lh[3] - 0.5) / th3;
       dual[18] = 1.0 - m.dualW;
+      dual[19] = k > 0 ? 0.277 : 0.0;
       dual[20] = 1.0 / (d3 * tw3); dual[21] = 1.0 / (d3 * th3);
       dual[22] = 1.0 / tw3;        dual[23] = 1.0 / th3;
-      if (m.sg > 0.3) {
+      const dualCut = k > 0 ? 0.55 : 0.3;
+      if (m.sg > dualCut) {
         postPass(lv[k], lw[k], lh[k], lv[4], lw[k], lh[k], 2, m.sg, 1, 0);
         gl.uniform4fv(PU.u_c, dual);
         gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, lv[3].t); gl.uniform1i(PU.u_lv3, 3);

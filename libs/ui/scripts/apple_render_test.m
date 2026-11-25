@@ -3620,6 +3620,59 @@ int main(void) {
             CHECK(gclr.dual_scale == 0 && gclr.k == 1 && gclr.sg > 0.3f);
             printf("apple_render: v13_dual_k1 w44=%.3f w62=%.3f clr_k=%d clr_sg=%.2f\n",
                    g44.dual_w, g62.dual_w, gclr.k, gclr.sg);
+            // V13c: effective-sigma continuity (no 1-frame sharpness pop) across menu morph & size sweep (14..20pt) at 2x & 3x.
+            double max_morph_dsig = 0.0, min_morph_dsig = 0.0, max_sz_dsig = 0.0;
+            for (int sc_i = 2; sc_i <= 3; sc_i++) {
+              mb_render_set_size(VW, VH, sc_i);
+              at_scale = sc_i;
+              double prev_se = -1.0;
+              for (int si = 0; si <= 240; si++) {
+                float t = (float)si / 240.0f;
+                memset(mf, 0, sizeof mf);
+                mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 120.0f; mf[3] = 60.0f; mf[4] = 24.0f;
+                mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f + 2.8f * t;
+                mf[8] = 253.0f / 255.0f; mf[9] = 252.0f / 255.0f; mf[10] = 253.0f / 255.0f;
+                mf[11] = (103.0f + 44.0f * t) / 255.0f;
+                mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -124.0f; mf[21] = 20.0f;
+                Grab gm;
+                CHECK(grab_of(&gm, mf, 0, 1, 1, VW * sc_i, VH * sc_i) == 1);
+                double pre = gm.k > 0 ? 0.75 * (1.0 - pow(0.25, (double)gm.k)) / 3.0 + 1.0 / 6.0 : 0.0;
+                double sgu = (gm.dual_scale && gm.k > 0) ? (gm.sg > 0.55f ? (double)gm.sg : 0.526) : (gm.sg > 0.3f ? (double)gm.sg : 0.0);
+                double se = (double)(1 << gm.k) * sqrt(sgu * sgu + pre);
+                if (prev_se >= 0.0) {
+                  double d = se - prev_se;
+                  if (fabs(d) > max_morph_dsig) max_morph_dsig = fabs(d);
+                  if (d < min_morph_dsig) min_morph_dsig = d;
+                }
+                prev_se = se;
+              }
+              prev_se = -1.0;
+              for (int si = 0; si <= 60; si++) {
+                float dim = 14.0f + 6.0f * (float)si / 60.0f;
+                memset(mf, 0, sizeof mf);
+                mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 120.0f; mf[3] = dim; mf[4] = dim * 0.5f;
+                mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f;
+                mf[8] = 253.0f / 255.0f; mf[9] = 252.0f / 255.0f; mf[10] = 253.0f / 255.0f; mf[11] = 103.0f / 255.0f;
+                mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -125.0f; mf[21] = 20.0f;
+                Grab gs;
+                CHECK(grab_of(&gs, mf, 0, 1, 1, VW * sc_i, VH * sc_i) == 1);
+                double pre = gs.k > 0 ? 0.75 * (1.0 - pow(0.25, (double)gs.k)) / 3.0 + 1.0 / 6.0 : 0.0;
+                double sgu = (gs.dual_scale && gs.k > 0) ? (gs.sg > 0.55f ? (double)gs.sg : 0.526) : (gs.sg > 0.3f ? (double)gs.sg : 0.0);
+                double se = (double)(1 << gs.k) * sqrt(sgu * sgu + pre);
+                if (prev_se >= 0.0) {
+                  double d = fabs(se - prev_se);
+                  if (d > max_sz_dsig) max_sz_dsig = d;
+                }
+                prev_se = se;
+              }
+            }
+            mb_render_set_size(VW, VH, 2);
+            at_scale = 2;
+            printf("apple_render: v13c_sigma_cont max_morph_dsig=%.3f min_morph_dsig=%.3f max_sz_dsig=%.3f\n",
+                   max_morph_dsig, min_morph_dsig, max_sz_dsig);
+            CHECK(min_morph_dsig >= -1e-4);
+            CHECK(max_morph_dsig <= 0.30);
+            CHECK(max_sz_dsig <= 0.30);
           }
           // V14-Opus-Gates: (1) Tinted capsule dark outer contour <= 14; (2) Light Regular rim on black/mid-grey/cream;
           // (3) Clear pill on pure white has zero inner grey band (min_L >= 254).
@@ -3685,6 +3738,50 @@ int main(void) {
             CHECK(top_d[1] <= 38.0 && top2_d[1] <= 18.0);
             CHECK(top_abs[2] >= 252.0);
             CHECK(clr_min_L >= 254.0);
+            // V14b-Scroll-Shimmer: measure 1px vertical scroll shift-invariance of 44pt Light Regular pill
+            // over crisp dark text-like strokes (1pt, 1.5pt, 2pt bars on white) at 2x and 3x.
+            for (int sc_i = 2; sc_i <= 3; sc_i++) {
+              mb_render_set_size(160, 80, sc_i);
+              uint8_t *fpx[2] = {NULL, NULL};
+              int faw = 0, fah = 0;
+              for (int fi = 0; fi < 2; fi++) {
+                double dy = (double)fi / (double)sc_i;
+                double sb[7 * MB_INST];
+                rect_at(sb, 0, 0, 160, 80, 0, 1.0, 1.0, 1.0, 0);
+                // Crisp dark horizontal strokes simulating text lines (1pt, 1.5pt, 2pt, 1pt, 2pt)
+                rect_at(sb + 1 * MB_INST, 0, 24.0 + dy, 160, 1.0, 0, 0.08, 0.08, 0.08, 0);
+                rect_at(sb + 2 * MB_INST, 0, 31.0 + dy, 160, 1.5, 0, 0.08, 0.08, 0.08, 0);
+                rect_at(sb + 3 * MB_INST, 0, 39.0 + dy, 160, 2.0, 0, 0.08, 0.08, 0.08, 0);
+                rect_at(sb + 4 * MB_INST, 0, 47.0 + dy, 160, 1.0, 0, 0.08, 0.08, 0.08, 0);
+                rect_at(sb + 5 * MB_INST, 0, 54.0 + dy, 160, 2.0, 0, 0.08, 0.08, 0.08, 0);
+                rect_at(sb + 6 * MB_INST, 14, 18, 132, 44, 6, 253.0/255.0, 252.0/255.0, 253.0/255.0, -140 - sc_i * 2 - fi);
+                sb[6 * MB_INST + 4] = 22.0; sb[6 * MB_INST + 6] = 1.0; sb[6 * MB_INST + 7] = 1.2;
+                sb[6 * MB_INST + 11] = 0x67 / 255.0; sb[6 * MB_INST + 12] = 0.6; sb[6 * MB_INST + 13] = 14.0;
+                sb[6 * MB_INST + 15] = 1.0; sb[6 * MB_INST + 21] = 20.0; sb[6 * MB_INST + 22] = 0.06;
+                glass_forget(); mb_host_render_dirty(0, 0, 160, 80);
+                mb_render_present(sb, 7, 1.0, 1.0, 1.0); present_drain();
+                fpx[fi] = read_texture(canvas, &faw, &fah);
+              }
+              double max_d_flat = 0.0, sum2_flat = 0.0;
+              int cnt_flat = 0;
+              // Flat interior: x in [44..116]pt, y in [28..52]pt (away from pill refraction bevel)
+              for (int py = 28 * sc_i; py < 52 * sc_i - 1; py++) {
+                for (int px = 44 * sc_i; px < 116 * sc_i; px++) {
+                  uint8_t *p0 = A_PX(fpx[0], faw, px, py);
+                  uint8_t *p1 = A_PX(fpx[1], faw, px, py + 1);
+                  double l0 = 0.2126 * p0[2] + 0.7152 * p0[1] + 0.0722 * p0[0];
+                  double l1 = 0.2126 * p1[2] + 0.7152 * p1[1] + 0.0722 * p1[0];
+                  double d = fabs(l1 - l0);
+                  if (d > max_d_flat) max_d_flat = d;
+                  sum2_flat += d * d;
+                  cnt_flat++;
+                }
+              }
+              double rms_flat = sqrt(sum2_flat / (double)(cnt_flat > 0 ? cnt_flat : 1));
+              printf("apple_render: v14b_scroll_shimmer_%dx flat_max=%.2f flat_rms=%.2f\n", sc_i, max_d_flat, rms_flat);
+              CHECK(max_d_flat <= 3.0);
+              free(fpx[0]); free(fpx[1]);
+            }
             mb_render_set_size(160, 80, 2);
           }
         }

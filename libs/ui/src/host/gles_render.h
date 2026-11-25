@@ -1435,6 +1435,14 @@ static const char *PFS =
     "        wsum += 2.0 * w;\n"
     "      }\n"
     "      cSharp = o_sum / wsum;\n"
+    "    } else if (u_c[4].w > 0.001) {\n"
+    "      vec2 uv = gl_FragCoord.xy * ts;\n"
+    "      vec2 ox = vec2(u_c[4].w, 0.0) * ts;\n"
+    "      vec2 oy = vec2(0.0, u_c[4].w) * ts;\n"
+    "      cSharp = (texture(u_src, clamp(uv - ox - oy, lo, hi)) +\n"
+    "                texture(u_src, clamp(uv + ox - oy, lo, hi)) +\n"
+    "                texture(u_src, clamp(uv - ox + oy, lo, hi)) +\n"
+    "                texture(u_src, clamp(uv + ox + oy, lo, hi))) * 0.25;\n"
     "    } else {\n"
     "      cSharp = texture(u_src, clamp(gl_FragCoord.xy * ts, lo, hi));\n"
     "    }\n"
@@ -2614,7 +2622,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   int is_dual = (dual_w > 0.005f);
   int merged_liquid = (kind == 6 && a[23] > 0.0f);
   int unmerged_liquid = (kind == 6 && !merged_liquid);
-  float clear_refract_scale = (is_clear_liq && a[11] > 0.01f) ? 2.20f : 1.0f;
+  float clear_refract_scale = (kind == 6 && fabsf(a[7]) < 0.01f && a[11] > 0.005f && a[11] < 0.31f) ? 2.20f : 1.0f;
   float margin = is_contained ? 0.0f : 3.0f * blur + (kind == 6 ? a[21] * clear_refract_scale * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   for (int32_t i = start; i < end; i++) {
@@ -2714,11 +2722,12 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   // iOS 27.0 Regular controls (blur <= 1.5pt) use crisp zero-frost sharp sampling (half-res lv[1] at >=2x, full-res at 1x) + 14pt wide ambient glass color, smoothly restoring sharp blur across 1.5..3.0pt during menu morphs.
   float sharp_fade = fminf(fmaxf((blur - 1.5f) / 1.5f, 0.0f), 1.0f);
   sharp_fade = sharp_fade * sharp_fade * (3.0f - 2.0f * sharp_fade);
-  float sp = (is_dual ? (blur * sharp_fade) : blur) * sc;
+  float crisp = fminf(dual_w / 0.10f, 1.0f);
+  float sp = blur * (1.0f - crisp * (1.0f - sharp_fade)) * sc;
   int k = 0;
   if (sp >= 2.4f) k = 1;
   while (k < 3 && sp / (float)(1 << (k + 1)) >= 2.0f) k++;
-  if (is_dual && sp <= 0.3f && sc >= 2.0f) k = 1;
+  if (is_dual && k == 0 && sc >= 2.0f) k = 1;
   m->sp = sp;
   if (is_progressive && k == 0 && sp > 0.5f) k = 1;
   // what is left of the deviation once the halvings' and the last look's (bilinear) spread are taken out
@@ -2726,7 +2735,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   float pre = k > 0 ? 0.75f * (1.0f - powf(0.25f, (float)k)) / 3.0f + 1.0f / 6.0f : 0.0f;
   m->k = k;
   if (k >= 3) { m->dual_scale = 0; m->dual_w = 0.0f; m->dual_wsp = 0.0f; }
-  m->sg = (is_dual && sp <= 0.3f) ? 0.0f : sqrtf(fmaxf(sk * sk - pre, 0.0f));
+  m->sg = sqrtf(fmaxf(sk * sk - pre, 0.0f));
   return 1;
 }
 
@@ -2767,7 +2776,10 @@ static void show_blur(const Grab *m, GLuint bt, int bw, int bh) {
 }
 
 // The level a grab's blur is left in.
-static level *grab_blurred(const Grab *m) { return (m->progressive || (m->dual_scale && m->sg <= 0.3f) || (m->contained && m->k == 0)) ? &lv[4] : &lv[m->k]; }
+static level *grab_blurred(const Grab *m) {
+  float dual_cut = m->k > 0 ? 0.55f : 0.3f;
+  return (m->progressive || (m->dual_scale && m->sg <= dual_cut) || (m->contained && m->k == 0)) ? &lv[4] : &lv[m->k];
+}
 
 // A grab of target_fb blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
 // Gaussian left (grab_blurred). The levels are shared by every capture: what is shown is the copy a slot keeps (below).
@@ -2813,9 +2825,11 @@ static void blur(const Grab *m) {
     dual[16] = ((float)lw[3] - 0.5f) / tw3;
     dual[17] = ((float)lh[3] - 0.5f) / th3;
     dual[18] = 1.0f - m->dual_w;
+    dual[19] = k > 0 ? 0.277f : 0.0f;
     dual[20] = 1.0f / (d3 * tw3); dual[21] = 1.0f / (d3 * th3);
     dual[22] = 1.0f / tw3;        dual[23] = 1.0f / th3;
-    if (m->sg > 0.3f) {
+    float dual_cut = k > 0 ? 0.55f : 0.3f;
+    if (m->sg > dual_cut) {
       post_pass(&lv[k], lw[k], lh[k], &lv[4], lw[k], lh[k], 2, m->sg, 1, 0);
       glUniform4fv(pu_c, 9, dual);
       glActiveTexture(GL_TEXTURE3); glBindTexture(GL_TEXTURE_2D, lv[3].t); glUniform1i(pu_lv3, 3);
@@ -3516,7 +3530,7 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
         float raw_blur_r = (gkind == 6 && a[7] < 0.0f) ? 0.0f : fabsf(a[7]);
         int is_clear_r = (gkind == 6 && a[7] >= -0.001f && a[7] <= 0.1f && a[11] < 0.12f);
         float blur_r = (is_clear_r && a[11] > 0.01f && raw_blur_r < 0.1f) ? 1.2f : raw_blur_r;
-        float clear_rs = (is_clear_r && a[11] > 0.01f) ? 2.20f : 1.0f;
+        float clear_rs = (gkind == 6 && fabsf(a[7]) < 0.01f && a[11] > 0.005f && a[11] < 0.31f) ? 2.20f : 1.0f;
         int merged_liquid = (gkind == 6 && a[23] > 0.0f);
         int unmerged_liquid = (gkind == 6 && !merged_liquid);
         float margin = is_contained ? 0.0f : 3.0f * blur_r + (gkind == 6 ? a[21] * clear_rs * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;

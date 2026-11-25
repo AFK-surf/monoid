@@ -1614,6 +1614,14 @@ static const char *prog_src =
     "        wsum += 2.0 * w;\n"
     "      }\n"
     "      cSharp = o / wsum;\n"
+    "    } else if (pc[4].w > 0.001) {\n"
+    "      float2 uv = pos.xy * ts;\n"
+    "      float2 ox = float2(pc[4].w, 0.0) * ts;\n"
+    "      float2 oy = float2(0.0, pc[4].w) * ts;\n"
+    "      cSharp = (lv0.SampleLevel(samp, clamp(uv - ox - oy, lo, hi), 0) +\n"
+    "                lv0.SampleLevel(samp, clamp(uv + ox - oy, lo, hi), 0) +\n"
+    "                lv0.SampleLevel(samp, clamp(uv - ox + oy, lo, hi), 0) +\n"
+    "                lv0.SampleLevel(samp, clamp(uv + ox + oy, lo, hi), 0)) * 0.25;\n"
     "    } else {\n"
     "      cSharp = lv0.SampleLevel(samp, clamp(pos.xy * ts, lo, hi), 0);\n"
     "    }\n"
@@ -2955,7 +2963,7 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   int is_dual = (dual_w > 0.005f);
   int merged_liquid = (kind == 6 && a[23] > 0.0f);
   int unmerged_liquid = (kind == 6 && !merged_liquid);
-  float clear_refract_scale = (is_clear_liq && a[11] > 0.01f) ? 2.20f : 1.0f;
+  float clear_refract_scale = (kind == 6 && fabsf(a[7]) < 0.01f && a[11] > 0.005f && a[11] < 0.31f) ? 2.20f : 1.0f;
   float margin = is_contained ? 0.0f : 3.0f * blur_r + (kind == 6 ? a[21] * clear_refract_scale * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
   float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
   int n = 0;
@@ -3056,18 +3064,19 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
   // iOS 27.0 Regular controls (blur <= 1.5pt) use crisp zero-frost sharp sampling (half-res lv[1] at >=2x, full-res at 1x) + 14pt wide ambient glass color, smoothly restoring sharp blur across 1.5..3.0pt during menu morphs.
   float sharp_fade = fminf(fmaxf((blur_r - 1.5f) / 1.5f, 0.0f), 1.0f);
   sharp_fade = sharp_fade * sharp_fade * (3.0f - 2.0f * sharp_fade);
-  float sp = (is_dual ? (blur_r * sharp_fade) : blur_r) * sc;
+  float crisp = fminf(dual_w / 0.10f, 1.0f);
+  float sp = blur_r * (1.0f - crisp * (1.0f - sharp_fade)) * sc;
   int k = 0;
   if (sp >= 2.4f) k = 1;
   while (k < 3 && sp / (float)(1 << (k + 1)) >= 2.0f) k++;
-  if (is_dual && sp <= 0.3f && sc >= 2.0f) k = 1;
+  if (is_dual && k == 0 && sc >= 2.0f) k = 1;
   m->sp = sp;
   if (is_progressive && k == 0 && sp > 0.5f) k = 1;
   float sk = sp / (float)(1 << k);
   float pre = k > 0 ? 0.75f * (1.0f - powf(0.25f, (float)k)) / 3.0f + 1.0f / 6.0f : 0.0f;
   m->k = k;
   if (k >= 3) { m->dual_scale = 0; m->dual_w = 0.0f; m->dual_wsp = 0.0f; }
-  m->sg = (is_dual && sp <= 0.3f) ? 0.0f : sqrtf(fmaxf(sk * sk - pre, 0.0f));
+  m->sg = sqrtf(fmaxf(sk * sk - pre, 0.0f));
   return 1;
 }
 
@@ -3165,7 +3174,7 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
         float raw_blur_r = (gkind == 6 && a[7] < 0.0f) ? 0.0f : fabsf(a[7]);
         int is_clear_r = (gkind == 6 && a[7] >= -0.001f && a[7] <= 0.1f && a[11] < 0.12f);
         float blur_r = (is_clear_r && a[11] > 0.01f && raw_blur_r < 0.1f) ? 1.2f : raw_blur_r;
-        float clear_rs = (is_clear_r && a[11] > 0.01f) ? 2.20f : 1.0f;
+        float clear_rs = (gkind == 6 && fabsf(a[7]) < 0.01f && a[11] > 0.005f && a[11] < 0.31f) ? 2.20f : 1.0f;
         int merged_liquid = (gkind == 6 && a[23] > 0.0f);
         int unmerged_liquid = (gkind == 6 && !merged_liquid);
         float margin = is_contained ? 0.0f : 3.0f * blur_r + (gkind == 6 ? a[21] * clear_rs * (1.0f + fabsf(a[22])) + fmaxf(a[23], 0.0f) : 0.0f) + 2.0f;
@@ -3252,7 +3261,7 @@ static int slot_same(const Grab *m, const double key[7]) {
 }
 
 static int slot_fill(const Grab *m, unsigned frame_clock) {
-  level *Lp = (m->progressive || (m->dual_scale && m->sg <= 0.3f) || (m->contained && m->k == 0)) ? &lv[4] : &lv[m->k];
+  level *Lp = (m->progressive || (m->dual_scale && m->sg <= (m->k > 0 ? 0.55f : 0.3f)) || (m->contained && m->k == 0)) ? &lv[4] : &lv[m->k];
   int t0 = -1, t1 = -1, t2 = -1, t3 = -1, t4 = -1, fallback = 0;
   for (int j = 0; j < MB_GLASS_SLOTS; j++) {
     if (gslots[j].used < gslots[fallback].used) fallback = j;
@@ -3337,7 +3346,8 @@ static int blur_grab(ID3D11RenderTargetView *target, const Grab *m) {
       post_pass(&lv[3], lw[3], lh[3], &lv[4], lw[3], lh[3], 2, wsg, 1, 0);
       post_pass(&lv[4], lw[3], lh[3], &lv[3], lw[3], lh[3], 2, wsg, 0, 1);
     }
-    int fused_v = (m->sg > 0.3f);
+    float dual_cut = k > 0 ? 0.55f : 0.3f;
+    int fused_v = (m->sg > dual_cut);
     if (fused_v) {
       post_pass(&lv[k], lw[k], lh[k], &lv[4], lw[k], lh[k], 2, m->sg, 1, 0);
     }
@@ -3347,6 +3357,7 @@ static int blur_grab(ID3D11RenderTargetView *target, const Grab *m) {
     post_edge.rc[0] = ((float)lw[3] - 0.5f) / tw3;
     post_edge.rc[1] = ((float)lh[3] - 0.5f) / th3;
     post_edge.rc[2] = 1.0f - m->dual_w;
+    post_edge.rc[3] = k > 0 ? 0.277f : 0.0f;
     post_edge.rs[0] = 1.0f / (d3 * tw3); post_edge.rs[1] = 1.0f / (d3 * th3);
     post_edge.rs[2] = 1.0f / tw3;        post_edge.rs[3] = 1.0f / th3;
     level *src = fused_v ? &lv[4] : &lv[k];
@@ -3457,7 +3468,7 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
       if (known && !encode_missing) slot_keep(slot, &m, key);
       slot_show(&m, slot);
     } else {
-      level *L = (m.progressive || (m.dual_scale && m.sg <= 0.3f) || (m.contained && m.k == 0)) ? &lv[4] : &lv[m.k];
+      level *L = (m.progressive || (m.dual_scale && m.sg <= (m.k > 0 ? 0.55f : 0.3f)) || (m.contained && m.k == 0)) ? &lv[4] : &lv[m.k];
       show_blur(&m, L);
     }
   }

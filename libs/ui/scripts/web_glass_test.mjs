@@ -747,6 +747,50 @@ function runGlassVectorsInPage() {
       mf[8] = 1; mf[9] = 1; mf[10] = 1; mf[11] = 0x1A / 255;
       const gclr = H.renderGrabOf(mf, 0, 1, 1);
       roi.v13_dual_k1 = { g44, g62, gclr };
+      // V13c: effective-sigma continuity across menu morph & size sweep (14..20pt) at 2x & 3x.
+      let maxMorphDsig = 0, minMorphDsig = 0, maxSzDsig = 0;
+      for (const scI of [2, 3]) {
+        H.renderInit(VW, VH, scI);
+        let prevSe = -1;
+        for (let si = 0; si <= 240; si++) {
+          const t = si / 240;
+          mf.fill(0);
+          mf[0] = 20; mf[1] = 10; mf[2] = 120; mf[3] = 60; mf[4] = 24;
+          mf[5] = 6; mf[6] = 1; mf[7] = 1.2 + 2.8 * t;
+          mf[8] = 253 / 255; mf[9] = 252 / 255; mf[10] = 253 / 255; mf[11] = (103 + 44 * t) / 255;
+          mf[12] = 0.6; mf[13] = 14; mf[15] = 1; mf[18] = VW; mf[19] = VH; mf[20] = -124; mf[21] = 20;
+          const gm = H.renderGrabOf(mf, 0, 1, 1);
+          const pre = gm.k > 0 ? 0.75 * (1 - Math.pow(0.25, gm.k)) / 3 + 1 / 6 : 0;
+          const sgu = (gm.dualScale && gm.k > 0) ? (gm.sg > 0.55 ? gm.sg : 0.526) : (gm.sg > 0.3 ? gm.sg : 0);
+          const se = (1 << gm.k) * Math.sqrt(sgu * sgu + pre);
+          if (prevSe >= 0) {
+            const d = se - prevSe;
+            if (Math.abs(d) > maxMorphDsig) maxMorphDsig = Math.abs(d);
+            if (d < minMorphDsig) minMorphDsig = d;
+          }
+          prevSe = se;
+        }
+        prevSe = -1;
+        for (let si = 0; si <= 60; si++) {
+          const dim = 14 + 6 * si / 60;
+          mf.fill(0);
+          mf[0] = 20; mf[1] = 10; mf[2] = 120; mf[3] = dim; mf[4] = dim * 0.5;
+          mf[5] = 6; mf[6] = 1; mf[7] = 1.2;
+          mf[8] = 253 / 255; mf[9] = 252 / 255; mf[10] = 253 / 255; mf[11] = 103 / 255;
+          mf[12] = 0.6; mf[13] = 14; mf[15] = 1; mf[18] = VW; mf[19] = VH; mf[20] = -125; mf[21] = 20;
+          const gs = H.renderGrabOf(mf, 0, 1, 1);
+          const pre = gs.k > 0 ? 0.75 * (1 - Math.pow(0.25, gs.k)) / 3 + 1 / 6 : 0;
+          const sgu = (gs.dualScale && gs.k > 0) ? (gs.sg > 0.55 ? gs.sg : 0.526) : (gs.sg > 0.3 ? gs.sg : 0);
+          const se = (1 << gs.k) * Math.sqrt(sgu * sgu + pre);
+          if (prevSe >= 0) {
+            const d = Math.abs(se - prevSe);
+            if (d > maxSzDsig) maxSzDsig = d;
+          }
+          prevSe = se;
+        }
+      }
+      H.renderInit(VW, VH, 2);
+      roi.v13c_sigma_cont = { maxMorphDsig, minMorphDsig, maxSzDsig };
     }
     // V14-Opus-Gates: (1) Tinted capsule dark outer contour <= 14; (2) Light Regular rim on black/mid-grey/cream;
     // (3) Clear pill on pure white has zero inner grey band (min_L >= 254).
@@ -787,6 +831,40 @@ function runGlassVectorsInPage() {
         if (L < clrMinL) clrMinL = L;
       }
       roi.v14_opus_gates = { tintSideL, topD, top2D, topAbs, clrMinL };
+      // V14b-Scroll-Shimmer: 1px vertical scroll shift-invariance at 2x & 3x.
+      roi.v14b_scroll_shimmer = [];
+      for (const scI of [2, 3]) {
+        H.renderInit(VW, VH, scI);
+        const fpx = [];
+        for (let fi = 0; fi < 2; fi++) {
+          const dy = fi / scI;
+          const sb = new Float32Array(7 * INST);
+          rect(sb, 0, 0, 0, VW, VH, 0, 1, 1, 1, 1, 0);
+          rect(sb, INST, 0, 24 + dy, VW, 1.0, 0, 0.08, 0.08, 0.08, 1, 0);
+          rect(sb, 2 * INST, 0, 31 + dy, VW, 1.5, 0, 0.08, 0.08, 0.08, 1, 0);
+          rect(sb, 3 * INST, 0, 39 + dy, VW, 2.0, 0, 0.08, 0.08, 0.08, 1, 0);
+          rect(sb, 4 * INST, 0, 47 + dy, VW, 1.0, 0, 0.08, 0.08, 0.08, 1, 0);
+          rect(sb, 5 * INST, 0, 54 + dy, VW, 2.0, 0, 0.08, 0.08, 0.08, 1, 0);
+          rect(sb, 6 * INST, 14, 18, 132, 44, 6, 253 / 255, 252 / 255, 253 / 255, 0x67 / 255, -140 - scI * 2 - fi);
+          sb[6 * INST + 4] = 22; sb[6 * INST + 6] = 1; sb[6 * INST + 7] = 1.2;
+          sb[6 * INST + 12] = 0.6; sb[6 * INST + 13] = 14; sb[6 * INST + 15] = 1;
+          sb[6 * INST + 21] = 20; sb[6 * INST + 22] = 0.06;
+          H.present(sb, 7, 1, 1, 1);
+          fpx.push(H.renderPixels());
+        }
+        let maxD = 0, sum2 = 0, cnt = 0;
+        for (let py = 28 * scI; py < 52 * scI - 1; py++) {
+          for (let px = 44 * scI; px < 116 * scI; px++) {
+            const l0 = lumaOf(pxAt(fpx[0], px, py));
+            const l1 = lumaOf(pxAt(fpx[1], px, py + 1));
+            const d = Math.abs(l1 - l0);
+            if (d > maxD) maxD = d;
+            sum2 += d * d;
+            cnt++;
+          }
+        }
+        roi.v14b_scroll_shimmer.push({ sc: scI, maxD, rms: Math.sqrt(sum2 / Math.max(cnt, 1)) });
+      }
       H.renderInit(VW, VH, 2);
     }
   }
@@ -1159,6 +1237,11 @@ check(roi.v14_opus_gates.tintSideL <= 14.0 &&
   roi.v14_opus_gates.topD[1] <= 38.0 && roi.v14_opus_gates.top2D[1] <= 18.0 &&
   roi.v14_opus_gates.topAbs[2] >= 252.0 && roi.v14_opus_gates.clrMinL >= 254.0,
   `v14_opus_gates=${JSON.stringify(roi.v14_opus_gates)}`);
+check(roi.v13c_sigma_cont.minMorphDsig >= -1e-4 && roi.v13c_sigma_cont.maxMorphDsig <= 0.30 && roi.v13c_sigma_cont.maxSzDsig <= 0.30,
+  `v13c_sigma_cont=${JSON.stringify(roi.v13c_sigma_cont)}`);
+for (const sh of roi.v14b_scroll_shimmer) {
+  check(sh.maxD <= 3.0, `v14b_scroll_shimmer=${JSON.stringify(sh)}`);
+}
 for (const a of roi.v11_aa) {
   const lim = a.sc === 3 ? (a.isLight ? 12.0 : 10.0) : (a.isLight ? 14.0 : 12.0);
   check(a.d2L <= lim && a.d2R <= lim, `v11_aa=${JSON.stringify(a)} lim=${lim}`);
