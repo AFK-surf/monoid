@@ -150,8 +150,9 @@ const GROWS: Record<string, Partial<Record<Knob, number>>> = {
   profile: { profiles: 200, stations: 216 },
   "profile key": { profiles: 200, stations: 216 },
   newChat: { profiles: 64 },
-  // (merged #7744 acceptAutoChats + #7730 startsOnStations across 15 station overviews crossed 416.0 KB, 2026-11-20)
-  pick: { profiles: 272, stations: 424 },
+  // (merged #7744 acceptAutoChats + #7730 startsOnStations across 15 station overviews crossed 416.0 KB, 2026-11-20;
+  // +mcpServers on station overviews crossed 424.0 KB to 424.3 KB, 2026-11-26)
+  pick: { profiles: 272, stations: 432 },
   settings: { stations: 96 },
   history: { profiles: 72 },
   agentCard: { profiles: 72 },

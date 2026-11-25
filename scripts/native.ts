@@ -26,10 +26,12 @@
 //   node scripts/native.ts missing --prebuilt          the prebuilt ones (`msvc`: the shell and engine, Android's,
 //        Windows' and Linux', which the mbui app's jobs only fetch; `prebuilt`: ghostty-vt) in neither the store nor
 //        the release, one a line
-//   node scripts/native.ts ensure [--windows] [--publish] [--outbox DIR] [part[:target]…]
+//   node scripts/native.ts ensure [--windows] [--publish | --publish-store] [--outbox DIR] [part[:target]…]
 //        CI: each (default: all) in the cache, built when not prebuilt; --publish uploads what the release and the
-//        store lack (gh, main only), then prunes those parts and targets to the newest 20; --outbox copies the artifacts the
-//        release lacks there (a branch's run artifact)
+//        store lack (gh, main only), then prunes those parts and targets to the newest 20; --publish-store puts what the
+//        store lacks in the store instead (release-put.sh, CLOUDFLARE_API_TOKEN), never asking GitHub (the Shanghai
+//        Macs' main jobs: their `gh release upload` timed out at the job's 5 minutes again and again, 2026-11-25);
+//        --outbox copies the artifacts the release lacks there (a branch's run artifact)
 //        The default leaves out what only Windows builds (MSVC's: the mbui app's shell and engine); --windows is those.
 //        Never what only Linux builds (the mbui app's Linux shell and engine: the prebuild workflow's alone), nor
 //        what is built only by hand (`prebuilt`: ghostty-vt, prebuild --release on a Mac).
@@ -1943,10 +1945,11 @@ async function main(argv: string[]) {
       return;
     }
     case "ensure": {
-      let publish = false, outbox = "", windows = false, mac = false, linux = false;
+      let publish = false, publishStore = false, outbox = "", windows = false, mac = false, linux = false;
       const wanted: [string, Target][] = [];
       for (let i = 0; i < args.length; i++) {
         if (args[i] === "--publish") publish = true;
+        else if (args[i] === "--publish-store") publishStore = true;
         else if (args[i] === "--windows") windows = true;
         else if (args[i] === "--mac") mac = true;
         else if (args[i] === "--linux") linux = true;
@@ -1955,7 +1958,10 @@ async function main(argv: string[]) {
       }
       // Default: all of ours that this kind of machine builds (--windows: MSVC's; --mac: Apple's; --linux: ci-1's).
       if (wanted.length === 0) wanted.push(...defaults(windows, mac, linux));
-      const listed = await published();
+      if (publish && publishStore) fail("cannot combine --publish and --publish-store");
+      // (--publish-store: the release not asked, only the store; what it lacks is built, the plan having found it in
+      // neither)
+      const listed = publishStore ? null : await published();
       const remote = listed ?? new Set<string>();
       // Its assets listed: it is there. Else asked again, and said missing only when GitHub says so: a request that did
       // not get through (EOF) was taken for a missing release (mbui-media-runtime 41457910309).
@@ -1981,9 +1987,11 @@ async function main(argv: string[]) {
       if (todo.length <= 1 && !process.env.STILLFAIL_NATIVE_ONE) process.env.STILLFAIL_NATIVE_READERS = "1";
       // Parallelize both multi-part builds AND multi-part release uploads (cached parts with todo.length === 0 would
       // otherwise upload sequentially in one thread and burn the 5-minute job limit if any single upload stalls).
-      const toPublish = publish ? wanted.filter(([p, t]) => !remote.has(asset(p, t, key(p, t)))) : [];
+      const toPublish = publish ? wanted.filter(([p, t]) => !remote.has(asset(p, t, key(p, t))))
+        : publishStore && wanted.length > 1 && !process.env.STILLFAIL_NATIVE_ONE ? (await Promise.all(wanted.map(async (w) => (await inStore(asset(w[0], w[1], key(...w)))) ? [] : [w]))).flat()
+        : [];
       if ((todo.length > 1 || toPublish.length > 1) && !process.env.STILLFAIL_NATIVE_ONE) {
-        const flags = [...(publish ? ["--publish"] : []), ...(outbox ? ["--outbox", outbox] : []), ...(windows ? ["--windows"] : []), ...(mac ? ["--mac"] : []), ...(linux ? ["--linux"] : [])];
+        const flags = [...(publish ? ["--publish"] : []), ...(publishStore ? ["--publish-store"] : []), ...(outbox ? ["--outbox", outbox] : []), ...(windows ? ["--windows"] : []), ...(mac ? ["--mac"] : []), ...(linux ? ["--linux"] : [])];
         const one = (p: string, t: Target) => new Promise<number>((done) => {
           const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "ensure", ...flags, `${p}:${t}`],
             { stdio: ["ignore", "inherit", "inherit"], env: { ...process.env, STILLFAIL_NATIVE_ONE: "1", STILLFAIL_NATIVE_READERS: String(readersToBuild) } });
@@ -2000,32 +2008,38 @@ async function main(argv: string[]) {
       const work = join(tmpdir(), `stillfail-native-${process.pid}`);
       mkdirSync(work, { recursive: true });
       const publishedNow = new Set<string>();
-      for (const [p, t] of wanted) {
-        const k = key(p, t);
-        const name = asset(p, t, k);
-        // (in the store, where store-sync keeps what the release pruned: not published again)
-        const there = remote.has(name) || (await inStore(name));
-        const before = complete(cached(p, t, k), p, t);
-        const started = Date.now();
-        // Known absent from the release and the store, and not in the inbox: built without asking the download endpoint
-        // first, whose 404 its edge then kept serving to the jobs fetching the part just published (44892476775).
-        const inboxed = Boolean(process.env.STILLFAIL_NATIVE_INBOX && existsSync(join(process.env.STILLFAIL_NATIVE_INBOX, name)));
-        const dir = await get(p, t, !before && listed !== null && !there && !inboxed ? "build" : "any");
-        const took = ((Date.now() - started) / 1000).toFixed(0);
-        const how = before ? "cached" : JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).from === "built" ? "built" : "downloaded";
-        let note = "";
-        if (!there && publish) {
-          const file = pack(dir, name, work);
-          upload(file);
-          publishedNow.add(`${p}-${t}`);
-          note = " → published";
-        } else if (!there && outbox) {
-          pack(dir, name, outbox);
-          note = " → outbox";
+      try {
+        for (const [p, t] of wanted) {
+          const k = key(p, t);
+          const name = asset(p, t, k);
+          // (in the store, where store-sync keeps what the release pruned: not published again)
+          const there = remote.has(name) || (await inStore(name));
+          const before = complete(cached(p, t, k), p, t);
+          const started = Date.now();
+          // Known absent from the release and the store, and not in the inbox: built without asking the download endpoint
+          // first, whose 404 its edge then kept serving to the jobs fetching the part just published (44892476775).
+          const inboxed = Boolean(process.env.STILLFAIL_NATIVE_INBOX && existsSync(join(process.env.STILLFAIL_NATIVE_INBOX, name)));
+          const dir = await get(p, t, !before && (listed !== null || publishStore) && !there && !inboxed ? "build" : "any");
+          const took = ((Date.now() - started) / 1000).toFixed(0);
+          const how = before ? "cached" : JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).from === "built" ? "built" : "downloaded";
+          let note = "";
+          if (!there && publish) {
+            const file = pack(dir, name, work);
+            upload(file);
+            publishedNow.add(`${p}-${t}`);
+            note = " → published";
+          } else if (!there && publishStore) {
+            mkdirSync(join(work, "natives"), { recursive: true });
+            pack(dir, name, join(work, "natives"));
+            run("sh", [join(ROOT, "scripts/release-put.sh"), "--files", work], { stdio: "inherit" });
+            note = " → store";
+          } else if (!there && outbox) {
+            pack(dir, name, outbox);
+            note = " → outbox";
+          }
+          console.log(`${p} ${t} ${k}: ${how} (${took} s)${there ? ", published already" : note}`);
         }
-        console.log(`${p} ${t} ${k}: ${how} (${took} s)${there ? ", published already" : note}`);
-      }
-      rmSync(work, { recursive: true, force: true });
+      } finally { rmSync(work, { recursive: true, force: true }); }
       if (publishedNow.size) prune(KEEP, publishedNow);
       return;
     }

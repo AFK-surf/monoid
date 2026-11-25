@@ -51,7 +51,7 @@ fn logged(name : String, v : Json) -> String {
       Object(m) => {
         let out : Map[String, Json] = Map([])
         for k, x in m {
-          out[k] = if secret_fields.contains(k) || (k == "text" && name.has_prefix("agentEnv")) {
+          out[k] = if secret_fields.contains(k) || (k == "text" && name.has_prefix("agentEnv")) || (k == "servers" && name.has_prefix("mcpServers")) {
             match x {
               Null => x
               _ => Json::string("<redacted>")

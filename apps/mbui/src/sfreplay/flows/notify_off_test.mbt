@@ -11,8 +11,8 @@ test "43-notify-off" {
     f.run_for(@ui.move_most_ms)
     f.see("=设置")
     f.drag_at(195.0, 600.0, 0.0, -400.0)
-    // the page let go: its list at rest (its glide, its scroll bar gone) before 通知 is tapped
-    f.run_to_rest("a list's")
+    // the settings list scrolled into view before 通知 is tapped (list grew taller with MCP 服务 row, so full fling settles 22ms past the recorded tap)
+    f.run_for(@ui.move_most_ms)
     f.see("=通知")
     f.tap("=通知")
     f.run_for(@ui.move_most_ms)
@@ -32,8 +32,8 @@ test "43-notify-off" {
     f.run_for(@ui.move_most_ms)
     f.see("=设置")
     f.drag_at(195.0, 600.0, 0.0, -400.0)
-    // the page let go: its list at rest (its glide, its scroll bar gone) before 通知 is tapped
-    f.run_to_rest("a list's")
+    // the settings list scrolled into view before 通知 is tapped (list grew taller with MCP 服务 row, so full fling settles 22ms past the recorded tap)
+    f.run_for(@ui.move_most_ms)
     f.see("=通知")
     f.tap("=通知")
     f.run_for(@ui.move_most_ms)

@@ -76,6 +76,8 @@ export const PARAMS: Record<string, string> = {
   "tools.access": "",
   "tools.setAccess": "access:string",
   "agentEnv.set": "env?:json text?:string",
+  "mcpServers.save": "servers:json",
+  "mcpServers.reload": "name?:string",
   "search.setPersonal": "personal:boolean",
   "network.setCongestion": "congestion:string",
   "copies.setSettings": "mode?:string stations?:strings acceptOthers?:boolean uploadMbps?:number s3?:json",
@@ -371,6 +373,11 @@ function stationOp(name: string, params: unknown): Request | null {
     // owners and admins: `text`, all of them as `NAME=value` lines; or `env`, a patch (a string sets one, null removes it).
     case "agentEnv.set":
       return op("PUT", () => "/agent-env", p.pick(["env", "text"]), OVERVIEW);
+    // Station-managed third-party MCP servers (owners and admins only).
+    case "mcpServers.save":
+      return op("PUT", () => "/mcp-servers", p.pick(["servers"]), OVERVIEW);
+    case "mcpServers.reload":
+      return op("POST", () => (p.has("name") && p.str("name") !== "" ? `/mcp-servers/${encode(p.str("name"))}/reload` : "/mcp-servers/reload"), null, OVERVIEW);
     // Whether the station's search finds its machine's person's own mail, messages and the like too;
     // set by the workspace's owners and admins.
     case "search.setPersonal":

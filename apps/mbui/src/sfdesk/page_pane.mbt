@@ -268,6 +268,10 @@ fn pane_made(
       made("memories", fn(a, core, here, _stint, frame, width) {
         @sfpages.memories_node(a, core, here, on_back=core.pop, frame~, width~)
       })
+    Setting(McpServers) =>
+      made("mcp", fn(a, core, here, _stint, frame, width) {
+        @sfpages.mcp_servers_page_node(a, core, here, on_back=core.pop, frame~, width~)
+      })
     Setting(Changelog) =>
       made("changelog", fn(a, core, _here, _stint, frame, width) {
         @sfpages.changelog_node(a, core, on_back=core.pop, frame~, width~)

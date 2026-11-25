@@ -17,9 +17,9 @@ pub struct KeyedField {
 }
 
 ///|
-/// The key's text of `item` by `fields` (the same text an op's `key` is said as).
+/// The canonical wire-key text of `item` by `fields` (matching `delta.mbt`'s `key_text` / `json_key_text`).
 fn KeyedField::item_key(self : KeyedField, item : Json) -> String {
-  key_of(item, self.key_fields).stringify()
+  key_text(item, self.key_fields)
 }
 
 ///|
@@ -50,7 +50,6 @@ fn KeyedField::take_whole(self : KeyedField, value : Json?) -> Unit {
 /// path by key, nothing else read; where one sets or removes the list or what holds it, or reaches into it by index,
 /// the list taken whole from `value` (the value with them applied) instead.
 fn KeyedField::take_ops(self : KeyedField, ops : Array[Json], value : Json?) -> Unit {
-  let path : Json = Json::array([Json::string(self.field)])
   @signals.start_batch()
   for op in ops {
     guard op is Object(o) else { continue }
@@ -62,7 +61,7 @@ fn KeyedField::take_ops(self : KeyedField, ops : Array[Json], value : Json?) -> 
             self.take_whole(value)
             break
           }
-        } else if Json::array(p) != path {
+        } else if p.length() != 1 {
           // (into an item by its index: not said by key)
           self.take_whole(value)
           break
@@ -84,12 +83,12 @@ fn KeyedField::take_ops(self : KeyedField, ops : Array[Json], value : Json?) -> 
 fn KeyedField::take_keyed(self : KeyedField, o : Map[String, Json]) -> Unit {
   let before = match o.get("before") {
     None | Some(Null) => None
-    Some(b) => Some(b.stringify())
+    Some(b) => Some(json_key_text(b))
   }
   match (o.get("drop"), o.get("patch"), o.get("move"), o.get("put")) {
-    (Some(k), _, _, _) => self.list.drop(k.stringify())
+    (Some(k), _, _, _) => self.list.drop(json_key_text(k))
     (None, Some(k), _, _) => {
-      let key = k.stringify()
+      let key = json_key_text(k)
       match (self.list.peek(key), o.get("ops")) {
         (Some(was), Some(Array(inner))) => {
           let now = apply_delta(was, inner)
@@ -112,7 +111,7 @@ fn KeyedField::take_keyed(self : KeyedField, o : Map[String, Json]) -> Unit {
         _ => ()
       }
     }
-    (None, None, Some(k), _) => self.list.move_before(k.stringify(), before~)
+    (None, None, Some(k), _) => self.list.move_before(json_key_text(k), before~)
     (None, None, None, Some(item)) => {
       let key = self.item_key(item)
       match self.list.peek(key) {

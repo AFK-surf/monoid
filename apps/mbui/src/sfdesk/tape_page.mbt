@@ -365,6 +365,11 @@ fn tape_made(
         context_node(p)
         @sfpages.memories_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    Setting(McpServers) =>
+      made("mcp", fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.mcp_servers_page_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
     Setting(Changelog) =>
       made("changelog", fn(p, core, _here, _stint, told, _acts) {
         context_node(p)

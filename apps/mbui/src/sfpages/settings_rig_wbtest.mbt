@@ -101,6 +101,7 @@ fn setting_made(p : @view.View, src : Source, route : @settings.Route, width : (
     About => about_node(p, core, on_back=core.pop, frame~, width~)
     Changelog => changelog_node(p, core, on_back=core.pop, frame~, width~)
     Memories => memories_node(p, core, here, on_back=core.pop, frame~, width~)
+    McpServers => mcp_servers_page_node(p, core, here, on_back=core.pop, frame~, width~)
     Memory(a) => memory_node(p, core, here, a, on_back=core.pop, frame~, width~)
     Archiving => archiving_node(p, core, here, on_back=core.pop, frame~, stint=fn() { 0 }, width~)
     StationArchiving(st) => station_archiving_node(p, core, here, st, on_back=core.pop, frame~, width~)

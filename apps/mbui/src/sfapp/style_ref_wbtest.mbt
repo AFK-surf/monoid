@@ -171,31 +171,20 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // iOS 27.0 resting segmented/pill thumb aligned to #68686E dark fill with zero border/shadow in Light and Dark.
   // iOS 27.0 Regular Liquid Glass calibration sets full-res blur=1.2 on narrow bars/pills.
   // The settings' list has one more row, 进度汇报.
+  // The settings' list has one more row, MCP 服务.
   inspect(out.to_string(), content=(
-    #|settings narrow 109669:902eed0f
+    #|settings narrow 116601:a22d795
     #|station narrow 97471:e6064415
     #|me-reading narrow 31221:8154947e
-    #|settings wide 213648:df76d9e4
-    #|station wide 285260:e3c3abfe
-    #|me-reading wide 208367:6bf0f714
-    #|settings-dark narrow 109924:5100d9f9
+    #|settings wide 218279:2741de4
+    #|station wide 290267:70935458
+    #|me-reading wide 212998:a2e52677
+    #|settings-dark narrow 116841:fca35794
     #|station-dark narrow 97282:52010a7c
     #|me-reading-dark narrow 31358:593d2ca5
-    #|settings-dark wide 213518:b810f431
-    #|station-dark wide 284868:cbc56874
-    #|me-reading-dark wide 208303:41b001da
+    #|settings-dark wide 218137:45a5c570
+    #|station-dark wide 289863:a3e6eef9
+    #|me-reading-dark wide 212922:f6d18852
     #|
-
-
-
-
-
-
-
-
-
-
-
-
   ))
 }

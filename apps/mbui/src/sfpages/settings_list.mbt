@@ -220,6 +220,7 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
   work_rows.push(settings_row(AutoDecisions, "decisions", "check", @sf.t("web-pages.automaticDecisions.title"), words=settings_words_decisions))
   work_rows.push(settings_row(Progress, "progress", "wait", @sf.t("web-pages.progress.title"), words=settings_words_progress))
   work_rows.push(settings_row(Memories, "memory", "brain", @sf.t("android-settings.memory"), words=settings_words_memory))
+  work_rows.push(settings_row(McpServers, "mcp", "plug", @sf.t("web-pages.stations.mcp"), words="MCP mcp server tool 服务 工具"))
   work_rows.push(settings_row(Archiving, "archiving", "archive", @sf.t("web-pages.archiving.title"), words=settings_words_archiving))
   work_rows.push(settings_row(Backup, "backup", "disk", @sf.t("web-pages.backup.title"), words=settings_words_backup))
   work_rows.push(settings_row(Usage, "usage", "chart", @sf.t("android-settings.home.usage"), words=settings_words_usage))
