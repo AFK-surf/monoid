@@ -24,6 +24,7 @@ import { serveModels } from "./models";
 import { FEEDBACK_LIMITS, receiveFeedback, receiveReply } from "./feedback";
 import { pushKey, registration, stationNotify } from "./push";
 import { relays } from "./relays";
+import { unavailable, Unavailable } from "./releases";
 import { receiveLoad, relaysLoad } from "./relay-load";
 import { receiveIncidents, receiveReleased, serveStatus } from "./status";
 import { onceMore, receiveLogs, receiveTraces, telemetryUnreached } from "./tracing";
@@ -90,6 +91,7 @@ async function directory<T>(run: () => Promise<T> | T, status = 200): Promise<Re
     const value = await run();
     return reply(value ?? { ok: true }, status);
   } catch (error) {
+    if (error instanceof Unavailable) return unavailable(error.file, error.cause);
     const code = error instanceof Error ? error.message : "";
     if (code in STATUS) return reply({ error: code }, STATUS[code]);
     throw error;

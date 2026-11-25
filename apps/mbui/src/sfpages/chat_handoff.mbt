@@ -56,6 +56,7 @@ fn handoff_confirm(src : Source, r : ChatRef, thread : Double, to : @sfbase.Stat
   let key = "handoff-" + r.session + "-" + @settings.station_name(to.address) + "-" + (src.now)().to_int64().to_string()
   let running : @signals.Signal[Bool] = @signals.signal(false)
   let refused : @signals.Signal[String] = @signals.signal("")
+  let refusal_words = st_problem_bad.then(@ui.text_style(dark=@ui.text_patch(color=Over(Danger, A(Fg, O25)))))
   let shown = Ref(true)
   let shut_by : Ref[() -> Unit] = Ref(fn() {  })
   let lines = [
@@ -125,7 +126,7 @@ fn handoff_confirm(src : Source, r : ChatRef, thread : Double, to : @sfbase.Stat
         |> ignore
       })
       v.show(fn() { refused.get() != "" && !running.get() }, fn(n) {
-        @sf.words_node(n, fn() { refused.get() }, fn() { st_problem_bad }) |> ignore
+        @sf.words_node(n, fn() { refused.get() }, fn() { refusal_words }) |> ignore
       })
     },
     fn(v, shut) {

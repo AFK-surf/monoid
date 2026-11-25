@@ -1,8 +1,9 @@
 // Local SQLite store operations for `sessions_actors` (`station/mb/src/reader/actor_store.mbt` 1:1).
 //
-// All 3 explicit write transactions (`endTurn`, `endCutOff`, `markDelivered`) go strictly through
-// `sql_db::Db::tx_err` (zero raw transaction SQL in this file; unified `pion-sqlite-tx-scanner`
-// directory gate and `--smoke-sessions-actors-store` CLI hook are wired in `W8-F`).
+// All 5 explicit write transactions (`endTurn`, `endCutOff`, `markDelivered`, `markUndelivered`,
+// `markWidgetModelsTold`) go strictly through `sql_db::Db::tx_err` (zero raw transaction SQL in
+// this file; unified `pion-sqlite-tx-scanner` directory gate and `--smoke-sessions-actors-store`
+// CLI hook are wired in `W8-F`).
 // This intentionally fixes MoonBit's unrolled-back `COMMIT` failure: on body error OR `COMMIT` error
 // OR external `BUSY` lock, `Db::tx_err` rolls back cleanly so subsequent `tx_err` calls succeed, and
 // `changes` is emitted ONLY after commit succeeds.
@@ -633,45 +634,62 @@ pub fn ActorsGen::local_store_with_db(
   }
 
   if f == "markUndelivered" {
+    let a0 = arg_at(args, 0)
     let handed = match arg_at(args, 1) {
       base_codec::Json::Arr(h) => h
       _ => []
     }
-    for i in 0..<handed.length() {
-      let m = handed[i]
-      let sql = if is_json_true(sessions_core::jget(m, "apart")) {
-        "UPDATE letter_deliveries SET delivered_at = NULL WHERE thread = ? AND n = ? AND session = ?"
-      } else {
-        "UPDATE deliveries SET delivered_at = NULL WHERE thread = ? AND n = ? AND session = ?"
-      }
-      match (sdb.run)(sql, [sessions_core::field_of(m, "thread"), sessions_core::field_of(m, "n"), arg_at(args, 0)]) {
-        Ok(_) => ()
-        Err(e) => return Err(e)
-      }
+    if handed.length() == 0 {
+      return Ok(Some(base_codec::json_null()))
     }
-    if handed.length() > 0 {
-      self.changed_store([session_changed(key)])
+    match (sdb.tx_err)(fn(tx : StoreDb) -> Result[base_codec::Json, sql_db::SqlError] {
+      for i in 0..<handed.length() {
+        let m = handed[i]
+        let sql = if is_json_true(sessions_core::jget(m, "apart")) {
+          "UPDATE letter_deliveries SET delivered_at = NULL WHERE thread = ? AND n = ? AND session = ?"
+        } else {
+          "UPDATE deliveries SET delivered_at = NULL WHERE thread = ? AND n = ? AND session = ?"
+        }
+        match (tx.run)(sql, [sessions_core::field_of(m, "thread"), sessions_core::field_of(m, "n"), a0]) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      Ok(base_codec::json_null())
+    }) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
     }
+    self.changed_store([session_changed(key)])
     return Ok(Some(base_codec::json_null()))
   }
 
   if f == "markWidgetModelsTold" {
+    let a0 = arg_at(args, 0)
     match arg_at(args, 1) {
       base_codec::Json::Arr(told) => {
-        for i in 0..<told.length() {
-          match told[i] {
-            base_codec::Json::Arr(pair) => {
-              if pair.length() == 2 {
-                match (sdb.run)(
-                  "UPDATE widget_states SET told_at = ? WHERE session = ? AND path = ? AND model = ?",
-                  [now, arg_at(args, 0), pair[0], pair[1]],
-                ) {
-                  Ok(_) => ()
-                  Err(e) => return Err(e)
+        if told.length() > 0 {
+          match (sdb.tx_err)(fn(tx : StoreDb) -> Result[base_codec::Json, sql_db::SqlError] {
+            for i in 0..<told.length() {
+              match told[i] {
+                base_codec::Json::Arr(pair) => {
+                  if pair.length() == 2 {
+                    match (tx.run)(
+                      "UPDATE widget_states SET told_at = ? WHERE session = ? AND path = ? AND model = ?",
+                      [now, a0, pair[0], pair[1]],
+                    ) {
+                      Ok(_) => ()
+                      Err(e) => return Err(e)
+                    }
+                  }
                 }
+                _ => ()
               }
             }
-            _ => ()
+            Ok(base_codec::json_null())
+          }) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
           }
         }
       }

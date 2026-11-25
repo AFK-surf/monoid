@@ -581,13 +581,11 @@ jobs:
   # the day before's main, found in neither, were built one after another on Mini1 and the job cut at its 10 minutes
   # every run (2026-11-19). Seconds when all are there. The release's checkout is older than this workflow, its
   # native.ts maybe one that asks the release alone: what is in either is asked here, and only what neither has is
-  # given to its `ensure --publish`. Linux's and Windows' on ci-1 (the readers' C, one job after the other: `needs:`
-  # chains station-natives-linux -> station-natives-win -> station-natives-linux-arm64), the Apple ones on Mini1. Not a
-  # shared concurrency group, which holds one running and one pending: in 44922872509 station-natives-win finished
-  # first while station-natives-linux was pending, station-natives-linux-arm64 entered the group and cancelled it.
+  # given to its `ensure --publish`. GitHub Linux builds the Linux and Windows targets.
+  # The Apple build runs on Mini1.
   station-natives-linux:
     needs: plan
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["ubuntu-24.04"]') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets
@@ -596,17 +594,10 @@ jobs:
         reader:linux-x64 pion-reader:linux-x64 launcher:linux-x64 mesh:linux-x64 runner:linux-x64 screen-linux:linux-x64 launcher:win32-x64
         mesh:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
     steps: &station-natives-linux-steps
-      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
-        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
-        with:
-          ref: '${{ needs.plan.outputs.sha }}'
-          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
-      # (the pinned Node: ci-1's from setup-linux, before anything runs node)
-      - if: runner.environment == 'self-hosted'
-        uses: ./.github/actions/setup-linux
-      - if: runner.environment != 'self-hosted'
-        uses: ./.github/actions/node
+        with: { ref: "${{ needs.plan.outputs.sha }}" }
+      - uses: ./.github/actions/node
       - &station-natives-missing
         id: missing
         name: What neither the store nor the release has
@@ -630,25 +621,21 @@ jobs:
       - if: steps.missing.outputs.list != ''
         uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc' }
-      - if: steps.missing.outputs.list != '' && runner.environment != 'self-hosted'
+      - if: steps.missing.outputs.list != ''
+        uses: actions/checkout@v5
+        with:
+          ref: "${{ github.sha }}"
+          path: .ci-workflow
+          sparse-checkout: .github/actions/setup-native-linux
+          persist-credentials: false
+      - if: steps.missing.outputs.list != ''
+        uses: ./.ci-workflow/.github/actions/setup-native-linux
+        with: { parts: "${{ steps.missing.outputs.list }}" }
+      - if: contains(steps.missing.outputs.list, 'pion-reader:')
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-toolchain
           key: pion-station-toolchain-linux-x64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
-      - name: Zig 0.16.0 (the reader's cc on GitHub's Linux)
-        if: steps.missing.outputs.list != '' && runner.environment != 'self-hosted'
-        run: |
-          d="$RUNNER_TOOL_CACHE/zig-0.16.0/zig-x86_64-linux-0.16.0"
-          if [ ! -x "$d/zig" ]; then
-            mkdir -p "$RUNNER_TOOL_CACHE/zig-0.16.0"
-            t="$RUNNER_TEMP/zig.tar.xz"
-            curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 -o "$t" https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
-            echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  $t" | sha256sum -c --quiet
-            tar -xf "$t" -C "$RUNNER_TOOL_CACHE/zig-0.16.0"
-            rm -f "$t"
-          fi
-          [ "$("$d/zig" version)" = 0.16.0 ]
-          echo "$d" >> "$GITHUB_PATH"
       - &station-natives-ensure
         name: Build and publish what neither has
         if: steps.missing.outputs.list != ''
@@ -665,12 +652,9 @@ jobs:
 
   # The arm64 parts apart, as Windows' reader: a release's readers are in main's store only where main built the same
   # revision's, never for one with fixes picked onto it, and two cold readers in one job were more than its 5 minutes.
-  # Last of the `needs:` chain station-natives-linux -> station-natives-win -> station-natives-linux-arm64, whatever
-  # the one before came to (the chain's reason is above station-natives-linux).
   station-natives-linux-arm64:
-    needs: [plan, station-natives-win]
-    if: ${{ !cancelled() && needs.plan.result == 'success' }}
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["ubuntu-24.04"]') }}
+    needs: plan
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets
@@ -679,9 +663,8 @@ jobs:
     steps: *station-natives-linux-steps
 
   station-natives-win:
-    needs: [plan, station-natives-linux]
-    if: ${{ !cancelled() && needs.plan.result == 'success' }}
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["ubuntu-24.04"]') }}
+    needs: plan
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets

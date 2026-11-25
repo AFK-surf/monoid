@@ -143,6 +143,13 @@ test("a branch pipeline hands an R2 chunk to its readers by a receipt", async ()
     assert.equal(got.status, 200);
     assert.equal(await got.text(), "part");
     assert.equal((await h.fetch("/releases/ci-natives/station.json")).status, 404);
+    // The bucket failing for a moment: its sender is told to come back, the stream not read (nor put) a second time.
+    await h.failBucket({ put: 1 });
+    const failed = await put({});
+    assert.deepEqual([failed.status, failed.headers.get("retry-after"), failed.headers.get("cache-control")], [503, "5", "no-store"]);
+    assert.deepEqual(await failed.json(), { error: "release_unavailable" });
+    assert.equal((await h.failBucket()).filter((call) => call.startsWith("put ")).length, 1);
+    assert.equal((await put({})).status, 201);
   } finally {
     await h.close();
   }

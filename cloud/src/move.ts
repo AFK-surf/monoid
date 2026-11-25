@@ -11,6 +11,7 @@
 //   POST /v1/admin/move/import          the export, in place of all this one has
 import { bearerToken, denied, digest, reply } from "./auth";
 import type { Env } from "./env";
+import { retryRead, unavailable } from "./releases";
 
 type Moved = { directory: Record<string, Record<string, unknown>[]>; accounts: Record<string, Record<string, unknown>> };
 
@@ -50,7 +51,10 @@ export async function moveApi(request: Request, env: Env, path: string): Promise
     const names: string[] = [];
     let cursor: string | undefined;
     do {
-      const page = bucket ? await bucket.list({ prefix: "icons/", cursor }) : { objects: [], truncated: false as const };
+      const from: string | undefined = cursor;
+      const got = await retryRead<R2Objects | null>(async () => (bucket ? bucket.list({ prefix: "icons/", cursor: from }) : null));
+      if (!got.ok) return unavailable("icons/", got.error);
+      const page = got.value ?? { objects: [], truncated: false as const };
       names.push(...page.objects.map((o) => o.key.slice("icons/".length)).filter((n) => ICON_NAME.test(n)));
       cursor = page.truncated ? page.cursor : undefined;
     } while (cursor);
@@ -60,7 +64,9 @@ export async function moveApi(request: Request, env: Env, path: string): Promise
   if (icon && request.method === "PUT" && ICON_NAME.test(icon) && bucket) {
     if (!env.MOVING) return reply({ error: "not_moving" }, 409);
     const type = request.headers.get("content-type") ?? "application/octet-stream";
-    await bucket.put(`icons/${icon}`, await request.arrayBuffer(), { httpMetadata: { contentType: type, cacheControl: "public, max-age=31536000, immutable" } });
+    const body = await request.arrayBuffer();
+    const got = await retryRead(() => bucket.put(`icons/${icon}`, body, { httpMetadata: { contentType: type, cacheControl: "public, max-age=31536000, immutable" } }));
+    if (!got.ok) return unavailable(`icons/${icon}`, got.error);
     return reply({ kept: icon });
   }
   return reply({ error: "not_found" }, 404);

@@ -2649,7 +2649,7 @@ let en : Map[String, String] = {
   "web-pages.profiles.useThis": "Use this account",
   "web-pages.profiles.usedBy": "Used by",
   "web-pages.profiles.verifiedAdded": "Verified and added",
-  "web-pages.profiles.workspaces.lead": "This station is also in other workspaces; by default, a profile is used in all of them",
+  "web-pages.profiles.workspaces.lead": "This station is also in the workspaces below. Turn one on to let its chats use this account.",
   "web-pages.rowMenu.copied": "Copied “{name}”",
   "web-pages.rowMenu.copyAddress": "Copy address",
   "web-pages.rowMenu.copyName": "Copy name",

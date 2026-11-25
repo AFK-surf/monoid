@@ -2622,7 +2622,7 @@ let zh : Map[String, String] = {
   "web-pages.profiles.useThis": "使用此账号",
   "web-pages.profiles.usedBy": "使用它的连接",
   "web-pages.profiles.verifiedAdded": "已验证并添加 Profile",
-  "web-pages.profiles.workspaces.lead": "此 station 也属于其他 workspace；Profile 默认同时用于这些 workspace",
+  "web-pages.profiles.workspaces.lead": "这台 station 也加入了下面的 workspace。打开后，那里的对话也能使用这个账号。",
   "web-pages.rowMenu.copied": "已复制「{name}」",
   "web-pages.rowMenu.copyAddress": "复制地址",
   "web-pages.rowMenu.copyName": "复制名称",

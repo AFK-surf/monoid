@@ -7,7 +7,7 @@ import { readText, reply } from "./auth";
 import { betaOrigin, header } from "./compat";
 import type { Env } from "./env";
 import { sharedRelease } from "./install.ts";
-import type { ReleaseBucket } from "./releases";
+import { retryRead, unavailable, type ReleaseBucket } from "./releases";
 import { stationSender } from "./tracing";
 
 export type Part = "station" | "web" | "android" | "desktop" | "cloud";
@@ -45,13 +45,38 @@ type PlatformReleases = Released & { macos: number | null; windows: number | nul
 
 type Bucket = ReleaseBucket | undefined;
 
-/** A file of the bucket; with `upstream` (RELEASES_UPSTREAM), one of still.fail's it lacks read there, as index.ts serves it. */
-async function read(bucket: Bucket, key: string, upstream?: string): Promise<string | null> {
-  const object = await bucket?.get(key);
-  if (object) return new Response(object.body).text();
+/**
+ * Told of a file that could not be read, which is not one that is not there. Only logged where nobody asks: the reports'
+ * marks (fixedFor, api.ts markFixed) go without it on purpose, as no entries unmark nothing and a station is told later.
+ */
+type Failed = (file: string, error: unknown) => void;
+const logged: Failed = (file, error) => console.error(`changelog ${file} unavailable:`, error);
+
+/**
+ * A file of the bucket; with `upstream` (RELEASES_UPSTREAM), one of still.fail's it lacks read there, as index.ts serves
+ * it. One that cannot be read (`retryRead` failed twice, or still.fail's not reached) is null as one not there is, and
+ * `failed` is told.
+ */
+async function read(bucket: Bucket, key: string, upstream?: string, failed: Failed = logged): Promise<string | null> {
+  const got = await retryRead(async () => {
+    const object = await bucket?.get(key);
+    return object ? await new Response(object.body).text() : null;
+  });
+  if (!got.ok) {
+    failed(key, got.error);
+    return null;
+  }
+  if (got.value !== null) return got.value;
   if (!upstream || !sharedRelease(key)) return null;
-  const answer = await fetch(`${upstream.replace(/\/+$/, "")}/${key}`).catch(() => null);
-  return answer?.ok ? answer.text() : null;
+  try {
+    const answer = await fetch(`${upstream.replace(/\/+$/, "")}/${key}`);
+    if (answer.ok) return await answer.text();
+    await answer.body?.cancel().catch(() => {});
+    if (answer.status >= 500) failed(key, new Error(`upstream ${answer.status}`));
+  } catch (error) {
+    failed(key, new Error("upstream unreachable", { cause: error }));
+  }
+  return null;
 }
 
 /**
@@ -59,17 +84,22 @@ async function read(bucket: Bucket, key: string, upstream?: string): Promise<str
  * is what reports are marked fixed by; the stable channel's (changelog-stable.json) a release an entry, as written for
  * it (docs/releases): read for the stable channel's apps, with the test channel's until there is one.
  */
-export async function changelog(bucket: Bucket, channel: Channel = "beta"): Promise<ChangelogEntry[]> {
+export async function changelog(bucket: Bucket, channel: Channel = "beta", failed: Failed = logged): Promise<ChangelogEntry[]> {
   if (channel === "stable") {
-    const written = await entries(bucket, "changelog-stable.json");
-    if (written.length) return written;
+    let stableFailed = false;
+    const written = await entries(bucket, "changelog-stable.json", (file, error) => {
+      stableFailed = true;
+      failed(file, error);
+    });
+    // (one that could not be read is not one there is none of)
+    if (written.length || stableFailed) return written;
   }
-  return entries(bucket, "changelog.json");
+  return entries(bucket, "changelog.json", failed);
 }
 
-async function entries(bucket: Bucket, key: string): Promise<ChangelogEntry[]> {
+async function entries(bucket: Bucket, key: string, failed: Failed = logged): Promise<ChangelogEntry[]> {
   try {
-    const value = JSON.parse((await read(bucket, key)) ?? "[]") as unknown;
+    const value = JSON.parse((await read(bucket, key, undefined, failed)) ?? "[]") as unknown;
     return Array.isArray(value) ? (value as ChangelogEntry[]).filter((e) => Number.isSafeInteger(e?.version) && Array.isArray(e.text) && Array.isArray(e.parts)) : [];
   } catch {
     return [];
@@ -93,15 +123,15 @@ const json = (text: string | null): Record<string, unknown> => {
  * What each part has out on a channel, from the feeds the updaters read (scripts/release.sh) and the web app's (deploy.py);
  * the station's from `upstream` where the bucket has none (monoid's cloud: its station is still.fail's, index.ts).
  */
-export async function released(bucket: Bucket, channel: Channel, upstream?: string): Promise<PlatformReleases> {
+export async function released(bucket: Bucket, channel: Channel, upstream?: string, failed: Failed = logged): Promise<PlatformReleases> {
   const beta = channel === "beta";
   const [station, android, mac, win, web] = await Promise.all([
-    read(bucket, beta ? "station-beta.json" : "station.json", upstream),
-    read(bucket, beta ? "android/beta/latest.json" : "android/latest.json"),
+    read(bucket, beta ? "station-beta.json" : "station.json", upstream, failed),
+    read(bucket, beta ? "android/beta/latest.json" : "android/latest.json", undefined, failed),
     // (the Mac app's own updater's feed, which every product's has: monoid's never had electron-updater's .yml)
-    read(bucket, beta ? "mac/beta/latest.json" : "mac/latest.json"),
-    read(bucket, beta ? "win/beta/latest.json" : "win/latest.json"),
-    read(bucket, beta ? "web-beta.json" : "web.json"),
+    read(bucket, beta ? "mac/beta/latest.json" : "mac/latest.json", undefined, failed),
+    read(bucket, beta ? "win/beta/latest.json" : "win/latest.json", undefined, failed),
+    read(bucket, beta ? "web-beta.json" : "web.json", undefined, failed),
   ]);
   const macos = build(json(mac).versionCode);
   const windows = build(json(win).versionCode);
@@ -121,10 +151,15 @@ export function out(entry: { version: number; parts: Part[] }, have: Released): 
 
 const channelOf = (request: Request, env: Env): Channel => (new URL(request.url).origin === betaOrigin(env) || header(request, "channel") === "beta" ? "beta" : "stable");
 
-/** GET /v1/changelog: { entries, released } on the channel of the host (or x-stillfail-channel). Anyone may read it. */
+/** GET /v1/changelog: { entries, released } on the channel of the host (or x-stillfail-channel). Anyone may read it. Unavailable while any of it cannot be read: a client keeps what a 200 says in place of what it has (client/core-ts/src/changelog.ts). */
 export async function serveChangelog(request: Request, env: Env): Promise<Response> {
   const channel = channelOf(request, env);
-  const [list, have] = await Promise.all([changelog(env.RELEASES, channel), released(env.RELEASES, channel, env.RELEASES_UPSTREAM)]);
+  let failure = null as { file: string; error: unknown } | null;
+  const failed: Failed = (file, error) => {
+    failure ??= { file, error };
+  };
+  const [list, have] = await Promise.all([changelog(env.RELEASES, channel, failed), released(env.RELEASES, channel, env.RELEASES_UPSTREAM, failed)]);
+  if (failure) return unavailable(failure.file, failure.error);
   return reply({ entries: list, released: have }, 200, { "cache-control": "public, max-age=300" });
 }
 

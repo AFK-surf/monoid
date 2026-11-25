@@ -1,7 +1,6 @@
 # The side run (scripts/side.sh, docs/development.md "Tests"): the tests that are not the same every run (real time,
 # real processes and sockets, networks made up at random), on main every four hours and on demand, blocking nothing.
-# Cross-platform parts run one at a time on ci-1's dedicated linux-quick runner (falling back to macos-ci when
-# vars.CI_1 == 'off'), leaving only the station's simulator-backed side tests on macos-ci (`side-mac`), not on a
+# Cross-platform parts use GitHub's Linux runners. The simulator tests use macos-ci, away from the
 # machine people and agents share (on the Mac test station, another agent load-testing it made the real relays' round
 # trips slow enough to fail, 2026-10-08). A failure is for an agent to reproduce as a test CI runs and fix; one it
 # cannot reproduce is let be.
@@ -25,15 +24,12 @@ jobs:
       max-parallel: 1
       matrix:
         part: [core-ts, rust, locks, locks-moved, locks-as-moved, rigs, rigs-as-moved, cloud]
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-quick"]' || '["self-hosted", "macos-ci"]') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
-      - if: runner.os == 'Linux'
-        uses: ./.github/actions/setup-linux
-      - if: runner.os == 'macOS'
-        uses: ./.github/actions/setup-mac
+      - uses: ./.github/actions/setup
       - uses: ./.github/actions/mbui-moonbit
       - uses: ./.github/actions/natives
         with: { harness: 'true' }

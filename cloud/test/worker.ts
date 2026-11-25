@@ -565,10 +565,41 @@ export class Account extends ProductionAccount {
   }
 }
 
+/** The releases bucket's calls the next of which fail, by method (as R2's do for a moment), and those asked since set. */
+let bucketFails: Record<string, number> | null = null;
+let bucketCalls: string[] = [];
+function withFailingBucket(env: Env): Env {
+  const bucket = env.RELEASES;
+  const fails = bucketFails;
+  if (!bucket || !fails) return env;
+  const call = <A extends unknown[], T>(name: string, run: (...args: A) => Promise<T>) => async (...args: A): Promise<T> => {
+    bucketCalls.push(`${name} ${typeof args[0] === "string" ? args[0] : ""}`.trim());
+    if ((fails[name] ?? 0) > 0) {
+      fails[name]!--;
+      throw new Error(`${name}: We encountered an internal connectivity issue. Please try again. (10001)`);
+    }
+    return run(...args);
+  };
+  const RELEASES = {
+    head: call("head", (key: string) => bucket.head(key)),
+    get: call("get", (key: string, options?: R2GetOptions) => bucket.get(key, options)),
+    put: call("put", (key: string, value: ArrayBuffer | Uint8Array | ReadableStream, options?: R2PutOptions) => bucket.put(key, value, options)),
+    list: call("list", (options?: R2ListOptions) => bucket.list(options)),
+  } as unknown as R2Bucket;
+  return { ...env, RELEASES };
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    env = withTestMail(env);
+    env = withFailingBucket(withTestMail(env));
     const path = new URL(request.url).pathname;
+    if (path === "/__test/bucket") {
+      // The next calls of the releases bucket fail, as many of each method as said; answers those asked since last set.
+      const calls = bucketCalls;
+      bucketFails = (await readJson(request)) as Record<string, number>;
+      bucketCalls = [];
+      return reply({ calls });
+    }
     if (path === "/__test/devices") return reply(deviceRequests);
     if (path === "/__test/sockets") {
       const { where } = (await readJson(request)) as { where: "objects" | "primary" };

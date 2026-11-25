@@ -13,6 +13,7 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { Readable, Writable } from "node:stream";
 import { after, test } from "node:test";
 import {
@@ -32,6 +33,7 @@ import {
 } from "../src/read/mb-reader.ts";
 import { setReaderModeImplementedForTest } from "../src/read/reader-select.ts";
 import { readerTelemetry } from "../src/read/reader-telemetry.ts";
+import { ActorsProgram } from "../src/sessions/mb-actor.ts";
 import { findRawTxControlViolations, scanPionDirForRawTxControl } from "./pion-sqlite-tx-scanner.ts";
 
 const tempDirs: string[] = [];
@@ -137,6 +139,54 @@ test("W8-0: pion-sqlite-tx-scanner catches concatenated raw tx SQL and throws on
   assert.equal(concatHits.length, 1, `expected concatenated ROLLBACK violation, got: ${concatHits.join("; ")}`);
   const multilineHits = findRawTxControlViolations("multiline.pion", 'let _ = tx_db.exec("COM" +\n  "MIT")');
   assert.equal(multilineHits.length, 1, `expected multiline COMMIT violation, got: ${multilineHits.join("; ")}`);
+  assert.equal(
+    findRawTxControlViolations("method.pion", 'if method == "release" || method == "savepoint" { () }').length,
+    0,
+    "standalone release/savepoint method names without a following identifier must not false-positive",
+  );
+  for (const op of ["SAVEPOINT", "RELEASE"]) {
+    const source = `let _ = db.exec("${op} " + name)`;
+    assert.equal(
+      findRawTxControlViolations("dynamic.pion", source).length,
+      1,
+      `dynamic ${op} concatenation must be caught`,
+    );
+  }
+  assert.equal(
+    findRawTxControlViolations("interp.pion", 'let _ = db.exec("RELEASE \\{n}")').length,
+    1,
+    "RELEASE with Pion string interpolation must be caught",
+  );
+  assert.equal(
+    findRawTxControlViolations("assign.pion", 'let op = "RELEASE"').length,
+    1,
+    "uppercase RELEASE assignment must be caught",
+  );
+  assert.equal(
+    findRawTxControlViolations("multiline_rel.pion", 'let _ = db.exec("RELEASE"\n  + sp)').length,
+    1,
+    "multiline RELEASE + sp concatenation must be caught",
+  );
+  assert.equal(
+    findRawTxControlViolations("sp1.pion", 'let _ = db.exec("RELEASE sp1")').length,
+    1,
+    "RELEASE <ident> must be caught",
+  );
+  assert.equal(
+    findRawTxControlViolations("sp2.pion", 'let _ = db.exec("RELEASE \\"sp1\\"")').length,
+    1,
+    "RELEASE with double-quoted identifier must be caught",
+  );
+  assert.equal(
+    findRawTxControlViolations("sp3.pion", 'let _ = db.exec("RELEASE [sp1]")').length,
+    1,
+    "RELEASE with bracketed identifier must be caught",
+  );
+  assert.equal(
+    findRawTxControlViolations("sp4.pion", 'let _ = db.exec("SAVEPOINT sp1")').length,
+    1,
+    "SAVEPOINT <ident> must be caught",
+  );
   assert.throws(
     () => scanPionDirForRawTxControl(join(tmpdir(), "definitely-nonexistent-pion-dir-w8-0")),
     /does not exist/,
@@ -413,5 +463,738 @@ test("W8-0: config.readers.sessions, env precedence, pending cold starts, dual-h
     restoreImpl();
     setSessionsSpawnObserverForTest(null);
     resetReaderSelectionStateForTest();
+  }
+});
+
+test("W8-E2: ActorsProgram routes cleanup RPCs to retired actor after forget() and drops non-cleanup RPCs", async () => {
+  let user: { said: (msg: any) => void; exited: (code: number) => void } | null = null;
+  const posted: any[] = [];
+  const stubProc = {
+    use(u: any) { user = u; },
+    post(msg: any) { posted.push(msg); return true; },
+    hold() {},
+    release() {},
+    kill() {},
+  };
+  const fakeClock = { currentTimeMillisUnsafe: () => 1000 } as any;
+  const program = ActorsProgram.openForTest(stubProc as any, fakeClock);
+  const calls: Array<{ fn: string; args: any[] }> = [];
+  const tells: Array<{ fn: string; args: any[] }> = [];
+  const shell = {
+    key: "retired-sess",
+    runtime: "claude" as const,
+    asked: async (fn: string, args: any[]) => {
+      calls.push({ fn, args });
+      if (fn === "agent.steer") return false;
+      return { ok: fn };
+    },
+    told: (fn: string, args: any[]) => {
+      tells.push({ fn, args });
+    },
+  };
+  program.shell(shell);
+
+  // Retire the actor via forget() — simulating close() removing it from #actors.
+  program.forget("retired-sess", shell);
+
+  // 1. Cleanup RPCs (store.markUndelivered, agent.dispose, agent.steer) must still route and answer.
+  user!.said({ rpc: 101, actor: "retired-sess", fn: "store.markUndelivered", args: [["m1"]] });
+  user!.said({ rpc: 102, actor: "retired-sess", fn: "agent.dispose", args: [7] });
+  user!.said({ rpc: 103, actor: "retired-sess", fn: "agent.steer", args: [7, "hi"] });
+  // 2. Non-cleanup RPCs get an explicit terminal error reply (never dropped) and tells are ignored.
+  user!.said({ rpc: 104, actor: "retired-sess", fn: "agent.prompt", args: [7, "nope"] });
+  user!.said({ tell: "notify", actor: "retired-sess", args: ["nope"] });
+
+  await new Promise((r) => setImmediate(r));
+
+  assert.deepEqual(
+    calls.map((c) => c.fn),
+    ["store.markUndelivered", "agent.dispose", "agent.steer"],
+    "only cleanup RPCs should be routed to retired actor after forget()",
+  );
+  assert.equal(tells.length, 0, "tells must not be routed to retired actor after forget()");
+
+  const answers = posted.filter((m) => typeof m.answer === "number");
+  assert.equal(answers.length, 4, "all 3 cleanup RPCs + 1 closed-actor RPC must receive a terminal answer reply");
+  assert.deepEqual(
+    answers.map((a) => [a.answer, a.value ?? null, a.error?.actorClosed === true]),
+    [
+      [104, null, true],
+      [101, { ok: "store.markUndelivered" }, false],
+      [102, { ok: "agent.dispose" }, false],
+      [103, false, false],
+    ],
+  );
+
+  // 3. Re-registering the same key routes normally again.
+  const calls2: string[] = [];
+  program.shell({
+    key: "retired-sess",
+    runtime: "claude",
+    asked: async (fn: string) => {
+      calls2.push(fn);
+      return true;
+    },
+    told: () => {},
+  });
+  user!.said({ rpc: 105, actor: "retired-sess", fn: "agent.prompt", args: [8, "ok"] });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(calls2, ["agent.prompt"]);
+
+  await program.close();
+});
+
+function r5RoutingFixture() {
+  let receive!: (frame: any) => void;
+  const posted: any[] = [];
+  const program = ActorsProgram.openForTest(
+    {
+      use(user: any) { receive = user.said; },
+      post(frame: any) { posted.push(frame); return true; },
+      hold() {},
+      release() {},
+      kill() {},
+    } as any,
+    { currentTimeMillisUnsafe: () => 1000 } as any,
+  );
+  const events: string[] = [];
+  function register(key: string, label: string) {
+    const store = {
+      getSession() { return { runtime: "claude" }; },
+      markUndelivered() { events.push(`${label}/undo`); },
+      markDelivered() { events.push(`${label}/mark`); },
+    };
+    const actor = program.actor(key, "claude", { store } as any);
+    const session = {
+      steer() { events.push(`${label}/steer`); return false; },
+      dispose() { events.push(`${label}/dispose`); },
+      snapshot() { return null; },
+      detach() {},
+    };
+    const ready = actor.adopt({ runtime: "claude" } as any, session as any, "");
+    const adoption = posted.at(-1);
+    assert.equal(adoption.method, "adopt");
+    receive({ returned: adoption.call, value: null });
+    return { actor, ready, handle: adoption.args[1].handle as number };
+  }
+  async function deliver(frame: any) {
+    receive(frame);
+    await new Promise((r) => setImmediate(r));
+    return posted.find((x) => x.answer === frame.rpc);
+  }
+  return { program, events, register, deliver, posted };
+}
+
+test("W8-E2 R5: fallback cleanup after actual MbActor.close", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    old.actor.close();
+    const reply = await f.deliver({ rpc: 101, actor: "s", fn: "store.markUndelivered", args: ["s", []] });
+    assert.equal(reply?.answer, 101);
+    assert.deepEqual(f.events, ["old/undo"]);
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R5: late runtime cleanup retains original handle owner on same-key replacement", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    const lateFrame = { rpc: 102, actor: "s", fn: "agent.dispose", args: [old.handle] };
+    old.actor.close();
+    const current = f.register("s", "new");
+    await current.ready;
+    assert.notEqual(old.handle, current.handle, "handles must be globally unique across ActorsProgram");
+    const reply = await f.deliver(lateFrame);
+    assert.equal(reply?.answer, 102);
+    assert.deepEqual(f.events, ["old/dispose"]);
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R5: delayed cleanup still receives answer after 512 other actors retire", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    old.actor.close();
+    for (let i = 0; i < 512; ++i) {
+      const item = f.program.actor(`other${i}`, "claude", { store: {} } as any);
+      item.close();
+    }
+    const reply = await f.deliver({ rpc: 103, actor: "s", fn: "store.markUndelivered", args: ["s", []] });
+    assert.equal(reply?.answer, 103);
+    assert.deepEqual(f.events, ["old/undo"]);
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R5: markDelivered dispatched before close always gets a terminal reply", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    const lateFrame = { rpc: 104, actor: "s", fn: "store.markDelivered", args: ["s", []] };
+    old.actor.close();
+    const reply = await f.deliver(lateFrame);
+    assert.equal(reply?.answer, 104);
+    assert.equal(reply?.error?.actorClosed, true);
+    assert.deepEqual(f.events, []);
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R5: stateForTurn dispatched before close receives a terminal stateWrite reply", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    const saving = old.actor.stateForTurn("t1", { kind: "all_done" } as any, null, null);
+    const request = f.posted.at(-1);
+    assert.equal(request.method, "stateForTurn");
+    old.actor.close();
+    const reply = await f.deliver({ rpc: 105, actor: "s", fn: "node.stateWrite", args: request.args });
+    assert.equal(reply?.answer, 105);
+    await f.program.close();
+    await saving;
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R6: pending stateWrite after replacement uses the original record", async () => {
+  let receive!: (frame: any) => void;
+  const frames: any[] = [];
+  const program = ActorsProgram.openForTest(
+    {
+      use(user: any) { receive = user.said; },
+      post(x: any) { frames.push(x); return true; },
+      hold() {},
+      release() {},
+      kill() {},
+    } as any,
+    { currentTimeMillisUnsafe: () => 100 } as any,
+  );
+  const rows: any[] = [];
+  const store = {
+    getSession() { return { runtime: "claude" }; },
+    setAbout() {},
+    declareTurn() {},
+    setNeed(id: string, words: string) { rows.push([id, words]); },
+    markUndelivered() { rows.push(["undo"]); },
+  };
+  const answer = async (id: number) => {
+    await new Promise((r) => setImmediate(r));
+    const reply = frames.find((f) => f.answer === id);
+    assert.ok(reply, "missing terminal answer");
+    return reply;
+  };
+  try {
+    const old = program.actor("s", "claude", { store } as any);
+    const first = old.stateForTurn("old-turn", { kind: "need_human" } as any, "old words", null);
+    const req = frames.at(-1);
+    old.close();
+    const current = program.actor("s", "claude", { store } as any);
+    const second = current.stateForTurn("new-turn", { kind: "need_human" } as any, "new words", null);
+    receive({ rpc: 201, actor: "s", fn: "node.stateWrite", args: req.args });
+    const reply = await answer(201);
+    assert.ok(!reply.error, JSON.stringify(reply));
+    assert.deepEqual(rows, [["old-turn", "old words"]]);
+    // Consumed token must fail explicitly if replayed instead of silently succeeding.
+    receive({ rpc: 202, actor: "s", fn: "node.stateWrite", args: req.args });
+    const replay = await answer(202);
+    assert.ok(replay.error, "replayed stateWrite token must fail explicitly");
+    await program.close();
+    await Promise.all([first, second]);
+  } finally {
+    await program.close();
+  }
+});
+
+test("W8-E2 R6: autonomous steer keeps its store cleanup available across negative receipt", async () => {
+  let receive!: (frame: any) => void;
+  const frames: any[] = [];
+  const program = ActorsProgram.openForTest(
+    {
+      use(user: any) { receive = user.said; },
+      post(x: any) { frames.push(x); return true; },
+      hold() {},
+      release() {},
+      kill() {},
+    } as any,
+    { currentTimeMillisUnsafe: () => 100 } as any,
+  );
+  const rows: any[] = [];
+  const store = {
+    getSession() { return { runtime: "claude" }; },
+    markUndelivered() { rows.push(["undo"]); },
+  };
+  const answer = async (id: number) => {
+    await new Promise((r) => setImmediate(r));
+    const reply = frames.find((f) => f.answer === id);
+    assert.ok(reply, "missing terminal answer");
+    return reply;
+  };
+  try {
+    const old = program.actor("s", "claude", { store } as any);
+    let rejectSteer!: () => void;
+    const ready = old.adopt(
+      { runtime: "claude" } as any,
+      { steer: () => new Promise((resolve) => { rejectSteer = () => resolve(false); }) } as any,
+      "",
+    );
+    const adopt = frames.at(-1);
+    receive({ returned: adopt.call, value: null });
+    await ready;
+    receive({ rpc: 210, actor: "s", fn: "agent.steer", args: [adopt.args[1].handle, "text"] });
+    assert.equal(typeof rejectSteer, "function");
+    old.close();
+    const close = frames.at(-1);
+    assert.equal(close.method, "close");
+    receive({ returned: close.call, value: null });
+    rejectSteer();
+    assert.equal((await answer(210)).value, false);
+    receive({ rpc: 211, actor: "s", fn: "store.markUndelivered", args: ["s", [{ thread: "th", n: 1 }]] });
+    const reply = await answer(211);
+    assert.deepEqual({ rows, error: reply.error?.message }, { rows: [["undo"]], error: undefined });
+  } finally {
+    await program.close();
+  }
+});
+
+test("W8-E2 R6 NN1: close is returned before its compensation is asked", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    old.actor.close();
+    const close = f.posted.at(-1);
+    assert.equal(close.method, "close");
+    await f.deliver({ returned: close.call, value: null });
+    const reply = await f.deliver({ rpc: 201, actor: "s", fn: "store.markUndelivered", args: ["s", []] });
+    assert.equal(reply?.error, undefined, JSON.stringify(reply));
+    assert.deepEqual(f.events, ["old/undo"]);
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R6 NN2: steer refused after close, then its compensation", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    old.actor.close();
+    const close = f.posted.at(-1);
+    await f.deliver({ rpc: 301, actor: "s", fn: "agent.steer", args: [old.handle, "x"] });
+    await f.deliver({ returned: close.call, value: null });
+    const reply = await f.deliver({ rpc: 302, actor: "s", fn: "store.markUndelivered", args: ["s", []] });
+    assert.equal(reply?.error, undefined, JSON.stringify(reply));
+    assert.deepEqual(f.events, ["old/steer", "old/undo"]);
+  } finally {
+    await f.program.close();
+  }
+});
+
+test("W8-E2 R6 NN3: snapshot hands over and nothing of the old reaches its session", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    const snapping = old.actor.snapshot();
+    const call = f.posted.at(-1);
+    await f.deliver({ returned: call.call, value: { agent: old.handle } });
+    await snapping;
+    const reply = await f.deliver({ rpc: 401, actor: "s", fn: "agent.dispose", args: [old.handle] });
+    assert.equal(reply?.error?.actorClosed, true, JSON.stringify(reply));
+    assert.deepEqual(f.events, []);
+  } finally {
+    await f.program.close();
+  }
+});
+
+for (const churn of [511, 512]) {
+  test(`W8-E2 R7: steer refill compensation survives ${churn} unrelated retirements`, async () => {
+    const frames: any[] = [];
+    let receive!: (frame: any) => void;
+    const program = ActorsProgram.openForTest(
+      {
+        use(user: any) { receive = user.said; },
+        post(frame: any) { frames.push(frame); return true; },
+        hold() {},
+        release() {},
+        kill() {},
+      } as any,
+      { currentTimeMillisUnsafe: () => 100 } as any,
+    );
+    let marked = false;
+    const store = {
+      getSession: () => ({ runtime: "claude" }),
+      markDelivered(_k: string, rows: any[]) { if (rows.length > 0) marked = true; },
+      markUndelivered() { marked = false; },
+    };
+    try {
+      const old = program.actor("original", "claude", { store } as any);
+      let finishSteer!: (v: boolean) => void;
+      const adopted = old.adopt(
+        { runtime: "claude" } as any,
+        { steer: () => new Promise<boolean>((r) => { finishSteer = r; }) } as any,
+        "",
+      );
+      const call = frames.at(-1);
+      receive({ returned: call.call, value: null });
+      await adopted;
+      receive({ rpc: 799, actor: "original", fn: "store.markDelivered", args: ["original", [{ thread: "t", n: 1 }], 7001] });
+      await new Promise((r) => setImmediate(r));
+      assert.equal(marked, true);
+      receive({ rpc: 800, actor: "original", fn: "agent.steer", args: [call.args[1].handle, "m"] });
+      old.close();
+      receive({ returned: frames.at(-1).call, value: null });
+      finishSteer(false);
+      await new Promise((r) => setImmediate(r));
+      assert.equal(frames.find((x) => x.answer === 800)?.value, false);
+      for (let i = 0; i < churn; i++) {
+        const a = program.actor(`other-${i}`, "claude", { store } as any);
+        a.close();
+        receive({ returned: frames.at(-1).call, value: null });
+      }
+      receive({ rpc: 900, actor: "original", fn: "store.markUndelivered", args: ["original", [{ thread: "t", n: 1 }], 7001] });
+      await new Promise((r) => setImmediate(r));
+      const result = frames.find((x) => x.answer === 900);
+      assert.deepEqual(
+        { marked, error: result?.error?.message, answer: result?.answer },
+        { marked: false, error: undefined, answer: 900 },
+      );
+    } finally {
+      await program.close();
+    }
+  });
+}
+
+test("W8-E2 R8 LL1: steer refused while live does not pin actor past idle bound", async () => {
+  const f = r5RoutingFixture();
+  try {
+    const old = f.register("s", "old");
+    await old.ready;
+    await f.deliver({ rpc: 1, actor: "s", fn: "agent.steer", args: [old.handle, "x"] });
+    const gone = old.actor.dispose();
+    const call = f.posted.filter((p: any) => p.method === "dispose").at(-1);
+    await f.deliver({ returned: call.call, value: null });
+    await gone;
+    for (let i = 0; i < 600; i++) {
+      const a = f.program.actor(`other${i}`, "claude", { store: {} } as any);
+      a.close();
+      await f.deliver({ returned: f.posted.at(-1).call, value: null });
+    }
+    const reply = await f.deliver({ rpc: 2, actor: "s", fn: "store.markUndelivered", args: ["s", []] });
+    assert.equal(reply?.error?.actorClosed, true, "still held after 600 others: " + JSON.stringify(reply));
+  } finally {
+    await f.program.close();
+  }
+});
+
+for (const refused of [false, true]) {
+  test(`W8-E2 R8: disposed actor with settled local work is evicted (steer refused=${refused})`, async () => {
+    let receive!: (frame: any) => void;
+    const frames: any[] = [];
+    const program = ActorsProgram.openForTest(
+      {
+        use(user: any) { receive = user.said; },
+        post(frame: any) { frames.push(frame); return true; },
+        hold() {},
+        release() {},
+        kill() {},
+      } as any,
+      { currentTimeMillisUnsafe: () => 100 } as any,
+    );
+    const key = "locally-settled";
+    let storeCalls = 0;
+    let disposed = 0;
+    const store = {
+      getSession: () => ({ runtime: "claude" }),
+      markUndelivered() { storeCalls++; },
+    };
+    try {
+      const actor = program.actor(key, "claude", { store } as any);
+      const adopted = actor.adopt(
+        { runtime: "claude" } as any,
+        { steer: async () => !refused, dispose: async () => { disposed++; } } as any,
+        "",
+      );
+      const request = frames.at(-1);
+      const handle = request.args[1].handle;
+      receive({ returned: request.call, value: null });
+      await adopted;
+      receive({ rpc: 1, actor: key, fn: "agent.steer", args: [handle, "reminder"] });
+      await new Promise((r) => setImmediate(r));
+      assert.equal(frames.find((f) => f.answer === 1).value, !refused);
+      const disposal = actor.dispose();
+      const disposeCall = frames.at(-1).call;
+      receive({ rpc: 2, actor: key, fn: "agent.dispose", args: [handle] });
+      await new Promise((r) => setImmediate(r));
+      receive({ returned: disposeCall, value: null });
+      await disposal;
+      assert.equal(disposed, 1);
+      for (let i = 0; i < 513; i++) {
+        program.actor(`idle-${i}`, "claude", { store } as any).close();
+        receive({ returned: frames.at(-1).call, value: null });
+      }
+      receive({ rpc: 3, actor: key, fn: "store.markUndelivered", args: [key, []] });
+      await new Promise((r) => setImmediate(r));
+      const reply = frames.find((f) => f.answer === 3);
+      assert.deepEqual({ storeCalls, closed: reply?.error?.actorClosed === true }, { storeCalls: 0, closed: true });
+    } finally {
+      await program.close();
+    }
+  });
+}
+
+const r9RoutingCases = [
+  { name: "outstanding delivery, no configured db, receipt after close", delivery: true, memory: false, replyFirst: false },
+  { name: "outstanding delivery, in-memory db, receipt after close", delivery: true, memory: true, replyFirst: false },
+  { name: "notice only, receipt after close", delivery: false, memory: false, replyFirst: false },
+  { name: "outstanding refill delivery, receipt before snapshot returns", delivery: true, memory: false, replyFirst: true },
+];
+for (const { name, delivery, memory, replyFirst } of r9RoutingCases) {
+  test(`W8-E2 R9: ${name}`, async () => {
+    const frames: any[] = [];
+    let receive!: (msg: any) => void;
+    const proc = {
+      use(user: any) { receive = user.said; },
+      post(msg: any) { frames.push(msg); return true; },
+      hold() {},
+      release() {},
+      kill() {},
+    };
+    const clock = { currentTimeMillisUnsafe: () => 100 } as any;
+    const db = new DatabaseSync(":memory:");
+    db.exec("CREATE TABLE delivery(marked INTEGER); INSERT INTO delivery VALUES (0)");
+    const store = {
+      db,
+      told() {},
+      getSession: () => ({ runtime: "claude" }),
+      markDelivered(_key: string, rows: any[]) { if (rows.length) db.exec("UPDATE delivery SET marked = 1"); },
+      markUndelivered(_key: string, rows: any[]) { if (rows.length) db.exec("UPDATE delivery SET marked = 0"); },
+    };
+    const program = ActorsProgram.openForTest(proc as any, clock, memory ? store : null);
+    const settle = () => new Promise((r) => setImmediate(r));
+    try {
+      assert.equal(frames.find((f) => Object.hasOwn(f, "db"))?.db, null, "worker has no attached database");
+      const key = "subject";
+      const actor = program.actor(key, "claude", { store } as any);
+      let finish!: (v: boolean) => void;
+      const adopted = actor.adopt(
+        { runtime: "claude" } as any,
+        {
+          steer: () => new Promise<boolean>((r) => { finish = r; }),
+          dispose: async () => {},
+          snapshot: () => null,
+          detach() {},
+        } as any,
+        "",
+      );
+      const { call, args } = frames.at(-1);
+      const handle = args[1].handle;
+      receive({ returned: call, value: null });
+      await adopted;
+      if (delivery) {
+        receive({ rpc: 10, actor: key, fn: "store.markDelivered", args: [key, [{ thread: "t", n: 1 }], 9001] });
+        await settle();
+        assert.equal(frames.find((f) => f.answer === 10)?.error, undefined);
+        assert.equal((db.prepare("SELECT marked FROM delivery").get() as any).marked, 1);
+      }
+      receive({ rpc: 1, actor: key, fn: "agent.steer", args: [handle, delivery ? "message" : "notice"] });
+      const refuse = async () => {
+        finish(false);
+        await settle();
+        assert.equal(frames.find((f) => f.answer === 1).value, false);
+      };
+      if (replyFirst) {
+        const snapshot = actor.snapshot();
+        const snapshotCall = frames.at(-1).call;
+        await refuse();
+        receive({ returned: snapshotCall, value: { agent: handle } });
+        await snapshot;
+      } else {
+        actor.close();
+        receive({ returned: frames.at(-1).call, value: null });
+        receive({ rpc: 2, actor: key, fn: "agent.dispose", args: [handle] });
+        await settle();
+        assert.equal(frames.find((f) => f.answer === 2).value, null);
+        const others: number[] = [];
+        for (let i = 0; i < 512; i++) {
+          program.actor(`idle-${i}`, "claude", { store } as any).close();
+          others.push(frames.at(-1).call);
+        }
+        await refuse();
+        for (const c of others) receive({ returned: c, value: null });
+      }
+      receive({
+        rpc: 3,
+        actor: key,
+        fn: "store.markUndelivered",
+        args: delivery ? [key, [{ thread: "t", n: 1 }], 9001] : [key, []],
+      });
+      await settle();
+      assert.deepEqual(
+        {
+          closed: frames.find((f) => f.answer === 3)?.error?.actorClosed === true,
+          marked: (db.prepare("SELECT marked FROM delivery").get() as any).marked,
+        },
+        { closed: !delivery, marked: 0 },
+      );
+    } finally {
+      await program.close();
+      db.close();
+    }
+  });
+}
+
+function r10RoutingFixture() {
+  let receive!: (frame: any) => void;
+  const frames: any[] = [];
+  const writes: string[] = [];
+  const seenArgCounts: { fn: string; argc: number }[] = [];
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE delivery (n INTEGER PRIMARY KEY, marked INTEGER); INSERT INTO delivery VALUES (1,0), (2,0)");
+  const program = ActorsProgram.openForTest(
+    {
+      use(user: any) { receive = user.said; },
+      post(frame: any) { frames.push(frame); return true; },
+      hold() {},
+      release() {},
+      kill() {},
+    } as any,
+    { currentTimeMillisUnsafe: () => 100 } as any,
+  );
+  let next = 10;
+  const rpc = async (fn: string, args: any[]) => {
+    const id = next++;
+    receive({ rpc: id, actor: "s", fn, args });
+    await new Promise((r) => setImmediate(r));
+    const reply = frames.find((f) => f.answer === id);
+    assert.ok(reply);
+    return reply;
+  };
+  const tell = (tellName: string, args: any[]) => {
+    receive({ actor: "s", tell: tellName, args });
+  };
+  const register = async (label: string, failMark = false) => {
+    const store = {
+      getSession() { return { runtime: "claude" }; },
+      markDelivered(...callArgs: any[]) {
+        seenArgCounts.push({ fn: "markDelivered", argc: callArgs.length });
+        if (failMark) throw new Error("mark failed");
+        for (const row of callArgs[1]) db.prepare("UPDATE delivery SET marked=1 WHERE n=?").run(row.n);
+      },
+      markUndelivered(...callArgs: any[]) {
+        seenArgCounts.push({ fn: "markUndelivered", argc: callArgs.length });
+        if (callArgs[1].length) writes.push(label);
+        for (const row of callArgs[1]) db.prepare("UPDATE delivery SET marked=0 WHERE n=?").run(row.n);
+      },
+    };
+    const actor = program.actor("s", "claude", { store } as any);
+    const adoption = actor.adopt(
+      { runtime: "claude" } as any,
+      { steer: async (text: string) => text === "accept", dispose: async () => {}, snapshot: () => null, detach() {} } as any,
+      "",
+    );
+    const { args, call } = frames.at(-1);
+    receive({ returned: call, value: null });
+    await adoption;
+    const handle = args[1].handle;
+    return {
+      actor,
+      handle,
+      snapshot: async () => {
+        const done = actor.snapshot();
+        receive({ returned: frames.at(-1).call, value: { agent: handle } });
+        await done;
+      },
+    };
+  };
+  const read = () => (db.prepare("SELECT marked FROM delivery WHERE n=1").get() as any).marked;
+  return {
+    program,
+    rpc,
+    tell,
+    register,
+    writes,
+    seenArgCounts,
+    read,
+    close: async () => { await program.close(); db.close(); },
+  };
+}
+
+for (const order of ["before accepted steer", "after accepted steer", "stopped while opening"] as const) {
+  test(`W8-E2 R10: finished delivery is released at snapshot (${order})`, async () => {
+    const f = r10RoutingFixture();
+    const rows = [{ thread: "t", n: 1 }];
+    try {
+      const old = await f.register("old");
+      if (order === "after accepted steer") assert.equal((await f.rpc("agent.steer", [old.handle, "accept"])).value, true);
+      const markArgs = order === "before accepted steer" ? ["s", rows, 101] : ["s", rows];
+      assert.equal((await f.rpc("store.markDelivered", markArgs)).error, undefined);
+      if (order === "before accepted steer") {
+        assert.equal((await f.rpc("agent.steer", [old.handle, "accept"])).value, true);
+        f.tell("store.deliverySettled", [101]);
+      }
+      assert.equal(f.read(), 1);
+      await old.snapshot();
+      const probe = await f.rpc("store.markUndelivered", ["s", []]);
+      assert.equal(probe.error?.actorClosed, true, "a completed batch kept its owner routable");
+      assert.ok(f.seenArgCounts.every((c) => c.argc === 2), "batchId must not leak to Store methods");
+    } finally {
+      await f.close();
+    }
+  });
+}
+
+test("W8-E2 R10: late undo settles the marking actor across same-key replacement, with a shared database", async () => {
+  const f = r10RoutingFixture();
+  const rows = [{ thread: "t", n: 1 }];
+  try {
+    const old = await f.register("original");
+    await f.rpc("store.markDelivered", ["s", rows, 202]);
+    assert.equal((await f.rpc("agent.steer", [old.handle, "refuse"])).value, false);
+    await old.snapshot();
+    const current = await f.register("replacement");
+    await f.rpc("store.markUndelivered", ["s", rows, 202]);
+    assert.equal(f.read(), 0);
+    await current.snapshot();
+    const probe = await f.rpc("store.markUndelivered", ["s", []]);
+    assert.deepEqual({ owners: f.writes, closed: probe.error?.actorClosed === true }, { owners: ["original"], closed: true });
+    assert.ok(f.seenArgCounts.every((c) => c.argc === 2), "batchId must not leak to Store methods");
+  } finally {
+    await f.close();
+  }
+});
+
+test("W8-E2 R10: store.deliverySettled releases retired actor after snapshot and failed markDelivered does not pin", async () => {
+  const f = r10RoutingFixture();
+  const rows = [{ thread: "t", n: 1 }];
+  try {
+    const old = await f.register("old");
+    assert.equal((await f.rpc("store.markDelivered", ["s", rows, 303])).error, undefined);
+    await old.snapshot();
+    f.tell("store.deliverySettled", [303]);
+    const probe1 = await f.rpc("store.markUndelivered", ["s", rows, 303]);
+    assert.equal(probe1.error?.actorClosed, true, "store.deliverySettled must release retired actor");
+
+    const failing = await f.register("failing", true);
+    const failedReply = await f.rpc("store.markDelivered", ["s", rows, 304]);
+    assert.ok(failedReply.error, "markDelivered should fail");
+    await failing.snapshot();
+    const probe2 = await f.rpc("store.markUndelivered", ["s", rows, 304]);
+    assert.equal(probe2.error?.actorClosed, true, "failed markDelivered must not pin retired actor");
+  } finally {
+    await f.close();
   }
 });

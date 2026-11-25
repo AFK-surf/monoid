@@ -1,6 +1,43 @@
 // tiny-skia's low precision pipeline: 16 pixels at a time in u16 lanes holding 0..=255,
 // wrapping as Rust's u16 does in release. Where Rust keeps two float vectors in the bits of the u16 registers (split
 // and join: x in r and g, y in b and a) they are kept as floats beside them.
+// Optimized with module-level scratch buffers, inlined blend stages (zero closures),
+// and direct horizontal scanline fast paths for common 2D canvas solid/AA/mask fills.
+// Invariant: module-level scratch buffers (`lowp_r`..`lowp_mask_c`) rely on single-threaded,
+// non-reentrant execution of `lowp_start_generic` and every stage writing all lanes/channels it reads.
+
+///|
+let lowp_r : FixedArray[Int] = FixedArray::make(16, 0)
+
+///|
+let lowp_g : FixedArray[Int] = FixedArray::make(16, 0)
+
+///|
+let lowp_b : FixedArray[Int] = FixedArray::make(16, 0)
+
+///|
+let lowp_a : FixedArray[Int] = FixedArray::make(16, 0)
+
+///|
+let lowp_dr : FixedArray[Int] = FixedArray::make(16, 0)
+
+///|
+let lowp_dg : FixedArray[Int] = FixedArray::make(16, 0)
+
+///|
+let lowp_db : FixedArray[Int] = FixedArray::make(16, 0)
+
+///|
+let lowp_da : FixedArray[Int] = FixedArray::make(16, 0)
+
+///|
+let lowp_fx : FixedArray[Float] = FixedArray::make(16, 0.0)
+
+///|
+let lowp_fy : FixedArray[Float] = FixedArray::make(16, 0.0)
+
+///|
+let lowp_mask_c : FixedArray[Int] = FixedArray::make(16, 0)
 
 ///|
 priv struct LowP {
@@ -25,7 +62,7 @@ priv struct LowP {
 }
 
 ///|
-fn lowp_start(
+fn lowp_start_generic(
   stages : Array[Stage],
   rect : ScreenIntRect,
   aa_mask_ctx : AAMaskCtx,
@@ -33,18 +70,17 @@ fn lowp_start(
   ctx : Context,
   dst : SubPixmap,
 ) -> Unit {
-  let z = fn() { FixedArray::make(16, 0) }
   let p : LowP = {
-    r: z(),
-    g: z(),
-    b: z(),
-    a: z(),
-    dr: z(),
-    dg: z(),
-    db: z(),
-    da: z(),
-    fx: FixedArray::make(16, 0.0),
-    fy: FixedArray::make(16, 0.0),
+    r: lowp_r,
+    g: lowp_g,
+    b: lowp_b,
+    a: lowp_a,
+    dr: lowp_dr,
+    dg: lowp_dg,
+    db: lowp_db,
+    da: lowp_da,
+    fx: lowp_fx,
+    fy: lowp_fy,
     tail: 0,
     dx: 0,
     dy: 0,
@@ -70,6 +106,317 @@ fn lowp_start(
       p.run(stages)
     }
   }
+}
+
+///|
+fn lowp_start(
+  stages : Array[Stage],
+  rect : ScreenIntRect,
+  aa_mask_ctx : AAMaskCtx,
+  mask_ctx : MaskCtx,
+  ctx : Context,
+  dst : SubPixmap,
+) -> Unit {
+  let slen = stages.length()
+  let rx = rect.x
+  let rw = rect.width
+  let ry = rect.y
+  let rbot = rect.bottom()
+  let data = dst.data
+
+  if slen == 2 {
+    match (stages[0], stages[1]) {
+      (UniformColor, Store) => {
+        let (r, g, b, a) = ctx.uniform_rgba
+        let rb = (r & 0xFF).to_byte()
+        let gb = (g & 0xFF).to_byte()
+        let bb = (b & 0xFF).to_byte()
+        let ab = (a & 0xFF).to_byte()
+        let mut y = ry
+        while y < rbot {
+          let mut o = dst.offset_at(rx, y) * 4
+          let end_o = o + rw * 4
+          while o < end_o {
+            data[o] = rb
+            data[o + 1] = gb
+            data[o + 2] = bb
+            data[o + 3] = ab
+            o += 4
+          }
+          y += 1
+        }
+        return
+      }
+      (UniformColor, SourceOverRgba) => {
+        let (r, g, b, a) = ctx.uniform_rgba
+        if a == 0 && r == 0 && g == 0 && b == 0 {
+          return
+        }
+        if a == 255 {
+          let rb = (r & 0xFF).to_byte()
+          let gb = (g & 0xFF).to_byte()
+          let bb = (b & 0xFF).to_byte()
+          let ab = (255).to_byte()
+          let mut y = ry
+          while y < rbot {
+            let mut o = dst.offset_at(rx, y) * 4
+            let end_o = o + rw * 4
+            while o < end_o {
+              data[o] = rb
+              data[o + 1] = gb
+              data[o + 2] = bb
+              data[o + 3] = ab
+              o += 4
+            }
+            y += 1
+          }
+          return
+        }
+        let ia = inv255(a)
+        let mut y = ry
+        while y < rbot {
+          let mut o = dst.offset_at(rx, y) * 4
+          let end_o = o + rw * 4
+          while o < end_o {
+            data[o] = (w16(r + div255(mul16(data[o].to_int(), ia))) & 0xFF).to_byte()
+            data[o + 1] = (w16(g + div255(mul16(data[o + 1].to_int(), ia))) & 0xFF).to_byte()
+            data[o + 2] = (w16(b + div255(mul16(data[o + 2].to_int(), ia))) & 0xFF).to_byte()
+            data[o + 3] = (w16(a + div255(mul16(data[o + 3].to_int(), ia))) & 0xFF).to_byte()
+            o += 4
+          }
+          y += 1
+        }
+        return
+      }
+      (UniformColor, StoreU8) => {
+        let ab = (ctx.uniform_rgba.3 & 0xFF).to_byte()
+        let mut y = ry
+        while y < rbot {
+          let mut o = dst.offset_at(rx, y)
+          let end_o = o + rw
+          while o < end_o {
+            data[o] = ab
+            o += 1
+          }
+          y += 1
+        }
+        return
+      }
+      _ => ()
+    }
+  } else if slen == 4 {
+    match (stages[0], stages[1], stages[2], stages[3]) {
+      (UniformColor, LoadDestinationU8, Lerp1Float, StoreU8) => {
+        let a = ctx.uniform_rgba.3
+        let c = f2u16(ctx.current_coverage * 255.0 + 0.5)
+        let ic = inv255(c)
+        let ac = mul16(a, c)
+        let mut y = ry
+        while y < rbot {
+          let mut o = dst.offset_at(rx, y)
+          let end_o = o + rw
+          while o < end_o {
+            let da = data[o].to_int()
+            data[o] = (div255(w16(mul16(da, ic) + ac)) & 0xFF).to_byte()
+            o += 1
+          }
+          y += 1
+        }
+        return
+      }
+      (UniformColor, LoadDestination, Lerp1Float, Store) => {
+        let (r, g, b, a) = ctx.uniform_rgba
+        let c = f2u16(ctx.current_coverage * 255.0 + 0.5)
+        let ic = inv255(c)
+        let rc = mul16(r, c)
+        let gc = mul16(g, c)
+        let bc = mul16(b, c)
+        let ac = mul16(a, c)
+        let mut y = ry
+        while y < rbot {
+          let mut o = dst.offset_at(rx, y) * 4
+          let end_o = o + rw * 4
+          while o < end_o {
+            data[o] = (div255(w16(mul16(data[o].to_int(), ic) + rc)) & 0xFF).to_byte()
+            data[o + 1] = (div255(w16(mul16(data[o + 1].to_int(), ic) + gc)) & 0xFF).to_byte()
+            data[o + 2] = (div255(w16(mul16(data[o + 2].to_int(), ic) + bc)) & 0xFF).to_byte()
+            data[o + 3] = (div255(w16(mul16(data[o + 3].to_int(), ic) + ac)) & 0xFF).to_byte()
+            o += 4
+          }
+          y += 1
+        }
+        return
+      }
+      (UniformColor, LoadDestination, LerpU8, Store) => {
+        let (r, g, b, a) = ctx.uniform_rgba
+        let end = rect.right()
+        let mut y = ry
+        while y < rbot {
+          let mut x = rx
+          while x < end {
+            let tail = if x + 16 <= end { 16 } else { end - x }
+            let (d0, d1) = aa_mask_ctx.copy_at_xy(x, y, tail)
+            let o = dst.offset_at(x, y) * 4
+            let mut i = 0
+            while i < tail {
+              let c = if i == 0 { d0 } else if i == 1 { d1 } else { 0 }
+              if c != 0 {
+                let ic = inv255(c)
+                let p = o + i * 4
+                data[p] = (div255(w16(mul16(data[p].to_int(), ic) + mul16(r, c))) & 0xFF).to_byte()
+                data[p + 1] = (div255(w16(mul16(data[p + 1].to_int(), ic) + mul16(g, c))) & 0xFF).to_byte()
+                data[p + 2] = (div255(w16(mul16(data[p + 2].to_int(), ic) + mul16(b, c))) & 0xFF).to_byte()
+                data[p + 3] = (div255(w16(mul16(data[p + 3].to_int(), ic) + mul16(a, c))) & 0xFF).to_byte()
+              }
+              i += 1
+            }
+            x += tail
+          }
+          y += 1
+        }
+        return
+      }
+      (UniformColor, LoadDestinationU8, LerpU8, StoreU8) => {
+        let a = ctx.uniform_rgba.3
+        let end = rect.right()
+        let mut y = ry
+        while y < rbot {
+          let mut x = rx
+          while x < end {
+            let tail = if x + 16 <= end { 16 } else { end - x }
+            let (d0, d1) = aa_mask_ctx.copy_at_xy(x, y, tail)
+            let o = dst.offset_at(x, y)
+            let mut i = 0
+            while i < tail {
+              let c = if i == 0 { d0 } else if i == 1 { d1 } else { 0 }
+              if c != 0 {
+                let ic = inv255(c)
+                let da = data[o + i].to_int()
+                data[o + i] = (div255(w16(mul16(da, ic) + mul16(a, c))) & 0xFF).to_byte()
+              }
+              i += 1
+            }
+            x += tail
+          }
+          y += 1
+        }
+        return
+      }
+      _ => ()
+    }
+  } else if slen == 5 {
+    match (stages[0], stages[1], stages[2], stages[3], stages[4]) {
+      (UniformColor, Scale1Float, LoadDestination, StSourceOver, Store) => {
+        let (r, g, b, a) = ctx.uniform_rgba
+        let c = f2u16(ctx.current_coverage * 255.0 + 0.5)
+        let sr = div255(mul16(r, c))
+        let sg = div255(mul16(g, c))
+        let sb = div255(mul16(b, c))
+        let sa = div255(mul16(a, c))
+        if sa == 0 && sr == 0 && sg == 0 && sb == 0 {
+          return
+        }
+        if sa == 255 {
+          let rb = (sr & 0xFF).to_byte()
+          let gb = (sg & 0xFF).to_byte()
+          let bb = (sb & 0xFF).to_byte()
+          let ab = (255).to_byte()
+          let mut y = ry
+          while y < rbot {
+            let mut o = dst.offset_at(rx, y) * 4
+            let end_o = o + rw * 4
+            while o < end_o {
+              data[o] = rb
+              data[o + 1] = gb
+              data[o + 2] = bb
+              data[o + 3] = ab
+              o += 4
+            }
+            y += 1
+          }
+          return
+        }
+        let ia = inv255(sa)
+        let mut y = ry
+        while y < rbot {
+          let mut o = dst.offset_at(rx, y) * 4
+          let end_o = o + rw * 4
+          while o < end_o {
+            data[o] = (w16(sr + div255(mul16(data[o].to_int(), ia))) & 0xFF).to_byte()
+            data[o + 1] = (w16(sg + div255(mul16(data[o + 1].to_int(), ia))) & 0xFF).to_byte()
+            data[o + 2] = (w16(sb + div255(mul16(data[o + 2].to_int(), ia))) & 0xFF).to_byte()
+            data[o + 3] = (w16(sa + div255(mul16(data[o + 3].to_int(), ia))) & 0xFF).to_byte()
+            o += 4
+          }
+          y += 1
+        }
+        return
+      }
+      (UniformColor, LoadDestination, StSourceOver, Lerp1Float, Store) => {
+        let (r, g, b, a) = ctx.uniform_rgba
+        let c = f2u16(ctx.current_coverage * 255.0 + 0.5)
+        let ic = inv255(c)
+        let ia = inv255(a)
+        let mut y = ry
+        while y < rbot {
+          let mut o = dst.offset_at(rx, y) * 4
+          let end_o = o + rw * 4
+          while o < end_o {
+            let dr = data[o].to_int()
+            let dg = data[o + 1].to_int()
+            let db = data[o + 2].to_int()
+            let da = data[o + 3].to_int()
+            let or_ = w16(r + div255(mul16(dr, ia)))
+            let og = w16(g + div255(mul16(dg, ia)))
+            let ob = w16(b + div255(mul16(db, ia)))
+            let oa = w16(a + div255(mul16(da, ia)))
+            data[o] = (div255(w16(mul16(dr, ic) + mul16(or_, c))) & 0xFF).to_byte()
+            data[o + 1] = (div255(w16(mul16(dg, ic) + mul16(og, c))) & 0xFF).to_byte()
+            data[o + 2] = (div255(w16(mul16(db, ic) + mul16(ob, c))) & 0xFF).to_byte()
+            data[o + 3] = (div255(w16(mul16(da, ic) + mul16(oa, c))) & 0xFF).to_byte()
+            o += 4
+          }
+          y += 1
+        }
+        return
+      }
+      (UniformColor, ScaleU8, LoadDestination, StSourceOver, Store) => {
+        let (r, g, b, a) = ctx.uniform_rgba
+        let end = rect.right()
+        let mut y = ry
+        while y < rbot {
+          let mut x = rx
+          while x < end {
+            let tail = if x + 16 <= end { 16 } else { end - x }
+            let (d0, d1) = aa_mask_ctx.copy_at_xy(x, y, tail)
+            let o = dst.offset_at(x, y) * 4
+            let mut i = 0
+            while i < tail {
+              let c = if i == 0 { d0 } else if i == 1 { d1 } else { 0 }
+              if c != 0 {
+                let sr = div255(mul16(r, c))
+                let sg = div255(mul16(g, c))
+                let sb = div255(mul16(b, c))
+                let sa = div255(mul16(a, c))
+                let ia = inv255(sa)
+                let p = o + i * 4
+                data[p] = (w16(sr + div255(mul16(data[p].to_int(), ia))) & 0xFF).to_byte()
+                data[p + 1] = (w16(sg + div255(mul16(data[p + 1].to_int(), ia))) & 0xFF).to_byte()
+                data[p + 2] = (w16(sb + div255(mul16(data[p + 2].to_int(), ia))) & 0xFF).to_byte()
+                data[p + 3] = (w16(sa + div255(mul16(data[p + 3].to_int(), ia))) & 0xFF).to_byte()
+              }
+              i += 1
+            }
+            x += tail
+          }
+          y += 1
+        }
+        return
+      }
+      _ => ()
+    }
+  }
+  lowp_start_generic(stages, rect, aa_mask_ctx, mask_ctx, ctx, dst)
 }
 
 ///|
@@ -162,11 +509,11 @@ fn LowP::stage(self : LowP, s : Stage) -> Bool {
     }
     MaskU8 => {
       let o = p.mask_ctx.at(p.dx, p.dy)
-      let c = FixedArray::make(16, 0)
       let mut all_zero = true
-      for i in 0..<p.tail {
-        c[i] = p.mask_ctx.data[o + i].to_int()
-        if c[i] != 0 {
+      for i in 0..<16 {
+        let v = if i < p.tail { p.mask_ctx.data[o + i].to_int() } else { 0 }
+        lowp_mask_c[i] = v
+        if v != 0 {
           all_zero = false
         }
       }
@@ -174,10 +521,11 @@ fn LowP::stage(self : LowP, s : Stage) -> Bool {
         return false
       }
       for i in 0..<16 {
-        p.r[i] = div255(mul16(p.r[i], c[i]))
-        p.g[i] = div255(mul16(p.g[i], c[i]))
-        p.b[i] = div255(mul16(p.b[i], c[i]))
-        p.a[i] = div255(mul16(p.a[i], c[i]))
+        let ci = lowp_mask_c[i]
+        p.r[i] = div255(mul16(p.r[i], ci))
+        p.g[i] = div255(mul16(p.g[i], ci))
+        p.b[i] = div255(mul16(p.b[i], ci))
+        p.a[i] = div255(mul16(p.a[i], ci))
       }
     }
     ScaleU8 => {
@@ -218,68 +566,248 @@ fn LowP::stage(self : LowP, s : Stage) -> Bool {
         p.a[i] = lerp16(p.da[i], p.a[i], c)
       }
     }
-    StClear => p.blend1(fn(_s, _d, _sa, _da) { 0 })
-    StSourceAtop => p.blend1(fn(s, d, sa, da) { div255(w16(mul16(s, da) + mul16(d, inv255(sa)))) })
-    StDestinationAtop => p.blend1(fn(s, d, sa, da) { div255(w16(mul16(d, sa) + mul16(s, inv255(da)))) })
-    StSourceIn => p.blend1(fn(s, _d, _sa, da) { div255(mul16(s, da)) })
-    StDestinationIn => p.blend1(fn(_s, d, sa, _da) { div255(mul16(d, sa)) })
-    StSourceOut => p.blend1(fn(s, _d, _sa, da) { div255(mul16(s, inv255(da))) })
-    StDestinationOut => p.blend1(fn(_s, d, sa, _da) { div255(mul16(d, inv255(sa))) })
-    StSourceOver => p.blend1(fn(s, d, sa, _da) { w16(s + div255(mul16(d, inv255(sa)))) })
-    StDestinationOver => p.blend1(fn(s, d, _sa, da) { w16(d + div255(mul16(s, inv255(da)))) })
-    StModulate => p.blend1(fn(s, d, _sa, _da) { div255(mul16(s, d)) })
+    StClear =>
+      for i in 0..<16 {
+        p.r[i] = 0
+        p.g[i] = 0
+        p.b[i] = 0
+        p.a[i] = 0
+      }
+    StSourceAtop =>
+      for i in 0..<16 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let isa = inv255(sa)
+        p.r[i] = div255(w16(mul16(p.r[i], da) + mul16(p.dr[i], isa)))
+        p.g[i] = div255(w16(mul16(p.g[i], da) + mul16(p.dg[i], isa)))
+        p.b[i] = div255(w16(mul16(p.b[i], da) + mul16(p.db[i], isa)))
+        p.a[i] = div255(w16(mul16(sa, da) + mul16(da, isa)))
+      }
+    StDestinationAtop =>
+      for i in 0..<16 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let ida = inv255(da)
+        p.r[i] = div255(w16(mul16(p.dr[i], sa) + mul16(p.r[i], ida)))
+        p.g[i] = div255(w16(mul16(p.dg[i], sa) + mul16(p.g[i], ida)))
+        p.b[i] = div255(w16(mul16(p.db[i], sa) + mul16(p.b[i], ida)))
+        p.a[i] = div255(w16(mul16(da, sa) + mul16(sa, ida)))
+      }
+    StSourceIn =>
+      for i in 0..<16 {
+        let da = p.da[i]
+        p.r[i] = div255(mul16(p.r[i], da))
+        p.g[i] = div255(mul16(p.g[i], da))
+        p.b[i] = div255(mul16(p.b[i], da))
+        p.a[i] = div255(mul16(p.a[i], da))
+      }
+    StDestinationIn =>
+      for i in 0..<16 {
+        let sa = p.a[i]
+        p.r[i] = div255(mul16(p.dr[i], sa))
+        p.g[i] = div255(mul16(p.dg[i], sa))
+        p.b[i] = div255(mul16(p.db[i], sa))
+        p.a[i] = div255(mul16(p.da[i], sa))
+      }
+    StSourceOut =>
+      for i in 0..<16 {
+        let ida = inv255(p.da[i])
+        p.r[i] = div255(mul16(p.r[i], ida))
+        p.g[i] = div255(mul16(p.g[i], ida))
+        p.b[i] = div255(mul16(p.b[i], ida))
+        p.a[i] = div255(mul16(p.a[i], ida))
+      }
+    StDestinationOut =>
+      for i in 0..<16 {
+        let isa = inv255(p.a[i])
+        p.r[i] = div255(mul16(p.dr[i], isa))
+        p.g[i] = div255(mul16(p.dg[i], isa))
+        p.b[i] = div255(mul16(p.db[i], isa))
+        p.a[i] = div255(mul16(p.da[i], isa))
+      }
+    StSourceOver =>
+      for i in 0..<16 {
+        let isa = inv255(p.a[i])
+        p.r[i] = w16(p.r[i] + div255(mul16(p.dr[i], isa)))
+        p.g[i] = w16(p.g[i] + div255(mul16(p.dg[i], isa)))
+        p.b[i] = w16(p.b[i] + div255(mul16(p.db[i], isa)))
+        p.a[i] = w16(p.a[i] + div255(mul16(p.da[i], isa)))
+      }
+    StDestinationOver =>
+      for i in 0..<16 {
+        let ida = inv255(p.da[i])
+        p.r[i] = w16(p.dr[i] + div255(mul16(p.r[i], ida)))
+        p.g[i] = w16(p.dg[i] + div255(mul16(p.g[i], ida)))
+        p.b[i] = w16(p.db[i] + div255(mul16(p.b[i], ida)))
+        p.a[i] = w16(p.da[i] + div255(mul16(p.a[i], ida)))
+      }
+    StModulate =>
+      for i in 0..<16 {
+        p.r[i] = div255(mul16(p.r[i], p.dr[i]))
+        p.g[i] = div255(mul16(p.g[i], p.dg[i]))
+        p.b[i] = div255(mul16(p.b[i], p.db[i]))
+        p.a[i] = div255(mul16(p.a[i], p.da[i]))
+      }
     StMultiply =>
-      p.blend1(fn(s, d, sa, da) {
-        div255(w16(w16(mul16(s, inv255(da)) + mul16(d, inv255(sa))) + mul16(s, d)))
-      })
-    StScreen => p.blend1(fn(s, d, _sa, _da) { w16(w16(s + d) - div255(mul16(s, d))) })
-    StXor => p.blend1(fn(s, d, sa, da) { div255(w16(mul16(s, inv255(da)) + mul16(d, inv255(sa)))) })
+      for i in 0..<16 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let isa = inv255(sa)
+        let ida = inv255(da)
+        p.r[i] = div255(w16(w16(mul16(p.r[i], ida) + mul16(p.dr[i], isa)) + mul16(p.r[i], p.dr[i])))
+        p.g[i] = div255(w16(w16(mul16(p.g[i], ida) + mul16(p.dg[i], isa)) + mul16(p.g[i], p.dg[i])))
+        p.b[i] = div255(w16(w16(mul16(p.b[i], ida) + mul16(p.db[i], isa)) + mul16(p.b[i], p.db[i])))
+        p.a[i] = div255(w16(w16(mul16(sa, ida) + mul16(da, isa)) + mul16(sa, da)))
+      }
+    StScreen =>
+      for i in 0..<16 {
+        p.r[i] = w16(w16(p.r[i] + p.dr[i]) - div255(mul16(p.r[i], p.dr[i])))
+        p.g[i] = w16(w16(p.g[i] + p.dg[i]) - div255(mul16(p.g[i], p.dg[i])))
+        p.b[i] = w16(w16(p.b[i] + p.db[i]) - div255(mul16(p.b[i], p.db[i])))
+        p.a[i] = w16(w16(p.a[i] + p.da[i]) - div255(mul16(p.a[i], p.da[i])))
+      }
+    StXor =>
+      for i in 0..<16 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let isa = inv255(sa)
+        let ida = inv255(da)
+        p.r[i] = div255(w16(mul16(p.r[i], ida) + mul16(p.dr[i], isa)))
+        p.g[i] = div255(w16(mul16(p.g[i], ida) + mul16(p.dg[i], isa)))
+        p.b[i] = div255(w16(mul16(p.b[i], ida) + mul16(p.db[i], isa)))
+        p.a[i] = div255(w16(mul16(sa, ida) + mul16(da, isa)))
+      }
     StPlus =>
-      p.blend1(fn(s, d, _sa, _da) {
-        let v = w16(s + d)
-        if v < 255 {
-          v
-        } else {
-          255
-        }
-      })
+      for i in 0..<16 {
+        let vr = w16(p.r[i] + p.dr[i])
+        let vg = w16(p.g[i] + p.dg[i])
+        let vb = w16(p.b[i] + p.db[i])
+        let va = w16(p.a[i] + p.da[i])
+        p.r[i] = if vr < 255 { vr } else { 255 }
+        p.g[i] = if vg < 255 { vg } else { 255 }
+        p.b[i] = if vb < 255 { vb } else { 255 }
+        p.a[i] = if va < 255 { va } else { 255 }
+      }
     StDarken =>
-      p.blend2(fn(s, d, sa, da) {
-        let x = mul16(s, da)
-        let y = mul16(d, sa)
-        w16(w16(s + d) - div255(if x > y { x } else { y }))
-      })
+      for i in 0..<16 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let xr = mul16(p.r[i], da)
+        let yr = mul16(p.dr[i], sa)
+        p.r[i] = w16(w16(p.r[i] + p.dr[i]) - div255(if xr > yr { xr } else { yr }))
+        let xg = mul16(p.g[i], da)
+        let yg = mul16(p.dg[i], sa)
+        p.g[i] = w16(w16(p.g[i] + p.dg[i]) - div255(if xg > yg { xg } else { yg }))
+        let xb = mul16(p.b[i], da)
+        let yb = mul16(p.db[i], sa)
+        p.b[i] = w16(w16(p.b[i] + p.db[i]) - div255(if xb > yb { xb } else { yb }))
+        p.a[i] = w16(sa + div255(mul16(da, inv255(sa))))
+      }
     StLighten =>
-      p.blend2(fn(s, d, sa, da) {
-        let x = mul16(s, da)
-        let y = mul16(d, sa)
-        w16(w16(s + d) - div255(if x < y { x } else { y }))
-      })
-    StExclusion => p.blend2(fn(s, d, _sa, _da) { w16(w16(s + d) - mul16(2, div255(mul16(s, d)))) })
+      for i in 0..<16 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let xr = mul16(p.r[i], da)
+        let yr = mul16(p.dr[i], sa)
+        p.r[i] = w16(w16(p.r[i] + p.dr[i]) - div255(if xr < yr { xr } else { yr }))
+        let xg = mul16(p.g[i], da)
+        let yg = mul16(p.dg[i], sa)
+        p.g[i] = w16(w16(p.g[i] + p.dg[i]) - div255(if xg < yg { xg } else { yg }))
+        let xb = mul16(p.b[i], da)
+        let yb = mul16(p.db[i], sa)
+        p.b[i] = w16(w16(p.b[i] + p.db[i]) - div255(if xb < yb { xb } else { yb }))
+        p.a[i] = w16(sa + div255(mul16(da, inv255(sa))))
+      }
+    StExclusion =>
+      for i in 0..<16 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        p.r[i] = w16(w16(p.r[i] + p.dr[i]) - mul16(2, div255(mul16(p.r[i], p.dr[i]))))
+        p.g[i] = w16(w16(p.g[i] + p.dg[i]) - mul16(2, div255(mul16(p.g[i], p.dg[i]))))
+        p.b[i] = w16(w16(p.b[i] + p.db[i]) - mul16(2, div255(mul16(p.b[i], p.db[i]))))
+        p.a[i] = w16(sa + div255(mul16(da, inv255(sa))))
+      }
     StDifference =>
-      p.blend2(fn(s, d, sa, da) {
-        let x = mul16(s, da)
-        let y = mul16(d, sa)
-        w16(w16(s + d) - mul16(2, div255(if x < y { x } else { y })))
-      })
+      for i in 0..<16 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let xr = mul16(p.r[i], da)
+        let yr = mul16(p.dr[i], sa)
+        p.r[i] = w16(w16(p.r[i] + p.dr[i]) - mul16(2, div255(if xr < yr { xr } else { yr })))
+        let xg = mul16(p.g[i], da)
+        let yg = mul16(p.dg[i], sa)
+        p.g[i] = w16(w16(p.g[i] + p.dg[i]) - mul16(2, div255(if xg < yg { xg } else { yg })))
+        let xb = mul16(p.b[i], da)
+        let yb = mul16(p.db[i], sa)
+        p.b[i] = w16(w16(p.b[i] + p.db[i]) - mul16(2, div255(if xb < yb { xb } else { yb })))
+        p.a[i] = w16(sa + div255(mul16(da, inv255(sa))))
+      }
     StHardLight =>
-      p.blend2(fn(s, d, sa, da) {
-        let k = if w16(s + s) <= sa {
-          mul16(mul16(2, s), d)
+      for i in 0..<16 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let isa = inv255(sa)
+        let ida = inv255(da)
+        let sada = mul16(sa, da)
+        let sr = p.r[i]
+        let dr = p.dr[i]
+        let kr = if w16(sr + sr) <= sa {
+          mul16(mul16(2, sr), dr)
         } else {
-          w16(mul16(sa, da) - mul16(mul16(2, w16(sa - s)), w16(da - d)))
+          w16(sada - mul16(mul16(2, w16(sa - sr)), w16(da - dr)))
         }
-        div255(w16(w16(mul16(s, inv255(da)) + mul16(d, inv255(sa))) + k))
-      })
+        p.r[i] = div255(w16(w16(mul16(sr, ida) + mul16(dr, isa)) + kr))
+        let sg = p.g[i]
+        let dg = p.dg[i]
+        let kg = if w16(sg + sg) <= sa {
+          mul16(mul16(2, sg), dg)
+        } else {
+          w16(sada - mul16(mul16(2, w16(sa - sg)), w16(da - dg)))
+        }
+        p.g[i] = div255(w16(w16(mul16(sg, ida) + mul16(dg, isa)) + kg))
+        let sb = p.b[i]
+        let db = p.db[i]
+        let kb = if w16(sb + sb) <= sa {
+          mul16(mul16(2, sb), db)
+        } else {
+          w16(sada - mul16(mul16(2, w16(sa - sb)), w16(da - db)))
+        }
+        p.b[i] = div255(w16(w16(mul16(sb, ida) + mul16(db, isa)) + kb))
+        p.a[i] = w16(sa + div255(mul16(da, isa)))
+      }
     StOverlay =>
-      p.blend2(fn(s, d, sa, da) {
-        let k = if w16(d + d) <= da {
-          mul16(mul16(2, s), d)
+      for i in 0..<16 {
+        let sa = p.a[i]
+        let da = p.da[i]
+        let isa = inv255(sa)
+        let ida = inv255(da)
+        let sada = mul16(sa, da)
+        let sr = p.r[i]
+        let dr = p.dr[i]
+        let kr = if w16(dr + dr) <= da {
+          mul16(mul16(2, sr), dr)
         } else {
-          w16(mul16(sa, da) - mul16(mul16(2, w16(sa - s)), w16(da - d)))
+          w16(sada - mul16(mul16(2, w16(sa - sr)), w16(da - dr)))
         }
-        div255(w16(w16(mul16(s, inv255(da)) + mul16(d, inv255(sa))) + k))
-      })
+        p.r[i] = div255(w16(w16(mul16(sr, ida) + mul16(dr, isa)) + kr))
+        let sg = p.g[i]
+        let dg = p.dg[i]
+        let kg = if w16(dg + dg) <= da {
+          mul16(mul16(2, sg), dg)
+        } else {
+          w16(sada - mul16(mul16(2, w16(sa - sg)), w16(da - dg)))
+        }
+        p.g[i] = div255(w16(w16(mul16(sg, ida) + mul16(dg, isa)) + kg))
+        let sb = p.b[i]
+        let db = p.db[i]
+        let kb = if w16(db + db) <= da {
+          mul16(mul16(2, sb), db)
+        } else {
+          w16(sada - mul16(mul16(2, w16(sa - sb)), w16(da - db)))
+        }
+        p.b[i] = div255(w16(w16(mul16(sb, ida) + mul16(db, isa)) + kb))
+        p.a[i] = w16(sa + div255(mul16(da, isa)))
+      }
     SourceOverRgba => {
       p.load_dst()
       for i in 0..<16 {
@@ -348,30 +876,6 @@ fn LowP::round_to_u16(self : LowP, i : Int, rf : Float, gf : Float, bf : Float, 
   self.g[i] = f2u16(lnormalize(gf) * 255.0 + 0.5)
   self.b[i] = f2u16(lnormalize(bf) * 255.0 + 0.5)
   self.a[i] = f2u16(af * 255.0 + 0.5)
-}
-
-///|
-fn LowP::blend1(self : LowP, f : (Int, Int, Int, Int) -> Int) -> Unit {
-  for i in 0..<16 {
-    let sa = self.a[i]
-    let da = self.da[i]
-    self.r[i] = f(self.r[i], self.dr[i], sa, da)
-    self.g[i] = f(self.g[i], self.dg[i], sa, da)
-    self.b[i] = f(self.b[i], self.db[i], sa, da)
-    self.a[i] = f(sa, da, sa, da)
-  }
-}
-
-///|
-fn LowP::blend2(self : LowP, f : (Int, Int, Int, Int) -> Int) -> Unit {
-  for i in 0..<16 {
-    let sa = self.a[i]
-    let da = self.da[i]
-    self.r[i] = f(self.r[i], self.dr[i], sa, da)
-    self.g[i] = f(self.g[i], self.dg[i], sa, da)
-    self.b[i] = f(self.b[i], self.db[i], sa, da)
-    self.a[i] = w16(sa + div255(mul16(da, inv255(sa))))
-  }
 }
 
 ///|

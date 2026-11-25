@@ -1,0 +1,1584 @@
+// Agent process lifecycle, runtime/auth failover (FB-44), open timeout (FB-34),
+// Codex Bad Request reload/afresh (FB-26), Codex update continuation, and profile reassignment
+// (`station/mb/src/reader/actor_run.mbt` 1:1).
+
+import "base_codec"
+import "builders_core"
+import "effect"
+import "sessions_core"
+
+/// Deadline for `node.open` before it is given up (FB-34; `actor_run.mbt:2245`).
+pub let OPEN_TIMEOUT_MS : Double = 120000.0
+
+/// Maximum profiles tried in a chain of `auth_retry` / `open_over` attempts (FB-44; `actor_run.mbt:2319`).
+pub let AUTH_TRIED_MOST : Int = 16
+
+/// Backoff before the second `toolsUnheard` restart (`actor_run.mbt:3264`).
+pub let TOOLS_RETRY_DELAY_MS : Double = 5000.0
+
+// ── Shared pure helpers across `actor_run_*.pion` ──
+
+fn ascii_lower(s : String) -> String {
+  let lower = "abcdefghijklmnopqrstuvwxyz"
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c >= 65 && c <= 90 {
+      sb.write_string(lower.slice(c - 65, c - 64))
+    } else {
+      sb.write_string(s.slice(i, i + 1))
+    }
+  }
+  sb.to_string()
+}
+
+fn json_eq(a : base_codec::Json, b : base_codec::Json) -> Bool {
+  base_codec::json_stringify(builders_core::normalize_json(a)) ==
+  base_codec::json_stringify(builders_core::normalize_json(b))
+}
+
+fn is_json_null(v : base_codec::Json) -> Bool {
+  match v {
+    base_codec::Json::Null => true
+    _ => false
+  }
+}
+
+fn is_json_true_val(v : base_codec::Json) -> Bool {
+  match v {
+    base_codec::Json::Bool(true) => true
+    _ => false
+  }
+}
+
+fn is_json_false_val(v : base_codec::Json) -> Bool {
+  match v {
+    base_codec::Json::Bool(false) => true
+    _ => false
+  }
+}
+
+fn is_opt_json_true(v : Option[base_codec::Json]) -> Bool {
+  match v {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+}
+
+fn is_opt_json_false(v : Option[base_codec::Json]) -> Bool {
+  match v {
+    Some(base_codec::Json::Bool(false)) => true
+    _ => false
+  }
+}
+
+fn is_opt_null_or_none(v : Option[base_codec::Json]) -> Bool {
+  match v {
+    None => true
+    Some(base_codec::Json::Null) => true
+    _ => false
+  }
+}
+
+fn opt_str_is(v : Option[String], expected : String) -> Bool {
+  match v {
+    Some(s) => s == expected
+    None => false
+  }
+}
+
+fn str_or(v : Option[String], fallback : String) -> String {
+  match v {
+    Some(s) => s
+    None => fallback
+  }
+}
+
+fn num_or(v : Option[Double], fallback : Double) -> Double {
+  match v {
+    Some(n) => n
+    None => fallback
+  }
+}
+
+fn parse_double_or_zero(s : String) -> Double {
+  match sessions_core::parse_json_strict(s.trim()) {
+    Ok(base_codec::Json::Num(n, _)) => n
+    _ => 0.0
+  }
+}
+
+fn asked_cause(e : effect::EffectError) -> Option[base_codec::Json] {
+  match sessions_core::decode_asked_error(e) {
+    Some(ae) => Some(ae.cause)
+    None => None
+  }
+}
+
+/// Why opening its runtime session was given up by a stop, suspension, or close (`actor_run.mbt:2250-2255`).
+pub fn open_abort_reason(e : effect::EffectError) -> Option[String] {
+  match asked_cause(e) {
+    Some(j) => sessions_core::str_of(sessions_core::jget(j, "openAbort"))
+    None => None
+  }
+}
+
+/// Extract `(profile, active, cap, protection)` when an RPC error is `sessionCap` (`actor_run.mbt:1834-1845`).
+pub fn session_cap_info(e : effect::EffectError) -> Option[(String, Int, Int, Bool)] {
+  match asked_cause(e) {
+    Some(j) => {
+      if is_opt_json_true(sessions_core::jget(j, "sessionCap")) {
+        let profile = str_or(sessions_core::str_of(sessions_core::jget(j, "profile")), "")
+        let active = num_or(sessions_core::num_of(sessions_core::jget(j, "active")), 0.0).to_int()
+        let cap = num_or(sessions_core::num_of(sessions_core::jget(j, "cap")), 0.0).to_int()
+        let protection = is_opt_json_true(sessions_core::jget(j, "protection"))
+        Some((profile, active, cap, protection))
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+/// Classify an `agent.open` error into `(error_type, is_timeout)` (`actor_run.mbt:2400-2421`).
+pub fn open_error_type(e : effect::EffectError) -> (String, Bool) {
+  match asked_cause(e) {
+    Some(j) => {
+      if is_opt_json_true(sessions_core::jget(j, "openTimeout")) {
+        return ("timeout", true)
+      }
+      if is_some(open_abort_reason(e)) {
+        return ("abort", false)
+      }
+      if is_some(session_cap_info(e)) {
+        return ("cap", false)
+      }
+      if is_opt_json_true(sessions_core::jget(j, "auth")) {
+        return ("auth", false)
+      }
+      if is_opt_json_true(sessions_core::jget(j, "missing")) {
+        return ("missing", false)
+      }
+    }
+    None => ()
+  }
+  let msg = ascii_lower(sessions_core::error_message(e))
+  if msg.contains("spawn") || msg.contains("enoent") {
+    return ("spawn", false)
+  }
+  ("rpc", false)
+}
+
+/// Profiles `a`'s turn was refused on (`actor_run.mbt:2323-2325`).
+pub fn auth_tried_json(a : Actor) -> base_codec::Json {
+  let items : Array[base_codec::Json] = []
+  for i in 0..<a.auth_tried.length() {
+    items.push(sessions_core::jstr(a.auth_tried[i]))
+  }
+  base_codec::json_arr(items)
+}
+
+// ── Agent process state & RPCs ──
+
+/// Update `a.agent` and notify Node `node.tasks` if its handle changed (`actor_run.mbt:12-19`).
+pub fn ActorsGen::set_agent(self : ActorsGen, a : Actor, agent : Option[Agent]) -> Unit {
+  if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
+    return
+  }
+  let was = match a.agent {
+    Some(g) => Some(g.handle)
+    None => None
+  }
+  a.agent = agent
+  let now = match agent {
+    Some(g) => Some(g.handle)
+    None => None
+  }
+  let changed = match (was, now) {
+    (Some(x), Some(y)) => x != y
+    (None, None) => false
+    _ => true
+  }
+  if changed {
+    let h_json = match now {
+      Some(h) => sessions_core::jint(h)
+      None => base_codec::json_null()
+    }
+    self.tell(a.key, "node.tasks", [h_json])
+  }
+}
+
+/// Whether `a`'s runtime session is currently busy (`actor_run.mbt:22-24`).
+pub fn ActorsGen::busy_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  self.busy_of_k(a, a.agent, k)
+}
+
+/// Whether `a`'s runtime session is holding background work (`actor_run.mbt:27-32`).
+pub fn ActorsGen::holding_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  match a.agent {
+    Some(g) => {
+      self.agent_do_k(a, g, "holding", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => k(effect::Exit::Succeeded(sessions_core::truthy(v)))
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      })
+    }
+    None => k(effect::Exit::Succeeded(false))
+  }
+}
+
+/// Collect background tasks and dispose `agent` (`actor_run.mbt:2233-2240`).
+pub fn ActorsGen::end_process_k(
+  self : ActorsGen,
+  a : Actor,
+  agent : Option[Agent],
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let g = match agent {
+    Some(v) => v
+    None => {
+      k(effect::Exit::Succeeded(()))
+      return
+    }
+  }
+  self.agent_do_k(a, g, "background", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(bg) => {
+        match bg {
+          base_codec::Json::Arr(tasks) => {
+            for i in 0..<tasks.length() {
+              a.stopped.push(tasks[i])
+            }
+          }
+          _ => ()
+        }
+        self.agent_do_k(a, g, "dispose", [], fn(ex2 : effect::Exit[base_codec::Json]) -> Unit {
+          match ex2 {
+            effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          }
+        })
+      }
+    }
+  })
+}
+
+/// Ask Node to open `a`'s runtime session (`node.open`) bounded by `OPEN_TIMEOUT_MS` and `abort_open`
+/// (`actor_run.mbt:2274-2314`, FB-34). Uses pure-value `OpenTimeout` timer (zero closures).
+pub fn ActorsGen::rpc_open_k(
+  self : ActorsGen,
+  a : Actor,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch || a.phase == "closed" {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  let id = self.host.alloc_id()
+  let d : effect::Deferred[base_codec::Json] = effect::Deferred::new()
+  let epoch = self.gen.counters.epoch
+  self.host.hub_asked.set(id, sessions_core::HubAskedEntry::{ epoch: epoch, deferred: d })
+  a.opening_rpc = Some(id)
+  let timer_id = self.arm_open_timeout_timer(a, OPEN_TIMEOUT_MS, id)
+  self.mirror(a)
+  self.gen.counters.active = self.gen.counters.active - 1
+  let full_args : Array[base_codec::Json] = []
+  for i in 0..<args.length() {
+    full_args.push(args[i])
+  }
+  full_args.push(sessions_core::jint(id))
+  self.say_node([
+    ("rpc", sessions_core::jint(id)),
+    ("actor", sessions_core::jstr(a.key)),
+    ("fn", sessions_core::jstr("node.open")),
+    ("args", base_codec::json_arr(full_args)),
+  ])
+  let counters = self.gen.counters
+  let hub_asked = self.host.hub_asked
+  d.wait_k(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    let _ = self.cancel_timer(timer_id)
+    let mut was_opening = false
+    match a.opening_rpc {
+      Some(cur) => {
+        if cur == id {
+          a.opening_rpc = None
+          was_opening = true
+        }
+      }
+      None => ()
+    }
+    match ex {
+      effect::Exit::Interrupted => {
+        match hub_asked.get(id) {
+          Some(entry) => {
+            if entry.epoch == epoch {
+              let _ = hub_asked.remove(id)
+              if !counters.sealed {
+                counters.active = counters.active + 1
+              }
+            }
+          }
+          None => ()
+        }
+        if !counters.sealed && was_opening {
+          self.tell(a.key, "node.cancelOpen", [sessions_core::jint(id)])
+        }
+        k(effect::Exit::Interrupted)
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(answer) => {
+        if counters.sealed || a.phase == "closed" {
+          k(effect::Exit::Interrupted)
+          return
+        }
+        match sessions_core::jget(answer, "error") {
+          Some(err) => {
+            if is_opt_json_true(sessions_core::jget(err, "openTimeout")) {
+              sessions_core::try_k(
+                fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                  self.store_k(a, "getSession", [sessions_core::jstr(a.key)], tk)
+                },
+                fn(ex_row : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                  match ex_row {
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Succeeded(row_res) => {
+                      if counters.sealed || a.phase == "closed" {
+                        k(effect::Exit::Interrupted)
+                        return
+                      }
+                      match row_res {
+                        Ok(row) => {
+                          match sessions_core::str_of(sessions_core::jget(row, "runtime")) {
+                            Some(rt) => {
+                              if rt != "" {
+                                a.runtime = rt
+                              }
+                            }
+                            None => ()
+                          }
+                        }
+                        Err(_) => ()
+                      }
+                      self.log(a, "warn", "agent startup timed out", [
+                        ("ms", sessions_core::jnum(OPEN_TIMEOUT_MS)),
+                      ])
+                      self.t_k(
+                        a,
+                        "station.notice.openTimedOut",
+                        base_codec::json_null(),
+                        fn(ex_t : effect::Exit[String]) -> Unit {
+                          match ex_t {
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                            effect::Exit::Succeeded(msg) => {
+                              let cause = base_codec::json_obj([
+                                ("message", sessions_core::jstr(msg)),
+                                ("said", sessions_core::jbool(true)),
+                                ("openTimeout", sessions_core::jbool(true)),
+                              ])
+                              k(effect::Exit::Failed(sessions_core::AskedError::new(cause).to_effect_error()))
+                            }
+                          }
+                        },
+                      )
+                    }
+                  }
+                },
+              )
+            } else {
+              k(effect::Exit::Failed(sessions_core::AskedError::new(err).to_effect_error()))
+            }
+          }
+          None => k(effect::Exit::Succeeded(sessions_core::field_of(answer, "value")))
+        }
+      }
+    }
+  })
+}
+
+/// `ensure_agent_k` with FB-44 profile auth failover loop (`actor_run.mbt:2332-2370`).
+pub fn ActorsGen::open_over_k(
+  self : ActorsGen,
+  a : Actor,
+  passive : Bool,
+  k : (effect::Exit[Agent]) -> Unit,
+) -> Unit {
+  let mut result : Option[Agent] = None
+  sessions_core::iter_sync_k(
+    fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
+        sk(effect::Exit::Interrupted)
+        return
+      }
+      self.ensure_agent_k(a, fn(ex : effect::Exit[Agent]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(g) => {
+            result = Some(g)
+            sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+          }
+          effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => {
+            match asked_cause(e) {
+              Some(j) => {
+                if !passive &&
+                is_opt_json_true(sessions_core::jget(j, "auth")) &&
+                !is_some(open_abort_reason(e)) {
+                  let id_opt : Option[String] = match
+                  sessions_core::str_of(sessions_core::jget(j, "authProfile"))
+                  {
+                    Some(p) => if p != "" { Some(p) } else { None }
+                    None => None
+                  }
+                  let resolved_id : Option[String] = match id_opt {
+                    Some(p) => Some(p)
+                    None => {
+                      match a.profile {
+                        base_codec::Json::Str(p) => if p != "" { Some(p) } else { None }
+                        _ => None
+                      }
+                    }
+                  }
+                  let id = match resolved_id {
+                    Some(p) => p
+                    None => {
+                      sk(effect::Exit::Failed(e))
+                      return
+                    }
+                  }
+                  if a.auth_tried.length() >= AUTH_TRIED_MOST {
+                    sk(effect::Exit::Failed(e))
+                    return
+                  }
+                  let already = array_contains_str(a.auth_tried, id)
+                  self.deps_k(
+                    a,
+                    "recheck",
+                    [sessions_core::jstr(id), sessions_core::jbool(already)],
+                    fn(ex_rc : effect::Exit[base_codec::Json]) -> Unit {
+                      match ex_rc {
+                        effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e2) => sk(effect::Exit::Failed(e2))
+                        effect::Exit::Succeeded(_) => {
+                          self.deps_k(
+                            a,
+                            "canAuthRetry",
+                            [sessions_core::jstr(a.key), sessions_core::jstr(id), auth_tried_json(a)],
+                            fn(ex_can : effect::Exit[base_codec::Json]) -> Unit {
+                              match ex_can {
+                                effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                effect::Exit::Failed(e3) => sk(effect::Exit::Failed(e3))
+                                effect::Exit::Succeeded(can_v) => {
+                                  let retry = !is_json_false_val(can_v)
+                                  if !already {
+                                    a.auth_tried.push(id)
+                                  }
+                                  if !retry {
+                                    a.auth_tried = []
+                                    sk(effect::Exit::Failed(e))
+                                    return
+                                  }
+                                  self.log(
+                                    a,
+                                    "info",
+                                    "its login is over where it was to open; going on on another profile",
+                                    [
+                                      ("profile", sessions_core::jstr(id)),
+                                      (
+                                        "error",
+                                        match sessions_core::jget(j, "message") {
+                                          Some(m) => m
+                                          None => sessions_core::jstr("")
+                                        },
+                                      ),
+                                    ],
+                                  )
+                                  sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                                }
+                              }
+                            },
+                          )
+                        }
+                      }
+                    },
+                  )
+                  return
+                }
+              }
+              None => ()
+            }
+            sk(effect::Exit::Failed(e))
+          }
+        }
+      })
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => {
+          match result {
+            Some(g) => k(effect::Exit::Succeeded(g))
+            None => k(effect::Exit::Failed(effect::EffectError::Custom("open_over ended without agent")))
+          }
+        }
+      }
+    },
+  )
+}
+
+/// Ensure `a` has a live, up-to-date runtime session (`actor_run.mbt:2426-2546`).
+pub fn ActorsGen::ensure_agent_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Agent]) -> Unit,
+) -> Unit {
+  let mut result : Option[Agent] = None
+  sessions_core::iter_sync_k(
+    fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
+        sk(effect::Exit::Interrupted)
+        return
+      }
+      let after_stale_check = fn() -> Unit {
+        self.catch_up_k(a, true, fn(ex_cu : effect::Exit[Unit]) -> Unit {
+          match ex_cu {
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(_) => {
+              match a.agent {
+                Some(g) => {
+                  a.force_session_cap = false
+                  a.paused_cap = false
+                  a.cap_wait_notified = false
+                  result = Some(g)
+                  sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                  return
+                }
+                None => ()
+              }
+              let seq = a.change_seq
+              let open_start = self.gen.counters.now
+              let prev_runtime = a.runtime
+              let open_kind = a.open_kind
+              a.open_kind = "other"
+              self.rpc_open_k(
+                a,
+                [
+                  base_codec::json_arr(a.stopped),
+                  sessions_core::jbool(a.read_back),
+                  a.profile,
+                  sessions_core::jbool(a.force_session_cap),
+                ],
+                fn(ex_open : effect::Exit[base_codec::Json]) -> Unit {
+                  match ex_open {
+                    effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => {
+                      let (err_type, is_timeout) = open_error_type(e)
+                      let rt = match asked_cause(e) {
+                        Some(j) => str_or(sessions_core::str_of(sessions_core::jget(j, "runtime")), a.runtime)
+                        None => a.runtime
+                      }
+                      let attrs : Array[(String, base_codec::Json)] = [
+                        ("stillfail.runtime", sessions_core::jstr(rt)),
+                        ("stillfail.kind", sessions_core::jstr(open_kind)),
+                        ("stillfail.take_across", sessions_core::jbool(prev_runtime != "" && rt != prev_runtime)),
+                        ("error.type", sessions_core::jstr(err_type)),
+                      ]
+                      if is_timeout {
+                        attrs.push(("stillfail.open_timeout", sessions_core::jbool(true)))
+                      }
+                      self.tell_trace(
+                        a.key,
+                        base_codec::json_obj([
+                          ("name", sessions_core::jstr("agent.open")),
+                          ("startMs", sessions_core::jnum(open_start)),
+                          ("endMs", sessions_core::jnum(self.gen.counters.now)),
+                          ("attributes", base_codec::json_obj(attrs)),
+                          ("failed", sessions_core::jbool(true)),
+                          ("alwaysKeep", sessions_core::jbool(true)),
+                          ("slowMs", sessions_core::jnum(-1.0)),
+                        ]),
+                      )
+                      sk(effect::Exit::Failed(e))
+                    }
+                    effect::Exit::Succeeded(opened) => {
+                      let opened_rt = str_or(
+                        sessions_core::str_of(sessions_core::jget(opened, "runtime")),
+                        prev_runtime,
+                      )
+                      let open_attrs : Array[(String, base_codec::Json)] = [
+                        ("stillfail.runtime", sessions_core::jstr(opened_rt)),
+                        ("stillfail.kind", sessions_core::jstr(open_kind)),
+                        (
+                          "stillfail.take_across",
+                          sessions_core::jbool(prev_runtime != "" && opened_rt != prev_runtime),
+                        ),
+                      ]
+                      match sessions_core::jget(opened, "identity") {
+                        Some(ident) => {
+                          match sessions_core::str_of(sessions_core::jget(ident, "model")) {
+                            Some(m) => {
+                              if m != "" {
+                                open_attrs.push(("stillfail.model", sessions_core::jstr(m)))
+                              }
+                            }
+                            None => ()
+                          }
+                        }
+                        None => ()
+                      }
+                      self.tell_trace(
+                        a.key,
+                        base_codec::json_obj([
+                          ("name", sessions_core::jstr("agent.open")),
+                          ("startMs", sessions_core::jnum(open_start)),
+                          ("endMs", sessions_core::jnum(self.gen.counters.now)),
+                          ("attributes", base_codec::json_obj(open_attrs)),
+                          ("failed", sessions_core::jbool(false)),
+                          ("alwaysKeep", sessions_core::jbool(true)),
+                          ("slowMs", sessions_core::jnum(-1.0)),
+                        ]),
+                      )
+                      a.force_session_cap = false
+                      a.paused_cap = false
+                      a.cap_wait_notified = false
+                      let handle = num_or(
+                        sessions_core::num_of(sessions_core::jget(opened, "handle")),
+                        0.0,
+                      ).to_int()
+                      let generation = num_or(
+                        sessions_core::num_of(sessions_core::jget(opened, "generation")),
+                        0.0,
+                      ).to_int()
+                      a.runtime = str_or(
+                        sessions_core::str_of(sessions_core::jget(opened, "runtime")),
+                        a.runtime,
+                      )
+                      match sessions_core::str_of(sessions_core::jget(opened, "afresh")) {
+                        Some(s) => a.afresh = Some(s)
+                        None => ()
+                      }
+                      if is_opt_json_true(sessions_core::jget(opened, "resumeLost")) {
+                        a.resume_lost = true
+                      }
+                      if is_opt_json_true(sessions_core::jget(opened, "readBackTold")) {
+                        a.read_back = false
+                      }
+                      a.stopped.clear()
+                      match sessions_core::str_of(sessions_core::jget(opened, "stoppedNote")) {
+                        Some(note) => a.stopped_note = Some(note)
+                        None => ()
+                      }
+                      let g = Agent::{ generation: generation, handle: handle }
+                      self.set_agent(a, Some(g))
+                      a.running_identity = sessions_core::field_of(opened, "identity")
+                      a.profile = sessions_core::field_of(opened, "profile")
+                      if a.change_seq == seq {
+                        a.stale = false
+                        a.restart = false
+                        self.mirror(a)
+                        result = Some(g)
+                        sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                      } else {
+                        a.stale = true
+                        a.restart = a.restart_seq > seq
+                        self.mirror(a)
+                        sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                      }
+                    }
+                  }
+                },
+              )
+            }
+          }
+        })
+      }
+
+      match a.agent {
+        Some(g) => {
+          if !a.stale {
+            self.busy_k(a, fn(ex_busy : effect::Exit[Bool]) -> Unit {
+              match ex_busy {
+                effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(true) => after_stale_check()
+                effect::Exit::Succeeded(false) => {
+                  sessions_core::try_k(
+                    fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                      self.holding_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
+                        match ex_h {
+                          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                          effect::Exit::Succeeded(h) => {
+                            self.rpc_k(
+                              a.key,
+                              "node.profileId",
+                              [sessions_core::jbool(h), sessions_core::jbool(a.force_session_cap)],
+                              tk,
+                            )
+                          }
+                        }
+                      })
+                    },
+                    fn(ex_pid : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                      match ex_pid {
+                        effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(res) => {
+                          let on = match res {
+                            Ok(v) => v
+                            Err(e) => {
+                              if is_some(session_cap_info(e)) {
+                                sk(effect::Exit::Failed(e))
+                                return
+                              }
+                              base_codec::json_null()
+                            }
+                          }
+                          if !is_json_null(on) && !json_eq(on, a.profile) {
+                            a.stale = true
+                          }
+                          if !a.stale {
+                            sessions_core::try_k(
+                              fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                                self.rpc_k(a.key, "node.outlived", [sessions_core::jint(g.handle)], tk)
+                              },
+                              fn(ex_ol : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                                match ex_ol {
+                                  effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                  effect::Exit::Succeeded(ol_res) => {
+                                    match ol_res {
+                                      Ok(base_codec::Json::Bool(true)) => a.stale = true
+                                      _ => ()
+                                    }
+                                    after_stale_check()
+                                  }
+                                }
+                              },
+                            )
+                          } else {
+                            after_stale_check()
+                          }
+                        }
+                      }
+                    },
+                  )
+                }
+              }
+            })
+          } else {
+            after_stale_check()
+          }
+        }
+        None => after_stale_check()
+      }
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => {
+          match result {
+            Some(g) => k(effect::Exit::Succeeded(g))
+            None => k(effect::Exit::Failed(effect::EffectError::Custom("ensure_agent ended without agent")))
+          }
+        }
+      }
+    },
+  )
+}
+
+/// Apply pending session changes in place or dispose stale process (`actor_run.mbt:2192-2230`).
+pub fn ActorsGen::catch_up_k(
+  self : ActorsGen,
+  a : Actor,
+  end : Bool,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  sessions_core::iter_sync_k(
+    fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
+        sk(effect::Exit::Interrupted)
+        return
+      }
+      if !a.stale {
+        sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+        return
+      }
+      self.busy_k(a, fn(ex_b : effect::Exit[Bool]) -> Unit {
+        match ex_b {
+          effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(true) => sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+          effect::Exit::Succeeded(false) => {
+            let agent = match a.agent {
+              Some(g) => g
+              None => {
+                sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                return
+              }
+            }
+            let seq = a.change_seq
+            let restart = a.restart
+            self.holding_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
+              match ex_h {
+                effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(h) => {
+                  self.rpc_k(
+                    a.key,
+                    "node.retune",
+                    [
+                      sessions_core::jint(agent.handle),
+                      a.profile,
+                      sessions_core::jbool(restart),
+                      sessions_core::jbool(h),
+                    ],
+                    fn(ex_rt : effect::Exit[base_codec::Json]) -> Unit {
+                      match ex_rt {
+                        effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(identity) => {
+                          if !still(a, Some(agent)) {
+                            sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                            return
+                          }
+                          match identity {
+                            base_codec::Json::Obj(_) => {
+                              a.running_identity = identity
+                              self.mirror(a)
+                              let model_v = match sessions_core::jget(identity, "model") {
+                                Some(v) => v
+                                None => sessions_core::jstr("")
+                              }
+                              let effort_v = match sessions_core::jget(identity, "effort") {
+                                Some(v) => v
+                                None => sessions_core::jstr("")
+                              }
+                              self.log(a, "info", "session process takes the change in place", [
+                                ("model", model_v),
+                                ("effort", effort_v),
+                              ])
+                              if a.change_seq == seq {
+                                a.stale = false
+                                a.restart = false
+                                sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                              } else {
+                                a.stale = true
+                                a.restart = a.restart_seq > seq
+                                sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                              }
+                            }
+                            _ => {
+                              if !end {
+                                sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                                return
+                              }
+                              self.busy_k(a, fn(ex_b2 : effect::Exit[Bool]) -> Unit {
+                                match ex_b2 {
+                                  effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                  effect::Exit::Succeeded(true) => {
+                                    sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                                  }
+                                  effect::Exit::Succeeded(false) => {
+                                    a.stale = false
+                                    a.restart = false
+                                    self.agent_do_k(a, agent, "background", [], fn(
+                                      ex_bg : effect::Exit[base_codec::Json],
+                                    ) -> Unit {
+                                      match ex_bg {
+                                        effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                        effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                        effect::Exit::Succeeded(bg) => {
+                                          let bg_n = match bg {
+                                            base_codec::Json::Arr(b) => b.length()
+                                            _ => 0
+                                          }
+                                          self.set_agent(a, None)
+                                          self.log(
+                                            a,
+                                            "info",
+                                            "ending the process from before the session was changed",
+                                            [("background", sessions_core::jint(bg_n))],
+                                          )
+                                          self.end_process_k(a, Some(agent), fn(
+                                            ex_ep : effect::Exit[Unit],
+                                          ) -> Unit {
+                                            match ex_ep {
+                                              effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                              effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                              effect::Exit::Succeeded(_) => {
+                                                self.notify_store_k(a, fn(
+                                                  ex_ns : effect::Exit[Unit],
+                                                ) -> Unit {
+                                                  match ex_ns {
+                                                    effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                                    effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                                    effect::Exit::Succeeded(_) => {
+                                                      sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                                                    }
+                                                  }
+                                                })
+                                              }
+                                            }
+                                          })
+                                        }
+                                      }
+                                    })
+                                  }
+                                }
+                              })
+                            }
+                          }
+                        }
+                      }
+                    },
+                  )
+                }
+              }
+            })
+          }
+        }
+      })
+    },
+    k,
+  )
+}
+
+/// Handle Codex bare Bad Request reload-then-afresh recovery (FB-26; `actor_run.mbt:2134-2155`).
+pub fn ActorsGen::refused_thread_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  self.last_turn_k(a, fn(ex_lt : effect::Exit[base_codec::Json]) -> Unit {
+    match ex_lt {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(last) => {
+        if !refused_bad_request(last) {
+          k(effect::Exit::Succeeded(()))
+          return
+        }
+        self.store_k(a, "getSession", [sessions_core::jstr(a.key)], fn(
+          ex_row : effect::Exit[base_codec::Json],
+        ) -> Unit {
+          match ex_row {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(row) => {
+              let id = match sessions_core::str_of(sessions_core::jget(row, "runtimeSessionId")) {
+                Some(s) => {
+                  if s != "" {
+                    s
+                  } else {
+                    k(effect::Exit::Succeeded(()))
+                    return
+                  }
+                }
+                None => {
+                  k(effect::Exit::Succeeded(()))
+                  return
+                }
+              }
+              if opt_str_is(a.codex_reloaded, id) {
+                a.codex_reloaded = None
+                self.log(
+                  a,
+                  "warn",
+                  "its Codex thread, taken up again, was refused again with Bad Request: starting afresh",
+                  [("thread", sessions_core::jstr(id))],
+                )
+                self.clear_now_k(
+                  a,
+                  true,
+                  "station.notice.afreshRefused",
+                  "as its Codex thread taken up again was refused with Bad Request",
+                  true,
+                  fn(ex_cl : effect::Exit[Option[String]]) -> Unit {
+                    match ex_cl {
+                      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    }
+                  },
+                )
+                return
+              }
+              a.codex_reloaded = Some(id)
+              self.log(
+                a,
+                "warn",
+                "its Codex thread was refused with Bad Request: taking it up again from its rollout",
+                [("thread", sessions_core::jstr(id))],
+              )
+              let agent = match a.agent {
+                Some(_) => a.agent
+                None => {
+                  k(effect::Exit::Succeeded(()))
+                  return
+                }
+              }
+              self.set_agent(a, None)
+              self.end_process_k(a, agent, fn(ex_ep : effect::Exit[Unit]) -> Unit {
+                match ex_ep {
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(_) => self.notify_store_k(a, k)
+                }
+              })
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+/// Check if an adopted process has a mismatched MCP URL (`actor_run.mbt:455-475`).
+pub fn ActorsGen::tools_at_k(
+  self : ActorsGen,
+  a : Actor,
+  url : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let g = match a.agent {
+    Some(v) => v
+    None => {
+      k(effect::Exit::Succeeded(()))
+      return
+    }
+  }
+  self.agent_do_k(a, g, "mcpUrl", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(base_codec::Json::Str(was)) => {
+        if was == url {
+          k(effect::Exit::Succeeded(()))
+          return
+        }
+        let check_busy = fn(is_busy : Bool) -> Unit {
+          if is_some(a.turn) || is_busy {
+            if !is_some(a.tools_lost) {
+              a.tools_lost = Some("its process was told the station's tools are at " + was + ", not " + url)
+            }
+            self.log(
+              a,
+              "warn",
+              "the process taken up was told another address of the station's tools; it starts again once its turn ends",
+              [("was", sessions_core::jstr(was)), ("now", sessions_core::jstr(url))],
+            )
+            k(effect::Exit::Succeeded(()))
+            return
+          }
+          self.set_agent(a, None)
+          self.log(
+            a,
+            "warn",
+            "the process taken up was told another address of the station's tools; ending it, its next turn resumes in a new one",
+            [("was", sessions_core::jstr(was)), ("now", sessions_core::jstr(url))],
+          )
+          self.end_process_k(a, Some(g), fn(ex2 : effect::Exit[Unit]) -> Unit {
+            match ex2 {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(_) => self.notify_store_k(a, k)
+            }
+          })
+        }
+        if is_some(a.turn) {
+          check_busy(false)
+        } else {
+          self.busy_k(a, fn(ex_b : effect::Exit[Bool]) -> Unit {
+            match ex_b {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(b) => check_busy(b)
+            }
+          })
+        }
+      }
+      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+    }
+  })
+}
+
+/// Count of MCP requests heard on this session's token (`actor_run.mbt:3255-3260`).
+pub fn ActorsGen::tools_heard_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Option[Double]]) -> Unit,
+) -> Unit {
+  sessions_core::try_k(
+    fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.rpc_k(a.key, "node.toolsHeard", [], tk)
+    },
+    fn(ex : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(Ok(base_codec::Json::Num(n, _))) => k(effect::Exit::Succeeded(Some(n)))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(None))
+      }
+    },
+  )
+}
+
+/// Shared Codex update finished callback (`actor_run.mbt:3343-3361`).
+pub fn ActorsGen::codex_updated_k(
+  self : ActorsGen,
+  a : Actor,
+  id : Int,
+  why : Option[String],
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let update = match a.codex_update {
+    Some(u) => {
+      if u.id == id {
+        u
+      } else {
+        k(effect::Exit::Succeeded(()))
+        return
+      }
+    }
+    None => {
+      k(effect::Exit::Succeeded(()))
+      return
+    }
+  }
+  match why {
+    None => {
+      update.finished = true
+      self.continue_after_codex_update_k(a, update, k)
+    }
+    Some(reason) => {
+      a.codex_update = None
+      self.set_running_k(a, false, fn(ex1 : effect::Exit[Unit]) -> Unit {
+        match ex1 {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(_) => {
+            self.t_k(
+              a,
+              "station.notice.codexUpdateFailed",
+              base_codec::json_obj([("why", sessions_core::jstr(reason))]),
+              fn(ex2 : effect::Exit[String]) -> Unit {
+                match ex2 {
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(msg) => {
+                    self.notice_k(
+                      a,
+                      "⚠️ " + msg,
+                      base_codec::json_null(),
+                      base_codec::json_null(),
+                      base_codec::json_null(),
+                      Some(update.turn),
+                      false,
+                      fn(ex3 : effect::Exit[Unit]) -> Unit {
+                        match ex3 {
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                          effect::Exit::Succeeded(_) => {
+                            self.deps_k(
+                              a,
+                              "settled",
+                              [
+                                sessions_core::jstr(a.key),
+                                sessions_core::jstr("failed"),
+                                sessions_core::jstr(reason),
+                              ],
+                              fn(ex4 : effect::Exit[base_codec::Json]) -> Unit {
+                                match ex4 {
+                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                  effect::Exit::Succeeded(_) => {
+                                    self.deps_k(a, "idle", [sessions_core::jstr(a.key)], fn(
+                                      ex5 : effect::Exit[base_codec::Json],
+                                    ) -> Unit {
+                                      match ex5 {
+                                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                        effect::Exit::Succeeded(_) => {
+                                          self.has_pending_k(a, fn(ex6 : effect::Exit[Bool]) -> Unit {
+                                            match ex6 {
+                                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                              effect::Exit::Succeeded(true) => self.pump_k(a, -1, k)
+                                              effect::Exit::Succeeded(false) => k(effect::Exit::Succeeded(()))
+                                            }
+                                          })
+                                        }
+                                      }
+                                    })
+                                  }
+                                }
+                              },
+                            )
+                          }
+                        }
+                      },
+                    )
+                  }
+                }
+              },
+            )
+          }
+        }
+      })
+    }
+  }
+}
+
+/// Continue after a successful Codex update (`actor_run.mbt:3364-3377`).
+pub fn ActorsGen::continue_after_codex_update_k(
+  self : ActorsGen,
+  a : Actor,
+  update : CodexUpdate,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let ok_id = match a.codex_update {
+    Some(u) => u.id == update.id && update.finished
+    None => false
+  }
+  if !ok_id {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  self.held_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
+    match ex_h {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(true) => k(effect::Exit::Succeeded(()))
+      effect::Exit::Succeeded(false) => {
+        a.codex_update = None
+        self.set_running_k(a, false, fn(ex1 : effect::Exit[Unit]) -> Unit {
+          match ex1 {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(_) => {
+              self.archived_k(a, fn(ex2 : effect::Exit[Bool]) -> Unit {
+                match ex2 {
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(true) => k(effect::Exit::Succeeded(()))
+                  effect::Exit::Succeeded(false) => {
+                    self.words_k(a, "GO_ON_AFTER_CODEX_UPDATE", [], fn(
+                      ex3 : effect::Exit[String],
+                    ) -> Unit {
+                      match ex3 {
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(words) => {
+                          self.start_turn_k(
+                            a,
+                            "codex_retry",
+                            words,
+                            update.by,
+                            None,
+                            false,
+                            0,
+                            false,
+                            fn(ex4 : effect::Exit[Unit]) -> Unit {
+                              match ex4 {
+                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                effect::Exit::Succeeded(_) => {
+                                  self.has_pending_k(a, fn(ex5 : effect::Exit[Bool]) -> Unit {
+                                    match ex5 {
+                                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                      effect::Exit::Succeeded(true) => self.pump_k(a, -1, k)
+                                      effect::Exit::Succeeded(false) => {
+                                        if a.notices.length() > 0 {
+                                          self.give_notices_k(a, k)
+                                        } else {
+                                          k(effect::Exit::Succeeded(()))
+                                        }
+                                      }
+                                    }
+                                  })
+                                }
+                              }
+                            },
+                          )
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+/// Move off a profile whose allowance showed spent when asked (`actor_run.mbt:548-598`).
+pub fn ActorsGen::reassign_k(
+  self : ActorsGen,
+  a : Actor,
+  thread : base_codec::Json,
+  seq : base_codec::Json,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  self.blocked_k(a, fn(ex_b : effect::Exit[Bool]) -> Unit {
+    match ex_b {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(true) => k(effect::Exit::Succeeded(()))
+      effect::Exit::Succeeded(false) => {
+        self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
+          match ex_hp {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(true) => k(effect::Exit::Succeeded(()))
+            effect::Exit::Succeeded(false) => {
+              self.last_turn_k(a, fn(ex_lt : effect::Exit[base_codec::Json]) -> Unit {
+                match ex_lt {
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(last) => {
+                    if is_json_null(last) ||
+                    !opt_str_is(sessions_core::str_of(sessions_core::jget(last, "outcome")), "failed") ||
+                    !about_is(last, thread, seq) {
+                      k(effect::Exit::Succeeded(()))
+                      return
+                    }
+                    self.rpc_k(
+                      a.key,
+                      "node.words",
+                      [sessions_core::jstr("shownLimitOf"), sessions_core::field_of(last, "detail")],
+                      fn(ex_lim : effect::Exit[base_codec::Json]) -> Unit {
+                        match ex_lim {
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                          effect::Exit::Succeeded(lim_v) => {
+                            let model = match lim_v {
+                              base_codec::Json::Obj(_) => sessions_core::field_of(lim_v, "model")
+                              _ => {
+                                k(effect::Exit::Succeeded(()))
+                                return
+                              }
+                            }
+                            self.store_k(a, "getSession", [sessions_core::jstr(a.key)], fn(
+                              ex_row : effect::Exit[base_codec::Json],
+                            ) -> Unit {
+                              match ex_row {
+                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                effect::Exit::Succeeded(row) => {
+                                  let ran_on = if is_json_null(a.profile) {
+                                    sessions_core::field_of(row, "profile")
+                                  } else {
+                                    a.profile
+                                  }
+                                  sessions_core::try_k(
+                                    fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                                      self.deps_k(a, "spend", [sessions_core::jstr(a.key), ran_on, model], tk)
+                                    },
+                                    fn(ex_sp : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                                      match ex_sp {
+                                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                        effect::Exit::Succeeded(res) => {
+                                          let moved = match res {
+                                            Ok(v) => v
+                                            Err(e) => {
+                                              self.log(
+                                                a,
+                                                "warn",
+                                                "could not move off a profile its allowance showed spent",
+                                                [("error", sessions_core::jstr(sessions_core::error_message(e)))],
+                                              )
+                                              base_codec::json_null()
+                                            }
+                                          }
+                                          match moved {
+                                            base_codec::Json::Arr(m) => {
+                                              let agent = a.agent
+                                              self.set_agent(a, None)
+                                              self.end_process_k(a, agent, fn(ex_ep : effect::Exit[Unit]) -> Unit {
+                                                match ex_ep {
+                                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                  effect::Exit::Succeeded(_) => {
+                                                    let from_v = if m.length() > 0 { m[0] } else { base_codec::json_null() }
+                                                    let to_v = if m.length() > 1 { m[1] } else { base_codec::json_null() }
+                                                    self.log(
+                                                      a,
+                                                      "info",
+                                                      "its allowance showed a limit; going on on another profile, as asked",
+                                                      [("from", from_v), ("to", to_v)],
+                                                    )
+                                                    a.refill = None
+                                                    self.words_k(a, "GO_ON_AFTER_SPENT", [], fn(
+                                                      ex_w : effect::Exit[String],
+                                                    ) -> Unit {
+                                                      match ex_w {
+                                                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                        effect::Exit::Succeeded(words) => {
+                                                          self.start_turn_k(
+                                                            a,
+                                                            "resume",
+                                                            words,
+                                                            turn_for_nobody(),
+                                                            None,
+                                                            false,
+                                                            0,
+                                                            false,
+                                                            k,
+                                                          )
+                                                        }
+                                                      }
+                                                    })
+                                                  }
+                                                }
+                                              })
+                                              return
+                                            }
+                                            base_codec::Json::Obj(_) => {
+                                              if opt_str_is(
+                                                sessions_core::str_of(sessions_core::jget(moved, "paused")),
+                                                "session_cap",
+                                              ) {
+                                                let agent = a.agent
+                                                self.set_agent(a, None)
+                                                self.end_process_k(a, agent, fn(ex_ep : effect::Exit[Unit]) -> Unit {
+                                                  match ex_ep {
+                                                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                    effect::Exit::Succeeded(_) => {
+                                                      a.refill = None
+                                                      self.words_k(a, "GO_ON_AFTER_SPENT", [], fn(
+                                                        ex_w : effect::Exit[String],
+                                                      ) -> Unit {
+                                                        match ex_w {
+                                                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                          effect::Exit::Succeeded(words) => {
+                                                            a.queued_retry = Some(QueuedRetry::{
+                                                              kind: "resume",
+                                                              text: words,
+                                                              by: turn_for_nobody(),
+                                                              codex_retried: false,
+                                                            })
+                                                            self.pause_for_session_cap_k(
+                                                              a,
+                                                              str_or(
+                                                                sessions_core::str_of(sessions_core::jget(moved, "profile")),
+                                                                "",
+                                                              ),
+                                                              num_or(
+                                                                sessions_core::num_of(sessions_core::jget(moved, "active")),
+                                                                0.0,
+                                                              ).to_int(),
+                                                              num_or(
+                                                                sessions_core::num_of(sessions_core::jget(moved, "cap")),
+                                                                0.0,
+                                                              ).to_int(),
+                                                              is_opt_json_true(sessions_core::jget(moved, "protection")),
+                                                              "resume",
+                                                              turn_for_nobody(),
+                                                              None,
+                                                              k,
+                                                            )
+                                                          }
+                                                        }
+                                                      })
+                                                    }
+                                                  }
+                                                })
+                                                return
+                                              }
+                                            }
+                                            _ => ()
+                                          }
+                                          let pinned = sessions_core::truthy(
+                                            sessions_core::field_of(row, "profilePinned"),
+                                          )
+                                          let key_msg = if pinned {
+                                            "station.notice.reassignPinned"
+                                          } else {
+                                            "station.notice.reassignNone"
+                                          }
+                                          self.t_k(a, key_msg, base_codec::json_null(), fn(
+                                            ex_t : effect::Exit[String],
+                                          ) -> Unit {
+                                            match ex_t {
+                                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                              effect::Exit::Succeeded(msg) => {
+                                                self.notice_k(
+                                                  a,
+                                                  "⚠️ " + msg,
+                                                  ran_on,
+                                                  base_codec::json_null(),
+                                                  base_codec::json_null(),
+                                                  None,
+                                                  false,
+                                                  fn(ex_n : effect::Exit[Unit]) -> Unit {
+                                                    match ex_n {
+                                                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                      effect::Exit::Succeeded(_) => {
+                                                        self.refills_at_k(a, fn(ex_r : effect::Exit[Double]) -> Unit {
+                                                          match ex_r {
+                                                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                            effect::Exit::Succeeded(at) => {
+                                                              self.await_refill(a, at)
+                                                              k(effect::Exit::Succeeded(()))
+                                                            }
+                                                          }
+                                                        })
+                                                      }
+                                                    }
+                                                  },
+                                                )
+                                              }
+                                            }
+                                          })
+                                        }
+                                      }
+                                    },
+                                  )
+                                }
+                              }
+                            })
+                          }
+                        }
+                      },
+                    )
+                  }
+                }
+              })
+            }
+          }
+        })
+      }
+    }
+  })
+}

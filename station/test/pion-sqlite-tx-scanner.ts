@@ -19,7 +19,7 @@ function unescapePionString(raw: string): string {
   return out;
 }
 
-type SqlTok = { kind: "word"; upper: string } | { kind: "semi" } | { kind: "other" };
+type SqlTok = { kind: "word"; upper: string } | { kind: "ident" } | { kind: "str" } | { kind: "semi" } | { kind: "other" };
 
 function isSqlIdentStart(c: number): boolean {
   return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c >= 0x80;
@@ -62,14 +62,14 @@ function tokenizeSql(sql: string): SqlTok[] {
         }
         i++;
       }
-      tokens.push({ kind: "other" });
+      tokens.push({ kind: quote === "'" ? "str" : "ident" });
       continue;
     }
     if (ch === "[") {
       i++;
       while (i < n && sql[i] !== "]") i++;
       if (i < n) i++;
-      tokens.push({ kind: "other" });
+      tokens.push({ kind: "ident" });
       continue;
     }
     if (ch === ";") {
@@ -163,6 +163,15 @@ export function findRawTxControlViolations(filename: string, source: string): st
       scanGap(gap);
 
       const literal = m[1]!;
+      const afterLiteral = line.slice(lastEnd);
+      const nextLineStartsWithPlus =
+        afterLiteral.trim() === "" && (lines[idx + 1]?.trimStart().startsWith("+") ?? false);
+      const isStandaloneMethodLiteral =
+        !literal.includes("\\{") &&
+        /^(?:release|savepoint)$/.test(unescapePionString(literal)) &&
+        /(?:==|!=)\s*$/.test(gap) &&
+        !afterLiteral.trimStart().startsWith("+") &&
+        !nextLineStartsWithPlus;
       const tokens = tokenizeSql(unescapePionString(literal));
       if ((inTriggerHeader || inTriggerBody) && parenDepth > triggerParenDepth) {
         let argStmtStart = true;
@@ -172,6 +181,9 @@ export function findRawTxControlViolations(filename: string, source: string): st
           if (!argStmtStart) continue;
           argStmtStart = false;
           if (tok.kind === "word" && forbiddenHeads.has(tok.upper)) {
+            if ((tok.upper === "RELEASE" || tok.upper === "SAVEPOINT") && isStandaloneMethodLiteral) {
+              continue;
+            }
             violations.push(`${filename}:${idx + 1}: forbidden raw transaction SQL "${tok.upper}" in literal "${literal}"`);
           }
         }
@@ -230,6 +242,11 @@ export function findRawTxControlViolations(filename: string, source: string): st
             const next = tokens[t + 1];
             const isTxEnd = next === undefined || next.kind === "semi" || (next.kind === "word" && next.upper === "TRANSACTION");
             if (!isTxEnd) continue;
+          }
+          // Exempt only an exact standalone `"release"` / `"savepoint"` method-name literal with
+          // no whitespace, no `\{...}` interpolation, and no `+` concatenation on either side.
+          if ((tok.upper === "RELEASE" || tok.upper === "SAVEPOINT") && isStandaloneMethodLiteral) {
+            continue;
           }
           violations.push(`${filename}:${idx + 1}: forbidden raw transaction SQL "${tok.upper}" in literal "${literal}"`);
         }

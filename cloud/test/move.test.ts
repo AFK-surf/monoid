@@ -61,3 +61,29 @@ test("a cloud's accounts, workspaces, stations and sessions go whole into anothe
     await into.close();
   }
 });
+
+test("an icon moved or listed while the bucket fails once is tried again; failing twice, it is unavailable", async () => {
+  const h = await harness({ moving: true });
+  try {
+    const name = `${"a".repeat(32)}.png`;
+    const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    const headers = { authorization: `Bearer ${h.adminToken}` };
+    const put = () => h.fetch(`/v1/admin/move/icons/${name}`, { method: "PUT", headers: { ...headers, "content-type": "image/png" }, body: bytes });
+    const list = () => h.fetch("/v1/admin/move/icons", { headers });
+    const unavailable = async (answer: Awaited<ReturnType<typeof put>>) => {
+      assert.deepEqual([answer.status, answer.headers.get("retry-after"), answer.headers.get("cache-control")], [503, "5", "no-store"]);
+      assert.deepEqual(await answer.json(), { error: "release_unavailable" });
+    };
+    await h.failBucket({ put: 2, list: 2 });
+    await unavailable(await put());
+    await unavailable(await list());
+    assert.deepEqual(await h.failBucket({ put: 1, list: 1 }), [`put icons/${name}`, `put icons/${name}`, "list", "list"]);
+    assert.equal((await put()).status, 200);
+    assert.deepEqual(await (await list()).json(), { icons: [name] });
+    assert.equal((await h.failBucket()).length, 4);
+    const kept = await h.fetch(`/v1/icons/${name}`);
+    assert.deepEqual(new Uint8Array(await kept.arrayBuffer()), bytes, "the second put had the same bytes");
+  } finally {
+    await h.close();
+  }
+});
