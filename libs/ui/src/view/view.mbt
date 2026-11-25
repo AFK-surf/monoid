@@ -2611,10 +2611,8 @@ pub let resident_step_ms : Double = 100.0
 
 ///|
 /// Moment `ms` on the resident clock: the step it is in.
-/// Native hosts (mac_app.m, ios_app.m) wake a display frame up to 0.5 ms ahead of `wake_for`;
-/// snapping within that same 0.5 ms tolerance avoids waking twice for one resident step.
 fn resident_of(ms : Double) -> Double {
-  ((ms + 0.5) / resident_step_ms).floor() * resident_step_ms
+  (ms / resident_step_ms).floor() * resident_step_ms
 }
 
 ///|

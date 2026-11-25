@@ -146,7 +146,7 @@ test "the resident clock: off-screen offset, clipped out, and zero-alpha readers
 }
 
 ///|
-test "the resident clock: waking up to 0.5 ms ahead of a step advances to that step without double-waking" {
+test "the resident clock: step boundaries stay exact before the next step" {
   let t = Tester::new(fn(_c) {  }, w=200.0, h=100.0, platform=0)
   set_view_app(fn(root) {
     root.box(fn(a) {
@@ -162,7 +162,7 @@ test "the resident clock: waking up to 0.5 ms ahead of a step advances to that s
   t.draw()
   let tree = view_tree().unwrap()
   tree.at(99.6)
-  assert_eq(tree.resident_next(), 200.0)
-  tree.at(99.0)
   assert_eq(tree.resident_next(), 100.0)
+  tree.at(100.0)
+  assert_eq(tree.resident_next(), 200.0)
 }

@@ -278,7 +278,7 @@ static double drawn_for;
   // happens to fire and the link wakes after it: a step a frame or two late, by as much as the timer and the link's
   // wake fall, so a resident cycle's steps 75 to 108 ms apart, not 100); the ticks before it draw nothing
   if (!self.wantFrame && wake_for >= 0) {
-    if (l.targetTimestamp * 1000.0 < wake_for - 0.5) {
+    if (l.targetTimestamp * 1000.0 < wake_for) {
       last_target = -1;
       return;
     }
