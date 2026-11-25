@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { cpSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { stat as statAsync } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -76,18 +77,27 @@ function encodeFrames(payload: Buffer): Buffer {
   return Buffer.concat(parts);
 }
 
-function decodeFramedResponse(raw: Buffer): { head: any; body: Buffer; text: string } | null {
+function decodeFramedResponse(raw: Buffer): { head: any; headKeys: string[]; headerKeys: string[]; body: Buffer; text: string } | null {
   if (raw.length === 0) return null;
   const chunks: Buffer[] = [];
   let at = 0;
-  while (at + 4 <= raw.length) {
+  let sawEnd = false;
+  while (at < raw.length) {
+    assert.ok(at + 4 <= raw.length, `truncated frame header: rem=${raw.length - at}`);
     const n = raw.readUInt32BE(at);
     at += 4;
-    if (n === PIPE_END) break;
+    if (n === PIPE_END) {
+      sawEnd = true;
+      break;
+    }
+    assert.notEqual(n, PIPE_FAILED, "unexpected PIPE_FAILED frame in response");
+    assert.ok(n <= PIPE_MOST, `frame exceeds PIPE_MOST: n=${n}`);
     assert.ok(at + n <= raw.length, `truncated frame: n=${n}, rem=${raw.length - at}`);
     chunks.push(raw.subarray(at, at + n));
     at += n;
   }
+  assert.ok(sawEnd, "response stream missing PIPE_END terminator");
+  assert.equal(at, raw.length, `unexpected ${raw.length - at} trailing byte(s) after PIPE_END`);
   const all = Buffer.concat(chunks);
   const nl = all.indexOf(0x0a);
   assert.ok(nl >= 0, `response missing newline: ${all.toString("utf8")}`);
@@ -95,7 +105,13 @@ function decodeFramedResponse(raw: Buffer): { head: any; body: Buffer; text: str
   const body = all.subarray(nl + 1);
   const decoded =
     head.headers?.["content-encoding"] === "zstd" ? zstdDecompressSync(body) : body;
-  return { head, body, text: decoded.toString("utf8") };
+  return {
+    head,
+    headKeys: Object.keys(head),
+    headerKeys: head.headers && typeof head.headers === "object" ? Object.keys(head.headers) : [],
+    body,
+    text: decoded.toString("utf8"),
+  };
 }
 
 class RawServeHarness {
@@ -183,7 +199,7 @@ class RawServeHarness {
     connId: number,
     head: Record<string, unknown>,
     body = "",
-  ): { written: Promise<void>; response: Promise<{ head: any; body: Buffer; text: string } | null> } {
+  ): { written: Promise<void>; response: Promise<{ head: any; headKeys: string[]; headerKeys: string[]; body: Buffer; text: string } | null> } {
     const payload = Buffer.from(`${JSON.stringify(head)}\n${body}`, "utf8");
     const wire = Buffer.concat([encodeStreamHead(connId), encodeFrames(payload)]);
     let resolveWritten!: () => void;
@@ -205,7 +221,7 @@ class RawServeHarness {
     connId: number,
     head: Record<string, unknown>,
     body = "",
-  ): Promise<{ head: any; body: Buffer; text: string } | null> {
+  ): Promise<{ head: any; headKeys: string[]; headerKeys: string[]; body: Buffer; text: string } | null> {
     return await this.openRequest(connId, head, body).response;
   }
 
@@ -367,6 +383,21 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
     return;
   }
 
+  // Negative self-checks for strict `decodeFramedResponse` (missing PIPE_END, trailing garbage, over-long frame)
+  const samplePayload = Buffer.from('{"status":200,"headers":{}}\n{}', "utf8");
+  assert.throws(
+    () => decodeFramedResponse(Buffer.concat([be32(samplePayload.length), samplePayload])),
+    /missing PIPE_END/,
+  );
+  assert.throws(
+    () => decodeFramedResponse(Buffer.concat([be32(samplePayload.length), samplePayload, be32(PIPE_END), Buffer.from([0x42])])),
+    /trailing byte/,
+  );
+  assert.throws(
+    () => decodeFramedResponse(Buffer.concat([be32(PIPE_MOST + 1), be32(PIPE_END)])),
+    /exceeds PIPE_MOST/,
+  );
+
   const root = mkdtempSync(join(tmpdir(), "w7g-serve-parity-"));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const baseData = join(root, "base");
@@ -420,12 +451,19 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
       );
       assert.equal(badJson.length, 0, `${label}: bad JSON head must close silently`);
 
-      // 2. Viewer wait & revoke (viewer: null closes waiting stream silently; barrier guarantees conn 10 is queued before revoke)
+      // 2. Viewer wait & revoke (viewer: null closes waiting stream silently; repeat revoke across syncBarrier until sock_10 is queued and closed)
       const waitRevoke = srv.openRequest(10, { method: "GET", path: "/admin/api/sessions", headers: BASE_HEADERS });
+      let revoked = false;
+      const waitRevokeDone = waitRevoke.response.then((r) => {
+        revoked = true;
+        return r;
+      });
       await waitRevoke.written;
-      await syncBarrier();
-      srv.tell({ viewer: { conn: 10, viewer: null } });
-      assert.equal(await waitRevoke.response, null, `${label}: revoked viewer must close waiting stream silently`);
+      while (!revoked) {
+        await syncBarrier();
+        if (!revoked) srv.tell({ viewer: { conn: 10, viewer: null } });
+      }
+      assert.equal(await waitRevokeDone, null, `${label}: revoked viewer must close waiting stream silently`);
 
       // 3. Viewer wait -> arrive with floor gating (426) vs allowed (200) + moved fallback without floor
       const waitFloor = srv.openRequest(11, {
@@ -539,18 +577,20 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
       }))!;
       assert.equal(direct404.head.status, 404);
 
-      // 6. Concurrent interleaved fallback + 2 zstd relay streams + `pieces: { pieces, to }` broadcast + write-failure `stop`
-      const rSock1 = srv.openStream(20, { method: "GET", path: "/admin/api/events?shared=1", headers: BASE_HEADERS });
-      const rSock2 = srv.openStream(20, { method: "GET", path: "/admin/api/events?shared=1", headers: BASE_HEADERS });
+      // 6. Concurrent interleaved fallback + 2 zstd relay streams (distinct query tags) + `pieces: { pieces, to }` broadcast + write-failure `stop`
+      const rSock1 = srv.openStream(20, { method: "GET", path: "/admin/api/events?shared=1&tag=r1", headers: BASE_HEADERS });
+      const rSock2 = srv.openStream(20, { method: "GET", path: "/admin/api/events?shared=1&tag=r2", headers: BASE_HEADERS });
       const fbInterleavedP = srv.request(20, {
         method: "GET",
         path: "/admin/api/chats",
         headers: { ...BASE_HEADERS, "stillfail-runtimes": "claude" },
       });
 
-      const relReq1 = await srv.nextMessage((m) => typeof m.fallback === "number" && m.stream === true);
-      const relReq2 = await srv.nextMessage((m) => typeof m.fallback === "number" && m.stream === true);
-      const fbInterleavedReq = await srv.nextMessage((m) => typeof m.fallback === "number" && m.stream !== true);
+      const [relReq1, relReq2, fbInterleavedReq] = await Promise.all([
+        srv.nextMessage((m) => typeof m.fallback === "number" && m.stream === true && m.head?.path === "/admin/api/events?shared=1&tag=r1"),
+        srv.nextMessage((m) => typeof m.fallback === "number" && m.stream === true && m.head?.path === "/admin/api/events?shared=1&tag=r2"),
+        srv.nextMessage((m) => typeof m.fallback === "number" && m.stream !== true && m.head?.path === "/admin/api/chats"),
+      ]);
 
       const attachRelayReader = (sock: Socket) => {
         let raw = Buffer.alloc(0);
@@ -632,7 +672,7 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
       });
       for (let i = 0; i < 64 && !stopped; i++) {
         srv.tell({ chunk: relReq2.fallback, text: `event: push\ndata: ${"z".repeat(4096)}-${i}\n\n` });
-        await new Promise<void>((r) => setImmediate(r));
+        await syncBarrier();
       }
       await stopPromise;
       rr1.close();
@@ -654,6 +694,14 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
       ))!;
       assert.equal(threadTitle.head.status, 200);
       assert.equal(JSON.parse(threadTitle.text).title, emoji80);
+
+      // Lone UTF-16 surrogate in authorized write JSON must be strictly rejected with 400 (DB title untouched)
+      const loneSurrogateTitle = (await srv.request(
+        20,
+        { method: "PUT", path: `/admin/api/threads/${fix.thread}/title`, headers: BASE_HEADERS },
+        '{"title":"bad\\ud800title"}',
+      ))!;
+      assert.equal(loneSurrogateTitle.head.status, 400, `${label}: lone surrogate JSON must return 400`);
 
       const slackTitleErr = (await srv.request(
         20,
@@ -714,23 +762,44 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
       const claimMsg = await srv.nextMessage((m) => typeof m.claim === "number");
       assert.equal(claimMsg.key, "k-card-1");
 
-      // Hold a brief BEGIN IMMEDIATE lock on an external connection, then release it cleanly after queueing the claim reply
+      // Hold a BEGIN IMMEDIATE write lock on an external connection, verify lock is genuinely held
+      // and `sayP` remains blocked across multiple real async I/O cycles before releasing COMMIT (zero setTimeout)
+      let saySettled = false;
+      const sayTrackedP = sayP.then((r) => {
+        saySettled = true;
+        return r;
+      });
       const lockDb = new DatabaseSync(join(dataDir, "stillfail.db"));
       lockDb.exec("BEGIN IMMEDIATE");
-      srv.tell({ claimed: claimMsg.claim, ts: "1750000010.000001" });
-      // Release lock on next event-loop turns (zero setTimeout sleep)
-      await new Promise<void>((r) => setImmediate(r));
+      // Prove write lock is actively held via a second connection with busy_timeout=0
+      const probeBusyDb = new DatabaseSync(join(dataDir, "stillfail.db"));
+      probeBusyDb.exec("PRAGMA busy_timeout = 0");
+      assert.throws(() => probeBusyDb.exec("BEGIN IMMEDIATE"), /locked|busy/i, `${label}: expected active write lock`);
+      probeBusyDb.close();
+
+      await new Promise<void>((resolve) => {
+        srv.proc.stdin.write(`${JSON.stringify({ claimed: claimMsg.claim, ts: "1750000010.000001" })}\n`, () => resolve());
+      });
+      // Give child real OS/libuv I/O cycles to read stdin and block in SQLite busy_timeout
+      for (let i = 0; i < 4; i++) {
+        await statAsync(dataDir);
+      }
+      assert.equal(saySettled, false, `${label}: say write must remain blocked while external BEGIN IMMEDIATE lock is held`);
       lockDb.exec("COMMIT");
       lockDb.close();
 
-      const sayRes = (await sayP)!;
+      const sayRes = (await sayTrackedP)!;
       assert.equal(sayRes.head.status, 200);
       const saidMsg = await srv.nextMessage((m) => m.said !== undefined && m.of === claimMsg.claim);
       assert.equal(saidMsg.said.thread, fix.cardThread);
       assert.equal(saidMsg.said.text, "ReplyIt");
       assert.equal(saidMsg.said.row.client, "desktop 0.1.9500");
 
-      // Inspect persisted DB state (muted_chats lowercased, synthetic wall >= 1750000005000, card read advanced)
+      // Synchronize stdout via a final round-trip so all emitted `changes`/`titled` messages have arrived before draining
+      await syncBarrier();
+      const extraStdout = srv.drainMessages();
+
+      // Inspect persisted DB state (muted_chats lowercased, synthetic wall >= 1750000005000, card read advanced, title intact)
       const checkDb = new DatabaseSync(join(dataDir, "stillfail.db"), { open: true });
       try {
         const mutedRows = checkDb.prepare("SELECT viewer FROM muted_chats WHERE thread = ?").all(fix.thread) as {
@@ -754,22 +823,63 @@ test("Dual-engine MB vs Pion `--serve`: framing, viewer gating, local reads, bat
 
         const sessRow = checkDb.prepare("SELECT title FROM sessions WHERE key = 's0'").get() as { title: string };
         assert.equal(sessRow.title, emoji80);
+        const threadRow = checkDb.prepare("SELECT title FROM threads WHERE id = ?").get(fix.thread) as { title: string };
+        assert.equal(threadRow.title, emoji80, `${label}: lone surrogate write must leave DB title unchanged`);
+
+        const respSnap = (r: { head: any; headKeys: string[]; headerKeys: string[]; text: string }) => ({
+          head: r.head,
+          headKeys: r.headKeys,
+          headerKeys: r.headerKeys,
+          body: JSON.parse(r.text),
+        });
+        const normFallback = (m: any) => ({ conn: m.conn, head: m.head, body: m.body, stream: m.stream });
+
+        const normExtra = extraStdout.map((msg) => {
+          if (!Array.isArray(msg?.changes)) return msg;
+          return {
+            ...msg,
+            changes: msg.changes.map((c: any) => {
+              if (c?.type === "pins" && typeof c.at === "number") {
+                assert.ok(c.at >= 1750000005000, `${label}: pins change at must reflect synthetic wall clock`);
+                return { ...c, at: "<wall>" };
+              }
+              return c;
+            }),
+          };
+        });
 
         return {
-          bigEntries: JSON.parse(bigRead.text),
-          changedSessions: JSON.parse(changedSessions.text),
-          batchParsed,
-          unseenRead: { status: unseenRead.head.status, body: JSON.parse(unseenRead.text) },
-          wentWrite: { status: wentWrite.head.status, body: JSON.parse(wentWrite.text) },
-          threadTitle: JSON.parse(threadTitle.text),
-          slackTitleErr: { status: slackTitleErr.head.status, body: JSON.parse(slackTitleErr.text) },
-          readMark: JSON.parse(readMark.text),
-          mutedMark: JSON.parse(mutedMark.text),
-          pinMark: JSON.parse(pinMark.text),
-          dismissMark: JSON.parse(dismissMark.text),
-          cardClose409: { status: cardClose409.head.status, body: JSON.parse(cardClose409.text) },
-          sayRes: JSON.parse(sayRes.text),
-          saidRow: saidMsg.said.row,
+          smallRead: respSnap(smallRead),
+          bigRead: respSnap(bigRead),
+          changedSessions: respSnap(changedSessions),
+          batchOk: respSnap(batchOk),
+          unseenRead: respSnap(unseenRead),
+          wentWrite: respSnap(wentWrite),
+          pendingFbRes: respSnap(pendingFbRes),
+          direct404: respSnap(direct404),
+          fbInterleavedRes: respSnap(fbInterleavedRes),
+          relay1: { head: got1.head, headKeys: Object.keys(got1.head), seen: got1.seen },
+          relay2: { head: got2.head, headKeys: Object.keys(got2.head), seen: got2.seen },
+          sessTitle: respSnap(sessTitle),
+          threadTitle: respSnap(threadTitle),
+          loneSurrogateTitle: respSnap(loneSurrogateTitle),
+          slackTitleErr: respSnap(slackTitleErr),
+          readMark: respSnap(readMark),
+          mutedMark: respSnap(mutedMark),
+          pinMark: respSnap(pinMark),
+          dismissMark: respSnap(dismissMark),
+          cardClose409: respSnap(cardClose409),
+          sayRes: respSnap(sayRes),
+          protocol: {
+            buildMsg,
+            fbMsg: normFallback(fbMsg),
+            fbInterleavedReq: normFallback(fbInterleavedReq),
+            relReq1: normFallback(relReq1),
+            relReq2: normFallback(relReq2),
+            claimMsg: { path: claimMsg.path, key: claimMsg.key, lang: claimMsg.lang, conn: claimMsg.conn },
+            saidMsg: { said: saidMsg.said, answer: saidMsg.answer },
+            extraStdout: normExtra,
+          },
         };
       } finally {
         checkDb.close();
@@ -790,6 +900,21 @@ test("Real Served integration: STILLFAIL_READER_SERVE=pion spawns BIN_PION (veri
     t.skip("dual reader binaries unavailable");
     return;
   }
+
+  // Negative self-checks for strict `decodeFramedResponse` (missing PIPE_END, trailing garbage, over-long frame)
+  const samplePayload = Buffer.from('{"status":200,"headers":{}}\n{}', "utf8");
+  assert.throws(
+    () => decodeFramedResponse(Buffer.concat([be32(samplePayload.length), samplePayload])),
+    /missing PIPE_END/,
+  );
+  assert.throws(
+    () => decodeFramedResponse(Buffer.concat([be32(samplePayload.length), samplePayload, be32(PIPE_END), Buffer.from([0x42])])),
+    /trailing byte/,
+  );
+  assert.throws(
+    () => decodeFramedResponse(Buffer.concat([be32(PIPE_MOST + 1), be32(PIPE_END)])),
+    /exceeds PIPE_MOST/,
+  );
 
   const dir = mkdtempSync(join(tmpdir(), "w7g-served-live-"));
   const dataDir = join(dir, "data");
@@ -897,11 +1022,14 @@ test("Real Served integration: STILLFAIL_READER_SERVE=pion spawns BIN_PION (veri
   assert.deepEqual(JSON.parse(fallbackRes.text), { fallback: true });
   assert.deepEqual(fallbackHits, ["/admin/api/chats"]);
 
-  // 4. When native mesh.node is available, also verify end-to-end iroh -> front -> Pion --serve
+  // 4. Verify end-to-end iroh -> front -> Pion --serve (mandatory when STILLFAIL_REQUIRE_DUAL_READER=1)
   let meshNative: ReturnType<typeof loadMesh> | null = null;
   try {
     meshNative = loadMesh();
-  } catch {
+  } catch (err) {
+    if (REQUIRE_DUAL) {
+      assert.fail(`STILLFAIL_REQUIRE_DUAL_READER=1 requires native mesh.node addon: ${(err as Error).message}`);
+    }
     meshNative = null;
   }
   if (meshNative) {

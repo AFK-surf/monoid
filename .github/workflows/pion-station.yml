@@ -1196,6 +1196,8 @@ jobs:
 
       - uses: ./.github/actions/setup
 
+      - uses: ./.github/actions/natives
+
       - name: Download and verify Linux binaries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1206,7 +1208,9 @@ jobs:
           chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
 
-      - name: Run Wave 7 serve gate (W7-G serve mode + served-programs + dual-engine Unix-socket & Served switch strict TAP)
+      - name: Run Wave 7 serve gate (W7-G serve mode + served-programs + dual-engine Unix-socket & real mesh.node Served switch strict TAP)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
@@ -1235,7 +1239,8 @@ jobs:
             printf '%s\n' "$out" | grep -qE '^# todo 0$'
           }
 
-          if ! OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+          if ! OUT="$(node scripts/native.ts run mesh -- env \
+            STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
             node --test --test-reporter=tap \
             station/test/w7-foundation.test.ts \
             station/test/served-programs.test.ts \

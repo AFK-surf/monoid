@@ -240,13 +240,6 @@ fn str_contains(hay : String, needle : String) -> Bool {
   false
 }
 
-fn listener_gone_msg(msg : String) -> Bool {
-  str_contains(msg, "no such") ||
-  str_contains(msg, "not listening") ||
-  str_contains(msg, "closed") ||
-  str_contains(msg, "invalid listener")
-}
-
 fn hdr_get(headers : Array[(String, base_codec::Json)], key : String) -> Option[base_codec::Json] {
   let mut found : Option[base_codec::Json] = None
   for i in 0..<headers.length() {
@@ -639,7 +632,7 @@ fn ServeRunner::send_whole_and_close(
 
 /// Handle one JSON line from Node on stdin (`serve.mbt:114`).
 pub fn ServeRunner::told(self : ServeRunner, line : String) -> Unit {
-  let said = match sql_db::parse_json(line) {
+  let said = match parse_json_strict(line) {
     base_codec::JsonParseResult::Ok(j) => j
     base_codec::JsonParseResult::Err(_) => return
   }
@@ -960,10 +953,12 @@ fn ServeRunner::on_zstd_done(
       Err(e) => {
         (self.note)("serve: a stream failed: " + e.message)
         let req_id = st.req_id
-        self.close_stream(stream_id)
         if req_id > 0 {
+          self.req_to_stream.remove(req_id)
+          st.req_id = 0
           self.say(base_codec::json_obj([("stop", base_codec::json_int(req_id))]))
         }
+        self.send_raw_json_and_close(stream_id, 500, error_json("read failed"))
       }
       Ok((j_opt, _)) => {
         let made = match j_opt {
@@ -1031,7 +1026,7 @@ fn ServeRunner::advance_stream_read(self : ServeRunner, stream_id : Int) -> Unit
       }
       let head = st.take_have(25)
       let conn_i64 = be_u(head, 0, 8)
-      st.conn = sql_db::int64_to_json(conn_i64)
+      st.conn = sql_db::double_to_json(conn_i64.to_double())
       st.conn_key = conn_key_of(st.conn)
       st.phase = PHASE_READ_FRAME_LEN
     } else if st.phase == PHASE_READ_FRAME_LEN {
@@ -1079,7 +1074,7 @@ fn ServeRunner::advance_stream_read(self : ServeRunner, stream_id : Int) -> Unit
     return
   }
   let head_str = sql_db::decode_utf8_lossy_bytes(slice_bytes(sent, 0, nl))
-  let asked = match sql_db::parse_json(head_str) {
+  let asked = match parse_json_strict(head_str) {
     base_codec::JsonParseResult::Ok(j) => j
     base_codec::JsonParseResult::Err(_) => {
       self.close_stream(stream_id)
@@ -1252,7 +1247,7 @@ fn ServeRunner::dispatch_request(self : ServeRunner, stream_id : Int) -> Unit {
       self.send_whole_and_close(stream_id, headers, 413, error_json("request too large").to_bytes())
       return
     }
-    let parsed = match sql_db::parse_json(sql_db::decode_utf8_lossy_bytes(body)) {
+    let parsed = match parse_json_strict(sql_db::decode_utf8_lossy_bytes(body)) {
       base_codec::JsonParseResult::Ok(j) => Some(j)
       base_codec::JsonParseResult::Err(_) => None
     }
@@ -1975,7 +1970,7 @@ fn ServeRunner::mark(
   let input = if body.length() == 0 {
     base_codec::json_obj([])
   } else {
-    match sql_db::parse_json(sql_db::decode_utf8_lossy_bytes(body)) {
+    match parse_json_strict(sql_db::decode_utf8_lossy_bytes(body)) {
       base_codec::JsonParseResult::Ok(base_codec::Json::Obj(m)) => base_codec::Json::Obj(m)
       base_codec::JsonParseResult::Ok(_) => base_codec::json_obj([])
       base_codec::JsonParseResult::Err(_) => return Ok(Done::Text(400, error_json("invalid JSON")))
@@ -2500,7 +2495,7 @@ fn ServeRunner::prepare_say(
   let input = if body.length() == 0 {
     base_codec::json_obj([])
   } else {
-    match sql_db::parse_json(body_str) {
+    match parse_json_strict(body_str) {
       base_codec::JsonParseResult::Ok(base_codec::Json::Obj(m)) => base_codec::Json::Obj(m)
       base_codec::JsonParseResult::Ok(_) => base_codec::json_obj([])
       base_codec::JsonParseResult::Err(_) => return Ok(SayPrep::Immediate(400, error_json("invalid JSON")))

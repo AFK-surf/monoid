@@ -180,3 +180,23 @@ test "title_of 80 code points including emoji surrogate pairs, client_of, and qu
     "[{\"author\":\"A\",\"text\":\"hi\",\"comment\":\"5\",\"ts\":\"1.2\",\"role\":\"agent\",\"file\":\"f.png\"},{\"author\":\"消息\",\"text\":\"ok\",\"comment\":\"\"}]",
   )
 }
+
+test "listener_gone_msg aligns with host/net.mbt and conn_key_of_with normalizes >2^53 by Double" {
+  // Permanent listener errors
+  eq_bool(listener_gone_msg("no handle 10"), true)
+  eq_bool(listener_gone_msg("not a listening socket"), true)
+  // Transient errors (including those containing "closed" or "no such") must NOT kill the server
+  eq_bool(listener_gone_msg("connection closed by peer"), false)
+  eq_bool(listener_gone_msg("closed"), false)
+  eq_bool(listener_gone_msg("no such file or directory"), false)
+  eq_bool(listener_gone_msg("EMFILE: too many open files"), false)
+
+  // Connection IDs > 2^53: binary Double and JSON Number with raw repr normalize to the same Double key
+  let big_i64 : Int64 = (1.to_int64() << 53.to_int64()) + 1.to_int64() // 9007199254740993
+  let big_dbl = big_i64.to_double() // rounds to 9007199254740992.0 in IEEE-754 Double
+  let from_bin = base_codec::Json::Num(big_dbl, "")
+  let from_json = base_codec::Json::Num(big_dbl, "9007199254740993")
+  let fmt = fn(d : Double) -> String { d.to_int64().to_string() }
+  eq_str(conn_key_of_with(from_bin, fmt), "9007199254740992")
+  eq_str(conn_key_of_with(from_json, fmt), "9007199254740992")
+}

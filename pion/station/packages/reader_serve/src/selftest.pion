@@ -164,13 +164,132 @@ fn run_selftest_in(client : builders_core::ShellClient, sub_dir : String) -> Res
     reader.close()
     return Err("reader_serve selftest: stream not cleaned up")
   }
-  env.events.push(host_shim::HostEvent::StdinEof)
+
+  // Test 2: zstd.stream open failure sends 500 {"error":"read failed"} frame AND emits {"stop": req_id}
+  let accept_id2 = env.calls[env.calls.length() - 2].id
+  // Find latest tcp.accept call
+  let mut latest_accept = accept_id2
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.accept" {
+      latest_accept = env.calls[i].id
+    }
+  }
+  env.push_done(latest_accept, "{\"id\":21}")
+  let _ = runner.step(0.to_int64())
+  let mut read_id2 = 0.to_int64()
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.read" {
+      read_id2 = env.calls[i].id
+    }
+  }
+  // Connection 8 with viewer ready, requesting SSE /admin/api/events with accept-encoding: zstd
+  env.push_stdin("{\"viewer\":{\"conn\":8,\"viewer\":{\"email\":\"a@b\",\"workspace\":\"ws\"},\"moved\":false}}")
+  let _ = runner.step(0.to_int64())
+  let req2 = make_req_bytes(
+    8.to_int64(),
+    "{\"method\":\"GET\",\"path\":\"/admin/api/events?shared=1\",\"headers\":{\"accept-encoding\":\"zstd\",\"stillfail-build\":\"0.1.9500\",\"stillfail-runtimes\":\"claude\"}}",
+    "",
+  )
+  env.push_done(read_id2, "{}", bytes=Some(req2))
+  let _ = runner.step(0.to_int64())
+  // Expect fallback stdout message with stream:true
+  let mut fb_req_id = 0
+  for i in 0..<env.stdout.length() {
+    if str_contains(env.stdout[i], "\"stream\":true") {
+      match sql_db::parse_json(env.stdout[i]) {
+        base_codec::JsonParseResult::Ok(j) => {
+          match builders_core::json_get_last(j, "fallback") {
+            Some(base_codec::Json::Num(n, _)) => fb_req_id = n.to_int()
+            _ => ()
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  if fb_req_id <= 0 {
+    reader.close()
+    return Err("reader_serve selftest: expected relay fallback request")
+  }
+  // Node replies with 200 text/event-stream -> runner calls zstd.stream
+  env.push_stdin(
+    "{\"answered\":" + fb_req_id.to_string() + ",\"status\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}",
+  )
+  let _ = runner.step(0.to_int64())
+  let zstd_call = env.calls[env.calls.length() - 1]
+  if zstd_call.op != "zstd.stream" {
+    reader.close()
+    return Err("reader_serve selftest: expected zstd.stream call, got " + zstd_call.op)
+  }
+  // Fail zstd.stream -> expect BOTH {"stop": fb_req_id} AND tcp.write 500 {"error":"read failed"}
+  env.push_done(zstd_call.id, "", error="zstd init failed")
+  let _ = runner.step(0.to_int64())
+  let mut saw_stop = false
+  for i in 0..<env.stdout.length() {
+    if str_contains(env.stdout[i], "\"stop\":" + fb_req_id.to_string()) {
+      saw_stop = true
+    }
+  }
+  if !saw_stop {
+    reader.close()
+    return Err("reader_serve selftest: zstd.stream open failure must emit stop")
+  }
+  let err_write = env.calls[env.calls.length() - 1]
+  if err_write.op != "tcp.write" {
+    reader.close()
+    return Err("reader_serve selftest: zstd.stream open failure must write 500 frame, got " + err_write.op)
+  }
+  match err_write.payload {
+    Some(p) => {
+      let s = sql_db::decode_utf8_lossy_bytes(p)
+      if !str_contains(s, "\"status\":500") || !str_contains(s, "\"read failed\"") {
+        reader.close()
+        return Err("reader_serve selftest: unexpected 500 payload: " + s)
+      }
+    }
+    None => {
+      reader.close()
+      return Err("reader_serve selftest: missing 500 payload")
+    }
+  }
+  env.push_done(err_write.id, "{}")
+  let _ = runner.step(0.to_int64())
+  if runner.active_streams() != 0 {
+    reader.close()
+    return Err("reader_serve selftest: zstd.stream failure stream not cleaned up")
+  }
+
+  // Test 3: Mock accept transient error containing "closed" retries after 100ms & recovers;
+  // permanent error ("no handle 10") exits cleanly.
+  let mut accept_before_transient = 0.to_int64()
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.accept" {
+      accept_before_transient = env.calls[i].id
+    }
+  }
+  let calls_before = env.calls.length()
+  env.push_done(accept_before_transient, "", error="connection closed by peer")
+  let _ = runner.step(0.to_int64())
+  if !runner.is_running() {
+    reader.close()
+    return Err("reader_serve selftest: transient 'closed' accept error must NOT exit")
+  }
+  // Advance clock by 100ms -> runner retries tcp.accept
+  env.now = env.now + SERVE_ACCEPT_RETRY_MS
+  let _ = runner.step(0.to_int64())
+  if env.calls.length() <= calls_before || env.calls[env.calls.length() - 1].op != "tcp.accept" {
+    reader.close()
+    return Err("reader_serve selftest: expected retry tcp.accept after transient error")
+  }
+  let retry_accept_id = env.calls[env.calls.length() - 1].id
+  // Permanent error ("no handle 10") must stop runner cleanly with exit_code 0
+  env.push_done(retry_accept_id, "", error="no handle 10")
   let _ = runner.step(0.to_int64())
   reader.close()
   if runner.is_running() || runner.exit_code() != 0 {
-    return Err("reader_serve selftest: clean EOF exit failed")
+    return Err("reader_serve selftest: permanent 'no handle' accept error must exit 0")
   }
-  Ok(3)
+  Ok(5)
 }
 
 pub fn run_selftest(temp_dir : String) -> Result[Int, String] {

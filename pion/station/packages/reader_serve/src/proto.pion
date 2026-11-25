@@ -8,6 +8,46 @@ import "jscase"
 import "readops_core"
 import "sql_db"
 
+/// Whether a failed `tcp.accept` error means the listening socket is permanently gone
+/// (`station/mb/src/host/net.mbt:10`, `pion/station/packages/front/src/mesh.pion:147`).
+pub fn listener_gone_msg(msg : String) -> Bool {
+  let sb = msg.to_bytes()
+  proto_bytes_contains(sb, "no handle".to_bytes()) ||
+  proto_bytes_contains(sb, "not a listening socket".to_bytes())
+}
+
+fn proto_bytes_contains(hay : Bytes, needle : Bytes) -> Bool {
+  let n = needle.length()
+  if n == 0 {
+    return true
+  }
+  if n > hay.length() {
+    return false
+  }
+  for i in 0..<(hay.length() - n + 1) {
+    let mut ok = true
+    for j in 0..<n {
+      if hay[i + j] != needle[j] {
+        ok = false
+        break
+      }
+    }
+    if ok {
+      return true
+    }
+  }
+  false
+}
+
+/// Strict JSON parser matching MoonBit `@json.parse`: rejects unpaired UTF-16 surrogates
+/// (`\ud800`..`\udfff`) instead of silently substituting U+FFFD.
+pub fn parse_json_strict(text : String) -> base_codec::JsonParseResult {
+  if builders_core::has_lone_surrogate(text) {
+    return base_codec::JsonParseResult::Err("lone surrogate")
+  }
+  sql_db::parse_json(text)
+}
+
 pub let PIPE_END : Int64 = (65535.to_int64() << 16.to_int64()) | 65534.to_int64() // 0xFFFFFFFE
 pub let PIPE_FAILED : Int64 = (65535.to_int64() << 16.to_int64()) | 65533.to_int64() // 0xFFFFFFFD
 pub let PIPE_MOST : Int = 1048576
@@ -656,7 +696,8 @@ pub fn changed_read(
   if body.length() > 1000000 {
     return Route::Refuse(413, "request too large")
   }
-  let parsed = match sql_db::parse_json(sql_db::decode_utf8_lossy_bytes(body)) {
+  let body_str = sql_db::decode_utf8_lossy_bytes(body)
+  let parsed = match parse_json_strict(body_str) {
     base_codec::JsonParseResult::Ok(j) => Some(j)
     base_codec::JsonParseResult::Err(_) => None
   }
@@ -914,18 +955,18 @@ fn quote_field_units(
   js_json::chars(raw_units, max)
 }
 
-/// Normalize a connection ID JSON value into a canonical string key (e.g. `7.0` -> `"7"`).
-pub fn conn_key_of(conn : base_codec::Json) -> String {
+/// Pure helper normalizing a connection ID JSON value into a canonical Double-keyed string
+/// (matches `serve.mbt:266` and Node JS Number semantics even for `> 2^53`).
+pub fn conn_key_of_with(conn : base_codec::Json, fmt_num : (Double) -> String) -> String {
   match conn {
-    base_codec::Json::Num(v, _) => {
-      if js_json::is_safe_integer(v) {
-        v.to_int64().to_string()
-      } else {
-        sql_db::stringify_json(conn)
-      }
-    }
-    _ => sql_db::stringify_json(conn)
+    base_codec::Json::Num(v, _) => fmt_num(v)
+    _ => base_codec::json_stringify(conn)
   }
+}
+
+/// Normalize a connection ID JSON value into a canonical Double-keyed string.
+pub fn conn_key_of(conn : base_codec::Json) -> String {
+  conn_key_of_with(conn, fn(d : Double) -> String { js_json::stringify(js_json::JValue::Num(d)) })
 }
 
 /// Format `{"error": m}` JSON string.
