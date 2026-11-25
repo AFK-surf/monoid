@@ -265,13 +265,13 @@ export const READER_MODES = {
   },
   forward: {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "network",
     note: "Local TCP port forwarder (--builder forward)",
   },
   mesh: {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "network",
     note: "Iroh mesh front endpoint (--builder mesh)",
   },

@@ -154,13 +154,25 @@ impl System {
     /// relay; and a launcher of that release, become at a handover (`renew`), takes up no front it is handed, the pipe to
     /// its stdin left open there for good. Ended before either: its stdin closed, then killed where it does not end.
     fn end_front_not_in_release(&mut self) {
-        if self.front.is_none() || crate::front::Front::in_release(&self.options.app) {
+        if self.front.is_none() || crate::front::Front::in_release(&self.options.app, &self.options.data) {
             return;
         }
         if let Some(front) = self.front.take() {
             log::info(&format!("the release ({}) has no front: the front (pid {}) ended, Nodes bind the station's endpoint themselves", self.options.app.display(), front.pid));
             front.end();
         }
+    }
+
+    /// Replaces the running front when the desired mesh engine changed (e.g. `config.json` `readers.mesh` updated
+    /// before `SIGUSR2` on the same launcher version). Returns true if a switch was attempted.
+    fn switch_front_if_needed(&mut self) -> bool {
+        let Some(front) = &self.front else { return false };
+        let Some(want) = front.engine_switch_target(&self.options.app, &self.options.data) else { return false };
+        let old = self.front.take().unwrap();
+        log::info(&format!("the front (pid {}) engine changed ({} -> {want}): replacing it before handover", old.pid, old.engine()));
+        old.end();
+        self.front = crate::front::Front::start(&self.options.app, &self.options.data);
+        true
     }
 }
 
@@ -658,7 +670,7 @@ pub fn run(mut options: Options) -> i32 {
     let parent = unsafe { libc::getppid() };
     let own = std::env::current_exe().ok().and_then(|exe| hash_of(&exe));
     let front = crate::front::Front::start(&options.app, &options.data);
-    let wanted = front.is_none() && crate::front::Front::in_release(&options.app);
+    let wanted = front.is_none() && crate::front::Front::in_release(&options.app, &options.data);
     let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
     // One the release has that did not start: tried again later (no Node is linked to it, so none hands over for it).
     if wanted {
@@ -694,12 +706,12 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
     // None handed on (a launcher from before the front, or one whose front would not run), or one handing streams as
     // a release before this one: one started here, before the Node the handover starts, so a station that only ever
     // updates comes to have one without being started again.
-    let front = front.and_then(crate::front::Front::current).or_else(|| crate::front::Front::start(&options.app, &options.data));
+    let front = front.and_then(|f| f.current(&options.app, &options.data)).or_else(|| crate::front::Front::start(&options.app, &options.data));
     // Kept: any other of this data directory's is left from before (one a launcher before front.pid lost, 2026-11-16).
     if let Some(kept) = &front {
         crate::front::clean_orphans(&options.data, Some(kept.pid));
     }
-    let wanted = front.is_none() && crate::front::Front::in_release(&options.app);
+    let wanted = front.is_none() && crate::front::Front::in_release(&options.app, &options.data);
     let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
     station.adopt(node, version, served, heartbeats);
     if wanted {
@@ -767,7 +779,13 @@ fn serve(station: &mut Lifecycle<System>, signals: OwnedFd) -> i32 {
                         }
                         libc::SIGUSR1 => station.ask("drain"),
                         libc::SIGHUP => station.ask("hup"),
-                        libc::SIGUSR2 => station.start_next(),
+                        libc::SIGUSR2 => {
+                            let handover_busy = station.processes_mut().iter().any(|(slot, _)| *slot != crate::lifecycle::Slot::Current);
+                            if !handover_busy && station.os.switch_front_if_needed() && station.os.front.is_none() {
+                                station.schedule_front_retry();
+                            }
+                            station.start_next();
+                        }
                         WOKEN => {
                             while let Ok((n, answered)) = station.os.probed.1.try_recv() {
                                 station.front_probed(n, answered);
