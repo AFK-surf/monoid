@@ -557,11 +557,11 @@ test("W7-A dual-engine mesh parity: MB vs Pion (bind, ALPN, wrong-key, lone-surr
   await runMeshParity(bins.pion, "pion");
 });
 
-test("READER_MODES forward and mesh resolve to Pion with STILLFAIL_READER_FORWARD / STILLFAIL_READER_MESH", async (t) => {
+test("READER_MODES mesh resolves to Pion with STILLFAIL_READER_MESH while forward remains unwired", async (t) => {
   const bins = resolveDualBinaries(t);
   if (!bins) return;
   resetReaderSelectionStateForTest();
-  assert.equal(READER_MODES.forward.pionImplemented, true);
+  assert.equal(READER_MODES.forward.pionImplemented, false);
   assert.equal(READER_MODES.mesh.pionImplemented, true);
   assert.equal(readerModeEnvKey("forward"), "STILLFAIL_READER_FORWARD");
   assert.equal(readerModeEnvKey("mesh"), "STILLFAIL_READER_MESH");
@@ -572,26 +572,22 @@ test("READER_MODES forward and mesh resolve to Pion with STILLFAIL_READER_FORWAR
   assert.equal(supported.has("mesh"), true);
 
   // Default (no env or config) stays on MB.
-  const defForward = resolveReaderSelection("forward", { config: undefined, env: {} });
-  assert.equal(defForward.engine, "mb");
-  assert.equal(defForward.primaryBinary, bins.mb);
-  assert.equal(defForward.selection.fallback, false);
-
   const defMesh = resolveReaderSelection("mesh", { config: undefined, env: {} });
   assert.equal(defMesh.engine, "mb");
   assert.equal(defMesh.primaryBinary, bins.mb);
   assert.equal(defMesh.selection.fallback, false);
 
-  // Explicit per-mode env selects Pion for both forward and mesh.
+  // forward has no production spawner so pionImplemented stays false (falls back to MB).
   const envForward = resolveReaderSelection("forward", {
     config: undefined,
     env: { STILLFAIL_READER_FORWARD: "pion" },
   });
-  assert.equal(envForward.engine, "pion");
-  assert.equal(envForward.primaryBinary, bins.pion);
-  assert.equal(envForward.selection.source, "env");
-  assert.equal(envForward.selection.fallback, false);
+  assert.equal(envForward.engine, "mb");
+  assert.equal(envForward.primaryBinary, bins.mb);
+  assert.equal(envForward.selection.fallback, true);
+  assert.equal(envForward.selection.reason, "pion-mode-unimplemented");
 
+  // Explicit STILLFAIL_READER_MESH selects Pion for mesh.
   const envMesh = resolveReaderSelection("mesh", {
     config: undefined,
     env: { STILLFAIL_READER_MESH: "pion" },

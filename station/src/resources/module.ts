@@ -82,13 +82,37 @@ export function programsIn(table: readonly ProcessInfo[] | null, pids: readonly 
   return { bytes, count: pids.length };
 }
 
-/// The resident bytes of the front in `table` (the MoonBit program the launcher keeps the station's endpoint in,
-/// native/launcher/src/front.rs): the launcher's child that runs the program, which no other is (its others are Nodes);
-/// null where there is no launcher, no table or no front. Linux's ps cuts a command's name to 15 bytes.
-export function frontIn(table: readonly ProcessInfo[] | null, launcher: number | null, self: number): number | null {
+/// The resident bytes of the front in `table` (the MoonBit or Pion program the launcher keeps the station's endpoint in,
+/// native/launcher/src/front.rs): matched first by `<data>/run/front.pid` (verified as a child of `launcher`, so custom
+/// binary overrides are covered too), else by the launcher's child running `stillfail-reader` or `stillfail-pion`
+/// (Linux's ps cuts a command's name to 15 bytes). Null where there is no launcher, no table or no front.
+export function frontIn(
+  table: readonly ProcessInfo[] | null,
+  launcher: number | null,
+  self: number,
+  frontPid: number | null = null,
+): number | null {
   if (table === null || launcher === null) return null;
-  const front = table.find((p) => p.ppid === launcher && p.pid !== self && basename(p.command).startsWith("stillfail-reade"));
+  if (frontPid !== null && frontPid > 0 && frontPid !== self) {
+    const byPid = table.find((p) => p.pid === frontPid && p.ppid === launcher);
+    if (byPid !== undefined) return byPid.bytes;
+  }
+  const front = table.find((p) => {
+    if (p.ppid !== launcher || p.pid === self) return false;
+    const name = basename(p.command);
+    return name.startsWith("stillfail-reade") || name.startsWith("stillfail-pion");
+  });
   return front?.bytes ?? null;
+}
+
+/// Reads the launcher's `<data>/run/front.pid` file; null where absent or unreadable.
+export async function readFrontPid(data: string): Promise<number | null> {
+  try {
+    const pid = Number((await readFile(join(data, "run", "front.pid"), "utf8")).trim());
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
 }
 
 /// Whether this process's parent is its launcher (stillfail-station), not a shell or launchd, whose all under it is not
@@ -134,7 +158,11 @@ export const ResourcesLive = Layer.effectDiscard(
             // (let go once read: the machine's table is not kept between samples)
             const current = table;
             table = null;
-            return frontIn(await (current ?? platform.processTable(false)), underLauncher ? process.ppid : null, process.pid);
+            const [snap, frontPid] = await Promise.all([
+              current ?? platform.processTable(false),
+              underLauncher ? readFrontPid(data) : Promise.resolve(null),
+            ]);
+            return frontIn(snap, underLauncher ? process.ppid : null, process.pid, frontPid);
           },
           pressure: () => platform.memoryPressure(),
           trimIdle: () => readers.trimIdle(),

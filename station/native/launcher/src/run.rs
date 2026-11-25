@@ -162,18 +162,6 @@ impl System {
             front.end();
         }
     }
-
-    /// Replaces the running front when the desired mesh engine changed (e.g. `config.json` `readers.mesh` updated
-    /// before `SIGUSR2` on the same launcher version). Returns true if a switch was attempted.
-    fn switch_front_if_needed(&mut self) -> bool {
-        let Some(front) = &self.front else { return false };
-        let Some(want) = front.engine_switch_target(&self.options.app, &self.options.data) else { return false };
-        let old = self.front.take().unwrap();
-        log::info(&format!("the front (pid {}) engine changed ({} -> {want}): replacing it before handover", old.pid, old.engine()));
-        old.end();
-        self.front = crate::front::Front::start(&self.options.app, &self.options.data);
-        true
-    }
 }
 
 /// How long an ask of the front may take to be answered.
@@ -326,6 +314,22 @@ impl Os for System {
         }
         self.front = crate::front::Front::start(&self.options.app, &self.options.data);
         self.front.is_some()
+    }
+
+    fn switch_front_if_needed(&mut self) -> Option<bool> {
+        if let Some(front) = &self.front {
+            let want = front.engine_switch_target(&self.options.app, &self.options.data)?;
+            let old = self.front.take().unwrap();
+            log::info(&format!("the front (pid {}) engine changed ({} -> {want}): replacing it before handover", old.pid, old.engine()));
+            old.end();
+            self.front = crate::front::Front::start(&self.options.app, &self.options.data);
+            return Some(self.front.is_some());
+        }
+        if !crate::front::Front::in_release(&self.options.app, &self.options.data) {
+            return None;
+        }
+        self.front = crate::front::Front::start(&self.options.app, &self.options.data);
+        Some(self.front.is_some())
     }
 
     fn kill_front(&mut self) {
@@ -779,13 +783,7 @@ fn serve(station: &mut Lifecycle<System>, signals: OwnedFd) -> i32 {
                         }
                         libc::SIGUSR1 => station.ask("drain"),
                         libc::SIGHUP => station.ask("hup"),
-                        libc::SIGUSR2 => {
-                            let handover_busy = station.processes_mut().iter().any(|(slot, _)| *slot != crate::lifecycle::Slot::Current);
-                            if !handover_busy && station.os.switch_front_if_needed() && station.os.front.is_none() {
-                                station.schedule_front_retry();
-                            }
-                            station.start_next();
-                        }
+                        libc::SIGUSR2 => station.start_next(),
                         WOKEN => {
                             while let Ok((n, answered)) = station.os.probed.1.try_recv() {
                                 station.front_probed(n, answered);

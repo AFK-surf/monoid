@@ -1,9 +1,12 @@
-//! The MoonBit front (station/mb's program, `--builder mesh`): the station's iroh endpoint kept for its Node across
-//! handovers, so an update binds no new endpoint and its relays stay linked (station/src/mesh/front.ts). The launcher
-//! starts it before the first Node (or, taking up one from before it, before the Node of that handover) and keeps it as long as it runs: across Node's handovers and restarts, and across its
-//! own `renew` (its pid and the pipe to its stdin handed on). Its stdin is that pipe: the launcher gone, it ends; the
-//! launcher stopping kills one that does not (`end`), and one left from before (no launcher's, beside the one kept) is
-//! found by its pid file and its arguments and killed (`clean_orphans`). Each Node
+//! The mesh front (`--builder mesh`): the station's iroh endpoint kept for its Node across handovers, so an update
+//! binds no new endpoint and its relays stay linked (station/src/mesh/front.ts). Runs MoonBit (`stillfail-reader`,
+//! default) or Pion (`stillfail-pion`) selected by `STILLFAIL_READER_MESH` > `<data>/config.json` `readers.mesh` >
+//! `STILLFAIL_READER_ENGINE` > `"mb"` (matching `station/src/read/reader-select.ts`), taking effect on startup,
+//! `SIGUSR2` handover, and launcher `renew`. The launcher starts it before the first Node (or, taking up one from
+//! before it, before the Node of that handover) and keeps it as long as it runs: across Node's handovers and restarts,
+//! and across its own `renew` (its pid, engine, and the pipe to its stdin handed on). Its stdin is that pipe: the
+//! launcher gone, it ends; the launcher stopping kills one that does not (`end`), and one left from before (no
+//! launcher's, beside the one kept) is found by its pid file and its arguments and killed (`clean_orphans`). Each Node
 //! is told where it listens (STILLFAIL_MESH_FRONT); where none could be started, a Node binds the endpoint itself as
 //! before (the mesh addon). Unix only: the front listens on a Unix socket.
 
@@ -80,11 +83,12 @@ impl Front {
         &self.engine
     }
 
-    /// Resolves the effective front engine (`"mb"` or `"pion"`) and binary path for `app` and `data`.
+    /// Resolves the effective front engine (`"mb"` or `"pion"`) and binary path for `app` and `data` (runs `--version`
+    /// capability probe when Pion is requested; used only when actually starting a front).
     fn resolve_program(app: &Path, data: &Path, warn: bool) -> Option<(String, PathBuf)> {
         let config_mesh = read_config_mesh(data);
-        let mesh_env = std::env::var(MESH_ENGINE_VAR).ok();
-        let global_env = std::env::var(GLOBAL_ENGINE_VAR).ok();
+        let mesh_env = std::env::var_os(MESH_ENGINE_VAR);
+        let global_env = std::env::var_os(GLOBAL_ENGINE_VAR);
         let mb_var = std::env::var_os(PROGRAM_VAR);
         let pion_var = std::env::var_os(PION_PROGRAM_VAR);
         resolve_program_with(
@@ -98,9 +102,22 @@ impl Front {
         )
     }
 
-    /// The effective engine (`"mb"` or `"pion"`) that `Front::start(app, data)` would launch right now.
+    /// The desired engine (`"mb"` or `"pion"`) from config/env and binary file existence alone, without running a
+    /// `--version` probe (avoids downgrading a healthy running Pion front on transient probe load).
     pub fn desired_engine(app: &Path, data: &Path) -> Option<String> {
-        Front::resolve_program(app, data, false).map(|(engine, _)| engine)
+        let config_mesh = read_config_mesh(data);
+        let mesh_env = std::env::var_os(MESH_ENGINE_VAR);
+        let global_env = std::env::var_os(GLOBAL_ENGINE_VAR);
+        let mb_var = std::env::var_os(PROGRAM_VAR);
+        let pion_var = std::env::var_os(PION_PROGRAM_VAR);
+        desired_engine_with(
+            app,
+            config_mesh.as_ref(),
+            mesh_env.as_deref(),
+            global_env.as_deref(),
+            mb_var.as_deref(),
+            pion_var.as_deref(),
+        )
     }
 
     /// Returns the new engine name when the desired engine differs from this running front's engine.
@@ -109,71 +126,33 @@ impl Front {
         engine_changed(&self.engine, &want).then_some(want)
     }
 
-    /// Whether the release at `app` has a front program (expected engine or fallback; where it does, one that does not
-    /// start is tried again later).
-    pub fn in_release(app: &Path, data: &Path) -> bool {
-        Front::resolve_program(app, data, false).is_some()
+    /// Whether the release at `app` has any front program on disk (checked by file existence only, no `--version`
+    /// probe; where it does, one that does not start is tried again later).
+    pub fn in_release(app: &Path, _data: &Path) -> bool {
+        let mb_var = std::env::var_os(PROGRAM_VAR);
+        let pion_var = std::env::var_os(PION_PROGRAM_VAR);
+        mb_program_with(app, mb_var.as_deref()).is_some()
+            || is_executable_file(&pion_candidate_with(app, pion_var.as_deref()))
     }
 
     /// The front for the station of `data`, listening; none where the release has none or it did not start (said).
+    /// If Pion passed its `--version` probe but subsequently fails to spawn or listen, falls back once to MoonBit.
     pub fn start(app: &Path, data: &Path) -> Option<Front> {
         // None of this launcher's runs (it starts one only where it has none): any other of this data directory is left
         // from before (a launcher killed, one from before front.pid) and holds the station's key on the relays.
         clean_orphans(data, None);
         let (engine, program) = Front::resolve_program(app, data, true)?;
-        let run = data.join("run");
-        let socket = run.join("front.sock");
-        let pid_file = run.join(PID_FILE);
-        let mut command = Command::new(&program);
-        command
-            .args(["--builder", "mesh", "--socket"])
-            .arg(&socket)
-            .arg("--shell-dir")
-            .arg(run.join("front"))
-            // Its shell's threads carry every byte of the station's iroh: as many as the machine has cores, as the addon's
-            // (tokio's own count) had (two, an app's, held bulk transfers 15% under the addon's).
-            .env("STILLFAIL_SHELL_THREADS", std::thread::available_parallelism().map_or(2, |n| n.get()).to_string())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .process_group(0);
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(error) => {
-                log::warn(&format!("the front (engine {engine}, {}) did not start: {error}; each Node binds the station's endpoint itself", program.display()));
-                return None;
-            }
-        };
-        let pid = child.id() as i32;
-        write_pid(&pid_file, pid);
-        // SAFETY: the pipe's write end, taken from the child's handle, owned here from now on.
-        let input = unsafe { OwnedFd::from_raw_fd(child.stdin.take().unwrap().into_raw_fd()) };
-        let mut out = child.stdout.take().unwrap();
-        // Reaped by waitpid in run.rs's serve(), not by std.
-        drop(child);
-        match listening(&mut out) {
-            Some((said, streams)) if said == socket.to_string_lossy() => {
-                log::info(&format!("the front listens (pid {pid}, engine {engine}, {}): {}", program.display(), socket.display()));
-                Some(Front {
-                    pid, input, socket, pid_file, started: Some(Instant::now()), streams, engine,
-                    #[cfg(target_os = "macos")]
-                    launcher_uuid: executable_uuid(),
-                    #[cfg(target_os = "macos")]
-                    uuid_recorded: true,
-                })
-            }
-            other => {
-                log::warn(&format!("the front (pid {pid}, engine {engine}) did not listen ({other:?}); each Node binds the station's endpoint itself"));
-                // SAFETY: a signal to a child of this process, then its exit waited for (it would be left a zombie, or,
-                // where the kill did not take, a second endpoint on the station's key).
-                unsafe {
-                    libc::kill(pid, libc::SIGKILL);
-                    libc::waitpid(pid, std::ptr::null_mut(), 0);
-                }
-                forget_pid(&pid_file, pid);
-                None
+        if let Some(front) = spawn_front(&program, &engine, data) {
+            return Some(front);
+        }
+        if engine == ENGINE_PION {
+            let mb_var = std::env::var_os(PROGRAM_VAR);
+            if let Some(mb_program) = mb_program_with(app, mb_var.as_deref()) {
+                log::warn(&format!("the front (engine pion, {}) failed to start or listen; falling back to \"mb\" ({})", program.display(), mb_program.display()));
+                return spawn_front(&mb_program, ENGINE_MB, data);
             }
         }
+        None
     }
 
     /// It ended: another in its place, unless it ended sooner than `lives` after it started (said; the lifecycle tries
@@ -222,10 +201,15 @@ impl Front {
         // (a launcher from before front.pid wrote none)
         write_pid(&pid_file, pid);
         // SAFETY: the descriptor the launcher before handed on, owned by this one from here.
+        let engine = state["engine"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| infer_engine_from_args(args_of(pid).as_deref()).to_string());
         Some(Front {
             pid, input: unsafe { OwnedFd::from_raw_fd(input) }, socket, pid_file, started: None,
             streams: state["streams"].as_u64().unwrap_or(1),
-            engine: state["engine"].as_str().filter(|s| !s.is_empty()).unwrap_or(ENGINE_MB).to_string(),
+            engine,
             #[cfg(target_os = "macos")]
             launcher_uuid: state["launcherUuid"].as_str().map(str::to_string),
             #[cfg(target_os = "macos")]
@@ -298,8 +282,97 @@ const ENDS_WITHIN: Duration = Duration::from_secs(1);
 /// How long a front left from before is waited for to be gone once killed.
 const ORPHAN_GONE_WITHIN: Duration = Duration::from_secs(2);
 
+fn spawn_front(program: &Path, engine: &str, data: &Path) -> Option<Front> {
+    let run = data.join("run");
+    let socket = run.join("front.sock");
+    let pid_file = run.join(PID_FILE);
+    let mut command = Command::new(program);
+    command
+        .args(["--builder", "mesh", "--socket"])
+        .arg(&socket)
+        .arg("--shell-dir")
+        .arg(run.join("front"))
+        // Its shell's threads carry every byte of the station's iroh: as many as the machine has cores, as the addon's
+        // (tokio's own count) had (two, an app's, held bulk transfers 15% under the addon's).
+        .env("STILLFAIL_SHELL_THREADS", std::thread::available_parallelism().map_or(2, |n| n.get()).to_string())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .process_group(0);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            log::warn(&format!("the front (engine {engine}, {}) did not start: {error}; each Node binds the station's endpoint itself", program.display()));
+            return None;
+        }
+    };
+    let pid = child.id() as i32;
+    write_pid(&pid_file, pid);
+    // SAFETY: the pipe's write end, taken from the child's handle, owned here from now on.
+    let input = unsafe { OwnedFd::from_raw_fd(child.stdin.take().unwrap().into_raw_fd()) };
+    let mut out = child.stdout.take().unwrap();
+    // Reaped by waitpid in run.rs's serve(), not by std.
+    drop(child);
+    match listening(&mut out) {
+        Some((said, streams)) if said == socket.to_string_lossy() => {
+            log::info(&format!("the front listens (pid {pid}, engine {engine}, {}): {}", program.display(), socket.display()));
+            Some(Front {
+                pid, input, socket, pid_file, started: Some(Instant::now()), streams, engine: engine.to_string(),
+                #[cfg(target_os = "macos")]
+                launcher_uuid: executable_uuid(),
+                #[cfg(target_os = "macos")]
+                uuid_recorded: true,
+            })
+        }
+        other => {
+            log::warn(&format!("the front (pid {pid}, engine {engine}) did not listen ({other:?}); each Node binds the station's endpoint itself"));
+            // SAFETY: a signal to a child of this process, then its exit waited for (it would be left a zombie, or,
+            // where the kill did not take, a second endpoint on the station's key).
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+                libc::waitpid(pid, std::ptr::null_mut(), 0);
+            }
+            forget_pid(&pid_file, pid);
+            None
+        }
+    }
+}
+
 fn engine_changed(current: &str, desired: &str) -> bool {
     current != desired
+}
+
+/// Infers engine from a live front process's `argv[0]` when resuming from an older launcher state that omitted `engine`.
+fn infer_engine_from_args(args: Option<&[std::ffi::OsString]>) -> &'static str {
+    let Some(first) = args.and_then(|list| list.first()) else {
+        return ENGINE_MB;
+    };
+    match Path::new(first).file_name().and_then(|n| n.to_str()) {
+        Some(name) if name == "stillfail-pion" => ENGINE_PION,
+        _ => ENGINE_MB,
+    }
+}
+
+/// ECMAScript `String.prototype.trim()` whitespace (includes U+FEFF BOM, excludes U+0085 NEL) for 1:1 parity with TS.
+fn is_es_whitespace(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0009}'..='\u{000D}'
+            | '\u{0020}'
+            | '\u{00A0}'
+            | '\u{1680}'
+            | '\u{2000}'..='\u{200A}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202F}'
+            | '\u{205F}'
+            | '\u{3000}'
+            | '\u{FEFF}'
+    )
+}
+
+fn trim_es_whitespace(s: &str) -> &str {
+    s.trim_matches(is_es_whitespace)
 }
 
 fn read_config_mesh(data: &Path) -> Option<Value> {
@@ -315,7 +388,7 @@ fn read_config_mesh_at(path: &Path) -> Option<Value> {
 }
 
 fn parse_engine_str(raw: &str, source: &str, warn: bool) -> &'static str {
-    match raw.trim().to_ascii_lowercase().as_str() {
+    match trim_es_whitespace(raw).to_ascii_lowercase().as_str() {
         ENGINE_MB => ENGINE_MB,
         ENGINE_PION => ENGINE_PION,
         "shadow" => {
@@ -333,21 +406,40 @@ fn parse_engine_str(raw: &str, source: &str, warn: bool) -> &'static str {
     }
 }
 
+/// Parses an environment variable value for engine selection: `None` if unset/blank; `Some(engine)` otherwise.
+/// Non-UTF-8 non-empty values fail safe to `"mb"` (do not fall through to config/global env).
+fn parse_engine_env(raw: Option<&OsStr>, source: &str, warn: bool) -> Option<&'static str> {
+    let os = raw?;
+    if os.is_empty() {
+        return None;
+    }
+    match os.to_str() {
+        Some(s) if trim_es_whitespace(s).is_empty() => None,
+        Some(s) => Some(parse_engine_str(s, source, warn)),
+        None => {
+            if warn {
+                log::warn(&format!("non-UTF-8 front mesh engine in {source}; falling back to \"mb\""));
+            }
+            Some(ENGINE_MB)
+        }
+    }
+}
+
 /// Resolves the requested engine for `--builder mesh` matching `station/src/read/reader-select.ts`:
 /// `STILLFAIL_READER_MESH > config.json readers.mesh > STILLFAIL_READER_ENGINE > "mb"`.
 fn select_requested_engine(
-    mesh_env: Option<&str>,
+    mesh_env: Option<&OsStr>,
     config_mesh: Option<&Value>,
-    global_env: Option<&str>,
+    global_env: Option<&OsStr>,
     warn: bool,
 ) -> &'static str {
-    if let Some(raw) = mesh_env.filter(|s| !s.trim().is_empty()) {
-        return parse_engine_str(raw, MESH_ENGINE_VAR, warn);
+    if let Some(engine) = parse_engine_env(mesh_env, MESH_ENGINE_VAR, warn) {
+        return engine;
     }
     if let Some(val) = config_mesh {
         match val {
             Value::Null => {}
-            Value::String(s) if s.trim().is_empty() => {}
+            Value::String(s) if trim_es_whitespace(s).is_empty() => {}
             Value::String(s) => return parse_engine_str(s, "config.json readers.mesh", warn),
             other => {
                 if warn {
@@ -357,27 +449,47 @@ fn select_requested_engine(
             }
         }
     }
-    if let Some(raw) = global_env.filter(|s| !s.trim().is_empty()) {
-        return parse_engine_str(raw, GLOBAL_ENGINE_VAR, warn);
+    if let Some(engine) = parse_engine_env(global_env, GLOBAL_ENGINE_VAR, warn) {
+        return engine;
     }
     ENGINE_MB
 }
 
+/// Resolves an explicit binary override env var to an absolute path so `access(X_OK)` and `Command::new` always refer
+/// to the exact same file (never falling back to `PATH` lookup on single-segment relative names).
+fn resolve_override_path(raw: Option<&OsStr>) -> Option<PathBuf> {
+    let os = raw?;
+    if os.is_empty() {
+        return None;
+    }
+    let path = match os.to_str() {
+        Some(s) => {
+            let trimmed = trim_es_whitespace(s);
+            if trimmed.is_empty() {
+                return None;
+            }
+            PathBuf::from(trimmed)
+        }
+        None => PathBuf::from(os),
+    };
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        std::env::current_dir().ok().map(|cwd| cwd.join(&path)).or(Some(path))
+    }
+}
+
 fn mb_program_with(app: &Path, mb_var: Option<&OsStr>) -> Option<PathBuf> {
-    if let Some(given) = mb_var.filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(given));
+    if let Some(given) = resolve_override_path(mb_var) {
+        return Some(given);
     }
     let program = app.join(PROGRAM_IN_APP);
     program.is_file().then_some(program)
 }
 
 fn pion_candidate_with(app: &Path, pion_var: Option<&OsStr>) -> PathBuf {
-    if let Some(given) = pion_var {
-        let trimmed = given.to_string_lossy();
-        let trimmed = trimmed.trim();
-        if !trimmed.is_empty() {
-            return PathBuf::from(trimmed);
-        }
+    if let Some(given) = resolve_override_path(pion_var) {
+        return given;
     }
     app.join(PION_PROGRAM_IN_APP)
 }
@@ -393,17 +505,29 @@ fn is_executable_file(path: &Path) -> bool {
     unsafe { libc::access(cpath.as_ptr(), libc::X_OK) == 0 }
 }
 
-/// Exact token-level check on `stillfail-pion --version` output: requires a `modes:<csv>` token whose comma-separated
-/// list contains `mesh` as an exact entry (never matching substrings like `mesh2` or `submesh`).
+/// Matches the first `(?:^|\s)modes:([a-z0-9_,-]+)` case-insensitively (1:1 with `mb-reader.ts` `parsePionVersionModes`)
+/// and requires `mesh` as an exact comma-separated entry (never matching substrings like `mesh2` or `submesh`).
 fn version_supports_mesh(stdout: &str) -> bool {
-    stdout.split_whitespace().any(|token| {
-        token
-            .get(..6)
-            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("modes:"))
-            && token[6..]
-                .split(',')
-                .any(|mode| mode.eq_ignore_ascii_case("mesh"))
-    })
+    let bytes = stdout.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let at_boundary = i == 0 || bytes[i - 1].is_ascii_whitespace();
+        if at_boundary && bytes.len() - i >= 6 && bytes[i..i + 6].eq_ignore_ascii_case(b"modes:") {
+            let start = i + 6;
+            let mut end = start;
+            while end < bytes.len()
+                && (bytes[end].is_ascii_alphanumeric() || matches!(bytes[end], b'_' | b',' | b'-'))
+            {
+                end += 1;
+            }
+            if end > start {
+                let csv = &stdout[start..end];
+                return csv.split(',').any(|m| m.eq_ignore_ascii_case("mesh"));
+            }
+        }
+        i += 1;
+    }
+    false
 }
 
 /// Runs `<program> --version` with a bounded timeout so a broken or wedged binary can never block launcher startup.
@@ -415,11 +539,16 @@ fn probe_pion_mesh_support(program: &Path, within: Duration) -> std::result::Res
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("spawn failed: {e}"))?;
-    let mut out = child.stdout.take().ok_or_else(|| "missing stdout pipe".to_string())?;
+    let Some(mut out) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err("missing stdout pipe".to_string());
+    };
     let deadline = Instant::now() + within;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 1024];
     let mut timed_out = false;
+    let mut overflowed = false;
     loop {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -439,14 +568,15 @@ fn probe_pion_mesh_support(program: &Path, within: Duration) -> std::result::Res
         match out.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => {
-                let take = n.min(PROBE_STDOUT_LIMIT.saturating_sub(buf.len()));
-                buf.extend_from_slice(&chunk[..take]);
-                if buf.len() >= PROBE_STDOUT_LIMIT {
+                if buf.len() + n > PROBE_STDOUT_LIMIT {
+                    overflowed = true;
                     break;
                 }
+                buf.extend_from_slice(&chunk[..n]);
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => {
+                drop(out);
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!("read failed: {e}"));
@@ -454,6 +584,11 @@ fn probe_pion_mesh_support(program: &Path, within: Duration) -> std::result::Res
         }
     }
     drop(out);
+    if overflowed {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("--version output exceeded {PROBE_STDOUT_LIMIT} bytes"));
+    }
     if timed_out {
         let _ = child.kill();
         let _ = child.wait();
@@ -487,11 +622,27 @@ fn probe_pion_mesh_support(program: &Path, within: Duration) -> std::result::Res
     Ok(())
 }
 
+/// Desired engine from config/env + binary file existence alone (no `--version` probe).
+fn desired_engine_with(
+    app: &Path,
+    config_mesh: Option<&Value>,
+    mesh_env: Option<&OsStr>,
+    global_env: Option<&OsStr>,
+    mb_var: Option<&OsStr>,
+    pion_var: Option<&OsStr>,
+) -> Option<String> {
+    let requested = select_requested_engine(mesh_env, config_mesh, global_env, false);
+    if requested == ENGINE_PION && is_executable_file(&pion_candidate_with(app, pion_var)) {
+        return Some(ENGINE_PION.to_string());
+    }
+    mb_program_with(app, mb_var).map(|_| ENGINE_MB.to_string())
+}
+
 fn resolve_program_with(
     app: &Path,
     config_mesh: Option<&Value>,
-    mesh_env: Option<&str>,
-    global_env: Option<&str>,
+    mesh_env: Option<&OsStr>,
+    global_env: Option<&OsStr>,
     mb_var: Option<&OsStr>,
     pion_var: Option<&OsStr>,
     warn: bool,
@@ -906,15 +1057,20 @@ fn connect_now(socket: &Path) -> Option<std::os::unix::net::UnixStream> {
 #[cfg(test)]
 mod engine_tests {
     use super::{
-        ENGINE_MB, ENGINE_PION, Front, STREAMS, engine_changed, read_config_mesh_at,
-        resolve_program_with, select_requested_engine, version_supports_mesh,
+        ENGINE_MB, ENGINE_PION, Front, PROBE_STDOUT_LIMIT, STREAMS, desired_engine_with,
+        engine_changed, infer_engine_from_args, probe_pion_mesh_support, read_config_mesh_at,
+        resolve_override_path, resolve_program_with, select_requested_engine,
+        version_supports_mesh,
     };
     use serde_json::json;
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
+    use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
 
     static SEQ: AtomicU64 = AtomicU64::new(0);
 
@@ -930,9 +1086,15 @@ mod engine_tests {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
-        std::fs::write(path, body).unwrap();
+        let tmp = path.with_extension(format!("tmp-{}", SEQ.fetch_add(1, Ordering::Relaxed)));
+        std::fs::write(&tmp, body).unwrap();
         let mode = if executable { 0o755 } else { 0o644 };
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode)).unwrap();
+        std::fs::rename(&tmp, path).unwrap();
+    }
+
+    fn os(s: &str) -> Option<&OsStr> {
+        Some(OsStr::new(s))
     }
 
     #[test]
@@ -944,40 +1106,59 @@ mod engine_tests {
         // Default is mb.
         assert_eq!(select_requested_engine(None, None, None, false), ENGINE_MB);
         // Global env selects pion when neither per-mode env nor config sets it.
-        assert_eq!(select_requested_engine(None, None, Some("pion"), false), ENGINE_PION);
+        assert_eq!(select_requested_engine(None, None, os("pion"), false), ENGINE_PION);
         // config.json readers.mesh overrides STILLFAIL_READER_ENGINE.
-        assert_eq!(select_requested_engine(None, Some(&cfg_mb), Some("pion"), false), ENGINE_MB);
-        assert_eq!(select_requested_engine(None, Some(&cfg_pion), Some("mb"), false), ENGINE_PION);
+        assert_eq!(select_requested_engine(None, Some(&cfg_mb), os("pion"), false), ENGINE_MB);
+        assert_eq!(select_requested_engine(None, Some(&cfg_pion), os("mb"), false), ENGINE_PION);
         // Blank config falls through to global env.
-        assert_eq!(select_requested_engine(None, Some(&cfg_blank), Some("pion"), false), ENGINE_PION);
+        assert_eq!(select_requested_engine(None, Some(&cfg_blank), os("pion"), false), ENGINE_PION);
         // STILLFAIL_READER_MESH overrides both config and global env.
-        assert_eq!(select_requested_engine(Some("mb"), Some(&cfg_pion), Some("pion"), false), ENGINE_MB);
-        assert_eq!(select_requested_engine(Some("  PiOn \n"), Some(&cfg_mb), Some("mb"), false), ENGINE_PION);
+        assert_eq!(select_requested_engine(os("mb"), Some(&cfg_pion), os("pion"), false), ENGINE_MB);
+        assert_eq!(select_requested_engine(os("  PiOn \n"), Some(&cfg_mb), os("mb"), false), ENGINE_PION);
         // Blank STILLFAIL_READER_MESH falls through to config.
-        assert_eq!(select_requested_engine(Some("  \t "), Some(&cfg_pion), Some("mb"), false), ENGINE_PION);
+        assert_eq!(select_requested_engine(os("  \t "), Some(&cfg_pion), os("mb"), false), ENGINE_PION);
     }
 
     #[test]
-    fn invalid_and_shadow_values_fall_back_safely_to_mb() {
+    fn invalid_shadow_non_utf8_and_ecmascript_whitespace_match_ts() {
         let cfg_pion = json!("pion");
         let cfg_shadow = json!("shadow");
         let cfg_num = json!(42);
         let cfg_bad = json!("rust");
 
         // Shadow is strictly forbidden for mesh (network mode).
-        assert_eq!(select_requested_engine(Some("shadow"), Some(&cfg_pion), Some("pion"), false), ENGINE_MB);
-        assert_eq!(select_requested_engine(Some(" SHADOW "), None, None, false), ENGINE_MB);
-        assert_eq!(select_requested_engine(None, Some(&cfg_shadow), Some("pion"), false), ENGINE_MB);
-        assert_eq!(select_requested_engine(None, None, Some("shadow"), false), ENGINE_MB);
+        assert_eq!(select_requested_engine(os("shadow"), Some(&cfg_pion), os("pion"), false), ENGINE_MB);
+        assert_eq!(select_requested_engine(os(" SHADOW "), None, None, false), ENGINE_MB);
+        assert_eq!(select_requested_engine(None, Some(&cfg_shadow), os("pion"), false), ENGINE_MB);
+        assert_eq!(select_requested_engine(None, None, os("shadow"), false), ENGINE_MB);
 
         // Invalid env must fail safe to mb without falling through to config=pion.
-        assert_eq!(select_requested_engine(Some("typo"), Some(&cfg_pion), Some("pion"), false), ENGINE_MB);
-        assert_eq!(select_requested_engine(None, Some(&cfg_num), Some("pion"), false), ENGINE_MB);
-        assert_eq!(select_requested_engine(None, Some(&cfg_bad), Some("pion"), false), ENGINE_MB);
+        assert_eq!(select_requested_engine(os("typo"), Some(&cfg_pion), os("pion"), false), ENGINE_MB);
+        assert_eq!(select_requested_engine(None, Some(&cfg_num), os("pion"), false), ENGINE_MB);
+        assert_eq!(select_requested_engine(None, Some(&cfg_bad), os("pion"), false), ENGINE_MB);
+
+        // Non-UTF-8 env var is treated as non-empty invalid value -> falls back to mb without falling through.
+        let non_utf8 = OsStr::from_bytes(b"\xff\xfe");
+        assert_eq!(select_requested_engine(Some(non_utf8), Some(&cfg_pion), os("pion"), false), ENGINE_MB);
+        assert_eq!(select_requested_engine(None, None, Some(non_utf8), false), ENGINE_MB);
+
+        // ECMAScript trim: U+FEFF (BOM) IS trimmed; U+0085 (NEL) is NOT trimmed (invalid -> mb).
+        assert_eq!(select_requested_engine(os("\u{FEFF}pion\u{FEFF}"), None, None, false), ENGINE_PION);
+        assert_eq!(select_requested_engine(os("\u{0085}pion"), Some(&cfg_pion), os("pion"), false), ENGINE_MB);
+        assert_eq!(select_requested_engine(os("\u{FEFF}"), Some(&cfg_pion), None, false), ENGINE_PION);
+
+        // Non-object `readers` in config.json is safely ignored.
+        let dir = temp_dir("bad-readers");
+        for body in [r#"{"readers":["pion"]}"#, r#"{"readers":"pion"}"#, r#"{"readers":null}"#] {
+            let cfg_path = dir.join("config.json");
+            std::fs::write(&cfg_path, body).unwrap();
+            assert_eq!(read_config_mesh_at(&cfg_path), None);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn version_supports_mesh_uses_exact_token_and_csv_boundaries() {
+    fn version_supports_mesh_uses_first_match_and_exact_csv_boundaries() {
         assert!(version_supports_mesh("stillfail-pion 0.3.0 modes:footprint,forward,mesh"));
         assert!(version_supports_mesh("stillfail-pion 0.3.0 modes:mesh"));
         assert!(version_supports_mesh("stillfail-pion 0.3.0 modes:footprint,mesh,serve\n"));
@@ -985,6 +1166,46 @@ mod engine_tests {
         assert!(!version_supports_mesh("stillfail-pion 0.3.0 modes:footprint,submesh"));
         assert!(!version_supports_mesh("stillfail-pion 0.3.0 xmodes:mesh"));
         assert!(!version_supports_mesh("stillfail-pion 0.3.0"));
+        // Only the FIRST modes: token is consulted (matches TS regex `.exec`).
+        assert!(!version_supports_mesh("stillfail-pion 0.3.0 modes:footprint,mesh2 modes:mesh"));
+    }
+
+    #[test]
+    fn probe_handles_timeout_oversized_truncation_and_nonzero_exit() {
+        let dir = temp_dir("probe-edge");
+
+        // 1. 200ms timeout kills slow binary cleanly.
+        let slow = dir.join("pion-slow");
+        write_script(&slow, "#!/bin/sh\nsleep 5\n", true);
+        let err = probe_pion_mesh_support(&slow, Duration::from_millis(200)).unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+
+        // 2. Output exceeding 64 KiB right across `modes:mesh2` boundary must fail (never truncate to `mesh`).
+        let big = dir.join("pion-big");
+        let pad_len = PROBE_STDOUT_LIMIT - "modes:mesh".len();
+        write_script(
+            &big,
+            &format!("#!/bin/sh\nawk 'BEGIN{{for(i=0;i<{pad_len};i++) printf \" \"; printf \"modes:mesh2\\n\"}}'\n"),
+            true,
+        );
+        let err = probe_pion_mesh_support(&big, Duration::from_secs(3)).unwrap_err();
+        assert!(err.contains("exceeded"), "{err}");
+
+        // 3. Valid modes:mesh output but exit 1 must fail.
+        let exit1 = dir.join("pion-exit1");
+        write_script(&exit1, "#!/bin/sh\necho 'stillfail-pion 0.3.0 modes:mesh'\nexit 1\n", true);
+        let err = probe_pion_mesh_support(&exit1, Duration::from_secs(3)).unwrap_err();
+        assert!(err.contains("exited"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn relative_override_path_resolves_against_cwd() {
+        let resolved = resolve_override_path(os("stillfail-pion")).expect("resolved");
+        assert!(resolved.is_absolute(), "must be absolute: {}", resolved.display());
+        assert_eq!(resolved.file_name().and_then(|n| n.to_str()), Some("stillfail-pion"));
+        assert_eq!(resolve_override_path(os("  \u{FEFF} ")), None);
     }
 
     #[test]
@@ -997,8 +1218,13 @@ mod engine_tests {
         // 1. Valid Pion binary advertising modes:...,mesh,... is selected.
         let good_pion = dir.join("pion-good");
         write_script(&good_pion, "#!/bin/sh\necho 'stillfail-pion 0.3.0 modes:footprint,forward,mesh'\n", true);
-        let resolved = resolve_program_with(&app, None, Some("pion"), None, None, Some(good_pion.as_os_str()), false);
+        let resolved = resolve_program_with(&app, None, os("pion"), None, None, Some(good_pion.as_os_str()), false);
         assert_eq!(resolved, Some((ENGINE_PION.to_string(), good_pion.clone())));
+        // desired_engine_with checks file existence only (no --version probe).
+        assert_eq!(
+            desired_engine_with(&app, None, os("pion"), None, None, Some(good_pion.as_os_str())).as_deref(),
+            Some(ENGINE_PION)
+        );
 
         // 2. Default (mb) selects stillfail-reader even when good Pion binary exists.
         let resolved_mb = resolve_program_with(&app, None, None, None, None, Some(good_pion.as_os_str()), false);
@@ -1006,25 +1232,25 @@ mod engine_tests {
 
         // 3. Missing Pion binary falls back safely to mb.
         let missing_pion = dir.join("pion-missing");
-        let resolved_missing = resolve_program_with(&app, None, Some("pion"), None, None, Some(missing_pion.as_os_str()), false);
+        let resolved_missing = resolve_program_with(&app, None, os("pion"), None, None, Some(missing_pion.as_os_str()), false);
         assert_eq!(resolved_missing, Some((ENGINE_MB.to_string(), mb_bin.clone())));
 
         // 4. Non-executable Pion file falls back safely to mb.
         let nonexec_pion = dir.join("pion-nonexec");
         write_script(&nonexec_pion, "#!/bin/sh\necho 'stillfail-pion 0.3.0 modes:mesh'\n", false);
-        let resolved_nonexec = resolve_program_with(&app, None, Some("pion"), None, None, Some(nonexec_pion.as_os_str()), false);
+        let resolved_nonexec = resolve_program_with(&app, None, os("pion"), None, None, Some(nonexec_pion.as_os_str()), false);
         assert_eq!(resolved_nonexec, Some((ENGINE_MB.to_string(), mb_bin.clone())));
 
         // 5. Pion binary whose --version lacks exact `mesh` (e.g. only `mesh2`) falls back safely to mb.
         let bad_modes_pion = dir.join("pion-mesh2");
         write_script(&bad_modes_pion, "#!/bin/sh\necho 'stillfail-pion 0.3.0 modes:footprint,mesh2'\n", true);
-        let resolved_bad_modes = resolve_program_with(&app, None, Some("pion"), None, None, Some(bad_modes_pion.as_os_str()), false);
+        let resolved_bad_modes = resolve_program_with(&app, None, os("pion"), None, None, Some(bad_modes_pion.as_os_str()), false);
         assert_eq!(resolved_bad_modes, Some((ENGINE_MB.to_string(), mb_bin.clone())));
 
         // 6. Pion binary whose --version exits non-zero falls back safely to mb.
         let fail_pion = dir.join("pion-fail");
         write_script(&fail_pion, "#!/bin/sh\nexit 1\n", true);
-        let resolved_fail = resolve_program_with(&app, None, Some("pion"), None, None, Some(fail_pion.as_os_str()), false);
+        let resolved_fail = resolve_program_with(&app, None, os("pion"), None, None, Some(fail_pion.as_os_str()), false);
         assert_eq!(resolved_fail, Some((ENGINE_MB.to_string(), mb_bin.clone())));
 
         // 7. Config file readers.mesh = "pion" resolves release's <app>/station/stillfail-pion when STILLFAIL_PION_READER is unset.
@@ -1040,7 +1266,7 @@ mod engine_tests {
     }
 
     #[test]
-    fn state_and_resumed_round_trip_engine_and_default_missing_to_mb() {
+    fn state_and_resumed_round_trip_engine_and_infer_legacy_engine() {
         let dir = temp_dir("state");
         let run = dir.join("run");
         std::fs::create_dir_all(&run).unwrap();
@@ -1070,7 +1296,6 @@ mod engine_tests {
         };
         let serialized = front.state();
         assert_eq!(serialized["engine"], json!("pion"));
-        // Transfer fd ownership out of `front` without closing it so `Front::resumed` can take ownership.
         let Front { input, .. } = front;
         let _leaked = input.into_raw_fd();
         let resumed = Front::resumed(&serialized).expect("resumed front");
@@ -1078,7 +1303,7 @@ mod engine_tests {
         assert_eq!(resumed.pid, 4242);
         drop(resumed);
 
-        // Old launcher state without "engine" field defaults safely to "mb".
+        // Old launcher state without "engine" field defaults safely to "mb" when pid is not a stillfail-pion process.
         let fd_old = make_pipe_fd();
         let old_state = json!({
             "pid": 5151,
@@ -1089,6 +1314,71 @@ mod engine_tests {
         let resumed_old = Front::resumed(&old_state).expect("resumed old front");
         assert_eq!(resumed_old.engine(), ENGINE_MB);
         drop(resumed_old);
+
+        // Legacy inference from argv[0] recognizes stillfail-pion.
+        let pion_args = vec![OsString::from("/opt/stillfail/station/stillfail-pion"), OsString::from("--builder"), OsString::from("mesh")];
+        let mb_args = vec![OsString::from("/opt/stillfail/station/stillfail-reader"), OsString::from("--builder"), OsString::from("mesh")];
+        assert_eq!(infer_engine_from_args(Some(&pion_args)), ENGINE_PION);
+        assert_eq!(infer_engine_from_args(Some(&mb_args)), ENGINE_MB);
+        assert_eq!(infer_engine_from_args(None), ENGINE_MB);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn current_keeps_matching_engine_and_ends_changed_engine() {
+        let dir = temp_dir("current");
+        let app = dir.join("app");
+        let data = dir.join("data");
+        std::fs::create_dir_all(data.join("run")).unwrap();
+        write_script(&app.join("station/stillfail-reader"), "#!/bin/sh\necho mb\n", true);
+        write_script(&app.join("station/stillfail-pion"), "#!/bin/sh\necho 'stillfail-pion 0.1.0 modes:mesh'\n", true);
+        std::fs::write(data.join("config.json"), r#"{"readers":{"mesh":"pion"}}"#).unwrap();
+
+        let spawn_cat = || -> (i32, OwnedFd) {
+            let mut child = Command::new("/bin/cat").stdin(Stdio::piped()).stdout(Stdio::null()).spawn().unwrap();
+            let pid = child.id() as i32;
+            let input = unsafe { OwnedFd::from_raw_fd(child.stdin.take().unwrap().into_raw_fd()) };
+            drop(child);
+            (pid, input)
+        };
+
+        // Matching engine ("pion") is kept.
+        let (pid1, input1) = spawn_cat();
+        let kept = Front {
+            pid: pid1,
+            input: input1,
+            socket: data.join("run/front.sock"),
+            pid_file: data.join("run/front.pid"),
+            started: None,
+            streams: STREAMS,
+            engine: ENGINE_PION.to_string(),
+            #[cfg(target_os = "macos")]
+            launcher_uuid: super::executable_uuid(),
+            #[cfg(target_os = "macos")]
+            uuid_recorded: true,
+        };
+        let kept = kept.current(&app, &data).expect("matching engine front must be kept");
+        assert_eq!(kept.pid, pid1);
+        kept.end();
+
+        // Mismatched engine ("mb" while config wants "pion") is cleanly ended and returns None.
+        let (pid2, input2) = spawn_cat();
+        let old = Front {
+            pid: pid2,
+            input: input2,
+            socket: data.join("run/front.sock"),
+            pid_file: data.join("run/front.pid"),
+            started: None,
+            streams: STREAMS,
+            engine: ENGINE_MB.to_string(),
+            #[cfg(target_os = "macos")]
+            launcher_uuid: super::executable_uuid(),
+            #[cfg(target_os = "macos")]
+            uuid_recorded: true,
+        };
+        assert!(old.current(&app, &data).is_none());
+        assert_ne!(unsafe { libc::kill(pid2, 0) }, 0, "old front process must have exited");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

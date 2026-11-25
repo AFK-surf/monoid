@@ -265,7 +265,7 @@ export const READER_MODES = {
   },
   forward: {
     allowShadow: false,
-    pionImplemented: true,
+    pionImplemented: false,
     sideEffect: "network",
     note: "Local TCP port forwarder (--builder forward)",
   },

@@ -178,6 +178,12 @@ pub trait Os {
     fn restart_front(&mut self) -> bool {
         false
     }
+    /// Before starting the next Node on a handover (after `renew` did not take over): replaces or starts the front
+    /// when the desired engine changed (or no front was running and one is now available). Returns `None` if no switch
+    /// was needed, `Some(true)` if the new front listens, or `Some(false)` if starting it failed.
+    fn switch_front_if_needed(&mut self) -> Option<bool> {
+        None
+    }
     /// The release's installer `script` started apart from the launcher, told `env` only, as the station's
     /// platform.startInstaller starts it (its copy in run/ replacing any there, its exit and log beside it): whether it
     /// started. Asked by a Node whose own start of it did not (`{"installer":…}`), so a station whose program cannot
@@ -668,6 +674,10 @@ impl<O: Os> Lifecycle<O> {
     /// A handover: a new Node beside the one serving (the release at --app may be new), the one serving told to hand
     /// over once the new one is ready.
     pub fn start_next(&mut self) {
+        self.start_next_inner(true);
+    }
+
+    fn start_next_inner(&mut self, allow_front_switch: bool) {
         if self.stopping.is_some() {
             return;
         }
@@ -685,12 +695,48 @@ impl<O: Os> Lifecycle<O> {
             self.renewed = true;
             return;
         }
+        let had_front = self.os.has_front();
+        let switch_failed_from_front = if allow_front_switch {
+            match self.os.switch_front_if_needed() {
+                Some(true) => {
+                    self.probing = None;
+                    self.front_misses = 0;
+                    self.front_probe_at = Some(self.os.now() + self.times.front_probe);
+                    self.front_gone = false;
+                    self.front_retry_at = None;
+                    self.front_retries = 0;
+                    false
+                }
+                Some(false) => {
+                    self.probing = None;
+                    self.front_misses = 0;
+                    self.front_probe_at = None;
+                    if had_front {
+                        true
+                    } else {
+                        self.schedule_front_retry();
+                        false
+                    }
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
         match self.os.spawn() {
             Ok(process) => {
                 log::info(&format!("handover: Node {} started beside the one serving", process.pid()));
                 self.next = Some((Self::node(process), self.os.now() + self.times.ready, false));
             }
             Err(error) => self.handoff_failed(&format!("{} did not start: {error}", self.os.program())),
+        }
+        if switch_failed_from_front {
+            self.front_gone();
+            // When `spawn()` above already started a direct-binding handover, clear the pending flag so finishing
+            // that handover does not immediately trigger a second redundant handover.
+            if self.next.is_some() {
+                self.front_gone = false;
+            }
         }
     }
 
@@ -731,11 +777,11 @@ impl<O: Os> Lifecycle<O> {
             self.front_retry_at = None;
             self.front_retries = 0;
             self.front_probe_at = Some(self.os.now() + self.times.front_probe);
-            self.start_next();
+            self.start_next_inner(false);
         } else if had {
             self.front_gone();
         } else {
-            self.start_next();
+            self.start_next_inner(false);
         }
     }
 
@@ -947,7 +993,7 @@ impl<O: Os> Lifecycle<O> {
             // None serving: the one started next binds the endpoint itself.
             if self.current.is_some() {
                 log::warn("the front is gone: the Node serving hands over to one that binds the station's endpoint itself");
-                self.start_next();
+                self.start_next_inner(false);
             }
         }
         if let Some(by) = self.heartbeat_by()
@@ -998,7 +1044,7 @@ impl<O: Os> Lifecycle<O> {
                 // The Node serving binds the endpoint itself: it hands over to one linked to the front (spawn).
                 if self.current.is_some() {
                     log::info("the Node serving hands over to one linked to the front");
-                    self.start_next();
+                    self.start_next_inner(false);
                 }
             } else {
                 let delay = self.front_retry_delay();
@@ -1123,6 +1169,9 @@ mod tests {
         front_killed: u32,
         /// The fronts ended and started anew as a Node asked (`restart_front`).
         restarted_fronts: u32,
+        /// Outcome of the next `switch_front_if_needed` call (`None` = no switch needed).
+        front_switch: Option<bool>,
+        front_switches: u32,
         /// The installers started as a Node asked (`run_installer`): the script and what it was told.
         installers: Vec<(String, Vec<(String, String)>)>,
         /// Diagnostics returned by `diagnose_hung`, and `(pid, called_before_kill)` calls recorded.
@@ -1177,6 +1226,12 @@ mod tests {
             self.front = if self.front_starts.is_empty() { true } else { self.front_starts.remove(0) };
             self.front
         }
+        fn switch_front_if_needed(&mut self) -> Option<bool> {
+            let started = self.front_switch.take()?;
+            self.front_switches += 1;
+            self.front = started;
+            Some(started)
+        }
         fn run_installer(&mut self, script: &str, env: &[(String, String)]) -> bool {
             self.installers.push((script.to_string(), env.to_vec()));
             true
@@ -1208,7 +1263,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
         let run = data.join("run");
         std::fs::create_dir_all(&run).unwrap();
-        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], takes_place: false, front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0, restarted_fronts: 0, installers: vec![], hung_diag: serde_json::Map::new(), diagnosed_before_kill: vec![] };
+        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], takes_place: false, front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0, restarted_fronts: 0, front_switch: None, front_switches: 0, installers: vec![], hung_diag: serde_json::Map::new(), diagnosed_before_kill: vec![] };
         let times = Times { ready: s(60), exit: s(30), stop: s(30), backoff: s(1), backoff_max: s(4), stable: s(60), parent: s(2), drained: s(300), take: s(90), rollback: s(10), front: s(10), heartbeat: s(90), front_retry: s(300), front_probe: s(30) };
         let mut station = Lifecycle::new(fake, times, run, with_parent);
         station.start();
@@ -2232,5 +2287,76 @@ mod tests {
         assert_eq!(events.len(), EVENTS_KEPT);
         assert_eq!(events[0]["reason"].as_str(), Some("try 7"));
         assert_eq!(events[EVENTS_KEPT - 1]["reason"].as_str(), Some(format!("try {}", EVENTS_KEPT + 6).as_str()));
+    }
+
+    #[test]
+    fn switching_front_on_handover_clears_inflight_probe_and_misses() {
+        let mut station = station("frontswitchprobe", false);
+        station.os.front = true;
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.tick();
+        // Two misses, then a 3rd probe in flight against the old front.
+        station.pass(s(30));
+        station.front_probed(1, false);
+        station.pass(s(30));
+        station.front_probed(2, false);
+        station.pass(s(30));
+        assert_eq!(station.os.probed, [1, 2, 3]);
+        assert_eq!(station.front_misses, 2);
+        assert!(station.probing.is_some());
+        // Handover switches the front: probe state resets so late failure of probe 3 never kills the new front.
+        station.os.front_switch = Some(true);
+        station.start_next();
+        assert_eq!(station.os.front_switches, 1);
+        assert_eq!(station.front_misses, 0);
+        assert!(station.probing.is_none());
+        station.front_probed(3, false);
+        assert_eq!(station.os.front_killed, 0);
+        assert_eq!(station.front_misses, 0);
+    }
+
+    #[test]
+    fn stopping_or_renewing_launcher_does_not_switch_front_early() {
+        // Stopping: start_next returns early without touching front.
+        let mut stopping = station("frontswitchstop", false);
+        stopping.os.front = true;
+        stopping.up(Slot::Current, "0.1.0", 5000);
+        stopping.stop();
+        stopping.os.front_switch = Some(true);
+        stopping.start_next();
+        assert_eq!(stopping.os.front_switches, 0);
+
+        // Renewing: renew takes over before switch_front_if_needed so the new launcher handles Front::current once.
+        let mut renewing = station("frontswitchrenew", false);
+        renewing.os.front = true;
+        renewing.up(Slot::Current, "0.1.0", 5000);
+        renewing.os.takes_place = true;
+        renewing.os.front_switch = Some(true);
+        renewing.start_next();
+        assert!(renewing.renewed());
+        assert_eq!(renewing.os.front_switches, 0);
+    }
+
+    #[test]
+    fn failed_front_switch_from_existing_front_triggers_front_gone_and_retry() {
+        let mut station = station("frontswitchfail", false);
+        station.os.front = true;
+        let old = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.os.front_switch = Some(false);
+        station.start_next();
+        assert_eq!(station.os.front_switches, 1);
+        let direct = station.last();
+        assert_ne!(direct, old);
+        assert!(station.front_retry_at.is_some(), "retry must be scheduled");
+        let events = station.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["kind"].as_str(), Some("front_gone"));
+        // Finishing the handover must not trigger a second redundant handover.
+        station.said(Slot::Next, ready("0.2.0"));
+        station.ended(old, EXITED_0);
+        station.serves(Slot::Current, 6000);
+        station.tick();
+        assert_eq!(station.last(), direct, "no redundant second handover");
     }
 }
