@@ -525,7 +525,7 @@ jobs:
                       echo "(pipeline natives done after $((SECONDS - t0)) s: run $run)"
                       mkdir -p "$RUNNER_TEMP/natives"
                       if gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$RUNNER_TEMP/natives"; then
-                        node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA" --targets linux-x64 --exclude-parts reader-harness
+                        node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA" --targets linux-x64
                         echo "STILLFAIL_NATIVE_INBOX=$RUNNER_TEMP/natives" >> "$GITHUB_ENV"
                       fi
                       break ;;
@@ -596,10 +596,9 @@ jobs:
               tar -xf "$czt" -C "$czbase"
               rm -f "$czt"
             fi
-            cp "$czbase/cargo-zigbuild" "$RUNNER_TEMP/zig-bin/cargo-zigbuild"
-            chmod +x "$RUNNER_TEMP/zig-bin/cargo-zigbuild"
+            chmod +x "$czbase/cargo-zigbuild"
             echo "$d" >> "$GITHUB_PATH"
-            echo "$RUNNER_TEMP/zig-bin" >> "$GITHUB_PATH"
+            echo "$czbase" >> "$GITHUB_PATH"
           fi
 
       - if: steps.reader.outputs.missing == 'true'
