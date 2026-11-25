@@ -2868,6 +2868,46 @@ int main(void) {
           CHECK(cr >= 4.5);
           free(bgx); free(px);
         }
+        // R7-1: Narrow bright edge (split x=242, capsule 100..260) + short muted word (p.muted #A8AAAE)
+        {
+          double mw[5 * MB_INST];
+          rect_at(mw, 0, 0, 242, 300, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(mw + MB_INST, 242, 0, 158, 300, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(mw + 2 * MB_INST, 100, 20, 160, 36, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -70);
+          mw[2 * MB_INST + 4] = 18.0; mw[2 * MB_INST + 6] = 1.0; mw[2 * MB_INST + 7] = 1.2;
+          mw[2 * MB_INST + 11] = 0x67 / 255.0; mw[2 * MB_INST + 12] = 0.6; mw[2 * MB_INST + 13] = 14.0;
+          mw[2 * MB_INST + 14] = -1.0; mw[2 * MB_INST + 15] = 1.0;
+          mw[2 * MB_INST + 21] = 20.0; mw[2 * MB_INST + 22] = 0.06; mw[2 * MB_INST + 23] = 0.0;
+          rect_at(mw + 3 * MB_INST, 194, 32, 12, 12, 7, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          mw[3 * MB_INST + 6] = 22.0; mw[3 * MB_INST + 7] = 0.0;
+          mw[3 * MB_INST + 12] = 16.0; mw[3 * MB_INST + 13] = 16.0; mw[3 * MB_INST + 14] = 16.0; mw[3 * MB_INST + 15] = 16.0;
+          mw[3 * MB_INST + 21] = 180.0; mw[3 * MB_INST + 22] = 38.0; mw[3 * MB_INST + 23] = 18.0;
+          rect_at(mw + 4 * MB_INST, 245, 32, 12, 12, 7, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          mw[4 * MB_INST + 6] = -29.0; mw[4 * MB_INST + 7] = 0.0;
+          mw[4 * MB_INST + 12] = 16.0; mw[4 * MB_INST + 13] = 16.0; mw[4 * MB_INST + 14] = 16.0; mw[4 * MB_INST + 15] = 16.0;
+          mw[4 * MB_INST + 21] = 180.0; mw[4 * MB_INST + 22] = 38.0; mw[4 * MB_INST + 23] = 18.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(mw, 3, 0.08, 0.08, 0.08);
+          present_drain();
+          int bcw = 0, bch = 0, cw = 0, ch = 0;
+          uint8_t *bgx = read_texture(canvas, &bcw, &bch);
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(mw, 5, 0.08, 0.08, 0.08);
+          present_drain();
+          uint8_t *px = read_texture(canvas, &cw, &ch);
+          int ilx = (76 * cw + 400) * 4, irx = (76 * cw + 502) * 4;
+          double ll = wcag_luma_u8(bgx[ilx+2], bgx[ilx+1], bgx[ilx+0]), fl = wcag_luma_u8(px[ilx+2], px[ilx+1], px[ilx+0]);
+          double lr = wcag_luma_u8(bgx[irx+2], bgx[irx+1], bgx[irx+0]), fr = wcag_luma_u8(px[irx+2], px[irx+1], px[irx+0]);
+          double crl = ((fl > ll ? fl : ll) + 0.05) / ((fl > ll ? ll : fl) + 0.05);
+          double crr = ((fr > lr ? fr : lr) + 0.05) / ((fr > lr ? lr : fr) + 0.05);
+          int wd = 0;
+          for (int c = 0; c < 3; c++) { int d = abs((int)px[ilx+c] - (int)px[irx+c]); if (d > wd) wd = d; }
+          printf("apple_render: dark adaptive narrow-bright muted-word left_cr=%.2f right_cr=%.2f diff=%d\n", crl, crr, wd);
+          CHECK(wd <= 1 && crl >= 4.5 && crr >= 4.5);
+          free(bgx); free(px);
+        }
       }
       mb_render_set_size(400, 300, 2);
       glass_forget();

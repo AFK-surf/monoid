@@ -607,12 +607,16 @@
         return vec3(darkL);
       }
       float bgL = capsuleBgL;
-      if (origL < 0.94) {
-        vec2 samplePos = rect.xy + rect.zw * 0.5 + sample_off;
-        if (capHalf.y <= 28.0) samplePos.y = capCenter.y;
-        vec2 guv = samplePos * u_map.xy + u_map.zw;
-        if (u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y && guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {
-          bgL = max(bgL, vs_backdrop_luma_rect(samplePos, vec2(10.0, 8.0)));
+      if (origL < 0.94 && u_uvc.z > u_uvc.x && u_uvc.w > u_uvc.y) {
+        for (int iy = -1; iy <= 1; iy++) {
+          float py = capCenter.y + float(iy) * (capHalf.y * 0.65);
+          for (int ix = -2; ix <= 2; ix++) {
+            float px = capCenter.x + float(ix) * (capHalf.x * 0.47);
+            vec2 guv = vec2(px, py) * u_map.xy + u_map.zw;
+            if (guv.x >= u_uvc.x && guv.x <= u_uvc.z && guv.y >= u_uvc.y && guv.y <= u_uvc.w) {
+              bgL = max(bgL, vs_ink_luma(vs_backdrop(vec2(px, py))));
+            }
+          }
         }
       }
       float liftW = smoothstep(0.03, 0.08, bgL);

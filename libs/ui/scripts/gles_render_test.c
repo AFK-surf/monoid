@@ -3118,6 +3118,48 @@ int main(void) {
           free(bgx); free(px);
         }
 
+        // R7-1: Narrow bright edge (split x=242, capsule 100..260) + short muted word (p.muted #A8AAAE)
+        // whose glyphs have word-center sample_off pointing to x=222 (dark side): BOTH ends stay uniform & CR >= 4.5
+        {
+          double mw[5 * MB_INST];
+          rect_at(mw, 0, 0, 242, 120, 0, 0.08, 0.08, 0.08, 0);
+          rect_at(mw + MB_INST, 242, 0, 158, 120, 0, 1.0, 1.0, 1.0, 0);
+          rect_at(mw + 2 * MB_INST, 100, 20, 160, 36, 6, 32.0/255.0, 32.0/255.0, 32.0/255.0, -70);
+          mw[2 * MB_INST + 4] = 18.0; mw[2 * MB_INST + 6] = 1.0; mw[2 * MB_INST + 7] = 1.2;
+          mw[2 * MB_INST + 11] = 0x67 / 255.0; mw[2 * MB_INST + 12] = 0.6; mw[2 * MB_INST + 13] = 14.0;
+          mw[2 * MB_INST + 14] = -1.0; mw[2 * MB_INST + 15] = 1.0;
+          mw[2 * MB_INST + 21] = 20.0; mw[2 * MB_INST + 22] = 0.06; mw[2 * MB_INST + 23] = 0.0;
+          // Left glyph at center (200, 38) with word-center offset +22 -> x=222
+          rect_at(mw + 3 * MB_INST, 194, 32, 12, 12, 7, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          mw[3 * MB_INST + 6] = 22.0; mw[3 * MB_INST + 7] = 0.0;
+          mw[3 * MB_INST + 12] = 16.0; mw[3 * MB_INST + 13] = 16.0; mw[3 * MB_INST + 14] = 16.0; mw[3 * MB_INST + 15] = 16.0;
+          mw[3 * MB_INST + 21] = 180.0; mw[3 * MB_INST + 22] = 38.0; mw[3 * MB_INST + 23] = 18.0;
+          // Right glyph at center (251, 38) with word-center offset -29 -> x=222 (strictly in white strip x>242)
+          rect_at(mw + 4 * MB_INST, 245, 32, 12, 12, 7, 0xA8/255.0, 0xAA/255.0, 0xAE/255.0, 0);
+          mw[4 * MB_INST + 6] = -29.0; mw[4 * MB_INST + 7] = 0.0;
+          mw[4 * MB_INST + 12] = 16.0; mw[4 * MB_INST + 13] = 16.0; mw[4 * MB_INST + 14] = 16.0; mw[4 * MB_INST + 15] = 16.0;
+          mw[4 * MB_INST + 21] = 180.0; mw[4 * MB_INST + 22] = 38.0; mw[4 * MB_INST + 23] = 18.0;
+          for (int i = 0; i < 5; i++) { mw[i * MB_INST + 18] = 400.0; mw[i * MB_INST + 19] = 120.0; }
+          glass_forget();
+          gl_present(mw, 3, 0.08, 0.08, 0.08);
+          unsigned char *bgx = pixels_of_fb(wt_fb);
+          glass_forget();
+          gl_present(mw, 5, 0.08, 0.08, 0.08);
+          unsigned char *px = pixels_of_fb(wt_fb);
+          int r38 = fb_h - 1 - 38;
+          unsigned char *bgl = bgx + (r38 * fb_w + 200) * 4, *bgr = bgx + (r38 * fb_w + 251) * 4;
+          unsigned char *fgl = px + (r38 * fb_w + 200) * 4, *fgr = px + (r38 * fb_w + 251) * 4;
+          double ll = wcag_luma_u8(bgl[0], bgl[1], bgl[2]), fl = wcag_luma_u8(fgl[0], fgl[1], fgl[2]);
+          double lr = wcag_luma_u8(bgr[0], bgr[1], bgr[2]), fr = wcag_luma_u8(fgr[0], fgr[1], fgr[2]);
+          double crl = ((fl > ll ? fl : ll) + 0.05) / ((fl > ll ? ll : fl) + 0.05);
+          double crr = ((fr > lr ? fr : lr) + 0.05) / ((fr > lr ? lr : fr) + 0.05);
+          int wd = 0;
+          for (int c = 0; c < 3; c++) { int d = abs((int)fgl[c] - (int)fgr[c]); if (d > wd) wd = d; }
+          printf("gles_render: dark adaptive narrow-bright muted-word left_cr=%.2f right_cr=%.2f diff=%d\n", crl, crr, wd);
+          CHECK(wd <= 1 && crl >= 4.5 && crr >= 4.5);
+          free(bgx); free(px);
+        }
+
         target_fb = pb_fb; fb_w = fbw_save; fb_h = fbh_save; cur_w = w_save; cur_h = h_save; cur_scale = sc_save;
         glBindFramebuffer(GL_FRAMEBUFFER, target_fb);
         glDeleteFramebuffers(1, &wt_fb);
