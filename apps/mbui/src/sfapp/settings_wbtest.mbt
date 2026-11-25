@@ -1207,7 +1207,7 @@ test "a profile's page: who it is and whether it works, then its allowance and w
   assert_true(t.find("近 7 天") is None)
   assert_true(y("分享给其他 station") > y("星火助手"))
   // A workspace without its own mark is named once, without a repeated initial beside it.
-  let ws = "个人 中的对话可使用此账号运行 agent"
+  let ws = "这台 station 也属于 workspace 个人，那里的对话也能用此账号运行 agent"
   assert_true(y("可用模型") > y("分享给其他 station"))
   assert_true(y("默认 Fast") > y("可用模型"))
   assert_true(y(ws) > y("默认 Fast") && t.find("同时用于 个人") is None)
