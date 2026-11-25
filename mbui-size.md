@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fdc6ccbb1](https://github.com/AFK-surf/monoid/commit/fdc6ccbb10984b875d6b04264ed5e770fe11c947) perf(ci): rebalance station test slices by CI runn | 2.55 | 3.45 | 14.24 | 36.87 | 55.72 | 32.18 | 65.05 | 100.7 | 122.76 |
 | [17f337ddd](https://github.com/AFK-surf/monoid/commit/17f337ddd8e9f8e0fd0c0e3e25003c5815ce0d86) perf(mbui): copy-on-write apply_delta, single-pass | 2.55 | 3.45 | 14.24 | 36.87 | 55.72 | 32.18 | 65.05 | 100.7 | 122.76 |
 | [17dd44eeb](https://github.com/AFK-surf/monoid/commit/17dd44eeb65296de5e4416de6458c4e83209bbdc) feat(ui): add Settings MCP tab to manage station M | 2.55 | 3.45 | 14.24 | 36.87 | 55.72 | 32.18 | 65.05 | 100.7 | 122.76 |
 | [e722bb594](https://github.com/AFK-surf/monoid/commit/e722bb594602ee611772cb8e17251e370c982fbe) ci(linux): move Linux jobs to GitHub-hosted runner | 2.55 | 3.45 | 14.24 | 36.87 | 55.72 | 32.18 | 65.05 | 100.7 | 122.76 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c20658d4d](https://github.com/AFK-surf/monoid/commit/c20658d4d60f5f0d26b93b4725be5c945cff29fd) fix(mbui): fly every shared node let go of in one  | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [7c26d51ae](https://github.com/AFK-surf/monoid/commit/7c26d51ae6493bf54b87c3aff8e37f5f1f3ad581) feat(station): give a Copilot profile its own MCP  | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 100.91 | 130.09 |
 | [8b93600fa](https://github.com/AFK-surf/monoid/commit/8b93600faad698f59b2ff7b07f4d7ea23dc1aa7c) fix(ci): escalate direct routeMs and clear preferr | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 100.91 | 130.09 |
-| [21933f8e1](https://github.com/AFK-surf/monoid/commit/21933f8e185bb3769e2009b15c3caf2296f1ce31) fix(ci): keep ci-1 and macos-ci checkouts non-shal | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 100.91 | 130.09 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fdc6ccbb1](https://github.com/AFK-surf/monoid/commit/fdc6ccbb10984b875d6b04264ed5e770fe11c947) perf(ci): rebalance station test slices by CI runn | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.85 |
 | [17f337ddd](https://github.com/AFK-surf/monoid/commit/17f337ddd8e9f8e0fd0c0e3e25003c5815ce0d86) perf(mbui): copy-on-write apply_delta, single-pass | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.72 |
 | [17dd44eeb](https://github.com/AFK-surf/monoid/commit/17dd44eeb65296de5e4416de6458c4e83209bbdc) feat(ui): add Settings MCP tab to manage station M | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.66 |
 | [e722bb594](https://github.com/AFK-surf/monoid/commit/e722bb594602ee611772cb8e17251e370c982fbe) ci(linux): move Linux jobs to GitHub-hosted runner | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 58.03 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [c20658d4d](https://github.com/AFK-surf/monoid/commit/c20658d4d60f5f0d26b93b4725be5c945cff29fd) fix(mbui): fly every shared node let go of in one  | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.13 |
 | [7c26d51ae](https://github.com/AFK-surf/monoid/commit/7c26d51ae6493bf54b87c3aff8e37f5f1f3ad581) feat(station): give a Copilot profile its own MCP  | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.28 |
 | [8b93600fa](https://github.com/AFK-surf/monoid/commit/8b93600faad698f59b2ff7b07f4d7ea23dc1aa7c) fix(ci): escalate direct routeMs and clear preferr | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.35 |
-| [21933f8e1](https://github.com/AFK-surf/monoid/commit/21933f8e185bb3769e2009b15c3caf2296f1ce31) fix(ci): keep ci-1 and macos-ci checkouts non-shal | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.43 |
