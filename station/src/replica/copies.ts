@@ -15,7 +15,7 @@ import { GEN, type Head, STATION, WORKSPACE, genMade } from "./format.ts";
 import { loadLocalTranscriptFiles, loadTranscriptManifest, readStreamBounded } from "./manifest.ts";
 import { FolderPlace, type Held, type Known, type Levelled, type Place, handOver, holdsAllLogical, level } from "./places.ts";
 import { type Ask, COPIES, MOST, PeerPlace, keepers, ranked, serve } from "./peers.ts";
-import { Refused, bytesOf, withBytes } from "../mesh/bus.ts";
+import { Refused, type Rtt, bytesOf, withBytes } from "../mesh/bus.ts";
 import { Pace, bytesPerSecond } from "./pace.ts";
 import { readBytes } from "../mesh/files.ts";
 import type { Traces } from "../mesh/traces.ts";
@@ -134,6 +134,8 @@ export type CopiesDeps = {
   /// The stations of `ws` (this one too) with their names, as its roster says now; null while the roster is not current.
   roster: (ws: string) => { id: string; name: string }[] | null;
   ask: Ask;
+  /// The round trip of each connection to another station now (mesh/bus.ts `rtts`): backups give way by it (pace.ts).
+  rtts?: () => Rtt[];
   runner: Runner;
   fibers: Fibers;
   /// What the station's settings show changed.
@@ -317,6 +319,7 @@ export class Copies {
       now: () => d.fibers.now(),
       sleep: (ms) => d.fibers.sleep(ms),
       rate: () => bytesPerSecond(this.#backup().uploadMbps ?? 0),
+      ...(d.rtts !== undefined ? { rtts: d.rtts } : {}),
     });
     this.kept = new FolderPlace(keptDir(d.data));
     let restored: Outcome | null = null;

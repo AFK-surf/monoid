@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
 import { S3Client } from "../src/replica/s3.ts";
-import { BURST_MS, Pace, SLICE, bytesPerSecond } from "../src/replica/pace.ts";
+import { ADJUST_MS, BASE_MS, BURST_MS, DOWN, FLOOR, Pace, SLICE, TARGET_MS, UP, bytesPerSecond } from "../src/replica/pace.ts";
 import { DEFAULT_UPLOAD_MBPS, applyBackupUpdate, checkBackupConfig, readBackupConfig } from "../src/replica/backup-config.ts";
 
 /// A clock that only moves when a wait asks it to, each wait recorded.
@@ -72,6 +72,46 @@ test("pace: an idle pace lets only a burst through at once", async () => {
   clock.waits.length = 0;
   await pace.take(1250);
   assert.deepEqual(clock.waits, [1000]);
+});
+
+test("pace: under its ceiling it gives way by the delay the line queues, and comes back as it goes", () => {
+  const ceiling = 1_000_000;
+  let at = 0;
+  let rtts = [{ key: "keeper", ms: 40 }, { key: "other", ms: 120 }];
+  const pace = new Pace({ now: () => at, sleep: async () => {}, rate: () => ceiling, rtts: () => rtts });
+  // First heard at their base: it starts at a quarter of the ceiling and climbs.
+  assert.equal(pace.rate(ceiling, at), ceiling / 4 + ceiling * UP);
+  at += ADJUST_MS / 2;
+  assert.equal(pace.rate(ceiling, at), ceiling / 4 + ceiling * UP, "worked out again only each ADJUST_MS");
+  let rate = 0;
+  for (let i = 0; i < 100; i++) rate = pace.rate(ceiling, (at += ADJUST_MS));
+  assert.equal(rate, ceiling, "no delay: up to the ceiling, never past it");
+  // One connection's round trip grows past its base by more than the target (its uplink queued): down each time.
+  rtts = [{ key: "keeper", ms: 40 + TARGET_MS + 200 }, { key: "other", ms: 120 }];
+  assert.equal(pace.rate(ceiling, (at += ADJUST_MS)), ceiling * DOWN);
+  for (let i = 0; i < 100; i++) rate = pace.rate(ceiling, (at += ADJUST_MS));
+  assert.equal(rate, FLOOR, "it keeps going, at its floor");
+  // Half the target over: it climbs at half the step.
+  rtts = [{ key: "keeper", ms: 40 + TARGET_MS / 2 }, { key: "other", ms: 120 }];
+  assert.equal(pace.rate(ceiling, (at += ADJUST_MS)), FLOOR + (ceiling * UP) / 2);
+  // A smaller ceiling holds it at once.
+  assert.equal(pace.rate(10_000, at), 10_000);
+});
+
+test("pace: a connection's base is its least round trip of the last BASE_MS, and none told is the ceiling alone", () => {
+  let at = 0;
+  let rtts: { key: string; ms: number }[] = [{ key: "k", ms: 30 }];
+  const pace = new Pace({ now: () => at, sleep: async () => {}, rate: () => 1, rtts: () => rtts });
+  assert.equal(pace.delay(at), 0);
+  rtts = [{ key: "k", ms: 90 }];
+  at += BASE_MS / 2;
+  assert.equal(pace.delay(at), 60, "the last half's least still counts");
+  at += BASE_MS / 2;
+  assert.equal(pace.delay(at), 0, "a line that changed comes to its new base");
+  rtts = [];
+  assert.equal(pace.delay(at), null);
+  const alone = new Pace({ now: () => 0, sleep: async () => {}, rate: () => 500 });
+  assert.equal(alone.rate(500, 0), 500, "no other station connected: the ceiling, as before");
 });
 
 test("backup.uploadMbps: default, checked, kept", () => {

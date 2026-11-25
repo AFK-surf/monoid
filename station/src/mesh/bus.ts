@@ -21,6 +21,8 @@ export const BYTES = Symbol("bytes");
 /// An optional check made immediately before a transport writes each piece.
 export const CHECK_BYTES = Symbol("check-bytes");
 export type Bytes = AsyncIterable<Buffer> & { [CHECK_BYTES]?: () => void };
+/// One connection's round trip now (its chosen path's), by the station it goes to.
+export type Rtt = { key: string; ms: number };
 
 /// Bytes whose permission may change while their receiver waits to write them.
 export function guardBytes(bytes: Bytes, check: () => void): Bytes {
@@ -59,7 +61,7 @@ export const MESH_WAIT_MS = 30_000;
 const methodOf = (request: Json): string => (request !== null && typeof request === "object" && typeof request.method === "string" ? request.method : "");
 
 export class PeerBus {
-  private call: PeerCall | null = null;
+  private call: (PeerCall & { rtts?: () => Rtt[] }) | null = null;
   private attached: Promise<void>;
   private markAttached!: () => void;
   private readonly waitMs: number;
@@ -84,10 +86,15 @@ export class PeerBus {
   }
 
   /// The transport is there (mesh/mesh.ts): what waited for it is asked, what follows it starts.
-  attach(call: PeerCall): void {
+  attach(call: PeerCall & { rtts?: () => Rtt[] }): void {
     this.call = call;
     this.markAttached();
     for (const f of this.onAttach.splice(0)) f();
+  }
+
+  /// The round trip of each connection to another station now (none before the transport is there).
+  rtts(): Rtt[] {
+    return this.call?.rtts?.() ?? [];
   }
 
   /// `f` once the transport is there (at once if it is).
