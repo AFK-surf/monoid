@@ -108,3 +108,11 @@
 - The Android delta's deflater is part of the format: JZlib's version (`libs/ui/android/jzlib`) and the level and settings
   `Delta.java` deflates with must be what every installed app carries, or what it makes no longer is the release's APK
   (each delta is checked by the Java applier before it is published, so such a change only stops Android's deltas).
+- Keep actions/checkout depth uniform per persistent self-hosted runner pool: every job that can land on `ci-1`
+  (`ci-1`, `linux-ci`, `linux-quick`) or `macos-ci` must use `fetch-depth: 0` (and no `sparse-checkout`), matching
+  `check`, `android`, and `natives-main`. Any single `fetch-depth: 1` job writes `.git/shallow` into the reused
+  workspace and forces the next `fetch-depth: 0` job into a full `--unshallow` of all history and refs over Shanghai
+  egress (`45626120402`: `check` on `ci-1-2` timed out at 310 s right after `natives` shallowed it). When computing
+  `fetch-depth` in a GitHub Actions expression, quote `'0'` (`runner.environment == 'self-hosted' && '0' || '1'`)
+  because numeric `0` is falsy in `&&`/`||`. Dedicated shallow pools (`quick` / `mini1-5`, `mbui-render`) run no
+  `fetch-depth: 0` jobs and stay shallow.

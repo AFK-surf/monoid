@@ -168,7 +168,7 @@ export async function fetchHandoff(at, init = {}, options = {}) {
   return response;
 }
 
-const getTimeoutsMs = [15_000, 20_000, 25_000, 30_000];
+const getTimeoutsMs = [20_000, 30_000, 45_000, 60_000];
 const writeTimeoutsMs = [60_000, 60_000, 60_000];
 const knownTargets = [
   "ios-sim-arm64", "android-arm64", "darwin-arm64", "darwin-x64",
@@ -213,19 +213,28 @@ async function transfer(url, options, consume, policy = {}) {
   for (let attempt = 1; ; attempt++) {
     callerSignal?.throwIfAborted();
     try {
-      // Directly, each route keeps a deadline of its own (fetchHandoff); otherwise GETs cut stalls fast and retry.
+      // Directly, pass the escalating attempt deadline to fetchHandoff's routeMs so retries do not stay pinned at 15 s;
+      // otherwise GETs cut stalls fast and retry via AbortSignal.timeout.
       const timeoutMs = timeouts[Math.min(attempt - 1, timeouts.length - 1)];
       const signal = direct
         ? callerSignal
         : callerSignal
           ? AbortSignal.any([AbortSignal.timeout(timeoutMs), callerSignal])
           : AbortSignal.timeout(timeoutMs);
-      const response = await fetchHandoff(url, { ...options, redirect: "error", ...(signal ? { signal } : {}) });
+      const fetcher = policy.fetcher ?? fetchHandoff;
+      const response = await fetcher(
+        url,
+        { ...options, redirect: "error", ...(signal ? { signal } : {}) },
+        direct ? { routeMs: timeoutMs } : undefined,
+      );
       if (response.ok) return await consume(response);
       const text = (await response.text().catch(() => "")).trim().slice(0, 200);
       throw Object.assign(new Error("HTTP " + response.status + (text ? ": " + text : "")), { status: response.status });
     } catch (error) {
       const status = error?.status;
+      if (direct && !callerSignal?.aborted && !(status && status < 500 && status !== 429)) {
+        preferredRoutes.delete(direct + "\0" + new URL(url).origin);
+      }
       if (callerSignal?.aborted || attempt >= maxAttempts || (status && status < 500 && status !== 429)) throw error;
       const delay = backoffMs(attempt);
       log(method + " " + new URL(url).pathname + " attempt " + attempt + " failed (" + reason(error) + "); again in " + (delay / 1000) + " s");
@@ -332,6 +341,7 @@ export async function restore(dir, sha, options = {}) {
   const policy = {
     ...(options.getTimeoutsMs ? { timeoutsMs: options.getTimeoutsMs } : {}),
     ...(options.backoffMs ? { backoffMs: options.backoffMs } : {}),
+    ...(options.fetcher ? { fetcher: options.fetcher } : {}),
   };
   const restored = new Set();
   const files = await readdir(dir).catch((error) => { if (error.code === "ENOENT") return []; throw error; });

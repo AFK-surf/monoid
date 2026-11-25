@@ -440,3 +440,42 @@ test("restore filters by --targets, downloads chunks concurrently in order, and 
   assert.equal(cliBad.status, 1);
   assert.match(cliBad.stderr, /Usage: native-handoff\.mjs/);
 });
+
+test("restore escalates direct routeMs across retries when STILLFAIL_DIRECT_DNS is set", async (t) => {
+  const prevDns = process.env.STILLFAIL_DIRECT_DNS;
+  process.env.STILLFAIL_DIRECT_DNS = "223.5.5.5";
+  t.after(() => {
+    if (prevDns === undefined) delete process.env.STILLFAIL_DIRECT_DNS;
+    else process.env.STILLFAIL_DIRECT_DNS = prevDns;
+  });
+
+  const dir = mkdtempSync(join(tmpdir(), "native-handoff-direct-escalate-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const sha = "c".repeat(40);
+  const payload = Buffer.from("direct-route-escalate-payload");
+  const name = `reader-linux-x64-${"3".repeat(24)}.tar.gz`;
+  const { createHash } = await import("node:crypto");
+  const { restore } = await import(pathToFileURL(script).href);
+  const digest = createHash("sha256").update(payload).digest("hex");
+  const receipt = `1700000000-${sha}/4c2b3e5d-e7a3-4c28-b7f1-000000000099`;
+  writeFileSync(join(dir, "natives.r2.json"), JSON.stringify([{ name, sha256: digest, chunks: [receipt] }]));
+
+  const seenRouteMs: (number | undefined)[] = [];
+  await restore(dir, sha, {
+    targets: "host",
+    host: "linux-x64",
+    getTimeoutsMs: [120, 240, 360],
+    backoffMs: () => 1,
+    fetcher: async (_at: string | URL, _init?: RequestInit, opts?: { routeMs?: number }) => {
+      seenRouteMs.push(opts?.routeMs);
+      if (seenRouteMs.length === 1) {
+        const err = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+        throw err;
+      }
+      return new Response(payload);
+    },
+  });
+
+  assert.deepEqual(seenRouteMs, [120, 240]);
+  assert.equal(readFileSync(join(dir, name), "utf8"), payload.toString("utf8"));
+});
