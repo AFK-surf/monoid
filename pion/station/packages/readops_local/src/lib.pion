@@ -731,7 +731,15 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   match write_sync(
     client,
     data_dir + "/share/memory/ws1.json",
-    "{\"files\":{\"MEMORY.md\":{\"hash\":\"" + blob_hash + "\",\"at\":1700000000000,\"by\":\"st-self\",\"prev\":[\"" + blob_hash + "\"]}}}",
+    "{\"files\":{\"MEMORY.md\":{\"hash\":\"" +
+    blob_hash +
+    "\",\"at\":1700000000000,\"by\":\"st-self\",\"prev\":[\"" +
+    blob_hash +
+    "\"]},\"skills/demo-proj/SKILL.md\":{\"hash\":\"" +
+    blob_hash +
+    "\",\"at\":1700000000000,\"by\":\"\\ud800\",\"prev\":[]},\"skills/demo-proj/extra.md\":{\"hash\":\"" +
+    blob_hash +
+    "\",\"at\":1700000000000,\"by\":\"\\ufffd\",\"prev\":[]}}}",
   ) {
     Ok(_) => ()
     Err(e) => {
@@ -784,9 +792,11 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       }
       match builders_core::json_get_last(res, "skills") {
         Some(base_codec::Json::Arr(ss)) => {
-          if ss.length() != 2 || !opt_json_str_eq(builders_core::json_get_last(ss[0], "name"), "demo-proj") {
+          if ss.length() != 2 ||
+          !opt_json_str_eq(builders_core::json_get_last(ss[0], "name"), "demo-proj") ||
+          !opt_json_str_eq(builders_core::json_get_last(ss[0], "by"), "Right") {
             db.close()
-            return Err("memory skills ordering mismatch")
+            return Err("memory skills ordering or newer_rec surrogate tie-break mismatch: " + sql_db::stringify_json(ss[0]))
           }
           // Lone-surrogate non-collision: missing has \ud800:7, told has \ufffd:1 => users:["\uFFFD"], missing:[]
           match builders_core::json_get_last(ss[0], "share") {
