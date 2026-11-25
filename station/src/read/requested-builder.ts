@@ -186,7 +186,9 @@ export class RequestedBuilder<K extends number | string> {
       mb.once("error", (error: Error) => log.warn("readers", "an old-state builder failed", { error: error.message }));
       mb.once("exit", () => {
         releaseStoppedBackfill(this.#options.priority, owner);
-        this.#holding = false;
+        // (only the builder's own: one let go idle can end after the next one took the permit for its batch, which
+        // would then never be given back, and no batch of any builder sharing the permit asked again)
+        if (this.#worker === mb) this.#holding = false;
         this.#gone(mb);
       });
     }

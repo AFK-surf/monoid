@@ -115,7 +115,8 @@ export class OutflowChatIndex {
       mb.once("error", (error: Error) => log.warn("outflow", "the chat order builder failed", { error: error.message }));
       mb.once("exit", () => {
         releaseStoppedBackfill(this.#options.priority, owner);
-        this.#holding = false;
+        // (only the builder's own: one let go idle can end after the next one took the permit, as in requested-builder.ts)
+        if (this.#worker === mb) this.#holding = false;
         this.#gone(mb);
       });
     }
