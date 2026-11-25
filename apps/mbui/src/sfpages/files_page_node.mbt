@@ -758,7 +758,15 @@ fn roots_sample_node(parent : @view.View) -> Unit {
 /// The bar in a window's whole: its last button at the window's top right corner following it where the bar's buttons
 /// do (@sf.window_end_in).
 fn bar_box_wide() -> @ui.Style {
-  bar_box.then(@ui.style(pr=@sf.room_of(@sf.window_end_in(files_bar_in, roots=@ui.tree_corner_roots_now())), gap=@sf.keys_gap()))
+  let over = @sf.window_keys_bar_over_now()
+  bar_box.then(
+    @ui.style(
+      h=Fixed(files_bar_h + over),
+      pt=@sf.room_of(over),
+      pr=@sf.room_of(@sf.window_end_in(files_bar_in, roots=@ui.tree_corner_roots_now())),
+      gap=@sf.keys_gap(),
+    ),
+  )
 }
 
 ///|

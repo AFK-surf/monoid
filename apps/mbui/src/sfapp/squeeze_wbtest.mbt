@@ -43,6 +43,7 @@ fn screen_in(
   font_scale? : Double = 1.0,
   moves_held? : Bool = true,
   latin? : (FixedArray[Double], FixedArray[Double])? = None,
+  window_inset? : Bool = false,
   loc~ : SourceLoc,
 ) -> @ui.Tester {
   let (_, w, h, platform, width) = win
@@ -77,6 +78,7 @@ fn screen_in(
     h~,
     platform~,
     window_corner=test_window_corner(platform),
+    window_inset~,
     // (the corner test says each screen's faults against its bar itself, all of them: none stops it at the first)
     corners_held=false,
     // (`moves_held` false: how what moves goes frame to frame not judged, for the real size's sweep, which counts the

@@ -143,7 +143,9 @@ pub fn service_view_node(
     }
     v.box(fn(col) {
       col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-      bar(col, false, fn(top) { service_page_bar_node(top, src, p, site, station, fixed, close, full, corners, tips, beside~) })
+      bar(col, false, fn(top) {
+        service_page_bar_node(top, src, p, site, station, fixed, close, full, corners, round, tips, beside~)
+      })
       col.box(fn(st) {
         st.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         if in_panel {
@@ -189,11 +191,23 @@ fn service_page_bar_node(
   close : (() -> Unit)?,
   full : (() -> Unit)?,
   corners : FixedArray[Double]?,
+  round : FixedArray[@ui.CornerOf]?,
   tips : @sf.TipLayer,
   beside? : (() -> Unit)? = None,
 ) -> Unit {
   let at = match (close, corners) {
     (Some(_), Some(k)) => Some((k[0], k[1]))
+    _ => None
+  }
+  let end_pad : (() -> Double)? = match (close, round) {
+    (Some(_), Some(k)) =>
+      Some(fn() {
+        if @ui.window_keys_own_now() {
+          @sf.tape_bar_end_of(k, @ui.tree_corner_roots_now(), 8.0, side=@sf.theme().bars.key)
+        } else {
+          0.0
+        }
+      })
     _ => None
   }
   // (a window of its own's one bar, `beside` its 移到侧边 at its end: the window's top row, a bar's height, what of it
@@ -215,17 +229,17 @@ fn service_page_bar_node(
           // (its last key a bar key of its own size, not the window's corner key: past the corner's arc, not following
           // it; before the window's own buttons where they are the app's)
           let roots = @ui.tree_corner_roots_now()
-          let end = if @ui.window_keys_own() {
+          let end = if @ui.window_keys_own_now() {
             @sf.window_keys_room(roots~) + window_bar_in
           } else {
             @sf.window_corner_past(window_bar_in, roots~)
           }
-          (dmax(0.0, start - pad), @sf.window_keys_bar_over_now(), dmax(0.0, end - pad), 0.0)
+          (dmax(0.0, start - pad), @sf.window_keys_bar_over_now(), dmax(0.0, end - pad), 1.0)
         }))
         |> ignore
       })
   }
-  @sf.page_bar_node(parent, corners=at, fn(row) {
+  @sf.page_bar_node(parent, corners=at, end_pad?, fn(row) {
     if beside is Some(_) {
       row.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     }

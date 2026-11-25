@@ -177,6 +177,11 @@ test "bar_pill_group_node interactive press drives GPU spot highlight, spring sc
 }
 
 ///|
+fn window_keys_at_roots(width : Double, whole : Bool, roots : @ui.CornerRoots) -> (Double, Double) {
+  window_keys_at_line(window_keys_line_for(width, whole, None), roots)
+}
+
+///|
 /// The window's own buttons (window_keys_node) alone in a Windows window `w` wide, its corner `corner` round, `whole`
 /// as a window of its own's: the tester and their pill.
 fn window_keys_tester(

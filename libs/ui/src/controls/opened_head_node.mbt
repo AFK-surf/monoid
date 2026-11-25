@@ -35,7 +35,7 @@ pub fn opened_head_node(
     if wide {
       // (as tall as the bar, which lies over it: what comes after it starts under it)
       h.box(fn(p) {
-        p.height(By(fn() { Some(top() + viewer_bar_h) })) |> ignore
+        p.height(By(fn() { Some(top() + viewer_bar_h_now()) })) |> ignore
         let tips_at : Ref[@view.View?] = Ref(None)
         let tips = TipLayer::new(fn() { tips_at.val })
         let ink = fn() { page_viewer_ink() }

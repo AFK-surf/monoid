@@ -166,10 +166,6 @@ let board_bar_end : Double = 20.0
 pub let board_beside_from : Double = 1040.0
 
 ///|
-/// How tall the board's bar is (the pane's bars': @sf.wide_bar_h's 50).
-let board_bar_h : Double = 50.0
-
-///|
 /// The card's padding, and its corner: a card's (@sf.card_corner, 26: the surface of a face 20 across 16 in, so what
 /// stands in its corners is concentric with them), what stands in its top end corner (a round key 28 across, as far in
 /// from both its edges as its corner allows) worked out of it.
@@ -802,12 +798,16 @@ fn board_bar(p : @view.View, own : BoardOwn) -> Unit {
   p.box(fn(bar) {
     bar
     .row(Is(true))
-    .height(Is(Some(board_bar_h)))
+    .height(By(fn() { Some(@sf.wide_bar_h_now()) }))
     .shrink(Is(0.0))
     .gap(Is(10.0))
     .lines_up(Is(Some(Middle)))
-    // (its end clear of the window's corner where it stands in it: the sidebar closed beside the board)
-    .padding(Is((board_pad, 0.0, board_bar_end, 0.0)))
+    // (its end clear of the window's corner and own buttons where it stands in it: the sidebar closed beside the board)
+    .padding(
+      By(fn() {
+        (board_pad, @sf.window_keys_bar_over_now(), @sf.window_end_in(board_bar_end, roots=@ui.tree_corner_roots_now()), 1.0)
+      }),
+    )
     |> ignore
     board_bar_items(bar, own, apart=true)
   })

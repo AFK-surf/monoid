@@ -989,15 +989,18 @@ pub fn remote_workbench_node(
   src : Source,
   ws : () -> String,
   tips : @sf.TipLayer,
-  start_pad? : () -> Double = fn() { 12.0 },
-  end_pad? : () -> Double = fn() { 12.0 },
+  bar_ends? : @sf.BarEnds = {
+    start: fn() { 12.0 },
+    end: fn() { 12.0 },
+    over: @sf.window_keys_bar_over_now,
+  },
   foot_pad? : () -> Double = fn() { 0.0 },
   width? : () -> Double,
   shown? : () -> Bool = fn() { true },
   keep_screen? : (String, String) -> Bool = fn(_, _) { false },
 ) -> Unit {
   let asks_t = (src.asks_terminals)()
-  let pads = fn() { (start_pad(), end_pad()) }
+  let pads = bar_ends
   let lines = @signals.computed(fn(_) { remote_lines(src, ws(), asks_t) }, same=fn(a, b) { a == b })
   let front = @signals.computed(fn(_) { remote_front_in(src, ws(), lines.get()) }, same=fn(a, b) { a == b })
   let front_key = fn() { front.get().map_or("", fn(p) { p.0 }) }

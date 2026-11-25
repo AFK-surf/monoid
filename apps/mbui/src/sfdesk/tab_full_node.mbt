@@ -191,7 +191,7 @@ fn tab_full_node(n : @view.View, src : Source, f : @sfbase.TabFull) -> Unit {
   n.box(fn(page) {
     page.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     // (under the bar, clear of the column of the system's bars down its trailing edge: an iPhone Duo's on its side)
-    page.box(fn(top) { top.height(By(fn() { Some(room().0 + @sf.viewer_bar_h) })).shrink(Is(0.0)) |> ignore }) |> ignore
+    page.box(fn(top) { top.height(By(fn() { Some(room().0 + @sf.viewer_bar_h_now()) })).shrink(Is(0.0)) |> ignore }) |> ignore
     page.box(fn(body) {
       body
       .grow(Is(1.0))
@@ -465,7 +465,7 @@ fn tab_window_body_node(
     _ => {
       n.box(fn(page) {
         page.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-        page.box(fn(t) { t.height(By(fn() { Some(top() + @sf.viewer_bar_h) })).shrink(Is(0.0)) |> ignore }) |> ignore
+        page.box(fn(t) { t.height(By(fn() { Some(top() + @sf.viewer_bar_h_now()) })).shrink(Is(0.0)) |> ignore }) |> ignore
         page.box(fn(body) {
           body.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
           side_view_node(body, src, r, tab, fn(b) { b.window_w() }, None, tools=false)

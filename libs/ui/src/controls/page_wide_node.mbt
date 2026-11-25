@@ -186,7 +186,9 @@ fn wide_head_node(
 ) -> Unit {
   col
   .padding(By(fn() {
-    (head_in(col), if frame().back is Some(_) { desk_head_deep_top } else { desk_head_top }, head_in(col), desk_head_foot)
+    let f = frame()
+    let base = if f.back is Some(_) { desk_head_deep_top } else { desk_head_top }
+    (head_in(col), base + desk_head_top_extra(f.top), head_in(col), desk_head_foot)
   }))
   .ground(By(fn() { @ui.tree_theme().color(Bg) }))
   |> ignore
@@ -238,9 +240,9 @@ fn own_head_lane_node(col : @view.View, head : (@view.View) -> Unit, on_back : (
     let top = if f.named {
       desk_first_top
     } else if f.back is Some(_) {
-      desk_head_deep_top
+      desk_head_deep_top + desk_head_top_extra(f.top)
     } else {
-      desk_head_top
+      desk_head_top + desk_head_top_extra(f.top)
     }
     (head_in(col), top, head_in(col), 0.0)
   }))
@@ -256,6 +258,17 @@ fn own_head_lane_node(col : @view.View, head : (@view.View) -> Unit, on_back : (
 /// desk_head's room (pt=S10, deep pt=S5, pb=S3), its title line's gap (S2_5), what it is for under it (pt=S1_5),
 /// back's line's room under it (pb=S2).
 let desk_head_top : Double = 40.0
+
+///|
+/// Extra top offset for unbarred wide page headers when the app draws its own window buttons (`y = 9..45`),
+/// keeping top-right page header actions at `y >= 48` clear of the window-controls capsule.
+fn desk_head_top_extra(frame_top : Double) -> Double {
+  if frame_top == 0.0 && @ui.window_keys_own_now() {
+    8.0
+  } else {
+    0.0
+  }
+}
 
 ///|
 let desk_head_deep_top : Double = 20.0

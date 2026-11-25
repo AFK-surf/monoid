@@ -12,6 +12,7 @@ pub fn page_bar_node(
   parent : @view.View,
   body : (@view.View) -> Unit,
   corners? : (Double, Double)? = None,
+  end_pad? : () -> Double,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(row) {
@@ -19,14 +20,20 @@ pub fn page_bar_node(
       let key = theme().bars.key
       let look = page_bar_box.then(@ui.style(gap=keys_gap(size=key)))
       match corners {
-        Some((left, right)) =>
+        Some((left, right)) => {
+          let base_pr = @ui.capsule_in(dmax(right, tape_corner), key)
+          let pr = match end_pad {
+            Some(f) => dmax(base_pr, f())
+            None => base_pr
+          }
           look.then(
             @ui.style(
               pt=room_of(@ui.capsule_in(tape_corner, key) - pane_edge),
               pl=room_of(@ui.capsule_in(dmax(left, tape_corner), key)),
-              pr=room_of(@ui.capsule_in(dmax(right, tape_corner), key)),
+              pr=room_of(pr),
             ),
           )
+        }
         None => look.then(@ui.style(min_h=Fixed(@ui.room_least())))
       }
     })

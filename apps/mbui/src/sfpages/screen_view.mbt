@@ -237,12 +237,12 @@ priv struct ScreenPage {
   close : () -> Unit
   tips : @sf.TipLayer
   in_tab : Bool
-  own_bar : @ui.Style?
+  own_bar : (() -> @ui.Style)?
   /// a window of its own (the desktop's windows of one run), alone in it: nowhere to go back to
   lone : Bool
   /// shown as a tab at a pane's top with no row of tabs over it (远程's): its bar the pane's own, as high as a page's,
-  /// its keys this far in from its start and its end (screen_tab_bar_node)
-  tab_pads : (() -> (Double, Double))?
+  /// its keys this far in from its start, top and end (screen_tab_bar_node)
+  tab_pads : @sf.BarEnds?
   /// the workbench pane's width when shown in 远程 (decides wide vs narrow simulator arrangement; none in a chat's side panel)
   pane_width : (() -> Double)?
   /// where a window of its own takes it, what hands it there (its 在独立窗口中打开)
@@ -251,12 +251,22 @@ priv struct ScreenPage {
 
 ///|
 /// The width deciding wide vs narrow arrangement for a simulator pane: its own pane's width where given (远程's
-/// workbench), 0 in a chat's side panel, else the window's.
+/// workbench), 0 in a chat's side panel, else the window's — minus the trailing room reserved for the app's own
+/// window buttons on Windows/Linux so the 3-zone simulator top bar folds before colliding with `- □ ×`.
 fn ScreenPage::sim_width(self : ScreenPage, v : @view.View) -> Double {
-  match self.pane_width {
+  let raw = match self.pane_width {
     Some(w) => w()
     None => if self.in_tab { 0.0 } else { v.window_w() }
   }
+  let keys_w = if @ui.window_keys_own_now() {
+    match self.tab_pads {
+      Some(pads) => (pads.end)()
+      None => if self.in_tab { 0.0 } else { @sf.window_keys_room(roots=@ui.tree_corner_roots_now()) }
+    }
+  } else {
+    0.0
+  }
+  dmax(0.0, raw - keys_w)
 }
 
 ///|
@@ -312,7 +322,7 @@ pub fn screen_node(
   frame : () -> PageFrame,
   on_close? : () -> Unit,
   in_tab? : Bool = false,
-  own_bar? : @ui.Style? = None,
+  own_bar? : (() -> @ui.Style)? = None,
   loc~ : SourceLoc,
 ) -> Unit {
   screen_pane_node(v, src, at, frame, on_close?, in_tab~, own_bar~, loc~)
@@ -332,8 +342,8 @@ pub fn screen_pane_node(
   frame : () -> PageFrame,
   on_close? : () -> Unit,
   in_tab? : Bool = false,
-  own_bar? : @ui.Style? = None,
-  tab_pads? : () -> (Double, Double),
+  own_bar? : (() -> @ui.Style)? = None,
+  tab_pads? : @sf.BarEnds,
   pane_width? : () -> Double,
   on_window? : () -> Unit,
   loc~ : SourceLoc,
