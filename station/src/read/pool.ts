@@ -41,6 +41,7 @@ import { HttpError } from "./views.ts";
 import { repairMergedEditLookup } from "../store/schema.ts";
 import { EventEmitter } from "node:events";
 import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "./mb-reader.ts";
+import { type TelemetryEngine, classifyProgram, readerTelemetry } from "./reader-telemetry.ts";
 import { wall } from "../ops/fibers.ts";
 import { roots as machineRoots } from "./machine.ts";
 import { platform } from "../platform/index.ts";
@@ -411,13 +412,20 @@ export class Readers {
       }
     }
     const slot: Slot = { worker, held: null, catalogVersion: 0, binary: spawnedBinary };
+    const slotEngine = (): TelemetryEngine | null => {
+      if (slot.binary !== undefined) return classifyProgram(slot.binary, []).engine;
+      if (slot.worker instanceof MbReader) return slot.worker.engine;
+      return null;
+    };
     const begun = wall.now();
     worker.on("message", (answer: Answer | Ready) => {
       // How long a reader took to start: a read given it as it starts waits on that (one read of 1.9 s took 18 s on
       // a station short of memory, 2026-11-03, a reader started for it).
       if ("ready" in answer) {
         const ms = wall.now() - begun;
-        if (ms >= 1_000) log.warn("readers", "a reader started slowly", { ms, line: line === this.asked ? "asked" : line === this.pages ? "pages" : line === this.log ? "log" : line === this.moved ? "moved" : "told", ...answer.ready });
+        const engine = slotEngine();
+        if (engine !== null) readerTelemetry.recordReady(engine, "data", ms, answer.ready.loadedMs, answer.ready.openedMs);
+        if (ms >= 1_000) log.warn("readers", "a reader started slowly", { ...(engine !== null ? { engine } : {}), mode: "data", ms, line: line === this.asked ? "asked" : line === this.pages ? "pages" : line === this.log ? "log" : line === this.moved ? "moved" : "told", ...answer.ready });
         return;
       }
       // An abandoned read may finish while its reader is being stopped. Do not give that reader another read until it exits.
@@ -426,12 +434,15 @@ export class Readers {
       slot.held = null;
       if (asked !== null && asked.ask.id === answer.id) {
         const now = wall.now();
-        if (now - asked.at > SLOW_MS) log.warn("readers", "a read went slowly", { op: asked.ask.op, told: line.told, waitedMs: asked.took - asked.at, ms: now - asked.took });
+        const execMs = now - asked.took;
+        const engine = slotEngine();
+        const text = answer.body ?? answer.text;
+        if (engine !== null) readerTelemetry.recordCall(engine, "data", execMs, text !== undefined);
+        if (now - asked.at > SLOW_MS) log.warn("readers", "a read went slowly", { ...(engine !== null ? { engine } : {}), mode: "data", op: asked.ask.op, told: line.told, waitedMs: asked.took - asked.at, ms: execMs });
         // A background read rests its line as long as it took before the next: one after another, a history brought on
         // read 40 MB of a transcript in 10 s on a station short of memory (2026-11-03), every write and read waiting on the
         // disk meanwhile.
-        if (asked.background) line.rested = now + (now - asked.took);
-        const text = answer.body ?? answer.text;
+        if (asked.background) line.rested = now + execMs;
         if (text !== undefined) {
           const session = answer.prepareUpJobs;
           if (session !== undefined && !this.preparingUpJobs.has(session)) {
@@ -452,12 +463,19 @@ export class Readers {
       }
       this.pump(line);
     });
-    worker.on("error", (error) => log.error("readers", "a reader failed", { error: error.message, reading: slot.held?.ask.op ?? null }));
+    worker.on("error", (error) => {
+      const engine = slotEngine();
+      log.error("readers", "a reader failed", { ...(engine !== null ? { engine } : {}), mode: "data", error: error.message, reading: slot.held?.ask.op ?? null });
+    });
     worker.on("exit", (code) => {
       slot.idle?.();
       line.slots = line.slots.filter((s) => s !== slot);
-      slot.held?.reject(new HttpError(500, `the reader stopped (exit ${code})`));
-      slot.held = null;
+      if (slot.held !== null) {
+        const engine = slotEngine();
+        if (engine !== null) readerTelemetry.recordCall(engine, "data", wall.now() - slot.held.took, false);
+        slot.held.reject(new HttpError(500, `the reader stopped (exit ${code})`));
+        slot.held = null;
+      }
       this.pump(line);
     });
     line.slots.push(slot);
@@ -494,7 +512,7 @@ export class Readers {
     if (this.mbReader !== null) {
       if (this.moved.slots.length === 0) {
         const started = this.start(this.moved);
-        if ("error" in started) log.warn("readers", "warm reader start failed", { error: started.error.message });
+        if ("error" in started) log.warn("readers", "warm reader start failed", { mode: "data", error: started.error.message });
       }
       return;
     }
@@ -502,7 +520,7 @@ export class Readers {
       while (!this.closed && line.slots.length < line.size) {
         const started = this.start(line);
         if ("error" in started) {
-          log.warn("readers", "warm reader start failed", { error: started.error.message });
+          log.warn("readers", "warm reader start failed", { mode: "data", error: started.error.message });
           break;
         }
       }

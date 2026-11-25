@@ -7,6 +7,7 @@ import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { MbProcess, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import type { TranscriptLocationHints } from "../read/transcript.ts";
 
@@ -24,7 +25,7 @@ export type MbRead = {
 /// What it answers: how many calls were new, of which sessions, the earliest made when, and the hints as it left them.
 export type MbReadAnswer = { added: number; sessions: string[]; from: number | null; hints: TranscriptLocationHints };
 
-type Waiting = { resolve: (answer: MbReadAnswer) => void; reject: (error: Error) => void };
+type Waiting = { resolve: (answer: MbReadAnswer) => void; reject: (error: Error) => void; at: number };
 
 /// The stop of a read under way: the program ended (`close`, a trim cannot end one under way).
 export class MbCounterStopped extends Error {}
@@ -63,7 +64,7 @@ export class MbUsageCounter {
     if (this.#closed) return Promise.reject(new MbCounterStopped("station stopping"));
     return new Promise((resolve, reject) => {
       const id = ++this.#next;
-      this.#waiting.set(id, { resolve, reject });
+      this.#waiting.set(id, { resolve, reject, at: wall.now() });
       this.#idle?.();
       this.#idle = null;
       const send = (proc: MbProcess) => {
@@ -142,6 +143,7 @@ export class MbUsageCounter {
       const waiting = this.#waiting.get(answer.id);
       if (!waiting) return;
       this.#waiting.delete(answer.id);
+      readerTelemetry.recordCall(child.engine, child.mode, wall.now() - waiting.at, answer.error === undefined);
       if (answer.error !== undefined) waiting.reject(new Error(answer.error));
       else waiting.resolve(answer);
       this.#idleLater();
@@ -149,7 +151,7 @@ export class MbUsageCounter {
     let failure: Error | null = null;
     child.on("error", (error: Error) => {
       failure = error;
-      log.error("usage", "the usage counter's program stopped", { error: error.message });
+      log.error("usage", "the usage counter's program stopped", { engine: child.engine, mode: child.mode, error: error.message });
     });
     child.on("exit", (code: number) => {
       if (this.#process !== child) return;
@@ -157,7 +159,11 @@ export class MbUsageCounter {
       this.#idle?.();
       this.#idle = null;
       const error = this.#closed ? new MbCounterStopped("station stopping") : (failure ?? new Error(`the usage counter's program stopped (exit ${code})`));
-      for (const waiting of this.#waiting.values()) waiting.reject(error);
+      const now = wall.now();
+      for (const waiting of this.#waiting.values()) {
+        if (!this.#closed) readerTelemetry.recordCall(child.engine, child.mode, now - waiting.at, false);
+        waiting.reject(error);
+      }
       this.#waiting.clear();
     });
     return child;

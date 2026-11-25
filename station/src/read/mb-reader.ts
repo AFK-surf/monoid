@@ -22,6 +22,7 @@ import {
   type ReaderSelection,
   resolveReaderEngine,
 } from "./reader-select.ts";
+import { type TelemetryEngine, classifyProgram, readerTelemetry } from "./reader-telemetry.ts";
 
 /// A read asked of a reader (main.mbt `answer`).
 export type Ask = { id: number; op: string; args: any; lang: Lang; names: [string, string][]; processes: [string, string][]; clientKeys: [string, string][]; catalog?: Record<string, unknown> };
@@ -252,6 +253,7 @@ export type ResolvedReaderSelection = {
 
 function warnReaderFallbackOnce(logAt: string, selection: ReaderSelection): void {
   if (!selection.fallback) return;
+  readerTelemetry.recordFallback(selection.mode);
   const dedupKey = `${selection.mode}:${selection.source}:${selection.reason ?? "unknown"}`;
   if (warnedReaderFallbacks.has(dedupKey)) return;
   warnedReaderFallbacks.add(dedupKey);
@@ -569,11 +571,14 @@ export class MbProcess extends EventEmitter {
   /// Those running now, by their pids, arguments and since when.
   static live(): ReadonlyArray<LiveProgram> { return [...MbProcess.#live.values()]; }
 
+  readonly engine: TelemetryEngine;
+  readonly mode: string;
   readonly #child: ChildProcess;
   readonly #args: readonly string[];
   readonly #stdinMost: number;
   #exited = false;
   #stalled = false;
+  #intentionalStop = false;
   /// All written to its stdin, and where it stood when it was last found behind (STDIN_BEHIND, `postLine`).
   #written = 0;
   #behind: { at: number; written: number; unread: number } | null = null;
@@ -582,6 +587,10 @@ export class MbProcess extends EventEmitter {
   /// `stdinMost`: STDIN_MOST but in tests.
   constructor(binary: string, args: string[], options: { background?: boolean; stdinMost?: number } = {}) {
     super();
+    const identity = classifyProgram(binary, args);
+    this.engine = identity.engine;
+    this.mode = identity.mode;
+    readerTelemetry.recordSpawn(this.engine, this.mode);
     const background = options.background ?? backgroundByDefault(args);
     const [command, given] = mbSpawned(binary, args, { background });
     this.#args = args;
@@ -590,7 +599,10 @@ export class MbProcess extends EventEmitter {
     if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, binary, args, background, startedAt: wall.now() });
     const said = new Said((answer) => this.emit("message", answer));
     this.#child.stdout!.on("data", (bytes: Buffer) => said.push(bytes));
-    createInterface({ input: this.#child.stderr! }).on("line", (line) => log.warn("readers", "a MoonBit reader said", { line }));
+    createInterface({ input: this.#child.stderr! }).on("line", (line) => {
+      readerTelemetry.recordStderr(this.engine, this.mode);
+      log.warn("readers", "a MoonBit reader said", { line, engine: this.engine, mode: this.mode });
+    });
     // (a failed write is the process gone, told by its exit)
     this.#child.stdin!.on("error", () => {});
     // All it was given read, with nothing written meanwhile: no longer behind (else the next time it is would be told
@@ -605,6 +617,9 @@ export class MbProcess extends EventEmitter {
     this.#child.on("close", (code, signal) => {
       this.#exited = true;
       MbProcess.#live.delete(this);
+      if (!this.#intentionalStop && !this.#stalled && (code !== 0 || signal !== null)) {
+        readerTelemetry.recordUnexpectedExit(this.engine, this.mode);
+      }
       this.emit("exit", code ?? (signal !== null ? 1 : 0));
     });
   }
@@ -625,14 +640,15 @@ export class MbProcess extends EventEmitter {
     const unread = stdin.writableLength;
     if (unread > STDIN_BEHIND && this.#behind === null) {
       this.#behind = { at: wall.now(), written: this.#written, unread };
-      log.warn("readers", "a MoonBit program is behind what it is asked", { args: this.#args.slice(0, 6), pid: this.#child.pid ?? null, unreadBytes: unread });
+      log.warn("readers", "a MoonBit program is behind what it is asked", { engine: this.engine, mode: this.mode, args: this.#args.slice(0, 6), pid: this.#child.pid ?? null, unreadBytes: unread });
     } else if (unread <= STDIN_BEHIND / 2) this.#behind = null;
     if (unread <= this.#stdinMost) return;
     this.#stalled = true;
+    readerTelemetry.recordStall(this.engine, this.mode);
     // Since it was found behind: how long, and what it read of what it was given (next to nothing, it stopped reading).
     const behind = this.#behind;
     const since = behind === null ? {} : { behindMs: wall.now() - behind.at, readBytes: this.#written - behind.written - (unread - behind.unread) };
-    log.error("readers", "a MoonBit program stopped reading what it is asked; ending it", { args: this.#args.slice(0, 6), pid: this.#child.pid ?? null, unreadBytes: unread, ...since });
+    log.error("readers", "a MoonBit program stopped reading what it is asked; ending it", { engine: this.engine, mode: this.mode, args: this.#args.slice(0, 6), pid: this.#child.pid ?? null, unreadBytes: unread, ...since });
     this.#child.kill("SIGKILL");
   }
 
@@ -650,10 +666,12 @@ export class MbProcess extends EventEmitter {
 
   /// Ends it now, not waiting for its end (the station's process is ending).
   kill() {
+    this.#intentionalStop = true;
     if (!this.#exited) this.#child.kill("SIGKILL");
   }
 
   terminate(): Promise<number> {
+    this.#intentionalStop = true;
     if (this.#exited) return Promise.resolve(this.#child.exitCode ?? 1);
     this.ref(true);
     return new Promise((resolve) => {
@@ -691,6 +709,7 @@ export class MbBackfill extends EventEmitter {
   readonly #pauseMs: number;
   #holding = false;
   #exited = false;
+  #askedAt = 0;
 
   constructor(binary: string, args: string[], priority: SharedArrayBuffer | undefined, pauseMs: number) {
     super();
@@ -699,12 +718,20 @@ export class MbBackfill extends EventEmitter {
     // (a backfill is the station's own, nobody waiting on it: the system's background work, whatever its kind)
     this.#process = new MbProcess(binary, args, { background: true });
     this.#process.on("message", (result: { done: boolean; error?: string }) => {
+      if (this.#askedAt > 0) {
+        readerTelemetry.recordCall(this.#process.engine, this.#process.mode, wall.now() - this.#askedAt, !result.error);
+        this.#askedAt = 0;
+      }
       this.#give();
       if (!result.done && !result.error) this.#later(result);
       else this.emit("message", result);
     });
     this.#process.on("error", (error) => this.emit("error", error));
     this.#process.on("exit", (code) => {
+      if (this.#askedAt > 0) {
+        readerTelemetry.recordCall(this.#process.engine, this.#process.mode, wall.now() - this.#askedAt, false);
+        this.#askedAt = 0;
+      }
       this.#give();
       this.#exited = true;
       this.emit("exit", code);
@@ -724,6 +751,7 @@ export class MbBackfill extends EventEmitter {
     if (this.#exited) return;
     if (!takeBackfill(this.#priority, this.threadId)) return void this.#later({ done: false });
     this.#holding = true;
+    this.#askedAt = wall.now();
     this.#process.postMessage(message);
   }
 

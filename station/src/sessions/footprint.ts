@@ -6,6 +6,7 @@ import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { fileName, samePath, segments, within } from "../ops/paths.ts";
 import { MbProcess, resolveReaderSelection } from "../read/mb-reader.ts";
+import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 /// Path::starts_with: `path` is `dir` or under it.
@@ -268,6 +269,7 @@ function spawnMeasureBinary(
       kill: () => {},
     };
   }
+  const startedAt = wall.now();
   const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true });
   let resolveClosed!: () => void;
   const closed = new Promise<void>((r) => { resolveClosed = r; });
@@ -275,9 +277,10 @@ function spawnMeasureBinary(
   const result = new Promise<Measured>((resolve, reject) => {
     let settled = false;
     let exited = false;
-    const settle = (f: () => void) => {
+    const settle = (f: () => void, ok?: boolean) => {
       if (settled) return;
       settled = true;
+      if (ok !== undefined) readerTelemetry.recordCall(p.engine, p.mode, wall.now() - startedAt, ok);
       f();
     };
     const stop = () => {
@@ -294,17 +297,19 @@ function spawnMeasureBinary(
     };
     signal?.addEventListener("abort", stop, { once: true });
     // (its bytes said `size`: a line that says `bytes` has a body after it, read/mb-reader.ts `Said`)
-    p.on("message", (raw: unknown) => settle(() => {
+    p.on("message", (raw: unknown) => {
       const parsed = parseMeasureMessage(raw);
-      if (parsed.ok) resolve(parsed.value);
-      else reject(parsed.error);
-    }));
+      settle(() => {
+        if (parsed.ok) resolve(parsed.value);
+        else reject(parsed.error);
+      }, parsed.ok);
+    });
     p.on("error", (e: Error) => {
-      settle(() => reject(e));
+      settle(() => reject(e), false);
       markClosed();
     });
     p.on("exit", (code: number) => {
-      settle(() => reject(new Error(`the measure's program ended saying nothing (${code})`)));
+      settle(() => reject(new Error(`the measure's program ended saying nothing (${code})`)), false);
       markClosed();
     });
     p.postMessage({

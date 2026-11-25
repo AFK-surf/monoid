@@ -4,6 +4,7 @@
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { MbProcess, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import type { Passed, Places, Told } from "./export.ts";
 
@@ -72,7 +73,7 @@ export class ProgramRunner implements Runner {
   #worker: Thread | null = null;
   #starting: Promise<Thread> | null = null;
   #closing: Thread | null = null;
-  readonly #waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
+  readonly #waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; at: number }>();
   #next = 0;
   #places: Places | null = null;
   #closed = false;
@@ -90,6 +91,9 @@ export class ProgramRunner implements Runner {
     worker.on("message", (m: { id: number; answer?: unknown; error?: string }) => {
       const w = this.#waiting.get(m.id);
       this.#waiting.delete(m.id);
+      if (w !== undefined && worker instanceof MbProcess) {
+        readerTelemetry.recordCall(worker.engine, worker.mode, wall.now() - w.at, m.error === undefined);
+      }
       if (m.error !== undefined) w?.reject(new Error(m.error));
       else w?.resolve(m.answer);
     });
@@ -97,7 +101,13 @@ export class ProgramRunner implements Runner {
       if (this.#worker !== worker && this.#closing !== worker) return;
       if (this.#worker === worker) this.#worker = null;
       if (this.#closing === worker) this.#closing = null;
-      for (const w of this.#waiting.values()) w.reject(e);
+      const now = wall.now();
+      for (const w of this.#waiting.values()) {
+        if (!this.#closed && worker instanceof MbProcess) {
+          readerTelemetry.recordCall(worker.engine, worker.mode, now - w.at, false);
+        }
+        w.reject(e);
+      }
       this.#waiting.clear();
     };
     worker.on("error", (e) => fail(new Error(`the copies' thread failed: ${e.message}`)));
@@ -110,9 +120,10 @@ export class ProgramRunner implements Runner {
   #sendAsk<T>(worker: Thread, m: Asked): Promise<T> {
     if (this.#closed) return Promise.reject(new Error("the copies' thread is closed"));
     const id = ++this.#next;
+    const at = wall.now();
     return new Promise<T>((resolve, reject) => {
-      this.#waiting.set(id, { resolve, reject });
-      worker.postMessage({ ...m, id, now: wall.now() });
+      this.#waiting.set(id, { resolve, reject, at });
+      worker.postMessage({ ...m, id, now: at });
     });
   }
 
@@ -164,9 +175,10 @@ export class ProgramRunner implements Runner {
     this.#closing = worker;
     const id = ++this.#next;
     const ack = new Promise<void>((resolve, reject) => {
-      this.#waiting.set(id, { resolve, reject });
+      const at = wall.now();
+      this.#waiting.set(id, { resolve, reject, at });
       try {
-        worker.postMessage({ type: "close", id, now: wall.now() });
+        worker.postMessage({ type: "close", id, now: at });
       } catch (e) {
         this.#waiting.delete(id);
         reject(e as Error);

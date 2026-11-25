@@ -1,8 +1,9 @@
 import { setMaxListeners } from "node:events";
-import { Fibers } from "../ops/fibers.ts";
+import { Fibers, wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { REQUEST_BACKFILL_PAUSE_MS, giveBackfill, releaseStoppedBackfill, takeBackfill } from "../store/backfill.ts";
 import { type BackfillOptions, MbProcess } from "./mb-reader.ts";
+import { classifyProgram, readerTelemetry } from "./reader-telemetry.ts";
 
 /// A builder in MoonBit or Pion (read/mb-reader.ts): its program (resolved on each spawn when given as a getter)
 /// and arguments. It knows nothing of the backfill permit, which
@@ -38,6 +39,7 @@ export class RequestedBuilder<K extends number | string> {
   #retry: (() => void) | null = null;
   #idle: (() => void) | null = null;
   #retryMs = 250;
+  #askedAt = 0;
 
   constructor(options: BackfillOptions, mb: MbBuilder,
     field: "thread" | "session" | "scope", name: string, message?: (item: K, cancel: boolean) => Record<string, unknown>) {
@@ -52,12 +54,16 @@ export class RequestedBuilder<K extends number | string> {
   /// A batch asked of the MoonBit builder, once it holds the permit (store/backfill.ts); without it, the batch is not
   /// done, after a pause.
   #askMb(process: MbProcess, message: Record<string, unknown>): void {
-    if (this.#mb.lazy) return void process.postMessage(message);
+    if (this.#mb.lazy) {
+      this.#askedAt = wall.now();
+      return void process.postMessage(message);
+    }
     if (!takeBackfill(this.#priority(), this.#owner)) {
       this.#timers.after(REQUEST_BACKFILL_PAUSE_MS, () => { if (this.#worker === process) this.#answer({ done: false }); });
       return;
     }
     this.#holding = true;
+    this.#askedAt = wall.now();
     process.postMessage(message);
   }
 
@@ -65,10 +71,14 @@ export class RequestedBuilder<K extends number | string> {
   /// pause before it is answered.
   #answeredMb(process: MbProcess, result: { done: boolean; error?: string; take?: boolean; give?: boolean; fallback?: boolean }): void {
     if (result.fallback === true) {
+      if (this.#askedAt > 0) {
+        readerTelemetry.recordCall(process.engine, process.mode, wall.now() - this.#askedAt, true);
+        this.#askedAt = 0;
+      }
       if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
       const repair = this.#mb.repair;
       if (repair === undefined) return void this.#answer({ done: false, error: "the store needs a repair this builder cannot make" });
-      log.info("readers", "a MoonBit builder left this store's schema to the writer to repair", { args: this.#mb.args.slice(0, 2) });
+      log.info("readers", "a MoonBit builder left this store's schema to the writer to repair", { engine: process.engine, mode: process.mode, args: this.#mb.args.slice(0, 2) });
       try { repair(); }
       catch (error) {
         // (the database busy with another's write: no error, the batch asked again after a pause, as any batch not done)
@@ -86,6 +96,10 @@ export class RequestedBuilder<K extends number | string> {
     if (result.give === true) {
       if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
       return;
+    }
+    if (this.#askedAt > 0) {
+      readerTelemetry.recordCall(process.engine, process.mode, wall.now() - this.#askedAt, !result.error);
+      this.#askedAt = 0;
     }
     if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
     if (!result.done && !result.error) this.#timers.after(REQUEST_BACKFILL_PAUSE_MS, () => { if (this.#worker === process) this.#answer(result); });
@@ -176,19 +190,26 @@ export class RequestedBuilder<K extends number | string> {
         mb = new MbProcess(binary, this.#mb.args);
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
-        log.warn("readers", "an old-state builder could not start", { error: err.message });
+        const mode = classifyProgram("", this.#mb.args).mode;
+        log.warn("readers", "an old-state builder could not start", { mode, error: err.message });
         for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
         return;
       }
       const owner = this.#owner = nextOwner++;
       this.#worker = mb;
       mb.on("message", (result: { done: boolean; error?: string }) => { if (this.#worker === mb) this.#answeredMb(mb, result); });
-      mb.once("error", (error: Error) => log.warn("readers", "an old-state builder failed", { error: error.message }));
+      mb.once("error", (error: Error) => log.warn("readers", "an old-state builder failed", { engine: mb.engine, mode: mb.mode, error: error.message }));
       mb.once("exit", () => {
         releaseStoppedBackfill(this.#options.priority, owner);
         // (only the builder's own: one let go idle can end after the next one took the permit for its batch, which
         // would then never be given back, and no batch of any builder sharing the permit asked again)
-        if (this.#worker === mb) this.#holding = false;
+        if (this.#worker === mb) {
+          this.#holding = false;
+          if (this.#askedAt > 0) {
+            readerTelemetry.recordCall(mb.engine, mb.mode, wall.now() - this.#askedAt, false);
+            this.#askedAt = 0;
+          }
+        }
         this.#gone(mb);
       });
     }
