@@ -1131,6 +1131,7 @@ pub fn remote_workbench_node(
           on_close=close_tab,
           in_tab=true,
           tab_pads=pads,
+          pane_width?=width,
           on_window=to_window,
         )
       Terminal(at) =>

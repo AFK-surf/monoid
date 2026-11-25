@@ -376,6 +376,8 @@ export interface ScreenSource {
   readonly chrome?: readonly ChromeSource[];
   /// A simulator's panels and their corners (sim-mask.ts).
   readonly panels?: readonly Panel[];
+  /// The device's model name ("iPhone 11 Pro", "Pixel 9"), when it may differ from its title (a simulator, an Android device).
+  readonly model?: string;
 }
 
 /// The station's browser as `ScreenHub` reaches it without importing `browser/`.

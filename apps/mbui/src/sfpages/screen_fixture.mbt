@@ -385,6 +385,7 @@ pub fn screen_fixture_stream(
       }
       // (远程's own simulator by its own name, as its list and its tab name it)
       st["title"] = Json::string(if asked == "sim:iphone" { "iPhone 17 Pro" } else { "iPhone Duo · iOS 27.1" })
+      st["model"] = Json::string(if asked == "sim:iphone" { "iPhone 17 Pro" } else { "iPhone Duo" })
       st["kind"] = Json::string("simulator")
       st["debug"] = Json::boolean(true)
       st["poses"] = Json::boolean(true)

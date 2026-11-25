@@ -243,8 +243,31 @@ priv struct ScreenPage {
   /// shown as a tab at a pane's top with no row of tabs over it (远程's): its bar the pane's own, as high as a page's,
   /// its keys this far in from its start and its end (screen_tab_bar_node)
   tab_pads : (() -> (Double, Double))?
+  /// the workbench pane's width when shown in 远程 (decides wide vs narrow simulator arrangement; none in a chat's side panel)
+  pane_width : (() -> Double)?
   /// where a window of its own takes it, what hands it there (its 在独立窗口中打开)
   on_window : (() -> Unit)?
+}
+
+///|
+/// The width deciding wide vs narrow arrangement for a simulator pane: its own pane's width where given (远程's
+/// workbench), 0 in a chat's side panel, else the window's.
+fn ScreenPage::sim_width(self : ScreenPage, v : @view.View) -> Double {
+  match self.pane_width {
+    Some(w) => w()
+    None => if self.in_tab { 0.0 } else { v.window_w() }
+  }
+}
+
+///|
+/// Whether this page shows a simulator in the wide unified top-bar arrangement (Proposal C: mouse/keyboard wide pane —
+/// 远程's workbench or standalone Viewer; touch tablets have no top bar and keep device buttons beside the device).
+fn ScreenPage::sim_wide(self : ScreenPage, v : @view.View) -> Bool {
+  self.s.said.get() |> ignore
+  self.s.simulator() &&
+  !@sf.soft_keyboard() &&
+  !(!self.in_tab && @sf.native_on()) &&
+  @sf.width_is_wide(Some(fn() { self.sim_width(v) }))
 }
 
 ///|
@@ -311,6 +334,7 @@ pub fn screen_pane_node(
   in_tab? : Bool = false,
   own_bar? : @ui.Style? = None,
   tab_pads? : () -> (Double, Double),
+  pane_width? : () -> Double,
   on_window? : () -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
@@ -356,6 +380,7 @@ pub fn screen_pane_node(
       own_bar,
       lone,
       tab_pads,
+      pane_width,
       on_window,
     }
     // unseen, where the keyboard's input goes (a press on the stage gives it the focus with a mouse; 键盘 with a finger)
@@ -473,7 +498,7 @@ fn screen_full_look(p : @view.View, pg : ScreenPage) -> Unit {
 fn screen_tab_look(p : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   screen_tab_bar_node(p, pg)
-  p.show(at_once=true, fn() { s.taking_over_now() }, fn(t) { take_over_node(t, pg, in_bar=false, placed=true) })
+  p.show(at_once=true, fn() { s.taking_over_now() && !pg.sim_wide(p) }, fn(t) { take_over_node(t, pg, in_bar=false, placed=true) })
   screen_content_node(p, pg)
 }
 

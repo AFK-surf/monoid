@@ -3063,6 +3063,9 @@ web-main.preset.clearModel
 web-main.preset.instructionsTitle
 web-pages.screen.debug.app
 web-pages.screen.device.back
+core-views.screen.control
+core-views.screen.watch
+web-pages.screen.debug.pane
 web-pages.screen.debug.paneHide
 web-pages.screen.debug.paneShow
 desktop.update.update

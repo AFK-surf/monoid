@@ -975,6 +975,50 @@ test "an Android device: its back and its volume by it, nothing it has not" {
 }
 
 ///|
+test "wide desktop simulator: unified top bar with model metadata, glass tool pill above pure stage, and collapsible 调试 drawer" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0)
+  r.state("live", others=[], more={
+    "kind": Json::string("simulator"),
+    "title": Json::string("ios-mbui-sf · iOS 27.2"),
+    "model": Json::string("iPhone 11 Pro"),
+    "debug": Json::boolean(true),
+    "poses": Json::boolean(true),
+  })
+  r.say({ "config": { "codec": "jpeg", "width": 1125.0, "height": 2436.0 } })
+  r.say({ "frame": { "key": true, "ts": 1.0 } }, bytes=b"\xFF\xD8\xFF\xE0jpeg")
+  r.t.stream_shows(r.sess().stream.unwrap().id(), 1.0, 1125, 2436)
+  r.t.draw()
+  r.t.draw()
+  // title, status pill, and non-duplicated model · runtime · size meta in top bar
+  assert_true(r.t.find("ios-mbui-sf") is Some(_))
+  assert_true(r.t.find("iPhone 11 Pro · iOS 27.2 · 1125×2436") is Some(_), msg=r.t.words().map(fn(w) { w.0 }).join(" | "))
+  // all device, pose, and quick-debug actions sit in the top bar above the pure stage
+  let shown = r.ui().shown(r.t.ctx())
+  let stage_top = r.ui().stage_xy().1 + shown.y
+  for word in [
+    "device.home", "device.appSwitcher", "device.lock", "device.softKeyboard", "debug.volume", "device.rotate",
+    "device.shot", "debug.recordStart", "debug.relaunch", "device.pose.closed", "device.pose.book", "device.pose.open",
+  ] {
+    let (_, by) = r.labelled(tr("web-pages.screen." + word)).unwrap()
+    assert_true(by < stage_top, msg="\{word} expected in top bar (\{by} < \{stage_top})")
+  }
+  // pure canvas by default: right debug drawer starts collapsed
+  assert_true(r.t.rect_of(tr("web-pages.screen.debug.openUrlGo")) is None)
+  let wide_h = shown.h
+  // clicking 调试 opens the right debug drawer; clicking again collapses it back to pure canvas
+  r.tap_label(tr("web-pages.screen.debug.paneShow"))
+  r.t.draw()
+  r.t.draw()
+  assert_true(r.t.rect_of(tr("web-pages.screen.debug.openUrlGo")) is Some(_))
+  r.tap_label(tr("web-pages.screen.debug.paneHide"))
+  r.t.draw()
+  r.t.draw()
+  assert_true(r.t.rect_of(tr("web-pages.screen.debug.openUrlGo")) is None)
+  assert_true(r.ui().shown(r.t.ctx()).h >= wide_h - 1.0)
+  screen_done(r.t)
+}
+
+///|
 test "录屏: started, with the panel in use, and ended" {
   let r = screen_rig()
   r.state("live", more={ "kind": Json::string("simulator"), "debug": Json::boolean(true), "poses": Json::boolean(true) })

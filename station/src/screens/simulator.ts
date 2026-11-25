@@ -69,8 +69,14 @@ const run: Run = (file, args) =>
     execFile(file, args, { timeout: 60_000, maxBuffer: 16 << 20 }, (error, out, err) => (error ? reject(new Error(`${file} ${args.join(" ")}: ${error.signal ?? error.code ?? ""} ${String(err).trim()}`.slice(0, 500))) : resolve(out))),
   );
 
+/// "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" → "iPhone 17 Pro"; "" for any other.
+export function deviceTypeName(id: string): string {
+  const m = /SimDeviceType\.(.+)$/.exec(id);
+  return m === null ? "" : m[1]!.replaceAll("-", " ");
+}
+
 /// A device type as its bundle says it: `#typed`.
-type Typed = { size: { width: number; height: number }; panels: Panel[]; chrome: ChromeSource[] };
+type Typed = { model: string; size: { width: number; height: number }; panels: Panel[]; chrome: ChromeSource[] };
 
 export type SimulatorsOptions = {
   screens: Screens;
@@ -146,23 +152,25 @@ export class Simulators {
     }
     for (const b of booted) {
       if (this.#listed.has(b.udid)) continue;
-      const { size, panels, chrome } = await this.#typed(b.type);
-      const source = new Simulator(b, this.#o.helper!, size, this.#run, panels, chrome);
+      const { model, size, panels, chrome } = await this.#typed(b.type);
+      const source = new Simulator(b, this.#o.helper!, size, this.#run, panels, chrome, undefined, model);
       if (this.#closed || this.#listed.has(b.udid)) continue;
       this.#listed.set(b.udid, { source, remove: this.#o.screens.add(source) });
     }
     await this.#follow();
   }
 
-  /// A device type's screen in pixels (its capabilities.plist; 0×0 when it cannot be read), panels (as its masks say
+  /// A device type's model name, screen in pixels (its capabilities.plist; 0×0 when it cannot be read), panels (as its masks say
   /// them; none: no corners drawn) and case (as Xcode has it: sim-chrome.ts), read from its bundle once.
   async #typed(type: string): Promise<Typed> {
     const known = this.#types.get(type);
     if (known) return known;
-    const typed: Typed = { size: { width: 0, height: 0 }, panels: [], chrome: [] };
+    const typed: Typed = { model: "", size: { width: 0, height: 0 }, panels: [], chrome: [] };
     try {
-      const types = JSON.parse(await this.#run(SIMCTL, ["list", "-j", "devicetypes"])).devicetypes as { identifier?: string; bundlePath?: string }[];
-      const bundle = types.find((t) => t.identifier === type)?.bundlePath;
+      const types = JSON.parse(await this.#run(SIMCTL, ["list", "-j", "devicetypes"])).devicetypes as { identifier?: string; name?: string; bundlePath?: string }[];
+      const found = types.find((t) => t.identifier === type);
+      if (typeof found?.name === "string" && found.name !== "") typed.model = found.name;
+      const bundle = found?.bundlePath;
       if (bundle) {
         const capabilities = JSON.parse(await this.#run("plutil", ["-convert", "json", "-o", "-", join(bundle, "Contents/Resources/capabilities.plist")]));
         typed.size = screenOf(capabilities);
@@ -175,6 +183,7 @@ export class Simulators {
         typed.chrome = cases.flatMap((c) => c ?? []);
       }
     } catch {}
+    if (typed.model === "") typed.model = deviceTypeName(type);
     this.#types.set(type, typed);
     return typed;
   }
@@ -253,6 +262,7 @@ export class Simulator implements ScreenSource {
   readonly poses: boolean;
   readonly panels: Panel[];
   readonly chrome: ChromeSource[];
+  readonly model?: string;
   readonly #device: Booted;
   readonly #helper: HelperApp;
   readonly #simctl: Run;
@@ -262,12 +272,13 @@ export class Simulator implements ScreenSource {
   readonly #views = new Set<HelperView>();
   readonly #opening: { ms: number; after: After };
 
-  constructor(device: Booted, helper: HelperApp, size: { width: number; height: number }, simctl: Run = run, panels: Panel[] = [], chrome: ChromeSource[] = [], opening: { ms: number; after: After } = { ms: OPEN_TIMEOUT_MS, after: wall.after }) {
+  constructor(device: Booted, helper: HelperApp, size: { width: number; height: number }, simctl: Run = run, panels: Panel[] = [], chrome: ChromeSource[] = [], opening: { ms: number; after: After } = { ms: OPEN_TIMEOUT_MS, after: wall.after }, model = "") {
     this.id = `simulator:${device.udid}`;
     this.debug = new SimDebug(SIMCTL, device.udid, simctl, () => this.#picture());
     this.poses = device.type.endsWith(".iPhone-Duo");
     this.panels = panels;
     this.chrome = chrome;
+    if (model !== "") this.model = model;
     this.#device = device;
     this.#helper = helper;
     this.#simctl = simctl;

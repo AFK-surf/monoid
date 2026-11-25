@@ -244,7 +244,7 @@ fn screen_stage_node(p : @view.View, pg : ScreenPage, pair? : () -> Bool = fn() 
     .min_width(Is(Some(0.0)))
     .clips(By(fn() { !in_body() }))
     |> ignore
-    if pg.in_tab {
+    if pg.in_tab && !s.simulator() {
       st.ground(By(fn() { @ui.tree_theme().color(Faint) })) |> ignore
     }
     st.by_room(fn(held, room) {
@@ -572,7 +572,7 @@ fn screen_pointer_node(o : @view.View, pg : ScreenPage, over : () -> Bool) -> Un
       .width(By(fn() { Some(pointer_drawn(s, ptr, shape()).1) }))
       .height(By(fn() { Some(pointer_drawn(s, ptr, shape()).2) }))
       .offset(By(place))
-      .image(By(fn() { Some((pointer_drawn(s, ptr, shape()).0, "", 0)) }))
+      .image(By(fn() { Some((pointer_drawn(s, ptr, shape()).0, "", 8192)) }))
       |> ignore
     })
     |> ignore
