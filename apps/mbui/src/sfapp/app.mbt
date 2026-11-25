@@ -789,10 +789,21 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     // at any width, as in a window's whole
     @sf.window_keys_node(
       root,
-      whole=fn() {
-        shell_is(src, root.window_w()) is Lone ||
-          @sfbase.tab_full.get() is Some(_) ||
-          @sfbase.preview_open()
+      line=fn() {
+        let sh = shell_is(src, root.window_w())
+        if sh is Lone || @sfbase.tab_full.get() is Some(_) || @sfbase.preview_open() || @sfpages.publish_open() {
+          Bar
+        } else if sh is Stacked {
+          Band
+        } else if sh is Taped {
+          if app.nav.top() is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_)) {
+            Bar
+          } else {
+            Tape
+          }
+        } else {
+          Bar
+        }
       },
     )
   }
@@ -1050,7 +1061,7 @@ pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
     )
     @sfbase.toasts_node(root, fn() { toast_bottom_now(root) }) |> ignore
     @sf.loupe_node(root, fn() { true })
-    @sf.window_keys_node(root, whole=fn() { true })
+    @sf.window_keys_node(root, line=fn() { Bar })
   }
 }
 

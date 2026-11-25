@@ -256,7 +256,12 @@ fn skeleton_page_head(
         b
         .row(Is(true))
         .gap(Is(8.0))
-        .padding(Is((pg_back_pill_x, pg_back_top, pg_back_pill_x, pg_back_foot + pg_back_content_gap)))
+        .padding(
+          By(fn() {
+            let (top_pad, right_pad) = narrow_back_bar_pads(frame().top)
+            (pg_back_pill_x, top_pad, right_pad, pg_back_foot + pg_back_content_gap)
+          }),
+        )
         .lines_up(Is(Some(Middle)))
         |> ignore
         let left_extra : @signals.Signal[Double] = @signals.signal(0.0)

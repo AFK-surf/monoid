@@ -966,10 +966,11 @@ async fn Actors::relieve(self : Actors, now : Double) -> Unit raise {
       return
     }
     let (workspace, peer, session, name, _) = c
+    let why = if self.remote.over > 0.0 { "over budget" } else { "disk low" }
     self.in_lane(self.room(workspace, peer, session), async fn() raise {
       let ms = self.mirrors_of(workspace, peer, session, now)
       if ms.search_by(x => x.name == name) is Some(i) && !ms[i].busy && now - ms[i].used >= mirror_recent_ms {
-        ignore(self.drop_mirror(workspace, peer, session, name, "disk low"))
+        ignore(self.drop_mirror(workspace, peer, session, name, why))
       }
     })
   }

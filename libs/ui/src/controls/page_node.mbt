@@ -580,7 +580,8 @@ fn narrow_page_node(
       let sub_h = if small() != "" { node_sp(node, t.text_size(Caption).1) } else { 0.0 }
       main_h + sub_h
     }
-    pg_back_top + dmax(pg_back_pill_h, title_h) + pg_back_foot
+    let (top_pad, _) = narrow_back_bar_pads(frame().top)
+    top_pad + dmax(pg_back_pill_h, title_h) + pg_back_foot
   }
   let items = fn() -> Array[PageItem] {
     let f = frame()
@@ -767,7 +768,13 @@ fn narrow_page_node(
         row
         .row(Is(true))
         .gap(Is(8.0))
-        .padding(By(fn() { (pg_back_pill_x, frame().top + pg_back_top, pg_back_pill_x, pg_back_foot) }))
+        .padding(
+          By(fn() {
+            let top = frame().top
+            let (top_pad, right_pad) = narrow_back_bar_pads(top)
+            (pg_back_pill_x, top + top_pad, right_pad, pg_back_foot)
+          }),
+        )
         .lines_up(Is(Some(Middle)))
         |> ignore
         match head {
@@ -912,6 +919,19 @@ let pg_back_pill_y : Double = 4.0
 
 ///|
 let pg_back_top : Double = 4.0
+
+///|
+/// Top and right padding for a narrow sub-page floating back bar: when rendered at the window's top
+/// (`top == 0.0`, i.e., Large narrow pane rather than Small below the 54pt window-keys band) and the app draws
+/// its own window buttons, align the 40pt back pill's centerline to 27pt (`top_pad = 7.0`) and reserve the
+/// window-controls capsule width on the right.
+fn narrow_back_bar_pads(top : Double) -> (Double, Double) {
+  if top == 0.0 && @ui.window_keys_own_now() {
+    (7.0, window_keys_room(roots=@ui.tree_corner_roots_now()) + pg_back_pill_x)
+  } else {
+    (pg_back_top, pg_back_pill_x)
+  }
+}
 
 ///|
 let pg_back_content_gap : Double = 8.0

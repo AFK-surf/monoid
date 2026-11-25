@@ -178,11 +178,12 @@ export async function latestIn(path: string, most = LATEST_MOST): Promise<number
   return latest;
 }
 
-/// remote/sessions' budget on a disk of `total` bytes (none known: its most): the source sessions' rooms here, their
-/// work and mirrors, beyond which the longest unused go (`budget`) before the disk runs low. They took 63 GiB of a
-/// station in five days (2026-11-15).
-export const REMOTE_BUDGET_MOST = 32 * 1024 ** 3;
-export const remoteBudget = (total: number | null): number => (total === null || !(total > 0) ? REMOTE_BUDGET_MOST : Math.min(REMOTE_BUDGET_MOST, Math.floor(total * 0.15)));
+/// remote/sessions' budget on a disk of `total` bytes: the source sessions' rooms here, their work and mirrors, beyond
+/// which the longest unused go (`budget`) before the disk runs low. They took 63 GiB of a station in five days
+/// (2026-11-15). A share of the disk with no most: one of 32 GiB removed warm 14 GiB mirrors from a disk with 390 GiB
+/// free (2026-11-25). The disk's size not known: REMOTE_BUDGET_UNKNOWN.
+export const REMOTE_BUDGET_UNKNOWN = 32 * 1024 ** 3;
+export const remoteBudget = (total: number | null): number => (total === null || !(total > 0) ? REMOTE_BUDGET_UNKNOWN : Math.floor(total * 0.15));
 /// A room used within this stays, over its budget or not (the program's, remote_target.mbt `room_recent_ms`).
 export const ROOM_RECENT_MS = 3600_000;
 /// A task done here (remote/incoming/<task>), and one started from here whose end was told (remote/outgoing/<id>.json),

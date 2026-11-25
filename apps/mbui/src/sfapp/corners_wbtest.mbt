@@ -47,17 +47,22 @@ fn corners_check(lang : String, start : Int, stride? : Int = 2, press_room~ : Bo
   let line_starts : Array[String] = []
   // (lines along an edge dragged for a width at rest: edge_divider_wbtest.mbt; none known, none let off)
   let dividers : Array[String] = []
+  let window_keys : Array[String] = []
   for k, win in corner_windows {
     if k % stride != start {
       continue
     }
     let squeezed = squeeze_windows.contains(win.0)
+    let win_inset = win.3 == 3
     for mode in corner_modes {
       let at = "\{win.0}-\{lang} \{mode}"
-      let t = screen_in(mode, win, lang)
+      let t = screen_in(mode, win, lang, window_inset=win_inset)
       // (at rest, before anything is lit)
       for f in edge_divider_faults(t) {
         dividers.push("\{at}: \{f}")
+      }
+      for f in t.window_keys_faults() {
+        window_keys.push("\{at}: \{f}")
       }
       if press_room {
         // (a press's room, at rest and with what shows only under the hand shown: rooms_known_wbtest.mbt; and the
@@ -176,6 +181,12 @@ fn corners_check(lang : String, start : Int, stride? : Int = 2, press_room~ : Bo
       "\{dividers.length()} lines drawn at rest along an edge dragged for a width (its look's own line shows only under " +
       "a pointer, focused or in hand: sf's edge_look_node; the user, 2026-10-26, #2012):\n  " +
       dividers.join("\n  "),
+    )
+  }
+  if window_keys.length() > 0 {
+    wrong.push(
+      "\{window_keys.length()} window-keys clearance/alignment faults (Tester::window_keys_faults):\n  " +
+      window_keys.join("\n  "),
     )
   }
   match gaps_wrong("\{lang} \{windows}", gaps) {

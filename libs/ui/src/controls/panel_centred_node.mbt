@@ -34,6 +34,27 @@ pub fn dialog_surface_decorate(
 }
 
 ///|
+/// Vertical margin for a centred panel of width `pw`: `dialog_room` (24pt top + 24pt bottom), or
+/// `2 * (ky + kh + 4 - clear_top)` on Windows when the centred panel horizontally reaches `[kx - 4, kx + kw]`,
+/// keeping its top close button clear of `- □ ×` while keeping symmetric bottom room and full height for narrow dialogs.
+fn panel_centred_room(v : @view.View, pw : Double) -> Double {
+  if !@ui.window_keys_own_now() {
+    return dialog_room
+  }
+  match v.tree.kept_away_now() {
+    Some((kx, ky, _, kh)) => {
+      let panel_right = (v.window_w() + pw) / 2.0
+      if panel_right <= kx - 4.0 {
+        return dialog_room
+      }
+      let (clear_top, _, _, _) = v.clear()
+      dmax(dialog_room, dmax(0.0, ky + kh + 4.0 - clear_top) * 2.0)
+    }
+    None => dialog_room
+  }
+}
+
+///|
 /// A centred panel `x` in `parent` while `open()` (going over pop_out_ms once not); `close`: what what it holds is given to close it; `cancel` as it is closed by its close button,
 /// Escape, back or a press outside. `shown`, `gone`: as dialog_layer_node's.
 fn panel_centred_node(
@@ -84,7 +105,7 @@ fn panel_centred_node(
       d
       .width(By(fn() { Some(w()) }))
       // (no taller than the window leaves it, dialog_room: what it holds scrolls in itself past that)
-      .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - dialog_room)) }))
+      .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - panel_centred_room(layer, w()))) }))
       // (dialog_box: 24 over its title, 24 in at its sides; each part out to them, the padding inside it)
       .padding(Is(if top_share > 0.0 { (top_pad, top_pad, top_pad, top_pad) } else { (dialog_pad, dialog_pad, dialog_pad, 0.0) }))
       .radius(Is(dialog_r))

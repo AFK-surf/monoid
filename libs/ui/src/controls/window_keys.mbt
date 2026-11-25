@@ -98,12 +98,26 @@ fn window_keys_side_tape(roots? : @ui.CornerRoots = @ui.corner_roots()) -> Doubl
 }
 
 ///|
+/// Pure geometric padding contract for wide top bars (`start`, `end`, and top `over` padding).
+pub(all) struct BarEnds {
+  start : () -> Double
+  end : () -> Double
+  over : () -> Double
+}
+
+///|
+/// Reactive height of a wide top bar (`wide_bar_h + window_keys_bar_over_now()`).
+pub fn wide_bar_h_now() -> Double {
+  wide_bar_h + window_keys_bar_over_now()
+}
+
+///|
 /// What a top row at the window's top right in a window's whole (laid out Large) leaves the buttons, from the
 /// window's side to before their pill: none where they are not the app's (window_end_in, window_clear_in). `roots` as
 /// window_keys_side's: a node of the window's tree asks it with its own (the old views' read is the window's corner
 /// only as they build).
 pub fn window_keys_room(roots? : @ui.CornerRoots = @ui.corner_roots()) -> Double {
-  if @ui.window_keys_own() {
+  if @ui.window_keys_own_now() {
     window_keys_side(roots~) + window_keys_w()
   } else {
     0.0
@@ -116,7 +130,7 @@ pub fn window_keys_room(roots? : @ui.CornerRoots = @ui.corner_roots()) -> Double
 /// put the last key of a page's bar made as nodes, sfdesk's pane_bar_node, against their pill: 20 nearer it than a
 /// chat's bar's last).
 pub fn window_keys_room_tape(roots? : @ui.CornerRoots = @ui.corner_roots()) -> Double {
-  if @ui.window_keys_own() {
+  if @ui.window_keys_own_now() {
     window_keys_side_tape(roots~) + window_keys_w()
   } else {
     0.0
