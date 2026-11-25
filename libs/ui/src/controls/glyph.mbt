@@ -228,7 +228,8 @@ pub fn station_glyph_node(
     // (the counts, read again as what `g` reads changes, and what draws them woken only where they come out otherwise)
     let counts = @signals.computed(fn(_) { g() }, same=fn(a, b) { a == b })
     let g = fn() { counts.get() }
-    let eye = fn() {
+    // (eye openness deduplicated via computed so the 2.29 s open phase never rebuilds or re-tessellates SVG shapes)
+    let eye = @signals.computed(fn(_) {
       let counts = g()
       let blinking = if counts.asleep { 0 } else { counts.working }
       if blinking > 0 && !@ui.reduced_motion() {
@@ -236,18 +237,21 @@ pub fn station_glyph_node(
       } else {
         1.0
       }
+    }, same=fn(a, b) { a == b })
+    let drawn = fn() { glyph_drawn(g(), eye.get(), @ui.reduced_motion(), tint(), red()) }
+    let breathing = fn() {
+      !@ui.reduced_motion() && glyph_layout(g()).0.iter().any(fn(a) { a.pulse })
     }
-    let drawn = fn() { glyph_drawn(g(), eye(), @ui.reduced_motion(), tint(), red()) }
     v
     .width(Is(Some(size)))
     .height(Is(Some(size)))
     .shapes(By(fn() { @ui.vector_shapes({ w: 24.0, h: 24.0, layers: drawn().0 }, size, v.pixel_scale()) }))
     |> ignore
     // (a link on its way: its arc over the rest, breathing)
-    v.show(fn() { drawn().2 }, fn(b) {
+    v.show(breathing, fn(b) {
       b
       .over(Is(true))
-      .shapes(By(fn() { @ui.vector_shapes({ w: 24.0, h: 24.0, layers: drawn().1 }, size, b.pixel_scale()) }))
+      .shapes(By(fn() { @ui.vector_shapes({ w: 24.0, h: 24.0, layers: glyph_drawn(g(), 1.0, @ui.reduced_motion(), tint(), red()).1 }, size, b.pixel_scale()) }))
       .alpha(By(fn() { glyph_breath_at(@motion.resident_cycle(b, glyph_breath_period)) }))
       |> ignore
     })
