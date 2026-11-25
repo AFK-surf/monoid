@@ -20,10 +20,6 @@ export const STREAM_AWAY_MS = 30_000;
 /// Away this long, a frozen app sent no keepalive for as long as a path may stay silent (3 s on both sides): its
 /// connections may have lost their ways, though not long enough to take them for gone.
 export const CHECK_AWAY_MS = 3_000;
-/// Away this long, the station links are taken for gone too. Below it they are asked first (`checksConnections`): a
-/// mesh connection outlives five minutes of silence (its idle timeout is ten, on both sides), and dialling every
-/// station again on each return after half a minute away cost a phone seconds it had a working link through.
-export const LINK_AWAY_MS = 300_000;
 
 export class Wake {
   readonly at: number;
@@ -55,14 +51,10 @@ export class Wake {
   suspectsConnections(): boolean {
     return this.network || this.retry || this.away >= STREAM_AWAY_MS;
   }
-  /// Long enough away that the station links are taken for gone, each raced by a new one at once.
-  suspectsLinks(): boolean {
-    return this.network || this.retry || this.away >= LINK_AWAY_MS;
-  }
-  /// Away long enough that the station links are worth asking whether they still answer, and not so long they are
-  /// taken for gone.
+  /// Away long enough that the connections are worth asking whether they still answer, and not so long they are taken
+  /// for gone.
   checksConnections(): boolean {
-    return !this.suspectsLinks() && this.away >= CHECK_AWAY_MS;
+    return !this.suspectsConnections() && this.away >= CHECK_AWAY_MS;
   }
   reason(): string {
     return this.network ? NETWORK : GONE;
