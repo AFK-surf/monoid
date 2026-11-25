@@ -77,7 +77,6 @@ fn handoff_confirm(src : Source, r : ChatRef, thread : Double, to : @sfbase.Stat
       ("key", str(key)),
     ])
     (src.call)("copies.handoff", params, fn(res) {
-      running.set(false)
       match res {
         Ok(v) => {
           @ui.haptic(Confirm)
@@ -87,10 +86,13 @@ fn handoff_confirm(src : Source, r : ChatRef, thread : Double, to : @sfbase.Stat
           }
           let made : ChatRef = { station: to.address, session: text(Some(v), "session"), title, station_name: to.name }
           if shown.val {
+            // (the dialog leaves as it stands, its words at work and 接着做 turning: a line let go of as it leaves
+            // goes at once, its column a step shorter in a frame)
             shown.val = false
             (shut_by.val)()
             @sfbase.open_chat(made)
           } else {
+            running.set(false)
             toast_later(
               @sf.t("web-pages.chat.handoff.made", args=[("station", to.name), ("title", title)]),
               action=@sf.t("web-pages.chat.handoff.open"),
@@ -100,6 +102,7 @@ fn handoff_confirm(src : Source, r : ChatRef, thread : Double, to : @sfbase.Stat
         }
         Err(e) => {
           @ui.haptic(Reject)
+          running.set(false)
           if shown.val {
             refused.set(error_words(e))
           } else {
