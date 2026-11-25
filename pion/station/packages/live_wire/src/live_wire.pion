@@ -397,6 +397,23 @@ pub fn end_event_u16(id : Array[Int]) -> js_json::JValue {
   obj([("kind", jstr("end")), ("id", jstr_u16(id))])
 }
 
+/// Lossless UTF-16 `failed` outcome preserving lone surrogates in `message` (`pi.mbt:273`).
+pub fn failed_u16(reason : String, message : Array[Int]) -> js_json::JValue {
+  obj([
+    ("kind", jstr("failed")),
+    ("reason", jstr(reason)),
+    ("message", jstr_u16(message)),
+  ])
+}
+
+/// Lossless UTF-16 `opt_str_json` preserving lone surrogates in resumed state (`cursor.mbt:88`).
+pub fn opt_str_json_u16(v : Option[Array[Int]]) -> js_json::JValue {
+  match v {
+    Some(u) => jstr_u16(u)
+    None => js_json::JValue::Null
+  }
+}
+
 pub fn find_entry_u16(entries : Array[(Array[Int], Array[Int])], key : Array[Int]) -> Option[Int] {
   for i in 0..<entries.length() {
     let (k, _) = entries[i]

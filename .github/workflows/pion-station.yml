@@ -1285,6 +1285,7 @@ jobs:
           VER_OUT="$("$BIN_PION" --version)"
           printf '%s\n' "$VER_OUT"
           MODES_CSV="$(printf '%s\n' "$VER_OUT" | sed -n 's/.*modes:\([^[:space:]]*\).*/\1/p')"
+          test -n "$MODES_CSV" || { echo "FAIL: empty MODES_CSV in $VER_OUT" >&2; exit 1; }
           if printf ',%s,\n' "$MODES_CSV" | grep -Fq ",sessions,"; then
             echo "FAIL: sessions must NOT be advertised in --version modes before W8-F ($MODES_CSV)" >&2
             exit 1

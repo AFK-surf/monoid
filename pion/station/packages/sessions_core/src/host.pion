@@ -306,6 +306,12 @@ pub struct ShellSlot {
   pub mut closed : Bool
 }
 
+/// Pure leaf list of interrupted shell call IDs queued for synchronous removal from
+/// `SessionHost.shell_waiters` without capturing `SessionHost` in `done.wait_k`.
+pub struct CancelledShellIds {
+  pub items : Array[(Int64, Option[AbandonedOp])]
+}
+
 pub struct ShellWaiter {
   pub owner : ShellOwner
   pub abandoned_op : Option[AbandonedOp]
@@ -335,6 +341,7 @@ pub struct SessionHost {
   pub lines : effect::Queue[String]
   input : builders_core::RawLines
   pub shell_waiters : Map[Int64, ShellWaiter]
+  pub cancelled_ids : CancelledShellIds
   pub abandoned_ops : Map[Int64, AbandonedOp]
   pub hub_asked : Map[Int, HubAskedEntry]
   pub hub_timers : Map[Int, HubTimerEntry]
@@ -358,6 +365,7 @@ pub fn SessionHost::new(rt : effect::Runtime, transport : HostTransport) -> Sess
     lines: effect::Queue::unbounded(),
     input: builders_core::RawLines::new(),
     shell_waiters: Map::new(),
+    cancelled_ids: CancelledShellIds::{ items: [] },
     abandoned_ops: Map::new(),
     hub_asked: Map::new(),
     hub_timers: Map::new(),
@@ -442,9 +450,36 @@ pub fn SessionHost::shell_sync(
   builders_core::parse_shell_sync_answer(raw)
 }
 
+/// Synchronously remove any shell waiters whose fibers were interrupted, transferring only
+/// handle-producing ops (`Some(CloseTcpHandle)`) to `abandoned_ops` (zero residual for `None` ops).
+pub fn SessionHost::drain_cancelled_waiters(self : SessionHost) -> Unit {
+  for i in 0..<self.cancelled_ids.items.length() {
+    let (id, abandoned_op) = self.cancelled_ids.items[i]
+    match self.shell_waiters.get(id) {
+      Some(w) => {
+        let _ = self.shell_waiters.remove(id)
+        if !w.slot.closed {
+          match abandoned_op {
+            Some(AbandonedOp::CloseTcpHandle) => self.abandoned_ops.set(id, AbandonedOp::CloseTcpHandle)
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  self.cancelled_ids.items.clear()
+}
+
+/// Run one runtime tick and immediately drain any cancelled shell waiters.
+pub fn SessionHost::tick(self : SessionHost) -> Unit {
+  self.rt.tick()
+  self.drain_cancelled_waiters()
+}
+
 /// Asynchronous shell call (`host.mbt:83-104`) with ownership tagging and late/interleaved
 /// handle cleanup. The `done.wait_k` continuation captures ONLY leaf objects (`slot`, `sender`,
-/// `abandoned_op`, `k`) — NEVER `SessionHost` or `shell_waiters`.
+/// `cancelled_ids`, `id`, `abandoned_op`, `k`) — NEVER `SessionHost` or `shell_waiters`.
 pub fn SessionHost::shell_k(
   self : SessionHost,
   owner : ShellOwner,
@@ -455,7 +490,9 @@ pub fn SessionHost::shell_k(
   on_called : Option[(Int64) -> Unit],
   k : (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
 ) -> Unit {
+  self.drain_cancelled_waiters()
   let sender = self.sender
+  let cancelled_ids = self.cancelled_ids
   let id = sender.alloc_shell_id()
   match on_called {
     Some(f) => f(id)
@@ -484,6 +521,7 @@ pub fn SessionHost::shell_k(
               slot.closed = true
               sender.close_abandoned_tcp_handle_json(j)
             }
+            (None, _) => cancelled_ids.items.push((id, abandoned_op))
             _ => ()
           }
         }
@@ -558,6 +596,7 @@ pub fn SessionHost::abandon_hub_timers(self : SessionHost, epoch : Int) -> Unit 
 
 /// Dispatch one host event (`host.mbt:173-200`).
 pub fn SessionHost::dispatch_event(self : SessionHost, ev : host_shim::HostEvent) -> Unit {
+  self.drain_cancelled_waiters()
   match ev {
     host_shim::HostEvent::StdinData(chunk) => {
       // Enqueue ALL complete `\n`-terminated lines in this chunk (never truncated at 64 lines).
@@ -625,7 +664,7 @@ pub fn run_host_loop(
   })
   while true {
     // Unconditionally tick once per round so expired timers fire even when `rt.idle()` is true.
-    host.rt.tick()
+    host.tick()
     if main_fiber.is_done() || host.exited {
       break
     }
@@ -677,10 +716,15 @@ pub fn run_host_loop(
       }
     }
   }
+  let main_outcome = main_fiber.poll()
+  if !main_fiber.is_done() {
+    main_fiber.interrupt()
+    host.tick()
+  }
   if host.exited {
     return host.exit_code
   }
-  match main_fiber.poll() {
+  match main_outcome {
     Some(effect::Exit::Failed(e)) => {
       host.note("failed: " + effect::effect_error_to_string(e))
       1

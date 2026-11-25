@@ -203,4 +203,15 @@ test "live_wire: lossless UTF-16 round-trip preserves distinct lone surrogates w
 
   assert(u16_eq(str_or_js_u16_with(Some(jstr_u16(p_k1)), lw_fmt_num), p_k1))
   assert(u16_eq(str_or_js_u16_with(None, lw_fmt_num), []))
+
+  // Lossless failed_u16 & opt_str_json_u16 preserve lone surrogate `\ud800`
+  let sb_f = StringBuilder::new()
+  js_json::write_utf8_with_num(sb_f, failed_u16("model", [0x61, 0xD800]), lw_fmt_num)
+  assert(sb_f.to_string() == "{\"kind\":\"failed\",\"reason\":\"model\",\"message\":\"a\\ud800\"}")
+  let sb_o1 = StringBuilder::new()
+  js_json::write_utf8_with_num(sb_o1, opt_str_json_u16(Some([0xD800])), lw_fmt_num)
+  assert(sb_o1.to_string() == "\"\\ud800\"")
+  let sb_o2 = StringBuilder::new()
+  js_json::write_utf8_with_num(sb_o2, opt_str_json_u16(None), lw_fmt_num)
+  assert(sb_o2.to_string() == "null")
 }

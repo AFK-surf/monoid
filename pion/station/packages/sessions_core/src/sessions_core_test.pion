@@ -5,6 +5,7 @@ import "base_codec"
 import "effect"
 import "host_shim"
 import "js_json"
+import "sql_db"
 
 fn assert(cond : Bool) -> Unit {
   if !cond {
@@ -253,15 +254,13 @@ test "sessions_core: 65 consecutive host events drain across two outer rounds (6
   assert(mem.wait_log[64] == (-1).to_int64())
 }
 
-test "sessions_core: HubGen rotation with delayed finalizer genuinely blocks across rounds while main stays unblocked and interruptible" {
+test "sessions_core: HubGen rotation with delayed finalizer genuinely blocks across rounds, closes real Some(db) once, and keeps main interruptible while parked" {
   let mem = MemHostTransport::new()
   let host = SessionHost::for_test(mem)
   let mut gen = HubGen::new(host, 0)
   let old_res = gen.resources
-  let mut mock_db_closed = 0
-  old_res.add_retire_hook(fn() -> Unit {
-    mock_db_closed = mock_db_closed + 1
-  })
+  // Attach real `Some(db)` so `HubGenResources::retire` exercises `transport.close_db` (`mem.db_close_count`).
+  old_res.db = Some(sql_db::Db::mock_for_test(1.to_int64()))
   let mut delayed_fin_entered = false
   let mut delayed_fin_done = false
   let mut old_work_exited = false
@@ -301,8 +300,6 @@ test "sessions_core: HubGen rotation with delayed finalizer genuinely blocks acr
                 gen.quiet()
               } else if line.starts_with("{\"afterDb\":") {
                 processed.push(line)
-              } else if line.starts_with("{\"releaseFin\":") {
-                let _ = fin_gate.succeed(())
               }
               sk(effect::Exit::Succeeded(IterStep::Continue))
             }
@@ -315,14 +312,13 @@ test "sessions_core: HubGen rotation with delayed finalizer genuinely blocks acr
       k,
     )
   })
-  // Initial tick: old work fiber sends RPC and suspends on `hub_asked`; main suspends on `line_k`.
-  host.rt.tick()
+  host.tick()
   assert(host.hub_asked.length() == 1)
 
   // Round 1: dispatch `{"db":null}` and tick.
-  // Old work fiber exits, delayed finalizer ENTERS and parks on `fin_gate`, old_res NOT yet retired!
+  // Old work exits, delayed finalizer ENTERS and parks on `fin_gate`, old_res NOT yet retired!
   host.dispatch_event(host_shim::HostEvent::StdinData("{\"db\":null}\n".to_bytes()))
-  host.rt.tick()
+  host.tick()
   assert(gen.counters.epoch == 1)
   assert(host.hub_asked.length() == 0)
   assert(old_work_exited)
@@ -330,40 +326,68 @@ test "sessions_core: HubGen rotation with delayed finalizer genuinely blocks acr
   assert(!delayed_fin_done)
   assert(!old_res.retired)
   assert(old_res.retire_count == 0)
-  assert(mock_db_closed == 0)
+  assert(mem.db_close_count == 0)
 
   // Round 2: dispatch `{"afterDb":1}` and tick.
   // Main MUST process it while delayed finalizer is still parked!
   host.dispatch_event(host_shim::HostEvent::StdinData("{\"afterDb\":1}\n".to_bytes()))
-  host.rt.tick()
+  host.tick()
   assert(processed.length() == 1)
   assert(processed[0] == "{\"afterDb\":1}")
   assert(delayed_fin_entered)
   assert(!delayed_fin_done)
   assert(!old_res.retired)
   assert(old_res.retire_count == 0)
-  assert(mock_db_closed == 0)
+  assert(mem.db_close_count == 0)
 
-  // Round 3: dispatch `{"releaseFin":1}` and tick.
-  // Finalizer completes -> old_res retires exactly once and DB hook closes once.
-  host.dispatch_event(host_shim::HostEvent::StdinData("{\"releaseFin\":1}\n".to_bytes()))
-  host.rt.tick()
-  assert(delayed_fin_done)
-  assert(old_res.retired)
-  assert(old_res.retire_count == 1)
-  assert(mock_db_closed == 1)
-  assert(mem.stderr_lines.length() == 0)
-  assert(gen.counters.active >= 0)
-
-  // Extra check: `main_fiber` (which called `rotate_hub_gen` -> `close_now()`) MUST still be
-  // normally interruptible (proving `main.shield` was never corrupted).
+  // Interrupt `main_fiber` WHILE finalizer is still parked: proves `main.shield` is uncorrupted
+  // and `old_res.db` is still NOT closed prematurely.
   main_fiber.interrupt()
-  host.rt.tick()
+  host.tick()
   assert(main_fiber.is_done())
   match main_fiber.poll() {
     Some(effect::Exit::Interrupted) => ()
-    _ => panic("expected main_fiber to be Interrupted cleanly after rotate_hub_gen")
+    _ => panic("expected main_fiber to be Interrupted cleanly while finalizer is parked")
   }
+  assert(mem.db_close_count == 0)
+
+  // Now release `fin_gate` directly and tick -> finalizer completes, `old_res.db` closes exactly once.
+  let _ = fin_gate.succeed(())
+  host.tick()
+  assert(delayed_fin_done)
+  assert(old_res.retired)
+  assert(old_res.retire_count == 1)
+  assert(mem.db_close_count == 1)
+  match old_res.db {
+    None => ()
+    Some(_) => panic("expected old_res.db to be None after retire")
+  }
+  // Idempotent repeat retire must NOT close DB a second time.
+  old_res.retire()
+  assert(old_res.retire_count == 1)
+  assert(mem.db_close_count == 1)
+  assert(mem.stderr_lines.length() == 0)
+  assert(gen.counters.active >= 0)
+}
+
+test "sessions_core: run_host_loop early return interrupts pending main and leaves zero live tasks" {
+  let mem = MemHostTransport::new()
+  // Empty event queue with stop_on_empty_wait = true -> early break returning 1.
+  let host = SessionHost::for_test(mem)
+  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    })
+  })
+  assert(code == 1)
+  let (live_tasks, ready_tasks, timers, _, _, _) = host.rt.holding()
+  assert(live_tasks == 0)
+  assert(ready_tasks == 0)
+  assert(timers == 0)
 }
 
 test "sessions_core: two consecutive db rotations in one chunk preserve next counter and zero stderr" {
@@ -562,9 +586,12 @@ test "sessions_core: unsealed direct fiber interrupt after ShellDone (and before
   assert(host.shell_waiters.length() == 0)
   assert(host.abandoned_ops.length() == 0)
 
-  // Case B: fiber.interrupt() BEFORE ShellDone -> slot.cancelled = true -> late ShellDone
-  // sees waiter.slot.cancelled, removes waiter, emits exactly one tcp.close for handle 101.
+  // Case B: fiber.interrupt() BEFORE ShellDone for BOTH a handle-producing `unix.open`
+  // (`Some(CloseTcpHandle)`) and a plain `tcp.read` (`None`).
+  // Immediately after `host.tick()` (BEFORE any ShellDone arrives!), `shell_waiters` MUST be 0
+  // and `abandoned_ops` MUST be 1 (only `unix.open`, zero leftover for `tcp.read`).
   let mut shell_id_b : Int64 = 0.to_int64()
+  let mut shell_id_c : Int64 = 0.to_int64()
   let fiber_b = host.rt.fork_named("unsealed-b", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     host.shell_k(
       ShellOwner::Process,
@@ -578,11 +605,42 @@ test "sessions_core: unsealed direct fiber interrupt after ShellDone (and before
       },
     )
   })
-  host.rt.tick()
+  let fiber_c = host.rt.fork_named("unsealed-c", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    host.shell_k(
+      ShellOwner::Process,
+      "tcp.read",
+      base_codec::json_obj([("id", jint(7))]),
+      None,
+      None,
+      Some(fn(id : Int64) -> Unit { shell_id_c = id }),
+      fn(_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        k(effect::Exit::Interrupted)
+      },
+    )
+  })
+  host.tick()
   assert(shell_id_b > 0.to_int64())
+  assert(shell_id_c > 0.to_int64())
+  assert(host.shell_waiters.length() == 2)
+
   fiber_b.interrupt()
-  host.rt.tick()
-  assert(mem.shell_calls.length() == 3)
+  fiber_c.interrupt()
+  host.tick()
+  // BEFORE any ShellDone arrives: immediate eviction from shell_waiters; only unix.open in abandoned_ops!
+  assert(host.shell_waiters.length() == 0)
+  assert(host.abandoned_ops.length() == 1)
+  assert(mem.shell_calls.length() == 4)
+
+  // Deliver late ShellDone for both: only unix.open emits tcp.close; tcp.read emits nothing.
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: shell_id_c,
+      error: "",
+      json: "{\"eof\":true}",
+      bytes: None,
+    }),
+  )
+  assert(mem.shell_calls.length() == 4)
   host.dispatch_event(
     host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
       id: shell_id_b,
@@ -591,9 +649,9 @@ test "sessions_core: unsealed direct fiber interrupt after ShellDone (and before
       bytes: None,
     }),
   )
-  assert(mem.shell_calls.length() == 4)
-  assert(mem.shell_calls[3].op == "tcp.close")
-  assert(mem.shell_calls[3].json == "{\"id\":101}")
+  assert(mem.shell_calls.length() == 5)
+  assert(mem.shell_calls[4].op == "tcp.close")
+  assert(mem.shell_calls[4].json == "{\"id\":101}")
   assert(host.shell_waiters.length() == 0)
   assert(host.abandoned_ops.length() == 0)
 }
