@@ -569,7 +569,7 @@ export function kernelKills(heard: (kill: KernelKill) => void): () => void {
   let cancel: () => void = () => {};
   let heardTo = 0;
   let quick = 0;
-  const notRead = (why: object) => log.info("memory", "the kernel's log is not read: its OOM kills are not told", why);
+  const notRead = (why: Record<string, unknown>) => log.info("memory", "the kernel's log is not read: its OOM kills are not told", why);
   const follow = () => {
     if (ended) return;
     let records = 0;
