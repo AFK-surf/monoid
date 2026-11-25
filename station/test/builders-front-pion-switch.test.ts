@@ -209,12 +209,13 @@ async function runForwardParity(bin: string) {
     await new Promise<void>((r) => echo.close(() => r()));
   }
 
-  // 2. Unreachable target: client connects to forwarder, gets closed cleanly; once target comes up on that port, forwarding succeeds!
+  // 2. Unreachable target: hold probe port while forward binds so kernel cannot assign targetPort to forward,
+  //    then release probe, connect c1 -> closed cleanly, then bring up target on targetPort -> forwards cleanly!
   const probe = createServer();
   await new Promise<void>((r) => probe.listen(0, "127.0.0.1", r));
   const targetPort = (probe.address() as AddressInfo).port;
-  await new Promise<void>((r) => probe.close(() => r()));
   const fwdDead = await spawnForward(bin, ["--listen-port", "0", "--to", String(targetPort)]);
+  await new Promise<void>((r) => probe.close(() => r()));
   let recovered: ReturnType<typeof createServer> | null = null;
   try {
     // Verify client genuinely connected to forwarder before being closed due to unreachable target.
@@ -282,11 +283,29 @@ async function runMeshParity(bin: string, label: string) {
     assert.equal(ep2.id(), ep1.id());
     assert.deepEqual(ep2.sockets(), ep1.sockets(), "ALPN update must keep same endpoint");
 
-    // 2. Wrong-key refusal + lone-surrogate line drop + numeric `dscp: 10.0` vs `10` parity
-    const ctl = await openControl(fA.socket);
-    // Send lone surrogate line (must be ignored) + wrong-key bind (must be refused)
-    ctl.conn.write(
-      `{"id":999,"op":"relayStatus","bad":"\\uD800"}\n${JSON.stringify({
+    // 2. Lone-surrogate `close` line MUST be dropped (first reply MUST be the following `route`, id=2) + wrong-key refusal
+    const ctlRaw = connect(fA.socket);
+    await new Promise<void>((resolve, reject) => ctlRaw.once("connect", resolve).once("error", reject));
+    const rawLines: string[] = [];
+    let rawLineBuf = "";
+    const waitRawLines = (count: number) =>
+      new Promise<string[]>((resolve) => {
+        const check = () => {
+          if (rawLines.length >= count) resolve(rawLines.slice(0, count));
+        };
+        ctlRaw.on("data", (chunk: Buffer) => {
+          rawLineBuf += chunk.toString();
+          for (let at = rawLineBuf.indexOf("\n"); at >= 0; at = rawLineBuf.indexOf("\n")) {
+            rawLines.push(rawLineBuf.slice(0, at));
+            rawLineBuf = rawLineBuf.slice(at + 1);
+          }
+          check();
+        });
+        check();
+      });
+    const firstTwoP = waitRawLines(2);
+    ctlRaw.write(
+      `{"id":999,"op":"close","bad":"\\uD800"}\n{"id":2,"op":"route","front":[],"routes":[],"alpn":null}\n${JSON.stringify({
         id: 1,
         op: "bind",
         streams: "/nonexistent/streams.sock",
@@ -294,9 +313,14 @@ async function runMeshParity(bin: string, label: string) {
         options: { alpns: [ALPN_MAIN.toString("hex")], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" },
       })}\n`,
     );
-    const refused = await ctl.answer(1);
+    const [firstLine, secondLine] = await firstTwoP;
+    const firstReply = JSON.parse(firstLine!) as { id?: number; ok?: unknown };
+    assert.equal(firstReply.id, 2, `lone-surrogate close must be dropped; first reply was ${firstLine}`);
+    assert.equal(firstReply.ok, null);
+    const refused = JSON.parse(secondLine!) as { id?: number; error?: string };
+    assert.equal(refused.id, 1);
     assert.match(String(refused.error), /another station's key/);
-    ctl.conn.destroy();
+    ctlRaw.destroy();
 
     // Dialer on fB connects with ALPN_EXTRA, verifying original endpoint is still alive after wrong-key refusal
     const dialer = await withFront({} as Mesh, fB.socket).bind({
@@ -461,6 +485,40 @@ async function runMeshParity(bin: string, label: string) {
     } finally {
       await frontClient.ask("close").catch(() => {});
       frontClient.close();
+    }
+
+    // 6b. Non-safe-integer JS number parity (`1e20` vs `100000000000000000000`):
+    //     both MB and Pion echo `100000000000000000000` on `route` and match `connect(id: 1e20)` with `giveUp(of: 100000000000000000000)`.
+    const bigCtl = connect(fA.socket);
+    await new Promise<void>((resolve, reject) => bigCtl.once("connect", resolve).once("error", reject));
+    try {
+      const bigLines: string[] = [];
+      let bigBuf = "";
+      const waiters: Array<() => void> = [];
+      bigCtl.on("data", (chunk: Buffer) => {
+        bigBuf += chunk.toString();
+        for (let at = bigBuf.indexOf("\n"); at >= 0; at = bigBuf.indexOf("\n")) {
+          bigLines.push(bigBuf.slice(0, at));
+          bigBuf = bigBuf.slice(at + 1);
+        }
+        while (waiters.length > 0) waiters.shift()!();
+      });
+      const waitCount = async (n: number) => {
+        while (bigLines.length < n) await new Promise<void>((r) => waiters.push(r));
+      };
+      bigCtl.write(
+        `{"id":1e20,"op":"route","front":[],"routes":[],"alpn":null}\n{"id":1e20,"op":"connect","alpn":${JSON.stringify(ALPN_MAIN.toString("hex"))},"addr":{"id":${JSON.stringify(dialer.id())},"ips":["127.0.0.1:1"]}}\n{"id":2,"op":"giveUp","of":100000000000000000000}\n`,
+      );
+      await waitCount(3);
+      assert.ok(
+        bigLines[0]!.includes("100000000000000000000"),
+        `route id 1e20 must serialize as 100000000000000000000, got: ${bigLines[0]}`,
+      );
+      const connectCancelLine = bigLines.slice(1).find((l) => l.includes("100000000000000000000"));
+      assert.ok(connectCancelLine, `expected connect reply with 100000000000000000000 in ${JSON.stringify(bigLines)}`);
+      assert.match(String(JSON.parse(connectCancelLine).error ?? ""), /cancel/i);
+    } finally {
+      bigCtl.destroy();
     }
 
     await fixed2.close();

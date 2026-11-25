@@ -188,7 +188,11 @@ pub fn mesh_unhex(s : String) -> Bytes {
   out
 }
 
-pub fn identity_of(options : base_codec::Json, key : Bytes) -> String {
+pub fn identity_of_with(
+  options : base_codec::Json,
+  key : Bytes,
+  stringify : (base_codec::Json) -> String,
+) -> String {
   let parts : Array[base_codec::Json] = [
     base_codec::json_str(base_codec::hex_encode(key)),
     mesh_field(options, "discovery"),
@@ -197,7 +201,11 @@ pub fn identity_of(options : base_codec::Json, key : Bytes) -> String {
     mesh_field(options, "relayOnly"),
     mesh_field(options, "dscp"),
   ]
-  mesh_stringify(base_codec::json_arr(parts))
+  stringify(base_codec::json_arr(parts))
+}
+
+pub fn identity_of(options : base_codec::Json, key : Bytes) -> String {
+  identity_of_with(options, key, mesh_stringify)
 }
 
 pub fn bare_url(url : String) -> String {
@@ -465,6 +473,7 @@ pub struct MeshRunner {
   socket_path : String
   note : (String) -> Unit
   on_accept_end : () -> Unit
+  stringify : (base_codec::Json) -> String
   mut listen_id : Option[base_codec::Json]
   mut listen_ready : Bool
   mut pending_stdin_eof : Bool
@@ -500,6 +509,7 @@ pub fn MeshRunner::new(
   socket_path : String,
   note : (String) -> Unit,
   on_accept_end : () -> Unit,
+  stringify : (base_codec::Json) -> String = mesh_stringify,
 ) -> MeshRunner {
   MeshRunner::{
     mux: mux,
@@ -507,6 +517,7 @@ pub fn MeshRunner::new(
     socket_path: socket_path,
     note: note,
     on_accept_end: on_accept_end,
+    stringify: stringify,
     listen_id: None,
     listen_ready: false,
     pending_stdin_eof: false,
@@ -642,7 +653,7 @@ fn MeshRunner::call_async(
   args : base_codec::Json,
   payload : Option[Bytes],
 ) -> Int64 {
-  self.mux.call_async_raw(token, op, mesh_stringify(args), payload)
+  self.mux.call_async_raw(token, op, (self.stringify)(args), payload)
 }
 
 fn MeshRunner::call_sync(
@@ -650,7 +661,7 @@ fn MeshRunner::call_sync(
   op : String,
   args : base_codec::Json,
 ) -> Result[base_codec::Json, builders_core::ShellError] {
-  builders_core::parse_shell_sync_answer(self.mux.call_sync_raw(op, mesh_stringify(args)))
+  builders_core::parse_shell_sync_answer(self.mux.call_sync_raw(op, (self.stringify)(args)))
 }
 
 fn MeshRunner::start_tcp_accept(self : MeshRunner, lid : base_codec::Json) -> Unit {
@@ -692,13 +703,13 @@ fn MeshRunner::reply(
     Ok(v) => base_codec::json_obj([("id", ask_id), ("ok", v)])
     Err(msg) => base_codec::json_obj([("id", ask_id), ("error", base_codec::json_str(msg))])
   }
-  let raw = (mesh_stringify(line_json) + "\n").to_bytes()
+  let raw = ((self.stringify)(line_json) + "\n").to_bytes()
   let _ = self.outbox.send_raw(
     self.mux,
     client_id,
     builders_core::MuxToken::Write(client_id),
     "tcp.write",
-    mesh_stringify(base_codec::json_obj([("id", client.sock_id)])),
+    (self.stringify)(base_codec::json_obj([("id", client.sock_id)])),
     Some(raw),
   )
 }
@@ -768,7 +779,7 @@ fn MeshRunner::taking(
     ("routes", if routed { client.routes } else { base_codec::json_arr([]) }),
   ])
   let seq = self.alloc_req_seq()
-  self.handing.set(seq, (client.id, mesh_stringify(conn)))
+  self.handing.set(seq, (client.id, (self.stringify)(conn)))
   let _ = self.call_async(
     builders_core::MuxToken::Tagged(seq, TOK_CONN_HAND, 0.to_int64()),
     "conn.hand",
@@ -803,7 +814,7 @@ fn MeshRunner::deliver_accepted_conn(
 ) -> Unit {
   let id = mesh_field(conn, "conn")
   if !mesh_is_null(id) {
-    client.conns.set(mesh_stringify(id), id)
+    client.conns.set((self.stringify)(id), id)
     self.taking(client, id, mesh_field(conn, "alpn"))
   }
   self.reply(client.id, ask_id, "accept", Ok(conn))
@@ -1095,7 +1106,7 @@ fn MeshRunner::start_bind(
     )
     return false
   }
-  let identity = identity_of(options, key_bytes)
+  let identity = identity_of_with(options, key_bytes, self.stringify)
   let st = ActiveBind::{
     client_id: client_id,
     sock_id: sock_id,
@@ -1220,7 +1231,7 @@ fn MeshRunner::advance_reconcile_alpns(self : MeshRunner, ep : base_codec::Json)
     None => return false
   }
   let alpns_val = mesh_field(st.options, "alpns")
-  let alpns_str = mesh_stringify(alpns_val)
+  let alpns_str = (self.stringify)(alpns_val)
   if alpns_str != self.bound_alpns {
     st.phase = BIND_PHASE_SET_ALPNS
     let _ = self.call_async(
@@ -1276,7 +1287,7 @@ fn MeshRunner::finish_new_endpoint_setup(self : MeshRunner, ep : base_codec::Jso
   self.bound_key = st.key_hex
   self.bound_relays = st.target_relays
   self.bound_congestion = congestion_of(st.options)
-  self.bound_alpns = mesh_stringify(mesh_field(st.options, "alpns"))
+  self.bound_alpns = (self.stringify)(mesh_field(st.options, "alpns"))
   self.said = base_codec::json_obj([("id", ep_id), ("sockets", sockets)])
   self.start_iroh_accept(ep)
   self.after_bind_ready()
@@ -1336,7 +1347,7 @@ fn MeshRunner::on_bind_step_done(self : MeshRunner, done : host_shim::ShellDone)
   let st = match self.active_bind {
     Some(s) => s
     None => {
-      self.release_bind_lock()
+      (self.note)("mesh: unexpected bind step completion with no active bind")
       return
     }
   }
@@ -1396,7 +1407,7 @@ fn MeshRunner::on_bind_step_done(self : MeshRunner, done : host_shim::ShellDone)
     }
   } else if st.phase == BIND_PHASE_SET_ALPNS {
     match res {
-      Ok(_) => self.bound_alpns = mesh_stringify(mesh_field(st.options, "alpns"))
+      Ok(_) => self.bound_alpns = (self.stringify)(mesh_field(st.options, "alpns"))
       Err(e) => (self.note)("mesh: protocols not changed: " + e.message)
     }
     if !self.after_bind_ready() {
@@ -1516,7 +1527,7 @@ fn MeshRunner::dispatch_ask(self : MeshRunner, client_id : Int, asked : base_cod
     Some(c) => c
     None => return
   }
-  let ask_key = mesh_stringify(ask_id)
+  let ask_key = (self.stringify)(ask_id)
 
   if op == "bind" {
     let streams = match mesh_field(asked, "streams") {
@@ -1599,7 +1610,7 @@ fn MeshRunner::dispatch_ask(self : MeshRunner, client_id : Int, asked : base_cod
     )
     client.calls.set(ask_key, call_id)
   } else if op == "giveUp" {
-    let of_key = mesh_stringify(mesh_field(asked, "of"))
+    let of_key = (self.stringify)(mesh_field(asked, "of"))
     match client.calls.get(of_key) {
       Some(call_id) => {
         match self.mux.cancel(call_id) {
@@ -1662,7 +1673,7 @@ fn MeshRunner::dispatch_ask(self : MeshRunner, client_id : Int, asked : base_cod
     )
   } else if op == "conn.close" {
     let conn = mesh_field(asked, "conn")
-    client.conns.remove(mesh_stringify(conn))
+    client.conns.remove((self.stringify)(conn))
     let seq = self.alloc_req_seq()
     self.pending_asks.set(
       seq,
@@ -1840,7 +1851,7 @@ fn MeshRunner::on_done(
             }
             self.listen_id = Some(id)
             self.listen_ready = true
-            let line = mesh_stringify(
+            let line = (self.stringify)(
               base_codec::json_obj([
                 ("listening", base_codec::json_str(self.socket_path)),
                 ("streams", base_codec::json_int(8)),
@@ -2048,7 +2059,7 @@ fn MeshRunner::on_done(
               Ok(seen) => {
                 match self.clients.get(req.client_id) {
                   Some(c) => {
-                    c.conns.set(mesh_stringify(id), id)
+                    c.conns.set((self.stringify)(id), id)
                     self.taking(c, id, mesh_field(seen, "alpn"))
                     self.reply(req.client_id, req.ask_id, req.op, Ok(seen))
                   }
@@ -2187,7 +2198,7 @@ fn MeshRunner::on_done(
             }
             match self.clients.get(req.client_id) {
               Some(c) => {
-                c.conns.remove(mesh_stringify(req.conn))
+                c.conns.remove((self.stringify)(req.conn))
               }
               None => ()
             }
@@ -2296,7 +2307,11 @@ fn MeshRunner::on_done(
   }
 }
 
-pub fn run_mesh(shell_dir : String, socket_path : String) -> Int {
+pub fn run_mesh(
+  shell_dir : String,
+  socket_path : String,
+  stringify : (base_codec::Json) -> String = mesh_stringify,
+) -> Int {
   if !host_shim::start(shell_dir, true) {
     let _ = host_shim::write_stderr_line("mesh: shell start failed")
     return 1
@@ -2312,6 +2327,7 @@ pub fn run_mesh(shell_dir : String, socket_path : String) -> Int {
     fn() -> Unit {
       accept_ended = true
     },
+    stringify=stringify,
   )
   runner.start()
   while runner.is_running() && !accept_ended {

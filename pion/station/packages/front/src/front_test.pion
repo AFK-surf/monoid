@@ -1098,3 +1098,97 @@ test "mesh P2-5, P2-8, P2-9: iterative bind_lock, non-fixed rebind order, setAlp
   drain_mesh(runner)
   assert(!runner.mux.has_pending(c_call.id))
 }
+
+test "mesh R2: deterministic part on EOF redistributes unclaimed coming conn ID to remaining bound holder" {
+  let env = MockEnv::new()
+  let ended : Array[Bool] = []
+  let (runner, accept_id) = boot_mesh(env, ended)
+
+  // Accept holder (client 1, sock 101) and rawA (client 2, sock 102)
+  env.push_done(accept_id, "{\"id\":101}")
+  drain_mesh(runner)
+  let accept_id2 = match env.find_last_op("tcp.accept") {
+    Some(c) => c.id
+    None => panic("expected accept_id2")
+  }
+  let r_holder = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r_holder")
+  }
+  env.push_done(accept_id2, "{\"id\":102}")
+  drain_mesh(runner)
+  let r_raw = match env.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected r_raw")
+  }
+
+  // Bind holder first (bound=1)
+  let bind_req = "{\"id\":1,\"op\":\"bind\",\"streams\":\"/tmp/h.sock\",\"key\":\"aa\",\"options\":{\"discovery\":false,\"alpns\":[\"61\"]}}\n"
+  env.push_done(r_holder.id, "{}", bytes=Some(bind_req.to_bytes()))
+  drain_mesh(runner)
+  let ib = match env.find_last_op("iroh.bind") {
+    Some(c) => c
+    None => panic("expected ib")
+  }
+  env.push_done(ib.id, "{\"id\":501}")
+  drain_mesh(runner)
+  let sub1 = match env.find_last_op("iroh.meshSubscribe") {
+    Some(c) => c
+    None => panic("expected sub1")
+  }
+  env.push_done(sub1.id, "{}")
+  drain_mesh(runner)
+  let w1 = match env.find_last_op("tcp.write") {
+    Some(c) => c
+    None => panic("expected w1")
+  }
+  env.push_done(w1.id, "{}")
+  drain_mesh(runner)
+
+  // Bind rawA second (bound=2 > holder.bound=1)
+  let bind_req2 = "{\"id\":2,\"op\":\"bind\",\"streams\":\"/tmp/r.sock\",\"key\":\"aa\",\"options\":{\"discovery\":false,\"alpns\":[\"61\"]}}\n"
+  env.push_done(r_raw.id, "{}", bytes=Some(bind_req2.to_bytes()))
+  drain_mesh(runner)
+  let sub2 = match env.find_last_op("iroh.meshSubscribe") {
+    Some(c) => c
+    None => panic("expected sub2")
+  }
+  env.push_done(sub2.id, "{}")
+  drain_mesh(runner)
+  let w2 = match env.find_last_op("tcp.write") {
+    Some(c) => c
+    None => panic("expected w2")
+  }
+  env.push_done(w2.id, "{}")
+  drain_mesh(runner)
+
+  // Find latest tcp.read for rawA (sock 102) and holder (sock 101)
+  let mut r_raw_next : Int64 = 0.to_int64()
+  let mut r_holder_next : Int64 = 0.to_int64()
+  for i in 0..<env.async_calls.length() {
+    let c = env.async_calls[i]
+    if c.op == "tcp.read" {
+      if str_contains(c.json, "102") {
+        r_raw_next = c.id
+      }
+      if str_contains(c.json, "101") {
+        r_holder_next = c.id
+      }
+    }
+  }
+  assert(r_raw_next > 0.to_int64() && r_holder_next > 0.to_int64())
+
+  // Push incoming conn 9901 -> goes into rawA.coming (since rawA has higher bound)
+  runner.give(base_codec::json_obj([("conn", base_codec::json_int(9901)), ("alpn", base_codec::json_str("61"))]))
+
+  // rawA hits control EOF -> part() redistributes unclaimed conn 9901 to holder!
+  env.push_done(r_raw_next, "{\"end\":true}")
+  drain_mesh(runner)
+
+  // holder asks `accept` -> MUST receive exact conn ID 9901!
+  env.push_done(r_holder_next, "{}", bytes=Some("{\"id\":3,\"op\":\"accept\"}\n".to_bytes()))
+  drain_mesh(runner)
+  let writes = env.all_writes_text()
+  assert(str_contains(writes[writes.length() - 1], "\"id\":3"))
+  assert(str_contains(writes[writes.length() - 1], "\"conn\":9901"))
+}

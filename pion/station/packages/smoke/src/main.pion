@@ -1848,7 +1848,7 @@ fn main(world : World) -> Unit {
           Some(s) => s
           None => "mesh.sock"
         }
-        host_shim::exit_process(front::run_mesh(shell_dir, socket_path))
+        host_shim::exit_process(front::run_mesh(shell_dir, socket_path, sql_db::stringify_json))
       }
       _ => usage_exit()
     }
