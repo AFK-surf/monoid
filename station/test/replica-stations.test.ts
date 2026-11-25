@@ -16,10 +16,10 @@ import { NoLink, PeerBus, Refused, bytesOf, withBytes } from "../src/mesh/bus.ts
 import { oneBytes } from "../src/mesh/files.ts";
 import { type Line, hearLines } from "../src/ops/log.ts";
 import { Fibers } from "../src/ops/fibers.ts";
-import { Copies, HANDOVER_QUIET_MS, RETRY_MOST_MS, keptDir } from "../src/replica/copies.ts";
+import { Copies, HANDOVER_QUIET_MS, RETRY_MOST_MS, keptDir, levelNewest } from "../src/replica/copies.ts";
 import { type Head, asHead, isHex64 } from "../src/replica/format.ts";
 import { keepers } from "../src/replica/peers.ts";
-import { FolderPlace, type Place, level, nothingHeld } from "../src/replica/places.ts";
+import { FolderPlace, type Known, type Place, level, nothingHeld } from "../src/replica/places.ts";
 import { readCopy, takeBack } from "./reference/replica-restore.ts";
 import { InlineRunner } from "./reference/replica-work.ts";
 import { Store } from "../src/store/store.ts";
@@ -1509,4 +1509,203 @@ test("D71: level() pages place.drop() by dropFilesPage, preserves remaining file
   assert.equal(r3.behind, false);
   assert.deepEqual(batchOnlyCalls, [{ batches: [b1], files: [] }]);
   assert.deepEqual([...r3.known.batches], [b2]);
+});
+
+// D86: a paced first copy runs across several 10-minute chunk GCs; each try that sent something goes on with a newer
+// head and what the place was found to hold, however many GCs it crosses.
+const hexOf = (n: number) => n.toString(16).padStart(64, "0");
+const enoentOf = (what: string) => Object.assign(new Error(`ENOENT: no such file or directory, stat '${what}'`), { code: "ENOENT" });
+
+function staleWorld(opts: { gen?: string } = {}) {
+  const origin = id("a");
+  const gen = opts.gen ?? "lz5x0-0123abcd";
+  const batch = "0000000001-0000000004-00000000.ndjson.zst";
+  const counts = { held: 0, batch: new Map<string, number>(), file: new Map<string, number>() };
+  const stale = new Set<string>();
+  const goneBatches = new Set<string>();
+  const place: Place = {
+    held: async () => {
+      counts.held++;
+      return nothingHeld();
+    },
+    put: async (_ws, _o, _g, kind, name) => {
+      if (kind === "batch") counts.batch.set(name, (counts.batch.get(name) ?? 0) + 1);
+    },
+    putFile: async (_ws, _o, hash) => {
+      if (stale.has(hash)) throw enoentOf(`chunks/${hash}`);
+      counts.file.set(hash, (counts.file.get(hash) ?? 0) + 1);
+    },
+    drop: async () => {},
+  };
+  const headOf = (to: number, tf: string[], made = to * 1000, batches = [batch]): Head => ({
+    v: 1,
+    origin,
+    workspace: HOME,
+    name: "a",
+    dataDir: "",
+    gen,
+    to,
+    made,
+    chats: 1,
+    messages: to,
+    bytes: 10,
+    batches,
+    files: {},
+    transcriptFiles: Object.fromEntries(tf.map((h) => [h, 1])),
+    runs: [{ run: "r1", from: 1 }],
+  });
+  const own = (head: Head) => ({
+    head,
+    batch: async (b: string) => {
+      if (goneBatches.has(b)) throw enoentOf(`log/${b}`);
+      return Buffer.from(b);
+    },
+    sources: async (hashes: string[]) => new Map(hashes.map((h) => [h, `/chunks/${h}`])),
+  });
+  return { place, counts, stale, goneBatches, headOf, own, batch };
+}
+
+test("levelNewest goes on past STALE_HEADS_MOST stale heads while each try sends something, sending nothing twice and asking the place once", async () => {
+  const w = staleWorld();
+  // head i names the chunks sent before it, one new chunk, and one the chunk GC takes before it is sent
+  const heads: Head[] = [];
+  for (let i = 0; i <= 4; i++) {
+    const goods = Array.from({ length: i + 1 }, (_, j) => hexOf(100 + j));
+    const tf = i < 4 ? [...goods, hexOf(200 + i)] : goods;
+    if (i < 4) w.stale.add(hexOf(200 + i));
+    heads.push(w.headOf(i + 1, tf));
+  }
+  const lines: Line[] = [];
+  hearLines((l) => lines.push(l));
+  let tries = 0;
+  try {
+    const { head, done } = await levelNewest(
+      heads[0]!,
+      null,
+      async (cur) => heads[heads.indexOf(cur) + 1],
+      (h, known, onProgress) => {
+        tries++;
+        return level(w.place, HOME, w.own(h), known, { onProgress });
+      },
+    );
+    assert.equal(tries, 5, "4 stale heads, then the newest goes through");
+    assert.equal(head, heads[4]);
+    assert.equal(done.behind, false);
+    if (!done.behind) assert.equal(done.to, 5);
+  } finally {
+    hearLines(null);
+  }
+  assert.equal(w.counts.held, 1, "the place is asked what it holds once; later tries go on from what it was found to hold");
+  assert.deepEqual([...w.counts.batch.values()], [1], "the batch is sent once");
+  for (let j = 0; j <= 4; j++) assert.equal(w.counts.file.get(hexOf(100 + j)), 1, `chunk ${j} sent once`);
+  assert.deepEqual(lines.filter((l) => l.message === "a place not brought level" || l.message === "an S3 place not brought level"), []);
+});
+
+test("levelNewest gives up after 1 + STALE_HEADS_MOST tries that sent nothing", async () => {
+  const w = staleWorld();
+  let n = 0;
+  const headAt = (i: number) => {
+    w.stale.add(hexOf(300 + i));
+    return w.headOf(i + 1, [hexOf(300 + i)]);
+  };
+  let tries = 0;
+  // (its batch folded away too: no try sends anything)
+  w.goneBatches.add(w.batch);
+  await assert.rejects(
+    levelNewest(
+      headAt(0),
+      null,
+      async () => headAt(++n),
+      (h, known, onProgress) => {
+        tries++;
+        return level(w.place, HOME, w.own(h), known, { onProgress });
+      },
+    ),
+    (e: unknown) => (e as { code?: unknown }).code === "ENOENT",
+  );
+  assert.equal(tries, 3);
+});
+
+test("levelNewest ends at STALE_HEADS_PROGRESS_MOST however much is sent, and asks the place again for a newer head of the same to", async () => {
+  // a try that always sends something before a stale chunk: ends after progressMost newer heads
+  {
+    const w = staleWorld();
+    let n = 0;
+    const headAt = (i: number) => {
+      w.stale.add(hexOf(500 + i));
+      return w.headOf(i + 1, [hexOf(400 + i), hexOf(500 + i)]);
+    };
+    let tries = 0;
+    await assert.rejects(
+      levelNewest(
+        headAt(0),
+        null,
+        async () => headAt(++n),
+        (h, known, onProgress) => {
+          tries++;
+          return level(w.place, HOME, w.own(h), known, { onProgress });
+        },
+        { progressMost: 3 },
+      ),
+      (e: unknown) => (e as { code?: unknown }).code === "ENOENT",
+    );
+    assert.equal(tries, 4, "the first try and 3 more");
+  }
+  // a newer head of the same `to` (made again): what the place holds is asked again, not taken from the failed try,
+  // so `level` still holds it to a same-to head found there
+  {
+    const w = staleWorld();
+    w.stale.add(hexOf(601));
+    const first = w.headOf(7, [hexOf(600), hexOf(601)], 7000);
+    const again = w.headOf(7, [hexOf(600)], 7001);
+    let tries = 0;
+    const knowns: (Known | null)[] = [];
+    const { head } = await levelNewest(
+      first,
+      null,
+      async () => again,
+      (h, known, onProgress) => {
+        tries++;
+        knowns.push(known);
+        return level(w.place, HOME, w.own(h), known, { onProgress });
+      },
+    );
+    assert.equal(head, again);
+    assert.equal(tries, 2);
+    assert.deepEqual(knowns, [null, null]);
+    assert.equal(w.counts.held, 2);
+  }
+});
+
+test("levelNewest with a known holding (as an S3 target or keeper after a whole copy) goes on from what the failed try sent", async () => {
+  // as `#levelS3`: `keeping.known` from the copy before, transcripts left out, a batch folded away mid-copy
+  const w = staleWorld();
+  const b0 = w.batch;
+  const b1 = "0000000005-0000000008-00000000.ndjson.zst";
+  const b2 = "0000000009-0000000012-00000000.ndjson.zst";
+  const b2f = "0000000005-0000000012-00000000.ndjson.zst";
+  const first = await level(w.place, HOME, w.own(w.headOf(4, [], 4000, [b0])), null, { includeTranscripts: false });
+  assert.equal(first.behind, false);
+  if (first.behind) return;
+  assert.equal(w.counts.held, 1);
+  w.goneBatches.add(b2);
+  const h1 = w.headOf(12, [], 12_000, [b0, b1, b2]);
+  const h2 = w.headOf(12, [], 12_001, [b0, b1, b2f]);
+  const knowns: (Known | null)[] = [];
+  const { head, done } = await levelNewest(
+    h1,
+    first.known,
+    async () => h2,
+    (h, known, onProgress) => {
+      knowns.push(known);
+      return level(w.place, HOME, w.own(h), known, { includeTranscripts: false, onProgress });
+    },
+  );
+  assert.equal(head, h2);
+  assert.equal(done.behind, false);
+  assert.equal(knowns.length, 2);
+  assert.equal(knowns[0], first.known);
+  assert.equal(knowns[1], first.known, "the same holding, carried on with what was sent");
+  assert.equal(w.counts.held, 1, "never asked again");
+  assert.deepEqual(Object.fromEntries(w.counts.batch), { [b0]: 1, [b1]: 1, [b2f]: 1 });
 });

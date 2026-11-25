@@ -237,8 +237,12 @@ export function tell(t: Told, change: StoreChange): boolean {
   }
 }
 
-/// Times a place is brought level again with a newer head where a batch or chunk the last named went meanwhile.
+/// Times in a row a place is brought level again with a newer head where a batch or chunk the last named went meanwhile
+/// and nothing was sent on that try. A try that sent something does not count: a paced first copy runs for an hour,
+/// across several of the 10-minute chunk GCs, each superseding a chunk it was still to send.
 const STALE_HEADS_MOST = 2;
+/// Times in all one levelling goes on with a newer head, sent something or not: it ends.
+const STALE_HEADS_PROGRESS_MOST = 64;
 
 function isEnoent(e: unknown): boolean {
   return (e as { code?: unknown } | null)?.code === "ENOENT" || (e instanceof Error && e.message.startsWith("ENOENT:"));
@@ -248,23 +252,46 @@ function headSaid(head: Head): string {
   return `${head.gen}:${head.to}:${head.made}`;
 }
 
-async function levelNewest(
+/// Brings a place level with `head`, going on with a newer head where something it named went meanwhile (ENOENT).
+/// What the place was found to hold on a failed try (`onProgress`) is the next try's `Known`, so nothing sent is sent
+/// again and the place is not asked again; only where that try's head goes past it (`to`), so a place found holding a
+/// head of the same `to` is still checked against it (`level` `initialHoldingHead`).
+export async function levelNewest(
   head: Head,
+  initialKnown: Known | null,
   newest: (cur: Head) => Promise<Head | undefined>,
-  go: (head: Head) => Promise<Levelled>,
+  go: (head: Head, known: Known | null, onProgress: (known: Known, uploaded: number) => void) => Promise<Levelled>,
+  limits: { staleMost?: number; progressMost?: number } = {},
 ): Promise<{ head: Head; done: Levelled }> {
+  const staleMost = limits.staleMost ?? STALE_HEADS_MOST;
+  const progressMost = limits.progressMost ?? STALE_HEADS_PROGRESS_MOST;
   let cur = head;
-  let again = 0;
+  let attemptKnown = initialKnown;
+  let latestKnown: Known | null = null;
+  let noProgress = 0;
+  let totalRetries = 0;
   for (;;) {
+    let attemptUploaded = 0;
+    const onProgress = (known: Known, uploaded: number) => {
+      latestKnown = known;
+      attemptUploaded = uploaded;
+    };
     try {
-      return { head: cur, done: await go(cur) };
+      return { head: cur, done: await go(cur, attemptKnown, onProgress) };
     } catch (e) {
-      if (isEnoent(e) && again < STALE_HEADS_MOST) {
-        const next = await newest(cur);
-        if (next !== undefined && next.batches.length > 0 && headSaid(next) !== headSaid(cur)) {
-          again++;
-          cur = next;
-          continue;
+      if (isEnoent(e)) {
+        const progressed = attemptUploaded > 0;
+        if (progressed) noProgress = 0;
+        else noProgress++;
+        if (totalRetries < progressMost && (progressed || noProgress <= staleMost)) {
+          const next = await newest(cur);
+          if (next !== undefined && next.batches.length > 0 && headSaid(next) !== headSaid(cur)) {
+            totalRetries++;
+            const seen = latestKnown as Known | null;
+            attemptKnown = seen !== null && seen.gen === next.gen && (initialKnown !== null || next.to > seen.to) ? seen : initialKnown;
+            cur = next;
+            continue;
+          }
         }
       }
       throw e;
@@ -984,8 +1011,9 @@ export class Copies {
         const place = new PeerPlace(peer, this.#ask);
         let { head: syncedHead, done } = await levelNewest(
           head,
+          keeping.known,
           (cur) => this.#newestHead(ws, cur),
-          (h) => level(place, ws, this.#own(h), keeping.known, { onPartial }),
+          (h, known, onProgress) => level(place, ws, this.#own(h), known, { onPartial, onProgress }),
         );
         if (done.behind) {
           // This station's own copy is behind what that station keeps of it: its data was rolled back. A new
@@ -1004,8 +1032,12 @@ export class Copies {
           await begun.done;
           const next = this.#passed?.heads[ws];
           if (next === undefined) throw new Error("no copy of this workspace's");
-          syncedHead = next;
-          done = await level(place, ws, this.#own(next), null, { onPartial });
+          ({ head: syncedHead, done } = await levelNewest(
+            next,
+            null,
+            (cur) => this.#newestHead(ws, cur),
+            (h, known, onProgress) => level(place, ws, this.#own(h), known, { onPartial, onProgress }),
+          ));
           if (done.behind) throw new Error("that station keeps more of this station's than it has");
         }
         if (this.#configSeq === startConfigSeq) {
@@ -1162,8 +1194,9 @@ export class Copies {
         };
         let { head: syncedHead, done } = await levelNewest(
           head,
+          keeping.known,
           (cur) => this.#newestHead(ws, cur),
-          (h) => level(place, ws, this.#own(h), keeping.known, opts),
+          (h, known, onProgress) => level(place, ws, this.#own(h), known, { ...opts, onProgress }),
         );
         if (done.behind) {
           let begun = this.#begun.get(ws);
@@ -1183,8 +1216,12 @@ export class Copies {
           await begun.done;
           const next = this.#passed?.heads[ws];
           if (next === undefined) throw new Error("no copy of this workspace's");
-          syncedHead = next;
-          done = await level(place, ws, this.#own(next), null, opts);
+          ({ head: syncedHead, done } = await levelNewest(
+            next,
+            null,
+            (cur) => this.#newestHead(ws, cur),
+            (h, known, onProgress) => level(place, ws, this.#own(h), known, { ...opts, onProgress }),
+          ));
           if (done.behind) throw new Error("that S3 target keeps more of this station's than it has");
         }
         if (this.#configSeq === startConfigSeq) {

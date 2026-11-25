@@ -770,13 +770,21 @@ function partialHead(head: Head, held: Set<string>, resolvedTf?: Record<string, 
 /// Brings `place` level with this station's own copy of `ws`: its batches and the chats' files first, a partial head
 /// while transcripts are lacking (`partialHead`), the transcripts, its head, then what is not named any more goes.
 /// `known`: what the place held after it was levelled last (null: asked of it now). `onPartial`: told as the partial
-/// head is put, how far it goes and how many transcripts are still to send.
+/// head is put, how far it goes and how many transcripts are still to send. `onProgress`: told what the place holds as it
+/// is known and after each batch or file sent, with how many this call sent, so a caller can go on from there when a
+/// later step fails.
 export async function level(
   place: Place,
   ws: string,
   own: Own,
   known: Known | null = null,
-  opts: { includeTranscripts?: boolean; onPartial?: (to: number, lacking: number) => void; dropFilesPage?: number; onPruneError?: (err: unknown) => void } = {},
+  opts: {
+    includeTranscripts?: boolean;
+    onPartial?: (to: number, lacking: number) => void;
+    onProgress?: (known: Known, uploaded: number) => void;
+    dropFilesPage?: number;
+    onPruneError?: (err: unknown) => void;
+  } = {},
 ): Promise<Levelled> {
   const includeTranscripts = opts.includeTranscripts !== false;
   const strategy = includeTranscripts ? "with-transcripts" : "no-transcripts";
@@ -833,10 +841,14 @@ export async function level(
       made: holding?.head?.partial === true ? -1 : (holding?.head?.made ?? -1),
     };
   }
+  let uploaded = 0;
+  opts.onProgress?.(k, 0);
   for (const b of own.head.batches) {
     if (k.batches.has(b)) continue;
     await place.put(ws, origin, own.head.gen, "batch", b, await own.batch(b));
     k.batches.add(b);
+    uploaded++;
+    opts.onProgress?.(k, uploaded);
   }
   const ownFiles = own.head.files;
   let resolvedTf: Record<string, number> | undefined;
@@ -918,6 +930,8 @@ export async function level(
       throw e;
     }
     k.files.add(hash);
+    uploaded++;
+    opts.onProgress?.(k, uploaded);
   };
   for (const hash of lackingChat) await send(hash, ownTf !== undefined && Object.hasOwn(ownTf, hash));
   // The chats as far as they go now, before the transcripts still to send: a first copy of a station's transcripts is
