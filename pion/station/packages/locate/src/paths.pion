@@ -38,11 +38,12 @@ struct Rollouts {
   failed : Array[String]
 }
 
-/// A Claude transcripts directory read once: by session id, the first project (in the directory's order)
-/// keeping its transcript, with that project's place in the order and the transcript's path; and the
-/// projects that could not be read, with their places, looked in one by one as before.
+/// A Claude transcripts directory read once: keyed by ASCII-lowercased session id stem,
+/// keeping all candidate projects `(project_idx, project_dir)` in strict directory order
+/// (so `EACCES` on an earlier project or case-only alias on a case-sensitive volume never hides
+/// a later valid project), plus projects whose `fs.readdir` failed.
 struct ClaudeIndex {
-  kept : Map[String, (Int, String)]
+  candidates : Map[String, Array[(Int, String)]]
   failed : Array[(Int, String)]
 }
 
@@ -179,17 +180,47 @@ pub fn Finder::join(self : Finder, parts : Array[String]) -> String {
   nodepath::join(self.sep, parts)
 }
 
-fn Finder::stat(self : Finder, path : String) -> Option[String] {
+fn Finder::stat_with(
+  self : Finder,
+  path : String,
+  sync_fn : (String, base_codec::Json) -> Result[base_codec::Json, builders_core::ShellError],
+) -> Option[String] {
   self.asked = self.asked + 1
-  match self.client.shell_sync_json("fs.stat", base_codec::json_obj([("path", base_codec::json_str(path))])) {
+  match sync_fn("fs.stat", base_codec::json_obj([("path", base_codec::json_str(path))])) {
     Ok(base_codec::Json::Str(kind)) => Some(kind)
     _ => None
+  }
+}
+
+fn Finder::stat(self : Finder, path : String) -> Option[String] {
+  self.stat_with(path, fn(op, args) { self.client.shell_sync_json(op, args) })
+}
+
+fn Finder::is_file_with(
+  self : Finder,
+  path : String,
+  sync_fn : (String, base_codec::Json) -> Result[base_codec::Json, builders_core::ShellError],
+) -> Bool {
+  match self.stat_with(path, sync_fn) {
+    Some("file") => true
+    _ => false
   }
 }
 
 fn Finder::is_file(self : Finder, path : String) -> Bool {
   match self.stat(path) {
     Some("file") => true
+    _ => false
+  }
+}
+
+fn Finder::is_dir_with(
+  self : Finder,
+  path : String,
+  sync_fn : (String, base_codec::Json) -> Result[base_codec::Json, builders_core::ShellError],
+) -> Bool {
+  match self.stat_with(path, sync_fn) {
+    Some("dir") => true
     _ => false
   }
 }
@@ -210,6 +241,20 @@ fn Finder::storage(self : Finder, path : String) -> String {
 
 fn Finder::kept(self : Finder, path : String) -> Bool {
   self.is_file(self.storage(path))
+}
+
+/// Semantically identical to `kept(path)` (a non-file at `path` shadows `path + ".zst"`),
+/// using 1 `stat` instead of 2 when `path` exists.
+fn Finder::kept_direct_with(
+  self : Finder,
+  path : String,
+  sync_fn : (String, base_codec::Json) -> Result[base_codec::Json, builders_core::ShellError],
+) -> Bool {
+  match self.stat_with(path, sync_fn) {
+    Some("file") => true
+    Some(_) => false
+    None => self.is_file_with(path + ".zst", sync_fn)
+  }
 }
 
 fn Finder::entries(self : Finder, dir : String) -> Option[Array[String]] {
@@ -239,7 +284,11 @@ fn Finder::entries(self : Finder, dir : String) -> Option[Array[String]] {
   }
 }
 
-fn Finder::typed_entries(self : Finder, dir : String) -> Option[Array[(String, String)]] {
+fn Finder::typed_entries_with(
+  self : Finder,
+  dir : String,
+  sync_fn : (String, base_codec::Json) -> Result[base_codec::Json, builders_core::ShellError],
+) -> Option[Array[(String, String)]] {
   self.asked = self.asked + 1
   match self.readdir_err.get(dir) {
     Some(true) => {
@@ -252,7 +301,7 @@ fn Finder::typed_entries(self : Finder, dir : String) -> Option[Array[(String, S
     ("path", base_codec::json_str(dir)),
     ("types", base_codec::json_bool(true)),
   ])
-  match self.client.shell_sync_json("fs.readdir", args) {
+  match sync_fn("fs.readdir", args) {
     Ok(base_codec::Json::Arr(entries)) => {
       let out : Array[(String, String)] = []
       for i in 0..<entries.length() {
@@ -275,6 +324,10 @@ fn Finder::typed_entries(self : Finder, dir : String) -> Option[Array[(String, S
       None
     }
   }
+}
+
+fn Finder::typed_entries(self : Finder, dir : String) -> Option[Array[(String, String)]] {
+  self.typed_entries_with(dir, fn(op, args) { self.client.shell_sync_json(op, args) })
 }
 
 fn Finder::real(self : Finder, path : String) -> Option[String] {
@@ -592,32 +645,41 @@ fn Finder::gather_rollouts(self : Finder, dir : String, into : Rollouts) -> Unit
   }
 }
 
-/// Whether `kept(join([dir, name]))`, answered from `dir`'s listing (`kinds`) and asking stat only of a link or an
-/// entry of no kind: a name not listed is not there, one listed a directory is not a file.
-fn Finder::kept_listed(self : Finder, kinds : Map[String, String], dir : String, name : String) -> Bool {
-  let packed = fn() -> Bool {
-    match kinds.get(name + ".zst") {
-      Some("file") => true
-      Some("dir") => false
-      None => false
-      Some(_) => self.is_file(self.join([dir, name + ".zst"]))
+fn ascii_lower_str(s : String) -> String {
+  let n = s.length()
+  let mut first_upper = -1
+  for i in 0..<n {
+    let c = s.code_unit_at(i)
+    if c >= 65 && c <= 90 {
+      first_upper = i
+      break
     }
   }
-  match kinds.get(name) {
-    Some("file") => true
-    Some("dir") => false
-    Some(_) => {
-      match self.stat(self.join([dir, name])) {
-        Some(kind) => kind == "file"
-        None => packed()
-      }
-    }
-    None => packed()
+  if first_upper < 0 {
+    return s
   }
+  let sb = StringBuilder::new()
+  if first_upper > 0 {
+    sb.write_substring(s, 0, first_upper)
+  }
+  for i in first_upper..<n {
+    let c = s.code_unit_at(i)
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(c as Byte)
+    }
+  }
+  sb.to_string()
 }
 
-/// The Claude transcripts directory `dir` read once: each project read, its transcripts' ids kept.
-fn Finder::claude_index(self : Finder, dir : String) -> Option[ClaudeIndex] {
+/// The Claude transcripts directory `dir` read once: each project read, its candidate session ids
+/// indexed by ASCII-lowercased stem in strict project order (preserving multiple projects per stem).
+fn Finder::claude_index_with(
+  self : Finder,
+  dir : String,
+  sync_fn : (String, base_codec::Json) -> Result[base_codec::Json, builders_core::ShellError],
+) -> Option[ClaudeIndex] {
   match self.claude_cache.get(dir) {
     Some(Some(known)) => {
       let failed_dirs : Array[String] = []
@@ -634,87 +696,113 @@ fn Finder::claude_index(self : Finder, dir : String) -> Option[ClaudeIndex] {
     }
     None => ()
   }
-  let projects = match self.typed_entries(dir) {
+  let projects = match self.typed_entries_with(dir, sync_fn) {
     Some(ps) => ps
     None => {
       self.claude_cache.set(dir, None)
       return None
     }
   }
-  let index = ClaudeIndex::{ kept: Map::new(), failed: [] }
+  let index = ClaudeIndex::{ candidates: Map::new(), failed: [] }
   for i in 0..<projects.length() {
     let (project, pkind) = projects[i]
     let project_dir = self.join([dir, project])
-    if !(pkind == "dir" || (pkind != "file" && self.is_dir(project_dir))) {
+    if !(pkind == "dir" || (pkind != "file" && self.is_dir_with(project_dir, sync_fn))) {
       continue
     }
-    let names = match self.typed_entries(project_dir) {
+    let names = match self.typed_entries_with(project_dir, sync_fn) {
       Some(ns) => ns
       None => {
         index.failed.push((i, project_dir))
         continue
       }
     }
-    let kinds : Map[String, String] = Map::new()
+    let added_in_proj : Map[String, Bool] = Map::new()
     for j in 0..<names.length() {
-      let (nm, kd) = names[j]
-      kinds.set(nm, kd)
-    }
-    for j in 0..<names.length() {
-      let (name, _) = names[j]
-      let fid = if str_has_suffix(name, ".jsonl") {
-        name.slice(0, name.length() - 6)
-      } else if str_has_suffix(name, ".jsonl.zst") {
-        name.slice(0, name.length() - 10)
+      let (name, kind) = names[j]
+      if kind == "dir" {
+        continue
+      }
+      let lower_name = ascii_lower_str(name)
+      let fid_lower = if str_has_suffix(lower_name, ".jsonl") {
+        lower_name.slice(0, lower_name.length() - 6)
+      } else if str_has_suffix(lower_name, ".jsonl.zst") {
+        lower_name.slice(0, lower_name.length() - 10)
       } else {
         continue
       }
-      let already = match index.kept.get(fid) {
-        Some(_) => true
-        None => false
+      match added_in_proj.get(fid_lower) {
+        Some(true) => continue
+        _ => added_in_proj.set(fid_lower, true)
       }
-      if already || !self.kept_listed(kinds, project_dir, fid + ".jsonl") {
-        continue
+      match index.candidates.get(fid_lower) {
+        Some(list) => list.push((i, project_dir))
+        None => index.candidates.set(fid_lower, [(i, project_dir)])
       }
-      index.kept.set(fid, (i, self.join([dir, project, fid + ".jsonl"])))
     }
   }
   self.claude_cache.set(dir, Some(index))
   Some(index)
 }
 
-/// `transcriptIn`'s look through every Claude project for `id`, over the directory read once: the same first project
-/// keeping it, the projects that could not be read looked in as before, and no answer kept for an id not found while
-/// some could not be read.
-fn Finder::claude_indexed(self : Finder, dir : String, id : String, at : String, placed : Bool) -> Option[String] {
-  let index = match self.claude_index(dir) {
+/// `transcriptIn`'s look through every Claude project for `id`, over the directory read once:
+/// merges candidate projects and unreadable projects in strict project order, confirming each
+/// with `stat` using the caller's exact `id` spelling so `EACCES` on an earlier project or a
+/// case-only alias on a case-sensitive filesystem never hides a later valid project.
+fn Finder::claude_indexed_with(
+  self : Finder,
+  dir : String,
+  id : String,
+  at : String,
+  placed : Bool,
+  sync_fn : (String, base_codec::Json) -> Result[base_codec::Json, builders_core::ShellError],
+) -> Option[String] {
+  let index = match self.claude_index_with(dir, sync_fn) {
     Some(idx) => idx
     None => return None
   }
-  let hit = index.kept.get(id)
-  for fi in 0..<index.failed.length() {
-    let (i, project_dir) = index.failed[fi]
-    match hit {
-      Some((first, _)) => if i > first { break }
-      None => ()
+  let id_lower = ascii_lower_str(id)
+  let cands : Array[(Int, String)] = match index.candidates.get(id_lower) {
+    Some(xs) => xs
+    None => []
+  }
+  let failed = index.failed
+  let mut ci = 0
+  let mut fi = 0
+  while ci < cands.length() || fi < failed.length() {
+    let project_dir = if fi >= failed.length() {
+      let (_, p) = cands[ci]
+      ci = ci + 1
+      p
+    } else if ci >= cands.length() {
+      let (_, p) = failed[fi]
+      fi = fi + 1
+      p
+    } else {
+      let (c_idx, c_dir) = cands[ci]
+      let (f_idx, f_dir) = failed[fi]
+      if c_idx < f_idx {
+        ci = ci + 1
+        c_dir
+      } else {
+        fi = fi + 1
+        f_dir
+      }
     }
     let path = self.join([project_dir, id + ".jsonl"])
-    if self.kept(path) {
+    if self.kept_direct_with(path, sync_fn) {
       self.set_elsewhere(at, Some(path))
       return Some(path)
     }
   }
-  match hit {
-    Some((_, path)) => {
-      self.set_elsewhere(at, Some(path))
-      return Some(path)
-    }
-    None => ()
-  }
-  if placed && index.failed.length() == 0 {
+  if placed && failed.length() == 0 {
     self.set_elsewhere(at, None)
   }
   None
+}
+
+fn Finder::claude_indexed(self : Finder, dir : String, id : String, at : String, placed : Bool) -> Option[String] {
+  self.claude_indexed_with(dir, id, at, placed, fn(op, args) { self.client.shell_sync_json(op, args) })
 }
 
 fn Finder::transcript_in(

@@ -41,7 +41,7 @@ fn ascii_lower(s : String) -> String {
   }
   let out = StringBuilder::new()
   if first_upper > 0 {
-    out.write_string(s.slice(0, first_upper))
+    out.write_substring(s, 0, first_upper)
   }
   for i in first_upper..<n {
     let c = s.code_unit_at(i)
