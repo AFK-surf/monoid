@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [918c06c90](https://github.com/AFK-surf/monoid/commit/918c06c90111e3e415bf6c5f41f1c6302ef52555) build(station): bundle stillfail-pion native reade | 2.54 | 3.44 | 14.21 | 36.75 | 55.59 | 32.11 | 64.99 | 100.93 | 123.13 |
 | [c4535b791](https://github.com/AFK-surf/monoid/commit/c4535b7918ac1a4c6c49914f4ef314579d1658e2) fix(core,station): show parent breadcrumbs on arch | 2.54 | 3.44 | 14.21 | 36.75 | 55.59 | 32.11 | 64.99 | 100.93 | 123.13 |
 | [c4535b791](https://github.com/AFK-surf/monoid/commit/c4535b7918ac1a4c6c49914f4ef314579d1658e2) fix(core,station): show parent breadcrumbs on arch | 2.54 | 3.44 | 14.21 | 36.75 | 55.59 | 32.11 | 64.99 | 101.01 | 130.55 |
 | [a647c8cd8](https://github.com/AFK-surf/monoid/commit/a647c8cd8653efc189f682ac138fb23ced025571) feat(core-ts): show size and speed of downloads, a | 2.54 | 3.43 | 14.19 | 36.72 | 55.5 | 32.08 | 64.92 | 101.06 | 127.43 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3142ff413](https://github.com/AFK-surf/monoid/commit/3142ff4130b8045ec4942e14d0e2753673a17ce9) feat(pion-station): port W7-C readops_local L1 pac | 2.52 | 3.4 | 14.07 | 36.6 | 55.08 | 31.97 | 64.57 | 101.07 | 124.6 |
 | [4add66765](https://github.com/AFK-surf/monoid/commit/4add66765d1d397ba8a187600457f348d1573124) feat(station): add workspace chat project & tag cl | 2.52 | 3.4 | 14.07 | 36.6 | 55.08 | 31.97 | 64.57 | 101.07 | 124.6 |
 | [a6e44a136](https://github.com/AFK-surf/monoid/commit/a6e44a136433173fe51df5157718e92ec2489054) fix(app): let a board draft with files move to ano | 2.52 | 3.4 | 14.07 | 36.6 | 55.08 | 31.97 | 64.57 | 100.76 | 126.05 |
-| [0fd9c17df](https://github.com/AFK-surf/monoid/commit/0fd9c17df87abfac1853e2557473c03520413733) feat(rules): prove the fork choice of a keeper tha | 2.52 | 3.4 | 14.07 | 36.6 | 55.08 | 31.97 | 64.57 | 101.01 | 116.62 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [918c06c90](https://github.com/AFK-surf/monoid/commit/918c06c90111e3e415bf6c5f41f1c6302ef52555) build(station): bundle stillfail-pion native reade | 0.56 | 0.74 | 2.86 | 3.9 | 7.15 | 2.12 | 5.96 | 57.36 |
 | [c4535b791](https://github.com/AFK-surf/monoid/commit/c4535b7918ac1a4c6c49914f4ef314579d1658e2) fix(core,station): show parent breadcrumbs on arch | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.59 |
 | [c4535b791](https://github.com/AFK-surf/monoid/commit/c4535b7918ac1a4c6c49914f4ef314579d1658e2) fix(core,station): show parent breadcrumbs on arch | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.75 |
 | [a647c8cd8](https://github.com/AFK-surf/monoid/commit/a647c8cd8653efc189f682ac138fb23ced025571) feat(core-ts): show size and speed of downloads, a | 0.56 | 0.74 | 2.86 | 3.9 | 7.14 | 2.12 | 5.94 | 57.67 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3142ff413](https://github.com/AFK-surf/monoid/commit/3142ff4130b8045ec4942e14d0e2753673a17ce9) feat(pion-station): port W7-C readops_local L1 pac | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.36 |
 | [4add66765](https://github.com/AFK-surf/monoid/commit/4add66765d1d397ba8a187600457f348d1573124) feat(station): add workspace chat project & tag cl | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.39 |
 | [a6e44a136](https://github.com/AFK-surf/monoid/commit/a6e44a136433173fe51df5157718e92ec2489054) fix(app): let a board draft with files move to ano | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.75 |
-| [0fd9c17df](https://github.com/AFK-surf/monoid/commit/0fd9c17df87abfac1853e2557473c03520413733) feat(rules): prove the fork choice of a keeper tha | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.43 |
