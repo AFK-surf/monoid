@@ -110,6 +110,7 @@ fn copies_mode_of(backup : Json?, picked_manual : Bool) -> String {
 
 ///|
 /// The upload limits offered (Mbps, 0 for none), slowest first and no limit last; the station's own default among them.
+// kept across runs: a value (no element of it changes)
 let copies_upload_steps : Array[Double] = [2.0, 5.0, 8.0, 20.0, 50.0, 100.0, 0.0]
 
 ///|
