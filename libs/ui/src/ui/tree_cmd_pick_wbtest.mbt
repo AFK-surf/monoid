@@ -1,6 +1,6 @@
 ///|
 fn cmd_pick_at(text : String, needle : String) -> String {
-  guard text.find(needle) is Some(off) else { abort("no \{needle} in \{text}") }
+  guard text.find(needle) is Some(off) else { @halt.saying("no \{needle} in \{text}") }
   let (a, b) = cmd_pick_sentence(text, off)
   text.exact_view(start=a, end=b).to_owned()
 }
