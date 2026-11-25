@@ -7,7 +7,7 @@
 // device was in the station's log of events (cursor.ts: what changed meanwhile is told first).
 import { type OwnHeld, type RowsMemo, rowsMemo } from "./rows-made.ts";
 import type { SharedMarkKind } from "../db/chats.ts";
-import { record, said, stationTag } from "../record.ts";
+import { record, recordInbound, recording, said, stationTag } from "../record.ts";
 import { Deferred, Effect, type Fiber } from "effect";
 import type { Inner } from "../core.ts";
 import { CoreError, asCoreError } from "../error.ts";
@@ -819,6 +819,7 @@ export class Links {
               if (link.state.state === "reconnecting") self.setLink(address, { state: "online" });
               for (const [name, data, id] of parser.feed(chunk)) {
                 events++;
+                if (recording(core.host)) recordInbound(core.host, `${stationTag(address)} sse:${name || "ping"}`, data.length, 1);
                 // Where the station's log is: nothing to tell, the next stream goes on from it.
                 if (name === "") {
                   if (id !== undefined) link.cursor.heard(id);

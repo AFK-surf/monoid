@@ -151,3 +151,21 @@ test "the performance record names the motions the frames were built for: what e
   assert_true(whys[0].contains("built: the clock read at " + named), msg=whys[0])
   @hostapi.set_perf(false)
 }
+
+///|
+test "looks_why names why the previous frame woke the host, and journal_arranged_now reports the layout class and size" {
+  let t = Tester::new(perf_scene)
+  t.set_perf(0)
+  @hostapi.set_perf(true)
+  journal_arranged("Medium", 669.0, 767.0)
+  assert_eq(journal_arranged_now(), ("Medium", 669.0, 767.0))
+  // First two frames settle paint; a subsequent unasked frame is attributed to host.
+  t.frame()
+  t.frame(ms=first_frame_ms)
+  t.frame(ms=first_frame_ms)
+  t.frame(ms=probe_record_ms)
+  let whys = t.perf_said().1.filter(fn(l) { l.has_prefix("frames why (the 5 heaviest, ms/frames): ") })
+  assert_eq(whys.length(), 1)
+  assert_true(whys[0].contains("looks (host)"), msg=whys[0])
+  @hostapi.set_perf(false)
+}

@@ -2922,6 +2922,7 @@ fn Ctx::wake_at_time(self : Ctx, t : Double, later? : Bool = false, loc~ : Sourc
   }
   if self.wake_at < 0.0 || t < self.wake_at {
     self.wake_at = t
+    wake_at_loc.val = loc.to_string()
   }
   if !later && (self.wake_waited < 0.0 || t < self.wake_waited) {
     self.wake_waited = t

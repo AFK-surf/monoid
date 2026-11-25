@@ -1706,6 +1706,7 @@ pub fn Tree::unfollow(Self) -> Unit
 pub fn Tree::untracked_read_faults(Self) -> Array[String]
 pub fn Tree::view_of(Self, NodeId) -> View?
 pub fn Tree::wake(Self) -> Double?
+pub fn Tree::wake_by(Self) -> String
 pub fn Tree::wake_waited(Self) -> Double?
 pub fn Tree::wake_waited_by(Self) -> String
 pub fn Tree::waterfall_faults(Self) -> Array[String]

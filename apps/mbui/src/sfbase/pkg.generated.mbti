@@ -81,6 +81,8 @@ pub fn attachment_of(@json.Json) -> Attachment
 
 pub fn attend(Source, String, Bool) -> Unit
 
+pub fn attention_workspace() -> String
+
 pub fn back_label(Page) -> String
 
 pub fn back_pop() -> Unit

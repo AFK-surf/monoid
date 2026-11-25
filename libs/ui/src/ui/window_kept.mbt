@@ -306,6 +306,8 @@ fn window_kept_ui_3() -> Array[WindowKept] {
     kept_ref(painted_alone, fn() { false }),
     kept_ref(looks_frames, fn() { 0 }),
     kept_ref(paints_alone, fn() { 0 }),
+    kept_ref(wake_at_loc, fn() { "" }),
+    kept_ref(prev_frame_wake, fn() { "" }),
     kept_struct(fn() { let held = { ..looks_tells }; fn() { looks_tells.window_put(held) } }, fn() { looks_tells.window_put({ now: [], before: [] }) }),
     kept_ref(looks_heads_only, fn() { false }),
     kept_ref(events_seen, fn() { 0 }),

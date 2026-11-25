@@ -571,8 +571,27 @@ fn main {
   // (said with each summary of the frames into the device's performance record while it is kept: the core's
   // messages, the page shown, the screens open; @ui.perf_also)
   @ui.perf_also("core", @core.perf_said)
-  // (the page shown as the journal was told it, sfbase's shown_kind: what the hang reports say too)
-  @ui.perf_also("page", fn(_) { @ui.journal_shown() })
+  // (the page shown as the journal was told it, sfbase's shown_kind, with its layout class, window size and workspace)
+  @ui.perf_also("page", fn(_) {
+    let p = @ui.journal_shown()
+    if p == "" {
+      return ""
+    }
+    let (arr, w, h) = @ui.journal_arranged_now()
+    let ws = @sfbase.attention_workspace()
+    let ws_tag = if ws.length() > 6 { ws.unsafe_substring(start=0, end=6) } else { ws }
+    let mut out = p
+    if arr != "" {
+      out = out + " arranged=" + arr
+    }
+    if w > 0.0 && h > 0.0 {
+      out = out + " window=\{w.to_int()}x\{h.to_int()}"
+    }
+    if ws_tag != "" {
+      out = out + " ws=" + ws_tag
+    }
+    out
+  })
   @ui.perf_also("screens", @sfpages.screens_perf)
   @ui.run_legacy_ctx(
     run_title(),

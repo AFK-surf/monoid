@@ -366,6 +366,8 @@ pub fn journal() -> Array[Entry]
 
 pub fn journal_arranged(String, Double, Double) -> Unit
 
+pub fn journal_arranged_now() -> (String, Double, Double)
+
 pub fn journal_shown() -> String
 
 pub fn journal_shows(String) -> Unit

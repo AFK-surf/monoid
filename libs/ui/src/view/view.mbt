@@ -12490,6 +12490,24 @@ pub fn Tree::wake(self : Tree) -> Double? {
 }
 
 ///|
+/// Where the soonest due entry on the timeline was asked (Tree::wake), including `later` timers; "" if unnamed.
+pub fn Tree::wake_by(self : Tree) -> String {
+  let mut soonest = -1.0
+  let mut by = ""
+  for d in self.timeline {
+    let at = self.due_at(d)
+    if at >= 0.0 && (soonest < 0.0 || at < soonest) {
+      soonest = at
+      by = match d {
+        Once(o, _) => o.by
+        _ => ""
+      }
+    }
+  }
+  by
+}
+
+///|
 /// Which timer the soonest due is (Tree::wake_waited): where it was said, for a timer said once (View::at_moment's
 /// caller); "" for the rest. What tells one that keeps saying itself again from others that each come once.
 pub fn Tree::wake_waited_by(self : Tree) -> String {
