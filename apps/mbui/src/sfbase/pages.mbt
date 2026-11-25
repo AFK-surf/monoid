@@ -1183,6 +1183,7 @@ fn setting_kind(r : @settings.Route) -> String {
     Connects(_) => "Connects"
     Connect(_, _) => "Connect"
     Memories => "Memories"
+    McpServers => "McpServers"
     Memory(_) => "Memory"
     MemoryDoc(_, _, _) => "MemoryDoc"
     Usage => "Usage"
@@ -1742,6 +1743,7 @@ pub fn back_label(p : Page) -> String {
     Setting(@settings.Route::About) => @sf.t("web-pages.settings.nav.about")
     Setting(@settings.Route::Permissions) => @sf.t("web-pages.settings.nav.permissions")
     Setting(@settings.Route::Memories) | Setting(@settings.Route::Memory(_)) => @sf.t("web-pages.settings.memory.title")
+    Setting(@settings.Route::McpServers) => @sf.t("web-pages.stations.mcp")
     Setting(@settings.Route::AutoDecisions) => @sf.t("web-pages.automaticDecisions.title")
     Setting(@settings.Route::AutoCompletion) => @sf.t("web-pages.automaticDecisions.completion")
     Setting(@settings.Route::Progress) => @sf.t("web-pages.progress.title")

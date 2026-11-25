@@ -210,6 +210,7 @@ pub fn route_reads(src : Source, ws : String, r : @settings.Route) -> OpenReads 
       ])
     // (each station's memory is its row's, as it comes: never waited for)
     Memories => reads_of([stations])
+    McpServers => reads_of([stations])
     Memory(address) => reads_of([stations, ("memory", { "station": Json::string(address) })])
     MemoryDoc(address, _, _) => reads_of([("memory", { "station": Json::string(address) })])
     // (as it opens with nothing chosen in it: sfpages usage_ask's seven days)

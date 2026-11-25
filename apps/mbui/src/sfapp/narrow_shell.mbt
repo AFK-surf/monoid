@@ -788,6 +788,8 @@ fn narrow_made_as(
       })
     Setting(Memories) =>
       made("memories", fn(p, core, here, frame, _stint, _acts) { @sfpages.memories_node(p, core, here, on_back=core.pop, frame~) })
+    Setting(McpServers) =>
+      made("mcp", fn(p, core, here, frame, _stint, _acts) { @sfpages.mcp_servers_page_node(p, core, here, on_back=core.pop, frame~) })
     Setting(Memory(address)) =>
       made("memory/" + address, fn(p, core, here, frame, _stint, _acts) {
         @sfpages.memory_node(p, core, here, address, on_back=core.pop, frame~)
