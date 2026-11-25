@@ -51,9 +51,15 @@ export type WorkspaceConnectsDeps = {
   sleep?: (ms: number) => Promise<void>;
   /// Timeout per `describe` RPC when balancing across a multi-station allowlist (default 1500 ms).
   describeTimeoutMs?: number;
+  /// Settles once this station has connected its own connects as it starts (agents.ts `connectsReady`): a call that
+  /// comes before then for one of them waits for it rather than being told the connect does not run here.
+  connectsReady?: () => Promise<void>;
+  /// How long such a call waits at most (default 15 s).
+  connectsReadyTimeoutMs?: number;
 };
 
 const DESCRIBE_TIMEOUT_MS = 1_500;
+const CONNECTS_READY_TIMEOUT_MS = 15_000;
 
 export class WorkspaceConnects {
   readonly remote: RemoteConnects;
@@ -126,10 +132,19 @@ export class WorkspaceConnects {
       this.remote.moved(localOf(known, d.here()), request.station);
       return { ok: true };
     });
-    const answer = answerCall((known: Known, workspace: string | undefined) => {
+    const answer = answerCall(async (known: Known, workspace: string | undefined) => {
       const id = localOf(known, d.here());
       const entry = this.entryOf(id);
-      return entry !== undefined && this.workspaceOf(entry) === workspace ? this.own(id) : undefined;
+      if (entry === undefined || this.workspaceOf(entry) !== workspace) return undefined;
+      const live = this.own(id);
+      if (live !== undefined) return live;
+      // A station of the workspace that started as this one did can ask before this one connected its own connects
+      // (agents.ts `start`, `along` `taken`): such a call waits for them, bounded, rather than failing the chat there.
+      if (entry.enabled === false || d.connectsReady === undefined) return undefined;
+      const sleep = d.sleep ?? ((t: number) => Effect.runPromise(Effect.sleep(Duration.millis(t))));
+      await Promise.race([d.connectsReady().catch(() => {}), sleep(d.connectsReadyTimeoutMs ?? CONNECTS_READY_TIMEOUT_MS)]);
+      const after = this.entryOf(id);
+      return after !== undefined && this.workspaceOf(after) === workspace ? this.own(id) : undefined;
     }, this.uploads, this.#uploadsCleared);
     d.bus.on(CALL, async (peer, request, workspace) => {
       const answered = await answer(peer, request, workspace);
@@ -918,6 +933,7 @@ export const WorkspaceConnectsLive = Layer.effectDiscard(
       names: (kind) => agents.nameBooks.get(kind) ?? null,
       selfLoad: () => agents.remote.selfDescribe(),
       sleep: (ms) => Effect.runPromise(Effect.sleep(Duration.millis(ms)).pipe(Effect.provideService(Clock.Clock, clock))),
+      connectsReady: () => agents.connectsReady,
     });
     // (the connects of other stations its chats run on, known before the hub asks for them)
     yield* Effect.promise(() => connects.remote.ready());

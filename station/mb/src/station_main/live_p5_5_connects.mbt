@@ -453,6 +453,9 @@ async fn P55::start_connects(self : P55) -> Unit {
     // (peer.ts `heard`: a station heard from again, a connect's move it may hold settled)
     heard: Some(f => bus.on_peer_heard(f)),
   }
+  // Done once this station, starting, connected its own connects (the `connects` fiber below), whether it could or
+  // not: another station's call of one of them that comes before then waits for it (connects_hub `connects_ready`).
+  let connects_ready : @effect.Deferred[Unit] = @effect.Deferred::new()
   let wc = @connects_hub.WorkspaceConnects::new({
     data,
     hub: {
@@ -502,7 +505,7 @@ async fn P55::start_connects(self : P55) -> Unit {
     self_load: Some(async fn() {
       to_jv((bus.jobs_ask.val)("remote.describe", Json::object({})) catch { _ => Json::null() })
     }),
-  })
+  }, connects_ready=async fn() { connects_ready.wait() })
   workspace_ref.val = Some(wc)
   let live : ConnectsLive = { slack, kinds, workspace: wc }
   connects_live.val = Some(live)
@@ -534,6 +537,7 @@ async fn P55::start_connects(self : P55) -> Unit {
     }
   }
   bus.host.rt.fork(name="connects", async fn() {
+    defer { ignore(connects_ready.succeed(())) }
     ignore(bus.door_ready.wait())
     reconcile_all()
     if kinds.values().all(c => c.connects().length() == 0) {

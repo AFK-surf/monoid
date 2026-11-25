@@ -90,6 +90,11 @@ pub(all) struct WorkspaceDeps {
 let describe_timeout_ms : Int = 1500
 
 ///|
+/// How long another station's call of a connect of this one's waits at most for this one to connect its connects as
+/// it starts (`connects_ready`).
+let connects_ready_timeout_ms : Int = 15_000
+
+///|
 pub struct WorkspaceConnects {
   remote : RemoteConnects
   priv d : WorkspaceDeps
@@ -140,9 +145,36 @@ fn single_session(c : J?) -> Bool {
 }
 
 ///|
+/// What another station's call of a connect answers with (`CallAnswerer`'s surface): none at once where the connect is
+/// not this station's of that workspace (`ours`), its surface at once where it is connected; else, for one turned on
+/// while this station is still connecting its own as it starts (`ready`, from one that started as this one did), what
+/// is there once they are connected or `timeout_ms` passed, rather than failing the chat there.
+async fn[S] surface_when_ready(
+  ours : () -> Bool,
+  own : async () -> S?,
+  enabled : Bool,
+  ready : (async () -> Unit)?,
+  timeout_ms : Int,
+) -> S? {
+  guard ours() else { return None }
+  if own() is Some(live) {
+    return Some(live)
+  }
+  guard enabled && ready is Some(ready) else { return None }
+  ignore(@effect.timeout(timeout_ms, async fn() { ready() catch { _ => () } }))
+  guard ours() else { return None }
+  own()
+}
+
+///|
 /// The workspace's connects of this station: what they kept read before the station serves, its handlers on the
-/// mesh, and the moves left under way settled.
-pub async fn WorkspaceConnects::new(d : WorkspaceDeps) -> WorkspaceConnects {
+/// mesh, and the moves left under way settled. `connects_ready` returns once the station, starting, connected its own
+/// connects (or will not): a call of one of them that comes before then waits for it, at most `ready_timeout_ms`.
+pub async fn WorkspaceConnects::new(
+  d : WorkspaceDeps,
+  connects_ready? : async () -> Unit,
+  ready_timeout_ms? : Int = connects_ready_timeout_ms,
+) -> WorkspaceConnects {
   let fs = d.fs
   let uploads = fs.join([d.data, "run", "connect-uploads"])
   let cleared : @effect.Deferred[Unit] = @effect.Deferred::new()
@@ -211,10 +243,13 @@ pub async fn WorkspaceConnects::new(d : WorkspaceDeps) -> WorkspaceConnects {
   let answerer : CallAnswerer = {
     surface: async fn(known, workspace) {
       let id = local_of(known, (d.here)())
-      match w.entry_of(id) {
-        Some(entry) if workspace is Some(ws) && w.workspace_of(Some(entry)) == Some(ws) => w.own(id)
-        _ => None
-      }
+      surface_when_ready(
+        () => w.entry_of(id) is Some(entry) && workspace is Some(ws) && w.workspace_of(Some(entry)) == Some(ws),
+        async fn() { w.own(id) },
+        !(at(w.entry_of(id), "enabled") is Some(Bool(false))),
+        connects_ready,
+        ready_timeout_ms,
+      )
     },
     uploads,
     cleared: async fn() { cleared.wait() },

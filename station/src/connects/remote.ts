@@ -364,11 +364,11 @@ export class RemoteSurface implements ChatSurface {
 /// How a station answers another's call of one of its connects' surfaces (`surface`: the connect's, null when it does not
 /// run here). Files a remote chat posts are kept in `uploads` until they are posted (or for the process's life at most);
 /// none is kept there before `cleared` (what a process before left there taken away).
-export function answerCall(surface: (connect: Known, workspace: string | undefined) => ChatSurface | undefined, uploads: string, cleared: Promise<void> = Promise.resolve()) {
+export function answerCall(surface: (connect: Known, workspace: string | undefined) => ChatSurface | undefined | Promise<ChatSurface | undefined>, uploads: string, cleared: Promise<void> = Promise.resolve()) {
   return async (_peer: string, request: Json, workspace?: string): Promise<Json> => {
     const op = typeof request?.op === "string" ? request.op : "";
     const known = knownIn(request?.connect);
-    const chat = known === null ? undefined : surface(known, workspace);
+    const chat = known === null ? undefined : await surface(known, workspace);
     if (chat === undefined) throw new Error("that connect does not run on this station");
     const args: Json[] = Array.isArray(request?.args) ? request.args : [];
     if (op === "upload") {

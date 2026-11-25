@@ -255,3 +255,67 @@ test "feishu_api across stations: JSON as it was, a Feishu file as bytes beside 
   )
   assert_true(wire[1].1 == Some(image))
 }
+
+///|
+/// `surface_when_ready` run on a runtime of the test's clock: the fiber, and the runtime to move it on.
+fn surface_asked(
+  ours : () -> Bool,
+  live : Ref[String?],
+  enabled : Bool,
+  ready : @effect.Deferred[Unit]?,
+) -> (@effect.Runtime, @effect.Fiber[String?], Ref[Int]) {
+  let rt = @effect.Runtime::new()
+  let looked : Ref[Int] = { val: 0 }
+  let waits = match ready {
+    Some(d) => Some(async fn() { d.wait() })
+    None => None
+  }
+  let fiber = rt.fork(async fn() {
+    surface_when_ready(ours, async fn() { looked.val += 1; live.val }, enabled, waits, 15_000)
+  })
+  ignore(rt.run_ready())
+  (rt, fiber, looked)
+}
+
+///|
+test "a call of a connect asked while its station is still connecting its connects waits for them, then is answered" {
+  let live : Ref[String?] = { val: None }
+  let ready : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let (rt, fiber, _) = surface_asked(() => true, live, true, Some(ready))
+  assert_true(fiber.poll() is None)
+  rt.advance(14_999)
+  assert_true(fiber.poll() is None)
+  live.val = Some("cl")
+  ignore(ready.succeed(()))
+  ignore(rt.run_ready())
+  assert_true(fiber.poll() is Some(Succeeded(Some("cl"))))
+  // Connected: the next call is answered at once, never waiting.
+  let (_, again, _) = surface_asked(() => true, live, true, Some(@effect.Deferred::new()))
+  assert_true(again.poll() is Some(Succeeded(Some("cl"))))
+}
+
+///|
+test "a call of a connect not this station's, of another workspace's or turned off is refused at once" {
+  let live : Ref[String?] = { val: None }
+  let ready : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let (_, theirs, looked) = surface_asked(() => false, live, true, Some(ready))
+  assert_true(theirs.poll() is Some(Succeeded(None)))
+  assert_eq(looked.val, 0)
+  let (_, off, _) = surface_asked(() => true, live, false, Some(ready))
+  assert_true(off.poll() is Some(Succeeded(None)))
+  let (_, unwaited, _) = surface_asked(() => true, live, true, None)
+  assert_true(unwaited.poll() is Some(Succeeded(None)))
+}
+
+///|
+test "a call of a connect that does not connect before the deadline is refused once it passes" {
+  let live : Ref[String?] = { val: None }
+  let ready : @effect.Deferred[Unit] = @effect.Deferred::new()
+  let (rt, fiber, looked) = surface_asked(() => true, live, true, Some(ready))
+  rt.advance(14_999)
+  assert_true(fiber.poll() is None)
+  rt.advance(1)
+  ignore(rt.run_ready())
+  assert_true(fiber.poll() is Some(Succeeded(None)))
+  assert_eq(looked.val, 2)
+}

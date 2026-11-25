@@ -2,16 +2,17 @@
 // station of the workspace. Two stations here, H (the connect's) and S, over a transport of the test's that carries
 // what the mesh does (a JSON head, bytes after it).
 import assert from "node:assert/strict";
-import { readdirSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
+import { type Inbox, PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { WorkspaceConnects, fingerprint } from "../src/connects/workspace.ts";
 import { connectEdits } from "../src/api/routes/connects.ts";
 import { overview } from "../src/api/overview.ts";
 import { hubConfig } from "../src/sessions/config.ts";
-import { sessionKey } from "../src/sessions/hub.ts";
+import { type Hub, sessionKey } from "../src/sessions/hub.ts";
 import type { ChatSurface } from "../src/sessions/chat.ts";
 import { FeishuSurface } from "../src/feishu/surface.ts";
 import { FeishuThreads } from "../src/feishu/threads.ts";
@@ -942,4 +943,71 @@ test("autoStation: a station with fewer agents but its CPUs full is passed over 
   assert.equal(h.rig.store.listSessions().length, 0);
   assert.ok(s1.rig.store.listSessions().length + s2.rig.store.listSessions().length >= 4);
   await close();
+});
+
+/// One station `H` starting: its config.json holds `entries`, its hub has connected those of `live` so far, and
+/// `connectsReady` settles when the test says (agents.ts `start`). Another station's `connect.call` is asked of its bus.
+function starting(entries: Json[]) {
+  const dir = mkdtempSync(join(tmpdir(), "connect-call-ready-"));
+  const inboxes = new Map<string, Inbox>();
+  const live = new Map<string, ChatSurface>();
+  const ready = Promise.withResolvers<void>();
+  const slept: number[] = [];
+  const deadline = Promise.withResolvers<void>();
+  const connects = new WorkspaceConnects({
+    data: dir,
+    hub: () => ({ chatOf: (id: string) => live.get(id) }) as unknown as Hub,
+    store: {} as never,
+    config: { raw: () => ({ connects: entries }), updateSoon: async () => {} },
+    bus: { ask: async () => { throw new Error("station unreachable"); }, on: (method, inbox) => void inboxes.set(method, inbox) },
+    here: () => H,
+    home: () => "ws",
+    stations: (ws) => (ws === "ws" ? roster : []),
+    names: () => null,
+    sleep: (ms) => (slept.push(ms), deadline.promise),
+    connectsReady: () => ready.promise,
+    connectsReadyTimeoutMs: 15_000,
+  });
+  const surface = { channelName: async (c: string) => `#${c}` } as unknown as ChatSurface;
+  const call = (id: string) => inboxes.get("connect.call")!(S, { method: "connect.call", connect: { id, origin: H }, op: "channel", args: ["C1"] }, "ws");
+  return { connects, live, ready, slept, deadline, surface, call, close: () => rm(dir, { recursive: true, force: true }) };
+}
+
+/// Whether `p` has settled by the time every queued microtask and I/O callback of now ran.
+async function settledYet(p: Promise<unknown>): Promise<boolean> {
+  let done = false;
+  void p.then(() => (done = true), () => (done = true));
+  await new Promise<void>((r) => setImmediate(r));
+  return done;
+}
+
+test("a call of a connect asked while its station is still connecting its connects waits for them, then is answered", async () => {
+  const t = starting([{ id: "cl", kind: "slack", enabled: true, workspace: "ws" }]);
+  const answered = t.call("cl");
+  assert.equal(await settledYet(answered), false, "it waits rather than refusing");
+  assert.deepEqual(t.slept, [15_000], "bounded by the deadline");
+  t.live.set("cl", t.surface);
+  t.ready.resolve();
+  assert.deepEqual(await answered, { result: "#C1" });
+  // Connected: the next call is answered at once, with no wait.
+  assert.deepEqual(await t.call("cl"), { result: "#C1" });
+  assert.deepEqual(t.slept, [15_000]);
+  await t.close();
+});
+
+test("a call of a connect not in config.json, of another workspace's or one turned off is refused at once, never waiting for the start", async () => {
+  const t = starting([{ id: "off", kind: "slack", enabled: false, workspace: "ws" }, { id: "other", kind: "slack", enabled: true, workspace: "ws2" }]);
+  for (const id of ["none", "off", "other"]) await assert.rejects(t.call(id), /that connect does not run on this station/, id);
+  assert.deepEqual(t.slept, [], "nothing waited");
+  await t.close();
+});
+
+test("a call of a connect that does not connect before the deadline is refused once it passes", async () => {
+  const t = starting([{ id: "cl", kind: "slack", enabled: true, workspace: "ws" }]);
+  const answered = t.call("cl");
+  assert.equal(await settledYet(answered), false);
+  t.deadline.resolve();
+  await assert.rejects(answered, /that connect does not run on this station/);
+  assert.deepEqual(t.slept, [15_000]);
+  await t.close();
 });

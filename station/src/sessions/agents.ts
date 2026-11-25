@@ -178,6 +178,9 @@ export type AgentsParts = {
   /// This station's connects of a workspace, and each moved to another station of it, as the workspace's connects say
   /// (connects/workspace.ts), for a station retired from it (replica/retire.ts).
   retireConnects: { of(ws: string): string[]; named(ws: string): { id: string; name: string; kind: string }[]; move(ws: string, to: string): Promise<void>; takeHeld(ws: string): Promise<void> } | null;
+  /// Settles once the station, starting, connected its own connects (`along` `taken`), or will not (not in its
+  /// workspace, or its start failed): another station's call of one of them waits for it (connects/workspace.ts).
+  connectsReady: Promise<void>;
   /// The workspace's connects (connects/workspace.ts), once made: what a chat handed over is re-pointed by (move/).
   workspaceConnects: import("../connects/workspace.ts").WorkspaceConnects | null;
   /// What a part does as the station takes its sessions up and as its workspaces change (`Along`).
@@ -285,6 +288,7 @@ export const AgentsLive = (control: Control) =>
       // What the station before this one left, taken up (`start`): until then the codex app-servers its runners keep are
       // the sessions' that ran on them (agents/codex.ts `takenUp`).
       const takenUp = Promise.withResolvers<void>();
+      const connectsReady = Promise.withResolvers<void>();
       let codexIncomplete = () => {};
       const codex = new CodexDriver({
         data,
@@ -1097,10 +1101,12 @@ export const AgentsLive = (control: Control) =>
         taken = true;
         // What was cut off is found while turns are still held (as `follow` does), so that releasing them starts each
         // session's once: its recovery, or what waits for it.
-        if (inWorkspace) {
-          for (const a of along) await a.taken?.();
-          hub.recover();
+        try {
+          if (inWorkspace) for (const a of along) await a.taken?.();
+        } finally {
+          connectsReady.resolve();
         }
+        if (inWorkspace) hub.recover();
         hub.release("starting");
         if (inWorkspace) {
           await jobs.relaunch();
@@ -1112,6 +1118,7 @@ export const AgentsLive = (control: Control) =>
         if ((cloud.state?.rig_due?.length ?? 0) > 0) await follow();
       };
       yield* Effect.forkScoped(Effect.promise(() => start().catch((e) => {
+        connectsReady.resolve();
         log.error("hub", "the agents' side did not start", { error: (e as Error).message });
         control.failed(`the agents' side did not start: ${(e as Error).message}`);
       })));
@@ -1274,7 +1281,7 @@ export const AgentsLive = (control: Control) =>
           }
         }),
       );
-      const self = Agents.of({ pageOf, pages, previousGone: previous, cardOutcomes, hub, jobs, remote, mcp, managedMcp, config, updates, accounts, sharing: sharing!, xshare, peers, forwards, overview: view, surfaces: (chats) => void surfaceChats.push(chats), connects: (more) => void moreConnects.push(more), receive: (connect, event) => receive(connect, event), route: (f) => void (receive = f), nameBook: (kind, book) => void nameBooks.set(kind, book), nameBooks, heldBy: (ws, kind, own) => connectHeld(ws, kind, own), connectHeld: (f) => void (connectHeld = f), connectKind: (kind, view) => void connectKinds.set(kind, view), connectKinds, retireConnects: null, workspaceConnects: null, along: (a) => void along.push(a), taken: () => taken, bound, cloud, net, helperFiles, place: () => { const s = place(); return s ? { origin: s.origin, workspace: s.workspace, station: s.station, name: s.name } : null; } });
+      const self = Agents.of({ pageOf, pages, previousGone: previous, cardOutcomes, hub, jobs, remote, mcp, managedMcp, config, updates, accounts, sharing: sharing!, xshare, peers, forwards, overview: view, surfaces: (chats) => void surfaceChats.push(chats), connects: (more) => void moreConnects.push(more), receive: (connect, event) => receive(connect, event), route: (f) => void (receive = f), nameBook: (kind, book) => void nameBooks.set(kind, book), nameBooks, heldBy: (ws, kind, own) => connectHeld(ws, kind, own), connectHeld: (f) => void (connectHeld = f), connectKind: (kind, view) => void connectKinds.set(kind, view), connectKinds, retireConnects: null, connectsReady: connectsReady.promise, workspaceConnects: null, along: (a) => void along.push(a), taken: () => taken, bound, cloud, net, helperFiles, place: () => { const s = place(); return s ? { origin: s.origin, workspace: s.workspace, station: s.station, name: s.name } : null; } });
       // The admin API asks for the agents' side as a request comes (services.ts AgentsSide); its routes are a part.
       (yield* AgentsSide).current = self;
       // And what the mesh asks of it (services.ts MeshSide).
