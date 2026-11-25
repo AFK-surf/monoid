@@ -8,10 +8,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { AgentsHost, HostedProcess, type HostedOptions } from "../src/agents/mb-agents.ts";
+import { sessionsBinaryAvailable } from "../src/agents/mb-program.ts";
 import { liveRunners } from "../src/agents/runner.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
 
-const skip = (process.platform === "win32" && "runner-windows.test.ts starts Windows' runners") || (mbReaderBinary() === null && "no stillfail-reader built");
+const skip = (process.platform === "win32" && "runner-windows.test.ts starts Windows' runners") || (!sessionsBinaryAvailable() && "no stillfail-reader/stillfail-pion built");
 const options: HostedOptions = { label: "test", kind: "dsh", heard: () => {}, exit: () => {} };
 /// A process that runs until it is ended.
 const forever = [process.execPath, ["-e", "setInterval(() => {}, 1 << 30)"]] as const;

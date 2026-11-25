@@ -239,6 +239,7 @@ export class AgentsHost {
       close: () => {
         if (this.#replays.get(id) !== null) return;
         this.#replays.delete(id);
+        if (this.#proc !== null) this.post({ codexReplayed: id });
         this.#idleIfNone();
       },
     };

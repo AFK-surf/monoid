@@ -1625,7 +1625,7 @@ pub fn LiveCtx::live_event(self : LiveCtx, key : String, event : base_codec::Jso
 
 // ── Turn end / running ──
 
-fn LiveCtx::live_turn_end_k(
+pub fn LiveCtx::live_turn_end_k(
   self : LiveCtx,
   key : String,
   k : (effect::Exit[Unit]) -> Unit,

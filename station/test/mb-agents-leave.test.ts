@@ -9,15 +9,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { AgentsHost, HostedProcess, type HostedOptions } from "../src/agents/mb-agents.ts";
+import { sessionsBinaryAvailable } from "../src/agents/mb-program.ts";
 import { allLeft, type RunnerInfo } from "../src/agents/runner.ts";
 import { platform } from "../src/platform/index.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
 
 /// Looks every 20 ms until `f` holds (a real process answers when the machine lets it: no deadline, as runner.test.ts).
 const until = async (f: () => boolean) => {
   while (!f()) await new Promise((r) => setTimeout(r, 20));
 };
-const skip = (process.platform === "win32" && "runner-windows.test.ts takes it up with the real runner's pipe") || (mbReaderBinary() === null && "no stillfail-reader built");
+const skip = (process.platform === "win32" && "runner-windows.test.ts takes it up with the real runner's pipe") || (!sessionsBinaryAvailable() && "no stillfail-reader/stillfail-pion built");
 
 test("let go where its runner cannot see a one-way close, it is asked to leave and taken up again", { skip }, async () => {
   // Short: a Unix socket's path is 104 bytes at most on macOS.

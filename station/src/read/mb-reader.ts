@@ -3,7 +3,7 @@
 // with `--builder` it is a builder of old state, asked by read/requested-builder.ts or, for a backfill the station
 // drives itself, through `MbBackfill`. It is built for every system a station runs on, so there is no reader or builder
 // in TypeScript to fall back to: those it replaced are the tests' only (test/reference-worker.ts, test/workers/).
-import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
@@ -189,8 +189,48 @@ export function pionSupportedModesStatus(binaryPath: string): PionProbeStatus {
         return;
       }
       try {
-        execFile(key, ["--version"], { timeout: 3_000, killSignal: "SIGKILL", windowsHide: true }, (err, stdout) => {
-          finish(err ? null : parsePionVersionModes(String(stdout ?? "")));
+        const child = spawn(key, ["--version"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+        let stdout = "";
+        child.stdout.setEncoding("utf8");
+        child.stdout.on("data", (chunk: string) => {
+          stdout += chunk;
+        });
+        let timedOut = false;
+        let checkImm: NodeJS.Immediate | null = null;
+        // timer: a timeout or deadline for the --version capability probe
+        const stopTimer = wall.after(3_000, () => {
+          // Defer the kill check past one libuv poll turn (`setImmediate` runs in the check
+          // phase after I/O + SIGCHLD) so a child that already exited during a synchronous
+          // main-thread stall gets reaped and its stdout drained before declaring timeout.
+          checkImm = setImmediate(() => {
+            checkImm = null;
+            if (!settled && child.exitCode === null && child.signalCode === null) {
+              timedOut = true;
+              try {
+                child.kill("SIGKILL");
+              } catch {}
+              finish(null);
+            }
+          });
+        });
+        const clearTimers = () => {
+          stopTimer();
+          if (checkImm !== null) {
+            clearImmediate(checkImm);
+            checkImm = null;
+          }
+        };
+        child.once("error", () => {
+          clearTimers();
+          finish(null);
+        });
+        child.once("close", (code, signal) => {
+          clearTimers();
+          if (timedOut || code !== 0 || signal !== null || stdout.trim() === "") {
+            finish(null);
+          } else {
+            finish(parsePionVersionModes(stdout));
+          }
         });
       } catch {
         finish(null);

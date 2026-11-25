@@ -11,14 +11,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { AgentsHost, HostedProcess, type Heard, type HostedOptions } from "../src/agents/mb-agents.ts";
+import { sessionsBinaryAvailable } from "../src/agents/mb-program.ts";
 import type { RunnerInfo } from "../src/agents/runner.ts";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
 
 /// Looks every 20 ms until `f` holds (a real process answers when the machine lets it: no deadline, as runner.test.ts).
 const until = async (f: () => boolean) => {
   while (!f()) await new Promise((r) => setTimeout(r, 20));
 };
-const skip = (process.platform === "win32" && "runner-windows.test.ts takes it up with the real runner's pipe") || (mbReaderBinary() === null && "no stillfail-reader built");
+const skip = (process.platform === "win32" && "runner-windows.test.ts takes it up with the real runner's pipe") || (!sessionsBinaryAvailable() && "no stillfail-reader/stillfail-pion built");
 
 /// What a runner says: `stream`'s bytes from `at`.
 const out = (stream: "out" | "err", at: number, text: string) => JSON.stringify({ op: "out", stream, at, data: Buffer.from(text).toString("base64") }) + "\n";

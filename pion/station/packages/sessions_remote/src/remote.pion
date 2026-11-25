@@ -1265,9 +1265,13 @@ pub fn RemoteCtx::clean_request_k(
 
 /// Entrypoint for `SessionDispatch::remote_changed_k` (synchronously dispatches `push_out`
 /// background fiber without ever waiting inside the jobs lock; `jobs.mbt:113-118`).
+/// Accepts either full job id `"remote_<task_id>"` or already-stripped `"<task_id>"` (as
+/// dispatched by `JobsCtx::remote_changed`).
 pub fn RemoteCtx::remote_changed(self : RemoteCtx, id : String) -> Unit {
   if id.starts_with("remote_") {
     self.push_out(id.slice(7, id.length()))
+  } else if id != "" {
+    self.push_out(id)
   }
 }
 

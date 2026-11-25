@@ -219,7 +219,7 @@ describe("jobs", { concurrency: true }, () => {
         await new Promise((r) => setTimeout(r, 10));
         got = nice(pgid);
       }
-      assert.equal(got, nice(process.pid) + agentNice());
+      assert.equal(got, Math.min(19, nice(process.pid) + agentNice()));
     }
     await r.jobs.notified(job.token, "  half way  ");
     assert.deepEqual(r.said(), [`Job "long" (${job.id}) says: half way`]);

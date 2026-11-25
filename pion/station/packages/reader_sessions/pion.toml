@@ -7,4 +7,9 @@ base_codec = { workspace = true }
 builders_core = { workspace = true }
 effect = { workspace = true }
 host_shim = { workspace = true }
+js_json = { workspace = true }
+sessions_actors = { workspace = true }
+sessions_agents = { workspace = true }
 sessions_core = { workspace = true }
+sessions_jobs_live = { workspace = true }
+sessions_remote = { workspace = true }

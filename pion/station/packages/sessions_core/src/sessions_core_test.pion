@@ -923,3 +923,24 @@ test "sessions_core: abandoned pack.open emits exact-once pack.close on rotation
   let (h0, h1, h2, h3, h4, h5) = host.rt.holding()
   assert(h0 == 0 && h1 == 0 && h2 == 0 && h3 == 0 && h4 == 0 && h5 == 0)
 }
+
+test "HubGen::spawn_work: live-gen Exit::Interrupted decrements active and emits quiet" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let gen = HubGen::new(host, 1)
+  gen.counters.seen = 3
+
+  gen.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    k(effect::Exit::Interrupted)
+  })
+  host.tick()
+  assert(!gen.counters.sealed)
+  assert(gen.counters.active == 0)
+  assert(mem.stdout_lines.length() == 1)
+  assert(mem.stdout_lines[0] == "{\"quiet\":true,\"active\":0,\"seen\":3}")
+
+  gen.fibers.close_now()
+  host.tick()
+  let (h0, h1, h2, h3, h4, h5) = host.rt.holding()
+  assert(h0 == 0 && h1 == 0 && h2 == 0 && h3 == 0 && h4 == 0 && h5 == 0)
+}

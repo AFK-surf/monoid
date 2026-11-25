@@ -1,85 +1,327 @@
-// Walking skeleton for `--sessions` (`reader_sessions`), assembling `sessions_core`
-// with stubbed subsystem handlers (marked `is_stub = true` for W8-F zero-stub assertion).
-// 1:1 aligned with `station/mb/src/reader/actors.mbt:522-536` and `wave8-plan.md` v5 §2.1-2.5.
+// Production `--sessions` assembly (`reader_sessions`), wiring `sessions_actors`,
+// `sessions_jobs_live`, `sessions_remote`, and `sessions_agents` with ZERO stubs.
+// 1:1 aligned with `station/mb/src/reader/actors.mbt:522-960` and `wave8-plan.md` v5.
 
 import "base_codec"
 import "effect"
 import "host_shim"
+import "js_json"
+import "sessions_actors"
+import "sessions_agents"
 import "sessions_core"
+import "sessions_jobs_live"
+import "sessions_remote"
+
+/// Indirection cell for generation-scoped subsystems (`#jobs`, `#live`, `#remote`, `ActorsGen`).
+/// Cleared synchronously on `{"db": place}` rotation and on `SessionsApp::close()` so
+/// cross-subsystem `SessionDispatch` closures never retain an RC cycle across generations.
+struct GenSubsystems {
+  mut jobs : Option[sessions_jobs_live::JobsCtx]
+  mut live : Option[sessions_jobs_live::LiveCtx]
+  mut remote : Option[sessions_remote::RemoteCtx]
+  mut actors_gen : Option[sessions_actors::ActorsGen]
+}
+
+fn GenSubsystems::clear(self : GenSubsystems) -> Unit {
+  self.jobs = None
+  self.live = None
+  self.remote = None
+  self.actors_gen = None
+}
+
+/// Process-lifetime indirection pointing to the active generation's `LiveCtx` for `ActorLiveHooks`.
+/// Updated on every `{"db": place}` rotation and cleared on `SessionsApp::close()`.
+struct ActiveLiveRef {
+  mut ctx : Option[sessions_jobs_live::LiveCtx]
+}
+
+fn build_live_hooks(active_live : ActiveLiveRef) -> sessions_actors::ActorLiveHooks {
+  sessions_actors::ActorLiveHooks::{
+    live_event: fn(key : String, ev : base_codec::Json) -> Unit {
+      match active_live.ctx {
+        Some(l) => l.live_event(key, ev)
+        None => ()
+      }
+    },
+    live_turn_end_k: fn(key : String, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      match active_live.ctx {
+        Some(l) => l.live_turn_end_k(key, k)
+        None => k(effect::Exit::Succeeded(()))
+      }
+    },
+    live_ended_k: fn(n : Int, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      match active_live.ctx {
+        Some(l) => l.live_ended_k(n, k)
+        None => k(effect::Exit::Succeeded(()))
+      }
+    },
+  }
+}
+
+fn build_gen_subsystems(
+  host : sessions_core::SessionHost,
+  gen : sessions_core::HubGen,
+  sep : String,
+  actors_gen : sessions_actors::ActorsGen,
+  agents : sessions_agents::Agents,
+  fmt_num : (Double) -> String,
+) -> (
+  GenSubsystems,
+  sessions_jobs_live::JobsCtx,
+  sessions_jobs_live::LiveCtx,
+  sessions_remote::RemoteCtx,
+  sessions_core::SessionDispatch,
+) {
+  let sub = GenSubsystems::{
+    jobs: None,
+    live: None,
+    remote: None,
+    actors_gen: Some(actors_gen),
+  }
+  let dispatch = sessions_core::SessionDispatch::{
+    mirror_actor: fn(key : String) -> Unit {
+      match sub.actors_gen {
+        Some(ag) => ag.mirror_by_key(key)
+        None => ()
+      }
+    },
+    live_event: fn(key : String, ev : base_codec::Json) -> Unit {
+      match sub.live {
+        Some(l) => l.live_event(key, ev)
+        None => ()
+      }
+    },
+    live_end: fn(key : String) -> Int {
+      match sub.live {
+        Some(l) => l.live_end(key)
+        None => 0
+      }
+    },
+    live_called: fn(id : Double, method : String, args : Array[base_codec::Json]) -> Unit {
+      match sub.live {
+        Some(l) => l.live_called(id, method, args)
+        None => ()
+      }
+    },
+    jobs_called_k: fn(
+      method : String,
+      args : Array[base_codec::Json],
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      match sub.jobs {
+        Some(j) => j.jobs_called_k(method, args, k)
+        None => k(effect::Exit::Interrupted)
+      }
+    },
+    jstore_get_job_k: fn(
+      id : String,
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      match sub.jobs {
+        Some(j) => j.jstore_get_job_k(id, k)
+        None => k(effect::Exit::Interrupted)
+      }
+    },
+    remote_called_k: fn(
+      method : String,
+      args : Array[base_codec::Json],
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      match sub.remote {
+        Some(r) => r.remote_called_k(method, args, k)
+        None => k(effect::Exit::Interrupted)
+      }
+    },
+    remote_changed_k: fn(id : String, _status : String) -> Unit {
+      match sub.remote {
+        Some(r) => r.remote_changed(id)
+        None => ()
+      }
+    },
+    queue_of_locked_k: fn(
+      station : String,
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      match sub.jobs {
+        Some(j) => j.queue_of_locked_k(station, k)
+        None => k(effect::Exit::Interrupted)
+      }
+    },
+    agents_told: fn(line : String) -> Unit {
+      agents.told(line)
+    },
+    agents_take: fn(n : Int, k : Int) -> Option[(Array[js_json::JValue], Int64)] {
+      agents.take(n, k)
+    },
+    is_stub: false,
+  }
+  let jobs_state = sessions_jobs_live::JobsState::new()
+  let live_state = sessions_jobs_live::LiveState::new()
+  let remote_state = sessions_remote::RemoteState::new_with_fmt(fmt_num)
+  let jobs = sessions_jobs_live::JobsCtx::new(host, gen, jobs_state, dispatch)
+  let live = sessions_jobs_live::LiveCtx::new(host, gen, live_state, dispatch)
+  let remote = sessions_remote::RemoteCtx::new_default(host, gen, sep, remote_state, dispatch)
+  sub.jobs = Some(jobs)
+  sub.live = Some(live)
+  sub.remote = Some(remote)
+  // Break all cross-subsystem references and retire generation state when this HubGen retires.
+  gen.resources.add_retire_hook(fn() -> Unit {
+    sub.clear()
+    jobs_state.reset()
+    remote_state.retire()
+  })
+  (sub, jobs, live, remote, dispatch)
+}
 
 pub struct SessionsApp {
   pub host : sessions_core::SessionHost
   pub sep : String
-  pub mut gen : sessions_core::HubGen
-  pub dispatch : sessions_core::SessionDispatch
+  pub actors : sessions_actors::Actors
+  pub agents : sessions_agents::Agents
+  pub mut jobs : sessions_jobs_live::JobsCtx
+  pub mut live : sessions_jobs_live::LiveCtx
+  pub mut remote : sessions_remote::RemoteCtx
+  mut sub : GenSubsystems
+  pub mut dispatch : sessions_core::SessionDispatch
+  active_live : ActiveLiveRef
+  fmt_num : (Double) -> String
+}
+
+pub fn SessionsApp::new_with(
+  host : sessions_core::SessionHost,
+  sep : String,
+  store_db_provider : (sessions_core::HubGen) -> Option[sessions_actors::StoreDb],
+  fmt_num : (Double) -> String,
+) -> SessionsApp {
+  let active_live = ActiveLiveRef::{ ctx: None }
+  let handlers = sessions_actors::ActorRunHandlers::real_with_live(build_live_hooks(active_live))
+  let init_gen = sessions_core::HubGen::new(host, 0)
+  let actors = sessions_actors::Actors::new_with_store_provider(
+    host,
+    init_gen,
+    sep,
+    handlers,
+    store_db_provider,
+  )
+  let agents = sessions_agents::Agents::new_with(host, fmt_num)
+  let (sub, jobs, live, remote, dispatch) = build_gen_subsystems(
+    host,
+    init_gen,
+    sep,
+    actors.current,
+    agents,
+    fmt_num,
+  )
+  active_live.ctx = Some(live)
+  SessionsApp::{
+    host: host,
+    sep: sep,
+    actors: actors,
+    agents: agents,
+    jobs: jobs,
+    live: live,
+    remote: remote,
+    sub: sub,
+    dispatch: dispatch,
+    active_live: active_live,
+    fmt_num: fmt_num,
+  }
 }
 
 pub fn SessionsApp::new(
   host : sessions_core::SessionHost,
   sep : String,
-  dispatch : sessions_core::SessionDispatch,
 ) -> SessionsApp {
-  SessionsApp::{
-    host: host,
-    sep: sep,
-    gen: sessions_core::HubGen::new(host, 0),
-    dispatch: dispatch,
-  }
+  SessionsApp::new_with(host, sep, sessions_actors::default_sql_store_db, js_json::num_text)
 }
 
 pub fn SessionsApp::has_stubs(self : SessionsApp) -> Bool {
-  self.dispatch.is_stub
+  self.dispatch.is_stub || self.actors.has_stubs()
 }
 
-/// Handle one actors-routed JSON line (`actors.mbt:793-953` skeleton).
+pub fn SessionsApp::gen(self : SessionsApp) -> sessions_core::HubGen {
+  self.actors.gen()
+}
+
+/// Tear down process-level agents, active generation subsystems, and release all indirection cells.
+pub fn SessionsApp::close(self : SessionsApp) -> Unit {
+  self.active_live.ctx = None
+  self.sub.clear()
+  self.jobs.state.reset()
+  self.agents.close()
+  self.actors.current.retire_all()
+  self.actors.gen().fibers.close_now()
+}
+
+/// Handle one actors-routed JSON line (`actors.mbt:793-953`).
 pub fn SessionsApp::heard(self : SessionsApp, line : String) -> Unit {
-  self.gen.counters.seen = self.gen.counters.seen + 1
-  let said = match sessions_core::parse_json_strict(line) {
-    Ok(j) => j
-    Err(_) => return
-  }
-  match sessions_core::num_of(sessions_core::jget(said, "now")) {
-    Some(now) => self.gen.counters.now = now
-    None => ()
-  }
-  match sessions_core::jget(said, "db") {
-    Some(place) => {
-      self.gen = sessions_core::rotate_hub_gen(self.host, self.gen, place)
-      return
+  // Fast-path `{"due": id}`: route across all 4 pure-value timer tables (Actors / Jobs / Live / Remote)
+  // and `HubGen::handle_due` (NEVER to `Agents`, which uses native `effect::Clock` `sleep_k`).
+  if line.starts_with("{\"due\":") {
+    let ctx = self.actors.current
+    ctx.gen.counters.seen = ctx.gen.counters.seen + 1
+    let said = match sessions_core::parse_json_strict(line) {
+      Ok(j) => j
+      Err(_) => return
     }
-    None => ()
-  }
-  match sessions_core::num_of(sessions_core::jget(said, "maxConcurrentTurns")) {
-    Some(n) => {
-      let pos_inf = 1.0 / 0.0
-      let neg_inf = -1.0 / 0.0
-      let next = if n != n || n == pos_inf || n == neg_inf || n <= 0.0 { 0 } else { n.to_int() }
-      self.gen.counters.max_concurrent_turns = next
-      return
+    match sessions_core::num_of(sessions_core::jget(said, "now")) {
+      Some(now) => ctx.gen.counters.now = now
+      None => ()
     }
-    None => ()
-  }
-  match sessions_core::jget(said, "answer") {
-    Some(base_codec::Json::Num(id, _)) => {
-      self.gen.handle_answer(self.host, id.to_int(), said)
-      return
+    match sessions_core::jget(said, "due") {
+      Some(base_codec::Json::Num(id, _)) => {
+        let due_id = id.to_int()
+        if ctx.handle_due_id(due_id) {
+          return
+        }
+        if self.jobs.handle_due(due_id) {
+          return
+        }
+        if self.live.handle_due(due_id) {
+          return
+        }
+        if self.remote.handle_due(due_id) {
+          return
+        }
+        ctx.gen.handle_due(self.host, due_id)
+        return
+      }
+      _ => return
     }
-    _ => ()
   }
-  match sessions_core::jget(said, "due") {
-    Some(base_codec::Json::Num(id, _)) => {
-      self.gen.handle_due(self.host, id.to_int())
-      return
-    }
-    _ => ()
+
+  let prev_epoch = self.actors.gen().counters.epoch
+  self.actors.heard(line, self.dispatch)
+  // On `{"db": place}`, `Actors::heard` rotated `HubGen` and replaced `actors.current`.
+  // Synchronously clear the old generation's subsystem refs and rebuild `#jobs`, `#live`, `#remote`
+  // bound to the new `HubGen` (matching `actors.mbt:812-814`), while keeping `Agents` alive.
+  if self.actors.gen().counters.epoch != prev_epoch {
+    self.sub.clear()
+    self.jobs.state.reset()
+    self.remote.state.retire()
+    let new_gen = self.actors.gen()
+    let (sub, jobs, live, remote, dispatch) = build_gen_subsystems(
+      self.host,
+      new_gen,
+      self.sep,
+      self.actors.current,
+      self.agents,
+      self.fmt_num,
+    )
+    self.sub = sub
+    self.jobs = jobs
+    self.live = live
+    self.remote = remote
+    self.dispatch = dispatch
+    self.active_live.ctx = Some(live)
   }
 }
 
 /// Main `--sessions` fiber (`actors.mbt:522-536`):
 /// 1. Emit `{"ready":true}` (NEVER includes `active`/`seen`).
 /// 2. Drive `host.line_k` via `sessions_core::iter_sync_k` (zero `pause_k`).
-/// 3. Route each line by `actors_line(line)` -> `heard` + `quiet`, else `dispatch.agents_told`.
-/// 4. On EOF (`None` from `QueueShutdown`), flush stdout and exit 0 immediately.
+/// 3. Route each line by `actors_line(line)` -> `heard` + `quiet`, else `agents.told`.
+/// 4. On EOF (`None` from `QueueShutdown`), close app, flush stdout, and exit 0 immediately.
 pub fn serve_sessions_k(
   app : SessionsApp,
   k : (effect::Exit[Unit]) -> Unit,
@@ -92,13 +334,14 @@ pub fn serve_sessions_k(
           effect::Exit::Succeeded(Some(line)) => {
             if sessions_core::actors_line(line) {
               app.heard(line)
-              app.gen.quiet()
+              app.actors.quiet()
             } else {
-              (app.dispatch.agents_told)(line)
+              app.agents.told(line)
             }
             sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
           }
           effect::Exit::Succeeded(None) => {
+            app.close()
             app.host.exit(0)
             sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
           }
@@ -111,16 +354,25 @@ pub fn serve_sessions_k(
   )
 }
 
-/// Run `--sessions` over an injected `SessionHost` (used by both production `run_sessions` and tests).
-pub fn run_sessions_with_host(
+/// Run `--sessions` over an injected `SessionHost` and store/number providers (used by pure-Pion tests).
+pub fn run_sessions_with_host_and(
   host : sessions_core::SessionHost,
   sep : String,
-  dispatch : sessions_core::SessionDispatch,
+  store_db_provider : (sessions_core::HubGen) -> Option[sessions_actors::StoreDb],
+  fmt_num : (Double) -> String,
 ) -> Int {
-  let app = SessionsApp::new(host, sep, dispatch)
+  let app = SessionsApp::new_with(host, sep, store_db_provider, fmt_num)
   sessions_core::run_host_loop(host, fn(_h : sessions_core::SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
     serve_sessions_k(app, k)
   })
+}
+
+/// Run `--sessions` over an injected `SessionHost` (used by production `run_sessions`).
+pub fn run_sessions_with_host(
+  host : sessions_core::SessionHost,
+  sep : String,
+) -> Int {
+  run_sessions_with_host_and(host, sep, sessions_actors::default_sql_store_db, js_json::num_text)
 }
 
 /// Production `--sessions <n> --data <dir> [--sep <sep>]` entrypoint (`reader/main.mbt:1252-1253`).
@@ -131,7 +383,7 @@ pub fn run_sessions(data_dir : String, sep : String) -> Int {
     return 1
   }
   let host = sessions_core::SessionHost::live()
-  let code = run_sessions_with_host(host, sep, sessions_core::SessionDispatch::stub())
+  let code = run_sessions_with_host(host, sep)
   host_shim::stop()
   code
 }

@@ -2588,3 +2588,126 @@ test "sessions_remote: again backoff, push_out/check re-entry, closer rounds, an
   assert(host.hub_timers.length() == 0)
   assert_holding_zero(host)
 }
+
+// ── Test 8: remote_changed accepts stripped and prefixed ids; relieve_k logs "over budget" vs "disk low" (#8731) ──
+
+test "sessions_remote: remote_changed stripped id and relieve_k over-budget vs disk-low (#8731)" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  gen.resources.add_retire_hook(fn() -> Unit { state.retire() })
+  let ctx = RemoteCtx::new(host, gen, "/", state, sessions_core::SessionDispatch::stub(), DirsyncPort::stub())
+  let fs = MemFs::new("/")
+  let cur = PumpCursor::new()
+
+  // 1. remote_changed works with both stripped task_id (from JobsCtx::remote_changed) and prefixed "remote_<id>"
+  let tid1 = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  let tid2 = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  fs.add_file(
+    ctx.rjoin([state.root, "incoming", tid1, "task.json"]),
+    "{\"workspace\":\"ws1\",\"station\":\"st1\",\"push\":\"1111111111111111111111111111111111111111111111111111111111111111\"}",
+  )
+  fs.add_file(
+    ctx.rjoin([state.root, "incoming", tid2, "task.json"]),
+    "{\"workspace\":\"ws1\",\"station\":\"st1\",\"push\":\"2222222222222222222222222222222222222222222222222222222222222222\"}",
+  )
+  let mut pushed_refs : Array[String] = []
+  let rpc_rc = fn(f : String, args : Array[base_codec::Json]) -> base_codec::Json {
+    if f == "store.now" {
+      return sessions_core::jnum(10000.0)
+    }
+    if f == "store.getJob" {
+      return base_codec::json_obj([("state", sessions_core::jstr("exited")), ("endedAt", sessions_core::jnum(9000.0))])
+    }
+    if f == "store.jobNotices" {
+      return base_codec::json_arr([])
+    }
+    if f == "node.ask" {
+      if args.length() >= 2 {
+        pushed_refs.push(sessions_core::text_of(args[1], "ref"))
+      }
+      return base_codec::json_obj([("taken", sessions_core::jbool(true))])
+    }
+    base_codec::json_null()
+  }
+  ctx.remote_changed(tid1)
+  ctx.remote_changed("remote_" + tid2)
+  pump_all(host, gen, mem, fs, cur, rpc_rc)
+  assert(pushed_refs.length() == 2)
+
+  // 2. #8731: relieve_k reports "over budget" when state.over > 0 and "disk low" when state.over == 0
+  let run_relieve = fn(over_bytes : Double) -> Array[String] {
+    let m2 = sessions_core::MemHostTransport::new()
+    let h2 = sessions_core::SessionHost::for_test(m2)
+    let g2 = sessions_core::HubGen::new(h2, 1)
+    let s2 = RemoteState::new_with_fmt(test_fmt_num)
+    s2.root = "/data/remote"
+    s2.over = over_bytes
+    g2.resources.add_retire_hook(fn() -> Unit { s2.retire() })
+    let c2 = RemoteCtx::new(h2, g2, "/", s2, sessions_core::SessionDispatch::stub(), DirsyncPort::stub())
+    let fs2 = MemFs::new("/")
+    let cur2 = PumpCursor::new()
+    let room_dir = c2.room("ws1", "peer1", "sess1")
+    fs2.add_file(
+      c2.rjoin([room_dir, "session.json"]),
+      "{\"workspace\":\"ws1\",\"station\":\"peer1\",\"session\":\"sess1\"}",
+    )
+    fs2.add_file(
+      c2.rjoin([room_dir, "mirrors", "app.json"]),
+      "{\"files\":{}}",
+    )
+    fs2.add_file(
+      c2.rjoin([room_dir, "mirrors-used.json"]),
+      "{\"app\":1000}",
+    )
+    let mut dropped = false
+    let rpc_rel = fn(f : String, _args : Array[base_codec::Json]) -> base_codec::Json {
+      if f == "node.diskLow" {
+        return sessions_core::jbool(!dropped)
+      }
+      if f == "node.treeBytes" {
+        return sessions_core::jnum(1024.0)
+      }
+      if f == "store.jobsUp" {
+        return base_codec::json_arr([])
+      }
+      if f == "node.removeMirror" {
+        dropped = true
+        return base_codec::json_null()
+      }
+      base_codec::json_null()
+    }
+    let mut done = false
+    fork_test(h2, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      c2.relieve_k(100000000.0, fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => done = true
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      })
+    })
+    pump_all(h2, g2, m2, fs2, cur2, rpc_rel)
+    assert(done)
+    assert_holding_zero(h2)
+    m2.stdout_lines
+  }
+  let over_lines = run_relieve(1024.0)
+  let low_lines = run_relieve(0.0)
+  let mut saw_over_budget = false
+  for i in 0..<over_lines.length() {
+    if str_contains(over_lines[i], "remote mirror removed") && str_contains(over_lines[i], "\"why\":\"over budget\"") {
+      saw_over_budget = true
+    }
+  }
+  let mut saw_disk_low = false
+  for i in 0..<low_lines.length() {
+    if str_contains(low_lines[i], "remote mirror removed") && str_contains(low_lines[i], "\"why\":\"disk low\"") {
+      saw_disk_low = true
+    }
+  }
+  assert(saw_over_budget)
+  assert(saw_disk_low)
+}

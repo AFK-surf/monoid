@@ -3114,6 +3114,7 @@ pub fn RemoteCtx::relieve_k(self : RemoteCtx, now : Double, k : (effect::Exit[Un
                               }
                               effect::Exit::Succeeded(true) => {
                                 let (workspace, peer, session, name, _) = c
+                                let why = if self.state.over > 0.0 { "over budget" } else { "disk low" }
                                 self.in_lane_k(
                                   self.room(workspace, peer, session),
                                   fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit {
@@ -3130,7 +3131,7 @@ pub fn RemoteCtx::relieve_k(self : RemoteCtx, now : Double, k : (effect::Exit[Un
                                             }
                                           }
                                           if idx >= 0 && !ms[idx].busy && now - ms[idx].used >= MIRROR_RECENT_MS {
-                                            self.drop_mirror_k(workspace, peer, session, name, "disk low", fn(dex : effect::Exit[Bool]) -> Unit {
+                                            self.drop_mirror_k(workspace, peer, session, name, why, fn(dex : effect::Exit[Bool]) -> Unit {
                                               match dex {
                                                 effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
                                                 effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))

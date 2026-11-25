@@ -25,6 +25,7 @@ import "js_json"
 import "locate"
 import "memory"
 import "packed"
+import "parse_codex"
 import "reader_data"
 import "reader_serve"
 import "reader_sessions"
@@ -33,6 +34,7 @@ import "readops_core"
 import "readops_local"
 import "readops_usage"
 import "readops_views"
+import "sessions_actors"
 import "sql_db"
 import "sqlite_ffi"
 
@@ -123,6 +125,7 @@ fn advertised_modes() -> Array[String] {
     "mesh",
     "data",
     "serve",
+    "sessions",
   ]
 }
 
@@ -1566,6 +1569,45 @@ fn run_smoke_readops(world : World, temp_dir : String) -> Unit {
   )
 }
 
+fn run_smoke_sessions_actors_store(world : World, db_path : String) -> Unit {
+  match sessions_actors::run_store_selftest(db_path) {
+    Ok(_) => io_println(world, "{\"ok\":true,\"smoke\":\"sessions-actors-store\"}")
+    Err(msg) => {
+      let _ = host_shim::write_stderr_line("smoke-sessions-actors-store failed: " + msg)
+      host_shim::exit_process(1)
+    }
+  }
+}
+
+fn run_smoke_parse_codex_num(world : World) -> Unit {
+  // Exercise linked `parse_codex::events` -> `js_json::num_text` -> C-shim `format_js_double`
+  // with a non-integer numeric item id `0.00001` (must format as `"0.00001"`, not `"0"` or `"1e-5"`).
+  let live = parse_codex::Live::new()
+  let params = match js_json::parse("{\"item\":{\"id\":0.00001,\"type\":\"commandExecution\",\"command\":\"echo hi\"}}") {
+    Ok(v) => v
+    Err(_) => {
+      let _ = host_shim::write_stderr_line("smoke-parse-codex-num: parse failed")
+      host_shim::exit_process(1)
+      js_json::JValue::Null
+    }
+  }
+  let evs = parse_codex::events(live, "item/started", params)
+  let mut found = false
+  let mut joined = ""
+  for i in 0..<evs.length() {
+    let s = js_json::stringify(evs[i])
+    if s.contains("\"id\":\"0.00001\"") {
+      found = true
+    }
+    joined = joined + s + ";"
+  }
+  if !found {
+    let _ = host_shim::write_stderr_line("smoke-parse-codex-num: unexpected output: " + joined)
+    host_shim::exit_process(1)
+  }
+  io_println(world, "{\"ok\":true,\"smoke\":\"parse-codex-num\",\"id\":\"0.00001\"}")
+}
+
 fn usage_exit() -> Unit {
   let _ = host_shim::write_stderr_line(
     "usage: stillfail-pion [--version | --smoke-stdio | --smoke-sqlite <db> | --smoke-sql-db <db> | --smoke-shell [dir] | --smoke-rc-soak [iters] | --builder footprint [--sep <sep>] | --builder memory [--shell-dir <dir>] [--sep <sep>] | --builder packed [--shell-dir <dir>] | --builder replica-export --db <file> [--replica <dir>] [--data-dir <dir>] [--origin <id>] [--sep <sep>] | --builder replica-restore --db <file> --data <dir> [--now <ms>] [--sep <sep>] | --builder replica-carry [--sep <sep>] | --builder archive-marks|session-bindings|session-counts|signin-save|post-blocks|usage-retire|widget-sources|card-posts|closed-cards|people-since|session-up-jobs|workspace-up-jobs|outflow-chats|search-scope|session-list|archive-last|page-letters|legacy-edits|legacy-said|session-backfill|recent-chat|vault-uses|turn-counts|said|cc-index|usage-check|live-locator --db <file>]",
@@ -1613,6 +1655,11 @@ fn main(world : World) -> Unit {
       usage_exit()
     }
     run_smoke_readops(world, argv[2])
+  } else if cmd == "--smoke-sessions-actors-store" {
+    let db_path = if argv.length() >= 3 { argv[2] } else { "/tmp/stillfail-pion-smoke-actors-store.db" }
+    run_smoke_sessions_actors_store(world, db_path)
+  } else if cmd == "--smoke-parse-codex-num" {
+    run_smoke_parse_codex_num(world)
   } else if cmd == "--smoke-history-marks" {
     match (flag_value(argv, "--data"), flag_value(argv, "--path"), flag_value(argv, "--runtime")) {
       (Some(data_dir), Some(tpath), Some(rt)) => {

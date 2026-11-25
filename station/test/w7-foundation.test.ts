@@ -763,6 +763,7 @@ function findForbiddenShellCalls(source: string): string[] {
   const forbidden = [
     /\bshell_call_wait\b/,
     /\bshell_call_wait_with\b/,
+    /\.shell_sync\s*\(/,
     /\bread_bytes_range\b/,
     /\bwrite_atomic\b/,
     /\bhost_shim::wait\b/,
@@ -781,7 +782,7 @@ function findForbiddenShellCalls(source: string): string[] {
   return hits;
 }
 
-test("Static guard: recursive lexical scan forbids blocking shell ops & raw host_shim wait/call in front/readops_*/reader_*", () => {
+test("Static guard: recursive lexical scan forbids blocking shell ops & raw host_shim wait/call in front/readops_*/reader_*/sessions_*", () => {
   // Lexical counter-example self-tests:
   assert.ok(
     findForbiddenShellCalls('let u = "https://example.com"; shell_call_wait(x)').length === 1,
@@ -789,6 +790,7 @@ test("Static guard: recursive lexical scan forbids blocking shell ops & raw host
   );
   assert.equal(findForbiddenShellCalls("// shell_call_wait(x)\n/* host_shim::wait(0) */\nlet ok = 1").length, 0);
   assert.ok(findForbiddenShellCalls("let _ = shell_call_wait_with(c, op, j, None)").length === 1);
+  assert.ok(findForbiddenShellCalls("let _ = client.shell_sync(op, j)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = host_shim::wait(10)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = host_shim::shell_call(id, op, j, None)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = builders_usage::unpacked(sh, p)").length === 1);
@@ -796,16 +798,31 @@ test("Static guard: recursive lexical scan forbids blocking shell ops & raw host
 
   const pkgRoot = join(REPO_ROOT, "pion", "station", "packages");
   const guardedPkgs = readdirSync(pkgRoot).filter(
-    (name) => name === "front" || name.startsWith("readops_") || name.startsWith("reader_"),
+    (name) => name === "front" || name.startsWith("readops_") || name.startsWith("reader_") || name.startsWith("sessions_"),
   );
   assert.ok(guardedPkgs.includes("front"));
   assert.ok(guardedPkgs.includes("readops_core"));
   assert.ok(guardedPkgs.includes("reader_data"));
   assert.ok(guardedPkgs.includes("reader_serve"));
+  assert.ok(guardedPkgs.includes("reader_sessions"));
+  assert.ok(guardedPkgs.includes("sessions_core"));
+  assert.ok(guardedPkgs.includes("sessions_actors"));
+  assert.ok(guardedPkgs.includes("sessions_jobs_live"));
+  assert.ok(guardedPkgs.includes("sessions_remote"));
+  assert.ok(guardedPkgs.includes("sessions_agents"));
+
+  // Negative mutation self-test on a real sessions_agents source file:
+  const agentsReal = readFileSync(join(pkgRoot, "sessions_agents", "src", "agents.pion"), "utf8");
+  assert.ok(
+    findForbiddenShellCalls(agentsReal + "\nlet _ = host.shell_sync(\"fs.meta\", j)\n").length >= 1,
+    "mutated sessions_agents source with .shell_sync( must be caught",
+  );
 
   for (const pkg of guardedPkgs) {
     const files = walkPionFiles(join(pkgRoot, pkg, "src"));
     for (const fullPath of files) {
+      // `sessions_core/src/host.pion` is the single event-loop wrapper that legitimately invokes `host_shim::wait` / `host_shim::shell_call`.
+      if (pkg === "sessions_core" && fullPath.endsWith("/host.pion")) continue;
       const hits = findForbiddenShellCalls(readFileSync(fullPath, "utf8"));
       assert.deepStrictEqual(hits, [], `Forbidden shell call in ${fullPath}`);
     }

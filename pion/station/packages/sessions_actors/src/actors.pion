@@ -630,8 +630,8 @@ pub fn ActorsGen::arm_open_timeout_timer(
 }
 
 /// Spawn a generation-scoped work fiber counted in `self.gen.counters.active`.
-/// Checks `self.gen.counters.sealed` at entry; on live-generation `Exit::Interrupted`, decrements
-/// `active` and emits `quiet()` before propagating `Exit::Interrupted`.
+/// Checks `self.gen.counters.sealed` at entry; `HubGen::spawn_work` handles live-generation
+/// `Exit::Succeeded` and `Exit::Interrupted` `active` decrement + `quiet()` uniformly.
 pub fn ActorsGen::spawn_work(
   self : ActorsGen,
   work_k : ((effect::Exit[Unit]) -> Unit) -> Unit,
@@ -645,19 +645,7 @@ pub fn ActorsGen::spawn_work(
       k(effect::Exit::Interrupted)
       return
     }
-    work_k(fn(ex : effect::Exit[Unit]) -> Unit {
-      match ex {
-        effect::Exit::Succeeded(()) => k(effect::Exit::Succeeded(()))
-        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-        effect::Exit::Interrupted => {
-          if !counters.sealed {
-            counters.active = counters.active - 1
-            counters.quiet()
-          }
-          k(effect::Exit::Interrupted)
-        }
-      }
-    })
+    work_k(k)
   })
 }
 
@@ -914,7 +902,7 @@ fn ActorsGen::drain_retire_actor(self : ActorsGen, a : Actor) -> Unit {
 }
 
 /// Synchronously retire this generation on `{"db": place}` BEFORE `actors.clear()`.
-fn ActorsGen::retire_all(self : ActorsGen) -> Unit {
+pub fn ActorsGen::retire_all(self : ActorsGen) -> Unit {
   self.gen.counters.sealed = true
   let keys = self.actors.keys()
   for i in 0..<keys.length() {
@@ -1616,12 +1604,12 @@ pub fn json_has_lone_surrogate_escape(raw : String) -> Bool {
   false
 }
 
-/// Handle `{"due": id}`: first checks `self.actor_timers` (value-only actor timer table),
-/// otherwise delegates to `self.gen.handle_due(self.host, id)`.
-fn ActorsGen::handle_due_id(self : ActorsGen, id : Int) -> Unit {
+/// Handle `{"due": id}` for `self.actor_timers` (value-only actor timer table).
+/// Returns `true` if `id` belonged to `self.actor_timers`, `false` otherwise.
+pub fn ActorsGen::handle_due_id(self : ActorsGen, id : Int) -> Bool {
   let counters = self.gen.counters
   if counters.sealed {
-    return
+    return false
   }
   match self.actor_timers.get(id) {
     Some(entry) => {
@@ -1680,8 +1668,9 @@ fn ActorsGen::handle_due_id(self : ActorsGen, id : Int) -> Unit {
         counters.active = counters.active - 1
         counters.quiet()
       }
+      true
     }
-    None => self.gen.handle_due(self.host, id)
+    None => false
   }
 }
 
@@ -1740,7 +1729,10 @@ pub fn Actors::heard(
   }
   match sessions_core::jget(said, "due") {
     Some(base_codec::Json::Num(id, _)) => {
-      ctx.handle_due_id(id.to_int())
+      let due_id = id.to_int()
+      if !ctx.handle_due_id(due_id) {
+        ctx.gen.handle_due(ctx.host, due_id)
+      }
       return
     }
     _ => ()

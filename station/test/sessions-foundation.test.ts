@@ -10,12 +10,13 @@
 // - Shared `pion-sqlite-tx-scanner.ts` concatenated raw-tx SQL detection & missing-directory throw
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessByStdio } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Readable, Writable } from "node:stream";
 import { after, test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   SessionsProgram,
   type ProgramUser,
@@ -191,13 +192,21 @@ test("W8-0: pion-sqlite-tx-scanner catches concatenated raw tx SQL and throws on
     () => scanPionDirForRawTxControl(join(tmpdir(), "definitely-nonexistent-pion-dir-w8-0")),
     /does not exist/,
   );
+
+  // W8-F: scan real `sessions_actors/src` + negative mutation check on a real copied file.
+  const actorsSrcDir = resolve(fileURLToPath(new URL("../../pion/station/packages/sessions_actors/src", import.meta.url)));
+  assert.deepEqual(scanPionDirForRawTxControl(actorsSrcDir), []);
+  const mutDir = makeTmp("sf-w8-tx-mut-");
+  const realStore = readFileSync(join(actorsSrcDir, "actor_store.pion"), "utf8");
+  writeFileSync(join(mutDir, "actor_store.pion"), realStore + '\nlet _ = db.exec("BEGIN IMMEDIATE")\n', "utf8");
+  assert.ok(scanPionDirForRawTxControl(mutDir).length >= 1, "mutated actor_store.pion with raw BEGIN IMMEDIATE must be caught");
 });
 
 test("W8-0: STILLFAIL_REQUIRE_PION_SESSIONS=1 throws when Pion is unimplemented, fallback, or missing", () => {
   resetReaderSelectionStateForTest();
   const data = makeTmp("sf-w8-req-");
   assert.throws(
-    () => SessionsProgram.of(data, true, { env: { STILLFAIL_REQUIRE_PION_SESSIONS: "1", STILLFAIL_READER_SESSIONS: "pion" } }),
+    () => SessionsProgram.of(data, true, { env: { STILLFAIL_REQUIRE_PION_SESSIONS: "1", STILLFAIL_READER_SESSIONS: "pion" }, pionImplemented: false }),
     /STILLFAIL_REQUIRE_PION_SESSIONS=1/,
   );
   assert.throws(
@@ -1196,5 +1205,65 @@ test("W8-E2 R10: store.deliverySettled releases retired actor after snapshot and
     assert.equal(probe2.error?.actorClosed, true, "failed markDelivered must not pin retired actor");
   } finally {
     await f.close();
+  }
+});
+
+test("W8-F PP4: agent.steer(true) does NOT coarsely clear another provisional delivery batchId, and { db } clears stale provisional batches", async () => {
+  const f = r10RoutingFixture();
+  const rows = [{ thread: "t", n: 1 }];
+  try {
+    const old = await f.register("old");
+    assert.equal((await f.rpc("store.markDelivered", ["s", rows, 401])).error, undefined);
+    // Accepting steer must NOT clear batch 401; only explicit store.deliverySettled / store.markUndelivered may.
+    assert.equal((await f.rpc("agent.steer", [old.handle, "accept"])).value, true);
+    await old.snapshot();
+    // Batch 401 must still route markUndelivered to the original retired actor until explicitly settled.
+    assert.equal((await f.rpc("store.markUndelivered", ["s", rows, 401])).error, undefined);
+    assert.deepEqual(f.writes, ["old"]);
+
+    // Now test `{ db: null }` rotation clears provisional batches cleanly.
+    const old2 = await f.register("old2");
+    assert.equal((await f.rpc("store.markDelivered", ["s", rows, 402])).error, undefined);
+    await old2.snapshot();
+    f.program.post({ db: null });
+    const probeAfterDb = await f.rpc("store.markUndelivered", ["s", rows, 402]);
+    assert.equal(probeAfterDb.error?.actorClosed, true, "{ db } rotation must clear provisional deliveries");
+  } finally {
+    await f.close();
+  }
+});
+
+test("W8-F: AgentsHost.replay().close() sends codexReplayed when reader is alive", async (t) => {
+  const pion = requirePionOrSkip(t);
+  if (pion === null) return;
+  const { AgentsHost } = await import("../src/agents/mb-agents.ts");
+  const data = makeTmp("sf-w8-replay-close-");
+  const prev = process.env.STILLFAIL_READER_SESSIONS;
+  process.env.STILLFAIL_READER_SESSIONS = "pion";
+  resetReaderSelectionStateForTest();
+  const host = AgentsHost.where(data);
+  const posted: any[] = [];
+  const origPost = host.post.bind(host);
+  host.post = (msg: any) => {
+    posted.push(msg);
+    origPost(msg);
+  };
+  const driver = {};
+  host.use(driver);
+  try {
+    const rep = host.replay();
+    rep.feed([["thread-1", "item/started", { item: { id: "c1", type: "commandExecution", command: "echo 1" } }]]);
+    rep.close();
+    const feedMsg = posted.find((m) => typeof m.codexReplay === "number");
+    assert.ok(feedMsg, "expected codexReplay post");
+    assert.ok(
+      posted.some((m) => m.codexReplayed === feedMsg.codexReplay),
+      `expected codexReplayed:${feedMsg.codexReplay} on replay.close(), got: ${JSON.stringify(posted)}`,
+    );
+  } finally {
+    await host.close(driver);
+    if (prev === undefined) delete process.env.STILLFAIL_READER_SESSIONS;
+    else process.env.STILLFAIL_READER_SESSIONS = prev;
+    resetReaderSelectionStateForTest();
   }
 });

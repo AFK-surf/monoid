@@ -73,7 +73,7 @@ export const READER_MODES = {
   },
   sessions: {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-db",
     note: "Session actors, #jobs, #remote, #live with SQLite writes (--sessions)",
   },

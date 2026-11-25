@@ -200,6 +200,8 @@ on:
       - "station/test/reader-contract-stdio.test.ts"
       - "station/test/reader-data-pion-switch.test.ts"
       - "station/test/reader-serve-pion-switch.test.ts"
+      - "station/test/reader-sessions-pion-switch.test.ts"
+      - "station/test/remote-windows-paths.test.ts"
       - "station/test/served-programs.test.ts"
       - "station/test/sessions-foundation.test.ts"
       - "station/test/usage-counter-reference.ts"
@@ -655,6 +657,8 @@ jobs:
           "$BIN_PION" --smoke-mux-churn 10000 "$RUNNER_TEMP/mux-smoke"
           mkdir -p "$RUNNER_TEMP/smoke-readops"
           "$BIN_PION" --smoke-readops "$RUNNER_TEMP/smoke-readops"
+          "$BIN_PION" --smoke-sessions-actors-store "$RUNNER_TEMP/smoke-actors-store.db"
+          "$BIN_PION" --smoke-parse-codex-num
 
           # Acquire this SHA's real MoonBit stillfail-reader-linux-x64 once for all downstream gate jobs.
           if [ "${{ steps.reader.outputs.missing }}" = "true" ]; then
@@ -1365,7 +1369,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
 
-      - name: Run Wave 8 W8-0 foundation gate (unadvertised sessions + dual-reader strict TAP + contracts)
+      - name: Run Wave 8 W8-F foundation gate (advertised sessions + dual-reader strict TAP + contracts)
         run: |
           set -euo pipefail
           BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
@@ -1376,10 +1380,7 @@ jobs:
           printf '%s\n' "$VER_OUT"
           MODES_CSV="$(printf '%s\n' "$VER_OUT" | sed -n 's/.*modes:\([^[:space:]]*\).*/\1/p')"
           test -n "$MODES_CSV" || { echo "FAIL: empty MODES_CSV in $VER_OUT" >&2; exit 1; }
-          if printf ',%s,\n' "$MODES_CSV" | grep -Fq ",sessions,"; then
-            echo "FAIL: sessions must NOT be advertised in --version modes before W8-F ($MODES_CSV)" >&2
-            exit 1
-          fi
+          printf ',%s,\n' "$MODES_CSV" | grep -Fq ",sessions," || { echo "FAIL: missing exact mode sessions in $MODES_CSV" >&2; exit 1; }
 
           check_tap_strict() {
             local label="$1"
@@ -1407,10 +1408,230 @@ jobs:
           fi
           check_tap_strict "gate-w8-foundation suites" "$OUT"
 
+  gate-w8-sessions-1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: build-linux
+    if: needs.build-linux.result == 'success'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup
+
+      - uses: ./.github/actions/natives
+
+      - name: Download and verify Linux binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/download-artifact.sh "$GITHUB_RUN_ID" pion-station-linux-bins "$RUNNER_TEMP/bins"
+          (cd "$RUNNER_TEMP/bins" && sha256sum -c SHA256SUMS)
+          chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
+
+      - name: Run Wave 8 sessions-1 gate (Hub / concurrency / handover under forced Pion --sessions)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
+          BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          pnpm --dir station install --frozen-lockfile --prefer-offline
+
+          check_tap_strict() {
+            local label="$1"
+            local out="$2"
+            printf '%s\n' "$out"
+            local t_count p_count
+            t_count="$(printf '%s\n' "$out" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            p_count="$(printf '%s\n' "$out" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            if ! test -n "$t_count" || ! test "$t_count" -ge 1 || ! test "$p_count" = "$t_count"; then
+              echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
+              exit 1
+            fi
+            printf '%s\n' "$out" | grep -qE '^# fail 0$'
+            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
+            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
+            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+          }
+
+          if ! OUT="$(node scripts/native.ts run mesh runner archive-rs -- env \
+            STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
+            STILLFAIL_READER_ENGINE=pion STILLFAIL_REQUIRE_PION_SESSIONS=1 \
+            node --import ./station/test/setup-env.mjs --test --test-reporter=tap \
+            station/test/hub-e2e.test.ts \
+            station/test/hub-max-concurrent-turns.test.ts \
+            station/test/hub-codex-bad-request.test.ts \
+            station/test/open-stuck.test.ts \
+            station/test/fb39-warm-auth-concurrency.test.ts \
+            station/test/fb44-auth-failover.test.ts \
+            station/test/waiting-progress.test.ts \
+            station/test/actor-afresh-source.test.ts \
+            station/test/actor-card-state-reader.test.ts \
+            station/test/handover-undeclared-end.test.ts \
+            station/test/chat-handover.test.ts \
+            station/test/chat-handover-back.test.ts \
+            station/test/chat-handover-flush.test.ts \
+            station/test/chat-handover-moves.test.ts \
+            station/test/chat-handover-steps.test.ts \
+            station/test/chat-handover-told.test.ts \
+            station/test/chat-handover-usage.test.ts 2>&1)"; then
+            printf '%s\n' "$OUT"
+            exit 1
+          fi
+          check_tap_strict "gate-w8-sessions-1 suites" "$OUT"
+
+  gate-w8-sessions-2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: build-linux
+    if: needs.build-linux.result == 'success'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup
+
+      - uses: ./.github/actions/natives
+
+      - name: Download and verify Linux binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/download-artifact.sh "$GITHUB_RUN_ID" pion-station-linux-bins "$RUNNER_TEMP/bins"
+          (cd "$RUNNER_TEMP/bins" && sha256sum -c SHA256SUMS)
+          chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
+
+      - name: Run Wave 8 sessions-2 gate (6 runtimes + agents + zero-spawn + dual-engine parity)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
+          BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          pnpm --dir station install --frozen-lockfile --prefer-offline
+
+          check_tap_strict() {
+            local label="$1"
+            local out="$2"
+            printf '%s\n' "$out"
+            local t_count p_count
+            t_count="$(printf '%s\n' "$out" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            p_count="$(printf '%s\n' "$out" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            if ! test -n "$t_count" || ! test "$t_count" -ge 1 || ! test "$p_count" = "$t_count"; then
+              echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
+              exit 1
+            fi
+            printf '%s\n' "$out" | grep -qE '^# fail 0$'
+            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
+            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
+            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+          }
+
+          if ! OUT="$(node scripts/native.ts run mesh runner archive-rs -- env \
+            STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
+            STILLFAIL_READER_ENGINE=pion STILLFAIL_REQUIRE_PION_SESSIONS=1 STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --import ./station/test/setup-env.mjs --test --test-reporter=tap \
+            station/test/claude.test.ts \
+            station/test/codex.test.ts \
+            station/test/cursor.test.ts \
+            station/test/dsh.test.ts \
+            station/test/pi.test.ts \
+            station/test/mb-acp.test.ts \
+            station/test/mb-cursor.test.ts \
+            station/test/mb-dsh.test.ts \
+            station/test/mb-agents-end.test.ts \
+            station/test/mb-agents-leave.test.ts \
+            station/test/mb-agents-closed.test.ts \
+            station/test/reader-sessions-pion-switch.test.ts \
+            station/test/settle.test.ts \
+            station/test/mb-active-jobs.test.ts \
+            station/test/live-locate-hints.test.ts \
+            station/test/remote-run-bounded.test.ts \
+            station/test/remote-task-workspace.test.ts \
+            station/test/remote-run-index.test.ts 2>&1)"; then
+            printf '%s\n' "$OUT"
+            exit 1
+          fi
+          check_tap_strict "gate-w8-sessions-2 suites" "$OUT"
+
+  gate-w8-sessions-3:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: build-linux
+    if: needs.build-linux.result == 'success'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup
+
+      - uses: ./.github/actions/natives
+
+      - name: Download and verify Linux binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/download-artifact.sh "$GITHUB_RUN_ID" pion-station-linux-bins "$RUNNER_TEMP/bins"
+          (cd "$RUNNER_TEMP/bins" && sha256sum -c SHA256SUMS)
+          chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
+
+      - name: Run Wave 8 sessions-3 gate (#live + #jobs + #remote + dirsync under forced Pion --sessions)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
+          BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          pnpm --dir station install --frozen-lockfile --prefer-offline
+
+          check_tap_strict() {
+            local label="$1"
+            local out="$2"
+            printf '%s\n' "$out"
+            local t_count p_count
+            t_count="$(printf '%s\n' "$out" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            p_count="$(printf '%s\n' "$out" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            if ! test -n "$t_count" || ! test "$t_count" -ge 1 || ! test "$p_count" = "$t_count"; then
+              echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
+              exit 1
+            fi
+            printf '%s\n' "$out" | grep -qE '^# fail 0$'
+            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
+            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
+            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+          }
+
+          if ! OUT="$(node scripts/native.ts run mesh runner archive-rs -- env \
+            STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
+            STILLFAIL_READER_ENGINE=pion STILLFAIL_REQUIRE_PION_SESSIONS=1 \
+            node --import ./station/test/setup-env.mjs --test --test-reporter=tap \
+            station/test/live-follow-order.test.ts \
+            station/test/live-follow-bounded.test.ts \
+            station/test/live-locate-bounded.test.ts \
+            station/test/live-locate-lifecycle.test.ts \
+            station/test/dirsync.test.ts \
+            station/test/mb-dirsync.test.ts \
+            station/test/remote.test.ts \
+            station/test/remote-budget.test.ts \
+            station/test/remote-queue-bounded.test.ts \
+            station/test/remote-task-list-bounded.test.ts \
+            station/test/jobs.test.ts \
+            station/test/jobs-logs.test.ts \
+            station/test/jobs-main-thread.test.ts \
+            station/test/jobs-tools.test.ts 2>&1)"; then
+            printf '%s\n' "$OUT"
+            exit 1
+          fi
+          check_tap_strict "gate-w8-sessions-3 suites" "$OUT"
+
   verify-linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [c-shims, pion-unit, build-linux, gate-workers, gate-sqlite-w14, gate-sqlite-w5, gate-w6-locate-search, gate-w6-usage, gate-w6-replica, gate-w7-front, gate-w7-data-1, gate-w7-data-2, gate-w7-serve, gate-w8-foundation]
+    needs: [c-shims, pion-unit, build-linux, gate-workers, gate-sqlite-w14, gate-sqlite-w5, gate-w6-locate-search, gate-w6-usage, gate-w6-replica, gate-w7-front, gate-w7-data-1, gate-w7-data-2, gate-w7-serve, gate-w8-foundation, gate-w8-sessions-1, gate-w8-sessions-2, gate-w8-sessions-3]
     if: always()
     steps:
       - name: Require all upstream jobs to succeed
@@ -1429,10 +1650,13 @@ jobs:
           R_W7_DATA_2: ${{ needs.gate-w7-data-2.result }}
           R_W7_SERVE: ${{ needs.gate-w7-serve.result }}
           R_W8_FOUNDATION: ${{ needs.gate-w8-foundation.result }}
+          R_W8_SESSIONS_1: ${{ needs.gate-w8-sessions-1.result }}
+          R_W8_SESSIONS_2: ${{ needs.gate-w8-sessions-2.result }}
+          R_W8_SESSIONS_3: ${{ needs.gate-w8-sessions-3.result }}
         run: |
           set -euo pipefail
-          echo "c-shims=$R_CSHIMS pion-unit=$R_UNIT build-linux=$R_BUILD gate-workers=$R_WORKERS gate-sqlite-w14=$R_W14 gate-sqlite-w5=$R_W5 gate-w6-locate-search=$R_W6_LOCATE_SEARCH gate-w6-usage=$R_W6_USAGE gate-w6-replica=$R_W6_REPLICA gate-w7-front=$R_W7_FRONT gate-w7-data-1=$R_W7_DATA_1 gate-w7-data-2=$R_W7_DATA_2 gate-w7-serve=$R_W7_SERVE gate-w8-foundation=$R_W8_FOUNDATION"
-          for r in "$R_CSHIMS" "$R_UNIT" "$R_BUILD" "$R_WORKERS" "$R_W14" "$R_W5" "$R_W6_LOCATE_SEARCH" "$R_W6_USAGE" "$R_W6_REPLICA" "$R_W7_FRONT" "$R_W7_DATA_1" "$R_W7_DATA_2" "$R_W7_SERVE" "$R_W8_FOUNDATION"; do
+          echo "c-shims=$R_CSHIMS pion-unit=$R_UNIT build-linux=$R_BUILD gate-workers=$R_WORKERS gate-sqlite-w14=$R_W14 gate-sqlite-w5=$R_W5 gate-w6-locate-search=$R_W6_LOCATE_SEARCH gate-w6-usage=$R_W6_USAGE gate-w6-replica=$R_W6_REPLICA gate-w7-front=$R_W7_FRONT gate-w7-data-1=$R_W7_DATA_1 gate-w7-data-2=$R_W7_DATA_2 gate-w7-serve=$R_W7_SERVE gate-w8-foundation=$R_W8_FOUNDATION gate-w8-sessions-1=$R_W8_SESSIONS_1 gate-w8-sessions-2=$R_W8_SESSIONS_2 gate-w8-sessions-3=$R_W8_SESSIONS_3"
+          for r in "$R_CSHIMS" "$R_UNIT" "$R_BUILD" "$R_WORKERS" "$R_W14" "$R_W5" "$R_W6_LOCATE_SEARCH" "$R_W6_USAGE" "$R_W6_REPLICA" "$R_W7_FRONT" "$R_W7_DATA_1" "$R_W7_DATA_2" "$R_W7_SERVE" "$R_W8_FOUNDATION" "$R_W8_SESSIONS_1" "$R_W8_SESSIONS_2" "$R_W8_SESSIONS_3"; do
             if [ "$r" != "success" ]; then
               echo "FAIL: upstream job result is '$r' (expected 'success')" >&2
               exit 1

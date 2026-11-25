@@ -222,6 +222,12 @@ export class ActorsProgram {
 
   post(message: Json): boolean {
     if (this.#closed) return false;
+    if (typeof message === "object" && message !== null && "db" in message) {
+      const owners = [...this.#provisionalByActor.keys()];
+      this.#provisionalDeliveries.clear();
+      this.#provisionalByActor.clear();
+      for (const owner of owners) this.#maybePruneRetired(owner);
+    }
     this.#sent++;
     const kind = Object.keys(message)[0] ?? "";
     this.posted.set(kind, (this.posted.get(kind) ?? 0) + 1);
@@ -333,18 +339,6 @@ export class ActorsProgram {
       if (set.size === 0) this.#provisionalByActor.delete(owner);
     }
     this.#maybePruneRetired(owner);
-  }
-
-  #clearActorProvisionalDeliveries(actor: MbActor | ProgramShell) {
-    const set = this.#provisionalByActor.get(actor);
-    if (!set) return;
-    for (const batchId of set) {
-      if (this.#provisionalDeliveries.get(batchId) === actor) {
-        this.#provisionalDeliveries.delete(batchId);
-      }
-    }
-    this.#provisionalByActor.delete(actor);
-    this.#maybePruneRetired(actor);
   }
 
   #maybePruneRetired(actor?: MbActor | ProgramShell) {
@@ -489,8 +483,6 @@ export class ActorsProgram {
         (value) => {
           if (said.fn === "store.markUndelivered" && Array.isArray(said.args) && typeof said.args[2] === "number") {
             this.#clearProvisionalDelivery(said.args[2]);
-          } else if ((said.fn === "agent.steer" && Boolean(value)) || said.fn === "agent.prompt") {
-            this.#clearActorProvisionalDeliveries(target);
           }
           done();
           this.post({ answer: id, value: value === undefined ? null : value });

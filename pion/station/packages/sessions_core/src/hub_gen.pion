@@ -199,7 +199,13 @@ pub fn HubGen::spawn_work(
             k(effect::Exit::Succeeded(()))
           }
           effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
-          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Interrupted => {
+            if !counters.sealed {
+              counters.active = counters.active - 1
+              counters.quiet()
+            }
+            k(effect::Exit::Interrupted)
+          }
         }
       })
     },
