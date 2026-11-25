@@ -67,31 +67,40 @@ fn json_hex_lower(v : Int) -> Byte {
 
 fn write_json_string(sb : StringBuilder, s : String) -> Unit {
   sb.write_byte(34 as Byte) // '"'
-  let raw = s.to_bytes()
-  let n = raw.length()
+  let n = s.length()
+  let mut seg_start = 0
   for i in 0..<n {
-    let b = raw[i].to_int()
-    if b == 34 {
-      sb.write_string("\\\"")
-    } else if b == 92 {
-      sb.write_string("\\\\")
-    } else if b == 8 {
-      sb.write_string("\\b")
-    } else if b == 12 {
-      sb.write_string("\\f")
-    } else if b == 10 {
-      sb.write_string("\\n")
-    } else if b == 13 {
-      sb.write_string("\\r")
-    } else if b == 9 {
-      sb.write_string("\\t")
-    } else if b < 0x20 {
-      sb.write_string("\\u00")
-      sb.write_byte(json_hex_lower((b >> 4) & 0xF))
-      sb.write_byte(json_hex_lower(b & 0xF))
-    } else {
-      sb.write_byte(b as Byte)
+    let b = s.code_unit_at(i)
+    if b == 34 || b == 92 || b < 0x20 {
+      if i > seg_start {
+        sb.write_string(s.slice(seg_start, i))
+      }
+      if b == 34 {
+        sb.write_string("\\\"")
+      } else if b == 92 {
+        sb.write_string("\\\\")
+      } else if b == 8 {
+        sb.write_string("\\b")
+      } else if b == 12 {
+        sb.write_string("\\f")
+      } else if b == 10 {
+        sb.write_string("\\n")
+      } else if b == 13 {
+        sb.write_string("\\r")
+      } else if b == 9 {
+        sb.write_string("\\t")
+      } else {
+        sb.write_string("\\u00")
+        sb.write_byte(json_hex_lower((b >> 4) & 0xF))
+        sb.write_byte(json_hex_lower(b & 0xF))
+      }
+      seg_start = i + 1
     }
+  }
+  if seg_start == 0 {
+    sb.write_string(s)
+  } else if seg_start < n {
+    sb.write_string(s.slice(seg_start, n))
   }
   sb.write_byte(34 as Byte)
 }
@@ -265,8 +274,44 @@ fn JsonParser::parse_string(self : JsonParser) -> Option[String] {
     return None
   }
   self.pos += 1
-  let sb = StringBuilder::new()
+  let start = self.pos
   while self.pos < self.n {
+    let c = self.s.code_unit_at(self.pos)
+    if c == 34 {
+      let out = self.s.slice(start, self.pos)
+      self.pos += 1
+      return Some(out)
+    }
+    if c < 0x20 {
+      return None
+    }
+    if c == 92 {
+      break
+    }
+    self.pos += 1
+  }
+  if self.pos >= self.n {
+    return None
+  }
+  let sb = StringBuilder::new()
+  if self.pos > start {
+    sb.write_string(self.s.slice(start, self.pos))
+  }
+  while self.pos < self.n {
+    let seg_start = self.pos
+    while self.pos < self.n {
+      let c = self.s.code_unit_at(self.pos)
+      if c == 34 || c == 92 || c < 0x20 {
+        break
+      }
+      self.pos += 1
+    }
+    if self.pos > seg_start {
+      sb.write_string(self.s.slice(seg_start, self.pos))
+    }
+    if self.pos >= self.n {
+      return None
+    }
     let c = self.s.code_unit_at(self.pos)
     self.pos += 1
     if c == 34 {
@@ -275,61 +320,58 @@ fn JsonParser::parse_string(self : JsonParser) -> Option[String] {
     if c < 0x20 {
       return None
     }
-    if c == 92 {
-      if self.pos >= self.n {
-        return None
+    // c == 92 ('\\')
+    if self.pos >= self.n {
+      return None
+    }
+    let esc = self.s.code_unit_at(self.pos)
+    self.pos += 1
+    if esc == 34 {
+      sb.write_byte(34 as Byte)
+    } else if esc == 92 {
+      sb.write_byte(92 as Byte)
+    } else if esc == 47 {
+      sb.write_byte(47 as Byte)
+    } else if esc == 98 {
+      sb.write_byte(8 as Byte)
+    } else if esc == 102 {
+      sb.write_byte(12 as Byte)
+    } else if esc == 110 {
+      sb.write_byte(10 as Byte)
+    } else if esc == 114 {
+      sb.write_byte(13 as Byte)
+    } else if esc == 116 {
+      sb.write_byte(9 as Byte)
+    } else if esc == 117 {
+      let u = match self.read_hex4() {
+        Some(v) => v
+        None => return None
       }
-      let esc = self.s.code_unit_at(self.pos)
-      self.pos += 1
-      if esc == 34 {
-        sb.write_byte(34 as Byte)
-      } else if esc == 92 {
-        sb.write_byte(92 as Byte)
-      } else if esc == 47 {
-        sb.write_byte(47 as Byte)
-      } else if esc == 98 {
-        sb.write_byte(8 as Byte)
-      } else if esc == 102 {
-        sb.write_byte(12 as Byte)
-      } else if esc == 110 {
-        sb.write_byte(10 as Byte)
-      } else if esc == 114 {
-        sb.write_byte(13 as Byte)
-      } else if esc == 116 {
-        sb.write_byte(9 as Byte)
-      } else if esc == 117 {
-        let u = match self.read_hex4() {
-          Some(v) => v
-          None => return None
-        }
-        if u >= 0xD800 && u <= 0xDBFF {
-          if self.pos + 2 <= self.n && self.s.code_unit_at(self.pos) == 92 && self.s.code_unit_at(self.pos + 1) == 117 {
-            let saved = self.pos
-            self.pos += 2
-            match self.read_hex4() {
-              Some(lo) =>
-              if lo >= 0xDC00 && lo <= 0xDFFF {
-                let cp = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00)
-                push_utf8_cp(sb, cp)
-              } else {
-                self.pos = saved
-                push_utf8_cp(sb, 0xFFFD)
-              }
-              None => return None
+      if u >= 0xD800 && u <= 0xDBFF {
+        if self.pos + 2 <= self.n && self.s.code_unit_at(self.pos) == 92 && self.s.code_unit_at(self.pos + 1) == 117 {
+          let saved = self.pos
+          self.pos += 2
+          match self.read_hex4() {
+            Some(lo) =>
+            if lo >= 0xDC00 && lo <= 0xDFFF {
+              let cp = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00)
+              push_utf8_cp(sb, cp)
+            } else {
+              self.pos = saved
+              push_utf8_cp(sb, 0xFFFD)
             }
-          } else {
-            push_utf8_cp(sb, 0xFFFD)
+            None => return None
           }
-        } else if u >= 0xDC00 && u <= 0xDFFF {
-          push_utf8_cp(sb, 0xFFFD)
         } else {
-          push_utf8_cp(sb, u)
+          push_utf8_cp(sb, 0xFFFD)
         }
+      } else if u >= 0xDC00 && u <= 0xDFFF {
+        push_utf8_cp(sb, 0xFFFD)
       } else {
-        return None
+        push_utf8_cp(sb, u)
       }
     } else {
-      sb.write_byte(c as Byte)
+      return None
     }
   }
   None

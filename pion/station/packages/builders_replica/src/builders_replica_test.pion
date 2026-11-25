@@ -414,3 +414,27 @@ test "fnv64_utf8 matches IETF 64-bit FNV-1a test vectors" {
   expect_int64(fnv64_utf8(""), empty_want)
   expect_int64(fnv64_utf8("foobar"), foobar_want)
 }
+
+test "TestFaults::from_json parses finder_asked_most" {
+  match TestFaults::from_json("{\"finder_asked_most\":42}") {
+    Some(f) => {
+      match f.finder_asked_most {
+        Some(n) => expect_int(n, 42)
+        None => panic("expected Some(42)")
+      }
+    }
+    None => panic("expected Some(TestFaults)")
+  }
+  match TestFaults::from_json("{}") {
+    Some(f) => {
+      expect_true(
+        match f.finder_asked_most {
+          None => true
+          Some(_) => false
+        },
+        "absent finder_asked_most is None",
+      )
+    }
+    None => panic("expected Some(TestFaults)")
+  }
+}

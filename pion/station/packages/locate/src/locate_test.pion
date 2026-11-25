@@ -70,4 +70,11 @@ test "claude_project, runtime_kind, transcript_dir, Finder::use_hints/hints roun
   finder.use_hints(hints)
   let out = finder.hints()
   expect_loc(base_codec::json_eq(out, hints), "Finder hints roundtrip")
+
+  let cached_finder = Finder::new(client, "/", cache_dirs=true)
+  expect_loc(cached_finder.asked() == 0, "fresh Finder::asked is 0")
+  cached_finder.enable_failed_dir_tracking(Map::new())
+  cached_finder.failed_again(["/dir/a", "/dir/b", "/dir/a"])
+  let failed = cached_finder.take_failed_dirs()
+  expect_loc(failed.length() == 2 && failed[0] == "/dir/a" && failed[1] == "/dir/b", "failed_again deduplicates dirs")
 }

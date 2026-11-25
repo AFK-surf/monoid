@@ -233,3 +233,87 @@ test "conformance: RFC 4648 §10 Base64 and Base16, §3.5 canonical pad bits, an
     debug_assert(c2 == c_u32(0xCBF4, 0x3926), "123456789 split")
   }
 }
+
+test "json string parse and stringify fast-path and escape boundaries" {
+  // Empty, pure ASCII, Chinese/emoji UTF-8 (unescaped fast path)
+  let plain_cases = ["", "hello world 123", "你好世界🚀🎉", "a/b/c:d=e?f&g"]
+  for i in 0..<plain_cases.length() {
+    let s = plain_cases[i]
+    let encoded = json_stringify(json_str(s))
+    debug_assert(encoded == "\"" + s + "\"", "plain stringify: " + encoded)
+    match json_parse(encoded) {
+      JsonParseResult::Ok(Json::Str(got)) => debug_assert(got == s, "plain roundtrip")
+      _ => debug_assert(false, "plain parse failed")
+    }
+  }
+
+  // Quotes, backslashes, leading/trailing escapes, mixed chunks
+  let esc_cases = [
+    "\"",
+    "\\",
+    "\"leading",
+    "trailing\"",
+    "\\leading",
+    "trailing\\",
+    "a\"b\\c\nd\re\tf\u{0008}g\u{000c}h",
+    "中文\"引号\"和\\反斜杠\\🚀\n换行",
+  ]
+  for i in 0..<esc_cases.length() {
+    let s = esc_cases[i]
+    let encoded = json_stringify(json_str(s))
+    match json_parse(encoded) {
+      JsonParseResult::Ok(Json::Str(got)) => debug_assert(got == s, "esc roundtrip: " + encoded)
+      _ => debug_assert(false, "esc parse failed: " + encoded)
+    }
+  }
+
+  // All control characters 0x00..0x1f must escape and round-trip cleanly
+  let sb = StringBuilder::new()
+  for b in 0..<0x20 {
+    sb.write_byte(b as Byte)
+  }
+  let all_ctrl = sb.to_string()
+  let enc_ctrl = json_stringify(json_str(all_ctrl))
+  debug_assert(enc_ctrl.contains("\\u0000"), "nul escaped")
+  debug_assert(enc_ctrl.contains("\\b"), "bs escaped")
+  debug_assert(enc_ctrl.contains("\\t"), "tab escaped")
+  debug_assert(enc_ctrl.contains("\\n"), "lf escaped")
+  debug_assert(enc_ctrl.contains("\\f"), "ff escaped")
+  debug_assert(enc_ctrl.contains("\\r"), "cr escaped")
+  debug_assert(enc_ctrl.contains("\\u001f"), "0x1f escaped")
+  match json_parse(enc_ctrl) {
+    JsonParseResult::Ok(Json::Str(got)) => debug_assert(got == all_ctrl, "all ctrl roundtrip")
+    _ => debug_assert(false, "all ctrl parse failed")
+  }
+
+  // Raw unescaped control characters (both before and after an escape) must be rejected
+  for b in 0..<0x20 {
+    let b1 = StringBuilder::new()
+    b1.write_string("\"abc")
+    b1.write_byte(b as Byte)
+    b1.write_string("def\"")
+    debug_assert(
+      match json_parse(b1.to_string()) {
+        JsonParseResult::Err(_) => true
+        _ => false
+      },
+      "raw ctrl rejected",
+    )
+    let b2 = StringBuilder::new()
+    b2.write_string("\"a\\nb")
+    b2.write_byte(b as Byte)
+    b2.write_string("c\"")
+    debug_assert(
+      match json_parse(b2.to_string()) {
+        JsonParseResult::Err(_) => true
+        _ => false
+      },
+      "raw ctrl after escape rejected",
+    )
+  }
+
+  // Unterminated string and trailing backslash rejected
+  debug_assert(match json_parse("\"unterminated") { JsonParseResult::Err(_) => true; _ => false }, "unterminated")
+  debug_assert(match json_parse("\"abc\\") { JsonParseResult::Err(_) => true; _ => false }, "trailing backslash")
+  debug_assert(match json_parse("\"\\uD83D\\uDE80\"") { JsonParseResult::Ok(Json::Str(s)) => s == "🚀"; _ => false }, "surrogate pair")
+}
