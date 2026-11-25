@@ -1026,7 +1026,7 @@ static NSCursor *cursor_of(int kind) {
 - (void)cut:(id)sender { mb_cb.key(14, 8); }
 - (void)copy:(id)sender { mb_cb.key(13, 8); }
 - (void)paste:(id)sender {
-  if (key_catching && self.imeActive && self.markedLen == 0) {
+  if (self.keyCatching && self.imeActive && self.markedLen == 0) {
     mb_cb.key(1000 + 'v', 8);
     return;
   }
