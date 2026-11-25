@@ -1234,6 +1234,10 @@ pub fn fixture_page(mode : String) -> String {
       fx.vault_own = "outside"
       fx_adb.val = "lock-outside"
     }
+    "settings-vault-own-finding" => {
+      fx.vault_own = "outside"
+      fx_adb.val = "lock-finding"
+    }
     "settings-vault-own-code" => {
       fx.vault_own = "outside"
       fx_adb.val = "gate-code"
@@ -1371,7 +1375,7 @@ pub fn fixture_page(mode : String) -> String {
     | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
     "settings-vault-off" | "settings-vault-elsewhere" | "settings-vault-no-key-code" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
     | "settings-vault-workspace-create" | "settings-vault-workspace" | "settings-vault-workspace-save-picked" | "settings-vault-workspace-members" | "settings-vault-devices-dialog"
-    | "settings-vault-own-off" | "settings-vault-own-on" | "settings-vault-own-outside" | "settings-vault-own-code" | "settings-vault-own-replaced"
+    | "settings-vault-own-off" | "settings-vault-own-on" | "settings-vault-own-outside" | "settings-vault-own-finding" | "settings-vault-own-code" | "settings-vault-own-replaced"
     | "settings-vault-confirm" | "settings-vault-syncing" | "settings-vault-waiting" | "settings-vault-waiting-was" | "settings-vault-replaced"
     | "settings-vault-replaced-was" => "vault"
     "settings-vault-items" | "settings-vault-add" | "settings-vault-editor" | "settings-vault-workspace-editor" => "vault-items"
@@ -5848,14 +5852,21 @@ fn fx_adb_share() -> Json {
     "gate-none" => lent("connected", [("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("none")), ("devices", Json::array([]))])]))])
     "gate-code" =>
       lent("connected", [
-        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("pair", obj([("state", str("code")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
+        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("approvers", waiting_approvers(true)), ("pair", obj([("state", str("code")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
       ])
     // (the code typed being checked, the device showing it asking its person there)
     "gate-checking" =>
       lent("connected", [
-        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("pair", obj([("state", str("checking")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("checkingText", str("请在显示安全码的设备上完成身份验证")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
+        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("approvers", waiting_approvers(true)), ("pair", obj([("state", str("checking")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("checkingText", str("请在显示安全码的设备上完成身份验证")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
       ])
-    "lock-outside" => lent("connected", [("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([]))])]))])
+    "lock-outside" =>
+      lent("connected", [
+        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("approvers", waiting_approvers(false))])])),
+      ])
+    "lock-finding" =>
+      lent("connected", [
+        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("approvers", waiting_approvers(false)), ("pair", obj([("state", str("finding")), ("devices", Json::number(0.0))]))])])),
+      ])
     "lock-replaced" => lent("connected", [("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("replaced")), ("devices", Json::array([]))])]))])
     // two accounts signed in here: another's lock has this device on it, the workspace's account (u1) is to be approved
     // on its own (`multi`), or set it up again elsewhere (`multi-replaced`); or the other way round (`multi-member`)

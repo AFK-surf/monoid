@@ -148,6 +148,7 @@ export const DEVICE_SHAPES: Record<string, Shape> = {
     ["email", "String", { said: true }],
     ["standing", "String", { doc: "`none` (no lock yet), `member`, `outside` (a lock this device is not on), `replaced` (the cloud has another than the one pinned here)." }],
     ["devices", vec("AdbPersonalDevice"), { default: true }],
+    ["approvers", vec("LockApprover"), { default: true, doc: "The trusted devices on this account's own lock that can approve this device (when `standing` is `outside`)." }],
     ["pair", opt("AdbPersonalPair")],
     ["pending", vec("LockPending"), { default: true, doc: "The changes this device made to it that no station of theirs took yet, oldest first." }],
     ["pendingText", opt("String"), { doc: "Their heading, while there are any." }],

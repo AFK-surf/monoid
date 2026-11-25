@@ -17,6 +17,7 @@ pub let said_paths : Map[String, Array[String]] = {
     "lends.*.message",
     "personal.*.email",
     "personal.*.devices.*.label",
+    "personal.*.approvers.*.nameText",
     "personal.*.pair.error",
     "personal.*.pair.untilText",
     "personal.*.pair.checkingText",
