@@ -24,15 +24,18 @@ const viewer: Viewer = { sub: "u1", email: "pat@example.com", name: "Pat", role:
 // tests at once on this machine would otherwise share, each one's adb and tunnels reaching the other's.
 const PHONE = randomBytes(32).toString("hex");
 
-/// A phone of this run's own whose usual port nothing on this machine holds now: other test processes' ephemeral ports
-/// fall in `PORTS` too (Linux gives 32768-60999), and `bind` then waits 5 x 500 ms and takes a port outside it.
-async function freePhone(): Promise<string> {
+/// Outside both Linux (32768-60999) and macOS (49152-65535) ephemeral port ranges so parallel test processes'
+/// outgoing sockets or `listen(0)` servers cannot steal a phone's usual port between `freePhone` and `bind`.
+const TEST_PORTS = { start: 27000, end: 28000 };
+
+/// A phone of this run's own whose usual port in `ports` nothing on this machine holds now.
+async function freePhone(ports = TEST_PORTS): Promise<string> {
   for (let i = 0; i < 64; i++) {
     const candidate = randomBytes(32).toString("hex");
     const server = net.createServer();
     const free = await new Promise<boolean>((resolve) => {
       server.once("error", () => resolve(false));
-      server.listen({ host: "127.0.0.1", port: usualPort(candidate), exclusive: true }, () => resolve(true));
+      server.listen({ host: "127.0.0.1", port: usualPort(candidate, ports), exclusive: true }, () => resolve(true));
     });
     if (free) {
       await new Promise((r) => server.close(r));
@@ -181,13 +184,15 @@ test("takes only plain package names", () => {
 
 test("gives a phone its usual port while it is free", async () => {
   // A phone of this run's own whose usual port is free (another run at once would hold the same usual port).
-  const phone = await freePhone();
-  const first = await bind(phone);
+  const phone = await freePhone(TEST_PORTS);
+  const prodPort = usualPort(phone);
+  assert.ok(prodPort >= PORTS.start && prodPort < PORTS.end);
+  const first = await bind(phone, TEST_PORTS);
   const port = (first.address() as net.AddressInfo).port;
-  assert.equal(port, usualPort(phone));
-  assert.ok(port >= PORTS.start && port < PORTS.end);
+  assert.equal(port, usualPort(phone, TEST_PORTS));
+  assert.ok(port >= TEST_PORTS.start && port < TEST_PORTS.end);
   await new Promise((r) => first.close(r));
-  const again = await bind(phone);
+  const again = await bind(phone, TEST_PORTS);
   assert.equal((again.address() as net.AddressInfo).port, port);
   again.close();
 });
@@ -555,9 +560,9 @@ function through(port: number, line: string): Promise<string> {
 test("a phone offered over the mesh: adb connects through its tunnel, asks reach it, and it goes after GRACE", async () => {
   const adb = fakeAdb();
   const time = testClock();
-  const shares = new Shares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
+  const shares = new Shares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock, ports: TEST_PORTS });
   const mesh = await link(shares);
-  const phone = await freePhone();
+  const phone = await freePhone(TEST_PORTS);
   try {
     const offer = { op: "share", phone, device: "Pixel\n8", android: "14", package: "fail.still.android", adbd: true, pair: true };
     const { stream: offered, reader } = await mesh.ask(offer);
@@ -568,7 +573,7 @@ test("a phone offered over the mesh: adb connects through its tunnel, asks reach
     assert.deepEqual(Object.keys(state), ["serial", "adb", "message"]);
     const serial: string = state.serial;
     const port = Number(serial.split(":")[1]);
-    assert.ok(serial.startsWith("127.0.0.1:") && port >= PORTS.start && port < PORTS.end, `serial ${serial}`);
+    assert.ok(serial.startsWith("127.0.0.1:") && port === usualPort(phone, TEST_PORTS) && port >= TEST_PORTS.start && port < TEST_PORTS.end, `serial ${serial}`);
     // adb was told, and its connection reached the phone as a tunnel stream, bytes both ways.
     assert.deepEqual(adb.calls().slice(0, 3), [["-s", serial, "get-state"], ["disconnect", serial], ["connect", serial]]);
     assert.deepEqual(adb.dialed(), ["phone:CNXN"]);
