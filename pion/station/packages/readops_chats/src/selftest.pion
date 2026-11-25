@@ -117,7 +117,7 @@ fn run_chats_selftest_inner(temp_dir : String) -> Result[Int, String] {
   "(30,'slack','C99','30.0',NULL,NULL,'U1',1000,NULL,NULL,NULL,NULL,NULL)," +
   "(40,'chat','c40','40.0','Archived Thread',NULL,'alice@x.com',500,'s3',2000,'manual',NULL,NULL)," +
   "(50,'chat','c50','50.0','Led Thread',NULL,'alice@x.com',1000,'s5',NULL,NULL,NULL,NULL)," +
-  "(60,'chat','c60','60.0','BigInt Thread',NULL,'alice@x.com',1000,NULL,NULL,NULL,NULL,NULL);" +
+  "(60,'chat','c60','60.0','BigInt Thread',NULL,'alice@x.com',1000,'s60',NULL,NULL,NULL,NULL);" +
   "INSERT INTO thread_sessions(thread,session,connect,joined_at) VALUES " +
   "(10,'s1','chat',1000),(20,'s2','chat',1000),(30,'s1','conn-b',1000),(30,'s2','conn-a',1001),(40,'s3','chat',500),(50,'s5','chat',1000);" +
   "INSERT INTO thread_people(thread,author,first_n) VALUES (10,'alice@x.com',1),(10,'bob@x.com',2),(10,'carol@x.com',3),(20,'bob@x.com',1),(30,'U1',1);" +
@@ -216,9 +216,9 @@ fn run_chats_selftest_inner(temp_dir : String) -> Result[Int, String] {
       }
       match readops_core::json_val_or_null(v, "ownUnknown") {
         base_codec::Json::Arr(xs) => {
-          if xs.length() < 1 {
+          if xs.length() != 1 || !base_codec::json_eq(xs[0], base_codec::json_int(20)) {
             db.close()
-            return Err("archive_look ownUnknown expected non-empty")
+            return Err("archive_look ownUnknown expected [20], got: " + sql_db::stringify_json(base_codec::json_arr(xs)))
           }
         }
         _ => {
@@ -861,6 +861,75 @@ fn run_chats_selftest_inner(temp_dir : String) -> Result[Int, String] {
       return Err("listed_threads failed: " + readops_core::read_error_message(e))
     }
   }
+  let known = readops_core::Known::of(
+    client,
+    temp_dir,
+    "/",
+    base_codec::json_obj([("args", base_codec::json_obj([("now", base_codec::json_num(5000.0))]))]),
+  )
+  let names10 = match known.author_names(db, base_codec::json_int(10)) {
+    Ok(ns) => ns
+    Err(e) => {
+      db.close()
+      return Err("author_names(10) failed: " + readops_core::read_error_message(e))
+    }
+  }
+  let names50 = match known.author_names(db, base_codec::json_int(50)) {
+    Ok(ns) => ns
+    Err(e) => {
+      db.close()
+      return Err("author_names(50) failed: " + readops_core::read_error_message(e))
+    }
+  }
+  let dism : Map[String, Bool] = Map::new()
+  dism.set("50:2", true)
+  match card_view(db, base_codec::json_int(50), names50, dismissed=dism, kept=Some(base_codec::json_int(2))) {
+    Ok(cv) => {
+      if !base_codec::json_eq(readops_core::json_val_or_null(cv, "seq"), base_codec::json_int(2)) ||
+      !base_codec::json_eq(readops_core::json_val_or_null(cv, "dismissed"), base_codec::json_bool(true)) {
+        db.close()
+        return Err("card_view(50, kept=2) mismatch: " + sql_db::stringify_json(cv))
+      }
+      passed = passed + 1
+    }
+    Err(e) => {
+      db.close()
+      return Err("card_view failed: " + readops_core::read_error_message(e))
+    }
+  }
+  let ags_done = [base_codec::json_obj([("key", base_codec::json_str("s5")), ("lastTurn", base_codec::json_obj([("ending", base_codec::json_str("all_done"))]))])]
+  match need_view(db, base_codec::json_int(10), ags_done, names10) {
+    Ok(base_codec::Json::Null) => passed = passed + 1
+    _ => {
+      db.close()
+      return Err("need_view(all_done) expected null")
+    }
+  }
+  match answers_since(db, base_codec::json_int(1000), [base_codec::json_int(10)]) {
+    Ok(ans) => {
+      if ans.length() != 1 {
+        db.close()
+        return Err("answers_since for answered_view expected 1")
+      }
+      match answered_view(known, ans[0]) {
+        Ok(av) => {
+          if !base_codec::json_eq(readops_core::json_val_or_null(av, "reply"), base_codec::json_str("Yes")) {
+            db.close()
+            return Err("answered_view reply mismatch: " + sql_db::stringify_json(av))
+          }
+          passed = passed + 1
+        }
+        Err(e) => {
+          db.close()
+          return Err("answered_view failed: " + readops_core::read_error_message(e))
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("answers_since(2) failed: " + readops_core::read_error_message(e))
+    }
+  }
   let so_full = shared_of(
     db,
     client,
@@ -1030,7 +1099,60 @@ fn run_chats_selftest_inner(temp_dir : String) -> Result[Int, String] {
     }
   }
 
-  // 15. viewerrows::viewer_chat_list (non-archived + 52-item tied-timestamp archived pagination + explicit next: null) + viewer_chat_rows
+  // 15. viewerrows::row_for + viewer_chat_list (non-archived + 52-item tied-timestamp archived pagination + explicit next: null) + viewer_chat_rows
+  let own_reads : Map[String, base_codec::Json] = Map::new()
+  own_reads.set("10", base_codec::json_int(2))
+  let own_kept : Map[String, Bool] = Map::new()
+  own_kept.set("10", true)
+  let own_muted : Map[String, Bool] = Map::new()
+  own_muted.set("10", true)
+  let own_pins : Map[String, base_codec::Json] = Map::new()
+  own_pins.set("s1", base_codec::json_int(1234))
+  let own_dism : Map[String, Bool] = Map::new()
+  own_dism.set("10:4", true)
+  let own_obj = Own::{
+    email: "alice@x.com",
+    slack: [],
+    reads: own_reads,
+    dismissed: own_dism,
+    kept: own_kept,
+    hidden: Map::new(),
+    muted: own_muted,
+    pins: own_pins,
+  }
+  let shared_sample = base_codec::json_obj([
+    ("id", base_codec::json_str("s1")),
+    ("thread", base_codec::json_int(10)),
+    ("ws", base_codec::json_str("ws1")),
+    ("named", base_codec::json_obj([
+      ("thread", base_codec::json_obj([("surface", base_codec::json_str("chat")), ("title", base_codec::json_str("Main Thread"))])),
+      ("firstText", base_codec::json_null()),
+      ("channelName", base_codec::json_null()),
+    ])),
+    ("last", base_codec::json_obj([("text", base_codec::json_str("")), ("quotedOnly", base_codec::json_bool(true))])),
+    ("said", base_codec::json_obj([("n", base_codec::json_int(4)), ("authorKind", base_codec::json_str("agent")), ("author", base_codec::json_str("s1")), ("other", base_codec::json_int(4))])),
+    ("mineOf", base_codec::json_arr([base_codec::json_obj([("id", base_codec::json_str("alice@x.com")), ("email", base_codec::json_str("alice@x.com"))])])),
+    ("need", base_codec::json_obj([("seq", base_codec::json_int(4))])),
+    ("answeredBy", base_codec::json_arr([base_codec::json_obj([("seq", base_codec::json_int(2)), ("by", base_codec::json_obj([("id", base_codec::json_str("alice@x.com")), ("email", base_codec::json_str("alice@x.com"))]))])])),
+  ])
+  let worded_row = row_for(
+    shared_sample,
+    own_obj,
+    base_codec::json_obj([("untitled", base_codec::json_str("Untitled")), ("directMessage", base_codec::json_str("DM")), ("quotedOnly", base_codec::json_str("[quote]"))]),
+  )
+  if !base_codec::json_eq(readops_core::json_val_or_null(worded_row, "title"), base_codec::json_str("Main Thread")) ||
+  !base_codec::json_eq(readops_core::json_val_or_null(worded_row, "unread"), base_codec::json_bool(true)) ||
+  !base_codec::json_eq(readops_core::json_val_or_null(worded_row, "mine"), base_codec::json_bool(true)) ||
+  !base_codec::json_eq(readops_core::json_val_or_null(worded_row, "pinned"), base_codec::json_int(1234)) ||
+  !base_codec::json_eq(readops_core::json_val_or_null(worded_row, "archiveReminderDismissed"), base_codec::json_bool(true)) ||
+  !base_codec::json_eq(readops_core::json_val_or_null(worded_row, "muted"), base_codec::json_bool(true)) ||
+  !base_codec::json_eq(readops_core::json_val_or_null(readops_core::json_val_or_null(worded_row, "last"), "text"), base_codec::json_str("[quote]")) ||
+  !base_codec::json_eq(readops_core::json_val_or_null(readops_core::json_val_or_null(worded_row, "need"), "dismissed"), base_codec::json_bool(true)) {
+    db.close()
+    return Err("viewerrows row_for mismatch: " + sql_db::stringify_json(worded_row))
+  }
+  passed = passed + 1
+
   let vcl_active = viewer_chat_list(
     db,
     client,
@@ -1165,6 +1287,10 @@ fn run_chats_selftest_inner(temp_dir : String) -> Result[Int, String] {
             db.close()
             return Err("archived page 1 expected 50 rows, got " + rows.length().to_string())
           }
+          if cur != "3000:arch-47" {
+            db.close()
+            return Err("archived page 1 cursor expected 3000:arch-47, got " + cur)
+          }
           let seen : Map[String, Bool] = Map::new()
           for i in 0..<rows.length() {
             let id = readops_core::js_text(readops_core::json_val_or_null(rows[i], "id"))
@@ -1229,6 +1355,7 @@ fn run_chats_selftest_inner(temp_dir : String) -> Result[Int, String] {
             db.close()
             return Err("archived page 2 expected 3 rows, got " + rows.length().to_string())
           }
+          let page2_ids : Map[String, Bool] = Map::new()
           for i in 0..<rows.length() {
             let id = readops_core::js_text(readops_core::json_val_or_null(rows[i], "id"))
             if seen_arch.contains(id) {
@@ -1236,6 +1363,11 @@ fn run_chats_selftest_inner(temp_dir : String) -> Result[Int, String] {
               return Err("archived page 2 duplicated page 1 id: " + id)
             }
             seen_arch.set(id, true)
+            page2_ids.set(id, true)
+          }
+          if page2_ids.length() != 3 || !page2_ids.contains("arch-46") || !page2_ids.contains("arch-45") || !page2_ids.contains("s3") {
+            db.close()
+            return Err("archived page 2 expected exact ID set {arch-46, arch-45, s3}")
           }
           if seen_arch.length() != 53 {
             db.close()
