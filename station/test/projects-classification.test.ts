@@ -698,3 +698,47 @@ test("MoonBit stillfail-reader emits project, projectLocked, tags, and proposal 
     await r.close();
   }
 });
+
+test("newSession accepts optional initial project, locks classification, and registers in PROJECTS.jsonl", async () => {
+  const r = withModels(new Rig({
+    link: true,
+    workspaces: ["ws-1"],
+    projectsOn: () => true,
+  }));
+  try {
+    const [, tNamed] = await newSession(r.hub, {
+      runtime: "claude",
+      model: "claude-opus-4-6",
+      createdBy: "ada@example.com",
+      ws: "ws-1",
+      project: "alpha",
+    });
+    assert.equal(tNamed.project, "alpha");
+    assert.equal(tNamed.projectLocked, true);
+    const info = await readProjectsInfo(r.config.agentHome, "ws-1", "ws-1");
+    assert.ok("alpha" in info.projects);
+
+    const [, tCross] = await newSession(r.hub, {
+      runtime: "claude",
+      model: "claude-opus-4-6",
+      createdBy: "ada@example.com",
+      ws: "ws-1",
+      project: "",
+    });
+    assert.equal(tCross.project, "");
+    assert.equal(tCross.projectLocked, true);
+
+    await assert.rejects(
+      () => newSession(r.hub, {
+        runtime: "claude",
+        model: "claude-opus-4-6",
+        createdBy: "ada@example.com",
+        ws: "ws-1",
+        project: "bad,name",
+      }),
+      /commas/i,
+    );
+  } finally {
+    await r.close();
+  }
+});

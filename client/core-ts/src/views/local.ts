@@ -345,6 +345,7 @@ export class Local {
         origin: null,
         clientKey: key,
       };
+      if (typeof get(chat.ask, "project") === "string") row.project = chat.ask.project;
       if (chat.made === null) row.pending = true;
       out.push(row);
     }
@@ -865,6 +866,7 @@ export class Local {
       if (c.restoreGuard || !Local.#matchesRow(c, station, row)) continue;
       if (out === row) out = { ...row };
       Object.assign(out, c.row);
+      if ("project" in c.row && c.row.project === null) delete out.project;
     }
     return out;
   }

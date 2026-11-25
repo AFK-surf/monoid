@@ -104,7 +104,7 @@ export const WINDOW_UNTOLD = 50;
 /// (`stationsWhole` is the core's own: a scope's stations, each its page with the models it can run, as `stations` was
 /// before its items were rows. choose.ts reads it for a model's choice and its borrowing; no UI asks it, and protocol.ts
 /// does not offer it.)
-const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "stationDiag", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "chatSubchats", "imageNear", "longJobs", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
+const VIEW_TOPICS = new Set(["chats", "projects", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "stationDiag", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "chatSubchats", "imageNear", "longJobs", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
 
 /// What a chat row's columns say that the views find rows by (db/account.ts): how urgent it is for its person
 /// (workspace marks), whether it asks something of them, what its agents are doing as its list's row says it.
@@ -279,7 +279,7 @@ function keptBetween(was: J[], made: (J | null)[], listed: J[], make: (raw: J) =
 const unmade = new WeakMap<object, () => J>();
 /// What a chat's whole row (`chatRow`, views.ts #chatRow `whole` and #rowMenu) says that its list's row is made without:
 /// what is read only as the row is pressed, held, swiped or pointed at (the rest of the two is one: views.test.ts).
-const WHOLE_ONLY = ["watch", "swipeAsk", "decision", "mayShare", "mayPublish", "mayMove", "slackUrl", "slackApp", "feishuUrl", "commaUrl", "commaApp"];
+const WHOLE_ONLY = ["watch", "swipeAsk", "decision", "mayShare", "mayPublish", "mayMove", "projectLocked", "slackUrl", "slackApp", "feishuUrl", "commaUrl", "commaApp"];
 /// What a chat list's row holds (#listRow) besides what its shape declares (schema.ts LISTED_CHAT), each for what reads it
 /// in the core (`store.value`, a row as made): nothing else of its record is copied into it, nor worked out for it.
 /// (A search's, the `@` menu's and a share's chats are a list's rows sent as ChatItem: `search`, `chatSearch`, `shareIn`,
@@ -1435,6 +1435,10 @@ export class Views implements Owner {
         scope = view.scope as string;
         perStation = (s) => [{ topic: "link", station: s }, { topic: "overview", station: s }, { topic: "profilePace", station: s }];
         break;
+      case "projects":
+        scope = view.scope as string;
+        perStation = (s) => [{ topic: "link", station: s }, { topic: "overview", station: s }, { topic: "projectsInfo", station: s }];
+        break;
       case "archive":
         scope = view.scope as string;
         perStation = (s) => [{ topic: "archivedRows", station: s }, { topic: "link", station: s }, ...(typeof view.q === "string" && view.q.trim() !== "" ? [archiveSearch(s, view.q)] : [])];
@@ -2112,6 +2116,8 @@ export class Views implements Owner {
         const pace = (station: string) => (stations.get(station) === true ? this.ok({ topic: "profilePace", station }) : undefined);
         return { ok: profilesOverview(arr(listed.items), pace, now, this.#core.host.utcOffsetMin(now)) };
       }
+      case "projects":
+        return this.#projectsView(view.scope as string);
       case "settings": {
         // Each station's name, whether it is up and its overview: what the settings say of them, not their pages.
         const stations = this.#stationsOr(view.scope as string);
@@ -3143,6 +3149,7 @@ export class Views implements Owner {
     if (!whole) return watching && !present.watches(arr(get(raw, "agents"))) ? null : this.#listRow(s, raw, me, slackUsers, members_, mark, hint, gone);
     work.rowsCloned++;
     let row = structuredClone(raw);
+    if (row.project === null) delete row.project;
     Object.assign(row, this.#placeOf(s, raw, mark));
     const agents = arr(row.agents);
     const watch = present.rowWatch(agents);
@@ -3215,7 +3222,7 @@ export class Views implements Owner {
     const row: J = {};
     for (const k of LIST_ROW_TAKEN) {
       const v = raw[k];
-      if (v !== undefined) row[k] = sharedOrCopied(v);
+      if (v !== undefined && !(k === "project" && v === null)) row[k] = sharedOrCopied(v);
     }
     Object.assign(row, this.#placeOf(s, raw, mark));
     const agents = arr(raw.agents);
@@ -3740,6 +3747,57 @@ export class Views implements Owner {
   }
 
   // ── stations and connects ──
+
+  /// Workspace project metadata (`PROJECTS.jsonl`) merged across online stations, capped at 200 projects and 16 refs each.
+  #projectsView(scope: string): Value | undefined {
+    const PROJECTS_MAX = 200;
+    const REFS_MAX = 16;
+    const stations = this.#stationsOr(scope);
+    if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
+    let supported = false;
+    const byName = new Map<string, { name: string; note?: string; refs: string[] }>();
+    for (const s of stations) {
+      const ov = this.ok({ topic: "overview", station: s.address });
+      if (stationFeature(ov, "projects")) supported = true;
+      if (!s.online) continue;
+      const info = this.ok({ topic: "projectsInfo", station: s.address });
+      if (get(info, "supported") === true) supported = true;
+      const raw = get(info, "projects");
+      if (!isObject(raw)) continue;
+      for (const name of Object.keys(raw)) {
+        const trimmed = name.trim();
+        if (trimmed === "") continue;
+        const entry = raw[name];
+        const note = isObject(entry) && typeof entry.note === "string" && entry.note.trim() !== "" ? entry.note.trim() : undefined;
+        const refs = isObject(entry) && Array.isArray(entry.refs)
+          ? entry.refs.filter((r): r is string => typeof r === "string" && r.trim() !== "").map((r) => r.trim())
+          : [];
+        const existing = byName.get(trimmed);
+        if (existing === undefined) {
+          byName.set(trimmed, { name: trimmed, ...(note !== undefined ? { note } : {}), refs: [...new Set(refs)].slice(0, REFS_MAX) });
+        } else {
+          if (existing.note === undefined && note !== undefined) existing.note = note;
+          for (const r of refs) {
+            if (existing.refs.length >= REFS_MAX) break;
+            if (!existing.refs.includes(r)) existing.refs.push(r);
+          }
+        }
+      }
+    }
+    const list = [...byName.values()];
+    const places = this.#core.host.collate?.(list.map((p) => p.name)) ?? null;
+    const placeOf = new Map<string, number>();
+    if (places !== null) list.forEach((p, i) => placeOf.set(p.name, places[i] ?? 0));
+    list.sort((a, b) => (places !== null ? (placeOf.get(a.name) ?? 0) - (placeOf.get(b.name) ?? 0) : 0) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const projects = list
+      .slice(0, PROJECTS_MAX)
+      .map((p) => ({
+        name: p.name,
+        ...(p.note !== undefined ? { note: p.note } : {}),
+        ...(p.refs.length > 0 ? { refs: p.refs } : {}),
+      }));
+    return { ok: { projects, supported } };
+  }
 
   /// The accounts need the stations' identities, availability and decorated profiles, not their changing host
   /// readings or network routes. The usage view uses these same accounts for their allowances.

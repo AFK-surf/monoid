@@ -47,6 +47,7 @@ export const SHAPES: Record<string, Shape> = {
 /// Each topic's shape: what present.ts conforms its value to before it goes out (topics with none go as they are).
 export const TOPIC_SHAPES: Record<string, Ty> = {
   chats: "ChatsView",
+  projects: "ProjectsView",
   chatRow: { opt: "ChatItem" },
   chatSearch: "ChatSearchView",
   search: "SearchView",

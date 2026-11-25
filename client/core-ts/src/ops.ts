@@ -23,6 +23,8 @@ export type Effect =
   | { kind: "memory" }
   /// The workspace's presets on the station (the `presets` topic): read again.
   | { kind: "presets" }
+  /// The workspace's shared project metadata (`PROJECTS.jsonl`, `projectsInfo` topic): read again.
+  | { kind: "projects" }
   /// What moves to another station (the `stationMove` topic): read again where shown.
   | { kind: "move" }
   | { kind: "identity" }
@@ -106,6 +108,8 @@ export const PARAMS: Record<string, string> = {
   "chat.keep": "kept?:boolean thread:number",
   "chat.hide": "hidden:boolean thread:number",
   "chat.mute": "muted:boolean thread:number",
+  "chat.classify": "thread:number project?:string clearProject?:boolean",
+  "project.setInfo": "name:string note?:string clearNote?:boolean refs?:strings clearRefs?:boolean delete?:boolean",
   "chat.rename": "session?:string title?:string thread?:number",
   "chat.regenerateTitle": "thread:number",
   "chat.selectionIntent": "thread:number selection:string messageTs?:string author?:string",
@@ -116,7 +120,7 @@ export const PARAMS: Record<string, string> = {
   "decision.dismiss": "thread:number seq:number",
   "decision.close": "thread:number seq:number option:string",
   "chat.report": "thread:number seq:number",
-  "session.new": "runtime?:string profile?:string profiles?:strings model?:string effort?:string fast?:boolean speed?:string tui?:boolean context?:number preset?:string",
+  "session.new": "runtime?:string profile?:string profiles?:strings model?:string effort?:string fast?:boolean speed?:string tui?:boolean context?:number preset?:string project?:string",
   "preset.add": "name:string dirs:json instructions?:string autoStation?:boolean stations?:strings model?:json",
   "preset.put": "id:string name:string dirs:json instructions?:string autoStation?:boolean stations?:strings model?:json",
   "preset.delete": "id:string",
@@ -490,6 +494,29 @@ function stationOp(name: string, params: unknown): Request | null {
       const thread = p.u64("thread");
       return op("PUT", () => `/threads/${thread}/muted`, p.pick(["muted"]), { kind: "thread", archived: false });
     }
+    case "chat.classify": {
+      const thread = p.u64("thread");
+      const body: Record<string, unknown> = {};
+      const clear = p.has("clearProject") && p.bool("clearProject");
+      const hasProject = p.has("project");
+      const project = hasProject ? (p.value("project") === null ? null : p.str("project")) : undefined;
+      if (clear) body.project = null;
+      else if (hasProject) body.project = project;
+      return op("PUT", () => `/threads/${thread}/classification`, body, { kind: "thread", archived: false });
+    }
+    case "project.setInfo": {
+      const body: Record<string, unknown> = { name: p.str("name") };
+      const clearNote = p.has("clearNote") && p.bool("clearNote");
+      const note = p.has("note") ? p.str("note") : undefined;
+      if (clearNote) body.note = null;
+      else if (note !== undefined) body.note = note;
+      const clearRefs = p.has("clearRefs") && p.bool("clearRefs");
+      const refsRaw = p.has("refs") ? p.value("refs") : undefined;
+      if (clearRefs) body.refs = null;
+      else if (Array.isArray(refsRaw)) body.refs = refsRaw.filter((r): r is string => typeof r === "string");
+      if (p.has("delete") && p.bool("delete")) body.delete = true;
+      return op("PUT", () => "/projects/info", body, { kind: "projects" });
+    }
     case "chat.rename": {
       const thread = optU64("thread");
       if (thread !== null) return op("PUT", () => `/threads/${thread}/title`, p.pick(["title"]), { kind: "thread", archived: false });
@@ -539,7 +566,7 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("POST", () => `/threads/${thread}/report`, { n: p.u64("seq") }, NONE);
     }
     case "session.new":
-      return op("POST", () => "/sessions", p.pick(["runtime", "profile", "profiles", "model", "effort", "fast", "speed", "tui", "context", "preset"]), { kind: "session", key: null });
+      return op("POST", () => "/sessions", p.pick(["runtime", "profile", "profiles", "model", "effort", "fast", "speed", "tui", "context", "preset", "project"]), { kind: "session", key: null });
     // The workspace's presets on the station: what a chat starts knowing, chosen as it is opened. A person's own are
     // made, changed and deleted on the device and carried to the stations (views/presets.ts, core/calls.ts `presets`):
     // these requests are what is still sent to a station from before (one that serves no /presets/kept), as before.

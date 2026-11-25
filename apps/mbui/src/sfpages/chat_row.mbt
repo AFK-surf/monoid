@@ -403,6 +403,17 @@ fn chat_menu_items(
       })))
     _ => ()
   }
+  match item.thread {
+    Some(th) =>
+      items.push(
+        Some(
+          @sf.menu_item_of(@sf.t("web-main.chat.moveProject"), icon="folder", further=true, fn() {
+            open_project_picker(src, item, th, from=share_from(), along~)
+          }),
+        ),
+      )
+    None => ()
+  }
   // with the chat's own state (pinned, kept), not last: a sheet's last row is over the screen's foot, where a thumb
   // going home or back lands on it
   items.push(

@@ -37,6 +37,8 @@ export interface OperationParams {
   "chat.keep": { kept?: boolean | null | undefined; thread: number };
   "chat.hide": { hidden: boolean; thread: number };
   "chat.mute": { muted: boolean; thread: number };
+  "chat.classify": { thread: number; project?: string | null | undefined; clearProject?: boolean | null | undefined };
+  "project.setInfo": { name: string; note?: string | null | undefined; clearNote?: boolean | null | undefined; refs?: string[] | null | undefined; clearRefs?: boolean | null | undefined; delete?: boolean | null | undefined };
   "chat.rename": { session?: string | null | undefined; title?: string | null | undefined; thread?: number | null | undefined };
   "chat.regenerateTitle": { thread: number };
   "chat.selectionIntent": { thread: number; selection: string; messageTs?: string | null | undefined; author?: string | null | undefined };
@@ -47,7 +49,7 @@ export interface OperationParams {
   "decision.dismiss": { thread: number; seq: number };
   "decision.close": { thread: number; seq: number; option: string };
   "chat.report": { thread: number; seq: number };
-  "session.new": { runtime?: string | null | undefined; profile?: string | null | undefined; profiles?: string[] | null | undefined; model?: string | null | undefined; effort?: string | null | undefined; fast?: boolean | null | undefined; speed?: string | null | undefined; tui?: boolean | null | undefined; context?: number | null | undefined; preset?: string | null | undefined };
+  "session.new": { runtime?: string | null | undefined; profile?: string | null | undefined; profiles?: string[] | null | undefined; model?: string | null | undefined; effort?: string | null | undefined; fast?: boolean | null | undefined; speed?: string | null | undefined; tui?: boolean | null | undefined; context?: number | null | undefined; preset?: string | null | undefined; project?: string | null | undefined };
   "preset.add": { name: string; dirs: unknown; instructions?: string | null | undefined; autoStation?: boolean | null | undefined; stations?: string[] | null | undefined; model?: unknown };
   "preset.put": { id: string; name: string; dirs: unknown; instructions?: string | null | undefined; autoStation?: boolean | null | undefined; stations?: string[] | null | undefined; model?: unknown };
   "preset.delete": { id: string };
@@ -253,6 +255,8 @@ export function bindStationOperations(call: Call) {
     chatKeep: <T = unknown>(params: OperationParams["chat.keep"]) => call("chat.keep", params) as Promise<T>,
     chatHide: <T = unknown>(params: OperationParams["chat.hide"]) => call("chat.hide", params) as Promise<T>,
     chatMute: <T = unknown>(params: OperationParams["chat.mute"]) => call("chat.mute", params) as Promise<T>,
+    chatClassify: <T = unknown>(params: OperationParams["chat.classify"]) => call("chat.classify", params) as Promise<T>,
+    projectSetInfo: <T = unknown>(params: OperationParams["project.setInfo"]) => call("project.setInfo", params) as Promise<T>,
     chatRename: <T = unknown>(params: OperationParams["chat.rename"] = {}) => call("chat.rename", params) as Promise<T>,
     chatRegenerateTitle: <T = unknown>(params: OperationParams["chat.regenerateTitle"]) => call("chat.regenerateTitle", params) as Promise<T>,
     chatSelectionIntent: <T = unknown>(params: OperationParams["chat.selectionIntent"]) => call("chat.selectionIntent", params) as Promise<T>,

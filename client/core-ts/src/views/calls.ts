@@ -561,9 +561,16 @@ export class ViewCalls {
         if (c.keep !== null) row.archiveReminderDismissed = c.keep;
         if (c.hidden !== null) row.hidden = c.hidden;
         if (c.muted !== null) row.muted = c.muted;
+        if (c.project !== undefined) {
+          row.project = c.project;
+          row.projectLocked = true;
+        }
         const change = local.changing(station, c.thread, c.session, row, null);
         const result = yield* Effect.result(self.#writeInOrder(JSON.stringify([station, c.op.path]), handlers.op!(inner, { kind: "op", op: c.op }, progress, at, ctx)));
         local.changed(change, result._tag === "Success", inner.data.rowsRev(station));
+        if (result._tag === "Success" && typeof c.project === "string" && c.project !== "") {
+          yield* Effect.ignore(inner.stations.afterWrite(station, { kind: "projects" }, null));
+        }
         return yield* settle(result);
       });
     };

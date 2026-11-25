@@ -220,8 +220,15 @@ fn new_send_go(
       None => if sending.val { not_sent("") }
     }
   })
+  let ws = workspace_of(station)
+  let initial_project = @signals.untracked(fn() { @sfbase.new_chat_project_of(ws) })
   if make {
-    (src.call)("newChat.create", { "station": Json::string(station), "key": Json::string(key) }, fn(res) {
+    let create_params : Map[String, Json] = { "station": Json::string(station), "key": Json::string(key) }
+    match initial_project {
+      Some(p) => create_params["project"] = Json::string(p)
+      None => ()
+    }
+    (src.call)("newChat.create", Json::object(create_params), fn(res) {
       match res {
         Ok(_) => {
           made.val = true
@@ -248,6 +255,9 @@ fn new_send_go(
             fresh.became.set(None)
           }
           if here {
+            if initial_project is Some(_) {
+              @sfbase.set_new_chat_project(ws, initial_project)
+            }
             // (the cursor in the chat's composer, as it was taken over from the new chat's (`became`): back with the
             // words in the new chat's, its keyboard as it was; the chat's composer made as nodes is a field of its own,
             // its cursor let go with its page, so asked for there: composer_take_focus; `had_cursor`)
@@ -268,6 +278,7 @@ fn new_send_go(
   @sfbase.writing_carry(src, d.key, draft)
   @view.transition(fn() {
     new_chat_reset()
+    @sfbase.set_new_chat_project(ws, None)
     sent(r)
     app.nav.become(Chat(r))
   })

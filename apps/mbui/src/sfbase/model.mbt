@@ -129,6 +129,10 @@ pub(all) struct ChatItem {
   opener_led : Bool
   /// ended, nothing left in it, read, and started by the viewer: 待收口's 归档已读 puts it away (the core's archiveRead)
   archive_read : Bool
+  /// workspace project name (`""` = explicit cross-project, non-empty = named project, None = unclassified)
+  project : String?
+  /// whether a member explicitly set or locked this chat's project (whole row only)
+  project_locked : Bool
 }
 
 ///|
@@ -417,6 +421,11 @@ pub fn chat_item(v : Json) -> ChatItem {
     subchats: text(s, "subchats"),
     opener_led: flag(field(s, "opener"), "led"),
     archive_read: flag(s, "archiveRead"),
+    project: match field(s, "project") {
+      Some(String(p)) => Some(p)
+      _ => None
+    },
+    project_locked: flag(s, "projectLocked"),
   }
 }
 

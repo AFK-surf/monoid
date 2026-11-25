@@ -1600,6 +1600,7 @@ pub fn reset() -> Unit {
   @ui.set_haptics(true)
   awake_reset()
   board_reset()
+  drawers_reset()
   app.filters.clear()
   app.menu = false
   app.switch_way = 0

@@ -1271,7 +1271,11 @@ pub fn fixture_days(f : Fixture) -> Array[Json] {
 ///|
 /// The rows of `items` not archived.
 fn kept(f : Fixture, items : Array[Json]) -> Json {
-  Json::array(items.filter(fn(r) { !f.archived.contains(text(Some(r), "id")) }))
+  Json::array(
+    items
+    .filter(fn(r) { !f.archived.contains(text(Some(r), "id")) })
+    .map(fn(r) { drawers_decorate_row(f, r) }),
+  )
 }
 
 ///|
@@ -2338,6 +2342,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
       }
       // the board's (board_fixture.mbt)
       board_prefs_into(o)
+      // sidebar project drawers (drawers_fixture.mbt)
+      drawers_prefs_into(o)
       if f.mode == "home-stale-build" {
         o["staleBuild"] = Json::boolean(true)
       }
@@ -2384,6 +2390,7 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         }
       })
     "chats" => fixture_chats(f, params).map(listed_chats)
+    "projects" => Some(fixture_projects_topic())
     // (one chat's whole row, of the same made-up chats: what the list's rows are cut from)
     "chatRow" => fixture_chat_row(f, params)
     "fleet" => Some(fixture_fleet(f))
@@ -3090,6 +3097,7 @@ pub fn fixture(mode : String) -> Source {
   board_started_rows.clear()
   // the board shown and its drafts, as the prefs keep them (but board-list: the same chats as Home's list)
   board_prefs_seed(mode)
+  drawers_fixture_seed(mode)
   paged_rows.clear()
   fixture_preview(mode)
   if mode == "newchat-preset-many" {
@@ -3428,6 +3436,8 @@ pub fn fixture(mode : String) -> Source {
           }
           done(Ok(Json::object({})))
         }
+        "chat.classify" => done(drawers_classify_call(f, params))
+        "project.setInfo" => done(drawers_set_info_call(f, params))
         // a visualization's widget kept nothing yet; what it keeps is taken (viz.mbt)
         "widget.state" => done(Ok({ "state": Json::null() }))
         "widget.setState" => done(Ok(Json::object({})))
@@ -3551,6 +3561,7 @@ pub fn fixture(mode : String) -> Source {
             Some(Null) => f.haptics = ""
             _ => ()
           }
+          drawers_prefs_set(params)
           match field(Some(params), "appUpdate") {
             Some(String(u)) => f.app_update = u
             Some(Null) => f.app_update = ""

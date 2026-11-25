@@ -54,6 +54,8 @@ export const MEMORY = "agentMemory";
 export const PRESETS = "presets";
 /// Its accounts' last hours as it answered GET /profiles/pace last (the `profilePace` topic), in the link's memory.
 export const PACE = "profilePace";
+/// The workspace's shared project metadata (`PROJECTS.jsonl`) as the station answered GET /projects/info last.
+export const PROJECTS_INFO = "projectsInfo";
 /// What a web link in a message is, as the station answered GET /link-preview for it last (the `linkPreview` topic), in
 /// the link's memory: the latest few kept (each may carry its page's icon and picture inline).
 export const LINK_PREVIEW_KEY = "linkPreview\n";

@@ -20,7 +20,7 @@ pub fn appearance_node(
   let wide = fn() { @sf.width_is_wide(width) }
   // (what this device offers: its window zoomed, files dropped in; the rail changed where it is beside the page)
   let keys = fn() {
-    let k = ["theme", "accent", "fonts", "glass", "motion", "haptics", "language"]
+    let k = ["theme", "accent", "fonts", "glass", "motion", "haptics", "drawers", "language"]
     if @ui.window_zoom_supported() {
       k.push("zoom")
     }
@@ -212,6 +212,15 @@ fn appearance_setting(v : @view.View, core : Core, key : String, wide : () -> Bo
         fn() { @settings.pref(core, "haptics") != "off" },
         fn(on) { @settings.set_pref(core, "haptics", if on { "" } else { "off" }) },
         note=fn() { @sf.t("web-pages.appearance.haptics.description") },
+      )
+    // collapsible project/folder drawers in the sidebar chat list (off by default: prefs.chatDrawers)
+    "drawers" =>
+      @sf.setting_switch_node(
+        v,
+        fn() { @sf.t("web-pages.appearance.drawers.title") },
+        fn() { @settings.pref(core, "chatDrawers") == "on" },
+        fn(on) { @settings.set_pref(core, "chatDrawers", if on { "on" } else { "" }) },
+        note=fn() { @sf.t("web-pages.appearance.drawers.description") },
       )
     "language" =>
       choice(

@@ -135,8 +135,32 @@ pub let fresh : FreshChat = {
 }
 
 ///|
+/// Project pre-selected when opening a new chat from a sidebar project drawer: `(workspace_id, project_name)`.
+// kept across runs: cleared on fresh_reset and drawers_reset
+pub let new_chat_project : @signals.Signal[(String, String)?] = @signals.signal(None)
+
+///|
+/// Project pre-selected for a new chat in workspace `ws`, if any.
+pub fn new_chat_project_of(ws : String) -> String? {
+  match new_chat_project.get() {
+    Some((w, p)) if w == ws && p != "" => Some(p)
+    _ => None
+  }
+}
+
+///|
+/// Set or clear the project pre-selected for a new chat in workspace `ws`.
+pub fn set_new_chat_project(ws : String, project : String?) -> Unit {
+  match project {
+    Some(p) if p.trim().to_owned() != "" => new_chat_project.set(Some((ws, p.trim().to_owned())))
+    _ => new_chat_project.set(None)
+  }
+}
+
+///|
 /// A new chat begun: nothing made for it yet (useEnsureChat's, made once a page).
 pub fn fresh_reset() -> Unit {
+  new_chat_project.set(None)
   fresh.made.set("")
   fresh.made_sig.set("")
   fresh.sent.set(false)
