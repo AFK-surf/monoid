@@ -243,30 +243,21 @@ function toldOut(cloud: Cloud, ws: string | null, device: string, hello: any): {
   return JSON.stringify(out).length <= REFUSAL_OUT_BYTES ? out : null;
 }
 
-/// Whether a device's connection is given `ws`'s bodies and logs: let in by its lock (while on); while its people's
-/// logs say it is off, the connection was let in by the control plane's word alone, so only where the list made of the
-/// bodies names that very device as the lock's admission would (its base key's proof of the endpoint, and an app's
-/// person's log as kept here). A connection that brought no proof (`lock` on its hello) is given none while off. While
-/// the station waits for the root's log or its `open` (`waiting`) nobody is let in, and a connection let in before the
-/// chain moved, still open, is given none either.
-function givesDevice(cloud: Cloud, ws: string | null, viewer: Admitted["viewer"]): boolean {
+/// Whether a device's connection is given `ws`'s bodies and logs: let in by its lock (while on), or any admitted
+/// member while a moved workspace is off (so devices not on the pre-off roster can fetch the root's log and the `off`
+/// statement's prev chain and verify locally that safe mode is off, instead of staying stuck in `waiting`). This does
+/// not widen the threat model: `off` is derived strictly from the root's signed log (unforgeable by cloud), stations
+/// already admit every workspace member by cloud credential while off, cross-workspace isolation (`viewer.workspace`)
+/// and peer-station `Cloud.givenTo` are unchanged, and re-opening (`open`) kicks unlisted connections via `gone()` /
+/// `stillIn`. While the station waits for the root's log or its `open` (`waiting`), or without a lock pinned here,
+/// nobody is given them.
+function givesDevice(cloud: Cloud, ws: string | null): boolean {
   const locked = cloud.locked(ws);
   if (locked !== null) return locked.waiting !== true;
   const li = cloud.list(ws);
   const s = li?.state;
   if (!s || li!.waiting === true || s.moved !== undefined || cloud.chain(ws)?.state?.moved === undefined) return false;
-  try {
-    const who = { sub: viewer.sub, endpoint: viewer.device, base: viewer.lockDevice?.base, proof: viewer.lockDevice?.proof };
-    const { device } = admit(s, who, nowSecs());
-    if (device.kind === "app" && s.persons.has(viewer.sub)) {
-      const chain = personChainsOf(cloud).kept(s.persons.get(viewer.sub)!);
-      if (chain === null) return false;
-      admitPerson(s, who, chain);
-    }
-    return true;
-  } catch {
-    return false;
-  }
+  return s.disabled === true;
 }
 
 /// How many bodies one request brings at most.
@@ -579,7 +570,7 @@ export function lockPartRoute(cloud: Cloud, part: string, method: string, body: 
   if (part === "bodies") {
     // (to a connection let in in this workspace alone: it is in its state, or, before its chain moved, in its chain)
     if (method === "GET") {
-      if (!givesDevice(cloud, ws, viewer)) return [200, { bodies: [], lacking: [] }];
+      if (!givesDevice(cloud, ws)) return [200, { bodies: [], lacking: [] }];
       return [200, { bodies: [...cloud.bodies(ws).all().values()], lacking: cloud.lacking(ws) }];
     }
     if (method !== "POST") return [405, { error: "GET or POST" }];
@@ -593,7 +584,7 @@ export function lockPartRoute(cloud: Cloud, part: string, method: string, body: 
     return [200, bodiesTaken(cloud, viewer, said.bodies)];
   }
   if (part === "logs" && method === "GET") {
-    if (!givesDevice(cloud, ws, viewer)) return [200, { chains: [] }];
+    if (!givesDevice(cloud, ws)) return [200, { chains: [] }];
     return [200, { chains: logsGiven(cloud, ws, null) }];
   }
   // What GET /lock/logs and GET /lock/bodies give, by their heads (`serves` `heads`): each log as its genesis and the
@@ -601,7 +592,7 @@ export function lockPartRoute(cloud: Cloud, part: string, method: string, body: 
   // conditions (`givesDevice`). A device asks of them only what it holds none of (POST /lock/given), so a read with
   // nothing changed carries no log and no body (2026-11-15: 1.3 MB a read at 1000 members, nothing changed).
   if (part === "heads" && method === "GET") {
-    if (!givesDevice(cloud, ws, viewer)) return [200, { logs: [], bodies: [], lacking: [] }];
+    if (!givesDevice(cloud, ws)) return [200, { logs: [], bodies: [], lacking: [] }];
     const chains = personChainsOf(cloud);
     return [200, { logs: cloud.logsOf(ws).flatMap((genesis) => {
       const entries = chains.kept(genesis) as Entry[] | null;
@@ -620,7 +611,7 @@ export function lockPartRoute(cloud: Cloud, part: string, method: string, body: 
     }
     const strings = (x: unknown): string[] => (Array.isArray(x) ? x.filter((y): y is string => typeof y === "string") : []);
     const logs = strings(said?.logs), hashes = strings(said?.bodies);
-    if (!givesDevice(cloud, ws, viewer)) return [200, { chains: [], bodies: [] }];
+    if (!givesDevice(cloud, ws)) return [200, { chains: [], bodies: [] }];
     const all = cloud.bodies(ws).all();
     return [200, { chains: logs.length === 0 ? [] : logsGiven(cloud, ws, new Set(logs)), bodies: [...new Set(hashes)].flatMap((h) => (all.has(h) ? [all.get(h)] : [])) }];
   }

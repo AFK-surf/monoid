@@ -19,6 +19,7 @@ import { liveClock, wall } from "../ops/fibers.ts";
 import { writePrivateSoon } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 import { startLasting } from "../ops/processes.ts";
+import { niced } from "../ops/nice.ts";
 import { platform } from "../platform/index.ts";
 import { endGroup, groupAlive, startTimeOf } from "../ops/group.ts";
 import { type Cdp, connectCdp } from "./cdp.ts";
@@ -248,7 +249,9 @@ export function chromeHost(o: ChromeOptions): ChromeHost {
     } catch {}
     const known = had.headlessAgent;
     const agent = headless && known && known.binary === binary && known.mtimeMs === mtimeMs ? known.agent : undefined;
-    const child = startLasting(binary, chromeArgs({ profile, port, headless, userAgent: agent }), { cwd: o.dir, stdio: "ignore", env: process.env });
+    // As low as what the agents run (ops/nice.ts): a page drawn in software (a headless Chrome's GPU process, SwiftShader)
+    // took six of a machine's 16 cores for 25 minutes and held the station's thread from its CPU for seconds at a time.
+    const child = startLasting(...niced(binary, chromeArgs({ profile, port, headless, userAgent: agent })), { cwd: o.dir, stdio: "ignore", env: process.env });
     let ended: number | null | undefined;
     child.once("exit", (code) => (ended = code));
     child.once("error", () => (ended = -1));

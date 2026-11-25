@@ -3,6 +3,11 @@
 # before the release. On main those jobs have published what was missing, and native.ts downloads it from the release.
 name: natives
 description: The native parts a branch's natives jobs built, for scripts/native.ts
+inputs:
+  targets:
+    description: Targets to restore from R2 manifests ('host' for current OS/arch + wasm32, 'all', or comma-separated targets)
+    required: false
+    default: host
 runs:
   using: composite
   steps:
@@ -17,4 +22,6 @@ runs:
         path: ${{ runner.temp }}/natives
     - if: github.ref != 'refs/heads/main'
       shell: bash
-      run: node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA"
+      env:
+        TARGETS: ${{ inputs.targets }}
+      run: node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA" --targets "$TARGETS"

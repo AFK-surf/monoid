@@ -26,6 +26,7 @@ public class MainActivity extends Activity {
         ReadAhead.start(this);
         Host.log("activity onCreate " + (saved != null ? "(restored)" : ""));
         Host.activity = this;
+        Notices.init(this);
         // a phone upright only (Host.upright), but while the app turns it for a film
         Host.holdUpright(this);
         // `--es env K=V;K2=V2`: environment variables for the app's MoonBit (as a desktop run has them: the core
@@ -465,7 +466,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (request == Notices.ASK) {
-            Notices.answered(results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED);
+            Notices.answered(results.length == 0, results.length > 0 && results[0] == android.content.pm.PackageManager.PERMISSION_GRANTED);
             return;
         }
         super.onRequestPermissionsResult(request, permissions, results);
@@ -519,6 +520,7 @@ public class MainActivity extends Activity {
         // back as the app has it now, whatever this activity was told before (Host.backWanted)
         setBackEnabled(Host.backWanted);
         Host.resumed = true;
+        Notices.resumed(this);
         Host.tellAppState();
         // (after onNewIntent: the browser come back is told before this)
         WebAuth.resumed();

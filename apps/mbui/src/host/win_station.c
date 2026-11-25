@@ -33,6 +33,8 @@
 #include "station_install.h"  // what the installer is handed
 #include "station_uninstall.h"  // what takes it away
 
+extern int32_t mb_win_launch_url(const wchar_t *url);
+
 // What it says changed (a step of the installer, an act done): a message posted on the app's channel for it, which
 // builds the next frame whole (@ui.on_message's), as a frame asked for did when this was the host's.
 static void station_changed(void) { mb_post("local_station", "{}", 2, NULL, 0); }
@@ -411,7 +413,8 @@ static void sf_station_act(moonbit_string_t action) {
   if (!wcscmp(a, L"log") || !wcscmp(a, L"folder")) {
     if (!wcscmp(a, L"log")) _snwprintf(path, MAX_PATH * 2, L"%ls\\stillfail.log", data);
     else lstrcpynW(path, data, MAX_PATH * 2);
-    ShellExecuteW(NULL, L"open", path, NULL, NULL, SW_SHOWNORMAL);
+    // Internal trusted local path entry: uses the background STA launch worker without widening mb_host_open_url.
+    mb_win_launch_url(path);
     free(a);
     return;
   }

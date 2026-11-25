@@ -4,6 +4,7 @@
 // none uses it. What it says goes to the part it is of: the actors' lines say where the program stands (`active`), the
 // agents' never.
 import { sep } from "node:path";
+import { log } from "../ops/log.ts";
 import { MbProcess, mbReaderBinary } from "../read/mb-reader.ts";
 
 type Json = any;
@@ -29,6 +30,8 @@ export class SessionsProgram {
     this.#proc = new MbProcess(mbReaderBinary()!, ["--sessions", "1", "--data", data, "--sep", sep]);
     // (held on to by the station's process only while a part of it has something going: `hold`)
     this.#proc.ref(false);
+    // One not started (ENFILE, EMFILE) or gone is told here, its end then by "exit": unheard, it ends the station (D80).
+    this.#proc.on("error", (error: Error) => log.warn("agents", "the sessions program failed", { error: error.message }));
     this.#proc.on("message", (said: Json) => {
       if (said?.ready === true) return;
       const actors = said !== null && typeof said === "object" && "active" in said;

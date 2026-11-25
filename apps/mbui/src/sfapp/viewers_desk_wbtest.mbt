@@ -29,10 +29,10 @@ fn desk_tester(
 }
 
 ///|
-/// Where a tool of the bar is, by how many from its end (download 0): the last at the window's corner as a page's bar's
-/// last is (window_end_in), 32 each, 2 apart.
+/// Where a tool of the bar is, by how many from its end (download 0): inside the 2pt-padded full-capsule tools pill
+/// positioned clear of rounded window corners (`window_corner_past(viewer_bar_in) + 2`), 32 each, 2 apart.
 fn desk_tool_x(from_end : Int) -> Double {
-  1280.0 - @sf.window_end_in(12.0) - 16.0 - from_end.to_double() * 34.0
+  1280.0 - (@sf.window_corner_past(@sf.viewer_bar_in) + 2.0) - 16.0 - from_end.to_double() * 34.0
 }
 
 ///|
@@ -107,19 +107,21 @@ test "desk: idle auto-fades after 1800ms, click on image toggles bars, double-cl
   assert_true(v.bars_shown())
   t.run_for(tick_ms)
   assert_true(!v.bars_shown())
-  // 600 × 400 in 1280 × 800, fitted 32 in: in the middle as it is; two clicks zoom it, open still
+  // 600 × 400 in 1280 × 800, fitted 32 in: in the middle as it is; two clicks zoom it, open still (the first's showing
+  // of the bars at once standing)
   t.tap(640.0, 400.0)
   t.tap(640.0, 400.0)
   t.run_for(@ui.double_click_ms)
   assert_true(viewer.get() is Some(_))
   assert_true(v.zoom.zoomed_at(t.time()))
-  // one click on the picture toggles bars back on (never closes the preview)
+  assert_true(v.bars_shown())
+  // one click on the picture toggles bars off at once (never closes the preview)
   t.tap(640.0, 400.0)
-  t.run_for(@ui.double_click_ms / 2.0)
+  t.draw()
   assert_true(viewer.get() is Some(_))
+  assert_true(!v.bars_shown())
   t.run_for(@ui.double_click_ms)
   assert_true(viewer.get() is Some(_))
-  assert_true(v.bars_shown())
   // opened again, a click in blank space outside the picture closes it at once
   let t = desk_tester("chat-preview-image")
   t.tap(150.0, 700.0)

@@ -10,7 +10,7 @@
 import { execFile } from "node:child_process";
 import type { Stats } from "node:fs";
 import { access, copyFile, cp, link as hardLink, lstat, mkdir, readdir, realpath, rename, rm, stat, writeFile, readFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, sep } from "node:path";
 import { Duration, Effect, type Clock } from "effect";
 import { liveClock, wall } from "../ops/fibers.ts";
 import { writePrivateSoon } from "../ops/files.ts";
@@ -152,7 +152,11 @@ export async function agyNotedEmail(home: string): Promise<string | null> {
 /// with the first one's quota; on Linux the moved file also left the profile appearing signed out). Where it thinks it
 /// is in an SSH session it keeps the sign-in in the file alone ("Using file-based token storage because SSH session
 /// detected", 1.5.9), so the station's processes are given that (`agyEnv`, agy-quota.ts, `agyRenew`, accounts/login.ts).
-export const AGY_FILE_TOKENS = { SSH_CLIENT: "127.0.0.1 0 0" };
+/// From 1.5.17 an SSH session on macOS uses the login keychain again whenever it is unlocked, so a profile's process
+/// read and ran on the machine's last account and its own file went into the keychain (2026-11-25); its own switch
+/// `AGY_CLI_FORCE_FILE_TOKEN_STORAGE` is checked before the SSH session and keeps the file alone. `SSH_CLIENT` stays
+/// for versions before it.
+export const AGY_FILE_TOKENS = { AGY_CLI_FORCE_FILE_TOKEN_STORAGE: "1", SSH_CLIENT: "127.0.0.1 0 0" };
 
 type KeyringExecResult = { error: (Error & { code?: string | number | null }) | null; stdout: string };
 type KeyringExec = (file: string, args: readonly string[], env: NodeJS.ProcessEnv) => Promise<KeyringExecResult>;
@@ -513,6 +517,38 @@ export async function agyHooks(home: string): Promise<void> {
 
 const NOT_SKILL_ENTRIES = new Set([".git", "node_modules", ".venv"]);
 
+/// How many bytes of skills `agy` is given (`agySkills`): each counted as it declares one in the pool its tools share
+/// (AGY_TOOL_BUDGET), its SKILL.md's front matter and its path. The station's tools were fitted beside some 20 KB of
+/// skills; a workspace of 149 skills (2026-11-25, some 60 KB of descriptions) filled the pool, `agy` dropped the
+/// largest of the station's tools (`chat_post`) and its sessions could not post.
+export const AGY_SKILL_BUDGET = 20_000;
+/// What a skill's entry in `agy`'s pool adds to its front matter and path, rounded up.
+const AGY_SKILL_WRAP = 64;
+
+/// A skill as `agy` declares it, in bytes: its SKILL.md's front matter (what is between the leading `---` lines, or
+/// the first KB where there is none) and the path it is found at.
+export function agySkillBytes(text: string, path: string): number {
+  const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  const head = fm ? fm[1]! : text.slice(0, 1024);
+  return Buffer.byteLength(head) + Buffer.byteLength(path) + AGY_SKILL_WRAP;
+}
+
+/// Which skills fit AGY_SKILL_BUDGET: the session's own first (`own`, its workspace's and any preset's, in name order),
+/// then the shared ones smallest first, as many as fit; the rest are left out.
+export function agySkillsFitted(skills: readonly { name: string; bytes: number; own: boolean }[], budget = AGY_SKILL_BUDGET): { kept: Set<string>; left: string[] } {
+  const order = [...skills].sort((a, b) => Number(b.own) - Number(a.own) || (a.own ? a.name.localeCompare(b.name) : a.bytes - b.bytes || a.name.localeCompare(b.name)));
+  const kept = new Set<string>();
+  const left: string[] = [];
+  let used = 0;
+  for (const s of order) {
+    if (used + s.bytes <= budget) {
+      kept.add(s.name);
+      used += s.bytes;
+    } else left.push(s.name);
+  }
+  return { kept, left };
+}
+
 /// Antigravity CLI confines workspace skills to paths inside the workspace (`pinnedEvalSymlinks` skips symbolic links in
 /// `.agents/skills/` that resolve outside `cwd`, 1.5.9). Materializes each skill of `<cwd>/.agents/skills/` (the
 /// workspace's and any preset's, `sessionSkills` and `keepCopy`) and `skillsDir` into `<cwd>/.agent/skills/<name>/` as a
@@ -530,15 +566,26 @@ export async function agySkills(cwd: string, skillsDir?: string): Promise<void> 
     }
   }
   const root = join(cwd, ".agent", "skills");
-  const valid = new Map<string, { dir: string; skillMd: string; stat: Stats }>();
+  const found = new Map<string, { dir: string; skillMd: string; stat: Stats }>();
+  const sizes: { name: string; bytes: number; own: boolean }[] = [];
+  // A shared skill is linked into `.agents/skills` too (agent-home.ts `sessionSkills`): what is the session's own is
+  // told by where it really is.
+  const shared = skillsDir === undefined ? null : await realpath(skillsDir).catch(() => skillsDir);
+  const inShared = (dir: string) => shared !== null && (dir === shared || dir.startsWith(shared.endsWith(sep) ? shared : shared + sep));
   for (const [name, src] of sources) {
     try {
       const dir = await realpath(src);
       const skillMd = await realpath(join(dir, "SKILL.md"));
       const st = await stat(skillMd);
-      if (st.isFile()) valid.set(name, { dir, skillMd, stat: st });
+      if (!st.isFile()) continue;
+      found.set(name, { dir, skillMd, stat: st });
+      const text = await readFile(skillMd, "utf8");
+      sizes.push({ name, bytes: agySkillBytes(text, join(root, name, "SKILL.md")), own: !inShared(dir) });
     } catch {}
   }
+  const { kept, left } = agySkillsFitted(sizes);
+  if (left.length > 0) log.info("agy", "skills left out of what agy is given, beyond its pool", { cwd, kept: kept.size, left: left.length });
+  const valid = new Map([...found].filter(([name]) => kept.has(name)));
   for (const old of await readdir(root).catch(() => [] as string[])) {
     if (!valid.has(old)) await rm(join(root, old), { recursive: true, force: true });
   }
@@ -830,7 +877,10 @@ export class AgyDriver extends AcpDriver<AgySession> {
     // be taken up across a station update, failing every prompt there too (Office-Host-2 0.1.9517, 2026-11-16): refused
     // here, `endOrphans` ends its runner and the session goes on in a new conversation.
     const id = typeof (snapshot as { id?: unknown } | null)?.id === "string" ? (snapshot as { id: string }).id : options.resume;
-    if (id !== undefined) await this.ensureConversation(options.profile.home, id);
+    if (id !== undefined) {
+      await this.ensureConversation(options.profile.home, id);
+      options.taking?.();
+    }
     const session = await super.adopt(options, snapshot, events);
     // One handed over says the token it opened on (`kept`); one taken up after a crash, or from a station from before,
     // does not, and is opened again before its next turn: the file may hold a token lent since, for another process.
@@ -850,9 +900,11 @@ export class AgyDriver extends AcpDriver<AgySession> {
         await session.dispose();
         throw error;
       }
+      options.taking?.();
     }
     await agyHooks(options.profile.home);
     if (options.skills !== undefined) await agySkills(options.cwd, options.skills);
+    options.taking?.();
     return session;
   }
 

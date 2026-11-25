@@ -36,6 +36,7 @@ import { liveClock, wall } from "../ops/fibers.ts";
 import { endGroup, groupAlive, startTimeOf } from "../ops/group.ts";
 import { log } from "../ops/log.ts";
 import { startLasting } from "../ops/processes.ts";
+import { niced } from "../ops/nice.ts";
 import type { Screens } from "../screens/source.ts";
 import type { BrowserStatus } from "./browser.ts";
 import { askTab } from "./farview-agent.ts";
@@ -320,7 +321,8 @@ export class FarviewTabs {
     }
     // (its id among the profile's tabs: the window id its opener's page holds, else its screen's)
     const tabId = meta?.window ? meta.window : `fv_${chatDir(session)}${n ? `_${n}` : ""}`;
-    const child = startLasting(config.host, ["--tab", "0", url], {
+    // (as low as what the agents run, as the station's Chrome is: chrome.ts)
+    const child = startLasting(...niced(config.host, ["--tab", "0", url]), {
       cwd: dir,
       stdio: "ignore",
       env: {

@@ -346,6 +346,7 @@ export class Local {
         clientKey: key,
       };
       if (chat.made === null) row.pending = true;
+      if (typeof get(chat.ask, "project") === "string") row.project = chat.ask.project;
       out.push(row);
     }
     return out;

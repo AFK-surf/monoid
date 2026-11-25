@@ -30,7 +30,7 @@ pub fn mesh_control_read(
           Err(e) => return Err(ReadError::Sql(e))
         }
         if rows.length() > 0 {
-          out.push(row_to_json(rows[0]))
+          out.push(row_to_json_cols(rows[0], ["body", "signature"]))
         }
       }
       Ok(base_codec::json_arr(out))
@@ -45,7 +45,7 @@ pub fn mesh_control_read(
       }
       let out : Array[base_codec::Json] = []
       for i in 0..<rows.length() {
-        out.push(row_to_json(rows[i]))
+        out.push(row_to_json_cols(rows[i], ["body", "signature"]))
       }
       Ok(base_codec::json_arr(out))
     }
@@ -58,7 +58,7 @@ pub fn mesh_control_read(
         Err(e) => return Err(ReadError::Sql(e))
       }
       if rows.length() > 0 {
-        Ok(row_to_json(rows[0]))
+        Ok(row_to_json_cols(rows[0], ["scope", "node", "issuer", "generation", "name", "made_by", "revoked"]))
       } else {
         Ok(base_codec::json_null())
       }

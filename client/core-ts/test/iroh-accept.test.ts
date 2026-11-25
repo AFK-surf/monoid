@@ -39,7 +39,7 @@ function loopback(endpoint: J): string[] {
 }
 
 /// `iroh` binds both ends; `bound(i)`: the addon's endpoint the `i`th bind made.
-async function acceptsOver(iroh: Iroh, bound: (i: number) => J, relayControls: boolean) {
+async function acceptsOver(iroh: Iroh, bound: (i: number) => J, relayControls = false) {
   const a = await run(iroh.bind({ secretKey: randomBytes(32), relayUrls: [], lookup: false, relayOnly: false }));
   const b = await run(iroh.bind({ secretKey: randomBytes(32), relayUrls: [], lookup: false, relayOnly: false, alpns: [utf8("test/1")] }));
   assert.equal(typeof b.accept, "function");

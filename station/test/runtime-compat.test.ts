@@ -23,7 +23,8 @@ const body = (a: ReturnType<typeof runtimeCompatible>) => JSON.parse(String(a.bo
 test("an old runtime enum rejects Hermes, while the station's legacy view remains readable", () => {
   const before = SHAPES.RuntimeKind;
   assert.equal(before.kind, "enum");
-  SHAPES.RuntimeKind = { ...before, kind: "enum", values: [...clientRuntimes({})], default: null };
+  // (an old app's: a closed set, before RuntimeKind was open)
+  SHAPES.RuntimeKind = { kind: "enum", values: [...clientRuntimes({})], default: null, client: before.client, doc: before.doc };
   try {
     const value = overview();
     assert.match((conform("Overview", value) as {error:string}).error, /profiles\[1\].runtime: unknown variant `hermes`/);
@@ -129,4 +130,23 @@ test("Admin applies compatibility to initial reads, account responses, batches a
   assert.deepEqual(held,oldHeld); assert.deepEqual(body(changed),{order:["cc"],rows:[]});
   const newChanged = await admin.handle(request("/changed/sessions",modern,"POST",{held:oldHeld}));
   assert.deepEqual(body(newChanged),{order:["cc","hm"],rows:[]});
+});
+
+test("an agentIdentity naming a runtime an older core does not know is left out wherever it stands, nothing else touched", () => {
+  const old = { "stillfail-runtimes": "claude,codex" };
+  // the entries of a thread: its author and text kept, the identity gone
+  const entries = { entries: [{ author: "k", authorKind: "agent", text: '{"agentIdentity":{"runtime":"copilot"}}', agentIdentity: { runtime: "copilot", model: "gpt-6" } }, { author: "c", agentIdentity: { runtime: "claude" } }] };
+  const seen = body(runtimeCompatible(request("/threads/1/entries", old), json(200, JSON.stringify(entries))));
+  assert.equal(seen.entries[0].agentIdentity, undefined);
+  assert.equal(seen.entries[0].text, entries.entries[0].text, "what was written stays as written");
+  assert.deepEqual(seen.entries[1].agentIdentity, { runtime: "claude" });
+  // a search's hits and a list's rows: paths no shape names, walked because they say agentIdentity
+  const hits = { hits: [{ author: "k", agentIdentity: { runtime: "copilot" } }] };
+  assert.equal(body(runtimeCompatible(request("/search", old), json(200, JSON.stringify(hits)))).hits[0].agentIdentity, undefined);
+  const rows = { rows: [{ thread: 1, last: { agentIdentity: { runtime: "copilot" }, text: "x" } }] };
+  const changed = body(runtimeCompatible(request("/changed/shared", old, "POST"), json(200, JSON.stringify(rows))));
+  assert.deepEqual(changed.rows[0].last, { text: "x" });
+  // a core that knows it gets the answer as it was
+  const sent = json(200, JSON.stringify(hits));
+  assert.equal(runtimeCompatible(request("/search", modern), sent), sent);
 });

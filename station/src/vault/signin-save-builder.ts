@@ -88,7 +88,7 @@ export class SigninSaveBuilder {
       // (by the MoonBit builder, station/mb's src/signin: `MbBackfill`)
       let worker: MbBackfill;
       try {
-        const bin = resolveReaderSelection("signin-save", { binary: this.#binary, config: this.#options.readers, logAt: "readers" }).primaryBinary;
+        const bin = resolveReaderSelection("signin-save", { binary: this.#binary, config: this.#options.readers, logAt: "readers" });
         worker = new MbBackfill(bin, ["--builder", "signin-save", "--db", this.#path], this.#options.priority, 20);
       }
       catch (error) {

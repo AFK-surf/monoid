@@ -3081,8 +3081,8 @@ int32_t mb_host_notice_state(int32_t what) {
       (void)e;
       dispatch_async(notice_queue(), ^{
         ++notice_perm_seq;
-        notice_answered = granted ? 1 : 0;
         notice_allowed = granted ? 1 : 2;
+        notice_answered = granted ? 1 : 0;
         dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
       });
     }];

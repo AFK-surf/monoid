@@ -176,8 +176,8 @@ const recorder: Recorder = (args) => {
     child.on("close", () => done());
   });
   const started = new Promise<void>((done) => {
-    child.stdout!.setEncoding("utf8");
-    child.stdout!.on("data", (chunk: string) => {
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
       if (chunk.includes("Recording started")) done();
     });
     void ended.then(done);
@@ -197,14 +197,15 @@ const recorder: Recorder = (args) => {
 const logStream: LogStream = (args, line, ended) => {
   const child: ChildProcess = spawn(args[0]!, args.slice(1), { stdio: ["ignore", "pipe", "ignore"] });
   let rest = "";
-  child.stdout!.setEncoding("utf8");
-  child.stdout!.on("data", (chunk: string) => {
+  // (heard before its stdout: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
+  child.on("error", ended);
+  child.on("close", ended);
+  child.stdout?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => {
     const parts = (rest + chunk).split("\n");
     rest = parts.pop()!;
     for (const part of parts) line(part);
   });
-  child.on("error", ended);
-  child.on("close", ended);
   return { stop: () => void child.kill() };
 };
 

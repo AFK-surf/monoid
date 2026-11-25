@@ -65,7 +65,7 @@ import type { Owner } from "../core/routing.ts";
 import { CoreError, asCoreError } from "../error.ts";
 import { t } from "../i18n.ts";
 import { type Entry, Signer, entryHash } from "../lock.ts";
-import { OTHERS_MS, answersOf, askPerson, baseOf, tookOrRefused, deviceText, deviceVerifyCode, held as lockHeld, inForceOf, leftIn, lockSeen, movedHere, onBoundPerson, view as workspaceView, nameOf as workspaceName, KEYS_SHOWN, signerKnown, signerOf, signerShown, stateOf } from "./lock.ts";
+import { OTHERS_MS, answersOf, askPerson, baseOf, tookOrRefused, deviceText, deviceVerifyCode, held as lockHeld, inForceOf, leftIn, lockSeen, movedHere, onBoundPerson, reopenedIn, view as workspaceView, nameOf as workspaceName, KEYS_SHOWN, signerKnown, signerOf, signerShown, stateOf } from "./lock.ts";
 import { checkChain, crypto as personCrypto } from "../personal-lock.ts";
 import * as prefs from "../prefs.ts";
 import { workspaceIds } from "./marks.ts";
@@ -239,8 +239,9 @@ function lockOf(inner: Inner, ws: string): Checked | CoreError {
   const head = isObject(h) ? str(get(h.head, "hash")) : null;
   if (entries.length === 0 || head === null) return new CoreError("vault_needs_lock", t("core-misc.vault.needsLock"));
   const force = inForceOf(inner, ws);
-  // (where the chain moved, off is a statement, not an entry of it: the workspace off, as a chain disabled is)
-  if (force.said === "off") return new CoreError("vault_needs_lock", t("core-misc.vault.needsLock"));
+  // (where the chain moved, off is a statement, not an entry of it: the workspace off, as a chain disabled is; if a
+  // station is already refusing this device with `left`, safe mode was reopened and this device awaits approval)
+  if (force.said === "off") return reopenedIn(inner, ws) ? new CoreError("vault_not_signer", t("core-misc.vault.notSigner")) : new CoreError("vault_needs_lock", t("core-misc.vault.needsLock"));
   // (moved: the state in force or, made of nothing the rules give, none that checks out; never the chain at the move)
   if (force.said !== "chain") return force.checked ?? new CoreError("vault_lock_invalid", "the workspace's lock does not check out: no state in force");
   return chainChecked(inner, ws, entries, head);
@@ -248,14 +249,14 @@ function lockOf(inner: Inner, ws: string): Checked | CoreError {
 
 /// Whether `ws`'s vault goes by its workspace's lock (safe mode), by the lock held here and checked entry by entry
 /// (never by a `disable` no owner signed, which a fold alone would take): a chain not turned off, or, moved, its state
-/// in force not off; one that does not check out counts as on (nothing is let in by it). With none held, the workspace's
-/// view's word (the cloud's), as `lockSafe` has it.
+/// in force not off (or reopened on a station refusing this device with `left`); one that does not check out counts as
+/// on (nothing is let in by it). With none held, the workspace's view's word (the cloud's), as `lockSafe` has it.
 function safeMode(inner: Inner, ws: string): boolean {
   const h = inner.data.record("lock", ws);
   const entries = isObject(h) && Array.isArray(h.entries) ? (h.entries as Entry[]) : [];
   const head = isObject(h) ? str(get(h.head, "hash")) : null;
   if (entries.length === 0 || head === null) return get(workspaceView(inner, ws), "locked") === true;
-  if (movedHere(inner, ws)) return inForceOf(inner, ws).said !== "off";
+  if (movedHere(inner, ws)) return inForceOf(inner, ws).said !== "off" || reopenedIn(inner, ws);
   const c = chainChecked(inner, ws, entries, head);
   return c instanceof CoreError || !c.disabled;
 }

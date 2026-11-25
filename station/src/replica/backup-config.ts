@@ -88,6 +88,8 @@ export type BackupView = {
   acceptOthers: boolean;
   peers: BackupPeerView[];
   s3: S3TargetView[];
+  /// The most backup uploads take of the uplink, in megabits a second (0: no limit).
+  uploadMbps: number;
 };
 
 export const S3_ID = /^[a-z0-9_-]{1,32}$/;
@@ -335,6 +337,7 @@ export function buildBackupView(
     stations: config.mode === "manual" ? [...config.stations] : [],
     acceptOthers: config.acceptOthers,
     peers,
+    uploadMbps: config.uploadMbps ?? DEFAULT_UPLOAD_MBPS,
     s3: config.s3.map((t) => {
       const st = s3Status(t.id);
       return {

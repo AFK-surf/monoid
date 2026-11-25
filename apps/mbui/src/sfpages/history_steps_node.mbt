@@ -455,25 +455,101 @@ fn steps_flip(key : String) -> Unit {
 }
 
 ///|
-/// A clock running in `v` from `since` (the core's time: `src.now`), read again each whole second from then as it is
-/// shown, no longer than `till` (ms after it, none: on), the test's idle not waiting on it (Ctx::every's): what reads
-/// the time of it reads what this returns.
-pub fn steps_seconds(v : @view.View, src : Source, since : Double, till? : Double) -> () -> Int {
-  let tick : @signals.Signal[Int] = @signals.signal(0)
-  fn plan() -> Unit {
-    let gone = (src.now)() - since
+let steps_hour_ms : Double = 3_600_000.0
+
+///|
+let steps_minute_ms : Double = 60_000.0
+
+///|
+/// Runs a whole-step clock on `v`'s timeline aligned to wall clock `src.now` from `since` (stopping at `till`),
+/// anchoring `(v.logic_at(), src.now())` so vsync latency and host frame-target lead (e.g. iOS CADisplayLink
+/// targetTimestamp) do not subtract latency twice or drift early into repeated empty `looks` frames.
+fn steps_clock_start(
+  v : @view.View,
+  src : Source,
+  since : Double,
+  till : Double?,
+  minute_past_hour : Bool,
+  tick : @signals.Signal[Int],
+) -> () -> Unit {
+  let stop : Ref[() -> Unit] = Ref(fn() {  })
+  let anchor_logic : Ref[Double] = Ref(v.logic_at())
+  let anchor_wall : Ref[Double] = Ref((src.now)())
+  fn next_target(v_at : Double, now_wall : Double) -> (Double, Double)? {
+    let gone = now_wall - since
     if till is Some(t) && gone >= t {
-      return
+      return None
     }
-    let into = if gone > 0.0 { gone - (gone / second_ms).floor() * second_ms } else { gone }
-    v.at_moment(v.logic_at() + second_ms - into, later=true, fn() {
-      tick.set(tick.untracked() + 1)
-      plan()
-    })
-    |> ignore
+    let step = if minute_past_hour && gone >= steps_hour_ms { steps_minute_ms } else { second_ms }
+    let mut next_wall = if gone >= 0.0 {
+      since + ((gone / step).floor() + 1.0) * step
+    } else {
+      since + second_ms
+    }
+    if till is Some(t) && next_wall > since + t {
+      next_wall = since + t
+    }
+    let naive = v_at + (next_wall - now_wall)
+    let mut target_logic = anchor_logic.val + (next_wall - anchor_wall.val)
+    if target_logic <= v_at || (target_logic - naive).abs() > 250.0 {
+      anchor_logic.val = v_at
+      anchor_wall.val = now_wall
+      target_logic = naive
+    }
+    Some((target_logic, next_wall))
   }
 
-  plan()
+  fn arm(due : Double, want_wall : Double) -> Unit {
+    stop.val = v.at_moment(due, later=true, fn() {
+      let now_wall = (src.now)()
+      let v_at = v.logic_at()
+      if now_wall < want_wall {
+        let shortfall = want_wall - now_wall
+        if shortfall > 250.0 {
+          anchor_logic.val = v_at
+          anchor_wall.val = now_wall
+          match next_target(v_at, now_wall) {
+            Some((d, w)) => arm(d, w)
+            None => stop.val = fn() {  }
+          }
+        } else {
+          anchor_logic.val = anchor_logic.val + shortfall + 1.0
+          let next_due = dmax(v_at + shortfall + 1.0, anchor_logic.val + (want_wall - anchor_wall.val))
+          arm(next_due, want_wall)
+        }
+      } else {
+        tick.set(tick.untracked() + 1)
+        match next_target(v_at, now_wall) {
+          Some((d, w)) => arm(d, w)
+          None => stop.val = fn() {  }
+        }
+      }
+    })
+  }
+
+  match next_target(anchor_logic.val, anchor_wall.val) {
+    Some((d, w)) => arm(d, w)
+    None => ()
+  }
+  fn() {
+    (stop.val)()
+    stop.val = fn() {  }
+  }
+}
+
+///|
+/// A clock running in `v` from `since` (the core's time: `src.now`), read again each whole second from then as it is
+/// shown (or each minute past an hour when `minute_past_hour`), no longer than `till` (ms after it, none: on), the
+/// test's idle not waiting on it (Ctx::every's): what reads the time of it reads what this returns.
+pub fn steps_seconds(
+  v : @view.View,
+  src : Source,
+  since : Double,
+  till? : Double,
+  minute_past_hour? : Bool = false,
+) -> () -> Int {
+  let tick : @signals.Signal[Int] = @signals.signal(0)
+  steps_clock_start(v, src, since, till, minute_past_hour, tick) |> ignore
   fn() { tick.get() }
 }
 
@@ -1907,7 +1983,7 @@ fn mark_node(v : @view.View, src : Source, key : String, mark : Json?, rail : Bo
       rail_next=fn() { rail },
       fn(ev) {
         ev_node(ev, "wait", "waiting", "", fn(b) {
-          let tick = steps_seconds(b, src, since, till?=most)
+          let tick = steps_seconds(b, src, since, till?=most, minute_past_hour=most is None)
           make_wait_line(b, tick, true, open)
         })
       },
@@ -1921,7 +1997,7 @@ fn mark_node(v : @view.View, src : Source, key : String, mark : Json?, rail : Bo
     )
   } else {
     ev_node(v, "wait", "waiting", "", rail_last=rail, fn(b) {
-      let tick = steps_seconds(b, src, since, till?=most)
+      let tick = steps_seconds(b, src, since, till?=most, minute_past_hour=most is None)
       make_wait_line(b, tick, false, fn() { false })
     })
   }

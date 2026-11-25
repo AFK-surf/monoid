@@ -9,7 +9,7 @@ export interface OperationParams {
   "agentEnv.set": { env?: unknown; text?: string | null | undefined };
   "search.setPersonal": { personal: boolean };
   "network.setCongestion": { congestion: string };
-  "copies.setSettings": { mode?: string | null | undefined; stations?: string[] | null | undefined; acceptOthers?: boolean | null | undefined; s3?: unknown };
+  "copies.setSettings": { mode?: string | null | undefined; stations?: string[] | null | undefined; acceptOthers?: boolean | null | undefined; uploadMbps?: number | null | undefined; s3?: unknown };
   "copies.testS3": { id?: string | null | undefined; endpoint?: string | null | undefined; region?: string | null | undefined; bucket?: string | null | undefined; prefix?: string | null | undefined; forcePathStyle?: boolean | null | undefined; accessKeyId?: string | null | undefined; secretAccessKey?: string | null | undefined; encryptionKey?: string | null | undefined };
   "copies.restore": { origin: string; gen: string; fromStation?: string | null | undefined; fromS3?: string | null | undefined };
   "copies.history": { limit?: number | null | undefined };

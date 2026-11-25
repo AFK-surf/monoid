@@ -254,6 +254,7 @@ test("backup settings: S3-only, mixed station+S3, partial failure, unconfigured,
       mode: "manual",
       stations: [A, B],
       acceptOthers: false,
+      uploadMbps: 20,
       peers: [
         { station: A, name: "Cedar", acceptOthers: true, online: true },
         { station: B, name: "Aspen", acceptOthers: false, online: false },
@@ -265,6 +266,10 @@ test("backup settings: S3-only, mixed station+S3, partial failure, unconfigured,
   assert.equal(mixed.level, "ok");
   assert.equal(mixed.backup.settingsSummary, "手动互备：Cedar 和 Aspen · Cloudflare R2 · 不接收他人备份");
   assert.equal(mixed.backup.acceptOthers, false);
+  // The upload limit as the station says it; absent from a station before backups were paced.
+  assert.equal(mixed.backup.uploadMbps, 20);
+  assert.equal("uploadMbps" in s3Only.backup, false);
+  assert.ok("ok" in conform("StationCopies", mixed), JSON.stringify(conform("StationCopies", mixed)));
   assert.equal(mixed.backup.peers.length, 2);
   assert.equal(mixed.backup.peers[1].acceptOthers, false);
   assert.ok("ok" in conform("StationCopies", mixed), JSON.stringify(conform("StationCopies", mixed)));

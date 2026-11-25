@@ -14,7 +14,7 @@ import type { Route, Tools } from "../admin.ts";
 import { tr } from "../../ops/i18n.ts";
 import { log } from "../../ops/log.ts";
 import { type MachineSession, roots as machineRoots } from "../../read/machine.ts";
-import { STILLFAIL_SURFACE, handedWs } from "../../store/rows.ts";
+import { STILLFAIL_SURFACE, handedWs, normalizeProject } from "../../store/rows.ts";
 import type { Attachment, Quote, SessionRow } from "../../store/rows.ts";
 import type { Store } from "../../store/store.ts";
 import type { AgentsParts } from "../../sessions/agents.ts";
@@ -513,6 +513,23 @@ export const routes = (tools: Tools): Route[] => {
                 context: contextAsked(i.context, r.lang),
                 title: typeof i.title === "string" ? chars(i.title, 120) : null,
                 createdBy: r.viewer.email,
+                createdBySub: r.viewer.sub || null,
+                ...("project" in i
+                  ? {
+                      project:
+                        i.project === null
+                          ? null
+                          : typeof i.project === "string"
+                            ? (() => {
+                                try {
+                                  return normalizeProject(i.project);
+                                } catch (e) {
+                                  throw new Refused(400, (e as Error).message);
+                                }
+                              })()
+                            : (() => { throw new Refused(400, "project must be a string or null"); })(),
+                    }
+                  : {}),
                 clientKey: given("clientKey"),
                 ws: r.viewer.workspace || null,
                 preset: given("preset"),

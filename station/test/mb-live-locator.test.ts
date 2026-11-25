@@ -61,14 +61,15 @@ test("the MoonBit live locator finds what the worker finds", { skip: binary === 
     rememberCodexRollout(own, "x-6", join(own, "sessions", "2026", "11", "05", "rollout-2026-11-05T00-00-00-x-6.jsonl"));
     session("codex", "codex", null, "/w", [["x-1", null, null], ["x-2", "codex", "own"], ["x-3", "codex", null], ["x-4", "codex", "own"],
       ["x-5", "codex", null], ["x-6", "codex", "own"]], "x-6");
-    // DeepSeek Harness's versions, Grok Build's directories, Cursor's, Devin's, Hermes', Antigravity's, one of no runtime.
+    // DeepSeek Harness's versions, Grok Build's directories, Cursor's, Devin's, Hermes', Antigravity's, Copilot's, one of no
+    // runtime.
     for (const v of ["2", "10", "010", "9"]) put(join(shared("dsh"), "-w", "d-1", `session.v${v}.jsonl`));
     put(join(shared("dsh"), "-w", "d-1", "session.vx.jsonl"));
     put(join(shared("grok"), "-w", "g-1", "chat_history.jsonl.zst"));
-    for (const rt of ["cursor", "devin", "hermes", "agy"]) put(join(shared(rt), `${rt}-1.jsonl`));
+    for (const rt of ["cursor", "devin", "hermes", "agy", "copilot"]) put(join(shared(rt), `${rt}-1.jsonl`));
     put(join(own, "cursor", "sessions", "cursor-2.jsonl"));
     session("mixed", "dsh", "/w", "/w", [["d-1", "dsh", null], ["g-1", "grok", null], ["cursor-1", "cursor", null], ["cursor-2", "cursor", "own"],
-      ["devin-1", "devin", null], ["hermes-1", "hermes", null], ["agy-1", "agy", null], ["u-1", "unknown", null]], "agy-1");
+      ["devin-1", "devin", null], ["hermes-1", "hermes", null], ["agy-1", "agy", null], ["copilot-1", "copilot", null], ["u-1", "unknown", null]], "agy-1");
     // Past a page of sources, the current one among them.
     const many: [string, string | null, string | null][] = [];
     for (let i = 0; i < 140; i++) many.push([i === 7 ? "m-current" : `m-${i}`, "claude", null]);

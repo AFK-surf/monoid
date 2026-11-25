@@ -357,7 +357,7 @@ let sources : Array[Source] = [
 ///|
 /// runtime.ts RUNTIME_KINDS.
 let runtime_kinds : Array[String] = [
-  "claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi",
+  "claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi", "copilot",
 ]
 
 ///|

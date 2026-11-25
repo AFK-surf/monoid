@@ -168,21 +168,73 @@ export async function fetchHandoff(at, init = {}, options = {}) {
   return response;
 }
 
-async function transfer(url, options, consume) {
+const getTimeoutsMs = [15_000, 20_000, 25_000, 30_000];
+const writeTimeoutsMs = [60_000, 60_000, 60_000];
+const knownTargets = [
+  "ios-sim-arm64", "android-arm64", "darwin-arm64", "darwin-x64",
+  "linux-arm64", "linux-x64", "win32-arm64", "win32-x64", "ios-arm64", "wasm32",
+];
+
+/** The target triple encoded in a native archive filename, or null when unrecognized. */
+export function archiveTarget(name) {
+  const stem = name.replace(/-[a-f0-9]{24}\.tar\.gz$/, "");
+  if (stem === name) return null;
+  for (const target of knownTargets) {
+    if (stem.endsWith("-" + target)) return target;
+  }
+  return null;
+}
+
+/** Allowed targets for `restore`, or null to download every archive in the manifests. */
+export function resolveTargets(spec, host = `${process.platform}-${process.arch}`) {
+  if (!spec || spec === "all") return null;
+  const allowed = new Set();
+  for (const raw of String(spec).split(",")) {
+    const item = raw.trim();
+    if (!item) continue;
+    if (item === "all") return null;
+    if (item === "host") {
+      allowed.add(host);
+      allowed.add("wasm32");
+    } else {
+      allowed.add(item);
+    }
+  }
+  return allowed.size ? allowed : null;
+}
+
+async function transfer(url, options, consume, policy = {}) {
   const direct = directDns(new URL(url));
+  const method = options.method ?? "GET";
+  const timeouts = policy.timeoutsMs ?? (method === "GET" ? getTimeoutsMs : writeTimeoutsMs);
+  const maxAttempts = timeouts.length;
+  const backoffMs = policy.backoffMs ?? ((attempt) => attempt * 1000);
+  const callerSignal = options.signal;
   for (let attempt = 1; ; attempt++) {
+    callerSignal?.throwIfAborted();
     try {
-      // Directly, each route keeps a deadline of its own (fetchHandoff); otherwise the request keeps one minute.
-      const response = await fetchHandoff(url, { ...options, redirect: "error", ...(direct ? {} : { signal: AbortSignal.timeout(60_000) }) });
+      // Directly, each route keeps a deadline of its own (fetchHandoff); otherwise GETs cut stalls fast and retry.
+      const timeoutMs = timeouts[Math.min(attempt - 1, timeouts.length - 1)];
+      const signal = direct
+        ? callerSignal
+        : callerSignal
+          ? AbortSignal.any([AbortSignal.timeout(timeoutMs), callerSignal])
+          : AbortSignal.timeout(timeoutMs);
+      const response = await fetchHandoff(url, { ...options, redirect: "error", ...(signal ? { signal } : {}) });
       if (response.ok) return await consume(response);
       const text = (await response.text().catch(() => "")).trim().slice(0, 200);
       throw Object.assign(new Error("HTTP " + response.status + (text ? ": " + text : "")), { status: response.status });
     } catch (error) {
       const status = error?.status;
-      if (attempt === 3 || (status && status < 500 && status !== 429)) throw error;
-      log((options.method ?? "GET") + " " + new URL(url).pathname + " attempt " + attempt + " failed (" + reason(error) + "); again in " + attempt + " s");
+      if (callerSignal?.aborted || attempt >= maxAttempts || (status && status < 500 && status !== 429)) throw error;
+      const delay = backoffMs(attempt);
+      log(method + " " + new URL(url).pathname + " attempt " + attempt + " failed (" + reason(error) + "); again in " + (delay / 1000) + " s");
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { callerSignal?.removeEventListener("abort", stop); resolve(); }, delay);
+        const stop = () => { clearTimeout(timer); reject(callerSignal.reason); };
+        callerSignal?.addEventListener("abort", stop, { once: true });
+      });
     }
-    await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
   }
 }
 
@@ -272,28 +324,62 @@ function receiptLocation(key) {
     : { endpoint, receipt: key };
 }
 
-async function restore(dir, sha) {
+export async function restore(dir, sha, options = {}) {
   if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Missing source commit for native artifacts");
+  const allowed = resolveTargets(options.targets, options.host);
+  const rawConcurrency = options.concurrency ?? 4;
+  const concurrency = Number.isFinite(rawConcurrency) ? Math.max(1, Math.floor(rawConcurrency)) : 4;
+  const policy = {
+    ...(options.getTimeoutsMs ? { timeoutsMs: options.getTimeoutsMs } : {}),
+    ...(options.backoffMs ? { backoffMs: options.backoffMs } : {}),
+  };
+  const restored = new Set();
   const files = await readdir(dir).catch((error) => { if (error.code === "ENOENT") return []; throw error; });
   for (const manifest of files.filter((f) => /^natives(-mac|-mac-reader|-win-reader|-harness)?\.r2\.json$/.test(f))) {
     const entries = JSON.parse(await readFile(join(dir, manifest), "utf8"));
     for (const { name, sha256, chunks } of entries) {
       if (!asset.test(name) || !/^[a-f0-9]{64}$/.test(sha256) || !Array.isArray(chunks) || !chunks.length ||
           !chunks.every((key) => typeof key === "string" && receipt.exec(receiptLocation(key).receipt)?.[1] === sha)) throw new Error("Invalid native manifest");
+      if (allowed) {
+        const target = archiveTarget(name);
+        if (target && !allowed.has(target)) continue;
+      }
+      if (restored.has(name)) continue;
+      const results = new Array(chunks.length);
+      let next = 0;
+      let firstError = null;
+      const abort = new AbortController();
+      const worker = async () => {
+        while (firstError === null) {
+          const index = next++;
+          if (index >= chunks.length) break;
+          const { endpoint: host, receipt: key } = receiptLocation(chunks[index]);
+          try {
+            results[index] = Buffer.from(await transfer(host + "/" + key, { signal: abort.signal }, (r) => r.arrayBuffer(), policy));
+          } catch (error) {
+            if (firstError === null) {
+              firstError = error;
+              abort.abort(error);
+            }
+            break;
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, worker));
+      if (firstError !== null) throw firstError;
       const tmp = join(dir, randomUUID() + ".part");
       try {
         const hash = createHash("sha256");
         const file = await open(tmp, "wx");
         try {
-          for (const stored of chunks) {
-            const { endpoint: host, receipt: key } = receiptLocation(stored);
-            const bytes = Buffer.from(await transfer(host + "/" + key, {}, (r) => r.arrayBuffer()));
+          for (const bytes of results) {
             hash.update(bytes);
             await file.writeFile(bytes);
           }
         } finally { await file.close(); }
         if (hash.digest("hex") !== sha256) throw new Error("Native archive failed SHA-256 verification: " + name);
         await rename(tmp, join(dir, name));
+        restored.add(name);
         console.log("Verified from R2: " + name);
       } finally { await rm(tmp, { force: true }); }
     }
@@ -308,8 +394,14 @@ function isMain() {
 }
 
 if (isMain()) {
-  const [op, dir, arg] = process.argv.slice(2);
-  if (op === "put") await put(dir, arg);
-  else if (op === "get") await restore(dir, arg);
-  else throw new Error("Usage: native-handoff.mjs put DIR MANIFEST | get DIR COMMIT");
+  const [op, dir, arg, ...rest] = process.argv.slice(2);
+  if (op === "put" && rest.length === 0) await put(dir, arg);
+  else if (op === "get") {
+    let targets;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--targets" && i + 1 < rest.length) targets = rest[++i];
+      else throw new Error("Usage: native-handoff.mjs put DIR MANIFEST | get DIR COMMIT [--targets SPEC]");
+    }
+    await restore(dir, arg, { targets });
+  } else throw new Error("Usage: native-handoff.mjs put DIR MANIFEST | get DIR COMMIT [--targets SPEC]");
 }

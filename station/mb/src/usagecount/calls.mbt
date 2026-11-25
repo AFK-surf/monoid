@@ -219,7 +219,7 @@ fn wanted(runtime : String, line : BytesView) -> Bool {
     "dsh" => (begins(line, dsh_message) && holds(line, usage_word)) || begins(line, dsh_context)
     "grok" => begins(line, grok_usage)
     "pi" => begins(line, pi_message) && holds(line, usage_word)
-    "cursor" | "devin" | "hermes" => holds(line, type_usage)
+    "cursor" | "devin" | "hermes" | "copilot" => holds(line, type_usage)
     "agy" => holds(line, type_usage) || holds(line, type_user) || holds(line, type_tool) || holds(line, type_end)
     _ => holds(line, token_count) || holds(line, turn_context) || holds(line, session_meta)
   }
@@ -275,7 +275,7 @@ pub fn calls_of(runtime : String, text : BytesView, subagent : Bool, state : Cal
           gen_ms: 0.0,
         })
       }
-      "cursor" | "devin" | "hermes" => {
+      "cursor" | "devin" | "hermes" | "copilot" => {
         let usage = get(rec, "usage")
         let id = str(get(rec, "run"))
         guard str(get(rec, "type")) == Some("usage") && usage is Some(u) && !(u is Null) && id is Some(id) else {

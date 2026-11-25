@@ -83,7 +83,7 @@ export class SessionDirectoryBuilder {
       // (by the MoonBit builder, station/mb's src/activity, directory.mbt: `MbBackfill`)
       let current: MbBackfill;
       try {
-        const bin = resolveReaderSelection("session-backfill", { binary: this.binary, config: this.readers, logAt: "readers" }).primaryBinary;
+        const bin = resolveReaderSelection("session-backfill", { binary: this.binary, config: this.readers, logAt: "readers" });
         current = new MbBackfill(bin, ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20);
       }
       catch (error) {

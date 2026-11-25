@@ -25,6 +25,7 @@ import { StationAddr } from "../station/addr.ts";
 import type { FindAt, FindHit } from "../chat-find.ts";
 import { readConnects, readPeople, type RelayConnect, type RelayPerson } from "../relay-pick.ts";
 import { fromBase64, get, isObject } from "../util.ts";
+import { ofAddress } from "../workspace.ts";
 import { orEmpty, read } from "./params.ts";
 
 /// A message of a preview socket (station/wire.rs `SocketFrame`).
@@ -197,9 +198,11 @@ export type Call =
   | { kind: "ways"; name: "setRelays" | "setWay"; workspace: string; params: Record<string, unknown> }
   /// A station's name and mark changed from the app (views/station-marks.ts): on the station, else on still.fail cloud.
   | { kind: "stationMark"; workspace: string; station: string; params: Record<string, unknown> }
-  /// A person's own preset made, changed, deleted, or someone else's copied into theirs (views/presets.ts): on this
-  /// device at once, carried to the workspace's stations after; `station` the page's (a new one's `home`).
-  | { kind: "presets"; name: "add" | "put" | "delete" | "copy"; station: string; params: Record<string, unknown> }
+  /// A person's own preset made, changed, deleted, someone else's copied into theirs, or its default project preference set
+  /// (views/presets.ts): on this device at once, carried to the workspace's stations after.
+  | { kind: "presets"; name: "add" | "put" | "delete" | "copy" | "setProject"; station: string; scope?: string; params: Record<string, unknown> }
+  /// Workspace project & tag classification and management calls (views/projects.ts).
+  | { kind: "projects"; name: "classify" | "resolveProposal" | "updateInfo" | "rename" | "merge"; scope: string; params: Record<string, unknown> }
   /// The board's drafts of 待派发 in a workspace as it has them now (views/board-drafts.ts): kept on this device at once,
   /// carried to the workspace's stations after.
   | { kind: "boardDrafts"; workspace: string; drafts: unknown }
@@ -454,6 +457,36 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
     const p = read(params, [["station", S, "req"]]);
     StationAddr.parse(p.station as string);
     return { kind: "presets", name: name.slice(7) as "add" | "put" | "delete" | "copy", station: p.station as string, params: isObject(params) ? (params as Record<string, unknown>) : {} };
+  }
+  if (name === "preset.setProject") {
+    const p = read(params, [["scope", S, "req"], ["presetId", S, "req"]]);
+    const proj = get(params, "project");
+    if (proj !== undefined && proj !== null && typeof proj !== "string") {
+      throw CoreError.invalid(t("core-misc.params.missing", { field: "project" }));
+    }
+    return { kind: "presets", name: "setProject", station: "", scope: p.scope as string, params: isObject(params) ? (params as Record<string, unknown>) : {} };
+  }
+  if (name === "chat.classify") {
+    const p = read(params, [["station", S, "req"], ["thread", "u64", "req"]]);
+    StationAddr.parse(p.station as string);
+    return { kind: "projects", name: "classify", scope: ofAddress(p.station as string), params: isObject(params) ? (params as Record<string, unknown>) : {} };
+  }
+  if (name === "proposal.resolve") {
+    const p = read(params, [["station", S, "req"], ["thread", "u64", "req"], ["entryN", "u64", "req"], ["action", S, "req"]]);
+    StationAddr.parse(p.station as string);
+    return { kind: "projects", name: "resolveProposal", scope: ofAddress(p.station as string), params: isObject(params) ? (params as Record<string, unknown>) : {} };
+  }
+  if (name === "project.updateInfo") {
+    const p = read(params, [["scope", S, "req"], ["name", S, "req"]]);
+    return { kind: "projects", name: "updateInfo", scope: p.scope as string, params: isObject(params) ? (params as Record<string, unknown>) : {} };
+  }
+  if (name === "project.rename" || name === "project.merge") {
+    const p = read(params, [["scope", S, "req"], ["from", S, "req"]]);
+    const toVal = get(params, "to");
+    if (typeof toVal !== "string" || (name === "project.rename" && toVal.trim() === "")) {
+      throw CoreError.invalid(t("core-misc.params.missing", { field: "to" }));
+    }
+    return { kind: "projects", name: name === "project.rename" ? "rename" : "merge", scope: p.scope as string, params: isObject(params) ? (params as Record<string, unknown>) : {} };
   }
   if (name === "workspace.setRelays" || name === "workspace.setWay") {
     const p = read(params, [["workspace", S, "req"]]);
@@ -724,9 +757,23 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
         ["mine", "bool", "default"],
         ["watching", "bool", "default"],
         ["hidden", "bool", "default"],
+        ["project", S, "opt"],
+        ["unclassified", "bool", "default"],
+        ["tag", S, "opt"],
+        ["groupBy", S, "opt"],
         ["rows", "u32", "req"],
       ]);
-      const list = parseTopic({ topic: "chats", scope: p.scope, mine: p.mine, watching: p.watching, hidden: p.hidden });
+      const list = parseTopic({
+        topic: "chats",
+        scope: p.scope,
+        mine: p.mine,
+        watching: p.watching,
+        hidden: p.hidden,
+        ...(p.project !== null ? { project: p.project } : {}),
+        ...(p.unclassified === true ? { unclassified: true } : {}),
+        ...(p.tag !== null ? { tag: p.tag } : {}),
+        ...(p.groupBy !== null ? { groupBy: p.groupBy } : {}),
+      });
       if (list === null || p.scope === "") throw CoreError.invalid(t("core-misc.params.missing", { field: "scope" }));
       return { kind: "chatsWindow", list, rows: p.rows as number };
     }

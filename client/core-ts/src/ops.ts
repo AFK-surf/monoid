@@ -78,7 +78,7 @@ export const PARAMS: Record<string, string> = {
   "agentEnv.set": "env?:json text?:string",
   "search.setPersonal": "personal:boolean",
   "network.setCongestion": "congestion:string",
-  "copies.setSettings": "mode?:string stations?:strings acceptOthers?:boolean s3?:json",
+  "copies.setSettings": "mode?:string stations?:strings acceptOthers?:boolean uploadMbps?:number s3?:json",
   "copies.testS3": "id?:string endpoint?:string region?:string bucket?:string prefix?:string forcePathStyle?:boolean accessKeyId?:string secretAccessKey?:string encryptionKey?:string",
   "copies.restore": "origin:string gen:string fromStation?:string fromS3?:string",
   "copies.history": "limit?:number",
@@ -376,9 +376,9 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("PUT", () => "/search/settings", p.pick(["personal"]), OVERVIEW);
     case "network.setCongestion":
       return op("PUT", () => "/network/settings", p.pick(["congestion"]), OVERVIEW);
-    // Configure backup targets (station mode/selection, acceptOthers, and external R2/S3 targets).
+    // Configure backup targets (station mode/selection, acceptOthers, upload rate, and external R2/S3 targets).
     case "copies.setSettings":
-      return op("PUT", () => "/copies/settings", p.pick(["mode", "stations", "acceptOthers", "s3"]), OVERVIEW);
+      return op("PUT", () => "/copies/settings", p.pick(["mode", "stations", "acceptOthers", "uploadMbps", "s3"]), OVERVIEW);
     // Test connectivity and credentials for an R2/S3 backup target without saving.
     case "copies.testS3":
       return op("POST", () => "/copies/s3/test", p.pick(["id", "endpoint", "region", "bucket", "prefix", "forcePathStyle", "accessKeyId", "secretAccessKey", "encryptionKey"]), NONE);

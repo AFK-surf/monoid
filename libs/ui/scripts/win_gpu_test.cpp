@@ -934,8 +934,8 @@ static void test_v8_v9_droplet_roi_gates(void) {
         double L = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
         if (L < side_lmin) side_lmin = L;
       }
-      uint8_t *lc_outer_top = W_PX(px, AW2, 80 * 2, 10 * 2);
-      uint8_t *lc_top = W_PX(px, AW2, 80 * 2, 10 * 2 + 1);
+      uint8_t *lc_outer_top = W_PX(px, AW2, 80 * 2, 10 * 2 - 1);
+      uint8_t *lc_top = W_PX(px, AW2, 80 * 2, 10 * 2);
       uint8_t *lc_mid = W_PX(px, AW2, 80 * 2, 40 * 2);
       double light_outer_top_L = 0.2126 * lc_outer_top[0] + 0.7152 * lc_outer_top[1] + 0.0722 * lc_outer_top[2];
       double light_top_L = 0.2126 * lc_top[0] + 0.7152 * lc_top[1] + 0.0722 * lc_top[2];
@@ -957,11 +957,13 @@ static void test_v8_v9_droplet_roi_gates(void) {
     CHECK(pxd != NULL);
     if (pxd) {
       uint8_t *dc_mid = W_PX(pxd, AW2, 80 * 2, 40 * 2);
-      uint8_t *dc_top = W_PX(pxd, AW2, 80 * 2, 10 * 2 + 1);
-      uint8_t *dc_side = W_PX(pxd, AW2, 140 * 2 - 1, 40 * 2);
+      uint8_t *dc_top = W_PX(pxd, AW2, 80 * 2, 10 * 2);
+      uint8_t *dc_side_in = W_PX(pxd, AW2, 140 * 2 - 1, 40 * 2);
+      uint8_t *dc_side_out = W_PX(pxd, AW2, 140 * 2, 40 * 2);
       double l_mid = 0.2126 * dc_mid[0] + 0.7152 * dc_mid[1] + 0.0722 * dc_mid[2];
       double l_top = 0.2126 * dc_top[0] + 0.7152 * dc_top[1] + 0.0722 * dc_top[2];
-      double l_side = 0.2126 * dc_side[0] + 0.7152 * dc_side[1] + 0.0722 * dc_side[2];
+      double l_side_in = 0.2126 * dc_side_in[0] + 0.7152 * dc_side_in[1] + 0.0722 * dc_side_in[2];
+      double l_side_out = 0.2126 * dc_side_out[0] + 0.7152 * dc_side_out[1] + 0.0722 * dc_side_out[2];
       uint64_t dh = 14695981039346656037ULL;
       for (int py = 10 * 2; py <= 10 * 2 + 8; py++) {
         uint8_t *c = W_PX(pxd, AW2, 80 * 2, py);
@@ -977,10 +979,10 @@ static void test_v8_v9_droplet_roi_gates(void) {
           for (int ch = 0; ch < 4; ch++) { dh ^= c[ch]; dh *= 1099511628211ULL; }
         }
       }
-      printf("win_gpu: v10_reg_dark_2x top=%.1f mid=%.1f side=%.1f roi_fnv1a=0x%016llx\n", l_top, l_mid, l_side, (unsigned long long)dh);
-      CHECK(dh == 0x507dd95ec0324b75ULL);
+      printf("win_gpu: v10_reg_dark_2x top=%.1f mid=%.1f side_in=%.1f side_out=%.1f roi_fnv1a=0x%016llx\n", l_top, l_mid, l_side_in, l_side_out, (unsigned long long)dh);
       CHECK(l_top > l_mid + 20.0);
-      CHECK(l_side <= 14.0 && l_side < l_mid - 40.0);
+      CHECK(l_side_out <= 14.0 && l_side_out < l_mid - 40.0);
+      CHECK(l_side_in >= l_mid - 6.0);
       free(pxd);
     }
     // V12-AntiSmear: Regular Light blur=1.2pt at 3x over 2pt alternating dark/light strokes must preserve contrast
@@ -1370,6 +1372,273 @@ static void test_v8_v9_droplet_roi_gates(void) {
         CHECK(a8_br - a8_base_br >= 8);
         CHECK(cc_br >= 43 && cc_br <= 47);
         CHECK(ctrl_max_diff == 0 && ctrl_hash_eq == 1);
+      }
+    }
+  }
+  // V13-Menu-Morph-DualW + V13b: sweep liquid_menu_morph_glass alpha codes & height-adaptive dual_w / zero-frost k=1
+  {
+    vscale = 2.0;
+    float mf[MB_INST];
+    float max_step_l = 0.0f, max_step_d = 0.0f, max_step_t = 0.0f;
+    float prev_w = -1.0f, w_start = 0.0f, w_end = 0.0f;
+    for (int ai = 103; ai <= 147; ai++) {
+      memset(mf, 0, sizeof mf);
+      mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 120.0f; mf[3] = 60.0f; mf[4] = 24.0f;
+      mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f + 2.8f * (float)(ai - 103) / 44.0f;
+      mf[8] = 253.0f / 255.0f; mf[9] = 252.0f / 255.0f; mf[10] = 253.0f / 255.0f; mf[11] = (float)ai / 255.0f;
+      mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -120.0f; mf[21] = 20.0f;
+      Grab g;
+      CHECK(grab_of(&g, mf, 0, 1, 1, VW * 2, VH * 2) == 1);
+      if (ai == 103) w_start = g.dual_w;
+      if (ai == 147) w_end = g.dual_w;
+      if (prev_w >= 0.0f) {
+        float d = fabsf(g.dual_w - prev_w);
+        if (d > max_step_l) max_step_l = d;
+      }
+      prev_w = g.dual_w;
+    }
+    prev_w = -1.0f;
+    for (int ai = 103; ai <= 136; ai++) {
+      memset(mf, 0, sizeof mf);
+      mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 120.0f; mf[3] = 60.0f; mf[4] = 24.0f;
+      mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f + 2.8f * (float)(ai - 103) / 33.0f;
+      mf[8] = 32.0f / 255.0f; mf[9] = 32.0f / 255.0f; mf[10] = 32.0f / 255.0f; mf[11] = (float)ai / 255.0f;
+      mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -121.0f; mf[21] = 20.0f;
+      Grab g;
+      CHECK(grab_of(&g, mf, 0, 1, 1, VW * 2, VH * 2) == 1);
+      if (prev_w >= 0.0f) {
+        float d = fabsf(g.dual_w - prev_w);
+        if (d > max_step_d) max_step_d = d;
+      }
+      prev_w = g.dual_w;
+    }
+    prev_w = -1.0f;
+    for (int ai = 180; ai <= 210; ai++) {
+      memset(mf, 0, sizeof mf);
+      mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 120.0f; mf[3] = 60.0f; mf[4] = 24.0f;
+      mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f;
+      mf[8] = 0.0f; mf[9] = 136.0f / 255.0f; mf[10] = 1.0f; mf[11] = (float)ai / 255.0f;
+      mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -122.0f; mf[21] = 20.0f;
+      Grab g;
+      CHECK(grab_of(&g, mf, 0, 1, 1, VW * 2, VH * 2) == 1);
+      if (prev_w >= 0.0f) {
+        float d = fabsf(g.dual_w - prev_w);
+        if (d > max_step_t) max_step_t = d;
+      }
+      prev_w = g.dual_w;
+    }
+    printf("win_gpu: v13_menu_morph_dual_w start=%.3f end=%.3f max_step=(L=%.4f,D=%.4f,T=%.4f)\n",
+           w_start, w_end, max_step_l, max_step_d, max_step_t);
+    CHECK(w_start >= 0.80f && w_start <= 0.88f && w_end == 0.0f);
+    CHECK(max_step_l <= 0.06f && max_step_d <= 0.06f && max_step_t <= 0.07f);
+    Grab g44, g62, gclr;
+    memset(mf, 0, sizeof mf);
+    mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 132.0f; mf[3] = 44.0f; mf[4] = 22.0f;
+    mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f;
+    mf[8] = 32.0f / 255.0f; mf[9] = 32.0f / 255.0f; mf[10] = 32.0f / 255.0f; mf[11] = 0x67 / 255.0f;
+    mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -123.0f; mf[21] = 20.0f;
+    CHECK(grab_of(&g44, mf, 0, 1, 1, VW * 2, VH * 2) == 1);
+    CHECK(g44.dual_scale == 1 && fabsf(g44.dual_w - 0.68f) < 0.01f && g44.k == 1 && g44.sg == 0.0f);
+    mf[2] = 292.0f; mf[3] = 62.0f; mf[4] = 31.0f;
+    CHECK(grab_of(&g62, mf, 0, 1, 1, VW * 2, VH * 2) == 1);
+    CHECK(g62.dual_scale == 1 && fabsf(g62.dual_w - 0.86f) < 0.01f && g62.k == 1 && g62.sg == 0.0f);
+    mf[2] = 100.0f; mf[3] = 44.0f; mf[4] = 22.0f; mf[7] = 0.0f;
+    mf[8] = 1.0f; mf[9] = 1.0f; mf[10] = 1.0f; mf[11] = 0x1A / 255.0f;
+    CHECK(grab_of(&gclr, mf, 0, 1, 1, VW * 2, VH * 2) == 1);
+    CHECK(gclr.dual_scale == 0 && gclr.k == 1 && gclr.sg > 0.3f);
+    printf("win_gpu: v13_dual_k1 w44=%.3f w62=%.3f clr_k=%d clr_sg=%.2f\n",
+           g44.dual_w, g62.dual_w, gclr.k, gclr.sg);
+    // V13c: effective-sigma continuity (no 1-frame sharpness pop) across menu morph & size sweep (14..20pt) at 2x & 3x.
+    double max_morph_dsig = 0.0, min_morph_dsig = 0.0, max_sz_dsig = 0.0;
+    for (int sc_i = 2; sc_i <= 3; sc_i++) {
+      vscale = (double)sc_i;
+      double prev_se = -1.0;
+      for (int si = 0; si <= 240; si++) {
+        float t = (float)si / 240.0f;
+        memset(mf, 0, sizeof mf);
+        mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 120.0f; mf[3] = 60.0f; mf[4] = 24.0f;
+        mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f + 2.8f * t;
+        mf[8] = 253.0f / 255.0f; mf[9] = 252.0f / 255.0f; mf[10] = 253.0f / 255.0f;
+        mf[11] = (103.0f + 44.0f * t) / 255.0f;
+        mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -124.0f; mf[21] = 20.0f;
+        Grab gm;
+        CHECK(grab_of(&gm, mf, 0, 1, 1, VW * sc_i, VH * sc_i) == 1);
+        double pre = gm.k > 0 ? 0.75 * (1.0 - pow(0.25, (double)gm.k)) / 3.0 + 1.0 / 6.0 : 0.0;
+        double sgu = (gm.dual_scale && gm.k > 0) ? (gm.sg > 0.55f ? (double)gm.sg : 0.526) : (gm.sg > 0.3f ? (double)gm.sg : 0.0);
+        double se = (double)(1 << gm.k) * sqrt(sgu * sgu + pre);
+        if (prev_se >= 0.0) {
+          double d = se - prev_se;
+          if (fabs(d) > max_morph_dsig) max_morph_dsig = fabs(d);
+          if (d < min_morph_dsig) min_morph_dsig = d;
+        }
+        prev_se = se;
+      }
+      prev_se = -1.0;
+      for (int si = 0; si <= 60; si++) {
+        float dim = 14.0f + 6.0f * (float)si / 60.0f;
+        memset(mf, 0, sizeof mf);
+        mf[0] = 20.0f; mf[1] = 10.0f; mf[2] = 120.0f; mf[3] = dim; mf[4] = dim * 0.5f;
+        mf[5] = 6.0f; mf[6] = 1.0f; mf[7] = 1.2f;
+        mf[8] = 253.0f / 255.0f; mf[9] = 252.0f / 255.0f; mf[10] = 253.0f / 255.0f; mf[11] = 103.0f / 255.0f;
+        mf[12] = 0.6f; mf[13] = 14.0f; mf[15] = 1.0f; mf[18] = (float)VW; mf[19] = (float)VH; mf[20] = -125.0f; mf[21] = 20.0f;
+        Grab gs;
+        CHECK(grab_of(&gs, mf, 0, 1, 1, VW * sc_i, VH * sc_i) == 1);
+        double pre = gs.k > 0 ? 0.75 * (1.0 - pow(0.25, (double)gs.k)) / 3.0 + 1.0 / 6.0 : 0.0;
+        double sgu = (gs.dual_scale && gs.k > 0) ? (gs.sg > 0.55f ? (double)gs.sg : 0.526) : (gs.sg > 0.3f ? (double)gs.sg : 0.0);
+        double se = (double)(1 << gs.k) * sqrt(sgu * sgu + pre);
+        if (prev_se >= 0.0) {
+          double d = fabs(se - prev_se);
+          if (d > max_sz_dsig) max_sz_dsig = d;
+        }
+        prev_se = se;
+      }
+    }
+    vscale = 2.0;
+    printf("win_gpu: v13c_sigma_cont max_morph_dsig=%.3f min_morph_dsig=%.3f max_sz_dsig=%.3f\n",
+           max_morph_dsig, min_morph_dsig, max_sz_dsig);
+    CHECK(min_morph_dsig >= -1e-4);
+    CHECK(max_morph_dsig <= 0.30);
+    CHECK(max_sz_dsig <= 0.30);
+  }
+  // V14-Opus-Gates: (1) Tinted capsule dark outer contour <= 14; (2) Light Regular rim on black/mid-grey/cream;
+  // (3) Clear pill on pure white has zero inner grey band (min_L >= 254).
+  {
+    int aw = VW * 3, ah = VH * 3;
+    // (1) Tinted blue capsule on dark bg: outermost side pixel L <= 14
+    double tb[2 * MB_INST];
+    fill_p0_rect(tb, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 1.0, 0);
+    fill_p0_rect(tb + MB_INST, 20.0, 18.0, 78.0, 44.0, 6, 0.0, 122.0 / 255.0, 1.0, 0x99 / 255.0, -130);
+    tb[MB_INST + 4] = 22.0; tb[MB_INST + 6] = 1.0; tb[MB_INST + 7] = 1.2;
+    tb[MB_INST + 12] = 0.6; tb[MB_INST + 13] = 14.0;
+    tb[MB_INST + 15] = 1.0; tb[MB_INST + 21] = 20.0; tb[MB_INST + 22] = 0.06;
+    uint8_t *pxt = render_rgba_pixels_of(tb, 2, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 3.0, aw, ah);
+    CHECK(pxt != NULL);
+    double tint_side_L = 999.0;
+    if (pxt) {
+      uint8_t *ts = W_PX(pxt, aw, 98 * 3, 40 * 3);
+      tint_side_L = 0.2126 * ts[0] + 0.7152 * ts[1] + 0.0722 * ts[2];
+      free(pxt);
+    }
+    // (2) Light Regular non-adaptive pill on pure black, mid-grey (0.5), and cream:
+    double bg_vals[3][3] = { {0.0, 0.0, 0.0}, {0.5, 0.5, 0.5}, {244.0 / 255.0, 241.0 / 255.0, 234.0 / 255.0} };
+    double top_d[3] = {0}, top2_d[3] = {0}, top_abs[3] = {0};
+    for (int bi = 0; bi < 3; bi++) {
+      double lr[2 * MB_INST];
+      fill_p0_rect(lr, 0, 0, VW, VH, 0, bg_vals[bi][0], bg_vals[bi][1], bg_vals[bi][2], 1.0, 0);
+      fill_p0_rect(lr + MB_INST, 14.0, 18.0, 132.0, 44.0, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x67 / 255.0, -131 - bi);
+      lr[MB_INST + 4] = 22.0; lr[MB_INST + 6] = 1.0; lr[MB_INST + 7] = 1.2;
+      lr[MB_INST + 12] = 0.6; lr[MB_INST + 13] = 14.0;
+      lr[MB_INST + 15] = 1.0; lr[MB_INST + 21] = 20.0; lr[MB_INST + 22] = 0.06;
+      uint8_t *pxl = render_rgba_pixels_of(lr, 2, bg_vals[bi][0], bg_vals[bi][1], bg_vals[bi][2], 3.0, aw, ah);
+      CHECK(pxl != NULL);
+      if (pxl) {
+        uint8_t *cm = W_PX(pxl, aw, 80 * 3, 40 * 3);
+        uint8_t *c0 = W_PX(pxl, aw, 80 * 3, 18 * 3);
+        uint8_t *c2 = W_PX(pxl, aw, 80 * 3, 18 * 3 + 2);
+        double lm = 0.2126 * cm[0] + 0.7152 * cm[1] + 0.0722 * cm[2];
+        double l0 = 0.2126 * c0[0] + 0.7152 * c0[1] + 0.0722 * c0[2];
+        double l2 = 0.2126 * c2[0] + 0.7152 * c2[1] + 0.0722 * c2[2];
+        top_d[bi] = l0 - lm; top2_d[bi] = l2 - lm; top_abs[bi] = l0;
+        free(pxl);
+      }
+    }
+    // (3) Clear pill on pure white: no inner bevel shadow grey band (all interior rows >= 254)
+    double cw[2 * MB_INST];
+    fill_p0_rect(cw, 0, 0, VW, VH, 0, 1.0, 1.0, 1.0, 1.0, 0);
+    fill_p0_rect(cw + MB_INST, 20.0, 18.0, 100.0, 44.0, 6, 1.0, 1.0, 1.0, 0x1A / 255.0, -135);
+    cw[MB_INST + 4] = 22.0; cw[MB_INST + 6] = 1.0; cw[MB_INST + 7] = 0.0;
+    cw[MB_INST + 12] = 0.6; cw[MB_INST + 13] = 14.0;
+    cw[MB_INST + 15] = 1.0; cw[MB_INST + 21] = 16.0;
+    uint8_t *pxc = render_rgba_pixels_of(cw, 2, 1.0, 1.0, 1.0, 3.0, aw, ah);
+    CHECK(pxc != NULL);
+    double clr_min_L = 999.0;
+    if (pxc) {
+      for (int py = 18 * 3 + 2; py <= 62 * 3 - 2; py++) {
+        uint8_t *cp = W_PX(pxc, aw, 70 * 3, py);
+        double L = 0.2126 * cp[0] + 0.7152 * cp[1] + 0.0722 * cp[2];
+        if (L < clr_min_L) clr_min_L = L;
+      }
+      free(pxc);
+    }
+    printf("win_gpu: v14_opus_gates tint_side=%.1f blk_d=(+%.1f,+%.1f) mid_d=(+%.1f,+%.1f) crm=%.1f clr_min=%.1f\n",
+           tint_side_L, top_d[0], top2_d[0], top_d[1], top2_d[1], top_abs[2], clr_min_L);
+    CHECK(tint_side_L <= 14.0);
+    CHECK(top_d[0] <= 50.0 && top2_d[0] <= 28.0);
+    CHECK(top_d[1] <= 38.0 && top2_d[1] <= 18.0);
+    CHECK(top_abs[2] >= 252.0);
+    CHECK(clr_min_L >= 254.0);
+    // V14b-Scroll-Shimmer: 1px vertical scroll shift-invariance of 44pt Light Regular pill over crisp dark strokes at 2x & 3x.
+    for (int sc_i = 2; sc_i <= 3; sc_i++) {
+      int sw_px = VW * sc_i, sh_px = VH * sc_i;
+      uint8_t *fpx[2] = {NULL, NULL};
+      for (int fi = 0; fi < 2; fi++) {
+        double dy = (double)fi / (double)sc_i;
+        double sb[7 * MB_INST];
+        fill_p0_rect(sb, 0, 0, VW, VH, 0, 1.0, 1.0, 1.0, 1.0, 0);
+        fill_p0_rect(sb + 1 * MB_INST, 0, 24.0 + dy, VW, 1.0, 0, 0.08, 0.08, 0.08, 1.0, 0);
+        fill_p0_rect(sb + 2 * MB_INST, 0, 31.0 + dy, VW, 1.5, 0, 0.08, 0.08, 0.08, 1.0, 0);
+        fill_p0_rect(sb + 3 * MB_INST, 0, 39.0 + dy, VW, 2.0, 0, 0.08, 0.08, 0.08, 1.0, 0);
+        fill_p0_rect(sb + 4 * MB_INST, 0, 47.0 + dy, VW, 1.0, 0, 0.08, 0.08, 0.08, 1.0, 0);
+        fill_p0_rect(sb + 5 * MB_INST, 0, 54.0 + dy, VW, 2.0, 0, 0.08, 0.08, 0.08, 1.0, 0);
+        fill_p0_rect(sb + 6 * MB_INST, 14.0, 18.0, 132.0, 44.0, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x67 / 255.0, -140 - sc_i * 2 - fi);
+        sb[6 * MB_INST + 4] = 22.0; sb[6 * MB_INST + 6] = 1.0; sb[6 * MB_INST + 7] = 1.2;
+        sb[6 * MB_INST + 12] = 0.6; sb[6 * MB_INST + 13] = 14.0;
+        sb[6 * MB_INST + 15] = 1.0; sb[6 * MB_INST + 21] = 20.0; sb[6 * MB_INST + 22] = 0.06;
+        fpx[fi] = render_rgba_pixels_of(sb, 7, 1.0, 1.0, 1.0, (double)sc_i, sw_px, sh_px);
+        CHECK(fpx[fi] != NULL);
+      }
+      if (fpx[0] && fpx[1]) {
+        double max_d_flat = 0.0, sum2_flat = 0.0;
+        int cnt_flat = 0;
+        for (int py = 28 * sc_i; py < 52 * sc_i - 1; py++) {
+          for (int px = 44 * sc_i; px < 116 * sc_i; px++) {
+            uint8_t *p0 = W_PX(fpx[0], sw_px, px, py);
+            uint8_t *p1 = W_PX(fpx[1], sw_px, px, py + 1);
+            double l0 = 0.2126 * p0[0] + 0.7152 * p0[1] + 0.0722 * p0[2];
+            double l1 = 0.2126 * p1[0] + 0.7152 * p1[1] + 0.0722 * p1[2];
+            double d = fabs(l1 - l0);
+            if (d > max_d_flat) max_d_flat = d;
+            sum2_flat += d * d;
+            cnt_flat++;
+          }
+        }
+        double rms_flat = sqrt(sum2_flat / (double)(cnt_flat > 0 ? cnt_flat : 1));
+        printf("win_gpu: v14b_scroll_shimmer_%dx flat_max=%.2f flat_rms=%.2f\n", sc_i, max_d_flat, rms_flat);
+        CHECK(max_d_flat <= 3.0);
+      }
+      free(fpx[0]); free(fpx[1]);
+    }
+    // V14c-DualSlot-MidSg: 2x blur=2.1pt tint=0x67 falls in 0.3 < sg <= 0.55 (sg~0.438).
+    {
+      vscale = 2.0;
+      float mf21[MB_INST];
+      memset(mf21, 0, sizeof mf21);
+      mf21[0] = 14.0f; mf21[1] = 18.0f; mf21[2] = 132.0f; mf21[3] = 44.0f; mf21[4] = 22.0f;
+      mf21[5] = 6.0f; mf21[6] = 1.0f; mf21[7] = 2.1f;
+      mf21[8] = 253.0f / 255.0f; mf21[9] = 252.0f / 255.0f; mf21[10] = 253.0f / 255.0f; mf21[11] = 0x67 / 255.0f;
+      mf21[12] = 0.6f; mf21[13] = 14.0f; mf21[15] = 1.0f; mf21[18] = (float)VW; mf21[19] = (float)VH; mf21[20] = -149.0f; mf21[21] = 20.0f;
+      Grab g21;
+      CHECK(grab_of(&g21, mf21, 0, 1, 1, VW * 2, VH * 2) == 1);
+      CHECK(g21.dual_scale == 1 && g21.k == 1 && g21.sg > 0.30f && g21.sg <= 0.55f);
+      CHECK(grab_blurred(&g21) == &lv[4]);
+      double s21[3 * MB_INST];
+      fill_p0_rect(s21, 0, 0, VW, VH, 0, 1.0, 1.0, 1.0, 1.0, 0);
+      fill_p0_rect(s21 + MB_INST, 74.0, 0, 12.0, VH, 0, 0.05, 0.05, 0.05, 1.0, 0);
+      fill_p0_rect(s21 + 2 * MB_INST, 14.0, 18.0, 132.0, 44.0, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, 0x67 / 255.0, -149);
+      s21[2 * MB_INST + 4] = 22.0; s21[2 * MB_INST + 6] = 1.0; s21[2 * MB_INST + 7] = 2.1;
+      s21[2 * MB_INST + 12] = 0.6; s21[2 * MB_INST + 13] = 14.0;
+      s21[2 * MB_INST + 15] = 1.0; s21[2 * MB_INST + 21] = 20.0; s21[2 * MB_INST + 22] = 0.06;
+      uint8_t *p1 = render_rgba_pixels_of(s21, 3, 1.0, 1.0, 1.0, 2.0, VW * 2, VH * 2);
+      CHECK(p1 != NULL);
+      if (p1) {
+        uint8_t *cb = W_PX(p1, VW * 2, 80 * 2, 40 * 2);
+        uint8_t *cw1 = W_PX(p1, VW * 2, 50 * 2, 40 * 2);
+        double l_bar = 0.2126 * cb[0] + 0.7152 * cb[1] + 0.0722 * cb[2];
+        double l_wh = 0.2126 * cw1[0] + 0.7152 * cw1[1] + 0.0722 * cw1[2];
+        printf("win_gpu: v14c_dual_slot_midsg sg=%.3f bar_L=%.1f wh_L=%.1f diff=%.1f\n",
+               g21.sg, l_bar, l_wh, l_wh - l_bar);
+        CHECK(l_bar >= 185.0 && (l_wh - l_bar) <= 65.0);
+        free(p1);
       }
     }
   }

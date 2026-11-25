@@ -17,7 +17,7 @@ const MAX_RATE = 60_000_000;
 /// ffmpeg may be blocked waiting for another raw picture; closing its input lets it observe termination.
 function stopEncoder(child: ChildProcessWithoutNullStreams | null) {
   if (!child) return;
-  child.stdin.destroy();
+  child.stdin?.destroy();
   child.kill();
 }
 
@@ -65,11 +65,12 @@ export class X11H264 {
       "-video_size", `${screen.width}x${screen.height}`, "-i", env.DISPLAY!, "-vf", `scale=${picture.width}:${picture.height}:flags=fast_bilinear`,
       "-pix_fmt", "yuv420p", "-threads", "1", "-f", "rawvideo", "pipe:1"];
     this.#capture = spawn(ffmpeg, args, { env, stdio: ["pipe", "pipe", "pipe"] });
-    this.#capture.stdin.end();
-    this.#capture.stderr.on("data", (data: Buffer) => this.#errorText(data));
-    this.#capture.stdout.on("data", (data: Buffer) => this.#raw(data));
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     this.#capture.on("error", (error) => this.#end(error.message));
     this.#capture.on("close", () => this.#end(this.#stderr || "X11 capture ended"));
+    this.#capture.stdin?.end();
+    this.#capture.stderr?.on("data", (data: Buffer) => this.#errorText(data));
+    this.#capture.stdout?.on("data", (data: Buffer) => this.#raw(data));
     this.#timer = wall.after(OPEN_TIMEOUT, () => this.#end("X11 H.264 capture did not produce a frame"));
     // Open waits for an actual encoded frame, so a missing encoder or inaccessible display is reported to the viewer.
     this.ready = this.#acquire().then((frame) => {
@@ -121,11 +122,12 @@ export class X11H264 {
       "-threads", "1", "-flvflags", "no_duration_filesize", "-flush_packets", "1", "-f", "flv", "pipe:1"];
     const encoder = spawn(this.#ffmpeg, args, { env: this.#env, stdio: ["pipe", "pipe", "pipe"] });
     this.#encoder = encoder;
-    encoder.stderr.on("data", (data: Buffer) => { if (this.#encoder === encoder) this.#errorText(data); });
-    encoder.stdout.on("data", (data: Buffer) => { if (this.#encoder === encoder) this.#flv(data); });
-    encoder.stdin.on("error", (error) => { if (this.#encoder === encoder) this.#end(error.message); });
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     encoder.on("error", (error) => { if (this.#encoder === encoder) this.#end(error.message); });
     encoder.on("close", () => { if (this.#encoder === encoder) this.#end(this.#stderr || "H.264 encoder ended"); });
+    encoder.stderr?.on("data", (data: Buffer) => { if (this.#encoder === encoder) this.#errorText(data); });
+    encoder.stdout?.on("data", (data: Buffer) => { if (this.#encoder === encoder) this.#flv(data); });
+    encoder.stdin?.on("error", (error) => { if (this.#encoder === encoder) this.#end(error.message); });
   }
 
   #submit() {
@@ -141,7 +143,7 @@ export class X11H264 {
     this.#latest = null;
     pending.ts = picture.ts;
     pending.submitted = true;
-    this.#encoder!.stdin.write(picture.data, () => this.#recycle(picture.data));
+    this.#encoder?.stdin?.write(picture.data, () => this.#recycle(picture.data));
   }
 
   #flv(chunk: Buffer) {

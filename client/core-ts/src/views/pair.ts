@@ -202,18 +202,25 @@ function personalAsked(inner: Inner, hello: J): { key: string; subs: string[]; w
   return account === undefined ? null : { key, subs: mine, who: { sub: account.sub, email: account.email, name: account.name ?? "" } };
 }
 
-function placesFor(inner: Inner, hello: J, peer: string, me: string): { places: Asking["places"]; who: { sub: string; email: string; name: string } | null } {
+function placesFor(inner: Inner, hello: J, peer: string, me: string): { places: Asking["places"]; who: { sub: string; email: string; name: string } | null; off: string[] } {
   const signer = signerOf(inner);
   const now = Math.floor(inner.host.nowMs() / 1000);
   const places: Asking["places"] = [];
   let who: { sub: string; email: string; name: string } | null = null;
-  if (signer === null || !inner.host.appKeys) return { places, who };
+  const off: string[] = [];
+  if (signer === null || !inner.host.appKeys) return { places, who, off };
   for (const w of arr(get(hello, "workspaces"))) {
     const ws = str(get(w, "ws")) ?? "";
     const account = inner.workspaces.owner(ws);
     const h = held(inner, ws);
     if (account === null || !h?.head) continue;
     if (movedHere(inner, ws)) {
+      const force = inForceOf(inner, ws);
+      if (force.said === "off") {
+        const c = credentialOf(str(get(w, "credential")) ?? "", force.settings?.cloud_keys, ws, peer, now);
+        if (c !== null && c.sub !== "") off.push(ws);
+        continue;
+      }
       const m = movedPlace(inner, w, ws, account, hello, peer, me, now);
       if (m === null || (who !== null && m.c.sub !== who.sub)) continue;
       who ??= m.c;
@@ -226,6 +233,11 @@ function placesFor(inner: Inner, hello: J, peer: string, me: string): { places: 
     } catch {
       continue;
     }
+    if (lock.disabled) {
+      const c = credentialOf(str(get(w, "credential")) ?? "", lock.cloudKeys, ws, peer, now);
+      if (c !== null && c.sub !== "") off.push(ws);
+      continue;
+    }
     const mine = lock.devices.get(me);
     // One in the lock already: only an app that does not sign with the key it brings (let in before it kept one) is
     // approved again, as one that signs, and as its own person's.
@@ -233,7 +245,7 @@ function placesFor(inner: Inner, hello: J, peer: string, me: string): { places: 
     const had = live(lock.devices.get(peer), now);
     const key = str(get(hello, "sign_key"));
     const upgrade = had !== undefined && had.kind === "app" && get(hello, "kind") === "app" && key !== null && had.sign_key !== key;
-    if (lock.disabled || mine?.sign_key !== signer || !mine.own || (had !== undefined && !upgrade)) continue;
+    if (mine?.sign_key !== signer || !mine.own || (had !== undefined && !upgrade)) continue;
     const c = credentialOf(str(get(w, "credential")) ?? "", lock.cloudKeys, ws, peer, now);
     if (c === null || c.sub === "" || (had !== undefined && c.sub !== had.sub)) continue;
     // Another person's: only their first device that signs, by an owner or admin (any later one they approve from a
@@ -246,7 +258,7 @@ function placesFor(inner: Inner, hello: J, peer: string, me: string): { places: 
     // is what makes it so)
     places.push({ ws, sub: c.sub, account, ...(lock.members.has(c.sub) ? {} : { joins: true }) });
   }
-  return { places, who };
+  return { places, who, off };
 }
 
 /// Who asks in workspace `ws`, whose chain moved to its people's own logs (src/lock-moved.ts), where this device lets
@@ -420,7 +432,17 @@ export function serveTrusted(inner: Inner, peer: string, me: string, d: Duplex):
     const rawPersonal = personalAsked(inner, hello.value);
     const personal = rawPersonal === null ? null : asked.who === null ? rawPersonal : rawPersonal.subs.includes(asked.who.sub) ? { ...rawPersonal, subs: rawPersonal.subs.filter((s) => s === asked.who!.sub) } : null;
     const who = asked.who ?? personal?.who ?? null;
-    if ((places.length === 0 && personal === null) || who === null) return yield* d.send({ t: "no", error: "not_here" });
+    if ((places.length === 0 && personal === null) || who === null) {
+      if (asked.off.length > 0) {
+        // A verified member asking for approval while this device still caches `off` may mean safe mode was just
+        // turned back on and this approver is behind: refresh those workspaces in the background.
+        for (const ws of new Set(asked.off)) {
+          inner.runner.fork(Effect.ignore(read(inner, ws), { log: "Unhandled", message: "serveTrusted off: workspace lock reread" }));
+        }
+        return yield* d.send({ t: "no", error: "off" });
+      }
+      return yield* d.send({ t: "no", error: "not_here" });
+    }
     // (their lock begun with nobody asked where it can be, so that its root goes with the code, `rootsOf`)
     if (personal !== null) for (const sub of personal.subs) yield* inner.adb.personal().beginForQuietly(sub);
     const all = askingsOf(inner);
@@ -718,7 +740,7 @@ export type Met = { id: string; d: Duplex; workspaces: string[]; until?: number;
 /// `lockMoved`: told a workspace's lock moved while looking; `lockSigned`, while waiting for the lock to name this
 /// device after a code was proved (`prove`). `asking`, while `checking`: the trusted device took the code and asks its
 /// person on its own screen (`tryOne`'s `asking`), which the page says (`checkingText`).
-export type Trying = { state: "finding" | "code" | "checking" | "wrong" | "none" | "failed" | "done"; asking?: boolean; left?: number; error?: string; lost?: boolean; approvedIn?: string[]; workspaces: string[]; met: Map<string, Met>; run: number; approvers?: Map<string, string[]>; credentialErrors?: Map<string, string>; lockMoved?: (ws: string) => void; lockSigned?: (ws: string) => void; lockReading?: (ws: string) => void; searching?: boolean; lastEnds?: CoreError[]; answering?: Map<string, Deferred.Deferred<void>> };
+export type Trying = { state: "finding" | "code" | "checking" | "wrong" | "none" | "failed" | "done"; asking?: boolean; left?: number; error?: string; lost?: boolean; approvedIn?: string[]; workspaces: string[]; met: Map<string, Met>; run: number; approvers?: Map<string, string[]>; credentialErrors?: Map<string, string>; lockMoved?: (ws: string) => void; lockSigned?: (ws: string) => void; lockReading?: (ws: string) => void; searching?: boolean; lastEnds?: CoreError[]; offReread?: boolean; answering?: Map<string, Deferred.Deferred<void>> };
 
 const tryings = new WeakMap<Inner, Trying>();
 let runs = 0;
@@ -823,7 +845,10 @@ function waitingIn(inner: Inner, base: string): { workspaces: string[]; approver
     // refused, the stations letting their app devices in on that lock alone; it joins that one, views/lock.ts `run`)
     // (nor where it is its person's only trusted device since it began their lock anew and the workspace binds the one
     // of before: nobody's approval lets it in till they are taken out, views/lock.ts `reboundIn`)
-    if (f.disabled || (had !== undefined && !unsigned) || onBoundPerson(inner, ws) || offOwnLock(inner, ws) || reboundIn(inner, ws)) continue;
+    const leftOut = movedHere(inner, ws) && leftIn(inner, ws) !== null;
+    const force = movedHere(inner, ws) ? inForceOf(inner, ws) : null;
+    const reopened = force?.said === "off" && leftOut;
+    if ((!reopened && f.disabled) || (!reopened && had !== undefined && !unsigned) || (!reopened && onBoundPerson(inner, ws)) || offOwnLock(inner, ws) || reboundIn(inner, ws)) continue;
     // (where the chain moved: its state's, of its people's own logs; a web page is let in there by its own person's
     // devices alone, `movedPlace`)
     // An app there whose person the list does not name with the log this device is on (someone's first device, or
@@ -832,13 +857,12 @@ function waitingIn(inner: Inner, base: string): { workspaces: string[]; approver
     // those who may let it in are dialled as the chain held before it moved names them, and its person's own devices
     // this device has heard of: whom it dials lets nobody in (the device dialled checks everything itself).
     // Told by a station it is left out there (views/lock.ts `leftIn`, the state not given it): those it said to ask.
-    if (movedHere(inner, ws)) {
-      const force = inForceOf(inner, ws);
-      if (force.said === "off") continue;
+    if (force !== null) {
+      if (force.said === "off" && !leftOut) continue;
       const personal = inner.adb.personal();
       if (inner.host.appKeys === true && personal.standing(sub) !== "none" && personal.standing(sub) !== "member") continue;
       workspaces.push(ws);
-      const left = force.said === "waiting" ? leftIn(inner, ws) : null;
+      const left = force.said === "waiting" || force.said === "off" ? leftIn(inner, ws) : null;
       // (a web page nobody could approve there asks nobody, views/lock.ts `needsAppIn`: left out from the start, or after
       // the chain carried it until its `exp`, the state it was given then naming it no more)
       if (needsAppIn(inner, ws)) {
@@ -1168,6 +1192,19 @@ function dial(inner: Inner, y: Trying, id: string, relays: string[], hello: J): 
         const answer = yield* Effect.orElseSucceed(Effect.timeoutOption(d.next(), PAIR_ANSWER_MS), () => null);
         // (no word from it, or this try over meanwhile, or another begun: nothing kept of it)
         if (answer === null || answer._tag === "None" || !looking(inner, y) || !isObject(answer.value) || answer.value.t !== "code") {
+          if (answer !== null && answer._tag === "Some" && isObject(answer.value) && answer.value.t === "no" && answer.value.error === "off" && looking(inner, y)) {
+            if (!(y.lastEnds ??= []).some((e) => e.code === "pair_off")) {
+              y.lastEnds.push(new CoreError("pair_off", "security mode is off"));
+            }
+            // A trusted device says safe mode is off: ask the stations again once per try so this device fetches the
+            // signed `off` state if they have it, without ever taking the peer's word alone.
+            if (!y.offReread) {
+              y.offReread = true;
+              for (const ws of y.workspaces) {
+                if (!isPerson(ws)) inner.runner.fork(Effect.ignore(Effect.andThen(Effect.sync(() => refusedAgain(inner, ws)), read(inner, ws)), { log: "Unhandled", message: "pair off: workspace lock reread" }));
+              }
+            }
+          }
           d.close();
           return true;
         }
@@ -1475,6 +1512,7 @@ function endedText(ends: CoreError[]): string {
   if (codes.includes("pair_denied")) return t("core-misc.lock.pairDenied");
   if (codes.includes("pair_tries")) return t("core-misc.lock.pairTries");
   if (codes.includes("pair_late")) return t("core-misc.lock.pairLate");
+  if (codes.includes("pair_off")) return t("core-misc.lock.pairOff");
   return t("core-misc.lock.pairGone");
 }
 

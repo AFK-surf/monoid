@@ -105,19 +105,3 @@ let viewer_buttons_w : Double = 72.0
 ///|
 /// (its row's px)
 pub let viewer_bar_in : Double = 12.0
-
-///|
-/// The corner of the way back at the window's top left corner: the window's followed from as far
-/// in as it stands from the bar's top (bar_keys_top), a block concentric with it where the window's corner lets one
-/// follow it (a Mac's 16, 6 in: 11.2), as a page's bar's last key at its right is (window_corner_key); `alone` (the
-/// theme's Xl) where it cannot.
-pub fn viewer_back_corner(alone : Double) -> @ui.CornerOf {
-  Follow(Window, bar_keys_top(), alone)
-}
-
-///|
-/// How far in from the window's left the way back stands at the window's corner (viewer_back_at_corner): as far as from
-/// the bar's top where its corner fits and follows the window's corner there; otherwise clear of the window's arc.
-pub fn viewer_bar_start_in(alone : Double, roots : @ui.CornerRoots) -> Double {
-  window_link_in(viewer_back_corner(alone), viewer_bar_in, roots)
-}

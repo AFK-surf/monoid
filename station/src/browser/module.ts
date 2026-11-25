@@ -14,6 +14,8 @@ import { readOnly } from "../mesh/credential.ts";
 import { pipeTcp, reachLocal } from "../mesh/peer-forward.ts";
 import { writeLine } from "../mesh/wire.ts";
 import { given } from "../read/views.ts";
+import { log } from "../ops/log.ts";
+import { Agents } from "../sessions/agents.ts";
 
 export const BrowserLive = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -24,6 +26,7 @@ export const BrowserLive = Layer.effectDiscard(
     const screens = yield* ScreenRegistry;
     const store = yield* Store;
     const helper = yield* Helper;
+    const { hub } = yield* Agents;
     yield* Effect.acquireRelease(
       Effect.sync(() => {
         browser.useHelper(helper);
@@ -55,6 +58,16 @@ export const BrowserLive = Layer.effectDiscard(
     );
     browser.onAgentAct((session, target, method) => hold.h.act(session, target, method));
     browser.onStopped((session) => hold.h.releaseSession(session));
+    // Its agent told, as nothing else tells it: the page it was working in is gone (a renderer the kernel killed for
+    // memory says `killed`).
+    browser.onCrashed((session, tab) => {
+      const why = tab.status === "killed" ? "its page's process was killed (most often by the system, the machine out of memory)" : `it crashed (${tab.status || "no reason given"})`;
+      try {
+        hub.notify(session, `A tab of your chat's browser${tab.url ? ` (${tab.url})` : ""} stopped: ${why}. Reload it or open it again if you still need it.`);
+      } catch (error) {
+        log.warn("browser", "a crashed tab's agent not told", { session, error: (error as Error).message });
+      }
+    });
     const farview = yield* Effect.acquireRelease(
       Effect.sync(() => new FarviewTabs({ dir: join(data, "browser", "farview"), config: () => farviewConfig(config.raw()), screens })),
       (f) => Effect.sync(() => f.close()),

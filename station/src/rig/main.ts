@@ -8,7 +8,7 @@
 import { closePeerRelays } from "../mesh/peer-relays.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { Effect, Layer, Option, Stream, SubscriptionRef } from "effect";
+import { Clock, Effect, Layer, Option, Stream, SubscriptionRef } from "effect";
 import { Jobs, notifyEndpoint, screenEndpoint } from "../jobs/jobs.ts";
 import { measure } from "../jobs/load.ts";
 import { liveMemory } from "../jobs/memory.ts";
@@ -19,7 +19,7 @@ import { applyNetwork, keptRunning } from "../mesh/mesh.ts";
 import { bindStation } from "../mesh/native.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, peerCall, servePeer } from "../mesh/peer.ts";
 import { DeviceRefused, PEER_HTTP_ALPN, rigAllowed, serveHttp } from "../mesh/peer-http.ts";
-import { keepRelays, wantedRelays } from "../mesh/relays.ts";
+import { fileRecoverStore, keepRelays, wantedRelays } from "../mesh/relays.ts";
 import { congestionOf } from "../mesh/settings.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { DISK_EVERY_MS, diskEvery, diskSoft, diskTier } from "../ops/disk.ts";
@@ -264,7 +264,7 @@ export const RigMeshLive = Layer.effectDiscard(
     const config = yield* StationConfig;
     const side = yield* MeshSide;
     const rig = yield* RigSide;
-    const { restartFront } = yield* Paths;
+    const { restartFront, data } = yield* Paths;
     const run = Effect.gen(function* () {
       if (!cloud.state) yield* plane.changes.pipe(Stream.filter(() => cloud.state !== null), Stream.runHead);
       if (Number(process.env.STILLFAIL_MESH_BIND_ADDR?.split(":").at(-1)) > 0) yield* Effect.promise(() => previous.gone);
@@ -278,7 +278,15 @@ export const RigMeshLive = Layer.effectDiscard(
       yield* Effect.acquireRelease(Effect.sync(() => applyNetwork(endpoint, config)), (off) => Effect.sync(off));
       yield* Effect.acquireRelease(Effect.sync(() => side.net.attach(() => endpoint.home())), (off) => Effect.sync(off));
       // An endpoint found stuck by its relays' probes (mesh/relays.ts `PROBE`): the front restarted, or closed and bound anew.
-      yield* Effect.forkScoped(keepRelays(endpoint, side.net, bound, { onUnhealthy: restartFront ? () => restartFront() : () => void endpoint.close() }));
+      // Reached end to end through a relay (a connection taken through one, `accept` below) is the probe passed.
+      // (on the clock the probes go by)
+      const clock = yield* Clock.Clock;
+      let lastRelayReachAt: number | null = null;
+      yield* Effect.forkScoped(keepRelays(endpoint, side.net, bound, {
+        onUnhealthy: restartFront ? () => restartFront() : () => void endpoint.close(),
+        lastRelayReachAt: () => lastRelayReachAt,
+        recoverStore: fileRecoverStore(join(data, "run", "relay-probe-recover.json")),
+      }));
       yield* Effect.forkScoped(
         Effect.gen(function* () {
           const online = yield* Effect.timeoutOption(Effect.promise(() => endpoint.online()), "15 seconds");
@@ -294,7 +302,10 @@ export const RigMeshLive = Layer.effectDiscard(
       stationLog.sendWith((body) => Effect.runPromise(plane.logs(body)));
       yield* accept(endpoint, {
         // (a station: what this one keeps to it, from before it started again, asked whether it is still there)
-        arrived: (conn) => call.arrived(conn),
+        arrived: (conn) => {
+          if (conn.via?.() === "relay") lastRelayReachAt = clock.currentTimeMillisUnsafe();
+          call.arrived(conn);
+        },
         serve: (conn) =>
           conn.alpn().equals(PEER_HTTP_ALPN)
             ? serveHttp(conn, cloud, {

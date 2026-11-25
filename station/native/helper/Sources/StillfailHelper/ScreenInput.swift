@@ -63,6 +63,42 @@ final class ScreenInput {
     send(CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false), flags: command)
   }
 
+  /// UTF-16 chunks to type one character at a time on the lock screen: one code unit (or a surrogate pair) per event,
+  /// skipping CR/LF so pasting a password with a trailing newline never submits it by itself.
+  static func lockedTextChunks(_ text: String) -> [[UInt16]] {
+    let units = Array(text.utf16)
+    var chunks: [[UInt16]] = []
+    var at = 0
+    while at < units.count {
+      let u = units[at]
+      if u == 0x000a || u == 0x000d {
+        at += 1
+        continue
+      }
+      if UTF16.isLeadSurrogate(u), at + 1 < units.count, UTF16.isTrailSurrogate(units[at + 1]) {
+        chunks.append([u, units[at + 1]])
+        at += 2
+      } else {
+        chunks.append([u])
+        at += 1
+      }
+    }
+    return chunks
+  }
+
+  /// Type `text` directly as key events (one character per event, CR/LF skipped) for the macOS lock screen, whose
+  /// password field ignores ⌘V. On this queue, after the input before it.
+  func typeLocked(_ text: String) {
+    guard Status.inputAllowed() else { return }
+    for chunk in ScreenInput.lockedTextChunks(text) {
+      for down in [true, false] {
+        let event = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down)
+        event?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+        send(event, flags: 0)
+      }
+    }
+  }
+
   func perform(_ op: [String: Any]) {
     if !Status.inputAllowed() {
       if !refusedTold {

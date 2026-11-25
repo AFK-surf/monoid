@@ -65,6 +65,7 @@ const OVER_DELTA: Record<string, number> = {
   // the list whole again; a step of rows a screen holds is what the app needs the moment it comes)
   "chats mine/grown": 24,
   "chats/grown": 24,
+  "chats grouped/grown": 24,
   "vaultUses/used": 128,
   "usage/down": 88,
   "drive/file": 72,
@@ -170,8 +171,9 @@ const EMPTY: Record<string, Record<string, string>> = {
   // (a sign-in under way: Willow's)
   "stationPart logins": { "(whole)": STATE },
   "stationPart updates": { "[].autoWhen": STATE },
-  "chats": { "note.failing": ERROR, interrupted: STATE },
-  "chats mine": { "note.failing": ERROR, interrupted: STATE },
+  "chats": { "note.failing": ERROR, interrupted: STATE, groups: ASKED_SO },
+  "chats mine": { "note.failing": ERROR, interrupted: STATE, groups: ASKED_SO },
+  "chats grouped": { "note.failing": ERROR, interrupted: STATE, days: ASKED_SO },
   // (foundMarks: a search's alone, views/search.ts foundChat; the chat weighed is shared with no other workspace)
   "chatRow": { foundMarks: NEVER, "xshare.to": STATE, "decision.card.vaultAsk.saveTargets": STATE },
   // (profiles.ts gives its note no failing)
@@ -231,6 +233,7 @@ const EMPTY: Record<string, Record<string, string>> = {
   "chatLetters": {
     "chats[].letters[].quotes": LETTER, "chats[].letters[].notice.lines": LETTER, "chats[].letters[].options": LETTER, "chats[].letters[].card.options": LETTER,
     "chats[].letters[].card.vaultAsk.hosts": LETTER, "chats[].letters[].card.vaultAsk.saveTargets": LETTER, "chats[].letters[].elsewhere": LETTER, "chats[].letters[].chats": LETTER,
+    "chats[].letters[].proposal.refs": LETTER,
   },
   // (what is looked for, `png`, only pictures' names have)
   "chatThings q": { files: ASKED_SO, links: ASKED_SO, pulls: ASKED_SO },

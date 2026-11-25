@@ -65,12 +65,12 @@ fn notices_reset() -> Unit {
 }
 
 ///|
-/// Hosts whose notification permission is refreshed asynchronously (macOS, iOS, Windows, Linux): excludes Android
-/// (synchronous Binder) and Web (`Notification.permission`). Reads `@hostapi.platform()` directly so `set_platform`
-/// overrides never toggle host polling.
+/// Hosts whose notification permission is refreshed asynchronously (macOS, iOS, Android, Windows, Linux): excludes
+/// Web (`Notification.permission`). Reads `@hostapi.platform()` directly so `set_platform` overrides never toggle
+/// host polling.
 fn poll_notice_permission() -> Bool {
   match @hostapi.platform() {
-    0 | 1 | 3 | 5 => true
+    0 | 1 | 2 | 3 | 5 => true
     _ => false
   }
 }

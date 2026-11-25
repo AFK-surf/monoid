@@ -158,10 +158,14 @@ on:
       - "station/test/replica-transcript.test.ts"
       - "station/test/reference/transcript-paths.ts"
       - "station/test/workers/live-locator-worker.ts"
+      - "station/test/live-reader-close.test.ts"
       - "station/test/mb-page-letters.test.ts"
       - "station/test/mb-post-blocks.test.ts"
       - "station/test/mb-process-jobs.test.ts"
+      - "station/test/mb-reader.test.ts"
+      - "station/test/mb-reader-*.test.ts"
       - "station/test/mb-recent-chat.test.ts"
+      - "station/test/read-tail.test.ts"
       - "station/test/mb-said.test.ts"
       - "station/test/mb-sandbox-names.test.ts"
       - "station/test/mb-search-history.test.ts"
@@ -189,6 +193,10 @@ on:
       - "station/test/reader-contract-memory.test.ts"
       - "station/test/reader-contract-packed.test.ts"
       - "station/test/reader-contract-select.test.ts"
+      - "station/test/reader-contract-stdio.test.ts"
+      - "station/test/reader-data-pion-switch.test.ts"
+      - "station/test/reader-serve-pion-switch.test.ts"
+      - "station/test/served-programs.test.ts"
       - "station/test/usage-counter-reference.ts"
       - "station/test/usage-counter.test.ts"
       - "station/test/usage-timing-bounded.test.ts"
@@ -1044,22 +1052,67 @@ jobs:
           chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
 
-      - name: Run Wave 7 data-1 gate (W7-0 foundation strict TAP)
+      - name: Run Wave 7 data-1 gate (stdio contract + mb-reader + first 17 mb-reader-* suites + idle/close forced Pion)
         run: |
           set -euo pipefail
           BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
           BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           pnpm --dir station install --frozen-lockfile --prefer-offline
-          OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
-            node --test --test-reporter=tap station/test/w7-foundation.test.ts 2>&1)"
-          printf '%s\n' "$OUT"
-          T_COUNT="$(printf '%s\n' "$OUT" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
-          P_COUNT="$(printf '%s\n' "$OUT" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
-          test -n "$T_COUNT" && test "$T_COUNT" -ge 1 && test "$P_COUNT" = "$T_COUNT"
-          printf '%s\n' "$OUT" | grep -qE '^# fail 0$'
-          printf '%s\n' "$OUT" | grep -qE '^# cancelled 0$'
-          printf '%s\n' "$OUT" | grep -qE '^# skipped 0$'
-          printf '%s\n' "$OUT" | grep -qE '^# todo 0$'
+
+          VER_OUT="$("$BIN_PION" --version)"
+          printf '%s\n' "$VER_OUT"
+          MODES_CSV="$(printf '%s\n' "$VER_OUT" | sed -n 's/.*modes:\([^[:space:]]*\).*/\1/p')"
+          printf ',%s,\n' "$MODES_CSV" | grep -Fq ",data," || { echo "FAIL: missing exact mode data in $MODES_CSV" >&2; exit 1; }
+
+          check_tap_strict() {
+            local label="$1"
+            local out="$2"
+            printf '%s\n' "$out"
+            local t_count p_count
+            t_count="$(printf '%s\n' "$out" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            p_count="$(printf '%s\n' "$out" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            if ! test -n "$t_count" || ! test "$t_count" -ge 1 || ! test "$p_count" = "$t_count"; then
+              echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
+              exit 1
+            fi
+            printf '%s\n' "$out" | grep -qE '^# fail 0$'
+            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
+            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
+            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+          }
+
+          if ! STDIO_OUT="$(STILLFAIL_READER_CANDIDATE="$BIN_PION" \
+            node --test --test-reporter=tap station/test/reader-contract-stdio.test.ts 2>&1)"; then
+            printf '%s\n' "$STDIO_OUT"
+            exit 1
+          fi
+          check_tap_strict "reader-contract-stdio.test.ts" "$STDIO_OUT"
+
+          if ! DATA1_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap \
+            station/test/mb-reader.test.ts \
+            station/test/mb-reader-archive-look.test.ts \
+            station/test/mb-reader-background.test.ts \
+            station/test/mb-reader-card-pages.test.ts \
+            station/test/mb-reader-cards.test.ts \
+            station/test/mb-reader-changed.test.ts \
+            station/test/mb-reader-entries.test.ts \
+            station/test/mb-reader-jobs.test.ts \
+            station/test/mb-reader-line-separators.test.ts \
+            station/test/mb-reader-machine.test.ts \
+            station/test/mb-reader-mesh.test.ts \
+            station/test/mb-reader-messages.test.ts \
+            station/test/mb-reader-notices.test.ts \
+            station/test/mb-reader-open-jobs.test.ts \
+            station/test/mb-reader-outflow-chats.test.ts \
+            station/test/mb-reader-shared-chats.test.ts \
+            station/test/mb-reader-shared-rows-perf.test.ts \
+            station/test/mb-reader-timeline.test.ts \
+            station/test/mb-idle-programs.test.ts \
+            station/test/live-reader-close.test.ts 2>&1)"; then
+            printf '%s\n' "$DATA1_OUT"
+            exit 1
+          fi
+          check_tap_strict "gate-w7-data-1 forced Pion suites" "$DATA1_OUT"
 
   gate-w7-data-2:
     runs-on: ubuntu-24.04
@@ -1081,22 +1134,57 @@ jobs:
           chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
 
-      - name: Run Wave 7 data-2 gate (W7-0 foundation strict TAP)
+      - name: Run Wave 7 data-2 gate (remaining 11 mb-reader-* suites forced Pion + dual-engine switch/foundation/tail)
         run: |
           set -euo pipefail
           BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
           BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           pnpm --dir station install --frozen-lockfile --prefer-offline
-          OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
-            node --test --test-reporter=tap station/test/w7-foundation.test.ts 2>&1)"
-          printf '%s\n' "$OUT"
-          T_COUNT="$(printf '%s\n' "$OUT" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
-          P_COUNT="$(printf '%s\n' "$OUT" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
-          test -n "$T_COUNT" && test "$T_COUNT" -ge 1 && test "$P_COUNT" = "$T_COUNT"
-          printf '%s\n' "$OUT" | grep -qE '^# fail 0$'
-          printf '%s\n' "$OUT" | grep -qE '^# cancelled 0$'
-          printf '%s\n' "$OUT" | grep -qE '^# skipped 0$'
-          printf '%s\n' "$OUT" | grep -qE '^# todo 0$'
+
+          check_tap_strict() {
+            local label="$1"
+            local out="$2"
+            printf '%s\n' "$out"
+            local t_count p_count
+            t_count="$(printf '%s\n' "$out" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            p_count="$(printf '%s\n' "$out" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            if ! test -n "$t_count" || ! test "$t_count" -ge 1 || ! test "$p_count" = "$t_count"; then
+              echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
+              exit 1
+            fi
+            printf '%s\n' "$out" | grep -qE '^# fail 0$'
+            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
+            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
+            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+          }
+
+          if ! DATA2_OUT="$(STILLFAIL_MB_READER="$BIN_PION" node --test --test-reporter=tap \
+            station/test/mb-reader-usage-page.test.ts \
+            station/test/mb-reader-outflow.test.ts \
+            station/test/mb-reader-pages.test.ts \
+            station/test/mb-reader-recent-chats.test.ts \
+            station/test/mb-reader-search-chats.test.ts \
+            station/test/mb-reader-session-files.test.ts \
+            station/test/mb-reader-session-place.test.ts \
+            station/test/mb-reader-sessions.test.ts \
+            station/test/mb-reader-thread-list.test.ts \
+            station/test/mb-reader-threads.test.ts \
+            station/test/mb-reader-usage.test.ts 2>&1)"; then
+            printf '%s\n' "$DATA2_OUT"
+            exit 1
+          fi
+          check_tap_strict "gate-w7-data-2 forced Pion suites" "$DATA2_OUT"
+
+          if ! DUAL_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap \
+            station/test/w7-foundation.test.ts \
+            station/test/reader-contract-select.test.ts \
+            station/test/reader-data-pion-switch.test.ts \
+            station/test/read-tail.test.ts 2>&1)"; then
+            printf '%s\n' "$DUAL_OUT"
+            exit 1
+          fi
+          check_tap_strict "gate-w7-data-2 dual-engine suites" "$DUAL_OUT"
 
   gate-w7-serve:
     runs-on: ubuntu-24.04
@@ -1108,6 +1196,8 @@ jobs:
 
       - uses: ./.github/actions/setup
 
+      - uses: ./.github/actions/natives
+
       - name: Download and verify Linux binaries
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1118,22 +1208,47 @@ jobs:
           chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
 
-      - name: Run Wave 7 serve gate (W7-0 foundation strict TAP)
+      - name: Run Wave 7 serve gate (W7-G serve mode + served-programs + dual-engine Unix-socket & real mesh.node Served switch strict TAP)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
           BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
           pnpm --dir station install --frozen-lockfile --prefer-offline
-          OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
-            node --test --test-reporter=tap station/test/w7-foundation.test.ts 2>&1)"
-          printf '%s\n' "$OUT"
-          T_COUNT="$(printf '%s\n' "$OUT" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
-          P_COUNT="$(printf '%s\n' "$OUT" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
-          test -n "$T_COUNT" && test "$T_COUNT" -ge 1 && test "$P_COUNT" = "$T_COUNT"
-          printf '%s\n' "$OUT" | grep -qE '^# fail 0$'
-          printf '%s\n' "$OUT" | grep -qE '^# cancelled 0$'
-          printf '%s\n' "$OUT" | grep -qE '^# skipped 0$'
-          printf '%s\n' "$OUT" | grep -qE '^# todo 0$'
+
+          VER_OUT="$("$BIN_PION" --version)"
+          printf '%s\n' "$VER_OUT"
+          MODES_CSV="$(printf '%s\n' "$VER_OUT" | sed -n 's/.*modes:\([^[:space:]]*\).*/\1/p')"
+          printf ',%s,\n' "$MODES_CSV" | grep -Fq ",serve," || { echo "FAIL: missing exact mode serve in $MODES_CSV" >&2; exit 1; }
+
+          check_tap_strict() {
+            local label="$1"
+            local out="$2"
+            printf '%s\n' "$out"
+            local t_count p_count
+            t_count="$(printf '%s\n' "$out" | sed -n 's/^# tests \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            p_count="$(printf '%s\n' "$out" | sed -n 's/^# pass \([0-9][0-9]*\)$/\1/p' | tail -n 1)"
+            if ! test -n "$t_count" || ! test "$t_count" -ge 1 || ! test "$p_count" = "$t_count"; then
+              echo "FAIL: $label invalid TAP counts tests='$t_count' pass='$p_count'" >&2
+              exit 1
+            fi
+            printf '%s\n' "$out" | grep -qE '^# fail 0$'
+            printf '%s\n' "$out" | grep -qE '^# cancelled 0$'
+            printf '%s\n' "$out" | grep -qE '^# skipped 0$'
+            printf '%s\n' "$out" | grep -qE '^# todo 0$'
+          }
+
+          if ! OUT="$(node scripts/native.ts run mesh -- env \
+            STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap \
+            station/test/w7-foundation.test.ts \
+            station/test/served-programs.test.ts \
+            station/test/reader-serve-pion-switch.test.ts 2>&1)"; then
+            printf '%s\n' "$OUT"
+            exit 1
+          fi
+          check_tap_strict "gate-w7-serve suites" "$OUT"
 
   verify-linux:
     runs-on: ubuntu-24.04

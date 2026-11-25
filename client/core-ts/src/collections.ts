@@ -28,7 +28,9 @@ const rows: Spec = { key: ["station", "id"] };
 
 /// Each topic's keyed lists.
 const SPECS: Record<string, Spec> = {
-  chats: { fields: { days: { key: ["daysAgo"], item: { fields: { items: rows } } } } },
+  chats: { fields: { days: { key: ["daysAgo"], item: { fields: { items: rows } } }, groups: { key: ["key"], item: { fields: { items: rows } } } } },
+  projects: { fields: { items: items("name") } },
+  tags: { fields: { items: items("name") } },
   chatSearch: { fields: { items: rows, messages: { key: ["station", "thread", "seq"] } } },
   chatSubchats: { fields: { items: { key: ["station", "session"] } } },
   search: { fields: { items: rows, messages: { key: ["station", "thread", "seq"] }, groups: { key: ["kind"], item: { fields: { items: items("key") } } } } },

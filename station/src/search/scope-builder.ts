@@ -7,7 +7,7 @@ export class SearchScopeBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("search-scope", { binary, config: options.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "search-scope", "--db", path] },
+      { binary: () => resolveReaderSelection("search-scope", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "search-scope", "--db", path] },
       "scope",
       "search scope preparation",
     );

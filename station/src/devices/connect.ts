@@ -52,9 +52,10 @@ function setRaw(path: string, baud: number): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn("stty", [flag, path, "raw", "-echo", String(baud)], { stdio: ["ignore", "ignore", "pipe"] });
     let said = "";
-    child.stderr.on("data", (chunk: Buffer) => (said += chunk.toString()));
+    // (heard before its stderr: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     child.once("error", reject);
     child.once("close", (code) => (code === 0 ? resolve() : reject(new Error(`stty ${path}: ${said.trim() || `exit ${code}`}`))));
+    child.stderr?.on("data", (chunk: Buffer) => (said += chunk.toString()));
   });
 }
 

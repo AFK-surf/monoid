@@ -11,6 +11,306 @@ import "sql_db"
 
 pub let OUTFLOW_CHATS_PENDING : String = "outflow chat order is still being prepared"
 
+let MAX_PARTICIPANTS : Int = 32
+
+let MAX_ROUTER_CONNECTS : Int = 32
+
+let MAX_PARTICIPANT_TEXT : Int = 200
+
+let PARTICIPANTS_SQL : String = "SELECT author FROM thread_people WHERE thread = ? LIMIT 64"
+
+let ROUTER_WROTE_SQL : String = "SELECT author FROM thread_people WHERE thread = ? AND author >= 'slack:' AND author < 'slack;' LIMIT 64"
+
+let ROUTER_CONNECTS_SQL : String = "SELECT connect FROM comma_router_connects WHERE thread = ? ORDER BY connect LIMIT 64"
+
+let TASK_PARTICIPANTS_SQL : String = "SELECT connect, email FROM comma_task_participants WHERE thread = ? ORDER BY connect, email LIMIT 128"
+
+fn str_array_contains(xs : Array[String], target : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+/// /^[^\s@]+@[^\s@]+$/
+pub fn participant_email_like(s : String) -> Bool {
+  let units = js_json::utf16_units(s)
+  let n = units.length()
+  let mut at = -1
+  for i in 0..<n {
+    let c = units[i]
+    if jscase::is_space(c) {
+      return false
+    }
+    if c == 64 {
+      if at >= 0 {
+        return false
+      }
+      at = i
+    }
+  }
+  at > 0 && at < n - 1
+}
+
+fn person_cached(
+  people_cache : Map[String, base_codec::Json],
+  teams_cache : TeamsCache,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  r : String,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  match people_cache.get(r) {
+    Some(p) => Ok(p)
+    None => {
+      let p = match outflow_person(client, data, sep, teams_cache, r) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      people_cache.set(r, p)
+      Ok(p)
+    }
+  }
+}
+
+/// outflow.ts `participantsOf`: the human participant emails of a chat (its creator if a valid email, plus anyone who
+/// spoke in it via `thread_people`, excluding the Comma Router and non-email ids), lowercase, distinct, at most 32.
+fn outflow_participants(
+  db : sql_db::Db,
+  thread_id : base_codec::Json,
+  surface : base_codec::Json,
+  connect : Option[String],
+  creator_email : Option[String],
+  people_cache : Map[String, base_codec::Json],
+  teams_cache : TeamsCache,
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+) -> Result[Array[base_codec::Json], readops_core::ReadError] {
+  let out : Array[String] = []
+  let add = fn(raw : String) -> Unit {
+    let email = jscase::lower(jscase::trim(raw))
+    if participant_email_like(email) &&
+    js_json::utf16_len(email) <= MAX_PARTICIPANT_TEXT &&
+    out.length() < MAX_PARTICIPANTS &&
+    !str_array_contains(out, email) {
+      out.push(email)
+    }
+  }
+  match creator_email {
+    Some(e) => add(e)
+    None => ()
+  }
+  let is_chat = readops_chats::mb_json_eq(surface, base_codec::json_str("chat"))
+  let rows = match db.all(PARTICIPANTS_SQL, [thread_id]) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  for i in 0..<rows.length() {
+    if out.length() >= MAX_PARTICIPANTS {
+      break
+    }
+    let author = match readops_core::field(rows[i], "author") {
+      base_codec::Json::Str(a) => a
+      _ => continue
+    }
+    if is_chat {
+      if readops_core::str_has_prefix(author, "slack:") || author == "local" {
+        continue
+      }
+      add(author)
+    } else {
+      match connect {
+        Some(c) => {
+          let p = match person_cached(people_cache, teams_cache, client, data, sep, "slack:" + c + ":" + author) {
+            Ok(v) => v
+            Err(e) => return Err(e)
+          }
+          match readops_core::json_val(p, "email") {
+            Some(base_codec::Json::Str(e)) => {
+              if e != "" {
+                add(e)
+              }
+            }
+            _ => ()
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  let res : Array[base_codec::Json] = []
+  for i in 0..<out.length() {
+    res.push(base_codec::json_str(out[i]))
+  }
+  Ok(res)
+}
+
+/// Extracts `<cid>` from `slack:<cid>:<req>`, or None when malformed / empty.
+pub fn legacy_router_connect(author : String) -> Option[String] {
+  if !readops_core::str_has_prefix(author, "slack:") {
+    return None
+  }
+  let rest = readops_core::str_slice_bytes(author, 6, author.to_bytes().length())
+  match readops_core::str_find_byte(rest, 58) {
+    Some(colon) => {
+      if colon > 0 {
+        Some(readops_core::str_slice_bytes(rest, 0, colon))
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+/// outflow.ts `routerConnectsOf`: returns `(has_router, router_connects)` for a still.fail chat.
+fn outflow_router_connects(
+  db : sql_db::Db,
+  thread_id : base_codec::Json,
+  has_table : Bool,
+) -> Result[(Bool, Array[base_codec::Json]), readops_core::ReadError] {
+  let recorded : Array[String] = []
+  if has_table {
+    let rows = match db.all(ROUTER_CONNECTS_SQL, [thread_id]) {
+      Ok(rs) => rs
+      Err(e) => return Err(readops_core::map_sql_err(e))
+    }
+    for i in 0..<rows.length() {
+      match readops_core::field(rows[i], "connect") {
+        base_codec::Json::Str(c) => {
+          let trimmed = jscase::trim(c)
+          if trimmed != "" &&
+          js_json::utf16_len(trimmed) <= MAX_PARTICIPANT_TEXT &&
+          !str_array_contains(recorded, trimmed) {
+            recorded.push(trimmed)
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  let slack_rows = match db.all(ROUTER_WROTE_SQL, [thread_id]) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  let has_any_slack = slack_rows.length() > 0
+  let combined : Array[String] = []
+  for i in 0..<recorded.length() {
+    combined.push(recorded[i])
+  }
+  for i in 0..<slack_rows.length() {
+    let author = match readops_core::field(slack_rows[i], "author") {
+      base_codec::Json::Str(a) => a
+      _ => continue
+    }
+    let cid = match legacy_router_connect(author) {
+      Some(c) => c
+      None => continue
+    }
+    let suffix = "/" + cid
+    let mut covered = false
+    for j in 0..<recorded.length() {
+      if recorded[j] == cid || readops_core::str_has_suffix(recorded[j], suffix) {
+        covered = true
+        break
+      }
+    }
+    if !covered && js_json::utf16_len(cid) <= MAX_PARTICIPANT_TEXT && !str_array_contains(combined, cid) {
+      combined.push(cid)
+    }
+  }
+  if combined.length() == 0 {
+    return Ok((has_any_slack, []))
+  }
+  let sorted = readops_core::stable_sort(combined, fn(a : String, b : String) -> Int {
+    shortlex_compare(a, b)
+  })
+  let cap = if sorted.length() > MAX_ROUTER_CONNECTS { MAX_ROUTER_CONNECTS } else { sorted.length() }
+  let res : Array[base_codec::Json] = []
+  for i in 0..<cap {
+    res.push(base_codec::json_str(sorted[i]))
+  }
+  Ok((true, res))
+}
+
+/// outflow.ts `connectParticipantsOf`: per-connect participant emails recorded via `task.say` for a still.fail chat.
+fn outflow_connect_participants(
+  db : sql_db::Db,
+  thread_id : base_codec::Json,
+  has_table : Bool,
+) -> Result[Option[base_codec::Json], readops_core::ReadError] {
+  if !has_table {
+    return Ok(None)
+  }
+  let grouped : Map[String, Array[String]] = Map::new()
+  let order : Array[String] = []
+  let rows = match db.all(TASK_PARTICIPANTS_SQL, [thread_id]) {
+    Ok(rs) => rs
+    Err(e) => return Err(readops_core::map_sql_err(e))
+  }
+  for i in 0..<rows.length() {
+    let raw_connect = match readops_core::field(rows[i], "connect") {
+      base_codec::Json::Str(s) => s
+      _ => continue
+    }
+    let raw_email = match readops_core::field(rows[i], "email") {
+      base_codec::Json::Str(s) => s
+      _ => continue
+    }
+    let connect = jscase::trim(raw_connect)
+    let email = jscase::lower(jscase::trim(raw_email))
+    if connect == "" ||
+    js_json::utf16_len(connect) > MAX_PARTICIPANT_TEXT ||
+    !participant_email_like(email) ||
+    js_json::utf16_len(email) > MAX_PARTICIPANT_TEXT ||
+    readops_core::str_contains_sub(email, ":") {
+      continue
+    }
+    let list = match grouped.get(connect) {
+      Some(xs) => xs
+      None => {
+        if order.length() >= MAX_ROUTER_CONNECTS {
+          continue
+        }
+        let xs : Array[String] = []
+        grouped.set(connect, xs)
+        order.push(connect)
+        xs
+      }
+    }
+    if list.length() < MAX_PARTICIPANTS && !str_array_contains(list, email) {
+      list.push(email)
+    }
+  }
+  if order.length() == 0 {
+    return Ok(None)
+  }
+  let obj_fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<order.length() {
+    let connect = order[i]
+    match grouped.get(connect) {
+      Some(xs) => {
+        if xs.length() > 0 {
+          let jxs : Array[base_codec::Json] = []
+          for j in 0..<xs.length() {
+            jxs.push(base_codec::json_str(xs[j]))
+          }
+          obj_fields.push((connect, base_codec::json_arr(jxs)))
+        }
+      }
+      None => ()
+    }
+  }
+  if obj_fields.length() > 0 {
+    Ok(Some(base_codec::json_obj(obj_fields)))
+  } else {
+    Ok(None)
+  }
+}
+
 /// outflow.ts `state`: how a chat stands by its agents' latest turn.
 pub fn outflow_state(turn : base_codec::Json) -> base_codec::Json {
   match turn {
@@ -577,7 +877,7 @@ pub fn outflow_chats(
     None => ordered
   }
   let sessions : Map[String, Option[Map[String, base_codec::Json]]] = Map::new()
-  let listed : Array[(Map[String, base_codec::Json], Array[String], Double)] = []
+  let listed : Array[(Map[String, base_codec::Json], Array[String], Double, Option[String])] = []
   for i in 0..<threads.length() {
     let t = threads[i]
     let thread = match readops_core::one(db, "SELECT * FROM threads WHERE id = ?", [t.0]) {
@@ -593,7 +893,21 @@ pub fn outflow_chats(
       Err(e) => return Err(readops_core::map_sql_err(e))
     }
     let members : Array[String] = []
+    let mut connect : Option[String] = None
     for j in 0..<mrows.length() {
+      match readops_core::field(mrows[j], "connect") {
+        base_codec::Json::Str(c) => {
+          match connect {
+            None => connect = Some(c)
+            Some(prev) => {
+              if shortlex_compare(c, prev) < 0 {
+                connect = Some(c)
+              }
+            }
+          }
+        }
+        _ => ()
+      }
       let k = readops_core::js_text(readops_core::field(mrows[j], "session"))
       let sopt = match session_cached(db, sessions, k) {
         Ok(s) => s
@@ -609,12 +923,12 @@ pub fn outflow_chats(
       }
     }
     if members.length() > 0 {
-      listed.push((thread, members, t.1))
+      listed.push((thread, members, t.1, connect))
     }
   }
   let turns : Map[String, base_codec::Json] = Map::new()
   for i in 0..<listed.length() {
-    let (_, members, _) = listed[i]
+    let (_, members, _, _) = listed[i]
     for j in 0..<members.length() {
       let k = members[j]
       if !turns.contains(k) {
@@ -627,9 +941,18 @@ pub fn outflow_chats(
     }
   }
   let cache = TeamsCache::new()
+  let people_cache : Map[String, base_codec::Json] = Map::new()
+  let has_router_connects = match readops_core::exists_in(db, "table", "comma_router_connects") {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let has_task_participants = match readops_core::exists_in(db, "table", "comma_task_participants") {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
   let chats : Array[base_codec::Json] = []
   for i in 0..<listed.length() {
-    let (thread, members, last_active_at) = listed[i]
+    let (thread, members, last_active_at, connect) = listed[i]
     let id = readops_core::field(thread, "id")
     let turn_pairs : Array[(String, base_codec::Json)] = []
     for j in 0..<members.length() {
@@ -670,7 +993,7 @@ pub fn outflow_chats(
     }
     let who : base_codec::Json = match creator {
       Some(c) => {
-        let p = match outflow_person(client, data, sep, cache, c) {
+        let p = match person_cached(people_cache, cache, client, data, sep, c) {
           Ok(v) => v
           Err(e) => return Err(e)
         }
@@ -693,6 +1016,21 @@ pub fn outflow_chats(
     }
     let attention = match attention_of(db, thread, latest, creator, email) {
       Ok(a) => a
+      Err(e) => return Err(e)
+    }
+    let participants = match outflow_participants(
+      db,
+      id,
+      readops_core::field(thread, "surface"),
+      connect,
+      email,
+      people_cache,
+      cache,
+      client,
+      data,
+      sep,
+    ) {
+      Ok(ps) => ps
       Err(e) => return Err(e)
     }
     let lead = if latest_list.length() > 0 { latest_list[0].0 } else { members[0] }
@@ -783,18 +1121,24 @@ pub fn outflow_chats(
       None => ()
     }
     if readops_chats::mb_json_eq(surf_col, base_codec::json_str("chat")) {
-      let has_router = match readops_core::one(
-        db,
-        "SELECT 1 AS x FROM thread_people WHERE thread = ? AND author >= 'slack:' AND author < 'slack;' LIMIT 1",
-        [id],
-      ) {
-        Ok(Some(_)) => true
-        Ok(None) => false
+      let (has_router, router_connects) = match outflow_router_connects(db, id, has_router_connects) {
+        Ok(pair) => pair
         Err(e) => return Err(e)
       }
       if has_router {
         chat.push(("router", base_codec::json_bool(true)))
       }
+      if router_connects.length() > 0 {
+        chat.push(("routerConnects", base_codec::json_arr(router_connects)))
+      }
+      match outflow_connect_participants(db, id, has_task_participants) {
+        Ok(Some(cp)) => chat.push(("connectParticipants", cp))
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    if participants.length() > 0 {
+      chat.push(("participants", base_codec::json_arr(participants)))
     }
     chats.push(base_codec::json_obj(chat))
   }

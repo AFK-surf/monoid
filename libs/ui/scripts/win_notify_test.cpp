@@ -1,5 +1,5 @@
-// Deterministic C++17 unit tests for Windows notification queue (win_notify_queue.h)
-// and taskbar badge scheduler (win_badge_sched.h).
+// Deterministic C++17 unit tests for Windows notification queue (win_notify_queue.h),
+// taskbar badge scheduler (win_badge_sched.h), and background launch queue (win_launch_queue.h).
 // Build & run on Linux/macOS:
 //   c++ -std=c++17 -Wall -Wextra -Werror -pthread -I libs/ui/src/host libs/ui/scripts/win_notify_test.cpp -o win_notify_test && ./win_notify_test
 
@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "win_badge_sched.h"
+#include "win_launch_queue.h"
 #include "win_notify_queue.h"
 
 namespace {
@@ -928,6 +929,239 @@ void test_notice_dead_queue_rejects_after_init_failed() {
   CHECK(q.queued_count_for_test() == 0);
 }
 
+// ---- Launch Queue Tests ----
+
+struct FakeLaunchOps {
+  std::vector<std::string> events;
+  std::vector<std::string> failed;
+  int pump_calls = 0;
+  std::function<void(const std::wstring &)> on_open_url;
+  std::function<void(const std::wstring &)> on_reveal_file;
+
+  static std::string narrow(const std::wstring &w) {
+    std::string out;
+    out.reserve(w.size());
+    for (wchar_t c : w) out.push_back(static_cast<char>(c));
+    return out;
+  }
+
+  void open_url(const std::wstring &url) {
+    if (on_open_url) on_open_url(url);
+    events.push_back("url:" + narrow(url));
+  }
+
+  void reveal_file(const std::wstring &path) {
+    if (on_reveal_file) on_reveal_file(path);
+    events.push_back("reveal:" + narrow(path));
+  }
+
+  void pump_messages() {
+    pump_calls++;
+    events.push_back("pump");
+  }
+
+  void on_failed(const mb::WinLaunchOp &op) {
+    std::string kind = op.kind == mb::WinLaunchOpKind::OpenUrl ? "url:" : "reveal:";
+    failed.push_back(kind + narrow(op.target));
+  }
+};
+
+void test_launch_fifo_and_pump() {
+  mb::WinLaunchQueue<FakeLaunchOps> q;
+  FakeLaunchOps ops;
+
+  CHECK(q.enqueue(mb::WinLaunchOpKind::OpenUrl, L"https://example.com/1"));
+  CHECK(q.enqueue(mb::WinLaunchOpKind::RevealFile, L"C:\\tmp\\a.txt"));
+  CHECK(q.enqueue(mb::WinLaunchOpKind::OpenUrl, L"mailto:test@example.com"));
+  CHECK(q.enqueue(mb::WinLaunchOpKind::RevealFile, L"C:\\tmp\\b.txt"));
+  CHECK(q.pending_count() == 4);
+  CHECK(!q.is_dead());
+
+  q.drain(ops);
+
+  std::vector<std::string> expected = {
+      "url:https://example.com/1",
+      "pump",
+      "reveal:C:\\tmp\\a.txt",
+      "pump",
+      "url:mailto:test@example.com",
+      "pump",
+      "reveal:C:\\tmp\\b.txt",
+      "pump",
+  };
+  CHECK(ops.events == expected);
+  CHECK(ops.pump_calls == 4);
+  CHECK(q.pending_count() == 0);
+}
+
+void test_launch_slow_shell_does_not_block_caller() {
+  mb::WinLaunchQueue<FakeLaunchOps> q;
+  FakeLaunchOps ops;
+
+  std::mutex gate_mu;
+  std::condition_variable gate_cv;
+  bool in_first_shell = false;
+  bool release_first_shell = false;
+
+  ops.on_open_url = [&](const std::wstring &url) {
+    if (url == L"https://slow.example/1") {
+      std::unique_lock<std::mutex> lk(gate_mu);
+      in_first_shell = true;
+      gate_cv.notify_one();
+      gate_cv.wait(lk, [&]() { return release_first_shell; });
+    }
+  };
+
+  CHECK(q.enqueue(mb::WinLaunchOpKind::OpenUrl, L"https://slow.example/1"));
+  std::thread worker([&]() { q.drain(ops); });
+
+  {
+    std::unique_lock<std::mutex> lk(gate_mu);
+    gate_cv.wait(lk, [&]() { return in_first_shell; });
+  }
+
+  // While the worker is blocked inside the first Shell call, caller enqueues without blocking.
+  CHECK(q.enqueue(mb::WinLaunchOpKind::RevealFile, L"C:\\tmp\\next.txt"));
+  CHECK(q.enqueue(mb::WinLaunchOpKind::OpenUrl, L"https://fast.example/2"));
+  CHECK(q.pending_count() == 2);
+
+  {
+    std::lock_guard<std::mutex> lk(gate_mu);
+    release_first_shell = true;
+  }
+  gate_cv.notify_one();
+  worker.join();
+
+  std::vector<std::string> expected = {
+      "url:https://slow.example/1",
+      "pump",
+      "reveal:C:\\tmp\\next.txt",
+      "pump",
+      "url:https://fast.example/2",
+      "pump",
+  };
+  CHECK(ops.events == expected);
+  CHECK(q.pending_count() == 0);
+}
+
+void test_launch_bounded_capacity() {
+  const size_t kCap = 4;
+  mb::WinLaunchQueue<FakeLaunchOps> q(kCap);
+  FakeLaunchOps ops;
+
+  for (size_t i = 0; i < kCap; i++) {
+    CHECK(q.enqueue(mb::WinLaunchOpKind::OpenUrl, L"https://example.com/" + std::to_wstring(i)));
+  }
+  CHECK(q.pending_count() == kCap);
+  CHECK(!q.enqueue(mb::WinLaunchOpKind::OpenUrl, L"https://example.com/overflow"));
+  CHECK(!q.enqueue(mb::WinLaunchOpKind::RevealFile, L"C:\\overflow.txt"));
+  CHECK(q.pending_count() == kCap);
+
+  q.drain(ops);
+  CHECK(q.pending_count() == 0);
+  CHECK(ops.pump_calls == static_cast<int>(kCap));
+
+  // After draining, enqueue succeeds again.
+  CHECK(q.enqueue(mb::WinLaunchOpKind::RevealFile, L"C:\\after.txt"));
+  CHECK(q.pending_count() == 1);
+  q.drain(ops);
+  CHECK(q.pending_count() == 0);
+  CHECK(ops.events.size() == (kCap + 1) * 2);
+}
+
+void test_launch_on_init_failed_settles_once() {
+  mb::WinLaunchQueue<FakeLaunchOps> q;
+  FakeLaunchOps ops;
+
+  CHECK(q.enqueue(mb::WinLaunchOpKind::OpenUrl, L"https://example.com/a"));
+  CHECK(q.enqueue(mb::WinLaunchOpKind::RevealFile, L"C:\\a.txt"));
+  CHECK(q.enqueue(mb::WinLaunchOpKind::OpenUrl, L"https://example.com/b"));
+  CHECK(q.pending_count() == 3);
+
+  q.on_init_failed(ops);
+  CHECK(q.is_dead());
+  CHECK(q.pending_count() == 0);
+
+  std::vector<std::string> expected = {
+      "url:https://example.com/a",
+      "reveal:C:\\a.txt",
+      "url:https://example.com/b",
+  };
+  CHECK(ops.failed == expected);
+
+  // Subsequent enqueues are rejected and repeated on_init_failed does not double-settle.
+  CHECK(!q.enqueue(mb::WinLaunchOpKind::OpenUrl, L"https://example.com/c"));
+  CHECK(!q.enqueue(mb::WinLaunchOpKind::RevealFile, L"C:\\c.txt"));
+  q.on_init_failed(ops);
+  CHECK(ops.failed == expected);
+  CHECK(q.pending_count() == 0);
+}
+
+void test_launch_concurrent_enqueue_stress() {
+  const int kThreads = 4;
+  const int kPerThread = 64;
+  // Use a capacity smaller than total items so producers and the concurrent consumer overlap heavily.
+  mb::WinLaunchQueue<FakeLaunchOps> q(32);
+  FakeLaunchOps ops;
+
+  std::mutex wake_mu;
+  std::condition_variable wake_cv;
+  bool producers_done = false;
+  uint64_t wake_seq = 0;
+
+  std::thread consumer([&]() {
+    uint64_t seen_seq = 0;
+    for (;;) {
+      q.drain(ops);
+      std::unique_lock<std::mutex> lk(wake_mu);
+      if (producers_done && wake_seq == seen_seq) {
+        break;
+      }
+      wake_cv.wait(lk, [&]() { return producers_done || wake_seq != seen_seq; });
+      seen_seq = wake_seq;
+    }
+    q.drain(ops);
+  });
+
+  std::atomic<int> accepted{0};
+  std::vector<std::thread> producers;
+  producers.reserve(kThreads);
+  for (int t = 0; t < kThreads; t++) {
+    producers.emplace_back([&, t]() {
+      for (int i = 0; i < kPerThread; i++) {
+        auto kind = ((t + i) % 2 == 0) ? mb::WinLaunchOpKind::OpenUrl : mb::WinLaunchOpKind::RevealFile;
+        std::wstring target = L"t" + std::to_wstring(t) + L"_" + std::to_wstring(i);
+        if (q.enqueue(kind, std::move(target))) {
+          accepted.fetch_add(1, std::memory_order_relaxed);
+          {
+            std::lock_guard<std::mutex> lk(wake_mu);
+            wake_seq++;
+          }
+          wake_cv.notify_one();
+        }
+      }
+    });
+  }
+  for (auto &th : producers) th.join();
+
+  {
+    std::lock_guard<std::mutex> lk(wake_mu);
+    producers_done = true;
+  }
+  wake_cv.notify_one();
+  consumer.join();
+
+  CHECK(accepted.load() > 0);
+  CHECK(q.pending_count() == 0);
+  CHECK(ops.pump_calls == accepted.load());
+
+  std::set<std::string> seen;
+  for (const auto &ev : ops.events) {
+    if (ev != "pump") seen.insert(ev);
+  }
+  CHECK(seen.size() == static_cast<size_t>(accepted.load()));
+}
+
 }  // namespace
 
 int main() {
@@ -942,6 +1176,11 @@ int main() {
   test_badge_zero_skip_and_clear();
   test_badge_superseded_while_rendering();
   test_badge_rebuild_interleavings();
+  test_launch_fifo_and_pump();
+  test_launch_slow_shell_does_not_block_caller();
+  test_launch_bounded_capacity();
+  test_launch_on_init_failed_settles_once();
+  test_launch_concurrent_enqueue_stress();
 
   if (!g_failed) {
     std::printf("win_notify_test: ok\n");

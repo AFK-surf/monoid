@@ -41,7 +41,7 @@ test "compat parses client runtimes, filters runtime_view, and rewrites SSE fram
   assert_false(takes_every(legacy))
 
   let all = client_runtimes([
-    ("StillFail-Runtimes", "claude, codex, dsh, grok, cursor, devin, hermes, agy, pi"),
+    ("StillFail-Runtimes", "claude, codex, dsh, grok, cursor, devin, hermes, agy, pi, copilot"),
   ])
   assert_true(takes_every(all))
 
@@ -71,7 +71,7 @@ test "compat parses client runtimes, filters runtime_view, and rewrites SSE fram
 ///|
 test "runtime_compatible passes through full cores and non-2xx responses" {
   let full_headers = [
-    ("stillfail-runtimes", "claude,codex,dsh,grok,cursor,devin,hermes,agy,pi"),
+    ("stillfail-runtimes", "claude,codex,dsh,grok,cursor,devin,hermes,agy,pi,copilot"),
   ]
   let ans : JsonAnswer = {
     status: 200,
@@ -397,4 +397,34 @@ test "overview_comparable ignores volatile telemetry drift while preserving low-
   let ok1000 = jo([("disk", jo([("freeBytes", jn(120.0 * gib)), ("totalBytes", jn(1000.0 * gib))]))])
   let warn1000 = jo([("disk", jo([("freeBytes", jn(80.0 * gib)), ("totalBytes", jn(1000.0 * gib))]))])
   assert_not_eq(overview_comparable(ok1000), overview_comparable(warn1000))
+}
+
+///|
+test "an agentIdentity naming a runtime the core does not know is left out wherever it stands" {
+  let old = client_runtimes([("stillfail-runtimes", "claude,codex")])
+  // a search's hits, its path shaped by nothing: walked because it says agentIdentity
+  let hits : JsonAnswer = {
+    status: 200,
+    headers: [("content-type", "application/json")],
+    body: "{\"hits\":[{\"author\":\"k\",\"text\":\"hi\",\"agentIdentity\":{\"runtime\":\"copilot\",\"model\":\"gpt\"}},{\"author\":\"c\",\"agentIdentity\":{\"runtime\":\"claude\"}}]}",
+  }
+  let got = runtime_compatible("/search", [("stillfail-runtimes", "claude,codex")], "", "en", hits)
+  assert_eq(got.status, 200)
+  assert_false(got.body.contains("copilot"))
+  assert_true(got.body.contains("\"text\":\"hi\""))
+  assert_true(got.body.contains("{\"runtime\":\"claude\"}"))
+  // a live event of rows: the same
+  let frame = compat_frame(
+    "event: rows\ndata: {\"rows\":[{\"last\":{\"agentIdentity\":{\"runtime\":\"copilot\"},\"text\":\"x\"}}]}",
+    old,
+  )
+  assert_false(frame.contains("copilot"))
+  assert_true(frame.contains("\"text\":\"x\""))
+  // an answer that does not say it is as it came
+  let plain : JsonAnswer = {
+    status: 200,
+    headers: [("content-type", "application/json")],
+    body: "{\"text\":\"copilot\"}",
+  }
+  assert_eq(runtime_compatible("/search", [("stillfail-runtimes", "claude,codex")], "", "en", plain).body, "{\"text\":\"copilot\"}")
 }

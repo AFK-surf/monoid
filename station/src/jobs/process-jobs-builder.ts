@@ -62,7 +62,7 @@ export class ProcessJobsBuilder {
     return new Promise<boolean>((resolve) => {
       let worker: MbBackfill;
       try {
-        const bin = resolveReaderSelection("session-backfill", { binary: this.binary, config: this.readers, logAt: "readers" }).primaryBinary;
+        const bin = resolveReaderSelection("session-backfill", { binary: this.binary, config: this.readers, logAt: "readers" });
         worker = new MbBackfill(bin, ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20);
       }
       catch (error) { log.warn("memory", "the process job worker could not start", { error: (error as Error).message }); resolve(false); return; }

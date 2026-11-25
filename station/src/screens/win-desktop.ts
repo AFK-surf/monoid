@@ -141,7 +141,6 @@ export class WindowsDesktop implements ScreenSource {
       const child = (this.#o.start ?? start)(binary, args);
       let said = "";
       const unarm = wall.after(10_000, () => child.kill());
-      child.stdout!.setEncoding("utf8").on("data", (chunk: string) => (said += chunk));
       let finished = false;
       const done = (error?: Error) => {
         if (finished) return;
@@ -156,8 +155,10 @@ export class WindowsDesktop implements ScreenSource {
           reject(e as Error);
         }
       };
+      // (heard before its stdout: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
       child.on("error", done);
       child.on("close", () => done());
+      child.stdout?.setEncoding("utf8").on("data", (chunk: string) => (said += chunk));
       child.stdin?.end();
     });
   }
@@ -268,8 +269,10 @@ export class WindowsDesktop implements ScreenSource {
   /// One process for a view, answering (its info had); fails with what it said.
   async #start(binary: string, ask: { codec: Codec; maxWidth: number; maxHeight: number; bitrate?: number; fps?: number; gamut?: "p3"; chroma?: "444"; audio?: boolean; audioCodec?: "opus"; agent?: boolean; peek?: boolean }, input: WinInput): Promise<HelperView> {
     const child = (this.#o.start ?? start)(binary, ["view"]);
-    child.stdin!.write(`${JSON.stringify(ask)}\n`);
+    // (its error heard, by childPipe, and its answer listened for, by the view, before it is asked: one not started has
+    // no stdin, and one quick to answer could say it before anything listens)
     const view = new HelperView(ask.codec, childPipe(child), () => {}, input, "Windows.Graphics.Capture", ask.audio, true);
+    child.stdin?.write(`${JSON.stringify(ask)}\n`);
     try {
       await view.ready;
       return view;
@@ -470,19 +473,20 @@ export function childPipe(child: ChildProcess): HelperPipe {
     closed = true;
     events.emit("close");
   };
-  child.stdout!.on("data", (chunk: Buffer) => events.emit("data", chunk));
-  // Its output read to the end first: what it said as it went is had.
+  // Its output read to the end first: what it said as it went is had. (Heard before its streams: one not started
+  // (ENFILE, EMFILE) has none, and its error told to none ends the station.)
   child.on("close", close);
   child.on("error", (error) => {
     log.warn("screens", "stillfail-screen did not start", { error: error.message });
     close();
   });
+  child.stdout?.on("data", (chunk: Buffer) => events.emit("data", chunk));
   // Written to as it ends: nothing to be told.
-  child.stdin!.on("error", () => {});
+  child.stdin?.on("error", () => {});
   return {
-    write: (data) => child.stdin!.write(data),
+    write: (data) => child.stdin?.write(data) ?? true,
     destroy() {
-      child.stdin!.end();
+      child.stdin?.end();
       wall.after(2_000, () => {
         if (child.exitCode === null && child.signalCode === null) child.kill();
       });

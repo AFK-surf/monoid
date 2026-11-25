@@ -7,7 +7,7 @@ export class WidgetSourcesBuilder extends RequestedBuilder<number> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("widget-sources", { binary, config: options.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "widget-sources", "--db", path] },
+      { binary: () => resolveReaderSelection("widget-sources", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "widget-sources", "--db", path] },
       "thread",
       "widget source preparation",
     );

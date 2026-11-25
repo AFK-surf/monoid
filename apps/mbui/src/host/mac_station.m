@@ -424,12 +424,23 @@ static void sf_station_act(moonbit_string_t action) {
     });
     return;
   }
-  if ([a isEqualToString:@"log"]) {
-    [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:[data stringByAppendingPathComponent:@"stillfail.log"]]];
-    return;
-  }
-  if ([a isEqualToString:@"folder"]) {
-    [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:data]];
+  if ([a isEqualToString:@"log"] || [a isEqualToString:@"folder"]) {
+    NSString *target = [a isEqualToString:@"log"] ? [data stringByAppendingPathComponent:@"stillfail.log"] : data;
+    NSURL *u = [NSURL fileURLWithPath:target];
+    if (@available(macOS 10.15, *)) {
+      [NSWorkspace.sharedWorkspace openURL:u
+                             configuration:[NSWorkspaceOpenConfiguration configuration]
+                         completionHandler:^(NSRunningApplication *app, NSError *err) {
+                           (void)app;
+                           if (err) {
+                             fprintf(stderr, "local station open %s failed: %s\n", a.UTF8String,
+                                     err.localizedDescription.UTF8String);
+                             fflush(stderr);
+                           }
+                         }];
+    } else {
+      [NSWorkspace.sharedWorkspace openURL:u];
+    }
     return;
   }
   // 更改存储位置 (asked first on its page): a folder chosen (the system's panel, not over the window: the app goes on

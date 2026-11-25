@@ -4,7 +4,7 @@ import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
-import { AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyPlanIn, agyRenew, agySessionPlan, agyTakeBack, agyTokenReady, agyKeychain, goKeyringValue, readLinuxAgyKeyring, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
+import { AGY_SKILL_BUDGET, agySkillBytes, agySkills, agySkillsFitted, AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyPlanIn, agyRenew, agySessionPlan, agyTakeBack, agyTokenReady, agyKeychain, goKeyringValue, readLinuxAgyKeyring, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
 import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
@@ -27,7 +27,7 @@ import { callsOf } from "./usage-counter-reference.ts";
 import { CHAT_CREATE } from "../src/tools/chat.ts";
 import { failureOf } from "../src/agents/runtime.ts";
 import { cannotStartWords } from "../src/sessions/actor.ts";
-import { testClock } from "./hub-fakes.ts";
+import { settle, testClock } from "./hub-fakes.ts";
 import { CORE, HIDDEN, INDIRECT, McpEndpoint } from "../src/tools/mcp.ts";
 import { stationTools } from "./station-tools.ts";
 
@@ -521,8 +521,11 @@ for (const crashed of [false, true]) {
     const next = new AgyDriver({ data });
     drivers.push(next);
     const later: RuntimeEvent[] = [];
+    let taking = 0;
+    const adoptOpts = { ...(crashed ? { ...configured, mcpUrl: "" } : configured), taking: () => void taking++ };
     // (after a crash, taken up before the station's door opened: no address of its tools known)
-    const adopted = await next.adopt(crashed ? { ...configured, mcpUrl: "" } : configured, snapshot, (e) => later.push(e));
+    const adopted = await next.adopt(adoptOpts, snapshot, (e) => later.push(e));
+    assert.ok(taking >= (crashed ? 4 : 2), `expected takeover progress reports (crashed=${crashed}), got ${taking}`);
     assert.equal(adopted.mcpUrl(), crashed ? null : configured.mcpUrl);
     assert.equal(adopted.model, "gemini-3.1-pro");
     await adopted.abort();
@@ -892,7 +895,7 @@ test("a Google account: signed in in its terminal interface (the way chosen, Goo
     const run = JSON.parse(readFileSync(dump, "utf8").trim().split("\n").at(-1)!);
     // Its HOME an empty directory of its own (its sign-in copied into the profile's agy/ once done), its sign-in kept in a
     // file there (AGY_FILE_TOKENS), its question to the terminal answered; none of the machine's keys.
-    assert.deepEqual([run.args, run.home, run.remote, run.key, run.fileTokens], [[], run.home, null, null, AGY_FILE_TOKENS.SSH_CLIENT]);
+    assert.deepEqual([run.args, run.home, run.remote, run.key, run.fileTokens, run.forceFileTokens], [[], run.home, null, null, AGY_FILE_TOKENS.SSH_CLIENT, AGY_FILE_TOKENS.AGY_CLI_FORCE_FILE_TOKEN_STORAGE]);
     // (its run and its manager's mark: one before it, or another manager's with the same run, is not taken for it)
     const g1 = join(data, "run", "agy-login", "g-1-");
     assert.ok(run.home.startsWith(g1) && /^[0-9a-f]{8}$/.test(run.home.slice(g1.length)), run.home);
@@ -1052,11 +1055,13 @@ test("agy stopped after its code: what it shows is said, not the code blamed; a 
   // (its clock moved on a little as each look is taken, as the sign-in's own waits are on it)
   const ticking = (f: () => boolean) => until(async () => (await time.adjust(50), f()));
   const wait = async (id: string, state: LoginState) => ticking(() => logins.get(id)?.state === state);
-  // (the clock moved on past its wait, the sign-in's look at its file each half second given its turn)
+  // (each 1 s step waits for look()'s async readFile/CloseReq on libuv to settle before advancing TestClock again;
+  // capped at 100 s so it crosses AGY_WAIT_MS = 90 s without ever approaching the 15-minute login TIMEOUT_MS)
   const pastWait = async (id: string) => {
-    for (let i = 0; i < 200 && logins.get(id)?.state === "verifying"; i++) {
+    await settle(5);
+    for (let i = 0; i < 100 && logins.get(id)?.state === "verifying"; i++) {
       await time.adjust(1000);
-      await new Promise((r) => setImmediate(r));
+      await settle(5);
     }
   };
   try {
@@ -1065,7 +1070,9 @@ test("agy stopped after its code: what it shows is said, not the code blamed; a 
     await logins.submitCode("s14", "4/0Ab-stuck", "en");
     await wait("s14", "needs_project");
     await logins.submitCode("s14", "my-project", "en");
-    await ticking(() => existsSync(join(data, "stuck14-dump.keys")) && readFileSync(join(data, "stuck14-dump.keys"), "utf8").includes('"step":"region"'));
+    await ticking(() => existsSync(join(data, "stuck14-dump.keys"))
+      && readFileSync(join(data, "stuck14-dump.keys"), "utf8").includes('"step":"region"')
+      && String((logins as any).jobs.get("s14")?.output ?? "").includes("Setting up your project"));
     await pastWait("s14");
     assert.equal(logins.get("s14")?.state, "failed");
     const error = logins.get("s14")!.error ?? "";
@@ -1168,6 +1175,7 @@ test("signed in again over a sign-in there is (a person's and a company's): `agy
       await wait("needs_code");
       const run = JSON.parse(readFileSync(dump, "utf8").trim().split("\n").at(-1)!);
       assert.equal(run.fileTokens, AGY_FILE_TOKENS.SSH_CLIENT);
+      assert.equal(run.forceFileTokens, AGY_FILE_TOKENS.AGY_CLI_FORCE_FILE_TOKEN_STORAGE);
       assert.ok(run.home.startsWith(join(data, "run", "agy-login")), run.home);
       // The old one untouched while the new is under way.
       assert.equal(JSON.parse(readFileSync(agyToken(home), "utf8")).token.access_token, "ya29.old");
@@ -1375,7 +1383,7 @@ test("a Google account's sign-in: refused at once where there is no terminal; wi
   }
   const q = await checkQuota({ id: "p", runtime: "agy", home: join(data, "no-signin"), access: { kind: "subscription" } } as never, {}, undefined, undefined, "en");
   assert.deepEqual([q.state, q.detail], ["unavailable", tr("en", "station.quota.signInExpired")]);
-  assert.equal(loginCommand("agy", "/h"), `SSH_CLIENT='${AGY_FILE_TOKENS.SSH_CLIENT}' HOME=/h/agy agy`);
+  assert.equal(loginCommand("agy", "/h"), `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 SSH_CLIENT='${AGY_FILE_TOKENS.SSH_CLIENT}' HOME=/h/agy agy`);
 });
 
 test("an Antigravity CLI account's Gemini and Claude / GPT windows weigh only on their own models in the pool", () => {
@@ -1679,6 +1687,7 @@ test("macOS keychain: `agy` is kept to the profile's file, and a sign-in it had 
     // Its processes keep the sign-in in the file alone: never the keychain's one item for every profile.
     const { options } = setup();
     assert.equal(agyEnv(options).SSH_CLIENT, AGY_FILE_TOKENS.SSH_CLIENT);
+    assert.equal(agyEnv(options).AGY_CLI_FORCE_FILE_TOKEN_STORAGE, "1");
 
     // 1. The first check notes the email; then `agy` (before) moved the file into the keychain, as go-keyring writes it.
     const first = await checkProfile({ runtime: "agy", kind: "subscription", key: "", via: {}, home: notedHome, env: {}, machine: false, lang: "en" });
@@ -1779,6 +1788,7 @@ test("Linux and Windows keep `agy` on file tokens, and Linux takes back a matchi
     platform.hasKeychain = false;
     platform.os = "linux";
     assert.equal(agyEnv(options).SSH_CLIENT, AGY_FILE_TOKENS.SSH_CLIENT);
+    assert.equal(agyEnv(options).AGY_CLI_FORCE_FILE_TOKEN_STORAGE, "1");
 
     // Matching Linux Secret Service item is taken back into the profile's token file.
     const back = await checkProfile({ runtime: "agy", kind: "subscription", key: "", via: {}, home: notedHome, env: {}, machine: false, lang: "en" });
@@ -1800,6 +1810,7 @@ test("Linux and Windows keep `agy` on file tokens, and Linux takes back a matchi
     // Windows also passes AGY_FILE_TOKENS, while agyTakeBack skips macOS/Linux keyring lookup.
     platform.os = "windows";
     assert.equal(agyEnv(options).SSH_CLIENT, AGY_FILE_TOKENS.SSH_CLIENT);
+    assert.equal(agyEnv(options).AGY_CLI_FORCE_FILE_TOKEN_STORAGE, "1");
     assert.equal(await agyTakeBack(windowsHome), false);
     assert.equal(reads, 2);
   } finally {
@@ -2325,4 +2336,38 @@ test("agy subscription falls back to google-vertex when spent (notifying billedF
   const back = pool.runOn("s-fb");
   assert.equal(back.id, "ag-sub");
   assert.equal(sessions.get("s-fb").profile, "ag-sub");
+});
+
+test("agy is given the skills that fit beside the station's tools: the session's own first, then the shared ones smallest first", async () => {
+  assert.equal(agySkillBytes("---\nname: a\ndescription: bb\n---\nbody that is not declared", "/w/.agent/skills/a/SKILL.md"), "name: a\ndescription: bb".length + "/w/.agent/skills/a/SKILL.md".length + 64);
+  const { kept, left } = agySkillsFitted([
+    { name: "big", bytes: 600, own: false }, { name: "small", bytes: 200, own: false }, { name: "mine", bytes: 500, own: true }, { name: "mid", bytes: 300, own: false },
+  ], 1000);
+  assert.deepEqual([...kept], ["mine", "small", "mid"]);
+  assert.deepEqual(left, ["big"]);
+
+  // A workspace of 149 skills of some 400 bytes each (Hypershell's, 2026-11-25): what agy is given stays in the budget.
+  const ws = mkdtempSync(join(tmpdir(), "agy-ws-many-"));
+  const shared = mkdtempSync(join(tmpdir(), "agy-skills-many-"));
+  try {
+    for (let i = 0; i < 149; i++) {
+      mkdirSync(join(shared, `skill-${i}`));
+      writeFileSync(join(shared, `skill-${i}`, "SKILL.md"), `---\nname: skill-${i}\ndescription: ${"x".repeat(380)}\n---\nbody\n`);
+    }
+    // As a session has them (agent-home.ts `sessionSkills`): every shared skill linked into .agents/skills, beside one
+    // of its own that sorts last and is bigger than any shared one.
+    mkdirSync(join(ws, ".agents", "skills"), { recursive: true });
+    for (let i = 0; i < 149; i++) symlinkSync(join(shared, `skill-${i}`), join(ws, ".agents", "skills", `skill-${i}`), "dir");
+    mkdirSync(join(ws, ".agents", "skills", "z-own"));
+    writeFileSync(join(ws, ".agents", "skills", "z-own", "SKILL.md"), `---\nname: z-own\ndescription: ${"y".repeat(900)}\n---\n`);
+    await agySkills(ws, shared);
+    const given = readdirSync(join(ws, ".agent", "skills"));
+    assert.ok(given.includes("z-own"), "the session's own skill is given first");
+    const bytes = given.reduce((n, name) => n + agySkillBytes(readFileSync(join(ws, ".agent", "skills", name, "SKILL.md"), "utf8"), join(ws, ".agent", "skills", name, "SKILL.md")), 0);
+    assert.ok(given.length > 10 && given.length < 149, `${given.length} given`);
+    assert.ok(bytes <= AGY_SKILL_BUDGET, `${bytes} bytes`);
+  } finally {
+    rmSync(ws, { recursive: true, force: true });
+    rmSync(shared, { recursive: true, force: true });
+  }
 });

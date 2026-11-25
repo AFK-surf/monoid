@@ -78,10 +78,10 @@ pub fn kind_of(
 
 pub fn join_path(sep : String, base : String, given : String) -> String {
   if sep == "\\" {
-    let gb = given.to_bytes()
+    let gu = js_json::utf16_units(given)
     let absolute = str_has_prefix(given, "\\") ||
     str_has_prefix(given, "/") ||
-    (gb.length() >= 3 && (gb[1].to_int() & 0xFF) == 58 && ((gb[2].to_int() & 0xFF) == 92 || (gb[2].to_int() & 0xFF) == 47))
+    (gu.length() >= 3 && gu[1] == 58 && (gu[2] == 92 || gu[2] == 47))
     if absolute || base == "" {
       given
     } else if str_has_suffix(base, "\\") || str_has_suffix(base, "/") {
