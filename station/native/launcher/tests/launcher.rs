@@ -1356,7 +1356,7 @@ fn the_moonbit_station_s_commands_are_its_own_with_the_same_arguments_and_its_re
     assert_eq!(said["args"], serde_json::json!(["heap", "--data", data]));
 }
 
-/// Atomically installs an executable script (closed write fd + rename) to avoid ETXTBSY races.
+/// Installs an executable script atomically via temp file + rename.
 fn write_exec_script(path: &Path, body: &str) {
     static SCRIPT_SEQ: AtomicUsize = AtomicUsize::new(0);
     let tmp = path.with_extension(format!("tmp-{}", SCRIPT_SEQ.fetch_add(1, Ordering::Relaxed)));
@@ -1504,7 +1504,7 @@ fn renew_persists_pion_engine_and_keeps_front_when_unchanged() {
 
 #[test]
 fn pion_probe_failure_and_listen_failure_fall_back_to_mb() {
-    // Subcase A: --version lacks exact `mesh` (only `mesh2`) -> falls back to MB.
+    // Subcase A: --version lacks exact `mesh` (only `mesh2`) -> falls back to MB and keeps MB across SIGUSR2.
     let mut station_probe = Station::new("front-pion-probe-fb");
     install_dual_fronts(&station_probe, "stillfail-pion 0.1.0 modes:footprint,mesh2", false);
     write_config(&station_probe, r#"{"http":{"port":0},"readers":{"mesh":"pion"}}"#);
@@ -1514,11 +1514,16 @@ fn pion_probe_failure_and_listen_failure_fall_back_to_mb() {
     assert_eq!(entries_a.len(), 1, "{entries_a:?}");
     assert_eq!(entries_a[0].0, "mb");
     assert!(alive(entries_a[0].1));
+    station_probe.conf("version=0.2.0\n");
+    station_probe.signal(libc::SIGUSR2);
+    until("handover A to 0.2.0", || station_probe.station_json().filter(|s| s["version"] == "0.2.0"));
+    assert_eq!(front_engine_log(&station_probe), entries_a, "fallback MB front must not restart on SIGUSR2");
+    assert!(alive(entries_a[0].1));
     station_probe.signal(libc::SIGTERM);
     assert!(station_probe.wait().success());
     until("mb fallback A gone", || (!alive(entries_a[0].1)).then_some(()));
 
-    // Subcase B: --version advertises `mesh`, but Pion exits before listening -> automatic fallback to MB.
+    // Subcase B: --version advertises `mesh`, but Pion exits before listening -> falls back to MB and keeps MB across SIGUSR2.
     let mut station_listen = Station::new("front-pion-listen-fb");
     install_dual_fronts(&station_listen, "stillfail-pion 0.1.0 modes:footprint,mesh", true);
     write_config(&station_listen, r#"{"http":{"port":0},"readers":{"mesh":"pion"}}"#);
@@ -1528,7 +1533,48 @@ fn pion_probe_failure_and_listen_failure_fall_back_to_mb() {
     assert_eq!(entries_b.len(), 1, "{entries_b:?}");
     assert_eq!(entries_b[0].0, "mb");
     assert!(alive(entries_b[0].1));
+    station_listen.conf("version=0.2.0\n");
+    station_listen.signal(libc::SIGUSR2);
+    until("handover B to 0.2.0", || station_listen.station_json().filter(|s| s["version"] == "0.2.0"));
+    assert_eq!(front_engine_log(&station_listen), entries_b, "fallback MB front must not restart on SIGUSR2");
+    assert!(alive(entries_b[0].1));
     station_listen.signal(libc::SIGTERM);
     assert!(station_listen.wait().success());
     until("mb fallback B gone", || (!alive(entries_b[0].1)).then_some(()));
+}
+
+#[test]
+fn pion_only_install_rolls_back_to_direct_bind_on_sigusr2() {
+    let mut station = Station::new("front-pion-only-rollback");
+    let log_file = station.data.join("fronts-engines");
+    // Only install stillfail-pion (no stillfail-reader in app/station).
+    write_exec_script(
+        &station.app.join("station/stillfail-pion"),
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then\n  printf 'stillfail-pion 0.1.0 modes:footprint,mesh\\n'\n  exit 0\nfi\necho \"pion $$\" >> '{}'\nprintf '{{\"listening\":\"%s\",\"streams\":8}}\\n' \"$4\"\nexec cat > /dev/null\n",
+            log_file.display()
+        ),
+    );
+    write_config(&station, r#"{"http":{"port":0},"readers":{"mesh":"pion"}}"#);
+    station.start("");
+    station.up();
+    let initial = front_engine_log(&station);
+    assert_eq!(initial.len(), 1, "{initial:?}");
+    assert_eq!(initial[0].0, "pion");
+    let pion_pid = initial[0].1;
+    assert!(alive(pion_pid));
+
+    // Roll back to "mb" on a Pion-only install: Pion front must end and the next Node must bind directly (`front none`).
+    write_config(&station, r#"{"http":{"port":0},"readers":{"mesh":"mb"}}"#);
+    station.conf("version=0.2.0\n");
+    station.signal(libc::SIGUSR2);
+    until("handover to 0.2.0", || station.station_json().filter(|s| s["version"] == "0.2.0"));
+    until("pion front ended on rollback", || (!alive(pion_pid)).then_some(()));
+    let node2 = *station.started().last().unwrap();
+    until("node2 to log front", || station.log().into_iter().any(|(_, p, w)| p == node2 && w.starts_with("front ")).then_some(()));
+    assert!(station.said(node2, "front none"), "{:?}", station.log());
+    assert_eq!(front_engine_log(&station), initial, "no second front started");
+
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
 }

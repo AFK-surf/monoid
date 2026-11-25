@@ -559,6 +559,10 @@ test("old stillfail-pion binary capability probe: baseline 3 modes work, unannou
     [...parsePionVersionModes("stillfail-pion 0.3.0 modes:footprint,packed,memory,session-counts")].sort(),
     ["footprint", "memory", "packed", "session-counts"],
   );
+  // ECMAScript whitespace prefixes (U+00A0 NBSP, U+000B VT) are accepted, while non-whitespace suffixes (e.g. .v2) are rejected.
+  assert.equal(parsePionVersionModes("stillfail-pion 0.3.0\u00A0modes:mesh").has("mesh"), true);
+  assert.equal(parsePionVersionModes("stillfail-pion 0.3.0\u000Bmodes:mesh").has("mesh"), true);
+  assert.equal(parsePionVersionModes("stillfail-pion 0.3.0 modes:mesh.v2").has("mesh"), false);
 
   const logs: Line[] = [];
   hearLines((l) => logs.push(l));

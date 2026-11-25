@@ -317,15 +317,25 @@ impl Os for System {
     }
 
     fn switch_front_if_needed(&mut self) -> Option<bool> {
-        if let Some(front) = &self.front {
-            let want = front.engine_switch_target(&self.options.app, &self.options.data)?;
-            let old = self.front.take().unwrap();
-            log::info(&format!("the front (pid {}) engine changed ({} -> {want}): replacing it before handover", old.pid, old.engine()));
-            old.end();
-            self.front = crate::front::Front::start(&self.options.app, &self.options.data);
-            return Some(self.front.is_some());
+        if let Some(front) = &mut self.front {
+            return match front.decide_transition(&self.options.app, &self.options.data) {
+                crate::front::FrontDecision::Keep => None,
+                crate::front::FrontDecision::SwitchTo(want) => {
+                    let old = self.front.take().unwrap();
+                    log::info(&format!("the front (pid {}) engine changed ({} -> {want}): replacing it before handover", old.pid, old.engine()));
+                    old.end();
+                    self.front = crate::front::Front::start(&self.options.app, &self.options.data);
+                    Some(self.front.is_some())
+                }
+                crate::front::FrontDecision::EndForDirectBind => {
+                    let old = self.front.take().unwrap();
+                    log::info(&format!("the front (pid {}) engine ({}) disabled with no fallback binary: ending it so the next Node binds directly", old.pid, old.engine()));
+                    old.end();
+                    Some(false)
+                }
+            };
         }
-        if !crate::front::Front::in_release(&self.options.app, &self.options.data) {
+        if !crate::front::Front::requested_program_available(&self.options.app, &self.options.data) {
             return None;
         }
         self.front = crate::front::Front::start(&self.options.app, &self.options.data);
@@ -674,7 +684,7 @@ pub fn run(mut options: Options) -> i32 {
     let parent = unsafe { libc::getppid() };
     let own = std::env::current_exe().ok().and_then(|exe| hash_of(&exe));
     let front = crate::front::Front::start(&options.app, &options.data);
-    let wanted = front.is_none() && crate::front::Front::in_release(&options.app, &options.data);
+    let wanted = front.is_none() && crate::front::Front::requested_program_available(&options.app, &options.data);
     let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
     // One the release has that did not start: tried again later (no Node is linked to it, so none hands over for it).
     if wanted {
@@ -715,14 +725,14 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
     if let Some(kept) = &front {
         crate::front::clean_orphans(&options.data, Some(kept.pid));
     }
-    let wanted = front.is_none() && crate::front::Front::in_release(&options.app, &options.data);
+    let wanted = front.is_none() && crate::front::Front::requested_program_available(&options.app, &options.data);
     let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
     station.adopt(node, version, served, heartbeats);
     if wanted {
         station.schedule_front_retry();
     }
     // A Node that ended meanwhile (its SIGCHLD held, then come) is reaped as signals come.
-    station.start_next();
+    station.start_next_after_resume();
     serve(&mut station, signals)
 }
 

@@ -259,6 +259,8 @@ pub struct Lifecycle<O: Os> {
     /// The front gone and none in its place (`front_gone`): the Nodes running are linked to it, so the one serving is
     /// replaced, by a handover once none is under way, with one that binds the station's endpoint itself.
     front_gone: bool,
+    /// When the next direct-binding handover attempt for `front_gone` may run (backoff after a failed direct-bind Next).
+    front_gone_at: Option<Instant>,
     /// Gone so: when one is started again (Times::front_retry), and how many tries did not start one.
     front_retry_at: Option<Instant>,
     front_retries: u32,
@@ -295,6 +297,7 @@ impl<O: Os> Lifecycle<O> {
             parent_at,
             exit: 0,
             front_gone: false,
+            front_gone_at: None,
             front_retry_at: None,
             front_retries: 0,
             renewed: false,
@@ -646,6 +649,10 @@ impl<O: Os> Lifecycle<O> {
     fn hand_over(&mut self) {
         let Some((mut next, _, _)) = self.next.take() else { return };
         self.restart_at = None;
+        if !self.os.has_front() {
+            self.front_gone = false;
+            self.front_gone_at = None;
+        }
         next.handed = true;
         next.take_by = Some(self.os.now() + self.times.take);
         let old = self.current.replace(next);
@@ -677,6 +684,12 @@ impl<O: Os> Lifecycle<O> {
         self.start_next_inner(true);
     }
 
+    /// Handover immediately after `resume()` (where `Front::current`/`Front::start` already reconciled the front).
+    #[cfg_attr(windows, allow(dead_code))]
+    pub fn start_next_after_resume(&mut self) {
+        self.start_next_inner(false);
+    }
+
     fn start_next_inner(&mut self, allow_front_switch: bool) {
         if self.stopping.is_some() {
             return;
@@ -696,13 +709,15 @@ impl<O: Os> Lifecycle<O> {
             return;
         }
         let had_front = self.os.has_front();
-        let switch_failed_from_front = if allow_front_switch {
+        let can_start_from_none = !self.front_gone && self.front_retry_at.is_none_or(|at| self.os.now() >= at);
+        let switch_failed_from_front = if allow_front_switch && (had_front || can_start_from_none) {
             match self.os.switch_front_if_needed() {
                 Some(true) => {
                     self.probing = None;
                     self.front_misses = 0;
                     self.front_probe_at = Some(self.os.now() + self.times.front_probe);
                     self.front_gone = false;
+                    self.front_gone_at = None;
                     self.front_retry_at = None;
                     self.front_retries = 0;
                     false
@@ -731,12 +746,9 @@ impl<O: Os> Lifecycle<O> {
             Err(error) => self.handoff_failed(&format!("{} did not start: {error}", self.os.program())),
         }
         if switch_failed_from_front {
+            // Keep `self.front_gone = true` until the direct-binding Next actually reaches `hand_over()` so that if
+            // this Next crashes before ready, `ended(Slot::Next)` retries direct-binding handover after backoff.
             self.front_gone();
-            // When `spawn()` above already started a direct-binding handover, clear the pending flag so finishing
-            // that handover does not immediately trigger a second redundant handover.
-            if self.next.is_some() {
-                self.front_gone = false;
-            }
         }
     }
 
@@ -749,6 +761,7 @@ impl<O: Os> Lifecycle<O> {
     pub fn front_gone(&mut self) {
         self.record("front_gone", serde_json::json!({ "retries": self.front_retries }), true);
         self.front_gone = true;
+        self.front_gone_at = None;
         self.probing = None;
         self.front_misses = 0;
         self.front_probe_at = None;
@@ -841,7 +854,11 @@ impl<O: Os> Lifecycle<O> {
     /// handover of its own), and the Node serving, if any, has taken over.
     fn front_retry_due(&self) -> Option<Instant> {
         let at = self.front_retry_at?;
-        let calm = self.stopping.is_none() && self.next.is_none() && self.retiring.is_none() && !self.front_gone && self.current.as_ref().is_none_or(|n| n.taken);
+        let calm = self.stopping.is_none()
+            && self.next.is_none()
+            && self.retiring.is_none()
+            && (!self.front_gone || self.front_gone_at.is_some())
+            && self.current.as_ref().is_none_or(|n| n.taken);
         calm.then_some(at)
     }
 
@@ -880,6 +897,11 @@ impl<O: Os> Lifecycle<O> {
                     self.handoff_failed(&format!("the new station {how} before it was ready"));
                 }
                 drop(node);
+                if self.front_gone && self.stopping.is_none() && self.current.is_some() {
+                    let delay = self.times.backoff.saturating_mul(1 << self.backoff_step.min(16)).min(self.times.backoff_max);
+                    self.backoff_step += 1;
+                    self.front_gone_at = Some(self.os.now() + delay);
+                }
                 if self.current.is_none() && self.stopping.is_none() && self.restart_at.is_none() {
                     self.schedule_restart();
                 }
@@ -988,12 +1010,19 @@ impl<O: Os> Lifecycle<O> {
         if self.restart_at.is_some_and(|at| now >= at) && self.stopping.is_none() {
             self.start();
         }
-        if self.front_gone && self.stopping.is_none() && self.next.is_none() && self.retiring.is_none() {
-            self.front_gone = false;
+        if self.front_gone
+            && self.stopping.is_none()
+            && self.next.is_none()
+            && self.retiring.is_none()
+            && self.front_gone_at.is_none_or(|at| now >= at)
+        {
+            self.front_gone_at = None;
             // None serving: the one started next binds the endpoint itself.
             if self.current.is_some() {
                 log::warn("the front is gone: the Node serving hands over to one that binds the station's endpoint itself");
                 self.start_next_inner(false);
+            } else {
+                self.front_gone = false;
             }
         }
         if let Some(by) = self.heartbeat_by()
@@ -1041,6 +1070,8 @@ impl<O: Os> Lifecycle<O> {
                 // one there already (started with a Node's restart meanwhile)
             } else if self.os.front_again() {
                 log::info("the front listens again");
+                self.front_gone = false;
+                self.front_gone_at = None;
                 // The Node serving binds the endpoint itself: it hands over to one linked to the front (spawn).
                 if self.current.is_some() {
                     log::info("the Node serving hands over to one linked to the front");
@@ -1104,6 +1135,7 @@ impl<O: Os> Lifecycle<O> {
             self.drained_at.map(|at| at + self.times.drained),
             self.parent_at,
             self.heartbeat_by(),
+            self.front_gone_at.filter(|_| self.front_gone && self.stopping.is_none() && self.next.is_none() && self.retiring.is_none()),
             self.front_retry_due(),
             self.front_probe_at.filter(|_| self.stopping.is_none() && self.probing.is_none()),
             self.probing.map(|(_, by)| by).filter(|_| self.stopping.is_none()),
@@ -2358,5 +2390,31 @@ mod tests {
         station.serves(Slot::Current, 6000);
         station.tick();
         assert_eq!(station.last(), direct, "no redundant second handover");
+    }
+
+    #[test]
+    fn failed_front_switch_retries_direct_bind_handover_when_first_next_crashes_before_ready() {
+        let mut station = station("frontswitchretry", false);
+        station.os.front = true;
+        let old = station.last();
+        station.up(Slot::Current, "0.1.0", 5000);
+        station.os.front_switch = Some(false);
+        station.start_next();
+        let direct1 = station.last();
+        assert_ne!(direct1, old);
+        // Direct-binding Next #1 exits before ready: old Current is still tied to the dead front, so after backoff
+        // a second direct-binding Next #2 must start automatically.
+        station.ended(direct1, EXITED_1);
+        station.pass(s(1) - MS);
+        assert_eq!(station.last(), direct1, "still waiting backoff");
+        station.pass(MS);
+        let direct2 = station.last();
+        assert_eq!(direct2, direct1 + 1, "second direct-binding handover started after backoff");
+        // Once Next #2 takes over, no third handover is triggered.
+        station.said(Slot::Next, ready("0.2.0"));
+        station.ended(old, EXITED_0);
+        station.serves(Slot::Current, 6000);
+        station.pass(s(10));
+        assert_eq!(station.last(), direct2, "no redundant handover after direct2 took over");
     }
 }
