@@ -85,6 +85,8 @@ static int url_app_asks, url_opens;
 static NSURL *url_app_said;
 static NSURL *url_last_opened;
 static NSError *url_open_fails;
+static int url_defer_open;
+static void (^url_deferred_cb)(NSRunningApplication *, NSError *);
 static NSURL *test_url_app(NSURL *u) {
   (void)u;
   url_app_asks++;
@@ -93,6 +95,10 @@ static NSURL *test_url_app(NSURL *u) {
 static void test_open_url_async(NSURL *u, void (^cb)(NSRunningApplication *, NSError *)) {
   url_last_opened = u;
   url_opens++;
+  if (url_defer_open) {
+    url_deferred_cb = [cb copy];
+    return;
+  }
   cb(nil, url_open_fails);
 }
 #define MB_MAC_URL_APP(u) test_url_app(u)
@@ -986,6 +992,10 @@ int main(void) {
     CHECK(url_opens == opens_before + 1);
     CHECK([url_last_opened.absoluteString isEqualToString:@"x-apple.systempreferences:com.apple.preference.notifications"]);
 
+    // Deferred async failure: mb_host_notice_state(3) returns 1 before the callback runs; no failure is logged
+    // until the deferred completion handler fires with an error.
+    url_defer_open = 1;
+    url_deferred_cb = nil;
     url_open_fails = [NSError errorWithDomain:NSCocoaErrorDomain code:2 userInfo:@{NSLocalizedDescriptionKey : @"prefs failed"}];
     int nfds[2];
     CHECK(pipe(nfds) == 0);
@@ -995,13 +1005,30 @@ int main(void) {
     int32_t nopened = mb_host_notice_state(3);
     fflush(stdout);
     dup2(nout, 1);
-    close(nout);
     close(nfds[1]);
-    char nsaid[1024] = {0};
-    ssize_t nn = read(nfds[0], nsaid, sizeof nsaid - 1);
+    char nsaid_before[1024] = {0};
+    ssize_t nn_before = read(nfds[0], nsaid_before, sizeof nsaid_before - 1);
     close(nfds[0]);
-    CHECK(nopened == 1 && url_app_asks == asks_before && url_opens == opens_before + 2 && nn > 0);
-    CHECK(strstr(nsaid, "open-url failed: x-apple.systempreferences:com.apple.preference.notifications: prefs failed\n") != NULL);
+    CHECK(nopened == 1 && url_app_asks == asks_before && url_opens == opens_before + 2 && nn_before > 0);
+    CHECK(url_deferred_cb != nil);
+    CHECK(strstr(nsaid_before, "open-url failed:") == NULL);
+
+    int nfds2[2];
+    CHECK(pipe(nfds2) == 0);
+    fflush(stdout);
+    dup2(nfds2[1], 1);
+    url_deferred_cb(nil, url_open_fails);
+    fflush(stdout);
+    dup2(nout, 1);
+    close(nout);
+    close(nfds2[1]);
+    char nsaid_after[1024] = {0};
+    ssize_t nn_after = read(nfds2[0], nsaid_after, sizeof nsaid_after - 1);
+    close(nfds2[0]);
+    CHECK(nn_after > 0);
+    CHECK(strstr(nsaid_after, "open-url failed: x-apple.systempreferences:com.apple.preference.notifications: prefs failed\n") != NULL);
+    url_defer_open = 0;
+    url_deferred_cb = nil;
     url_open_fails = nil;
     url_last_opened = nil;
     for (int i = 0; i < 3; i++) {

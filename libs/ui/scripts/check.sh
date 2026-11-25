@@ -17,6 +17,8 @@ cc -Wall -I "$D/../src/host" "$D/log_files_test.c" -o "$D/../out/log_files_test"
 cc -Wall -I "$D/../src/host" "$D/frame_mail_test.c" -lm -o "$D/../out/frame_mail_test" && "$D/../out/frame_mail_test" || exit 1
 # Windows toast notification queue and taskbar badge scheduler (src/host/win_notify_queue.h, win_badge_sched.h)
 c++ -std=c++17 -Wall -Wextra -Werror -pthread -I "$D/../src/host" "$D/win_notify_test.cpp" -o "$D/../out/win_notify_test" && "$D/../out/win_notify_test" || exit 1
+# Linux URI launch precheck, portal detection, login guard matrix, and safe error formatting (src/host/linux_launch.h)
+cc -Wall -Wextra -Werror -I "$D/../src/host" "$D/linux_launch_test.c" -o "$D/../out/linux_launch_test" && "$D/../out/linux_launch_test" || exit 1
 sh "$D/framemail_test.sh" || exit 1
 sh "$D/noticesqueue_test.sh" || exit 1
 sh "$D/glyphsahead_test.sh" || exit 1

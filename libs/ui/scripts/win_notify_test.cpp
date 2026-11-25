@@ -1100,8 +1100,28 @@ void test_launch_on_init_failed_settles_once() {
 void test_launch_concurrent_enqueue_stress() {
   const int kThreads = 4;
   const int kPerThread = 64;
-  mb::WinLaunchQueue<FakeLaunchOps> q(static_cast<size_t>(kThreads * kPerThread));
+  // Use a capacity smaller than total items so producers and the concurrent consumer overlap heavily.
+  mb::WinLaunchQueue<FakeLaunchOps> q(32);
   FakeLaunchOps ops;
+
+  std::mutex wake_mu;
+  std::condition_variable wake_cv;
+  bool producers_done = false;
+  uint64_t wake_seq = 0;
+
+  std::thread consumer([&]() {
+    uint64_t seen_seq = 0;
+    for (;;) {
+      q.drain(ops);
+      std::unique_lock<std::mutex> lk(wake_mu);
+      if (producers_done && wake_seq == seen_seq) {
+        break;
+      }
+      wake_cv.wait(lk, [&]() { return producers_done || wake_seq != seen_seq; });
+      seen_seq = wake_seq;
+    }
+    q.drain(ops);
+  });
 
   std::atomic<int> accepted{0};
   std::vector<std::thread> producers;
@@ -1113,16 +1133,25 @@ void test_launch_concurrent_enqueue_stress() {
         std::wstring target = L"t" + std::to_wstring(t) + L"_" + std::to_wstring(i);
         if (q.enqueue(kind, std::move(target))) {
           accepted.fetch_add(1, std::memory_order_relaxed);
+          {
+            std::lock_guard<std::mutex> lk(wake_mu);
+            wake_seq++;
+          }
+          wake_cv.notify_one();
         }
       }
     });
   }
   for (auto &th : producers) th.join();
 
-  CHECK(accepted.load() == kThreads * kPerThread);
-  CHECK(q.pending_count() == static_cast<size_t>(kThreads * kPerThread));
+  {
+    std::lock_guard<std::mutex> lk(wake_mu);
+    producers_done = true;
+  }
+  wake_cv.notify_one();
+  consumer.join();
 
-  q.drain(ops);
+  CHECK(accepted.load() > 0);
   CHECK(q.pending_count() == 0);
   CHECK(ops.pump_calls == accepted.load());
 

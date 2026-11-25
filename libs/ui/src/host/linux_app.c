@@ -15,6 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 #include "linux.h"
+#include "linux_launch.h"
 #include "post.h"
 #include "term.h"
 #include "app_calls.h"  // the app's own calls
@@ -1605,10 +1606,21 @@ void mb_host_log(moonbit_string_t s) {
 // The app over another app done (@hostapi.over_done): it never is here.
 void mb_host_over_done(int32_t open_app) { (void)open_app; }
 
-static GAppLaunchContext *mb_linux_launch_context(void) {
+GAppLaunchContext *mb_linux_launch_context(void) {
   GtkWidget *w = ws && ws->win ? ws->win : (ws ? ws->area : NULL);
   GdkDisplay *display = w ? gtk_widget_get_display(w) : NULL;
   return display ? G_APP_LAUNCH_CONTEXT(gdk_display_get_app_launch_context(display)) : NULL;
+}
+
+static int mb_linux_file_exists_gio(const char *path) {
+  return g_file_test(path, G_FILE_TEST_EXISTS) ? 1 : 0;
+}
+
+static int mb_linux_has_scheme_handler_gio(const char *scheme) {
+  GAppInfo *app = g_app_info_get_default_for_uri_scheme(scheme);
+  if (!app) return 0;
+  g_object_unref(app);
+  return 1;
 }
 
 static void on_open_url_done(GObject *source, GAsyncResult *res, gpointer data) {
@@ -1616,7 +1628,10 @@ static void on_open_url_done(GObject *source, GAsyncResult *res, gpointer data) 
   (void)data;
   GError *err = NULL;
   if (!g_app_info_launch_default_for_uri_finish(res, &err)) {
-    fprintf(stderr, "open-url failed: %s\n", err ? err->message : "unknown");
+    char msg[160];
+    mb_linux_format_launch_error(msg, sizeof msg, "open-url", err ? g_quark_to_string(err->domain) : "unknown",
+                                 err ? err->code : 0);
+    fputs(msg, stderr);
     fflush(stderr);
     g_clear_error(&err);
   }
@@ -1635,24 +1650,13 @@ int32_t mb_host_open_url(moonbit_string_t s) {
   if (scheme) {
     fprintf(stdout, "%s\n", u);
     fflush(stdout);
-    if (getenv("MBUI_SCRIPT") || getenv("MBUI_DRIVE") || getenv("MBUI_DRIVE_B64")) {
+    if (mb_linux_scripted(g_getenv)) {
       ok = 1;
-    } else {
-      int has_handler = 1;
-      if (!g_file_test("/.flatpak-info", G_FILE_TEST_EXISTS) && !getenv("SNAP")) {
-        GAppInfo *app = g_app_info_get_default_for_uri_scheme(scheme);
-        if (!app) {
-          has_handler = 0;
-        } else {
-          g_object_unref(app);
-        }
-      }
-      if (has_handler) {
-        GAppLaunchContext *lctx = mb_linux_launch_context();
-        g_app_info_launch_default_for_uri_async(u, lctx, NULL, on_open_url_done, NULL);
-        if (lctx) g_object_unref(lctx);
-        ok = 1;
-      }
+    } else if (mb_linux_can_launch_uri(scheme, mb_linux_has_scheme_handler_gio, mb_linux_file_exists_gio, g_getenv)) {
+      GAppLaunchContext *lctx = mb_linux_launch_context();
+      g_app_info_launch_default_for_uri_async(u, lctx, NULL, on_open_url_done, NULL);
+      if (lctx) g_object_unref(lctx);
+      ok = 1;
     }
   }
   g_free(u);
@@ -1792,7 +1796,10 @@ static void on_reveal_fallback_done(GObject *source, GAsyncResult *res, gpointer
   LinuxRevealCtx *rctx = (LinuxRevealCtx *)data;
   GError *err = NULL;
   if (!g_app_info_launch_default_for_uri_finish(res, &err)) {
-    fprintf(stderr, "reveal-file fallback failed: %s\n", err ? err->message : "unknown");
+    char msg[160];
+    mb_linux_format_launch_error(msg, sizeof msg, "reveal-file fallback",
+                                 err ? g_quark_to_string(err->domain) : "unknown", err ? err->code : 0);
+    fputs(msg, stderr);
     fflush(stderr);
     g_clear_error(&err);
   }
@@ -1848,7 +1855,7 @@ int32_t mb_host_reveal_file(moonbit_string_t s, int32_t go) {
   if (path[0] && g_file_test(path, G_FILE_TEST_EXISTS)) {
     fprintf(stdout, "reveal-file: %s\n", path);
     fflush(stdout);
-    if (getenv("MBUI_SCRIPT") || getenv("MBUI_DRIVE") || getenv("MBUI_DRIVE_B64")) {
+    if (mb_linux_scripted(g_getenv)) {
       ok = 1;
     } else {
       char *uri = g_filename_to_uri(path, NULL, NULL);

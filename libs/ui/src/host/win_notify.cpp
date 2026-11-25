@@ -650,7 +650,7 @@ struct WinLaunchOps {
   }
 
   void on_failed(const mb::WinLaunchOp &op) {
-    fprintf(stderr, "launch %s failed (worker init failed)\n",
+    fprintf(stderr, "launch %s failed (worker stopped)\n",
             op.kind == mb::WinLaunchOpKind::OpenUrl ? "url" : "reveal");
     fflush(stderr);
   }
@@ -686,12 +686,14 @@ DWORD WINAPI launch_worker_proc(LPVOID arg) {
       fprintf(stderr, "LAUNCH worker MsgWaitForMultipleObjectsEx failed (%lu)\n", (unsigned long)err);
       fflush(stderr);
       w->queue.on_init_failed(w->ops);
-      return 0;
+      break;
     }
     if (r == WAIT_OBJECT_0 + 1) {
       w->ops.pump_messages();
     }
   }
+  CoUninitialize();
+  return 0;
 }
 
 BOOL CALLBACK launch_init_cb(PINIT_ONCE, PVOID, PVOID *) {
@@ -732,7 +734,11 @@ int32_t mb_win_launch_url(const wchar_t *url) {
   if (!url || !*url) return 0;
   LaunchWorker *w = ensure_launch_worker();
   if (!w) return 0;
-  if (!w->queue.enqueue(mb::WinLaunchOpKind::OpenUrl, std::wstring(url))) return 0;
+  try {
+    if (!w->queue.enqueue(mb::WinLaunchOpKind::OpenUrl, std::wstring(url))) return 0;
+  } catch (...) {
+    return 0;
+  }
   SetEvent(w->wake_ev);
   return 1;
 }
@@ -741,7 +747,11 @@ int32_t mb_win_reveal_file(const wchar_t *path) {
   if (!path || !*path) return 0;
   LaunchWorker *w = ensure_launch_worker();
   if (!w) return 0;
-  if (!w->queue.enqueue(mb::WinLaunchOpKind::RevealFile, std::wstring(path))) return 0;
+  try {
+    if (!w->queue.enqueue(mb::WinLaunchOpKind::RevealFile, std::wstring(path))) return 0;
+  } catch (...) {
+    return 0;
+  }
   SetEvent(w->wake_ev);
   return 1;
 }

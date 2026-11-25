@@ -219,6 +219,8 @@ int32_t mb_host_browser_login_open(int32_t id, moonbit_string_t url) {
     if (ok) CloseHandle(pi.hThread), CloseHandle(pi.hProcess);
     else fprintf(stderr, "browser login: BROWSER did not start (%lu)\n", GetLastError());
     free(cmd);
+  } else if (getenv("MBUI_SCRIPT") || getenv("MBUI_DRIVE") || getenv("MBUI_DRIVE_B64")) {
+    ok = 1;
   } else {
     ok = mb_win_launch_url(w);
   }
