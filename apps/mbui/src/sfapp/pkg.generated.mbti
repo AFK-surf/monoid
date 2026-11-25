@@ -343,6 +343,8 @@ pub fn filter_of(@sfbase.Source, String) -> String
 
 pub fn first_frame(@ui.Ctx, @sfbase.Source, String, String, @sfbase.Attachment, String) -> String
 
+pub let first_page_timing : @ref.Ref[((Double, Double, Bool) -> Unit)?]
+
 pub fn fixture_app(String) -> @sfbase.Source
 
 pub fn fixture_json(String) -> @sfbase.Source

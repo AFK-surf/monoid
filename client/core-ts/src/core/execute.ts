@@ -154,6 +154,14 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
           span.end();
           return Effect.succeed(null);
         }
+        // (the app's first page shown, how long from its splash: app.first_page, beside core.start)
+        if (call.metricKind === "first_page") {
+          const span = inner.tracer.always("app.first_page", Kind.Internal);
+          span.set("stillfail.duration_ms", Math.round(call.durationMs));
+          for (const [k, v] of Object.entries(call.attrs)) span.set(`stillfail.${k}`, v);
+          span.end();
+          return Effect.succeed(null);
+        }
         const stalls = typeof call.attrs.stalls === "number" ? call.attrs.stalls : 0;
         const hangs = typeof call.attrs.hangs === "number" ? call.attrs.hangs : 0;
         if (stalls > 0 || hangs >= 3) {

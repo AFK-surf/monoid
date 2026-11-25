@@ -20,6 +20,8 @@
 #import <LocalAuthentication/LocalAuthentication.h>
 #import <Security/Security.h>
 #include <pthread.h>
+#include <sys/sysctl.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -1004,11 +1006,25 @@ static NSString *script_path(void) {
   return [[NSBundle mainBundle] pathForResource:@"core" ofType:@"hbc"];
 }
 
+// How long ago this process started, in ms (-1: unknown): what a start spent before the core's thread began, the app's
+// own and the system's launching it (core.start `boot.before_ms`).
+static double since_process_ms(void) {
+  struct kinfo_proc info;
+  size_t size = sizeof(info);
+  int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
+  if (sysctl(mib, 4, &info, &size, nullptr, 0) != 0 || size == 0) return -1;
+  const struct timeval &at = info.kp_proc.p_starttime;
+  double started = at.tv_sec * 1000.0 + at.tv_usec / 1000.0;
+  double now = clock_ms(CLOCK_REALTIME);
+  return now >= started ? now - started : -1;
+}
+
 // The core's thread: the shell, the runtime, the script, then the loop until stopped.
 static void run(void) {
   std::unique_ptr<facebook::hermes::HermesRuntime> rt;
   @autoreleasepool {
     secure_dir = [@(C.dataDir.c_str()) stringByAppendingPathComponent:@"secure"];
+    double before = since_process_ms();
     double t0 = clock_ms(CLOCK_MONOTONIC);
     C.shell = sf_shell_start(C.dataDir.c_str(), on_complete, C.gate);
     if (!C.shell) fatal("the core's files cannot be kept: " + C.dataDir);
@@ -1037,8 +1053,12 @@ static void run(void) {
         rt->evaluateJavaScript(std::make_shared<Bytes>(std_of(script)), path.lastPathComponent.UTF8String ?: "core.hbc");
         t2 = clock_ms(CLOCK_MONOTONIC);
         jsi::Object sf = stillfail(*rt);
+        // (what the start spent before the core's own first step: core.start's `boot.*`)
+        char boot[160];
+        snprintf(boot, sizeof boot, "{\"before_ms\":%.0f,\"shell_ms\":%.0f,\"script_ms\":%.0f}", before, t1 - t0, t2 - t1);
         sf.getPropertyAsFunction(*rt, "start")
-            .callWithThis(*rt, sf, jsi::String::createFromUtf8(*rt, C.cloud), jsi::Value(C.beta), jsi::String::createFromAscii(*rt, kOS));
+            .callWithThis(*rt, sf, jsi::String::createFromUtf8(*rt, C.cloud), jsi::Value(C.beta), jsi::String::createFromAscii(*rt, kOS),
+                          jsi::String::createFromAscii(*rt, boot));
         C.client = sf.getPropertyAsFunction(*rt, "connect").callWithThis(*rt, sf).asNumber();
         rt->drainMicrotasks();
       } catch (const std::exception &e) {

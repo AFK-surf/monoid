@@ -238,6 +238,19 @@ fn reports_start() -> Unit {
       None => ()
     }
   })
+  // (how long the first page took from the splash: what a start slow to show says, beside the core's core.start)
+  @sfapp.first_page_timing.val = Some(fn(shown_ms, in_view_ms, waited) {
+    if reporting_allowed() {
+      @core.call(
+        "client.metric",
+        params={
+          "kind": "first_page",
+          "duration_ms": Json::number(shown_ms.round()),
+          "attrs": { "in_view_ms": Json::number(in_view_ms.round()), "waited": Json::boolean(waited) },
+        },
+      )
+    }
+  })
   if !has_host {
     // (a build that reports nothing still keeps its long hangs in this device's log and mirrors severe hangs/summaries)
     @ui.hangs_told(

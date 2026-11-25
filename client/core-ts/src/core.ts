@@ -116,6 +116,12 @@ export const PUSH_KEY = "push";
 /// How far a call has got, for a UI that asked to hear it; `bytes` go beside the value, not in it (protocol.ts).
 export type Progress = (value: unknown, bytes?: Uint8Array) => void;
 
+/// What a start spent before the core's own first step, as its native host measured it (hosts/engine.ts), in ms:
+/// `before_ms` from the process's start to the core's thread's (the system launching the app, the app's own start);
+/// `shell_ms` the shell started, the core's script read and its runtime made; `script_ms` the script run. A start
+/// slow before the core says which of these grew (core.start `boot.*`).
+export type Boot = { before_ms?: number; shell_ms?: number; script_ms?: number };
+
 export type Options = {
   /// How the core reaches stations: the mesh by default; tests' stations answer over the host's fetch.
   wire?: (inner: Inner) => StationWire;
@@ -133,6 +139,8 @@ export type Options = {
   account?: AccountProviderFactory;
   /// Where what people use is counted to (use-counts.ts): the project this build was given unless a test gives its own.
   usage?: UsageSink | null;
+  /// What the start spent before the core, where its host measured it.
+  boot?: Boot;
 };
 
 /// What the core holds: every module.
@@ -209,10 +217,11 @@ export class Inner {
 
 /// The start's span (`core.start`): each step's ms as it ends (`step`); then, once the person's own lock of every account
 /// and this device's keys are read from the device, or `START_TOLD_MS` passed, or the core stopped first, how long each
-/// took from the start (`ownLock`) with what the core's parts spent meanwhile. (The time before `Core.make`, the bundle
-/// loading, is not in it: the core does not know when its process started.)
-function startTrace(inner: Inner): { step: (name: string) => void; ownLock: () => void } {
+/// took from the start (`ownLock`) with what the core's parts spent meanwhile; what was spent before `Core.make`, where
+/// the host measured it (`Boot`), with them.
+function startTrace(inner: Inner, boot: Boot | undefined): { step: (name: string) => void; ownLock: () => void } {
   const span = inner.tracer.root("core.start", Kind.Internal);
+  for (const [key, ms] of Object.entries(boot ?? {})) span.set(`stillfail.boot.${key}`, ms);
   const t0 = inner.host.monotonicMs();
   const spentFrom = { ...spent };
   const since = () => Math.round(inner.host.monotonicMs() - t0);
@@ -297,7 +306,7 @@ export class Core {
       spentClock(() => inner.host.monotonicMs());
       // How long this start took, by step, and till what the person's own lock is read from the device (the vaults'
       // pages and cards wait on it, views/vault.ts `lockRead`): a start grown slow says which step grew.
-      const start = startTrace(inner);
+      const start = startTrace(inner, options.boot);
       // A failure let go of is a span of its own: Cloud Trace has it though nothing waited on it.
       inner.runner.onIgnored = (what, error) => {
         const span = inner.tracer.root("ignored", Kind.Internal);

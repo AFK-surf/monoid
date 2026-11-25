@@ -57,7 +57,7 @@
 //   it is (libcrux's; a shell without it: an error, and the core checks in JS: Host.verify).
 import type { Recorder } from "../record.ts";
 import { Effect, Fiber, type Scope } from "effect";
-import { Core } from "../core.ts";
+import { type Boot, Core } from "../core.ts";
 import { FileSource } from "../file-source.ts";
 import { HostError } from "../error.ts";
 import type { CloseReason, Iroh, IrohAddr, IrohConnection, IrohEndpoint, IrohPath, IrohStream } from "../iroh.ts";
@@ -609,7 +609,7 @@ export function bridgeIroh(bridge: Bridge): Iroh {
 
 /// A core on a shell: the API the Rust core's Node addon had (connect / receive(json) / disconnect). A bug that ends a fiber ends it as a
 /// panic ended the Rust core: `onFatal` (each UI is told `{"fatal": …}` by the shell, which starts another).
-export function startBridged(native: Native, cloudOrigin: string, beta: boolean, os: string, onFatal: (reason: string) => void) {
+export function startBridged(native: Native, cloudOrigin: string, beta: boolean, os: string, onFatal: (reason: string) => void, boot?: Boot) {
   service.name = "stillfail-native";
   service.os = os;
   const bridge = new Bridge(native);
@@ -620,7 +620,7 @@ export function startBridged(native: Native, cloudOrigin: string, beta: boolean,
     dead = true;
     onFatal(t("core-misc.host.crashed", { reason: error instanceof Error ? error.message : String(error) }));
   };
-  const ready = Core.create(host, { iroh: bridgeIroh(bridge) }).then((core) => {
+  const ready = Core.create(host, { iroh: bridgeIroh(bridge), ...(boot !== undefined ? { boot } : {}) }).then((core) => {
     // A database found damaged on the way is marked first: the core that follows makes it again (data.ts).
     core.inner.runner.onDefect = (error) => void core.inner.data.damageKept().then(() => fatal(error));
     core.keepTime();
