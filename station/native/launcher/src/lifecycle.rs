@@ -136,6 +136,19 @@ pub trait Process {
     }
 }
 
+/// Outcome of `Os::switch_front_if_needed` before spawning the next Node on a handover.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FrontSwitch {
+    /// No front engine change was needed.
+    NoChange,
+    /// A replacement (or newly started) front is now listening.
+    Started,
+    /// Starting the replacement/new front failed (old front ended if one existed; retry later).
+    Failed,
+    /// Front was intentionally ended by config (e.g. Pion-only rolled back to `mb` -> Node binds directly; no retry).
+    EndedForDirectBind,
+}
+
 /// What the launcher does to processes, and its clock: the system's, or a test's.
 pub trait Os {
     type Node: Process;
@@ -178,11 +191,10 @@ pub trait Os {
     fn restart_front(&mut self) -> bool {
         false
     }
-    /// Before starting the next Node on a handover (after `renew` did not take over): replaces or starts the front
-    /// when the desired engine changed (or no front was running and one is now available). Returns `None` if no switch
-    /// was needed, `Some(true)` if the new front listens, or `Some(false)` if starting it failed.
-    fn switch_front_if_needed(&mut self) -> Option<bool> {
-        None
+    /// Before starting the next Node on a handover (after `renew` did not take over): replaces, starts, or ends the
+    /// front when the desired engine changed.
+    fn switch_front_if_needed(&mut self) -> FrontSwitch {
+        FrontSwitch::NoChange
     }
     /// The release's installer `script` started apart from the launcher, told `env` only, as the station's
     /// platform.startInstaller starts it (its copy in run/ replacing any there, its exit and log beside it): whether it
@@ -710,9 +722,9 @@ impl<O: Os> Lifecycle<O> {
         }
         let had_front = self.os.has_front();
         let can_start_from_none = !self.front_gone && self.front_retry_at.is_none_or(|at| self.os.now() >= at);
-        let switch_failed_from_front = if allow_front_switch && (had_front || can_start_from_none) {
+        let (hold_front_gone, schedule_retry) = if allow_front_switch && (had_front || can_start_from_none) {
             match self.os.switch_front_if_needed() {
-                Some(true) => {
+                FrontSwitch::Started => {
                     self.probing = None;
                     self.front_misses = 0;
                     self.front_probe_at = Some(self.os.now() + self.times.front_probe);
@@ -720,35 +732,54 @@ impl<O: Os> Lifecycle<O> {
                     self.front_gone_at = None;
                     self.front_retry_at = None;
                     self.front_retries = 0;
-                    false
+                    (false, false)
                 }
-                Some(false) => {
+                FrontSwitch::Failed => {
                     self.probing = None;
                     self.front_misses = 0;
                     self.front_probe_at = None;
                     if had_front {
-                        true
+                        (true, true)
                     } else {
                         self.schedule_front_retry();
-                        false
+                        (false, false)
                     }
                 }
-                None => false,
+                FrontSwitch::EndedForDirectBind => {
+                    self.probing = None;
+                    self.front_misses = 0;
+                    self.front_probe_at = None;
+                    self.front_retry_at = None;
+                    (had_front, false)
+                }
+                FrontSwitch::NoChange => (false, false),
             }
         } else {
-            false
+            (false, false)
         };
         match self.os.spawn() {
             Ok(process) => {
                 log::info(&format!("handover: Node {} started beside the one serving", process.pid()));
                 self.next = Some((Self::node(process), self.os.now() + self.times.ready, false));
             }
-            Err(error) => self.handoff_failed(&format!("{} did not start: {error}", self.os.program())),
+            Err(error) => {
+                self.handoff_failed(&format!("{} did not start: {error}", self.os.program()));
+                if (self.front_gone || hold_front_gone) && self.stopping.is_none() && self.current.is_some() {
+                    let delay = self.times.backoff.saturating_mul(1 << self.backoff_step.min(16)).min(self.times.backoff_max);
+                    self.backoff_step += 1;
+                    self.front_gone_at = Some(self.os.now() + delay);
+                }
+            }
         }
-        if switch_failed_from_front {
-            // Keep `self.front_gone = true` until the direct-binding Next actually reaches `hand_over()` so that if
-            // this Next crashes before ready, `ended(Slot::Next)` retries direct-binding handover after backoff.
-            self.front_gone();
+        if hold_front_gone {
+            if schedule_retry {
+                self.record("front_gone", serde_json::json!({ "retries": self.front_retries }), true);
+                self.schedule_front_retry();
+            }
+            self.front_gone = true;
+            self.probing = None;
+            self.front_misses = 0;
+            self.front_probe_at = None;
         }
     }
 
@@ -1201,9 +1232,12 @@ mod tests {
         front_killed: u32,
         /// The fronts ended and started anew as a Node asked (`restart_front`).
         restarted_fronts: u32,
-        /// Outcome of the next `switch_front_if_needed` call (`None` = no switch needed).
-        front_switch: Option<bool>,
+        /// Outcome of the next `switch_front_if_needed` call (`FrontSwitch::NoChange` = no switch needed).
+        front_switch: FrontSwitch,
         front_switches: u32,
+        /// When > 0, the next `spawn()` calls return `Err` and decrement this counter.
+        fail_spawns: u32,
+        spawn_attempts: u32,
         /// The installers started as a Node asked (`run_installer`): the script and what it was told.
         installers: Vec<(String, Vec<(String, String)>)>,
         /// Diagnostics returned by `diagnose_hung`, and `(pid, called_before_kill)` calls recorded.
@@ -1220,6 +1254,11 @@ mod tests {
             self.now
         }
         fn spawn(&mut self) -> Result<FakeNode> {
+            self.spawn_attempts += 1;
+            if self.fail_spawns > 0 {
+                self.fail_spawns -= 1;
+                return Err(std::io::Error::other("simulated spawn failure"));
+            }
             self.pid += 1;
             let told = Rc::new(RefCell::new(vec![]));
             self.told.push((self.pid, told.clone()));
@@ -1258,11 +1297,13 @@ mod tests {
             self.front = if self.front_starts.is_empty() { true } else { self.front_starts.remove(0) };
             self.front
         }
-        fn switch_front_if_needed(&mut self) -> Option<bool> {
-            let started = self.front_switch.take()?;
-            self.front_switches += 1;
-            self.front = started;
-            Some(started)
+        fn switch_front_if_needed(&mut self) -> FrontSwitch {
+            let outcome = std::mem::replace(&mut self.front_switch, FrontSwitch::NoChange);
+            if outcome != FrontSwitch::NoChange {
+                self.front_switches += 1;
+                self.front = outcome == FrontSwitch::Started;
+            }
+            outcome
         }
         fn run_installer(&mut self, script: &str, env: &[(String, String)]) -> bool {
             self.installers.push((script.to_string(), env.to_vec()));
@@ -1295,7 +1336,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
         let run = data.join("run");
         std::fs::create_dir_all(&run).unwrap();
-        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], takes_place: false, front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0, restarted_fronts: 0, front_switch: None, front_switches: 0, installers: vec![], hung_diag: serde_json::Map::new(), diagnosed_before_kill: vec![] };
+        let fake = Fake { dir: data, now: Instant::now(), pid: 100, told: vec![], killed: vec![], parent_gone: false, routes: vec![], renewed: vec![], takes_place: false, front: false, front_starts: vec![], started_fronts: 0, probed: vec![], front_killed: 0, restarted_fronts: 0, front_switch: FrontSwitch::NoChange, front_switches: 0, fail_spawns: 0, spawn_attempts: 0, installers: vec![], hung_diag: serde_json::Map::new(), diagnosed_before_kill: vec![] };
         let times = Times { ready: s(60), exit: s(30), stop: s(30), backoff: s(1), backoff_max: s(4), stable: s(60), parent: s(2), drained: s(300), take: s(90), rollback: s(10), front: s(10), heartbeat: s(90), front_retry: s(300), front_probe: s(30) };
         let mut station = Lifecycle::new(fake, times, run, with_parent);
         station.start();
@@ -2337,7 +2378,7 @@ mod tests {
         assert_eq!(station.front_misses, 2);
         assert!(station.probing.is_some());
         // Handover switches the front: probe state resets so late failure of probe 3 never kills the new front.
-        station.os.front_switch = Some(true);
+        station.os.front_switch = FrontSwitch::Started;
         station.start_next();
         assert_eq!(station.os.front_switches, 1);
         assert_eq!(station.front_misses, 0);
@@ -2354,7 +2395,7 @@ mod tests {
         stopping.os.front = true;
         stopping.up(Slot::Current, "0.1.0", 5000);
         stopping.stop();
-        stopping.os.front_switch = Some(true);
+        stopping.os.front_switch = FrontSwitch::Started;
         stopping.start_next();
         assert_eq!(stopping.os.front_switches, 0);
 
@@ -2363,7 +2404,7 @@ mod tests {
         renewing.os.front = true;
         renewing.up(Slot::Current, "0.1.0", 5000);
         renewing.os.takes_place = true;
-        renewing.os.front_switch = Some(true);
+        renewing.os.front_switch = FrontSwitch::Started;
         renewing.start_next();
         assert!(renewing.renewed());
         assert_eq!(renewing.os.front_switches, 0);
@@ -2375,7 +2416,7 @@ mod tests {
         station.os.front = true;
         let old = station.last();
         station.up(Slot::Current, "0.1.0", 5000);
-        station.os.front_switch = Some(false);
+        station.os.front_switch = FrontSwitch::Failed;
         station.start_next();
         assert_eq!(station.os.front_switches, 1);
         let direct = station.last();
@@ -2398,7 +2439,7 @@ mod tests {
         station.os.front = true;
         let old = station.last();
         station.up(Slot::Current, "0.1.0", 5000);
-        station.os.front_switch = Some(false);
+        station.os.front_switch = FrontSwitch::Failed;
         station.start_next();
         let direct1 = station.last();
         assert_ne!(direct1, old);
@@ -2416,5 +2457,41 @@ mod tests {
         station.serves(Slot::Current, 6000);
         station.pass(s(10));
         assert_eq!(station.last(), direct2, "no redundant handover after direct2 took over");
+    }
+
+    #[test]
+    fn failed_front_switch_with_spawn_error_backs_off_and_ended_for_direct_bind_skips_front_retry() {
+        // 1. Failed front switch + immediate spawn Err: must back off via front_gone_at instead of spinning spawn().
+        let mut station_err = station("frontswitchspawnerr", false);
+        station_err.os.front = true;
+        station_err.up(Slot::Current, "0.1.0", 5000);
+        let spawns_before = station_err.os.spawn_attempts;
+        station_err.os.front_switch = FrontSwitch::Failed;
+        station_err.os.fail_spawns = 1;
+        station_err.start_next();
+        assert_eq!(station_err.os.spawn_attempts, spawns_before + 1, "must not synchronously spin-retry spawn");
+        assert!(station_err.front_gone_at.is_some(), "backoff must be scheduled on spawn Err");
+        station_err.tick();
+        assert_eq!(station_err.os.spawn_attempts, spawns_before + 1, "tick before backoff must not spin");
+        station_err.pass(s(1) - MS);
+        assert_eq!(station_err.os.spawn_attempts, spawns_before + 1, "still within backoff");
+        station_err.pass(MS);
+        assert_eq!(station_err.os.spawn_attempts, spawns_before + 2, "retried once after backoff");
+
+        // 2. EndedForDirectBind (intentional config rollback on Pion-only install): must NOT schedule front_retry.
+        let mut station_direct = station("frontendeddirect", false);
+        station_direct.os.front = true;
+        let old = station_direct.last();
+        station_direct.up(Slot::Current, "0.1.0", 5000);
+        station_direct.os.front_switch = FrontSwitch::EndedForDirectBind;
+        station_direct.start_next();
+        assert!(station_direct.front_retry_at.is_none(), "EndedForDirectBind must not schedule front_retry");
+        let direct1 = station_direct.last();
+        assert_ne!(direct1, old);
+        // If direct1 exits before ready, direct-bind handover still retries after backoff without scheduling front_retry.
+        station_direct.ended(direct1, EXITED_1);
+        station_direct.pass(s(1));
+        assert_eq!(station_direct.last(), direct1 + 1);
+        assert!(station_direct.front_retry_at.is_none());
     }
 }

@@ -316,30 +316,31 @@ impl Os for System {
         self.front.is_some()
     }
 
-    fn switch_front_if_needed(&mut self) -> Option<bool> {
+    fn switch_front_if_needed(&mut self) -> crate::lifecycle::FrontSwitch {
+        use crate::lifecycle::FrontSwitch;
         if let Some(front) = &mut self.front {
             return match front.decide_transition(&self.options.app, &self.options.data) {
-                crate::front::FrontDecision::Keep => None,
+                crate::front::FrontDecision::Keep => FrontSwitch::NoChange,
                 crate::front::FrontDecision::SwitchTo(want) => {
                     let old = self.front.take().unwrap();
                     log::info(&format!("the front (pid {}) engine changed ({} -> {want}): replacing it before handover", old.pid, old.engine()));
                     old.end();
                     self.front = crate::front::Front::start(&self.options.app, &self.options.data);
-                    Some(self.front.is_some())
+                    if self.front.is_some() { FrontSwitch::Started } else { FrontSwitch::Failed }
                 }
                 crate::front::FrontDecision::EndForDirectBind => {
                     let old = self.front.take().unwrap();
                     log::info(&format!("the front (pid {}) engine ({}) disabled with no fallback binary: ending it so the next Node binds directly", old.pid, old.engine()));
                     old.end();
-                    Some(false)
+                    FrontSwitch::EndedForDirectBind
                 }
             };
         }
         if !crate::front::Front::requested_program_available(&self.options.app, &self.options.data) {
-            return None;
+            return FrontSwitch::NoChange;
         }
         self.front = crate::front::Front::start(&self.options.app, &self.options.data);
-        Some(self.front.is_some())
+        if self.front.is_some() { FrontSwitch::Started } else { FrontSwitch::Failed }
     }
 
     fn kill_front(&mut self) {

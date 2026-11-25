@@ -67,6 +67,7 @@ struct PionStamp {
     mtime_sec: i64,
     mtime_nsec: i64,
     size: u64,
+    mode: u32,
 }
 
 impl PionStamp {
@@ -82,6 +83,7 @@ impl PionStamp {
             mtime_sec: meta.mtime(),
             mtime_nsec: meta.mtime_nsec(),
             size: meta.len(),
+            mode: meta.mode(),
         })
     }
 
@@ -93,6 +95,7 @@ impl PionStamp {
             "mtimeSec": self.mtime_sec,
             "mtimeNsec": self.mtime_nsec,
             "size": self.size,
+            "mode": self.mode,
         })
     }
 
@@ -104,6 +107,7 @@ impl PionStamp {
             mtime_sec: v["mtimeSec"].as_i64()?,
             mtime_nsec: v["mtimeNsec"].as_i64()?,
             size: v["size"].as_u64()?,
+            mode: v["mode"].as_u64().and_then(|m| u32::try_from(m).ok())?,
         })
     }
 }
@@ -1660,6 +1664,41 @@ mod engine_tests {
             FrontDecision::EndForDirectBind
         );
         pion_only.end();
+
+        // 5. `chmod +x` on a previously non-executable Pion binary changes `PionStamp.mode` without changing mtime/ino/size,
+        //    so the next handover re-probes and switches to Pion.
+        let chmod_pion = dir.join("chmod-pion");
+        write_script(&chmod_pion, "#!/bin/sh\necho 'stillfail-pion 0.1.0 modes:mesh'\n", false);
+        let stamp_before = PionStamp::of(&chmod_pion).expect("stamp before chmod");
+        let (pid5, input5) = spawn_cat();
+        let mut waiting_mb = Front {
+            pid: pid5,
+            input: input5,
+            socket: data.join("run/front.sock"),
+            pid_file: data.join("run/front.pid"),
+            started: None,
+            streams: STREAMS,
+            engine: ENGINE_MB.to_string(),
+            requested: ENGINE_MB.to_string(),
+            fallback_pion_stamp: None,
+            #[cfg(target_os = "macos")]
+            launcher_uuid: super::executable_uuid(),
+            #[cfg(target_os = "macos")]
+            uuid_recorded: true,
+        };
+        assert_eq!(
+            waiting_mb.decide_transition_with(&app, Some(&cfg_pion), None, None, None, Some(chmod_pion.as_os_str()), false),
+            FrontDecision::Keep
+        );
+        assert_eq!(waiting_mb.fallback_pion_stamp.as_ref(), Some(&stamp_before));
+        std::fs::set_permissions(&chmod_pion, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let stamp_after = PionStamp::of(&chmod_pion).expect("stamp after chmod");
+        assert_ne!(stamp_before.mode, stamp_after.mode);
+        assert_eq!(
+            waiting_mb.decide_transition_with(&app, Some(&cfg_pion), None, None, None, Some(chmod_pion.as_os_str()), false),
+            FrontDecision::SwitchTo(ENGINE_PION.to_string())
+        );
+        waiting_mb.end();
 
         let _ = std::fs::remove_dir_all(&dir);
     }
