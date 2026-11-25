@@ -8,10 +8,10 @@ import { mkdir, open, readFile, readdir, rename, rm, writeFile } from "node:fs/p
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { log } from "../ops/log.ts";
-import type { Fibers } from "../ops/fibers.ts";
+import { type Fibers, wall } from "../ops/fibers.ts";
 import type { StoreChange } from "../store/rows.ts";
 import { type Places, type Told, nothingTold } from "./export.ts";
-import { GEN, type Head, STATION, WORKSPACE, genMade } from "./format.ts";
+import { GEN, type Head, STATION, VERSION, WORKSPACE, genMade } from "./format.ts";
 import { loadLocalTranscriptFiles, loadTranscriptManifest, readStreamBounded } from "./manifest.ts";
 import { FolderPlace, type Held, type Known, type Levelled, type Place, handOver, holdsAllLogical, level } from "./places.ts";
 import { type Ask, COPIES, MOST, PeerPlace, keepers, ranked, serve } from "./peers.ts";
@@ -23,6 +23,8 @@ import { NotEmpty, type Outcome, type Ready, copyDir, outcomeFile, readyFile } f
 import type { Runner, WorkPassed } from "./runner.ts";
 import { type BackupView, type NormalizedBackupConfig, type NormalizedS3Target, buildBackupView } from "./backup-config.ts";
 import { type S3ClientOptions, S3HttpError, S3Place } from "./s3.ts";
+import { type ChatCopy, type ChatReading, newestWhole, readChatSoon } from "./chat.ts";
+import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 const DEFAULT_BACKUP: NormalizedBackupConfig = { mode: "auto", stations: [], acceptOthers: true, s3: [] };
 export type RestoreFrom = { station: string } | { s3: string };
@@ -150,7 +152,20 @@ export type CopiesDeps = {
   s3ClientOptions?: S3ClientOptions;
   /// Active OTLP traces batcher for `replica.export` and `replica.level` spans.
   traces?: () => Traces | null;
+  /// Live `config.json` `readers` snapshot or getter for `replica-chat` engine selection; `chatBinary`: a test's program.
+  readers?: ReaderSelectConfig | (() => ReaderSelectConfig);
+  chatBinary?: string;
 };
+
+/// How many chats read from kept copies are kept as read once done (`Copies.chat`): one asked again after a timed-out
+/// request gets the same reading. One still being read is never let go.
+const CHATS_KEPT = 4;
+/// How many readings of chats may wait at once (one runs, the others queue behind it); one more is refused, busy.
+const CHAT_READS_WAITING = 3;
+/// How long one reading may take before its program is killed, so that one stuck never holds up those after it.
+export const CHAT_READ_MS = 120_000;
+/// The scratch databases of readings, by name: the ones a station ended in the middle of are let go as it starts.
+const CHAT_WORK = /^chat-[0-9a-f]{12}\.db(-wal|-shm|-journal)?$/;
 
 /// How a place for this station's copies stands: how far it goes, when it was brought level last, what went wrong.
 /// `known`: what it holds, as this station left it (null: to be asked); `head`: the head it was brought level with.
@@ -302,6 +317,13 @@ export class Copies {
   #historySeq = 0;
   #savingHistory: Promise<void> | null = null;
   #saveHistoryAgain = false;
+  /// The chats read from kept copies, by copy (generation, how far it goes) and chat: those being read, and the last
+  /// CHATS_KEPT done; the reading under way, which the next waits for (one fold at a time); how many wait; and the
+  /// scratch databases in use.
+  readonly #chats = new Map<string, { reading: Promise<ChatCopy>; done: boolean }>();
+  #chatTurn: Promise<unknown> = Promise.resolve();
+  #chatsWaiting = 0;
+  readonly #chatWork = new Set<string>();
 
   /// What came of the restore this station was started again for (null: none): written before its store opened and
   /// never after, so read once.
@@ -343,7 +365,18 @@ export class Copies {
   async start(): Promise<void> {
     // (what each place holds asked of it again as this station starts)
     for (const k of this.#keeping.values()) k.known = null;
+    await this.#sweepChatWork();
     await this.placesChanged();
+  }
+
+  /// The scratch databases of chat readings a station ended in the middle of, let go: none of them is in use.
+  async #sweepChatWork(): Promise<void> {
+    const scratch = join(this.#d.data, "replica");
+    const names = await readdir(scratch).catch(() => [] as string[]);
+    for (const name of names) {
+      if (!CHAT_WORK.test(name) || this.#chatWork.has(name.replace(/-(wal|shm|journal)$/, ""))) continue;
+      await rm(join(scratch, name), { force: true }).catch(() => {});
+    }
   }
 
   async close(): Promise<void> {
@@ -715,7 +748,110 @@ export class Copies {
       hello: (peer, ws, formerly, acceptCopies) => this.heard(peer, ws, formerly, acceptCopies),
       acceptOthers: () => this.#backup().acceptOthers,
       guardWrite: (ws, origin, fn) => this.#guardWrite(ws, origin, fn),
+      chat: (ws, origin, thread) => this.chat(ws, origin, thread),
     });
+  }
+
+  // ── one chat of a copy this station keeps (handoff.ts) ──
+
+  /// Whether `station` answers now: it says so to `replica.hello`, or refuses it as one from before copies does (it is
+  /// up all the same). One that does not answer may still run, cut off: nothing here takes it for gone.
+  async answering(ws: string, station: string): Promise<boolean> {
+    try {
+      const answer = await this.#d.ask(station, { method: "replica.hello", workspace: ws, formerly: this.#was, acceptCopies: this.#backup().acceptOthers });
+      this.#old.delete(station);
+      this.#online.add(station);
+      this.#peerAccepts.set(station, answer?.acceptCopies !== false);
+      this.#heardFormerly(ws, station, Array.isArray(answer?.formerly) ? answer.formerly : []);
+      return true;
+    } catch (e) {
+      if (e instanceof Refused) {
+        this.#old.add(station);
+        return true;
+      }
+      this.#online.delete(station);
+      return false;
+    }
+  }
+
+  /// What this station keeps of `origin`'s copy in `ws`: each generation's head and the batches here (places.ts).
+  held(ws: string, origin: string): Promise<Held> {
+    return this.kept.held(ws, origin);
+  }
+
+  /// The chat `thread` of `origin`'s copy kept here in `ws`, read from its newest generation (chat.ts): "none" where no
+  /// copy of `origin` is kept here, "newer" where its newest head is of a format newer than this station reads. One
+  /// reading at a time, CHAT_READS_WAITING at most waiting (one more refused, busy); the same chat of the same copy asked
+  /// again gets the reading under way or done.
+  async chat(ws: string, origin: string, thread: number): Promise<ChatReading> {
+    if (!WORKSPACE.test(ws) || !STATION.test(origin) || !Number.isSafeInteger(thread)) return "none";
+    const held = await this.kept.held(ws, origin);
+    // (the newest generation's head not read: of a newer format, this station to be updated; else not there yet)
+    const last = held.gens.at(-1);
+    if (last !== undefined && last.head === null && (await this.#newerHead(ws, origin, last.gen))) return "newer";
+    const newest = newestWhole(held, ws, origin);
+    if (newest === undefined) return "none";
+    const head = newest.head;
+    const key = JSON.stringify([ws, origin, newest.gen, head.to, head.made, thread]);
+    const had = this.#chats.get(key);
+    if (had !== undefined) return had.reading;
+    if (this.#chatsWaiting >= CHAT_READS_WAITING) throw new Refused("busy reading other chats from copies: try again in a minute");
+    const dir = join(this.kept.dir(ws, origin), newest.gen);
+    this.#chatsWaiting++;
+    const reading = this.#chatTurn
+      .then(() => this.#readChat(dir, thread))
+      .then((chat) => {
+        if (chat.origin !== origin || chat.gen !== newest.gen) throw new Error("the reading was of another copy");
+        return chat;
+      })
+      .finally(() => void this.#chatsWaiting--);
+    this.#chatTurn = reading.catch(() => {});
+    const entry = { reading, done: false };
+    this.#chats.set(key, entry);
+    reading.then(
+      () => {
+        entry.done = true;
+        // (the oldest done let go past CHATS_KEPT; one being read never)
+        const done = [...this.#chats].filter(([, e]) => e.done);
+        for (const [k] of done.slice(0, Math.max(0, done.length - CHATS_KEPT))) this.#chats.delete(k);
+      },
+      () => {
+        // (one that failed is read again when asked again)
+        if (this.#chats.get(key) === entry) this.#chats.delete(key);
+      },
+    );
+    return await reading;
+  }
+
+  /// Whether generation `gen` of `origin`'s copy kept here has a head of a format newer than this station reads.
+  async #newerHead(ws: string, origin: string, gen: string): Promise<boolean> {
+    try {
+      const v = JSON.parse(await readFile(join(this.kept.dir(ws, origin), gen, "head.json"), "utf8"));
+      return typeof v?.v === "number" && v.v > VERSION;
+    } catch {
+      return false;
+    }
+  }
+
+  /// One reading, its program killed if it takes longer than CHAT_READ_MS, its scratch database gone after.
+  async #readChat(dir: string, thread: number): Promise<ChatCopy> {
+    const scratch = join(this.#d.data, "replica");
+    await mkdir(scratch, { recursive: true });
+    const name = `chat-${randomBytes(6).toString("hex")}.db`;
+    const work = join(scratch, name);
+    this.#chatWork.add(name);
+    const stop = new AbortController();
+    const reading = readChatSoon({ dir, work, thread, shellDir: join(this.#d.data, "shell"), readers: this.#d.readers, binary: this.#d.chatBinary, signal: stop.signal });
+    try {
+      return await wall.within(CHAT_READ_MS, reading, "the chat's reading took too long");
+    } catch (e) {
+      stop.abort();
+      await reading.catch(() => {});
+      throw e;
+    } finally {
+      await rm(work, { force: true }).catch(() => {});
+      this.#chatWork.delete(name);
+    }
   }
 
   // ── this station's copies, at the stations that keep them ──

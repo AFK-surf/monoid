@@ -163,9 +163,9 @@ test "stations_list: compact grouped rows keep fixed order, preserve edge states
     assert_true(y < 760.0, msg="expected \{name} above bottom bar, got y=\{y}")
     prev_y = y
   }
-  assert_true(t.find("14 个运行中") is Some(_), msg="running count shown on line 1")
-  assert_true(t.find("CPU 空闲 69%") is Some(_), msg="compact CPU figure preserves idle/remaining wording")
-  assert_true(t.find("直连") is Some(_) && t.find("38 ms") is Some(_), msg="compact network shown on line 2")
+  assert_true(sl_said(t, "14 个运行中"), msg="running count on line 1, read out whole")
+  assert_true(sl_said(t, "CPU 空闲 69%"), msg="the CPU's icon read out with its idle wording")
+  assert_true(t.find("38 ms") is Some(_) && sl_said(t, "直连 38 ms"), msg="latency on line 2, its way read out")
   assert_true(t.find("离线 · 2 天前") is Some(_), msg="offline summary shown on line 2")
   assert_true(t.find("此 station 尚未加入安全模式") is Some(_), msg="offline block reason preserved")
 }
@@ -329,10 +329,16 @@ test "stations_list: 390px keeps all three low-headroom warning meters alongside
     h=844.0,
     platform=2,
   )
-  assert_true(t.find("CPU 空闲 8%") is Some(_), msg="red CPU warning visible on 390px")
-  assert_true(t.find("内存剩 5.8 G") is Some(_), msg="amber memory warning visible on 390px")
-  assert_true(t.find("磁盘剩 19.4 G") is Some(_), msg="amber disk warning preserved over network path on 390px")
+  assert_true(sl_said(t, "CPU 空闲 8%"), msg="red CPU warning read out on 390px")
+  assert_true(t.find("5.8G") is Some(_) && sl_said(t, "内存剩 5.8 G"), msg="amber memory warning visible on 390px")
+  assert_true(t.find("19.4G") is Some(_) && sl_said(t, "磁盘剩 19.4 G"), msg="amber disk warning visible on 390px")
   assert_true(t.find("38 ms") is Some(_), msg="latency preserved alongside all three warnings on 390px")
+}
+
+///|
+/// Whether what is read out as `label` shows in `t` (an icon's words, a count beside its icon).
+fn sl_said(t : @ui.Tester, label : String) -> Bool {
+  t.semantics().iter().any(fn(n) { n.label == label && !n.hidden })
 }
 
 ///|

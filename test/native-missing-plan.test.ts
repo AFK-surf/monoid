@@ -147,7 +147,7 @@ test("one missing for every list plan asks lists the release once and answers ea
   // a branch's: every list and the runners' shell-station, each once
   const want = [...BRANCH.BRANCH_NATIVES!, ...BRANCH.BRANCH_WIN_READER!, ...BRANCH.BRANCH_HARNESS!, ...BRANCH.BRANCH_MAC_NATIVES!,
     ...BRANCH.BRANCH_MAC_READER!, "shell-station:linux-x64", "shell-station:win32-x64", "reader:linux-x64"];
-  assert.deepEqual(missing(...want), ["reader:linux-x64", "mesh:darwin-arm64", "shell-station:linux-x64"]);
+  assert.deepEqual(missing(...want), ["shell-station:linux-x64", "reader:linux-x64", "mesh:darwin-arm64"]);
 });
 
 test("plan.sh triggers station on pion-reader production inputs and ignores its tests and docs", { skip: process.platform === "win32" }, () => {

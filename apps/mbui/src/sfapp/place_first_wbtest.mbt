@@ -322,9 +322,9 @@ test "a place of the bar in view shows what the device holds the first time it i
 
 ///|
 /// What Station draws in its bones when all but how each station up is reached is held (stationNet, asked only from its
-/// tab: bars.mbt place_reads): the compact network tail of each online station of the fixture's (`sl_net_tail_node`:
-/// path and round trip), nothing else.
-let station_net_bones : Int = 3
+/// tab: bars.mbt place_reads): the round trip's words at the end of each online station's second line, beside its
+/// signal's icon (`sl_signals_line_node`), nothing else.
+let station_net_bones : Int = 2
 
 ///|
 test "Station left before the core said how its stations are reached: come back to, its network line still alone in its bones (nothing said to keep), the rest as the device holds it" {

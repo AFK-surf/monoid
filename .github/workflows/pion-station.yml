@@ -429,6 +429,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
@@ -492,21 +493,109 @@ jobs:
           echo "PION_RT_DIR=$PION_RT_DIR" >> "$GITHUB_ENV"
           "$PIONC" --version
 
-      - name: Whether this commit's MoonBit reader is prebuilt
+      - name: Whether shell-station and MoonBit reader are prebuilt (reuse pipeline natives when missing)
         id: reader
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          missing="$(node scripts/native.ts missing reader:linux-x64)"
-          echo "missing=$([ -n "$missing" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          inbox="$RUNNER_TEMP/natives"
+          mkdir -p "$inbox"
+          # Always expose STILLFAIL_NATIVE_INBOX so native.ts falls back to the GitHub API
+          # if the releases download edge returns a stale 404 right after main publishes.
+          echo "STILLFAIL_NATIVE_INBOX=$inbox" >> "$GITHUB_ENV"
+
+          shell_key="$(node scripts/native.ts key shell-station linux-x64)"
+          reader_key="$(node scripts/native.ts key reader linux-x64)"
+          shell_asset="shell-station-linux-x64-$shell_key.tar.gz"
+          reader_asset="reader-linux-x64-$reader_key.tar.gz"
+          missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
+          missing_reader="$(node scripts/native.ts missing reader:linux-x64)"
+
+          # Both stillfail-pion (build.sh) and reader:linux-x64 link libstillfail_shell.a (shell-station:linux-x64).
+          # When client/shell/** changed, pipeline's natives job builds it on ci-1 (with cargo-zigbuild and sccache);
+          # wait for it here since a cold Rust cross-build of shell-station cannot fit in this 5m job.
+          run="" natives_state=""
+          if [ -n "$missing_shell" ]; then
+            echo "shell-station:linux-x64 not published yet; waiting for same-SHA pipeline natives"
+            api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
+            t0=$SECONDS
+            # Leave >= 70 s after the wait for R2 restore (~8 s), pion build + smoke (~35 s), and artifact upload (~5 s).
+            deadline=$(( JOB_END - 70 ))
+            while :; do
+              if [ "$GITHUB_REF" = refs/heads/main ]; then
+                missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
+                missing_reader="$(node scripts/native.ts missing reader:linux-x64)"
+                if [ -z "$missing_shell" ] && [ -z "$missing_reader" ]; then
+                  echo "(shell-station and reader published after $((SECONDS - t0)) s)"
+                  break
+                fi
+              fi
+              [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)"
+              if [ -n "$run" ]; then
+                natives_state="$(api "actions/runs/$run/jobs?per_page=100" '[.jobs[] | select(.name == "natives") | "\(.status) \(.conclusion // "")"] | .[0] // empty' || true)"
+                if [ "$GITHUB_REF" != refs/heads/main ]; then
+                  case "$natives_state" in
+                    "completed success")
+                      echo "(pipeline natives done after $((SECONDS - t0)) s: run $run)"
+                      if ! (gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$inbox" && \
+                            node scripts/native-handoff.mjs get "$inbox" "$GITHUB_SHA" --targets linux-x64); then
+                        echo "warning: failed to restore natives-$GITHUB_SHA from run $run; clearing partial inbox"
+                        rm -rf "$inbox"
+                        mkdir -p "$inbox"
+                      fi
+                      break ;;
+                    completed*)
+                      echo "pipeline natives ended '$natives_state' (run $run; may be failed, cancelled, or superseded by a newer push)"
+                      break ;;
+                  esac
+                else
+                  case "$natives_state" in
+                    completed*)
+                      missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
+                      missing_reader="$(node scripts/native.ts missing reader:linux-x64)"
+                      echo "pipeline natives ended '$natives_state' (run $run) after $((SECONDS - t0)) s"
+                      break ;;
+                  esac
+                fi
+              elif [ $((SECONDS - t0)) -ge 25 ]; then
+                echo "no same-SHA pipeline run found after $((SECONDS - t0)) s (e.g. workflow_dispatch); stopping wait"
+                break
+              fi
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "pipeline natives not ready after $((SECONDS - t0)) s (run=${run:-none}, state=${natives_state:-none})"
+                break
+              fi
+              sleep 5
+            done
+            missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
+            missing_reader="$(node scripts/native.ts missing reader:linux-x64)"
+          fi
+
+          if [ -f "$inbox/$shell_asset" ]; then missing_shell=""; fi
+          if [ -f "$inbox/$reader_asset" ]; then missing_reader=""; fi
+          if [ -n "$missing_shell" ]; then
+            echo "::error::shell-station:linux-x64 ($shell_key) is not prebuilt and same-SHA pipeline natives did not provide it (run=${run:-none}, state=${natives_state:-none}; may have failed, been cancelled/superseded by a newer push, or timed out). Cold-building Rust shell-station does not fit in this 5m job."
+            exit 1
+          fi
+          if [ -n "$missing_reader" ]; then
+            left=$(( JOB_END - $(date +%s) ))
+            if [ "$left" -lt 100 ]; then
+              echo "::error::reader:linux-x64 ($reader_key) still missing after waiting for pipeline natives (run=${run:-none}, state=${natives_state:-none}); only ${left} s left in 5m job, not enough to build reader locally"
+              exit 1
+            fi
+          fi
+          echo "missing=$([ -n "$missing_reader" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "shell_missing=false reader_missing=$([ -n "$missing_reader" ] && echo true || echo false)"
 
       - if: steps.reader.outputs.missing == 'true'
         uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc' }
 
-      - name: Zig 0.16.0 for the reader (UBSan off at -O0, as natives)
+      - name: Zig 0.16.0 (when building reader)
         if: steps.reader.outputs.missing == 'true'
         run: |
+          set -euo pipefail
           zbase="$HOME/.cache/pion-station-zig/0.16.0"
           d="$zbase/zig-x86_64-linux-0.16.0"
           if [ ! -x "$d/zig" ]; then

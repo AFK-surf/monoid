@@ -792,3 +792,45 @@ test "sessions_core: Process-scoped shell waiters survive HubGen rotation" {
   assert(proc_done)
   assert(gen.counters.epoch == 1)
 }
+
+test "sessions_core: direct Fiber.interrupt() on pending rpc_k evicts hub_asked, restores active, and ignores late answer" {
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let gen = HubGen::new(host, 0)
+  let mut saw_interrupted = false
+
+  // Simulate spawn_work incrementing active to 1 before rpc_k borrows -1 (active -> 0).
+  gen.counters.active = 1
+  let f = gen.fibers.fork_quiet(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    gen.rpc_k(host, "a", "node.uuid", [], fn(_k : String) -> Unit { () }, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          saw_interrupted = true
+          // Mirror ActorsGen::spawn_work settling live Interrupted: active -= 1; quiet().
+          gen.counters.active = gen.counters.active - 1
+          gen.counters.quiet()
+          k(effect::Exit::Interrupted)
+        }
+        _ => k(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  host.tick()
+  assert(host.hub_asked.length() == 1)
+  assert(gen.counters.active == 0)
+
+  f.interrupt()
+  host.tick()
+  assert(saw_interrupted)
+  assert(host.hub_asked.length() == 0)
+  assert(gen.counters.active == 0)
+  assert(mem.stdout_lines.length() == 2)
+  assert(mem.stdout_lines[1].contains("\"quiet\":true"))
+
+  // Late answer for evicted RPC id 1 must be a complete no-op (active stays 0, no new stdout).
+  gen.handle_answer(host, 1, base_codec::json_obj([("answer", jint(1)), ("value", jstr("late"))]))
+  host.tick()
+  assert(host.hub_asked.length() == 0)
+  assert(gen.counters.active == 0)
+  assert(mem.stdout_lines.length() == 2)
+}

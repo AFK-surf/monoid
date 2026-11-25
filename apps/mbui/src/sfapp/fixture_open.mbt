@@ -199,6 +199,27 @@ fn open_decide_panels(mode : String, src : Source) -> Unit {
         from=@sf.at_point(195.0, 800.0),
       )
     }
+    // its station away, gone on with on another (sfpages chat_handoff.mbt): its "…" with 在其他 station 接着做; the
+    // stations picked among; what it means on Maple; that asked, at work (-busy) or refused (-refused)
+    "chat-handoff" => {
+      @sf.set_words(fill)
+      @sfpages.open_chat_menu(
+        src,
+        "ws1",
+        r,
+        @sfpages.chat_extra_items(src, r, src.topic("chat", chat_params(r)).get().value),
+        from=@sf.at_point(195.0, 800.0),
+      )
+    }
+    "chat-handoff-pick" => {
+      @sf.set_words(fill)
+      @sfpages.open_chat_handoff_step(src, r, "pick", "", from=@sf.at_point(195.0, 800.0))
+    }
+    "chat-handoff-confirm" | "chat-handoff-busy" | "chat-handoff-refused" => {
+      @sf.set_words(fill)
+      let step = if mode == "chat-handoff-confirm" { "confirm" } else { "asked" }
+      @sfpages.open_chat_handoff_step(src, r, step, "ws1/st2", from=@sf.at_point(195.0, 800.0))
+    }
     "chat-letters" | "chat-letters-many" => open_letters(src, r, 7.0)
     // what was said in it besides words (sfpages things.mbt), from its info
     "chat-things" => open_things(src, r, 7.0)
@@ -989,6 +1010,8 @@ pub fn fixture_corner_modes() -> Array[String] {
     "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
     "chat-agent-working", "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose", "chat-download", "chat-failed", "chat-feedback", "chat-image-coming",
     "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice", "chat-history-side",
+    // (its station away, gone on with on another: the "…" offering it, the stations, what it means, at work, refused)
+    "chat-handoff", "chat-handoff-pick", "chat-handoff-confirm", "chat-handoff-busy", "chat-handoff-refused",
     // (its agent at work: what the history's head shows only then, #6246's stop among its keys)
     "chat-history-side-working", "chat-info", "chat-info-bare", "chat-job",
     "chat-jobs", "chat-jobs-pop", "chat-jobs-side", "chat-letters", "chat-letters-info", "chat-letters-open",

@@ -1,0 +1,101 @@
+// Strongly-typed port between `sessions_actors` core (`actors.pion`) and the actor state machine
+// (`actor_run_{turn,agent,events,lifecycle}.pion` added in `W8-E2`), aligned with `wave8-plan.md` v5 §2.5.3.
+//
+// Every callback receives the immutable per-generation `ActorsGen` context (NEVER the mutable outer
+// `Actors` shell), so old-generation closures can never observe a newer generation's `HubGen` or DB.
+
+import "base_codec"
+import "effect"
+
+pub struct ActorRunHandlers {
+  pub on_event_k : (
+    ActorsGen,
+    Actor,
+    Int,
+    base_codec::Json,
+    base_codec::Json,
+    (effect::Exit[Unit]) -> Unit,
+  ) -> Unit
+  pub called_k : (
+    ActorsGen,
+    Actor,
+    String,
+    Array[base_codec::Json],
+    (effect::Exit[base_codec::Json]) -> Unit,
+  ) -> Unit
+  pub wake_queued_k : (ActorsGen, Actor, (effect::Exit[Unit]) -> Unit) -> Unit
+  pub wake_cap_queued_k : (ActorsGen, Actor, (effect::Exit[Unit]) -> Unit) -> Unit
+  pub codex_updated_k : (
+    ActorsGen,
+    Actor,
+    Int,
+    Option[String],
+    (effect::Exit[Unit]) -> Unit,
+  ) -> Unit
+  pub on_timer_k : (
+    ActorsGen,
+    Actor,
+    String,
+    ActorTimerAction,
+    (effect::Exit[Unit]) -> Unit,
+  ) -> Unit
+  /// `true` while stub handlers remain (`W8-F` asserts `false` on production assembly).
+  pub is_stub : Bool
+}
+
+pub fn ActorRunHandlers::stub() -> ActorRunHandlers {
+  ActorRunHandlers::{
+    on_event_k: fn(
+      _ctx : ActorsGen,
+      _a : Actor,
+      _generation : Int,
+      _event : base_codec::Json,
+      _read : base_codec::Json,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    },
+    called_k: fn(
+      _ctx : ActorsGen,
+      _a : Actor,
+      _method : String,
+      _args : Array[base_codec::Json],
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Succeeded(base_codec::json_null()))
+    },
+    wake_queued_k: fn(
+      _ctx : ActorsGen,
+      _a : Actor,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    },
+    wake_cap_queued_k: fn(
+      _ctx : ActorsGen,
+      _a : Actor,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    },
+    codex_updated_k: fn(
+      _ctx : ActorsGen,
+      _a : Actor,
+      _id : Int,
+      _why : Option[String],
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    },
+    on_timer_k: fn(
+      _ctx : ActorsGen,
+      _a : Actor,
+      _name : String,
+      _action : ActorTimerAction,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    },
+    is_stub: true,
+  }
+}

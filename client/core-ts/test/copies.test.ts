@@ -358,6 +358,14 @@ test("backup settings: S3-only, mixed station+S3, partial failure, unconfigured,
   const restoreStReq = request("copies.restore", { station: "ws1/st1", origin: A, gen: "1-abcdef01", fromStation: B });
   assert.deepEqual(restoreStReq?.body, { station: A, gen: "1-abcdef01", from: { station: B } });
 
+  // A chat of a station that does not answer, gone on with on this one from its backup (any member)
+  const handoffReq = request("copies.handoff", { station: "ws1/st1", origin: A, thread: 42 });
+  assert.equal(handoffReq?.method, "POST");
+  assert.equal(handoffReq?.path, "/copies/handoff");
+  assert.deepEqual(handoffReq?.body, { origin: A, thread: 42 });
+  assert.deepEqual(handoffReq?.effect, { kind: "session", key: null });
+  assert.deepEqual(request("copies.handoff", { station: "ws1/st1", origin: A, thread: 42, key: "k-1", runtime: "codex", model: "gpt-x" })?.body, { origin: A, thread: 42, key: "k-1", runtime: "codex", model: "gpt-x" });
+
   const histDefault = request("copies.history", { station: "ws1/st1" });
   assert.equal(histDefault?.method, "GET");
   assert.equal(histDefault?.path, "/copies/history");

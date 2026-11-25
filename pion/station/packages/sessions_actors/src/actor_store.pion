@@ -1,0 +1,987 @@
+// Local SQLite store operations for `sessions_actors` (`station/mb/src/reader/actor_store.mbt` 1:1).
+//
+// All 3 explicit write transactions (`endTurn`, `endCutOff`, `markDelivered`) go strictly through
+// `sql_db::Db::tx_err` (zero raw transaction SQL in this file; unified `pion-sqlite-tx-scanner`
+// directory gate and `--smoke-sessions-actors-store` CLI hook are wired in `W8-F`).
+// This intentionally fixes MoonBit's unrolled-back `COMMIT` failure: on body error OR `COMMIT` error
+// OR external `BUSY` lock, `Db::tx_err` rolls back cleanly so subsequent `tx_err` calls succeed, and
+// `changes` is emitted ONLY after commit succeeds.
+
+import "base_codec"
+import "sessions_core"
+import "sql_db"
+
+/// Narrow SQLite adapter so production runs directly on `sql_db::Db` (`Db::tx_err`) while
+/// pure-Pion unit tests can deterministically inject failure/BUSY/commit-error scenarios.
+pub struct StoreDb {
+  pub all : (String, Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError]
+  pub run : (String, Array[base_codec::Json]) -> Result[Int, sql_db::SqlError]
+  pub tx_err : ((StoreDb) -> Result[base_codec::Json, sql_db::SqlError]) -> Result[base_codec::Json, sql_db::SqlError]
+}
+
+pub fn StoreDb::from_db(db : sql_db::Db) -> StoreDb {
+  StoreDb::{
+    all: fn(sql : String, params : Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError] {
+      db.all(sql, params)
+    },
+    run: fn(sql : String, params : Array[base_codec::Json]) -> Result[Int, sql_db::SqlError] {
+      db.run(sql, params)
+    },
+    tx_err: fn(
+      body : (StoreDb) -> Result[base_codec::Json, sql_db::SqlError],
+    ) -> Result[base_codec::Json, sql_db::SqlError] {
+      db.tx_err(
+        fn(tx_db : sql_db::Db) -> Result[base_codec::Json, sql_db::SqlError] {
+          let scoped = StoreDb::{
+            all: fn(s : String, p : Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError] {
+              tx_db.all(s, p)
+            },
+            run: fn(s : String, p : Array[base_codec::Json]) -> Result[Int, sql_db::SqlError] {
+              tx_db.run(s, p)
+            },
+            tx_err: fn(
+              _nested : (StoreDb) -> Result[base_codec::Json, sql_db::SqlError],
+            ) -> Result[base_codec::Json, sql_db::SqlError] {
+              Err(sql_db::sql_error(1, "nested tx_err not supported"))
+            },
+          }
+          body(scoped)
+        },
+        fn(e : sql_db::SqlError) -> sql_db::SqlError { e },
+      )
+    },
+  }
+}
+
+fn sql_flag(on : Bool) -> base_codec::Json {
+  sessions_core::jint(if on { 1 } else { 0 })
+}
+
+/// `rows.ts` `saidBefore`: a declared state in the words stations wrote before.
+pub fn said_before(declared : String) -> String {
+  if declared == "all_done" {
+    "final"
+  } else if declared == "need_decision" || declared == "need_help" {
+    "block"
+  } else {
+    declared
+  }
+}
+
+/// `rows.ts` `ending`: the same in today's words.
+pub fn ending_of(declared : String) -> String {
+  if declared == "final" {
+    "all_done"
+  } else if declared == "block" || declared == "need_decision" {
+    "need_help"
+  } else {
+    declared
+  }
+}
+
+fn col(r : Map[String, base_codec::Json], name : String) -> base_codec::Json {
+  match r.get(name) {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+}
+
+fn is_json_one(v : base_codec::Json) -> Bool {
+  match v {
+    base_codec::Json::Num(n, _) => n == 1.0
+    _ => false
+  }
+}
+
+/// `rows.ts` `toTurnSummary`.
+pub fn turn_summary(r : Map[String, base_codec::Json]) -> base_codec::Json {
+  let declared = col(r, "declared")
+  let about_t = col(r, "about_thread")
+  let about_n = col(r, "about_n")
+  let about_ts = col(r, "about_ts")
+  let about_is_null = (match about_t {
+    base_codec::Json::Null => true
+    _ => false
+  }) ||
+  (match about_n {
+    base_codec::Json::Null => true
+    _ => false
+  }) ||
+  (match about_ts {
+    base_codec::Json::Null => true
+    _ => false
+  })
+  let about = if about_is_null {
+    base_codec::json_null()
+  } else {
+    base_codec::json_obj([("thread", about_t), ("seq", about_n), ("ts", about_ts)])
+  }
+  let declared_out = match declared {
+    base_codec::Json::Str(d) => sessions_core::jstr(said_before(d))
+    _ => base_codec::json_null()
+  }
+  let ending_out = match declared {
+    base_codec::Json::Str(d) => sessions_core::jstr(ending_of(d))
+    _ => base_codec::json_null()
+  }
+  let wait_watch = match col(r, "wait_watch") {
+    base_codec::Json::Num(n, _) => sessions_core::jbool(n == 1.0)
+    _ => base_codec::json_null()
+  }
+  base_codec::json_obj([
+    ("kind", col(r, "kind")),
+    ("outcome", col(r, "outcome")),
+    ("declared", declared_out),
+    ("ending", ending_out),
+    ("need", col(r, "need")),
+    ("about", about),
+    ("waitSeconds", col(r, "wait_seconds")),
+    ("waitFor", col(r, "wait_for")),
+    ("waitWatch", wait_watch),
+    ("detail", col(r, "detail")),
+    ("startedAt", col(r, "started_at")),
+    ("endedAt", col(r, "ended_at")),
+  ])
+}
+
+/// `store.ts` `getSession` / `rows.ts` `toSession`.
+pub fn session_of(r : Map[String, base_codec::Json]) -> base_codec::Json {
+  base_codec::json_obj([
+    ("key", col(r, "key")),
+    ("runtime", col(r, "runtime")),
+    ("profile", col(r, "profile")),
+    ("profilePinned", sessions_core::jbool(is_json_one(col(r, "profile_pinned")))),
+    ("model", col(r, "model")),
+    ("effort", col(r, "effort")),
+    ("runtimeSessionId", col(r, "runtime_session_id")),
+    ("contextBefore", col(r, "context_before")),
+    ("archivedAt", col(r, "archived_at")),
+  ])
+}
+
+fn ActorsGen::changed_store(self : ActorsGen, changes : Array[base_codec::Json]) -> Unit {
+  if changes.length() > 0 && !self.gen.counters.sealed {
+    self.say_node([("changes", base_codec::json_arr(changes))])
+  }
+}
+
+fn session_changed(key : String) -> base_codec::Json {
+  base_codec::json_obj([
+    ("type", sessions_core::jstr("session")),
+    ("key", sessions_core::jstr(key)),
+  ])
+}
+
+fn arg_at(args : Array[base_codec::Json], i : Int) -> base_codec::Json {
+  if i < args.length() {
+    args[i]
+  } else {
+    base_codec::json_null()
+  }
+}
+
+fn str_val(v : base_codec::Json) -> String {
+  match v {
+    base_codec::Json::Str(s) => s
+    _ => ""
+  }
+}
+
+fn is_json_true(v : Option[base_codec::Json]) -> Bool {
+  match v {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+}
+
+pub fn default_sql_store_db(gen : sessions_core::HubGen) -> Option[StoreDb] {
+  match gen.resources.db {
+    Some(db) => Some(StoreDb::from_db(db))
+    None => None
+  }
+}
+
+/// Execute `f` with `args` locally on this generation's bound SQLite DB;
+/// returns `Ok(None)` when no DB is bound or `f` is handled by Node RPC.
+pub fn ActorsGen::local_store(
+  self : ActorsGen,
+  f : String,
+  args : Array[base_codec::Json],
+) -> Result[Option[base_codec::Json], sql_db::SqlError] {
+  if self.gen.counters.sealed {
+    return Ok(None)
+  }
+  let sdb = match self.store_db {
+    Some(d) => d
+    None => return Ok(None)
+  }
+  self.local_store_with_db(sdb, f, args)
+}
+
+pub fn ActorsGen::local_store_with_db(
+  self : ActorsGen,
+  sdb : StoreDb,
+  f : String,
+  args : Array[base_codec::Json],
+) -> Result[Option[base_codec::Json], sql_db::SqlError] {
+  if self.gen.counters.sealed {
+    return Ok(None)
+  }
+  let key = str_val(arg_at(args, 0))
+  let now = sessions_core::jnum(self.gen.counters.now)
+
+  if f == "getSession" {
+    let rows = match (sdb.all)(
+      "SELECT key, runtime, profile, profile_pinned, model, effort, runtime_session_id, context_before, archived_at FROM sessions WHERE key = ?",
+      [arg_at(args, 0)],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    if rows.length() > 0 {
+      return Ok(Some(session_of(rows[0])))
+    }
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "lastTurn" {
+    let rows = match (sdb.all)(
+      "SELECT * FROM turns WHERE session_key = ? ORDER BY started_at DESC, rowid DESC LIMIT 1",
+      [arg_at(args, 0)],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    if rows.length() > 0 {
+      return Ok(Some(turn_summary(rows[0])))
+    }
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "latestTurn" {
+    let rows = match (sdb.all)(
+      "SELECT * FROM turns WHERE session_key = ? ORDER BY started_at DESC, rowid DESC LIMIT 1",
+      [arg_at(args, 0)],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    if rows.length() > 0 {
+      let r = rows[0]
+      return Ok(Some(base_codec::json_obj([("id", col(r, "id")), ("summary", turn_summary(r))])))
+    }
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "slackStop" {
+    let rows = match (sdb.all)(
+      "SELECT event_ts, turn_id FROM slack_stops WHERE session = ? AND connect = ? AND channel = ? AND thread_ts = ?",
+      [arg_at(args, 0), arg_at(args, 1), arg_at(args, 2), arg_at(args, 3)],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    if rows.length() > 0 {
+      let r = rows[0]
+      return Ok(Some(base_codec::json_obj([("ts", col(r, "event_ts")), ("turn", col(r, "turn_id"))])))
+    }
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "leftThread" {
+    let rows = match (sdb.all)(
+      "SELECT 1 FROM thread_sessions m JOIN threads t ON t.id = m.thread WHERE m.session = ? AND m.connect = ? AND t.channel = ? AND t.thread_ts = ? AND m.left_at IS NOT NULL LIMIT 1",
+      [arg_at(args, 0), arg_at(args, 1), arg_at(args, 2), arg_at(args, 3)],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    return Ok(Some(sessions_core::jbool(rows.length() > 0)))
+  }
+
+  if f == "hasPending" {
+    let r1 = match (sdb.all)(
+      "SELECT 1 FROM deliveries d INDEXED BY deliveries_pending JOIN entries m ON m.thread = d.thread AND m.n = d.n AND m.kind = 'message' JOIN threads t ON t.id = d.thread JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session WHERE d.session = ? AND d.delivered_at IS NULL LIMIT 1",
+      [arg_at(args, 0)],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    if r1.length() > 0 {
+      return Ok(Some(sessions_core::jbool(true)))
+    }
+    let r2 = match (sdb.all)(
+      "SELECT 1 FROM letter_deliveries d INDEXED BY letter_deliveries_pending JOIN letters l ON l.thread = d.thread AND l.n = d.n JOIN threads t ON t.id = d.thread JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session WHERE d.session = ? AND d.delivered_at IS NULL LIMIT 1",
+      [arg_at(args, 0)],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    return Ok(Some(sessions_core::jbool(r2.length() > 0)))
+  }
+
+  if f == "notify" {
+    self.changed_store([session_changed(key)])
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "setRunning" {
+    match (sdb.run)(
+      "UPDATE sessions SET running = ?1, last_active_at = ?2 WHERE key = ?3",
+      [sql_flag(sessions_core::truthy(arg_at(args, 1))), now, arg_at(args, 0)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    self.changed_store([session_changed(key)])
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "setSessionContextBefore" {
+    match (sdb.run)(
+      "UPDATE sessions SET context_before = ?1 WHERE key = ?2",
+      [arg_at(args, 1), arg_at(args, 0)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    self.changed_store([session_changed(key)])
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "noteCompacted" {
+    match (sdb.run)(
+      "UPDATE sessions SET compactions = COALESCE(compactions, 0) + 1 WHERE key = ?1",
+      [arg_at(args, 0)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    self.changed_store([session_changed(key)])
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "setRuntimeSessionId" {
+    match (sdb.run)(
+      "UPDATE sessions SET compactions = CASE WHEN runtime_session_id IS ?1 THEN compactions ELSE NULL END, runtime_session_id = ?1 WHERE key = ?2",
+      [arg_at(args, 1), arg_at(args, 0)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    self.changed_store([
+      session_changed(key),
+      base_codec::json_obj([
+        ("type", sessions_core::jstr("conversation")),
+        ("key", sessions_core::jstr(key)),
+      ]),
+    ])
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "rememberSlackStop" {
+    match (sdb.run)(
+      "INSERT INTO slack_stops (session, connect, channel, thread_ts, event_ts, turn_id) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (session, connect, channel, thread_ts) DO UPDATE SET event_ts = excluded.event_ts, turn_id = excluded.turn_id",
+      [arg_at(args, 0), arg_at(args, 1), arg_at(args, 2), arg_at(args, 3), arg_at(args, 4), arg_at(args, 5)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "startTurnFor" {
+    let by = arg_at(args, 3)
+    let sql = "INSERT INTO turns (id, session_key, kind, started_at, profile, person, thread) VALUES (?1, ?2, ?3, ?4, ?5, COALESCE(?6, (SELECT person FROM turns WHERE session_key = ?2 ORDER BY started_at DESC LIMIT 1)), COALESCE(?7, (SELECT thread FROM turns WHERE session_key = ?2 ORDER BY started_at DESC LIMIT 1)))"
+    match (sdb.run)(
+      sql,
+      [
+        arg_at(args, 0),
+        arg_at(args, 1),
+        arg_at(args, 2),
+        now,
+        sessions_core::field_of(by, "profile"),
+        sessions_core::field_of(by, "person"),
+        sessions_core::field_of(by, "thread"),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    self.changed_store([session_changed(str_val(arg_at(args, 1)))])
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "setWaitFor" {
+    match (sdb.run)(
+      "UPDATE turns SET wait_for = ?, wait_watch = ? WHERE id = ?",
+      [arg_at(args, 1), sql_flag(sessions_core::truthy(arg_at(args, 2))), arg_at(args, 0)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "setAbout" {
+    let (t, n, ts) = match arg_at(args, 1) {
+      base_codec::Json::Arr(items) => {
+        if items.length() == 3 {
+          (items[0], items[1], items[2])
+        } else {
+          (base_codec::json_null(), base_codec::json_null(), base_codec::json_null())
+        }
+      }
+      _ => (base_codec::json_null(), base_codec::json_null(), base_codec::json_null())
+    }
+    match (sdb.run)(
+      "UPDATE turns SET about_thread = ?, about_n = ?, about_ts = ? WHERE id = ?",
+      [t, n, ts, arg_at(args, 0)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "setNeed" {
+    match (sdb.run)("UPDATE turns SET need = ? WHERE id = ?", [arg_at(args, 1), arg_at(args, 0)]) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "declareTurn" {
+    match (sdb.run)(
+      "UPDATE turns SET declared = ?, wait_seconds = ? WHERE id = ? AND ended_at IS NULL",
+      [arg_at(args, 1), arg_at(args, 2), arg_at(args, 0)],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "endTurn" {
+    let a0 = arg_at(args, 0)
+    let a1 = arg_at(args, 1)
+    let a2 = arg_at(args, 2)
+    let a3 = arg_at(args, 3)
+    let a4 = arg_at(args, 4)
+    let session_json = match (sdb.tx_err)(fn(tx : StoreDb) -> Result[base_codec::Json, sql_db::SqlError] {
+      match (tx.run)(
+        "UPDATE turns SET ended_at = ?, outcome = ?, detail = ?, declared = ?, wait_seconds = ? WHERE id = ?",
+        [now, a1, a2, a3, a4, a0],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match (tx.run)(
+        "UPDATE turns SET declared = 'final', wait_seconds = NULL WHERE id = ? AND declared IN ('block', 'need_help', 'need_human', 'need_decision') AND about_n IS NOT NULL AND EXISTS (SELECT 1 FROM closed_cards c WHERE c.thread = turns.about_thread AND c.n = turns.about_n)",
+        [a0],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      match (tx.all)("SELECT session_key FROM turns WHERE id = ?", [a0]) {
+        Ok(rows) => {
+          if rows.length() > 0 {
+            Ok(col(rows[0], "session_key"))
+          } else {
+            Ok(base_codec::json_null())
+          }
+        }
+        Err(e) => Err(e)
+      }
+    }) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    match session_json {
+      base_codec::Json::Str(s) => self.changed_store([session_changed(s)])
+      _ => ()
+    }
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "endCutOff" {
+    let a0 = arg_at(args, 0)
+    let n_json = match (sdb.tx_err)(fn(tx : StoreDb) -> Result[base_codec::Json, sql_db::SqlError] {
+      let n = match (tx.run)(
+        "UPDATE turns SET ended_at = ?2, outcome = 'aborted', detail = 'other: cut off by restart', declared = CASE WHEN declared = 'waiting' THEN NULL ELSE declared END, wait_seconds = CASE WHEN declared = 'waiting' THEN NULL ELSE wait_seconds END WHERE session_key = ?1 AND ended_at IS NULL",
+        [a0, now],
+      ) {
+        Ok(cnt) => cnt
+        Err(e) => return Err(e)
+      }
+      if n > 0 {
+        match (tx.run)(
+          "UPDATE turns SET declared = 'final', wait_seconds = NULL WHERE session_key = ?1 AND ended_at = ?2 AND detail = 'other: cut off by restart' AND declared IN ('block', 'need_help', 'need_human', 'need_decision') AND about_n IS NOT NULL AND EXISTS (SELECT 1 FROM closed_cards c WHERE c.thread = turns.about_thread AND c.n = turns.about_n)",
+          [a0, now],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      Ok(sessions_core::jint(n))
+    }) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let n = sessions_core::int_of(Some(n_json))
+    if n > 0 {
+      self.changed_store([session_changed(key)])
+    }
+    return Ok(Some(sessions_core::jint(n)))
+  }
+
+  if f == "stopWait" {
+    let n = match (sdb.run)(
+      "UPDATE turns SET outcome = 'aborted', declared = NULL, wait_seconds = NULL, detail = 'other: stopped while waiting' WHERE id = (SELECT id FROM turns WHERE session_key = ?1 ORDER BY started_at DESC, rowid DESC LIMIT 1) AND ended_at IS NOT NULL AND (declared = 'waiting' OR (?2 AND outcome = 'failed' AND detail LIKE 'rate_limit:%'))",
+      [arg_at(args, 0), sql_flag(sessions_core::truthy(arg_at(args, 1)))],
+    ) {
+      Ok(cnt) => cnt
+      Err(e) => return Err(e)
+    }
+    if n > 0 {
+      self.changed_store([session_changed(key)])
+    }
+    return Ok(Some(sessions_core::jbool(n > 0)))
+  }
+
+  if f == "forgetWait" {
+    let n = match (sdb.run)(
+      "UPDATE turns SET declared = NULL, wait_seconds = NULL WHERE id = (SELECT id FROM turns WHERE session_key = ?1 ORDER BY started_at DESC LIMIT 1) AND declared = 'waiting' AND ended_at IS NOT NULL AND outcome <> 'completed'",
+      [arg_at(args, 0)],
+    ) {
+      Ok(cnt) => cnt
+      Err(e) => return Err(e)
+    }
+    if n > 0 {
+      self.changed_store([session_changed(key)])
+    }
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "markDelivered" {
+    let a0 = arg_at(args, 0)
+    let handed = match arg_at(args, 1) {
+      base_codec::Json::Arr(h) => h
+      _ => []
+    }
+    let res = match (sdb.tx_err)(fn(tx : StoreDb) -> Result[base_codec::Json, sql_db::SqlError] {
+      let mut marked = 0
+      for i in 0..<handed.length() {
+        let m = handed[i]
+        let sql = if is_json_true(sessions_core::jget(m, "apart")) {
+          "UPDATE letter_deliveries SET delivered_at = ? WHERE thread = ? AND n = ? AND session = ? AND delivered_at IS NULL"
+        } else {
+          "UPDATE deliveries SET delivered_at = ? WHERE thread = ? AND n = ? AND session = ? AND delivered_at IS NULL"
+        }
+        let cnt = match (tx.run)(
+          sql,
+          [now, sessions_core::field_of(m, "thread"), sessions_core::field_of(m, "n"), a0],
+        ) {
+          Ok(c) => c
+          Err(e) => return Err(e)
+        }
+        marked = marked + cnt
+      }
+      if handed.length() > 0 {
+        let pending = match (tx.all)(
+          "SELECT (SELECT COUNT(*) FROM deliveries INDEXED BY deliveries_pending WHERE session = ?1 AND delivered_at IS NULL) + (SELECT COUNT(*) FROM letter_deliveries WHERE session = ?1 AND delivered_at IS NULL) AS n",
+          [a0],
+        ) {
+          Ok(rows) => {
+            if rows.length() > 0 {
+              col(rows[0], "n")
+            } else {
+              sessions_core::jint(0)
+            }
+          }
+          Err(e) => return Err(e)
+        }
+        Ok(
+          base_codec::json_obj([
+            ("marked", sessions_core::jint(marked)),
+            ("pending", pending),
+          ]),
+        )
+      } else {
+        Ok(base_codec::json_null())
+      }
+    }) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    match res {
+      base_codec::Json::Obj(_) => {
+        let n = sessions_core::int_of(sessions_core::jget(res, "marked"))
+        let pending = sessions_core::field_of(res, "pending")
+        self.changed_store([
+          base_codec::json_obj([
+            ("type", sessions_core::jstr("session")),
+            ("key", sessions_core::jstr(key)),
+            ("pending", pending),
+          ]),
+        ])
+        return Ok(Some(sessions_core::jint(n)))
+      }
+      _ => return Ok(Some(sessions_core::jint(0)))
+    }
+  }
+
+  if f == "markUndelivered" {
+    let handed = match arg_at(args, 1) {
+      base_codec::Json::Arr(h) => h
+      _ => []
+    }
+    for i in 0..<handed.length() {
+      let m = handed[i]
+      let sql = if is_json_true(sessions_core::jget(m, "apart")) {
+        "UPDATE letter_deliveries SET delivered_at = NULL WHERE thread = ? AND n = ? AND session = ?"
+      } else {
+        "UPDATE deliveries SET delivered_at = NULL WHERE thread = ? AND n = ? AND session = ?"
+      }
+      match (sdb.run)(sql, [sessions_core::field_of(m, "thread"), sessions_core::field_of(m, "n"), arg_at(args, 0)]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    if handed.length() > 0 {
+      self.changed_store([session_changed(key)])
+    }
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "markWidgetModelsTold" {
+    match arg_at(args, 1) {
+      base_codec::Json::Arr(told) => {
+        for i in 0..<told.length() {
+          match told[i] {
+            base_codec::Json::Arr(pair) => {
+              if pair.length() == 2 {
+                match (sdb.run)(
+                  "UPDATE widget_states SET told_at = ? WHERE session = ? AND path = ? AND model = ?",
+                  [now, arg_at(args, 0), pair[0], pair[1]],
+                ) {
+                  Ok(_) => ()
+                  Err(e) => return Err(e)
+                }
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    return Ok(Some(base_codec::json_null()))
+  }
+
+  if f == "entriesBefore" {
+    let before = match arg_at(args, 1) {
+      base_codec::Json::Null => sessions_core::jnum(9007199254740991.0)
+      n => n
+    }
+    let rows = match (sdb.all)(
+      "SELECT n, ts, text FROM entries WHERE thread = ? AND n < ? ORDER BY n DESC LIMIT ?",
+      [arg_at(args, 0), before, arg_at(args, 2)],
+    ) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    let out : Array[base_codec::Json] = []
+    let mut i = rows.length() - 1
+    while i >= 0 {
+      let r = rows[i]
+      out.push(base_codec::json_obj([("n", col(r, "n")), ("ts", col(r, "ts")), ("text", col(r, "text"))]))
+      i = i - 1
+    }
+    return Ok(Some(base_codec::json_arr(out)))
+  }
+
+  if f == "hasSessionActiveWatch" {
+    let found = match (sdb.all)(
+      "SELECT 1 FROM active_watch_jobs INDEXED BY active_watch_jobs_session WHERE session = ? LIMIT 1",
+      [arg_at(args, 0)],
+    ) {
+      Ok(r) => r
+      Err(_) => {
+        match (sdb.all)(
+          "SELECT 1 FROM jobs INDEXED BY jobs_by_session WHERE session_key = ? AND state = 'running' AND watch <> 0 LIMIT 1",
+          [arg_at(args, 0)],
+        ) {
+          Ok(r2) => r2
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    return Ok(Some(sessions_core::jbool(found.length() > 0)))
+  }
+
+  Ok(None)
+}
+
+/// Native SQLite selftest exercising production `local_store_with_db(StoreDb::from_db(db), ...)`
+/// across all 3 explicit write transactions (`endTurn`, `endCutOff`, `markDelivered`) under real
+/// SQLite failure modes:
+/// 1) `endTurn` second-write failure (via trigger) rolls back first write, emits 0 `changes`,
+///    leaves `autocommit() == true`, and recovers on next `endTurn` with exact row values + 1 `changes`.
+/// 2) `endCutOff` deferred FK violation fails at `COMMIT`, rolls back row, emits 0 `changes`,
+///    leaves `autocommit() == true`, and recovers on next `endCutOff` with exact row values + 1 `changes`.
+/// 3) `markDelivered` external `BUSY` write lock from a second connection fails `BEGIN IMMEDIATE`,
+///    emits 0 `changes`, leaves `autocommit() == true`, and recovers once lock releases with exact
+///    `delivered_at` row value + 1 `changes` carrying `pending`.
+pub fn run_store_selftest(temp_db_path : String) -> Result[Unit, String] {
+  let db = match sql_db::Db::create(temp_db_path, wait_ms=0) {
+    Ok(d) => d
+    Err(e) => return Err("create failed: " + e.message)
+  }
+  let setup_sqls = [
+    "PRAGMA foreign_keys = ON;",
+    "CREATE TABLE sessions (key TEXT PRIMARY KEY, runtime TEXT, profile TEXT, profile_pinned INTEGER, model TEXT, effort TEXT, runtime_session_id TEXT, context_before TEXT, archived_at REAL, running INTEGER, last_active_at REAL, compactions INTEGER);",
+    "CREATE TABLE turns (id TEXT PRIMARY KEY, session_key TEXT, kind TEXT, started_at REAL, ended_at REAL, outcome TEXT, detail TEXT, declared TEXT, wait_seconds REAL, wait_for TEXT, wait_watch INTEGER, need TEXT, about_thread TEXT, about_n INTEGER, about_ts TEXT, profile TEXT, person TEXT, thread TEXT);",
+    "CREATE TABLE closed_cards (thread TEXT, n INTEGER);",
+    "CREATE TABLE deliveries (thread TEXT, n INTEGER, session TEXT, delivered_at REAL);",
+    "CREATE INDEX deliveries_pending ON deliveries(session, delivered_at);",
+    "CREATE TABLE letter_deliveries (thread TEXT, n INTEGER, session TEXT, delivered_at REAL);",
+    "CREATE TABLE fk_parents (id INTEGER PRIMARY KEY);",
+    "CREATE TABLE fk_children (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES fk_parents(id) DEFERRABLE INITIALLY DEFERRED);",
+    "CREATE TABLE fail_flags (name TEXT PRIMARY KEY, on_flag INTEGER);",
+    "INSERT INTO fail_flags VALUES ('fail_end_second', 1), ('fail_cutoff_commit', 1);",
+    "INSERT INTO closed_cards VALUES ('th1', 1);",
+    "INSERT INTO turns (id, session_key, kind, started_at, declared, about_thread, about_n, about_ts) VALUES ('t-end', 's1', 'user', 10, 'need_help', 'th1', 1, '1.0');",
+    "INSERT INTO turns (id, session_key, kind, started_at, declared) VALUES ('t-cut', 's2', 'user', 20, 'waiting');",
+    "INSERT INTO deliveries VALUES ('th1', 1, 's3', NULL), ('th1', 2, 's3', NULL);",
+    "CREATE TRIGGER tr_fail_end_second BEFORE UPDATE OF declared ON turns WHEN NEW.id = 't-end' AND NEW.declared = 'final' AND EXISTS (SELECT 1 FROM fail_flags WHERE name = 'fail_end_second' AND on_flag = 1) BEGIN SELECT RAISE(ABORT, 'injected second-write failure'); END;",
+    "CREATE TRIGGER tr_fail_cutoff_commit AFTER UPDATE OF outcome ON turns WHEN NEW.id = 't-cut' AND NEW.outcome = 'aborted' AND EXISTS (SELECT 1 FROM fail_flags WHERE name = 'fail_cutoff_commit' AND on_flag = 1) BEGIN INSERT INTO fk_children (id, parent_id) VALUES (1, 999); END;",
+  ]
+  for i in 0..<setup_sqls.length() {
+    match db.exec(setup_sqls[i]) {
+      Ok(_) => ()
+      Err(e) => {
+        db.close()
+        return Err("setup failed at " + i.to_string() + ": " + e.message)
+      }
+    }
+  }
+
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  gen.counters.now = 1000.0
+  let sdb = StoreDb::from_db(db)
+  let ctx = ActorsGen::new_with_store(host, gen, "/", ActorRunHandlers::stub(), Some(sdb))
+
+  // 1) `endTurn`: 2nd write fails -> 1st write rolled back, 0 changes, autocommit clean.
+  match ctx.local_store_with_db(
+    sdb,
+    "endTurn",
+    [
+      sessions_core::jstr("t-end"),
+      sessions_core::jstr("completed"),
+      base_codec::json_null(),
+      sessions_core::jstr("need_help"),
+      base_codec::json_null(),
+    ],
+  ) {
+    Err(_) => ()
+    Ok(_) => {
+      db.close()
+      return Err("expected endTurn 2nd write to fail")
+    }
+  }
+  if !db.autocommit() {
+    db.close()
+    return Err("autocommit false after endTurn rollback")
+  }
+  if mem.stdout_lines.length() != 0 {
+    db.close()
+    return Err("expected 0 changes on failed endTurn")
+  }
+  match db.all("SELECT ended_at FROM turns WHERE id = 't-end'", []) {
+    Ok(rows) => {
+      match col(rows[0], "ended_at") {
+        base_codec::Json::Null => ()
+        _ => {
+          db.close()
+          return Err("endTurn first write was not rolled back")
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("verify endTurn rollback query failed: " + e.message)
+    }
+  }
+  // Clear trigger flag and verify recovery on same connection.
+  match db.exec("UPDATE fail_flags SET on_flag = 0 WHERE name = 'fail_end_second';") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("clear fail_end_second failed: " + e.message)
+    }
+  }
+  match ctx.local_store_with_db(
+    sdb,
+    "endTurn",
+    [
+      sessions_core::jstr("t-end"),
+      sessions_core::jstr("completed"),
+      base_codec::json_null(),
+      sessions_core::jstr("need_help"),
+      base_codec::json_null(),
+    ],
+  ) {
+    Ok(Some(_)) => ()
+    _ => {
+      db.close()
+      return Err("endTurn recovery failed")
+    }
+  }
+  if mem.stdout_lines.length() != 1 {
+    db.close()
+    return Err("expected 1 changes after endTurn recovery")
+  }
+  match db.all("SELECT declared, outcome FROM turns WHERE id = 't-end'", []) {
+    Ok(rows) => {
+      if str_val(col(rows[0], "declared")) != "final" || str_val(col(rows[0], "outcome")) != "completed" {
+        db.close()
+        return Err("endTurn recovered row mismatch")
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("verify endTurn recovery failed: " + e.message)
+    }
+  }
+
+  // 2) `endCutOff`: deferred FK fails at COMMIT -> rolled back, 0 new changes, autocommit clean.
+  match ctx.local_store_with_db(sdb, "endCutOff", [sessions_core::jstr("s2")]) {
+    Err(_) => ()
+    Ok(_) => {
+      db.close()
+      return Err("expected endCutOff COMMIT failure")
+    }
+  }
+  if !db.autocommit() {
+    db.close()
+    return Err("autocommit false after endCutOff COMMIT failure")
+  }
+  if mem.stdout_lines.length() != 1 {
+    db.close()
+    return Err("expected 0 new changes on failed endCutOff")
+  }
+  match db.all("SELECT ended_at FROM turns WHERE id = 't-cut'", []) {
+    Ok(rows) => {
+      match col(rows[0], "ended_at") {
+        base_codec::Json::Null => ()
+        _ => {
+          db.close()
+          return Err("endCutOff was not rolled back on COMMIT error")
+        }
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("verify endCutOff rollback failed: " + e.message)
+    }
+  }
+  match db.exec("UPDATE fail_flags SET on_flag = 0 WHERE name = 'fail_cutoff_commit';") {
+    Ok(_) => ()
+    Err(e) => {
+      db.close()
+      return Err("clear fail_cutoff_commit failed: " + e.message)
+    }
+  }
+  match ctx.local_store_with_db(sdb, "endCutOff", [sessions_core::jstr("s2")]) {
+    Ok(Some(v)) => {
+      if sessions_core::int_of(Some(v)) != 1 {
+        db.close()
+        return Err("expected endCutOff recovery count 1")
+      }
+    }
+    _ => {
+      db.close()
+      return Err("endCutOff recovery failed")
+    }
+  }
+  if mem.stdout_lines.length() != 2 {
+    db.close()
+    return Err("expected 2 total changes after endCutOff recovery")
+  }
+
+  // 3) `markDelivered`: external BUSY write lock fails BEGIN IMMEDIATE -> 0 new changes, then recovers.
+  let handed = base_codec::json_arr([
+    base_codec::json_obj([
+      ("thread", sessions_core::jstr("th1")),
+      ("n", sessions_core::jint(1)),
+      ("apart", sessions_core::jbool(false)),
+    ]),
+  ])
+  let locker = match sql_db::Db::attach(temp_db_path, wait_ms=0) {
+    Ok(d) => d
+    Err(e) => {
+      db.close()
+      return Err("locker attach failed: " + e.message)
+    }
+  }
+  let mut busy_hit = false
+  let _ = locker.tx_err(
+    fn(_ltx : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+      match ctx.local_store_with_db(sdb, "markDelivered", [sessions_core::jstr("s3"), handed]) {
+        Err(e) => {
+          busy_hit = sql_db::is_busy(e)
+          Ok(())
+        }
+        Ok(_) => Ok(())
+      }
+    },
+    fn(e : sql_db::SqlError) -> sql_db::SqlError { e },
+  )
+  locker.close()
+  if !busy_hit {
+    db.close()
+    return Err("expected BUSY on contended markDelivered")
+  }
+  if !db.autocommit() {
+    db.close()
+    return Err("autocommit false after BUSY markDelivered")
+  }
+  if mem.stdout_lines.length() != 2 {
+    db.close()
+    return Err("expected 0 new changes on BUSY markDelivered")
+  }
+  match ctx.local_store_with_db(sdb, "markDelivered", [sessions_core::jstr("s3"), handed]) {
+    Ok(Some(v)) => {
+      if sessions_core::int_of(Some(v)) != 1 {
+        db.close()
+        return Err("expected markDelivered recovery count 1")
+      }
+    }
+    _ => {
+      db.close()
+      return Err("markDelivered recovery failed")
+    }
+  }
+  if mem.stdout_lines.length() != 3 {
+    db.close()
+    return Err("expected 3 total changes after markDelivered recovery")
+  }
+  match db.all("SELECT delivered_at FROM deliveries WHERE thread = 'th1' AND n = 1 AND session = 's3'", []) {
+    Ok(rows) => {
+      if sessions_core::int_of(Some(col(rows[0], "delivered_at"))) != 1000 {
+        db.close()
+        return Err("markDelivered delivered_at mismatch")
+      }
+    }
+    Err(e) => {
+      db.close()
+      return Err("verify markDelivered row failed: " + e.message)
+    }
+  }
+  db.close()
+  Ok(())
+}

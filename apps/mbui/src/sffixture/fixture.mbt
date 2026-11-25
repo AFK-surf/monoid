@@ -3331,6 +3331,11 @@ pub fn fixture(mode : String) -> Source {
         })
         return
       }
+      // a chat of Willow's gone on with on Maple (chat_fixture.mbt fix_handoff_call)
+      if name == "copies.handoff" {
+        fix_handoff_call(f.mode, params, done)
+        return
+      }
       match @settings.fixture_call(name, params) {
         Some(r) => {
           done(r)

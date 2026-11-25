@@ -129,6 +129,10 @@ export function Copy(props: IconProps) {
   return <Svg {...props}><path d="M8 6.5Q8 3.5 11 3.5H17Q20.5 3.5 20.5 7V13Q20.5 16 17.5 16 M7 8H13Q16 8 16 11V17Q16 20.5 12.5 20.5H7Q3.5 20.5 3.5 17V11.5Q3.5 8 7 8Z" /></Svg>;
 }
 
+export function Cpu(props: IconProps) {
+  return <Svg {...props}><path d="M8.5 6.5H15.5Q17.5 6.5 17.5 8.5V15.5Q17.5 17.5 15.5 17.5H8.5Q6.5 17.5 6.5 15.5V8.5Q6.5 6.5 8.5 6.5Z M10 10H14V14H10Z M10 3.5V6.5 M14 3.5V6.5 M10 17.5V20.5 M14 17.5V20.5 M3.5 10H6.5 M3.5 14H6.5 M17.5 10H20.5 M17.5 14H20.5" /></Svg>;
+}
+
 export function Cursor(props: IconProps) {
   return <Svg {...props}><path d="M5.5 3.5L18.5 10.5L12.5 12.5L10 18.5Z M12.5 12.5L18 18" /></Svg>;
 }
@@ -287,6 +291,10 @@ export function LogIn(props: IconProps) {
 
 export function LogOut(props: IconProps) {
   return <Svg {...props}><path d="M11 3.5H8Q4 3.5 4 7.5V16.5Q4 20.5 8 20.5H11 M10 12H20.5 M16 7.5L20.5 12L16 16.5" /></Svg>;
+}
+
+export function Memory(props: IconProps) {
+  return <Svg {...props}><path d="M5 7.5H19Q20.5 7.5 20.5 9V15.5H3.5V9Q3.5 7.5 5 7.5Z M7.5 10.5V12.5 M10.5 10.5V12.5 M13.5 10.5V12.5 M16.5 10.5V12.5 M6.5 15.5V18 M10 15.5V18 M14 15.5V18 M17.5 15.5V18" /></Svg>;
 }
 
 export function MicOff(props: IconProps) {
@@ -521,6 +529,10 @@ export function Shrink(props: IconProps) {
   return <Svg {...props}><path d="M18.5 10H14V5.5 M14.5 9.5L19.5 4.5 M5.5 14H10V18.5 M9.5 14.5L4.5 19.5" /></Svg>;
 }
 
+export function Signal(props: IconProps) {
+  return <Svg {...props}><path d="M4.5 19.5V16.5 M9.5 19.5V12.5 M14.5 19.5V8.5 M19.5 19.5V4.5" /></Svg>;
+}
+
 export function SkipBack(props: IconProps) {
   return <Svg {...props}><path d="M6 5V19 M18 5.8Q18 4.3 16.7 5L8.6 11Q7.4 12 8.6 13L16.7 19Q18 19.7 18 18.2Z" /></Svg>;
 }
@@ -704,6 +716,7 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "command": Command,
   "compose": Compose,
   "copy": Copy,
+  "cpu": Cpu,
   "cursor": Cursor,
   "cut": Cut,
   "devices": Devices,
@@ -744,6 +757,7 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "list": List,
   "log-in": LogIn,
   "log-out": LogOut,
+  "memory": Memory,
   "mic-off": MicOff,
   "mic": Mic,
   "minus": Minus,
@@ -802,6 +816,7 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "share": Share,
   "shield-check": ShieldCheck,
   "shrink": Shrink,
+  "signal": Signal,
   "skip-back": SkipBack,
   "skip-forward": SkipForward,
   "sliders": Sliders,
