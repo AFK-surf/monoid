@@ -33,6 +33,9 @@ let mouse_pair_end : @ui.Style = @ui.css("justify=JEnd")
 let screen_top_end : @ui.Style = @ui.css("w=Full p=S3 align=AEnd")
 
 ///|
+let screen_full_top_pad : Double = 3.0
+
+///|
 /// One of those two (`style`) where it stands in the window's corner: its 12 clear of a corner too square for its
 /// round buttons (@sf.window_corner_clear, a Mac's 16), and past what the system has at the sides turned sideways.
 fn screen_corner_end(style : @ui.Style, top? : Bool = false) -> @ui.Style {
@@ -41,7 +44,7 @@ fn screen_corner_end(style : @ui.Style, top? : Bool = false) -> @ui.Style {
   if top && @ui.window_keys_own_now() {
     base.then(
       @ui.style(
-        pt=@sf.room_of(3.0),
+        pt=@sf.room_of(screen_full_top_pad),
         pr=@sf.room_of(@sf.window_end_in(in_, roots=@ui.tree_corner_roots_now())),
       ),
     )

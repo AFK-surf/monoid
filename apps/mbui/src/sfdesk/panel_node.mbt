@@ -840,6 +840,10 @@ fn side_bar_clip_node(
   at : () -> Double,
   make : (@view.View) -> Unit,
 ) -> Unit {
+  if @ui.platform() != 3 && @ui.platform() != 5 {
+    make(parent)
+    return
+  }
   parent.box(fn(c) {
     let sliding_win = fn() { @ui.window_keys_own_now() && at() < side_whole(src, c) - 0.5 }
     c
