@@ -1,6 +1,8 @@
-// Zero-conflict W7-0 skeleton for `readops_views` (L2, implemented in W7-D).
+// Wave 7 L2 package `readops_views`: 1:1 port of `chatmarks`, `entries`, `openjobs`,
+// `resourcechats`, `sessions_sql`, `summaries`, and `threadviews`.
+// Depends strictly on `readops_core`, `readops_chats`, `readops_local`, and Wave 4-6 packages.
 
+/// Real-SQLite linked-binary self-test entrypoint invoked by `stillfail-pion --smoke-readops <temp-dir>`.
 pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
-  let _ = temp_dir
-  Ok(0)
+  run_views_selftest(temp_dir)
 }
