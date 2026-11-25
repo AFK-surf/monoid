@@ -892,7 +892,7 @@ test("a Google account: signed in in its terminal interface (the way chosen, Goo
     const run = JSON.parse(readFileSync(dump, "utf8").trim().split("\n").at(-1)!);
     // Its HOME an empty directory of its own (its sign-in copied into the profile's agy/ once done), its sign-in kept in a
     // file there (AGY_FILE_TOKENS), its question to the terminal answered; none of the machine's keys.
-    assert.deepEqual([run.args, run.home, run.remote, run.key, run.fileTokens], [[], run.home, null, null, AGY_FILE_TOKENS.SSH_CLIENT]);
+    assert.deepEqual([run.args, run.home, run.remote, run.key, run.fileTokens, run.forceFileTokens], [[], run.home, null, null, AGY_FILE_TOKENS.SSH_CLIENT, AGY_FILE_TOKENS.AGY_CLI_FORCE_FILE_TOKEN_STORAGE]);
     // (its run and its manager's mark: one before it, or another manager's with the same run, is not taken for it)
     const g1 = join(data, "run", "agy-login", "g-1-");
     assert.ok(run.home.startsWith(g1) && /^[0-9a-f]{8}$/.test(run.home.slice(g1.length)), run.home);
@@ -1168,6 +1168,7 @@ test("signed in again over a sign-in there is (a person's and a company's): `agy
       await wait("needs_code");
       const run = JSON.parse(readFileSync(dump, "utf8").trim().split("\n").at(-1)!);
       assert.equal(run.fileTokens, AGY_FILE_TOKENS.SSH_CLIENT);
+      assert.equal(run.forceFileTokens, AGY_FILE_TOKENS.AGY_CLI_FORCE_FILE_TOKEN_STORAGE);
       assert.ok(run.home.startsWith(join(data, "run", "agy-login")), run.home);
       // The old one untouched while the new is under way.
       assert.equal(JSON.parse(readFileSync(agyToken(home), "utf8")).token.access_token, "ya29.old");
@@ -1375,7 +1376,7 @@ test("a Google account's sign-in: refused at once where there is no terminal; wi
   }
   const q = await checkQuota({ id: "p", runtime: "agy", home: join(data, "no-signin"), access: { kind: "subscription" } } as never, {}, undefined, undefined, "en");
   assert.deepEqual([q.state, q.detail], ["unavailable", tr("en", "station.quota.signInExpired")]);
-  assert.equal(loginCommand("agy", "/h"), `SSH_CLIENT='${AGY_FILE_TOKENS.SSH_CLIENT}' HOME=/h/agy agy`);
+  assert.equal(loginCommand("agy", "/h"), `AGY_CLI_FORCE_FILE_TOKEN_STORAGE=1 SSH_CLIENT='${AGY_FILE_TOKENS.SSH_CLIENT}' HOME=/h/agy agy`);
 });
 
 test("an Antigravity CLI account's Gemini and Claude / GPT windows weigh only on their own models in the pool", () => {
@@ -1679,6 +1680,7 @@ test("macOS keychain: `agy` is kept to the profile's file, and a sign-in it had 
     // Its processes keep the sign-in in the file alone: never the keychain's one item for every profile.
     const { options } = setup();
     assert.equal(agyEnv(options).SSH_CLIENT, AGY_FILE_TOKENS.SSH_CLIENT);
+    assert.equal(agyEnv(options).AGY_CLI_FORCE_FILE_TOKEN_STORAGE, "1");
 
     // 1. The first check notes the email; then `agy` (before) moved the file into the keychain, as go-keyring writes it.
     const first = await checkProfile({ runtime: "agy", kind: "subscription", key: "", via: {}, home: notedHome, env: {}, machine: false, lang: "en" });
@@ -1779,6 +1781,7 @@ test("Linux and Windows keep `agy` on file tokens, and Linux takes back a matchi
     platform.hasKeychain = false;
     platform.os = "linux";
     assert.equal(agyEnv(options).SSH_CLIENT, AGY_FILE_TOKENS.SSH_CLIENT);
+    assert.equal(agyEnv(options).AGY_CLI_FORCE_FILE_TOKEN_STORAGE, "1");
 
     // Matching Linux Secret Service item is taken back into the profile's token file.
     const back = await checkProfile({ runtime: "agy", kind: "subscription", key: "", via: {}, home: notedHome, env: {}, machine: false, lang: "en" });
@@ -1800,6 +1803,7 @@ test("Linux and Windows keep `agy` on file tokens, and Linux takes back a matchi
     // Windows also passes AGY_FILE_TOKENS, while agyTakeBack skips macOS/Linux keyring lookup.
     platform.os = "windows";
     assert.equal(agyEnv(options).SSH_CLIENT, AGY_FILE_TOKENS.SSH_CLIENT);
+    assert.equal(agyEnv(options).AGY_CLI_FORCE_FILE_TOKEN_STORAGE, "1");
     assert.equal(await agyTakeBack(windowsHome), false);
     assert.equal(reads, 2);
   } finally {
