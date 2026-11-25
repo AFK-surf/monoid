@@ -147,7 +147,7 @@ test("config.readers selects mb, pion, and shadow (for footprint)", () => {
   );
 
   // Unimplemented modes safely fall back to mb with reason "pion-mode-unimplemented".
-  const unimpl = resolveReaderEngine("data", { config: { readers: { data: "pion" } }, env: {}, hasPionBinary: true });
+  const unimpl = resolveReaderEngine("sessions", { config: { readers: { sessions: "pion" } }, env: {}, hasPionBinary: true });
   assert.equal(unimpl.engine, "mb");
   assert.equal(unimpl.requested, "pion");
   assert.equal(unimpl.source, "config");

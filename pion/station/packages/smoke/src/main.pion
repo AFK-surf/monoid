@@ -19,11 +19,19 @@ import "builders_stateful"
 import "builders_usage"
 import "builders_vault"
 import "footprint"
+import "front"
 import "host_shim"
 import "js_json"
 import "locate"
 import "memory"
 import "packed"
+import "reader_data"
+import "reader_serve"
+import "readops_chats"
+import "readops_core"
+import "readops_local"
+import "readops_usage"
+import "readops_views"
 import "sql_db"
 import "sqlite_ffi"
 
@@ -1059,6 +1067,190 @@ fn run_smoke_sql_db(world : World, db_path : String) -> Unit {
   io_println(world, "{\"ok\":true,\"suite\":\"sql_db+js_json+builders_core+builders_stateful+builders_legacy+builders_recent+builders_vault\"}")
 }
 
+fn run_smoke_mux_churn(world : World, cycles : Int) -> Unit {
+  if !front::skeleton_ready() || !reader_data::skeleton_ready() || !reader_serve::skeleton_ready() {
+    let _ = host_shim::write_stderr_line("smoke-mux-churn: skeleton check failed")
+    host_shim::exit_process(1)
+  }
+  let events : Array[host_shim::HostEvent] = []
+  let mut ev_head = 0
+  let transport = builders_core::MuxTransport::{
+    call_async: fn(id : Int64, _op : String, _json : String, _bytes : Option[Bytes]) -> Unit {
+      events.push(
+        host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+          id: id,
+          error: "",
+          json: "{\"ok\":true}",
+          bytes: Some("ok".to_bytes()),
+        }),
+      )
+    },
+    call_sync: fn(_op : String, _json : String) -> String { "{\"value\":true}" },
+    write_stdout_line: fn(_line : String) -> Bool { true },
+    write_stdout_frame: fn(_head : Array[(String, base_codec::Json)], _body : Bytes) -> Bool { true },
+    now_ms: host_shim::now_ms,
+    wall_ms: host_shim::wall_ms,
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      if ev_head < events.length() {
+        let ev = events[ev_head]
+        ev_head = ev_head + 1
+        if ev_head == events.length() {
+          events.clear()
+          ev_head = 0
+        }
+        Some(ev)
+      } else {
+        None
+      }
+    },
+  }
+  let mux = builders_core::ShellMux::new(transport, start_stdin=false)
+  let outbox = builders_core::SerialOutbox::new()
+  let owners : Map[Int, Int] = Map::new()
+
+  let run_batch = fn(start_i : Int, count : Int) -> Unit {
+    for k in 0..<count {
+      let h = start_i + k
+      owners.set(h, h)
+      let _ = outbox.send(
+        mux,
+        h,
+        builders_core::MuxToken::Write(h),
+        "tcp.write",
+        base_codec::json_obj([("id", base_codec::json_int(h))]),
+        Some("payload".to_bytes()),
+      )
+      let _ = mux.step(
+        0.to_int64(),
+        fn(_l : String) -> Unit {},
+        fn() -> Unit {},
+        fn(tok : builders_core::MuxToken, _done : host_shim::ShellDone) -> Unit {
+          match tok {
+            builders_core::MuxToken::Write(owner_h) => {
+              let _ = outbox.on_complete(mux, owner_h)
+              outbox.close_handle(owner_h)
+              owners.remove(owner_h)
+            }
+            _ => ()
+          }
+        },
+      )
+    }
+  }
+
+  // Warmup
+  run_batch(0, 1000)
+  let rss_before = host_shim::rss_bytes()
+  let fd_before = host_shim::open_fd_count()
+
+  run_batch(1000, cycles)
+
+  let rss_after = host_shim::rss_bytes()
+  let fd_after = host_shim::open_fd_count()
+  let rss_delta = rss_after - rss_before
+  let fd_delta = fd_after - fd_before
+
+  if mux.pending_len() != 0 ||
+  outbox.in_flight_count() != 0 ||
+  outbox.queued_handles() != 0 ||
+  owners.length() != 0 {
+    let _ = host_shim::write_stderr_line(
+      "smoke-mux-churn: non-empty tables pending=" +
+      mux.pending_len().to_string() +
+      " in_flight=" +
+      outbox.in_flight_count().to_string() +
+      " queued=" +
+      outbox.queued_handles().to_string() +
+      " owners=" +
+      owners.length().to_string(),
+    )
+    host_shim::exit_process(1)
+  }
+  if fd_before >= 0 && fd_after >= 0 && fd_delta > 0 {
+    let _ = host_shim::write_stderr_line("smoke-mux-churn: open fd grew by " + fd_delta.to_string())
+    host_shim::exit_process(1)
+  }
+  let max_rss_delta : Int64 = (16 * 1024 * 1024).to_int64()
+  if rss_before > 0.to_int64() && rss_after > 0.to_int64() && rss_delta > max_rss_delta {
+    let _ = host_shim::write_stderr_line("smoke-mux-churn: rss grew by " + rss_delta.to_string())
+    host_shim::exit_process(1)
+  }
+  io_println(
+    world,
+    "{\"ok\":true,\"cycles\":" +
+    cycles.to_string() +
+    ",\"rss_delta\":" +
+    rss_delta.to_string() +
+    ",\"fd_delta\":" +
+    fd_delta.to_string() +
+    "}",
+  )
+}
+
+fn run_smoke_readops(world : World, temp_dir : String) -> Unit {
+  let c_core = match readops_core::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("readops_core selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  if c_core <= 0 {
+    let _ = host_shim::write_stderr_line("readops_core selftest executed 0 cases")
+    host_shim::exit_process(1)
+  }
+  let c_chats = match readops_chats::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("readops_chats selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  let c_local = match readops_local::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("readops_local selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  let c_views = match readops_views::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("readops_views selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  let c_usage = match readops_usage::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("readops_usage selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  let total = c_core + c_chats + c_local + c_views + c_usage
+  io_println(
+    world,
+    "{\"ok\":true,\"readops_core\":" +
+    c_core.to_string() +
+    ",\"readops_chats\":" +
+    c_chats.to_string() +
+    ",\"readops_local\":" +
+    c_local.to_string() +
+    ",\"readops_views\":" +
+    c_views.to_string() +
+    ",\"readops_usage\":" +
+    c_usage.to_string() +
+    ",\"total\":" +
+    total.to_string() +
+    "}",
+  )
+}
+
 fn usage_exit() -> Unit {
   let _ = host_shim::write_stderr_line(
     "usage: stillfail-pion [--version | --smoke-stdio | --smoke-sqlite <db> | --smoke-sql-db <db> | --smoke-shell [dir] | --smoke-rc-soak [iters] | --builder footprint [--sep <sep>] | --builder memory [--shell-dir <dir>] [--sep <sep>] | --builder packed [--shell-dir <dir>] | --builder replica-export --db <file> [--replica <dir>] [--data-dir <dir>] [--origin <id>] [--sep <sep>] | --builder replica-restore --db <file> --data <dir> [--now <ms>] [--sep <sep>] | --builder replica-carry [--sep <sep>] | --builder archive-marks|session-bindings|session-counts|signin-save|post-blocks|usage-retire|widget-sources|card-posts|closed-cards|people-since|session-up-jobs|workspace-up-jobs|outflow-chats|search-scope|session-list|archive-last|page-letters|legacy-edits|legacy-said|session-backfill|recent-chat|vault-uses|turn-counts|said|cc-index|usage-check|live-locator --db <file>]",
@@ -1093,6 +1285,14 @@ fn main(world : World) -> Unit {
   } else if cmd == "--smoke-rc-soak" {
     let iters = if argv.length() >= 3 { parse_positive_int(argv[2], 50000) } else { 50000 }
     run_smoke_rc_soak(world, iters)
+  } else if cmd == "--smoke-mux-churn" {
+    let cycles = if argv.length() >= 3 { parse_positive_int(argv[2], 10000) } else { 10000 }
+    run_smoke_mux_churn(world, cycles)
+  } else if cmd == "--smoke-readops" {
+    if argv.length() < 3 {
+      usage_exit()
+    }
+    run_smoke_readops(world, argv[2])
   } else if cmd == "--smoke-history-marks" {
     match (flag_value(argv, "--data"), flag_value(argv, "--path"), flag_value(argv, "--runtime")) {
       (Some(data_dir), Some(tpath), Some(rt)) => {

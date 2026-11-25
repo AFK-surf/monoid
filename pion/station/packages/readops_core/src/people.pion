@@ -1,0 +1,992 @@
+// 1:1 port of `station/mb/src/readops/people.mbt`.
+// Exports `Place`, `Known`, `Names`, `Known::of`, and all read-side helpers for L1/L2 packages.
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "sql_db"
+
+pub struct Place {
+  pub id : String
+  pub name : String
+  pub book : String
+}
+
+pub struct Known {
+  pub client : builders_core::ShellClient
+  pub data : String
+  pub sep : String
+  pub names : Map[String, String]
+  pub processes : Map[String, String]
+  pub client_keys : Map[String, String]
+  pub local_page : Option[String]
+  pub admin : Option[String]
+  pub now : Double
+  mut cached_places : Option[Map[String, Place]]
+  books : Map[String, js_json::JValue]
+  mut cached_config : Option[(Array[(String, String)], Bool)]
+  mut has_runtime_sessions_ordered : Option[Bool]
+  pub original_runtimes : Map[String, base_codec::Json]
+}
+
+fn pairs_of(v : Option[base_codec::Json]) -> Map[String, String] {
+  let out : Map[String, String] = Map::new()
+  match v {
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Arr(pair) => {
+            if pair.length() == 2 {
+              match (pair[0], pair[1]) {
+                (base_codec::Json::Str(k), base_codec::Json::Str(pv)) => out.set(k, pv)
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+pub fn Known::of(
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  ask : base_codec::Json,
+) -> Known {
+  let args = json_val_or_null(ask, "args")
+  let words = json_val(args, "words")
+  let get_word = fn(k : String) -> Option[String] {
+    match words {
+      Some(w) => {
+        match json_val(w, k) {
+          Some(base_codec::Json::Str(s)) => Some(s)
+          _ => None
+        }
+      }
+      None => None
+    }
+  }
+  let now = match json_val(args, "now") {
+    Some(base_codec::Json::Num(n, _)) => n
+    _ => 0.0
+  }
+  Known::{
+    client: client,
+    data: data,
+    sep: sep,
+    names: pairs_of(json_val(ask, "names")),
+    processes: pairs_of(json_val(ask, "processes")),
+    client_keys: pairs_of(json_val(ask, "clientKeys")),
+    local_page: get_word("localPage"),
+    admin: get_word("admin"),
+    now: now,
+    cached_places: None,
+    books: Map::new(),
+    cached_config: None,
+    has_runtime_sessions_ordered: None,
+    original_runtimes: Map::new(),
+  }
+}
+
+pub fn Known::places(self : Known) -> Result[Map[String, Place], ReadError] {
+  match self.cached_places {
+    Some(p) => return Ok(p)
+    None => ()
+  }
+  let out : Map[String, Place] = Map::new()
+  let remote = match read_json(self.client, join_path(self.sep, self.data, "remote-connects.json")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let entries = entries_of(Some(remote))
+  for i in 0..<entries.length() {
+    let (ek, ev) = entries[i]
+    let d = jget(Some(ev), "described")
+    match str_of(jget(d, "kind")) {
+      Some("feishu") => {
+        let nm = match str_of(jget(jget(d, "identity"), "team")) {
+          Some(s) => s
+          None => ""
+        }
+        out.set(ek, Place::{ id: ek, name: nm, book: "feishu" })
+      }
+      Some("slack") => {
+        match str_of(jget(d, "team")) {
+          Some(t) => {
+            if t != "" {
+              let nm = match str_of(jget(jget(d, "identity"), "team")) {
+                Some(s) => s
+                None => ""
+              }
+              out.set(ek, Place::{ id: t, name: nm, book: "slack" })
+            }
+          }
+          None => ()
+        }
+      }
+      _ => ()
+    }
+  }
+  let own = match read_json(self.client, join_path(self.sep, self.data, "config.json")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  match jget(Some(own), "connects") {
+    Some(js_json::JValue::Arr(connects)) => {
+      for i in 0..<connects.length() {
+        let c = connects[i]
+        let id = match str_of(jget(Some(c), "id")) {
+          Some(s) => s
+          None => continue
+        }
+        match str_of(jget(Some(c), "kind")) {
+          Some("feishu") => {
+            let nm = match str_of(jget(jget(jget(Some(c), "feishu"), "tenant"), "name")) {
+              Some(s) => s
+              None => ""
+            }
+            out.set(id, Place::{ id: id, name: nm, book: "feishu" })
+          }
+          Some("comma") => out.set(id, Place::{ id: id, name: "", book: "comma" })
+          Some("group") => out.set(id, Place::{ id: id, name: "", book: "group" })
+          _ => {
+            let team = jget(jget(Some(c), "slack"), "team")
+            match str_of(jget(team, "id")) {
+              Some(t) => {
+                if t != "" {
+                  let nm = match str_of(jget(team, "name")) {
+                    Some(s) => s
+                    None => ""
+                  }
+                  out.set(id, Place::{ id: t, name: nm, book: "slack" })
+                }
+              }
+              None => ()
+            }
+          }
+        }
+      }
+    }
+    _ => ()
+  }
+  self.cached_places = Some(out)
+  Ok(out)
+}
+
+pub fn Known::book(self : Known, platform : String) -> Result[js_json::JValue, ReadError] {
+  let file = if platform == "feishu" {
+    "feishu-names.json"
+  } else if platform == "comma" {
+    "comma-names.json"
+  } else if platform == "group" {
+    "group-names.json"
+  } else {
+    "slack-names.json"
+  }
+  match self.books.get(file) {
+    Some(b) => return Ok(b)
+    None => ()
+  }
+  let raw = match read_json(self.client, join_path(self.sep, self.data, file)) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let b = match raw {
+    js_json::JValue::Obj(_) => raw
+    _ => js_json::JValue::Obj([])
+  }
+  self.books.set(file, b)
+  Ok(b)
+}
+
+pub fn Known::config(self : Known) -> Result[(Array[(String, String)], Bool), ReadError] {
+  match self.cached_config {
+    Some(c) => return Ok(c)
+    None => ()
+  }
+  let connects : Array[(String, String)] = []
+  let mut reviews = false
+  match read_text(self.client, join_path(self.sep, self.data, "config.json"), false) {
+    Ok(Some(t)) => {
+      match js_json::parse(t) {
+        Ok(raw) => {
+          reviews = match jget(jget(jget(Some(raw), "automaticDecisions"), "completion"), "enabled") {
+            Some(js_json::JValue::Bool(true)) => true
+            _ => false
+          }
+          let is_non_null = match raw {
+            js_json::JValue::Null => false
+            _ => true
+          }
+          if is_non_null {
+            match jget(Some(raw), "connects") {
+              Some(js_json::JValue::Arr(cs)) => {
+                for i in 0..<cs.length() {
+                  let c = cs[i]
+                  let id = match str_of(jget(Some(c), "id")) {
+                    Some(s) => s
+                    None => continue
+                  }
+                  let bot = match str_of(jget(jget(Some(c), "slack"), "botName")) {
+                    Some(b) => if b != "" { Some(b) } else { None }
+                    None => None
+                  }
+                  let label = match bot {
+                    Some(b) => b
+                    None => id
+                  }
+                  connects.push((id, label))
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+        Err(_) => ()
+      }
+    }
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  let c = (connects, reviews)
+  self.cached_config = Some(c)
+  Ok(c)
+}
+
+pub fn Known::place(self : Known, connect : String) -> Result[Option[Place], ReadError] {
+  let ps = match self.places() {
+    Ok(m) => m
+    Err(e) => return Err(e)
+  }
+  match ps.get(connect) {
+    Some(p) => Ok(Some(p))
+    None => {
+      match str_find_byte(connect, 64) {
+        Some(at) => {
+          if at > 0 {
+            Ok(ps.get(str_slice_bytes(connect, 0, at)))
+          } else {
+            Ok(None)
+          }
+        }
+        None => Ok(None)
+      }
+    }
+  }
+}
+
+pub fn Known::person(
+  self : Known,
+  connect : String,
+  user : String,
+) -> Result[Option[(String, String, String)], ReadError] {
+  let pl = match self.place(connect) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let book_name = match pl {
+    Some(p) => p.book
+    None => "slack"
+  }
+  let place_id = match pl {
+    Some(p) => p.id
+    None => "?"
+  }
+  let bk = match self.book(book_name) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let person = jget(jget(Some(bk), "u:" + place_id + ":" + user), "person")
+  let name = match str_of(jget(person, "name")) {
+    Some(n) => n
+    None => return Ok(None)
+  }
+  let email = match str_of(jget(person, "email")) {
+    Some(e) => e
+    None => ""
+  }
+  let picture = match str_of(jget(person, "picture")) {
+    Some(p) => p
+    None => ""
+  }
+  Ok(Some((name, email, picture)))
+}
+
+pub fn Known::channel(
+  self : Known,
+  connect : Option[String],
+  channel : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let c = match connect {
+    Some(s) => s
+    None => return Ok(base_codec::json_null())
+  }
+  let pl = match self.place(c) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let book_name = match pl {
+    Some(p) => p.book
+    None => "slack"
+  }
+  let place_id = match pl {
+    Some(p) => p.id
+    None => "?"
+  }
+  let bk = match self.book(book_name) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  match str_of(jget(jget(Some(bk), "c:" + place_id + ":" + js_text(channel)), "channel")) {
+    Some(name) => Ok(base_codec::json_str(name))
+    None => Ok(base_codec::json_null())
+  }
+}
+
+pub fn Known::team_name(self : Known, connect : String) -> Result[base_codec::Json, ReadError] {
+  let ps = match self.places() {
+    Ok(m) => m
+    Err(e) => return Err(e)
+  }
+  match ps.get(connect) {
+    Some(p) => if p.name != "" { Ok(base_codec::json_str(p.name)) } else { Ok(base_codec::json_null()) }
+    None => Ok(base_codec::json_null())
+  }
+}
+
+pub fn Known::creator(
+  self : Known,
+  reference : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let r = match reference {
+    base_codec::Json::Str(s) => s
+    _ => return Ok(base_codec::json_null())
+  }
+  if r == "local" {
+    let nm = match self.local_page {
+      Some(w) => base_codec::json_str(w)
+      None => base_codec::json_null()
+    }
+    return Ok(
+      base_codec::json_obj([
+        ("id", base_codec::json_str("local")),
+        ("name", nm),
+        ("email", base_codec::json_null()),
+        ("via", base_codec::json_str("local")),
+      ]),
+    )
+  }
+  if str_has_prefix(r, "slack:") {
+    let rest = str_slice_bytes(r, 6, r.to_bytes().length())
+    match str_find_byte(rest, 58) {
+      Some(colon) => {
+        if colon > 0 && colon < rest.to_bytes().length() - 1 {
+          let connect = str_slice_bytes(rest, 0, colon)
+          let user = str_slice_bytes(rest, colon + 1, rest.to_bytes().length())
+          let person = match self.person(connect, user) {
+            Ok(p) => p
+            Err(e) => return Err(e)
+          }
+          let pl = match self.place(connect) {
+            Ok(p) => p
+            Err(e) => return Err(e)
+          }
+          let nm = match person {
+            Some((n, _, _)) => if n != "" { n } else { user }
+            None => user
+          }
+          let em = match person {
+            Some((_, e, _)) => if e != "" { base_codec::json_str(e) } else { base_codec::json_null() }
+            None => base_codec::json_null()
+          }
+          let via = match pl {
+            Some(p) => p.book
+            None => "slack"
+          }
+          let out : Array[(String, base_codec::Json)] = [
+            ("id", base_codec::json_str(r)),
+            ("name", base_codec::json_str(nm)),
+            ("email", em),
+            ("via", base_codec::json_str(via)),
+          ]
+          match person {
+            Some((_, _, pic)) => {
+              if pic != "" {
+                out.push(("picture", base_codec::json_str(pic)))
+              }
+            }
+            None => ()
+          }
+          return Ok(base_codec::json_obj(out))
+        }
+      }
+      None => ()
+    }
+  }
+  let display = match self.names.get(r) {
+    Some(n) => n
+    None => r
+  }
+  Ok(
+    base_codec::json_obj([
+      ("id", base_codec::json_str(r)),
+      ("name", base_codec::json_str(display)),
+      ("email", base_codec::json_str(r)),
+      ("via", base_codec::json_str("cloud")),
+    ]),
+  )
+}
+
+pub fn Known::people(
+  self : Known,
+  refs : base_codec::Json,
+) -> Result[Array[base_codec::Json], ReadError] {
+  let seen : Map[String, Bool] = Map::new()
+  let out : Array[base_codec::Json] = []
+  let items = match refs {
+    base_codec::Json::Arr(xs) => xs
+    _ => return Ok(out)
+  }
+  for i in 0..<items.length() {
+    let p = match self.creator(items[i]) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    match p {
+      base_codec::Json::Null => continue
+      _ => ()
+    }
+    let key = match json_val(p, "email") {
+      Some(base_codec::Json::Str(e)) => e
+      _ => {
+        match json_val(p, "id") {
+          Some(base_codec::Json::Str(id)) => id
+          _ => ""
+        }
+      }
+    }
+    if seen.contains(key) {
+      continue
+    }
+    seen.set(key, true)
+    out.push(p)
+  }
+  Ok(out)
+}
+
+pub fn slack_connect_of(sessions : Array[Map[String, base_codec::Json]]) -> Option[String] {
+  for i in 0..<sessions.length() {
+    match field(sessions[i], "connect") {
+      base_codec::Json::Str(c) => {
+        if c != "chat" {
+          return Some(c)
+        }
+      }
+      _ => ()
+    }
+  }
+  None
+}
+
+pub fn Known::origin(
+  self : Known,
+  thread : Map[String, base_codec::Json],
+  sessions : Array[Map[String, base_codec::Json]],
+) -> Result[base_codec::Json, ReadError] {
+  let connect = slack_connect_of(sessions)
+  let team_name = match connect {
+    Some(c) => {
+      match self.team_name(c) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+    }
+    None => base_codec::json_null()
+  }
+  let ch_name = match self.channel(connect, field(thread, "channel")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("teamName", team_name),
+    ("channel", field(thread, "channel")),
+    ("channelName", ch_name),
+    ("threadTs", field(thread, "thread_ts")),
+    ("surface", field(thread, "surface")),
+  ]
+  match parsed_thread_links(field(thread, "links")) {
+    Some(l) => out.push(("links", l))
+    None => ()
+  }
+  Ok(base_codec::json_obj(out))
+}
+
+pub struct Names {
+  pub known : Known
+  pub db : sql_db::Db
+  pub surface : base_codec::Json
+  pub members : Array[Map[String, base_codec::Json]]
+  pub sessions : Option[Map[String, Map[String, base_codec::Json]]]
+  names : Map[String, base_codec::Json]
+  pictures : Map[String, String]
+}
+
+pub fn Known::author_names(
+  self : Known,
+  db : sql_db::Db,
+  thread : base_codec::Json,
+) -> Result[Names, ReadError] {
+  let surface = match one(db, "SELECT * FROM threads WHERE id = ?", [thread]) {
+    Ok(Some(t)) => field(t, "surface")
+    Ok(None) => base_codec::json_null()
+    Err(e) => return Err(e)
+  }
+  let members = match db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [thread]) {
+    Ok(rs) => rs
+    Err(e) => return Err(ReadError::Sql(e))
+  }
+  Ok(
+    Names::{
+      known: self,
+      db: db,
+      surface: surface,
+      members: members,
+      sessions: None,
+      names: Map::new(),
+      pictures: Map::new(),
+    },
+  )
+}
+
+pub fn Known::author_names_preloaded(
+  self : Known,
+  db : sql_db::Db,
+  surface : base_codec::Json,
+  members : Array[Map[String, base_codec::Json]],
+  sessions : Map[String, Map[String, base_codec::Json]],
+) -> Names {
+  Names::{
+    known: self,
+    db: db,
+    surface: surface,
+    members: members,
+    sessions: Some(sessions),
+    names: Map::new(),
+    pictures: Map::new(),
+  }
+}
+
+pub fn Names::session_of(
+  self : Names,
+  author : String,
+) -> Result[Option[Map[String, base_codec::Json]], ReadError] {
+  match self.sessions {
+    Some(cache) => {
+      match cache.get(author) {
+        Some(s) => Ok(Some(s))
+        None => one(self.db, "SELECT * FROM sessions WHERE key = ?", [base_codec::json_str(author)])
+      }
+    }
+    None => one(self.db, "SELECT * FROM sessions WHERE key = ?", [base_codec::json_str(author)])
+  }
+}
+
+pub fn Names::name(
+  self : Names,
+  kind : String,
+  author : String,
+) -> Result[base_codec::Json, ReadError] {
+  let key = kind + ":" + author
+  match self.names.get(key) {
+    Some(n) => return Ok(n)
+    None => ()
+  }
+  let name = if kind == "station" {
+    base_codec::json_str("still.fail")
+  } else if kind == "agent" {
+    let session = match self.session_of(author) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let mut via : Option[base_codec::Json] = None
+    let auth_j = base_codec::json_str(author)
+    for i in 0..<self.members.length() {
+      if base_codec::json_eq(field(self.members[i], "session"), auth_j) {
+        via = Some(field(self.members[i], "connect"))
+        break
+      }
+    }
+    let connect = match via {
+      Some(base_codec::Json::Str(c)) => {
+        if c != "chat" {
+          base_codec::json_str(c)
+        } else {
+          match session {
+            Some(s) => field(s, "connect")
+            None => base_codec::json_null()
+          }
+        }
+      }
+      _ => {
+        match session {
+          Some(s) => field(s, "connect")
+          None => base_codec::json_null()
+        }
+      }
+    }
+    let (connects, _) = match self.known.config() {
+      Ok(c) => c
+      Err(e) => return Err(e)
+    }
+    let mut matched : Option[String] = None
+    for i in 0..<connects.length() {
+      if base_codec::json_eq(base_codec::json_str(connects[i].0), connect) {
+        matched = Some(connects[i].1)
+        break
+      }
+    }
+    match matched {
+      Some(label) => base_codec::json_str(label)
+      None => {
+        match session {
+          Some(s) => field(s, "title")
+          None => base_codec::json_null()
+        }
+      }
+    }
+  } else if base_codec::json_eq(self.surface, base_codec::json_str("chat")) {
+    if author == "local" {
+      match self.known.admin {
+        Some(w) => base_codec::json_str(w)
+        None => base_codec::json_null()
+      }
+    } else {
+      let display = match self.known.names.get(author) {
+        Some(n) => n
+        None => author
+      }
+      base_codec::json_str(display)
+    }
+  } else {
+    let connect = slack_connect_of(self.members)
+    let person = match connect {
+      Some(c) => {
+        match self.known.person(c, author) {
+          Ok(p) => p
+          Err(e) => return Err(e)
+        }
+      }
+      None => None
+    }
+    match person {
+      Some((_, _, pic)) => {
+        if pic != "" {
+          self.pictures.set(key, pic)
+        }
+      }
+      None => ()
+    }
+    match person {
+      Some((n, _, _)) => if n != "" { base_codec::json_str(n) } else { base_codec::json_null() }
+      None => base_codec::json_null()
+    }
+  }
+  self.names.set(key, name)
+  Ok(name)
+}
+
+pub fn Names::picture(
+  self : Names,
+  kind : String,
+  author : String,
+) -> Result[Option[String], ReadError] {
+  match self.name(kind, author) {
+    Ok(_) => Ok(self.pictures.get(kind + ":" + author))
+    Err(e) => Err(e)
+  }
+}
+
+pub fn Known::runtime_sessions_ordered(self : Known, db : sql_db::Db) -> Result[Bool, ReadError] {
+  match self.has_runtime_sessions_ordered {
+    Some(v) => Ok(v)
+    None => {
+      match exists_in(db, "index", "runtime_sessions_ordered") {
+        Ok(v) => {
+          self.has_runtime_sessions_ordered = Some(v)
+          Ok(v)
+        }
+        Err(e) => Err(e)
+      }
+    }
+  }
+}
+
+fn original_runtime_with_ordered(
+  db : sql_db::Db,
+  key : base_codec::Json,
+  ordered : Bool,
+) -> Result[base_codec::Json, ReadError] {
+  let query_rt = fn(sql : String) -> Result[base_codec::Json, ReadError] {
+    match one(db, sql, [key]) {
+      Ok(Some(r)) => Ok(field(r, "runtime"))
+      Ok(None) => Ok(base_codec::json_null())
+      Err(e) => Err(e)
+    }
+  }
+  let primary_sql = if ordered {
+    "SELECT COALESCE(s.original_runtime,\n  (SELECT r.runtime FROM runtime_sessions r INDEXED BY runtime_sessions_ordered WHERE r.session_key = s.key ORDER BY r.at, r.rowid LIMIT 1),\n  s.runtime) AS runtime FROM sessions s WHERE s.key = ?"
+  } else {
+    "SELECT COALESCE(original_runtime, runtime) AS runtime FROM sessions WHERE key = ?"
+  }
+  match query_rt(primary_sql) {
+    Ok(r) => Ok(r)
+    Err(_) => {
+      if ordered {
+        match query_rt(
+          "SELECT runtime FROM runtime_sessions INDEXED BY runtime_sessions_ordered WHERE session_key = ? ORDER BY at, rowid LIMIT 1",
+        ) {
+          Ok(base_codec::Json::Null) => return query_rt("SELECT runtime FROM sessions WHERE key = ?")
+          Ok(r) => return Ok(r)
+          Err(_) => ()
+        }
+      }
+      query_rt("SELECT runtime FROM sessions WHERE key = ?")
+    }
+  }
+}
+
+pub fn original_runtime(
+  db : sql_db::Db,
+  key : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let ordered = match exists_in(db, "index", "runtime_sessions_ordered") {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  original_runtime_with_ordered(db, key, ordered)
+}
+
+pub fn Known::prefetch_original_runtimes(
+  self : Known,
+  db : sql_db::Db,
+  keys : Array[String],
+) -> Result[Unit, ReadError] {
+  if keys.length() == 0 {
+    return Ok(())
+  }
+  let ordered = match self.runtime_sessions_ordered(db) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let jkeys : Array[base_codec::Json] = []
+  for i in 0..<keys.length() {
+    jkeys.push(base_codec::json_str(keys[i]))
+  }
+  let param = [ids_json(jkeys)]
+  let primary_sql = if ordered {
+    "SELECT s.key, COALESCE(s.original_runtime,\n  (SELECT r.runtime FROM runtime_sessions r INDEXED BY runtime_sessions_ordered WHERE r.session_key = s.key ORDER BY r.at, r.rowid LIMIT 1),\n  s.runtime) AS runtime FROM sessions s WHERE s.key IN (SELECT value FROM json_each(?1))"
+  } else {
+    "SELECT key, COALESCE(original_runtime, runtime) AS runtime FROM sessions WHERE key IN (SELECT value FROM json_each(?1))"
+  }
+  let rows = match db.all(primary_sql, param) {
+    Ok(rs) => rs
+    Err(_) => {
+      if ordered {
+        match db.all(
+          "SELECT s.key, COALESCE(\n  (SELECT r.runtime FROM runtime_sessions r INDEXED BY runtime_sessions_ordered WHERE r.session_key = s.key ORDER BY r.at, r.rowid LIMIT 1),\n  s.runtime) AS runtime FROM sessions s WHERE s.key IN (SELECT value FROM json_each(?1))",
+          param,
+        ) {
+          Ok(rs) => rs
+          Err(_) => {
+            match db.all("SELECT key, runtime FROM sessions WHERE key IN (SELECT value FROM json_each(?1))", param) {
+              Ok(rs2) => rs2
+              Err(e2) => return Err(ReadError::Sql(e2))
+            }
+          }
+        }
+      } else {
+        match db.all("SELECT key, runtime FROM sessions WHERE key IN (SELECT value FROM json_each(?1))", param) {
+          Ok(rs2) => rs2
+          Err(e2) => return Err(ReadError::Sql(e2))
+        }
+      }
+    }
+  }
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    self.original_runtimes.set(js_text(field(r, "key")), field(r, "runtime"))
+  }
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    if !self.original_runtimes.contains(k) {
+      self.original_runtimes.set(k, base_codec::json_null())
+    }
+  }
+  Ok(())
+}
+
+pub fn Known::original_runtime_of(
+  self : Known,
+  db : sql_db::Db,
+  author_json : base_codec::Json,
+  author : String,
+  session : Option[Map[String, base_codec::Json]],
+) -> Result[base_codec::Json, ReadError] {
+  match self.original_runtimes.get(author) {
+    Some(r) => return Ok(r)
+    None => ()
+  }
+  match session {
+    Some(s) => {
+      match s.get("original_runtime") {
+        Some(base_codec::Json::Null) => ()
+        Some(r) => {
+          self.original_runtimes.set(author, r)
+          return Ok(r)
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  let ordered = match self.runtime_sessions_ordered(db) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let r = match original_runtime_with_ordered(db, author_json, ordered) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  self.original_runtimes.set(author, r)
+  Ok(r)
+}
+
+pub fn message_view(
+  db : sql_db::Db,
+  m : base_codec::Json,
+  names : Names,
+) -> Result[base_codec::Json, ReadError] {
+  let get = fn(k : String) -> base_codec::Json { json_val_or_null(m, k) }
+  let kind = js_text(get("authorKind"))
+  let author = js_text(get("author"))
+  let identity = get("agentIdentity")
+  let author_name = match names.name(kind, author) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let declared_raw = get("declared")
+  let declared_out = match declared_raw {
+    base_codec::Json::Str(d) => base_codec::json_str(said_before(d))
+    other => other
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("agentIdentity", identity),
+    ("seq", get("n")),
+    ("thread", get("thread")),
+    ("ts", get("ts")),
+    ("authorKind", get("authorKind")),
+    ("author", get("author")),
+    ("authorName", author_name),
+    ("text", get("text")),
+    ("attachments", get("attachments")),
+    ("quotes", get("quotes")),
+    ("declared", declared_out),
+    ("createdAt", get("createdAt")),
+    ("editedAt", get("editedAt")),
+  ]
+  match names.picture(kind, author) {
+    Ok(Some(p)) => out.push(("authorPicture", base_codec::json_str(p)))
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  if kind == "agent" {
+    let said_runtime = match identity {
+      base_codec::Json::Obj(_) => json_val(identity, "runtime")
+      _ => None
+    }
+    let session = match said_runtime {
+      Some(base_codec::Json::Str(_)) => None
+      _ => {
+        match get("author") {
+          base_codec::Json::Str(a) => {
+            match names.session_of(a) {
+              Ok(s) => s
+              Err(e) => return Err(e)
+            }
+          }
+          other => {
+            match one(db, "SELECT * FROM sessions WHERE key = ?", [other]) {
+              Ok(s) => s
+              Err(e) => return Err(e)
+            }
+          }
+        }
+      }
+    }
+    let runtime : Option[base_codec::Json] = match said_runtime {
+      Some(base_codec::Json::Null) => {
+        let orig = match names.known.original_runtime_of(db, get("author"), author, session) {
+          Ok(v) => v
+          Err(e) => return Err(e)
+        }
+        match orig {
+          base_codec::Json::Null => {
+            match session {
+              Some(s) => s.get("runtime")
+              None => None
+            }
+          }
+          r => Some(r)
+        }
+      }
+      None => {
+        let orig = match names.known.original_runtime_of(db, get("author"), author, session) {
+          Ok(v) => v
+          Err(e) => return Err(e)
+        }
+        match orig {
+          base_codec::Json::Null => {
+            match session {
+              Some(s) => s.get("runtime")
+              None => None
+            }
+          }
+          r => Some(r)
+        }
+      }
+      r => r
+    }
+    match runtime {
+      Some(base_codec::Json::Str(r)) => out.push(("authorRuntime", base_codec::json_str(r)))
+      _ => ()
+    }
+    let model : Option[base_codec::Json] = match identity {
+      base_codec::Json::Obj(_) => json_val(identity, "model")
+      _ => {
+        match (session, runtime) {
+          (Some(s), Some(rt)) => {
+            match s.get("runtime") {
+              Some(srt) => if base_codec::json_eq(rt, srt) { s.get("model") } else { None }
+              None => None
+            }
+          }
+          _ => None
+        }
+      }
+    }
+    match model {
+      Some(base_codec::Json::Str(md)) => out.push(("authorModel", base_codec::json_str(md)))
+      _ => ()
+    }
+  }
+  match declared_raw {
+    base_codec::Json::Str(d) => out.push(("ending", base_codec::json_str(ending_of(d))))
+    _ => ()
+  }
+  Ok(base_codec::json_obj(out))
+}

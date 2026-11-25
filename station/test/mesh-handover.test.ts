@@ -8,7 +8,7 @@ import { Clock, Effect, Fiber, Layer, Stream, SubscriptionRef } from "effect";
 import { MeshLive } from "../src/mesh/mesh.ts";
 import { StationKey } from "../src/cloud/key.ts";
 import { Net } from "../src/jobs/load.ts";
-import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, RigSide, ScreenRegistry, StationConfig, Store, Up } from "../src/services.ts";
+import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, ReaderConfig, RigSide, ScreenRegistry, StationConfig, Store, Up } from "../src/services.ts";
 import type { Endpoint, Mesh } from "../src/mesh/native.ts";
 import { ALPN } from "../src/mesh/serve.ts";
 import { hearLines, type Line } from "../src/ops/log.ts";
@@ -55,6 +55,7 @@ function startup(t: TestContext, bindAddr: string | undefined, congestion?: "cub
     Layer.succeed(Parts)(new StationParts()),
     Layer.succeed(Paths)({ data: "", app: "" }),
     Layer.succeed(StationConfig)({ raw: () => ({ network: { congestion } }), listen: () => () => {} } as never),
+    Layer.succeed(ReaderConfig)(() => undefined),
     Layer.succeed(ControlPlane)({
       state: cloud,
       changes: Stream.never,

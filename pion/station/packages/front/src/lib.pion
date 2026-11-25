@@ -1,0 +1,5 @@
+// Zero-conflict W7-0 skeleton for `front` (`--builder forward`, `--builder mesh`, implemented in W7-A).
+
+pub fn skeleton_ready() -> Bool {
+  true
+}

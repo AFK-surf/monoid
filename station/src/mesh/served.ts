@@ -64,11 +64,17 @@ export type ServingProcess = {
 /// `ended`: its process exited.
 type Server = { process: ServingProcess; path: string; listening: Promise<void>; startedAt: number; ready: boolean; ended: boolean };
 
-/// What a test gives in place of the programs and the machine's time.
-export type ServedWith = { spawn?: (binary: string, args: string[]) => ServingProcess; now?: () => number; after?: (ms: number, f: () => void) => () => void };
+/// What a test gives in place of the programs and the machine's time, or an async binary resolver for restarts.
+export type ServedWith = {
+  spawn?: (binary: string, args: string[]) => ServingProcess;
+  now?: () => number;
+  after?: (ms: number, f: () => void) => () => void;
+  resolveBinary?: () => Promise<string>;
+};
 
 export class Served {
-  readonly #binary: string;
+  #binary: string;
+  readonly #resolveBinary: (() => Promise<string>) | undefined;
   readonly #data: string;
   readonly #answer: (viewer: any, head: any, body: Buffer) => Promise<Handled>;
   readonly #stream: ((viewer: any, head: any, body: Buffer) => Promise<{ status: number; headers: Record<string, string>; body: Buffer | AsyncIterable<Buffer> }>) | undefined;
@@ -111,6 +117,7 @@ export class Served {
     this.#now = given.now ?? wall.now;
     this.#after = given.after ?? wall.after;
     this.#binary = binary;
+    this.#resolveBinary = given.resolveBinary;
     this.#data = data;
     this.#answer = answer;
     this.#built = built;
@@ -142,12 +149,12 @@ export class Served {
     return this.#servers.filter((s) => s.ready).map((s) => s.path);
   }
 
-  #start(i: number): Server {
+  #start(i: number, binary = this.#binary): Server {
     // (this process's own: the next one in a handover has its own, the front giving it the connections it takes)
     const path = join(this.#data, "run", `serve-${process.pid}-${i}.sock`);
     mkdirSync(join(this.#data, "run"), { recursive: true }); // sync: one step before the program listens there
     rmSync(path, { force: true }); // sync: one step before the program listens there
-    const child = this.#spawn(this.#binary, ["--data", this.#data, "--sep", sep, "--serve", path]);
+    const child = this.#spawn(binary, ["--data", this.#data, "--sep", sep, "--serve", path]);
     let listened = () => {};
     let failed = (_: Error) => {};
     const listening = new Promise<void>((resolve, reject) => ((listened = resolve), (failed = reject)));
@@ -187,7 +194,27 @@ export class Served {
       if (at < 0) return;
       // Off the routes the connections taken from now on go by, till the next one listens.
       if (this.#started) this.onRoutes?.(this.#livePaths());
-      const again = () => { if (!this.#closed && this.#servers[at] === server) this.#servers[at] = this.#start(i); };
+      const again = () => {
+        if (this.#closed || this.#servers[at] !== server) return;
+        if (this.#resolveBinary === undefined) {
+          this.#servers[at] = this.#start(i);
+          return;
+        }
+        void this.#resolveBinary().then(
+          (nextBinary) => {
+            if (this.#closed || this.#servers[at] !== server) return;
+            this.#binary = nextBinary;
+            this.#servers[at] = this.#start(i, nextBinary);
+          },
+          (err) => {
+            if (this.#closed || this.#servers[at] !== server) return;
+            log.warn("served", "resolving serving binary failed; retrying after backoff", {
+              error: err instanceof Error ? err.message : String(err),
+            });
+            this.#after(SERVED_AGAIN_MS, again); // timer: a retry after a failure, with a backoff
+          },
+        );
+      };
       if (this.#now() - server.startedAt >= SERVED_STEADY_MS) {
         log.warn("served", "a serving program ended; starting it again", { code });
         again();

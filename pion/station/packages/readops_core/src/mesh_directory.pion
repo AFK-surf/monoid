@@ -1,0 +1,68 @@
+// 1:1 port of `station/mb/src/readops/mesh_directory.mbt`.
+
+import "base_codec"
+import "sql_db"
+
+pub fn mesh_control_read(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let scope_arg = json_val_or_null(args, "scope")
+  match json_val(args, "kind") {
+    Some(base_codec::Json::Str("announcements")) => {
+      let nodes = match json_val(args, "nodes") {
+        Some(base_codec::Json::Arr(ns)) => {
+          if ns.length() <= 256 {
+            ns
+          } else {
+            return Ok(base_codec::json_null())
+          }
+        }
+        _ => return Ok(base_codec::json_null())
+      }
+      let out : Array[base_codec::Json] = []
+      for i in 0..<nodes.length() {
+        let rows = match db.all(
+          "SELECT body,signature FROM mesh_announcements WHERE scope=?1 AND node=?2",
+          [scope_arg, nodes[i]],
+        ) {
+          Ok(r) => r
+          Err(e) => return Err(ReadError::Sql(e))
+        }
+        if rows.length() > 0 {
+          out.push(row_to_json(rows[0]))
+        }
+      }
+      Ok(base_codec::json_arr(out))
+    }
+    Some(base_codec::Json::Str("relayRecords")) => {
+      let rows = match db.all(
+        "SELECT body,signature FROM mesh_relay_records WHERE scope=?1 ORDER BY node LIMIT 257",
+        [scope_arg],
+      ) {
+        Ok(r) => r
+        Err(e) => return Err(ReadError::Sql(e))
+      }
+      let out : Array[base_codec::Json] = []
+      for i in 0..<rows.length() {
+        out.push(row_to_json(rows[i]))
+      }
+      Ok(base_codec::json_arr(out))
+    }
+    Some(base_codec::Json::Str("registration")) => {
+      let rows = match db.all(
+        "SELECT scope,node,issuer,generation,name,made_by,revoked FROM mesh_relay_registrations WHERE scope=?1 AND node=?2 AND issuer=?3 AND revoked=0",
+        [scope_arg, json_val_or_null(args, "node"), json_val_or_null(args, "issuer")],
+      ) {
+        Ok(r) => r
+        Err(e) => return Err(ReadError::Sql(e))
+      }
+      if rows.length() > 0 {
+        Ok(row_to_json(rows[0]))
+      } else {
+        Ok(base_codec::json_null())
+      }
+    }
+    _ => Ok(base_codec::json_null())
+  }
+}

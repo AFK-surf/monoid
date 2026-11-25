@@ -1,0 +1,6 @@
+// Zero-conflict W7-0 skeleton for `readops_local` (L1, implemented in W7-C).
+
+pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
+  let _ = temp_dir
+  Ok(0)
+}

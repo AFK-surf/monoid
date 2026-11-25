@@ -1,0 +1,17 @@
+[package]
+name = "reader_data"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { workspace = true }
+host_shim = { workspace = true }
+sql_db = { workspace = true }
+js_json = { workspace = true }
+builders_core = { workspace = true }
+builders_search = { workspace = true }
+locate = { workspace = true }
+readops_core = { workspace = true }
+readops_chats = { workspace = true }
+readops_local = { workspace = true }
+readops_views = { workspace = true }
+readops_usage = { workspace = true }

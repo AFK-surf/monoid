@@ -1,0 +1,139 @@
+// 1:1 port of `station/mb/src/readops/files.mbt` over synchronous `builders_core::ShellClient`.
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+
+pub fn read_text(
+  client : builders_core::ShellClient,
+  path : String,
+  strict : Bool,
+) -> Result[Option[String], ReadError] {
+  match client.shell_sync_json(
+    "fs.read",
+    base_codec::json_obj([
+      ("path", base_codec::json_str(path)),
+      ("strict", base_codec::json_bool(strict)),
+    ]),
+  ) {
+    Ok(base_codec::Json::Str(s)) => Ok(Some(s))
+    Ok(_) => Ok(None)
+    Err(e) => Err(ReadError::App(e.message))
+  }
+}
+
+pub fn read_json(
+  client : builders_core::ShellClient,
+  path : String,
+) -> Result[js_json::JValue, ReadError] {
+  match read_text(client, path, false) {
+    Ok(Some(text)) => {
+      match js_json::parse(text) {
+        Ok(v) => Ok(v)
+        Err(_) => Ok(js_json::JValue::Obj([]))
+      }
+    }
+    Ok(None) => Ok(js_json::JValue::Obj([]))
+    Err(e) => Err(e)
+  }
+}
+
+pub fn read_dir(
+  client : builders_core::ShellClient,
+  path : String,
+  disk : Bool = false,
+) -> Result[Option[Array[String]], ReadError] {
+  match client.shell_sync_json(
+    "fs.readdir",
+    base_codec::json_obj([
+      ("path", base_codec::json_str(path)),
+      ("disk", base_codec::json_bool(disk)),
+    ]),
+  ) {
+    Ok(base_codec::Json::Arr(names)) => {
+      let out : Array[String] = []
+      for i in 0..<names.length() {
+        match names[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+      }
+      Ok(Some(out))
+    }
+    Ok(_) => Ok(None)
+    Err(e) => Err(ReadError::App(e.message))
+  }
+}
+
+pub fn kind_of(
+  client : builders_core::ShellClient,
+  path : String,
+) -> Result[Option[String], ReadError] {
+  match client.shell_sync_json("fs.stat", base_codec::json_obj([("path", base_codec::json_str(path))])) {
+    Ok(base_codec::Json::Str(k)) => Ok(Some(k))
+    Ok(_) => Ok(None)
+    Err(e) => Err(ReadError::App(e.message))
+  }
+}
+
+pub fn join_path(sep : String, base : String, given : String) -> String {
+  if sep == "\\" {
+    let gb = given.to_bytes()
+    let absolute = str_has_prefix(given, "\\") ||
+    str_has_prefix(given, "/") ||
+    (gb.length() >= 3 && (gb[1].to_int() & 0xFF) == 58 && ((gb[2].to_int() & 0xFF) == 92 || (gb[2].to_int() & 0xFF) == 47))
+    if absolute || base == "" {
+      given
+    } else if str_has_suffix(base, "\\") || str_has_suffix(base, "/") {
+      base + given
+    } else {
+      base + "\\" + given
+    }
+  } else if str_has_prefix(given, "/") || base == "" {
+    given
+  } else if str_has_suffix(base, "/") {
+    base + given
+  } else {
+    base + "/" + given
+  }
+}
+
+/// Rust's String order: by the bytes of UTF-8 (which is code-point order).
+pub fn by_bytes(a : String, b : String) -> Int {
+  let xa = a.to_bytes()
+  let xb = b.to_bytes()
+  let n = if xa.length() < xb.length() { xa.length() } else { xb.length() }
+  for i in 0..<n {
+    let va = xa[i].to_int() & 0xFF
+    let vb = xb[i].to_int() & 0xFF
+    if va != vb {
+      return if va < vb { -1 } else { 1 }
+    }
+  }
+  xa.length() - xb.length()
+}
+
+pub fn truthy(v : Option[js_json::JValue]) -> Bool {
+  js_json::jval_truthy(v)
+}
+
+pub fn entries_of(v : Option[js_json::JValue]) -> Array[(String, js_json::JValue)] {
+  match v {
+    Some(js_json::JValue::Obj(es)) => {
+      let out : Array[(String, js_json::JValue)] = []
+      for i in 0..<es.length() {
+        let (k, ev) = es[i]
+        out.push((js_json::sanitize_str(k), ev))
+      }
+      out
+    }
+    Some(js_json::JValue::Arr(xs)) => {
+      let out : Array[(String, js_json::JValue)] = []
+      for i in 0..<xs.length() {
+        out.push((i.to_string(), xs[i]))
+      }
+      out
+    }
+    _ => []
+  }
+}

@@ -189,14 +189,62 @@ pub fn write_stderr_line(line : String) -> Bool {
   write_stderr((line + "\n").to_bytes())
 }
 
-/// Write a `mb-reader` framed JSON header followed by exact raw binary tail bytes.
-pub fn write_stdout_frame(head_fields : Array[(String, base_codec::Json)], body : Bytes) -> Bool {
+fn escape_line_separators(s : String) -> String {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let mut found = false
+  let mut i = 0
+  while i + 2 < n {
+    if (raw[i].to_int() & 0xFF) == 0xE2 && (raw[i + 1].to_int() & 0xFF) == 0x80 {
+      let b2 = raw[i + 2].to_int() & 0xFF
+      if b2 == 0xA8 || b2 == 0xA9 {
+        found = true
+        break
+      }
+    }
+    i = i + 1
+  }
+  if !found {
+    return s
+  }
+  let sb = StringBuilder::new()
+  let mut j = 0
+  while j < n {
+    if j + 2 < n && (raw[j].to_int() & 0xFF) == 0xE2 && (raw[j + 1].to_int() & 0xFF) == 0x80 {
+      let b2 = raw[j + 2].to_int() & 0xFF
+      if b2 == 0xA8 {
+        sb.write_string("\\u2028")
+        j = j + 3
+        continue
+      } else if b2 == 0xA9 {
+        sb.write_string("\\u2029")
+        j = j + 3
+        continue
+      }
+    }
+    sb.write_byte(raw[j])
+    j = j + 1
+  }
+  sb.to_string()
+}
+
+/// Format a `mb-reader` framed JSON header line with `bytes` last and U+2028/U+2029 escaped
+/// (1:1 aligned with `station/mb/src/host/host.mbt:123-131`).
+pub fn format_stdout_frame_header(
+  head_fields : Array[(String, base_codec::Json)],
+  body_len : Int,
+) -> String {
   let fields : Array[(String, base_codec::Json)] = []
   for i in 0..<head_fields.length() {
     fields.push(head_fields[i])
   }
-  fields.push(("bytes", base_codec::json_int(body.length())))
-  let header = base_codec::json_stringify(base_codec::json_obj(fields)) + "\n"
+  fields.push(("bytes", base_codec::json_int(body_len)))
+  escape_line_separators(base_codec::json_stringify(base_codec::json_obj(fields))) + "\n"
+}
+
+/// Write a `mb-reader` framed JSON header followed by exact raw binary tail bytes.
+pub fn write_stdout_frame(head_fields : Array[(String, base_codec::Json)], body : Bytes) -> Bool {
+  let header = format_stdout_frame_header(head_fields, body.length())
   if !write_stdout(header.to_bytes()) {
     return false
   }

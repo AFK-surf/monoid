@@ -1025,7 +1025,7 @@ test("builders_recent static transaction guard + real in-closure mutation detect
   const srcDir = resolve(fileURLToPath(new URL("../../pion/station/packages/builders_recent/src", import.meta.url)));
   assert.ok(existsSync(srcDir), `expected ${srcDir} to exist`);
   const files = readdirSync(srcDir).filter((f) => f.endsWith(".pion") && !f.endsWith("_test.pion")).sort();
-  assert.deepStrictEqual(files, ["db.pion", "global.pion", "home.pion", "prepare.pion", "schema.pion", "scope.pion"]);
+  assert.deepStrictEqual(files, ["db.pion", "global.pion", "home.pion", "page.pion", "prepare.pion", "schema.pion", "scope.pion"]);
 
   for (const file of files) {
     const content = readFileSync(join(srcDir, file), "utf8");

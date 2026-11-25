@@ -1,0 +1,5 @@
+// Zero-conflict W7-0 skeleton for `reader_data` (`--data <dir>`, implemented in W7-F).
+
+pub fn skeleton_ready() -> Bool {
+  true
+}

@@ -3,6 +3,7 @@ name: pion-station
 on:
   push:
     paths:
+      - "client/shell/**"
       - "pion/station/**"
       - "pion/base/**"
       - "station/mb/src/activity/**"
@@ -12,6 +13,7 @@ on:
       - "station/mb/src/cc/**"
       - "station/mb/src/counts/**"
       - "station/mb/src/footprint/**"
+      - "station/mb/src/front/**"
       - "station/mb/src/history/**"
       - "station/mb/src/host/**"
       - "station/mb/src/jobs/**"
@@ -28,11 +30,8 @@ on:
       - "station/mb/src/packed/**"
       - "station/mb/src/posts/**"
       - "station/mb/src/reader/main.mbt"
-      - "station/mb/src/readops/chatparts.mbt"
-      - "station/mb/src/readops/machine.mbt"
-      - "station/mb/src/readops/pages.mbt"
-      - "station/mb/src/readops/shared_sql.mbt"
-      - "station/mb/src/readops/usage.mbt"
+      - "station/mb/src/reader/serve.mbt"
+      - "station/mb/src/readops/**"
       - "station/mb/src/recent/**"
       - "station/mb/src/replica/**"
       - "station/mb/src/said/**"
@@ -51,6 +50,7 @@ on:
       - "station/mb/src/wire/**"
       - "station/src/jobs/process-jobs-builder.ts"
       - "station/src/main.ts"
+      - "station/src/mesh/**"
       - "station/src/move/live.ts"
       - "station/src/move/station.ts"
       - "station/src/ops/paths.ts"
@@ -70,6 +70,7 @@ on:
       - "station/src/sessions/agents.ts"
       - "station/src/sessions/footprint.ts"
       - "station/src/sessions/hub.ts"
+      - "station/src/sessions/live.ts"
       - "station/src/sessions/live-location-protocol.ts"
       - "station/src/sessions/live-locator.ts"
       - "station/src/sessions/packed-mb.ts"
@@ -194,6 +195,7 @@ on:
       - "station/test/vault-use-ambiguity.test.ts"
       - "station/test/w5-foundation.test.ts"
       - "station/test/w6-selection-coldstart.test.ts"
+      - "station/test/w7-foundation.test.ts"
       - "station/test/reference/backfill/archive-last.ts"
       - "station/test/reference/backfill/archive-mark-index.ts"
       - "station/test/reference/backfill/archive-policy-index.ts"
@@ -546,6 +548,9 @@ jobs:
           "$BIN_PION" --smoke-sql-db "$RUNNER_TEMP/smoke-sql-db.db"
           "$BIN_PION" --smoke-shell "$RUNNER_TEMP/shell-dir"
           "$BIN_PION" --smoke-rc-soak 50000
+          "$BIN_PION" --smoke-mux-churn 10000
+          mkdir -p "$RUNNER_TEMP/smoke-readops"
+          "$BIN_PION" --smoke-readops "$RUNNER_TEMP/smoke-readops"
 
           # Acquire this SHA's real MoonBit stillfail-reader-linux-x64 once for all downstream gate jobs.
           if [ "${{ steps.reader.outputs.missing }}" = "true" ]; then
@@ -946,10 +951,142 @@ jobs:
           printf '%s\n' "$SW_OUT" | grep -qE '^# tests [1-9]'
           printf '%s\n' "$SW_OUT" | grep -qE '^# skipped 0$'
 
+  gate-w7-front:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: build-linux
+    if: needs.build-linux.result == 'success'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup
+
+      - name: Download and verify Linux binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/download-artifact.sh "$GITHUB_RUN_ID" pion-station-linux-bins "$RUNNER_TEMP/bins"
+          (cd "$RUNNER_TEMP/bins" && sha256sum -c SHA256SUMS)
+          chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
+
+      - name: Run Wave 7 front gate (W7-0 foundation strict TAP)
+        run: |
+          set -euo pipefail
+          BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
+          BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          pnpm --dir station install --frozen-lockfile --prefer-offline
+          OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
+            node --test --test-reporter=tap station/test/w7-foundation.test.ts 2>&1)"
+          printf '%s\n' "$OUT"
+          printf '%s\n' "$OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$OUT" | grep -qE '^# fail 0$'
+          printf '%s\n' "$OUT" | grep -qE '^# skipped 0$'
+
+  gate-w7-data-1:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: build-linux
+    if: needs.build-linux.result == 'success'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup
+
+      - name: Download and verify Linux binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/download-artifact.sh "$GITHUB_RUN_ID" pion-station-linux-bins "$RUNNER_TEMP/bins"
+          (cd "$RUNNER_TEMP/bins" && sha256sum -c SHA256SUMS)
+          chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
+
+      - name: Run Wave 7 data-1 gate (W7-0 foundation strict TAP)
+        run: |
+          set -euo pipefail
+          BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
+          BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          pnpm --dir station install --frozen-lockfile --prefer-offline
+          OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
+            node --test --test-reporter=tap station/test/w7-foundation.test.ts 2>&1)"
+          printf '%s\n' "$OUT"
+          printf '%s\n' "$OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$OUT" | grep -qE '^# fail 0$'
+          printf '%s\n' "$OUT" | grep -qE '^# skipped 0$'
+
+  gate-w7-data-2:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: build-linux
+    if: needs.build-linux.result == 'success'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup
+
+      - name: Download and verify Linux binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/download-artifact.sh "$GITHUB_RUN_ID" pion-station-linux-bins "$RUNNER_TEMP/bins"
+          (cd "$RUNNER_TEMP/bins" && sha256sum -c SHA256SUMS)
+          chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
+
+      - name: Run Wave 7 data-2 gate (W7-0 foundation strict TAP)
+        run: |
+          set -euo pipefail
+          BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
+          BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          pnpm --dir station install --frozen-lockfile --prefer-offline
+          OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
+            node --test --test-reporter=tap station/test/w7-foundation.test.ts 2>&1)"
+          printf '%s\n' "$OUT"
+          printf '%s\n' "$OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$OUT" | grep -qE '^# fail 0$'
+          printf '%s\n' "$OUT" | grep -qE '^# skipped 0$'
+
+  gate-w7-serve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    needs: build-linux
+    if: needs.build-linux.result == 'success'
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/setup
+
+      - name: Download and verify Linux binaries
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash scripts/download-artifact.sh "$GITHUB_RUN_ID" pion-station-linux-bins "$RUNNER_TEMP/bins"
+          (cd "$RUNNER_TEMP/bins" && sha256sum -c SHA256SUMS)
+          chmod +x "$RUNNER_TEMP/bins/stillfail-pion-linux-x64" "$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          test "$(realpath "$RUNNER_TEMP/bins/stillfail-pion-linux-x64")" != "$(realpath "$RUNNER_TEMP/bins/stillfail-reader-linux-x64")"
+
+      - name: Run Wave 7 serve gate (W7-0 foundation strict TAP)
+        run: |
+          set -euo pipefail
+          BIN_PION="$RUNNER_TEMP/bins/stillfail-pion-linux-x64"
+          BIN_MB="$RUNNER_TEMP/bins/stillfail-reader-linux-x64"
+          pnpm --dir station install --frozen-lockfile --prefer-offline
+          OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
+            node --test --test-reporter=tap station/test/w7-foundation.test.ts 2>&1)"
+          printf '%s\n' "$OUT"
+          printf '%s\n' "$OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$OUT" | grep -qE '^# fail 0$'
+          printf '%s\n' "$OUT" | grep -qE '^# skipped 0$'
+
   verify-linux:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    needs: [c-shims, pion-unit, build-linux, gate-workers, gate-sqlite-w14, gate-sqlite-w5, gate-w6-locate-search, gate-w6-usage, gate-w6-replica]
+    needs: [c-shims, pion-unit, build-linux, gate-workers, gate-sqlite-w14, gate-sqlite-w5, gate-w6-locate-search, gate-w6-usage, gate-w6-replica, gate-w7-front, gate-w7-data-1, gate-w7-data-2, gate-w7-serve]
     if: always()
     steps:
       - name: Require all upstream jobs to succeed
@@ -963,10 +1100,14 @@ jobs:
           R_W6_LOCATE_SEARCH: ${{ needs.gate-w6-locate-search.result }}
           R_W6_USAGE: ${{ needs.gate-w6-usage.result }}
           R_W6_REPLICA: ${{ needs.gate-w6-replica.result }}
+          R_W7_FRONT: ${{ needs.gate-w7-front.result }}
+          R_W7_DATA_1: ${{ needs.gate-w7-data-1.result }}
+          R_W7_DATA_2: ${{ needs.gate-w7-data-2.result }}
+          R_W7_SERVE: ${{ needs.gate-w7-serve.result }}
         run: |
           set -euo pipefail
-          echo "c-shims=$R_CSHIMS pion-unit=$R_UNIT build-linux=$R_BUILD gate-workers=$R_WORKERS gate-sqlite-w14=$R_W14 gate-sqlite-w5=$R_W5 gate-w6-locate-search=$R_W6_LOCATE_SEARCH gate-w6-usage=$R_W6_USAGE gate-w6-replica=$R_W6_REPLICA"
-          for r in "$R_CSHIMS" "$R_UNIT" "$R_BUILD" "$R_WORKERS" "$R_W14" "$R_W5" "$R_W6_LOCATE_SEARCH" "$R_W6_USAGE" "$R_W6_REPLICA"; do
+          echo "c-shims=$R_CSHIMS pion-unit=$R_UNIT build-linux=$R_BUILD gate-workers=$R_WORKERS gate-sqlite-w14=$R_W14 gate-sqlite-w5=$R_W5 gate-w6-locate-search=$R_W6_LOCATE_SEARCH gate-w6-usage=$R_W6_USAGE gate-w6-replica=$R_W6_REPLICA gate-w7-front=$R_W7_FRONT gate-w7-data-1=$R_W7_DATA_1 gate-w7-data-2=$R_W7_DATA_2 gate-w7-serve=$R_W7_SERVE"
+          for r in "$R_CSHIMS" "$R_UNIT" "$R_BUILD" "$R_WORKERS" "$R_W14" "$R_W5" "$R_W6_LOCATE_SEARCH" "$R_W6_USAGE" "$R_W6_REPLICA" "$R_W7_FRONT" "$R_W7_DATA_1" "$R_W7_DATA_2" "$R_W7_SERVE"; do
             if [ "$r" != "success" ]; then
               echo "FAIL: upstream job result is '$r' (expected 'success')" >&2
               exit 1

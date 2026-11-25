@@ -1,0 +1,18 @@
+[package]
+name = "readops_views"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { workspace = true }
+sql_db = { workspace = true }
+js_json = { workspace = true }
+jscase = { workspace = true }
+nodepath = { workspace = true }
+builders_core = { workspace = true }
+builders_requested = { workspace = true }
+builders_legacy = { workspace = true }
+builders_search = { workspace = true }
+locate = { workspace = true }
+readops_core = { workspace = true }
+readops_chats = { workspace = true }
+readops_local = { workspace = true }

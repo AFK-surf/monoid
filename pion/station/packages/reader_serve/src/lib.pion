@@ -1,0 +1,5 @@
+// Zero-conflict W7-0 skeleton for `reader_serve` (`--serve <socket>`, implemented in W7-G).
+
+pub fn skeleton_ready() -> Bool {
+  true
+}

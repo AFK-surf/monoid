@@ -1,0 +1,93 @@
+// 1:1 port of `station/mb/src/readops/shared_sql.mbt`.
+
+pub let SAID_LATEST_SQL : String = "SELECT n, author_kind, author FROM entries INDEXED BY entries_said WHERE thread = ?1 AND kind = 'message' AND letter IS NULL ORDER BY n DESC LIMIT 1"
+
+pub let SAID_STATE_SQL : String = "SELECT s.said_n, s.said_other_n, s.said_other_known,\n    g.author AS guard_author, g.other_n AS guard_other_n, g.ready AS guard_ready\n  FROM thread_state s LEFT JOIN said_state_guard g ON g.thread = s.thread WHERE s.thread = ?1\n  UNION ALL SELECT NULL, NULL, NULL, g.author, g.other_n, g.ready FROM said_state_guard g\n    WHERE g.thread = ?1 AND NOT EXISTS (SELECT 1 FROM thread_state s WHERE s.thread = ?1) LIMIT 1"
+
+pub let SAID_SCAN_SQL : String = "SELECT n, author_kind, author FROM entries INDEXED BY entries_said\n  WHERE thread = ?1 AND kind = 'message' AND letter IS NULL AND n < ?2 ORDER BY n DESC LIMIT ?3"
+
+pub let LEGACY_SAID_LATEST_SQL : String = "WITH dirty_latest AS MATERIALIZED (\n    SELECT e.n,e.author_kind,e.author FROM legacy_said_meta m CROSS JOIN legacy_said_dirty d\n      CROSS JOIN entries e ON e.thread=d.thread AND e.n=d.n\n    WHERE m.id=1 AND m.scanned=1 AND d.thread=?1 AND e.kind='message' AND e.letter IS NULL\n    ORDER BY d.n DESC LIMIT 1\n  )\n  SELECT n,author_kind,author FROM dirty_latest\n  UNION ALL\n  SELECT n,author_kind,author FROM (\n    SELECT s.n,s.author_kind,s.author FROM legacy_said_meta m CROSS JOIN legacy_said_build s\n    WHERE m.id=1 AND m.scanned=1 AND s.thread=?1\n      AND s.n >= COALESCE((SELECT n FROM dirty_latest), -9223372036854775808)\n      AND NOT EXISTS (SELECT 1 FROM legacy_said_dirty d WHERE d.thread=s.thread AND d.n=s.n)\n    ORDER BY s.n DESC LIMIT 1\n  )\n  UNION ALL\n  SELECT n,author_kind,author FROM (\n    SELECT e.n,e.author_kind,e.author FROM legacy_said_meta m CROSS JOIN entries e\n    WHERE m.id=1 AND m.scanned=0 AND e.thread=?1 AND e.kind='message' AND e.letter IS NULL\n    ORDER BY e.n DESC LIMIT 1\n  )\n  ORDER BY n DESC LIMIT 1"
+
+pub let LEGACY_SAID_SCAN_SQL : String = "SELECT n, author_kind, author FROM legacy_said WHERE thread = ?1 AND n < ?2 ORDER BY n DESC LIMIT ?3"
+
+pub let LEGACY_SAID_NEEDS_DRAIN_SQL : String = "SELECT 1 FROM legacy_said_meta m WHERE m.id=1 AND m.scanned=1 AND EXISTS (\n    SELECT 1 FROM legacy_said_dirty WHERE thread=?1 LIMIT 1 OFFSET 64)"
+
+pub let LEGACY_SAID_HEAD_FIRST_SQL : String = "SELECT CASE WHEN e.kind='message' AND e.letter IS NULL THEN e.n END AS n,\n    CASE WHEN e.kind='message' AND e.letter IS NULL THEN e.author_kind END AS author_kind,\n    CASE WHEN e.kind='message' AND e.letter IS NULL THEN e.author END AS author\n    FROM entries e WHERE e.thread=? ORDER BY e.n DESC LIMIT 1"
+
+pub let LEGACY_SAID_HEAD_TAIL_SQL : String = "WITH tail AS MATERIALIZED (\n      SELECT n,kind,letter,author_kind,author FROM entries WHERE thread=? ORDER BY n DESC LIMIT 65\n    ), latest AS MATERIALIZED (\n      SELECT n,author_kind,author FROM tail WHERE kind='message' AND letter IS NULL ORDER BY n DESC LIMIT 1\n    ) SELECT (SELECT n FROM latest) AS n,(SELECT author_kind FROM latest) AS author_kind,\n      (SELECT author FROM latest) AS author,(SELECT COUNT(*) FROM tail) AS count"
+
+pub let LEGACY_SAID_BOUNDARY_TAIL_SQL : String = "WITH tail AS MATERIALIZED (\n      SELECT n,kind,letter,author_kind,author FROM entries WHERE thread=?1 AND n<?2 ORDER BY n DESC LIMIT 65\n    ) SELECT (SELECT n FROM tail WHERE kind='message' AND letter IS NULL\n      AND NOT (author_kind='person' AND author=?3) ORDER BY n DESC LIMIT 1) AS n,\n      (SELECT COUNT(*) FROM tail) AS count"
+
+pub let ASKED_DURING_SQL : String = "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND at >= ? AND at <= ?"
+
+pub let LEGACY_ASKED_DURING_SQL : String = "SELECT MAX(n) AS n FROM (\n  SELECT e.n FROM legacy_agent_meta m CROSS JOIN entries e\n    WHERE m.id=1 AND m.scanned=0 AND e.thread=?1 AND e.kind='message' AND e.author_kind='agent' AND e.at>=?2 AND e.at<=?3\n  UNION ALL\n  SELECT s.n FROM legacy_agent_meta m CROSS JOIN legacy_agent_build s\n    WHERE m.id=1 AND m.scanned=1 AND s.thread=?1 AND s.at>=?2 AND s.at<=?3\n      AND NOT EXISTS (SELECT 1 FROM legacy_agent_dirty d WHERE d.thread=s.thread AND d.n=s.n)\n  UNION ALL\n  SELECT e.n FROM legacy_agent_meta m CROSS JOIN legacy_agent_times t\n    CROSS JOIN entries e ON e.thread=t.thread AND e.n=t.n\n    WHERE m.id=1 AND m.scanned=1 AND t.thread=?1 AND t.at>=?2 AND t.at<=?3\n      AND e.kind='message' AND e.author_kind='agent' AND e.at=t.at\n)"
+
+pub let CLOSED_CARDS_INDEXED_SQL : String = "SELECT thread,n,viewer,at,rowid AS ordering\n  FROM closed_cards INDEXED BY closed_cards_thread_at WHERE thread=? AND at>=?"
+
+pub let LEGACY_CLOSED_CARDS_SQL : String = "SELECT c.thread,c.n,c.viewer,c.at,c.rowid AS ordering\n  FROM legacy_closed_cards k INDEXED BY legacy_closed_by_time CROSS JOIN closed_cards c ON c.rowid=k.source_rowid\n  WHERE k.thread=? AND k.at>=? AND c.thread=k.thread AND c.n=k.n AND c.at=k.at"
+
+pub let CLOSED_CHAT_SAMPLE_SQL : String = "SELECT * FROM (SELECT c.thread,CASE WHEN c.at>=?2 THEN c.n END AS n,\n  CASE WHEN c.at>=?2 THEN c.viewer END AS viewer,CASE WHEN c.at>=?2 THEN c.at END AS at,\n  CASE WHEN c.at>=?2 THEN c.rowid END AS ordering FROM closed_cards c\n  WHERE c.thread=?1 ORDER BY c.n LIMIT 65) ORDER BY at,ordering"
+
+pub let CLOSED_TIME_SAMPLE_SQL : String = "WITH recent AS MATERIALIZED (\n  SELECT thread,n,viewer,at,rowid AS ordering FROM closed_cards INDEXED BY closed_cards_at\n  WHERE at>=? ORDER BY at,rowid LIMIT 65\n), selected AS MATERIALIZED (\n  SELECT *,thread IN (SELECT value FROM json_each(?2)) AS wanted FROM recent\n)\nSELECT CASE WHEN wanted THEN thread END AS thread,CASE WHEN wanted THEN n END AS n,\n  CASE WHEN wanted THEN viewer END AS viewer,CASE WHEN wanted THEN at END AS at,\n  CASE WHEN wanted THEN ordering END AS ordering FROM selected"
+
+pub let LEGACY_HAS_PEOPLE_SINCE_SQL : String = "SELECT 1 FROM legacy_people_time_rows k INDEXED BY legacy_people_time_by_at\n  CROSS JOIN entries e ON e.rowid=k.source_rowid\n  WHERE k.thread=?1 AND k.at>=?2 AND e.thread=k.thread AND e.n=k.n AND e.at=k.at\n    AND e.kind='message' AND e.author_kind='person' LIMIT 1"
+
+pub let LEGACY_FIRST_PERSON_SINCE_SQL : String = "SELECT MIN(e.n) AS n FROM legacy_people_time_rows k INDEXED BY legacy_people_time_by_at\n  CROSS JOIN entries e ON e.rowid=k.source_rowid\n  WHERE k.thread=?1 AND k.at>=?2 AND e.thread=k.thread AND e.n=k.n AND e.at=k.at\n    AND e.kind='message' AND e.author_kind='person'"
+
+pub let LEGACY_PEOPLE_AFTER_SQL : String = "SELECT e.thread,e.n FROM legacy_people_time_rows k INDEXED BY legacy_people_time_by_at\n  CROSS JOIN entries e ON e.rowid=k.source_rowid\n  WHERE k.thread=?1 AND k.at>=?2 AND e.thread=k.thread AND e.n=k.n AND e.at=k.at\n    AND e.kind='message' AND e.author_kind='person' AND e.n>?3 ORDER BY e.n"
+
+pub let SMALL_PEOPLE_HAS_SQL : String = "WITH sample AS MATERIALIZED (SELECT n,kind,author_kind,at FROM entries WHERE thread=?1 ORDER BY n LIMIT 65) SELECT COUNT(*) AS seen,MAX(CASE WHEN kind='message' AND author_kind='person' AND at>=?2 THEN 1 ELSE 0 END) AS yes FROM sample"
+
+pub let SMALL_PEOPLE_FIRST_SQL : String = "WITH sample AS MATERIALIZED (SELECT n,kind,author_kind,at FROM entries WHERE thread=?1 ORDER BY n LIMIT 65) SELECT COUNT(*) AS seen,\n  CASE WHEN COUNT(*)<65 THEN MIN(CASE WHEN kind='message' AND author_kind='person' AND at>=?2 THEN n END) END AS n FROM sample"
+
+pub let SMALL_PEOPLE_AFTER_SQL : String = "WITH sample AS MATERIALIZED (SELECT n,kind,author_kind,at FROM entries WHERE thread=?1 ORDER BY n LIMIT 65)\n  SELECT ?1 AS thread,CASE WHEN (SELECT COUNT(*) FROM sample)<65 THEN n END AS n,\n    (SELECT COUNT(*) FROM sample) AS seen FROM sample WHERE kind='message' AND author_kind='person' AND at>=?2 AND n>?3\n  UNION ALL SELECT ?1,NULL,(SELECT COUNT(*) FROM sample) ORDER BY n"
+
+pub let HAS_ANSWER_PEOPLE_SINCE_SQL : String = "SELECT 1 FROM entries INDEXED BY entries_people_since\n  WHERE thread = ? AND author_kind = 'person' AND kind = 'message' AND at >= ? LIMIT 1"
+
+pub let FIRST_ANSWER_PERSON_SINCE_SQL : String = "SELECT MIN(n) AS n FROM entries INDEXED BY entries_people_since\n  WHERE thread = ? AND author_kind = 'person' AND kind = 'message' AND at >= ?"
+
+pub let ANSWER_PEOPLE_AFTER_SQL : String = "SELECT thread, n FROM entries INDEXED BY entries_people_since\n  WHERE thread = ? AND author_kind = 'person' AND kind = 'message' AND at >= ? AND n > ? ORDER BY n"
+
+pub let ANSWER_NEXT_PERSON_SQL : String = "SELECT n, at FROM entries INDEXED BY entries_people_by_n\n  WHERE thread = ? AND author_kind = 'person' AND kind = 'message' AND n > ? ORDER BY n LIMIT 1"
+
+pub let CARD_POST_NEXT_SQL : String = "SELECT n FROM card_posts WHERE thread=? AND n>=? ORDER BY n LIMIT 1"
+
+pub let CARD_POST_SAMPLE_SQL : String = "SELECT n FROM card_posts WHERE thread=? ORDER BY n LIMIT 65"
+
+pub let SESSION_ACTIVITY_SQL : String = "SELECT s.key, ((SELECT COUNT(*) FROM deliveries d INDEXED BY deliveries_pending WHERE d.session = s.key AND d.delivered_at IS NULL) +\n         (SELECT COUNT(*) FROM letter_deliveries d WHERE d.session = s.key AND d.delivered_at IS NULL)) AS pending, l.id AS turn_id, l.kind, l.outcome, l.declared, l.wait_seconds, l.wait_for, l.wait_watch, l.need, l.about_thread, l.about_n, l.about_ts, l.detail, l.started_at, l.ended_at FROM sessions s\n     LEFT JOIN turns l ON l.id = (SELECT id FROM turns t2 WHERE t2.session_key = s.key ORDER BY t2.started_at DESC LIMIT 1)"
+
+pub let WATCHING_OF_SQL : String = "SELECT j.* FROM active_watch_jobs w INDEXED BY active_watch_jobs_session\n  CROSS JOIN jobs j ON j.id = w.job WHERE w.session IN (SELECT value FROM json_each(?)) ORDER BY j.started_at DESC, j.rowid"
+
+pub let WATCHING_ALL_SQL : String = "SELECT j.* FROM active_watch_jobs w\n  CROSS JOIN jobs j ON j.id = w.job ORDER BY j.started_at DESC, j.rowid"
+
+pub let RUNNING_OF_SQL : String = "SELECT * FROM jobs WHERE session_key IN (SELECT value FROM json_each(?)) AND state = 'running' ORDER BY started_at DESC"
+
+pub let JOBS_RUNNING_SQL : String = "SELECT * FROM jobs WHERE state = 'running' ORDER BY started_at DESC, port, rowid"
+
+pub let SHARES_OF_SQL : String = "SELECT * FROM chat_shares WHERE session IN (SELECT value FROM json_each(?))"
+
+pub let OPENERS_OF_SQL : String = "SELECT o.child, o.parent_station, o.parent, o.opener_title, o.led, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent WHERE o.child_station = '' AND o.child IN (SELECT value FROM json_each(?))"
+
+pub let OPENED_OF_SQL : String = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child WHERE o.parent_station = '' AND o.parent IN (SELECT value FROM json_each(?)) ORDER BY o.created_at, o.rowid"
+
+pub let SHOWN_SESSIONS_SQL : String = "SELECT * FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL ORDER BY last_active_at DESC"
+
+pub let WAITING_JOBS_ALL_SQL : String = "SELECT DISTINCT session_key FROM jobs INDEXED BY jobs_state WHERE state = 'running' AND watch = 0"
+
+pub let WAITING_JOBS_OF_SQL : String = "SELECT DISTINCT session_key FROM jobs INDEXED BY jobs_state WHERE state = 'running' AND watch = 0\n  AND session_key IN (SELECT value FROM json_each(?1))"
+
+pub let WAITING_LED_ALL_SQL : String = "SELECT DISTINCT o.parent FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child\n  WHERE o.parent_station = '' AND o.led = 1 AND c.archived_at IS NULL\n  AND (o.state IS NULL OR o.state NOT IN ('all_done', 'stopped'))"
+
+pub let WAITING_LED_OF_SQL : String = "SELECT DISTINCT o.parent FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child\n  WHERE o.parent_station = '' AND o.led = 1 AND c.archived_at IS NULL\n  AND (o.state IS NULL OR o.state NOT IN ('all_done', 'stopped'))\n  AND o.parent IN (SELECT value FROM json_each(?1))"
+
+pub let SAID_BATCH_SQL : String = "SELECT t.value AS thread,\n       e.n, e.author_kind, e.author,\n       s.said_n, s.said_other_n, s.said_other_known,\n       g.author AS guard_author, g.other_n AS guard_other_n, g.ready AS guard_ready\n  FROM json_each(?1) t\n  LEFT JOIN entries e ON e.thread = t.value\n    AND e.n = (SELECT MAX(n) FROM entries INDEXED BY entries_said WHERE thread = t.value AND kind = 'message' AND letter IS NULL)\n  LEFT JOIN thread_state s ON s.thread = t.value\n  LEFT JOIN said_state_guard g ON g.thread = t.value"
+
+pub let LISTED_LAST_SAID_ALL_SQL : String = "SELECT t.thread, m.n, m.ts, m.author_kind, m.author,\n    CASE\n      WHEN m.text IS NULL THEN NULL\n      WHEN length(trim(m.text, char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288))) > 200\n        THEN substr(trim(m.text, char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)), 1, 200) || 'x'\n      ELSE trim(m.text, char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288))\n    END AS text,\n    NULL AS attachments,\n    CASE\n      WHEN trim(COALESCE(m.text, ''), char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)) = ''\n        THEN m.quotes\n      ELSE NULL\n    END AS quotes,\n    m.declared, m.client, m.agent_identity, m.created_at, m.edited_at, m.letter\n  FROM thread_state t\n  CROSS JOIN merged m ON m.thread = t.thread AND m.n = t.said_n"
+
+pub let LISTED_LAST_SAID_OF_SQL : String = "SELECT t.thread, m.n, m.ts, m.author_kind, m.author,\n    CASE\n      WHEN m.text IS NULL THEN NULL\n      WHEN length(trim(m.text, char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288))) > 200\n        THEN substr(trim(m.text, char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)), 1, 200) || 'x'\n      ELSE trim(m.text, char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288))\n    END AS text,\n    NULL AS attachments,\n    CASE\n      WHEN trim(COALESCE(m.text, ''), char(9,10,11,12,13,32,133,160,5760,8192,8193,8194,8195,8196,8197,8198,8199,8200,8201,8202,8232,8233,8239,8287,12288)) = ''\n        THEN m.quotes\n      ELSE NULL\n    END AS quotes,\n    m.declared, m.client, m.agent_identity, m.created_at, m.edited_at, m.letter\n  FROM json_each(?1) req\n  CROSS JOIN thread_state t ON t.thread = req.value\n  CROSS JOIN merged m ON m.thread = t.thread AND m.n = t.said_n"
+
+pub let LISTED_FIRST_TEXT_ALL_SQL : String = "SELECT t.thread, substr(m.text, 1, 300) AS t\n  FROM thread_state t\n  CROSS JOIN merged m ON m.thread = t.thread AND m.n = t.person_n"
+
+pub let LISTED_FIRST_TEXT_OF_SQL : String = "SELECT t.thread, substr(m.text, 1, 300) AS t\n  FROM json_each(?1) req\n  CROSS JOIN thread_state t ON t.thread = req.value\n  CROSS JOIN merged m ON m.thread = t.thread AND m.n = t.person_n"
+
+pub let ASKER_BEFORE_SQL : String = "SELECT author FROM entries INDEXED BY entries_people_by_n WHERE thread = ?1 AND n < ?2\n  AND author_kind = 'person' AND kind = 'message' ORDER BY n DESC LIMIT 1"

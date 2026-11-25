@@ -1402,11 +1402,16 @@ pub fn merged_needs_repair(db : sql_db::Db) -> Result[Bool, builders_core::StepE
   }
 }
 
+pub enum EditKey {
+  Key(Option[String])
+  Unprepared
+}
+
 pub fn bounded_edit_key(
   db : sql_db::Db,
   thread : base_codec::Json,
   n : base_codec::Json,
-) -> Result[Option[String], builders_core::StepError] {
+) -> Result[EditKey, builders_core::StepError] {
   let mut edit = match db.first(
     "WITH tail AS MATERIALIZED (\n    SELECT n,target FROM entries WHERE thread=?1 ORDER BY n DESC LIMIT 65\n  ) SELECT (SELECT CAST(n AS TEXT) FROM tail WHERE target=CAST(?2 AS INTEGER) ORDER BY n DESC LIMIT 1) AS n,\n    (SELECT COUNT(*) FROM tail) AS count",
     [thread, n],
@@ -1468,8 +1473,8 @@ pub fn bounded_edit_key(
       None => ()
     }
     if get_count(edit) == 65 {
-      return Err(builders_core::StepError::App("legacy edits pending"))
+      return Ok(EditKey::Unprepared)
     }
   }
-  Ok(get_key(edit))
+  Ok(EditKey::Key(get_key(edit)))
 }

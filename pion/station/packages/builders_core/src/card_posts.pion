@@ -274,6 +274,18 @@ pub fn card_posts_dispatch(
   }
 }
 
+/// Whether a chat's card posts are all in the index (`cards.mbt:163`).
+pub fn cards_ready(db : sql_db::Db, thread : base_codec::Json) -> Result[Bool, StepError] {
+  match card_check(db) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match card_scope_of(db, thread) {
+    Ok(sc) => Ok(card_phase(sc) == 2)
+    Err(e) => Err(e)
+  }
+}
+
 pub fn run_card_posts(db_path : String) -> Int {
   builder_loop(db_path, "card post", card_posts_dispatch)
 }

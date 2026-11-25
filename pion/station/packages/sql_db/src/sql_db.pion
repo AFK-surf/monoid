@@ -771,6 +771,30 @@ pub fn Db::with_temp_write_tx[T, E](
   res
 }
 
+/// Deferred read-snapshot transaction (`BEGIN .. COMMIT`) matching `station/mb/src/reader/main.mbt:142-144`:
+/// - On `BEGIN` failure: returns `Err(map_sql(err))`.
+/// - Propagates callback errors from `f()`.
+/// - Ignores post-read `COMMIT` errors, and ALWAYS calls `rollback_if_in_tx()` if `COMMIT` fails
+///   so subsequent `BEGIN` calls on the same connection never fail.
+pub fn Db::read_snapshot_err[T, E](
+  self : Db,
+  map_sql : (SqlError) -> E,
+  f : () -> Result[T, E],
+) -> Result[T, E] {
+  match self.exec("BEGIN") {
+    Ok(_) => ()
+    Err(e) => return Err(map_sql(e))
+  }
+  let res = f()
+  match self.exec("COMMIT") {
+    Ok(_) => ()
+    Err(_) => {
+      let _ = self.rollback_if_in_tx()
+    }
+  }
+  res
+}
+
 /// The anchor session key for `key`'s conversation (`conv ?? key`, aligned with `sql/conversations.mbt:18-26`).
 /// Returns `key` when the row is absent, `conv` is NULL, or `conv` is empty string.
 pub fn conversation_of(db : Db, key : String) -> Result[String, SqlError] {
@@ -784,6 +808,46 @@ pub fn conversation_of(db : Db, key : String) -> Result[String, SqlError] {
     Ok(None) => Ok(key)
     Err(e) => Err(e)
   }
+}
+
+/// All owned sessions belonging to conversation `anchor` (`conv = anchor OR key = anchor`),
+/// 1:1 aligned with `station/mb/src/sql/conversations.mbt:31-48`.
+/// Inlines `owned_ws_sql` directly to avoid any upward dependency on `station_conv`.
+pub fn members_of(
+  db : Db,
+  anchor : String,
+  limit : Option[Int] = None,
+) -> Result[Array[String], SqlError] {
+  let owned_ws_sql = "(ws IS NULL OR (ws NOT LIKE 'handed:%' AND ws NOT LIKE 'coming:%'))"
+  let (sql, args) = match limit {
+    Some(n) => (
+      "SELECT key FROM sessions WHERE conv = ?1 AND " +
+      owned_ws_sql +
+      " UNION SELECT key FROM sessions WHERE key = ?1 AND " +
+      owned_ws_sql +
+      " LIMIT ?2",
+      [base_codec::json_str(anchor), base_codec::json_num(n.to_double())],
+    )
+    None => (
+      "SELECT key FROM sessions WHERE conv = ?1 AND " +
+      owned_ws_sql +
+      " UNION SELECT key FROM sessions WHERE key = ?1 AND " +
+      owned_ws_sql,
+      [base_codec::json_str(anchor)],
+    )
+  }
+  let rows = match db.all(sql, args) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let out : Array[String] = []
+  for i in 0..<rows.length() {
+    match row_val(rows[i], "key") {
+      base_codec::Json::Str(k) => out.push(k)
+      _ => ()
+    }
+  }
+  Ok(out)
 }
 
 /// Emergency rollback guard: if a transaction is open (`!self.autocommit()`), execute `ROLLBACK`

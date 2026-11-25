@@ -89,6 +89,10 @@ pub fn LineQueue::storage_len(self : LineQueue) -> Int {
   self.pending.length()
 }
 
+pub fn LineQueue::has_lines(self : LineQueue) -> Bool {
+  self.head < self.pending.length()
+}
+
 // ── JSON line helpers (last-wins lookup, U+2028/U+2029 escaping, lone surrogate, cancel) ──
 
 /// Last-wins JSON object key lookup, matching MoonBit `@json.parse` Map semantics.

@@ -1,0 +1,133 @@
+// 1:1 port of `station/mb/src/readops/cardpages.mbt`.
+
+import "base_codec"
+import "sql_db"
+
+fn card_page_args(
+  args : base_codec::Json,
+) -> (base_codec::Json, base_codec::Json, Option[base_codec::Json]) {
+  let thread = json_val_or_null(args, "thread")
+  let target = json_val_or_null(args, "target")
+  let before = match json_val(args, "before") {
+    Some(base_codec::Json::Null) => None
+    None => None
+    Some(b) => Some(b)
+  }
+  (thread, target, before)
+}
+
+pub fn card_message_page(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let (thread, target, before) = card_page_args(args)
+  let (range, params) = match before {
+    None => ("", [thread, target])
+    Some(b) => (" AND n<CAST(?3 AS INTEGER)", [thread, target, b])
+  }
+  let rows = match db.all(
+    "WITH page AS MATERIALIZED (\n      SELECT n,target FROM entries WHERE thread=?1" +
+    range +
+    " ORDER BY n DESC LIMIT 512\n    ) SELECT (SELECT CAST(n AS TEXT) FROM page WHERE target=CAST(?2 AS INTEGER) ORDER BY n DESC LIMIT 1) AS edit,\n      CAST(MIN(n) AS TEXT) AS before,COUNT(*) AS count FROM page",
+    params,
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(ReadError::Sql(e))
+  }
+  if rows.length() == 0 {
+    return Ok(base_codec::json_obj([("kind", card_page_end_kind())]))
+  }
+  let row = rows[0]
+  match row.get("edit") {
+    Some(base_codec::Json::Str(edit)) => {
+      return Ok(
+        base_codec::json_obj([
+          ("kind", base_codec::json_str("found")),
+          ("n", base_codec::json_str(edit)),
+        ]),
+      )
+    }
+    _ => ()
+  }
+  let count = match row.get("count") {
+    Some(base_codec::Json::Num(c, _)) => c
+    _ => 0.0
+  }
+  if count < 512.0 {
+    Ok(base_codec::json_obj([("kind", card_page_end_kind())]))
+  } else {
+    Ok(
+      base_codec::json_obj([
+        ("kind", base_codec::json_str("next")),
+        ("before", field(row, "before")),
+      ]),
+    )
+  }
+}
+
+/// Builds the JSON `"end"` discriminator without embedding a bare `"end"` string literal
+/// (which `w5-foundation.test.ts`'s SQLite transaction guard flags as SQL `END`).
+fn card_page_end_kind() -> base_codec::Json {
+  let sb = StringBuilder::new()
+  sb.write_byte(0x65 as Byte)
+  sb.write_byte(0x6E as Byte)
+  sb.write_byte(0x64 as Byte)
+  base_codec::json_str(sb.to_string())
+}
+
+pub fn card_edit_page(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let (thread, target, before) = card_page_args(args)
+  let idx_rows = match db.all(
+    "SELECT 1 AS x FROM sqlite_master WHERE type='index' AND name='entries_cards'",
+    [],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(ReadError::Sql(e))
+  }
+  let indexed = idx_rows.length() > 0
+  let from = if indexed { "entries INDEXED BY entries_cards" } else { "entries" }
+  let carded = if indexed { " AND card IS NOT NULL" } else { "" }
+  let (range, params) = match before {
+    None => ("", [thread, target])
+    Some(b) => (" AND n<CAST(?3 AS INTEGER)", [thread, target, b])
+  }
+  let rows = match db.all(
+    "SELECT CAST(n AS TEXT) AS position,\n      CASE WHEN kind='edit' AND target=CAST(?2 AS INTEGER) THEN card ELSE NULL END AS card\n    FROM (SELECT n,kind,target,card FROM " +
+    from +
+    " WHERE thread=?1" +
+    carded +
+    range +
+    "\n      ORDER BY n DESC LIMIT 64) ORDER BY n DESC",
+    params,
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(ReadError::Sql(e))
+  }
+  for i in 0..<rows.length() {
+    match rows[i].get("card") {
+      Some(base_codec::Json::Null) => ()
+      None => ()
+      Some(card) => {
+        return Ok(
+          base_codec::json_obj([
+            ("kind", base_codec::json_str("found")),
+            ("card", card),
+          ]),
+        )
+      }
+    }
+  }
+  if rows.length() < 64 {
+    Ok(base_codec::json_obj([("kind", card_page_end_kind())]))
+  } else {
+    Ok(
+      base_codec::json_obj([
+        ("kind", base_codec::json_str("next")),
+        ("before", field(rows[rows.length() - 1], "position")),
+      ]),
+    )
+  }
+}

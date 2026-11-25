@@ -1,0 +1,107 @@
+// Pure-Pion unit tests for `readops_core` (`place_wbtest.mbt`, `cyrb53`/`base36`/`canonical`, `url_util`, `common`).
+
+import "base_codec"
+import "js_json"
+import "jscase"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn test_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    "0"
+  } else if js_json::is_safe_integer(d) {
+    d.to_int64().to_string()
+  } else {
+    d.to_string()
+  }
+}
+
+fn opt_str_eq(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => x == y
+    (None, None) => true
+    _ => false
+  }
+}
+
+test "readops_core: place_wbtest protected folders (home and mounts)" {
+  let prot = Protected::new("/", "/Users/me", ["/Volumes/Data/x", "/mnt/Share", "/mnt/Share/Deep"])
+  let known = fn(p : String) -> Option[String] { protected_known(prot, jscase::lower(p)) }
+  assert(opt_str_eq(known("/Users/me/Documents"), Some("/Users/me/Documents")))
+  assert(opt_str_eq(known("/users/ME/documents/a/b"), Some("/Users/me/Documents")))
+  assert(opt_str_eq(known("/Users/me/Library/CloudStorage/Box/f"), Some("/Users/me/Library/CloudStorage")))
+  assert(opt_str_eq(known("/Users/me/Library/Mobile Documents"), Some("/Users/me/Library/Mobile Documents")))
+  assert(opt_str_eq(known("/Users/me/DocumentsX"), None))
+  assert(opt_str_eq(known("/Users/me/code"), None))
+  assert(opt_str_eq(known("/mnt/share/deep/f"), Some("/mnt/Share/Deep")))
+  assert(opt_str_eq(known("/mnt/Share/f"), Some("/mnt/Share")))
+  assert(opt_str_eq(known("/Volumes/Data/x/f"), None))
+  assert(opt_str_eq(known("/mnt/Shared"), None))
+}
+
+test "readops_core: cyrb53 32-bit imul wraparound and base36 vectors" {
+  // Exact JS/MB cyrb53 vectors verified against Node / `client/core-ts/src/digest.ts`:
+  assert(cyrb53("").to_string() == "3338908027751811")
+  assert(base36(cyrb53("")) == "wvjl67o803")
+  assert(cyrb53("hello").to_string() == "4625896200565286")
+  assert(base36(cyrb53("hello")) == "19jqrdkps12")
+  // Non-BMP emoji (UTF-16 surrogate pair 0xD83D 0xDE00)
+  assert(cyrb53("a😀b").to_string() == "4276530243625572")
+  assert(base36(cyrb53("a😀b")) == "163wivebdd0")
+  assert(base36(0.to_int64()) == "0")
+  assert(base36(35.to_int64()) == "z")
+  assert(base36(36.to_int64()) == "10")
+}
+
+test "readops_core: canonical sorts object keys in UTF-16 order" {
+  let obj = base_codec::json_obj([
+    ("z", base_codec::json_int(1)),
+    ("a", base_codec::json_obj([("b", base_codec::json_bool(true)), ("a", base_codec::json_null())])),
+  ])
+  let sb = StringBuilder::new()
+  canonical_with(sb, obj, test_fmt_num)
+  assert(sb.to_string() == "{\"a\":{\"a\":null,\"b\":true},\"z\":1}")
+  let d = digest_with(obj, test_fmt_num)
+  assert(d == base36(cyrb53("{\"a\":{\"a\":null,\"b\":true},\"z\":1}")))
+}
+
+test "readops_core: url_util encode_uri_component and percent_decode_lossy" {
+  assert(encode_uri_component("a b/é!") == "a%20b%2F%C3%A9!")
+  assert(encode_uri_component("a/b?c=1") == "a%2Fb%3Fc%3D1")
+  assert(percent_decode_lossy("a%20b+c%zz", plus_space=true) == "a b c%zz")
+  assert(percent_decode_lossy("a%20b+c%e4%b8%ad%zz", plus_space=true) == "a b c中%zz")
+  assert(percent_decode_lossy("a%20b+c", plus_space=false) == "a b+c")
+}
+
+test "readops_core: common helpers is_mine, said_before, ending_of, parsed_thread_links" {
+  assert(said_before("all_done") == "final")
+  assert(said_before("need_decision") == "block")
+  assert(said_before("need_help") == "block")
+  assert(said_before("waiting") == "waiting")
+  assert(ending_of("final") == "all_done")
+  assert(ending_of("block") == "need_help")
+  assert(ending_of("need_decision") == "need_help")
+  assert(ending_of("waiting") == "waiting")
+
+  let p_email = base_codec::json_obj([
+    ("id", base_codec::json_str("u1")),
+    ("email", base_codec::json_str("Alice@Example.com")),
+  ])
+  assert(is_mine("alice@example.com", [], p_email))
+  let p_slack = base_codec::json_obj([
+    ("id", base_codec::json_str("slack:c1:U999")),
+    ("via", base_codec::json_str("slack")),
+  ])
+  assert(is_mine("bob@example.com", ["U999"], p_slack))
+  assert(!is_mine("bob@example.com", ["U888"], p_slack))
+
+  match parsed_thread_links(base_codec::json_str("{\"web\":\"https://a\",\"extra\":1}")) {
+    Some(l) => assert(base_codec::json_stringify(l) == "{\"web\":\"https://a\"}")
+    None => panic("expected parsed links")
+  }
+  assert(parsed_thread_links(base_codec::json_str("{}")) is None)
+}

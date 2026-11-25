@@ -1,0 +1,273 @@
+// 1:1 port of `station/mb/src/readops/background.mbt`.
+
+import "base_codec"
+import "js_json"
+import "sql_db"
+
+let SESSIONS_AT_WORK_SQL : String = "SELECT s.key, s.workspace FROM (SELECT rowid AS rid, key, workspace, running, last_active_at\n  FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL ORDER BY last_active_at DESC, rowid DESC LIMIT ?2) s\n  WHERE s.running = 1 OR s.key IN (SELECT value FROM json_each(?1)) OR EXISTS (SELECT 1 FROM active_watch_jobs INDEXED BY active_watch_jobs_session WHERE session = s.key)\n    OR EXISTS (SELECT 1 FROM active_other_jobs WHERE session = s.key)\n    OR (SELECT declared FROM turns INDEXED BY turns_by_session WHERE session_key = s.key ORDER BY started_at DESC, rowid DESC LIMIT 1) = 'waiting'\n  ORDER BY s.last_active_at DESC, s.rid DESC"
+
+let SESSIONS_AT_WORK_BEFORE_UPGRADE_SQL : String = "SELECT s.key, s.workspace FROM (SELECT rowid AS rid, key, workspace, running, last_active_at\n  FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL ORDER BY last_active_at DESC, rowid DESC LIMIT ?2) s\n  WHERE s.running = 1 OR s.key IN (SELECT value FROM json_each(?1)) OR EXISTS (SELECT 1 FROM jobs INDEXED BY jobs_by_session WHERE session_key = s.key AND state = 'running')\n    OR (SELECT declared FROM turns INDEXED BY turns_by_session WHERE session_key = s.key ORDER BY started_at DESC, rowid DESC LIMIT 1) = 'waiting'\n  ORDER BY s.last_active_at DESC, s.rid DESC"
+
+pub let LATEST_DECISIONS_SCOPED_SQL : String = "WITH RECURSIVE\n\n\nrecent AS MATERIALIZED (\n  SELECT id FROM decision_checks INDEXED BY decision_checks_lately WHERE ?3 = 0 AND created_at >= ?1 LIMIT 65\n),\n\nconnects(connect, n) AS (\n  SELECT (SELECT connect FROM sessions INDEXED BY sessions_by_connect ORDER BY connect LIMIT 1), 1\n  WHERE (SELECT COUNT(*) FROM recent) = 65\n  UNION ALL\n  SELECT (SELECT connect FROM sessions INDEXED BY sessions_by_connect WHERE connect > c.connect ORDER BY connect LIMIT 1), n + 1\n  FROM connects c WHERE c.connect IS NOT NULL AND n < 65\n),\nchosen AS MATERIALIZED (\n  SELECT s.key FROM connects c CROSS JOIN sessions s INDEXED BY sessions_by_connect\n  WHERE c.connect IS NOT NULL AND s.connect = c.connect AND s.ws = ?2 LIMIT 65\n),\nlookups AS MATERIALIZED (\n  SELECT c.key, (SELECT id FROM (\n    SELECT id, created_at FROM decision_checks INDEXED BY decision_checks_session WHERE session = c.key ORDER BY id DESC LIMIT 65\n  ) WHERE created_at >= ?1 ORDER BY id DESC LIMIT 1) AS id\n  FROM chosen c WHERE (SELECT COUNT(connect) FROM connects) <= 64 AND (SELECT COUNT(*) FROM chosen) <= 64\n),\nmode AS MATERIALIZED (\n  SELECT (SELECT COUNT(*) FROM recent) < 65 OR (SELECT COUNT(connect) FROM connects) > 64\n    OR (SELECT COUNT(*) FROM chosen) > 64 OR EXISTS (\n      SELECT 1 FROM lookups l WHERE l.id IS NULL AND EXISTS (\n        SELECT 1 FROM decision_checks INDEXED BY decision_checks_session WHERE session = l.key ORDER BY id DESC LIMIT 1 OFFSET 64\n      )\n    ) AS use_global\n),\nlatest AS MATERIALIZED (\n  SELECT MAX(id) AS id, session FROM mode CROSS JOIN decision_checks WHERE use_global AND created_at >= ?1 GROUP BY +session\n  UNION ALL\n  SELECT id, key AS session FROM lookups WHERE id IS NOT NULL AND NOT (SELECT use_global FROM mode)\n)\nSELECT d.id, d.session, d.created_at, d.result FROM latest l\nLEFT JOIN sessions s ON s.key = l.session\nCROSS JOIN decision_checks d ON d.id = l.id\nWHERE s.ws = ?2 OR (?3 AND s.ws IS NULL)\nORDER BY d.created_at, d.id"
+
+pub let LATEST_DECISIONS_SCOPED_FALLBACK_SQL : String = "WITH latest AS MATERIALIZED (\n  SELECT MAX(id) AS id, session FROM decision_checks WHERE created_at >= ?1 GROUP BY +session\n)\nSELECT d.id, d.session, d.created_at, d.result FROM latest l\nLEFT JOIN sessions s ON s.key = l.session\nCROSS JOIN decision_checks d ON d.id = l.id\nWHERE s.ws = ?2 OR (?3 AND s.ws IS NULL)\nORDER BY d.created_at, d.id"
+
+pub let RECENT_CONNECT_THREADS_SQL : String = "WITH recent AS MATERIALIZED (\n  SELECT t.id, t.surface, t.created_at, COALESCE(e.at, 0) AS said_at\n  FROM threads t LEFT JOIN thread_state s ON s.thread = t.id\n  LEFT JOIN entries e ON e.thread = t.id AND e.n = s.said_n AND e.kind = 'message'\n  ORDER BY said_at DESC, t.created_at DESC, t.id DESC LIMIT ?1\n) SELECT r.id, r.surface FROM recent r\n  WHERE EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = r.id AND m.connect = ?2)\n  ORDER BY r.said_at DESC, r.created_at DESC, r.id DESC"
+
+let MEASURED_MOST : Int = 1000
+
+let VIEW_CHATS : Int = 20
+
+pub fn sessions_at_work(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let processes = match json_val(args, "processes") {
+    Some(p) => p
+    None => base_codec::json_arr([])
+  }
+  let params = [
+    base_codec::json_str(sql_db::stringify_json(processes)),
+    base_codec::json_num(MEASURED_MOST.to_double()),
+  ]
+  let rows = match db.all(SESSIONS_AT_WORK_SQL, params) {
+    Ok(rs) => rs
+    Err(e) => {
+      if str_contains_sub(e.message, "no such table: active_watch_jobs") ||
+      str_contains_sub(e.message, "no such table: active_other_jobs") {
+        match db.all(SESSIONS_AT_WORK_BEFORE_UPGRADE_SQL, params) {
+          Ok(rs2) => rs2
+          Err(e2) => return Err(ReadError::Sql(e2))
+        }
+      } else {
+        return Err(ReadError::Sql(e))
+      }
+    }
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    out.push(
+      base_codec::json_obj([
+        ("key", field(r, "key")),
+        ("workspace", field(r, "workspace")),
+      ]),
+    )
+  }
+  Ok(base_codec::json_arr(out))
+}
+
+fn has_legacy_decision_time(db : sql_db::Db) -> Result[Bool, ReadError] {
+  match exists_in(db, "table", "legacy_decision_time_meta") {
+    Ok(false) => return Ok(false)
+    Ok(true) => ()
+    Err(e) => return Err(e)
+  }
+  match exists_in(db, "table", "legacy_decision_time") {
+    Ok(false) => return Err(ReadError::App("legacy decision-time metadata has no lookup"))
+    Ok(true) => ()
+    Err(e) => return Err(e)
+  }
+  let r = match one(db, "SELECT version,complete FROM legacy_decision_time_meta WHERE id=1", []) {
+    Ok(Some(row)) => row
+    Ok(None) => return Err(ReadError::App("legacy decision-time lookup has an unsupported version"))
+    Err(e) => return Err(e)
+  }
+  let ver_ok = match field(r, "version") {
+    base_codec::Json::Num(v, _) => v == 1.0
+    _ => false
+  }
+  let comp_ok = match field(r, "complete") {
+    base_codec::Json::Num(v, _) => v == 0.0 || v == 1.0
+    _ => false
+  }
+  if !ver_ok || !comp_ok {
+    return Err(ReadError::App("legacy decision-time lookup has an unsupported version"))
+  }
+  Ok(true)
+}
+
+pub fn policy_checks(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  match has_legacy_decision_time(db) {
+    Ok(true) => return Ok(base_codec::json_null())
+    Ok(false) => ()
+    Err(e) => return Err(e)
+  }
+  match exists_in(db, "index", "decision_checks_lately") {
+    Ok(false) => return Ok(base_codec::json_null())
+    Ok(true) => ()
+    Err(e) => return Err(e)
+  }
+  match exists_in(db, "index", "decision_checks_session") {
+    Ok(false) => return Ok(base_codec::json_null())
+    Ok(true) => ()
+    Err(e) => return Err(e)
+  }
+  let viewer = json_val_or_null(args, "viewer")
+  let home = match json_val(viewer, "home") {
+    Some(base_codec::Json::Bool(false)) => false
+    _ => true
+  }
+  let params = [
+    json_val_or_null(args, "since"),
+    json_val_or_null(viewer, "workspace"),
+    base_codec::json_num(if home { 1.0 } else { 0.0 }),
+  ]
+  let sql = if home { LATEST_DECISIONS_SCOPED_FALLBACK_SQL } else { LATEST_DECISIONS_SCOPED_SQL }
+  let rows = match db.all(sql, params) {
+    Ok(rs) => rs
+    Err(e) => {
+      if str_contains_sub(e.message, "no such index") || str_contains_sub(e.message, "no such table") {
+        return Ok(base_codec::json_null())
+      }
+      return Err(ReadError::Sql(e))
+    }
+  }
+  let order : Array[String] = []
+  let latest : Map[String, (base_codec::Json, Option[js_json::JValue])] = Map::new()
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    match field(r, "session") {
+      base_codec::Json::Str(session) => {
+        if !latest.contains(session) {
+          order.push(session)
+        }
+        latest.set(session, (field(r, "created_at"), parsed(field(r, "result"))))
+      }
+      _ => ()
+    }
+  }
+  let options : Map[String, (Int, Array[base_codec::Json])] = Map::new()
+  let picks : Array[String] = []
+  let mut failed = 0
+  let rev_order = array_rev(order)
+  for i in 0..<rev_order.length() {
+    let session = rev_order[i]
+    let (at, detail) = match latest.get(session) {
+      Some(v) => v
+      None => continue
+    }
+    let picked = match str_of(jget(jget(detail, "result"), "selected")) {
+      Some(p) => p
+      None => {
+        failed = failed + 1
+        continue
+      }
+    }
+    let (count, chats) = match options.get(picked) {
+      Some(o) => o
+      None => {
+        picks.push(picked)
+        (0, [])
+      }
+    }
+    if chats.length() < VIEW_CHATS {
+      let rec = match jget(detail, "accepted") {
+        Some(js_json::JValue::Bool(true)) => true
+        _ => false
+      }
+      chats.push(
+        base_codec::json_obj([
+          ("session", base_codec::json_str(session)),
+          ("at", at),
+          ("recommended", base_codec::json_bool(rec)),
+        ]),
+      )
+    }
+    options.set(picked, (count + 1, chats))
+  }
+  let shown : Array[(String, base_codec::Json)] = []
+  for i in 0..<picks.length() {
+    let p = picks[i]
+    match options.get(p) {
+      Some((count, chats)) => {
+        shown.push(
+          (
+            p,
+            base_codec::json_obj([
+              ("count", base_codec::json_num(count.to_double())),
+              ("chats", base_codec::json_arr(chats)),
+            ]),
+          ),
+        )
+      }
+      None => ()
+    }
+  }
+  Ok(
+    base_codec::json_obj([
+      ("checked", base_codec::json_num(order.length().to_double())),
+      ("failed", base_codec::json_num(failed.to_double())),
+      ("options", base_codec::json_obj(shown)),
+    ]),
+  )
+}
+
+pub fn recent_connect_people(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  let connect = json_val_or_null(args, "connect")
+  let connect_str = match connect {
+    base_codec::Json::Str(c) => c
+    other => sql_db::stringify_json(other)
+  }
+  let prefix = "slack:" + connect_str + ":"
+  let prefix_len = prefix.to_bytes().length()
+  let rows = match db.all(RECENT_CONNECT_THREADS_SQL, [json_val_or_null(args, "limit"), connect]) {
+    Ok(rs) => rs
+    Err(e) => return Err(ReadError::Sql(e))
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let thread = field(r, "id")
+    let first = match one(db, "SELECT MIN(connect) AS c FROM thread_sessions WHERE thread = ?", [thread]) {
+      Ok(Some(row)) => field(row, "c")
+      Ok(None) => base_codec::json_null()
+      Err(e) => return Err(e)
+    }
+    let author_rows = match db.all("SELECT author FROM thread_people WHERE thread = ? ORDER BY first_n", [thread]) {
+      Ok(rs) => rs
+      Err(e) => return Err(ReadError::Sql(e))
+    }
+    let authors : Array[String] = []
+    for j in 0..<author_rows.length() {
+      match field(author_rows[j], "author") {
+        base_codec::Json::Str(s) => authors.push(s)
+        _ => ()
+      }
+    }
+    let people : Array[String] = if base_codec::json_eq(field(r, "surface"), base_codec::json_str("chat")) {
+      authors
+    } else {
+      match first {
+        base_codec::Json::Str(c) => {
+          let ps : Array[String] = []
+          for j in 0..<authors.length() {
+            ps.push("slack:" + c + ":" + authors[j])
+          }
+          ps
+        }
+        _ => []
+      }
+    }
+    let stripped : Array[base_codec::Json] = []
+    for j in 0..<people.length() {
+      let p = people[j]
+      if str_has_prefix(p, prefix) {
+        stripped.push(base_codec::json_str(str_slice_bytes(p, prefix_len, p.to_bytes().length())))
+      }
+    }
+    out.push(
+      base_codec::json_obj([
+        ("thread", thread),
+        ("people", base_codec::json_arr(stripped)),
+      ]),
+    )
+  }
+  Ok(base_codec::json_arr(out))
+}

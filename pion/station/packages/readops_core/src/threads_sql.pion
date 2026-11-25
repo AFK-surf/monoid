@@ -1,0 +1,21 @@
+// 1:1 port of `station/mb/src/readops/threads_sql.mbt`.
+
+pub let UNREAD_SQL : String = "SELECT COUNT(*) AS c FROM entries WHERE thread = ?1 AND n > ?2 AND kind = 'message' AND letter IS NULL\n  AND NOT (author_kind = 'person' AND author IN (SELECT value FROM json_each(?3)))"
+
+pub let HAS_UNREAD_SQL : String = "SELECT EXISTS (SELECT 1 FROM entries WHERE thread = ?1 AND n > ?2 AND kind = 'message' AND letter IS NULL\n  AND NOT (author_kind = 'person' AND author IN (SELECT value FROM json_each(?3)))) AS c"
+
+pub let LEGACY_UNREAD_SQL : String = "SELECT CASE WHEN (SELECT scanned FROM legacy_said_meta WHERE id=1)=0 THEN\n  (SELECT COUNT(*) FROM entries e WHERE e.thread=?1 AND e.n>?2 AND e.kind='message' AND e.letter IS NULL AND NOT (e.author_kind='person' AND e.author IN (SELECT value FROM json_each(?3))))\n  ELSE\n  (SELECT COUNT(*) FROM legacy_said_build s WHERE s.thread=?1 AND s.n>?2 AND NOT (s.author_kind='person' AND s.author IN (SELECT value FROM json_each(?3))))\n  - (SELECT COUNT(*) FROM legacy_said_dirty d CROSS JOIN legacy_said_build s ON s.thread=d.thread AND s.n=d.n\n      WHERE d.thread=?1 AND d.n>?2 AND NOT (s.author_kind='person' AND s.author IN (SELECT value FROM json_each(?3))))\n  + (SELECT COUNT(*) FROM legacy_said_dirty d CROSS JOIN entries e ON e.thread=d.thread AND e.n=d.n\n      WHERE d.thread=?1 AND d.n>?2 AND e.kind='message' AND e.letter IS NULL AND NOT (e.author_kind='person' AND e.author IN (SELECT value FROM json_each(?3)))) END AS c"
+
+pub let CC_SESSION_KEYS_SQL : String = "SELECT CAST(thread AS TEXT) AS thread FROM cc_session_rows INDEXED BY cc_session_order\n  WHERE session=?1 AND surface != 'chat' ORDER BY last_at DESC,created_at DESC,cc_session_rows.thread DESC LIMIT 20"
+
+pub let CC_INDEXED_THREADS_SQL : String = "SELECT t.*,o.connect FROM json_each(?1) c\n  CROSS JOIN threads t ON t.id=CAST(json_extract(c.value,'$[0]') AS INTEGER)\n  CROSS JOIN thread_sessions o ON o.thread=t.id AND o.session=json_extract(c.value,'$[1]')\n  WHERE t.surface != 'chat'\n  ORDER BY (SELECT e.at FROM thread_state st JOIN entries e ON e.thread=st.thread AND e.n=st.last_n\n    WHERE st.thread=t.id) DESC, t.created_at DESC, t.id DESC LIMIT 20"
+
+pub let LATEST_TURNS_SQL : String = "SELECT * FROM turns WHERE session_key = ? ORDER BY started_at DESC LIMIT ?"
+
+pub let LATEST_JOBS_SQL : String = "SELECT * FROM jobs INDEXED BY jobs_by_session WHERE session_key = ? ORDER BY rowid DESC LIMIT ?"
+
+pub let UP_JOBS_OF_SQL : String = "SELECT * FROM jobs INDEXED BY jobs_up WHERE state = 'running' AND session_key = ?1 UNION ALL SELECT * FROM jobs INDEXED BY jobs_up WHERE state = 'exited' AND port IS NOT NULL AND session_key = ?1"
+
+pub let PREPARED_UP_JOBS_OF_SQL : String = "SELECT j.* FROM session_up_job_rows i CROSS JOIN jobs j ON j.rowid = i.job_rowid\n  WHERE i.session = ? ORDER BY (j.state <> 'running'), j.port, j.rowid"
+
+pub let SESSION_JOBS_SQL : String = "SELECT * FROM jobs WHERE session_key = ? ORDER BY started_at DESC"
