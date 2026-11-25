@@ -1963,9 +1963,28 @@ jobs:
       - uses: ./.github/actions/setup
         with: { pnpm: 'false' }
       - uses: ./.github/actions/natives
-      - name: The macOS shell's key
+      - name: The macOS shell and core native keys
         id: native-keys
-        run: echo "key=natives-shell-apple-darwin-arm64-$(node scripts/native.ts key shell-apple darwin-arm64)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -o pipefail
+          # Compute shell-apple, ghostty-vt, and clang++ version keys concurrently to shave 3-5 s before build start.
+          K=$RUNNER_TEMP/mac-native-keys; rm -rf "$K" && mkdir -p "$K"
+          (xcrun --sdk macosx clang++ --version > "$K/cc") & p1=$!
+          (node scripts/native.ts key shell-apple darwin-arm64 > "$K/shell") & p2=$!
+          (node scripts/native.ts key ghostty-vt darwin-arm64 > "$K/ghostty") & p3=$!
+          sources=$(shasum -a 256 apps/mbui/src/host/apple_core.mm apps/mbui/engine/ready_queue.h \
+            apps/mbui/src/host/apple_collate.h apps/mbui/src/host/electron_sealed.h apps/mbui/src/host/core_api.h \
+            apps/mbui/src/host/listen_api.h libs/ui/src/host/listen_api.h apps/mbui/scripts/core.sh)
+          wait "$p1"
+          wait "$p2"
+          wait "$p3"
+          IFS= read -r cc < "$K/cc"
+          shell_key=$(cat "$K/shell")
+          ghostty=$(cat "$K/ghostty")
+          [ -n "$cc" ] && [ -n "$shell_key" ] && [ -n "$ghostty" ]
+          key=$(printf '%s\n' 'macos 12.0' "$cc" '${{ steps.hermes.outputs.key }}' "$sources" "$ghostty" | shasum -a 256 | cut -c1-16)
+          echo "key=natives-shell-apple-darwin-arm64-$shell_key" >> "$GITHUB_OUTPUT"
+          echo "apple-native=mbui-mac-apple-native-$key" >> "$GITHUB_OUTPUT"
       # (saved by main alone, below: a branch that changed the mesh saved it in its Post Run, after its five minutes)
       - uses: actions/cache/restore@v4
         id: shell
@@ -1984,30 +2003,30 @@ jobs:
       # every fresh runner, 14-36 s of the prebuild before moon's build started. Keyed by all the engine is made of, its
       # sources and the headers they include, core.sh, the compiler, the macOS it is for and Hermes, and by ghostty-vt's
       # own key; only that exact key is taken, never an older engine. Saved by main alone, below)
-      - name: The Mac core's native parts' key
-        id: apple-native-key
-        run: |
-          set -o pipefail
-          # (its first line, cut here: a pipe into head could end clang++ on a closed pipe, and pipefail the step)
-          cc=$(xcrun --sdk macosx clang++ --version)
-          cc=${cc%%$'\n'*}
-          ghostty=$(node scripts/native.ts key ghostty-vt darwin-arm64)
-          sources=$(shasum -a 256 apps/mbui/src/host/apple_core.mm apps/mbui/engine/ready_queue.h \
-            apps/mbui/src/host/apple_collate.h apps/mbui/src/host/electron_sealed.h apps/mbui/src/host/core_api.h \
-            apps/mbui/src/host/listen_api.h libs/ui/src/host/listen_api.h apps/mbui/scripts/core.sh)
-          key=$(printf '%s\n' 'macos 12.0' "$cc" '${{ steps.hermes.outputs.key }}' "$sources" "$ghostty" | shasum -a 256 | cut -c1-16)
-          echo "key=mbui-mac-apple-native-$key" >> "$GITHUB_OUTPUT"
       - uses: actions/cache/restore@v4
         id: apple-native
         with:
           path: |
             apps/mbui/out/core/aarch64-apple-darwin/libmbui_core.a
             ~/Library/Caches/stillfail-native/ghostty-vt
-          key: ${{ steps.apple-native-key.outputs.key }}
+          key: ${{ steps.native-keys.outputs.apple-native }}
       # (newer than every source, which moon-mtimes.sh dates 2000-2008, and than core.sh, as engine() asks; the app is
       # linked again by what its native parts are, not their mtimes: mac.sh's $exe.native-libs)
       - if: steps.apple-native.outputs.cache-hit == 'true'
         run: touch apps/mbui/out/core/aarch64-apple-darwin/libmbui_core.a
+      # Start the prebuild worker as soon as shell + apple-native caches are restored so cold apple_core.mm compilation
+      # overlaps with mbui-moonbit and mbui-mac-moon- restore (~15-17 s); the worker waits for `ready` before Moon runs.
+      - name: Start the Mac app build
+        id: start
+        env:
+          # the PostHog project the app's core sends what people use to (mac-release-prebuild.sh), as the bundling
+          # step below gives it, so that core.hbc is made once
+          POSTHOG_JSON: ${{ github.ref == 'refs/heads/main' && secrets.POSTHOG_JSON || '' }}
+          # main's core says when it was built (apps/mbui/scripts/core.sh built_at_define: any MBUI_BUILD >= 1000, the
+          # number itself not read here, mac.sh building no Info.plist; main's history is not fetched yet), as the
+          # bundling step's below does, so that core.hbc's key is one in every step; a branch's says 0 in each
+          MBUI_BUILD: ${{ github.ref == 'refs/heads/main' && '1000' || '' }}
+        run: bash .github/mac-release-prebuild.sh start
       - uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc chk pack' }
       # The next build is kept on main's ref too. Take its Moon build first; unlike the content-addressed units,
@@ -2032,23 +2051,11 @@ jobs:
             !apps/mbui/_build/**/*.mbc/**
           key: mbui-mac-moon-${{ github.sha }}
           restore-keys: mbui-mac-moon-
-      # The app's build (its core's native parts, then its Moon build) runs beside pnpm and the icon restore. Started once
-      # MoonBit and the old Moon build are restored, not before; its native parts are downloads of a few seconds. The same
-      # scripts, target and compiler are used by mac-app.sh below.
-      - name: Start the Mac app build
-        id: start
-        env:
-          # the PostHog project the app's core sends what people use to (mac-release-prebuild.sh), as the bundling
-          # step below gives it, so that core.hbc is made once
-          POSTHOG_JSON: ${{ github.ref == 'refs/heads/main' && secrets.POSTHOG_JSON || '' }}
-          # main's core says when it was built (apps/mbui/scripts/core.sh built_at_define: any MBUI_BUILD >= 1000, the
-          # number itself not read here, mac.sh building no Info.plist; main's history is not fetched yet), as the
-          # bundling step's below does, so that core.hbc's key is one in every step; a branch's says 0 in each
-          MBUI_BUILD: ${{ github.ref == 'refs/heads/main' && '1000' || '' }}
+      # Release the prebuild worker into Moon's build once MoonBit and _build are restored and source mtimes are normalized.
+      - name: Signal Moon toolchain ready
         run: |
           bash apps/mbui/scripts/moon-mtimes.sh
           touch "$RUNNER_TEMP/start"
-          bash .github/mac-release-prebuild.sh start
           bash .github/mac-release-prebuild.sh ready
       # (main's -O2 units: main's own, and a branch's to take where they are what its changed program's would be at -O2,
       # mbc's MBC_LIGHT_TESTS, below)
@@ -2130,8 +2137,11 @@ jobs:
           unset POSTHOG_JSON
           if bash apps/mbui/scripts/core.sh hermes-kept apple; then echo "kept=true" >> "$GITHUB_OUTPUT"; fi
           rm -f "$RUNNER_TEMP/posthog-kept.json"
+      # Restore pnpm store only (no 15 s Post Run 142 MB cache save that cancelled main 45475280318 at 303 s after
+      # mac-unsigned was already uploaded; station and check-mac maintain pnpm-macOS-*). Node is already on PATH.
       - if: steps.hbc.outputs.kept != 'true'
         uses: ./.github/actions/setup
+        with: { node: 'false', pnpm-save: 'false' }
       - run: bash .github/mac-release-prebuild.sh packages
       - uses: actions/cache@v4
         with:
@@ -2194,22 +2204,28 @@ jobs:
       # (main's, when it built the shell here)
       - if: github.ref == 'refs/heads/main' && steps.shell.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
+        continue-on-error: true
+        timeout-minutes: 1
         with:
           path: ~/Library/Caches/stillfail-native/shell-apple
           key: ${{ steps.native-keys.outputs.key }}
       - if: github.ref == 'refs/heads/main' && steps.shell.outputs.cache-hit != 'true' && hashFiles('apps/mbui/out/core-target*/native/shell-apple/**/libstillfail_shell.a') != ''
         uses: actions/cache/save@v4
+        continue-on-error: true
+        timeout-minutes: 1
         with:
           path: apps/mbui/out/core-target*/native/shell-apple
           key: shell-apple-target-darwin-arm64-${{ hashFiles('client/Cargo.lock') }}-${{ github.sha }}
       # (main's, when it compiled the engine here: a build that went through, the app handed over above)
       - if: github.ref == 'refs/heads/main' && steps.apple-native.outputs.cache-hit != 'true' && hashFiles('apps/mbui/out/core/aarch64-apple-darwin/libmbui_core.a') != ''
         uses: actions/cache/save@v4
+        continue-on-error: true
+        timeout-minutes: 1
         with:
           path: |
             apps/mbui/out/core/aarch64-apple-darwin/libmbui_core.a
             ~/Library/Caches/stillfail-native/ghostty-vt
-          key: ${{ steps.apple-native-key.outputs.key }}
+          key: ${{ steps.native-keys.outputs.apple-native }}
       # (a cut build's log and its compilers stopped on main and a branch alike; a branch's store saved only of a build
       # that went through: a job that needs longer is made faster, never finished over several pushes, .github/AGENTS.md;
       # main's cut keeps what it compiled, as above)
@@ -2240,6 +2256,8 @@ jobs:
           echo "STORE_KEY=mbui-mac-cc-${{ github.ref != 'refs/heads/main' && 'b-' || '' }}${{ steps.mac-cc.outputs.key }}-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
       - if: always() && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key && env.STORE_KEY != steps.own.outputs.cache-matched-key
         uses: actions/cache/save@v4
+        continue-on-error: true
+        timeout-minutes: 1
         with:
           path: |
             .ci/mbc-store
@@ -2274,6 +2292,8 @@ jobs:
           echo "MOON_KEY=$key" >> "$GITHUB_ENV"
       - if: always() && github.ref == 'refs/heads/main' && env.MOON_KEY != '' && env.MOON_KEY != steps.moon.outputs.cache-matched-key
         uses: actions/cache/save@v4
+        continue-on-error: true
+        timeout-minutes: 1
         with:
           path: |
             apps/mbui/_build
@@ -2535,8 +2555,11 @@ jobs:
           STILLFAIL_POSTHOG=$([ ! -s "$RUNNER_TEMP/posthog.json" ] || echo "$RUNNER_TEMP/posthog.json") bash apps/mbui/scripts/core.sh hermes-kept || exit 0
           [ "${{ vars.MONOID_CI }}" != on ] || bash apps/mbui/scripts/core.sh hermes-kept || exit 0
           echo "kept=true" >> "$GITHUB_OUTPUT"
+      # Restore pnpm store only (avoid a 15-30 s Post Run cache save at the 5-minute cliff; preview.yml's windows job
+      # maintains pnpm-Windows-*). Node is already on PATH from the earlier step.
       - if: steps.hbc.outputs.kept != 'true'
         uses: ./.github/actions/setup
+        with: { node: 'false', pnpm-save: 'false' }
       - name: The core's packages
         if: steps.hbc.outputs.kept != 'true'
         run: (cd client/core-ts && pnpm install --frozen-lockfile --prefer-offline --reporter=append-only > "$RUNNER_TEMP/packages.log" 2>&1) || { cat "$RUNNER_TEMP/packages.log"; exit 1; }
