@@ -971,7 +971,7 @@ fn recent_timing_candidates(db : sql_db::Db, time_from : Double) -> Result[Array
 }
 
 fn is_single_file_runtime(rt : String) -> Bool {
-  rt == "dsh" || rt == "grok" || rt == "cursor" || rt == "devin" || rt == "hermes" || rt == "agy" || rt == "pi"
+  rt == "dsh" || rt == "grok" || rt == "cursor" || rt == "devin" || rt == "hermes" || rt == "agy" || rt == "pi" || rt == "copilot"
 }
 
 fn load_sessions(db : sql_db::Db, keys : Array[String]) -> Result[Array[Session], String] {

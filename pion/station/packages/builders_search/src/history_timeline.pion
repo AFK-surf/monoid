@@ -237,7 +237,7 @@ pub fn timeline_of(
   } else if runtime == "grok" {
     grok_entry(record, out)
     Ok(())
-  } else if runtime == "cursor" || runtime == "devin" || runtime == "hermes" || runtime == "agy" {
+  } else if runtime == "cursor" || runtime == "devin" || runtime == "hermes" || runtime == "agy" || runtime == "copilot" {
     cursor_entry(record, out)
   } else if runtime == "pi" {
     pi_entry(record, out)
