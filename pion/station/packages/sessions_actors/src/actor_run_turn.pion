@@ -1189,6 +1189,12 @@ fn ActorsGen::pump_steer_k(
                     for i in 0..<d.pending.length() {
                       marked.push(sessions_core::field_of(d.pending[i], "handed"))
                     }
+                    let batch_id = if marked.length() > 0 { self.host.alloc_id() } else { 0 }
+                    let settle_delivery = fn() -> Unit {
+                      if marked.length() > 0 {
+                        self.tell(a.key, "store.deliverySettled", [sessions_core::jint(batch_id)])
+                      }
+                    }
                     let after_mark = fn(ex_mk : effect::Exit[Unit]) -> Unit {
                       match ex_mk {
                         effect::Exit::Interrupted => {
@@ -1199,7 +1205,11 @@ fn ActorsGen::pump_steer_k(
                                 self.store_direct_k(
                                   a,
                                   "markUndelivered",
-                                  [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
+                                  [
+                                    sessions_core::jstr(a.key),
+                                    base_codec::json_arr(marked),
+                                    sessions_core::jint(batch_id),
+                                  ],
                                   tk,
                                 )
                               },
@@ -1208,6 +1218,7 @@ fn ActorsGen::pump_steer_k(
                               },
                             )
                           } else {
+                            settle_delivery()
                             k(effect::Exit::Interrupted)
                           }
                         }
@@ -1224,7 +1235,11 @@ fn ActorsGen::pump_steer_k(
                                   self.store_direct_k(
                                     a,
                                     "markUndelivered",
-                                    [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
+                                    [
+                                      sessions_core::jstr(a.key),
+                                      base_codec::json_arr(marked),
+                                      sessions_core::jint(batch_id),
+                                    ],
                                     tk,
                                   )
                                 },
@@ -1233,6 +1248,7 @@ fn ActorsGen::pump_steer_k(
                                 },
                               )
                             } else {
+                              settle_delivery()
                               k(effect::Exit::Interrupted)
                             }
                             return
@@ -1248,7 +1264,11 @@ fn ActorsGen::pump_steer_k(
                                       self.store_direct_k(
                                         a,
                                         "markUndelivered",
-                                        [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
+                                        [
+                                          sessions_core::jstr(a.key),
+                                          base_codec::json_arr(marked),
+                                          sessions_core::jint(batch_id),
+                                        ],
                                         tk,
                                       )
                                     },
@@ -1257,6 +1277,7 @@ fn ActorsGen::pump_steer_k(
                                     },
                                   )
                                 } else {
+                                  settle_delivery()
                                   k(effect::Exit::Interrupted)
                                 }
                               }
@@ -1268,7 +1289,11 @@ fn ActorsGen::pump_steer_k(
                                       self.store_direct_k(
                                         a,
                                         "markUndelivered",
-                                        [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
+                                        [
+                                          sessions_core::jstr(a.key),
+                                          base_codec::json_arr(marked),
+                                          sessions_core::jint(batch_id),
+                                        ],
                                         tk,
                                       )
                                     },
@@ -1300,7 +1325,11 @@ fn ActorsGen::pump_steer_k(
                                         self.store_direct_k(
                                           a,
                                           "markUndelivered",
-                                          [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
+                                          [
+                                            sessions_core::jstr(a.key),
+                                            base_codec::json_arr(marked),
+                                            sessions_core::jint(batch_id),
+                                          ],
                                           tk,
                                         )
                                       },
@@ -1309,6 +1338,7 @@ fn ActorsGen::pump_steer_k(
                                       },
                                     )
                                   } else {
+                                    settle_delivery()
                                     k(effect::Exit::Interrupted)
                                   }
                                   return
@@ -1324,6 +1354,7 @@ fn ActorsGen::pump_steer_k(
                                     match ex_st {
                                       effect::Exit::Interrupted => {
                                         unsteer()
+                                        settle_delivery()
                                         k(effect::Exit::Interrupted)
                                       }
                                       effect::Exit::Failed(e) => {
@@ -1334,7 +1365,11 @@ fn ActorsGen::pump_steer_k(
                                               self.store_direct_k(
                                                 a,
                                                 "markUndelivered",
-                                                [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
+                                                [
+                                                  sessions_core::jstr(a.key),
+                                                  base_codec::json_arr(marked),
+                                                  sessions_core::jint(batch_id),
+                                                ],
                                                 tk,
                                               )
                                             },
@@ -1364,7 +1399,11 @@ fn ActorsGen::pump_steer_k(
                                             self.store_direct_k(
                                               a,
                                               "markUndelivered",
-                                              [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
+                                              [
+                                                sessions_core::jstr(a.key),
+                                                base_codec::json_arr(marked),
+                                                sessions_core::jint(batch_id),
+                                              ],
                                               fn(ex_u : effect::Exit[base_codec::Json]) -> Unit {
                                                 match ex_u {
                                                   effect::Exit::Interrupted => k(effect::Exit::Interrupted)
@@ -1391,6 +1430,7 @@ fn ActorsGen::pump_steer_k(
                                             k(effect::Exit::Succeeded(()))
                                           }
                                         } else {
+                                          settle_delivery()
                                           if !attempt_same() {
                                             k(effect::Exit::Interrupted)
                                             return
@@ -1481,7 +1521,11 @@ fn ActorsGen::pump_steer_k(
                       self.store_k(
                         a,
                         "markDelivered",
-                        [sessions_core::jstr(a.key), base_codec::json_arr(marked)],
+                        [
+                          sessions_core::jstr(a.key),
+                          base_codec::json_arr(marked),
+                          sessions_core::jint(batch_id),
+                        ],
                         fn(ex_m : effect::Exit[base_codec::Json]) -> Unit {
                           match ex_m {
                             effect::Exit::Succeeded(_) => after_mark(effect::Exit::Succeeded(()))
@@ -2500,9 +2544,38 @@ fn ActorsGen::start_turn_send_prompt_k(
               effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
               effect::Exit::Succeeded(_) => {
                 let marked = delivered.length() > 0
+                let batch_id = if marked { self.host.alloc_id() } else { 0 }
+                let settle_delivery = fn() -> Unit {
+                  if marked {
+                    self.tell(a.key, "store.deliverySettled", [sessions_core::jint(batch_id)])
+                  }
+                }
                 let after_mark = fn(ex_mk : effect::Exit[Unit]) -> Unit {
                   match ex_mk {
-                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Interrupted => {
+                      if !self.gen.counters.sealed && marked {
+                        sessions_core::try_k(
+                          fn(tk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                            self.store_direct_k(
+                              a,
+                              "markUndelivered",
+                              [
+                                sessions_core::jstr(a.key),
+                                base_codec::json_arr(delivered),
+                                sessions_core::jint(batch_id),
+                              ],
+                              tk,
+                            )
+                          },
+                          fn(_ex_u : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
+                            k(effect::Exit::Interrupted)
+                          },
+                        )
+                      } else {
+                        settle_delivery()
+                        k(effect::Exit::Interrupted)
+                      }
+                    }
                     effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
                     effect::Exit::Succeeded(_) => {
                       let drained_notices = drain_notices(a, notices_taken)
@@ -2510,8 +2583,14 @@ fn ActorsGen::start_turn_send_prompt_k(
                         ex_p : effect::Exit[base_codec::Json],
                       ) -> Unit {
                         match ex_p {
-                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                          effect::Exit::Succeeded(_) => self.told_k(a, told_choices, k)
+                          effect::Exit::Interrupted => {
+                            settle_delivery()
+                            k(effect::Exit::Interrupted)
+                          }
+                          effect::Exit::Succeeded(_) => {
+                            settle_delivery()
+                            self.told_k(a, told_choices, k)
+                          }
                           effect::Exit::Failed(e) => {
                             let reopen_and_prompt = fn() -> Unit {
                               self.log(a, "warn", "prompt failed, reopening the runtime", [
@@ -2533,7 +2612,11 @@ fn ActorsGen::start_turn_send_prompt_k(
                                     self.store_direct_k(
                                       a,
                                       "markUndelivered",
-                                      [sessions_core::jstr(a.key), base_codec::json_arr(delivered)],
+                                      [
+                                        sessions_core::jstr(a.key),
+                                        base_codec::json_arr(delivered),
+                                        sessions_core::jint(batch_id),
+                                      ],
                                       fn(ex_u : effect::Exit[base_codec::Json]) -> Unit {
                                         match ex_u {
                                           effect::Exit::Interrupted => k(effect::Exit::Interrupted)
@@ -2544,6 +2627,8 @@ fn ActorsGen::start_turn_send_prompt_k(
                                     )
                                     return
                                   }
+                                } else {
+                                  settle_delivery()
                                 }
                                 k(effect::Exit::Failed(e2))
                               }
@@ -2565,7 +2650,11 @@ fn ActorsGen::start_turn_send_prompt_k(
                                         self.store_direct_k(
                                           a,
                                           "markUndelivered",
-                                          [sessions_core::jstr(a.key), base_codec::json_arr(delivered)],
+                                          [
+                                            sessions_core::jstr(a.key),
+                                            base_codec::json_arr(delivered),
+                                            sessions_core::jint(batch_id),
+                                          ],
                                           tk,
                                         )
                                       },
@@ -2575,6 +2664,8 @@ fn ActorsGen::start_turn_send_prompt_k(
                                     )
                                     return
                                   }
+                                } else {
+                                  settle_delivery()
                                 }
                                 k(effect::Exit::Interrupted)
                               }
@@ -2601,9 +2692,15 @@ fn ActorsGen::start_turn_send_prompt_k(
                                                 // Do not call `markUndelivered` when the 2nd prompt is
                                                 // interrupted: the runtime may already have accepted it,
                                                 // so reverting could duplicate delivery.
-                                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                effect::Exit::Interrupted => {
+                                                  settle_delivery()
+                                                  k(effect::Exit::Interrupted)
+                                                }
                                                 effect::Exit::Failed(e2) => on_reopen_err(e2)
-                                                effect::Exit::Succeeded(_) => self.told_k(a, told_choices, k)
+                                                effect::Exit::Succeeded(_) => {
+                                                  settle_delivery()
+                                                  self.told_k(a, told_choices, k)
+                                                }
                                               }
                                             },
                                           )
@@ -2621,10 +2718,17 @@ fn ActorsGen::start_turn_send_prompt_k(
                                 },
                                 fn(ex_st : effect::Exit[Result[base_codec::Json, effect::EffectError]]) -> Unit {
                                   match ex_st {
-                                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                                    effect::Exit::Failed(e2) => k(effect::Exit::Failed(e2))
+                                    effect::Exit::Interrupted => {
+                                      settle_delivery()
+                                      k(effect::Exit::Interrupted)
+                                    }
+                                    effect::Exit::Failed(e2) => {
+                                      settle_delivery()
+                                      k(effect::Exit::Failed(e2))
+                                    }
                                     effect::Exit::Succeeded(Ok(sv)) => {
                                       if sessions_core::truthy(sv) {
+                                        settle_delivery()
                                         self.told_k(a, told_choices, k)
                                       } else {
                                         reopen_and_prompt()
@@ -2647,7 +2751,11 @@ fn ActorsGen::start_turn_send_prompt_k(
                   self.store_k(
                     a,
                     "markDelivered",
-                    [sessions_core::jstr(a.key), base_codec::json_arr(delivered)],
+                    [
+                      sessions_core::jstr(a.key),
+                      base_codec::json_arr(delivered),
+                      sessions_core::jint(batch_id),
+                    ],
                     fn(ex_m : effect::Exit[base_codec::Json]) -> Unit {
                       match ex_m {
                         effect::Exit::Succeeded(_) => after_mark(effect::Exit::Succeeded(()))

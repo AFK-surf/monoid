@@ -95,7 +95,8 @@ export class ActorsProgram {
   readonly #calls = new Map<number, { resolve: (value: Json) => void; reject: (error: Error) => void; actor?: MbActor | ProgramShell }>();
   readonly #pendingCalls = new Map<MbActor | ProgramShell, number>();
   readonly #answeringByActor = new Map<MbActor | ProgramShell, number>();
-  readonly #pendingNodeDeliveries = new Map<MbActor | ProgramShell, number>();
+  readonly #provisionalDeliveries = new Map<number, MbActor | ProgramShell>();
+  readonly #provisionalByActor = new Map<MbActor | ProgramShell, Set<number>>();
 
   readonly #store: { told(changes: any[]): void } | null;
 
@@ -273,7 +274,8 @@ export class ActorsProgram {
     this.#stateWriteOwners.clear();
     this.#pendingCalls.clear();
     this.#answeringByActor.clear();
-    this.#pendingNodeDeliveries.clear();
+    this.#provisionalDeliveries.clear();
+    this.#provisionalByActor.clear();
     for (const fiber of this.#timers.values()) Effect.runFork(Fiber.interrupt(fiber));
     this.#timers.clear();
     const calls = [...this.#calls.values()];
@@ -306,13 +308,52 @@ export class ActorsProgram {
     }
   }
 
+  #registerProvisionalDelivery(batchId: number, owner: MbActor | ProgramShell) {
+    const prev = this.#provisionalDeliveries.get(batchId);
+    if (prev !== undefined && prev !== owner) {
+      this.#clearProvisionalDelivery(batchId);
+    }
+    this.#provisionalDeliveries.set(batchId, owner);
+    let set = this.#provisionalByActor.get(owner);
+    if (!set) {
+      set = new Set();
+      this.#provisionalByActor.set(owner, set);
+    }
+    set.add(batchId);
+    this.#retiredIdleOrder.delete(owner);
+  }
+
+  #clearProvisionalDelivery(batchId: number) {
+    const owner = this.#provisionalDeliveries.get(batchId);
+    if (owner === undefined) return;
+    this.#provisionalDeliveries.delete(batchId);
+    const set = this.#provisionalByActor.get(owner);
+    if (set) {
+      set.delete(batchId);
+      if (set.size === 0) this.#provisionalByActor.delete(owner);
+    }
+    this.#maybePruneRetired(owner);
+  }
+
+  #clearActorProvisionalDeliveries(actor: MbActor | ProgramShell) {
+    const set = this.#provisionalByActor.get(actor);
+    if (!set) return;
+    for (const batchId of set) {
+      if (this.#provisionalDeliveries.get(batchId) === actor) {
+        this.#provisionalDeliveries.delete(batchId);
+      }
+    }
+    this.#provisionalByActor.delete(actor);
+    this.#maybePruneRetired(actor);
+  }
+
   #maybePruneRetired(actor?: MbActor | ProgramShell) {
     if (actor === undefined) return;
     if (this.#actors.get(actor.key) === actor) return;
     if (
       (this.#pendingCalls.get(actor) ?? 0) > 0 ||
       (this.#answeringByActor.get(actor) ?? 0) > 0 ||
-      (this.#pendingNodeDeliveries.get(actor) ?? 0) > 0
+      (this.#provisionalByActor.get(actor)?.size ?? 0) > 0
     ) {
       return;
     }
@@ -362,6 +403,10 @@ export class ActorsProgram {
       if (fiber) Effect.runFork(Fiber.interrupt(fiber));
       return;
     }
+    if (said?.tell === "store.deliverySettled" && Array.isArray(said.args) && typeof said.args[0] === "number") {
+      this.#clearProvisionalDelivery(said.args[0]);
+      return;
+    }
     let actor = typeof said?.actor === "string" ? this.#actors.get(said.actor) : typeof said?.mirror === "string" ? this.#actors.get(said.mirror) : undefined;
     if (typeof said?.returned === "number") {
       const call = this.#calls.get(said.returned);
@@ -394,6 +439,13 @@ export class ActorsProgram {
       ) {
         const owner = this.#stateWriteOwners.get(said.args[2]);
         if (owner !== undefined) actor = owner;
+      } else if (
+        said.fn === "store.markUndelivered" &&
+        Array.isArray(said.args) &&
+        typeof said.args[2] === "number"
+      ) {
+        const owner = this.#provisionalDeliveries.get(said.args[2]);
+        if (owner !== undefined) actor = owner;
       }
       if (
         actor === undefined &&
@@ -424,26 +476,33 @@ export class ActorsProgram {
         else this.#answeringByActor.set(target, left);
         this.#maybePruneRetired(target);
       };
-      const decPendingDelivery = () => {
-        const cur = this.#pendingNodeDeliveries.get(target) ?? 0;
-        if (cur <= 1) this.#pendingNodeDeliveries.delete(target);
-        else this.#pendingNodeDeliveries.set(target, cur - 1);
-      };
+      if (
+        said.fn === "store.markDelivered" &&
+        Array.isArray(said.args) &&
+        Array.isArray(said.args[1]) &&
+        said.args[1].length > 0 &&
+        typeof said.args[2] === "number"
+      ) {
+        this.#registerProvisionalDelivery(said.args[2], target);
+      }
       target.asked(said.fn, Array.isArray(said.args) ? said.args : []).then(
         (value) => {
-          if (said.fn === "store.markDelivered" && Array.isArray(said.args?.[1]) && said.args[1].length > 0) {
-            this.#pendingNodeDeliveries.set(target, (this.#pendingNodeDeliveries.get(target) ?? 0) + 1);
-            this.#retiredIdleOrder.delete(target);
+          if (said.fn === "store.markUndelivered" && Array.isArray(said.args) && typeof said.args[2] === "number") {
+            this.#clearProvisionalDelivery(said.args[2]);
           } else if ((said.fn === "agent.steer" && Boolean(value)) || said.fn === "agent.prompt") {
-            decPendingDelivery();
-          } else if (said.fn === "store.markUndelivered") {
-            decPendingDelivery();
+            this.#clearActorProvisionalDeliveries(target);
           }
           done();
           this.post({ answer: id, value: value === undefined ? null : value });
         },
         (error) => {
-          if (said.fn === "store.markUndelivered") decPendingDelivery();
+          if (
+            (said.fn === "store.markDelivered" || said.fn === "store.markUndelivered") &&
+            Array.isArray(said.args) &&
+            typeof said.args[2] === "number"
+          ) {
+            this.#clearProvisionalDelivery(said.args[2]);
+          }
           done();
           this.post({ answer: id, error: errorOf(error, target.runtime) });
         },
@@ -463,7 +522,7 @@ export class ActorsProgram {
       const hasObligation =
         (this.#pendingCalls.get(actor) ?? 0) > 0 ||
         (this.#answeringByActor.get(actor) ?? 0) > 0 ||
-        (this.#pendingNodeDeliveries.get(actor) ?? 0) > 0;
+        (this.#provisionalByActor.get(actor)?.size ?? 0) > 0;
       if (!hasObligation && !retainIfIdle) {
         this.#retiredRetainIfIdle.delete(actor);
         return;
@@ -951,6 +1010,8 @@ export class MbActor {
         deps.emitTrace?.(args[0]);
         return;
       }
+      case "store.deliverySettled":
+        return;
     }
     log.warn("session", "a session told the station what it does not know", { session: this.key, tell: f });
   }
@@ -963,6 +1024,9 @@ export class MbActor {
     const [part, name] = dot < 0 ? [f, ""] : [f.slice(0, dot), f.slice(dot + 1)];
     if (part === "store") {
       if (typeof store[name] !== "function") return null;
+      if (name === "markDelivered" || name === "markUndelivered") {
+        return store[name](args[0], args[1]);
+      }
       return store[name](...args);
     }
     if (part === "deps") {

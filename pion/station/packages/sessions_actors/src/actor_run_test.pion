@@ -3083,3 +3083,227 @@ test "R9 independent: timer refill needs undo after snapshot returns" {
   s.drive(respond)
   assert_run(!delivered, "snapshot before negative steer ACK must still give message back")
 }
+
+test "R10 review: snapshot after a committed cold mark before its receipt restores the unsent input" {
+  let s = r2_new()
+  let mut marked = false
+  let mut rid = 0
+  let mut mark_batch_id = 0
+  let mut undo_batch_id = 0
+  let r = fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(!marked)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.open" {
+      return Some(Ok(base_codec::json_obj([("handle", sessions_core::jint(4)), ("generation", sessions_core::jint(1))])))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn")))
+    }
+    if f == "store.markDelivered" {
+      assert_run(args.length() == 3, "provisional cold markDelivered must carry batch_id")
+      mark_batch_id = sessions_core::int_of(Some(args[2]))
+      marked = true
+      return None
+    }
+    if f == "store.markUndelivered" {
+      assert_run(args.length() == 3, "provisional cold markUndelivered must carry batch_id")
+      undo_batch_id = sessions_core::int_of(Some(args[2]))
+      marked = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\"}", s.disp)
+  s.drive(r)
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "store.markDelivered" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0 && marked && mark_batch_id > 0, "cold path never reached provisional mark")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"snapshot\"}", s.disp)
+  s.drive(r)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":1}", s.disp)
+  s.drive(r)
+  assert_run(s.returned.length() == 2 && s.actors.host.hub_asked.length() == 0, "call or RPC still pending")
+  assert_run(!s.has_rpc("agent.prompt") && !s.has_rpc("agent.steer"), "runtime unexpectedly received input")
+  assert_run(!marked && undo_batch_id == mark_batch_id, "cold mark compensation must match batch_id")
+}
+
+test "R10 review: busy changes while starting and the final delivery mark follows acceptance" {
+  let s = r2_new()
+  let mut marked = false
+  let mut busy_calls = 0
+  let mut accepted = false
+  let mut mark_argc = 0
+  let r = fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.busy" {
+      busy_calls = busy_calls + 1
+      return Some(Ok(sessions_core::jbool(busy_calls > 1)))
+    }
+    if f == "agent.steer" {
+      accepted = true
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(!marked)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.open" {
+      return Some(Ok(base_codec::json_obj([("handle", sessions_core::jint(4)), ("generation", sessions_core::jint(1))])))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn")))
+    }
+    if f == "store.markDelivered" {
+      assert_run(accepted, "unexpected provisional mark before steer")
+      mark_argc = args.length()
+      marked = true
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "store.markUndelivered" {
+      marked = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\"},{\"handle\":4,\"generation\":1},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.drive(r)
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\"}", s.disp)
+  s.drive(r)
+  assert_run(marked && accepted && mark_argc == 2 && !s.has_rpc("agent.prompt") && !s.has_rpc("store.markUndelivered"), "final mark trace must use 2 args")
+  assert_run(s.returned.length() == 2 && s.actors.host.hub_asked.length() == 0, "kick did not settle")
+}
+
+test "R10 review: stopped open sends a final mark without a runtime settlement" {
+  let s = r2_new()
+  let mut pending_left = true
+  let mut mark_argc = 0
+  let responder = fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.open" {
+      return None
+    }
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(pending_left)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            (
+              "pending",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("handed", sessions_core::jstr("m1")),
+                  ("surface", sessions_core::jstr("stillfail")),
+                ]),
+              ]),
+            ),
+            ("text", sessions_core::jstr("hi")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      mark_argc = args.length()
+      pending_left = false
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "t" {
+      return Some(Ok(sessions_core::jstr("Stopped")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+  assert_run(s.has_rpc("node.open"), "node.open must be in flight")
+
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"stop\",\"args\":[],\"now\":1001}", s.disp)
+  s.drive(responder)
+  assert_run(s.has_tell_fn("node.cancelOpen"), "stop must emit node.cancelOpen")
+  assert_run(s.has_rpc("store.markDelivered") && mark_argc == 2, "stop during open must send 2-arg final markDelivered")
+  assert_run(s.has_rpc("node.notice"), "stop during open must emit stopped notice")
+  assert_run(!s.has_rpc("agent.prompt") && !s.has_rpc("agent.steer") && !s.has_rpc("store.markUndelivered"), "stop unexpectedly produced a settlement RPC")
+  assert_run(s.returned.length() == 2, "both kick and stop calls must return")
+}
+
+test "R10 review: prompt interrupted by snapshot emits store.deliverySettled with matching batch_id" {
+  let s = r2_new()
+  let mut marked = false
+  let mut mark_batch_id = 0
+  let r = fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(!marked)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.open" {
+      return Some(Ok(base_codec::json_obj([("handle", sessions_core::jint(4)), ("generation", sessions_core::jint(1))])))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn")))
+    }
+    if f == "store.markDelivered" {
+      assert_run(args.length() == 3, "provisional prompt markDelivered must carry batch_id")
+      mark_batch_id = sessions_core::int_of(Some(args[2]))
+      marked = true
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "agent.prompt" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\"}", s.disp)
+  s.drive(r)
+  assert_run(marked && mark_batch_id > 0 && s.has_rpc("agent.prompt"), "did not reach prompt window")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"snapshot\"}", s.disp)
+  s.drive(r)
+  let mut settled_batch_id = 0
+  for i in 0..<s.tells.length() {
+    let (_, fn_name, targs) = s.tells[i]
+    if fn_name == "store.deliverySettled" && targs.length() == 1 {
+      settled_batch_id = sessions_core::int_of(Some(targs[0]))
+    }
+  }
+  assert_run(!s.has_rpc("store.markUndelivered"), "interrupted prompt must not markUndelivered")
+  assert_run(settled_batch_id == mark_batch_id, "snapshot during prompt must emit store.deliverySettled with matching batch_id")
+}

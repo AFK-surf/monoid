@@ -851,7 +851,7 @@ for (const churn of [511, 512]) {
       const call = frames.at(-1);
       receive({ returned: call.call, value: null });
       await adopted;
-      receive({ rpc: 799, actor: "original", fn: "store.markDelivered", args: ["original", [{ thread: "t", n: 1 }]] });
+      receive({ rpc: 799, actor: "original", fn: "store.markDelivered", args: ["original", [{ thread: "t", n: 1 }], 7001] });
       await new Promise((r) => setImmediate(r));
       assert.equal(marked, true);
       receive({ rpc: 800, actor: "original", fn: "agent.steer", args: [call.args[1].handle, "m"] });
@@ -865,7 +865,7 @@ for (const churn of [511, 512]) {
         a.close();
         receive({ returned: frames.at(-1).call, value: null });
       }
-      receive({ rpc: 900, actor: "original", fn: "store.markUndelivered", args: ["original", [{ thread: "t", n: 1 }]] });
+      receive({ rpc: 900, actor: "original", fn: "store.markUndelivered", args: ["original", [{ thread: "t", n: 1 }], 7001] });
       await new Promise((r) => setImmediate(r));
       const result = frames.find((x) => x.answer === 900);
       assert.deepEqual(
@@ -1005,7 +1005,7 @@ for (const { name, delivery, memory, replyFirst } of r9RoutingCases) {
       receive({ returned: call, value: null });
       await adopted;
       if (delivery) {
-        receive({ rpc: 10, actor: key, fn: "store.markDelivered", args: [key, [{ thread: "t", n: 1 }]] });
+        receive({ rpc: 10, actor: key, fn: "store.markDelivered", args: [key, [{ thread: "t", n: 1 }], 9001] });
         await settle();
         assert.equal(frames.find((f) => f.answer === 10)?.error, undefined);
         assert.equal((db.prepare("SELECT marked FROM delivery").get() as any).marked, 1);
@@ -1036,7 +1036,12 @@ for (const { name, delivery, memory, replyFirst } of r9RoutingCases) {
         await refuse();
         for (const c of others) receive({ returned: c, value: null });
       }
-      receive({ rpc: 3, actor: key, fn: "store.markUndelivered", args: [key, delivery ? [{ thread: "t", n: 1 }] : []] });
+      receive({
+        rpc: 3,
+        actor: key,
+        fn: "store.markUndelivered",
+        args: delivery ? [key, [{ thread: "t", n: 1 }], 9001] : [key, []],
+      });
       await settle();
       assert.deepEqual(
         {
@@ -1051,3 +1056,145 @@ for (const { name, delivery, memory, replyFirst } of r9RoutingCases) {
     }
   });
 }
+
+function r10RoutingFixture() {
+  let receive!: (frame: any) => void;
+  const frames: any[] = [];
+  const writes: string[] = [];
+  const seenArgCounts: { fn: string; argc: number }[] = [];
+  const db = new DatabaseSync(":memory:");
+  db.exec("CREATE TABLE delivery (n INTEGER PRIMARY KEY, marked INTEGER); INSERT INTO delivery VALUES (1,0), (2,0)");
+  const program = ActorsProgram.openForTest(
+    {
+      use(user: any) { receive = user.said; },
+      post(frame: any) { frames.push(frame); return true; },
+      hold() {},
+      release() {},
+      kill() {},
+    } as any,
+    { currentTimeMillisUnsafe: () => 100 } as any,
+  );
+  let next = 10;
+  const rpc = async (fn: string, args: any[]) => {
+    const id = next++;
+    receive({ rpc: id, actor: "s", fn, args });
+    await new Promise((r) => setImmediate(r));
+    const reply = frames.find((f) => f.answer === id);
+    assert.ok(reply);
+    return reply;
+  };
+  const tell = (tellName: string, args: any[]) => {
+    receive({ actor: "s", tell: tellName, args });
+  };
+  const register = async (label: string, failMark = false) => {
+    const store = {
+      getSession() { return { runtime: "claude" }; },
+      markDelivered(...callArgs: any[]) {
+        seenArgCounts.push({ fn: "markDelivered", argc: callArgs.length });
+        if (failMark) throw new Error("mark failed");
+        for (const row of callArgs[1]) db.prepare("UPDATE delivery SET marked=1 WHERE n=?").run(row.n);
+      },
+      markUndelivered(...callArgs: any[]) {
+        seenArgCounts.push({ fn: "markUndelivered", argc: callArgs.length });
+        if (callArgs[1].length) writes.push(label);
+        for (const row of callArgs[1]) db.prepare("UPDATE delivery SET marked=0 WHERE n=?").run(row.n);
+      },
+    };
+    const actor = program.actor("s", "claude", { store } as any);
+    const adoption = actor.adopt(
+      { runtime: "claude" } as any,
+      { steer: async (text: string) => text === "accept", dispose: async () => {}, snapshot: () => null, detach() {} } as any,
+      "",
+    );
+    const { args, call } = frames.at(-1);
+    receive({ returned: call, value: null });
+    await adoption;
+    const handle = args[1].handle;
+    return {
+      actor,
+      handle,
+      snapshot: async () => {
+        const done = actor.snapshot();
+        receive({ returned: frames.at(-1).call, value: { agent: handle } });
+        await done;
+      },
+    };
+  };
+  const read = () => (db.prepare("SELECT marked FROM delivery WHERE n=1").get() as any).marked;
+  return {
+    program,
+    rpc,
+    tell,
+    register,
+    writes,
+    seenArgCounts,
+    read,
+    close: async () => { await program.close(); db.close(); },
+  };
+}
+
+for (const order of ["before accepted steer", "after accepted steer", "stopped while opening"] as const) {
+  test(`W8-E2 R10: finished delivery is released at snapshot (${order})`, async () => {
+    const f = r10RoutingFixture();
+    const rows = [{ thread: "t", n: 1 }];
+    try {
+      const old = await f.register("old");
+      if (order === "after accepted steer") assert.equal((await f.rpc("agent.steer", [old.handle, "accept"])).value, true);
+      const markArgs = order === "before accepted steer" ? ["s", rows, 101] : ["s", rows];
+      assert.equal((await f.rpc("store.markDelivered", markArgs)).error, undefined);
+      if (order === "before accepted steer") {
+        assert.equal((await f.rpc("agent.steer", [old.handle, "accept"])).value, true);
+        f.tell("store.deliverySettled", [101]);
+      }
+      assert.equal(f.read(), 1);
+      await old.snapshot();
+      const probe = await f.rpc("store.markUndelivered", ["s", []]);
+      assert.equal(probe.error?.actorClosed, true, "a completed batch kept its owner routable");
+      assert.ok(f.seenArgCounts.every((c) => c.argc === 2), "batchId must not leak to Store methods");
+    } finally {
+      await f.close();
+    }
+  });
+}
+
+test("W8-E2 R10: late undo settles the marking actor across same-key replacement, with a shared database", async () => {
+  const f = r10RoutingFixture();
+  const rows = [{ thread: "t", n: 1 }];
+  try {
+    const old = await f.register("original");
+    await f.rpc("store.markDelivered", ["s", rows, 202]);
+    assert.equal((await f.rpc("agent.steer", [old.handle, "refuse"])).value, false);
+    await old.snapshot();
+    const current = await f.register("replacement");
+    await f.rpc("store.markUndelivered", ["s", rows, 202]);
+    assert.equal(f.read(), 0);
+    await current.snapshot();
+    const probe = await f.rpc("store.markUndelivered", ["s", []]);
+    assert.deepEqual({ owners: f.writes, closed: probe.error?.actorClosed === true }, { owners: ["original"], closed: true });
+    assert.ok(f.seenArgCounts.every((c) => c.argc === 2), "batchId must not leak to Store methods");
+  } finally {
+    await f.close();
+  }
+});
+
+test("W8-E2 R10: store.deliverySettled releases retired actor after snapshot and failed markDelivered does not pin", async () => {
+  const f = r10RoutingFixture();
+  const rows = [{ thread: "t", n: 1 }];
+  try {
+    const old = await f.register("old");
+    assert.equal((await f.rpc("store.markDelivered", ["s", rows, 303])).error, undefined);
+    await old.snapshot();
+    f.tell("store.deliverySettled", [303]);
+    const probe1 = await f.rpc("store.markUndelivered", ["s", rows, 303]);
+    assert.equal(probe1.error?.actorClosed, true, "store.deliverySettled must release retired actor");
+
+    const failing = await f.register("failing", true);
+    const failedReply = await f.rpc("store.markDelivered", ["s", rows, 304]);
+    assert.ok(failedReply.error, "markDelivered should fail");
+    await failing.snapshot();
+    const probe2 = await f.rpc("store.markUndelivered", ["s", rows, 304]);
+    assert.equal(probe2.error?.actorClosed, true, "failed markDelivered must not pin retired actor");
+  } finally {
+    await f.close();
+  }
+});
