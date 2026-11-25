@@ -34,6 +34,7 @@ members = [
   "packages/pieces",
   "packages/admit",
   "packages/sessions_core",
+  "packages/sessions_actors",
   "packages/reader_sessions",
   "packages/smoke",
 ]
@@ -78,4 +79,5 @@ live_wire = { path = "packages/live_wire" }
 pieces = { path = "packages/pieces" }
 admit = { path = "packages/admit" }
 sessions_core = { path = "packages/sessions_core" }
+sessions_actors = { path = "packages/sessions_actors" }
 reader_sessions = { path = "packages/reader_sessions" }

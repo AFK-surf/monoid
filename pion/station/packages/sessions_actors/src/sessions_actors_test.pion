@@ -1,0 +1,1064 @@
+// Deterministic unit tests for `sessions_actors` (`wave8-plan.md` v5 §2.2-§2.6).
+// All tests use `sessions_core::SessionHost::for_test` (`effect::Runtime::new_at(None, 0L)`, NEVER seeded!).
+
+import "base_codec"
+import "effect"
+import "js_json"
+import "sessions_core"
+import "sql_db"
+
+fn no_store_db(_gen : sessions_core::HubGen) -> Option[StoreDb] {
+  None
+}
+
+fn new_test_actors(
+  host : sessions_core::SessionHost,
+  gen : sessions_core::HubGen,
+  dispatch : sessions_core::SessionDispatch,
+  handlers : ActorRunHandlers,
+) -> Actors {
+  Actors::new_with_store_provider(host, gen, "/", dispatch, handlers, no_store_db)
+}
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn assert_rt_clean(rt : effect::Runtime) -> Unit {
+  let (live_tasks, ready_tasks, timers, d, e, f) = rt.holding()
+  assert(live_tasks == 0)
+  assert(ready_tasks == 0)
+  assert(timers == 0)
+  assert(d == 0)
+  assert(e == 0)
+  assert(f == 0)
+}
+
+fn parse_stdout(mem : sessions_core::MemHostTransport) -> Array[base_codec::Json] {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<mem.stdout_lines.length() {
+    match sessions_core::parse_json_strict(mem.stdout_lines[i]) {
+      Ok(j) => out.push(j)
+      Err(e) => panic("invalid stdout json: " + e)
+    }
+  }
+  out
+}
+
+fn find_rpc_id(mem : sessions_core::MemHostTransport, fn_name : String) -> Option[Int] {
+  let msgs = parse_stdout(mem)
+  let mut found : Option[Int] = None
+  for i in 0..<msgs.length() {
+    let m = msgs[i]
+    if sessions_core::text_of(m, "fn") == fn_name {
+      match sessions_core::jget(m, "rpc") {
+        Some(base_codec::Json::Num(id, _)) => found = Some(id.to_int())
+        _ => ()
+      }
+    }
+  }
+  found
+}
+
+fn count_msgs_with_key(mem : sessions_core::MemHostTransport, key : String) -> Int {
+  let msgs = parse_stdout(mem)
+  let mut n = 0
+  for i in 0..<msgs.length() {
+    match sessions_core::jget(msgs[i], key) {
+      Some(_) => n = n + 1
+      None => ()
+    }
+  }
+  n
+}
+
+fn has_tell(mem : sessions_core::MemHostTransport, actor_key : String, tell_name : String) -> Bool {
+  let msgs = parse_stdout(mem)
+  for i in 0..<msgs.length() {
+    let m = msgs[i]
+    if sessions_core::text_of(m, "actor") == actor_key && sessions_core::text_of(m, "tell") == tell_name {
+      return true
+    }
+  }
+  false
+}
+
+test "sessions_actors: strict single-consumer serial pump holds B while A awaits RPC, then runs A -> B" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let trace : Array[String] = []
+  let handlers = ActorRunHandlers::{
+    on_event_k: ActorRunHandlers::stub().on_event_k,
+    called_k: fn(
+      actors : Actors,
+      a : Actor,
+      method : String,
+      _args : Array[base_codec::Json],
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      if method == "taskA" {
+        actors.enqueue_k(
+          a,
+          fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            trace.push("A:start")
+            actors.rpc_k(a.key, "node.uuid", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+              match ex {
+                effect::Exit::Succeeded(_) => {
+                  trace.push("A:done")
+                  tk(effect::Exit::Succeeded(()))
+                }
+                effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+              }
+            })
+          },
+          fn(ex : effect::Exit[Unit]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(sessions_core::jstr("resA")))
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          },
+        )
+      } else if method == "taskB" {
+        actors.enqueue_k(
+          a,
+          fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            trace.push("B:start")
+            trace.push("B:done")
+            tk(effect::Exit::Succeeded(()))
+          },
+          fn(ex : effect::Exit[Unit]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(sessions_core::jstr("resB")))
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          },
+        )
+      } else {
+        k(effect::Exit::Succeeded(base_codec::json_null()))
+      }
+    },
+    wake_queued_k: ActorRunHandlers::stub().wake_queued_k,
+    wake_cap_queued_k: ActorRunHandlers::stub().wake_cap_queued_k,
+    codex_updated_k: ActorRunHandlers::stub().codex_updated_k,
+    is_stub: false,
+  }
+  let actors = new_test_actors(host, gen, sessions_core::SessionDispatch::stub(), handlers)
+
+  // Enqueue A via call #1; A suspends on `node.uuid` RPC.
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"taskA\",\"args\":[],\"now\":100}")
+  host.tick()
+
+  let a = match actors.actors.get("s1") {
+    Some(x) => x
+    None => panic("missing actor s1")
+  }
+  assert(trace.length() == 1 && trace[0] == "A:start")
+  assert(a.task_running)
+  assert(a.queued == 1)
+  // Task A's caller fiber decremented active to 0 when suspending on RPC; pump did NOT add active.
+  assert(actors.gen.counters.active == 0)
+
+  let rpc_id = match find_rpc_id(mem, "node.uuid") {
+    Some(id) => id
+    None => panic("expected node.uuid rpc")
+  }
+
+  // Enqueue B while A is still suspended on RPC: B must stay queued and NOT execute!
+  actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"taskB\",\"args\":[],\"now\":110}")
+  host.tick()
+  assert(a.task_running)
+  assert(a.queued == 2)
+  assert(a.task_queue.length() == 1)
+  assert(trace.length() == 1)
+  assert(count_msgs_with_key(mem, "returned") == 0)
+
+  // Release A's RPC: pump completes A, then strictly runs B, then exits (`task_running == false`).
+  actors.heard("{\"answer\":" + rpc_id.to_string() + ",\"value\":\"u-1\",\"now\":120}")
+  host.tick()
+
+  assert(trace.length() == 4)
+  assert(trace[0] == "A:start")
+  assert(trace[1] == "A:done")
+  assert(trace[2] == "B:start")
+  assert(trace[3] == "B:done")
+  assert(!a.task_running)
+  assert(a.queued == 0)
+  assert(a.task_queue.length() == 0)
+  assert(actors.gen.counters.active == 0)
+  assert(count_msgs_with_key(mem, "returned") == 2)
+  assert_rt_clean(host.rt)
+}
+
+test "sessions_actors: close cancels timers & opening_rpc, settles queued items SkippedClosed, retains closed placeholder, and codexUpdated emits 0 returned" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let mut b_ran = false
+  let mut c_ran = false
+  let mut codex_ran = false
+  let mut a_open_aborted = false
+
+  let handlers = ActorRunHandlers::{
+    on_event_k: ActorRunHandlers::stub().on_event_k,
+    called_k: fn(
+      actors : Actors,
+      a : Actor,
+      method : String,
+      _args : Array[base_codec::Json],
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      if method == "openBlocked" {
+        actors.enqueue_k(
+          a,
+          fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            let next_id = actors.host.next + 1
+            a.opening_rpc = Some(next_id)
+            actors.rpc_k(a.key, "node.open", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+              match ex {
+                effect::Exit::Failed(e) => {
+                  match sessions_core::decode_asked_error(e) {
+                    Some(ae) => {
+                      if sessions_core::text_of(ae.cause, "openAbort") == "closed" {
+                        a_open_aborted = true
+                      }
+                    }
+                    None => ()
+                  }
+                  tk(effect::Exit::Succeeded(()))
+                }
+                effect::Exit::Succeeded(_) => tk(effect::Exit::Succeeded(()))
+                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+              }
+            })
+          },
+          fn(ex : effect::Exit[Unit]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(sessions_core::jstr("openDone")))
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          },
+        )
+      } else if method == "queuedB" {
+        actors.enqueue_k(
+          a,
+          fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            b_ran = true
+            tk(effect::Exit::Succeeded(()))
+          },
+          fn(ex : effect::Exit[Unit]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(sessions_core::jstr("bSettled")))
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          },
+        )
+      } else if method == "queuedC" {
+        actors.enqueue_k(
+          a,
+          fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            c_ran = true
+            tk(effect::Exit::Succeeded(()))
+          },
+          fn(ex : effect::Exit[Unit]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(sessions_core::jstr("cSettled")))
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          },
+        )
+      } else {
+        k(effect::Exit::Succeeded(base_codec::json_null()))
+      }
+    },
+    wake_queued_k: ActorRunHandlers::stub().wake_queued_k,
+    wake_cap_queued_k: ActorRunHandlers::stub().wake_cap_queued_k,
+    codex_updated_k: fn(
+      _actors : Actors,
+      _a : Actor,
+      _id : Int,
+      _why : Option[String],
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      codex_ran = true
+      k(effect::Exit::Succeeded(()))
+    },
+    is_stub: false,
+  }
+  let actors = new_test_actors(host, gen, sessions_core::SessionDispatch::stub(), handlers)
+
+  // Start openBlocked (RPC in-flight), arm a named actor timer, then queue B and C.
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"codex\",\"method\":\"openBlocked\",\"args\":[],\"now\":10}")
+  host.tick()
+  let a = match actors.actors.get("s1") {
+    Some(x) => x
+    None => panic("missing s1")
+  }
+  actors.arm_actor_timer(a, "retry", 5000.0, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    tk(effect::Exit::Succeeded(()))
+  })
+  assert(a.timers.length() == 1)
+  actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"queuedB\",\"args\":[],\"now\":11}")
+  actors.heard("{\"call\":3,\"actor\":\"s1\",\"method\":\"queuedC\",\"args\":[],\"now\":12}")
+  host.tick()
+  assert(a.queued == 3)
+
+  // Close `a`: cancels timer + opening_rpc (`node.cancelOpen`), drains B & C with SkippedClosed.
+  actors.close(a)
+  host.tick()
+
+  assert(a.phase == "closed")
+  assert(a_open_aborted)
+  assert(!b_ran)
+  assert(!c_ran)
+  assert(a.timers.length() == 0)
+  assert(a.queued == 0)
+  assert(!a.task_running)
+  assert(has_tell(mem, "s1", "node.cancelOpen"))
+  assert(count_msgs_with_key(mem, "cancel") == 1)
+  assert(count_msgs_with_key(mem, "returned") == 3)
+
+  // Closed placeholder remains in `actors.actors`; new `codexUpdated` skips body and emits ZERO `returned`.
+  let closed_ok = match actors.actors.get("s1") {
+    Some(x) => x.phase == "closed"
+    None => false
+  }
+  assert(closed_ok)
+  actors.heard("{\"codexUpdated\":7,\"actor\":\"s1\",\"why\":\"ok\",\"now\":15}")
+  host.tick()
+  assert(!codex_ran)
+  assert(count_msgs_with_key(mem, "returned") == 3)
+  assert(a.queued == 0)
+
+  // `{"db": null}` clears closed placeholder.
+  actors.heard("{\"db\":null,\"now\":20}")
+  host.tick()
+  assert(actors.actors.length() == 0)
+  assert_rt_clean(host.rt)
+}
+
+test "sessions_actors: ActorRunHandlers fake covers routed/live_for_actor, codexUpdated, turn_wait & cap_wait queues, and pseudo-actors" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+
+  let events_seen : Array[String] = []
+  let live_seen : Array[String] = []
+  let woken_turn : Array[String] = []
+  let woken_cap : Array[String] = []
+  let mut codex_seen_id = 0
+  let mut live_called_count = 0
+
+  let dispatch = sessions_core::SessionDispatch::{
+    mirror_actor: sessions_core::SessionDispatch::stub().mirror_actor,
+    live_event: fn(key : String, ev : base_codec::Json) -> Unit {
+      live_seen.push(key + ":" + sessions_core::text_of(ev, "kind"))
+    },
+    live_end: fn(_key : String) -> Int { 42 },
+    live_called: fn(_id : Double, _method : String, _args : Array[base_codec::Json]) -> Unit {
+      live_called_count = live_called_count + 1
+    },
+    jobs_called_k: fn(
+      method : String,
+      _args : Array[base_codec::Json],
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Succeeded(sessions_core::jstr("job:" + method)))
+    },
+    jstore_get_job_k: sessions_core::SessionDispatch::stub().jstore_get_job_k,
+    remote_called_k: fn(
+      _method : String,
+      _args : Array[base_codec::Json],
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      k(
+        effect::Exit::Failed(
+          sessions_core::AskedError::new(base_codec::json_obj([("message", sessions_core::jstr("remote boom"))]))
+          .to_effect_error(),
+        ),
+      )
+    },
+    remote_changed_k: sessions_core::SessionDispatch::stub().remote_changed_k,
+    queue_of_locked_k: sessions_core::SessionDispatch::stub().queue_of_locked_k,
+    agents_told: sessions_core::SessionDispatch::stub().agents_told,
+    agents_take: fn(n : Int, k_batch : Int) -> Option[(Array[js_json::JValue], Int64)] {
+      if n == 5 && k_batch == 1 {
+        let evs : Array[js_json::JValue] = [
+          js_json::jval_from_json(
+            base_codec::json_obj([
+              ("type", sessions_core::jstr("live")),
+              ("event", base_codec::json_obj([("kind", sessions_core::jstr("tasks"))])),
+            ]),
+          ),
+          js_json::jval_from_json(
+            base_codec::json_obj([
+              ("type", sessions_core::jstr("live")),
+              (
+                "event",
+                base_codec::json_obj([
+                  ("kind", sessions_core::jstr("start")),
+                  ("step", sessions_core::jstr("tool")),
+                  ("id", sessions_core::jstr("t1")),
+                  ("tool", sessions_core::jstr("bash")),
+                  ("input", sessions_core::jstr("secret")),
+                ]),
+              ),
+            ]),
+          ),
+          js_json::jval_from_json(base_codec::json_obj([("type", sessions_core::jstr("usage"))])),
+          js_json::jval_from_json(
+            base_codec::json_obj([
+              ("type", sessions_core::jstr("turnEnded")),
+              ("turn", sessions_core::jint(1)),
+              ("from", sessions_core::jint(0)),
+              ("to", sessions_core::jint(9)),
+            ]),
+          ),
+        ]
+        Some((evs, 9.to_int64()))
+      } else {
+        None
+      }
+    },
+    is_stub: false,
+  }
+
+  let handlers = ActorRunHandlers::{
+    on_event_k: fn(
+      _actors : Actors,
+      _a : Actor,
+      _generation : Int,
+      ev : base_codec::Json,
+      read : base_codec::Json,
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      let ty = sessions_core::text_of(ev, "type")
+      if ty == "live" {
+        let inner = sessions_core::field_of(ev, "event")
+        // Tool start must strip `input` and keep `id` & `tool`.
+        let no_input = match sessions_core::jget(inner, "input") {
+          None => true
+          Some(_) => false
+        }
+        assert(no_input)
+        assert(sessions_core::text_of(inner, "tool") == "bash")
+      }
+      if ty == "turnEnded" {
+        let no_turn = match sessions_core::jget(ev, "turn") {
+          None => true
+          Some(_) => false
+        }
+        assert(no_turn)
+        assert(sessions_core::text_of(ev, "outcome") == "completed")
+        assert(sessions_core::int_of(sessions_core::jget(read, "live")) == 42)
+      }
+      events_seen.push(ty)
+      k(effect::Exit::Succeeded(()))
+    },
+    called_k: ActorRunHandlers::stub().called_k,
+    wake_queued_k: fn(_actors : Actors, a : Actor, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      woken_turn.push(a.key)
+      a.starting_turn = false
+      k(effect::Exit::Succeeded(()))
+    },
+    wake_cap_queued_k: fn(_actors : Actors, a : Actor, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      woken_cap.push(a.key)
+      // Simulate Claude still capped (re-sets paused_cap = true), Codex unblocked!
+      if a.runtime == "claude" {
+        a.paused_cap = true
+      }
+      k(effect::Exit::Succeeded(()))
+    },
+    codex_updated_k: fn(
+      _actors : Actors,
+      _a : Actor,
+      id : Int,
+      _why : Option[String],
+      k : (effect::Exit[Unit]) -> Unit,
+    ) -> Unit {
+      codex_seen_id = id
+      k(effect::Exit::Succeeded(()))
+    },
+    is_stub: false,
+  }
+
+  let actors = new_test_actors(host, gen, dispatch, handlers)
+  assert(!actors.has_stubs())
+
+  // 1) Routed batch filters `tasks` & `usage`, strips `input` & `turn/from/to`, injects `outcome` & `read.live`.
+  actors.heard("{\"routed\":5,\"batch\":1,\"generation\":3,\"actor\":\"s1\",\"runtime\":\"claude\",\"outcome\":\"completed\",\"now\":50}")
+  host.tick()
+  assert(live_seen.length() == 2)
+  assert(events_seen.length() == 2)
+  assert(events_seen[0] == "live")
+  assert(events_seen[1] == "turnEnded")
+
+  // 2) codexUpdated runs through serial pump with ZERO `returned`.
+  actors.heard("{\"codexUpdated\":99,\"actor\":\"s1\",\"why\":\"updated\",\"now\":60}")
+  host.tick()
+  assert(codex_seen_id == 99)
+  assert(count_msgs_with_key(mem, "returned") == 0)
+
+  // 3) `#live`, `#jobs`, `#remote` dispatch.
+  actors.heard("{\"call\":10,\"actor\":\"#live\",\"method\":\"watch\",\"args\":[]}")
+  actors.heard("{\"call\":11,\"actor\":\"#jobs\",\"method\":\"list\",\"args\":[]}")
+  actors.heard("{\"call\":12,\"actor\":\"#remote\",\"method\":\"ping\",\"args\":[]}")
+  host.tick()
+  assert(live_called_count == 1)
+  assert(count_msgs_with_key(mem, "returned") == 2)
+
+  // 4) `cap_wait_queue`: capped Claude session does NOT head-of-line block Codex session.
+  let c1 = actors.actor("c1", "claude")
+  let c2 = actors.actor("c2", "claude")
+  let x1 = actors.actor("x1", "codex")
+  c1.paused_cap = true
+  c2.paused_cap = true
+  x1.paused_cap = true
+  actors.enqueue_cap_wait(c1)
+  actors.enqueue_cap_wait(c2)
+  actors.enqueue_cap_wait(x1)
+  actors.heard("{\"drainCapQueue\":true}")
+  host.tick()
+  // c1 tried and stayed capped -> c2 skipped (same blocked runtime) -> x1 woken and removed!
+  assert(woken_cap.length() == 2)
+  assert(woken_cap[0] == "c1")
+  assert(woken_cap[1] == "x1")
+  assert(actors.gen.resources.cap_wait_queue.length() == 2)
+
+  // 5) `maxConcurrentTurns` + `turn_wait_queue` FIFO drain.
+  actors.heard("{\"maxConcurrentTurns\":1}")
+  let t1 = actors.actor("t1", "claude")
+  let t2 = actors.actor("t2", "claude")
+  actors.enqueue_turn_wait(t1)
+  actors.enqueue_turn_wait(t2)
+  actors.heard("{\"maxConcurrentTurns\":2}")
+  host.tick()
+  assert(woken_turn.length() == 2)
+  assert(woken_turn[0] == "t1")
+  assert(woken_turn[1] == "t2")
+  assert_rt_clean(host.rt)
+}
+
+test "sessions_actors: actor_base pure predicates and RPC helpers" {
+  assert(retry_after(0) == 30.0)
+  assert(retry_after(1) == 60.0)
+  assert(retry_after(4) == 480.0)
+  assert(retry_after(5) == 600.0)
+  assert(retry_after(20) == 600.0)
+
+  assert(bare_bad_request("{\"detail\":\"Bad Request\"}"))
+  assert(bare_bad_request(" { \"detail\" : \"Bad Request\" } "))
+  assert(!bare_bad_request("{\"detail\":\"Unsupported parameter\"}"))
+  assert(!bare_bad_request("{\"detail\":\"Bad Request\",\"extra\":1}"))
+  assert(!bare_bad_request("not json"))
+
+  let bad_turn = base_codec::json_obj([
+    ("outcome", sessions_core::jstr("failed")),
+    ("detail", sessions_core::jstr("model: {\"detail\":\"Bad Request\"}")),
+  ])
+  assert(refused_bad_request(bad_turn))
+  assert(failed_again(bad_turn))
+  assert(retryable(bad_turn))
+
+  let retry_turn = base_codec::json_obj([
+    ("outcome", sessions_core::jstr("failed")),
+    ("declared", sessions_core::jstr("waiting")),
+    ("detail", sessions_core::jstr("overloaded: busy")),
+  ])
+  assert(retrying(retry_turn))
+  assert(!failed_again(retry_turn))
+
+  let cut_turn = base_codec::json_obj([
+    ("outcome", sessions_core::jstr("aborted")),
+    ("detail", sessions_core::jstr("other: cut off by restart")),
+  ])
+  assert(cut_off_by_restart(cut_turn))
+  assert(retryable(cut_turn))
+
+  let d_wait = parse_declared("waiting", 45.0)
+  let is_waiting_kind = match kind_of(d_wait) {
+    Some(k) => k == "waiting"
+    None => false
+  }
+  assert(is_waiting_kind)
+  let ended_failed_none = match ended_in(d_wait, "failed") {
+    None => true
+    Some(_) => false
+  }
+  assert(ended_failed_none)
+  let ended_ok_some = match ended_in(d_wait, "completed") {
+    Some(_) => true
+    None => false
+  }
+  assert(ended_ok_some)
+  match parse_declared("need_human", 0.0) {
+    Some(d) => assert(settled_state(d))
+    None => panic("expected need_human")
+  }
+
+  let w = working_of(
+    base_codec::json_obj([
+      ("connect", sessions_core::jstr("c")),
+      ("channel", sessions_core::jstr("ch")),
+      ("threadTs", sessions_core::jstr("1.0")),
+      ("ts", sessions_core::jstr("2.0")),
+      ("since", sessions_core::jnum(123.0)),
+    ]),
+  )
+  let wj = working_json(w)
+  assert(sessions_core::text_of(wj, "firstTs") == "2.0")
+  assert(sessions_core::text_of(wj, "connect") == "c")
+
+  // `turn_summary` & `session_of` formatting parity (`saidBefore` / `ending` / `about` / `profilePinned`).
+  let trow : Map[String, base_codec::Json] = Map::new()
+  trow.set("kind", sessions_core::jstr("user"))
+  trow.set("outcome", sessions_core::jstr("completed"))
+  trow.set("declared", sessions_core::jstr("need_help"))
+  trow.set("about_thread", sessions_core::jstr("th1"))
+  trow.set("about_n", sessions_core::jint(7))
+  trow.set("about_ts", sessions_core::jstr("1.23"))
+  trow.set("wait_watch", sessions_core::jint(1))
+  let ts = turn_summary(trow)
+  assert(sessions_core::text_of(ts, "declared") == "block")
+  assert(sessions_core::text_of(ts, "ending") == "need_help")
+  assert(sessions_core::truthy(sessions_core::field_of(ts, "waitWatch")))
+  let about = sessions_core::field_of(ts, "about")
+  assert(sessions_core::text_of(about, "thread") == "th1")
+  assert(sessions_core::int_of(sessions_core::jget(about, "seq")) == 7)
+
+  let srow : Map[String, base_codec::Json] = Map::new()
+  srow.set("key", sessions_core::jstr("s1"))
+  srow.set("runtime", sessions_core::jstr("claude"))
+  srow.set("profile_pinned", sessions_core::jint(1))
+  let sj = session_of(srow)
+  assert(sessions_core::truthy(sessions_core::field_of(sj, "profilePinned")))
+
+  // RPC helpers: `deps_k` (`held_k`), `agent_do_k` (`busy_agent_k` + `still`), `t_k`, and `store_k` fallback.
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = new_test_actors(
+    host,
+    gen,
+    sessions_core::SessionDispatch::stub(),
+    ActorRunHandlers::stub(),
+  )
+  let a = actors.actor("s1", "claude")
+  let g = Agent::{ generation: 2, handle: 9 }
+  a.agent = Some(g)
+  assert(still(a, Some(g)))
+  assert(!still(a, Some(Agent::{ generation: 3, handle: 9 })))
+
+  let mut held_res = false
+  let mut t_res = ""
+  let mut busy_ok = false
+  actors.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    actors.held_k(a, fn(ex : effect::Exit[Bool]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => {
+          held_res = v
+          actors.t_k(a, "station.hi", base_codec::json_null(), fn(ex2 : effect::Exit[String]) -> Unit {
+            match ex2 {
+              effect::Exit::Succeeded(s) => {
+                t_res = s
+                actors.busy_agent_k(a, fn(ex3 : effect::Exit[Option[Agent]]) -> Unit {
+                  match ex3 {
+                    effect::Exit::Succeeded(Some(ag)) => {
+                      busy_ok = ag.handle == 9
+                      k(effect::Exit::Succeeded(()))
+                    }
+                    effect::Exit::Succeeded(None) => k(effect::Exit::Succeeded(()))
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  }
+                })
+              }
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          })
+        }
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    })
+  })
+  host.tick()
+  let id1 = match find_rpc_id(mem, "deps.held") {
+    Some(id) => id
+    None => panic("expected deps.held")
+  }
+  actors.heard("{\"answer\":" + id1.to_string() + ",\"value\":true}")
+  host.tick()
+  let id2 = match find_rpc_id(mem, "t") {
+    Some(id) => id
+    None => panic("expected t")
+  }
+  actors.heard("{\"answer\":" + id2.to_string() + ",\"value\":\"hello\"}")
+  host.tick()
+  let id3 = match find_rpc_id(mem, "agent.busy") {
+    Some(id) => id
+    None => panic("expected agent.busy")
+  }
+  actors.heard("{\"answer\":" + id3.to_string() + ",\"value\":true}")
+  host.tick()
+  assert(held_res)
+  assert(t_res == "hello")
+  assert(busy_ok)
+  assert_rt_clean(host.rt)
+}
+
+struct MockTxState {
+  pub mut in_tx : Bool
+  pub mut tx_begins : Int
+  pub mut tx_commits : Int
+  pub mut tx_rollbacks : Int
+  pub mut fail_begin_busy : Bool
+  pub mut fail_run_at : Int
+  pub mut run_calls : Int
+  pub mut fail_commit : Bool
+  pub mut run_count_return : Int
+  pub mut active_watch_index_missing : Bool
+}
+
+fn make_mock_store_db(st : MockTxState) -> StoreDb {
+  let make_inner = fn() -> StoreDb {
+    StoreDb::{
+      all: fn(sql : String, _params : Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError] {
+        if sql.starts_with("SELECT session_key FROM turns") {
+          let row : Map[String, base_codec::Json] = Map::new()
+          row.set("session_key", sessions_core::jstr("s1"))
+          return Ok([row])
+        }
+        if sql.starts_with("SELECT (SELECT COUNT(*)") {
+          let row : Map[String, base_codec::Json] = Map::new()
+          row.set("n", sessions_core::jint(3))
+          return Ok([row])
+        }
+        if sql.starts_with("SELECT 1 FROM active_watch_jobs") {
+          if st.active_watch_index_missing {
+            return Err(sql_db::sql_error(1, "no such table: active_watch_jobs"))
+          }
+          let row : Map[String, base_codec::Json] = Map::new()
+          row.set("1", sessions_core::jint(1))
+          return Ok([row])
+        }
+        if sql.starts_with("SELECT 1 FROM jobs INDEXED BY jobs_by_session") {
+          let row : Map[String, base_codec::Json] = Map::new()
+          row.set("1", sessions_core::jint(1))
+          return Ok([row])
+        }
+        if sql.starts_with("SELECT n, ts, text FROM entries") {
+          let r1 : Map[String, base_codec::Json] = Map::new()
+          r1.set("n", sessions_core::jint(20))
+          r1.set("ts", sessions_core::jstr("t20"))
+          r1.set("text", sessions_core::jstr("second"))
+          let r2 : Map[String, base_codec::Json] = Map::new()
+          r2.set("n", sessions_core::jint(10))
+          r2.set("ts", sessions_core::jstr("t10"))
+          r2.set("text", sessions_core::jstr("first"))
+          return Ok([r1, r2])
+        }
+        Ok([])
+      },
+      run: fn(_sql : String, _params : Array[base_codec::Json]) -> Result[Int, sql_db::SqlError] {
+        st.run_calls = st.run_calls + 1
+        if st.fail_run_at > 0 && st.run_calls == st.fail_run_at {
+          return Err(sql_db::sql_error(19, "constraint failed on second write"))
+        }
+        Ok(st.run_count_return)
+      },
+      tx_err: fn(
+        _body : (StoreDb) -> Result[base_codec::Json, sql_db::SqlError],
+      ) -> Result[base_codec::Json, sql_db::SqlError] {
+        Err(sql_db::sql_error(1, "nested tx_err"))
+      },
+    }
+  }
+  let inner = make_inner()
+  StoreDb::{
+    all: inner.all,
+    run: inner.run,
+    tx_err: fn(
+      body : (StoreDb) -> Result[base_codec::Json, sql_db::SqlError],
+    ) -> Result[base_codec::Json, sql_db::SqlError] {
+      if st.in_tx {
+        return Err(sql_db::sql_error(1, "cannot start a transaction within a transaction"))
+      }
+      if st.fail_begin_busy {
+        return Err(sql_db::sql_error(5, "database is locked"))
+      }
+      st.in_tx = true
+      st.tx_begins = st.tx_begins + 1
+      match body(inner) {
+        Err(e) => {
+          st.in_tx = false
+          st.tx_rollbacks = st.tx_rollbacks + 1
+          Err(e)
+        }
+        Ok(v) => {
+          if st.fail_commit {
+            st.in_tx = false
+            st.tx_rollbacks = st.tx_rollbacks + 1
+            Err(sql_db::sql_error(19, "FOREIGN KEY constraint failed at COMMIT"))
+          } else {
+            st.in_tx = false
+            st.tx_commits = st.tx_commits + 1
+            Ok(v)
+          }
+        }
+      }
+    },
+  }
+}
+
+test "sessions_actors: actor_store 3 tx_err transactions handle second-write fail, COMMIT fail, BUSY lock, and recovery; stopWait/forgetWait/markWidgetModelsTold/hasSessionActiveWatch/entriesBefore" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = new_test_actors(
+    host,
+    gen,
+    sessions_core::SessionDispatch::stub(),
+    ActorRunHandlers::stub(),
+  )
+
+  let st = MockTxState::{
+    in_tx: false,
+    tx_begins: 0,
+    tx_commits: 0,
+    tx_rollbacks: 0,
+    fail_begin_busy: false,
+    fail_run_at: 0,
+    run_calls: 0,
+    fail_commit: false,
+    run_count_return: 1,
+    active_watch_index_missing: false,
+  }
+  let mock_db = make_mock_store_db(st)
+  actors.store_db_provider = fn(_g : sessions_core::HubGen) -> Option[StoreDb] { Some(mock_db) }
+
+  // 1) `endTurn` second write fails -> rolled back, 0 changes, connection clean.
+  st.run_calls = 0
+  st.fail_run_at = 2
+  match actors.local_store(
+    "endTurn",
+    [
+      sessions_core::jstr("turn1"),
+      sessions_core::jstr("completed"),
+      base_codec::json_null(),
+      sessions_core::jstr("final"),
+      base_codec::json_null(),
+    ],
+  ) {
+    Err(_) => ()
+    Ok(_) => panic("expected endTurn second write failure")
+  }
+  assert(!st.in_tx)
+  assert(st.tx_rollbacks == 1)
+  assert(count_msgs_with_key(mem, "changes") == 0)
+
+  // 2) `endCutOff` COMMIT fails -> rolled back, 0 changes, connection clean.
+  st.fail_run_at = 0
+  st.fail_commit = true
+  match actors.local_store("endCutOff", [sessions_core::jstr("s1")]) {
+    Err(_) => ()
+    Ok(_) => panic("expected endCutOff COMMIT failure")
+  }
+  assert(!st.in_tx)
+  assert(st.tx_rollbacks == 2)
+  assert(count_msgs_with_key(mem, "changes") == 0)
+
+  // 3) `markDelivered` external BUSY lock -> fails cleanly, 0 changes, connection clean.
+  st.fail_commit = false
+  st.fail_begin_busy = true
+  let handed = base_codec::json_arr([
+    base_codec::json_obj([
+      ("thread", sessions_core::jstr("th1")),
+      ("n", sessions_core::jint(1)),
+      ("apart", sessions_core::jbool(false)),
+    ]),
+  ])
+  match actors.local_store("markDelivered", [sessions_core::jstr("s1"), handed]) {
+    Err(e) => assert(sql_db::is_busy(e))
+    Ok(_) => panic("expected BUSY")
+  }
+  assert(!st.in_tx)
+  assert(count_msgs_with_key(mem, "changes") == 0)
+
+  // 4) Recovery: all 3 `tx_err` ops succeed and emit `changes` AFTER commit.
+  st.fail_begin_busy = false
+  match actors.local_store(
+    "endTurn",
+    [
+      sessions_core::jstr("turn1"),
+      sessions_core::jstr("completed"),
+      base_codec::json_null(),
+      sessions_core::jstr("final"),
+      base_codec::json_null(),
+    ],
+  ) {
+    Ok(Some(_)) => ()
+    _ => panic("endTurn recovery failed")
+  }
+  match actors.local_store("endCutOff", [sessions_core::jstr("s1")]) {
+    Ok(Some(v)) => assert(sessions_core::int_of(Some(v)) == 1)
+    _ => panic("endCutOff recovery failed")
+  }
+  match actors.local_store("markDelivered", [sessions_core::jstr("s1"), handed]) {
+    Ok(Some(v)) => assert(sessions_core::int_of(Some(v)) == 1)
+    _ => panic("markDelivered recovery failed")
+  }
+  assert(st.tx_commits == 3)
+  assert(count_msgs_with_key(mem, "changes") == 3)
+
+  // 5) `stopWait` and `forgetWait` emit `changes` ONLY when `n > 0`.
+  st.run_count_return = 0
+  match actors.local_store("stopWait", [sessions_core::jstr("s1"), sessions_core::jbool(false)]) {
+    Ok(Some(v)) => assert(!sessions_core::truthy(v))
+    _ => panic("stopWait 0 failed")
+  }
+  match actors.local_store("forgetWait", [sessions_core::jstr("s1")]) {
+    Ok(Some(_)) => ()
+    _ => panic("forgetWait 0 failed")
+  }
+  assert(count_msgs_with_key(mem, "changes") == 3)
+
+  st.run_count_return = 1
+  match actors.local_store("stopWait", [sessions_core::jstr("s1"), sessions_core::jbool(true)]) {
+    Ok(Some(v)) => assert(sessions_core::truthy(v))
+    _ => panic("stopWait 1 failed")
+  }
+  match actors.local_store("forgetWait", [sessions_core::jstr("s1")]) {
+    Ok(Some(_)) => ()
+    _ => panic("forgetWait 1 failed")
+  }
+  assert(count_msgs_with_key(mem, "changes") == 5)
+
+  // 6) `markWidgetModelsTold` emits ZERO `changes`.
+  let pairs = base_codec::json_arr([
+    base_codec::json_arr([sessions_core::jstr("/w"), sessions_core::jstr("m1")]),
+  ])
+  match actors.local_store("markWidgetModelsTold", [sessions_core::jstr("s1"), pairs]) {
+    Ok(Some(_)) => ()
+    _ => panic("markWidgetModelsTold failed")
+  }
+  assert(count_msgs_with_key(mem, "changes") == 5)
+
+  // 7) `hasSessionActiveWatch` index fallback when `active_watch_jobs` is missing.
+  st.active_watch_index_missing = true
+  match actors.local_store("hasSessionActiveWatch", [sessions_core::jstr("s1")]) {
+    Ok(Some(v)) => assert(sessions_core::truthy(v))
+    _ => panic("hasSessionActiveWatch fallback failed")
+  }
+
+  // 8) `entriesBefore` reverses DESC rows into ascending order.
+  match actors.local_store("entriesBefore", [sessions_core::jstr("th1"), base_codec::json_null(), sessions_core::jint(10)]) {
+    Ok(Some(base_codec::Json::Arr(items))) => {
+      assert(items.length() == 2)
+      assert(sessions_core::int_of(sessions_core::jget(items[0], "n")) == 10)
+      assert(sessions_core::int_of(sessions_core::jget(items[1], "n")) == 20)
+    }
+    _ => panic("entriesBefore failed")
+  }
+
+  // 9) Unknown op returns `Ok(None)` so `store_k` falls back to Node RPC.
+  match actors.local_store("unknownOp", [sessions_core::jstr("s1")]) {
+    Ok(None) => ()
+    _ => panic("expected Ok(None) for unknown store op")
+  }
+}
+
+test "sessions_actors: 100 keys x 100 rounds churn returns rt.holding() and all maps to exact zero" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+
+  let handlers = ActorRunHandlers::{
+    on_event_k: ActorRunHandlers::stub().on_event_k,
+    called_k: fn(
+      actors : Actors,
+      a : Actor,
+      method : String,
+      _args : Array[base_codec::Json],
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      if method == "ping" {
+        actors.enqueue_k(
+          a,
+          fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            tk(effect::Exit::Succeeded(()))
+          },
+          fn(ex : effect::Exit[Unit]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(sessions_core::jbool(true)))
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          },
+        )
+      } else {
+        k(effect::Exit::Succeeded(base_codec::json_null()))
+      }
+    },
+    wake_queued_k: ActorRunHandlers::stub().wake_queued_k,
+    wake_cap_queued_k: ActorRunHandlers::stub().wake_cap_queued_k,
+    codex_updated_k: ActorRunHandlers::stub().codex_updated_k,
+    is_stub: false,
+  }
+  let actors = new_test_actors(host, gen, sessions_core::SessionDispatch::stub(), handlers)
+
+  // 100 keys x 100 rounds: calls + named actor timers + cancel/close + periodic `{"db":null}` rotation.
+  for round in 0..<100 {
+    for k_idx in 0..<100 {
+      let key = "k-" + k_idx.to_string()
+      let call_id = round * 100 + k_idx + 1
+      actors.heard(
+        "{\"call\":" +
+        call_id.to_string() +
+        ",\"actor\":\"" +
+        key +
+        "\",\"runtime\":\"claude\",\"method\":\"ping\",\"args\":[],\"now\":" +
+        call_id.to_string() +
+        "}",
+      )
+      if round % 25 == 0 {
+        match actors.actors.get(key) {
+          Some(a) => {
+            actors.arm_actor_timer(a, "t", 1000.0, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+              tk(effect::Exit::Succeeded(()))
+            })
+            actors.cancel_actor_timer(a, "t")
+          }
+          None => ()
+        }
+      }
+    }
+    host.tick()
+    if round % 20 == 19 {
+      actors.heard("{\"db\":null,\"now\":" + (round * 1000).to_string() + "}")
+      host.tick()
+    }
+    // Keep mem buffer bounded across 10,000 iterations.
+    mem.stdout_lines.clear()
+  }
+
+  actors.heard("{\"db\":null,\"now\":999999}")
+  host.tick()
+
+  assert(actors.actors.length() == 0)
+  assert(host.hub_asked.length() == 0)
+  assert(host.hub_timers.length() == 0)
+  assert(actors.gen.resources.turn_wait_queue.length() == 0)
+  assert(actors.gen.resources.cap_wait_queue.length() == 0)
+  assert(actors.gen.counters.active == 0)
+  assert_rt_clean(host.rt)
+}
