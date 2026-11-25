@@ -604,7 +604,8 @@ jobs:
   # sfapp's test program built once (scripts/test.sh APP_BUILD_OUT), its units kept as the native job keeps its own
   app-build:
     name: native (app build)
-    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    # A release's source is older than main's cache. Build its test binaries on ci-1 so a cold compile fits the job.
+    runs-on: &app-build-runner ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && (vars.CI_1_MBUI == 'on' || startsWith(github.ref, 'refs/heads/release/')) && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
     timeout-minutes: 5
     env:
       PART: app
@@ -618,7 +619,7 @@ jobs:
   # keeping sfrealsize payloads and static budget tables out of sfapp.whitebox_test.
   realsize-build:
     name: native (realsize build)
-    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: *app-build-runner
     timeout-minutes: 5
     env:
       PART: realsize
@@ -632,7 +633,7 @@ jobs:
   # (scripts/test.sh PAGES_TEST_BUILD_OUT), keeping pages/settings/files/viewer tests out of sfapp.whitebox_test.
   pages-test-build:
     name: native (pages test build)
-    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: *app-build-runner
     timeout-minutes: 5
     env:
       PART: pages_test
@@ -650,7 +651,7 @@ jobs:
   # 2dbd62da, 42734298401, 2026-11-10), every unit a change made compiled twice.
   replay-build:
     name: native (replay build)
-    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: *app-build-runner
     timeout-minutes: 5
     env:
       PART: replay
@@ -733,10 +734,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1/4, 2/4, 3/4, 4/4, contrast]
+        group: [1/4, 2/4, 3/4, 4/4]
         fps: [""]
+        # Release branches use the light app test binary. Split each group with APP_PART to keep its runs within five minutes.
+        part: ${{ fromJSON(startsWith(github.ref, 'refs/heads/release/') && '["1/2", "2/2"]' || '[""]') }}
         # The Chinese odd-window sweep exceeded the job limit in run 44236112180.
         include:
+          - { group: contrast, fps: "" }
           - { group: corners, fps: "", part: 1/2 }
           - { group: corners, fps: "", part: 2/2 }
     env: &app-env
