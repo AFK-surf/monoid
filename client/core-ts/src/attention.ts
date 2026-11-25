@@ -146,6 +146,7 @@ export class Attention implements Owner {
       if (shown) core.views.checkMoments();
       else core.data.shrinkMemory();
     };
+    attend.onFocus = () => core.stations.refreshSparing();
     core.stations.also.push({
       read: () => Effect.void,
       event: (station, name, data) => {

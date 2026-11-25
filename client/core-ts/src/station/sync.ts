@@ -49,6 +49,8 @@ import { timed } from "../spent.ts";
 import { MOVE_PAGE, moveLimit } from "../move.ts";
 import { isOwnSurface } from "../titles.ts";
 import { keepOs } from "../station-os.ts";
+import * as prefs from "../prefs.ts";
+import { ofAddress } from "../workspace.ts";
 
 export { HOST_KEY, LINK_KEY, LONG_MISSES, MISSES, OFFLINE_RETRY_MS, RECONNECT_MAX_MS, RECONNECT_MS, STREAM_IDLE_MS, STREAM_QUIET_MS, Link } from "./link.ts";
 export type { EventsFor, LiveView } from "./link.ts";
@@ -178,6 +180,8 @@ export class StationsSync {
   readonly #usageReading = new Map<string, { link: Link; fiber: Fiber.Fiber<void, never> | null }>();
   /// Whether the device is on a cellular network and spares live events for chats not currently shown.
   #sparing = false;
+  /// Links whose streams are currently spared (cellular, phone device, or unfocused workspace).
+  readonly #sparedLinks = new Set<string>();
   /// The stations whose history is to be swept as they are next reached (`roomAgain`).
   readonly #sweepOwed = new Set<string>();
   /// What the station topics want of a stream beyond what the sync wants (host samples, logs, logins, open sessions, rates).
@@ -225,7 +229,10 @@ export class StationsSync {
     this.#links = new Links(core, this.requests, {
       wanted: (address) => {
         const w = this.wanted(address);
-        const spare = this.#sparing && !w.rates ? [...new Set(w.open ?? [])].sort() : null;
+        const sparing = this.isSparing(address);
+        if (sparing) this.#sparedLinks.add(address);
+        else this.#sparedLinks.delete(address);
+        const spare = sparing && !w.rates ? [...new Set(w.open ?? [])].sort() : null;
         return { host: w.host, logs: w.logs, logins: w.logins, spare };
       },
       afresh: (address, ctx) => this.snapshot(address, ctx),
@@ -240,7 +247,11 @@ export class StationsSync {
         link.ratesSupported = supported;
         this.seen.touch(address, "rates");
       },
-      gone: (address) => this.channels.forget(address),
+      gone: (address) => {
+        this.#sparedLinks.delete(address);
+        this.#sweepOwed.delete(address);
+        this.channels.forget(address);
+      },
     });
     // A thread caught up on brought its latest: one less to catch up on.
     core.data.onLogChange((table, station, id) => {
@@ -321,19 +332,37 @@ export class StationsSync {
     this.#links.openEvents(address, anew);
   }
 
-  /// Whether live events for unopened chats are spared (cellular network).
-  isSparing(): boolean {
-    return this.#sparing;
+  /// Whether live events for unopened chats are spared for `address` (cellular network, phone device, or a workspace
+  /// the viewer is not currently looking at).
+  isSparing(address?: string): boolean {
+    if (this.#sparing || prefs.devicePhone(this.#core.data)) return true;
+    if (address === undefined) return false;
+    const current = this.#core.attention?.attend.currentWorkspaces() ?? null;
+    return current !== null && !current.has(ofAddress(address));
+  }
+
+  /// Re-evaluates sparing across open links after network, device, or workspace focus changes: seamlessly replaces
+  /// streams whose sparing flipped and sweeps lagging transcripts on links returning to full.
+  refreshSparing(): void {
+    for (const link of this.#links.values()) {
+      const now = this.isSparing(link.address);
+      const was = this.#sparedLinks.has(link.address);
+      if (now === was) continue;
+      if (now) this.#sparedLinks.add(link.address);
+      else this.#sparedLinks.delete(link.address);
+      this.openEvents(link.address, false);
+      if (!now) {
+        if (this.reachable(link.address)) this.#historyStart(link.address);
+        else this.#sweepOwed.add(link.address);
+      }
+    }
   }
 
   /// Switches cellular live-event sparing on or off, replacing open streams and sweeping transcripts on return to full.
   spare(on: boolean): void {
     if (this.#sparing === on) return;
     this.#sparing = on;
-    for (const link of this.#links.values()) {
-      this.openEvents(link.address, false);
-      if (!on && this.reachable(link.address)) this.#historyStart(link.address);
-    }
+    this.refreshSparing();
   }
 
   /// A database has room again (data.ts `onRoomAgain`): the transcripts of the stations kept in it that were left as
@@ -347,7 +376,7 @@ export class StationsSync {
   }
 
   #transcriptSpared(address: string, key: string): boolean {
-    return this.#sparing && !this.#core.store.inUse({ topic: "live", station: address, key });
+    return this.isSparing(address) && !this.#core.store.inUse({ topic: "live", station: address, key }) && !this.#core.data.transcriptRead(address, key);
   }
 
   #transcriptLetGo(address: string, key: string): boolean {

@@ -576,6 +576,12 @@ export function deviceApp(data: Data): string | null {
   return deviceSaid(data, "app");
 }
 
+/// Whether this device is a phone or mobile app (iOS, Android, or mobile web).
+export function devicePhone(data: Data): boolean {
+  const d = kept(data).device;
+  return isObject(d) && d.phone === true;
+}
+
 /// The name the device signs in as.
 export function deviceName(data: Data): string | null {
   return deviceSaid(data, "name");

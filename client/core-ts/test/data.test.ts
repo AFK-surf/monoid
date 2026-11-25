@@ -1054,13 +1054,13 @@ test("a_chats_messages_let_go_for_room_before_come_back_and_what_the_search_inde
     db().run("DELETE FROM entry WHERE station = 'w/a' AND thread > 1");
   }
   for (let t = 2; t <= 20; t++) db().run("INSERT INTO log_use (kind, station, id, evicted) VALUES ('entry', 'w/a', ?, 1)", [String(t)]);
-  const used = () => data.db("s1")!.used();
-  const before = used();
+  const before = data.db("s1")!.used();
   const d = await again();
   // Opened again: none is let go, so the sync brings them all; the room the index took is the database's again, and
   // what was said is found by scanning it.
   for (let t = 1; t <= 20; t++) assert.equal(d.evicted("entry", "w/a", String(t)), false, `thread ${t}`);
-  assert.ok(used() < before, `${used()} of ${before}`);
+  const after = d.db("s1")!.used();
+  assert.ok(after < before, `${after} of ${before}`);
   assert.deepEqual(db().all("SELECT name FROM sqlite_master WHERE name LIKE 'said_index%'"), []);
   assert.equal(d.findSaid(["w/a"], ["第 29 遍 1 号"], 5).length, 1);
   assert.equal(d.findSaid(["w/a"], ["第 28 遍"], 5).length, 0);
@@ -2130,5 +2130,38 @@ test("room_is_made_past_fifty_transcripts_a_page_reads_and_room_again_is_not_tol
     await run(data.written);
     assert.deepEqual(again, [1], "its own commit does");
     for (const stop of stops) stop();
+  } finally { runner.shutdown(); }
+});
+
+test("db_used_caches_pragma_reads_across_repeated_over_budget_checks_and_invalidates_on_write", async () => {
+  const { host, data, open, db, runner } = fresh({ s1: ["w"] });
+  // Open with a tiny 1 MiB budget by reusing the same counted DB in a fresh Data with `kept: 1024 * 1024`.
+  await open();
+  const counted = db();
+  const capped = new Data(host, runner, { owner: (ws) => (ws === "w" ? "s1" : null), kept: 1024 * 1024 });
+  await run(capped.open(["s1"]));
+  try {
+    // Fill past 1 MiB with an un-evictable overview so `#keptUntil` is armed and `transcriptOverBudget` runs `db.used()`.
+    capped.set({ topic: "overview", station: "w/a" }, { counts: { running: 1 }, pad: "x".repeat(2_000_000) });
+    capped.putItems("entry", "w/a", "1", [[1, { n: 1, kind: "message", text: "a", at: 1 }]]);
+    await run(capped.written);
+    await host.time.pass(60_000, 10_000);
+    capped.putItems("entry", "w/a", "1", [[2, { n: 2, kind: "message", text: "b", at: 2 }]]);
+    await run(capped.written);
+    await flush();
+
+    // First over-budget check measures `used()`; the next 50 checks must run zero PRAGMA queries.
+    assert.equal(capped.transcriptOverBudget("w/a", "bg0"), true);
+    const pragmasBefore = counted.reads.filter((q) => q.startsWith("PRAGMA "));
+    for (let i = 1; i <= 50; i++) assert.equal(capped.transcriptOverBudget("w/a", `bg${i}`), true);
+    const pragmasAfter = counted.reads.filter((q) => q.startsWith("PRAGMA "));
+    assert.deepEqual(pragmasAfter.slice(pragmasBefore.length), [], "repeated over-budget checks must hit cached used()");
+
+    // After a write drops the DB back below budget, `used()` re-measures without re-querying `PRAGMA page_size`.
+    const beforeWrite = counted.reads.length;
+    capped.set({ topic: "overview", station: "w/a" }, { counts: { running: 1 } });
+    assert.equal(capped.transcriptOverBudget("w/a", "bg-after"), false);
+    const afterWritePragmas = counted.reads.slice(beforeWrite).filter((q) => q.startsWith("PRAGMA "));
+    assert.deepEqual(afterWritePragmas, ["PRAGMA page_count", "PRAGMA freelist_count"]);
   } finally { runner.shutdown(); }
 });

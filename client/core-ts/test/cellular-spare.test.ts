@@ -1,8 +1,11 @@
-// On a cellular network (`client.network {cellular: true}`), station `/events` streams carry `spare=1` and `open=<key>`
-// for sessions whose `live` topic is in use (except while `stationRates` is in use). Unopened sessions' transcripts are
-// neither written from live events nor fetched on summary growth until opened or until leaving cellular.
+// On a cellular network (`client.network {cellular: true}`), on phone devices (`client.device` with phone app), or for
+// workspaces not currently focused (`client.focus`), station `/events` streams carry `spare=1` and `open=<key>` for
+// sessions whose `live` topic is in use (except while `stationRates` is in use). Unopened sessions' transcripts (unless
+// actively read, e.g. via `$slack-said`) are neither written from live events nor fetched on summary growth until opened
+// or until returning to a full stream.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { observe } from "../src/reactive.ts";
 import { apply, call, subscribe, v } from "./helpers.ts";
 import { base, session, started, stationReplies, status } from "./station-fixture.ts";
 
@@ -172,6 +175,113 @@ test("steps_ended_while_a_transcript_is_not_taken_are_let_go_and_its_history_sho
     assert.equal(x.loaded, true);
     assert.equal(x.timeline.length, 22);
     assert.deepEqual(x.steps.map((st: any) => st.id), ["said:10/thinking"]);
+  } finally {
+    s.core.close();
+  }
+});
+
+test("phone devices enable spare=1 on Wi-Fi, keep open live sessions and slack-said reads, and yield to stationRates", async () => {
+  const answers = threeSessions();
+  const timelineGets: string[] = [];
+  const s = await started(answers, 0, undefined, (f) => {
+    f.gate.marks = true;
+    f.gate.resumes = true;
+    stationReplies(f.host, (req) => {
+      const path = req.url.replace("https://stillfail.test/admin/api", "");
+      if (path.includes("/timeline")) timelineGets.push(path);
+      if (path.startsWith("/sessions/k2/timeline") && path.includes("after=0")) {
+        return { start: 1, end: 3, entries: [{ kind: "step", text: "k2-1" }, { kind: "step", text: "k2-2" }] };
+      }
+      if (path.startsWith("/sessions/k3/timeline") && path.includes("after=0")) {
+        return { start: 1, end: 3, entries: [{ kind: "step", text: "k3-1" }, { kind: "step", text: "k3-2" }] };
+      }
+      return undefined;
+    });
+  });
+  const ui = s.core.connect();
+  try {
+    // Desktop/unspecified starts full
+    assert.ok(!s.streams.at(-1)!.path.includes("spare=1"), s.streams.at(-1)!.path);
+    await s.host.time.pass(500, 10);
+    timelineGets.length = 0;
+
+    // Identifying as iOS enables spare=1 even on Wi-Fi
+    call(s.core, ui, 1, "client.device", { app: "ios", model: "iPhone", build: "0.1.99" });
+    await s.host.time.pass(500, 10);
+    assert.ok(s.streams.at(-1)!.path.includes("spare=1"), `ios should spare on Wi-Fi: ${s.streams.at(-1)!.path}`);
+
+    // Unopened k2 timeline event is dropped while sparing on phone
+    s.push("live", { key: "k2", type: "timeline", start: 1, entries: [{ kind: "step", text: "k2-dropped" }] });
+    s.push("session", { ...session("k2"), transcriptLength: 3 });
+    await s.host.time.pass(1_000, 20);
+    assert.equal(s.core.inner.data.logSpan("transcript", S, "k2")?.max, 0);
+    assert.deepEqual(timelineGets.filter((p) => p.includes("/k2/")), []);
+
+    // A transcript read by a Slack-said query (opened chat without live topic) is still kept current while sparing
+    const stopObserve = observe(() => void s.core.inner.data.slackSaid(S, "k3"), () => {});
+    try {
+      s.push("session", { ...session("k3"), transcriptLength: 3 });
+      await s.host.time.pass(1_000, 20);
+      assert.equal(s.core.inner.data.logSpan("transcript", S, "k3")?.max, 2, "transcript read via $slack-said must not be dropped while sparing");
+    } finally {
+      stopObserve();
+    }
+
+    // Opening k2 live topic fetches missing transcript and passes open=k2
+    subscribe(s.core, ui, 10, { topic: "live", station: S, key: "k2" });
+    await s.host.time.pass(1_000, 20);
+    assert.ok(s.streams.at(-1)!.path.includes("spare=1") && s.streams.at(-1)!.path.includes("open=k2"), s.streams.at(-1)!.path);
+    assert.equal(s.core.inner.data.logSpan("transcript", S, "k2")?.max, 2);
+
+    // stationRates still overrides spare=1
+    subscribe(s.core, ui, 11, { topic: "stationRates", station: S });
+    await s.host.time.pass(500, 10);
+    assert.ok(!s.streams.at(-1)!.path.includes("spare=1"), s.streams.at(-1)!.path);
+  } finally {
+    s.core.close();
+  }
+});
+
+test("non-current workspace stations spare live streams until workspace regains focus and then catch up transcripts", async () => {
+  const answers = threeSessions();
+  const timelineGets: string[] = [];
+  const s = await started(answers, 0, undefined, (f) => {
+    f.gate.marks = true;
+    f.gate.resumes = true;
+    stationReplies(f.host, (req) => {
+      const path = req.url.replace("https://stillfail.test/admin/api", "");
+      if (path.includes("/timeline")) timelineGets.push(path);
+      if (path.startsWith("/sessions/k3/timeline") && path.includes("after=0")) {
+        return { start: 1, end: 3, entries: [{ kind: "step", text: "k3-1" }, { kind: "step", text: "k3-2" }] };
+      }
+      return undefined;
+    });
+  });
+  const ui = s.core.connect();
+  try {
+    call(s.core, ui, 1, "client.device", { app: "desktop", build: "0.1.99" });
+    call(s.core, ui, 2, "client.focus", { visible: true, focused: true, workspace: "ws" });
+    await s.host.time.pass(500, 10);
+    assert.ok(!s.streams.at(-1)!.path.includes("spare=1"), `focused workspace must stay full: ${s.streams.at(-1)!.path}`);
+    timelineGets.length = 0;
+
+    // Switching focus to another workspace spares ws/st seamlessly
+    call(s.core, ui, 3, "client.focus", { visible: true, focused: true, workspace: "other-ws" });
+    await s.host.time.pass(500, 10);
+    assert.ok(s.streams.at(-1)!.path.includes("spare=1"), `unfocused workspace must spare: ${s.streams.at(-1)!.path}`);
+
+    // Unopened k3 transcript growth while unfocused is skipped
+    s.push("live", { key: "k3", type: "timeline", start: 1, entries: [{ kind: "step", text: "k3-dropped" }] });
+    s.push("session", { ...session("k3"), transcriptLength: 3 });
+    await s.host.time.pass(1_000, 20);
+    assert.equal(s.core.inner.data.logSpan("transcript", S, "k3")?.max, 0);
+    assert.deepEqual(timelineGets.filter((p) => p.includes("/k3/")), []);
+
+    // Switching focus back to ws restores full stream and sweeps lagging k3 transcript
+    call(s.core, ui, 4, "client.focus", { visible: true, focused: true, workspace: "ws" });
+    await s.host.time.pass(2_000, 40);
+    assert.ok(!s.streams.at(-1)!.path.includes("spare=1"), `refocused workspace must restore full: ${s.streams.at(-1)!.path}`);
+    assert.equal(s.core.inner.data.logSpan("transcript", S, "k3")?.max, 2, "refocusing workspace catches up lagging transcript k3");
   } finally {
     s.core.close();
   }

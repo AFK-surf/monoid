@@ -262,7 +262,7 @@ export class StationTopics implements Owner {
     // One message of a chat a link names: read each time its card shows, the same.
     if (topic.topic === "messagePeek") this.#sync.messagePeekShown(station, topic.thread as number, topic.seq as number);
     if (topic.topic === "live") {
-      if (this.#sync.isSparing()) this.#sync.channels.bring(transcriptOf(station, topic.key as string), Priority.shown, "latest");
+      if (this.#sync.isSparing(station)) this.#sync.channels.bring(transcriptOf(station, topic.key as string), Priority.shown, "latest");
       this.#sync.openEvents(station, false);
     }
     if (topic.topic === "stationRates") this.#sync.openEvents(station, false);

@@ -255,6 +255,7 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
         return Effect.try({
           try: () => {
             prefs.device(inner.data, call.facts);
+            inner.stations.refreshSparing();
             const app = isObject(call.facts) ? call.facts.app : undefined;
             if (typeof app === "string") inner.deviceApp = app;
             inner.adb.deviceTold();

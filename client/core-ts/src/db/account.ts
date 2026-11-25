@@ -278,6 +278,8 @@ export class AccountDb {
         this.#noTx = true;
       }
       this.#hurry();
+    } finally {
+      this.#logs.invalidateUsed();
     }
   }
 
@@ -401,6 +403,7 @@ export class AccountDb {
       }
       this.#said(error);
     }
+    this.#logs.invalidateUsed();
     this.onCommit(changes);
     this.#settled();
   }
@@ -495,6 +498,8 @@ export class AccountDb {
       return giveBackRoomStep(this.sql, pages, minFree);
     } catch {
       return false;
+    } finally {
+      this.#logs.invalidateUsed();
     }
   }
 
@@ -777,7 +782,7 @@ export class AccountDb {
   findSaidInThreads(targets: readonly { station: string; thread: number }[], terms: string[]): Map<string, { seq: number; at: number | null; text: string }> { return this.#logs.findSaidInThreads(targets, terms); }
   messageAt(station: string, thread: number, ts: string): number | null { return this.#logs.messageAt(station, thread, ts); }
   findInThread(station: string, thread: number, terms: string[]): { seq: number; text: string }[] { return this.#logs.findInThread(station, thread, terms); }
-  used(): number { return this.#logs.used(); }
+  used(): number { return this.#logs.used(this.readOnly); }
   evicted(kind: LogTable, station: string, id: string): boolean { return this.#logs.evicted(kind, station, id); }
   opened(kind: LogTable, station: string, id: string, at: number): boolean { return this.#logs.opened(kind, station, id, at); }
   openedHere(kind: LogTable, station: string, id: string): boolean { return this.#logs.openedHere(kind, station, id); }
