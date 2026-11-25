@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6df8ba486](https://github.com/AFK-surf/monoid/commit/6df8ba4862d216fe89c8eb929ee413c7d6df6e23) fix(mbui): put a station's state dot after its wor | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [b9c8a4280](https://github.com/AFK-surf/monoid/commit/b9c8a42804079619d16d10671845e4ff67eb8d5f) fix(station): let backups give way by the delay th | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [bd99b367c](https://github.com/AFK-surf/monoid/commit/bd99b367c777a9ec85411246d786b09c789baaca) fix(cloud): retry a failed release read once and a | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [5c67aea1c](https://github.com/AFK-surf/monoid/commit/5c67aea1ce6cca79985064a48a603c1e78cb4d14) fix(core): ask the station links first after up to | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [66fc0145f](https://github.com/AFK-surf/monoid/commit/66fc0145f612889519919079f360839083056e0a) perf(android): move notification IPC off app threa | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.83 | 93.86 |
 | [d27f004bc](https://github.com/AFK-surf/monoid/commit/d27f004bc7c660da2dbfee7a20eda100f3b878d2) feat(station,app): GitHub Copilot as a station run | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.55 | 125.57 |
 | [0dc373cef](https://github.com/AFK-surf/monoid/commit/0dc373cef1e2826ea03b3dc9e0e6de4555a84c8b) fix(core): show the running command, not the tool  | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.55 | 125.57 |
-| [3f59bd231](https://github.com/AFK-surf/monoid/commit/3f59bd231f0784f4b83126f37930f2f0bba26659) fix(station): keep agy profiles off the macOS keyc | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.63 | 123.13 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6df8ba486](https://github.com/AFK-surf/monoid/commit/6df8ba4862d216fe89c8eb929ee413c7d6df6e23) fix(mbui): put a station's state dot after its wor | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.44 |
 | [b9c8a4280](https://github.com/AFK-surf/monoid/commit/b9c8a42804079619d16d10671845e4ff67eb8d5f) fix(station): let backups give way by the delay th | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.51 |
 | [bd99b367c](https://github.com/AFK-surf/monoid/commit/bd99b367c777a9ec85411246d786b09c789baaca) fix(cloud): retry a failed release read once and a | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57 |
 | [5c67aea1c](https://github.com/AFK-surf/monoid/commit/5c67aea1ce6cca79985064a48a603c1e78cb4d14) fix(core): ask the station links first after up to | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [66fc0145f](https://github.com/AFK-surf/monoid/commit/66fc0145f612889519919079f360839083056e0a) perf(android): move notification IPC off app threa | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.28 |
 | [d27f004bc](https://github.com/AFK-surf/monoid/commit/d27f004bc7c660da2dbfee7a20eda100f3b878d2) feat(station,app): GitHub Copilot as a station run | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.31 |
 | [0dc373cef](https://github.com/AFK-surf/monoid/commit/0dc373cef1e2826ea03b3dc9e0e6de4555a84c8b) fix(core): show the running command, not the tool  | 0.56 | 0.74 | 2.86 | 3.9 | 7.15 | 2.12 | 5.96 | 57.28 |
-| [3f59bd231](https://github.com/AFK-surf/monoid/commit/3f59bd231f0784f4b83126f37930f2f0bba26659) fix(station): keep agy profiles off the macOS keyc | 0.56 | 0.74 | 2.86 | 3.9 | 7.15 | 2.12 | 5.96 | 57.18 |
