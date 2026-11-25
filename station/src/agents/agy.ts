@@ -439,6 +439,7 @@ export function noticeFailure(said: string): FailureReason | null {
   }
   if (lower.startsWith(AGY_UNAUTHENTICATED)) return "auth";
   if (lower.startsWith(AGY_VERIFICATION_REQUIRED)) return "auth";
+  if (lower.startsWith(AGY_QUOTA_REACHED)) return classifyFailure(last);
   if (!text.startsWith("⚠") || text.includes("\n")) return null;
   if (lower.startsWith(AGY_PERMISSION_DENIED) && lower.includes("denied")) return "auth";
   if (lower.startsWith(AGY_UNABLE_TO_SUBMIT)) return "other";
@@ -451,6 +452,9 @@ const AGY_TERMINATED = "⚠ agent execution terminated due to error.";
 const AGY_EXECUTOR_ERROR = "⚠ agent executor error:";
 const AGY_UNAUTHENTICATED = "⚠ unauthenticated (code 401):";
 const AGY_VERIFICATION_REQUIRED = "⚠ verification required";
+/// Its spent quota, even after the turn's own text (2026-11-24: "…\n⚠ Individual quota reached. … Resets in 4h46m59s."
+/// ended a turn as finished, the session kept the spent account, and the process stopped answering).
+const AGY_QUOTA_REACHED = "⚠ individual quota reached";
 const AGY_PERMISSION_DENIED = "⚠ permission '";
 const AGY_UNABLE_TO_SUBMIT = "⚠ unable to submit request";
 

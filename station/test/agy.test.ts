@@ -370,6 +370,9 @@ test("cancel, a signed-out account, an expired sign-in and a spent quota", async
   assert.equal(noticeFailure("⚠ UNAUTHENTICATED (code 401): Request had invalid authentication credentials."), "auth");
   assert.equal(noticeFailure("partial\n⚠ UNAUTHENTICATED (code 401): Request had invalid authentication credentials.\n"), "auth");
   assert.equal(noticeFailure("⚠ agent executor error: unexpected EOF"), "other");
+  // Its spent quota after the turn's own words (2026-11-24): a spent account, not the agent's last words.
+  assert.equal(noticeFailure("⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 56m33s."), "rate_limit");
+  assert.equal(noticeFailure("All 7 lines are still running.\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h46m59s.\n"), "rate_limit");
 });
 
 test("a borrowed Google account: a process opens on a sign-in lent anew once the one it has runs out soon, and goes on with one that lasts", async () => {

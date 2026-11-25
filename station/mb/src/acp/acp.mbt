@@ -382,6 +382,10 @@ pub fn notice_failure(said : String) -> String? {
   if lower.has_prefix("\u{26a0} verification required") {
     return Some("auth")
   }
+  if lower.has_prefix("\u{26a0} individual quota reached") {
+    // (agy.ts `AGY_QUOTA_REACHED`: its spent quota, even after the turn's own text)
+    return Some(classify("agy", last))
+  }
   if text.unsafe_get(0).to_int() != 0x26a0 || text.contains("\n") {
     return None
   }
