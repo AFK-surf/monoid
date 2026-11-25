@@ -221,3 +221,27 @@ test "readops_core: thread_json includes project, projectLocked, and tags" {
     got == "{\"id\":1,\"surface\":\"chat\",\"project\":\"monoid\",\"projectLocked\":true,\"tags\":[\"ui\",\"ops\"]}",
   )
 }
+
+test "readops_core: tally_background_selected_json_str preserves numeric key order, lone surrogate keys, and >2^53 at repr" {
+  let d10 = js_json::jval_try_parse("{\"result\":{\"selected\":\"10\"},\"accepted\":true}")
+  let d2 = js_json::jval_try_parse("{\"result\":{\"selected\":\"2\"},\"accepted\":false}")
+  let d1 = js_json::jval_try_parse("{\"result\":{\"selected\":\"1\"},\"accepted\":true}")
+  let dlone = js_json::jval_try_parse("{\"result\":{\"selected\":\"\\ud800\"},\"accepted\":false}")
+  let dfffd = js_json::jval_try_parse("{\"result\":{\"selected\":\"\\ufffd\"},\"accepted\":true}")
+  let big_at = base_codec::Json::Num(9007199254740993.0, "9007199254740993")
+  let wire = tally_background_selected_json_str_with(
+    5,
+    [
+      ("s10", big_at, d10),
+      ("s2", base_codec::json_int(2), d2),
+      ("s1", base_codec::json_int(1), d1),
+      ("sl", base_codec::json_int(3), dlone),
+      ("sf", base_codec::json_int(4), dfffd),
+    ],
+    base_codec::json_stringify,
+  )
+  assert(
+    wire ==
+    "{\"checked\":5,\"failed\":0,\"options\":{\"10\":{\"count\":1,\"chats\":[{\"session\":\"s10\",\"at\":9007199254740993,\"recommended\":true}]},\"2\":{\"count\":1,\"chats\":[{\"session\":\"s2\",\"at\":2,\"recommended\":false}]},\"1\":{\"count\":1,\"chats\":[{\"session\":\"s1\",\"at\":1,\"recommended\":true}]},\"\\ud800\":{\"count\":1,\"chats\":[{\"session\":\"sl\",\"at\":3,\"recommended\":false}]},\"\u{FFFD}\":{\"count\":1,\"chats\":[{\"session\":\"sf\",\"at\":4,\"recommended\":true}]}}}",
+  )
+}

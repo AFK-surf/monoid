@@ -109,9 +109,3 @@ test "reader_data: classify_ask rejects invalid JSON, lone surrogates, missing o
     _ => panic("expected moved threadList")
   }
 }
-
-test "reader_data: strip_location_prefix removes file:line:col prefix" {
-  assert(strip_location_prefix("foo.pion:12:3: boom") == "boom")
-  assert(strip_location_prefix("plain error: detail") == "plain error: detail")
-  assert(strip_location_prefix("no read x") == "no read x")
-}

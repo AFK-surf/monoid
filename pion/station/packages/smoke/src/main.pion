@@ -1525,7 +1525,15 @@ fn run_smoke_readops(world : World, temp_dir : String) -> Unit {
       0
     }
   }
-  let total = c_core + c_chats + c_local + c_views + c_usage
+  let c_data = match reader_data::run_selftest(temp_dir) {
+    Ok(n) => n
+    Err(e) => {
+      let _ = host_shim::write_stderr_line("reader_data selftest failed: " + e)
+      host_shim::exit_process(1)
+      0
+    }
+  }
+  let total = c_core + c_chats + c_local + c_views + c_usage + c_data
   io_println(
     world,
     "{\"ok\":true,\"readops_core\":" +
@@ -1538,6 +1546,8 @@ fn run_smoke_readops(world : World, temp_dir : String) -> Unit {
     c_views.to_string() +
     ",\"readops_usage\":" +
     c_usage.to_string() +
+    ",\"reader_data\":" +
+    c_data.to_string() +
     ",\"total\":" +
     total.to_string() +
     "}",

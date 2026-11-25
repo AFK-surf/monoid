@@ -135,31 +135,6 @@ pub fn moved(op : String) -> Bool {
   }
 }
 
-/// Strip optional file:line:col prefix (e.g. `foo.pion:12:3: msg`) from 500 error messages.
-pub fn strip_location_prefix(msg : String) -> String {
-  let b = msg.to_bytes()
-  let n = b.length()
-  let mut i = 0
-  let mut colons = 0
-  let mut last_colon = -1
-  while i < n {
-    let c = b[i].to_int() & 0xFF
-    if c == 10 || c == 32 {
-      break
-    }
-    if c == 58 {
-      colons = colons + 1
-      last_colon = i
-      if colons >= 2 && i + 1 < n && (b[i + 1].to_int() & 0xFF) == 32 {
-        return readops_core::str_slice_bytes(msg, i + 2, n)
-      }
-    }
-    i = i + 1
-  }
-  let _ = last_colon
-  msg
-}
-
 /// Replace/set `"args"` on an `ask` JSON object for `changed` inner dispatch.
 fn with_inner_args(ask : base_codec::Json, inner_args : base_codec::Json) -> base_codec::Json {
   let out : Array[(String, base_codec::Json)] = []
@@ -178,9 +153,27 @@ fn with_inner_args(ask : base_codec::Json, inner_args : base_codec::Json) -> bas
   base_codec::json_obj(out)
 }
 
+/// Lazily attach and return the shared read connection (`wait_ms=5000`), matching
+/// `station/mb/src/reader/serve.mbt:1014` (`Reader::db_now`).
+pub fn Reader::db_now(self : Reader) -> Result[sql_db::Db, readops_core::ReadError] {
+  match self.reading {
+    Some(d) => Ok(d)
+    None => {
+      match sql_db::Db::attach(self.db_path, wait_ms=5000) {
+        Ok(d) => {
+          self.reading = Some(d)
+          Ok(d)
+        }
+        Err(e) => Err(readops_core::ReadError::Sql(e))
+      }
+    }
+  }
+}
+
 /// WAL checkpoint on a dedicated writer connection (`wait_ms=0`), returning `{busy, log, checkpointed}`
 /// by column name. For `hard=true`, raises `busy_timeout = 1000`, runs `TRUNCATE`, and ALWAYS
-/// restores `busy_timeout = 0` on both `Ok` and `Err` paths (`main.mbt:25-60`).
+/// restores `busy_timeout = 0` on both `Ok` and `Err` paths; if restoring `busy_timeout = 0` itself
+/// fails, closes/clears the writer connection and propagates the error (`main.mbt:25-60`).
 pub fn Reader::checkpoint(
   self : Reader,
   hard : Bool = false,
@@ -203,8 +196,14 @@ pub fn Reader::checkpoint(
       Err(e) => return Err(readops_core::ReadError::Sql(e))
     }
     let done = db.all_ordered("PRAGMA wal_checkpoint(TRUNCATE)", [])
-    let _ = db.exec("PRAGMA busy_timeout = 0")
-    done
+    match db.exec("PRAGMA busy_timeout = 0") {
+      Ok(_) => done
+      Err(reset_err) => {
+        db.close()
+        self.writer = None
+        return Err(readops_core::ReadError::Sql(reset_err))
+      }
+    }
   } else {
     db.all_ordered("PRAGMA wal_checkpoint(PASSIVE)", [])
   }
@@ -250,10 +249,10 @@ pub fn Reader::answer_in_result(
   }
 }
 
-/// Execute one read inside an already-opened snapshot transaction, returning `base_codec::Json`.
-/// Note: for `policyChecks` and `usage` on the `--data` wire, use `answer_in_result` / `read_text`
-/// to preserve lossless JSON output.
-pub fn Reader::answer_in(
+/// Internal read dispatcher inside an already-opened snapshot transaction for `base_codec::Json` ops
+/// (used by `answer_in_result` and `changed` recursion; lossless `policyChecks` / `usage` are
+/// handled directly by `answer_in_result` without any lossy re-parse).
+fn Reader::answer_in(
   self : Reader,
   db : sql_db::Db,
   op : String,
@@ -279,17 +278,7 @@ pub fn Reader::answer_in(
     "machineSessions" => readops_local::machine_sessions(db, self.client, self.sep, args)
     "machineSession" => readops_local::machine_session(db, self.client, self.sep, args)
     "sessionsAtWork" => readops_core::sessions_at_work(db, args)
-    "policyChecks" => {
-      match readops_core::policy_checks_json_str(db, args) {
-        Ok(s) => {
-          match sql_db::parse_json(s) {
-            base_codec::JsonParseResult::Ok(j) => Ok(j)
-            base_codec::JsonParseResult::Err(err) => Err(readops_core::ReadError::App("policyChecks parse: " + err))
-          }
-        }
-        Err(e) => Err(e)
-      }
-    }
+    "policyChecks" => Err(readops_core::ReadError::App("use answer_in_result for lossless policyChecks"))
     "recentConnectPeople" => readops_core::recent_connect_people(db, args)
     "usageTurns" => readops_local::usage_turns(db, args)
     "usageCalls" => readops_local::usage_calls(db, args)
@@ -315,17 +304,7 @@ pub fn Reader::answer_in(
     "outflowChats" => readops_usage::outflow_chats(db, self.client, self.data, self.sep, ask)
     "openJobs" => readops_views::open_jobs(db, self.client, self.data, self.sep, signals, ask)
     "resourceChats" => readops_views::resource_chats(db, self.client, self.data, self.sep, ask)
-    "usage" => {
-      match readops_usage::usage_page_json_str(db, self.state, self.data, ask) {
-        Ok(s) => {
-          match sql_db::parse_json(s) {
-            base_codec::JsonParseResult::Ok(j) => Ok(j)
-            base_codec::JsonParseResult::Err(err) => Err(readops_core::ReadError::App("usage parse: " + err))
-          }
-        }
-        Err(e) => Err(e)
-      }
-    }
+    "usage" => Err(readops_core::ReadError::App("use answer_in_result for lossless usage"))
     "outflowUsage" => readops_usage::outflow_usage(db, self.state, self.data, ask)
     "timeline" => readops_local::timeline(db, self.state, self.data, ask)
     "transcriptState" => readops_local::transcript_state(db, self.state, self.data, args)
@@ -363,17 +342,9 @@ pub fn Reader::read_result(
   ask : base_codec::Json,
   signals : readops_core::ReadSignals,
 ) -> Result[ReadResult, readops_core::ReadError] {
-  let db = match self.reading {
-    Some(d) => d
-    None => {
-      match sql_db::Db::attach(self.db_path, wait_ms=5000) {
-        Ok(d) => {
-          self.reading = Some(d)
-          d
-        }
-        Err(e) => return Err(readops_core::ReadError::Sql(e))
-      }
-    }
+  let db = match self.db_now() {
+    Ok(d) => d
+    Err(e) => return Err(e)
   }
   // Update model catalog ONLY when `ask` carries `catalog`, after DB attach and before `BEGIN`,
   // and keep it in `ReaderState` even if the read fails (`main.mbt:139-141`).
@@ -401,23 +372,16 @@ pub fn Reader::read_text(
   }
 }
 
-/// Execute a read in a snapshot and return `base_codec::Json` (for callers like `--serve`).
-pub fn Reader::read(
+/// Lossless read entrypoint for `W7-G` (`--serve`): executes `op` in a read snapshot,
+/// discards `ReadSignals` (not used by `--serve`), and returns the exact wire JSON string
+/// without any lossy re-parse of `policyChecks` or `usage`.
+pub fn Reader::read_text_for_serve(
   self : Reader,
   op : String,
   ask : base_codec::Json,
-  signals : readops_core::ReadSignals,
-) -> Result[base_codec::Json, readops_core::ReadError] {
-  match self.read_result(op, ask, signals) {
-    Ok(ReadResult::JsonVal(j)) => Ok(j)
-    Ok(ReadResult::PreSerialized(s)) => {
-      match sql_db::parse_json(s) {
-        base_codec::JsonParseResult::Ok(j) => Ok(j)
-        base_codec::JsonParseResult::Err(err) => Err(readops_core::ReadError::App("parse pre-serialized: " + err))
-      }
-    }
-    Err(e) => Err(e)
-  }
+) -> Result[String, readops_core::ReadError] {
+  let signals = readops_core::ReadSignals::new()
+  self.read_text(op, ask, signals)
 }
 
 /// Pure parsed/classified ask line (testable without native SQLite/shell linking).
@@ -471,7 +435,7 @@ pub fn Reader::answer(self : Reader, line : String) -> Answer {
     AskKind::Checkpoint(id, hard) => {
       match self.checkpoint(hard=hard) {
         Ok(res) => Answer::OkText(id, sql_db::stringify_json(res), None, false)
-        Err(e) => Answer::ErrStatus(id, 500, strip_location_prefix(readops_core::read_error_message(e)))
+        Err(e) => Answer::ErrStatus(id, 500, readops_core::read_error_message(e))
       }
     }
     AskKind::Moved(id, op, ask) => {
@@ -479,18 +443,19 @@ pub fn Reader::answer(self : Reader, line : String) -> Answer {
       match self.read_text(op, ask, signals) {
         Ok(text) => Answer::OkText(id, text, signals.prepare_up_jobs, signals.prepare_workspace_up_jobs)
         Err(readops_core::ReadError::Refused(status, m)) => Answer::ErrStatus(id, status, m)
-        Err(e) => Answer::ErrStatus(id, 500, strip_location_prefix(readops_core::read_error_message(e)))
+        Err(e) => Answer::ErrStatus(id, 500, readops_core::read_error_message(e))
       }
     }
   }
 }
 
-/// Write an `Answer` to stdout using `host_shim::write_stdout_frame` for text responses
-/// (`bytes` last, header U+2028/U+2029 escaped, raw UTF-8 body bytes) and `client.say_line`
-/// for error responses (`main.mbt:106-116`).
+/// Write an `Answer` to stdout using `sql_db::stringify_json` + `host_shim::write_stdout_frame_header_json`
+/// for text responses (`bytes` last, MB-aligned numeric `id` formatting, header U+2028/U+2029 escaped,
+/// raw UTF-8 body bytes untouched) and `client.say_line` for error responses (`main.mbt:106-116`).
 pub fn say_answer(client : builders_core::ShellClient, ans : Answer) -> Bool {
   match ans {
     Answer::OkText(id, text, prep_up, prep_ws) => {
+      let body = text.to_bytes()
       let head : Array[(String, base_codec::Json)] = [("id", id)]
       match prep_up {
         Some(session) => head.push(("prepareUpJobs", base_codec::json_str(session)))
@@ -499,7 +464,9 @@ pub fn say_answer(client : builders_core::ShellClient, ans : Answer) -> Bool {
       if prep_ws {
         head.push(("prepareWorkspaceUpJobs", base_codec::json_bool(true)))
       }
-      host_shim::write_stdout_frame(head, text.to_bytes())
+      head.push(("bytes", base_codec::json_int(body.length())))
+      let header_json = sql_db::stringify_json(base_codec::json_obj(head))
+      host_shim::write_stdout_frame_header_json(header_json, body)
     }
     Answer::ErrStatus(id, status, err) => {
       let obj = base_codec::json_obj([
@@ -549,4 +516,75 @@ pub fn run_data(data : String, sep : String) -> Int {
   }
   reader.close()
   if write_failed { 1 } else { 0 }
+}
+
+/// Native-linked selftest exercised by `--smoke-readops`: verifies `Reader::db_now` and
+/// `Reader::read_text_for_serve` preserve numeric key order, lone-surrogate keys, and >2^53 `at`
+/// losslessly on `policyChecks` against real SQLite.
+pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
+  let db_path = temp_dir + "/stillfail.db"
+  let init_db = match sql_db::Db::create(db_path) {
+    Ok(d) => d
+    Err(e) => return Err("reader_data selftest create db: " + e.message)
+  }
+  let schema_sql = "CREATE TABLE IF NOT EXISTS sessions (key TEXT PRIMARY KEY, connect TEXT, ws TEXT);" +
+  "CREATE TABLE IF NOT EXISTS decision_checks (id INTEGER PRIMARY KEY AUTOINCREMENT, session TEXT NOT NULL, created_at INTEGER NOT NULL, result TEXT NOT NULL);" +
+  "CREATE INDEX IF NOT EXISTS decision_checks_lately ON decision_checks(created_at);" +
+  "CREATE INDEX IF NOT EXISTS decision_checks_session ON decision_checks(session, id);" +
+  "INSERT INTO sessions(key, connect, ws) VALUES ('s1', 'c1', 'ws1'), ('s2', 'c1', 'ws1'), ('sl', 'c1', 'ws1'), ('sf', 'c1', 'ws1'), ('s10', 'c1', 'ws1');" +
+  "INSERT INTO decision_checks(session, created_at, result) VALUES ('s1', 1, '{\"result\":{\"selected\":\"1\"},\"accepted\":true}');" +
+  "INSERT INTO decision_checks(session, created_at, result) VALUES ('s2', 2, '{\"result\":{\"selected\":\"2\"},\"accepted\":false}');" +
+  "INSERT INTO decision_checks(session, created_at, result) VALUES ('sl', 3, '{\"result\":{\"selected\":\"\\ud800\"},\"accepted\":false}');" +
+  "INSERT INTO decision_checks(session, created_at, result) VALUES ('sf', 4, '{\"result\":{\"selected\":\"\\ufffd\"},\"accepted\":true}');" +
+  "INSERT INTO decision_checks(session, created_at, result) VALUES ('s10', 9007199254740993, '{\"result\":{\"selected\":\"10\"},\"accepted\":true}');"
+  match init_db.exec(schema_sql) {
+    Ok(_) => ()
+    Err(e) => {
+      init_db.close()
+      return Err("reader_data selftest schema: " + e.message)
+    }
+  }
+  init_db.close()
+
+  let client = builders_core::ShellClient::new()
+  let reader = Reader::new(client, temp_dir, "/")
+  match reader.db_now() {
+    Ok(_) => ()
+    Err(e) => {
+      reader.close()
+      return Err("reader_data selftest db_now: " + readops_core::read_error_message(e))
+    }
+  }
+  let ask = base_codec::json_obj([
+    ("lang", base_codec::json_str("en")),
+    ("now", base_codec::json_num(1795580000000.0)),
+    (
+      "args",
+      base_codec::json_obj([
+        ("since", base_codec::json_int(0)),
+        (
+          "viewer",
+          base_codec::json_obj([
+            ("workspace", base_codec::json_str("ws1")),
+            ("home", base_codec::json_bool(true)),
+          ]),
+        ),
+      ]),
+    ),
+  ])
+  let wire = match reader.read_text_for_serve("policyChecks", ask) {
+    Ok(s) => s
+    Err(e) => {
+      reader.close()
+      return Err(
+        "reader_data selftest read_text_for_serve(policyChecks): " + readops_core::read_error_message(e),
+      )
+    }
+  }
+  reader.close()
+  let expected = "{\"checked\":5,\"failed\":0,\"options\":{\"10\":{\"count\":1,\"chats\":[{\"session\":\"s10\",\"at\":9007199254740993,\"recommended\":true}]},\"\u{FFFD}\":{\"count\":1,\"chats\":[{\"session\":\"sf\",\"at\":4,\"recommended\":true}]},\"\\ud800\":{\"count\":1,\"chats\":[{\"session\":\"sl\",\"at\":3,\"recommended\":false}]},\"2\":{\"count\":1,\"chats\":[{\"session\":\"s2\",\"at\":2,\"recommended\":false}]},\"1\":{\"count\":1,\"chats\":[{\"session\":\"s1\",\"at\":1,\"recommended\":true}]}}}"
+  if wire != expected {
+    return Err("reader_data selftest read_text_for_serve(policyChecks) mismatch: " + wire)
+  }
+  Ok(2)
 }
