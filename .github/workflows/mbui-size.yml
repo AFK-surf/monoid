@@ -179,8 +179,12 @@ jobs:
       - name: Clear lingering partial-clone promisor state
         run: |
           if [ "$(git config --local --get remote.origin.promisor 2>/dev/null || true)" = true ]; then
+            head_ref=$(git symbolic-ref -q HEAD || true)
+            git for-each-ref --format='%(refname)' | while read -r ref; do
+              [ "$ref" = "$head_ref" ] || git update-ref -d "$ref"
+            done
             git reflog expire --expire=now --all 2>/dev/null || true
-            if git rev-list --objects --missing=print --all HEAD > "$RUNNER_TEMP/rev-list.out" &&
+            if git rev-list --objects --missing=print HEAD > "$RUNNER_TEMP/rev-list.out" &&
               ! grep -q '^?' "$RUNNER_TEMP/rev-list.out"; then
               G=$(git rev-parse --absolute-git-dir)
               rm -f "$G"/objects/pack/*.promisor
