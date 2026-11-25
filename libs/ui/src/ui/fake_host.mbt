@@ -2417,10 +2417,11 @@ fn FakeHost::nt_state(self : FakeHost, what : Int) -> Int {
         "denied" => 2
         "ask" => 3
         "default" => 4
+        "pending" => 5
         _ => 0
       }
     1 => {
-      if self.notice_perm == "granted" || self.notice_perm == "unknown" {
+      if self.notice_perm == "granted" || self.notice_perm == "unknown" || self.notice_perm == "pending" {
         return 0
       }
       self.notice_asks += 1

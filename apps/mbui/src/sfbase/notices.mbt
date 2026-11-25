@@ -28,6 +28,7 @@ pub(all) struct NoticeHost {
   show : (String, String, String, String) -> Unit
   cancel : (String) -> Unit
   permission : () -> String
+  permission_state : () -> (Bool, String)
   ask : () -> Bool
   answer : () -> Bool?
   opened : () -> String
@@ -44,6 +45,7 @@ pub fn host_notices() -> NoticeHost {
     },
     cancel: fn(tag) { @ui.notice_cancel(tag) },
     permission: fn() { @ui.notice_permission() },
+    permission_state: fn() { @ui.notice_permission_state() },
     ask: fn() { @ui.notice_ask() },
     answer: fn() { @ui.notice_answer() },
     opened: fn() { @ui.notice_opened() },
@@ -63,6 +65,8 @@ pub(all) struct NoticeState {
   mut following : String
   /// what the system allows was told since the app was last shown
   mut told : Bool
+  /// the last non-pending host permission string reported while visible ("" none yet)
+  mut last_told_perm : String
   /// the system asked once (the first time signed in with notifications on)
   mut asked_once : Bool
   /// an ask from settings' switch is under way: refused, a toast says where to allow them
@@ -82,6 +86,7 @@ pub let notice_state : NoticeState = {
   taken: {},
   following: "",
   told: false,
+  last_told_perm: "",
   asked_once: false,
   from_switch: false,
   synced: false,
@@ -95,6 +100,7 @@ fn notices_reset() -> Unit {
   notice_state.taken.clear()
   notice_state.following = ""
   notice_state.told = false
+  notice_state.last_told_perm = ""
   notice_state.asked_once = false
   notice_state.from_switch = false
   notice_state.synced = false
@@ -174,20 +180,28 @@ pub fn notices_said_node(v : @view.View, src : Source) -> Unit {
   v.reacts(
     fn() {
       match workspace_in_view(src).0 {
-        Some(_) if !src.read_only => src.topic("notify", Map([])).get().value is Some(_) && @ui.app_visible()
-        _ => false
+        Some(_) if !src.read_only && src.topic("notify", Map([])).get().value is Some(_) && @ui.app_visible() =>
+          Some((notice_host.val.permission_state)())
+        _ => None
       }
     },
     fn(now) {
-      if !now {
-        return
-      }
+      guard now is Some((pending, perm)) else { return }
       notice_state.src = Some(src)
       let h = notice_host.val
       let notify = @signals.untracked(fn() { src.topic("notify", Map([])).get().value })
-      if !notice_state.told {
+      if pending {
+        if !notice_state.synced {
+          notice_state.synced = true
+          notice_state.token = (h.token)()
+          push_sync(src, None)
+        }
+        return
+      }
+      if !notice_state.told || notice_state.last_told_perm != perm {
         notice_state.told = true
-        tell_permission(src, notify)
+        notice_state.last_told_perm = perm
+        tell_permission_value(src, notify, perm)
       }
       if !notice_state.asked_once && flag(notify, "on") && field(notify, "asked") is Some(False) {
         notice_state.asked_once = true
@@ -241,9 +255,10 @@ pub fn notices_frame(src : Source, w : Workspace) -> Unit {
   // prompt put away leaves it "default", asked again by the page's way to allow them, no toast)
   match (h.answer)() {
     Some(granted) => {
+      let current_perm = (h.permission)()
       let state = if granted {
         "granted"
-      } else if (h.permission)() == "default" {
+      } else if current_perm == "default" {
         "default"
       } else {
         "denied"
@@ -252,7 +267,15 @@ pub fn notices_frame(src : Source, w : Workspace) -> Unit {
         toast_later(@sf.t("android-misc.notify.allowInSettings", args=[("app", @sf.product())]))
       }
       notice_state.from_switch = false
-      (src.call)("notify.permission", { "state": Json::string(state) }, answer_unread)
+      // On async-polling hosts, notices_said_node may have already reported this exact non-default state in the same
+      // frame when perm_tick advanced during notices_arrive(); avoid emitting a duplicate notify.permission while
+      // preserving a browser's consecutive "default" reports.
+      let already_told = notice_state.told && notice_state.last_told_perm == state && state != "default"
+      notice_state.told = true
+      notice_state.last_told_perm = if state == "default" { current_perm } else { state }
+      if !already_told {
+        (src.call)("notify.permission", { "state": Json::string(state) }, answer_unread)
+      }
     }
     None => ()
   }
@@ -290,6 +313,7 @@ fn notices_app_change(shown : Bool, awake : Bool) -> Unit {
     return
   }
   notice_state.told = false
+  notice_state.last_told_perm = ""
   // what came for the chat on top while hidden is taken off as the app is shown on it again
   notice_state.cancelled = ""
   match notice_state.src {
@@ -349,8 +373,8 @@ fn show_notice(n : Json) -> Unit {
 /// What the system lets the app show, to the core (Notifier.permission): the host's say; Android's "ask" (never asked,
 /// or refused: it cannot tell) "default" while the core says it was never asked, else "denied"; a browser's "default"
 /// (never answered, its prompt shown whenever asked) as it is, whether asked or not.
-fn tell_permission(src : Source, notify : Json?) -> Unit {
-  let state = match (notice_host.val.permission)() {
+fn tell_permission_value(src : Source, notify : Json?, perm : String) -> Unit {
+  let state = match perm {
     "ask" => if field(notify, "asked") is Some(False) { "default" } else { "denied" }
     s => s
   }

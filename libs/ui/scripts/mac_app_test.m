@@ -968,6 +968,41 @@ int main(void) {
       free(kept[i]);
     }
   }
+  // 13. Notification permission refresh/authorization interleaving on notice_queue():
+  //     stale refresh completions must never overwrite a newer refresh or authorization result.
+  @autoreleasepool {
+    // Bare executable (no bundleIdentifier): uninitialized notice_allowed (-1) reports 0 (unknown).
+    CHECK(!notice_system());
+    notice_allowed = -1;
+    notice_answered = -1;
+    CHECK(mb_host_notice_state(0) == 0);
+
+    // 13a. refresh-1 issued -> refresh-2 issued & completes with 2 (denied) -> stale refresh-1 arrives late with 1 (granted).
+    __block uint64_t seq1 = 0;
+    __block uint64_t seq2 = 0;
+    dispatch_sync(notice_queue(), ^{
+      notice_allowed = 5;
+      seq1 = notice_perm_begin_refresh();
+      seq2 = notice_perm_begin_refresh();
+      notice_perm_finish_refresh(seq2, 2);
+      notice_perm_finish_refresh(seq1, 1);
+    });
+    CHECK(notice_allowed == 2);
+    CHECK(mb_host_notice_state(0) == 2);
+
+    // 13b. refresh-1 issued while state is 3 (ask) -> user authorizes (granted=YES) -> stale refresh-1 arrives late with 3 (ask).
+    dispatch_sync(notice_queue(), ^{
+      notice_allowed = 3;
+      notice_answered = -1;
+      seq1 = notice_perm_begin_refresh();
+      notice_perm_finish_auth(YES);
+      notice_perm_finish_refresh(seq1, 3);
+    });
+    CHECK(notice_allowed == 1);
+    CHECK(mb_host_notice_state(0) == 1);
+    CHECK(mb_host_notice_state(2) == 1);
+    CHECK(mb_host_notice_state(2) == -1);
+  }
   if (!failed) printf("mac_app_test: ok\n");
   return failed;
 }

@@ -4317,11 +4317,43 @@ __asm__(".linker_option \"-framework\", \"UserNotifications\"");
 
 static NSMutableArray<NSArray<NSString *> *> *notices;
 static NSString *notice_opened = @"";
-// what the system allows: 0 not known yet, 1 granted, 2 denied, 3 not asked; the answer to an ask: -1 none, 0, 1
-static _Atomic int32_t notice_allowed = 0;
+// what the system allows: -1 uninitialized, 0 not known (bare executable), 1 granted, 2 denied, 3 not asked, 5 pending;
+// the answer to an ask: -1 none, 0, 1
+static _Atomic int32_t notice_allowed = -1;
 static _Atomic int32_t notice_answered = -1;
+// Only accessed on notice_queue().
+static uint64_t notice_perm_seq = 0;
 
 static BOOL notice_system(void) { return NSBundle.mainBundle.bundleIdentifier != nil; }
+
+static dispatch_queue_t notice_queue(void) {
+  static dispatch_queue_t q;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_autorelease_frequency(
+        DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM);
+    attr = dispatch_queue_attr_make_with_qos_class(attr, QOS_CLASS_UTILITY, 0);
+    q = dispatch_queue_create("dev.mbui.notice", attr);
+  });
+  return q;
+}
+
+// Serialized permission state-machine helpers (must run on notice_queue()).
+static uint64_t notice_perm_begin_refresh(void) { return ++notice_perm_seq; }
+
+static void notice_perm_finish_refresh(uint64_t seq, int32_t next) {
+  if (seq != notice_perm_seq) return;
+  int32_t was = notice_allowed;
+  notice_allowed = next;
+  if (was != next) dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
+}
+
+static void notice_perm_finish_auth(BOOL granted) {
+  ++notice_perm_seq;
+  notice_answered = granted ? 1 : 0;
+  notice_allowed = granted ? 1 : 2;
+  dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
+}
 
 @interface MBNoticeDelegate : NSObject <UNUserNotificationCenterDelegate>
 @end
@@ -4353,20 +4385,24 @@ static BOOL notice_system(void) { return NSBundle.mainBundle.bundleIdentifier !=
 // What the system allows, asked again (as the app comes to the front: it may have changed in the system's settings).
 static void notice_refresh(void) {
   if (!notice_system()) return;
-  [[UNUserNotificationCenter currentNotificationCenter] getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *s) {
-    int32_t was = notice_allowed;
-    switch (s.authorizationStatus) {
-      case UNAuthorizationStatusNotDetermined: notice_allowed = 3; break;
-      case UNAuthorizationStatusDenied: notice_allowed = 2; break;
-      default: notice_allowed = 1; break;
-    }
-    if (was != notice_allowed) dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
-  }];
+  dispatch_async(notice_queue(), ^{
+    uint64_t seq = notice_perm_begin_refresh();
+    [[UNUserNotificationCenter currentNotificationCenter] getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *s) {
+      int32_t next;
+      switch (s.authorizationStatus) {
+        case UNAuthorizationStatusNotDetermined: next = 3; break;
+        case UNAuthorizationStatusDenied: next = 2; break;
+        default: next = 1; break;
+      }
+      dispatch_async(notice_queue(), ^{ notice_perm_finish_refresh(seq, next); });
+    }];
+  });
 }
 
 // Before the app runs (mb_host_run): the center's delegate, and what it allows.
 static void notice_start(void) {
   if (!notice_system()) return;
+  if (notice_allowed < 0) notice_allowed = 5;
   static MBNoticeDelegate *delegate;
   delegate = [MBNoticeDelegate new];
   [UNUserNotificationCenter currentNotificationCenter].delegate = delegate;
@@ -4393,19 +4429,25 @@ void mb_host_notice_show(moonbit_string_t channel, moonbit_string_t tag, moonbit
   fprintf(stdout, "NOTICE %s\t%s\t%s\n", n[0].UTF8String, n[1].UTF8String, n[2].UTF8String);
   fflush(stdout);
   if (!notice_system()) return;
-  UNMutableNotificationContent *c = [UNMutableNotificationContent new];
-  c.title = n[1];
-  c.body = n[2];
-  c.sound = UNNotificationSound.defaultSound;
-  c.userInfo = @{@"opens" : n[3]};
-  // the same identifier: the system replaces the one shown
-  UNNotificationRequest *r = [UNNotificationRequest requestWithIdentifier:t content:c trigger:nil];
-  [[UNUserNotificationCenter currentNotificationCenter] addNotificationRequest:r withCompletionHandler:^(NSError *e) {
-    if (e) {
-      fprintf(stdout, "NOTICE NOT SHOWN %s: %s\n", t.UTF8String, e.localizedDescription.UTF8String);
-      fflush(stdout);
-    }
-  }];
+  NSString *tid = [t copy];
+  NSString *titleCopy = [n[1] copy];
+  NSString *bodyCopy = [n[2] copy];
+  NSString *opensCopy = [n[3] copy];
+  dispatch_async(notice_queue(), ^{
+    UNMutableNotificationContent *c = [UNMutableNotificationContent new];
+    c.title = titleCopy;
+    c.body = bodyCopy;
+    c.sound = UNNotificationSound.defaultSound;
+    c.userInfo = @{@"opens" : opensCopy};
+    // the same identifier: the system replaces the one shown
+    UNNotificationRequest *r = [UNNotificationRequest requestWithIdentifier:tid content:c trigger:nil];
+    [[UNUserNotificationCenter currentNotificationCenter] addNotificationRequest:r withCompletionHandler:^(NSError *e) {
+      if (e) {
+        fprintf(stdout, "NOTICE NOT SHOWN %s: %s\n", tid.UTF8String, e.localizedDescription.UTF8String);
+        fflush(stdout);
+      }
+    }];
+  });
 }
 
 // The system's own bars (@hostapi.nav_bar): none here, the app draws its own.
@@ -4425,16 +4467,22 @@ void mb_host_notice_cancel(moonbit_string_t tag) {
     fflush(stdout);
   }
   if (!notice_system()) return;
-  UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
-  [center removeDeliveredNotificationsWithIdentifiers:@[ t ]];
-  [center removePendingNotificationRequestsWithIdentifiers:@[ t ]];
+  NSString *tid = [t copy];
+  dispatch_async(notice_queue(), ^{
+    UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
+    [center removeDeliveredNotificationsWithIdentifiers:@[ tid ]];
+    [center removePendingNotificationRequestsWithIdentifiers:@[ tid ]];
+  });
 }
 
-// 0: what the system allows (1 granted, 2 denied, 3 not asked, 0 not known: always so for a bare executable);
-// 1: ask it (1 when asked: not asked before); 2: its answer to the ask, once (1, 0; -1 none yet); 3: System Settings'
-// Notifications opened (1); 4: the app's number shown on its icon (1: the Dock's tile, mb_host_set_badge).
+// 0: what the system allows (1 granted, 2 denied, 3 not asked, 5 pending initial refresh, 0 not known: always so for a
+// bare executable); 1: ask it (1 when asked: not asked before); 2: its answer to the ask, once (1, 0; -1 none yet);
+// 3: System Settings' Notifications opened (1); 4: the app's number shown on its icon (1: the Dock's tile, mb_host_set_badge).
 int32_t mb_host_notice_state(int32_t what) {
-  if (what == 0) return notice_allowed;
+  if (what == 0) {
+    int32_t a = notice_allowed;
+    return a < 0 ? (notice_system() ? 5 : 0) : a;
+  }
   if (what == 4) return 1;
   if (what == 2) {
     int32_t a = notice_answered;
@@ -4448,12 +4496,13 @@ int32_t mb_host_notice_state(int32_t what) {
   if (what != 1) return 0;
   if (!notice_system() || notice_allowed != 3) return 0;
   UNAuthorizationOptions o = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
-  [[UNUserNotificationCenter currentNotificationCenter] requestAuthorizationWithOptions:o
-                                                                      completionHandler:^(BOOL granted, NSError *e) {
-    notice_answered = granted ? 1 : 0;
-    notice_allowed = granted ? 1 : 2;
-    dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
-  }];
+  dispatch_async(notice_queue(), ^{
+    [[UNUserNotificationCenter currentNotificationCenter] requestAuthorizationWithOptions:o
+                                                                        completionHandler:^(BOOL granted, NSError *e) {
+      (void)e;
+      dispatch_async(notice_queue(), ^{ notice_perm_finish_auth(granted); });
+    }];
+  });
   return 1;
 }
 
@@ -4478,8 +4527,13 @@ static int32_t notice_drive(int tap, NSString *words) {
   notice_opened = found[3];
   fprintf(stdout, "NOTICE TAP %s\n", found[0].UTF8String);
   fflush(stdout);
+  NSString *tid = [found[0] copy];
   [notices removeObject:found];
-  if (notice_system()) [[UNUserNotificationCenter currentNotificationCenter] removeDeliveredNotificationsWithIdentifiers:@[ found[0] ]];
+  if (notice_system()) {
+    dispatch_async(notice_queue(), ^{
+      [[UNUserNotificationCenter currentNotificationCenter] removeDeliveredNotificationsWithIdentifiers:@[ tid ]];
+    });
+  }
   [the_view requestFrame];
   return 1;
 }

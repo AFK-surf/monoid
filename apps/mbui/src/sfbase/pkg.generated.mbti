@@ -2915,6 +2915,7 @@ pub(all) struct NoticeHost {
   show : (String, String, String, String) -> Unit
   cancel : (String) -> Unit
   permission : () -> String
+  permission_state : () -> (Bool, String)
   ask : () -> Bool
   answer : () -> Bool?
   opened : () -> String
@@ -2926,6 +2927,7 @@ pub(all) struct NoticeState {
   taken : Map[String, Bool]
   mut following : String
   mut told : Bool
+  mut last_told_perm : String
   mut asked_once : Bool
   mut from_switch : Bool
   mut synced : Bool

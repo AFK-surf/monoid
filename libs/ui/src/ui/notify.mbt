@@ -33,8 +33,11 @@ pub fn notice_cancel(tag : String) -> Unit {
 priv struct NoticesSaid {
   opened : @signals.Signal[(Int, String)]
   answer : @signals.Signal[(Int, Bool)]
+  perm_tick : @signals.Signal[Int]
   mut opened_taken : Int
   mut answer_taken : Int
+  mut last_arrived : (Bool, String)?
+  mut saw_other : Bool
 }
 
 ///|
@@ -42,8 +45,11 @@ priv struct NoticesSaid {
 let notices_said : NoticesSaid = {
   opened: @signals.signal((0, "")),
   answer: @signals.signal((0, false)),
+  perm_tick: @signals.signal(0),
   opened_taken: 0,
   answer_taken: 0,
+  last_arrived: None,
+  saw_other: false,
 }
 
 ///|
@@ -51,8 +57,22 @@ let notices_said : NoticesSaid = {
 fn notices_reset() -> Unit {
   notices_said.opened.set((0, ""))
   notices_said.answer.set((0, false))
+  notices_said.perm_tick.set(0)
   notices_said.opened_taken = 0
   notices_said.answer_taken = 0
+  notices_said.last_arrived = None
+  notices_said.saw_other = false
+}
+
+///|
+/// Hosts whose notification permission is refreshed asynchronously (macOS, iOS, Windows, Linux): excludes Android
+/// (synchronous Binder) and Web (`Notification.permission`). Reads `@hostapi.platform()` directly so `set_platform`
+/// overrides never toggle host polling.
+fn poll_notice_permission() -> Bool {
+  match @hostapi.platform() {
+    0 | 1 | 3 | 5 => true
+    _ => false
+  }
 }
 
 ///|
@@ -70,6 +90,14 @@ fn notices_arrive() -> Unit {
       notices_said.answer.set((n + 1, yes))
     }
     None => ()
+  }
+  if poll_notice_permission() {
+    let now = Some(@hostapi.notice_permission_state())
+    if now != notices_said.last_arrived || notices_said.saw_other {
+      notices_said.last_arrived = now
+      notices_said.saw_other = false
+      notices_said.perm_tick.set(notices_said.perm_tick.untracked() + 1)
+    }
   }
 }
 
@@ -90,11 +118,29 @@ pub fn notice_opened() -> String {
 }
 
 ///|
+/// What the system lets the app show, together with whether the host is still awaiting its first asynchronous
+/// permission read (`@hostapi.notice_permission_state`). On async-refresh hosts, subscribes to `perm_tick` and reads
+/// `@hostapi.notice_permission_state()` live (without mutating any signal); `notices_arrive()` increments `perm_tick`
+/// whenever the host value differs from `last_arrived` or a between-frame read observed another value (`saw_other`),
+/// preserving live between-frame reads while preventing ABA skips and multi-subscriber missed wakeups.
+pub fn notice_permission_state() -> (Bool, String) {
+  if poll_notice_permission() {
+    notices_said.perm_tick.get() |> ignore
+    let now = @hostapi.notice_permission_state()
+    if Some(now) != notices_said.last_arrived {
+      notices_said.saw_other = true
+    }
+    return now
+  }
+  @hostapi.notice_permission_state()
+}
+
+///|
 /// What the system lets the app show (@hostapi.notice_permission): "granted", "denied", "ask", "default" (a browser's:
 /// never answered, its prompt shown whenever asked), "unknown". A Tester's host lets it unless the test says otherwise
 /// (Tester::set_notice_permission).
 pub fn notice_permission() -> String {
-  @hostapi.notice_permission()
+  notice_permission_state().1
 }
 
 ///|

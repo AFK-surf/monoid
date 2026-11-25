@@ -2789,9 +2789,23 @@ void mb_host_set_dark(int32_t dark) {
 static NSMutableArray<NSArray<NSString *> *> *notices;
 static NSString *notice_opened = @"";
 static NSString *push_token = @"";
-// what the system allows: 0 not known yet, 1 granted, 2 denied, 3 not asked; the answer to an ask: -1 none, 0, 1
-static _Atomic int32_t notice_allowed = 0;
+// what the system allows: 5 pending initial refresh, 1 granted, 2 denied, 3 not asked; the answer to an ask: -1 none, 0, 1
+static _Atomic int32_t notice_allowed = 5;
 static _Atomic int32_t notice_answered = -1;
+// Only accessed on notice_queue().
+static uint64_t notice_perm_seq = 0;
+
+static dispatch_queue_t notice_queue(void) {
+  static dispatch_queue_t q;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    dispatch_queue_attr_t attr = dispatch_queue_attr_make_with_autorelease_frequency(
+        DISPATCH_QUEUE_SERIAL, DISPATCH_AUTORELEASE_FREQUENCY_WORK_ITEM);
+    attr = dispatch_queue_attr_make_with_qos_class(attr, QOS_CLASS_UTILITY, 0);
+    q = dispatch_queue_create("dev.mbui.notice", attr);
+  });
+  return q;
+}
 
 static void notice_drop(NSString *tag) {
   NSIndexSet *at = [notices indexesOfObjectsPassingTest:^BOOL(NSArray<NSString *> *n, NSUInteger i, BOOL *stop) {
@@ -2835,15 +2849,23 @@ static void notice_drop(NSString *tag) {
 
 // What the system allows, asked again (as the app comes to the front: it may have changed in the system's settings).
 static void notice_refresh(void) {
-  [[UNUserNotificationCenter currentNotificationCenter] getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *s) {
-    int32_t was = notice_allowed;
-    switch (s.authorizationStatus) {
-      case UNAuthorizationStatusNotDetermined: notice_allowed = 3; break;
-      case UNAuthorizationStatusDenied: notice_allowed = 2; break;
-      default: notice_allowed = 1; break;
-    }
-    if (was != notice_allowed) dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
-  }];
+  dispatch_async(notice_queue(), ^{
+    uint64_t seq = ++notice_perm_seq;
+    [[UNUserNotificationCenter currentNotificationCenter] getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *s) {
+      int32_t next;
+      switch (s.authorizationStatus) {
+        case UNAuthorizationStatusNotDetermined: next = 3; break;
+        case UNAuthorizationStatusDenied: next = 2; break;
+        default: next = 1; break;
+      }
+      dispatch_async(notice_queue(), ^{
+        if (seq != notice_perm_seq) return;
+        int32_t was = notice_allowed;
+        notice_allowed = next;
+        if (was != next) dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
+      });
+    }];
+  });
 }
 
 // As the app starts (MBAppDelegate): the center's delegate, and what it allows.
@@ -2950,12 +2972,18 @@ int32_t mb_host_notice_state(int32_t what) {
   if (what != 1) return 0;
   if (notice_allowed != 3) return 0;
   UNAuthorizationOptions o = UNAuthorizationOptionAlert | UNAuthorizationOptionSound | UNAuthorizationOptionBadge;
-  [[UNUserNotificationCenter currentNotificationCenter] requestAuthorizationWithOptions:o
-                                                                      completionHandler:^(BOOL granted, NSError *e) {
-    notice_answered = granted ? 1 : 0;
-    notice_allowed = granted ? 1 : 2;
-    dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
-  }];
+  dispatch_async(notice_queue(), ^{
+    [[UNUserNotificationCenter currentNotificationCenter] requestAuthorizationWithOptions:o
+                                                                        completionHandler:^(BOOL granted, NSError *e) {
+      (void)e;
+      dispatch_async(notice_queue(), ^{
+        ++notice_perm_seq;
+        notice_answered = granted ? 1 : 0;
+        notice_allowed = granted ? 1 : 2;
+        dispatch_async(dispatch_get_main_queue(), ^{ [the_view requestFrame]; });
+      });
+    }];
+  });
   return 1;
 }
 
