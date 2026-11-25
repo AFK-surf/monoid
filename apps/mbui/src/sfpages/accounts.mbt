@@ -2047,45 +2047,6 @@ fn profile_settings_node(
                 )
               })
             })
-            g.show(at_once=true, fn() { joined().length() > 0 }, fn(ws_box) {
-              ws_box.each(joined, fn(w) { text(Some(w), "workspace") }, fn(r, w) {
-                let wv = fn() { Some(w.get()) }
-                let ws = @signals.untracked(fn() { text(wv(), "workspace") })
-                let name = fn() { text(wv(), "name") }
-                let emoji = fn() { text(wv(), "emoji") }
-                let icon = fn() { text(wv(), "icon") }
-                let on_ws = fn() { strings(p(), "workspaces").contains(ws) }
-                r.pick(at_once=true, fn() { @sf.has_station_mark(emoji(), icon()) }, fn(y, marked) {
-                  @sf.switch_row_node(
-                    y,
-                    name,
-                    on_ws,
-                    fn(next) {
-                      let now = strings(@signals.untracked(p), "workspaces")
-                      let list = if next { now.copy() } else { now.filter(fn(x) { x != ws }) }
-                      if next {
-                        list.push(ws)
-                      }
-                      let named = @signals.untracked(name)
-                      @settings.act(
-                        core,
-                        @sf.t("web-pages.profiles.workspaces.title"),
-                        "profile.put",
-                        obj([("station", str(address)), ("id", str(id)), ("input", obj([("workspaces", Json::array(list.map(str)))]))]),
-                        done=@sf.t(if next { "web-pages.profiles.workspaces.turnedOn" } else { "web-pages.profiles.workspaces.turnedOff" }, args=[("name", named)]),
-                      )
-                    },
-                    note=fn() { @sf.t(if on_ws() { "web-pages.profiles.workspaces.on" } else { "web-pages.profiles.workspaces.off" }, args=[("name", name())]) },
-                    busy~,
-                    lead?=if marked {
-                      Some(fn(l) { @sf.station_mark_node(l, emoji, icon, profile_ws_mark, fn() { @sf.theme().p.text }, stint) })
-                    } else {
-                      None
-                    },
-                  )
-                })
-              })
-            })
             g.show(at_once=true, fn() { kind() == "env" }, fn(env_box) {
               env_box.each(fn() { items(p(), "env") }, fn(e) { text(Some(e), "key") }, fn(r, e) {
                 @sf.link_row_node(r, fn() { text(Some(e.get()), "key") }, fn() {  }, note=fn() { text(Some(e.get()), "value") }, goes=false)
@@ -2108,6 +2069,49 @@ fn profile_settings_node(
           })
         },
       )
+      // The workspaces this station joined besides its own: what they are said once over them, each row only its name.
+      x.show(at_once=true, fn() { joined().length() > 0 }, fn(ws_sec) {
+        @sf.section_node(ws_sec, fn() { @sf.t("web-pages.profiles.workspaces.title") }, note=fn() { @sf.t("web-pages.profiles.workspaces.lead") }, fn(sec) {
+          @sf.group_node(sec, fn(g) {
+            g.each(joined, fn(w) { text(Some(w), "workspace") }, fn(r, w) {
+              let wv = fn() { Some(w.get()) }
+              let ws = @signals.untracked(fn() { text(wv(), "workspace") })
+              let name = fn() { text(wv(), "name") }
+              let emoji = fn() { text(wv(), "emoji") }
+              let icon = fn() { text(wv(), "icon") }
+              let on_ws = fn() { strings(p(), "workspaces").contains(ws) }
+              r.pick(at_once=true, fn() { @sf.has_station_mark(emoji(), icon()) }, fn(y, marked) {
+                @sf.switch_row_node(
+                  y,
+                  name,
+                  on_ws,
+                  fn(next) {
+                    let now = strings(@signals.untracked(p), "workspaces")
+                    let list = if next { now.copy() } else { now.filter(fn(x) { x != ws }) }
+                    if next {
+                      list.push(ws)
+                    }
+                    let named = @signals.untracked(name)
+                    @settings.act(
+                      core,
+                      @sf.t("web-pages.profiles.workspaces.title"),
+                      "profile.put",
+                      obj([("station", str(address)), ("id", str(id)), ("input", obj([("workspaces", Json::array(list.map(str)))]))]),
+                      done=@sf.t(if next { "web-pages.profiles.workspaces.turnedOn" } else { "web-pages.profiles.workspaces.turnedOff" }, args=[("name", named)]),
+                    )
+                  },
+                  busy~,
+                  lead?=if marked {
+                    Some(fn(l) { @sf.station_mark_node(l, emoji, icon, profile_ws_mark, fn() { @sf.theme().p.text }, stint) })
+                  } else {
+                    None
+                  },
+                )
+              })
+            })
+          })
+        })
+      })
     }
   })
 }
