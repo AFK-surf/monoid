@@ -80,10 +80,27 @@ test("a model its maker sells under another name, or by its dated version, has t
     "command-a": null,
     // Only resold: no list price of its maker's.
     "llama-5": null,
+    // The names it sells it by, which sessions record: that model at those prices.
+    "deepseek-flash": cost,
+    "deepseek-v4-flash": cost,
   });
+  assert.equal(catalog(canonical, providers)["deepseek-flash"]!.name, "DeepSeek V4.1 Flash 1017");
   // Dated versions of different prices: none of them.
   const two = { deepseek: { models: { a: { canonical_model_id: "deepseek/deepseek-v4.1-flash-1017", cost: flash }, b: { canonical_model_id: "deepseek/deepseek-v4.1-flash-1120", cost: { input: 1, output: 1 } } } } };
   assert.equal(catalog({ "deepseek/deepseek-v4.1-flash": {} }, two)["deepseek-v4.1-flash"]!.cost, undefined);
+});
+
+test("a name a maker sells only another lab's model by, or under a path, is not that model", () => {
+  const canonical = { "mistral/ministral-3": { name: "Ministral 3" }, "zhipuai/glm-5.3": { name: "GLM-5.3" } };
+  const providers = {
+    mistral: { models: {
+      "zai-glm-5-3": { canonical_model_id: "zhipuai/glm-5.3", cost: { input: 9, output: 9 } },
+      "ministral-latest": { canonical_model_id: "mistral/ministral-3", cost: { input: 0.1, output: 0.1 } },
+      "mistral/ministral-x": { canonical_model_id: "mistral/ministral-3", cost: { input: 0.1, output: 0.1 } },
+      "ministral-3": { cost: { input: 0.1, output: 0.1 } },
+    } },
+  };
+  assert.deepEqual(Object.keys(catalog(canonical, providers)).sort(), ["glm-5.3", "ministral-3", "ministral-latest"]);
 });
 
 test("the catalog is made once, and a station that has it is told so", async () => {

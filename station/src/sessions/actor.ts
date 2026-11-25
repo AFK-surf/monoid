@@ -122,6 +122,7 @@ export type SessionStore = {
   stopWait(key: string, refill?: boolean): void;
   forgetWait(key: string): void;
   hasSessionActiveWatch(session: string): boolean;
+  progressOf(session: string, home: string | null, email?: string | null): { minutes: number; strength: "require" | "remind" };
   latestThread(key: string): any | null;
   entriesBefore(thread: number, n: number | null, limit: number): any[];
   insertMessage(message: any): [number, boolean];
@@ -191,6 +192,10 @@ export type SessionDeps = {
   moveOn?(): boolean;
   /// Whether workspace project classification (`FEATURES.projects`) is active on this station.
   projectsOn?(): boolean;
+  /// The workspace of a session that says none of its own.
+  homeWorkspace?(): string | null;
+  /// The email of who started the session on a platform (Slack, Feishu), where the platform shares it.
+  starterEmail?(key: string): Promise<string | null>;
   /// Compact (<= 1 KB) workspace projects/tags delta header for normal message delivery when first seen or changed.
   untoldProjects?(key: string): Promise<{ text: string; markTold: () => void } | null>;
   maxNudges(): number;

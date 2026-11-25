@@ -169,32 +169,22 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // P0 Regular Liquid Glass optics fix restored recipe blur 2.0/2.2 on narrow bars/pills.
   // iOS 27.0 resting segmented/pill thumb aligned to #68686E dark fill with zero border/shadow in Light and Dark.
   // iOS 27.0 Regular Liquid Glass calibration sets full-res blur=1.2 on narrow bars/pills.
+  // The settings' list has one more row, 进度汇报.
+  // The settings' list has one more row, MCP 服务.
   // Pure progressive scroll-edge blur + bare adaptive ink + adaptive bar pills on narrow page_node bars.
   inspect(out.to_string(), content=(
-    #|settings narrow 101788:28db1cae
+    #|settings narrow 116567:67707861
     #|station narrow 97469:2987ccf7
     #|me-reading narrow 31187:43d2c218
-    #|settings wide 208705:aa1d9d1c
-    #|station wide 279941:90c60101
-    #|me-reading wide 203424:d1d4b002
-    #|settings-dark narrow 102053:6661d64a
+    #|settings wide 218279:2741de4
+    #|station wide 290267:70935458
+    #|me-reading wide 212998:a2e52677
+    #|settings-dark narrow 116804:7f651aac
     #|station-dark narrow 97277:c47c7a1e
     #|me-reading-dark narrow 31321:8f3392df
-    #|settings-dark wide 208585:278a13a9
-    #|station-dark wide 279559:6ef28ef5
-    #|me-reading-dark wide 203370:c81f248c
+    #|settings-dark wide 218137:45a5c570
+    #|station-dark wide 289863:a3e6eef9
+    #|me-reading-dark wide 212922:f6d18852
     #|
-
-
-
-
-
-
-
-
-
-
-
-
   ))
 }

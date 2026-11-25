@@ -7,6 +7,8 @@ export interface OperationParams {
   "tools.access": {  };
   "tools.setAccess": { access: string };
   "agentEnv.set": { env?: unknown; text?: string | null | undefined };
+  "mcpServers.save": { servers: unknown };
+  "mcpServers.reload": { name?: string | null | undefined };
   "search.setPersonal": { personal: boolean };
   "network.setCongestion": { congestion: string };
   "copies.setSettings": { mode?: string | null | undefined; stations?: string[] | null | undefined; acceptOthers?: boolean | null | undefined; uploadMbps?: number | null | undefined; s3?: unknown };
@@ -224,6 +226,8 @@ export function bindStationOperations(call: Call) {
     toolsAccess: <T = unknown>(params: OperationParams["tools.access"] = {}) => call("tools.access", params) as Promise<T>,
     toolsSetAccess: <T = unknown>(params: OperationParams["tools.setAccess"]) => call("tools.setAccess", params) as Promise<T>,
     agentEnvSet: <T = unknown>(params: OperationParams["agentEnv.set"] = {}) => call("agentEnv.set", params) as Promise<T>,
+    mcpServersSave: <T = unknown>(params: OperationParams["mcpServers.save"]) => call("mcpServers.save", params) as Promise<T>,
+    mcpServersReload: <T = unknown>(params: OperationParams["mcpServers.reload"] = {}) => call("mcpServers.reload", params) as Promise<T>,
     searchSetPersonal: <T = unknown>(params: OperationParams["search.setPersonal"]) => call("search.setPersonal", params) as Promise<T>,
     networkSetCongestion: <T = unknown>(params: OperationParams["network.setCongestion"]) => call("network.setCongestion", params) as Promise<T>,
     copiesSetSettings: <T = unknown>(params: OperationParams["copies.setSettings"] = {}) => call("copies.setSettings", params) as Promise<T>,

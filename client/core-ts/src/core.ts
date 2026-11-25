@@ -88,6 +88,7 @@ import * as stationMarkCalls from "./views/station-marks.ts";
 import * as presetCalls from "./views/presets.ts";
 import * as projectCalls from "./views/projects.ts";
 import * as boardDraftCalls from "./views/board-drafts.ts";
+import * as progressCalls from "./views/progress.ts";
 import * as movedChats from "./views/moved.ts";
 import { MOVED } from "./station/requests.ts";
 import * as transferCalls from "./views/transfers.ts";
@@ -197,6 +198,8 @@ export class Inner {
   presets!: presetCalls.PresetViews;
   /// A person's drafts of 待派发 as their devices carry them (views/board-drafts.ts).
   boardDrafts!: boardDraftCalls.BoardDraftViews;
+  /// How a person's agents are asked for progress, as their devices carry it (views/progress.ts).
+  progress!: progressCalls.ProgressViews;
   changelog!: Changelog;
   forms!: Forms;
   adb!: Adb;
@@ -414,6 +417,7 @@ export class Core {
       inner.presets = presetCalls.install(inner);
       projectCalls.install(inner);
       inner.boardDrafts = boardDraftCalls.install(inner);
+      inner.progress = progressCalls.install(inner);
       movedChats.install(inner);
       transferCalls.install(inner);
       browseCalls.install(inner);

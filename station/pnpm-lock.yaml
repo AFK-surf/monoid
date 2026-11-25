@@ -14,6 +14,9 @@ importers:
       effect:
         specifier: 4.1.0
         version: 4.1.0
+      tldts:
+        specifier: 7.5.4
+        version: 7.5.4
       undici:
         specifier: 8.12.4
         version: 8.12.4
@@ -256,6 +259,13 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  tldts-core@7.6.0:
+    resolution: {integrity: sha512-0By9U6fw2hNzfJAbBMuo1bsX/OyVlsj0wjGyMPV50RZKoLCRwXBOX0FQqgZDaMo2WjjaEW/ZGyVXicLUFTmXqQ==}
+
+  tldts@7.5.4:
+    resolution: {integrity: sha512-Rn2ABgjHZrA+jzqom5zhxA0hLohzYrIgfCPyhpTUxqsUrcsBYuab49LseR9waB9Jr8/MxdodvMHA91oRiGLO3Q==}
+    hasBin: true
+
   undici-types@7.16.0:
     resolution: {integrity: sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw==}
 
@@ -426,6 +436,12 @@ snapshots:
       '@esbuild/win32-arm64': 0.28.2
       '@esbuild/win32-ia32': 0.28.2
       '@esbuild/win32-x64': 0.28.2
+
+  tldts-core@7.6.0: {}
+
+  tldts@7.5.4:
+    dependencies:
+      tldts-core: 7.6.0
 
   undici-types@7.16.0: {}
 

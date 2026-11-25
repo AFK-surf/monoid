@@ -25,6 +25,7 @@ fn station_part_tester(make : (@view.View) -> Unit, w~ : Double, h~ : Double, pl
         make(p)
       })
       |> ignore
+      @sf.presented_nodes(root)
     },
     around=fn(c) {
       @sf.begin(c) |> ignore
@@ -1585,4 +1586,109 @@ test "the backup history says each run of syncs that went well to one place once
     r("7", "r2", "ok"),
   ])
   assert_eq(runs.map(x => text(Some(x), "id")), ["1", "2", "4", "5"])
+}
+
+///|
+test "Settings MCP tab: lists stations, toggles shared/enabled, reconnects, deletes, and hides writes for non-managers" {
+  for (w, platform) in page_cases {
+    @sfbase.reset()
+    reset()
+    @settings.reset()
+    @sffixture.fixture_reset()
+    @sf.presenters_reset()
+    @sf.set_words(@sfbase.fill)
+    let calls : Array[(String, Json)] = []
+    let base = @sffixture.fixture("settings")
+    let src : Source = {
+      ..base,
+      call: fn(name, params, done) {
+        if name.has_prefix("mcpServers.") {
+          calls.push((name, params))
+        }
+        done(Ok(Json::null()))
+      },
+    }
+    let servers : Array[Json] = [
+      {
+        "name": "github",
+        "transport": "stdio",
+        "enabled": true,
+        "shared": true,
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": { "GITHUB_TOKEN": "ghp_1…9xyz" },
+        "status": "ready",
+        "toolCount": 12,
+        "tools": ["create_issue"],
+        "error": Json::null(),
+      },
+      {
+        "name": "docs",
+        "transport": "http",
+        "enabled": true,
+        "shared": false,
+        "url": "https://docs.example.com/mcp",
+        "headers": { "Authorization": "Beare…9xyz" },
+        "status": "failed",
+        "toolCount": 0,
+        "tools": [],
+        "error": "HTTP 502",
+      },
+    ]
+    let core = @sfbase.settings_core(src, rig_workspace)
+    let t = station_part_tester(fn(p) {
+      mcp_station_card_node(p, core, "ws1/st1", fn() { "Willow" }, fn() { servers }, fn() { true }, fn() { true })
+    }, w~, h=900.0, platform~)
+    assert_true(t.find("Willow") is Some(_), msg="station title: \{w}")
+    assert_true(t.find("github") is Some(_), msg="github server shown: \{w}")
+    assert_true(t.find("docs") is Some(_), msg="docs server shown: \{w}")
+    assert_true(t.find("HTTP 502") is Some(_), msg="error shown: \{w}")
+    assert_true(t.find("跨站共享") is Some(_), msg="shared badge shown: \{w}")
+    assert_true(t.find("添加 MCP 服务") is Some(_), msg="add button shown: \{w}")
+    assert_eq(t.audit(), [], msg="manager audit: \{w}")
+
+    // Click github row to open edit dialog, toggle shared off, and save
+    t.click(Link, label="github")
+    presented_in(t)
+    assert_true(t.find("允许其他 Station 使用") is Some(_), msg="shared toggle in dialog: \{w}")
+    t.click(Switch, label="允许其他 Station 使用")
+    t.draw()
+    t.click(Button, label="保存")
+    presented_in(t)
+    assert_eq(calls.length(), 1)
+    assert_eq(calls[0].0, "mcpServers.save")
+    assert_eq(field(field(field(Some(calls[0].1), "servers"), "github"), "shared"), None)
+
+    // Re-open github dialog and reconnect
+    t.click(Link, label="github")
+    presented_in(t)
+    t.click(Button, label="重新连接")
+    presented_in(t)
+    assert_eq(calls.length(), 2)
+    assert_eq(calls[1].0, "mcpServers.reload")
+    assert_eq(text(Some(calls[1].1), "name"), "github")
+
+    // Re-open github dialog and delete via confirm dialog
+    t.click(Link, label="github")
+    presented_in(t)
+    t.click(Button, label="删除")
+    presented_in(t)
+    assert_true(t.find("删除「github」？") is Some(_), msg="confirm shown: \{w}")
+    let confirm_dels = t.all(Button, label="删除")
+    let (cx, cy, cw, ch) = confirm_dels[confirm_dels.length() - 1].rect
+    t.tap(cx + cw / 2.0, cy + ch / 2.0)
+    presented_in(t)
+    assert_eq(calls.length(), 3)
+    assert_eq(calls[2].0, "mcpServers.save")
+    assert_eq(field(field(Some(calls[2].1), "servers"), "github"), Some(Json::null()))
+
+    // Non-manager view hides add button and makes rows non-editable
+    let t_ro = station_part_tester(fn(p) {
+      mcp_station_card_node(p, core, "ws1/st1", fn() { "Willow" }, fn() { servers }, fn() { false }, fn() { true })
+    }, w~, h=900.0, platform~)
+    assert_true(t_ro.find("github") is Some(_), msg="ro shows servers: \{w}")
+    assert_true(t_ro.find("添加 MCP 服务") is None, msg="ro hides add: \{w}")
+    assert_eq(t_ro.all(Link, label="github").length(), 0)
+    assert_eq(t_ro.audit(), [], msg="ro audit: \{w}")
+  }
 }

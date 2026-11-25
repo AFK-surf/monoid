@@ -1,0 +1,20 @@
+[package]
+name = "sessions_agents"
+version = "0.1.0"
+
+[dependencies]
+base64 = { workspace = true }
+base_codec = { workspace = true }
+builders_core = { workspace = true }
+effect = { workspace = true }
+js_json = { workspace = true }
+jscase = { workspace = true }
+live_wire = { workspace = true }
+parse_acp = { workspace = true }
+parse_claude = { workspace = true }
+parse_codex = { workspace = true }
+parse_cursor = { workspace = true }
+parse_dsh = { workspace = true }
+parse_pi = { workspace = true }
+pieces = { workspace = true }
+sessions_core = { workspace = true }

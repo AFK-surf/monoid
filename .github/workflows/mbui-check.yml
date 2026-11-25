@@ -60,10 +60,7 @@ jobs:
   # parts: the apps are not built with it (scripts/mbc's lto_for, 2026-10-24).
   native:
     name: native (${{ matrix.part }}${{ matrix.group && format(' {0}', matrix.group) || '' }}${{ matrix.fps && format(' at {0} fps', matrix.fps) || '' }})
-    # (kept on GitHub's elastic Linux pool unless CI_1_MBUI == 'on': four ~100 s jobs per push queued 800-1000 s behind
-    # two runners on ci-1 when several mbui branches pushed at once, 43736377567 and 43736529570, while ci-1 alone takes
-    # natives, check and side off Mini1)
-    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: ubuntu-24.04
     # (a push's 5 minutes, the pipeline's call of a branch's push too; the day's, its pages in one process, 10)
     timeout-minutes: ${{ github.event_name != 'schedule' && 5 || 10 }}
     strategy:
@@ -124,43 +121,18 @@ jobs:
         # (arch/next's commit, on main's ref: workflow_run, above)
         with:
           ref: "${{ github.event.workflow_run.head_sha || github.sha }}"
-          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
       - name: The core takes input and due timers in order
         # (once a push, on replay-build's runner: a frame rate is nothing to it)
         if: env.PART == 'replay'
         run: |
           clang++ -std=c++20 -O2 apps/mbui/engine/tests/ready_queue.cpp -o "$RUNNER_TEMP/core-ready-queue-test"
           "$RUNNER_TEMP/core-ready-queue-test"
-      - if: runner.environment == 'self-hosted'
-        uses: ./.github/actions/setup-linux
-      - if: runner.environment != 'self-hosted'
-        uses: ./.github/actions/node
-      # (from the Actions cache the moonbit workflow fills, never downloaded here; on ci-1, local NVMe _tool/moon-ci + ~/stillfail-ci/mbui-tools)
+      - uses: ./.github/actions/node
+      # Restore MoonBit from the Actions cache.
       - uses: ./.github/actions/mbui-moonbit
         with: { tools: "${{ env.PART == 'replay' && 'mbc testexe detlint chk' || 'mbc testexe' }}" }
-      # (on ci-1: one content-addressed MBC_STORE and per-part moon _build seed on local NVMe, shared by ci-1-1 and ci-1-2)
-      - if: runner.environment == 'self-hosted'
-        run: |
-          mkdir -p "$HOME/stillfail-ci/mbc-store" "$HOME/stillfail-ci/moon-build"
-          echo "MBC_STORE=$HOME/stillfail-ci/mbc-store" >> "$GITHUB_ENV"
-          seed="$HOME/stillfail-ci/moon-build/$CACHE_PREFIX"
-          if [ -d "$seed" ]; then
-            mkdir -p apps/mbui/_build
-            cp -a "$seed/." apps/mbui/_build/
-          fi
-      # moon's own build (moonc's C and what it checked) as main's newest run left it: without, moonc made all of it
-      # again each run, 46-53 s of the tests' build with every unit and link kept, and the check's type-check from
-      # nothing (2026-10-23, 40018743319); over it, moon makes again what changed (on a branch over its own: the app
-      # part's build 29 s to 20, the check 24 s to 5 after it, the replay's build 26 s to 13-17). Main's only (75-180 MB
-      # a part): a branch takes main's. Without each test program's objects (<test>.mbc: the units' store keeps them):
-      # with them, a run took its units from there and left the store's untouched, so it kept none of them, and a
-      # branch from before this took main's store of 68 units and compiled the rest (files-browse, 40038188859).
-      # ('**/*.mbc' alone kept their files: it names the directory, not what is in it, and 44 of them, 2.9 GB, were
-      # most of the app part's 1.1 GB cache (419 MB without, zstd -3), restored in 21-45 s of each job and saved
-      # again on main's: #5410, 2026-11-11)
       - uses: actions/cache/restore@v4
         id: moon
-        if: runner.environment != 'self-hosted'
         with:
           path: |
             apps/mbui/_build
@@ -185,7 +157,7 @@ jobs:
       # caches, 11 s, and its test program, 5, 135321359511, 2026-11-19)
       - name: Start the app build
         id: app-start
-        if: runner.environment != 'self-hosted' && env.PART == 'app' && env.GROUP == 'build'
+        if: env.PART == 'app' && env.GROUP == 'build'
         run: |
           mkdir -p "$RUNNER_TEMP/app-live"
           : > "$RUNNER_TEMP/app-store-pending"
@@ -205,7 +177,6 @@ jobs:
       # (mbui-wide-sidebar, 39991582878, 2026-10-23).
       - uses: actions/cache/restore@v4
         id: main
-        if: runner.environment != 'self-hosted'
         with:
           path: ${{ env.MBC_STORE }}
           key: ${{ env.CACHE_PREFIX }}m-${{ github.sha }}
@@ -222,26 +193,26 @@ jobs:
             mbui-linux-store-app-realsize-m-
             mbui-linux-store-app-sfapp-m-${{ env.IMG }}-
             mbui-linux-store-app-sfapp-m-
-      - if: runner.environment != 'self-hosted' && env.OWN != 'm-'
+      - if: env.OWN != 'm-'
         run: |
           mkdir -p "$MBC_STORE"
           mv "$MBC_STORE" "$RUNNER_TEMP/store-main"
       # (and a branch's, arch/next's newest beside main's: a branch off it has most of its units there, none of main's)
       - uses: actions/cache/restore@v4
-        if: runner.environment != 'self-hosted' && env.OWN == 'b-'
+        if: env.OWN == 'b-'
         with:
           path: ${{ env.MBC_STORE }}
           key: ${{ env.CACHE_PREFIX }}a-${{ github.sha }}
           restore-keys: |
             ${{ env.CACHE_PREFIX }}a-${{ env.IMG }}-
             ${{ env.CACHE_PREFIX }}a-
-      - if: runner.environment != 'self-hosted' && env.OWN == 'b-'
+      - if: env.OWN == 'b-'
         run: |
           mkdir -p "$MBC_STORE"
           mv "$MBC_STORE" "$RUNNER_TEMP/store-arch"
       - uses: actions/cache/restore@v4
         id: own
-        if: runner.environment != 'self-hosted' && env.OWN != 'm-'
+        if: env.OWN != 'm-'
         with:
           path: ${{ env.MBC_STORE }}
           key: ${{ env.CACHE_PREFIX }}${{ env.OWN }}${{ github.sha }}
@@ -252,7 +223,7 @@ jobs:
             mbui-linux-store-app-realsize-${{ env.OWN }}
             mbui-linux-store-app-sfapp-${{ env.OWN }}${{ env.IMG }}-
             mbui-linux-store-app-sfapp-${{ env.OWN }}
-      - if: runner.environment != 'self-hosted' && env.OWN != 'm-'
+      - if: env.OWN != 'm-'
         run: |
           mkdir -p "$MBC_STORE" "$RUNNER_TEMP/store-arch"
           # (linked, not copied: a unit's files are never written again once kept, and the three are on one disk. Copied,
@@ -267,7 +238,7 @@ jobs:
       # 156-162 s, app build 267-311 s of its 5 minutes (1bf02b58, 16c0c777 stopped, f150a1db, 2026-11-11), the branch
       # having compiled the same units by their content already. What is not found is compiled, as before.
       - name: The units the merged branches compiled
-        if: runner.environment != 'self-hosted' && env.OWN == 'm-' && github.event_name == 'push'
+        if: env.OWN == 'm-' && github.event_name == 'push'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -303,7 +274,7 @@ jobs:
       # (what main's store had: a branch puts all its units main's lacks, its earlier pushes' too, so what it compiled
       # is main's once merged. Only a run that built every program it builds: one cut at its limit puts none, below)
       - name: The units main's store had
-        if: runner.environment != 'self-hosted' && env.OWN == 'b-'
+        if: env.OWN == 'b-'
         run: |
           mkdir -p "$RUNNER_TEMP/store-main" "$RUNNER_TEMP/store-arch"
           # (and arch/next's: everyone's already, a cache on main's ref)
@@ -372,31 +343,6 @@ jobs:
             TIMES=1 MBC_REAL_CC=clang TARGETS=native PARTS=${{ env.PART }} APP_GROUP=${{ env.GROUP == 'build' && '1/4' || env.GROUP }} APP_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'app' && format('{0}/app-test', runner.temp) || '' }} REALSIZE_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'realsize' && format('{0}/realsize-test', runner.temp) || '' }} PAGES_TEST_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'pages_test' && format('{0}/pages-test', runner.temp) || '' }} PKGS_BUILD_OUT=${{ env.GROUP == 'pkgs' && format('{0}/pkgs-test', runner.temp) || '' }} REPLAY_BUILD_OUT=${{ env.GROUP == 'build' && env.PART == 'replay' && format('{0}/replay-test', runner.temp) || '' }} SFAPP_SHARDS=${{ github.event_name == 'schedule' && 1 || 4 }} LINES_OUT=40 bash scripts/with-timeout.sh @$((JOB_END - ${{ env.PART == 'replay' && (env.OWN == 'm-' && 65 || 45) || env.GROUP == 'build' && env.OWN != 'm-' && 35 || 25 }})) bash apps/mbui/scripts/test.sh 2>&1 | tee -a "$RUNNER_TEMP/mbui-test.log" || { s=$?; [ $s != 124 ] || exit 124; code=1; }
           done
           exit $code
-      # (sfapp's test program and its tests' list, for the app job's runs; stripped & zstd -6 so home upload takes ~3 s,
-      # and kept locally on ci-1 for corners' run right after app-build)
-      - if: runner.environment == 'self-hosted' && env.GROUP == 'build' && env.PART == 'app'
-        run: |
-          local_dir="$HOME/stillfail-ci/app-test/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          rm -rf "$local_dir" && mkdir -p "$(dirname "$local_dir")"
-          cp -a "$RUNNER_TEMP/app-test" "$local_dir"
-          find "$HOME/stillfail-ci/app-test" -mindepth 1 -maxdepth 1 -type d -mmin +120 -exec rm -rf {} + 2>/dev/null || true
-      # On self-hosted non-main pipeline runs (e.g. release/* on ci-1), stage the built test binary dir in Cloudflare R2
-      # via scripts/native-handoff.mjs and leave only ~1 KB natives.r2.json for actions/upload-artifact@v4, avoiding
-      # 5-minute Azure Blob upload stalls over congested egress (release/2026-11-26 run 45648336081).
-      - name: Stage mbui test binaries in R2 (self-hosted non-main pipeline)
-        if: ${{ !cancelled() && runner.environment == 'self-hosted' && startsWith(github.ref, 'refs/heads/') && github.ref != 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.workflow == 'pipeline' }}
-        run: |
-          set -euo pipefail
-          if [ "${{ steps.tests.outcome }}" = success ] && [ "${GROUP:-}" = build ]; then
-            case "${PART:-}" in
-              app)        bash scripts/mbui-artifact-handoff.sh put app "$RUNNER_TEMP/app-test" "$GITHUB_SHA" ;;
-              realsize)   bash scripts/mbui-artifact-handoff.sh put realsize "$RUNNER_TEMP/realsize-test" "$GITHUB_SHA" ;;
-              pages_test) bash scripts/mbui-artifact-handoff.sh put pages_test "$RUNNER_TEMP/pages-test" "$GITHUB_SHA" ;;
-              replay)     bash scripts/mbui-artifact-handoff.sh put replay "$RUNNER_TEMP/replay-test" "$GITHUB_SHA" ;;
-            esac
-          elif [ "${GROUP:-}" = pkgs ] && [ "${GITHUB_EVENT_NAME:-}" != workflow_run ]; then
-            bash scripts/mbui-artifact-handoff.sh put pkgs "$RUNNER_TEMP/pkgs-test" "$GITHUB_SHA"
-          fi
       - if: env.GROUP == 'build' && env.PART == 'app'
         uses: actions/upload-artifact@v4
         with: { name: "mbui-app-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/app-test", retention-days: 1, compression-level: 6 }
@@ -432,7 +378,7 @@ jobs:
           [ ! -f "$RUNNER_TEMP/app-store-pending" ] || touch "$RUNNER_TEMP/app-store-pending.failed"
           t=$(cat "$RUNNER_TEMP/tests-tree" 2>/dev/null || true)
           left() { [ -z "$t" ] || grep -lsz "^MBUI_TESTS_TREE=$t\$" /proc/[0-9]*/environ 2>/dev/null | cut -d/ -f3 || true; }
-          hosted=${{ runner.environment != 'self-hosted' && '1' || '' }}
+          hosted=1
           for i in 1 2 3 4 5; do
             p=$(left)
             [ -n "$p" ] || [ -z "$hosted" ] || p=$(pgrep -x 'moon|moonc|mbc|clang|clang\+\+|clang-[0-9]+' || true)
@@ -457,7 +403,7 @@ jobs:
       # branch's: it is never merged into main, and its whole app's programs are built light, test.sh)
       - name: The units this run compiled, for main's
         id: queue-units
-        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && steps.tests.outcome == 'success' && !startsWith(github.ref, 'refs/heads/release/')
+        if: env.OWN == 'b-' && steps.tests.outcome == 'success' && !startsWith(github.ref, 'refs/heads/release/')
         run: |
           # (the store's save after it comes first: with 45 s or less left, none put for main)
           if [ "$((JOB_END - $(date +%s)))" -le 45 ]; then
@@ -469,7 +415,7 @@ jobs:
           echo "units main's store lacks: $(wc -l < "$RUNNER_TEMP/units-new")"
           mkdir -p "$RUNNER_TEMP/queue-units"
           [ ! -s "$RUNNER_TEMP/units-new" ] || tar -cf "$RUNNER_TEMP/queue-units/units.tar" -C "$MBC_STORE" -T "$RUNNER_TEMP/units-new"
-      - if: runner.environment != 'self-hosted' && steps.queue-units.outcome == 'success'
+      - if: steps.queue-units.outcome == 'success'
         uses: actions/upload-artifact@v4
         continue-on-error: true
         with: { name: "mbui-units-${{ env.CACHE_PREFIX }}${{ github.sha }}", path: "${{ runner.temp }}/queue-units", retention-days: 1, compression-level: 1, if-no-files-found: ignore }
@@ -495,50 +441,34 @@ jobs:
           went=${{ steps.tests.outcome }}
           [ '${{ steps.app-start.outcome }}' != success ] || [ "$went" != skipped ] || went=failure
           [ "$OWN" != a- ] || [ "$went" != failure ] || went=success
-          if [ "${{ runner.environment }}" = self-hosted ]; then
-            [ ! -d "$S" ] || find "$S" -name '*.lock' -mmin +120 -delete 2>/dev/null || true
-            [ ! -d "$S" ] || [ "$went" != success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +4320 -exec rm -rf {} +
-            seed="$HOME/stillfail-ci/moon-build/$CACHE_PREFIX"
-            if [ "$went" = success ] && { [ "$OWN" = m- ] || [ ! -d "$seed" ]; } && [ -d apps/mbui/_build ]; then
-              tmp="$HOME/stillfail-ci/moon-build/.tmp-$CACHE_PREFIX-$$"
-              rm -rf "$tmp" && mkdir -p "$tmp"
-              cp -a apps/mbui/_build/. "$tmp/"
-              find "$tmp" -type d \( -name '*.mbc' -o -name mbc-store \) -prune -exec rm -rf {} +
-              rm -rf "$seed.old"
-              [ ! -d "$seed" ] || mv "$seed" "$seed.old" || true
-              mv "$tmp" "$seed" || rm -rf "$tmp"
-              rm -rf "$seed.old"
-            fi
+          [ ! -d "$S" ] || find "$S" -name '*.lock' -delete
+          # (main's keeps what its runs used for the last three hours, not only this run's: a branch off main of an hour
+          # or two before found few of its units in main's newest store, main having changed them since, and compiled
+          # them all again, 644 of sfapp's 899 in 141 s, app build 275-276 s of its 5 minutes, core-connect-rows
+          # 42934469629 and mbui-app-part-balance, 2026-11-10 and 11, where main's own was 41-227)
+          # (three hours of them: twelve kept 23,351 units, 926 MB, 36-45 s to restore, 2026-11-17)
+          # (a branch's: only a run that built all its programs keeps its units, those it did not use gone (test.sh's
+          # MBUI_BUILT_MARK; its tests may have failed: a push that mends a test compiles nothing again); a run cut
+          # before then keeps nothing, so no build is finished over several pushes)
+          if [ "$OWN" = m- ]; then
+            old="-mmin +180"
+            [ ! -d "$S" ] || [ "$went" != success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" $old -exec rm -rf {} +
+            # (a cut run's too, those no run used for four hours: kept whole, a cut one saved the 987 MB above)
+            [ ! -d "$S" ] || [ "$went" = success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +240 -exec rm -rf {} +
+          elif [ -d "$S" ] && [ -f "$RUNNER_TEMP/start" ] && [ -f "$RUNNER_TEMP/built" ]; then
+            find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -exec rm -rf {} +
+          fi
+          if [ "$OWN" = m- ] || [ -f "$RUNNER_TEMP/built" ]; then
+            c=$( (cd "$S" 2>/dev/null && find . -mindepth 2 -maxdepth 2 -type d | sort) | sha256sum | cut -c1-16)
+            echo "BUILD_KEY=$CACHE_PREFIX$OWN$IMG-$c" >> "$GITHUB_ENV"
+            echo "units kept: $(find "$S" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l), $(du -sh "$S" 2>/dev/null | cut -f1)"
           else
-            [ ! -d "$S" ] || find "$S" -name '*.lock' -delete
-            # (main's keeps what its runs used for the last three hours, not only this run's: a branch off main of an hour
-            # or two before found few of its units in main's newest store, main having changed them since, and compiled
-            # them all again, 644 of sfapp's 899 in 141 s, app build 275-276 s of its 5 minutes, core-connect-rows
-            # 42934469629 and mbui-app-part-balance, 2026-11-10 and 11, where main's own was 41-227)
-            # (three hours of them: twelve kept 23,351 units, 926 MB, 36-45 s to restore, 2026-11-17)
-            # (a branch's: only a run that built all its programs keeps its units, those it did not use gone (test.sh's
-            # MBUI_BUILT_MARK; its tests may have failed: a push that mends a test compiles nothing again); a run cut
-            # before then keeps nothing, so no build is finished over several pushes)
-            if [ "$OWN" = m- ]; then
-              old="-mmin +180"
-              [ ! -d "$S" ] || [ "$went" != success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" $old -exec rm -rf {} +
-              # (a cut run's too, those no run used for four hours: kept whole, a cut one saved the 987 MB above)
-              [ ! -d "$S" ] || [ "$went" = success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +240 -exec rm -rf {} +
-            elif [ -d "$S" ] && [ -f "$RUNNER_TEMP/start" ] && [ -f "$RUNNER_TEMP/built" ]; then
-              find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -exec rm -rf {} +
-            fi
-            if [ "$OWN" = m- ] || [ -f "$RUNNER_TEMP/built" ]; then
-              c=$( (cd "$S" 2>/dev/null && find . -mindepth 2 -maxdepth 2 -type d | sort) | sha256sum | cut -c1-16)
-              echo "BUILD_KEY=$CACHE_PREFIX$OWN$IMG-$c" >> "$GITHUB_ENV"
-              echo "units kept: $(find "$S" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l), $(du -sh "$S" 2>/dev/null | cut -f1)"
-            else
-              echo "not every program built (cut at its limit): none of this run's units kept"
-            fi
+            echo "not every program built (cut at its limit): none of this run's units kept"
           fi
       # (both saves: at most 2 minutes, and a save that hangs or fails does not fail a job whose build went through;
       # main's 45369648320 built pages_test in 1m12s and then hung 9 minutes in this MOON_KEY save until the job's
       # 10 minutes cancelled it, and every pages test after it with it)
-      - if: always() && runner.environment != 'self-hosted' && env.BUILD_KEY != '' && env.BUILD_KEY != steps.main.outputs.cache-matched-key && env.BUILD_KEY != steps.own.outputs.cache-matched-key
+      - if: always() && env.BUILD_KEY != '' && env.BUILD_KEY != steps.main.outputs.cache-matched-key && env.BUILD_KEY != steps.own.outputs.cache-matched-key
         uses: actions/cache/save@v4
         timeout-minutes: 2
         continue-on-error: true
@@ -552,7 +482,7 @@ jobs:
       # that went through, or an app or replay build cut at its limit (or red) once moonc had written its test
       # program's C, with 15 s left to save it: moon's own of that program is then whole, and main's next run compiled
       # it all again without (44336167298). Any other cut or red run's _build is half made: none kept)
-      - if: always() && runner.environment != 'self-hosted' && env.OWN == 'm-' && steps.moon.outputs.cache-hit != 'true'
+      - if: always() && env.OWN == 'm-' && steps.moon.outputs.cache-hit != 'true'
         run: |
           if [ '${{ steps.tests.outcome }}' != success ]; then
             case "$PART" in
@@ -575,7 +505,7 @@ jobs:
           rm -rf "$MBC_STORE"
           find apps/mbui/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
           echo "MOON_KEY=mbui-moon-${{ env.GROUP == 'pkgs' && 'pkgs' || 'build' }}-${{ env.PART }}-${{ github.sha }}" >> "$GITHUB_ENV"
-      - if: always() && runner.environment != 'self-hosted' && env.OWN == 'm-' && steps.moon.outputs.cache-hit != 'true' && env.MOON_KEY != ''
+      - if: always() && env.OWN == 'm-' && steps.moon.outputs.cache-hit != 'true' && env.MOON_KEY != ''
         uses: actions/cache/save@v4
         timeout-minutes: 2
         continue-on-error: true
@@ -622,7 +552,7 @@ jobs:
   # sfapp's test program built once (scripts/test.sh APP_BUILD_OUT), its units kept as the native job keeps its own
   app-build:
     name: native (app build)
-    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       PART: app
@@ -636,7 +566,7 @@ jobs:
   # keeping sfrealsize payloads and static budget tables out of sfapp.whitebox_test.
   realsize-build:
     name: native (realsize build)
-    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       PART: realsize
@@ -650,7 +580,7 @@ jobs:
   # (scripts/test.sh PAGES_TEST_BUILD_OUT), keeping pages/settings/files/viewer tests out of sfapp.whitebox_test.
   pages-test-build:
     name: native (pages test build)
-    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       PART: pages_test
@@ -668,7 +598,7 @@ jobs:
   # 2dbd62da, 42734298401, 2026-11-10), every unit a change made compiled twice.
   replay-build:
     name: native (replay build)
-    runs-on: ${{ fromJSON(github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     env:
       PART: replay
@@ -746,7 +676,7 @@ jobs:
     if: github.event_name != 'workflow_run' && inputs.rates != 'only'
     # (corners' five processes with motion judged again were 293 s of 300 on GitHub's 4-core Ubuntu (#5567); on ci-1's 16
     # Zen 4 threads right after app-build, ~103 s)
-    runs-on: ${{ fromJSON(matrix.group == 'corners' && github.event.pull_request.head.repo.fork != true && vars.CI_1 != 'off' && vars.CI_1_MBUI == 'on' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: ubuntu-24.04
     # (a push's 5 minutes; the day's, its pages in one process, 10)
     timeout-minutes: ${{ github.event_name != 'schedule' && 5 || 10 }}
     strategy:
@@ -772,21 +702,7 @@ jobs:
       - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
         run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
-      - if: runner.environment == 'self-hosted'
-        uses: ./.github/actions/setup-linux
-      - id: local-app
-        if: runner.environment == 'self-hosted'
-        run: |
-          local_dir="$HOME/stillfail-ci/app-test/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          if [ -f "$local_dir/sfapp.whitebox_test.exe" ]; then
-            mkdir -p "$RUNNER_TEMP/app-test"
-            cp -a "$local_dir/." "$RUNNER_TEMP/app-test/"
-            echo "hit=true" >> "$GITHUB_OUTPUT"
-          fi
-      - if: steps.local-app.outputs.hit != 'true'
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with: { name: "mbui-app-test-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/app-test" }
       - if: env.PKGS == 'yes'
         uses: actions/download-artifact@v4

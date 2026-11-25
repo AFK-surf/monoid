@@ -14,13 +14,14 @@
 export const BEHIND = { newWindow: true, background: true } as const;
 
 /// Methods on the browser's own target, and what of them is the agent's: `target` names a target of its own in
-/// params.targetId, `context` puts the chat's context as params.browserContextId (or one the agent made), `answer` is
-/// answered here, `pass` goes as it is.
-const BROWSER_METHODS: Record<string, "target" | "context" | "pass" | "answer" | "own"> = {
+/// params.targetId, `context` puts the chat's context as params.browserContextId (or one the agent made), `window`
+/// requires a windowId previously returned for one of this chat's targets, `answer` is answered here, `pass` goes as
+/// it is.
+const BROWSER_METHODS: Record<string, "target" | "context" | "pass" | "answer" | "own" | "window"> = {
   "Browser.getVersion": "pass",
   "Browser.getWindowForTarget": "target",
-  "Browser.getWindowBounds": "pass",
-  "Browser.setWindowBounds": "pass",
+  "Browser.getWindowBounds": "window",
+  "Browser.setWindowBounds": "window",
   "Browser.setDownloadBehavior": "context",
   "Browser.grantPermissions": "context",
   "Browser.resetPermissions": "context",
@@ -31,16 +32,13 @@ const BROWSER_METHODS: Record<string, "target" | "context" | "pass" | "answer" |
   "Storage.clearCookies": "context",
   "Target.setDiscoverTargets": "pass",
   "Target.setAutoAttach": "pass",
-  "Target.setRemoteLocations": "pass",
   "Target.getTargets": "pass",
   "Target.getTargetInfo": "target",
   "Target.attachToTarget": "target",
   "Target.detachFromTarget": "own",
   "Target.closeTarget": "target",
   "Target.activateTarget": "answer",
-  "Target.exposeDevToolsProtocol": "target",
   "Target.autoAttachRelated": "target",
-  "Target.sendMessageToTarget": "own",
   "Target.createTarget": "context",
   "Target.createBrowserContext": "pass",
   "Target.disposeBrowserContext": "context",
@@ -106,6 +104,8 @@ export class Gate {
   readonly #targets = new Map<string, string>();
   /// Target sessions Chrome attached on its own to targets not the agent's: let go of, and nothing of them passed.
   readonly #foreign = new Set<string>();
+  /// Window IDs returned by Browser.getWindowForTarget for this chat's own targets.
+  readonly #windows = new Set<number>();
   /// The agent's requests whose answers are looked at, by their id: what to do with each.
   readonly #asked = new Map<string, (m: any) => string | null>();
   /// What the gate itself asked of Chrome and is not answered yet, by id: its answers are its own.
@@ -139,10 +139,25 @@ export class Gate {
     } catch {
       return { up: [], down: [] };
     }
-    if (m === null || typeof m !== "object" || typeof m.method !== "string") return { up: [], down: [error(m?.id, m?.sessionId, "a message is {id, method, params}")] };
+    if (
+      m === null ||
+      typeof m !== "object" ||
+      typeof m.method !== "string" ||
+      !((typeof m.id === "number" && Number.isSafeInteger(m.id)) || (typeof m.id === "string" && m.id !== ""))
+    ) {
+      return { up: [], down: [error(m?.id, m?.sessionId, "a message is {id, method, params}")] };
+    }
+    const sid = typeof m.sessionId === "string" ? m.sessionId : undefined;
+    if (
+      this.#asked.has(`${sid ?? ""}\0${m.id}`) ||
+      (sid === undefined && typeof m.id === "number" && this.#own.has(m.id))
+    ) {
+      return { up: [], down: [error(m.id, sid, "Duplicate or reserved request id.")] };
+    }
     const params = m.params !== null && typeof m.params === "object" ? m.params : {};
     if (typeof m.sessionId === "string") {
       if (!this.#sessions.has(m.sessionId)) return { up: [], down: [error(m.id, m.sessionId, "No such session of this chat's.")] };
+      if (m.method.startsWith("WebAuthn.")) return { up: [], down: [error(m.id, m.sessionId, `${m.method} is not for one chat's browser.`)] };
       const target = this.#targets.get(m.sessionId);
       if (target && ACTING.has(m.method)) {
         const refused = this.#p.act?.(target, m.method) ?? null;
@@ -177,7 +192,23 @@ export class Gate {
           return { up: [], down: [JSON.stringify({ id: m.id, ...(sessionId ? { sessionId } : {}), result: { browserContextIds: [...this.#contexts], defaultBrowserContextId: this.#p.context } })] };
         }
         return { up: [], down: [JSON.stringify({ id: m.id, ...(sessionId ? { sessionId } : {}), result: {} })] };
+      case "window":
+        if (typeof params.windowId !== "number" || !this.#windows.has(params.windowId)) return no("No such window of this chat's.");
+        return { up: [JSON.stringify(m)], down: [] };
       case "target":
+        if (m.method === "Target.attachToTarget" && params.flatten !== true) return no("Target.attachToTarget requires flatten: true.");
+        if (m.method === "Browser.getWindowForTarget") {
+          if (params.targetId === undefined) {
+            if (sessionId === undefined) return no("No such target of this chat's.");
+          } else if (!this.#target(params.targetId)) {
+            return no("No such target of this chat's.");
+          }
+          this.#asked.set(key, (a) => {
+            if (typeof a.result?.windowId === "number") this.#windows.add(a.result.windowId);
+            return null;
+          });
+          return { up: [JSON.stringify(m)], down: [] };
+        }
         // Without one, the browser's own target (Target.getTargetInfo): nothing of a chat's.
         if (params.targetId === undefined && m.method !== "Target.attachToTarget" && m.method !== "Target.closeTarget") return { up: [JSON.stringify(m)], down: [] };
         if (!this.#target(params.targetId)) return no("No such target of this chat's.");
@@ -230,12 +261,34 @@ export class Gate {
   }
 
   /// Whether a message from Chrome is one the gate reads: the browser's news of targets, or an answer it looks at.
-  /// Others pass unread (a page's screenshot is large: it is never parsed).
+  /// Target.* events and pending #asked/#own/#foreign responses are matched in O(1) regardless of length so large
+  /// Target.getTargets / Target.* payloads are never bypassed, while large unrelated payloads (such as screenshots)
+  /// pass unread without JSON.parse().
   wants(text: string): boolean {
-    if (text.length > 1 << 20) return false;
     if (text.startsWith('{"method":"Target.')) return true;
     if (this.#asked.size === 0 && this.#foreign.size === 0 && this.#own.size === 0) return false;
-    return text.startsWith('{"id":');
+    const tail = text.length > 128 ? text.slice(-128) : text;
+    if (text.startsWith('{"id":')) {
+      const head = text.slice(0, 64);
+      const idMatch = /^\{"id":(-?\d+|"[^"]{1,64}")/.exec(head);
+      // Unknown or unexpected id formatting must never bypass filtering on length.
+      if (idMatch === null) return true;
+      const rawId = idMatch[1]!;
+      const id = rawId.startsWith('"') ? rawId.slice(1, -1) : rawId;
+      if (!rawId.startsWith('"') && this.#own.has(Number(id))) return true;
+      if (this.#asked.has(`\0${id}`)) return true;
+      // Anchor top-level sessionId at the end of the JSON object (or immediately after id) so nested
+      // result.sessionId values (such as Target.attachToTarget responses) never shadow the outer sessionId.
+      const sidMatch = /"sessionId":"([^"]+)"\s*\}$/.exec(tail) ?? /^\{"id":(?:-?\d+|"[^"]{1,64}"),"sessionId":"([^"]+)"/.exec(head);
+      const sid = sidMatch?.[1] ?? "";
+      if (sid !== "" && (this.#asked.has(`${sid}\0${id}`) || this.#foreign.has(sid))) return true;
+      return false;
+    }
+    if (this.#foreign.size > 0 && text.startsWith('{"method":')) {
+      const sidMatch = /"sessionId":"([^"]+)"\s*\}$/.exec(tail);
+      if (sidMatch !== null && this.#foreign.has(sidMatch[1]!)) return true;
+    }
+    return false;
   }
 
   /// A message from Chrome the gate reads (`wants`).
@@ -275,7 +328,12 @@ export class Gate {
           if (m.method === "Target.detachedFromTarget") this.#foreign.delete(p.sessionId);
           return { up: [], down: [] };
         }
-        if (m.method === "Target.detachedFromTarget" && typeof p.sessionId === "string") { this.#sessions.delete(p.sessionId); this.#targets.delete(p.sessionId); }
+        if (m.method === "Target.detachedFromTarget" && typeof p.sessionId === "string") {
+          this.#sessions.delete(p.sessionId);
+          this.#targets.delete(p.sessionId);
+          const prefix = `${p.sessionId}\0`;
+          for (const k of this.#asked.keys()) if (k.startsWith(prefix)) this.#asked.delete(k);
+        }
         return { up: [], down: [text] };
       case "Target.targetDestroyed":
       case "Target.targetCrashed":

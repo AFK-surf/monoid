@@ -848,6 +848,19 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
       self.nodes[first].kind == kind_box &&
       !self.nodes[first].grounded() &&
       !(sx0 < sx1 && sx0 - gb.x < gb.fw / 4.0 && gb.x + gb.fw - sx1 < gb.fw / 4.0)
+    // (when a top bar reserves trailing room for the window's own inset controls (`Tree::kept_away`),
+    // check horizontal symmetry against the remaining width left of `kx`)
+    let away_even = match view_tree().bind(fn(tr) { tr.kept_away() }) {
+      Some((kx, ky, _kw, kh)) if gb.y <= ky + kh && gb.y + gb.fh >= ky && gb.x + gb.fw > kx => {
+        let away_r = gb.x + gb.fw - kx
+        ((r - away_r) - l).abs() <= 2.0 * gap_slack ||
+          (match seen {
+            Some((sl, sr)) => ((sr - away_r) - sl).abs() <= 2.0 * gap_slack
+            None => false
+          })
+      }
+      _ => false
+    }
     let one_line = y1 - y0 <= tallest + gap_slack
     if !one_unspanned &&
       bx0 < bx1 &&
@@ -856,7 +869,8 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
       r < gb.fw / 4.0 &&
       (l - r).abs() > 2.0 * gap_slack &&
       !seen_even &&
-      !outer_even() {
+      !outer_even() &&
+      !away_even {
       let shown = match seen {
         Some((sl, sr)) => " (what is seen of it \{sl} and \{sr})"
         None => ""

@@ -1989,7 +1989,7 @@ fn desk_player_node(
           _ => ""
         }
       })
-      along_time_hud_node(mid, pn, ink, fn() { viewer_bar_h + @ui.Space::S2.px() })
+      along_time_hud_node(mid, pn, ink, fn() { viewer_bar_h_now() + @ui.Space::S2.px() })
       cue_node(mid, pn, fn(v) { if away() { 0.0 } else { pn.shown.shown(v) } }, fn() {
         if embedded {
           desk_cue_apart
@@ -2139,7 +2139,7 @@ fn desk_player_node(
       // it is where it is, whatever is over it, View::pointer_within)
       top
       .over(Is(true))
-      .height(By(fn() { Some(if !native_on() && !embedded { viewer_bar_h + (viewer_host().room)().0 } else { 0.0 }) }))
+      .height(By(fn() { Some(if !native_on() && !embedded { viewer_bar_h_now() + (viewer_host().room)().0 } else { 0.0 }) }))
       |> ignore
       top.reacts(fn() { top.pointer_within() && pointer_rests() }, fn(near) { pn.near_top.set(near) })
     })

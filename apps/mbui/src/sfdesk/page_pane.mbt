@@ -268,6 +268,10 @@ fn pane_made(
       made("memories", fn(a, core, here, _stint, frame, width) {
         @sfpages.memories_node(a, core, here, on_back=core.pop, frame~, width~)
       })
+    Setting(McpServers) =>
+      made("mcp", fn(a, core, here, _stint, frame, width) {
+        @sfpages.mcp_servers_page_node(a, core, here, on_back=core.pop, frame~, width~)
+      })
     Setting(Changelog) =>
       made("changelog", fn(a, core, _here, _stint, frame, width) {
         @sfpages.changelog_node(a, core, on_back=core.pop, frame~, width~)
@@ -297,8 +301,11 @@ fn pane_made(
                 src,
                 fn() { @sfbase.workspace_in_view(src).0.map_or(wid, fn(w) { w.id }) },
                 tips,
-                start_pad=fn() { dmax(12.0, (ends.start)(true)) },
-                end_pad=fn() { (ends.end)(false, false) },
+                bar_ends={
+                  start: fn() { dmax(12.0, (ends.start)(true)) },
+                  end: fn() { (ends.end)(false, false) },
+                  over: ends.over,
+                },
                 width~,
                 shown=pane_shows(k),
                 keep_screen=fn(st, sc) {
@@ -368,6 +375,10 @@ fn pane_made(
       // (its pictures asked for again each time it is come back to, not each frame it stays: nav_flat_view's stint)
       made("archiving", fn(a, core, here, stint, frame, width) {
         @sfpages.archiving_node(a, core, here, on_back=core.pop, frame~, stint~, width~)
+      })
+    Setting(Progress) =>
+      made("progress", fn(a, core, here, _stint, frame, width) {
+        @sfpages.progress_node(a, core, here, on_back=core.pop, frame~, width~)
       })
     Setting(AutoDecisions) =>
       made("auto-decisions", fn(a, core, here, _stint, frame, width) {
@@ -648,7 +659,7 @@ fn pane_chat_bar_ends(
       }
       let roots = @ui.tree_corner_roots_now()
       let closed_end = if finding {
-        if @ui.window_keys_own() {
+        if @ui.window_keys_own_now() {
           @sf.window_keys_room(roots~) + bar_in
         } else {
           @sf.window_corner_past(bar_in, roots~)
@@ -665,7 +676,7 @@ fn pane_chat_bar_ends(
           } else {
             0.0
           }
-          if @ui.window_keys_own() {
+          if @ui.window_keys_own_now() {
             if !side_by_side || col_w <= 0.0 {
               closed_end
             } else {
@@ -690,7 +701,7 @@ fn pane_chat_bar_ends(
         None => 0.0
       }
     },
-    linked: fn() { if @ui.window_keys_own() { None } else { Some(@sf.window_corner_key()) } },
+    linked: fn() { if @ui.window_keys_own_now() { None } else { Some(@sf.window_corner_key()) } },
     ground: fn(_) { @sf.theme().p.bg },
   }
 }

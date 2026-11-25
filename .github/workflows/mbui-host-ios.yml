@@ -51,9 +51,35 @@ jobs:
     runs-on: [self-hosted, mbui-render]
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - name: Clear stale partial-clone filter
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ -d .git ]; then
+            git config --local --unset-all remote.origin.partialclonefilter 2>/dev/null || true
+          fi
+      - uses: actions/checkout@v5
         # (the merge commit and its base: what changed is told by them, scripts/ci_paths.py)
         with: { fetch-depth: 2 }
+      - name: Clear lingering partial-clone promisor state
+        working-directory: ${{ github.workspace }}
+        run: |
+          if [ "$(git config --local --get remote.origin.promisor 2>/dev/null || true)" = true ]; then
+            head_ref=$(git symbolic-ref -q HEAD || true)
+            git for-each-ref --format='%(refname)' | while read -r ref; do
+              [ "$ref" = "$head_ref" ] || git update-ref --no-deref -d "$ref"
+            done
+            git reflog expire --expire=now --all 2>/dev/null || true
+            if git rev-list --objects --missing=print HEAD > "$RUNNER_TEMP/rev-list.out" &&
+              ! grep -q '^?' "$RUNNER_TEMP/rev-list.out"; then
+              G=$(git rev-parse --absolute-git-dir)
+              rm -f "$G"/objects/pack/*.promisor
+              git config --local --unset-all remote.origin.promisor 2>/dev/null || true
+              git config --local --unset-all remote.origin.partialclonefilter 2>/dev/null || true
+              git config --local --unset-all extensions.partialclone 2>/dev/null || true
+              echo "Cleared lingering partial-clone promisor state"
+            fi
+            rm -f "$RUNNER_TEMP/rev-list.out"
+          fi
       - name: What changed (a pull request runs the contracts its files touch)
         id: f
         if: github.event_name == 'pull_request'
@@ -137,6 +163,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         continue-on-error: true
+        timeout-minutes: 1
         with:
           name: host-ios
           path: libs/ui/out/host/

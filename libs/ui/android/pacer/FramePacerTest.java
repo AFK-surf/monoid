@@ -1982,6 +1982,135 @@ public final class FramePacerTest {
                         + ", jitter=" + jitterOk + ", ahead=" + aheadOk + ", edge=" + edgeOk);
     }
 
+    static void resumeContinuityBoundaryCase() {
+        // (1a) Old vsyncAt=1000ms dispatched before 600s pause; after resume, stale/system render arrives first,
+        //      requests more=true, then new vsync arrives: both frames report late == 0, and a 3rd frame with a
+        //      real continuous drop reports late > 0.
+        Phone ph1 = new Phone(60, 3, true, 200_000);
+        long t0 = 1_000_000_000L; // 1000 ms
+        ph1.pacer.wantFrame();
+        ph1.pacer.vsyncCame(t0, t0 + ph1.period);
+        FramePacer.Taken tk0 = ph1.pacer.takeRender();
+        FramePacer.Begun b0 = ph1.pacer.begin(tk0.vsyncAt, t0 + 100_000L, tk0.external, tk0.continuityGen);
+        ph1.pacer.ended(true, false, b0.following, 0f, b0.externalDemand);
+        // Dispatch next old vsync (1016.67ms) right before pause
+        long tOld = t0 + ph1.period;
+        ph1.pacer.vsyncCame(tOld, tOld + ph1.period);
+        // Pause & resume 600s later
+        ph1.pacer.resetContinuity(0L);
+        long tResume = t0 + 600_000_000_000L;
+        ph1.pacer.resetContinuity(tResume);
+        // Simulate stale render (ONE systemFrameNeeded or pre-resume at=[tOld, tOld+period])
+        FramePacer.Taken tkStale = ph1.pacer.takeRender();
+        FramePacer.Begun b1 = ph1.pacer.begin(new long[] {tOld, tOld + ph1.period}, tResume + 100_000L,
+                tkStale.external, tkStale.continuityGen);
+        ph1.pacer.ended(true, false, b1.following, 0f, b1.externalDemand);
+        // New vsync arrives after resume
+        long tNew1 = tResume + ph1.period;
+        ph1.pacer.vsyncCame(tNew1, tNew1 + ph1.period);
+        FramePacer.Taken tkNew1 = ph1.pacer.takeRender();
+        FramePacer.Begun b2 = ph1.pacer.begin(tkNew1.vsyncAt, tNew1 + 100_000L, tkNew1.external, tkNew1.continuityGen);
+        ph1.pacer.ended(true, false, b2.following, 0f, b2.externalDemand);
+        // 3rd frame has a real 2-frame drop (3 periods after tNew1) -> late > 0
+        long tNew3 = tNew1 + 3 * ph1.period;
+        ph1.pacer.vsyncCame(tNew3, tNew3 + ph1.period);
+        FramePacer.Taken tkNew3 = ph1.pacer.takeRender();
+        FramePacer.Begun b3 = ph1.pacer.begin(tkNew3.vsyncAt, tNew3 + 100_000L, tkNew3.external, tkNew3.continuityGen);
+        boolean case1a = b1.vsync == 0L && b1.late == 0.0 && b2.late == 0.0 && b3.late > 0.0;
+
+        // (1b) New vsync arrives first after resume, then takeRender(): first frame has late == 0.
+        Phone ph2 = new Phone(60, 3, true, 200_000);
+        ph2.pacer.wantFrame();
+        ph2.pacer.vsyncCame(t0, t0 + ph2.period);
+        FramePacer.Taken p2k0 = ph2.pacer.takeRender();
+        FramePacer.Begun p2b0 = ph2.pacer.begin(p2k0.vsyncAt, t0 + 100_000L, p2k0.external, p2k0.continuityGen);
+        ph2.pacer.ended(true, false, p2b0.following, 0f, p2b0.externalDemand);
+        ph2.pacer.resetContinuity(0L);
+        ph2.pacer.resetContinuity(tResume);
+        ph2.pacer.wantFrame();
+        ph2.pacer.vsyncCame(tNew1, tNew1 + ph2.period);
+        FramePacer.Taken p2k1 = ph2.pacer.takeRender();
+        FramePacer.Begun p2b1 = ph2.pacer.begin(p2k1.vsyncAt, tNew1 + 100_000L, p2k1.external, p2k1.continuityGen);
+        boolean case1b = p2k1.app && p2b1.late == 0.0 && p2b1.vsync == tNew1;
+
+        // (2) surfaceDestroyed alone (resetContinuity(0L)) with stale vsync injected before surfaceCreated
+        //     (resetContinuity(tResume) 600s later): first two frames have late == 0, 3rd real drop reports late > 0.
+        Phone ph3 = new Phone(60, 3, true, 200_000);
+        ph3.pacer.wantFrame();
+        ph3.pacer.vsyncCame(t0, t0 + ph3.period);
+        FramePacer.Taken p3k0 = ph3.pacer.takeRender();
+        FramePacer.Begun p3b0 = ph3.pacer.begin(p3k0.vsyncAt, t0 + 100_000L, p3k0.external, p3k0.continuityGen);
+        ph3.pacer.ended(true, false, p3b0.following, 0f, p3b0.externalDemand);
+        ph3.pacer.resetContinuity(0L);
+        // Stale Choreographer callback arrives before surfaceCreated 600s later
+        ph3.pacer.vsyncCame(t0 + ph3.period, t0 + 2 * ph3.period);
+        ph3.pacer.resetContinuity(tResume);
+        FramePacer.Taken p3k1 = ph3.pacer.takeRender();
+        FramePacer.Begun p3b1 = ph3.pacer.begin(p3k1.vsyncAt, tResume, p3k1.external, p3k1.continuityGen);
+        ph3.pacer.ended(true, false, p3b1.following, 0f, p3b1.externalDemand);
+        ph3.pacer.vsyncCame(tNew1, tNew1 + ph3.period);
+        FramePacer.Taken p3k2 = ph3.pacer.takeRender();
+        FramePacer.Begun p3b2 = ph3.pacer.begin(p3k2.vsyncAt, tNew1 + 100_000L, p3k2.external, p3k2.continuityGen);
+        ph3.pacer.ended(true, false, p3b2.following, 0f, p3b2.externalDemand);
+        ph3.pacer.vsyncCame(tNew3, tNew3 + ph3.period);
+        FramePacer.Taken p3k3 = ph3.pacer.takeRender();
+        FramePacer.Begun p3b3 = ph3.pacer.begin(p3k3.vsyncAt, tNew3 + 100_000L, p3k3.external, p3k3.continuityGen);
+        boolean case2 = p3b1.vsync == 0L && p3b1.late == 0.0 && p3b2.late == 0.0 && p3b3.late > 0.0;
+
+        // (3) Fast pause -> resume does NOT drop an existing scheduled WakeReq.
+        Phone ph4 = new Phone(60, 3, true, 200_000);
+        FramePacer.WakeReq wake = ph4.pacer.scheduleWake(2000.0, false);
+        ph4.pacer.resetContinuity(0L);
+        ph4.pacer.resetContinuity(1_500_000_000L);
+        boolean stillCurrent = ph4.pacer.isWakeCurrent(wake);
+        int fired = ph4.pacer.fireWake(wake, 2_000_000_000L, 2_016_666_667L);
+        boolean case3 = wake != null && stillCurrent && fired == 2;
+
+        check("resume continuity boundary clears stale vsync/late without dropping pending wakes",
+                case1a && case1b && case2 && case3,
+                "case1a=" + case1a + ", case1b=" + case1b + ", case2=" + case2 + ", case3=" + case3);
+    }
+
+    static void imeDeferredResetContinuityNoDeadlockCase() {
+        // (a) setImeMoving(true) -> Choreographer callback arrives and defers -> inside onInsets (before flush runs),
+        //     surfaceDestroyed triggers resetContinuity(0L) + setImeMoving(false) -> next beat calls wantFrame():
+        //     must clear wanted and deliver renders (fails with renders=0 without deferredFromVsync wanted cleanup).
+        Phone ph = new Phone(60, 3, true, 200_000);
+        ph.app = steady(1.0, 1.0, -1);
+        ph.onMain = true;
+        ph.pacer.setImeMoving(true);
+        ph.onInsets = () -> {
+            ph.onInsets = null;
+            ph.pacer.resetContinuity(0L);
+            ph.pacer.setImeMoving(false);
+        };
+        ph.runUntil(ph.period);
+        int beforeRenders = ph.renderRequests;
+        ph.main(ph.period + 1, ph.pacer::wantFrame);
+        ph.runUntil(10 * ph.period);
+        boolean noDeadlockA = ph.renderRequests > beforeRenders;
+
+        // (b) deferredWakeApp=true during imeMoving -> resetContinuity(0L) + setImeMoving(false):
+        //     must preserve appWanted + externalWanted, re-post vsync, and render without deadlock.
+        Phone ph2 = new Phone(60, 3, true, 200_000);
+        ph2.app = steady(1.0, 1.0, -1);
+        ph2.pacer.setImeMoving(true);
+        long tWake = 5 * ph2.period;
+        ph2.pacer.wakeFrameNow(tWake, tWake + ph2.period, false);
+        int rendersBeforeB = ph2.renderRequests;
+        ph2.pacer.resetContinuity(0L);
+        ph2.pacer.setImeMoving(false);
+        boolean preservedWanted = ph2.pacer.appWanted.get() && ph2.pacer.externalWanted.get();
+        ph2.runUntil(12 * ph2.period);
+        boolean noDeadlockB = preservedWanted && ph2.renderRequests > rendersBeforeB;
+
+        check("resetContinuity during imeMoving clears deferred wanted lock and preserves deferredWakeApp",
+                noDeadlockA && noDeadlockB,
+                "noDeadlockA=" + noDeadlockA + " (renders=" + (ph.renderRequests - beforeRenders)
+                        + "), noDeadlockB=" + noDeadlockB + " (preserved=" + preservedWanted
+                        + ", renders=" + (ph2.renderRequests - rendersBeforeB) + ")");
+    }
+
     public static void main(String[] args) throws IOException {
         motionCase("a motion of 1 ms CPU and 1 ms GPU a frame shows a new frame at every refresh", 1, 1, true);
         motionCase("a motion of 0.5 ms CPU and 7 ms GPU a frame (the GPU under a refresh) shows a new frame at every refresh", 0.5, 7, true);
@@ -2024,6 +2153,8 @@ public final class FramePacerTest {
         adpfTargetNanosAndTouchBoostCase();
         picturedPacedSurvivesEarlyRecheckCase();
         fireWakeExactBoundaryCase();
+        resumeContinuityBoundaryCase();
+        imeDeferredResetContinuityNoDeadlockCase();
         if (args.length > 0) {
             replay(args[0], 1);
             replay(args[0], 7);

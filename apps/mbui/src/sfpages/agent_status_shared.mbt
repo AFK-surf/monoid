@@ -64,7 +64,7 @@ pub fn agent_status_node(v : @view.View, src : Source, a : () -> Json?) -> Unit 
         let said = since()
         let runs = [@ui.span(text(s(), "statusText"))]
         if said != "" {
-          runs.push(@ui.span(" · " + said, color=@sf.theme().p.muted))
+          runs.push(@ui.span(" · " + said, color=@ui.style_ink(agent_since_ink_style)))
         }
         runs
       }))
@@ -81,3 +81,11 @@ pub fn agent_status_node(v : @view.View, src : Source, a : () -> Json?) -> Unit 
 /// Where its words stand: the meta's, in the ink.
 // kept across runs: a value (no field of it changes)
 let agent_status_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg)
+
+///|
+// kept across runs: a value (no field of it changes)
+let agent_since_ink_style : @ui.TextStyle = @ui.text_style(
+  size=Meta,
+  color=Muted,
+  dark=@ui.text_patch(color=Over(Muted, A(Fg, O75))),
+)

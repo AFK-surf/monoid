@@ -12,7 +12,7 @@ import { type ScreenAccess, type ScreenBrowser, type ScreenSource, type ScreenVi
 /// it is (shown only; none from a client before them). `self`: the device's own main id as it says it, which its link's
 /// `device` is not on a link made for a LAN or a relay (only for it to know its own views). `agent`: an agent's own view (computer.ts). `end` and `watchOnly`:
 /// how a member elsewhere ends it or stops its input being taken, `by` naming them (for `watchOnly`, who took it, if one did).
-export type Watcher = { name: string; control: boolean; tell(state: Record<string, unknown>): void; device?: string; self?: string; client?: string; app?: string; agent?: boolean; taken?: boolean; end?(by: string): void; watchOnly?(by?: string): void };
+export type Watcher = { name: string; control: boolean; tell(state: Record<string, unknown>): void; device?: string; self?: string; client?: string; app?: string; agent?: boolean; taken?: boolean; takenToken?: symbol; end?(by: string): void; watchOnly?(by?: string): void };
 
 /// One view as members are told of it: `id`, the hub's, to end it by; `at`,
 /// when it opened (ms).
@@ -81,8 +81,8 @@ export class ScreenHub implements Screens {
   #viewCount = 0;
   /// Until when a device's views of a screen are held to only looking (`watchOnly`), by device and screen.
   readonly #held = new Map<string, number>();
-  /// Devices whose next driving view of a screen was explicitly asked (`taken: true` in `drive`).
-  readonly #taking = new Set<string>();
+  /// Per-call tokens for views whose driving control was explicitly asked (`taken: true` in `drive`), mapped to `${device}\n${id}`.
+  readonly #taking = new Map<symbol, string>();
   readonly #listeners = new Set<() => void>();
   readonly #refreshers = new Set<() => Promise<void>>();
   readonly #stopping = new Set<() => void>();
@@ -149,8 +149,7 @@ export class ScreenHub implements Screens {
     const on = this.#views.get(id) ?? new Map<string, Watcher & { at: number }>();
     this.#views.set(id, on);
     const view = `v${++this.#viewCount}`;
-    const takenKey = watcher.device ? `${watcher.device}\n${id}` : "";
-    const fromDrive = watcher.control && !watcher.agent && takenKey !== "" && this.#taking.delete(takenKey);
+    const fromDrive = watcher.control && !watcher.agent && watcher.takenToken !== undefined && this.#taking.delete(watcher.takenToken);
     const taken = watcher.taken === true || fromDrive;
     on.set(view, Object.assign(watcher, { taken, at: wall.now() }));
     this.#tellPeople(id);
@@ -223,20 +222,22 @@ export class ScreenHub implements Screens {
   /// drives it goes on only looking, told it was `by` (an agent's waits as before). Opened again by itself (a link that
   /// went, a resize), it drives only while no such view does, and not soon after it was made to only look (`mayDrive`).
   /// `took`: whose views it took it from.
-  drive(id: string, device: string, taken: boolean, by: string): { control: boolean; took: string[] } {
-    if (!this.mayDrive(id, device, taken)) return { control: false, took: [] };
+  drive(id: string, device: string, taken: boolean, by: string): { control: boolean; took: string[]; release: () => void; takenToken?: symbol } {
+    const noop = () => {};
+    if (!this.mayDrive(id, device, taken)) return { control: false, took: [], release: noop };
+    const claimTaken = () => {
+      if (!device || !taken) return { release: noop };
+      const token = Symbol();
+      this.#taking.set(token, `${device}\n${id}`);
+      return { release: () => void this.#taking.delete(token), takenToken: token };
+    };
     const others = [...(this.#views.get(id)?.values() ?? [])].filter((w) => w.control && !w.agent && w.device !== device);
     if (others.length === 0) {
-      if (device) {
-        if (taken) this.#taking.add(`${device}\n${id}`);
-        else this.#taking.delete(`${device}\n${id}`);
-      }
-      return { control: true, took: [] };
+      return { control: true, took: [], ...claimTaken() };
     }
-    if (!taken) return { control: false, took: [] };
+    if (!taken) return { control: false, took: [], release: noop };
     for (const w of others) this.#lookOnly(id, w, by);
-    if (device) this.#taking.add(`${device}\n${id}`);
-    return { control: true, took: [...new Set(others.map((w) => w.name))] };
+    return { control: true, took: [...new Set(others.map((w) => w.name))], ...claimTaken() };
   }
 
   /// Whether any person's view currently driving `id` explicitly asked to take control (`taken: true`).
@@ -378,12 +379,19 @@ export class ScreenHub implements Screens {
   /// `closable`, a person may close it (POST …/close); `debug`, its apps' logs and restart are had, `install` where a file to
   /// install on it goes up to; `openedBy`, the session that opened it (an agent's tab); `since`, since when it has been up
 /// (ms: a simulator's boot, an emulator's start).
-  listed(lang: Lang): { browser?: boolean; screens: Record<string, unknown>[] } {
+  /// Where dropped files are saved on this machine (null when drops are not configured).
+  dropFolder(): string | null {
+    return this.#o.drop?.() ?? null;
+  }
+
+  /// Computes the screen list for `lang` once alongside each `ScreenSource`, so callers (GET /screens, events.screens)
+  /// can project per-workspace visibility without recomputing `title()`, `size()`, or `access()`.
+  listedEntries(lang: Lang): { browser?: boolean; entries: { source: ScreenSource; data: Record<string, unknown> }[] } {
     const folder = this.#o.drop?.() ?? null;
     const browser = this.#browser?.available() === true;
     return {
       ...(browser ? { browser: true } : {}),
-      screens: this.list().map((s) => {
+      entries: this.list().map((s) => {
         const { width, height } = s.size();
         const access = accessShown(s.access?.(), lang);
         const clipboard = s.clipboard?.() ?? [];
@@ -392,25 +400,36 @@ export class ScreenHub implements Screens {
         const site = s.site?.();
         const sleeping = s.sleeping?.() === true;
         return {
-          id: s.id, kind: s.kind, title: s.title(), width, height, ...this.people(s.id), ...(access ? { access } : {}),
-          ...(clipboard.length > 0 ? { clipboard } : {}),
-          ...(s.peek ? { peek: true } : {}),
-          ...(s.farview ? { farview: true } : {}),
-          ...(s.discard ? { closable: true } : {}),
-          ...(s.userTab ? { userTab: true } : {}),
-          ...(sleeping ? { sleeping: true } : {}),
-          ...(site ? { site } : {}),
-          ...(s.openUrl ? { openUrl: true } : {}),
-          ...(s.debug ? { debug: true, install: s.debug.installFolder() } : {}),
-          ...(s.poses ? { poses: true } : {}),
-          ...(s.panels?.length ? { panels: s.panels } : {}),
-          ...(s.chrome?.length ? { chrome: s.chrome.map(toldOf) } : {}),
-          ...(s.model ? { model: s.model } : {}),
-          ...(by ? { openedBy: by } : {}),
-          ...(since !== undefined ? { since } : {}),
-          ...(folder !== null ? { drop: { folder, reveal: s.reveal === true } } : {}),
+          source: s,
+          data: {
+            id: s.id, kind: s.kind, title: s.title(), width, height, ...this.people(s.id), ...(access ? { access } : {}),
+            ...(clipboard.length > 0 ? { clipboard } : {}),
+            ...(s.peek ? { peek: true } : {}),
+            ...(s.farview ? { farview: true } : {}),
+            ...(s.discard ? { closable: true } : {}),
+            ...(s.userTab ? { userTab: true } : {}),
+            ...(sleeping ? { sleeping: true } : {}),
+            ...(site ? { site } : {}),
+            ...(s.openUrl ? { openUrl: true } : {}),
+            ...(s.debug ? { debug: true, install: s.debug.installFolder() } : {}),
+            ...(s.poses ? { poses: true } : {}),
+            ...(s.panels?.length ? { panels: s.panels } : {}),
+            ...(s.chrome?.length ? { chrome: s.chrome.map(toldOf) } : {}),
+            ...(s.model ? { model: s.model } : {}),
+            ...(by ? { openedBy: by } : {}),
+            ...(since !== undefined ? { since } : {}),
+            ...(folder !== null ? { drop: { folder, reveal: s.reveal === true } } : {}),
+          },
         };
       }),
+    };
+  }
+
+  listed(lang: Lang): { browser?: boolean; screens: Record<string, unknown>[] } {
+    const { browser, entries } = this.listedEntries(lang);
+    return {
+      ...(browser ? { browser: true } : {}),
+      screens: entries.map((e) => e.data),
     };
   }
 }

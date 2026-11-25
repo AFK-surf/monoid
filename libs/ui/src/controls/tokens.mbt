@@ -2291,9 +2291,6 @@ pub let glass_chooser_station_most : @ui.Len = Fixed(128.0)
 
 ///|
 /// A page's bar in the wide frame (the web's sidebar.css.ts pageBar: 45 high).
-pub let wide_bar_h_size : @ui.Len = Fixed(wide_bar_h)
-
-///|
 pub let wide_bar_h : Double = 45.0
 
 ///|
@@ -2342,7 +2339,7 @@ pub fn tape_bar_end_of(
 ) -> Double {
   // (the panel at the window's right edge, the window's own buttons over its top right corner where they are the
   // app's: its bar's last before them, alone: window_keys)
-  if k[1] == tape_edge && @ui.window_keys_own() {
+  if k[1] == tape_edge && @ui.window_keys_own_now() {
     return window_keys_room_tape(roots~) - window_in + alone
   }
   line_end_in(k[1].radius(roots), alone, side~)
@@ -2380,7 +2377,7 @@ pub fn line_end_in(corner : Double, alone : Double, side? : Double = bar_key_sid
 /// views', as they ask it; a node's, followed: @ui.tree_corner_roots_now).
 pub fn window_end_in(alone : Double, roots? : @ui.CornerRoots = @ui.corner_roots()) -> Double {
   // (the window's own buttons there where the app draws them: the bar's last before them, alone: window_keys)
-  if @ui.window_keys_own() {
+  if @ui.window_keys_own_now() {
     return window_keys_room(roots~) + alone
   }
   match bar_keys_link() {
@@ -2439,7 +2436,7 @@ pub fn window_corner_clear(alone : Double) -> Double {
 /// panel of its own on the tape, where the bar's buttons are round on the tape's line, concentric with its corner.
 pub fn bar_keys_link() -> @ui.CornerOf? {
   // (not in the window's corner where its own buttons are there, the app's: window_keys)
-  if in_pane() || @ui.window_keys_own() {
+  if in_pane() || @ui.window_keys_own_now() {
     return None
   }
   Some(window_corner_key())

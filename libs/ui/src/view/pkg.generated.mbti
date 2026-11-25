@@ -1439,6 +1439,7 @@ pub fn Tree::default_of(Self, NodeId?) -> NodeId?
 pub fn Tree::dispose(Self) -> Unit
 pub fn Tree::drag_at(Self, NodeId, DragIs, Double, Double, Double, finger? : Int32, track? : Array[(Double, Double, Double)]) -> Bool
 pub fn Tree::drawn(Self) -> Array[Drawn]
+pub fn Tree::draw_clip_bounds(Self, NodeId) -> (Double, Double, Double, Double)
 pub fn Tree::drawn_at(Self) -> Double
 pub fn Tree::drawn_by(Self, words_scale? : () -> Double, pixel_scale? : () -> Double, glass_solid? : () -> Bool, keyboard_inset? : () -> Double, image_ready? : (String, Double) -> Bool, image_ask? : (String, Double) -> Unit, focus_let_go? : () -> Unit) -> Unit
 pub fn Tree::drawn_clear_of(Self, NodeId, NodeId) -> Bool
@@ -1524,7 +1525,11 @@ pub fn Tree::is_scroll_held(Self, NodeId) -> Bool
 pub fn Tree::is_scroller(Self, NodeId) -> Bool
 pub fn Tree::is_sticky(Self, NodeId) -> Bool
 pub fn Tree::is_thumb(Self, NodeId) -> Bool
-pub fn Tree::keeps_away(Self, (Double, Double, Double, Double)?) -> Unit
+pub fn Tree::keeps_away(Self, (Double, Double, Double, Double)?, owner? : NodeId, band? : Bool) -> Unit
+pub fn Tree::kept_away(Self) -> (Double, Double, Double, Double)?
+pub fn Tree::kept_away_band(Self) -> Bool
+pub fn Tree::kept_away_now(Self) -> (Double, Double, Double, Double)?
+pub fn Tree::kept_away_owner(Self) -> NodeId?
 pub fn Tree::kept_drawn_said(Self) -> String?
 pub fn Tree::kept_inputs_said(Self) -> String?
 pub fn Tree::kept_said(Self) -> String?

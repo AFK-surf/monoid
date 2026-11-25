@@ -1,0 +1,3309 @@
+// Deterministic state machine unit tests for real `ActorRunHandlers::real()` (`W8-E2`).
+// Covers: normal turn lifecycle, `Exit::Interrupted` propagation, `close` with 1 in-flight RPC +
+// 2 queued calls, FB-26 (Codex Bad Request reload -> afresh), FB-34 (open timeout & stop abort),
+// FB-44 (auth profile failover), pure-value `ActorTimerAction` + stale timer discard across DB
+// rotation, `sessionCap` pause + `drainCapQueue` wake, `snapshot`/`adopt`, and `rt.holding() == 0`.
+
+import "base_codec"
+import "effect"
+import "sessions_core"
+import "sql_db"
+
+fn assert_run(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic("actor_run_test failed: " + msg)
+  }
+}
+
+fn get_actor(actors : Actors, key : String) -> Actor {
+  match actors.current.actors.get(key) {
+    Some(a) => a
+    None => panic("missing actor " + key)
+  }
+}
+
+fn assert_run_rt_clean(rt : effect::Runtime) -> Unit {
+  let (live_tasks, ready_tasks, timers, d, e, f) = rt.holding()
+  assert_run(live_tasks == 0, "live_tasks == 0")
+  assert_run(ready_tasks == 0, "ready_tasks == 0")
+  assert_run(timers == 0, "timers == 0")
+  assert_run(d == 0, "deferreds == 0")
+  assert_run(e == 0, "events == 0")
+  assert_run(f == 0, "fibers == 0")
+}
+
+/// Scripted Node RPC responder that drains stdout frames from `mem` and answers each new `{"rpc": id, "fn": ...}`.
+struct NodeScript {
+  pub mem : sessions_core::MemHostTransport
+  pub actors : Actors
+  pub disp : sessions_core::SessionDispatch
+  pub mut cursor : Int
+  pub rpcs : Array[(Int, String, Array[base_codec::Json])]
+  pub tells : Array[(String, String, Array[base_codec::Json])]
+  pub timers : Array[(Int, Double)]
+  pub cancels : Array[Int]
+  pub returned : Array[base_codec::Json]
+  pub mut quiet_count : Int
+  pub mut now : Double
+}
+
+fn NodeScript::new(
+  mem : sessions_core::MemHostTransport,
+  actors : Actors,
+) -> NodeScript {
+  NodeScript::{
+    mem: mem,
+    actors: actors,
+    disp: sessions_core::SessionDispatch::stub(),
+    cursor: 0,
+    rpcs: [],
+    tells: [],
+    timers: [],
+    cancels: [],
+    returned: [],
+    quiet_count: 0,
+    now: 1000.0,
+  }
+}
+
+fn NodeScript::drive(
+  self : NodeScript,
+  respond : (String, Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]],
+) -> Unit {
+  let mut progress = true
+  while progress {
+    progress = false
+    self.actors.host.tick()
+    while self.cursor < self.mem.stdout_lines.length() {
+      let line = self.mem.stdout_lines[self.cursor]
+      self.cursor = self.cursor + 1
+      let msg = match sessions_core::parse_json_strict(line) {
+        Ok(j) => j
+        Err(e) => panic("bad stdout json: " + e)
+      }
+      if is_opt_json_true(sessions_core::jget(msg, "quiet")) {
+        self.quiet_count = self.quiet_count + 1
+      }
+      match sessions_core::jget(msg, "returned") {
+        Some(_) => self.returned.push(msg)
+        None => ()
+      }
+      match (sessions_core::jget(msg, "tell"), sessions_core::str_of(sessions_core::jget(msg, "actor"))) {
+        (Some(base_codec::Json::Str(t)), Some(ak)) => {
+          let targs = match sessions_core::jget(msg, "args") {
+            Some(base_codec::Json::Arr(xs)) => xs
+            _ => []
+          }
+          self.tells.push((ak, t, targs))
+        }
+        _ => ()
+      }
+      match (sessions_core::jget(msg, "after"), sessions_core::jget(msg, "ms")) {
+        (Some(base_codec::Json::Num(tid, _)), Some(base_codec::Json::Num(ms, _))) => {
+          self.timers.push((tid.to_int(), ms))
+        }
+        _ => ()
+      }
+      match sessions_core::jget(msg, "cancel") {
+        Some(base_codec::Json::Num(cid, _)) => self.cancels.push(cid.to_int())
+        _ => ()
+      }
+      match (sessions_core::jget(msg, "rpc"), sessions_core::str_of(sessions_core::jget(msg, "fn"))) {
+        (Some(base_codec::Json::Num(id_n, _)), Some(f)) => {
+          let id = id_n.to_int()
+          let args = match sessions_core::jget(msg, "args") {
+            Some(base_codec::Json::Arr(xs)) => xs
+            _ => []
+          }
+          self.rpcs.push((id, f, args))
+          match respond(f, args) {
+            Some(Ok(v)) => {
+              let ans = base_codec::json_obj([
+                ("answer", sessions_core::jint(id)),
+                ("value", v),
+                ("now", sessions_core::jnum(self.now)),
+              ])
+              self.actors.heard(base_codec::json_stringify(ans), self.disp)
+              progress = true
+            }
+            Some(Err(err_j)) => {
+              let ans = base_codec::json_obj([
+                ("answer", sessions_core::jint(id)),
+                ("error", err_j),
+                ("now", sessions_core::jnum(self.now)),
+              ])
+              self.actors.heard(base_codec::json_stringify(ans), self.disp)
+              progress = true
+            }
+            None => ()
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+}
+
+fn NodeScript::has_rpc(self : NodeScript, fn_name : String) -> Bool {
+  for i in 0..<self.rpcs.length() {
+    let (_, f, _) = self.rpcs[i]
+    if f == fn_name {
+      return true
+    }
+  }
+  false
+}
+
+fn NodeScript::has_tell_fn(self : NodeScript, tell_name : String) -> Bool {
+  for i in 0..<self.tells.length() {
+    let (_, t, _) = self.tells[i]
+    if t == tell_name {
+      return true
+    }
+  }
+  false
+}
+
+test "actor_run: ActorRunHandlers::real_with_live has is_stub == false, real() has is_stub == true, unknown method fails with AskedError" {
+  let real_no_live = ActorRunHandlers::real()
+  assert_run(real_no_live.is_stub, "real() without live hooks must keep is_stub == true")
+  let real = ActorRunHandlers::real_with_live(ActorLiveHooks::noop())
+  assert_run(!real.is_stub, "real_with_live().is_stub must be false")
+
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", real, no_store_db)
+  let s = NodeScript::new(mem, actors)
+
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"noSuchMethod\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(fn(_f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    Some(Ok(base_codec::json_null()))
+  })
+
+  assert_run(s.returned.length() == 1, "expected 1 returned frame")
+  assert_run(
+    sessions_core::text_of(s.returned[0], "error") == "no actor method noSuchMethod",
+    "expected AskedError message, got: " + sessions_core::text_of(s.returned[0], "error"),
+  )
+  assert_run(actors.current.gen.counters.active == 0, "active == 0")
+  assert_run_rt_clean(host.rt)
+}
+
+test "actor_run: normal turn lifecycle (kick -> open -> prompt -> declare all_done -> turnEnded -> idle)" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+  let mut pending_left = true
+
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(pending_left)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            (
+              "pending",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("handed", sessions_core::jstr("m1")),
+                  ("authorKind", sessions_core::jstr("person")),
+                  ("person", sessions_core::jstr("alice")),
+                  ("thread", sessions_core::jstr("th1")),
+                  ("surface", sessions_core::jstr("stillfail")),
+                ]),
+              ]),
+            ),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.open" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(7)),
+            ("generation", sessions_core::jint(1)),
+            ("runtime", sessions_core::jstr("claude")),
+            ("profile", sessions_core::jstr("prof-1")),
+            ("identity", base_codec::json_obj([("model", sessions_core::jstr("opus"))])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.withChoices" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("text", sessions_core::jstr("hello")),
+            ("told", base_codec::json_null()),
+          ]),
+        ),
+      )
+    }
+    if f == "node.prompt" {
+      return Some(Ok(sessions_core::jstr("prompt:hello")))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-1")))
+    }
+    if f == "store.markDelivered" {
+      pending_left = false
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "node.words" {
+      return Some(Ok(sessions_core::jstr("WORDS")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+
+  let a = get_actor(actors, "s1")
+  assert_run(is_some(a.turn), "turn should be active after kick")
+  assert_run(a.phase == "running", "phase should be running")
+  assert_run(s.has_rpc("node.open"), "expected node.open")
+  assert_run(s.has_rpc("agent.prompt"), "expected agent.prompt")
+  assert_run(s.has_tell_fn("node.tasks"), "expected node.tasks tell")
+
+  // Declare all_done
+  actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"declare\",\"args\":[{\"kind\":\"all_done\"}],\"now\":1100}", s.disp)
+  s.drive(responder)
+
+  // End turn
+  s.now = 1200.0
+  actors.heard("{\"event\":{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"completed\"}},\"generation\":1,\"actor\":\"s1\",\"read\":null,\"now\":1200}", s.disp)
+  s.drive(responder)
+
+  assert_run(!is_some(a.turn), "turn should be cleared after turnEnded")
+  assert_run(a.phase == "idle", "phase should be idle")
+  assert_run(s.has_rpc("store.endTurn"), "expected store.endTurn")
+  assert_run(s.has_rpc("deps.settled"), "expected deps.settled")
+  assert_run(s.has_rpc("deps.idle"), "expected deps.idle")
+  assert_run(actors.current.gen.counters.active == 0, "active == 0")
+  assert_run_rt_clean(host.rt)
+}
+
+test "actor_run: close with 1 in-flight node.open RPC + 2 queued calls settles all cleanly (active == 0, quiet once)" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.open" {
+      // Leave node.open in flight!
+      return None
+    }
+    if f == "deps.held" || f == "store.getSession" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  // Start warm (will suspend on node.open)
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"warm\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+
+  let a = get_actor(actors, "s1")
+  assert_run(is_some(a.opening_rpc), "opening_rpc should be set while node.open is in flight")
+
+  // Queue 2 more calls behind warm
+  actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"flushed\",\"args\":[],\"now\":1010}", s.disp)
+  actors.heard("{\"call\":3,\"actor\":\"s1\",\"method\":\"flushed\",\"args\":[],\"now\":1020}", s.disp)
+  s.drive(responder)
+  assert_run(a.queued == 3, "expected 3 queued/running tasks before close")
+
+  // Reset quiet count right before close
+  s.quiet_count = 0
+
+  // Close the actor: aborts opening_rpc via node.cancelOpen, skips the 2 queued calls cleanly
+  actors.heard("{\"call\":4,\"actor\":\"s1\",\"method\":\"close\",\"args\":[],\"now\":1030}", s.disp)
+  s.drive(responder)
+
+  assert_run(a.phase == "closed", "phase must be closed")
+  assert_run(a.queued == 0, "all queued tasks must be settled")
+  assert_run(actors.current.gen.counters.active == 0, "active must be 0")
+  assert_run(s.has_tell_fn("node.cancelOpen"), "expected node.cancelOpen tell")
+  assert_run(s.returned.length() == 4, "all 4 calls must have returned")
+  assert_run(s.quiet_count == 1, "quiet must be emitted exactly once after drain")
+  assert_run_rt_clean(host.rt)
+}
+
+test "actor_run: FB-34 open timeout fires without deadlocking serial pump and emits node.cancelOpen" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.open" {
+      return None
+    }
+    if f == "deps.held" || f == "store.getSession" || f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "t" {
+      return Some(Ok(sessions_core::jstr("open timed out")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"warm\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+
+  assert_run(s.timers.length() == 1, "expected 1 open timeout timer")
+  let (tid, ms) = s.timers[0]
+  assert_run(ms == OPEN_TIMEOUT_MS, "expected OPEN_TIMEOUT_MS")
+
+  // Fire the open timeout timer while warm is still blocked in serial pump!
+  s.now = 121000.0
+  actors.heard("{\"due\":" + tid.to_string() + ",\"now\":121000}", s.disp)
+  s.drive(responder)
+
+  assert_run(s.has_tell_fn("node.cancelOpen"), "expected node.cancelOpen on timeout")
+  assert_run(s.returned.length() == 1, "warm call must finish after timeout")
+  assert_run(actors.current.gen.counters.active == 0, "active == 0")
+  assert_run_rt_clean(host.rt)
+}
+
+test "actor_run: FB-44 open_over retries on next profile when node.open fails with auth:true" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+  let mut open_calls = 0
+
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(open_calls == 0)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m1")), ("surface", sessions_core::jstr("stillfail"))])])),
+            ("text", sessions_core::jstr("hi")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.open" {
+      open_calls = open_calls + 1
+      if open_calls == 1 {
+        return Some(
+          Err(
+            base_codec::json_obj([
+              ("auth", sessions_core::jbool(true)),
+              ("authProfile", sessions_core::jstr("prof-bad")),
+              ("message", sessions_core::jstr("login over")),
+            ]),
+          ),
+        )
+      }
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(9)),
+            ("generation", sessions_core::jint(1)),
+            ("runtime", sessions_core::jstr("claude")),
+            ("profile", sessions_core::jstr("prof-good")),
+            ("identity", base_codec::json_obj([])),
+          ]),
+        ),
+      )
+    }
+    if f == "deps.canAuthRetry" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.withChoices" {
+      return Some(Ok(base_codec::json_obj([("text", sessions_core::jstr("hi")), ("told", base_codec::json_null())])))
+    }
+    if f == "node.prompt" {
+      return Some(Ok(sessions_core::jstr("hi")))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-fb44")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+
+  let a = get_actor(actors, "s1")
+  assert_run(open_calls == 2, "expected 2 node.open calls (failover)")
+  assert_run(s.has_rpc("deps.recheck"), "expected deps.recheck")
+  assert_run(s.has_rpc("deps.canAuthRetry"), "expected deps.canAuthRetry")
+  assert_run(a.auth_tried.length() == 1 && a.auth_tried[0] == "prof-bad", "expected prof-bad in auth_tried")
+  assert_run(is_some(a.turn), "turn should succeed on second profile")
+  assert_run_rt_clean(host.rt)
+}
+
+test "actor_run: FB-26 Codex bare Bad Request reloads rollout once, then clears afresh on second refusal" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+
+  let a = actors.actor("s1", "codex")
+  a.agent = Some(Agent::{ generation: 1, handle: 4 })
+
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.lastTurn" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("outcome", sessions_core::jstr("failed")),
+            ("detail", sessions_core::jstr("model: {\"detail\":\"Bad Request\"}")),
+          ]),
+        ),
+      )
+    }
+    if f == "store.getSession" {
+      return Some(Ok(base_codec::json_obj([("runtimeSessionId", sessions_core::jstr("codex-th-1"))])))
+    }
+    if f == "agent.background" {
+      return Some(Ok(base_codec::json_arr([])))
+    }
+    if f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "t" {
+      return Some(Ok(sessions_core::jstr("started afresh")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  // First call: reloads rollout (sets codex_reloaded = Some("codex-th-1") and disposes agent)
+  let mut done1 = false
+  actors.current.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    actors.current.refused_thread_k(a, fn(ex : effect::Exit[Unit]) -> Unit {
+      done1 = true
+      k(ex)
+    })
+  })
+  s.drive(responder)
+  assert_run(done1, "first refused_thread_k must complete")
+  assert_run(opt_str_is(a.codex_reloaded, "codex-th-1"), "expected codex_reloaded set to thread id")
+  assert_run(!is_some(a.agent), "agent must be disposed on reload")
+
+  // Second call on same thread id: clears afresh (setRuntimeSessionId -> null, read_back -> true)
+  let mut done2 = false
+  actors.current.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    actors.current.refused_thread_k(a, fn(ex : effect::Exit[Unit]) -> Unit {
+      done2 = true
+      k(ex)
+    })
+  })
+  s.drive(responder)
+  assert_run(done2, "second refused_thread_k must complete")
+  assert_run(!is_some(a.codex_reloaded), "codex_reloaded must reset after afresh")
+  assert_run(a.read_back, "read_back must be true after afresh")
+  assert_run(s.has_rpc("store.setRuntimeSessionId"), "expected setRuntimeSessionId on afresh")
+  assert_run_rt_clean(host.rt)
+}
+
+test "actor_run: pure-value ActorTimerAction fires wait with context and stale timers are discarded across db rotation" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+
+  let a = actors.actor("s1", "claude")
+  actors.current.wait_ms(a, 60.0, 60000.0)
+  s.drive(fn(_f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    Some(Ok(base_codec::json_null()))
+  })
+  assert_run(s.timers.length() == 1, "expected 1 wait timer")
+  let (tid1, _) = s.timers[0]
+
+  // Fire timer -> fire_wait_k checks held/archived/lastTurn and starts nudge turn
+  let mut started_nudge = false
+  s.now = 61000.0
+  actors.heard("{\"due\":" + tid1.to_string() + ",\"now\":61000}", s.disp)
+  s.drive(fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.startTurnFor" && args.length() > 2 && opt_str_is(sessions_core::str_of(Some(args[2])), "nudge") {
+      started_nudge = true
+    }
+    if f == "deps.held" || f == "store.getSession" || f == "store.hasSessionActiveWatch" || f == "agent.busy" || f == "agent.holding" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "node.open" {
+      return Some(Ok(base_codec::json_obj([("handle", sessions_core::jint(1)), ("generation", sessions_core::jint(1)), ("runtime", sessions_core::jstr("claude"))])))
+    }
+    if f == "node.withChoices" {
+      return Some(Ok(base_codec::json_obj([("text", sessions_core::jstr("wait over")), ("told", base_codec::json_null())])))
+    }
+    if f == "node.prompt" || f == "node.words" {
+      return Some(Ok(sessions_core::jstr("wait over")))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-wait")))
+    }
+    Some(Ok(base_codec::json_null()))
+  })
+  assert_run(started_nudge, "expected fire_wait_k to start nudge turn")
+
+  // Now arm another timer and rotate generation (`{"db": null}`): firing old timer ID must be ignored!
+  actors.current.wait_ms(a, 30.0, 30000.0)
+  s.drive(fn(_f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    Some(Ok(base_codec::json_null()))
+  })
+  let (stale_tid, _) = s.timers[s.timers.length() - 1]
+  actors.heard("{\"db\":null,\"now\":62000}", s.disp)
+  host.tick()
+  let rpcs_before = s.rpcs.length()
+  actors.heard("{\"due\":" + stale_tid.to_string() + ",\"now\":92000}", s.disp)
+  s.drive(fn(_f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    Some(Ok(base_codec::json_null()))
+  })
+  assert_run(s.rpcs.length() == rpcs_before, "stale timer from previous generation must be ignored")
+  assert_run_rt_clean(host.rt)
+}
+
+test "actor_run: sessionCap pauses into cap_wait_queue and drainCapQueue wakes actor" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+  let mut cap_full = true
+
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m1")), ("surface", sessions_core::jstr("stillfail"))])])),
+            ("text", sessions_core::jstr("go")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.open" {
+      if cap_full {
+        return Some(
+          Err(
+            base_codec::json_obj([
+              ("sessionCap", sessions_core::jbool(true)),
+              ("profile", sessions_core::jstr("prof-1")),
+              ("active", sessions_core::jint(3)),
+              ("cap", sessions_core::jint(3)),
+              ("protection", sessions_core::jbool(false)),
+            ]),
+          ),
+        )
+      }
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(11)),
+            ("generation", sessions_core::jint(1)),
+            ("runtime", sessions_core::jstr("claude")),
+          ]),
+        ),
+      )
+    }
+    if f == "node.withChoices" {
+      return Some(Ok(base_codec::json_obj([("text", sessions_core::jstr("go")), ("told", base_codec::json_null())])))
+    }
+    if f == "node.prompt" || f == "node.words" || f == "t" {
+      return Some(Ok(sessions_core::jstr("msg")))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-cap")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+
+  let a = get_actor(actors, "s1")
+  assert_run(a.paused_cap, "actor must be paused_cap")
+  assert_run(actors.current.gen.resources.cap_wait_queue.length() == 1, "expected 1 in cap_wait_queue")
+
+  // Release cap and drainCapQueue -> wakes s1 and starts its turn
+  cap_full = false
+  actors.heard("{\"drainCapQueue\":true,\"now\":1100}", s.disp)
+  s.drive(responder)
+
+  assert_run(!a.paused_cap, "paused_cap must be cleared after wake")
+  assert_run(actors.current.gen.resources.cap_wait_queue.length() == 0, "cap_wait_queue must be empty")
+  assert_run(is_some(a.turn), "turn must be running after cap wake")
+  assert_run_rt_clean(host.rt)
+}
+
+test "actor_run: snapshot and adopt preserve turn, notices, timers and Exit::Interrupted propagates on db rotation" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  gen.counters.now = 5000.0
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+
+  let a = actors.actor("s1", "claude")
+  a.notices.push("job done")
+  a.nudges = 2
+  actors.current.wait_ms(a, 60.0, 40000.0)
+
+  let snap = actors.current.snapshot(a)
+  assert_run(a.phase == "closed", "snapshot must close old actor")
+
+  // Adopt into a new actor key
+  let a2 = actors.actor("s2", "claude")
+  actors.current.adopt(
+    a2,
+    snap,
+    base_codec::json_obj([("handle", sessions_core::jint(3)), ("generation", sessions_core::jint(2))]),
+    sessions_core::jstr("prof-2"),
+    base_codec::json_obj([("runtime", sessions_core::jstr("claude"))]),
+  )
+  assert_run(a2.notices.length() == 1 && a2.notices[0] == "job done", "notices preserved")
+  assert_run(a2.nudges == 2, "nudges preserved")
+  assert_run(is_some(a2.waiting), "waiting timer re-armed on adopt")
+
+  // Start an in-flight RPC on a2 (`kick` awaits `deps.held`), then rotate DB -> must interrupt cleanly
+  let mut got_interrupted = false
+  let cur_gen = actors.current
+  cur_gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cur_gen.called_k(a2, "kick", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          got_interrupted = true
+          wk(effect::Exit::Interrupted)
+        }
+        effect::Exit::Failed(e) => wk(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => wk(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  host.tick()
+  actors.heard("{\"db\":null,\"now\":6000}", s.disp)
+  host.tick()
+  assert_run(got_interrupted, "DB rotation must propagate Exit::Interrupted to in-flight called_k")
+  assert_run_rt_clean(host.rt)
+}
+
+// ── R2 Review Regression & Coverage Tests ──
+
+fn r2_new() -> NodeScript {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  NodeScript::new(mem, actors)
+}
+
+fn r2_started(s : NodeScript) -> Bool {
+  s.has_rpc("store.startTurnFor") || s.has_rpc("node.open")
+}
+
+fn r2_release_stop(deferred : Bool) -> NodeScript {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  if deferred {
+    a.deferred_end = Some(DeferredEnd::{ lost: false, unheard: false, recorded: None })
+    a.warm = true
+  } else {
+    a.tools_retry_deferred = true
+  }
+  let mut held_n = 0
+  let mut held_id = 0
+  let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" {
+      held_n = held_n + 1
+      if held_n == 2 {
+        return None
+      }
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.hasPending" || f == "agent.busy" || f == "agent.holding" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "deps.maxNudges" {
+      return Some(Ok(sessions_core::jint(2)))
+    }
+    if f == "node.words" {
+      return Some(Ok(sessions_core::jstr("W")))
+    }
+    if f == "node.open" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(1)),
+            ("generation", sessions_core::jint(1)),
+            ("runtime", sessions_core::jstr("claude")),
+          ]),
+        ),
+      )
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("t1")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"release\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(r)
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "deps.held" {
+      held_id = id
+    }
+  }
+  assert_run(held_n == 2, "second held in flight")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"stop\",\"args\":[],\"now\":1001}", s.disp)
+  s.drive(r)
+  s.actors.heard("{\"answer\":" + held_id.to_string() + ",\"value\":false,\"now\":1002}", s.disp)
+  s.drive(r)
+  s
+}
+
+test "r2 zz1: release deferred_end then stop during held must not start a turn" {
+  let s = r2_release_stop(true)
+  assert_run(!r2_started(s), "ZZ1 nudge turn started after stop")
+}
+
+test "r2 zz2: release tools_retry_deferred then stop during held must not start a turn" {
+  let s = r2_release_stop(false)
+  assert_run(!r2_started(s), "ZZ2 TOOLS_LOST turn started after stop")
+}
+
+test "r2 zz3: ensure_agent swallows a holding failure as MB catch does" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  a.agent = Some(Agent::{ generation: 1, handle: 4 })
+  let mut got = "none"
+  s.actors.current.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    s.actors.current.ensure_agent_k(a, fn(ex : effect::Exit[Agent]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => got = "ok"
+        effect::Exit::Failed(_) => got = "failed"
+        effect::Exit::Interrupted => got = "interrupted"
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  s.drive(fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.holding" {
+      return Some(Err(base_codec::json_obj([("message", sessions_core::jstr("boom"))])))
+    }
+    Some(Ok(base_codec::json_null()))
+  })
+  assert_run(got == "ok", "ZZ3 got " + got)
+}
+
+test "r2 zz4: pump_steer passes Interrupted through markUndelivered" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  let g = Agent::{ generation: 1, handle: 4 }
+  a.agent = Some(g)
+  let d = Delivery::{
+    pending: [base_codec::json_obj([("handed", sessions_core::jstr("m1"))])],
+    text: "x",
+    widgets: base_codec::json_null(),
+  }
+  let cur = s.actors.current
+  let mut got = "none"
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cur.pump_steer_k(a, g, Some(g), d, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => got = "ok"
+        effect::Exit::Failed(_) => got = "failed"
+        effect::Exit::Interrupted => got = "interrupted"
+      }
+      k(ex)
+    })
+  })
+  s.drive(fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return Some(Err(base_codec::json_obj([("message", sessions_core::jstr("boom"))])))
+    }
+    if f == "store.markUndelivered" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  })
+  assert_run(s.has_rpc("store.markUndelivered"), "in flight")
+  s.actors.heard("{\"db\":null,\"now\":6000}", s.disp)
+  s.actors.host.tick()
+  assert_run(got == "interrupted", "ZZ4 got " + got)
+}
+
+test "r2 zz5: stopFromSlack lastTurn failure is the task's (logged, answers null)" {
+  let s = r2_new()
+  s.actors.heard(
+    "{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"stopFromSlack\",\"args\":[\"c\",\"ch\",\"1.0\",\"2.0\"],\"now\":1000}",
+    s.disp,
+  )
+  s.drive(fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.lastTurn" {
+      return Some(Err(base_codec::json_obj([("message", sessions_core::jstr("boom"))])))
+    }
+    Some(Ok(base_codec::json_null()))
+  })
+  assert_run(
+    s.returned.length() == 1 && sessions_core::text_of(s.returned[0], "error") == "",
+    "ZZ5 returned error",
+  )
+}
+
+test "r2 review: close interleave during openTimeout t RPC stays closed" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+  let mut parked = true
+  let mut pending_left = true
+
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.open" {
+      return None
+    }
+    if f == "t" && parked {
+      return None
+    }
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(pending_left)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            (
+              "pending",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("handed", sessions_core::jstr("m1")),
+                  ("authorKind", sessions_core::jstr("person")),
+                  ("person", sessions_core::jstr("alice")),
+                  ("thread", sessions_core::jstr("th1")),
+                  ("surface", sessions_core::jstr("stillfail")),
+                ]),
+              ]),
+            ),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      pending_left = false
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "node.words" {
+      return Some(Ok(sessions_core::jstr("WORDS")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+
+  let (tid, _) = s.timers[0]
+  actors.heard("{\"due\":" + tid.to_string() + "}", s.disp)
+  s.drive(responder)
+  let a = get_actor(actors, "s1")
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (r, f, _) = s.rpcs[i]
+    if f == "t" {
+      rid = r
+    }
+  }
+  assert_run(rid != 0, "parked RPC reached")
+  actors.heard("{\"call\":20,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(responder)
+  assert_run(a.phase == "closed", "closure took effect")
+  parked = false
+  actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null}", s.disp)
+  s.drive(responder)
+  assert_run(a.phase == "closed", "closed became " + a.phase)
+}
+
+test "r2 review: close interleave during node.withChoices stays closed" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+  let mut parked = true
+  let mut pending_left = true
+
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.withChoices" && parked {
+      return None
+    }
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(pending_left)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            (
+              "pending",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("handed", sessions_core::jstr("m1")),
+                  ("authorKind", sessions_core::jstr("person")),
+                  ("person", sessions_core::jstr("alice")),
+                  ("thread", sessions_core::jstr("th1")),
+                  ("surface", sessions_core::jstr("stillfail")),
+                ]),
+              ]),
+            ),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.open" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(7)),
+            ("generation", sessions_core::jint(1)),
+            ("runtime", sessions_core::jstr("claude")),
+            ("profile", sessions_core::jstr("prof-1")),
+            ("identity", base_codec::json_obj([("model", sessions_core::jstr("opus"))])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.withChoices" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("text", sessions_core::jstr("hello")),
+            ("told", base_codec::json_null()),
+          ]),
+        ),
+      )
+    }
+    if f == "node.prompt" {
+      return Some(Ok(sessions_core::jstr("prompt:hello")))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-1")))
+    }
+    if f == "store.markDelivered" {
+      pending_left = false
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "node.words" {
+      return Some(Ok(sessions_core::jstr("WORDS")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+
+  let a = get_actor(actors, "s1")
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (r, f, _) = s.rpcs[i]
+    if f == "node.withChoices" {
+      rid = r
+    }
+  }
+  assert_run(rid != 0, "parked RPC reached")
+  actors.heard("{\"call\":20,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(responder)
+  assert_run(a.phase == "closed", "closure took effect")
+  parked = false
+  actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null}", s.disp)
+  s.drive(responder)
+  assert_run(a.phase == "closed", "closed became " + a.phase)
+}
+
+test "r2 review: close cancels non-open RPC and drains queued calls" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let actors = Actors::new_with_store_provider(host, sessions_core::HubGen::new(host, 0), "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+  let hold = fn(_f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] { None }
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"warm\"}", s.disp)
+  s.drive(hold)
+  assert_run(s.has_rpc("deps.held"), "parked at held")
+  actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"flushed\"}", s.disp)
+  actors.heard("{\"call\":3,\"actor\":\"s1\",\"method\":\"flushed\"}", s.disp)
+  s.drive(hold)
+  actors.heard("{\"call\":4,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(hold)
+  let a = get_actor(actors, "s1")
+  assert_run(
+    a.queued == 0 && s.returned.length() == 4,
+    "queued=" + a.queued.to_string() + " returned=" + s.returned.length().to_string() + " active=" + actors.gen().counters.active.to_string(),
+  )
+}
+
+test "r2 review: direct open interruption cancels node process" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+  let a = actors.actor("s1", "claude")
+  gen.counters.active = 1
+  let f = gen.fibers.fork_quiet(fn(rk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+    actors.current.rpc_open_k(a, [], rk)
+  })
+  let hold = fn(_f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] { None }
+  s.drive(hold)
+  assert_run(s.has_rpc("node.open"), "pending open")
+  f.interrupt()
+  s.drive(hold)
+  assert_run(host.hub_asked.length() == 0 && host.hub_timers.length() == 0, "local tear down")
+  assert_run(s.has_tell_fn("node.cancelOpen"), "pending Node open left without cancelOpen")
+}
+
+test "r2 review: steer interruption during markUndelivered preserves Interrupted" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let a = actors.actor("s1", "claude")
+  let s = NodeScript::new(mem, actors)
+  let agent = Agent::{ generation: 1, handle: 1 }
+  actors.current.set_agent(a, Some(agent))
+  gen.counters.active = 1
+  let d = Delivery::{
+    pending: [base_codec::json_obj([("handed", sessions_core::jstr("m1"))])],
+    text: "hi",
+    widgets: base_codec::json_arr([]),
+  }
+  let mut observed = "pending"
+  let f = gen.fibers.fork_quiet(fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    actors.current.pump_steer_k(a, agent, Some(agent), d, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => observed = "interrupted"
+        effect::Exit::Failed(_) => observed = "failed"
+        effect::Exit::Succeeded(_) => observed = "succeeded"
+      }
+      rk(ex)
+    })
+  })
+  let respond = fn(method : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if method == "store.markUndelivered" {
+      return None
+    }
+    if method == "node.timed" {
+      return Some(Err(sessions_core::jstr("failed")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.drive(respond)
+  assert_run(
+    s.has_rpc("store.markUndelivered") && s.has_rpc("store.markDelivered") && !s.has_rpc("agent.steer"),
+    "parked at expected stage",
+  )
+  f.interrupt()
+  s.drive(respond)
+  assert_run(
+    observed == "interrupted" && s.has_rpc("store.markUndelivered"),
+    "steer exit=" + observed,
+  )
+}
+
+test "r2 review: steer interruption during node.timed compensates with markUndelivered" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let a = actors.actor("s1", "claude")
+  let s = NodeScript::new(mem, actors)
+  let agent = Agent::{ generation: 1, handle: 1 }
+  actors.current.set_agent(a, Some(agent))
+  gen.counters.active = 1
+  let d = Delivery::{
+    pending: [base_codec::json_obj([("handed", sessions_core::jstr("m1"))])],
+    text: "hi",
+    widgets: base_codec::json_arr([]),
+  }
+  let mut observed = "pending"
+  let f = gen.fibers.fork_quiet(fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    actors.current.pump_steer_k(a, agent, Some(agent), d, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => observed = "interrupted"
+        effect::Exit::Failed(_) => observed = "failed"
+        effect::Exit::Succeeded(_) => observed = "succeeded"
+      }
+      rk(ex)
+    })
+  })
+  let respond = fn(method : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if method == "node.timed" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.drive(respond)
+  assert_run(
+    s.has_rpc("node.timed") && s.has_rpc("store.markDelivered") && !s.has_rpc("agent.steer"),
+    "parked at expected stage",
+  )
+  f.interrupt()
+  s.drive(respond)
+  assert_run(
+    observed == "interrupted" && s.has_rpc("store.markUndelivered"),
+    "steer exit=" + observed,
+  )
+}
+
+test "r2 review: stale runtime event does not mutate active turn" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+  let mut pending_left = true
+
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(pending_left)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            (
+              "pending",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("handed", sessions_core::jstr("m1")),
+                  ("authorKind", sessions_core::jstr("person")),
+                  ("person", sessions_core::jstr("alice")),
+                  ("thread", sessions_core::jstr("th1")),
+                  ("surface", sessions_core::jstr("stillfail")),
+                ]),
+              ]),
+            ),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.open" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(7)),
+            ("generation", sessions_core::jint(1)),
+            ("runtime", sessions_core::jstr("claude")),
+            ("profile", sessions_core::jstr("prof-1")),
+            ("identity", base_codec::json_obj([("model", sessions_core::jstr("opus"))])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.withChoices" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("text", sessions_core::jstr("hello")),
+            ("told", base_codec::json_null()),
+          ]),
+        ),
+      )
+    }
+    if f == "node.prompt" {
+      return Some(Ok(sessions_core::jstr("prompt:hello")))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-1")))
+    }
+    if f == "store.markDelivered" {
+      pending_left = false
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "node.words" {
+      return Some(Ok(sessions_core::jstr("WORDS")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+
+  let a = get_actor(actors, "s1")
+  assert_run(is_some(a.turn), "turn should be active after kick")
+  let w = Working::{
+    connect: "slack",
+    channel: "C",
+    thread_ts: "100",
+    ts: sessions_core::jstr("101"),
+    first_ts: sessions_core::jstr("101"),
+    since: 900.0,
+  }
+  a.working_for.push(w)
+  actors.heard(
+    "{\"actor\":\"s1\",\"generation\":0,\"now\":3000,\"event\":{\"type\":\"live\",\"event\":{\"kind\":\"start\",\"step\":\"tool\",\"tool\":\"old\",\"id\":\"old-id\"}}}",
+    s.disp,
+  )
+  s.drive(responder)
+  actors.heard(
+    "{\"actor\":\"s1\",\"generation\":0,\"event\":{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"completed\"}}}",
+    s.disp,
+  )
+  s.drive(responder)
+  let turn = match a.turn {
+    Some(v) => v
+    None => panic("lost active turn")
+  }
+  assert_run(
+    turn.tools_count == 0 && a.working_for.length() == 1,
+    "stale event counted tools=" + turn.tools_count.to_string() + " working=" + a.working_for.length().to_string(),
+  )
+}
+
+test "r2 review: about_is requires thread and seq keys to be present" {
+  let last = base_codec::json_obj([("about", base_codec::json_obj([]))])
+  assert_run(
+    !about_is(last, base_codec::json_null(), base_codec::json_null()),
+    "missing about keys matched null call args",
+  )
+  let ok_last = base_codec::json_obj([
+    ("about", base_codec::json_obj([("thread", sessions_core::jstr("th1")), ("seq", sessions_core::jint(3))])),
+  ])
+  assert_run(about_is(ok_last, sessions_core::jstr("th1"), sessions_core::jint(3)), "present keys should match")
+}
+
+test "r2 review: warm auth fails with concurrent kick triggers failover" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+  let mut open_calls = 0
+
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(open_calls <= 1)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            (
+              "pending",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("handed", sessions_core::jstr("m1")),
+                  ("surface", sessions_core::jstr("stillfail")),
+                ]),
+              ]),
+            ),
+            ("text", sessions_core::jstr("hi")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.open" {
+      open_calls = open_calls + 1
+      if open_calls == 1 {
+        return None
+      }
+      if open_calls == 2 {
+        return Some(
+          Err(
+            base_codec::json_obj([
+              ("auth", sessions_core::jbool(true)),
+              ("authProfile", sessions_core::jstr("prof-bad")),
+              ("message", sessions_core::jstr("login over")),
+            ]),
+          ),
+        )
+      }
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(9)),
+            ("generation", sessions_core::jint(1)),
+            ("runtime", sessions_core::jstr("claude")),
+            ("profile", sessions_core::jstr("prof-good")),
+            ("identity", base_codec::json_obj([])),
+          ]),
+        ),
+      )
+    }
+    if f == "deps.canAuthRetry" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.withChoices" {
+      return Some(Ok(base_codec::json_obj([("text", sessions_core::jstr("hi")), ("told", base_codec::json_null())])))
+    }
+    if f == "node.prompt" {
+      return Some(Ok(sessions_core::jstr("hi")))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-fb44")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  actors.heard("{\"call\":20,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"warm\"}", s.disp)
+  s.drive(responder)
+  let rid = match get_actor(actors, "s1").opening_rpc {
+    Some(r) => r
+    None => panic("warm did not open")
+  }
+  actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+
+  actors.heard(
+    "{\"answer\":" + rid.to_string() + ",\"error\":{\"auth\":true,\"authProfile\":\"prof-bad\",\"message\":\"login over\"}}",
+    s.disp,
+  )
+  s.drive(responder)
+  let a = get_actor(actors, "s1")
+  assert_run(open_calls == 3, "expected 3 node.open calls (failover)")
+  assert_run(s.has_rpc("deps.recheck"), "expected deps.recheck")
+  assert_run(s.has_rpc("deps.canAuthRetry"), "expected deps.canAuthRetry")
+  assert_run(a.auth_tried.length() == 1 && a.auth_tried[0] == "prof-bad", "expected prof-bad in auth_tried")
+  assert_run(is_some(a.turn), "turn should succeed on second profile")
+  assert_run_rt_clean(host.rt)
+}
+
+test "r2 coverage: FB-34 stop during node.open cancels open, marks delivered, and emits stopped notice" {
+  let s = r2_new()
+  let mut pending_left = true
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.open" {
+      return None
+    }
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(pending_left)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            (
+              "pending",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("handed", sessions_core::jstr("m1")),
+                  ("surface", sessions_core::jstr("stillfail")),
+                ]),
+              ]),
+            ),
+            ("text", sessions_core::jstr("hi")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      pending_left = false
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "t" {
+      return Some(Ok(sessions_core::jstr("Stopped")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+  assert_run(s.has_rpc("node.open"), "node.open must be in flight")
+
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"stop\",\"args\":[],\"now\":1001}", s.disp)
+  s.drive(responder)
+  assert_run(s.has_tell_fn("node.cancelOpen"), "stop must emit node.cancelOpen")
+  assert_run(s.has_rpc("store.markDelivered"), "stop during open must mark pending delivered")
+  assert_run(s.has_rpc("node.notice"), "stop during open must emit stopped notice")
+  assert_run(s.returned.length() == 2, "both kick and stop calls must return")
+}
+
+test "r2 coverage: FB-44 on_turn_ended auth refusal retries on fallback profile and handles agy lentExpired" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "agy")
+  a.agent = Some(Agent::{ generation: 1, handle: 5 })
+  a.profile = sessions_core::jstr("prof-a")
+  a.turn = Some(Turn::{
+    id: "turn-auth-1",
+    declared: None,
+    auth_retried: false,
+    codex_retried: false,
+    passive: false,
+    by: turn_for_nobody(),
+    asked_before: None,
+    started_at: 1000.0,
+    first_live_at: None,
+    tools_count: 0,
+    last_tool_at: 1000.0,
+    wait_watch: false,
+  })
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.hasPending" || f == "agent.busy" || f == "agent.holding" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "deps.canAuthRetry" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.words" {
+      return Some(Ok(sessions_core::jstr("GO_ON")))
+    }
+    if f == "node.open" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(6)),
+            ("generation", sessions_core::jint(2)),
+            ("runtime", sessions_core::jstr("agy")),
+            ("profile", sessions_core::jstr("prof-b")),
+            ("identity", base_codec::json_obj([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.withChoices" {
+      return Some(Ok(base_codec::json_obj([("text", sessions_core::jstr("GO_ON")), ("told", base_codec::json_null())])))
+    }
+    if f == "node.prompt" {
+      return Some(Ok(sessions_core::jstr("GO_ON")))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-auth-2")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  s.actors.heard(
+    "{\"actor\":\"s1\",\"generation\":1,\"now\":2000,\"event\":{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"auth\",\"message\":\"401\"}}}",
+    s.disp,
+  )
+  s.drive(responder)
+  assert_run(s.has_rpc("deps.recheck"), "expected deps.recheck on auth failure")
+  assert_run(s.has_rpc("deps.canAuthRetry"), "expected deps.canAuthRetry")
+  assert_run(a.auth_tried.length() == 1 && a.auth_tried[0] == "prof-a", "prof-a recorded in auth_tried")
+  assert_run(is_some(a.turn), "auth_retry turn must start")
+
+  // Now simulate lentExpired on the retried turn (generation 2)
+  let responder_lent = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.lentExpired" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "deps.held" || f == "store.hasPending" || f == "agent.busy" || f == "agent.holding" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "node.words" || f == "node.prompt" {
+      return Some(Ok(sessions_core::jstr("GO_ON")))
+    }
+    if f == "node.withChoices" {
+      return Some(Ok(base_codec::json_obj([("text", sessions_core::jstr("GO_ON")), ("told", base_codec::json_null())])))
+    }
+    if f == "node.open" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(7)),
+            ("generation", sessions_core::jint(3)),
+            ("runtime", sessions_core::jstr("agy")),
+            ("profile", sessions_core::jstr("prof-b")),
+            ("identity", base_codec::json_obj([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-auth-3")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard(
+    "{\"actor\":\"s1\",\"generation\":2,\"now\":3000,\"event\":{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"auth\",\"message\":\"lent over\"}}}",
+    s.disp,
+  )
+  s.drive(responder_lent)
+  assert_run(s.has_rpc("agent.lentExpired"), "agy auth_retried turn must probe agent.lentExpired")
+  assert_run(is_some(a.turn), "lentExpired must reopen and retry")
+}
+
+test "r2 coverage: FB-26 Codex bare Bad Request through start_turn_body_k reloads once then clears afresh" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "codex")
+  a.agent = Some(Agent::{ generation: 1, handle: 10 })
+  let mut cleared = false
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "agent.holding" || f == "agent.busy" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.lastTurn" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("outcome", sessions_core::jstr("failed")),
+            ("detail", sessions_core::jstr("model: {\"detail\":\"Bad Request\"}")),
+          ]),
+        ),
+      )
+    }
+    if f == "store.getSession" {
+      return Some(Ok(base_codec::json_obj([("runtimeSessionId", sessions_core::jstr("codex-th-1"))])))
+    }
+    if f == "store.setRuntimeSessionId" {
+      cleared = true
+      return Some(Ok(base_codec::json_null()))
+    }
+    if f == "node.open" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(11)),
+            ("generation", sessions_core::jint(2)),
+            ("runtime", sessions_core::jstr("codex")),
+          ]),
+        ),
+      )
+    }
+    if f == "node.withChoices" {
+      return Some(Ok(base_codec::json_obj([("text", sessions_core::jstr("go")), ("told", base_codec::json_null())])))
+    }
+    if f == "node.prompt" || f == "t" || f == "node.words" {
+      return Some(Ok(sessions_core::jstr("go")))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("t-fb26")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  let mut ex1_ok = false
+  s.actors.current.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    s.actors.current.start_turn_body_k(a, "input", "go", turn_for_nobody(), base_codec::json_null(), None, false, 0, false, fn(
+      ex : effect::Exit[Unit],
+    ) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => ex1_ok = true
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  s.drive(responder)
+  assert_run(ex1_ok, "first start_turn_body_k must succeed")
+  assert_run(opt_str_is(a.codex_reloaded, "codex-th-1"), "first Bad Request must record codex_reloaded")
+  assert_run(!cleared, "first Bad Request must reload, not clear")
+
+  // Second attempt on same thread -> clears afresh
+  a.turn = None
+  let mut ex2_ok = false
+  s.actors.current.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    s.actors.current.start_turn_body_k(a, "input", "go", turn_for_nobody(), base_codec::json_null(), None, false, 0, false, fn(
+      ex : effect::Exit[Unit],
+    ) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => ex2_ok = true
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  s.drive(responder)
+  assert_run(ex2_ok, "second start_turn_body_k must succeed")
+  assert_run(cleared, "second Bad Request on same thread must clear afresh")
+  assert_run(!is_some(a.codex_reloaded), "codex_reloaded cleared after afresh")
+}
+
+test "r2 coverage: suspend and recover lifecycle preserves resume state" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  a.agent = Some(Agent::{ generation: 1, handle: 8 })
+  a.turn = Some(Turn::{
+    id: "turn-sus",
+    declared: None,
+    auth_retried: false,
+    codex_retried: false,
+    passive: false,
+    by: turn_for_nobody(),
+    asked_before: None,
+    started_at: 1000.0,
+    first_live_at: None,
+    tools_count: 0,
+    last_tool_at: 1000.0,
+    wait_watch: false,
+  })
+  a.phase = "running"
+
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.busy" || f == "deps.held" || f == "agent.holding" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([])),
+            ("text", sessions_core::jstr("")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.open" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(9)),
+            ("generation", sessions_core::jint(2)),
+            ("runtime", sessions_core::jstr("claude")),
+          ]),
+        ),
+      )
+    }
+    if f == "node.withChoices" {
+      return Some(Ok(base_codec::json_obj([("text", sessions_core::jstr("RESUME")), ("told", base_codec::json_null())])))
+    }
+    if f == "node.words" || f == "node.prompt" {
+      return Some(Ok(sessions_core::jstr("RESUME")))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-rec")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"method\":\"suspend\",\"args\":[\"restarting\"],\"now\":2000}", s.disp)
+  s.drive(responder)
+  assert_run(a.phase == "idle" && !is_some(a.turn) && !is_some(a.agent), "suspend must clear turn/agent and return to idle")
+  assert_run(s.has_rpc("store.endTurn"), "suspend must end active turn")
+  assert_run(s.has_rpc("store.markUndelivered"), "suspend must mark steered undelivered")
+
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"recover\",\"args\":[],\"now\":3000}", s.disp)
+  s.drive(responder)
+  assert_run(is_some(a.turn), "recover must start resume turn")
+  assert_run(a.phase == "running", "recover must enter running phase")
+}
+
+test "r2 coverage: local StoreDb markUndelivered and markWidgetModelsTold roll back atomically on 2nd-row failure" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let mut exec_calls = 0
+  let mut tx_entered = false
+  let mut tx_rolled_back = false
+  let mut row1_written = false
+
+  let make_sdb = fn() -> StoreDb {
+    let inner = StoreDb::{
+      all: fn(_sql : String, _params : Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError] {
+        Ok([])
+      },
+      run: fn(_sql : String, _params : Array[base_codec::Json]) -> Result[Int, sql_db::SqlError] {
+        exec_calls = exec_calls + 1
+        if exec_calls == 1 {
+          row1_written = true
+          return Ok(1)
+        }
+        Err(sql_db::sql_error(1, "simulated 2nd-row failure"))
+      },
+      tx_err: fn(_b : (StoreDb) -> Result[base_codec::Json, sql_db::SqlError]) -> Result[base_codec::Json, sql_db::SqlError] {
+        Err(sql_db::sql_error(1, "nested tx"))
+      },
+    }
+    StoreDb::{
+      all: inner.all,
+      run: inner.run,
+      tx_err: fn(body : (StoreDb) -> Result[base_codec::Json, sql_db::SqlError]) -> Result[base_codec::Json, sql_db::SqlError] {
+        tx_entered = true
+        let r = body(inner)
+        match r {
+          Ok(v) => Ok(v)
+          Err(e) => {
+            tx_rolled_back = true
+            row1_written = false
+            Err(e)
+          }
+        }
+      },
+    }
+  }
+
+  let r1 = actors.current.local_store_with_db(
+    make_sdb(),
+    "markUndelivered",
+    [
+      sessions_core::jstr("s1"),
+      base_codec::json_arr([
+        base_codec::json_obj([("thread", sessions_core::jstr("t1")), ("seq", sessions_core::jint(1))]),
+        base_codec::json_obj([("thread", sessions_core::jstr("t1")), ("seq", sessions_core::jint(2))]),
+      ]),
+    ],
+  )
+  match r1 {
+    Err(_) => ()
+    Ok(_) => panic("markUndelivered 2nd-row failure must return Err")
+  }
+  assert_run(tx_entered && tx_rolled_back, "markUndelivered must run inside tx_err and roll back")
+  assert_run(!row1_written, "1st row must be rolled back")
+  assert_run(mem.stdout_lines.length() == 0, "0 changes emitted on rollback")
+
+  // Reset and test markWidgetModelsTold
+  exec_calls = 0
+  tx_entered = false
+  tx_rolled_back = false
+  row1_written = false
+  let r2 = actors.current.local_store_with_db(
+    make_sdb(),
+    "markWidgetModelsTold",
+    [
+      sessions_core::jstr("s1"),
+      base_codec::json_arr([
+        base_codec::json_arr([sessions_core::jstr("w1"), sessions_core::jstr("m1")]),
+        base_codec::json_arr([sessions_core::jstr("w2"), sessions_core::jstr("m2")]),
+      ]),
+    ],
+  )
+  match r2 {
+    Err(_) => ()
+    Ok(_) => panic("markWidgetModelsTold 2nd-row failure must return Err")
+  }
+  assert_run(tx_entered && tx_rolled_back, "markWidgetModelsTold must run inside tx_err and roll back")
+  assert_run(!row1_written, "1st row must be rolled back")
+  assert_run(mem.stdout_lines.length() == 0, "0 changes emitted on rollback")
+}
+
+// ── R3 Review Regression & FB-39 Coverage Tests ──
+
+fn r3_null(_f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+  Some(Ok(base_codec::json_null()))
+}
+
+fn r3_probe_adopt(s : NodeScript, id : String, generation : Int) -> Unit {
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"" +
+    id +
+    "\",\"declared\":\"all_done\"}},{\"handle\":" +
+    generation.to_string() +
+    ",\"generation\":" +
+    generation.to_string() +
+    "},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.actors.host.tick()
+}
+
+test "r3 rr1: dispose asks agent.dispose and returns without error" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  a.agent = Some(Agent::{ generation: 1, handle: 4 })
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"method\":\"dispose\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(r3_null)
+  assert_run(
+    s.has_rpc("agent.dispose") && s.returned.length() == 1 && sessions_core::text_of(s.returned[0], "error") == "",
+    "RR1 agent.dispose sent=" +
+    s.has_rpc("agent.dispose").to_string() +
+    " error=" +
+    sessions_core::text_of(s.returned[0], "error"),
+  )
+}
+
+test "r3 rr2: close while node.timed is in flight gives back what was marked delivered" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  let g = Agent::{ generation: 1, handle: 4 }
+  a.agent = Some(g)
+  let d = Delivery::{
+    pending: [base_codec::json_obj([("handed", sessions_core::jstr("m1"))])],
+    text: "x",
+    widgets: base_codec::json_null(),
+  }
+  let cur = s.actors.current
+  let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.timed" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cur.enqueue_k(a, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit { cur.pump_steer_k(a, g, Some(g), d, tk) }, k)
+  })
+  s.drive(r)
+  assert_run(s.has_rpc("store.markDelivered") && s.has_rpc("node.timed"), "reached")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\",\"args\":[],\"now\":1001}", s.disp)
+  s.drive(r)
+  assert_run(s.has_rpc("store.markUndelivered"), "RR2 marked delivered, never written, never given back")
+}
+
+test "r3 rr3: runChanged on a closed actor asks node.notice with no error" {
+  let s = r2_new()
+  let _ = s.actors.actor("s1", "claude")
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"method\":\"close\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(r3_null)
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"runChanged\",\"args\":[\"x\",null],\"now\":1000}", s.disp)
+  s.drive(r3_null)
+  assert_run(
+    s.has_rpc("node.notice") && sessions_core::text_of(s.returned[1], "error") == "",
+    "RR3 no notice, error=" + sessions_core::text_of(s.returned[1], "error"),
+  )
+}
+
+test "r3 rr4: stateForTurn with stateWrite answered stays recorded across close" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  a.turn = Some(Turn::{
+    id: "t1",
+    declared: None,
+    auth_retried: false,
+    codex_retried: false,
+    passive: false,
+    by: base_codec::json_null(),
+    asked_before: None,
+    started_at: 0.0,
+    first_live_at: None,
+    tools_count: 0,
+    last_tool_at: 0.0,
+    wait_watch: false,
+  })
+  let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.stateWrite" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard(
+    "{\"call\":1,\"actor\":\"s1\",\"method\":\"stateForTurn\",\"args\":[\"t1\",{\"kind\":\"all_done\"},5],\"now\":1000}",
+    s.disp,
+  )
+  s.drive(r)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "node.stateWrite" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0, "reached")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"close\",\"args\":[],\"now\":1001}", s.disp)
+  s.drive(r)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null,\"now\":1002}", s.disp)
+  s.drive(r)
+  let mut ok = false
+  for i in 0..<s.returned.length() {
+    if sessions_core::int_of(sessions_core::jget(s.returned[i], "returned")) == 1 &&
+    is_opt_json_true(sessions_core::jget(s.returned[i], "value")) {
+      ok = true
+    }
+  }
+  assert_run(ok, "RR4 not recorded")
+}
+
+test "r3 independent: dispose sends captured handle and returns success" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  s.actors.heard("{\"call\":7,\"actor\":\"s1\",\"method\":\"dispose\"}", s.disp)
+  s.drive(r3_null)
+  let answer = s.returned[s.returned.length() - 1]
+  assert_run(
+    s.has_rpc("agent.dispose") && !is_some(sessions_core::jget(answer, "error")),
+    "dispose rpc=" +
+    (if s.has_rpc("agent.dispose") { "yes" } else { "no" }) +
+    " returned=" +
+    base_codec::json_stringify(answer),
+  )
+}
+
+test "r3 independent: close while timed call pending restores unsteered delivery" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.timed" {
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      delivered = true
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  assert_run(delivered && s.has_rpc("node.timed") && !s.has_rpc("agent.steer"), "did not reach test window")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(respond)
+  assert_run(!delivered, "delivered remains true after close before agent.steer")
+}
+
+test "r3 independent: queued old requesting event preserves adopted turn declaration" {
+  let s = r2_new()
+  r3_probe_adopt(s, "old", 1)
+  let a = get_actor(s.actors, "s1")
+  a.unread.push(sessions_core::jstr("old-message"))
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.setNeed" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":11,\"actor\":\"s1\",\"method\":\"need\",\"args\":[\"q\"]}", s.disp)
+  s.drive(respond)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "store.setNeed" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0, "need did not park")
+  s.actors.heard(
+    "{\"actor\":\"s1\",\"generation\":1,\"event\":{\"type\":\"live\",\"event\":{\"kind\":\"phase\",\"phase\":\"requesting\"}}}",
+    s.disp,
+  )
+  s.drive(respond)
+  assert_run(a.queued == 2, "requesting did not queue")
+  r3_probe_adopt(s, "new", 2)
+  let t = match a.turn {
+    Some(tv) => tv
+    None => panic("missing adopted turn")
+  }
+  assert_run(t.id == "new" && is_some(t.declared), "adoption did not set state")
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null}", s.disp)
+  s.drive(respond)
+  assert_run(is_some(t.declared) && !s.has_rpc("store.declareTurn"), "new turn declaration was cleared")
+}
+
+test "r3 coverage: FB-39 passive turn does not auto-retry on auth failure" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  a.agent = Some(Agent::{ generation: 1, handle: 5 })
+  a.profile = sessions_core::jstr("prof-a")
+  a.turn = Some(Turn::{
+    id: "turn-passive",
+    declared: None,
+    auth_retried: false,
+    codex_retried: false,
+    passive: true,
+    by: turn_for_nobody(),
+    asked_before: None,
+    started_at: 1000.0,
+    first_live_at: None,
+    tools_count: 0,
+    last_tool_at: 1000.0,
+    wait_watch: false,
+  })
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.hasPending" || f == "agent.busy" || f == "agent.holding" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "deps.canAuthRetry" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.words" {
+      return Some(Ok(sessions_core::jstr("auth failed")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard(
+    "{\"actor\":\"s1\",\"generation\":1,\"now\":2000,\"event\":{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"auth\",\"message\":\"401\"}}}",
+    s.disp,
+  )
+  s.drive(responder)
+  assert_run(!s.has_rpc("node.open"), "passive turn must not reopen/auth-retry")
+  assert_run(!is_some(a.turn), "passive turn must remain ended")
+}
+
+test "r3 coverage: FB-39 max_concurrent_turns queues auth_retry into queued_retry and cap_wait_queue wakes queued_retry" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  gen.counters.max_concurrent_turns = 1
+  let actors = Actors::new_with_store_provider(host, gen, "/", ActorRunHandlers::real(), no_store_db)
+  let s = NodeScript::new(mem, actors)
+
+  // s0 occupies the single concurrent turn slot
+  let s0 = actors.actor("s0", "claude")
+  s0.turn = Some(Turn::{
+    id: "turn-s0",
+    declared: None,
+    auth_retried: false,
+    codex_retried: false,
+    passive: false,
+    by: turn_for_nobody(),
+    asked_before: None,
+    started_at: 900.0,
+    first_live_at: None,
+    tools_count: 0,
+    last_tool_at: 900.0,
+    wait_watch: false,
+  })
+
+  // s1 fails with auth while slot is full -> queues into turn_wait_queue with queued_retry
+  let s1 = actors.actor("s1", "claude")
+  s1.agent = Some(Agent::{ generation: 1, handle: 2 })
+  s1.profile = sessions_core::jstr("prof-a")
+  s1.turn = Some(Turn::{
+    id: "turn-s1",
+    declared: None,
+    auth_retried: false,
+    codex_retried: false,
+    passive: false,
+    by: turn_for_nobody(),
+    asked_before: None,
+    started_at: 1000.0,
+    first_live_at: None,
+    tools_count: 0,
+    last_tool_at: 1000.0,
+    wait_watch: false,
+  })
+
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.hasPending" || f == "agent.busy" || f == "agent.holding" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "deps.canAuthRetry" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.words" || f == "node.prompt" {
+      return Some(Ok(sessions_core::jstr("GO_ON_AUTH")))
+    }
+    if f == "node.withChoices" {
+      return Some(Ok(base_codec::json_obj([("text", sessions_core::jstr("GO_ON_AUTH")), ("told", base_codec::json_null())])))
+    }
+    if f == "node.open" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(3)),
+            ("generation", sessions_core::jint(2)),
+            ("runtime", sessions_core::jstr("claude")),
+            ("profile", sessions_core::jstr("prof-b")),
+            ("identity", base_codec::json_obj([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-s1-retry")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  actors.heard(
+    "{\"actor\":\"s1\",\"generation\":1,\"now\":2000,\"event\":{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"failed\",\"reason\":\"auth\",\"message\":\"401\"}}}",
+    s.disp,
+  )
+  s.drive(responder)
+  assert_run(is_some(s1.queued_retry), "s1 must stash queued_retry when max_concurrent_turns is full")
+  assert_run(actors.current.gen.resources.turn_wait_queue.length() == 1, "s1 must be in turn_wait_queue")
+
+  // Free s0's slot and drain turn_wait_queue -> s1 wakes and starts its auth_retry turn
+  s0.turn = None
+  actors.current.drain_turn_queue(true)
+  s.drive(responder)
+  assert_run(!is_some(s1.queued_retry), "drain_turn_queue must consume s1.queued_retry")
+  assert_run(actors.current.gen.resources.turn_wait_queue.length() == 0, "turn_wait_queue must be empty")
+  match s1.turn {
+    Some(t) => assert_run(t.auth_retried, "s1 must wake and start an auth_retry turn")
+    None => panic("s1 turn must start from queued_retry after slot is released")
+  }
+
+  // Free s1's slot and test cap_wait_queue waking a queued_retry actor (s2)
+  s1.turn = None
+  let s2 = actors.actor("s2", "claude")
+  s2.paused_cap = true
+  s2.queued_retry = Some(QueuedRetry::{
+    kind: "resume",
+    text: "GO_ON_AFTER_SPENT",
+    by: turn_for_nobody(),
+    codex_retried: true,
+  })
+  actors.current.enqueue_cap_wait(s2)
+  actors.heard("{\"drainCapQueue\":true,\"now\":3000}", s.disp)
+  s.drive(responder)
+  assert_run(!is_some(s2.queued_retry), "drainCapQueue must consume s2.queued_retry")
+  match s2.turn {
+    Some(t) => assert_run(t.codex_retried, "cap_wait_queue wake must preserve codex_retried")
+    None => panic("s2 turn must start from queued_retry on cap wake")
+  }
+}
+
+// ── R4 Final Cap Regression Tests (Opus ss1..ss3 + Astra R3 probes + Local StoreDb) ──
+
+fn r4_reopen(park : String) -> NodeScript {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  a.agent = Some(Agent::{ generation: 1, handle: 4 })
+  let cur = s.actors.current
+  let mut prompts = 0
+  let d = Delivery::{
+    pending: [base_codec::json_obj([("handed", sessions_core::jstr("m1"))])],
+    text: "x",
+    widgets: base_codec::json_null(),
+  }
+  let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.prompt" {
+      prompts = prompts + 1
+      return Some(Err(base_codec::json_obj([("message", sessions_core::jstr("broken pipe"))])))
+    }
+    if f == park {
+      return None
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("t1")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cur.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        cur.start_turn_k(a, "input", "x", turn_for_nobody(), Some(d), false, 0, false, tk)
+      },
+      k,
+    )
+  })
+  s.drive(r)
+  assert_run(s.has_rpc("store.markDelivered") && prompts == 1 && s.has_rpc(park), "ZS did not reach window")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\",\"args\":[],\"now\":1001}", s.disp)
+  s.drive(r)
+  s
+}
+
+test "r4 ss1: close while reopening node.open after failed prompt gives messages back" {
+  let s = r4_reopen("node.open")
+  assert_run(s.has_rpc("store.markUndelivered"), "SS1 marked delivered, prompt failed, never given back")
+}
+
+test "r4 ss2: close while agent.dispose of reopening is in flight gives messages back" {
+  let s = r4_reopen("agent.dispose")
+  assert_run(s.has_rpc("store.markUndelivered"), "SS2 marked delivered, prompt failed, never given back")
+}
+
+test "r4 ss3: rpc_direct_k answered then sealed in same batch is Interrupted" {
+  let s = r2_new()
+  let cur = s.actors.current
+  let mut got = "none"
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cur.rpc_direct_k("s1", "node.notice", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => got = "ok"
+        effect::Exit::Failed(_) => got = "failed"
+        effect::Exit::Interrupted => got = "interrupted"
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  s.drive(fn(_f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] { None })
+  let (id, _, _) = s.rpcs[0]
+  s.actors.heard("{\"answer\":" + id.to_string() + ",\"value\":null,\"now\":1}", s.disp)
+  s.actors.heard("{\"db\":null,\"now\":2}", s.disp)
+  s.actors.host.tick()
+  assert_run(got == "interrupted", "SS3 got " + got)
+}
+
+test "r4 final: close after mark commit before ACK recovers undelivered message" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.markDelivered" {
+      delivered = true
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "store.markDelivered" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0 && delivered, "mark did not commit")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(respond)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null}", s.disp)
+  s.drive(respond)
+  assert_run(!delivered, "close after mark commit before ACK must recover undelivered message")
+}
+
+test "r4 final: close with negative steer ACK recovers rejected message" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      delivered = true
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "agent.steer" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0 && delivered, "did not reach steer window")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(respond)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":false}", s.disp)
+  s.drive(respond)
+  assert_run(!delivered, "close with negative steer ACK must recover rejected message")
+}
+
+test "r4 final: stale stateWrite receipt preserves adopted mid-wait timer" {
+  let s = r2_new()
+  r3_probe_adopt(s, "old", 1)
+  let a = get_actor(s.actors, "s1")
+  let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.stateWrite" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"method\":\"stateForTurn\",\"args\":[\"old\",{\"kind\":\"all_done\"},5]}", s.disp)
+  s.drive(r)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "node.stateWrite" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0, "did not reach stateWrite")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(r)
+  s.actors.heard(
+    "{\"call\":3,\"actor\":\"s1\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"new\",\"declared\":\"waiting\",\"wait\":60},\"midWaitingSeconds\":60,\"midWaitingMs\":60000},{\"handle\":2,\"generation\":2},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.drive(r)
+  assert_run(is_some(a.mid_waiting) && is_some(a.timers.get("mid_wait")), "adopt did not install timer")
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null}", s.disp)
+  s.drive(r)
+  assert_run(is_some(a.mid_waiting) && is_some(a.timers.get("mid_wait")), "old ACK cancelled new turn timer")
+}
+
+test "r4 final: local StoreDb restores delivered_at=NULL on close even when Node route is forgotten" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 0)
+  let row_thread = "th1"
+  let row_n = 1
+  let row_session = "s1"
+  let mut row_delivered_at : Option[Int] = None
+  let inner_sdb = StoreDb::{
+    all: fn(sql : String, params : Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], sql_db::SqlError] {
+      if sql.contains("delivered_at IS NULL") {
+        let sess_ok = params.length() > 0 && str_or(sessions_core::str_of(Some(params[0])), "") == row_session
+        if sess_ok && !is_some(row_delivered_at) {
+          let row : Map[String, base_codec::Json] = Map::new()
+          row.set("1", sessions_core::jint(1))
+          row.set("n", sessions_core::jint(1))
+          return Ok([row])
+        }
+        return Ok([])
+      }
+      Ok([])
+    },
+    run: fn(sql : String, params : Array[base_codec::Json]) -> Result[Int, sql_db::SqlError] {
+      if sql.contains("UPDATE deliveries SET delivered_at = ?") {
+        if params.length() == 4 &&
+        str_or(sessions_core::str_of(Some(params[1])), "") == row_thread &&
+        sessions_core::int_of(Some(params[2])) == row_n &&
+        str_or(sessions_core::str_of(Some(params[3])), "") == row_session &&
+        !is_some(row_delivered_at) {
+          row_delivered_at = Some(sessions_core::int_of(Some(params[0])))
+          return Ok(1)
+        }
+        return Ok(0)
+      }
+      if sql.contains("UPDATE deliveries SET delivered_at = NULL") {
+        if params.length() == 3 &&
+        str_or(sessions_core::str_of(Some(params[0])), "") == row_thread &&
+        sessions_core::int_of(Some(params[1])) == row_n &&
+        str_or(sessions_core::str_of(Some(params[2])), "") == row_session {
+          row_delivered_at = None
+          return Ok(1)
+        }
+        return Ok(0)
+      }
+      Ok(0)
+    },
+    tx_err: fn(_b : (StoreDb) -> Result[base_codec::Json, sql_db::SqlError]) -> Result[base_codec::Json, sql_db::SqlError] {
+      Err(sql_db::sql_error(1, "nested tx"))
+    },
+  }
+  let local_sdb = StoreDb::{
+    all: inner_sdb.all,
+    run: inner_sdb.run,
+    tx_err: fn(body : (StoreDb) -> Result[base_codec::Json, sql_db::SqlError]) -> Result[base_codec::Json, sql_db::SqlError] {
+      body(inner_sdb)
+    },
+  }
+  let actors = Actors::new_with_store_provider(
+    host,
+    gen,
+    "/",
+    ActorRunHandlers::real(),
+    fn(_g : sessions_core::HubGen) -> Option[StoreDb] { Some(local_sdb) },
+  )
+  let s = NodeScript::new(mem, actors)
+  r3_probe_adopt(s, "t1", 1)
+  let mut registered = true
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if !registered {
+      return None
+    }
+    if f == "node.timed" {
+      return None
+    }
+    if f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            (
+              "pending",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("handed", base_codec::json_obj([("thread", sessions_core::jstr("th1")), ("n", sessions_core::jint(1))])),
+                ]),
+              ]),
+            ),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let before_close = is_some(row_delivered_at)
+  assert_run(before_close && s.has_rpc("node.timed") && !s.has_rpc("agent.steer"), "did not mark row before close")
+  // Simulate Node route forgotten: Node answers no more RPCs at all.
+  registered = false
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(respond)
+  let after_close = is_some(row_delivered_at)
+  let mut kick_returned = false
+  for i in 0..<s.returned.length() {
+    if sessions_core::int_of(sessions_core::jget(s.returned[i], "returned")) == 8 {
+      kick_returned = true
+    }
+  }
+  assert_run(
+    before_close && !after_close && kick_returned && s.actors.host.hub_asked.length() == 0,
+    "before=" +
+    before_close.to_string() +
+    " after=" +
+    after_close.to_string() +
+    " kick_returned=" +
+    kick_returned.to_string() +
+    " pending=" +
+    s.actors.host.hub_asked.length().to_string(),
+  )
+}
+
+test "R5 verify: mark receipt after close and adopt must not dispatch an old steer" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.markDelivered" {
+      delivered = true
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let rid = match find_rpc_id(s.mem, "store.markDelivered") {
+    Some(id) => id
+    None => panic("did not reach requested window")
+  }
+  assert_run(delivered, "mark did not commit")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(respond)
+  r3_probe_adopt(s, "new", 2)
+  s.drive(respond)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null}", s.disp)
+  s.drive(respond)
+  assert_run(!s.has_rpc("agent.steer") && !delivered, "old mark ACK sent agent.steer or kept delivered after adopt")
+}
+
+test "R5 verify: accepted old steer must not populate replacement turn accounting" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      delivered = true
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let rid = match find_rpc_id(s.mem, "agent.steer") {
+    Some(id) => id
+    None => panic("did not reach requested window")
+  }
+  assert_run(delivered, "mark did not commit")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(respond)
+  r3_probe_adopt(s, "new", 2)
+  s.drive(respond)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":true}", s.disp)
+  s.drive(respond)
+  let a = get_actor(s.actors, "s1")
+  assert_run(
+    a.steered.length() == 0 && !s.has_rpc("store.markWidgetModelsTold"),
+    "old accepted ACK wrote replacement turn: steered=" + a.steered.length().to_string(),
+  )
+}
+
+test "R5 verify: close after sending mark before Node reads it must settle kick" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.markDelivered" {
+      delivered = false
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let _rid = match find_rpc_id(s.mem, "store.markDelivered") {
+    Some(id) => id
+    None => panic("did not reach requested window")
+  }
+  assert_run(!delivered, "Node must not have committed")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(respond)
+  let mut kick_returned = false
+  for i in 0..<s.returned.length() {
+    if sessions_core::int_of(sessions_core::jget(s.returned[i], "returned")) == 8 {
+      kick_returned = true
+    }
+  }
+  assert_run(
+    kick_returned && s.actors.host.hub_asked.length() == 0,
+    "mark without host reply: kick_returned=" +
+    kick_returned.to_string() +
+    " pending=" +
+    s.actors.host.hub_asked.length().to_string(),
+  )
+}
+
+test "R6 verify: replacement handle may reuse turn id and runtime generation" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      delivered = true
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let rid = match find_rpc_id(s.mem, "agent.steer") {
+    Some(id) => id
+    None => panic("did not reach requested window")
+  }
+  assert_run(delivered, "mark did not commit")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(respond)
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"t1\",\"declared\":\"all_done\"}},{\"handle\":2,\"generation\":1},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.drive(respond)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":true}", s.disp)
+  s.drive(respond)
+  let a = get_actor(s.actors, "s1")
+  assert_run(
+    a.steered.length() == 0 && !s.has_rpc("store.markWidgetModelsTold"),
+    "old accepted ACK wrote replacement turn: steered=" + a.steered.length().to_string(),
+  )
+}
+
+test "R6 verify: adopted turn survives old widget receipt" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "store.markWidgetModelsTold" {
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      delivered = true
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let rid = match find_rpc_id(s.mem, "store.markWidgetModelsTold") {
+    Some(id) => id
+    None => panic("did not reach requested window")
+  }
+  assert_run(delivered, "mark did not commit")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"new\",\"declared\":\"all_done\"}},{\"handle\":2,\"generation\":2},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":true}", s.disp)
+  s.drive(respond)
+  let a = get_actor(s.actors, "s1")
+  assert_run(
+    a.steered.length() == 0,
+    "old accepted ACK wrote replacement turn: steered=" + a.steered.length().to_string(),
+  )
+}
+
+test "R6 verify: widget reply cannot change previously verified adopted state" {
+  let s = r2_new()
+  r3_probe_adopt(s, "t1", 1)
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "store.markWidgetModelsTold" {
+      return None
+    }
+    if f == "store.hasPending" || f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      delivered = true
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":8,\"actor\":\"s1\",\"method\":\"kick\"}", s.disp)
+  s.drive(respond)
+  let rid = match find_rpc_id(s.mem, "store.markWidgetModelsTold") {
+    Some(id) => id
+    None => panic("did not reach requested window")
+  }
+  assert_run(delivered, "mark did not commit")
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"new\",\"declared\":\"all_done\"}},{\"handle\":2,\"generation\":2},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.drive(respond)
+  let replacement = get_actor(s.actors, "s1")
+  match replacement.turn {
+    Some(t) => assert_run(t.id == "new" && replacement.steered.length() == 0, "replacement must start clean")
+    None => panic("missing replacement turn")
+  }
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":true}", s.disp)
+  s.drive(respond)
+  let a = get_actor(s.actors, "s1")
+  assert_run(
+    a.steered.length() == 0,
+    "old accepted ACK wrote replacement turn: steered=" + a.steered.length().to_string(),
+  )
+}
+
+fn zv_words(s : NodeScript) -> Option[Array[base_codec::Json]] {
+  for i in 0..<s.rpcs.length() {
+    let (_, f, args) = s.rpcs[i]
+    if f == "node.words" && args.length() > 0 && opt_str_is(sessions_core::str_of(Some(args[0])), "silentProgress") {
+      return Some(args)
+    }
+  }
+  None
+}
+
+test "R7 vv1: silentProgress is asked with silent ms and reminded ms as MB and Node say" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  a.silent_waiting_since = Some(0.0)
+  s.actors.current.gen.counters.now = 1200000.0
+  let cur = s.actors.current
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cur.maybe_progress_reminder_k(a, fn(_ex : effect::Exit[(Option[String], Bool)]) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  s.drive(r3_null)
+  match zv_words(s) {
+    Some(args) => {
+      let ms = num_or(sessions_core::num_of(Some(args[1])), -1.0)
+      assert_run(
+        args.length() == 3 && ms == 1200000.0 && is_json_null(args[2]),
+        "VV1 args=" + base_codec::json_stringify(base_codec::json_arr(args)),
+      )
+    }
+    None => panic("VV1 not asked")
+  }
+}
+
+test "R7 vv2: wait of 5 minutes asks Node, which decides when it is due" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  a.silent_waiting_since = Some(0.0)
+  s.actors.current.gen.counters.now = 300000.0
+  let cur = s.actors.current
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cur.maybe_progress_reminder_k(a, fn(_ex : effect::Exit[(Option[String], Bool)]) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  s.drive(r3_null)
+  assert_run(is_some(zv_words(s)), "VV2 Node not asked")
+}
+
+test "R7 vv3: give_up tells the opener it failed" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  let cur = s.actors.current
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit { cur.give_up_k(a, None, k) })
+  s.drive(r3_null)
+  assert_run(s.has_rpc("node.notice") && s.has_rpc("deps.settled"), "VV3 deps.settled not asked")
+}
+
+test "R7: start_turn_handle_error_k tells opener failed after posting notice" {
+  let s = r2_new()
+  let a = s.actors.actor("s1", "claude")
+  let cur = s.actors.current
+  let respond = fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.words" && args.length() > 0 && opt_str_is(sessions_core::str_of(Some(args[0])), "cannotStartWords") {
+      return Some(Ok(sessions_core::jstr("boom start")))
+    }
+    if f == "t" {
+      return Some(Ok(sessions_core::jstr("cannot start")))
+    }
+    if f == "node.saidLast" {
+      return Some(Ok(base_codec::json_null()))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cur.start_turn_handle_error_k(a, None, effect::EffectError::Custom("boom"), fn(_ex : effect::Exit[Unit]) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  s.drive(respond)
+  let mut settled_words = ""
+  let mut settled_status = ""
+  for i in 0..<s.rpcs.length() {
+    let (_, f, args) = s.rpcs[i]
+    if f == "deps.settled" && args.length() >= 3 {
+      settled_status = str_or(sessions_core::str_of(Some(args[1])), "")
+      settled_words = str_or(sessions_core::str_of(Some(args[2])), "")
+    }
+  }
+  assert_run(
+    s.has_rpc("node.notice") && settled_status == "failed" && settled_words == "boom start",
+    "settled status=" + settled_status + " words=" + settled_words,
+  )
+}
+
+test "R7 review: successful old stateWrite leaves new handle mid-wait intact" {
+  let s = r2_new()
+  r3_probe_adopt(s, "old", 1)
+  let a = get_actor(s.actors, "s1")
+  let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.stateWrite" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"method\":\"stateForTurn\",\"args\":[\"old\",{\"kind\":\"all_done\"},5]}", s.disp)
+  s.drive(r)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "node.stateWrite" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0, "did not reach stateWrite")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(r)
+  s.actors.heard(
+    "{\"call\":3,\"actor\":\"s1\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"old\",\"declared\":\"waiting\",\"wait\":60},\"midWaitingSeconds\":60,\"midWaitingMs\":60000},{\"handle\":2,\"generation\":1},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.drive(r)
+  assert_run(is_some(a.mid_waiting) && is_some(a.timers.get("mid_wait")), "adopt did not install timer")
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null}", s.disp)
+  s.drive(r)
+  assert_run(is_some(a.mid_waiting) && is_some(a.timers.get("mid_wait")), "old ACK cancelled new turn timer")
+}
+
+test "R8 boundary: agentless handover isolates the adopted turn timer" {
+  let s = r2_new()
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"old\"}},null,null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.actors.host.tick()
+  let a = get_actor(s.actors, "s1")
+  let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.stateWrite" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"method\":\"stateForTurn\",\"args\":[\"old\",{\"kind\":\"all_done\"},5]}", s.disp)
+  s.drive(r)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "node.stateWrite" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0, "did not reach stateWrite")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(r)
+  s.actors.heard(
+    "{\"call\":3,\"actor\":\"s1\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"turn\":{\"id\":\"old\",\"declared\":\"waiting\",\"wait\":60},\"midWaitingSeconds\":60,\"midWaitingMs\":60000},null,null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.drive(r)
+  assert_run(is_some(a.mid_waiting) && is_some(a.timers.get("mid_wait")), "adopt did not install timer")
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":null}", s.disp)
+  s.drive(r)
+  assert_run(is_some(a.mid_waiting) && is_some(a.timers.get("mid_wait")), "old ACK cancelled new turn timer")
+}
+
+test "R9 independent: close during a notice steer issues no undo in fallback mode" {
+  let s = r2_new()
+  r3_probe_adopt(s, "turn", 1)
+  let r = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return None
+    }
+    if f == "agent.busy" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"method\":\"notify\",\"args\":[\"notice\"]}", s.disp)
+  s.drive(r)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "agent.steer" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0, "notify did not dispatch agent.steer")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"close\"}", s.disp)
+  s.drive(r)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":false}", s.disp)
+  s.drive(r)
+  for i in 0..<s.rpcs.length() {
+    let (_, f, _) = s.rpcs[i]
+    assert_run(f != "store.markDelivered" && f != "store.markUndelivered", "unexpected delivery RPC " + f)
+  }
+  assert_run(s.actors.host.hub_asked.length() == 0 && s.actors.current.gen.counters.active == 0, "all settled")
+}
+
+test "R9 independent: timer refill needs undo after snapshot returns" {
+  let s = r2_new()
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\",\"refillMs\":1},{\"handle\":1,\"generation\":1},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  let mut busy_calls = 0
+  let mut delivered = false
+  let respond = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.steer" {
+      return None
+    }
+    if f == "agent.busy" {
+      busy_calls = busy_calls + 1
+      return Some(Ok(sessions_core::jbool(busy_calls > 1)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      delivered = true
+    }
+    if f == "store.markUndelivered" {
+      delivered = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.drive(respond)
+  assert_run(s.timers.length() > 0, "refill timer not armed")
+  let (id, _) = s.timers[0]
+  s.actors.heard("{\"due\":" + id.to_string() + "}", s.disp)
+  s.drive(respond)
+  let mut rid = 0
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "agent.steer" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0 && delivered, "did not reach steer window")
+  s.actors.heard("{\"call\":9,\"actor\":\"s1\",\"method\":\"snapshot\"}", s.disp)
+  s.drive(respond)
+  let mut snapshot_returned = false
+  for i in 0..<s.returned.length() {
+    if sessions_core::int_of(sessions_core::jget(s.returned[i], "returned")) == 9 {
+      snapshot_returned = true
+    }
+  }
+  assert_run(snapshot_returned && !s.has_rpc("store.markUndelivered"), "snapshot must precede undo")
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":false}", s.disp)
+  s.drive(respond)
+  assert_run(!delivered, "snapshot before negative steer ACK must still give message back")
+}
+
+test "R10 review: snapshot after a committed cold mark before its receipt restores the unsent input" {
+  let s = r2_new()
+  let mut marked = false
+  let mut rid = 0
+  let mut mark_batch_id = 0
+  let mut undo_batch_id = 0
+  let r = fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(!marked)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.open" {
+      return Some(Ok(base_codec::json_obj([("handle", sessions_core::jint(4)), ("generation", sessions_core::jint(1))])))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn")))
+    }
+    if f == "store.markDelivered" {
+      assert_run(args.length() == 3, "provisional cold markDelivered must carry batch_id")
+      mark_batch_id = sessions_core::int_of(Some(args[2]))
+      marked = true
+      return None
+    }
+    if f == "store.markUndelivered" {
+      assert_run(args.length() == 3, "provisional cold markUndelivered must carry batch_id")
+      undo_batch_id = sessions_core::int_of(Some(args[2]))
+      marked = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\"}", s.disp)
+  s.drive(r)
+  for i in 0..<s.rpcs.length() {
+    let (id, f, _) = s.rpcs[i]
+    if f == "store.markDelivered" {
+      rid = id
+    }
+  }
+  assert_run(rid != 0 && marked && mark_batch_id > 0, "cold path never reached provisional mark")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"snapshot\"}", s.disp)
+  s.drive(r)
+  s.actors.heard("{\"answer\":" + rid.to_string() + ",\"value\":1}", s.disp)
+  s.drive(r)
+  assert_run(s.returned.length() == 2 && s.actors.host.hub_asked.length() == 0, "call or RPC still pending")
+  assert_run(!s.has_rpc("agent.prompt") && !s.has_rpc("agent.steer"), "runtime unexpectedly received input")
+  assert_run(!marked && undo_batch_id == mark_batch_id, "cold mark compensation must match batch_id")
+}
+
+test "R10 review: busy changes while starting and the final delivery mark follows acceptance" {
+  let s = r2_new()
+  let mut marked = false
+  let mut busy_calls = 0
+  let mut accepted = false
+  let mut mark_argc = 0
+  let r = fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "agent.busy" {
+      busy_calls = busy_calls + 1
+      return Some(Ok(sessions_core::jbool(busy_calls > 1)))
+    }
+    if f == "agent.steer" {
+      accepted = true
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(!marked)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.open" {
+      return Some(Ok(base_codec::json_obj([("handle", sessions_core::jint(4)), ("generation", sessions_core::jint(1))])))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn")))
+    }
+    if f == "store.markDelivered" {
+      assert_run(accepted, "unexpected provisional mark before steer")
+      mark_argc = args.length()
+      marked = true
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "store.markUndelivered" {
+      marked = false
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard(
+    "{\"call\":100,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"adopt\",\"args\":[{\"runtime\":\"claude\"},{\"handle\":4,\"generation\":1},null,{\"runtime\":\"claude\"}]}",
+    s.disp,
+  )
+  s.drive(r)
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\"}", s.disp)
+  s.drive(r)
+  assert_run(marked && accepted && mark_argc == 2 && !s.has_rpc("agent.prompt") && !s.has_rpc("store.markUndelivered"), "final mark trace must use 2 args")
+  assert_run(s.returned.length() == 2 && s.actors.host.hub_asked.length() == 0, "kick did not settle")
+}
+
+test "R10 review: stopped open sends a final mark without a runtime settlement" {
+  let s = r2_new()
+  let mut pending_left = true
+  let mut mark_argc = 0
+  let responder = fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.open" {
+      return None
+    }
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(pending_left)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            (
+              "pending",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("handed", sessions_core::jstr("m1")),
+                  ("surface", sessions_core::jstr("stillfail")),
+                ]),
+              ]),
+            ),
+            ("text", sessions_core::jstr("hi")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "store.markDelivered" {
+      mark_argc = args.length()
+      pending_left = false
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "t" {
+      return Some(Ok(sessions_core::jstr("Stopped")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+  assert_run(s.has_rpc("node.open"), "node.open must be in flight")
+
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"stop\",\"args\":[],\"now\":1001}", s.disp)
+  s.drive(responder)
+  assert_run(s.has_tell_fn("node.cancelOpen"), "stop must emit node.cancelOpen")
+  assert_run(s.has_rpc("store.markDelivered") && mark_argc == 2, "stop during open must send 2-arg final markDelivered")
+  assert_run(s.has_rpc("node.notice"), "stop during open must emit stopped notice")
+  assert_run(!s.has_rpc("agent.prompt") && !s.has_rpc("agent.steer") && !s.has_rpc("store.markUndelivered"), "stop unexpectedly produced a settlement RPC")
+  assert_run(s.returned.length() == 2, "both kick and stop calls must return")
+}
+
+test "R10 review: prompt interrupted by snapshot emits store.deliverySettled with matching batch_id" {
+  let s = r2_new()
+  let mut marked = false
+  let mut mark_batch_id = 0
+  let r = fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(!marked)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("pending", base_codec::json_arr([base_codec::json_obj([("handed", sessions_core::jstr("m"))])])),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.open" {
+      return Some(Ok(base_codec::json_obj([("handle", sessions_core::jint(4)), ("generation", sessions_core::jint(1))])))
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn")))
+    }
+    if f == "store.markDelivered" {
+      assert_run(args.length() == 3, "provisional prompt markDelivered must carry batch_id")
+      mark_batch_id = sessions_core::int_of(Some(args[2]))
+      marked = true
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "agent.prompt" {
+      return None
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\"}", s.disp)
+  s.drive(r)
+  assert_run(marked && mark_batch_id > 0 && s.has_rpc("agent.prompt"), "did not reach prompt window")
+  s.actors.heard("{\"call\":2,\"actor\":\"s1\",\"method\":\"snapshot\"}", s.disp)
+  s.drive(r)
+  let mut settled_batch_id = 0
+  for i in 0..<s.tells.length() {
+    let (_, fn_name, targs) = s.tells[i]
+    if fn_name == "store.deliverySettled" && targs.length() == 1 {
+      settled_batch_id = sessions_core::int_of(Some(targs[0]))
+    }
+  }
+  assert_run(!s.has_rpc("store.markUndelivered"), "interrupted prompt must not markUndelivered")
+  assert_run(settled_batch_id == mark_batch_id, "snapshot during prompt must emit store.deliverySettled with matching batch_id")
+}

@@ -499,6 +499,10 @@ export function overviewOf(now: number, station: number): J {
       { key: "HTTPS_PROXY", secret: false, value: "http://127.0.0.1:7890" },
       { key: "SENTRY_AUTH_TOKEN", secret: true, value: "sntrys_…8f1a" },
     ],
+    mcpServers: [
+      { name: "github", transport: "stdio", enabled: true, shared: true, command: "npx", args: ["-y", "@modelcontextprotocol/server-github"], env: { GITHUB_TOKEN: "ghp_1…9xyz" }, status: "ready", toolCount: 12, tools: ["create_issue", "search_code"], error: null },
+      { name: "docs", transport: "http", enabled: true, shared: false, url: "https://docs.example.com/mcp", headers: { Authorization: "Beare…9xyz" }, status: "failed", toolCount: 0, tools: [], error: "HTTP 502" },
+    ],
     drive: {
       roots: [
         { path: `/Users/${s.host}/Documents`, name: "文稿", state: "ok" },

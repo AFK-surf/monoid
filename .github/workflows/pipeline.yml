@@ -1,4 +1,4 @@
-# still.fail's pipeline (docs/operations.md, "CI"), on AFK-surf's Linux runners and self-hosted Macs:
+# still.fail's pipeline (docs/operations.md, "CI"), on GitHub's Linux runners and self-hosted Macs:
 #   a branch: the full check (scripts/check.sh) of what it changes from main, and every part it touches built and
 #             bundled (deploy.py --dry-run): evidence for its merge; nothing deployed, no secrets.
 #   main:     the full check of what changed since the last deploy (the tag deployed/beta), then what changed of it goes
@@ -27,11 +27,8 @@ concurrency:
 permissions:
   contents: read
 env:
-  # The native parts a branch's checks and builds use, split between ci-1 (`BRANCH_NATIVES`: Linux, Windows cross-builds,
-  # Wasm and Android) and macos-ci (`BRANCH_MAC_NATIVES`: Apple's darwin-arm64 parts).
+  # The parts a branch consumes, split between GitHub Linux and the Apple runners.
   BRANCH_NATIVES: archive-rs:linux-x64 shell-station:linux-x64 reader:linux-x64 iroh-wasm:wasm32 shell:android-arm64 engine:android-arm64 mesh:linux-x64 runner:linux-x64 launcher:linux-x64 mesh:win32-x64 launcher:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
-  # Windows' readers, built in a job of their own on ci-1 (natives-win-reader, main's natives-win-reader-main after natives): two readers side by side there,
-  # each cold at -O2, took 244-253 s of natives' five minutes and its upload was cut (44208145437, 2026-11-18).
   BRANCH_WIN_READER: reader:win32-x64 pion-reader:win32-x64
   BRANCH_MAC_NATIVES: mesh:darwin-arm64 launcher:darwin-arm64 runner:darwin-arm64 archive-rs:darwin-arm64 shell-apple:darwin-arm64 helper:darwin-arm64
   # The Mac's readers, built in a job of their own (natives-mac-reader) beside natives-mac: desktop-build uses none of them
@@ -42,11 +39,6 @@ env:
   # it would hold every job that waits for the readers, and a branch missing only reader:linux-x64 off ubuntu-24.04.
   BRANCH_HARNESS: reader-harness:linux-x64
 jobs:
-  # What needs macOS signing/Xcode runs on macos-ci; Rust/MoonBit native builds and the station/core check run on ci-1
-  # (falling back to macos-ci when vars.CI_1 == 'off'); horizontal Linux test shards and small deploy jobs run on
-  # GitHub's own runners, free for a public repository, not on Blacksmith's (2026-10-15, as asked).
-  # GitHub's runners were short once (Actions degraded, 2026-10-05): a job waiting for one held each run 15 minutes and
-  # was cancelled, nothing released.
   plan:
     # Trusted repository pushes only. Never add pull_request or pull_request_target here:
     # deployment jobs use production secrets; local signing stays isolated.
@@ -63,17 +55,13 @@ jobs:
       android_beta: ${{ steps.plan.outputs.android_beta }}
       mac_beta: ${{ steps.plan.outputs.mac_beta }}
       win_beta: ${{ steps.plan.outputs.win_beta }}
-      natives: ${{ steps.natives.outputs.natives }}
       natives_mac: ${{ steps.natives.outputs.natives_mac }}
       natives_mac_reader: ${{ steps.natives.outputs.natives_mac_reader }}
       natives_win_reader: ${{ steps.natives.outputs.natives_win_reader }}
       natives_harness: ${{ steps.natives.outputs.natives_harness }}
       natives_mac_runner: ${{ steps.natives.outputs.natives_mac_runner }}
       natives_mac_reader_runner: ${{ steps.natives.outputs.natives_mac_reader_runner }}
-      natives_runner: ${{ steps.natives.outputs.natives_runner }}
-      natives_win_runner: ${{ steps.natives.outputs.natives_win_runner }}
-      natives_harness_runner: ${{ steps.natives.outputs.natives_harness_runner }}
-      missing_list: ${{ steps.natives.outputs.missing_list }}
+      linux_matrix: ${{ steps.natives.outputs.linux_matrix }}
       missing_mac_list: ${{ steps.natives.outputs.missing_mac_list }}
       missing_mac_reader_list: ${{ steps.natives.outputs.missing_mac_reader_list }}
       missing_win_list: ${{ steps.natives.outputs.missing_win_list }}
@@ -123,102 +111,61 @@ jobs:
           apple() { printf '%s\n' $all | grep -E ':(darwin|ios)-' || true; }
           non_apple() { printf '%s\n' $all | grep -vE ':(darwin|ios)-' | grep . || true; }
           if [ "$GITHUB_REF" = refs/heads/main ]; then
-            # (shell-station:linux-x64, which natives_harness_runner asks after, is one of --linux's)
             all=$(node scripts/native.ts missing --linux --mac)
           else
             want="$BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_HARNESS"
-            if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then want="$want pion-reader:linux-x64 pion-reader:linux-arm64"; fi
+            if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then
+              want="$want pion-reader:linux-x64 pion-reader:linux-arm64 shell-station:linux-arm64 shell-station:win32-x64"
+            fi
             if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then want="$want $BRANCH_MAC_NATIVES"; fi
             if grep -qE '^(check_mac|station)=true$' "$RUNNER_TEMP/plan"; then want="$want $BRANCH_MAC_READER"; fi
-            # (where natives and natives-win-reader build, below)
-            if [ "${{ vars.CI_1 }}" != off ]; then want="$want shell-station:linux-x64 shell-station:linux-arm64 shell-station:win32-x64"; fi
             all=$(node scripts/native.ts missing $want)
           fi
-          if [ "${{ vars.CI_1 }}" = off ]; then
-            # (the non-Apple parts all in natives on macos-ci; the Apple ones in natives-mac all the same, which takes no
-            # ci-1 runner, so that desktop-build waits for those alone)
-            if [ "$GITHUB_REF" = refs/heads/main ]; then
-              missing=$(non_apple)
-              all_mac=$(apple)
-              missing_mac=$(printf '%s\n' $all_mac | grep -vE '^(pion-)?reader:darwin-arm64$' || true)
-              missing_mac_reader=$(printf '%s\n' $all_mac | grep -E '^(pion-)?reader:darwin-arm64$' || true)
-            else
-              missing_want="$BRANCH_NATIVES $BRANCH_HARNESS"
-              if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then missing_want="$missing_want pion-reader:linux-x64 pion-reader:linux-arm64 $BRANCH_WIN_READER"; fi
-              missing=$(pick $missing_want)
-              if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(pick $BRANCH_MAC_NATIVES)
-              else missing_mac=""; echo "missing (mac): skipped (no mac job planned)"; fi
-              # (release_smoke's desktop-build uses no reader)
-              if grep -qE '^(check_mac|station)=true$' "$RUNNER_TEMP/plan"; then missing_mac_reader=$(pick $BRANCH_MAC_READER)
-              else missing_mac_reader=""; fi
-            fi
-            missing=$(printf '%s\n' $missing | tr '\n' ' ' | xargs)
-            missing_mac=$(printf '%s\n' $missing_mac | tr '\n' ' ' | xargs)
-            missing_mac_reader=$(printf '%s\n' $missing_mac_reader | tr '\n' ' ' | xargs)
-            missing_win=""
-            echo "missing (non-Apple, all on mac): ${missing:-none}"
-            echo "missing (mac): ${missing_mac:-none}"
-            echo "missing (the Mac's reader): ${missing_mac_reader:-none}"
-            echo "natives=$([ -n "$missing" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
-            echo "natives_mac=$([ -n "$missing_mac" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
-            echo "natives_mac_reader=$([ -n "$missing_mac_reader" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
-            echo "natives_win_reader=ready" >> "$GITHUB_OUTPUT"
-            echo "natives_harness=ready" >> "$GITHUB_OUTPUT"
-            echo "missing_list=$missing" >> "$GITHUB_OUTPUT"
-            echo "missing_mac_list=$missing_mac" >> "$GITHUB_OUTPUT"
-            echo "missing_mac_reader_list=$missing_mac_reader" >> "$GITHUB_OUTPUT"
-            echo "missing_win_list=" >> "$GITHUB_OUTPUT"
-            echo "missing_harness_list=" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            all_linux=$(non_apple)
+            missing=$(printf '%s\n' $all_linux | grep -vE '^(pion-)?reader:win32-x64$|^reader-harness:' || true)
+            missing_win=$(printf '%s\n' $all_linux | grep -E '^(pion-)?reader:win32-x64$' || true)
+            missing_harness=$(printf '%s\n' $all_linux | grep '^reader-harness:' || true)
+            all_mac=$(apple)
+            missing_mac=$(printf '%s\n' $all_mac | grep -vE '^(pion-)?reader:darwin-arm64$' || true)
+            missing_mac_reader=$(printf '%s\n' $all_mac | grep -E '^(pion-)?reader:darwin-arm64$' || true)
           else
-            if [ "$GITHUB_REF" = refs/heads/main ]; then
-              # (main's Windows reader in natives-win-reader-main: three readers at -O2 in one natives job took 270-300 s
-              # of its five minutes, and nothing but ui-windows and the station's release waits for it)
-              # (and the tests' program in natives-harness, which only check-station waits for)
-              all_linux=$(non_apple)
-              missing=$(printf '%s\n' $all_linux | grep -vE '^(pion-)?reader:win32-x64$|^reader-harness:' || true)
-              missing_win=$(printf '%s\n' $all_linux | grep -E '^(pion-)?reader:win32-x64$' || true)
-              missing_harness=$(printf '%s\n' $all_linux | grep '^reader-harness:' || true)
-              all_mac=$(apple)
-              missing_mac=$(printf '%s\n' $all_mac | grep -vE '^(pion-)?reader:darwin-arm64$' || true)
-              missing_mac_reader=$(printf '%s\n' $all_mac | grep -E '^(pion-)?reader:darwin-arm64$' || true)
+            missing_want="$BRANCH_NATIVES"
+            if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then
+              missing_want="$missing_want pion-reader:linux-x64 pion-reader:linux-arm64 shell-station:linux-arm64 shell-station:win32-x64"
+              missing_win=$(pick $BRANCH_WIN_READER)
             else
-              missing_want="$BRANCH_NATIVES"
-              if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then missing_want="$missing_want pion-reader:linux-x64 pion-reader:linux-arm64"; fi
-              missing=$(pick $missing_want)
-              # (only ui-windows uses Windows' readers, and only for a change to the station)
-              if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then missing_win=$(pick $BRANCH_WIN_READER)
-              else missing_win=""; fi
-              # (only check-station and check-core run the harnesses)
-              if grep -qE '^(station_tests|core_tests)=true$' "$RUNNER_TEMP/plan"; then missing_harness=$(pick $BRANCH_HARNESS)
-              else missing_harness=""; fi
-              if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(pick $BRANCH_MAC_NATIVES)
-              else missing_mac=""; echo "missing (mac): skipped (no mac job planned)"; fi
-              # (release_smoke's desktop-build uses no reader)
-              if grep -qE '^(check_mac|station)=true$' "$RUNNER_TEMP/plan"; then missing_mac_reader=$(pick $BRANCH_MAC_READER)
-              else missing_mac_reader=""; fi
+              missing_win=""
             fi
-            # (each one line, the parts the natives jobs build: no part is asked of the release again there)
-            missing=$(printf '%s\n' $missing | tr '\n' ' ' | xargs)
-            missing_mac=$(printf '%s\n' $missing_mac | tr '\n' ' ' | xargs)
-            missing_mac_reader=$(printf '%s\n' $missing_mac_reader | tr '\n' ' ' | xargs)
-            missing_win=$(printf '%s\n' $missing_win | tr '\n' ' ' | xargs)
-            missing_harness=$(printf '%s\n' $missing_harness | tr '\n' ' ' | xargs)
-            echo "missing (linux): ${missing:-none}"
-            echo "missing (mac): ${missing_mac:-none}"
-            echo "missing (the Mac's reader): ${missing_mac_reader:-none}"
-            echo "missing (Windows' reader): ${missing_win:-none}"
-            echo "missing (the tests' harness): ${missing_harness:-none}"
-            echo "natives=$([ -n "$missing" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
-            echo "natives_mac=$([ -n "$missing_mac" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
-            echo "natives_mac_reader=$([ -n "$missing_mac_reader" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
-            echo "natives_win_reader=$([ -n "$missing_win" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
-            echo "natives_harness=$([ -n "$missing_harness" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
-            echo "missing_list=$missing" >> "$GITHUB_OUTPUT"
-            echo "missing_mac_list=$missing_mac" >> "$GITHUB_OUTPUT"
-            echo "missing_mac_reader_list=$missing_mac_reader" >> "$GITHUB_OUTPUT"
-            echo "missing_win_list=$missing_win" >> "$GITHUB_OUTPUT"
-            echo "missing_harness_list=$missing_harness" >> "$GITHUB_OUTPUT"
+            missing=$(pick $missing_want)
+            if grep -qE '^(station_tests|core_tests)=true$' "$RUNNER_TEMP/plan"; then missing_harness=$(pick $BRANCH_HARNESS)
+            else missing_harness=""; fi
+            if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(pick $BRANCH_MAC_NATIVES)
+            else missing_mac=""; fi
+            if grep -qE '^(check_mac|station)=true$' "$RUNNER_TEMP/plan"; then missing_mac_reader=$(pick $BRANCH_MAC_READER)
+            else missing_mac_reader=""; fi
           fi
+          # One VM per target. A shell and its reader share the same local native cache.
+          matrix=$(
+            for target in $(printf '%s\n' $missing | cut -d: -f2 | sort -u); do
+              parts=$(printf '%s\n' $missing | awk -F: -v target="$target" '$2 == target' | xargs)
+              jq -cn --arg target "$target" --arg parts "$parts" '{target: $target, parts: $parts}'
+            done | jq -cs '{include: .}'
+          )
+          echo "linux_matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "missing (linux jobs): $matrix"
+          for kind in mac mac_reader win_reader harness; do
+            case "$kind" in
+              mac) list=$missing_mac; list_output=missing_mac_list ;;
+              mac_reader) list=$missing_mac_reader; list_output=missing_mac_reader_list ;;
+              win_reader) list=$missing_win; list_output=missing_win_list ;;
+              harness) list=$missing_harness; list_output=missing_harness_list ;;
+            esac
+            list=$(printf '%s\n' $list | xargs)
+            echo "$list_output=$list" >> "$GITHUB_OUTPUT"
+            echo "missing ($kind): ${list:-none}"
+            echo "natives_$kind=$([ -n "$list" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
+          done
           # Where natives-mac and natives-mac-reader build (their runs-on, as JSON): Mini1's quick runner for main, for a
           # branch's reader, and for a branch missing mesh or shell-apple (cold builds of the first two there took 228 and 323 s before packing; with
           # station/mb at 71 thousand functions the reader's cold build on macos-26, 8 MB units at -O0, came to
@@ -236,458 +183,169 @@ jobs:
           else
             echo 'natives_mac_reader_runner="macos-26"' >> "$GITHUB_OUTPUT"
           fi
-          # Where natives and natives-win-reader build: a branch missing only readers whose shell-station main already
-          # published needs moon/pionc, mbc and zig alone (-O0 on GitHub's runner, station/mb/build.sh), so it builds on
-          # ubuntu-24.04 and does not wait for ci-1 (a change to station/mb queued while ci-1 was away, #7347).
-          if [ "${{ vars.CI_1 }}" != off ] && [ "$GITHUB_REF" != refs/heads/main ] && [ -n "${missing:-}" ] && ! printf '%s\n' $missing | grep -qvE '^(reader:linux-x64|pion-reader:linux-(x64|arm64))$' && [ -z "$(pick shell-station:linux-x64 shell-station:linux-arm64)" ]; then
-            echo 'natives_runner="ubuntu-24.04"' >> "$GITHUB_OUTPUT"
-          elif [ "${{ vars.CI_1 }}" != off ]; then
-            echo 'natives_runner=["self-hosted","ci-1"]' >> "$GITHUB_OUTPUT"
-          else
-            echo 'natives_runner=["self-hosted","quick"]' >> "$GITHUB_OUTPUT"
-          fi
-          if [ "${{ vars.CI_1 }}" != off ] && [ "$GITHUB_REF" != refs/heads/main ] && [ -z "$(pick shell-station:win32-x64)" ]; then
-            echo 'natives_win_runner="ubuntu-24.04"' >> "$GITHUB_OUTPUT"
-          else
-            echo 'natives_win_runner=["self-hosted","ci-1"]' >> "$GITHUB_OUTPUT"
-          fi
-          # (the tests' program, main's too, on GitHub's runner whenever shell-station is published: at -O0, all a test
-          # needs, it takes no ci-1 runner, and it cannot be a third job of the readers' concurrency group there, whose
-          # pending job a third one queued would cancel)
-          if [ "${{ vars.CI_1 }}" != off ] && [ -z "$(pick shell-station:linux-x64)" ]; then
-            echo 'natives_harness_runner="ubuntu-24.04"' >> "$GITHUB_OUTPUT"
-          else
-            echo 'natives_harness_runner=["self-hosted","ci-1"]' >> "$GITHUB_OUTPUT"
-          fi
 
-  # The non-Apple native parts for this commit (scripts/native.ts --linux): Linux, Windows cross-builds, Wasm and Android,
-  # built on any of ci-1's runners (falling back to macos-ci's quick runner when vars.CI_1 == 'off'), decoupling
-  # check, check-linux, check-station, check-core, bundle, ui-windows, static and android from Mini1. Not linux-quick's
-  # alone: one runner, natives waited 16-26 minutes behind one another there while ci-1's others were idle (2026-11-17).
-  # It builds plan's missing_list alone, the parts the release lacks. STILLFAIL_NATIVE_READERS: the readers among them,
-  # built side by side, among which station/mb/build.sh shares the cores.
-  natives:
+  # Native artifacts remain private to the branch run. Main publishes by source key.
+  natives-build:
+    name: natives-build (${{ matrix.target }})
     needs: plan
-    if: needs.plan.outputs.natives == 'needed'
-    runs-on: ${{ fromJSON(needs.plan.outputs.natives_runner) }}
-    # (on ci-1, a branch's one after its Windows reader there or before it, natives-win-reader; main's before it,
-    # natives-win-reader-main)
-    concurrency:
-      group: ${{ needs.plan.outputs.natives_runner == '["self-hosted","ci-1"]' && format('ci1-readers-{0}', github.run_id) || format('natives-{0}', github.run_id) }}
-      cancel-in-progress: false
+    if: needs.plan.outputs.linux_matrix != '{"include":[]}'
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets, on main only
-      id-token: write # the branch job can stage its native archives in R2
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.linux_matrix) }}
+    env:
+      PARTS: ${{ matrix.parts }}
+      TARGET: ${{ matrix.target }}
+      MBC_UNIT_KB: '8192'
+      MBC_INIT_SPLIT: '0'
     steps:
-      # (when the job is cut, for the build's own limit on GitHub's runner and the reader's units saved after it)
       - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
-      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
-      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
-        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
-        # (ci-1 shares persistent workspaces with fetch-depth: 0 jobs like check; keep ci-1 non-shallow so they never --unshallow)
-        with:
-          fetch-depth: ${{ needs.plan.outputs.natives_runner == '["self-hosted","ci-1"]' && '0' || '1' }}
-      - if: runner.environment == 'self-hosted' && runner.os == 'Linux'
-        uses: ./.github/actions/setup-linux
-      - if: runner.os == 'macOS'
-        uses: ./.github/actions/setup-mac
-      # (the station's reader is MoonBit: scripts/native.ts `reader`, which needs only mbc of mbui's tools)
-      - uses: ./.github/actions/mbui-moonbit
-        with: { tools: 'mbc' }
-      # (GitHub's: the pinned Node, and the zig scripts/native.ts builds Linux and Windows with, kept in the Actions
-      # cache by its version, with what it compiled of its own (glibc's and MinGW's stubs, compiler-rt) in ~/.cache/zig)
-      - if: runner.environment != 'self-hosted'
-        uses: ./.github/actions/node
-      - if: runner.environment != 'self-hosted'
+      - uses: ./.github/actions/node
+      - if: contains(matrix.parts, ' reader:') || startsWith(matrix.parts, 'reader:')
+        uses: ./.github/actions/mbui-moonbit
+        with: { tools: mbc }
+      - uses: ./.github/actions/setup-native-linux
+        with: { parts: "${{ matrix.parts }}" }
+      - if: contains(matrix.parts, 'pion-reader:')
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-toolchain
           key: pion-station-toolchain-linux-x64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
-      - if: runner.environment != 'self-hosted'
+      - if: contains(matrix.parts, 'reader:')
         uses: actions/cache@v4
         with:
-          path: ${{ runner.tool_cache }}/zig-0.16.0
-          key: zig-linux-x64-0.16.0
-      - name: Zig 0.16.0 (the reader's cc on GitHub's Linux)
-        if: runner.environment != 'self-hosted'
-        run: |
-          d="$RUNNER_TOOL_CACHE/zig-0.16.0/zig-x86_64-linux-0.16.0"
-          if [ ! -x "$d/zig" ]; then
-            mkdir -p "$RUNNER_TOOL_CACHE/zig-0.16.0"
-            t="$RUNNER_TEMP/zig.tar.xz"
-            curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 -o "$t" https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
-            echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  $t" | sha256sum -c --quiet
-            tar -xf "$t" -C "$RUNNER_TOOL_CACHE/zig-0.16.0"
-            rm -f "$t"
-          fi
-          [ "$("$d/zig" version)" = 0.16.0 ]
-          # (zig cc at -O0 puts UBSan in every unit, which station/mb/build.sh turns off only for moonbit_init: each
-          # unit several times slower to compile. Off here for the whole reader; a branch's build alone takes it)
-          mkdir -p "$RUNNER_TEMP/zig-bin"
-          printf '#!/bin/sh\nif [ "${1:-}" = cc ]; then shift; exec "%s/zig" cc -fno-sanitize=undefined "$@"; fi\nexec "%s/zig" "$@"\n' "$d" "$d" > "$RUNNER_TEMP/zig-bin/zig"
-          chmod +x "$RUNNER_TEMP/zig-bin/zig"
-          echo "$RUNNER_TEMP/zig-bin" >> "$GITHUB_PATH"
-      - if: runner.environment != 'self-hosted'
-        id: zig-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/zig
-          key: zig-cache-linux-x64-0.16.0-${{ github.job }}
-          restore-keys: zig-cache-linux-x64-0.16.0-
-      # (a branch's reader units at -O0 on GitHub's runner, station/mb/build.sh's MBC_STORE: restored here and saved at
-      # the end whatever came of the build, a cut one too)
-      - if: runner.environment != 'self-hosted'
-        id: reader-store
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/stillfail-reader-mbc
-          key: mbui-reader-linux-branch-v2-${{ github.sha }}
-          restore-keys: mbui-reader-linux-branch-v2-
-      - name: Get or build the native parts
+          path: |
+            ~/.cache/stillfail-reader-mbc
+            ~/.cache/zig
+          key: native-reader-v1-${{ matrix.target }}-${{ github.ref == 'refs/heads/main' && 'main' || 'branch' }}-${{ github.sha }}
+          restore-keys: native-reader-v1-${{ matrix.target }}-${{ github.ref == 'refs/heads/main' && 'main' || 'branch' }}-
+      - name: Build native parts
         env:
           GH_TOKEN: ${{ github.token }}
-          GITHUB_RUNNER: ${{ runner.environment }}
-          MISSING: ${{ needs.plan.outputs.missing_list }}
         run: |
-          limit=()
-          # (ci-1's: mbc's own 768 KB units by package and moonbit_init's data by layout (MBC_DATA_LAYOUTS), so that a
-          # change recompiles only its units. MBC_INIT_SPLIT=0 made moonbit_init one unit and took the layouts off with it:
-          # every change of a type compiled all of data_*.c and init.c again)
-          # (a branch's on GitHub's: -O0 in units of 8 MB with moonbit_init one unit on every core, kept in
-          # ~/.cache/stillfail-reader-mbc by the branch: a branch's first push finds none of them, and its 209 units
-          # compiled cold in 71 s where 2 MB's 489 took 105 s, cut on macos-26 with #7417's)
-          if [ "$GITHUB_RUNNER" != self-hosted ]; then
-            limit=(bash scripts/with-timeout.sh @$((JOB_END - 25)))
-            export MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0
-          fi
-          r=$(printf '%s\n' $MISSING | grep -c '^reader:' || true)
-          [ "$r" -ge 1 ] || r=1
-          [ "$r" -le 3 ] || r=3
-          export STILLFAIL_NATIVE_READERS=$r
+          read -ra parts <<< "$PARTS"
           if [ "$GITHUB_REF" = refs/heads/main ]; then
-            node scripts/native.ts ensure --publish $MISSING
+            bash scripts/with-timeout.sh @$((JOB_END - 15)) node scripts/native.ts ensure --publish "${parts[@]}"
           else
-            ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $MISSING
+            bash scripts/with-timeout.sh @$((JOB_END - 30)) node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" "${parts[@]}"
           fi
-          if printf '%s\n' $MISSING | grep -qx 'pion-reader:linux-arm64'; then
-            arm_bin="$(node scripts/native.ts file pion-reader linux-arm64)"
-            arm_desc="$(file "$arm_bin")"
-            echo "$arm_desc"
-            echo "$arm_desc" | grep -qE 'ELF 64-bit.*ARM aarch64'
+          if printf '%s\n' "${parts[@]}" | grep -qx 'pion-reader:linux-arm64'; then
+            file "$(node scripts/native.ts file pion-reader linux-arm64)" | grep -E 'ELF 64-bit.*ARM aarch64'
           fi
       - name: Stage native archives in R2
         if: github.ref != 'refs/heads/main'
-        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives.r2.json"
+        env:
+          STILLFAIL_NATIVE_DIRECT_R2: '1'
+        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives-$TARGET.r2.json"
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
-        with: { name: "natives-${{ github.sha }}", path: "${{ runner.temp }}/natives.r2.json", if-no-files-found: ignore, retention-days: 7 }
-      - if: always() && runner.environment != 'self-hosted' && steps.zig-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.cache/zig
-          key: zig-cache-linux-x64-0.16.0-${{ github.job }}
-      - if: always() && runner.environment != 'self-hosted'
-        run: |
-          find ~/.cache/stillfail-reader-mbc -name '*.lock' -delete 2>/dev/null || true
-          find ~/.cache/stillfail-reader-mbc -type f -mtime +3 -delete 2>/dev/null || true
-          find ~/.cache/stillfail-reader-mbc -mindepth 1 -type d -empty -delete 2>/dev/null || true
-      - if: always() && runner.environment != 'self-hosted' && steps.reader-store.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        continue-on-error: true
-        with:
-          path: ~/.cache/stillfail-reader-mbc
-          key: mbui-reader-linux-branch-v2-${{ github.sha }}
+        with: { name: "natives-${{ matrix.target }}-${{ github.sha }}", path: "${{ runner.temp }}/natives-${{ matrix.target }}.r2.json", if-no-files-found: ignore, retention-days: 7 }
 
-  # Windows' reader (plan's missing_win_list), a branch's, on ci-1 one after natives or before it (the concurrency group
-  # both take there), so that the readers' C does not share its cores and each has a job's five minutes, and beside it
-  # on GitHub's runners, each a machine of its own: its archive staged in R2 as natives' are (natives-win-reader-<sha>),
-  # for ui-windows. Main's is natives-win-reader-main's. With vars.CI_1 == 'off' natives builds it itself.
+  # Keep the single dependency and status used by the pipeline and the Windows preview.
+  natives:
+    needs: [plan, natives-build]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.natives-build.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - env:
+          RESULT: ${{ needs.natives-build.result }}
+        run: test "$RESULT" = success
+
+  # The readers use the native builds' static shell when it changed in this run.
   natives-win-reader:
-    needs: plan
-    if: ${{ !cancelled() && vars.CI_1 != 'off' && github.ref != 'refs/heads/main' && needs.plan.outputs.natives_win_reader == 'needed' }}
-    runs-on: ${{ fromJSON(needs.plan.outputs.natives_win_runner) }}
-    concurrency:
-      group: ${{ needs.plan.outputs.natives_win_runner != '"ubuntu-24.04"' && format('ci1-readers-{0}', github.run_id) || format('natives-win-{0}', github.run_id) }}
-      cancel-in-progress: false
+    needs: [plan, natives]
+    if: ${{ !cancelled() && github.ref != 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.natives_win_reader == 'needed' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      contents: write # the release native-artifacts' assets, on main only
-      id-token: write # the branch job can stage its native archive in R2
-    steps:
+      contents: read
+      id-token: write
+    env:
+      PARTS: ${{ needs.plan.outputs.missing_win_list }}
+      MANIFEST: natives-win-reader
+      TARGET: win32-x64
+      MBC_UNIT_KB: '8192'
+      MBC_INIT_SPLIT: '0'
+    steps: &hosted-reader-steps
       - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
-      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
-      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
-        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
-        with:
-          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
-      - if: runner.environment == 'self-hosted'
-        uses: ./.github/actions/setup-linux
+      - uses: ./.github/actions/node
       - uses: ./.github/actions/mbui-moonbit
-        with: { tools: 'mbc' }
-      # (GitHub's: the pinned Node, and the zig scripts/native.ts builds Linux and Windows with, kept in the Actions
-      # cache by its version, with what it compiled of its own (glibc's and MinGW's stubs, compiler-rt) in ~/.cache/zig)
-      - if: runner.environment != 'self-hosted'
-        uses: ./.github/actions/node
-      - if: runner.environment != 'self-hosted'
+        with: { tools: mbc }
+      - uses: ./.github/actions/setup-native-linux
+        with: { parts: "${{ env.PARTS }}" }
+      - if: contains(env.PARTS, 'pion-reader:')
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-toolchain
           key: pion-station-toolchain-linux-x64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
-      - if: runner.environment != 'self-hosted'
-        uses: actions/cache@v4
+      - uses: actions/cache@v4
         with:
-          path: ${{ runner.tool_cache }}/zig-0.16.0
-          key: zig-linux-x64-0.16.0
-      - name: Zig 0.16.0 (the reader's cc on GitHub's Linux)
-        if: runner.environment != 'self-hosted'
-        run: |
-          d="$RUNNER_TOOL_CACHE/zig-0.16.0/zig-x86_64-linux-0.16.0"
-          if [ ! -x "$d/zig" ]; then
-            mkdir -p "$RUNNER_TOOL_CACHE/zig-0.16.0"
-            t="$RUNNER_TEMP/zig.tar.xz"
-            curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 -o "$t" https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
-            echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  $t" | sha256sum -c --quiet
-            tar -xf "$t" -C "$RUNNER_TOOL_CACHE/zig-0.16.0"
-            rm -f "$t"
-          fi
-          [ "$("$d/zig" version)" = 0.16.0 ]
-          # (zig cc at -O0 puts UBSan in every unit, which station/mb/build.sh turns off only for moonbit_init: each
-          # unit several times slower to compile. Off here for the whole reader; a branch's build alone takes it)
-          mkdir -p "$RUNNER_TEMP/zig-bin"
-          printf '#!/bin/sh\nif [ "${1:-}" = cc ]; then shift; exec "%s/zig" cc -fno-sanitize=undefined "$@"; fi\nexec "%s/zig" "$@"\n' "$d" "$d" > "$RUNNER_TEMP/zig-bin/zig"
-          chmod +x "$RUNNER_TEMP/zig-bin/zig"
-          echo "$RUNNER_TEMP/zig-bin" >> "$GITHUB_PATH"
-      - if: runner.environment != 'self-hosted'
-        id: zig-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/zig
-          key: zig-cache-linux-x64-0.16.0-${{ github.job }}
-          restore-keys: zig-cache-linux-x64-0.16.0-
-      - if: runner.environment != 'self-hosted'
-        id: reader-store
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/stillfail-reader-mbc
-          key: mbui-reader-win-branch-v2-${{ github.sha }}
-          restore-keys: mbui-reader-win-branch-v2-
-      - name: Get or build Windows' reader
+          path: |
+            ~/.cache/stillfail-reader-mbc
+            ~/.cache/zig
+          key: native-reader-v1-${{ env.MANIFEST }}-${{ github.ref == 'refs/heads/main' && 'main' || 'branch' }}-${{ github.sha }}
+          restore-keys: native-reader-v1-${{ env.MANIFEST }}-${{ github.ref == 'refs/heads/main' && 'main' || 'branch' }}-
+      - uses: ./.github/actions/natives
+        with: { targets: "${{ env.TARGET }}" }
+      - name: Build reader programs
         env:
           GH_TOKEN: ${{ github.token }}
-          # (one reader here: every core its)
-          STILLFAIL_NATIVE_READERS: "1"
-          GITHUB_RUNNER: ${{ runner.environment }}
-          MISSING_WIN: ${{ needs.plan.outputs.missing_win_list }}
         run: |
-          limit=()
-          # (as natives': mbc's 768 KB units and data layouts on ci-1, a branch's -O0 in units of 8 MB with moonbit_init
-          # one unit kept by the branch on GitHub's)
-          if [ "$GITHUB_RUNNER" != self-hosted ]; then
-            limit=(bash scripts/with-timeout.sh @$((JOB_END - 25)))
-            export MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0
-          fi
+          read -ra parts <<< "$PARTS"
           if [ "$GITHUB_REF" = refs/heads/main ]; then
-            node scripts/native.ts ensure --publish $MISSING_WIN
+            bash scripts/with-timeout.sh @$((JOB_END - 15)) node scripts/native.ts ensure --publish "${parts[@]}"
           else
-            ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $MISSING_WIN
+            bash scripts/with-timeout.sh @$((JOB_END - 30)) node scripts/native.ts ensure --outbox "$RUNNER_TEMP/native-out" "${parts[@]}"
           fi
-      - name: Stage its archive in R2
+      - name: Stage native archives in R2
         if: github.ref != 'refs/heads/main'
-        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives-win-reader.r2.json"
+        env:
+          STILLFAIL_NATIVE_DIRECT_R2: '1'
+        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/native-out" "$RUNNER_TEMP/$MANIFEST.r2.json"
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
-        with: { name: "natives-win-reader-${{ github.sha }}", path: "${{ runner.temp }}/natives-win-reader.r2.json", if-no-files-found: ignore, retention-days: 7 }
-      - if: always() && runner.environment != 'self-hosted' && steps.zig-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.cache/zig
-          key: zig-cache-linux-x64-0.16.0-${{ github.job }}
-      - if: always() && runner.environment != 'self-hosted'
-        run: |
-          find ~/.cache/stillfail-reader-mbc -name '*.lock' -delete 2>/dev/null || true
-          find ~/.cache/stillfail-reader-mbc -type f -mtime +3 -delete 2>/dev/null || true
-          find ~/.cache/stillfail-reader-mbc -mindepth 1 -type d -empty -delete 2>/dev/null || true
-      - if: always() && runner.environment != 'self-hosted' && steps.reader-store.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        continue-on-error: true
-        with:
-          path: ~/.cache/stillfail-reader-mbc
-          key: mbui-reader-win-branch-v2-${{ github.sha }}
+        with: { name: "${{ env.MANIFEST }}-${{ github.sha }}", path: "${{ runner.temp }}/${{ env.MANIFEST }}.r2.json", if-no-files-found: ignore, retention-days: 7 }
 
-  # Main's Windows reader, published, on ci-1 after natives (its needs), never before it: taking the readers' group
-  # first there, it held natives and every job waiting for the readers 153 s (cbab7545c). Only ui-windows and the
-  # station's release wait for it.
   natives-win-reader-main:
     needs: [plan, natives]
-    if: ${{ !cancelled() && vars.CI_1 != 'off' && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.natives_win_reader == 'needed' }}
-    runs-on: ${{ fromJSON(needs.plan.outputs.natives_win_runner) }}
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.natives_win_reader == 'needed' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      contents: write # the release native-artifacts' assets
-    steps:
-      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
-        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
-      - uses: ./.github/actions/setup-linux
-      - uses: ./.github/actions/mbui-moonbit
-        with: { tools: 'mbc' }
-      - name: Get or build Windows' reader
-        env:
-          GH_TOKEN: ${{ github.token }}
-          # (one reader here: every core its)
-          STILLFAIL_NATIVE_READERS: "1"
-          MISSING_WIN: ${{ needs.plan.outputs.missing_win_list }}
-        run: node scripts/native.ts ensure --publish $MISSING_WIN
+      contents: write
+    env:
+      PARTS: ${{ needs.plan.outputs.missing_win_list }}
+      MANIFEST: natives-win-reader
+      TARGET: win32-x64
+      MBC_UNIT_KB: '8192'
+      MBC_INIT_SPLIT: '0'
+    steps: *hosted-reader-steps
 
-  # The tests' MoonBit program (plan's missing_harness_list: reader-harness, every package's harness, which only
-  # check-station runs), main's and a branch's, built as natives-win-reader is but on GitHub's runner wherever
-  # shell-station is published, main's too, at -O0 (STATION_READER_OPT: the tests' alone, never shipped) in units of
-  # 8 MB, beside natives: on ci-1 it would be a third job of the readers' concurrency group, which cancels the one
-  # pending there. Its units kept in the Actions cache by keys of its own, main's (`-main-`) read by a branch's first
-  # push. Main's published, a branch's staged in R2 (natives-harness-<sha>) for check-station. With vars.CI_1 == 'off'
-  # natives builds it itself.
   natives-harness:
-    needs: plan
-    if: ${{ !cancelled() && vars.CI_1 != 'off' && needs.plan.outputs.natives_harness == 'needed' }}
-    runs-on: ${{ fromJSON(needs.plan.outputs.natives_harness_runner) }}
+    needs: [plan, natives]
+    if: ${{ !cancelled() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.plan.outputs.natives_harness == 'needed' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets, on main only
-      id-token: write # the branch job can stage its native archive in R2
-    steps:
-      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
-      # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
-      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
-        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
-      - if: runner.environment == 'self-hosted'
-        uses: ./.github/actions/setup-linux
-      - uses: ./.github/actions/mbui-moonbit
-        with: { tools: 'mbc' }
-      # (GitHub's: the pinned Node, and the zig scripts/native.ts builds Linux and Windows with, kept in the Actions
-      # cache by its version, with what it compiled of its own (glibc's and MinGW's stubs, compiler-rt) in ~/.cache/zig)
-      - if: runner.environment != 'self-hosted'
-        uses: ./.github/actions/node
-      - if: runner.environment != 'self-hosted'
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.tool_cache }}/zig-0.16.0
-          key: zig-linux-x64-0.16.0
-      - name: Zig 0.16.0 (the reader's cc on GitHub's Linux)
-        if: runner.environment != 'self-hosted'
-        run: |
-          d="$RUNNER_TOOL_CACHE/zig-0.16.0/zig-x86_64-linux-0.16.0"
-          if [ ! -x "$d/zig" ]; then
-            mkdir -p "$RUNNER_TOOL_CACHE/zig-0.16.0"
-            t="$RUNNER_TEMP/zig.tar.xz"
-            curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 -o "$t" https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
-            echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  $t" | sha256sum -c --quiet
-            tar -xf "$t" -C "$RUNNER_TOOL_CACHE/zig-0.16.0"
-            rm -f "$t"
-          fi
-          [ "$("$d/zig" version)" = 0.16.0 ]
-          # (zig cc at -O0 puts UBSan in every unit, which station/mb/build.sh turns off only for moonbit_init: each
-          # unit several times slower to compile. Off here for the whole reader; a branch's build alone takes it)
-          mkdir -p "$RUNNER_TEMP/zig-bin"
-          printf '#!/bin/sh\nif [ "${1:-}" = cc ]; then shift; exec "%s/zig" cc -fno-sanitize=undefined "$@"; fi\nexec "%s/zig" "$@"\n' "$d" "$d" > "$RUNNER_TEMP/zig-bin/zig"
-          chmod +x "$RUNNER_TEMP/zig-bin/zig"
-          echo "$RUNNER_TEMP/zig-bin" >> "$GITHUB_PATH"
-      - if: runner.environment != 'self-hosted'
-        id: zig-cache
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/zig
-          key: zig-cache-linux-x64-0.16.0-${{ github.job }}
-          restore-keys: zig-cache-linux-x64-0.16.0-
-      - if: runner.environment != 'self-hosted'
-        id: reader-store
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.cache/stillfail-reader-mbc
-          key: mbui-reader-harness-linux-${{ github.ref == 'refs/heads/main' && 'main' || 'branch' }}-v2-${{ github.sha }}
-          restore-keys: |
-            mbui-reader-harness-linux-${{ github.ref == 'refs/heads/main' && 'main' || 'branch' }}-v2-
-            mbui-reader-harness-linux-main-v2-
-      - name: Get or build the tests' harness program
-        env:
-          GH_TOKEN: ${{ github.token }}
-          # (one program here: every core its)
-          STILLFAIL_NATIVE_READERS: "1"
-          GITHUB_RUNNER: ${{ runner.environment }}
-          MISSING_HARNESS: ${{ needs.plan.outputs.missing_harness_list }}
-          # (the tests' alone: -O0 on main too)
-          STATION_READER_OPT: "-O0"
-        run: |
-          limit=()
-          # (as natives': mbc's 768 KB units and data layouts on ci-1, -O0 in units of 8 MB with moonbit_init one unit on
-          # GitHub's)
-          if [ "$GITHUB_RUNNER" != self-hosted ]; then
-            limit=(bash scripts/with-timeout.sh @$((JOB_END - 25)))
-            export MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0
-          fi
-          if [ "$GITHUB_REF" = refs/heads/main ]; then
-            ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --publish $MISSING_HARNESS
-          else
-            ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $MISSING_HARNESS
-          fi
-      - name: Stage its archive in R2
-        if: github.ref != 'refs/heads/main'
-        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives-harness.r2.json"
-      - if: github.ref != 'refs/heads/main'
-        uses: actions/upload-artifact@v4
-        with: { name: "natives-harness-${{ github.sha }}", path: "${{ runner.temp }}/natives-harness.r2.json", if-no-files-found: ignore, retention-days: 7 }
-      - if: always() && runner.environment != 'self-hosted' && steps.zig-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.cache/zig
-          key: zig-cache-linux-x64-0.16.0-${{ github.job }}
-      - if: always() && runner.environment != 'self-hosted'
-        run: |
-          find ~/.cache/stillfail-reader-mbc -name '*.lock' -delete 2>/dev/null || true
-          find ~/.cache/stillfail-reader-mbc -type f -mtime +3 -delete 2>/dev/null || true
-          find ~/.cache/stillfail-reader-mbc -mindepth 1 -type d -empty -delete 2>/dev/null || true
-      - if: always() && runner.environment != 'self-hosted' && steps.reader-store.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        continue-on-error: true
-        with:
-          path: ~/.cache/stillfail-reader-mbc
-          key: mbui-reader-harness-linux-${{ github.ref == 'refs/heads/main' && 'main' || 'branch' }}-v2-${{ github.sha }}
-
-  # A branch's the rest of what main builds on ci-1 (linux-arm64, shell-station), into ci-1's cache,
-  # which main's natives job takes them from without holding main's jobs back.
-  natives-main:
-    needs: [plan, natives, natives-win-reader]
-    if: ${{ !cancelled() && needs.plan.outputs.natives == 'needed' && github.ref != 'refs/heads/main' && needs.natives.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && needs.plan.outputs.natives_runner != '"ubuntu-24.04"' }}
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["self-hosted", "macos-ci"]') }}
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v5
-        with: { fetch-depth: 0 }
-      - if: runner.os == 'Linux'
-        uses: ./.github/actions/setup-linux
-      - if: runner.os == 'macOS'
-        uses: ./.github/actions/setup-mac
-      - uses: ./.github/actions/mbui-moonbit
-        with: { tools: 'mbc' }
-      - name: Build what main builds besides the branch's (into ci-1's cache)
-        env:
-          GH_TOKEN: ${{ github.token }}
-          # (one reader here, linux-arm64: every core its)
-          STILLFAIL_NATIVE_READERS: "1"
-        run: |
-          # (not the tests' program: natives-harness's, which only check-station waits for)
-          if [ "${{ vars.CI_1 }}" = off ]; then
-            node scripts/native.ts ensure $(node scripts/native.ts parts | grep -v '^reader-harness:')
-          else
-            node scripts/native.ts ensure --linux $(node scripts/native.ts parts --linux | grep -v '^reader-harness:')
-          fi
+      id-token: write
+    env:
+      PARTS: ${{ needs.plan.outputs.missing_harness_list }}
+      MANIFEST: natives-harness
+      TARGET: linux-x64
+      STATION_READER_OPT: '-O0'
+      MBC_UNIT_KB: '8192'
+      MBC_INIT_SPLIT: '0'
+    steps: *hosted-reader-steps
 
   # The Apple native parts (darwin-arm64, ios-arm64, ios-sim-arm64: scripts/native.ts --mac) but the Mac's reader
   # (natives-mac-reader's), built only when one is missing, where plan's natives_mac_runner says: Mini1's quick runner for main and for a branch's
@@ -695,7 +353,7 @@ jobs:
   # 2026-11-17).
   natives-mac:
     needs: plan
-    # (with vars.CI_1 == 'off' too: it takes no ci-1 runner, and natives then builds only the non-Apple parts)
+    # (natives-build builds the non-Apple parts)
     if: needs.plan.outputs.natives_mac == 'needed'
     runs-on: ${{ fromJSON(needs.plan.outputs.natives_mac_runner) }}
     timeout-minutes: 5
@@ -868,7 +526,7 @@ jobs:
   # branch's checks need none of it.
   natives-mac-main:
     needs: [plan, natives-mac, natives-mac-reader]
-    if: ${{ !cancelled() && vars.CI_1 != 'off' && vars.MINI1 == 'on' && (needs.plan.outputs.natives_mac == 'needed' || needs.plan.outputs.natives_mac_reader == 'needed') && github.ref != 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) }}
+    if: ${{ !cancelled() && vars.MINI1 == 'on' && (needs.plan.outputs.natives_mac == 'needed' || needs.plan.outputs.natives_mac_reader == 'needed') && github.ref != 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) }}
     runs-on: [self-hosted, macos-ci]
     timeout-minutes: 5
     steps:
@@ -1044,14 +702,10 @@ jobs:
   # The full check (scripts/check.sh) in four: station typecheck/MoonBit/Rust and client Rust (check), the few checks
   # that need macOS/Xcode on macos-ci only when their inputs changed (check-mac), the station's tests in slices on Linux
   # runners of their own (check-station), and the rest beside them on Linux (check-linux).
-  # check runs on ci-1 only when the Rust it tests changed (plan.sh's check_rust: ci-1's sccache makes its cold
-  # builds short); otherwise on GitHub's ubuntu-24.04 with those Rust tests left out (STILLFAIL_SKIP_RUST_TESTS, as
-  # where CI's own files changed the check runs whole), what is left there a minute or less: with ci-1's line down,
-  # every pull request's check queued until it was cancelled (44383403135).
-  check:
+  check-base:
     needs: [plan, natives]
     if: ${{ !cancelled() && needs.plan.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.natives.result) }}
-    runs-on: ${{ fromJSON(needs.plan.outputs.check_rust == 'true' && (vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["self-hosted", "macos-ci"]') || '"ubuntu-24.04"') }}
+    runs-on: ubuntu-24.04
     # Usually under 2 minutes, all of it with Rust built anew a few: a test that hangs (one waiting on what never comes,
     # up to its 10 minutes each) held one of macos-ci's four runners for most of an hour, and every run behind it waited
     # (2026-10-16, station/test/mesh-handover.test.ts on branches whose mesh needed a service it did not give).
@@ -1059,19 +713,14 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
       STILLFAIL_CHECK_PART: station core
-      STILLFAIL_SKIP_RUST_TESTS: ${{ needs.plan.outputs.check_rust != 'true' && '1' || '' }}
+      STILLFAIL_SKIP_RUST_TESTS: '1'
     steps:
       # (a SYN lost to github.com waits 135 s on Linux's 6 retries, most of a job's 5 minutes; 3 retries give up in 15 s and connect again)
       - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
         run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0 }
-      - if: runner.environment == 'self-hosted' && runner.os == 'Linux'
-        uses: ./.github/actions/setup-linux
-      - if: runner.environment == 'self-hosted' && runner.os == 'macOS'
-        uses: ./.github/actions/setup-mac
-      - if: runner.environment != 'self-hosted'
-        uses: ./.github/actions/setup
+      - uses: ./.github/actions/setup
       # (the station's programs in MoonBit: station/mb)
       - uses: ./.github/actions/mbui-moonbit
       # Use the reader built by natives so this test job does not repeat its cold build.
@@ -1121,6 +770,57 @@ jobs:
           fi
           exit $status
 
+  # Rust checks have their own runners so several cold Cargo builds cannot exhaust one job's five minutes.
+  check-rust:
+    needs: plan
+    if: needs.plan.outputs.check_rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { crate: launcher, dir: station/native/launcher }
+          - { crate: runner, dir: station/native/runner }
+          - { crate: mesh, dir: station/native/mesh }
+          - { crate: screen, dir: station/native/screen }
+          - { crate: screen-linux, dir: station/native/screen-linux }
+          - { crate: mesh-transport, dir: libs/mesh-transport }
+          - { crate: client, dir: client }
+    env:
+      STILLFAIL_CHECK_PART: rust
+      STILLFAIL_RUST_CRATE: ${{ matrix.crate }}
+      RANGE: ${{ needs.plan.outputs.range }}
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0, filter: blob:none }
+      - uses: ./.github/actions/node
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: check-rust-ubuntu-24.04-${{ matrix.crate }}-${{ hashFiles(format('{0}/Cargo.lock', matrix.dir)) }}
+          restore-keys: check-rust-ubuntu-24.04-${{ matrix.crate }}-
+      - run: |
+          if [ "$RANGE" = all ] || git diff --name-only "$(git merge-base origin/main HEAD)" HEAD | grep -qE '^\.github/actions/setup-(native-linux|linux|mac)/'; then
+            exec sh scripts/check.sh all
+          fi
+          exec sh scripts/check.sh full "$RANGE"
+
+  check:
+    needs: [check-base, check-rust]
+    if: ${{ !cancelled() && needs.check-base.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - env:
+          BASE: ${{ needs.check-base.result }}
+          RUST: ${{ needs.check-rust.result }}
+        run: test "$BASE" = success && { test "$RUST" = success || test "$RUST" = skipped; }
+
   # The few checks only a Mac can run (Swift's still.fail Helper, the iOS crash reports' Objective-C test, and the Mac
   # release prebuild's Mach-O symbol check), run only when one of them or CI's own files changed: main's on macos-ci, a
   # branch's on GitHub's macos-26 (free for a public repository, as many as are asked for), which they need no more of
@@ -1129,7 +829,7 @@ jobs:
   # vars.MINI1 == 'off' puts main's there too.
   check-mac:
     needs: [plan, natives-mac, natives-mac-reader]
-    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && vars.CI_1 != 'off' && needs.plan.result == 'success' && needs.plan.outputs.check_mac == 'true' }}
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && needs.plan.result == 'success' && needs.plan.outputs.check_mac == 'true' }}
     runs-on: ${{ fromJSON(github.ref == 'refs/heads/main' && vars.MINI1 != 'off' && '["self-hosted", "macos-ci"]' || '"macos-26"') }}
     timeout-minutes: 5
     env:
@@ -1467,7 +1167,7 @@ jobs:
   # 2026-10-22): every job a branch runs, one skipped as passing, one failed or cancelled failing it. Its list
   # is the branch's jobs: a job added to them goes here too, or the protection does not wait for it.
   gate:
-    needs: [plan, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, windows-natives, launcher-windows, ui-windows, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
+    needs: [plan, natives-build, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, windows-natives, launcher-windows, ui-windows, check-base, check-rust, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
     if: always() && github.ref != 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -1503,7 +1203,7 @@ jobs:
     needs: [plan, check, check-mac, check-linux, check-station, check-core]
     # Not on the implicit success(): a skipped job before it (natives, when nothing native changed) would
     # skip it too (2026-10-04 to 05: the API was not deployed for a day). The checks it needs passed or were not needed.
-    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.plan.outputs.api == 'true' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') }}
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.plan.outputs.api == 'true' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') }}
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
@@ -1574,7 +1274,7 @@ jobs:
   static:
     needs: [plan, natives, check, check-mac, check-linux, check-station, check-core, api, mbui-web]
     # After the API (a page may need what it adds), or without it when it did not change.
-    if: ${{ !cancelled() && needs.plan.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.mbui-web.result == 'success' && ((github.ref == 'refs/heads/main' && needs.plan.outputs.static == 'true' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result)) || needs.plan.outputs.release_smoke == 'true') }}
+    if: ${{ !cancelled() && needs.plan.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && needs.mbui-web.result == 'success' && ((github.ref == 'refs/heads/main' && needs.plan.outputs.static == 'true' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result)) || needs.plan.outputs.release_smoke == 'true') }}
     runs-on: ubuntu-24.04
     environment: ${{ github.ref == 'refs/heads/main' && 'production' || '' }}
     timeout-minutes: 5
@@ -1905,7 +1605,7 @@ jobs:
   # bucket once the check passed.
   monoid-android:
     needs: [plan, check, check-mac, check-linux, check-station, check-core, android]
-    if: ${{ !cancelled() && vars.MONOID_CI == 'on' && github.ref == 'refs/heads/main' && needs.plan.outputs.android_beta == 'true' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && needs.android.result == 'success' && needs.android.outputs.monoid != '' }}
+    if: ${{ !cancelled() && vars.MONOID_CI == 'on' && github.ref == 'refs/heads/main' && needs.plan.outputs.android_beta == 'true' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && needs.android.result == 'success' && needs.android.outputs.monoid != '' }}
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
@@ -1933,7 +1633,7 @@ jobs:
   # MBUI_MAC_FROM), signed and notarized as monoid.zone, put in monoid's bucket.
   monoid-desktop:
     needs: [plan, check, check-mac, check-linux, check-station, check-core, desktop]
-    if: ${{ !cancelled() && vars.MONOID_CI == 'on' && github.ref == 'refs/heads/main' && needs.plan.outputs.mac_beta == 'true' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && needs.desktop.result == 'success' }}
+    if: ${{ !cancelled() && vars.MONOID_CI == 'on' && github.ref == 'refs/heads/main' && needs.plan.outputs.mac_beta == 'true' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && needs.desktop.result == 'success' }}
     runs-on: macos-26
     environment: production
     timeout-minutes: 5
@@ -2002,10 +1702,9 @@ jobs:
             echo "next=true" >> "$GITHUB_OUTPUT"
           fi
       - if: github.ref != 'refs/heads/main'
-        run: echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
-      - if: startsWith(github.ref, 'refs/heads/release/')
         run: |
-          # Older release trees have few matching C units in main's store. Use the same cold -O0 layout as the hosted reader.
+          # Cold branch builds parse the same declarations in every C unit. Use the hosted reader's larger -O0 units.
+          echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
           echo "MBC_UNIT_KB=8192" >> "$GITHUB_ENV"
           echo "MBC_INIT_SPLIT=0" >> "$GITHUB_ENV"
       - id: hermes
@@ -2786,7 +2485,7 @@ jobs:
   # bucket once the check passed.
   monoid-desktop-win:
     needs: [plan, check, check-mac, check-linux, check-station, check-core, desktop-win]
-    if: ${{ !cancelled() && vars.MONOID_CI == 'on' && github.ref == 'refs/heads/main' && needs.plan.outputs.win_beta == 'true' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && needs.desktop-win.result == 'success' && needs.desktop-win.outputs.monoid == '1' }}
+    if: ${{ !cancelled() && vars.MONOID_CI == 'on' && github.ref == 'refs/heads/main' && needs.plan.outputs.win_beta == 'true' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && needs.desktop-win.result == 'success' && needs.desktop-win.outputs.monoid == '1' }}
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
@@ -2912,7 +2611,7 @@ jobs:
   # part, so deployed/beta stays and the next run plans the one that failed again)
   put:
     needs: [plan, check, check-mac, check-linux, check-station, check-core, api, static, station, android, desktop-build, desktop, desktop-win, deltas-station, deltas-android, deltas-desktop, deltas-desktop-win]
-    if: always() && github.ref == 'refs/heads/main' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && (needs.station.result == 'success' || needs.android.result == 'success' || needs.desktop.result == 'success' || needs.desktop-win.result == 'success')
+    if: always() && github.ref == 'refs/heads/main' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && (needs.station.result == 'success' || needs.android.result == 'success' || needs.desktop.result == 'success' || needs.desktop-win.result == 'success')
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
@@ -3019,7 +2718,7 @@ jobs:
   # cloud counts as out as soon as it is listed, not before the API carrying it is deployed.
   changelog:
     needs: [plan, check, check-mac, check-linux, check-station, check-core, api, static, put]
-    if: always() && github.ref == 'refs/heads/main' && needs.put.result == 'skipped' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result)
+    if: always() && github.ref == 'refs/heads/main' && needs.put.result == 'skipped' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result)
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
@@ -3044,7 +2743,7 @@ jobs:
   # main, once all of it is out: the tag the next run's range starts from, and what is left to do by hand.
   done:
     needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-harness, natives-mac, natives-mac-reader, check, check-mac, check-linux, check-station, check-core, api, static, monoid-api, monoid-static, monoid-kit, monoid-ui, station, android, desktop-build, desktop, desktop-win, put]
-    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader-main.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-api.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-kit.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-ui.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.put.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result)
+    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader-main.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-api.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-kit.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-ui.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.put.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result)
     runs-on: [self-hosted, quick]
     timeout-minutes: 5
     permissions:
@@ -3092,7 +2791,7 @@ jobs:
       # main: every part the plan said changed went out, or this run fails (a job skipped where it should have run went
       # unnoticed for a day: the API, 2026-10-04 to 05). Skipped is right only for a part the plan left alone, or when a
       # check before it failed (the run has failed then anyway).
-      - if: github.ref == 'refs/heads/main' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success')
+      - if: github.ref == 'refs/heads/main' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success')
         run: |
           missed=""
           planned() { [ "$1" = true ] && [ "$2" = skipped ] && missed="$missed $3"; return 0; }

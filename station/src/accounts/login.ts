@@ -299,7 +299,7 @@ export class LoginManager {
 
   /// Opens the page of `profile`'s sign-in in the station's browser (the tab open already, if there is one): its
   /// screen.
-  async openPage(profile: string, lang: Lang = stationLang()): Promise<string> {
+  async openPage(profile: string, lang: Lang = stationLang(), workspace: string | null = null): Promise<string> {
     const running = this.jobs.get(profile);
     if (!running) throw new Error(tr(lang, "station.loginPage.nothing"));
     if (this.pages === null || !this.pages.can()) throw new Error(tr(lang, "station.loginPage.noBrowser"));
@@ -308,7 +308,7 @@ export class LoginManager {
     if (url === null && this.pages.screenOf(pageKey(profile)) === null) throw new Error(tr(lang, "station.loginPage.nothing"));
     let screen: string;
     try {
-      screen = await this.pages.open(pageKey(profile), url ?? "about:blank", { stateFile: () => this.stateFile(profile) });
+      screen = await this.pages.open(pageKey(profile), url ?? "about:blank", { stateFile: () => this.stateFile(profile), workspace });
     } catch (error) {
       throw new Error(tr(lang, "station.loginPage.failed", { error: (error as Error).message }));
     }
@@ -915,6 +915,17 @@ export class LoginManager {
 
   cancel(profile: string) {
     if (this.jobs.has(profile)) this.finish(profile, "cancelled", null);
+    else if (this.finished.delete(profile)) this.emit(profile);
+  }
+
+  /// Drops a finished sign-in record (for example once post-sign-in checks settle still needing login),
+  /// leaving any newer sign-in untouched.
+  clearFinished(profile: string, startedAt?: number) {
+    const done = this.finished.get(profile);
+    if (!done) return;
+    if (startedAt !== undefined && done.startedAt !== startedAt) return;
+    this.finished.delete(profile);
+    this.emit(profile);
   }
 
   stopAll() {

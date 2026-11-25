@@ -276,13 +276,72 @@ struct Team {
   book : String
 }
 
-/// Lazy cache for `teams(...)` avoiding closure capture cycles, keyed by raw UTF-16 code units.
+fn units_has_lone_surrogate(u : Array[Int]) -> Bool {
+  let n = u.length()
+  let mut i = 0
+  while i < n {
+    let c = u[i]
+    if c >= 0xD800 && c <= 0xDBFF {
+      if i + 1 < n && u[i + 1] >= 0xDC00 && u[i + 1] <= 0xDFFF {
+        i = i + 2
+        continue
+      }
+      return true
+    } else if c >= 0xDC00 && c <= 0xDFFF {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Per-call indexed `*-names.json` cache: O(1) `Map` lookup for well-formed UTF-16 keys
+/// (first-wins matching `JValue::get_units`), falling back to `raw.get_units` for lone surrogates.
+struct BookCache {
+  raw : js_json::JValue
+  index : Map[String, js_json::JValue]
+}
+
+fn BookCache::from_jval(raw : js_json::JValue) -> BookCache {
+  let index : Map[String, js_json::JValue] = Map::new()
+  match raw {
+    js_json::JValue::Obj(entries) => {
+      for i in 0..<entries.length() {
+        let (k, v) = entries[i]
+        if !units_has_lone_surrogate(k) {
+          let sk = js_json::sanitize_str(k)
+          if !index.contains(sk) {
+            index.set(sk, v)
+          }
+        }
+      }
+    }
+    _ => ()
+  }
+  BookCache::{ raw: raw, index: index }
+}
+
+fn BookCache::lookup(self : BookCache, lookup_units : Array[Int]) -> Option[js_json::JValue] {
+  match self.raw {
+    js_json::JValue::Obj(_) => {
+      if !units_has_lone_surrogate(lookup_units) {
+        self.index.get(js_json::sanitize_str(lookup_units))
+      } else {
+        self.raw.get_units(lookup_units)
+      }
+    }
+    _ => None
+  }
+}
+
+/// Lazy cache for `teams(...)` and `*-names.json` books avoiding closure capture cycles.
 struct TeamsCache {
   mut loaded : Option[Array[(Array[Int], Team)]]
+  books : Map[String, BookCache]
 }
 
 fn TeamsCache::new() -> TeamsCache {
-  TeamsCache::{ loaded: None }
+  TeamsCache::{ loaded: None, books: Map::new() }
 }
 
 fn teams_set(out : Array[(Array[Int], Team)], key : Array[Int], team : Team) -> Unit {
@@ -357,16 +416,13 @@ fn jval_raw_units(v : Option[js_json::JValue]) -> Option[Array[Int]] {
 /// slack-known.ts `teams`: each connect's Slack workspace, Feishu company or Comma group,
 /// this station's over those of other stations whose chats run here.
 /// Preserves raw UTF-16 code units for connect/team IDs so `\ud800` and `U+FFFD` stay distinct.
-fn teams(
-  client : builders_core::ShellClient,
+fn teams_with(
+  read_json_fn : (String) -> Result[js_json::JValue, readops_core::ReadError],
   data : String,
   sep : String,
 ) -> Result[Array[(Array[Int], Team)], readops_core::ReadError] {
   let out : Array[(Array[Int], Team)] = []
-  let remote = match readops_core::read_json(
-    client,
-    readops_core::join_path(sep, data, "remote-connects.json"),
-  ) {
+  let remote = match read_json_fn(readops_core::join_path(sep, data, "remote-connects.json")) {
     Ok(v) => v
     Err(e) => return Err(e)
   }
@@ -413,7 +469,7 @@ fn teams(
     }
     _ => ()
   }
-  let own = match readops_core::read_json(client, readops_core::join_path(sep, data, "config.json")) {
+  let own = match read_json_fn(readops_core::join_path(sep, data, "config.json")) {
     Ok(v) => v
     Err(e) => return Err(e)
   }
@@ -448,16 +504,16 @@ fn teams(
   Ok(out)
 }
 
-fn teams_cached(
+fn teams_cached_with(
   cache : TeamsCache,
-  client : builders_core::ShellClient,
+  read_json_fn : (String) -> Result[js_json::JValue, readops_core::ReadError],
   data : String,
   sep : String,
 ) -> Result[Array[(Array[Int], Team)], readops_core::ReadError] {
   match cache.loaded {
     Some(m) => Ok(m)
     None => {
-      let m = match teams(client, data, sep) {
+      let m = match teams_with(read_json_fn, data, sep) {
         Ok(v) => v
         Err(e) => return Err(e)
       }
@@ -467,9 +523,30 @@ fn teams_cached(
   }
 }
 
+fn book_cached_with(
+  cache : TeamsCache,
+  read_json_fn : (String) -> Result[js_json::JValue, readops_core::ReadError],
+  data : String,
+  sep : String,
+  book_file : String,
+) -> Result[BookCache, readops_core::ReadError] {
+  match cache.books.get(book_file) {
+    Some(b) => Ok(b)
+    None => {
+      let raw = match read_json_fn(readops_core::join_path(sep, data, book_file)) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let bc = BookCache::from_jval(raw)
+      cache.books.set(book_file, bc)
+      Ok(bc)
+    }
+  }
+}
+
 /// outflow.ts `person`: who a person reference is as far as known, with where they were heard.
-fn outflow_person(
-  client : builders_core::ShellClient,
+fn outflow_person_with(
+  read_json_fn : (String) -> Result[js_json::JValue, readops_core::ReadError],
   data : String,
   sep : String,
   cache : TeamsCache,
@@ -484,7 +561,7 @@ fn outflow_person(
           let connect = readops_core::str_slice_bytes(rest, 0, colon)
           let user = readops_core::str_slice_bytes(rest, colon + 1, rest_len)
           let connect_units = js_json::utf16_units(connect)
-          let ts = match teams_cached(cache, client, data, sep) {
+          let ts = match teams_cached_with(cache, read_json_fn, data, sep) {
             Ok(m) => m
             Err(e) => return Err(e)
           }
@@ -517,10 +594,7 @@ fn outflow_person(
             }
             None => "slack-names.json"
           }
-          let raw_names = match readops_core::read_json(
-            client,
-            readops_core::join_path(sep, data, book_file),
-          ) {
+          let book = match book_cached_with(cache, read_json_fn, data, sep, book_file) {
             Ok(v) => v
             Err(e) => return Err(e)
           }
@@ -534,10 +608,7 @@ fn outflow_person(
             js_json::utf16_units(":"),
             js_json::utf16_units(user),
           ])
-          let book_entry = match raw_names {
-            js_json::JValue::Obj(_) => raw_names.get_units(lookup_units)
-            _ => None
-          }
+          let book_entry = book.lookup(lookup_units)
           let known = readops_core::jget(book_entry, "person")
           let (name_units, name, email) = match readops_core::jget(known, "name") {
             Some(js_json::JValue::Str(nu)) => {
@@ -592,6 +663,24 @@ fn outflow_person(
       ("email", base_codec::json_str(ref_str)),
       ("via", base_codec::json_str("cloud")),
     ]),
+  )
+}
+
+fn outflow_person(
+  client : builders_core::ShellClient,
+  data : String,
+  sep : String,
+  cache : TeamsCache,
+  ref_str : String,
+) -> Result[base_codec::Json, readops_core::ReadError] {
+  outflow_person_with(
+    fn(path : String) -> Result[js_json::JValue, readops_core::ReadError] {
+      readops_core::read_json(client, path)
+    },
+    data,
+    sep,
+    cache,
+    ref_str,
   )
 }
 

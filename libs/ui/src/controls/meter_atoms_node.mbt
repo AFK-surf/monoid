@@ -40,11 +40,19 @@ pub fn fill_chip_node(
     None => fn() { false }
   }
   let icon_sz = if small { 9.0 } else { 10.5 }
+  let in_overlay = parent.lent(floating_host_lent) is Some(_)
   let chip = parent.box(made_for=loc, fn(b) {
     // (as high as its words' line at the system's size of words where that is higher than the chip: at 1.3 a small
     // chip's 16 held words of 20, over the line above and below it, a station's row in 选择运行的 station, main
     // df98aad1 42956992852, 2026-11-11)
-    style_node(b, fn() { chip_box_at(b.words_scale(), small) })
+    style_node(b, fn() {
+      let base = chip_box_at(b.words_scale(), small)
+      if in_overlay && theme().dark {
+        base.then(chip_box_dark_overlay)
+      } else {
+        base
+      }
+    })
     b.bone_whole(Is(true)).shrink(Is(if squeezes { 1.0 } else { 0.0 })) |> ignore
     if squeezes {
       b.min_width(Is(Some(0.0))) |> ignore

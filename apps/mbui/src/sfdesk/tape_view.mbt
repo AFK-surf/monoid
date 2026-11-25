@@ -1654,6 +1654,38 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
         side_history_node(s, src, r, agent, tips)
       }
     })
+    // When the side panel extends past the window's right edge on Windows/Linux (e.g. peeking beside the active chat
+    // page on Medium), veil its top-right strip behind the translucent window-controls capsule so inactive top-bar
+    // buttons (tabs, single-service nav keys, single-screen tools) do not bleed under `- □ ×`.
+    q.show(
+      at_once=true,
+      fn() {
+        if !@ui.window_keys_own_now() {
+          return false
+        }
+        let r = tape_room_now()
+        let t = tape_drawn_at(q)
+        let side_right = tape_x_at(r, t) + tape_col_at(t) + tape_page_at(t) + bar_gap_now() + r.panel_w
+        side_right > r.tw - @sf.window_in + 0.5
+      },
+      fn(veil) {
+        veil
+        .over(Is(true))
+        .ground(By(fn() { tape_ground(tape_behind_in(Panel, veil)) }))
+        .offset(
+          By(fn() {
+            let r = tape_room_now()
+            let t = tape_drawn_at(veil)
+            let side_left = tape_x_at(r, t) + tape_col_at(t) + tape_page_at(t) + bar_gap_now()
+            let x = dmax(0.0, r.tw - @sf.window_keys_room_tape(roots=@ui.tree_corner_roots_now()) - 6.0 - side_left)
+            (x, 0.0)
+          }),
+        )
+        .width(By(fn() { Some(tape_room_now().tw) }))
+        .height(By(fn() { Some(@sf.wide_bar_h + @sf.tape_bar_over()) }))
+        |> ignore
+      },
+    )
   })
 }
 
@@ -1887,18 +1919,18 @@ fn tape_goes_over(pulled : Double, span : Double, v : Double) -> Bool {
 /// Wraps a tape side panel's top bar (`make`) in a container that clips it clear of Windows' own window keys (`| - □ ×`)
 /// while the tape slides, without shrinking the bar's inner layout width.
 fn tape_side_bar_clip_node(parent : @view.View, make : (@view.View) -> Unit) -> Unit {
-  if !@ui.window_keys_own() {
-    make(parent)
-    return
-  }
   parent.box(fn(c) {
     let sliding_win = fn() {
+      if !@ui.window_keys_own_now() {
+        return false
+      }
       let t = tape_drawn_at(c)
       t != @double.infinity && tape_goes.way.goes_at(t)
     }
     c
     .shrink(Is(0.0))
     .clips(By(sliding_win))
+    .bounds_input(By(sliding_win))
     .width(
       By(fn() {
         if sliding_win() {
@@ -1913,7 +1945,7 @@ fn tape_side_bar_clip_node(parent : @view.View, make : (@view.View) -> Unit) -> 
     )
     |> ignore
     c.box(fn(inner) {
-      inner.shrink(Is(0.0)).width(By(fn() { Some(tape_room_now().panel_w) })) |> ignore
+      inner.shrink(Is(0.0)).width(By(fn() { if @ui.window_keys_own_now() { Some(tape_room_now().panel_w) } else { None } })) |> ignore
       make(inner)
     })
     |> ignore

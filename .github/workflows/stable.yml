@@ -49,7 +49,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       hand: ${{ steps.hand.outputs.key }}
-      monoid: ${{ steps.monoid-upload.outcome == 'success' && '1' || '' }}
+      monoid: ${{ steps.monoid-upload.outputs.key }}
     env:
       GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
@@ -82,8 +82,8 @@ jobs:
       # monoid's (build.monoid.android, the same key): from the same build, in the same warm cache (only the package is
       # made again: its id, name and links are in its manifest and resources); put by monoid-android. Not a reason to hold
       # still.fail's release back: skipped without failing monoid-android when time is short or upload fails (45498745060).
-      # Leave 165 s before JOB_END for monoid-upload (timeout-minutes: 2; 37 MB took 84 s in 45502063213) and cleanup so
-      # optional monoid work cannot cancel android and skip web/station/site/done (44770813931, 45502063213).
+      # Leave 165 s before JOB_END for the two-minute R2 handoff and cleanup. An optional monoid step must not cancel
+      # the still.fail Android job.
       - name: Build and sign monoid's stable Android app from the same build
         id: monoid-build
         continue-on-error: true
@@ -104,12 +104,17 @@ jobs:
           else
             echo "::warning::skipping monoid's stable Android upload: only ${left_up} s left before job end"
           fi
-      - if: steps.monoid-build.outcome == 'success' && steps.monoid-build.outputs.packed == '1'
+      - name: Hand monoid's Android package through company R2
+        if: steps.monoid-build.outcome == 'success' && steps.monoid-build.outputs.packed == '1'
         id: monoid-upload
-        uses: actions/upload-artifact@v4
         continue-on-error: true
         timeout-minutes: 2
-        with: { name: "monoid-android-stable", path: "${{ runner.temp }}/monoid", if-no-files-found: error, retention-days: 1, compression-level: 0 }
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -o pipefail
+          STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put.sh" --hand "$RUNNER_TEMP/monoid" | tee "$RUNNER_TEMP/monoid-hand.out"
+          echo "key=$(tail -1 "$RUNNER_TEMP/monoid-hand.out")" >> "$GITHUB_OUTPUT"
 
   # The stable Android app's deltas, APK, symbols, and feed (staged by android), on Linux where Java compiles the delta
   # applier and uploads are fast, mirroring station-put/desktop-win-feeds and pipeline.yml's deltas-android.
@@ -148,14 +153,16 @@ jobs:
           sh scripts/release-put.sh --drop $HANDED
 
   # The Mac app is mbui's (apps/mbui, its `stable` variant: fail.still.desktop, signed by the same team, so an installed
-  # Electron app's updater moves it over, its data and sign-in kept), as the beta's became on 2026-10-26. 10 minutes (it
-  # runs by hand): the day before's main has no warm build, and its build and Apple's notary took 4m59s on 2026-11-12
-  # and were cut at 5 on 2026-11-13.
-  desktop:
+  # Electron app's updater moves it over, its data and sign-in kept), as the beta's became on 2026-10-26. Built warm on
+  # Mini1 and handed to macos-26 (`desktop`) through R2 (`--hand`): Mini1's home uplink aborted Apple's notarytool S3
+  # uploads (45671338999, 2026-11-25), just as pipeline.yml's beta desktop moved signing and notarization to macos-26.
+  desktop-build:
     needs: plan
     runs-on: [self-hosted, macos-ci]
     environment: production
     timeout-minutes: 10
+    outputs:
+      hand: ${{ steps.hand.outputs.key }}
     env:
       GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
@@ -163,7 +170,75 @@ jobs:
         with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0 }
       - uses: ./.github/actions/setup-mac
       - uses: ./.github/actions/natives
-      - name: Publish the stable Mac app (mbui's) with its original signing identity
+      - name: Build the unsigned stable Mac app (mbui's) warm on Mini1
+        env:
+          POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
+        run: |
+          set -eu
+          ph_dir=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/stillfail-posthog.XXXXXX")
+          trap 'rm -rf "$ph_dir"' EXIT
+          if [ -n "${POSTHOG_JSON:-}" ]; then
+            (umask 077 && printf '%s' "$POSTHOG_JSON" > "$ph_dir/posthog.json")
+            export STILLFAIL_POSTHOG="$ph_dir/posthog.json"
+          fi
+          unset POSTHOG_JSON
+          build=$(git rev-list --count HEAD)
+          mbui_cache=${MBUI_MAC_CACHE:-$HOME/stillfail-ci/mbui-mac-stable}
+          rm -rf "$RUNNER_TEMP/unsigned"
+          MBUI_CACHE="$mbui_cache" bash apps/mbui/scripts/beta.sh tools
+          MBUI_CACHE="$mbui_cache" MBUI_TOOLS="$mbui_cache/tools" MBUI_VARIANT=stable \
+            UNSIGNED=1 MAC_SIGN_IDENTITY=- RELEASE_DIR="$RUNNER_TEMP/unsigned" \
+            bash apps/mbui/scripts/beta.sh mac
+          # Remove the warm tree's ad-hoc zip copy now that beta.sh copied it into $RUNNER_TEMP/unsigned.
+          rm -f "$mbui_cache/tree/apps/mbui/out/mac/stillfail-$build-arm64-mac.zip"
+      - name: Hand the unsigned Mac app to desktop via R2
+        id: hand
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -eu
+          set -o pipefail
+          # Keep macos-ci non-shallow (no --depth=1 / --filter) if the release checkout predates this workflow's commit.
+          git cat-file -e "$GITHUB_SHA:scripts/release-put.sh" 2>/dev/null || git fetch origin "$GITHUB_SHA"
+          git show "$GITHUB_SHA:scripts/release-put.sh" > "$RUNNER_TEMP/release-put.sh"
+          STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put.sh" --hand "$RUNNER_TEMP/unsigned" | tee "$RUNNER_TEMP/hand.out"
+          echo "key=$(tail -1 "$RUNNER_TEMP/hand.out")" >> "$GITHUB_OUTPUT"
+
+  # Sign, notarize, compute deltas and publish the stable Mac app on GitHub's macos-26 (fast AWS S3 notarytool + R2
+  # uploads, mirroring pipeline.yml's desktop and monoid-desktop below).
+  desktop:
+    needs: [plan, desktop-build]
+    if: ${{ !cancelled() && needs.desktop-build.result == 'success' }}
+    runs-on: macos-26
+    environment: production
+    timeout-minutes: 10
+    env:
+      MBUI_FRESH: 1
+      HANDED: ${{ needs.desktop-build.outputs.hand }}
+    steps:
+      - uses: actions/checkout@v5
+        with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0, filter: "blob:none" } # its build is the commits in the history
+      - uses: ./.github/actions/setup
+      - name: Fetch and verify the unsigned stable Mac app
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -eu
+          [ -n "$HANDED" ] || { echo "no handoff key from desktop-build" >&2; exit 1; }
+          # No --depth=1: preserve full commit history for git rev-list --count HEAD.
+          git cat-file -e "$GITHUB_SHA:scripts/release-put.sh" 2>/dev/null || git fetch --filter=blob:none origin "$GITHUB_SHA"
+          git show "$GITHUB_SHA:scripts/release-put.sh" > "$RUNNER_TEMP/release-put.sh"
+          # shellcheck disable=SC2086 # names, one word each
+          STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put.sh" --unhand "$RUNNER_TEMP/unsigned" $HANDED
+          zip="$RUNNER_TEMP/unsigned/mac/app-stable.zip"
+          [ -f "$zip" ] || { echo "missing handed-over app-stable.zip" >&2; exit 1; }
+          rm -rf "$RUNNER_TEMP/mac-unsigned" && mkdir -p "$RUNNER_TEMP/mac-unsigned"
+          ditto -x -k "$zip" "$RUNNER_TEMP/mac-unsigned"
+          plist="$RUNNER_TEMP/mac-unsigned/still.fail.app/Contents/Info.plist"
+          test "$(plutil -extract CFBundleIdentifier raw "$plist")" = fail.still.desktop
+          test "$(plutil -extract CFBundleExecutable raw "$plist")" = still.fail
+          test "$(plutil -extract CFBundleVersion raw "$plist")" = "$(git rev-list --count HEAD)"
+      - name: Sign, notarize and publish the stable Mac app (mbui's) with its original signing identity
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
@@ -171,25 +246,15 @@ jobs:
           MACOS_DEVELOPER_ID_KEYCHAIN_B64_1: ${{ secrets.MACOS_DEVELOPER_ID_KEYCHAIN_B64_1 }}
           MACOS_DEVELOPER_ID_KEYCHAIN_B64_2: ${{ secrets.MACOS_DEVELOPER_ID_KEYCHAIN_B64_2 }}
           KEYCHAIN_PASSWORD_AFK: ${{ secrets.KEYCHAIN_PASSWORD_AFK }}
+          MBUI_MAC_FROM: ${{ runner.temp }}/mac-unsigned/still.fail.app
         run: sh .github/release-desktop.sh --stable
-      # Only frees the runner's disk of the zip already put: it fetches the zip back from R2 to compare, which from mini1
-      # took past the job's 10 minutes after the release was out (0.1.8947, two attempts, 2026-11-15), so it never fails
-      # or holds back the release.
-      - name: Remove the uploaded Mac zip's local copy
+      - name: Drop the staged unsigned Mac handoff
         continue-on-error: true
-        timeout-minutes: 2
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          build=$(git rev-list --count HEAD)
-          cache=${MBUI_MAC_CACHE:-"$HOME/stillfail-ci/mbui-mac-stable"}
-          # (where scripts/beta.sh of the release's checkout builds: beside libs/ui once mbui is there)
-          work=$cache/tree/apps/mbui; [ -d "$GITHUB_WORKSPACE/libs/ui" ] || work=$cache/work
-          work=${WORK:-$work}
-          if [ "${MBUI_FRESH:-}" = 1 ]; then work="$GITHUB_WORKSPACE/apps/mbui"; fi
-          # The checkout is the reviewed release, which can be older than this workflow. Use this workflow's helper.
-          git show "$GITHUB_SHA:scripts/release-put.sh" > "$RUNNER_TEMP/release-put-cleanup.sh"
-          STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put-cleanup.sh" --clean-uploaded "desktop/stillfail-0.1.$build-arm64-mac.zip" "$work/out/mac/stillfail-$build-arm64-mac.zip"
+          # shellcheck disable=SC2086 # names, one word each
+          STILLFAIL_RELEASE_TOOLS_ROOT="$GITHUB_WORKSPACE" sh "$RUNNER_TEMP/release-put.sh" --drop $HANDED
 
   # The Windows app is mbui's (apps/mbui, its `stable` variant: fail.still.desktop, its installer run by an installed
   # Electron app's updater, its data and sign-in kept), as the beta's became on 2026-10-26: built as the pipeline's
@@ -360,7 +425,7 @@ jobs:
   # company's Cloudflare account. Apart from done: still.fail's stable is recorded whatever they do.
   monoid-android:
     needs: [plan, android]
-    if: ${{ !cancelled() && needs.android.result == 'success' && needs.android.outputs.monoid == '1' }}
+    if: ${{ !cancelled() && needs.android.result == 'success' && needs.android.outputs.monoid != '' }}
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
@@ -368,15 +433,16 @@ jobs:
       - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
-      - uses: actions/download-artifact@v4
-        with: { name: "monoid-android-stable", path: "${{ runner.temp }}/monoid" }
       - name: Put it in monoid's bucket (its files and deltas, then its feed)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
+          HANDED: ${{ needs.android.outputs.monoid }}
         run: |
           (cd cloud && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
+          sh scripts/release-put.sh --unhand "$RUNNER_TEMP/monoid" "$HANDED"
           node scripts/release-deltas.ts "$RUNNER_TEMP/monoid" --releases https://app.monoid.build/releases --deadline 150
           sh scripts/release-put.sh "$RUNNER_TEMP/monoid"
+          sh scripts/release-put.sh --drop "$HANDED"
 
   # monoid's Mac app: still.fail's stable one (as the desktop job put it) renamed, not built again: the same program,
   # Hermes, bytecode and icon, its own Info.plist, program name and updater id (apps/mbui/scripts/mac-app.sh
@@ -515,13 +581,11 @@ jobs:
   # the day before's main, found in neither, were built one after another on Mini1 and the job cut at its 10 minutes
   # every run (2026-11-19). Seconds when all are there. The release's checkout is older than this workflow, its
   # native.ts maybe one that asks the release alone: what is in either is asked here, and only what neither has is
-  # given to its `ensure --publish`. Linux's and Windows' on ci-1 (the readers' C, one job after the other: `needs:`
-  # chains station-natives-linux -> station-natives-win -> station-natives-linux-arm64), the Apple ones on Mini1. Not a
-  # shared concurrency group, which holds one running and one pending: in 44922872509 station-natives-win finished
-  # first while station-natives-linux was pending, station-natives-linux-arm64 entered the group and cancelled it.
+  # given to its `ensure --publish`. GitHub Linux builds the Linux and Windows targets.
+  # The Apple build runs on Mini1.
   station-natives-linux:
     needs: plan
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["ubuntu-24.04"]') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets
@@ -530,17 +594,10 @@ jobs:
         reader:linux-x64 pion-reader:linux-x64 launcher:linux-x64 mesh:linux-x64 runner:linux-x64 screen-linux:linux-x64 launcher:win32-x64
         mesh:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
     steps: &station-natives-linux-steps
-      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
-        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
-        with:
-          ref: '${{ needs.plan.outputs.sha }}'
-          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
-      # (the pinned Node: ci-1's from setup-linux, before anything runs node)
-      - if: runner.environment == 'self-hosted'
-        uses: ./.github/actions/setup-linux
-      - if: runner.environment != 'self-hosted'
-        uses: ./.github/actions/node
+        with: { ref: "${{ needs.plan.outputs.sha }}" }
+      - uses: ./.github/actions/node
       - &station-natives-missing
         id: missing
         name: What neither the store nor the release has
@@ -564,25 +621,21 @@ jobs:
       - if: steps.missing.outputs.list != ''
         uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc' }
-      - if: steps.missing.outputs.list != '' && runner.environment != 'self-hosted'
+      - if: steps.missing.outputs.list != ''
+        uses: actions/checkout@v5
+        with:
+          ref: "${{ github.sha }}"
+          path: .ci-workflow
+          sparse-checkout: .github/actions/setup-native-linux
+          persist-credentials: false
+      - if: steps.missing.outputs.list != ''
+        uses: ./.ci-workflow/.github/actions/setup-native-linux
+        with: { parts: "${{ steps.missing.outputs.list }}" }
+      - if: contains(steps.missing.outputs.list, 'pion-reader:')
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-toolchain
           key: pion-station-toolchain-linux-x64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
-      - name: Zig 0.16.0 (the reader's cc on GitHub's Linux)
-        if: steps.missing.outputs.list != '' && runner.environment != 'self-hosted'
-        run: |
-          d="$RUNNER_TOOL_CACHE/zig-0.16.0/zig-x86_64-linux-0.16.0"
-          if [ ! -x "$d/zig" ]; then
-            mkdir -p "$RUNNER_TOOL_CACHE/zig-0.16.0"
-            t="$RUNNER_TEMP/zig.tar.xz"
-            curl -fsSL --retry 5 --retry-all-errors --speed-limit 1024 --speed-time 20 -o "$t" https://ziglang.org/download/0.16.0/zig-x86_64-linux-0.16.0.tar.xz
-            echo "70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00  $t" | sha256sum -c --quiet
-            tar -xf "$t" -C "$RUNNER_TOOL_CACHE/zig-0.16.0"
-            rm -f "$t"
-          fi
-          [ "$("$d/zig" version)" = 0.16.0 ]
-          echo "$d" >> "$GITHUB_PATH"
       - &station-natives-ensure
         name: Build and publish what neither has
         if: steps.missing.outputs.list != ''
@@ -599,12 +652,9 @@ jobs:
 
   # The arm64 parts apart, as Windows' reader: a release's readers are in main's store only where main built the same
   # revision's, never for one with fixes picked onto it, and two cold readers in one job were more than its 5 minutes.
-  # Last of the `needs:` chain station-natives-linux -> station-natives-win -> station-natives-linux-arm64, whatever
-  # the one before came to (the chain's reason is above station-natives-linux).
   station-natives-linux-arm64:
-    needs: [plan, station-natives-win]
-    if: ${{ !cancelled() && needs.plan.result == 'success' }}
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["ubuntu-24.04"]') }}
+    needs: plan
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets
@@ -613,9 +663,8 @@ jobs:
     steps: *station-natives-linux-steps
 
   station-natives-win:
-    needs: [plan, station-natives-linux]
-    if: ${{ !cancelled() && needs.plan.result == 'success' }}
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '["ubuntu-24.04"]') }}
+    needs: plan
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets

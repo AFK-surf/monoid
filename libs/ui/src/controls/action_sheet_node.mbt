@@ -168,7 +168,7 @@ pub fn action_sheet_node(
                       max_lines: 0,
                     },
                   )
-                  .ink(By(fn() { theme().p.muted }))
+                  .ink(By(overlay_muted_ink))
                   |> ignore
                 })
               })

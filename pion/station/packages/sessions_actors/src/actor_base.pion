@@ -20,7 +20,7 @@ pub fn ActorsGen::store_k(
   args : Array[base_codec::Json],
   k : (effect::Exit[base_codec::Json]) -> Unit,
 ) -> Unit {
-  if self.gen.counters.sealed {
+  if self.gen.counters.sealed || a.phase == "closed" {
     k(effect::Exit::Interrupted)
     return
   }
@@ -34,6 +34,33 @@ pub fn ActorsGen::store_k(
       k(effect::Exit::Succeeded(v))
     }
     Ok(None) => self.rpc_k(a.key, "store." + f, args, k)
+    Err(e) => k(effect::Exit::Failed(effect::EffectError::IoError(e.message)))
+  }
+}
+
+/// Store call guarded ONLY by generation `sealed` (never blocked by `a.phase == "closed"`).
+/// Uses local `StoreDb` when attached, otherwise delegates to `rpc_direct_k`.
+pub fn ActorsGen::store_direct_k(
+  self : ActorsGen,
+  a : Actor,
+  f : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  if self.gen.counters.sealed {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  match self.local_store(f, args) {
+    Ok(Some(v)) => {
+      if self.gen.counters.sealed {
+        k(effect::Exit::Interrupted)
+        return
+      }
+      self.mirror(a)
+      k(effect::Exit::Succeeded(v))
+    }
+    Ok(None) => self.rpc_direct_k(a.key, "store." + f, args, k)
     Err(e) => k(effect::Exit::Failed(effect::EffectError::IoError(e.message)))
   }
 }

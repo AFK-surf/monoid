@@ -147,7 +147,7 @@ test("a simulator's install folder named and an app in it installed: its folders
     // (no app in it: nothing installed, the file let go of)
     assert.equal(await debug.install(join(folder, "none.ipa")), null);
   }), []);
-  assert.match(folder, /stillfail-sim-install$/);
+  assert.match(folder, /stillfail[/\\]sim-install$/);
 });
 
 /// A Windows station's data as install.ps1 leaves it, its Elevation on a clock the test moves.

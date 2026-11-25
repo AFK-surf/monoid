@@ -160,6 +160,8 @@ pub fn forget_dropped(Int32) -> Unit
 
 pub fn frame_awaiting(Int32, String) -> Unit
 
+pub fn frame_hidden() -> Bool
+
 pub fn frame_late() -> Double
 
 pub fn frames_dropped() -> Int32
@@ -855,6 +857,7 @@ pub(all) struct Host {
   mut request_frame : () -> Unit
   mut request_frame_on : (() -> Unit)?
   mut frames_paced : ((Double) -> Unit)?
+  mut frame_hidden : (() -> Bool)?
   mut wake_after : (Double) -> Unit
   mut font_metrics : (Double, Int32, Int32, FixedArray[Double]) -> Unit
   mut shape : (String, Double, Int32, Int32, FixedArray[Double]) -> Int32
@@ -1107,6 +1110,7 @@ pub(all) struct Host {
 }
 pub fn Host::clipboard_set_html(Self, String, String) -> Unit
 pub fn Host::clock_at_wall(Self, Double) -> Double
+pub fn Host::frame_hidden(Self) -> Bool
 pub fn Host::frames_paced(Self, Double) -> Unit
 pub fn Host::lines_on_pixels(Self) -> Bool
 pub fn Host::noop() -> Self

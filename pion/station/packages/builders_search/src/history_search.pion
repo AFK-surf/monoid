@@ -27,14 +27,28 @@ enum WordMatcher {
 }
 
 fn ascii_lower(s : String) -> String {
-  let raw = s.to_bytes()
+  let n = s.length()
+  let mut first_upper = -1
+  for i in 0..<n {
+    let c = s.code_unit_at(i)
+    if c >= 65 && c <= 90 {
+      first_upper = i
+      break
+    }
+  }
+  if first_upper < 0 {
+    return s
+  }
   let out = StringBuilder::new()
-  for i in 0..<raw.length() {
-    let c = raw[i].to_int() & 0xFF
+  if first_upper > 0 {
+    out.write_substring(s, 0, first_upper)
+  }
+  for i in first_upper..<n {
+    let c = s.code_unit_at(i)
     if c >= 65 && c <= 90 {
       out.write_byte((c + 32) as Byte)
     } else {
-      out.write_byte(raw[i])
+      out.write_byte(c as Byte)
     }
   }
   out.to_string()
@@ -67,27 +81,35 @@ fn make_word_matcher(word : String) -> WordMatcher {
   WordMatcher::Exact(forms)
 }
 
-fn matcher_matches(m : WordMatcher, text : String) -> Bool {
+fn matcher_matches_with_lower(m : WordMatcher, text : String, lower : Option[String]) -> (Bool, Option[String]) {
   match m {
-    WordMatcher::AlwaysTrue => true
+    WordMatcher::AlwaysTrue => (true, lower)
     WordMatcher::AsciiLower(forms) => {
-      let t = ascii_lower(text)
+      let t = match lower {
+        Some(v) => v
+        None => ascii_lower(text)
+      }
       for i in 0..<forms.length() {
         if t.contains(forms[i]) {
-          return true
+          return (true, Some(t))
         }
       }
-      false
+      (false, Some(t))
     }
     WordMatcher::Exact(forms) => {
       for i in 0..<forms.length() {
         if text.contains(forms[i]) {
-          return true
+          return (true, lower)
         }
       }
-      false
+      (false, lower)
     }
   }
+}
+
+fn matcher_matches(m : WordMatcher, text : String) -> Bool {
+  let (hit, _) = matcher_matches_with_lower(m, text, None)
+  hit
 }
 
 /// Keep the exact trailing `max_units` UTF-16 code units of `units` (matching `history.mbt:235`
@@ -752,8 +774,11 @@ fn HistoriesStepper::step_mentions_with(
         }
         let view = if ms.tail.length() == 0 { text } else { js_json::sanitize_str(ms.tail) + text }
         let remaining : Array[WordMatcher] = []
+        let mut view_lower : Option[String] = None
         for i in 0..<ms.left.length() {
-          if !matcher_matches(ms.left[i], view) {
+          let (hit, next_lower) = matcher_matches_with_lower(ms.left[i], view, view_lower)
+          view_lower = next_lower
+          if !hit {
             remaining.push(ms.left[i])
           }
         }

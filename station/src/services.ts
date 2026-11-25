@@ -9,9 +9,10 @@ import { Admin } from "./api/admin.ts";
 import { Events as EventStreams, eventsHandoverFile } from "./api/events.ts";
 import { Host } from "./api/host.ts";
 import { EgressLook } from "./api/egress.ts";
-import { jobSeen, seerOf, sessionSeen, threadSeen } from "./api/seen.ts";
+import { jobSeen, screenSeen, seerOf, sessionSeen, threadSeen } from "./api/seen.ts";
 import { Store as StationStore } from "./store/store.ts";
-import { sees } from "./store/rows.ts";
+import { type InWorkspace, sees } from "./store/rows.ts";
+import type { Lang } from "./ops/i18n.ts";
 import { buildLegacyEntryLookups } from "./store/legacy-said-builder.ts";
 import { type StationKey, loadKey } from "./cloud/key.ts";
 import { Cloud as CloudState } from "./cloud/state.ts";
@@ -266,6 +267,7 @@ export class Events extends Context.Service<Events, EventStreams>()("stillfail/E
       const readers = yield* Readers;
       const admin = yield* AdminHost;
       const screens = yield* ScreenRegistry;
+      const cloud = yield* ControlPlane;
       const { data } = yield* Paths;
       const previous = yield* Previous;
       // What was just said, made as the pages show it on this thread: over the store's own connection (what it just
@@ -274,7 +276,16 @@ export class Events extends Context.Service<Events, EventStreams>()("stillfail/E
       // and the config and names books as the station holds them, so a message said looks at no file
       const config = yield* StationConfig;
       const known = yield* Effect.acquireRelease(Effect.sync(() => new KnownNames(data, () => config.raw())), (known) => Effect.sync(() => known.close()));
-      const events = new EventStreams({
+      let events!: EventStreams;
+      const emitScreens = (langs?: Iterable<Lang>) =>
+        events.screens((lang) => {
+          const { browser, entries } = screens.listedEntries(lang);
+          return (viewer: InWorkspace) => ({
+            ...(browser ? { browser: true } : {}),
+            screens: entries.filter((e) => screenSeen(store, viewer, e.source)).map((e) => e.data),
+          });
+        }, langs);
+      events = new EventStreams({
         readers,
         said: (thread, entries, lang) => spokenIn(lang, () => entryViews(apiOf(view, config.raw(), known), thread, entries)),
         subscribe: (listener) => store.subscribe(listener),
@@ -293,13 +304,15 @@ export class Events extends Context.Service<Events, EventStreams>()("stillfail/E
         seen: (viewer, of) => ("session" in of ? sessionSeen(store, viewer, of.session) : "thread" in of ? threadSeen(store, viewer, of.thread) : jobSeen(store, viewer, of.job)),
         seer: (of) => seerOf(store, of),
         handover: { file: eventsHandoverFile(data), previous },
+        workspaces: () => cloud.state.memberships().map((m) => ({ workspace: m.workspace, home: m.home })),
+        refreshScreens: (langs) => emitScreens(langs),
       });
       // Handed over as the station stops, after the parts made on it (the agents' side has handed over its sessions,
       // the mesh let go of every stream): the last it tells is told by then.
       yield* Effect.addFinalizer(() => Effect.promise(() => events.handOver()));
       // The screens as they change, and who is on them (`screens`).
       yield* Effect.acquireRelease(
-        Effect.sync(() => screens.onChange(() => events.screens((lang) => screens.listed(lang)))),
+        Effect.sync(() => screens.onChange(() => emitScreens())),
         (off) => Effect.sync(off),
       );
       return events;

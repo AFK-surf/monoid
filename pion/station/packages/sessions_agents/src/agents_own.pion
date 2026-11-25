@@ -1,0 +1,438 @@
+// DeepSeek Harness, Cursor, ACP, and Pi process reader + crash replay
+// (1:1 port of `station/mb/src/reader/agents_own.mbt`).
+
+import "base_codec"
+import "effect"
+import "js_json"
+import "live_wire"
+import "parse_acp"
+import "parse_claude"
+import "parse_cursor"
+import "parse_dsh"
+import "parse_pi"
+import "pieces"
+import "sessions_core"
+
+enum Own {
+  Dsh(parse_dsh::Session)
+  Cursor(parse_cursor::Session)
+  Acp(parse_acp::Session)
+  Pi(parse_pi::Session)
+}
+
+fn opt_jval(v : Option[js_json::JValue]) -> Option[js_json::JValue] {
+  match v {
+    None => None
+    Some(js_json::JValue::Null) => None
+    Some(x) => Some(x)
+  }
+}
+
+fn own_of(kind : String, m : js_json::JValue) -> Option[Own] {
+  let turn = opt_jval(m.get("turn"))
+  let live = opt_jval(m.get("live"))
+  if kind == "dsh" {
+    let t = parse_dsh::Turn::of_json(live_wire::or_else(turn, js_json::JValue::Null))
+    let l = parse_dsh::Live::of_state(live_wire::or_else(live, js_json::JValue::Null))
+    Some(Own::Dsh(parse_dsh::Session::new(t, l)))
+  } else if kind == "cursor" {
+    let t = parse_cursor::Turn::of_json(live_wire::or_else(turn, js_json::JValue::Null))
+    let l = parse_cursor::Live::of_state(live_wire::or_else(live, js_json::JValue::Null))
+    Some(Own::Cursor(parse_cursor::Session::new(t, l)))
+  } else if kind == "acp" {
+    let flavor = match jval_str(m, "flavor") {
+      Some(f) => f
+      None => "grok"
+    }
+    let kept = jval_is_true(m, "kept")
+    let s = match live {
+      Some(_) => parse_acp::Session::of_state(flavor, kept, turn, live)
+      None => parse_acp::Session::new(flavor, kept)
+    }
+    Some(Own::Acp(s))
+  } else if kind == "pi" {
+    let t = parse_pi::Turn::of_json(live_wire::or_else(turn, js_json::JValue::Null))
+    let l = parse_pi::Live::of_state(live_wire::or_else(live, js_json::JValue::Null))
+    Some(Own::Pi(parse_pi::Session::new(t, l)))
+  } else {
+    None
+  }
+}
+
+fn Own::turn(self : Own) -> js_json::JValue {
+  match self {
+    Own::Dsh(s) => s.turn.json()
+    Own::Cursor(s) => s.turn.json()
+    Own::Acp(s) => s.turn.json()
+    Own::Pi(s) => s.turn.json()
+  }
+}
+
+fn Own::state(self : Own) -> js_json::JValue {
+  match self {
+    Own::Dsh(s) => s.live.state()
+    Own::Cursor(s) => s.live.state()
+    Own::Acp(s) => s.state()
+    Own::Pi(s) => s.live.state()
+  }
+}
+
+fn Own::aborting(self : Own) -> Unit {
+  match self {
+    Own::Dsh(s) => s.turn.aborting = true
+    Own::Cursor(s) => s.turn.aborting = true
+    Own::Acp(s) => s.turn.aborting = true
+    Own::Pi(s) => s.turn.aborting = true
+  }
+}
+
+fn Own::cut_short(self : Own) -> Array[js_json::JValue] {
+  match self {
+    Own::Dsh(s) => s.cut_short()
+    Own::Cursor(s) => s.cut_short()
+    Own::Acp(s) => s.cut_short()
+    Own::Pi(s) => s.cut_short()
+  }
+}
+
+fn Own::line_with(
+  self : Own,
+  v : js_json::JValue,
+  now : () -> Double,
+  fmt_num : (Double) -> String,
+) -> (Array[js_json::JValue], Bool) {
+  match self {
+    Own::Dsh(s) => {
+      let said = s.line_with(v, fmt_num)
+      (said.events, said.node)
+    }
+    Own::Cursor(s) => {
+      let said = s.line_with(v, fmt_num)
+      (said.events, said.node)
+    }
+    Own::Acp(s) => {
+      let said = s.line_with(v, now, fmt_num)
+      (said.events, said.node)
+    }
+    Own::Pi(s) => {
+      let said = s.line_with(v, fmt_num)
+      (said.events, said.node)
+    }
+  }
+}
+
+fn with_turn(e : js_json::JValue, turn : js_json::JValue) -> js_json::JValue {
+  match e {
+    js_json::JValue::Obj(fields) => {
+      if live_wire::is_str(e.get("type"), "turnStarted") ||
+      live_wire::is_str(e.get("type"), "turnEnded") {
+        let next : Array[(Array[Int], js_json::JValue)] = []
+        for i in 0..<fields.length() {
+          next.push(fields[i])
+        }
+        next.push((js_json::utf16_units("turn"), turn))
+        js_json::JValue::Obj(next)
+      } else {
+        e
+      }
+    }
+    _ => e
+  }
+}
+
+fn AgentsState::own_heard(
+  self : AgentsState,
+  h : Hosted,
+  own : Own,
+  lines : Array[(Bytes, Int64)],
+) -> Unit {
+  let before = js_json::stringify_with_num(own.turn(), self.fmt_num)
+  let events : Array[js_json::JValue] = []
+  let node : Array[(Bytes, Int64, Int64)] = []
+  let now_fn = fn() -> Double { self.now() }
+  for i in 0..<lines.length() {
+    let (raw_line, line_end) = lines[i]
+    let line = strip_cr_bytes(raw_line)
+    let from = line_end - (raw_line.length() + 1).to_int64()
+    let v = match js_json::parse(decode_utf8_lossy_bytes(line)) {
+      Ok(parsed) => parsed
+      Err(_) => continue
+    }
+    let (said, to_node) = own.line_with(v, now_fn, self.fmt_num)
+    if to_node {
+      node.push((line, from, line_end))
+    }
+    if said.length() > 0 {
+      let turn = own.turn()
+      for j in 0..<said.length() {
+        events.push(with_turn(said[j], turn))
+      }
+    }
+  }
+  let (_, end) = lines[lines.length() - 1]
+  let turn = own.turn()
+  let same = js_json::stringify_with_num(turn, self.fmt_num) == before && node.length() == 0
+  self.deliver_heard(h, end, turn, same, events, node)
+}
+
+fn AgentsState::own_now(
+  self : AgentsState,
+  h : Hosted,
+  own : Own,
+  events : Array[js_json::JValue],
+) -> Unit {
+  if events.length() == 0 || h.left {
+    return
+  }
+  let all = h.pending
+  h.pending = []
+  h.pending_units = 0
+  merge_into(all, events)
+  self.tell(h, h.told, own.turn(), all, [])
+}
+
+fn AgentsState::own_begin(self : AgentsState, h : Hosted, own : Own) -> Unit {
+  let events = match own {
+    Own::Dsh(s) => s.prompted()
+    Own::Cursor(s) => s.prompted()
+    Own::Pi(s) => s.prompted()
+    Own::Acp(_) => []
+  }
+  self.own_now(h, own, events)
+}
+
+fn AgentsState::acp_told(self : AgentsState, h : Hosted, op : String, m : js_json::JValue) -> Unit {
+  let (s, own) = match h.own {
+    Some(Own::Acp(sess)) => (sess, Own::Acp(sess))
+    _ => return
+  }
+  let text_u16 = fn(k : String) -> Array[Int] {
+    match jval_str_u16(m, k) {
+      Some(u) => u
+      None => []
+    }
+  }
+  if op == "acpSession" {
+    s.session = text_u16("id")
+  } else if op == "acpOpened" {
+    s.opened(jval_is_true(m, "resumed"))
+  } else if op == "acpPrompt" {
+    if jval_is_true(m, "resend") {
+      self.own_now(h, own, s.resent(text_u16("owner")))
+    } else {
+      self.own_now(
+        h,
+        own,
+        s.prompted(text_u16("owner"), text_u16("text"), Some(fn() -> Double { self.now() })),
+      )
+    }
+  } else if op == "acpInject" {
+    self.own_now(h, own, s.injected(text_u16("id"), jval_is_true(m, "takeOver"), text_u16("text")))
+  }
+}
+
+/// Chunk size for crash replay reads (`agents_own.mbt:215`).
+let REPLAY_CHUNK : Int64 = 1048576.to_int64()
+
+fn decode_hex_bytes(hex : String) -> Bytes {
+  let n = hex.length()
+  if n == 0 || (n & 1) != 0 {
+    return Bytes::new(0)
+  }
+  let out = Bytes::new(n / 2)
+  let mut i = 0
+  while i < n {
+    let hi = match base_codec::hex_digit(hex.code_unit_at(i)) {
+      Some(v) => v
+      None => return Bytes::new(0)
+    }
+    let lo = match base_codec::hex_digit(hex.code_unit_at(i + 1)) {
+      Some(v) => v
+      None => return Bytes::new(0)
+    }
+    out[i / 2] = ((hi << 4) | lo).to_byte()
+    i = i + 2
+  }
+  out
+}
+
+fn extract_hex_bytes(json : base_codec::Json) -> Bytes {
+  match json {
+    base_codec::Json::Str(hex) => decode_hex_bytes(hex)
+    _ => {
+      match sessions_core::jget(json, "value") {
+        Some(base_codec::Json::Str(hex)) => decode_hex_bytes(hex)
+        _ => Bytes::new(0)
+      }
+    }
+  }
+}
+
+struct ReplayLoopState {
+  mut pieces : pieces::Pieces
+  mut pos : Int64
+}
+
+fn AgentsState::own_replay_k(
+  self : AgentsState,
+  id : Int,
+  kind : String,
+  path : String,
+  at : Int64,
+  m : js_json::JValue,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let now_fn = fn() -> Double { self.now() }
+  let claude_turn = parse_claude::Turn::new()
+  let claude_live = parse_claude::Live::new()
+  let dsh = parse_dsh::Replay::new()
+  let cursor = parse_cursor::Replay::new()
+  let pi = parse_pi::Replay::new()
+  let flavor = match jval_str(m, "flavor") {
+    Some(f) => f
+    None => "grok"
+  }
+  let from_id = match jval_str_u16(m, "resume") {
+    Some(r) => r
+    None => []
+  }
+  let acp = parse_acp::Replay::new(flavor, jval_is_true(m, "kept"), from_id)
+  let fmt_num = self.fmt_num
+  let feed = fn(line : Bytes) -> Unit {
+    let v = match js_json::parse(decode_utf8_lossy_bytes(strip_cr_bytes(line))) {
+      Ok(parsed) => parsed
+      Err(_) => return
+    }
+    if kind == "claude" {
+      let _ = claude_live.feed_with(v, now_fn, fmt_num)
+      parse_claude::on_frame_with(
+        v,
+        claude_turn,
+        fn(_e : js_json::JValue) -> Unit { () },
+        fn() -> Unit { () },
+        now_fn,
+        fn(_msg : String) -> Unit { () },
+        fmt_num,
+      )
+    } else if kind == "dsh" {
+      dsh.line_with(v, fmt_num)
+    } else if kind == "cursor" {
+      cursor.line_with(v, fmt_num)
+    } else if kind == "acp" {
+      acp.line_with(v, fmt_num)
+    } else if kind == "pi" {
+      pi.line_with(v, fmt_num)
+    }
+  }
+
+  let st = ReplayLoopState::{ pieces: pieces::Pieces::new(), pos: 0.to_int64() }
+  let host = self.host
+  sessions_core::iter_sync_k(
+    fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      if st.pos >= at {
+        sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+        return
+      }
+      let rem = at - st.pos
+      let length = if rem < REPLAY_CHUNK { rem } else { REPLAY_CHUNK }
+      host.shell_k(
+        sessions_core::ShellOwner::Process,
+        "fs.bytes",
+        base_codec::json_obj([
+          ("path", sessions_core::jstr(path)),
+          ("from", base_codec::json_int64(st.pos)),
+          ("length", base_codec::json_int64(length)),
+        ]),
+        None,
+        None,
+        None,
+        fn(read_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+          match read_ex {
+            effect::Exit::Succeeded((json, _)) => {
+              let bytes = extract_hex_bytes(json)
+              if bytes.length() == 0 {
+                sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                return
+              }
+              let mut skip = 0
+              if (bytes[0].to_int() & 0xFF) == 0 {
+                while skip < bytes.length() && (bytes[skip].to_int() & 0xFF) == 0 {
+                  skip = skip + 1
+                }
+                st.pieces = pieces::Pieces::new()
+              }
+              let chunk = if skip == 0 {
+                bytes
+              } else {
+                copy_bytes_slice(bytes, skip, bytes.length() - skip)
+              }
+              let lines = st.pieces.lines(chunk)
+              for i in 0..<lines.length() {
+                feed(lines[i])
+              }
+              st.pos = st.pos + bytes.length().to_int64()
+              effect::sleep_k(0, fn(sl_ex : effect::Exit[Unit]) -> Unit {
+                match sl_ex {
+                  effect::Exit::Succeeded(_) => sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                  effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                }
+              })
+            }
+            effect::Exit::Failed(_) => {
+              sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+            }
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        },
+      )
+    },
+    fn(loop_ex : effect::Exit[Unit]) -> Unit {
+      // Never emit a fake partial `ownReplayed` success frame on interruption (`Agents::close()`).
+      match loop_ex {
+        effect::Exit::Interrupted => {
+          k(effect::Exit::Interrupted)
+          return
+        }
+        _ => ()
+      }
+      let fields : Array[(String, js_json::JValue)] = [
+        ("ownReplayed", js_json::JValue::Num(id.to_double())),
+      ]
+      if kind == "claude" {
+        fields.push(("turn", turn_json_js(claude_turn)))
+        fields.push(("live", claude_live.state()))
+      } else if kind == "dsh" {
+        fields.push(("session", live_wire::opt_str_json_u16(dsh.session)))
+        fields.push(("turn", dsh.turn.json()))
+        fields.push(("live", dsh.live.state()))
+      } else if kind == "cursor" {
+        fields.push(("session", live_wire::opt_str_json_u16(cursor.session)))
+        fields.push(("turn", cursor.turn.json()))
+        fields.push(("live", cursor.live.state()))
+      } else if kind == "pi" {
+        fields.push(("session", js_json::JValue::Null))
+        fields.push(("turn", pi.session.turn.json()))
+        fields.push(("live", pi.session.live.state()))
+      } else if kind == "acp" {
+        let usages = acp.finish_with(now_fn, fmt_num)
+        let s = acp.session()
+        fields.push(("session", live_wire::jstr_u16(s.session)))
+        fields.push(("turn", s.turn.json()))
+        fields.push(("live", s.state()))
+        fields.push(
+          (
+            "opened",
+            match acp.opened() {
+              Some(o) => o
+              None => js_json::JValue::Null
+            },
+          ),
+        )
+        fields.push(("usages", js_json::JValue::Arr(usages)))
+      }
+      host.say(js_json::stringify_with_num(live_wire::obj(fields), fmt_num))
+      k(effect::Exit::Succeeded(()))
+    },
+  )
+}

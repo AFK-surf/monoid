@@ -14,9 +14,10 @@ pub fn overlay_solid_edge() -> (Double, Int64) {
 }
 
 ///|
-/// Decorates an existing modal dialog container node `v` in place (zero wrapper nodes) with symmetric dense
-/// liquid dialog glass (`tint_light=0xFDFCFDD1L` for WCAG >= 4.5:1 muted text contrast in Light mode),
-/// outside-only `glass_overlay_shadow`, and `MBUI_GLASS=solid` `panel_edge()` hairline fallback.
+/// Decorates an existing modal dialog container node `v` in place (zero wrapper nodes) with the unified liquid dialog
+/// glass (`@glass.liquid_dialog_glass`: 50% tint, `blur=14`, the same in light and dark; its secondary words keep
+/// >= 4.5:1 by `dialog_lead`'s dark ink), outside-only `glass_overlay_shadow`, and `MBUI_GLASS=solid` `panel_edge()`
+/// hairline fallback.
 pub fn dialog_surface_decorate(
   v : @view.View,
   edge_w? : Double = 1.0,
@@ -26,11 +27,31 @@ pub fn dialog_surface_decorate(
   @glass.liquid_dialog_surface_decorate(
     v,
     solid=panel_ground,
-    tint_light=0xFDFCFDD1L,
     shadow=glass_overlay_shadow,
     solid_edge=fn() { (edge_w, panel_edge()) },
     clips~,
   )
+}
+
+///|
+/// Vertical margin for a centred panel of width `pw`: `dialog_room` (24pt top + 24pt bottom), or
+/// `2 * (ky + kh + 4 - clear_top)` on Windows when the centred panel horizontally reaches `[kx - 4, kx + kw]`,
+/// keeping its top close button clear of `- □ ×` while keeping symmetric bottom room and full height for narrow dialogs.
+fn panel_centred_room(v : @view.View, pw : Double) -> Double {
+  if !@ui.window_keys_own_now() {
+    return dialog_room
+  }
+  match v.tree.kept_away_now() {
+    Some((kx, ky, _, kh)) => {
+      let panel_right = (v.window_w() + pw) / 2.0
+      if panel_right <= kx - 4.0 {
+        return dialog_room
+      }
+      let (clear_top, _, _, _) = v.clear()
+      dmax(dialog_room, dmax(0.0, ky + kh + 4.0 - clear_top) * 2.0)
+    }
+    None => dialog_room
+  }
 }
 
 ///|
@@ -84,7 +105,7 @@ fn panel_centred_node(
       d
       .width(By(fn() { Some(w()) }))
       // (no taller than the window leaves it, dialog_room: what it holds scrolls in itself past that)
-      .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - dialog_room)) }))
+      .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - panel_centred_room(layer, w()))) }))
       // (dialog_box: 24 over its title, 24 in at its sides; each part out to them, the padding inside it)
       .padding(Is(if top_share > 0.0 { (top_pad, top_pad, top_pad, top_pad) } else { (dialog_pad, dialog_pad, dialog_pad, 0.0) }))
       .radius(Is(dialog_r))

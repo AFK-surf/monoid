@@ -29,6 +29,7 @@ import type { Connection, Stream } from "./native.ts";
 import { answerScreen } from "./screens.ts";
 import { pinBrought } from "./moved-pin.ts";
 import type { ScreenHub } from "../screens/hub.ts";
+import type { ScreenSource } from "../screens/source.ts";
 import type { MemberAsk } from "../parts.ts";
 import { compressed } from "./compress.ts";
 import { Traces, parseParent, route } from "./traces.ts";
@@ -740,6 +741,8 @@ export type Members = {
   streams?: (head: any) => ((ask: MemberAsk) => Promise<void>) | undefined;
   /// The screens members see and drive; none: no view is answered.
   screens?: ScreenHub;
+  /// Whether `viewer` may see `source` (api/seen.ts `screenSeen`); omitted in unit tests without workspaces.
+  canSeeScreen?: (viewer: Admitted["viewer"], source: ScreenSource) => boolean;
   /// The mesh's spans, when traces are on.
   traces?: Traces;
   /// Which member credentials the control plane signs (still.fail cloud's when not said).
@@ -1001,7 +1004,7 @@ async function answerRequest(m: Members, stream: Stream, reader: Reader, head: a
   // A view of a screen (mesh/screens.ts): frames both ways for as long as it lasts. A read-only member views only.
   if (head.screen !== null && typeof head.screen === "object" && !Array.isArray(head.screen)) {
     if (m.screens === undefined) return answer(404, { error: "no screens on this station" });
-    return answerScreen(m.screens, stream, reader.carry, head, viewer, m.up, undefined, conn);
+    return answerScreen(m.screens, stream, reader.carry, head, viewer, m.up, undefined, conn, m.canSeeScreen);
   }
   // A preview page's WebSocket (`"socket": true`): no body to wait for, the stream carries its messages both ways.
   if (head.socket === true) {

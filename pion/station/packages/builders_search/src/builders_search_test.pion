@@ -477,3 +477,28 @@ test "HistoriesStepper P11 interleaved A/B cancel + tail overlap + exact-once te
     )
   }
 }
+
+test "ascii_lower and matcher_matches_with_lower reuse lowered chunk across words" {
+  expect_bs(ascii_lower("") == "", "empty")
+  expect_bs(ascii_lower("already lower 123 中文 🚀") == "already lower 123 中文 🚀", "no upper fast path")
+  expect_bs(ascii_lower("HeLLo WoRLD! 中文") == "hello world! 中文", "mixed ascii upper")
+
+  let chunk = "Hello WORLD from Pion Station 中文 🚀"
+  let m1 = make_word_matcher("hello")
+  let m2 = make_word_matcher("station")
+  let m3 = make_word_matcher("missing")
+  let m4 = make_word_matcher("中文")
+  let mut cached : Option[String] = None
+  let (h1, c1) = matcher_matches_with_lower(m1, chunk, cached)
+  cached = c1
+  expect_bs(h1, "m1 matched")
+  expect_bs(match cached { Some(v) => v == "hello world from pion station 中文 🚀"; None => false }, "lower cached once")
+  let (h2, c2) = matcher_matches_with_lower(m2, chunk, cached)
+  cached = c2
+  expect_bs(h2, "m2 matched via cached lower")
+  let (h3, c3) = matcher_matches_with_lower(m3, chunk, cached)
+  cached = c3
+  expect_bs(!h3, "m3 missed")
+  let (h4, _) = matcher_matches_with_lower(m4, chunk, cached)
+  expect_bs(h4, "m4 exact non-ascii matched")
+}

@@ -33,11 +33,24 @@ let mouse_pair_end : @ui.Style = @ui.css("justify=JEnd")
 let screen_top_end : @ui.Style = @ui.css("w=Full p=S3 align=AEnd")
 
 ///|
+let screen_full_top_pad : Double = 3.0
+
+///|
 /// One of those two (`style`) where it stands in the window's corner: its 12 clear of a corner too square for its
 /// round buttons (@sf.window_corner_clear, a Mac's 16), and past what the system has at the sides turned sideways.
-fn screen_corner_end(style : @ui.Style) -> @ui.Style {
+fn screen_corner_end(style : @ui.Style, top? : Bool = false) -> @ui.Style {
   let in_ = @sf.window_corner_clear(@ui.Space::S3.px())
-  style.then(@ui.style(p=@sf.room_of(in_))).then(@sf.sides_clear(in_))
+  let base = style.then(@ui.style(p=@sf.room_of(in_))).then(@sf.sides_clear(in_))
+  if top && @ui.window_keys_own_now() {
+    base.then(
+      @ui.style(
+        pt=@sf.room_of(screen_full_top_pad),
+        pr=@sf.room_of(@sf.window_end_in(in_, roots=@ui.tree_corner_roots_now())),
+      ),
+    )
+  } else {
+    base
+  }
 }
 
 ///|
@@ -85,7 +98,7 @@ let screen_bar_in_tabs : @ui.Style = @ui.css("row w=Full h=S11 pl=S10 pr=S6 gap=
 /// 1 under it, so its 32 keys stand 6 under its top as a page's bar's do: @sf.bar_keys_top), on the page's ground; how
 /// far in its keys stand from its ends is the pane's (screen_tab_bar).
 // kept across runs: a value (no field of it changes)
-let screen_pane_bar : @ui.Style = @ui.style(row=true, w=Full, h=@sf.wide_bar_h_size, pb=SPx, gap=S1, align=ACenter)
+let screen_pane_bar : @ui.Style = @ui.css("row w=Full gap=S1 align=ACenter")
 
 ///|
 /// With keyboard and mouse in a chat's side panel (its tab bar above already names the tab, closes it and pops it out):
@@ -574,7 +587,7 @@ let debug_stage_wide_body : @ui.Style = @ui.style(w=@sf.grow, h=@sf.grow, px=S6,
 ///|
 /// Simulator workbench top bar wrapper (45pt tall: 44pt content row over a 1px bottom hairline).
 // kept across runs: a value (no field of it changes)
-let sim_bar_wrap : @ui.Style = @ui.style(w=Full, h=@sf.wide_bar_h_size)
+let sim_bar_wrap : @ui.Style = @ui.css("w=Full")
 
 ///|
 /// Simulator top bar content row: three-zone horizontal row (left title/meta, center glass capsule, right actions).

@@ -268,7 +268,7 @@ fn confirm_panel(
     d.box(fn(t) {
       t
       .words(By(words), look=toast_words_look(Meta, L6, 400, true))
-      .ink(By(fn() { theme().color(Muted) }))
+      .ink(By(overlay_muted_ink))
       .alpha(By(words_in))
       |> ignore
     })

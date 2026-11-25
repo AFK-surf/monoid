@@ -1,4 +1,5 @@
 import { modelSpeed, type ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
+import { PROGRESS_DEFAULT, type ProgressChoice, progressOf } from "../../../client/core-ts/src/progress-prefs.ts";
 import { latest as latestNote } from "../agents/migrations.ts";
 // All durable station state, in one SQLite file (the Rust station's store.rs ported: the same file, schema, SQL and rules, so
 // the Rust station and this one open each other's data). One read-write connection, used synchronously; every method is
@@ -1386,6 +1387,41 @@ export class Store {
   /// The models `sub` starred in workspace `ws`, kept as `stars` (JSON).
   putModelStars(ws: string, sub: string, stars: string): void {
     this.#run("INSERT INTO model_stars (ws, sub, stars) VALUES (?1, ?2, ?3) ON CONFLICT (ws, sub) DO UPDATE SET stars = excluded.stars", ws, sub, stars);
+  }
+
+  /// How `sub`'s agents in workspace `ws` are asked for progress as kept (api/routes/progress.ts), as JSON; null before any.
+  progressPrefs(ws: string, sub: string): string | null {
+    const row = this.#one("SELECT json FROM progress_prefs WHERE ws = ?1 AND sub = ?2", ws, sub);
+    return row === undefined || row === null ? null : String(row.json);
+  }
+
+  putProgressPrefs(ws: string, sub: string, email: string, json: string): void {
+    this.#run(
+      "INSERT INTO progress_prefs (ws, sub, email, json) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (ws, sub) DO UPDATE SET email = excluded.email, json = excluded.json",
+      ws, sub, email.trim().toLowerCase(), json,
+    );
+  }
+
+  /// How session `key` is asked for progress: as the person who started it set it (by their sub where it is recorded,
+  /// else by the one person of that email in its workspace: `email`, as its platform says it, else as recorded), else the
+  /// default.
+  progressOf(key: string, home: string | null, email: string | null = null): ProgressChoice {
+    const row = this.#one("SELECT ws, created_by FROM sessions WHERE key = ?1", key);
+    if (row === undefined || row === null) return PROGRESS_DEFAULT;
+    const ws = typeof row.ws === "string" ? row.ws : home ?? "";
+    const sub = this.sessionCreatorSub(key);
+    let json = sub === null ? null : this.progressPrefs(ws, sub);
+    const of = (email ?? (typeof row.created_by === "string" ? row.created_by : "")).trim().toLowerCase();
+    if (sub === null && of !== "") {
+      const found = this.#all("SELECT json FROM progress_prefs WHERE ws = ?1 AND email = ?2 LIMIT 2", ws, of);
+      if (found.length === 1) json = String(found[0]!.json);
+    }
+    if (json === null) return PROGRESS_DEFAULT;
+    try {
+      return progressOf(JSON.parse(json));
+    } catch {
+      return PROGRESS_DEFAULT;
+    }
   }
 
   /// The default project preferences per preset for `sub` in workspace `ws` (api/routes/preset-projects.ts), as JSON; null before any.

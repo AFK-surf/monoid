@@ -93,7 +93,9 @@ fn make_native_host() -> @hostapi.Host {
   h.frame_late = fn() { frame_late() }
   h.platform = fn() { said_once(platform_said, fn() { platform() }) }
   h.request_frame = fn() { request_frame() }
+  h.request_frame_on = Some(fn() { if windows(6, 0, "") == 0 { request_frame() } })
   h.frames_paced = Some(fn(hz) { frames_paced(hz) })
+  h.frame_hidden = Some(fn() { windows(7, 0, "") != 0 })
   h.wake_after = fn(ms) { wake_after(ms) }
   h.font_metrics = fn(size, weight, style, out) { font_metrics(size, weight, style, out) }
   h.shape = fn(text, size, weight, style, out) { shape(text, size, weight, style, out) }

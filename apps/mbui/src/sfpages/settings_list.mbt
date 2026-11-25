@@ -206,7 +206,9 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
     heading: "",
     rows: [
       settings_row(AutoDecisions, "decisions", "check", @sf.t("web-pages.automaticDecisions.title"), words=settings_words_decisions),
+      settings_row(Progress, "progress", "wait", @sf.t("web-pages.progress.title"), words=settings_words_progress),
       settings_row(Memories, "memory", "brain", @sf.t("android-settings.memory"), words=settings_words_memory),
+      settings_row(McpServers, "mcp", "plug", @sf.t("web-pages.stations.mcp"), words="MCP mcp server tool 服务 工具"),
       settings_row(Archiving, "archiving", "archive", @sf.t("web-pages.archiving.title"), words=settings_words_archiving),
       settings_row(Backup, "backup", "disk", @sf.t("web-pages.backup.title"), words=settings_words_backup),
       settings_row(Usage, "usage", "chart", @sf.t("android-settings.home.usage"), words=settings_words_usage),
@@ -792,6 +794,9 @@ let settings_words_decisions : String = "自动审批 自动决定 完结判断 
 
 ///|
 let settings_words_memory : String = "技能 提示词 规则 知识库 memory skill MEMORY.md AGENTS.md prompt"
+
+///|
+let settings_words_progress : String = "进度 汇报 提醒 间隔 强度 等待 progress report remind interval"
 
 ///|
 let settings_words_archiving : String = "自动归档 归档会话 闲置 archive idle"

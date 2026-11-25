@@ -227,9 +227,11 @@ test("a tab's login form, for a person driving it: the field in focus said with 
     await view.next();
     const heard: (LoginField | null)[] = [];
     const unwatch = view.watchLogin!((l) => heard.push(l));
-    await until(async () => (await evaluate(`typeof window.${LOGIN_BINDING}`)) === "function", "the binding is there");
-    await evaluate("p.focus(); true");
-    await until(() => heard.at(-1)?.field === "password", "the password field in focus is said");
+    assert.equal(await evaluate(`typeof window.${LOGIN_BINDING}`), "undefined", "login binding stays out of the page main world");
+    await until(async () => {
+      await evaluate("p.focus(); true");
+      return heard.at(-1)?.field === "password";
+    }, "the password field in focus is said");
     assert.deepEqual(heard.at(-1), { host: "127.0.0.1", field: "password" }, "with the tab's host");
     await evaluate("q.focus(); true");
     await until(() => heard.at(-1) === null, "a field that is no login's: none");

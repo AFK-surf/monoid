@@ -457,6 +457,10 @@ let fixture_open : FixtureOpen = { sheet: "", desk: "" }
 let fx_connect_step : Ref[String] = Ref("team")
 
 ///|
+/// How the person's agents are asked for progress (minutes, strength), as `progress.set` last said.
+let fx_progress : Ref[(Double, String)] = Ref((10.0, "require"))
+
+///|
 /// What is typed on a new group connect's server step (its fields by name), as the page sends it; and whether one was
 /// added (k1 is it then).
 // kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
@@ -552,6 +556,7 @@ let fx_connect_auto : Map[String, Bool] = Map([])
 ///|
 /// The made-up settings as a run starts (reset): none changed, no sheet or scroll to put up.
 fn fixture_reset() -> Unit {
+  fx_progress.val = (10.0, "require")
   fx.names.clear()
   fx_connect_stations.clear()
   fx_connect_auto.clear()
@@ -2887,6 +2892,47 @@ fn fx_station(address : String) -> Json {
               obj([("key", str("NO_PROXY")), ("secret", Json::boolean(false)), ("value", str("localhost,.internal"))]),
             ],
           ),
+          (
+            "mcpServers",
+            [
+              obj([
+                ("name", str("github")),
+                ("transport", str("stdio")),
+                ("enabled", Json::boolean(true)),
+                ("shared", Json::boolean(true)),
+                ("command", str("npx")),
+                ("args", Json::array([str("-y"), str("@modelcontextprotocol/server-github")])),
+                ("env", obj([("GITHUB_TOKEN", str("ghp_1…9xyz"))])),
+                ("status", str("ready")),
+                ("toolCount", Json::number(12.0)),
+                ("tools", Json::array([str("create_issue"), str("search_code")])),
+                ("error", Json::null()),
+              ]),
+              obj([
+                ("name", str("docs")),
+                ("transport", str("http")),
+                ("enabled", Json::boolean(true)),
+                ("shared", Json::boolean(false)),
+                ("url", str("https://docs.example.com/mcp")),
+                ("headers", obj([("Authorization", str("Beare…9xyz"))])),
+                ("status", str("failed")),
+                ("toolCount", Json::number(0.0)),
+                ("tools", Json::array([])),
+                ("error", str("HTTP 502")),
+              ]),
+              obj([
+                ("name", str("legacy")),
+                ("transport", str("sse")),
+                ("enabled", Json::boolean(false)),
+                ("shared", Json::boolean(false)),
+                ("url", str("https://legacy.example.com/sse")),
+                ("status", str("disabled")),
+                ("toolCount", Json::number(0.0)),
+                ("tools", Json::array([])),
+                ("error", Json::null()),
+              ]),
+            ],
+          ),
           ("search", obj([("files", str("spotlight")), ("personal", Json::boolean(false))])),
           ("context", obj([("afreshWhenCold", Json::boolean(fx.afresh)), ("afreshAbove", Json::number(fx.afresh_above))])),
           ("diagnostics", obj([("logs", Json::boolean(fx.logs))])),
@@ -3892,6 +3938,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           // (Willow reviews, Maple is offline: nothing to say of the hint)
           ("hintNoReview", Json::boolean(false)),
           ("hintReviewText", str("")),
+          ("progressMinutes", Json::number(fx_progress.val.0)),
+          ("progressStrength", str(fx_progress.val.1)),
         ]),
       )
     // (as the core answers it: every tab, the one asked (`part`, the first where none or another is said) with its
@@ -4421,6 +4469,21 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
   // (验证 on a device whose person's lock was begun anew elsewhere: refused, as the core did before it offered none)
   if name == "lock.confirmSigner" && fx.lock_case == "replaced-was" {
     return Some(Err(obj([("code", str("personal_outside")), ("message", str("此设备尚未获批：先在这台设备上发送批准请求，输入你的受信任设备上显示的安全码"))])))
+  }
+  if name == "progress.set" {
+    let (minutes, strength) = fx_progress.val
+    fx_progress.val = (
+      match number(p, "minutes") {
+        0.0 => minutes
+        n => n
+      },
+      match text(p, "strength") {
+        "" => strength
+        s => s
+      },
+    )
+    fx_changed()
+    return Some(Ok(obj([])))
   }
   match rigs_fixture_call(name, p) {
     Some(r) => return Some(r)

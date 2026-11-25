@@ -17,24 +17,24 @@ fn named_at(t : @ui.Tester, label : String) -> (Double, Double, Double, Double)?
 let window_key_names : Array[String] = ["最小化", "最大化", "还原", "关闭窗口"]
 
 ///|
-/// Whether a key of a bar in the window's top row (a named button 32 across, its first 45 high; not a bar itself, a
-/// button across it), other than the window's own buttons, reaches past `x`: under them, or past the outer edge of the
-/// pill holding them.
+/// Whether any non-owner visible control, text, icon, or narrow pill overlaps the window's own buttons
+/// (or violates window-keys clearance/alignment via framework `Tester::window_keys_faults`).
 fn past_rule(t : @ui.Tester, x : Double) -> String? {
-  for s in t.semantics() {
-    let (sx, sy, sw, sh) = s.rect
-    if !s.hidden &&
-      s.label != "" &&
-      !window_key_names.contains(s.label) &&
-      (s.role is (Button | Link | Tab)) &&
-      sw <= 32.0 &&
-      sy >= 0.0 &&
-      sy + sh <= 60.0 &&
-      sx + sw > x {
-      return Some(s.label)
-    }
+  ignore(x)
+  let faults = t.window_keys_faults()
+  if faults.is_empty() {
+    None
+  } else {
+    Some(faults.join("\n"))
   }
-  None
+}
+
+///|
+fn assert_no_wk_faults(t : @ui.Tester, at : String) -> Unit raise {
+  let faults = t.window_keys_faults()
+  if !faults.is_empty() {
+    fail("\{at}: \{faults.length()} window_keys_faults:\n" + faults.join("\n"))
+  }
 }
 
 ///|
@@ -655,4 +655,209 @@ test "a Windows window in Light mode: window_keys_node uses adaptive glass and a
       })
     assert_eq((has_adaptive_glass, has_adaptive_icon, window_keys_faults(t)), (true, true, []), msg=mode)
   }
+}
+
+///|
+#callsite(autofill(loc))
+fn wk_mode_tester(
+  mode : String,
+  w~ : Double,
+  h~ : Double,
+  window_inset? : Bool = true,
+  loc~ : SourceLoc,
+) -> @ui.Tester {
+  let src : Ref[Source?] = Ref(None)
+  let made = fn() {
+    match src.val {
+      Some(s) => s
+      None => {
+        let s = fixture_app(mode)
+        src.val = Some(s)
+        s
+      }
+    }
+  }
+  @ui.Tester::new(
+    fn(c) { view(c, made()) },
+    tree=fn(root) { app_tree(made())(root) },
+    w~,
+    h~,
+    platform=3,
+    window_corner=8.0,
+    window_inset~,
+    loc~,
+  )
+}
+
+///|
+test "window_keys_faults: place-remote (desktop screen, simulator, terminal) on Large and Medium Windows" {
+  for win in [("Large", 1280.0, 800.0), ("Medium-600", 600.0, 760.0), ("Medium-800", 800.0, 800.0)] {
+    let t = wk_mode_tester("place-remote", w=win.1, h=win.2)
+    t.run_for(@ui.move_most_ms)
+    if @sfdesk.wide.tape.get() && !(@sfdesk.wide.tape_at.get() is Page) {
+      page_over(t, win.1)
+    }
+    assert_no_wk_faults(t, "place-remote desktop \{win.0}")
+    // Switch to simulator tab ("iPhone 17 Pro") and assert zero faults (no silent skip)
+    if @sfdesk.wide.tape.get() {
+      @sfdesk.wide.tape_ask.set(Some(Side))
+      t.run_for(@ui.move_most_ms)
+    }
+    t.click(Link, label="iPhone 17 Pro")
+    t.run_for(@ui.move_most_ms)
+    if @sfdesk.wide.tape.get() && !(@sfdesk.wide.tape_at.get() is Page) {
+      page_over(t, win.1)
+    }
+    assert_no_wk_faults(t, "place-remote simulator \{win.0}")
+    // Open a terminal tab in place-remote via Willow's "+" menu -> "新建终端"
+    // (remote screens intentionally catch Ctrl+T after #8708 once focused).
+    if @sfdesk.wide.tape.get() {
+      @sfdesk.wide.tape_ask.set(Some(Side))
+      t.run_for(@ui.move_most_ms)
+    }
+    t.click(Button, label="在 Willow 新建视图")
+    t.run_for(@ui.move_most_ms)
+    t.tap_text("新建终端")
+    t.run_for(@ui.move_most_ms)
+    if @sfdesk.wide.tape.get() && !(@sfdesk.wide.tape_at.get() is Page) {
+      page_over(t, win.1)
+    }
+    assert_true(named_at(t, "粘贴") is Some(_), msg="place-remote 新建终端 did not open Terminal tab (\{win.0})")
+    assert_no_wk_faults(t, "place-remote terminal \{win.0}")
+  }
+}
+
+///|
+test "window_keys_faults: files-tree on Large and Medium Windows" {
+  for win in [("Large", 1280.0, 800.0), ("Medium", 600.0, 760.0)] {
+    let t = wk_mode_tester("files-tree", w=win.1, h=win.2)
+    t.run_for(@ui.move_most_ms)
+    if @sfdesk.wide.tape.get() && !(@sfdesk.wide.tape_at.get() is Page) {
+      page_over(t, win.1)
+    }
+    assert_no_wk_faults(t, "files-tree \{win.0}")
+  }
+}
+
+///|
+test "window_keys_faults: board and board_beside on Large Windows" {
+  let t = wk_mode_tester("board", w=1280.0, h=800.0)
+  t.run_for(@ui.move_most_ms)
+  assert_no_wk_faults(t, "board Large")
+  let t_side = wk_mode_tester("board-side", w=1280.0, h=800.0)
+  t_side.run_for(@ui.move_most_ms)
+  assert_no_wk_faults(t_side, "board-side Large")
+}
+
+///|
+test "window_keys_faults: Large narrow pane (880x800) settings sub-page aligns back bar and clears window keys" {
+  let t = wk_mode_tester("settings-completion", w=880.0, h=800.0)
+  t.run_for(@ui.move_most_ms)
+  // Verify the pushed settings sub-page rendered in Narrow look with its back bar and zero window-keys faults
+  assert_true(t.find("归档建议") is Some(_))
+  assert_no_wk_faults(t, "880x800 settings-completion")
+}
+
+///|
+test "window_keys_faults: Medium place_bare and Medium full-window Screen, Terminal, DriveRead, DrivePlay" {
+  for mode in ["settings-connects", "settings-usage", "screen-live", "screen-full", "terminal", "reader", "player-video"] {
+    let t = wk_mode_tester(mode, w=680.0, h=800.0)
+    t.run_for(@ui.move_most_ms)
+    assert_no_wk_faults(t, "Medium \{mode}")
+  }
+}
+
+///|
+test "window_keys_faults: terminal in-app fullscreen exit button on Large and Medium Windows" {
+  for win in [("Large", 1280.0, 800.0), ("Medium", 800.0, 800.0)] {
+    let t = wk_mode_tester("terminal", w=win.1, h=win.2)
+    t.run_for(@ui.move_most_ms)
+    assert_no_wk_faults(t, "terminal normal \{win.0}")
+    t.click(Button, label="控制中心")
+    t.run_for(@ui.move_most_ms)
+    t.click(Button, label="全屏")
+    t.run_for(@ui.move_most_ms)
+    assert_true(named_at(t, "退出全屏") is Some(_), msg="terminal fullscreen exit button missing (\{win.0})")
+    assert_no_wk_faults(t, "terminal fullscreen \{win.0}")
+  }
+}
+
+///|
+test "window_keys_faults: Medium single-service side panel path clears window keys without wasting chat bar width" {
+  let t = wk_mode_tester("chat-service-side", w=800.0, h=800.0)
+  t.run_for(@ui.move_most_ms)
+  if !(@sfdesk.wide.tape_at.get() is Page) {
+    page_over(t, 800.0)
+  }
+  assert_no_wk_faults(t, "Medium chat-service-side (Page)")
+  // With the side panel open on the right, the chat bar must NOT double-reserve window_keys_room_tape (#7752):
+  // restrict to chat-bar buttons left of `kx` (excluding any peeking side-panel buttons) and assert the trailing gap
+  // to `kx` stays within 48 pt (catching the ~116-120 pt double-reserved dead zone).
+  guard named_at(t, "最小化") is Some((min_x, _, _, _)) else { fail("chat-service-side: no minimize button") }
+  let kx = min_x - 2.0
+  let mut right_most = 0.0
+  for s in t.semantics() {
+    let (sx, sy, sw, sh) = s.rect
+    if !s.hidden &&
+      !window_key_names.contains(s.label) &&
+      (s.role is Button) &&
+      sy >= 20.0 &&
+      sy + sh <= 72.0 &&
+      sx + sw <= kx + 0.5 {
+      if sx + sw > right_most {
+        right_most = sx + sw
+      }
+    }
+  }
+  assert_true(
+    right_most >= kx - 48.0,
+    msg="Medium chat bar over-reserved trailing space (> 48 pt) when side panel is open: right_most=\{right_most}, kx=\{kx}",
+  )
+  @sfdesk.wide.tape_ask.set(Some(Panel))
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_no_wk_faults(t, "Medium chat-service-side (Panel)")
+}
+
+///|
+test "window_keys_faults: Small 390x844 and real lone_window_tree Screen window pass with zero faults" {
+  let t_small = wk_mode_tester("chat", w=390.0, h=844.0)
+  t_small.run_for(@ui.move_most_ms)
+  assert_no_wk_faults(t_small, "Small 390x844")
+  let t_main = wk_mode_tester("place-remote", w=1280.0, h=800.0)
+  t_main.set_window_opens(true)
+  t_main.set_windows_in_process(true)
+  t_main.run_for(@ui.move_most_ms)
+  assert_true(
+    @sfbase.open_window(Screen({ station: "ws1/st1", screen: "display:0", title: "桌面", until_gone: false })),
+    msg="failed to open in-process lone_window_tree screen",
+  )
+  t_main.run_for(@ui.move_most_ms)
+  assert_eq(t_main.windows_beside().length(), 1)
+  let (wid, _) = t_main.windows_beside()[0]
+  t_main.set_window_beside_size(wid, 800.0, 720.0)
+  t_main.set_window_inset_of(wid, true)
+  t_main.run_for(@ui.move_most_ms)
+  let lone_center : Ref[Bool] = Ref(false)
+  let lone_close : Ref[Bool] = Ref(false)
+  let lone_faults : Ref[Array[String]] = Ref([])
+  t_main.in_window(wid, fn() {
+    lone_center.val = t_main.semantics().any(fn(s) { !s.hidden && s.label == "控制中心" })
+    lone_close.val = t_main.semantics().any(fn(s) { !s.hidden && s.label == "关闭窗口" })
+    lone_faults.val = t_main.window_keys_faults()
+  })
+  assert_true(lone_center.val, msg="lone_window_tree screen controls missing")
+  assert_true(lone_close.val, msg="lone_window_tree window keys missing")
+  assert_eq(lone_faults.val, [], msg="lone_window_tree screen faults")
+}
+
+///|
+test "window_keys_faults: reactive toggle set_window_inset(false) -> true updates bars and clears faults" {
+  let t = wk_mode_tester("place-remote", w=1280.0, h=800.0, window_inset=false)
+  t.run_for(@ui.move_most_ms)
+  assert_no_wk_faults(t, "inset false")
+  assert_eq(named_at(t, "关闭窗口"), None)
+  t.set_window_inset(true)
+  t.run_for(@ui.move_most_ms)
+  assert_true(named_at(t, "关闭窗口") is Some(_))
+  assert_no_wk_faults(t, "inset toggled true")
 }

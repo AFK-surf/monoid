@@ -281,7 +281,7 @@ fn screen_top_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
   p.box(fn(bar) {
     @sf.style_node(bar, fn() {
       match pg.own_bar {
-        Some(own) => own
+        Some(own) => own()
         None => if pg.in_tab { screen_bar_in_tabs } else { screen_bar }
       }
     })
@@ -439,14 +439,12 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
         bar.pick(at_once=true, fn() { s.said.get() |> ignore; s.simulator() }, fn(slot, sim) {
           if sim {
             @sf.style_node(slot, fn() { sim_bar_wrap })
+            slot.height(By(fn() { Some(@sf.wide_bar_h + (pads.over)()) })) |> ignore
             slot.box(fn(row) {
               @sf.style_node(row, fn() { sim_bar_row })
               row
               .grow(Is(1.0))
-              .padding(By(fn() {
-                let (start, end) = pads()
-                (start, 0.0, end, 0.0)
-              }))
+              .padding(By(fn() { ((pads.start)(), (pads.over)(), (pads.end)(), 0.0) }))
               .moves_window(By(@ui.window_inset_now))
               |> ignore
               let wide = fn() { pg.sim_wide(row) }
@@ -510,17 +508,15 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
           // its keys as far in as the pane says, its empty part dragging the window)
           @sf.style_node(slot, fn() { screen_pane_bar })
           slot
-          .padding(By(fn() {
-            let (start, end) = pads()
-            (start, 0.0, end, 1.0)
-          }))
+          .height(By(fn() { Some(@sf.wide_bar_h + (pads.over)()) }))
+          .padding(By(fn() { ((pads.start)(), (pads.over)(), (pads.end)(), 1.0) }))
           .moves_window(By(@ui.window_inset_now))
           |> ignore
           screen_tab_bar_inner(slot, pg, narrow)
         })
       }
       (Some(own), _) => {
-        @sf.style_node(bar, fn() { own })
+        @sf.style_node(bar, own)
         screen_tab_bar_inner(bar, pg, narrow)
       }
       (None, None) => {
@@ -625,7 +621,7 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
   let middle_shown = fn() { tabs_shown() || sim_wide() }
   let ink = fn() { @sf.page_viewer_ink() }
   p.box(fn(room) {
-    room.height(Is(Some(@sf.viewer_bar_h))) |> ignore
+    room.height(By(fn() { Some(@sf.viewer_bar_h_now()) })) |> ignore
     @sf.viewer_bar_node(
       room,
       // (alone in a window of its own, nowhere to go back to: its window's close and 控制中心's 断开 close it)
@@ -676,7 +672,7 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
         m.pick(at_once=true, sim_wide, fn(slot, is_sim) {
           slot.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
           if is_sim {
-            slot.height(Is(Some(@sf.viewer_bar_h))).gap(Is(@ui.Space::S2.px())).padding(Is((@ui.Space::S1.px(), 0.0, @ui.Space::S1.px(), 0.0))) |> ignore
+            slot.height(Is(Some(@sf.viewer_bar_h - 1.0))).gap(Is(@ui.Space::S2.px())).padding(Is((@ui.Space::S1.px(), 0.0, @ui.Space::S1.px(), 0.0))) |> ignore
             slot.box(fn(left) {
               left.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
               sim_bar_title_node(left, pg)
@@ -779,7 +775,7 @@ fn full_tools_node(fill : @view.View, pg : ScreenPage) -> Unit {
   let u = pg.u
   fill.box(fn(place) {
     place.over(Is(true)) |> ignore
-    @sf.style_node(place, fn() { screen_corner_end(screen_top_end) })
+    @sf.style_node(place, fn() { screen_corner_end(screen_top_end, top=true) })
     place.box(fn(cap) {
       @sf.style_node(cap, fn() { full_tools_box })
       floats_capsule_node(cap, trigger=true)

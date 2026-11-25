@@ -1230,6 +1230,26 @@ export interface SoftwareVersion {
 	failedText?: string;
 }
 
+/** A station-managed third-party MCP server as shown in the station's settings (secrets masked). */
+export interface McpServer {
+	name: string;
+	/** stdio | http | sse */
+	transport: string;
+	enabled: boolean;
+	/** Whether other stations in this workspace may call this server over the mesh. */
+	shared?: boolean;
+	command?: string;
+	args?: string[];
+	env?: Record<string, string>;
+	url?: string;
+	headers?: Record<string, string>;
+	/** disabled | connecting | ready | reconnecting | failed | stopped */
+	status: string;
+	toolCount: number;
+	tools?: string[];
+	error?: string;
+}
+
 /** Whether a folder of the drive can be browsed now. */
 export type DriveRootState = "ok" | "missing" | "not_a_directory" | "unreadable";
 
@@ -1584,6 +1604,8 @@ export interface Overview {
 	 * masked (none from a station older than them, which then does not offer them).
 	 */
 	agentEnv?: EnvVar[];
+	/** Station-managed third-party MCP servers with masked secrets and live status (absent from older stations). */
+	mcpServers?: McpServer[];
 	/**
 	 * Its files: the folders pinned, and whether the viewer browses every folder (none from a station older
 	 * than the drive, which then is not offered).

@@ -240,7 +240,7 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
         .grow(Is(1.0))
         .basis(Is(Some(0.0)))
         .min_width(Is(Some(0.0)))
-        .height(Is(Some(@sf.wide_bar_h)))
+        .height(Is(Some(@sf.wide_bar_h - 1.0)))
         .gap(Is(16.0))
         .lines_up(Is(Some(Middle)))
         |> ignore

@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { routes, permissionsView } from "../src/api/routes/permissions.ts";
 import type { Request } from "../src/api/request.ts";
@@ -39,11 +39,13 @@ class FakeHelper {
   launches = 0;
   failing = false;
 
-  launch = async (_app: string, env: Record<string, string>) => {
+  launch = async (app: string, env: Record<string, string>) => {
     if (this.#closed) throw new Error("the test is over");
     this.launches++;
     if (this.failing) throw new Error("LSOpenURLsWithRole() failed with error -610");
-    this.#where = { path: env.STILLFAIL_HELPER_SOCKET!, token: env.STILLFAIL_HELPER_TOKEN! };
+    assert.equal(env.STILLFAIL_HELPER_TOKEN, undefined, "token must not be passed in launch env");
+    const token = readFileSync(join(dirname(app), "token"), "utf8").trim();
+    this.#where = { path: env.STILLFAIL_HELPER_SOCKET!, token };
     rmSync(this.#where.path, { force: true });
     const server = net.createServer((c) => this.#serve(c));
     await new Promise<void>((resolve) => server.listen(this.#where!.path, resolve));

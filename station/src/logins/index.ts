@@ -20,6 +20,7 @@ import { commandWords, domainOf, programOf, webPage } from "../ops/command-outpu
 import { type Answered, type Callback, Refused, relay } from "./relay.ts";
 import type { LoginPages } from "./pages.ts";
 import { type Key, KEYS, LoginRun, type Screen } from "./run.ts";
+import { type InWorkspace, sees } from "../store/rows.ts";
 
 export { Refused };
 
@@ -447,8 +448,9 @@ export class Logins {
 
   /// Its page opened in the station's browser for the person `by` (who goes on to finish it there): the screen of its
   /// tab, the one open already if there is one.
-  async openPage(id: string, by?: Person): Promise<string> {
+  async openPage(id: string, by?: Person, viewer?: InWorkspace): Promise<string> {
     const e = this.#entry(id);
+    if (viewer !== undefined && !sees(viewer, e.starter.workspace)) throw new Refused(404, "no such login");
     const lang = this.#lang();
     if (!e.run.active) throw new Refused(409, tr(lang, "station.machineLogin.ended"));
     if (this.#pages === null || !this.#pages.can()) throw new Refused(501, tr(lang, "station.loginPage.noBrowser"));
@@ -457,7 +459,7 @@ export class Logins {
     if (url === null && open === null) throw new Refused(409, tr(lang, "station.loginPage.nothing"));
     let screen: string;
     try {
-      screen = await this.#pages.open(pageKey(id), url ?? "about:blank");
+      screen = await this.#pages.open(pageKey(id), url ?? "about:blank", { workspace: e.starter.workspace });
     } catch (error) {
       throw new Refused(502, tr(lang, "station.loginPage.failed", { error: (error as Error).message }));
     }

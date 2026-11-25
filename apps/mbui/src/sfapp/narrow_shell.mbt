@@ -607,6 +607,10 @@ fn narrow_made_as(
     // (已归档 laid out Small: its page, the settings' 已归档)
     Archived | Setting(Archive) =>
       made("archive", fn(p, core, here, frame, _stint, _acts) { @sfpages.archive_node(p, core, here, on_back=core.pop, frame~) })
+    Setting(Progress) =>
+      made("progress", fn(p, core, here, frame, _stint, _acts) {
+        @sfpages.progress_node(p, core, here, on_back=core.pop, frame~)
+      })
     Setting(Archiving) =>
       made("archiving", fn(p, core, here, frame, stint, _acts) {
         @sfpages.archiving_node(p, core, here, on_back=core.pop, frame~, stint~)
@@ -784,6 +788,8 @@ fn narrow_made_as(
       })
     Setting(Memories) =>
       made("memories", fn(p, core, here, frame, _stint, _acts) { @sfpages.memories_node(p, core, here, on_back=core.pop, frame~) })
+    Setting(McpServers) =>
+      made("mcp", fn(p, core, here, frame, _stint, _acts) { @sfpages.mcp_servers_page_node(p, core, here, on_back=core.pop, frame~) })
     Setting(Memory(address)) =>
       made("memory/" + address, fn(p, core, here, frame, _stint, _acts) {
         @sfpages.memory_node(p, core, here, address, on_back=core.pop, frame~)

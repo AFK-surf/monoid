@@ -191,6 +191,7 @@ test("a person's paste goes to the tab as typed, and what they copy there reache
     await pasted;
     const copied = new Promise<unknown>((resolve) => view.watchClipboard!((clip) => resolve(clip)));
     await until(() => port.sockets.length > 0);
+    await view.input({ t: "key", kind: "down", key: "c", code: "KeyC", mods: 4 });
     port.said({ copied: "copied words" });
     assert.deepEqual(await copied, { type: "text", text: "copied words" });
     view.close();

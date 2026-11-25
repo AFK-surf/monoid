@@ -419,3 +419,111 @@ test("by ref: agent-desktop's refusal as the agent reads it, whether it may be t
   await assert.rejects(computer.act("s1", { screen: "desktop", action: "tree", app: "Calculator" }), (e: Error) => /control it yet \(Accessibility\)/.test(e.message) && e.message.includes("/screen/desktop"));
   await assert.rejects(setup().computer.act("s1", { screen: "browser:T1", action: "tree", app: "Calculator" }), /The screen browser:T1 has no accessibility trees: use screenshots/);
 });
+
+test("computer hides userTab from screen listing and refuses operating it without leaking its existence", async () => {
+  const { computer, hub } = setup();
+  const userTab = Object.assign(new FakeSource("browser:u_deadbeef1234"), { userTab: true as const });
+  hub.add(userTab);
+  const pat = hub.join(userTab.id, { name: "Pat", control: true, tell: () => {} });
+  await assert.rejects(
+    computer.act("s1", { screen: "" }),
+    (e: Error) => e.message.includes("browser:T1") && !e.message.includes("u_deadbeef1234"),
+  );
+  await assert.rejects(
+    computer.act("s1", { screen: userTab.id, action: "click", x: 10, y: 10 }),
+    (e: Error) => e.message === "no screen browser:u_deadbeef1234 on this station (it has: browser:T1)" && !e.message.includes("Pat"),
+  );
+  assert.deepEqual(userTab.opened, []);
+  pat();
+});
+
+test("byTree allows reads and passive driving, blocks writes when a person has taken control, registers agent activity, and hardens args", async () => {
+  const desktop = new TreeDesktop();
+  const { computer, hub } = setup(desktop);
+  desktop.answers.push(calculator("s1", "0"));
+  await computer.act("s1", { screen: "desktop", action: "tree", app: "Calculator" });
+
+  // While a person explicitly took control (taken = true), tree read still succeeds, but writes are refused.
+  const taken = hub.join("desktop", { name: "Pat", device: "dev-1", control: true, taken: true, tell: () => {} });
+  desktop.answers.push(calculator("s2", "0"));
+  await computer.act("s1", { screen: "desktop", action: "tree", app: "Calculator" });
+  await assert.rejects(
+    computer.act("s1", { screen: "desktop", action: "click", ref: "e2", wait: 0 }),
+    /Pat .*taken control of desktop right now/,
+  );
+  await assert.rejects(
+    computer.act("s1", { screen: "desktop", action: "key", app: "Calculator", key: "Enter", tree: false }),
+    /Pat .*taken control of desktop right now/,
+  );
+  taken();
+
+  // Re-check after async hub.refresh(): if a person takes control during refresh, the write is refused before ui().
+  desktop.access = () => ({ capture: true, control: true });
+  const releaseDuringRefresh: (() => void)[] = [];
+  const unrefresh = hub.refresher(async () => {
+    releaseDuringRefresh.push(hub.join("desktop", { name: "Pat", device: "dev-2", control: true, taken: true, tell: () => {} }));
+  });
+  const countBefore = desktop.commands.length;
+  await assert.rejects(
+    computer.act("s1", { screen: "desktop", action: "click", ref: "e2", wait: 0 }),
+    /Pat .*taken control of desktop right now/,
+  );
+  assert.equal(desktop.commands.length, countBefore, "source.ui must not be called when taken during refresh");
+  unrefresh();
+  for (const r of releaseDuringRefresh) r();
+
+  // During a write action, agent is registered in ScreenHub and released when the action finishes.
+  let seenDuringWrite: string[] = [];
+  let finishUi!: (v: unknown) => void;
+  const origUi = desktop.ui.bind(desktop);
+  desktop.ui = async (args) => {
+    desktop.commands.push(args);
+    seenDuringWrite = hub.people("desktop").controlledBy;
+    return new Promise((resolve) => (finishUi = resolve));
+  };
+  const pending = computer.act("s1", { screen: "desktop", action: "click", ref: "e2", tree: false });
+  await flush();
+  assert.deepEqual(seenDuringWrite, ["agent: Chat s1"]);
+  assert.deepEqual(hub.people("desktop").controlledBy, ["agent: Chat s1"]);
+  finishUi({ ok: true, data: {} });
+  await pending;
+  assert.deepEqual(hub.people("desktop").controlledBy, []);
+  desktop.ui = origUi;
+
+  // Argument hardening: reject malformed refs, option-like app/window/key; safely pass leading-dash text, "-" key,
+  // base36 snapshot IDs (e.g. s8f3k2p9), and native agent-desktop key names (minus, forwarddelete).
+  await assert.rejects(computer.act("s1", { screen: "desktop", action: "click", ref: "@--help", tree: false }), /ref is an element's ref/);
+  await assert.rejects(computer.act("s1", { screen: "desktop", action: "click", ref: "@s2:e1 --evil", tree: false }), /ref is an element's ref/);
+  await assert.rejects(computer.act("s1", { screen: "desktop", action: "tree", app: "--help" }), /invalid app/);
+  await assert.rejects(computer.act("s1", { screen: "desktop", action: "tree", app: "Calculator", window: "--all" }), /invalid window/);
+  await assert.rejects(computer.act("s1", { screen: "desktop", action: "key", app: "Calculator", key: "--help", tree: false }), /invalid key/);
+  await assert.rejects(computer.act("s1", { screen: "desktop", action: "key", app: "Calculator", key: "-v", tree: false }), /invalid key/);
+  await assert.rejects(computer.act("s1", { screen: "desktop", action: "key", app: "Calculator", key: "Enter", mods: ["--evil"], tree: false }), /invalid modifier/);
+
+  // Real agent-desktop base36 snapshot ID (e.g. s8f3k2p9) works for both bare and qualified refs.
+  desktop.answers.push(calculator("s8f3k2p9", "0"));
+  await computer.act("s1", { screen: "desktop", action: "tree", app: "Calculator" });
+
+  desktop.commands = [];
+  desktop.answers.push({ ok: true, data: {} }, { ok: true, data: {} }, { ok: true, data: {} }, { ok: true, data: {} }, { ok: true, data: {} }, { ok: true, data: {} }, { ok: true, data: {} }, { ok: true, data: {} }, { ok: true, data: {} });
+  await computer.act("s1", { screen: "desktop", action: "click", ref: "e2", tree: false });
+  await computer.act("s1", { screen: "desktop", action: "click", ref: "@s8f3k2p9:e1", tree: false });
+  await computer.act("s1", { screen: "desktop", action: "type", ref: "e1", text: "--flag -x", tree: false });
+  await computer.act("s1", { screen: "desktop", action: "set", ref: "e1", text: "-42", tree: false });
+  await computer.act("s1", { screen: "desktop", action: "key", app: "Calculator", key: "-", tree: false });
+  await computer.act("s1", { screen: "desktop", action: "key", app: "Calculator", key: "minus", tree: false });
+  await computer.act("s1", { screen: "desktop", action: "key", app: "Calculator", key: "forwarddelete", mods: ["cmd"], tree: false });
+  await computer.act("s1", { screen: "desktop", action: "key", app: "Calculator", key: "cmd+,", tree: false });
+  await computer.act("s1", { screen: "desktop", action: "key", app: "Calculator", key: "cmd+.", tree: false });
+  assert.deepEqual(desktop.commands, [
+    ["click", "@s8f3k2p9:e2"],
+    ["click", "@s8f3k2p9:e1"],
+    ["type", "@s8f3k2p9:e1", "--", "--flag -x"],
+    ["set-value", "@s8f3k2p9:e1", "--", "-42"],
+    ["press", "--app", "Calculator", "--", "-"],
+    ["press", "minus", "--app", "Calculator"],
+    ["press", "cmd+forwarddelete", "--app", "Calculator"],
+    ["press", "cmd+,", "--app", "Calculator"],
+    ["press", "cmd+.", "--app", "Calculator"],
+  ]);
+});

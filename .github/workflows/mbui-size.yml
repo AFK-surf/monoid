@@ -167,12 +167,34 @@ jobs:
     timeout-minutes: 5
     steps:
       - run: echo "JOB_END=$(($(date +%s) + 300))" >> "$GITHUB_ENV"
+      # Plain shallow checkout matching mbui-render.yml on this persistent runner: sparse-checkout turns on
+      # --filter=blob:none (promisor remote), whose second `git sparse-checkout set` fetch has no retry and fails
+      # on transient Shanghai egress resets (45684006336) while leaving partial-clone settings for subsequent runs.
+      - name: Clear stale partial-clone filter
+        run: |
+          if [ -d .git ]; then
+            git config --local --unset-all remote.origin.partialclonefilter 2>/dev/null || true
+          fi
       - uses: actions/checkout@v5
-        with:
-          sparse-checkout: |
-            apps/mbui/scripts
-            libs/ui/scripts
-            scripts
+      - name: Clear lingering partial-clone promisor state
+        run: |
+          if [ "$(git config --local --get remote.origin.promisor 2>/dev/null || true)" = true ]; then
+            head_ref=$(git symbolic-ref -q HEAD || true)
+            git for-each-ref --format='%(refname)' | while read -r ref; do
+              [ "$ref" = "$head_ref" ] || git update-ref --no-deref -d "$ref"
+            done
+            git reflog expire --expire=now --all 2>/dev/null || true
+            if git rev-list --objects --missing=print HEAD > "$RUNNER_TEMP/rev-list.out" &&
+              ! grep -q '^?' "$RUNNER_TEMP/rev-list.out"; then
+              G=$(git rev-parse --absolute-git-dir)
+              rm -f "$G"/objects/pack/*.promisor
+              git config --local --unset-all remote.origin.promisor 2>/dev/null || true
+              git config --local --unset-all remote.origin.partialclonefilter 2>/dev/null || true
+              git config --local --unset-all extensions.partialclone 2>/dev/null || true
+              echo "Cleared lingering partial-clone promisor state"
+            fi
+            rm -f "$RUNNER_TEMP/rev-list.out"
+          fi
       - if: needs.find.outputs.apk == 'true' && needs.find.outputs.apk_url == ''
         run: bash scripts/download-artifact.sh --optional "$RUN" "mbui-apk-${{ needs.find.outputs.sha }}" in/apk
       - if: needs.find.outputs.apk_url != ''
@@ -228,6 +250,7 @@ jobs:
           fi
       - uses: actions/upload-artifact@v4
         continue-on-error: true
+        timeout-minutes: 1
         with: { name: idle, path: idle.jsonl, retention-days: 1 }
 
   # A line for the commit, appended on the branch mbui-size (made when it is not there)

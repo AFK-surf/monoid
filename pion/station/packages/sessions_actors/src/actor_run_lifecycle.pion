@@ -1,0 +1,3459 @@
+// Actor lifecycle, hub `called_k` dispatch, handover (`snapshot`/`adopt`), stop/suspend/recover,
+// compaction/clear, release, and pure-value `on_timer_k` dispatch
+// (`station/mb/src/reader/actor_run.mbt` 1:1).
+
+import "base_codec"
+import "effect"
+import "sessions_core"
+
+pub fn ActorsGen::idle_now(self : ActorsGen, a : Actor) -> Unit {
+  a.idle_since = self.gen.counters.now
+}
+
+pub fn ActorsGen::closed(self : ActorsGen, a : Actor) -> Bool {
+  let _ = self
+  a.phase == "closed"
+}
+
+pub fn about_is(
+  last : base_codec::Json,
+  thread : base_codec::Json,
+  seq : base_codec::Json,
+) -> Bool {
+  match sessions_core::jget(last, "about") {
+    Some(base_codec::Json::Obj(_)) => {
+      let ab = sessions_core::field_of(last, "about")
+      match (sessions_core::jget(ab, "thread"), sessions_core::jget(ab, "seq")) {
+        (Some(t), Some(s)) => json_eq(t, thread) && json_eq(s, seq)
+        _ => false
+      }
+    }
+    _ => false
+  }
+}
+
+pub fn ActorsGen::live_turn_ended_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  (self.live.live_turn_end_k)(a.key, k)
+}
+
+/// Dispatch a pure-value `ActorTimerAction` (`actor_run.mbt:3791-3800` + `wave8-plan.md` v5 §2.5.3).
+pub fn ActorsGen::on_timer_k(
+  self : ActorsGen,
+  a : Actor,
+  _name : String,
+  action : ActorTimerAction,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  match action {
+    ActorTimerAction::FireWait(wait, seconds) => self.fire_wait_k(a, wait, seconds, k)
+    ActorTimerAction::FireMidWait(wait, turn_id, seconds) => {
+      self.fire_mid_wait_k(a, wait, turn_id, seconds, k)
+    }
+    ActorTimerAction::FireRefill(refill) => self.fire_refill_k(a, refill, k)
+    ActorTimerAction::FireToolsRetry(id) => self.fire_tools_retry_k(a, id, k)
+    ActorTimerAction::OpenTimeout(_) => k(effect::Exit::Succeeded(()))
+    ActorTimerAction::Named(_, _) => k(effect::Exit::Succeeded(()))
+  }
+}
+
+/// Record turn state while that same turn runs (`actor_run.mbt:431-452`).
+pub fn ActorsGen::state_for_turn_k(
+  self : ActorsGen,
+  a : Actor,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let id = if args.length() > 0 { sessions_core::str_of(Some(args[0])) } else { None }
+  let state = if args.length() > 1 { args[1] } else { base_codec::json_null() }
+  let mut recorded = false
+  let mut failure : Option[effect::EffectError] = None
+  self.enqueue_k(
+    a,
+    fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      let t = match (a.turn, id) {
+        (Some(tv), Some(iv)) => {
+          if tv.id == iv {
+            tv
+          } else {
+            tk(effect::Exit::Succeeded(()))
+            return
+          }
+        }
+        _ => {
+          tk(effect::Exit::Succeeded(()))
+          return
+        }
+      }
+      let req_turn_id = t.id
+      let req_turn_epoch = a.turn_epoch
+      let req_agent = a.agent
+      // Direct RPC: an in-flight `node.stateWrite` already sent to Node must not be cancelled by
+      // a concurrent `close(a)` so its recorded state matches what Node persisted; guard
+      // `on_declared` by phase, turn epoch, turn ID, and agent handle+generation so a late ACK
+      // cannot arm/cancel timers on a closed or newly-adopted turn.
+      self.rpc_direct_k(a.key, "node.stateWrite", args, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => {
+            failure = Some(e)
+            tk(effect::Exit::Succeeded(()))
+          }
+          effect::Exit::Succeeded(_) => {
+            t.declared = Some(state)
+            let same_turn = match a.turn {
+              Some(cur) => cur.id == req_turn_id
+              None => false
+            }
+            if a.phase != "closed" && a.turn_epoch == req_turn_epoch && same_turn && still(a, req_agent) {
+              self.on_declared(a, t, state)
+            }
+            recorded = true
+            tk(effect::Exit::Succeeded(()))
+          }
+        }
+      })
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => {
+          match failure {
+            Some(e) => k(effect::Exit::Failed(e))
+            None => k(effect::Exit::Succeeded(sessions_core::jbool(recorded)))
+          }
+        }
+      }
+    },
+  )
+}
+
+/// Stop running turn / pending open / waiting timer (`actor_run.mbt:488-545`).
+pub fn ActorsGen::stop_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let stop_recovery = a.recoveries > 0 || a.recovery_deferred
+  a.recovery_deferred = false
+  a.queued_retry = None
+  let had_deferred = is_some(a.deferred_end) || a.warm
+  a.deferred_end = None
+  a.warm = false
+  self.cancel_tools_retry(a)
+  self.cancel_mid_wait(a)
+  a.tools_restarts = 0
+  a.paused_cap = false
+  a.cap_wait_notified = false
+  a.force_session_cap = false
+  self.mirror(a)
+  self.remove_turn_wait(a.key)
+  self.remove_cap_wait(a.key)
+  a.delivery_interruptions = a.delivery_interruptions + 1
+  let was_starting_turn = a.starting_turn
+  let stop_starting = self.abort_open(a, "stopped") && was_starting_turn
+  self.enqueue_k(
+    a,
+    fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      let finish = fn(ex : effect::Exit[Unit]) -> Unit {
+        a.delivery_interruptions = a.delivery_interruptions - 1
+        tk(ex)
+      }
+      let after_sr = fn(ex_sr : effect::Exit[Unit]) -> Unit {
+        match ex_sr {
+          effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(_) => {
+            if is_some(a.codex_update) {
+              a.codex_update = None
+              self.set_running_k(a, false, fn(ex1 : effect::Exit[Unit]) -> Unit {
+                match ex1 {
+                  effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(_) => {
+                    self.t_k(a, "station.notice.stopped", base_codec::json_null(), fn(
+                      ex_t : effect::Exit[String],
+                    ) -> Unit {
+                      match ex_t {
+                        effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(msg) => {
+                          self.notice_k(
+                            a,
+                            msg,
+                            base_codec::json_null(),
+                            base_codec::json_null(),
+                            base_codec::json_null(),
+                            None,
+                            false,
+                            fn(ex_n : effect::Exit[Unit]) -> Unit {
+                              match ex_n {
+                                effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                effect::Exit::Succeeded(_) => self.live_turn_ended_k(a, finish)
+                              }
+                            },
+                          )
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+              return
+            }
+            self.busy_agent_k(a, fn(ex_ba : effect::Exit[Option[Agent]]) -> Unit {
+              match ex_ba {
+                effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(Some(agent)) => {
+                  a.stop_requested = true
+                  self.agent_do_k(a, agent, "abort", [], fn(
+                    ex_ab : effect::Exit[base_codec::Json],
+                  ) -> Unit {
+                    match ex_ab {
+                      effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => {
+                        a.stop_requested = false
+                        finish(effect::Exit::Failed(e))
+                      }
+                      effect::Exit::Succeeded(_) => finish(effect::Exit::Succeeded(()))
+                    }
+                  })
+                }
+                effect::Exit::Succeeded(None) => {
+                  if is_some(a.turn) {
+                    finish(effect::Exit::Succeeded(()))
+                    return
+                  }
+                  self.stop_waiting_k(a, true, false, fn(ex_sw : effect::Exit[Bool]) -> Unit {
+                    match ex_sw {
+                      effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                      effect::Exit::Succeeded(stopped_wait) => {
+                        if stop_starting && !stopped_wait {
+                          self.t_k(a, "station.notice.stopped", base_codec::json_null(), fn(
+                            ex_t : effect::Exit[String],
+                          ) -> Unit {
+                            match ex_t {
+                              effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                              effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                              effect::Exit::Succeeded(msg) => {
+                                self.notice_k(
+                                  a,
+                                  msg,
+                                  base_codec::json_null(),
+                                  base_codec::json_null(),
+                                  base_codec::json_null(),
+                                  None,
+                                  false,
+                                  fn(ex_n : effect::Exit[Unit]) -> Unit {
+                                    match ex_n {
+                                      effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                      effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                      effect::Exit::Succeeded(_) => self.live_turn_ended_k(a, finish)
+                                    }
+                                  },
+                                )
+                              }
+                            }
+                          })
+                        } else {
+                          self.live_turn_ended_k(a, finish)
+                        }
+                      }
+                    }
+                  })
+                }
+              }
+            })
+          }
+        }
+      }
+      if stop_recovery || had_deferred || stop_starting {
+        self.set_running_k(a, false, after_sr)
+      } else {
+        after_sr(effect::Exit::Succeeded(()))
+      }
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+/// Stop triggered from Slack reaction/command (`actor_run.mbt:602-672`).
+pub fn ActorsGen::stop_from_slack_k(
+  self : ActorsGen,
+  a : Actor,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let connect = if args.length() > 0 { str_or(sessions_core::str_of(Some(args[0])), "") } else { "" }
+  let channel = if args.length() > 1 { str_or(sessions_core::str_of(Some(args[1])), "") } else { "" }
+  let thread_ts = if args.length() > 2 { str_or(sessions_core::str_of(Some(args[2])), "") } else { "" }
+  let ts = if args.length() > 3 { str_or(sessions_core::str_of(Some(args[3])), "0") } else { "0" }
+  let local_at : Option[base_codec::Json] = if args.length() > 4 { Some(args[4]) } else { None }
+  let mut failure : Option[effect::EffectError] = None
+  self.enqueue_k(
+    a,
+    fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      let at = parse_double_or_zero(ts)
+      self.store_k(
+        a,
+        "slackStop",
+        [
+          sessions_core::jstr(a.key),
+          sessions_core::jstr(connect),
+          sessions_core::jstr(channel),
+          sessions_core::jstr(thread_ts),
+        ],
+        fn(ex_ss : effect::Exit[base_codec::Json]) -> Unit {
+          match ex_ss {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => {
+              failure = Some(e)
+              tk(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Succeeded(previous) => {
+              let prev_ts : Option[Double] = match sessions_core::str_of(sessions_core::jget(previous, "ts")) {
+                Some(s) => Some(parse_double_or_zero(s))
+                None => None
+              }
+              match prev_ts {
+                Some(p) => {
+                  if p > at {
+                    tk(effect::Exit::Succeeded(()))
+                    return
+                  }
+                }
+                None => ()
+              }
+              let with_turn = fn(turn_opt : Option[String]) -> Unit {
+                let matches_cur = match (turn_opt, a.turn) {
+                  (Some(id), Some(t)) => t.id == id
+                  _ => false
+                }
+                if !matches_cur {
+                  tk(effect::Exit::Succeeded(()))
+                  return
+                }
+                self.busy_agent_k(a, fn(ex_ba : effect::Exit[Option[Agent]]) -> Unit {
+                  match ex_ba {
+                    effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => {
+                      failure = Some(e)
+                      tk(effect::Exit::Succeeded(()))
+                    }
+                    effect::Exit::Succeeded(Some(agent)) => {
+                      if a.stop_requested {
+                        tk(effect::Exit::Succeeded(()))
+                        return
+                      }
+                      a.stop_requested = true
+                      self.agent_do_k(a, agent, "abort", [], fn(
+                        ex_ab : effect::Exit[base_codec::Json],
+                      ) -> Unit {
+                        match ex_ab {
+                          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                          effect::Exit::Failed(e) => {
+                            a.stop_requested = false
+                            failure = Some(e)
+                            tk(effect::Exit::Succeeded(()))
+                          }
+                          effect::Exit::Succeeded(_) => tk(effect::Exit::Succeeded(()))
+                        }
+                      })
+                    }
+                    effect::Exit::Succeeded(None) => tk(effect::Exit::Succeeded(()))
+                  }
+                })
+              }
+              let same_prev = match prev_ts {
+                Some(p) => p == at
+                None => false
+              }
+              if same_prev {
+                with_turn(sessions_core::str_of(sessions_core::jget(previous, "turn")))
+                return
+              }
+              let mut work_opt : Option[Working] = None
+              for i in 0..<a.working_for.length() {
+                let w = a.working_for[i]
+                if w.connect == connect && w.channel == channel && w.thread_ts == thread_ts {
+                  work_opt = Some(w)
+                  break
+                }
+              }
+              let with_since = fn(since : Double) -> Unit {
+                let first : Option[base_codec::Json] = match work_opt {
+                  Some(w) => Some(if is_json_null(w.first_ts) { w.ts } else { w.first_ts })
+                  None => None
+                }
+                let timely_ts = match first {
+                  Some(base_codec::Json::Str(f)) => {
+                    if f != "" {
+                      at >= parse_double_or_zero(f)
+                    } else {
+                      true
+                    }
+                  }
+                  _ => true
+                }
+                let timely_local = match local_at {
+                  Some(base_codec::Json::Null) => true
+                  Some(base_codec::Json::Num(l, _)) => l >= since
+                  _ => at * 1000.0 >= since
+                }
+                let turn_opt : Option[String] = match (work_opt, a.turn) {
+                  (Some(_), Some(t)) => if timely_ts && timely_local { Some(t.id) } else { None }
+                  _ => None
+                }
+                let turn_j = match turn_opt {
+                  Some(id) => sessions_core::jstr(id)
+                  None => base_codec::json_null()
+                }
+                self.store_k(
+                  a,
+                  "rememberSlackStop",
+                  [
+                    sessions_core::jstr(a.key),
+                    sessions_core::jstr(connect),
+                    sessions_core::jstr(channel),
+                    sessions_core::jstr(thread_ts),
+                    sessions_core::jstr(ts),
+                    turn_j,
+                  ],
+                  fn(ex_rem : effect::Exit[base_codec::Json]) -> Unit {
+                    match ex_rem {
+                      effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => {
+                        failure = Some(e)
+                        tk(effect::Exit::Succeeded(()))
+                      }
+                      effect::Exit::Succeeded(_) => with_turn(turn_opt)
+                    }
+                  },
+                )
+              }
+              match work_opt {
+                Some(w) => with_since(w.since)
+                None => {
+                  self.last_turn_k(a, fn(ex_lt : effect::Exit[base_codec::Json]) -> Unit {
+                    match ex_lt {
+                      effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                      effect::Exit::Succeeded(lt) => {
+                        with_since(num_or(sessions_core::num_of(sessions_core::jget(lt, "startedAt")), 0.0))
+                      }
+                    }
+                  })
+                }
+              }
+            }
+          }
+        },
+      )
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => {
+          match failure {
+            Some(e) => k(effect::Exit::Failed(e))
+            None => k(effect::Exit::Succeeded(base_codec::json_null()))
+          }
+        }
+      }
+    },
+  )
+}
+
+/// End a turn cut off by a non-update station restart (`actor_run.mbt:678-701`).
+pub fn ActorsGen::cut_off_by_restart_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let mut interrupted = false
+  self.enqueue_k(
+    a,
+    fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      if is_some(a.turn) {
+        tk(effect::Exit::Succeeded(()))
+        return
+      }
+      a.recovery_deferred = false
+      self.store_k(a, "endCutOff", [sessions_core::jstr(a.key)], fn(
+        ex_ec : effect::Exit[base_codec::Json],
+      ) -> Unit {
+        match ex_ec {
+          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(ec_v) => {
+            let ended = num_or(sessions_core::num_of(Some(ec_v)), 0.0).to_int()
+            self.set_running_k(a, false, fn(ex_sr : effect::Exit[Unit]) -> Unit {
+              match ex_sr {
+                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(_) => {
+                  self.archived_k(a, fn(ex_ar : effect::Exit[Bool]) -> Unit {
+                    match ex_ar {
+                      effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                      effect::Exit::Succeeded(true) => self.let_go_k(a, tk)
+                      effect::Exit::Succeeded(false) => {
+                        if ended <= 0 {
+                          tk(effect::Exit::Succeeded(()))
+                          return
+                        }
+                        self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
+                          match ex_hp {
+                            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                            effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
+                            effect::Exit::Succeeded(false) => {
+                              self.store_k(a, "latestTurn", [sessions_core::jstr(a.key)], fn(
+                                ex_lt : effect::Exit[base_codec::Json],
+                              ) -> Unit {
+                                match ex_lt {
+                                  effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                                  effect::Exit::Succeeded(latest) => {
+                                    let summary = sessions_core::field_of(latest, "summary")
+                                    if cut_off_by_restart(summary) {
+                                      self.t_k(a, "station.notice.cutOffRestart", base_codec::json_null(), fn(
+                                        ex_t : effect::Exit[String],
+                                      ) -> Unit {
+                                        match ex_t {
+                                          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                                          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                                          effect::Exit::Succeeded(msg) => {
+                                            let said = "⚠️ " + msg
+                                            self.notice_k(
+                                              a,
+                                              said,
+                                              base_codec::json_null(),
+                                              base_codec::json_null(),
+                                              base_codec::json_null(),
+                                              sessions_core::str_of(sessions_core::jget(latest, "id")),
+                                              false,
+                                              fn(ex_n : effect::Exit[Unit]) -> Unit {
+                                                match ex_n {
+                                                  effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                                                  effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                                                  effect::Exit::Succeeded(_) => {
+                                                    self.tell_opener_failed_k(a, said, fn(ex_to : effect::Exit[Unit]) -> Unit {
+                                                      match ex_to {
+                                                        effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                                                        effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                                                        effect::Exit::Succeeded(_) => {
+                                                          interrupted = true
+                                                          tk(effect::Exit::Succeeded(()))
+                                                        }
+                                                      }
+                                                    })
+                                                  }
+                                                }
+                                              },
+                                            )
+                                          }
+                                        }
+                                      })
+                                    } else {
+                                      tk(effect::Exit::Succeeded(()))
+                                    }
+                                  }
+                                }
+                              })
+                            }
+                          }
+                        })
+                      }
+                    }
+                  })
+                }
+              }
+            })
+          }
+        }
+      })
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(sessions_core::jbool(interrupted)))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+/// Recover after restart (`actor_run.mbt:705-769`).
+pub fn ActorsGen::recover_k(
+  self : ActorsGen,
+  a : Actor,
+  slot_reserved : Bool,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  a.recoveries = a.recoveries + 1
+  self.enqueue_k(
+    a,
+    fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      let mut reading = true
+      let mut reserved = slot_reserved && a.starting_turn
+      let finish = fn(ex : effect::Exit[Unit]) -> Unit {
+        if reading {
+          a.recoveries = a.recoveries - 1
+          reading = false
+        }
+        if reserved {
+          a.starting_turn = false
+          if !self.gen.counters.sealed && !is_some(a.turn) {
+            self.drain_turn_queue(true)
+          }
+        }
+        tk(ex)
+      }
+      if a.delivery_interruptions > 0 {
+        finish(effect::Exit::Succeeded(()))
+        return
+      }
+      let after_cutoff = fn(ex_ec : effect::Exit[Unit]) -> Unit {
+        match ex_ec {
+          effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(_) => {
+            self.archived_k(a, fn(ex_ar : effect::Exit[Bool]) -> Unit {
+              match ex_ar {
+                effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(true) => {
+                  a.recovery_deferred = false
+                  self.set_running_k(a, false, fn(ex_sr : effect::Exit[Unit]) -> Unit {
+                    match ex_sr {
+                      effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                      effect::Exit::Succeeded(_) => self.let_go_k(a, finish)
+                    }
+                  })
+                }
+                effect::Exit::Succeeded(false) => {
+                  self.held_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
+                    match ex_h {
+                      effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                      effect::Exit::Succeeded(true) => {
+                        a.recovery_deferred = true
+                        finish(effect::Exit::Succeeded(()))
+                      }
+                      effect::Exit::Succeeded(false) => {
+                        if self.turn_slots_full(a) {
+                          a.recovery_deferred = true
+                          self.enqueue_turn_wait(a)
+                          finish(effect::Exit::Succeeded(()))
+                          return
+                        }
+                        if !a.starting_turn {
+                          a.starting_turn = true
+                          reserved = true
+                        }
+                        a.recovery_deferred = false
+                        self.pending_and_format_k(a, true, fn(ex_pf : effect::Exit[Option[Delivery]]) -> Unit {
+                          a.recoveries = a.recoveries - 1
+                          reading = false
+                          match ex_pf {
+                            effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                            effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                            effect::Exit::Succeeded(None) => finish(effect::Exit::Succeeded(()))
+                            effect::Exit::Succeeded(Some(d)) => {
+                              if a.delivery_interruptions > 0 || self.closed(a) {
+                                finish(effect::Exit::Succeeded(()))
+                                return
+                              }
+                              self.archived_k(a, fn(ex_ar2 : effect::Exit[Bool]) -> Unit {
+                                match ex_ar2 {
+                                  effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                  effect::Exit::Succeeded(true) => {
+                                    self.set_running_k(a, false, fn(ex_sr : effect::Exit[Unit]) -> Unit {
+                                      match ex_sr {
+                                        effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                        effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                        effect::Exit::Succeeded(_) => self.let_go_k(a, finish)
+                                      }
+                                    })
+                                  }
+                                  effect::Exit::Succeeded(false) => {
+                                    self.held_k(a, fn(ex_h2 : effect::Exit[Bool]) -> Unit {
+                                      match ex_h2 {
+                                        effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                        effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                        effect::Exit::Succeeded(true) => {
+                                          a.recovery_deferred = true
+                                          finish(effect::Exit::Succeeded(()))
+                                        }
+                                        effect::Exit::Succeeded(false) => {
+                                          self.set_running_k(a, false, fn(ex_sr : effect::Exit[Unit]) -> Unit {
+                                            match ex_sr {
+                                              effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                              effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                              effect::Exit::Succeeded(_) => {
+                                                self.words_k(a, "RESUME_AFTER_RESTART", [], fn(
+                                                  ex_w : effect::Exit[String],
+                                                ) -> Unit {
+                                                  match ex_w {
+                                                    effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                                    effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                                    effect::Exit::Succeeded(resume) => {
+                                                      let body = if d.text == "" {
+                                                        resume
+                                                      } else {
+                                                        resume + "\n\n" + d.text
+                                                      }
+                                                      self.start_turn_k(
+                                                        a,
+                                                        "resume",
+                                                        body,
+                                                        turn_for_nobody(),
+                                                        Some(d),
+                                                        false,
+                                                        0,
+                                                        false,
+                                                        finish,
+                                                      )
+                                                    }
+                                                  }
+                                                })
+                                              }
+                                            }
+                                          })
+                                        }
+                                      }
+                                    })
+                                  }
+                                }
+                              })
+                            }
+                          }
+                        })
+                      }
+                    }
+                  })
+                }
+              }
+            })
+          }
+        }
+      }
+      if !is_some(a.turn) {
+        self.store_k(a, "endCutOff", [sessions_core::jstr(a.key)], fn(
+          ex_ec : effect::Exit[base_codec::Json],
+        ) -> Unit {
+          match ex_ec {
+            effect::Exit::Succeeded(_) => after_cutoff(effect::Exit::Succeeded(()))
+            effect::Exit::Failed(e) => after_cutoff(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => after_cutoff(effect::Exit::Interrupted)
+          }
+        })
+      } else {
+        after_cutoff(effect::Exit::Succeeded(()))
+      }
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+/// Re-arm a recorded wait timer on startup (`actor_run.mbt:772-790`).
+pub fn ActorsGen::take_wait_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if is_some(a.waiting) || is_some(a.turn) {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  self.archived_k(a, fn(ex_ar : effect::Exit[Bool]) -> Unit {
+    match ex_ar {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(true) => k(effect::Exit::Succeeded(()))
+      effect::Exit::Succeeded(false) => {
+        self.last_turn_k(a, fn(ex_lt : effect::Exit[base_codec::Json]) -> Unit {
+          match ex_lt {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(last) => {
+              if is_json_null(last) ||
+              is_opt_null_or_none(sessions_core::jget(last, "endedAt")) ||
+              !opt_str_is(sessions_core::str_of(sessions_core::jget(last, "declared")), "waiting") {
+                k(effect::Exit::Succeeded(()))
+                return
+              }
+              if !opt_str_is(sessions_core::str_of(sessions_core::jget(last, "outcome")), "completed") &&
+              !retrying(last) {
+                self.store_k(a, "forgetWait", [sessions_core::jstr(a.key)], fn(
+                  ex_fw : effect::Exit[base_codec::Json],
+                ) -> Unit {
+                  match ex_fw {
+                    effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  }
+                })
+                return
+              }
+              let seconds = num_or(sessions_core::num_of(sessions_core::jget(last, "waitSeconds")), 0.0)
+              if !retrying(last) &&
+              !is_opt_json_true(sessions_core::jget(last, "waitWatch")) &&
+              !is_some(a.silent_waiting_since) {
+                a.silent_waiting_since = Some(
+                  num_or(sessions_core::num_of(sessions_core::jget(last, "endedAt")), self.gen.counters.now),
+                )
+              }
+              self.log(a, "info", "taking up a wait on record", [
+                ("seconds", sessions_core::jnum(seconds)),
+              ])
+              let ended_at = num_or(sessions_core::num_of(sessions_core::jget(last, "endedAt")), 0.0)
+              self.wait_ms(a, seconds, ended_at + seconds * 1000.0 - self.gen.counters.now)
+              k(effect::Exit::Succeeded(()))
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+/// Release a held actor (`actor_run.mbt:883-939`).
+pub fn ActorsGen::release_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  if a.recovery_deferred {
+    a.recovery_deferred = false
+    if a.recoveries == 0 {
+      self.recover_k(a, false, k)
+      return
+    }
+  }
+  let before = a.start_failures
+  self.enqueue_k(
+    a,
+    fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      if is_some(a.waiting) && a.waiting_until <= self.gen.counters.now {
+        self.wait_ms(a, a.waiting_seconds, 0.0)
+      }
+      if is_some(a.mid_waiting) && a.mid_waiting_until <= self.gen.counters.now {
+        match a.turn {
+          Some(t) => self.arm_mid_wait(a, t.id, a.mid_waiting_seconds, 0.0)
+          None => ()
+        }
+      }
+      if is_some(a.refill) && a.refill_at <= self.gen.counters.now {
+        self.await_refill(a, self.gen.counters.now)
+      }
+      if is_some(a.queued_retry) {
+        self.enqueue_turn_wait(a)
+        self.drain_turn_queue(true)
+        tk(effect::Exit::Succeeded(()))
+        return
+      }
+      self.pump_k(a, before, fn(ex_p : effect::Exit[Unit]) -> Unit {
+        match ex_p {
+          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(_) => {
+            let after_notices = fn(ex_n : effect::Exit[Unit]) -> Unit {
+              match ex_n {
+                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(_) => {
+                  let check_tools_retry = fn() -> Unit {
+                    if !is_some(a.turn) && a.tools_retry_deferred {
+                      self.held_k(a, fn(ex_h2 : effect::Exit[Bool]) -> Unit {
+                        match ex_h2 {
+                          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                          effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
+                          effect::Exit::Succeeded(false) => {
+                            if is_some(a.turn) || !a.tools_retry_deferred {
+                              tk(effect::Exit::Succeeded(()))
+                              return
+                            }
+                            a.tools_retry_deferred = false
+                            self.mirror(a)
+                            self.archived_k(a, fn(ex_ar : effect::Exit[Bool]) -> Unit {
+                              match ex_ar {
+                                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                                effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                                effect::Exit::Succeeded(true) => self.let_go_k(a, tk)
+                                effect::Exit::Succeeded(false) => {
+                                  self.words_k(a, "TOOLS_LOST", [], fn(ex_w : effect::Exit[String]) -> Unit {
+                                    match ex_w {
+                                      effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                                      effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                                      effect::Exit::Succeeded(words) => {
+                                        self.start_turn_k(
+                                          a,
+                                          "resume",
+                                          words,
+                                          turn_for_nobody(),
+                                          None,
+                                          false,
+                                          0,
+                                          false,
+                                          tk,
+                                        )
+                                      }
+                                    }
+                                  })
+                                }
+                              }
+                            })
+                          }
+                        }
+                      })
+                    } else {
+                      tk(effect::Exit::Succeeded(()))
+                    }
+                  }
+                  if !is_some(a.turn) && is_some(a.deferred_end) {
+                    self.held_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
+                      match ex_h {
+                        effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(true) => check_tools_retry()
+                        effect::Exit::Succeeded(false) => {
+                          if is_some(a.turn) {
+                            check_tools_retry()
+                            return
+                          }
+                          match a.deferred_end {
+                            None => check_tools_retry()
+                            Some(d) => {
+                              let was_warm = a.warm
+                              a.deferred_end = None
+                              self.mirror(a)
+                              let finish_def = fn(ex_d : effect::Exit[Unit]) -> Unit {
+                                if a.warm && !is_some(a.deferred_end) {
+                                  a.warm = false
+                                  self.mirror(a)
+                                }
+                                tk(ex_d)
+                              }
+                              self.archived_k(a, fn(ex_ar : effect::Exit[Bool]) -> Unit {
+                                match ex_ar {
+                                  effect::Exit::Interrupted => finish_def(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => finish_def(effect::Exit::Failed(e))
+                                  effect::Exit::Succeeded(true) => {
+                                    self.cool_k(a, was_warm, fn(ex_c : effect::Exit[Unit]) -> Unit {
+                                      match ex_c {
+                                        effect::Exit::Interrupted => finish_def(effect::Exit::Interrupted)
+                                        effect::Exit::Failed(e) => finish_def(effect::Exit::Failed(e))
+                                        effect::Exit::Succeeded(_) => self.let_go_k(a, finish_def)
+                                      }
+                                    })
+                                  }
+                                  effect::Exit::Succeeded(false) => {
+                                    self.continue_undeclared_end_k(
+                                      a,
+                                      d.lost,
+                                      d.unheard,
+                                      d.recorded,
+                                      was_warm,
+                                      finish_def,
+                                    )
+                                  }
+                                }
+                              })
+                            }
+                          }
+                        }
+                      }
+                    })
+                    return
+                  }
+                  check_tools_retry()
+                }
+              }
+            }
+            if a.notices.length() > 0 {
+              self.give_notices_k(a, after_notices)
+            } else {
+              after_notices(effect::Exit::Succeeded(()))
+            }
+          }
+        }
+      })
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+// ── Compaction & clear (`actor_run.mbt:942-1103`) ──
+
+pub fn ActorsGen::compacting_to_cap_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  self.store_k(a, "getSession", [sessions_core::jstr(a.key)], fn(
+    ex_row : effect::Exit[base_codec::Json],
+  ) -> Unit {
+    match ex_row {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(row) => {
+        if is_opt_null_or_none(sessions_core::jget(row, "contextBefore")) {
+          k(effect::Exit::Succeeded(false))
+          return
+        }
+        if is_some(a.turn) || is_some(a.codex_update) || a.compacting || is_some(a.waiting) {
+          k(effect::Exit::Succeeded(false))
+          return
+        }
+        self.busy_k(a, fn(ex_b : effect::Exit[Bool]) -> Unit {
+          match ex_b {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(true) => k(effect::Exit::Succeeded(false))
+            effect::Exit::Succeeded(false) => {
+              self.held_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
+                match ex_h {
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(true) => k(effect::Exit::Succeeded(false))
+                  effect::Exit::Succeeded(false) => {
+                    self.archived_k(a, fn(ex_ar : effect::Exit[Bool]) -> Unit {
+                      match ex_ar {
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(true) => k(effect::Exit::Succeeded(false))
+                        effect::Exit::Succeeded(false) => {
+                          self.begin_compacting_k(a, fn(ex_bc : effect::Exit[Option[String]]) -> Unit {
+                            match ex_bc {
+                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                              effect::Exit::Succeeded(None) => k(effect::Exit::Succeeded(true))
+                              effect::Exit::Succeeded(Some(refused)) => {
+                                self.log(a, "info", "could not compact down to its most context", [
+                                  ("why", sessions_core::jstr(refused)),
+                                ])
+                                self.store_k(
+                                  a,
+                                  "setSessionContextBefore",
+                                  [sessions_core::jstr(a.key), base_codec::json_null()],
+                                  fn(ex_sc : effect::Exit[base_codec::Json]) -> Unit {
+                                    match ex_sc {
+                                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                      effect::Exit::Succeeded(_) => {
+                                        self.notify_store_k(a, fn(ex_ns : effect::Exit[Unit]) -> Unit {
+                                          match ex_ns {
+                                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                            effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(false))
+                                          }
+                                        })
+                                      }
+                                    }
+                                  },
+                                )
+                              }
+                            }
+                          })
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+pub fn ActorsGen::begin_compacting_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Option[String]]) -> Unit,
+) -> Unit {
+  let check_busy = fn(is_busy : Bool) -> Unit {
+    if is_some(a.turn) || is_some(a.codex_update) || a.compacting || is_busy {
+      self.t_k(a, "station.context.busy", base_codec::json_null(), fn(ex : effect::Exit[String]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(s) => k(effect::Exit::Succeeded(Some(s)))
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      })
+      return
+    }
+    self.held_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
+      match ex_h {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(true) => {
+          self.t_k(a, "station.context.held", base_codec::json_null(), fn(ex : effect::Exit[String]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(s) => k(effect::Exit::Succeeded(Some(s)))
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          })
+        }
+        effect::Exit::Succeeded(false) => {
+          self.store_k(a, "getSession", [sessions_core::jstr(a.key)], fn(
+            ex_row : effect::Exit[base_codec::Json],
+          ) -> Unit {
+            match ex_row {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(row) => {
+                if !sessions_core::truthy(sessions_core::field_of(row, "runtimeSessionId")) {
+                  self.t_k(a, "station.context.empty", base_codec::json_null(), fn(
+                    ex : effect::Exit[String],
+                  ) -> Unit {
+                    match ex {
+                      effect::Exit::Succeeded(s) => k(effect::Exit::Succeeded(Some(s)))
+                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    }
+                  })
+                  return
+                }
+                self.ensure_agent_k(a, fn(ex_ea : effect::Exit[Agent]) -> Unit {
+                  match ex_ea {
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => {
+                      if is_some(open_abort_reason(e)) {
+                        k(effect::Exit::Succeeded(None))
+                      } else {
+                        self.failed_words_k(a, "compactFailed", e, fn(ex_fw : effect::Exit[String]) -> Unit {
+                          match ex_fw {
+                            effect::Exit::Succeeded(s) => k(effect::Exit::Succeeded(Some(s)))
+                            effect::Exit::Failed(e2) => k(effect::Exit::Failed(e2))
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          }
+                        })
+                      }
+                    }
+                    effect::Exit::Succeeded(agent) => {
+                      if is_some(a.afresh) {
+                        self.t_k(a, "station.context.empty", base_codec::json_null(), fn(
+                          ex : effect::Exit[String],
+                        ) -> Unit {
+                          match ex {
+                            effect::Exit::Succeeded(s) => k(effect::Exit::Succeeded(Some(s)))
+                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          }
+                        })
+                        return
+                      }
+                      self.agent_do_k(a, agent, "canCompact", [], fn(
+                        ex_cc : effect::Exit[base_codec::Json],
+                      ) -> Unit {
+                        match ex_cc {
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                          effect::Exit::Succeeded(cc_v) => {
+                            if !sessions_core::truthy(cc_v) {
+                              self.rpc_k(
+                                a.key,
+                                "node.words",
+                                [sessions_core::jstr("runtimeLabel"), sessions_core::jstr(a.runtime)],
+                                fn(ex_lbl : effect::Exit[base_codec::Json]) -> Unit {
+                                  match ex_lbl {
+                                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                    effect::Exit::Succeeded(lbl) => {
+                                      self.t_k(
+                                        a,
+                                        "station.context.cannotCompact",
+                                        base_codec::json_obj([("name", lbl)]),
+                                        fn(ex : effect::Exit[String]) -> Unit {
+                                          match ex {
+                                            effect::Exit::Succeeded(s) => k(effect::Exit::Succeeded(Some(s)))
+                                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                          }
+                                        },
+                                      )
+                                    }
+                                  }
+                                },
+                              )
+                              return
+                            }
+                            self.log(a, "info", "compacting its context")
+                            a.compacting = true
+                            self.set_running_k(a, true, fn(ex_sr : effect::Exit[Unit]) -> Unit {
+                              match ex_sr {
+                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                effect::Exit::Succeeded(_) => {
+                                  self.notify_store_k(a, fn(ex_ns : effect::Exit[Unit]) -> Unit {
+                                    match ex_ns {
+                                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                      effect::Exit::Succeeded(_) => {
+                                        self.agent_do_k(a, agent, "compact", [], fn(
+                                          ex_c : effect::Exit[base_codec::Json],
+                                        ) -> Unit {
+                                          match ex_c {
+                                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                            effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(None))
+                                            effect::Exit::Failed(e) => {
+                                              a.compacting = false
+                                              self.set_running_k(a, false, fn(ex_sr2 : effect::Exit[Unit]) -> Unit {
+                                                match ex_sr2 {
+                                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                  effect::Exit::Failed(e2) => k(effect::Exit::Failed(e2))
+                                                  effect::Exit::Succeeded(_) => {
+                                                    self.notify_store_k(a, fn(ex_ns2 : effect::Exit[Unit]) -> Unit {
+                                                      match ex_ns2 {
+                                                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                        effect::Exit::Failed(e2) => k(effect::Exit::Failed(e2))
+                                                        effect::Exit::Succeeded(_) => {
+                                                          self.failed_words_k(a, "compactFailed", e, fn(
+                                                            ex_fw : effect::Exit[String],
+                                                          ) -> Unit {
+                                                            match ex_fw {
+                                                              effect::Exit::Succeeded(s) => k(effect::Exit::Succeeded(Some(s)))
+                                                              effect::Exit::Failed(e2) => k(effect::Exit::Failed(e2))
+                                                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                            }
+                                                          })
+                                                        }
+                                                      }
+                                                    })
+                                                  }
+                                                }
+                                              })
+                                            }
+                                          }
+                                        })
+                                      }
+                                    }
+                                  })
+                                }
+                              }
+                            })
+                          }
+                        }
+                      })
+                    }
+                  }
+                })
+              }
+            }
+          })
+        }
+      }
+    })
+  }
+  if is_some(a.turn) || is_some(a.codex_update) || a.compacting {
+    check_busy(false)
+  } else {
+    self.busy_k(a, fn(ex_b : effect::Exit[Bool]) -> Unit {
+      match ex_b {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(b) => check_busy(b)
+      }
+    })
+  }
+}
+
+pub fn ActorsGen::compacted_k(
+  self : ActorsGen,
+  a : Actor,
+  outcome : base_codec::Json,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  a.compacting = false
+  self.idle_now(a)
+  let stop_requested = a.stop_requested
+  a.stop_requested = false
+  self.set_running_k(a, false, fn(ex_sr : effect::Exit[Unit]) -> Unit {
+    match ex_sr {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(_) => {
+        self.store_k(
+          a,
+          "setSessionContextBefore",
+          [sessions_core::jstr(a.key), base_codec::json_null()],
+          fn(ex_sc : effect::Exit[base_codec::Json]) -> Unit {
+            match ex_sc {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(_) => {
+                self.notify_store_k(a, fn(ex_ns : effect::Exit[Unit]) -> Unit {
+                  match ex_ns {
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Succeeded(_) => {
+                      let kind = sessions_core::text_of(outcome, "kind")
+                      self.log(a, "info", "compaction ended", [
+                        ("outcome", sessions_core::jstr(kind)),
+                      ])
+                      let after_notice = fn(ex_n : effect::Exit[Unit]) -> Unit {
+                        match ex_n {
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                          effect::Exit::Succeeded(_) => {
+                            self.archived_k(a, fn(ex_ar : effect::Exit[Bool]) -> Unit {
+                              match ex_ar {
+                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                effect::Exit::Succeeded(true) => {
+                                  self.let_go_k(a, fn(ex_lg : effect::Exit[Unit]) -> Unit {
+                                    match ex_lg {
+                                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                      effect::Exit::Succeeded(_) => {
+                                        self.deps_k(a, "idle", [sessions_core::jstr(a.key)], fn(
+                                          ex_id : effect::Exit[base_codec::Json],
+                                        ) -> Unit {
+                                          match ex_id {
+                                            effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+                                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                          }
+                                        })
+                                      }
+                                    }
+                                  })
+                                }
+                                effect::Exit::Succeeded(false) => {
+                                  if a.over_while_compacting {
+                                    a.over_while_compacting = false
+                                    if is_some(a.waiting) {
+                                      self.wait_ms(a, a.waiting_seconds, 0.0)
+                                    }
+                                  }
+                                  self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
+                                    match ex_hp {
+                                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                      effect::Exit::Succeeded(true) => self.pump_k(a, -1, k)
+                                      effect::Exit::Succeeded(false) => {
+                                        if a.notices.length() > 0 {
+                                          self.give_notices_k(a, k)
+                                        } else {
+                                          self.deps_k(a, "idle", [sessions_core::jstr(a.key)], fn(
+                                            ex_id : effect::Exit[base_codec::Json],
+                                          ) -> Unit {
+                                            match ex_id {
+                                              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+                                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                            }
+                                          })
+                                        }
+                                      }
+                                    }
+                                  })
+                                }
+                              }
+                            })
+                          }
+                        }
+                      }
+                      if kind == "completed" {
+                        self.t_k(a, "station.notice.compacted", base_codec::json_null(), fn(
+                          ex_t : effect::Exit[String],
+                        ) -> Unit {
+                          match ex_t {
+                            effect::Exit::Interrupted => after_notice(effect::Exit::Interrupted)
+                            effect::Exit::Failed(e) => after_notice(effect::Exit::Failed(e))
+                            effect::Exit::Succeeded(msg) => {
+                              self.notice_k(
+                                a,
+                                msg,
+                                base_codec::json_null(),
+                                base_codec::json_null(),
+                                base_codec::json_null(),
+                                None,
+                                false,
+                                after_notice,
+                              )
+                            }
+                          }
+                        })
+                      } else if kind == "failed" {
+                        let reason = sessions_core::text_of(outcome, "reason")
+                        self.log(a, "warn", "compaction failed", [
+                          ("reason", sessions_core::jstr(reason)),
+                          ("error", sessions_core::field_of(outcome, "message")),
+                        ])
+                        self.rpc_k(
+                          a.key,
+                          "node.words",
+                          [sessions_core::jstr("compactFailedNotice"), outcome],
+                          fn(ex_w : effect::Exit[base_codec::Json]) -> Unit {
+                            match ex_w {
+                              effect::Exit::Interrupted => after_notice(effect::Exit::Interrupted)
+                              effect::Exit::Failed(e) => after_notice(effect::Exit::Failed(e))
+                              effect::Exit::Succeeded(wv) => {
+                                let said = str_or(sessions_core::str_of(Some(wv)), "")
+                                let prof = if reason == "auth" || reason == "refused" {
+                                  a.profile
+                                } else {
+                                  base_codec::json_null()
+                                }
+                                self.notice_k(
+                                  a,
+                                  said,
+                                  prof,
+                                  base_codec::json_null(),
+                                  base_codec::json_null(),
+                                  None,
+                                  false,
+                                  after_notice,
+                                )
+                              }
+                            }
+                          },
+                        )
+                      } else if stop_requested {
+                        self.t_k(a, "station.notice.stopped", base_codec::json_null(), fn(
+                          ex_t : effect::Exit[String],
+                        ) -> Unit {
+                          match ex_t {
+                            effect::Exit::Interrupted => after_notice(effect::Exit::Interrupted)
+                            effect::Exit::Failed(e) => after_notice(effect::Exit::Failed(e))
+                            effect::Exit::Succeeded(msg) => {
+                              self.notice_k(
+                                a,
+                                msg,
+                                base_codec::json_null(),
+                                base_codec::json_null(),
+                                base_codec::json_null(),
+                                None,
+                                false,
+                                after_notice,
+                              )
+                            }
+                          }
+                        })
+                      } else {
+                        after_notice(effect::Exit::Succeeded(()))
+                      }
+                    }
+                  }
+                })
+              }
+            }
+          },
+        )
+      }
+    }
+  })
+}
+
+pub fn ActorsGen::clear_now_k(
+  self : ActorsGen,
+  a : Actor,
+  read_back : Bool,
+  said : String,
+  by : String,
+  keep_jobs : Bool,
+  k : (effect::Exit[Option[String]]) -> Unit,
+) -> Unit {
+  let check_busy = fn(is_busy : Bool) -> Unit {
+    if is_some(a.turn) || is_some(a.codex_update) || a.compacting || is_busy {
+      self.t_k(a, "station.context.busy", base_codec::json_null(), fn(ex : effect::Exit[String]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(s) => k(effect::Exit::Succeeded(Some(s)))
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      })
+      return
+    }
+    self.store_k(a, "getSession", [sessions_core::jstr(a.key)], fn(
+      ex_row : effect::Exit[base_codec::Json],
+    ) -> Unit {
+      match ex_row {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(row) => {
+          let left = sessions_core::field_of(row, "runtimeSessionId")
+          if !sessions_core::truthy(left) {
+            self.t_k(a, "station.context.empty", base_codec::json_null(), fn(
+              ex : effect::Exit[String],
+            ) -> Unit {
+              match ex {
+                effect::Exit::Succeeded(s) => k(effect::Exit::Succeeded(Some(s)))
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              }
+            })
+            return
+          }
+          self.stop_waiting_k(a, false, keep_jobs, fn(ex_sw : effect::Exit[Bool]) -> Unit {
+            match ex_sw {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(_) => {
+                self.cancel_mid_wait(a)
+                self.clear_silent_wait(a)
+                let agent = a.agent
+                let after_bg = fn(bg_n : Int) -> Unit {
+                  self.set_agent(a, None)
+                  self.log(a, "info", "clearing its context, asked " + by, [
+                    ("left", left),
+                    ("readBack", sessions_core::jbool(read_back)),
+                    ("background", sessions_core::jint(bg_n)),
+                  ])
+                  let after_dispose = fn(ex_d : effect::Exit[Unit]) -> Unit {
+                    match ex_d {
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                      effect::Exit::Succeeded(_) => {
+                        a.stopped.clear()
+                        a.stopped_note = None
+                        a.resume_lost = false
+                        a.afresh = None
+                        a.codex_reloaded = None
+                        a.compacted_untold = false
+                        a.nudges = 0
+                        self.cancel_tools_retry(a)
+                        a.tools_restarts = 0
+                        a.deferred_end = None
+                        a.warm = false
+                        self.mirror(a)
+                        self.deps_k(
+                          a,
+                          "ranIn",
+                          [sessions_core::jstr(a.key), left, base_codec::json_null()],
+                          fn(ex_ri : effect::Exit[base_codec::Json]) -> Unit {
+                            match ex_ri {
+                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                              effect::Exit::Succeeded(_) => {
+                                self.store_k(
+                                  a,
+                                  "setRuntimeSessionId",
+                                  [sessions_core::jstr(a.key), base_codec::json_null()],
+                                  fn(ex_sr : effect::Exit[base_codec::Json]) -> Unit {
+                                    match ex_sr {
+                                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                      effect::Exit::Succeeded(_) => {
+                                        a.read_back = read_back
+                                        self.notify_store_k(a, fn(ex_ns : effect::Exit[Unit]) -> Unit {
+                                          match ex_ns {
+                                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                            effect::Exit::Succeeded(_) => {
+                                              self.t_k(a, said, base_codec::json_null(), fn(
+                                                ex_t : effect::Exit[String],
+                                              ) -> Unit {
+                                                match ex_t {
+                                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                  effect::Exit::Succeeded(msg) => {
+                                                    self.notice_k(
+                                                      a,
+                                                      msg,
+                                                      base_codec::json_null(),
+                                                      base_codec::json_null(),
+                                                      base_codec::json_null(),
+                                                      None,
+                                                      false,
+                                                      fn(ex_n : effect::Exit[Unit]) -> Unit {
+                                                        match ex_n {
+                                                          effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(None))
+                                                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                        }
+                                                      },
+                                                    )
+                                                  }
+                                                }
+                                              })
+                                            }
+                                          }
+                                        })
+                                      }
+                                    }
+                                  },
+                                )
+                              }
+                            }
+                          },
+                        )
+                      }
+                    }
+                  }
+                  match agent {
+                    Some(g) => {
+                      self.agent_do_k(a, g, "dispose", [], fn(ex_dp : effect::Exit[base_codec::Json]) -> Unit {
+                        match ex_dp {
+                          effect::Exit::Succeeded(_) => after_dispose(effect::Exit::Succeeded(()))
+                          effect::Exit::Failed(e) => after_dispose(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => after_dispose(effect::Exit::Interrupted)
+                        }
+                      })
+                    }
+                    None => after_dispose(effect::Exit::Succeeded(()))
+                  }
+                }
+                match agent {
+                  Some(g) => {
+                    self.agent_do_k(a, g, "background", [], fn(
+                      ex_bg : effect::Exit[base_codec::Json],
+                    ) -> Unit {
+                      match ex_bg {
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(base_codec::Json::Arr(b)) => after_bg(b.length())
+                        effect::Exit::Succeeded(_) => after_bg(0)
+                      }
+                    })
+                  }
+                  None => after_bg(0)
+                }
+              }
+            }
+          })
+        }
+      }
+    })
+  }
+  if is_some(a.turn) || is_some(a.codex_update) || a.compacting {
+    check_busy(false)
+  } else {
+    self.busy_k(a, fn(ex_b : effect::Exit[Bool]) -> Unit {
+      match ex_b {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(b) => check_busy(b)
+      }
+    })
+  }
+}
+
+// ── Suspend, snapshot, adopt, stop_waiting, stop_background, let_go (`actor_run.mbt:1108-1327`, `3393-3461`) ──
+
+pub fn ActorsGen::suspend_k(
+  self : ActorsGen,
+  a : Actor,
+  why : String,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let _ = self.abort_open(a, "suspended")
+  a.delivery_interruptions = a.delivery_interruptions + 1
+  self.enqueue_k(
+    a,
+    fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      let agent = a.agent
+      self.set_agent(a, None)
+      self.busy_of_k(a, agent, fn(ex_b : effect::Exit[Bool]) -> Unit {
+        match ex_b {
+          effect::Exit::Interrupted => {
+            a.delivery_interruptions = a.delivery_interruptions - 1
+            tk(effect::Exit::Interrupted)
+          }
+          effect::Exit::Failed(e) => {
+            a.delivery_interruptions = a.delivery_interruptions - 1
+            tk(effect::Exit::Failed(e))
+          }
+          effect::Exit::Succeeded(busy) => {
+            let turn = a.turn
+            let had_slot = is_some(turn) || a.starting_turn
+            a.turn = None
+            a.warm = false
+            a.deferred_end = None
+            self.cancel_tools_retry(a)
+            self.cancel_mid_wait(a)
+            self.clear_silent_wait(a)
+            a.starting_turn = false
+            a.queued_retry = None
+            self.remove_turn_wait(a.key)
+            let finish = fn(ex : effect::Exit[Unit]) -> Unit {
+              if had_slot && !self.gen.counters.sealed && !is_some(a.turn) && !a.starting_turn {
+                self.drain_turn_queue(true)
+              }
+              a.delivery_interruptions = a.delivery_interruptions - 1
+              tk(ex)
+            }
+            a.tools.clear()
+            a.working_for = []
+            a.stop_requested = false
+            let steered = a.steered
+            a.steered = []
+            a.steered_for = []
+            a.unread = []
+            a.unread_preparing = 0
+            if !is_some(agent) && !is_some(turn) {
+              finish(effect::Exit::Succeeded(()))
+              return
+            }
+            let settled_decl = match turn {
+              Some(t) => {
+                match t.declared {
+                  Some(d) => settled_state(d)
+                  None => false
+                }
+              }
+              None => false
+            }
+            let resume = (is_some(turn) || busy) && !settled_decl
+            self.log(a, "info", "ending the runtime process: " + why, [
+              ("resume", sessions_core::jbool(resume)),
+            ])
+            let after_dispose = fn(ex_d : effect::Exit[Unit]) -> Unit {
+              match ex_d {
+                effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(_) => {
+                  let after_end = fn(ex_et : effect::Exit[Unit]) -> Unit {
+                    match ex_et {
+                      effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                      effect::Exit::Succeeded(_) => {
+                        self.set_running_k(a, resume, fn(ex_sr : effect::Exit[Unit]) -> Unit {
+                          match ex_sr {
+                            effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                            effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                            effect::Exit::Succeeded(_) => {
+                              let after_undel = fn(ex_u : effect::Exit[Unit]) -> Unit {
+                                match ex_u {
+                                  effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                  effect::Exit::Succeeded(_) => {
+                                    self.live_turn_ended_k(a, fn(ex_lt : effect::Exit[Unit]) -> Unit {
+                                      match ex_lt {
+                                        effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                        effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                        effect::Exit::Succeeded(_) => {
+                                          self.notify_store_k(a, fn(ex_ns : effect::Exit[Unit]) -> Unit {
+                                            match ex_ns {
+                                              effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                              effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                              effect::Exit::Succeeded(_) => {
+                                                if a.phase != "closed" {
+                                                  a.phase = "idle"
+                                                }
+                                                finish(effect::Exit::Succeeded(()))
+                                              }
+                                            }
+                                          })
+                                        }
+                                      }
+                                    })
+                                  }
+                                }
+                              }
+                              if is_some(turn) || busy {
+                                self.store_k(
+                                  a,
+                                  "markUndelivered",
+                                  [sessions_core::jstr(a.key), base_codec::json_arr(steered)],
+                                  fn(ex_mu : effect::Exit[base_codec::Json]) -> Unit {
+                                    match ex_mu {
+                                      effect::Exit::Succeeded(_) => after_undel(effect::Exit::Succeeded(()))
+                                      effect::Exit::Failed(e) => after_undel(effect::Exit::Failed(e))
+                                      effect::Exit::Interrupted => after_undel(effect::Exit::Interrupted)
+                                    }
+                                  },
+                                )
+                              } else {
+                                after_undel(effect::Exit::Succeeded(()))
+                              }
+                            }
+                          }
+                        })
+                      }
+                    }
+                  }
+                  match turn {
+                    Some(t) => {
+                      let ended_j = match kind_of(ended_in(t.declared, "aborted")) {
+                        Some(ek) => sessions_core::jstr(ek)
+                        None => base_codec::json_null()
+                      }
+                      self.store_k(
+                        a,
+                        "endTurn",
+                        [
+                          sessions_core::jstr(t.id),
+                          sessions_core::jstr("aborted"),
+                          sessions_core::jstr("other: " + why),
+                          ended_j,
+                          base_codec::json_null(),
+                        ],
+                        fn(ex_e : effect::Exit[base_codec::Json]) -> Unit {
+                          match ex_e {
+                            effect::Exit::Succeeded(_) => after_end(effect::Exit::Succeeded(()))
+                            effect::Exit::Failed(e) => after_end(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => after_end(effect::Exit::Interrupted)
+                          }
+                        },
+                      )
+                    }
+                    None => after_end(effect::Exit::Succeeded(()))
+                  }
+                }
+              }
+            }
+            match agent {
+              Some(g) => {
+                self.agent_do_k(a, g, "dispose", [], fn(ex_dp : effect::Exit[base_codec::Json]) -> Unit {
+                  match ex_dp {
+                    effect::Exit::Succeeded(_) => after_dispose(effect::Exit::Succeeded(()))
+                    effect::Exit::Failed(e) => after_dispose(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => after_dispose(effect::Exit::Interrupted)
+                  }
+                })
+              }
+              None => after_dispose(effect::Exit::Succeeded(()))
+            }
+          }
+        }
+      })
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+fn max0(x : Double) -> Double {
+  if x < 0.0 { 0.0 } else { x }
+}
+
+/// Handover snapshot (`actor_run.mbt:1169-1221`).
+pub fn ActorsGen::snapshot(self : ActorsGen, a : Actor) -> base_codec::Json {
+  let now = self.gen.counters.now
+  let turn = match a.turn {
+    Some(t) => {
+      let decl_j = match kind_of(t.declared) {
+        Some(dk) => sessions_core::jstr(dk)
+        None => base_codec::json_null()
+      }
+      let wait_j = if opt_str_is(kind_of(t.declared), "waiting") {
+        match t.declared {
+          Some(d) => sessions_core::field_of(d, "seconds")
+          None => base_codec::json_null()
+        }
+      } else {
+        base_codec::json_null()
+      }
+      let asked_j = match t.asked_before {
+        Some(ab) => ab
+        None => base_codec::json_null()
+      }
+      base_codec::json_obj([
+        ("id", sessions_core::jstr(t.id)),
+        ("authRetried", sessions_core::jbool(t.auth_retried)),
+        ("codexRetried", sessions_core::jbool(t.codex_retried)),
+        ("passive", sessions_core::jbool(t.passive)),
+        ("by", t.by),
+        ("declared", decl_j),
+        ("wait", wait_j),
+        ("askedBefore", asked_j),
+      ])
+    }
+    None => base_codec::json_null()
+  }
+  let deferred_end = match a.deferred_end {
+    Some(d) => {
+      let rec_j = match d.recorded {
+        Some(r) => sessions_core::jstr(r)
+        None => base_codec::json_null()
+      }
+      base_codec::json_obj([
+        ("lost", sessions_core::jbool(d.lost)),
+        ("unheard", sessions_core::jbool(d.unheard)),
+        ("recorded", rec_j),
+      ])
+    }
+    None => base_codec::json_null()
+  }
+  let wf : Array[base_codec::Json] = []
+  for i in 0..<a.working_for.length() {
+    wf.push(working_json(a.working_for[i]))
+  }
+  let nts : Array[base_codec::Json] = []
+  for i in 0..<a.notices.length() {
+    nts.push(sessions_core::jstr(a.notices[i]))
+  }
+  let waiting_ms = if is_some(a.waiting) {
+    sessions_core::jnum(max0(a.waiting_until - now))
+  } else {
+    base_codec::json_null()
+  }
+  let mid_waiting_ms = if is_some(a.mid_waiting) {
+    sessions_core::jnum(max0(a.mid_waiting_until - now))
+  } else {
+    base_codec::json_null()
+  }
+  let silent_waiting_ms = match a.silent_waiting_since {
+    Some(s) => sessions_core::jnum(max0(now - s))
+    None => base_codec::json_null()
+  }
+  let progress_reminded_ms = if a.progress_reminded_at > 0.0 {
+    sessions_core::jnum(max0(now - a.progress_reminded_at))
+  } else {
+    base_codec::json_null()
+  }
+  let tools_retry_ms = if is_some(a.tools_retry) {
+    sessions_core::jnum(max0(a.tools_retry_at - now))
+  } else if a.tools_retry_deferred {
+    sessions_core::jnum(0.0)
+  } else {
+    base_codec::json_null()
+  }
+  let refill_ms = if is_some(a.refill) {
+    sessions_core::jnum(max0(a.refill_at - now))
+  } else {
+    base_codec::json_null()
+  }
+  let agent_j = match a.agent {
+    Some(g) => sessions_core::jint(g.handle)
+    None => base_codec::json_null()
+  }
+  let snap = base_codec::json_obj([
+    ("key", sessions_core::jstr(a.key)),
+    ("runtime", sessions_core::jstr(a.runtime)),
+    ("identity", a.running_identity),
+    ("turn", turn),
+    ("deferredEnd", deferred_end),
+    ("workingFor", base_codec::json_arr(wf)),
+    ("notices", base_codec::json_arr(nts)),
+    ("waitingMs", waiting_ms),
+    ("waitingSeconds", sessions_core::jnum(a.waiting_seconds)),
+    ("midWaitingMs", mid_waiting_ms),
+    ("midWaitingSeconds", sessions_core::jnum(a.mid_waiting_seconds)),
+    ("silentWaitingMs", silent_waiting_ms),
+    ("progressRemindedMs", progress_reminded_ms),
+    ("nudges", sessions_core::jint(a.nudges)),
+    ("toolsRestarts", sessions_core::jint(a.tools_restarts)),
+    ("toolsRetryMs", tools_retry_ms),
+    ("stopRequested", sessions_core::jbool(a.stop_requested)),
+    ("refillMs", refill_ms),
+    ("idleMs", sessions_core::jnum(max0(now - a.idle_since))),
+    ("stale", sessions_core::jbool(a.stale)),
+    ("restart", sessions_core::jbool(a.restart)),
+    ("compacting", sessions_core::jbool(a.compacting)),
+    ("agent", agent_j),
+  ])
+  self.close(a)
+  snap
+}
+
+/// Handover adoption (`actor_run.mbt:1225-1327`).
+pub fn ActorsGen::adopt(
+  self : ActorsGen,
+  a : Actor,
+  snap : base_codec::Json,
+  agent : base_codec::Json,
+  profile : base_codec::Json,
+  row : base_codec::Json,
+) -> Unit {
+  if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
+    return
+  }
+  a.turn_epoch = a.turn_epoch + 1
+  let now = self.gen.counters.now
+  let runtime = str_or(sessions_core::str_of(sessions_core::jget(snap, "runtime")), a.runtime)
+  let taken : Option[Agent] = match agent {
+    base_codec::Json::Obj(_) => {
+      Some(Agent::{
+        generation: num_or(sessions_core::num_of(sessions_core::jget(agent, "generation")), 0.0).to_int(),
+        handle: num_or(sessions_core::num_of(sessions_core::jget(agent, "handle")), 0.0).to_int(),
+      })
+    }
+    _ => None
+  }
+  if is_some(taken) {
+    a.runtime = runtime
+  }
+  a.running_identity = match taken {
+    None => base_codec::json_null()
+    Some(_) => {
+      match sessions_core::jget(snap, "identity") {
+        Some(base_codec::Json::Obj(_)) => sessions_core::field_of(snap, "identity")
+        _ => {
+          base_codec::json_obj([
+            ("runtime", sessions_core::jstr(runtime)),
+            ("model", sessions_core::field_of(row, "model")),
+            ("effort", sessions_core::field_of(row, "effort")),
+          ])
+        }
+      }
+    }
+  }
+  self.set_agent(a, taken)
+  a.profile = if is_some(taken) { profile } else { base_codec::json_null() }
+  a.turn = match sessions_core::jget(snap, "turn") {
+    Some(base_codec::Json::Obj(_)) => {
+      let t = sessions_core::field_of(snap, "turn")
+      let decl = match sessions_core::str_of(sessions_core::jget(t, "declared")) {
+        Some(dk) => parse_declared(dk, num_or(sessions_core::num_of(sessions_core::jget(t, "wait")), 0.0))
+        None => None
+      }
+      let asked_before = match sessions_core::jget(t, "askedBefore") {
+        Some(base_codec::Json::Obj(_)) => sessions_core::jget(t, "askedBefore")
+        _ => None
+      }
+      let by_v = match sessions_core::jget(t, "by") {
+        Some(bv) => bv
+        None => turn_for_nobody()
+      }
+      Some(Turn::{
+        id: str_or(sessions_core::str_of(sessions_core::jget(t, "id")), ""),
+        auth_retried: is_opt_json_true(sessions_core::jget(t, "authRetried")),
+        codex_retried: is_opt_json_true(sessions_core::jget(t, "codexRetried")),
+        passive: is_opt_json_true(sessions_core::jget(t, "passive")),
+        by: by_v,
+        declared: decl,
+        asked_before: asked_before,
+        started_at: now,
+        first_live_at: None,
+        tools_count: 0,
+        last_tool_at: now,
+        wait_watch: false,
+      })
+    }
+    _ => None
+  }
+  a.phase = if is_some(a.turn) { "running" } else { "idle" }
+  a.deferred_end = match sessions_core::jget(snap, "deferredEnd") {
+    Some(base_codec::Json::Obj(_)) => {
+      let d = sessions_core::field_of(snap, "deferredEnd")
+      Some(DeferredEnd::{
+        lost: is_opt_json_true(sessions_core::jget(d, "lost")),
+        unheard: is_opt_json_true(sessions_core::jget(d, "unheard")),
+        recorded: sessions_core::str_of(sessions_core::jget(d, "recorded")),
+      })
+    }
+    _ => None
+  }
+  a.warm = !is_some(a.turn) && is_some(a.deferred_end)
+  a.working_for = match sessions_core::jget(snap, "workingFor") {
+    Some(base_codec::Json::Arr(ws)) => {
+      let out : Array[Working] = []
+      for i in 0..<ws.length() {
+        out.push(working_of(ws[i]))
+      }
+      out
+    }
+    _ => []
+  }
+  let merged_notices : Array[String] = []
+  match sessions_core::jget(snap, "notices") {
+    Some(base_codec::Json::Arr(ns)) => {
+      for i in 0..<ns.length() {
+        match sessions_core::str_of(Some(ns[i])) {
+          Some(s) => merged_notices.push(s)
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  for i in 0..<a.notices.length() {
+    merged_notices.push(a.notices[i])
+  }
+  a.notices = merged_notices
+  a.nudges = num_or(sessions_core::num_of(sessions_core::jget(snap, "nudges")), 0.0).to_int()
+  a.tools_restarts = num_or(sessions_core::num_of(sessions_core::jget(snap, "toolsRestarts")), 0.0).to_int()
+  a.stop_requested = is_opt_json_true(sessions_core::jget(snap, "stopRequested"))
+  let runtime_changed = is_some(taken) && !opt_str_is(sessions_core::str_of(sessions_core::jget(row, "runtime")), runtime)
+  a.stale = runtime_changed || is_opt_json_true(sessions_core::jget(snap, "stale"))
+  a.restart = runtime_changed || is_opt_json_true(sessions_core::jget(snap, "restart"))
+  a.compacting = is_opt_json_true(sessions_core::jget(snap, "compacting"))
+  a.idle_since = now - num_or(sessions_core::num_of(sessions_core::jget(snap, "idleMs")), 0.0)
+  match sessions_core::num_of(sessions_core::jget(snap, "waitingMs")) {
+    Some(ms) => self.wait_ms(a, num_or(sessions_core::num_of(sessions_core::jget(snap, "waitingSeconds")), 0.0), ms)
+    None => ()
+  }
+  match sessions_core::num_of(sessions_core::jget(snap, "silentWaitingMs")) {
+    Some(ms) => a.silent_waiting_since = Some(now - ms)
+    None => ()
+  }
+  match sessions_core::num_of(sessions_core::jget(snap, "progressRemindedMs")) {
+    Some(ms) => a.progress_reminded_at = now - ms
+    None => ()
+  }
+  match a.turn {
+    Some(t) => {
+      if opt_str_is(kind_of(t.declared), "waiting") {
+        let secs = match sessions_core::num_of(sessions_core::jget(snap, "midWaitingSeconds")) {
+          Some(s) => {
+            if s > 0.0 {
+              s
+            } else {
+              match t.declared {
+                Some(d) => num_or(sessions_core::num_of(sessions_core::jget(d, "seconds")), 0.0)
+                None => 0.0
+              }
+            }
+          }
+          None => {
+            match t.declared {
+              Some(d) => num_or(sessions_core::num_of(sessions_core::jget(d, "seconds")), 0.0)
+              None => 0.0
+            }
+          }
+        }
+        let ms = match sessions_core::num_of(sessions_core::jget(snap, "midWaitingMs")) {
+          Some(m) => m
+          None => secs * 1000.0
+        }
+        if secs > 0.0 {
+          let elapsed = secs * 1000.0 - ms
+          if elapsed > 0.0 {
+            t.last_tool_at = now - elapsed
+          }
+          self.arm_mid_wait(a, t.id, secs, ms)
+        }
+      }
+    }
+    None => ()
+  }
+  match sessions_core::num_of(sessions_core::jget(snap, "refillMs")) {
+    Some(ms) => self.await_refill(a, now + ms)
+    None => ()
+  }
+  match sessions_core::num_of(sessions_core::jget(snap, "toolsRetryMs")) {
+    Some(ms) => self.schedule_tools_retry(a, ms)
+    None => ()
+  }
+  self.mirror(a)
+}
+
+pub fn ActorsGen::stop_waiting_k(
+  self : ActorsGen,
+  a : Actor,
+  say : Bool,
+  keep_jobs : Bool,
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  let refill = is_some(a.refill)
+  let waited = is_some(a.waiting) || refill
+  a.waiting = None
+  a.refill = None
+  self.cancel_mid_wait(a)
+  self.clear_silent_wait(a)
+  if a.phase == "waiting" {
+    a.phase = "idle"
+  }
+  self.last_turn_k(a, fn(ex_lt : effect::Exit[base_codec::Json]) -> Unit {
+    match ex_lt {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(last) => {
+        let recorded = !is_json_null(last) &&
+        !is_opt_null_or_none(sessions_core::jget(last, "endedAt")) &&
+        opt_str_is(sessions_core::str_of(sessions_core::jget(last, "declared")), "waiting")
+        if !waited && !recorded {
+          k(effect::Exit::Succeeded(false))
+          return
+        }
+        self.log(a, "info", "stopped while waiting")
+        let after_jobs = fn(ex_j : effect::Exit[Unit]) -> Unit {
+          match ex_j {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(_) => {
+              a.nudges = 0
+              let agent = a.agent
+              self.set_agent(a, None)
+              let after_dispose = fn(ex_d : effect::Exit[Unit]) -> Unit {
+                match ex_d {
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(_) => {
+                    self.store_k(
+                      a,
+                      "stopWait",
+                      [sessions_core::jstr(a.key), sessions_core::jbool(refill)],
+                      fn(ex_sw : effect::Exit[base_codec::Json]) -> Unit {
+                        match ex_sw {
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                          effect::Exit::Succeeded(_) => {
+                            if say {
+                              self.t_k(a, "station.notice.stopped", base_codec::json_null(), fn(
+                                ex_t : effect::Exit[String],
+                              ) -> Unit {
+                                match ex_t {
+                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                  effect::Exit::Succeeded(msg) => {
+                                    self.notice_k(
+                                      a,
+                                      msg,
+                                      base_codec::json_null(),
+                                      base_codec::json_null(),
+                                      base_codec::json_null(),
+                                      None,
+                                      false,
+                                      fn(ex_n : effect::Exit[Unit]) -> Unit {
+                                        match ex_n {
+                                          effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(true))
+                                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                        }
+                                      },
+                                    )
+                                  }
+                                }
+                              })
+                            } else {
+                              k(effect::Exit::Succeeded(true))
+                            }
+                          }
+                        }
+                      },
+                    )
+                  }
+                }
+              }
+              match agent {
+                Some(g) => {
+                  self.agent_do_k(a, g, "dispose", [], fn(ex_dp : effect::Exit[base_codec::Json]) -> Unit {
+                    match ex_dp {
+                      effect::Exit::Succeeded(_) => after_dispose(effect::Exit::Succeeded(()))
+                      effect::Exit::Failed(e) => after_dispose(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => after_dispose(effect::Exit::Interrupted)
+                    }
+                  })
+                }
+                None => after_dispose(effect::Exit::Succeeded(()))
+              }
+            }
+          }
+        }
+        if !is_json_null(last) && retrying(last) {
+          a.overloads = 0
+          after_jobs(effect::Exit::Succeeded(()))
+        } else if !keep_jobs {
+          self.deps_k(a, "stopJobs", [sessions_core::jstr(a.key)], fn(
+            ex_sj : effect::Exit[base_codec::Json],
+          ) -> Unit {
+            match ex_sj {
+              effect::Exit::Succeeded(_) => {
+                a.notices = []
+                after_jobs(effect::Exit::Succeeded(()))
+              }
+              effect::Exit::Failed(e) => after_jobs(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => after_jobs(effect::Exit::Interrupted)
+            }
+          })
+        } else {
+          after_jobs(effect::Exit::Succeeded(()))
+        }
+      }
+    }
+  })
+}
+
+pub fn ActorsGen::stop_background_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let agent = a.agent
+  self.set_agent(a, None)
+  self.end_process_k(a, agent, fn(ex_ep : effect::Exit[Unit]) -> Unit {
+    match ex_ep {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(_) => {
+        self.deps_k(a, "stopJobs", [sessions_core::jstr(a.key)], fn(
+          ex_sj : effect::Exit[base_codec::Json],
+        ) -> Unit {
+          match ex_sj {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(_) => {
+              a.notices = []
+              self.notify_store_k(a, k)
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+pub fn ActorsGen::let_go_k(
+  self : ActorsGen,
+  a : Actor,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  a.notices = []
+  a.queued_retry = None
+  a.deferred_end = None
+  a.warm = false
+  self.cancel_tools_retry(a)
+  self.cancel_mid_wait(a)
+  self.clear_silent_wait(a)
+  self.mirror(a)
+  a.nudges = 0
+  let waited = is_some(a.waiting)
+  a.waiting = None
+  if a.phase == "waiting" {
+    a.phase = "idle"
+  }
+  self.last_turn_k(a, fn(ex_lt : effect::Exit[base_codec::Json]) -> Unit {
+    match ex_lt {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(last) => {
+        let recorded = !is_json_null(last) &&
+        !is_opt_null_or_none(sessions_core::jget(last, "endedAt")) &&
+        opt_str_is(sessions_core::str_of(sessions_core::jget(last, "declared")), "waiting")
+        let finish_end_jobs = fn(ex_sw : effect::Exit[Unit]) -> Unit {
+          match ex_sw {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(_) => {
+              self.deps_k(a, "endJobs", [sessions_core::jstr(a.key)], fn(
+                ex_ej : effect::Exit[base_codec::Json],
+              ) -> Unit {
+                match ex_ej {
+                  effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                }
+              })
+            }
+          }
+        }
+        if waited || recorded {
+          self.log(a, "info", "archived: its wait ends")
+          self.store_k(a, "stopWait", [sessions_core::jstr(a.key)], fn(
+            ex_sw : effect::Exit[base_codec::Json],
+          ) -> Unit {
+            match ex_sw {
+              effect::Exit::Succeeded(_) => finish_end_jobs(effect::Exit::Succeeded(()))
+              effect::Exit::Failed(e) => finish_end_jobs(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => finish_end_jobs(effect::Exit::Interrupted)
+            }
+          })
+        } else {
+          finish_end_jobs(effect::Exit::Succeeded(()))
+        }
+      }
+    }
+  })
+}
+
+// ── Hub method dispatcher (`actor_run.mbt:42-379`) ──
+
+fn arg_or_null(args : Array[base_codec::Json], i : Int) -> base_codec::Json {
+  if i < args.length() { args[i] } else { base_codec::json_null() }
+}
+
+fn finish_null(k : (effect::Exit[base_codec::Json]) -> Unit) -> (effect::Exit[Unit]) -> Unit {
+  fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  }
+}
+
+pub fn ActorsGen::called_k(
+  self : ActorsGen,
+  a : Actor,
+  method : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  if self.gen.counters.sealed || a.gen_epoch != self.gen.counters.epoch {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  if method == "flushed" {
+    self.enqueue_k(a, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit { tk(effect::Exit::Succeeded(())) }, finish_null(k))
+    return
+  }
+  if method == "cleanArchive" {
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        if is_some(a.agent) || is_some(a.turn) || is_some(a.waiting) || a.notices.length() > 0 {
+          tk(effect::Exit::Succeeded(()))
+          return
+        }
+        self.deps_k(a, "cleanArchive", [sessions_core::jstr(a.key)], fn(
+          ex : effect::Exit[base_codec::Json],
+        ) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(_) => tk(effect::Exit::Succeeded(()))
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "kick" {
+    let before = a.start_failures
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        a.open_kind = "kick"
+        self.pump_k(a, before, tk)
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "notify" {
+    a.notices.push(str_or(sessions_core::str_of(Some(arg_or_null(args, 0))), ""))
+    self.enqueue_k(a, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit { self.give_notices_k(a, tk) }, finish_null(k))
+    return
+  }
+  if method == "putAway" {
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        a.notices.clear()
+        a.queued_retry = None
+        a.paused_cap = false
+        a.cap_wait_notified = false
+        a.force_session_cap = false
+        self.remove_cap_wait(a.key)
+        self.cancel_mid_wait(a)
+        self.clear_silent_wait(a)
+        let after_codex = fn(ex_sr : effect::Exit[Unit]) -> Unit {
+          match ex_sr {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(_) => {
+              if is_some(a.turn) {
+                tk(effect::Exit::Succeeded(()))
+                return
+              }
+              self.busy_k(a, fn(ex_b : effect::Exit[Bool]) -> Unit {
+                match ex_b {
+                  effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(false) => self.let_go_k(a, tk)
+                  effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
+                }
+              })
+            }
+          }
+        }
+        if is_some(a.codex_update) {
+          a.codex_update = None
+          self.set_running_k(a, false, after_codex)
+        } else {
+          after_codex(effect::Exit::Succeeded(()))
+        }
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "postedNow" {
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        self.note_posted(a)
+        tk(effect::Exit::Succeeded(()))
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "postedForTurn" {
+    let id = sessions_core::str_of(Some(arg_or_null(args, 0)))
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        match (a.turn, id) {
+          (Some(t), Some(iv)) => {
+            if t.id == iv {
+              self.note_posted(a)
+            }
+          }
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "goesOn" {
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        let t = match a.turn {
+          Some(v) => v
+          None => {
+            tk(effect::Exit::Succeeded(()))
+            return
+          }
+        }
+        let d = match t.declared {
+          Some(v) => v
+          None => {
+            tk(effect::Exit::Succeeded(()))
+            return
+          }
+        }
+        let dk = kind_of(Some(d))
+        if !opt_str_is(dk, "all_done") && !opt_str_is(dk, "need_help") {
+          tk(effect::Exit::Succeeded(()))
+          return
+        }
+        self.log(a, "info", "a post after the turn said it ended goes on: that state no longer stands", [
+          ("was", sessions_core::field_of(d, "kind")),
+        ])
+        t.declared = None
+        self.declare_turn_k(a, t.id, None, tk)
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "stateForTurn" {
+    self.state_for_turn_k(a, args, k)
+    return
+  }
+  if method == "toolsAt" {
+    let url = str_or(sessions_core::str_of(Some(arg_or_null(args, 0))), "")
+    self.enqueue_k(a, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit { self.tools_at_k(a, url, tk) }, finish_null(k))
+    return
+  }
+  if method == "declare" {
+    let state = arg_or_null(args, 0)
+    let mut recorded = false
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        let t = match a.turn {
+          Some(v) => v
+          None => {
+            tk(effect::Exit::Succeeded(()))
+            return
+          }
+        }
+        t.declared = Some(state)
+        self.declare_turn_k(a, t.id, Some(state), fn(ex : effect::Exit[Unit]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(_) => {
+              self.on_declared(a, t, state)
+              recorded = true
+              tk(effect::Exit::Succeeded(()))
+            }
+          }
+        })
+      },
+      fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(sessions_core::jbool(recorded)))
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      },
+    )
+    return
+  }
+  if method == "waitFor" {
+    let what = arg_or_null(args, 0)
+    let watch = arg_or_null(args, 1)
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        match a.turn {
+          Some(t) => {
+            t.wait_watch = sessions_core::truthy(watch)
+            self.store_k(a, "setWaitFor", [sessions_core::jstr(t.id), what, watch], fn(
+              ex : effect::Exit[base_codec::Json],
+            ) -> Unit {
+              match ex {
+                effect::Exit::Succeeded(_) => tk(effect::Exit::Succeeded(()))
+                effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+              }
+            })
+          }
+          None => tk(effect::Exit::Succeeded(()))
+        }
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "need" {
+    let what = arg_or_null(args, 0)
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        match a.turn {
+          Some(t) => {
+            self.store_k(a, "setNeed", [sessions_core::jstr(t.id), what], fn(
+              ex : effect::Exit[base_codec::Json],
+            ) -> Unit {
+              match ex {
+                effect::Exit::Succeeded(_) => tk(effect::Exit::Succeeded(()))
+                effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+              }
+            })
+          }
+          None => tk(effect::Exit::Succeeded(()))
+        }
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "about" {
+    let about = arg_or_null(args, 0)
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        match a.turn {
+          Some(t) => {
+            self.store_k(a, "setAbout", [sessions_core::jstr(t.id), about], fn(
+              ex : effect::Exit[base_codec::Json],
+            ) -> Unit {
+              match ex {
+                effect::Exit::Succeeded(_) => tk(effect::Exit::Succeeded(()))
+                effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+              }
+            })
+          }
+          None => tk(effect::Exit::Succeeded(()))
+        }
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "stop" {
+    self.stop_k(a, k)
+    return
+  }
+  if method == "cancelRetry" {
+    let thread = arg_or_null(args, 0)
+    let seq = arg_or_null(args, 1)
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        self.last_turn_k(a, fn(ex_lt : effect::Exit[base_codec::Json]) -> Unit {
+          match ex_lt {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(last) => {
+              if is_some(a.turn) || is_json_null(last) || !retrying(last) || !about_is(last, thread, seq) {
+                tk(effect::Exit::Succeeded(()))
+                return
+              }
+              self.busy_k(a, fn(ex_b : effect::Exit[Bool]) -> Unit {
+                match ex_b {
+                  effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
+                  effect::Exit::Succeeded(false) => {
+                    self.stop_waiting_k(a, false, false, fn(ex_sw : effect::Exit[Bool]) -> Unit {
+                      match ex_sw {
+                        effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(_) => {
+                          self.t_k(a, "station.notice.retryCanceled", base_codec::json_null(), fn(
+                            ex_t : effect::Exit[String],
+                          ) -> Unit {
+                            match ex_t {
+                              effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                              effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                              effect::Exit::Succeeded(msg) => {
+                                self.notice_k(
+                                  a,
+                                  msg,
+                                  base_codec::json_null(),
+                                  base_codec::json_null(),
+                                  base_codec::json_null(),
+                                  None,
+                                  false,
+                                  fn(ex_n : effect::Exit[Unit]) -> Unit {
+                                    match ex_n {
+                                      effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                                      effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                                      effect::Exit::Succeeded(_) => self.live_turn_ended_k(a, tk)
+                                    }
+                                  },
+                                )
+                              }
+                            }
+                          })
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+          }
+        })
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "retryFailed" {
+    let thread = arg_or_null(args, 0)
+    let seq = arg_or_null(args, 1)
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        self.last_turn_k(a, fn(ex_lt : effect::Exit[base_codec::Json]) -> Unit {
+          match ex_lt {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(last) => {
+              let cap_paused = !is_json_null(last) &&
+              opt_str_is(sessions_core::str_of(sessions_core::jget(last, "outcome")), "failed") &&
+              opt_str_is(sessions_core::str_of(sessions_core::jget(last, "detail")), "other: session_cap")
+              self.blocked_k(a, fn(ex_bl : effect::Exit[Bool]) -> Unit {
+                match ex_bl {
+                  effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
+                  effect::Exit::Succeeded(false) => {
+                    self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
+                      match ex_hp {
+                        effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(has_p) => {
+                          if (!cap_paused && has_p) || is_json_null(last) || !retryable(last) || !about_is(last, thread, seq) {
+                            tk(effect::Exit::Succeeded(()))
+                            return
+                          }
+                          if cap_paused {
+                            self.remove_cap_wait(a.key)
+                            a.paused_cap = false
+                            a.cap_wait_notified = false
+                            a.force_session_cap = true
+                            self.log(a, "info", "manually starting a turn queued by account concurrency cap, as asked")
+                            if has_p {
+                              self.pump_k(a, -1, tk)
+                              return
+                            }
+                            match a.queued_retry {
+                              Some(r) => {
+                                a.queued_retry = None
+                                self.start_turn_k(a, r.kind, r.text, r.by, None, false, 0, false, tk)
+                                return
+                              }
+                              None => ()
+                            }
+                            self.words_k(a, "GO_ON_AFTER_FAILED", [], fn(ex_w : effect::Exit[String]) -> Unit {
+                              match ex_w {
+                                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                                effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                                effect::Exit::Succeeded(words) => {
+                                  self.start_turn_k(a, "resume", words, turn_for_nobody(), None, false, 0, true, tk)
+                                }
+                              }
+                            })
+                            return
+                          }
+                          self.log(a, "info", "trying again a failed turn, as asked")
+                          let words_key = if cut_off_by_restart(last) {
+                            "RESUME_AFTER_RESTART"
+                          } else if given_up(last) {
+                            "GO_ON_AFTER_UNANSWERED"
+                          } else {
+                            "GO_ON_AFTER_FAILED"
+                          }
+                          self.words_k(a, words_key, [], fn(ex_w : effect::Exit[String]) -> Unit {
+                            match ex_w {
+                              effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                              effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                              effect::Exit::Succeeded(words) => {
+                                self.start_turn_k(a, "resume", words, turn_for_nobody(), None, false, 0, true, tk)
+                              }
+                            }
+                          })
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+          }
+        })
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "reassign" {
+    let thread = arg_or_null(args, 0)
+    let seq = arg_or_null(args, 1)
+    self.enqueue_k(a, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit { self.reassign_k(a, thread, seq, tk) }, finish_null(k))
+    return
+  }
+  if method == "stopFromSlack" {
+    self.stop_from_slack_k(a, args, k)
+    return
+  }
+  if method == "goOn" {
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        self.blocked_k(a, fn(ex_bl : effect::Exit[Bool]) -> Unit {
+          match ex_bl {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
+            effect::Exit::Succeeded(false) => {
+              a.refill = None
+              self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
+                match ex_hp {
+                  effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(true) => self.pump_k(a, -1, tk)
+                  effect::Exit::Succeeded(false) => {
+                    self.last_turn_k(a, fn(ex_lt : effect::Exit[base_codec::Json]) -> Unit {
+                      match ex_lt {
+                        effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(last) => {
+                          let wk = if !is_json_null(last) && retrying(last) {
+                            "GO_ON_AFTER_OVERLOADED"
+                          } else {
+                            "GO_ON_AFTER_SPENT"
+                          }
+                          self.words_k(a, wk, [], fn(ex_w : effect::Exit[String]) -> Unit {
+                            match ex_w {
+                              effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                              effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                              effect::Exit::Succeeded(words) => {
+                                self.start_turn_k(a, "resume", words, turn_for_nobody(), None, false, 0, false, tk)
+                              }
+                            }
+                          })
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+          }
+        })
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "allowanceReset" {
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        if !is_some(a.refill) || is_some(a.turn) {
+          tk(effect::Exit::Succeeded(()))
+          return
+        }
+        self.archived_k(a, fn(ex_ar : effect::Exit[Bool]) -> Unit {
+          match ex_ar {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
+            effect::Exit::Succeeded(false) => {
+              self.busy_k(a, fn(ex_b : effect::Exit[Bool]) -> Unit {
+                match ex_b {
+                  effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
+                  effect::Exit::Succeeded(false) => {
+                    self.held_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
+                      match ex_h {
+                        effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(true) => {
+                          a.refill_at = self.gen.counters.now
+                          tk(effect::Exit::Succeeded(()))
+                        }
+                        effect::Exit::Succeeded(false) => {
+                          if self.turn_slots_full(a) {
+                            a.refill_at = self.gen.counters.now
+                            self.enqueue_turn_wait(a)
+                            tk(effect::Exit::Succeeded(()))
+                            return
+                          }
+                          let reserved = !a.starting_turn
+                          if reserved {
+                            a.starting_turn = true
+                          }
+                          let finish = fn(ex : effect::Exit[Unit]) -> Unit {
+                            if reserved {
+                              a.starting_turn = false
+                              if !self.gen.counters.sealed && !is_some(a.turn) {
+                                self.drain_turn_queue(true)
+                              }
+                            }
+                            tk(ex)
+                          }
+                          a.refill = None
+                          self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
+                            match ex_hp {
+                              effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                              effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                              effect::Exit::Succeeded(true) => self.pump_k(a, -1, finish)
+                              effect::Exit::Succeeded(false) => {
+                                self.words_k(a, "GO_ON_AFTER_REFILL", [], fn(ex_w : effect::Exit[String]) -> Unit {
+                                  match ex_w {
+                                    effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
+                                    effect::Exit::Failed(e) => finish(effect::Exit::Failed(e))
+                                    effect::Exit::Succeeded(words) => {
+                                      self.start_turn_k(
+                                        a,
+                                        "resume",
+                                        words,
+                                        turn_for_nobody(),
+                                        None,
+                                        true,
+                                        0,
+                                        false,
+                                        finish,
+                                      )
+                                    }
+                                  }
+                                })
+                              }
+                            }
+                          })
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+          }
+        })
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "recover" {
+    a.open_kind = "recover"
+    self.recover_k(a, false, k)
+    return
+  }
+  if method == "cutOffByRestart" {
+    self.cut_off_by_restart_k(a, k)
+    return
+  }
+  if method == "takeWait" {
+    self.enqueue_k(a, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit { self.take_wait_k(a, tk) }, finish_null(k))
+    return
+  }
+  if method == "takeRefill" {
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        if is_some(a.refill) || is_some(a.turn) {
+          tk(effect::Exit::Succeeded(()))
+          return
+        }
+        self.busy_k(a, fn(ex_b : effect::Exit[Bool]) -> Unit {
+          match ex_b {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
+            effect::Exit::Succeeded(false) => {
+              self.archived_k(a, fn(ex_ar : effect::Exit[Bool]) -> Unit {
+                match ex_ar {
+                  effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
+                  effect::Exit::Succeeded(false) => {
+                    self.last_turn_k(a, fn(ex_lt : effect::Exit[base_codec::Json]) -> Unit {
+                      match ex_lt {
+                        effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(last) => {
+                          if !opt_str_is(sessions_core::str_of(sessions_core::jget(last, "outcome")), "failed") ||
+                          !sessions_core::text_of(last, "detail").starts_with("rate_limit:") ||
+                          is_opt_null_or_none(sessions_core::jget(last, "endedAt")) {
+                            tk(effect::Exit::Succeeded(()))
+                            return
+                          }
+                          self.refills_at_k(a, fn(ex_ra : effect::Exit[Double]) -> Unit {
+                            match ex_ra {
+                              effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                              effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                              effect::Exit::Succeeded(at) => {
+                                self.await_refill(a, at)
+                                tk(effect::Exit::Succeeded(()))
+                              }
+                            }
+                          })
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+          }
+        })
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "release" {
+    self.release_k(a, k)
+    return
+  }
+  if method == "warm" {
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        if is_some(a.agent) || is_some(a.codex_update) {
+          tk(effect::Exit::Succeeded(()))
+          return
+        }
+        self.held_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
+          match ex_h {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
+            effect::Exit::Succeeded(false) => {
+              self.log(a, "info", "warming session process")
+              a.open_kind = "warm"
+              self.ensure_agent_k(a, fn(ex_ea : effect::Exit[Agent]) -> Unit {
+                match ex_ea {
+                  effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => {
+                    if is_some(open_abort_reason(e)) {
+                      tk(effect::Exit::Succeeded(()))
+                      return
+                    }
+                    let is_open_timeout = match asked_cause(e) {
+                      Some(j) => is_opt_json_true(sessions_core::jget(j, "openTimeout"))
+                      None => false
+                    }
+                    if is_open_timeout {
+                      self.warm_waited_on_k(a, e, fn(ex_ww : effect::Exit[Bool]) -> Unit {
+                        match ex_ww {
+                          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                          effect::Exit::Failed(e2) => tk(effect::Exit::Failed(e2))
+                          effect::Exit::Succeeded(true) => tk(effect::Exit::Failed(e))
+                          effect::Exit::Succeeded(false) => {
+                            self.log(a, "warn", "warming session process failed", [
+                              ("error", sessions_core::jstr(sessions_core::error_message(e))),
+                              ("runtime", sessions_core::jstr(a.runtime)),
+                            ])
+                            tk(effect::Exit::Succeeded(()))
+                          }
+                        }
+                      })
+                    } else {
+                      self.log(a, "warn", "warming session process failed", [
+                        ("error", sessions_core::jstr(sessions_core::error_message(e))),
+                        ("runtime", sessions_core::jstr(a.runtime)),
+                      ])
+                      tk(effect::Exit::Succeeded(()))
+                    }
+                  }
+                  effect::Exit::Succeeded(_) => {
+                    self.idle_now(a)
+                    self.notify_store_k(a, fn(ex_ns : effect::Exit[Unit]) -> Unit {
+                      match ex_ns {
+                        effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(_) => {
+                          self.deps_k(a, "idle", [sessions_core::jstr(a.key)], fn(
+                            ex_id : effect::Exit[base_codec::Json],
+                          ) -> Unit {
+                            match ex_id {
+                              effect::Exit::Succeeded(_) => tk(effect::Exit::Succeeded(()))
+                              effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                            }
+                          })
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+          }
+        })
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "changed" {
+    let restart = sessions_core::truthy(arg_or_null(args, 0))
+    let was_paused_cap = a.paused_cap
+    a.paused_cap = false
+    a.cap_wait_notified = false
+    self.remove_cap_wait(a.key)
+    a.change_seq = a.change_seq + 1
+    if restart {
+      a.restart_seq = a.change_seq
+    }
+    if is_some(a.agent) {
+      a.stale = true
+      if restart {
+        a.restart = true
+      }
+    }
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        self.catch_up_k(a, !is_some(a.turn) && !is_some(a.waiting), fn(ex_cu : effect::Exit[Unit]) -> Unit {
+          match ex_cu {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(_) => {
+              if !was_paused_cap || is_some(a.turn) {
+                tk(effect::Exit::Succeeded(()))
+                return
+              }
+              self.busy_k(a, fn(ex_b : effect::Exit[Bool]) -> Unit {
+                match ex_b {
+                  effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                  effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
+                  effect::Exit::Succeeded(false) => {
+                    self.has_pending_k(a, fn(ex_hp : effect::Exit[Bool]) -> Unit {
+                      match ex_hp {
+                        effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                        effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                        effect::Exit::Succeeded(true) => self.pump_k(a, -1, tk)
+                        effect::Exit::Succeeded(false) => {
+                          match a.queued_retry {
+                            Some(r) => {
+                              a.queued_retry = None
+                              self.start_turn_k(a, r.kind, r.text, r.by, None, false, 0, false, tk)
+                            }
+                            None => tk(effect::Exit::Succeeded(()))
+                          }
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+          }
+        })
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "evict" {
+    let force = sessions_core::truthy(arg_or_null(args, 0))
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        let g = match a.agent {
+          Some(v) => v
+          None => {
+            tk(effect::Exit::Succeeded(()))
+            return
+          }
+        }
+        self.busy_k(a, fn(ex_b : effect::Exit[Bool]) -> Unit {
+          match ex_b {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(true) => tk(effect::Exit::Succeeded(()))
+            effect::Exit::Succeeded(false) => {
+              if is_some(a.turn) {
+                tk(effect::Exit::Succeeded(()))
+                return
+              }
+              let finish_evict = fn(is_holding : Bool) -> Unit {
+                if !force && is_holding {
+                  tk(effect::Exit::Succeeded(()))
+                  return
+                }
+                if !still(a, Some(g)) {
+                  tk(effect::Exit::Succeeded(()))
+                  return
+                }
+                self.set_agent(a, None)
+                self.log(a, "info", "evicting idle session process")
+                self.agent_do_k(a, g, "dispose", [], fn(ex_dp : effect::Exit[base_codec::Json]) -> Unit {
+                  match ex_dp {
+                    effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                    effect::Exit::Succeeded(_) => self.notify_store_k(a, tk)
+                  }
+                })
+              }
+              if force {
+                finish_evict(false)
+              } else {
+                self.holding_k(a, fn(ex_h : effect::Exit[Bool]) -> Unit {
+                  match ex_h {
+                    effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                    effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                    effect::Exit::Succeeded(h) => finish_evict(h)
+                  }
+                })
+              }
+            }
+          }
+        })
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "compact" {
+    let say = sessions_core::truthy(arg_or_null(args, 0))
+    let mut refused : Option[String] = None
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        self.begin_compacting_k(a, fn(ex : effect::Exit[Option[String]]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(r_opt) => {
+              refused = r_opt
+              match r_opt {
+                Some(r) => {
+                  if say {
+                    self.notice_k(
+                      a,
+                      "⚠️ " + r,
+                      base_codec::json_null(),
+                      base_codec::json_null(),
+                      base_codec::json_null(),
+                      None,
+                      false,
+                      tk,
+                    )
+                  } else {
+                    tk(effect::Exit::Succeeded(()))
+                  }
+                }
+                None => tk(effect::Exit::Succeeded(()))
+              }
+            }
+          }
+        })
+      },
+      fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(_) => {
+            let out = match refused {
+              Some(r) => sessions_core::jstr(r)
+              None => base_codec::json_null()
+            }
+            k(effect::Exit::Succeeded(out))
+          }
+        }
+      },
+    )
+    return
+  }
+  if method == "compactToCap" {
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        self.compacting_to_cap_k(a, fn(ex : effect::Exit[Bool]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(_) => tk(effect::Exit::Succeeded(()))
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      finish_null(k),
+    )
+    return
+  }
+  if method == "clear" {
+    let say = sessions_core::truthy(arg_or_null(args, 0))
+    let read_back = sessions_core::truthy(arg_or_null(args, 1))
+    let mut refused : Option[String] = None
+    self.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        let said_key = if read_back { "station.notice.afresh" } else { "station.notice.cleared" }
+        self.clear_now_k(a, read_back, said_key, "by hand", false, fn(
+          ex : effect::Exit[Option[String]],
+        ) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(r_opt) => {
+              refused = r_opt
+              match r_opt {
+                Some(r) => {
+                  if say {
+                    self.notice_k(
+                      a,
+                      "⚠️ " + r,
+                      base_codec::json_null(),
+                      base_codec::json_null(),
+                      base_codec::json_null(),
+                      None,
+                      false,
+                      tk,
+                    )
+                  } else {
+                    tk(effect::Exit::Succeeded(()))
+                  }
+                }
+                None => tk(effect::Exit::Succeeded(()))
+              }
+            }
+          }
+        })
+      },
+      fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(_) => {
+            let out = match refused {
+              Some(r) => sessions_core::jstr(r)
+              None => base_codec::json_null()
+            }
+            k(effect::Exit::Succeeded(out))
+          }
+        }
+      },
+    )
+    return
+  }
+  if method == "suspend" {
+    let why = str_or(sessions_core::str_of(Some(arg_or_null(args, 0))), "the station is in no workspace")
+    self.suspend_k(a, why, k)
+    return
+  }
+  if method == "runChanged" {
+    let text = str_or(sessions_core::str_of(Some(arg_or_null(args, 0))), "")
+    let change = arg_or_null(args, 1)
+    // Direct RPC: matches MB where `runChanged` still posts its notice even after `close(a)`.
+    self.rpc_direct_k(
+      a.key,
+      "node.notice",
+      [
+        sessions_core::jstr(text),
+        base_codec::json_null(),
+        base_codec::json_null(),
+        change,
+        base_codec::json_null(),
+        sessions_core::jbool(false),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      },
+    )
+    return
+  }
+  if method == "adopt" {
+    self.adopt(a, arg_or_null(args, 0), arg_or_null(args, 1), arg_or_null(args, 2), arg_or_null(args, 3))
+    k(effect::Exit::Succeeded(base_codec::json_null()))
+    return
+  }
+  if method == "snapshot" {
+    k(effect::Exit::Succeeded(self.snapshot(a)))
+    return
+  }
+  if method == "close" {
+    self.close(a)
+    k(effect::Exit::Succeeded(base_codec::json_null()))
+    return
+  }
+  if method == "dispose" {
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.close(a)
+    match agent {
+      Some(g) => {
+        // Direct RPC: `close(a)` already ran, so releasing the captured runtime handle must not
+        // be blocked by `a.phase == "closed"`.
+        self.rpc_direct_k(
+          a.key,
+          "agent.dispose",
+          [sessions_core::jint(g.handle)],
+          fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+            match ex {
+              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          },
+        )
+      }
+      None => k(effect::Exit::Succeeded(base_codec::json_null()))
+    }
+    return
+  }
+  let err_cause = base_codec::json_obj([("message", sessions_core::jstr("no actor method " + method))])
+  k(effect::Exit::Failed(sessions_core::AskedError::new(err_cause).to_effect_error()))
+}

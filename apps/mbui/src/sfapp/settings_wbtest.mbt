@@ -1206,11 +1206,12 @@ test "a profile's page: who it is and whether it works, then its allowance and w
   assert_true(y("星火助手") > y("5 小时"))
   assert_true(t.find("近 7 天") is None)
   assert_true(y("分享给其他 station") > y("星火助手"))
-  // A workspace without its own mark is named once, without a repeated initial beside it.
-  let ws = "个人 中的对话可使用此账号运行 agent"
+  // The other workspaces of its station a section of their own after its settings, why they are there said once over
+  // them; a workspace without its own mark is named once, without a repeated initial beside it.
+  let lead = "这台 station 也加入了下面的 workspace。打开后，那里的对话也能使用这个账号。"
   assert_true(y("可用模型") > y("分享给其他 station"))
   assert_true(y("默认 Fast") > y("可用模型"))
-  assert_true(y(ws) > y("默认 Fast") && t.find("同时用于 个人") is None)
+  assert_true(y("其他 workspace") > y("默认 Fast") && y(lead) > y("其他 workspace") && y("个人") > y(lead))
   assert_true(t.boxes().filter(fn(b) { b.text == "个" }).is_empty())
   // its models one row, how many; all of them a press away
   assert_true(t.find("3 个模型") is Some(_) && t.find("Sonnet 5") is None)

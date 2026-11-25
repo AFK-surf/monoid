@@ -1,0 +1,2244 @@
+// Target side of remote task directory mirroring (1:1 port of `station/mb/src/reader/dirsync.mbt`).
+// Every file operation runs via `RemoteHost` async shell RPCs (zero blocking shell calls,
+// zero RC cycles, deterministic UTF-16 key ordering).
+
+import "base_codec"
+import "effect"
+import "js_json"
+import "sessions_core"
+import "transcript_io"
+
+pub let FILE_MODE : String = "100644"
+pub let EXEC_MODE : String = "100755"
+pub let LINK_MODE : String = "120000"
+
+/// A page of a manifest or a plan, as JSON, at most about this much.
+pub let PAGE_BYTES : Int = 512 * 1024
+
+/// A request's pieces at most, and their bytes unpacked at most (as the source packs them: dirsync_source.pion).
+pub let MAX_PIECES : Int = 2000
+pub let MAX_RAW : Int = 16 * 1024 * 1024
+
+pub fn mode_of_bits(mode : Double) -> String {
+  if (mode.to_int() & 73) != 0 {
+    EXEC_MODE
+  } else {
+    FILE_MODE
+  }
+}
+
+/// A content's id as Git has it, of a link's target (its text).
+pub fn text_blob_id(text : String) -> String {
+  let sb = StringBuilder::new()
+  sb.write_string("blob ")
+  sb.write_string(bytes_len(text).to_string())
+  sb.write_byte(0 as Byte)
+  sb.write_string(text)
+  transcript_io::sha1_utf8_hex(sb.to_string())
+}
+
+pub fn is_blob_id(s : String) -> Bool {
+  if s.length() != 40 {
+    return false
+  }
+  let bytes = s.to_bytes()
+  for i in 0..<bytes.length() {
+    let b = bytes[i].to_int()
+    let ok = (b >= 48 && b <= 57) || (b >= 97 && b <= 102)
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+/// Whether a link at `path` (relative, `/` between parts) naming `target` stays inside the directory
+/// (the source's listing and the target's writing both ask).
+pub fn link_inside(path : String, target : String) -> Bool {
+  if target == "" || target.starts_with("/") || target.starts_with("\\") {
+    return false
+  }
+  let tbytes = target.to_bytes()
+  if tbytes.length() >= 2 && tbytes[1].to_int() == 58 {
+    let c = tbytes[0].to_int()
+    if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {
+      return false
+    }
+  }
+  let parts = split_char(path, 47 as Byte)
+  if parts.length() > 0 {
+    let _ = parts.pop()
+  }
+  let norm_sb = StringBuilder::new()
+  for i in 0..<tbytes.length() {
+    if tbytes[i].to_int() == 92 {
+      norm_sb.write_byte(47 as Byte)
+    } else {
+      norm_sb.write_byte(tbytes[i])
+    }
+  }
+  let tparts = split_char(norm_sb.to_string(), 47 as Byte)
+  for i in 0..<tparts.length() {
+    let part = tparts[i]
+    if part == "" || part == "." {
+      continue
+    }
+    if part == ".." {
+      if parts.length() == 0 {
+        return false
+      }
+      let _ = parts.pop()
+    } else {
+      parts.push(part)
+    }
+  }
+  true
+}
+
+fn dirsync_rjoin(host : RemoteHost, parts : Array[String]) -> String {
+  sessions_core::rjoin(host.sep, parts)
+}
+
+fn dirsync_rdirname(host : RemoteHost, path : String) -> String {
+  sessions_core::rdirname(host.sep, path)
+}
+
+fn dirsync_fs_k(
+  host : RemoteHost,
+  op : String,
+  args : Array[(String, base_codec::Json)],
+  bytes : Option[Bytes],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  (host.fs_k)(op, args, bytes, fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded((j, _)) => k(effect::Exit::Succeeded(j))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn dirsync_proc_fs_k(
+  host : RemoteHost,
+  op : String,
+  args : Array[(String, base_codec::Json)],
+  bytes : Option[Bytes],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  (host.proc_shell_k)(op, base_codec::json_obj(args), bytes, fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded((j, _)) => k(effect::Exit::Succeeded(j))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn dirsync_proc_lstat_k(
+  host : RemoteHost,
+  path : String,
+  k : (effect::Exit[Option[base_codec::Json]]) -> Unit,
+) -> Unit {
+  dirsync_proc_fs_k(host, "fs.lstat", [("path", sessions_core::jstr(path))], None, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(base_codec::Json::Null) => k(effect::Exit::Succeeded(None))
+      effect::Exit::Succeeded(st) => k(effect::Exit::Succeeded(Some(st)))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn dirsync_proc_remove_k(
+  host : RemoteHost,
+  path : String,
+  recursive : Bool,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  dirsync_proc_fs_k(
+    host,
+    "fs.remove",
+    [("path", sessions_core::jstr(path)), ("recursive", sessions_core::jbool(recursive))],
+    None,
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+fn dirsync_proc_rename_k(
+  host : RemoteHost,
+  from : String,
+  to : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  dirsync_proc_fs_k(
+    host,
+    "fs.rename",
+    [("from", sessions_core::jstr(from)), ("to", sessions_core::jstr(to))],
+    None,
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+/// Stat-less manifest entry written when `fs.lstat` fails after a mirror write succeeded,
+/// ensuring the landed file is never omitted from the manifest and forces a rehash next round.
+fn entry_without_stat(hash : String, mode : String) -> base_codec::Json {
+  base_codec::json_arr([
+    sessions_core::jstr(hash),
+    sessions_core::jstr(mode),
+    base_codec::json_null(),
+    base_codec::json_null(),
+    base_codec::json_null(),
+    base_codec::json_null(),
+  ])
+}
+
+fn dirsync_there_k(host : RemoteHost, path : String, k : (effect::Exit[Bool]) -> Unit) -> Unit {
+  (host.lstat_k)(path, fn(ex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(Some(_)) => k(effect::Exit::Succeeded(true))
+      effect::Exit::Succeeded(None) => k(effect::Exit::Succeeded(false))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn dirsync_file_id_k(
+  host : RemoteHost,
+  path : String,
+  size : Double,
+  k : (effect::Exit[String]) -> Unit,
+) -> Unit {
+  dirsync_fs_k(
+    host,
+    "fs.gitblob",
+    [("path", sessions_core::jstr(path)), ("size", sessions_core::jnum(size))],
+    None,
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(base_codec::Json::Str(s)) => k(effect::Exit::Succeeded(s))
+        effect::Exit::Succeeded(_) => {
+          k(effect::Exit::Failed(sessions_core::FsError::new(path + " changed while it was read").to_effect_error()))
+        }
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+fn dirsync_read_link_k(
+  host : RemoteHost,
+  path : String,
+  k : (effect::Exit[String]) -> Unit,
+) -> Unit {
+  dirsync_fs_k(
+    host,
+    "fs.readlink",
+    [("path", sessions_core::jstr(path))],
+    None,
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(base_codec::Json::Str(s)) => k(effect::Exit::Succeeded(s))
+        effect::Exit::Succeeded(_) => {
+          k(
+            effect::Exit::Failed(
+              sessions_core::FsError::new("ENOENT: no such file or directory, readlink '" + path + "'").to_effect_error(),
+            ),
+          )
+        }
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+/// A mirror's manifest: `{dir, name, version, files: {path: [id, mode, size, mtime, ino, ctime]}}`;
+/// `None` when there is none (or it does not read).
+pub fn dirsync_read_manifest_k(
+  host : RemoteHost,
+  path : String,
+  k : (effect::Exit[Option[base_codec::Json]]) -> Unit,
+) -> Unit {
+  (host.read_text_k)(path, fn(ex : effect::Exit[Option[String]]) -> Unit {
+    match ex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(None) => k(effect::Exit::Succeeded(None))
+      effect::Exit::Succeeded(Some(text)) => {
+        match sessions_core::parse_json_strict(text) {
+          Ok(v) => {
+            match sessions_core::jget(v, "files") {
+              Some(base_codec::Json::Obj(_)) => k(effect::Exit::Succeeded(Some(v)))
+              _ => k(effect::Exit::Succeeded(None))
+            }
+          }
+          Err(_) => k(effect::Exit::Succeeded(None))
+        }
+      }
+    }
+  })
+}
+
+fn files_of(manifest : Option[base_codec::Json]) -> Map[String, base_codec::Json] {
+  match manifest {
+    Some(m) => {
+      let f = sessions_core::field_of(m, "files")
+      match f {
+        base_codec::Json::Obj(_) => json_obj_map(f)
+        _ => Map::new()
+      }
+    }
+    None => Map::new()
+  }
+}
+
+fn clone_json_map(src : Map[String, base_codec::Json]) -> Map[String, base_codec::Json] {
+  let out : Map[String, base_codec::Json] = Map::new()
+  let keys = src.keys()
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    match src.get(k) {
+      Some(v) => out.set(k, v)
+      None => ()
+    }
+  }
+  out
+}
+
+/// Serialize a `Map[String, Json]` to a `Json::Obj` with keys intentionally sorted in
+/// deterministic UTF-16 code-unit order (Pion `Map::keys()` is hash-bucket ordered; MB's
+/// manifest `files` object is insertion-ordered, so sorting guarantees deterministic bytes).
+fn sorted_json_obj(m : Map[String, base_codec::Json]) -> base_codec::Json {
+  let keys = m.keys()
+  sort_strings_js(keys)
+  let fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    match m.get(k) {
+      Some(v) => fields.push((k, v))
+      None => ()
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+fn entry_of_stat(hash : String, mode : String, st : base_codec::Json) -> base_codec::Json {
+  let size = match sessions_core::jget(st, "size") { Some(v) => v; None => sessions_core::jnum(0.0) }
+  let mtime = match sessions_core::jget(st, "mtimeMs") { Some(v) => v; None => sessions_core::jnum(0.0) }
+  let ino = match sessions_core::jget(st, "ino") { Some(v) => v; None => sessions_core::jnum(0.0) }
+  let ctime = match sessions_core::jget(st, "ctimeMs") { Some(v) => v; None => sessions_core::jnum(0.0) }
+  base_codec::json_arr([
+    sessions_core::jstr(hash),
+    sessions_core::jstr(mode),
+    size,
+    mtime,
+    ino,
+    ctime,
+  ])
+}
+
+fn entry_at(e : base_codec::Json, i : Int) -> base_codec::Json {
+  match e {
+    base_codec::Json::Arr(a) => {
+      if i < a.length() { a[i] } else { base_codec::json_null() }
+    }
+    _ => base_codec::json_null()
+  }
+}
+
+fn opt_json_eq(a : Option[base_codec::Json], b : base_codec::Json) -> Bool {
+  match a {
+    Some(x) => json_equal(x, b)
+    None => false
+  }
+}
+
+/// Whether two entries name the same content and mode.
+fn same_content(a : Option[base_codec::Json], b : Option[base_codec::Json]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => json_equal(entry_at(x, 0), entry_at(y, 0)) && json_equal(entry_at(x, 1), entry_at(y, 1))
+    (None, None) => true
+    _ => false
+  }
+}
+
+/// What the mirror has of the files it was given, now: one a command changed is hashed again,
+/// one it removed (or made something else) is no longer there; those in `verify` checked by content
+/// even where their stat matches.
+fn dirsync_actual_k(
+  host : RemoteHost,
+  mirror : String,
+  files : Map[String, base_codec::Json],
+  verify : Map[String, Bool],
+  k : (effect::Exit[Map[String, base_codec::Json]]) -> Unit,
+) -> Unit {
+  let out : Map[String, base_codec::Json] = Map::new()
+  let paths = files.keys()
+  sort_strings_js(paths)
+  for_each_k(
+    paths,
+    fn(_i : Int, path : String, pk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      let e = match files.get(path) {
+        Some(v) => v
+        None => {
+          pk(effect::Exit::Succeeded(()))
+          return
+        }
+      }
+      let abs = dirsync_rjoin(host, [mirror, path])
+      (host.lstat_k)(abs, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+        match lex {
+          effect::Exit::Failed(err) => pk(effect::Exit::Failed(err))
+          effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(None) => pk(effect::Exit::Succeeded(()))
+          effect::Exit::Succeeded(Some(st)) => {
+            let same = !verify.contains(path) &&
+            opt_json_eq(sessions_core::jget(st, "size"), entry_at(e, 2)) &&
+            opt_json_eq(sessions_core::jget(st, "mtimeMs"), entry_at(e, 3)) &&
+            opt_json_eq(sessions_core::jget(st, "ino"), entry_at(e, 4)) &&
+            opt_json_eq(sessions_core::jget(st, "ctimeMs"), entry_at(e, 5))
+            let kind = kind_of_stat(st)
+            if kind == "link" {
+              if json_equal(entry_at(e, 1), sessions_core::jstr(LINK_MODE)) && same {
+                out.set(path, e)
+                pk(effect::Exit::Succeeded(()))
+              } else {
+                dirsync_read_link_k(host, abs, fn(rex : effect::Exit[String]) -> Unit {
+                  match rex {
+                    effect::Exit::Failed(err) => pk(effect::Exit::Failed(err))
+                    effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(target) => {
+                      out.set(path, entry_of_stat(text_blob_id(target), LINK_MODE, st))
+                      pk(effect::Exit::Succeeded(()))
+                    }
+                  }
+                })
+              }
+            } else if kind == "file" {
+              let mode_bits = match sessions_core::num_of(sessions_core::jget(st, "mode")) {
+                Some(n) => n
+                None => 0.0
+              }
+              let mode = mode_of_bits(mode_bits)
+              if json_equal(entry_at(e, 1), sessions_core::jstr(mode)) && same {
+                out.set(path, e)
+                pk(effect::Exit::Succeeded(()))
+              } else {
+                let sz = match sessions_core::num_of(sessions_core::jget(st, "size")) {
+                  Some(n) => n
+                  None => 0.0
+                }
+                dirsync_file_id_k(host, abs, sz, fn(fex : effect::Exit[String]) -> Unit {
+                  match fex {
+                    effect::Exit::Failed(err) => pk(effect::Exit::Failed(err))
+                    effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(hash) => {
+                      out.set(path, entry_of_stat(hash, mode, st))
+                      pk(effect::Exit::Succeeded(()))
+                    }
+                  }
+                })
+              }
+            } else {
+              pk(effect::Exit::Succeeded(()))
+            }
+          }
+        }
+      })
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(out))
+        effect::Exit::Failed(err) => k(effect::Exit::Failed(err))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+/// `sync.begin`: what the mirror has now of what its manifest says, and the conflict base,
+/// written beside the sync (`actual.json`, `base.json`); returns the manifest's version.
+pub fn dirsync_sync_begin_k(
+  host : RemoteHost,
+  manifest_path : String,
+  mirror_root : String,
+  syncing : String,
+  k : (effect::Exit[Double]) -> Unit,
+) -> Unit {
+  dirsync_read_manifest_k(host, manifest_path, fn(mex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+    match mex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(manifest) => {
+        let kept = files_of(manifest)
+        let after_actual = fn(files : Map[String, base_codec::Json]) -> Unit {
+          let base = clone_json_map(kept)
+          let fkeys = files.keys()
+          for i in 0..<fkeys.length() {
+            let path = fkeys[i]
+            match (files.get(path), base.get(path)) {
+              (Some(current), Some(before)) => {
+                if same_content(Some(before), Some(current)) {
+                  base.set(path, current)
+                }
+              }
+              _ => ()
+            }
+          }
+          (host.write_json_k)(
+            dirsync_rjoin(host, [syncing, "actual.json"]),
+            sorted_json_obj(files),
+            fn(w1 : effect::Exit[Unit]) -> Unit {
+              match w1 {
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(_) => {
+                  (host.write_json_k)(
+                    dirsync_rjoin(host, [syncing, "base.json"]),
+                    sorted_json_obj(base),
+                    fn(w2 : effect::Exit[Unit]) -> Unit {
+                      match w2 {
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        effect::Exit::Succeeded(_) => {
+                          let ver = match manifest {
+                            Some(m) => {
+                              match sessions_core::num_of(sessions_core::jget(m, "version")) {
+                                Some(n) => n
+                                None => 0.0
+                              }
+                            }
+                            None => 0.0
+                          }
+                          k(effect::Exit::Succeeded(ver))
+                        }
+                      }
+                    },
+                  )
+                }
+              }
+            },
+          )
+        }
+        match manifest {
+          None => after_actual(Map::new())
+          Some(_) => {
+            dirsync_actual_k(host, mirror_root, kept, Map::new(), fn(aex : effect::Exit[Map[String, base_codec::Json]]) -> Unit {
+              match aex {
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(files) => after_actual(files)
+              }
+            })
+          }
+        }
+      }
+    }
+  })
+}
+
+/// The manifest's entries as pages give them: `[path, id, mode]`, sorted by UTF-16 code units.
+pub fn dirsync_listed_entries(files : Map[String, base_codec::Json]) -> Array[base_codec::Json] {
+  let paths = files.keys()
+  sort_strings_js(paths)
+  let out : Array[base_codec::Json] = []
+  for i in 0..<paths.length() {
+    let p = paths[i]
+    match files.get(p) {
+      Some(e) => {
+        out.push(base_codec::json_arr([sessions_core::jstr(p), entry_at(e, 0), entry_at(e, 1)]))
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+fn dirsync_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    "0"
+  } else if js_json::is_safe_integer(d) {
+    d.to_int64().to_string()
+  } else {
+    d.to_string()
+  }
+}
+
+/// A page of `all` from `after`: as many as about `PAGE_BYTES` of JSON, and where the next starts (`null` at the end).
+pub fn dirsync_page_of(all : Array[base_codec::Json], after : Int) -> base_codec::Json {
+  let entries : Array[base_codec::Json] = []
+  let mut size = 0
+  let mut i = after
+  while i < all.length() {
+    let n = bytes_len(sessions_core::js_text_with(all[i], dirsync_fmt_num)) + 1
+    if size + n > PAGE_BYTES && entries.length() > 0 {
+      break
+    }
+    entries.push(all[i])
+    size = size + n
+    i = i + 1
+  }
+  let next_val = if i < all.length() { sessions_core::jnum(i.to_double()) } else { base_codec::json_null() }
+  base_codec::json_obj([
+    ("entries", base_codec::json_arr(entries)),
+    ("next", next_val),
+  ])
+}
+
+/// Checks a plan's part as it comes: `[path, id, mode]` to have, paths to remove.
+pub fn dirsync_plan_part(request : base_codec::Json) -> Result[base_codec::Json, effect::EffectError] {
+  let set = match sessions_core::field_of(request, "set") {
+    base_codec::Json::Null => []
+    base_codec::Json::Arr(a) => a
+    _ => return Err(refusal("bad plan"))
+  }
+  let remove = match sessions_core::field_of(request, "remove") {
+    base_codec::Json::Null => []
+    base_codec::Json::Arr(a) => a
+    _ => return Err(refusal("bad plan"))
+  }
+  for i in 0..<set.length() {
+    match set[i] {
+      base_codec::Json::Arr(a) => {
+        if a.length() < 3 {
+          return Err(refusal("bad plan"))
+        }
+        match (a[0], a[1], a[2]) {
+          (base_codec::Json::Str(_), base_codec::Json::Str(id), base_codec::Json::Str(mode)) => {
+            if !is_blob_id(id) || (mode != FILE_MODE && mode != EXEC_MODE && mode != LINK_MODE) {
+              return Err(refusal("bad plan"))
+            }
+          }
+          _ => return Err(refusal("bad plan"))
+        }
+      }
+      _ => return Err(refusal("bad plan"))
+    }
+  }
+  for i in 0..<remove.length() {
+    match remove[i] {
+      base_codec::Json::Str(_) => ()
+      _ => return Err(refusal("bad plan"))
+    }
+  }
+  Ok(
+    base_codec::json_obj([
+      ("set", base_codec::json_arr(set)),
+      ("remove", base_codec::json_arr(remove)),
+    ]),
+  )
+}
+
+/// Removes the empty directories from `path`'s parent up to the mirror's root.
+fn dirsync_prune_empty_k(
+  host : RemoteHost,
+  mirror : String,
+  path : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let mut d = dirsync_rdirname(host, path)
+  sessions_core::iter_sync_k(
+    fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      if !(d.length() > mirror.length() && d.starts_with(mirror)) {
+        sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+        return
+      }
+      let cur = d
+      (host.lstat_k)(cur, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+        match lex {
+          effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          effect::Exit::Failed(_) => sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+          effect::Exit::Succeeded(Some(st)) => {
+            if kind_of_stat(st) != "dir" {
+              sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+              return
+            }
+            (host.remove_k)(cur, false, fn(rex : effect::Exit[Unit]) -> Unit {
+              match rex {
+                effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                effect::Exit::Failed(_) => sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                effect::Exit::Succeeded(_) => {
+                  d = dirsync_rdirname(host, cur)
+                  sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                }
+              }
+            })
+          }
+          effect::Exit::Succeeded(None) => sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+        }
+      })
+    },
+    k,
+  )
+}
+
+struct InflightMutation {
+  mut pending : Option[effect::Deferred[Unit]]
+}
+
+/// Run a mirror-mutating I/O sequence inside an un-interrupted live-generation daemon so that
+/// caller interruption waits for the in-flight mutation to finish updating `files` before
+/// `sync_commit_k` writes the partial manifest. Runs in process scope (`proc_daemon_k`) so
+/// `rotate_hub_gen` cannot abandon an in-flight native mirror mutation before `files` is updated
+/// and `mut_done` is resolved; caller still receives `Exit::Interrupted` immediately.
+fn run_mutation_k(
+  host : RemoteHost,
+  inflight : InflightMutation,
+  label : String,
+  body_k : ((effect::Exit[Unit]) -> Unit) -> Unit,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if (host.is_sealed)() {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  let mut_done : effect::Deferred[Unit] = effect::Deferred::new()
+  let step_done : effect::Deferred[effect::Exit[Unit]] = effect::Deferred::new()
+  inflight.pending = Some(mut_done)
+  let spawned = (host.proc_daemon_k)(label, fn(dk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    body_k(fn(ex : effect::Exit[Unit]) -> Unit {
+      inflight.pending = None
+      let _ = mut_done.succeed(())
+      let _ = step_done.succeed(ex)
+      match ex {
+        effect::Exit::Interrupted => dk(effect::Exit::Interrupted)
+        _ => dk(effect::Exit::Succeeded(()))
+      }
+    })
+  })
+  if !spawned {
+    inflight.pending = None
+    let _ = mut_done.succeed(())
+    k(effect::Exit::Interrupted)
+    return
+  }
+  step_done.wait_k(fn(sex : effect::Exit[effect::Exit[Unit]]) -> Unit {
+    match sex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(inner) => k(inner)
+    }
+  })
+}
+
+/// Carries out a plan in the mirror (`name` in `work`): every new content made beside it first
+/// (in `scratch`, from `blobs` or from a file of the mirror with the same id), then the files that
+/// left removed, then the new ones renamed into place. `files` is updated as it goes, also when it
+/// stops part way.
+fn dirsync_apply_plan_k(
+  host : RemoteHost,
+  work : String,
+  name : String,
+  scratch : String,
+  blobs : String,
+  files : Map[String, base_codec::Json],
+  set : Array[(String, String, String)],
+  remove : Array[String],
+  inflight : InflightMutation,
+  k : (effect::Exit[(Int, Int)]) -> Unit,
+) -> Unit {
+  (host.file_path_k)(work, name, true, false, fn(mex : effect::Exit[String]) -> Unit {
+    match mex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(mirror) => {
+        (host.mkdirs_k)(mirror, fn(m1 : effect::Exit[Unit]) -> Unit {
+          match m1 {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(_) => {
+              (host.mkdirs_k)(scratch, fn(m2 : effect::Exit[Unit]) -> Unit {
+                match m2 {
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(_) => {
+                    let by_hash : Map[String, String] = Map::new()
+                    let fkeys = files.keys()
+                    sort_strings_js(fkeys)
+                    for i in 0..<fkeys.length() {
+                      let p = fkeys[i]
+                      match files.get(p) {
+                        Some(e) => {
+                          match entry_at(e, 0) {
+                            base_codec::Json::Str(h) => by_hash.set(h, p)
+                            _ => ()
+                          }
+                        }
+                        None => ()
+                      }
+                    }
+                    let uses : Map[String, Int] = Map::new()
+                    for i in 0..<set.length() {
+                      let (_, hash, _) = set[i]
+                      let prev = match uses.get(hash) { Some(n) => n; None => 0 }
+                      uses.set(hash, prev + 1)
+                    }
+                    let ready : Array[(String, String, String, Option[String])] = []
+                    // Phase 1: stage every new content in `scratch`.
+                    for_each_k(
+                      set,
+                      fn(i : Int, s : (String, String, String), sk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                        let (path, hash, mode) = s
+                        let same_kind_and_hash = match files.get(path) {
+                          Some(now) => {
+                            json_equal(entry_at(now, 0), sessions_core::jstr(hash)) &&
+                            (json_equal(entry_at(now, 1), sessions_core::jstr(LINK_MODE)) == (mode == LINK_MODE))
+                          }
+                          None => false
+                        }
+                        if same_kind_and_hash {
+                          ready.push((path, hash, mode, None))
+                          sk(effect::Exit::Succeeded(()))
+                          return
+                        }
+                        let temp = dirsync_rjoin(host, [scratch, i.to_string()])
+                        (host.remove_k)(temp, false, fn(rem : effect::Exit[Unit]) -> Unit {
+                          match rem {
+                            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                            effect::Exit::Succeeded(_) => {
+                              let blob = dirsync_rjoin(host, [blobs, hash])
+                              dirsync_there_k(host, blob, fn(tex : effect::Exit[Bool]) -> Unit {
+                                match tex {
+                                  effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                  effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                  effect::Exit::Succeeded(has_blob) => {
+                                    let from = if has_blob { None } else { by_hash.get(hash) }
+                                    if !has_blob {
+                                      match from {
+                                        None => {
+                                          sk(effect::Exit::Failed(refusal("the content of " + path + " was not sent")))
+                                          return
+                                        }
+                                        Some(_) => ()
+                                      }
+                                    }
+                                    if mode == LINK_MODE {
+                                      let got_target = fn(target : String) -> Unit {
+                                        if !link_inside(path, target) {
+                                          sk(
+                                            effect::Exit::Failed(
+                                              refusal(path + " is a symbolic link leading out of the directory"),
+                                            ),
+                                          )
+                                          return
+                                        }
+                                        dirsync_fs_k(
+                                          host,
+                                          "fs.symlink",
+                                          [("target", sessions_core::jstr(target)), ("path", sessions_core::jstr(temp))],
+                                          None,
+                                          fn(symex : effect::Exit[base_codec::Json]) -> Unit {
+                                            match symex {
+                                              effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                              effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                              effect::Exit::Succeeded(_) => {
+                                                ready.push((path, hash, mode, Some(temp)))
+                                                sk(effect::Exit::Succeeded(()))
+                                              }
+                                            }
+                                          },
+                                        )
+                                      }
+                                      match from {
+                                        Some(f) => {
+                                          dirsync_read_link_k(host, dirsync_rjoin(host, [mirror, f]), fn(rlex : effect::Exit[String]) -> Unit {
+                                            match rlex {
+                                              effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                              effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                              effect::Exit::Succeeded(t) => got_target(t)
+                                            }
+                                          })
+                                        }
+                                        None => {
+                                          (host.read_text_k)(blob, fn(rtex : effect::Exit[Option[String]]) -> Unit {
+                                            match rtex {
+                                              effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                              effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                              effect::Exit::Succeeded(Some(t)) => got_target(t)
+                                              effect::Exit::Succeeded(None) => got_target("")
+                                            }
+                                          })
+                                        }
+                                      }
+                                    } else {
+                                      let left = (match uses.get(hash) { Some(n) => n; None => 1 }) - 1
+                                      uses.set(hash, left)
+                                      let after_stage = fn(stex : effect::Exit[Unit]) -> Unit {
+                                        match stex {
+                                          effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                          effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                          effect::Exit::Succeeded(_) => {
+                                            let cmode = if mode == EXEC_MODE { 493.0 } else { 420.0 }
+                                            dirsync_fs_k(
+                                              host,
+                                              "fs.chmod",
+                                              [("path", sessions_core::jstr(temp)), ("mode", sessions_core::jnum(cmode))],
+                                              None,
+                                              fn(chex : effect::Exit[base_codec::Json]) -> Unit {
+                                                match chex {
+                                                  effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                                  effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                                  effect::Exit::Succeeded(_) => {
+                                                    ready.push((path, hash, mode, Some(temp)))
+                                                    sk(effect::Exit::Succeeded(()))
+                                                  }
+                                                }
+                                              },
+                                            )
+                                          }
+                                        }
+                                      }
+                                      match from {
+                                        None => {
+                                          if left == 0 {
+                                            (host.rename_k)(blob, temp, after_stage)
+                                          } else {
+                                            dirsync_fs_k(
+                                              host,
+                                              "fs.copy",
+                                              [("from", sessions_core::jstr(blob)), ("to", sessions_core::jstr(temp))],
+                                              None,
+                                              fn(cpex : effect::Exit[base_codec::Json]) -> Unit {
+                                                match cpex {
+                                                  effect::Exit::Succeeded(_) => after_stage(effect::Exit::Succeeded(()))
+                                                  effect::Exit::Failed(e) => after_stage(effect::Exit::Failed(e))
+                                                  effect::Exit::Interrupted => after_stage(effect::Exit::Interrupted)
+                                                }
+                                              },
+                                            )
+                                          }
+                                        }
+                                        Some(f) => {
+                                          dirsync_fs_k(
+                                            host,
+                                            "fs.copy",
+                                            [
+                                              ("from", sessions_core::jstr(dirsync_rjoin(host, [mirror, f]))),
+                                              ("to", sessions_core::jstr(temp)),
+                                            ],
+                                            None,
+                                            fn(cpex : effect::Exit[base_codec::Json]) -> Unit {
+                                              match cpex {
+                                                effect::Exit::Succeeded(_) => after_stage(effect::Exit::Succeeded(()))
+                                                effect::Exit::Failed(e) => after_stage(effect::Exit::Failed(e))
+                                                effect::Exit::Interrupted => after_stage(effect::Exit::Interrupted)
+                                              }
+                                            },
+                                          )
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              })
+                            }
+                          }
+                        })
+                      },
+                      fn(p1ex : effect::Exit[Unit]) -> Unit {
+                        match p1ex {
+                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          effect::Exit::Succeeded(_) => {
+                            // Phase 2: remove deleted paths.
+                            let mut removed = 0
+                            for_each_k(
+                              remove,
+                              fn(_ri : Int, path : String, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                if !files.contains(path) {
+                                  rk(effect::Exit::Succeeded(()))
+                                  return
+                                }
+                                (host.file_path_k)(mirror, path, false, true, fn(fpex : effect::Exit[String]) -> Unit {
+                                  match fpex {
+                                    effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                                    effect::Exit::Failed(_) => {
+                                      let _ = files.remove(path)
+                                      rk(effect::Exit::Succeeded(()))
+                                    }
+                                    effect::Exit::Succeeded(abs) => {
+                                      let after_rm = fn() -> Unit {
+                                        let _ = files.remove(path)
+                                        removed = removed + 1
+                                        dirsync_prune_empty_k(host, mirror, abs, rk)
+                                      }
+                                      (host.lstat_k)(abs, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+                                        match lex {
+                                          effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                                          effect::Exit::Succeeded(Some(st)) => {
+                                            let kind = kind_of_stat(st)
+                                            if kind == "file" || kind == "link" {
+                                              run_mutation_k(
+                                                host,
+                                                inflight,
+                                                "dirsync apply remove",
+                                                fn(mk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                                  dirsync_proc_remove_k(host, abs, false, fn(rmex : effect::Exit[Unit]) -> Unit {
+                                                    match rmex {
+                                                      effect::Exit::Interrupted => mk(effect::Exit::Interrupted)
+                                                      _ => {
+                                                        let _ = files.remove(path)
+                                                        removed = removed + 1
+                                                        mk(effect::Exit::Succeeded(()))
+                                                      }
+                                                    }
+                                                  })
+                                                },
+                                                fn(mex : effect::Exit[Unit]) -> Unit {
+                                                  match mex {
+                                                    effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                                                    effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+                                                    effect::Exit::Succeeded(_) => dirsync_prune_empty_k(host, mirror, abs, rk)
+                                                  }
+                                                },
+                                              )
+                                            } else {
+                                              after_rm()
+                                            }
+                                          }
+                                          _ => after_rm()
+                                        }
+                                      })
+                                    }
+                                  }
+                                })
+                              },
+                              fn(p2ex : effect::Exit[Unit]) -> Unit {
+                                match p2ex {
+                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  effect::Exit::Succeeded(_) => {
+                                    // Phase 3: rename/chmod ready entries into place.
+                                    let mut written = 0
+                                    for_each_k(
+                                      ready,
+                                      fn(_wi : Int, r : (String, String, String, Option[String]), wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                        let (path, hash, mode, temp) = r
+                                        let allow_leaf = match temp {
+                                          Some(_) => true
+                                          None => mode == LINK_MODE
+                                        }
+                                        (host.file_path_k)(mirror, path, true, allow_leaf, fn(fpex : effect::Exit[String]) -> Unit {
+                                          match fpex {
+                                            effect::Exit::Interrupted => wk(effect::Exit::Interrupted)
+                                            effect::Exit::Failed(e) => {
+                                              wk(
+                                                effect::Exit::Failed(
+                                                  refusal("cannot write " + path + " on the target: " + sessions_core::error_message(e)),
+                                                ),
+                                              )
+                                            }
+                                            effect::Exit::Succeeded(abs) => {
+                                              match temp {
+                                                None => {
+                                                  let need_chmod = mode != LINK_MODE && match files.get(path) {
+                                                    Some(cur) => !json_equal(entry_at(cur, 1), sessions_core::jstr(mode))
+                                                    None => true
+                                                  }
+                                                  run_mutation_k(
+                                                    host,
+                                                    inflight,
+                                                    "dirsync apply chmod",
+                                                    fn(mk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                                      let after_chmod = fn(chex : effect::Exit[Unit]) -> Unit {
+                                                        match chex {
+                                                          effect::Exit::Failed(e) => mk(effect::Exit::Failed(e))
+                                                          effect::Exit::Interrupted => mk(effect::Exit::Interrupted)
+                                                          effect::Exit::Succeeded(_) => {
+                                                            dirsync_proc_lstat_k(host, abs, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+                                                              match lex {
+                                                                effect::Exit::Failed(e) => {
+                                                                  files.set(path, entry_without_stat(hash, mode))
+                                                                  mk(effect::Exit::Failed(e))
+                                                                }
+                                                                effect::Exit::Interrupted => {
+                                                                  files.set(path, entry_without_stat(hash, mode))
+                                                                  mk(effect::Exit::Interrupted)
+                                                                }
+                                                                effect::Exit::Succeeded(Some(st)) => {
+                                                                  files.set(path, entry_of_stat(hash, mode, st))
+                                                                  mk(effect::Exit::Succeeded(()))
+                                                                }
+                                                                effect::Exit::Succeeded(None) => {
+                                                                  files.set(path, entry_without_stat(hash, mode))
+                                                                  mk(
+                                                                    effect::Exit::Failed(
+                                                                      sessions_core::FsError::new(
+                                                                        "ENOENT: no such file or directory, lstat '" + abs + "'",
+                                                                      ).to_effect_error(),
+                                                                    ),
+                                                                  )
+                                                                }
+                                                              }
+                                                            })
+                                                          }
+                                                        }
+                                                      }
+                                                      if need_chmod {
+                                                        let cmode = if mode == EXEC_MODE { 493.0 } else { 420.0 }
+                                                        dirsync_proc_fs_k(
+                                                          host,
+                                                          "fs.chmod",
+                                                          [("path", sessions_core::jstr(abs)), ("mode", sessions_core::jnum(cmode))],
+                                                          None,
+                                                          fn(cex : effect::Exit[base_codec::Json]) -> Unit {
+                                                            match cex {
+                                                              effect::Exit::Succeeded(_) => after_chmod(effect::Exit::Succeeded(()))
+                                                              effect::Exit::Failed(e) => after_chmod(effect::Exit::Failed(e))
+                                                              effect::Exit::Interrupted => after_chmod(effect::Exit::Interrupted)
+                                                            }
+                                                          },
+                                                        )
+                                                      } else {
+                                                        after_chmod(effect::Exit::Succeeded(()))
+                                                      }
+                                                    },
+                                                    wk,
+                                                  )
+                                                }
+                                                Some(t) => {
+                                                  run_mutation_k(
+                                                    host,
+                                                    inflight,
+                                                    "dirsync apply rename",
+                                                    fn(mk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                                      let do_rename = fn(already_unlinked : Bool) -> Unit {
+                                                        if !already_unlinked && (host.is_sealed)() {
+                                                          mk(effect::Exit::Interrupted)
+                                                          return
+                                                        }
+                                                        dirsync_proc_rename_k(host, t, abs, fn(rnex : effect::Exit[Unit]) -> Unit {
+                                                          match rnex {
+                                                            effect::Exit::Failed(e) => mk(effect::Exit::Failed(e))
+                                                            effect::Exit::Interrupted => mk(effect::Exit::Interrupted)
+                                                            effect::Exit::Succeeded(_) => {
+                                                              dirsync_proc_lstat_k(host, abs, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+                                                                match lex {
+                                                                  effect::Exit::Failed(e) => {
+                                                                    files.set(path, entry_without_stat(hash, mode))
+                                                                    written = written + 1
+                                                                    mk(effect::Exit::Failed(e))
+                                                                  }
+                                                                  effect::Exit::Interrupted => {
+                                                                    files.set(path, entry_without_stat(hash, mode))
+                                                                    written = written + 1
+                                                                    mk(effect::Exit::Interrupted)
+                                                                  }
+                                                                  effect::Exit::Succeeded(Some(st)) => {
+                                                                    files.set(path, entry_of_stat(hash, mode, st))
+                                                                    written = written + 1
+                                                                    mk(effect::Exit::Succeeded(()))
+                                                                  }
+                                                                  effect::Exit::Succeeded(None) => {
+                                                                    files.set(path, entry_without_stat(hash, mode))
+                                                                    written = written + 1
+                                                                    mk(
+                                                                      effect::Exit::Failed(
+                                                                        sessions_core::FsError::new(
+                                                                          "ENOENT: no such file or directory, lstat '" + abs + "'",
+                                                                        ).to_effect_error(),
+                                                                      ),
+                                                                    )
+                                                                  }
+                                                                }
+                                                              })
+                                                            }
+                                                          }
+                                                        })
+                                                      }
+                                                      dirsync_proc_lstat_k(host, abs, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+                                                        if (host.is_sealed)() {
+                                                          mk(effect::Exit::Interrupted)
+                                                          return
+                                                        }
+                                                        match lex {
+                                                          effect::Exit::Failed(e) => mk(effect::Exit::Failed(e))
+                                                          effect::Exit::Interrupted => mk(effect::Exit::Interrupted)
+                                                          effect::Exit::Succeeded(Some(st)) => {
+                                                            let kind = kind_of_stat(st)
+                                                            if kind == "dir" {
+                                                              dirsync_proc_remove_k(host, abs, false, fn(rmex : effect::Exit[Unit]) -> Unit {
+                                                                match rmex {
+                                                                  effect::Exit::Interrupted => mk(effect::Exit::Interrupted)
+                                                                  effect::Exit::Failed(_) => {
+                                                                    mk(
+                                                                      effect::Exit::Failed(
+                                                                        refusal("cannot write " + path + " on the target: a directory is there"),
+                                                                      ),
+                                                                    )
+                                                                  }
+                                                                  effect::Exit::Succeeded(_) => {
+                                                                    let _ = files.remove(path)
+                                                                    do_rename(true)
+                                                                  }
+                                                                }
+                                                              })
+                                                            } else if kind == "link" {
+                                                              dirsync_proc_remove_k(host, abs, false, fn(rmex : effect::Exit[Unit]) -> Unit {
+                                                                match rmex {
+                                                                  effect::Exit::Interrupted => mk(effect::Exit::Interrupted)
+                                                                  effect::Exit::Failed(e) => {
+                                                                    mk(
+                                                                      effect::Exit::Failed(
+                                                                        refusal("cannot write " + path + " on the target: " + sessions_core::error_message(e)),
+                                                                      ),
+                                                                    )
+                                                                  }
+                                                                  effect::Exit::Succeeded(_) => {
+                                                                    let _ = files.remove(path)
+                                                                    do_rename(true)
+                                                                  }
+                                                                }
+                                                              })
+                                                            } else {
+                                                              do_rename(false)
+                                                            }
+                                                          }
+                                                          effect::Exit::Succeeded(None) => do_rename(false)
+                                                        }
+                                                      })
+                                                    },
+                                                    wk,
+                                                  )
+                                                }
+                                              }
+                                            }
+                                          }
+                                        })
+                                      },
+                                      fn(p3ex : effect::Exit[Unit]) -> Unit {
+                                        match p3ex {
+                                          effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded((written, removed)))
+                                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                        }
+                                      },
+                                    )
+                                  }
+                                }
+                              },
+                            )
+                          }
+                        }
+                      },
+                    )
+                  }
+                }
+              })
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+/// `sync.commit`, its last part: reads manifest first (NEVER inside `write_whole_k`), verifies
+/// version, checks conflicts, applies the plan, and writes the new manifest via `write_whole_k`.
+pub fn dirsync_sync_commit_k(
+  host : RemoteHost,
+  work : String,
+  mirror : String,
+  syncing : String,
+  manifest_path : String,
+  version0 : base_codec::Json,
+  dir : String,
+  submodules : Array[(String, String, String)],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  dirsync_read_manifest_k(host, manifest_path, fn(mex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+    match mex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(manifest) => {
+        let version = match manifest {
+          Some(m) => {
+            match sessions_core::num_of(sessions_core::jget(m, "version")) {
+              Some(n) => n
+              None => 0.0
+            }
+          }
+          None => 0.0
+        }
+        let ver_match = match sessions_core::num_of(Some(version0)) {
+          Some(v0) => version == v0
+          None => false
+        }
+        if !ver_match {
+          k(effect::Exit::Failed(refusal("the mirror changed while this sync went on; start again")))
+          return
+        }
+        (host.read_text_k)(dirsync_rjoin(host, [syncing, "plan.jsonl"]), fn(pex : effect::Exit[Option[String]]) -> Unit {
+          match pex {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(plan_opt) => {
+              let set : Array[(String, String, String)] = []
+              let remove : Array[String] = []
+              let plan_text = match plan_opt { Some(s) => s; None => "" }
+              let lines = split_char(plan_text, 10 as Byte)
+              for i in 0..<lines.length() {
+                let line = lines[i]
+                if line == "" {
+                  continue
+                }
+                let p = match sessions_core::parse_json_strict(line) {
+                  Ok(v) => v
+                  Err(_) => {
+                    k(effect::Exit::Failed(refusal("bad plan")))
+                    return
+                  }
+                }
+                match sessions_core::field_of(p, "set") {
+                  base_codec::Json::Arr(a) => {
+                    for j in 0..<a.length() {
+                      match a[j] {
+                        base_codec::Json::Arr(s) => {
+                          if s.length() >= 3 {
+                            match (s[0], s[1], s[2]) {
+                              (base_codec::Json::Str(path), base_codec::Json::Str(hash), base_codec::Json::Str(mode)) => {
+                                set.push((path, hash, mode))
+                              }
+                              _ => ()
+                            }
+                          }
+                        }
+                        _ => ()
+                      }
+                    }
+                  }
+                  _ => ()
+                }
+                match sessions_core::field_of(p, "remove") {
+                  base_codec::Json::Arr(a) => {
+                    for j in 0..<a.length() {
+                      match a[j] {
+                        base_codec::Json::Str(path) => remove.push(path)
+                        _ => ()
+                      }
+                    }
+                  }
+                  _ => ()
+                }
+              }
+              (host.read_json_k)(dirsync_rjoin(host, [syncing, "base.json"]), fn(bex : effect::Exit[base_codec::Json]) -> Unit {
+                match bex {
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(base_json) => {
+                    let base = match base_json {
+                      base_codec::Json::Obj(_) => json_obj_map(base_json)
+                      _ => Map::new()
+                    }
+                    let root = dirsync_rjoin(host, [work, mirror])
+                    dirsync_there_k(host, root, fn(rex : effect::Exit[Bool]) -> Unit {
+                      match rex {
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        effect::Exit::Succeeded(root_exists) => {
+                          let after_submodules_cleanup = fn(smex : effect::Exit[Unit]) -> Unit {
+                            match smex {
+                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                              effect::Exit::Succeeded(_) => {
+                                let verify : Map[String, Bool] = Map::new()
+                                for i in 0..<set.length() {
+                                  verify.set(set[i].0, true)
+                                }
+                                for i in 0..<remove.length() {
+                                  verify.set(remove[i], true)
+                                }
+                                dirsync_actual_k(host, root, base, verify, fn(aex : effect::Exit[Map[String, base_codec::Json]]) -> Unit {
+                                  match aex {
+                                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                    effect::Exit::Succeeded(files) => {
+                                      let untracked : Map[String, base_codec::Json] = Map::new()
+                                      let check_untracked_k = fn(uk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                        if !root_exists {
+                                          uk(effect::Exit::Succeeded(()))
+                                          return
+                                        }
+                                        for_each_k(
+                                          set,
+                                          fn(_si : Int, s : (String, String, String), sk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                            let path = s.0
+                                            if base.contains(path) || files.contains(path) {
+                                              sk(effect::Exit::Succeeded(()))
+                                              return
+                                            }
+                                            let conflict = "sync conflict at " + path + ": an existing remote path would be overwritten"
+                                            (host.file_path_k)(root, path, false, false, fn(fpex : effect::Exit[String]) -> Unit {
+                                              match fpex {
+                                                effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                                effect::Exit::Failed(_) => sk(effect::Exit::Failed(refusal(conflict)))
+                                                effect::Exit::Succeeded(abs) => {
+                                                  (host.lstat_k)(abs, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+                                                    match lex {
+                                                      effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                                      effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                                      effect::Exit::Succeeded(Some(st)) => {
+                                                        if kind_of_stat(st) != "file" {
+                                                          sk(effect::Exit::Failed(refusal(conflict)))
+                                                        } else {
+                                                          untracked.set(
+                                                            path,
+                                                            base_codec::json_arr([
+                                                              sessions_core::jstr(""),
+                                                              sessions_core::jstr(""),
+                                                              sessions_core::jnum(0.0),
+                                                              sessions_core::jnum(0.0),
+                                                              sessions_core::jnum(0.0),
+                                                            ]),
+                                                          )
+                                                          sk(effect::Exit::Succeeded(()))
+                                                        }
+                                                      }
+                                                      effect::Exit::Succeeded(None) => sk(effect::Exit::Succeeded(()))
+                                                    }
+                                                  })
+                                                }
+                                              }
+                                            })
+                                          },
+                                          uk,
+                                        )
+                                      }
+                                      check_untracked_k(fn(uex : effect::Exit[Unit]) -> Unit {
+                                        match uex {
+                                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                          effect::Exit::Succeeded(_) => {
+                                            dirsync_actual_k(
+                                              host,
+                                              root,
+                                              untracked,
+                                              Map::new(),
+                                              fn(uaex : effect::Exit[Map[String, base_codec::Json]]) -> Unit {
+                                                match uaex {
+                                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                  effect::Exit::Succeeded(untracked_files) => {
+                                                    let ukeys = untracked_files.keys()
+                                                    for i in 0..<ukeys.length() {
+                                                      let up = ukeys[i]
+                                                      match untracked_files.get(up) {
+                                                        Some(ue) => files.set(up, ue)
+                                                        None => ()
+                                                      }
+                                                    }
+                                                    let safe_set : Array[(String, String, String)] = []
+                                                    let safe_remove : Array[String] = []
+                                                    for i in 0..<set.length() {
+                                                      let s = set[i]
+                                                      let (path, hash, mode) = s
+                                                      let before = base.get(path)
+                                                      let current = files.get(path)
+                                                      let wanted = Some(base_codec::json_arr([sessions_core::jstr(hash), sessions_core::jstr(mode)]))
+                                                      if same_content(before, wanted) && !same_content(before, current) {
+                                                        continue
+                                                      }
+                                                      if !same_content(before, current) && !same_content(current, wanted) {
+                                                        k(
+                                                          effect::Exit::Failed(
+                                                            refusal(
+                                                              "sync conflict at " + path +
+                                                              ": source and remote both changed; preserve the remote result and reconcile the files",
+                                                            ),
+                                                          ),
+                                                        )
+                                                        return
+                                                      }
+                                                      safe_set.push(s)
+                                                    }
+                                                    for i in 0..<remove.length() {
+                                                      let path = remove[i]
+                                                      if files.contains(path) && !same_content(base.get(path), files.get(path)) {
+                                                        k(
+                                                          effect::Exit::Failed(
+                                                            refusal("sync conflict at " + path + ": the remote file changed before removal"),
+                                                          ),
+                                                        )
+                                                        return
+                                                      }
+                                                      safe_remove.push(path)
+                                                    }
+                                                    let next_base = clone_json_map(base)
+                                                    let build_manifest_json = fn() -> String {
+                                                      for i in 0..<safe_set.length() {
+                                                        let (sp, sh, sm) = safe_set[i]
+                                                        let wanted = Some(base_codec::json_arr([sessions_core::jstr(sh), sessions_core::jstr(sm)]))
+                                                        if !files.contains(sp) {
+                                                          let _ = next_base.remove(sp)
+                                                        } else if same_content(files.get(sp), wanted) {
+                                                          match files.get(sp) {
+                                                            Some(fe) => next_base.set(sp, fe)
+                                                            None => ()
+                                                          }
+                                                        }
+                                                      }
+                                                      for i in 0..<safe_remove.length() {
+                                                        let rp = safe_remove[i]
+                                                        if !files.contains(rp) {
+                                                          let _ = next_base.remove(rp)
+                                                        }
+                                                      }
+                                                      let mfields : Array[(String, base_codec::Json)] = [
+                                                        ("dir", sessions_core::jstr(dir)),
+                                                        ("name", sessions_core::jstr(mirror)),
+                                                        ("version", sessions_core::jnum(version + 1.0)),
+                                                        ("files", sorted_json_obj(next_base)),
+                                                      ]
+                                                      if submodules.length() > 0 {
+                                                        let subs : Array[base_codec::Json] = []
+                                                        for i in 0..<submodules.length() {
+                                                          let (sp, sid, surl) = submodules[i]
+                                                          subs.push(
+                                                            base_codec::json_arr([
+                                                              sessions_core::jstr(sp),
+                                                              sessions_core::jstr(sid),
+                                                              sessions_core::jstr(surl),
+                                                            ]),
+                                                          )
+                                                        }
+                                                        mfields.push(("submodules", base_codec::json_arr(subs)))
+                                                      }
+                                                      (host.js_text)(base_codec::json_obj(mfields))
+                                                    }
+                                                    let inflight = InflightMutation::{ pending: None }
+                                                    // Publish manifest via process-scope `SessionHost::publish_manifest_lazy_k`
+                                                    // so neither caller cancellation nor `rotate_hub_gen` loses the manifest
+                                                    // after mirror mutations landed; caller still receives `Exit::Interrupted`
+                                                    // immediately while next-gen readers wait on `host.manifest_barriers`.
+                                                    let finish_k = fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                                      (host.write_whole_after_k)(
+                                                        manifest_path,
+                                                        inflight.pending,
+                                                        build_manifest_json,
+                                                        fk,
+                                                      )
+                                                    }
+                                                    dirsync_apply_plan_k(
+                                                      host,
+                                                      work,
+                                                      mirror,
+                                                      dirsync_rjoin(host, [syncing, "scratch"]),
+                                                      dirsync_rjoin(host, [syncing, "blobs"]),
+                                                      files,
+                                                      safe_set,
+                                                      safe_remove,
+                                                      inflight,
+                                                      fn(apex : effect::Exit[(Int, Int)]) -> Unit {
+                                                        match apex {
+                                                          effect::Exit::Interrupted => {
+                                                            // Wait for any in-flight mirror mutation to settle and persist
+                                                            // the partial manifest in process scope behind `manifest_barriers`
+                                                            // (surviving both caller cancel and `rotate_hub_gen`).
+                                                            let _ = (host.publish_manifest_after)(
+                                                              manifest_path,
+                                                              inflight.pending,
+                                                              build_manifest_json,
+                                                            )
+                                                            k(effect::Exit::Interrupted)
+                                                          }
+                                                          effect::Exit::Failed(apply_err) => {
+                                                            finish_k(fn(fex : effect::Exit[Unit]) -> Unit {
+                                                              match fex {
+                                                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                                effect::Exit::Failed(fin_err) => k(effect::Exit::Failed(fin_err))
+                                                                effect::Exit::Succeeded(_) => k(effect::Exit::Failed(apply_err))
+                                                              }
+                                                            })
+                                                          }
+                                                          effect::Exit::Succeeded((written, removed)) => {
+                                                            finish_k(fn(fex : effect::Exit[Unit]) -> Unit {
+                                                              match fex {
+                                                                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                                effect::Exit::Succeeded(_) => {
+                                                                  k(
+                                                                    effect::Exit::Succeeded(
+                                                                      base_codec::json_obj([
+                                                                        ("written", sessions_core::jnum(written.to_double())),
+                                                                        ("removed", sessions_core::jnum(removed.to_double())),
+                                                                        ("version", sessions_core::jnum(version + 1.0)),
+                                                                      ]),
+                                                                    ),
+                                                                  )
+                                                                }
+                                                              }
+                                                            })
+                                                          }
+                                                        }
+                                                      },
+                                                    )
+                                                  }
+                                                }
+                                              },
+                                            )
+                                          }
+                                        }
+                                      })
+                                    }
+                                  }
+                                })
+                              }
+                            }
+                          }
+                          if root_exists {
+                            let kept_subs : Map[String, Bool] = Map::new()
+                            for i in 0..<submodules.length() {
+                              kept_subs.set(submodules[i].0, true)
+                            }
+                            let old_subs = submodules_of_manifest(manifest)
+                            for_each_k(
+                              old_subs,
+                              fn(_si : Int, path : String, sk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                if kept_subs.contains(path) {
+                                  sk(effect::Exit::Succeeded(()))
+                                  return
+                                }
+                                (host.file_path_k)(root, path, false, false, fn(fpex : effect::Exit[String]) -> Unit {
+                                  match fpex {
+                                    effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                    effect::Exit::Failed(_) => sk(effect::Exit::Succeeded(()))
+                                    effect::Exit::Succeeded(abs) => {
+                                      (host.lstat_k)(abs, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+                                        match lex {
+                                          effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                          effect::Exit::Succeeded(Some(st)) => {
+                                            if kind_of_stat(st) == "dir" {
+                                              (host.remove_k)(abs, true, sk)
+                                            } else {
+                                              sk(effect::Exit::Succeeded(()))
+                                            }
+                                          }
+                                          _ => sk(effect::Exit::Succeeded(()))
+                                        }
+                                      })
+                                    }
+                                  }
+                                })
+                              },
+                              after_submodules_cleanup,
+                            )
+                          } else {
+                            after_submodules_cleanup(effect::Exit::Succeeded(()))
+                          }
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+/// `sync.changes`: the synced files a finished task's command changed in its mirror (1000 at most).
+pub fn dirsync_sync_changes_k(
+  host : RemoteHost,
+  manifest_path : String,
+  base : String,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  dirsync_read_manifest_k(host, manifest_path, fn(mex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+    match mex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(manifest) => {
+        let kept = files_of(manifest)
+        let after_now = fn(now : Map[String, base_codec::Json]) -> Unit {
+          let paths = kept.keys()
+          sort_strings_js(paths)
+          let changes : Array[base_codec::Json] = []
+          let mut more = false
+          let mut idx = 0
+          sessions_core::iter_sync_k(
+            fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+              if idx >= paths.length() {
+                sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                return
+              }
+              let path = paths[idx]
+              idx = idx + 1
+              let was = match kept.get(path) {
+                Some(w) => w
+                None => {
+                  sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                  return
+                }
+              }
+              let is_opt = now.get(path)
+              match is_opt {
+                Some(cur) => {
+                  if same_content(Some(cur), Some(was)) {
+                    sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                    return
+                  }
+                }
+                None => ()
+              }
+              if changes.length() == 1000 {
+                more = true
+                sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                return
+              }
+              let hash_val = match is_opt { Some(cur) => entry_at(cur, 0); None => base_codec::json_null() }
+              let new_mode_val = match is_opt { Some(cur) => entry_at(cur, 1); None => base_codec::json_null() }
+              let fields : Array[(String, base_codec::Json)] = [
+                ("path", sessions_core::jstr(path)),
+                ("old", entry_at(was, 0)),
+                ("mode", entry_at(was, 1)),
+                ("hash", hash_val),
+                ("newMode", new_mode_val),
+              ]
+              let is_link = match is_opt {
+                Some(cur) => json_equal(entry_at(cur, 1), sessions_core::jstr(LINK_MODE))
+                None => false
+              }
+              if is_link {
+                dirsync_read_link_k(host, dirsync_rjoin(host, [base, path]), fn(rlex : effect::Exit[String]) -> Unit {
+                  match rlex {
+                    effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(target) => {
+                      fields.push(("link", sessions_core::jstr(target)))
+                      changes.push(base_codec::json_obj(fields))
+                      sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                    }
+                  }
+                })
+              } else {
+                changes.push(base_codec::json_obj(fields))
+                sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+              }
+            },
+            fn(ex : effect::Exit[Unit]) -> Unit {
+              match ex {
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(_) => {
+                  k(
+                    effect::Exit::Succeeded(
+                      base_codec::json_obj([
+                        ("changes", base_codec::json_arr(changes)),
+                        ("more", sessions_core::jbool(more)),
+                      ]),
+                    ),
+                  )
+                }
+              }
+            },
+          )
+        }
+        match manifest {
+          None => after_now(Map::new())
+          Some(_) => {
+            dirsync_actual_k(host, base, kept, Map::new(), fn(aex : effect::Exit[Map[String, base_codec::Json]]) -> Unit {
+              match aex {
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(now) => after_now(now)
+              }
+            })
+          }
+        }
+      }
+    }
+  })
+}
+
+fn dirsync_slice_bytes(b : Bytes, start : Int, end : Int) -> Bytes {
+  if start >= end || start < 0 || end > b.length() {
+    return Bytes::new(0)
+  }
+  b.slice(start, end)
+}
+
+/// `sync.put`: pieces sent (`index`: `[id, size, offset, length]` each) unpacked into `blobs`,
+/// each content in its own file, complete when its last piece came and its id checked.
+pub fn dirsync_put_blobs_k(
+  host : RemoteHost,
+  blobs : String,
+  index : base_codec::Json,
+  packed : Option[String],
+  data : base_codec::Json,
+  k : (effect::Exit[Int]) -> Unit,
+) -> Unit {
+  let arr = match index {
+    base_codec::Json::Arr(a) => {
+      if a.length() <= MAX_PIECES {
+        a
+      } else {
+        k(effect::Exit::Failed(refusal("bad pieces")))
+        return
+      }
+    }
+    _ => {
+      k(effect::Exit::Failed(refusal("bad pieces")))
+      return
+    }
+  }
+  let pieces : Array[(String, Double, Double, Int)] = []
+  let mut total = 0.0
+  for i in 0..<arr.length() {
+    match arr[i] {
+      base_codec::Json::Arr(p) => {
+        if p.length() < 4 {
+          k(effect::Exit::Failed(refusal("bad piece")))
+          return
+        }
+        let hash = match p[0] {
+          base_codec::Json::Str(s) => s
+          _ => {
+            k(effect::Exit::Failed(refusal("bad piece")))
+            return
+          }
+        }
+        if !is_blob_id(hash) {
+          k(effect::Exit::Failed(refusal("bad piece")))
+          return
+        }
+        match (as_u64(p[1]), as_u64(p[2]), as_u64(p[3])) {
+          (Some(size), Some(offset), Some(length)) => {
+            if size > MAX_FILE || offset + length > size {
+              k(effect::Exit::Failed(refusal("bad piece")))
+              return
+            }
+            total = total + length
+            pieces.push((hash, size, offset, length.to_int()))
+          }
+          _ => {
+            k(effect::Exit::Failed(refusal("bad piece")))
+            return
+          }
+        }
+      }
+      _ => {
+        k(effect::Exit::Failed(refusal("bad piece")))
+        return
+      }
+    }
+  }
+  if total > MAX_RAW.to_double() {
+    k(effect::Exit::Failed(refusal("too much in one request")))
+    return
+  }
+  let unpack_k = fn(
+    args : Array[(String, base_codec::Json)],
+    bytes : Option[Bytes],
+    uk : (effect::Exit[Bytes]) -> Unit,
+  ) -> Unit {
+    (host.fs_k)("zstd.unpack", args, bytes, fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => uk(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => uk(effect::Exit::Failed(refusal(sessions_core::error_message(e))))
+        effect::Exit::Succeeded((_, out)) => {
+          let raw = match out { Some(b) => b; None => Bytes::new(0) }
+          uk(effect::Exit::Succeeded(raw))
+        }
+      }
+    })
+  }
+  let after_raw = fn(rex : effect::Exit[Bytes]) -> Unit {
+    match rex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(raw) => {
+        if raw.length().to_double() != total {
+          k(effect::Exit::Failed(refusal("pieces do not match their data")))
+          return
+        }
+        (host.mkdirs_k)(blobs, fn(mex : effect::Exit[Unit]) -> Unit {
+          match mex {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(_) => {
+              let mut at = 0
+              for_each_k(
+                pieces,
+                fn(_pi : Int, p : (String, Double, Double, Int), pk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                  let (hash, size, offset, length) = p
+                  let piece = dirsync_slice_bytes(raw, at, at + length)
+                  at = at + length
+                  let done = dirsync_rjoin(host, [blobs, hash])
+                  dirsync_there_k(host, done, fn(tex : effect::Exit[Bool]) -> Unit {
+                    match tex {
+                      effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+                      effect::Exit::Succeeded(true) => pk(effect::Exit::Succeeded(()))
+                      effect::Exit::Succeeded(false) => {
+                        let part = done + ".part"
+                        (host.lstat_k)(part, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+                          match lex {
+                            effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+                            effect::Exit::Succeeded(st_opt) => {
+                              let has = match st_opt {
+                                Some(st) => {
+                                  match sessions_core::num_of(sessions_core::jget(st, "size")) {
+                                    Some(n) => n
+                                    None => 0.0
+                                  }
+                                }
+                                None => 0.0
+                              }
+                              let end = offset + length.to_double()
+                              if end <= has && !(offset == 0.0 && has == 0.0) {
+                                pk(effect::Exit::Succeeded(()))
+                                return
+                              }
+                              if offset != has {
+                                pk(effect::Exit::Failed(refusal("a content's pieces came out of order")))
+                                return
+                              }
+                              dirsync_fs_k(
+                                host,
+                                "fs.put",
+                                [
+                                  ("path", sessions_core::jstr(part)),
+                                  ("offset", sessions_core::jnum(offset)),
+                                  ("truncate", sessions_core::jbool(true)),
+                                  ("nofollow", sessions_core::jbool(true)),
+                                ],
+                                Some(piece),
+                                fn(putex : effect::Exit[base_codec::Json]) -> Unit {
+                                  match putex {
+                                    effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))
+                                    effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+                                    effect::Exit::Succeeded(_) => {
+                                      if end == size {
+                                        dirsync_file_id_k(host, part, size, fn(fidex : effect::Exit[String]) -> Unit {
+                                          match fidex {
+                                            effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))
+                                            effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+                                            effect::Exit::Succeeded(got_id) => {
+                                              if got_id != hash {
+                                                (host.remove_k)(part, false, fn(rmex : effect::Exit[Unit]) -> Unit {
+                                                  match rmex {
+                                                    effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+                                                    _ => pk(effect::Exit::Failed(refusal("a content sent does not match its id")))
+                                                  }
+                                                })
+                                              } else {
+                                                (host.rename_k)(part, done, pk)
+                                              }
+                                            }
+                                          }
+                                        })
+                                      } else {
+                                        pk(effect::Exit::Succeeded(()))
+                                      }
+                                    }
+                                  }
+                                },
+                              )
+                            }
+                          }
+                        })
+                      }
+                    }
+                  })
+                },
+                fn(ex : effect::Exit[Unit]) -> Unit {
+                  match ex {
+                    effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(pieces.length()))
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  }
+                },
+              )
+            }
+          }
+        })
+      }
+    }
+  }
+  match packed {
+    Some(path) => {
+      unpack_k(
+        [("path", sessions_core::jstr(path)), ("most", sessions_core::jnum(MAX_RAW.to_double()))],
+        None,
+        after_raw,
+      )
+    }
+    None => {
+      let text = match sessions_core::str_of(Some(data)) { Some(s) => s; None => "" }
+      if text.length() % 4 != 0 {
+        k(effect::Exit::Failed(refusal("Invalid input length or symbol")))
+        return
+      }
+      match base_codec::base64_decode_strict(text) {
+        Some(bytes) => {
+          unpack_k([("most", sessions_core::jnum(MAX_RAW.to_double()))], Some(bytes), after_raw)
+        }
+        None => k(effect::Exit::Failed(refusal("Invalid input length or symbol")))
+      }
+    }
+  }
+}
+
+/// Whether `path` names a place inside the mirror for a submodule.
+pub fn submodule_path_ok(path : String) -> Bool {
+  if path == "" || path.starts_with("/") || path.starts_with("-") {
+    return false
+  }
+  let bytes = path.to_bytes()
+  for i in 0..<bytes.length() {
+    let b = bytes[i].to_int()
+    if b < 0x20 || b == 92 || b == 58 {
+      return false
+    }
+  }
+  let parts = split_char(path, 47 as Byte)
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    if p == "" || p == "." || p == ".." || p == ".git" {
+      return false
+    }
+  }
+  true
+}
+
+fn has_control_char(s : String) -> Bool {
+  let bytes = s.to_bytes()
+  for i in 0..<bytes.length() {
+    if bytes[i].to_int() < 0x20 {
+      return true
+    }
+  }
+  false
+}
+
+/// The submodules a sync's last part names: `[path, commit, URL]` each, checked; none from a source from before.
+pub fn dirsync_submodules_part(
+  request : base_codec::Json,
+) -> Result[Array[(String, String, String)], effect::EffectError] {
+  let out : Array[(String, String, String)] = []
+  match sessions_core::field_of(request, "submodules") {
+    base_codec::Json::Null => ()
+    base_codec::Json::Arr(a) => {
+      for i in 0..<a.length() {
+        match a[i] {
+          base_codec::Json::Arr(s) => {
+            if s.length() < 3 {
+              return Err(refusal("bad submodule"))
+            }
+            match (s[0], s[1], s[2]) {
+              (base_codec::Json::Str(path), base_codec::Json::Str(id), base_codec::Json::Str(url)) => {
+                if !submodule_path_ok(path) || !is_blob_id(id) || url == "" || url.starts_with("-") || has_control_char(url) {
+                  return Err(refusal("bad submodule"))
+                }
+                out.push((path, id, url))
+              }
+              _ => return Err(refusal("bad submodule"))
+            }
+          }
+          _ => return Err(refusal("bad submodule"))
+        }
+      }
+    }
+    _ => return Err(refusal("bad submodule"))
+  }
+  Ok(out)
+}
+
+/// The submodules a mirror's manifest keeps: path, commit, URL.
+fn submodules_kept(manifest : Option[base_codec::Json]) -> Array[(String, String, String)] {
+  let out : Array[(String, String, String)] = []
+  match manifest {
+    Some(m) => {
+      match sessions_core::field_of(m, "submodules") {
+        base_codec::Json::Arr(a) => {
+          for i in 0..<a.length() {
+            match a[i] {
+              base_codec::Json::Arr(s) => {
+                if s.length() >= 3 {
+                  match (s[0], s[1], s[2]) {
+                    (base_codec::Json::Str(path), base_codec::Json::Str(id), base_codec::Json::Str(url)) => {
+                      if submodule_path_ok(path) && is_blob_id(id) {
+                        out.push((path, id, url))
+                      }
+                    }
+                    _ => ()
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+fn submodules_of_manifest(manifest : Option[base_codec::Json]) -> Array[String] {
+  let kept = submodules_kept(manifest)
+  let out : Array[String] = []
+  for i in 0..<kept.length() {
+    out.push(kept[i].0)
+  }
+  out
+}
+
+/// A word for `sh`, as it is.
+pub fn sh_word(s : String) -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte(39 as Byte)
+  let bytes = s.to_bytes()
+  for i in 0..<bytes.length() {
+    if bytes[i].to_int() == 39 {
+      sb.write_string("'\\''")
+    } else {
+      sb.write_byte(bytes[i])
+    }
+  }
+  sb.write_byte(39 as Byte)
+  sb.to_string()
+}
+
+/// Where this station may have a submodule's commits already, by its URL's last parts:
+/// `<data>/repos/<owner>/<name>`, `<data>/repos/<name>`.
+pub fn dirsync_submodule_clones(host : RemoteHost, url : String) -> Array[String] {
+  let mut u = url
+  while u.ends_with("/") {
+    u = u.slice(0, u.length() - 1)
+  }
+  if u.ends_with(".git") {
+    u = u.slice(0, u.length() - 4)
+  }
+  let sb = StringBuilder::new()
+  let ubytes = u.to_bytes()
+  for i in 0..<ubytes.length() {
+    if ubytes[i].to_int() == 58 {
+      sb.write_byte(47 as Byte)
+    } else {
+      sb.write_byte(ubytes[i])
+    }
+  }
+  let raw_parts = split_char(sb.to_string(), 47 as Byte)
+  let parts : Array[String] = []
+  for i in 0..<raw_parts.length() {
+    if raw_parts[i] != "" {
+      parts.push(raw_parts[i])
+    }
+  }
+  let ok = fn(p : String) -> Bool { p != "." && p != ".." && !str_contains(p, "\\") }
+  if parts.length() == 0 || !ok(parts[parts.length() - 1]) {
+    return []
+  }
+  let name = parts[parts.length() - 1]
+  let repos = dirsync_rjoin(host, [dirsync_rdirname(host, host.root), "repos"])
+  let out : Array[String] = []
+  if parts.length() >= 2 && ok(parts[parts.length() - 2]) {
+    out.push(dirsync_rjoin(host, [repos, parts[parts.length() - 2], name]))
+  }
+  out.push(dirsync_rjoin(host, [repos, name]))
+  out
+}
+
+fn submodule_fn_script() -> String {
+  let lines : Array[String] = [
+    "sf_submodule() {",
+    "  p=$1 id=$2 url=$3; shift 3",
+    "  if [ -e \"$p/.git\" ] && [ \"$(git -C \"$p\" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)\" = \"$id\" ]; then return 0; fi",
+    "  { mkdir -p \"$p\" && { [ -e \"$p/.git\" ] || git -C \"$p\" init -q; }; } || { echo \"still.fail: submodule $p could not be made here; the task runs without it\" >&2; return 0; }",
+    "  for r in \"$@\"; do",
+    "    if [ -d \"$r\" ] && git -C \"$r\" cat-file -e \"$id^{commit}\" 2>/dev/null && git -C \"$p\" -c protocol.ext.allow=never -c uploadpack.allowAnySHA1InWant=true fetch -q --no-tags --depth 1 \"$r\" \"$id\" 2>/dev/null; then url=; break; fi",
+    "  done",
+    "  if [ -n \"$url\" ] && ! git -C \"$p\" -c protocol.ext.allow=never fetch -q --no-tags --depth 1 \"$url\" \"$id\"; then",
+    "    echo \"still.fail: submodule $p could not be fetched at $id from $url; the task runs without it\" >&2; return 0",
+    "  fi",
+    "  if git -C \"$p\" -c advice.detachedHead=false checkout -q -f --detach \"$id\"; then echo \"still.fail: submodule $p checked out at $id\"",
+    "  else echo \"still.fail: submodule $p could not be checked out at $id; the task runs without it\" >&2; fi",
+    "}",
+  ]
+  join_lines(lines)
+}
+
+fn join_lines(lines : Array[String]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<lines.length() {
+    if i > 0 {
+      sb.write_byte(10 as Byte)
+    }
+    sb.write_string(lines[i])
+  }
+  sb.to_string()
+}
+
+fn join_words(words : Array[String]) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<words.length() {
+    if i > 0 {
+      sb.write_byte(32 as Byte)
+    }
+    sb.write_string(words[i])
+  }
+  sb.to_string()
+}
+
+/// A task's command in a mirror with submodules (its manifest's): first their checkout (`submodule_fn`),
+/// then it as it was. `None` where the mirror has none.
+pub fn dirsync_with_submodules_k(
+  host : RemoteHost,
+  manifest_path : String,
+  command : String,
+  k : (effect::Exit[Option[String]]) -> Unit,
+) -> Unit {
+  dirsync_read_manifest_k(host, manifest_path, fn(mex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+    match mex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(manifest) => {
+        let kept = submodules_kept(manifest)
+        if kept.length() == 0 {
+          k(effect::Exit::Succeeded(None))
+          return
+        }
+        let lines : Array[String] = [
+          "# still.fail: the mirror's Git submodules first (station_task dir)",
+          "(",
+          submodule_fn_script(),
+        ]
+        for i in 0..<kept.length() {
+          let (p, id, url) = kept[i]
+          let words : Array[String] = [sh_word(p), sh_word(id), sh_word(url)]
+          let clones = dirsync_submodule_clones(host, url)
+          for j in 0..<clones.length() {
+            words.push(sh_word(clones[j]))
+          }
+          lines.push("sf_submodule " + join_words(words))
+        }
+        lines.push(")")
+        lines.push(command)
+        k(effect::Exit::Succeeded(Some(join_lines(lines))))
+      }
+    }
+  })
+}

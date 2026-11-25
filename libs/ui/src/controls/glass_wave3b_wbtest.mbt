@@ -31,8 +31,8 @@ test "Wave 3B glass helpers emit calibrated iOS 27 liquid glass in light and dar
       (true, 4.0, 0.55, 9.0, 12.0, 0.70),
     )
     assert_eq(
-      (gt.liquid, gt.blur, gt.tint, gt.bezel, gt.refraction),
-      (true, 2.1, if dark { 0x202020BFL } else { 0xFDFCFDBFL }, 12.0, 14.0),
+      (gt.liquid, gt.blur, gt.tint, gt.bezel, gt.refraction, gt.chroma),
+      (true, 12.0, if dark { 0x20202080L } else { 0xFDFCFD80L }, 14.0, 14.0, 0.0),
     )
   }
   set_dark(None)

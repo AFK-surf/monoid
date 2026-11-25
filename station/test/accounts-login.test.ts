@@ -43,6 +43,20 @@ test("a subscription sign-in relays the link, the code and the result", async ()
     assert.deepEqual([device.url, device.userCode], ["https://auth.openai.com/codex/device", "ABCD-12345"]);
     await approved.approve();
     await wait("cxs", "done");
+    const doneCxs = logins.get("cxs")!;
+    assert.equal(doneCxs.state, "done");
+    // clearFinished ignores a mismatched startedAt and clears a matching finished job.
+    logins.clearFinished("cxs", doneCxs.startedAt - 1);
+    assert.equal(logins.get("cxs")?.state, "done");
+    const beforeClear = heard.length;
+    logins.clearFinished("cxs", doneCxs.startedAt);
+    assert.equal(logins.get("cxs"), null);
+    assert.equal(heard[beforeClear], "cxs");
+    // cancel() on an already-finished job clears it and notifies listeners (FB-64).
+    const beforeCancel = heard.length;
+    logins.cancel("sub");
+    assert.equal(logins.get("sub"), null);
+    assert.equal(heard[beforeCancel], "sub");
 
     // A cancelled sign-in stops its command and says so.
     await logins.start(sub, "zh");

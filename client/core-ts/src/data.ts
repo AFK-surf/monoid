@@ -1179,6 +1179,8 @@ export class Data {
     if (table === "presetRecords") return [this.#ofWorkspace(key) ?? null, [key, "presetRecords"]];
     // Its person's drafts of 待派发 as the device carries them (views/board-drafts.ts): in the workspace's, by its id.
     if (table === "boardDrafts") return [this.#ofWorkspace(key) ?? null, [key, "boardDrafts"]];
+    // How its person's agents are asked for progress, as the device carries it (views/progress.ts): in the workspace's, by its id.
+    if (table === "progressPrefs") return [this.#ofWorkspace(key) ?? null, [key, "progressPrefs"]];
     // A workspace's vaults as its stations hold them (views/vault.ts): the vaults, box certificates and requests by the
     // workspace's id; each vault's items by `<workspace>/<vault>`.
     if (table === "vault") return [this.#ofWorkspace(key) ?? null, [key, "vault"]];

@@ -1373,6 +1373,53 @@ test("an agent opens a chat here: it begins with its message, goes to its starte
   await r.close();
 });
 
+/// What the leader `keyA` was told since it began (steered into its turn, or a turn of its own).
+const toldLeader = (r: Rig, keyA: string) => [...runtimeOf(r, keyA).steers, ...runtimeOf(r, keyA).prompts.slice(1)].join("\n");
+
+test("a chat that cannot start tells the chat that leads it, with why", async () => {
+  const r = new Rig({ link: true });
+  const a = say("<@UBOT> ship it");
+  await r.accept(a);
+  await settle();
+  const keyA = sessionKey("cl", "C1", a.threadTs);
+  r.claude.last().complete();
+  await settle();
+  r.claude.refuses = "spawn claude ENOMEM";
+  await r.call(keyA, "chat_create", { for: "me", key: "android", text: "build the android app", title: "安卓构建" });
+  await settle();
+  const child = r.store.openedBy(keyA)[0]!.child;
+  const thread = r.store.homeChat(child)!;
+  assert.ok(r.said(thread.id).some((m) => m.authorKind === "station" && m.text.startsWith("⚠️")), "said in its own chat");
+  const told = toldLeader(r, keyA);
+  assert.ok(matches(told, ["安卓构建", "stopped with an error", "ENOMEM"]), told);
+  assert.ok(!told.includes("⚠️"), told);
+  assert.equal(r.store.openedBy(keyA)[0]!.state, "failed");
+  await r.close();
+});
+
+test("a led chat whose turns give nothing and say no state tells the chat that leads it", async () => {
+  const r = new Rig({ link: true, maxNudges: 1 });
+  const a = say("<@UBOT> ship it");
+  await r.accept(a);
+  await settle();
+  const keyA = sessionKey("cl", "C1", a.threadTs);
+  r.claude.last().complete();
+  await settle();
+  await r.call(keyA, "chat_create", { for: "me", key: "android", text: "build the android app", title: "安卓构建" });
+  await settle();
+  const child = r.store.openedBy(keyA)[0]!.child;
+  runtimeOf(r, child).complete();
+  await settle();
+  assert.equal(runtimeOf(r, child).prompts.length, 2, "nudged once");
+  assert.ok(!toldLeader(r, keyA).includes("安卓构建"), "not told while it is asked again");
+  runtimeOf(r, child).complete();
+  await settle();
+  const told = toldLeader(r, keyA);
+  assert.ok(matches(told, ["安卓构建", "stopped with an error"]), told);
+  assert.equal(r.store.openedBy(keyA)[0]!.state, "failed");
+  await r.close();
+});
+
 test("an agent can open more than eight unfinished chats without duplicating a key", async () => {
   const r = new Rig({ link: true });
   const a = say("<@UBOT> split it up");

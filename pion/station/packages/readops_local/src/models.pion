@@ -385,6 +385,36 @@ pub fn cost(state : readops_core::ReaderState, g : Group) -> base_codec::Json {
   base_codec::json_num(tokens / 1.0e6 * (if g.fast { 2.0 } else { 1.0 }))
 }
 
+/// `cost` with a per-call `model -> Option[Price]` cache to avoid repeated `model_key` + `prices` scans.
+pub fn cost_cached(
+  state : readops_core::ReaderState,
+  price_cache : Map[String, Option[Price]],
+  g : Group,
+) -> base_codec::Json {
+  let model = match g.model {
+    base_codec::Json::Str(s) => s
+    _ => return base_codec::json_null()
+  }
+  let p_opt = match price_cache.get(model) {
+    Some(cached) => cached
+    None => {
+      let computed = price(state, model)
+      price_cache.set(model, computed)
+      computed
+    }
+  }
+  let p = match p_opt {
+    Some(pr) => pr
+    None => return base_codec::json_null()
+  }
+  let tokens = g.input * p.input +
+  g.cache_write * p.input * 1.25 +
+  g.cache_write_long * p.input * 2.0 +
+  g.cache_read * p.cache_read +
+  g.output * p.output
+  base_codec::json_num(tokens / 1.0e6 * (if g.fast { 2.0 } else { 1.0 }))
+}
+
 /// usage.ts `priceTable`: the prices `cost` uses, of the station's table and of the models the rows name.
 pub fn price_table(
   state : readops_core::ReaderState,

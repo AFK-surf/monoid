@@ -241,8 +241,8 @@ test("only programs on this machine: another Host or a web page's Origin is refu
     assert.equal((await raw(s.door, path, { host: "127.0.0.1:1" }))[0], 403);
     assert.equal((await raw(s.door, path, { origin: "https://evil.example" }))[0], 403);
     assert.equal((await raw(s.door, path, { origin: `http://127.0.0.1:${s.door.port}` }))[0], 403);
-    // `Origin: null` from outside a browser passes; from a browser's sandboxed frame (which says where it fetches) not.
-    assert.deepEqual(await raw(s.door, path, { origin: "null" }), [200, "ok"]);
+    // Any Origin header (including `Origin: null`, with or without `Sec-Fetch-Site`) is refused.
+    assert.equal((await raw(s.door, path, { origin: "null" }))[0], 403);
     assert.equal((await raw(s.door, path, { origin: "null", "sec-fetch-site": "cross-site" }))[0], 403);
     const ws = new WebSocket(`ws://127.0.0.1:${s.door.port}${path}`, { origin: "https://evil.example" });
     assert.equal(await new Promise<number>((r) => ws.once("unexpected-response", (_q, res) => r(res.statusCode ?? 0))), 403);

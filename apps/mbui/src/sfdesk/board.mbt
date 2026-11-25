@@ -151,10 +151,10 @@ fn board_pane_bar(parent : @view.View, src : Source, make : (@view.View) -> Unit
       .grow(Is(1.0))
       .min_width(Is(Some(0.0)))
       .lines_up(Is(Some(Middle)))
-      .padding(By(fn() { (0.0, (ends.over)(), 0.0, 0.0) }))
+      .padding(By(fn() { (0.0, (ends.over)(), 0.0, 1.0) }))
       // (its empty part drags the window: what is in it taking presses all the same, so it is said to take them)
       .presses(Is(true))
-      .moves_window(By(fn() { @ui.window_inset() }))
+      .moves_window(By(@ui.window_inset_now))
       |> ignore
       bar_room_node(bar, fn() { (ends.start)(true) })
       bar.box(fn(inner) {
@@ -213,7 +213,7 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
       board_beside_page(page, src, r, tips, serial)
     })
     |> ignore
-    let high = fn() { @sf.wide_bar_h + (ends.over)() }
+    let high = fn() { chat_bar_room(in_pane=false) }
     col.box(fn(bar) {
       bar
       .over(Is(true))
@@ -223,7 +223,7 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
       .padding(By(fn() { (0.0, (ends.over)(), 0.0, 1.0) }))
       // (its empty part drags the window, as a chat's bar does)
       .presses(Is(true))
-      .moves_window(By(fn() { @ui.window_inset() }))
+      .moves_window(By(@ui.window_inset_now))
       |> ignore
       @sf.top_scroll_edge_by_node(
         bar,
@@ -242,9 +242,11 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
         .min_width(Is(Some(0.0)))
         .gap(Is(8.0))
         .lines_up(Is(Some(Middle)))
+        // (its title as far in from its start as × is seen from its normal end without mirroring window_keys_room)
         .padding(By(fn() {
-          let end = dmax(12.0, (ends.end)(false, false))
-          (end, 0.0, end, 0.0)
+          let end = (ends.end)(false, false)
+          let start_in = (if @ui.window_keys_own_now() { bar_in } else { end }) + (@sf.icon_button_side - 16.0) / 2.0
+          (start_in, 0.0, end, 0.0)
         }))
         |> ignore
         inner.box(fn(t) {

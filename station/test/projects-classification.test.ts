@@ -554,9 +554,8 @@ test("instructions & migrations gate projects on FEATURES.projects; long-session
   assert.match(withP, /never end need_human for it/);
 
   // Migration note 186 is gated on projectsOn.
-  assert.equal(latestNote({ projectsOn: false }), 185);
-  assert.equal(latestNote({ projectsOn: true }), 186);
-  assert.equal(untoldNotes(185, "/full", { projectsOn: false }), "");
+  assert.equal(latestNote({ projectsOn: false }), latestNote({ projectsOn: true }));
+  assert.doesNotMatch(untoldNotes(185, "/full", { projectsOn: false }), /project_manage/);
   assert.match(untoldNotes(185, "/full", { projectsOn: true }), /project_manage/);
 
   // Beta-off rig refuses project_manage and chat_configure classification.
