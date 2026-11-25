@@ -356,6 +356,8 @@ jobs:
     # (natives-build builds the non-Apple parts)
     if: needs.plan.outputs.natives_mac == 'needed'
     runs-on: ${{ fromJSON(needs.plan.outputs.natives_mac_runner) }}
+    # (main's: the releases bucket's token, for --publish-store)
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || '' }}
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets, on main only
@@ -392,6 +394,7 @@ jobs:
       - name: Get or build the Apple native parts
         env:
           GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           STILLFAIL_NATIVE_READERS: "1"
           GITHUB_RUNNER: ${{ runner.environment }}
           MISSING_MAC: ${{ needs.plan.outputs.missing_mac_list }}
@@ -409,7 +412,13 @@ jobs:
             fi
           fi
           if [ "$GITHUB_REF" = refs/heads/main ]; then
-            ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --publish $MISSING_MAC
+            # (Mini1-5 put main's in the store, through Cloudflare's API by STILLFAIL_DIRECT_DNS, seconds; their
+            # `gh release upload` from Shanghai timed out at the job's 5 minutes, ETIMEDOUT or TLS, 2026-11-25)
+            if [ "$GITHUB_RUNNER" = self-hosted ] && [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+              node scripts/native.ts ensure --publish-store $MISSING_MAC
+            else
+              ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --publish $MISSING_MAC
+            fi
           else
             ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $MISSING_MAC
           fi
@@ -439,6 +448,8 @@ jobs:
     needs: plan
     if: needs.plan.outputs.natives_mac_reader == 'needed'
     runs-on: ${{ fromJSON(needs.plan.outputs.natives_mac_reader_runner) }}
+    # (main's: the releases bucket's token, for --publish-store)
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || '' }}
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets, on main only
@@ -480,6 +491,7 @@ jobs:
       - name: Get or build the Mac's reader
         env:
           GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           STILLFAIL_NATIVE_READERS: "1"
           GITHUB_RUNNER: ${{ runner.environment }}
           MISSING_MAC: ${{ needs.plan.outputs.missing_mac_reader_list }}
@@ -497,7 +509,13 @@ jobs:
             fi
           fi
           if [ "$GITHUB_REF" = refs/heads/main ]; then
-            ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --publish $MISSING_MAC
+            # (Mini1-5 put main's in the store, through Cloudflare's API by STILLFAIL_DIRECT_DNS, seconds; their
+            # `gh release upload` from Shanghai timed out at the job's 5 minutes, ETIMEDOUT or TLS, 2026-11-25)
+            if [ "$GITHUB_RUNNER" = self-hosted ] && [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+              node scripts/native.ts ensure --publish-store $MISSING_MAC
+            else
+              ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --publish $MISSING_MAC
+            fi
           else
             ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $MISSING_MAC
           fi
