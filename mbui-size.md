@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d5c6e59eb](https://github.com/AFK-surf/monoid/commit/d5c6e59eb42b8fccb1a678eeb11495a381d1a4aa) feat(ui): calibrate iOS 27.0 Liquid Glass v8 (roun | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.12 | 65 | 100.75 | 129.12 |
 | [010a71e28](https://github.com/AFK-surf/monoid/commit/010a71e280b8fbc0f7fc2c49c9fe51691282808e) fix(ci): run deltas-station and deltas-desktop-win | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.94 | 121.84 |
 | [1d40febe4](https://github.com/AFK-surf/monoid/commit/1d40febe4eeb4b726223d5219d2228bb591df388) feat(pion-station): port reader_serve (--serve) wi | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.94 | 121.84 |
 | [38f0aa4e0](https://github.com/AFK-surf/monoid/commit/38f0aa4e0dad79a45f5bd4b81d53f283c662b54c) feat(mbui): default profile sharing to follow work | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.94 | 121.84 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3c6d60e59](https://github.com/AFK-surf/monoid/commit/3c6d60e594fbed10d7bc0dcc249f77a8cb1109d8) fix(mbui): keep the remote rail dot steady during  | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.96 | 123.35 |
 | [cd9b47945](https://github.com/AFK-surf/monoid/commit/cd9b47945a7781e08f686cb52bd817296dc2988a) fix(ui): remove liquid slider end-clamp and flush- | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 100.93 | 113.13 |
 | [a9e0129a7](https://github.com/AFK-surf/monoid/commit/a9e0129a7fd817301be66e61e3edd0a7102b8ded) perf(ui): skip off-screen resident clock wakes and | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 101.14 | 128.19 |
-| [ff693e9ed](https://github.com/AFK-surf/monoid/commit/ff693e9ed78f3b196f93ece36f34e3c59e4e161d) feat(core,app): time a start before the core and t | 2.54 | 3.43 | 14.18 | 36.71 | 55.47 | 32.07 | 64.89 | 101.14 | 128.19 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d5c6e59eb](https://github.com/AFK-surf/monoid/commit/d5c6e59eb42b8fccb1a678eeb11495a381d1a4aa) feat(ui): calibrate iOS 27.0 Liquid Glass v8 (roun | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.41 |
 | [010a71e28](https://github.com/AFK-surf/monoid/commit/010a71e280b8fbc0f7fc2c49c9fe51691282808e) fix(ci): run deltas-station and deltas-desktop-win | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.18 |
 | [1d40febe4](https://github.com/AFK-surf/monoid/commit/1d40febe4eeb4b726223d5219d2228bb591df388) feat(pion-station): port reader_serve (--serve) wi | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.02 |
 | [38f0aa4e0](https://github.com/AFK-surf/monoid/commit/38f0aa4e0dad79a45f5bd4b81d53f283c662b54c) feat(mbui): default profile sharing to follow work | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.23 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3c6d60e59](https://github.com/AFK-surf/monoid/commit/3c6d60e594fbed10d7bc0dcc249f77a8cb1109d8) fix(mbui): keep the remote rail dot steady during  | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.71 |
 | [cd9b47945](https://github.com/AFK-surf/monoid/commit/cd9b47945a7781e08f686cb52bd817296dc2988a) fix(ui): remove liquid slider end-clamp and flush- | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.69 |
 | [a9e0129a7](https://github.com/AFK-surf/monoid/commit/a9e0129a7fd817301be66e61e3edd0a7102b8ded) perf(ui): skip off-screen resident clock wakes and | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.59 |
-| [ff693e9ed](https://github.com/AFK-surf/monoid/commit/ff693e9ed78f3b196f93ece36f34e3c59e4e161d) feat(core,app): time a start before the core and t | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.41 |
