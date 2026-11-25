@@ -7,7 +7,7 @@ import type { Profile } from "../src/agents/runtime.ts";
 const profile = (access: Record<string, unknown> = {}, env: Record<string, unknown> = {}): Profile =>
   ({ id: "copilot", runtime: "copilot", home: "/tmp/copilot", access, env }) as Profile;
 
-test("copilotRules names MCP tools as the Copilot SDK does, not mcp__stillfail__", () => {
+test("copilotRules names MCP tools as Copilot CLI does, not mcp__stillfail__", () => {
   const rules = copilotRules("Be brief.");
   assert.match(rules, /^Be brief\./);
   assert.match(rules, /stillfail-chat_post/);

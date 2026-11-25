@@ -1,49 +1,40 @@
 # GitHub Copilot
 
-The station's `copilot` runtime runs each session as one ACP session (`station/src/agents/acp.ts`) served by
-`station/src/agents/copilot-bridge.mjs`, which hosts the official **GitHub Copilot SDK** (`@microsoft/copilot-sdk`). The
-bridge is a separate process because the SDK's runtime is a process of its own and its package is not bundled into
-`main.js`; the station's build copies `copilot-bridge.mjs` beside the bundle.
+The station's `copilot` runtime runs each session as one `copilot --acp --stdio` process (the GitHub Copilot CLI's own
+ACP server), like `dsh` and Pi. The station installs the CLI through its updater (`@github/copilot`); there is no
+station-side ACP adapter.
 
-## What the bridge does
+## How a session runs
 
-- Starts `CopilotClient` in `mode: "empty"`, with `RuntimeConnection.forSpawnedStdio({ baseDirectory: COPILOT_HOME })`.
-- `session/new` / `session/load`: creates or resumes a Copilot session with the station's MCP server from ACP
-  (`{type:"http", url, headers:[{name,value}]}` becomes `mcp.servers` with a header object) and the profile's
-  instructions file (`systemMessage: { mode: "append" }`).
-- `session/prompt`: `session.sendAndWait(...)`; the SDK's `events.streaming` deltas become `agent_message_chunk`,
-  `tool.execution_start/complete` become `tool_call` / `tool_call_update`; `stopReason: "end_turn"` ends the ACP turn.
-- `session/set_config_option` `model`: `session.setModel(value)`.
-- `session/cancel`: `session.abort()`.
+- One CLI process per session, under the station's runner.
+- `COPILOT_HOME` is the profile's `copilot/` directory, so its session state and settings are the profile's.
+- The station writes its instructions to `copilot/instructions/stillfail.instructions.md` and points
+  `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` there. The CLI's own tools (`bash`, `edit`, `view`, `web_fetch`, …) are excluded:
+  a session gets the station's MCP server from ACP's `session/new`, and nothing else.
+- The profile's model is passed with `--model`; its reasoning effort with `--effort`. `auto` leaves Copilot's own
+  routing.
+- `session/prompt`, `session/cancel`, streaming updates, tool calls and permission requests are ACP's, handled by
+  `station/src/agents/acp.ts`.
 
 ## Auth
 
-The profile's `access.key` (a `gho_`, `ghu_` or `github_pat_` token) is passed as `COPILOT_GITHUB_TOKEN` for both the
-client and the per-session token provider. With none, the bridge falls back to `gh auth token` for development. Copilot
-accepts fine-grained PATs with the "Copilot Requests" permission; classic `ghp_` tokens are refused.
+Profiles sign in with GitHub's OAuth device flow (`station/src/accounts/copilot.ts`): the app shows
+`github.com/login/device` and the code, and the token is kept in `<profile home>/copilot/github-token`. The driver passes
+it as `COPILOT_GITHUB_TOKEN`; a token in `access.key` or the profile's environment works too. With none, the CLI uses its
+own `copilot login` in `COPILOT_HOME` (development).
 
-For a headless station that should not depend on `gh`, put the token in the profile (`access.key`) or configure a
-`copilot login` in `COPILOT_HOME` with `settings.json`'s `storeTokenPlaintext: true`.
+## Models and allowance
 
-## Models
+The profile check lists the account's chat models from GitHub's Copilot model catalog
+(`https://api.githubcopilot.com/models`), and reads the premium-request allowance from
+`https://api.github.com/copilot_internal/user` (window, reset date and plan). The app shows both; a chat can pick any
+listed model.
 
-The bridge lists models with `client.listModels()` and exposes them as the ACP `model` config option. The profile's
-model is applied once the session is open; `auto` keeps Copilot's own routing.
+## Packaging
 
-## Tools
-
-MCP tools are named `<server>-<tool>` by the SDK, so the station's `chat_post` is `stillfail-chat_post`, not
-`mcp__stillfail__chat_post`. `copilotRules()` appends that to the station's instructions.
-
-## Packaging and limits
-
-- `@microsoft/copilot-sdk` is a station dependency; it brings the platform runtime package
-  (`@microsoft/copilot-sdk-<os>-<arch>`). A packaged station must ship that runtime or install it beside the bundle. The
-  current station build copies only the bridge; running from a checkout works because Node resolves the SDK from
-  `station/node_modules`.
-- ACP support in the Copilot SDK is evolving. Pin the SDK version and probe `initialize` capabilities rather than
-  assuming.
-- The Copilot runtime is closed source; the SDK is MIT. Do not vendor or patch the runtime binary.
+The CLI is a station runtime, installed and updated by the station's software page (`npm install -g @github/copilot`),
+not bundled in the station's own tarball. Its `--acp` mode is in public preview and subject to change; pin the station's
+CLI through the updater and probe `initialize` capabilities rather than assuming.
 
 ## Trying it
 
@@ -53,25 +44,5 @@ pnpm --filter @stillfail/station build
 # run a disposable station from source (see docs/development.md)
 ```
 
-Add a profile with `runtime: "copilot"` and a Copilot token, then open a chat on it. The session's runtime is
-`copilot`; its transcript is kept under `<profile home>/copilot/sessions`.
-
-## Docker, for a local try
-
-The image runs a **disposable station** with a local test workspace (`station-load setup`), one Copilot profile, and a
-small chat page; it is not enrolled in a still.fail cloud workspace, so it does not appear in the app.
-
-```sh
-# The station's native parts are not in git: take them from an installed still.fail app, or build them.
-mkdir -p docker/station/native
-cp /path/to/stillfail/app/station/mesh.node docker/station/native/
-cp /path/to/stillfail/app/station/stillfail-runner docker/station/native/
-
-docker build -f docker/station/Dockerfile -t stillfail-station-copilot .
-docker run --rm -p 18080:8080 -e COPILOT_GITHUB_TOKEN="$(gh auth token)" stillfail-station-copilot
-# open http://127.0.0.1:18080
-```
-
-The station's log (`docker logs`) should say `runtime=copilot profile=copilot model=gpt-6.2-sol`. The chat page talks to
-the station over its own loopback mesh port through `station-load`; the station's SQLite entries are the transcript.
-`COPILOT_GITHUB_TOKEN` must be a `gho_`, `ghu_` or `github_pat_` token: the image has no `gh` login of its own.
+Add a profile with `runtime: "copilot"`, sign it in, then open a chat on it. The session's runtime is `copilot`; its
+transcript is kept under `<profile home>/copilot/sessions`.

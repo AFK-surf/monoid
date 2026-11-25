@@ -1,29 +1,12 @@
-// GitHub Copilot driver: one ACP session per session, served by src/agents/copilot-bridge.mjs, which hosts the
-// official Copilot SDK. The station speaks ACP to the bridge (acp.ts), so sessions, tools, permissions, live steps and
-// the kept transcript are the same as any ACP runtime; the bridge owns the SDK runtime and its GitHub identity.
-//
-// The SDK's own surfaces this uses:
-// - `mode: "empty"` with an explicit tool allowlist (`mcp:*`, `custom:*`), so a station session gets no ambient CLI
-//   tools and only the MCP server the station passes in session/new;
-// - a per-session `github.tokenProvider`; the profile's token when it has one, else the bridge falls back to `gh auth`
-//   for development (the driver never lets the station's own environment decide a profile's identity);
-// - `events.streaming`, so the bridge can send agent_message_chunk updates as the model writes;
-// - `systemMessage` append for the station's instructions, and `mcp.servers` for its tools.
-//
-// The bridge is a separate file because the SDK's runtime is a child process of its own and its package is not bundled
-// into main.js; the station's build copies copilot-bridge.mjs beside main.js. See docs/copilot.md.
+// GitHub Copilot driver: one `copilot --acp --stdio` per session (the CLI's own ACP server, like dsh's and Pi's).
+// The station speaks ACP to it (acp.ts): sessions, tools, permissions, live steps and the kept transcript are the
+// same as any ACP runtime. The CLI is installed by the station's updater (`@github/copilot`).
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { peerHttpBase } from "../tools/http.ts";
 import { AcpDriver, AcpSession, KeptTranscript, type AcpStart } from "./acp.ts";
 import type { Events } from "./own-process.ts";
 import { expandRoute, profileEnv, profileModel } from "./profiles.ts";
-import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions } from "./runtime.ts";
-
-const run = promisify(execFile);
+import { cleanEnv, failureOf, type FailureReason, type OpenOptions } from "./runtime.ts";
 
 type Json = any;
 
@@ -50,7 +33,7 @@ export const copilotRules = (instructions: string) =>
   `${instructions}${instructions === "" ? "" : "\n\n"}The station's tools (chat_post, chat_state and the others named in these instructions) are MCP tools named stillfail-<tool>: stillfail-chat_post and so on. Call one by that name without listing the server's tools first.`;
 
 /// The profile's GitHub token, when it has one (a fine-grained PAT or an OAuth token: gho_, ghu_, github_pat_).
-/// None leaves the bridge to `gh auth` (development); a station that wants no ambient identity sets one.
+/// None lets the CLI use the machine's own `copilot login` (development); a station that wants no ambient identity sets one.
 export function copilotToken(profile: OpenOptions["profile"]): string | undefined {
   const access = profile.access as { key?: unknown } | undefined;
   const key = typeof access?.key === "string" ? access.key.trim() : "";
@@ -65,8 +48,9 @@ export function copilotToken(profile: OpenOptions["profile"]): string | undefine
   return undefined;
 }
 
-/// The bridge, beside this file in src/ and in dist/ (the station's build copies it).
-const BRIDGE = fileURLToPath(new URL("./copilot-bridge.mjs", import.meta.url));
+/// The CLI's own tools, removed from every session: the station gives its agent only the MCP server it passes in
+/// session/new, as the other runtimes do. The CLI has no wildcard for MCP tools, so every built-in is excluded.
+const BUILTIN_TOOLS = ["bash", "powershell", "list_bash", "list_powershell", "read_bash", "read_powershell", "stop_bash", "stop_powershell", "write_bash", "write_powershell", "apply_patch", "create", "edit", "view", "list_agents", "read_agent", "task", "write_agent", "ask_user", "glob", "grep", "rg", "skill", "web_fetch"].join(",");
 
 export class CopilotDriver extends AcpDriver<CopilotSession> {
   constructor(options: { data: string }) {
@@ -77,19 +61,20 @@ export class CopilotDriver extends AcpDriver<CopilotSession> {
     return "copilot";
   }
 
-  /// Every model this GitHub account may use, as the SDK lists them (`copilot-bridge.mjs --models`): the profile's
+  /// Every chat model this GitHub account may use: GitHub's Copilot model catalog, as the CLI sees it. The profile's
   /// check offers these, and a chat may pick any of them.
   async models(profile: OpenOptions["profile"]): Promise<string[]> {
-    const home = copilotHome(profile.home);
-    mkdirSync(home, { recursive: true });
-    const env: Record<string, string> = { ...cleanEnv(SCRUBBED), COPILOT_HOME: home };
     const token = copilotToken(profile);
-    if (token !== undefined) env.COPILOT_GITHUB_TOKEN = token;
-    const { stdout } = await run(process.execPath, [BRIDGE, "--models"], { env, maxBuffer: 4 * 1024 * 1024 });
-    const line = stdout.split("\n").map((l) => l.trim()).find((l) => l.startsWith("["));
-    if (line === undefined) return [];
-    const models = JSON.parse(line) as unknown;
-    return Array.isArray(models) ? models.filter((m): m is string => typeof m === "string" && m !== "") : [];
+    if (token === undefined) return [];
+    const answer = await fetch("https://api.githubcopilot.com/models", {
+      headers: { authorization: `Bearer ${token}`, "copilot-integration-id": "vscode-chat", accept: "application/json" },
+    });
+    if (!answer.ok) throw new Error(`GitHub Copilot models: ${answer.status}`);
+    const body = (await answer.json().catch(() => null)) as Json;
+    const data = Array.isArray(body?.data) ? body.data : [];
+    return data
+      .filter((m: Json) => m?.policy?.state === "enabled" && m?.capabilities?.type === "chat" && typeof m?.id === "string")
+      .map((m: Json) => m.id as string);
   }
 
   protected session(options: OpenOptions, events: Events): CopilotSession {
@@ -100,25 +85,26 @@ export class CopilotDriver extends AcpDriver<CopilotSession> {
     const home = copilotHome(options.profile.home);
     mkdirSync(home, { recursive: true });
     mkdirSync(join(home, "sessions"), { recursive: true });
-    const instructions = join(home, "stillfail-instructions.md");
-    writeFileSync(instructions, copilotRules(options.instructions), { mode: 0o600 });
+    const instructionsDir = join(home, "instructions");
+    mkdirSync(instructionsDir, { recursive: true });
+    writeFileSync(join(instructionsDir, "stillfail.instructions.md"), copilotRules(options.instructions), { mode: 0o600 });
 
     const env: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "copilot"), options.route) };
     env.COPILOT_HOME = home;
-    env.COPILOT_INSTRUCTIONS = instructions;
-    env.STILLFAIL_PEER_HTTP = peerHttpBase(options.mcpUrl);
+    env.COPILOT_CUSTOM_INSTRUCTIONS_DIRS = instructionsDir;
     const token = copilotToken(options.profile);
     if (token !== undefined) env.COPILOT_GITHUB_TOKEN = token;
 
-    return { command: process.execPath, args: [BRIDGE], env };
+    const model = options.model ?? profileModel(options.profile);
+    const args = ["--acp", "--stdio", "--no-auto-update", `--excluded-tools=${BUILTIN_TOOLS}`];
+    if (model !== undefined && model !== "" && model !== "auto") args.push(`--model=${model}`);
+    if (options.effort !== undefined && options.effort !== "") args.push(`--effort=${options.effort}`);
+    return { command: "copilot", args, env };
   }
 
-  /// The model the profile names is set once the bridge's session is open; its own default is "auto".
-  protected async ready(session: CopilotSession): Promise<void> {
-    const model = session.model;
-    if (model === null || model === "" || model === "auto") return;
-    await session.request(`config:${uuid()}`, "session/set_config_option", { sessionId: session.id(), configId: "model", value: model }).catch(() => undefined);
-  }
+  /// The model was chosen when the CLI started; a later turn's model change is sent through ACP's config option (the
+  /// CLI applies it to the session when it supports that, and otherwise keeps the one it has).
+  protected async ready(_session: CopilotSession): Promise<void> {}
 }
 
 export class CopilotSession extends AcpSession {
@@ -150,7 +136,7 @@ export class CopilotSession extends AcpSession {
     this.models = Array.isArray(snapshot.models) ? snapshot.models : [];
   }
 
-  /// Another model between turns: the bridge sets it on the SDK session, read from its next turn on.
+  /// Another model between turns: ACP's config option is sent; a CLI that cannot change it keeps the one it started with.
   retune(options: OpenOptions): boolean {
     if (this.turn.closed || this.turn.busy || this.sessionId === "") return false;
     const model = options.model ?? profileModel(options.profile);
