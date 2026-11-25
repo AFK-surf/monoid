@@ -1,0 +1,399 @@
+// One chat of a station read from the copy another station keeps of it, to go on with it there while its station does
+// not answer (station/src/replica/chat.ts, handoff.ts): the newest generation's batches folded (`Folded`, the fold a
+// restore uses), then only that chat taken out of the fold: its thread's row, its last entries of people and agents,
+// and its sessions, each part bounded. 1:1 aligned with `station/mb/src/replica/chat.mbt`.
+
+import "base_codec"
+import "builders_core"
+import "js_json"
+import "sql_db"
+
+/// The most a reading takes, whatever it is asked: entries, bytes of an entry's text, bytes of the whole reading,
+/// sessions, files of an entry.
+pub let chat_entries_most : Int = 200
+
+pub let chat_text_most : Int = 16384
+
+pub let chat_bytes_most : Int = 1048576
+
+let chat_sessions_most : Int = 20
+
+let chat_files_most : Int = 10
+
+/// The most bytes of an entry's attachments read (the names of CHAT_FILES files fit in far fewer).
+let chat_attached_most : Int = 65536
+
+/// Whether a record line can be of use to the reading of chat `id` (its number as the export writes one, `stringify`),
+/// seen from its text alone, so the fold takes only what it can need. The export writes a row's record as
+/// `{"r":"<table>","row":{…}}` (no spaces), a file's as `{"file":…`, a transcript's as `{"tr":…` or `{"tr_del":…`.
+/// A row of `threads` is taken only where its row says `"id":<id>`, one of `entries` or `thread_sessions` only where it
+/// says `"thread":<id>`, each as a whole key of the row and its whole value (after `{` or `,`, before `,` or `}`: 7 is
+/// not 70, and a text that holds those words holds them with its quotes escaped); every row of `sessions` (the chat's
+/// are found by their keys after), every deletion of a row, of a session or of a thread, and every line not known so.
+fn chat_takes(line : String, id : String) -> Bool {
+  if str_has_prefix(line, "{\"file\":") || str_has_prefix(line, "{\"tr\":") || str_has_prefix(line, "{\"tr_del\":") {
+    return false
+  }
+  if !str_has_prefix(line, "{\"r\":\"") {
+    return true
+  }
+  let end = match str_find_byte(line, 34, 6) {
+    Some(e) => e
+    None => return true
+  }
+  let table = str_slice(line, 6, end)
+  if table == "threads" {
+    says(line, "\"id\":" + id)
+  } else if table == "entries" || table == "thread_sessions" {
+    says(line, "\"thread\":" + id)
+  } else if table == "sessions" {
+    true
+  } else {
+    false
+  }
+}
+
+/// Whether `line` holds `pair` (`"key":value`) as a whole key and value of an object.
+fn says(line : String, pair : String) -> Bool {
+  line.contains("," + pair + ",") || line.contains("{" + pair + ",") || line.contains("," + pair + "}") || line.contains("{" + pair + "}")
+}
+
+/// `s` cut to at most `most` bytes of UTF-8 at a character's end, and whether it was cut.
+fn cut_to(s : String, most : Int) -> (String, Bool) {
+  if utf8_length(s) <= most {
+    return (s, false)
+  }
+  let b = s.to_bytes()
+  let mut at = 0
+  while at < b.length() {
+    let lead = b[at].to_int() & 0xFF
+    let n = if lead < 0x80 { 1 } else if lead >= 0xF0 { 4 } else if lead >= 0xE0 { 3 } else if lead >= 0xC0 { 2 } else { 1 }
+    if at + n > most {
+      break
+    }
+    at = at + n
+  }
+  (slice_bytes(b, 0, at), true)
+}
+
+fn chat_clamp(v : Int, low : Int, high : Int) -> Int {
+  if v < low {
+    low
+  } else if v > high {
+    high
+  } else {
+    v
+  }
+}
+
+fn or_null(v : Option[js_json::JValue]) -> js_json::JValue {
+  match v {
+    Some(x) => x
+    None => js_json::JValue::Null
+  }
+}
+
+/// A text column as it is, cut to `most` bytes; null where it is none.
+fn chat_text(row : js_json::JValue, name : String, most : Int) -> js_json::JValue {
+  match text_of(jval_get(row, name)) {
+    Some(t) => jval_str(cut_to(t, most).0)
+    None => js_json::JValue::Null
+  }
+}
+
+/// A number column as it is; null where it is none.
+fn chat_num(row : js_json::JValue, name : String) -> js_json::JValue {
+  match jval_get(row, name) {
+    Some(js_json::JValue::Num(d)) => js_json::JValue::Num(d)
+    _ => js_json::JValue::Null
+  }
+}
+
+/// A number column of the fold's query; null where it is none.
+fn chat_col_num(r : Map[String, base_codec::Json], name : String) -> js_json::JValue {
+  match r.get(name) {
+    Some(base_codec::Json::Num(x, _)) => js_json::JValue::Num(x)
+    _ => js_json::JValue::Null
+  }
+}
+
+/// An entry as the reading gives it, from its columns as the fold's query takes them out (`text` at most `most`
+/// characters of it, `long` whether it had more, `attachments` its first chat_attached_most characters): its number,
+/// kind, the message an edit is of, who said it, its text cut to `most` bytes (`cut`: it was), when, and the names of
+/// the files it attached.
+fn chat_entry(r : Map[String, base_codec::Json], most : Int) -> js_json::JValue {
+  let (text, cut) = cut_to(field_text(r, "text"), most)
+  let names : Array[js_json::JValue] = []
+  let attached = field_text(r, "attachments")
+  if attached != "" && attached != "[]" {
+    match js_json::parse(attached) {
+      Ok(js_json::JValue::Arr(items)) => {
+        for i in 0..<items.length() {
+          if names.length() >= chat_files_most {
+            break
+          }
+          match text_of(jval_get(items[i], "name")) {
+            Some(n) => names.push(jval_str(cut_to(n, 300).0))
+            None => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  let kind = field_text(r, "kind")
+  let author = match r.get("author") {
+    Some(base_codec::Json::Str(a)) => jval_str(cut_to(a, 400).0)
+    _ => js_json::JValue::Null
+  }
+  jval_obj([
+    ("n", chat_col_num(r, "n")),
+    ("kind", jval_str(if kind == "" { "message" } else { kind })),
+    ("target", chat_col_num(r, "target")),
+    ("author_kind", jval_str(field_text(r, "author_kind"))),
+    ("author", author),
+    ("text", jval_str(text)),
+    ("cut", jval_bool(cut || field_num(r, "long") != 0.0)),
+    ("at", chat_col_num(r, "at")),
+    ("files", js_json::JValue::Arr(names)),
+  ])
+}
+
+/// The row of a record line.
+fn chat_row(line : String) -> Result[js_json::JValue, String] {
+  match js_json::parse(line) {
+    Ok(v) =>
+    match jval_get(v, "row") {
+      Some(row) => Ok(row)
+      None => Ok(jval_obj([]))
+    }
+    Err(e) => Err(e)
+  }
+}
+
+/// `head` followed by `tail` (`copy + rest`), a new array of them.
+fn with_parts(head : Array[(String, js_json::JValue)], tail : Array[(String, js_json::JValue)]) -> Array[(String, js_json::JValue)] {
+  let out : Array[(String, js_json::JValue)] = []
+  for i in 0..<head.length() {
+    out.push(head[i])
+  }
+  for i in 0..<tail.length() {
+    out.push(tail[i])
+  }
+  out
+}
+
+fn chat_all(db : sql_db::Db, sql : String, params : Array[base_codec::Json]) -> Result[Array[Map[String, base_codec::Json]], String] {
+  match db.all(sql, params) {
+    Ok(rows) => Ok(rows)
+    Err(e) => Err(e.message)
+  }
+}
+
+/// The chat `thread` of the copy whose generation is in `dir` (its `head.json` and `log/`), the batches folded in a
+/// database of its own at `work` (gone after): what the copy is (`origin`, `workspace`, `gen`, its station's `name`,
+/// `made`, `to`), the thread's row (`thread`; null where the copy holds no such chat), its last `most_entries` entries of
+/// people and agents oldest first, each text cut to `most_text` bytes (`entries`; `earlier`: how many of them before
+/// those are left out), and its sessions (`sessions`). The whole is at most `most_bytes`: older entries are left out
+/// first.
+pub fn read_chat(
+  client : builders_core::ShellClient,
+  sep : String,
+  dir : String,
+  work : String,
+  thread : Double,
+  most_entries : Int,
+  most_text : Int,
+  most_bytes : Int,
+) -> Result[js_json::JValue, String] {
+  let files = Files::new(client, sep)
+  let head_v = match read_json(files, files.join([dir, "head.json"])) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let head = match as_head(head_v) {
+    Some(h) => h
+    None => return Err("no copy here, or one of a newer station's")
+  }
+  let entries_most = chat_clamp(most_entries, 1, chat_entries_most)
+  let text_most = chat_clamp(most_text, 16, chat_text_most)
+  let bytes_most = chat_clamp(most_bytes, 65536, chat_bytes_most)
+  // (the scratch fold: whatever was left there removed first, and removed after, whether the reading went or failed)
+  Folded::with_open(files, work, fn(folded : Folded) -> Result[js_json::JValue, String] {
+    read_chat_in(files, folded, dir, head, thread, entries_most, text_most, bytes_most)
+  }, best_effort_remove=true)
+}
+
+fn read_chat_in(
+  files : Files,
+  folded : Folded,
+  dir : String,
+  head : js_json::JValue,
+  thread : Double,
+  entries_most : Int,
+  text_most : Int,
+  bytes_most : Int,
+) -> Result[js_json::JValue, String] {
+  let said = js_json::stringify(jval_num(thread))
+  let batches = strings_of(jval_get(head, "batches"))
+  for bi in 0..<batches.length() {
+    let lines = match batch_lines(files, files.join([dir, "log", batches[bi]])) {
+      Ok(ls) => ls
+      Err(e) => return Err(e)
+    }
+    for li in 0..<lines.length() {
+      if chat_takes(lines[li], said) {
+        match folded.apply(lines[li]) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    }
+  }
+  let db = folded.db
+  let id = sql_db::double_to_json(thread)
+  let copy : Array[(String, js_json::JValue)] = [
+    ("origin", or_null(jval_get(head, "origin"))),
+    ("workspace", or_null(jval_get(head, "workspace"))),
+    ("gen", or_null(jval_get(head, "gen"))),
+    (
+      "name",
+      match jval_get(head, "name") {
+        Some(v) => v
+        None => jval_str("")
+      },
+    ),
+    (
+      "made",
+      match jval_get(head, "made") {
+        Some(v) => v
+        None => jval_num(0.0)
+      },
+    ),
+    (
+      "to",
+      match jval_get(head, "to") {
+        Some(v) => v
+        None => jval_num(0.0)
+      },
+    ),
+  ]
+  let found = match chat_all(db, "SELECT line FROM rows WHERE thread = ?1 AND tbl = ?2 LIMIT 1", [id, base_codec::json_int(order_of("threads"))]) {
+    Ok(rs) => rs
+    Err(e) => return Err(e)
+  }
+  if found.length() == 0 {
+    return Ok(jval_obj(with_parts(copy, [
+      ("thread", js_json::JValue::Null),
+      ("entries", js_json::JValue::Arr([])),
+      ("earlier", jval_num(0.0)),
+      ("sessions", js_json::JValue::Arr([])),
+    ])))
+  }
+  let row = match chat_row(field_text(found[0], "line")) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let shown = jval_obj([
+    ("id", chat_num(row, "id")),
+    ("title", chat_text(row, "title", 1000)),
+    ("auto_title", chat_text(row, "auto_title", 1000)),
+    ("created_by", chat_text(row, "created_by", 400)),
+    ("created_at", chat_num(row, "created_at")),
+    ("archived_at", chat_num(row, "archived_at")),
+  ])
+  // Its sessions: those its thread_sessions name, those still in the chat first, then the newest to join (the last
+  // said first among those that joined at once), each as its sessions row says (by the fold's index of sessions).
+  let sessions : Array[js_json::JValue] = []
+  let members = match chat_all(
+    db,
+    "SELECT line FROM rows WHERE thread = ?1 AND tbl = ?2 ORDER BY json_extract(line, '$.row.left_at') IS NOT NULL, json_extract(line, '$.row.joined_at') DESC, seq DESC LIMIT ?3",
+    [id, base_codec::json_int(order_of("thread_sessions")), base_codec::json_int(chat_sessions_most)],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(e)
+  }
+  for mi in 0..<members.length() {
+    let member = match chat_row(field_text(members[mi], "line")) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    let key = match text_of(jval_get(member, "session")) {
+      Some(k) => k
+      None => continue
+    }
+    let srows = match chat_all(db, "SELECT line FROM rows WHERE session = ?1 AND tbl = ?2 LIMIT 1", [base_codec::json_str(key), base_codec::json_int(order_of("sessions"))]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    let s = if srows.length() > 0 {
+      match chat_row(field_text(srows[0], "line")) {
+        Ok(r) => r
+        Err(e) => return Err(e)
+      }
+    } else {
+      jval_obj([])
+    }
+    sessions.push(
+      jval_obj([
+        ("key", jval_str(cut_to(key, 200).0)),
+        ("runtime", chat_text(s, "runtime", 40)),
+        ("model", chat_text(s, "model", 200)),
+        ("effort", chat_text(s, "effort", 40)),
+        ("title", chat_text(s, "title", 1000)),
+        ("cwd", chat_text(s, "cwd", 2000)),
+        ("workspace", chat_text(s, "workspace", 2000)),
+        ("archived_at", chat_num(s, "archived_at")),
+        ("left_at", chat_num(member, "left_at")),
+      ]),
+    )
+  }
+  // Its last entries of people and agents (a station's notices left out), newest first, by its log's numbers: each
+  // one's columns alone, its text and attachments cut in the query, so a long one is never read whole.
+  let people = "json_extract(line, '$.row.author_kind') IN ('person', 'agent')"
+  let counted = match chat_all(db, "SELECT COUNT(*) AS n FROM rows WHERE thread = ?1 AND tbl = ?2 AND " + people, [id, base_codec::json_int(order_of("entries"))]) {
+    Ok(rs) => rs
+    Err(e) => return Err(e)
+  }
+  let count = if counted.length() > 0 { field_num(counted[0], "n") } else { 0.0 }
+  let columns = "json_extract(line, '$.row.n') AS n, json_extract(line, '$.row.kind') AS kind, json_extract(line, '$.row.target') AS target, json_extract(line, '$.row.author_kind') AS author_kind, substr(json_extract(line, '$.row.author'), 1, 400) AS author, substr(json_extract(line, '$.row.text'), 1, ?4) AS text, length(json_extract(line, '$.row.text')) > ?4 AS long, json_extract(line, '$.row.at') AS at, substr(json_extract(line, '$.row.attachments'), 1, ?5) AS attachments"
+  let newest = match chat_all(
+    db,
+    "SELECT " + columns + " FROM rows WHERE thread = ?1 AND tbl = ?2 AND " + people + " ORDER BY json_extract(line, '$.row.n') DESC LIMIT ?3",
+    [
+      id,
+      base_codec::json_int(order_of("entries")),
+      base_codec::json_int(entries_most),
+      base_codec::json_int(text_most),
+      base_codec::json_int(chat_attached_most),
+    ],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(e)
+  }
+  let sized = with_parts(copy, [("thread", shown), ("sessions", js_json::JValue::Arr(sessions))])
+  let mut size = utf8_length(js_json::stringify(jval_obj(sized))) + 64
+  let kept : Array[js_json::JValue] = []
+  for ni in 0..<newest.length() {
+    let e = chat_entry(newest[ni], text_most)
+    let b = utf8_length(js_json::stringify(e)) + 1
+    if size + b > bytes_most {
+      break
+    }
+    kept.push(e)
+    size = size + b
+  }
+  let oldest_first : Array[js_json::JValue] = []
+  let mut ki = kept.length() - 1
+  while ki >= 0 {
+    oldest_first.push(kept[ki])
+    ki = ki - 1
+  }
+  let earlier = count - kept.length().to_double()
+  Ok(jval_obj(with_parts(copy, [
+    ("thread", shown),
+    ("entries", js_json::JValue::Arr(oldest_first)),
+    ("earlier", jval_num(if earlier > 0.0 { earlier } else { 0.0 })),
+    ("sessions", js_json::JValue::Arr(sessions)),
+  ])))
+}

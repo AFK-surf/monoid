@@ -119,6 +119,7 @@ fn advertised_modes() -> Array[String] {
     "replica-export",
     "replica-restore",
     "replica-carry",
+    "replica-chat",
     "usage-counter",
     "search",
     "forward",
@@ -1610,7 +1611,7 @@ fn run_smoke_parse_codex_num(world : World) -> Unit {
 
 fn usage_exit() -> Unit {
   let _ = host_shim::write_stderr_line(
-    "usage: stillfail-pion [--version | --smoke-stdio | --smoke-sqlite <db> | --smoke-sql-db <db> | --smoke-shell [dir] | --smoke-rc-soak [iters] | --builder footprint [--sep <sep>] | --builder memory [--shell-dir <dir>] [--sep <sep>] | --builder packed [--shell-dir <dir>] | --builder replica-export --db <file> [--replica <dir>] [--data-dir <dir>] [--origin <id>] [--sep <sep>] | --builder replica-restore --db <file> --data <dir> [--now <ms>] [--sep <sep>] | --builder replica-carry [--sep <sep>] | --builder archive-marks|session-bindings|session-counts|signin-save|post-blocks|usage-retire|widget-sources|card-posts|closed-cards|people-since|session-up-jobs|workspace-up-jobs|outflow-chats|search-scope|session-list|archive-last|page-letters|legacy-edits|legacy-said|session-backfill|recent-chat|vault-uses|turn-counts|said|cc-index|usage-check|live-locator --db <file>]",
+    "usage: stillfail-pion [--version | --smoke-stdio | --smoke-sqlite <db> | --smoke-sql-db <db> | --smoke-shell [dir] | --smoke-rc-soak [iters] | --builder footprint [--sep <sep>] | --builder memory [--shell-dir <dir>] [--sep <sep>] | --builder packed [--shell-dir <dir>] | --builder replica-export --db <file> [--replica <dir>] [--data-dir <dir>] [--origin <id>] [--sep <sep>] | --builder replica-restore --db <file> --data <dir> [--now <ms>] [--sep <sep>] | --builder replica-carry [--sep <sep>] | --builder replica-chat --dir <gen> --work <file> --thread <id> [--entries <n>] [--text <n>] [--bytes <n>] [--sep <sep>] [--shell-dir <dir>] | --builder archive-marks|session-bindings|session-counts|signin-save|post-blocks|usage-retire|widget-sources|card-posts|closed-cards|people-since|session-up-jobs|workspace-up-jobs|outflow-chats|search-scope|session-list|archive-last|page-letters|legacy-edits|legacy-said|session-backfill|recent-chat|vault-uses|turn-counts|said|cc-index|usage-check|live-locator --db <file>]",
   )
   host_shim::exit_process(2)
 }
@@ -1882,6 +1883,9 @@ fn main(world : World) -> Unit {
       }
       Some("replica-carry") => {
         host_shim::exit_process(builders_replica::run_replica_carry(argv))
+      }
+      Some("replica-chat") => {
+        host_shim::exit_process(builders_replica::run_replica_chat(argv))
       }
       Some("usage-counter") => {
         match flag_value(argv, "--db") {

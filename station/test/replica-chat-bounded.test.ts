@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { mbReaderBinary } from "../src/read/mb-reader.ts";
+import { mbReaderBinary, pionBinary } from "../src/read/mb-reader.ts";
 import { CHAT_BYTES, CHAT_ENTRIES, CHAT_SESSIONS, CHAT_TEXT, readChatSoon } from "../src/replica/chat.ts";
 import { nothingTold } from "../src/replica/export.ts";
 import { Store } from "../src/store/store.ts";
@@ -14,7 +14,15 @@ import { InlineRunner } from "./reference/replica-work.ts";
 import { HOME, ORIGIN, chat, dataDir } from "./replica-fakes.ts";
 
 const binary = mbReaderBinary();
-const skip = binary === null ? "the MoonBit program is not built here (station/mb/build.sh)" : false;
+/// Asked for Pion (`STILLFAIL_READER_REPLICA_CHAT` or `STILLFAIL_READER_ENGINE`), the readings go through the reader
+/// selection (no binary given), so they are the Pion program's; else the MoonBit program's.
+const viaSelection = (process.env.STILLFAIL_READER_REPLICA_CHAT ?? process.env.STILLFAIL_READER_ENGINE)?.trim() === "pion";
+const chosen = viaSelection ? undefined : binary ?? undefined;
+const skip = binary === null
+  ? "the MoonBit program is not built here (station/mb/build.sh)"
+  : viaSelection && pionBinary() === null
+    ? "Pion asked for, but no stillfail-pion is built here (STILLFAIL_PION_READER)"
+    : false;
 
 /// A station's copy of HOME written by the export, its generation's directory.
 async function copied(data: string, store: Store): Promise<string> {
@@ -55,7 +63,7 @@ test("a chat read from a copy is held to its bounds, its newest entries kept", {
   chat(store, data, "chat:other", null, 50);
   const dir = await copied(data, store);
   const work = join(data, "replica", "chat-read.db");
-  const read = await readChatSoon({ dir, work, thread: big, shellDir: join(data, "shell"), binary: binary! });
+  const read = await readChatSoon({ dir, work, thread: big, shellDir: join(data, "shell"), binary: chosen });
   assert.equal(read.origin, ORIGIN);
   assert.equal(read.thread?.id, big);
   assert.equal(read.thread?.title, "Chat chat:big");
@@ -81,7 +89,7 @@ test("a chat read from a copy is held to its bounds, its newest entries kept", {
   assert.equal(existsSync(work), false, "the fold is gone after");
 
   // A chat the copy does not hold: the copy, and no thread.
-  const none = await readChatSoon({ dir, work, thread: 987_654, shellDir: join(data, "shell"), binary: binary! });
+  const none = await readChatSoon({ dir, work, thread: 987_654, shellDir: join(data, "shell"), binary: chosen });
   assert.equal(none.thread, null);
   assert.deepEqual(none.entries, []);
 });
@@ -96,7 +104,7 @@ test("a chat read from a copy is its own, whole, beside chats whose numbers begi
   const dir = await copied(data, store);
   const work = join(data, "replica", "chat-read.db");
   for (const id of [1, 10, 11]) {
-    const read = await readChatSoon({ dir, work, thread: id, shellDir: join(data, "shell"), binary: binary! });
+    const read = await readChatSoon({ dir, work, thread: id, shellDir: join(data, "shell"), binary: chosen });
     const key = `chat:n${threads.indexOf(id) + 1}`;
     assert.equal(read.thread?.id, id);
     assert.equal(read.thread?.title, `Chat ${key}`);

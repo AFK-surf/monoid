@@ -70,6 +70,7 @@ test("READER_MODES strictly matches all modes in station/mb/src/reader/main.mbt 
       "post-blocks",
       "recent-chat",
       "replica-carry",
+      "replica-chat",
       "replica-export",
       "replica-restore",
       "said",
@@ -151,7 +152,7 @@ test("config.readers selects mb, pion, and shadow (for footprint)", () => {
   );
 
   // Unimplemented modes safely fall back to mb with reason "pion-mode-unimplemented".
-  const unimpl = resolveReaderEngine("replica-chat", { config: { readers: { "replica-chat": "pion" } }, env: {}, hasPionBinary: true });
+  const unimpl = resolveReaderEngine("forward", { config: { readers: { forward: "pion" } }, env: {}, hasPionBinary: true });
   assert.equal(unimpl.engine, "mb");
   assert.equal(unimpl.requested, "pion");
   assert.equal(unimpl.source, "config");
@@ -198,9 +199,9 @@ test("environment variable STILLFAIL_READER_<UPPER_SNAKE_MODE> overrides config"
     fallback: false,
   });
 
-  const unimplEnv = resolveReaderEngine("replica-chat", {
-    config: { readers: { "replica-chat": "mb" } },
-    env: { STILLFAIL_READER_REPLICA_CHAT: "pion" },
+  const unimplEnv = resolveReaderEngine("forward", {
+    config: { readers: { forward: "mb" } },
+    env: { STILLFAIL_READER_FORWARD: "pion" },
     hasPionBinary: true,
   });
   assert.equal(unimplEnv.engine, "mb");
@@ -410,6 +411,7 @@ test("every mode with pionImplemented: true is explicitly wired to resolveReader
     "post-blocks",
     "recent-chat",
     "replica-carry",
+    "replica-chat",
     "replica-export",
     "replica-restore",
     "said",

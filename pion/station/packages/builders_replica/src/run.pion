@@ -251,11 +251,8 @@ fn normalize_double_text(raw : String) -> Option[String] {
   Some(sb.to_string())
 }
 
-pub fn parse_double_flag(raw : Option[String], fallback : Double) -> Double {
-  let s = match raw {
-    Some(v) => v
-    None => return fallback
-  }
+/// `raw` as MoonBit `@string.parse_double` reads it; None where that raises.
+pub fn parse_double_opt(s : String) -> Option[Double] {
   let b = s.to_bytes()
   if b.length() > 0 {
     let mut i = 0
@@ -269,19 +266,30 @@ pub fn parse_double_flag(raw : Option[String], fallback : Double) -> Double {
     }
     let lower = str_to_ascii_lower(slice_bytes(b, i, b.length()))
     if lower == "infinity" || lower == "inf" {
-      return if neg { -1.0 / 0.0 } else { 1.0 / 0.0 }
+      return Some(if neg { -1.0 / 0.0 } else { 1.0 / 0.0 })
     }
     if lower == "nan" {
-      return 0.0 / 0.0
+      return Some(0.0 / 0.0)
     }
   }
   let norm = match normalize_double_text(s) {
     Some(v) => v
-    None => return fallback
+    None => return None
   }
   match js_json::parse(norm) {
-    Ok(js_json::JValue::Num(d)) => if sql_db::is_nan_or_inf(d) { fallback } else { d }
-    _ => fallback
+    Ok(js_json::JValue::Num(d)) => if sql_db::is_nan_or_inf(d) { None } else { Some(d) }
+    _ => None
+  }
+}
+
+pub fn parse_double_flag(raw : Option[String], fallback : Double) -> Double {
+  match raw {
+    Some(s) =>
+    match parse_double_opt(s) {
+      Some(d) => d
+      None => fallback
+    }
+    None => fallback
   }
 }
 
@@ -623,4 +631,49 @@ fn handle_carry_line(client : builders_core::ShellClient, sep : String, line : S
     }
     _ => Err("no such ask")
   }
+}
+
+/// `--builder replica-chat --dir <gen> --work <file> --thread <id> [--entries <n>] [--text <n>] [--bytes <n>]
+/// [--sep <sep>] [--shell-dir <dir>]`: one chat of a copy this station keeps, read for a handoff (replica/chat.ts): a
+/// line `{"chat": …}` or `{"error"}`; the fold in `--work`, gone after; the shell's own files in `--shell-dir`. Does NOT
+/// read stdin; 1:1 aligned with `station/mb/src/reader/main.mbt:1158-1190`.
+pub fn run_replica_chat(argv : Array[String]) -> Int {
+  let shell_dir = match flag_first(argv, "--shell-dir") {
+    Some(d) => d
+    None => "."
+  }
+  if !host_shim::start(shell_dir, false) {
+    return 1
+  }
+  let client = builders_core::ShellClient::new()
+  let text = fn(name : String) -> String {
+    match flag_first(argv, name) {
+      Some(v) => v
+      None => ""
+    }
+  }
+  let read = match parse_double_opt(text("--thread")) {
+    Some(thread) =>
+    read_chat(
+      client,
+      match flag_first(argv, "--sep") {
+        Some(s) => s
+        None => "/"
+      },
+      text("--dir"),
+      text("--work"),
+      thread,
+      parse_int_flag(flag_first(argv, "--entries"), chat_entries_most),
+      parse_int_flag(flag_first(argv, "--text"), chat_text_most),
+      parse_int_flag(flag_first(argv, "--bytes"), chat_bytes_most),
+    )
+    None => Err("--thread is a chat's id")
+  }
+  let line = match read {
+    Ok(chat) => "{\"chat\":" + js_json::stringify(chat) + "}"
+    Err(e) => base_codec::json_stringify(base_codec::json_obj([("error", base_codec::json_str(e))]))
+  }
+  let _ = client.say_line(line)
+  host_shim::stop()
+  0
 }

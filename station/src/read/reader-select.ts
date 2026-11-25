@@ -109,7 +109,7 @@ export const READER_MODES = {
   },
   "replica-chat": {
     allowShadow: false,
-    pionImplemented: false,
+    pionImplemented: true,
     sideEffect: "write-fs",
     note: "One chat read from a kept copy, folded in a scratch database (--builder replica-chat)",
   },

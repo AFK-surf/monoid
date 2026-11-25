@@ -1333,7 +1333,7 @@ test("W8-F R3 P1: AgentsHost session IDs remain monotonic across SessionsProgram
     // 1. Attach live session A (id `a`) with only agents using the SessionsProgram.
     const heardA: any[] = [];
     const heardB: any[] = [];
-    const makeFakeHosted = (n: number, out: any[]) => ({
+    const makeFakeHosted = (n: number, out: any[], onAttached: () => void = () => {}) => ({
       n,
       info: { socket: join(data, `fake-${n}.sock`), pid: 999999 },
       kind: "claude" as const,
@@ -1344,7 +1344,7 @@ test("W8-F R3 P1: AgentsHost session IDs remain monotonic across SessionsProgram
       detaching: false,
       turnNow: () => null,
       liveNow: () => null,
-      attached() {},
+      attached() { onAttached(); },
       heard(h: any) { out.push(h); },
       inTurn(fn: () => void) { fn(); },
       exited_() {},
@@ -1353,23 +1353,23 @@ test("W8-F R3 P1: AgentsHost session IDs remain monotonic across SessionsProgram
     });
 
     const idA = host.number();
-    const procA = makeFakeHosted(idA, heardA);
+    // (A's second `attached()` is AgentsHost re-attaching it to the restarted SessionsProgram: no wall-clock deadline)
+    let attachedA = 0;
+    let secondAttach!: () => void;
+    const secondAttachSeen = new Promise<void>((resolveSeen) => (secondAttach = resolveSeen));
+    const procA = makeFakeHosted(idA, heardA, () => {
+      attachedA += 1;
+      if (attachedA === 2) secondAttach();
+    });
     host.attach(procA as any);
+    assert.equal(attachedA, 1, "A attached once to the first SessionsProgram");
     const firstProg = host.program();
     assert.ok(firstProg !== null, "first SessionsProgram must be active");
 
     // 2. Kill the underlying SessionsProgram so AgentsHost.#exited triggers a restart and re-attaches A with idA.
     firstProg.kill();
-    await new Promise<void>((resolveWait) => {
-      const deadline = Date.now() + 5000;
-      const poll = () => {
-        const cur = host.program();
-        if (cur !== null && cur !== firstProg && !cur.ended) return resolveWait();
-        if (Date.now() > deadline) return resolveWait();
-        setTimeout(poll, 25);
-      };
-      poll();
-    });
+    await secondAttachSeen;
+    assert.equal(attachedA, 2, "A re-attached exactly once after the restart");
     const secondProg = host.program();
     assert.ok(secondProg !== null && secondProg !== firstProg, "AgentsHost must restart a fresh SessionsProgram");
     const agentUser = capturedAgentUsers.at(-1);

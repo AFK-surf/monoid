@@ -1,6 +1,8 @@
 // Pure Pion unit tests for `builders_replica` helpers (run under `pionc test`).
 
+import "base_codec"
 import "builders_core"
+import "js_json"
 import "transcript_io"
 
 fn expect_true(cond : Bool, msg : String) -> Unit {
@@ -437,4 +439,124 @@ test "TestFaults::from_json parses finder_asked_most" {
     }
     None => panic("expected Some(TestFaults)")
   }
+}
+
+// ── `chat.pion` (1:1 port of `station/mb/src/replica/chat_wbtest.mbt`) ──
+
+test "a chat's reading folds only the records that can be of its chat" {
+  // (that chat's rows of the tables a chat is read from, every session, and every deletion: folded)
+  let taken = [
+    "{\"r\":\"threads\",\"row\":{\"id\":7,\"title\":\"t\"}}",
+    "{\"r\":\"threads\",\"row\":{\"title\":\"t\",\"id\":7}}",
+    "{\"r\":\"entries\",\"row\":{\"thread\":7,\"n\":1}}",
+    "{\"r\":\"entries\",\"row\":{\"n\":1,\"thread\":7}}",
+    "{\"r\":\"thread_sessions\",\"row\":{\"thread\":7,\"session\":\"chat:a\"}}",
+    "{\"r\":\"sessions\",\"row\":{\"key\":\"chat:a\"}}",
+    "{\"del\":\"entries\",\"key\":{\"thread\":70,\"n\":1}}",
+    "{\"gone\":\"thread\",\"id\":70}",
+    "{\"gone\":\"session\",\"key\":\"chat:a\"}",
+    // (a record written another way: folded, not taken for one of no use)
+    "{\"row\":{\"id\":1},\"r\":\"turns\"}",
+    "{\"r\":\"entr",
+  ]
+  for i in 0..<taken.length() {
+    expect_true(chat_takes(taken[i], "7"), taken[i])
+  }
+  // (other chats' rows, though their numbers begin or end as its does, or a text says its number; rows of other
+  // tables, files and transcripts: not)
+  let left = [
+    "{\"r\":\"threads\",\"row\":{\"id\":70,\"title\":\"t\"}}",
+    "{\"r\":\"threads\",\"row\":{\"id\":17}}",
+    "{\"r\":\"threads\",\"row\":{\"id\":8,\"parent_id\":7}}",
+    "{\"r\":\"entries\",\"row\":{\"thread\":70,\"n\":7}}",
+    "{\"r\":\"entries\",\"row\":{\"thread\":7.5,\"n\":1}}",
+    "{\"r\":\"entries\",\"row\":{\"thread\":8,\"text\":\"{\\\"thread\\\":7,\\\"n\\\":1}\"}}",
+    "{\"r\":\"thread_sessions\",\"row\":{\"thread\":77,\"session\":\"chat:a\"}}",
+    "{\"r\":\"letters\",\"row\":{\"thread\":7,\"n\":1}}",
+    "{\"r\":\"turns\",\"row\":{\"id\":\"t\"}}",
+    "{\"r\":\"runtime_sessions\",\"row\":{\"session_key\":\"chat:a\",\"id\":\"x\"}}",
+    "{\"r\":\"reads\",\"row\":{\"viewer\":\"p@x\",\"thread\":7}}",
+    "{\"file\":\"00\",\"size\":1,\"path\":\"/d/f\"}",
+    "{\"tr\":\"/d/transcripts/a.jsonl\",\"chunks\":[]}",
+    "{\"tr_del\":\"/d/transcripts/a.jsonl\"}",
+  ]
+  for i in 0..<left.length() {
+    expect_true(!chat_takes(left[i], "7"), left[i])
+  }
+  // (chat 70 asked: its rows, not chat 7's)
+  expect_true(chat_takes("{\"r\":\"entries\",\"row\":{\"thread\":70,\"n\":7}}", "70"), "chat 70's entry")
+  expect_true(!chat_takes("{\"r\":\"entries\",\"row\":{\"thread\":7,\"n\":70}}", "70"), "chat 7's entry 70")
+  // (a number as the export writes it, `js_json::stringify`, "7" and "70": its formatter is `sqlite_ffi`'s native one,
+  // not linked in unit tests, so `station/test/replica-chat-pion-switch.test.ts` holds it, reading chats 1, 10 and 11)
+}
+
+test "a text is cut at a character's end, within its bytes" {
+  let (short, short_cut) = cut_to("short", 16)
+  expect_str(short, "short")
+  expect_true(!short_cut, "short is not cut")
+  let (abcd, abcd_cut) = cut_to("abcdef", 4)
+  expect_str(abcd, "abcd")
+  expect_true(abcd_cut, "abcdef is cut")
+  // (three bytes a character: two fit in seven, never half of the third)
+  let (cut, was) = cut_to("中文字符", 7)
+  expect_str(cut, "中文")
+  expect_true(was, "中文字符 is cut")
+  expect_true(utf8_length(cut) <= 7, "within its bytes")
+  // (four bytes a character, outside the BMP)
+  let (emoji, _) = cut_to("😀😀😀", 9)
+  expect_str(emoji, "😀😀")
+}
+
+test "a chat's reading clamps what it is asked to its bounds" {
+  expect_int(chat_clamp(0, 1, chat_entries_most), 1)
+  expect_int(chat_clamp(60, 1, chat_entries_most), 60)
+  expect_int(chat_clamp(1000, 1, chat_entries_most), 200)
+  expect_int(chat_clamp(4000, 16, chat_text_most), 4000)
+  expect_int(chat_clamp(131072, 65536, chat_bytes_most), 131072)
+  expect_int(chat_clamp(10, 65536, chat_bytes_most), 65536)
+}
+
+/// Whole numbers as `js_json::stringify` writes them, without `sqlite_ffi`'s native formatter (not linked here).
+fn whole_num(d : Double) -> String {
+  d.to_int64().to_string()
+}
+
+test "a chat's entry: kind falls back to message, cut from its text or its length, files bounded" {
+  let names = StringBuilder::new()
+  names.write_string("[")
+  for i in 0..<12 {
+    if i > 0 {
+      names.write_string(",")
+    }
+    names.write_string("{\"name\":\"f" + i.to_string() + "\"}")
+  }
+  names.write_string(",{\"size\":1}]")
+  let r : Map[String, base_codec::Json] = Map::new()
+  r.set("n", base_codec::json_int(3))
+  r.set("kind", base_codec::json_null())
+  r.set("target", base_codec::json_null())
+  r.set("author_kind", base_codec::json_str("person"))
+  r.set("author", base_codec::json_str("p@x"))
+  r.set("text", base_codec::json_str("字字字"))
+  r.set("long", base_codec::json_int(0))
+  r.set("at", base_codec::json_int(5))
+  r.set("attachments", base_codec::json_str(names.to_string()))
+  let e = chat_entry(r, 7)
+  expect_str(
+    js_json::stringify_with_num(e, whole_num),
+    "{\"n\":3,\"kind\":\"message\",\"target\":null,\"author_kind\":\"person\",\"author\":\"p@x\",\"text\":\"字字\",\"cut\":true,\"at\":5,\"files\":[\"f0\",\"f1\",\"f2\",\"f3\",\"f4\",\"f5\",\"f6\",\"f7\",\"f8\",\"f9\"]}",
+  )
+  // (cut in the query: `long` says so though the text fits; no author: null; attachments not JSON: no files)
+  let q : Map[String, base_codec::Json] = Map::new()
+  q.set("n", base_codec::json_int(4))
+  q.set("kind", base_codec::json_str("edit"))
+  q.set("target", base_codec::json_int(3))
+  q.set("author_kind", base_codec::json_str("agent"))
+  q.set("text", base_codec::json_str("ok"))
+  q.set("long", base_codec::json_int(1))
+  q.set("attachments", base_codec::json_str("[not json"))
+  expect_str(
+    js_json::stringify_with_num(chat_entry(q, 16), whole_num),
+    "{\"n\":4,\"kind\":\"edit\",\"target\":3,\"author_kind\":\"agent\",\"author\":null,\"text\":\"ok\",\"cut\":true,\"at\":null,\"files\":[]}",
+  )
 }

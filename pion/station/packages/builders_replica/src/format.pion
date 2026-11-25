@@ -382,14 +382,17 @@ pub struct Folded {
 /// 2) `db.close()` to release file handle
 /// 3) `files.remove(path)` to unlink temp DB
 /// 4) re-propagate original error if any
+/// `best_effort_remove`: removing `path`, before and after, never fails it (`station/mb/src/replica/chat.mbt`
+/// `read_chat`, whose scratch fold is removed with its errors ignored).
 pub fn Folded::with_open[T](
   files : Files,
   path : String,
   f : (Folded) -> Result[T, String],
+  best_effort_remove : Bool = false,
 ) -> Result[T, String] {
   match files.remove(path) {
     Ok(()) => ()
-    Err(e) => return Err(e)
+    Err(e) => if !best_effort_remove { return Err(e) }
   }
   let db = match sql_db::Db::create(path, wait_ms=5000) {
     Ok(d) => d
@@ -423,7 +426,7 @@ pub fn Folded::with_open[T](
     Ok(v) => {
       match files.remove(path) {
         Ok(()) => Ok(v)
-        Err(e) => Err(e)
+        Err(e) => if best_effort_remove { Ok(v) } else { Err(e) }
       }
     }
     Err(e) => {

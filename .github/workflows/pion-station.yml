@@ -75,6 +75,7 @@ on:
       - "station/src/ops/paths.ts"
       - "station/src/read/**"
       - "station/src/replica/carry.ts"
+      - "station/src/replica/chat.ts"
       - "station/src/replica/handover.ts"
       - "station/src/replica/manifest.ts"
       - "station/src/replica/module.ts"
@@ -220,6 +221,8 @@ on:
       - "station/test/remote-run-index.test.ts"
       - "station/test/remote-task-list-bounded.test.ts"
       - "station/test/remote-task-workspace.test.ts"
+      - "station/test/replica-chat-bounded.test.ts"
+      - "station/test/replica-chat-pion-switch.test.ts"
       - "station/test/replica-manifest.test.ts"
       - "station/test/replica-retire.test.ts"
       - "station/test/replica-transcript.test.ts"
@@ -1072,7 +1075,7 @@ jobs:
           VER_OUT="$("$BIN_PION" --version)"
           printf '%s\n' "$VER_OUT"
           MODES_CSV="$(printf '%s\n' "$VER_OUT" | sed -n 's/.*modes:\([^[:space:]]*\).*/\1/p')"
-          for m in replica-export replica-restore replica-carry; do
+          for m in replica-export replica-restore replica-carry replica-chat; do
             printf ',%s,\n' "$MODES_CSV" | grep -Fq ",$m," || { echo "FAIL: missing exact mode $m in $MODES_CSV" >&2; exit 1; }
           done
 
@@ -1114,6 +1117,41 @@ jobs:
           CARRY_SPAWNS="$(grep -c -- '--builder replica-carry' "$RETIRE_LOG" || true)"
           echo "replica-retire Pion replica-carry spawns: $CARRY_SPAWNS"
           test "${CARRY_SPAWNS:-0}" -gt 0
+
+          echo "=== Pion replica-chat through the reader selection: station/test/replica-chat-bounded.test.ts ==="
+          # Wrap BIN_PION to prove readChatSoon's spawns genuinely executed Pion (never a hard-coded MB binary).
+          CHAT_LOG="$RUNNER_TEMP/chat-pion-spawns.log"
+          CHAT_PION_WRAP="$RUNNER_TEMP/chat-pion-wrap.sh"
+          rm -f "$CHAT_LOG"
+          cat > "$CHAT_PION_WRAP" <<EOF
+          #!/bin/sh
+          printf '%s\n' "\$*" >> "$CHAT_LOG"
+          exec "$BIN_PION" "\$@"
+          EOF
+          chmod +x "$CHAT_PION_WRAP"
+          if ! CHAT_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$CHAT_PION_WRAP" STILLFAIL_READER_REPLICA_CHAT=pion \
+            node --test --test-reporter=tap station/test/replica-chat-bounded.test.ts 2>&1)"; then
+            printf '%s\n' "$CHAT_OUT"
+            exit 1
+          fi
+          printf '%s\n' "$CHAT_OUT"
+          printf '%s\n' "$CHAT_OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$CHAT_OUT" | grep -qE '^# fail 0$'
+          printf '%s\n' "$CHAT_OUT" | grep -qE '^# skipped 0$'
+          CHAT_SPAWNS="$(grep -c -- '--builder replica-chat' "$CHAT_LOG" || true)"
+          echo "replica-chat-bounded Pion replica-chat spawns: $CHAT_SPAWNS"
+          test "${CHAT_SPAWNS:-0}" -ge 5
+
+          echo "=== Dual-engine 0-diff suite: station/test/replica-chat-pion-switch.test.ts ==="
+          if ! CSW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --test --test-reporter=tap station/test/replica-chat-pion-switch.test.ts 2>&1)"; then
+            printf '%s\n' "$CSW_OUT"
+            exit 1
+          fi
+          printf '%s\n' "$CSW_OUT"
+          printf '%s\n' "$CSW_OUT" | grep -qE '^# tests [1-9]'
+          printf '%s\n' "$CSW_OUT" | grep -qE '^# fail 0$'
+          printf '%s\n' "$CSW_OUT" | grep -qE '^# skipped 0$'
 
           echo "=== Dual-engine switch suite: station/test/builders-replica-pion-switch.test.ts ==="
           if ! SW_OUT="$(STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" STILLFAIL_REQUIRE_DUAL_READER=1 \
