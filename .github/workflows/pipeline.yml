@@ -1765,14 +1765,6 @@ jobs:
           POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
           RELEASE_DIR: ${{ runner.temp }}/release
         run: sh .github/release.sh android
-      # (what it weighs and takes once idle: mbui-size.yml, after this run, recorded, never a gate: its upload's failure
-      # is not the release's. Studio's connection to GitHub's artifact service reset stopped a release that had built and
-      # signed its APK, main a3e59ea9 43157398296 and three times before on 2026-11-11 and 12; timeout-minutes: 1 keeps a
-      # slow Mini1 proxy upload — 194 s in 45444450664, 134 s in 45439573958 — from cancelling the job before release-put)
-      - uses: actions/upload-artifact@v4
-        continue-on-error: true
-        timeout-minutes: 1
-        with: { name: "mbui-apk-${{ github.sha }}", path: "${{ runner.temp }}/release/android/*.apk", retention-days: 1, compression-level: 0 }
       # Its files put (named by its version, nothing points at them until put writes the feed), then what is left handed
       # to put through the bucket, not a run artifact (scripts/release-put.sh --hand), beside monoid's beta Android app
       # (build.monoid.android.beta, the same key) built from the same build: the put is the network's ~30 s and monoid's
@@ -1791,14 +1783,20 @@ jobs:
           MONOID_CI: ${{ vars.MONOID_CI }}
         run: |
           set -o pipefail
+          # Keep a hard link to still.fail's APK before release-put --files removes it, so the optional mbui-apk
+          # artifact upload runs after release-put and only when the job's 5-minute budget still leaves room for it.
+          mkdir -p "$RUNNER_TEMP/mbui-apk"
+          for apk in "$RUNNER_TEMP/release/android/"*.apk; do
+            [ -f "$apk" ] && ln -f "$apk" "$RUNNER_TEMP/mbui-apk/"
+          done
           monoid=""
           if [ "$MONOID_CI" = on ]; then
             used=$(( $(date +%s) - JOB_BEGAN ))
-            if [ "$used" -gt 200 ]; then
+            if [ "$used" -ge 195 ]; then
               echo "::warning::monoid's beta Android app left for the next release: this job has used ${used} s of its 300"
             else
               (unset CLOUDFLARE_API_TOKEN; RELEASE_DIR="$RUNNER_TEMP/monoid" \
-                bash scripts/with-timeout.sh "@$(( JOB_BEGAN + 275 ))" sh .github/release.sh --product monoid android) \
+                bash scripts/with-timeout.sh "@$(( JOB_BEGAN + 195 ))" sh .github/release.sh --product monoid android) \
                 > "$RUNNER_TEMP/monoid.log" 2>&1 &
               monoid=$!
             fi
@@ -1811,21 +1809,22 @@ jobs:
           else
             echo "::error::still.fail's beta Android app was not put"; failed=1
           fi
-          # (monoid's ended before the job is, 25 s left for the rest: run beside stable's android on the same Mac it ran
-          # on to the job's 5 minutes, and the job cut after still.fail's beta was put, 44770976468; out of time it is
-          # left for the next release, not this one's failure)
+          # (monoid's ended with >=105 s left in the job so a 60 s timed-out upload plus ~25 s of job setup/teardown
+          # still finish inside the 5-minute cap: run beside stable's android on the same Mac it ran on to 5 minutes,
+          # 44770976468, and at 225 s a 60 s stalled upload + 19 s Post checkout still hit 304 s, 45517890562; out of
+          # time it is left for the next release, not this one's failure)
           if [ -n "$monoid" ]; then
             ms=0; wait "$monoid" || ms=$?
             if [ "$ms" = 0 ]; then
               echo "::group::monoid's beta Android app"; cat "$RUNNER_TEMP/monoid.log"; echo "::endgroup::"
-              if [ "$(( $(date +%s) - JOB_BEGAN ))" -le 225 ]; then
+              if [ "$(( $(date +%s) - JOB_BEGAN ))" -le 195 ]; then
                 echo "packed=1" >> "$GITHUB_OUTPUT"
               else
-                echo "::warning::monoid's beta Android app upload skipped: less than 75 s left in this job"
+                echo "::warning::monoid's beta Android app upload skipped: less than 105 s left in this job"
               fi
             elif [ "$ms" = 124 ]; then
               cat "$RUNNER_TEMP/monoid.log"
-              echo "::warning::monoid's beta Android app did not finish before the job's end and is left for the next release"
+              echo "::warning::monoid's beta Android app did not finish with room to upload and is left for the next release"
             else
               cat "$RUNNER_TEMP/monoid.log"; echo "::error::monoid's beta Android app was not built"; failed=1
             fi
@@ -1840,6 +1839,24 @@ jobs:
         continue-on-error: true
         timeout-minutes: 1
         with: { name: "monoid-android-${{ github.sha }}", path: "${{ runner.temp }}/monoid", retention-days: 1, compression-level: 0 }
+      # (what it weighs and takes once idle: mbui-size.yml, after this run, recorded, never a gate: its upload's failure
+      # is not the release's. Moved after release-put and gated on the job's remaining time: a slow Mini1 proxy upload —
+      # 194 s in 45444450664, 134 s in 45439573958, and 60 s + 60 s across both optional uploads in 45517890562 —
+      # otherwise ate into the 5-minute cap and cancelled the job after still.fail's beta was already built)
+      - id: mbui-apk-room
+        run: |
+          has_apk=""
+          for apk in "$RUNNER_TEMP/mbui-apk/"*.apk; do [ -f "$apk" ] && has_apk=1 && break; done
+          if [ -n "$has_apk" ] && [ "$(( $(date +%s) - JOB_BEGAN ))" -le 195 ]; then
+            echo "ok=1" >> "$GITHUB_OUTPUT"
+          elif [ -n "$has_apk" ]; then
+            echo "::warning::mbui-apk upload skipped: less than 105 s left in this job"
+          fi
+      - if: steps.mbui-apk-room.outputs.ok == '1'
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        timeout-minutes: 1
+        with: { name: "mbui-apk-${{ github.sha }}", path: "${{ runner.temp }}/mbui-apk/*.apk", retention-days: 1, compression-level: 0 }
 
   # monoid's beta Android app (build.monoid.android.beta), built by android from its own build, put whole in monoid's
   # bucket once the check passed.
