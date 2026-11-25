@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8851a260e](https://github.com/AFK-surf/monoid/commit/8851a260ea6a65b7a440f1f78e0b19f7dc3bcb93) test(station): resolve new-account-cap concurrent  | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.88 | 110.78 |
 | [71a24c1b4](https://github.com/AFK-surf/monoid/commit/71a24c1b42326b2375412920d33edbc8d8a7ef14) feat(core,mbui): sync only the workspace in view,  | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.88 | 110.78 |
 | [5badca1bd](https://github.com/AFK-surf/monoid/commit/5badca1bd3f3f096a6fad209c44fe240c15059d7) feat(comma): report human participants in task.ind | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.76 | 122.81 |
 | [54be19794](https://github.com/AFK-surf/monoid/commit/54be1979418e710aa221906c6d5197ff178a6f8a) fix(mbui): hide the empty "who can use" section of | 2.54 | 3.43 | 14.18 | 36.72 | 55.48 | 32.07 | 64.89 | 100.76 | 122.81 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f090a98ac](https://github.com/AFK-surf/monoid/commit/f090a98ac106b6800d0f3e7a3e2e5ba6f9af3c42) feat(station): add expected_card_seq CAS for MoonB | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [4e1e2088a](https://github.com/AFK-surf/monoid/commit/4e1e2088a9bd1ae1fe054d9d1bd689558455afe5) feat(website): list Antigravity instead of Grok Bu | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 | [fcf19b573](https://github.com/AFK-surf/monoid/commit/fcf19b573d6c375e05e29263e071f0addc2bc6ae) ci(desktop): eliminate Post setup pnpm-cache cance | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
-| [9ac4cc360](https://github.com/AFK-surf/monoid/commit/9ac4cc3602b75a392d517890ca3552be1beb94c4) fix(station): fail agy turns that end on a quota n | 2.52 | 3.4 | 14.07 | 36.6 | 55.07 | 31.96 | 64.57 | 101.02 | 126.54 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8851a260e](https://github.com/AFK-surf/monoid/commit/8851a260ea6a65b7a440f1f78e0b19f7dc3bcb93) test(station): resolve new-account-cap concurrent  | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.53 |
 | [71a24c1b4](https://github.com/AFK-surf/monoid/commit/71a24c1b42326b2375412920d33edbc8d8a7ef14) feat(core,mbui): sync only the workspace in view,  | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.9 |
 | [5badca1bd](https://github.com/AFK-surf/monoid/commit/5badca1bd3f3f096a6fad209c44fe240c15059d7) feat(comma): report human participants in task.ind | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.82 |
 | [54be19794](https://github.com/AFK-surf/monoid/commit/54be1979418e710aa221906c6d5197ff178a6f8a) fix(mbui): hide the empty "who can use" section of | 0.56 | 0.74 | 2.86 | 3.89 | 7.13 | 2.12 | 5.94 | 57.59 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f090a98ac](https://github.com/AFK-surf/monoid/commit/f090a98ac106b6800d0f3e7a3e2e5ba6f9af3c42) feat(station): add expected_card_seq CAS for MoonB | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.59 |
 | [4e1e2088a](https://github.com/AFK-surf/monoid/commit/4e1e2088a9bd1ae1fe054d9d1bd689558455afe5) feat(website): list Antigravity instead of Grok Bu | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.56 |
 | [fcf19b573](https://github.com/AFK-surf/monoid/commit/fcf19b573d6c375e05e29263e071f0addc2bc6ae) ci(desktop): eliminate Post setup pnpm-cache cance | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.46 |
-| [9ac4cc360](https://github.com/AFK-surf/monoid/commit/9ac4cc3602b75a392d517890ca3552be1beb94c4) fix(station): fail agy turns that end on a quota n | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.51 |
