@@ -29,19 +29,20 @@ fn stations_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
         then?=@sfbase.route_open_then(src, w, route),
       )
     }
-    // (its lines in their order: the stations, those that only run tasks after the whole ones, the devices under
-    // their heading)
+    // (its lines in their order: the stations, those that only run tasks under their heading, the devices under
+    // theirs)
     let lines = fn() -> Array[PlaceLine] {
       let out = []
-      // (the stations and the rigs one run of cards: each but the run's last has room under it)
       let listed = stations_listed(src, w)
       let rigs = @settings.rigs_listed(core, here())
-      let run = listed.length() + rigs.length()
       for i, st in listed {
-        out.push({ key: "s/" + text(Some(st), "station"), data: Some(st), more: i + 1 < run })
+        out.push({ key: "s/" + text(Some(st), "station"), data: Some(st), more: i + 1 < listed.length() })
+      }
+      if rigs.length() > 0 {
+        out.push({ key: "rh", data: None, more: false })
       }
       for j, r in rigs {
-        out.push({ key: "r/" + w.id + "/" + text(Some(r), "id"), data: Some(r), more: listed.length() + j + 1 < run })
+        out.push({ key: "r/" + w.id + "/" + text(Some(r), "id"), data: Some(r), more: j + 1 < rigs.length() })
       }
       let devices = @settings.devices_listed(core, here())
       if devices.length() > 0 {
@@ -75,6 +76,8 @@ fn stations_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
       let made_as = stations_line_shape(@signals.untracked(key))
       if made_as == 0 {
         @sf.list_heading_node(line, fn() { @sf.t("web-pages.devices.title") }, list_at)
+      } else if made_as == 4 {
+        @sf.list_heading_node(line, fn() { @sf.t("web-pages.rigs.mode.tasks") }, list_at)
       } else if made_as == 1 {
         @sf.nav_item_node(
           line,
@@ -109,8 +112,9 @@ fn stations_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
           fn(_) { pick(address()) },
           fn(m) { @sf.icon_node(m, "boxes", @sf.nav_mark_side, By(fn() { @sf.theme().p.text })) |> ignore },
           fn(t) { @sf.nav_title_node(t, fn() { text(data(), "name") }) },
+          end=fn(e) { @sfpages.rig_state_node(e, data) },
           lines=fn(ls) { @sfpages.rig_figures_node(ls, data) },
-          keep_lines=2,
+          keep_lines=1,
           more~,
         )
       } else {
@@ -360,6 +364,8 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
 fn stations_line_shape(key : String) -> Int {
   if key == "dh" {
     0
+  } else if key == "rh" {
+    4
   } else if key.has_prefix("s/") {
     1
   } else if key.has_prefix("r/") {

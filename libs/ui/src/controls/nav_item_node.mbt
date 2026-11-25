@@ -30,7 +30,16 @@ pub fn nav_item_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(o) {
-    style_node(o, fn() { if more() { list_more(at) } else { nav_item_last } })
+    // (rows that keep room for lines under the title stand as cards: 6 apart, so two lit at once never read as one)
+    style_node(o, fn() {
+      if !more() {
+        nav_item_last
+      } else if keep_lines > 0 {
+        nav_item_card_more
+      } else {
+        list_more(at)
+      }
+    })
     @headless.button(o, label, press, fn(r, _) {
       style_node(r, fn() {
         let l = theme().chat_list
@@ -199,6 +208,11 @@ pub fn nav_meta_node(parent : @view.View, words : () -> String, look? : () -> @u
 /// The last row of a run: no room of another under it.
 // kept across runs: a value (no field of it changes)
 let nav_item_last : @ui.Style = @ui.css("w=Full")
+
+///|
+// kept across runs: a value (no field of it changes)
+// (pb: S1_5, 6 under a card-high row with another under it)
+let nav_item_card_more : @ui.Style = @ui.css("w=Full pb=S1_5")
 
 ///|
 /// What stands at its first line's end, 5 apart, kept whole.

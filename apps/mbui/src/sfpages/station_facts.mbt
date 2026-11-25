@@ -30,12 +30,40 @@ let station_dot_side : Double = 6.0
 
 ///|
 /// Under the name of a station that only runs tasks (rig `r()`: the core's `rigs`, as it is now), in its figures'
-/// place, as nodes in `parent` (the column under its name): that it only runs tasks, then whose it is and how it is.
+/// place, as nodes in `parent` (the column under its name): whose it is, and how it is while not up (its heading
+/// already says it only runs tasks; its dot at the name's end says it is up).
 pub fn rig_figures_node(parent : @view.View, r : () -> Json?) -> Unit {
-  @sf.list_row_line_node(parent, fn(l) { @sf.words_node(l, fn() { @sf.t("web-pages.rigs.mode.tasks") }, station_words) |> ignore })
   @sf.list_row_line_node(parent, fn(l) {
-    @sf.words_node(l, fn() { @settings.rig_whose(r()) + " · " + @settings.rig_state(r()) }, station_words) |> ignore
+    @sf.words_node(
+      l,
+      fn() {
+        if rig_up(r()) {
+          @settings.rig_whose(r())
+        } else {
+          @settings.rig_whose(r()) + " · " + @settings.rig_state(r())
+        }
+      },
+      station_words,
+    )
+    |> ignore
   })
+}
+
+///|
+/// Whether rig `r` is up: its code compared and reached by a station.
+fn rig_up(r : Json?) -> Bool {
+  flag(r, "vouched") && field(r, "reached") is Some(True)
+}
+
+///|
+/// At the end of a task-only station's name (rig `r()`), as a station's is: the rail's dot while it is up, the ring
+/// while not.
+pub fn rig_state_node(parent : @view.View, r : () -> Json?) -> Unit {
+  parent.box(fn(b) {
+    @sf.style_node(b, fn() { station_state_box })
+    @sf.state_dot_node(b, fn() { if rig_up(r()) { "up" } else { "offline" } }, size=station_dot_side)
+  })
+  |> ignore
 }
 
 ///|
