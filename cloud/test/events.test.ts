@@ -4,6 +4,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { harness } from "./harness.ts";
 import type { AccountEvent } from "../src/types.ts";
 import { entryHash } from "../src/lock.ts";
+import { ICON_URL_CHARS } from "../src/icons.ts";
 import { signer } from "./lock-signer.ts";
 
 type Harness = Awaited<ReturnType<typeof harness>>;
@@ -204,7 +205,10 @@ test("every change reaches exactly the accounts it affects", async () => {
     await alice("PATCH", `/v1/workspaces/${w}`, { icon: "data:image/png;base64,iVBORw0KGgo=" });
     await expect(on, { alice: [ws, list], bob: [ws, list] }, "workspace picture");
     assert.match(((await (await bob("GET", `/v1/workspaces/${w}`)).json()) as any).icon, /\/v1\/icons\/[0-9a-f]{32}\.png$/);
-    for (const bad of [`data:image/gif;base64,R0lGODlh${"A".repeat(1_500_000)}`, "data:image/png;base64,R0lGODlh", "https://example.com/v1/icons/0123456789abcdef0123456789abcdef.gif", "rocket", "glyph:Rocket!", "glyph:rocket:", "glyph:rocket:blue:red", "data:image/svg+xml;base64,PHN2Zz4="]) {
+    // (one too large is just past what an icon may be and well within what the call reads: past that, the Worker
+    // answers before the request is sent whole and the connection is cut under the client's write, ECONNRESET
+    // whenever that write comes later; how a body over the limit is refused is auth.test.ts's)
+    for (const bad of [`data:image/gif;base64,R0lGODlh${"A".repeat(ICON_URL_CHARS)}`, "data:image/png;base64,R0lGODlh", "https://example.com/v1/icons/0123456789abcdef0123456789abcdef.gif", "rocket", "glyph:Rocket!", "glyph:rocket:", "glyph:rocket:blue:red", "data:image/svg+xml;base64,PHN2Zz4="]) {
       assert.equal((await alice("PATCH", `/v1/workspaces/${w}/stations/${station.id}`, { icon: bad })).status, 400, bad.slice(0, 30));
     }
     await alice("PATCH", `/v1/workspaces/${w}/stations/${station.id}`, { icon: "", emoji: "" });

@@ -70,7 +70,7 @@ for (const scenario of ["public", "api", "api-anonymous", "api-redirect", "inval
   const run = spawnSync(process.execPath, ["--import", preload, join(root, "scripts/native.ts"), "fetch", "shell-apple", "darwin-arm64"], {
     cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, NATIVE_TEST_ARCHIVE: archive,
       STILLFAIL_NATIVE_CACHE: cache, STILLFAIL_NATIVE: "", STILLFAIL_NATIVE_INBOX: scenario === "public-404-ci-inbox" ? inbox : "", STILLFAIL_DIRECT_DNS: "",
-      STILLFAIL_NATIVE_STORE: "https://app.still.fail/releases/natives", STILLFAIL_NATIVE_REPO: "AFK-surf/monoid",
+      STILLFAIL_NATIVE_STORE: "https://app.still.fail/releases/natives", STILLFAIL_NATIVE_REPO: "AFK-surf/monoid", STILLFAIL_NATIVE_RETRY_MS: "0",
       STILLFAIL_NATIVE_RELEASE: "native-artifacts", STILLFAIL_NATIVE_CACHE_MAX_BYTES: "0",
       GH_TOKEN: scenario === "api-anonymous" ? "" : "native-test-token", GITHUB_TOKEN: "" },
   });
@@ -112,7 +112,7 @@ test("ensure does not ask the download endpoint for a part the release and the s
   const run = spawnSync(process.execPath, ["--import", preload, join(root, "scripts/native.ts"), "ensure", "--outbox", outbox, target], {
     cwd: root, encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, CI: "",
       STILLFAIL_NATIVE_CACHE: cache, STILLFAIL_NATIVE: "", STILLFAIL_NATIVE_INBOX: "", STILLFAIL_DIRECT_DNS: "",
-      STILLFAIL_NATIVE_STORE: "https://app.still.fail/releases/natives", STILLFAIL_NATIVE_REPO: "AFK-surf/monoid",
+      STILLFAIL_NATIVE_STORE: "https://app.still.fail/releases/natives", STILLFAIL_NATIVE_REPO: "AFK-surf/monoid", STILLFAIL_NATIVE_RETRY_MS: "0",
       STILLFAIL_NATIVE_RELEASE: "native-artifacts", STILLFAIL_NATIVE_CACHE_MAX_BYTES: "0",
       GH_TOKEN: "native-test-token", GITHUB_TOKEN: "" },
   });

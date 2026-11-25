@@ -37,6 +37,8 @@ def urlopen(*args, **kwargs):
     return io.BytesIO(scenario.get("body", "").encode())
 
 deploy.wrangler = wrangler
+# (the lookup asked again after a broken connection waits 5 and 10 s between: the same tries, without the wait)
+deploy.time.sleep = lambda seconds: None
 deploy.urllib.request.urlopen = urlopen
 if scenario.get("probe"):
     print(json.dumps(deploy.beta_ready("test-account")))

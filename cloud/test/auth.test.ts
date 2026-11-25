@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ulid } from "ulid";
-import { ACCESS_TTL_SEC, bearerToken, nowSeconds, randomSecret, signToken, validRedirect, verifyToken } from "../src/auth.ts";
+import { ACCESS_TTL_SEC, bearerToken, nowSeconds, randomSecret, readText, signToken, validRedirect, verifyToken } from "../src/auth.ts";
 import type { Env } from "../src/env.ts";
 
 const env = { AUTH_SIGNING_KEY: randomSecret(), PUBLIC_ORIGIN: "https://relay.example", PUBLIC_ORIGIN_ALIASES: "https://old.relay.example", ADMIN_ORIGIN: "https://admin.relay.example", ADMIN_ORIGIN_ALIASES: "https://admin.old.relay.example" } as Env;
@@ -49,4 +49,17 @@ test("credentials are accepted only in a bounded bearer header", () => {
   );
   assert.equal(bearerToken(new Request("https://relay.example/relay?token=secret")), null);
   assert.equal(bearerToken(new Request("https://relay.example/relay", { headers: { authorization: "Basic secret" } })), null);
+});
+
+test("a body is read up to its limit: past it the call is refused and the rest is not read", async () => {
+  // (4 KiB at a time: three of them in all, or for ever, which only a reader that stops at its limit gets past)
+  const sent = (chunks: number) => new ReadableStream<Uint8Array>({
+    pull(controller) {
+      controller.enqueue(new Uint8Array(4096).fill(65));
+      if (--chunks === 0) controller.close();
+    },
+  }, { highWaterMark: 0 });
+  const request = (body: ReadableStream<Uint8Array>) => new Request("https://relay.example/v1/me/picture", { method: "PUT", body, duplex: "half" } as RequestInit);
+  assert.equal(await readText(request(sent(3)), 3 * 4096), "A".repeat(3 * 4096));
+  await assert.rejects(readText(request(sent(Infinity)), 3 * 4096), /body_too_large/);
 });

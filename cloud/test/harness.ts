@@ -1,4 +1,3 @@
-import { build } from "esbuild";
 import { Miniflare, convertV4MiniflareOptions, Response as MFResponse, Log, LogLevel } from "miniflare";
 import { exportJWK, exportPKCS8, generateKeyPair, jwtVerify, SignJWT } from "jose";
 import { ulid } from "ulid";
@@ -6,6 +5,7 @@ import { digest, randomSecret, type Tokens } from "../src/auth.ts";
 import type { MailMessage } from "../src/mail.ts";
 import { createRequire } from "node:module";
 import { brotliCompressSync } from "node:zlib";
+import { NOW_MS, workerScripts } from "./bundles.ts";
 
 // workerd keeps a WebSocket's TCP connection open some ten seconds after a close the Worker began (Cloudflare does
 // not), and the ws client miniflare hands sockets through says "close" only once it ends: a test waiting on a close
@@ -22,15 +22,10 @@ WS.prototype.close = function (this: any, ...args: unknown[]) {
   else socket.once("finish", () => socket.destroy());
 };
 
-/**
- * still.fail cloud's time in the tests (src/auth.ts `clock`), in ms: one fixed moment, so what a test sees never
- * depends on the hour it runs at (a minute's budget turning over halfway, say). Ahead of any real one, so the alarms
- * set from it (a login limit's day, a session's end) never go off during a test.
- */
+export { NOW_MS };
 
 /** Where the test service account of `telemetry` gets its token. */
 const TELEMETRY_TOKEN_URI = "https://oauth.example/telemetry-token";
-export const NOW_MS = Date.UTC(2030, 0, 1, 12, 0, 30);
 
 /** A request the Worker made to somewhere outside (a push service, say), as a stand-in sees it. */
 export interface OutboundRequest {
@@ -167,19 +162,7 @@ export async function harness(
   const grantJwk = options.grantJwk ? { ...options.grantJwk, kid: "test-grant" } : { ...(await exportJWK(grantPair!.privateKey)), kid: "test-grant" };
   const { d: _d, ...grantPublicFields } = grantJwk as JsonWebKey & { kid: string };
   const grantPublicJwk = options.grantJwk ? { ...grantPublicFields, kid: "test-grant" } : { ...(await exportJWK(grantPair!.publicKey)), kid: "test-grant" };
-  const bundle = async (entry: string) => (await build({
-    entryPoints: [entry],
-    bundle: true,
-    write: false,
-    format: "esm",
-    platform: "node",
-    banner: {
-      js: 'import { createRequire } from "node:module"; const require = createRequire("file:///worker.js");',
-    },
-    external: ["cloudflare:workers", "cloudflare:sockets", "node:*"],
-    define: { TEST_NOW_MS: options.clock === "real" ? "null" : String(NOW_MS) },
-    conditions: ["workerd", "worker", "browser"],
-  })).outputFiles[0].text;
+  const scripts = await workerScripts(options.clock === "real" ? null : NOW_MS);
   // still.fail cloud's Workers as Cloudflare runs them: the static sites on their hosts, and routes (which take
   // precedence) sending the API's and the relay's paths to theirs (cloud/wrangler*.jsonc); on each host's new name
   // and its old one.
@@ -194,13 +177,13 @@ export async function harness(
       workers: [{
         ...common,
         name: "static",
-        script: await bundle("test/static-worker.ts"),
+        script: scripts.static,
         bindings: { PUBLIC_ORIGIN: origin, ADMIN_ORIGIN: adminOrigin, PREVIEW_ORIGIN: previewOrigin, PUBLIC_ORIGIN_ALIASES: oldOrigin, ADMIN_ORIGIN_ALIASES: oldAdminOrigin, PREVIEW_ORIGIN_ALIASES: oldPreviewOrigin, BETA_ORIGIN: betaOrigin },
         serviceBindings: { ASSETS: (options.assets ?? standInAssets) as any },
       }, {
         ...common,
         name: "relay",
-        script: await bundle("test/relay-worker.ts"),
+        script: scripts.relay,
         routes: hosts.flatMap((host) => [`${host}/relay*`, `${host}/ping*`, `${host}/generate_204*`, `${host}/v1/admin/relay/*`]),
         bindings: { PUBLIC_ORIGIN: origin, PUBLIC_ORIGIN_ALIASES: oldOrigin, ADMIN_TOKEN: adminToken },
         serviceBindings: options.relay ? { TEST_RELAY: { external: { address: new URL(options.relay).host, http: {} } } } : {},
@@ -208,7 +191,7 @@ export async function harness(
       }, {
         ...common,
         name: "api",
-        script: await bundle("test/worker.ts"),
+        script: scripts.api,
         routes: [...[...hosts, betaHost].flatMap((host) => [`${host}/v1/*`, `${host}/healthz*`, `${host}/install.sh*`, `${host}/install.ps1*`, `${host}/releases/*`, `${host}/.well-known/*`, `${host}/__test/*`]), ...adminHosts.map((host) => `${host}/v1/*`)],
         bindings: {
         PUBLIC_ORIGIN: origin,

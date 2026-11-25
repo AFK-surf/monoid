@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { harness } from "./harness.ts";
+import { ICON_URL_CHARS } from "../src/icons.ts";
 
 /** What the harness's Google says is everyone's picture. */
 const GOOGLE = "https://example.test/p.png";
@@ -45,7 +46,8 @@ test("an account's own picture is shown in place of its sign-in's until it takes
 
     // Its address may be given again; anything not a picture kept here, or not a picture, is refused, and changes nothing.
     assert.equal((await alice("PUT", "/v1/me/picture", { picture: own })).status, 200);
-    for (const bad of ["data:image/svg+xml;base64,PHN2Zz4=", "data:image/png;base64,R0lGODlh", `data:image/jpeg;base64,/9j/${"A".repeat(1_500_000)}`, GOOGLE, "glyph:rocket", ""]) {
+    // (the one too large is just past a picture's limit, within the call's: events.test.ts says why)
+    for (const bad of ["data:image/svg+xml;base64,PHN2Zz4=", "data:image/png;base64,R0lGODlh", `data:image/jpeg;base64,/9j/${"A".repeat(ICON_URL_CHARS)}`, GOOGLE, "glyph:rocket", ""]) {
       assert.equal((await alice("PUT", "/v1/me/picture", { picture: bad })).status, 400, bad.slice(0, 30));
     }
     assert.equal((await alice("PUT", "/v1/me/picture", {})).status, 400, "none");
