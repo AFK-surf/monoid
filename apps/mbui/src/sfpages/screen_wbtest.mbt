@@ -15,9 +15,11 @@ priv struct ScreenRig {
   cancelled : Array[Int]
   /// how the fake core answers a call (None: as the fixture does)
   answer : Ref[(String, Json) -> Result[Json, Json]?]
-  /// the prefs' `screenQuality`, `screenFps` (0: none)
+  /// the prefs' `screenQuality`, `screenFps` (0: none), `screenKeyMap` / `screenKeepCtrl` ("": default on, "off": off)
   quality : @signals.Signal[String]
   fps : @signals.Signal[Int]
+  key_map : @signals.Signal[String]
+  keep_ctrl : @signals.Signal[String]
 }
 
 ///|
@@ -38,9 +40,12 @@ fn screen_rig(
   here? : String = "",
   h264? : Bool = false,
   os? : String = "",
+  key_map? : String = "",
+  keep_ctrl? : String = "",
   screens? : Json,
   terminals? : Json,
   in_tab? : Bool = false,
+  tab_pads? : Bool = false,
   keep_screen? : Bool = false,
   net? : Json,
 ) -> ScreenRig {
@@ -79,6 +84,8 @@ fn screen_rig(
   let touch_ = @signals.signal(touch)
   let quality_ = @signals.signal("")
   let fps_ = @signals.signal(0)
+  let key_map_ = @signals.signal(key_map)
+  let keep_ctrl_ = @signals.signal(keep_ctrl)
   let ask = fn(name : String, params : Json, bytes : Bytes?, done : (Result[Json, Json]) -> Unit, fallback : () -> Unit) {
     calls.push((name, params, bytes))
     match (answer.val)(name, params) {
@@ -98,7 +105,7 @@ fn screen_rig(
       let tp = base.topic(name, params).get().snapshot()
       if name == "stations" && os != "" {
         { ..tp, value: Some([{ "station": "ws-1/st-1", "host": { "os": os } }]) }
-      } else if name == "prefs" && (touch_.get() != "" || quality_.get() != "" || fps_.get() != 0) {
+      } else if name == "prefs" && (touch_.get() != "" || quality_.get() != "" || fps_.get() != 0 || key_map_.get() != "" || keep_ctrl_.get() != "") {
         let m = match tp.value {
           Some(Object(m)) => m.copy()
           _ => {}
@@ -111,6 +118,12 @@ fn screen_rig(
         }
         if fps_.get() != 0 {
           m["screenFps"] = Json::number(fps_.get().to_double())
+        }
+        if key_map_.get() != "" {
+          m["screenKeyMap"] = Json::string(key_map_.get())
+        }
+        if keep_ctrl_.get() != "" {
+          m["screenKeepCtrl"] = Json::string(keep_ctrl_.get())
         }
         { ..tp, value: Some(Json::object(m)) }
       } else {
@@ -132,6 +145,16 @@ fn screen_rig(
         match field(Some(params), "screenFps") {
           Some(Number(n, ..)) => fps_.set(n.to_int())
           Some(Null) => fps_.set(0)
+          _ => ()
+        }
+        match field(Some(params), "screenKeyMap") {
+          Some(String(v)) => key_map_.set(v)
+          Some(Null) => key_map_.set("")
+          _ => ()
+        }
+        match field(Some(params), "screenKeepCtrl") {
+          Some(String(v)) => keep_ctrl_.set(v)
+          Some(Null) => keep_ctrl_.set("")
           _ => ()
         }
       }
@@ -185,7 +208,12 @@ fn screen_rig(
       }, fn(p, at) {
         p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         match at {
-          Some(at) => screen_node(p, src, at, fn() { @sf.no_frame }, in_tab~)
+          Some(at) =>
+            if tab_pads {
+              screen_pane_node(p, src, at, fn() { @sf.no_frame }, in_tab~, tab_pads=fn() { (0.0, 0.0) })
+            } else {
+              screen_node(p, src, at, fn() { @sf.no_frame }, in_tab~)
+            }
           None => ()
         }
       })
@@ -204,7 +232,7 @@ fn screen_rig(
   t.draw()
   app.nav.push(Screen({ station: "ws-1/st-1", screen, title: "Chrome", until_gone }))
   nav_rested(t)
-  { t, calls, views, cancelled, answer, quality: quality_, fps: fps_ }
+  { t, calls, views, cancelled, answer, quality: quality_, fps: fps_, key_map: key_map_, keep_ctrl: keep_ctrl_ }
 }
 
 ///|

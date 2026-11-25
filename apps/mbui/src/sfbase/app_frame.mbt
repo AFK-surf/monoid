@@ -216,6 +216,12 @@ let attention : Attention = {
 }
 
 ///|
+/// The workspace currently in view as last told to the core (`attend`), or "" before any.
+pub fn attention_workspace() -> String {
+  attention.workspace
+}
+
+///|
 /// Tells the core where this app's attention is, as the Android app's activity and App.kt do: shown and in front or
 /// not (`client.focus {visible, focused}`, as the system says: @ui.app_visible, app_focused) and the workspace in view
 /// (`workspace`); a chat's own place (`chat`, `left`) is chat.mbt's. Only a change is told. What is read follows from

@@ -123,3 +123,51 @@ test "switch_node: liquid glass lens scale animation causes zero relayout (laid 
   t.touch(2, x + w / 2.0, y + h / 2.0)
   t.run_for(@ui.move_most_ms * 2.0)
 }
+
+///|
+/// How far a switch `w` wide moves its thumb end to end (@glass.liquid_toggle_node's drag_dist).
+fn switch_drag_dist(w : Double) -> Double {
+  w - 2.0 * @glass.toggle_pad - w * @glass.thumb_w / @glass.toggle_w
+}
+
+///|
+test "a switch dragged past its on end and brought back three quarters of the way from where it was taken stays on" {
+  let on = @signals.signal(false)
+  let t = switch_tester(0, on, false)
+  let (x, y, w, h) = t.get(Switch, label="性能记录").rect
+  let (x0, y0) = (x + h / 2.0, y + h / 2.0)
+  let back = x0 + 0.75 * switch_drag_dist(w)
+  t.press_at(x0, y0)
+  t.run_for(@ui.input_step_ms)
+  // (on far past its on end: held at on)
+  for dx in [20.0, 60.0, 120.0] {
+    t.move_to(x0 + dx, y0)
+    t.run_for(@ui.input_step_ms)
+  }
+  // (back to three quarters of its way: on, as the hand has it there; summed move by move it would be off)
+  t.move_to(back, y0)
+  t.run_for(@ui.input_step_ms)
+  t.release(back, y0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(on.get())
+}
+
+///|
+test "a switch dragged past its off end and brought back three quarters of the way from where it was taken turns off" {
+  let on = @signals.signal(true)
+  let t = switch_tester(0, on, false)
+  let (x, y, w, h) = t.get(Switch, label="性能记录").rect
+  let (x0, y0) = (x + w - h / 2.0, y + h / 2.0)
+  let back = x0 - 0.75 * switch_drag_dist(w)
+  t.press_at(x0, y0)
+  t.run_for(@ui.input_step_ms)
+  for dx in [20.0, 60.0, 120.0] {
+    t.move_to(x0 - dx, y0)
+    t.run_for(@ui.input_step_ms)
+  }
+  t.move_to(back, y0)
+  t.run_for(@ui.input_step_ms)
+  t.release(back, y0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(!on.get())
+}

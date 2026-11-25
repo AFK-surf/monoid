@@ -685,10 +685,27 @@ export class Exporter {
     // What of a thread a workspace is told of all at once, as the thread is first of it (a chat whose session came
     // into it, or every chat of a generation begun): its rows as they are, and its logs up to where this pass began.
     const cursor = { entries: Number(this.#meta("entries")), letters: Number(this.#meta("letters")) };
+    // A session's own rows, but for its threads (which `sessionRows` enters).
+    const sessionOwn = (ws: string, key: string) => {
+      for (const r of all(READS.sessionRuns, key)) changed(ws, "runtime_sessions", r);
+      for (const r of all(READS.sessionTurns, key)) changed(ws, "turns", r);
+      for (const r of all(READS.sessionOpened, key)) changed(ws, "opened_chats", r);
+      for (const r of all(marksOf("pins", "session"), key)) changed(ws, "pins", r);
+    };
     const threadRows = (ws: string, thread: number) => {
       const t = all(READS.thread, thread)[0];
       if (t !== undefined) changed(ws, "threads", t);
-      for (const r of all(READS.threadSessions, thread)) changed(ws, "thread_sessions", r);
+      for (const r of all(READS.threadSessions, thread)) {
+        changed(ws, "thread_sessions", r);
+        // Its session too: a chat whose entries come before the session is told of (a pass between its commit and
+        // the told note) is otherwise copied without its `sessions` row.
+        const key = typeof r.session === "string" ? r.session : "";
+        const s = all(READS.session, key)[0];
+        if (s !== undefined && wsOfSession(s.ws) === ws) {
+          changed(ws, "sessions", s);
+          sessionOwn(ws, key);
+        }
+      }
       for (const r of all(READS.threadCards, thread)) changed(ws, "closed_cards", r);
       if (this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entry_proposals'").get() !== undefined) {
         for (const r of all(READS.threadEntryProposals, thread)) changed(ws, "entry_proposals", r);
@@ -742,10 +759,7 @@ export class Exporter {
         changed(ws, "thread_sessions", r);
         enter(num(r.thread));
       }
-      for (const r of all(READS.sessionRuns, key)) changed(ws, "runtime_sessions", r);
-      for (const r of all(READS.sessionTurns, key)) changed(ws, "turns", r);
-      for (const r of all(READS.sessionOpened, key)) changed(ws, "opened_chats", r);
-      for (const r of all(marksOf("pins", "session"), key)) changed(ws, "pins", r);
+      sessionOwn(ws, key);
     };
     let more = false;
     const wantTranscripts = told.transcripts === true;

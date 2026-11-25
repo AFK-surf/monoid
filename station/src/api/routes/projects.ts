@@ -3,16 +3,18 @@
 // None of these write routes are in `OWN_MARKS`, so `admin.ts` automatically rejects read-only members (403).
 import { join } from "node:path";
 import type { Route, Tools } from "../admin.ts";
-import { type Answer, type Request, error, json } from "../request.ts";
+import { type Answer, type Request, Refused, error, json } from "../request.ts";
 import {
   applyProposalInfoSync,
   ensureProjectRegistered,
   normalizeNote,
   normalizeRefs,
   readProjectsInfoLenient,
+  stripInternalProjectInfo,
   updateProjectInfo,
 } from "../../projects/info.ts";
 import { normalizeProject, normalizeTags } from "../../store/rows.ts";
+import { renameOrMergeProject } from "../../sessions/projects.ts";
 import type { Cloud } from "../../cloud/state.ts";
 
 const BODY_MOST = 256 * 1024;
@@ -192,7 +194,11 @@ export function routes(tools: Tools, cloud?: Cloud): Route[] {
           if (agentHome !== null) {
             const ws = viewerWs(r);
             try {
-              const reg = await ensureProjectRegistered(agentHome, ws, homeWs(), { name: change.project, now: tools.store.now() });
+              const reg = await ensureProjectRegistered(agentHome, ws, homeWs(), {
+                name: change.project,
+                now: tools.store.now(),
+                keepOpIds: tools.store.listPendingRenameInfoOpIds(ws ?? homeWs() ?? ""),
+              });
               if (reg.changed) notifyProjectsChanged(ws);
             } catch (e) {
               infoError = (e as Error).message;
@@ -234,6 +240,7 @@ export function routes(tools: Tools, cloud?: Cloud): Route[] {
         if (!refsCheck.ok) return error(400, refsCheck.error);
         const ws = viewerWs(r);
         const now = tools.store?.now() ?? 0;
+        const keepOpIds = tools.store?.listPendingRenameInfoOpIds(ws ?? homeWs() ?? "");
         try {
           const { doc } = await updateProjectInfo(agentHome, ws, homeWs(), {
             name: body.name,
@@ -241,13 +248,52 @@ export function routes(tools: Tools, cloud?: Cloud): Route[] {
             ...(refsCheck.value !== undefined ? { refs: refsCheck.value } : {}),
             ...(body.delete === true ? { delete: true } : {}),
             now,
+            ...(keepOpIds !== undefined ? { keepOpIds } : {}),
           });
           notifyProjectsChanged(ws);
-          return json(200, JSON.stringify(doc));
+          return json(200, JSON.stringify(stripInternalProjectInfo(doc)));
         } catch (e) {
           const msg = (e as Error).message;
           const status = /corrupt|invalid PROJECTS\.jsonl|exceeds/i.test(msg) ? 500 : 400;
           return error(status, msg);
+        }
+      },
+    },
+    {
+      method: "POST",
+      pattern: /^\/projects\/(rename|merge)$/,
+      handle: async (r: Request, [action]: string[]): Promise<Answer> => {
+        const hub = tools.agents?.hub;
+        if (!hub) return error(503, "station hub is not ready");
+        const ws = viewerWs(r);
+        if (ws === null || ws === "") return error(400, "workspace is required");
+        if (hub.isRigIn(ws)) return error(403, "a rig does not manage workspace projects");
+        if (hub.quietIn(ws)) return error(409, "this station is retiring from this workspace");
+        const body = parseBody(r);
+        if (body === null) return error(r.body.length > BODY_MOST ? 413 : 400, r.body.length > BODY_MOST ? "request too large" : "invalid JSON body");
+        if (typeof body.from !== "string" || typeof body.to !== "string") {
+          return error(400, "from and to must be strings");
+        }
+        const rawKey = Object.entries(r.headers ?? {}).find(([k]) => k.toLowerCase() === "idempotency-key")?.[1]?.trim() || "";
+        const opKey = rawKey !== "" ? `${r.viewer.sub || r.viewer.email || ""}\0${action}\0${rawKey}` : undefined;
+        try {
+          const res = await renameOrMergeProject(hub, ws, action as "rename" | "merge", body.from, body.to, { checkKnown: true, skipPrivate: false, ...(opKey ? { opKey } : {}) });
+          const answer = json(200, JSON.stringify(res));
+          if (
+            res.infoError !== undefined ||
+            res.rosterError !== undefined ||
+            res.peers.some((p) => p.status !== "ok" && p.status !== "rig")
+          ) {
+            answer.noCache = true;
+          }
+          return answer;
+        } catch (e) {
+          if (e instanceof Refused) {
+            const ans = error(e.status, e.message);
+            if (e.noCache === true) ans.noCache = true;
+            return ans;
+          }
+          return error(500, (e as Error).message);
         }
       },
     },

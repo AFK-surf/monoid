@@ -2437,6 +2437,7 @@ web-pages.files.showPreview
 web-pages.files.size
 web-pages.files.skip
 web-pages.files.split
+web-pages.files.startKeeping
 web-pages.files.stopKeeping
 web-pages.files.switchNote
 web-pages.files.switchStation
@@ -2447,6 +2448,7 @@ web-pages.files.toDevice
 web-pages.files.transferWhat
 web-pages.files.transfers
 web-pages.files.transfersGoing
+web-pages.files.transfersGoingRate
 web-pages.files.unfavorite
 web-pages.files.unsplit
 web-pages.files.where
@@ -2693,6 +2695,11 @@ web-pages.screen.micMute
 web-pages.screen.micAsked
 web-pages.screen.paste
 web-pages.screen.keysPanel
+web-pages.screen.keyMap
+web-pages.screen.keyMapNote
+web-pages.screen.keyMapNoteMac
+web-pages.screen.keepCtrl
+web-pages.screen.keepCtrlNote
 web-pages.screen.quick
 web-pages.screen.picture
 web-pages.screen.quality
@@ -2753,6 +2760,7 @@ web-pages.settings.nav.changelog
 web-pages.settings.nav.client
 web-pages.settings.nav.connects
 web-pages.settings.nav.memory
+web-pages.settings.nav.network
 web-pages.settings.nav.notifications
 web-pages.settings.nav.permissions
 web-pages.settings.nav.shortcuts
@@ -2895,6 +2903,11 @@ web-pages.stations.copies.peerOffline
 web-pages.stations.copies.noPeers
 web-pages.stations.copies.acceptOthers
 web-pages.stations.copies.acceptOthersNote
+web-pages.stations.copies.uploadLabel
+web-pages.stations.copies.uploadNote
+web-pages.stations.copies.uploadNone
+web-pages.stations.copies.uploadMbps
+web-pages.stations.copies.uploadDefault
 web-pages.stations.copies.s3Heading
 web-pages.stations.copies.s3Add
 web-pages.stations.copies.s3Empty
@@ -3070,6 +3083,9 @@ web-main.preset.clearModel
 web-main.preset.instructionsTitle
 web-pages.screen.debug.app
 web-pages.screen.device.back
+core-views.screen.control
+core-views.screen.watch
+web-pages.screen.debug.pane
 web-pages.screen.debug.paneHide
 web-pages.screen.debug.paneShow
 desktop.update.update

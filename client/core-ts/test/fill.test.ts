@@ -14,6 +14,7 @@ import { HostWire, type StationWire } from "../src/station/wire.ts";
 import { BULK_LANE } from "../src/station/requests.ts";
 import { RECONNECT_MS } from "../src/station/sync.ts";
 import { AGAIN_MS } from "../src/views/downloads.ts";
+import { bytes } from "../src/format.ts";
 import { call } from "./helpers.ts";
 import { Raw, started, stationReplies, status } from "./station-fixture.ts";
 
@@ -250,6 +251,39 @@ test("what is brought is listed as it stands; one stopped is no longer brought, 
   assert.equal(await Effect.runPromise(t.core.inner.driveKept.has(chatKeptId(ST, "k1", "film.mp4"))), true);
   await t.host.time.pass(IDLE_MS * 3);
   assert.deepEqual(keeping(), [], "not brought again");
+  t.core.close();
+});
+
+test("one after the others is listed as paused with its size, and a person can start it: it comes next, before the rest, as one asked to load", async () => {
+  const film = bytesOf(10 * MB, 3);
+  const clip = bytesOf(6 * MB, 4);
+  const t = await started();
+  files(t.host, new Map([["film.mp4", film], ["clip.mp4", clip]]));
+  const r = await rig(t);
+  const keeping = () => (t.core.inner.downloads.view().keeping as { name: string; state: string; wanted?: boolean; statusText: string }[]);
+  for (const [name, f] of [["film.mp4", film], ["clip.mp4", clip]] as const) {
+    await r.ask("station.file.part", { station: ST, key: "k1", name, offset: 0, length: MB, keep: true, size: f.length });
+  }
+  // the clip coming (its part held), the film after it
+  const held = t.host.hold(`name=clip.mp4&offset=${MB}&length=${4 * MB}`);
+  await t.host.time.pass(IDLE_MS + 100);
+  assert.deepEqual(keeping().map((k) => [k.name, k.state]), [["clip.mp4", "going"], ["film.mp4", "queued"]]);
+  for (const k of keeping()) assert.ok(k.statusText.includes(bytes(k.name === "film.mp4" ? film.length : clip.length)), k.statusText);
+  // started: asked to load from now on; the clip's part comes whole, then the film before the rest of the clip
+  const id = chatKeptId(ST, "k1", "film.mp4");
+  assert.ok("ok" in (await r.ask("fill.start", { id }))!);
+  assert.equal(keeping().find((k) => k.name === "film.mp4")?.wanted, true);
+  const from = t.host.requests.length;
+  held();
+  await t.host.settle();
+  const next = t.host.requests.slice(from).map((q) => q.url).find((u) => u.includes("/sessions/k1/parts"));
+  assert.ok(next?.includes("name=film.mp4&"), next);
+  await t.host.time.pass(IDLE_MS + 100);
+  assert.equal(await r.whole(id, film.length), true);
+  assert.equal(keeping().some((k) => k.name === "film.mp4"), false, "out of the list once all of it is here");
+  // one not listed: nothing; none named: refused
+  assert.ok("ok" in (await r.ask("fill.start", { id }))!);
+  assert.ok("error" in (await r.ask("fill.start", {}))!);
   t.core.close();
 });
 

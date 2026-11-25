@@ -90,13 +90,15 @@ fn tone_colours(tone : PillTone) -> (Int64, Int64) {
 /// A status pill (pill's) as a node in `parent`: `words` in its tone's ink on its tone's ground, a tag (static_tag_in's:
 /// round as a tag is, Radius::Base, so a status said never looks like what is pressed) pill_h high, pill_in in at either
 /// end, growing with the system's size of words, cut short where its row has not the room; `icon` leading it (pill_icon,
-/// its ink, 4 before its words; "" none); one piece in bones. The node.
+/// its ink, 4 before its words; "" none); its words picked with the pointer where it is `read`; one piece in bones. The
+/// node.
 #callsite(autofill(loc))
 pub fn pill_node(
   parent : @view.View,
   words : () -> String,
   tone? : PillTone = Neutral,
   icon? : String = "",
+  read? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   let colours = fn() { tone_colours(tone) }
@@ -106,7 +108,7 @@ pub fn pill_node(
     } else {
       None
     }
-    static_tag_in(b, pill_kind, words, fn() { colours().1 }, ground=fn() { colours().0 }, lead?, cuts=true)
+    static_tag_in(b, pill_kind, words, fn() { colours().1 }, ground=fn() { colours().0 }, lead?, cuts=true, read~)
   })
 }
 

@@ -198,10 +198,11 @@ pub fn notices_said_node(v : @view.View, src : Source) -> Unit {
         }
         return
       }
-      if !notice_state.told || notice_state.last_told_perm != perm {
+      let resolved = resolve_permission_state(notify, perm)
+      if !notice_state.told || notice_state.last_told_perm != resolved {
         notice_state.told = true
-        notice_state.last_told_perm = perm
-        tell_permission_value(src, notify, perm)
+        notice_state.last_told_perm = resolved
+        (src.call)("notify.permission", { "state": Json::string(resolved) }, answer_unread)
       }
       if !notice_state.asked_once && flag(notify, "on") && field(notify, "asked") is Some(False) {
         notice_state.asked_once = true
@@ -255,8 +256,12 @@ pub fn notices_frame(src : Source, w : Workspace) -> Unit {
   // prompt put away leaves it "default", asked again by the page's way to allow them, no toast)
   match (h.answer)() {
     Some(granted) => {
-      let current_perm = (h.permission)()
-      let state = if granted {
+      let (perm_pending, current_perm) = (h.permission_state)()
+      let state = if !perm_pending && current_perm == "granted" {
+        "granted"
+      } else if !perm_pending && (current_perm == "denied" || current_perm == "ask") {
+        "denied"
+      } else if granted {
         "granted"
       } else if current_perm == "default" {
         "default"
@@ -370,15 +375,14 @@ fn show_notice(n : Json) -> Unit {
 }
 
 ///|
-/// What the system lets the app show, to the core (Notifier.permission): the host's say; Android's "ask" (never asked,
-/// or refused: it cannot tell) "default" while the core says it was never asked, else "denied"; a browser's "default"
-/// (never answered, its prompt shown whenever asked) as it is, whether asked or not.
-fn tell_permission_value(src : Source, notify : Json?, perm : String) -> Unit {
-  let state = match perm {
+/// What the system lets the app show, resolved for the core (Notifier.permission): the host's say; Android's "ask"
+/// (never asked, or refused: it cannot tell) maps to "default" while the core says it was never asked, else "denied";
+/// a browser's "default" (never answered, its prompt shown whenever asked) stays "default", whether asked or not.
+fn resolve_permission_state(notify : Json?, perm : String) -> String {
+  match perm {
     "ask" => if field(notify, "asked") is Some(False) { "default" } else { "denied" }
     s => s
   }
-  (src.call)("notify.permission", { "state": Json::string(state) }, answer_unread)
 }
 
 ///|

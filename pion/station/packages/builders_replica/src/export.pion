@@ -1353,6 +1353,50 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
     Ok(rs) => rs.length() > 0
     Err(_) => false
   }
+  // A session's own rows, but for its threads (which `session_rows` enters).
+  let session_own = fn(ws : String, key : String) -> Result[Unit, String] {
+    let rts = match all("SELECT * FROM runtime_sessions WHERE session_key = ?", [base_codec::json_str(key)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    for i in 0..<rts.length() {
+      match changed(ws, "runtime_sessions", rts[i]) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let turns = match all("SELECT rowid AS _rowid, * FROM turns WHERE session_key = ? ORDER BY started_at DESC LIMIT 2", [base_codec::json_str(key)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    for i in 0..<turns.length() {
+      match changed(ws, "turns", turns[i]) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let opened = match all("SELECT * FROM opened_chats WHERE child_station = '' AND child = ?", [base_codec::json_str(key)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    for i in 0..<opened.length() {
+      match changed(ws, "opened_chats", opened[i]) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let pins = match all(marks_of("pins", "session"), [base_codec::json_str(key)]) {
+      Ok(rs) => rs
+      Err(e) => return Err(e)
+    }
+    for i in 0..<pins.length() {
+      match changed(ws, "pins", pins[i]) {
+        Ok(()) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    Ok(())
+  }
   let thread_rows = fn(ws : String, thread : Double) -> Result[Unit, String] {
     let ts = match all("SELECT * FROM threads WHERE id = ?", [sql_db::double_to_json(thread)]) {
       Ok(rs) => rs
@@ -1372,6 +1416,26 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
       match changed(ws, "thread_sessions", tss[i]) {
         Ok(()) => ()
         Err(e) => return Err(e)
+      }
+      // Its session too: a chat whose entries come before the session is told of (a pass between its commit and
+      // the told note) is otherwise copied without its `sessions` row.
+      let key = match text_of(jval_get(tss[i], "session")) {
+        Some(k) => k
+        None => ""
+      }
+      let sess_list = match all("SELECT * FROM sessions WHERE key = ?", [base_codec::json_str(key)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e)
+      }
+      if sess_list.length() > 0 && ws_of_session(jval_get(sess_list[0], "ws")) == ws {
+        match changed(ws, "sessions", sess_list[0]) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
+        match session_own(ws, key) {
+          Ok(()) => ()
+          Err(e) => return Err(e)
+        }
       }
     }
     let ccs = match all("SELECT * FROM closed_cards WHERE thread = ?", [sql_db::double_to_json(thread)]) {
@@ -1574,45 +1638,9 @@ fn Exporter::pass_in(self : Exporter, told : js_json::JValue, home : String) -> 
         Err(e) => return Err(e)
       }
     }
-    let rts = match all("SELECT * FROM runtime_sessions WHERE session_key = ?", [base_codec::json_str(key)]) {
-      Ok(rs) => rs
+    match session_own(ws, key) {
+      Ok(()) => ()
       Err(e) => return Err(e)
-    }
-    for i in 0..<rts.length() {
-      match changed(ws, "runtime_sessions", rts[i]) {
-        Ok(()) => ()
-        Err(e) => return Err(e)
-      }
-    }
-    let turns = match all("SELECT rowid AS _rowid, * FROM turns WHERE session_key = ? ORDER BY started_at DESC LIMIT 2", [base_codec::json_str(key)]) {
-      Ok(rs) => rs
-      Err(e) => return Err(e)
-    }
-    for i in 0..<turns.length() {
-      match changed(ws, "turns", turns[i]) {
-        Ok(()) => ()
-        Err(e) => return Err(e)
-      }
-    }
-    let opened = match all("SELECT * FROM opened_chats WHERE child_station = '' AND child = ?", [base_codec::json_str(key)]) {
-      Ok(rs) => rs
-      Err(e) => return Err(e)
-    }
-    for i in 0..<opened.length() {
-      match changed(ws, "opened_chats", opened[i]) {
-        Ok(()) => ()
-        Err(e) => return Err(e)
-      }
-    }
-    let pins = match all(marks_of("pins", "session"), [base_codec::json_str(key)]) {
-      Ok(rs) => rs
-      Err(e) => return Err(e)
-    }
-    for i in 0..<pins.length() {
-      match changed(ws, "pins", pins[i]) {
-        Ok(()) => ()
-        Err(e) => return Err(e)
-      }
     }
     Ok(())
   }

@@ -103,6 +103,7 @@ export const STATION_SHAPES: Record<string, Shape> = {
     ["mode", "String", { doc: "auto | manual" }],
     ["stations", vec("String"), { doc: "Selected peer station ids when mode is manual." }],
     ["acceptOthers", "bool", { doc: "Whether this station accepts backups from other stations in the workspace." }],
+    ["uploadMbps", opt("f64"), { doc: "The most its backup uploads take of the uplink, in megabits a second (0: no limit). Absent from stations before it." }],
     ["peers", vec("CopyPeerChoice"), { doc: "Other stations in the workspace available as backup targets." }],
     ["s3", vec("CopyS3Target"), { doc: "Configured external R2/S3 backup targets and their sync status." }],
     ["settingsSummary", "String", { doc: "Concise one-line summary of this station's current backup configuration." }],

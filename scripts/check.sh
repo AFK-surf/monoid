@@ -334,6 +334,10 @@ if part ts; then
   if touches '^design/(station-)?icons/|^apps/mbui/(tools/icons/|scripts/icons$)|^web/ui/src/icons\.tsx$'; then
     step icons bash apps/mbui/scripts/icons . --check
   fi
+  # Pion's sf_assets_native stays in sync with libs/ui/src/controls assets (checked in pipeline's check and pre-commit).
+  if touches '^libs/ui/src/controls/(font_assets|math_glyphs|icon_data|palette_data)\.mbt$|^libs/ui/src/controls/math(\.json|-mac\.textrec)$|^pion/ui/packages/sf_assets_native/|^pion/tools/mbt2pion-monoid/gen_assets\.mjs$'; then
+    step "pion-ui assets" node pion/tools/mbt2pion-monoid/gen_assets.mjs --check
+  fi
   # Every file cloud's api, the station and the beta apps' core are built from deploys them (scripts/plan.sh).
   if touches '^(cloud/src/|station/src/|shared/|client/|apps/mbui/core/|rules/|scripts/plan)'; then
     prep station deps station

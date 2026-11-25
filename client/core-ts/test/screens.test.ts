@@ -514,7 +514,9 @@ each("a_chat_says_the_screens_of_its_station_for_its_bar_and_which_an_agent_driv
 
 test("a_simulator_is_listed_and_linked_as_one_and_a_kind_not_known_as_a_display", async () => {
   const sim = { id: "simulator:5A25EA86-3568-43D6-9068-8B2CB5FADB26", kind: "simulator", title: "iPhone 17 · iOS 26.2", width: 1206, height: 2622, viewers: [], peek: true };
-  const answers = { ...base(), "GET /screens": { screens: [sim, { id: "later:1", kind: "something-later", title: "", width: 0, height: 0, viewers: [] }] } };
+  const custom = { id: "simulator:11111111-2222-3333-4444-555555555555", kind: "simulator", title: "ios-mbui-sf · iOS 27.2", model: "iPhone 11 Pro", width: 1125, height: 2436, viewers: [], peek: true };
+  const same = { id: "simulator:22222222-3333-4444-5555-666666666666", kind: "simulator", title: "iPhone 17 Pro · iOS 26.2", model: "iPhone 17 Pro", width: 1206, height: 2622, viewers: [], peek: true };
+  const answers = { ...base(), "GET /screens": { screens: [sim, custom, same, { id: "later:1", kind: "something-later", title: "", width: 0, height: 0, viewers: [] }] } };
   const { host, core, ui } = await viewing(1, answers);
   const values = new Map<number, unknown>();
   subscribe(core, ui, 1, { topic: "screens", station: "ws/st" });
@@ -522,12 +524,19 @@ test("a_simulator_is_listed_and_linked_as_one_and_a_kind_not_known_as_a_display"
   await host.settle();
   apply(host, values);
   const v = values.get(1) as J;
-  assert.deepEqual(v.screens.map((x: J) => [x.kind, x.title, x.line]), [
-    ["simulator", "iPhone 17 · iOS 26.2", "iOS 模拟器 · 1206×2622"],
-    ["desktop", "桌面", "桌面"],
+  assert.deepEqual(v.screens.map((x: J) => [x.kind, x.title, x.model ?? "", x.line]), [
+    ["simulator", "iPhone 17 · iOS 26.2", "", "iOS 模拟器 · 1206×2622"],
+    ["simulator", "ios-mbui-sf · iOS 27.2", "iPhone 11 Pro", "iPhone 11 Pro · 1125×2436"],
+    ["simulator", "iPhone 17 Pro · iOS 26.2", "iPhone 17 Pro", "iOS 模拟器 · 1206×2622"],
+    ["desktop", "桌面", "", "桌面"],
   ]);
   assert.equal(v.screens[0].peek, true);
   assert.deepEqual(values.get(2), { kind: "simulator", title: "iOS 模拟器", line: "远程屏幕", link: "/w/ws/s/elsewhere/screen/simulator%3A5A25EA86-3568-43D6-9068-8B2CB5FADB26", gone: false, peek: false, width: 0, height: 0 });
+  const log: J[] = [];
+  call(core, ui, 3, "screen.view", { station: "ws/st", screen: custom.id, view: "v", codecs: ["h264", "jpeg"] });
+  await host.settle();
+  said(host, log);
+  assert.equal(lastState(log, 3).model, "iPhone 11 Pro");
   core.close();
 });
 

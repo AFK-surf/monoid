@@ -75,7 +75,7 @@ priv struct ScreenUi {
   /// ⌘V's V taken as a paste and still down: its going up taken too, whatever is let go of first
   mut pasted_v : Bool
   /// the modifiers held from the keys row as each key went down (by its code), for it to go up with them too
-  down_with : Map[String, Int]
+  down_with : Map[String, (String, String, Int, Int)]
   /// the device kept awake, the window sideways, a phone let turn as held: as last told to the host
   mut awake : Bool
   mut sideways_told : Bool
@@ -243,8 +243,31 @@ priv struct ScreenPage {
   /// shown as a tab at a pane's top with no row of tabs over it (远程's): its bar the pane's own, as high as a page's,
   /// its keys this far in from its start and its end (screen_tab_bar_node)
   tab_pads : (() -> (Double, Double))?
+  /// the workbench pane's width when shown in 远程 (decides wide vs narrow simulator arrangement; none in a chat's side panel)
+  pane_width : (() -> Double)?
   /// where a window of its own takes it, what hands it there (its 在独立窗口中打开)
   on_window : (() -> Unit)?
+}
+
+///|
+/// The width deciding wide vs narrow arrangement for a simulator pane: its own pane's width where given (远程's
+/// workbench), 0 in a chat's side panel, else the window's.
+fn ScreenPage::sim_width(self : ScreenPage, v : @view.View) -> Double {
+  match self.pane_width {
+    Some(w) => w()
+    None => if self.in_tab { 0.0 } else { v.window_w() }
+  }
+}
+
+///|
+/// Whether this page shows a simulator in the wide unified top-bar arrangement (Proposal C: mouse/keyboard wide pane —
+/// 远程's workbench or standalone Viewer; touch tablets have no top bar and keep device buttons beside the device).
+fn ScreenPage::sim_wide(self : ScreenPage, v : @view.View) -> Bool {
+  self.s.said.get() |> ignore
+  self.s.simulator() &&
+  !@sf.soft_keyboard() &&
+  !(!self.in_tab && @sf.native_on()) &&
+  @sf.width_is_wide(Some(fn() { self.sim_width(v) }))
 }
 
 ///|
@@ -311,6 +334,7 @@ pub fn screen_pane_node(
   in_tab? : Bool = false,
   own_bar? : @ui.Style? = None,
   tab_pads? : () -> (Double, Double),
+  pane_width? : () -> Double,
   on_window? : () -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
@@ -356,6 +380,7 @@ pub fn screen_pane_node(
       own_bar,
       lone,
       tab_pads,
+      pane_width,
       on_window,
     }
     // unseen, where the keyboard's input goes (a press on the stage gives it the focus with a mouse; 键盘 with a finger)
@@ -473,7 +498,7 @@ fn screen_full_look(p : @view.View, pg : ScreenPage) -> Unit {
 fn screen_tab_look(p : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   screen_tab_bar_node(p, pg)
-  p.show(at_once=true, fn() { s.taking_over_now() }, fn(t) { take_over_node(t, pg, in_bar=false, placed=true) })
+  p.show(at_once=true, fn() { s.taking_over_now() && !pg.sim_wide(p) }, fn(t) { take_over_node(t, pg, in_bar=false, placed=true) })
   screen_content_node(p, pg)
 }
 
@@ -577,6 +602,7 @@ fn screen_catcher_node(root : @view.View, pg : ScreenPage) -> Unit {
       @sf.t("android-misc.screen.title"),
       fn(k) { screen_keys_in(pg, k) },
       on=By(fn() { s.driving_now() }),
+      catch_close=true,
       fn(k) {
         k.width(Is(Some(0.0))).height(Is(Some(0.0))) |> ignore
         u.catcher = Some(k)
@@ -605,14 +631,18 @@ fn screen_catcher_node(root : @view.View, pg : ScreenPage) -> Unit {
       u.down_with.clear()
       u.typing.set(false)
     } else {
-      // driving it on a page of its own with a keyboard (a window's, not a tab beside a chat's, whose field it would
-      // take; no soft keyboard brought up unasked): the keys go to the screen straight away, so a shortcut or what a
-      // voice input types lands there without a press on the picture first; never over the address bar asked for
+      // driving it on a page of its own with a keyboard (a window's, or 远程's workbench pane where no chat field sits
+      // beside it; not a tab beside a chat's, whose field it would take; no soft keyboard brought up unasked): the keys
+      // go to the screen straight away, so a shortcut or what a voice input types lands there without a press on the
+      // picture first; never over the address bar asked for
       let addr_focused = match u.address_field {
         Some(f) => @signals.untracked(fn() { f.focused() })
         None => false
       }
-      if !pg.in_tab && !@sf.soft_keyboard() && u.address_asked.untracked() == 0 && !addr_focused {
+      if (!pg.in_tab || pg.tab_pads is Some(_)) &&
+        !@sf.soft_keyboard() &&
+        u.address_asked.untracked() == 0 &&
+        !addr_focused {
         match u.catcher {
           Some(k) => @ui.key_catcher_focus_set(k, true)
           None => ()
@@ -726,6 +756,8 @@ fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : Scree
       @hostapi.set_sideways(on)
     }
   })
+  // keep the station's OS subscribed from opening so cross-OS shortcut mapping works in standalone windows before 控制中心 opens
+  root.reacts(fn() { screen_os(src, s.station) }, fn(_) {  })
   // a copy made on the screen: onto the device's clipboard (screen_copies)
   root.reacts(fn() { s.copied_told.get() }, fn(_) { screen_copies(s) })
   // the device's clipboard read for a paste, once it answers (screen_pasted)
@@ -1283,33 +1315,39 @@ fn screen_keys_in(pg : ScreenPage, k : @ui.KeyIn) -> Unit {
   let send = fn(j : Json) { s.input(s.src, j) }
   match k {
     Text(words) => type_into(s, u, words)
-    // ⌘V (Ctrl+V): this device's clipboard onto the screen's and pasted there, where it carries one, as a paste is on
-    // the web's page (its keys are not sent); where it carries none, its text typed there (what a voice input put on
-    // the clipboard and pasted). Its V let go of after ⌘, taken here too: nothing of it went down there
-    Key(down~, key~, code="KeyV", mods~) if (down && (mods & (mod_meta | mod_ctrl)) != 0 && (mods & mod_alt) == 0) ||
-      (!down && u.pasted_v) =>
-      if down {
-        u.pasted_v = true
-        let held_mods = mods | u.held.take()
-        paste_asked(s, u, from_key=if s.pastes() { None } else { Some((key, held_mods)) })
-      } else {
-        u.pasted_v = false
-      }
     // the pointer held for an app there let go of by the person's own keys (⌃Esc, ⌃⌥⇧Q), whatever the app does
     Key(down~, code~, mods~, ..) if screen_lock_keys(u.mouse, code, mods, down) => ()
     // a browser's own keys on a tab of the station's browser (⌘L, ⌘T, ⌘W, ⌘R, ⌘[, ⌘]): the viewer's, as a browser's
     Key(down~, code~, mods~, ..) if browser_key(s, u, code, mods, down) => ()
     Key(down~, key~, code~, mods~) => {
-      let extra = if down {
-        let m = u.held.take()
-        u.down_with[code] = m
-        m
-      } else {
-        let m = u.down_with.get(code).unwrap_or(0)
-        u.down_with.remove(code)
-        m
+      let (mapped_key, mapped_code, mapped_mods) = remap_screen_key(s, key, code, mods)
+      // ⌘V (Apple) or Ctrl+V (Windows/Linux/Android): this device's clipboard onto the screen's and pasted there,
+      // where it carries one, as a paste is on the web's page (its keys are not sent); where it carries none, its text
+      // typed there (what a voice input put on the clipboard and pasted). Its V let go of after ⌘/Ctrl, taken here too.
+      if (down && is_paste_key(s, mapped_code, mods, mapped_mods)) || (!down && u.pasted_v && code == "KeyV") {
+        if down {
+          u.pasted_v = true
+          let held_mods = mapped_mods | u.held.take()
+          paste_asked(s, u, from_key=if s.pastes() { None } else { Some((mapped_key, held_mods)) })
+        } else {
+          u.pasted_v = false
+        }
+        return
       }
-      send(key_input(if down { "down" } else { "up" }, key, code, mods | extra))
+      if down {
+        let extra = u.held.take()
+        u.down_with[code] = (mapped_key, mapped_code, mapped_mods, extra)
+        send(key_input("down", mapped_key, mapped_code, mapped_mods | extra))
+      } else {
+        let (up_key, up_code, up_mods) = match u.down_with.get(code) {
+          Some((dk, dc, dm, extra)) => {
+            u.down_with.remove(code)
+            (dk, dc, (if dc != mapped_code { dm } else { mapped_mods }) | extra)
+          }
+          None => (mapped_key, mapped_code, mapped_mods)
+        }
+        send(key_input("up", up_key, up_code, up_mods))
+      }
     }
   }
 }

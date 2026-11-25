@@ -53,9 +53,10 @@ export function processUi(binary: string): (args: string[]) => Promise<unknown> 
       const child = spawn(binary, args, { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
       let out = "";
       const unarm = wall.after(UI_LIMIT_MS, () => child.kill());
-      child.stdout.setEncoding("utf8").on("data", (chunk: string) => (out += chunk));
+      // (heard before its stdout: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
       child.once("error", (error) => (unarm(), reject(error)));
       child.once("close", (status) => (unarm(), resolve(envelope(out, status ?? -1))));
+      child.stdout?.setEncoding("utf8").on("data", (chunk: string) => (out += chunk));
     });
 }
 

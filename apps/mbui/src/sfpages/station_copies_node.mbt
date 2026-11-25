@@ -109,6 +109,71 @@ fn copies_mode_of(backup : Json?, picked_manual : Bool) -> String {
 }
 
 ///|
+/// The upload limits offered (Mbps, 0 for none), slowest first and no limit last; the station's own default among them.
+// kept across runs: a value (no element of it changes)
+let copies_upload_steps : Array[Double] = [2.0, 5.0, 8.0, 20.0, 50.0, 100.0, 0.0]
+
+///|
+/// What a station uses when its config sets none (station/src/replica/backup-config.ts `DEFAULT_UPLOAD_MBPS`).
+let copies_upload_default : Double = 8.0
+
+///|
+/// The upload limit a station's `backup` says (None from a station before backups were paced: nothing to set).
+fn copies_upload_of(backup : Json?) -> Double? {
+  match field(backup, "uploadMbps") {
+    Some(Number(n, ..)) if n >= 0.0 => Some(n)
+    _ => None
+  }
+}
+
+///|
+/// An upload limit as a choice's key.
+fn copies_upload_key(n : Double) -> String {
+  if n == n.floor() {
+    n.to_int().to_string()
+  } else {
+    n.to_string()
+  }
+}
+
+///|
+/// The upload limits to choose from: the steps, and `cur` among them where a station's config holds another.
+fn copies_upload_values(cur : Double) -> Array[Double] {
+  if copies_upload_steps.contains(cur) {
+    return copies_upload_steps
+  }
+  let out = copies_upload_steps.filter(fn(n) { n != 0.0 && n < cur })
+  out.push(cur)
+  for n in copies_upload_steps {
+    if n == 0.0 || n > cur {
+      out.push(n)
+    }
+  }
+  out
+}
+
+///|
+/// The choices of `copies_upload_values`, as the select shows them.
+fn copies_upload_choices(cur : Double) -> Array[(String, String)] {
+  copies_upload_values(cur).map(fn(n) {
+    let words = if n == 0.0 {
+      @sf.t("web-pages.stations.copies.uploadNone")
+    } else if n == copies_upload_default {
+      @sf.t("web-pages.stations.copies.uploadDefault", args=[("n", copies_upload_key(n))])
+    } else {
+      @sf.t("web-pages.stations.copies.uploadMbps", args=[("n", copies_upload_key(n))])
+    }
+    (copies_upload_key(n), words)
+  })
+}
+
+///|
+/// The upload limit a chosen key names, of those offered beside `cur`.
+fn copies_upload_chosen(key : String, cur : Double) -> Double? {
+  copies_upload_values(cur).iter().find_first(fn(n) { copies_upload_key(n) == key })
+}
+
+///|
 /// Format the note lines for an R2 / S3 target row (bucket + status, key fingerprint).
 fn copies_s3_note(sv : Json?) -> String {
   let bucket = text(sv, "bucket")
@@ -205,6 +270,12 @@ pub fn backup_node(
       _ => []
     },
   )
+  let draft_upload = @signals.signal(
+    match copies_upload_of(init_backup) {
+      Some(n) => n
+      None => copies_upload_default
+    },
+  )
   let applying = @signals.signal(false)
   let s3_dirty = @signals.signal(false)
   let next_draft_seq = Ref(1)
@@ -221,6 +292,10 @@ pub fn backup_node(
                   draft_mode.set(copies_mode_of(bk, false))
                   draft_stations.set(copies_selected_ids(bk))
                   draft_s3.set(items(bk, "s3"))
+                  match copies_upload_of(bk) {
+                    Some(n) => draft_upload.set(n)
+                    None => ()
+                  }
                 }
                 _ => ()
               }
@@ -286,6 +361,28 @@ pub fn backup_node(
                   )
                 })
               })
+              @sf.setting_node(
+                g,
+                fn() { @sf.t("web-pages.stations.copies.uploadLabel") },
+                note=fn() { @sf.t("web-pages.stations.copies.uploadNote") },
+                in_card=true,
+                fn(c) {
+                  @sf.select_node(
+                    c,
+                    fn() { copies_upload_key(draft_upload.get()) },
+                    fn() { copies_upload_choices(draft_upload.get()) },
+                    fn(chosen) {
+                      match copies_upload_chosen(chosen, draft_upload.untracked()) {
+                        Some(n) => draft_upload.set(n)
+                        None => ()
+                      }
+                    },
+                    label=fn() { @sf.t("web-pages.stations.copies.uploadLabel") },
+                    disabled=fn() { applying.get() },
+                    whole=true,
+                  )
+                },
+              )
             })
             st_section_node(
               u,
@@ -415,6 +512,7 @@ pub fn backup_node(
                   let mode = draft_mode.untracked()
                   let sel = draft_stations.untracked()
                   let send_s3 = s3_dirty.untracked()
+                  let upload = draft_upload.untracked()
                   let current_s3 : Ref[Array[Json]] = Ref(draft_s3.untracked().map(copies_s3_draft_wire))
                   let generated_pairs : Array[(String, String)] = []
                   let generated_captured = Ref(false)
@@ -465,6 +563,7 @@ pub fn backup_node(
                         params.push(("stations", Json::array(peers_for_this.map(str))))
                       }
                     }
+                    params.push(("uploadMbps", Json::number(upload)))
                     if send_s3 {
                       params.push(("s3", Json::array(current_s3.val)))
                     }
@@ -1130,6 +1229,44 @@ pub fn station_backup_node(
               note=fn() { @sf.t("web-pages.stations.copies.acceptOthersNote") },
               busy=saving,
             )
+            g.show(fn() { copies_upload_of(backup()) is Some(_) }, fn(u) {
+              let cur = fn() {
+                match copies_upload_of(backup()) {
+                  Some(n) => n
+                  None => copies_upload_default
+                }
+              }
+              @sf.setting_node(
+                u,
+                fn() { @sf.t("web-pages.stations.copies.uploadLabel") },
+                note=fn() { @sf.t("web-pages.stations.copies.uploadNote") },
+                in_card=true,
+                fn(c) {
+                  @sf.select_node(
+                    c,
+                    fn() { copies_upload_key(cur()) },
+                    fn() { copies_upload_choices(cur()) },
+                    fn(chosen) {
+                      match copies_upload_chosen(chosen, @signals.untracked(cur)) {
+                        Some(n) =>
+                          @settings.act(
+                            core,
+                            @sf.t("web-pages.stations.copies.saveWhat"),
+                            "copies.setSettings",
+                            obj([("station", str(station)), ("uploadMbps", Json::number(n))]),
+                            done=@sf.t("web-pages.stations.copies.saved"),
+                            then=fn(_) { load_history() },
+                          )
+                        None => ()
+                      }
+                    },
+                    label=fn() { @sf.t("web-pages.stations.copies.uploadLabel") },
+                    disabled=saving,
+                    whole=true,
+                  )
+                },
+              )
+            })
           })
         })
       _ =>

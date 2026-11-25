@@ -638,8 +638,19 @@ export class Data {
       };
       for (const row of rows.values()) {
         tell(readTopic(CHAT_RECORD, [station, row.archived ? 1 : 0, row.id]));
-        const keysOf = (value: unknown, ord: number | undefined) =>
-          chatKeys(station, row.archived, row.id, value, markedRead && !row.archived && (this.#derive.tone(value) !== null || this.#derive.asks(value)), { state: this.#derive.state(value), watched: this.#derive.watched(value) }, ord ?? 0);
+        const keysOf = (value: unknown, ord: number | undefined) => {
+          const tone = !row.archived ? this.#derive.tone(value) : null;
+          const asks = !row.archived && this.#derive.asks(value);
+          return chatKeys(
+            station,
+            row.archived,
+            row.id,
+            value,
+            markedRead && !row.archived && (tone !== null || asks),
+            { state: this.#derive.state(value), watched: this.#derive.watched(value), asking: !row.archived && (tone === "wait" || asks) },
+            ord ?? 0,
+          );
+        };
         const before = row.before === undefined ? undefined : keysOf(row.before, row.ordBefore);
         const after = row.after === undefined ? undefined : keysOf(row.after, row.ordAfter);
         const between = (row.between ?? []).map((v) => keysOf(v, row.ordAfter));

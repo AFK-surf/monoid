@@ -201,7 +201,7 @@ test "composer adaptive glass shows its backdrop fade only when expanded and kee
       None => (-1.0, -1, false)
     }
   }
-  assert_eq(glass_of(), (2.2, 0x67, true))
+  assert_eq(glass_of(), (1.2, 0x67, true))
   assert_eq(composer_cover_backdrop(t).length(), 0, msg="expected no backdrop fade on compact single-line capsule")
   assert_eq(composer_cover_visible_fade(t).length(), 0, msg="expected no visible 0xFE fade behind compact capsule")
   assert_eq(

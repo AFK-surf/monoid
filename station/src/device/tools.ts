@@ -241,8 +241,9 @@ export class DeviceTools {
           resume(fail("failed", (e as Error).message));
           return;
         }
-        const out = capture(child.stdout!);
-        const err = capture(child.stderr!);
+        // (none on one not started (ENFILE, EMFILE): its error, heard below, says so)
+        const out = capture(child.stdout);
+        const err = capture(child.stderr);
         let timedOut = false;
         // How long a command is given is the machine's time (ops/fibers.ts `wall`).
         const cancel = wall.after(timeout, () => {
@@ -368,9 +369,7 @@ export class DeviceTools {
           held -= dropped.length;
         }
       };
-      child.stdout!.on("data", take);
-      child.stderr!.on("data", take);
-      child.stdin!.on("error", () => {});
+      // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
       child.on("error", (e) => {
         take(Buffer.from(`\n[failed: ${e.message}]\n`));
         kept.exited = true;
@@ -379,6 +378,9 @@ export class DeviceTools {
         kept.exited = true;
         kept.exitCode = code;
       });
+      child.stdout?.on("data", take);
+      child.stderr?.on("data", take);
+      child.stdin?.on("error", () => {});
       self.processes.set(id, kept);
       return { process_id: id };
     });
@@ -395,9 +397,11 @@ export class DeviceTools {
     return Effect.flatMap(this.kept(a), (p) => {
       const data = str(a, "data_base64");
       if (data === null) return fail("invalid_request", "data_base64 is required");
-      if (p.exited) return fail("exited", `process ${p.id} has exited`);
+      // (no stdin: it never started, its end told on the next tick)
+      const stdin = p.child.stdin;
+      if (p.exited || !stdin) return fail("exited", `process ${p.id} has exited`);
       return Effect.callback<{}, ToolError>((resume) => {
-        p.child.stdin!.write(Buffer.from(data, "base64"), (e) => resume(e ? fail("failed", e.message) : Effect.succeed({})));
+        stdin.write(Buffer.from(data, "base64"), (e) => resume(e ? fail("failed", e.message) : Effect.succeed({})));
       });
     });
   }
@@ -492,11 +496,11 @@ async function signedIn(kind: "claude" | "codex", env: Record<string, string | u
 }
 
 /// A stream's text, the first OUTPUT_CAP bytes of it.
-function capture(stream: NodeJS.ReadableStream) {
+function capture(stream: NodeJS.ReadableStream | null | undefined) {
   const parts: Buffer[] = [];
   let size = 0;
   let cut = false;
-  stream.on("data", (chunk: Buffer) => {
+  stream?.on("data", (chunk: Buffer) => {
     if (size >= OUTPUT_CAP) {
       cut = true;
       return;

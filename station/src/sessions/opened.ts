@@ -26,6 +26,7 @@ import { USED_WITHIN_MS, askWhich, candidates, choose } from "./model-choice.ts"
 import { sameModel } from "./config.ts";
 import { contextAsked } from "./context-cap.ts";
 import { type Preset, type PresetCopy, type PresetModel, type Presets, presetCopyInput } from "./presets.ts";
+import { presetProjectsOf } from "../../../client/core-ts/src/preset-records.ts";
 import { STATION_AUTHOR } from "../store/rows.ts";
 import { markNotice } from "./chat.ts";
 
@@ -105,11 +106,11 @@ function starterOf(hub: Hub, key: string): string {
 /// In workspace `ws` (the opener's). `more`: what else it is opened with, as the app would (its preset, Fast, context).
 async function makeChat(
   hub: Hub,
-  o: { runtime: RuntimeName; model: string | null; effort: string | null; inherited: boolean; title: string | null; createdBy: string; ws: string | null; bound?: boolean },
-  more: Partial<Pick<NewChat, "preset" | "presetCopy" | "fast" | "speed" | "tui" | "context" | "profile" | "profiles">> = {},
+  o: { runtime: RuntimeName; model: string | null; effort: string | null; inherited: boolean; title: string | null; createdBy: string; createdBySub?: string | null; ws: string | null; bound?: boolean },
+  more: Partial<Pick<NewChat, "preset" | "presetCopy" | "fast" | "speed" | "tui" | "context" | "profile" | "profiles" | "project">> = {},
 ) {
   const usual = o.effort === null && o.bound !== true ? usualEffort(hub, o.createdBy, o.runtime, o.model) : null;
-  const options: NewChat = { ...more, runtime: o.runtime, model: o.model, effort: o.effort ?? usual, title: o.title, createdBy: o.createdBy, ws: o.ws };
+  const options: NewChat = { ...more, runtime: o.runtime, model: o.model, effort: o.effort ?? usual, title: o.title, createdBy: o.createdBy, ...(o.createdBySub !== undefined ? { createdBySub: o.createdBySub } : {}), ws: o.ws };
   try {
     return await newSession(hub, options);
   } catch (error) {
@@ -330,11 +331,55 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
     }
     return opened({ session: before.child, link: before.link, thread }, there, true, before.led !== false);
   }
+  // Resolve the calling session's `sub`:
+  // 1. Persisted `session_creators.sub` (new sessions)
+  // 2. Only when `preset !== null` and `session_creators` has no row (pre-upgrade sessions):
+  //    look up `createdBy` via indexed `session_creators_by_email`:
+  //    - `"unique"` -> use that `sub`
+  //    - `"ambiguous"` -> keep `null` (never guess or fall back to `preset.owner`)
+  //    - `"none"` -> ONLY if `preset` was created by the exact same `createdBy` email, use `preset.owner`
+  let callerSub: string | null = hub.store.sessionCreatorSub(row.key);
+  if (callerSub === null && preset !== null && createdBy.trim() !== "") {
+    const looked = hub.store.lookupCreatorSubByEmail(createdBy);
+    if (looked.kind === "unique") {
+      callerSub = looked.sub;
+    } else if (
+      looked.kind === "none" &&
+      typeof preset.createdBy === "string" &&
+      preset.createdBy.trim() !== "" &&
+      createdBy.trim().toLowerCase() === preset.createdBy.trim().toLowerCase() &&
+      typeof preset.owner === "string" &&
+      preset.owner.trim() !== ""
+    ) {
+      callerSub = preset.owner.trim();
+    }
+  }
+  const presetProjectPref = (): string | null | undefined => {
+    if (!hub.projectsOn() || preset === null || callerSub === null) return undefined;
+    const wsKey = row.ws ?? hub.homeWorkspace() ?? "";
+    let raw = hub.store.presetProjects(wsKey, callerSub);
+    if (raw === null && (row.ws ?? null) === null && wsKey !== "") raw = hub.store.presetProjects("", callerSub);
+    if (raw === null) return undefined;
+    try {
+      const pref = presetProjectsOf(JSON.parse(raw))[preset.id];
+      return pref !== undefined ? pref.project : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   if (there === null) {
     const bound = preset?.model ? boundHere(hub, row.ws ?? null, preset.model, preset.name) : null;
     const chosen = bound !== null ? bound.choice : model === null ? chosenHere(hub, createdBy, row.ws ?? null, runtime as RuntimeName | null) : choice;
-    const more = { ...(preset !== null ? { preset: preset.id } : {}), fast, ...(speed ? { speed } : {}), context, ...bound?.more };
-    const [child, chat] = await makeChat(hub, { ...choice, ...chosen, title, createdBy, ws: row.ws ?? null }, more);
+    const prefProj = presetProjectPref();
+    const more = {
+      ...(preset !== null ? { preset: preset.id } : {}),
+      ...(prefProj !== undefined ? { project: prefProj } : {}),
+      fast,
+      ...(speed ? { speed } : {}),
+      context,
+      ...bound?.more,
+    };
+    const [child, chat] = await makeChat(hub, { ...choice, ...chosen, title, createdBy, ...(callerSub !== null ? { createdBySub: callerSub } : {}), ws: row.ws ?? null }, more);
     if (preset === null) {
       let parentThread = hub.store.latestDeliveredThread(key);
       if (parentThread === null) {
@@ -361,7 +406,7 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
   // `choose`: the station it is opened on picks the model (`runtimeGiven`: of that runtime); one from before it runs the
   // runtime's default there.
   // With a preset, its copy (`presetCopy`), whose model configuration, where it names one, the station there runs.
-  let parentProject: string | undefined;
+  let parentProject: string | null | undefined;
   if (preset === null) {
     let parentThread = hub.store.latestDeliveredThread(key);
     if (parentThread === null) {
@@ -372,10 +417,14 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
       }
     }
     parentProject = parentThread?.project;
+  } else {
+    parentProject = presetProjectPref();
   }
   const request: Json = {
     method: preset?.model?.tui ? CREATE_PRESET_TUI : preset !== null ? (speed !== null || preset.model?.speed ? CREATE_PRESET_SPEED : CREATE_PRESET) : speed !== null ? CREATE_SPEED : CREATE,
-    session: key, key: k, title, ...choice, choose: model === null, runtimeGiven: runtime !== null, createdBy, from: { title: from, link: fromLink }, led,
+    session: key, key: k, title, ...choice, choose: model === null, runtimeGiven: runtime !== null, createdBy,
+    ...(callerSub !== null ? { createdBySub: callerSub } : {}),
+    from: { title: from, link: fromLink }, led,
     ...(fast !== null ? { fast } : {}),
     ...(speed !== null ? { speed } : {}),
     ...(context !== null ? { context } : {}),
@@ -440,17 +489,24 @@ async function createForPeerNow(hub: Hub, peer: string, request: Json, ws: strin
   const chosen = bound !== null ? bound.choice
     : request?.choose === true && model === null ? chosenHere(hub, createdBy, ws, request?.runtimeGiven === true ? (runtime as RuntimeName) : null)
     : { runtime: runtime as RuntimeName, model };
+  const reqProject: string | null | undefined =
+    request?.project === null ? null : typeof request?.project === "string" ? request.project : undefined;
   const more = {
     fast: typeof request?.fast === "boolean" ? (request.fast as boolean) : null,
     speed: modelSpeed(request?.speed),
     context: contextAsked(request?.context ?? undefined, stationLang()) ?? null,
     ...(copy !== null ? { presetCopy: copy } : {}),
+    ...(reqProject !== undefined ? { project: reqProject } : {}),
     ...bound?.more,
   };
-  const [child, childChat] = await makeChat(hub, { effort: given(request, "effort"), ...chosen, inherited: request?.inherited === true, title, createdBy, ws }, more);
-  if (copy === null && typeof request?.project === "string") {
+  const [child, childChat] = await makeChat(
+    hub,
+    { effort: given(request, "effort"), ...chosen, inherited: request?.inherited === true, title, createdBy, createdBySub: given(request, "createdBySub"), ws },
+    more,
+  );
+  if (copy === null && typeof reqProject === "string" && childChat.project === undefined) {
     try {
-      hub.store.setThreadClassification(childChat.id, { project: request.project, force: true });
+      hub.store.setThreadClassification(childChat.id, { project: reqProject, force: true });
     } catch {}
   }
   // What its opener was called (its chat's way back to it says so while that chat is not in the viewer's list).

@@ -355,8 +355,8 @@ export class UseIndex {
   #start(): MbUseReader {
     if (this.#worker !== null) return this.#worker;
     // (by the MoonBit program, station/mb's src/vaultuses)
-    const bin = resolveReaderSelection("vault-uses", { binary: this.#binary, config: this.#readers, logAt: "readers" }).primaryBinary;
-    const worker = new MbUseReader(bin, this.#path!, this.#priority, this.#known);
+    const sel = resolveReaderSelection("vault-uses", { binary: this.#binary, config: this.#readers, logAt: "readers" });
+    const worker = new MbUseReader(sel, this.#path!, this.#priority, this.#known);
     const owner = worker.threadId;
     worker.once("exit", () => releaseStoppedBackfill(this.#priority, owner));
     this.#worker = worker;

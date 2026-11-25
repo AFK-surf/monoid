@@ -4,8 +4,41 @@
 
 import "base_codec"
 import "host_shim"
+import "js_json"
 import "nodepath"
 import "sql_db"
+
+/// Normalize numeric representations (e.g. `1.0` -> `1`, `10.0` -> `10`, `-0.0` -> `0`)
+/// in pure Pion (no C FFI) so identity comparison, ask/call map keys, and shell JSON
+/// arguments match MoonBit `@json.parse` + `Json::stringify` and Rust `as_u64`.
+pub fn normalize_json(j : base_codec::Json) -> base_codec::Json {
+  match j {
+    base_codec::Json::Num(v, repr) => {
+      if js_json::is_safe_integer(v) {
+        let i64 = v.to_int64()
+        base_codec::json_int64(i64)
+      } else {
+        base_codec::Json::Num(v, repr)
+      }
+    }
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        out.push(normalize_json(items[i]))
+      }
+      base_codec::json_arr(out)
+    }
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        out.push((k, normalize_json(v)))
+      }
+      base_codec::json_obj(out)
+    }
+    _ => j
+  }
+}
 
 pub struct ShellError {
   pub message : String

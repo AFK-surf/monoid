@@ -242,6 +242,16 @@ pub fn format_stdout_frame_header(
   escape_line_separators(base_codec::json_stringify(base_codec::json_obj(fields))) + "\n"
 }
 
+/// Write a pre-serialized `mb-reader` framed JSON header line (escaping U+2028/U+2029 on the
+/// header line only) followed by exact raw binary tail bytes.
+pub fn write_stdout_frame_header_json(header_json : String, body : Bytes) -> Bool {
+  let header = escape_line_separators(header_json) + "\n"
+  if !write_stdout(header.to_bytes()) {
+    return false
+  }
+  write_stdout(body)
+}
+
 /// Write a `mb-reader` framed JSON header followed by exact raw binary tail bytes.
 pub fn write_stdout_frame(head_fields : Array[(String, base_codec::Json)], body : Bytes) -> Bool {
   let header = format_stdout_frame_header(head_fields, body.length())

@@ -134,6 +134,7 @@ export const COMPOSER_SHAPES: Record<string, Shape> = {
     ["runtime", opt("RuntimeKind"), { doc: "Runtime when the preset binds a model." }],
     ["dirName", opt("String"), { said: true, doc: "First folder's display name when the preset binds folders." }],
     ["dirRepo", opt("String"), { doc: "First folder's repository address for deterministic tile color." }],
+    ["project", opt("String"), { doc: "Current user's default project preference for this preset (\"\" cross-project, non-empty project name; absent when auto)." }],
     ["used", opt("bool"), { doc: "Whether this preset has been used on this device." }],
   ], { doc: "A preset of the person's own a new chat can be opened with, as its page's menu of them lists it (views/presets.ts:\nas the device holds them; others' are `otherPresets`): its name, and the station it was made on where two are\nnamed alike." }),
   ShareInView: struct([

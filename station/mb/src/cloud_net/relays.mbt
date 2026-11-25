@@ -124,13 +124,15 @@ pub(all) struct Pinger {
 ///|
 /// The watch of the endpoint itself on the relays' check (relays.ts `PROBE`, which says why and how): probed end to
 /// end through a relay that answers, told unhealthy after `failures_to_recover` probes in a row found it at fault, never
-/// in the first `startup_grace_ms`, again only after a cooldown that doubles to `cooldown_max_ms`.
+/// in the first `startup_grace_ms`, again only after a cooldown that doubles to `cooldown_max_ms`; not probed while a
+/// relay connection was taken within `recent_reach_ms`.
 pub(all) struct ProbeParams {
   startup_grace_ms : Int64
   every_healthy : Int
   failures_to_recover : Int
   cooldown_ms : Int64
   cooldown_max_ms : Int64
+  recent_reach_ms : Int64
 }
 
 ///|
@@ -140,6 +142,7 @@ pub let probe_params : ProbeParams = {
   failures_to_recover: 3,
   cooldown_ms: 600_000L,
   cooldown_max_ms: 3_600_000L,
+  recent_reach_ms: 60_000L,
 }
 
 ///|
@@ -158,6 +161,25 @@ priv struct ProbeWatch {
   mut unsupported : Bool
   mut last_recover_at : Int64?
   mut cooldown : Int64
+  /// When the endpoint last took a connection through a relay (relays.ts `lastRelayReachAt`).
+  last_relay_reach : () -> Int64?
+  /// Where the last recovery and its cooldown are kept across processes (relays.ts `RecoverStore`; None: none kept).
+  save_recover : async ((Int64, Int64)?) -> Unit
+}
+
+///|
+/// Once the cooldown is over, back to its first, and nothing kept.
+async fn ProbeWatch::cooled_down(self : ProbeWatch, now : Int64) -> Unit {
+  match self.last_recover_at {
+    Some(at) if now - at >= self.cooldown => {
+      self.cooldown = self.params.cooldown_ms
+      self.last_recover_at = None
+      (self.save_recover)(None) catch {
+        _ => ()
+      }
+    }
+    _ => ()
+  }
 }
 
 ///|
@@ -214,6 +236,21 @@ async fn ProbeWatch::tick(
     return
   }
   guard reachable is Some(first) else { return }
+  // (a connection taken through a relay lately: reached end to end, relays.ts `PROBE`)
+  let now = @effect.now()
+  match (self.last_relay_reach)() {
+    Some(reached) if now >= reached && now - reached < self.params.recent_reach_ms => {
+      if self.failures > 0 || self.streak_failed.length() > 0 {
+        say("INFO", "the endpoint took an incoming relay connection after earlier probe failures; not the endpoint's: failures=\{self.failures} failedBefore=\{self.streak_failed.join(",")} reachedMsAgo=\{now - reached}")
+        self.failures = 0
+        self.streak_failed.clear()
+      }
+      self.cooled_down(now)
+      self.healthy_ticks = 0
+      return
+    }
+    _ => ()
+  }
   let status = match (endpoint.relay_status)() {
     Array(rs) => rs
     _ => []
@@ -301,14 +338,7 @@ async fn ProbeWatch::tick(
         }
         self.failures = 0
         self.streak_failed.clear()
-        let now = @effect.now()
-        match self.last_recover_at {
-          Some(at) if now - at >= self.cooldown => {
-            self.cooldown = self.params.cooldown_ms
-            self.last_recover_at = None
-          }
-          _ => ()
-        }
+        self.cooled_down(@effect.now())
         return
       }
       Offline => offline_relays.push(relay)
@@ -320,14 +350,14 @@ async fn ProbeWatch::tick(
         if !self.streak_failed.contains(bare(relay)) {
           self.streak_failed.push(bare(relay))
         }
-        // (two relays found it out of reach: the endpoint's)
-        if failed_relays.length() >= 2 {
+        // (three relays found it out of reach: the endpoint's; two may be one region's, relays.ts `PROBE`)
+        if failed_relays.length() >= 3 {
           break
         }
       }
     }
   }
-  if failed_relays.length() < 2 &&
+  if failed_relays.length() < 3 &&
     candidates[cand_idx:].iter().all(c => self.streak_failed.contains(bare(c))) {
     exhausted = true
   }
@@ -346,7 +376,7 @@ async fn ProbeWatch::tick(
     return
   }
   let also = if failed_relays.length() > 1 {
-    " also=\{failed_relays[1]}"
+    " also=\{failed_relays[1:].to_owned().join(",")}"
   } else {
     ""
   }
@@ -370,6 +400,10 @@ async fn ProbeWatch::tick(
     None => self.cooldown = self.params.cooldown_ms
   }
   self.last_recover_at = Some(now)
+  // (kept before the front restarts: the next process keeps the cooldown)
+  (self.save_recover)(Some((now, self.cooldown))) catch {
+    _ => ()
+  }
   say("ERROR", "the endpoint failed its end-to-end probes through a relay that answers; recovering it: relay=\{failed_relays[0]}\{also} failures=\{self.failures} cooldownMs=\{self.cooldown}")
   self.failures = 0
   self.streak_failed.clear()
@@ -395,7 +429,9 @@ fn same_list(a : Array[String], b : Array[String]) -> Bool {
 /// Keeps the endpoint on the relays wanted, for good (until interrupted). `bound`: the relays it was bound with
 /// (still.fail's where not said). `log` hears what it would say. `on_unhealthy`: the endpoint probed on each check
 /// (`ProbeParams`, `params` a test's), and this told once it is found at fault; `say` hears what the watch would say,
-/// with its level (`INFO`, `WARN`, `ERROR`; none: `log`).
+/// with its level (`INFO`, `WARN`, `ERROR`; none: `log`). `last_relay_reach`: when the endpoint last took a connection
+/// through a relay (`@effect.now()`'s time); `load_recover` and `save_recover`: where the last recovery and its cooldown
+/// (`(at, cooldown)`) are kept across processes.
 pub async fn keep_relays(
   endpoint : RelayEndpoint,
   ways : Ways,
@@ -405,6 +441,9 @@ pub async fn keep_relays(
   on_unhealthy? : () -> Unit,
   params? : ProbeParams = probe_params,
   say? : (String, String) -> Unit,
+  last_relay_reach? : () -> Int64? = () => None,
+  load_recover? : async () -> (Int64, Int64)?,
+  save_recover? : async ((Int64, Int64)?) -> Unit,
 ) -> Unit {
   let cloud = ways.cloud
   let mut ours = wanted_relays(ways)
@@ -433,15 +472,41 @@ pub async fn keep_relays(
     stop_ways()
     stop_cloud()
   }
+  let started_at = @effect.now()
   let watch : ProbeWatch = {
     params,
-    started_at: @effect.now(),
+    started_at,
     failures: 0,
     streak_failed: [],
     healthy_ticks: 0,
     unsupported: false,
     last_recover_at: None,
     cooldown: params.cooldown_ms,
+    last_relay_reach,
+    save_recover: match save_recover {
+      Some(f) => f
+      None => async fn(_ : (Int64, Int64)?) {  }
+    },
+  }
+  // (a recovery's cooldown from the process before: one found absurd or long over is not kept)
+  match load_recover {
+    Some(load) =>
+      match (load() catch { _ => None }) {
+        Some((at, cooldown)) if at <= started_at + 60_000L &&
+          started_at - at <= params.cooldown_max_ms * 2L => {
+          watch.last_recover_at = Some(at)
+          watch.cooldown = if cooldown < params.cooldown_ms {
+            params.cooldown_ms
+          } else if cooldown > params.cooldown_max_ms {
+            params.cooldown_max_ms
+          } else {
+            cooldown
+          }
+          log("the relays' probe cooldown kept from the process before: lastRecoverAt=\{at} cooldownMs=\{watch.cooldown}")
+        }
+        _ => ()
+      }
+    None => ()
   }
   let check = async fn() {
     let mut up = false

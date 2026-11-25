@@ -71,9 +71,9 @@ const OVER_SHOWN: Over = {
 /// The same with the workspace's chats three times.
 const OVER_CHATS: Over = {
   "quota": ["shared", "equaled"],
-  "message": ["reads", "shared", "copied"],
+  "message": ["reads", "shared"],
   "agent": ["copied", "fitted"],
-  "thing": ["reads", "shared", "copied"],
+  "thing": ["reads", "shared"],
   "card": ["reads", "shared", "diffed"],
   // (grown's built and fitted joined as the rows that are the objects they were came to be taken by one comparison:
   // they were the whole window's before, alike at every size; now they are the rows the window grew by and the days

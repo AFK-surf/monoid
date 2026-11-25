@@ -564,7 +564,11 @@ pub fn liquid_slider_node(
   }
   let on_thumb = Ref(false)
   let did_drag = Ref(false)
-  let last_x = Ref(0.0)
+  // (where the finger went down across the window, and the value it held then: each move puts the value where that
+  // point has gone, so held past an end and brought back it comes off the end only as the finger reaches where it
+  // stopped, never summed move by move, which would slip under the finger)
+  let from_x = Ref(0.0)
+  let from_val = Ref(0.0)
   // (how far the thumb's middle travels end to end, as the finger came down: what a move of it along the track is of
   // the whole)
   let travel_px = Ref(1.0)
@@ -594,7 +598,7 @@ pub fn liquid_slider_node(
         let hit_thumb = d.x >= tx && d.x <= tx + cur_tw
         on_thumb.val = true
         did_drag.val = false
-        last_x.val = d.wx
+        from_x.val = d.wx
         dd.press()
         if has_stops {
           let raw = if hit_thumb {
@@ -620,16 +624,16 @@ pub fn liquid_slider_node(
         } else {
           raw_drag_val.val = @signals.untracked(value)
         }
+        from_val.val = raw_drag_val.val
       }
       Moved =>
         if on_thumb.val {
-          let dx = d.wx - last_x.val
-          last_x.val = d.wx
+          let dx = d.wx - from_x.val
           if dx != 0.0 {
             did_drag.val = true
           }
           if has_stops {
-            raw_drag_val.val = clamp(raw_drag_val.val + span * (dx / travel_px.val), least, most)
+            raw_drag_val.val = clamp(from_val.val + span * (dx / travel_px.val), least, most)
             let (nearest, leaned) = lean_value_for(raw_drag_val.val)
             if nearest != felt_stop.val {
               felt_stop.val = nearest
@@ -638,7 +642,7 @@ pub fn liquid_slider_node(
             }
             dd.update_value(leaned)
           } else {
-            raw_drag_val.val = clamp(raw_drag_val.val + span * (dx / travel_px.val), least, most)
+            raw_drag_val.val = clamp(from_val.val + span * (dx / travel_px.val), least, most)
             let next = snap_step(raw_drag_val.val)
             if next != dd.target() {
               dd.update_value(next)

@@ -77,7 +77,7 @@ export const KEPT = {
     source: { table: "chat", owner: ["station", "id"] },
     policy: "read",
     each: "owner",
-    making: 3,
+    making: 4,
     put: (v) => [v.state, JSON.stringify(v.whole), JSON.stringify(v.sent)],
     take: (c) => (typeof c[1] === "string" && typeof c[2] === "string" ? { state: typeof c[0] === "string" ? c[0] : null, whole: json(c[1]), sent: json(c[2]) } : undefined),
   } satisfies Kept<ListRow>,

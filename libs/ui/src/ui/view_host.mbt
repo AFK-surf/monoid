@@ -5319,6 +5319,8 @@ fn view_frame_end(c : Ctx) -> Unit {
     Some(at) =>
       if c.wake_at <= 0.0 || at < c.wake_at {
         c.wake_at = at
+        let by = tree.wake_by()
+        wake_at_loc.val = if by != "" { "tree: " + by } else { "tree" }
       }
     None => ()
   }

@@ -10,10 +10,15 @@ void mb_host_request_frame(void);
 
 // ---- a key catcher (@hostapi.key_catch) ----
 
-// the focus is a key catcher's: the view's keys are its (catch_key below), its input method has no text of its own
+#if TARGET_OS_IPHONE
+// the focus is a key catcher's: the view's keys are its (catch_press below), its input method has no text of its own
 static int key_catching;
 
 void mb_host_key_catch(int32_t on) { key_catching = on != 0; }
+#else
+// per-window on macOS so multi-window redraws never clobber another window's key catcher (0 off, 1 terminal, 2 screen)
+void mb_host_key_catch(int32_t on) { if (the_view) the_view.keyCatching = on; }
+#endif
 
 // The framework's modifiers (src/ui/desktop.mbt: Shift 1, Ctrl 2, Alt 4, ⌘ 8) and a key's code for the catcher, by
 // the keyboard's own (HID usage on iOS, the virtual key code on macOS: kVK_*): the named keys; a character with
@@ -48,6 +53,19 @@ static int catch_press(UIPress *p) {
     case UIKeyboardHIDUsageKeyboardPageDown: named = 16; break;
     case UIKeyboardHIDUsageKeyboardEscape: named = 17; break;
     case UIKeyboardHIDUsageKeyboardTab: named = 18; break;
+    case UIKeyboardHIDUsageKeyboardInsert: named = 41; break;
+    case UIKeyboardHIDUsageKeyboardF1: named = 42; break;
+    case UIKeyboardHIDUsageKeyboardF2: named = 43; break;
+    case UIKeyboardHIDUsageKeyboardF3: named = 44; break;
+    case UIKeyboardHIDUsageKeyboardF4: named = 45; break;
+    case UIKeyboardHIDUsageKeyboardF5: named = 46; break;
+    case UIKeyboardHIDUsageKeyboardF6: named = 47; break;
+    case UIKeyboardHIDUsageKeyboardF7: named = 48; break;
+    case UIKeyboardHIDUsageKeyboardF8: named = 49; break;
+    case UIKeyboardHIDUsageKeyboardF9: named = 50; break;
+    case UIKeyboardHIDUsageKeyboardF10: named = 51; break;
+    case UIKeyboardHIDUsageKeyboardF11: named = 52; break;
+    case UIKeyboardHIDUsageKeyboardF12: named = 53; break;
     case UIKeyboardHIDUsageKeyboardSpacebar: named = 1032; break;
     default: break;
   }
@@ -57,6 +75,25 @@ static int catch_press(UIPress *p) {
 }
 
 #else
+
+// Physical ANSI fallback for shortcuts pressed under non-Latin IMEs (e.g. Chinese Pinyin turning '[' into '【').
+static int mac_ansi_char(unsigned short keyCode) {
+  switch (keyCode) {
+    case 0: return 'a'; case 1: return 's'; case 2: return 'd'; case 3: return 'f';
+    case 4: return 'h'; case 5: return 'g'; case 6: return 'z'; case 7: return 'x';
+    case 8: return 'c'; case 9: return 'v'; case 11: return 'b'; case 12: return 'q';
+    case 13: return 'w'; case 14: return 'e'; case 15: return 'r'; case 16: return 'y';
+    case 17: return 't'; case 18: return '1'; case 19: return '2'; case 20: return '3';
+    case 21: return '4'; case 22: return '6'; case 23: return '5'; case 24: return '=';
+    case 25: return '9'; case 26: return '7'; case 27: return '-'; case 28: return '8';
+    case 29: return '0'; case 30: return ']'; case 31: return 'o'; case 32: return 'u';
+    case 33: return '['; case 34: return 'i'; case 35: return 'p'; case 37: return 'l';
+    case 38: return 'j'; case 39: return '\''; case 40: return 'k'; case 41: return ';';
+    case 42: return '\\'; case 43: return ','; case 44: return '/'; case 45: return 'n';
+    case 46: return 'm'; case 47: return '.'; case 50: return '`';
+    default: return 0;
+  }
+}
 
 static int catch_key_down(NSEvent *e) {
   NSEventModifierFlags m = e.modifierFlags;
@@ -79,10 +116,27 @@ static int catch_key_down(NSEvent *e) {
     case 121: named = 16; break;          // Page Down
     case 53: named = 17; break;           // Escape
     case 48: named = 18; break;           // Tab
+    case 114: named = 41; break;          // Help / Insert
+    case 122: named = 42; break;          // F1
+    case 120: named = 43; break;          // F2
+    case 99: named = 44; break;           // F3
+    case 118: named = 45; break;          // F4
+    case 96: named = 46; break;           // F5
+    case 97: named = 47; break;           // F6
+    case 98: named = 48; break;           // F7
+    case 100: named = 49; break;          // F8
+    case 101: named = 50; break;          // F9
+    case 109: named = 51; break;          // F10
+    case 103: named = 52; break;          // F11
+    case 111: named = 53; break;          // F12
     case 49: named = 1032; break;         // Space
     default: break;
   }
   int code = catch_code(named, e.charactersIgnoringModifiers, mods);
+  if (!named && (mods & (2 | 4 | 8)) && (code < 1032 || code >= 1127)) {
+    int ansi = mac_ansi_char(e.keyCode);
+    if (ansi) code = 1000 + ansi;
+  }
   if (code) mb_cb.key(code, mods);
   return code != 0;
 }

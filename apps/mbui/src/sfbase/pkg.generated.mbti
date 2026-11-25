@@ -81,6 +81,8 @@ pub fn attachment_of(@json.Json) -> Attachment
 
 pub fn attend(Source, String, Bool) -> Unit
 
+pub fn attention_workspace() -> String
+
 pub fn back_label(Page) -> String
 
 pub fn back_pop() -> Unit
@@ -3742,8 +3744,7 @@ pub(all) struct Viewer {
   mut menu_open : Bool
   mut manual_hidden : Bool
   mut pointer_left : Bool
-  mut tap_paused_idle : Bool
-  mut lock_epoch : Int32
+  mut bars_tapped_at : Double
   mut idle_off : () -> Unit
   mut down_pointer : Bool
   zoom : @motion.Zoom
@@ -3783,6 +3784,8 @@ pub(all) struct Viewer {
   mut down_ly : Double
   mut at_left : Bool
   mut at_right : Bool
+  mut past_x : Double
+  mut past_y : Double
   mut caught : Bool
   mut strip_down : Double
   mut flies : Bool

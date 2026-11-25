@@ -1,0 +1,269 @@
+// The station's queue for other stations' tasks (1:1 port of `station/mb/src/admit/admit.mbt`).
+
+/// The machine's input idle less than this: a person is at it (or works it through still.fail).
+pub let PERSON_IDLE_MS : Double = 60000.0
+
+/// A command that has held the screen this long while another waits for it: its agent is told (once).
+pub let HELD_LONG_MS : Double = 600000.0
+
+pub struct Waiting {
+  pub id : String
+  pub session : String
+  pub screen : Bool
+  pub queued_at : Double
+  pub small : Bool
+}
+
+pub struct Started {
+  pub id : String
+  pub screen : Bool
+  pub small : Bool
+}
+
+pub struct Claim {
+  pub job : String
+  pub pid : Int
+  pub at : Double
+  pub held : Bool
+  pub since : Option[Double]
+}
+
+pub struct Claims {
+  pub held : Bool
+  pub asked : Option[Double]
+}
+
+pub enum Picked {
+  Start(Waiting)
+  Wait(String)
+}
+
+pub fn claims_held(claims : Array[Claim]) -> Claims {
+  let mut asked : Option[Double] = None
+  let mut held = false
+  for i in 0..<claims.length() {
+    let c = claims[i]
+    if c.held {
+      held = true
+    } else {
+      match asked {
+        None => asked = Some(c.at)
+        Some(_) => ()
+      }
+    }
+  }
+  Claims::{ held: held, asked: asked }
+}
+
+pub fn served(
+  claims : Array[Claim],
+  screen_jobs : Array[String],
+  now : Double,
+  person : Bool,
+) -> Array[Claim] {
+  let having : Map[String, Bool] = Map::new()
+  for i in 0..<screen_jobs.length() {
+    having.set(screen_jobs[i], true)
+  }
+  for i in 0..<claims.length() {
+    if claims[i].held {
+      having.set(claims[i].job, true)
+    }
+  }
+  let out : Array[Claim] = []
+  for i in 0..<claims.length() {
+    let c = claims[i]
+    if c.held || (having.length() > 0 && !having.contains(c.job)) || (person && !having.contains(c.job)) {
+      out.push(c)
+    } else {
+      having.set(c.job, true)
+      out.push(Claim::{ job: c.job, pid: c.pid, at: c.at, held: true, since: Some(now) })
+    }
+  }
+  out
+}
+
+pub fn overstaying(claims : Array[Claim], now : Double) -> Array[Claim] {
+  let mut any_waiting = false
+  for i in 0..<claims.length() {
+    if !claims[i].held {
+      any_waiting = true
+      break
+    }
+  }
+  if !any_waiting {
+    return []
+  }
+  let out : Array[Claim] = []
+  for i in 0..<claims.length() {
+    let c = claims[i]
+    if c.held {
+      let since = match c.since {
+        Some(s) => s
+        None => c.at
+      }
+      if now - since >= HELD_LONG_MS {
+        out.push(c)
+      }
+    }
+  }
+  out
+}
+
+fn compare_double(a : Double, b : Double) -> Int {
+  if a < b {
+    -1
+  } else if a > b {
+    1
+  } else {
+    0
+  }
+}
+
+fn waiting_before(a : Waiting, b : Waiting, last_of : (String) -> Option[Double]) -> Int {
+  let by = match last_of(a.session) {
+    None => {
+      match last_of(b.session) {
+        None => 0
+        Some(_) => -1
+      }
+    }
+    Some(x) => {
+      match last_of(b.session) {
+        None => 1
+        Some(y) => compare_double(x, y)
+      }
+    }
+  }
+  if by != 0 {
+    by
+  } else {
+    compare_double(a.queued_at, b.queued_at)
+  }
+}
+
+fn in_line(waiting : Array[Waiting], last_of : (String) -> Option[Double]) -> Array[Waiting] {
+  let sorted : Array[Waiting] = []
+  for i in 0..<waiting.length() {
+    sorted.push(waiting[i])
+  }
+  // Stable insertion sort matching MoonBit Array::sort_by stability.
+  for i in 1..<sorted.length() {
+    let cur = sorted[i]
+    let mut j = i - 1
+    while j >= 0 && waiting_before(cur, sorted[j], last_of) < 0 {
+      sorted[j + 1] = sorted[j]
+      j = j - 1
+    }
+    sorted[j + 1] = cur
+  }
+  sorted
+}
+
+pub fn pick(
+  waiting : Array[Waiting],
+  running : Array[Started],
+  pressure : Option[String],
+  person : Bool,
+  last_of : (String) -> Option[Double],
+  claims : Claims,
+) -> Option[Picked] {
+  if waiting.length() == 0 {
+    return None
+  }
+  match pressure {
+    Some("critical") => return Some(Picked::Wait("memory"))
+    _ => ()
+  }
+  let roomy = match pressure {
+    Some("high") => false
+    _ => true
+  }
+  if !roomy {
+    let mut any_small = false
+    for i in 0..<waiting.length() {
+      if waiting[i].small {
+        any_small = true
+        break
+      }
+    }
+    if !any_small {
+      return Some(Picked::Wait("memory"))
+    }
+  }
+  let mut screen_busy = claims.held
+  if !screen_busy {
+    for i in 0..<running.length() {
+      if running[i].screen {
+        screen_busy = true
+        break
+      }
+    }
+  }
+  let able : Array[Waiting] = []
+  for i in 0..<waiting.length() {
+    let w = waiting[i]
+    let mem_ok = roomy || w.small
+    let asked_before = match claims.asked {
+      Some(a) => a <= w.queued_at
+      None => false
+    }
+    let screen_blocked = w.screen && (screen_busy || person || asked_before)
+    if mem_ok && !screen_blocked {
+      able.push(w)
+    }
+  }
+  if !roomy && able.length() == 0 {
+    return Some(Picked::Wait("memory"))
+  }
+  if able.length() == 0 {
+    return Some(Picked::Wait(if !screen_busy && person { "person" } else { "screen" }))
+  }
+  let mut small_busy = false
+  for i in 0..<running.length() {
+    if running[i].small {
+      small_busy = true
+      break
+    }
+  }
+  let ready : Array[Waiting] = []
+  for i in 0..<able.length() {
+    let w = able[i]
+    if !w.small || !small_busy {
+      ready.push(w)
+    }
+  }
+  if ready.length() == 0 {
+    return Some(Picked::Wait("small"))
+  }
+  Some(Picked::Start(in_line(ready, last_of)[0]))
+}
+
+pub fn place(waiting : Array[Waiting], id : String, last_of : (String) -> Option[Double]) -> Option[Int] {
+  let sorted = in_line(waiting, last_of)
+  for i in 0..<sorted.length() {
+    if sorted[i].id == id {
+      return Some(i + 1)
+    }
+  }
+  None
+}
+
+let STEADY_MS : Double = 60000.0
+let MAX_PAUSE_MS : Double = 60000.0
+
+pub fn restart_pause(restarts : Int, ran_ms : Double) -> Double {
+  if ran_ms >= STEADY_MS {
+    return 0.0
+  }
+  let mut v = 1000.0
+  let n = if restarts < 0 { 0 } else if restarts > 6 { 6 } else { restarts }
+  for _ in 0..<n {
+    v = v * 2.0
+  }
+  if v > MAX_PAUSE_MS {
+    MAX_PAUSE_MS
+  } else {
+    v
+  }
+}

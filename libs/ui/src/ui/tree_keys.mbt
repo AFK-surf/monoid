@@ -17,6 +17,7 @@ pub fn key_catcher_node(
   make : (@view.View) -> Unit,
   on? : @view.Live[Bool] = Is(true),
   paste? : (String) -> Unit,
+  catch_close? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(k) {
@@ -26,6 +27,7 @@ pub fn key_catcher_node(
     st.node = Some(id)
     st.told = Some(keys)
     st.paste_told = paste
+    st.catch_close = catch_close
     k
     .focusable(on, keys=0)
     .says(Is(Some(@view.said(TextField, label~))))

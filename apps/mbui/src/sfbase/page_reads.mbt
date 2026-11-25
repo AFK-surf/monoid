@@ -259,6 +259,7 @@ pub fn route_reads(src : Source, ws : String, r : @settings.Route) -> OpenReads 
     | KeptChat(_, _)
     | About
     | Shortcuts
+    | Network
     | LocalStation
     | Permissions => reads_of([])
   }

@@ -9,7 +9,7 @@
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { type Cloud, NOT_GIVEN, UNPROTECTED, personChainsOf } from "../cloud/state.ts";
-import { BYTES, CHECK_BYTES, type Bytes, NoBytes, NoLink, type PeerBus, type PeerCall, Refused, bytesOf } from "./bus.ts";
+import { BYTES, CHECK_BYTES, type Bytes, NoBytes, NoLink, type PeerBus, type PeerCall, Refused, type Rtt, bytesOf } from "./bus.ts";
 import type { Addr, Connection, Endpoint, Stream } from "./native.ts";
 import { answerLock } from "./lock-sync.ts";
 import { answerMarks, stationMarksOf } from "./station-marks.ts";
@@ -243,7 +243,7 @@ type Dial = { made: Promise<Connection>; waiters: number; settled: boolean; aban
 
 /// What the station transport's caller is given: its requests, and `arrived` for each connection another station
 /// opens to this one (what this one keeps to it is asked whether it is still there: a station started again dials anew).
-export type StationCall = PeerCall & { arrived(conn: Connection): void; close?(): void };
+export type StationCall = PeerCall & { arrived(conn: Connection): void; close?(): void; rtts?(): Rtt[] };
 
 /// Whether `conn` was closed by its other end's process stopping (`STOPPING`), as its close says.
 const closedStopping = (conn: Connection): boolean => {
@@ -592,7 +592,18 @@ export function peerCall(
     if (kept === undefined || kept === conn || kept.isClosed()) return;
     void there(kept).then((yes) => { if (!yes) drop(target, kept); });
   };
-  return Object.assign(ask, { arrived, close: stopSweeping });
+  /// The round trip of each connection kept to another station, its chosen path's: what queues at this machine's uplink
+  /// shows on every one (replica/pace.ts gives way by it).
+  const rtts = (): Rtt[] => {
+    const out: Rtt[] = [];
+    for (const [key, conn] of connections) {
+      if (conn.isClosed()) continue;
+      const ms = conn.paths?.().find((p) => p.selected)?.rttMs;
+      if (typeof ms === "number" && Number.isFinite(ms) && ms > 0) out.push({ key, ms });
+    }
+    return out;
+  };
+  return Object.assign(ask, { arrived, close: stopSweeping, rtts });
 }
 
 /// Another station's connection: each of its requests answered by the remote tasks, while it belongs.

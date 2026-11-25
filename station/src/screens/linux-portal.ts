@@ -156,12 +156,13 @@ class PortalProcess implements ScreenView {
     void this.ready.catch(() => {});
     void this.#first.catch(() => {});
     this.#child = spawn(python, ["-u", helper], { env, stdio: ["pipe", "pipe", "pipe"] });
-    this.#pads = new LinuxGamepads((e) => this.input(e), env, python);
-    this.#child.stdin.on("error", () => {});
-    this.#child.stderr.on("data", (data: Buffer) => { this.#error = (this.#error + data.toString()).slice(-2000); });
-    this.#child.stdout.on("data", (data: Buffer) => this.#read(data));
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     this.#child.on("error", (error) => this.#end(error));
     this.#child.on("close", () => this.#end(new Error(this.#error.trim() || "desktop portal ended")));
+    this.#pads = new LinuxGamepads((e) => this.input(e), env, python);
+    this.#child.stdin?.on("error", () => {});
+    this.#child.stderr?.on("data", (data: Buffer) => { this.#error = (this.#error + data.toString()).slice(-2000); });
+    this.#child.stdout?.on("data", (data: Buffer) => this.#read(data));
     this.exited = new Promise((resolve) => {
       this.#child.once("close", () => resolve());
       this.#child.once("error", () => { if (this.#child.pid === undefined) resolve(); }); // never started
@@ -177,7 +178,9 @@ class PortalProcess implements ScreenView {
 
   #send(command: unknown): Promise<void> {
     if (this.#ended) return Promise.reject(new Error("desktop portal closed"));
-    return new Promise((resolve, reject) => this.#child.stdin.write(`${JSON.stringify(command)}\n`, (error) => error ? reject(error) : resolve()));
+    const stdin = this.#child.stdin;
+    if (!stdin) return Promise.reject(new Error("desktop portal did not start"));
+    return new Promise((resolve, reject) => stdin.write(`${JSON.stringify(command)}\n`, (error) => error ? reject(error) : resolve()));
   }
 
   #read(chunk: Buffer): void {
@@ -306,7 +309,8 @@ class PortalProcess implements ScreenView {
     this.#normal = true;
     // A live helper can release its virtual keys and buttons before the portal session closes. An unanswered
     // permission dialog cannot read this command, so #end still bounds the lifetime of the process.
-    if (!this.#child.stdin.destroyed && !this.#child.stdin.writableEnded) this.#child.stdin.end('{"op":"close"}\n');
+    const stdin = this.#child.stdin;
+    if (stdin && !stdin.destroyed && !stdin.writableEnded) stdin.end('{"op":"close"}\n');
     this.#end(new Error("desktop portal closed"), false);
   }
 }

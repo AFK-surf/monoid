@@ -1,0 +1,106 @@
+// Stream line assembly from arbitrary byte chunks and chunked base64 output
+// (1:1 port of `station/mb/src/pieces/pieces.mbt`).
+
+import "base64"
+
+pub struct Pieces {
+  pub parts : Array[Bytes]
+  pub mut size : Int
+}
+
+pub fn Pieces::new() -> Pieces {
+  Pieces::{ parts: [], size: 0 }
+}
+
+fn copy_slice(src : Bytes, from : Int, len : Int) -> Bytes {
+  if len <= 0 {
+    return Bytes::new(0)
+  }
+  let out = Bytes::new(len)
+  for i in 0..<len {
+    out[i] = src[from + i]
+  }
+  out
+}
+
+/// The lines `bytes` ends, each whole without its newline; what it does not end is held.
+pub fn Pieces::lines(self : Pieces, bytes : Bytes) -> Array[Bytes] {
+  let out : Array[Bytes] = []
+  let mut from = 0
+  let n = bytes.length()
+  for i in 0..<n {
+    if (bytes[i].to_int() & 0xFF) != 10 {
+      continue
+    }
+    if self.parts.length() == 0 {
+      out.push(copy_slice(bytes, from, i - from))
+    } else {
+      let total = self.size + (i - from)
+      let line = Bytes::new(total)
+      let mut at = 0
+      for pi in 0..<self.parts.length() {
+        let p = self.parts[pi]
+        let plen = p.length()
+        for k in 0..<plen {
+          line[at + k] = p[k]
+        }
+        at = at + plen
+      }
+      let tail_len = i - from
+      for k in 0..<tail_len {
+        line[at + k] = bytes[from + k]
+      }
+      self.parts.clear()
+      self.size = 0
+      out.push(line)
+    }
+    from = i + 1
+  }
+  if from < n {
+    let rest = if from == 0 { bytes } else { copy_slice(bytes, from, n - from) }
+    self.parts.push(rest)
+    self.size = self.size + rest.length()
+  }
+  out
+}
+
+/// What is held of a line its stream ended without its newline, taken: None where nothing is held.
+pub fn Pieces::rest(self : Pieces) -> Option[Bytes] {
+  if self.parts.length() == 0 {
+    return None
+  }
+  let line = Bytes::new(self.size)
+  let mut at = 0
+  for pi in 0..<self.parts.length() {
+    let p = self.parts[pi]
+    let plen = p.length()
+    for k in 0..<plen {
+      line[at + k] = p[k]
+    }
+    at = at + plen
+  }
+  self.parts.clear()
+  self.size = 0
+  Some(line)
+}
+
+/// `bytes` then `tail` written to `out` as standard padded base64 in 48 KiB chunks.
+pub fn base64_into(out : StringBuilder, bytes : Bytes, tail : Bytes) -> Unit {
+  let whole = (bytes.length() / 3) * 3
+  let mut i = 0
+  while i < whole {
+    let end = if whole - i < 49152 { whole } else { i + 49152 }
+    let chunk = copy_slice(bytes, i, end - i)
+    out.write_string(base64::encode(chunk))
+    i = end
+  }
+  let rem_len = bytes.length() - whole
+  let rest = Bytes::new(rem_len + tail.length())
+  for k in 0..<rem_len {
+    rest[k] = bytes[whole + k]
+  }
+  for k in 0..<tail.length() {
+    rest[rem_len + k] = tail[k]
+  }
+  out.write_string(base64::encode(rest))
+}

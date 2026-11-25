@@ -677,16 +677,36 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
       Some(x) => field(x, "ws")
       None => match all.get(js_text(agents[0].value("key").unwrap())) { Some(x) => field(x, "ws"); None => Json::null() }
     }
+    let t_locked = match field(t.thread, "project_locked") {
+      Number(n, ..) if n == 1.0 => true
+      _ => false
+    }
     match field(t.thread, "project") {
-      String(p) => row["project"] = Json::string(p)
+      String(p) => {
+        row["project"] = Json::string(p)
+        if t_locked {
+          row["projectLocked"] = Json::boolean(true)
+        }
+      }
       _ =>
-        match from {
-          Some(f) =>
-            match field(f.thread, "project") {
-              String(p) => row["project"] = Json::string(p)
-              _ => ()
+        if t_locked {
+          // Own thread is explicitly locked as unclassified (project = NULL, project_locked = 1):
+          // NEVER inherit `project` or `projectLocked` from `from`.
+          row["projectLocked"] = Json::boolean(true)
+        } else {
+          match from {
+            Some(f) => {
+              match field(f.thread, "project") {
+                String(p) => row["project"] = Json::string(p)
+                _ => ()
+              }
+              match field(f.thread, "project_locked") {
+                Number(n, ..) if n == 1.0 => row["projectLocked"] = Json::boolean(true)
+                _ => ()
+              }
             }
-          None => ()
+            None => ()
+          }
         }
     }
     match parsed_thread_tags(field(t.thread, "tags")) {
@@ -868,6 +888,10 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
       Some(f) => {
         match field(f.thread, "project") {
           String(p) => row["project"] = Json::string(p)
+          _ => ()
+        }
+        match field(f.thread, "project_locked") {
+          Number(n, ..) if n == 1.0 => row["projectLocked"] = Json::boolean(true)
           _ => ()
         }
         match parsed_thread_tags(field(f.thread, "tags")) {

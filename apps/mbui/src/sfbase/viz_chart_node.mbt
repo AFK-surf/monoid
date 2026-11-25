@@ -377,7 +377,7 @@ fn viz_cartesian_node(parent : @view.View, chart : VizChart, kind : String) -> U
             }
             if show_vals && sum > 0.0 {
               let sum_txt = viz_fmt_num(sum, "")
-              cat.box(fn(w) { @sf.words_node(w, fn() { sum_txt }, fn() { @sf.caption }) |> ignore }) |> ignore
+              cat.box(fn(w) { @sf.read_words_node(w, fn() { sum_txt }, fn() { @sf.caption }) |> ignore }) |> ignore
             }
             let total_h = @sf.dmax(4.0, bar_max_h * @sf.dclamp((sum - lo) / span, 0.0, 1.0))
             cat.box(fn(stack) {
@@ -411,7 +411,7 @@ fn viz_cartesian_node(parent : @view.View, chart : VizChart, kind : String) -> U
                   grp.box(fn(item_col) {
                     @sf.style_node(item_col, fn() { viz_bar_item_col }, in_row=true)
                     if show_vals {
-                      item_col.box(fn(w) { @sf.words_node(w, fn() { v_txt }, fn() { @sf.caption }) |> ignore }) |> ignore
+                      item_col.box(fn(w) { @sf.read_words_node(w, fn() { v_txt }, fn() { @sf.caption }) |> ignore }) |> ignore
                     }
                     item_col.box(fn(bar) {
                       @sf.style_node(
@@ -499,7 +499,7 @@ fn viz_chart_node(parent : @view.View, key_prefix : String, chart : VizChart, in
               let t = chart.title
               r.box(fn(w) {
                 @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-                @sf.words_node(w, fn() { t }, fn() { @sf.card_title }) |> ignore
+                @sf.read_words_node(w, fn() { t }, fn() { @sf.card_title }) |> ignore
               })
               |> ignore
             }
@@ -507,7 +507,7 @@ fn viz_chart_node(parent : @view.View, key_prefix : String, chart : VizChart, in
               let ctr = chart.center
               r.box(fn(w) {
                 @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-                @sf.words_node(w, fn() { ctr }, fn() { @sf.code }) |> ignore
+                @sf.read_words_node(w, fn() { ctr }, fn() { @sf.code }) |> ignore
               })
               |> ignore
             }
@@ -515,7 +515,7 @@ fn viz_chart_node(parent : @view.View, key_prefix : String, chart : VizChart, in
           |> ignore
         }
         if sub != "" {
-          head.box(fn(w) { @sf.words_node(w, fn() { sub }, fn() { @sf.caption }) |> ignore }) |> ignore
+          head.box(fn(w) { @sf.read_words_node(w, fn() { sub }, fn() { @sf.caption }) |> ignore }) |> ignore
         }
       })
       |> ignore
@@ -556,7 +556,7 @@ fn viz_axis_node(parent : @view.View, chart : VizChart) -> Unit {
         let lbl = chart.labels[i]
         row.box(fn(cell) {
           @sf.style_node(cell, fn() { viz_axis_cell }, in_row=true)
-          @sf.words_node(cell, fn() { lbl }, fn() { @sf.caption }) |> ignore
+          @sf.read_words_node(cell, fn() { lbl }, fn() { @sf.caption }) |> ignore
         })
         |> ignore
       }
@@ -591,12 +591,12 @@ fn viz_hbar_node(parent : @view.View, chart : VizChart) -> Unit {
           let lbl = item.label
           r.box(fn(w) {
             @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-            @sf.words_node(w, fn() { lbl }, fn() { @sf.body }) |> ignore
+            @sf.read_words_node(w, fn() { lbl }, fn() { @sf.body }) |> ignore
           })
           |> ignore
           r.box(fn(w) {
             @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-            @sf.words_node(w, fn() { val_str }, fn() { @sf.code }) |> ignore
+            @sf.read_words_node(w, fn() { val_str }, fn() { @sf.code }) |> ignore
           })
           |> ignore
         })
@@ -639,7 +639,7 @@ fn viz_legend_node(parent : @view.View, chart : VizChart, kind : String) -> Unit
           |> ignore
           item.box(fn(w) {
             @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-            @sf.words_node(w, fn() { txt }, fn() { @sf.caption }) |> ignore
+            @sf.read_words_node(w, fn() { txt }, fn() { @sf.caption }) |> ignore
           })
           |> ignore
         })
@@ -664,7 +664,7 @@ fn viz_legend_node(parent : @view.View, chart : VizChart, kind : String) -> Unit
             |> ignore
             item.box(fn(w) {
               @sf.style_node(w, fn() { @ui.style() }, in_row=true)
-              @sf.words_node(w, fn() { name }, fn() { @sf.caption }) |> ignore
+              @sf.read_words_node(w, fn() { name }, fn() { @sf.caption }) |> ignore
             })
             |> ignore
           })

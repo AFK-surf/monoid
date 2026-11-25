@@ -253,7 +253,7 @@ test "small screen home: a long workspace name gives way to syncing and transfer
   t.run_for(@sf.later_ms + @motion.presence_in_ms)
   let (fx, _, fw, _) = t.query(Button, label="筛选会话：全部").unwrap().rect
   let (sync_x, _, sync_w, _) = t.query(Status, label="正在同步 · 还剩 12 个对话").unwrap().rect
-  let (tx, _, tw, _) = t.query(Button, label="1 个传输 · 2%").unwrap().rect
+  let (tx, _, tw, _) = t.query(Button, label="1 个传输 · 2% · 50 B").unwrap().rect
   let (sx, _, sw, _) = t.query(Button, label="设置").unwrap().rect
   let (wx, wy, ww, wh) = t.rect_of(long_name).unwrap()
   assert_true(

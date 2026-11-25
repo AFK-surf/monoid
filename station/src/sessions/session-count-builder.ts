@@ -36,7 +36,7 @@ export function buildSessionCounts(
     }
     let current: MbBackfill;
     try {
-      const bin = resolveReaderSelection("session-counts", { binary, config: readers, logAt: "readers" }).primaryBinary;
+      const bin = resolveReaderSelection("session-counts", { binary, config: readers, logAt: "readers" });
       current = new MbBackfill(bin, ["--builder", "session-counts", "--db", path], store.backfillPriority, 20);
     }
     catch (error) {

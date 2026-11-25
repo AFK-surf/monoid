@@ -164,6 +164,24 @@ fn share_key(t : Summary) -> String {
 }
 
 ///|
+/// The session keys a thread's `opened_chats` opener is matched by: its home alone (another chat's agent taking part
+/// in it brings no opener of its own), else its sessions.
+fn thread_keys(t : Summary) -> Array[String] {
+  let out : Array[String] = []
+  match field(t.thread, "home") {
+    String(h) if h != "" => return [h]
+    _ => ()
+  }
+  for m in t.sessions {
+    let s = js_text(field(m, "session"))
+    if s != "" && !out.contains(s) {
+      out.push(s)
+    }
+  }
+  out
+}
+
+///|
 /// cc-thread-index.ts `indexedCcThreads`: the Slack and Feishu threads a still.fail chat copies to, with the connect
 /// posting in each; refused while one of its sessions' destinations is prepared.
 fn cc_threads(db : @sql.Db, thread : Json) -> Array[Map[String, Json]] raise {
@@ -232,7 +250,7 @@ fn listed_thread_json(t : Map[String, Json]) -> Map[String, Json] {
 
 ///|
 /// sessions.ts `threadView`.
-fn thread_view(db : @sql.Db, known : Known, t : Summary, shares : Map[String, Json]) -> Json raise {
+fn thread_view(db : @sql.Db, known : Known, t : Summary, shares : Map[String, Json], openers : Map[String, Json]) -> Json raise {
   let id = field(t.thread, "id")
   let names = known.author_names(db, id)
   let v = listed_thread_json(t.thread)
@@ -274,6 +292,12 @@ fn thread_view(db : @sql.Db, known : Known, t : Summary, shares : Map[String, Js
     }
   }
   v["xshare"] = shares.get(share_key(t)).unwrap_or(Json::null())
+  for mk in thread_keys(t) {
+    if openers.get(mk) is Some(op) {
+      v["opener"] = op
+      break
+    }
+  }
   Json::object(v)
 }
 
@@ -301,7 +325,18 @@ fn thread_views(db : @sql.Db, known : Known, viewer : Json, session : String?) -
     raise Refused(503, cc_sessions_pending + Json::array(missing).stringify())
   }
   let shares = shares_of(db, visible.map(share_key), known.now)
-  visible.map(t => thread_view(db, known, t, shares)) catch { e => raise e }
+  let opener_keys : Array[String] = []
+  let opener_seen : Set[String] = Set::new()
+  for t in visible {
+    for k in thread_keys(t) {
+      if !opener_seen.contains(k) {
+        opener_seen.add(k)
+        opener_keys.push(k)
+      }
+    }
+  }
+  let openers = openers_of(db, Some(opener_keys))
+  visible.map(t => thread_view(db, known, t, shares, openers)) catch { e => raise e }
 }
 
 ///|
@@ -371,7 +406,7 @@ pub fn thread_of(db : @sql.Db, host : @host.Host, data : String, sep : String, a
     raise Refused(404, "unknown thread \{js_text(n)}")
   }
   let known = Known::of(host, data, sep, ask)
-  thread_view(db, known, found, shares_of(db, [share_key(found)], known.now))
+  thread_view(db, known, found, shares_of(db, [share_key(found)], known.now), openers_of(db, Some(thread_keys(found))))
 }
 
 ///|

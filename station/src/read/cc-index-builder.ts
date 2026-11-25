@@ -7,7 +7,7 @@ export class CcIndexBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("cc-index", { binary, config: options.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "cc-index", "--db", path] },
+      { binary: () => resolveReaderSelection("cc-index", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "cc-index", "--db", path] },
       "session",
       "session conversation preparation",
       (key, cancel) => ({

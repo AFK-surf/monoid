@@ -975,8 +975,8 @@ final class CoreHost {
         return got[0] instanceof android.hardware.biometrics.BiometricPrompt.CryptoObject c ? c : crypto;
     }
 
-    /** The app's context (a push's core runs with no activity). */
-    private static android.content.Context context() {
+    /** The app's context (a push's core runs with no activity; also read by android_core.c for iroh's Android DNS). */
+    static android.content.Context context() {
         return StillfailApp.app;
     }
 

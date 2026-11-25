@@ -919,8 +919,10 @@ fn looks_frame(c : Ctx, t : Double) -> Double {
   c.wants_frame = false
   c.cycling = false
   c.wake_at = looks_base.wake
+  wake_at_loc.val = if looks_base.wake >= 0.0 { looks_base.wake_by } else { "" }
   if paint_base.wake >= 0.0 && (c.wake_at < 0.0 || paint_base.wake < c.wake_at) {
     c.wake_at = paint_base.wake
+    wake_at_loc.val = "paint_base"
   }
   // (and the moments the rows kept wait for: kept_part.mbt's KeptClock)
   dues_wake(c)
@@ -966,6 +968,7 @@ fn paint_frame(c : Ctx, t : Double) -> Double {
   c.frame_by = None
   c.wake_by = None
   c.wake_at = looks_base.wake
+  wake_at_loc.val = if looks_base.wake >= 0.0 { looks_base.wake_by } else { "" }
   dues_wake(c)
   paint_watch_of().read(fn() { frame_paint(c, paint_base.root, alone=true) })
   c.t_build = 0.0

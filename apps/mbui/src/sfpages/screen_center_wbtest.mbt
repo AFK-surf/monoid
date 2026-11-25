@@ -518,3 +518,76 @@ test "控制中心's 麦克风: there driving a screen with a virtual microphone
   shut(r)
   screen_done(r.t)
 }
+
+///|
+test "控制中心's 跨系统快捷键映射 & ⌃ 保留为 Ctrl: default on, toggleable, keepCtrl only on Mac->non-Apple while keyMap on" {
+  let r = screen_rig(w=1280.0, h=800.0, platform=0, os="Windows 11 Pro")
+  let title = tr("web-pages.screen.keyMap")
+  let keep = tr("web-pages.screen.keepCtrl")
+  center_opened(r)
+  assert_eq(r.t.audit(), [])
+  assert_true(r.t.find(title) is Some(_))
+  assert_true(r.t.find(keep) is Some(_))
+  assert_eq(r.t.all(Switch, checked=On).filter(fn(s) { s.label == title }).length(), 1)
+  assert_eq(r.t.all(Switch, checked=On).filter(fn(s) { s.label == keep }).length(), 1)
+  // Toggle keepCtrl OFF -> prefs.set { screenKeepCtrl: "off" }
+  r.tap_label(keep)
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(r.keep_ctrl.untracked(), "off")
+  assert_eq(r.t.all(Switch, checked=Off).filter(fn(s) { s.label == keep }).length(), 1)
+  assert_eq(field(r.told("prefs.set").last(), "screenKeepCtrl"), Some(Json::string("off")))
+  // Toggle keepCtrl ON -> prefs.set { screenKeepCtrl: null }
+  r.tap_label(keep)
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(r.keep_ctrl.untracked(), "")
+  assert_eq(r.t.all(Switch, checked=On).filter(fn(s) { s.label == keep }).length(), 1)
+  assert_eq(field(r.told("prefs.set").last(), "screenKeepCtrl"), Some(Json::null()))
+  // Toggle keyMap OFF -> prefs.set { screenKeyMap: "off" } and keepCtrl hides
+  r.tap_label(title)
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(r.key_map.untracked(), "off")
+  assert_eq(r.t.all(Switch, checked=Off).filter(fn(s) { s.label == title }).length(), 1)
+  assert_true(r.t.find(keep) is None)
+  assert_eq(field(r.told("prefs.set").last(), "screenKeyMap"), Some(Json::string("off")))
+  // Toggle keyMap ON -> prefs.set { screenKeyMap: null } and keepCtrl returns
+  r.tap_label(title)
+  r.t.run_for(@ui.move_most_ms)
+  assert_eq(r.key_map.untracked(), "")
+  assert_eq(r.t.all(Switch, checked=On).filter(fn(s) { s.label == title }).length(), 1)
+  assert_true(r.t.find(keep) is Some(_))
+  assert_eq(field(r.told("prefs.set").last(), "screenKeyMap"), Some(Json::null()))
+  // Only looking -> both hidden
+  shut(r)
+  center_all_said(r, control=false)
+  open_center(r)
+  r.t.run_for(@ui.move_most_ms)
+  assert_true(r.t.find(title) is None)
+  assert_true(r.t.find(keep) is None)
+  shut(r)
+  screen_done(r.t)
+
+  // Windows driving Mac -> keyMap shown, keepCtrl hidden (only applies Mac -> Win/Linux)
+  let win_mac = screen_rig(w=1280.0, h=800.0, platform=3, os="macOS 26")
+  center_opened(win_mac)
+  assert_eq(win_mac.t.audit(), [])
+  assert_true(win_mac.t.find(title) is Some(_))
+  assert_true(win_mac.t.find(keep) is None)
+  shut(win_mac)
+  screen_done(win_mac.t)
+
+  // Same OS (Mac -> Mac) -> hidden
+  let same = screen_rig(w=1280.0, h=800.0, platform=0, os="macOS 26")
+  center_opened(same)
+  assert_true(same.t.find(title) is None)
+  assert_true(same.t.find(keep) is None)
+  shut(same)
+  screen_done(same.t)
+
+  // Touch phone driving Windows -> hidden
+  let touch = screen_rig(os="Windows 11 Pro")
+  center_opened(touch)
+  assert_true(touch.t.find(title) is None)
+  assert_true(touch.t.find(keep) is None)
+  shut(touch)
+  screen_done(touch.t)
+}

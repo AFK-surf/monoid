@@ -51,11 +51,14 @@ fn FakeHost::display_hz(self : FakeHost) -> Double {
 }
 
 ///|
-/// Scripted system input (drive.mbt): tap a matching notification (6), look for one (7), resize the next frame (8), or
-/// let files go on the window as a file manager does (13: fake_drop_drive).
+/// Scripted system input (drive.mbt): tap a matching notification (6), look for one (7), confirm none matches (14),
+/// resize the next frame (8), or let files go on the window as a file manager does (13: fake_drop_drive).
 fn FakeHost::drive(self : FakeHost, kind : Int, text : String) -> Bool {
   if kind == 13 {
     return fake_drop_drive(self, text)
+  }
+  if kind == 14 {
+    return self.find_notice(text) is None
   }
   if kind == 6 || kind == 7 {
     guard self.find_notice(text) is Some(index) else { return false }

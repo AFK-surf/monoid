@@ -66,3 +66,37 @@ test "viewer_steps_node: awake_for controls left and right arrows independently 
   tr.draw()
   assert_eq(steps, [-1, 1], msg="right arrow click dispatches +1")
 }
+
+///|
+test "viewer_steps_node: its viewer saying so, a side goes and comes at once, unreachable the moment it is hidden" {
+  let on = @signals.signal(true)
+  let prev_label = t("web-main.preview.prevKey")
+  let tr = @ui.Tester::tree(
+    fn(root) {
+      viewer_bars_at_once_lend(root, fn(_) { true })
+      let tips_at : Ref[@view.View?] = Ref(None)
+      let tips = TipLayer::new(fn() { tips_at.val })
+      root.box(fn(stage) {
+        stage.grow(Is(1.0)).ground(By(fn() { theme().p.canvas })) |> ignore
+        viewer_steps_node(stage, fn() { true }, fn() { true }, fn(_) { on.get() }, fn(_) { 1.0 }, fn() { false }, fn(_) {  }, tips)
+        |> ignore
+        tips_at.val = Some(stage.box(fn(l) { l.over(Is(true)) |> ignore }))
+      })
+      |> ignore
+    },
+    w=800.0,
+    h=600.0,
+    platform=0,
+    theme=ui_theme_now,
+  )
+  tr.draw()
+  assert_eq(tr.all(Button, label=prev_label).length(), 1, msg="shown")
+  on.set(false)
+  tr.draw()
+  assert_eq(tr.all(Button, label=prev_label).length(), 0, msg="hidden at once: no fade still taking a press")
+  assert_true(tr.at_rest(), msg="hidden at once: nothing left moving")
+  on.set(true)
+  tr.draw()
+  assert_eq(tr.all(Button, label=prev_label).length(), 1, msg="shown again at once")
+  assert_true(tr.at_rest(), msg="shown at once: nothing left moving")
+}

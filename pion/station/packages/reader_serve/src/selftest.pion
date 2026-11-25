@@ -1,0 +1,572 @@
+// Native-linked selftest for `reader_serve` (`--smoke-readops`), exercising `ServeRunner`
+// over a mock `MuxTransport` with an isolated atomic subdir (`fs.mkdir(recursive: false)`).
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "reader_data"
+import "readops_core"
+import "sql_db"
+
+struct MockCall {
+  id : Int64
+  op : String
+  json_str : String
+  payload : Option[Bytes]
+}
+
+struct MockServeEnv {
+  calls : Array[MockCall]
+  stdout : Array[String]
+  events : Array[host_shim::HostEvent]
+  mut ev_head : Int
+  mut now : Int64
+  mut wall : Int64
+}
+
+fn MockServeEnv::new() -> MockServeEnv {
+  MockServeEnv::{
+    calls: [],
+    stdout: [],
+    events: [],
+    ev_head: 0,
+    now: 1000.to_int64(),
+    wall: 1700000000.to_int64() * 1000.to_int64(),
+  }
+}
+
+fn MockServeEnv::transport(self : MockServeEnv) -> builders_core::MuxTransport {
+  builders_core::MuxTransport::{
+    call_async: fn(id : Int64, op : String, json_str : String, payload : Option[Bytes]) -> Unit {
+      self.calls.push(MockCall::{ id: id, op: op, json_str: json_str, payload: payload })
+    },
+    call_sync: fn(_op : String, _json_str : String) -> String { "{\"value\":null}" },
+    write_stdout_line: fn(line : String) -> Bool {
+      self.stdout.push(line)
+      true
+    },
+    write_stdout_frame: fn(_head : Array[(String, base_codec::Json)], _body : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { self.now },
+    wall_ms: fn() -> Int64 { self.wall },
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      if self.ev_head >= self.events.length() {
+        return None
+      }
+      let ev = self.events[self.ev_head]
+      self.ev_head = self.ev_head + 1
+      Some(ev)
+    },
+  }
+}
+
+fn MockServeEnv::push_done(
+  self : MockServeEnv,
+  id : Int64,
+  json : String,
+  bytes : Option[Bytes] = None,
+  error : String = "",
+) -> Unit {
+  self.events.push(
+    host_shim::HostEvent::ShellDone(
+      host_shim::ShellDone::{ id: id, json: json, bytes: bytes, error: error },
+    ),
+  )
+}
+
+fn MockServeEnv::push_stdin(self : MockServeEnv, line : String) -> Unit {
+  self.events.push(host_shim::HostEvent::StdinData((line + "\n").to_bytes()))
+}
+
+fn make_req_bytes(conn_id : Int64, head_json : String, body : String) -> Bytes {
+  let req = (head_json + "\n" + body).to_bytes()
+  let out = Bytes::new(25 + 4 + req.length() + 4)
+  for i in 0..<8 {
+    let shift = ((7 - i) * 8).to_int64()
+    out[i] = ((conn_id >> shift) & 0xFF.to_int64()).to_int() as Byte
+  }
+  let lhdr = be32(req.length().to_int64())
+  out[25] = lhdr[0]
+  out[26] = lhdr[1]
+  out[27] = lhdr[2]
+  out[28] = lhdr[3]
+  for i in 0..<req.length() {
+    out[29 + i] = req[i]
+  }
+  let ehdr = be32(PIPE_END)
+  let base = 29 + req.length()
+  out[base] = ehdr[0]
+  out[base + 1] = ehdr[1]
+  out[base + 2] = ehdr[2]
+  out[base + 3] = ehdr[3]
+  out
+}
+
+fn run_selftest_in(client : builders_core::ShellClient, sub_dir : String) -> Result[Int, String] {
+  let env = MockServeEnv::new()
+  let mux = builders_core::ShellMux::new(env.transport(), start_stdin=true)
+  let reader = reader_data::Reader::new(client, sub_dir, "/")
+  let runner = ServeRunner::new(mux, reader, sub_dir + "/serve.sock", fn(_m : String) -> Unit {})
+  runner.start()
+  if env.calls.length() != 1 || env.calls[0].op != "unix.listen" {
+    reader.close()
+    return Err("reader_serve selftest: expected unix.listen")
+  }
+  env.push_done(env.calls[0].id, "{\"id\":10}")
+  let _ = runner.step(0.to_int64())
+  if env.stdout.length() != 1 || !str_contains(env.stdout[0], "\"listening\"") {
+    reader.close()
+    return Err("reader_serve selftest: expected listening line")
+  }
+  env.push_stdin(
+    "{\"set\":{\"words\":{\"en\":{\"updateApp\":\"Update app\"}},\"oldestCore\":5000,\"countedFrom\":1000,\"movedFromBuild\":9000,\"build\":\"0.1.9500\",\"runtimes\":[\"claude\"]},\"wall\":1800000000000}",
+  )
+  let _ = runner.step(0.to_int64())
+  env.now = 1250.to_int64()
+  if runner.now() != 1800000000.to_int64() * 1000.to_int64() + 250.to_int64() {
+    reader.close()
+    return Err("reader_serve selftest: synthetic wall mismatch")
+  }
+  // Accept stream + feed request before viewer arrives
+  let accept_id = env.calls[1].id
+  env.push_done(accept_id, "{\"id\":20}")
+  let _ = runner.step(0.to_int64())
+  let read_id = env.calls[env.calls.length() - 1].id
+  let req1 = make_req_bytes(
+    7.to_int64(),
+    "{\"method\":\"GET\",\"path\":\"/admin/api/chats\",\"headers\":{\"stillfail-build\":\"0.1.8999\",\"stillfail-lang\":\"en\"}}",
+    "",
+  )
+  env.push_done(read_id, "{}", bytes=Some(req1))
+  let _ = runner.step(0.to_int64())
+  // Viewer arrives with floor=9000 -> 426 update
+  env.push_stdin("{\"viewer\":{\"conn\":7,\"viewer\":{\"email\":\"a@b\"},\"moved\":true,\"floor\":9000}}")
+  let _ = runner.step(0.to_int64())
+  let last_call = env.calls[env.calls.length() - 1]
+  if last_call.op != "tcp.write" {
+    reader.close()
+    return Err("reader_serve selftest: expected tcp.write for 426")
+  }
+  match last_call.payload {
+    Some(p) => {
+      let s = sql_db::decode_utf8_lossy_bytes(p)
+      if !str_contains(s, "\"status\":426") || !str_contains(s, "\"update\":true") {
+        reader.close()
+        return Err("reader_serve selftest: unexpected 426 body: " + s)
+      }
+    }
+    None => {
+      reader.close()
+      return Err("reader_serve selftest: missing 426 payload")
+    }
+  }
+  env.push_done(last_call.id, "{}")
+  let _ = runner.step(0.to_int64())
+  if runner.active_streams() != 0 {
+    reader.close()
+    return Err("reader_serve selftest: stream not cleaned up")
+  }
+
+  // Test 2: zstd.stream open failure sends 500 {"error":"read failed"} frame AND emits {"stop": req_id}
+  let accept_id2 = env.calls[env.calls.length() - 2].id
+  // Find latest tcp.accept call
+  let mut latest_accept = accept_id2
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.accept" {
+      latest_accept = env.calls[i].id
+    }
+  }
+  env.push_done(latest_accept, "{\"id\":21}")
+  let _ = runner.step(0.to_int64())
+  let mut read_id2 = 0.to_int64()
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.read" {
+      read_id2 = env.calls[i].id
+    }
+  }
+  // Connection 8 with viewer ready, requesting SSE /admin/api/events with accept-encoding: zstd
+  env.push_stdin("{\"viewer\":{\"conn\":8,\"viewer\":{\"email\":\"a@b\",\"workspace\":\"ws\"},\"moved\":false}}")
+  let _ = runner.step(0.to_int64())
+  let req2 = make_req_bytes(
+    8.to_int64(),
+    "{\"method\":\"GET\",\"path\":\"/admin/api/events?shared=1\",\"headers\":{\"accept-encoding\":\"zstd\",\"stillfail-build\":\"0.1.9500\",\"stillfail-runtimes\":\"claude\"}}",
+    "",
+  )
+  env.push_done(read_id2, "{}", bytes=Some(req2))
+  let _ = runner.step(0.to_int64())
+  // Expect fallback stdout message with stream:true
+  let mut fb_req_id = 0
+  for i in 0..<env.stdout.length() {
+    if str_contains(env.stdout[i], "\"stream\":true") {
+      match sql_db::parse_json(env.stdout[i]) {
+        base_codec::JsonParseResult::Ok(j) => {
+          match builders_core::json_get_last(j, "fallback") {
+            Some(base_codec::Json::Num(n, _)) => fb_req_id = n.to_int()
+            _ => ()
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  if fb_req_id <= 0 {
+    reader.close()
+    return Err("reader_serve selftest: expected relay fallback request")
+  }
+  // Node replies with 200 text/event-stream -> runner calls zstd.stream
+  env.push_stdin(
+    "{\"answered\":" + fb_req_id.to_string() + ",\"status\":200,\"headers\":{\"content-type\":\"text/event-stream\"}}",
+  )
+  let _ = runner.step(0.to_int64())
+  let zstd_call = env.calls[env.calls.length() - 1]
+  if zstd_call.op != "zstd.stream" {
+    reader.close()
+    return Err("reader_serve selftest: expected zstd.stream call, got " + zstd_call.op)
+  }
+  // Fail zstd.stream -> expect BOTH {"stop": fb_req_id} AND tcp.write 500 {"error":"read failed"}
+  env.push_done(zstd_call.id, "", error="zstd init failed")
+  let _ = runner.step(0.to_int64())
+  let mut saw_stop = false
+  for i in 0..<env.stdout.length() {
+    if str_contains(env.stdout[i], "\"stop\":" + fb_req_id.to_string()) {
+      saw_stop = true
+    }
+  }
+  if !saw_stop {
+    reader.close()
+    return Err("reader_serve selftest: zstd.stream open failure must emit stop")
+  }
+  let err_write = env.calls[env.calls.length() - 1]
+  if err_write.op != "tcp.write" {
+    reader.close()
+    return Err("reader_serve selftest: zstd.stream open failure must write 500 frame, got " + err_write.op)
+  }
+  match err_write.payload {
+    Some(p) => {
+      let s = sql_db::decode_utf8_lossy_bytes(p)
+      if !str_contains(s, "\"status\":500") || !str_contains(s, "\"read failed\"") {
+        reader.close()
+        return Err("reader_serve selftest: unexpected 500 payload: " + s)
+      }
+    }
+    None => {
+      reader.close()
+      return Err("reader_serve selftest: missing 500 payload")
+    }
+  }
+  env.push_done(err_write.id, "{}")
+  let _ = runner.step(0.to_int64())
+  if runner.active_streams() != 0 {
+    reader.close()
+    return Err("reader_serve selftest: zstd.stream failure stream not cleaned up")
+  }
+
+  // Test 3: Deterministic single-shot viewer: null revocation while stream is in PHASE_WAIT_VIEWER
+  let mut accept_wait_v = 0.to_int64()
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.accept" {
+      accept_wait_v = env.calls[i].id
+    }
+  }
+  env.push_done(accept_wait_v, "{\"id\":22}")
+  let _ = runner.step(0.to_int64())
+  let mut read_wait_v = 0.to_int64()
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.read" {
+      read_wait_v = env.calls[i].id
+    }
+  }
+  let req_wait = make_req_bytes(
+    9.to_int64(),
+    "{\"method\":\"GET\",\"path\":\"/admin/api/sessions\",\"headers\":{\"stillfail-build\":\"0.1.9500\",\"stillfail-lang\":\"en\"}}",
+    "",
+  )
+  env.push_done(read_wait_v, "{}", bytes=Some(req_wait))
+  let _ = runner.step(0.to_int64())
+  if runner.active_streams() != 1 {
+    reader.close()
+    return Err("reader_serve selftest: stream should be queued in PHASE_WAIT_VIEWER")
+  }
+  let calls_before_revoke = env.calls.length()
+  // Single viewer: null line (no retry): must immediately close sock 22 and empty waiting queue
+  env.push_stdin("{\"viewer\":{\"conn\":9,\"viewer\":null}}")
+  let _ = runner.step(0.to_int64())
+  if runner.active_streams() != 0 {
+    reader.close()
+    return Err("reader_serve selftest: single viewer:null must immediately clear waiting stream")
+  }
+  let mut saw_close_22 = false
+  for i in calls_before_revoke..<env.calls.length() {
+    if env.calls[i].op == "tcp.close" && str_contains(env.calls[i].json_str, "22") {
+      saw_close_22 = true
+    }
+  }
+  if !saw_close_22 {
+    reader.close()
+    return Err("reader_serve selftest: single viewer:null must emit tcp.close for sock 22")
+  }
+
+  // Test 4: Genuine SQLITE_BUSY write contention on reader_serve write path + clean retry after COMMIT
+  let db_path = sub_dir + "/stillfail.db"
+  let ext_db = match sql_db::Db::create(db_path, wait_ms=250) {
+    Ok(d) => d
+    Err(e) => {
+      reader.close()
+      return Err("reader_serve selftest: create db failed: " + e.message)
+    }
+  }
+  let init_sql = "PRAGMA journal_mode = WAL; " +
+  "CREATE TABLE threads (id INTEGER PRIMARY KEY, surface TEXT NOT NULL, channel TEXT NOT NULL, thread_ts TEXT NOT NULL, title TEXT); " +
+  "CREATE TABLE sessions (key TEXT PRIMARY KEY, ws TEXT); " +
+  "CREATE TABLE thread_sessions (thread INTEGER NOT NULL, session TEXT NOT NULL); " +
+  "CREATE TABLE handed_over (session TEXT, station TEXT, ws TEXT, thread INTEGER, there INTEGER, at INTEGER); " +
+  "CREATE TABLE reads (viewer TEXT NOT NULL, thread INTEGER NOT NULL, n INTEGER NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (viewer, thread)); " +
+  "INSERT INTO threads (id, surface, channel, thread_ts, title) VALUES (1, 'chat', 'CHAT', 't1', 'T1');"
+  match ext_db.exec(init_sql) {
+    Ok(_) => ()
+    Err(e) => {
+      ext_db.close()
+      reader.close()
+      return Err("reader_serve selftest: init schema failed: " + e.message)
+    }
+  }
+  match reader.db_now() {
+    Ok(wdb) => {
+      match wdb.exec("PRAGMA busy_timeout = 50") {
+        Ok(_) => ()
+        Err(e) => {
+          ext_db.close()
+          reader.close()
+          return Err("reader_serve selftest: set busy_timeout failed: " + e.message)
+        }
+      }
+    }
+    Err(e) => {
+      ext_db.close()
+      reader.close()
+      return Err("reader_serve selftest: reader.db_now failed: " + readops_core::read_error_message(e))
+    }
+  }
+  // Hold an external BEGIN IMMEDIATE write lock via ext_db.tx_err while runner executes PUT /threads/1/read
+  let busy_res : Result[Unit, String] = ext_db.tx_err(
+    fn(_tx : sql_db::Db) -> Result[Unit, String] {
+      let mut acc_busy = 0.to_int64()
+      for i in 0..<env.calls.length() {
+        if env.calls[i].op == "tcp.accept" {
+          acc_busy = env.calls[i].id
+        }
+      }
+      env.push_done(acc_busy, "{\"id\":23}")
+      let _ = runner.step(0.to_int64())
+      let mut rd_busy = 0.to_int64()
+      for i in 0..<env.calls.length() {
+        if env.calls[i].op == "tcp.read" {
+          rd_busy = env.calls[i].id
+        }
+      }
+      let req_busy = make_req_bytes(
+        8.to_int64(),
+        "{\"method\":\"PUT\",\"path\":\"/admin/api/threads/1/read\",\"headers\":{\"stillfail-build\":\"0.1.9500\",\"stillfail-runtimes\":\"claude\",\"stillfail-lang\":\"en\"}}",
+        "{\"n\":3}",
+      )
+      env.push_done(rd_busy, "{}", bytes=Some(req_busy))
+      let _ = runner.step(0.to_int64())
+      let busy_write = env.calls[env.calls.length() - 1]
+      if busy_write.op != "tcp.write" {
+        return Err("reader_serve selftest: expected tcp.write 500 on SQLITE_BUSY, got " + busy_write.op)
+      }
+      match busy_write.payload {
+        Some(p) => {
+          let s = sql_db::decode_utf8_lossy_bytes(p)
+          if !str_contains(s, "\"status\":500") {
+            return Err("reader_serve selftest: expected 500 on SQLITE_BUSY, got: " + s)
+          }
+        }
+        None => return Err("reader_serve selftest: missing 500 payload on SQLITE_BUSY")
+      }
+      env.push_done(busy_write.id, "{}")
+      let _ = runner.step(0.to_int64())
+      Ok(())
+    },
+    fn(e : sql_db::SqlError) -> String { e.message },
+  )
+  match busy_res {
+    Ok(_) => ()
+    Err(m) => {
+      ext_db.close()
+      reader.close()
+      return Err(m)
+    }
+  }
+  // Confirm zero rows left in `reads` after SQLITE_BUSY failure
+  match ext_db.all("SELECT n FROM reads WHERE viewer = 'a@b' AND thread = 1", []) {
+    Ok(rs) => {
+      if rs.length() != 0 {
+        ext_db.close()
+        reader.close()
+        return Err("reader_serve selftest: expected 0 reads rows after SQLITE_BUSY")
+      }
+    }
+    Err(e) => {
+      ext_db.close()
+      reader.close()
+      return Err("reader_serve selftest: verify empty reads failed: " + e.message)
+    }
+  }
+  // Lock is now released (COMMITted): re-send identical write -> must succeed 200 and persist n=3
+  let mut acc_ok = 0.to_int64()
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.accept" {
+      acc_ok = env.calls[i].id
+    }
+  }
+  env.push_done(acc_ok, "{\"id\":24}")
+  let _ = runner.step(0.to_int64())
+  let mut rd_ok = 0.to_int64()
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.read" {
+      rd_ok = env.calls[i].id
+    }
+  }
+  let req_ok = make_req_bytes(
+    8.to_int64(),
+    "{\"method\":\"PUT\",\"path\":\"/admin/api/threads/1/read\",\"headers\":{\"stillfail-build\":\"0.1.9500\",\"stillfail-runtimes\":\"claude\",\"stillfail-lang\":\"en\"}}",
+    "{\"n\":3}",
+  )
+  env.push_done(rd_ok, "{}", bytes=Some(req_ok))
+  let _ = runner.step(0.to_int64())
+  let ok_write = env.calls[env.calls.length() - 1]
+  if ok_write.op != "tcp.write" {
+    ext_db.close()
+    reader.close()
+    return Err("reader_serve selftest: expected tcp.write 200 after lock release, got " + ok_write.op)
+  }
+  match ok_write.payload {
+    Some(p) => {
+      let s = sql_db::decode_utf8_lossy_bytes(p)
+      if !str_contains(s, "\"status\":200") {
+        ext_db.close()
+        reader.close()
+        return Err("reader_serve selftest: expected 200 after lock release, got: " + s)
+      }
+    }
+    None => {
+      ext_db.close()
+      reader.close()
+      return Err("reader_serve selftest: missing 200 payload after lock release")
+    }
+  }
+  env.push_done(ok_write.id, "{}")
+  let _ = runner.step(0.to_int64())
+  match ext_db.all("SELECT n FROM reads WHERE viewer = 'a@b' AND thread = 1", []) {
+    Ok(rs) => {
+      if rs.length() != 1 || sql_db::row_int(rs[0], "n") != 3 {
+        ext_db.close()
+        reader.close()
+        return Err("reader_serve selftest: expected persisted reads.n=3 after lock release")
+      }
+    }
+    Err(e) => {
+      ext_db.close()
+      reader.close()
+      return Err("reader_serve selftest: verify persisted reads failed: " + e.message)
+    }
+  }
+  ext_db.close()
+
+  // Test 5: Mock accept transient error containing "closed" retries after 100ms & recovers;
+  // permanent error ("no handle 10") exits cleanly.
+  let mut accept_before_transient = 0.to_int64()
+  for i in 0..<env.calls.length() {
+    if env.calls[i].op == "tcp.accept" {
+      accept_before_transient = env.calls[i].id
+    }
+  }
+  let calls_before = env.calls.length()
+  env.push_done(accept_before_transient, "", error="connection closed by peer")
+  let _ = runner.step(0.to_int64())
+  if !runner.is_running() {
+    reader.close()
+    return Err("reader_serve selftest: transient 'closed' accept error must NOT exit")
+  }
+  // Advance clock by 100ms -> runner retries tcp.accept
+  env.now = env.now + SERVE_ACCEPT_RETRY_MS
+  let _ = runner.step(0.to_int64())
+  if env.calls.length() <= calls_before || env.calls[env.calls.length() - 1].op != "tcp.accept" {
+    reader.close()
+    return Err("reader_serve selftest: expected retry tcp.accept after transient error")
+  }
+  let retry_accept_id = env.calls[env.calls.length() - 1].id
+  // Permanent error ("no handle 10") must stop runner cleanly with exit_code 0
+  env.push_done(retry_accept_id, "", error="no handle 10")
+  let _ = runner.step(0.to_int64())
+  reader.close()
+  if runner.is_running() || runner.exit_code() != 0 {
+    return Err("reader_serve selftest: permanent 'no handle' accept error must exit 0")
+  }
+  Ok(7)
+}
+
+pub fn run_selftest(temp_dir : String) -> Result[Int, String] {
+  let started_shell = if !host_shim::shell_active() {
+    if !host_shim::start(temp_dir, false) {
+      return Err("reader_serve selftest host_shim::start failed")
+    }
+    true
+  } else {
+    false
+  }
+  let client = builders_core::ShellClient::new()
+  let pid_str = host_shim::pid().to_string()
+  let wall_str = host_shim::wall_ms().to_string()
+  let mut sub_dir = ""
+  let mut created = false
+  let mut seq = 0
+  while seq < 100 {
+    let candidate = temp_dir + "/reader_serve_selftest-" + pid_str + "-" + wall_str + "-" + seq.to_string()
+    match client.shell_sync_json(
+      "fs.mkdir",
+      base_codec::json_obj([
+        ("path", base_codec::json_str(candidate)),
+        ("recursive", base_codec::json_bool(false)),
+      ]),
+    ) {
+      Ok(_) => {
+        sub_dir = candidate
+        created = true
+        break
+      }
+      Err(e) => {
+        match client.shell_sync_json("fs.stat", base_codec::json_obj([("path", base_codec::json_str(candidate))])) {
+          Ok(base_codec::Json::Null) => {
+            if started_shell {
+              host_shim::stop()
+            }
+            return Err("reader_serve selftest fs.mkdir failed: " + e.message)
+          }
+          Ok(_) => seq = seq + 1
+          Err(_) => {
+            if started_shell {
+              host_shim::stop()
+            }
+            return Err("reader_serve selftest fs.mkdir failed: " + e.message)
+          }
+        }
+      }
+    }
+  }
+  let res = if created {
+    run_selftest_in(client, sub_dir)
+  } else {
+    Err("reader_serve selftest could not allocate unique subdir")
+  }
+  if created {
+    let _ = client.shell_sync_json(
+      "fs.remove",
+      base_codec::json_obj([("path", base_codec::json_str(sub_dir)), ("recursive", base_codec::json_bool(true))]),
+    )
+  }
+  if started_shell {
+    host_shim::stop()
+  }
+  res
+}

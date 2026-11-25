@@ -707,8 +707,10 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
   }
   match check(
     readops_chats::mb_json_eq(readops_core::json_val_or_null(c0, "router"), base_codec::json_bool(true)) &&
-    readops_chats::mb_json_eq(readops_core::json_val_or_null(c0, "surface"), base_codec::json_str("stillfail")),
-    "outflow_chats router flag & chat->stillfail surface",
+    readops_chats::mb_json_eq(readops_core::json_val_or_null(c0, "surface"), base_codec::json_str("stillfail")) &&
+    sql_db::stringify_json(readops_core::json_val_or_null(c0, "routerConnects")) == "[\"c-slack\"]" &&
+    sql_db::stringify_json(readops_core::json_val_or_null(c0, "participants")) == "[\"alice@acme.com\"]",
+    "outflow_chats router flag, routerConnects, participants & chat->stillfail surface",
     passed,
   ) {
     Ok(_) => ()
@@ -762,6 +764,56 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     None => false
   }
   match check(page2_ok, "outflow_chats page2 cursor pagination & failed attention first-line note", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // #8625 R1: comma_router_connects + comma_task_participants tables present (recorded merge, /cid suffix dedup,
+  // shortlex routerConnects order ["zz","abc","st1/c-slack"], and connectParticipants output).
+  let comma_stmts : Array[String] = [
+    "CREATE TABLE comma_router_connects(thread INTEGER, connect TEXT, at INTEGER)",
+    "CREATE TABLE comma_task_participants(thread INTEGER, connect TEXT, email TEXT, at INTEGER)",
+    "INSERT INTO comma_router_connects(thread, connect, at) VALUES (10, 'st1/c-slack', 1001)",
+    "INSERT INTO comma_router_connects(thread, connect, at) VALUES (10, 'zz', 1002)",
+    "INSERT INTO comma_router_connects(thread, connect, at) VALUES (10, 'abc', 1003)",
+    "INSERT INTO comma_task_participants(thread, connect, email, at) VALUES (10, 'st1/c-slack', 'Bob@Acme.com', 1001)",
+    "INSERT INTO comma_task_participants(thread, connect, email, at) VALUES (10, 'zz', 'carol@acme.com', 1002)",
+  ]
+  for i in 0..<comma_stmts.length() {
+    match db_exec_ok(db, comma_stmts[i], []) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let oc_comma = match outflow_chats(
+    db,
+    client,
+    root,
+    "/",
+    base_codec::json_obj([
+      (
+        "args",
+        base_codec::json_obj([
+          ("since", base_codec::json_num(0.0)),
+          ("limit", base_codec::json_num(1.0)),
+          ("ws", base_codec::json_obj([("workspace", base_codec::json_str("ws1")), ("home", base_codec::json_bool(false))])),
+        ]),
+      ),
+    ]),
+  ) {
+    Ok(v) => v
+    Err(e) => return Err("outflow_chats comma tables failed: " + readops_core::read_error_message(e))
+  }
+  let oc_comma_list = match readops_core::json_val(oc_comma, "chats") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+  match check(
+    oc_comma_list.length() == 1 &&
+    sql_db::stringify_json(readops_core::json_val_or_null(oc_comma_list[0], "routerConnects")) == "[\"zz\",\"abc\",\"st1/c-slack\"]" &&
+    sql_db::stringify_json(readops_core::json_val_or_null(oc_comma_list[0], "connectParticipants")) == "{\"st1/c-slack\":[\"bob@acme.com\"],\"zz\":[\"carol@acme.com\"]}",
+    "outflow_chats comma_router_connects (/cid dedup + shortlex order) & comma_task_participants (#8625)",
+    passed,
+  ) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }

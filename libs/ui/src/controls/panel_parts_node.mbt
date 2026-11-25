@@ -638,7 +638,14 @@ pub fn panel_switch_row_node(
   let noted = fn() { note() != "" }
   if look_node(parent) is Wide {
     parent.box(made_for=loc, fn(b) {
-      style_node(b, fn() { panel_row_in_node(b) })
+      style_node(b, fn() {
+        let base = panel_row_in_node(b)
+        if panel_in_of(b).small && noted() {
+          base.then(@ui.style(py=room(menu_row_over)))
+        } else {
+          base
+        }
+      })
       wide_control_row_node(b, title, note, None, control, looks=(fn() { setting_title() }, fn() { theme().rows.note }), first_line=true, first_line_while=noted, loc~)
     })
     |> ignore

@@ -2422,7 +2422,7 @@ test "小屏, a chat's composer: the bottom bar's liquid glass and outside shado
     guard composer_glass_drawn(t) is Some((_, blur, bezel, refraction, drawn_shadow)) else {
       fail("\{name}: no composer's glass at rest")
     }
-    assert_eq((blur, bezel, refraction, drawn_shadow), (2.2, 20.0, 28.0, want_shadow), msg="\{name}: at rest")
+    assert_eq((blur, bezel, refraction, drawn_shadow), (1.2, 20.0, 28.0, want_shadow), msg="\{name}: at rest")
     // composer-top floating glass capsule on 小屏 also casts glass_control_shadow() with shadow_outside=true
     let ch = fn(v : Double) { (v * 255.0).round().to_int64() }
     let top_capsule_shadows = t
@@ -2463,7 +2463,7 @@ test "小屏, a chat's composer: the bottom bar's liquid glass and outside shado
       guard composer_glass_drawn(t) is Some((_, blur, _, _, _)) else {
         fail("\{name}: no composer's glass opening")
       }
-      assert_true(blur > 2.1 && blur < 4.0, msg="\{name}: its blur opening \{blur}")
+      assert_true(blur > 1.2 && blur < 4.0, msg="\{name}: its blur opening \{blur}")
     }
     t.run_for(@ui.move_most_ms)
     guard composer_glass_drawn(t) is Some((_, blur, bezel, refraction, drawn_shadow)) else {

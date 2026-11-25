@@ -165,6 +165,35 @@ test "传输: what is brought, then the downloads, then the copies, each what it
 }
 
 ///|
+test "传输: what waits after the others is paused, its size said, and its ▶ starts it (fill.start); its key says how big and how fast all of it comes" {
+  for screen in [(2, false), (0, true)] {
+    let about = "platform \{screen.0}, wide \{screen.1}"
+    let calls : Array[(String, Json)] = []
+    let t = transfers_up(calls, platform=screen.0, wide=screen.1)
+    let words = fn() { t.words().map(fn(w) { w.0 }).join("|") }
+    // the recording after the video: 已暂停, how big, a ▶ of its own; the video and the download coming say how fast
+    assert_true(t.find("后台缓存已暂停 · 11% · 42.0 MB") is Some(_), msg="\{about}: \{words()}")
+    assert_true(t.find("后台缓存 45% · 186.0 MB · 2.1 MB/s") is Some(_), msg="\{about}: \{words()}")
+    assert_true(t.find("正在下载 60% · 48.0 MB · 3.4 MB/s") is Some(_), msg="\{about}: \{words()}")
+    // what comes and goes in all, as its key says it (under the open list): five, how far, how big, how fast (the
+    // download and the video)
+    let key = "5 个传输 · 30% · 596.0 MB · 5.5 MB/s"
+    assert_true(t.semantics().iter().any(fn(n) { n.label == key }), msg="\{about}: \{t.semantics().filter(fn(n) { n.label.contains("传输") }).map(fn(n) { n.label }).join("|")}")
+    assert_eq(t.all(Button, label="开始缓存").length(), 1, msg=about)
+    let (x, y) = button_mid(t, "开始缓存")
+    t.tap(x, y)
+    t.draw()
+    let started = calls_named(calls, "fill.start")
+    assert_eq(started.length(), 1, msg=about)
+    assert_true(text(Some(started[0]), "id").has_suffix("周会录音.m4a"), msg="\{about}: \{Repr(started)}")
+    // started: loading at once, no longer paused
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.all(Button, label="开始缓存").length(), 0, msg=about)
+    assert_true(t.find("正在加载 11% · 42.0 MB") is Some(_), msg="\{about}: \{words()}")
+  }
+}
+
+///|
 test "传输: each key asks the core what it says; 显示 goes to the copy's folder and closes the list" {
   for screen in [(2, false), (0, true)] {
     let about = "platform \{screen.0}, wide \{screen.1}"

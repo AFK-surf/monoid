@@ -1,7 +1,7 @@
 // The record of what the connections do (record.ts): its lines' form, and nothing built while it is off.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { dialLine, record, recordDht, recording, said, stationTag, type Recording } from "../src/record.ts";
+import { dialLine, record, recordDht, recordInbound, recording, said, stationTag, type Recording } from "../src/record.ts";
 
 test("a_dial_is_one_line_its_stages_from_its_start", () => {
   assert.equal(
@@ -78,4 +78,38 @@ test("the_dht_s_lines_recorded_each_with_how_long_before_kept_until_off_and_off_
   assert.deepEqual(keeps, [true, true, false]);
   // a host whose endpoints look nothing up on the DHT
   recordDht(host, {});
+});
+
+test("inbound_traffic_tallied_by_station_and_kind_while_recording_and_cleared_when_off", () => {
+  let on = false;
+  let now = 1_000;
+  const lines: string[] = [];
+  const host = { recorder: { on: () => on, line: (l: string) => lines.push(l) }, nowMs: () => now };
+  recordInbound(host, "01M3HN/021f71b0 sse:session", 2048, 1);
+  now += 6_000;
+  recordInbound(host, "01M3HN/021f71b0 sse:session", 2048, 1);
+  assert.deepEqual(lines, []);
+
+  on = true;
+  recordInbound(host, "01M3HN/021f71b0 sse:session", 2048, 1);
+  recordInbound(host, "01M3KM/d0dfed2e req:/overview", 512, 1);
+  now += 3_000;
+  recordInbound(host, "01M3HN/021f71b0 sse:session", 1024, 2);
+  assert.deepEqual(lines, []);
+
+  now += 2_000;
+  recordInbound(host, "01M3HN/6969820d sse:overview", 1536, 1);
+  assert.deepEqual(lines, [
+    "core in: span=5s total=5.0KB/5 01M3HN/021f71b0 sse:session=3.0KB/3 | 01M3HN/6969820d sse:overview=1.5KB/1 | 01M3KM/d0dfed2e req:/overview=512B/1",
+  ]);
+
+  // Turning off discards buffered counts so re-enabling starts fresh.
+  now += 1_000;
+  recordInbound(host, "01M3HN/021f71b0 sse:session", 4096, 1);
+  on = false;
+  recordInbound(host, "01M3HN/021f71b0 sse:session", 4096, 1);
+  on = true;
+  now += 10_000;
+  recordInbound(host, "01M3KM/d0dfed2e sse:host", 256, 1);
+  assert.equal(lines.length, 1);
 });

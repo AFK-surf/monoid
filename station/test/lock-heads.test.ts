@@ -75,7 +75,7 @@ test("by the heads, a member's device, one taken out and one left out are given 
   assert.deepEqual(byHeads(c, other, { logs: [w.alice.genesis], bodies: [...w.alice.bodies.keys()] }), { logs: [], bodies: [], lacking: [] }, "another workspace's device, naming them all: nothing");
 });
 
-test("while off, by the heads only to a device the list names, as the whole reads; none to one that brought no proof", () => {
+test("while off, by the heads any admitted member of the workspace gets logs and bodies as the whole reads; another workspace's gets nothing", () => {
   const w = world();
   handover(w);
   const c = station(w);
@@ -86,9 +86,12 @@ test("while off, by the heads only to a device the list names, as the whole read
   const named = same(c, viewerOf("carol", w.carol.app), "carol's app, named by the list");
   assert.ok(named.logs.length >= 3 && named.bodies.length > 0);
   const stranger = same(c, viewerOf("carol", { base: ed() }), "a device the list does not name");
-  assert.deepEqual(stranger, { logs: [], bodies: [], lacking: [] });
+  assert.deepEqual(stranger, named, "new device receives logs and bodies while off");
   const { lockDevice: _, ...noProof } = viewerOf("carol", w.carol.app);
-  assert.deepEqual(same(c, noProof, "no proof", { logs: [w.alice.genesis], bodies: [...w.alice.bodies.keys()] }), { logs: [], bodies: [], lacking: [] });
+  assert.deepEqual(same(c, noProof, "no proof", { logs: [w.alice.genesis], bodies: [...w.alice.bodies.keys()] }), named, "admitted member without lock proof receives logs and bodies while off");
+  const dan = new Log("dan");
+  const other = viewerOf("dan", dan.app, "member", WS2);
+  assert.deepEqual(same(c, other, "another workspace's device while off", { logs: [w.alice.genesis], bodies: [...w.alice.bodies.keys()] }), { logs: [], bodies: [], lacking: [] });
 });
 
 test("before the chain moved, by the heads the logs its `person` entries bind, as GET /lock/logs; none bound in another workspace", () => {

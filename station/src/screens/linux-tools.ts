@@ -29,8 +29,6 @@ function run(program: string, args: string[], o: Running): Promise<{ stdout: str
       if (said > most) end(new Error(`${program} said more than ${most} bytes`));
       else if (keep) stdout += chunk.toString("utf8");
     };
-    child.stdout!.on("data", hear(true));
-    child.stderr!.on("data", hear(false));
     const done = (answer: () => void) => {
       late();
       o.signal.removeEventListener("abort", stopped);
@@ -39,6 +37,9 @@ function run(program: string, args: string[], o: Running): Promise<{ stdout: str
     // (not started at all: nothing of it to wait for)
     child.on("error", (e) => done(() => reject(failed ?? e)));
     child.on("close", (code, signal) => done(() => (failed ? reject(failed) : code === 0 ? resolve({ stdout }) : reject(new Error(`${program} ended with ${code ?? signal}`)))));
+    // (after its error is heard: one not started (ENFILE, EMFILE) has no streams, and its error told to none ends the station)
+    child.stdout?.on("data", hear(true));
+    child.stderr?.on("data", hear(false));
     if (o.signal.aborted) stopped();
     else o.signal.addEventListener("abort", stopped, { once: true });
   });

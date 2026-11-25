@@ -68,6 +68,9 @@ test "日志 on 小屏: a sheet from the foot, App, 设备 and 日志 each where
 ///|
 test "日志 with keyboard and mouse: beside 控制中心's button, App, 设备 and 日志 each where its old body had them" {
   let r = screen_rig(w=1280.0, h=800.0, platform=0)
+  // open the collapsible right debug drawer so this pinned snapshot covers both the drawer and the logs popover
+  r.ui().logs.shown_set = true
+  r.ui().logs.shown.set(true)
   let want : Map[String, (Array[(String, Double, Double, Double, Double)], Array[(String, String, Double, Double, Double, Double)])] = {
     "app": (logs_wide_app_words, logs_wide_app_said),
     "device": (logs_wide_device_words, logs_wide_device_said),

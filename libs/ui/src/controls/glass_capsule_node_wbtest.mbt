@@ -189,7 +189,7 @@ test "viewer_bar_node uses progressive scroll edge and floating adaptive liquid 
     // Bare title (`middle`) emits negative-slot-23 adaptive kind == 7 text (a[23] < 0); back pill emits positive (a[23] > 0).
     let bare_text_count = t.drawn_instances().filter(fn(a) { a.length() >= 60 && a[5] == 7.0 && a[23] < 0.0 }).length()
     let cap_text_count = t.drawn_instances().filter(fn(a) { a.length() >= 60 && a[5] == 7.0 && a[23] > 0.0 }).length()
-    // `back_node` uses intentional optical 4pt/10pt icon-label padding which triggers rule 4 under solid hairline border.
+    // `back_node` uses intentional optical 6pt/12pt icon-label padding which triggers rule 4 under solid hairline border.
     let audits = t.audit().filter(fn(a) { !(solid && a.has_prefix("rule 4:")) })
     assert_eq(
       (

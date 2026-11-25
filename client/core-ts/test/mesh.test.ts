@@ -16,7 +16,7 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HEDGE_MAX_MS, HOT_RELAYS, HOT_SETTLE_MS, KEEP_WAYS, LAN, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REBIND_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_KEPT_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_KEPT_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HEDGE_MAX_MS, HOT_RELAYS, HOT_SETTLE_MS, IDLE_HOT_RELAYS, IDLE_TICK_MS, KEEP_WAYS, LAN, MAIN_RECOVER_MS, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REBIND_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_KEPT_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_KEPT_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { keptFirst } from "../src/station/calls.ts";
@@ -4442,7 +4442,7 @@ sim("a_missed_ping_race_cleans_up_when_the_new_link_closes_or_the_place_is_dropp
 
 /// Back from a short while away (`Wake.checksConnections`), the app's keepalives frozen meanwhile: a link that no longer
 /// answers is replaced now, not at its next ping, and one that answers is kept with nothing dialled.
-for (const [net, ms, within] of [["good", 40, 1_000], ["weak", 200, 2_000]] as const) for (const phase of [0, 1_000, 2_500, 4_000]) {
+for (const [net, ms, within] of [["good", 40, 1_000], ["weak", 200, 2_000]] as const) for (const phase of [0, 1_000, 2_500, 4_000]) for (const away of [10_000, 120_000]) {
   const shortlyAway = async (s: Sim, dead: boolean) => {
     const a = s.relay("https://a.relay.test/", { device: { ms: ms / 2 }, station: { ms: ms / 2 } });
     const b = s.relay("https://b.relay.test/", { device: { ms: ms / 2 + 10 }, station: { ms: ms / 2 + 10 } });
@@ -4456,19 +4456,19 @@ for (const [net, ms, within] of [["good", 40, 1_000], ["weak", 200, 2_000]] as c
     const dialled = station.conns.length;
     if (dead) station.deadBelow = dialled;
     const woken = s.time.now();
-    s.wakes.wake(new Wake(woken, 10_000, false, false));
+    s.wakes.wake(new Wake(woken, away, false, false));
     assert.equal(await s.settle(ask(), 60_000), 200);
     const took = s.time.now() - woken;
     const more = station.conns.length - dialled;
     await close(s, station, mesh);
     return { took, more };
   };
-  sim(`a_link_gone_while_the_app_was_away_a_short_while_is_replaced_as_it_comes_back_on_a_${net}_network_${phase}ms_into_its_pings`, async (s) => {
+  sim(`a_link_gone_while_the_app_was_away_${away / 1000}s_is_replaced_as_it_comes_back_on_a_${net}_network_${phase}ms_into_its_pings`, async (s) => {
     const { took, more } = await shortlyAway(s, true);
     assert.ok(took < within, `answered ${took} ms after the wake`);
     assert.equal(more, 1);
   });
-  sim(`a_link_that_still_answers_as_the_app_comes_back_is_kept_on_a_${net}_network_${phase}ms_into_its_pings`, async (s) => {
+  sim(`a_link_that_still_answers_as_the_app_comes_back_after_${away / 1000}s_is_kept_on_a_${net}_network_${phase}ms_into_its_pings`, async (s) => {
     const { took, more } = await shortlyAway(s, false);
     assert.ok(took < within, `answered ${took} ms after the wake`);
     assert.equal(more, 0);
@@ -4727,6 +4727,252 @@ sim("steer_ticks_and_net_way_reads_deduplicate_sync_connection_ffi_calls", async
   } finally {
     await s.run(mesh.close(), 20_000);
     await station.close();
+  }
+});
+
+sim("hot_relays_native_takes_and_direct_path_narrows_per_peer_while_keeping_home_relays", async (s) => {
+  s.iroh = s.net.iroh({ relayControls: true });
+  s.net.direct = { ms: 2 };
+  s.net.lan = { punchMs: 500 };
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 8 }, station: { ms: 8 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 12 }, station: { ms: 12 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r3 = s.relay("https://r3.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const r4 = s.relay("https://r4.relay.test/", { device: { ms: 40 }, station: { ms: 40 } });
+  const r5 = s.relay("https://r5.relay.test/", { device: { ms: 50 }, station: { ms: 50 } });
+  const allRelays = [r0, r1, r2, r3, r4, r5];
+
+  const station = await s.stationBound({ alpns: [Buffer.from(ALPN)], relayUrls: [r0], discovery: false, bindAddr: "127.0.0.1:0" });
+  await s.settle(station.endpoint.online());
+  station.endpoint.keep([r1, r2, r3, r4, r5]);
+  const pairAlpn = new TextEncoder().encode("stillfail/pair/1");
+  const mesh = await s.run(
+    Mesh.make({ ...env(s), takes: [pairAlpn], incoming: () => {}, hotRelays: HOT_RELAYS }, allRelays),
+  );
+  try {
+    const id = `w/${station.id()}`;
+    const link = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+    await s.until(() => link.path() === "direct", 20_000);
+
+    await s.time.pass(HOT_SETTLE_MS + TICK_MS);
+    const paths = link.conn.paths();
+    assert.ok(paths.some((p) => p.relay === null), "direct IP path must remain open after hot-relay narrowing");
+    assert.deepEqual(
+      relaySetOf(paths.filter((p) => p.relay !== null).map((p) => p.relay)),
+      [r0, r1].sort(),
+      "settled native station with direct path must still narrow relay paths to HOT_RELAYS",
+    );
+    assert.equal(
+      mesh.endpoint().relayStatus().length,
+      allRelays.length,
+      "endpoint accepting incoming pairing connections must keep all official home relays connected",
+    );
+
+    // Must remain narrowed with zero oscillation across several ticks.
+    await s.time.pass(4 * TICK_MS);
+    const later = link.conn.paths();
+    assert.ok(later.some((p) => p.relay === null));
+    assert.deepEqual(
+      relaySetOf(later.filter((p) => p.relay !== null).map((p) => p.relay)),
+      [r0, r1].sort(),
+    );
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await s.settle(station.close());
+  }
+});
+
+sim("hot_relays_unrelated_station_dial_does_not_block_settled_station_narrowing", async (s) => {
+  s.iroh = s.net.iroh({ relayControls: true });
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 8 }, station: { ms: 8 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 12 }, station: { ms: 12 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r3 = s.relay("https://r3.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const r4 = s.relay("https://r4.relay.test/", { device: { ms: 40 }, station: { ms: 40 } });
+  const r5 = s.relay("https://r5.relay.test/", { device: { ms: 50 }, station: { ms: 50 } });
+  const allRelays = [r0, r1, r2, r3, r4, r5];
+
+  const online = await s.stationOn(r0, [r1, r2, r3, r4, r5]);
+  const mesh = await s.run(Mesh.make({ ...env(s), lookup: false, hotRelays: HOT_RELAYS }, allRelays));
+  try {
+    const link = await s.run(mesh.link(`w/${online.id()}`, grants("ok", { n: 0 })));
+    await s.time.pass(HOT_SETTLE_MS - TICK_MS);
+    assert.equal(link.conn.paths().length, allRelays.length);
+
+    // Start a slow dial to an unreachable station right before the settled station crosses HOT_SETTLE_MS.
+    const missingId = "99".repeat(32);
+    const dialFiber = s.runner.fork(Effect.ignore(mesh.link(`w/${missingId}`, grants("ok", { n: 0 }))));
+    await s.time.pass(TICK_MS + 1_000);
+
+    // Even while the unrelated station's dial is still in flight (< CONNECT_TIMEOUT_MS), the settled online station
+    // narrows to 2 relays, while endpoint-level relay removal waits until all dials finish.
+    assert.deepEqual(
+      relaySetOf(link.conn.paths().map((p) => p.relay)),
+      [r0, r1].sort(),
+      "an unrelated station dialing must not block a settled station from narrowing",
+    );
+    assert.equal(
+      mesh.endpoint().relayStatus().length,
+      allRelays.length,
+      "endpoint must keep all relays connected while an unrelated dial is in flight",
+    );
+
+    // Once the unreachable dial times out, endpoint-level unused relays are removed.
+    await s.time.pass(CONNECT_TIMEOUT_MS + TICK_MS);
+    await s.run(Effect.ignore(Fiber.join(dialFiber)));
+    assert.deepEqual(
+      relaySetOf(mesh.endpoint().relayStatus().map((r) => r.url)),
+      [r0, r1].sort(),
+    );
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await s.settle(online.close());
+  }
+});
+
+sim("pinned_rescue_redials_main_promotes_it_and_retires_pinned_relays", async (s) => {
+  const a = s.relay("https://a.relay.test/", { device: { ms: 20 }, station: { ms: 5 } });
+  const b = s.relay("https://b.relay.test/", { device: { ms: 40 }, station: { ms: 20 } });
+  const c = s.relay("https://c.relay.test/", { device: { ms: 60 }, station: { ms: 20 } });
+  const { station, mesh, id } = await onRelays(s, [a, b, c]);
+  try {
+    const link = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+    assert.equal(link.pinned, null);
+    // Force main loss so rescue fan-out moves requests onto a pinned relay while main is dead.
+    s.net.leg(a, "device").loss = 0.95;
+    await s.time.pass(12 * TICK_MS);
+    const rescued = mesh.current(id);
+    assert.ok(rescued !== null && rescued.usable());
+    // Restore relay a: main must recover, promote back to main, and retire leftover pinned rescue ways.
+    s.net.leg(a, "device").loss = 0;
+    await s.until(
+      () => mesh.current(id)?.pinned === null && mesh.ways(id).length === 1,
+      MAIN_RECOVER_MS + MIN_STAY_MS + 6 * TICK_MS + RETIRE_MS + 10_000,
+    );
+    assert.equal(mesh.current(id)?.pinned, null);
+    assert.equal(mesh.ways(id).length, 1);
+    assert.equal((await request(s, mesh.current(id)!, head("/admin/api/overview"))).status, 200);
+  } finally {
+    await close(s, station, mesh);
+  }
+});
+
+sim("onARelay_backs_off_beyond_250ms_when_relay_stays_offline", async (s) => {
+  let looks = 0;
+  const from = s.time.now();
+  await s.run(onARelay({ relayStatus: () => (looks++, [{ url: "relay", connected: false }]) }, false), ONTO_MAX_MS + 1_000);
+  assert.ok(s.time.now() - from >= ONTO_MAX_MS && s.time.now() - from <= ONTO_MAX_MS + 250);
+  assert.ok(looks <= 35, `expected exponential backoff <= 35 relayStatus calls over 30s, got ${looks}`);
+});
+
+sim("unreachable_pinned_relay_is_cached_across_stations_and_cleared_on_network_wake", async (s) => {
+  const good = s.relay("https://good.relay.test/", { device: { ms: 15 }, station: { ms: 15 } });
+  const dead = s.relay("https://dead.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const st1 = await s.stationOn(good, [dead]);
+  const st2 = await s.stationOn(good, [dead]);
+  s.net.down(dead, 60 * 60_000);
+  const connects: { to: string; relays: string[] }[] = [];
+  const baseIroh = s.net.iroh({ relayControls: true });
+  const trackingIroh: Iroh = {
+    bind: (opts) =>
+      Effect.map(baseIroh.bind(opts), (ep) => ({
+        ...ep,
+        connect: (addr, alpn, additional, givenUp) => {
+          connects.push({ to: addr.id, relays: [...(addr.relays ?? [])] });
+          return ep.connect(addr, alpn, additional, givenUp);
+        },
+      })),
+  };
+  const mesh = await s.run(Mesh.make({ ...env(s), iroh: trackingIroh }, [good, dead]));
+  try {
+    const addr1 = `w/${st1.id()}`;
+    const addr2 = `w/${st2.id()}`;
+    // Dial st1 off main (`off = [DIRECT]`) so pinned endpoints try both `good` and `dead`.
+    const l1 = await s.run(mesh.link(addr1, grants("ok", { n: 0 }), undefined, [DIRECT]), 60_000);
+    assert.equal(l1.usable(), true);
+    // Let the background pinned dial to `dead` time out and populate the cross-station negative cache.
+    await s.time.pass(ONTO_MAX_MS + CONNECT_TIMEOUT_MS + 2_000);
+    const deadTriesFor = (stationId: string) => connects.filter((c) => c.to === stationId && c.relays.some((r) => sameRelay(r, dead))).length;
+    assert.ok(deadTriesFor(st1.id()) >= 1, "first station must try dead relay once");
+    assert.equal(deadTriesFor(st2.id()), 0);
+
+    // Dialing st2 now must skip the cached dead relay while still connecting via `good`.
+    const l2 = await s.run(mesh.link(addr2, grants("ok", { n: 0 }), undefined, [DIRECT]), 60_000);
+    assert.equal(l2.usable(), true);
+    await s.time.pass(2_000);
+    assert.equal(deadTriesFor(st2.id()), 0, "second station must skip recently dead pinned relay");
+
+    // A network change clears the negative cache so subsequent exploration retries `dead`.
+    s.wakes.wake(network(s.host));
+    await s.time.pass(EXPLORE_MS + 2_000);
+    assert.ok(deadTriesFor(st2.id()) >= 1, "network wake must clear dead-relay cache");
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await st1.close();
+    await st2.close();
+  }
+});
+
+sim("idle_stations_narrow_to_one_hot_relay_and_throttle_pings_while_active_stays_full", async (s) => {
+  const nativeBase = s.net.iroh({ relayControls: true });
+  s.iroh = nativeBase;
+  const r0 = s.relay("https://r0.relay.test/", { device: { ms: 10 }, station: { ms: 10 } });
+  const r1 = s.relay("https://r1.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const r2 = s.relay("https://r2.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const r3 = s.relay("https://r3.relay.test/", { device: { ms: 40 }, station: { ms: 40 } });
+  const allRelays = [r0, r1, r2, r3];
+
+  const stActive = await s.stationOn(r0, [r1, r2, r3]);
+  const stIdle = await s.stationOn(r0, [r1, r2, r3]);
+  const addrActive = `w/${stActive.id()}`;
+  const addrIdle = `w/${stIdle.id()}`;
+  const idleSet = new Set<string>([addrIdle]);
+
+  const mesh = await s.run(
+    Mesh.make(
+      {
+        ...env(s),
+        lookup: false,
+        takes: [PAIR_ALPN],
+        idleHotRelays: IDLE_HOT_RELAYS,
+        idle: (addr) => idleSet.has(addr),
+      },
+      allRelays,
+    ),
+  );
+  try {
+    const linkActive = await s.run(mesh.link(addrActive, grants("ok", { n: 0 })));
+    const linkIdle = await s.run(mesh.link(addrIdle, grants("ok", { n: 0 })));
+    await s.time.pass(HOT_SETTLE_MS + 2 * TICK_MS);
+
+    // Active station keeps all 4 relay paths hot; idle station narrows to 1 hot relay; endpoint keeps all 4 relays for pairing.
+    assert.equal(linkActive.conn.paths().length, 4, "active station must keep all relay paths");
+    assert.equal(linkIdle.conn.paths().length, 1, "idle station must narrow to 1 hot relay");
+    assert.equal(mesh.endpoint().relayStatus().length, 4, "endpoint with takes must keep official relays connected");
+
+    // Over one IDLE_TICK_MS window, active pings every 5s while idle throttles to 30s.
+    const activeBefore = linkActive.controlAnswers();
+    const idleBefore = linkIdle.controlAnswers();
+    await s.time.pass(IDLE_TICK_MS);
+    const activeDelta = linkActive.controlAnswers() - activeBefore;
+    const idleDelta = linkIdle.controlAnswers() - idleBefore;
+    assert.ok(activeDelta >= 5, `expected active station to ping ~6 times in 30s, got ${activeDelta}`);
+    assert.ok(idleDelta <= 2, `expected idle station to ping <= 2 times in 30s, got ${idleDelta}`);
+
+    // Moving the idle station to active relaxes its relays immediately and wakes its steer timer without waiting 30s.
+    idleSet.delete(addrIdle);
+    mesh.refreshIdle(addrIdle);
+    await s.time.pass(200);
+    assert.equal(linkIdle.conn.paths().length, 4, "waking idle station must restore full relay paths immediately");
+
+    const resumedBefore = linkIdle.controlAnswers();
+    await s.time.pass(3 * TICK_MS);
+    const resumedDelta = linkIdle.controlAnswers() - resumedBefore;
+    assert.ok(resumedDelta >= 2, `expected resumed active station to ping every 5s, got ${resumedDelta} in 15s`);
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await stActive.close();
+    await stIdle.close();
   }
 });
 

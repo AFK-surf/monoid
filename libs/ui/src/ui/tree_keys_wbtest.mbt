@@ -47,8 +47,10 @@ test "a key catcher of the tree's: under a modal layer it is told nothing; let g
   key_catcher_focus_set(caught.val.unwrap(), true)
   t.draw()
   assert_true(t.key_catching())
+  assert_eq(t.edit_can(), @hostapi.text_menu_paste)
   modal.set(true)
   t.draw()
+  assert_eq(t.edit_can(), 0)
   t.type_text("x")
   assert_eq(told, [], msg="kept from input by the layer over it")
   modal.set(false)
@@ -57,4 +59,5 @@ test "a key catcher of the tree's: under a modal layer it is told nothing; let g
   t.type_text("y")
   assert_eq(told, [], msg="let go")
   assert_false(t.key_catching(), msg="no catcher has the focus")
+  assert_eq(t.edit_can(), 0)
 }

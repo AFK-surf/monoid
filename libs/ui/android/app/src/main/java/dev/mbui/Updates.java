@@ -411,7 +411,17 @@ final class Updates {
             }
             File[] all = d.listFiles();
             if (all != null) for (File f : all) f.delete();
-            if (said != null && !said.isEmpty()) Notices.show(c, c.getApplicationInfo().loadLabel(c.getPackageManager()).toString(), "update", said, "", "");
+            if (said != null && !said.isEmpty()) {
+                String label = c.getApplicationInfo().loadLabel(c.getPackageManager()).toString();
+                final PendingResult pending = goAsync();
+                try {
+                    Notices.showAsync(c, label, "update", said, "", "", pending::finish);
+                } catch (RuntimeException e) {
+                    pending.finish();
+                    Host.log("update notice failed: " + e);
+                    throw e;
+                }
+            }
         }
     }
 

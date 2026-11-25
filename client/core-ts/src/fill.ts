@@ -13,7 +13,8 @@
 // A chat's file a person asked to load (加载, `fill.want`: a video to play from here) is brought the same way, before
 // all else and at once: not after what is waited on, not bound by the prefs, whether or not any of it was read. It is
 // one thing whichever way it began: what was read of it, what was brought of it, however sparse, is never asked again;
-// only what is not kept is. Stopped (`fill.stop`), it is no longer brought; what came of it stays kept.
+// only what is not kept is. Stopped (`fill.stop`), it is no longer brought; what came of it stays kept. One listed
+// as given way or after the others (已暂停) a person can start (`fill.start`): it is then one asked to load.
 import { Marks } from "./reactive.ts";
 import { Effect } from "effect";
 import type { Inner } from "./core.ts";
@@ -30,6 +31,7 @@ import { bytes } from "./format.ts";
 import { t } from "./i18n.ts";
 import { get, isObject } from "./util.ts";
 import { conform } from "./conform.ts";
+import { FLOW_TELL_MS, Flow } from "./flow.ts";
 
 /// The most a file is brought whole by itself, unless the prefs say otherwise (`fillMax`).
 export const FILL_MAX = 1024 * 1024 * 1024;
@@ -98,8 +100,11 @@ export class Fill {
   /// Stopped as it came (`stop`): let go once its part has stopped.
   readonly #stopping = new Set<string>();
   #stop: (() => void) | null = null;
-  /// The percents last told, by file.
-  readonly #told = new Map<string, number>();
+  /// The percents last told, by file, when, and the speed then (bytes a second, 0 not known yet): told again for it at
+  /// most every FLOW_TELL_MS as it comes.
+  readonly #told = new Map<string, { percent: number; at: number; rate: number }>();
+  /// How fast what is brought of each comes off the wire.
+  readonly #flows = new Map<string, Flow>();
 
   constructor(inner: Inner) {
     this.#inner = inner;
@@ -132,27 +137,33 @@ export class Fill {
   shown(): Record<string, unknown>[] {
     this.#seen.read();
     const out: Record<string, unknown>[] = [];
+    // (the one to come next while none comes, between its parts: shown as coming, not as after the others)
+    const next = this.#going === null ? this.#list.find((f) => this.#ready(f))?.id : undefined;
     for (const f of this.#list) {
       const going = this.#going?.id === f.id ? this.#going : null;
       const loaded = Math.min(f.size, going?.loaded ?? f.have);
       const call = partOf(f);
       const station = call?.station ?? "";
-      const state: KeepingState = going !== null ? (this.#yielding && !f.wanted ? "yielding" : "going")
+      const state: KeepingState = going !== null || f.id === next ? (this.#yielding && !f.wanted ? "yielding" : "going")
         : this.#away.has(station) || !this.#reached(station) ? "waiting"
         : this.#yielding && out.length === 0 && !f.wanted ? "yielding"
         : "queued";
       const percent = f.size > 0 ? Math.floor((loaded / f.size) * 100) : 0;
-      const statusText = f.wanted && state !== "waiting" ? t("core-logic.download.loading", { percent, total: bytes(f.size) })
-        : state === "going" ? t("core-logic.keeping.going", { percent, total: bytes(f.size) })
-        : state === "yielding" ? t("core-logic.keeping.yielding", { percent })
-        : state === "waiting" ? t("core-logic.keeping.waiting", { percent })
-        : t("core-logic.keeping.queued", { percent });
+      const total = bytes(f.size);
+      const told = this.#told.get(f.id);
+      const rate = going !== null && state === "going" && told !== undefined ? told.rate : 0;
+      const statusText = f.wanted && state !== "waiting"
+          ? rate > 0 ? t("core-logic.download.loadingRate", { percent, total, rate: bytes(rate) }) : t("core-logic.download.loading", { percent, total })
+        : state === "going" ? rate > 0 ? t("core-logic.keeping.goingRate", { percent, total, rate: bytes(rate) }) : t("core-logic.keeping.going", { percent, total })
+        : state === "waiting" ? t("core-logic.download.waiting", { percent, total })
+        // (given way or after the others: paused alike, a person can start it)
+        : t("core-logic.keeping.paused", { percent, total });
       const where = call === null ? {} : call.kind === "stationFilePart" ? { key: call.key } : { root: call.root, path: call.path };
       const name = call === null ? f.id : call.kind === "stationFilePart" ? call.name : (call.path.split("/").pop() ?? call.path);
       const from = this.#from.get(f.id);
       const original = get(get(from, "file"), "name");
       const title = typeof original === "string" && original !== "" ? original : call?.kind === "stationFilePart" ? titleOf(name) : name;
-      out.push({ id: f.id, station, ...where, name, title, size: f.size, loaded, progress: f.size > 0 ? loaded / f.size : 0, state, statusText, ...(f.wanted ? { wanted: true } : {}), ...(from !== undefined ? { from } : {}) });
+      out.push({ id: f.id, station, ...where, name, title, size: f.size, loaded, progress: f.size > 0 ? loaded / f.size : 0, state, ...(rate > 0 ? { rate } : {}), statusText, ...(f.wanted ? { wanted: true } : {}), ...(from !== undefined ? { from } : {}) });
     }
     // what comes now first
     return out.sort((a, b) => Number(b.state === "going" || b.state === "yielding") - Number(a.state === "going" || a.state === "yielding"));
@@ -168,6 +179,21 @@ export class Fill {
       // all of it here already: nothing to bring
       if (yield* kept.whole(id, size)) return;
       yield* kept.want(id, "chat", size);
+      this.#failed.delete(id);
+      const wake = this.#wake;
+      this.#wake = null;
+      wake?.();
+      this.poke();
+    });
+  }
+
+  /// One listed as given way or after the others started by a person (`fill.start`): asked to load from now on, brought
+  /// before everything else, at once, from what is kept of it. One no longer listed, or asked to load already: nothing.
+  bringNow(id: string): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const f = this.#list.find((x) => x.id === id);
+      if (f === undefined || f.wanted) return;
+      yield* this.#inner.driveKept.want(f.id, f.kind, f.size);
       this.#failed.delete(id);
       const wake = this.#wake;
       this.#wake = null;
@@ -198,13 +224,24 @@ export class Fill {
     this.#seen.touch();
   }
 
-  /// Told again as one moves on a whole percent, or what it is doing changes.
+  /// Told again as one moves on a whole percent, as its speed changes FLOW_TELL_MS after it was last told, or as what
+  /// it is doing changes.
   #moved(id: string, loaded: number, size: number): void {
     if (this.#going?.id === id) this.#going.loaded = loaded;
     const percent = size > 0 ? Math.floor((loaded / size) * 100) : 0;
-    if (this.#told.get(id) === percent) return;
-    this.#told.set(id, percent);
+    const now = this.#inner.host.nowMs();
+    const rate = this.#flows.get(id)?.perSecond(now) ?? 0;
+    const was = this.#told.get(id);
+    if (was !== undefined && was.percent === percent && (was.rate === rate || now - was.at < FLOW_TELL_MS)) return;
+    this.#told.set(id, { percent, at: now, rate });
     this.#changed();
+  }
+
+  /// `more` bytes of the file `id` came off the wire.
+  #came(id: string, more: number): void {
+    let flow = this.#flows.get(id);
+    if (flow === undefined) this.#flows.set(id, (flow = new Flow()));
+    flow.came(this.#inner.host.nowMs(), more);
   }
 
   #again(id: string): void {
@@ -269,8 +306,11 @@ export class Fill {
       const stopped = Effect.callback<void>((resume) => {
         self.#stop = () => resume(Effect.void);
       });
+      let came = 0;
       const heard = (v: unknown) => {
         const loaded = isObject(v) && typeof v.loaded === "number" ? v.loaded : 0;
+        self.#came(id, loaded - came);
+        came = Math.max(came, loaded);
         self.#moved(id, f.have + loaded, f.size);
       };
       const lanes = f.wanted && f.size > DOWNLOAD_PART
@@ -302,6 +342,7 @@ export class Fill {
             const chunkCall = { ...call, offset: chunk.offset, length: chunk.length, lane: idx };
             const chunkHeard = (v: unknown) => {
               const loaded = isObject(v) && typeof v.loaded === "number" ? v.loaded : 0;
+              self.#came(id, loaded - (inflight.get(chunk.offset) ?? 0));
               inflight.set(chunk.offset, loaded);
               let live = 0;
               for (const n of inflight.values()) live += n;
@@ -377,6 +418,9 @@ export class Fill {
       if (this.#going !== null && !list.some((f) => f.id === this.#going?.id)) this.#stop?.();
       const was = this.#list;
       this.#list = list;
+      // (how fast each came, and what was told of it, kept only while it is listed)
+      for (const id of this.#flows.keys()) if (!list.some((f) => f.id === id)) this.#flows.delete(id);
+      for (const id of this.#told.keys()) if (!list.some((f) => f.id === id)) this.#told.delete(id);
       if (was.length !== list.length || was.some((f, i) => f.id !== list[i].id || f.have !== list[i].have || f.wanted !== list[i].wanted)) this.#changed();
       return list;
     });
@@ -417,7 +461,8 @@ export function install(inner: Inner): void {
       return Effect.as(core.fill.want(p.station as string, p.key as string, p.name as string, size, shaped !== null && "ok" in shaped ? shaped.ok : undefined), {});
     }
     const id = c.params.id;
-    if (c.action === "stop" && (typeof id !== "string" || id === "")) return Effect.fail(CoreError.invalid(t("core-misc.params.missing", { field: "id" })));
+    if ((c.action === "stop" || c.action === "start") && (typeof id !== "string" || id === "")) return Effect.fail(CoreError.invalid(t("core-misc.params.missing", { field: "id" })));
+    if (c.action === "start") return Effect.as(core.fill.bringNow(id as string), {});
     return Effect.as(core.fill.stop(c.action === "stop" ? [id as string] : null), {});
   };
 }

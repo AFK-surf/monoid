@@ -400,6 +400,14 @@ pub fn is_blank_json_str(v : base_codec::Json) -> Bool {
   }
 }
 
+pub fn has_proposal_column(db : sql_db::Db) -> Result[Bool, ReadError] {
+  match one(db, "SELECT 1 AS x FROM pragma_table_info('entries') WHERE name = 'proposal' LIMIT 1", []) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
 pub fn state_question(
   db : sql_db::Db,
   args : base_codec::Json,
@@ -413,11 +421,28 @@ pub fn state_question(
   db.savepoint_swallow_err(
     "state_question_read",
     fn(sp_db : sql_db::Db) -> Result[base_codec::Json, ReadError] {
+      let has_prop = match has_proposal_column(sp_db) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let has_sidecar = match exists_in(sp_db, "table", "entry_proposals") {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let sql = if has_prop && has_sidecar {
+        "SELECT CAST(e.n AS TEXT) AS n, e.card, e.options, COALESCE(e.proposal, ep.proposal) AS proposal FROM entries e LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n WHERE e.thread = ? AND e.ts = ? AND e.kind = 'message'"
+      } else if has_prop {
+        "SELECT CAST(n AS TEXT) AS n, card, options, proposal FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'"
+      } else if has_sidecar {
+        "SELECT CAST(e.n AS TEXT) AS n, e.card, e.options, ep.proposal AS proposal FROM entries e LEFT JOIN entry_proposals ep ON ep.thread = e.thread AND ep.n = e.n WHERE e.thread = ? AND e.ts = ? AND e.kind = 'message'"
+      } else {
+        "SELECT CAST(n AS TEXT) AS n, card, options FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'"
+      }
       for i in 0..<threads.length() {
         let thread = threads[i]
         let entry = match one(
           sp_db,
-          "SELECT CAST(n AS TEXT) AS n, card, options FROM entries WHERE thread = ? AND ts = ? AND kind = 'message'",
+          sql,
           [thread, ts],
         ) {
           Ok(Some(e)) => e
@@ -428,6 +453,9 @@ pub fn state_question(
           Ok(true) => return Err(edits_pending())
           Ok(false) => ()
           Err(e) => return Err(map_step_err(e))
+        }
+        if (has_prop || has_sidecar) && !(field(entry, "proposal") is base_codec::Json::Null) {
+          return Ok(base_codec::json_obj([("kind", base_codec::json_str("proposal"))]))
         }
         let n = number_of(field(entry, "n"))
         let m = match merged(sp_db, thread, n) {

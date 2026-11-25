@@ -63,6 +63,9 @@ const CHAT_ITEM: Parameters<typeof struct>[0] = [
   ["archived", opt("bool"), { doc: "A chat a search found in its station's archive (`search`). Absent otherwise." }],
   ["foundText", opt("String"), { said: true, doc: "A chat a search found by words its title shows late or not at all: the part of it that has them, on one line\n(`search`: listed first, its title under it). Absent otherwise." }],
   ["foundMarks", opt(vec("TextMark")), { doc: "Where the words are in `foundText`." }],
+  ["project", opt("String"), { doc: "Project classification (\"\" cross-project, non-empty project name; absent when unclassified)." }],
+  ["projectLocked", opt("bool"), { doc: "True when a member explicitly set or resolved this chat's project (agents cannot overwrite)." }],
+  ["tags", opt(vec("String")), { doc: "Up to 3 orthogonal tags on this chat. Absent when none." }],
 ];
 
 /// Those of a chat's row's fields a row of the `chats` list carries (ListedChat).
@@ -70,7 +73,7 @@ export const LISTED_CHAT: readonly string[] = [
   "id", "session", "thread", "clientKey", "station", "stationName", "stationEmoji", "stationIcon", "title", "unread", "hidden",
   "settled", "tone", "state", "connect", "originKind", "originText", "opener", "stateText", "stateLead", "stateLeadText",
   "stateRest", "stateAbout", "unsent", "last", "agents", "people", "creator", "peopleText", "pinned", "pending", "swipeArchive",
-  "stage", "subchats", "archiveRead",
+  "stage", "subchats", "archiveRead", "project", "projectLocked", "tags",
 ];
 
 export const CHAT_SHAPES: Record<string, Shape> = {
@@ -119,9 +122,22 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["label", "String"],
     ["items", vec("ListedChat")],
   ], { doc: "A day of the list, with its heading (今天, 昨天, 星期三, 9月20日); or, above them all, the chats the viewer pinned\n(`daysAgo` -1, headed 已固定). When it is and whether it is the pinned (`at`, `pinned`) are the core's." }),
+  ChatProjectGroup: struct([
+    ["key", "String", { doc: "Stable group key for keyed diffs: \"pinned\", \"unclassified\", \"cross\", or \"project:<name>\"." }],
+    ["kind", "String", { doc: "pinned | unclassified | project | cross" }],
+    ["label", "String"],
+    ["project", opt("String"), { doc: "Project name for kind=\"project\", \"\" for kind=\"cross\"; absent for pinned/unclassified." }],
+    ["chatCount", "i64", { client: "I54", doc: "Full-scope count of matching chats in this group (across the active filter, not truncated to the loaded window)." }],
+    ["runningCount", "i64", { client: "I54", doc: "Full-scope count of running chats in this group." }],
+    ["askingCount", "i64", { client: "I54", doc: "Full-scope count of chats asking for human input in this group." }],
+    ["unreadCount", "i64", { client: "I54", doc: "Full-scope count of unread chats in this group." }],
+    ["latestActiveAt", "i64", { client: "I54", doc: "Full-scope latest activity timestamp (ms) in this group." }],
+    ["items", vec("ListedChat"), { doc: "Chats belonging to this group within the currently loaded window (`chats.window`)." }],
+  ], { doc: "A project group of the chat list when `groupBy` is \"project\". Header counters reflect the full filtered scope; `items` contains the current window's rows." }),
   ChatsView: struct([
     ["stations", vec("StationState")],
     ["days", vec("ChatDay")],
+    ["groups", opt(vec("ChatProjectGroup")), { doc: "Project groups when `groupBy` is \"project\" (pinned -> unclassified -> projects by latestActiveAt DESC -> cross-project). Absent when `groupBy` is \"time\"." }],
     ["more", opt("i64"), { client: opt("I54"), doc: "How many rows the list has past its window (`chats.window`: its days hold those alone); absent when\nit has none." }],
     ["trouble", opt("StationTrouble"), { doc: "The stations not working as they should, in a line (\"Maple 离线\", \"正在重连 Willow\", \"2 台 station 异常\"), for a\ncorner of the list; absent while all are (a station first connecting is not one)." }],
     ["members", opt("i64"), { client: opt("I54"), doc: "How many people the scope has, for how rows are pictured; absent until known." }],
@@ -176,6 +192,17 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["picture", opt("String")],
     ["from", opt("String"), { doc: "Another chat's agent (session_send): that chat's link, its name opens it." }],
   ], { doc: "Who said a message, as its line shows them: an agent by its label and mark, a person by name and picture." }),
+  MessageProposal: struct([
+    ["id", "String"],
+    ["name", "String"],
+    ["note", opt("String")],
+    ["refs", opt(vec("String"))],
+    ["proposer", opt("String")],
+    ["status", "String", { doc: "pending | accepted | reassigned | dismissed" }],
+    ["resolvedProject", opt("String")],
+    ["resolvedBy", opt("String")],
+    ["resolvedAt", opt("i64"), { client: opt("I54") }],
+  ], { doc: "Silent inline project-creation proposal carried on an agent message (never a blocking card)." }),
   Message: struct([
     ["seq", "i64", { client: "I54" }],
     ["thread", "i64", { client: "I54" }],
@@ -231,6 +258,7 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["elsewhere", opt(vec("ChatSentElsewhere")), { doc: "In a chat's page: what its agents sent to Slack or were given there after this message, before the next. Absent\nwhen nothing." }],
     ["placed", opt(vec("String")), { doc: "In a chat's page: the names of the files its text places (`![](shot.png)`, `[the report](report.pdf)`), in the\norder it names them, drawn where it names them; the rest go below it. Absent when it places none (a person's\nwords never do)." }],
     ["way", opt("String"), { doc: "On a chat's letters page (`chatLetters`): in, another chat's agent wrote it to this chat's; out, this chat's\nagent wrote it to the other. Absent in a chat's page, which has no letters." }],
+    ["proposal", opt("MessageProposal"), { doc: "Silent inline project-creation proposal carried on this message. Absent otherwise." }],
   ], { doc: "A message of a chat, with what the core decides of it: the viewer's (their bubble), still.fail's own notice, who said\nit, and whether its agents have yet to take it." }),
   ChatThread: struct([
     ["id", "i64", { client: "I54" }],
@@ -343,6 +371,9 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["opened", vec("OpenedChat"), { default: true, doc: "The chats its agent opened, the first first, for its bar's list of them. Empty when none." }],
     ["openedText", opt("String"), { said: true, doc: "With `opened`: how many, in words (创建了 3 个对话). Absent otherwise." }],
     ["tabs", opt("ChatTabs"), { doc: "Its side panel's tabs as this device keeps them for it (prefs `chatTabs`, chat-tabs.ts); absent from a core\nbefore it." }],
+    ["project", opt("String"), { doc: "Project classification (\"\" cross-project, non-empty project name; absent when unclassified)." }],
+    ["projectLocked", opt("bool"), { doc: "True when a member explicitly set or resolved this chat's project (agents cannot overwrite)." }],
+    ["tags", opt(vec("String")), { doc: "Up to 3 orthogonal tags on this chat. Absent when none." }],
   ], { doc: "An item's page: its chat (with the viewer's read position), or its agent before it has one." }),
   ThreadShown: struct([
     ["id", "i64", { client: "I54" }],

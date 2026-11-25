@@ -14,7 +14,10 @@
 #include <string.h>
 #include <strings.h>
 #include "linux.h"
+#include "linux_launch.h"
 #include "listen_api.h"
+
+extern GAppLaunchContext *mb_linux_launch_context(void);
 
 typedef struct login {
   struct login *next;
@@ -188,24 +191,62 @@ int32_t mb_host_browser_login_port(int32_t id) {
   return port;
 }
 
+static int mb_linux_login_file_exists(const char *path) {
+  return g_file_test(path, G_FILE_TEST_EXISTS) ? 1 : 0;
+}
+
+static int mb_linux_login_has_handler(const char *scheme) {
+  GAppInfo *app = g_app_info_get_default_for_uri_scheme(scheme);
+  if (!app) return 0;
+  g_object_unref(app);
+  return 1;
+}
+
+static void on_login_url_done(GObject *source, GAsyncResult *res, gpointer data) {
+  (void)source;
+  (void)data;
+  GError *err = NULL;
+  if (!g_app_info_launch_default_for_uri_finish(res, &err)) {
+    char msg[160];
+    mb_linux_format_launch_error(msg, sizeof msg, "browser login open",
+                                 err ? g_quark_to_string(err->domain) : "unknown", err ? err->code : 0);
+    fputs(msg, stderr);
+    fflush(stderr);
+    g_clear_error(&err);
+  }
+}
+
+static int mb_linux_login_spawn_browser(const char *browser, const char *url, void *ctx) {
+  (void)ctx;
+  // its first program (BROWSER is a ':'-separated list), given the address; not waited for: a browser started
+  // directly keeps running after us
+  char *first = g_strndup(browser, strcspn(browser, ":"));
+  char *u_copy = g_strdup(url);
+  char *argv[] = {first, u_copy, NULL};
+  GError *e = NULL;
+  int ok = g_spawn_async(NULL, argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &e) ? 1 : 0;
+  if (!ok) fprintf(stderr, "browser login: BROWSER did not start (%s)\n", e ? e->message : "?");
+  if (e) g_error_free(e);
+  g_free(u_copy);
+  g_free(first);
+  return ok;
+}
+
+static int mb_linux_login_launch_system(const char *url, void *ctx) {
+  (void)ctx;
+  GAppLaunchContext *lctx = mb_linux_launch_context();
+  g_app_info_launch_default_for_uri_async(url, lctx, NULL, on_login_url_done, NULL);
+  if (lctx) g_object_unref(lctx);
+  return 1;
+}
+
 int32_t mb_host_browser_login_open(int32_t id, moonbit_string_t url) {
   (void)id;
   char *u = utf8(url);
-  int ok = 0;
-  const char *browser = getenv("BROWSER");
-  if (browser && *browser) {
-    // its first program (BROWSER is a ':'-separated list), given the address; not waited for: a browser started
-    // directly keeps running after us
-    char *first = g_strndup(browser, strcspn(browser, ":"));
-    char *argv[] = {first, u, NULL};
-    GError *e = NULL;
-    ok = g_spawn_async(NULL, argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &e);
-    if (!ok) fprintf(stderr, "browser login: BROWSER did not start (%s)\n", e ? e->message : "?");
-    if (e) g_error_free(e);
-    g_free(first);
-  } else {
-    ok = g_app_info_launch_default_for_uri(u, NULL, NULL);
-  }
+  char *scheme = g_uri_parse_scheme(u);
+  int ok = mb_linux_dispatch_browser_login(u, scheme, g_getenv, mb_linux_login_file_exists, mb_linux_login_has_handler,
+                                           mb_linux_login_spawn_browser, mb_linux_login_launch_system, NULL);
+  g_free(scheme);
   free(u);
   return ok;
 }

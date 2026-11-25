@@ -4,9 +4,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Resolver } from "node:dns/promises";
 import { createReadStream, realpathSync } from "node:fs";
-import { open, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 
@@ -168,21 +168,105 @@ export async function fetchHandoff(at, init = {}, options = {}) {
   return response;
 }
 
-async function transfer(url, options, consume) {
+const getTimeoutsMs = [20_000, 30_000, 45_000, 60_000];
+// Direct routes (STILLFAIL_DIRECT_DNS on Shanghai/Mini1 runners) already abort stalled sockets in idleMs (8 s);
+// a healthy 4 MB chunk over evening international egress can stream steadily for 25-40 s, so routeMs starts at 60 s
+// instead of aborting healthy streams at 20 s and 30 s (#45632883823, #8703).
+const directGetTimeoutsMs = [60_000, 60_000, 90_000];
+const writeTimeoutsMs = [60_000, 60_000, 60_000];
+const knownTargets = [
+  "ios-sim-arm64", "android-arm64", "darwin-arm64", "darwin-x64",
+  "linux-arm64", "linux-x64", "win32-arm64", "win32-x64", "ios-arm64", "wasm32",
+];
+
+/** The `{ part, target, key }` encoded in a native archive filename, or null when unrecognized. */
+export function archiveMeta(name) {
+  const match = /^([a-z0-9-]+)-([a-f0-9]{24})\.tar\.gz$/.exec(name);
+  if (!match) return null;
+  const [, stem, key] = match;
+  for (const target of knownTargets) {
+    if (stem.endsWith("-" + target) && stem.length > target.length + 1) {
+      return { part: stem.slice(0, -(target.length + 1)), target, key };
+    }
+  }
+  return null;
+}
+
+/** The target triple encoded in a native archive filename, or null when unrecognized. */
+export function archiveTarget(name) {
+  return archiveMeta(name)?.target ?? null;
+}
+
+function resolvePartSet(spec) {
+  if (!spec) return null;
+  const raw = typeof spec === "string" ? spec.split(",") : Array.from(spec);
+  const parts = new Set();
+  for (const item of raw) {
+    const trimmed = String(item).trim();
+    if (trimmed) parts.add(trimmed);
+  }
+  return parts.size ? parts : null;
+}
+
+/** Allowed targets for `restore`, or null to download every archive in the manifests. */
+export function resolveTargets(spec, host = `${process.platform}-${process.arch}`) {
+  if (!spec || spec === "all") return null;
+  const allowed = new Set();
+  for (const raw of String(spec).split(",")) {
+    const item = raw.trim();
+    if (!item) continue;
+    if (item === "all") return null;
+    if (item === "host") {
+      allowed.add(host);
+      allowed.add("wasm32");
+    } else {
+      allowed.add(item);
+    }
+  }
+  return allowed.size ? allowed : null;
+}
+
+async function transfer(url, options, consume, policy = {}) {
   const direct = directDns(new URL(url));
+  const method = options.method ?? "GET";
+  const timeouts = policy.timeoutsMs ?? (method === "GET" ? (direct ? directGetTimeoutsMs : getTimeoutsMs) : writeTimeoutsMs);
+  const maxAttempts = timeouts.length;
+  const backoffMs = policy.backoffMs ?? ((attempt) => attempt * 1000);
+  const callerSignal = options.signal;
   for (let attempt = 1; ; attempt++) {
+    callerSignal?.throwIfAborted();
     try {
-      // Directly, each route keeps a deadline of its own (fetchHandoff); otherwise the request keeps one minute.
-      const response = await fetchHandoff(url, { ...options, redirect: "error", ...(direct ? {} : { signal: AbortSignal.timeout(60_000) }) });
+      // Directly, pass the escalating attempt deadline to fetchHandoff's routeMs so retries do not stay pinned at 15 s;
+      // otherwise GETs cut stalls fast and retry via AbortSignal.timeout.
+      const timeoutMs = timeouts[Math.min(attempt - 1, timeouts.length - 1)];
+      const signal = direct
+        ? callerSignal
+        : callerSignal
+          ? AbortSignal.any([AbortSignal.timeout(timeoutMs), callerSignal])
+          : AbortSignal.timeout(timeoutMs);
+      const fetcher = policy.fetcher ?? fetchHandoff;
+      const response = await fetcher(
+        url,
+        { ...options, redirect: "error", ...(signal ? { signal } : {}) },
+        direct ? { routeMs: timeoutMs } : undefined,
+      );
       if (response.ok) return await consume(response);
       const text = (await response.text().catch(() => "")).trim().slice(0, 200);
       throw Object.assign(new Error("HTTP " + response.status + (text ? ": " + text : "")), { status: response.status });
     } catch (error) {
       const status = error?.status;
-      if (attempt === 3 || (status && status < 500 && status !== 429)) throw error;
-      log((options.method ?? "GET") + " " + new URL(url).pathname + " attempt " + attempt + " failed (" + reason(error) + "); again in " + attempt + " s");
+      if (direct && !callerSignal?.aborted && !(status && status < 500 && status !== 429)) {
+        preferredRoutes.delete(direct + "\0" + new URL(url).origin);
+      }
+      if (callerSignal?.aborted || attempt >= maxAttempts || (status && status < 500 && status !== 429)) throw error;
+      const delay = backoffMs(attempt);
+      log(method + " " + new URL(url).pathname + " attempt " + attempt + " failed (" + reason(error) + "); again in " + (delay / 1000) + " s");
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => { callerSignal?.removeEventListener("abort", stop); resolve(); }, delay);
+        const stop = () => { clearTimeout(timer); reject(callerSignal.reason); };
+        callerSignal?.addEventListener("abort", stop, { once: true });
+      });
     }
-    await new Promise((resolve) => setTimeout(resolve, attempt * 1000));
   }
 }
 
@@ -272,28 +356,82 @@ function receiptLocation(key) {
     : { endpoint, receipt: key };
 }
 
-async function restore(dir, sha) {
+export async function restore(dir, sha, options = {}) {
   if (!/^[a-f0-9]{40}$/.test(sha)) throw new Error("Missing source commit for native artifacts");
+  const allowed = resolveTargets(options.targets, options.host);
+  const excludedParts = resolvePartSet(options.excludeParts);
+  const cacheDir = options.cacheDir !== undefined ? String(options.cacheDir) : (process.env.STILLFAIL_NATIVE_CACHE ?? "");
+  const rawConcurrency = options.concurrency ?? 4;
+  const concurrency = Number.isFinite(rawConcurrency) ? Math.max(1, Math.floor(rawConcurrency)) : 4;
+  const policy = {
+    ...(options.getTimeoutsMs ? { timeoutsMs: options.getTimeoutsMs } : {}),
+    ...(options.backoffMs ? { backoffMs: options.backoffMs } : {}),
+    ...(options.fetcher ? { fetcher: options.fetcher } : {}),
+  };
+  const restored = new Set();
   const files = await readdir(dir).catch((error) => { if (error.code === "ENOENT") return []; throw error; });
   for (const manifest of files.filter((f) => /^natives(-mac|-mac-reader|-win-reader|-harness)?\.r2\.json$/.test(f))) {
     const entries = JSON.parse(await readFile(join(dir, manifest), "utf8"));
     for (const { name, sha256, chunks } of entries) {
       if (!asset.test(name) || !/^[a-f0-9]{64}$/.test(sha256) || !Array.isArray(chunks) || !chunks.length ||
           !chunks.every((key) => typeof key === "string" && receipt.exec(receiptLocation(key).receipt)?.[1] === sha)) throw new Error("Invalid native manifest");
+      const meta = archiveMeta(name);
+      if (allowed && meta && !allowed.has(meta.target)) continue;
+      if (excludedParts && meta && excludedParts.has(meta.part)) continue;
+      if (restored.has(name)) continue;
+      // When STILLFAIL_NATIVE_CACHE is set (shared NVMe across ci-1 runners), scripts/native.ts checks the cache before
+      // STILLFAIL_NATIVE_INBOX. Skip re-downloading via R2 if the entry is already complete and unlocked: touch .access
+      // first (so a concurrent trimCache sees fresh mtime before deleting), then verify no .lock is held and manifest
+      // is still present.
+      if (cacheDir && meta) {
+        const entryDir = join(cacheDir, meta.part, `${meta.target}-${meta.key}`);
+        const cachedManifest = join(entryDir, "manifest.json");
+        if ((await stat(cachedManifest).catch(() => null))?.isFile()) {
+          const access = join(cacheDir, ".access", meta.part, `${meta.target}-${meta.key}`);
+          await mkdir(dirname(access), { recursive: true }).then(() => writeFile(access, "")).catch(() => {});
+          const locked = Boolean(await stat(`${entryDir}.lock`).catch(() => null));
+          if (!locked && (await stat(cachedManifest).catch(() => null))?.isFile()) {
+            restored.add(name);
+            console.log("Already in native cache: " + name);
+            continue;
+          }
+        }
+      }
+      const results = new Array(chunks.length);
+      let next = 0;
+      let firstError = null;
+      const abort = new AbortController();
+      const worker = async () => {
+        while (firstError === null) {
+          const index = next++;
+          if (index >= chunks.length) break;
+          const { endpoint: host, receipt: key } = receiptLocation(chunks[index]);
+          try {
+            results[index] = Buffer.from(await transfer(host + "/" + key, { signal: abort.signal }, (r) => r.arrayBuffer(), policy));
+          } catch (error) {
+            if (firstError === null) {
+              firstError = error;
+              abort.abort(error);
+            }
+            break;
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, worker));
+      if (firstError !== null) throw firstError;
       const tmp = join(dir, randomUUID() + ".part");
       try {
         const hash = createHash("sha256");
         const file = await open(tmp, "wx");
         try {
-          for (const stored of chunks) {
-            const { endpoint: host, receipt: key } = receiptLocation(stored);
-            const bytes = Buffer.from(await transfer(host + "/" + key, {}, (r) => r.arrayBuffer()));
+          for (const bytes of results) {
             hash.update(bytes);
             await file.writeFile(bytes);
           }
         } finally { await file.close(); }
         if (hash.digest("hex") !== sha256) throw new Error("Native archive failed SHA-256 verification: " + name);
         await rename(tmp, join(dir, name));
+        restored.add(name);
         console.log("Verified from R2: " + name);
       } finally { await rm(tmp, { force: true }); }
     }
@@ -308,8 +446,15 @@ function isMain() {
 }
 
 if (isMain()) {
-  const [op, dir, arg] = process.argv.slice(2);
-  if (op === "put") await put(dir, arg);
-  else if (op === "get") await restore(dir, arg);
-  else throw new Error("Usage: native-handoff.mjs put DIR MANIFEST | get DIR COMMIT");
+  const [op, dir, arg, ...rest] = process.argv.slice(2);
+  if (op === "put" && rest.length === 0) await put(dir, arg);
+  else if (op === "get") {
+    let targets, excludeParts;
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--targets" && i + 1 < rest.length) targets = rest[++i];
+      else if (rest[i] === "--exclude-parts" && i + 1 < rest.length) excludeParts = rest[++i];
+      else throw new Error("Usage: native-handoff.mjs put DIR MANIFEST | get DIR COMMIT [--targets SPEC] [--exclude-parts PARTS]");
+    }
+    await restore(dir, arg, { targets, excludeParts });
+  } else throw new Error("Usage: native-handoff.mjs put DIR MANIFEST | get DIR COMMIT [--targets SPEC] [--exclude-parts PARTS]");
 }

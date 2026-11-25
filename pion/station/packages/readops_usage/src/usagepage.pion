@@ -252,7 +252,8 @@ fn is_runtime_kind(s : String) -> Bool {
   s == "devin" ||
   s == "hermes" ||
   s == "agy" ||
-  s == "pi"
+  s == "pi" ||
+  s == "copilot"
 }
 
 /// providers.ts `cleanEndpoint`: an address trimmed, without a trailing slash; none unless http(s).

@@ -34,6 +34,21 @@ test "a panel's switch row with a note of several lines: its switch on its title
 }
 
 ///|
+test "consecutive wide small-panel switch rows with notes keep vertical padding between note and next title" {
+  let t = parts_tester(320.0, 600.0, fn(root) {
+    panel_in_lend(root, Wide, 0.0, sides=16.0, small=true)
+    panel_group_node(root, fn() { "" }, fn(g) {
+      panel_switch_row_node(g, fn() { "第一项" }, fn() { true }, fn(_) {  }, note=fn() { "第一项说明" })
+      panel_switch_row_node(g, fn() { "第二项" }, fn() { true }, fn(_) {  }, note=fn() { "第二项说明" })
+    })
+  })
+  let (_, ny, _, nh) = t.rect_of("第一项说明").unwrap()
+  let (_, t2y, _, _) = t.rect_of("第二项").unwrap()
+  let gap = t2y - (ny + nh)
+  assert_true(gap >= menu_row_over * 2.0 - 1.0, msg="tight vertical gap between consecutive wide switch rows: \{gap}")
+}
+
+///|
 test "a row that does what cannot be undone, busy: not done while it is under way, done once it is not" {
   let busy = @signals.signal(true)
   let done = Ref(0)

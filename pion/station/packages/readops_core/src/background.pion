@@ -87,22 +87,22 @@ pub fn has_legacy_decision_time(db : sql_db::Db) -> Result[Bool, ReadError] {
   Ok(true)
 }
 
-pub fn policy_checks_jval(
+fn policy_checks_rows(
   db : sql_db::Db,
   args : base_codec::Json,
-) -> Result[js_json::JValue, ReadError] {
+) -> Result[Option[(Int, Array[(String, base_codec::Json, Option[js_json::JValue])])], ReadError] {
   match has_legacy_decision_time(db) {
-    Ok(true) => return Ok(js_json::JValue::Null)
+    Ok(true) => return Ok(None)
     Ok(false) => ()
     Err(e) => return Err(e)
   }
   match exists_in(db, "index", "decision_checks_lately") {
-    Ok(false) => return Ok(js_json::JValue::Null)
+    Ok(false) => return Ok(None)
     Ok(true) => ()
     Err(e) => return Err(e)
   }
   match exists_in(db, "index", "decision_checks_session") {
-    Ok(false) => return Ok(js_json::JValue::Null)
+    Ok(false) => return Ok(None)
     Ok(true) => ()
     Err(e) => return Err(e)
   }
@@ -121,7 +121,7 @@ pub fn policy_checks_jval(
     Ok(rs) => rs
     Err(e) => {
       if str_contains_sub(e.message, "no such index") || str_contains_sub(e.message, "no such table") {
-        return Ok(js_json::JValue::Null)
+        return Ok(None)
       }
       return Err(ReadError::Sql(e))
     }
@@ -149,24 +149,128 @@ pub fn policy_checks_jval(
       None => ()
     }
   }
-  let (failed, options_jv) = tally_background_selected_jval(rev_entries)
-  Ok(
-    js_json::JValue::Obj([
-      (js_json::utf16_units("checked"), js_json::JValue::Num(order.length().to_double())),
-      (js_json::utf16_units("failed"), js_json::JValue::Num(failed.to_double())),
-      (js_json::utf16_units("options"), options_jv),
-    ]),
-  )
+  Ok(Some((order.length(), rev_entries)))
 }
 
-/// Lossless `policyChecks` wire JSON string (preserves lone UTF-16 surrogates in `options` keys
-/// without collapsing `\uD800` and `\uFFFD`).
+pub fn policy_checks_jval(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[js_json::JValue, ReadError] {
+  match policy_checks_rows(db, args) {
+    Ok(None) => Ok(js_json::JValue::Null)
+    Ok(Some((checked, rev_entries))) => {
+      let (failed, options_jv) = tally_background_selected_jval(rev_entries)
+      Ok(
+        js_json::JValue::Obj([
+          (js_json::utf16_units("checked"), js_json::JValue::Num(checked.to_double())),
+          (js_json::utf16_units("failed"), js_json::JValue::Num(failed.to_double())),
+          (js_json::utf16_units("options"), options_jv),
+        ]),
+      )
+    }
+    Err(e) => Err(e)
+  }
+}
+
+/// Pure lossless `policyChecks` wire serializer: preserves exact `picks` insertion order (never
+/// reorders pure-numeric option keys like `["10","2","1"]`), preserves raw UTF-16 lone surrogates
+/// in option keys, and formats `chats[].at` via `fmt_json` (in production `sql_db::stringify_json`)
+/// to keep exact Int64 `repr` (e.g. `9007199254740993`).
+pub fn tally_background_selected_json_str_with(
+  checked : Int,
+  rev_entries : Array[(String, base_codec::Json, Option[js_json::JValue])],
+  fmt_json : (base_codec::Json) -> String,
+) -> String {
+  let options : Map[String, (Int, Array[(String, base_codec::Json, Bool)], Array[Int])] = Map::new()
+  let picks : Array[String] = []
+  let mut failed = 0
+  for i in 0..<rev_entries.length() {
+    let (session, at, detail) = rev_entries[i]
+    let picked_units = match jget(jget(detail, "result"), "selected") {
+      Some(js_json::JValue::Str(u)) => u
+      _ => {
+        failed = failed + 1
+        continue
+      }
+    }
+    let raw_key = utf16_units_map_key(picked_units)
+    let (count, chats, raw_units) = match options.get(raw_key) {
+      Some(o) => o
+      None => {
+        picks.push(raw_key)
+        (0, [], picked_units)
+      }
+    }
+    if chats.length() < VIEW_CHATS {
+      let rec = match jget(detail, "accepted") {
+        Some(js_json::JValue::Bool(true)) => true
+        _ => false
+      }
+      chats.push((session, at, rec))
+    }
+    options.set(raw_key, (count + 1, chats, raw_units))
+  }
+  let sb = StringBuilder::new()
+  sb.write_string("{\"checked\":")
+  sb.write_string(checked.to_string())
+  sb.write_string(",\"failed\":")
+  sb.write_string(failed.to_string())
+  sb.write_string(",\"options\":{")
+  let mut first_opt = true
+  for i in 0..<picks.length() {
+    let raw_key = picks[i]
+    match options.get(raw_key) {
+      Some((count, chats, raw_units)) => {
+        if !first_opt {
+          sb.write_string(",")
+        }
+        first_opt = false
+        sb.write_string(
+          js_json::stringify_with_num(js_json::JValue::Str(raw_units), fn(d : Double) -> String {
+            d.to_string()
+          }),
+        )
+        sb.write_string(":{\"count\":")
+        sb.write_string(count.to_string())
+        sb.write_string(",\"chats\":[")
+        for j in 0..<chats.length() {
+          if j > 0 {
+            sb.write_string(",")
+          }
+          let (sess, at, rec) = chats[j]
+          sb.write_string("{\"session\":")
+          sb.write_string(fmt_json(base_codec::json_str(sess)))
+          sb.write_string(",\"at\":")
+          sb.write_string(fmt_json(at))
+          sb.write_string(",\"recommended\":")
+          sb.write_string(if rec { "true" } else { "false" })
+          sb.write_string("}")
+        }
+        sb.write_string("]}")
+      }
+      None => ()
+    }
+  }
+  sb.write_string("}}")
+  sb.to_string()
+}
+
+pub fn tally_background_selected_json_str(
+  checked : Int,
+  rev_entries : Array[(String, base_codec::Json, Option[js_json::JValue])],
+) -> String {
+  tally_background_selected_json_str_with(checked, rev_entries, sql_db::stringify_json)
+}
+
+/// Lossless `policyChecks` wire JSON string (preserves exact insertion order for numeric option
+/// keys, lone UTF-16 surrogates in option keys, and exact `chats[].at` decimal `repr`).
 pub fn policy_checks_json_str(
   db : sql_db::Db,
   args : base_codec::Json,
 ) -> Result[String, ReadError] {
-  match policy_checks_jval(db, args) {
-    Ok(jv) => Ok(js_json::stringify(jv))
+  match policy_checks_rows(db, args) {
+    Ok(None) => Ok("null")
+    Ok(Some((checked, rev_entries))) => Ok(tally_background_selected_json_str(checked, rev_entries))
     Err(e) => Err(e)
   }
 }

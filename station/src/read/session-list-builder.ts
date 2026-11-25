@@ -7,7 +7,7 @@ export class SessionListBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("session-list", { binary, config: options.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "session-list", "--db", path] },
+      { binary: () => resolveReaderSelection("session-list", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "session-list", "--db", path] },
       "scope",
       "session list preparation",
     );

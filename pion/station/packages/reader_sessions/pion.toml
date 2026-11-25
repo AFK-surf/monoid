@@ -1,0 +1,10 @@
+[package]
+name = "reader_sessions"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { workspace = true }
+builders_core = { workspace = true }
+effect = { workspace = true }
+host_shim = { workspace = true }
+sessions_core = { workspace = true }

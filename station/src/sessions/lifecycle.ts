@@ -33,9 +33,12 @@ import { safeUrl } from "./clones.ts";
 import { roomOfSoon } from "./footprint.ts";
 import { noProfileHere, type Profile, type Runtime, runs, runtimeNamed, runtimeTitle } from "./config.ts";
 import { billedPerUse, FAST_RUNTIMES } from "../agents/profiles.ts";
+import { migratePresetProjectsByRenames, parsePresetProjectsMeta } from "../api/routes/preset-projects.ts";
+import { ensureProjectRegistered } from "../projects/info.ts";
 import { CLIENT_KEY_KEPT_MS, type Hub, connectOf, newChatKey, newSingleSessionKey, newToken } from "./hub.ts";
 import { INTERNAL_CHANNEL, INTERNAL_CONNECT, chatKey, chatWorkspace } from "./internal.ts";
-import { STATION_AUTHOR } from "../store/rows.ts";
+import { STATION_AUTHOR, normalizeProject } from "../store/rows.ts";
+import { presetProjectsOf } from "../../../client/core-ts/src/preset-records.ts";
 
 /// A session of its own, talked to in the station's chat.
 export type NewChat = {
@@ -51,6 +54,10 @@ export type NewChat = {
   context?: number | null;
   title?: string | null;
   createdBy: string;
+  /// The creator's account `sub` (for reading per-person carried preset project preferences).
+  createdBySub?: string | null;
+  /// Explicit project override (`""` cross-project, non-empty project name, `null` unclassified); undefined defers to preset preference / agent.
+  project?: string | null;
   /// The key the asking client knows it by until it is made (`clientKey`): the sidebar's rows say it for a while.
   clientKey?: string | null;
   /// The workspace its chat is in (the asker's, or the opening session's); absent: the station's home one.
@@ -123,7 +130,7 @@ export function ensureConversationChat(hub: Hub, session: string, createdBy: str
 }
 
 /// Opens a chat on the station's pages with a session in it. More sessions can join it later (addToThread).
-export function openChat(hub: Hub, session: string, createdBy: string, title: string | null): ThreadRow {
+export function openChat(hub: Hub, session: string, createdBy: string, title: string | null, initialProject?: string | null): ThreadRow {
   if (!hub.internal) throw new Error("still.fail chat is not available");
   const row = hub.store.getSession(session);
   if (!row) throw new Error(`unknown session ${session}`);
@@ -131,9 +138,7 @@ export function openChat(hub: Hub, session: string, createdBy: string, title: st
   const home = hub.store.homeChat(session) !== null ? null : session;
   // Its own chat keeps the name the session was given before it had one.
   const name = title ?? (home !== null ? row.title : null);
-  const thread = hub.store.openThreadOf(STILLFAIL_SURFACE, INTERNAL_CHANNEL, hub.nextTs(), name, createdBy, home);
-  hub.store.joinThread(thread.id, session, INTERNAL_CONNECT);
-  return thread;
+  return hub.store.openChatAtomic(STILLFAIL_SURFACE, INTERNAL_CHANNEL, hub.nextTs(), name, createdBy, home, session, INTERNAL_CONNECT, initialProject);
 }
 
 function stillfailChat(hub: Hub, thread: number): ThreadRow {
@@ -176,13 +181,21 @@ export function say(hub: Hub, thread: number, user: string, text: string, attach
 /// rather than a connect's, and the profile: one given keeps it there; else the pool picks one with the model on. Only
 /// the profiles allowed in its workspace.
 export async function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang()): Promise<[string, ThreadRow]> {
-  const client = trimmed(options.clientKey);
+  // Validate explicit project BEFORE any DB/disk/clientKey side effects so invalid names never leave orphan sessions.
+  const validatedProject =
+    options.project === undefined
+      ? undefined
+      : options.project === null
+        ? null
+        : normalizeProject(options.project);
+  const checkedOptions = validatedProject === options.project ? options : { ...options, project: validatedProject };
+  const client = trimmed(checkedOptions.clientKey);
   // A reply can be lost when the station restarts. The same request must find the rows already made, including when
   // the process stopped between inserting the session, the thread and its membership.
-  const key = client === null ? newChatKey() : chatKey(`c-${createHash("sha256").update(JSON.stringify([options.ws ?? null, options.createdBy, client])).digest("hex").slice(0, 32)}`, (k) => hub.store.getSession(k) !== null);
+  const key = client === null ? newChatKey() : chatKey(`c-${createHash("sha256").update(JSON.stringify([checkedOptions.ws ?? null, checkedOptions.createdBy, client])).digest("hex").slice(0, 32)}`, (k) => hub.store.getSession(k) !== null);
   // The same request again while this one waits on the disk (a retry): it waits for this one, then finds what it made,
   // picking no account and writing nothing.
-  return client === null ? sessionMade(hub, key, client, options, lang) : oneByKey(hub, key, () => sessionMade(hub, key, client, options, lang));
+  return client === null ? sessionMade(hub, key, client, checkedOptions, lang) : oneByKey(hub, key, () => sessionMade(hub, key, client, checkedOptions, lang));
 }
 
 /// The new sessions being made by their keys, of each hub (`newSession`).
@@ -199,13 +212,67 @@ function oneByKey<T>(hub: Hub, key: string, f: () => Promise<T>): Promise<T> {
   return run;
 }
 
+function resolveInitialProject(hub: Hub, options: NewChat, preset: string | null): string | null | undefined {
+  if (!hub.projectsOn()) return undefined;
+  if (options.project !== undefined) {
+    return options.project === null ? null : normalizeProject(options.project);
+  }
+  const presetId = preset ?? trimmed(options.presetCopy?.id);
+  const sub = trimmed(options.createdBySub);
+  if (presetId !== null && sub !== null) {
+    const wsKey = options.ws ?? hub.homeWorkspace() ?? "";
+    let row = hub.store.presetProjectsWithMeta(wsKey, sub);
+    if (row === null && options.ws === null && wsKey !== "") {
+      row = hub.store.presetProjectsWithMeta("", sub);
+    }
+    if (row !== null) {
+      try {
+        const parsed = presetProjectsOf(JSON.parse(row.json));
+        const meta = parsePresetProjectsMeta(row.meta);
+        const { map } = migratePresetProjectsByRenames(parsed, hub.store.listProjectRenameEvents(wsKey), meta, {
+          isActiveProject: (name) => hub.store.hasLocalProject(wsKey, name, hub.homeWorkspace()),
+        });
+        const pref = map[presetId];
+        if (pref !== undefined && pref.project !== null) return pref.project;
+      } catch {
+        // Corrupt preset_projects JSON: leave thread unclassified.
+      }
+    }
+  }
+  return undefined;
+}
+
+function registerInitialProjectSoon(hub: Hub, ws: string | null, project: string | null | undefined): void {
+  if (typeof project !== "string" || project === "") return;
+  const agentHome = hub.config().agentHome;
+  if (!agentHome) return;
+  void ensureProjectRegistered(agentHome, ws, hub.homeWorkspace(), {
+    name: project,
+    now: hub.store.now(),
+    keepOpIds: hub.store.listPendingRenameInfoOpIds(ws ?? hub.homeWorkspace() ?? ""),
+  })
+    .then((reg) => {
+      if (reg.changed) hub.notifyProjectsChanged(ws);
+    })
+    .catch(() => {});
+}
+
 async function sessionMade(hub: Hub, key: string, client: string | null, options: NewChat, lang: Lang): Promise<[string, ThreadRow]> {
   const config = hub.config();
+  const preset = trimmed(options.preset);
+  const initialProject = resolveInitialProject(hub, options, preset);
   const made = (): [string, ThreadRow] | null => {
     const existing = hub.store.getSession(key);
     if (existing === null) return null;
     if (client !== null) hub.clientKeysMade.set(key, [client, hub.now()]);
-    const thread = hub.store.homeChat(key) ?? openChat(hub, key, options.createdBy, existing.title);
+    let thread = hub.store.homeChat(key);
+    if (thread === null) {
+      thread = openChat(hub, key, options.createdBy, existing.title, initialProject);
+      registerInitialProjectSoon(hub, options.ws ?? null, initialProject);
+    } else if (thread.project !== undefined && thread.project !== "") {
+      // Strictly idempotent retry: never mutate an already-created thread's classification; only ensure PROJECTS.jsonl registration.
+      registerInitialProjectSoon(hub, options.ws ?? null, thread.project);
+    }
     hub.store.joinThread(thread.id, key, INTERNAL_CONNECT);
     return [key, thread];
   };
@@ -227,7 +294,6 @@ async function sessionMade(hub: Hub, key: string, client: string | null, options
   if (profiles.length === 0) throw new Error(noProfileHere(lang, runtime, all));
   const model = trimmed(options.model);
   // (what its preset binds it to, held here too: an app from before or another way in changes none of it)
-  const preset = trimmed(options.preset);
   const bound = options.presetCopy ?? (preset !== null ? await hub.presets.get(options.ws ?? hub.workspaces()[0] ?? null, preset) : null);
   const refused = bound === null ? null : presetRefusal(bound, hub.station(), { runtime, model }, lang);
   if (refused !== null) throw new Error(refused);
@@ -281,6 +347,7 @@ async function sessionMade(hub: Hub, key: string, client: string | null, options
     scope: "all",
     title,
     createdBy: options.createdBy,
+    createdBySub: trimmed(options.createdBySub),
     runtime,
     profile: profile.id,
     profilePinned: wantedProfiles?.length === 1,
@@ -303,7 +370,9 @@ async function sessionMade(hub: Hub, key: string, client: string | null, options
   if (wantedProfiles?.length !== 1 && billedPerUse(profile) && candidatePool.some((p) => !billedPerUse(p))) {
     hub.noteBilledFallback({ session: key, workspace: options.ws ?? null, runtime, profile });
   }
-  return [key, openChat(hub, key, options.createdBy, title)];
+  const thread = openChat(hub, key, options.createdBy, title, initialProject);
+  registerInitialProjectSoon(hub, options.ws ?? null, initialProject);
+  return [key, thread];
 }
 
 /// Changes how a session runs from its next turn on: another profile of its runtime (another account, say), another

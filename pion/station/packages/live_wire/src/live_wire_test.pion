@@ -1,0 +1,217 @@
+// 1:1 port of `station/mb/src/live_wire/live_wire_test.mbt`.
+
+import "js_json"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn opt_str_eq(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+fn opt_int_eq(a : Option[Int], b : Option[Int]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+fn lw_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    "0"
+  } else if js_json::is_safe_integer(d) {
+    d.to_int64().to_string()
+  } else {
+    d.to_string()
+  }
+}
+
+fn said(v : js_json::JValue) -> String {
+  js_json::stringify_with_num(v, lw_fmt_num)
+}
+
+test "live_wire: reads as JSON.parse reads" {
+  let v = Some(obj([("a", jstr("x")), ("e", jstr("")), ("n", js_json::JValue::Null)]))
+  assert(opt_str_eq(str(field(v, "a")), Some("x")))
+  assert(opt_str_eq(str(field(Some(jstr("a")), "a")), None))
+  assert(opt_str_eq(non_empty(field(v, "e")), None))
+  assert(opt_str_eq(non_empty(field(v, "a")), Some("x")))
+  assert(is_str(field(v, "a"), "x"))
+  assert(!is_str(field(v, "n"), "x"))
+  assert(said(or_else(field(v, "n"), jstr("f"))) == "\"f\"")
+  assert(said(or_else(field(v, "missing"), jstr("f"))) == "\"f\"")
+  assert(said(or_else(field(v, "e"), jstr("f"))) == "\"\"")
+  assert(has_prefix("mcp__x", "mcp__"))
+  assert(!has_prefix("mc", "mcp__"))
+}
+
+test "live_wire: pretty and joined" {
+  assert(pretty_with_num(None, lw_fmt_num) == "{}")
+  assert(pretty_with_num(Some(js_json::JValue::Null), lw_fmt_num) == "{}")
+  assert(pretty_with_num(Some(obj([("a", js_json::JValue::Num(1.0))])), lw_fmt_num) == "{\n  \"a\": 1\n}")
+  assert(joined(["a", "", "b"], ", ") == "a, , b")
+  assert(joined([], ",") == "")
+}
+
+test "live_wire: live events" {
+  assert(said(start("1", "tool", None, None)) == "{\"kind\":\"start\",\"id\":\"1\",\"step\":\"tool\"}")
+  assert(
+    said(start("1", "tool", Some("Bash"), Some("ls"))) ==
+    "{\"kind\":\"start\",\"id\":\"1\",\"step\":\"tool\",\"tool\":\"Bash\",\"input\":\"ls\"}",
+  )
+  assert(said(delta("1", "text", "hi")) == "{\"kind\":\"delta\",\"id\":\"1\",\"field\":\"text\",\"text\":\"hi\"}")
+  assert(said(live(end_event("1"))) == "{\"type\":\"live\",\"event\":{\"kind\":\"end\",\"id\":\"1\"}}")
+  assert(said(failed("model", "x")) == "{\"kind\":\"failed\",\"reason\":\"model\",\"message\":\"x\"}")
+  assert(INPUT_MOST == 262144)
+}
+
+test "live_wire: entry state machine helpers" {
+  let open : Array[(String, String)] = []
+  set_entry(open, "a#0", "text")
+  set_entry(open, "t1", "tool")
+  set_entry(open, "a#0", "thinking")
+  assert(opt_int_eq(find_entry(open, "a#0"), Some(0)))
+  assert(has_open_tool(open))
+  let out : Array[js_json::JValue] = []
+  end_non_tool_prefix(open, "a#", out)
+  assert(out.length() == 1)
+  assert(said(out[0]) == "{\"kind\":\"end\",\"id\":\"a#0\"}")
+  assert(opt_int_eq(find_entry(open, "a#0"), None))
+  let phase = transition(None, "requesting", out)
+  assert(opt_str_eq(phase, Some("requesting")))
+  assert(opt_str_eq(transition(phase, "requesting", out), Some("requesting")))
+  assert(out.length() == 2)
+  let ended = end_open(open)
+  assert(ended.length() == 1)
+  assert(!has_open_tool(open))
+  let loaded : Array[(String, String)] = []
+  let state = obj([("open", entries_json([("k1", "v1"), ("k2", "v2")]))])
+  load_entries(state, "open", loaded)
+  assert(loaded.length() == 2)
+  let (k1, v1) = loaded[0]
+  let (k2, v2) = loaded[1]
+  assert(k1 == "k1")
+  assert(v1 == "v1")
+  assert(k2 == "k2")
+  assert(v2 == "v2")
+  assert(said(opt_str_json(None)) == "null")
+  assert(said(opt_str_json(Some("ok"))) == "\"ok\"")
+  assert(said(turn_started()) == "{\"type\":\"turnStarted\"}")
+  assert(said(turn_ended(completed())) == "{\"type\":\"turnEnded\",\"outcome\":{\"kind\":\"completed\"}}")
+  assert(said(aborted()) == "{\"kind\":\"aborted\"}")
+  assert(said(tools_lost_event("err")) == "{\"type\":\"toolsLost\",\"why\":\"err\"}")
+  assert(station_tool("mcp__stillfail__post"))
+  assert(station_tool("stillfail__post"))
+  assert(!station_tool("bash"))
+  assert(str_or_js_with(None, lw_fmt_num) == "")
+  assert(str_or_js_with(Some(js_json::JValue::Num(42.0)), lw_fmt_num) == "42")
+  assert(content_text(Some(jstr("hi"))) == "hi")
+  assert(content_text(Some(jstr("hi")), allow_str=false) == "")
+  assert(
+    content_text(Some(js_json::JValue::Arr([obj([("text", jstr("a"))]), obj([("text", jstr(""))]), obj([("text", jstr("b"))])]))) ==
+    "a\nb",
+  )
+}
+
+test "live_wire: lossless UTF-16 round-trip preserves distinct lone surrogates without collision" {
+  let k1 : Array[Int] = [0xD800]
+  let k2 : Array[Int] = [0xD801]
+  let v1 : Array[Int] = [0x61, 0xDC00]
+  let v2 : Array[Int] = [0x62, 0xD800]
+  let raw_state = obj([
+    (
+      "open",
+      js_json::JValue::Arr([
+        js_json::JValue::Arr([jstr_u16(k1), jstr_u16(v1)]),
+        js_json::JValue::Arr([jstr_u16(k2), jstr_u16(v2)]),
+      ]),
+    ),
+  ])
+  let loaded : Array[(Array[Int], Array[Int])] = []
+  load_entries_u16(raw_state, "open", loaded)
+  // Both lone-surrogate keys MUST coexist without collapsing to U+FFFD!
+  assert(loaded.length() == 2)
+  let sb = StringBuilder::new()
+  js_json::write_utf8_with_num(sb, entries_json_u16(loaded), lw_fmt_num)
+  assert(sb.to_string() == "[[\"\\ud800\",\"a\\udc00\"],[\"\\ud801\",\"b\\ud800\"]]")
+
+  // Lossless start_u16, delta_u16, content_text_u16
+  let ev = delta_u16(k1, "text", v1)
+  let sb2 = StringBuilder::new()
+  js_json::write_utf8_with_num(sb2, ev, lw_fmt_num)
+  assert(sb2.to_string() == "{\"kind\":\"delta\",\"id\":\"\\ud800\",\"field\":\"text\",\"text\":\"a\\udc00\"}")
+  let ct = content_text_u16(
+    Some(js_json::JValue::Arr([obj([("text", jstr_u16(k1))]), obj([("text", jstr_u16(k2))])])),
+  )
+  assert(u16_eq(ct, [0xD800, 0x0A, 0xD801]))
+
+  // Full lossless `_u16` state-machine chain with distinct lone-surrogate keys `\ud800` & `\ud801`:
+  // load_entries_u16 -> end_entry_u16 (closes only \ud800) -> has_open_tool_u16 ->
+  // end_non_tool_prefix_u16 -> end_open_u16 -> str_or_js_u16_with
+  let p_k1 : Array[Int] = [0xD800]
+  let p_k2 : Array[Int] = [0xD801]
+  let p_text : Array[Int] = [0xD801, 0x23, 0x30] // "\ud801#0"
+  let open_state = obj([
+    (
+      "open",
+      js_json::JValue::Arr([
+        js_json::JValue::Arr([jstr_u16(p_k1), jstr("text")]),
+        js_json::JValue::Arr([jstr_u16(p_k2), jstr("tool")]),
+        js_json::JValue::Arr([jstr_u16(p_text), jstr("thinking")]),
+      ]),
+    ),
+  ])
+  let open_u16 : Array[(Array[Int], Array[Int])] = []
+  load_entries_u16(open_state, "open", open_u16)
+  assert(open_u16.length() == 3)
+  assert(has_open_tool_u16(open_u16))
+
+  let evs : Array[js_json::JValue] = []
+  end_entry_u16(open_u16, p_k1, evs)
+  assert(open_u16.length() == 2)
+  assert(evs.length() == 1)
+  let sb_e1 = StringBuilder::new()
+  js_json::write_utf8_with_num(sb_e1, evs[0], lw_fmt_num)
+  assert(sb_e1.to_string() == "{\"kind\":\"end\",\"id\":\"\\ud800\"}")
+  assert(has_open_tool_u16(open_u16))
+
+  // Close non-tool entries prefixed with "\ud801#" (leaves tool entry "\ud801" open)
+  end_non_tool_prefix_u16(open_u16, [0xD801, 0x23], evs)
+  assert(open_u16.length() == 1)
+  assert(evs.length() == 2)
+  let sb_e2 = StringBuilder::new()
+  js_json::write_utf8_with_num(sb_e2, evs[1], lw_fmt_num)
+  assert(sb_e2.to_string() == "{\"kind\":\"end\",\"id\":\"\\ud801#0\"}")
+  assert(has_open_tool_u16(open_u16))
+
+  // Close remaining open tool entry "\ud801"
+  let rest_evs = end_open_u16(open_u16)
+  assert(open_u16.length() == 0)
+  assert(!has_open_tool_u16(open_u16))
+  assert(rest_evs.length() == 1)
+  let sb_e3 = StringBuilder::new()
+  js_json::write_utf8_with_num(sb_e3, rest_evs[0], lw_fmt_num)
+  assert(sb_e3.to_string() == "{\"kind\":\"end\",\"id\":\"\\ud801\"}")
+
+  assert(u16_eq(str_or_js_u16_with(Some(jstr_u16(p_k1)), lw_fmt_num), p_k1))
+  assert(u16_eq(str_or_js_u16_with(None, lw_fmt_num), []))
+
+  // Lossless failed_u16 & opt_str_json_u16 preserve lone surrogate `\ud800`
+  let sb_f = StringBuilder::new()
+  js_json::write_utf8_with_num(sb_f, failed_u16("model", [0x61, 0xD800]), lw_fmt_num)
+  assert(sb_f.to_string() == "{\"kind\":\"failed\",\"reason\":\"model\",\"message\":\"a\\ud800\"}")
+  let sb_o1 = StringBuilder::new()
+  js_json::write_utf8_with_num(sb_o1, opt_str_json_u16(Some([0xD800])), lw_fmt_num)
+  assert(sb_o1.to_string() == "\"\\ud800\"")
+  let sb_o2 = StringBuilder::new()
+  js_json::write_utf8_with_num(sb_o2, opt_str_json_u16(None), lw_fmt_num)
+  assert(sb_o2.to_string() == "null")
+}

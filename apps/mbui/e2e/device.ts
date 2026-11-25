@@ -235,7 +235,8 @@ if (process.argv[2] === "device") {
   mkdirSync(data, { recursive: true });
   // What it seals, in a file of its own (the system's secure storage, as it outlives the app).
   const sealedAt = join(data, "sealed.json");
-  const kept = new Map<string, Uint8Array>(existsSync(sealedAt) ? Object.entries(JSON.parse(readFileSync(sealedAt, "utf8")) as Record<string, string>).map(([k, v]) => [k, Buffer.from(v, "hex")]) : []);
+  // Store plain Uint8Arrays (never Node Buffers, whose `.slice()` returns a shared view rather than a copy).
+  const kept = new Map<string, Uint8Array>(existsSync(sealedAt) ? Object.entries(JSON.parse(readFileSync(sealedAt, "utf8")) as Record<string, string>).map(([k, v]) => [k, new Uint8Array(Buffer.from(v, "hex"))]) : []);
   const save = () => writeFileSync(sealedAt, JSON.stringify(Object.fromEntries([...kept].map(([k, v]) => [k, Buffer.from(v).toString("hex")]))));
   // Each time the person would have been asked (a value sealed for their presence read, or they asked to say yes),
   // a line, written as it happens: it outlives the process, as the driver reads it after a restart. Its time and the
@@ -243,11 +244,22 @@ if (process.argv[2] === "device") {
   // person 7 times" and nothing of why).
   const noteAsked = (what: string, reason: string) => appendFileSync(askedFile(data), `${new Date().toISOString()} ${what} ${reason.replace(/\s+/g, " ")}\n`);
   const sealer = {
+    // Copy bytes in and out with `new Uint8Array(...)` (matching FakeHost in client/core-ts/src/testing.ts): callers
+    // zero unsealed key buffers (`boxPriv.fill(0)` in views/pair.ts, `priv.fill(0)` in views/vault.ts) after use, which
+    // would otherwise wipe `kept`'s in-memory buffers for the rest of the process lifetime.
     get: async (key: string, user: boolean, reason: string) => {
       if (user) noteAsked(`get ${key}`, reason);
-      return kept.get(key) ?? null;
+      const v = kept.get(key);
+      return v ? new Uint8Array(v) : null;
     },
-    set: async (key: string, value: Uint8Array, _user: boolean) => void (kept.set(key, value), save()),
+    getMany: async (keys: readonly string[], user: boolean, reason: string) => {
+      if (user && keys.length > 0) noteAsked(`get ${keys.join(",")}`, reason);
+      return keys.map((key) => {
+        const v = kept.get(key);
+        return v ? new Uint8Array(v) : null;
+      });
+    },
+    set: async (key: string, value: Uint8Array, _user: boolean) => void (kept.set(key, new Uint8Array(value)), save()),
     delete: async (key: string) => void (kept.delete(key), save()),
     ask: async (reason: string) => noteAsked("ask", reason),
   };
@@ -380,13 +392,14 @@ export class Device {
     this.child = this.#fork(true);
     await this.call("client.device", this.#about());
   }
-  /// How many times its sealer was asked with the person present since the device was new: a value sealed for their
-  /// presence read (`get` with `user`), or the person asked to say yes (`ask`). None while it had no sealer.
+  /// How many times its sealer was asked with the person present since the device was new: a value (or batch of values
+  /// in one prompt, `getMany`) sealed for their presence read (`get` with `user`), or the person asked to say yes
+  /// (`ask`). None while it had no sealer.
   asked(): number {
     return this.askedWhat().length;
   }
-  /// What its sealer was asked from the `from`th time on (`asked`), a line each: when, what (`get <key>`, `ask`), the
-  /// reason the core gave.
+  /// What its sealer was asked from the `from`th time on (`asked`), a line each: when, what (`get <key>`, `get <k1,k2>`,
+  /// `ask`), the reason the core gave.
   askedWhat(from = 0): string[] {
     const at = askedFile(join(dir, this.name));
     return (existsSync(at) ? readFileSync(at, "utf8").split("\n").filter((l) => l !== "") : []).slice(from);

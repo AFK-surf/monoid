@@ -1,15 +1,20 @@
 // Workspace project & tag classification, silent project-creation proposals, and cross-station
 // lightweight RPC handlers (`projects.names`, `thread.classify`).
+import { presetProjectsOf } from "../../../client/core-ts/src/preset-records.ts";
 import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
+import { Refused as HttpRefused } from "../api/request.ts";
 import { Refused } from "../jobs/remote.ts";
 import { stationLang } from "../ops/i18n.ts";
 import {
+  ensureProjectRegistered,
   normalizeNote,
   normalizeRefs,
   projectsInfoPath,
+  pruneAppliedOpIds,
   readProjectsInfoBestEffort,
   renameProjectInfo,
+  stripInternalProjectInfo,
   updateProjectInfo,
 } from "../projects/info.ts";
 import {
@@ -79,7 +84,7 @@ export function parseClassificationArgs(args: Args): ClassificationInput {
 
 function assertProjectsEnabled(hub: Hub): void {
   if (!hub.projectsOn()) {
-    throw new Error("chat classification is not enabled on this station");
+    throw new HttpRefused(403, "chat classification is not enabled on this station");
   }
 }
 
@@ -204,14 +209,34 @@ export async function knownWorkspaceProjects(hub: Hub, key: string | null, ws: s
   return known;
 }
 
-async function peerHasProject(hub: Hub, key: string | null, ws: string | null, project: string): Promise<boolean> {
+async function peerHasProject(
+  hub: Hub,
+  key: string | null,
+  ws: string | null,
+  project: string,
+  opts?: { offlineIsUncertain?: boolean },
+): Promise<{ exists: boolean; uncertain?: string }> {
   const call = key !== null ? peersOf(hub, key) : hub.peersInWorkspace(ws);
-  if (!call) return false;
-  const roster = await call("", { method: "peers" }).catch(() => null);
+  if (!call) return { exists: false };
+  let roster: Json = null;
+  try {
+    roster = await call("", { method: "peers" });
+  } catch (e) {
+    return { exists: false, uncertain: `peer roster lookup failed: ${(e as Error).message}` };
+  }
   const selfId = hub.station() ?? "";
   const stations: { id: string; name?: string; online?: boolean }[] = Array.isArray(roster?.stations) ? roster.stations : [];
-  const peers = stations.filter((s) => typeof s?.id === "string" && s.id !== "" && s.id !== selfId && s.online !== false);
+  const otherStations = stations.filter((s) => typeof s?.id === "string" && s.id !== "" && s.id !== selfId);
   let found = false;
+  let uncertain: string | undefined;
+  if (opts?.offlineIsUncertain === true) {
+    for (const p of otherStations) {
+      if (p.online === false) {
+        uncertain ??= `peer ${p.id} is offline`;
+      }
+    }
+  }
+  const peers = otherStations.filter((s) => s.online !== false);
   await Promise.all(peers.map(async (p) => {
     if (found) return;
     try {
@@ -224,11 +249,44 @@ async function peerHasProject(hub: Hub, key: string | null, ws: string | null, p
       if (res?.exists === undefined && Array.isArray(res?.projects)) {
         if (res.projects.some((item: Json) => item?.name === project)) found = true;
       }
-    } catch {
-      // Best-effort peer lookup.
+    } catch (e) {
+      const msg = (e as Error).message;
+      // Ignore rig refusals and legacy unsupported peers; record real reachability/RPC failures as uncertain.
+      if (!isRigRefusal(msg) && !(e instanceof Refused && isUnsupportedError(msg))) {
+        uncertain ??= `peer ${p.id} lookup failed: ${msg}`;
+      }
     }
   }));
-  return found;
+  return { exists: found, ...(uncertain !== undefined ? { uncertain } : {}) };
+}
+
+async function isKnownProject(
+  hub: Hub,
+  key: string | null,
+  ws: string | null,
+  project: string,
+  opts?: { fresh?: boolean; skipPrivate?: boolean; strictPeer?: boolean; offlineIsUncertain?: boolean },
+): Promise<boolean> {
+  if (project === "") return true;
+  const home = hub.homeWorkspace();
+  // O(log N) indexed existence check on local active unhidden threads first (never truncated by cap).
+  if (hub.store.hasActiveProjectInWorkspace(ws, home, project)) return true;
+  // Next check local PROJECTS.jsonl (skipPrivate when invoked by a peer so 0600 private entries are not leaked).
+  const info = await readProjectsInfoBestEffort(hub.config().agentHome, ws, home, { skipPrivate: opts?.skipPrivate ?? (key === null) });
+  if (Object.hasOwn(info.projects, project)) return true;
+  // Fast hit from peer cache if warm and not requiring an authoritative fresh check.
+  if (opts?.fresh !== true) {
+    const wsKey = ws ?? home ?? "";
+    const cached = hub.getPeerProjectsCache(wsKey, hub.store.now(), PEER_CACHE_TTL_MS);
+    if (cached !== null && cached.includes(project)) return true;
+  }
+  // Exact single-name peer check (unbounded by 200-item list cap, works on cold cache too).
+  const peer = await peerHasProject(hub, key, ws, project, { offlineIsUncertain: opts?.offlineIsUncertain });
+  if (peer.exists) return true;
+  if (opts?.strictPeer === true && peer.uncertain !== undefined) {
+    throw new HttpRefused(503, `cannot verify whether project ${JSON.stringify(project)} exists on peers (${peer.uncertain}); retry when peers are reachable`);
+  }
+  return false;
 }
 
 async function assertKnownProject(
@@ -236,24 +294,10 @@ async function assertKnownProject(
   key: string | null,
   ws: string | null,
   project: string,
-  opts?: { fresh?: boolean },
+  opts?: { fresh?: boolean; skipPrivate?: boolean; strictPeer?: boolean; offlineIsUncertain?: boolean },
 ): Promise<void> {
-  if (project === "") return;
-  const home = hub.homeWorkspace();
-  // O(log N) indexed existence check on local active unhidden threads first (never truncated by cap).
-  if (hub.store.hasActiveProjectInWorkspace(ws, home, project)) return;
-  // Next check local PROJECTS.jsonl (skipPrivate when invoked by a peer so 0600 private entries are not leaked).
-  const info = await readProjectsInfoBestEffort(hub.config().agentHome, ws, home, { skipPrivate: key === null });
-  if (project in info.projects) return;
-  // Fast hit from peer cache if warm and not requiring an authoritative fresh check.
-  if (opts?.fresh !== true) {
-    const wsKey = ws ?? home ?? "";
-    const cached = hub.getPeerProjectsCache(wsKey, hub.store.now(), PEER_CACHE_TTL_MS);
-    if (cached !== null && cached.includes(project)) return;
-  }
-  // Exact single-name peer check (unbounded by 200-item list cap, works on cold cache too).
-  if (await peerHasProject(hub, key, ws, project)) return;
-  throw new Error(`unknown project ${JSON.stringify(project)}: agents cannot create new projects directly — use project_manage(action="propose") to propose it, or pick an existing project`);
+  if (await isKnownProject(hub, key, ws, project, { ...opts, strictPeer: opts?.strictPeer ?? false })) return;
+  throw new HttpRefused(404, `unknown project ${JSON.stringify(project)}: agents cannot create new projects directly — use project_manage(action="propose") to propose it, or pick an existing project`);
 }
 
 /// Classifies a local or cross-station chat (called by `chat_configure` when only classification params are given).
@@ -345,6 +389,38 @@ export async function projectNamesForPeer(
   return { projects, tags: local.tags };
 }
 
+/// Forward-resolves `startName` through causal rename events `(renamedAt, originSeq, seq)` so out-of-order peer
+/// deliveries and late `pending_info` retries converge to the final target name and carry the final event watermark.
+function forwardResolveTarget(
+  events: readonly { seq: number; from: string; to: string; renamedAt: number; wallAt?: number; originSeq: number; opId: string | null }[],
+  startName: string,
+  startAt: number,
+  startOriginSeq: number,
+  selfOpId: string | null,
+  startWallAt: number = startAt,
+): { target: string; advanced: boolean; at: number; wallAt: number; originSeq: number; seq: number } {
+  let cur = startName;
+  let curAt = startAt;
+  let curWallAt = startWallAt;
+  let curOriginSeq = startOriginSeq;
+  let curSeq = 0;
+  let advanced = false;
+  if (cur === "") return { target: cur, advanced, at: curAt, wallAt: curWallAt, originSeq: curOriginSeq, seq: curSeq };
+  for (const ev of events) {
+    if (selfOpId !== null && ev.opId === selfOpId) continue;
+    if (ev.from === cur && (ev.renamedAt > curAt || (ev.renamedAt === curAt && ev.originSeq > curOriginSeq))) {
+      cur = ev.to;
+      curAt = ev.renamedAt;
+      curWallAt = ev.wallAt ?? ev.renamedAt;
+      curOriginSeq = ev.originSeq;
+      curSeq = ev.seq;
+      advanced = true;
+      if (cur === "") break;
+    }
+  }
+  return { target: cur, advanced, at: curAt, wallAt: curWallAt, originSeq: curOriginSeq, seq: curSeq };
+}
+
 /// Mesh RPC handler: `thread.classify` (single thread classification or bulk project rename/merge in `ws`).
 export async function classifyForPeer(hub: Hub, request: Json, ws: string | null): Promise<Json> {
   const effectiveWs = ws ?? hub.homeWorkspace();
@@ -355,7 +431,49 @@ export async function classifyForPeer(hub: Hub, request: Json, ws: string | null
     if (typeof request.rename.from !== "string" || typeof request.rename.to !== "string") {
       throw new Error("rename.from and rename.to must be strings");
     }
-    return hub.store.renameProjectInWorkspace(effectiveWs, hub.homeWorkspace(), request.rename.from, request.rename.to);
+    const home = hub.homeWorkspace();
+    const wsKey = effectiveWs ?? home ?? "";
+    const from = normalizeProject(request.rename.from);
+    const to = normalizeProject(request.rename.to);
+    const opId = typeof request.rename.opId === "string" && request.rename.opId.trim() !== "" ? request.rename.opId.trim() : null;
+    const incomingRenamedAt =
+      typeof request.rename.renamedAt === "number" && Number.isFinite(request.rename.renamedAt)
+        ? request.rename.renamedAt
+        : hub.store.now();
+    const incomingWallAt =
+      typeof request.rename.wallAt === "number" && Number.isFinite(request.rename.wallAt)
+        ? request.rename.wallAt
+        : incomingRenamedAt;
+    const incomingOriginSeq =
+      typeof request.rename.originSeq === "number" && Number.isFinite(request.rename.originSeq)
+        ? request.rename.originSeq
+        : 0;
+
+    return withWorkspaceRenameLock(hub, wsKey, async () => {
+      const events = hub.store.listProjectRenameEvents(wsKey);
+      const resolved = forwardResolveTarget(events, to, incomingRenamedAt, incomingOriginSeq, opId, incomingWallAt);
+      const committed = hub.store.commitLocalProjectRenameAtomic({
+        ws: effectiveWs,
+        home,
+        action: request.rename.action === "merge" ? "merge" : "rename",
+        from,
+        to,
+        effectiveTo: resolved.target,
+        ...(resolved.advanced
+          ? { effectiveWatermark: { at: resolved.at, wallAt: resolved.wallAt, originSeq: resolved.originSeq, seq: resolved.seq } }
+          : {}),
+        renamedAt: incomingRenamedAt,
+        wallAt: incomingWallAt,
+        originSeq: incomingOriginSeq,
+        opKey: null,
+        opId,
+        pendingPeers: [],
+        pendingRoster: false,
+        pendingInfo: false,
+      });
+      for (const [wk, sub] of committed.presetNotifies) hub.notifyPresetProjectsChanged(wk, sub);
+      return committed.local;
+    });
   }
   const chat = typeof request?.chat === "string" ? request.chat.trim() : "";
   if (chat === "") throw new Error("chat is required");
@@ -1017,6 +1135,400 @@ export async function proposeProject(hub: Hub, key: string, rawArgs: Record<stri
   return work;
 }
 
+export type RenameMergePeer = {
+  station: string;
+  name?: string;
+  status: "ok" | "offline" | "unsupported" | "rig" | "error";
+  updated?: number;
+  skippedLocked?: number;
+  error?: string;
+};
+
+export type RenameMergeResult = {
+  action: "rename" | "merge";
+  from: string;
+  to: string;
+  local: { updated: number; skippedLocked: number };
+  infoError?: string;
+  rosterError?: string;
+  peers: RenameMergePeer[];
+};
+
+/// Rewrites local carried `preset_projects` entries pointing to `from` -> `to` with `rev++` and notifies SSE.
+function rewritePresetProjectsForRename(hub: Hub, ws: string | null, from: string, to: string): void {
+  const home = hub.homeWorkspace();
+  const now = hub.store.now();
+  const wsKeys = new Set<string>([ws ?? home ?? ""]);
+  if (ws === null || ws === home) wsKeys.add("");
+  for (const wsKey of wsKeys) {
+    for (const [sub, rawJson] of hub.store.listPresetProjectsForWorkspace(wsKey)) {
+      try {
+        const map = presetProjectsOf(JSON.parse(rawJson));
+        let changed = false;
+        for (const pid of Object.keys(map)) {
+          if (Object.hasOwn(map, pid) && map[pid]!.project === from) {
+            map[pid] = { project: to, rev: map[pid]!.rev + 1, at: now };
+            changed = true;
+          }
+        }
+        if (changed) {
+          hub.store.putPresetProjects(wsKey, sub, JSON.stringify(map));
+          hub.notifyPresetProjectsChanged(wsKey, sub);
+        }
+      } catch {
+        // Leave unparseable preset_projects row untouched.
+      }
+    }
+  }
+}
+
+/// Per-(Hub, workspace) async mutex serializing rename/merge operations so concurrent `X -> Z` and `Y -> Z`
+/// can never both pass preflight and silently merge.
+const renameLocks = new WeakMap<Hub, Map<string, Promise<void>>>();
+
+async function withWorkspaceRenameLock<T>(hub: Hub, wsKey: string, fn: () => Promise<T>): Promise<T> {
+  let byWs = renameLocks.get(hub);
+  if (byWs === undefined) {
+    byWs = new Map();
+    renameLocks.set(hub, byWs);
+  }
+  const prev = byWs.get(wsKey) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((r) => { release = r; });
+  const tail = prev.then(() => next, () => next);
+  byWs.set(wsKey, tail);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (byWs.get(wsKey) === tail) byWs.delete(wsKey);
+  }
+}
+
+const eventInfoLocks = new WeakMap<Hub, Map<number, Promise<void>>>();
+
+async function withEventInfoLock<T>(hub: Hub, eventSeq: number, fn: () => Promise<T>): Promise<T> {
+  let bySeq = eventInfoLocks.get(hub);
+  if (bySeq === undefined) {
+    bySeq = new Map();
+    eventInfoLocks.set(hub, bySeq);
+  }
+  const prev = bySeq.get(eventSeq) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((r) => { release = r; });
+  const tail = prev.then(() => next, () => next);
+  bySeq.set(eventSeq, tail);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (bySeq.get(eventSeq) === tail) bySeq.delete(eventSeq);
+  }
+}
+
+/// Renames or merges project `fromRaw` -> `toRaw` locally and across all reachable workspace peers, updating `PROJECTS.jsonl`
+/// and any carried `preset_projects` defaults pointing to `from`.
+/// Shared by `project_manage(action="rename"|"merge")` and member HTTP routes `POST /projects/rename|merge`.
+export async function renameOrMergeProject(
+  hub: Hub,
+  ws: string | null,
+  action: "rename" | "merge",
+  fromRaw: string,
+  toRaw: string,
+  opts?: { key?: string | null; checkKnown?: boolean; skipPrivate?: boolean; opKey?: string },
+): Promise<RenameMergeResult> {
+  assertProjectsEnabled(hub);
+  let from: string;
+  let to: string;
+  try {
+    from = normalizeProject(fromRaw);
+    to = normalizeProject(toRaw);
+  } catch (e) {
+    throw new HttpRefused(400, (e as Error).message);
+  }
+  if (from === "") throw new HttpRefused(400, "from is required");
+  if (to === "" && action === "rename") throw new HttpRefused(400, "to is required for rename");
+  if (from === to) throw new HttpRefused(400, "from and to must differ");
+  const key = opts?.key ?? null;
+  const skipPrivate = opts?.skipPrivate ?? false;
+  const opKey = typeof opts?.opKey === "string" && opts.opKey.trim() !== "" ? opts.opKey.trim() : null;
+  const home = hub.homeWorkspace();
+  const wsKey = ws ?? home ?? "";
+
+  // Phase 1 (under workspace mutex): preflight + atomic local commit only, then release lock BEFORE peer RPC fan-out
+  // so two peers concurrently renaming disjoint projects never AB-BA deadlock on `classifyForPeer`.
+  const call = key !== null ? peersOf(hub, key) : hub.peersInWorkspace(ws);
+  const phase1 = await withWorkspaceRenameLock(hub, wsKey, async () => {
+    const existingByOp = opKey !== null ? hub.store.findProjectRenameByOpKey(wsKey, opKey) : null;
+    if (existingByOp !== null) {
+      if (existingByOp.action !== action || existingByOp.from !== from || existingByOp.to !== to) {
+        throw new HttpRefused(409, "idempotency key already used for a different project rename/merge");
+      }
+      if (existingByOp.pendingPeers.length === 0 && !existingByOp.pendingRoster && existingByOp.pendingInfoState === 0) {
+        return {
+          done: true as const,
+          result: {
+            action,
+            from: existingByOp.from,
+            to: existingByOp.to,
+            local: { updated: 0, skippedLocked: 0 },
+            peers: [],
+          },
+        };
+      }
+    }
+    const unfinished = existingByOp ?? hub.store.findUnfinishedProjectRename(wsKey, action, from, to);
+    const isContinuation = unfinished !== null;
+
+    if (!isContinuation && hub.store.hasUnfinishedRenameFrom(wsKey, from, to)) {
+      throw new HttpRefused(
+        409,
+        `previous rename/merge from ${JSON.stringify(from)} still has pending work; retry it to completion before renaming ${JSON.stringify(from)} again`,
+        { noCache: true },
+      );
+    }
+
+    if (!isContinuation && opts?.checkKnown !== false) {
+      await assertKnownProject(hub, key, ws, from, { fresh: true, skipPrivate, strictPeer: false });
+      if (action === "merge" && to !== "") {
+        await assertKnownProject(hub, key, ws, to, { fresh: true, skipPrivate, strictPeer: false });
+      }
+      if (action === "rename") {
+        if (hub.store.hasPendingProjectTarget(wsKey, to)) {
+          throw new HttpRefused(409, `project ${JSON.stringify(to)} is already targeted by an unfinished rename/merge`, { noCache: true });
+        }
+        if (await isKnownProject(hub, key, ws, to, { fresh: true, skipPrivate, strictPeer: true, offlineIsUncertain: true })) {
+          throw new HttpRefused(409, `project ${JSON.stringify(to)} already exists; use merge instead`);
+        }
+      }
+    }
+
+    let roster: Json = null;
+    let rosterError: string | undefined;
+    if (call) {
+      try {
+        roster = await call("", { method: "peers" });
+      } catch (e) {
+        rosterError = (e as Error).message;
+      }
+    }
+    const selfId = hub.station() ?? "";
+    const stations: { id: string; name?: string; online?: boolean }[] = Array.isArray(roster?.stations) ? roster.stations : [];
+    const allOtherStations = stations.filter((s) => typeof s?.id === "string" && s.id !== "" && s.id !== selfId);
+
+    if (isContinuation) {
+      if (opKey !== null && existingByOp === null) {
+        hub.store.bindProjectRenameOpKey(wsKey, opKey, unfinished.seq);
+      }
+      return {
+        done: false as const,
+        isContinuation: true,
+        eventSeq: unfinished.seq,
+        originSeq: unfinished.originSeq,
+        opId: unfinished.opId ?? randomUUID(),
+        renamedAt: unfinished.renamedAt,
+        wallAt: unfinished.wallAt,
+        local: { updated: 0, skippedLocked: 0 },
+        pendingPeers: unfinished.pendingPeers,
+        pendingRoster: unfinished.pendingRoster,
+        pendingInfoState: unfinished.pendingInfoState,
+        phase1InfoError: undefined as string | undefined,
+        rosterError,
+        allOtherStations,
+      };
+    }
+
+    const opId = randomUUID();
+    // Strictly monotonic logical timestamp per workspace prevents same-ms collisions across chained renames and peers,
+    // while `wallAt` preserves the real wall-clock time so explicit user rev+1 edits after same-ms renames inherit the watermark.
+    const wallAt = hub.store.now();
+    const lastRenamedAt = hub.store.maxProjectRenameAt(wsKey);
+    const renamedAt = Math.max(wallAt, lastRenamedAt + 1);
+    const pendingRoster = Boolean(call && rosterError !== undefined);
+    let pendingInfoState: 0 | 1 | 2 | 3 = 1;
+    const initialPending = pendingRoster ? [] : allOtherStations.map((t) => t.id);
+    const committed = hub.store.commitLocalProjectRenameAtomic({
+      ws,
+      home,
+      action,
+      from,
+      to,
+      renamedAt,
+      wallAt,
+      opKey,
+      opId,
+      pendingPeers: initialPending,
+      pendingRoster,
+      pendingInfo: true,
+    });
+    for (const [wk, sub] of committed.presetNotifies) hub.notifyPresetProjectsChanged(wk, sub);
+
+    // Execute local PROJECTS.jsonl migration BEFORE releasing the workspace lock and fanning out peer RPCs
+    // (pure local disk I/O, zero RPCs -> zero deadlock risk), so a newly created same-name project during
+    // in-flight peer RPCs can never be clobbered by this rename's initial info migration.
+    let phase1InfoError: string | undefined;
+    await withEventInfoLock(hub, committed.seq, async () => {
+      try {
+        const keepOpIds = hub.store.listPendingRenameInfoOpIds(wsKey);
+        const infoRes = await renameProjectInfo(hub.config().agentHome, ws, home, from, to, renamedAt, {
+          createIfMissing: committed.local.updated > 0,
+          opId,
+          keepOpIds,
+        });
+        if (infoRes.changed) hub.notifyProjectsChanged(ws);
+        const nextState: 0 | 2 =
+          infoRes.alreadyApplied === true || infoRes.changed || committed.local.updated > 0 || (initialPending.length === 0 && !pendingRoster) ? 0 : 2;
+        hub.store.markRenameInfoState(committed.seq, nextState);
+        pendingInfoState = nextState;
+        await pruneAppliedOpIds(hub.config().agentHome, ws, home, [opId], hub.store.listPendingRenameInfoOpIds(wsKey)).catch(() => {});
+      } catch (e) {
+        phase1InfoError = (e as Error).message;
+      }
+    });
+
+    return {
+      done: false as const,
+      isContinuation: false,
+      eventSeq: committed.seq,
+      originSeq: committed.originSeq,
+      opId,
+      renamedAt,
+      wallAt,
+      local: committed.local,
+      pendingPeers: initialPending,
+      pendingRoster,
+      pendingInfoState,
+      phase1InfoError,
+      rosterError,
+      allOtherStations,
+    };
+  });
+
+  if (phase1.done) return phase1.result;
+
+  // Phase 2 (outside workspace mutex): monotonic peer fan-out & 4-state `pending_info` (`0|1|2|3`) convergence.
+  let { rosterError } = phase1;
+  const { pendingRoster, isContinuation, eventSeq, originSeq, opId, renamedAt, wallAt, local, allOtherStations } = phase1;
+  const peers: RenameMergePeer[] = [];
+  const resolvedPeers: string[] = [];
+
+  if (!call) {
+    if (isContinuation && (phase1.pendingPeers.length > 0 || pendingRoster)) {
+      rosterError = "peer transport unavailable";
+    }
+  } else if (rosterError === undefined) {
+    let targets: { id: string; name?: string; online?: boolean }[];
+    if (pendingRoster) {
+      const claimed = hub.store.claimRenameRosterResult(eventSeq, allOtherStations.map((s) => s.id));
+      if (claimed) {
+        targets = allOtherStations;
+      } else {
+        const latest = hub.store.getProjectRenameEvent(eventSeq);
+        const byId = new Map(allOtherStations.map((s) => [s.id, s]));
+        targets = (latest?.pendingPeers ?? []).map((id) => byId.get(id) ?? { id, online: false });
+      }
+    } else {
+      const pendingSet = new Set(phase1.pendingPeers);
+      const byId = new Map(allOtherStations.map((s) => [s.id, s]));
+      targets = [...pendingSet].map((id) => byId.get(id) ?? { id, online: false });
+    }
+    await Promise.all(targets.map(async (p) => {
+      if (p.online === false) {
+        peers.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "offline" });
+        if (action === "merge") resolvedPeers.push(p.id);
+        return;
+      }
+      try {
+        const res = await call(p.id, { method: THREAD_CLASSIFY, rename: { from, to, action, opId, renamedAt, wallAt, originSeq } });
+        peers.push({
+          station: p.id,
+          ...(p.name ? { name: p.name } : {}),
+          status: "ok",
+          updated: Number(res?.updated ?? 0),
+          skippedLocked: Number(res?.skippedLocked ?? 0),
+        });
+        resolvedPeers.push(p.id);
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (isRigRefusal(msg)) {
+          peers.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "rig" });
+          resolvedPeers.push(p.id);
+        } else if (e instanceof Refused && isUnsupportedError(msg)) {
+          peers.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "unsupported" });
+          resolvedPeers.push(p.id);
+        } else if (/timed out|offline|not connected|unreachable|PeerGone/i.test(msg)) {
+          peers.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "offline", error: msg });
+          if (action === "merge") resolvedPeers.push(p.id);
+        } else {
+          peers.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "error", error: msg });
+        }
+      }
+    }));
+    const anyRemoteUpdated = peers.some((p) => (p.updated ?? 0) > 0);
+    hub.store.markRenamePeersResolved(eventSeq, resolvedPeers, anyRemoteUpdated);
+  }
+
+  const totalUpdated = local.updated + peers.reduce((acc, p) => acc + (p.updated ?? 0), 0);
+  let infoError: string | undefined = phase1.phase1InfoError;
+  await withEventInfoLock(hub, eventSeq, async () => {
+    const latest = hub.store.getProjectRenameEvent(eventSeq);
+    if (latest === null) return;
+    if (latest.pendingInfoState === 1 && isContinuation) {
+      try {
+        const effectiveInfoTo = forwardResolveTarget(hub.store.listProjectRenameEvents(wsKey), to, renamedAt, originSeq, opId, wallAt).target;
+        const hadAnyUpdated = totalUpdated > 0 || latest.localUpdated > 0 || latest.remoteUpdated;
+        const keepOpIds = hub.store.listPendingRenameInfoOpIds(wsKey);
+        const infoRes = await renameProjectInfo(hub.config().agentHome, ws, home, from, effectiveInfoTo, renamedAt, {
+          createIfMissing: hadAnyUpdated,
+          opId,
+          keepOpIds,
+        });
+        if (infoRes.changed) hub.notifyProjectsChanged(ws);
+        const nextState: 0 | 2 =
+          infoRes.alreadyApplied === true ||
+          infoRes.changed ||
+          hadAnyUpdated ||
+          (latest.pendingPeers.length === 0 && !latest.pendingRoster)
+            ? 0
+            : 2;
+        hub.store.markRenameInfoState(eventSeq, nextState);
+        await pruneAppliedOpIds(hub.config().agentHome, ws, home, [opId], hub.store.listPendingRenameInfoOpIds(wsKey)).catch(() => {});
+      } catch (e) {
+        infoError = (e as Error).message;
+      }
+    } else if (latest.pendingInfoState === 3) {
+      const effectiveInfoTo = forwardResolveTarget(hub.store.listProjectRenameEvents(wsKey), to, renamedAt, originSeq, opId, wallAt).target;
+      try {
+        if (effectiveInfoTo !== "") {
+          const reg = await ensureProjectRegistered(hub.config().agentHome, ws, home, {
+            name: effectiveInfoTo,
+            now: renamedAt,
+            keepOpIds: hub.store.listPendingRenameInfoOpIds(wsKey),
+          });
+          if (reg.changed) hub.notifyProjectsChanged(ws);
+        }
+        hub.store.markRenameInfoState(eventSeq, 0);
+      } catch (e) {
+        infoError = (e as Error).message;
+      }
+    } else if (latest.pendingInfoState === 2 && latest.pendingPeers.length === 0 && !latest.pendingRoster) {
+      hub.store.markRenameInfoState(eventSeq, 0);
+    }
+  });
+  hub.invalidateProjectsCache(ws);
+  return {
+    action,
+    from,
+    to,
+    local,
+    ...(infoError !== undefined ? { infoError } : {}),
+    ...(rosterError !== undefined ? { rosterError } : {}),
+    peers,
+  };
+}
+
 /// Main dispatcher for the `project_manage` MCP tool.
 export async function projectManage(hub: Hub, key: string, raw: Args): Promise<string> {
   assertProjectsEnabled(hub);
@@ -1053,73 +1565,17 @@ export async function projectManage(hub: Hub, key: string, raw: Args): Promise<s
         ...(args.refs !== undefined ? { refs: args.refs as string[] | null } : {}),
         ...(args.delete === true ? { delete: true } : {}),
         now: hub.store.now(),
+        keepOpIds: hub.store.listPendingRenameInfoOpIds(ws ?? home ?? ""),
       });
       hub.notifyProjectsChanged(ws);
-      return JSON.stringify({ updated: true, project: name, info: doc.projects[name] ?? null });
+      return JSON.stringify({ updated: true, project: name, info: stripInternalProjectInfo(doc).projects[name] ?? null });
     }
     case "rename":
     case "merge": {
       if (typeof args.from !== "string") throw new Error("args.from must be a string");
       if (typeof args.to !== "string") throw new Error("args.to must be a string");
-      const from = normalizeProject(args.from);
-      const to = normalizeProject(args.to);
-      if (from === "") throw new Error("args.from is required");
-      if (to === "" && action === "rename") throw new Error("args.to is required for rename");
-      if (from === to) throw new Error("args.from and args.to must differ");
-      // Always verify source project authoritatively (`fresh: true`, bypassing stale peerProjectsCache) before any mutation.
-      await assertKnownProject(hub, key, ws, from, { fresh: true });
-      if (action === "merge" && to !== "") {
-        await assertKnownProject(hub, key, ws, to, { fresh: true });
-      }
-
-      const local = hub.store.renameProjectInWorkspace(ws, home, from, to);
-
-      const peers: { station: string; name?: string; status: "ok" | "offline" | "unsupported" | "rig" | "error"; updated?: number; skippedLocked?: number; error?: string }[] = [];
-      const call = peersOf(hub, key);
-      if (call) {
-        const roster = await call("", { method: "peers" }).catch(() => null);
-        const selfId = hub.station() ?? "";
-        const stations: { id: string; name?: string; online?: boolean }[] = Array.isArray(roster?.stations) ? roster.stations : [];
-        const targets = stations.filter((s) => typeof s?.id === "string" && s.id !== "" && s.id !== selfId);
-        await Promise.all(targets.map(async (p) => {
-          if (p.online === false) {
-            peers.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "offline" });
-            return;
-          }
-          try {
-            const res = await call(p.id, { method: THREAD_CLASSIFY, rename: { from, to } });
-            peers.push({
-              station: p.id,
-              ...(p.name ? { name: p.name } : {}),
-              status: "ok",
-              updated: Number(res?.updated ?? 0),
-              skippedLocked: Number(res?.skippedLocked ?? 0),
-            });
-          } catch (e) {
-            const msg = (e as Error).message;
-            if (isRigRefusal(msg)) {
-              peers.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "rig" });
-            } else if (e instanceof Refused && isUnsupportedError(msg)) {
-              peers.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "unsupported" });
-            } else if (/timed out|offline|not connected|unreachable|PeerGone/i.test(msg)) {
-              peers.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "offline", error: msg });
-            } else {
-              peers.push({ station: p.id, ...(p.name ? { name: p.name } : {}), status: "error", error: msg });
-            }
-          }
-        }));
-      }
-
-      const totalUpdated = local.updated + peers.reduce((acc, p) => acc + (p.updated ?? 0), 0);
-      let infoError: string | undefined;
-      try {
-        await renameProjectInfo(hub.config().agentHome, ws, home, from, to, hub.store.now(), { createIfMissing: totalUpdated > 0 });
-        hub.notifyProjectsChanged(ws);
-      } catch (e) {
-        infoError = (e as Error).message;
-      }
-      hub.invalidateProjectsCache(ws);
-      return JSON.stringify({ action, from, to, local, ...(infoError !== undefined ? { infoError } : {}), peers }, null, 2);
+      const res = await renameOrMergeProject(hub, ws, action, args.from, args.to, { key, checkKnown: true });
+      return JSON.stringify(res, null, 2);
     }
     case "reclassify": {
       const items = Array.isArray(args.items) ? args.items : [];

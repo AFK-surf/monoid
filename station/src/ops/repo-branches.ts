@@ -56,16 +56,13 @@ export const runRepoGit: RepoGitRun = (dir, args, timeoutMs = REPO_GIT_TIMEOUT_M
     const env = { ...startEnv(), GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new" };
     const child = spawn("git", ["-C", dir, ...args], { env, stdio: ["ignore", "pipe", "ignore"] });
     let stdout = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (d: string) => {
-      if (stdout.length < 512 * 1024) stdout += d;
-    });
     let late = false;
     // timer: a deadline to a process (local git check / bundle / gc given timeoutMs at most)
     const stop = wall.after(timeoutMs, () => {
       late = true;
       child.kill("SIGKILL");
     });
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     child.on("error", () => {
       stop();
       resolve({ ok: false, stdout: "" });
@@ -73,6 +70,10 @@ export const runRepoGit: RepoGitRun = (dir, args, timeoutMs = REPO_GIT_TIMEOUT_M
     child.on("close", (code) => {
       stop();
       resolve({ ok: !late && code === 0, stdout });
+    });
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (d: string) => {
+      if (stdout.length < 512 * 1024) stdout += d;
     });
   });
 

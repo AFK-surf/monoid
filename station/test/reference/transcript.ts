@@ -12,6 +12,7 @@
 // - cursor: <home>/cursor/sessions/<id>.jsonl, the station's own (agents/cursor-bridge.mjs), lines of {time, type: user |
 //   assistant | thinking | tool | usage | end, …}
 // - devin: <home>/devin/sessions/<id>.jsonl, the station's own (agents/devin.ts), lines as Cursor's
+// - copilot: <home>/copilot/sessions/<id>.jsonl, the station's own (agents/copilot-bridge.mjs), lines as Cursor's
 //
 // JSON is read with JSON.parse, so a value shows as JavaScript has it: a number written `1.0` shows `1`, a key that is
 // an integer comes first, a number past 2^53 rounds (serde_json keeps each as written). Transcripts rarely have them.
@@ -220,7 +221,7 @@ export function timelineOf(runtime: RuntimeKind, record: Json, state: ReadState,
   if (runtime === "claude") claudeTimeline(record, state, out);
   else if (runtime === "dsh") dshTimeline(record, out);
   else if (runtime === "grok") grokTimeline(record, out);
-  else if (runtime === "cursor" || runtime === "devin" || runtime === "hermes" || runtime === "agy") cursorTimeline(record, out);
+  else if (runtime === "cursor" || runtime === "devin" || runtime === "hermes" || runtime === "agy" || runtime === "copilot") cursorTimeline(record, out);
   else codexTimeline(record, state, out);
 }
 

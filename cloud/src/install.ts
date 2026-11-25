@@ -444,6 +444,8 @@ PLIST
 elif user_systemd; then
   service_file="$unit_dir/$unit"
   # KillMode=process: stopping the service stops the station, not the jobs it runs (the next one takes them up).
+  # OOMPolicy=continue: the kernel killing one process of it for memory (a job's browser, a session's tool) leaves the
+  # station running; systemd's default stops the whole service then, every session and job with it.
   cat > "$tmp/service" <<UNIT
 [Unit]
 Description=still.fail station
@@ -456,6 +458,7 @@ Environment=STILLFAIL_DATA=$data
 Restart=always
 RestartSec=5
 KillMode=process
+OOMPolicy=continue
 StandardOutput=append:$data/stillfail.log
 StandardError=append:$data/stillfail.log
 

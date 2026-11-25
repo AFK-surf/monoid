@@ -312,3 +312,30 @@ test "value_slider_node: remote track taps to min and max endpoints settle at ex
     assert_eq(t2.drawn_glass().length(), 0)
   }
 }
+
+///|
+test "value_slider_node: held past its most and brought back, the thumb stays under the point the finger took" {
+  // (80 of 0…100 along a 300 track whose thumb's middle runs 260 from x 40: its middle at 248)
+  let v = @signals.signal(80.0)
+  let t = slider_case(v)
+  let y = 60.0 + 14.0
+  t.press_at(248.0, y)
+  t.run_for(part_whole_ms)
+  // (on past its most: held there, at 100)
+  for x in [290.0, 330.0, 380.0] {
+    t.move_to(x, y)
+    t.run_for(@ui.input_step_ms)
+  }
+  assert_eq(v.get(), 100.0)
+  // (back, still past where it stopped: it stays at its most, never leaving it before the finger comes back to it)
+  t.move_to(320.0, y)
+  t.run_for(@ui.input_step_ms)
+  assert_eq(v.get(), 100.0)
+  // (back to 13 past where it was taken: as far from 80 as 13 of 260 is of the whole, 85)
+  t.move_to(261.0, y)
+  t.run_for(@ui.input_step_ms)
+  assert_eq(v.get(), 85.0)
+  t.release(261.0, y)
+  t.run_for(slider_past_ms)
+  assert_eq(v.get(), 85.0)
+}

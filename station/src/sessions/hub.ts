@@ -198,6 +198,8 @@ export type HubOptions = {
   isRig?: (ws: string | null) => boolean;
   /// Fired whenever `PROJECTS.jsonl` changes locally so `/events` pushes `"projects"` to clients.
   onProjectsChanged?: (ws: string | null) => void;
+  /// Fired whenever a user's `preset_projects` changes locally (e.g. during project rename/merge).
+  onPresetProjectsChanged?: (ws: string, sub: string) => void;
   /// Reader for `<data>/upkeep-state.json` (default: `ops/upkeep-state.ts` `readUpkeepState`).
   readUpkeepState?: (dataDir: string) => Promise<UpkeepState>;
   /// Called when a session automatically falls back to a pay-as-you-go profile while subscriptions exist.
@@ -638,6 +640,11 @@ export class Hub {
     this.options.onProjectsChanged?.(ws);
   }
 
+  /// Notifies a user's clients that their `preset_projects` row changed locally (e.g. after project rename/merge).
+  notifyPresetProjectsChanged(ws: string, sub: string): void {
+    this.options.onPresetProjectsChanged?.(ws, sub);
+  }
+
   getPeerProjectsCache(wsKey: string, now: number, ttlMs: number): string[] | null {
     const hit = this.peerProjectsCache.get(wsKey);
     if (!hit || now - hit.at >= ttlMs) return null;
@@ -906,6 +913,7 @@ export class Hub {
     }
     // Found before anything is taken up or started: what nobody takes up of these is ended, nothing started meanwhile.
     const before = (this.options.runners ? this.options.runners().map((id) => ({ id }) as RunnerInfo) : await liveRunners(this.config().dataDir, { strict: true })).filter((r) => !isTerminalRunner(r.id));
+    this.options.taking?.();
     await this.adopt(handed);
     // A crash left runners without a snapshot: what they keep is taken up as it stands.
     const runners = new Set(before.map((r) => r.id));
@@ -1018,17 +1026,19 @@ export class Hub {
         const driver = this.sessionDriver(snap.runtime);
         const memory = await this.deps.linkSkills(row);
         const options = await openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory);
-        agent = await driver.adopt({ ...options, router }, snap.agent, actor.listener(generation));
+        agent = await driver.adopt({ ...options, router, taking: this.options.taking }, snap.agent, actor.listener(generation));
       } catch (error) {
         actor.cancelAdopt(generation);
         log.warn("hub", "a session's runtime could not be taken up; it resumes the usual way", { session: row.key, error: (error as Error).message });
       }
       if (!agent) actor.cancelAdopt(generation);
+      this.options.taking?.();
     }
     // Its runtime not taken up: a turn it had is resumed the usual way (recover).
     if (withProcess && !agent) return;
     // (taken up whole before its idle time is looked at: `idleNow`)
     await actor.adopt(snap, agent, ranOn);
+    this.options.taking?.();
     log.info("hub", "session taken up from the previous station", { session: row.key, withAgent: agent !== null });
     if (agent) {
       this.adopted.add(row.key);

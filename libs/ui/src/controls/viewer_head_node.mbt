@@ -10,7 +10,8 @@
 /// at most (32 over 640) and 1080 wide at most; `name` first (`meta` after it over 640), cut short before the tools give
 /// way, then what `tools` makes in the row of tools it is given (`holds`: which they are, as that
 /// changes), then × (`close` as it is pressed). There while `awake`
-/// (in over wake_ms, out over sleep_ms, from where it is at that moment), as far in as `shown` says of the node as it is
+/// (in over wake_ms, out over sleep_ms, from where it is at that moment; at once where its viewer says so:
+/// viewer_bars_at_once), as far in as `shown` says of the node as it is
 /// drawn (the viewer's fade). Its tools' tips in `tips`. The bar's node.
 #callsite(autofill(loc))
 pub fn viewer_head_node(
@@ -38,13 +39,26 @@ pub fn viewer_head_node(
     let woke = @signals.untracked(awake)
     fade.from = if woke { 1.0 } else { 0.0 }
     fade.to = fade.from
+    // (put there at once: told so, its way going nowhere telling nothing)
+    let put_told = @signals.signal(0)
     room.reacts(awake, fn(on) {
       let at = room.cause_at()
       if on != (fade.to > 0.5) {
-        fade.go(room, if on { 1.0 } else { 0.0 }, at, if on { wake_ms } else { sleep_ms }, Out)
+        let to = if on { 1.0 } else { 0.0 }
+        // (at once where its viewer says so: viewer_bars_at_once)
+        if viewer_bars_at_once(room) {
+          fade.put(to)
+          put_told.set(put_told.untracked() + 1)
+        } else {
+          fade.go(room, to, at, if on { wake_ms } else { sleep_ms }, Out)
+        }
       }
     })
-    room.alpha(By(fn() { fade.shown(room) * shown(room) })) |> ignore
+    room.alpha(By(fn() {
+      put_told.get() |> ignore
+      fade.shown(room) * shown(room)
+    }))
+    |> ignore
     room.box(fn(down) {
       down.height(By(fn() { Some(dmax(top(), if small() { vfr_head_top_small } else { vfr_head_top })) })) |> ignore
     })

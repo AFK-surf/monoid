@@ -3,6 +3,8 @@
 import { createHash, createHmac } from "node:crypto";
 import { open } from "node:fs/promises";
 import { wall } from "../ops/fibers.ts";
+import { oneBytes } from "../mesh/files.ts";
+import { type Pace, SLICE } from "./pace.ts";
 import type { NormalizedS3Target } from "./backup-config.ts";
 import {
   FRAME_PLAIN_MAX,
@@ -101,6 +103,8 @@ export type S3ClientOptions = {
   now?: () => number;
   multipartThreshold?: number;
   multipartPartSize?: number;
+  /// The rate uploads share with the station's other backups (pace.ts); none: sent as fast as the line takes them.
+  pace?: Pace;
 };
 
 export type SignedS3Request = {
@@ -121,12 +125,14 @@ export class S3Client {
   readonly #now: () => number;
   readonly #multipartThreshold: number;
   readonly #multipartPartSize: number;
+  readonly #pace: Pace | null;
 
   constructor(target: NormalizedS3Target, opts: S3ClientOptions = {}) {
     this.target = target;
     this.#now = opts.now ?? (() => wall.now());
     this.#multipartThreshold = opts.multipartThreshold ?? MULTIPART_THRESHOLD;
     this.#multipartPartSize = opts.multipartPartSize ?? MULTIPART_PART_SIZE;
+    this.#pace = opts.pace ?? null;
   }
 
   /// Computes URL and SigV4 headers for an S3 request.
@@ -206,12 +212,23 @@ export class S3Client {
     extraHeaders: Record<string, string> = {},
   ): Promise<Response> {
     const { url, headers } = this.signRequest(method, key, query, body, extraHeaders);
-    const res = await fetch(url, {
+    const sends = method !== "GET" && method !== "HEAD" && method !== "DELETE";
+    const pace = this.#pace;
+    if (!sends || pace === null || !pace.on || body.length === 0) {
+      return await fetch(url, { method, headers, body: sends ? new Uint8Array(body) : undefined });
+    }
+    if (body.length <= SLICE) {
+      await pace.take(body.length);
+      return await fetch(url, { method, headers, body: new Uint8Array(body) });
+    }
+    // Streamed at the pace, its length said so the request is not chunked (S3 refuses a chunked PUT unsigned so).
+    return await fetch(url, {
       method,
-      headers,
-      body: method === "GET" || method === "HEAD" || method === "DELETE" ? undefined : new Uint8Array(body),
-    });
-    return res;
+      headers: { ...headers, "content-length": String(body.length) },
+      // (Node's fetch takes an async iterable as a body)
+      body: pace.paced(oneBytes(body)) as unknown as BodyInit,
+      duplex: "half",
+    } as RequestInit);
   }
 
   async testConnection(): Promise<void> {

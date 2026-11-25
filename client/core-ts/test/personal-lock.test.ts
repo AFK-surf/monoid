@@ -778,3 +778,74 @@ test("a start reads the lock it pinned from the device in one wait, not one wait
     a.runner.shutdown();
   }
 });
+
+test("adbShare personal approvers lists deduplicated normalized trusted devices only when standing is outside", async () => {
+  const c = cloud();
+  const a = device(c, "still.fail 桌面版 · 林的 MacBook Pro");
+  const b = device(c, "b-outside");
+  const freshCloud = cloud();
+  const fresh = device(freshCloud, "f-none");
+  let pairState: unknown = null;
+  const pOut = phone({
+    personal: b.lock,
+    subOf: () => SUB,
+    subs: () => [{ sub: SUB, email: "a@x" }],
+    pair: { begin: () => Effect.void, code: () => Effect.void, cancel: () => {}, state: () => pairState },
+  });
+  const pMember = phone({ personal: a.lock, subOf: () => SUB, subs: () => [{ sub: SUB, email: "a@x" }] });
+  const pNone = phone({ personal: fresh.lock, subOf: () => SUB, subs: () => [{ sub: SUB, email: "a@x" }] });
+  try {
+    await a.runner.run(a.lock.open(SUB, "why"));
+    const idMonoid = "05".repeat(32);
+    const idYoudid = "06".repeat(32);
+    const idMonoidZone = "07".repeat(32);
+    const idAndroid = "11".repeat(32);
+    const idIos = "22".repeat(32);
+    const idUnnamed = "33".repeat(32);
+    const idEmpty = "44".repeat(32);
+    await a.runner.run(a.lock.addDevice(SUB, { key: `ed25519:${"0a".repeat(32)}`, id: idMonoid, label: "monoid 桌面版 · 林的 MacBook Pro" }, "why"));
+    await a.runner.run(a.lock.addDevice(SUB, { key: `ed25519:${"0b".repeat(32)}`, id: idYoudid, label: "youdid.wtf 桌面版 · 测试机" }, "why"));
+    await a.runner.run(a.lock.addDevice(SUB, { key: `ed25519:${"0c".repeat(32)}`, id: idMonoidZone, label: "monoid.zone iOS · 林的 iPhone" }, "why"));
+    await a.runner.run(a.lock.addDevice(SUB, { key: `ed25519:${"1a".repeat(32)}`, id: idAndroid, label: "still.fail Android · Pixel 9" }, "why"));
+    // Duplicate id under another key: must be deduplicated, keeping the first entry in order.
+    await a.runner.run(a.lock.addDevice(SUB, { key: `ed25519:${"1b".repeat(32)}`, id: idAndroid, label: "still.fail Android · Pixel 9 Dup" }, "why"));
+    await a.runner.run(a.lock.addDevice(SUB, { key: `ed25519:${"2a".repeat(32)}`, id: idIos, label: "iOS iPhone 16" }, "why"));
+    await a.runner.run(a.lock.addDevice(SUB, { key: `ed25519:${"3a".repeat(32)}`, id: idUnnamed, label: "still.fail 桌面版" }, "why"));
+    await a.runner.run(a.lock.addDevice(SUB, { key: `ed25519:${"4a".repeat(32)}`, id: idEmpty, label: "" }, "why"));
+
+    await b.runner.run(b.lock.refresh(SUB));
+    assert.equal(b.lock.standing(SUB), "outside");
+
+    const beforePair = (pOut.adb.value() as { personal: { standing: string; approvers: unknown[] }[] }).personal[0]!;
+    assert.equal(beforePair.standing, "outside");
+    assert.deepEqual(beforePair.approvers, [
+      { id: a.id, showing: false, kind: "computer", nameText: "林的 MacBook Pro · still.fail 桌面版" },
+      { id: idMonoid, showing: false, kind: "computer", nameText: "林的 MacBook Pro · monoid 桌面版" },
+      { id: idYoudid, showing: false, kind: "computer", nameText: "测试机 · youdid.wtf 桌面版" },
+      { id: idMonoidZone, showing: false, kind: "phone", nameText: "林的 iPhone · monoid.zone iOS" },
+      { id: idAndroid, showing: false, kind: "phone", nameText: "Pixel 9 · still.fail Android" },
+      { id: idIos, showing: false, kind: "phone", nameText: "iOS iPhone 16" },
+      { id: idUnnamed, showing: false, kind: "computer", nameText: `${t("web-pages.security.unnamed")} · still.fail 桌面版` },
+      { id: idEmpty, showing: false, kind: "computer", nameText: t("web-pages.security.appDevice") },
+    ]);
+
+    pairState = { state: "code", devices: 1, approvers: [{ id: idAndroid, showing: true }, { id: a.id, showing: false }] };
+    const duringPair = (pOut.adb.value() as { personal: { approvers: { id: string; showing: boolean }[] }[] }).personal[0]!;
+    assert.equal(duringPair.approvers.find((x) => x.id === idAndroid)?.showing, true);
+    assert.equal(duringPair.approvers.find((x) => x.id === a.id)?.showing, false);
+
+    assert.equal(a.lock.standing(SUB), "member");
+    assert.deepEqual((pMember.adb.value() as { personal: { approvers: unknown[] }[] }).personal[0]!.approvers, []);
+
+    await fresh.runner.run(fresh.lock.refresh(SUB));
+    assert.equal(fresh.lock.standing(SUB), "none");
+    assert.deepEqual((pNone.adb.value() as { personal: { approvers: unknown[] }[] }).personal[0]!.approvers, []);
+  } finally {
+    a.runner.shutdown();
+    b.runner.shutdown();
+    fresh.runner.shutdown();
+    pOut.runner.shutdown();
+    pMember.runner.shutdown();
+    pNone.runner.shutdown();
+  }
+});

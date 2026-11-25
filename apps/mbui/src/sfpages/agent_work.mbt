@@ -113,7 +113,7 @@ fn work_task_node(row : @view.View, src : Source, task : @signals.Signal[Json]) 
   let tv = fn() { Some(task.get()) }
   row.box(fn(r) {
     @sf.style_node(r, fn() { @sf.panel_words_in_node(r).then(work_task) })
-    let tick = steps_seconds(r, src, @signals.untracked(fn() { number(tv(), "since") }))
+    let tick = steps_seconds(r, src, @signals.untracked(fn() { number(tv(), "since") }), minute_past_hour=true)
     r.box(fn(k) {
       @sf.style_node(k, fn() { work_kind_column }, in_row=true)
       k.shrink(Is(0.0)) |> ignore

@@ -242,6 +242,13 @@ export class Attend {
     return all.size > 0 ? all : null;
   }
 
+  /// The station addresses whose chats are currently shown in a visible UI, without recording a reactive read.
+  focusedStations(): Set<string> {
+    const out = new Set<string>();
+    for (const f of this.#focus.values()) if (f.visible && f.chat !== null) out.add(f.chat.station);
+    return out;
+  }
+
   #currentHas(workspace: string): boolean {
     const c = this.current();
     return c === null || c.has(workspace);

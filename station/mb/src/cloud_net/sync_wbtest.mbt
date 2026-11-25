@@ -351,6 +351,11 @@ priv struct Watched {
   probed_through : Array[String]
   recovered : Array[Int64]
   fiber : @effect.Fiber[Unit]
+  /// When it last took a connection through a relay (`last_relay_reach`).
+  reach : Ref[Int64?]
+  /// Its cooldown as kept across processes (`load_recover`, `save_recover`), and each it was given.
+  kept : Ref[(Int64, Int64)?]
+  saved : Array[(Int64, Int64)?]
 }
 
 ///|
@@ -384,15 +389,23 @@ fn watched(probe : Json, status : Json) -> Watched {
 ///|
 /// A watched endpoint homed on `relay_r2`, kept on `relay_r1` and the workspace's `owns` too, those of `answering`
 /// answering their ping.
+/// `rt`: one another watch ran on before (a process after it), `kept` where its cooldown is kept, `start` the time to
+/// start at.
 fn watched_on(
   probe : Json,
   status : Json,
   answering : Array[String],
   owns : Array[String],
+  rt? : @effect.Runtime = @effect.Runtime::new(),
+  kept? : Ref[(Int64, Int64)?] = Ref(None),
+  start? : Int = 0,
+  through? : Map[String, Json] = Map([]),
 ) -> Watched {
-  let rt = @effect.Runtime::new()
+  if start > 0 {
+    rt.advance(start)
+  }
   let c = StateCloud::new(Some(base_state([peer_b])))
-  let kept : Json = {
+  let ways_kept : Json = {
     "w1": {
       "relays": Json::array(owns.map(u => ({ "url": Json::string(u) } : Json))),
       "off": [],
@@ -400,7 +413,7 @@ fn watched_on(
       "station": me_id,
     },
   }
-  let ways = Ways::new(c.view(), Kept::memory(text=kept.stringify()).0, () => 10L)
+  let ways = Ways::new(c.view(), Kept::memory(text=ways_kept.stringify()).0, () => 10L)
   let probes = []
   let probed_through = []
   let recovered = []
@@ -431,20 +444,36 @@ fn watched_on(
     },
     pinged: None,
   }
+  let reach : Ref[Int64?] = Ref(None)
+  let saved : Array[(Int64, Int64)?] = []
   let fiber = rt.fork(async fn() {
-    keep_relays(endpoint, ways, pinger, on_unhealthy=() => recovered.push(rt.now()))
+    keep_relays(
+      endpoint,
+      ways,
+      pinger,
+      on_unhealthy=() => recovered.push(rt.now()),
+      last_relay_reach=() => reach.val,
+      load_recover=async fn() { kept.val },
+      save_recover=async fn(state) {
+        saved.push(state)
+        kept.val = state
+      },
+    )
   })
   let made = {
     rt,
     probe,
     status,
-    through: Map([]),
+    through,
     answering,
     up,
     probes,
     probed_through,
     recovered,
     fiber,
+    reach,
+    kept,
+    saved,
   }
   w.val = Some(made)
   rt.advance(1)
@@ -569,12 +598,12 @@ test "watch: failing through one relay but reached through another never recover
 
 ///|
 test "watch: the first relay letting no probe on, the next two failing: recovered as through one" {
-  let w = watched_on(failed, lost, [relay_r2, relay_r1, relay_own], [relay_own])
-  w.through = Map::from_array([(relay_r2, offline_found)])
-  let from = w.probed_through.length()
+  let w = watched_on(failed, lost, [relay_r2, relay_r1, relay_own], [relay_own], through=Map::from_array([
+    (relay_r2, offline_found),
+  ]))
   w.ticks(3)
-  // (the first check failed through r2 and r1, so the one not failed since is asked first)
-  assert_eq(w.probed_through[from:from + 3].to_owned(), [relay_own, relay_r2, relay_r1])
+  // (past the one it could not get on, to two that answer)
+  assert_eq(w.probed_through[0:3].to_owned(), [relay_r2, relay_r1, relay_own])
   assert_eq(w.recovered, [])
   w.ticks(1)
   assert_eq(w.recovered, [2L * minute])
@@ -603,11 +632,12 @@ test "watch: the first relay letting no probe on, the next reaching the endpoint
 }
 
 ///|
-test "watch: two relays failing in one check count once, on the same timeline; the next check asks the third first" {
-  let w = watched_on(failed, lost, [relay_r2, relay_r1, relay_own], [relay_own])
+test "watch: three relays failing in one check count once, on the same timeline" {
+  let last = "https://d.example"
+  let w = watched_on(failed, lost, [relay_r2, relay_r1, relay_own, last], [relay_own, last])
   w.ticks(3)
-  assert_eq(w.probes, [0L, 0L, 30_000L, 30_000L, 60_000L, 60_000L, 90_000L, 90_000L])
-  assert_eq(w.probed_through[0:4].to_owned(), [relay_r2, relay_r1, relay_own, relay_r2])
+  assert_eq(w.probes, [0L, 0L, 0L, 30_000L, 30_000L, 30_000L, 60_000L, 60_000L, 60_000L, 90_000L, 90_000L, 90_000L])
+  assert_eq(w.probed_through[0:4].to_owned(), [relay_r2, relay_r1, relay_own, last])
   assert_eq(w.recovered, [])
   w.ticks(1)
   assert_eq(w.recovered, [2L * minute])
@@ -810,4 +840,135 @@ fn with_station(state : Json, id : String) -> Json {
   let m = object_copy(state)
   m["station"] = Json::string(id)
   Json::object(m)
+}
+
+///|
+test "watch: two relays failing in one check while a third reaches the endpoint: cleared in that check, never counted" {
+  let w = watched_on({ "ok": true }, lost, [relay_r2, relay_r1, relay_own], [relay_own], through=Map::from_array([
+    (relay_r2, failed),
+    (relay_r1, failed),
+  ]))
+  assert_eq(w.probed_through, [relay_r2, relay_r1, relay_own])
+  assert_eq(w.probes, [0L, 0L, 0L])
+  w.ticks(60)
+  assert_eq(w.recovered, [])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: only two relays, both failing: counted, as no other was left to ask" {
+  let w = watched_on(failed, lost, [relay_r2, relay_r1], [])
+  w.ticks(3)
+  assert_eq(w.probes, [0L, 0L, 30_000L, 30_000L, 60_000L, 60_000L, 90_000L, 90_000L])
+  assert_eq(w.recovered, [])
+  w.ticks(1)
+  assert_eq(w.recovered, [2L * minute])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+/// The time of the check just run (`ticks` leaves the runtime 1 ms after it).
+fn Watched::checked(self : Watched) -> Int64 {
+  self.rt.now() - 1L
+}
+
+///|
+test "watch: a connection taken through a relay lately: not probed, never recovered; a minute without one, probed and recovered again" {
+  let w = watched(failed, lost)
+  w.ticks(4)
+  assert_eq(w.recovered, [2L * minute])
+  let from = w.probes.length()
+  for _ in 0..<20 {
+    w.reach.val = Some(w.checked())
+    w.ticks(1)
+  }
+  assert_eq(w.probes.length(), from)
+  w.ticks(1)
+  assert_eq(w.probes.length(), from + 1)
+  w.ticks(20)
+  assert_eq(w.recovered.length(), 2)
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: a connection taken through a relay clears the probes' failures so far" {
+  let w = watched({ "ok": true }, connected)
+  w.ticks(5)
+  w.probe = failed
+  w.status = lost
+  w.ticks(2)
+  w.reach.val = Some(w.checked())
+  w.ticks(1)
+  let probed = w.probes.length()
+  w.ticks(2)
+  assert_eq(w.probes.length(), probed + 2)
+  assert_eq(w.recovered, [])
+  w.ticks(1)
+  assert_eq(w.recovered, [w.checked()])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: the cooldown outlives the process: the next keeps it past its first two minutes, then doubles it; a well probe after it clears it" {
+  let first = watched(failed, lost)
+  first.ticks(4)
+  assert_eq(first.recovered, [2L * minute])
+  assert_eq(first.saved, [Some((2L * minute, 10L * minute))])
+  first.fiber.interrupt()
+  // The front restarted: the next process, on the same clock, failing on.
+  let next = watched_on(failed, lost, [relay_r2], [relay_own], rt=first.rt, kept=first.kept)
+  let began = next.checked()
+  next.ticks(19)
+  assert_eq(next.recovered, [], msg="within the cooldown kept from the process before")
+  next.ticks(1)
+  assert_eq(next.recovered, [began + 20L * 30_000L])
+  assert_true(next.recovered[0] >= 12L * minute)
+  assert_eq(next.kept.val, Some((next.recovered[0], 20L * minute)))
+  next.probe = { "ok": true }
+  next.ticks(40)
+  assert_eq(next.kept.val, None)
+  assert_eq(next.saved, [Some((next.recovered[0], 20L * minute)), None])
+  next.fiber.interrupt()
+  next.rt.advance(1)
+}
+
+///|
+test "watch: a connection through a relay past the cooldown clears what is kept" {
+  let kept : Ref[(Int64, Int64)?] = Ref(Some((0L, 20L * minute)))
+  let w = watched_on(failed, lost, [relay_r2], [relay_own], kept~, start=5 * 60_000 - 1)
+  w.reach.val = Some(w.checked())
+  w.ticks(1)
+  assert_eq(w.kept.val, Some((0L, 20L * minute)))
+  while w.checked() < 20L * minute {
+    w.reach.val = Some(w.checked())
+    w.ticks(1)
+  }
+  assert_eq(w.kept.val, None)
+  assert_eq(w.saved, [None])
+  assert_eq(w.recovered, [])
+  w.fiber.interrupt()
+  w.rt.advance(1)
+}
+
+///|
+test "watch: a kept cooldown long over, or from the future, is not kept; one out of bounds is held to them" {
+  let old = watched_on(failed, lost, [relay_r2], [relay_own], kept=Ref(Some((0L, 60L * minute))), start=121 * 60_000)
+  old.ticks(4)
+  assert_eq(old.recovered, [121L * minute + 2L * minute])
+  old.fiber.interrupt()
+  old.rt.advance(1)
+  let ahead = watched_on(failed, lost, [relay_r2], [relay_own], kept=Ref(Some((10L * minute, 10L * minute))))
+  ahead.ticks(4)
+  assert_eq(ahead.recovered, [2L * minute])
+  ahead.fiber.interrupt()
+  ahead.rt.advance(1)
+  let long = watched_on(failed, lost, [relay_r2], [relay_own], kept=Ref(Some((0L, 24L * 60L * minute))), start=60_000)
+  long.ticks(120)
+  assert_eq(long.recovered, [60L * minute])
+  long.fiber.interrupt()
+  long.rt.advance(1)
 }

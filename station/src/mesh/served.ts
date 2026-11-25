@@ -10,7 +10,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
-import { MbProcess } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf } from "../read/mb-reader.ts";
 import { COUNTED_FROM, OLDEST_CORE, stationBuild } from "../api/oldest.ts";
 import { MOVED_FROM_BUILD } from "../../../shared/moved-from.ts";
 import { RUNTIME_KINDS } from "../agents/runtime.ts";
@@ -69,12 +69,12 @@ export type ServedWith = {
   spawn?: (binary: string, args: string[]) => ServingProcess;
   now?: () => number;
   after?: (ms: number, f: () => void) => () => void;
-  resolveBinary?: () => Promise<string>;
+  resolveBinary?: () => Promise<string | ResolvedReaderSelection>;
 };
 
 export class Served {
-  #binary: string;
-  readonly #resolveBinary: (() => Promise<string>) | undefined;
+  #binary: string | ResolvedReaderSelection;
+  readonly #resolveBinary: (() => Promise<string | ResolvedReaderSelection>) | undefined;
   readonly #data: string;
   readonly #answer: (viewer: any, head: any, body: Buffer) => Promise<Handled>;
   readonly #stream: ((viewer: any, head: any, body: Buffer) => Promise<{ status: number; headers: Record<string, string>; body: Buffer | AsyncIterable<Buffer> }>) | undefined;
@@ -88,7 +88,7 @@ export class Served {
   #closed = false;
   /// Past `start`: a program that ends or listens again changes the routes (`onRoutes`).
   #started = false;
-  readonly #spawn: (binary: string, args: string[]) => ServingProcess;
+  readonly #spawn: (binary: string | ResolvedReaderSelection, args: string[]) => ServingProcess;
   readonly #now: () => number;
   readonly #after: (ms: number, f: () => void) => () => void;
   /// The sockets of the programs listening now, said each time that changes after `start`: the front hands the
@@ -110,10 +110,14 @@ export class Served {
   /// `answer`: a request of a connection's member given back, answered as serve.ts answers one; `built`: the build a
   /// connection's device says.
   /// `stream`: one answered as it comes (GET /events), its body's pieces given the program as they are made.
-  constructor(binary: string, data: string, answer: (viewer: any, head: any, body: Buffer) => Promise<Handled>, built: (viewer: any, build: number | null) => void,
+  constructor(binary: string | ResolvedReaderSelection, data: string, answer: (viewer: any, head: any, body: Buffer) => Promise<Handled>, built: (viewer: any, build: number | null) => void,
     stream?: (viewer: any, head: any, body: Buffer) => Promise<{ status: number; headers: Record<string, string>; body: Buffer | AsyncIterable<Buffer> }>,
     given: ServedWith = {}) {
-    this.#spawn = given.spawn ?? ((bin, args) => new MbProcess(bin, args));
+    this.#spawn = given.spawn
+      ? ((bin, args) => given.spawn!(typeof bin === "string" ? bin : bin.primaryBinary, args))
+      : ((bin, args) => typeof bin === "string"
+        ? new MbProcess(bin, args)
+        : new MbProcess(bin.primaryBinary, args, { engine: engineOfSelection(bin), fallbackMode: fallbackModeOf(bin.selection) }));
     this.#now = given.now ?? wall.now;
     this.#after = given.after ?? wall.after;
     this.#binary = binary;
@@ -194,7 +198,7 @@ export class Served {
       if (at < 0) return;
       // Off the routes the connections taken from now on go by, till the next one listens.
       if (this.#started) this.onRoutes?.(this.#livePaths());
-      const restartWith = (nextBinary?: string) => {
+      const restartWith = (nextBinary?: string | ResolvedReaderSelection) => {
         if (this.#closed || this.#servers[at] !== server) return;
         try {
           if (nextBinary !== undefined) this.#binary = nextBinary;

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { threads } from "./reference/sessions.ts";
+import { thread, threads } from "./reference/sessions.ts";
 import { firstText, listThreads, makeStore } from "./reference/store.ts";
 import { installLegacyEdits } from "../src/store/legacy-edits-build.ts";
 import { Store } from "../src/store/store.ts";
@@ -145,4 +145,25 @@ test("workspace selection and thread details share the reader's snapshot", () =>
     finally { reader.db.exec("COMMIT"); }
     assert.deepEqual(threads(reader, viewer("A", false), null, "en"), []);
   } finally { writer.close(); f.store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("archived led sub-chat threads include their opener in thread and threads views", () => {
+  const f = fixture();
+  try {
+    f.store.insertSession({ key: "sub", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "sub",
+      createdAt: 1, lastActiveAt: 1, createdBy: "ann@x", ws: "A" });
+    f.store.db.prepare("UPDATE sessions SET archived_at = 50 WHERE key = 'sub'").run();
+    const subId = f.add("sub", ["sub"]);
+    f.store.db.prepare("UPDATE threads SET hidden_at = 50 WHERE id = ?").run(subId);
+    f.store.insertOpened({ childStation: "", child: "sub", parentStation: "", parent: "a", key: "k-sub", title: "Sub", link: null, openerTitle: "Parent", led: true });
+    const reader = makeStore(f.store.db, ".");
+    const single = thread(reader, viewer("A", false), String(subId), "en");
+    assert.deepEqual(single.opener, { session: "a", title: "Parent", led: true });
+    const listed = threads(reader, viewer("A", false), "sub", "en");
+    assert.equal(listed.length, 1);
+    assert.deepEqual(listed[0].opener, { session: "a", title: "Parent", led: true });
+    // Another chat's led agent taking part in a chat brings no opener to it: its home has none.
+    const host = f.add("host", ["a", "sub"]);
+    assert.equal(thread(reader, viewer("A", false), String(host), "en").opener, undefined);
+  } finally { f.store.close(); }
 });

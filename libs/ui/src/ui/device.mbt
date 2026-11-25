@@ -466,8 +466,8 @@ fn h_ime_let_go() -> Unit {
 }
 
 ///|
-fn h_key_catch(on : Bool) -> Unit {
-  @hostapi.key_catch(on)
+fn h_key_catch_mode(mode : Int) -> Unit {
+  @hostapi.key_catch_mode(mode)
 }
 
 ///|
@@ -538,6 +538,7 @@ priv struct Catcher {
   mut node : @view.NodeId?
   mut told : ((KeyIn) -> Unit)?
   mut paste_told : ((String) -> Unit)?
+  mut catch_close : Bool
 }
 
 ///|
@@ -564,6 +565,7 @@ fn Ctx::catcher_of(self : Ctx, id : Int) -> Catcher {
         node: None,
         told: None,
         paste_told: None,
+        catch_close: false,
       }
       self.dev.catchers[id] = st
       st
@@ -653,6 +655,23 @@ fn key_in_mods(mods : Int) -> Int {
 }
 
 ///|
+/// Whether a key catcher holds the window's keyboard focus now (and is not blocked by a modal layer).
+pub fn key_catching() -> Bool {
+  let c = g()
+  c.dev.catchers.contains(c.focus_allowed())
+}
+
+///|
+/// Whether the focused key catcher also captures macOS ⌘W (e.g. a remote screen, not a terminal).
+pub fn key_catching_close() -> Bool {
+  let c = g()
+  match c.dev.catchers.get(c.focus_allowed()) {
+    Some(st) => st.catch_close
+    None => false
+  }
+}
+
+///|
 /// The keys that are not text, by the framework's code: the DOM's `key` and `code`.
 fn named_key(code : Int) -> (String, String)? {
   match code {
@@ -669,6 +688,19 @@ fn named_key(code : Int) -> (String, String)? {
     16 => Some(("PageDown", "PageDown"))
     17 => Some(("Escape", "Escape"))
     18 => Some(("Tab", "Tab"))
+    41 => Some(("Insert", "Insert"))
+    42 => Some(("F1", "F1"))
+    43 => Some(("F2", "F2"))
+    44 => Some(("F3", "F3"))
+    45 => Some(("F4", "F4"))
+    46 => Some(("F5", "F5"))
+    47 => Some(("F6", "F6"))
+    48 => Some(("F7", "F7"))
+    49 => Some(("F8", "F8"))
+    50 => Some(("F9", "F9"))
+    51 => Some(("F10", "F10"))
+    52 => Some(("F11", "F11"))
+    53 => Some(("F12", "F12"))
     1032 => Some((" ", "Space"))
     _ => None
   }

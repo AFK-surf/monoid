@@ -90,3 +90,46 @@ test "notice_permission_state: multi-subscriber wakeup when one subscriber reads
   notices_reset()
   @hostapi.set_host(prev)
 }
+
+///|
+test "notice_permission_state: Android (platform=2) polls async pending -> granted / ask, ABA, and multi-subscriber" {
+  let prev = @hostapi.host()
+  let raw_state = Ref(5) // 5 => (true, "unknown") pending
+  let h : @hostapi.Host = {
+    ..@hostapi.Host::noop(),
+    platform: fn() { 2 },
+    nt_state: fn(what) { if what == 0 { raw_state.val } else { -1 } },
+  }
+  @hostapi.set_host(h)
+  notices_reset()
+  assert_true(poll_notice_permission())
+  let seen : Array[(Bool, String)] = []
+  let s1 = @signals.computed(fn(_) {
+    let s = notice_permission_state()
+    seen.push(s)
+    s
+  })
+  let s2 = @signals.computed(fn(_) { notice_permission_state() })
+  assert_eq(s1.get(), (true, "unknown"))
+  assert_eq(s2.get(), (true, "unknown"))
+  // pending -> granted wakes both subscribers
+  raw_state.val = 1
+  notices_arrive()
+  assert_eq(s1.get(), (false, "granted"))
+  assert_eq(s2.get(), (false, "granted"))
+  // between-frame flip to ask (3) observed live, then ABA flip back to granted (1) before notices_arrive()
+  raw_state.val = 3
+  assert_eq(notice_permission_state(), (false, "ask"))
+  raw_state.val = 1
+  notices_arrive()
+  assert_eq(s1.get(), (false, "granted"))
+  assert_eq(s2.get(), (false, "granted"))
+  assert_eq(seen, [(true, "unknown"), (false, "granted"), (false, "granted")])
+  // transition to ask (3) wakes both
+  raw_state.val = 3
+  notices_arrive()
+  assert_eq(s1.get(), (false, "ask"))
+  assert_eq(s2.get(), (false, "ask"))
+  notices_reset()
+  @hostapi.set_host(prev)
+}

@@ -14,7 +14,7 @@ import { ofAddress } from "./workspace.ts";
 import { equal, isObject } from "./util.ts";
 import { isBuildStale, ownBuiltAt, setOwnBuild, setOwnBuiltAt, STALE_BUILD_MS } from "./station/oldest.ts";
 
-const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "terminalZoom", "motion", "glassFrost", "haptics", "dht", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "typography", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "cpuDial", "sendKey", "moveTo", "experimental", "reports"];
+const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "terminalZoom", "motion", "glassFrost", "haptics", "dht", "otherWorkspaces", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "screenKeyMap", "screenKeepCtrl", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "typography", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "cpuDial", "sendKey", "moveTo", "experimental", "reports"];
 const MAPS = ["listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo", "experimental"];
 const TABS_KEPT = 200;
 /// At most this many jobs kept as looked at in one workspace's bell.
@@ -387,6 +387,7 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
   if ("accent" in prefs && !(ACCENTS.includes(prefs.accent as string) || customHue(prefs.accent) !== null)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "accent" }));
   if ("haptics" in prefs && prefs.haptics !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "haptics" }));
   if ("dht" in prefs && prefs.dht !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "dht" }));
+  if ("otherWorkspaces" in prefs && prefs.otherWorkspaces !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "otherWorkspaces" }));
   if ("appUpdate" in prefs && prefs.appUpdate !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "appUpdate" }));
   if ("windowZoom" in prefs && !["50", "67", "75", "80", "90", "110", "125", "150", "175", "200"].includes(prefs.windowZoom as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "windowZoom" }));
   if ("terminalZoom" in prefs && !(typeof prefs.terminalZoom === "string" && /^(6[0-9]|[7-9][0-9]|1[0-9]{2}|200)$/.test(prefs.terminalZoom))) throw CoreError.invalid(t("core-misc.params.invalid", { error: "terminalZoom" }));
@@ -402,6 +403,8 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
   if ("screenFps" in prefs && !SCREEN_FPS.includes(prefs.screenFps as ScreenFps)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenFps" }));
   if ("screenCodec" in prefs && prefs.screenCodec !== "h264") throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenCodec" }));
   if ("screenMouse" in prefs && prefs.screenMouse !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenMouse" }));
+  if ("screenKeyMap" in prefs && prefs.screenKeyMap !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenKeyMap" }));
+  if ("screenKeepCtrl" in prefs && prefs.screenKeepCtrl !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "screenKeepCtrl" }));
   if (isObject(prefs.previewSizes) && Object.values(prefs.previewSizes).some((v) => typeof v !== "string" || !/^[0-9]{1,4}(x[0-9]{1,4})?$/.test(v))) throw CoreError.invalid(t("core-misc.params.invalid", { error: "previewSizes" }));
   if (isObject(prefs.sidebars) && Object.values(prefs.sidebars).some((v) => typeof v !== "string" || !/^([0-9]{1,4}|[0-9]{1,4},closed|closed)$/.test(v))) throw CoreError.invalid(t("core-misc.params.invalid", { error: "sidebars" }));
   if (isObject(prefs.trouble) && (Object.keys(prefs.trouble).some((k) => !/\n(seen|gone)$/.test(k)) || Object.values(prefs.trouble).some((v) => v !== null && (typeof v !== "string" || v.length > 2000)))) throw CoreError.invalid(t("core-misc.params.invalid", { error: "trouble" }));
@@ -547,6 +550,18 @@ function withLang(prefs: Map_): Lang {
 /// filter marks the DHT as risky, the LAN's mDNS kept either way (mesh-wire.ts `meshEnv`).
 export function dhtOn(data: Data): boolean {
   return kept(data).dht !== "off";
+}
+
+/// Whether this device keeps workspaces other than the one in view linked (`otherWorkspaces`: `off`, or none for on):
+/// off where a workspace too big to follow from afar costs battery and traffic each time the app comes back.
+export function otherWorkspacesOn(data: Data): boolean {
+  return kept(data).otherWorkspaces !== "off";
+}
+
+/// The workspace the apps last had open (`workspace`), if they said.
+export function lastWorkspace(data: Data): string | null {
+  const w = kept(data).workspace;
+  return typeof w === "string" && w !== "" ? w : null;
 }
 
 /// The core says its words in the language kept (at start).

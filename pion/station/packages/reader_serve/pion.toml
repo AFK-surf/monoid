@@ -7,6 +7,7 @@ base_codec = { workspace = true }
 host_shim = { workspace = true }
 sql_db = { workspace = true }
 js_json = { workspace = true }
+jscase = { workspace = true }
 builders_core = { workspace = true }
 readops_core = { workspace = true }
 readops_chats = { workspace = true }

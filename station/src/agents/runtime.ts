@@ -7,12 +7,12 @@ import type { Router } from "./mb-agents.ts";
 import { startEnv } from "../ops/agent-env.ts";
 
 /// The runtimes a station runs, in the order they are offered.
-export type RuntimeKind = "claude" | "codex" | "dsh" | "grok" | "cursor" | "devin" | "hermes" | "agy" | "pi";
-export const RUNTIME_KINDS: RuntimeKind[] = ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi"];
+export type RuntimeKind = "claude" | "codex" | "dsh" | "grok" | "cursor" | "devin" | "hermes" | "agy" | "pi" | "copilot";
+export const RUNTIME_KINDS: RuntimeKind[] = ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi", "copilot"];
 /// A runtime as stored or sent (a name of one of them), none for anything else.
 export const runtimeKind = (v: unknown): RuntimeKind | undefined => (RUNTIME_KINDS as unknown[]).includes(v) ? (v as RuntimeKind) : undefined;
 /// How a runtime is named to people.
-export const runtimeLabel = (r: RuntimeKind) => (r === "claude" ? "Claude Code" : r === "codex" ? "Codex" : r === "dsh" ? "DeepSeek Harness" : r === "grok" ? "Grok Build" : r === "cursor" ? "Cursor" : r === "hermes" ? "Hermes Agent" : r === "agy" ? "Antigravity CLI" : r === "pi" ? "Pi" : "Devin");
+export const runtimeLabel = (r: RuntimeKind) => (r === "claude" ? "Claude Code" : r === "codex" ? "Codex" : r === "dsh" ? "DeepSeek Harness" : r === "grok" ? "Grok Build" : r === "cursor" ? "Cursor" : r === "hermes" ? "Hermes Agent" : r === "agy" ? "Antigravity CLI" : r === "pi" ? "Pi" : r === "copilot" ? "GitHub Copilot" : "Devin");
 
 /// What failed a turn, as people are told it (sessions/actor.ts `failureNotice`, the client's `failureText`): the account
 /// (`auth`), the provider turning away where the request comes from (`refused`: a region it does not serve, an address
@@ -88,9 +88,13 @@ export type OpenOptions = {
   /// Stable per-session routing id for provider affinity headers.
   route: string;
   /// An isolated, temporary text-only request. Drivers must explicitly support this without exposing their tools.
-  textOnly?: boolean;  /// Aborted when the station gives up opening this session (timeout, stop, suspend, close: `node.cancelOpen`): a driver
+  textOnly?: boolean;
+  /// Aborted when the station gives up opening this session (timeout, stop, suspend, close: `node.cancelOpen`): a driver
   /// that opens again after a failure stops there, and starts no process after it.
   signal?: AbortSignal;
+  /// Called during takeover (`adopt`) after each completed step so the launcher resets its takeover deadline when a
+  /// heavily loaded machine slows recovery down without hanging.
+  taking?: () => void;
 };
 
 export interface AgentSession {

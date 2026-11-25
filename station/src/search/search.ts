@@ -18,7 +18,8 @@ export type Told = { type: "query"; id: number; query: string; asker: Asker; kin
 export type Answered = { id: number; groups?: Group[]; error?: string } | { scopePending: true } | { sessionListPending: true };
 import { SearchScopeBuilder } from "./scope-builder.ts";
 import { SessionListBuilder } from "../read/session-list-builder.ts";
-import { type BackfillOptions, MbProcess, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { type BackfillOptions, MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
 /// How long a search may take before it is answered with nothing.
@@ -46,7 +47,7 @@ export class Search {
   #looker: Looker | null = null;
   #spawning: Promise<Looker | null> | null = null;
   #next = 0;
-  #waiting = new Map<number, { resolve: (found: Found) => void; reject: (error: Error) => void; timer: () => void }>();
+  #waiting = new Map<number, { resolve: (found: Found) => void; reject: (error: Error) => void; timer: () => void; at: number; engine: TelemetryEngine | null }>();
   #closed = false;
   readonly #scope: SearchScopeBuilder;
   #preparingScope: Promise<void> | null = null;
@@ -115,10 +116,10 @@ export class Search {
     return looker;
   }
 
-  #spawnLooker(binary: string): Looker | null {
+  #spawnLooker(resolved: ResolvedReaderSelection): Looker | null {
     if (this.#closed) return null;
     if (this.#looker !== null) return this.#looker;
-    const looker = new MbProcess(binary, ["--builder", "search", "--db", join(this.#data, "stillfail.db"), "--data", this.#data, "--sep", sep]);
+    const looker = new MbProcess(resolved.primaryBinary, ["--builder", "search", "--db", join(this.#data, "stillfail.db"), "--data", this.#data, "--sep", sep], { engine: engineOfSelection(resolved), fallbackMode: fallbackModeOf(resolved.selection) });
     return this.#spawnWith(looker);
   }
 
@@ -134,10 +135,10 @@ export class Search {
         return Promise.reject(e);
       }
       if (!sync.pending) {
-        return this.#ask(this.#spawnLooker(sync.primaryBinary), query, asker, options);
+        return this.#ask(this.#spawnLooker(sync), query, asker, options);
       }
       const pending = resolveReaderSelectionAsync("search", { config: this.#readers, logAt: "search" }).then(
-        (resolved) => this.#spawnLooker(resolved.primaryBinary),
+        (resolved) => this.#spawnLooker(resolved),
       ).finally(() => {
         if (this.#spawning === pending) this.#spawning = null;
       });
@@ -157,16 +158,22 @@ export class Search {
       if (!waiter) return;
       this.#waiting.delete(answer.id);
       waiter.timer();
+      if (waiter.engine !== null) readerTelemetry.recordCall(waiter.engine, "search", wall.now() - waiter.at, answer.error === undefined);
       if (answer.error !== undefined) waiter.reject(new Error(answer.error));
       else waiter.resolve({ groups: answer.groups ?? [], building: false });
       this.#idleLater();
     });
-    looker.on("error", (error: Error) => log.error("search", "the search's looker stopped", { error: error.message }));
+    looker.on("error", (error: Error) => {
+      const extra = looker instanceof MbProcess ? { engine: looker.engine, mode: looker.mode } : {};
+      log.error("search", "the search's looker stopped", { ...extra, error: error.message });
+    });
     looker.on("exit", () => {
       gone();
+      const now = wall.now();
       for (const [id, waiter] of this.#waiting) {
         if (!mine.has(id)) continue;
         waiter.timer();
+        if (!this.#closed && waiter.engine !== null) readerTelemetry.recordCall(waiter.engine, "search", now - waiter.at, false);
         waiter.reject(new Error("the search stopped"));
         this.#waiting.delete(id);
       }
@@ -215,16 +222,19 @@ export class Search {
     this.#idle = null;
     const id = this.#next++;
     const program = looker instanceof MbProcess;
+    const engine: TelemetryEngine | null = program ? looker.engine : null;
+    const at = wall.now();
     const cancel = program ? undefined : new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
     return new Promise<Found>((resolve, reject) => {
       const timer = wall.after(QUERY_MS, () => {
         if (cancel) Atomics.store(new Int32Array(cancel), 0, 1);
         else looker.postMessage({ type: "cancel", id });
         this.#waiting.delete(id);
+        if (engine !== null) readerTelemetry.recordCall(engine, "search", wall.now() - at, false);
         reject(new Error("the search took too long"));
         this.#idleLater();
       });
-      this.#waiting.set(id, { resolve, reject, timer });
+      this.#waiting.set(id, { resolve, reject, timer, at, engine });
       this.#asked.get(looker)?.add(id);
       looker.postMessage({ type: "query", id, query, asker, ...options, ...(cancel ? { cancel } : {}) } satisfies Told);
     });

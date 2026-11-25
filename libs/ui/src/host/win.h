@@ -150,6 +150,10 @@ const wchar_t *mb_win_env(const wchar_t *name);
 void mb_win_notify_start(void);
 void mb_win_notify_refresh(void);
 int32_t mb_notice_drive(int32_t tap, const wchar_t *text);
+// background shell launch queue (win_notify.cpp, unrelated to notifications: lives there to reuse the existing
+// Windows C++17 translation unit without changing build scripts): opens URLs and reveals files on a dedicated STA thread
+int32_t mb_win_launch_url(const wchar_t *url);
+int32_t mb_win_reveal_file(const wchar_t *path);
 // the number on a window's taskbar button (win_notify.cpp: its overlay; 0 none), ready on TaskbarButtonCreated,
 // rescaled on WM_DPICHANGED, and forgotten on window close
 void mb_win_badge(void *hwnd, int n);

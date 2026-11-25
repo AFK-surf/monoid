@@ -345,6 +345,7 @@ pub fn personal_lock_node(
     match standing {
       "outside" => {
         let state = fn() { text(field(p(), "pair"), "state") }
+        let approvers = fn() { items(p(), "approvers") }
         @sf.waiting_page_node(w, "shield-check", fn() { tr("android-misc.adb.lock.join") }, outside_note, fn(col) {
           col.show(fn() { state() != "" && state() != "done" }, fn(j) { personal_join_node(j, core, p) })
           col.show(fn() { state() == "" || state() == "none" || state() == "failed" || state() == "done" }, fn(s) {
@@ -359,6 +360,9 @@ pub fn personal_lock_node(
             @sf.words_node(s, restart_note, fn() { personal_note_centred })
             .words_centered(Is(true))
             |> ignore
+          })
+          col.show(fn() { !(state() is ("code" | "wrong" | "checking")) && approvers().length() > 0 }, fn(room) {
+            personal_approvers_node(room, approvers)
           })
         })
         |> ignore
@@ -463,9 +467,39 @@ fn personal_join_node(j : @view.View, core : Core, p : () -> Json?) -> Unit {
 }
 
 ///|
+/// The trusted devices on this account's own lock (`list()`, LockApprover rows) on a quiet card under the action,
+/// matching `lock_wait_node.mbt` `lock_devices_node`.
+fn personal_approvers_node(room : @view.View, list : () -> Array[Json]) -> Unit {
+  @sf.style_node(room, fn() { personal_approvers })
+  room.box(fn(card) {
+    @sf.style_node(card, fn() { personal_approvers_card })
+    card.max_width(Is(Some(personal_approvers_most)), within=true) |> ignore
+    card.each(fn() { list().mapi(fn(i, x) { (i, x) }) }, fn(e) { e.0 }, fn(row, e) {
+      let d = fn() { Some(e.get().1) }
+      let kind = fn() { if text(d(), "kind") == "phone" { "phone" } else { "monitor" } }
+      @sf.icon_point_row_node(row, @signals.untracked(kind), fn() { text(d(), "nameText") }, icon_now=kind, look=@sf.PointLook::Listed)
+    })
+  })
+  |> ignore
+}
+
+///|
 /// The step's title and its pill on its first line, 8 apart.
 // kept across runs: a value (no field of it changes)
 let adb_step_head : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
+
+///|
+/// Trusted approver devices card container, centered under the action (`lock_devices` in lock_wait_node.mbt).
+// kept across runs: a value (no field of it changes)
+let personal_approvers : @ui.Style = @ui.css("w=Full align=ACenter")
+
+///|
+/// Trusted approver devices card surface (`lock_devices_card` in lock_wait_node.mbt).
+// kept across runs: a value (no field of it changes)
+let personal_approvers_card : @ui.Style = @ui.css("px=S4 py=S3 gap=S3 radius=Xl bg=Tint").then(@ui.style(max_w=Fixed(personal_approvers_most)))
+
+///|
+let personal_approvers_most : Double = 412.0
 
 ///|
 /// The code's words, its boxes and how long it holds, 12 apart.

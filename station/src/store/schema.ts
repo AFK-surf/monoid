@@ -504,6 +504,54 @@ CREATE TABLE IF NOT EXISTS model_stars (
   stars TEXT NOT NULL,
   PRIMARY KEY (ws, sub)
 );
+-- A person's default project preference per preset in a workspace, as their devices carry them
+-- (api/routes/preset-projects.ts; PresetProjects JSON of core-ts/src/preset-records.ts).
+CREATE TABLE IF NOT EXISTS preset_projects (
+  workspace TEXT NOT NULL,
+  sub TEXT NOT NULL,
+  json TEXT NOT NULL,
+  meta TEXT,
+  PRIMARY KEY (workspace, sub)
+);
+-- Creator subject (sub) per session, kept outside sessions so frozen native readers'
+-- SELECT u.* FROM sessions statements never shift column indices across upgrades.
+CREATE TABLE IF NOT EXISTS session_creators (
+  session_key TEXT PRIMARY KEY,
+  email_lower TEXT,
+  sub TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS session_creators_by_email ON session_creators (email_lower, sub) WHERE email_lower IS NOT NULL;
+-- Ordered append-only log of workspace project renames/merges:
+-- seq ASC drives late-arriving offline device preset_projects migration (arbitrary hop count & name reuse);
+-- op_key + pending_peers bound continuation retries strictly to unfinished operations.
+CREATE TABLE IF NOT EXISTS project_rename_events (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  workspace TEXT NOT NULL,
+  action TEXT NOT NULL DEFAULT 'rename',
+  from_name TEXT NOT NULL,
+  to_name TEXT NOT NULL,
+  renamed_at INTEGER NOT NULL,
+  wall_at INTEGER NOT NULL DEFAULT 0,
+  origin_seq INTEGER NOT NULL DEFAULT 0,
+  op_key TEXT,
+  op_id TEXT,
+  pending_peers TEXT NOT NULL DEFAULT '[]',
+  pending_roster INTEGER NOT NULL DEFAULT 0,
+  pending_info INTEGER NOT NULL DEFAULT 0,
+  local_updated INTEGER NOT NULL DEFAULT 0,
+  remote_updated INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS project_rename_events_ws_seq ON project_rename_events (workspace, seq);
+CREATE INDEX IF NOT EXISTS project_rename_events_ws_at ON project_rename_events (workspace, renamed_at);
+CREATE UNIQUE INDEX IF NOT EXISTS project_rename_events_ws_op ON project_rename_events (workspace, op_key) WHERE op_key IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS project_rename_events_ws_opid ON project_rename_events (workspace, op_id) WHERE op_id IS NOT NULL;
+-- Durable mapping from scoped Idempotency-Key (including takeover retry keys) to the rename event seq.
+CREATE TABLE IF NOT EXISTS project_rename_op_keys (
+  workspace TEXT NOT NULL,
+  op_key TEXT NOT NULL,
+  event_seq INTEGER NOT NULL,
+  PRIMARY KEY (workspace, op_key)
+);
 -- A person's drafts of 待派发 in a workspace, as their devices carry them (sessions/board-drafts.ts; the drafts as JSON
 -- by id, the KeptDraft of the core's board-drafts.ts): one row a person (their sub) a workspace, read by its key.
 CREATE TABLE IF NOT EXISTS board_drafts (
@@ -1527,6 +1575,13 @@ export function addConvColumn(db: DatabaseSync): void {
 /// Chat classification columns (`threads.project`, `threads.project_locked`, `threads.tags`) and
 /// non-blocking project creation proposals (`entries.proposal`), plus partial indexes for bounded lookups.
 export function addProjectColumns(db: DatabaseSync): void {
+  const hasPresetProjectsTbl = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'preset_projects'").get() !== undefined;
+  if (hasPresetProjectsTbl && !has(db, "preset_projects", "meta")) db.exec("ALTER TABLE preset_projects ADD COLUMN meta TEXT");
+  const hasRenameEventsTbl = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_rename_events'").get() !== undefined;
+  if (hasRenameEventsTbl && !has(db, "project_rename_events", "wall_at")) db.exec("ALTER TABLE project_rename_events ADD COLUMN wall_at INTEGER NOT NULL DEFAULT 0");
+  if (hasRenameEventsTbl && !has(db, "project_rename_events", "local_updated")) db.exec("ALTER TABLE project_rename_events ADD COLUMN local_updated INTEGER NOT NULL DEFAULT 0");
+  if (hasRenameEventsTbl && !has(db, "project_rename_events", "remote_updated")) db.exec("ALTER TABLE project_rename_events ADD COLUMN remote_updated INTEGER NOT NULL DEFAULT 0");
+  if (hasRenameEventsTbl) db.exec("CREATE INDEX IF NOT EXISTS project_rename_events_ws_at ON project_rename_events (workspace, renamed_at)");
   if (!has(db, "threads", "project")) db.exec("ALTER TABLE threads ADD COLUMN project TEXT");
   if (!has(db, "threads", "project_locked")) db.exec("ALTER TABLE threads ADD COLUMN project_locked INTEGER NOT NULL DEFAULT 0");
   if (!has(db, "threads", "tags")) db.exec("ALTER TABLE threads ADD COLUMN tags TEXT");

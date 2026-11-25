@@ -491,3 +491,73 @@ test "one of an id made in one pass of a layout and let go of in a later pass of
     }
   }
 }
+
+///|
+test "two shared nodes let go of in one box, each made again elsewhere in that change: both fly, each from its own place, both old copies kept on the way" {
+  let open = @signals.signal(false, same=fn(a, b) { a == b })
+  let olds : Array[@view.View] = []
+  let news : Array[@view.View] = []
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(p) {
+      p.grow(Is(1.0)) |> ignore
+      // (the box of both at the top, let go of whole as `open` comes)
+      p.show(fn() { !open.get() }, fn(box) {
+        box.height(Is(Some(100.0))) |> ignore
+        for id in ["a", "b"] {
+          box.box(fn(c) {
+            olds.push(c)
+            c.width(Is(Some(40.0))).height(Is(Some(40.0))).ground(Is(red)).shared(Is(id), straight) |> ignore
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+      // (each made again lower down, apart, in the change that lets the box go)
+      p.show(fn() { open.get() }, fn(box) {
+        box.padding(Is((300.0, 0.0, 0.0, 0.0))) |> ignore
+        for id in ["a", "b"] {
+          box.box(fn(c) {
+            news.push(c)
+            c.width(Is(Some(80.0))).height(Is(Some(40.0))).ground(Is(blue)).shared(Is(id), straight) |> ignore
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(400.0, 800.0, now=0.0) |> ignore
+  let was = olds.map(fn(o) { drawn_as(tree, o).unwrap() })
+  tree.event(1000.0, fn() { open.set(true) })
+  tree.frame(400.0, 800.0, now=1000.0) |> ignore
+  assert_eq(news.length(), 2)
+  // (each of them on its way, its old copy with it: the second's never let go of with the box by the first's pairing)
+  for k in 0..<2 {
+    assert_true(news[k].flies(), msg="new \{k} does not fly")
+    assert_true(olds[k].alive(), msg="old \{k} let go of")
+    assert_true(olds[k].flies(), msg="old \{k} does not fly")
+  }
+  // (half way: each between its own two places, the two apart)
+  tree.frame(400.0, 800.0, now=1100.0) |> ignore
+  let mid = news.map(fn(n) { drawn_as(tree, n).unwrap() })
+  // (landed: both old copies let go of)
+  tree.frame(400.0, 800.0, now=1200.0) |> ignore
+  let rest = news.map(fn(n) { drawn_as(tree, n).unwrap() })
+  for k in 0..<2 {
+    assert_false(news[k].flies())
+    assert_false(olds[k].alive())
+    // (on its way between its two places, along whichever of across and down it goes)
+    let between = fn(a : Double, m : Double, b : Double) {
+      let (lo, hi) = if a < b { (a, b) } else { (b, a) }
+      hi - lo < 1.0 || (m > lo + 1.0 && m < hi - 1.0)
+    }
+    assert_true(
+      (was[k].0 != rest[k].0 || was[k].1 != rest[k].1) &&
+      between(was[k].0, mid[k].0, rest[k].0) &&
+      between(was[k].1, mid[k].1, rest[k].1),
+      msg="\{k} half way at \{Repr(mid[k])}, from \{Repr(was[k])} to \{Repr(rest[k])}",
+    )
+  }
+  assert_true(mid[0] != mid[1], msg="both half way at \{Repr(mid[0])}")
+}

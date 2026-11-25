@@ -31,6 +31,7 @@ import { routes as networkSettings } from "./routes/network.ts";
 import { pageRestart } from "../ops/restart.ts";
 import { routes as contextSettings } from "./routes/context.ts";
 import { routes as presetRoutes } from "./routes/presets.ts";
+import { routes as presetProjectRoutes } from "./routes/preset-projects.ts";
 import { routes as starRoutes } from "./routes/stars.ts";
 import { routes as boardRoutes } from "./routes/board.ts";
 import { routes as diagnosticsSettings } from "./routes/diagnostics.ts";
@@ -46,6 +47,7 @@ import { routes as permissions } from "./routes/permissions.ts";
 import { platform } from "../platform/index.ts";
 import type { AgentsParts } from "../sessions/agents.ts";
 import type { Store } from "../store/store.ts";
+import { createHash } from "node:crypto";
 import type { Events } from "./events.ts";
 import { Host } from "./host.ts";
 import { previewTarget, proxyPreview } from "../jobs/preview.ts";
@@ -137,7 +139,7 @@ export type KeptSend = { viewer: string; thread: number; key: string; at: number
 /// A person's message in a chat (routes/hub.ts): the thread it is written to.
 const SEND_PATH = /^\/*threads\/+([^/]+)\/+messages(?:\/.*)?$/;
 /// A key's first write: its answer once there (none: not kept), and when it was kept.
-type Slot = { at: number | null; answer: Promise<Kept | null> };
+type Slot = { at: number | null; bodyHash?: string; answer: Promise<Kept | null> };
 
 export class Admin {
   private slots = new Map<string, Slot>();
@@ -298,8 +300,16 @@ export class Admin {
     const keyed = key !== undefined && key !== "" && key.length <= 200 && r.method !== "GET" && r.method !== "HEAD" && !READS.test(r.path);
     const slotKey = `${r.viewer.email}\0${r.viewer.workspace ?? ""}\0${r.method}\0${r.path}\0${key}`;
     const legacySendKey = r.method === "POST" && SEND_PATH.test(r.path) ? `${r.viewer.email}\0\0POST\0${r.path}\0${key}` : null;
+    const projectRenameBodyHash =
+      r.method === "POST" && /^\/projects\/(rename|merge)$/.test(r.path)
+        ? createHash("sha256").update(r.body).digest("hex")
+        : undefined;
     const answer = keyed
-      ? await this.once(legacySendKey !== null && this.slots.has(legacySendKey) ? legacySendKey : slotKey, () => this.answer(r))
+      ? await this.once(
+          legacySendKey !== null && this.slots.has(legacySendKey) ? legacySendKey : slotKey,
+          () => this.answer(r),
+          projectRenameBodyHash,
+        )
       : await this.answer(r);
     // Every answer says this station keeps writes to once, and its build (api/oldest.ts).
     answer.headers["stillfail-idempotent"] = "1";
@@ -412,19 +422,22 @@ export class Admin {
 
   /// `write`'s answer, or the answer the first write under `key` had: while the first is under way the
   /// others wait for it; a 5xx is not kept (the write may not have happened: asked again, it is tried again).
-  private async once(key: string, write: () => Promise<Answer>): Promise<Answer> {
+  private async once(key: string, write: () => Promise<Answer>, bodyHash?: string): Promise<Answer> {
     const now = (this.deps.clock ?? liveClock).currentTimeMillisUnsafe();
     for (const [k, slot] of this.slots) if (slot.at !== null && now - slot.at >= ONCE_KEEP_MS) this.slots.delete(k);
     for (;;) {
       const slot = this.slots.get(key);
       if (slot === undefined) break;
+      if (bodyHash !== undefined && slot.bodyHash !== undefined && slot.bodyHash !== bodyHash) {
+        return error(409, "idempotency key already used with different request body");
+      }
       const kept = await slot.answer;
       if (kept !== null) return { status: kept.status, headers: { ...kept.headers }, body: kept.body };
       // The first one's was not kept: this one tries, unless another got there first.
       if (this.slots.get(key) === slot) this.slots.delete(key);
     }
     let settle: (kept: Kept | null) => void = () => {};
-    const slot: Slot = { at: null, answer: new Promise<Kept | null>((resolve) => (settle = resolve)) };
+    const slot: Slot = { at: null, ...(bodyHash !== undefined ? { bodyHash } : {}), answer: new Promise<Kept | null>((resolve) => (settle = resolve)) };
     this.slots.set(key, slot);
     let kept: Kept;
     let noCache = false;
@@ -598,6 +611,14 @@ export function agentsRoutes(agents: AgentsParts, deps: { store?: Store; events?
     ...(agents.config ? agentEnv({ config: agents.config, changed: () => deps.events?.overviewChanged(), restart: () => agents.hub.everyChanged() }) : []),
     ...(agents.hub ? presetRoutes({ presets: agents.hub.presets, reposDir: () => agents.hub.reposDir(), index: agents.hub.repoIndex, clones: agents.hub.clones, changed: () => deps.events?.presetsChanged() }) : []),
     ...(agents.hub ? starRoutes({ kept: agents.hub.store, told: (ws, sub) => deps.events?.tell("stars", { workspace: ws }, `stars\0${ws}\0${sub}`, { workspace: ws, subs: [sub] }) }) : []),
+    ...(agents.hub
+      ? presetProjectRoutes({
+          kept: agents.hub.store,
+          told: (ws, sub) => deps.events?.tell("presetProjects", { workspace: ws }, `presetProjects\0${ws}\0${sub}`, { workspace: ws, subs: [sub] }),
+          agentHome: () => agents.hub!.config().agentHome,
+          homeWorkspace: () => agents.hub!.homeWorkspace(),
+        })
+      : []),
     ...(agents.hub ? boardRoutes({ drafts: agents.hub.boardDrafts, told: (ws, sub) => deps.events?.tell("boardDrafts", { workspace: ws }, `boardDrafts\0${ws}\0${sub}`, { workspace: ws, subs: [sub] }) }) : []),
     ...(agents.config ? contextSettings({ config: agents.config, changed: () => deps.events?.overviewChanged() }) : []),
     ...(agents.config ? diagnosticsSettings({ config: agents.config, changed: () => deps.events?.overviewChanged() }) : []),

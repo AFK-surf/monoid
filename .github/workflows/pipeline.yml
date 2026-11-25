@@ -30,13 +30,13 @@ env:
   # The native parts a branch's checks and builds use, split between ci-1 (`BRANCH_NATIVES`: Linux, Windows cross-builds,
   # Wasm and Android) and macos-ci (`BRANCH_MAC_NATIVES`: Apple's darwin-arm64 parts).
   BRANCH_NATIVES: archive-rs:linux-x64 reader:linux-x64 iroh-wasm:wasm32 shell:android-arm64 engine:android-arm64 mesh:linux-x64 runner:linux-x64 launcher:linux-x64 mesh:win32-x64 launcher:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
-  # Windows' reader, built in a job of its own on ci-1 (natives-win-reader, main's natives-win-reader-main after natives): two readers side by side there,
+  # Windows' readers, built in a job of their own on ci-1 (natives-win-reader, main's natives-win-reader-main after natives): two readers side by side there,
   # each cold at -O2, took 244-253 s of natives' five minutes and its upload was cut (44208145437, 2026-11-18).
-  BRANCH_WIN_READER: reader:win32-x64
+  BRANCH_WIN_READER: reader:win32-x64 pion-reader:win32-x64
   BRANCH_MAC_NATIVES: mesh:darwin-arm64 launcher:darwin-arm64 runner:darwin-arm64 archive-rs:darwin-arm64 shell-apple:darwin-arm64 helper:darwin-arm64
-  # The Mac's reader, built in a job of its own (natives-mac-reader) beside natives-mac: desktop-build uses none of it
+  # The Mac's readers, built in a job of their own (natives-mac-reader) beside natives-mac: desktop-build uses none of them
   # and waits for natives-mac alone, never for the reader's minutes; check-mac, mac-build and the station wait for both.
-  BRANCH_MAC_READER: reader:darwin-arm64
+  BRANCH_MAC_READER: reader:darwin-arm64 pion-reader:darwin-arm64
   # The tests' MoonBit program (every package's harness, kept out of the reader: station/mb/src/reader_harness), which
   # only check-station runs, built beside natives in a job of its own (natives-harness), never in natives' list: there
   # it would hold every job that waits for the readers, and a branch missing only reader:linux-x64 off ubuntu-24.04.
@@ -127,10 +127,11 @@ jobs:
             all=$(node scripts/native.ts missing --linux --mac)
           else
             want="$BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_HARNESS"
+            if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then want="$want pion-reader:linux-x64 pion-reader:linux-arm64"; fi
             if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then want="$want $BRANCH_MAC_NATIVES"; fi
             if grep -qE '^(check_mac|station)=true$' "$RUNNER_TEMP/plan"; then want="$want $BRANCH_MAC_READER"; fi
             # (where natives and natives-win-reader build, below)
-            if [ "${{ vars.CI_1 }}" != off ]; then want="$want shell-station:linux-x64 shell-station:win32-x64"; fi
+            if [ "${{ vars.CI_1 }}" != off ]; then want="$want shell-station:linux-x64 shell-station:linux-arm64 shell-station:win32-x64"; fi
             all=$(node scripts/native.ts missing $want)
           fi
           if [ "${{ vars.CI_1 }}" = off ]; then
@@ -139,10 +140,12 @@ jobs:
             if [ "$GITHUB_REF" = refs/heads/main ]; then
               missing=$(non_apple)
               all_mac=$(apple)
-              missing_mac=$(printf '%s\n' $all_mac | grep -v '^reader:darwin-arm64$' || true)
-              missing_mac_reader=$(printf '%s\n' $all_mac | grep '^reader:darwin-arm64$' || true)
+              missing_mac=$(printf '%s\n' $all_mac | grep -vE '^(pion-)?reader:darwin-arm64$' || true)
+              missing_mac_reader=$(printf '%s\n' $all_mac | grep -E '^(pion-)?reader:darwin-arm64$' || true)
             else
-              missing=$(pick $BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_HARNESS)
+              missing_want="$BRANCH_NATIVES $BRANCH_HARNESS"
+              if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then missing_want="$missing_want pion-reader:linux-x64 pion-reader:linux-arm64 $BRANCH_WIN_READER"; fi
+              missing=$(pick $missing_want)
               if grep -qE '^(check_mac|station|release_smoke)=true$' "$RUNNER_TEMP/plan"; then missing_mac=$(pick $BRANCH_MAC_NATIVES)
               else missing_mac=""; echo "missing (mac): skipped (no mac job planned)"; fi
               # (release_smoke's desktop-build uses no reader)
@@ -172,15 +175,17 @@ jobs:
               # of its five minutes, and nothing but ui-windows and the station's release waits for it)
               # (and the tests' program in natives-harness, which only check-station waits for)
               all_linux=$(non_apple)
-              missing=$(printf '%s\n' $all_linux | grep -v -e '^reader:win32-x64$' -e '^reader-harness:' || true)
-              missing_win=$(printf '%s\n' $all_linux | grep '^reader:win32-x64$' || true)
+              missing=$(printf '%s\n' $all_linux | grep -vE '^(pion-)?reader:win32-x64$|^reader-harness:' || true)
+              missing_win=$(printf '%s\n' $all_linux | grep -E '^(pion-)?reader:win32-x64$' || true)
               missing_harness=$(printf '%s\n' $all_linux | grep '^reader-harness:' || true)
               all_mac=$(apple)
-              missing_mac=$(printf '%s\n' $all_mac | grep -v '^reader:darwin-arm64$' || true)
-              missing_mac_reader=$(printf '%s\n' $all_mac | grep '^reader:darwin-arm64$' || true)
+              missing_mac=$(printf '%s\n' $all_mac | grep -vE '^(pion-)?reader:darwin-arm64$' || true)
+              missing_mac_reader=$(printf '%s\n' $all_mac | grep -E '^(pion-)?reader:darwin-arm64$' || true)
             else
-              missing=$(pick $BRANCH_NATIVES)
-              # (only ui-windows uses Windows' reader, and only for a change to the station)
+              missing_want="$BRANCH_NATIVES"
+              if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then missing_want="$missing_want pion-reader:linux-x64 pion-reader:linux-arm64"; fi
+              missing=$(pick $missing_want)
+              # (only ui-windows uses Windows' readers, and only for a change to the station)
               if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then missing_win=$(pick $BRANCH_WIN_READER)
               else missing_win=""; fi
               # (only check-station and check-core run the harnesses)
@@ -232,9 +237,9 @@ jobs:
             echo 'natives_mac_reader_runner="macos-26"' >> "$GITHUB_OUTPUT"
           fi
           # Where natives and natives-win-reader build: a branch missing only readers whose shell-station main already
-          # published needs moon, mbc and zig alone (-O0 on GitHub's runner, station/mb/build.sh), so it builds on
+          # published needs moon/pionc, mbc and zig alone (-O0 on GitHub's runner, station/mb/build.sh), so it builds on
           # ubuntu-24.04 and does not wait for ci-1 (a change to station/mb queued while ci-1 was away, #7347).
-          if [ "${{ vars.CI_1 }}" != off ] && [ "$GITHUB_REF" != refs/heads/main ] && [ "${missing:-}" = "reader:linux-x64" ] && [ -z "$(pick shell-station:linux-x64)" ]; then
+          if [ "${{ vars.CI_1 }}" != off ] && [ "$GITHUB_REF" != refs/heads/main ] && [ -n "${missing:-}" ] && ! printf '%s\n' $missing | grep -qvE '^(reader:linux-x64|pion-reader:linux-(x64|arm64))$' && [ -z "$(pick shell-station:linux-x64 shell-station:linux-arm64)" ]; then
             echo 'natives_runner="ubuntu-24.04"' >> "$GITHUB_OUTPUT"
           elif [ "${{ vars.CI_1 }}" != off ]; then
             echo 'natives_runner=["self-hosted","ci-1"]' >> "$GITHUB_OUTPUT"
@@ -281,6 +286,9 @@ jobs:
       - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
         run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
+        # (ci-1 shares persistent workspaces with fetch-depth: 0 jobs like check; keep ci-1 non-shallow so they never --unshallow)
+        with:
+          fetch-depth: ${{ needs.plan.outputs.natives_runner == '["self-hosted","ci-1"]' && '0' || '1' }}
       - if: runner.environment == 'self-hosted' && runner.os == 'Linux'
         uses: ./.github/actions/setup-linux
       - if: runner.os == 'macOS'
@@ -292,6 +300,11 @@ jobs:
       # cache by its version, with what it compiled of its own (glibc's and MinGW's stubs, compiler-rt) in ~/.cache/zig)
       - if: runner.environment != 'self-hosted'
         uses: ./.github/actions/node
+      - if: runner.environment != 'self-hosted'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pion-station-toolchain
+          key: pion-station-toolchain-linux-x64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
       - if: runner.environment != 'self-hosted'
         uses: actions/cache@v4
         with:
@@ -358,6 +371,12 @@ jobs:
           else
             ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $MISSING
           fi
+          if printf '%s\n' $MISSING | grep -qx 'pion-reader:linux-arm64'; then
+            arm_bin="$(node scripts/native.ts file pion-reader linux-arm64)"
+            arm_desc="$(file "$arm_bin")"
+            echo "$arm_desc"
+            echo "$arm_desc" | grep -qE 'ELF 64-bit.*ARM aarch64'
+          fi
       - name: Stage native archives in R2
         if: github.ref != 'refs/heads/main'
         run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives.r2.json"
@@ -402,6 +421,8 @@ jobs:
       - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
         run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
       - if: runner.environment == 'self-hosted'
         uses: ./.github/actions/setup-linux
       - uses: ./.github/actions/mbui-moonbit
@@ -410,6 +431,11 @@ jobs:
       # cache by its version, with what it compiled of its own (glibc's and MinGW's stubs, compiler-rt) in ~/.cache/zig)
       - if: runner.environment != 'self-hosted'
         uses: ./.github/actions/node
+      - if: runner.environment != 'self-hosted'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pion-station-toolchain
+          key: pion-station-toolchain-linux-x64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
       - if: runner.environment != 'self-hosted'
         uses: actions/cache@v4
         with:
@@ -505,6 +531,8 @@ jobs:
       - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
         run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
       - uses: ./.github/actions/setup-linux
       - uses: ./.github/actions/mbui-moonbit
         with: { tools: 'mbc' }
@@ -537,6 +565,8 @@ jobs:
       - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
         run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: ${{ runner.environment == 'self-hosted' && '0' || '1' }}
       - if: runner.environment == 'self-hosted'
         uses: ./.github/actions/setup-linux
       - uses: ./.github/actions/mbui-moonbit
@@ -771,6 +801,11 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
           echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+      - if: runner.environment != 'self-hosted'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pion-station-toolchain
+          key: pion-station-toolchain-darwin-arm64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
       # (the reader's compiled MoonBit packages by their content, station/mb/build.sh's MBC_STORE: tens of MB, which
       # take its build from 72 s to about 20. Restored here and saved at the end whatever came of the build, a cut one
       # too: as one step, actions/cache saved nothing of a build cut at the job's five minutes, 134032580996. Main's -O2
@@ -954,6 +989,13 @@ jobs:
       # `stillfail-reader.exe` station_shim + Job Object orphan-free kill / detached-grandchild survival on Windows.
       - name: stillfail-reader station_shim on Windows
         run: cd station && node ../scripts/native.ts run reader -- node --test test/mb-station-shim.test.ts
+      # `stillfail-pion.exe` as Windows stations run it (cross-built on Linux: pion/station/scripts/build.sh).
+      - name: The Pion reader on Windows
+        run: |
+          out=$("$(node scripts/native.ts file pion-reader win32-x64)" --version)
+          echo "$out"
+          echo "$out" | grep -q 'modes:'
+          echo "$out" | grep -q 'target=win32-x64'
       # What the job started that is still running as it ends: the runner's clean-up of them took 52-237 s after the
       # last step of some runs (the rest 2-9 s), the release's job at 282 of its 300 (main 08c83003, 41537791777).
       - name: What it left running
@@ -1206,6 +1248,7 @@ jobs:
         with: { fetch-depth: 0, filter: "blob:none" }
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/natives
+        with: { harness: 'true' }
       # (the footprint tests mount a tmpfs in a user namespace, which Ubuntu 24.04's AppArmor keeps from a user's)
       - run: sudo -n sysctl -qw kernel.apparmor_restrict_unprivileged_userns=0 || true
       - name: The station's tests, slice ${{ matrix.shard }} of 6
@@ -1240,6 +1283,7 @@ jobs:
         with: { fetch-depth: 0, filter: "blob:none" }
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/natives
+        with: { harness: 'true' }
       - name: The core's tests, slice ${{ matrix.shard }} of 3
         run: |
           range='${{ needs.plan.outputs.range }}'
@@ -2762,10 +2806,9 @@ jobs:
   deltas-station:
     needs: [plan, station]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.station.result == 'success' }}
-    # (linux-x64 and linux-arm64 on ci-1, filling its 2 runners; darwin-arm64 and win32-x64 on ubuntu-24.04 beside
-    # deltas-desktop, check-station nearly done by then: the four and deltas-desktop end in one wave, where the five on
-    # ci-1's 2 runners queued 2-4 minutes, main 44695551492; with vars.CI_1 == 'off', all on ubuntu-24.04)
-    runs-on: ${{ fromJSON((vars.CI_1 != 'off' && startsWith(matrix.platform, 'linux-')) && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    # (all four on ubuntu-24.04: ci-1's R2 unstage/put over Shanghai egress stalled 200-304 s and timed out at 5 m on
+    # main 45605595780 and 45607690010 while ubuntu-24.04 finishes the same jobs in 53-77 s with near-zero queue)
+    runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
     continue-on-error: true
@@ -2780,10 +2823,8 @@ jobs:
     # (what it runs alone: scripts/release-deltas.ts and its delta.ts, release-put.sh through Cloudflare's API, javac
     # on Delta.java and JZlib for Android's; no packages, no pnpm)
     steps: &deltas-steps
-      - if: runner.os == 'Linux' && runner.environment != 'self-hosted'
-        run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
-      - if: runner.environment != 'self-hosted'
-        uses: actions/checkout@v5
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
+      - uses: actions/checkout@v5
         with:
           sparse-checkout: |
             /scripts/
@@ -2793,30 +2834,7 @@ jobs:
             /libs/ui/android/app/src/main/java/dev/mbui/Delta.java
             /libs/ui/android/jzlib/
           sparse-checkout-cone-mode: false
-      # Sparse checkout in ci-1's reused workspaces left skip-worktree bits behind.
-      # Later natives jobs could not find station/mb/build.sh (main 44691945453 and 44692636480).
-      - if: runner.environment == 'self-hosted'
-        uses: actions/checkout@v5
-      - if: runner.environment != 'self-hosted'
-        uses: ./.github/actions/node
-      # (ci-1's: the Node kept in ~/.local, as setup-linux's; it needs only .node-version, curl and tar)
-      - if: runner.environment == 'self-hosted'
-        run: |
-          if [ ! -f station/mb/build.sh ] || [ "$(git config --bool core.sparseCheckout 2>/dev/null)" = true ]; then
-            git config --worktree --unset-all core.sparseCheckout 2>/dev/null || true
-            git config --worktree --unset-all core.sparseCheckoutCone 2>/dev/null || true
-            git config --local --unset-all core.sparseCheckout 2>/dev/null || true
-            git config --local --unset-all core.sparseCheckoutCone 2>/dev/null || true
-            git config --local --unset-all extensions.worktreeConfig 2>/dev/null || true
-            rm -f .git/info/sparse-checkout .git/index
-            git reset --hard HEAD
-          fi
-          # (ci-1 does not run setup-linux here; set STILLFAIL_DIRECT_DNS so release-put.sh and node-here.sh reach
-          # Cloudflare's API directly instead of stalling over the proxy — deltas-station linux-x64 hung 286 s and
-          # deltas-desktop-win took 198 s in Put them on main 45444450664)
-          export STILLFAIL_DIRECT_DNS=223.5.5.5
-          echo "STILLFAIL_DIRECT_DNS=$STILLFAIL_DIRECT_DNS" >> "$GITHUB_ENV"
-          echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/node
       - if: env.PART == 'desktop-win'
         uses: actions/download-artifact@v4
         with: { name: "release-desktop-win-${{ github.sha }}", path: "${{ runner.temp }}/release" }
@@ -2852,8 +2870,6 @@ jobs:
   deltas-desktop:
     needs: [plan, desktop]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.desktop.result == 'success' }}
-    # (on ubuntu-24.04, idle by then: it is let go with deltas-station, and on ci-1 the station's four held it 234 s,
-    # main 44695551492)
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
@@ -2865,9 +2881,7 @@ jobs:
   deltas-desktop-win:
     needs: [plan, desktop-win]
     if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.desktop-win.result == 'success' }}
-    # (on ci-1, while check-station fills GitHub's runners: it is done before deltas-station starts; with
-    # vars.CI_1 == 'off', ubuntu-24.04)
-    runs-on: ${{ fromJSON(vars.CI_1 != 'off' && '["self-hosted", "linux-ci"]' || '"ubuntu-24.04"') }}
+    runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
     continue-on-error: true

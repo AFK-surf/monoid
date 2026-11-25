@@ -1,0 +1,589 @@
+// Shared live-parser wire helpers (1:1 port of `station/mb/src/live_wire/live_wire.mbt`).
+
+import "js_json"
+
+pub fn jstr(s : String) -> js_json::JValue {
+  js_json::JValue::Str(js_json::utf16_units(s))
+}
+
+pub fn jstr_u16(u : Array[Int]) -> js_json::JValue {
+  js_json::JValue::Str(u)
+}
+
+pub fn u16_eq(a : Array[Int], b : Array[Int]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+pub fn obj(fields : Array[(String, js_json::JValue)]) -> js_json::JValue {
+  let out : Array[(Array[Int], js_json::JValue)] = []
+  for i in 0..<fields.length() {
+    let (k, v) = fields[i]
+    out.push((js_json::utf16_units(k), v))
+  }
+  js_json::JValue::Obj(out)
+}
+
+/// `v?.name`.
+pub fn field(v : Option[js_json::JValue], name : String) -> Option[js_json::JValue] {
+  match v {
+    Some(o) => o.get(name)
+    None => None
+  }
+}
+
+/// Lossless UTF-16 `str(v)`: preserves lone surrogates verbatim without `sanitize_str`.
+pub fn str_u16(v : Option[js_json::JValue]) -> Option[Array[Int]] {
+  match v {
+    Some(js_json::JValue::Str(u)) => Some(u)
+    _ => None
+  }
+}
+
+/// Lossless UTF-16 `nonEmpty(v)`.
+pub fn non_empty_u16(v : Option[js_json::JValue]) -> Option[Array[Int]] {
+  match str_u16(v) {
+    Some(u) => if u.length() > 0 { Some(u) } else { None }
+    None => None
+  }
+}
+
+/// `str(v)`: the string it is.
+pub fn str(v : Option[js_json::JValue]) -> Option[String] {
+  match v {
+    Some(js_json::JValue::Str(u)) => Some(js_json::sanitize_str(u))
+    _ => None
+  }
+}
+
+/// `nonEmpty(v)`.
+pub fn non_empty(v : Option[js_json::JValue]) -> Option[String] {
+  match str(v) {
+    Some(s) => if s.length() > 0 { Some(s) } else { None }
+    None => None
+  }
+}
+
+pub fn is_str(v : Option[js_json::JValue], s : String) -> Bool {
+  match str(v) {
+    Some(t) => t == s
+    None => false
+  }
+}
+
+pub fn has_prefix(s : String, p : String) -> Bool {
+  s.starts_with(p)
+}
+
+/// `v ?? fallback`: none or null is the fallback.
+pub fn or_else(v : Option[js_json::JValue], fallback : js_json::JValue) -> js_json::JValue {
+  match v {
+    None => fallback
+    Some(js_json::JValue::Null) => fallback
+    Some(x) => x
+  }
+}
+
+/// How much of a call's input a step is started with (live.ts `INPUT_MOST`).
+pub let INPUT_MOST : Int = 262144
+
+/// live.ts `pretty`: JSON.stringify(v ?? {}, null, 2) with custom number formatter.
+pub fn pretty_with_num(v : Option[js_json::JValue], fmt_num : (Double) -> String) -> String {
+  js_json::stringify_indent_with_num(or_else(v, obj([])), 2, fmt_num)
+}
+
+/// live.ts `pretty`: JSON.stringify(v ?? {}, null, 2).
+pub fn pretty(v : Option[js_json::JValue]) -> String {
+  js_json::stringify_pretty(or_else(v, obj([])))
+}
+
+pub fn joined(parts : Array[String], sep : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<parts.length() {
+    if i > 0 {
+      sb.write_string(sep)
+    }
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
+/// A step's start as live.ts `start` makes it: what is none left out.
+pub fn start(
+  id : String,
+  step : String,
+  tool : Option[String],
+  input : Option[String],
+) -> js_json::JValue {
+  let fields : Array[(String, js_json::JValue)] = [
+    ("kind", jstr("start")),
+    ("id", jstr(id)),
+    ("step", jstr(step)),
+  ]
+  match tool {
+    Some(t) => fields.push(("tool", jstr(t)))
+    None => ()
+  }
+  match input {
+    Some(inp) => fields.push(("input", jstr(inp)))
+    None => ()
+  }
+  obj(fields)
+}
+
+pub fn delta(id : String, field_name : String, text : String) -> js_json::JValue {
+  obj([
+    ("kind", jstr("delta")),
+    ("id", jstr(id)),
+    ("field", jstr(field_name)),
+    ("text", jstr(text)),
+  ])
+}
+
+pub fn end_event(id : String) -> js_json::JValue {
+  obj([("kind", jstr("end")), ("id", jstr(id))])
+}
+
+/// A live event as a line the station is told.
+pub fn live(e : js_json::JValue) -> js_json::JValue {
+  obj([("type", jstr("live")), ("event", e)])
+}
+
+/// A turn's failed outcome (runtime.ts `TurnOutcome`).
+pub fn failed(reason : String, message : String) -> js_json::JValue {
+  obj([
+    ("kind", jstr("failed")),
+    ("reason", jstr(reason)),
+    ("message", jstr(message)),
+  ])
+}
+
+pub fn completed() -> js_json::JValue {
+  obj([("kind", jstr("completed"))])
+}
+
+pub fn aborted() -> js_json::JValue {
+  obj([("kind", jstr("aborted"))])
+}
+
+pub fn turn_started() -> js_json::JValue {
+  obj([("type", jstr("turnStarted"))])
+}
+
+pub fn turn_ended(outcome : js_json::JValue) -> js_json::JValue {
+  obj([("type", jstr("turnEnded")), ("outcome", outcome)])
+}
+
+pub fn tools_lost_event(why : String) -> js_json::JValue {
+  obj([("type", jstr("toolsLost")), ("why", jstr(why))])
+}
+
+pub fn find_entry(entries : Array[(String, String)], key : String) -> Option[Int] {
+  for i in 0..<entries.length() {
+    let (k, _) = entries[i]
+    if k == key {
+      return Some(i)
+    }
+  }
+  None
+}
+
+/// `Map.set`: a key there keeps its place.
+pub fn set_entry(entries : Array[(String, String)], key : String, value : String) -> Unit {
+  match find_entry(entries, key) {
+    Some(i) => entries[i] = (key, value)
+    None => entries.push((key, value))
+  }
+}
+
+pub fn load_entries(
+  state : js_json::JValue,
+  key : String,
+  entries : Array[(String, String)],
+) -> Unit {
+  match state.get(key) {
+    Some(js_json::JValue::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          js_json::JValue::Arr(pair) => {
+            if pair.length() >= 2 {
+              match (pair[0], pair[1]) {
+                (js_json::JValue::Str(ku), js_json::JValue::Str(vu)) => {
+                  set_entry(entries, js_json::sanitize_str(ku), js_json::sanitize_str(vu))
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+}
+
+pub fn entries_json(entries : Array[(String, String)]) -> js_json::JValue {
+  let out : Array[js_json::JValue] = []
+  for i in 0..<entries.length() {
+    let (k, v) = entries[i]
+    out.push(js_json::JValue::Arr([jstr(k), jstr(v)]))
+  }
+  js_json::JValue::Arr(out)
+}
+
+pub fn opt_str_json(v : Option[String]) -> js_json::JValue {
+  match v {
+    Some(s) => jstr(s)
+    None => js_json::JValue::Null
+  }
+}
+
+pub fn transition(
+  phase : Option[String],
+  next : String,
+  out : Array[js_json::JValue],
+) -> Option[String] {
+  let same = match phase {
+    Some(p) => p == next
+    None => false
+  }
+  if !same {
+    out.push(obj([("kind", jstr("phase")), ("phase", jstr(next))]))
+    Some(next)
+  } else {
+    phase
+  }
+}
+
+pub fn end_entry(
+  open : Array[(String, String)],
+  id : String,
+  out : Array[js_json::JValue],
+) -> Unit {
+  match find_entry(open, id) {
+    Some(i) => {
+      let mut j = i
+      while j + 1 < open.length() {
+        open[j] = open[j + 1]
+        j = j + 1
+      }
+      let _ = open.pop()
+      out.push(end_event(id))
+    }
+    None => ()
+  }
+}
+
+pub fn end_open(open : Array[(String, String)]) -> Array[js_json::JValue] {
+  let out : Array[js_json::JValue] = []
+  for i in 0..<open.length() {
+    let (id, _) = open[i]
+    out.push(end_event(id))
+  }
+  open.clear()
+  out
+}
+
+pub fn end_non_tool_prefix(
+  open : Array[(String, String)],
+  prefix : String,
+  out : Array[js_json::JValue],
+) -> Unit {
+  let snapshot : Array[(String, String)] = []
+  for i in 0..<open.length() {
+    snapshot.push(open[i])
+  }
+  for i in 0..<snapshot.length() {
+    let (id, kind) = snapshot[i]
+    if kind != "tool" && has_prefix(id, prefix) {
+      end_entry(open, id, out)
+    }
+  }
+}
+
+pub fn has_open_tool(open : Array[(String, String)]) -> Bool {
+  for i in 0..<open.length() {
+    let (_, kind) = open[i]
+    if kind == "tool" {
+      return true
+    }
+  }
+  false
+}
+
+/// runtime.ts `stationTool`: a call to one of the station's tools, by the name the station gives it.
+pub fn station_tool(name : String) -> Bool {
+  has_prefix(name, "mcp__stillfail__") || has_prefix(name, "stillfail__")
+}
+
+pub fn str_or_js_with(v : Option[js_json::JValue], fmt_num : (Double) -> String) -> String {
+  match v {
+    None => ""
+    Some(js_json::JValue::Null) => ""
+    Some(x) => js_json::js_string_with(x, fmt_num)
+  }
+}
+
+pub fn str_or_js(v : Option[js_json::JValue]) -> String {
+  match v {
+    None => ""
+    Some(js_json::JValue::Null) => ""
+    Some(x) => js_json::js_string(x)
+  }
+}
+
+pub fn content_text(content : Option[js_json::JValue], allow_str : Bool = true) -> String {
+  match content {
+    Some(js_json::JValue::Str(u)) => if allow_str { js_json::sanitize_str(u) } else { "" }
+    Some(js_json::JValue::Arr(items)) => {
+      let parts : Array[String] = []
+      for i in 0..<items.length() {
+        match str(field(Some(items[i]), "text")) {
+          Some(t) => {
+            if t.length() > 0 {
+              parts.push(t)
+            }
+          }
+          None => ()
+        }
+      }
+      joined(parts, "\n")
+    }
+    _ => ""
+  }
+}
+
+/// Lossless UTF-16 live event builders & entry helpers (preserve lone surrogates verbatim).
+pub fn start_u16(
+  id : Array[Int],
+  step : String,
+  tool : Option[Array[Int]],
+  input : Option[Array[Int]],
+) -> js_json::JValue {
+  let fields : Array[(String, js_json::JValue)] = [
+    ("kind", jstr("start")),
+    ("id", jstr_u16(id)),
+    ("step", jstr(step)),
+  ]
+  match tool {
+    Some(t) => fields.push(("tool", jstr_u16(t)))
+    None => ()
+  }
+  match input {
+    Some(inp) => fields.push(("input", jstr_u16(inp)))
+    None => ()
+  }
+  obj(fields)
+}
+
+pub fn delta_u16(id : Array[Int], field_name : String, text : Array[Int]) -> js_json::JValue {
+  obj([
+    ("kind", jstr("delta")),
+    ("id", jstr_u16(id)),
+    ("field", jstr(field_name)),
+    ("text", jstr_u16(text)),
+  ])
+}
+
+pub fn end_event_u16(id : Array[Int]) -> js_json::JValue {
+  obj([("kind", jstr("end")), ("id", jstr_u16(id))])
+}
+
+/// Lossless UTF-16 `failed` outcome preserving lone surrogates in `message` (`pi.mbt:273`).
+pub fn failed_u16(reason : String, message : Array[Int]) -> js_json::JValue {
+  obj([
+    ("kind", jstr("failed")),
+    ("reason", jstr(reason)),
+    ("message", jstr_u16(message)),
+  ])
+}
+
+/// Lossless UTF-16 `opt_str_json` preserving lone surrogates in resumed state (`cursor.mbt:88`).
+pub fn opt_str_json_u16(v : Option[Array[Int]]) -> js_json::JValue {
+  match v {
+    Some(u) => jstr_u16(u)
+    None => js_json::JValue::Null
+  }
+}
+
+pub fn find_entry_u16(entries : Array[(Array[Int], Array[Int])], key : Array[Int]) -> Option[Int] {
+  for i in 0..<entries.length() {
+    let (k, _) = entries[i]
+    if u16_eq(k, key) {
+      return Some(i)
+    }
+  }
+  None
+}
+
+pub fn set_entry_u16(
+  entries : Array[(Array[Int], Array[Int])],
+  key : Array[Int],
+  value : Array[Int],
+) -> Unit {
+  match find_entry_u16(entries, key) {
+    Some(i) => entries[i] = (key, value)
+    None => entries.push((key, value))
+  }
+}
+
+pub fn load_entries_u16(
+  state : js_json::JValue,
+  key : String,
+  entries : Array[(Array[Int], Array[Int])],
+) -> Unit {
+  match state.get(key) {
+    Some(js_json::JValue::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          js_json::JValue::Arr(pair) => {
+            if pair.length() >= 2 {
+              match (pair[0], pair[1]) {
+                (js_json::JValue::Str(ku), js_json::JValue::Str(vu)) => {
+                  set_entry_u16(entries, ku, vu)
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+}
+
+pub fn entries_json_u16(entries : Array[(Array[Int], Array[Int])]) -> js_json::JValue {
+  let out : Array[js_json::JValue] = []
+  for i in 0..<entries.length() {
+    let (k, v) = entries[i]
+    out.push(js_json::JValue::Arr([jstr_u16(k), jstr_u16(v)]))
+  }
+  js_json::JValue::Arr(out)
+}
+
+pub fn content_text_u16(content : Option[js_json::JValue], allow_str : Bool = true) -> Array[Int] {
+  match content {
+    Some(js_json::JValue::Str(u)) => if allow_str { u } else { [] }
+    Some(js_json::JValue::Arr(items)) => {
+      let out : Array[Int] = []
+      let mut wrote = false
+      for i in 0..<items.length() {
+        match str_u16(field(Some(items[i]), "text")) {
+          Some(t) => {
+            if t.length() > 0 {
+              if wrote {
+                out.push(0x0A)
+              }
+              for j in 0..<t.length() {
+                out.push(t[j])
+              }
+              wrote = true
+            }
+          }
+          None => ()
+        }
+      }
+      out
+    }
+    _ => []
+  }
+}
+
+pub fn u16_has_prefix(s : Array[Int], p : Array[Int]) -> Bool {
+  if p.length() > s.length() {
+    return false
+  }
+  for i in 0..<p.length() {
+    if s[i] != p[i] {
+      return false
+    }
+  }
+  true
+}
+
+pub fn end_entry_u16(
+  open : Array[(Array[Int], Array[Int])],
+  id : Array[Int],
+  out : Array[js_json::JValue],
+) -> Unit {
+  match find_entry_u16(open, id) {
+    Some(i) => {
+      let mut j = i
+      while j + 1 < open.length() {
+        open[j] = open[j + 1]
+        j = j + 1
+      }
+      let _ = open.pop()
+      out.push(end_event_u16(id))
+    }
+    None => ()
+  }
+}
+
+pub fn end_open_u16(open : Array[(Array[Int], Array[Int])]) -> Array[js_json::JValue] {
+  let out : Array[js_json::JValue] = []
+  for i in 0..<open.length() {
+    let (id, _) = open[i]
+    out.push(end_event_u16(id))
+  }
+  open.clear()
+  out
+}
+
+pub fn end_non_tool_prefix_u16(
+  open : Array[(Array[Int], Array[Int])],
+  prefix : Array[Int],
+  out : Array[js_json::JValue],
+) -> Unit {
+  let tool_u16 = js_json::utf16_units("tool")
+  let snapshot : Array[(Array[Int], Array[Int])] = []
+  for i in 0..<open.length() {
+    snapshot.push(open[i])
+  }
+  for i in 0..<snapshot.length() {
+    let (id, kind) = snapshot[i]
+    if !u16_eq(kind, tool_u16) && u16_has_prefix(id, prefix) {
+      end_entry_u16(open, id, out)
+    }
+  }
+}
+
+pub fn has_open_tool_u16(open : Array[(Array[Int], Array[Int])]) -> Bool {
+  let tool_u16 = js_json::utf16_units("tool")
+  for i in 0..<open.length() {
+    let (_, kind) = open[i]
+    if u16_eq(kind, tool_u16) {
+      return true
+    }
+  }
+  false
+}
+
+pub fn str_or_js_u16_with(
+  v : Option[js_json::JValue],
+  fmt_num : (Double) -> String,
+) -> Array[Int] {
+  match v {
+    None => []
+    Some(js_json::JValue::Null) => []
+    Some(x) => js_json::js_string_u16_with(x, fmt_num)
+  }
+}
+
+pub fn str_or_js_u16(v : Option[js_json::JValue]) -> Array[Int] {
+  match v {
+    None => []
+    Some(js_json::JValue::Null) => []
+    Some(x) => js_json::js_string_u16(x)
+  }
+}

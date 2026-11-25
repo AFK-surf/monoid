@@ -200,6 +200,7 @@ export class StationTopics implements Owner {
     }
     // What a UI has open (a chat's messages, its agent, a history, a job's or a login's card): urgent (#raise).
     this.#raise(topic, station);
+    this.#core.meshNow()?.refreshIdle?.(station);
     if (topic.topic === "thread") {
       const id = topic.thread as number;
       // Opened: the most recently used, kept while shown. Let go for room before, or a chat no list has (opened from an
@@ -248,6 +249,7 @@ export class StationTopics implements Owner {
   resume(topic: Topic): void {
     const station = topicStation(topic);
     if (station === null) return;
+    this.#core.meshNow()?.refreshIdle?.(station);
     // What the agents spent, and the archive: read as a page shows them, not with each change while none does.
     if (topic.topic === "stationUsage") this.#sync.usageShown(station);
     if (topic.topic === "archivedRows") this.#sync.archivedShown(station);

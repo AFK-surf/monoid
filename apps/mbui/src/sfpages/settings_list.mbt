@@ -261,6 +261,7 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
   if platform != 4 {
     device.push(settings_row(AdbShare(""), "adb", "phone", @sf.t("android-misc.adb.title"), words=settings_words_adb))
   }
+  device.push(settings_row(Network, "network", "refresh", @sf.t("web-pages.settings.nav.network"), words=settings_words_network))
   device.push(settings_row(KeptFiles, "files", "disk", @sf.t("android-settings.files.title"), value=kept, words=settings_words_files))
   let exp = @settings.experimental_items_from(prefs)
   if !exp.is_empty() {
@@ -639,9 +640,18 @@ fn settings_children_of(
       [
         ("sending", @sf.t("web-main.shortcuts.sending"), Shortcuts, "回车发送 Enter ⌘Enter Ctrl+Enter 换行 发送消息 send message"),
       ]
+    "network" => {
+      let a : Array[(String, String, @settings.Route, String)] = [
+        ("otherWorkspaces", @sf.t("web-pages.network.otherWorkspaces.title"), Network, "同步 workspace 工作区 省电 耗电 流量 sync battery data workspaces"),
+        ("fill", @sf.t("android-settings.files.fill.title"), Network, "后台下载 自动下载 离线文件 background download fill"),
+      ]
+      if @ui.platform() != 4 {
+        a.push(("dht", @sf.t("web-pages.about.dht.title"), Network, "DHT 网络 查找 Station 中继 公司网络 防火墙 network relay lookup firewall"))
+      }
+      a
+    }
     "files" =>
       [
-        ("fill", @sf.t("android-settings.files.fill.title"), KeptFiles, "后台下载 自动下载 离线文件 background download fill"),
         ("clear", @sf.t("android-settings.files.clearAll"), KeptFiles, "清除缓存 清理空间 删除缓存 clear cache storage"),
       ]
     "about" => {
@@ -662,9 +672,6 @@ fn settings_children_of(
       }
       if @hostapi.perf_state() >= 0 {
         a.push(("perf", @sf.t("web-pages.about.perf.title"), About, "性能日志 诊断日志 打开日志文件夹 卡顿记录 performance log folder"))
-      }
-      if @ui.platform() != 4 {
-        a.push(("dht", @sf.t("web-pages.about.dht.title"), About, "DHT 网络 查找 Station 中继 公司网络 防火墙 network relay lookup firewall"))
       }
       a
     }
@@ -812,6 +819,9 @@ let settings_words_local : String = "本地 本机 服务 开机自启 守护进
 
 ///|
 let settings_words_adb : String = "手机 安卓 真机 无线调试 USB ADB Android phone wireless debug"
+
+///|
+let settings_words_network : String = "网络 同步 工作区 省电 耗电 流量 后台下载 DHT 中继 network sync workspace battery data download relay"
 
 ///|
 let settings_words_files : String = "缓存 存储 空间 清理 磁盘 下载 文件 cache storage disk space clean clear download"

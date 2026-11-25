@@ -244,7 +244,7 @@ fn screen_stage_node(p : @view.View, pg : ScreenPage, pair? : () -> Bool = fn() 
     .min_width(Is(Some(0.0)))
     .clips(By(fn() { !in_body() }))
     |> ignore
-    if pg.in_tab {
+    if pg.in_tab && !s.simulator() {
       st.ground(By(fn() { @ui.tree_theme().color(Faint) })) |> ignore
     }
     st.by_room(fn(held, room) {
@@ -572,7 +572,7 @@ fn screen_pointer_node(o : @view.View, pg : ScreenPage, over : () -> Bool) -> Un
       .width(By(fn() { Some(pointer_drawn(s, ptr, shape()).1) }))
       .height(By(fn() { Some(pointer_drawn(s, ptr, shape()).2) }))
       .offset(By(place))
-      .image(By(fn() { Some((pointer_drawn(s, ptr, shape()).0, "", 0)) }))
+      .image(By(fn() { Some((pointer_drawn(s, ptr, shape()).0, "", 8192)) }))
       |> ignore
     })
     |> ignore
@@ -1725,7 +1725,7 @@ fn screen_mouse_drag(stage : @view.View, pg : ScreenPage, d : @view.Drag) -> Uni
           Some(at) => {
             // (the keys round the first button down, the others' going down with them already)
             if m.extra == 0 {
-              m.mods = mods_of_held(@ui.mods_held())
+              m.mods = screen_remap_mods(s, mods_of_held(@ui.mods_held()))
               mods_round(send, m.mods, "down")
             }
             screen_lock_take(s, m)
@@ -1807,7 +1807,7 @@ fn screen_mouse_menu(pg : ScreenPage, menu : @view.Menu) -> Unit {
   let send = fn(j : Json) { s.input(s.src, j) }
   match screen_frame_at(menu.x, menu.y, u.shown_at(menu.at), false) {
     Some(at) => {
-      let mods = mods_of_held(@ui.mods_held()) & mod_ctrl.lnot()
+      let mods = screen_remap_mods(s, mods_of_held(@ui.mods_held()) & mod_ctrl.lnot())
       mods_round(send, mods, "down")
       u.mouse.at = Some(at)
       send(pointer_input("down", at, btn_secondary))
@@ -1832,7 +1832,7 @@ fn screen_mouse_wheel(pg : ScreenPage, w : @view.Wheel) -> Unit {
   match screen_frame_at(w.x, w.y, u.shown_at(w.at), false) {
     Some(at) => {
       // (those a press still held went down with already go up with it)
-      let mods = mods_of_held(@ui.mods_held()) & (if m.held() != 0 { m.mods } else { 0 }).lnot()
+      let mods = screen_remap_mods(s, mods_of_held(@ui.mods_held())) & (if m.held() != 0 { m.mods } else { 0 }).lnot()
       mods_round(send, mods, "down")
       send(wheel_input(at, w.dx, w.dy))
       mods_round(send, mods, "up")

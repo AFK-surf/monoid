@@ -13,7 +13,9 @@ import { type ProcessInfo, platform, treeOf } from "../platform/index.ts";
 import { Agents } from "../sessions/agents.ts";
 import { restarter } from "../ops/restart.ts";
 import { SelfMemoryGovernor } from "../ops/self-memory.ts";
+import { wall } from "../ops/fibers.ts";
 import { MbProcess } from "../read/mb-reader.ts";
+import { readerTelemetry } from "../read/reader-telemetry.ts";
 import { Parts, Paths, Readers, Store } from "../services.ts";
 import { linuxUsage } from "./linux.ts";
 import { PRODUCTS, STILLFAIL } from "../../../client/i18n/brand.ts";
@@ -118,7 +120,16 @@ export const ResourcesLive = Layer.effectDiscard(
           totalBytes: () => totalmem(),
           startedAt: hub.clock.currentTimeMillisUnsafe() - Math.round(process.uptime() * 1000),
           memory: () => process.memoryUsage(),
-          children: async () => programsIn(await (table = platform.processTable(false)), MbProcess.live().map((p) => p.pid)),
+          children: async () => {
+            const snap = await (table = platform.processTable(false));
+            const live = MbProcess.live();
+            try {
+              const breakdown = readerTelemetry.recordRssSnapshot(snap, live, wall.now());
+              return { bytes: breakdown.totalBytes, count: breakdown.totalCount };
+            } catch {
+              return programsIn(snap, live.map((p) => p.pid));
+            }
+          },
           front: async () => {
             // (let go once read: the machine's table is not kept between samples)
             const current = table;

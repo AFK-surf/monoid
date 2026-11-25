@@ -1,4 +1,4 @@
-// Claude Code, Codex, DeepSeek Harness, Grok Build, Devin and Pi on this machine (Cursor's SDK: updates.ts readCursor): where the station's PATH finds
+// Claude Code, Codex, DeepSeek Harness, Grok Build, Devin and Pi on this machine (Cursor's and Copilot's SDKs: updates.ts readSdk): where the station's PATH finds
 // them, how each is updated the way it was installed (`claude update`, `pi update`, Devin's installer, npm, Homebrew, winget, Vite+, Codex's
 // standalone installer) or installed when it is not there, and running those commands.
 import { existsSync, lstatSync, readdirSync, readlinkSync, unlinkSync } from "node:fs";
@@ -23,7 +23,7 @@ export const kindName = (k: Kind) => (k === "station" ? "Station" : runtimeLabel
 export const kindCommand = (k: Kind) => (k === "station" ? "stillfail-station" : k);
 /// Where the latest is said: the npm registry's latest of the runtime's package (none for Devin: its manifest says it,
 /// DEVIN_MANIFEST).
-export const kindPackage = (k: Kind) => (k === "claude" ? "@anthropic-ai/claude-code" : k === "codex" ? "@openai/codex" : k === "dsh" ? "@deepseek-ai/dsh" : k === "grok" ? "@xai-official/grok" : k === "cursor" ? "@cursor/sdk" : k === "pi" ? "@earendil-works/pi-coding-agent" : "");
+export const kindPackage = (k: Kind) => (k === "claude" ? "@anthropic-ai/claude-code" : k === "codex" ? "@openai/codex" : k === "dsh" ? "@deepseek-ai/dsh" : k === "grok" ? "@xai-official/grok" : k === "cursor" ? "@cursor/sdk" : k === "copilot" ? "@microsoft/copilot-sdk" : k === "pi" ? "@earendil-works/pi-coding-agent" : "");
 
 /// Where the Devin CLI's installer reads the latest build ({version, platforms}).
 export const DEVIN_MANIFEST = "https://static.devin.ai/cli/current/manifest.json";
@@ -319,11 +319,11 @@ async function runBoth(program: string, args: string[], env: Env, timeoutMs: num
         }),
       );
     };
-    const ends = Promise.all([take(child.stdout!, 0), take(child.stderr!, 1)]);
     const timer = wall.after(timeoutMs, () => {
       endCommand(child, "SIGKILL");
       reject(new NotFinished(tr(lang, "station.updates.notFinished", { program })));
     });
+    // (heard before its streams: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     child.on("error", (e) => {
       timer();
       reject(e);
@@ -332,5 +332,6 @@ async function runBoth(program: string, args: string[], env: Env, timeoutMs: num
       timer();
       void ends.then(() => resolve([code === 0, said, whole[0]!, whole[1]!, code]));
     });
+    const ends = Promise.all([child.stdout ? take(child.stdout, 0) : undefined, child.stderr ? take(child.stderr, 1) : undefined]);
   });
 }

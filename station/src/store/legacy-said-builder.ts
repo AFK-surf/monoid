@@ -23,14 +23,14 @@ interface LookupWorker extends EventEmitter {
   unref(): void;
   terminate(): Promise<number>;
 }
-type StartLookupWorker = (...args: ConstructorParameters<typeof MbBackfill>) => LookupWorker;
+type StartLookupWorker = (binary: string, args: string[], priority: SharedArrayBuffer | undefined, pauseMs: number) => LookupWorker;
 
 /// Keep an old store readable during handover. One builder takes turns preparing its missing entry lookups, so one
 /// steadily changing lookup cannot starve another and their transactions still yield to foreground writes. By the
 /// MoonBit builder (station/mb, src/legacy; `MbBackfill`; `binary`: the program, a test's own where it gives one).
 /// A test can give `startWorker` to decide when each batch answers without starting a process.
 function buildLookups(store: Store, previous: Promise<void>, kinds: readonly Kind[], binary?: string,
-  startWorker: StartLookupWorker = (...args) => new MbBackfill(...args),
+  startWorker?: StartLookupWorker,
   readers?: () => ReaderSelectConfig): {
   ready: Promise<boolean>; waitForDecisionSessions: () => Promise<boolean>;
   wake: () => void; close: () => Promise<void>;
@@ -132,8 +132,10 @@ function buildLookups(store: Store, previous: Promise<void>, kinds: readonly Kin
     }
     let current: LookupWorker;
     try {
-      const bin = resolveReaderSelection("session-backfill", { binary, config: readers, logAt: "readers" }).primaryBinary;
-      current = startWorker(bin, ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20);
+      const sel = resolveReaderSelection("session-backfill", { binary, config: readers, logAt: "readers" });
+      current = startWorker !== undefined
+        ? startWorker(sel.primaryBinary, ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20)
+        : new MbBackfill(sel, ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20);
     }
     catch (error) {
       log.warn("store", "the old message lookup worker could not start", { error: (error as Error).message });

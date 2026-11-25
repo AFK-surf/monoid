@@ -18,6 +18,57 @@ class Wrong extends Error {
   }
 }
 
+/// A word of an open set (dsl.ts `words` `open`) this core does not know: what holds it is left out, the nearest
+/// option (absent) or item of a list or map (dropped). Nothing holding it so: wrong, as any unknown word.
+class Unknown extends Wrong {}
+
+/// The words of open sets a station sent that this core does not know (`RuntimeKind`: a runtime added on a station
+/// newer than this app), by their set, in the order first met. Plain data: this file is the station's too
+/// (station/src/read/runtime-view.ts), which has no reactive layer; what reads them (views.ts: the chats' list says to
+/// update the app) is told by `onUnknownWords`, never while a value is being made (a topic's, read in a computed):
+/// after it, in a microtask.
+const unknown = new Map<string, string[]>();
+const unknownTold = new Set<(tys: string[]) => void>();
+
+export function unknownWords(ty: string): readonly string[] {
+  return unknown.get(ty) ?? [];
+}
+
+/// `f` told the sets that met a word they did not know, or forgot them; what it gives back stops it.
+export function onUnknownWords(f: (tys: string[]) => void): () => void {
+  unknownTold.add(f);
+  return () => void unknownTold.delete(f);
+}
+
+const tellUnknown = (tys: string[]) => {
+  for (const f of unknownTold) f(tys);
+};
+
+function unknownWord(ty: string, word: string): void {
+  const had = unknown.get(ty) ?? [];
+  if (had.includes(word)) return;
+  unknown.set(ty, [...had, word]);
+  queueMicrotask(() => tellUnknown([ty]));
+}
+
+/// Forgets the words met (tests).
+export function forgetUnknownWords(): void {
+  const tys = [...unknown.keys()];
+  unknown.clear();
+  if (tys.length > 0) tellUnknown(tys);
+}
+
+/// `walk` of an item that an unknown word of an open set leaves out: `left` then.
+function orLeft<T>(v: unknown, ty: Ty, path: string, left: T): unknown | T {
+  try {
+    return walk(v, ty, path);
+  } catch (e) {
+    if (e instanceof Unknown) return left;
+    throw e;
+  }
+}
+const LEFT = Symbol("left out");
+
 const INTS: Record<string, [number, number]> = {
   i64: [-(2 ** 63), 2 ** 63],
   i32: [-(2 ** 31), 2 ** 31 - 1],
@@ -126,13 +177,18 @@ export function shapedBeside(v: object, ty: string, out: object): void {
 const beside = new WeakMap<object, Map<string, unknown>>();
 
 function walk(v: unknown, ty: Ty, path: string): unknown {
-  if (typeof ty === "object" && "opt" in ty) return v === null || v === undefined ? null : walk(v, ty.opt, path);
+  if (typeof ty === "object" && "opt" in ty) return v === null || v === undefined ? null : orLeft(v, ty.opt, path, null);
   // What already went out through its shape (output.ts) is as it went.
   if (wentOut(v, ty)) return v;
   if (typeof ty === "object") {
     if ("vec" in ty) {
       if (!Array.isArray(v)) throw new Wrong(path, `invalid type: ${unexpected(v)}, expected a sequence`);
-      return v.map((item, i) => walk(item, ty.vec, at(path, i)));
+      const out: unknown[] = [];
+      for (let i = 0; i < v.length; i++) {
+        const item = orLeft(v[i], ty.vec, at(path, i), LEFT);
+        if (item !== LEFT) out.push(item);
+      }
+      return out;
     }
     if ("tuple" in ty) {
       if (!Array.isArray(v)) throw new Wrong(path, `invalid type: ${unexpected(v)}, expected a tuple of size ${ty.tuple.length}`);
@@ -141,7 +197,10 @@ function walk(v: unknown, ty: Ty, path: string): unknown {
     }
     if (v === null || typeof v !== "object" || Array.isArray(v)) throw new Wrong(path, `invalid type: ${unexpected(v)}, expected a map`);
     const out: Record<string, unknown> = {};
-    for (const [k, item] of Object.entries(v)) out[k] = walk(item, ty.map, at(path, k));
+    for (const [k, item] of Object.entries(v)) {
+      const one = orLeft(item, ty.map, at(path, k), LEFT);
+      if (one !== LEFT) out[k] = one;
+    }
     return out;
   }
   switch (ty) {
@@ -168,7 +227,12 @@ function walk(v: unknown, ty: Ty, path: string): unknown {
   if (!shape) throw new Error(`no shape ${ty}`);
   if (shape.kind === "enum") {
     if (typeof v !== "string") throw new Wrong(path, `invalid type: ${unexpected(v)}, expected variant identifier`);
-    if (!shape.values.includes(v)) throw new Wrong(path, `unknown variant \`${v}\`, ${oneOf(shape.values)}`);
+    if (!shape.values.includes(v)) {
+      const said = `unknown variant \`${v}\`, ${oneOf(shape.values)}`;
+      if (shape.open !== true) throw new Wrong(path, said);
+      unknownWord(ty, v);
+      throw new Unknown(path, said);
+    }
     return v;
   }
   if (v === null || typeof v !== "object" || Array.isArray(v)) throw new Wrong(path, `invalid type: ${unexpected(v)}, expected ${expecting(ty)}`);
@@ -220,7 +284,7 @@ export function shapeKey(ty: Ty): string {
     if (shape.kind === "struct") {
       reached.set(t, [shape.default, shape.fields.map((f) => [f.name, f.ty, f.default, f.skipNone])]);
       for (const f of shape.fields) reach(f.ty);
-    } else if (shape.kind === "enum") reached.set(t, [shape.values, shape.default]);
+    } else if (shape.kind === "enum") reached.set(t, shape.open === true ? [shape.values, shape.default, true] : [shape.values, shape.default]);
     else {
       reached.set(t, [shape.tag, shape.content, shape.variants]);
       for (const v of Object.values(shape.variants)) reach(v);

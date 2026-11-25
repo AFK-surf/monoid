@@ -286,3 +286,49 @@ test "sharing a chat with a placed .mbui widget draws it synchronously in the ex
   assert_true(words.contains("0.25.0 发布与性能看板"), msg=words)
   assert_eq(t.kept().length(), 1)
 }
+
+///|
+test "a .mbui widget's words are picked with the mouse in its message, a table's copied with tabs; what is pressed in it picks nothing; beside the chat the same" {
+  let t = beside_tester(mode="chat-mbui", h=1100.0)
+  let pick = fn(from : String, to : String) -> String raise {
+    t.ctx().selection_clear()
+    t.frame()
+    let (x0, y0, _, h0) = words_rect(t, from)
+    let (x1, y1, w1, h1) = words_rect(t, to)
+    t.drag(x0 + 0.5, y0 + h0 / 2.0, x1 + w1 - 0.5, y1 + h1 / 2.0)
+    t.frame()
+    t.ctx().selected_text()
+  }
+  // a title, a stat's words, a pill's, a chart's
+  for words in ["原生 mbui + Wasm 沙箱渲染", "单组件内存", "同步直出", "灰度 100%", "各端每日构建通过次数"] {
+    assert_eq(pick(words, words), words)
+  }
+  // pressed: nothing picked, and a drag's press on a tab, a button or a details' head begins none
+  for words in ["发版检查单", "Wasm 复核", "展开其余 17 条规则"] {
+    t.ctx().selection_clear()
+    guard t.find(words) is Some((x, y)) else { fail("\{words} not drawn") }
+    let made = t.ctx().selection_made()
+    t.press_at(x, y)
+    t.move_to(x + 20.0, y)
+    assert_eq(t.ctx().selection_made(), made, msg="\{words} began a selection")
+    assert_eq(t.ctx().selected_text(), "", msg=words)
+    t.move_to(x, y - 300.0)
+    t.release(x, y - 300.0)
+    t.frame()
+  }
+  t.tap_text("发版检查单")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(pick("发版前门禁检查", "发版前门禁检查"), "发版前门禁检查")
+  assert_eq(pick("列表首帧高度同步", "宽排法 / 窄排法"), "列表首帧高度同步\t宽排法 / 窄排法")
+  assert_eq(mbui_viz_faults(t), [])
+  t.ctx().selection_clear()
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("release.mbui"), beside=true)
+  t.run_for(@ui.move_most_ms)
+  let tab = t.get(Tab, label="0.25.0 发布与性能看板").rect.0
+  guard t.words().iter().find_first(fn(w) { w.0 == "单组件内存" && w.1 >= tab - 20.0 }) is Some(w) else {
+    fail("the widget beside the chat not drawn")
+  }
+  t.drag(w.1 + 0.5, w.2 + w.4 / 2.0, w.1 + w.3 - 0.5, w.2 + w.4 / 2.0)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "单组件内存")
+}

@@ -540,14 +540,37 @@ pub fn asking_message(
   from : base_codec::Json,
   to : base_codec::Json,
 ) -> Result[Option[(base_codec::Json, Array[base_codec::Json])], readops_core::ReadError] {
+  let has_prop = match readops_core::has_proposal_column(db) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let has_sidecar = match readops_core::exists_in(db, "table", "entry_proposals") {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
   let n = match about {
     base_codec::Json::Null => {
       let legacy = match builders_legacy::has_legacy_agent(db) {
         Ok(b) => b
         Err(e) => return Err(readops_core::map_step_err(e))
       }
-      let sql = if legacy { readops_core::LEGACY_ASKED_DURING_SQL } else { readops_core::ASKED_DURING_SQL }
-      let during = match readops_core::one(db, sql, [thread, from, to]) {
+      let during_sql = if legacy {
+        readops_core::LEGACY_ASKED_DURING_SQL
+      } else if has_prop && has_sidecar {
+        "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND NOT EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n) AND at >= ? AND at <= ?"
+      } else if has_prop {
+        "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND at >= ? AND at <= ?"
+      } else {
+        readops_core::ASKED_DURING_SQL
+      }
+      let latest_sql = if has_prop && has_sidecar {
+        "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND NOT EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n) AND at <= ? ORDER BY at DESC LIMIT 1"
+      } else if has_prop {
+        "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND proposal IS NULL AND at <= ? ORDER BY at DESC LIMIT 1"
+      } else {
+        readops_core::ASKED_LATEST_SQL
+      }
+      let during = match readops_core::one(db, during_sql, [thread, from, to]) {
         Ok(r) => r
         Err(e) => return Err(e)
       }
@@ -557,7 +580,7 @@ pub fn asking_message(
           match rn {
             base_codec::Json::Null => {
               if !legacy {
-                match readops_core::one(db, readops_core::ASKED_LATEST_SQL, [thread, to]) {
+                match readops_core::one(db, latest_sql, [thread, to]) {
                   Ok(Some(r2)) => readops_core::field(r2, "n")
                   Ok(None) => base_codec::json_null()
                   Err(e) => return Err(e)
@@ -571,7 +594,7 @@ pub fn asking_message(
         }
         None => {
           if !legacy {
-            match readops_core::one(db, readops_core::ASKED_LATEST_SQL, [thread, to]) {
+            match readops_core::one(db, latest_sql, [thread, to]) {
               Ok(Some(r2)) => readops_core::field(r2, "n")
               Ok(None) => base_codec::json_null()
               Err(e) => return Err(e)
@@ -593,11 +616,14 @@ pub fn asking_message(
     Ok(None) => false
     Err(e) => return Err(e)
   }
-  let carded = match readops_core::one(
-    db,
-    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)",
-    [thread, n],
-  ) {
+  let carded_sql = if has_prop && has_sidecar {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL OR proposal IS NOT NULL OR EXISTS (SELECT 1 FROM entry_proposals ep WHERE ep.thread = entries.thread AND ep.n = entries.n))"
+  } else if has_prop {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL OR proposal IS NOT NULL)"
+  } else {
+    "SELECT 1 AS x FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)"
+  }
+  let carded = match readops_core::one(db, carded_sql, [thread, n]) {
     Ok(Some(_)) => true
     Ok(None) => false
     Err(e) => return Err(e)
@@ -1486,15 +1512,22 @@ fn opened_named(
   base_codec::json_obj(out)
 }
 
-/// `store.ts` `openers` and `openedChats` of some sessions (none: of all).
-pub fn openers_opened_ordered(
+/// `store.ts` `openers` of some sessions (none: of all), preserving SQL first-seen key order;
+/// none on a database from before.
+pub fn openers_of_ordered(
   db : sql_db::Db,
   ids : Option[Array[String]],
-) -> Result[(Array[(String, base_codec::Json)], Array[(String, Array[base_codec::Json])]), readops_core::ReadError] {
+) -> Array[(String, base_codec::Json)] {
   let openers : Array[(String, base_codec::Json)] = []
   let openers_idx : Map[String, Int] = Map::new()
-  let opened : Array[(String, Array[base_codec::Json])] = []
-  let opened_idx : Map[String, Int] = Map::new()
+  match ids {
+    Some(arr) => {
+      if arr.length() == 0 {
+        return openers
+      }
+    }
+    None => ()
+  }
   let list : Array[base_codec::Json] = match ids {
     Some(arr) => {
       let js : Array[base_codec::Json] = []
@@ -1510,7 +1543,6 @@ pub fn openers_opened_ordered(
     None => false
   }
   let base_openers = "SELECT o.child, o.parent_station, o.parent, o.opener_title, o.led, p.title AS parent_title FROM opened_chats o LEFT JOIN sessions p ON o.parent_station = '' AND p.key = o.parent"
-  let base_opened = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child"
   let station_of = fn(v : base_codec::Json) -> base_codec::Json {
     if base_codec::json_eq(v, base_codec::json_str("")) {
       base_codec::json_null()
@@ -1544,6 +1576,62 @@ pub fn openers_opened_ordered(
       }
     }
     Err(_) => ()
+  }
+  openers
+}
+
+/// `store.ts` `openers` of some sessions (none: of all): by session, the chat it was opened from;
+/// none on a database from before.
+pub fn openers_of(
+  db : sql_db::Db,
+  ids : Option[Array[String]],
+) -> Map[String, base_codec::Json] {
+  let openers_arr = openers_of_ordered(db, ids)
+  let openers : Map[String, base_codec::Json] = Map::new()
+  for i in 0..<openers_arr.length() {
+    let (k, v) = openers_arr[i]
+    openers.set(k, v)
+  }
+  openers
+}
+
+/// `store.ts` `openers` and `openedChats` of some sessions (none: of all).
+pub fn openers_opened_ordered(
+  db : sql_db::Db,
+  ids : Option[Array[String]],
+) -> Result[(Array[(String, base_codec::Json)], Array[(String, Array[base_codec::Json])]), readops_core::ReadError] {
+  let openers = openers_of_ordered(db, ids)
+  let opened : Array[(String, Array[base_codec::Json])] = []
+  let opened_idx : Map[String, Int] = Map::new()
+  match ids {
+    Some(arr) => {
+      if arr.length() == 0 {
+        return Ok((openers, opened))
+      }
+    }
+    None => ()
+  }
+  let list : Array[base_codec::Json] = match ids {
+    Some(arr) => {
+      let js : Array[base_codec::Json] = []
+      for i in 0..<arr.length() {
+        js.push(base_codec::json_str(arr[i]))
+      }
+      [readops_core::ids_json(js)]
+    }
+    None => []
+  }
+  let has_ids = match ids {
+    Some(_) => true
+    None => false
+  }
+  let base_opened = "SELECT o.parent, o.child_station, o.child, o.title, c.title AS child_title, o.led, o.state, c.archived_at AS child_archived FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child"
+  let station_of = fn(v : base_codec::Json) -> base_codec::Json {
+    if base_codec::json_eq(v, base_codec::json_str("")) {
+      base_codec::json_null()
+    } else {
+      v
+    }
   }
   let od_sql = if has_ids {
     readops_core::OPENED_OF_SQL

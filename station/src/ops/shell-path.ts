@@ -54,10 +54,7 @@ export function readShellPath(shell: string, login: boolean, source: Env, timeou
       resolve(value);
     };
     const stop = wall.after(timeoutMs, () => { endCommand(child, "SIGKILL"); finish(null); });
-    child.stdout!.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-      if (Buffer.byteLength(output) > MAX_OUTPUT) { endCommand(child, "SIGKILL"); finish(null); }
-    });
+    // (heard before its stdout: one not started (ENFILE, EMFILE) has none, and its error told to none ends the station)
     child.on("error", () => finish(null));
     child.on("close", (code) => {
       if (code !== 0) return finish(null);
@@ -68,6 +65,10 @@ export function readShellPath(shell: string, login: boolean, source: Env, timeou
       } catch {
         finish(null);
       }
+    });
+    child.stdout?.on("data", (chunk: Buffer) => {
+      output += chunk.toString("utf8");
+      if (Buffer.byteLength(output) > MAX_OUTPUT) { endCommand(child, "SIGKILL"); finish(null); }
     });
   });
 }
