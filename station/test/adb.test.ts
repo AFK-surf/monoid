@@ -30,13 +30,14 @@ const TEST_PORTS = { start: 27000, end: 28000 };
 const testShares = (options: ConstructorParameters<typeof Shares>[0] = {}) => new Shares({ ports: TEST_PORTS, ...options });
 
 /// A phone of this run's own whose usual port in `ports` nothing on this machine holds now.
-async function freePhone(ports = TEST_PORTS): Promise<string> {
+/// Pass `prefix` (`"${viewer.sub}/"`) when `answerAdb` will hash `key(viewer, conn, ask)` instead of raw `phone`.
+async function freePhone(ports = TEST_PORTS, prefix = ""): Promise<string> {
   for (let i = 0; i < 64; i++) {
     const candidate = randomBytes(32).toString("hex");
     const server = net.createServer();
     const free = await new Promise<boolean>((resolve) => {
       server.once("error", () => resolve(false));
-      server.listen({ host: "127.0.0.1", port: usualPort(candidate, ports), exclusive: true }, () => resolve(true));
+      server.listen({ host: "127.0.0.1", port: usualPort(`${prefix}${candidate}`, ports), exclusive: true }, () => resolve(true));
     });
     if (free) {
       await new Promise((r) => server.close(r));
@@ -563,7 +564,7 @@ test("a phone offered over the mesh: adb connects through its tunnel, asks reach
   const time = testClock();
   const shares = testShares({ adb: () => adb.path, limits: UNLIMITED, clock: time.clock });
   const mesh = await link(shares);
-  const phone = await freePhone(TEST_PORTS);
+  const phone = await freePhone(TEST_PORTS, `${viewer.sub}/`);
   try {
     const offer = { op: "share", phone, device: "Pixel\n8", android: "14", package: "fail.still.android", adbd: true, pair: true };
     const { stream: offered, reader } = await mesh.ask(offer);
@@ -574,7 +575,7 @@ test("a phone offered over the mesh: adb connects through its tunnel, asks reach
     assert.deepEqual(Object.keys(state), ["serial", "adb", "message"]);
     const serial: string = state.serial;
     const port = Number(serial.split(":")[1]);
-    assert.ok(serial.startsWith("127.0.0.1:") && port === usualPort(phone, TEST_PORTS) && port >= TEST_PORTS.start && port < TEST_PORTS.end, `serial ${serial}`);
+    assert.ok(serial.startsWith("127.0.0.1:") && port === usualPort(`${viewer.sub}/${phone}`, TEST_PORTS) && port >= TEST_PORTS.start && port < TEST_PORTS.end, `serial ${serial}`);
     // adb was told, and its connection reached the phone as a tunnel stream, bytes both ways.
     assert.deepEqual(adb.calls().slice(0, 3), [["-s", serial, "get-state"], ["disconnect", serial], ["connect", serial]]);
     assert.deepEqual(adb.dialed(), ["phone:CNXN"]);
