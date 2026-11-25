@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [184906dae](https://github.com/AFK-surf/monoid/commit/184906dae0dd6431cd03f9f581f71855d89b1004) perf(pion-station): land P0/P1 hot-path optimizati | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [78c0cc1f8](https://github.com/AFK-surf/monoid/commit/78c0cc1f8d13ee72237a8b4954e77902ee4d8eb1) fix(station): declare search directly to agy and n | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [2316b2f67](https://github.com/AFK-surf/monoid/commit/2316b2f6743ae497970c88dc5ea6e9d6119347a3) feat(pion-station): Wave 8 W8-C1 sessions_remote c | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [c47b2cd31](https://github.com/AFK-surf/monoid/commit/c47b2cd314b896ce5b506ac85736bc33576b47ec) revert(core): undo "ask the station links first af | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d5c6e59eb](https://github.com/AFK-surf/monoid/commit/d5c6e59eb42b8fccb1a678eeb11495a381d1a4aa) feat(ui): calibrate iOS 27.0 Liquid Glass v8 (roun | 2.54 | 3.44 | 14.21 | 36.77 | 55.6 | 32.12 | 65 | 100.75 | 129.12 |
 | [010a71e28](https://github.com/AFK-surf/monoid/commit/010a71e280b8fbc0f7fc2c49c9fe51691282808e) fix(ci): run deltas-station and deltas-desktop-win | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.94 | 121.84 |
 | [1d40febe4](https://github.com/AFK-surf/monoid/commit/1d40febe4eeb4b726223d5219d2228bb591df388) feat(pion-station): port reader_serve (--serve) wi | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.94 | 121.84 |
-| [38f0aa4e0](https://github.com/AFK-surf/monoid/commit/38f0aa4e0dad79a45f5bd4b81d53f283c662b54c) feat(mbui): default profile sharing to follow work | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.94 | 121.84 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [184906dae](https://github.com/AFK-surf/monoid/commit/184906dae0dd6431cd03f9f581f71855d89b1004) perf(pion-station): land P0/P1 hot-path optimizati | 0.56 | 0.74 | 2.87 | 3.91 | 7.16 | 2.13 | 5.98 | 57.28 |
 | [78c0cc1f8](https://github.com/AFK-surf/monoid/commit/78c0cc1f8d13ee72237a8b4954e77902ee4d8eb1) fix(station): declare search directly to agy and n | 0.56 | 0.74 | 2.87 | 3.91 | 7.16 | 2.13 | 5.98 | 57.21 |
 | [2316b2f67](https://github.com/AFK-surf/monoid/commit/2316b2f6743ae497970c88dc5ea6e9d6119347a3) feat(pion-station): Wave 8 W8-C1 sessions_remote c | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.05 |
 | [c47b2cd31](https://github.com/AFK-surf/monoid/commit/c47b2cd314b896ce5b506ac85736bc33576b47ec) revert(core): undo "ask the station links first af | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.16 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d5c6e59eb](https://github.com/AFK-surf/monoid/commit/d5c6e59eb42b8fccb1a678eeb11495a381d1a4aa) feat(ui): calibrate iOS 27.0 Liquid Glass v8 (roun | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.41 |
 | [010a71e28](https://github.com/AFK-surf/monoid/commit/010a71e280b8fbc0f7fc2c49c9fe51691282808e) fix(ci): run deltas-station and deltas-desktop-win | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.18 |
 | [1d40febe4](https://github.com/AFK-surf/monoid/commit/1d40febe4eeb4b726223d5219d2228bb591df388) feat(pion-station): port reader_serve (--serve) wi | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.02 |
-| [38f0aa4e0](https://github.com/AFK-surf/monoid/commit/38f0aa4e0dad79a45f5bd4b81d53f283c662b54c) feat(mbui): default profile sharing to follow work | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.96 | 57.23 |
