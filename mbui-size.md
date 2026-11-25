@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0dc373cef](https://github.com/AFK-surf/monoid/commit/0dc373cef1e2826ea03b3dc9e0e6de4555a84c8b) fix(core): show the running command, not the tool  | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.55 | 125.57 |
 | [3f59bd231](https://github.com/AFK-surf/monoid/commit/3f59bd231f0784f4b83126f37930f2f0bba26659) fix(station): keep agy profiles off the macOS keyc | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.63 | 123.13 |
 | [d65877bfe](https://github.com/AFK-surf/monoid/commit/d65877bfe98afbab2532bf32245e9b9adf464835) fix(app): make the text in interactive cards selec | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.63 | 123.13 |
 | [3a47d3fd0](https://github.com/AFK-surf/monoid/commit/3a47d3fd021c0e9289b201a998f7afcb9549c025) fix(install): keep the station running when the ke | 2.54 | 3.44 | 14.21 | 36.76 | 55.6 | 32.11 | 65 | 100.66 | 126.4 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [352566952](https://github.com/AFK-surf/monoid/commit/352566952d0319900c610590a715a0af1e2278bb) fix(app): line up a board draft's panel and put wh | 2.52 | 3.41 | 14.07 | 36.61 | 55.08 | 31.97 | 64.59 | 100.94 | 110.04 |
 | [12b53b34c](https://github.com/AFK-surf/monoid/commit/12b53b34c7a21f149097533e38ff8d533efc74f8) feat(pion): implement W7-B readops_chats L1 packag | 2.52 | 3.41 | 14.07 | 36.61 | 55.08 | 31.97 | 64.57 | 100.83 | 125.74 |
 | [bf66c2dbb](https://github.com/AFK-surf/monoid/commit/bf66c2dbbc04fa1067f02629b964b5462bb085bc) feat(pion): Wave 7.1 front (--builder forward and  | 2.52 | 3.41 | 14.07 | 36.61 | 55.08 | 31.97 | 64.57 | 100.83 | 125.74 |
-| [04f23f8f2](https://github.com/AFK-surf/monoid/commit/04f23f8f28d20778832cc3a30277cd4de3ea7487) perf(ui): keep the macOS menu bar in place and ope | 2.52 | 3.4 | 14.07 | 36.61 | 55.08 | 31.97 | 64.57 | 100.76 | 120.32 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0dc373cef](https://github.com/AFK-surf/monoid/commit/0dc373cef1e2826ea03b3dc9e0e6de4555a84c8b) fix(core): show the running command, not the tool  | 0.56 | 0.74 | 2.86 | 3.9 | 7.15 | 2.12 | 5.96 | 57.28 |
 | [3f59bd231](https://github.com/AFK-surf/monoid/commit/3f59bd231f0784f4b83126f37930f2f0bba26659) fix(station): keep agy profiles off the macOS keyc | 0.56 | 0.74 | 2.86 | 3.9 | 7.15 | 2.12 | 5.96 | 57.18 |
 | [d65877bfe](https://github.com/AFK-surf/monoid/commit/d65877bfe98afbab2532bf32245e9b9adf464835) fix(app): make the text in interactive cards selec | 0.56 | 0.74 | 2.86 | 3.9 | 7.15 | 2.12 | 5.96 | 56.9 |
 | [3a47d3fd0](https://github.com/AFK-surf/monoid/commit/3a47d3fd021c0e9289b201a998f7afcb9549c025) fix(install): keep the station running when the ke | 0.56 | 0.74 | 2.86 | 3.9 | 7.15 | 2.12 | 5.96 | 57.46 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [352566952](https://github.com/AFK-surf/monoid/commit/352566952d0319900c610590a715a0af1e2278bb) fix(app): line up a board draft's panel and put wh | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.49 |
 | [12b53b34c](https://github.com/AFK-surf/monoid/commit/12b53b34c7a21f149097533e38ff8d533efc74f8) feat(pion): implement W7-B readops_chats L1 packag | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.48 |
 | [bf66c2dbb](https://github.com/AFK-surf/monoid/commit/bf66c2dbbc04fa1067f02629b964b5462bb085bc) feat(pion): Wave 7.1 front (--builder forward and  | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.51 |
-| [04f23f8f2](https://github.com/AFK-surf/monoid/commit/04f23f8f28d20778832cc3a30277cd4de3ea7487) perf(ui): keep the macOS menu bar in place and ope | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.69 |
