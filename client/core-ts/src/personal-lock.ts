@@ -187,7 +187,8 @@ export type Standing = "none" | "member" | "outside" | "replaced";
 
 /// What the device keeps of the people's own locks, its reads begun at a start before the lock is made (core.ts, beside
 /// the databases' opening: each read waits its turn on the host's disk, and the vaults' pages and cards wait on these;
-/// core.start `own_lock_ms`). Each is taken by the first read of its key, and let go of by any write of it first.
+/// core.start `own_lock_ms`). Each is taken by the first read of its key (this device's key's id, every person's alike,
+/// by each person's), and let go of by any write of it first.
 export class EarlyReads {
   readonly #reads = new Map<string, Effect.Effect<Uint8Array | null>>();
 
@@ -198,7 +199,7 @@ export class EarlyReads {
 
   take(key: string): Effect.Effect<Uint8Array | null> | undefined {
     const read = this.#reads.get(key);
-    this.#reads.delete(key);
+    if (key !== KEY_ID) this.#reads.delete(key);
     return read;
   }
 

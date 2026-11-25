@@ -497,6 +497,17 @@ test("what a start began to read of the lock is what the device keeps, not what 
   };
   try {
     assert.notEqual((await restart(async () => {})).chain(SUB)?.hash ?? null, null, "the chain kept, read at the start");
+    // (this device's key's id read once for every person signed in, not once more for each after the first)
+    const early = new EarlyReads(a.host, a.runner, [SUB, "s2"]);
+    await a.host.settle();
+    const get = a.host.storageGet.bind(a.host);
+    const asked: string[] = [];
+    a.host.storageGet = (k) => (asked.push(k), get(k));
+    const both = new PersonalLock({ host: a.host, runner: a.runner, early, cloud: () => Effect.fail(new CoreError("offline", "offline")), device: () => Effect.succeed("61".repeat(32)), label: () => "a", changed: () => {} });
+    await a.runner.run(Effect.all([Effect.ignore(both.refresh(SUB)), Effect.ignore(both.refresh("s2"))], { concurrency: "unbounded" }));
+    assert.deepEqual(asked, [], "every read begun at the start");
+    assert.equal(both.standing(SUB), "member", "this device's key known, on the chain kept");
+    a.host.storageGet = get;
     const forgot = await restart((lock) => a.runner.run(lock.forget(SUB, "why")));
     assert.equal(forgot.chain(SUB)?.hash ?? null, null, "let go of before it was taken: not the one read before");
   } finally {
