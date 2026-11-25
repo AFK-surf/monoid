@@ -2,9 +2,10 @@
 // and `actors_line` (1:1 aligned with `wave8-plan.md` v5 §2.2, §2.3, §2.5).
 //
 // Strict unidirectional DAG (zero strong reference cycles during open lifetime or close):
-//   HubGen -> fibers (EffectScope) -> finalizers[] -> HubGenResources
-//   HubGen -> fibers (EffectScope) -> daemon tasks -> HubCounters / HubGenResources
-// Neither `HubGenResources` nor `HubCounters` EVER holds a reference to `HubGen`,
+//   HubGen -> fibers (EffectScope) -> finalizers[] -> HubGenResources (db + queues + hooks only)
+//   HubGen -> fibers (EffectScope) -> daemon tasks -> HubCounters / ShellSender / ShellSlot
+//   SessionHost -> hub_asked / hub_timers / shell_waiters (tagged by epoch, cleaned on rotation)
+// Neither `HubGenResources` nor `HubCounters` EVER holds a `Deferred`, `Task`, `HubGen`,
 // `EffectScope`, or `SessionHost`.
 
 import "base_codec"
@@ -77,11 +78,10 @@ pub fn HubCounters::note(self : HubCounters, text : String) -> Unit {
 }
 
 /// Standalone retireable resources of one Hub generation.
-/// Holds ZERO strong references to `HubGen` or `EffectScope`.
+/// Holds ONLY `db`, plain string queues, retirement flags, and leaf hooks —
+/// ZERO `Deferred`, ZERO `Task`, ZERO `HubGen`, ZERO `EffectScope`, ZERO `SessionHost`.
 pub struct HubGenResources {
   pub mut db : Option[sql_db::Db]
-  pub asked : Map[Int, effect::Deferred[base_codec::Json]]
-  pub timers : Map[Int, () -> Unit]
   pub turn_wait_queue : Array[String]
   pub cap_wait_queue : Array[String]
   pub mut retired : Bool
@@ -93,8 +93,6 @@ pub struct HubGenResources {
 pub fn HubGenResources::new(close_db : (sql_db::Db) -> Unit) -> HubGenResources {
   HubGenResources::{
     db: None,
-    asked: Map::new(),
-    timers: Map::new(),
     turn_wait_queue: [],
     cap_wait_queue: [],
     retired: false,
@@ -104,7 +102,7 @@ pub fn HubGenResources::new(close_db : (sql_db::Db) -> Unit) -> HubGenResources 
   }
 }
 
-/// Register a subsystem cleanup callback that captures only subsystem state (never `HubGen` or `fibers`).
+/// Register a subsystem cleanup callback that captures only leaf state (never `HubGen`/`fibers`/`SessionHost`).
 pub fn HubGenResources::add_retire_hook(self : HubGenResources, hook : () -> Unit) -> Unit {
   if self.retired {
     hook()
@@ -113,7 +111,7 @@ pub fn HubGenResources::add_retire_hook(self : HubGenResources, hook : () -> Uni
   }
 }
 
-/// Idempotently close `db` and clear all generation-scoped maps/queues.
+/// Idempotently close `db` and clear all generation-scoped queues/hooks.
 pub fn HubGenResources::retire(self : HubGenResources) -> Unit {
   if self.retired {
     return
@@ -127,8 +125,6 @@ pub fn HubGenResources::retire(self : HubGenResources) -> Unit {
     }
     None => ()
   }
-  self.asked.clear()
-  self.timers.clear()
   self.turn_wait_queue.clear()
   self.cap_wait_queue.clear()
   for i in 0..<self.on_retire.length() {
@@ -152,7 +148,7 @@ pub fn HubGen::new(host : SessionHost, epoch : Int) -> HubGen {
     host.transport.write_stdout_line,
     host.transport.write_stderr_line,
   )
-  // Finalizer captures ONLY `res` (never `gen` or `fibers`): strict acyclic DAG.
+  // Finalizer captures ONLY `res` (never `gen`, `fibers`, or `host`): strict acyclic DAG.
   fibers.add_finalizer(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     res.retire()
     k(effect::Exit::Succeeded(()))
@@ -180,7 +176,7 @@ pub fn HubGen::quiet(self : HubGen) -> Unit {
 /// Spawn a generation-scoped work fiber (`actors.mbt:333`):
 /// increments `active` synchronously, decrements + emits `quiet()` ONLY on `Succeeded`,
 /// and routes `Failed` to the daemon error handler without decrementing `active`.
-/// Captures ONLY `HubCounters` (ZERO back-reference to `HubGen` or `EffectScope`).
+/// Captures ONLY `HubCounters` (ZERO back-reference to `HubGen`, `EffectScope`, or `SessionHost`).
 pub fn HubGen::spawn_work(
   self : HubGen,
   work_k : ((effect::Exit[Unit]) -> Unit) -> Unit,
@@ -214,9 +210,8 @@ pub fn HubGen::spawn_work(
 }
 
 /// Issue a generation-scoped shell call, refusing immediately if `self.counters.sealed` is true.
-/// If the generation is sealed after `ShellDone` settled the Deferred but before the fiber resumed
-/// (e.g. `rotate_hub_gen` called `close_now()` whose close task runs after the already-enqueued
-/// resume), closes any `CloseTcpHandle` result once and delivers `Exit::Interrupted`.
+/// The continuation captures ONLY leaf objects (`counters`, `sender`, `abandoned_op`, `k`) —
+/// NEVER `HubGen`, `EffectScope`, or `SessionHost`.
 pub fn HubGen::shell_k(
   self : HubGen,
   host : SessionHost,
@@ -228,6 +223,7 @@ pub fn HubGen::shell_k(
   k : (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
 ) -> Unit {
   let counters = self.counters
+  let sender = host.sender
   if counters.sealed {
     k(effect::Exit::Interrupted)
     return
@@ -243,7 +239,7 @@ pub fn HubGen::shell_k(
       if counters.sealed {
         match (ex, abandoned_op) {
           (effect::Exit::Succeeded((j, _)), Some(AbandonedOp::CloseTcpHandle)) => {
-            host.close_abandoned_tcp_handle_json(j)
+            sender.close_abandoned_tcp_handle_json(j)
           }
           _ => ()
         }
@@ -255,8 +251,8 @@ pub fn HubGen::shell_k(
   )
 }
 
-/// Issue an RPC to Node, decrementing `active` before sending and awaiting the answer Deferred.
-/// The continuation captures ONLY `k` (zero back-reference to `HubGen`).
+/// Issue an RPC to Node, decrementing `active` before sending and awaiting the answer Deferred
+/// stored in `host.hub_asked` (tagged by `epoch`, never inside `HubGenResources`).
 pub fn HubGen::rpc_k(
   self : HubGen,
   host : SessionHost,
@@ -272,7 +268,7 @@ pub fn HubGen::rpc_k(
   }
   let id = host.alloc_id()
   let d : effect::Deferred[base_codec::Json] = effect::Deferred::new()
-  self.resources.asked.set(id, d)
+  host.hub_asked.set(id, HubAskedEntry::{ epoch: self.counters.epoch, deferred: d })
   mirror_actor(key)
   self.counters.active = self.counters.active - 1
   self.counters.say_node([
@@ -295,16 +291,27 @@ pub fn HubGen::rpc_k(
   })
 }
 
+/// Register a generation-scoped Node timer callback in `host.hub_timers` tagged by `epoch`.
+pub fn HubGen::register_timer(self : HubGen, host : SessionHost, id : Int, then : () -> Unit) -> Unit {
+  if self.counters.sealed {
+    return
+  }
+  host.hub_timers.set(id, HubTimerEntry::{ epoch: self.counters.epoch, then: then })
+}
+
 /// Cancel an in-flight RPC (`actors.mbt:285-295`), restoring `active` before waking the waiter.
-pub fn HubGen::cancel_rpc(self : HubGen, id : Int, err : base_codec::Json) -> Bool {
+pub fn HubGen::cancel_rpc(self : HubGen, host : SessionHost, id : Int, err : base_codec::Json) -> Bool {
   if self.counters.sealed {
     return false
   }
-  match self.resources.asked.get(id) {
-    Some(d) => {
-      let _ = self.resources.asked.remove(id)
+  match host.hub_asked.get(id) {
+    Some(entry) => {
+      if entry.epoch != self.counters.epoch {
+        return false
+      }
+      let _ = host.hub_asked.remove(id)
       self.counters.active = self.counters.active + 1
-      let _ = d.succeed(base_codec::json_obj([("error", err)]))
+      let _ = entry.deferred.succeed(base_codec::json_obj([("error", err)]))
       true
     }
     None => false
@@ -312,31 +319,37 @@ pub fn HubGen::cancel_rpc(self : HubGen, id : Int, err : base_codec::Json) -> Bo
 }
 
 /// Handle `{"answer": id, ...}` from Node (`actors.mbt:839-848`).
-pub fn HubGen::handle_answer(self : HubGen, id : Int, said : base_codec::Json) -> Unit {
+pub fn HubGen::handle_answer(self : HubGen, host : SessionHost, id : Int, said : base_codec::Json) -> Unit {
   if self.counters.sealed {
     return
   }
-  match self.resources.asked.get(id) {
-    Some(d) => {
-      let _ = self.resources.asked.remove(id)
+  match host.hub_asked.get(id) {
+    Some(entry) => {
+      if entry.epoch != self.counters.epoch {
+        return
+      }
+      let _ = host.hub_asked.remove(id)
       self.counters.active = self.counters.active + 1
-      let _ = d.succeed(said)
+      let _ = entry.deferred.succeed(said)
     }
     None => ()
   }
 }
 
 /// Handle `{"due": id}` from Node (`actors.mbt:849-860`).
-pub fn HubGen::handle_due(self : HubGen, id : Int) -> Unit {
+pub fn HubGen::handle_due(self : HubGen, host : SessionHost, id : Int) -> Unit {
   let counters = self.counters
   if counters.sealed {
     return
   }
-  match self.resources.timers.get(id) {
-    Some(then) => {
-      let _ = self.resources.timers.remove(id)
+  match host.hub_timers.get(id) {
+    Some(entry) => {
+      if entry.epoch != counters.epoch {
+        return
+      }
+      let _ = host.hub_timers.remove(id)
       counters.active = counters.active + 1
-      then()
+      (entry.then)()
       if !counters.sealed {
         counters.active = counters.active - 1
         counters.quiet()
@@ -349,7 +362,7 @@ pub fn HubGen::handle_due(self : HubGen, id : Int) -> Unit {
 /// Rotate from `old_gen` to a brand new `HubGen` on `{"db": place}` (`wave8-plan.md` v5 §2.2):
 /// 1. Synchronously seal `old_gen.counters` so no old fiber can emit frames, mutate counts, or issue new shell calls.
 /// 2. Construct `new_gen` (`seen = 1`, `active = 0`, `epoch = old_gen.counters.epoch + 1`) and attach DB (`wait_ms = 30000` for String, silent `None` for Null).
-/// 3. Drop (without failing) `old_gen.resources.asked`, `timers`, and `Hub(old_epoch)` shell waiters.
+/// 3. Drop (without failing) `host.hub_asked`, `host.hub_timers`, and `Hub(old_epoch)` shell waiters.
 /// 4. Call `old_gen.fibers.close_now()` (NEVER `close_k` on `main` fiber!).
 pub fn rotate_hub_gen(
   host : SessionHost,
@@ -357,7 +370,8 @@ pub fn rotate_hub_gen(
   place : base_codec::Json,
 ) -> HubGen {
   old_gen.counters.sealed = true
-  let next_epoch = old_gen.counters.epoch + 1
+  let old_epoch = old_gen.counters.epoch
+  let next_epoch = old_epoch + 1
   let new_gen = HubGen::new(host, next_epoch)
   new_gen.counters.seen = 1
   new_gen.counters.active = 0
@@ -378,9 +392,9 @@ pub fn rotate_hub_gen(
   }
 
   // Drop (clear without failing) old generation waiters so `active` never goes negative.
-  old_gen.resources.asked.clear()
-  old_gen.resources.timers.clear()
-  host.abandon_hub_waiters(old_gen.counters.epoch)
+  host.abandon_hub_asked(old_epoch)
+  host.abandon_hub_timers(old_epoch)
+  host.abandon_hub_waiters(old_epoch)
 
   // Async teardown on an independent "close" task — never blocks `main` fiber or touches `main.shield`.
   old_gen.fibers.close_now()

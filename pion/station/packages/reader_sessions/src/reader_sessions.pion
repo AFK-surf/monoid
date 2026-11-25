@@ -61,14 +61,14 @@ pub fn SessionsApp::heard(self : SessionsApp, line : String) -> Unit {
   }
   match sessions_core::jget(said, "answer") {
     Some(base_codec::Json::Num(id, _)) => {
-      self.gen.handle_answer(id.to_int(), said)
+      self.gen.handle_answer(self.host, id.to_int(), said)
       return
     }
     _ => ()
   }
   match sessions_core::jget(said, "due") {
     Some(base_codec::Json::Num(id, _)) => {
-      self.gen.handle_due(id.to_int())
+      self.gen.handle_due(self.host, id.to_int())
       return
     }
     _ => ()
@@ -125,7 +125,7 @@ pub fn run_sessions_with_host(
 
 /// Production `--sessions <n> --data <dir> [--sep <sep>]` entrypoint (`reader/main.mbt:1252-1253`).
 pub fn run_sessions(data_dir : String, sep : String) -> Int {
-  let shell_dir = sessions_core::rjoin(sep, [data_dir, "shell"])
+  let shell_dir = data_dir + "/shell"
   if !host_shim::start(shell_dir, true) {
     let _ = host_shim::write_stderr_line("the shell did not start")
     return 1

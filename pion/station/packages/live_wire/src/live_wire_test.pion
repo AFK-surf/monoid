@@ -152,4 +152,55 @@ test "live_wire: lossless UTF-16 round-trip preserves distinct lone surrogates w
     Some(js_json::JValue::Arr([obj([("text", jstr_u16(k1))]), obj([("text", jstr_u16(k2))])])),
   )
   assert(u16_eq(ct, [0xD800, 0x0A, 0xD801]))
+
+  // Full lossless `_u16` state-machine chain with distinct lone-surrogate keys `\ud800` & `\ud801`:
+  // load_entries_u16 -> end_entry_u16 (closes only \ud800) -> has_open_tool_u16 ->
+  // end_non_tool_prefix_u16 -> end_open_u16 -> str_or_js_u16_with
+  let p_k1 : Array[Int] = [0xD800]
+  let p_k2 : Array[Int] = [0xD801]
+  let p_text : Array[Int] = [0xD801, 0x23, 0x30] // "\ud801#0"
+  let open_state = obj([
+    (
+      "open",
+      js_json::JValue::Arr([
+        js_json::JValue::Arr([jstr_u16(p_k1), jstr("text")]),
+        js_json::JValue::Arr([jstr_u16(p_k2), jstr("tool")]),
+        js_json::JValue::Arr([jstr_u16(p_text), jstr("thinking")]),
+      ]),
+    ),
+  ])
+  let open_u16 : Array[(Array[Int], Array[Int])] = []
+  load_entries_u16(open_state, "open", open_u16)
+  assert(open_u16.length() == 3)
+  assert(has_open_tool_u16(open_u16))
+
+  let evs : Array[js_json::JValue] = []
+  end_entry_u16(open_u16, p_k1, evs)
+  assert(open_u16.length() == 2)
+  assert(evs.length() == 1)
+  let sb_e1 = StringBuilder::new()
+  js_json::write_utf8_with_num(sb_e1, evs[0], lw_fmt_num)
+  assert(sb_e1.to_string() == "{\"kind\":\"end\",\"id\":\"\\ud800\"}")
+  assert(has_open_tool_u16(open_u16))
+
+  // Close non-tool entries prefixed with "\ud801#" (leaves tool entry "\ud801" open)
+  end_non_tool_prefix_u16(open_u16, [0xD801, 0x23], evs)
+  assert(open_u16.length() == 1)
+  assert(evs.length() == 2)
+  let sb_e2 = StringBuilder::new()
+  js_json::write_utf8_with_num(sb_e2, evs[1], lw_fmt_num)
+  assert(sb_e2.to_string() == "{\"kind\":\"end\",\"id\":\"\\ud801#0\"}")
+  assert(has_open_tool_u16(open_u16))
+
+  // Close remaining open tool entry "\ud801"
+  let rest_evs = end_open_u16(open_u16)
+  assert(open_u16.length() == 0)
+  assert(!has_open_tool_u16(open_u16))
+  assert(rest_evs.length() == 1)
+  let sb_e3 = StringBuilder::new()
+  js_json::write_utf8_with_num(sb_e3, rest_evs[0], lw_fmt_num)
+  assert(sb_e3.to_string() == "{\"kind\":\"end\",\"id\":\"\\ud801\"}")
+
+  assert(u16_eq(str_or_js_u16_with(Some(jstr_u16(p_k1)), lw_fmt_num), p_k1))
+  assert(u16_eq(str_or_js_u16_with(None, lw_fmt_num), []))
 }

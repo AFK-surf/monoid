@@ -481,3 +481,92 @@ pub fn content_text_u16(content : Option[js_json::JValue], allow_str : Bool = tr
     _ => []
   }
 }
+
+pub fn u16_has_prefix(s : Array[Int], p : Array[Int]) -> Bool {
+  if p.length() > s.length() {
+    return false
+  }
+  for i in 0..<p.length() {
+    if s[i] != p[i] {
+      return false
+    }
+  }
+  true
+}
+
+pub fn end_entry_u16(
+  open : Array[(Array[Int], Array[Int])],
+  id : Array[Int],
+  out : Array[js_json::JValue],
+) -> Unit {
+  match find_entry_u16(open, id) {
+    Some(i) => {
+      let mut j = i
+      while j + 1 < open.length() {
+        open[j] = open[j + 1]
+        j = j + 1
+      }
+      let _ = open.pop()
+      out.push(end_event_u16(id))
+    }
+    None => ()
+  }
+}
+
+pub fn end_open_u16(open : Array[(Array[Int], Array[Int])]) -> Array[js_json::JValue] {
+  let out : Array[js_json::JValue] = []
+  for i in 0..<open.length() {
+    let (id, _) = open[i]
+    out.push(end_event_u16(id))
+  }
+  open.clear()
+  out
+}
+
+pub fn end_non_tool_prefix_u16(
+  open : Array[(Array[Int], Array[Int])],
+  prefix : Array[Int],
+  out : Array[js_json::JValue],
+) -> Unit {
+  let tool_u16 = js_json::utf16_units("tool")
+  let snapshot : Array[(Array[Int], Array[Int])] = []
+  for i in 0..<open.length() {
+    snapshot.push(open[i])
+  }
+  for i in 0..<snapshot.length() {
+    let (id, kind) = snapshot[i]
+    if !u16_eq(kind, tool_u16) && u16_has_prefix(id, prefix) {
+      end_entry_u16(open, id, out)
+    }
+  }
+}
+
+pub fn has_open_tool_u16(open : Array[(Array[Int], Array[Int])]) -> Bool {
+  let tool_u16 = js_json::utf16_units("tool")
+  for i in 0..<open.length() {
+    let (_, kind) = open[i]
+    if u16_eq(kind, tool_u16) {
+      return true
+    }
+  }
+  false
+}
+
+pub fn str_or_js_u16_with(
+  v : Option[js_json::JValue],
+  fmt_num : (Double) -> String,
+) -> Array[Int] {
+  match v {
+    None => []
+    Some(js_json::JValue::Null) => []
+    Some(x) => js_json::js_string_u16_with(x, fmt_num)
+  }
+}
+
+pub fn str_or_js_u16(v : Option[js_json::JValue]) -> Array[Int] {
+  match v {
+    None => []
+    Some(js_json::JValue::Null) => []
+    Some(x) => js_json::js_string_u16(x)
+  }
+}

@@ -264,7 +264,8 @@ test("the pseudo-actors' matcher fails a jnode whose prefix is no longer node.",
 
 // ── Pion `--sessions` RPC/tell/store/deps/agent contract framework (Wave 8 §2.5.4) ──
 
-function pionSessionsSources(): Sources {
+function pionSessionsSources(pkgsDir: string = pionStationPkgs): Sources {
+  assert.ok(existsSync(pkgsDir), `pion/station/packages directory missing: ${pkgsDir}`);
   const out: Sources = {
     "src/sessions/mb-actor.ts": read(join(station, "src", "sessions", "mb-actor.ts")),
     "src/sessions/actor.ts": read(join(station, "src", "sessions", "actor.ts")),
@@ -274,16 +275,23 @@ function pionSessionsSources(): Sources {
     "src/sessions/live.ts": read(join(station, "src", "sessions", "live.ts")),
     "src/jobs/remote.ts": read(join(station, "src", "jobs", "remote.ts")),
   };
-  if (existsSync(pionStationPkgs)) {
-    for (const entry of readdirSync(pionStationPkgs, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-      if (!entry.isDirectory()) continue;
-      if (!entry.name.startsWith("sessions_") && entry.name !== "reader_sessions") continue;
-      const srcDir = join(pionStationPkgs, entry.name, "src");
-      if (!existsSync(srcDir)) continue;
-      for (const f of readdirSync(srcDir).filter((n) => n.endsWith(".pion") && !n.endsWith("_test.pion")).sort()) {
-        out[`pion/${entry.name}/${f}`] = read(join(srcDir, f));
-      }
+  const foundByPkg = new Map<string, number>();
+  for (const entry of readdirSync(pkgsDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory()) continue;
+    if (!entry.name.startsWith("sessions_") && entry.name !== "reader_sessions") continue;
+    const srcDir = join(pkgsDir, entry.name, "src");
+    if (!existsSync(srcDir)) continue;
+    const files = readdirSync(srcDir).filter((n) => n.endsWith(".pion") && !n.endsWith("_test.pion")).sort();
+    foundByPkg.set(entry.name, files.length);
+    for (const f of files) {
+      out[`pion/${entry.name}/${f}`] = read(join(srcDir, f));
     }
+  }
+  for (const required of ["sessions_core", "reader_sessions"]) {
+    assert.ok(
+      (foundByPkg.get(required) ?? 0) > 0,
+      `required Pion package "${required}" missing or has no production src/*.pion in ${pkgsDir}`,
+    );
   }
   return out;
 }
@@ -422,6 +430,18 @@ function pionSessionsWrong(s: Sources): string[] {
 test("every Pion --sessions RPC, store, deps, agent_do and tell is handled in Node", () => {
   const wrong = pionSessionsWrong(pionSessionsSources());
   assert.deepEqual(wrong, [], wrong.join("\n"));
+});
+
+test("Pion --sessions source discovery fails loudly on missing packages root or missing required package", () => {
+  assert.throws(
+    () => pionSessionsSources(join(pionStationPkgs, "__definitely_missing_root__")),
+    /directory missing/,
+  );
+  // Existing directory that lacks `sessions_core` and `reader_sessions` must also throw.
+  assert.throws(
+    () => pionSessionsSources(station),
+    /required Pion package/,
+  );
 });
 
 test("Pion --sessions matcher negative 1: catches real gen.rpc_k(host, key, ...) and 2-arg rpc_k for agent-only node.* and missing \"t\"", () => {

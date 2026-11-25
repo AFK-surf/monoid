@@ -59,3 +59,38 @@ test "reader_sessions: non-actor lines route to agents_told without emitting qui
   assert(mem.stdout_lines.length() == 1)
   assert(mem.stdout_lines[0] == "{\"ready\":true}")
 }
+
+test "reader_sessions: same-chunk freeze (numeric) + routed (numeric) route with zero cross-talk" {
+  let mem = sessions_core::MemHostTransport::new()
+  // Real Node payloads: `{"freeze":1}` (mb-agents.ts:297) and `{"routed":2}` (mb-actor.ts:655) in one chunk.
+  mem.push_stdin("{\"freeze\":1}\n{\"routed\":2}\n")
+  mem.push_round_barrier()
+  mem.push_eof()
+
+  let seen_agents : Array[String] = []
+  let stub = sessions_core::SessionDispatch::stub()
+  let dispatch = sessions_core::SessionDispatch::{
+    mirror_actor: stub.mirror_actor,
+    live_event: stub.live_event,
+    live_end: stub.live_end,
+    live_called: stub.live_called,
+    jobs_called_k: stub.jobs_called_k,
+    jstore_get_job_k: stub.jstore_get_job_k,
+    remote_called_k: stub.remote_called_k,
+    remote_changed_k: stub.remote_changed_k,
+    queue_of_locked_k: stub.queue_of_locked_k,
+    agents_told: fn(line : String) -> Unit { seen_agents.push(line) },
+    agents_take: stub.agents_take,
+    is_stub: true,
+  }
+
+  let host = sessions_core::SessionHost::for_test(mem)
+  let code = run_sessions_with_host(host, "/", dispatch)
+  assert(code == 0)
+  // `{"freeze":1}` goes exclusively to agents_told; `{"routed":2}` goes exclusively to actors (seen=1 + quiet).
+  assert(seen_agents.length() == 1)
+  assert(seen_agents[0] == "{\"freeze\":1}")
+  assert(mem.stdout_lines.length() == 2)
+  assert(mem.stdout_lines[0] == "{\"ready\":true}")
+  assert(mem.stdout_lines[1] == "{\"quiet\":true,\"active\":0,\"seen\":1}")
+}

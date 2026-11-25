@@ -1,10 +1,15 @@
-// Process-scope host event loop (`SessionHost`, `HostFlags`, `HostTransport`, `MemHostTransport`,
-// `run_host_loop`), 1:1 aligned with `station/mb/src/host/host.mbt:173-269` and
-// `wave8-plan.md` v5 §2.1 & §2.2.
+// Process-scope host event loop (`SessionHost`, `HostFlags`, `ShellSender`, `ShellSlot`,
+// `HostTransport`, `MemHostTransport`, `run_host_loop`), 1:1 aligned with
+// `station/mb/src/host/host.mbt:173-269` and `wave8-plan.md` v5 §2.1 & §2.2.
 //
-// RC acyclicity invariant:
-// - `rt.on_defect` captures ONLY `HostFlags` (never `SessionHost` or `Runtime`),
-//   so there is zero `SessionHost <-> Runtime` strong reference cycle.
+// Strict open-lifetime RC acyclicity invariants (zero strong reference cycles):
+// - `rt.on_defect` captures ONLY `HostFlags` (never `SessionHost` or `Runtime`).
+// - `SessionHost::shell_k` and `HubGen::shell_k` continuations capture ONLY leaf structs
+//   (`ShellSender`, `ShellSlot`, `HubCounters`, `AbandonedOp`, `k`) — NEVER `SessionHost`,
+//   `shell_waiters`, `HubGen`, or `EffectScope`.
+// - `hub_asked` and `hub_timers` live on `SessionHost` tagged by `epoch` (NEVER inside
+//   `HubGenResources`), so `EffectScope -> finalizer -> HubGenResources` has zero path back
+//   to any `Deferred`, `Task`, `HubGen`, `EffectScope`, or `SessionHost`.
 
 import "base_codec"
 import "builders_core"
@@ -20,6 +25,63 @@ pub let MAX_HOST_EVENTS_PER_ROUND : Int = 64
 pub struct HostFlags {
   pub mut failed : Bool
   write_stderr_line : (String) -> Bool
+}
+
+/// Standalone leaf shell-call sender with ZERO back-reference to `SessionHost` or `Runtime`.
+pub struct ShellSender {
+  pub mut next_shell_id : Int64
+  pub shell_call : (Int64, String, String, Option[Bytes]) -> Unit
+}
+
+pub fn ShellSender::new(
+  shell_call : (Int64, String, String, Option[Bytes]) -> Unit,
+) -> ShellSender {
+  ShellSender::{
+    next_shell_id: 0.to_int64(),
+    shell_call: shell_call,
+  }
+}
+
+pub fn ShellSender::alloc_shell_id(self : ShellSender) -> Int64 {
+  self.next_shell_id = self.next_shell_id + 1.to_int64()
+  self.next_shell_id
+}
+
+pub fn ShellSender::close_abandoned_tcp_handle_json(
+  self : ShellSender,
+  j : base_codec::Json,
+) -> Unit {
+  let handle_opt : Option[base_codec::Json] = match j {
+    base_codec::Json::Num(_, _) => Some(j)
+    base_codec::Json::Obj(_) => jget(j, "id")
+    _ => None
+  }
+  match handle_opt {
+    Some(h) => {
+      let close_id = self.alloc_shell_id()
+      let close_args = base_codec::json_obj([("id", h)])
+      (self.shell_call)(
+        close_id,
+        "tcp.close",
+        base_codec::json_stringify(builders_core::normalize_json(close_args)),
+        None,
+      )
+    }
+    None => ()
+  }
+}
+
+pub fn ShellSender::close_abandoned_tcp_handle(
+  self : ShellSender,
+  done : host_shim::ShellDone,
+) -> Unit {
+  if done.error.length() > 0 || done.json.length() == 0 {
+    return
+  }
+  match parse_json_strict(done.json) {
+    Ok(j) => self.close_abandoned_tcp_handle_json(j)
+    Err(_) => ()
+  }
 }
 
 /// Abstract host I/O & clock transport so production uses `host_shim` + `sql_db` while
@@ -79,6 +141,9 @@ pub struct MemHostTransport {
   pub wait_log : Array[Int64]
   pub events : Array[host_shim::HostEvent]
   pub mut event_head : Int
+  /// Event indices where `wait(0)` returns `None` to force an outer round boundary (`rt.tick()`).
+  pub barriers : Array[Int]
+  pub mut barrier_head : Int
   pub mut now : Int64
   pub mut wall : Int64
   pub mut shell_sync_handler : Option[(String, String) -> String]
@@ -102,6 +167,8 @@ pub fn MemHostTransport::new() -> MemHostTransport {
     wait_log: [],
     events: [],
     event_head: 0,
+    barriers: [],
+    barrier_head: 0,
     now: 0.to_int64(),
     wall: 0.to_int64(),
     shell_sync_handler: None,
@@ -124,6 +191,12 @@ pub fn MemHostTransport::push_stdin(self : MemHostTransport, text : String) -> U
 
 pub fn MemHostTransport::push_eof(self : MemHostTransport) -> Unit {
   self.events.push(host_shim::HostEvent::StdinEof)
+}
+
+/// Insert an outer-round barrier at the current event queue tail: inner `wait(0)` returns
+/// `None` once at this index so `run_host_loop` runs `rt.tick()` before pulling the next event.
+pub fn MemHostTransport::push_round_barrier(self : MemHostTransport) -> Unit {
+  self.barriers.push(self.events.length())
 }
 
 pub fn MemHostTransport::push_shell_done(
@@ -157,6 +230,12 @@ pub fn MemHostTransport::transport(self : MemHostTransport) -> HostTransport {
       if self.spurious_nones > 0 {
         self.spurious_nones = self.spurious_nones - 1
         return None
+      }
+      if ms == 0.to_int64() && self.barrier_head < self.barriers.length() {
+        if self.barriers[self.barrier_head] == self.event_head {
+          self.barrier_head = self.barrier_head + 1
+          return None
+        }
       }
       if self.event_head < self.events.length() {
         let ev = self.events[self.event_head]
@@ -219,10 +298,10 @@ pub enum AbandonedOp {
   CloseTcpHandle
 }
 
-/// Tracks handle ownership across the window between `ShellDone` settling `Deferred`
-/// and the calling fiber resuming `done.wait_k`, preventing handle leaks when the fiber
-/// is interrupted after `ShellDone` but before resumption.
-pub struct PendingHandle {
+/// Standalone per-call cancellation/settlement leaf with ZERO back-reference to `SessionHost`.
+/// Coordinates exact-once handle cleanup across `ShellDone` settlement and fiber interruption.
+pub struct ShellSlot {
+  pub mut cancelled : Bool
   pub mut settled : Option[base_codec::Json]
   pub mut closed : Bool
 }
@@ -230,8 +309,20 @@ pub struct PendingHandle {
 pub struct ShellWaiter {
   pub owner : ShellOwner
   pub abandoned_op : Option[AbandonedOp]
-  pub pending_handle : Option[PendingHandle]
+  pub slot : ShellSlot
   pub done : effect::Deferred[(base_codec::Json, Option[Bytes])]
+}
+
+/// Epoch-tagged RPC waiter stored on `SessionHost` (never inside `HubGenResources`).
+pub struct HubAskedEntry {
+  pub epoch : Int
+  pub deferred : effect::Deferred[base_codec::Json]
+}
+
+/// Epoch-tagged Node timer callback stored on `SessionHost` (never inside `HubGenResources`).
+pub struct HubTimerEntry {
+  pub epoch : Int
+  pub then : () -> Unit
 }
 
 // ── Process-scope SessionHost ──
@@ -240,11 +331,13 @@ pub struct SessionHost {
   pub rt : effect::Runtime
   pub transport : HostTransport
   pub flags : HostFlags
+  pub sender : ShellSender
   pub lines : effect::Queue[String]
   input : builders_core::RawLines
   pub shell_waiters : Map[Int64, ShellWaiter]
   pub abandoned_ops : Map[Int64, AbandonedOp]
-  pub mut next_shell_id : Int64
+  pub hub_asked : Map[Int, HubAskedEntry]
+  pub hub_timers : Map[Int, HubTimerEntry]
   /// Monotonic process-scope RPC/timer ID counter (NEVER reset across `{"db": ...}`).
   pub mut next : Int
   pub mut exited : Bool
@@ -256,15 +349,18 @@ pub fn SessionHost::new(rt : effect::Runtime, transport : HostTransport) -> Sess
     failed: false,
     write_stderr_line: transport.write_stderr_line,
   }
+  let sender = ShellSender::new(transport.shell_call)
   let host = SessionHost::{
     rt: rt,
     transport: transport,
     flags: flags,
+    sender: sender,
     lines: effect::Queue::unbounded(),
     input: builders_core::RawLines::new(),
     shell_waiters: Map::new(),
     abandoned_ops: Map::new(),
-    next_shell_id: 0.to_int64(),
+    hub_asked: Map::new(),
+    hub_timers: Map::new(),
     next: 0,
     exited: false,
     exit_code: 0,
@@ -346,7 +442,9 @@ pub fn SessionHost::shell_sync(
   builders_core::parse_shell_sync_answer(raw)
 }
 
-/// Asynchronous shell call (`host.mbt:83-104`) with ownership tagging and late-handle cleanup.
+/// Asynchronous shell call (`host.mbt:83-104`) with ownership tagging and late/interleaved
+/// handle cleanup. The `done.wait_k` continuation captures ONLY leaf objects (`slot`, `sender`,
+/// `abandoned_op`, `k`) — NEVER `SessionHost` or `shell_waiters`.
 pub fn SessionHost::shell_k(
   self : SessionHost,
   owner : ShellOwner,
@@ -357,65 +455,42 @@ pub fn SessionHost::shell_k(
   on_called : Option[(Int64) -> Unit],
   k : (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
 ) -> Unit {
-  self.next_shell_id = self.next_shell_id + 1.to_int64()
-  let id = self.next_shell_id
+  let sender = self.sender
+  let id = sender.alloc_shell_id()
   match on_called {
     Some(f) => f(id)
     None => ()
   }
   let done : effect::Deferred[(base_codec::Json, Option[Bytes])] = effect::Deferred::new()
-  let pending_handle : Option[PendingHandle] = match abandoned_op {
-    Some(AbandonedOp::CloseTcpHandle) => Some(PendingHandle::{ settled: None, closed: false })
-    None => None
-  }
+  let slot = ShellSlot::{ cancelled: false, settled: None, closed: false }
   self.shell_waiters.set(
     id,
     ShellWaiter::{
       owner: owner,
       abandoned_op: abandoned_op,
-      pending_handle: pending_handle,
+      slot: slot,
       done: done,
     },
   )
   let json_str = base_codec::json_stringify(builders_core::normalize_json(args))
-  (self.transport.shell_call)(id, op, json_str, bytes)
+  (sender.shell_call)(id, op, json_str, bytes)
   done.wait_k(fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
     match ex {
       effect::Exit::Interrupted => {
-        match self.shell_waiters.get(id) {
-          Some(w) => {
-            let _ = self.shell_waiters.remove(id)
-            match w.abandoned_op {
-              Some(aop) => self.abandoned_ops.set(id, aop)
-              None => ()
+        slot.cancelled = true
+        if !slot.closed {
+          match (slot.settled, abandoned_op) {
+            (Some(j), Some(AbandonedOp::CloseTcpHandle)) => {
+              slot.closed = true
+              sender.close_abandoned_tcp_handle_json(j)
             }
-          }
-          None => {
-            // `ShellDone` already settled `done` before this fiber resumed, or `abandon_hub_waiters`
-            // moved `id` to `abandoned_ops`. If `pending_handle.settled` has a handle, close it once.
-            match pending_handle {
-              Some(ph) => {
-                if !ph.closed {
-                  match ph.settled {
-                    Some(j) => {
-                      ph.closed = true
-                      self.close_abandoned_tcp_handle_json(j)
-                    }
-                    None => ()
-                  }
-                }
-              }
-              None => ()
-            }
+            _ => ()
           }
         }
         k(effect::Exit::Interrupted)
       }
       other => {
-        match pending_handle {
-          Some(ph) => ph.closed = true
-          None => ()
-        }
+        slot.closed = true
         k(other)
       }
     }
@@ -433,6 +508,7 @@ pub fn SessionHost::abandon_hub_waiters(self : SessionHost, epoch : Int) -> Unit
         match w.owner {
           ShellOwner::Hub(ep) => {
             if ep == epoch {
+              w.slot.cancelled = true
               let _ = self.shell_waiters.remove(id)
               match w.abandoned_op {
                 Some(aop) => self.abandoned_ops.set(id, aop)
@@ -448,35 +524,35 @@ pub fn SessionHost::abandon_hub_waiters(self : SessionHost, epoch : Int) -> Unit
   }
 }
 
-fn SessionHost::close_abandoned_tcp_handle_json(self : SessionHost, j : base_codec::Json) -> Unit {
-  let handle_opt : Option[base_codec::Json] = match j {
-    base_codec::Json::Num(_, _) => Some(j)
-    base_codec::Json::Obj(_) => jget(j, "id")
-    _ => None
-  }
-  match handle_opt {
-    Some(h) => {
-      self.next_shell_id = self.next_shell_id + 1.to_int64()
-      let close_id = self.next_shell_id
-      let close_args = base_codec::json_obj([("id", h)])
-      (self.transport.shell_call)(
-        close_id,
-        "tcp.close",
-        base_codec::json_stringify(builders_core::normalize_json(close_args)),
-        None,
-      )
+/// Drop (without failing) all RPC waiters belonging to `epoch` during `{"db": ...}` rotation.
+pub fn SessionHost::abandon_hub_asked(self : SessionHost, epoch : Int) -> Unit {
+  let keys = self.hub_asked.keys()
+  for i in 0..<keys.length() {
+    let id = keys[i]
+    match self.hub_asked.get(id) {
+      Some(entry) => {
+        if entry.epoch == epoch {
+          let _ = self.hub_asked.remove(id)
+        }
+      }
+      None => ()
     }
-    None => ()
   }
 }
 
-fn SessionHost::close_abandoned_tcp_handle(self : SessionHost, done : host_shim::ShellDone) -> Unit {
-  if done.error.length() > 0 || done.json.length() == 0 {
-    return
-  }
-  match parse_json_strict(done.json) {
-    Ok(j) => self.close_abandoned_tcp_handle_json(j)
-    Err(_) => ()
+/// Drop all Node timer callbacks belonging to `epoch` during `{"db": ...}` rotation.
+pub fn SessionHost::abandon_hub_timers(self : SessionHost, epoch : Int) -> Unit {
+  let keys = self.hub_timers.keys()
+  for i in 0..<keys.length() {
+    let id = keys[i]
+    match self.hub_timers.get(id) {
+      Some(entry) => {
+        if entry.epoch == epoch {
+          let _ = self.hub_timers.remove(id)
+        }
+      }
+      None => ()
+    }
   }
 }
 
@@ -498,20 +574,29 @@ pub fn SessionHost::dispatch_event(self : SessionHost, ev : host_shim::HostEvent
       match self.shell_waiters.get(done.id) {
         Some(waiter) => {
           let _ = self.shell_waiters.remove(done.id)
-          match builders_core::decode_shell_done(done) {
-            Ok((j_opt, b_opt)) => {
-              let j = match j_opt {
-                Some(v) => v
-                None => base_codec::json_null()
-              }
-              match waiter.pending_handle {
-                Some(ph) => ph.settled = Some(j)
+          if waiter.slot.cancelled {
+            if !waiter.slot.closed {
+              match waiter.abandoned_op {
+                Some(AbandonedOp::CloseTcpHandle) => {
+                  waiter.slot.closed = true
+                  self.sender.close_abandoned_tcp_handle(done)
+                }
                 None => ()
               }
-              let _ = waiter.done.succeed((j, b_opt))
             }
-            Err(err) => {
-              let _ = waiter.done.fail(effect::EffectError::IoError(err.message))
+          } else {
+            match builders_core::decode_shell_done(done) {
+              Ok((j_opt, b_opt)) => {
+                let j = match j_opt {
+                  Some(v) => v
+                  None => base_codec::json_null()
+                }
+                waiter.slot.settled = Some(j)
+                let _ = waiter.done.succeed((j, b_opt))
+              }
+              Err(err) => {
+                let _ = waiter.done.fail(effect::EffectError::IoError(err.message))
+              }
             }
           }
         }
@@ -519,7 +604,7 @@ pub fn SessionHost::dispatch_event(self : SessionHost, ev : host_shim::HostEvent
           match self.abandoned_ops.get(done.id) {
             Some(AbandonedOp::CloseTcpHandle) => {
               let _ = self.abandoned_ops.remove(done.id)
-              self.close_abandoned_tcp_handle(done)
+              self.sender.close_abandoned_tcp_handle(done)
             }
             None => ()
           }

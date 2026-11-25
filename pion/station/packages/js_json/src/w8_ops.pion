@@ -68,20 +68,8 @@ pub fn js_string(v : JValue) -> String {
   js_string_with(v, sqlite_ffi::format_js_double)
 }
 
-fn units_eq_w8(a : Array[Int], b : Array[Int]) -> Bool {
-  if a.length() != b.length() {
-    return false
-  }
-  for i in 0..<a.length() {
-    if a[i] != b[i] {
-      return false
-    }
-  }
-  true
-}
-
 /// Convert `base_codec::Json` to lossless `JValue` (matching `@replica.of_json` / MoonBit `Map`
-/// last-write-wins semantics on duplicate object keys).
+/// last-write-wins semantics on duplicate object keys in O(n) time).
 pub fn jval_from_json(j : base_codec::Json) -> JValue {
   match j {
     base_codec::Json::Null => JValue::Null
@@ -97,22 +85,17 @@ pub fn jval_from_json(j : base_codec::Json) -> JValue {
     }
     base_codec::Json::Obj(fields) => {
       let out : Array[(Array[Int], JValue)] = []
+      let seen : Map[String, Int] = Map::new()
       for i in 0..<fields.length() {
         let (k, v) = fields[i]
         let ku = utf16_units(k)
         let jv = jval_from_json(v)
-        let mut found = -1
-        for j_idx in 0..<out.length() {
-          let (ek, _) = out[j_idx]
-          if units_eq_w8(ek, ku) {
-            found = j_idx
-            break
+        match seen.get(k) {
+          Some(idx) => out[idx] = (ku, jv)
+          None => {
+            seen.set(k, out.length())
+            out.push((ku, jv))
           }
-        }
-        if found >= 0 {
-          out[found] = (ku, jv)
-        } else {
-          out.push((ku, jv))
         }
       }
       JValue::Obj(out)

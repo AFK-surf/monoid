@@ -169,12 +169,26 @@ test("W8-0: STILLFAIL_REQUIRE_PION_SESSIONS=1 throws when Pion is unimplemented,
   }
 });
 
-test("W8-0: real stillfail-pion --sessions walking skeleton handshake (ready, db:null zero stderr, quiet, EOF 0)", async (t) => {
+const requireDualReader = process.env.STILLFAIL_REQUIRE_DUAL_READER === "1";
+
+function requirePionOrSkip(t: { skip(msg?: string): void }): string | null {
   const pion = pionBinary();
   if (pion === null) {
+    if (requireDualReader) {
+      assert.fail("STILLFAIL_REQUIRE_DUAL_READER=1 requires stillfail-pion binary (STILLFAIL_PION_READER)");
+    }
     t.skip("stillfail-pion binary not built");
-    return;
+    return null;
   }
+  if (requireDualReader && mbReaderBinary() === null) {
+    assert.fail("STILLFAIL_REQUIRE_DUAL_READER=1 requires MoonBit stillfail-reader binary (STILLFAIL_MB_READER)");
+  }
+  return pion;
+}
+
+test("W8-0: real stillfail-pion --sessions walking skeleton handshake (ready, db:null zero stderr, quiet, EOF 0)", async (t) => {
+  const pion = requirePionOrSkip(t);
+  if (pion === null) return;
   const data = makeTmp("sf-w8-skel-");
   const child = spawn(pion, ["--sessions", "1", "--data", data, "--sep", "/"], { stdio: ["pipe", "pipe", "pipe"] });
   let stderr = "";
@@ -201,11 +215,8 @@ test("W8-0: real stillfail-pion --sessions walking skeleton handshake (ready, db
 });
 
 test("W8-0: config.readers.sessions, env precedence, pending cold starts, dual-hub isolation, and require-pion async refusal", async (t) => {
-  const pion = pionBinary();
-  if (pion === null) {
-    t.skip("stillfail-pion binary not built");
-    return;
-  }
+  const pion = requirePionOrSkip(t);
+  if (pion === null) return;
 
   const restoreImpl = setReaderModeImplementedForTest("sessions", true);
   try {
@@ -368,6 +379,36 @@ test("W8-0: config.readers.sessions, env precedence, pending cold starts, dual-h
       assert.equal(tracker6.events[0]!.fallback, false);
       await prog6.release(u6.user);
     }
+    // 8. Pending kill() + synchronous release(u1): 0 sync callbacks, microtask notifies only still-subscribed u2, 0 spawns
+    resetReaderSelectionStateForTest();
+    let resolveProbeKill!: (modes: ReadonlySet<string> | null) => void;
+    const probePromiseKill = new Promise<ReadonlySet<string> | null>((r) => { resolveProbeKill = r; });
+    setPionProbeRunnerForTest(() => probePromiseKill);
+    const trackerKill = createSpawnTracker();
+    const dataKill = makeTmp("sf-w8-killpend-");
+    const unregisterKill = registerSessionsReaderConfig(dataKill, () => ({ readers: { sessions: "pion" } }));
+    let u1Exited = 0;
+    let u2Exited = 0;
+    let u2Code: number | null = null;
+    const u1Kill: ProgramUser = { actors: true, said: () => {}, exited: () => { u1Exited++; } };
+    const u2Kill: ProgramUser = { actors: false, said: () => {}, exited: (code) => { u2Exited++; u2Code = code; } };
+    const progKill = SessionsProgram.of(dataKill, true)!;
+    progKill.use(u1Kill);
+    progKill.use(u2Kill);
+    progKill.kill();
+    void progKill.release(u1Kill);
+    // Synchronously 0 exit callbacks (deferred via queueMicrotask so process.on("exit") does not trigger process.exit(70)).
+    assert.equal(u1Exited, 0, "u1 must not be notified synchronously");
+    assert.equal(u2Exited, 0, "u2 must not be notified synchronously");
+    await Promise.resolve();
+    assert.equal(u1Exited, 0, "released u1 must receive 0 exited callbacks after microtask");
+    assert.equal(u2Exited, 1, "still-subscribed u2 must receive exactly 1 exited callback after microtask");
+    assert.equal(u2Code, 1);
+    resolveProbeKill(new Set(["footprint", "packed", "memory", "sessions"]));
+    await probePromiseKill;
+    await Promise.resolve();
+    assert.equal(trackerKill.events.length, 0, "killed pending SessionsProgram must spawn 0 processes");
+    unregisterKill();
   } finally {
     restoreImpl();
     setSessionsSpawnObserverForTest(null);

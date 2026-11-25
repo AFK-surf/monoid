@@ -69,7 +69,7 @@ test "js_json: js_string_with and lossless js_string_u16_with match JS String(v)
   assert(u[2] == 0xDC00)
 }
 
-test "js_json: jval_from_json round-trip and last-write-wins duplicate keys" {
+test "js_json: jval_from_json round-trip, last-write-wins duplicate keys, and 500+ key wide object" {
   let j = base_codec::json_obj([
     ("b", base_codec::json_int(2)),
     ("0", base_codec::json_str("first")),
@@ -78,6 +78,25 @@ test "js_json: jval_from_json round-trip and last-write-wins duplicate keys" {
   ])
   let jv = jval_from_json(j)
   assert(stringify_with_num(jv, w8_fmt_num) == "{\"0\":\"first\",\"b\":9,\"arr\":[true,null]}")
+
+  // 520 unique keys + duplicate overwrites in O(n) preserving first position and last value
+  let wide : Array[(String, base_codec::Json)] = []
+  for i in 0..<520 {
+    wide.push(("k" + i.to_string(), base_codec::json_int(i)))
+  }
+  wide.push(("k0", base_codec::json_int(9999)))
+  wide.push(("k519", base_codec::json_int(8888)))
+  let wide_jv = jval_from_json(base_codec::json_obj(wide))
+  match wide_jv {
+    JValue::Obj(entries) => {
+      assert(entries.length() == 520)
+      let (_, v0) = entries[0]
+      let (_, v519) = entries[519]
+      assert(stringify_with_num(v0, w8_fmt_num) == "9999")
+      assert(stringify_with_num(v519, w8_fmt_num) == "8888")
+    }
+    _ => panic("expected JValue::Obj")
+  }
 }
 
 test "js_json: js_compare matches UTF-16 code-unit order (non-BMP < U+E000)" {

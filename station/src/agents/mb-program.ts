@@ -351,7 +351,9 @@ export class SessionsProgram {
     this.#end();
     const users = [...this.#users];
     queueMicrotask(() => {
-      for (const user of users) user.exited(1);
+      for (const user of users) {
+        if (this.#users.has(user)) user.exited(1);
+      }
     });
   }
 

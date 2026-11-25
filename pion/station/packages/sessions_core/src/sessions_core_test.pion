@@ -144,7 +144,6 @@ test "sessions_core: virtual clock 200ms sleep_k fires and host.exit preserves e
 
 test "sessions_core: spurious empty wakeup before deadline keeps looping in production mode" {
   let mem = MemHostTransport::new()
-  // Production mode (`stop_on_empty_wait = false`): 3 spurious empty wakeups before timer fires.
   mem.stop_on_empty_wait = false
   mem.spurious_nones = 3
   let host = SessionHost::for_test(mem)
@@ -164,7 +163,6 @@ test "sessions_core: spurious empty wakeup before deadline keeps looping in prod
   assert(code == 0)
   assert(woke)
   assert(mem.now == 200.to_int64())
-  // 3 spurious waits + 1 wait that advanced virtual clock to 200ms.
   assert(mem.wait_log.length() == 4)
   assert(mem.wait_log[0] == 200.to_int64())
   assert(mem.wait_log[3] == 200.to_int64())
@@ -248,25 +246,15 @@ test "sessions_core: 65 consecutive host events drain across two outer rounds (6
   assert(seen.length() == 65)
   assert(seen[0] == "ev-0")
   assert(seen[64] == "ev-64")
-  // Round 1 drained exactly 64 events, then `rt.tick()` ran `main` (processing ev-0..ev-63)
-  // BEFORE Round 2 pulled ev-64 + EOF. Without the 64-event cap, `event_head` would be 66 here!
   assert(ready_ran_after_count == 64)
-  // wait_log: round 1 = wait(-1) + 63 * wait(0) = 64 waits; round 2 = wait(-1) + wait(0) (EOF) + wait(0) (None) = 3 waits.
   assert(mem.wait_log.length() == 67)
   assert(mem.wait_log[0] == (-1).to_int64())
   assert(mem.wait_log[63] == 0.to_int64())
   assert(mem.wait_log[64] == (-1).to_int64())
 }
 
-test "sessions_core: HubGen rotation with delayed finalizer keeps main unblocked until later event releases gate" {
+test "sessions_core: HubGen rotation with delayed finalizer genuinely blocks across rounds while main stays unblocked and interruptible" {
   let mem = MemHostTransport::new()
-  // Separate host events: (1) db rotation, (2) work line processed WHILE finalizer is still blocked,
-  // (3) release line that opens fin_gate, (4) EOF.
-  mem.push_stdin("{\"db\":null}\n")
-  mem.push_stdin("{\"afterDb\":1}\n")
-  mem.push_stdin("{\"releaseFin\":1}\n")
-  mem.push_eof()
-
   let host = SessionHost::for_test(mem)
   let mut gen = HubGen::new(host, 0)
   let old_res = gen.resources
@@ -274,42 +262,45 @@ test "sessions_core: HubGen rotation with delayed finalizer keeps main unblocked
   old_res.add_retire_hook(fn() -> Unit {
     mock_db_closed = mock_db_closed + 1
   })
-  let mut delayed_fin_ran = false
-  let mut saw_unblocked_before_release = false
+  let mut delayed_fin_entered = false
+  let mut delayed_fin_done = false
+  let mut old_work_exited = false
   let fin_gate : effect::Deferred[Unit] = effect::Deferred::new()
 
   gen.fibers.add_finalizer(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    delayed_fin_entered = true
     fin_gate.wait_k(fn(_ex : effect::Exit[Unit]) -> Unit {
-      delayed_fin_ran = true
+      delayed_fin_done = true
       fk(effect::Exit::Succeeded(()))
     })
   })
 
   let old_gen_ref = gen
   gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
-    old_gen_ref.rpc_k(host, "s1", "node.test", [], fn(_k : String) -> Unit { () }, fn(_r : effect::Exit[base_codec::Json]) -> Unit {
-      wk(effect::Exit::Succeeded(()))
+    old_gen_ref.rpc_k(host, "s1", "node.test", [], fn(_k : String) -> Unit { () }, fn(r : effect::Exit[base_codec::Json]) -> Unit {
+      match r {
+        effect::Exit::Interrupted => {
+          old_work_exited = true
+          wk(effect::Exit::Interrupted)
+        }
+        effect::Exit::Failed(e) => wk(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => wk(effect::Exit::Succeeded(()))
+      }
     })
   })
 
   let processed : Array[String] = []
-  let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  let main_fiber = host.rt.fork_named("main", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     iter_sync_k(
       fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
-        h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
+        host.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
           match ex {
             effect::Exit::Succeeded(Some(line)) => {
               if line.starts_with("{\"db\":") {
-                gen = rotate_hub_gen(h, gen, base_codec::json_null())
+                gen = rotate_hub_gen(host, gen, base_codec::json_null())
                 gen.quiet()
               } else if line.starts_with("{\"afterDb\":") {
-                // Main MUST process this line while delayed finalizer is still pending!
                 processed.push(line)
-                assert(!old_res.retired)
-                assert(old_res.retire_count == 0)
-                assert(mock_db_closed == 0)
-                assert(!delayed_fin_ran)
-                saw_unblocked_before_release = true
               } else if line.starts_with("{\"releaseFin\":") {
                 let _ = fin_gate.succeed(())
               }
@@ -324,19 +315,55 @@ test "sessions_core: HubGen rotation with delayed finalizer keeps main unblocked
       k,
     )
   })
+  // Initial tick: old work fiber sends RPC and suspends on `hub_asked`; main suspends on `line_k`.
   host.rt.tick()
+  assert(host.hub_asked.length() == 1)
 
-  assert(code == 0)
-  assert(saw_unblocked_before_release)
+  // Round 1: dispatch `{"db":null}` and tick.
+  // Old work fiber exits, delayed finalizer ENTERS and parks on `fin_gate`, old_res NOT yet retired!
+  host.dispatch_event(host_shim::HostEvent::StdinData("{\"db\":null}\n".to_bytes()))
+  host.rt.tick()
+  assert(gen.counters.epoch == 1)
+  assert(host.hub_asked.length() == 0)
+  assert(old_work_exited)
+  assert(delayed_fin_entered)
+  assert(!delayed_fin_done)
+  assert(!old_res.retired)
+  assert(old_res.retire_count == 0)
+  assert(mock_db_closed == 0)
+
+  // Round 2: dispatch `{"afterDb":1}` and tick.
+  // Main MUST process it while delayed finalizer is still parked!
+  host.dispatch_event(host_shim::HostEvent::StdinData("{\"afterDb\":1}\n".to_bytes()))
+  host.rt.tick()
   assert(processed.length() == 1)
   assert(processed[0] == "{\"afterDb\":1}")
-  assert(delayed_fin_ran)
+  assert(delayed_fin_entered)
+  assert(!delayed_fin_done)
+  assert(!old_res.retired)
+  assert(old_res.retire_count == 0)
+  assert(mock_db_closed == 0)
+
+  // Round 3: dispatch `{"releaseFin":1}` and tick.
+  // Finalizer completes -> old_res retires exactly once and DB hook closes once.
+  host.dispatch_event(host_shim::HostEvent::StdinData("{\"releaseFin\":1}\n".to_bytes()))
+  host.rt.tick()
+  assert(delayed_fin_done)
   assert(old_res.retired)
   assert(old_res.retire_count == 1)
   assert(mock_db_closed == 1)
   assert(mem.stderr_lines.length() == 0)
   assert(gen.counters.active >= 0)
-  assert(gen.counters.epoch == 1)
+
+  // Extra check: `main_fiber` (which called `rotate_hub_gen` -> `close_now()`) MUST still be
+  // normally interruptible (proving `main.shield` was never corrupted).
+  main_fiber.interrupt()
+  host.rt.tick()
+  assert(main_fiber.is_done())
+  match main_fiber.poll() {
+    Some(effect::Exit::Interrupted) => ()
+    _ => panic("expected main_fiber to be Interrupted cleanly after rotate_hub_gen")
+  }
 }
 
 test "sessions_core: two consecutive db rotations in one chunk preserve next counter and zero stderr" {
@@ -442,7 +469,7 @@ test "sessions_core: late unix.open completion after abandonment emits exactly o
   assert(mem.shell_calls.length() == 2)
 }
 
-test "sessions_core: unix.open ShellDone followed by interrupt before fiber resumes emits exactly one tcp.close" {
+test "sessions_core: unix.open ShellDone followed by rotate_hub_gen seal before resume emits exactly one tcp.close" {
   let mem = MemHostTransport::new()
   let host = SessionHost::for_test(mem)
   let mut gen = HubGen::new(host, 0)
@@ -467,7 +494,6 @@ test "sessions_core: unix.open ShellDone followed by interrupt before fiber resu
   assert(opened_shell_id > 0.to_int64())
   assert(mem.shell_calls.length() == 1)
 
-  // Step 1: ShellDone arrives and settles Deferred (removes waiter from shell_waiters) BEFORE tick!
   host.dispatch_event(
     host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
       id: opened_shell_id,
@@ -478,10 +504,8 @@ test "sessions_core: unix.open ShellDone followed by interrupt before fiber resu
   )
   assert(host.shell_waiters.length() == 0)
 
-  // Step 2: Before the fiber resumes, rotate_hub_gen interrupts the generation's scope!
   gen = rotate_hub_gen(host, gen, base_codec::json_null())
 
-  // Step 3: Tick runs the interrupted continuation -> MUST emit exactly one tcp.close for handle 77!
   host.rt.tick()
   assert(mem.shell_calls.length() == 2)
   assert(mem.shell_calls[1].op == "tcp.close")
@@ -489,6 +513,89 @@ test "sessions_core: unix.open ShellDone followed by interrupt before fiber resu
   assert(host.shell_waiters.length() == 0)
   assert(host.abandoned_ops.length() == 0)
   assert(gen.counters.epoch == 1)
+}
+
+test "sessions_core: unsealed direct fiber interrupt after ShellDone (and before ShellDone) emits exactly one tcp.close via ShellSlot" {
+  // Case A: ShellDone arrives and settles Deferred -> fiber.interrupt() BEFORE rt.tick() ->
+  // SessionHost::shell_k Exit::Interrupted path closes handle 99 via slot.settled (NO HubGen seal involved!).
+  let mem = MemHostTransport::new()
+  let host = SessionHost::for_test(mem)
+  let mut shell_id_a : Int64 = 0.to_int64()
+  let mut interrupted_a = false
+  let fiber_a = host.rt.fork_named("unsealed-a", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    host.shell_k(
+      ShellOwner::Process,
+      "unix.open",
+      base_codec::json_obj([("path", jstr("/tmp/direct-a.sock"))]),
+      None,
+      Some(AbandonedOp::CloseTcpHandle),
+      Some(fn(id : Int64) -> Unit { shell_id_a = id }),
+      fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => interrupted_a = true
+          _ => ()
+        }
+        k(effect::Exit::Interrupted)
+      },
+    )
+  })
+  host.rt.tick()
+  assert(shell_id_a > 0.to_int64())
+  assert(mem.shell_calls.length() == 1)
+
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: shell_id_a,
+      error: "",
+      json: "{\"id\":99}",
+      bytes: None,
+    }),
+  )
+  assert(host.shell_waiters.length() == 0)
+  fiber_a.interrupt()
+  host.rt.tick()
+
+  assert(interrupted_a)
+  assert(mem.shell_calls.length() == 2)
+  assert(mem.shell_calls[1].op == "tcp.close")
+  assert(mem.shell_calls[1].json == "{\"id\":99}")
+  assert(host.shell_waiters.length() == 0)
+  assert(host.abandoned_ops.length() == 0)
+
+  // Case B: fiber.interrupt() BEFORE ShellDone -> slot.cancelled = true -> late ShellDone
+  // sees waiter.slot.cancelled, removes waiter, emits exactly one tcp.close for handle 101.
+  let mut shell_id_b : Int64 = 0.to_int64()
+  let fiber_b = host.rt.fork_named("unsealed-b", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    host.shell_k(
+      ShellOwner::Process,
+      "unix.open",
+      base_codec::json_obj([("path", jstr("/tmp/direct-b.sock"))]),
+      None,
+      Some(AbandonedOp::CloseTcpHandle),
+      Some(fn(id : Int64) -> Unit { shell_id_b = id }),
+      fn(_ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+        k(effect::Exit::Interrupted)
+      },
+    )
+  })
+  host.rt.tick()
+  assert(shell_id_b > 0.to_int64())
+  fiber_b.interrupt()
+  host.rt.tick()
+  assert(mem.shell_calls.length() == 3)
+  host.dispatch_event(
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+      id: shell_id_b,
+      error: "",
+      json: "{\"id\":101}",
+      bytes: None,
+    }),
+  )
+  assert(mem.shell_calls.length() == 4)
+  assert(mem.shell_calls[3].op == "tcp.close")
+  assert(mem.shell_calls[3].json == "{\"id\":101}")
+  assert(host.shell_waiters.length() == 0)
+  assert(host.abandoned_ops.length() == 0)
 }
 
 test "sessions_core: spawn_work Failed routes to daemon handler without decrementing active (actors.mbt:333)" {
@@ -501,23 +608,21 @@ test "sessions_core: spawn_work Failed routes to daemon handler without decremen
   })
   assert(gen.counters.active == 1)
   host.rt.tick()
-  // Failed work must NOT decrement `active` or emit `quiet`, and must log via daemon handler.
   assert(gen.counters.active == 1)
   assert(mem.stdout_lines.length() == 0)
   assert(mem.stderr_lines.length() == 1)
   assert(mem.stderr_lines[0].contains("actor work failed"))
 }
 
-test "sessions_core: same-chunk answer + due and freeze + routed frame sequences" {
-  // (a) Same-chunk answer + due: work issues RPC -> active=0; answer arrives -> active=1;
-  //     due arrives in same chunk -> timer fires with active=2->1; work finishes -> active=0 + quiet.
+test "sessions_core: same-chunk answer + due emits exact frame sequence before EOF round" {
   let mem = MemHostTransport::new()
   let host = SessionHost::for_test(mem)
   let gen = HubGen::new(host, 0)
   let order : Array[String] = []
+  let mut quiet_emitted_before_eof = false
 
   let timer_id = host.alloc_id()
-  gen.resources.timers.set(timer_id, fn() -> Unit {
+  gen.register_timer(host, timer_id, fn() -> Unit {
     order.push("due")
   })
 
@@ -535,8 +640,9 @@ test "sessions_core: same-chunk answer + due and freeze + routed frame sequences
   assert(mem.stdout_lines.length() == 1)
   assert(mem.stdout_lines[0].contains("\"rpc\":2"))
 
-  // Both answer and due arrive in one stdin chunk.
+  // Round 1: same-chunk answer + due (NO EOF in Round 1); Round 2: EOF after observation.
   mem.push_stdin("{\"answer\":2,\"value\":true}\n{\"due\":1}\n")
+  mem.push_round_barrier()
   mem.push_eof()
 
   let code = run_host_loop(host, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
@@ -545,15 +651,16 @@ test "sessions_core: same-chunk answer + due and freeze + routed frame sequences
         h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
           match ex {
             effect::Exit::Succeeded(Some(line)) => {
+              assert(actors_line(line))
               gen.counters.seen = gen.counters.seen + 1
               match parse_json_strict(line) {
                 Ok(j) => {
                   match jget(j, "answer") {
-                    Some(base_codec::Json::Num(id, _)) => gen.handle_answer(id.to_int(), j)
+                    Some(base_codec::Json::Num(id, _)) => gen.handle_answer(h, id.to_int(), j)
                     _ => ()
                   }
                   match jget(j, "due") {
-                    Some(base_codec::Json::Num(id, _)) => gen.handle_due(id.to_int())
+                    Some(base_codec::Json::Num(id, _)) => gen.handle_due(h, id.to_int())
                     _ => ()
                   }
                 }
@@ -561,7 +668,11 @@ test "sessions_core: same-chunk answer + due and freeze + routed frame sequences
               }
               sk(effect::Exit::Succeeded(IterStep::Continue))
             }
-            effect::Exit::Succeeded(None) => sk(effect::Exit::Succeeded(IterStep::Stop))
+            effect::Exit::Succeeded(None) => {
+              quiet_emitted_before_eof = mem.stdout_lines.length() == 2
+              h.exit(0)
+              sk(effect::Exit::Succeeded(IterStep::Stop))
+            }
             effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
             effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
           }
@@ -571,45 +682,13 @@ test "sessions_core: same-chunk answer + due and freeze + routed frame sequences
     )
   })
   assert(code == 0)
+  assert(quiet_emitted_before_eof)
   assert(order.length() == 2)
   assert(order[0] == "due")
   assert(order[1] == "answer")
   assert(gen.counters.active == 0)
   assert(mem.stdout_lines.length() == 2)
   assert(mem.stdout_lines[1] == "{\"quiet\":true,\"active\":0,\"seen\":2}")
-
-  // (b) Same-chunk freeze + routed: actors_line routes `routed` to actors and `freeze` to agents in exact order.
-  let mem2 = MemHostTransport::new()
-  mem2.push_stdin("{\"freeze\":[1]}\n{\"routed\":\"s1\",\"id\":\"m1\"}\n")
-  mem2.push_eof()
-  let host2 = SessionHost::for_test(mem2)
-  let routed_log : Array[String] = []
-  let code2 = run_host_loop(host2, fn(h : SessionHost, k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    iter_sync_k(
-      fn(sk : (effect::Exit[IterStep]) -> Unit) -> Unit {
-        h.line_k(fn(ex : effect::Exit[Option[String]]) -> Unit {
-          match ex {
-            effect::Exit::Succeeded(Some(line)) => {
-              if actors_line(line) {
-                routed_log.push("actors:" + line)
-              } else {
-                routed_log.push("agents:" + line)
-              }
-              sk(effect::Exit::Succeeded(IterStep::Continue))
-            }
-            effect::Exit::Succeeded(None) => sk(effect::Exit::Succeeded(IterStep::Stop))
-            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
-            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
-          }
-        })
-      },
-      k,
-    )
-  })
-  assert(code2 == 0)
-  assert(routed_log.length() == 2)
-  assert(routed_log[0] == "agents:{\"freeze\":[1]}")
-  assert(routed_log[1] == "actors:{\"routed\":\"s1\",\"id\":\"m1\"}")
 }
 
 test "sessions_core: Process-scoped shell waiters survive HubGen rotation" {
