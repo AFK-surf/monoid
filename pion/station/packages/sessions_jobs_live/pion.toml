@@ -1,0 +1,12 @@
+[package]
+name = "sessions_jobs_live"
+version = "0.1.0"
+
+[dependencies]
+admit = { workspace = true }
+base_codec = { workspace = true }
+builders_core = { workspace = true }
+effect = { workspace = true }
+js_json = { workspace = true }
+live_wire = { workspace = true }
+sessions_core = { workspace = true }

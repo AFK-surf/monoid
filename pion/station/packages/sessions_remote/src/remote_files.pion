@@ -1,0 +1,749 @@
+// Filesystem and record-persistence helpers for `#remote`
+// (1:1 port of `station/mb/src/reader/remote_files.mbt`).
+
+import "base_codec"
+import "effect"
+import "nodepath"
+import "sessions_core"
+
+pub fn RemoteCtx::fs_raw_k(
+  self : RemoteCtx,
+  op : String,
+  args : Array[(String, base_codec::Json)],
+  bytes : Option[Bytes],
+  k : (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
+) -> Unit {
+  self.gen.shell_k(self.host, op, base_codec::json_obj(args), bytes, None, None, k)
+}
+
+pub fn RemoteCtx::fs_k(
+  self : RemoteCtx,
+  op : String,
+  args : Array[(String, base_codec::Json)],
+  bytes : Option[Bytes],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.fs_raw_k(op, args, bytes, fn(ex : effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded((j, _)) => k(effect::Exit::Succeeded(j))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+pub fn RemoteCtx::rjoin(self : RemoteCtx, parts : Array[String]) -> String {
+  sessions_core::rjoin(self.sep, parts)
+}
+
+pub fn RemoteCtx::rdirname(self : RemoteCtx, path : String) -> String {
+  sessions_core::rdirname(self.sep, path)
+}
+
+pub fn RemoteCtx::rbasename(self : RemoteCtx, path : String) -> String {
+  sessions_core::rbasename(self.sep, path)
+}
+
+pub fn RemoteCtx::with_extension(self : RemoteCtx, path : String, ext : String) -> String {
+  nodepath::with_extension(self.sep, path, ext)
+}
+
+pub fn kind_of_stat(st : base_codec::Json) -> String {
+  match sessions_core::str_of(sessions_core::jget(st, "kind")) {
+    Some(s) => s
+    None => ""
+  }
+}
+
+pub fn RemoteCtx::lstat_k(
+  self : RemoteCtx,
+  path : String,
+  k : (effect::Exit[Option[base_codec::Json]]) -> Unit,
+) -> Unit {
+  self.fs_k("fs.lstat", [("path", sessions_core::jstr(path))], None, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(base_codec::Json::Null) => k(effect::Exit::Succeeded(None))
+      effect::Exit::Succeeded(st) => k(effect::Exit::Succeeded(Some(st)))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+pub fn RemoteCtx::there_k(
+  self : RemoteCtx,
+  path : String,
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  self.lstat_k(path, fn(ex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(Some(_)) => k(effect::Exit::Succeeded(true))
+      effect::Exit::Succeeded(None) => k(effect::Exit::Succeeded(false))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+pub fn RemoteCtx::read_text_k(
+  self : RemoteCtx,
+  path : String,
+  k : (effect::Exit[Option[String]]) -> Unit,
+) -> Unit {
+  self.fs_k(
+    "fs.read",
+    [("path", sessions_core::jstr(path)), ("strict", sessions_core::jbool(true))],
+    None,
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(base_codec::Json::Str(s)) => k(effect::Exit::Succeeded(Some(s)))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(None))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+pub fn RemoteCtx::readdir_names_k(
+  self : RemoteCtx,
+  path : String,
+  k : (effect::Exit[Array[String]]) -> Unit,
+) -> Unit {
+  self.fs_k("fs.readdir", [("path", sessions_core::jstr(path))], None, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(base_codec::Json::Arr(rows)) => {
+        let names : Array[String] = []
+        for i in 0..<rows.length() {
+          match rows[i] {
+            base_codec::Json::Arr(row) => {
+              if row.length() > 0 {
+                match row[0] {
+                  base_codec::Json::Str(n) => names.push(n)
+                  _ => ()
+                }
+              }
+            }
+            base_codec::Json::Str(n) => names.push(n)
+            _ => ()
+          }
+        }
+        k(effect::Exit::Succeeded(names))
+      }
+      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded([]))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+pub fn RemoteCtx::mkdirs_k(
+  self : RemoteCtx,
+  path : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  self.fs_k("fs.mkdir", [("path", sessions_core::jstr(path))], None, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+pub fn RemoteCtx::remove_k(
+  self : RemoteCtx,
+  path : String,
+  recursive : Bool,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  self.fs_k(
+    "fs.remove",
+    [("path", sessions_core::jstr(path)), ("recursive", sessions_core::jbool(recursive))],
+    None,
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+pub fn RemoteCtx::rename_k(
+  self : RemoteCtx,
+  from : String,
+  to : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  self.fs_k(
+    "fs.rename",
+    [("from", sessions_core::jstr(from)), ("to", sessions_core::jstr(to))],
+    None,
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+/// Asynchronous random hex via `HubGen::shell_k("crypto.random", ...)` (zero blocking `shell_sync`,
+/// sealed-generation guarded, interrupt-propagating, fallback to monotonic id on shell failure).
+pub fn RemoteCtx::random_hex_k(
+  self : RemoteCtx,
+  n : Int,
+  k : (effect::Exit[String]) -> Unit,
+) -> Unit {
+  self.fs_k(
+    "crypto.random",
+    [("bytes", sessions_core::jnum(n.to_double()))],
+    None,
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(base_codec::Json::Str(s)) => k(effect::Exit::Succeeded(s))
+        _ => k(effect::Exit::Succeeded(self.host.alloc_id().to_string()))
+      }
+    },
+  )
+}
+
+/// Wait until all previously queued writes to `path` complete (`remote_files.mbt:145-152`).
+pub fn RemoteCtx::written_k(
+  self : RemoteCtx,
+  path : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let state = self.state
+  sessions_core::iter_sync_k(
+    fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      match state.writing.get(path) {
+        None => sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+        Some(turn) => {
+          turn.done.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+            match ex {
+              effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+              _ => {
+                let stop = match state.writing.get(path) {
+                  Some(cur) => cur.id == turn.id
+                  None => true
+                }
+                if stop {
+                  sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                } else {
+                  sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                }
+              }
+            }
+          })
+        }
+      }
+    },
+    k,
+  )
+}
+
+pub fn RemoteCtx::read_json_k(
+  self : RemoteCtx,
+  path : String,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.written_k(path, fn(wex : effect::Exit[Unit]) -> Unit {
+    match wex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(_) => {
+        self.read_text_k(path, fn(rex : effect::Exit[Option[String]]) -> Unit {
+          match rex {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(Some(text)) => {
+              match sessions_core::parse_json_strict(text) {
+                Ok(v) => k(effect::Exit::Succeeded(v))
+                Err(_) => k(effect::Exit::Failed(sessions_core::FsError::new(path + ": not JSON").to_effect_error()))
+              }
+            }
+            effect::Exit::Succeeded(None) => {
+              k(effect::Exit::Failed(sessions_core::FsError::new("ENOENT: " + path).to_effect_error()))
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+/// Serialize `work_k` for `path`, emitting `writing` before awaiting prior turns and
+/// `wrote` + identity-checked `writing.remove(path)` on completion (`remote_files.mbt:156-175`).
+/// If a middle waiter B in A -> B -> C is interrupted while A is still writing, B preserves
+/// A's barrier by relaying A's completion to `mine.done` so C never overtakes A's rename.
+pub fn RemoteCtx::in_turn_k[X](
+  self : RemoteCtx,
+  path : String,
+  work_k : ((effect::Exit[X]) -> Unit) -> Unit,
+  k : (effect::Exit[X]) -> Unit,
+) -> Unit {
+  self.serialize_path_k(path, true, work_k, k)
+}
+
+/// Shared per-path write barrier used by `in_turn_k` (`emit_tells = true`) and
+/// `RemoteHost.write_whole_k` (`emit_tells = false`, matching MB `dirsync.mbt:526` which
+/// does not emit `writing`/`wrote` tells while still serializing with `written_k` & `rename_inflight`).
+fn RemoteCtx::serialize_path_k[X](
+  self : RemoteCtx,
+  path : String,
+  emit_tells : Bool,
+  work_k : ((effect::Exit[X]) -> Unit) -> Unit,
+  k : (effect::Exit[X]) -> Unit,
+) -> Unit {
+  let state = self.state
+  let counters = self.gen.counters
+  let before = state.writing.get(path)
+  let mine = WriteTurn::{ id: state.alloc_gen(), done: effect::Deferred::new() }
+  state.writing.set(path, mine)
+  let id = if emit_tells { sessions_core::jint(self.host.alloc_id()) } else { base_codec::json_null() }
+  if emit_tells {
+    self.tell(remote_key, "writing", [sessions_core::jstr(path), id])
+  }
+  let release_mine = fn() -> Unit {
+    let _ = mine.done.succeed(())
+    match state.writing.get(path) {
+      Some(cur) => {
+        if cur.id == mine.id {
+          let _ = state.writing.remove(path)
+        }
+      }
+      None => ()
+    }
+  }
+  let finish = fn() -> Unit {
+    if emit_tells {
+      self.tell(remote_key, "wrote", [sessions_core::jstr(path), id])
+    }
+    release_mine()
+  }
+  let run_work = fn() -> Unit {
+    work_k(fn(ex : effect::Exit[X]) -> Unit {
+      match state.rename_inflight.get(path) {
+        Some((_, rd)) => {
+          if !rd.is_done() && !counters.sealed {
+            // An in-flight fs.rename on `path` is still running on the shell thread after
+            // caller cancellation: hold the write barrier until that rename actually finishes
+            // so a subsequent writer cannot overtake and be overwritten by the late rename.
+            let _ = self.gen.fibers.fork_daemon(
+              "write rename barrier",
+              fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                rd.wait_k(fn(_rex : effect::Exit[Unit]) -> Unit {
+                  finish()
+                  rk(effect::Exit::Succeeded(()))
+                })
+              },
+              fn(_e : effect::EffectError) -> Unit { finish() },
+            )
+            k(ex)
+            return
+          }
+        }
+        None => ()
+      }
+      finish()
+      k(ex)
+    })
+  }
+  match before {
+    Some(b) => {
+      b.done.wait_k(fn(bex : effect::Exit[Unit]) -> Unit {
+        match bex {
+          effect::Exit::Interrupted => {
+            if emit_tells {
+              self.tell(remote_key, "wrote", [sessions_core::jstr(path), id])
+            }
+            if b.done.is_done() || counters.sealed {
+              release_mine()
+            } else {
+              // Preserve predecessor barrier so downstream waiters (C) wait for A to finish.
+              let _ = self.gen.fibers.fork_daemon(
+                "write barrier relay",
+                fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                  b.done.wait_k(fn(_rex : effect::Exit[Unit]) -> Unit {
+                    release_mine()
+                    rk(effect::Exit::Succeeded(()))
+                  })
+                },
+                fn(_e : effect::EffectError) -> Unit { () },
+              )
+            }
+            k(effect::Exit::Interrupted)
+          }
+          _ => run_work()
+        }
+      })
+    }
+    None => run_work()
+  }
+}
+
+/// Write `json` atomically via private temp file + sync + rename (`remote_files.mbt:179-188`).
+/// Runs the in-flight `fs.put` -> `fs.rename` sequence on a generation-scoped daemon so:
+/// - If the caller is cancelled while `fs.put` is in flight and `fs.put` actually succeeds
+///   in an unsealed generation, the orphan temp file is removed (while `fs.put` errors such
+///   as exclusive conflicts never remove another writer's file);
+/// - If the caller is cancelled while `fs.rename` is in flight, `state.rename_inflight[path]`
+///   holds `in_turn_k`'s write barrier until the dispatched `fs.rename` completes (or seals),
+///   preventing a successor writer from racing ahead and being clobbered by the late rename.
+pub fn RemoteCtx::write_whole_k(
+  self : RemoteCtx,
+  path : String,
+  json : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  self.random_hex_k(8, fn(hex_ex : effect::Exit[String]) -> Unit {
+    match hex_ex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(hex) => {
+        let temp = self.with_extension(path, hex + ".tmp")
+        let counters = self.gen.counters
+        let state = self.state
+        let mut caller_cancelled = false
+        let step_done : effect::Deferred[effect::Exit[Unit]] = effect::Deferred::new()
+        let _ = self.gen.fibers.fork_daemon(
+          "write_whole io",
+          fn(dk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            self.fs_k(
+              "fs.put",
+              [
+                ("path", sessions_core::jstr(temp)),
+                ("offset", sessions_core::jnum(0.0)),
+                ("exclusive", sessions_core::jbool(true)),
+                ("truncate", sessions_core::jbool(true)),
+                ("sync", sessions_core::jbool(true)),
+                ("mode", sessions_core::jnum(384.0)),
+              ],
+              Some(json.to_bytes()),
+              fn(pex : effect::Exit[base_codec::Json]) -> Unit {
+                match pex {
+                  effect::Exit::Failed(e) => {
+                    let _ = step_done.succeed(effect::Exit::Failed(e))
+                    dk(effect::Exit::Succeeded(()))
+                  }
+                  effect::Exit::Interrupted => {
+                    let _ = step_done.succeed(effect::Exit::Interrupted)
+                    dk(effect::Exit::Interrupted)
+                  }
+                  effect::Exit::Succeeded(_) => {
+                    if caller_cancelled {
+                      if !counters.sealed {
+                        self.remove_k(temp, false, fn(_rem : effect::Exit[Unit]) -> Unit {
+                          dk(effect::Exit::Succeeded(()))
+                        })
+                      } else {
+                        dk(effect::Exit::Succeeded(()))
+                      }
+                      return
+                    }
+                    let rename_id = self.host.alloc_id()
+                    let rename_done : effect::Deferred[Unit] = effect::Deferred::new()
+                    state.rename_inflight.set(path, (rename_id, rename_done))
+                    let clear_rename = fn() -> Unit {
+                      match state.rename_inflight.get(path) {
+                        Some((cur_id, _)) => {
+                          if cur_id == rename_id {
+                            let _ = state.rename_inflight.remove(path)
+                          }
+                        }
+                        None => ()
+                      }
+                      let _ = rename_done.succeed(())
+                    }
+                    self.rename_k(temp, path, fn(rex : effect::Exit[Unit]) -> Unit {
+                      clear_rename()
+                      match rex {
+                        effect::Exit::Succeeded(_) => {
+                          let _ = step_done.succeed(effect::Exit::Succeeded(()))
+                          dk(effect::Exit::Succeeded(()))
+                        }
+                        effect::Exit::Interrupted => {
+                          let _ = step_done.succeed(effect::Exit::Interrupted)
+                          dk(effect::Exit::Interrupted)
+                        }
+                        effect::Exit::Failed(e) => {
+                          if !counters.sealed {
+                            self.remove_k(temp, false, fn(_rem : effect::Exit[Unit]) -> Unit {
+                              let _ = step_done.succeed(effect::Exit::Failed(e))
+                              dk(effect::Exit::Succeeded(()))
+                            })
+                          } else {
+                            let _ = step_done.succeed(effect::Exit::Failed(e))
+                            dk(effect::Exit::Succeeded(()))
+                          }
+                        }
+                      }
+                    })
+                  }
+                }
+              },
+            )
+          },
+          fn(_e : effect::EffectError) -> Unit { () },
+        )
+        step_done.wait_k(fn(ex : effect::Exit[effect::Exit[Unit]]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => {
+              caller_cancelled = true
+              k(effect::Exit::Interrupted)
+            }
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(inner) => k(inner)
+          }
+        })
+      }
+    }
+  })
+}
+
+fn bump_writes(state : RemoteState, path : String) -> Unit {
+  let prev = match state.writes.get(path) {
+    Some(n) => n
+    None => 0
+  }
+  state.writes.set(path, prev + 1)
+}
+
+pub fn RemoteCtx::write_json_k(
+  self : RemoteCtx,
+  path : String,
+  value : base_codec::Json,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let json = self.js_text(value)
+  bump_writes(self.state, path)
+  if self.state.used.contains(path) {
+    let parsed = match sessions_core::parse_json_strict(json) {
+      Ok(j) => j
+      Err(_) => base_codec::json_null()
+    }
+    self.state.used.set(path, parsed)
+  }
+  self.in_turn_k(
+    path,
+    fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.write_whole_k(path, json, tk)
+    },
+    k,
+  )
+}
+
+/// Notify `session` then persist `value` at `path` within a single `in_turn` (`remote_files.mbt:211-221`).
+pub fn RemoteCtx::told_then_written_k(
+  self : RemoteCtx,
+  path : String,
+  session : String,
+  message : String,
+  value : base_codec::Json,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let json = self.js_text(value)
+  self.in_turn_k(
+    path,
+    fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.rnode_k("notify", [sessions_core::jstr(session), sessions_core::jstr(message)], fn(nex : effect::Exit[base_codec::Json]) -> Unit {
+        match nex {
+          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(_) => {
+            bump_writes(self.state, path)
+            if self.state.used.contains(path) {
+              let parsed = match sessions_core::parse_json_strict(json) {
+                Ok(j) => j
+                Err(_) => base_codec::json_null()
+              }
+              self.state.used.set(path, parsed)
+            }
+            self.write_whole_k(path, json, fn(wex : effect::Exit[Unit]) -> Unit {
+              match wex {
+                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                _ => tk(effect::Exit::Succeeded(()))
+              }
+            })
+          }
+        }
+      })
+    },
+    k,
+  )
+}
+
+/// Read, transform, and atomically update/remove a JSON record in its turn (`remote_files.mbt:227-260`).
+pub fn RemoteCtx::update_json_k(
+  self : RemoteCtx,
+  path : String,
+  edit : (base_codec::Json) -> Option[base_codec::Json],
+  missing : Option[base_codec::Json],
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  self.in_turn_k(
+    path,
+    fn(tk : (effect::Exit[Bool]) -> Unit) -> Unit {
+      self.read_text_k(path, fn(rex : effect::Exit[Option[String]]) -> Unit {
+        match rex {
+          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(text_opt) => {
+            let v = match text_opt {
+              Some(text) => {
+                match sessions_core::parse_json_strict(text) {
+                  Ok(parsed) => parsed
+                  Err(_) => {
+                    tk(effect::Exit::Succeeded(false))
+                    return
+                  }
+                }
+              }
+              None => {
+                match missing {
+                  Some(m) => m
+                  None => {
+                    tk(effect::Exit::Succeeded(false))
+                    return
+                  }
+                }
+              }
+            }
+            match edit(v) {
+              None => tk(effect::Exit::Succeeded(true))
+              Some(base_codec::Json::Null) => {
+                bump_writes(self.state, path)
+                let _ = self.state.used.remove(path)
+                self.remove_k(path, false, fn(rem : effect::Exit[Unit]) -> Unit {
+                  match rem {
+                    effect::Exit::Succeeded(_) => tk(effect::Exit::Succeeded(true))
+                    effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                  }
+                })
+              }
+              Some(next) => {
+                bump_writes(self.state, path)
+                let json = self.js_text(next)
+                if self.state.used.contains(path) {
+                  self.state.used.set(path, next)
+                }
+                self.write_whole_k(path, json, fn(wex : effect::Exit[Unit]) -> Unit {
+                  match wex {
+                    effect::Exit::Succeeded(_) => tk(effect::Exit::Succeeded(true))
+                    effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                  }
+                })
+              }
+            }
+          }
+        }
+      })
+    },
+    k,
+  )
+}
+
+/// Safe relative path resolution rejecting symlinks, leading `.`, `..`, drives/shares/streams
+/// (`remote_files.mbt:267-309`).
+pub fn RemoteCtx::file_path_k(
+  self : RemoteCtx,
+  root : String,
+  relative : String,
+  create : Bool,
+  allow_leaf_link : Bool,
+  k : (effect::Exit[String]) -> Unit,
+) -> Unit {
+  self.lstat_k(root, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+    match lex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(None) => {
+        k(effect::Exit::Failed(sessions_core::FsError::new("ENOENT: no such file or directory, lstat '" + root + "'").to_effect_error()))
+      }
+      effect::Exit::Succeeded(Some(st)) => {
+        if kind_of_stat(st) == "link" {
+          k(effect::Exit::Failed(sessions_core::FsError::new("transfer root is a symbolic link").to_effect_error()))
+          return
+        }
+        let given = match nodepath::relative_parts(self.sep, relative) {
+          Some(g) => g
+          None => {
+            k(effect::Exit::Failed(sessions_core::FsError::new("file path must be relative, without . or ..").to_effect_error()))
+            return
+          }
+        }
+        let parts : Array[String] = []
+        let mut bad = false
+        for i in 0..<given.length() {
+          let part = given[i]
+          if part == "" {
+            continue
+          }
+          if part == "." {
+            if i == 0 {
+              bad = true
+            }
+            continue
+          }
+          parts.push(part)
+        }
+        if bad || parts.length() == 0 {
+          k(effect::Exit::Failed(sessions_core::FsError::new("file path must be relative, without . or ..").to_effect_error()))
+          return
+        }
+        let mut out = root
+        let last = parts.length() - 1
+        for_each_k(
+          parts,
+          fn(i : Int, part : String, pk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            out = self.rjoin([out, part])
+            if i < last || !allow_leaf_link {
+              self.lstat_k(out, fn(sex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+                match sex {
+                  effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(Some(pst)) => {
+                    if kind_of_stat(pst) == "link" {
+                      pk(effect::Exit::Failed(sessions_core::FsError::new("file path contains a symbolic link").to_effect_error()))
+                    } else {
+                      pk(effect::Exit::Succeeded(()))
+                    }
+                  }
+                  effect::Exit::Succeeded(None) => pk(effect::Exit::Succeeded(()))
+                }
+              })
+            } else {
+              pk(effect::Exit::Succeeded(()))
+            }
+          },
+          fn(fex : effect::Exit[Unit]) -> Unit {
+            match fex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => {
+                if create {
+                  self.mkdirs_k(self.rdirname(out), fn(mex : effect::Exit[Unit]) -> Unit {
+                    match mex {
+                      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(out))
+                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    }
+                  })
+                } else {
+                  k(effect::Exit::Succeeded(out))
+                }
+              }
+            }
+          },
+        )
+      }
+    }
+  })
+}

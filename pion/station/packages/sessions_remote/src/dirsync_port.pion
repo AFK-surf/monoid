@@ -1,0 +1,254 @@
+// Strongly typed 12-method `DirsyncPort` boundary and `RemoteHost` capability
+// (`wave8-plan.md` v5 §2.5.3). W8-C1 tests against a fake `DirsyncPort`; W8-C2
+// adds `dirsync.pion` + `dirsync_source.pion` in this same package and wires the
+// real implementation without any package cycle.
+
+import "base_codec"
+import "effect"
+import "sessions_core"
+
+/// One local file entry returned by `DirsyncPort::list_local_k` (`dirsync_source.mbt:69-75`).
+pub struct DirsyncLocal {
+  pub path : String
+  pub mut hash : String
+  pub mut mode : String
+  pub mut size : Int
+  pub mut indexed : Bool
+}
+
+/// Result of `DirsyncPort::list_local_k` (`dirsync_source.mbt:78-104`).
+pub struct DirsyncListing {
+  pub mut files : Array[DirsyncLocal]
+  pub git : Bool
+  pub prefix : String
+  pub skipped : Array[(String, String)]
+  pub submodules : Array[(String, String, String)]
+}
+
+pub fn DirsyncListing::to_json(self : DirsyncListing) -> base_codec::Json {
+  let files_json : Array[base_codec::Json] = []
+  for i in 0..<self.files.length() {
+    let f = self.files[i]
+    let fields : Array[(String, base_codec::Json)] = [
+      ("path", sessions_core::jstr(f.path)),
+      ("hash", sessions_core::jstr(f.hash)),
+      ("mode", sessions_core::jstr(f.mode)),
+      ("size", sessions_core::jnum(f.size.to_double())),
+    ]
+    if f.indexed {
+      fields.push(("indexed", sessions_core::jbool(true)))
+    }
+    files_json.push(base_codec::json_obj(fields))
+  }
+  let skipped_json : Array[base_codec::Json] = []
+  for i in 0..<self.skipped.length() {
+    let (p, why) = self.skipped[i]
+    skipped_json.push(
+      base_codec::json_obj([
+        ("path", sessions_core::jstr(p)),
+        ("why", sessions_core::jstr(why)),
+      ]),
+    )
+  }
+  let sub_json : Array[base_codec::Json] = []
+  for i in 0..<self.submodules.length() {
+    let (p, id, url) = self.submodules[i]
+    sub_json.push(
+      base_codec::json_obj([
+        ("path", sessions_core::jstr(p)),
+        ("id", sessions_core::jstr(id)),
+        ("url", sessions_core::jstr(url)),
+      ]),
+    )
+  }
+  base_codec::json_obj([
+    ("files", base_codec::json_arr(files_json)),
+    ("git", sessions_core::jbool(self.git)),
+    ("prefix", sessions_core::jstr(self.prefix)),
+    ("skipped", base_codec::json_arr(skipped_json)),
+    ("submodules", base_codec::json_arr(sub_json)),
+  ])
+}
+
+/// Narrow capability object handed from `sessions_remote` core to `DirsyncPort`
+/// implementations (`W8-C2` `dirsync.pion` / `dirsync_source.pion`) so dirsync
+/// can call `ask`, `rnode_k` (`syncPacking`/`syncPut`), write-barrier `read_json_k`,
+/// `file_path_k` (including `allow_leaf_link`), `write_whole`/`write_json`, fs ops,
+/// and inspect `root`/`sep` without creating any cyclic reference.
+pub struct RemoteHost {
+  pub root : String
+  pub sep : String
+  pub js_text : (base_codec::Json) -> String
+  pub ask_k : (String, base_codec::Json, (effect::Exit[base_codec::Json]) -> Unit) -> Unit
+  rnode_fn : (String, Array[base_codec::Json], (effect::Exit[base_codec::Json]) -> Unit) -> Unit
+  pub write_whole_k : (String, String, (effect::Exit[Unit]) -> Unit) -> Unit
+  pub write_json_k : (String, base_codec::Json, (effect::Exit[Unit]) -> Unit) -> Unit
+  pub read_text_k : (String, (effect::Exit[Option[String]]) -> Unit) -> Unit
+  pub read_json_k : (String, (effect::Exit[base_codec::Json]) -> Unit) -> Unit
+  pub file_path_k : (String, String, Bool, Bool, (effect::Exit[String]) -> Unit) -> Unit
+  pub lstat_k : (String, (effect::Exit[Option[base_codec::Json]]) -> Unit) -> Unit
+  pub mkdirs_k : (String, (effect::Exit[Unit]) -> Unit) -> Unit
+  pub remove_k : (String, Bool, (effect::Exit[Unit]) -> Unit) -> Unit
+  pub rename_k : (String, String, (effect::Exit[Unit]) -> Unit) -> Unit
+  pub fs_k : (
+    String,
+    Array[(String, base_codec::Json)],
+    Option[Bytes],
+    (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
+  ) -> Unit
+  pub remote_now_k : ((effect::Exit[Double]) -> Unit) -> Unit
+}
+
+/// Method wrapper so `W8-C2` call sites write `host.rnode_k("syncPut", ...)` /
+/// `host.rnode_k("syncPacking", ...)` and are directly scanned by `mb-reader-contracts.test.ts`.
+pub fn RemoteHost::rnode_k(
+  self : RemoteHost,
+  f : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  (self.rnode_fn)(f, args, k)
+}
+
+/// Complete 12-method `DirsyncPort` covering every call from `remote*.mbt` into
+/// `dirsync*.mbt`:
+/// 1. `sync_dir_k`       (`remote_source.mbt:425`)
+/// 2. `list_local_k`     (`remote.mbt:302`)
+/// 3. `sync_begin_k`     (`remote_target.mbt:306`)
+/// 4. `listed_entries`   (`remote_target.mbt:323`)
+/// 5. `page_of`          (`remote_target.mbt:323`)
+/// 6. `put_blobs_k`      (`remote_target.mbt:330`)
+/// 7. `plan_part`        (`remote_target.mbt:334`)
+/// 8. `submodules_part`  (`remote_target.mbt:340`)
+/// 9. `sync_commit_k`    (`remote_target.mbt:342`)
+/// 10. `sync_changes_k`  (`remote_target.mbt:358`)
+/// 11. `read_manifest_k` (`remote_target.mbt:692`)
+/// 12. `with_submodules_k` (`remote_target.mbt:267`)
+pub struct DirsyncPort {
+  pub sync_dir_k : (
+    RemoteHost,
+    String,
+    String,
+    String,
+    String,
+    String,
+    (effect::Exit[base_codec::Json]) -> Unit,
+  ) -> Unit
+  pub list_local_k : (RemoteHost, String, (effect::Exit[DirsyncListing]) -> Unit) -> Unit
+  pub sync_begin_k : (RemoteHost, String, String, String, (effect::Exit[Double]) -> Unit) -> Unit
+  pub listed_entries : (Map[String, base_codec::Json]) -> Array[base_codec::Json]
+  pub page_of : (Array[base_codec::Json], Int) -> base_codec::Json
+  pub put_blobs_k : (
+    RemoteHost,
+    String,
+    base_codec::Json,
+    Option[String],
+    base_codec::Json,
+    (effect::Exit[Int]) -> Unit,
+  ) -> Unit
+  pub plan_part : (base_codec::Json) -> Result[base_codec::Json, effect::EffectError]
+  pub submodules_part : (base_codec::Json) -> Result[Array[(String, String, String)], effect::EffectError]
+  pub sync_commit_k : (
+    RemoteHost,
+    String,
+    String,
+    String,
+    String,
+    base_codec::Json,
+    String,
+    Array[(String, String, String)],
+    (effect::Exit[base_codec::Json]) -> Unit,
+  ) -> Unit
+  pub sync_changes_k : (RemoteHost, String, String, (effect::Exit[base_codec::Json]) -> Unit) -> Unit
+  pub read_manifest_k : (RemoteHost, String, (effect::Exit[Option[base_codec::Json]]) -> Unit) -> Unit
+  pub with_submodules_k : (RemoteHost, String, String, (effect::Exit[Option[String]]) -> Unit) -> Unit
+  pub is_stub : Bool
+}
+
+pub fn DirsyncPort::stub() -> DirsyncPort {
+  DirsyncPort::{
+    sync_dir_k: fn(
+      _h : RemoteHost,
+      _st : String,
+      _ws : String,
+      _sess : String,
+      _key : String,
+      _dir : String,
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Failed(refusal("dirsync stub: sync_dir not implemented")))
+    },
+    list_local_k: fn(_h : RemoteHost, _dir : String, k : (effect::Exit[DirsyncListing]) -> Unit) -> Unit {
+      k(effect::Exit::Failed(refusal("dirsync stub: list_local not implemented")))
+    },
+    sync_begin_k: fn(
+      _h : RemoteHost,
+      _manifest : String,
+      _mirror : String,
+      _syncing : String,
+      k : (effect::Exit[Double]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Failed(refusal("dirsync stub: sync_begin not implemented")))
+    },
+    listed_entries: fn(_files : Map[String, base_codec::Json]) -> Array[base_codec::Json] { [] },
+    page_of: fn(_all : Array[base_codec::Json], _after : Int) -> base_codec::Json {
+      base_codec::json_obj([
+        ("entries", base_codec::json_arr([])),
+        ("next", base_codec::json_null()),
+      ])
+    },
+    put_blobs_k: fn(
+      _h : RemoteHost,
+      _blobs : String,
+      _index : base_codec::Json,
+      _packed : Option[String],
+      _data : base_codec::Json,
+      k : (effect::Exit[Int]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Failed(refusal("dirsync stub: put_blobs not implemented")))
+    },
+    plan_part: fn(_req : base_codec::Json) -> Result[base_codec::Json, effect::EffectError] {
+      Err(refusal("dirsync stub: plan_part not implemented"))
+    },
+    submodules_part: fn(_req : base_codec::Json) -> Result[Array[(String, String, String)], effect::EffectError] {
+      Err(refusal("dirsync stub: submodules_part not implemented"))
+    },
+    sync_commit_k: fn(
+      _h : RemoteHost,
+      _work : String,
+      _mirror : String,
+      _syncing : String,
+      _manifest : String,
+      _ver0 : base_codec::Json,
+      _dir : String,
+      _subs : Array[(String, String, String)],
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Failed(refusal("dirsync stub: sync_commit not implemented")))
+    },
+    sync_changes_k: fn(
+      _h : RemoteHost,
+      _manifest : String,
+      _base : String,
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Failed(refusal("dirsync stub: sync_changes not implemented")))
+    },
+    read_manifest_k: fn(
+      _h : RemoteHost,
+      _path : String,
+      k : (effect::Exit[Option[base_codec::Json]]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Succeeded(None))
+    },
+    with_submodules_k: fn(
+      _h : RemoteHost,
+      _manifest : String,
+      _cmd : String,
+      k : (effect::Exit[Option[String]]) -> Unit,
+    ) -> Unit {
+      k(effect::Exit::Succeeded(None))
+    },
+    is_stub: true,
+  }
+}

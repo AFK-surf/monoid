@@ -1,0 +1,2937 @@
+// 1:1 port of `station/mb/src/reader/jobs.mbt` (`#jobs` pseudo-actor) to pure Pion.
+// Uses static-contract `jnode_k` / `jstore_k` / `tell(jobs_key, ...)` helpers,
+// `HubGen` `counters.sealed` guards, and value-passed `SessionDispatch` (zero RC cycles).
+
+import "admit"
+import "base_codec"
+import "builders_core"
+import "effect"
+import "js_json"
+import "sessions_core"
+
+pub let jobs_key : String = "#jobs"
+
+let MAX_RUNNING : Int = 20
+let LOOK_MS : Double = 5000.0
+
+pub struct Run {
+  pub pgid : Int
+  pub mut stopping : Bool
+}
+
+/// Pure-value timer actions for `#jobs` (ZERO closures, ZERO `host.hub_timers` cycles).
+pub enum JobsTimerAction {
+  LookLater
+  RestartService(String)
+}
+
+/// Generation-scoped `#jobs` state. Holds ZERO references to `SessionHost`, `HubGen`,
+/// `EffectScope`, or `SessionDispatch` (strictly acyclic).
+pub struct JobsState {
+  pub running : Map[String, Run]
+  pub mut claims : Array[admit::Claim]
+  pub last_of : Map[String, Double]
+  pub mut pressure : Option[String]
+  pub mut person : Bool
+  pub mut reading_person : Bool
+  pub mut why : Option[String]
+  pub mut closing : Bool
+  pub mut looking : Bool
+  pub told_long : Map[String, Bool]
+  /// Epoch-tagged pure-value timer actions (`timer_id -> (epoch, action)`).
+  pub timer_actions : Map[Int, (Int, JobsTimerAction)]
+  /// One step at a time (`locked_k`), matching `jobs.mbt` `lock`.
+  pub lock : effect::Semaphore
+}
+
+pub fn JobsState::new() -> JobsState {
+  JobsState::{
+    running: Map::new(),
+    claims: [],
+    last_of: Map::new(),
+    pressure: None,
+    person: false,
+    reading_person: false,
+    why: None,
+    closing: false,
+    looking: false,
+    told_long: Map::new(),
+    timer_actions: Map::new(),
+    lock: effect::Semaphore::new(1),
+  }
+}
+
+/// Clear all in-memory maps/state on Hub generation retirement.
+pub fn JobsState::reset(self : JobsState) -> Unit {
+  self.running.clear()
+  self.claims = []
+  self.last_of.clear()
+  self.pressure = None
+  self.person = false
+  self.reading_person = false
+  self.why = None
+  self.closing = true
+  self.looking = false
+  self.told_long.clear()
+  self.timer_actions.clear()
+}
+
+/// Value-passed context for `#jobs` operations (never stored inside `JobsState`).
+pub struct JobsCtx {
+  pub host : sessions_core::SessionHost
+  pub gen : sessions_core::HubGen
+  pub state : JobsState
+  pub dispatch : sessions_core::SessionDispatch
+}
+
+pub fn JobsCtx::new(
+  host : sessions_core::SessionHost,
+  gen : sessions_core::HubGen,
+  state : JobsState,
+  dispatch : sessions_core::SessionDispatch,
+) -> JobsCtx {
+  JobsCtx::{
+    host: host,
+    gen: gen,
+    state: state,
+    dispatch: dispatch,
+  }
+}
+
+// ── Small pure helpers ──
+
+fn opt_str_is(a : Option[String], target : String) -> Bool {
+  match a {
+    Some(s) => s == target
+    None => false
+  }
+}
+
+fn opt_str_eq(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => x == y
+    (None, None) => true
+    _ => false
+  }
+}
+
+fn opt_int_is(a : Option[Int], target : Int) -> Bool {
+  match a {
+    Some(x) => x == target
+    None => false
+  }
+}
+
+fn pop_front[T](arr : Array[T]) -> T {
+  let first = arr[0]
+  let rest : Array[T] = []
+  for i in 1..<arr.length() {
+    rest.push(arr[i])
+  }
+  arr.clear()
+  for i in 0..<rest.length() {
+    arr.push(rest[i])
+  }
+  first
+}
+
+fn trim_space_mb(s : String) -> String {
+  let raw = s.to_bytes()
+  let mut start = 0
+  let mut end = raw.length()
+  while start < end {
+    let b = raw[start].to_int()
+    if b == 32 || b == 9 || b == 13 || b == 10 {
+      start = start + 1
+    } else {
+      break
+    }
+  }
+  while end > start {
+    let b = raw[end - 1].to_int()
+    if b == 32 || b == 9 || b == 13 || b == 10 {
+      end = end - 1
+    } else {
+      break
+    }
+  }
+  s.slice(start, end)
+}
+
+fn arg_at(args : Array[base_codec::Json], i : Int) -> base_codec::Json {
+  if i < args.length() {
+    args[i]
+  } else {
+    base_codec::json_null()
+  }
+}
+
+fn is_null(v : base_codec::Json) -> Bool {
+  match v {
+    base_codec::Json::Null => true
+    _ => false
+  }
+}
+
+fn is_true(v : Option[base_codec::Json]) -> Bool {
+  match v {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+}
+
+fn fail_asked(m : String) -> effect::EffectError {
+  sessions_core::AskedError::new(
+    base_codec::json_obj([("message", sessions_core::jstr(m))]),
+  ).to_effect_error()
+}
+
+fn chars_of(s : String, n : Int) -> String {
+  if n <= 0 || s.length() == 0 {
+    return ""
+  }
+  let units = js_json::utf16_units(s)
+  js_json::sanitize_str(js_json::chars(units, n))
+}
+
+fn round_double(x : Double) -> Double {
+  if x >= 0.0 {
+    (x + 0.5).to_int64().to_double()
+  } else {
+    -((-x + 0.5).to_int64().to_double())
+  }
+}
+
+fn replace_dquotes(s : String) -> String {
+  let sb = StringBuilder::new()
+  let raw = s.to_bytes()
+  let mut start = 0
+  for i in 0..<raw.length() {
+    if raw[i].to_int() == 34 {
+      if i > start {
+        sb.write_string(s.slice(start, i))
+      }
+      sb.write_string("'")
+      start = i + 1
+    }
+  }
+  if start < raw.length() {
+    sb.write_string(s.slice(start, raw.length()))
+  }
+  sb.to_string()
+}
+
+fn split_colon(s : String) -> Array[String] {
+  let out : Array[String] = []
+  let raw = s.to_bytes()
+  let mut start = 0
+  for i in 0..<raw.length() {
+    if raw[i].to_int() == 58 {
+      out.push(s.slice(start, i))
+      start = i + 1
+    }
+  }
+  out.push(s.slice(start, raw.length()))
+  out
+}
+
+/// `jobs.ts` `named`: how a job is named to its agent.
+pub fn named(job : base_codec::Json) -> String {
+  let name = match sessions_core::str_of(sessions_core::jget(job, "name")) {
+    Some(s) => s
+    None => ""
+  }
+  let id = match sessions_core::str_of(sessions_core::jget(job, "id")) {
+    Some(s) => s
+    None => ""
+  }
+  match sessions_core::jget(job, "port") {
+    Some(base_codec::Json::Num(p, _)) => {
+      "Service \"" + name + "\" (" + id + ", port " + p.to_int().to_string() + ")"
+    }
+    _ => "Job \"" + name + "\" (" + id + ")"
+  }
+}
+
+fn has_port(job : base_codec::Json) -> Bool {
+  match sessions_core::jget(job, "port") {
+    Some(base_codec::Json::Num(_, _)) => true
+    _ => false
+  }
+}
+
+/// `jobs.ts` `chatOf`: the chat a session key is, as an agent reads it.
+pub fn chat_of(session : String) -> String {
+  if session.starts_with("remote:") {
+    let parts = split_colon(session)
+    if parts.length() >= 4 {
+      let station = parts[2]
+      let short = chars_of(station, 12)
+      let sb = StringBuilder::new()
+      for i in 3..<parts.length() {
+        if i > 3 {
+          sb.write_string(":")
+        }
+        sb.write_string(parts[i])
+      }
+      return "chat " + sb.to_string() + " on station " + short
+    }
+  }
+  "chat " + session
+}
+
+/// Claims as Node keeps them (`jobs/screen.json`, `heldClaims`): those that hold the screen.
+pub fn claims_of_json(v : base_codec::Json) -> Array[admit::Claim] {
+  let out : Array[admit::Claim] = []
+  match v {
+    base_codec::Json::Arr(rows) => {
+      for i in 0..<rows.length() {
+        let c = rows[i]
+        match (
+          sessions_core::jget(c, "job"),
+          sessions_core::jget(c, "pid"),
+          sessions_core::jget(c, "at"),
+        ) {
+          (
+            Some(base_codec::Json::Str(job)),
+            Some(base_codec::Json::Num(pid, _)),
+            Some(base_codec::Json::Num(at, _)),
+          ) => {
+            if pid == pid.to_int().to_double() {
+              out.push(admit::Claim::{
+                job: job,
+                pid: pid.to_int(),
+                at: at,
+                held: true,
+                since: sessions_core::num_of(sessions_core::jget(c, "since")),
+              })
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn sort_waiting_by_queued_at(waiting : Array[admit::Waiting]) -> Unit {
+  for i in 1..<waiting.length() {
+    let cur = waiting[i]
+    let mut j = i - 1
+    while j >= 0 && cur.queued_at < waiting[j].queued_at {
+      waiting[j + 1] = waiting[j]
+      j = j - 1
+    }
+    waiting[j + 1] = cur
+  }
+}
+
+// ── Core RPC / tell / lock / timer primitives ──
+
+/// Run `f` as one step of the jobs': none other runs meanwhile.
+pub fn JobsCtx::locked_k[X](
+  self : JobsCtx,
+  f : ((effect::Exit[X]) -> Unit) -> Unit,
+  k : (effect::Exit[X]) -> Unit,
+) -> Unit {
+  self.state.lock.with_permit_k(f, k)
+}
+
+pub fn JobsCtx::jstore_k(
+  self : JobsCtx,
+  f : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.gen.rpc_k(self.host, jobs_key, "store." + f, args, self.dispatch.mirror_actor, k)
+}
+
+pub fn JobsCtx::jnode_k(
+  self : JobsCtx,
+  f : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.gen.rpc_k(self.host, jobs_key, "node." + f, args, self.dispatch.mirror_actor, k)
+}
+
+fn JobsCtx::tell(
+  self : JobsCtx,
+  key : String,
+  f : String,
+  args : Array[base_codec::Json],
+) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  (self.dispatch.mirror_actor)(key)
+  self.gen.say_node([
+    ("tell", sessions_core::jstr(f)),
+    ("actor", sessions_core::jstr(key)),
+    ("args", base_codec::json_arr(args)),
+  ])
+}
+
+fn JobsCtx::jlog(
+  self : JobsCtx,
+  level : String,
+  message : String,
+  fields : Array[(String, base_codec::Json)],
+) -> Unit {
+  self.tell(jobs_key, "log", [
+    sessions_core::jstr(level),
+    sessions_core::jstr(message),
+    base_codec::json_obj(fields),
+  ])
+}
+
+fn JobsCtx::after_action(self : JobsCtx, ms : Double, action : JobsTimerAction) -> Int {
+  if self.gen.counters.sealed {
+    return 0
+  }
+  let id = self.host.alloc_id()
+  self.state.timer_actions.set(id, (self.gen.counters.epoch, action))
+  let delay = if ms < 0.0 { 0.0 } else { ms }
+  self.gen.say_node([
+    ("after", sessions_core::jint(id)),
+    ("ms", sessions_core::jnum(delay)),
+  ])
+  id
+}
+
+/// Dispatch a Node `{"due": id}` event for `#jobs` timers using the current value-passed context.
+/// Returns `true` if `id` belonged to this generation's `#jobs` timer table.
+pub fn JobsCtx::handle_due(self : JobsCtx, id : Int) -> Bool {
+  let counters = self.gen.counters
+  if counters.sealed {
+    return false
+  }
+  match self.state.timer_actions.get(id) {
+    Some((epoch, action)) => {
+      if epoch != counters.epoch {
+        return false
+      }
+      let _ = self.state.timer_actions.remove(id)
+      counters.active = counters.active + 1
+      match action {
+        JobsTimerAction::LookLater => self.run_look_later()
+        JobsTimerAction::RestartService(job_id) => self.run_restart_service(job_id)
+      }
+      if !counters.sealed {
+        counters.active = counters.active - 1
+        counters.quiet()
+      }
+      true
+    }
+    None => false
+  }
+}
+
+/// Synchronously dispatches `remote_changed_k` (starting background `push_out` without awaiting
+/// inside the jobs lock, matching `wave8-plan.md` v5 §2.5.3).
+pub fn JobsCtx::remote_changed(self : JobsCtx, id : String, status : String) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  if id.starts_with("remote_") {
+    let task_id = id.slice(7, id.length())
+    (self.dispatch.remote_changed_k)(task_id, status)
+  }
+}
+
+/// A notice for a job's agent (`jobs.ts` `tell`): a remote task's is kept by its job and returned by Remote.
+fn JobsCtx::jtell_k(
+  self : JobsCtx,
+  job : base_codec::Json,
+  text : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let session = match sessions_core::str_of(sessions_core::jget(job, "sessionKey")) {
+    Some(s) => s
+    None => ""
+  }
+  if session.starts_with("remote:") {
+    let id = match sessions_core::str_of(sessions_core::jget(job, "id")) {
+      Some(s) => s
+      None => ""
+    }
+    self.remote_changed(id, "notify")
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  sessions_core::catch_k(
+    fn(bk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.jnode_k("notify", [sessions_core::jstr(session), sessions_core::jstr(text)], fn(
+        ex : effect::Exit[base_codec::Json],
+      ) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => bk(effect::Exit::Succeeded(()))
+          effect::Exit::Failed(e) => bk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => bk(effect::Exit::Interrupted)
+        }
+      })
+    },
+    fn(e : effect::EffectError, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.jlog("warn", "job notice not given", [
+        ("session", sessions_core::jstr(session)),
+        ("error", sessions_core::jstr(sessions_core::error_message(e))),
+      ])
+      rk(effect::Exit::Succeeded(()))
+    },
+    k,
+  )
+}
+
+// ── Public cross-subsystem entrypoints (`SessionDispatch`) ──
+
+/// Direct store lookup for `SessionDispatch.jstore_get_job_k`.
+pub fn JobsCtx::jstore_get_job_k(
+  self : JobsCtx,
+  id : String,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.jstore_k("getJob", [sessions_core::jstr(id)], k)
+}
+
+/// Locked `queue_of` for `SessionDispatch.queue_of_locked_k`.
+pub fn JobsCtx::queue_of_locked_k(
+  self : JobsCtx,
+  id : String,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.locked_k(fn(lk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+    self.queue_of_k(id, lk)
+  }, k)
+}
+
+/// Top-level `#jobs` call handler (1:1 `actors.mbt:886-899`).
+pub fn JobsCtx::handle_call(
+  self : JobsCtx,
+  id : Double,
+  method : String,
+  args : Array[base_codec::Json],
+) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  self.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.jobs_called_k(method, args, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(value) => {
+          self.gen.say_node([
+            ("returned", sessions_core::jnum(id)),
+            ("value", value),
+          ])
+          wk(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Failed(e) => {
+          let fields : Array[(String, base_codec::Json)] = [
+            ("returned", sessions_core::jnum(id)),
+            ("error", sessions_core::jstr(sessions_core::error_message(e))),
+          ]
+          match sessions_core::decode_asked_error(e) {
+            Some(a) => fields.push(("cause", a.cause))
+            None => ()
+          }
+          fields.push(("value", base_codec::json_null()))
+          self.gen.say_node(fields)
+          wk(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Interrupted => wk(effect::Exit::Interrupted)
+      }
+    })
+  })
+}
+
+/// What Node asks of the jobs (`mb-jobs.ts`): `method` with `args`.
+pub fn JobsCtx::jobs_called_k(
+  self : JobsCtx,
+  method : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  if self.gen.counters.sealed {
+    k(effect::Exit::Interrupted)
+    return
+  }
+  if method == "startId" {
+    self.locked_k(fn(lk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.start_id_k(args, lk)
+    }, k)
+    return
+  }
+  if method == "stop" {
+    let id = match sessions_core::str_of(Some(arg_at(args, 0))) {
+      Some(s) => s
+      None => ""
+    }
+    self.job_stop_k(id, k)
+    return
+  }
+  if method == "exited" {
+    let id = match sessions_core::str_of(Some(arg_at(args, 0))) {
+      Some(s) => s
+      None => ""
+    }
+    let pgid = match sessions_core::num_of(Some(arg_at(args, 1))) {
+      Some(n) => Some(n.to_int())
+      None => None
+    }
+    let code = match sessions_core::num_of(Some(arg_at(args, 2))) {
+      Some(n) => Some(n.to_int())
+      None => None
+    }
+    let ran_ms = match sessions_core::num_of(Some(arg_at(args, 3))) {
+      Some(n) => n
+      None => 0.0
+    }
+    self.locked_k(fn(lk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.ended_k(id, pgid, code, ran_ms, lk)
+    }, k)
+    return
+  }
+  if method == "relaunch" {
+    self.relaunch_k(k)
+    return
+  }
+  if method == "shutdown" {
+    self.state.closing = true
+    k(effect::Exit::Succeeded(base_codec::json_null()))
+    return
+  }
+  if method == "notified" {
+    let tok = arg_at(args, 0)
+    let raw_said = match sessions_core::str_of(Some(arg_at(args, 1))) {
+      Some(s) => s
+      None => ""
+    }
+    self.locked_k(fn(lk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.jstore_k("jobByToken", [tok], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(job) => {
+            if is_null(job) {
+              lk(effect::Exit::Failed(fail_asked("unknown job token")))
+              return
+            }
+            let said = chars_of(trim_space_mb(raw_said), 4000)
+            if said == "" {
+              lk(effect::Exit::Failed(fail_asked("nothing to say")))
+              return
+            }
+            let job_id_json = sessions_core::field_of(job, "id")
+            self.jstore_k("addJobNotice", [job_id_json, sessions_core::jstr(said)], fn(
+              ex2 : effect::Exit[base_codec::Json],
+            ) -> Unit {
+              match ex2 {
+                effect::Exit::Succeeded(_) => {
+                  self.jtell_k(job, named(job) + " says: " + said, fn(
+                    ex3 : effect::Exit[Unit],
+                  ) -> Unit {
+                    match ex3 {
+                      effect::Exit::Succeeded(_) => lk(effect::Exit::Succeeded(base_codec::json_null()))
+                      effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                    }
+                  })
+                }
+                effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+              }
+            })
+          }
+          effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+        }
+      })
+    }, k)
+    return
+  }
+  if method == "memorySeen" {
+    self.state.pressure = sessions_core::str_of(Some(arg_at(args, 0)))
+    k(effect::Exit::Succeeded(base_codec::json_null()))
+    return
+  }
+  if method == "queueOf" {
+    let id = match sessions_core::str_of(Some(arg_at(args, 0))) {
+      Some(s) => s
+      None => ""
+    }
+    self.queue_of_locked_k(id, k)
+    return
+  }
+  if method == "screenHolder" {
+    let except = sessions_core::str_of(Some(arg_at(args, 0)))
+    self.locked_k(fn(lk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.screen_holder_k(except, fn(ex : effect::Exit[Option[String]]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(Some(s)) => lk(effect::Exit::Succeeded(sessions_core::jstr(s)))
+          effect::Exit::Succeeded(None) => lk(effect::Exit::Succeeded(base_codec::json_null()))
+          effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+        }
+      })
+    }, k)
+    return
+  }
+  if method == "screenAsked" {
+    let token = match sessions_core::str_of(Some(arg_at(args, 0))) {
+      Some(s) => s
+      None => ""
+    }
+    let ask = match sessions_core::str_of(Some(arg_at(args, 1))) {
+      Some(s) => s
+      None => ""
+    }
+    let pid = match sessions_core::num_of(Some(arg_at(args, 2))) {
+      Some(n) => n.to_int()
+      None => 0
+    }
+    self.locked_k(fn(lk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.screen_asked_k(token, ask, pid, lk)
+    }, k)
+    return
+  }
+  if method == "claims" {
+    self.state.claims = claims_of_json(arg_at(args, 0))
+    k(effect::Exit::Succeeded(base_codec::json_null()))
+    return
+  }
+  k(effect::Exit::Failed(fail_asked("no jobs method " + method)))
+}
+
+// ── startId ──
+
+fn JobsCtx::start_id_k(
+  self : JobsCtx,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let session = match sessions_core::str_of(Some(arg_at(args, 0))) {
+    Some(s) => s
+    None => ""
+  }
+  let name = match sessions_core::str_of(Some(arg_at(args, 1))) {
+    Some(s) => s
+    None => ""
+  }
+  let command = match sessions_core::str_of(Some(arg_at(args, 2))) {
+    Some(s) => s
+    None => ""
+  }
+  let cwd = match sessions_core::str_of(Some(arg_at(args, 3))) {
+    Some(s) => s
+    None => ""
+  }
+  let port = arg_at(args, 4)
+  let watch = sessions_core::truthy(arg_at(args, 5))
+  let id = arg_at(args, 6)
+  let checked = sessions_core::truthy(arg_at(args, 7))
+  let queue = arg_at(args, 8)
+  let sandbox = arg_at(args, 9)
+
+  let check_after_id = fn() -> Unit {
+    if trim_space_mb(command) == "" {
+      k(effect::Exit::Failed(fail_asked("command is empty")))
+      return
+    }
+    let screen = is_true(sessions_core::jget(queue, "screen"))
+    let small = is_true(sessions_core::jget(queue, "small"))
+    if screen && small {
+      k(effect::Exit::Failed(fail_asked("a small task cannot use the screen")))
+      return
+    }
+    let after_dir = fn() -> Unit {
+      let port_is_num = match port {
+        base_codec::Json::Num(p, _) => {
+          if p < 1024.0 {
+            k(effect::Exit::Failed(fail_asked("a service's port is 1024 or above")))
+            return
+          }
+          true
+        }
+        _ => false
+      }
+      if watch && port_is_num {
+        k(effect::Exit::Failed(fail_asked("a watch is a job, not a web service: give it no port")))
+        return
+      }
+      if !is_null(sandbox) && (port_is_num || !is_null(queue)) {
+        k(effect::Exit::Failed(fail_asked("a sandbox's task is neither a service nor queued here")))
+        return
+      }
+      self.jstore_k(
+        "runningJobsAtLeast",
+        [sessions_core::jstr(session), sessions_core::jnum(MAX_RUNNING.to_double())],
+        fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(at_least) => {
+              if sessions_core::truthy(at_least) {
+                k(effect::Exit::Failed(fail_asked(
+                  "this session runs " + MAX_RUNNING.to_string() + " jobs already; stop some first",
+                )))
+                return
+              }
+              let create_job = fn() -> Unit {
+                self.jnode_k(
+                  "newJob",
+                  [
+                    sessions_core::jstr(session),
+                    sessions_core::jstr(name),
+                    sessions_core::jstr(command),
+                    sessions_core::jstr(cwd),
+                    port,
+                    sessions_core::jbool(watch),
+                    id,
+                    queue,
+                    sandbox,
+                  ],
+                  fn(ex_new : effect::Exit[base_codec::Json]) -> Unit {
+                    match ex_new {
+                      effect::Exit::Succeeded(job) => {
+                        let job_id = match sessions_core::str_of(sessions_core::jget(job, "id")) {
+                          Some(s) => s
+                          None => ""
+                        }
+                        if !is_null(queue) {
+                          self.start_next_k(fn(ex_sn : effect::Exit[Unit]) -> Unit {
+                            match ex_sn {
+                              effect::Exit::Succeeded(_) => {
+                                self.jstore_k("getJob", [sessions_core::jstr(job_id)], fn(
+                                  ex_get : effect::Exit[base_codec::Json],
+                                ) -> Unit {
+                                  match ex_get {
+                                    effect::Exit::Succeeded(now_raw) => {
+                                      let now = if is_null(now_raw) { job } else { now_raw }
+                                      if is_true(sessions_core::jget(now, "queued")) {
+                                        let why_j = match self.state.why {
+                                          Some(w) => sessions_core::jstr(w)
+                                          None => base_codec::json_null()
+                                        }
+                                        self.jlog("info", "job queued", [
+                                          ("job", sessions_core::jstr(job_id)),
+                                          ("session", sessions_core::jstr(session)),
+                                          ("name", sessions_core::field_of(job, "name")),
+                                          ("why", why_j),
+                                        ])
+                                      }
+                                      k(effect::Exit::Succeeded(now))
+                                    }
+                                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  }
+                                })
+                              }
+                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            }
+                          })
+                          return
+                        }
+                        sessions_core::catch_k(
+                          fn(sk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                            self.spawn_job_k(job, false, base_codec::json_obj([]), sk)
+                          },
+                          fn(e : effect::EffectError, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                            self.jstore_k(
+                              "jobEnded",
+                              [
+                                sessions_core::jstr(job_id),
+                                sessions_core::jstr("failed"),
+                                base_codec::json_null(),
+                              ],
+                              fn(ex_end : effect::Exit[base_codec::Json]) -> Unit {
+                                match ex_end {
+                                  effect::Exit::Succeeded(_) => rk(effect::Exit::Failed(e))
+                                  effect::Exit::Failed(e2) => rk(effect::Exit::Failed(e2))
+                                  effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                                }
+                              },
+                            )
+                          },
+                          fn(ex_sp : effect::Exit[Unit]) -> Unit {
+                            match ex_sp {
+                              effect::Exit::Succeeded(_) => {
+                                self.jlog("info", "job started", [
+                                  ("job", sessions_core::jstr(job_id)),
+                                  ("session", sessions_core::jstr(session)),
+                                  ("name", sessions_core::field_of(job, "name")),
+                                  ("port", port),
+                                ])
+                                self.jstore_k("getJob", [sessions_core::jstr(job_id)], fn(
+                                  ex_get : effect::Exit[base_codec::Json],
+                                ) -> Unit {
+                                  match ex_get {
+                                    effect::Exit::Succeeded(now_raw) => {
+                                      let now = if is_null(now_raw) { job } else { now_raw }
+                                      k(effect::Exit::Succeeded(now))
+                                    }
+                                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  }
+                                })
+                              }
+                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            }
+                          },
+                        )
+                      }
+                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    }
+                  },
+                )
+              }
+              if port_is_num {
+                self.jstore_k("jobAtPort", [port], fn(
+                  ex_p : effect::Exit[base_codec::Json],
+                ) -> Unit {
+                  match ex_p {
+                    effect::Exit::Succeeded(taken) => {
+                      if !is_null(taken) {
+                        let port_str = base_codec::json_stringify(builders_core::normalize_json(port))
+                        k(effect::Exit::Failed(fail_asked(
+                          "port " + port_str + " is " + named(taken) + "'s already",
+                        )))
+                        return
+                      }
+                      create_job()
+                    }
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  }
+                })
+              } else {
+                create_job()
+              }
+            }
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          }
+        },
+      )
+    }
+    if !checked {
+      self.jnode_k("isDir", [sessions_core::jstr(cwd)], fn(
+        ex_d : effect::Exit[base_codec::Json],
+      ) -> Unit {
+        match ex_d {
+          effect::Exit::Succeeded(ok) => {
+            if !sessions_core::truthy(ok) {
+              k(effect::Exit::Failed(fail_asked("no such directory: " + cwd)))
+              return
+            }
+            after_dir()
+          }
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      })
+    } else {
+      after_dir()
+    }
+  }
+
+  match id {
+    base_codec::Json::Str(_) => {
+      self.jstore_k("getJob", [id], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(job) => {
+            if !is_null(job) {
+              k(effect::Exit::Succeeded(job))
+              return
+            }
+            check_after_id()
+          }
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      })
+    }
+    _ => check_after_id()
+  }
+}
+
+fn JobsCtx::spawn_job_k(
+  self : JobsCtx,
+  job : base_codec::Json,
+  restarted : Bool,
+  extra : base_codec::Json,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let id = match sessions_core::str_of(sessions_core::jget(job, "id")) {
+    Some(s) => s
+    None => ""
+  }
+  self.jnode_k(
+    "spawn",
+    [sessions_core::jstr(id), sessions_core::jbool(restarted), extra],
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(res) => {
+          let pgid = match sessions_core::num_of(Some(res)) {
+            Some(n) => n.to_int()
+            None => 0
+          }
+          self.state.running.set(id, Run::{ pgid: pgid, stopping: false })
+          k(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+fn JobsCtx::stored_now_k(
+  self : JobsCtx,
+  k : (effect::Exit[Double]) -> Unit,
+) -> Unit {
+  self.jstore_k("now", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(v) => {
+        let n = match sessions_core::num_of(Some(v)) {
+          Some(x) => x
+          None => self.gen.counters.now
+        }
+        k(effect::Exit::Succeeded(n))
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn JobsCtx::line_k(
+  self : JobsCtx,
+  k : (effect::Exit[(Array[admit::Waiting], Array[admit::Started])]) -> Unit,
+) -> Unit {
+  self.jstore_k("remoteQueueJobs", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(v) => {
+        let waiting : Array[admit::Waiting] = []
+        let running : Array[admit::Started] = []
+        match v {
+          base_codec::Json::Arr(rows) => {
+            for i in 0..<rows.length() {
+              let j = rows[i]
+              let id = match sessions_core::str_of(sessions_core::jget(j, "id")) {
+                Some(s) => s
+                None => ""
+              }
+              let screen = is_true(sessions_core::jget(j, "screen"))
+              let small = is_true(sessions_core::jget(j, "small"))
+              if is_true(sessions_core::jget(j, "queued")) {
+                let sess = match sessions_core::str_of(sessions_core::jget(j, "sessionKey")) {
+                  Some(s) => s
+                  None => ""
+                }
+                let qat = match sessions_core::num_of(sessions_core::jget(j, "startedAt")) {
+                  Some(n) => n
+                  None => 0.0
+                }
+                waiting.push(admit::Waiting::{
+                  id: id,
+                  session: sess,
+                  screen: screen,
+                  queued_at: qat,
+                  small: small,
+                })
+              } else {
+                running.push(admit::Started::{
+                  id: id,
+                  screen: screen,
+                  small: small,
+                })
+              }
+            }
+          }
+          _ => ()
+        }
+        sort_waiting_by_queued_at(waiting)
+        k(effect::Exit::Succeeded((waiting, running)))
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn JobsCtx::chosen_k(
+  self : JobsCtx,
+  k : (effect::Exit[Option[admit::Picked]]) -> Unit,
+) -> Unit {
+  self.line_k(fn(ex : effect::Exit[(Array[admit::Waiting], Array[admit::Started])]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded((waiting, running)) => {
+        let chosen = admit::pick(
+          waiting,
+          running,
+          self.state.pressure,
+          self.state.person,
+          fn(s : String) -> Option[Double] { self.state.last_of.get(s) },
+          admit::claims_held(self.state.claims),
+        )
+        self.state.why = match chosen {
+          Some(admit::Picked::Wait(w)) => Some(w)
+          _ => None
+        }
+        k(effect::Exit::Succeeded(chosen))
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn JobsCtx::watch_queue(self : JobsCtx) -> Unit {
+  if self.state.looking || self.state.closing || self.gen.counters.sealed {
+    return
+  }
+  self.state.looking = true
+  self.look_later()
+}
+
+fn JobsCtx::look_later(self : JobsCtx) -> Unit {
+  let _ = self.after_action(LOOK_MS, JobsTimerAction::LookLater)
+}
+
+fn JobsCtx::run_look_later(self : JobsCtx) -> Unit {
+  self.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sessions_core::catch_k(
+      fn(bk : (effect::Exit[Bool]) -> Unit) -> Unit {
+        if self.state.closing {
+          bk(effect::Exit::Succeeded(false))
+          return
+        }
+        sessions_core::catch_k(
+          fn(pk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+            self.jnode_k("pressure", [], pk)
+          },
+          fn(_e : effect::EffectError, rk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+            rk(effect::Exit::Succeeded(base_codec::json_null()))
+          },
+          fn(ex_p : effect::Exit[base_codec::Json]) -> Unit {
+            match ex_p {
+              effect::Exit::Succeeded(pressure) => {
+                self.state.pressure = sessions_core::str_of(Some(pressure))
+                self.look_person_k(fn(ex_lp : effect::Exit[Unit]) -> Unit {
+                  match ex_lp {
+                    effect::Exit::Succeeded(_) => {
+                      self.locked_k(fn(lk : (effect::Exit[Bool]) -> Unit) -> Unit {
+                        self.start_next_k(fn(ex_sn : effect::Exit[Unit]) -> Unit {
+                          match ex_sn {
+                            effect::Exit::Succeeded(_) => {
+                              self.line_k(fn(
+                                ex_ln : effect::Exit[(Array[admit::Waiting], Array[admit::Started])],
+                              ) -> Unit {
+                                match ex_ln {
+                                  effect::Exit::Succeeded((waiting, _)) => {
+                                    lk(effect::Exit::Succeeded(!self.state.closing && waiting.length() > 0))
+                                  }
+                                  effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+                                  effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                                }
+                              })
+                            }
+                            effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                          }
+                        })
+                      }, bk)
+                    }
+                    effect::Exit::Failed(e) => bk(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => bk(effect::Exit::Interrupted)
+                  }
+                })
+              }
+              effect::Exit::Failed(e) => bk(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => bk(effect::Exit::Interrupted)
+            }
+          },
+        )
+      },
+      fn(_e : effect::EffectError, rk : (effect::Exit[Bool]) -> Unit) -> Unit {
+        rk(effect::Exit::Succeeded(false))
+      },
+      fn(ex_go : effect::Exit[Bool]) -> Unit {
+        match ex_go {
+          effect::Exit::Succeeded(go_on) => {
+            if go_on {
+              self.look_later()
+            } else {
+              self.state.looking = false
+              self.state.why = None
+            }
+            wk(effect::Exit::Succeeded(()))
+          }
+          effect::Exit::Failed(_) => {
+            self.state.looking = false
+            self.state.why = None
+            wk(effect::Exit::Succeeded(()))
+          }
+          effect::Exit::Interrupted => {
+            self.state.looking = false
+            self.state.why = None
+            wk(effect::Exit::Interrupted)
+          }
+        }
+      },
+    )
+  })
+}
+
+fn JobsCtx::look_person_k(
+  self : JobsCtx,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if self.state.reading_person {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  self.state.reading_person = true
+  sessions_core::catch_k(
+    fn(bk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.jnode_k("inputIdle", [], bk)
+    },
+    fn(_e : effect::EffectError, rk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      rk(effect::Exit::Succeeded(base_codec::json_null()))
+    },
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      self.state.reading_person = false
+      match ex {
+        effect::Exit::Succeeded(idle) => {
+          self.state.person = match idle {
+            base_codec::Json::Num(n, _) => n < admit::PERSON_IDLE_MS
+            _ => false
+          }
+          k(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+fn JobsCtx::start_next_k(
+  self : JobsCtx,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if self.state.closing {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  self.prune_k(fn(ex1 : effect::Exit[Unit]) -> Unit {
+    match ex1 {
+      effect::Exit::Succeeded(_) => {
+        self.admit_next_k(fn(ex2 : effect::Exit[Unit]) -> Unit {
+          match ex2 {
+            effect::Exit::Succeeded(_) => {
+              self.line_k(fn(
+                ex3 : effect::Exit[(Array[admit::Waiting], Array[admit::Started])],
+              ) -> Unit {
+                match ex3 {
+                  effect::Exit::Succeeded((waiting, running)) => {
+                    let mut any_small_w = false
+                    for i in 0..<waiting.length() {
+                      if waiting[i].small {
+                        any_small_w = true
+                        break
+                      }
+                    }
+                    let mut any_small_r = false
+                    for i in 0..<running.length() {
+                      if running[i].small {
+                        any_small_r = true
+                        break
+                      }
+                    }
+                    let after_second = fn() -> Unit {
+                      self.serve_k(fn(ex4 : effect::Exit[Unit]) -> Unit {
+                        match ex4 {
+                          effect::Exit::Succeeded(_) => self.tell_long_k(k)
+                          other => k(other)
+                        }
+                      })
+                    }
+                    if any_small_w && !any_small_r {
+                      self.admit_next_k(fn(ex_a2 : effect::Exit[Unit]) -> Unit {
+                        match ex_a2 {
+                          effect::Exit::Succeeded(_) => after_second()
+                          other => k(other)
+                        }
+                      })
+                    } else {
+                      after_second()
+                    }
+                  }
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                }
+              })
+            }
+            other => k(other)
+          }
+        })
+      }
+      other => k(other)
+    }
+  })
+}
+
+fn JobsCtx::admit_next_k(
+  self : JobsCtx,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  self.chosen_k(fn(ex : effect::Exit[Option[admit::Picked]]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(chosen) => {
+        match chosen {
+          Some(admit::Picked::Wait(_)) => {
+            self.watch_queue()
+            k(effect::Exit::Succeeded(()))
+            return
+          }
+          Some(admit::Picked::Start(w)) => {
+            self.jstore_k("getJob", [sessions_core::jstr(w.id)], fn(
+              ex_job : effect::Exit[base_codec::Json],
+            ) -> Unit {
+              match ex_job {
+                effect::Exit::Succeeded(job) => {
+                  if is_null(job) ||
+                  !opt_str_is(sessions_core::str_of(sessions_core::jget(job, "state")), "running") ||
+                  !is_true(sessions_core::jget(job, "queued"))
+                  {
+                    k(effect::Exit::Succeeded(()))
+                    return
+                  }
+                  self.state.last_of.set(w.session, self.gen.counters.now)
+                  let extra = if is_true(sessions_core::jget(job, "small")) {
+                    base_codec::json_obj([
+                      ("STILLFAIL_CPUS", sessions_core::jstr("1")),
+                      ("MAKEFLAGS", sessions_core::jstr("-j1")),
+                      ("CARGO_BUILD_JOBS", sessions_core::jstr("1")),
+                      ("CMAKE_BUILD_PARALLEL_LEVEL", sessions_core::jstr("1")),
+                    ])
+                  } else {
+                    base_codec::json_obj([])
+                  }
+                  let check_more = fn() -> Unit {
+                    self.line_k(fn(
+                      ex_l : effect::Exit[(Array[admit::Waiting], Array[admit::Started])],
+                    ) -> Unit {
+                      match ex_l {
+                        effect::Exit::Succeeded((waiting, _)) => {
+                          if waiting.length() > 0 {
+                            self.watch_queue()
+                          }
+                          k(effect::Exit::Succeeded(()))
+                        }
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                      }
+                    })
+                  }
+                  sessions_core::catch_k(
+                    fn(sk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      self.spawn_job_k(job, false, extra, fn(ex_sp : effect::Exit[Unit]) -> Unit {
+                        match ex_sp {
+                          effect::Exit::Succeeded(_) => {
+                            self.jlog("info", "queued job started", [
+                              ("job", sessions_core::jstr(w.id)),
+                              ("session", sessions_core::field_of(job, "sessionKey")),
+                              ("name", sessions_core::field_of(job, "name")),
+                            ])
+                            sk(effect::Exit::Succeeded(()))
+                          }
+                          other => sk(other)
+                        }
+                      })
+                    },
+                    fn(e : effect::EffectError, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      let m = sessions_core::error_message(e)
+                      self.jlog("warn", "queued job not started", [
+                        ("job", sessions_core::jstr(w.id)),
+                        ("error", sessions_core::jstr(m)),
+                      ])
+                      sessions_core::catch_k(
+                        fn(ak : (effect::Exit[Unit]) -> Unit) -> Unit {
+                          self.jnode_k(
+                            "append",
+                            [
+                              sessions_core::field_of(job, "log"),
+                              sessions_core::jstr("[still.fail] could not start: " + m + "\n"),
+                            ],
+                            fn(ex_a : effect::Exit[base_codec::Json]) -> Unit {
+                              match ex_a {
+                                effect::Exit::Succeeded(_) => ak(effect::Exit::Succeeded(()))
+                                effect::Exit::Failed(e2) => ak(effect::Exit::Failed(e2))
+                                effect::Exit::Interrupted => ak(effect::Exit::Interrupted)
+                              }
+                            },
+                          )
+                        },
+                        fn(_e2 : effect::EffectError, rk2 : (effect::Exit[Unit]) -> Unit) -> Unit {
+                          rk2(effect::Exit::Succeeded(()))
+                        },
+                        fn(ex_ap : effect::Exit[Unit]) -> Unit {
+                          match ex_ap {
+                            effect::Exit::Succeeded(_) => {
+                              self.jstore_k(
+                                "jobEnded",
+                                [
+                                  sessions_core::jstr(w.id),
+                                  sessions_core::jstr("failed"),
+                                  base_codec::json_null(),
+                                ],
+                                fn(ex_je : effect::Exit[base_codec::Json]) -> Unit {
+                                  match ex_je {
+                                    effect::Exit::Succeeded(_) => {
+                                      self.jtell_k(
+                                        job,
+                                        named(job) + " could not be started: " + m,
+                                        rk,
+                                      )
+                                    }
+                                    effect::Exit::Failed(e3) => rk(effect::Exit::Failed(e3))
+                                    effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                                  }
+                                },
+                              )
+                            }
+                            other => rk(other)
+                          }
+                        },
+                      )
+                    },
+                    fn(ex_done : effect::Exit[Unit]) -> Unit {
+                      match ex_done {
+                        effect::Exit::Succeeded(_) => check_more()
+                        other => k(other)
+                      }
+                    },
+                  )
+                }
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              }
+            })
+          }
+          None => k(effect::Exit::Succeeded(()))
+        }
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn JobsCtx::queue_of_k(
+  self : JobsCtx,
+  id : String,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.jstore_k("getJob", [sessions_core::jstr(id)], fn(
+    ex_job : effect::Exit[base_codec::Json],
+  ) -> Unit {
+    match ex_job {
+      effect::Exit::Succeeded(job) => {
+        if is_null(job) ||
+        !opt_str_is(sessions_core::str_of(sessions_core::jget(job, "state")), "running") ||
+        !is_true(sessions_core::jget(job, "queued"))
+        {
+          k(effect::Exit::Succeeded(base_codec::json_null()))
+          return
+        }
+        self.line_k(fn(
+          ex_ln : effect::Exit[(Array[admit::Waiting], Array[admit::Started])],
+        ) -> Unit {
+          match ex_ln {
+            effect::Exit::Succeeded((waiting, running)) => {
+              let mut found_idx = -1
+              for i in 0..<waiting.length() {
+                if waiting[i].id == id {
+                  found_idx = i
+                  break
+                }
+              }
+              if found_idx < 0 {
+                k(effect::Exit::Succeeded(base_codec::json_null()))
+                return
+              }
+              let task = waiting[found_idx]
+              let same_kind : Array[admit::Waiting] = []
+              for i in 0..<waiting.length() {
+                if waiting[i].small == task.small {
+                  same_kind.push(waiting[i])
+                }
+              }
+              let place_opt = admit::place(same_kind, id, fn(s : String) -> Option[Double] {
+                self.state.last_of.get(s)
+              })
+              let p = match place_opt {
+                Some(x) => x
+                None => {
+                  k(effect::Exit::Succeeded(base_codec::json_null()))
+                  return
+                }
+              }
+              let why = match admit::pick(
+                [task],
+                running,
+                self.state.pressure,
+                self.state.person,
+                fn(s : String) -> Option[Double] { self.state.last_of.get(s) },
+                admit::claims_held(self.state.claims),
+              ) {
+                Some(admit::Picked::Wait(w)) => Some(w)
+                _ => None
+              }
+              let pressure_j = match self.state.pressure {
+                Some(pr) => sessions_core::jstr(pr)
+                None => base_codec::json_null()
+              }
+              let why_j = match why {
+                Some(w) => sessions_core::jstr(w)
+                None => base_codec::json_null()
+              }
+              let out : Array[(String, base_codec::Json)] = [
+                ("place", sessions_core::jnum(p.to_double())),
+                ("why", why_j),
+                ("decision", base_codec::json_obj([("memoryPressure", pressure_j)])),
+              ]
+              if opt_str_is(why, "screen") {
+                self.screen_holder_k(Some(id), fn(ex_h : effect::Exit[Option[String]]) -> Unit {
+                  match ex_h {
+                    effect::Exit::Succeeded(Some(h)) => {
+                      out.push(("holder", sessions_core::jstr(h)))
+                      k(effect::Exit::Succeeded(base_codec::json_obj(out)))
+                    }
+                    effect::Exit::Succeeded(None) => {
+                      k(effect::Exit::Succeeded(base_codec::json_obj(out)))
+                    }
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  }
+                })
+              } else {
+                k(effect::Exit::Succeeded(base_codec::json_obj(out)))
+              }
+            }
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          }
+        })
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn JobsCtx::format_holder_k(
+  self : JobsCtx,
+  id : String,
+  since : Double,
+  now : Double,
+  k : (effect::Exit[Option[String]]) -> Unit,
+) -> Unit {
+  self.jstore_k("getJob", [sessions_core::jstr(id)], fn(
+    ex : effect::Exit[base_codec::Json],
+  ) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(job) => {
+        if is_null(job) {
+          k(effect::Exit::Succeeded(None))
+          return
+        }
+        let raw_name = match sessions_core::str_of(sessions_core::jget(job, "name")) {
+          Some(s) => s
+          None => ""
+        }
+        let name = replace_dquotes(raw_name)
+        let sess = match sessions_core::str_of(sessions_core::jget(job, "sessionKey")) {
+          Some(s) => s
+          None => ""
+        }
+        let m = round_double((now - since) / 60000.0)
+        let mins = if m < 1.0 { 1 } else { m.to_int() }
+        k(effect::Exit::Succeeded(Some(
+          name + " (" + id + ") of " + chat_of(sess) + ", for " + mins.to_string() + " min",
+        )))
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn JobsCtx::screen_holder_k(
+  self : JobsCtx,
+  except : Option[String],
+  k : (effect::Exit[Option[String]]) -> Unit,
+) -> Unit {
+  self.stored_now_k(fn(ex_now : effect::Exit[Double]) -> Unit {
+    match ex_now {
+      effect::Exit::Succeeded(now) => {
+        let claims = self.state.claims
+        let mut ci = 0
+        let mut found_holder : Option[String] = None
+        sessions_core::iter_sync_k(
+          fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+            while ci < claims.length() {
+              let c = claims[ci]
+              ci = ci + 1
+              if c.held && !opt_str_eq(Some(c.job), except) {
+                let since = match c.since {
+                  Some(s) => s
+                  None => c.at
+                }
+                self.format_holder_k(c.job, since, now, fn(
+                  ex_f : effect::Exit[Option[String]],
+                ) -> Unit {
+                  match ex_f {
+                    effect::Exit::Succeeded(Some(s)) => {
+                      found_holder = Some(s)
+                      sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                    }
+                    effect::Exit::Succeeded(None) => {
+                      sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                    }
+                    effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                  }
+                })
+                return
+              }
+            }
+            sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+          },
+          fn(ex_c : effect::Exit[Unit]) -> Unit {
+            match ex_c {
+              effect::Exit::Succeeded(_) => {
+                match found_holder {
+                  Some(s) => {
+                    k(effect::Exit::Succeeded(Some(s)))
+                    return
+                  }
+                  None => ()
+                }
+                self.line_k(fn(
+                  ex_ln : effect::Exit[(Array[admit::Waiting], Array[admit::Started])],
+                ) -> Unit {
+                  match ex_ln {
+                    effect::Exit::Succeeded((_, running)) => {
+                      let mut ri = 0
+                      let mut run_holder : Option[String] = None
+                      let mut run_returned = false
+                      sessions_core::iter_sync_k(
+                        fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+                          while ri < running.length() {
+                            let r = running[ri]
+                            ri = ri + 1
+                            if r.screen && !opt_str_eq(Some(r.id), except) {
+                              self.jstore_k("getJob", [sessions_core::jstr(r.id)], fn(
+                                ex_j : effect::Exit[base_codec::Json],
+                              ) -> Unit {
+                                match ex_j {
+                                  effect::Exit::Succeeded(job) => {
+                                    if !is_null(job) {
+                                      let since = match sessions_core::num_of(sessions_core::jget(job, "startedAt")) {
+                                        Some(s) => s
+                                        None => now
+                                      }
+                                      self.format_holder_k(r.id, since, now, fn(
+                                        ex_f : effect::Exit[Option[String]],
+                                      ) -> Unit {
+                                        match ex_f {
+                                          effect::Exit::Succeeded(res) => {
+                                            run_holder = res
+                                            run_returned = true
+                                            sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                                          }
+                                          effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                          effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                        }
+                                      })
+                                    } else {
+                                      sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                                    }
+                                  }
+                                  effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                  effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                }
+                              })
+                              return
+                            }
+                          }
+                          sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                        },
+                        fn(ex_r : effect::Exit[Unit]) -> Unit {
+                          match ex_r {
+                            effect::Exit::Succeeded(_) => {
+                              if run_returned {
+                                k(effect::Exit::Succeeded(run_holder))
+                              } else if self.state.person {
+                                k(effect::Exit::Succeeded(Some("a person using this machine")))
+                              } else {
+                                k(effect::Exit::Succeeded(None))
+                              }
+                            }
+                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          }
+                        },
+                      )
+                    }
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  }
+                })
+              }
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          },
+        )
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn JobsCtx::screen_asked_k(
+  self : JobsCtx,
+  token : String,
+  ask : String,
+  pid : Int,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.jstore_k("jobByToken", [sessions_core::jstr(token)], fn(
+    ex_job : effect::Exit[base_codec::Json],
+  ) -> Unit {
+    match ex_job {
+      effect::Exit::Succeeded(job) => {
+        if is_null(job) {
+          k(effect::Exit::Failed(fail_asked("unknown job token")))
+          return
+        }
+        if !opt_str_is(sessions_core::str_of(sessions_core::jget(job, "state")), "running") ||
+        is_true(sessions_core::jget(job, "queued"))
+        {
+          k(effect::Exit::Failed(fail_asked(named(job) + " is not running")))
+          return
+        }
+        let id = match sessions_core::str_of(sessions_core::jget(job, "id")) {
+          Some(s) => s
+          None => ""
+        }
+        if ask == "give" {
+          let kept : Array[admit::Claim] = []
+          for i in 0..<self.state.claims.length() {
+            let c = self.state.claims[i]
+            if !(c.job == id && c.pid == pid) {
+              kept.push(c)
+            }
+          }
+          self.state.claims = kept
+          self.keep_claims_k(fn(ex_kc : effect::Exit[Unit]) -> Unit {
+            match ex_kc {
+              effect::Exit::Succeeded(_) => {
+                self.start_next_k(fn(ex_sn : effect::Exit[Unit]) -> Unit {
+                  match ex_sn {
+                    effect::Exit::Succeeded(_) => {
+                      k(effect::Exit::Succeeded(
+                        base_codec::json_obj([("screen", sessions_core::jstr("given"))]),
+                      ))
+                    }
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  }
+                })
+              }
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          })
+          return
+        }
+        self.jnode_k("pidAlive", [sessions_core::jnum(pid.to_double())], fn(
+          ex_pa : effect::Exit[base_codec::Json],
+        ) -> Unit {
+          match ex_pa {
+            effect::Exit::Succeeded(alive) => {
+              if !sessions_core::truthy(alive) {
+                k(effect::Exit::Failed(fail_asked(
+                  "no process " + pid.to_string() + " on this machine",
+                )))
+                return
+              }
+              let mut has_mine = false
+              for i in 0..<self.state.claims.length() {
+                if self.state.claims[i].job == id && self.state.claims[i].pid == pid {
+                  has_mine = true
+                  break
+                }
+              }
+              let after_claim = fn() -> Unit {
+                self.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                  sessions_core::catch_k(
+                    fn(bk : (effect::Exit[Unit]) -> Unit) -> Unit { self.look_person_k(bk) },
+                    fn(_e : effect::EffectError, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      rk(effect::Exit::Succeeded(()))
+                    },
+                    wk,
+                  )
+                })
+                self.start_next_k(fn(ex_sn : effect::Exit[Unit]) -> Unit {
+                  match ex_sn {
+                    effect::Exit::Succeeded(_) => {
+                      let mut wait_idx = -1
+                      let mut wpos = 0
+                      for i in 0..<self.state.claims.length() {
+                        let c = self.state.claims[i]
+                        if !c.held {
+                          if c.job == id && c.pid == pid {
+                            wait_idx = wpos
+                            break
+                          }
+                          wpos = wpos + 1
+                        }
+                      }
+                      if wait_idx < 0 {
+                        k(effect::Exit::Succeeded(
+                          base_codec::json_obj([("screen", sessions_core::jstr("yours"))]),
+                        ))
+                      } else {
+                        self.screen_holder_k(Some(id), fn(
+                          ex_h : effect::Exit[Option[String]],
+                        ) -> Unit {
+                          match ex_h {
+                            effect::Exit::Succeeded(who_opt) => {
+                              let who = match who_opt {
+                                Some(s) => sessions_core::jstr(s)
+                                None => base_codec::json_null()
+                              }
+                              k(effect::Exit::Succeeded(base_codec::json_obj([
+                                ("screen", sessions_core::jstr("waiting")),
+                                ("place", sessions_core::jnum((wait_idx + 1).to_double())),
+                                ("who", who),
+                              ])))
+                            }
+                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          }
+                        })
+                      }
+                    }
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  }
+                })
+              }
+              if !has_mine {
+                self.stored_now_k(fn(ex_now : effect::Exit[Double]) -> Unit {
+                  match ex_now {
+                    effect::Exit::Succeeded(now) => {
+                      self.state.claims.push(admit::Claim::{
+                        job: id,
+                        pid: pid,
+                        at: now,
+                        held: false,
+                        since: None,
+                      })
+                      after_claim()
+                    }
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  }
+                })
+              } else {
+                after_claim()
+              }
+            }
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          }
+        })
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn JobsCtx::prune_k(self : JobsCtx, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  let claims : Array[admit::Claim] = []
+  for i in 0..<self.state.claims.length() {
+    claims.push(self.state.claims[i])
+  }
+  let kept : Array[admit::Claim] = []
+  let mut idx = 0
+  sessions_core::iter_sync_k(
+    fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      if idx >= claims.length() {
+        sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+        return
+      }
+      let c = claims[idx]
+      idx = idx + 1
+      self.jstore_k("getJob", [sessions_core::jstr(c.job)], fn(
+        ex_j : effect::Exit[base_codec::Json],
+      ) -> Unit {
+        match ex_j {
+          effect::Exit::Succeeded(job) => {
+            if opt_str_is(sessions_core::str_of(sessions_core::jget(job, "state")), "running") &&
+            !is_true(sessions_core::jget(job, "queued"))
+            {
+              self.jnode_k("pidAlive", [sessions_core::jnum(c.pid.to_double())], fn(
+                ex_p : effect::Exit[base_codec::Json],
+              ) -> Unit {
+                match ex_p {
+                  effect::Exit::Succeeded(alive) => {
+                    if sessions_core::truthy(alive) {
+                      kept.push(c)
+                    }
+                    sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                  }
+                  effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                }
+              })
+            } else {
+              sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+            }
+          }
+          effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+        }
+      })
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          if kept.length() == self.state.claims.length() {
+            k(effect::Exit::Succeeded(()))
+            return
+          }
+          self.state.claims = kept
+          self.keep_claims_k(k)
+        }
+        other => k(other)
+      }
+    },
+  )
+}
+
+fn JobsCtx::serve_k(self : JobsCtx, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  self.line_k(fn(ex : effect::Exit[(Array[admit::Waiting], Array[admit::Started])]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded((_, running)) => {
+        let screen_jobs : Array[String] = []
+        for i in 0..<running.length() {
+          if running[i].screen {
+            screen_jobs.push(running[i].id)
+          }
+        }
+        let mut before = 0
+        for i in 0..<self.state.claims.length() {
+          if self.state.claims[i].held {
+            before = before + 1
+          }
+        }
+        self.stored_now_k(fn(ex_now : effect::Exit[Double]) -> Unit {
+          match ex_now {
+            effect::Exit::Succeeded(now) => {
+              self.state.claims = admit::served(
+                self.state.claims,
+                screen_jobs,
+                now,
+                self.state.person,
+              )
+              let mut after = 0
+              for i in 0..<self.state.claims.length() {
+                if self.state.claims[i].held {
+                  after = after + 1
+                }
+              }
+              if after != before {
+                self.keep_claims_k(k)
+              } else {
+                k(effect::Exit::Succeeded(()))
+              }
+            }
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          }
+        })
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn JobsCtx::keep_claims_k(self : JobsCtx, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  let held : Array[base_codec::Json] = []
+  for i in 0..<self.state.claims.length() {
+    let c = self.state.claims[i]
+    if c.held {
+      let o : Array[(String, base_codec::Json)] = [
+        ("job", sessions_core::jstr(c.job)),
+        ("pid", sessions_core::jnum(c.pid.to_double())),
+        ("at", sessions_core::jnum(c.at)),
+      ]
+      match c.since {
+        Some(s) => o.push(("since", sessions_core::jnum(s)))
+        None => ()
+      }
+      held.push(base_codec::json_obj(o))
+    }
+  }
+  self.jnode_k("keepClaims", [base_codec::json_arr(held)], fn(
+    ex : effect::Exit[base_codec::Json],
+  ) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn JobsCtx::tell_long_k(self : JobsCtx, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  self.stored_now_k(fn(ex_now : effect::Exit[Double]) -> Unit {
+    match ex_now {
+      effect::Exit::Succeeded(now) => {
+        let over = admit::overstaying(self.state.claims, now)
+        let mut idx = 0
+        sessions_core::iter_sync_k(
+          fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+            while idx < over.length() {
+              let c = over[idx]
+              idx = idx + 1
+              let since = match c.since {
+                Some(s) => s
+                None => c.at
+              }
+              let key = c.job + " " + c.pid.to_string() + " " + since.to_string()
+              if self.state.told_long.contains(key) {
+                continue
+              }
+              self.state.told_long.set(key, true)
+              self.jstore_k("getJob", [sessions_core::jstr(c.job)], fn(
+                ex_j : effect::Exit[base_codec::Json],
+              ) -> Unit {
+                match ex_j {
+                  effect::Exit::Succeeded(job) => {
+                    if is_null(job) {
+                      sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                      return
+                    }
+                    let mut waiting = 0
+                    for wi in 0..<self.state.claims.length() {
+                      if !self.state.claims[wi].held {
+                        waiting = waiting + 1
+                      }
+                    }
+                    let mins = round_double((now - since) / 60000.0).to_int()
+                    let plural = if waiting == 1 { "" } else { "s" }
+                    let text = named(job) +
+                    " has held this machine's screen " +
+                    mins.to_string() +
+                    " min (its `stillfail-job screen` command, pid " +
+                    c.pid.to_string() +
+                    ") while " +
+                    waiting.to_string() +
+                    " other command" +
+                    plural +
+                    " wait for it. The screen is for work done in minutes (screenshots, a scripted run, a simulator's tests); a window kept up for a person (a virtual machine, a simulator to look at) is `stillfail-job show <command>`'s, which holds nothing. Finish with the screen, or put the window up again that way."
+                    let sess = match sessions_core::str_of(sessions_core::jget(job, "sessionKey")) {
+                      Some(s) => s
+                      None => ""
+                    }
+                    let log_and_next = fn(ex_t : effect::Exit[Unit]) -> Unit {
+                      match ex_t {
+                        effect::Exit::Succeeded(_) => {
+                          self.jlog("info", "a command told it holds the screen long", [
+                            ("job", sessions_core::jstr(c.job)),
+                            ("pid", sessions_core::jnum(c.pid.to_double())),
+                            ("waiting", sessions_core::jnum(waiting.to_double())),
+                          ])
+                          sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                        }
+                        effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                      }
+                    }
+                    if sess.starts_with("remote:") {
+                      self.jstore_k(
+                        "addJobNotice",
+                        [sessions_core::jstr(c.job), sessions_core::jstr(text)],
+                        fn(ex_an : effect::Exit[base_codec::Json]) -> Unit {
+                          match ex_an {
+                            effect::Exit::Succeeded(_) => log_and_next(effect::Exit::Succeeded(()))
+                            effect::Exit::Failed(e) => log_and_next(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => log_and_next(effect::Exit::Interrupted)
+                          }
+                        },
+                      )
+                    } else {
+                      self.jtell_k(job, text, log_and_next)
+                    }
+                  }
+                  effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                }
+              })
+              return
+            }
+            sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+          },
+          k,
+        )
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+// ── ended / ended_record ──
+
+fn JobsCtx::ended_k(
+  self : JobsCtx,
+  id : String,
+  pgid : Option[Int],
+  code : Option[Int],
+  ran_ms : Double,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  if self.state.closing {
+    k(effect::Exit::Succeeded(base_codec::json_null()))
+    return
+  }
+  let run = self.state.running.get(id)
+  let _ = self.state.running.remove(id)
+  let stopped = match run {
+    Some(r) => r.stopping
+    None => false
+  }
+  self.ended_record_k(id, pgid, code, stopped, ran_ms, fn(ex1 : effect::Exit[Unit]) -> Unit {
+    match ex1 {
+      effect::Exit::Succeeded(_) => {
+        self.start_next_k(fn(ex2 : effect::Exit[Unit]) -> Unit {
+          match ex2 {
+            effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          }
+        })
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn JobsCtx::ended_record_k(
+  self : JobsCtx,
+  id : String,
+  pgid : Option[Int],
+  code : Option[Int],
+  stopped : Bool,
+  ran_ms : Double,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let after_pgid = fn() -> Unit {
+    self.jstore_k("getJob", [sessions_core::jstr(id)], fn(
+      ex_j : effect::Exit[base_codec::Json],
+    ) -> Unit {
+      match ex_j {
+        effect::Exit::Succeeded(job) => {
+          if is_null(job) {
+            k(effect::Exit::Succeeded(()))
+            return
+          }
+          let code_json = match code {
+            Some(c) => sessions_core::jnum(c.to_double())
+            None => base_codec::json_null()
+          }
+          if stopped {
+            self.jstore_k(
+              "jobEnded",
+              [sessions_core::jstr(id), sessions_core::jstr("stopped"), code_json],
+              fn(ex_e : effect::Exit[base_codec::Json]) -> Unit {
+                match ex_e {
+                  effect::Exit::Succeeded(_) => {
+                    self.remote_changed(id, "stopped")
+                    k(effect::Exit::Succeeded(()))
+                  }
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                }
+              },
+            )
+            return
+          }
+          let said = match code {
+            Some(c) => "exit code " + c.to_string()
+            None => "a signal"
+          }
+          self.jnode_k("tail", [sessions_core::field_of(job, "log"), sessions_core::jnum(20.0)], fn(
+            ex_t : effect::Exit[base_codec::Json],
+          ) -> Unit {
+            match ex_t {
+              effect::Exit::Succeeded(tail_val) => {
+                let lines = match sessions_core::str_of(Some(tail_val)) {
+                  Some(s) => s
+                  None => ""
+                }
+                let last = if lines == "" {
+                  ""
+                } else {
+                  "\nIts last lines:\n```\n" + lines + "\n```"
+                }
+                let restarts = match sessions_core::num_of(sessions_core::jget(job, "restarts")) {
+                  Some(n) => n.to_int()
+                  None => 0
+                }
+                if !has_port(job) {
+                  self.jnode_k("lost", [sessions_core::jstr(id)], fn(
+                    ex_l : effect::Exit[base_codec::Json],
+                  ) -> Unit {
+                    match ex_l {
+                      effect::Exit::Succeeded(lost_val) => {
+                        if sessions_core::truthy(lost_val) && restarts == 0 {
+                          self.jstore_k(
+                            "jobEnded",
+                            [sessions_core::jstr(id), sessions_core::jstr("exited"), code_json],
+                            fn(ex_je : effect::Exit[base_codec::Json]) -> Unit {
+                              match ex_je {
+                                effect::Exit::Succeeded(_) => {
+                                  self.jtell_k(
+                                    job,
+                                    named(job) +
+                                    " lost the connection to the sandbox it ran in (what it was running was ended); the station starts it again once." +
+                                    last,
+                                    fn(ex_nt : effect::Exit[Unit]) -> Unit {
+                                      match ex_nt {
+                                        effect::Exit::Succeeded(_) => {
+                                          self.jlog(
+                                            "info",
+                                            "job's sandbox connection lost; starting it again",
+                                            [("job", sessions_core::jstr(id))],
+                                          )
+                                          self.jstore_k("getJob", [sessions_core::jstr(id)], fn(
+                                            ex_gj : effect::Exit[base_codec::Json],
+                                          ) -> Unit {
+                                            match ex_gj {
+                                              effect::Exit::Succeeded(again) => {
+                                                self.spawn_job_k(again, true, base_codec::json_obj([]), k)
+                                              }
+                                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                            }
+                                          })
+                                        }
+                                        other => k(other)
+                                      }
+                                    },
+                                  )
+                                }
+                                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                              }
+                            },
+                          )
+                          return
+                        }
+                        self.jstore_k(
+                          "jobEnded",
+                          [sessions_core::jstr(id), sessions_core::jstr("exited"), code_json],
+                          fn(ex_je : effect::Exit[base_codec::Json]) -> Unit {
+                            match ex_je {
+                              effect::Exit::Succeeded(_) => {
+                                self.jtell_k(job, named(job) + " ended with " + said + "." + last, k)
+                              }
+                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            }
+                          },
+                        )
+                      }
+                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    }
+                  })
+                  return
+                }
+                let pause = admit::restart_pause(restarts, ran_ms)
+                self.jstore_k(
+                  "jobEnded",
+                  [sessions_core::jstr(id), sessions_core::jstr("exited"), code_json],
+                  fn(ex_je : effect::Exit[base_codec::Json]) -> Unit {
+                    match ex_je {
+                      effect::Exit::Succeeded(_) => {
+                        let when = if pause == 0.0 {
+                          ""
+                        } else {
+                          " in " + (pause / 1000.0).to_int().to_string() + " s"
+                        }
+                        self.jtell_k(
+                          job,
+                          named(job) +
+                          " ended with " +
+                          said +
+                          "; the station starts it again" +
+                          when +
+                          "." +
+                          last,
+                          fn(ex_nt : effect::Exit[Unit]) -> Unit {
+                            match ex_nt {
+                              effect::Exit::Succeeded(_) => {
+                                let _ = self.after_action(pause, JobsTimerAction::RestartService(id))
+                                k(effect::Exit::Succeeded(()))
+                              }
+                              other => k(other)
+                            }
+                          },
+                        )
+                      }
+                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    }
+                  },
+                )
+              }
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          })
+        }
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    })
+  }
+  match pgid {
+    Some(g) => {
+      self.jstore_k("forgetProcess", [sessions_core::jnum(g.to_double())], fn(
+        ex1 : effect::Exit[base_codec::Json],
+      ) -> Unit {
+        match ex1 {
+          effect::Exit::Succeeded(_) => {
+            self.jnode_k(
+              "signal",
+              [sessions_core::jnum(g.to_double()), sessions_core::jstr("SIGTERM")],
+              fn(ex2 : effect::Exit[base_codec::Json]) -> Unit {
+                match ex2 {
+                  effect::Exit::Succeeded(_) => after_pgid()
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                }
+              },
+            )
+          }
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      })
+    }
+    None => after_pgid()
+  }
+}
+
+// ── stop ──
+
+fn JobsCtx::run_restart_service(self : JobsCtx, id : String) -> Unit {
+  self.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sessions_core::catch_k(
+      fn(bk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        self.locked_k(fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          self.jstore_k("getJob", [sessions_core::jstr(id)], fn(
+            ex_n : effect::Exit[base_codec::Json],
+          ) -> Unit {
+            match ex_n {
+              effect::Exit::Succeeded(now) => {
+                if !is_null(now) &&
+                opt_str_is(sessions_core::str_of(sessions_core::jget(now, "state")), "exited") &&
+                !self.state.closing
+                {
+                  sessions_core::catch_k(
+                    fn(sk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      self.spawn_job_k(now, true, base_codec::json_obj([]), sk)
+                    },
+                    fn(e : effect::EffectError, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      let m = sessions_core::error_message(e)
+                      self.jlog("warn", "service not started again", [
+                        ("job", sessions_core::jstr(id)),
+                        ("error", sessions_core::jstr(m)),
+                      ])
+                      self.jstore_k(
+                        "jobEnded",
+                        [
+                          sessions_core::jstr(id),
+                          sessions_core::jstr("failed"),
+                          base_codec::json_null(),
+                        ],
+                        fn(ex_f : effect::Exit[base_codec::Json]) -> Unit {
+                          match ex_f {
+                            effect::Exit::Succeeded(_) => {
+                              self.jtell_k(
+                                now,
+                                named(now) + " could not be started again: " + m,
+                                rk,
+                              )
+                            }
+                            effect::Exit::Failed(e2) => rk(effect::Exit::Failed(e2))
+                            effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                          }
+                        },
+                      )
+                    },
+                    lk,
+                  )
+                } else {
+                  lk(effect::Exit::Succeeded(()))
+                }
+              }
+              effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+            }
+          })
+        }, bk)
+      },
+      fn(_e : effect::EffectError, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        rk(effect::Exit::Succeeded(()))
+      },
+      wk,
+    )
+  })
+}
+
+fn JobsCtx::job_stop_k(
+  self : JobsCtx,
+  id : String,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.locked_k(
+    fn(lk : (effect::Exit[(base_codec::Json, Option[Int])]) -> Unit) -> Unit {
+      self.jstore_k("getJob", [sessions_core::jstr(id)], fn(
+        ex_j : effect::Exit[base_codec::Json],
+      ) -> Unit {
+        match ex_j {
+          effect::Exit::Succeeded(job) => {
+            if is_null(job) {
+              lk(effect::Exit::Failed(fail_asked("no job " + id)))
+              return
+            }
+            match self.state.running.get(id) {
+              Some(run) => {
+                run.stopping = true
+                let pgid = run.pgid
+                self.jnode_k(
+                  "signal",
+                  [sessions_core::jnum(pgid.to_double()), sessions_core::jstr("SIGTERM")],
+                  fn(ex_s : effect::Exit[base_codec::Json]) -> Unit {
+                    match ex_s {
+                      effect::Exit::Succeeded(_) => lk(effect::Exit::Succeeded((job, Some(pgid))))
+                      effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                    }
+                  },
+                )
+              }
+              None => lk(effect::Exit::Succeeded((job, None)))
+            }
+          }
+          effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+        }
+      })
+    },
+    fn(ex : effect::Exit[(base_codec::Json, Option[Int])]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded((job, group)) => {
+          let fetch_now = fn() -> Unit {
+            self.jstore_k("getJob", [sessions_core::jstr(id)], fn(
+              ex_n : effect::Exit[base_codec::Json],
+            ) -> Unit {
+              match ex_n {
+                effect::Exit::Succeeded(now) => {
+                  k(effect::Exit::Succeeded(if is_null(now) { job } else { now }))
+                }
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              }
+            })
+          }
+          match group {
+            Some(pgid) => {
+              self.jnode_k(
+                "grace",
+                [sessions_core::jstr(id), sessions_core::jnum(pgid.to_double())],
+                fn(ex_g : effect::Exit[base_codec::Json]) -> Unit {
+                  match ex_g {
+                    effect::Exit::Succeeded(_) => fetch_now()
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  }
+                },
+              )
+            }
+            None => {
+              let state = sessions_core::str_of(sessions_core::jget(job, "state"))
+              if opt_str_is(state, "running") || opt_str_is(state, "exited") {
+                let mark_stopped = fn() -> Unit {
+                  self.locked_k(
+                    fn(lk2 : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      self.jstore_k(
+                        "jobEnded",
+                        [
+                          sessions_core::jstr(id),
+                          sessions_core::jstr("stopped"),
+                          sessions_core::field_of(job, "exitCode"),
+                        ],
+                        fn(ex_je : effect::Exit[base_codec::Json]) -> Unit {
+                          match ex_je {
+                            effect::Exit::Succeeded(_) => {
+                              self.remote_changed(id, "stopped")
+                              lk2(effect::Exit::Succeeded(()))
+                            }
+                            effect::Exit::Failed(e) => lk2(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => lk2(effect::Exit::Interrupted)
+                          }
+                        },
+                      )
+                    },
+                    fn(ex_m : effect::Exit[Unit]) -> Unit {
+                      match ex_m {
+                        effect::Exit::Succeeded(_) => fetch_now()
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                      }
+                    },
+                  )
+                }
+                match sessions_core::num_of(sessions_core::jget(job, "pgid")) {
+                  Some(g) => {
+                    self.jnode_k(
+                      "endLeftBehind",
+                      [sessions_core::jnum(g), sessions_core::jstr(id)],
+                      fn(ex_e : effect::Exit[base_codec::Json]) -> Unit {
+                        match ex_e {
+                          effect::Exit::Succeeded(_) => mark_stopped()
+                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        }
+                      },
+                    )
+                  }
+                  None => mark_stopped()
+                }
+              } else {
+                fetch_now()
+              }
+            }
+          }
+        }
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+// ── relaunch ──
+
+fn JobsCtx::relaunch_k(
+  self : JobsCtx,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.jnode_k("recordedGroups", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(recorded) => {
+        let ours : Map[Int, Bool] = Map::new()
+        let groups : Map[Int, base_codec::Json] = Map::new()
+        let group_keys : Array[Int] = []
+        match recorded {
+          base_codec::Json::Arr(rows) => {
+            for i in 0..<rows.length() {
+              let r = rows[i]
+              let g = match sessions_core::num_of(sessions_core::jget(r, "pgid")) {
+                Some(n) => n.to_int()
+                None => 0
+              }
+              if !groups.contains(g) {
+                group_keys.push(g)
+              }
+              groups.set(g, r)
+              if is_true(sessions_core::jget(r, "ours")) {
+                ours.set(g, true)
+              }
+            }
+          }
+          _ => ()
+        }
+        self.locked_k(fn(lk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+          self.relaunched_k(groups, group_keys, ours, lk)
+        }, k)
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+fn JobsCtx::relaunched_k(
+  self : JobsCtx,
+  groups : Map[Int, base_codec::Json],
+  group_keys : Array[Int],
+  ours : Map[Int, Bool],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let followed : Map[Int, Bool] = Map::new()
+  self.jstore_k("jobsUp", [], fn(ex_up : effect::Exit[base_codec::Json]) -> Unit {
+    match ex_up {
+      effect::Exit::Succeeded(up_val) => {
+        let jobs : Array[base_codec::Json] = match up_val {
+          base_codec::Json::Arr(rows) => rows
+          _ => []
+        }
+        // Pass 1: running, non-queued jobs
+        let mut idx1 = 0
+        sessions_core::iter_sync_k(
+          fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+            while idx1 < jobs.length() {
+              let job = jobs[idx1]
+              idx1 = idx1 + 1
+              if !opt_str_is(sessions_core::str_of(sessions_core::jget(job, "state")), "running") ||
+              is_true(sessions_core::jget(job, "queued"))
+              {
+                continue
+              }
+              let id = match sessions_core::str_of(sessions_core::jget(job, "id")) {
+                Some(s) => s
+                None => ""
+              }
+              let pgid = match sessions_core::num_of(sessions_core::jget(job, "pgid")) {
+                Some(n) => Some(n.to_int())
+                None => None
+              }
+              let restart_gone = fn() -> Unit {
+                if id.starts_with("remote_") {
+                  self.jstore_k(
+                    "jobEnded",
+                    [
+                      sessions_core::jstr(id),
+                      sessions_core::jstr("failed"),
+                      base_codec::json_null(),
+                    ],
+                    fn(ex_je : effect::Exit[base_codec::Json]) -> Unit {
+                      match ex_je {
+                        effect::Exit::Succeeded(_) => {
+                          self.remote_changed(id, "failed")
+                          sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                        }
+                        effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                      }
+                    },
+                  )
+                  return
+                }
+                sessions_core::catch_k(
+                  fn(bk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                    self.spawn_job_k(job, true, base_codec::json_obj([]), fn(
+                      ex_sp : effect::Exit[Unit],
+                    ) -> Unit {
+                      match ex_sp {
+                        effect::Exit::Succeeded(_) => {
+                          self.jtell_k(
+                            job,
+                            "The station restarted; " + named(job) + " was started again.",
+                            bk,
+                          )
+                        }
+                        other => bk(other)
+                      }
+                    })
+                  },
+                  fn(e : effect::EffectError, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                    let m = sessions_core::error_message(e)
+                    self.jlog("warn", "job not started again", [
+                      ("job", sessions_core::jstr(id)),
+                      ("error", sessions_core::jstr(m)),
+                    ])
+                    self.jstore_k(
+                      "jobEnded",
+                      [
+                        sessions_core::jstr(id),
+                        sessions_core::jstr("failed"),
+                        base_codec::json_null(),
+                      ],
+                      fn(ex_je : effect::Exit[base_codec::Json]) -> Unit {
+                        match ex_je {
+                          effect::Exit::Succeeded(_) => {
+                            self.jtell_k(
+                              job,
+                              "The station restarted; " +
+                              named(job) +
+                              " could not be started again: " +
+                              m,
+                              rk,
+                            )
+                          }
+                          effect::Exit::Failed(e2) => rk(effect::Exit::Failed(e2))
+                          effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                        }
+                      },
+                    )
+                  },
+                  fn(ex_d : effect::Exit[Unit]) -> Unit {
+                    match ex_d {
+                      effect::Exit::Succeeded(_) => {
+                        sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                      }
+                      effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                    }
+                  },
+                )
+              }
+              match pgid {
+                Some(g) => {
+                  if groups.contains(g) {
+                    if ours.contains(g) {
+                      self.jlog("info", "job went on through the restart; following it again", [
+                        ("job", sessions_core::jstr(id)),
+                        ("pgid", sessions_core::jnum(g.to_double())),
+                      ])
+                      self.jnode_k(
+                        "follow",
+                        [sessions_core::jstr(id), sessions_core::jnum(g.to_double())],
+                        fn(ex_f : effect::Exit[base_codec::Json]) -> Unit {
+                          match ex_f {
+                            effect::Exit::Succeeded(_) => {
+                              self.state.running.set(id, Run::{ pgid: g, stopping: false })
+                              followed.set(g, true)
+                              sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                            }
+                            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                          }
+                        },
+                      )
+                      return
+                    }
+                    self.jstore_k("forgetProcess", [sessions_core::jnum(g.to_double())], fn(
+                      ex_fp : effect::Exit[base_codec::Json],
+                    ) -> Unit {
+                      match ex_fp {
+                        effect::Exit::Succeeded(_) => {
+                          self.jnode_k("readExit", [sessions_core::jstr(id)], fn(
+                            ex_re : effect::Exit[base_codec::Json],
+                          ) -> Unit {
+                            match ex_re {
+                              effect::Exit::Succeeded(base_codec::Json::Num(code_d, _)) => {
+                                self.stored_now_k(fn(ex_now : effect::Exit[Double]) -> Unit {
+                                  match ex_now {
+                                    effect::Exit::Succeeded(now) => {
+                                      let started = match sessions_core::num_of(sessions_core::jget(job, "startedAt")) {
+                                        Some(s) => s
+                                        None => now
+                                      }
+                                      let ran = if now - started < 0.0 { 0.0 } else { now - started }
+                                      let code_i = code_d.to_int()
+                                      self.gen.spawn_work(fn(
+                                        wk : (effect::Exit[Unit]) -> Unit,
+                                      ) -> Unit {
+                                        sessions_core::catch_k(
+                                          fn(bk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                            self.locked_k(
+                                              fn(lk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                                                self.ended_k(id, None, Some(code_i), ran, lk)
+                                              },
+                                              fn(ex_e : effect::Exit[base_codec::Json]) -> Unit {
+                                                match ex_e {
+                                                  effect::Exit::Succeeded(_) => bk(effect::Exit::Succeeded(()))
+                                                  effect::Exit::Failed(e) => bk(effect::Exit::Failed(e))
+                                                  effect::Exit::Interrupted => bk(effect::Exit::Interrupted)
+                                                }
+                                              },
+                                            )
+                                          },
+                                          fn(
+                                            _e : effect::EffectError,
+                                            rk : (effect::Exit[Unit]) -> Unit,
+                                          ) -> Unit {
+                                            rk(effect::Exit::Succeeded(()))
+                                          },
+                                          wk,
+                                        )
+                                      })
+                                      sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                                    }
+                                    effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                    effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                  }
+                                })
+                              }
+                              effect::Exit::Succeeded(_) => restart_gone()
+                              effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                            }
+                          })
+                        }
+                        effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                      }
+                    })
+                    return
+                  }
+                  restart_gone()
+                  return
+                }
+                None => {
+                  restart_gone()
+                  return
+                }
+              }
+            }
+            sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+          },
+          fn(ex_p1 : effect::Exit[Unit]) -> Unit {
+            match ex_p1 {
+              effect::Exit::Succeeded(_) => {
+                // Pass 2: exited services (has_port)
+                let mut idx2 = 0
+                sessions_core::iter_sync_k(
+                  fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+                    while idx2 < jobs.length() {
+                      let job = jobs[idx2]
+                      idx2 = idx2 + 1
+                      if !opt_str_is(sessions_core::str_of(sessions_core::jget(job, "state")), "exited") ||
+                      !has_port(job)
+                      {
+                        continue
+                      }
+                      sessions_core::catch_k(
+                        fn(bk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                          self.spawn_job_k(job, true, base_codec::json_obj([]), bk)
+                        },
+                        fn(e : effect::EffectError, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                          self.jlog("warn", "service not started again", [
+                            ("job", sessions_core::field_of(job, "id")),
+                            ("error", sessions_core::jstr(sessions_core::error_message(e))),
+                          ])
+                          self.jstore_k(
+                            "jobEnded",
+                            [
+                              sessions_core::field_of(job, "id"),
+                              sessions_core::jstr("failed"),
+                              base_codec::json_null(),
+                            ],
+                            fn(ex_je : effect::Exit[base_codec::Json]) -> Unit {
+                              match ex_je {
+                                effect::Exit::Succeeded(_) => rk(effect::Exit::Succeeded(()))
+                                effect::Exit::Failed(e2) => rk(effect::Exit::Failed(e2))
+                                effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                              }
+                            },
+                          )
+                        },
+                        fn(ex_s : effect::Exit[Unit]) -> Unit {
+                          match ex_s {
+                            effect::Exit::Succeeded(_) => {
+                              sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                            }
+                            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                          }
+                        },
+                      )
+                      return
+                    }
+                    sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                  },
+                  fn(ex_p2 : effect::Exit[Unit]) -> Unit {
+                    match ex_p2 {
+                      effect::Exit::Succeeded(_) => {
+                        // Pass 3: unfollowed groups
+                        let mut idx3 = 0
+                        sessions_core::iter_sync_k(
+                          fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+                            while idx3 < group_keys.length() {
+                              let g = group_keys[idx3]
+                              idx3 = idx3 + 1
+                              if followed.contains(g) {
+                                continue
+                              }
+                              if ours.contains(g) {
+                                let label = match groups.get(g) {
+                                  Some(entry) => sessions_core::field_of(entry, "label")
+                                  None => base_codec::json_null()
+                                }
+                                self.jlog("warn", "ending the group of a job no longer running", [
+                                  ("pgid", sessions_core::jnum(g.to_double())),
+                                  ("label", label),
+                                ])
+                                self.tell(jobs_key, "node.endGroup", [sessions_core::jnum(g.to_double())])
+                              }
+                              self.jstore_k("forgetProcess", [sessions_core::jnum(g.to_double())], fn(
+                                ex_fp : effect::Exit[base_codec::Json],
+                              ) -> Unit {
+                                match ex_fp {
+                                  effect::Exit::Succeeded(_) => {
+                                    sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                                  }
+                                  effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                                  effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                                }
+                              })
+                              return
+                            }
+                            sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                          },
+                          fn(ex_p3 : effect::Exit[Unit]) -> Unit {
+                            match ex_p3 {
+                              effect::Exit::Succeeded(_) => {
+                                self.start_next_k(fn(ex_sn : effect::Exit[Unit]) -> Unit {
+                                  match ex_sn {
+                                    effect::Exit::Succeeded(_) => {
+                                      k(effect::Exit::Succeeded(base_codec::json_null()))
+                                    }
+                                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  }
+                                })
+                              }
+                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            }
+                          },
+                        )
+                      }
+                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    }
+                  },
+                )
+              }
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          },
+        )
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}

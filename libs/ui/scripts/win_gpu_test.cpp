@@ -16,6 +16,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d11.h>
+#include <float.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +42,7 @@ double mb_app_scale(void) { return 1.0; }
 
 #include "win_render.cpp"
 #include "frame_late.h"
+#include "frame_pace.h"
 
 static int failed = 0;
 #define CHECK(c)                                                         \
@@ -201,6 +203,23 @@ static void test_frame_late_logic(void) {
   CHECK(mb_frame_late_from_target(-1.0, 200.0) == 0.0);
   CHECK(mb_frame_late_from_target(100.0, 100.0) == 0.0);
   CHECK(mb_frame_late_from_target(100.0, 116.67) > 16.0);
+}
+
+static void test_frame_pace_logic(void) {
+  const double p60 = 1000.0 / 60.0;
+  CHECK(mb_frame_pace_every(60.0, 20.0) == 3);
+  CHECK(mb_frame_pace_every(120.0, 20.0) == 6);
+  CHECK(mb_frame_pace_every(240.0 / 2.0, 20.0) == 6);
+  CHECK(mb_frame_pace_every(120.0, DBL_MIN) == 1000);
+  CHECK(mb_frame_pace_every(NAN, 20.0) == 1);
+  CHECK(mb_frame_pace_every(60.0, 0.0) == 1);
+  CHECK(mb_frame_pace_timer_margin_ms(p60) == 0.25);
+  CHECK(mb_frame_pace_clamp_wait_ms(NAN, 86400000.0) == 0.0);
+  CHECK(mb_frame_pace_clamp_wait_ms(1e15, 86400000.0) == 86400000.0);
+  double t0 = mb_frame_pace_grid_target_ms(1001.0, p60, 3, 1, 1000.0, p60);
+  double t_past = mb_frame_pace_grid_target_ms(1001.0, p60, 3, 1, 1000.0 - 4.0 * p60, p60);
+  double t_future = mb_frame_pace_grid_target_ms(1001.0, p60, 3, 1, 1000.0 + 3.0 * p60, p60);
+  CHECK(t0 > 1001.0 && fabs(t0 - (1000.0 + 3.0 * p60)) < 1e-6 && fabs(t0 - t_past) < 1e-6 && fabs(t0 - t_future) < 1e-6);
 }
 
 static void fill_p0_rect(double *p, double x, double y, double w, double h, double kind, double r, double g, double b,
@@ -1650,9 +1669,10 @@ int main(void) {
   CHECK(mb_host_gpu_ms() == -1.0);
   CHECK(mb_host_frames_dropped() == 0);
 
-  // 2. Pure dropped-frame boundary logic & frame_late continuity logic.
+  // 2. Pure dropped-frame boundary logic, frame_late continuity, & frame_pace grid logic.
   test_dropped_step_logic();
   test_frame_late_logic();
+  test_frame_pace_logic();
 
   // 3. D3D11 timestamp query ring on WARP offscreen device.
   mb_render_init_offscreen(128.0, 128.0, 1.0);

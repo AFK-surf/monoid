@@ -1,0 +1,2590 @@
+// Deterministic unit tests for `sessions_remote` (`wave8-plan.md` v5 §2.3, §2.4.2, §2.5.3).
+// Zero sleeps, virtual clock `SessionHost::for_test` (`Runtime::new_at(None, 0L)`),
+// in-memory VFS over `MemHostTransport`, and fake 12-method `DirsyncPort`.
+
+import "base_codec"
+import "effect"
+import "host_shim"
+import "js_json"
+import "sessions_core"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn assert_holding_zero(host : sessions_core::SessionHost) -> Unit {
+  let (a, b, c, d, e, f) = host.rt.holding()
+  assert(a == 0 && b == 0 && c == 0 && d == 0 && e == 0 && f == 0)
+}
+
+fn opt_int_eq(a : Option[Int], b : Option[Int]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+fn test_fmt_num(d : Double) -> String {
+  if d == 0.0 {
+    "0"
+  } else if js_json::is_safe_integer(d) {
+    d.to_int64().to_string()
+  } else {
+    d.to_string()
+  }
+}
+
+// ── In-memory fake filesystem + Node RPC responder for deterministic tests ──
+
+struct MemFs {
+  files : Map[String, String]
+  dirs : Map[String, Bool]
+  dir_mtime : Map[String, Double]
+  links : Map[String, Bool]
+  mut mtime_seq : Double
+  sep : String
+}
+
+fn MemFs::new(sep : String) -> MemFs {
+  let fs = MemFs::{
+    files: Map::new(),
+    dirs: Map::new(),
+    dir_mtime: Map::new(),
+    links: Map::new(),
+    mtime_seq: 1000.0,
+    sep: sep,
+  }
+  fs.dirs.set("/", true)
+  fs.dir_mtime.set("/", 1000.0)
+  fs
+}
+
+fn MemFs::touch_dir(self : MemFs, dir : String) -> Unit {
+  self.mtime_seq = self.mtime_seq + 1.0
+  self.dir_mtime.set(dir, self.mtime_seq)
+}
+
+fn MemFs::add_dir(self : MemFs, path : String) -> Unit {
+  if !self.dirs.contains(path) {
+    self.dirs.set(path, true)
+    self.touch_dir(path)
+    let parent = sessions_core::rdirname(self.sep, path)
+    if parent != "" && parent != path {
+      self.add_dir(parent)
+      self.touch_dir(parent)
+    }
+  }
+}
+
+fn MemFs::add_file(self : MemFs, path : String, content : String) -> Unit {
+  self.files.set(path, content)
+  let dir = sessions_core::rdirname(self.sep, path)
+  if dir != "" && dir != path {
+    self.add_dir(dir)
+    self.touch_dir(dir)
+  }
+}
+
+fn MemFs::add_link(self : MemFs, path : String) -> Unit {
+  self.links.set(path, true)
+}
+
+fn MemFs::children_of(self : MemFs, dir : String) -> Array[String] {
+  let prefix = if dir.ends_with(self.sep) { dir } else { dir + self.sep }
+  let seen : Map[String, Bool] = Map::new()
+  let fkeys = self.files.keys()
+  for i in 0..<fkeys.length() {
+    let k = fkeys[i]
+    if k.starts_with(prefix) {
+      let rest = k.slice(prefix.length(), k.length())
+      let idx = rest.index_of(self.sep)
+      let seg = if idx >= 0 { rest.slice(0, idx) } else { rest }
+      if seg != "" {
+        seen.set(seg, true)
+      }
+    }
+  }
+  let dkeys = self.dirs.keys()
+  for i in 0..<dkeys.length() {
+    let k = dkeys[i]
+    if k.starts_with(prefix) {
+      let rest = k.slice(prefix.length(), k.length())
+      let idx = rest.index_of(self.sep)
+      let seg = if idx >= 0 { rest.slice(0, idx) } else { rest }
+      if seg != "" {
+        seen.set(seg, true)
+      }
+    }
+  }
+  seen.keys()
+}
+
+fn MemFs::remove_path(self : MemFs, path : String, recursive : Bool) -> Unit {
+  let _ = self.files.remove(path)
+  let _ = self.links.remove(path)
+  let _ = self.dirs.remove(path)
+  if recursive {
+    let prefix = if path.ends_with(self.sep) { path } else { path + self.sep }
+    let fkeys = self.files.keys()
+    for i in 0..<fkeys.length() {
+      if fkeys[i].starts_with(prefix) {
+        let _ = self.files.remove(fkeys[i])
+      }
+    }
+    let dkeys = self.dirs.keys()
+    for i in 0..<dkeys.length() {
+      if dkeys[i].starts_with(prefix) {
+        let _ = self.dirs.remove(dkeys[i])
+      }
+    }
+  }
+}
+
+fn MemFs::handle_shell(self : MemFs, call : sessions_core::MemShellCall) -> (String, String) {
+  let args = match sessions_core::parse_json_strict(call.json) {
+    Ok(j) => j
+    Err(_) => base_codec::json_obj([])
+  }
+  let op = call.op
+  if op == "fs.lstat" {
+    let path = sessions_core::text_of(args, "path")
+    if self.links.contains(path) {
+      return ("{\"kind\":\"link\",\"size\":0,\"mtimeMs\":1000,\"ino\":1,\"ctimeMs\":1000}", "")
+    }
+    match self.files.get(path) {
+      Some(content) => {
+        let sz = bytes_len(content).to_string()
+        return ("{\"kind\":\"file\",\"size\":" + sz + ",\"mtimeMs\":1000,\"ino\":2,\"ctimeMs\":1000}", "")
+      }
+      None => ()
+    }
+    if self.dirs.contains(path) {
+      let mt = match self.dir_mtime.get(path) { Some(m) => m.to_int().to_string(); None => "1000" }
+      return ("{\"kind\":\"dir\",\"size\":0,\"mtimeMs\":" + mt + ",\"ino\":3,\"ctimeMs\":" + mt + "}", "")
+    }
+    return ("null", "")
+  }
+  if op == "fs.read" {
+    let path = sessions_core::text_of(args, "path")
+    match self.files.get(path) {
+      Some(content) => return (base_codec::json_stringify(sessions_core::jstr(content)), "")
+      None => return ("null", "")
+    }
+  }
+  if op == "fs.readdir" {
+    let path = sessions_core::text_of(args, "path")
+    let names = self.children_of(path)
+    let arr : Array[base_codec::Json] = []
+    for i in 0..<names.length() {
+      arr.push(sessions_core::jstr(names[i]))
+    }
+    return (base_codec::json_stringify(base_codec::json_arr(arr)), "")
+  }
+  if op == "fs.mkdir" {
+    let path = sessions_core::text_of(args, "path")
+    self.add_dir(path)
+    return ("null", "")
+  }
+  if op == "fs.put" {
+    let path = sessions_core::text_of(args, "path")
+    let content = match call.bytes {
+      Some(b) => b.to_string()
+      None => ""
+    }
+    self.add_file(path, content)
+    return ("null", "")
+  }
+  if op == "fs.rename" {
+    let from = sessions_core::text_of(args, "from")
+    let to = sessions_core::text_of(args, "to")
+    match self.files.get(from) {
+      Some(content) => {
+        let _ = self.files.remove(from)
+        self.add_file(to, content)
+        return ("null", "")
+      }
+      None => return ("", "ENOENT: " + from)
+    }
+  }
+  if op == "fs.remove" {
+    let path = sessions_core::text_of(args, "path")
+    let rec = sessions_core::truthy(sessions_core::field_of(args, "recursive"))
+    self.remove_path(path, rec)
+    return ("null", "")
+  }
+  if op == "fs.link" {
+    let from = sessions_core::text_of(args, "from")
+    let to = sessions_core::text_of(args, "to")
+    match self.files.get(from) {
+      Some(content) => {
+        if self.files.contains(to) {
+          return ("", "EEXIST: " + to)
+        }
+        self.add_file(to, content)
+        return ("null", "")
+      }
+      None => return ("", "ENOENT: " + from)
+    }
+  }
+  if op == "crypto.random" {
+    let n = sessions_core::int_of(sessions_core::jget(args, "bytes"))
+    let hex_chars = "0123456789abcdef"
+    let sb = StringBuilder::new()
+    for i in 0..<n {
+      let v = (i * 17 + 90) & 255
+      let hi = (v >> 4) & 15
+      let lo = v & 15
+      sb.write_string(hex_chars.slice(hi, hi + 1))
+      sb.write_string(hex_chars.slice(lo, lo + 1))
+    }
+    return (base_codec::json_stringify(sessions_core::jstr(sb.to_string())), "")
+  }
+  ("null", "")
+}
+
+fn fork_test(host : sessions_core::SessionHost, body : ((effect::Exit[Unit]) -> Unit) -> Unit) -> Unit {
+  let _ = host.rt.fork_named("test", body)
+}
+
+struct PumpCursor {
+  mut shell_cursor : Int
+  mut stdout_cursor : Int
+}
+
+fn PumpCursor::new() -> PumpCursor {
+  PumpCursor::{ shell_cursor: 0, stdout_cursor: 0 }
+}
+
+/// Pump all pending shell calls and Node RPCs using the supplied handlers until quiescent.
+fn pump_all(
+  host : sessions_core::SessionHost,
+  gen : sessions_core::HubGen,
+  mem : sessions_core::MemHostTransport,
+  fs : MemFs,
+  cur : PumpCursor,
+  rpc_handler : (String, Array[base_codec::Json]) -> base_codec::Json,
+) -> Unit {
+  let mut guard_rounds = 0
+  while guard_rounds < 500 {
+    guard_rounds = guard_rounds + 1
+    host.tick()
+    let mut progressed = false
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let call = mem.shell_calls[cur.shell_cursor]
+      cur.shell_cursor = cur.shell_cursor + 1
+      let (json, err) = fs.handle_shell(call)
+      host.dispatch_event(
+        host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+          id: call.id,
+          error: err,
+          json: json,
+          bytes: None,
+        }),
+      )
+      progressed = true
+    }
+    while cur.stdout_cursor < mem.stdout_lines.length() {
+      let line = mem.stdout_lines[cur.stdout_cursor]
+      cur.stdout_cursor = cur.stdout_cursor + 1
+      match sessions_core::parse_json_strict(line) {
+        Ok(msg) => {
+          match sessions_core::jget(msg, "rpc") {
+            Some(base_codec::Json::Num(id_f, _)) => {
+              let f = sessions_core::text_of(msg, "fn")
+              let args = match sessions_core::field_of(msg, "args") {
+                base_codec::Json::Arr(a) => a
+                _ => []
+              }
+              let reply_v = rpc_handler(f, args)
+              gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", reply_v)]))
+              progressed = true
+            }
+            _ => ()
+          }
+        }
+        Err(_) => ()
+      }
+    }
+    if !progressed && host.rt.idle() {
+      break
+    }
+  }
+}
+
+fn make_fake_dirsync(
+  submodules_manifests : Map[String, String],
+  manifests_by_path : Map[String, base_codec::Json],
+  called_ops : Array[String],
+) -> DirsyncPort {
+  DirsyncPort::{
+    sync_dir_k: fn(
+      _h : RemoteHost,
+      _st : String,
+      _ws : String,
+      _sess : String,
+      _key : String,
+      _dir : String,
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      called_ops.push("sync_dir")
+      k(effect::Exit::Succeeded(base_codec::json_obj([("written", sessions_core::jint(1)), ("prefix", sessions_core::jstr(""))])))
+    },
+    list_local_k: fn(_h : RemoteHost, dir : String, k : (effect::Exit[DirsyncListing]) -> Unit) -> Unit {
+      called_ops.push("list_local:" + dir)
+      k(effect::Exit::Succeeded(DirsyncListing::{
+        files: [
+          DirsyncLocal::{ path: "a.txt", hash: "0123456789abcdef0123456789abcdef01234567", mode: "100644", size: 5, indexed: true },
+        ],
+        git: true,
+        prefix: "sub/",
+        skipped: [("out", "symbolic link leading out of the directory")],
+        submodules: [("libs/sub", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "https://example.com/sub.git")],
+      }))
+    },
+    sync_begin_k: fn(
+      h : RemoteHost,
+      _manifest : String,
+      _mirror : String,
+      syncing : String,
+      k : (effect::Exit[Double]) -> Unit,
+    ) -> Unit {
+      called_ops.push("sync_begin")
+      let actual = base_codec::json_obj([
+        ("a.txt", base_codec::json_arr([sessions_core::jstr("hash_a"), sessions_core::jstr("100644")])),
+        ("b.txt", base_codec::json_arr([sessions_core::jstr("hash_b"), sessions_core::jstr("100755")])),
+      ])
+      let base = base_codec::json_obj([
+        ("a.txt", base_codec::json_arr([sessions_core::jstr("hash_a0"), sessions_core::jstr("100644")])),
+      ])
+      let actual_path = sessions_core::rjoin(h.sep, [syncing, "actual.json"])
+      let base_path = sessions_core::rjoin(h.sep, [syncing, "base.json"])
+      (h.write_json_k)(actual_path, actual, fn(ex1 : effect::Exit[Unit]) -> Unit {
+        match ex1 {
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(_) => {
+            (h.write_json_k)(base_path, base, fn(ex2 : effect::Exit[Unit]) -> Unit {
+              match ex2 {
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(3.0))
+              }
+            })
+          }
+        }
+      })
+    },
+    listed_entries: fn(files : Map[String, base_codec::Json]) -> Array[base_codec::Json] {
+      called_ops.push("listed_entries")
+      let keys = files.keys()
+      sort_strings_js(keys)
+      let out : Array[base_codec::Json] = []
+      for i in 0..<keys.length() {
+        let p = keys[i]
+        match files.get(p) {
+          Some(base_codec::Json::Arr(a)) => {
+            let h = if a.length() > 0 { a[0] } else { base_codec::json_null() }
+            let m = if a.length() > 1 { a[1] } else { base_codec::json_null() }
+            out.push(base_codec::json_arr([sessions_core::jstr(p), h, m]))
+          }
+          _ => ()
+        }
+      }
+      out
+    },
+    page_of: fn(all : Array[base_codec::Json], after : Int) -> base_codec::Json {
+      called_ops.push("page_of:" + after.to_string())
+      let entries : Array[base_codec::Json] = []
+      if after < all.length() {
+        entries.push(all[after])
+      }
+      let next = if after + 1 < all.length() { sessions_core::jint(after + 1) } else { base_codec::json_null() }
+      base_codec::json_obj([("entries", base_codec::json_arr(entries)), ("next", next)])
+    },
+    put_blobs_k: fn(
+      h : RemoteHost,
+      _blobs : String,
+      _index : base_codec::Json,
+      _packed : Option[String],
+      _data : base_codec::Json,
+      k : (effect::Exit[Int]) -> Unit,
+    ) -> Unit {
+      called_ops.push("put_blobs")
+      h.rnode_k("syncPacking", [], fn(ex1 : effect::Exit[base_codec::Json]) -> Unit {
+        match ex1 {
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(_) => {
+            h.rnode_k("syncPut", [sessions_core::jstr("blob1")], fn(ex2 : effect::Exit[base_codec::Json]) -> Unit {
+              match ex2 {
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(2))
+              }
+            })
+          }
+        }
+      })
+    },
+    plan_part: fn(req : base_codec::Json) -> Result[base_codec::Json, effect::EffectError] {
+      called_ops.push("plan_part")
+      Ok(base_codec::json_obj([
+        ("set", sessions_core::field_of(req, "set")),
+        ("remove", sessions_core::field_of(req, "remove")),
+      ]))
+    },
+    submodules_part: fn(_req : base_codec::Json) -> Result[Array[(String, String, String)], effect::EffectError] {
+      called_ops.push("submodules_part")
+      Ok([])
+    },
+    sync_commit_k: fn(
+      _h : RemoteHost,
+      _work : String,
+      _mirror : String,
+      _syncing : String,
+      _manifest : String,
+      _ver0 : base_codec::Json,
+      _dir : String,
+      _subs : Array[(String, String, String)],
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      called_ops.push("sync_commit")
+      k(effect::Exit::Succeeded(base_codec::json_obj([
+        ("written", sessions_core::jint(1)),
+        ("removed", sessions_core::jint(0)),
+        ("version", sessions_core::jint(4)),
+      ])))
+    },
+    sync_changes_k: fn(
+      _h : RemoteHost,
+      _manifest : String,
+      _base : String,
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      called_ops.push("sync_changes")
+      k(effect::Exit::Succeeded(base_codec::json_obj([
+        ("changes", base_codec::json_arr([])),
+        ("more", sessions_core::jbool(false)),
+      ])))
+    },
+    read_manifest_k: fn(
+      _h : RemoteHost,
+      path : String,
+      k : (effect::Exit[Option[base_codec::Json]]) -> Unit,
+    ) -> Unit {
+      called_ops.push("read_manifest")
+      k(effect::Exit::Succeeded(manifests_by_path.get(path)))
+    },
+    with_submodules_k: fn(
+      _h : RemoteHost,
+      manifest : String,
+      cmd : String,
+      k : (effect::Exit[Option[String]]) -> Unit,
+    ) -> Unit {
+      called_ops.push("with_submodules")
+      match submodules_manifests.get(manifest) {
+        Some(prefix) => k(effect::Exit::Succeeded(Some(prefix + "\n" + cmd)))
+        None => k(effect::Exit::Succeeded(None))
+      }
+    },
+    is_stub: false,
+  }
+}
+
+// ── Test 1: real remote_called_k: listLocal, sync.manifest/base, mirror collision, with_submodules (both paths) ──
+
+test "sessions_remote: remote_called_k listLocal, sync.manifest/base, mirror collision, and task.start with_submodules" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  let fs = MemFs::new("/")
+  let cur = PumpCursor::new()
+  let called_ops : Array[String] = []
+  let sub_manifests : Map[String, String] = Map::new()
+  let manifests_by_path : Map[String, base_codec::Json] = Map::new()
+  let started_commands : Array[String] = []
+  let mut dispatch = sessions_core::SessionDispatch::stub()
+  dispatch = sessions_core::SessionDispatch::{
+    mirror_actor: dispatch.mirror_actor,
+    live_event: dispatch.live_event,
+    live_end: dispatch.live_end,
+    live_called: dispatch.live_called,
+    jobs_called_k: fn(method : String, args : Array[base_codec::Json], k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      if method == "startId" {
+        let cmd = match sessions_core::str_of(Some(args[2])) { Some(s) => s; None => "" }
+        started_commands.push(cmd)
+        k(effect::Exit::Succeeded(base_codec::json_obj([
+          ("id", args[6]),
+          ("state", sessions_core::jstr("running")),
+        ])))
+      } else {
+        k(effect::Exit::Succeeded(base_codec::json_null()))
+      }
+    },
+    jstore_get_job_k: fn(_id : String, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      k(effect::Exit::Succeeded(base_codec::json_null()))
+    },
+    remote_called_k: dispatch.remote_called_k,
+    remote_changed_k: dispatch.remote_changed_k,
+    queue_of_locked_k: fn(_id : String, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      k(effect::Exit::Succeeded(base_codec::json_null()))
+    },
+    agents_told: dispatch.agents_told,
+    agents_take: dispatch.agents_take,
+    is_stub: false,
+  }
+  let dirsync = make_fake_dirsync(sub_manifests, manifests_by_path, called_ops)
+  let ctx = RemoteCtx::new(host, gen, "/", state, dispatch, dirsync)
+
+  // Start #remote with root = "/data/remote"
+  let mut start_done = false
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k("start", [sessions_core::jstr("/data/remote")], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => start_done = true
+        _ => ()
+      }
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  let rpc_handler = fn(f : String, args : Array[base_codec::Json]) -> base_codec::Json {
+    if f == "store.now" {
+      return sessions_core::jnum(10000.0)
+    }
+    if f == "store.getJob" {
+      return base_codec::json_null()
+    }
+    if f == "node.seen" {
+      let ws = match sessions_core::str_of(Some(args[0])) { Some(s) => s; None => "" }
+      let peer = match sessions_core::str_of(Some(args[1])) { Some(s) => s; None => "" }
+      let sess = match sessions_core::str_of(Some(args[2])) { Some(s) => s; None => "" }
+      let work = ctx.rjoin([ctx.room(ws, peer, sess), "work"])
+      fs.add_dir(work)
+      return base_codec::json_obj([("work", sessions_core::jstr(work)), ("write", sessions_core::jbool(false))])
+    }
+    if f == "node.jobJson" {
+      return args[0]
+    }
+    base_codec::json_null()
+  }
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  assert(start_done)
+
+  // 1. listLocal via remote_called_k
+  let mut list_res : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k("listLocal", [sessions_core::jstr("/repo")], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => list_res = Some(v)
+        _ => ()
+      }
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  match list_res {
+    Some(v) => {
+      assert(sessions_core::text_of(v, "prefix") == "sub/")
+      match sessions_core::field_of(v, "files") {
+        base_codec::Json::Arr(files) => assert(files.length() == 1)
+        _ => panic("expected files array")
+      }
+    }
+    None => panic("listLocal did not succeed")
+  }
+
+  // 2. Mirror name collision: prepare /a/proj (key1) -> "proj", then /b/proj (key2) -> "proj-<8hex>"
+  let mut prep1 : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k(
+      "handle",
+      [
+        sessions_core::jstr("ws1"),
+        sessions_core::jstr("peer1"),
+        base_codec::json_obj([
+          ("method", sessions_core::jstr("task.prepare")),
+          ("session", sessions_core::jstr("s1")),
+          ("key", sessions_core::jstr("k1")),
+          ("spec", base_codec::json_obj([
+            ("command", sessions_core::jstr("echo hi")),
+            ("dir", sessions_core::jstr("/a/proj")),
+          ])),
+        ]),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => prep1 = Some(v)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  match prep1 {
+    Some(v) => assert(sessions_core::text_of(v, "dir") == "proj")
+    None => panic("prep1 failed")
+  }
+
+  let mut prep2 : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k(
+      "handle",
+      [
+        sessions_core::jstr("ws1"),
+        sessions_core::jstr("peer1"),
+        base_codec::json_obj([
+          ("method", sessions_core::jstr("task.prepare")),
+          ("session", sessions_core::jstr("s1")),
+          ("key", sessions_core::jstr("k2")),
+          ("spec", base_codec::json_obj([
+            ("command", sessions_core::jstr("echo two")),
+            ("dir", sessions_core::jstr("/b/proj")),
+          ])),
+        ]),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => prep2 = Some(v)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  let expected_m2 = "proj-" + ctx.rhash(sessions_core::jstr("/b/proj")).slice(0, 8)
+  match prep2 {
+    Some(v) => assert(sessions_core::text_of(v, "dir") == expected_m2)
+    None => panic("prep2 failed")
+  }
+
+  // 3. sync.begin -> sync.manifest (paged) -> sync.base -> sync.put -> sync.commit on k1
+  let mut sb_res : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k(
+      "handle",
+      [
+        sessions_core::jstr("ws1"),
+        sessions_core::jstr("peer1"),
+        base_codec::json_obj([
+          ("method", sessions_core::jstr("sync.begin")),
+          ("session", sessions_core::jstr("s1")),
+          ("key", sessions_core::jstr("k1")),
+          ("safe", sessions_core::jnum(1.0)),
+        ]),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => sb_res = Some(v)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  let sid = match sb_res {
+    Some(v) => sessions_core::text_of(v, "id")
+    None => panic("sync.begin failed")
+  }
+  assert(sid != "")
+
+  // sync.manifest page 0 -> next = 1
+  let mut sm0 : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k(
+      "handle",
+      [
+        sessions_core::jstr("ws1"),
+        sessions_core::jstr("peer1"),
+        base_codec::json_obj([
+          ("method", sessions_core::jstr("sync.manifest")),
+          ("session", sessions_core::jstr("s1")),
+          ("key", sessions_core::jstr("k1")),
+          ("id", sessions_core::jstr(sid)),
+          ("after", sessions_core::jint(0)),
+        ]),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => sm0 = Some(v)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  match sm0 {
+    Some(v) => {
+      assert(sessions_core::int_of(sessions_core::jget(v, "next")) == 1)
+      match sessions_core::field_of(v, "entries") {
+        base_codec::Json::Arr(e) => assert(e.length() == 1)
+        _ => panic("expected entries")
+      }
+    }
+    None => panic("sync.manifest failed")
+  }
+
+  // sync.base page 0 -> next = null
+  let mut sb0 : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k(
+      "handle",
+      [
+        sessions_core::jstr("ws1"),
+        sessions_core::jstr("peer1"),
+        base_codec::json_obj([
+          ("method", sessions_core::jstr("sync.base")),
+          ("session", sessions_core::jstr("s1")),
+          ("key", sessions_core::jstr("k1")),
+          ("id", sessions_core::jstr(sid)),
+          ("after", sessions_core::jint(0)),
+        ]),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => sb0 = Some(v)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  match sb0 {
+    Some(v) => {
+      match sessions_core::field_of(v, "next") {
+        base_codec::Json::Null => ()
+        _ => panic("expected null next")
+      }
+    }
+    None => panic("sync.base failed")
+  }
+
+  // sync.put exercises RemoteHost::rnode_k("syncPacking") + rnode_k("syncPut")
+  let mut sp_res : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k(
+      "handle",
+      [
+        sessions_core::jstr("ws1"),
+        sessions_core::jstr("peer1"),
+        base_codec::json_obj([
+          ("method", sessions_core::jstr("sync.put")),
+          ("session", sessions_core::jstr("s1")),
+          ("key", sessions_core::jstr("k1")),
+          ("id", sessions_core::jstr(sid)),
+          ("blobs", base_codec::json_arr([])),
+        ]),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => sp_res = Some(v)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  match sp_res {
+    Some(v) => assert(sessions_core::int_of(sessions_core::jget(v, "pieces")) == 2)
+    None => panic("sync.put failed")
+  }
+  let mut saw_sync_packing = false
+  let mut saw_sync_put = false
+  for li in 0..<mem.stdout_lines.length() {
+    if str_contains(mem.stdout_lines[li], "\"node.syncPacking\"") {
+      saw_sync_packing = true
+    }
+    if str_contains(mem.stdout_lines[li], "\"node.syncPut\"") {
+      saw_sync_put = true
+    }
+  }
+  assert(saw_sync_packing && saw_sync_put)
+
+  // sync.commit (final = true) marks k1 synced
+  let mut sc_res : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k(
+      "handle",
+      [
+        sessions_core::jstr("ws1"),
+        sessions_core::jstr("peer1"),
+        base_codec::json_obj([
+          ("method", sessions_core::jstr("sync.commit")),
+          ("session", sessions_core::jstr("s1")),
+          ("key", sessions_core::jstr("k1")),
+          ("id", sessions_core::jstr(sid)),
+          ("set", base_codec::json_arr([])),
+          ("remove", base_codec::json_arr([])),
+          ("final", sessions_core::jbool(true)),
+        ]),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => sc_res = Some(v)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  match sc_res {
+    Some(v) => assert(sessions_core::int_of(sessions_core::jget(v, "version")) == 4)
+    None => panic("sync.commit failed")
+  }
+
+  // 4a. task.start on k1 WITH submodules configured on its manifest
+  let room = ctx.room("ws1", "peer1", "s1")
+  let m1_manifest = ctx.rjoin([room, "mirrors", "proj.json"])
+  sub_manifests.set(m1_manifest, "# sf_submodule checkout")
+  fs.add_dir(ctx.rjoin([room, "work", "proj"]))
+  let mut st1_ok = false
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k(
+      "handle",
+      [
+        sessions_core::jstr("ws1"),
+        sessions_core::jstr("peer1"),
+        base_codec::json_obj([
+          ("method", sessions_core::jstr("task.start")),
+          ("session", sessions_core::jstr("s1")),
+          ("key", sessions_core::jstr("k1")),
+        ]),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => st1_ok = true
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  assert(st1_ok)
+  assert(started_commands.length() == 1)
+  assert(started_commands[0] == "# sf_submodule checkout\necho hi")
+
+  // 4b. task.start on k2 WITHOUT submodules (first sync k2, then start without manifest entry in sub_manifests)
+  let mut sb2_res : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k(
+      "handle",
+      [
+        sessions_core::jstr("ws1"),
+        sessions_core::jstr("peer1"),
+        base_codec::json_obj([
+          ("method", sessions_core::jstr("sync.begin")),
+          ("session", sessions_core::jstr("s1")),
+          ("key", sessions_core::jstr("k2")),
+        ]),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => sb2_res = Some(v)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  let sid2 = match sb2_res {
+    Some(v) => sessions_core::text_of(v, "id")
+    None => panic("sync.begin k2 failed")
+  }
+  let mut sc2_ok = false
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k(
+      "handle",
+      [
+        sessions_core::jstr("ws1"),
+        sessions_core::jstr("peer1"),
+        base_codec::json_obj([
+          ("method", sessions_core::jstr("sync.commit")),
+          ("session", sessions_core::jstr("s1")),
+          ("key", sessions_core::jstr("k2")),
+          ("id", sessions_core::jstr(sid2)),
+          ("set", base_codec::json_arr([])),
+          ("remove", base_codec::json_arr([])),
+          ("final", sessions_core::jbool(true)),
+        ]),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => sc2_ok = true
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  assert(sc2_ok)
+  fs.add_dir(ctx.rjoin([room, "work", expected_m2]))
+  let mut st2_ok = false
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k(
+      "handle",
+      [
+        sessions_core::jstr("ws1"),
+        sessions_core::jstr("peer1"),
+        base_codec::json_obj([
+          ("method", sessions_core::jstr("task.start")),
+          ("session", sessions_core::jstr("s1")),
+          ("key", sessions_core::jstr("k2")),
+        ]),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => st2_ok = true
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  assert(st2_ok)
+  assert(started_commands.length() == 2)
+  assert(started_commands[1] == "echo two")
+
+  // 4c. sync.changes on finished k1
+  let mut sch_res : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k(
+      "handle",
+      [
+        sessions_core::jstr("ws1"),
+        sessions_core::jstr("peer1"),
+        base_codec::json_obj([
+          ("method", sessions_core::jstr("sync.changes")),
+          ("session", sessions_core::jstr("s1")),
+          ("key", sessions_core::jstr("k1")),
+        ]),
+      ],
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => sch_res = Some(v)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  let rpc_handler_exited = fn(f : String, args : Array[base_codec::Json]) -> base_codec::Json {
+    if f == "store.getJob" {
+      return base_codec::json_obj([("state", sessions_core::jstr("exited"))])
+    }
+    rpc_handler(f, args)
+  }
+  pump_all(host, gen, mem, fs, cur, rpc_handler_exited)
+  match sch_res {
+    Some(v) => {
+      assert(sessions_core::text_of(v, "base") == "proj")
+      match sessions_core::field_of(v, "more") {
+        base_codec::Json::Bool(false) => ()
+        _ => panic("expected more: false")
+      }
+    }
+    None => panic("sync.changes failed")
+  }
+
+  // Verify lanes & writing maps are completely drained and zero live tasks remain.
+  assert(state.lanes.length() == 0)
+  assert(state.writing.length() == 0)
+  assert(host.hub_timers.length() == 0)
+  assert_holding_zero(host)
+}
+
+// ── Test 2: bounded_k 1:1 MB active trajectory, timeout, and waiter-only interruption ──
+
+test "sessions_remote: bounded_k normal, timeout active trajectory, and waiter-only interruption" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  let ctx = RemoteCtx::new(host, gen, "/", state, sessions_core::SessionDispatch::stub(), DirsyncPort::stub())
+
+  // Case A: resolves before timeout (active: 1 -> waiting 1 -> resolved 1)
+  gen.counters.active = 1
+  let d1 : effect::Deferred[Int] = effect::Deferred::new()
+  let mut res1 : Option[Int] = None
+  let mut done1 = false
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.bounded_k(d1, 1000.0, fn(ex : effect::Exit[Option[Int]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => {
+          res1 = v
+          done1 = true
+        }
+        _ => ()
+      }
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  host.tick()
+  // Watcher incremented active (+1), caller decremented (-1) => net active == 1
+  assert(gen.counters.active == 1)
+  assert(state.timers.length() == 1)
+  assert(host.hub_timers.length() == 0)
+  let _ = d1.succeed(42)
+  host.tick()
+  assert(done1)
+  assert(opt_int_eq(res1, Some(42)))
+  assert(gen.counters.active == 1)
+  assert(state.timers.length() == 0)
+  assert(state.bounded_wakers.length() == 0)
+  assert_holding_zero(host)
+
+  // Case B: SAME producer `d2` stays unsettled across 3 consecutive timeouts + 1 waiter-only cancel.
+  // BEFORE `d2` ever settles:
+  // - during every wait window, `active` stays at baseline 1 (never drops to 0 / premature quiet);
+  // - on timeout or cancel, this call's own watcher is cancelled so `active` returns to 1 and
+  //   `rt.holding()` returns to 0 (zero dangling watchers, zero accumulation!).
+  let d2 : effect::Deferred[Int] = effect::Deferred::new()
+  for _round in 0..<3 {
+    let mut res_t : Option[Int] = Some(99)
+    let mut done_t = false
+    fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      ctx.bounded_k(d2, 500.0, fn(ex : effect::Exit[Option[Int]]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => {
+            res_t = v
+            done_t = true
+          }
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      })
+    })
+    host.tick()
+    assert(gen.counters.active == 1)
+    let tkeys = state.timers.keys()
+    assert(tkeys.length() == 1)
+    assert(ctx.handle_due(tkeys[0]))
+    host.tick()
+    assert(done_t)
+    assert(opt_int_eq(res_t, None))
+    assert(gen.counters.active == 1)
+    assert(state.timers.length() == 0)
+    assert(state.bounded_wakers.length() == 0)
+    assert_holding_zero(host)
+  }
+
+  // Case C: waiter-only interruption while unsealed on the SAME unsettled `d2`:
+  // cancels timer + cancels watcher + restores `active` to 1 with zero live tasks BEFORE `d2` settles.
+  let mut waiter_interrupted = false
+  let wf = gen.fibers.fork_daemon(
+    "bounded waiter",
+    fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      ctx.bounded_k(d2, 500.0, fn(ex : effect::Exit[Option[Int]]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => waiter_interrupted = true
+          _ => ()
+        }
+        fk(effect::Exit::Succeeded(()))
+      })
+    },
+    fn(_e : effect::EffectError) -> Unit { () },
+  )
+  host.tick()
+  assert(gen.counters.active == 1)
+  assert(state.timers.length() == 1)
+  wf.interrupt()
+  host.tick()
+  assert(waiter_interrupted)
+  assert(state.timers.length() == 0)
+  assert(state.bounded_wakers.length() == 0)
+  assert(gen.counters.active == 1)
+  assert_holding_zero(host)
+  // Settling `d2` afterwards is a clean no-op
+  let _ = d2.succeed(88)
+  host.tick()
+  assert(gen.counters.active == 1)
+  assert_holding_zero(host)
+}
+
+// ── Test 3: lanes FIFO serialization + automatic map eviction on zero holders+waiters (normal & interrupted) ──
+
+test "sessions_remote: lanes auto-evict on zero active_count including interrupted waiters" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  let ctx = RemoteCtx::new(host, gen, "/", state, sessions_core::SessionDispatch::stub(), DirsyncPort::stub())
+
+  let order : Array[String] = []
+  let gate1 : effect::Deferred[Unit] = effect::Deferred::new()
+  let mut done1 = false
+  let mut done2 = false
+
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.in_lane_k(
+      "lane-a",
+      fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        order.push("start-1")
+        gate1.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+          order.push("end-1")
+          lk(ex)
+        })
+      },
+      fn(_ex : effect::Exit[Unit]) -> Unit {
+        done1 = true
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  host.tick()
+  assert(state.lanes.contains("lane-a"))
+
+  // Spawn a waiter that will be interrupted before gate1 opens
+  let mut interrupted_waiter = false
+  let wf = gen.fibers.fork_daemon(
+    "interrupted waiter",
+    fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      ctx.in_lane_k(
+        "lane-a",
+        fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          order.push("never")
+          lk(effect::Exit::Succeeded(()))
+        },
+        fn(ex : effect::Exit[Unit]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => interrupted_waiter = true
+            _ => ()
+          }
+          fk(ex)
+        },
+      )
+    },
+    fn(_e : effect::EffectError) -> Unit { () },
+  )
+  host.tick()
+
+  // Queue a second normal waiter behind the interrupted one
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.in_lane_k(
+      "lane-a",
+      fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        order.push("start-2")
+        order.push("end-2")
+        lk(effect::Exit::Succeeded(()))
+      },
+      fn(_ex : effect::Exit[Unit]) -> Unit {
+        done2 = true
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  host.tick()
+
+  wf.interrupt()
+  host.tick()
+  assert(interrupted_waiter)
+  assert(state.lanes.contains("lane-a"))
+
+  let _ = gate1.succeed(())
+  host.tick()
+  assert(done1)
+  assert(done2)
+  assert(order.length() == 4)
+  assert(order[0] == "start-1" && order[1] == "end-1" && order[2] == "start-2" && order[3] == "end-2")
+  // Lane automatically evicted once holders + waiters == 0!
+  assert(state.lanes.length() == 0)
+  assert_holding_zero(host)
+
+  // Handoff-window interrupt: A releases -> grants B -> B interrupted BEFORE tick -> C acquires & finishes
+  let order2 : Array[String] = []
+  let gate_h : effect::Deferred[Unit] = effect::Deferred::new()
+  let mut b_interrupted = false
+  let mut c_done = false
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.in_lane_k(
+      "lane-h",
+      fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        order2.push("A")
+        gate_h.wait_k(lk)
+      },
+      fn(_ex : effect::Exit[Unit]) -> Unit { tk(effect::Exit::Succeeded(())) },
+    )
+  })
+  host.tick()
+  let bf = gen.fibers.fork_daemon(
+    "handoff B",
+    fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      ctx.in_lane_k(
+        "lane-h",
+        fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          order2.push("B-never")
+          lk(effect::Exit::Succeeded(()))
+        },
+        fn(ex : effect::Exit[Unit]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => b_interrupted = true
+            _ => ()
+          }
+          fk(ex)
+        },
+      )
+    },
+    fn(_e : effect::EffectError) -> Unit { () },
+  )
+  host.tick()
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.in_lane_k(
+      "lane-h",
+      fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        order2.push("C")
+        lk(effect::Exit::Succeeded(()))
+      },
+      fn(_ex : effect::Exit[Unit]) -> Unit {
+        c_done = true
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  host.tick()
+  // Release A: A's continuation will run on next tick? Wait: let's resolve gate_h,
+  // interrupt B immediately when A's release runs by interrupting B right after A finishes:
+  // Even better: release A via a synchronous callback inside A's body that interrupts B right after lane_release!
+  // Let's test direct handoff-window: resolve gate_h -> B's deferred is succeeded when A's waiter runs.
+  // In single-threaded cooperative tick: resolve gate_h, then interrupt B before B's resumed task runs!
+  // Since gate_h.wait_k resumes A in the same tick, we run a 2-step sequence:
+  // A releases -> B is granted (scheduled to ready queue) -> interrupt B before B runs!
+  let _ = gate_h.succeed(())
+  // Interrupt B while B is still queued / handed-off in the same tick batch
+  bf.interrupt()
+  host.tick()
+  assert(b_interrupted)
+  assert(c_done)
+  assert(order2.length() == 2 && order2[0] == "A" && order2[1] == "C")
+  assert(state.lanes.length() == 0)
+  assert_holding_zero(host)
+}
+
+// ── Test 4: remote_files delayed cleanup finalizer & HubGen rotation isolation ──
+
+test "sessions_remote: remote_files in_turn_k finalizer and HubGen rotation isolation" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen1 = sessions_core::HubGen::new(host, 1)
+  let state1 = RemoteState::new_with_fmt(test_fmt_num)
+  gen1.resources.add_retire_hook(fn() -> Unit { state1.retire() })
+  let ctx1 = RemoteCtx::new(host, gen1, "/", state1, sessions_core::SessionDispatch::stub(), DirsyncPort::stub())
+
+  let block : effect::Deferred[Unit] = effect::Deferred::new()
+  let mut interrupted = false
+  let _ = gen1.fibers.fork_daemon(
+    "blocked write",
+    fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      ctx1.in_turn_k(
+        "/data/remote/record.json",
+        fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          block.wait_k(tk)
+        },
+        fn(ex : effect::Exit[Unit]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => interrupted = true
+            _ => ()
+          }
+          fk(ex)
+        },
+      )
+    },
+    fn(_e : effect::EffectError) -> Unit { () },
+  )
+  host.tick()
+  assert(state1.writing.contains("/data/remote/record.json"))
+  let lines_before_rotate = mem.stdout_lines.length()
+  assert(lines_before_rotate >= 1)
+
+  // Rotate HubGen: seals gen1, closes gen1.fibers asynchronously, runs retire hook
+  let gen2 = sessions_core::rotate_hub_gen(host, gen1, base_codec::json_null())
+  host.tick()
+  assert(interrupted)
+  assert(state1.stopped)
+  assert(state1.writing.length() == 0)
+  // Sealed gen1 must NOT emit stale `wrote` lines into stdout after rotation!
+  assert(mem.stdout_lines.length() == lines_before_rotate)
+  assert(gen2.counters.epoch == 2)
+  assert_holding_zero(host)
+
+  // in_turn_k A -> B -> C barrier when B is interrupted while A is still writing:
+  // C must NOT overtake A!
+  let state2 = RemoteState::new_with_fmt(test_fmt_num)
+  let ctx2 = RemoteCtx::new(host, gen2, "/", state2, sessions_core::SessionDispatch::stub(), DirsyncPort::stub())
+  let turn_log : Array[String] = []
+  let gate_a : effect::Deferred[Unit] = effect::Deferred::new()
+  let mut b_int = false
+  let mut c_fin = false
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx2.in_turn_k(
+      "/data/remote/turn.json",
+      fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        turn_log.push("A-start")
+        gate_a.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+          turn_log.push("A-end")
+          wk(ex)
+        })
+      },
+      fn(_ex : effect::Exit[Unit]) -> Unit { tk(effect::Exit::Succeeded(())) },
+    )
+  })
+  host.tick()
+  let b_turn = gen2.fibers.fork_daemon(
+    "turn B",
+    fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      ctx2.in_turn_k(
+        "/data/remote/turn.json",
+        fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          turn_log.push("B-never")
+          wk(effect::Exit::Succeeded(()))
+        },
+        fn(ex : effect::Exit[Unit]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => b_int = true
+            _ => ()
+          }
+          fk(ex)
+        },
+      )
+    },
+    fn(_e : effect::EffectError) -> Unit { () },
+  )
+  host.tick()
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx2.in_turn_k(
+      "/data/remote/turn.json",
+      fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        turn_log.push("C-start")
+        turn_log.push("C-end")
+        wk(effect::Exit::Succeeded(()))
+      },
+      fn(_ex : effect::Exit[Unit]) -> Unit {
+        c_fin = true
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  host.tick()
+  // Interrupt B while A is still blocked on gate_a
+  b_turn.interrupt()
+  host.tick()
+  assert(b_int)
+  assert(!c_fin)
+  assert(turn_log.length() == 1 && turn_log[0] == "A-start")
+  // Now A finishes -> relay daemon unblocks C -> strict A -> C order
+  let _ = gate_a.succeed(())
+  host.tick()
+  assert(c_fin)
+  assert(turn_log.length() == 4)
+  assert(turn_log[0] == "A-start" && turn_log[1] == "A-end" && turn_log[2] == "C-start" && turn_log[3] == "C-end")
+  assert(state2.writing.length() == 0)
+  assert_holding_zero(host)
+
+  // write_json_k / write_whole_k in-flight cancellation:
+  // (a) Active gen: hold A's fs.rename, cancel A, queue B on same path ->
+  //     write barrier stays held until A's fs.rename completes, then B writes last,
+  //     final file == B and ZERO orphan .tmp files remain in directory!
+  let fs = MemFs::new("/")
+  let cur = PumpCursor::new()
+  cur.shell_cursor = mem.shell_calls.length()
+  cur.stdout_cursor = mem.stdout_lines.length()
+  let mut w_int = false
+  let wf = gen2.fibers.fork_daemon(
+    "write json A",
+    fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      ctx2.write_json_k(
+        "/data/remote/atomic.json",
+        base_codec::json_obj([("v", sessions_core::jstr("A"))]),
+        fn(ex : effect::Exit[Unit]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => w_int = true
+            _ => ()
+          }
+          fk(ex)
+        },
+      )
+    },
+    fn(_e : effect::EffectError) -> Unit { () },
+  )
+  // Pump shell calls until A's fs.rename is issued (hold fs.rename without completing it!)
+  let mut rename_seen = false
+  let mut steps1 = 0
+  while !rename_seen && steps1 < 50 {
+    steps1 = steps1 + 1
+    host.tick()
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let call = mem.shell_calls[cur.shell_cursor]
+      if call.op == "fs.rename" {
+        rename_seen = true
+        break
+      }
+      cur.shell_cursor = cur.shell_cursor + 1
+      let (json, err) = fs.handle_shell(call)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: call.id, error: err, json: json, bytes: None }))
+    }
+  }
+  assert(rename_seen)
+  wf.interrupt()
+  host.tick()
+  assert(w_int)
+  // Barrier MUST still be held while A's in-flight fs.rename has not finished
+  assert(state2.writing.contains("/data/remote/atomic.json"))
+  let shell_before_b = mem.shell_calls.length()
+  let mut b_done = false
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx2.write_json_k(
+      "/data/remote/atomic.json",
+      base_codec::json_obj([("v", sessions_core::jstr("B"))]),
+      fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => b_done = true
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  host.tick()
+  // B must NOT have started its own shell I/O while A's rename is still pending
+  assert(!b_done)
+  assert(mem.shell_calls.length() == shell_before_b)
+  // Now deliver A's held fs.rename and pump all -> B runs after A and wins!
+  pump_all(host, gen2, mem, fs, cur, fn(_f : String, _a : Array[base_codec::Json]) -> base_codec::Json { base_codec::json_null() })
+  assert(b_done)
+  assert(state2.writing.length() == 0)
+  assert(state2.rename_inflight.length() == 0)
+  match fs.files.get("/data/remote/atomic.json") {
+    Some(content) => assert(content == "{\"v\":\"B\"}")
+    None => panic("expected atomic.json")
+  }
+  let dir_kids = fs.children_of("/data/remote")
+  for ki in 0..<dir_kids.length() {
+    assert(!dir_kids[ki].ends_with(".tmp"))
+  }
+  assert_holding_zero(host)
+
+  // (b) Active gen: hold A2's fs.put, cancel A2, then deliver fs.put success ->
+  //     daemon deletes orphan .tmp file so directory has ZERO .tmp files!
+  let mut w_put_int = false
+  let wf_put = gen2.fibers.fork_daemon(
+    "write whole put cancel",
+    fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      ctx2.write_whole_k("/data/remote/put_cancel.json", "{\"v\":\"X\"}", fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => w_put_int = true
+          _ => ()
+        }
+        fk(ex)
+      })
+    },
+    fn(_e : effect::EffectError) -> Unit { () },
+  )
+  let mut put_seen = false
+  let mut steps_put = 0
+  while !put_seen && steps_put < 50 {
+    steps_put = steps_put + 1
+    host.tick()
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let call = mem.shell_calls[cur.shell_cursor]
+      if call.op == "fs.put" {
+        put_seen = true
+        break
+      }
+      cur.shell_cursor = cur.shell_cursor + 1
+      let (json, err) = fs.handle_shell(call)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: call.id, error: err, json: json, bytes: None }))
+    }
+  }
+  assert(put_seen)
+  wf_put.interrupt()
+  host.tick()
+  assert(w_put_int)
+  // Deliver the in-flight fs.put and pump -> daemon cleans up the orphan .tmp
+  pump_all(host, gen2, mem, fs, cur, fn(_f : String, _a : Array[base_codec::Json]) -> base_codec::Json { base_codec::json_null() })
+  assert(!fs.files.contains("/data/remote/put_cancel.json"))
+  let dir_kids2 = fs.children_of("/data/remote")
+  for ki in 0..<dir_kids2.length() {
+    assert(!dir_kids2[ki].ends_with(".tmp"))
+  }
+  assert_holding_zero(host)
+
+  // (b2) RemoteHost.write_whole_k + RemoteHost.read_text_k via real handle("sync.commit"):
+  //      - Disk manifest starts at v1;
+  //      - A (expecting v1 -> writes v2 via h.write_whole_k) has its fs.rename held, then A is cancelled;
+  //      - B (retry expecting v1) starts BEFORE A's rename lands; B's non-blocking I/O runs while A's rename
+  //        is still held, and B's h.read_text_k(manifest_sc) MUST wait on written_k(manifest_sc);
+  //      - Release A's fs.rename -> B reads v2, detects version conflict, does NOT issue a second rename!
+  //      - Also assert RemoteHost.write_whole_k emits ZERO `writing`/`wrote` tells for manifest_sc!
+  let mut ds_barrier = DirsyncPort::stub()
+  ds_barrier = DirsyncPort::{
+    sync_dir_k: ds_barrier.sync_dir_k,
+    list_local_k: ds_barrier.list_local_k,
+    sync_begin_k: ds_barrier.sync_begin_k,
+    listed_entries: ds_barrier.listed_entries,
+    page_of: ds_barrier.page_of,
+    put_blobs_k: ds_barrier.put_blobs_k,
+    plan_part: fn(_req : base_codec::Json) -> Result[base_codec::Json, effect::EffectError] { Ok(base_codec::json_obj([])) },
+    submodules_part: fn(_req : base_codec::Json) -> Result[Array[(String, String, String)], effect::EffectError] { Ok([]) },
+    sync_commit_k: fn(
+      h : RemoteHost,
+      _work : String,
+      _m : String,
+      _syncing : String,
+      manifest_path : String,
+      _ver : base_codec::Json,
+      _dir : String,
+      _subs : Array[(String, String, String)],
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      (h.read_text_k)(manifest_path, fn(rex : effect::Exit[Option[String]]) -> Unit {
+        match rex {
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(Some(text)) => {
+            if !str_contains(text, "\"version\":1") {
+              k(effect::Exit::Failed(refusal("manifest version conflict")))
+              return
+            }
+            (h.write_whole_k)(manifest_path, "{\"version\":2}", fn(wex : effect::Exit[Unit]) -> Unit {
+              match wex {
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_obj([("version", sessions_core::jint(2))])))
+              }
+            })
+          }
+          effect::Exit::Succeeded(None) => k(effect::Exit::Failed(refusal("missing manifest")))
+        }
+      })
+    },
+    sync_changes_k: ds_barrier.sync_changes_k,
+    read_manifest_k: ds_barrier.read_manifest_k,
+    with_submodules_k: ds_barrier.with_submodules_k,
+    is_stub: false,
+  }
+  state2.root = "/data/remote"
+  let ctx2_ds = RemoteCtx::new(host, gen2, "/", state2, sessions_core::SessionDispatch::stub(), ds_barrier)
+  let tid_sc = ctx2_ds.rhash(base_codec::json_arr([
+    sessions_core::jstr("ws1"),
+    sessions_core::jstr("peer1"),
+    sessions_core::jstr("s1"),
+    sessions_core::jstr("ksc"),
+  ]))
+  let room_sc = ctx2_ds.room("ws1", "peer1", "s1")
+  let manifest_sc = ctx2_ds.rjoin([room_sc, "mirrors", "proj.json"])
+  fs.add_file(manifest_sc, "{\"version\":1}")
+  fs.add_file(
+    ctx2_ds.rjoin([state2.root, "incoming", tid_sc, "task.json"]),
+    "{\"workspace\":\"ws1\",\"station\":\"peer1\",\"session\":\"s1\",\"key\":\"ksc\",\"layout\":\"session\",\"mirror\":\"proj\",\"spec\":{\"command\":\"echo\",\"dir\":\"/repo\"}}",
+  )
+  fs.add_file(
+    ctx2_ds.rjoin([room_sc, "sync", "proj", "state.json"]),
+    "{\"id\":\"sid-sc\",\"key\":\"ksc\",\"version\":1}",
+  )
+  let sc_rpc = fn(f : String, _a : Array[base_codec::Json]) -> base_codec::Json {
+    if f == "store.now" {
+      return sessions_core::jnum(20000.0)
+    }
+    base_codec::json_null()
+  }
+  let sc_req = base_codec::json_obj([
+    ("method", sessions_core::jstr("sync.commit")),
+    ("session", sessions_core::jstr("s1")),
+    ("key", sessions_core::jstr("ksc")),
+    ("id", sessions_core::jstr("sid-sc")),
+    ("final", sessions_core::jbool(true)),
+  ])
+  let stdout_before_sc = mem.stdout_lines.length()
+  let mut sc_a_int = false
+  let sc_fa = gen2.fibers.fork_daemon(
+    "sync.commit A",
+    fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      ctx2_ds.remote_called_k("handle", [sessions_core::jstr("ws1"), sessions_core::jstr("peer1"), sc_req], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => sc_a_int = true
+          _ => ()
+        }
+        fk(effect::Exit::Succeeded(()))
+      })
+    },
+    fn(_e : effect::EffectError) -> Unit { () },
+  )
+  // Pump RPCs + shell calls until A's fs.rename for manifest_sc is issued (do NOT complete it yet!)
+  let mut held_rename_idx = -1
+  let mut steps_sc = 0
+  while held_rename_idx < 0 && steps_sc < 100 {
+    steps_sc = steps_sc + 1
+    host.tick()
+    while cur.stdout_cursor < mem.stdout_lines.length() {
+      let line = mem.stdout_lines[cur.stdout_cursor]
+      cur.stdout_cursor = cur.stdout_cursor + 1
+      match sessions_core::parse_json_strict(line) {
+        Ok(msg) => {
+          match sessions_core::jget(msg, "rpc") {
+            Some(base_codec::Json::Num(id_f, _)) => {
+              let f = sessions_core::text_of(msg, "fn")
+              let args = match sessions_core::field_of(msg, "args") { base_codec::Json::Arr(a) => a; _ => [] }
+              gen2.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", sc_rpc(f, args))]))
+            }
+            _ => ()
+          }
+        }
+        Err(_) => ()
+      }
+    }
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let call = mem.shell_calls[cur.shell_cursor]
+      if call.op == "fs.rename" && str_contains(call.json, "proj.json") {
+        held_rename_idx = cur.shell_cursor
+        cur.shell_cursor = cur.shell_cursor + 1
+        break
+      }
+      cur.shell_cursor = cur.shell_cursor + 1
+      let (json, err) = fs.handle_shell(call)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: call.id, error: err, json: json, bytes: None }))
+    }
+  }
+  assert(held_rename_idx >= 0)
+  sc_fa.interrupt()
+  host.tick()
+  assert(sc_a_int)
+  assert(state2.writing.contains(manifest_sc))
+
+  // Start retry B BEFORE A's fs.rename lands; pump B's non-blocking I/O (task.json, state.json, plan.jsonl, etc.)
+  // while keeping A's fs.rename held -> B MUST block in h.read_text_k -> written_k(manifest_sc) and NOT read old v1!
+  let mut sc_b_err = ""
+  let mut sc_b_done = false
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx2_ds.remote_called_k("handle", [sessions_core::jstr("ws1"), sessions_core::jstr("peer1"), sc_req], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Failed(e) => sc_b_err = sessions_core::error_message(e)
+        _ => ()
+      }
+      sc_b_done = true
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  pump_all(host, gen2, mem, fs, cur, sc_rpc)
+  // B is still waiting for A's rename barrier; MUST NOT have completed or read stale v1!
+  assert(!sc_b_done)
+  let shell_before_release = mem.shell_calls.length()
+
+  // Now deliver A's held fs.rename (v2 lands on disk) -> B wakes, reads v2, reports version conflict,
+  // and MUST NOT issue a second fs.rename for proj.json!
+  let held_call = mem.shell_calls[held_rename_idx]
+  let (hjson, herr) = fs.handle_shell(held_call)
+  host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: held_call.id, error: herr, json: hjson, bytes: None }))
+  pump_all(host, gen2, mem, fs, cur, sc_rpc)
+  assert(sc_b_done)
+  assert(str_contains(sc_b_err, "manifest version conflict"))
+  let mut extra_manifest_rename = false
+  for si in shell_before_release..<mem.shell_calls.length() {
+    if mem.shell_calls[si].op == "fs.rename" && str_contains(mem.shell_calls[si].json, "proj.json") {
+      extra_manifest_rename = true
+    }
+  }
+  assert(!extra_manifest_rename)
+  match fs.files.get(manifest_sc) {
+    Some(content) => assert(content == "{\"version\":2}")
+    None => panic("expected manifest_sc")
+  }
+  // Verify RemoteHost.write_whole_k emitted ZERO `writing`/`wrote` tells for manifest_sc!
+  for li in stdout_before_sc..<mem.stdout_lines.length() {
+    let ln = mem.stdout_lines[li]
+    if str_contains(ln, "proj.json") {
+      assert(!str_contains(ln, "\"tell\":\"writing\""))
+      assert(!str_contains(ln, "\"tell\":\"wrote\""))
+    }
+  }
+  assert(state2.writing.length() == 0)
+  assert(state2.rename_inflight.length() == 0)
+  assert_holding_zero(host)
+
+  // (c) Sealed gen (rotation during rename) -> must NOT emit fs.remove after seal
+  let mut w_int_sealed = false
+  let _ = gen2.fibers.fork_daemon(
+    "write whole sealed",
+    fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      ctx2.write_whole_k("/data/remote/atomic2.json", "{\"v\":2}", fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => w_int_sealed = true
+          _ => ()
+        }
+        fk(ex)
+      })
+    },
+    fn(_e : effect::EffectError) -> Unit { () },
+  )
+  let mut rename2_seen = false
+  let mut steps2 = 0
+  while !rename2_seen && steps2 < 50 {
+    steps2 = steps2 + 1
+    host.tick()
+    while cur.shell_cursor < mem.shell_calls.length() {
+      let call = mem.shell_calls[cur.shell_cursor]
+      if call.op == "fs.rename" {
+        rename2_seen = true
+        break
+      }
+      cur.shell_cursor = cur.shell_cursor + 1
+      let (json, err) = fs.handle_shell(call)
+      host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: call.id, error: err, json: json, bytes: None }))
+    }
+  }
+  assert(rename2_seen)
+  let shell_before_seal = mem.shell_calls.length()
+  let _gen3 = sessions_core::rotate_hub_gen(host, gen2, base_codec::json_null())
+  host.tick()
+  assert(w_int_sealed)
+  assert(mem.shell_calls.length() == shell_before_seal)
+  assert_holding_zero(host)
+}
+
+// ── Test 5: rhash + dual separator (`/` and `\`) parity + multi-round rt.holding() zero check ──
+
+test "sessions_remote: rhash, dual separators (/ and \\), and multi-round zero leaks" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+
+  // rhash parity: JS object key order invariance + exact SHA-256 vector
+  let state_posix = RemoteState::new_with_fmt(test_fmt_num)
+  let ctx_posix = RemoteCtx::new(host, gen, "/", state_posix, sessions_core::SessionDispatch::stub(), DirsyncPort::stub())
+  let h1 = ctx_posix.rhash(base_codec::json_obj([("b", sessions_core::jint(2)), ("0", sessions_core::jstr("x"))]))
+  let h2 = ctx_posix.rhash(base_codec::json_obj([("0", sessions_core::jstr("x")), ("b", sessions_core::jint(2))]))
+  assert(h1 == h2)
+  assert(is_hex64(h1))
+  assert(h1 == "a685582ac9d75842c107a49b52d53327d8d32b7c23e590fe739eefa036a2074b")
+
+  // list_bounded merge sort: rank asc -> time desc -> key asc
+  let rows : Array[(Int, Double, String, base_codec::Json)] = [
+    (2, 100.0, "k-b", base_codec::json_obj([("key", sessions_core::jstr("k-b")), ("spec", base_codec::json_obj([])), ("job", base_codec::json_null())])),
+    (0, 50.0, "k-run", base_codec::json_obj([("key", sessions_core::jstr("k-run")), ("spec", base_codec::json_obj([])), ("job", base_codec::json_null())])),
+    (2, 200.0, "k-new", base_codec::json_obj([("key", sessions_core::jstr("k-new")), ("spec", base_codec::json_obj([])), ("job", base_codec::json_null())])),
+    (2, 100.0, "k-a", base_codec::json_obj([("key", sessions_core::jstr("k-a")), ("spec", base_codec::json_obj([])), ("job", base_codec::json_null())])),
+    (1, 10.0, "k-q", base_codec::json_obj([("key", sessions_core::jstr("k-q")), ("spec", base_codec::json_obj([])), ("job", base_codec::json_null())])),
+  ]
+  let bounded = ctx_posix.list_bounded(rows)
+  match sessions_core::field_of(bounded, "tasks") {
+    base_codec::Json::Arr(ts) => {
+      assert(ts.length() == 5)
+      assert(sessions_core::text_of(ts[0], "key") == "k-run")
+      assert(sessions_core::text_of(ts[1], "key") == "k-q")
+      assert(sessions_core::text_of(ts[2], "key") == "k-new")
+      assert(sessions_core::text_of(ts[3], "key") == "k-a")
+      assert(sessions_core::text_of(ts[4], "key") == "k-b")
+    }
+    _ => panic("expected tasks array")
+  }
+
+  // Multi-key JSON insertion order via with_field
+  let mut ordered = base_codec::json_obj([("z", sessions_core::jint(1)), ("a", sessions_core::jint(2))])
+  ordered = with_field(ordered, "m", sessions_core::jint(3))
+  ordered = with_field(ordered, "a", sessions_core::jint(20))
+  assert(ctx_posix.js_text(ordered) == "{\"z\":1,\"a\":20,\"m\":3}")
+
+  // POSIX paths
+  assert(ctx_posix.rjoin(["/root", "sessions", "abc"]) == "/root/sessions/abc")
+  assert(ctx_posix.rdirname("/root/sessions/abc") == "/root/sessions")
+  assert(ctx_posix.rbasename("/root/sessions/abc") == "abc")
+
+  // Windows backslash paths
+  let state_win = RemoteState::new_with_fmt(test_fmt_num)
+  let ctx_win = RemoteCtx::new(host, gen, "\\", state_win, sessions_core::SessionDispatch::stub(), DirsyncPort::stub())
+  assert(ctx_win.rjoin(["C:\\data", "sessions", "abc"]) == "C:\\data\\sessions\\abc")
+  assert(ctx_win.rdirname("C:\\data\\sessions\\abc") == "C:\\data\\sessions")
+  assert(ctx_win.rbasename("C:\\data\\sessions\\abc") == "abc")
+  assert(clean_mirror_leaf("C:\\Users\\dev\\my-repo\\") == "my-repo")
+  assert(clean_mirror_leaf("/Users/dev/my-repo/") == "my-repo")
+
+  // file_path_k rejects symlinks, `..`, and leading `.` on both separators
+  let fs_win = MemFs::new("\\")
+  fs_win.add_dir("C:\\work")
+  fs_win.add_link("C:\\work\\badlink")
+  let mut bad_dotdot = false
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx_win.file_path_k("C:\\work", "..\\secret", false, false, fn(ex : effect::Exit[String]) -> Unit {
+      match ex {
+        effect::Exit::Failed(_) => bad_dotdot = true
+        _ => ()
+      }
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  let mut bad_link = false
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx_win.file_path_k("C:\\work", "badlink\\file.txt", false, false, fn(ex : effect::Exit[String]) -> Unit {
+      match ex {
+        effect::Exit::Failed(_) => bad_link = true
+        _ => ()
+      }
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  let mut good_win = ""
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx_win.file_path_k("C:\\work", "sub\\ok.txt", false, false, fn(ex : effect::Exit[String]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(p) => good_win = p
+        _ => ()
+      }
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  let cur_win = PumpCursor::new()
+  pump_all(host, gen, mem, fs_win, cur_win, fn(_f : String, _a : Array[base_codec::Json]) -> base_codec::Json { base_codec::json_null() })
+  assert(bad_dotdot)
+  assert(bad_link)
+  assert(good_win == "C:\\work\\sub\\ok.txt")
+
+  // Multi-round lane + bounded stress: verify all maps & rt.holding() return to 0
+  for round in 0..<25 {
+    let lane = "lane-" + round.to_string()
+    let mut ran = false
+    ctx_posix.in_lane_k(
+      lane,
+      fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        ran = true
+        lk(effect::Exit::Succeeded(()))
+      },
+      fn(_ex : effect::Exit[Unit]) -> Unit { () },
+    )
+    assert(ran)
+    let d : effect::Deferred[Int] = effect::Deferred::new()
+    let _ = d.succeed(round)
+    let mut got : Option[Int] = None
+    ctx_posix.bounded_k(d, 100.0, fn(ex : effect::Exit[Option[Int]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => got = v
+        _ => ()
+      }
+    })
+    assert(opt_int_eq(got, Some(round)))
+  }
+  host.tick()
+  assert(state_posix.lanes.length() == 0)
+  assert(state_posix.writing.length() == 0)
+  assert(state_posix.syncs.length() == 0)
+  assert(state_posix.cleans.length() == 0)
+  assert(state_win.lanes.length() == 0)
+  assert_holding_zero(host)
+}
+
+// ── Test 6: clean_request_k pending + sync_of_k coalescing + source tool start sync_dir_k ──
+
+test "sessions_remote: clean_request_k pending/expiry and sync_of_k coalescing + tool start" {
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  let fs = MemFs::new("/")
+  let cur = PumpCursor::new()
+  let sync_gates : Array[effect::Deferred[base_codec::Json]] = []
+  let sync_keys : Array[String] = []
+  let mut dirsync = DirsyncPort::stub()
+  dirsync = DirsyncPort::{
+    sync_dir_k: fn(
+      _h : RemoteHost,
+      _st : String,
+      _ws : String,
+      _sess : String,
+      key : String,
+      _dir : String,
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      sync_keys.push(key)
+      let g : effect::Deferred[base_codec::Json] = effect::Deferred::new()
+      sync_gates.push(g)
+      g.wait_k(k)
+    },
+    list_local_k: dirsync.list_local_k,
+    sync_begin_k: dirsync.sync_begin_k,
+    listed_entries: dirsync.listed_entries,
+    page_of: dirsync.page_of,
+    put_blobs_k: dirsync.put_blobs_k,
+    plan_part: dirsync.plan_part,
+    submodules_part: dirsync.submodules_part,
+    sync_commit_k: dirsync.sync_commit_k,
+    sync_changes_k: dirsync.sync_changes_k,
+    read_manifest_k: dirsync.read_manifest_k,
+    with_submodules_k: dirsync.with_submodules_k,
+    is_stub: false,
+  }
+  let ctx = RemoteCtx::new(host, gen, "/", state, sessions_core::SessionDispatch::stub(), dirsync)
+
+  let mut now_ms = 50000.0
+  let rpc_handler = fn(f : String, args : Array[base_codec::Json]) -> base_codec::Json {
+    if f == "store.now" {
+      return sessions_core::jnum(now_ms)
+    }
+    if f == "store.getSession" {
+      return base_codec::json_obj([
+        ("ws", sessions_core::jstr("ws1")),
+        ("workspace", sessions_core::jstr("/ws")),
+        ("createdBy", sessions_core::jstr("u1")),
+      ])
+    }
+    if f == "node.cloudState" {
+      return base_codec::json_obj([("workspace", sessions_core::jstr("ws1")), ("station", sessions_core::jstr("st0"))])
+    }
+    if f == "node.sandboxes" || f == "node.remoteSandboxes" {
+      return base_codec::json_arr([])
+    }
+    if f == "node.ask" {
+      let req = args[1]
+      let m = sessions_core::text_of(req, "method")
+      if m == "peers" {
+        return base_codec::json_obj([("stations", base_codec::json_arr([]))])
+      }
+      if m == "task.start" {
+        return base_codec::json_obj([("key", sessions_core::field_of(req, "key")), ("push", sessions_core::jbool(true))])
+      }
+    }
+    base_codec::json_null()
+  }
+
+  // 1. sync_of_k coalescing for same key & waiting on prior run for different key
+  let mut run1_id = 0.to_int64()
+  let mut run2_id = 0.to_int64()
+  let mut run3_id = 0.to_int64()
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.sync_of_k("sync-id-1", "k1", "st1", "ws1", "s1", "/repo", fn(ex : effect::Exit[SyncRun]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(r) => run1_id = r.id
+        _ => ()
+      }
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  assert(run1_id != 0.to_int64())
+  assert(sync_keys.length() == 1 && sync_keys[0] == "k1")
+
+  // Same key coalesces to run1
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.sync_of_k("sync-id-1", "k1", "st1", "ws1", "s1", "/repo", fn(ex : effect::Exit[SyncRun]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(r) => run2_id = r.id
+        _ => ()
+      }
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  assert(run2_id == run1_id)
+  assert(sync_keys.length() == 1)
+
+  // Different key starts a new run that waits for run1 before invoking sync_dir_k
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.sync_of_k("sync-id-1", "k2", "st1", "ws1", "s1", "/repo", fn(ex : effect::Exit[SyncRun]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(r) => run3_id = r.id
+        _ => ()
+      }
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  assert(run3_id != run1_id)
+  assert(sync_keys.length() == 1)
+  let _ = sync_gates[0].succeed(base_codec::json_obj([("written", sessions_core::jint(1)), ("prefix", sessions_core::jstr(""))]))
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  assert(sync_keys.length() == 2 && sync_keys[1] == "k2")
+  let _ = sync_gates[1].succeed(base_codec::json_obj([("written", sessions_core::jint(2)), ("prefix", sessions_core::jstr(""))]))
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  let _ = state.syncs.remove("sync-id-1")
+
+  // 2. Source-side tool("station_task", ..., {"action":"start"}) invokes sync_dir_k and returns syncing: true on timeout
+  let prep_name = ctx.rhash(base_codec::json_arr([
+    sessions_core::jstr("ws1"),
+    sessions_core::jstr("s1"),
+    sessions_core::jstr("st1"),
+    sessions_core::jstr("kt"),
+  ])) + ".json"
+  let prep_path = ctx.rjoin([ctx.prepared_dir("s1"), prep_name])
+  fs.add_file(prep_path, "{\"workspace\":\"ws1\",\"session\":\"s1\",\"station\":\"st1\",\"key\":\"kt\",\"dir\":\"/repo\",\"back\":null,\"small\":false,\"screen\":false}")
+  let mut start_ans1 : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.tool_k(
+      "station_task",
+      "s1",
+      base_codec::json_obj([
+        ("station", sessions_core::jstr("st1")),
+        ("key", sessions_core::jstr("kt")),
+        ("action", sessions_core::jstr("start")),
+      ]),
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => start_ans1 = Some(v)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  assert(sync_keys.length() == 3 && sync_keys[2] == "kt")
+  let st_timers = state.timers.keys()
+  assert(st_timers.length() == 1)
+  assert(ctx.handle_due(st_timers[0]))
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  match start_ans1 {
+    Some(v) => {
+      match sessions_core::field_of(v, "syncing") {
+        base_codec::Json::Bool(true) => ()
+        _ => panic("expected syncing: true")
+      }
+    }
+    None => panic("expected syncing answer")
+  }
+  // Finish the sync and call start again -> succeeds and removes syncs entry
+  let _ = sync_gates[2].succeed(base_codec::json_obj([("written", sessions_core::jint(3)), ("prefix", sessions_core::jstr(""))]))
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  let mut start_ans2 : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.tool_k(
+      "station_task",
+      "s1",
+      base_codec::json_obj([
+        ("station", sessions_core::jstr("st1")),
+        ("key", sessions_core::jstr("kt")),
+        ("action", sessions_core::jstr("start")),
+      ]),
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => start_ans2 = Some(v)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  match start_ans2 {
+    Some(v) => assert(sessions_core::text_of(v, "key") == "kt")
+    None => panic("expected completed start answer")
+  }
+  assert(state.syncs.length() == 0)
+
+  // 3. clean_request_k pending path: hold lane -> timeout -> {mirror, pending: true}, retry joins same SyncRun
+  let lane_gate : effect::Deferred[Unit] = effect::Deferred::new()
+  let room = ctx.room("ws1", "peer1", "s1")
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.in_lane_k(
+      room,
+      fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit { lane_gate.wait_k(lk) },
+      fn(_ex : effect::Exit[Unit]) -> Unit { tk(effect::Exit::Succeeded(())) },
+    )
+  })
+  host.tick()
+  let clean_req = base_codec::json_obj([
+    ("method", sessions_core::jstr("task.clean")),
+    ("session", sessions_core::jstr("s1")),
+    ("mirror", sessions_core::jstr("proj")),
+  ])
+  let mut clean1 : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.clean_request_k("ws1", "peer1", clean_req, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => clean1 = Some(v)
+        _ => ()
+      }
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  let ct1 = state.timers.keys()
+  assert(ct1.length() == 1)
+  assert(ctx.handle_due(ct1[0]))
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  match clean1 {
+    Some(v) => {
+      match sessions_core::field_of(v, "pending") {
+        base_codec::Json::Bool(true) => ()
+        _ => panic("expected pending: true")
+      }
+    }
+    None => panic("clean1 did not resolve")
+  }
+  assert(state.cleans.length() == 1)
+  // Release lane -> clean completes -> retry joins same SyncRun and consumes/removes it
+  let _ = lane_gate.succeed(())
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  let mut clean2 : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.clean_request_k("ws1", "peer1", clean_req, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => clean2 = Some(v)
+        _ => ()
+      }
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  match clean2 {
+    Some(v) => assert(sessions_core::text_of(v, "mirror") == "proj")
+    None => panic("clean2 failed")
+  }
+  assert(state.cleans.length() == 0)
+  assert(state.timers.length() == 0)
+
+  // 4. Source-side `tool_k("station_task", ..., {"action":"start"})` -> fake `sync_dir_k` calling
+  //    `RemoteHost.rnode_k("syncPacking")` (returns path String) -> 4-arg `syncPut(station, req, packedPath, Bool)`
+  //    with structured `decode_asked_error` `cause.kind == "NoBytes"` fallback `true -> false`
+  //    AND refusal `{kind: "Refused", message: "NoBytes"}` NOT falling back (1:1 dirsync_source.mbt:733)!
+  let mut sp_calls = 0
+  let mut saw_true_arg = false
+  let mut saw_false_arg = false
+  let mut sync_put_mode = 0
+  let mut ds_src = DirsyncPort::stub()
+  ds_src = DirsyncPort::{
+    sync_dir_k: fn(
+      h : RemoteHost,
+      st : String,
+      ws : String,
+      sess : String,
+      key : String,
+      _dir : String,
+      k : (effect::Exit[base_codec::Json]) -> Unit,
+    ) -> Unit {
+      let put_req = base_codec::json_obj([
+        ("method", sessions_core::jstr("sync.put")),
+        ("workspace", sessions_core::jstr(ws)),
+        ("session", sessions_core::jstr(sess)),
+        ("key", sessions_core::jstr(key)),
+        ("id", sessions_core::jstr("sid1")),
+      ])
+      h.rnode_k("syncPacking", [], fn(ex1 : effect::Exit[base_codec::Json]) -> Unit {
+        match ex1 {
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(base_codec::Json::Str(packed_path)) => {
+            h.rnode_k(
+              "syncPut",
+              [sessions_core::jstr(st), put_req, sessions_core::jstr(packed_path), sessions_core::jbool(true)],
+              fn(ex2 : effect::Exit[base_codec::Json]) -> Unit {
+                match ex2 {
+                  effect::Exit::Succeeded(v) => k(effect::Exit::Succeeded(v))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Failed(e) => {
+                    let is_no_bytes = match sessions_core::decode_asked_error(e) {
+                      Some(a) => sessions_core::text_of(a.cause, "kind") == "NoBytes"
+                      None => false
+                    }
+                    if is_no_bytes {
+                      h.rnode_k(
+                        "syncPut",
+                        [sessions_core::jstr(st), put_req, sessions_core::jstr(packed_path), sessions_core::jbool(false)],
+                        k,
+                      )
+                    } else {
+                      k(effect::Exit::Failed(e))
+                    }
+                  }
+                }
+              },
+            )
+          }
+          effect::Exit::Succeeded(_) => k(effect::Exit::Failed(refusal("expected string path from syncPacking")))
+        }
+      })
+    },
+    list_local_k: ds_src.list_local_k,
+    sync_begin_k: ds_src.sync_begin_k,
+    listed_entries: ds_src.listed_entries,
+    page_of: ds_src.page_of,
+    put_blobs_k: ds_src.put_blobs_k,
+    plan_part: ds_src.plan_part,
+    submodules_part: ds_src.submodules_part,
+    sync_commit_k: ds_src.sync_commit_k,
+    sync_changes_k: ds_src.sync_changes_k,
+    read_manifest_k: ds_src.read_manifest_k,
+    with_submodules_k: ds_src.with_submodules_k,
+    is_stub: false,
+  }
+  let ctx_src = RemoteCtx::new(host, gen, "/", state, sessions_core::SessionDispatch::stub(), ds_src)
+  let rpc_sync_put = fn(f : String, args : Array[base_codec::Json]) -> (Bool, base_codec::Json) {
+    if f == "node.syncPacking" {
+      assert(args.length() == 0)
+      return (true, sessions_core::jstr("/tmp/pack.bin"))
+    }
+    if f == "node.syncPut" {
+      sp_calls = sp_calls + 1
+      assert(args.length() == 4)
+      assert(sessions_core::str_of(Some(args[0])) is Some("st1"))
+      assert(sessions_core::text_of(args[1], "method") == "sync.put")
+      assert(sessions_core::str_of(Some(args[2])) is Some("/tmp/pack.bin"))
+      if sync_put_mode == 1 {
+        // Refusal whose message happens to be "NoBytes" MUST NOT trigger fallback!
+        return (false, base_codec::json_obj([("kind", sessions_core::jstr("Refused")), ("message", sessions_core::jstr("NoBytes"))]))
+      }
+      match args[3] {
+        base_codec::Json::Bool(true) => {
+          saw_true_arg = true
+          return (
+            false,
+            base_codec::json_obj([
+              ("kind", sessions_core::jstr("NoBytes")),
+              ("message", sessions_core::jstr("that station takes files only in chunks (it is not updated yet)")),
+            ]),
+          )
+        }
+        base_codec::Json::Bool(false) => {
+          saw_false_arg = true
+          return (true, base_codec::json_obj([("written", sessions_core::jint(3)), ("prefix", sessions_core::jstr(""))]))
+        }
+        _ => panic("expected boolean 4th arg to syncPut")
+      }
+    }
+    (true, rpc_handler(f, args))
+  }
+  let pump_sync_put = fn() -> Unit {
+    let mut g = 0
+    while g < 200 {
+      g = g + 1
+      host.tick()
+      let mut prog = false
+      while cur.shell_cursor < mem.shell_calls.length() {
+        let call = mem.shell_calls[cur.shell_cursor]
+        cur.shell_cursor = cur.shell_cursor + 1
+        let (json, err) = fs.handle_shell(call)
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: call.id, error: err, json: json, bytes: None }))
+        prog = true
+      }
+      while cur.stdout_cursor < mem.stdout_lines.length() {
+        let line = mem.stdout_lines[cur.stdout_cursor]
+        cur.stdout_cursor = cur.stdout_cursor + 1
+        match sessions_core::parse_json_strict(line) {
+          Ok(msg) => {
+            match sessions_core::jget(msg, "rpc") {
+              Some(base_codec::Json::Num(id_f, _)) => {
+                let f = sessions_core::text_of(msg, "fn")
+                let args = match sessions_core::field_of(msg, "args") {
+                  base_codec::Json::Arr(a) => a
+                  _ => []
+                }
+                let (is_ok, payload) = rpc_sync_put(f, args)
+                if is_ok {
+                  gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", payload)]))
+                } else {
+                  gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("error", payload)]))
+                }
+                prog = true
+              }
+              _ => ()
+            }
+          }
+          Err(_) => ()
+        }
+      }
+      if !prog && host.rt.idle() {
+        break
+      }
+    }
+  }
+  // Case 4a: structured {kind: "NoBytes", ...} -> falls back true -> false (2 calls) and succeeds!
+  let prep_sp1 = ctx_src.rhash(base_codec::json_arr([
+    sessions_core::jstr("ws1"),
+    sessions_core::jstr("s1"),
+    sessions_core::jstr("st1"),
+    sessions_core::jstr("ksp1"),
+  ])) + ".json"
+  fs.add_file(
+    ctx_src.rjoin([ctx_src.prepared_dir("s1"), prep_sp1]),
+    "{\"workspace\":\"ws1\",\"session\":\"s1\",\"station\":\"st1\",\"key\":\"ksp1\",\"dir\":\"/repo-sp\",\"back\":null,\"small\":false,\"screen\":false}",
+  )
+  let mut sp_ok : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx_src.tool_k(
+      "station_task",
+      "s1",
+      base_codec::json_obj([
+        ("station", sessions_core::jstr("st1")),
+        ("key", sessions_core::jstr("ksp1")),
+        ("action", sessions_core::jstr("start")),
+      ]),
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(v) => sp_ok = Some(v)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_sync_put()
+  assert(saw_true_arg && saw_false_arg && sp_calls == 2)
+  match sp_ok {
+    Some(v) => assert(sessions_core::text_of(v, "key") == "ksp1")
+    None => panic("expected source station_task start syncPut NoBytes fallback success")
+  }
+  // Case 4b: {kind: "Refused", message: "NoBytes"} -> MUST NOT fall back (1 call only) and propagates error!
+  sync_put_mode = 1
+  sp_calls = 0
+  let prep_sp2 = ctx_src.rhash(base_codec::json_arr([
+    sessions_core::jstr("ws1"),
+    sessions_core::jstr("s1"),
+    sessions_core::jstr("st1"),
+    sessions_core::jstr("ksp2"),
+  ])) + ".json"
+  fs.add_file(
+    ctx_src.rjoin([ctx_src.prepared_dir("s1"), prep_sp2]),
+    "{\"workspace\":\"ws1\",\"session\":\"s1\",\"station\":\"st1\",\"key\":\"ksp2\",\"dir\":\"/repo-sp\",\"back\":null,\"small\":false,\"screen\":false}",
+  )
+  let mut sp_err = ""
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx_src.tool_k(
+      "station_task",
+      "s1",
+      base_codec::json_obj([
+        ("station", sessions_core::jstr("st1")),
+        ("key", sessions_core::jstr("ksp2")),
+        ("action", sessions_core::jstr("start")),
+      ]),
+      fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+        match ex {
+          effect::Exit::Failed(e) => sp_err = sessions_core::error_message(e)
+          _ => ()
+        }
+        tk(effect::Exit::Succeeded(()))
+      },
+    )
+  })
+  pump_sync_put()
+  assert(sp_calls == 1)
+  assert(str_contains(sp_err, "NoBytes"))
+
+  // 5. task.clean admitted before `close`: receives `close` while awaiting `store.now`,
+  //    then enters `bounded_k` and STILL registers its 1s timer & returns {mirror, pending: true}!
+  let lane_gate2 : effect::Deferred[Unit] = effect::Deferred::new()
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.in_lane_k(
+      room,
+      fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit { lane_gate2.wait_k(lk) },
+      fn(_ex : effect::Exit[Unit]) -> Unit { tk(effect::Exit::Succeeded(())) },
+    )
+  })
+  host.tick()
+  let mut clean_after_close : Option[base_codec::Json] = None
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.clean_request_k("ws1", "peer1", clean_req, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(v) => clean_after_close = Some(v)
+        _ => ()
+      }
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  host.tick()
+  // Find the pending store.now RPC id before answering it
+  let mut now_rpc_id = -1
+  while cur.stdout_cursor < mem.stdout_lines.length() {
+    let line = mem.stdout_lines[cur.stdout_cursor]
+    cur.stdout_cursor = cur.stdout_cursor + 1
+    match sessions_core::parse_json_strict(line) {
+      Ok(msg) => {
+        if sessions_core::text_of(msg, "fn") == "store.now" {
+          match sessions_core::jget(msg, "rpc") {
+            Some(base_codec::Json::Num(id_f, _)) => now_rpc_id = id_f.to_int()
+            _ => ()
+          }
+        }
+      }
+      Err(_) => ()
+    }
+  }
+  assert(now_rpc_id >= 0)
+  // Deliver `close` BEFORE store.now returns!
+  fork_test(host, fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctx.remote_called_k("close", [], fn(_ex : effect::Exit[base_codec::Json]) -> Unit {
+      tk(effect::Exit::Succeeded(()))
+    })
+  })
+  host.tick()
+  assert(state.stopped)
+  // Now answer store.now -> clean_request_k enters bounded_k and MUST still arm its 1s timer!
+  gen.handle_answer(host, now_rpc_id, base_codec::json_obj([("value", sessions_core::jnum(now_ms))]))
+  host.tick()
+  let ct_close = state.timers.keys()
+  assert(ct_close.length() == 1)
+  assert(ctx.handle_due(ct_close[0]))
+  host.tick()
+  match clean_after_close {
+    Some(v) => {
+      match sessions_core::field_of(v, "pending") {
+        base_codec::Json::Bool(true) => ()
+        _ => panic("expected pending: true even after close")
+      }
+    }
+    None => panic("clean_after_close hung instead of timing out at 1s")
+  }
+  let _ = lane_gate2.succeed(())
+  pump_all(host, gen, mem, fs, cur, rpc_handler)
+  assert(state.timers.length() == 0)
+  assert(host.hub_timers.length() == 0)
+  assert_holding_zero(host)
+}
+
+// ── Test 7: again backoff 1s..60s, push_out/check re-entry, closer rounds, and rotation timer isolation ──
+
+test "sessions_remote: again backoff, push_out/check re-entry, closer rounds, and timer rotation isolation" {
+  // 1. Exponential backoff 1s -> 2s -> 4s -> 8s -> 16s -> 32s -> 60s -> 60s
+  assert(again_delay_ms(0) == 1000.0)
+  assert(again_delay_ms(1) == 2000.0)
+  assert(again_delay_ms(2) == 4000.0)
+  assert(again_delay_ms(3) == 8000.0)
+  assert(again_delay_ms(4) == 16000.0)
+  assert(again_delay_ms(5) == 32000.0)
+  assert(again_delay_ms(6) == 60000.0)
+  assert(again_delay_ms(7) == 60000.0)
+
+  let mem = sessions_core::MemHostTransport::new()
+  let host = sessions_core::SessionHost::for_test(mem)
+  let gen = sessions_core::HubGen::new(host, 1)
+  let state = RemoteState::new_with_fmt(test_fmt_num)
+  state.root = "/data/remote"
+  gen.resources.add_retire_hook(fn() -> Unit { state.retire() })
+  let ctx = RemoteCtx::new(host, gen, "/", state, sessions_core::SessionDispatch::stub(), DirsyncPort::stub())
+  let fs = MemFs::new("/")
+  let cur = PumpCursor::new()
+
+  // 2. Real `push_out` retry backoff via pure-value RemoteTimerAction::AgainStep (1000ms -> 2000ms -> 4000ms)
+  //    plus re-entry flag when `push_out` is called again while in flight.
+  let task_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  let task_file = ctx.rjoin([state.root, "incoming", task_id, "task.json"])
+  fs.add_file(task_file, "{\"workspace\":\"ws1\",\"station\":\"st1\",\"push\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}")
+  let mut ask_count = 0
+  let pump_push = fn() -> Unit {
+    let mut g = 0
+    while g < 200 {
+      g = g + 1
+      host.tick()
+      let mut prog = false
+      while cur.shell_cursor < mem.shell_calls.length() {
+        let call = mem.shell_calls[cur.shell_cursor]
+        cur.shell_cursor = cur.shell_cursor + 1
+        let (json, err) = fs.handle_shell(call)
+        host.dispatch_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: call.id, error: err, json: json, bytes: None }))
+        prog = true
+      }
+      while cur.stdout_cursor < mem.stdout_lines.length() {
+        let line = mem.stdout_lines[cur.stdout_cursor]
+        cur.stdout_cursor = cur.stdout_cursor + 1
+        match sessions_core::parse_json_strict(line) {
+          Ok(msg) => {
+            match sessions_core::jget(msg, "rpc") {
+              Some(base_codec::Json::Num(id_f, _)) => {
+                let f = sessions_core::text_of(msg, "fn")
+                if f == "store.now" {
+                  gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", sessions_core::jnum(10000.0))]))
+                } else if f == "store.getJob" {
+                  gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", base_codec::json_obj([("state", sessions_core::jstr("exited")), ("endedAt", sessions_core::jnum(9000.0))]))]))
+                } else if f == "store.jobNotices" {
+                  gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", base_codec::json_arr([]))]))
+                } else if f == "node.ask" {
+                  ask_count = ask_count + 1
+                  if ask_count <= 3 {
+                    // Transient non-refusal error -> schedules AgainStep(tries+1)
+                    gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("error", base_codec::json_obj([("message", sessions_core::jstr("offline"))]))]))
+                  } else {
+                    if ask_count == 4 {
+                      ctx.push_out(task_id)
+                    }
+                    gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", base_codec::json_obj([("taken", sessions_core::jbool(true))]))]))
+                  }
+                } else {
+                  gen.handle_answer(host, id_f.to_int(), base_codec::json_obj([("value", base_codec::json_null())]))
+                }
+                prog = true
+              }
+              _ => ()
+            }
+          }
+          Err(_) => ()
+        }
+      }
+      if !prog && host.rt.idle() {
+        break
+      }
+    }
+  }
+  ctx.push_out(task_id)
+  pump_push()
+  assert(ask_count == 1 && state.timers.length() == 1 && host.hub_timers.length() == 0)
+  // Fire 1000ms timer
+  let tk1 = state.timers.keys()[0]
+  assert(ctx.handle_due(tk1))
+  pump_push()
+  assert(ask_count == 2 && state.timers.length() == 1)
+  // Fire 2000ms timer
+  let tk2 = state.timers.keys()[0]
+  assert(ctx.handle_due(tk2))
+  pump_push()
+  assert(ask_count == 3 && state.timers.length() == 1)
+  // Fire 4000ms timer -> succeeds on 4th attempt
+  let tk3 = state.timers.keys()[0]
+  assert(ctx.handle_due(tk3))
+  pump_push()
+  assert(ask_count == 4)
+  assert(state.timers.length() == 0 && state.again_jobs.length() == 0)
+  assert(!state.pushing.contains(task_id))
+  // Verify emitted backoff ms values 1000, 2000, 4000 appeared on stdout
+  let mut saw_1000 = false
+  let mut saw_2000 = false
+  let mut saw_4000 = false
+  for li in 0..<mem.stdout_lines.length() {
+    let ln = mem.stdout_lines[li]
+    if str_contains(ln, "\"after\"") && str_contains(ln, "\"ms\":1000") {
+      saw_1000 = true
+    }
+    if str_contains(ln, "\"after\"") && str_contains(ln, "\"ms\":2000") {
+      saw_2000 = true
+    }
+    if str_contains(ln, "\"after\"") && str_contains(ln, "\"ms\":4000") {
+      saw_4000 = true
+    }
+  }
+  assert(saw_1000 && saw_2000 && saw_4000)
+
+  // 4. closer schedules ClosingRound timer when station is unreachable, and HubGen rotation ignores stale timer due
+  let used_path = ctx.used_path("s-close")
+  fs.add_file(used_path, "{\"session\":\"s-close\",\"workspace\":\"ws1\",\"stations\":[\"st-down\"],\"closing\":true,\"closed\":[],\"since\":10000}")
+  let mut close_attempts = 0
+  let rpc_close = fn(f : String, _args : Array[base_codec::Json]) -> base_codec::Json {
+    if f == "store.now" {
+      return sessions_core::jnum(10000.0)
+    }
+    if f == "node.ask" {
+      close_attempts = close_attempts + 1
+      return base_codec::json_null()
+    }
+    base_codec::json_null()
+  }
+  ctx.closer(used_path)
+  pump_all(host, gen, mem, fs, cur, rpc_close)
+  assert(close_attempts == 1)
+  assert(state.timers.length() == 1)
+  let pending_tid = state.timers.keys()[0]
+
+  // Rotate HubGen while timer is still pending -> state retired, stale due ignored, zero leaks
+  let _gen2 = sessions_core::rotate_hub_gen(host, gen, base_codec::json_null())
+  host.tick()
+  assert(state.stopped)
+  assert(state.timers.length() == 0)
+  assert(!ctx.handle_due(pending_tid))
+  assert(host.hub_timers.length() == 0)
+  assert_holding_zero(host)
+}

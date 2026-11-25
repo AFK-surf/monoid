@@ -1,0 +1,3796 @@
+// 1:1 port of `station/mb/src/reader/live.mbt` (`#live` pseudo-actor) to pure Pion.
+// Enforces zero self-reference closures in `LWatched` (`waiters`, `take_up`) and `LRate` (`quiet`),
+// exact `active`/`quiet` accounting in `live_called` and `in_read`, and full `LRate.quiet` lifecycle
+// (unwatch does NOT cancel `quiet`; `turn_end`, `rate_clear`/`live_forget`, `reset`, and step `end`
+// exhausting all valid buckets cancel `quiet` immediately).
+
+import "base_codec"
+import "builders_core"
+import "effect"
+import "js_json"
+import "live_wire"
+import "sessions_core"
+
+pub let live_key : String = "#live"
+
+let INPUT_CHARS : Int = 300
+let RATE_EVERY_MS : Double = 1000.0
+let RATE_WINDOW_MS : Double = 2000.0
+let RATE_FIRST_MS : Double = 500.0
+let HELD_AFTER_MS : Double = 120000.0
+let PLAN_PAGES : Int = 4
+let PLAN_PAGE : Int = 1000
+
+fn saying_fields() -> Array[String] {
+  [
+    "description", "toolSummary", "command", "cmd", "CommandLine", "file_path", "path", "Path",
+    "target_file", "target_directory", "DirectoryPath", "Directory", "SearchDirectory",
+    "SearchPath", "pattern", "Pattern", "url", "query", "Query", "prompt", "Prompt", "station",
+    "action", "name", "key", "id", "to", "chat", "title", "file", "method", "Role", "Recipient",
+    "Message",
+  ]
+}
+
+// ── Data structures (ZERO closures, ZERO self-references) ──
+
+pub struct LBucket {
+  pub at : Double
+  pub step : String
+  pub mut tokens : Double
+  pub since : Option[Double]
+}
+
+/// Model output rate state (`live.ts` `Rate`). Stores ONLY value timer ID + generation ID.
+pub struct LRate {
+  pub gen_id : Int
+  pub mut buckets : Array[LBucket]
+  pub mut told_at : Double
+  pub mut told : Int
+  pub last : Map[String, Double]
+  pub mut last_delta : Double
+  pub mut quiet_timer_id : Option[Int]
+}
+
+pub struct PItem {
+  pub tag : Int
+  pub mut text : String
+  pub mut status : String
+  pub mut id : Option[String]
+}
+
+pub struct LPlan {
+  pub mut items : Array[PItem]
+  pub creating : Map[String, PItem]
+  pub creating_order : Array[String]
+}
+
+pub struct LOne {
+  pub runtime : String
+  pub path : String
+  pub mut state : Option[base_codec::Json]
+}
+
+pub struct LTail {
+  pub runtime : String
+  pub mut tails : Array[LOne]
+}
+
+pub struct LSub {
+  pub seq : Int
+  pub id : Int
+  pub brief : Bool
+  pub held : Bool
+  pub mut queue : Option[Array[base_codec::Json]]
+}
+
+/// Pure-value waiter action stored in `LWatched.waiters` (ZERO closures).
+pub enum LWaiter {
+  Join(Int, Double, Option[Int])
+  Soon(Int)
+}
+
+/// Pure-value take-up state stored in `LWatched.take_up` (ZERO closures).
+pub struct LTakeUp {
+  pub watch_n : Int
+  pub runtime : String
+  pub at : base_codec::Json
+  pub mut begun : Bool
+}
+
+/// Ticket state for `in_read_k` serialization, coordinating single-reader cancellation and handoff.
+pub enum ReadTicketState {
+  Queued
+  Handed
+  Cancelled
+}
+
+/// Pure-value leaf ticket for `in_read_k` serialization (ZERO `Deferred` or closure refs).
+pub struct LReadTicket {
+  pub id : Int
+  pub mut state : ReadTicketState
+}
+
+/// Pure-value timer actions for `#live` (ZERO closures, ZERO `host.hub_timers` cycles).
+pub enum LiveTimerAction {
+  RateDeadline(String, Int)
+  ReleaseHold(String)
+  SoonRead(String)
+}
+
+pub struct LWatched {
+  pub n : Int
+  pub mut tail : Option[LTail]
+  pub mut ready : Bool
+  pub waiters : Array[LWaiter]
+  pub mut reading : Bool
+  pub mut behind : Bool
+  pub mut announce : Bool
+  pub mut read_held : Bool
+  pub read_queue : Array[LReadTicket]
+  pub mut locating : Bool
+  pub mut following : Int
+  pub mut follow_again : Bool
+  pub mut carried : Option[Array[base_codec::Json]]
+  pub mut take_up : Option[LTakeUp]
+  pub mut armed : Option[String]
+}
+
+/// Generation-scoped `#live` state. Holds ZERO closures and ZERO references to
+/// `SessionHost`, `HubGen`, `EffectScope`, or `SessionDispatch`.
+pub struct LiveState {
+  pub steps : Map[String, Array[base_codec::Json]]
+  pub phase : Map[String, (String, Double)]
+  pub rates : Map[String, LRate]
+  pub tasks : Map[String, Array[base_codec::Json]]
+  pub plans : Map[String, LPlan]
+  pub plan_at : Map[String, Int]
+  pub plan_at_order : Array[String]
+  pub plan_back : Map[String, Array[base_codec::Json]]
+  pub said_plans : Map[String, base_codec::Json]
+  pub listeners : Map[String, Array[LSub]]
+  pub watched : Map[String, LWatched]
+  pub watched_order : Array[String]
+  pub stood : Map[String, Array[base_codec::Json]]
+  pub stood_order : Array[String]
+  pub mut took_tails : Bool
+  /// Protocol-visible monotonic counter (strictly 4 MB sites: watch n, held id, follow pending, live_end).
+  pub mut next : Int
+  /// Internal identity counter (PItem.tag, LSub.seq, LRate.gen_id, LReadTicket.id).
+  pub mut internal_seq : Int
+  pub holds : Map[String, Int]
+  pub holds_order : Array[String]
+  /// Value timer IDs for `running(key, false)` delayed releases (ZERO closures).
+  pub releases : Map[String, Int]
+  /// Epoch-tagged pure-value timer actions (`timer_id -> (epoch, action)`).
+  pub timer_actions : Map[Int, (Int, LiveTimerAction)]
+  pub length_told : Map[String, Int]
+  pub ends : Map[Int, effect::Deferred[Unit]]
+  /// Wakeup handles for queued `in_read_k` tickets (`ticket_id -> Deferred`), removed immediately on wake/cancel/reset.
+  pub read_turns : Map[Int, effect::Deferred[Unit]]
+  pub mut pending : Int
+}
+
+pub fn LiveState::new() -> LiveState {
+  LiveState::{
+    steps: Map::new(),
+    phase: Map::new(),
+    rates: Map::new(),
+    tasks: Map::new(),
+    plans: Map::new(),
+    plan_at: Map::new(),
+    plan_at_order: [],
+    plan_back: Map::new(),
+    said_plans: Map::new(),
+    listeners: Map::new(),
+    watched: Map::new(),
+    watched_order: [],
+    stood: Map::new(),
+    stood_order: [],
+    took_tails: false,
+    next: 0,
+    internal_seq: 0,
+    holds: Map::new(),
+    holds_order: [],
+    releases: Map::new(),
+    timer_actions: Map::new(),
+    length_told: Map::new(),
+    ends: Map::new(),
+    read_turns: Map::new(),
+    pending: 0,
+  }
+}
+
+/// Value-passed context for `#live` operations (never stored inside `LiveState`).
+pub struct LiveCtx {
+  pub host : sessions_core::SessionHost
+  pub gen : sessions_core::HubGen
+  pub state : LiveState
+  pub dispatch : sessions_core::SessionDispatch
+}
+
+pub fn LiveCtx::new(
+  host : sessions_core::SessionHost,
+  gen : sessions_core::HubGen,
+  state : LiveState,
+  dispatch : sessions_core::SessionDispatch,
+) -> LiveCtx {
+  LiveCtx::{
+    host: host,
+    gen: gen,
+    state: state,
+    dispatch: dispatch,
+  }
+}
+
+// ── Pure helpers ──
+
+fn floor_double(x : Double) -> Double {
+  let i = x.to_int64()
+  let d = i.to_double()
+  if x < d {
+    (i - 1.to_int64()).to_double()
+  } else {
+    d
+  }
+}
+
+fn abs_double(x : Double) -> Double {
+  if x < 0.0 { -x } else { x }
+}
+
+fn min_double(a : Double, b : Double) -> Double {
+  if a < b { a } else { b }
+}
+
+fn max_double(a : Double, b : Double) -> Double {
+  if a > b { a } else { b }
+}
+
+fn min_int(a : Int, b : Int) -> Int {
+  if a < b { a } else { b }
+}
+
+fn max_int(a : Int, b : Int) -> Int {
+  if a > b { a } else { b }
+}
+
+fn take_chars(text : String, n : Int) -> String {
+  chars_of(text, n)
+}
+
+fn order_set(order : Array[String], key : String) -> Unit {
+  for i in 0..<order.length() {
+    if order[i] == key {
+      return
+    }
+  }
+  order.push(key)
+}
+
+fn order_remove(order : Array[String], key : String) -> Unit {
+  let kept : Array[String] = []
+  let mut removed = false
+  for i in 0..<order.length() {
+    if order[i] == key {
+      removed = true
+    } else {
+      kept.push(order[i])
+    }
+  }
+  if removed {
+    order.clear()
+    for i in 0..<kept.length() {
+      order.push(kept[i])
+    }
+  }
+}
+
+fn hex_val(b : Int) -> Int {
+  if b >= 48 && b <= 57 {
+    b - 48
+  } else if b >= 65 && b <= 70 {
+    b - 55
+  } else if b >= 97 && b <= 102 {
+    b - 87
+  } else {
+    -1
+  }
+}
+
+fn parse_u4(raw : Bytes, idx : Int) -> Int {
+  if idx + 4 > raw.length() {
+    return -1
+  }
+  let h0 = hex_val(raw[idx].to_int())
+  let h1 = hex_val(raw[idx + 1].to_int())
+  let h2 = hex_val(raw[idx + 2].to_int())
+  let h3 = hex_val(raw[idx + 3].to_int())
+  if h0 < 0 || h1 < 0 || h2 < 0 || h3 < 0 {
+    return -1
+  }
+  h0 * 4096 + h1 * 256 + h2 * 16 + h3
+}
+
+/// Reject JSON strings containing unpaired UTF-16 surrogate escapes (`\uD800`..`\uDFFF`)
+/// to match MoonBit `core/json.parse` strictness (`live.mbt:196,440`).
+fn has_lone_surrogate_escape(src : String) -> Bool {
+  let raw = src.to_bytes()
+  let n = raw.length()
+  let mut in_str = false
+  let mut i = 0
+  while i < n {
+    let b = raw[i].to_int()
+    if !in_str {
+      if b == 34 {
+        in_str = true
+      }
+      i = i + 1
+      continue
+    }
+    if b == 34 {
+      in_str = false
+      i = i + 1
+      continue
+    }
+    if b == 92 {
+      if i + 1 >= n {
+        return false
+      }
+      let next = raw[i + 1].to_int()
+      if next == 117 {
+        let code = parse_u4(raw, i + 2)
+        if code >= 0xD800 && code <= 0xDBFF {
+          // High surrogate MUST be followed immediately by a low surrogate \uDC00..\uDFFF.
+          if i + 11 < n && raw[i + 6].to_int() == 92 && raw[i + 7].to_int() == 117 {
+            let low = parse_u4(raw, i + 8)
+            if low >= 0xDC00 && low <= 0xDFFF {
+              i = i + 12
+              continue
+            }
+          }
+          return true
+        }
+        if code >= 0xDC00 && code <= 0xDFFF {
+          return true
+        }
+        i = i + 6
+        continue
+      }
+      i = i + 2
+      continue
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn parse_json_no_lone_surrogates(raw : String) -> Result[base_codec::Json, String] {
+  if has_lone_surrogate_escape(raw) {
+    return Err("lone surrogate")
+  }
+  sessions_core::parse_json_strict(raw)
+}
+
+/// A call's input as a step carries it (`live.ts` `briefInput`).
+pub fn brief_input(input : String) -> String {
+  let parsed = match parse_json_no_lone_surrogates(input) {
+    Ok(v) => v
+    Err(_) => return take_chars(input, INPUT_CHARS)
+  }
+  match parsed {
+    base_codec::Json::Obj(_) => {
+      let kept : Array[(String, base_codec::Json)] = []
+      let names = saying_fields()
+      for i in 0..<names.length() {
+        let name = names[i]
+        match sessions_core::jget(parsed, name) {
+          Some(base_codec::Json::Str(v)) => {
+            kept.push((name, sessions_core::jstr(take_chars(v, INPUT_CHARS))))
+          }
+          Some(base_codec::Json::Arr(vs)) => {
+            let arr : Array[base_codec::Json] = []
+            for j in 0..<vs.length() {
+              match vs[j] {
+                base_codec::Json::Str(s) => arr.push(sessions_core::jstr(take_chars(s, INPUT_CHARS)))
+                _ => ()
+              }
+            }
+            kept.push((name, base_codec::json_arr(arr)))
+          }
+          _ => ()
+        }
+      }
+      base_codec::json_stringify(builders_core::normalize_json(base_codec::json_obj(kept)))
+    }
+    _ => take_chars(input, INPUT_CHARS)
+  }
+}
+
+/// About how many tokens a piece of output is (`live.ts` `tokensOf`).
+pub fn tokens_of(text : String) -> Double {
+  let u = js_json::utf16_units(text)
+  let mut ascii = 0.0
+  let mut other = 0.0
+  let mut i = 0
+  while i < u.length() {
+    let c = u[i]
+    if c >= 0xD800 && c <= 0xDBFF && i + 1 < u.length() {
+      let d = u[i + 1]
+      if d >= 0xDC00 && d <= 0xDFFF {
+        other = other + 1.0
+        i = i + 2
+        continue
+      }
+    }
+    if c < 0x80 {
+      ascii = ascii + 1.0
+    } else {
+      other = other + 1.0
+    }
+    i = i + 1
+  }
+  ascii / 4.0 + other / 1.5
+}
+
+fn base64_bytes(s : String) -> Int {
+  let len = s.length()
+  if len == 0 {
+    return 0
+  }
+  let pad = if s.ends_with("==") {
+    2
+  } else if s.ends_with("=") {
+    1
+  } else {
+    0
+  }
+  len * 3 / 4 - pad
+}
+
+fn js_number(n : Double) -> String {
+  if n == floor_double(n) && abs_double(n) < 1.0e15 {
+    n.to_int64().to_string()
+  } else {
+    n.to_string()
+  }
+}
+
+fn copy_json_obj_fields(v : base_codec::Json) -> Array[(String, base_codec::Json)] {
+  let out : Array[(String, base_codec::Json)] = []
+  match v {
+    base_codec::Json::Obj(fields) => {
+      for i in 0..<fields.length() {
+        out.push(fields[i])
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn is_false_opt(v : Option[base_codec::Json]) -> Bool {
+  match v {
+    Some(base_codec::Json::Bool(false)) => true
+    _ => false
+  }
+}
+
+// ── LTail / LOne ──
+
+fn ref_of(runtime : String, r : base_codec::Json) -> (String, String) {
+  match r {
+    base_codec::Json::Str(p) => (p, runtime)
+    _ => {
+      let p = match sessions_core::str_of(sessions_core::jget(r, "path")) {
+        Some(s) => s
+        None => ""
+      }
+      let rt = match sessions_core::str_of(sessions_core::jget(r, "runtime")) {
+        Some(s) => s
+        None => runtime
+      }
+      (p, rt)
+    }
+  }
+}
+
+fn LTail::new(runtime : String, paths : Array[base_codec::Json]) -> LTail {
+  let tails : Array[LOne] = []
+  for i in 0..<paths.length() {
+    let (path, rt) = ref_of(runtime, paths[i])
+    tails.push(LOne::{ runtime: rt, path: path, state: None })
+  }
+  LTail::{ runtime: runtime, tails: tails }
+}
+
+fn LTail::from(runtime : String, states : Array[base_codec::Json]) -> LTail {
+  let tails : Array[LOne] = []
+  for i in 0..<states.length() {
+    let st = states[i]
+    let rt = match sessions_core::str_of(sessions_core::jget(st, "runtime")) {
+      Some(s) => s
+      None => runtime
+    }
+    let path = match sessions_core::str_of(sessions_core::jget(st, "path")) {
+      Some(s) => s
+      None => ""
+    }
+    tails.push(LOne::{ runtime: rt, path: path, state: Some(st) })
+  }
+  LTail::{ runtime: runtime, tails: tails }
+}
+
+fn LTail::snapshot(self : LTail) -> Array[base_codec::Json] {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<self.tails.length() {
+    let t = self.tails[i]
+    match t.state {
+      Some(s) => out.push(s)
+      None => {
+        out.push(base_codec::json_obj([
+          ("path", sessions_core::jstr(t.path)),
+          ("runtime", sessions_core::jstr(t.runtime)),
+          ("offset", sessions_core::jnum(0.0)),
+          ("partial", sessions_core::jstr("")),
+          ("count", sessions_core::jnum(0.0)),
+          ("inner", base_codec::json_arr([])),
+          ("packedStamp", base_codec::json_null()),
+        ]))
+      }
+    }
+  }
+  out
+}
+
+fn LOne::length(self : LOne) -> Int {
+  match self.state {
+    Some(s) => sessions_core::int_of(sessions_core::jget(s, "count"))
+    None => 0
+  }
+}
+
+fn LTail::length(self : LTail) -> Int {
+  let mut n = 0
+  for i in 0..<self.tails.length() {
+    n = n + self.tails[i].length()
+  }
+  n
+}
+
+fn LTail::read_bytes(self : LTail) -> Int {
+  let mut n = 0
+  for i in 0..<self.tails.length() {
+    match self.tails[i].state {
+      Some(s) => {
+        let partial = match sessions_core::str_of(sessions_core::jget(s, "partial")) {
+          Some(p) => p
+          None => ""
+        }
+        n = n + sessions_core::int_of(sessions_core::jget(s, "offset")) - base64_bytes(partial)
+      }
+      None => ()
+    }
+  }
+  n
+}
+
+fn LTail::path(self : LTail) -> String {
+  let len = self.tails.length()
+  if len == 0 {
+    ""
+  } else {
+    self.tails[len - 1].path
+  }
+}
+
+fn LTail::go_on(self : LTail, paths : Array[base_codec::Json]) -> Bool {
+  let refs : Array[(String, String)] = []
+  for i in 0..<paths.length() {
+    refs.push(ref_of(self.runtime, paths[i]))
+  }
+  let mut differ = refs.length() < self.tails.length()
+  if !differ {
+    for i in 0..<self.tails.length() {
+      let t = self.tails[i]
+      let (rp, rrt) = refs[i]
+      if t.path != rp || t.runtime != rrt {
+        differ = true
+        break
+      }
+    }
+  }
+  if differ {
+    let next_tails : Array[LOne] = []
+    for i in 0..<refs.length() {
+      let (rp, rrt) = refs[i]
+      next_tails.push(LOne::{ runtime: rrt, path: rp, state: None })
+    }
+    self.tails = next_tails
+    return true
+  }
+  if refs.length() == self.tails.length() {
+    return false
+  }
+  for i in self.tails.length()..<refs.length() {
+    let (rp, rrt) = refs[i]
+    self.tails.push(LOne::{ runtime: rrt, path: rp, state: None })
+  }
+  true
+}
+
+fn same_states(states_opt : Option[Array[base_codec::Json]], at : base_codec::Json) -> Bool {
+  let states = match states_opt {
+    Some(s) => s
+    None => return false
+  }
+  let runtime = match sessions_core::str_of(sessions_core::jget(at, "runtime")) {
+    Some(s) => s
+    None => "claude"
+  }
+  let paths : Array[base_codec::Json] = match sessions_core::jget(at, "paths") {
+    Some(base_codec::Json::Arr(p)) => p
+    _ => []
+  }
+  if states.length() != paths.length() {
+    return false
+  }
+  for i in 0..<states.length() {
+    let st = states[i]
+    let (path, rt) = ref_of(runtime, paths[i])
+    let st_rt = match sessions_core::str_of(sessions_core::jget(st, "runtime")) {
+      Some(s) => s
+      None => runtime
+    }
+    if !opt_str_is(sessions_core::str_of(sessions_core::jget(st, "path")), path) || st_rt != rt {
+      return false
+    }
+  }
+  true
+}
+
+// ── Plan checklist helpers ──
+
+fn plan_whole(tool : String) -> Bool {
+  tool == "TodoWrite" || tool == "update_plan"
+}
+
+fn plan_items(p : LPlan) -> base_codec::Json {
+  let arr : Array[base_codec::Json] = []
+  for i in 0..<p.items.length() {
+    let item = p.items[i]
+    arr.push(base_codec::json_obj([
+      ("text", sessions_core::jstr(item.text)),
+      ("status", sessions_core::jstr(item.status)),
+    ]))
+  }
+  base_codec::json_arr(arr)
+}
+
+fn created_id(text : String) -> Option[String] {
+  if !text.starts_with("Task #") {
+    return None
+  }
+  let rest = text.slice(6, text.length())
+  let raw = rest.to_bytes()
+  let mut end_idx = 0
+  while end_idx < raw.length() {
+    let b = raw[end_idx].to_int()
+    if b == 32 || b == 9 || b == 10 || b == 13 {
+      break
+    }
+    end_idx = end_idx + 1
+  }
+  if end_idx == 0 {
+    return None
+  }
+  let id = rest.slice(0, end_idx)
+  let after = rest.slice(end_idx, rest.length())
+  if after.starts_with(" created") {
+    Some(id)
+  } else {
+    None
+  }
+}
+
+fn says_whole(e : base_codec::Json) -> Bool {
+  if !opt_str_is(sessions_core::str_of(sessions_core::jget(e, "kind")), "tool_call") {
+    return false
+  }
+  if is_true(sessions_core::jget(e, "subagent")) {
+    return false
+  }
+  match sessions_core::str_of(sessions_core::jget(e, "tool")) {
+    Some(t) => plan_whole(t)
+    None => false
+  }
+}
+
+fn LiveCtx::alloc_tag(self : LiveCtx) -> Int {
+  self.state.internal_seq = self.state.internal_seq + 1
+  self.state.internal_seq
+}
+
+fn LiveCtx::read_plan(
+  self : LiveCtx,
+  p : LPlan,
+  entries : Array[base_codec::Json],
+) -> Bool {
+  let mut changed = false
+  for i in 0..<entries.length() {
+    let e = entries[i]
+    if is_true(sessions_core::jget(e, "subagent")) {
+      continue
+    }
+    let kind = match sessions_core::str_of(sessions_core::jget(e, "kind")) {
+      Some(s) => s
+      None => ""
+    }
+    if kind == "tool_result" {
+      let call = match sessions_core::str_of(sessions_core::jget(e, "callId")) {
+        Some(s) => s
+        None => continue
+      }
+      let made = match p.creating.get(call) {
+        Some(m) => m
+        None => continue
+      }
+      let _ = p.creating.remove(call)
+      order_remove(p.creating_order, call)
+      let text = match sessions_core::str_of(sessions_core::jget(e, "text")) {
+        Some(s) => s
+        None => ""
+      }
+      match created_id(text) {
+        Some(id) => made.id = Some(id)
+        None => {
+          if is_false_opt(sessions_core::jget(e, "ok")) {
+            let next_items : Array[PItem] = []
+            for j in 0..<p.items.length() {
+              if p.items[j].tag != made.tag {
+                next_items.push(p.items[j])
+              }
+            }
+            p.items = next_items
+            changed = true
+          }
+        }
+      }
+      continue
+    }
+    if kind != "tool_call" {
+      continue
+    }
+    let tool = match sessions_core::str_of(sessions_core::jget(e, "tool")) {
+      Some(s) => s
+      None => continue
+    }
+    if !(plan_whole(tool) || tool == "TaskCreate" || tool == "TaskUpdate") {
+      continue
+    }
+    let raw_text = match sessions_core::str_of(sessions_core::jget(e, "text")) {
+      Some(s) => s
+      None => ""
+    }
+    let args = match parse_json_no_lone_surrogates(raw_text) {
+      Ok(base_codec::Json::Obj(f)) => base_codec::Json::Obj(f)
+      _ => continue
+    }
+    if plan_whole(tool) {
+      let list : Array[base_codec::Json] = match (
+        sessions_core::jget(args, "todos"),
+        sessions_core::jget(args, "plan"),
+      ) {
+        (Some(base_codec::Json::Arr(l)), _) => l
+        (_, Some(base_codec::Json::Arr(l))) => l
+        _ => continue
+      }
+      let next_items : Array[PItem] = []
+      for j in 0..<list.length() {
+        let t = list[j]
+        match t {
+          base_codec::Json::Obj(_) => {
+            let text = match (
+              sessions_core::str_of(sessions_core::jget(t, "content")),
+              sessions_core::str_of(sessions_core::jget(t, "step")),
+            ) {
+              (Some(c), _) => c
+              (None, Some(st)) => st
+              _ => ""
+            }
+            if text != "" {
+              let status = match sessions_core::str_of(sessions_core::jget(t, "status")) {
+                Some(s) => s
+                None => "pending"
+              }
+              next_items.push(PItem::{
+                tag: self.alloc_tag(),
+                text: text,
+                status: status,
+                id: None,
+              })
+            }
+          }
+          _ => ()
+        }
+      }
+      p.items = next_items
+      p.creating.clear()
+      p.creating_order.clear()
+      changed = true
+    } else if tool == "TaskCreate" {
+      let subject = match sessions_core::str_of(sessions_core::jget(args, "subject")) {
+        Some(s) => s
+        None => ""
+      }
+      if subject == "" {
+        continue
+      }
+      let item = PItem::{
+        tag: self.alloc_tag(),
+        text: subject,
+        status: "pending",
+        id: None,
+      }
+      p.items.push(item)
+      match sessions_core::str_of(sessions_core::jget(e, "callId")) {
+        Some(call) => {
+          p.creating.set(call, item)
+          order_set(p.creating_order, call)
+        }
+        None => ()
+      }
+      changed = true
+    } else {
+      let id_opt : Option[String] = match sessions_core::jget(args, "taskId") {
+        Some(base_codec::Json::Str(s)) => Some(s)
+        Some(base_codec::Json::Num(n, _)) => Some(js_number(n))
+        _ => None
+      }
+      let at = match id_opt {
+        Some(id) => {
+          let mut found = -1
+          for j in 0..<p.items.length() {
+            if opt_str_is(p.items[j].id, id) {
+              found = j
+              break
+            }
+          }
+          found
+        }
+        None => -1
+      }
+      if at < 0 {
+        continue
+      }
+      let status = sessions_core::str_of(sessions_core::jget(args, "status"))
+      if opt_str_is(status, "deleted") {
+        let drop_tag = p.items[at].tag
+        let next_items : Array[PItem] = []
+        for j in 0..<p.items.length() {
+          if p.items[j].tag != drop_tag {
+            next_items.push(p.items[j])
+          }
+        }
+        p.items = next_items
+      } else {
+        let was = p.items[at]
+        let next_status = match status {
+          Some(s) => s
+          None => was.status
+        }
+        let next_text = match sessions_core::str_of(sessions_core::jget(args, "subject")) {
+          Some(s) => if s != "" { s } else { was.text }
+          None => was.text
+        }
+        let item = PItem::{
+          tag: self.alloc_tag(),
+          text: next_text,
+          status: next_status,
+          id: was.id,
+        }
+        p.items[at] = item
+      }
+      changed = true
+    }
+  }
+  changed
+}
+
+// ── RPC / tell / timer / lspawn primitives ──
+
+pub fn LiveCtx::lnode_k(
+  self : LiveCtx,
+  f : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.gen.rpc_k(self.host, live_key, f, args, self.dispatch.mirror_actor, k)
+}
+
+fn LiveCtx::tell(
+  self : LiveCtx,
+  key : String,
+  f : String,
+  args : Array[base_codec::Json],
+) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  (self.dispatch.mirror_actor)(key)
+  self.gen.say_node([
+    ("tell", sessions_core::jstr(f)),
+    ("actor", sessions_core::jstr(key)),
+    ("args", base_codec::json_arr(args)),
+  ])
+}
+
+fn LiveCtx::llog(
+  self : LiveCtx,
+  level : String,
+  message : String,
+  fields : Array[(String, base_codec::Json)],
+) -> Unit {
+  self.tell(live_key, "log", [
+    sessions_core::jstr(level),
+    sessions_core::jstr(message),
+    base_codec::json_obj(fields),
+  ])
+}
+
+fn LiveCtx::after_action(
+  self : LiveCtx,
+  ms : Double,
+  on : Option[String],
+  action : LiveTimerAction,
+) -> Int {
+  if self.gen.counters.sealed {
+    return 0
+  }
+  let id = self.host.alloc_id()
+  self.state.timer_actions.set(id, (self.gen.counters.epoch, action))
+  let delay = if ms < 0.0 { 0.0 } else { ms }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("after", sessions_core::jint(id)),
+    ("ms", sessions_core::jnum(delay)),
+  ]
+  match on {
+    Some(k) => fields.push(("on", sessions_core::jstr(k)))
+    None => ()
+  }
+  self.gen.say_node(fields)
+  id
+}
+
+fn LiveCtx::cancel_timer(self : LiveCtx, id : Int) -> Unit {
+  if id == 0 || self.gen.counters.sealed {
+    return
+  }
+  match self.state.timer_actions.get(id) {
+    Some((epoch, _)) => {
+      if epoch == self.gen.counters.epoch {
+        let _ = self.state.timer_actions.remove(id)
+        self.gen.say_node([("cancel", sessions_core::jint(id))])
+      }
+    }
+    None => ()
+  }
+}
+
+/// Dispatch a Node `{"due": id}` event for `#live` timers using the current value-passed context.
+/// Returns `true` if `id` belonged to this generation's `#live` timer table.
+pub fn LiveCtx::handle_due(self : LiveCtx, id : Int) -> Bool {
+  let counters = self.gen.counters
+  if counters.sealed {
+    return false
+  }
+  match self.state.timer_actions.get(id) {
+    Some((epoch, action)) => {
+      if epoch != counters.epoch {
+        return false
+      }
+      let _ = self.state.timer_actions.remove(id)
+      counters.active = counters.active + 1
+      match action {
+        LiveTimerAction::RateDeadline(key, rate_gen) => self.run_rate_deadline(key, rate_gen)
+        LiveTimerAction::ReleaseHold(key) => self.run_release_hold(key)
+        LiveTimerAction::SoonRead(key) => self.run_soon_read(key)
+      }
+      if !counters.sealed {
+        counters.active = counters.active - 1
+        counters.quiet()
+      }
+      true
+    }
+    None => false
+  }
+}
+
+fn LiveCtx::lspawn(
+  self : LiveCtx,
+  work_k : ((effect::Exit[Unit]) -> Unit) -> Unit,
+) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  self.state.pending = self.state.pending + 1
+  if self.state.pending == 1 {
+    self.tell(live_key, "pending", [sessions_core::jbool(true)])
+  }
+  self.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    work_k(fn(ex : effect::Exit[Unit]) -> Unit {
+      if self.state.pending > 0 {
+        self.state.pending = self.state.pending - 1
+        if self.state.pending == 0 && !self.gen.counters.sealed {
+          self.tell(live_key, "pending", [sessions_core::jbool(false)])
+        }
+      }
+      wk(ex)
+    })
+  })
+}
+
+fn LiveCtx::ltell(
+  self : LiveCtx,
+  key : String,
+  subs : Array[LSub],
+  message : base_codec::Json,
+  briefed : Bool,
+) -> Unit {
+  if subs.length() == 0 {
+    return
+  }
+  let to : Array[base_codec::Json] = []
+  for i in 0..<subs.length() {
+    let s = subs[i]
+    to.push(base_codec::json_arr([
+      sessions_core::jnum(s.id.to_double()),
+      sessions_core::jbool(s.brief),
+      sessions_core::jbool(s.held),
+    ]))
+  }
+  self.tell(live_key, "told", [
+    sessions_core::jstr(key),
+    base_codec::json_arr(to),
+    message,
+    sessions_core::jbool(briefed),
+  ])
+}
+
+fn LiveCtx::lemit(self : LiveCtx, key : String, message : base_codec::Json) -> Unit {
+  let subs = match self.state.listeners.get(key) {
+    Some(a) => a
+    None => return
+  }
+  let now : Array[LSub] = []
+  for i in 0..<subs.length() {
+    let sub = subs[i]
+    match sub.queue {
+      Some(q) => q.push(message)
+      None => now.push(sub)
+    }
+  }
+  self.ltell(key, now, message, false)
+}
+
+fn timeline(start : Int, entries : Array[base_codec::Json]) -> base_codec::Json {
+  base_codec::json_obj([
+    ("type", sessions_core::jstr("timeline")),
+    ("start", sessions_core::jnum(start.to_double())),
+    ("entries", base_codec::json_arr(entries)),
+    ("usage", base_codec::json_null()),
+  ])
+}
+
+fn LiveCtx::work_now(self : LiveCtx, key : String) -> base_codec::Json {
+  let now = self.gen.counters.now
+  let tasks_raw = match self.state.tasks.get(key) {
+    Some(a) => a
+    None => []
+  }
+  let tasks : Array[base_codec::Json] = []
+  for i in 0..<tasks_raw.length() {
+    let t = tasks_raw[i]
+    let m = copy_json_obj_fields(t)
+    let started = match sessions_core::num_of(sessions_core::jget(t, "startedAt")) {
+      Some(s) => s
+      None => now
+    }
+    let elapsed = if now - started > 0.0 { now - started } else { 0.0 }
+    base_codec::json_obj_set(m, "elapsedMs", sessions_core::jnum(elapsed))
+    tasks.push(base_codec::json_obj(m))
+  }
+  let plan = match self.state.said_plans.get(key) {
+    Some(p) => p
+    None => {
+      match self.state.plans.get(key) {
+        Some(p) => plan_items(p)
+        None => base_codec::json_arr([])
+      }
+    }
+  }
+  base_codec::json_obj([
+    ("type", sessions_core::jstr("work")),
+    ("tasks", base_codec::json_arr(tasks)),
+    ("plan", plan),
+  ])
+}
+
+fn LiveCtx::steps_now(self : LiveCtx, key : String) -> base_codec::Json {
+  let phase = match self.state.phase.get(key) {
+    Some((p, at)) => {
+      base_codec::json_obj([
+        ("phase", sessions_core::jstr(p)),
+        ("elapsedMs", sessions_core::jnum(self.gen.counters.now - at)),
+      ])
+    }
+    None => base_codec::json_null()
+  }
+  let steps_arr : Array[base_codec::Json] = []
+  match self.state.steps.get(key) {
+    Some(s) => {
+      for i in 0..<s.length() {
+        steps_arr.push(s[i])
+      }
+    }
+    None => ()
+  }
+  base_codec::json_obj([
+    ("type", sessions_core::jstr("steps")),
+    ("steps", base_codec::json_arr(steps_arr)),
+    ("phase", phase),
+  ])
+}
+
+fn LiveCtx::rate_now(self : LiveCtx, key : String) -> base_codec::Json {
+  let rate = match self.state.rates.get(key) {
+    Some(r) => r.told
+    None => 0
+  }
+  base_codec::json_obj([
+    ("type", sessions_core::jstr("rate")),
+    ("tokensPerSecond", sessions_core::jnum(rate.to_double())),
+  ])
+}
+
+pub fn LiveCtx::live_now(self : LiveCtx, key : String) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  match self.state.watched.get(key) {
+    Some(w) => {
+      match w.tail {
+        Some(tail) => out.push(timeline(tail.length(), []))
+        None => ()
+      }
+    }
+    None => ()
+  }
+  out.push(self.steps_now(key))
+  out.push(self.work_now(key))
+  out.push(self.rate_now(key))
+  base_codec::json_arr(out)
+}
+
+// ── Rate lifecycle (`LRate.quiet` timer ID + generation ID) ──
+
+fn LiveCtx::cancel_rate_quiet(self : LiveCtx, rate : LRate) -> Unit {
+  match rate.quiet_timer_id {
+    Some(tid) => {
+      rate.quiet_timer_id = None
+      self.cancel_timer(tid)
+    }
+    None => ()
+  }
+}
+
+/// Immediately cancel `rate.quiet` and remove the rate entry for `key`.
+pub fn LiveCtx::rate_clear(self : LiveCtx, key : String) -> Unit {
+  match self.state.rates.get(key) {
+    Some(rate) => {
+      self.cancel_rate_quiet(rate)
+      let _ = self.state.rates.remove(key)
+    }
+    None => ()
+  }
+}
+
+fn LiveCtx::rate_deadline(self : LiveCtx, key : String, rate_gen : Int, ms : Double) -> Unit {
+  match self.state.rates.get(key) {
+    Some(rate) => {
+      if rate.gen_id != rate_gen {
+        return
+      }
+      let tid = self.after_action(ms, None, LiveTimerAction::RateDeadline(key, rate_gen))
+      rate.quiet_timer_id = Some(tid)
+    }
+    None => ()
+  }
+}
+
+fn LiveCtx::run_rate_deadline(self : LiveCtx, key : String, rate_gen : Int) -> Unit {
+  match self.state.rates.get(key) {
+    Some(cur) => {
+      if cur.gen_id != rate_gen {
+        return
+      }
+      let left = cur.last_delta + RATE_WINDOW_MS - self.gen.counters.now
+      if left > 0.0 {
+        self.rate_deadline(key, rate_gen, left)
+      } else {
+        cur.quiet_timer_id = None
+        cur.buckets = []
+        cur.told_at = 0.0
+        if cur.told > 0 {
+          cur.told = 0
+          self.lemit(
+            key,
+            base_codec::json_obj([
+              ("type", sessions_core::jstr("rate")),
+              ("tokensPerSecond", sessions_core::jnum(0.0)),
+            ]),
+          )
+        }
+      }
+    }
+    None => ()
+  }
+}
+
+fn LiveCtx::tell_rate(self : LiveCtx, key : String, rate : LRate, now : Double) -> Unit {
+  let mut written = sessions_core::NEVER
+  let mut counts = sessions_core::NEVER
+  let mut total = 0.0
+  for i in 0..<rate.buckets.length() {
+    let b = rate.buckets[i]
+    match b.since {
+      None => {
+        if b.at < written {
+          written = b.at
+        }
+      }
+      Some(s) => {
+        if s < counts {
+          counts = s
+        }
+      }
+    }
+    total = total + b.tokens
+  }
+  let w = if written == sessions_core::NEVER {
+    0.0
+  } else {
+    min_double(now - written + 250.0, RATE_WINDOW_MS)
+  }
+  let c = if counts == sessions_core::NEVER { 0.0 } else { now - counts }
+  let span = max_double(max_double(w, c), 1.0)
+  let per = round_double(total * 1000.0 / span)
+  let tps = if per < 1.0 { 1 } else { per.to_int() }
+  rate.told_at = now
+  rate.told = tps
+  self.lemit(
+    key,
+    base_codec::json_obj([
+      ("type", sessions_core::jstr("rate")),
+      ("tokensPerSecond", sessions_core::jnum(tps.to_double())),
+    ]),
+  )
+}
+
+fn LiveCtx::counted(
+  self : LiveCtx,
+  key : String,
+  id : String,
+  tokens : Double,
+  counted : Bool,
+) -> Unit {
+  if tokens <= 0.0 {
+    return
+  }
+  let now = self.gen.counters.now
+  let rate = match self.state.rates.get(key) {
+    Some(r) => r
+    None => {
+      let gen_id = self.alloc_tag()
+      let r = LRate::{
+        gen_id: gen_id,
+        buckets: [],
+        told_at: 0.0,
+        told: 0,
+        last: Map::new(),
+        last_delta: now,
+        quiet_timer_id: None,
+      }
+      self.state.rates.set(key, r)
+      r
+    }
+  }
+  rate.last_delta = now
+  match rate.quiet_timer_id {
+    None => self.rate_deadline(key, rate.gen_id, RATE_WINDOW_MS)
+    Some(_) => ()
+  }
+  let at = floor_double(now / 250.0) * 250.0
+  if counted {
+    let since = match rate.last.get(id) {
+      Some(t) => t
+      None => {
+        let mut found = now
+        match self.state.steps.get(key) {
+          Some(steps) => {
+            for i in 0..<steps.length() {
+              if opt_str_is(sessions_core::str_of(sessions_core::jget(steps[i], "id")), id) {
+                found = match sessions_core::num_of(sessions_core::jget(steps[i], "startedAt")) {
+                  Some(s) => s
+                  None => now
+                }
+                break
+              }
+            }
+          }
+          None => ()
+        }
+        found
+      }
+    }
+    rate.last.set(id, now)
+    rate.buckets.push(LBucket::{
+      at: at,
+      step: id,
+      tokens: tokens,
+      since: Some(if since < now { since } else { now }),
+    })
+  } else {
+    let mut found_idx = -1
+    for i in 0..<rate.buckets.length() {
+      let b = rate.buckets[i]
+      if b.at == at && b.step == id {
+        match b.since {
+          None => {
+            found_idx = i
+            break
+          }
+          Some(_) => ()
+        }
+      }
+    }
+    if found_idx >= 0 {
+      rate.buckets[found_idx].tokens = rate.buckets[found_idx].tokens + tokens
+    } else {
+      rate.buckets.push(LBucket::{ at: at, step: id, tokens: tokens, since: None })
+    }
+  }
+  let kept : Array[LBucket] = []
+  for i in 0..<rate.buckets.length() {
+    if rate.buckets[i].at > now - RATE_WINDOW_MS {
+      kept.push(rate.buckets[i])
+    }
+  }
+  rate.buckets = kept
+  if now - rate.told_at < RATE_EVERY_MS {
+    return
+  }
+  let mut first = sessions_core::NEVER
+  for i in 0..<rate.buckets.length() {
+    let b = rate.buckets[i]
+    let s = match b.since {
+      Some(x) => x
+      None => b.at
+    }
+    if s < first {
+      first = s
+    }
+  }
+  if rate.told_at == 0.0 && now - first < RATE_FIRST_MS {
+    return
+  }
+  self.tell_rate(key, rate, now)
+}
+
+// ── Runtime events (`live_event`) ──
+
+pub fn LiveCtx::live_event(self : LiveCtx, key : String, event : base_codec::Json) -> Unit {
+  let l = self.state
+  let kind = match sessions_core::str_of(sessions_core::jget(event, "kind")) {
+    Some(s) => s
+    None => ""
+  }
+  if kind == "tasks" {
+    let was : Map[String, base_codec::Json] = Map::new()
+    match l.tasks.get(key) {
+      Some(prev) => {
+        for i in 0..<prev.length() {
+          let t = prev[i]
+          match (
+            sessions_core::str_of(sessions_core::jget(t, "id")),
+            sessions_core::jget(t, "startedAt"),
+          ) {
+            (Some(id), Some(at)) => was.set(id, at)
+            _ => ()
+          }
+        }
+      }
+      None => ()
+    }
+    let given : Array[base_codec::Json] = match sessions_core::jget(event, "tasks") {
+      Some(base_codec::Json::Arr(t)) => t
+      _ => []
+    }
+    let tasks : Array[base_codec::Json] = []
+    for i in 0..<given.length() {
+      let t = given[i]
+      let m = copy_json_obj_fields(t)
+      match sessions_core::jget(t, "startedAt") {
+        Some(base_codec::Json::Num(_, _)) => ()
+        _ => {
+          let tid = match sessions_core::str_of(sessions_core::jget(t, "id")) {
+            Some(s) => s
+            None => ""
+          }
+          let at_val = match was.get(tid) {
+            Some(at) => at
+            None => sessions_core::jnum(self.gen.counters.now)
+          }
+          base_codec::json_obj_set(m, "startedAt", at_val)
+        }
+      }
+      tasks.push(base_codec::json_obj(m))
+    }
+    if tasks.length() == 0 && !l.tasks.contains(key) {
+      return
+    }
+    if tasks.length() == 0 {
+      let _ = l.tasks.remove(key)
+    } else {
+      l.tasks.set(key, tasks)
+    }
+    self.lemit(key, self.work_now(key))
+    return
+  }
+  if kind == "plan" {
+    let plan_val = match sessions_core::jget(event, "plan") {
+      Some(p) => p
+      None => base_codec::json_arr([])
+    }
+    l.said_plans.set(key, plan_val)
+    self.lemit(key, self.work_now(key))
+    return
+  }
+  if kind == "phase" {
+    let p = match sessions_core::str_of(sessions_core::jget(event, "phase")) {
+      Some(s) => s
+      None => ""
+    }
+    l.phase.set(key, (p, self.gen.counters.now))
+    self.lemit(
+      key,
+      base_codec::json_obj([("type", sessions_core::jstr("step")), ("event", event)]),
+    )
+    return
+  }
+  if kind == "delta" {
+    if !opt_str_is(sessions_core::str_of(sessions_core::jget(event, "field")), "output") {
+      let id = match sessions_core::str_of(sessions_core::jget(event, "id")) {
+        Some(s) => s
+        None => ""
+      }
+      match sessions_core::num_of(sessions_core::jget(event, "tokens")) {
+        Some(n) => self.counted(key, id, n, true)
+        None => {
+          let txt = match sessions_core::str_of(sessions_core::jget(event, "text")) {
+            Some(s) => s
+            None => ""
+          }
+          self.counted(key, id, tokens_of(txt), false)
+        }
+      }
+    }
+    return
+  }
+  if kind == "start" {
+    let id = match sessions_core::str_of(sessions_core::jget(event, "id")) {
+      Some(s) => s
+      None => ""
+    }
+    let step = match sessions_core::jget(event, "step") {
+      Some(st) => st
+      None => sessions_core::jstr("text")
+    }
+    let raw_input = match sessions_core::str_of(sessions_core::jget(event, "input")) {
+      Some(s) => s
+      None => ""
+    }
+    let input = brief_input(raw_input)
+    let steps = match l.steps.get(key) {
+      Some(s) => s
+      None => []
+    }
+    let mut started = sessions_core::jnum(self.gen.counters.now)
+    let kept : Array[base_codec::Json] = []
+    for i in 0..<steps.length() {
+      let s = steps[i]
+      if opt_str_is(sessions_core::str_of(sessions_core::jget(s, "id")), id) {
+        match sessions_core::jget(s, "startedAt") {
+          Some(st) => started = st
+          None => ()
+        }
+      } else {
+        kept.push(s)
+      }
+    }
+    let s : Array[(String, base_codec::Json)] = [
+      ("id", sessions_core::jstr(id)),
+      ("step", step),
+    ]
+    match sessions_core::jget(event, "tool") {
+      Some(t) => s.push(("tool", t))
+      None => ()
+    }
+    if is_true(sessions_core::jget(event, "subagent")) {
+      s.push(("subagent", sessions_core::jbool(true)))
+    }
+    match sessions_core::jget(event, "parent") {
+      Some(p) => s.push(("parent", p))
+      None => ()
+    }
+    s.push(("input", sessions_core::jstr(input)))
+    s.push(("startedAt", started))
+    kept.push(base_codec::json_obj(s))
+    l.steps.set(key, kept)
+
+    let told : Array[(String, base_codec::Json)] = [
+      ("kind", sessions_core::jstr("start")),
+      ("id", sessions_core::jstr(id)),
+      ("step", step),
+    ]
+    match sessions_core::jget(event, "tool") {
+      Some(t) => told.push(("tool", t))
+      None => ()
+    }
+    told.push(("input", sessions_core::jstr(input)))
+    match sessions_core::jget(event, "subagent") {
+      Some(v) => told.push(("subagent", v))
+      None => ()
+    }
+    match sessions_core::jget(event, "parent") {
+      Some(p) => told.push(("parent", p))
+      None => ()
+    }
+    self.lemit(
+      key,
+      base_codec::json_obj([
+        ("type", sessions_core::jstr("step")),
+        ("event", base_codec::json_obj(told)),
+      ]),
+    )
+    return
+  }
+  if kind == live_wire::KIND_END {
+    let id = match sessions_core::str_of(sessions_core::jget(event, "id")) {
+      Some(s) => s
+      None => ""
+    }
+    let steps = match l.steps.get(key) {
+      Some(s) => s
+      None => return
+    }
+    let kept : Array[base_codec::Json] = []
+    for i in 0..<steps.length() {
+      if !opt_str_is(sessions_core::str_of(sessions_core::jget(steps[i], "id")), id) {
+        kept.push(steps[i])
+      }
+    }
+    if kept.length() == steps.length() {
+      return
+    }
+    l.steps.set(key, kept)
+    self.lemit(
+      key,
+      base_codec::json_obj([("type", sessions_core::jstr("step")), ("event", event)]),
+    )
+    // Single step ended: drop its buckets & expired buckets.
+    // If all valid buckets are exhausted, cancel `rate.quiet`, remove rate, and emit rate 0 if told > 0.
+    // If other steps still have valid buckets, keep counting and update rate if told > 0.
+    match l.rates.get(key) {
+      Some(rate) => {
+        let now = self.gen.counters.now
+        let left : Array[LBucket] = []
+        for i in 0..<rate.buckets.length() {
+          let b = rate.buckets[i]
+          if b.step != id && b.at > now - RATE_WINDOW_MS {
+            left.push(b)
+          }
+        }
+        rate.buckets = left
+        let _ = rate.last.remove(id)
+        if rate.buckets.length() == 0 {
+          self.cancel_rate_quiet(rate)
+          let _ = l.rates.remove(key)
+          if rate.told > 0 {
+            self.lemit(
+              key,
+              base_codec::json_obj([
+                ("type", sessions_core::jstr("rate")),
+                ("tokensPerSecond", sessions_core::jnum(0.0)),
+              ]),
+            )
+          }
+        } else if rate.told > 0 {
+          self.tell_rate(key, rate, now)
+        }
+      }
+      None => ()
+    }
+    self.lsoon(key)
+    return
+  }
+}
+
+// ── Turn end / running ──
+
+fn LiveCtx::live_turn_end_k(
+  self : LiveCtx,
+  key : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let _ = self.state.steps.remove(key)
+  let _ = self.state.phase.remove(key)
+  self.rate_clear(key)
+  self.read_now_k(key, fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => {
+        self.lemit(key, base_codec::json_obj([("type", sessions_core::jstr("clear"))]))
+        self.lsoon(key)
+        k(effect::Exit::Succeeded(()))
+      }
+      other => k(other)
+    }
+  })
+}
+
+pub fn LiveCtx::live_end(self : LiveCtx, key : String) -> Int {
+  self.state.next = self.state.next + 1
+  let n = self.state.next
+  let d : effect::Deferred[Unit] = effect::Deferred::new()
+  self.state.ends.set(n, d)
+  self.lspawn(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.live_turn_end_k(key, fn(ex : effect::Exit[Unit]) -> Unit {
+      let _ = d.succeed(())
+      wk(ex)
+    })
+  })
+  n
+}
+
+pub fn LiveCtx::live_ended_k(
+  self : LiveCtx,
+  n : Int,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  match self.state.ends.get(n) {
+    Some(d) => {
+      d.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+        let _ = self.state.ends.remove(n)
+        k(ex)
+      })
+    }
+    None => k(effect::Exit::Succeeded(()))
+  }
+}
+
+fn LiveCtx::tell_held(self : LiveCtx) -> Unit {
+  let arr : Array[base_codec::Json] = []
+  for i in 0..<self.state.holds_order.length() {
+    arr.push(sessions_core::jstr(self.state.holds_order[i]))
+  }
+  self.tell(live_key, "held", [base_codec::json_arr(arr)])
+}
+
+fn LiveCtx::live_running(self : LiveCtx, key : String, on : Bool) -> Unit {
+  let l = self.state
+  if on {
+    match l.releases.get(key) {
+      Some(tid) => {
+        let _ = l.releases.remove(key)
+        self.cancel_timer(tid)
+      }
+      None => ()
+    }
+    if l.holds.contains(key) {
+      return
+    }
+    l.next = l.next + 1
+    let id = -l.next
+    l.holds.set(key, id)
+    order_set(l.holds_order, key)
+    self.tell_held()
+    self.live_subscribe(key, 9007199254740991.0, None, id, true, true)
+    return
+  }
+  if !l.holds.contains(key) || l.releases.contains(key) {
+    return
+  }
+  let tid = self.after_action(HELD_AFTER_MS, Some(live_key), LiveTimerAction::ReleaseHold(key))
+  l.releases.set(key, tid)
+}
+
+fn LiveCtx::run_release_hold(self : LiveCtx, key : String) -> Unit {
+  let l = self.state
+  let _ = l.releases.remove(key)
+  match l.holds.get(key) {
+    Some(id) => {
+      let _ = l.holds.remove(key)
+      order_remove(l.holds_order, key)
+      self.tell_held()
+      self.live_unsubscribe(key, id)
+    }
+    None => ()
+  }
+}
+
+// ── Listeners ──
+
+fn LiveCtx::live_subscribe(
+  self : LiveCtx,
+  key : String,
+  from : Double,
+  last : Option[Int],
+  id : Int,
+  brief : Bool,
+  held : Bool,
+) -> Unit {
+  let seq = self.alloc_tag()
+  let sub = LSub::{ seq: seq, id: id, brief: brief, held: held, queue: Some([]) }
+  let subs = match self.state.listeners.get(key) {
+    Some(a) => {
+      let next : Array[LSub] = []
+      for i in 0..<a.length() {
+        next.push(a[i])
+      }
+      next.push(sub)
+      next
+    }
+    None => [sub]
+  }
+  self.state.listeners.set(key, subs)
+  let _ = self.lwatch(key)
+  match self.state.watched.get(key) {
+    Some(w) => {
+      if w.ready {
+        w.waiters.push(LWaiter::Join(seq, from, last))
+      } else {
+        self.join(key, seq, from, last)
+      }
+    }
+    None => self.join(key, seq, from, last)
+  }
+}
+
+fn LiveCtx::find_sub(self : LiveCtx, key : String, seq : Int) -> Option[LSub] {
+  match self.state.listeners.get(key) {
+    Some(subs) => {
+      for i in 0..<subs.length() {
+        if subs[i].seq == seq {
+          return Some(subs[i])
+        }
+      }
+      None
+    }
+    None => None
+  }
+}
+
+fn LiveCtx::joined(
+  self : LiveCtx,
+  key : String,
+  seq : Int,
+  first : Array[base_codec::Json],
+  briefed : Bool,
+) -> Unit {
+  let sub = match self.find_sub(key, seq) {
+    Some(s) => s
+    None => return
+  }
+  for i in 0..<first.length() {
+    self.ltell(key, [sub], first[i], briefed)
+  }
+  let queued = match sub.queue {
+    Some(q) => q
+    None => []
+  }
+  sub.queue = None
+  for i in 0..<queued.length() {
+    self.ltell(key, [sub], queued[i], false)
+  }
+  self.ltell(key, [sub], self.rate_now(key), false)
+}
+
+fn LiveCtx::join(
+  self : LiveCtx,
+  key : String,
+  seq : Int,
+  from : Double,
+  last : Option[Int],
+) -> Unit {
+  let sub = match self.find_sub(key, seq) {
+    Some(s) => s
+    None => return
+  }
+  let tail = match self.state.watched.get(key) {
+    Some(w) => {
+      match w.tail {
+        Some(t) => t
+        None => {
+          self.joined(key, seq, [self.steps_now(key), self.work_now(key)], false)
+          return
+        }
+      }
+    }
+    None => {
+      self.joined(key, seq, [self.steps_now(key), self.work_now(key)], false)
+      return
+    }
+  }
+  let len = tail.length()
+  let from_i = if from > len.to_double() { len } else { from.to_int() }
+  let start = match last {
+    Some(n) => max_int(from_i, max_int(len - n, 0))
+    None => max_int(from_i, 0)
+  }
+  if start >= len {
+    self.joined(key, seq, [timeline(start, []), self.steps_now(key), self.work_now(key)], false)
+    return
+  }
+  let brief = sub.brief
+  self.lspawn(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sessions_core::catch_k(
+      fn(bk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        self.past_k(key, start, len, brief, fn(ex : effect::Exit[Array[base_codec::Json]]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(entries) => {
+              self.joined(
+                key,
+                seq,
+                [timeline(start, entries), self.steps_now(key), self.work_now(key)],
+                true,
+              )
+              bk(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Failed(e) => bk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => bk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      fn(_e : effect::EffectError, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        self.joined(key, seq, [timeline(len, []), self.steps_now(key), self.work_now(key)], false)
+        rk(effect::Exit::Succeeded(()))
+      },
+      wk,
+    )
+  })
+}
+
+fn LiveCtx::past_k(
+  self : LiveCtx,
+  key : String,
+  from : Int,
+  to : Int,
+  brief : Bool,
+  k : (effect::Exit[Array[base_codec::Json]]) -> Unit,
+) -> Unit {
+  let pages : Array[Array[base_codec::Json]] = []
+  let mut upto = to
+  sessions_core::iter_sync_k(
+    fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      if upto <= from {
+        sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+        return
+      }
+      let limit = min_int(upto - from, 1000)
+      self.lnode_k(
+        "page",
+        [
+          sessions_core::jstr(key),
+          sessions_core::jnum(upto.to_double()),
+          sessions_core::jnum(limit.to_double()),
+          sessions_core::jbool(brief),
+        ],
+        fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(page) => {
+              let start = sessions_core::int_of(sessions_core::jget(page, "start"))
+              let entries : Array[base_codec::Json] = match sessions_core::jget(page, "entries") {
+                Some(base_codec::Json::Arr(e)) => e
+                _ => []
+              }
+              let take_n = min_int(entries.length(), max_int(upto - start, 0))
+              if take_n == 0 {
+                sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                return
+              }
+              let got : Array[base_codec::Json] = []
+              for i in 0..<take_n {
+                got.push(entries[i])
+              }
+              pages.push(got)
+              upto = start
+              sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+            }
+            effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+          }
+        },
+      )
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          // `pages` was pushed in reverse order (from newest to oldest); flatten oldest-first.
+          let out : Array[base_codec::Json] = []
+          let mut pi = pages.length() - 1
+          while pi >= 0 {
+            let p = pages[pi]
+            for j in 0..<p.length() {
+              out.push(p[j])
+            }
+            pi = pi - 1
+          }
+          k(effect::Exit::Succeeded(out))
+        }
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+fn LiveCtx::live_unsubscribe(self : LiveCtx, key : String, id : Int) -> Unit {
+  let subs = match self.state.listeners.get(key) {
+    Some(s) => s
+    None => return
+  }
+  let kept : Array[LSub] = []
+  for i in 0..<subs.length() {
+    if subs[i].id != id {
+      kept.push(subs[i])
+    }
+  }
+  if kept.length() > 0 {
+    self.state.listeners.set(key, kept)
+    return
+  }
+  let _ = self.state.listeners.remove(key)
+  self.unwatch(key, true)
+}
+
+// ── Watching & reading transcripts ──
+
+fn LiveCtx::current_watch(self : LiveCtx, key : String, watch_n : Int) -> Bool {
+  match self.state.watched.get(key) {
+    Some(x) => x.n == watch_n
+    None => false
+  }
+}
+
+fn remove_read_ticket(queue : Array[LReadTicket], id : Int) -> Unit {
+  let kept : Array[LReadTicket] = []
+  let mut removed = false
+  for i in 0..<queue.length() {
+    if queue[i].id == id {
+      removed = true
+    } else {
+      kept.push(queue[i])
+    }
+  }
+  if removed {
+    queue.clear()
+    for i in 0..<kept.length() {
+      queue.push(kept[i])
+    }
+  }
+}
+
+/// Hand off read ownership to the next live (`Queued`) ticket, or release `read_held = false`.
+/// Returns `true` if handed off to a live waiter, `false` if queue is empty.
+fn LiveCtx::handoff_next_reader(self : LiveCtx, w : LWatched) -> Bool {
+  while w.read_queue.length() > 0 {
+    let ticket = pop_front(w.read_queue)
+    match ticket.state {
+      ReadTicketState::Queued => {
+        ticket.state = ReadTicketState::Handed
+        if !self.gen.counters.sealed {
+          self.gen.counters.active = self.gen.counters.active + 1
+        }
+        let maybe_turn = self.state.read_turns.get(ticket.id)
+        let _ = self.state.read_turns.remove(ticket.id)
+        match maybe_turn {
+          Some(turn) => {
+            let _ = turn.succeed(())
+          }
+          None => ()
+        }
+        return true
+      }
+      _ => {
+        let _ = self.state.read_turns.remove(ticket.id)
+      }
+    }
+  }
+  w.read_held = false
+  false
+}
+
+/// Clear `LWatched.waiters`, reset `take_up = None`, and wake live `read_queue` waiters
+/// using the `in_read` `active += 1` + `succeed(())` invariant (or drop silently if sealed).
+fn LiveCtx::cleanup_watch(self : LiveCtx, w : LWatched) -> Unit {
+  w.ready = false
+  w.waiters.clear()
+  w.take_up = None
+  w.following = 0
+  w.follow_again = false
+  if self.gen.counters.sealed {
+    for i in 0..<w.read_queue.length() {
+      let _ = self.state.read_turns.remove(w.read_queue[i].id)
+    }
+    w.read_queue.clear()
+    w.read_held = false
+    return
+  }
+  while w.read_queue.length() > 0 {
+    let ticket = pop_front(w.read_queue)
+    match ticket.state {
+      ReadTicketState::Queued => {
+        ticket.state = ReadTicketState::Handed
+        self.gen.counters.active = self.gen.counters.active + 1
+        let maybe_turn = self.state.read_turns.get(ticket.id)
+        let _ = self.state.read_turns.remove(ticket.id)
+        match maybe_turn {
+          Some(turn) => {
+            let _ = turn.succeed(())
+          }
+          None => ()
+        }
+      }
+      _ => {
+        let _ = self.state.read_turns.remove(ticket.id)
+      }
+    }
+  }
+}
+
+/// Serialize reads of `(key, watch_n)` (`live.mbt:1088-1108`) with ticket-based single-reader
+/// cancellation & handoff safety (ZERO `ticket <-> Deferred` cycle; `Deferred` lives in `read_turns`):
+/// - Queuing: `active -= 1; quiet()` before `turn.wait_k`.
+/// - Handing off: `active += 1` before `turn.succeed(())` (and removes `tid` from `read_turns`).
+/// - Single-reader cancel while `Queued`: removes ticket & turn, preserves `active`, propagates `Interrupted`.
+/// - Single-reader cancel after `Handed` before resume: undoes `active += 1` regardless of watch replacement,
+///   hands off to next live ticket only if `cur.n == watch_n` (otherwise emits `quiet()`), propagates `Interrupted`.
+fn LiveCtx::in_read_k(
+  self : LiveCtx,
+  key : String,
+  watch_n : Int,
+  work_k : ((effect::Exit[Unit]) -> Unit) -> Unit,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let w = match self.state.watched.get(key) {
+    Some(x) => if x.n == watch_n { x } else {
+      k(effect::Exit::Succeeded(()))
+      return
+    }
+    None => {
+      k(effect::Exit::Succeeded(()))
+      return
+    }
+  }
+  let release_and_finish = fn(ex : effect::Exit[Unit]) -> Unit {
+    match self.state.watched.get(key) {
+      Some(cur) => {
+        if cur.n == watch_n {
+          let _ = self.handoff_next_reader(cur)
+        }
+      }
+      None => ()
+    }
+    k(ex)
+  }
+  let run_body = fn() -> Unit {
+    work_k(fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => release_and_finish(effect::Exit::Succeeded(()))
+        effect::Exit::Failed(e) => {
+          self.llog("warn", "a transcript could not be read", [
+            ("error", sessions_core::jstr(sessions_core::error_message(e))),
+          ])
+          release_and_finish(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Interrupted => release_and_finish(effect::Exit::Interrupted)
+      }
+    })
+  }
+  if w.read_held {
+    let tid = self.alloc_tag()
+    let turn : effect::Deferred[Unit] = effect::Deferred::new()
+    let ticket = LReadTicket::{ id: tid, state: ReadTicketState::Queued }
+    w.read_queue.push(ticket)
+    self.state.read_turns.set(tid, turn)
+    if !self.gen.counters.sealed {
+      self.gen.counters.active = self.gen.counters.active - 1
+      self.gen.quiet()
+    }
+    turn.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+      let _ = self.state.read_turns.remove(tid)
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          match ticket.state {
+            ReadTicketState::Cancelled => k(effect::Exit::Interrupted)
+            _ => run_body()
+          }
+        }
+        effect::Exit::Interrupted => {
+          let was_handed = match ticket.state {
+            ReadTicketState::Handed => true
+            _ => false
+          }
+          ticket.state = ReadTicketState::Cancelled
+          let mut same_watch : Option[LWatched] = None
+          match self.state.watched.get(key) {
+            Some(cur) => {
+              if cur.n == watch_n {
+                remove_read_ticket(cur.read_queue, tid)
+                same_watch = Some(cur)
+              }
+            }
+            None => ()
+          }
+          if was_handed {
+            if !self.gen.counters.sealed {
+              self.gen.counters.active = self.gen.counters.active - 1
+            }
+            let handed = match same_watch {
+              Some(cur) => self.handoff_next_reader(cur)
+              None => false
+            }
+            if !handed && !self.gen.counters.sealed {
+              self.gen.quiet()
+            }
+          }
+          k(effect::Exit::Interrupted)
+        }
+        other => {
+          let was_handed = match ticket.state {
+            ReadTicketState::Handed => true
+            _ => false
+          }
+          ticket.state = ReadTicketState::Cancelled
+          let mut same_watch : Option[LWatched] = None
+          match self.state.watched.get(key) {
+            Some(cur) => {
+              if cur.n == watch_n {
+                remove_read_ticket(cur.read_queue, tid)
+                same_watch = Some(cur)
+              }
+            }
+            None => ()
+          }
+          if was_handed {
+            if !self.gen.counters.sealed {
+              self.gen.counters.active = self.gen.counters.active - 1
+            }
+            let handed = match same_watch {
+              Some(cur) => self.handoff_next_reader(cur)
+              None => false
+            }
+            if !handed && !self.gen.counters.sealed {
+              self.gen.quiet()
+            }
+          }
+          k(other)
+        }
+      }
+    })
+  } else {
+    w.read_held = true
+    run_body()
+  }
+}
+
+fn LiveCtx::ready_now(self : LiveCtx, key : String, w : LWatched) -> Unit {
+  if !w.ready {
+    return
+  }
+  w.ready = false
+  let waiting : Array[LWaiter] = []
+  for i in 0..<w.waiters.length() {
+    waiting.push(w.waiters[i])
+  }
+  w.waiters.clear()
+  for i in 0..<waiting.length() {
+    match waiting[i] {
+      LWaiter::Join(seq, from, last) => self.join(key, seq, from, last)
+      LWaiter::Soon(watch_n) => {
+        if self.current_watch(key, watch_n) {
+          match self.state.watched.get(key) {
+            Some(cur) => {
+              match cur.tail {
+                Some(_) => self.lsoon(key)
+                None => ()
+              }
+            }
+            None => ()
+          }
+        }
+      }
+    }
+  }
+}
+
+fn LiveCtx::stood_remove(self : LiveCtx, key : String) -> Unit {
+  let _ = self.state.stood.remove(key)
+  order_remove(self.state.stood_order, key)
+}
+
+fn LiveCtx::keep_stood(self : LiveCtx, key : String, states : Array[base_codec::Json]) -> Unit {
+  self.stood_remove(key)
+  self.state.stood.set(key, states)
+  self.state.stood_order.push(key)
+  while self.state.stood_order.length() > 256 {
+    let first = pop_front(self.state.stood_order)
+    let _ = self.state.stood.remove(first)
+  }
+}
+
+fn LiveCtx::plan_at_set(self : LiveCtx, key : String, at : Int) -> Unit {
+  self.state.plan_at.set(key, at)
+  order_set(self.state.plan_at_order, key)
+}
+
+fn LiveCtx::plan_at_remove(self : LiveCtx, key : String) -> Unit {
+  let _ = self.state.plan_at.remove(key)
+  order_remove(self.state.plan_at_order, key)
+}
+
+fn LiveCtx::note_length(self : LiveCtx, key : String, tail : LTail) -> Unit {
+  let n = tail.length()
+  if opt_int_is(self.state.length_told.get(key), n) {
+    return
+  }
+  self.state.length_told.set(key, n)
+  self.tell(live_key, "length", [sessions_core::jstr(key), sessions_core::jnum(n.to_double())])
+}
+
+fn LiveCtx::gained(
+  self : LiveCtx,
+  key : String,
+  start : Int,
+  entries : Array[base_codec::Json],
+  grew : Bool,
+) -> Unit {
+  if entries.length() == 0 {
+    if grew {
+      self.tell(live_key, "count", [sessions_core::jstr(key)])
+    }
+    return
+  }
+  self.lemit(key, timeline(start, entries))
+  self.tell(live_key, "count", [sessions_core::jstr(key)])
+  self.read_for_plan(key, start, entries)
+}
+
+fn LiveCtx::read_for_plan(
+  self : LiveCtx,
+  key : String,
+  start : Int,
+  entries : Array[base_codec::Json],
+) -> Unit {
+  let l = self.state
+  match l.plan_back.get(key) {
+    Some(back) => {
+      for i in 0..<entries.length() {
+        back.push(entries[i])
+      }
+      return
+    }
+    None => ()
+  }
+  let state = match l.plans.get(key) {
+    Some(s) => s
+    None => {
+      let s = LPlan::{ items: [], creating: Map::new(), creating_order: [] }
+      l.plans.set(key, s)
+      s
+    }
+  }
+  if opt_int_is(l.plan_at.get(key), start) {
+    self.plan_at_set(key, start + entries.length())
+  } else {
+    self.plan_at_remove(key)
+  }
+  if self.read_plan(state, entries) && !l.said_plans.contains(key) {
+    self.lemit(key, self.work_now(key))
+  }
+}
+
+fn LiveCtx::read_plan_back(self : LiveCtx, key : String, end : Int) -> Unit {
+  let l = self.state
+  match (l.plans.get(key), l.plan_at.get(key)) {
+    (Some(had), Some(at)) => {
+      if at <= end && end - at <= PLAN_PAGE * PLAN_PAGES {
+        if at == end {
+          return
+        }
+        l.plan_back.set(key, [])
+        self.lspawn(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          let gap : Array[base_codec::Json] = []
+          let mut from = at
+          sessions_core::catch_k(
+            fn(bk : (effect::Exit[Bool]) -> Unit) -> Unit {
+              sessions_core::iter_sync_k(
+                fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+                  if from >= end {
+                    sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                    return
+                  }
+                  let upto = min_int(end, from + PLAN_PAGE)
+                  self.lnode_k(
+                    "page",
+                    [
+                      sessions_core::jstr(key),
+                      sessions_core::jnum(upto.to_double()),
+                      sessions_core::jnum((upto - from).to_double()),
+                      sessions_core::jbool(false),
+                    ],
+                    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+                      match ex {
+                        effect::Exit::Succeeded(page) => {
+                          let entries : Array[base_codec::Json] = match sessions_core::jget(page, "entries") {
+                            Some(base_codec::Json::Arr(e)) => e
+                            _ => []
+                          }
+                          let got_n = if sessions_core::int_of(sessions_core::jget(page, "start")) == from {
+                            min_int(entries.length(), upto - from)
+                          } else {
+                            0
+                          }
+                          if got_n == 0 {
+                            sk(effect::Exit::Failed(
+                              sessions_core::AskedError::new(sessions_core::jstr("not read on")).to_effect_error(),
+                            ))
+                            return
+                          }
+                          for i in 0..<got_n {
+                            gap.push(entries[i])
+                          }
+                          from = from + got_n
+                          sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                        }
+                        effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                      }
+                    },
+                  )
+                },
+                fn(ex_l : effect::Exit[Unit]) -> Unit {
+                  match ex_l {
+                    effect::Exit::Succeeded(_) => bk(effect::Exit::Succeeded(true))
+                    effect::Exit::Failed(e) => bk(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => bk(effect::Exit::Interrupted)
+                  }
+                },
+              )
+            },
+            fn(_e : effect::EffectError, rk : (effect::Exit[Bool]) -> Unit) -> Unit {
+              rk(effect::Exit::Succeeded(false))
+            },
+            fn(ex_ok : effect::Exit[Bool]) -> Unit {
+              match ex_ok {
+                effect::Exit::Succeeded(true) => {
+                  self.plan_read(key, Some(end), gap, Some(had))
+                  wk(effect::Exit::Succeeded(()))
+                }
+                effect::Exit::Succeeded(false) => {
+                  let _ = l.plan_back.remove(key)
+                  self.plan_at_remove(key)
+                  self.read_plan_back(key, end)
+                  wk(effect::Exit::Succeeded(()))
+                }
+                effect::Exit::Failed(e) => wk(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => wk(effect::Exit::Interrupted)
+              }
+            },
+          )
+        })
+        return
+      }
+    }
+    _ => ()
+  }
+  l.plan_back.set(key, [])
+  self.lspawn(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    let pages : Array[Array[base_codec::Json]] = []
+    let mut upto = end
+    let mut n = 0
+    sessions_core::catch_k(
+      fn(bk : (effect::Exit[Bool]) -> Unit) -> Unit {
+        sessions_core::iter_sync_k(
+          fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+            if upto <= 0 || n >= PLAN_PAGES {
+              sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+              return
+            }
+            let limit = min_int(PLAN_PAGE, upto)
+            self.lnode_k(
+              "page",
+              [
+                sessions_core::jstr(key),
+                sessions_core::jnum(upto.to_double()),
+                sessions_core::jnum(limit.to_double()),
+                sessions_core::jbool(false),
+              ],
+              fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+                match ex {
+                  effect::Exit::Succeeded(page) => {
+                    let start = sessions_core::int_of(sessions_core::jget(page, "start"))
+                    let entries : Array[base_codec::Json] = match sessions_core::jget(page, "entries") {
+                      Some(base_codec::Json::Arr(e)) => e
+                      _ => []
+                    }
+                    let take_n = min_int(entries.length(), max_int(upto - start, 0))
+                    if take_n == 0 {
+                      sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                      return
+                    }
+                    let got : Array[base_codec::Json] = []
+                    let mut whole = false
+                    for i in 0..<take_n {
+                      got.push(entries[i])
+                      if says_whole(entries[i]) {
+                        whole = true
+                      }
+                    }
+                    pages.push(got)
+                    upto = start
+                    n = n + 1
+                    if whole {
+                      sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                    } else {
+                      sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                    }
+                  }
+                  effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                }
+              },
+            )
+          },
+          fn(ex_l : effect::Exit[Unit]) -> Unit {
+            match ex_l {
+              effect::Exit::Succeeded(_) => bk(effect::Exit::Succeeded(true))
+              effect::Exit::Failed(e) => bk(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => bk(effect::Exit::Interrupted)
+            }
+          },
+        )
+      },
+      fn(_e : effect::EffectError, rk : (effect::Exit[Bool]) -> Unit) -> Unit {
+        rk(effect::Exit::Succeeded(false))
+      },
+      fn(ex_ok : effect::Exit[Bool]) -> Unit {
+        match ex_ok {
+          effect::Exit::Succeeded(true) => {
+            let past : Array[base_codec::Json] = []
+            let mut pi = pages.length() - 1
+            while pi >= 0 {
+              let p = pages[pi]
+              for j in 0..<p.length() {
+                past.push(p[j])
+              }
+              pi = pi - 1
+            }
+            self.plan_read(key, Some(end), past, None)
+            wk(effect::Exit::Succeeded(()))
+          }
+          effect::Exit::Succeeded(false) => {
+            self.plan_read(key, None, [], None)
+            wk(effect::Exit::Succeeded(()))
+          }
+          effect::Exit::Failed(e) => wk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => wk(effect::Exit::Interrupted)
+        }
+      },
+    )
+  })
+}
+
+fn LiveCtx::plan_read(
+  self : LiveCtx,
+  key : String,
+  end : Option[Int],
+  past : Array[base_codec::Json],
+  from : Option[LPlan],
+) -> Unit {
+  let l = self.state
+  let meanwhile = match l.plan_back.get(key) {
+    Some(b) => b
+    None => []
+  }
+  let _ = l.plan_back.remove(key)
+  let before = match l.plans.get(key) {
+    Some(p) => base_codec::json_stringify(builders_core::normalize_json(plan_items(p)))
+    None => "[]"
+  }
+  let state = match from {
+    Some(s) => s
+    None => LPlan::{ items: [], creating: Map::new(), creating_order: [] }
+  }
+  let _ = self.read_plan(state, past)
+  let _ = self.read_plan(state, meanwhile)
+  match end {
+    Some(e) => self.plan_at_set(key, e + meanwhile.length())
+    None => self.plan_at_remove(key)
+  }
+  l.plans.set(key, state)
+  let after = base_codec::json_stringify(builders_core::normalize_json(plan_items(state)))
+  if after != before && !l.said_plans.contains(key) {
+    self.lemit(key, self.work_now(key))
+  }
+}
+
+fn LiveCtx::read_soon_k(
+  self : LiveCtx,
+  tail : LTail,
+  k : (effect::Exit[(Int, Array[base_codec::Json])]) -> Unit,
+) -> Unit {
+  let mut offset = 0
+  let mut from : Option[Int] = None
+  let told : Array[base_codec::Json] = []
+  let mut idx = 0
+  sessions_core::iter_sync_k(
+    fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      if idx >= tail.tails.length() {
+        sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+        return
+      }
+      let t = tail.tails[idx]
+      idx = idx + 1
+      match from {
+        Some(_) => {
+          if t.length() > 0 {
+            t.state = None
+          }
+        }
+        None => ()
+      }
+      let had = t.length()
+      let state = match t.state {
+        Some(s) => s
+        None => {
+          base_codec::json_obj([
+            ("path", sessions_core::jstr(t.path)),
+            ("runtime", sessions_core::jstr(t.runtime)),
+          ])
+        }
+      }
+      self.lnode_k("tailRead", [sessions_core::jstr(t.runtime), state], fn(
+        ex : effect::Exit[base_codec::Json],
+      ) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(read) => {
+            t.state = sessions_core::jget(read, "state")
+            let entries : Array[base_codec::Json] = match sessions_core::jget(read, "entries") {
+              Some(base_codec::Json::Arr(e)) => e
+              _ => []
+            }
+            let start = sessions_core::int_of(sessions_core::jget(read, "start"))
+            match from {
+              None => {
+                if entries.length() > 0 || start < had {
+                  from = Some(offset + start)
+                }
+              }
+              Some(_) => ()
+            }
+            match from {
+              Some(_) => {
+                for j in 0..<entries.length() {
+                  told.push(entries[j])
+                }
+              }
+              None => ()
+            }
+            offset = offset + t.length()
+            sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+          }
+          effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+        }
+      })
+    },
+    fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => {
+          match from {
+            Some(f) => k(effect::Exit::Succeeded((f, told)))
+            None => k(effect::Exit::Succeeded((offset, [])))
+          }
+        }
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+fn LiveCtx::lwatch(self : LiveCtx, key : String) -> Bool {
+  let l = self.state
+  if l.watched.contains(key) {
+    return true
+  }
+  if !l.listeners.contains(key) {
+    return false
+  }
+  l.next = l.next + 1
+  let w = LWatched::{
+    n: l.next,
+    tail: None,
+    ready: true,
+    waiters: [],
+    reading: false,
+    behind: false,
+    announce: false,
+    read_held: false,
+    read_queue: [],
+    locating: true,
+    following: 0,
+    follow_again: false,
+    carried: None,
+    take_up: None,
+    armed: None,
+  }
+  l.watched.set(key, w)
+  order_set(l.watched_order, key)
+  self.lspawn(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sessions_core::catch_k(
+      fn(bk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        self.lnode_k("locate", [sessions_core::jstr(key)], fn(
+          ex : effect::Exit[base_codec::Json],
+        ) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(at) => {
+              if !self.current_watch(key, w.n) {
+                self.ready_now(key, w)
+                bk(effect::Exit::Succeeded(()))
+                return
+              }
+              w.locating = false
+              if is_null(at) {
+                match w.carried {
+                  Some(c) => self.keep_stood(key, c)
+                  None => ()
+                }
+                self.lgone(key)
+                self.ready_now(key, w)
+                bk(effect::Exit::Succeeded(()))
+                return
+              }
+              self.lstart_k(key, w, at, fn(ex_s : effect::Exit[Unit]) -> Unit {
+                self.ready_now(key, w)
+                bk(ex_s)
+              })
+            }
+            effect::Exit::Failed(e) => bk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => bk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      fn(e : effect::EffectError, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        if self.current_watch(key, w.n) {
+          match w.carried {
+            Some(c) => self.keep_stood(key, c)
+            None => ()
+          }
+          self.lgone(key)
+          self.llog("warn", "a transcript's location could not be read", [
+            ("session", sessions_core::jstr(key)),
+            ("error", sessions_core::jstr(sessions_core::error_message(e))),
+          ])
+        }
+        self.ready_now(key, w)
+        rk(effect::Exit::Succeeded(()))
+      },
+      wk,
+    )
+  })
+  true
+}
+
+fn LiveCtx::lgone(self : LiveCtx, key : String) -> Unit {
+  match self.state.watched.get(key) {
+    Some(w) => {
+      let _ = self.state.watched.remove(key)
+      order_remove(self.state.watched_order, key)
+      w.take_up = None
+      if self.gen.counters.sealed {
+        for i in 0..<w.read_queue.length() {
+          let _ = self.state.read_turns.remove(w.read_queue[i].id)
+        }
+        w.read_queue.clear()
+        w.read_held = false
+        return
+      }
+      while w.read_queue.length() > 0 {
+        let ticket = pop_front(w.read_queue)
+        match ticket.state {
+          ReadTicketState::Queued => {
+            ticket.state = ReadTicketState::Handed
+            self.gen.counters.active = self.gen.counters.active + 1
+            let maybe_turn = self.state.read_turns.get(ticket.id)
+            let _ = self.state.read_turns.remove(ticket.id)
+            match maybe_turn {
+              Some(turn) => {
+                let _ = turn.succeed(())
+              }
+              None => ()
+            }
+          }
+          _ => {
+            let _ = self.state.read_turns.remove(ticket.id)
+          }
+        }
+      }
+    }
+    None => ()
+  }
+}
+
+fn LiveCtx::begin_watch(self : LiveCtx, key : String, w : LWatched, tail : LTail) -> Unit {
+  w.tail = Some(tail)
+  self.note_length(key, tail)
+  self.tell(live_key, "watching", [sessions_core::jstr(key), sessions_core::jbool(true)])
+  self.read_plan_back(key, tail.length())
+  self.arm(key, w)
+}
+
+fn LiveCtx::try_take_up(
+  self : LiveCtx,
+  key : String,
+  w : LWatched,
+  states : Array[base_codec::Json],
+) -> Bool {
+  match w.take_up {
+    Some(tu) => {
+      if tu.begun || !self.current_watch(key, tu.watch_n) || !same_states(Some(states), tu.at) {
+        return false
+      }
+      tu.begun = true
+      self.begin_watch(key, w, LTail::from(tu.runtime, states))
+      self.tell(live_key, "begun", [sessions_core::jstr(key)])
+      self.ready_now(key, w)
+      self.lsoon(key)
+      true
+    }
+    None => false
+  }
+}
+
+fn LiveCtx::lstart_k(
+  self : LiveCtx,
+  key : String,
+  w : LWatched,
+  at : base_codec::Json,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let l = self.state
+  let runtime = match sessions_core::str_of(sessions_core::jget(at, "runtime")) {
+    Some(s) => s
+    None => "claude"
+  }
+  let paths : Array[base_codec::Json] = match sessions_core::jget(at, "paths") {
+    Some(base_codec::Json::Arr(p)) => p
+    _ => []
+  }
+  w.behind = w.behind || is_false_opt(sessions_core::jget(at, "current"))
+  let stood = l.stood.get(key)
+  self.stood_remove(key)
+  let carried = w.carried
+  w.carried = None
+  match stood {
+    Some(st) => {
+      if same_states(Some(st), at) {
+        self.begin_watch(key, w, LTail::from(runtime, st))
+        self.lsoon(key)
+        k(effect::Exit::Succeeded(()))
+        return
+      }
+    }
+    None => ()
+  }
+  match carried {
+    Some(ca) => {
+      if same_states(Some(ca), at) {
+        self.begin_watch(key, w, LTail::from(runtime, ca))
+        self.lsoon(key)
+        k(effect::Exit::Succeeded(()))
+        return
+      }
+    }
+    None => ()
+  }
+  if l.took_tails {
+    let kept_b = match stood {
+      Some(_) => true
+      None => false
+    }
+    self.llog("info", "a transcript's reading asked of the readers", [
+      ("session", sessions_core::jstr(key)),
+      ("kept", sessions_core::jbool(kept_b)),
+      ("carried", sessions_core::jbool(true)),
+    ])
+  }
+  let tu = LTakeUp::{ watch_n: w.n, runtime: runtime, at: at, begun: false }
+  w.take_up = Some(tu)
+  sessions_core::catch_k(
+    fn(bk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.lnode_k("state", [sessions_core::jstr(key)], bk)
+    },
+    fn(_e : effect::EffectError, rk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      rk(effect::Exit::Succeeded(base_codec::json_null()))
+    },
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      w.take_up = None
+      match ex {
+        effect::Exit::Succeeded(states) => {
+          if !self.current_watch(key, w.n) || tu.begun {
+            k(effect::Exit::Succeeded(()))
+            return
+          }
+          tu.begun = true
+          let given : Option[Array[base_codec::Json]] = match states {
+            base_codec::Json::Arr(s) => Some(s)
+            _ => None
+          }
+          match given {
+            Some(g) => {
+              if same_states(Some(g), at) {
+                self.begin_watch(key, w, LTail::from(runtime, g))
+                self.lsoon(key)
+                k(effect::Exit::Succeeded(()))
+                return
+              }
+            }
+            None => ()
+          }
+          let tail = LTail::new(runtime, paths)
+          sessions_core::catch_k(
+            fn(bk2 : (effect::Exit[Unit]) -> Unit) -> Unit {
+              self.read_soon_k(tail, fn(ex_r : effect::Exit[(Int, Array[base_codec::Json])]) -> Unit {
+                match ex_r {
+                  effect::Exit::Succeeded(_) => {
+                    if self.current_watch(key, w.n) {
+                      self.begin_watch(key, w, tail)
+                    }
+                    self.lsoon(key)
+                    bk2(effect::Exit::Succeeded(()))
+                  }
+                  effect::Exit::Failed(e) => bk2(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => bk2(effect::Exit::Interrupted)
+                }
+              })
+            },
+            fn(_e : effect::EffectError, rk2 : (effect::Exit[Unit]) -> Unit) -> Unit {
+              rk2(effect::Exit::Succeeded(()))
+            },
+            k,
+          )
+        }
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+fn LiveCtx::arm(self : LiveCtx, key : String, w : LWatched) -> Unit {
+  let tail = match w.tail {
+    Some(t) => t
+    None => return
+  }
+  let path = tail.path()
+  if opt_str_is(w.armed, path) {
+    return
+  }
+  w.armed = Some(path)
+  self.tell(live_key, "arm", [sessions_core::jstr(key), sessions_core::jstr(path)])
+}
+
+/// Unwatch `key`. Intentionally does NOT cancel `LRate.quiet` (aligned with `live.mbt:1453-1469`):
+/// clears `waiters`, sets `take_up = None`, wakes `read_queue` (`active += 1` + `succeed`).
+pub fn LiveCtx::unwatch(self : LiveCtx, key : String, preserve : Bool) -> Unit {
+  let w = match self.state.watched.get(key) {
+    Some(x) => x
+    None => return
+  }
+  if preserve {
+    match (w.tail, w.carried) {
+      (Some(tail), _) => self.keep_stood(key, tail.snapshot())
+      (None, Some(c)) => self.keep_stood(key, c)
+      _ => ()
+    }
+  }
+  let _ = self.state.watched.remove(key)
+  order_remove(self.state.watched_order, key)
+  self.cleanup_watch(w)
+  self.tell(live_key, "watching", [sessions_core::jstr(key), sessions_core::jbool(false)])
+  match w.armed {
+    Some(_) => self.tell(live_key, "disarm", [sessions_core::jstr(key)])
+    None => ()
+  }
+}
+
+fn LiveCtx::read_now_k(
+  self : LiveCtx,
+  key : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let w = match self.state.watched.get(key) {
+    Some(x) => x
+    None => {
+      k(effect::Exit::Succeeded(()))
+      return
+    }
+  }
+  match w.tail {
+    None => {
+      k(effect::Exit::Succeeded(()))
+      return
+    }
+    Some(_) => ()
+  }
+  let watch_n = w.n
+  self.in_read_k(
+    key,
+    watch_n,
+    fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      if !self.current_watch(key, watch_n) {
+        wk(effect::Exit::Succeeded(()))
+        return
+      }
+      let cur_w = match self.state.watched.get(key) {
+        Some(x) => x
+        None => {
+          wk(effect::Exit::Succeeded(()))
+          return
+        }
+      }
+      let tail = match cur_w.tail {
+        Some(t) => t
+        None => {
+          wk(effect::Exit::Succeeded(()))
+          return
+        }
+      }
+      let do_read = fn() -> Unit {
+        let before = tail.read_bytes()
+        self.read_soon_k(tail, fn(ex : effect::Exit[(Int, Array[base_codec::Json])]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded((start, entries)) => {
+              if !self.current_watch(key, watch_n) {
+                wk(effect::Exit::Succeeded(()))
+                return
+              }
+              self.note_length(key, tail)
+              self.gained(key, start, entries, tail.read_bytes() != before)
+              wk(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Failed(e) => wk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => wk(effect::Exit::Interrupted)
+          }
+        })
+      }
+      if cur_w.behind {
+        self.stop_follow(key, cur_w)
+        self.follow_now_k(key, cur_w, fn(ex_f : effect::Exit[Unit]) -> Unit {
+          match ex_f {
+            effect::Exit::Succeeded(_) => do_read()
+            other => wk(other)
+          }
+        })
+      } else {
+        do_read()
+      }
+    },
+    k,
+  )
+}
+
+fn LiveCtx::follow_now_k(
+  self : LiveCtx,
+  key : String,
+  w : LWatched,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let tail = match w.tail {
+    Some(t) => t
+    None => {
+      k(effect::Exit::Succeeded(()))
+      return
+    }
+  }
+  sessions_core::catch_k(
+    fn(bk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.lnode_k("locate", [sessions_core::jstr(key)], bk)
+    },
+    fn(_e : effect::EffectError, rk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      rk(effect::Exit::Succeeded(base_codec::json_null()))
+    },
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(at) => {
+          if is_null(at) || !self.current_watch(key, w.n) {
+            k(effect::Exit::Succeeded(()))
+            return
+          }
+          w.behind = is_false_opt(sessions_core::jget(at, "current"))
+          let path = tail.path()
+          let paths : Array[base_codec::Json] = match sessions_core::jget(at, "paths") {
+            Some(base_codec::Json::Arr(p)) => p
+            _ => []
+          }
+          let _ = tail.go_on(paths)
+          if tail.path() != path {
+            self.arm(key, w)
+          }
+          k(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+fn LiveCtx::stop_follow(self : LiveCtx, key : String, w : LWatched) -> Unit {
+  if w.following != 0 {
+    self.tell(live_key, "unfollow", [sessions_core::jstr(key)])
+  }
+  w.following = 0
+  w.follow_again = false
+}
+
+fn LiveCtx::follow_later(self : LiveCtx, key : String, w : LWatched) -> Unit {
+  match w.tail {
+    None => return
+    Some(_) => ()
+  }
+  if w.following != 0 {
+    w.follow_again = true
+    return
+  }
+  self.state.next = self.state.next + 1
+  let pending = self.state.next
+  w.following = pending
+  let watch_n = w.n
+  let finished = fn(cur_w : LWatched) -> Unit {
+    let again = cur_w.follow_again
+    cur_w.follow_again = false
+    cur_w.following = 0
+    if again && cur_w.behind {
+      self.follow_later(key, cur_w)
+    }
+  }
+  self.gen.spawn_work(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sessions_core::catch_k(
+      fn(bk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        self.lnode_k("locate", [sessions_core::jstr(key), sessions_core::jbool(true)], fn(
+          ex : effect::Exit[base_codec::Json],
+        ) -> Unit {
+          match ex {
+            effect::Exit::Succeeded(at) => {
+              self.in_read_k(
+                key,
+                watch_n,
+                fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                  let cur_w = match self.state.watched.get(key) {
+                    Some(x) => if x.n == watch_n && x.following == pending { x } else {
+                      rk(effect::Exit::Succeeded(()))
+                      return
+                    }
+                    None => {
+                      rk(effect::Exit::Succeeded(()))
+                      return
+                    }
+                  }
+                  let tail = match cur_w.tail {
+                    Some(t) => t
+                    None => {
+                      rk(effect::Exit::Succeeded(()))
+                      return
+                    }
+                  }
+                  if is_null(at) {
+                    finished(cur_w)
+                    rk(effect::Exit::Succeeded(()))
+                    return
+                  }
+                  let path = tail.path()
+                  let paths : Array[base_codec::Json] = match sessions_core::jget(at, "paths") {
+                    Some(base_codec::Json::Arr(p)) => p
+                    _ => []
+                  }
+                  let changed = tail.go_on(paths)
+                  cur_w.behind = is_false_opt(sessions_core::jget(at, "current"))
+                  if tail.path() != path {
+                    self.arm(key, cur_w)
+                  }
+                  finished(cur_w)
+                  if changed {
+                    self.lsoon(key)
+                  }
+                  rk(effect::Exit::Succeeded(()))
+                },
+                bk,
+              )
+            }
+            effect::Exit::Failed(e) => bk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => bk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      fn(e : effect::EffectError, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        match self.state.watched.get(key) {
+          Some(cur_w) => {
+            if cur_w.n == watch_n && cur_w.following == pending {
+              cur_w.behind = true
+              self.llog("warn", "a transcript's new location could not be read", [
+                ("session", sessions_core::jstr(key)),
+                ("error", sessions_core::jstr(sessions_core::error_message(e))),
+              ])
+              finished(cur_w)
+            }
+          }
+          None => ()
+        }
+        rk(effect::Exit::Succeeded(()))
+      },
+      wk,
+    )
+  })
+}
+
+fn LiveCtx::live_moved(self : LiveCtx, key : String) -> Unit {
+  let w = match self.state.watched.get(key) {
+    Some(x) => x
+    None => return
+  }
+  match w.tail {
+    None => {
+      w.behind = true
+      return
+    }
+    Some(_) => ()
+  }
+  let watch_n = w.n
+  self.lspawn(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.in_read_k(
+      key,
+      watch_n,
+      fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        let cur_w = match self.state.watched.get(key) {
+          Some(x) => if x.n == watch_n { x } else {
+            rk(effect::Exit::Succeeded(()))
+            return
+          }
+          None => {
+            rk(effect::Exit::Succeeded(()))
+            return
+          }
+        }
+        let tail = match cur_w.tail {
+          Some(t) => t
+          None => {
+            rk(effect::Exit::Succeeded(()))
+            return
+          }
+        }
+        let before = tail.read_bytes()
+        self.read_soon_k(tail, fn(ex : effect::Exit[(Int, Array[base_codec::Json])]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded((start, entries)) => {
+              if !self.current_watch(key, watch_n) {
+                rk(effect::Exit::Succeeded(()))
+                return
+              }
+              self.gained(key, start, entries, tail.read_bytes() != before)
+              cur_w.behind = true
+              self.stop_follow(key, cur_w)
+              self.follow_later(key, cur_w)
+              self.lsoon(key)
+              rk(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      wk,
+    )
+  })
+}
+
+fn LiveCtx::lsoon(self : LiveCtx, key : String) -> Unit {
+  if !self.state.listeners.contains(key) {
+    return
+  }
+  let fresh = !self.state.watched.contains(key)
+  if !self.lwatch(key) {
+    return
+  }
+  let w = match self.state.watched.get(key) {
+    Some(x) => x
+    None => return
+  }
+  if fresh {
+    w.announce = true
+  }
+  if w.reading {
+    return
+  }
+  w.reading = true
+  let _ = self.after_action(40.0, Some(live_key), LiveTimerAction::SoonRead(key))
+}
+
+fn LiveCtx::run_soon_read(self : LiveCtx, key : String) -> Unit {
+  let now_w = match self.state.watched.get(key) {
+    Some(x) => x
+    None => return
+  }
+  now_w.reading = false
+  match now_w.tail {
+    None => {
+      if now_w.ready {
+        now_w.waiters.push(LWaiter::Soon(now_w.n))
+      }
+      return
+    }
+    Some(_) => ()
+  }
+  let announce = now_w.announce
+  now_w.announce = false
+  if now_w.behind {
+    self.follow_later(key, now_w)
+  }
+  let watch_n = now_w.n
+  self.lspawn(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.in_read_k(
+      key,
+      watch_n,
+      fn(rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        if !self.current_watch(key, watch_n) {
+          rk(effect::Exit::Succeeded(()))
+          return
+        }
+        let cur_w = match self.state.watched.get(key) {
+          Some(x) => x
+          None => {
+            rk(effect::Exit::Succeeded(()))
+            return
+          }
+        }
+        let tail = match cur_w.tail {
+          Some(t) => t
+          None => {
+            rk(effect::Exit::Succeeded(()))
+            return
+          }
+        }
+        let before = tail.read_bytes()
+        self.read_soon_k(tail, fn(ex : effect::Exit[(Int, Array[base_codec::Json])]) -> Unit {
+          match ex {
+            effect::Exit::Succeeded((start, entries)) => {
+              if !self.current_watch(key, watch_n) {
+                rk(effect::Exit::Succeeded(()))
+                return
+              }
+              self.note_length(key, tail)
+              self.gained(key, start, entries, tail.read_bytes() != before)
+              if entries.length() == 0 && announce {
+                self.lemit(key, timeline(start, entries))
+              }
+              rk(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+          }
+        })
+      },
+      wk,
+    )
+  })
+}
+
+fn LiveCtx::live_usage(self : LiveCtx, key : String) -> Unit {
+  match self.state.watched.get(key) {
+    Some(w) => {
+      match w.tail {
+        Some(tail) => self.lemit(key, timeline(tail.length(), []))
+        None => ()
+      }
+    }
+    None => ()
+  }
+}
+
+pub fn LiveCtx::live_forget(self : LiveCtx, key : String) -> Unit {
+  let l = self.state
+  let _ = l.tasks.remove(key)
+  let _ = l.plans.remove(key)
+  self.plan_at_remove(key)
+  self.stood_remove(key)
+  let _ = l.plan_back.remove(key)
+  let _ = l.said_plans.remove(key)
+  let _ = l.steps.remove(key)
+  let _ = l.phase.remove(key)
+  self.rate_clear(key)
+  self.lemit(key, base_codec::json_obj([("type", sessions_core::jstr("clear"))]))
+  match l.releases.get(key) {
+    Some(tid) => {
+      let _ = l.releases.remove(key)
+      self.cancel_timer(tid)
+    }
+    None => ()
+  }
+  if l.holds.contains(key) {
+    let _ = l.holds.remove(key)
+    order_remove(l.holds_order, key)
+    self.tell_held()
+  }
+  let _ = l.length_told.remove(key)
+  let _ = l.listeners.remove(key)
+  self.unwatch(key, false)
+}
+
+/// Full Hub `reset`: cleans up all rates, releases, timer actions, watched entries, and maps.
+/// In production (`rotate_hub_gen` -> `reset()`), `self.gen.counters.sealed` is already `true`,
+/// so no extra `{"cancel": id}` frames are emitted and old `active` is untouched.
+pub fn LiveCtx::reset(self : LiveCtx) -> Unit {
+  let l = self.state
+  if self.gen.counters.sealed {
+    l.rates.clear()
+    l.releases.clear()
+    l.timer_actions.clear()
+  } else {
+    let rkeys = l.rates.keys()
+    for i in 0..<rkeys.length() {
+      self.rate_clear(rkeys[i])
+    }
+    let rel_keys = l.releases.keys()
+    for i in 0..<rel_keys.length() {
+      match l.releases.get(rel_keys[i]) {
+        Some(tid) => self.cancel_timer(tid)
+        None => ()
+      }
+    }
+    l.releases.clear()
+    l.timer_actions.clear()
+  }
+  for i in 0..<l.watched_order.length() {
+    match l.watched.get(l.watched_order[i]) {
+      Some(w) => self.cleanup_watch(w)
+      None => ()
+    }
+  }
+  l.watched.clear()
+  l.watched_order.clear()
+  l.steps.clear()
+  l.phase.clear()
+  l.tasks.clear()
+  l.plans.clear()
+  l.plan_at.clear()
+  l.plan_at_order.clear()
+  l.plan_back.clear()
+  l.said_plans.clear()
+  l.listeners.clear()
+  l.stood.clear()
+  l.stood_order.clear()
+  l.holds.clear()
+  l.holds_order.clear()
+  l.length_told.clear()
+  if !self.gen.counters.sealed {
+    let ekeys = l.ends.keys()
+    for i in 0..<ekeys.length() {
+      match l.ends.get(ekeys[i]) {
+        Some(d) => {
+          let _ = d.succeed(())
+        }
+        None => ()
+      }
+    }
+  }
+  l.ends.clear()
+  l.read_turns.clear()
+  l.pending = 0
+}
+
+// ── Carried over at handover ──
+
+fn LiveCtx::carried_plans(self : LiveCtx) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for ki in 0..<self.state.plan_at_order.length() {
+    let key = self.state.plan_at_order[ki]
+    let at = match self.state.plan_at.get(key) {
+      Some(a) => a
+      None => continue
+    }
+    if self.state.plan_back.contains(key) {
+      continue
+    }
+    let state = match self.state.plans.get(key) {
+      Some(s) => s
+      None => continue
+    }
+    let creating : Array[base_codec::Json] = []
+    for ci in 0..<state.creating_order.length() {
+      let id = state.creating_order[ci]
+      match state.creating.get(id) {
+        Some(made) => {
+          for ii in 0..<state.items.length() {
+            if state.items[ii].tag == made.tag {
+              creating.push(base_codec::json_arr([
+                sessions_core::jstr(id),
+                sessions_core::jnum(ii.to_double()),
+              ]))
+              break
+            }
+          }
+        }
+        None => ()
+      }
+    }
+    let items : Array[base_codec::Json] = []
+    for ii in 0..<state.items.length() {
+      let item = state.items[ii]
+      let m : Array[(String, base_codec::Json)] = [
+        ("text", sessions_core::jstr(item.text)),
+        ("status", sessions_core::jstr(item.status)),
+      ]
+      match item.id {
+        Some(id) => m.push(("id", sessions_core::jstr(id)))
+        None => ()
+      }
+      items.push(base_codec::json_obj(m))
+    }
+    out.push(base_codec::json_obj([
+      ("key", sessions_core::jstr(key)),
+      ("at", sessions_core::jnum(at.to_double())),
+      ("items", base_codec::json_arr(items)),
+      ("creating", base_codec::json_arr(creating)),
+    ]))
+  }
+  base_codec::json_arr(out)
+}
+
+fn LiveCtx::take_plans(self : LiveCtx, carried : base_codec::Json) -> Unit {
+  let list = match carried {
+    base_codec::Json::Arr(a) => a
+    _ => return
+  }
+  for i in 0..<list.length() {
+    let c = list[i]
+    let (key, at) = match (
+      sessions_core::str_of(sessions_core::jget(c, "key")),
+      sessions_core::num_of(sessions_core::jget(c, "at")),
+    ) {
+      (Some(k), Some(a)) => (k, a.to_int())
+      _ => continue
+    }
+    let (raw_items, raw_creating) = match (
+      sessions_core::jget(c, "items"),
+      sessions_core::jget(c, "creating"),
+    ) {
+      (Some(base_codec::Json::Arr(it)), Some(base_codec::Json::Arr(cr))) => (it, cr)
+      _ => continue
+    }
+    if self.state.plans.contains(key) || self.state.plan_back.contains(key) {
+      continue
+    }
+    let items : Array[PItem] = []
+    for j in 0..<raw_items.length() {
+      let it = raw_items[j]
+      let text = match sessions_core::str_of(sessions_core::jget(it, "text")) {
+        Some(s) => s
+        None => ""
+      }
+      let status = match sessions_core::str_of(sessions_core::jget(it, "status")) {
+        Some(s) => s
+        None => "pending"
+      }
+      items.push(PItem::{
+        tag: self.alloc_tag(),
+        text: text,
+        status: status,
+        id: sessions_core::str_of(sessions_core::jget(it, "id")),
+      })
+    }
+    let made : Map[String, PItem] = Map::new()
+    let made_order : Array[String] = []
+    for j in 0..<raw_creating.length() {
+      match raw_creating[j] {
+        base_codec::Json::Arr(pair) => {
+          if pair.length() == 2 {
+            match (pair[0], pair[1]) {
+              (base_codec::Json::Str(id), base_codec::Json::Num(idx_d, _)) => {
+                let idx = idx_d.to_int()
+                if idx >= 0 && idx < items.length() {
+                  made.set(id, items[idx])
+                  order_set(made_order, id)
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+    self.state.plans.set(key, LPlan::{ items: items, creating: made, creating_order: made_order })
+    self.plan_at_set(key, at)
+  }
+}
+
+fn LiveCtx::carried_tails(self : LiveCtx) -> base_codec::Json {
+  let out : Map[String, Array[base_codec::Json]] = Map::new()
+  let out_order : Array[String] = []
+  for i in 0..<self.state.stood_order.length() {
+    let key = self.state.stood_order[i]
+    match self.state.stood.get(key) {
+      Some(st) => {
+        out.set(key, st)
+        order_set(out_order, key)
+      }
+      None => ()
+    }
+  }
+  for i in 0..<self.state.watched_order.length() {
+    let key = self.state.watched_order[i]
+    match self.state.watched.get(key) {
+      Some(w) => {
+        match (w.tail, w.carried) {
+          (Some(tail), _) => {
+            out.set(key, tail.snapshot())
+            order_set(out_order, key)
+          }
+          (None, Some(c)) => {
+            out.set(key, c)
+            order_set(out_order, key)
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+  }
+  let arr : Array[base_codec::Json] = []
+  for i in 0..<out_order.length() {
+    let key = out_order[i]
+    match out.get(key) {
+      Some(states) => {
+        arr.push(base_codec::json_obj([
+          ("key", sessions_core::jstr(key)),
+          ("states", base_codec::json_arr(states)),
+        ]))
+      }
+      None => ()
+    }
+  }
+  base_codec::json_arr(arr)
+}
+
+fn LiveCtx::take_tails(self : LiveCtx, carried : base_codec::Json) -> Unit {
+  let list = match carried {
+    base_codec::Json::Arr(a) => a
+    _ => return
+  }
+  let mut taken = 0
+  let mut watched = 0
+  for i in 0..<list.length() {
+    let c = list[i]
+    let (key, states) = match (
+      sessions_core::str_of(sessions_core::jget(c, "key")),
+      sessions_core::jget(c, "states"),
+    ) {
+      (Some(k), Some(base_codec::Json::Arr(s))) => (k, s)
+      _ => continue
+    }
+    let mut whole = true
+    for j in 0..<states.length() {
+      let st = states[j]
+      let ok_path = match sessions_core::str_of(sessions_core::jget(st, "path")) {
+        Some(_) => true
+        None => false
+      }
+      let ok_off = match sessions_core::jget(st, "offset") {
+        Some(base_codec::Json::Num(_, _)) => true
+        _ => false
+      }
+      let ok_cnt = match sessions_core::jget(st, "count") {
+        Some(base_codec::Json::Num(_, _)) => true
+        _ => false
+      }
+      if !(ok_path && ok_off && ok_cnt) {
+        whole = false
+        break
+      }
+    }
+    if !whole {
+      continue
+    }
+    match self.state.watched.get(key) {
+      Some(w) => {
+        let no_tail = match w.tail {
+          None => true
+          Some(_) => false
+        }
+        let no_carried = match w.carried {
+          None => true
+          Some(_) => false
+        }
+        if no_tail && w.locating && no_carried {
+          w.carried = Some(states)
+          taken = taken + 1
+        } else if no_tail && self.try_take_up(key, w, states) {
+          taken = taken + 1
+        } else {
+          watched = watched + 1
+        }
+      }
+      None => {
+        self.keep_stood(key, states)
+        taken = taken + 1
+      }
+    }
+  }
+  self.state.took_tails = true
+  self.llog("info", "transcripts' readings taken up", [
+    ("carried", sessions_core::jnum(list.length().to_double())),
+    ("taken", sessions_core::jnum(taken.to_double())),
+    ("watched", sessions_core::jnum(watched.to_double())),
+  ])
+}
+
+// ── Node's calls of `#live` (`live_called`, 1:1 `actors.mbt:872-875` + `live.mbt:1789-1860`) ──
+
+pub fn LiveCtx::live_called(
+  self : LiveCtx,
+  id : Double,
+  method : String,
+  args : Array[base_codec::Json],
+) -> Unit {
+  if self.gen.counters.sealed {
+    return
+  }
+  self.gen.counters.active = self.gen.counters.active + 1
+  self.live_called_body(id, method, args)
+  if !self.gen.counters.sealed {
+    self.gen.counters.active = self.gen.counters.active - 1
+    self.gen.quiet()
+  }
+}
+
+fn LiveCtx::live_called_body(
+  self : LiveCtx,
+  id : Double,
+  method : String,
+  args : Array[base_codec::Json],
+) -> Unit {
+  let key = match sessions_core::str_of(Some(arg_at(args, 0))) {
+    Some(s) => s
+    None => ""
+  }
+  let answer = fn(value : base_codec::Json) -> Unit {
+    self.gen.say_node([
+      ("returned", sessions_core::jnum(id)),
+      ("value", value),
+    ])
+  }
+  if method == "event" {
+    self.live_event(key, arg_at(args, 1))
+    answer(base_codec::json_null())
+    return
+  }
+  if method == "turnEnded" {
+    self.lspawn(fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.live_turn_end_k(key, fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => {
+            answer(base_codec::json_null())
+            wk(effect::Exit::Succeeded(()))
+          }
+          other => wk(other)
+        }
+      })
+    })
+    return
+  }
+  if method == "running" {
+    let on = match arg_at(args, 1) {
+      base_codec::Json::Bool(true) => true
+      _ => false
+    }
+    self.live_running(key, on)
+    answer(base_codec::json_null())
+    return
+  }
+  if method == "subscribe" {
+    let from = match sessions_core::num_of(Some(arg_at(args, 1))) {
+      Some(n) => n
+      None => 0.0
+    }
+    let last = match arg_at(args, 2) {
+      base_codec::Json::Num(n, _) => Some(n.to_int())
+      _ => None
+    }
+    let sub_id = sessions_core::int_of(Some(arg_at(args, 3)))
+    let brief = match arg_at(args, 4) {
+      base_codec::Json::Bool(true) => true
+      _ => false
+    }
+    self.live_subscribe(key, from, last, sub_id, brief, false)
+    answer(base_codec::json_null())
+    return
+  }
+  if method == "unsubscribe" {
+    self.live_unsubscribe(key, sessions_core::int_of(Some(arg_at(args, 1))))
+    answer(base_codec::json_null())
+    return
+  }
+  if method == "soon" {
+    self.lsoon(key)
+    answer(base_codec::json_null())
+    return
+  }
+  if method == "moved" {
+    self.live_moved(key)
+    answer(base_codec::json_null())
+    return
+  }
+  if method == "forget" {
+    self.live_forget(key)
+    answer(base_codec::json_null())
+    return
+  }
+  if method == "usage" {
+    self.live_usage(key)
+    answer(base_codec::json_null())
+    return
+  }
+  if method == "now" {
+    let out : Array[(String, base_codec::Json)] = []
+    match arg_at(args, 0) {
+      base_codec::Json::Arr(keys) => {
+        for i in 0..<keys.length() {
+          match sessions_core::str_of(Some(keys[i])) {
+            Some(k) => base_codec::json_obj_set(out, k, self.live_now(k))
+            None => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    answer(base_codec::json_obj(out))
+    return
+  }
+  if method == "carried" {
+    answer(base_codec::json_obj([
+      ("plans", self.carried_plans()),
+      ("tails", self.carried_tails()),
+    ]))
+    return
+  }
+  if method == "takePlans" {
+    self.take_plans(arg_at(args, 0))
+    answer(base_codec::json_null())
+    return
+  }
+  if method == "takeTails" {
+    self.take_tails(arg_at(args, 0))
+    answer(base_codec::json_null())
+    return
+  }
+  answer(base_codec::json_null())
+}

@@ -3890,11 +3890,13 @@ int32_t mb_host_app_version(void) {
 }
 
 // How it goes, from the worker: kept and told on the main thread (where the frames read it).
+// percent == -2 preserves the current update_percent on the main thread without cross-thread reads.
 static void update_say(NSString *phase, int percent, NSString *error) {
   dispatch_async(dispatch_get_main_queue(), ^{
-    BOOL changed = ![phase isEqualToString:update_phase] || percent != update_percent;
+    int next_percent = percent == -2 ? update_percent : percent;
+    BOOL changed = ![phase isEqualToString:update_phase] || next_percent != update_percent;
     update_phase = phase;
-    update_percent = percent;
+    update_percent = next_percent;
     update_error = error ?: @"";
     if ([phase isEqualToString:@"failed"] || [phase isEqualToString:@"ready"]) update_working = NO;
     if (changed) {
@@ -4061,9 +4063,9 @@ static NSString *update_get(NSString *dir, NSURL *url, NSString *sha256, long lo
     if (!retry) return nil;
     if ((long long)[[fm attributesOfItemAtPath:part error:NULL] fileSize] > before) failures = 0;
     if (++failures >= retries) return nil;
-    update_say(@"retrying", update_percent, nil);
+    update_say(@"retrying", -2, nil);
     [NSThread sleepForTimeInterval:(double)(1 << (failures - 1))];
-    update_say(@"downloading", update_percent, nil);
+    update_say(@"downloading", -2, nil);
   }
   NSString *got = update_sha256(part);
   if ([got caseInsensitiveCompare:sha256] != NSOrderedSame) {
@@ -4270,21 +4272,23 @@ void mb_host_update_fetch(moonbit_string_t url_s, moonbit_string_t sha256_s, dou
   NSString *sha256 = mb_ns_from_string(sha256_s), *name = mb_ns_from_string(name_s).lastPathComponent;
   NSData *delta_json = [mb_ns_from_string(delta_s) dataUsingEncoding:NSUTF8StringEncoding];
   if (!url || !name.length) return;
-  // (ready already, or being put in place)
-  if ([name isEqualToString:update_file] && ([update_phase isEqualToString:@"ready"] || [update_phase isEqualToString:@"installing"]))
+  // (installing any build, or this build already ready)
+  if ([update_phase isEqualToString:@"installing"] ||
+      ([name isEqualToString:update_file] && [update_phase isEqualToString:@"ready"]))
     return;
-  if (update_staged) [NSFileManager.defaultManager removeItemAtURL:update_staged.URLByDeletingLastPathComponent error:NULL];
+  NSURL *old_staged = update_staged;
   update_staged = nil;
+  NSString *bundle_id = NSBundle.mainBundle.bundleIdentifier;
   update_working = YES;
   update_file = name;
   update_phase = @"downloading";
   update_percent = -1;
   update_error = @"";
   mb_host_outside(MB_OUTSIDE_UPDATE, 1, 0);
-  NSString *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-  NSString *dir = [[caches stringByAppendingPathComponent:NSBundle.mainBundle.bundleIdentifier]
-      stringByAppendingPathComponent:@"updates"];
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+    if (old_staged) [NSFileManager.defaultManager removeItemAtURL:old_staged.URLByDeletingLastPathComponent error:NULL];
+    NSString *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+    NSString *dir = [[caches stringByAppendingPathComponent:bundle_id] stringByAppendingPathComponent:@"updates"];
     NSString *why = nil;
     NSURL *app = nil;
     // the delta first, where there is one: on any trouble, said and left for the zip downloaded whole
@@ -4313,8 +4317,16 @@ void mb_host_update_fetch(moonbit_string_t url_s, moonbit_string_t sha256_s, dou
       dispatch_once(&once, ^{
         atexit(update_at_quit);
       });
+      BOOL changed = ![@"ready" isEqualToString:update_phase] || update_percent != -1;
+      update_phase = @"ready";
+      update_percent = -1;
+      update_error = @"";
+      update_working = NO;
+      if (changed) {
+        mb_host_outside(MB_OUTSIDE_UPDATE, 1, 1);
+        [the_view requestFrame];
+      }
     });
-    update_say(@"ready", -1, nil);
   });
 }
 
@@ -4322,6 +4334,8 @@ void mb_host_update_apply(moonbit_string_t said) {
   (void)said;  // (opened again here: nothing to say)
   NSURL *app = update_staged;
   if (!app || ![update_phase isEqualToString:@"ready"]) return;
+  NSString *applied_file = [update_file copy];
+  NSString *bundle_id = NSBundle.mainBundle.bundleIdentifier;
   update_staged = nil;
   update_phase = @"installing";
   update_percent = -1;
@@ -4340,11 +4354,10 @@ void mb_host_update_apply(moonbit_string_t said) {
       return;
     }
     NSString *caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-    NSString *updates = [[caches stringByAppendingPathComponent:NSBundle.mainBundle.bundleIdentifier]
-        stringByAppendingPathComponent:@"updates"];
+    NSString *updates = [[caches stringByAppendingPathComponent:bundle_id] stringByAppendingPathComponent:@"updates"];
     // (the zip it came of, downloaded or made from a delta)
-    [fm removeItemAtPath:[updates stringByAppendingPathComponent:update_file] error:NULL];
-    [fm removeItemAtPath:[updates stringByAppendingPathComponent:[update_file stringByAppendingString:@".raw"]] error:NULL];
+    [fm removeItemAtPath:[updates stringByAppendingPathComponent:applied_file] error:NULL];
+    [fm removeItemAtPath:[updates stringByAppendingPathComponent:[applied_file stringByAppendingString:@".raw"]] error:NULL];
     update_log(@"in place; opened again as this one quits");
     dispatch_async(dispatch_get_main_queue(), ^{
       // opened again once this process has ended, said on the update's log (the app's path as $0, the log's as $1:

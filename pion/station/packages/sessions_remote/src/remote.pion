@@ -1,0 +1,1415 @@
+// Core `#remote` pseudo-actor state, lane serialization, `bounded`, acyclic value-based
+// timers, RPC/tell helpers, and `remote_called_k` dispatcher
+// (1:1 port of `station/mb/src/reader/remote.mbt`).
+
+import "base_codec"
+import "effect"
+import "js_json"
+import "sessions_core"
+import "transcript_io"
+
+pub let remote_key : String = "#remote"
+
+pub let IDLE_MS : Double = 14.0 * 24.0 * 3600.0 * 1000.0
+pub let GIVE_UP_MS : Double = 600000.0
+pub let MIRROR_IDLE_MS : Double = 24.0 * 3600.0 * 1000.0
+pub let MIRROR_RECENT_MS : Double = 3600000.0
+pub let SYNC_ANSWER_MS : Double = 40000.0
+pub let SYNC_KEPT_MS : Double = 600000.0
+pub let CLEAN_ANSWER_MS : Double = 1000.0
+pub let CLEAN_KEPT_MS : Double = 600000.0
+pub let GETS_MAX : Int = 200
+pub let MAX_FILE : Double = 1073741824.0
+pub let CHUNK_BYTES : Int = 262144
+pub let SWEEP_EVERY_MS : Double = 3600000.0
+
+pub struct SyncRun {
+  pub id : Int64
+  pub key : String
+  pub result : effect::Deferred[base_codec::Json]
+  pub mut ended_at : Option[Double]
+}
+
+pub struct WriteTurn {
+  pub id : Int64
+  pub done : effect::Deferred[Unit]
+}
+
+pub struct IndexingRun {
+  pub id : Int64
+  pub done : effect::Deferred[Unit]
+}
+
+pub struct LaneWaiter {
+  pub deferred : effect::Deferred[Unit]
+  pub mut cancelled : Bool
+  pub mut granted : Bool
+}
+
+/// Per-lane FIFO mutex tracking `active_count = holders + waiters` so `lanes.remove(lane)`
+/// reclaims idle entries immediately and prevents unbounded map growth.
+pub struct LaneLock {
+  pub id : Int64
+  pub mut held : Bool
+  pub mut waiters : Array[LaneWaiter]
+  pub mut head : Int
+  pub mut active_count : Int
+}
+
+/// Pure-value timer action stored in `RemoteState::timers` (tagged with `epoch`) so pending
+/// Node timers NEVER capture `RemoteCtx`, `SessionHost`, or `HubGen` (zero RC cycles).
+pub enum RemoteTimerAction {
+  SweepHourly
+  CheckLater(String)
+  ClosingRound(String)
+  AgainStep(Int64, Int)
+  WakeBounded(Int64)
+}
+
+pub struct RemoteTimerEntry {
+  pub epoch : Int
+  pub action : RemoteTimerAction
+}
+
+/// Pure-value retry descriptor for `again` (indexed by `Int64` token in `RemoteState::again_jobs`).
+pub enum AgainKind {
+  PushOut(String)
+  CheckTask(String)
+}
+
+/// Pure-value bounded waiter waker stored in `RemoteState::bounded_wakers`
+/// (holds ONLY `HubCounters` + `Deferred[Unit]` — zero `Map` or `RemoteCtx` capture).
+pub struct BoundedWaker {
+  pub counters : sessions_core::HubCounters
+  pub woke : effect::Deferred[Unit]
+  pub mut settled : Bool
+}
+
+fn BoundedWaker::wake(self : BoundedWaker) -> Unit {
+  if !self.settled && !self.woke.is_done() {
+    self.settled = true
+    if !self.counters.sealed {
+      self.counters.active = self.counters.active + 1
+    }
+    let _ = self.woke.succeed(())
+  }
+}
+
+/// Generation-scoped `#remote` state. Holds ZERO strong references to `HubGen`,
+/// `EffectScope`, `SessionHost`, or `RemoteCtx` (acyclic RC graph).
+pub struct RemoteState {
+  pub writing : Map[String, WriteTurn]
+  pub writes : Map[String, Int]
+  pub used : Map[String, base_codec::Json]
+  pub lanes : Map[String, LaneLock]
+  pub checking : Map[String, Bool]
+  pub pushing : Map[String, Bool]
+  pub syncs : Map[String, SyncRun]
+  pub cleans : Map[String, SyncRun]
+  pub task_owners : Map[String, String]
+  /// Insertion-ordered task names per owner (never relies on hash-slot iteration order).
+  pub owner_tasks : Map[String, Array[String]]
+  pub unreadable : Map[String, Bool]
+  pub closing : Map[String, Bool]
+  /// Pending Node timers (pure value + epoch, dispatched via `RemoteCtx::handle_due`).
+  pub timers : Map[Int, RemoteTimerEntry]
+  /// Active `again` retry descriptors keyed by generation token.
+  pub again_jobs : Map[Int64, AgainKind]
+  /// Pure-value bounded wakers (zero `Map`/`RemoteCtx`/`SessionHost` references).
+  pub bounded_wakers : Map[Int64, BoundedWaker]
+  /// Latest `(outcome, got)` recorded per active `check(path)` loop.
+  pub check_last : Map[String, (base_codec::Json, base_codec::Json)]
+  /// In-flight `fs.rename` completion barriers keyed by target path with unique `op_id`
+  /// so `in_turn_k` holds the write barrier until completion and `clear_rename` never evicts a successor.
+  pub rename_inflight : Map[String, (Int, effect::Deferred[Unit])]
+  pub mut over : Double
+  pub mut incoming_stamp : Option[String]
+  pub mut indexing : Option[IndexingRun]
+  pub mut root : String
+  pub mut stopped : Bool
+  pub mut next_gen : Int64
+  pub json_text : (base_codec::Json) -> String
+}
+
+pub fn RemoteState::new() -> RemoteState {
+  RemoteState::new_with_json_text(sessions_core::js_text)
+}
+
+/// Pure-Pion constructor with injectable number formatter (for unit tests without C FFI).
+pub fn RemoteState::new_with_fmt(fmt_num : (Double) -> String) -> RemoteState {
+  RemoteState::new_with_json_text(fn(v : base_codec::Json) -> String {
+    sessions_core::js_text_with(v, fmt_num)
+  })
+}
+
+pub fn RemoteState::new_with_json_text(json_text : (base_codec::Json) -> String) -> RemoteState {
+  RemoteState::{
+    writing: Map::new(),
+    writes: Map::new(),
+    used: Map::new(),
+    lanes: Map::new(),
+    checking: Map::new(),
+    pushing: Map::new(),
+    syncs: Map::new(),
+    cleans: Map::new(),
+    task_owners: Map::new(),
+    owner_tasks: Map::new(),
+    unreadable: Map::new(),
+    closing: Map::new(),
+    timers: Map::new(),
+    again_jobs: Map::new(),
+    bounded_wakers: Map::new(),
+    check_last: Map::new(),
+    rename_inflight: Map::new(),
+    over: 0.0,
+    incoming_stamp: None,
+    indexing: None,
+    root: "",
+    stopped: false,
+    next_gen: 0.to_int64(),
+    json_text: json_text,
+  }
+}
+
+pub fn RemoteState::alloc_gen(self : RemoteState) -> Int64 {
+  self.next_gen = self.next_gen + 1.to_int64()
+  self.next_gen
+}
+
+/// Retire hook registered on `HubGenResources::add_retire_hook` (captures only `RemoteState`).
+pub fn RemoteState::retire(self : RemoteState) -> Unit {
+  self.stopped = true
+  self.writing.clear()
+  self.writes.clear()
+  self.used.clear()
+  self.lanes.clear()
+  self.checking.clear()
+  self.pushing.clear()
+  self.syncs.clear()
+  self.cleans.clear()
+  self.task_owners.clear()
+  self.owner_tasks.clear()
+  self.unreadable.clear()
+  self.closing.clear()
+  self.timers.clear()
+  self.again_jobs.clear()
+  self.bounded_wakers.clear()
+  self.check_last.clear()
+  self.rename_inflight.clear()
+  self.incoming_stamp = None
+  self.indexing = None
+}
+
+/// Ephemeral execution context passed into `#remote` handlers. Never stored inside `RemoteState`.
+pub struct RemoteCtx {
+  pub host : sessions_core::SessionHost
+  pub gen : sessions_core::HubGen
+  pub sep : String
+  pub state : RemoteState
+  pub dispatch : sessions_core::SessionDispatch
+  pub dirsync : DirsyncPort
+}
+
+pub fn RemoteCtx::new(
+  host : sessions_core::SessionHost,
+  gen : sessions_core::HubGen,
+  sep : String,
+  state : RemoteState,
+  dispatch : sessions_core::SessionDispatch,
+  dirsync : DirsyncPort,
+) -> RemoteCtx {
+  RemoteCtx::{
+    host: host,
+    gen: gen,
+    sep: sep,
+    state: state,
+    dispatch: dispatch,
+    dirsync: dirsync,
+  }
+}
+
+/// Construct a `RemoteHost` capability snapshot for `DirsyncPort` calls.
+pub fn RemoteCtx::remote_host(self : RemoteCtx) -> RemoteHost {
+  RemoteHost::{
+    root: self.state.root,
+    sep: self.sep,
+    js_text: self.state.json_text,
+    ask_k: fn(station : String, req : base_codec::Json, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.ask_k(station, req, k)
+    },
+    rnode_fn: fn(f : String, args : Array[base_codec::Json], k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.gen.rpc_k(self.host, remote_key, "node." + f, args, self.dispatch.mirror_actor, k)
+    },
+    write_whole_k: fn(path : String, json : String, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.serialize_path_k(
+        path,
+        false,
+        fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          self.write_whole_k(path, json, wk)
+        },
+        k,
+      )
+    },
+    write_json_k: fn(path : String, value : base_codec::Json, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.write_json_k(path, value, k)
+    },
+    read_text_k: fn(path : String, k : (effect::Exit[Option[String]]) -> Unit) -> Unit {
+      self.written_k(path, fn(wex : effect::Exit[Unit]) -> Unit {
+        match wex {
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(_) => self.read_text_k(path, k)
+        }
+      })
+    },
+    read_json_k: fn(path : String, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      self.read_json_k(path, k)
+    },
+    file_path_k: fn(root : String, rel : String, create : Bool, allow_leaf_link : Bool, k : (effect::Exit[String]) -> Unit) -> Unit {
+      self.file_path_k(root, rel, create, allow_leaf_link, k)
+    },
+    lstat_k: fn(path : String, k : (effect::Exit[Option[base_codec::Json]]) -> Unit) -> Unit {
+      self.lstat_k(path, k)
+    },
+    mkdirs_k: fn(path : String, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.mkdirs_k(path, k)
+    },
+    remove_k: fn(path : String, recursive : Bool, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.remove_k(path, recursive, k)
+    },
+    rename_k: fn(from : String, to : String, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.rename_k(from, to, k)
+    },
+    fs_k: fn(
+      op : String,
+      args : Array[(String, base_codec::Json)],
+      bytes : Option[Bytes],
+      k : (effect::Exit[(base_codec::Json, Option[Bytes])]) -> Unit,
+    ) -> Unit {
+      self.fs_raw_k(op, args, bytes, k)
+    },
+    remote_now_k: fn(k : (effect::Exit[Double]) -> Unit) -> Unit {
+      self.remote_now_k(k)
+    },
+  }
+}
+
+// ── Static-contract RPC / tell / acyclic value-based timer primitives ──
+
+/// Static contract: first argument MUST be a string literal at every call site.
+pub fn RemoteCtx::rnode_k(
+  self : RemoteCtx,
+  f : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.gen.rpc_k(self.host, remote_key, "node." + f, args, self.dispatch.mirror_actor, k)
+}
+
+/// Static contract: first argument MUST be a string literal at every call site.
+pub fn RemoteCtx::rstore_k(
+  self : RemoteCtx,
+  f : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.gen.rpc_k(self.host, remote_key, "store." + f, args, self.dispatch.mirror_actor, k)
+}
+
+/// Static contract: pass `remote_key` as `key` and a string literal as `f`.
+pub fn RemoteCtx::tell(
+  self : RemoteCtx,
+  key : String,
+  f : String,
+  args : Array[base_codec::Json],
+) -> Unit {
+  self.gen.say_node([
+    ("tell", sessions_core::jstr(f)),
+    ("actor", sessions_core::jstr(key)),
+    ("args", base_codec::json_arr(args)),
+  ])
+}
+
+/// Side-channel telemetry trace span (1:1 `actors.mbt:308`).
+pub fn RemoteCtx::tell_trace(self : RemoteCtx, key : String, payload : base_codec::Json) -> Unit {
+  self.gen.say_node([
+    ("tell", sessions_core::jstr("trace")),
+    ("actor", sessions_core::jstr(key)),
+    ("args", base_codec::json_arr([payload])),
+  ])
+}
+
+pub fn RemoteCtx::rlog(
+  self : RemoteCtx,
+  level : String,
+  message : String,
+  fields : Array[(String, base_codec::Json)] = [],
+) -> Unit {
+  self.tell(remote_key, "log", [
+    sessions_core::jstr(level),
+    sessions_core::jstr(message),
+    base_codec::json_obj(fields),
+  ])
+}
+
+/// A request to another station (bus / sandbox via Node).
+pub fn RemoteCtx::ask_k(
+  self : RemoteCtx,
+  station : String,
+  request : base_codec::Json,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  self.rnode_k("ask", [sessions_core::jstr(station), request], k)
+}
+
+/// Schedule a pure-value Node timer on `#remote`'s clock stored in `state.timers` tagged
+/// by `epoch` (zero `SessionHost`/`HubGen`/`RemoteCtx` capture in pending timer table).
+/// Returns a leaf cancel closure capturing only `state.timers`, `counters`, `id`, `epoch`.
+pub fn RemoteCtx::rafter_action(
+  self : RemoteCtx,
+  ms : Double,
+  action : RemoteTimerAction,
+) -> () -> Unit {
+  let counters = self.gen.counters
+  let timers = self.state.timers
+  if counters.sealed {
+    return fn() -> Unit { () }
+  }
+  let id = self.host.alloc_id()
+  let epoch = counters.epoch
+  timers.set(id, RemoteTimerEntry::{ epoch: epoch, action: action })
+  let clamped = if ms < 0.0 { 0.0 } else { ms }
+  counters.say_node([
+    ("after", sessions_core::jint(id)),
+    ("ms", sessions_core::jnum(clamped)),
+    ("on", sessions_core::jstr(remote_key)),
+  ])
+  fn() -> Unit {
+    match timers.get(id) {
+      Some(entry) => {
+        if entry.epoch == epoch {
+          let _ = timers.remove(id)
+          counters.say_node([("cancel", sessions_core::jint(id))])
+        }
+      }
+      None => ()
+    }
+  }
+}
+
+/// External `{"due": id}` dispatcher for `#remote` timers (1:1 with `HubGen::handle_due`
+/// `active += 1 -> body -> active -= 1; quiet()`).
+///
+/// Wiring contract for W8-F (`packages/reader_sessions`):
+/// `heard({"due": id})` MUST route to `RemoteCtx::handle_due(id)` alongside
+/// `HubGen::handle_due(host, id)`. Both tables allocate from `SessionHost::alloc_id`, so
+/// their ID spaces are strictly disjoint; stop as soon as one returns `true`.
+pub fn RemoteCtx::handle_due(self : RemoteCtx, id : Int) -> Bool {
+  let counters = self.gen.counters
+  if counters.sealed {
+    return false
+  }
+  match self.state.timers.get(id) {
+    Some(entry) => {
+      if entry.epoch != counters.epoch {
+        return false
+      }
+      let _ = self.state.timers.remove(id)
+      counters.active = counters.active + 1
+      match entry.action {
+        RemoteTimerAction::SweepHourly => self.sweep_hourly()
+        RemoteTimerAction::CheckLater(path) => self.check(path)
+        RemoteTimerAction::ClosingRound(path) => self.closing_round(path)
+        RemoteTimerAction::AgainStep(token, tries) => self.run_again_step(token, tries)
+        RemoteTimerAction::WakeBounded(wake_id) => {
+          match self.state.bounded_wakers.get(wake_id) {
+            Some(bw) => {
+              let _ = self.state.bounded_wakers.remove(wake_id)
+              bw.wake()
+            }
+            None => ()
+          }
+        }
+      }
+      if !counters.sealed {
+        counters.active = counters.active - 1
+        counters.quiet()
+      }
+      true
+    }
+    None => false
+  }
+}
+
+/// Now on `#remote`'s clock (`remote.mbt:434-436`).
+pub fn RemoteCtx::remote_now_k(
+  self : RemoteCtx,
+  k : (effect::Exit[Double]) -> Unit,
+) -> Unit {
+  let fallback = self.gen.counters.now
+  self.rstore_k("now", [], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(v) => {
+        let now = match sessions_core::num_of(Some(v)) {
+          Some(n) => n
+          None => fallback
+        }
+        k(effect::Exit::Succeeded(now))
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+/// Spawn a generation-scoped work fiber (`actors.mbt:333`).
+pub fn RemoteCtx::spawn_work(self : RemoteCtx, work_k : ((effect::Exit[Unit]) -> Unit) -> Unit) -> Unit {
+  self.gen.spawn_work(work_k)
+}
+
+// ── Shared pure helpers ──
+
+pub fn RemoteCtx::js_text(self : RemoteCtx, v : base_codec::Json) -> String {
+  (self.state.json_text)(v)
+}
+
+pub fn RemoteCtx::rhash(self : RemoteCtx, v : base_codec::Json) -> String {
+  transcript_io::sha256_utf8_hex((self.state.json_text)(v))
+}
+
+pub fn refusal(m : String) -> effect::EffectError {
+  sessions_core::AskedError::new(base_codec::json_obj([("message", sessions_core::jstr(m))])).to_effect_error()
+}
+
+pub fn refused(e : effect::EffectError) -> Bool {
+  match sessions_core::decode_asked_error(e) {
+    Some(a) => {
+      match sessions_core::jget(a.cause, "kind") {
+        Some(base_codec::Json::Str("Refused")) => true
+        _ => false
+      }
+    }
+    None => false
+  }
+}
+
+pub fn bytes_len(s : String) -> Int {
+  js_json::js_utf8_len(s)
+}
+
+pub fn is_finite_double(n : Double) -> Bool {
+  let pos_inf = 1.0 / 0.0
+  let neg_inf = -1.0 / 0.0
+  n == n && n != pos_inf && n != neg_inf
+}
+
+pub fn as_u64(v : base_codec::Json) -> Option[Double] {
+  match v {
+    base_codec::Json::Num(n, _) => {
+      if is_finite_double(n) && n >= 0.0 && n == js_json::js_trunc(n) {
+        Some(n)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+pub fn as_i64(v : base_codec::Json) -> Option[Double] {
+  match v {
+    base_codec::Json::Num(n, _) => {
+      if is_finite_double(n) && n == js_json::js_trunc(n) {
+        Some(n)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+pub fn with_field(v : base_codec::Json, key : String, value : base_codec::Json) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = []
+  let mut replaced = false
+  match v {
+    base_codec::Json::Obj(entries) => {
+      for i in 0..<entries.length() {
+        let (ek, ev) = entries[i]
+        if ek == key {
+          if !replaced {
+            out.push((key, value))
+            replaced = true
+          }
+        } else {
+          out.push((ek, ev))
+        }
+      }
+    }
+    _ => ()
+  }
+  if !replaced {
+    out.push((key, value))
+  }
+  base_codec::json_obj(out)
+}
+
+pub fn without_field(v : base_codec::Json, key : String) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = []
+  match v {
+    base_codec::Json::Obj(entries) => {
+      for i in 0..<entries.length() {
+        let (ek, ev) = entries[i]
+        if ek != key {
+          out.push((ek, ev))
+        }
+      }
+    }
+    _ => ()
+  }
+  base_codec::json_obj(out)
+}
+
+pub fn json_obj_map(v : base_codec::Json) -> Map[String, base_codec::Json] {
+  let m : Map[String, base_codec::Json] = Map::new()
+  match v {
+    base_codec::Json::Obj(entries) => {
+      for i in 0..<entries.length() {
+        let (k, item_v) = entries[i]
+        m.set(k, item_v)
+      }
+    }
+    _ => ()
+  }
+  m
+}
+
+pub fn is_read_method(method : String) -> Bool {
+  method == "task.get" ||
+  method == "task.gets" ||
+  method == "task.log" ||
+  method == "task.list" ||
+  method == "session.size"
+}
+
+pub fn ascii_lower(s : String) -> String {
+  let sb = StringBuilder::new()
+  let bytes = s.to_bytes()
+  for i in 0..<bytes.length() {
+    let b = bytes[i].to_int()
+    if b >= 65 && b <= 90 {
+      sb.write_byte((b + 32) as Byte)
+    } else {
+      sb.write_byte(bytes[i])
+    }
+  }
+  sb.to_string()
+}
+
+pub fn str_contains(haystack : String, needle : String) -> Bool {
+  if needle.length() == 0 {
+    return true
+  }
+  if needle.length() > haystack.length() {
+    return false
+  }
+  haystack.index_of(needle) >= 0
+}
+
+pub fn opt_str_eq(a : Option[String], b : String) -> Bool {
+  match a {
+    Some(s) => s == b
+    None => false
+  }
+}
+
+pub fn split_char(s : String, sep : Byte) -> Array[String] {
+  let out : Array[String] = []
+  let bytes = s.to_bytes()
+  let mut start = 0
+  for i in 0..<bytes.length() {
+    if bytes[i] == sep {
+      out.push(s.slice(start, i))
+      start = i + 1
+    }
+  }
+  out.push(s.slice(start, bytes.length()))
+  out
+}
+
+/// Sequential async iteration over an array using `iter_sync_k` (zero stack growth, no `pause_k`).
+pub fn for_each_k[T](
+  items : Array[T],
+  body_k : (Int, T, (effect::Exit[Unit]) -> Unit) -> Unit,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let mut idx = 0
+  sessions_core::iter_sync_k(
+    fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      if idx >= items.length() {
+        sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+        return
+      }
+      let i = idx
+      let item = items[i]
+      idx = idx + 1
+      body_k(i, item, fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Succeeded(_) => sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+          effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+        }
+      })
+    },
+    k,
+  )
+}
+
+// ── Per-lane FIFO lock with automatic eviction, prefix compaction, and handoff-interrupt safety ──
+
+fn lane_compact(lock : LaneLock) -> Unit {
+  if lock.head == 0 {
+    return
+  }
+  if lock.head >= lock.waiters.length() {
+    lock.waiters = []
+    lock.head = 0
+    return
+  }
+  if lock.head >= 16 {
+    let next : Array[LaneWaiter] = []
+    for i in lock.head..<lock.waiters.length() {
+      next.push(lock.waiters[i])
+    }
+    lock.waiters = next
+    lock.head = 0
+  }
+}
+
+fn lane_release(state : RemoteState, lane : String, lock : LaneLock) -> Unit {
+  lock.active_count = lock.active_count - 1
+  while lock.head < lock.waiters.length() {
+    let w = lock.waiters[lock.head]
+    lock.head = lock.head + 1
+    if !w.cancelled {
+      w.granted = true
+      lane_compact(lock)
+      let _ = w.deferred.succeed(())
+      return
+    }
+  }
+  lock.waiters = []
+  lock.head = 0
+  lock.held = false
+  if lock.active_count <= 0 {
+    match state.lanes.get(lane) {
+      Some(cur) => {
+        if cur.id == lock.id {
+          let _ = state.lanes.remove(lane)
+        }
+      }
+      None => ()
+    }
+  }
+}
+
+/// Serialize `work_k` per `lane` (FIFO); removes `lane` from `state.lanes` as soon as
+/// `holders + waiters == 0`, compacts consumed prefix slots, and hands off the lock cleanly
+/// if a waiter is interrupted after being granted (`wave8-plan.md` v5 §2.4.2).
+pub fn RemoteCtx::in_lane_k[X](
+  self : RemoteCtx,
+  lane : String,
+  work_k : ((effect::Exit[X]) -> Unit) -> Unit,
+  k : (effect::Exit[X]) -> Unit,
+) -> Unit {
+  let state = self.state
+  let lock = match state.lanes.get(lane) {
+    Some(l) => l
+    None => {
+      let l = LaneLock::{
+        id: state.alloc_gen(),
+        held: false,
+        waiters: [],
+        head: 0,
+        active_count: 0,
+      }
+      state.lanes.set(lane, l)
+      l
+    }
+  }
+  lock.active_count = lock.active_count + 1
+  if !lock.held {
+    lock.held = true
+    work_k(fn(ex : effect::Exit[X]) -> Unit {
+      lane_release(state, lane, lock)
+      k(ex)
+    })
+    return
+  }
+  let w = LaneWaiter::{ deferred: effect::Deferred::new(), cancelled: false, granted: false }
+  lock.waiters.push(w)
+  w.deferred.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(_) => {
+        work_k(fn(wex : effect::Exit[X]) -> Unit {
+          lane_release(state, lane, lock)
+          k(wex)
+        })
+      }
+      other => {
+        if w.granted || w.deferred.is_done() {
+          // Lock was already transferred to this waiter before it could resume: pass it on.
+          if !w.cancelled {
+            w.cancelled = true
+            lane_release(state, lane, lock)
+          }
+        } else if !w.cancelled {
+          w.cancelled = true
+          lock.active_count = lock.active_count - 1
+          if !lock.held && lock.active_count <= 0 {
+            match state.lanes.get(lane) {
+              Some(cur) => {
+                if cur.id == lock.id {
+                  let _ = state.lanes.remove(lane)
+                }
+              }
+              None => ()
+            }
+          }
+        }
+        match other {
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(_) => ()
+        }
+      }
+    }
+  })
+}
+
+// ── Room / job helpers ──
+
+pub fn RemoteCtx::room(self : RemoteCtx, workspace : String, peer : String, session : String) -> String {
+  self.rjoin([
+    self.state.root,
+    "sessions",
+    self.rhash(base_codec::json_arr([
+      sessions_core::jstr(workspace),
+      sessions_core::jstr(peer),
+      sessions_core::jstr(session),
+    ])),
+  ])
+}
+
+pub fn RemoteCtx::seen_k(
+  self : RemoteCtx,
+  workspace : String,
+  peer : String,
+  session : String,
+  k : (effect::Exit[String]) -> Unit,
+) -> Unit {
+  self.rnode_k(
+    "seen",
+    [sessions_core::jstr(workspace), sessions_core::jstr(peer), sessions_core::jstr(session)],
+    fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(got) => {
+          let work = sessions_core::text_of(got, "work")
+          match sessions_core::field_of(got, "write") {
+            base_codec::Json::Bool(true) => {
+              self.write_session_k(workspace, peer, session, sessions_core::field_of(got, "now"), fn(wex : effect::Exit[Unit]) -> Unit {
+                match wex {
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  _ => k(effect::Exit::Succeeded(work))
+                }
+              })
+            }
+            _ => k(effect::Exit::Succeeded(work))
+          }
+        }
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    },
+  )
+}
+
+pub fn RemoteCtx::write_session_k(
+  self : RemoteCtx,
+  workspace : String,
+  peer : String,
+  session : String,
+  seen : base_codec::Json,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let record = self.rjoin([self.room(workspace, peer, session), "session.json"])
+  let payload = base_codec::json_obj([
+    ("workspace", sessions_core::jstr(workspace)),
+    ("station", sessions_core::jstr(peer)),
+    ("session", sessions_core::jstr(session)),
+    ("seen", seen),
+  ])
+  self.write_json_k(record, payload, fn(ex : effect::Exit[Unit]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      _ => k(effect::Exit::Succeeded(()))
+    }
+  })
+}
+
+pub fn RemoteCtx::job_of_task(self : RemoteCtx, dir : String) -> String {
+  "remote_" + self.rbasename(dir)
+}
+
+pub fn RemoteCtx::task_running_k(
+  self : RemoteCtx,
+  dir : String,
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  self.rstore_k("getJob", [sessions_core::jstr(self.job_of_task(dir))], fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+    match ex {
+      effect::Exit::Succeeded(job) => {
+        let running = match sessions_core::str_of(sessions_core::jget(job, "state")) {
+          Some("running") => true
+          _ => false
+        }
+        k(effect::Exit::Succeeded(running))
+      }
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+    }
+  })
+}
+
+/// Room/lane peer key: isolates remote sandbox tasks (`<peer>:sandbox:<name>`) from ordinary remote tasks.
+pub fn room_peer_of(peer : String, request : base_codec::Json) -> String {
+  let sb = sessions_core::text_of(request, "sandbox")
+  if sb != "" { peer + ":sandbox:" + sb } else { peer }
+}
+
+/// What `d` settles to, or `None` when it has not within `ms` on `#remote`'s clock (`remote.mbt:398-424`).
+/// Architectural invariants:
+/// - Watcher holds `active += 1` while awaiting `d`, and caller decrements `active -= 1` before
+///   awaiting `woke`, so during the 1s/40s wait window `active` never drops to 0 / emits premature `quiet`;
+/// - On timeout OR caller cancellation, `bounded_k` immediately cancels this call's own watcher
+///   (`watcher.interrupt()`), and the watcher releases its own `active -= 1` on `Interrupted` as well
+///   as `Succeeded`, guaranteeing zero dangling watchers and zero `active` accumulation across retries;
+/// - `RemoteState::bounded_wakers` stores pure-value `BoundedWaker` structs (zero `Map`/ctx cycles).
+pub fn RemoteCtx::bounded_k[X](
+  self : RemoteCtx,
+  d : effect::Deferred[X],
+  ms : Double,
+  k : (effect::Exit[Option[X]]) -> Unit,
+) -> Unit {
+  if d.is_done() {
+    let res = match d.poll() {
+      Some(effect::Exit::Succeeded(x)) => Some(x)
+      _ => None
+    }
+    k(effect::Exit::Succeeded(res))
+    return
+  }
+  let counters = self.gen.counters
+  let wakers = self.state.bounded_wakers
+  let wake_id = self.state.alloc_gen()
+  let bw = BoundedWaker::{
+    counters: counters,
+    woke: effect::Deferred::new(),
+    settled: false,
+  }
+  wakers.set(wake_id, bw)
+  let cancel = self.rafter_action(ms, RemoteTimerAction::WakeBounded(wake_id))
+  if !counters.sealed {
+    counters.active = counters.active + 1
+  }
+  let mut watcher_released = false
+  let release_watcher = fn() -> Unit {
+    if !watcher_released {
+      watcher_released = true
+      if !counters.sealed {
+        counters.active = counters.active - 1
+        counters.quiet()
+      }
+    }
+  }
+  let watcher = self.gen.fibers.fork_daemon(
+    "bounded watcher",
+    fn(wk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      d.wait_k(fn(ex : effect::Exit[X]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => {
+            release_watcher()
+            wk(effect::Exit::Interrupted)
+          }
+          _ => {
+            let _ = wakers.remove(wake_id)
+            bw.wake()
+            release_watcher()
+            wk(effect::Exit::Succeeded(()))
+          }
+        }
+      })
+    },
+    fn(_e : effect::EffectError) -> Unit { release_watcher() },
+  )
+  if !counters.sealed {
+    counters.active = counters.active - 1
+  }
+  bw.woke.wait_k(fn(ex : effect::Exit[Unit]) -> Unit {
+    cancel()
+    let _ = wakers.remove(wake_id)
+    watcher.interrupt()
+    match ex {
+      effect::Exit::Interrupted => {
+        if !bw.settled {
+          bw.settled = true
+          if !counters.sealed {
+            counters.active = counters.active + 1
+          }
+        }
+        k(effect::Exit::Interrupted)
+      }
+      _ => {
+        let res = if d.is_done() {
+          match d.poll() {
+            Some(effect::Exit::Succeeded(x)) => Some(x)
+            _ => None
+          }
+        } else {
+          None
+        }
+        k(effect::Exit::Succeeded(res))
+      }
+    }
+  })
+}
+
+/// Compute exponential backoff delay for `again` (1 s -> 2 s -> ... -> 60 s cap; `remote.mbt:339-343`).
+pub fn again_delay_ms(tries : Int) -> Double {
+  let mut wait = 1000.0
+  let mut i = 0
+  while i < tries && wait < 60000.0 {
+    wait = wait * 2.0
+    i = i + 1
+  }
+  if wait > 60000.0 { 60000.0 } else { wait }
+}
+
+/// Start a pure-value `again` loop registered under a token in `state.again_jobs`
+/// so retry timers store only `(token, tries)` with zero `RemoteCtx`/`SessionHost` capture.
+pub fn RemoteCtx::start_again(self : RemoteCtx, kind : AgainKind) -> Unit {
+  let token = self.state.alloc_gen()
+  self.state.again_jobs.set(token, kind)
+  self.run_again_step(token, 0)
+}
+
+fn RemoteCtx::run_again_step(self : RemoteCtx, token : Int64, tries : Int) -> Unit {
+  let kind = match self.state.again_jobs.get(token) {
+    Some(k) => k
+    None => return
+  }
+  self.spawn_work(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    let on_result = fn(ex : effect::Exit[Bool]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => {
+          let _ = self.state.again_jobs.remove(token)
+          fk(effect::Exit::Interrupted)
+        }
+        effect::Exit::Failed(_) => {
+          if self.state.stopped || self.gen.counters.sealed {
+            let _ = self.state.again_jobs.remove(token)
+            self.finish_again_kind(kind)
+            fk(effect::Exit::Succeeded(()))
+            return
+          }
+          let _ = self.rafter_action(again_delay_ms(tries), RemoteTimerAction::AgainStep(token, tries + 1))
+          fk(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Succeeded(over) => {
+          if over || self.state.stopped || self.gen.counters.sealed {
+            let _ = self.state.again_jobs.remove(token)
+            self.finish_again_kind(kind)
+            fk(effect::Exit::Succeeded(()))
+            return
+          }
+          let _ = self.rafter_action(again_delay_ms(tries), RemoteTimerAction::AgainStep(token, tries + 1))
+          fk(effect::Exit::Succeeded(()))
+        }
+      }
+    }
+    match kind {
+      AgainKind::PushOut(id) => self.push_out_once_k(id, on_result)
+      AgainKind::CheckTask(path) => self.check_once_k(path, on_result)
+    }
+  })
+}
+
+fn RemoteCtx::finish_again_kind(self : RemoteCtx, kind : AgainKind) -> Unit {
+  match kind {
+    AgainKind::PushOut(id) => self.push_out_ended(id)
+    AgainKind::CheckTask(path) => self.check_ended(path)
+  }
+}
+
+/// The target's sweep, now and hourly on `#remote`'s clock (`remote.mbt:314-327`).
+pub fn RemoteCtx::sweep_hourly(self : RemoteCtx) -> Unit {
+  self.spawn_work(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    if self.state.stopped || self.gen.counters.sealed {
+      fk(effect::Exit::Succeeded(()))
+      return
+    }
+    self.remote_now_k(fn(nex : effect::Exit[Double]) -> Unit {
+      match nex {
+        effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+        effect::Exit::Failed(_) => {
+          let _ = self.rafter_action(SWEEP_EVERY_MS, RemoteTimerAction::SweepHourly)
+          fk(effect::Exit::Succeeded(()))
+        }
+        effect::Exit::Succeeded(now) => {
+          self.sweep_k(now, fn(sex : effect::Exit[Unit]) -> Unit {
+            match sex {
+              effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+              _ => {
+                let _ = self.rafter_action(SWEEP_EVERY_MS, RemoteTimerAction::SweepHourly)
+                fk(effect::Exit::Succeeded(()))
+              }
+            }
+          })
+        }
+      }
+    })
+  })
+}
+
+/// `task.clean` holds the session's lane while it runs; answers early after `CLEAN_ANSWER_MS`
+/// and retries join the same `SyncRun` (`remote.mbt:358-394`).
+pub fn RemoteCtx::clean_request_k(
+  self : RemoteCtx,
+  workspace : String,
+  peer : String,
+  request : base_codec::Json,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let session = sessions_core::text_of(request, "session")
+  let mirror = sessions_core::text_of(request, "mirror")
+  let room_peer = room_peer_of(peer, request)
+  let id = self.rhash(base_codec::json_arr([
+    sessions_core::jstr(workspace),
+    sessions_core::jstr(room_peer),
+    sessions_core::jstr(session),
+    sessions_core::jstr(mirror),
+  ]))
+  self.remote_now_k(fn(nex : effect::Exit[Double]) -> Unit {
+    match nex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(now) => {
+        let keys = self.state.cleans.keys()
+        for i in 0..<keys.length() {
+          let ck = keys[i]
+          match self.state.cleans.get(ck) {
+            Some(c) => {
+              match c.ended_at {
+                Some(at) => {
+                  if now - at >= CLEAN_KEPT_MS {
+                    let _ = self.state.cleans.remove(ck)
+                  }
+                }
+                None => ()
+              }
+            }
+            None => ()
+          }
+        }
+        let clean = match self.state.cleans.get(id) {
+          Some(c) => c
+          None => {
+            let c = SyncRun::{
+              id: self.state.alloc_gen(),
+              key: id,
+              result: effect::Deferred::new(),
+              ended_at: None,
+            }
+            self.state.cleans.set(id, c)
+            self.spawn_work(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+              let lane = self.room(workspace, room_peer, session)
+              self.in_lane_k(
+                lane,
+                fn(lk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                  self.task_k(workspace, peer, "task.clean", request, None, lk)
+                },
+                fn(tex : effect::Exit[base_codec::Json]) -> Unit {
+                  match tex {
+                    effect::Exit::Interrupted => {
+                      let _ = c.result.succeed(base_codec::json_obj([("error", sessions_core::jstr("interrupted"))]))
+                      fk(effect::Exit::Interrupted)
+                    }
+                    _ => {
+                      let got = match tex {
+                        effect::Exit::Succeeded(v) => base_codec::json_obj([("ok", v)])
+                        effect::Exit::Failed(e) => base_codec::json_obj([("error", sessions_core::jstr(sessions_core::error_message(e)))])
+                        effect::Exit::Interrupted => base_codec::json_null()
+                      }
+                      self.remote_now_k(fn(aex : effect::Exit[Double]) -> Unit {
+                        let at = match aex {
+                          effect::Exit::Succeeded(t) => t
+                          _ => 0.0
+                        }
+                        c.ended_at = Some(at)
+                        let _ = c.result.succeed(got)
+                        fk(effect::Exit::Succeeded(()))
+                      })
+                    }
+                  }
+                },
+              )
+            })
+            c
+          }
+        }
+        self.bounded_k(clean.result, CLEAN_ANSWER_MS, fn(bex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+          match bex {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(None) => {
+              k(effect::Exit::Succeeded(base_codec::json_obj([
+                ("mirror", sessions_core::jstr(mirror)),
+                ("pending", sessions_core::jbool(true)),
+              ])))
+            }
+            effect::Exit::Succeeded(Some(got)) => {
+              match self.state.cleans.get(id) {
+                Some(cur) => {
+                  if cur.id == clean.id {
+                    let _ = self.state.cleans.remove(id)
+                  }
+                }
+                None => ()
+              }
+              match sessions_core::jget(got, "error") {
+                Some(base_codec::Json::Str(m)) => k(effect::Exit::Failed(refusal(m)))
+                _ => k(effect::Exit::Succeeded(sessions_core::field_of(got, "ok")))
+              }
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+/// Entrypoint for `SessionDispatch::remote_changed_k` (synchronously dispatches `push_out`
+/// background fiber without ever waiting inside the jobs lock; `jobs.mbt:113-118`).
+pub fn RemoteCtx::remote_changed(self : RemoteCtx, id : String) -> Unit {
+  if id.starts_with("remote_") {
+    self.push_out(id.slice(7, id.length()))
+  }
+}
+
+fn arg_at(args : Array[base_codec::Json], i : Int) -> base_codec::Json {
+  if i < args.length() { args[i] } else { base_codec::json_null() }
+}
+
+/// What Node asks of `#remote` (`remote.mbt:241-310`).
+pub fn RemoteCtx::remote_called_k(
+  self : RemoteCtx,
+  method : String,
+  args : Array[base_codec::Json],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  if method == "start" {
+    self.state.root = match sessions_core::str_of(Some(arg_at(args, 0))) {
+      Some(s) => s
+      None => ""
+    }
+    self.spawn_work(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.load_used_k(fk)
+    })
+    k(effect::Exit::Succeeded(base_codec::json_null()))
+    return
+  }
+  if method == "attached" {
+    self.spawn_work(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.resume_k(fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+          _ => fk(effect::Exit::Succeeded(()))
+        }
+      })
+    })
+    self.spawn_work(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.push_missed_k(fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+          _ => fk(effect::Exit::Succeeded(()))
+        }
+      })
+    })
+    self.spawn_work(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.resume_closing_k(fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+          _ => fk(effect::Exit::Succeeded(()))
+        }
+      })
+    })
+    self.spawn_work(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      self.move_prepared_k(fn(ex : effect::Exit[Unit]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+          _ => fk(effect::Exit::Succeeded(()))
+        }
+      })
+    })
+    self.sweep_hourly()
+    k(effect::Exit::Succeeded(base_codec::json_null()))
+    return
+  }
+  if method == "recordUse" {
+    let ws = match sessions_core::str_of(Some(arg_at(args, 0))) { Some(s) => s; None => "" }
+    let sess = match sessions_core::str_of(Some(arg_at(args, 1))) { Some(s) => s; None => "" }
+    let st = match sessions_core::str_of(Some(arg_at(args, 2))) { Some(s) => s; None => "" }
+    self.record_use_k(ws, sess, st, k)
+    return
+  }
+  if method == "closeSession" {
+    let sess = match sessions_core::str_of(Some(arg_at(args, 0))) { Some(s) => s; None => "" }
+    let since = match sessions_core::num_of(Some(arg_at(args, 1))) { Some(n) => n; None => 0.0 }
+    self.close_session_k(sess, since, k)
+    return
+  }
+  if method == "writeSession" {
+    let ws = match sessions_core::str_of(Some(arg_at(args, 0))) { Some(s) => s; None => "" }
+    let peer = match sessions_core::str_of(Some(arg_at(args, 1))) { Some(s) => s; None => "" }
+    let sess = match sessions_core::str_of(Some(arg_at(args, 2))) { Some(s) => s; None => "" }
+    self.write_session_k(ws, peer, sess, arg_at(args, 3), fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+      }
+    })
+    return
+  }
+  if method == "movePrepared" {
+    self.move_prepared_k(fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+      }
+    })
+    return
+  }
+  if method == "expire" {
+    let now = match sessions_core::num_of(Some(arg_at(args, 0))) { Some(n) => n; None => 0.0 }
+    self.expire_k(now, fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(n) => k(effect::Exit::Succeeded(sessions_core::jnum(n.to_double())))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    })
+    return
+  }
+  if method == "budget" {
+    let now = match sessions_core::num_of(Some(arg_at(args, 0))) { Some(n) => n; None => 0.0 }
+    let limit = match sessions_core::num_of(Some(arg_at(args, 1))) { Some(n) => n; None => 0.0 }
+    self.budget_k(now, limit, fn(ex : effect::Exit[Double]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(n) => k(effect::Exit::Succeeded(sessions_core::jnum(n)))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    })
+    return
+  }
+  if method == "handle" {
+    let workspace = match sessions_core::str_of(Some(arg_at(args, 0))) { Some(s) => s; None => "" }
+    let peer = match sessions_core::str_of(Some(arg_at(args, 1))) { Some(s) => s; None => "" }
+    let request = arg_at(args, 2)
+    let req_method = sessions_core::text_of(request, "method")
+    let room_peer = room_peer_of(peer, request)
+    if req_method == "task.clean" {
+      self.clean_request_k(workspace, peer, request, k)
+    } else if is_read_method(req_method) {
+      self.task_k(workspace, peer, req_method, request, None, k)
+    } else {
+      let lane = self.room(workspace, room_peer, sessions_core::text_of(request, "session"))
+      self.in_lane_k(
+        lane,
+        fn(lk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+          self.task_k(workspace, peer, req_method, request, None, lk)
+        },
+        k,
+      )
+    }
+    return
+  }
+  if method == "changed" {
+    let ws = match sessions_core::str_of(Some(arg_at(args, 0))) { Some(s) => s; None => "" }
+    self.changed_there_k(ws, arg_at(args, 1), k)
+    return
+  }
+  if method == "pushOut" {
+    let id = match sessions_core::str_of(Some(arg_at(args, 0))) { Some(s) => s; None => "" }
+    self.push_out(id)
+    k(effect::Exit::Succeeded(base_codec::json_null()))
+    return
+  }
+  if method == "sweep" {
+    let now = match sessions_core::num_of(Some(arg_at(args, 0))) { Some(n) => n; None => 0.0 }
+    self.sweep_k(now, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    })
+    return
+  }
+  if method == "relieve" {
+    let now = match sessions_core::num_of(Some(arg_at(args, 0))) { Some(n) => n; None => 0.0 }
+    self.relieve_k(now, fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    })
+    return
+  }
+  if method == "revoke" {
+    self.revoke_k(arg_at(args, 0), sessions_core::truthy(arg_at(args, 1)), fn(ex : effect::Exit[Unit]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_null()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    })
+    return
+  }
+  if method == "listLocal" {
+    let dir = match sessions_core::str_of(Some(arg_at(args, 0))) { Some(s) => s; None => "" }
+    (self.dirsync.list_local_k)(self.remote_host(), dir, fn(ex : effect::Exit[DirsyncListing]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(listing) => k(effect::Exit::Succeeded(listing.to_json()))
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      }
+    })
+    return
+  }
+  if method == "tool" {
+    let tool_name = match sessions_core::str_of(Some(arg_at(args, 0))) { Some(s) => s; None => "" }
+    let sess = match sessions_core::str_of(Some(arg_at(args, 1))) { Some(s) => s; None => "" }
+    self.tool_k(tool_name, sess, arg_at(args, 2), k)
+    return
+  }
+  if method == "close" {
+    self.state.stopped = true
+    k(effect::Exit::Succeeded(base_codec::json_null()))
+    return
+  }
+  k(effect::Exit::Failed(refusal("no remote method " + method)))
+}

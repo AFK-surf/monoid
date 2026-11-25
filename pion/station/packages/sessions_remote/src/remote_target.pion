@@ -1,0 +1,3900 @@
+// Target-side remote task handlers (`task.*`, `sync.*`, `file.*`, `session.*`),
+// incoming task index, mirror naming/lifecycle, `sweep`, `relieve`, `budget`, `expire`,
+// `move_prepared`, `revoke`, and `task.list` bounding
+// (1:1 port of `station/mb/src/reader/remote_target.mbt`).
+
+import "base_codec"
+import "effect"
+import "js_json"
+import "sessions_core"
+
+pub let ROOM_RECENT_MS : Double = 3600000.0
+pub let TASKS_KEPT_MS : Double = 7.0 * 24.0 * 3600.0 * 1000.0
+pub let EXPIRE_BATCH_SIZE : Int = 500
+pub let LIST_MOST : Int = 100
+pub let LIST_BYTES : Int = 256 * 1024
+pub let LIST_TEXT_BYTES : Int = 256
+pub let LIST_BACK_MOST : Int = 16
+
+pub struct IncomingTask {
+  pub dir : String
+  pub meta : base_codec::Json
+}
+
+pub struct MirrorUse {
+  pub name : String
+  pub used : Double
+  pub busy : Bool
+}
+
+pub struct RoomUse {
+  pub dir : String
+  pub bytes : Double
+  pub seen : Double
+  pub owner : Option[(String, String, String)]
+}
+
+pub fn meta_room_peer(meta : base_codec::Json) -> String {
+  let st = sessions_core::text_of(meta, "station")
+  let sb = sessions_core::text_of(meta, "sandbox")
+  if sb != "" { st + ":sandbox:" + sb } else { st }
+}
+
+pub fn is_hex64(s : String) -> Bool {
+  let bytes = s.to_bytes()
+  if bytes.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    let b = bytes[i].to_int()
+    let ok = (b >= 48 && b <= 57) || (b >= 97 && b <= 102)
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+/// Deep structural equality of two JSON values (object keys in any order; `remote_target.mbt:450-456`).
+pub fn json_equal(a : base_codec::Json, b : base_codec::Json) -> Bool {
+  match (a, b) {
+    (base_codec::Json::Null, base_codec::Json::Null) => true
+    (base_codec::Json::Bool(x), base_codec::Json::Bool(y)) => x == y
+    (base_codec::Json::Num(x, _), base_codec::Json::Num(y, _)) => x == y
+    (base_codec::Json::Str(x), base_codec::Json::Str(y)) => x == y
+    (base_codec::Json::Arr(x), base_codec::Json::Arr(y)) => {
+      if x.length() != y.length() {
+        return false
+      }
+      for i in 0..<x.length() {
+        if !json_equal(x[i], y[i]) {
+          return false
+        }
+      }
+      true
+    }
+    (base_codec::Json::Obj(_), base_codec::Json::Obj(_)) => {
+      let mx = json_obj_map(a)
+      let my = json_obj_map(b)
+      if mx.length() != my.length() {
+        return false
+      }
+      let keys = mx.keys()
+      for i in 0..<keys.length() {
+        let k = keys[i]
+        match (mx.get(k), my.get(k)) {
+          (Some(vx), Some(vy)) => {
+            if !json_equal(vx, vy) {
+              return false
+            }
+          }
+          _ => return false
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+fn trim_slashes(s : String) -> String {
+  let mut end = s.length()
+  let bytes = s.to_bytes()
+  while end > 0 && bytes[end - 1] == (47 as Byte) {
+    end = end - 1
+  }
+  s.slice(0, end)
+}
+
+fn sort_strings_js(arr : Array[String]) -> Unit {
+  for i in 1..<arr.length() {
+    let cur = arr[i]
+    let mut j = i - 1
+    while j >= 0 && js_json::js_compare(cur, arr[j]) < 0 {
+      arr[j + 1] = arr[j]
+      j = j - 1
+    }
+    arr[j + 1] = cur
+  }
+}
+
+/// Main target request dispatcher (`remote_target.mbt:20-441`).
+pub fn RemoteCtx::task_k(
+  self : RemoteCtx,
+  workspace : String,
+  peer : String,
+  method : String,
+  request : base_codec::Json,
+  load : Option[effect::Deferred[base_codec::Json]],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let sandbox_arg = sessions_core::text_of(request, "sandbox")
+  let room_peer = if sandbox_arg != "" { peer + ":sandbox:" + sandbox_arg } else { peer }
+  if method == "task.gets" {
+    let asked = match sessions_core::field_of(request, "tasks") {
+      base_codec::Json::Arr(a) => {
+        if a.length() <= GETS_MAX {
+          a
+        } else {
+          k(effect::Exit::Failed(refusal("tasks are required (at most " + GETS_MAX.to_string() + ")")))
+          return
+        }
+      }
+      _ => {
+        k(effect::Exit::Failed(refusal("tasks are required (at most " + GETS_MAX.to_string() + ")")))
+        return
+      }
+    }
+    let reading : effect::Deferred[base_codec::Json] = effect::Deferred::new()
+    let mut read = false
+    let tasks : Array[base_codec::Json] = []
+    for_each_k(
+      asked,
+      fn(_i : Int, one : base_codec::Json, ok : (effect::Exit[Unit]) -> Unit) -> Unit {
+        let s_val = sessions_core::field_of(one, "session")
+        let k_val = sessions_core::field_of(one, "key")
+        if !read {
+          read = true
+          self.spawn_work(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            self.rnode_k("load", [], fn(lex : effect::Exit[base_codec::Json]) -> Unit {
+              match lex {
+                effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(l) => {
+                  let _ = reading.succeed(l)
+                  fk(effect::Exit::Succeeded(()))
+                }
+                effect::Exit::Failed(e) => {
+                  let _ = reading.succeed(base_codec::json_obj([("unavailable", sessions_core::jstr(sessions_core::error_message(e)))]))
+                  fk(effect::Exit::Succeeded(()))
+                }
+              }
+            })
+          })
+        }
+        let sub_req = if sandbox_arg != "" {
+          base_codec::json_obj([("session", s_val), ("key", k_val), ("sandbox", sessions_core::jstr(sandbox_arg))])
+        } else {
+          base_codec::json_obj([("session", s_val), ("key", k_val)])
+        }
+        self.task_k(workspace, peer, "task.get", sub_req, Some(reading), fn(tex : effect::Exit[base_codec::Json]) -> Unit {
+          match tex {
+            effect::Exit::Interrupted => ok(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(res) => {
+              tasks.push(base_codec::json_obj([("session", s_val), ("key", k_val), ("result", res)]))
+              ok(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Failed(e) => {
+              tasks.push(base_codec::json_obj([
+                ("session", s_val),
+                ("key", k_val),
+                ("error", sessions_core::jstr(sessions_core::error_message(e))),
+              ]))
+              ok(effect::Exit::Succeeded(()))
+            }
+          }
+        })
+      },
+      fn(fex : effect::Exit[Unit]) -> Unit {
+        match fex {
+          effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_obj([("tasks", base_codec::json_arr(tasks))])))
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      },
+    )
+    return
+  }
+  let session = sessions_core::text_of(request, "session")
+  let session_ok = session != "" && bytes_len(session) <= 256
+  if method == "session.size" {
+    if !session_ok {
+      k(effect::Exit::Failed(refusal("session is required")))
+      return
+    }
+    let room = self.room(workspace, room_peer, session)
+    let sess_file = self.rjoin([room, "session.json"])
+    self.written_k(sess_file, fn(wex : effect::Exit[Unit]) -> Unit {
+      match wex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(_) => {
+          self.rnode_k("written", [sessions_core::jstr(sess_file)], fn(rnex : effect::Exit[base_codec::Json]) -> Unit {
+            match rnex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => {
+                self.there_k(sess_file, fn(tex : effect::Exit[Bool]) -> Unit {
+                  match tex {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(false) => {
+                      k(effect::Exit::Succeeded(base_codec::json_obj([("present", sessions_core::jbool(false))])))
+                    }
+                    effect::Exit::Succeeded(true) => {
+                      let path = self.rjoin([room, "work"])
+                      let cutoff = match sessions_core::field_of(request, "limit") {
+                        base_codec::Json::Null => base_codec::json_null()
+                        base_codec::Json::Num(n, _) => {
+                          if is_finite_double(n) && n >= 1.0 && n == js_json::js_trunc(n) {
+                            sessions_core::jnum(n)
+                          } else {
+                            k(effect::Exit::Failed(refusal("limit must be a positive whole number of bytes")))
+                            return
+                          }
+                        }
+                        _ => {
+                          k(effect::Exit::Failed(refusal("limit must be a positive whole number of bytes")))
+                          return
+                        }
+                      }
+                      self.rnode_k("workspaceSize", [sessions_core::jstr(path), cutoff], k)
+                    }
+                  }
+                })
+              }
+            }
+          })
+        }
+      }
+    })
+    return
+  }
+  if method == "task.mirrors" || method == "task.clean" {
+    if !session_ok {
+      k(effect::Exit::Failed(refusal("session is required")))
+      return
+    }
+    let room = self.room(workspace, room_peer, session)
+    let sess_file = self.rjoin([room, "session.json"])
+    self.written_k(sess_file, fn(wex : effect::Exit[Unit]) -> Unit {
+      match wex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(_) => {
+          self.rnode_k("written", [sessions_core::jstr(sess_file)], fn(rnex : effect::Exit[base_codec::Json]) -> Unit {
+            match rnex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => {
+                self.there_k(sess_file, fn(tex : effect::Exit[Bool]) -> Unit {
+                  match tex {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(present) => {
+                      let after_mirrors = fn(mirrors : Array[MirrorUse]) -> Unit {
+                        let syncing_now : Map[String, Bool] = Map::new()
+                        for_each_k(
+                          mirrors,
+                          fn(_i : Int, m : MirrorUse, mk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                            self.there_k(self.rjoin([room, "sync", m.name]), fn(sex : effect::Exit[Bool]) -> Unit {
+                              match sex {
+                                effect::Exit::Failed(e) => mk(effect::Exit::Failed(e))
+                                effect::Exit::Interrupted => mk(effect::Exit::Interrupted)
+                                effect::Exit::Succeeded(true) => {
+                                  syncing_now.set(m.name, true)
+                                  mk(effect::Exit::Succeeded(()))
+                                }
+                                effect::Exit::Succeeded(false) => mk(effect::Exit::Succeeded(()))
+                              }
+                            })
+                          },
+                          fn(fex : effect::Exit[Unit]) -> Unit {
+                            match fex {
+                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                              effect::Exit::Succeeded(_) => {
+                                if method == "task.mirrors" {
+                                  let items : Array[base_codec::Json] = []
+                                  for i in 0..<mirrors.length() {
+                                    let m = mirrors[i]
+                                    let busy = m.busy || syncing_now.contains(m.name)
+                                    items.push(base_codec::json_obj([
+                                      ("name", sessions_core::jstr(m.name)),
+                                      ("path", sessions_core::jstr(self.rjoin([room, "work", m.name]))),
+                                      ("busy", sessions_core::jbool(busy)),
+                                      ("lastUsed", sessions_core::jnum(m.used)),
+                                    ]))
+                                  }
+                                  k(effect::Exit::Succeeded(base_codec::json_obj([("mirrors", base_codec::json_arr(items))])))
+                                  return
+                                }
+                                let name = sessions_core::text_of(request, "mirror")
+                                if name == "" {
+                                  k(effect::Exit::Failed(refusal("mirror is required")))
+                                  return
+                                }
+                                let mut found_idx = -1
+                                for i in 0..<mirrors.length() {
+                                  if mirrors[i].name == name {
+                                    found_idx = i
+                                    break
+                                  }
+                                }
+                                if found_idx < 0 {
+                                  k(effect::Exit::Succeeded(base_codec::json_obj([
+                                    ("mirror", sessions_core::jstr(name)),
+                                    ("removed", sessions_core::jbool(false)),
+                                  ])))
+                                  return
+                                }
+                                let m = mirrors[found_idx]
+                                if m.busy || syncing_now.contains(m.name) {
+                                  k(effect::Exit::Failed(refusal("mirror is in use by a task or sync")))
+                                  return
+                                }
+                                self.drop_mirror_k(workspace, room_peer, session, name, "requested", fn(dex : effect::Exit[Bool]) -> Unit {
+                                  match dex {
+                                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                    effect::Exit::Succeeded(false) => k(effect::Exit::Failed(refusal("mirror could not be removed completely")))
+                                    effect::Exit::Succeeded(true) => {
+                                      k(effect::Exit::Succeeded(base_codec::json_obj([
+                                        ("mirror", sessions_core::jstr(name)),
+                                        ("removed", sessions_core::jbool(true)),
+                                      ])))
+                                    }
+                                  }
+                                })
+                              }
+                            }
+                          },
+                        )
+                      }
+                      if present {
+                        self.remote_now_k(fn(nex : effect::Exit[Double]) -> Unit {
+                          match nex {
+                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            effect::Exit::Succeeded(now) => {
+                              self.mirrors_of_k(workspace, room_peer, session, now, fn(mex : effect::Exit[Array[MirrorUse]]) -> Unit {
+                                match mex {
+                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  effect::Exit::Succeeded(ms) => after_mirrors(ms)
+                                }
+                              })
+                            }
+                          }
+                        })
+                      } else {
+                        after_mirrors([])
+                      }
+                    }
+                  }
+                })
+              }
+            }
+          })
+        }
+      }
+    })
+    return
+  }
+  if method == "task.list" {
+    if !session_ok {
+      k(effect::Exit::Failed(refusal("session is required")))
+      return
+    }
+    self.tasks_of_k(workspace, room_peer, session, fn(tex : effect::Exit[Array[IncomingTask]]) -> Unit {
+      match tex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(tasks) => {
+          let listed : Array[(Int, Double, String, base_codec::Json)] = []
+          for_each_k(
+            tasks,
+            fn(_i : Int, t : IncomingTask, tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+              self.rstore_k("getJob", [sessions_core::jstr(self.job_of_task(t.dir))], fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+                match jex {
+                  effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(job) => {
+                    let push_shown = fn(shown : base_codec::Json) -> Unit {
+                      listed.push((
+                        list_rank(shown),
+                        list_time(shown),
+                        sessions_core::text_of(t.meta, "key"),
+                        base_codec::json_obj([
+                          ("key", sessions_core::field_of(t.meta, "key")),
+                          ("spec", sessions_core::field_of(t.meta, "spec")),
+                          ("job", shown),
+                        ]),
+                      ))
+                      tk(effect::Exit::Succeeded(()))
+                    }
+                    match job {
+                      base_codec::Json::Null => push_shown(base_codec::json_null())
+                      _ => {
+                        self.rnode_k("jobJson", [job], fn(jjex : effect::Exit[base_codec::Json]) -> Unit {
+                          match jjex {
+                            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                            effect::Exit::Succeeded(shown) => push_shown(shown)
+                          }
+                        })
+                      }
+                    }
+                  }
+                }
+              })
+            },
+            fn(fex : effect::Exit[Unit]) -> Unit {
+              match fex {
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(self.list_bounded(listed)))
+              }
+            },
+          )
+        }
+      }
+    })
+    return
+  }
+  if method == "session.close" {
+    if !session_ok {
+      k(effect::Exit::Failed(refusal("session is required")))
+      return
+    }
+    self.close_here_k(workspace, room_peer, session, None, fn(cex : effect::Exit[Bool]) -> Unit {
+      match cex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(base_codec::json_obj([("closed", sessions_core::jbool(true))])))
+      }
+    })
+    return
+  }
+  let key = sessions_core::text_of(request, "key")
+  if !session_ok || key == "" || bytes_len(key) > 128 {
+    k(effect::Exit::Failed(refusal("session and task key are required (at most 256 / 128 bytes)")))
+    return
+  }
+  let id = self.rhash(base_codec::json_arr([
+    sessions_core::jstr(workspace),
+    sessions_core::jstr(room_peer),
+    sessions_core::jstr(session),
+    sessions_core::jstr(key),
+  ]))
+  let dir = self.rjoin([self.state.root, "incoming", id])
+  let record = self.rjoin([dir, "task.json"])
+  let job_id = "remote_" + id
+  let owner = "remote:" + workspace + ":" + room_peer + ":" + session
+  if method == "task.prepare" {
+    self.task_prepare_k(workspace, peer, room_peer, sandbox_arg, session, key, dir, record, request, k)
+    return
+  }
+  self.read_json_k(record, fn(mex : effect::Exit[base_codec::Json]) -> Unit {
+    match mex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(_) => k(effect::Exit::Failed(refusal("unknown task")))
+      effect::Exit::Succeeded(meta) => {
+        self.rstore_k("getJob", [sessions_core::jstr(job_id)], fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+          match jex {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(job) => {
+              let resolve_work = fn(wk : (effect::Exit[String]) -> Unit) -> Unit {
+                if sessions_core::text_of(meta, "layout") == "session" {
+                  if method == "task.start" || method == "file.put" || method == "sync.begin" {
+                    self.seen_k(workspace, room_peer, session, wk)
+                  } else {
+                    wk(effect::Exit::Succeeded(self.rjoin([self.room(workspace, room_peer, session), "work"])))
+                  }
+                } else {
+                  wk(effect::Exit::Succeeded(self.rjoin([dir, "work"])))
+                }
+              }
+              resolve_work(fn(wex : effect::Exit[String]) -> Unit {
+                match wex {
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(work) => {
+                    self.task_existing_k(
+                      workspace,
+                      peer,
+                      room_peer,
+                      sandbox_arg,
+                      session,
+                      key,
+                      id,
+                      dir,
+                      record,
+                      job_id,
+                      owner,
+                      work,
+                      meta,
+                      job,
+                      method,
+                      request,
+                      load,
+                      k,
+                    )
+                  }
+                }
+              })
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+fn RemoteCtx::task_prepare_k(
+  self : RemoteCtx,
+  workspace : String,
+  peer : String,
+  room_peer : String,
+  sandbox_arg : String,
+  session : String,
+  key : String,
+  dir : String,
+  record : String,
+  request : base_codec::Json,
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let spec = sessions_core::field_of(request, "spec")
+  if js_json::trim_js(sessions_core::text_of(spec, "command")) == "" {
+    k(effect::Exit::Failed(refusal("command is required")))
+    return
+  }
+  match sessions_core::field_of(spec, "small") {
+    base_codec::Json::Null => ()
+    base_codec::Json::Bool(_) => ()
+    _ => {
+      k(effect::Exit::Failed(refusal("small must be a boolean")))
+      return
+    }
+  }
+  let small = match sessions_core::field_of(spec, "small") {
+    base_codec::Json::Bool(true) => true
+    _ => false
+  }
+  let screen = match sessions_core::field_of(spec, "screen") {
+    base_codec::Json::Bool(true) => true
+    _ => false
+  }
+  if small && screen {
+    k(effect::Exit::Failed(refusal("a small task cannot use the screen")))
+    return
+  }
+  let from = sessions_core::field_of(spec, "dir")
+  match from {
+    base_codec::Json::Null => ()
+    base_codec::Json::Str(f) => {
+      if f == "" || bytes_len(f) > 4096 {
+        k(effect::Exit::Failed(refusal("dir must be a path")))
+        return
+      }
+    }
+    _ => {
+      k(effect::Exit::Failed(refusal("dir must be a path")))
+      return
+    }
+  }
+  let finish_prepare = fn(meta : base_codec::Json) -> Unit {
+    self.seen_k(workspace, room_peer, session, fn(sex : effect::Exit[String]) -> Unit {
+      match sex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(_) => {
+          let ans = match sessions_core::field_of(meta, "mirror") {
+            base_codec::Json::Str(mirror) => {
+              base_codec::json_obj([
+                ("key", sessions_core::jstr(key)),
+                ("prepared", sessions_core::jbool(true)),
+                ("dir", sessions_core::jstr(mirror)),
+              ])
+            }
+            _ => {
+              base_codec::json_obj([
+                ("key", sessions_core::jstr(key)),
+                ("prepared", sessions_core::jbool(true)),
+              ])
+            }
+          }
+          k(effect::Exit::Succeeded(ans))
+        }
+      }
+    })
+  }
+  self.there_k(record, fn(tex : effect::Exit[Bool]) -> Unit {
+    match tex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(true) => {
+        self.read_json_k(record, fn(rex : effect::Exit[base_codec::Json]) -> Unit {
+          match rex {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(meta) => {
+              let old_spec = sessions_core::field_of(meta, "spec")
+              if self.js_text(old_spec) != self.js_text(spec) && !json_equal(old_spec, spec) {
+                k(effect::Exit::Failed(refusal("task key already used with different inputs; choose a new key for new work")))
+                return
+              }
+              finish_prepare(meta)
+            }
+          }
+        })
+      }
+      effect::Exit::Succeeded(false) => {
+        let fields : Array[(String, base_codec::Json)] = [
+          ("spec", spec),
+          ("workspace", sessions_core::jstr(workspace)),
+          ("station", sessions_core::jstr(peer)),
+          ("session", sessions_core::jstr(session)),
+          ("key", sessions_core::jstr(key)),
+          ("layout", sessions_core::jstr("session")),
+        ]
+        if sandbox_arg != "" {
+          fields.push(("sandbox", sessions_core::jstr(sandbox_arg)))
+        }
+        let persist_new = fn() -> Unit {
+          let meta_obj = base_codec::json_obj(fields)
+          self.mkdirs_k(dir, fn(mex : effect::Exit[Unit]) -> Unit {
+            match mex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => {
+                self.write_json_k(record, meta_obj, fn(wex : effect::Exit[Unit]) -> Unit {
+                  match wex {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(_) => finish_prepare(meta_obj)
+                  }
+                })
+              }
+            }
+          })
+        }
+        match from {
+          base_codec::Json::Str(f) => {
+            self.mirror_name_k(workspace, room_peer, session, f, fn(mnex : effect::Exit[String]) -> Unit {
+              match mnex {
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(mname) => {
+                  fields.push(("mirror", sessions_core::jstr(mname)))
+                  persist_new()
+                }
+              }
+            })
+          }
+          _ => persist_new()
+        }
+      }
+    }
+  })
+}
+
+fn RemoteCtx::task_existing_k(
+  self : RemoteCtx,
+  workspace : String,
+  peer : String,
+  room_peer : String,
+  sandbox_arg : String,
+  session : String,
+  key : String,
+  id : String,
+  dir : String,
+  record : String,
+  job_id : String,
+  owner : String,
+  work : String,
+  meta : base_codec::Json,
+  job : base_codec::Json,
+  method : String,
+  request : base_codec::Json,
+  load : Option[effect::Deferred[base_codec::Json]],
+  k : (effect::Exit[base_codec::Json]) -> Unit,
+) -> Unit {
+  let mirror = match sessions_core::field_of(meta, "mirror") {
+    base_codec::Json::Str(m) => Some(m)
+    _ => None
+  }
+  let m = match mirror {
+    Some(s) => s
+    None => ""
+  }
+  let room = self.room(workspace, room_peer, session)
+  let manifest_path = match mirror {
+    Some(ms) => self.rjoin([room, "mirrors", ms + ".json"])
+    None => ""
+  }
+  let syncing = match mirror {
+    Some(ms) => self.rjoin([room, "sync", ms])
+    None => ""
+  }
+  if method.starts_with("sync.") {
+    match mirror {
+      None => {
+        k(effect::Exit::Failed(refusal("this task has no directory to sync")))
+        return
+      }
+      Some(_) => ()
+    }
+  }
+  let refuse_busy_k = fn(bk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.tasks_of_k(workspace, room_peer, session, fn(tex : effect::Exit[Array[IncomingTask]]) -> Unit {
+      match tex {
+        effect::Exit::Failed(e) => bk(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => bk(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(all_tasks) => {
+          let mirror_j = match mirror { Some(ms) => sessions_core::jstr(ms); None => base_codec::json_null() }
+          let tasks : Array[IncomingTask] = []
+          for i in 0..<all_tasks.length() {
+            let t = all_tasks[i]
+            if t.dir != dir && json_equal(sessions_core::field_of(t.meta, "mirror"), mirror_j) {
+              tasks.push(t)
+            }
+          }
+          for_each_k(
+            tasks,
+            fn(_i : Int, t : IncomingTask, tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+              self.task_running_k(t.dir, fn(rex : effect::Exit[Bool]) -> Unit {
+                match rex {
+                  effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(true) => {
+                    tk(effect::Exit::Failed(refusal("task " + sessions_core::text_of(t.meta, "key") + " is running in " + m + " on this station; wait for it or stop it")))
+                  }
+                  effect::Exit::Succeeded(false) => tk(effect::Exit::Succeeded(()))
+                }
+              })
+            },
+            fn(fex1 : effect::Exit[Unit]) -> Unit {
+              match fex1 {
+                effect::Exit::Failed(e) => bk(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => bk(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(_) => {
+                  for_each_k(
+                    tasks,
+                    fn(_i : Int, t : IncomingTask, tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      let is_safe = match sessions_core::field_of(t.meta, "safe") { base_codec::Json::Bool(true) => true; _ => false }
+                      let is_collected = match sessions_core::field_of(t.meta, "collected") { base_codec::Json::Bool(true) => true; _ => false }
+                      if !is_safe || is_collected {
+                        tk(effect::Exit::Succeeded(()))
+                        return
+                      }
+                      self.rstore_k("getJob", [sessions_core::jstr(self.job_of_task(t.dir))], fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+                        match jex {
+                          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                          effect::Exit::Succeeded(base_codec::Json::Null) => tk(effect::Exit::Succeeded(()))
+                          effect::Exit::Succeeded(_) => {
+                            tk(effect::Exit::Failed(refusal("task " + sessions_core::text_of(t.meta, "key") + " is still bringing back its results from " + m + "; wait for its completion notice")))
+                          }
+                        }
+                      })
+                    },
+                    bk,
+                  )
+                }
+              }
+            },
+          )
+        }
+      }
+    })
+  }
+  let ongoing_k = fn(ok : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+    self.read_json_k(self.rjoin([syncing, "state.json"]), fn(sex : effect::Exit[base_codec::Json]) -> Unit {
+      match sex {
+        effect::Exit::Interrupted => ok(effect::Exit::Interrupted)
+        effect::Exit::Failed(_) => ok(effect::Exit::Failed(refusal("this sync is over or another one began; start again")))
+        effect::Exit::Succeeded(state) => {
+          let bad = match state {
+            base_codec::Json::Null => true
+            _ => sessions_core::text_of(state, "id") != sessions_core::text_of(request, "id") || sessions_core::text_of(state, "key") != key
+          }
+          if bad {
+            ok(effect::Exit::Failed(refusal("this sync is over or another one began; start again")))
+          } else {
+            ok(effect::Exit::Succeeded(state))
+          }
+        }
+      }
+    })
+  }
+  if method == "task.start" {
+    match sessions_core::field_of(meta, "uploads") {
+      base_codec::Json::Obj(entries) => {
+        for i in 0..<entries.length() {
+          let (_, uv) = entries[i]
+          match uv {
+            base_codec::Json::Bool(true) => ()
+            _ => {
+              k(effect::Exit::Failed(refusal("input upload is incomplete; finish it before starting")))
+              return
+            }
+          }
+        }
+      }
+      _ => ()
+    }
+    let job_is_null = match job { base_codec::Json::Null => true; _ => false }
+    let has_mirror = match mirror { Some(_) => true; None => false }
+    let after_mirror_check = fn() -> Unit {
+      let resolve_cwd = fn(ck : (effect::Exit[String]) -> Unit) -> Unit {
+        if has_mirror {
+          self.file_path_k(work, m, false, false, fn(fex : effect::Exit[String]) -> Unit {
+            match fex {
+              effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(cwd) => {
+                self.used_mirror_k(workspace, room_peer, session, m, fn(uex : effect::Exit[Unit]) -> Unit {
+                  match uex {
+                    effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(_) => ck(effect::Exit::Succeeded(cwd))
+                  }
+                })
+              }
+            }
+          })
+        } else {
+          ck(effect::Exit::Succeeded(work))
+        }
+      }
+      resolve_cwd(fn(cex : effect::Exit[String]) -> Unit {
+        match cex {
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(cwd) => {
+            let spec = sessions_core::field_of(meta, "spec")
+            let sandbox_target = if sandbox_arg != "" {
+              sandbox_arg
+            } else if peer.starts_with("sandbox:") {
+              peer.slice(8, peer.length())
+            } else {
+              ""
+            }
+            let in_sandbox = sandbox_target != ""
+            let spec_screen = match sessions_core::field_of(spec, "screen") { base_codec::Json::Bool(true) => true; _ => false }
+            let spec_small = match sessions_core::field_of(spec, "small") { base_codec::Json::Bool(true) => true; _ => false }
+            if in_sandbox && spec_screen {
+              k(effect::Exit::Failed(refusal("a sandbox has no screen: run what needs one on a station")))
+              return
+            }
+            let after_identity = fn() -> Unit {
+              let back_arr : Array[base_codec::Json] = []
+              match sessions_core::field_of(spec, "back") {
+                base_codec::Json::Arr(b) => {
+                  for i in 0..<b.length() {
+                    match b[i] {
+                      base_codec::Json::Str(_) => back_arr.push(b[i])
+                      _ => ()
+                    }
+                  }
+                }
+                _ => ()
+              }
+              let back = base_codec::json_arr(back_arr)
+              let resolve_cmd = fn(cmdk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                let raw_cmd = sessions_core::field_of(spec, "command")
+                if has_mirror {
+                  match raw_cmd {
+                    base_codec::Json::Str(c) => {
+                      (self.dirsync.with_submodules_k)(self.remote_host(), manifest_path, c, fn(wex : effect::Exit[Option[String]]) -> Unit {
+                        match wex {
+                          effect::Exit::Failed(e) => cmdk(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => cmdk(effect::Exit::Interrupted)
+                          effect::Exit::Succeeded(Some(wrapped)) => cmdk(effect::Exit::Succeeded(sessions_core::jstr(wrapped)))
+                          effect::Exit::Succeeded(None) => cmdk(effect::Exit::Succeeded(sessions_core::jstr(c)))
+                        }
+                      })
+                    }
+                    _ => cmdk(effect::Exit::Succeeded(raw_cmd))
+                  }
+                } else {
+                  cmdk(effect::Exit::Succeeded(raw_cmd))
+                }
+              }
+              resolve_cmd(fn(cmdex : effect::Exit[base_codec::Json]) -> Unit {
+                match cmdex {
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(command) => {
+                    let sbx_session = if sandbox_arg != "" { peer + ":" + session } else { session }
+                    let start_args = if in_sandbox {
+                      [
+                        sessions_core::jstr(owner),
+                        sessions_core::field_of(spec, "name"),
+                        command,
+                        sessions_core::jstr(cwd),
+                        base_codec::json_null(),
+                        sessions_core::jbool(false),
+                        sessions_core::jstr(job_id),
+                        sessions_core::jbool(false),
+                        base_codec::json_null(),
+                        base_codec::json_obj([
+                          ("sandbox", sessions_core::jstr(sandbox_target)),
+                          ("session", sessions_core::jstr(sbx_session)),
+                          ("back", back),
+                          ("workspace", sessions_core::jstr(workspace)),
+                        ]),
+                      ]
+                    } else {
+                      [
+                        sessions_core::jstr(owner),
+                        sessions_core::field_of(spec, "name"),
+                        command,
+                        sessions_core::jstr(cwd),
+                        base_codec::json_null(),
+                        sessions_core::jbool(false),
+                        sessions_core::jstr(job_id),
+                        sessions_core::jbool(false),
+                        base_codec::json_obj([
+                          ("screen", sessions_core::jbool(spec_screen)),
+                          ("small", sessions_core::jbool(spec_small)),
+                        ]),
+                        base_codec::json_null(),
+                      ]
+                    }
+                    (self.dispatch.jobs_called_k)("startId", start_args, fn(stex : effect::Exit[base_codec::Json]) -> Unit {
+                      match stex {
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        effect::Exit::Succeeded(started) => {
+                          let push = sessions_core::text_of(request, "push")
+                          let after_push_meta = fn(meta2 : base_codec::Json) -> Unit {
+                            self.queued_k(sessions_core::text_of(started, "id"), load, fn(qex : effect::Exit[Map[String, base_codec::Json]]) -> Unit {
+                              match qex {
+                                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                effect::Exit::Succeeded(queue) => {
+                                  self.rstore_k("getJob", [sessions_core::jstr(job_id)], fn(gjex : effect::Exit[base_codec::Json]) -> Unit {
+                                    match gjex {
+                                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                      effect::Exit::Succeeded(now_job) => {
+                                        let target_job = match now_job { base_codec::Json::Null => started; _ => now_job }
+                                        self.rnode_k("jobJson", [target_job], fn(jjex : effect::Exit[base_codec::Json]) -> Unit {
+                                          match jjex {
+                                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                            effect::Exit::Succeeded(jjson) => {
+                                              let out : Array[(String, base_codec::Json)] = [
+                                                ("key", sessions_core::jstr(key)),
+                                                ("job", jjson),
+                                              ]
+                                              let qkeys = queue.keys()
+                                              for qi in 0..<qkeys.length() {
+                                                let qk = qkeys[qi]
+                                                match queue.get(qk) {
+                                                  Some(qv) => out.push((qk, qv))
+                                                  None => ()
+                                                }
+                                              }
+                                              match sessions_core::field_of(meta2, "push") {
+                                                base_codec::Json::Null => ()
+                                                _ => out.push(("push", sessions_core::jbool(true)))
+                                              }
+                                              k(effect::Exit::Succeeded(base_codec::json_obj(out)))
+                                            }
+                                          }
+                                        })
+                                      }
+                                    }
+                                  })
+                                }
+                              }
+                            })
+                          }
+                          if is_hex64(push) && sessions_core::text_of(meta, "push") != push {
+                            self.said_k(id, fn(sdex : effect::Exit[base_codec::Json]) -> Unit {
+                              match sdex {
+                                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                effect::Exit::Succeeded(said) => {
+                                  let meta2 = with_field(with_field(meta, "push", sessions_core::jstr(push)), "pushed", said)
+                                  self.write_json_k(record, meta2, fn(wex : effect::Exit[Unit]) -> Unit {
+                                    match wex {
+                                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                      effect::Exit::Succeeded(_) => after_push_meta(meta2)
+                                    }
+                                  })
+                                }
+                              }
+                            })
+                          } else {
+                            after_push_meta(meta)
+                          }
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+            if in_sandbox {
+              self.rnode_k("ensureIdentity", [sessions_core::jstr(sandbox_target), sessions_core::jstr(workspace)], fn(eex : effect::Exit[base_codec::Json]) -> Unit {
+                match eex {
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(_) => after_identity()
+                }
+              })
+            } else {
+              after_identity()
+            }
+          }
+        }
+      })
+    }
+    if has_mirror && job_is_null {
+      match sessions_core::field_of(meta, "synced") {
+        base_codec::Json::Bool(true) => {
+          refuse_busy_k(fn(bex : effect::Exit[Unit]) -> Unit {
+            match bex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => after_mirror_check()
+            }
+          })
+        }
+        _ => k(effect::Exit::Failed(refusal("this task's directory has not been synced; start it from a station that syncs directories")))
+      }
+    } else {
+      after_mirror_check()
+    }
+    return
+  }
+  if method == "sync.begin" {
+    match job {
+      base_codec::Json::Null => ()
+      _ => {
+        k(effect::Exit::Succeeded(base_codec::json_obj([
+          ("key", sessions_core::jstr(key)),
+          ("started", sessions_core::jbool(true)),
+        ])))
+        return
+      }
+    }
+    refuse_busy_k(fn(bex : effect::Exit[Unit]) -> Unit {
+      match bex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(_) => {
+          self.remove_k(syncing, true, fn(rem : effect::Exit[Unit]) -> Unit {
+            match rem {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => {
+                self.mkdirs_k(syncing, fn(m1 : effect::Exit[Unit]) -> Unit {
+                  match m1 {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(_) => {
+                      self.mkdirs_k(self.rjoin([room, "mirrors"]), fn(m2 : effect::Exit[Unit]) -> Unit {
+                        match m2 {
+                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          effect::Exit::Succeeded(_) => {
+                            self.used_mirror_k(workspace, room_peer, session, m, fn(uex : effect::Exit[Unit]) -> Unit {
+                              match uex {
+                                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                effect::Exit::Succeeded(_) => {
+                                  (self.dirsync.sync_begin_k)(self.remote_host(), manifest_path, self.rjoin([work, m]), syncing, fn(sbex : effect::Exit[Double]) -> Unit {
+                                    match sbex {
+                                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                      effect::Exit::Succeeded(version) => {
+                                        self.random_hex_k(12, fn(hex_ex : effect::Exit[String]) -> Unit {
+                                          match hex_ex {
+                                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                            effect::Exit::Succeeded(sid) => {
+                                              let st_json = base_codec::json_obj([
+                                                ("id", sessions_core::jstr(sid)),
+                                                ("key", sessions_core::jstr(key)),
+                                                ("version", sessions_core::jnum(version)),
+                                              ])
+                                              self.write_json_k(self.rjoin([syncing, "state.json"]), st_json, fn(wex : effect::Exit[Unit]) -> Unit {
+                                                match wex {
+                                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                  effect::Exit::Succeeded(_) => {
+                                                    let reply = base_codec::json_obj([
+                                                      ("key", sessions_core::jstr(key)),
+                                                      ("id", sessions_core::jstr(sid)),
+                                                      ("dir", sessions_core::jstr(m)),
+                                                      ("version", sessions_core::jnum(version)),
+                                                      ("safe", sessions_core::jnum(1.0)),
+                                                    ])
+                                                    if json_equal(sessions_core::field_of(request, "safe"), sessions_core::jnum(1.0)) {
+                                                      self.write_json_k(record, with_field(meta, "safe", sessions_core::jbool(true)), fn(w2 : effect::Exit[Unit]) -> Unit {
+                                                        match w2 {
+                                                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                                          effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(reply))
+                                                        }
+                                                      })
+                                                    } else {
+                                                      k(effect::Exit::Succeeded(reply))
+                                                    }
+                                                  }
+                                                }
+                                              })
+                                            }
+                                          }
+                                        })
+                                      }
+                                    }
+                                  })
+                                }
+                              }
+                            })
+                          }
+                        }
+                      })
+                    }
+                  }
+                })
+              }
+            }
+          })
+        }
+      }
+    })
+    return
+  }
+  if method == "sync.manifest" || method == "sync.base" {
+    ongoing_k(fn(oex : effect::Exit[base_codec::Json]) -> Unit {
+      match oex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(_) => {
+          let after = match as_u64(sessions_core::field_of(request, "after")) {
+            Some(n) => n.to_int()
+            None => 0
+          }
+          let file = if method == "sync.manifest" { "actual.json" } else { "base.json" }
+          let fpath = self.rjoin([syncing, file])
+          self.written_k(fpath, fn(wex : effect::Exit[Unit]) -> Unit {
+            match wex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => {
+                self.read_json_k(fpath, fn(rex : effect::Exit[base_codec::Json]) -> Unit {
+                  match rex {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(v) => {
+                      let files = json_obj_map(v)
+                      let entries = (self.dirsync.listed_entries)(files)
+                      k(effect::Exit::Succeeded((self.dirsync.page_of)(entries, after)))
+                    }
+                  }
+                })
+              }
+            }
+          })
+        }
+      }
+    })
+    return
+  }
+  if method == "sync.put" {
+    ongoing_k(fn(oex : effect::Exit[base_codec::Json]) -> Unit {
+      match oex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(_) => {
+          let landed = sessions_core::str_of(Some(sessions_core::field_of(request, "landed")))
+          (self.dirsync.put_blobs_k)(
+            self.remote_host(),
+            self.rjoin([syncing, "blobs"]),
+            sessions_core::field_of(request, "blobs"),
+            landed,
+            sessions_core::field_of(request, "data"),
+            fn(pex : effect::Exit[Int]) -> Unit {
+              match pex {
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(n) => k(effect::Exit::Succeeded(base_codec::json_obj([("pieces", sessions_core::jnum(n.to_double()))])))
+              }
+            },
+          )
+        }
+      }
+    })
+    return
+  }
+  if method == "sync.commit" {
+    ongoing_k(fn(oex : effect::Exit[base_codec::Json]) -> Unit {
+      match oex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(state) => {
+          let part = match (self.dirsync.plan_part)(request) {
+            Ok(p) => p
+            Err(e) => {
+              k(effect::Exit::Failed(e))
+              return
+            }
+          }
+          let line = self.js_text(part) + "\n"
+          self.fs_k("fs.put", [("path", sessions_core::jstr(self.rjoin([syncing, "plan.jsonl"])))], Some(line.to_bytes()), fn(pex : effect::Exit[base_codec::Json]) -> Unit {
+            match pex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => {
+                match sessions_core::field_of(request, "final") {
+                  base_codec::Json::Bool(true) => ()
+                  _ => {
+                    k(effect::Exit::Succeeded(base_codec::json_obj([
+                      ("key", sessions_core::jstr(key)),
+                      ("planned", sessions_core::jbool(true)),
+                    ])))
+                    return
+                  }
+                }
+                refuse_busy_k(fn(bex : effect::Exit[Unit]) -> Unit {
+                  match bex {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(_) => {
+                      let submodules = match (self.dirsync.submodules_part)(request) {
+                        Ok(s) => s
+                        Err(e) => {
+                          k(effect::Exit::Failed(e))
+                          return
+                        }
+                      }
+                      (self.dirsync.sync_commit_k)(
+                        self.remote_host(),
+                        work,
+                        m,
+                        syncing,
+                        manifest_path,
+                        sessions_core::field_of(state, "version"),
+                        sessions_core::text_of(sessions_core::field_of(meta, "spec"), "dir"),
+                        submodules,
+                        fn(cex : effect::Exit[base_codec::Json]) -> Unit {
+                          match cex {
+                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            effect::Exit::Succeeded(done) => {
+                              self.write_json_k(record, with_field(meta, "synced", sessions_core::jbool(true)), fn(wex : effect::Exit[Unit]) -> Unit {
+                                match wex {
+                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  effect::Exit::Succeeded(_) => {
+                                    self.remove_k(syncing, true, fn(rem : effect::Exit[Unit]) -> Unit {
+                                      match rem {
+                                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                        effect::Exit::Succeeded(_) => {
+                                          self.used_mirror_k(workspace, room_peer, session, m, fn(uex : effect::Exit[Unit]) -> Unit {
+                                            match uex {
+                                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                              effect::Exit::Succeeded(_) => {
+                                                let out : Array[(String, base_codec::Json)] = [("key", sessions_core::jstr(key))]
+                                                match done {
+                                                  base_codec::Json::Obj(entries) => {
+                                                    for i in 0..<entries.length() {
+                                                      out.push(entries[i])
+                                                    }
+                                                  }
+                                                  _ => ()
+                                                }
+                                                k(effect::Exit::Succeeded(base_codec::json_obj(out)))
+                                              }
+                                            }
+                                          })
+                                        }
+                                      }
+                                    })
+                                  }
+                                }
+                              })
+                            }
+                          }
+                        },
+                      )
+                    }
+                  }
+                })
+              }
+            }
+          })
+        }
+      }
+    })
+    return
+  }
+  if method == "sync.changes" {
+    let not_done = match job {
+      base_codec::Json::Null => true
+      _ => opt_str_eq(sessions_core::str_of(sessions_core::jget(job, "state")), "running")
+    }
+    if not_done {
+      k(effect::Exit::Failed(refusal("the task has not finished")))
+      return
+    }
+    self.file_path_k(work, m, false, false, fn(fex : effect::Exit[String]) -> Unit {
+      match fex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(base) => {
+          (self.dirsync.sync_changes_k)(self.remote_host(), manifest_path, base, fn(cex : effect::Exit[base_codec::Json]) -> Unit {
+            match cex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(found) => {
+                k(effect::Exit::Succeeded(base_codec::json_obj([
+                  ("key", sessions_core::jstr(key)),
+                  ("base", sessions_core::jstr(m)),
+                  ("changes", sessions_core::field_of(found, "changes")),
+                  ("more", sessions_core::field_of(found, "more")),
+                ])))
+              }
+            }
+          })
+        }
+      }
+    })
+    return
+  }
+  if method == "task.collected" {
+    let not_done = match job {
+      base_codec::Json::Null => true
+      _ => opt_str_eq(sessions_core::str_of(sessions_core::jget(job, "state")), "running")
+    }
+    if not_done {
+      k(effect::Exit::Failed(refusal("the task has not finished")))
+      return
+    }
+    self.write_json_k(record, with_field(meta, "collected", sessions_core::jbool(true)), fn(wex : effect::Exit[Unit]) -> Unit {
+      match wex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(_) => {
+          k(effect::Exit::Succeeded(base_codec::json_obj([
+            ("key", sessions_core::jstr(key)),
+            ("collected", sessions_core::jbool(true)),
+          ])))
+        }
+      }
+    })
+    return
+  }
+  if method == "task.files" {
+    if opt_str_eq(sessions_core::str_of(sessions_core::jget(job, "state")), "running") {
+      k(effect::Exit::Failed(refusal("wait for the task to finish before downloading artifacts")))
+      return
+    }
+    let paths : Array[String] = []
+    match sessions_core::field_of(request, "paths") {
+      base_codec::Json::Arr(p) => {
+        if p.length() > 100 {
+          k(effect::Exit::Failed(refusal("paths are required (at most 100)")))
+          return
+        }
+        for i in 0..<p.length() {
+          match p[i] {
+            base_codec::Json::Str(s) => paths.push(s)
+            _ => {
+              k(effect::Exit::Failed(refusal("paths are required (at most 100)")))
+              return
+            }
+          }
+        }
+      }
+      _ => {
+        k(effect::Exit::Failed(refusal("paths are required (at most 100)")))
+        return
+      }
+    }
+    let resolve_cwd = fn(ck : (effect::Exit[String]) -> Unit) -> Unit {
+      match mirror {
+        None => ck(effect::Exit::Succeeded(work))
+        Some(_) => self.file_path_k(work, m, false, false, ck)
+      }
+    }
+    resolve_cwd(fn(cex : effect::Exit[String]) -> Unit {
+      match cex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(cwd) => {
+          let files : Array[base_codec::Json] = []
+          for_each_k(
+            paths,
+            fn(_i : Int, p : String, pk : (effect::Exit[Unit]) -> Unit) -> Unit {
+              self.visit_files_k(cwd, p, files, pk)
+            },
+            fn(fex : effect::Exit[Unit]) -> Unit {
+              match fex {
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(_) => {
+                  k(effect::Exit::Succeeded(base_codec::json_obj([
+                    ("key", sessions_core::jstr(key)),
+                    ("base", sessions_core::jstr(m)),
+                    ("files", base_codec::json_arr(files)),
+                  ])))
+                }
+              }
+            },
+          )
+        }
+      }
+    })
+    return
+  }
+  if method == "task.get" || method == "task.log" {
+    let lines = match as_u64(sessions_core::field_of(request, "lines")) {
+      Some(n) => if n < 1.0 { 1.0 } else if n > 1000.0 { 1000.0 } else { n }
+      None => 50.0
+    }
+    self.queued_k(job_id, load, fn(qex : effect::Exit[Map[String, base_codec::Json]]) -> Unit {
+      match qex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(queue) => {
+          self.rstore_k("getJob", [sessions_core::jstr(job_id)], fn(gjex : effect::Exit[base_codec::Json]) -> Unit {
+            match gjex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(current) => {
+                let get_job_and_log = fn(jlk : (effect::Exit[(base_codec::Json, base_codec::Json)]) -> Unit) -> Unit {
+                  match current {
+                    base_codec::Json::Null => jlk(effect::Exit::Succeeded((base_codec::json_null(), base_codec::json_null())))
+                    _ => {
+                      self.rnode_k("jobJson", [current], fn(jjex : effect::Exit[base_codec::Json]) -> Unit {
+                        match jjex {
+                          effect::Exit::Failed(e) => jlk(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => jlk(effect::Exit::Interrupted)
+                          effect::Exit::Succeeded(jj) => {
+                            self.rnode_k("tail", [sessions_core::field_of(current, "log"), sessions_core::jnum(lines)], fn(tex : effect::Exit[base_codec::Json]) -> Unit {
+                              match tex {
+                                effect::Exit::Failed(e) => jlk(effect::Exit::Failed(e))
+                                effect::Exit::Interrupted => jlk(effect::Exit::Interrupted)
+                                effect::Exit::Succeeded(tl) => jlk(effect::Exit::Succeeded((jj, tl)))
+                              }
+                            })
+                          }
+                        }
+                      })
+                    }
+                  }
+                }
+                get_job_and_log(fn(jlex : effect::Exit[(base_codec::Json, base_codec::Json)]) -> Unit {
+                  match jlex {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded((jj, tl)) => {
+                      self.rstore_k("jobNotices", [sessions_core::jstr(job_id), sessions_core::jnum(20.0)], fn(nex : effect::Exit[base_codec::Json]) -> Unit {
+                        match nex {
+                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          effect::Exit::Succeeded(notices) => {
+                            let out : Array[(String, base_codec::Json)] = [
+                              ("key", sessions_core::jstr(key)),
+                              ("job", jj),
+                              ("log", tl),
+                              ("notices", notices),
+                            ]
+                            let qkeys = queue.keys()
+                            for qi in 0..<qkeys.length() {
+                              let qk = qkeys[qi]
+                              match queue.get(qk) {
+                                Some(qv) => out.push((qk, qv))
+                                None => ()
+                              }
+                            }
+                            match sessions_core::field_of(meta, "push") {
+                              base_codec::Json::Str(_) => out.push(("push", sessions_core::jbool(true)))
+                              _ => ()
+                            }
+                            k(effect::Exit::Succeeded(base_codec::json_obj(out)))
+                          }
+                        }
+                      })
+                    }
+                  }
+                })
+              }
+            }
+          })
+        }
+      }
+    })
+    return
+  }
+  if method == "task.stop" {
+    match job {
+      base_codec::Json::Null => {
+        k(effect::Exit::Failed(refusal("task has not started")))
+        return
+      }
+      _ => ()
+    }
+    (self.dispatch.jobs_called_k)("stop", [sessions_core::jstr(sessions_core::text_of(job, "id"))], fn(sex : effect::Exit[base_codec::Json]) -> Unit {
+      match sex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(stopped) => {
+          self.rnode_k("jobJson", [stopped], fn(jjex : effect::Exit[base_codec::Json]) -> Unit {
+            match jjex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(jj) => {
+                k(effect::Exit::Succeeded(base_codec::json_obj([
+                  ("key", sessions_core::jstr(key)),
+                  ("job", jj),
+                ])))
+              }
+            }
+          })
+        }
+      }
+    })
+    return
+  }
+  if method == "file.put" {
+    match job {
+      base_codec::Json::Null => ()
+      _ => {
+        k(effect::Exit::Failed(refusal("inputs are immutable after a task starts")))
+        return
+      }
+    }
+    let name = sessions_core::text_of(request, "path")
+    self.file_path_k(work, name, true, false, fn(fex : effect::Exit[String]) -> Unit {
+      match fex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(path) => {
+          let uploads0 = match sessions_core::field_of(meta, "uploads") {
+            base_codec::Json::Obj(_) => sessions_core::field_of(meta, "uploads")
+            _ => base_codec::json_obj([])
+          }
+          let uploads1 = with_field(uploads0, name, sessions_core::jbool(false))
+          let meta1 = with_field(meta, "uploads", uploads1)
+          self.write_json_k(record, meta1, fn(w1 : effect::Exit[Unit]) -> Unit {
+            match w1 {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => {
+                self.rnode_k("filePut", [sessions_core::jstr(path), request], fn(pex : effect::Exit[base_codec::Json]) -> Unit {
+                  match pex {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(put) => {
+                      let bytes_val = match sessions_core::jget(put, "bytes") {
+                        Some(b) => b
+                        None => sessions_core::jnum(0.0)
+                      }
+                      let reply = base_codec::json_obj([("bytes", bytes_val)])
+                      match sessions_core::jget(put, "whole") {
+                        Some(base_codec::Json::Bool(true)) => {
+                          let uploads2 = with_field(uploads1, name, sessions_core::jbool(true))
+                          self.write_json_k(record, with_field(meta1, "uploads", uploads2), fn(w2 : effect::Exit[Unit]) -> Unit {
+                            match w2 {
+                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(reply))
+                            }
+                          })
+                        }
+                        _ => k(effect::Exit::Succeeded(reply))
+                      }
+                    }
+                  }
+                })
+              }
+            }
+          })
+        }
+      }
+    })
+    return
+  }
+  if method == "file.get" {
+    if opt_str_eq(sessions_core::str_of(sessions_core::jget(job, "state")), "running") {
+      k(effect::Exit::Failed(refusal("wait for the task to finish before downloading artifacts")))
+      return
+    }
+    self.file_path_k(work, sessions_core::text_of(request, "path"), false, false, fn(fex : effect::Exit[String]) -> Unit {
+      match fex {
+        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(path) => self.rnode_k("fileGet", [sessions_core::jstr(path), request], k)
+      }
+    })
+    return
+  }
+  k(effect::Exit::Failed(refusal("unsupported peer method: " + method)))
+}
+
+pub fn RemoteCtx::visit_files_k(
+  self : RemoteCtx,
+  cwd : String,
+  rel : String,
+  files : Array[base_codec::Json],
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if files.length() >= 1000 {
+    k(effect::Exit::Failed(refusal("more than 1000 files to bring back")))
+    return
+  }
+  self.file_path_k(cwd, rel, false, false, fn(fex : effect::Exit[String]) -> Unit {
+    match fex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(_) => {
+        files.push(base_codec::json_arr([sessions_core::jstr(rel), base_codec::json_null()]))
+        k(effect::Exit::Succeeded(()))
+      }
+      effect::Exit::Succeeded(full) => {
+        self.lstat_k(full, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+          match lex {
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Failed(_) => {
+              files.push(base_codec::json_arr([sessions_core::jstr(rel), base_codec::json_null()]))
+              k(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Succeeded(None) => {
+              files.push(base_codec::json_arr([sessions_core::jstr(rel), base_codec::json_null()]))
+              k(effect::Exit::Succeeded(()))
+            }
+            effect::Exit::Succeeded(Some(st)) => {
+              let kind = kind_of_stat(st)
+              if kind == "file" {
+                let sz = match sessions_core::jget(st, "size") {
+                  Some(v) => v
+                  None => sessions_core::jnum(0.0)
+                }
+                files.push(base_codec::json_arr([sessions_core::jstr(rel), sz]))
+                k(effect::Exit::Succeeded(()))
+              } else if kind == "dir" {
+                self.readdir_names_k(self.rjoin([cwd, rel]), fn(rex : effect::Exit[Array[String]]) -> Unit {
+                  match rex {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(names) => {
+                      sort_strings_js(names)
+                      let base = trim_slashes(rel)
+                      for_each_k(
+                        names,
+                        fn(_i : Int, name : String, nk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                          self.visit_files_k(cwd, base + "/" + name, files, nk)
+                        },
+                        k,
+                      )
+                    }
+                  }
+                })
+              } else {
+                k(effect::Exit::Succeeded(()))
+              }
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+pub fn RemoteCtx::said_k(self : RemoteCtx, id : String, k : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+  let job_id = "remote_" + id
+  self.rstore_k("getJob", [sessions_core::jstr(job_id)], fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+    match jex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(base_codec::Json::Null) => k(effect::Exit::Succeeded(base_codec::json_null()))
+      effect::Exit::Succeeded(job) => {
+        self.rstore_k("jobNotices", [sessions_core::jstr(job_id), sessions_core::jnum(20.0)], fn(nex : effect::Exit[base_codec::Json]) -> Unit {
+          match nex {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(notices) => {
+              let h = self.rhash(base_codec::json_arr([
+                sessions_core::field_of(job, "state"),
+                sessions_core::field_of(job, "endedAt"),
+                notices,
+              ]))
+              k(effect::Exit::Succeeded(sessions_core::jstr(h)))
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+/// Two-phase queued state lookup via `SessionDispatch::{jstore_get_job_k, queue_of_locked_k}`
+/// (`remote_target.mbt:509-547`).
+pub fn RemoteCtx::queued_k(
+  self : RemoteCtx,
+  job_id : String,
+  load : Option[effect::Deferred[base_codec::Json]],
+  k : (effect::Exit[Map[String, base_codec::Json]]) -> Unit,
+) -> Unit {
+  (self.dispatch.jstore_get_job_k)(job_id, fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+    match jex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(job) => {
+        let is_queued = match job {
+          base_codec::Json::Null => false
+          _ => {
+            let st_ok = opt_str_eq(sessions_core::str_of(sessions_core::jget(job, "state")), "running")
+            let q_ok = match sessions_core::jget(job, "queued") {
+              Some(base_codec::Json::Bool(true)) => true
+              _ => false
+            }
+            st_ok && q_ok
+          }
+        }
+        if !is_queued {
+          k(effect::Exit::Succeeded(Map::new()))
+          return
+        }
+        (self.dispatch.queue_of_locked_k)(job_id, fn(q1ex : effect::Exit[base_codec::Json]) -> Unit {
+          match q1ex {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(base_codec::Json::Null) => k(effect::Exit::Succeeded(Map::new()))
+            effect::Exit::Succeeded(_) => {
+              let get_load = fn(lk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                match load {
+                  Some(d) => {
+                    d.wait_k(fn(dex : effect::Exit[base_codec::Json]) -> Unit {
+                      match dex {
+                        effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                        effect::Exit::Succeeded(v) => lk(effect::Exit::Succeeded(v))
+                        effect::Exit::Failed(_) => lk(effect::Exit::Succeeded(base_codec::json_null()))
+                      }
+                    })
+                  }
+                  None => {
+                    self.rnode_k("load", [], fn(lex : effect::Exit[base_codec::Json]) -> Unit {
+                      match lex {
+                        effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                        effect::Exit::Succeeded(v) => lk(effect::Exit::Succeeded(v))
+                        effect::Exit::Failed(e) => {
+                          lk(effect::Exit::Succeeded(base_codec::json_obj([("unavailable", sessions_core::jstr(sessions_core::error_message(e)))])))
+                        }
+                      }
+                    })
+                  }
+                }
+              }
+              get_load(fn(lex : effect::Exit[base_codec::Json]) -> Unit {
+                match lex {
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(measured) => {
+                    (self.dispatch.queue_of_locked_k)(job_id, fn(q2ex : effect::Exit[base_codec::Json]) -> Unit {
+                      match q2ex {
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        effect::Exit::Succeeded(base_codec::Json::Null) => k(effect::Exit::Succeeded(Map::new()))
+                        effect::Exit::Succeeded(q) => {
+                          let place = match sessions_core::num_of(sessions_core::jget(q, "place")) {
+                            Some(p) => p
+                            None => 1.0
+                          }
+                          let why = match sessions_core::str_of(sessions_core::jget(q, "why")) {
+                            Some("memory") => "the machine's memory is under pressure"
+                            Some("screen") => {
+                              match sessions_core::str_of(sessions_core::jget(q, "holder")) {
+                                Some(h) => "the screen is held by " + h
+                                None => "the screen is held or an earlier request is waiting for it"
+                              }
+                            }
+                            Some("person") => "a person is using this machine's screen (its input not idle): no task is given it meanwhile"
+                            Some("small") => "another small task is using the station's small-work slot"
+                            _ => "it is waiting for its turn"
+                          }
+                          let at = if place == 1.0 { "next" } else { "number " + place.to_int().to_string() }
+                          let note = "Waiting in this station's queue (" +
+                          at +
+                          "): " +
+                          why +
+                          ". It starts by itself when there is room; you are told when it ends, as for any task."
+                          let qobj = with_field(with_field(q, "load", measured), "note", sessions_core::jstr(note))
+                          let out : Map[String, base_codec::Json] = Map::new()
+                          out.set("queue", qobj)
+                          k(effect::Exit::Succeeded(out))
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+pub fn RemoteCtx::forget_task(self : RemoteCtx, name : String) -> Unit {
+  match self.state.task_owners.get(name) {
+    Some(owner) => {
+      match self.state.owner_tasks.get(owner) {
+        Some(names) => {
+          let kept : Array[String] = []
+          for i in 0..<names.length() {
+            if names[i] != name {
+              kept.push(names[i])
+            }
+          }
+          if kept.length() == 0 {
+            let _ = self.state.owner_tasks.remove(owner)
+          } else {
+            self.state.owner_tasks.set(owner, kept)
+          }
+        }
+        None => ()
+      }
+      let _ = self.state.task_owners.remove(name)
+    }
+    None => ()
+  }
+  let _ = self.state.unreadable.remove(name)
+}
+
+pub fn RemoteCtx::index_incoming_k(self : RemoteCtx, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  let incoming = self.rjoin([self.state.root, "incoming"])
+  let stamp_k = fn(sk : (effect::Exit[String]) -> Unit) -> Unit {
+    self.lstat_k(incoming, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+      match lex {
+        effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(None) => sk(effect::Exit::Succeeded(""))
+        effect::Exit::Succeeded(Some(st)) => {
+          let ino = self.js_text(sessions_core::field_of(st, "ino"))
+          let mtime = self.js_text(sessions_core::field_of(st, "mtimeMs"))
+          let ctime = self.js_text(sessions_core::field_of(st, "ctimeMs"))
+          sk(effect::Exit::Succeeded(ino + ":" + mtime + ":" + ctime))
+        }
+      }
+    })
+  }
+  sessions_core::iter_sync_k(
+    fn(ik : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+      stamp_k(fn(bex : effect::Exit[String]) -> Unit {
+        match bex {
+          effect::Exit::Failed(e) => ik(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => ik(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(before) => {
+            if opt_str_eq(self.state.incoming_stamp, before) && self.state.unreadable.length() == 0 {
+              ik(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+              return
+            }
+            self.readdir_names_k(incoming, fn(rex : effect::Exit[Array[String]]) -> Unit {
+              match rex {
+                effect::Exit::Failed(e) => ik(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => ik(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(names) => {
+                  let present : Map[String, Bool] = Map::new()
+                  for i in 0..<names.length() {
+                    present.set(names[i], true)
+                  }
+                  let to_keys = self.state.task_owners.keys()
+                  for i in 0..<to_keys.length() {
+                    let n = to_keys[i]
+                    if !present.contains(n) {
+                      self.forget_task(n)
+                    }
+                  }
+                  let ur_keys = self.state.unreadable.keys()
+                  for i in 0..<ur_keys.length() {
+                    let n = ur_keys[i]
+                    if !present.contains(n) {
+                      let _ = self.state.unreadable.remove(n)
+                    }
+                  }
+                  for_each_k(
+                    names,
+                    fn(_i : Int, name : String, nk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      if self.state.task_owners.contains(name) {
+                        nk(effect::Exit::Succeeded(()))
+                        return
+                      }
+                      self.read_json_k(self.rjoin([incoming, name, "task.json"]), fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+                        match jex {
+                          effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                          effect::Exit::Failed(_) => {
+                            self.state.unreadable.set(name, true)
+                            nk(effect::Exit::Succeeded(()))
+                          }
+                          effect::Exit::Succeeded(base_codec::Json::Null) => {
+                            self.state.unreadable.set(name, true)
+                            nk(effect::Exit::Succeeded(()))
+                          }
+                          effect::Exit::Succeeded(meta) => {
+                            let owner = self.js_text(base_codec::json_arr([
+                              sessions_core::jstr(sessions_core::text_of(meta, "workspace")),
+                              sessions_core::jstr(meta_room_peer(meta)),
+                              sessions_core::jstr(sessions_core::text_of(meta, "session")),
+                            ]))
+                            self.state.task_owners.set(name, owner)
+                            match self.state.owner_tasks.get(owner) {
+                              Some(owned) => owned.push(name)
+                              None => self.state.owner_tasks.set(owner, [name])
+                            }
+                            let _ = self.state.unreadable.remove(name)
+                            nk(effect::Exit::Succeeded(()))
+                          }
+                        }
+                      })
+                    },
+                    fn(fex : effect::Exit[Unit]) -> Unit {
+                      match fex {
+                        effect::Exit::Failed(e) => ik(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => ik(effect::Exit::Interrupted)
+                        effect::Exit::Succeeded(_) => {
+                          stamp_k(fn(aex : effect::Exit[String]) -> Unit {
+                            match aex {
+                              effect::Exit::Failed(e) => ik(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => ik(effect::Exit::Interrupted)
+                              effect::Exit::Succeeded(after) => {
+                                if before == after {
+                                  self.state.incoming_stamp = Some(after)
+                                  ik(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                                } else {
+                                  self.state.incoming_stamp = None
+                                  ik(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                                }
+                              }
+                            }
+                          })
+                        }
+                      }
+                    },
+                  )
+                }
+              }
+            })
+          }
+        }
+      })
+    },
+    k,
+  )
+}
+
+pub fn RemoteCtx::tasks_of_k(
+  self : RemoteCtx,
+  workspace : String,
+  peer : String,
+  session : String,
+  k : (effect::Exit[Array[IncomingTask]]) -> Unit,
+) -> Unit {
+  let after_index = fn() -> Unit {
+    let owner = self.js_text(base_codec::json_arr([
+      sessions_core::jstr(workspace),
+      sessions_core::jstr(peer),
+      sessions_core::jstr(session),
+    ]))
+    let names : Array[String] = []
+    match self.state.owner_tasks.get(owner) {
+      Some(n) => {
+        for i in 0..<n.length() {
+          names.push(n[i])
+        }
+      }
+      None => ()
+    }
+    let found : Array[IncomingTask] = []
+    for_each_k(
+      names,
+      fn(_i : Int, name : String, nk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        let dir = self.rjoin([self.state.root, "incoming", name])
+        self.read_json_k(self.rjoin([dir, "task.json"]), fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+          match jex {
+            effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+            effect::Exit::Failed(_) => nk(effect::Exit::Succeeded(()))
+            effect::Exit::Succeeded(meta) => {
+              if sessions_core::text_of(meta, "workspace") == workspace &&
+              meta_room_peer(meta) == peer &&
+              sessions_core::text_of(meta, "session") == session {
+                found.push(IncomingTask::{ dir: dir, meta: meta })
+              }
+              nk(effect::Exit::Succeeded(()))
+            }
+          }
+        })
+      },
+      fn(fex : effect::Exit[Unit]) -> Unit {
+        match fex {
+          effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(found))
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      },
+    )
+  }
+  match self.state.indexing {
+    Some(run) => {
+      run.done.wait_k(fn(wex : effect::Exit[Unit]) -> Unit {
+        match wex {
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+          _ => after_index()
+        }
+      })
+    }
+    None => {
+      let mine = IndexingRun::{ id: self.state.alloc_gen(), done: effect::Deferred::new() }
+      self.state.indexing = Some(mine)
+      self.index_incoming_k(fn(iex : effect::Exit[Unit]) -> Unit {
+        match self.state.indexing {
+          Some(cur) => {
+            if cur.id == mine.id {
+              self.state.indexing = None
+            }
+          }
+          None => ()
+        }
+        let _ = mine.done.succeed(())
+        match iex {
+          effect::Exit::Succeeded(_) => after_index()
+          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+        }
+      })
+    }
+  }
+}
+
+fn clean_mirror_leaf(dir : String) -> String {
+  let parts : Array[String] = []
+  let slash = split_char(dir, 47 as Byte)
+  for i in 0..<slash.length() {
+    let bs = split_char(slash[i], 92 as Byte)
+    for j in 0..<bs.length() {
+      if bs[j] != "" {
+        parts.push(bs[j])
+      }
+    }
+  }
+  let last = if parts.length() > 0 { parts[parts.length() - 1] } else { "" }
+  let units = js_json::utf16_units(last)
+  let out : Array[Int] = []
+  let mut i = 0
+  let mut n = 0
+  while i < units.length() && n < 100 {
+    let u = units[i]
+    if u >= 0xd800 && u <= 0xdbff && i + 1 < units.length() && units[i + 1] >= 0xdc00 && units[i + 1] <= 0xdfff {
+      out.push(u)
+      out.push(units[i + 1])
+      i = i + 2
+      n = n + 2
+    } else {
+      let ok = (u >= 65 && u <= 90) ||
+      (u >= 97 && u <= 122) ||
+      (u >= 48 && u <= 57) ||
+      u == 46 ||
+      u == 95 ||
+      u == 32 ||
+      u == 45 ||
+      u > 127
+      out.push(if ok { u } else { 95 })
+      i = i + 1
+      n = n + 1
+    }
+  }
+  let name = js_json::text(out)
+  if name == "" || name == "." || name == ".." { "dir" } else { name }
+}
+
+pub fn RemoteCtx::mirror_name_k(
+  self : RemoteCtx,
+  workspace : String,
+  peer : String,
+  session : String,
+  dir : String,
+  k : (effect::Exit[String]) -> Unit,
+) -> Unit {
+  let name = clean_mirror_leaf(dir)
+  let claimed : Map[String, String] = Map::new()
+  self.tasks_of_k(workspace, peer, session, fn(tex : effect::Exit[Array[IncomingTask]]) -> Unit {
+    match tex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(tasks) => {
+        for i in 0..<tasks.length() {
+          match sessions_core::field_of(tasks[i].meta, "mirror") {
+            base_codec::Json::Str(m) => {
+              claimed.set(m, sessions_core::text_of(sessions_core::field_of(tasks[i].meta, "spec"), "dir"))
+            }
+            _ => ()
+          }
+        }
+        let mirrors = self.rjoin([self.room(workspace, peer, session), "mirrors"])
+        self.readdir_names_k(mirrors, fn(rex : effect::Exit[Array[String]]) -> Unit {
+          match rex {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(files) => {
+              for_each_k(
+                files,
+                fn(_i : Int, file : String, fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                  (self.dirsync.read_manifest_k)(self.remote_host(), self.rjoin([mirrors, file]), fn(mex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+                    match mex {
+                      effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+                      effect::Exit::Succeeded(None) => fk(effect::Exit::Succeeded(()))
+                      effect::Exit::Succeeded(Some(m)) => {
+                        claimed.set(sessions_core::text_of(m, "name"), sessions_core::text_of(m, "dir"))
+                        fk(effect::Exit::Succeeded(()))
+                      }
+                    }
+                  })
+                },
+                fn(fex : effect::Exit[Unit]) -> Unit {
+                  match fex {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(_) => {
+                      match claimed.get(name) {
+                        None => k(effect::Exit::Succeeded(name))
+                        Some(owner) => {
+                          if owner == dir {
+                            k(effect::Exit::Succeeded(name))
+                          } else {
+                            let h = self.rhash(sessions_core::jstr(dir))
+                            k(effect::Exit::Succeeded(name + "-" + h.slice(0, 8)))
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+              )
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+pub fn RemoteCtx::used_mirror_k(
+  self : RemoteCtx,
+  workspace : String,
+  peer : String,
+  session : String,
+  mirror : String,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  let record = self.rjoin([self.room(workspace, peer, session), "mirrors-used.json"])
+  self.remote_now_k(fn(nex : effect::Exit[Double]) -> Unit {
+    match nex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(now) => {
+        self.update_json_k(
+          record,
+          fn(used : base_codec::Json) -> Option[base_codec::Json] { Some(with_field(used, mirror, sessions_core::jnum(now))) },
+          Some(base_codec::json_obj([])),
+          fn(uex : effect::Exit[Bool]) -> Unit {
+            match uex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(()))
+            }
+          },
+        )
+      }
+    }
+  })
+}
+
+pub fn RemoteCtx::syncing_recently_k(
+  self : RemoteCtx,
+  dir : String,
+  now : Double,
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  let mut latest = 0.0
+  self.readdir_names_k(dir, fn(rex : effect::Exit[Array[String]]) -> Unit {
+    match rex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(names) => {
+        let paths : Array[String] = [dir]
+        for i in 0..<names.length() {
+          paths.push(self.rjoin([dir, names[i]]))
+        }
+        for_each_k(
+          paths,
+          fn(_i : Int, p : String, pk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            self.fs_k("fs.lstat", [("path", sessions_core::jstr(p))], None, fn(lex : effect::Exit[base_codec::Json]) -> Unit {
+              match lex {
+                effect::Exit::Failed(e) => pk(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => pk(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(base_codec::Json::Null) => pk(effect::Exit::Succeeded(()))
+                effect::Exit::Succeeded(st) => {
+                  let at = match sessions_core::num_of(sessions_core::jget(st, "mtimeMs")) { Some(n) => n; None => 0.0 }
+                  if at > latest {
+                    latest = at
+                  }
+                  pk(effect::Exit::Succeeded(()))
+                }
+              }
+            })
+          },
+          fn(fex : effect::Exit[Unit]) -> Unit {
+            match fex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(now - latest < MIRROR_RECENT_MS))
+            }
+          },
+        )
+      }
+    }
+  })
+}
+
+pub fn RemoteCtx::mirrors_of_k(
+  self : RemoteCtx,
+  workspace : String,
+  peer : String,
+  session : String,
+  now : Double,
+  k : (effect::Exit[Array[MirrorUse]]) -> Unit,
+) -> Unit {
+  let room = self.room(workspace, peer, session)
+  let record = self.rjoin([room, "mirrors-used.json"])
+  let running : Map[String, Bool] = Map::new()
+  let ended : Map[String, Double] = Map::new()
+  self.tasks_of_k(workspace, peer, session, fn(tex : effect::Exit[Array[IncomingTask]]) -> Unit {
+    match tex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(tasks) => {
+        for_each_k(
+          tasks,
+          fn(_i : Int, t : IncomingTask, tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            let mirror = match sessions_core::field_of(t.meta, "mirror") {
+              base_codec::Json::Str(ms) => ms
+              _ => {
+                tk(effect::Exit::Succeeded(()))
+                return
+              }
+            }
+            self.rstore_k("getJob", [sessions_core::jstr(self.job_of_task(t.dir))], fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+              match jex {
+                effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(job) => {
+                  let job_null = match job { base_codec::Json::Null => true; _ => false }
+                  let is_safe = match sessions_core::field_of(t.meta, "safe") { base_codec::Json::Bool(true) => true; _ => false }
+                  let is_collected = match sessions_core::field_of(t.meta, "collected") { base_codec::Json::Bool(true) => true; _ => false }
+                  if opt_str_eq(sessions_core::str_of(sessions_core::jget(job, "state")), "running") || (!job_null && is_safe && !is_collected) {
+                    running.set(mirror, true)
+                  }
+                  match sessions_core::num_of(sessions_core::jget(job, "endedAt")) {
+                    Some(at) => {
+                      if at != 0.0 {
+                        let prev = match ended.get(mirror) { Some(p) => p; None => 0.0 }
+                        if at > prev {
+                          ended.set(mirror, at)
+                        }
+                      }
+                    }
+                    None => ()
+                  }
+                  tk(effect::Exit::Succeeded(()))
+                }
+              }
+            })
+          },
+          fn(fex : effect::Exit[Unit]) -> Unit {
+            match fex {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => {
+                self.readdir_names_k(self.rjoin([room, "mirrors"]), fn(rex : effect::Exit[Array[String]]) -> Unit {
+                  match rex {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(mfiles) => {
+                      let mirrors : Array[String] = []
+                      for i in 0..<mfiles.length() {
+                        let f = mfiles[i]
+                        if f.ends_with(".json") {
+                          mirrors.push(f.slice(0, f.length() - 5))
+                        }
+                      }
+                      let busy : Map[String, Bool] = Map::new()
+                      for_each_k(
+                        mirrors,
+                        fn(_i : Int, name : String, mk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                          if running.contains(name) {
+                            busy.set(name, true)
+                            mk(effect::Exit::Succeeded(()))
+                            return
+                          }
+                          self.syncing_recently_k(self.rjoin([room, "sync", name]), now, fn(sex : effect::Exit[Bool]) -> Unit {
+                            match sex {
+                              effect::Exit::Failed(e) => mk(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => mk(effect::Exit::Interrupted)
+                              effect::Exit::Succeeded(true) => {
+                                busy.set(name, true)
+                                mk(effect::Exit::Succeeded(()))
+                              }
+                              effect::Exit::Succeeded(false) => mk(effect::Exit::Succeeded(()))
+                            }
+                          })
+                        },
+                        fn(bex : effect::Exit[Unit]) -> Unit {
+                          match bex {
+                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            effect::Exit::Succeeded(_) => {
+                              self.read_json_k(record, fn(uex : effect::Exit[base_codec::Json]) -> Unit {
+                                match uex {
+                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  _ => {
+                                    let used0 = match uex {
+                                      effect::Exit::Succeeded(v) => v
+                                      _ => base_codec::json_obj([])
+                                    }
+                                    let marked : Array[String] = []
+                                    for i in 0..<mirrors.length() {
+                                      let name = mirrors[i]
+                                      let no_ts = match as_i64(sessions_core::field_of(used0, name)) {
+                                        None => true
+                                        Some(_) => false
+                                      }
+                                      if no_ts || busy.contains(name) {
+                                        marked.push(name)
+                                      }
+                                    }
+                                    let finish_mirrors = fn(used : base_codec::Json) -> Unit {
+                                      let out : Array[MirrorUse] = []
+                                      for i in 0..<mirrors.length() {
+                                        let name = mirrors[i]
+                                        let u = match as_i64(sessions_core::field_of(used, name)) { Some(v) => v; None => now }
+                                        let e = match ended.get(name) { Some(v) => v; None => 0.0 }
+                                        out.push(MirrorUse::{ name: name, used: if u > e { u } else { e }, busy: busy.contains(name) })
+                                      }
+                                      k(effect::Exit::Succeeded(out))
+                                    }
+                                    if marked.length() > 0 {
+                                      let mut used1 = used0
+                                      for i in 0..<marked.length() {
+                                        used1 = with_field(used1, marked[i], sessions_core::jnum(now))
+                                      }
+                                      self.update_json_k(
+                                        record,
+                                        fn(kept : base_codec::Json) -> Option[base_codec::Json] {
+                                          let mut next_kept = kept
+                                          for i in 0..<marked.length() {
+                                            next_kept = with_field(next_kept, marked[i], sessions_core::jnum(now))
+                                          }
+                                          Some(next_kept)
+                                        },
+                                        Some(base_codec::json_obj([])),
+                                        fn(upex : effect::Exit[Bool]) -> Unit {
+                                          match upex {
+                                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                            _ => finish_mirrors(used1)
+                                          }
+                                        },
+                                      )
+                                    } else {
+                                      finish_mirrors(used0)
+                                    }
+                                  }
+                                }
+                              })
+                            }
+                          }
+                        },
+                      )
+                    }
+                  }
+                })
+              }
+            }
+          },
+        )
+      }
+    }
+  })
+}
+
+pub fn RemoteCtx::drop_mirror_k(
+  self : RemoteCtx,
+  workspace : String,
+  peer : String,
+  session : String,
+  mirror : String,
+  why : String,
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  let room = self.room(workspace, peer, session)
+  let on_err = fn(e : effect::EffectError) -> Unit {
+    self.rlog("warn", "remote mirror not removed", [
+      ("mirror", sessions_core::jstr(mirror)),
+      ("error", sessions_core::jstr(sessions_core::error_message(e))),
+    ])
+    k(effect::Exit::Succeeded(false))
+  }
+  self.tasks_of_k(workspace, peer, session, fn(tex : effect::Exit[Array[IncomingTask]]) -> Unit {
+    match tex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => on_err(e)
+      effect::Exit::Succeeded(tasks) => {
+        for_each_k(
+          tasks,
+          fn(_i : Int, t : IncomingTask, tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            let path = self.rjoin([t.dir, "task.json"])
+            self.read_json_k(path, fn(rex : effect::Exit[base_codec::Json]) -> Unit {
+              match rex {
+                effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                effect::Exit::Succeeded(meta) => {
+                  let synced = match sessions_core::field_of(meta, "synced") { base_codec::Json::Bool(true) => true; _ => false }
+                  if sessions_core::text_of(meta, "mirror") == mirror && synced {
+                    self.write_json_k(path, with_field(meta, "synced", sessions_core::jbool(false)), tk)
+                  } else {
+                    tk(effect::Exit::Succeeded(()))
+                  }
+                }
+              }
+            })
+          },
+          fn(fex : effect::Exit[Unit]) -> Unit {
+            match fex {
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => on_err(e)
+              effect::Exit::Succeeded(_) => {
+                let tree = self.rjoin([room, "work", mirror])
+                let after_over = fn() -> Unit {
+                  self.rnode_k("removeMirror", [sessions_core::jstr(tree)], fn(rmex : effect::Exit[base_codec::Json]) -> Unit {
+                    match rmex {
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => on_err(e)
+                      effect::Exit::Succeeded(_) => {
+                        self.remove_k(self.rjoin([room, "sync", mirror]), true, fn(r1 : effect::Exit[Unit]) -> Unit {
+                          match r1 {
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            effect::Exit::Failed(e) => on_err(e)
+                            effect::Exit::Succeeded(_) => {
+                              self.remove_k(self.rjoin([room, "mirrors", mirror + ".json"]), false, fn(r2 : effect::Exit[Unit]) -> Unit {
+                                match r2 {
+                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  effect::Exit::Failed(e) => on_err(e)
+                                  effect::Exit::Succeeded(_) => {
+                                    self.update_json_k(
+                                      self.rjoin([room, "mirrors-used.json"]),
+                                      fn(used : base_codec::Json) -> Option[base_codec::Json] {
+                                        match used {
+                                          base_codec::Json::Obj(_) => Some(without_field(used, mirror))
+                                          _ => None
+                                        }
+                                      },
+                                      None,
+                                      fn(uex : effect::Exit[Bool]) -> Unit {
+                                        match uex {
+                                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                          _ => {
+                                            self.rlog("info", "remote mirror removed", [
+                                              ("workspace", sessions_core::jstr(workspace)),
+                                              ("station", sessions_core::jstr(peer)),
+                                              ("session", sessions_core::jstr(session)),
+                                              ("mirror", sessions_core::jstr(mirror)),
+                                              ("why", sessions_core::jstr(why)),
+                                            ])
+                                            k(effect::Exit::Succeeded(true))
+                                          }
+                                        }
+                                      },
+                                    )
+                                  }
+                                }
+                              })
+                            }
+                          }
+                        })
+                      }
+                    }
+                  })
+                }
+                if self.state.over > 0.0 {
+                  self.rnode_k("treeBytes", [sessions_core::jstr(tree)], fn(tbex : effect::Exit[base_codec::Json]) -> Unit {
+                    match tbex {
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                      effect::Exit::Failed(e) => on_err(e)
+                      effect::Exit::Succeeded(v) => {
+                        let bytes = match sessions_core::num_of(Some(v)) { Some(n) => n; None => 0.0 }
+                        self.state.over = self.state.over - bytes
+                        after_over()
+                      }
+                    }
+                  })
+                } else {
+                  after_over()
+                }
+              }
+            }
+          },
+        )
+      }
+    }
+  })
+}
+
+pub fn RemoteCtx::close_here_k(
+  self : RemoteCtx,
+  workspace : String,
+  peer : String,
+  session : String,
+  idle_at : Option[Double],
+  k : (effect::Exit[Bool]) -> Unit,
+) -> Unit {
+  self.tasks_of_k(workspace, peer, session, fn(tex : effect::Exit[Array[IncomingTask]]) -> Unit {
+    match tex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(tasks) => {
+        let room = self.room(workspace, peer, session)
+        let after_moved = fn(moved : base_codec::Json) -> Unit {
+          match moved {
+            base_codec::Json::Null => {
+              k(effect::Exit::Succeeded(false))
+              return
+            }
+            _ => ()
+          }
+          let aside = match sessions_core::field_of(moved, "aside") {
+            base_codec::Json::Arr(a) => a
+            _ => []
+          }
+          for_each_k(
+            aside,
+            fn(_i : Int, d : base_codec::Json, dk : (effect::Exit[Unit]) -> Unit) -> Unit {
+              match d {
+                base_codec::Json::Str(p) => {
+                  self.rnode_k("removeTask", [sessions_core::jstr(p)], fn(rex : effect::Exit[base_codec::Json]) -> Unit {
+                    match rex {
+                      effect::Exit::Interrupted => dk(effect::Exit::Interrupted)
+                      _ => dk(effect::Exit::Succeeded(()))
+                    }
+                  })
+                }
+                _ => dk(effect::Exit::Succeeded(()))
+              }
+            },
+            fn(fex : effect::Exit[Unit]) -> Unit {
+              match fex {
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                effect::Exit::Succeeded(_) => {
+                  match sessions_core::field_of(moved, "room") {
+                    base_codec::Json::Str(gone) => {
+                      self.rlog("info", "remote session directory removed", [
+                        ("workspace", sessions_core::jstr(workspace)),
+                        ("station", sessions_core::jstr(peer)),
+                        ("session", sessions_core::jstr(session)),
+                      ])
+                      self.remove_k(gone, true, fn(rem : effect::Exit[Unit]) -> Unit {
+                        match rem {
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          _ => k(effect::Exit::Succeeded(true))
+                        }
+                      })
+                    }
+                    _ => k(effect::Exit::Succeeded(true))
+                  }
+                }
+              }
+            },
+          )
+        }
+        match idle_at {
+          Some(at) => {
+            self.read_json_k(self.rjoin([room, "session.json"]), fn(rex : effect::Exit[base_codec::Json]) -> Unit {
+              match rex {
+                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                effect::Exit::Failed(_) => k(effect::Exit::Succeeded(false))
+                effect::Exit::Succeeded(recorded) => {
+                  self.rnode_k("seenAt", [sessions_core::jstr(room)], fn(sex : effect::Exit[base_codec::Json]) -> Unit {
+                    match sex {
+                      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                      effect::Exit::Succeeded(sh_val) => {
+                        let seen_here = match sessions_core::num_of(Some(sh_val)) { Some(n) => n; None => 0.0 }
+                        let rec = match as_i64(sessions_core::field_of(recorded, "seen")) { Some(n) => n; None => at }
+                        let seen = if rec > seen_here { rec } else { seen_here }
+                        if at - seen < IDLE_MS || seen_here > seen {
+                          k(effect::Exit::Succeeded(false))
+                          return
+                        }
+                        let mut any_running = false
+                        for_each_k(
+                          tasks,
+                          fn(_i : Int, t : IncomingTask, tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                            if any_running {
+                              tk(effect::Exit::Succeeded(()))
+                              return
+                            }
+                            self.task_running_k(t.dir, fn(trex : effect::Exit[Bool]) -> Unit {
+                              match trex {
+                                effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                                effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                                effect::Exit::Succeeded(r) => {
+                                  if r {
+                                    any_running = true
+                                  }
+                                  tk(effect::Exit::Succeeded(()))
+                                }
+                              }
+                            })
+                          },
+                          fn(fex : effect::Exit[Unit]) -> Unit {
+                            match fex {
+                              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                              effect::Exit::Succeeded(_) => {
+                                if any_running {
+                                  k(effect::Exit::Succeeded(false))
+                                  return
+                                }
+                                let dirs : Array[base_codec::Json] = []
+                                for i in 0..<tasks.length() {
+                                  dirs.push(sessions_core::jstr(tasks[i].dir))
+                                }
+                                self.rnode_k("closeRoom", [sessions_core::jstr(room), base_codec::json_arr(dirs), sessions_core::jnum(seen)], fn(cex : effect::Exit[base_codec::Json]) -> Unit {
+                                  match cex {
+                                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                    effect::Exit::Succeeded(mv) => after_moved(mv)
+                                  }
+                                })
+                              }
+                            }
+                          },
+                        )
+                      }
+                    }
+                  })
+                }
+              }
+            })
+          }
+          None => {
+            for_each_k(
+              tasks,
+              fn(_i : Int, t : IncomingTask, tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                self.task_running_k(t.dir, fn(trex : effect::Exit[Bool]) -> Unit {
+                  match trex {
+                    effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(running) => {
+                      let after_stop = fn() -> Unit {
+                        self.rnode_k("removeTask", [sessions_core::jstr(t.dir)], fn(rmex : effect::Exit[base_codec::Json]) -> Unit {
+                          match rmex {
+                            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                            effect::Exit::Succeeded(_) => tk(effect::Exit::Succeeded(()))
+                          }
+                        })
+                      }
+                      if running {
+                        (self.dispatch.jobs_called_k)("stop", [sessions_core::jstr(self.job_of_task(t.dir))], fn(sex : effect::Exit[base_codec::Json]) -> Unit {
+                          match sex {
+                            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+                            effect::Exit::Succeeded(_) => after_stop()
+                          }
+                        })
+                      } else {
+                        after_stop()
+                      }
+                    }
+                  }
+                })
+              },
+              fn(fex : effect::Exit[Unit]) -> Unit {
+                match fex {
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(_) => {
+                    self.rnode_k("closeRoom", [sessions_core::jstr(room), base_codec::json_arr([]), base_codec::json_null()], fn(cex : effect::Exit[base_codec::Json]) -> Unit {
+                      match cex {
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        effect::Exit::Succeeded(mv) => after_moved(mv)
+                      }
+                    })
+                  }
+                }
+              },
+            )
+          }
+        }
+      }
+    }
+  })
+}
+
+pub fn RemoteCtx::sweep_k(self : RemoteCtx, now : Double, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  let sessions = self.rjoin([self.state.root, "sessions"])
+  self.readdir_names_k(sessions, fn(srex : effect::Exit[Array[String]]) -> Unit {
+    match srex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(snames) => {
+        for_each_k(
+          snames,
+          fn(_i : Int, name : String, nk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            if self.state.stopped {
+              nk(effect::Exit::Succeeded(()))
+              return
+            }
+            let srec = self.rjoin([sessions, name, "session.json"])
+            self.read_json_k(srec, fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+              match jex {
+                effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                effect::Exit::Failed(_) => nk(effect::Exit::Succeeded(()))
+                effect::Exit::Succeeded(meta) => {
+                  let workspace = sessions_core::text_of(meta, "workspace")
+                  let peer = sessions_core::text_of(meta, "station")
+                  let session = sessions_core::text_of(meta, "session")
+                  self.in_lane_k(
+                    self.room(workspace, peer, session),
+                    fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                      self.read_json_k(srec, fn(aex : effect::Exit[base_codec::Json]) -> Unit {
+                        match aex {
+                          effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                          effect::Exit::Failed(_) => lk(effect::Exit::Succeeded(()))
+                          effect::Exit::Succeeded(again) => {
+                            self.rnode_k("seenAt", [sessions_core::jstr(self.rjoin([sessions, name]))], fn(sex : effect::Exit[base_codec::Json]) -> Unit {
+                              match sex {
+                                effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+                                effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                                effect::Exit::Succeeded(sh_val) => {
+                                  let seen_here = match sessions_core::num_of(Some(sh_val)) { Some(n) => n; None => 0.0 }
+                                  let rec = match as_i64(sessions_core::field_of(again, "seen")) { Some(n) => n; None => now }
+                                  let seen = if rec > seen_here { rec } else { seen_here }
+                                  let sweep_mirrors = fn() -> Unit {
+                                    self.mirrors_of_k(workspace, peer, session, now, fn(mex : effect::Exit[Array[MirrorUse]]) -> Unit {
+                                      match mex {
+                                        effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+                                        effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                                        effect::Exit::Succeeded(ms) => {
+                                          for_each_k(
+                                            ms,
+                                            fn(_j : Int, m : MirrorUse, mk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                              if !m.busy && now - m.used >= MIRROR_IDLE_MS {
+                                                self.drop_mirror_k(workspace, peer, session, m.name, "unused", fn(dex : effect::Exit[Bool]) -> Unit {
+                                                  match dex {
+                                                    effect::Exit::Interrupted => mk(effect::Exit::Interrupted)
+                                                    effect::Exit::Failed(e) => mk(effect::Exit::Failed(e))
+                                                    effect::Exit::Succeeded(_) => mk(effect::Exit::Succeeded(()))
+                                                  }
+                                                })
+                                              } else {
+                                                mk(effect::Exit::Succeeded(()))
+                                              }
+                                            },
+                                            lk,
+                                          )
+                                        }
+                                      }
+                                    })
+                                  }
+                                  if now - seen >= IDLE_MS {
+                                    self.close_here_k(workspace, peer, session, Some(now), fn(cex : effect::Exit[Bool]) -> Unit {
+                                      match cex {
+                                        effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                                        effect::Exit::Failed(e) => {
+                                          self.rlog("warn", "idle remote session directory not removed", [
+                                            ("error", sessions_core::jstr(sessions_core::error_message(e))),
+                                          ])
+                                          lk(effect::Exit::Succeeded(()))
+                                        }
+                                        effect::Exit::Succeeded(true) => lk(effect::Exit::Succeeded(()))
+                                        effect::Exit::Succeeded(false) => sweep_mirrors()
+                                      }
+                                    })
+                                  } else {
+                                    sweep_mirrors()
+                                  }
+                                }
+                              }
+                            })
+                          }
+                        }
+                      })
+                    },
+                    nk,
+                  )
+                }
+              }
+            })
+          },
+          fn(fex1 : effect::Exit[Unit]) -> Unit {
+            match fex1 {
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+              effect::Exit::Succeeded(_) => {
+                if self.state.stopped {
+                  k(effect::Exit::Succeeded(()))
+                  return
+                }
+                let incoming = self.rjoin([self.state.root, "incoming"])
+                self.readdir_names_k(incoming, fn(irex : effect::Exit[Array[String]]) -> Unit {
+                  match irex {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(inames) => {
+                      for_each_k(
+                        inames,
+                        fn(_i : Int, name : String, nk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                          if self.state.stopped {
+                            nk(effect::Exit::Succeeded(()))
+                            return
+                          }
+                          let dir = self.rjoin([incoming, name])
+                          let record = self.rjoin([dir, "task.json"])
+                          self.read_json_k(record, fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+                            match jex {
+                              effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                              effect::Exit::Failed(_) => nk(effect::Exit::Succeeded(()))
+                              effect::Exit::Succeeded(meta) => {
+                                if sessions_core::text_of(meta, "layout") == "session" {
+                                  nk(effect::Exit::Succeeded(()))
+                                  return
+                                }
+                                let workspace = sessions_core::text_of(meta, "workspace")
+                                let peer = sessions_core::text_of(meta, "station")
+                                let session = sessions_core::text_of(meta, "session")
+                                self.in_lane_k(
+                                  self.room(workspace, peer, session),
+                                  fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                    self.read_json_k(record, fn(r2 : effect::Exit[base_codec::Json]) -> Unit {
+                                      match r2 {
+                                        effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                                        effect::Exit::Failed(_) => lk(effect::Exit::Succeeded(()))
+                                        effect::Exit::Succeeded(meta2) => {
+                                          self.lstat_k(record, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+                                            match lex {
+                                              effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+                                              effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                                              effect::Exit::Succeeded(None) => lk(effect::Exit::Succeeded(()))
+                                              effect::Exit::Succeeded(Some(st)) => {
+                                                let mtime = match sessions_core::num_of(sessions_core::jget(st, "mtimeMs")) { Some(n) => n; None => now }
+                                                let modified = js_json::js_trunc(mtime)
+                                                if sessions_core::text_of(meta2, "layout") == "session" || now - modified < IDLE_MS {
+                                                  lk(effect::Exit::Succeeded(()))
+                                                  return
+                                                }
+                                                self.task_running_k(dir, fn(trex : effect::Exit[Bool]) -> Unit {
+                                                  match trex {
+                                                    effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+                                                    effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                                                    effect::Exit::Succeeded(true) => lk(effect::Exit::Succeeded(()))
+                                                    effect::Exit::Succeeded(false) => self.remove_k(dir, true, lk)
+                                                  }
+                                                })
+                                              }
+                                            }
+                                          })
+                                        }
+                                      }
+                                    })
+                                  },
+                                  nk,
+                                )
+                              }
+                            }
+                          })
+                        },
+                        k,
+                      )
+                    }
+                  }
+                })
+              }
+            }
+          },
+        )
+      }
+    }
+  })
+}
+
+pub fn RemoteCtx::relieve_k(self : RemoteCtx, now : Double, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  let low_k = fn(lk : (effect::Exit[Bool]) -> Unit) -> Unit {
+    if self.state.over > 0.0 {
+      lk(effect::Exit::Succeeded(true))
+      return
+    }
+    self.rnode_k("diskLow", [sessions_core::jstr(self.state.root)], fn(dex : effect::Exit[base_codec::Json]) -> Unit {
+      match dex {
+        effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+        effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+        effect::Exit::Succeeded(v) => lk(effect::Exit::Succeeded(sessions_core::truthy(v)))
+      }
+    })
+  }
+  low_k(fn(l1 : effect::Exit[Bool]) -> Unit {
+    match l1 {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(false) => k(effect::Exit::Succeeded(()))
+      effect::Exit::Succeeded(true) => {
+        let sessions = self.rjoin([self.state.root, "sessions"])
+        self.readdir_names_k(sessions, fn(rex : effect::Exit[Array[String]]) -> Unit {
+          match rex {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(snames) => {
+              let candidates : Array[(String, String, String, String, Double)] = []
+              for_each_k(
+                snames,
+                fn(_i : Int, name : String, nk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                  self.read_json_k(self.rjoin([sessions, name, "session.json"]), fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+                    match jex {
+                      effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                      effect::Exit::Failed(_) => nk(effect::Exit::Succeeded(()))
+                      effect::Exit::Succeeded(meta) => {
+                        let workspace = sessions_core::text_of(meta, "workspace")
+                        let peer = sessions_core::text_of(meta, "station")
+                        let session = sessions_core::text_of(meta, "session")
+                        self.in_lane_k(
+                          self.room(workspace, peer, session),
+                          fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                            self.mirrors_of_k(workspace, peer, session, now, fn(mex : effect::Exit[Array[MirrorUse]]) -> Unit {
+                              match mex {
+                                effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+                                effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                                effect::Exit::Succeeded(ms) => {
+                                  for j in 0..<ms.length() {
+                                    let m = ms[j]
+                                    if !m.busy && now - m.used >= MIRROR_RECENT_MS {
+                                      candidates.push((workspace, peer, session, m.name, m.used))
+                                    }
+                                  }
+                                  lk(effect::Exit::Succeeded(()))
+                                }
+                              }
+                            })
+                          },
+                          nk,
+                        )
+                      }
+                    }
+                  })
+                },
+                fn(fex : effect::Exit[Unit]) -> Unit {
+                  match fex {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(_) => {
+                      for i in 1..<candidates.length() {
+                        let cur = candidates[i]
+                        let (_, _, _, _, cur_u) = cur
+                        let mut j = i - 1
+                        while j >= 0 {
+                          let (_, _, _, _, prev_u) = candidates[j]
+                          if cur_u < prev_u {
+                            candidates[j + 1] = candidates[j]
+                            j = j - 1
+                          } else {
+                            break
+                          }
+                        }
+                        candidates[j + 1] = cur
+                      }
+                      let mut stopped_early = false
+                      for_each_k(
+                        candidates,
+                        fn(_i : Int, c : (String, String, String, String, Double), ck : (effect::Exit[Unit]) -> Unit) -> Unit {
+                          if stopped_early {
+                            ck(effect::Exit::Succeeded(()))
+                            return
+                          }
+                          low_k(fn(lx : effect::Exit[Bool]) -> Unit {
+                            match lx {
+                              effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+                              effect::Exit::Succeeded(false) => {
+                                stopped_early = true
+                                ck(effect::Exit::Succeeded(()))
+                              }
+                              effect::Exit::Succeeded(true) => {
+                                let (workspace, peer, session, name, _) = c
+                                self.in_lane_k(
+                                  self.room(workspace, peer, session),
+                                  fn(lk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                    self.mirrors_of_k(workspace, peer, session, now, fn(mex : effect::Exit[Array[MirrorUse]]) -> Unit {
+                                      match mex {
+                                        effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+                                        effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                                        effect::Exit::Succeeded(ms) => {
+                                          let mut idx = -1
+                                          for mi in 0..<ms.length() {
+                                            if ms[mi].name == name {
+                                              idx = mi
+                                              break
+                                            }
+                                          }
+                                          if idx >= 0 && !ms[idx].busy && now - ms[idx].used >= MIRROR_RECENT_MS {
+                                            self.drop_mirror_k(workspace, peer, session, name, "disk low", fn(dex : effect::Exit[Bool]) -> Unit {
+                                              match dex {
+                                                effect::Exit::Interrupted => lk(effect::Exit::Interrupted)
+                                                effect::Exit::Failed(e) => lk(effect::Exit::Failed(e))
+                                                effect::Exit::Succeeded(_) => lk(effect::Exit::Succeeded(()))
+                                              }
+                                            })
+                                          } else {
+                                            lk(effect::Exit::Succeeded(()))
+                                          }
+                                        }
+                                      }
+                                    })
+                                  },
+                                  ck,
+                                )
+                              }
+                            }
+                          })
+                        },
+                        k,
+                      )
+                    }
+                  }
+                },
+              )
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+pub fn RemoteCtx::rooms_k(self : RemoteCtx, k : (effect::Exit[Array[RoomUse]]) -> Unit) -> Unit {
+  let sessions = self.rjoin([self.state.root, "sessions"])
+  self.readdir_names_k(sessions, fn(rex : effect::Exit[Array[String]]) -> Unit {
+    match rex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(names) => {
+        let out : Array[RoomUse] = []
+        for_each_k(
+          names,
+          fn(_i : Int, name : String, nk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            if self.state.stopped {
+              nk(effect::Exit::Succeeded(()))
+              return
+            }
+            let dir = self.rjoin([sessions, name])
+            self.read_json_k(self.rjoin([dir, "session.json"]), fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+              match jex {
+                effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                _ => {
+                  let meta = match jex {
+                    effect::Exit::Succeeded(v) => v
+                    _ => base_codec::json_null()
+                  }
+                  self.rnode_k("roomInfo", [sessions_core::jstr(dir)], fn(iex : effect::Exit[base_codec::Json]) -> Unit {
+                    match iex {
+                      effect::Exit::Failed(e) => nk(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                      effect::Exit::Succeeded(info) => {
+                        let recorded = match sessions_core::field_of(meta, "seen") {
+                          base_codec::Json::Num(n, _) => n
+                          _ => 0.0
+                        }
+                        let here = match sessions_core::num_of(Some(sessions_core::field_of(info, "seenAt"))) { Some(n) => n; None => 0.0 }
+                        let owner = match (
+                          sessions_core::field_of(meta, "workspace"),
+                          sessions_core::field_of(meta, "station"),
+                          sessions_core::field_of(meta, "session"),
+                        ) {
+                          (base_codec::Json::Str(w), base_codec::Json::Str(s), base_codec::Json::Str(x)) => Some((w, s, x))
+                          _ => None
+                        }
+                        let bytes = match sessions_core::num_of(Some(sessions_core::field_of(info, "bytes"))) { Some(n) => n; None => 0.0 }
+                        out.push(RoomUse::{
+                          dir: dir,
+                          bytes: bytes,
+                          seen: if here > recorded { here } else { recorded },
+                          owner: owner,
+                        })
+                        nk(effect::Exit::Succeeded(()))
+                      }
+                    }
+                  })
+                }
+              }
+            })
+          },
+          fn(fex : effect::Exit[Unit]) -> Unit {
+            match fex {
+              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(out))
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          },
+        )
+      }
+    }
+  })
+}
+
+fn rooms_bytes(rooms : Array[RoomUse]) -> Double {
+  let mut sum = 0.0
+  for i in 0..<rooms.length() {
+    sum = sum + rooms[i].bytes
+  }
+  sum
+}
+
+pub fn RemoteCtx::running_owners_k(self : RemoteCtx, k : (effect::Exit[Map[String, Bool]]) -> Unit) -> Unit {
+  let owners : Map[String, Bool] = Map::new()
+  self.rstore_k("jobsUp", [], fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+    match jex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(base_codec::Json::Arr(jobs)) => {
+        for_each_k(
+          jobs,
+          fn(_i : Int, job : base_codec::Json, jk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            let id = sessions_core::text_of(job, "id")
+            if !id.starts_with("remote_") {
+              jk(effect::Exit::Succeeded(()))
+              return
+            }
+            let record = self.rjoin([self.state.root, "incoming", id.slice(7, id.length()), "task.json"])
+            self.read_json_k(record, fn(rex : effect::Exit[base_codec::Json]) -> Unit {
+              match rex {
+                effect::Exit::Interrupted => jk(effect::Exit::Interrupted)
+                effect::Exit::Failed(_) => jk(effect::Exit::Succeeded(()))
+                effect::Exit::Succeeded(meta) => {
+                  let owner = self.js_text(base_codec::json_arr([
+                    sessions_core::field_of(meta, "workspace"),
+                    sessions_core::jstr(meta_room_peer(meta)),
+                    sessions_core::field_of(meta, "session"),
+                  ]))
+                  owners.set(owner, true)
+                  jk(effect::Exit::Succeeded(()))
+                }
+              }
+            })
+          },
+          fn(fex : effect::Exit[Unit]) -> Unit {
+            match fex {
+              effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(owners))
+              effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            }
+          },
+        )
+      }
+      effect::Exit::Succeeded(_) => k(effect::Exit::Succeeded(owners))
+    }
+  })
+}
+
+pub fn RemoteCtx::budget_k(self : RemoteCtx, now : Double, budget : Double, k : (effect::Exit[Double]) -> Unit) -> Unit {
+  self.rooms_k(fn(r1 : effect::Exit[Array[RoomUse]]) -> Unit {
+    match r1 {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(rooms0) => {
+        let before = rooms_bytes(rooms0)
+        if before <= budget || self.state.stopped {
+          k(effect::Exit::Succeeded(0.0))
+          return
+        }
+        self.rlog("warn", "other stations' rooms here over their budget: the longest unused go", [
+          ("bytes", sessions_core::jnum(before)),
+          ("budget", sessions_core::jnum(budget)),
+        ])
+        self.state.over = before - budget
+        self.relieve_k(now, fn(relex : effect::Exit[Unit]) -> Unit {
+          self.state.over = 0.0
+          match relex {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(_) => {
+              self.rooms_k(fn(r2 : effect::Exit[Array[RoomUse]]) -> Unit {
+                match r2 {
+                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(rooms) => {
+                    let mut total = rooms_bytes(rooms)
+                    self.running_owners_k(fn(roex : effect::Exit[Map[String, Bool]]) -> Unit {
+                      match roex {
+                        effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                        effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                        effect::Exit::Succeeded(running) => {
+                          for i in 1..<rooms.length() {
+                            let cur = rooms[i]
+                            let mut j = i - 1
+                            while j >= 0 && cur.seen < rooms[j].seen {
+                              rooms[j + 1] = rooms[j]
+                              j = j - 1
+                            }
+                            rooms[j + 1] = cur
+                          }
+                          for_each_k(
+                            rooms,
+                            fn(_i : Int, room : RoomUse, rk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                              if total <= budget || self.state.stopped {
+                                rk(effect::Exit::Succeeded(()))
+                                return
+                              }
+                              let (workspace, station, session) = match room.owner {
+                                Some(o) => o
+                                None => {
+                                  rk(effect::Exit::Succeeded(()))
+                                  return
+                                }
+                              }
+                              let owner = self.js_text(base_codec::json_arr([
+                                sessions_core::jstr(workspace),
+                                sessions_core::jstr(station),
+                                sessions_core::jstr(session),
+                              ]))
+                              if now - room.seen < ROOM_RECENT_MS || running.contains(owner) {
+                                rk(effect::Exit::Succeeded(()))
+                                return
+                              }
+                              self.rnode_k("closeRoom", [sessions_core::jstr(room.dir), base_codec::json_arr([]), sessions_core::jnum(now - ROOM_RECENT_MS)], fn(cex : effect::Exit[base_codec::Json]) -> Unit {
+                                match cex {
+                                  effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+                                  effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                                  effect::Exit::Succeeded(moved) => {
+                                    match sessions_core::field_of(moved, "room") {
+                                      base_codec::Json::Str(gone) => {
+                                        self.rnode_k("removeTask", [sessions_core::jstr(gone)], fn(rmex : effect::Exit[base_codec::Json]) -> Unit {
+                                          match rmex {
+                                            effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+                                            _ => {
+                                              total = total - room.bytes
+                                              self.rlog("info", "remote session directory removed", [
+                                                ("why", sessions_core::jstr("over budget")),
+                                                ("bytes", sessions_core::jnum(room.bytes)),
+                                                ("workspace", sessions_core::jstr(workspace)),
+                                                ("station", sessions_core::jstr(station)),
+                                                ("session", sessions_core::jstr(session)),
+                                              ])
+                                              rk(effect::Exit::Succeeded(()))
+                                            }
+                                          }
+                                        })
+                                      }
+                                      _ => rk(effect::Exit::Succeeded(()))
+                                    }
+                                  }
+                                }
+                              })
+                            },
+                            fn(fex : effect::Exit[Unit]) -> Unit {
+                              match fex {
+                                effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                effect::Exit::Succeeded(_) => {
+                                  let freed = before - total
+                                  k(effect::Exit::Succeeded(if freed > 0.0 { freed } else { 0.0 }))
+                                }
+                              }
+                            },
+                          )
+                        }
+                      }
+                    })
+                  }
+                }
+              })
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+pub fn RemoteCtx::expire_k(self : RemoteCtx, now : Double, k : (effect::Exit[Int]) -> Unit) -> Unit {
+  let mut gone = 0
+  let up : Map[String, Bool] = Map::new()
+  self.rstore_k("jobsUp", [], fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+    match jex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(jobs_val) => {
+        match jobs_val {
+          base_codec::Json::Arr(jobs) => {
+            for i in 0..<jobs.length() {
+              up.set(sessions_core::text_of(jobs[i], "id"), true)
+            }
+          }
+          _ => ()
+        }
+        let incoming = self.rjoin([self.state.root, "incoming"])
+        self.readdir_names_k(incoming, fn(irex : effect::Exit[Array[String]]) -> Unit {
+          match irex {
+            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+            effect::Exit::Succeeded(names) => {
+              let mut offset = 0
+              sessions_core::iter_sync_k(
+                fn(sk : (effect::Exit[sessions_core::IterStep]) -> Unit) -> Unit {
+                  if offset >= names.length() || self.state.stopped {
+                    sk(effect::Exit::Succeeded(sessions_core::IterStep::Stop))
+                    return
+                  }
+                  let end = if offset + EXPIRE_BATCH_SIZE < names.length() { offset + EXPIRE_BATCH_SIZE } else { names.length() }
+                  let chunk : Array[(String, String)] = []
+                  let chunk_ids : Array[base_codec::Json] = []
+                  for i in offset..<end {
+                    let name = names[i]
+                    let id = "remote_" + name
+                    if !up.contains(id) {
+                      chunk.push((name, id))
+                      chunk_ids.push(sessions_core::jstr(id))
+                    }
+                  }
+                  offset = end
+                  if chunk.length() == 0 {
+                    sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                    return
+                  }
+                  self.rstore_k("jobsEnds", [base_codec::json_arr(chunk_ids)], fn(eex : effect::Exit[base_codec::Json]) -> Unit {
+                    match eex {
+                      effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                      effect::Exit::Succeeded(ends) => {
+                        for_each_k(
+                          chunk,
+                          fn(_ci : Int, item : (String, String), ck : (effect::Exit[Unit]) -> Unit) -> Unit {
+                            if self.state.stopped {
+                              ck(effect::Exit::Succeeded(()))
+                              return
+                            }
+                            let (name, id) = item
+                            let job = sessions_core::field_of(ends, id)
+                            let dir = self.rjoin([incoming, name])
+                            let maybe_remove = fn(at : Double) -> Unit {
+                              if now - at < TASKS_KEPT_MS {
+                                ck(effect::Exit::Succeeded(()))
+                                return
+                              }
+                              self.remove_k(dir, true, fn(rem : effect::Exit[Unit]) -> Unit {
+                                match rem {
+                                  effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+                                  _ => {
+                                    gone = gone + 1
+                                    ck(effect::Exit::Succeeded(()))
+                                  }
+                                }
+                              })
+                            }
+                            match job {
+                              base_codec::Json::Null => {
+                                self.lstat_k(self.rjoin([dir, "task.json"]), fn(l1 : effect::Exit[Option[base_codec::Json]]) -> Unit {
+                                  match l1 {
+                                    effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+                                    effect::Exit::Succeeded(Some(st)) => {
+                                      let at = match sessions_core::num_of(Some(sessions_core::field_of(st, "mtimeMs"))) { Some(n) => n; None => now }
+                                      maybe_remove(at)
+                                    }
+                                    _ => {
+                                      self.lstat_k(dir, fn(l2 : effect::Exit[Option[base_codec::Json]]) -> Unit {
+                                        match l2 {
+                                          effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+                                          effect::Exit::Succeeded(Some(st)) => {
+                                            let at = match sessions_core::num_of(Some(sessions_core::field_of(st, "mtimeMs"))) { Some(n) => n; None => now }
+                                            maybe_remove(at)
+                                          }
+                                          _ => maybe_remove(now)
+                                        }
+                                      })
+                                    }
+                                  }
+                                })
+                              }
+                              _ => {
+                                if sessions_core::text_of(job, "state") == "running" {
+                                  ck(effect::Exit::Succeeded(()))
+                                  return
+                                }
+                                match sessions_core::num_of(Some(sessions_core::field_of(job, "endedAt"))) {
+                                  Some(ended) => maybe_remove(ended)
+                                  None => ck(effect::Exit::Succeeded(()))
+                                }
+                              }
+                            }
+                          },
+                          fn(cex : effect::Exit[Unit]) -> Unit {
+                            match cex {
+                              effect::Exit::Failed(e) => sk(effect::Exit::Failed(e))
+                              effect::Exit::Interrupted => sk(effect::Exit::Interrupted)
+                              effect::Exit::Succeeded(_) => sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                            }
+                          },
+                        )
+                      }
+                    }
+                  })
+                },
+                fn(iex : effect::Exit[Unit]) -> Unit {
+                  match iex {
+                    effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                    effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                    effect::Exit::Succeeded(_) => {
+                      if self.state.stopped {
+                        k(effect::Exit::Succeeded(gone))
+                        return
+                      }
+                      let outgoing = self.rjoin([self.state.root, "outgoing"])
+                      self.readdir_names_k(outgoing, fn(orex : effect::Exit[Array[String]]) -> Unit {
+                        match orex {
+                          effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                          effect::Exit::Succeeded(onames) => {
+                            for_each_k(
+                              onames,
+                              fn(_i : Int, name : String, ok : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                if self.state.stopped || !name.ends_with(".json") {
+                                  ok(effect::Exit::Succeeded(()))
+                                  return
+                                }
+                                let file = self.rjoin([outgoing, name])
+                                self.lstat_k(file, fn(lex : effect::Exit[Option[base_codec::Json]]) -> Unit {
+                                  match lex {
+                                    effect::Exit::Interrupted => ok(effect::Exit::Interrupted)
+                                    effect::Exit::Succeeded(Some(st)) => {
+                                      let mtime = match sessions_core::num_of(Some(sessions_core::field_of(st, "mtimeMs"))) { Some(n) => n; None => now }
+                                      if now - mtime < TASKS_KEPT_MS {
+                                        ok(effect::Exit::Succeeded(()))
+                                        return
+                                      }
+                                      self.read_json_k(file, fn(rex : effect::Exit[base_codec::Json]) -> Unit {
+                                        match rex {
+                                          effect::Exit::Interrupted => ok(effect::Exit::Interrupted)
+                                          effect::Exit::Succeeded(rec) => {
+                                            match sessions_core::field_of(rec, "delivered") {
+                                              base_codec::Json::Bool(true) => {
+                                                self.remove_k(file, false, fn(rem : effect::Exit[Unit]) -> Unit {
+                                                  match rem {
+                                                    effect::Exit::Interrupted => ok(effect::Exit::Interrupted)
+                                                    _ => {
+                                                      gone = gone + 1
+                                                      ok(effect::Exit::Succeeded(()))
+                                                    }
+                                                  }
+                                                })
+                                              }
+                                              _ => ok(effect::Exit::Succeeded(()))
+                                            }
+                                          }
+                                          _ => ok(effect::Exit::Succeeded(()))
+                                        }
+                                      })
+                                    }
+                                    _ => ok(effect::Exit::Succeeded(()))
+                                  }
+                                })
+                              },
+                              fn(fex : effect::Exit[Unit]) -> Unit {
+                                match fex {
+                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  effect::Exit::Succeeded(_) => {
+                                    if gone > 0 {
+                                      self.rlog("info", "tasks long over let go of", [("count", sessions_core::jnum(gone.to_double()))])
+                                    }
+                                    k(effect::Exit::Succeeded(gone))
+                                  }
+                                }
+                              },
+                            )
+                          }
+                        }
+                      })
+                    }
+                  }
+                },
+              )
+            }
+          }
+        })
+      }
+    }
+  })
+}
+
+pub fn RemoteCtx::move_prepared_k(self : RemoteCtx, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+  let dir = self.rjoin([self.state.root, "prepared"])
+  self.readdir_names_k(dir, fn(rex : effect::Exit[Array[String]]) -> Unit {
+    match rex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(names) => {
+        for_each_k(
+          names,
+          fn(_i : Int, name : String, nk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            if self.state.stopped || !name.ends_with(".json") {
+              nk(effect::Exit::Succeeded(()))
+              return
+            }
+            let file = self.rjoin([dir, name])
+            self.read_json_k(file, fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+              match jex {
+                effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                _ => {
+                  let v = match jex { effect::Exit::Succeeded(x) => x; _ => base_codec::json_null() }
+                  let session = sessions_core::text_of(v, "session")
+                  if session == "" {
+                    self.remove_k(file, false, fn(rem : effect::Exit[Unit]) -> Unit {
+                      match rem {
+                        effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                        _ => nk(effect::Exit::Succeeded(()))
+                      }
+                    })
+                    return
+                  }
+                  let target_dir = self.prepared_dir(session)
+                  self.mkdirs_k(target_dir, fn(mex : effect::Exit[Unit]) -> Unit {
+                    match mex {
+                      effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                      _ => {
+                        self.fs_k(
+                          "fs.link",
+                          [("from", sessions_core::jstr(file)), ("to", sessions_core::jstr(self.rjoin([target_dir, name])))],
+                          None,
+                          fn(lex : effect::Exit[base_codec::Json]) -> Unit {
+                            match lex {
+                              effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                              effect::Exit::Succeeded(_) => {
+                                self.remove_k(file, false, fn(rem : effect::Exit[Unit]) -> Unit {
+                                  match rem {
+                                    effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                                    _ => nk(effect::Exit::Succeeded(()))
+                                  }
+                                })
+                              }
+                              effect::Exit::Failed(_) => nk(effect::Exit::Succeeded(()))
+                            }
+                          },
+                        )
+                      }
+                    }
+                  })
+                }
+              }
+            })
+          },
+          k,
+        )
+      }
+    }
+  })
+}
+
+pub fn RemoteCtx::revoke_k(
+  self : RemoteCtx,
+  rosters : base_codec::Json,
+  current : Bool,
+  k : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if !current {
+    k(effect::Exit::Succeeded(()))
+    return
+  }
+  let list = match rosters {
+    base_codec::Json::Arr(a) => a
+    _ => []
+  }
+  let incoming = self.rjoin([self.state.root, "incoming"])
+  self.readdir_names_k(incoming, fn(rex : effect::Exit[Array[String]]) -> Unit {
+    match rex {
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Succeeded(names) => {
+        for_each_k(
+          names,
+          fn(_i : Int, name : String, nk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            self.read_json_k(self.rjoin([incoming, name, "task.json"]), fn(jex : effect::Exit[base_codec::Json]) -> Unit {
+              match jex {
+                effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                effect::Exit::Failed(_) => nk(effect::Exit::Succeeded(()))
+                effect::Exit::Succeeded(meta) => {
+                  let peer = sessions_core::text_of(meta, "station")
+                  let ws = sessions_core::text_of(meta, "workspace")
+                  let mut allowed = false
+                  for i in 0..<list.length() {
+                    let r = list[i]
+                    if sessions_core::text_of(r, "workspace") == ws {
+                      match sessions_core::field_of(r, "peers") {
+                        base_codec::Json::Arr(p) => {
+                          if json_arr_contains_str(p, peer) {
+                            allowed = true
+                            break
+                          }
+                        }
+                        _ => ()
+                      }
+                    }
+                  }
+                  if allowed || peer.starts_with("sandbox:") {
+                    nk(effect::Exit::Succeeded(()))
+                    return
+                  }
+                  let id = "remote_" + name
+                  self.rstore_k("getJob", [sessions_core::jstr(id)], fn(gjex : effect::Exit[base_codec::Json]) -> Unit {
+                    match gjex {
+                      effect::Exit::Failed(e) => nk(effect::Exit::Failed(e))
+                      effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                      effect::Exit::Succeeded(job) => {
+                        if opt_str_eq(sessions_core::str_of(sessions_core::jget(job, "state")), "running") {
+                          (self.dispatch.jobs_called_k)("stop", [sessions_core::jstr(id)], fn(sex : effect::Exit[base_codec::Json]) -> Unit {
+                            match sex {
+                              effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                              _ => nk(effect::Exit::Succeeded(()))
+                            }
+                          })
+                        } else {
+                          nk(effect::Exit::Succeeded(()))
+                        }
+                      }
+                    }
+                  })
+                }
+              }
+            })
+          },
+          k,
+        )
+      }
+    }
+  })
+}
+
+// ── `task.list` clipping and bounding (`remote_target.mbt:1267-1415`) ──
+
+pub fn clip_utf8(s : String, most : Int) -> Option[String] {
+  if bytes_len(s) <= most {
+    return None
+  }
+  let units = js_json::utf16_units(s)
+  let mut n = 0
+  let mut i = 0
+  while i < units.length() {
+    let c = units[i]
+    let (bytes, step) = if c < 0x80 {
+      (1, 1)
+    } else if c < 0x800 {
+      (2, 1)
+    } else if c >= 0xd800 && c <= 0xdbff && i + 1 < units.length() && units[i + 1] >= 0xdc00 && units[i + 1] <= 0xdfff {
+      (4, 2)
+    } else {
+      (3, 1)
+    }
+    if n + bytes > most {
+      break
+    }
+    n = n + bytes
+    i = i + step
+  }
+  Some(js_json::utf16_slice(s, 0, i) + "…")
+}
+
+fn clip_field(v : base_codec::Json, key : String) -> (base_codec::Json, Bool) {
+  match sessions_core::field_of(v, key) {
+    base_codec::Json::Str(t) => {
+      match clip_utf8(t, LIST_TEXT_BYTES) {
+        Some(c) => (with_field(v, key, sessions_core::jstr(c)), true)
+        None => (v, false)
+      }
+    }
+    _ => (v, false)
+  }
+}
+
+pub fn list_entry(entry : base_codec::Json) -> (base_codec::Json, Bool) {
+  let mut clipped = false
+  let mut spec = sessions_core::field_of(entry, "spec")
+  let (s1, c1) = clip_field(spec, "command")
+  spec = s1
+  clipped = clipped || c1
+  let (s2, c2) = clip_field(spec, "name")
+  spec = s2
+  clipped = clipped || c2
+  match sessions_core::field_of(spec, "back") {
+    base_codec::Json::Arr(back) => {
+      let kept : Array[base_codec::Json] = []
+      for i in 0..<back.length() {
+        if kept.length() >= LIST_BACK_MOST {
+          break
+        }
+        match back[i] {
+          base_codec::Json::Str(t) => {
+            match clip_utf8(t, LIST_TEXT_BYTES) {
+              Some(c) => {
+                kept.push(sessions_core::jstr(c))
+                clipped = true
+              }
+              None => kept.push(back[i])
+            }
+          }
+          other => kept.push(other)
+        }
+      }
+      if back.length() > kept.length() {
+        spec = with_field(spec, "backMore", sessions_core::jnum((back.length() - kept.length()).to_double()))
+        clipped = true
+      }
+      if clipped {
+        spec = with_field(spec, "back", base_codec::json_arr(kept))
+      }
+    }
+    _ => ()
+  }
+  let mut job = sessions_core::field_of(entry, "job")
+  match job {
+    base_codec::Json::Null => ()
+    _ => {
+      let (j1, jc1) = clip_field(job, "command")
+      job = j1
+      clipped = clipped || jc1
+      let (j2, jc2) = clip_field(job, "name")
+      job = j2
+      clipped = clipped || jc2
+    }
+  }
+  (
+    base_codec::json_obj([
+      ("key", sessions_core::field_of(entry, "key")),
+      ("spec", spec),
+      ("job", job),
+    ]),
+    clipped,
+  )
+}
+
+pub fn list_rank(job : base_codec::Json) -> Int {
+  if sessions_core::text_of(job, "state") != "running" {
+    2
+  } else {
+    match sessions_core::field_of(job, "queued") {
+      base_codec::Json::Bool(true) => 1
+      _ => 0
+    }
+  }
+}
+
+pub fn list_time(job : base_codec::Json) -> Double {
+  let ended = match sessions_core::field_of(job, "endedAt") {
+    base_codec::Json::Num(x, _) => x
+    _ => 0.0
+  }
+  let started = match sessions_core::field_of(job, "startedAt") {
+    base_codec::Json::Num(x, _) => x
+    _ => 0.0
+  }
+  if ended > started { ended } else { started }
+}
+
+fn list_row_before(a : (Int, Double, String, base_codec::Json), b : (Int, Double, String, base_codec::Json)) -> Bool {
+  let (r1, t1, k1, _) = a
+  let (r2, t2, k2, _) = b
+  if r1 != r2 {
+    r1 < r2
+  } else if t1 != t2 {
+    t1 > t2
+  } else {
+    js_json::js_compare(k1, k2) < 0
+  }
+}
+
+fn merge_sort_list_rows(
+  rows : Array[(Int, Double, String, base_codec::Json)],
+) -> Array[(Int, Double, String, base_codec::Json)] {
+  let n = rows.length()
+  if n <= 1 {
+    return rows
+  }
+  let mut src = rows
+  let mut width = 1
+  while width < n {
+    let dst : Array[(Int, Double, String, base_codec::Json)] = []
+    let mut left = 0
+    while left < n {
+      let mid = if left + width < n { left + width } else { n }
+      let right = if left + width * 2 < n { left + width * 2 } else { n }
+      let mut i = left
+      let mut j = mid
+      while i < mid && j < right {
+        if list_row_before(src[j], src[i]) {
+          dst.push(src[j])
+          j = j + 1
+        } else {
+          dst.push(src[i])
+          i = i + 1
+        }
+      }
+      while i < mid {
+        dst.push(src[i])
+        i = i + 1
+      }
+      while j < right {
+        dst.push(src[j])
+        j = j + 1
+      }
+      left = left + width * 2
+    }
+    src = dst
+    width = width * 2
+  }
+  src
+}
+
+pub fn RemoteCtx::list_bounded(self : RemoteCtx, listed : Array[(Int, Double, String, base_codec::Json)]) -> base_codec::Json {
+  let sorted = merge_sort_list_rows(listed)
+  let tasks : Array[base_codec::Json] = []
+  let mut used = 1024
+  let mut clipped = false
+  for i in 0..<sorted.length() {
+    if tasks.length() >= LIST_MOST {
+      break
+    }
+    let (_, _, _, raw_entry) = sorted[i]
+    let (entry, c) = list_entry(raw_entry)
+    let size = bytes_len(self.js_text(entry)) + 1
+    if used + size > LIST_BYTES {
+      break
+    }
+    used = used + size
+    clipped = clipped || c
+    tasks.push(entry)
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("tasks", base_codec::json_arr(tasks)),
+    ("total", sessions_core::jnum(sorted.length().to_double())),
+  ]
+  if tasks.length() < sorted.length() {
+    fields.push(("truncated", sessions_core::jbool(true)))
+  }
+  if tasks.length() < sorted.length() || clipped {
+    let note = tasks.length().to_string() +
+    " of " +
+    sorted.length().to_string() +
+    " tasks listed (running and queued first, then the latest), long commands and paths clipped (…); action get with a task's key says its job whole"
+    fields.push(("note", sessions_core::jstr(note)))
+  }
+  base_codec::json_obj(fields)
+}
