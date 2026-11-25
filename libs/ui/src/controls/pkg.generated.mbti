@@ -1777,7 +1777,7 @@ pub fn page_action_opens_node(@view.View, String, () -> String, (@view.View) -> 
 pub fn page_add_node(@view.View, () -> String, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 
 #callsite(autofill(loc))
-pub fn page_bar_node(@view.View, (@view.View) -> Unit, corners? : (Double, Double)?, loc~ : SourceLoc) -> @view.View
+pub fn page_bar_node(@view.View, (@view.View) -> Unit, corners? : (Double, Double)?, end_pad? : () -> Double, loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
 pub fn page_block(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
@@ -3148,6 +3148,8 @@ pub fn viewer_bar_floats(Double) -> Bool
 
 pub let viewer_bar_h : Double
 
+pub fn viewer_bar_h_now() -> Double
+
 pub let viewer_bar_in : Double
 
 pub let viewer_bar_ms : Double
@@ -3273,7 +3275,7 @@ pub let white_ink : @ui.Color
 
 pub let wide_bar_h : Double
 
-pub let wide_bar_h_size : @ui.Len
+pub fn wide_bar_h_now() -> Double
 
 pub let wide_heading : @ui.TextStyle
 
@@ -3308,7 +3310,7 @@ pub fn window_keys_bar_over_now() -> Double
 pub let window_keys_in : Double
 
 #callsite(autofill(loc))
-pub fn window_keys_node(@view.View, whole? : () -> Bool, loc~ : SourceLoc) -> Unit
+pub fn window_keys_node(@view.View, whole? : () -> Bool, line? : () -> KeysLine, loc~ : SourceLoc) -> Unit
 
 pub fn window_keys_room(roots? : @paint.CornerRoots) -> Double
 
@@ -3368,6 +3370,12 @@ pub(all) enum Anchor {
   Unanchored
 }
 pub impl Eq for Anchor
+
+pub(all) struct BarEnds {
+  start : () -> Double
+  end : () -> Double
+  over : () -> Double
+}
 
 pub(all) struct BarOnScroll {
   mut hidden : Bool
@@ -3726,6 +3734,13 @@ pub(all) struct Items {
 pub(all) enum KeyLook {
   Tile
   Pill
+}
+
+#derive(Eq)
+pub(all) enum KeysLine {
+  Bar
+  Tape
+  Band
 }
 
 pub(all) struct KeyPadKey {

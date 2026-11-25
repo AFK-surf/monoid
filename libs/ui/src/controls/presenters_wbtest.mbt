@@ -1350,3 +1350,116 @@ test "Small sheet_node: tall=0.0 grows=true caps at sheet_most at rest, and tall
   let dlg2_grown = t2.get(@ui.Role::Dialog)
   assert_true(dlg2_grown.rect.3 >= phone.2 * 0.9, msg="dragging tall=0.62 hugs=true grows=true expands to sheet_most: \{Repr(dlg2_grown.rect)}")
 }
+
+///|
+test "Small sheet_node: a steps=true panel pushed into an existing sheet via panel_page steps deeper with panel_go_nodes" {
+  let step2_left = Ref(0)
+  let step3_left = Ref(0)
+  let t = presenting_tester(
+    phone,
+    fn(_) {
+      panel_nodes("外层抽屉", from=Unanchored, grows=true, fn(v, close) {
+        button_node(v, fn() { "打开模型" }, fn() {
+          close()
+          panel_nodes(
+            "模型",
+            from=Unanchored,
+            steps=true,
+            ruled=true,
+            foot=fn(f, _) { words_node(f, fn() { "页脚操作" }, fn() { paragraph }) |> ignore },
+            fn(m, _) {
+              button_node(m, fn() { "全部模型" }, fn() {
+                panel_go_nodes(
+                  "全部模型",
+                  left=fn() { step2_left.val += 1 },
+                  foot=fn(f, _) { words_node(f, fn() { "全部页脚" }, fn() { paragraph }) |> ignore },
+                  fn(a, _) {
+                    button_node(a, fn() { "Anthropic" }, fn() {
+                      panel_go_nodes(
+                        "Anthropic",
+                        left=fn() { step3_left.val += 1 },
+                        foot=fn(f, _) { words_node(f, fn() { "厂商页脚" }, fn() { paragraph }) |> ignore },
+                        fn(k, _) { words_node(k, fn() { "Sonnet 5" }, fn() { paragraph }) |> ignore },
+                      )
+                    })
+                    |> ignore
+                  },
+                )
+              })
+              |> ignore
+            },
+          )
+        })
+        |> ignore
+      })
+    },
+    button_at=JStart,
+  )
+  open_it(t)
+  assert_true(t.query(Button, label="打开模型") is Some(_))
+  t.click(Button, label="打开模型")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="全部模型") is Some(_), msg="model page opened inside existing sheet")
+  // Step 1 -> Step 2 (全部模型)
+  t.click(Button, label="全部模型")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="Anthropic") is Some(_), msg="全部模型 step opened inside chained sheet")
+  assert_true(t.query(Button, label="全部模型") is None, msg="previous page hidden while 全部模型 shows")
+  assert_true(t.find("全部页脚") is Some(_), msg="step 2 footer rendered")
+  // Step 2 -> Step 3 (Anthropic)
+  t.click(Button, label="Anthropic")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("Sonnet 5") is Some(_), msg="maker step opened from 全部模型")
+  assert_true(t.find("厂商页脚") is Some(_), msg="step 3 footer rendered")
+  // Back unwinds step 3 -> step 2 -> step 1 -> outer sheet
+  t.click(Button, label="common.back")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="Anthropic") is Some(_) && step3_left.val == 1)
+  t.click(Button, label="common.back")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="全部模型") is Some(_) && step2_left.val == 1)
+  t.click(Button, label="common.back")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="打开模型") is Some(_))
+}
+
+///|
+test "Small sheet_node: last_presented returns the reused sheet serial after panel_page when an overlay opened and closed earlier" {
+  let reused_serial = Ref(0)
+  let t = presenting_tester(
+    phone,
+    fn(_) {
+      panel_nodes("外层抽屉", from=Unanchored, fn(v, close) {
+        button_node(v, fn() { "临时浮层" }, fn() {
+          panel_nodes("临时", from=Unanchored, fn(tmp, close_tmp) {
+            button_node(tmp, fn() { "关掉临时" }, close_tmp) |> ignore
+          })
+        })
+        |> ignore
+        button_node(v, fn() { "下一步面板" }, fn() {
+          close()
+          panel_nodes("第二页", from=Unanchored, steps=true, fn(p2, _) {
+            words_node(p2, fn() { "第二页内容" }, fn() { paragraph }) |> ignore
+          })
+          reused_serial.val = last_presented()
+        })
+        |> ignore
+      })
+    },
+    button_at=JStart,
+  )
+  open_it(t)
+  let base_serial = last_presented()
+  t.click(Button, label="临时浮层")
+  t.run_for(@ui.move_most_ms)
+  let tmp_serial = last_presented()
+  assert_true(tmp_serial > base_serial)
+  t.click(Button, label="关掉临时")
+  t.run_for(@ui.move_most_ms)
+  assert_false(presented_open_of(tmp_serial))
+  assert_true(presented_open_of(base_serial))
+  t.click(Button, label="下一步面板")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(reused_serial.val, base_serial)
+  assert_true(presented_open_of(reused_serial.val))
+}

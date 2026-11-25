@@ -67,6 +67,44 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
       transition=@ui.NavTransition::layered(),
     )
     |> ignore
+    // When the page panel extends past the window's right edge on Windows/Linux (e.g. peeking beside the sidebar on
+    // Medium), veil its top-right strip behind the translucent window-controls capsule so inactive top-bar titles and
+    // controls do not bleed under `- □ ×`.
+    panel.show(
+      at_once=true,
+      fn() {
+        if !@ui.window_keys_own_now() {
+          return false
+        }
+        let r = tape_room_now()
+        let t = tape_drawn_at(panel)
+        let page_right = tape_x_at(r, t) + tape_col_at(t) + tape_page_at(t)
+        page_right > r.tw - @sf.window_in + 0.5
+      },
+      fn(veil) {
+        let is_remote = fn() { app.nav.top() == Place("remote") }
+        veil
+        .over(Is(true))
+        .ground(By(fn() { if is_remote() { @sf.theme().p.bg } else { page_ground() } }))
+        .offset(
+          By(fn() {
+            let r = tape_room_now()
+            let t = tape_drawn_at(veil)
+            let page_left = tape_x_at(r, t) + tape_col_at(t)
+            let x = dmax(0.0, r.tw - @sf.window_keys_room_tape(roots=@ui.tree_corner_roots_now()) - 6.0 - page_left)
+            (x, 0.0)
+          }),
+        )
+        .width(By(fn() { Some(tape_room_now().tw) }))
+        .height(
+          By(fn() {
+            let h = @sf.wide_bar_h + @sf.tape_bar_over()
+            Some(if is_remote() { h - 1.0 } else { h })
+          }),
+        )
+        |> ignore
+      },
+    )
   })
   |> ignore
 }
@@ -360,9 +398,19 @@ fn tape_made(
                 fn() { @sfbase.workspace_in_view(src).0.map_or(wid, fn(w) { w.id }) },
                 tips,
                 // (its tabs, ＋ among them, clear of the panel's top corners as the files' bar is (tape_bar_clear_start):
-                // they stand wherever the room left puts them, so none of them can be concentric with a corner)
-                start_pad=fn() { dmax(12.0, tape_remote_radii()[0]) },
-                end_pad=fn() { dmax(12.0, tape_remote_radii()[1]) },
+                // they stand wherever the room left puts them, so none of them can be concentric with a corner;
+                // on Windows/Linux also reserve the tape window-controls capsule width at the panel's right edge
+                bar_ends={
+                  start: fn() { dmax(12.0, tape_remote_radii()[0]) },
+                  end: fn() {
+                    let base_end = tape_files_ends().1
+                    if !@ui.window_keys_own_now() {
+                      return base_end
+                    }
+                    dmax(base_end, @sf.window_keys_room_tape(roots=@ui.tree_corner_roots_now()) - @sf.window_in + bar_in)
+                  },
+                  over: @sf.tape_bar_over,
+                },
                 // (a screen driven by a finger, its actions at its foot clear of the panel's foot corners: under the
                 // round of the rounder of them, past what their row keeps under them)
                 foot_pad=fn() {
@@ -643,7 +691,7 @@ fn tape_made(
               src,
               k,
               drawn=fn(serial) { tape_page_wait.draws(serial) },
-              over=fn(o, src, page, stint) { chat_bar_wide_node(o, src, page, tape_chat_bar_ends(o), tips, stint) },
+              over=fn(o, src, page, stint) { chat_bar_wide_node(o, src, page, tape_chat_bar_ends(), tips, stint) },
               // (its messages nodes, its composer made as nodes in their list's foot)
               // (built in the page's panel, as tape_page_one builds the page: what stands in its corners concentric with them)
               body=fn(col, s, r, composer, shows, on_stack) {
@@ -715,7 +763,7 @@ fn tape_made(
 /// on the panel's words' line; what ends it, ⌘F's field where that is open, concentric with the panel's top right
 /// corner; its buttons round on that line, no corner of the window's; its ground the panel's (tape_page_ground), as a
 /// page's bar there has it.
-fn tape_chat_bar_ends(n : @view.View) -> ChatBarEnds {
+fn tape_chat_bar_ends() -> ChatBarEnds {
   let corners = fn() {
     let side = tape_shown_side()
     let under = if side is None { tape_room_now().under } else { 0.0 }
@@ -737,13 +785,16 @@ fn tape_chat_bar_ends(n : @view.View) -> ChatBarEnds {
     end: fn(_, finding) {
       let side = if finding { @sfpages.find_field_h } else { @sf.bar_key_side }
       let base_end = tape_bar_end_room(corners(), side~)
-      if !@ui.window_keys_own() {
+      if !@ui.window_keys_own_now() {
         return base_end
       }
-      let r = tape_room_now()
-      let t = tape_drawn_at(n)
-      let page_right = tape_x_at(r, t) + tape_col_at(t) + tape_page_at(t)
-      let past_right = dmax(@sf.window_in, r.tw - page_right)
+      // Compute steady-state right offset when resting on Page (no per-frame animation dependency so sliding never
+      // kinks, while deducting the peeking right side panel strip when a side panel is open: #7752).
+      let past_right = if tape_shown_side() is Some(_) && !@sf.native_side() {
+        tape_shows_right() + bar_gap_now()
+      } else {
+        @sf.window_in
+      }
       let keys_clear = @sf.window_keys_room_tape(roots=@ui.tree_corner_roots_now()) + bar_in - past_right
       dmax(base_end, keys_clear)
     },

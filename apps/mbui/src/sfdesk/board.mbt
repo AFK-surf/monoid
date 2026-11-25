@@ -151,10 +151,10 @@ fn board_pane_bar(parent : @view.View, src : Source, make : (@view.View) -> Unit
       .grow(Is(1.0))
       .min_width(Is(Some(0.0)))
       .lines_up(Is(Some(Middle)))
-      .padding(By(fn() { (0.0, (ends.over)(), 0.0, 0.0) }))
+      .padding(By(fn() { (0.0, (ends.over)(), 0.0, 1.0) }))
       // (its empty part drags the window: what is in it taking presses all the same, so it is said to take them)
       .presses(Is(true))
-      .moves_window(By(fn() { @ui.window_inset() }))
+      .moves_window(By(@ui.window_inset_now))
       |> ignore
       bar_room_node(bar, fn() { (ends.start)(true) })
       bar.box(fn(inner) {
@@ -216,20 +216,20 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
     col.box(fn(bar) {
       bar
       .over(Is(true))
-      .height(Is(Some(chat_bar_room(in_pane=false))))
+      .height(By(fn() { Some(chat_bar_room(in_pane=false)) }))
       .row(Is(true))
       .gap(Is(4.0))
       .lines_up(Is(Some(Middle)))
-      // (its title as far in from its start as × is seen from its end: the button's room at the end's, its icon of 16
-      // in its middle)
+      // (its title as far in from its start as × is seen from its normal end without mirroring window_keys_room)
       .padding(By(fn() {
         let end = (ends.end)(false, false)
-        (end + (@sf.icon_button_side - 16.0) / 2.0, 0.0, end, 0.0)
+        let start_in = (if @ui.window_keys_own_now() { bar_in } else { end }) + (@sf.icon_button_side - 16.0) / 2.0
+        (start_in, (ends.over)(), end, 1.0)
       }))
       .ground(By(fn() { @sf.theme().p.bg }))
       // (its empty part drags the window, as a chat's bar does)
       .presses(Is(true))
-      .moves_window(By(fn() { @ui.window_inset() }))
+      .moves_window(By(@ui.window_inset_now))
       |> ignore
       bar.box(fn(t) {
         t.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore

@@ -27,6 +27,7 @@ import { routes as xshare } from "./routes/xshare.ts";
 import { routes as hub, movedAnswer, uploadPath } from "./routes/hub.ts";
 import { routes as deviceTools } from "./routes/tools.ts";
 import { routes as agentEnv } from "./routes/agent-env.ts";
+import { routes as mcpServersRoutes } from "./routes/mcp-servers.ts";
 import { routes as networkSettings } from "./routes/network.ts";
 import { pageRestart } from "../ops/restart.ts";
 import { routes as contextSettings } from "./routes/context.ts";
@@ -619,6 +620,7 @@ export function agentsRoutes(agents: AgentsParts, deps: { store?: Store; events?
       : []),
     ...(agents.updates ? updates({ updates: agents.updates }) : []),
     ...(agents.config ? agentEnv({ config: agents.config, changed: () => deps.events?.overviewChanged(), restart: () => agents.hub.everyChanged() }) : []),
+    ...(agents.config && agents.managedMcp ? mcpServersRoutes({ config: agents.config, managedMcp: agents.managedMcp, changed: () => deps.events?.overviewChanged() }) : []),
     ...(agents.hub ? presetRoutes({ presets: agents.hub.presets, reposDir: () => agents.hub.reposDir(), index: agents.hub.repoIndex, clones: agents.hub.clones, changed: () => deps.events?.presetsChanged() }) : []),
     ...(agents.hub ? starRoutes({ kept: agents.hub.store, told: (ws, sub) => deps.events?.tell("stars", { workspace: ws }, `stars\0${ws}\0${sub}`, { workspace: ws, subs: [sub] }) }) : []),
     ...(agents.hub ? progressRoutes({ kept: agents.hub.store, told: (ws, sub) => deps.events?.tell("progress", { workspace: ws }, `progress\0${ws}\0${sub}`, { workspace: ws, subs: [sub] }) }) : []),

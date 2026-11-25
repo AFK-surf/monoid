@@ -1064,6 +1064,12 @@ pub struct Tree {
   /// a box of the window's own over all else of it (x, y, w, h: its own buttons, Tree::keeps_away): what goes beside
   /// another (View::beside) goes round it rather than under it
   mut away : (Double, Double, Double, Double)?
+  /// reactive signal mirroring `away` for layout bindings that depend on window-keys geometry (`Tree::kept_away_now`)
+  away_sig : @signals.Signal[(Double, Double, Double, Double)?]
+  /// the node owning the `away` overlay subtree (Tree::keeps_away `owner`), excluded from overlap audits
+  mut away_owner : NodeId?
+  /// whether `away` occupies a dedicated top band across the whole window (Small layout)
+  mut away_band : Bool
   /// Each window press, with its number and window coordinates (Tree::went_down).
   pressed_anywhere : @signals.Signal[(Int, Double, Double)]
   /// Whether a finger or a button is down anywhere in the window now (Tree::went_down, Tree::went_up).
@@ -1648,6 +1654,9 @@ pub fn Tree::new(
     room_h: @signals.signal(0.0, same=fn(a, b) { a == b }),
     clear: @signals.signal((0.0, 0.0, 0.0, 0.0), same=fn(a, b) { a == b }),
     away: None,
+    away_sig: @signals.signal(None, same=fn(a, b) { a == b }),
+    away_owner: None,
+    away_band: false,
     pressed_anywhere: @signals.signal((0, -1.0, -1.0), same=fn(a, b) { a == b }),
     held_anywhere: @signals.signal(false, same=fn(a, b) { a == b }),
     tapped_anywhere: @signals.signal(0, same=fn(a, b) { a == b }),
@@ -5099,15 +5108,59 @@ pub fn Tree::clear_of(self : Tree, top : Double, right : Double, foot : Double, 
 ///|
 /// A box of the window's own drawn over all else of it (x, y, w, h in the window; its own buttons where they are the
 /// app's to draw), `None` none: what goes beside another (View::beside, a menu by its trigger) is placed round it as
-/// round the window's edges, never under it.
-pub fn Tree::keeps_away(self : Tree, box : (Double, Double, Double, Double)?) -> Unit {
-  if self.away == box {
+/// round the window's edges, never under it. `owner`: the overlay capsule node owning this region (excluded from
+/// window-controls audits); `band`: true when the region occupies a dedicated top band across the whole window.
+pub fn Tree::keeps_away(
+  self : Tree,
+  box : (Double, Double, Double, Double)?,
+  owner? : NodeId,
+  band? : Bool = false,
+) -> Unit {
+  let next_owner = match box {
+    Some(_) => owner
+    None => None
+  }
+  let next_band = match box {
+    Some(_) => band
+    None => false
+  }
+  if self.away == box && self.away_owner == next_owner && self.away_band == next_band {
     return
   }
+  let box_changed = self.away != box
   self.away = box
-  if self.nodes.length() > 0 && self.nodes[0].live {
+  self.away_owner = next_owner
+  self.away_band = next_band
+  if box_changed {
+    self.away_sig.set(box)
+  }
+  if box_changed && self.nodes.length() > 0 && self.nodes[0].live {
     self.layout_marked_at(0)
   }
+}
+
+///|
+/// The window's own kept-away box (Tree::keeps_away), or `None` when none is set.
+pub fn Tree::kept_away(self : Tree) -> (Double, Double, Double, Double)? {
+  self.away
+}
+
+///|
+/// Signal-tracked read of `Tree::kept_away()` for reactive layout bindings (such as centred dialogs).
+pub fn Tree::kept_away_now(self : Tree) -> (Double, Double, Double, Double)? {
+  self.away_sig.get()
+}
+
+///|
+/// The node owning the kept-away overlay subtree (Tree::keeps_away `owner`), or `None`.
+pub fn Tree::kept_away_owner(self : Tree) -> NodeId? {
+  self.away_owner
+}
+
+///|
+/// Whether the kept-away box occupies a dedicated top band across the whole window (Tree::keeps_away `band`).
+pub fn Tree::kept_away_band(self : Tree) -> Bool {
+  self.away_band
 }
 
 ///|
@@ -5523,6 +5576,51 @@ pub fn Tree::input_bounds(self : Tree, id : NodeId) -> (Double, Double, Double, 
       let (x, y, sc) = self.placed(i)
       let (x1, y1) = (x + n.flex.width * sc, y + n.flex.height * sc)
       b = (dmax(b.0, x), dmax(b.1, y), dmin(b.2, x1), dmin(b.3, y1))
+    }
+    if n.lift is Some(_) {
+      break
+    }
+    i = n.parent
+  }
+  b
+}
+
+///|
+/// Where in the window what node `id` draws is clipped by its clipping ancestors (`View::clips`, `View::clips_past`,
+/// `View::cut_across`, matching `view_host.mbt` paint clipping): `(x0, y0, x1, y1)`, unbounded where no ancestor
+/// clips (or `id` is gone). Unlike `Tree::input_bounds`, this tracks paint clipping rather than `bounds_input`.
+pub fn Tree::draw_clip_bounds(self : Tree, id : NodeId) -> (Double, Double, Double, Double) {
+  let mut b = (-1.0e9, -1.0e9, 1.0e9, 1.0e9)
+  guard self.alive_id(id) else { return b }
+  let m = self.nodes[id.at]
+  if m.tucked_under is Some(t) {
+    b = self.tucked_bound(t, b)
+  }
+  let mut i = if m.lift is Some(_) { -1 } else { m.parent }
+  while i >= 0 {
+    let n = self.nodes[i]
+    if n.tucked_under is Some(t) {
+      b = self.tucked_bound(t, b)
+    }
+    if n.look.clips {
+      let (x, y, sc) = self.placed(i)
+      let ch = dmax(0.0, n.flex.height + n.look.clips_past) * sc
+      let (x1, y1) = (x + n.flex.width * sc, y + ch)
+      b = if n.clips_down {
+        (b.0, dmax(b.1, y), b.2, dmin(b.3, y1))
+      } else {
+        (dmax(b.0, x), dmax(b.1, y), dmin(b.2, x1), dmin(b.3, y1))
+      }
+      let nid : NodeId = { at: i, gen: n.gen }
+      match self.cut_across_of(nid) {
+        Some((from, to)) => {
+          let w = n.flex.width
+          let cf = dmax(0.0, dmin(from, w))
+          let ct = dmax(0.0, dmin(to, w))
+          b = (dmax(b.0, x + cf * sc), b.1, dmin(b.2, x + dmax(cf, ct) * sc), b.3)
+        }
+        None => ()
+      }
     }
     if n.lift is Some(_) {
       break

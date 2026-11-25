@@ -17,11 +17,11 @@ import { stationTools } from "./station-tools.ts";
 /// The factories the list (test/station-tools.ts `stationTools`) is made of, by the names their callers call them by.
 const FACTORIES = [
   "chatTools", "projectTools", "archiveTools", "remoteTools", "workspaceSizeTools", "jobTools", "screenTools", "permissionTools", "computerTools", "forwardTools", "relayTools",
-  "phoneTools", "adbTools", "browserTools", "deviceTools", "feedbackTools", "feishuTools", "loginTools", "retireTools", "rigTools", "searchTools", "vaultTools", "moveTools", "versionTools",
+  "phoneTools", "adbTools", "browserTools", "deviceTools", "feedbackTools", "feishuTools", "loginTools", "retireTools", "rigTools", "searchTools", "vaultTools", "moveTools", "versionTools", "mcpServerTools",
 ];
 /// How many times the parts give tools (`parts.tools(`, anywhere in src/): one a factory above but adb's, which also
 /// gives phone_send by itself.
-const PARTS_GIVE = 14;
+const PARTS_GIVE = 15;
 
 // The ceilings, in bytes: what the list weighed once it was slimmed (2026-11-14: 60,925 in all, from 80,230; the core
 // ones 13,951, from 22,140; chat_post the heaviest at 4,705, from 8,125), each rounded up to the next thousand. The

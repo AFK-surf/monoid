@@ -43,6 +43,7 @@ members = [
   "packages/sessions_actors",
   "packages/sessions_jobs_live",
   "packages/sessions_remote",
+  "packages/sessions_agents",
   "packages/reader_sessions",
   "packages/smoke",
 ]
@@ -96,4 +97,5 @@ sessions_core = { path = "packages/sessions_core" }
 sessions_actors = { path = "packages/sessions_actors" }
 sessions_jobs_live = { path = "packages/sessions_jobs_live" }
 sessions_remote = { path = "packages/sessions_remote" }
+sessions_agents = { path = "packages/sessions_agents" }
 reader_sessions = { path = "packages/reader_sessions" }

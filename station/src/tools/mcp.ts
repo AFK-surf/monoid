@@ -14,18 +14,26 @@ export const OUTWARD = ["chat_post", "slack_api", "job_start", "station_list", "
 export const UNBOUND_REFUSAL =
   "Refused: this station is not in a still.fail workspace right now (it was removed from it, or has not joined one), so it does not post to chats or Slack, call Slack, or start jobs. Nothing was sent. Stop here and do not retry: when the station is back in its workspace, the interrupted work resumes and you can post then.";
 
-/// A tool result's parts (MCP's content): text, or an image as base64 with its type.
-export type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
+/// A tool result's parts (MCP's content): text, image, audio, embedded resource, or resource link.
+export type Content =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string }
+  | { type: "audio"; data: string; mimeType: string }
+  | { type: "resource"; resource: Record<string, unknown> }
+  | { type: "resource_link"; uri: string; name?: string; description?: string; mimeType?: string };
 export type ToolReply = { content: Content[]; isError?: boolean };
 
 export type Tool = {
   name: string;
   description: string;
   inputSchema: unknown;
+  /// True for dynamically registered tools (such as station-managed third-party MCP tools) that reach outside the station
+  /// and must be refused while the station is unbound from its workspace.
+  outward?: boolean;
   /// The text the agent sees; a thrown error's message comes back as a tool error.
   run(session: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<string>;
-  /// What the agent sees when it is more than text (a screenshot): called instead of `run` where there is one.
-  content?(session: string, args: Record<string, unknown>): Promise<ToolReply>;
+  /// What the agent sees when it is more than text (a screenshot, or passthrough MCP content): called instead of `run` where there is one.
+  content?(session: string, args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolReply>;
   /// Whether this call, which succeeded and answered `said`, ended the session's turn: nothing is left for its model to
   /// read, so a runtime that can stop there (`Listing.ended`) makes no further request.
   endsTurn?(session: string, args: Record<string, unknown>, said: string): boolean;
@@ -191,13 +199,18 @@ export class McpEndpoint {
   private heardBy = new Map<string, number>();
   private traces?: () => Traces | null;
   private runtimeOf?: (session: string) => string | undefined;
+  private dynamicTools?: (session: string) => Promise<readonly Tool[]>;
 
   constructor(
     resolve: (token: string) => string | undefined,
     tools: readonly Tool[] | (() => readonly Tool[]),
     gate?: (session: string) => string | undefined,
     listing?: (session: string) => Listing | undefined,
-    options?: { traces?: () => Traces | null; runtimeOf?: (session: string) => string | undefined },
+    options?: {
+      traces?: () => Traces | null;
+      runtimeOf?: (session: string) => string | undefined;
+      dynamicTools?: (session: string) => Promise<readonly Tool[]>;
+    },
   ) {
     this.tools = typeof tools === "function" ? tools : () => tools;
     this.resolve = resolve;
@@ -205,13 +218,17 @@ export class McpEndpoint {
     this.listing = listing;
     this.traces = options?.traces;
     this.runtimeOf = options?.runtimeOf;
+    this.dynamicTools = options?.dynamicTools;
   }
 
   /// The tools a session is declared: all of them, or those within its runtime's budget and INDIRECT for the rest;
   /// the EVERY_TURN ones with its runtime's `loaded`, whose bytes its budget counts. A runtime that needs nothing is
   /// declared them byte for byte as before there was any of this: some validate or weigh what they are given.
-  private listed(session: string): Declared[] {
-    const visible = this.tools().filter((t) => !HIDDEN.includes(t.name));
+  private listed(session: string, extra: readonly Tool[] = []): Declared[] {
+    const base = this.tools();
+    const seen = new Set(base.map((t) => t.name));
+    const merged = extra.length === 0 ? base : [...base, ...extra.filter((t) => !seen.has(t.name))];
+    const visible = merged.filter((t) => !HIDDEN.includes(t.name));
     const { budget, loaded } = this.listing?.(session) ?? {};
     const say = (t: Tool): Declared => (loaded !== undefined && EVERY_TURN.includes(t.name) ? { ...declared(t), _meta: loaded } : declared(t));
     if (budget === undefined) return visible.map(say);
@@ -251,9 +268,11 @@ export class McpEndpoint {
         });
       case "ping":
         return reply({ result: {} });
-      case "tools/list":
+      case "tools/list": {
         this.heardBy.set(session, this.heard(session) + 1);
-        return reply({ result: { tools: this.listed(session) } });
+        const extra = this.dynamicTools ? await this.dynamicTools(session).catch(() => []) : [];
+        return reply({ result: { tools: this.listed(session, extra) } });
+      }
       case "tools/call": {
         this.heardBy.set(session, this.heard(session) + 1);
         let name = typeof params?.name === "string" ? params.name : "";
@@ -270,7 +289,7 @@ export class McpEndpoint {
         }
         const tool = this.tools().find((t) => t.name === name);
         if (!tool) return reply({ error: { code: -32602, message: `unknown tool ${name}` } });
-        if (OUTWARD.includes(name)) {
+        if (OUTWARD.includes(name) || tool.outward === true) {
           const why = this.gate?.(session);
           if (why !== undefined) {
             log.warn("mcp", "outward tool refused: the station is in no workspace", { session, tool: name });
@@ -289,7 +308,7 @@ export class McpEndpoint {
         };
         try {
           if (tool.content) {
-            const { content, isError } = await tool.content(session, args);
+            const { content, isError } = await tool.content(session, args, signal);
             if (span && traces) traces.endInternal(span, "mcp.tool", toolAttrs(isError ? "tool_error" : undefined), isError === true, { alwaysKeep: false, slowMs: 500 });
             return reply({ result: { content, ...(isError ? { isError: true } : {}) } });
           }

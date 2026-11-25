@@ -19,6 +19,7 @@ import { sees } from "../store/rows.ts";
 import { titleOf } from "../read/views.ts";
 import { type PolicyChecks, policySince, policyView } from "../sessions/archive-policy.ts";
 import { agentEnvView } from "./routes/agent-env.ts";
+import { type ManagedMcpServerView, managedMcpConfigView } from "../tools/managed-mcp-config.ts";
 import { networkView } from "../mesh/settings.ts";
 import { contextView } from "./routes/context.ts";
 import { CONTEXT_LEAST, CONTEXT_RUNTIMES } from "../sessions/context-cap.ts";
@@ -42,6 +43,8 @@ export type OverviewDeps = {
   rootView?: (path: string) => Promise<RootView>;
   /// Unix ms timestamp when this station release was built (ops/version.ts `builtAt`); undefined in development.
   builtAt?: () => number | undefined;
+  /// Station-managed third-party MCP servers with live status and masked secrets.
+  mcpServers?: () => ManagedMcpServerView[];
 };
 
 /// This station's link to still.fail cloud, as the pages show it (server.rs MeshFile::status): in the viewer's workspace
@@ -222,6 +225,8 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
     // Those of a joined workspace browse only its pinned folders, never the whole machine.
     // The variables everything it starts for its agents runs with (ops/agent-env.ts): a proxy, mostly.
     agentEnv: agentEnvView(raw),
+    // Station-managed third-party MCP servers (tools/managed-mcp.ts): masked secrets and live status.
+    mcpServers: d.mcpServers ? d.mcpServers() : managedMcpConfigView(raw),
     // How a session whose prompt cache is over goes on (routes/context.ts): afresh, by itself, when set.
     context: contextView(raw),
     // Whether it sends its log to still.fail (routes/diagnostics.ts).

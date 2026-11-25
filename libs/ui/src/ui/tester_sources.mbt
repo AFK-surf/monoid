@@ -156,5 +156,6 @@ pub fn Tester::audit(self : Tester) -> Array[String] {
   self.line_start_faults() +
   self.contrast_faults() +
   self.unseen_press_faults() +
-  self.fixed_outgrown()
+  self.fixed_outgrown() +
+  self.window_keys_faults()
 }

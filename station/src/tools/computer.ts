@@ -710,7 +710,7 @@ export function computerTools(computer: Computer): Tool[] {
       ...COMPUTER,
       content: (session, args) => computer.act(session, args),
       run: async (session, args) =>
-        (await computer.act(session, args)).content.map((c) => (c.type === "text" ? c.text : `[${c.mimeType} screenshot]`)).join("\n"),
+        (await computer.act(session, args)).content.map((c) => (c.type === "text" ? c.text : c.type === "image" ? `[${c.mimeType} screenshot]` : `[${c.type}]`)).join("\n"),
     },
   ];
 }

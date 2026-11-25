@@ -5,55 +5,94 @@
 // keys are.
 
 ///|
-/// Where the pill holding the buttons stands in a window `width` wide (window_keys_at's), given `whole` and the tree's
-/// tracked corner `roots`: (its top from the window's top, its side from the window's right).
-fn window_keys_at_roots(width : Double, whole : Bool, roots : @ui.CornerRoots) -> (Double, Double) {
-  if whole {
-    return (bar_keys_top() - window_keys_pill_pad + window_keys_bar_extra, window_keys_side(roots~))
+/// Which top-row band the window's own buttons (`window_keys_node`) align to, driven by the active shell.
+/// - `Bar`: wide top bar or full-window viewer bar (`y = 9..45`, centerline `27pt`, symmetric `9pt` top/right inset).
+/// - `Tape`: Medium tape card header (`y = window_in + tape_line - pad`, concentric with the tape panel's top-right).
+/// - `Band`: Small dedicated top band (`54pt` tall, pill centered vertically at `y = 9..45`).
+#derive(Eq)
+pub(all) enum KeysLine {
+  Bar
+  Tape
+  Band
+}
+
+///|
+/// Resolve which `KeysLine` applies: explicit shell-driven `line` when provided, else legacy `whole` + `layout(width)`.
+fn window_keys_line_for(width : Double, whole : Bool, line : (() -> KeysLine)?) -> KeysLine {
+  match line {
+    Some(f) => f()
+    None =>
+      if whole {
+        Bar
+      } else {
+        match layout(width) {
+          Small => Band
+          Medium => Tape
+          Large => Bar
+        }
+      }
   }
-  match layout(width) {
-    Small => ((window_keys_band - window_keys_pill_h) / 2.0, window_keys_side(roots~))
-    Medium => (window_in + tape_line - window_keys_pill_pad, window_keys_side_tape(roots~))
-    Large => (bar_keys_top() - window_keys_pill_pad + window_keys_bar_extra, window_keys_side(roots~))
+}
+
+///|
+/// Where the pill holding the buttons stands for `kl` and tracked corner `roots`: (top from window top, side from right).
+fn window_keys_at_line(kl : KeysLine, roots : @ui.CornerRoots) -> (Double, Double) {
+  match kl {
+    Bar => (bar_keys_top() - window_keys_pill_pad + window_keys_bar_extra, window_keys_side(roots~))
+    Tape => (window_in + tape_line - window_keys_pill_pad, window_keys_side_tape(roots~))
+    Band => ((window_keys_band - window_keys_pill_h) / 2.0, window_keys_side(roots~))
   }
 }
 
 ///|
 /// The window's own buttons over all else of the window in `root` (minimize, maximize/restore, close, in one liquid
-/// glass pill), shown while `@ui.window_keys_own_now()` holds. `whole`: over a page alone over all the window (a window of
-/// its own, a full-window tab or file preview), on its bar's line at any width.
+/// glass pill), shown while `@ui.window_keys_own_now()` holds. `line`: shell-driven band (`Bar`, `Tape`, or `Band`);
+/// when omitted, falls back to `whole` + `layout(width)`.
 #callsite(autofill(loc))
 pub fn window_keys_node(
   root : @view.View,
   whole? : () -> Bool = fn() { false },
+  line? : () -> KeysLine,
   loc~ : SourceLoc,
 ) -> Unit {
-  window_keys_made(loc~, root, whole, fn(_) {  })
+  window_keys_made(loc~, root, whole, fn(_) {  }, line?)
 }
 
 ///|
 /// window_keys_node's buttons, `made` given their pill as it is made (a test's hold on it).
 #callsite(autofill(loc))
-fn window_keys_made(root : @view.View, whole : () -> Bool, made : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+fn window_keys_made(
+  root : @view.View,
+  whole : () -> Bool,
+  made : (@view.View) -> Unit,
+  line? : () -> KeysLine,
+  loc~ : SourceLoc,
+) -> Unit {
+  let pill_owner : @signals.Signal[@view.NodeId?] = @signals.signal(None, same=fn(a, b) { a == b })
   // (report the maximize button's rect to the host for Windows' Snap Layouts, and the pill's to the tree for what goes
   // beside another to go round it (a menu morphing out of a bar's pill beside them: Tree::keeps_away), updating as
-  // own/width/whole/corners change)
+  // own/width/whole/line/corners/owner change)
   root.reacts(
     fn() {
       if !@ui.window_keys_own_now() {
         return None
       }
       let width = root.window().0
-      let (pill_top, pill_side) = window_keys_at_roots(width, whole(), @ui.tree_corner_roots_now())
-      Some((width - pill_side, pill_top))
+      let kl = window_keys_line_for(width, whole(), line)
+      let (pill_top, pill_side) = window_keys_at_line(kl, @ui.tree_corner_roots_now())
+      Some((width - pill_side, pill_top, kl is Band, pill_owner.get()))
     },
     fn(pos) {
       match pos {
-        Some((right, top)) => {
+        Some((right, top, is_band, owner)) => {
           // (the maximize button is second from the right: past the pill's pad, close and the gap between them)
           let x = right - window_keys_pill_pad - bar_key_side - window_keys_gap - bar_key_side
           @ui.window_snap(x, top + window_keys_pill_pad, bar_key_side, bar_key_side)
-          root.tree.keeps_away(Some((right - window_keys_w(), top, window_keys_w(), window_keys_pill_h)))
+          root.tree.keeps_away(
+            Some((right - window_keys_w(), top, window_keys_w(), window_keys_pill_h)),
+            owner?,
+            band=is_band,
+          )
         }
         None => {
           @ui.window_snap(0.0, 0.0, 0.0, 0.0)
@@ -74,12 +113,13 @@ fn window_keys_made(root : @view.View, whole : () -> Bool, made : (@view.View) -
     .lines_up(Is(Some(Start)))
     .padding(
       By(fn() {
-        let (top, side) = window_keys_at_roots(layer.window_w(), whole(), @ui.tree_corner_roots_now())
+        let kl = window_keys_line_for(layer.window_w(), whole(), line)
+        let (top, side) = window_keys_at_line(kl, @ui.tree_corner_roots_now())
         (0.0, top, side, 0.0)
       }),
     )
     |> ignore
-    bar_pill_group_with(
+    let pill = bar_pill_group_with(
       loc~,
       layer,
       height=window_keys_pill_h,
@@ -134,6 +174,14 @@ fn window_keys_made(root : @view.View, whole : () -> Bool, made : (@view.View) -
         close_btn.focus_ring(Is(Some((1.5, -1.5, 0xFFFFFFD9L)))) |> ignore
       },
     )
-    |> made
+    let pid = pill.id()
+    pill_owner.set(Some(pid))
+    pill.owns(fn() {
+      if pill_owner.untracked() == Some(pid) {
+        pill_owner.set(None)
+      }
+    })
+    |> ignore
+    made(pill)
   })
 }

@@ -16,6 +16,7 @@ import { computerTools } from "../src/tools/computer.ts";
 import { feedbackTools } from "../src/tools/feedback.ts";
 import { forwardTools } from "../src/tools/forward.ts";
 import { jobTools } from "../src/tools/jobs.ts";
+import { mcpServerTools } from "../src/tools/managed-mcp-tool.ts";
 import type { Tool } from "../src/tools/mcp.ts";
 import { permissionTools } from "../src/tools/permissions.ts";
 import { relayTools } from "../src/tools/relays.ts";
@@ -58,5 +59,6 @@ export function stationTools(): Tool[] {
     ...rigTools(none),
     ...searchTools(none),
     ...vaultTools(none, () => null, none),
+    ...mcpServerTools(none),
   ];
 }

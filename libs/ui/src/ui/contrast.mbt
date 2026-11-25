@@ -884,6 +884,10 @@ fn Ctx::contrast_faults_drawn(self : Ctx, marks : Double) -> Array[String] {
           continue
         }
         let ink = inst_rgb(a, b)
+        // Adaptive-ink icons/glyphs (slot 23 > 0 on glyph/shape instances) invert dynamically against backdrop luminance in the GPU shader.
+        if (kind == 1.0 || kind == 11.0) && b + 23 < a.length() && a[b + 23] > 0.0 {
+          continue
+        }
         let shown = Rgb::laid(ground, ink, a[b + 11])
         // (a cut through to a ground under it, or that ground's own colour; words are never that)
         if !is_words &&

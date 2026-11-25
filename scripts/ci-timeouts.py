@@ -45,6 +45,7 @@ LONGER = {
     ("side.yml", "side-mac"): 10,
     ("stable.yml", "desktop-win"): 10,
     ("stable.yml", "android"): 10,
+    ("stable.yml", "desktop-build"): 10,
     ("stable.yml", "desktop"): 10,
 }
 root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")

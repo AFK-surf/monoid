@@ -18,7 +18,7 @@ const SPEAKS_IN_WRITES = "slack_api";
 /// reason. A subagent is not kept from them; whether it should be is the owner's to decide (not decided, 2026-11-14).
 const ASKS = [
   "secret_use", "secret_save", "secret_describe", "secret_delete", "secret_reask", "secret_cancel", "sign_in", "login", "station_use", "device_use", "phone_use",
-  "station_retire", "station_move", "feedback_send", "feedback_reply",
+  "station_retire", "station_move", "feedback_send", "feedback_reply", "mcp_servers",
 ];
 /// These say nothing in any chat: they read, or work on the station, its jobs, its screens, its devices and its other
 /// stations. feishu_api among them: it refuses to send, answer or change a message, and adds only reactions.

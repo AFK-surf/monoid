@@ -655,7 +655,7 @@ fn side_screen_page_node(
           fn() { { back: None, top: 0.0, foot: 0.0, named: false } },
           on_close=fn() { side_change(src, r, "close", Some(tab)) },
           in_tab=true,
-          own_bar=if alone { Some(side_bar_look_node(on_tape)) } else { None },
+          own_bar=if alone { Some(fn() { side_bar_look_node(on_tape) }) } else { None },
         )
         // on the tape, out of sight while another panel is in use at rest; off the tape, out of sight while another page
         // covers its chat in the pane: let go of as a page under another is (its last frame kept, the stream and its hold
@@ -840,15 +840,16 @@ fn side_bar_clip_node(
   at : () -> Double,
   make : (@view.View) -> Unit,
 ) -> Unit {
-  if !@ui.window_keys_own() {
+  if @ui.platform() != 3 && @ui.platform() != 5 {
     make(parent)
     return
   }
   parent.box(fn(c) {
-    let sliding_win = fn() { at() < side_whole(src, c) - 0.5 }
+    let sliding_win = fn() { @ui.window_keys_own_now() && at() < side_whole(src, c) - 0.5 }
     c
     .shrink(Is(0.0))
     .clips(By(sliding_win))
+    .bounds_input(By(sliding_win))
     .width(
       By(fn() {
         if sliding_win() {
@@ -860,7 +861,7 @@ fn side_bar_clip_node(
     )
     |> ignore
     c.box(fn(inner) {
-      inner.shrink(Is(0.0)).width(By(fn() { Some(side_whole(src, inner)) })) |> ignore
+      inner.shrink(Is(0.0)).width(By(fn() { if @ui.window_keys_own_now() { Some(side_whole(src, inner)) } else { None } })) |> ignore
       make(inner)
     })
     |> ignore

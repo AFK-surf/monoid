@@ -37,7 +37,7 @@ runs:
         # load from other jobs as before, #3887, 2026-11-04)
         # The Node the station runs on (.node-version), ahead of ~/.local/bin's: what it is checked and built with.
         echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
-        sh .github/actions/setup-linux/whole-clone.sh || echo "::warning::the checkout's partial clone not made whole (whole-clone.sh)"
+        sh .github/actions/setup-mac/whole-clone.sh || echo "::warning::the checkout's partial clone not made whole (whole-clone.sh)"
         # Disk upkeep (upkeep.sh): once an hour, or at each job start below 15 GiB free.
         upkeep="$HOME/stillfail-ci/.upkeep"
         free_kb=$(df -Pk / | awk 'NR==2 {print $4}')
