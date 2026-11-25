@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
+import { hearLines, type Line } from "../src/ops/log.ts";
 import { timeFiles } from "../src/ops/file-waits.ts";
 import { killGroups } from "./kill-groups.ts";
 import { Jobs } from "../src/jobs/jobs.ts";
@@ -65,7 +66,14 @@ describe("remote's budget", { concurrency: true }, () => {
     writeFileSync(join(r.remote.root, "incoming", task, "task.json"), JSON.stringify({ workspace: "ws", station: "peer-a", session: "older", key: "k", layout: "session", spec: { command: "x" } }));
     const running = await r.jobs.startId("remote:ws:peer-a:older", "k", "tail -f /dev/null", join(older, "work"), null, false, `remote_${task}`);
 
-    const freed = await r.remote.budget(now, 4.5 * MiB);
+    const lines: Line[] = [];
+    hearLines((line) => void lines.push(line));
+    const freed = await r.remote.budget(now, 4.5 * MiB).finally(() => hearLines(null));
+    assert.deepEqual(
+      lines.filter((l) => l.message === "remote mirror removed" && l.fields.mirror === "big").map((l) => l.fields.why),
+      ["over budget"],
+      "the log says why: not a low disk",
+    );
     assert.ok(freed >= 4 * MiB, `freed ${freed}`);
     assert.ok(!existsSync(join(old, "work", "big")), "the mirror unused went first");
     assert.ok(!existsSync(old), "then the room unused the longest with nothing running");
@@ -75,9 +83,9 @@ describe("remote's budget", { concurrency: true }, () => {
     await r.jobs.stop(running.id);
   });
 
-  test("its budget: 15% of the disk, 32 GiB at most", () => {
+  test("its budget: 15% of the disk, however large; 32 GiB with its size not known", () => {
     assert.equal(remoteBudget(100 * 1024 ** 3), Math.floor(15 * 1024 ** 3));
-    assert.equal(remoteBudget(1000 * 1024 ** 3), 32 * 1024 ** 3);
+    assert.equal(remoteBudget(1000 * 1024 ** 3), 150 * 1024 ** 3);
     assert.equal(remoteBudget(null), 32 * 1024 ** 3);
   });
 
