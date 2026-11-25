@@ -71,19 +71,24 @@ os.execvp(sys.argv[2], sys.argv[2:])
 }
 
 ensure_zig() {
+  local zver="0.16.0"
   if [ -n "${ZIG_BIN:-}" ] && [ -x "$ZIG_BIN" ]; then
     printf '%s\n' "$ZIG_BIN"
     return 0
   fi
   if command -v zig >/dev/null 2>&1; then
-    command -v zig
-    return 0
+    local path_zig
+    path_zig="$(command -v zig)"
+    if [ "${PION_REQUIRE_PINNED:-0}" != "1" ] || [ "$("$path_zig" version 2>/dev/null || true)" = "$zver" ]; then
+      printf '%s\n' "$path_zig"
+      return 0
+    fi
+    echo "build.sh: ignoring PATH zig ($path_zig) whose version != $zver under PION_REQUIRE_PINNED=1" >&2
   fi
   if [ "$(uname -s)-$(uname -m)" != "Linux-x86_64" ]; then
-    echo "build.sh: zig is required for target $target (install zig 0.16.0 or set ZIG_BIN)" >&2
-    exit 1
+    echo "build.sh: zig $zver is required for target $target (install zig $zver or set ZIG_BIN)" >&2
+    return 1
   fi
-  local zver="0.16.0"
   local zsha="70e49664a74374b48b51e6f3fdfbf437f6395d42509050588bd49abe52ba3d00"
   local zbase="${XDG_CACHE_HOME:-$HOME/.cache}/pion-station-zig/$zver"
   local zdir="$zbase/zig-x86_64-linux-$zver"
