@@ -1076,17 +1076,40 @@ void mb_host_glyphs_ahead(int32_t *keys, int32_t n) {
       uint8_t bit = (uint8_t)(1 << key_sub(keys[i]));
       MBAhead *a = ahead_of[@(k)];
       if (a) {
-        // (asked already, this phase not begun: drawn first too; one asked in this batch is handed on with all of it)
         pthread_mutex_lock(&ahead_lock);
-        BOOL more = (a.want & bit) && !(a.first & bit);
-        if (more) a.first = (uint8_t)(a.first | bit);
+        BOOL stale = a.gone || a.scale != text_scale;
+        BOOL add_first = NO;
+        if (stale) {
+          a.gone = YES;
+          a.drawn = nil;
+          a.have = 0;
+          a.want = 0;
+          a.first = 0;
+        } else if ((a.want & bit) && !(a.first & bit)) {
+          a.first = (uint8_t)(a.first | bit);
+          add_first = YES;
+        } else if (!((a.want | a.drawing | a.have) & bit)) {
+          a.want = (uint8_t)(a.want | bit);
+          a.first = (uint8_t)(a.first | bit);
+          add_first = YES;
+        }
         pthread_mutex_unlock(&ahead_lock);
-        if (more && a.batch != ahead_batch) [firsts addObject:a];
-        continue;
+        if (stale) {
+          ahead_let_go(a);
+        } else {
+          if (add_first) {
+            entries[k].subs_queued |= bit;
+            if (a.batch != ahead_batch) {
+              [firsts addObject:a];
+              [ahead_order removeObject:a];
+              [ahead_order addObject:a];
+            }
+          }
+          continue;
+        }
       }
-      uint8_t want = (uint8_t)(SUB_ALL & ~entries[k].subs_queued);
-      if (want == 0) continue;
-      if (!ahead_ask(k, want, (uint8_t)(want & bit), asked) && ahead_order.count >= AHEAD_MOST) break;
+      uint8_t want = (uint8_t)(bit | (SUB_ALL & ~entries[k].subs_queued));
+      if (!ahead_ask(k, want, (uint8_t)(want & bit), asked)) continue;
     }
     ahead_go(asked, firsts);
   }

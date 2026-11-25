@@ -581,6 +581,12 @@ final class FramePacer {
     }
 
     void ended(boolean more, boolean later, boolean following, float paced, boolean externalDemand) {
+        applyRate(more, later, following, paced, externalDemand);
+        scheduleNext(more || later);
+    }
+
+    /** Applies the frame's display-rate vote and returns whether a low-rate paced vote is active. */
+    boolean applyRate(boolean more, boolean later, boolean following, float paced, boolean externalDemand) {
         boolean ext = externalDemand || (lastVsync != 0 && externalForVsync.compareAndSet(lastVsync, 0L));
         askedAtEnd = more || later;
         drawn++;
@@ -621,8 +627,40 @@ final class FramePacer {
                 stillAfter(moved);
             }
         }
-        if (more || later) wantFrame();
+        return pacedActive;
+    }
+
+    /** Schedules the next frame (or clears ahead) after handing over the current frame. */
+    void scheduleNext(boolean wantMore) {
+        if (wantMore) wantFrame();
         else ahead.set(false);
+    }
+
+    /** Valid thread CPU delta in ns, or -1 if either sample is unavailable or moved backwards. */
+    static long cpuDeltaNanos(long cpuStartNs, long cpuEndNs) {
+        return (cpuStartNs >= 0L && cpuEndNs >= cpuStartNs) ? (cpuEndNs - cpuStartNs) : -1L;
+    }
+
+    /**
+     * GL thread work duration (ns): non-paced swaps keep full wall time (including real GPU backpressure);
+     * paced swaps exclude intentional pacing sleep in eglSwapBuffers / lazy dequeueBuffer via thread CPU time,
+     * falling back to pre-swap wall time if CPU time is unavailable.
+     */
+    static long glWorkNanos(long drawStartNs, long drawEndNs, long swapDoneNs, long cpuDeltaNs, boolean pacedSwap) {
+        long wallNs = Math.max(0L, swapDoneNs - drawStartNs);
+        if (!pacedSwap) return wallNs;
+        if (cpuDeltaNs >= 0L) return Math.min(wallNs, cpuDeltaNs);
+        return Math.min(wallNs, Math.max(0L, drawEndNs - drawStartNs));
+    }
+
+    /** ADPF target work duration (70% of period), optionally clamped to the display's top refresh rate. */
+    static long adpfTargetNanos(long framePeriodNs, float topRate, boolean clampToTop) {
+        long period = framePeriodNs;
+        if (clampToTop && topRate > 0f) {
+            long topPeriod = (long) (1e9 / topRate);
+            if (topPeriod > 0L && (period <= 0L || topPeriod < period)) period = topPeriod;
+        }
+        return period > 0L ? period * 7L / 10L : 0L;
     }
 
     // ---- the display's rate ----

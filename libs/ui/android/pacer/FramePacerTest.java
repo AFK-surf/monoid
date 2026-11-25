@@ -1620,6 +1620,99 @@ public final class FramePacerTest {
                         + "), imeInsets=" + deltaInsets + " (t1=" + nowsInsets[1] + ")");
     }
 
+    /** 21. applyRate + scheduleNext matches ended() and returns the active paced state before handOver. */
+    static void applyRateScheduleNextEquivalenceCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        long t1 = 12 * ph.period;
+        ph.pacer.wantPacedFrame();
+        ph.pacer.vsyncCame(t1, t1 + 2 * ph.period);
+        FramePacer.Taken tk1 = ph.pacer.takeRender();
+        FramePacer.Begun b1 = ph.pacer.begin(tk1.vsyncAt, t1 + 200_000L, tk1.external);
+        boolean paced1 = ph.pacer.applyRate(false, false, b1.following, 20f, b1.externalDemand);
+        ph.pacer.scheduleNext(false);
+        boolean ok1 = paced1 && ph.pacer.isPacedActive() && ph.rate == 20f;
+
+        // Next frame has external demand -> applyRate lifts to 120 Hz and returns false before handOver.
+        long t2 = 13 * ph.period;
+        ph.pacer.wantFrame();
+        ph.pacer.vsyncCame(t2, t2 + 2 * ph.period);
+        FramePacer.Taken tk2 = ph.pacer.takeRender();
+        FramePacer.Begun b2 = ph.pacer.begin(tk2.vsyncAt, t2 + 200_000L, tk2.external);
+        boolean paced2 = ph.pacer.applyRate(true, false, b2.following, 20f, b2.externalDemand);
+        int postsBefore = ph.vsyncPosts;
+        ph.pacer.scheduleNext(true);
+        ph.runUntil(ph.now);
+        boolean ok2 = !paced2 && !ph.pacer.isPacedActive() && ph.rate == 120f && ph.vsyncPosts > postsBefore;
+
+        check("applyRate + scheduleNext matches ended() and reports exact paced state",
+                ok1 && ok2, "ok1=" + ok1 + ", ok2=" + ok2);
+    }
+
+    /** 22. cpuDeltaNanos and glWorkNanos exclude paced swap/dequeue sleep while preserving non-paced GPU backpressure. */
+    static void cpuDeltaAndGlWorkNanosCase() {
+        // cpuDeltaNanos edge cases: both -1 (must NOT return 0!), single -1, backwards, normal.
+        boolean cpuOk = FramePacer.cpuDeltaNanos(-1L, -1L) == -1L
+                && FramePacer.cpuDeltaNanos(-1L, 1_000_000L) == -1L
+                && FramePacer.cpuDeltaNanos(1_000_000L, -1L) == -1L
+                && FramePacer.cpuDeltaNanos(5_000_000L, 4_000_000L) == -1L
+                && FramePacer.cpuDeltaNanos(1_000_000L, 3_000_000L) == 2_000_000L;
+
+        long d0 = 100_000_000L;
+        // Non-paced with 48 ms GPU backpressure in swap: must report full 50 ms wall time.
+        long nonPaced = FramePacer.glWorkNanos(d0, d0 + 2_000_000L, d0 + 50_000_000L, 2_000_000L, false);
+        // Paced with 2 ms CPU and 50 ms wall (eglSwapBuffers sleep): reports 2 ms CPU.
+        long pacedSwapSleep = FramePacer.glWorkNanos(d0, d0 + 2_000_000L, d0 + 50_000_000L, 2_000_000L, true);
+        // Paced with lazy dequeueBuffer sleep inside draw (48 ms drawWall, 2 ms CPU): reports 2 ms CPU.
+        long pacedLazyDequeue = FramePacer.glWorkNanos(d0, d0 + 48_000_000L, d0 + 50_000_000L, 2_000_000L, true);
+        // Paced with CPU time unavailable (-1): falls back to pre-swap drawWall (2 ms), not 50 ms swapWall.
+        long pacedNoCpu = FramePacer.glWorkNanos(d0, d0 + 2_000_000L, d0 + 50_000_000L, -1L, true);
+        // Fallback path (swapEnd used as swapDoneNs, swapCpuEnd used for cpuDelta): excludes lazy dequeue sleep.
+        long fallbackPaced = FramePacer.glWorkNanos(
+                d0, d0 + 48_000_000L, d0 + 48_000_000L, FramePacer.cpuDeltaNanos(10_000_000L, 12_000_000L), true);
+
+        boolean workOk = nonPaced == 50_000_000L
+                && pacedSwapSleep == 2_000_000L
+                && pacedLazyDequeue == 2_000_000L
+                && pacedNoCpu == 2_000_000L
+                && fallbackPaced == 2_000_000L;
+        check("cpuDeltaNanos & glWorkNanos preserve non-paced backpressure and strip paced swap/dequeue sleep",
+                cpuOk && workOk, "cpuOk=" + cpuOk + ", nonPaced=" + nonPaced + ", pacedSwap=" + pacedSwapSleep
+                        + ", lazyDequeue=" + pacedLazyDequeue + ", noCpu=" + pacedNoCpu + ", fallback=" + fallbackPaced);
+    }
+
+    /** 23. adpfTargetNanos clamps to topRate during touch boost from paced 20 Hz even while timeline still reports 50 ms. */
+    static void adpfTargetNanosAndTouchBoostCase() {
+        long period50ms = 50_000_000L;
+        long period8ms = Math.round(1e9 / 120.0);
+        long expectedTopTarget = (long) (1e9 / 120f) * 7L / 10L; // ~5_833_333 ns
+        long expectedPacedTarget = period50ms * 7L / 10L;        // 35_000_000 ns
+
+        // Low-rate in-flight frame -> ACTION_DOWN sets boostTargetActive=true while timeline is still 50 ms:
+        // session creation, wake, and first-frame frameWorked all keep 5.83 ms target instead of 35 ms.
+        boolean boostTargetActive = true;
+        long onCreate = FramePacer.adpfTargetNanos(period50ms, 120f, boostTargetActive);
+        long onWake = FramePacer.adpfTargetNanos(period50ms, 120f, boostTargetActive);
+        long firstFrameWhile50ms = FramePacer.adpfTargetNanos(period50ms, 120f, boostTargetActive);
+        // Once finger lifts and timeline recovers to ~8.33 ms, boostTargetActive clears and normal policy resumes.
+        boolean touching = false;
+        boolean pacedActive = false;
+        if (boostTargetActive && (pacedActive || (!touching && period8ms <= (long) (1.1e9 / 120f)))) {
+            boostTargetActive = false;
+        }
+        long afterRecoverHigh = FramePacer.adpfTargetNanos(period8ms, 120f, boostTargetActive);
+        long backToPaced = FramePacer.adpfTargetNanos(period50ms, 120f, boostTargetActive);
+
+        boolean ok = onCreate == expectedTopTarget
+                && onWake == expectedTopTarget
+                && firstFrameWhile50ms == expectedTopTarget
+                && !boostTargetActive
+                && afterRecoverHigh == period8ms * 7L / 10L
+                && backToPaced == expectedPacedTarget;
+        check("adpfTargetNanos keeps 5.83 ms target on touch boost from 20 Hz until timeline recovers",
+                ok, "onCreate=" + onCreate + ", expectedTop=" + expectedTopTarget
+                        + ", backToPaced=" + backToPaced + ", expectedPaced=" + expectedPacedTarget);
+    }
+
     public static void main(String[] args) throws IOException {
         motionCase("a motion of 1 ms CPU and 1 ms GPU a frame shows a new frame at every refresh", 1, 1, true);
         motionCase("a motion of 0.5 ms CPU and 7 ms GPU a frame (the GPU under a refresh) shows a new frame at every refresh", 0.5, 7, true);
@@ -1657,6 +1750,9 @@ public final class FramePacerTest {
         wantImmediateFrameClearsAheadForNextFrameCase();
         sameVsyncFireWakeAfterAskAheadDoesNotDoublePostCase();
         wantFrameBeforeFireWakeAtSameTDoesNotDoublePostCase();
+        applyRateScheduleNextEquivalenceCase();
+        cpuDeltaAndGlWorkNanosCase();
+        adpfTargetNanosAndTouchBoostCase();
         if (args.length > 0) {
             replay(args[0], 1);
             replay(args[0], 7);
