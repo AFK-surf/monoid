@@ -160,6 +160,7 @@ test("cut at 5 minutes after git fetch RPC failed (HTTP 408 / curl 16 / curl 56)
     "##[error]error: RPC failed; HTTP 408 curl 22 The requested URL returned error: 408\n",
     "##[error]error: RPC failed; curl 56 Connection died, tried 5 times before giving up\n",
     "##[error]error: RPC failed; curl 16 Error in the HTTP2 framing layer\n",
+    "##[error]error: RPC failed; curl 92 HTTP/2 stream 1 was not closed cleanly\n",
   ]) {
     const ok = await run([{ run: { conclusion: "failure" }, jobs }], { 13: rpc + cut });
     assert.equal(ok.ok, true, rpc + "\n" + ok.said);
@@ -174,6 +175,16 @@ test("cut at 5 minutes after git fetch RPC failed (HTTP 408 / curl 16 / curl 56)
   ]) {
     const denied = await run([{ run: { conclusion: "failure" }, jobs }], { 13: nonTransport + cut });
     assert.equal(denied.ok, false, nonTransport + "\n" + denied.said);
+  }
+});
+
+test("retried-and-succeeded checkout RPC line does not excuse a later own-step test failure", async () => {
+  const jobs = [job(14, "check-station (2)", { took: 110, steps: [...setup, step("Station tests", "failure")] }), gateFailed];
+  const rpc = "##[error]error: RPC failed; curl 56 Connection died, tried 5 times before giving up\n";
+  for (const soft of ["not ok 3 - some test\n", "✖ some test\n", "· tests: station 2/6 … FAILED (12 s)\n"]) {
+    const r = await run([{ run: { conclusion: "failure" }, jobs }], { 14: rpc + soft });
+    assert.equal(r.ok, false, soft + "\n" + r.said);
+    assert.match(r.said, /check-station \(2\): NOT let through/);
   }
 });
 
