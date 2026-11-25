@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [12b53b34c](https://github.com/AFK-surf/monoid/commit/12b53b34c7a21f149097533e38ff8d533efc74f8) feat(pion): implement W7-B readops_chats L1 packag | 2.52 | 3.41 | 14.07 | 36.61 | 55.08 | 31.97 | 64.57 | 100.83 | 125.74 |
 | [bf66c2dbb](https://github.com/AFK-surf/monoid/commit/bf66c2dbbc04fa1067f02629b964b5462bb085bc) feat(pion): Wave 7.1 front (--builder forward and  | 2.52 | 3.41 | 14.07 | 36.61 | 55.08 | 31.97 | 64.57 | 100.83 | 125.74 |
 | [04f23f8f2](https://github.com/AFK-surf/monoid/commit/04f23f8f28d20778832cc3a30277cd4de3ea7487) perf(ui): keep the macOS menu bar in place and ope | 2.52 | 3.4 | 14.07 | 36.61 | 55.08 | 31.97 | 64.57 | 100.76 | 120.32 |
 | [af836a0fc](https://github.com/AFK-surf/monoid/commit/af836a0fcee54d4fa05d9fe02fce27cb9e6b6374) feat(ui): stop Cmd-click quick-pick at commas (#86 | 2.52 | 3.4 | 14.07 | 36.61 | 55.08 | 31.97 | 64.57 | 100.86 | 129.86 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cfc4a28c5](https://github.com/AFK-surf/monoid/commit/cfc4a28c5c3dc7c697a6c338ff059a0ea6bfac04) docs(releases): pin stable notes to 0.1.11220 (#85 | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 | [f2d09f531](https://github.com/AFK-surf/monoid/commit/f2d09f53181fc0f13ac58128f085f998925b0aea) perf(ui): fix Windows prewarm eviction race, add c | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.78 | 121.83 |
 | [669ee5d70](https://github.com/AFK-surf/monoid/commit/669ee5d70e138679346606f9ce1ded16d7c3ef18) feat(stations): show a station with no mark by its | 2.52 | 3.4 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 100.96 | 121.83 |
-| [f959ec7ab](https://github.com/AFK-surf/monoid/commit/f959ec7ab6b37494a74a93eee9c1ac90fac526fa) fix(core-ts): show the chats a search finds before | 2.52 | 3.39 | 14.03 | 37.51 | 58.07 | 31.93 | 64.49 | 101.21 | 121.83 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [12b53b34c](https://github.com/AFK-surf/monoid/commit/12b53b34c7a21f149097533e38ff8d533efc74f8) feat(pion): implement W7-B readops_chats L1 packag | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.48 |
 | [bf66c2dbb](https://github.com/AFK-surf/monoid/commit/bf66c2dbbc04fa1067f02629b964b5462bb085bc) feat(pion): Wave 7.1 front (--builder forward and  | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.12 | 5.93 | 57.51 |
 | [04f23f8f2](https://github.com/AFK-surf/monoid/commit/04f23f8f28d20778832cc3a30277cd4de3ea7487) perf(ui): keep the macOS menu bar in place and ope | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.69 |
 | [af836a0fc](https://github.com/AFK-surf/monoid/commit/af836a0fcee54d4fa05d9fe02fce27cb9e6b6374) feat(ui): stop Cmd-click quick-pick at commas (#86 | 0.56 | 0.73 | 2.86 | 3.89 | 7.13 | 2.11 | 5.93 | 57.74 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cfc4a28c5](https://github.com/AFK-surf/monoid/commit/cfc4a28c5c3dc7c697a6c338ff059a0ea6bfac04) docs(releases): pin stable notes to 0.1.11220 (#85 | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.51 |
 | [f2d09f531](https://github.com/AFK-surf/monoid/commit/f2d09f53181fc0f13ac58128f085f998925b0aea) perf(ui): fix Windows prewarm eviction race, add c | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.74 |
 | [669ee5d70](https://github.com/AFK-surf/monoid/commit/669ee5d70e138679346606f9ce1ded16d7c3ef18) feat(stations): show a station with no mark by its | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.62 |
-| [f959ec7ab](https://github.com/AFK-surf/monoid/commit/f959ec7ab6b37494a74a93eee9c1ac90fac526fa) fix(core-ts): show the chats a search finds before | 0.56 | 0.73 | 2.84 | 3.86 | 7.08 | 2.1 | 5.88 | 57.82 |
