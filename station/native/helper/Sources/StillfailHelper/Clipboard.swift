@@ -127,16 +127,13 @@ final class Clipboard {
     }
   }
 
-  /// Message 6: the path, shown selected in Finder.
+  /// Message 6: the path, shown selected in Finder; nothing for one that is not there (opening its folder instead would
+  /// launch an app given as `/Applications/Some.app/missing`).
   func reveal(_ payload: Data) {
     guard let path = String(data: payload, encoding: .utf8), path.hasPrefix("/") else { return }
     DispatchQueue.main.async {
-      let url = URL(fileURLWithPath: path)
-      if FileManager.default.fileExists(atPath: path) {
-        NSWorkspace.shared.activateFileViewerSelecting([url])
-      } else {
-        NSWorkspace.shared.open(url.deletingLastPathComponent())
-      }
+      guard FileManager.default.fileExists(atPath: path) else { return }
+      NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
   }
 

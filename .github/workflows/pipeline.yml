@@ -918,7 +918,8 @@ jobs:
 
   # The launcher's tests on Windows (station/native/launcher: its unit tests, and tests/windows.rs: an update whose
   # release has another launcher handed over to it under stillfail-station-w, run_windows.rs `renew`), on GitHub's
-  # Windows (no runner of ours is), with rustup's Rust the image has and the pinned Node, for a change to it.
+  # Windows (no runner of ours is), with rustup's Rust the image has and the pinned Node, for a change to it. And the
+  # screen's tests there (station/native/screen: its service pipe's security, svc_pipe.rs), for a change to the screen.
   launcher-windows:
     needs: plan
     if: needs.plan.outputs.launcher_windows == 'true'
@@ -937,7 +938,8 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             station/native/launcher/target
-          key: launcher-windows-${{ hashFiles('station/native/launcher/Cargo.lock') }}
+            station/native/screen/target
+          key: launcher-windows-${{ hashFiles('station/native/launcher/Cargo.lock', 'station/native/screen/Cargo.lock') }}
           restore-keys: launcher-windows-
       - name: The launcher's tests on Windows
         env:
@@ -945,6 +947,11 @@ jobs:
         run: |
           export STILLFAIL_NODE="$(command -v node)"
           cargo test --manifest-path station/native/launcher/Cargo.toml --locked -- --test-threads=1
+      # Its service pipe's security (svc_pipe.rs) and the rest of stillfail-screen's tests, which only Windows runs.
+      - name: The screen's tests on Windows
+        env:
+          CARGO_INCREMENTAL: '0'
+        run: cargo test --manifest-path station/native/screen/Cargo.toml --locked -- --test-threads=1
 
   # The desktop's accessibility trees on Windows (station/test/ui-live.test.ts): the agent-desktop.exe a Windows station
   # carries (the native part agent-desktop) driving Notepad through the agents' computer tool, on GitHub's Windows,

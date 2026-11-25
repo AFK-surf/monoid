@@ -98,6 +98,11 @@ final class Daemon {
       lock.unlock()
       close(fd)
     }
+    // Only a process of this same user is served, whatever the socket's mode lets connect (the defer above closes
+    // the connection, once).
+    var euid: uid_t = 0
+    var egid: gid_t = 0
+    guard getpeereid(fd, &euid, &egid) == 0, euid == geteuid() else { return }
     let channel = Channel(fd: fd)
     guard let line = channel.readLine(), let request = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { return }
     guard let given = request["token"] as? String, same(given, token) else {
