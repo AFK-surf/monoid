@@ -98,18 +98,37 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
-  let remote_connects = "{\"c-rem\":{\"described\":{\"kind\":\"slack\",\"team\":\"T2\"}}}"
+  let remote_connects = "{\"c-rem\":{\"described\":{\"kind\":\"slack\",\"team\":\"T2\"}},\"\\ufffd\":{\"described\":{\"kind\":\"feishu\"}},\"\\ud800\":{\"described\":{\"kind\":\"slack\",\"team\":\"T2\"}}}"
   match write_sync(client, root + "/remote-connects.json", remote_connects) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
-  let slack_names = "{\"u:T1:U1\":{\"person\":{\"name\":\"Alice\",\"email\":\"alice@acme.com\"}},\"c:T1:C1\":{\"channel\":\"general\"}}"
+  let slack_names = "{\"u:T1:U1\":{\"person\":{\"name\":\"Alice\",\"email\":\"alice@acme.com\"}},\"u:T1:\\ufffd\":{\"person\":{\"name\":\"\\ud800\",\"email\":\"lone@acme.com\"}},\"c:T1:C1\":{\"channel\":\"general\"}}"
   match write_sync(client, root + "/slack-names.json", slack_names) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
   let feishu_names = "{\"u:\\ufffd:U9\":{\"person\":{\"name\":\"FeishuUser\",\"email\":\"fu@acme.com\"}}}"
   match write_sync(client, root + "/feishu-names.json", feishu_names) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+
+  // Dedicated data dir for R2 P1 (`usage.people` via `remote-connects.json` without local `config.json` override)
+  let remote_root = root + "/remote_only_data"
+  match mkdir_sync(client, remote_root) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match write_sync(
+    client,
+    remote_root + "/remote-connects.json",
+    "{\"\\ufffd\":{\"described\":{\"kind\":\"feishu\"}},\"\\ud800\":{\"described\":{\"kind\":\"slack\",\"team\":\"T2\"}}}",
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match write_sync(client, remote_root + "/feishu-names.json", feishu_names) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
@@ -322,6 +341,20 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
         base_codec::json_null(),
       ],
     ),
+    // P2-1 regression: author "slack:c-slack:\u{FFFD}" whose name in slack-names.json is "\ud800"
+    (
+      "INSERT INTO entries(thread, n, kind, author_kind, author, text, at, card) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_num(10.0),
+        base_codec::json_num(5.0),
+        base_codec::json_str("message"),
+        base_codec::json_str("person"),
+        base_codec::json_str("slack:c-slack:\u{FFFD}"),
+        base_codec::json_str("lone name"),
+        base_codec::json_num(1005.0),
+        base_codec::json_null(),
+      ],
+    ),
     // Thread 30 entry (agent message at n=5, unread by alice)
     (
       "INSERT INTO entries(thread, n, kind, author_kind, author, text, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -425,6 +458,27 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
         base_codec::json_num(300.0),
       ],
     ),
+    // R2 P1 regression row in ws3: person = "slack:\u{FFFD}:U9" resolved via remote-connects.json
+    (
+      "INSERT INTO usage_15m(scope, quarter, session, thread, person, profile, runtime, model, fast, calls, input, cache_read, cache_write, cache_write_long, output) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        base_codec::json_str("ws3"),
+        base_codec::json_num(1893408.0),
+        base_codec::json_str("s3"),
+        base_codec::json_num(10.0),
+        base_codec::json_str("slack:\u{FFFD}:U9"),
+        base_codec::json_str("dup"),
+        base_codec::json_str("claude"),
+        base_codec::json_str("claude-opus-5-5"),
+        base_codec::json_num(0.0),
+        base_codec::json_num(1.0),
+        base_codec::json_num(100.0),
+        base_codec::json_num(0.0),
+        base_codec::json_num(0.0),
+        base_codec::json_num(0.0),
+        base_codec::json_num(50.0),
+      ],
+    ),
     (
       "INSERT INTO usage_scope_totals(scope, tokens) VALUES (?, ?)",
       [base_codec::json_str("ws1"), base_codec::json_num(2100.0)],
@@ -471,7 +525,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Some(base_codec::Json::Arr(xs)) => xs
     _ => []
   }
-  match check(om_msgs.length() == 4, "outflow_messages all count == 4", passed) {
+  match check(om_msgs.length() == 5, "outflow_messages all count == 5", passed) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
@@ -498,6 +552,20 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     None => false
   }
   match check(p3_ok, "P1-2: Feishu U+FFFD connect not clobbered by Group \\ud800 connect", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  // R2 P2-1 regression: author "slack:c-slack:\u{FFFD}" with name "\ud800" MUST NOT be falsely nulled by suffix check!
+  let p4_ok = match readops_core::json_val(om_msgs[4], "person") {
+    Some(p) => {
+      match readops_core::json_val(p, "name") {
+        Some(base_codec::Json::Str(n)) => n != ""
+        _ => false
+      }
+    }
+    None => false
+  }
+  match check(p4_ok, "R2 P2-1: lone-surrogate name not falsely nulled by suffix comparison", passed) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
@@ -534,7 +602,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Some(base_codec::Json::Arr(xs)) => xs
     _ => []
   }
-  match check(om_only_msgs.length() == 3, "outflow_messages messagesOnly excludes edit via savepoint", passed) {
+  match check(om_only_msgs.length() == 4, "outflow_messages messagesOnly excludes edit via savepoint", passed) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
@@ -902,8 +970,33 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
+  // R2 P1 regression: usage_page_json_str with remote-connects.json (U+FFFD Feishu + \ud800 Slack)
+  // resolves usage.people["slack:\u{FFFD}:U9"] -> name="FeishuUser", email="fu@acme.com", via="feishu"!
+  let remote_usage_ask = base_codec::json_obj([
+    (
+      "args",
+      base_codec::json_obj([
+        ("from", base_codec::json_num(1704067200000.0)),
+        ("to", base_codec::json_num(1704153600000.0)),
+        ("tz", base_codec::json_num(0.0)),
+        ("viewer", base_codec::json_obj([("workspace", base_codec::json_str("ws3")), ("home", base_codec::json_bool(false))])),
+      ]),
+    ),
+  ])
+  let remote_usage_wire = match usage_page_json_str(db, state, remote_root, remote_usage_ask) {
+    Ok(s) => s
+    Err(e) => return Err("R2 P1 usage_page_json_str failed: " + readops_core::read_error_message(e))
+  }
+  let r2_p1_ok = readops_core::str_contains_sub(remote_usage_wire, "\"name\":\"FeishuUser\"") &&
+  readops_core::str_contains_sub(remote_usage_wire, "\"email\":\"fu@acme.com\"") &&
+  readops_core::str_contains_sub(remote_usage_wire, "\"via\":\"feishu\"")
+  match check(r2_p1_ok, "R2 P1: usage.people remote-connects U+FFFD Feishu not clobbered by \\ud800 Slack", passed) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+
   // Drop entries_letters index and seed 70 edit rows on thread 10 to trigger 503 PAGE_LETTER_PENDING
-  // inside `savepoint_swallow_err("message_entries_after_read", ...)`, then verify DB remains usable!
+  // inside `savepoint_swallow_err("message_entries_after_read", ...)`, verifying db.autocommit() == true before & after!
   match db_exec_ok(db, "DROP INDEX entries_letters", []) {
     Ok(_) => ()
     Err(e) => return Err(e)
@@ -918,6 +1011,7 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
       Err(e) => return Err(e)
     }
   }
+  let ac_before = db.autocommit()
   let sp_503 = match outflow_messages(
     db,
     client,
@@ -934,11 +1028,16 @@ fn run_selftest_inner(temp_dir : String) -> Result[Int, String] {
     Err(readops_core::ReadError::Refused(503, m)) => readops_core::str_has_prefix(m, readops_core::PAGE_LETTER_PENDING)
     _ => false
   }
+  let ac_after = db.autocommit()
   let still_usable = match readops_core::one(db, "SELECT 1 AS x FROM threads WHERE id = 10", []) {
     Ok(Some(_)) => true
     _ => false
   }
-  match check(sp_503 && still_usable, "page_keys_after 503 + savepoint_swallow_err leaves db usable", passed) {
+  match check(
+    ac_before && sp_503 && ac_after && still_usable,
+    "R2 P2-2: page_keys_after 503 + savepoint_swallow_err keeps db.autocommit() == true",
+    passed,
+  ) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }

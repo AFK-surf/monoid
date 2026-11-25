@@ -150,3 +150,40 @@ test "readops_core: background tally preserves distinct raw UTF-16 keys through 
     _ => panic("expected JValue::Obj")
   }
 }
+
+test "readops_core: places_from_jvals keeps remote lone-surrogate keys distinct from U+FFFD while preserving local config sanitization" {
+  let remote_both = match js_json::parse(
+    "{\"\\ufffd\":{\"described\":{\"kind\":\"feishu\"}},\"\\ud800\":{\"described\":{\"kind\":\"slack\",\"team\":\"T2\"}}}",
+  ) {
+    Ok(v) => v
+    Err(_) => js_json::JValue::Null
+  }
+  let m_remote = places_from_jvals(remote_both, js_json::JValue::Obj([]))
+  match m_remote.get("\u{FFFD}") {
+    Some(p) => assert(p.book == "feishu" && p.id == "\u{FFFD}")
+    None => assert(false)
+  }
+
+  let remote_lone_only = match js_json::parse("{\"\\ud800\":{\"described\":{\"kind\":\"slack\",\"team\":\"T2\"}}}") {
+    Ok(v) => v
+    Err(_) => js_json::JValue::Null
+  }
+  let m_lone = places_from_jvals(remote_lone_only, js_json::JValue::Obj([]))
+  match m_lone.get("\u{FFFD}") {
+    None => ()
+    Some(_) => assert(false)
+  }
+
+  // Control group: local config.json retains MB `str_of` sanitization behavior unchanged.
+  let own_both = match js_json::parse(
+    "{\"connects\":[{\"id\":\"\\ufffd\",\"kind\":\"feishu\"},{\"id\":\"\\ud800\",\"kind\":\"group\"}]}",
+  ) {
+    Ok(v) => v
+    Err(_) => js_json::JValue::Null
+  }
+  let m_local = places_from_jvals(js_json::JValue::Obj([]), own_both)
+  match m_local.get("\u{FFFD}") {
+    Some(p) => assert(p.book == "group" && p.id == "\u{FFFD}")
+    None => assert(false)
+  }
+}

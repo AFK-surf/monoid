@@ -332,6 +332,21 @@ fn find_unit(u : Array[Int], target : Int) -> Option[Int] {
   None
 }
 
+fn units_has_suffix(u : Array[Int], suffix : Array[Int]) -> Bool {
+  let n = u.length()
+  let m = suffix.length()
+  if m > n {
+    return false
+  }
+  let off = n - m
+  for i in 0..<m {
+    if u[off + i] != suffix[i] {
+      return false
+    }
+  }
+  true
+}
+
 fn jval_raw_units(v : Option[js_json::JValue]) -> Option[Array[Int]] {
   match v {
     Some(js_json::JValue::Str(u)) => Some(u)
@@ -524,7 +539,7 @@ fn outflow_person(
             _ => None
           }
           let known = readops_core::jget(book_entry, "person")
-          let (name, email) = match readops_core::jget(known, "name") {
+          let (name_units, name, email) = match readops_core::jget(known, "name") {
             Some(js_json::JValue::Str(nu)) => {
               let n = js_json::sanitize_str(nu)
               let e = match readops_core::jget(known, "email") {
@@ -532,17 +547,20 @@ fn outflow_person(
                 _ => ""
               }
               (
+                if nu.length() > 0 { nu } else { js_json::utf16_units(user) },
                 if n != "" { n } else { user },
                 if e != "" { base_codec::json_str(e) } else { base_codec::json_null() },
               )
             }
-            _ => (user, base_codec::json_null())
+            _ => (js_json::utf16_units(user), user, base_codec::json_null())
           }
           let via = match team {
             Some(t) => t.book
             None => "slack"
           }
-          let name_json = if readops_core::str_has_suffix(ref_str, ":" + name) {
+          let suffix_units = concat_units([js_json::utf16_units(":"), name_units])
+          let ref_units = js_json::utf16_units(ref_str)
+          let name_json = if units_has_suffix(ref_units, suffix_units) {
             base_codec::json_null()
           } else {
             base_codec::json_str(name)

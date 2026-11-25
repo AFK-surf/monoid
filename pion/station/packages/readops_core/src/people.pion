@@ -93,49 +93,98 @@ pub fn Known::of(
   }
 }
 
-pub fn Known::places(self : Known) -> Result[Map[String, Place], ReadError] {
-  match self.cached_places {
-    Some(p) => return Ok(p)
-    None => ()
-  }
-  let out : Map[String, Place] = Map::new()
-  let remote = match read_json(self.client, join_path(self.sep, self.data, "remote-connects.json")) {
-    Ok(v) => v
-    Err(e) => return Err(e)
-  }
-  let entries = entries_of(Some(remote))
-  for i in 0..<entries.length() {
-    let (ek, ev) = entries[i]
-    let d = jget(Some(ev), "described")
-    match str_of(jget(d, "kind")) {
-      Some("feishu") => {
-        let nm = match str_of(jget(jget(d, "identity"), "team")) {
-          Some(s) => s
-          None => ""
-        }
-        out.set(ek, Place::{ id: ek, name: nm, book: "feishu" })
+fn has_lone_surrogate_units(u : Array[Int]) -> Bool {
+  let n = u.length()
+  let mut i = 0
+  while i < n {
+    let c = u[i]
+    if c >= 0xD800 && c <= 0xDBFF {
+      if i + 1 < n && u[i + 1] >= 0xDC00 && u[i + 1] <= 0xDFFF {
+        i = i + 2
+      } else {
+        return true
       }
-      Some("slack") => {
-        match str_of(jget(d, "team")) {
-          Some(t) => {
-            if t != "" {
-              let nm = match str_of(jget(jget(d, "identity"), "team")) {
-                Some(s) => s
-                None => ""
-              }
-              out.set(ek, Place::{ id: t, name: nm, book: "slack" })
-            }
-          }
-          None => ()
-        }
-      }
-      _ => ()
+    } else if c >= 0xDC00 && c <= 0xDFFF {
+      return true
+    } else {
+      i = i + 1
     }
   }
-  let own = match read_json(self.client, join_path(self.sep, self.data, "config.json")) {
-    Ok(v) => v
-    Err(e) => return Err(e)
+  false
+}
+
+fn places_from_jvals(remote : js_json::JValue, own : js_json::JValue) -> Map[String, Place] {
+  let out : Map[String, Place] = Map::new()
+  // Remote connects: match raw UTF-16 object keys without sanitizing lone surrogates into U+FFFD,
+  // so a `\uD800` key never collides with or clobbers a real `U+FFFD` key (MB `people.mbt`).
+  match remote {
+    js_json::JValue::Obj(entries) => {
+      for i in 0..<entries.length() {
+        let (ek_units, ev) = entries[i]
+        if has_lone_surrogate_units(ek_units) {
+          continue
+        }
+        let ek = js_json::sanitize_str(ek_units)
+        let d = jget(Some(ev), "described")
+        match str_of(jget(d, "kind")) {
+          Some("feishu") => {
+            let nm = match str_of(jget(jget(d, "identity"), "team")) {
+              Some(s) => s
+              None => ""
+            }
+            out.set(ek, Place::{ id: ek, name: nm, book: "feishu" })
+          }
+          Some("slack") => {
+            match str_of(jget(d, "team")) {
+              Some(t) => {
+                if t != "" {
+                  let nm = match str_of(jget(jget(d, "identity"), "team")) {
+                    Some(s) => s
+                    None => ""
+                  }
+                  out.set(ek, Place::{ id: t, name: nm, book: "slack" })
+                }
+              }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    js_json::JValue::Arr(items) => {
+      for i in 0..<items.length() {
+        let ek = i.to_string()
+        let d = jget(Some(items[i]), "described")
+        match str_of(jget(d, "kind")) {
+          Some("feishu") => {
+            let nm = match str_of(jget(jget(d, "identity"), "team")) {
+              Some(s) => s
+              None => ""
+            }
+            out.set(ek, Place::{ id: ek, name: nm, book: "feishu" })
+          }
+          Some("slack") => {
+            match str_of(jget(d, "team")) {
+              Some(t) => {
+                if t != "" {
+                  let nm = match str_of(jget(jget(d, "identity"), "team")) {
+                    Some(s) => s
+                    None => ""
+                  }
+                  out.set(ek, Place::{ id: t, name: nm, book: "slack" })
+                }
+              }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
   }
+  // Local config.json connects: keep MB `str_of` sanitization behavior unchanged.
   match jget(Some(own), "connects") {
     Some(js_json::JValue::Arr(connects)) => {
       for i in 0..<connects.length() {
@@ -174,6 +223,23 @@ pub fn Known::places(self : Known) -> Result[Map[String, Place], ReadError] {
     }
     _ => ()
   }
+  out
+}
+
+pub fn Known::places(self : Known) -> Result[Map[String, Place], ReadError] {
+  match self.cached_places {
+    Some(p) => return Ok(p)
+    None => ()
+  }
+  let remote = match read_json(self.client, join_path(self.sep, self.data, "remote-connects.json")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let own = match read_json(self.client, join_path(self.sep, self.data, "config.json")) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let out = places_from_jvals(remote, own)
   self.cached_places = Some(out)
   Ok(out)
 }
