@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { wall } from "../ops/fibers.ts";
 import type { Lang } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
-import { isBackgroundWrapperExecFailure, platform } from "../platform/index.ts";
+import { isBackgroundWrapperExecFailure, isBackgroundWrapperStderrLine, platform } from "../platform/index.ts";
 import { giveBackfill, takeBackfill } from "../store/backfill.ts";
 import {
   READER_MODES,
@@ -610,9 +610,9 @@ export class MbProcess extends EventEmitter {
   readonly #wrapped: boolean;
   readonly #spawnFallbackMode: string | undefined;
   #spawned = false;
-  #spawnEpoch: number | null = null;
+  #pendingWrappedSpawn = false;
+  #pendingStderrCount = 0;
   #sawStdout = false;
-  #stderrCounted = 0;
   readonly #wrapperStderr: string[] = [];
   #exited = false;
   #stalled = false;
@@ -620,6 +620,17 @@ export class MbProcess extends EventEmitter {
   /// All written to its stdin, and where it stood when it was last found behind (STDIN_BEHIND, `postLine`).
   #written = 0;
   #behind: { at: number; written: number; unread: number } | null = null;
+
+  #commitWrappedSpawn(): void {
+    if (!this.#pendingWrappedSpawn) return;
+    this.#pendingWrappedSpawn = false;
+    readerTelemetry.recordSpawn(this.engine, this.mode);
+    if (this.#spawnFallbackMode !== undefined) readerTelemetry.recordFallback(this.#spawnFallbackMode);
+    for (let i = 0; i < this.#pendingStderrCount; i++) {
+      readerTelemetry.recordStderr(this.engine, this.mode);
+    }
+    this.#pendingStderrCount = 0;
+  }
 
   /// `options.background`: whether it runs as the system's background work (mbSpawned), else as its args say;
   /// `stdinMost`: STDIN_MOST but in tests; `engine`/`mode`: explicit telemetry identity when known at spawn;
@@ -638,9 +649,12 @@ export class MbProcess extends EventEmitter {
     this.#child = spawn(command, given, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     this.#child.once("spawn", () => {
       this.#spawned = true;
-      this.#spawnEpoch = readerTelemetry.windowEpoch;
-      readerTelemetry.recordSpawn(this.engine, this.mode);
-      if (this.#spawnFallbackMode !== undefined) readerTelemetry.recordFallback(this.#spawnFallbackMode);
+      if (this.#wrapped) {
+        this.#pendingWrappedSpawn = true;
+      } else {
+        readerTelemetry.recordSpawn(this.engine, this.mode);
+        if (this.#spawnFallbackMode !== undefined) readerTelemetry.recordFallback(this.#spawnFallbackMode);
+      }
     });
     if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, binary, args, background, startedAt: wall.now(), engine: this.engine, mode: this.mode });
     const said = new Said((answer) => this.emit("message", answer));
@@ -648,14 +662,17 @@ export class MbProcess extends EventEmitter {
       if (bytes.length > 0 && !this.#sawStdout) {
         this.#sawStdout = true;
         this.#wrapperStderr.length = 0;
+        this.#commitWrappedSpawn();
       }
       said.push(bytes);
     });
     createInterface({ input: this.#child.stderr! }).on("line", (line) => {
-      readerTelemetry.recordStderr(this.engine, this.mode);
-      this.#stderrCounted++;
-      if (this.#wrapped && !this.#sawStdout && this.#wrapperStderr.length < 8) {
-        this.#wrapperStderr.push(line);
+      if (this.#wrapped && this.#pendingWrappedSpawn && !this.#sawStdout && isBackgroundWrapperStderrLine(command, line)) {
+        this.#pendingStderrCount++;
+        if (this.#wrapperStderr.length < 8) this.#wrapperStderr.push(line);
+      } else {
+        this.#commitWrappedSpawn();
+        readerTelemetry.recordStderr(this.engine, this.mode);
       }
       log.warn("readers", "a MoonBit reader said", { line, engine: this.engine, mode: this.mode });
     });
@@ -680,14 +697,14 @@ export class MbProcess extends EventEmitter {
         !this.#intentionalStop &&
         isBackgroundWrapperExecFailure(command, code, signal, this.#wrapperStderr)
       ) {
-        if (this.#spawnEpoch !== null) {
-          readerTelemetry.undoUnstartedSpawn(this.#spawnEpoch, this.engine, this.mode, {
-            fallbackMode: this.#spawnFallbackMode,
-            stderrLines: this.#stderrCounted,
-          });
+        this.#pendingWrappedSpawn = false;
+        this.#pendingStderrCount = 0;
+        this.#wrapperStderr.length = 0;
+      } else {
+        this.#commitWrappedSpawn();
+        if (this.#spawned && !this.#intentionalStop && !this.#stalled && (code !== 0 || signal !== null)) {
+          readerTelemetry.recordUnexpectedExit(this.engine, this.mode);
         }
-      } else if (this.#spawned && !this.#intentionalStop && !this.#stalled && (code !== 0 || signal !== null)) {
-        readerTelemetry.recordUnexpectedExit(this.engine, this.mode);
       }
       this.emit("exit", code ?? (signal !== null ? 1 : 0));
     });

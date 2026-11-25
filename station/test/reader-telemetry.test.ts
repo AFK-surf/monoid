@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { LogExport, record } from "../src/ops/log-export.ts";
 import { type Line, hearLines } from "../src/ops/log.ts";
-import { type ProcessInfo, isBackgroundWrapperExecFailure } from "../src/platform/index.ts";
+import { type ProcessInfo, isBackgroundWrapperExecFailure, isBackgroundWrapperStderrLine } from "../src/platform/index.ts";
 import { ArchiveMarkBuilder } from "../src/read/archive-mark-builder.ts";
 import {
   type LiveProgram,
@@ -728,9 +728,13 @@ test("isBackgroundWrapperExecFailure distinguishes taskpolicy/nice/ionice exec f
     isBackgroundWrapperExecFailure("/usr/local/bin/stillfail-reader", 127, null, ["nice: nope"]),
     false,
   );
+  assert.equal(isBackgroundWrapperStderrLine("/usr/sbin/taskpolicy", "taskpolicy: posix_spawn: No such file or directory"), true);
+  assert.equal(isBackgroundWrapperStderrLine("/usr/bin/nice", "nice: '/bad/bin': No such file or directory"), true);
+  assert.equal(isBackgroundWrapperStderrLine("/usr/bin/ionice", "ionice: failed to execute /bad/bin: Permission denied"), true);
+  assert.equal(isBackgroundWrapperStderrLine("/usr/sbin/taskpolicy", "reader warning: something else"), false);
 });
 
-test("background wrapper exec failure (bad shebang) rolls back spawn/fallback/stderr without unexpectedExit, while real exit 66/127 still counts", { skip: unix ? false : "Unix background wrappers only" }, async () => {
+test("background wrapper exec failure (bad shebang) stays uncredited even across a mid-flight flushWindow(), while real exit 66/127 still counts", { skip: unix ? false : "Unix background wrappers only" }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "bg-wrapper-exec-fail-"));
   const prevPion = process.env.STILLFAIL_PION_READER;
   const prevFoot = process.env.STILLFAIL_READER_FOOTPRINT;
@@ -739,6 +743,9 @@ test("background wrapper exec failure (bad shebang) rolls back spawn/fallback/st
 
   try {
     // 1. Executable with non-existent shebang interpreter via measured() (background: true) + missing Pion fallback.
+    // Flush once mid-flight right after the wrapper diagnostic stderr line arrives (before `close` settles),
+    // and again after `measured()` rejects: across both windows combined, spawns/fallbacks/stderrLines/unexpectedExits
+    // must all remain 0 and no `pion/footprint` bucket may be emitted.
     const badShebang = join(dir, "stillfail-reader");
     writeFileSync(badShebang, "#!/nonexistent/interp\n");
     chmodSync(badShebang, 0o755);
@@ -746,20 +753,34 @@ test("background wrapper exec failure (bad shebang) rolls back spawn/fallback/st
     process.env.STILLFAIL_PION_READER = join(dir, "missing-pion");
     process.env.STILLFAIL_READER_FOOTPRINT = "pion";
 
-    await assert.rejects(measured(dir, undefined, { maxDurationMs: 5_000 }));
+    let midFlightFlushed = false;
+    let window1: ReturnType<typeof readerTelemetry.flushWindow> = [];
+    hearLines((entry) => {
+      if (!midFlightFlushed && entry.at === "readers" && entry.message === "a MoonBit reader said") {
+        midFlightFlushed = true;
+        window1 = readerTelemetry.flushWindow(31_000);
+      }
+    });
 
-    const flushedBad = readerTelemetry.flushWindow(61_000);
-    const mbFoot = flushedBad.find((s) => s.engine === "mb" && s.mode === "footprint");
-    assert.ok(mbFoot, "measured() still records ops=1, errors=1");
-    assert.equal(mbFoot.ops, 1);
-    assert.equal(mbFoot.errors, 1);
-    assert.equal(mbFoot.spawns, 0);
-    assert.equal(mbFoot.unexpectedExits, 0);
-    assert.equal(mbFoot.stderrLines, 0);
-    assert.equal(
-      flushedBad.find((s) => s.engine === "pion" && s.mode === "footprint"),
-      undefined,
-      "fallback ghost bucket rolled back and removed",
+    await assert.rejects(measured(dir, undefined, { maxDurationMs: 5_000 }));
+    hearLines(null);
+    assert.equal(midFlightFlushed, true, "expected mid-flight flushWindow() to run after wrapper diagnostic stderr line");
+
+    const window2 = readerTelemetry.flushWindow(61_000);
+    const combined = [...window1, ...window2];
+    const mbFoot = combined.filter((s) => s.engine === "mb" && s.mode === "footprint");
+    const sum = (items: typeof mbFoot, key: "ops" | "errors" | "spawns" | "unexpectedExits" | "stderrLines" | "fallbacks") =>
+      items.reduce((acc, item) => acc + item[key], 0);
+    assert.equal(sum(mbFoot, "ops"), 1);
+    assert.equal(sum(mbFoot, "errors"), 1);
+    assert.equal(sum(mbFoot, "spawns"), 0);
+    assert.equal(sum(mbFoot, "unexpectedExits"), 0);
+    assert.equal(sum(mbFoot, "stderrLines"), 0);
+    assert.equal(sum(mbFoot, "fallbacks"), 0);
+    assert.deepEqual(
+      combined.filter((s) => s.engine === "pion" && s.mode === "footprint"),
+      [],
+      "no pion/footprint fallback bucket emitted in either window",
     );
 
     // 2. Contrast control: real runnable script under background: true exiting with 66 and 127 MUST still count.
@@ -775,6 +796,7 @@ test("background wrapper exec failure (bad shebang) rolls back spawn/fallback/st
       assert.equal(bucket.unexpectedExits, 1, `real exit ${exitCode} keeps unexpectedExits=1`);
     }
   } finally {
+    hearLines(null);
     if (prevPion === undefined) delete process.env.STILLFAIL_PION_READER;
     else process.env.STILLFAIL_PION_READER = prevPion;
     if (prevFoot === undefined) delete process.env.STILLFAIL_READER_FOOTPRINT;
