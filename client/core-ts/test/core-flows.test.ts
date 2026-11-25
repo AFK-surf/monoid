@@ -4461,6 +4461,27 @@ test("a start reads this device's notice settings beside its databases, not afte
   }
 });
 
+test("a start reads what the device keeps of the person's own lock beside its databases, not after them", async () => {
+  const s = stationHost(base());
+  // (the person's own lock and the device's values each answered 200 ms after they are asked, as a disk busy at a start
+  // answers)
+  const get = s.host.storageGet.bind(s.host);
+  s.host.storageGet = (k) => (k.startsWith("personal-") || k.startsWith("device/") ? Effect.flatMap(Effect.sleep("200 millis"), () => get(k)) : get(k));
+  let core: Core | undefined;
+  const making = Core.create(s.host, { clock: s.host.time.clock, sample: 0, wire: () => new HostWire(s.host) }).then((c) => void (core = c));
+  try {
+    await s.host.time.pass(300);
+    assert.notEqual(core, undefined);
+    const subs = core!.inner.accounts.list().map((a) => a.sub);
+    assert.equal(subs.length, 1);
+    assert.ok(core!.inner.adb.personal().loaded(subs[0]!), "read in one wait of 200 ms, not one after the databases' own");
+  } finally {
+    await s.host.time.pass(1_000);
+    await making;
+    core?.close();
+  }
+});
+
 test("a start whose own lock is never read from the device is told at the deadline, as not read", async () => {
   const { host, core } = await started(base(), 1, undefined, (x) => {
     const get = x.host.storageGet.bind(x.host);

@@ -73,7 +73,7 @@ import { Adb } from "./adb.ts";
 import { Rigs } from "./rigs.ts";
 import { Devices } from "./devices.ts";
 import { Signer } from "./lock.ts";
-import { PersonalLock } from "./personal-lock.ts";
+import { EarlyReads, PersonalLock } from "./personal-lock.ts";
 import { answersOf, asked, bindPerson, enrolled, inForceOf, keepToPerson, lockSeen, movedBySelf, movedHere, ownLockEnv, ownLockFor, personStations, personalStations, pinHash, refusedAgain, safeNow, signerKnown, signerOf, signsAs, takeOffBound, tellStations, tookOrRefused, withBound } from "./views/lock.ts";
 import { personalBegin, personalCancel, personalPairState, personalProve } from "./views/pair.ts";
 import { envOf, Views } from "./views/views.ts";
@@ -310,6 +310,9 @@ export class Core {
       inner.provider = yield* (options.account ?? stillfailAccountProvider)({ host: inner.host, tracer: inner.tracer, status: inner.status });
       inner.accounts = inner.provider.accounts;
       start.step("accounts");
+      // (what the device keeps of each person's own lock read beside the databases, not after them: views/vault.ts
+      // `lockRead`)
+      const early = new EarlyReads(inner.host, inner.runner, inner.accounts.list().map((a) => a.sub));
       inner.workspaces = new Workspaces(inner.host, inner.runner, inner.waited);
       inner.store = new Store(inner.host, inner.runner, inner.tracer);
       const store = inner.store;
@@ -437,6 +440,7 @@ export class Core {
         personal: new PersonalLock({
           host: inner.host,
           runner: inner.runner,
+          early,
           cloud: (sub, method, path, body) => inner.provider.request(sub, method, path, body),
           device: () => Effect.map(inner.mesh(), (m) => m.deviceId()),
           label: () => prefs.deviceName(inner.data) ?? "",

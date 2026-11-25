@@ -9,7 +9,7 @@ import { CoreError, HostError } from "../src/error.ts";
 import { generateKeyPairSync, sign as nodeSign } from "node:crypto";
 import { type Entry, entryHash, signedBytes } from "../src/lock.ts";
 import type { Mesh } from "../src/mesh.ts";
-import { PersonalLock, checkChain, grantHolds } from "../src/personal-lock.ts";
+import { EarlyReads, PersonalLock, checkChain, grantHolds } from "../src/personal-lock.ts";
 import { Runner } from "../src/runtime.ts";
 import { Store } from "../src/store.ts";
 import { FakeHost } from "../src/testing.ts";
@@ -478,6 +478,28 @@ test("a phone started anew reads the lock it pinned, and lends for its grants be
     assert.deepEqual(p.adb.wanted(), [STATION]);
   } finally {
     p.runner.shutdown();
+    a.runner.shutdown();
+  }
+});
+
+test("what a start began to read of the lock is what the device keeps, not what it kept before a write meanwhile", async () => {
+  const c = cloud();
+  const a = device(c, "a");
+  await a.runner.run(a.lock.signGrant(SUB, body(), "why"));
+  // The same device's storage, the process gone and back, the cloud out of reach; its reads begun before the lock is made.
+  const restart = async (meanwhile: (lock: PersonalLock) => Promise<unknown>) => {
+    const early = new EarlyReads(a.host, a.runner, [SUB]);
+    const again = new PersonalLock({ host: a.host, runner: a.runner, early, cloud: () => Effect.fail(new CoreError("offline", "offline")), device: () => Effect.succeed("61".repeat(32)), label: () => "a", changed: () => {} });
+    await a.host.settle();
+    await meanwhile(again);
+    await a.runner.run(Effect.ignore(again.refresh(SUB)));
+    return again;
+  };
+  try {
+    assert.notEqual((await restart(async () => {})).chain(SUB)?.hash ?? null, null, "the chain kept, read at the start");
+    const forgot = await restart((lock) => a.runner.run(lock.forget(SUB, "why")));
+    assert.equal(forgot.chain(SUB)?.hash ?? null, null, "let go of before it was taken: not the one read before");
+  } finally {
     a.runner.shutdown();
   }
 });
