@@ -322,6 +322,9 @@ priv struct Picked {
   mut island : @view.NodeId?
   /// the word a finger's hold picked (its start and its end), widened from by words while the finger slides on
   mut word : (SelSpot, SelSpot)?
+  /// the pointer's press began with the command key held over words of a `words_cmd_pick` scope: `word` is the unit
+  /// (a word, or a sentence with ⇧: cmd_snap_at) under the press, and the drag widens by those units
+  mut snap : Bool
   /// which handle a finger has (1 the start's, 2 the end's, 0 none) and the end's place off the finger
   mut handle : Int
   mut grab_x : Double
@@ -342,6 +345,7 @@ let picked : Picked = {
   finger: false,
   island: None,
   word: None,
+  snap: false,
   handle: 0,
   grab_x: 0.0,
   grab_y: 0.0,
@@ -1036,6 +1040,7 @@ fn select_none() -> Unit {
   picked.layer = OldLayer(0)
   picked.finger = false
   picked.island = None
+  picked.snap = false
   finger_let_go()
   select_edge_stop()
   picked_told()
@@ -1423,7 +1428,7 @@ fn Ctx::select_to(self : Ctx, x : Double, y : Double) -> Unit {
         // a finger sliding on from the word its hold picked: by words as its hold finds them (a space the word beside
         // it: finger_word_at), that word kept whole (Pick::slide's)
         Some((ws, we)) => {
-          let (s, e) = finger_word_at(t.text, off)
+          let (s, e) = if picked.snap { cmd_snap_at(t.text, off) } else { finger_word_at(t.text, off) }
           let start = now({ base: t.base, off: s, at: [], row_depth: t.row_depth })
           if spot_cmp(start, now(ws)) < 0 {
             picked.from = now(we)
@@ -1713,6 +1718,20 @@ fn Ctx::select_press(self : Ctx, x : Double, y : Double, clicks : Int) -> Unit {
       picked.spans[target.base] = { a: s, b: e, text, at, row_depth: target.row_depth, of: target.of, shape: target.shape, runs: target.runs }
       picked.dragging = clicks <= 1
       picked.layer = target.layer
+      // (the command key held as a mouse's press goes down on words of a Cmd-pick scope: a drag on from it goes by
+      // words, or sentences with ⇧, the one under the press kept whole: tree_cmd_pick.mbt)
+      if clicks <= 1 && cmd_snap_scope(target.layer) {
+        let (ws, we) = cmd_snap_at(text, off)
+        picked.word = Some(
+          (
+            { base: target.base, off: ws, at, row_depth: target.row_depth },
+            { base: target.base, off: we, at, row_depth: target.row_depth },
+          ),
+        )
+        picked.snap = true
+      } else if !picked.finger {
+        picked.word = None
+      }
       // (the list it lies in: sideways boxes in it scroll it no way the pointer goes up or down)
       picked.list = if picked.dragging { outer_scroll(self, x, y) } else { 0 }
       // (the box scrolled sideways it lies in, the same way across)
