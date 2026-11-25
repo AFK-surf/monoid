@@ -57,7 +57,7 @@ pub fn sessions_at_work(
   Ok(base_codec::json_arr(out))
 }
 
-fn has_legacy_decision_time(db : sql_db::Db) -> Result[Bool, ReadError] {
+pub fn has_legacy_decision_time(db : sql_db::Db) -> Result[Bool, ReadError] {
   match exists_in(db, "table", "legacy_decision_time_meta") {
     Ok(false) => return Ok(false)
     Ok(true) => ()
@@ -140,28 +140,61 @@ pub fn policy_checks(
       _ => ()
     }
   }
-  let options : Map[String, (Int, Array[base_codec::Json])] = Map::new()
-  let picks : Array[String] = []
-  let mut failed = 0
   let rev_order = array_rev(order)
+  let rev_entries : Array[(String, base_codec::Json, Option[js_json::JValue])] = []
   for i in 0..<rev_order.length() {
     let session = rev_order[i]
-    let (at, detail) = match latest.get(session) {
-      Some(v) => v
-      None => continue
+    match latest.get(session) {
+      Some((at, detail)) => rev_entries.push((session, at, detail))
+      None => ()
     }
-    let picked = match str_of(jget(jget(detail, "result"), "selected")) {
-      Some(p) => p
-      None => {
+  }
+  let (failed, shown) = tally_background_selected(rev_entries)
+  Ok(
+    base_codec::json_obj([
+      ("checked", base_codec::json_num(order.length().to_double())),
+      ("failed", base_codec::json_num(failed.to_double())),
+      ("options", base_codec::json_obj(shown)),
+    ]),
+  )
+}
+
+fn utf16_units_map_key(units : Array[Int]) -> String {
+  let hex = "0123456789abcdef".to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<units.length() {
+    let u = units[i] & 0xFFFF
+    sb.write_byte(hex[(u >> 12) & 0xF])
+    sb.write_byte(hex[(u >> 8) & 0xF])
+    sb.write_byte(hex[(u >> 4) & 0xF])
+    sb.write_byte(hex[u & 0xF])
+  }
+  sb.to_string()
+}
+
+/// Pure tally helper grouping `selected` by raw UTF-16 code units before sanitization so an escaped
+/// lone surrogate (`\uD800`) and literal `U+FFFD` stay independent buckets (1:1 MB `background.mbt:176-202`).
+pub fn tally_background_selected(
+  rev_entries : Array[(String, base_codec::Json, Option[js_json::JValue])],
+) -> (Int, Array[(String, base_codec::Json)]) {
+  let options : Map[String, (Int, Array[base_codec::Json], String)] = Map::new()
+  let picks : Array[String] = []
+  let mut failed = 0
+  for i in 0..<rev_entries.length() {
+    let (session, at, detail) = rev_entries[i]
+    let picked_units = match jget(jget(detail, "result"), "selected") {
+      Some(js_json::JValue::Str(u)) => u
+      _ => {
         failed = failed + 1
         continue
       }
     }
-    let (count, chats) = match options.get(picked) {
+    let raw_key = utf16_units_map_key(picked_units)
+    let (count, chats, label) = match options.get(raw_key) {
       Some(o) => o
       None => {
-        picks.push(picked)
-        (0, [])
+        picks.push(raw_key)
+        (0, [], js_json::sanitize_str(picked_units))
       }
     }
     if chats.length() < VIEW_CHATS {
@@ -177,16 +210,16 @@ pub fn policy_checks(
         ]),
       )
     }
-    options.set(picked, (count + 1, chats))
+    options.set(raw_key, (count + 1, chats, label))
   }
   let shown : Array[(String, base_codec::Json)] = []
   for i in 0..<picks.length() {
-    let p = picks[i]
-    match options.get(p) {
-      Some((count, chats)) => {
+    let raw_key = picks[i]
+    match options.get(raw_key) {
+      Some((count, chats, label)) => {
         shown.push(
           (
-            p,
+            label,
             base_codec::json_obj([
               ("count", base_codec::json_num(count.to_double())),
               ("chats", base_codec::json_arr(chats)),
@@ -197,13 +230,7 @@ pub fn policy_checks(
       None => ()
     }
   }
-  Ok(
-    base_codec::json_obj([
-      ("checked", base_codec::json_num(order.length().to_double())),
-      ("failed", base_codec::json_num(failed.to_double())),
-      ("options", base_codec::json_obj(shown)),
-    ]),
-  )
+  (failed, shown)
 }
 
 pub fn recent_connect_people(

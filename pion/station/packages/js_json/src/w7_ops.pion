@@ -235,8 +235,48 @@ pub fn json_js_str(v : Option[base_codec::Json]) -> String {
   json_js_str_with(v, sqlite_ffi::format_js_double)
 }
 
-/// Convert `JValue` to `base_codec::Json` (reordering integer-index keys, last-wins duplicates,
-/// non-finite numbers -> `Null`).
+/// Convert `JValue` to `base_codec::Json` in insertion order with well-formed strings (`sanitize_str`),
+/// deduplicating colliding sanitized keys (last-wins, preserving first-seen key position), and keeping
+/// numbers as given (1:1 `jvalue_ops.mbt:203-219`).
+pub fn JValue::to_json_lossy(self : JValue) -> base_codec::Json {
+  match self {
+    JValue::Null => base_codec::json_null()
+    JValue::Bool(b) => base_codec::json_bool(b)
+    JValue::Num(d) => base_codec::json_num(d)
+    JValue::Str(u) => base_codec::json_str(sanitize_str(u))
+    JValue::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        out.push(items[i].to_json_lossy())
+      }
+      base_codec::json_arr(out)
+    }
+    JValue::Obj(entries) => {
+      let order : Array[String] = []
+      let latest : Map[String, base_codec::Json] = Map::new()
+      for i in 0..<entries.length() {
+        let (k, v) = entries[i]
+        let sk = sanitize_str(k)
+        if !latest.contains(sk) {
+          order.push(sk)
+        }
+        latest.set(sk, v.to_json_lossy())
+      }
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<order.length() {
+        let sk = order[i]
+        match latest.get(sk) {
+          Some(v) => out.push((sk, v))
+          None => ()
+        }
+      }
+      base_codec::json_obj(out)
+    }
+  }
+}
+
+/// Convert `JValue` to `base_codec::Json` (reordering integer-index keys, deduplicating sanitized keys
+/// last-wins, non-finite numbers -> `Null`).
 /// PRECONDITION: Only use on proven surrogate-free structures; lone surrogates are replaced with
 /// `U+FFFD` via `sanitize_str`. User-keyed outputs that may contain lone surrogates MUST remain
 /// in `JValue` and serialize losslessly via `js_json::stringify`.
@@ -261,10 +301,23 @@ pub fn JValue::to_json(self : JValue) -> base_codec::Json {
     }
     JValue::Obj(entries) => {
       let ord = ordered_entries(entries)
-      let out : Array[(String, base_codec::Json)] = []
+      let order : Array[String] = []
+      let latest : Map[String, base_codec::Json] = Map::new()
       for i in 0..<ord.length() {
         let (k, v) = ord[i]
-        out.push((sanitize_str(k), v.to_json()))
+        let sk = sanitize_str(k)
+        if !latest.contains(sk) {
+          order.push(sk)
+        }
+        latest.set(sk, v.to_json())
+      }
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<order.length() {
+        let sk = order[i]
+        match latest.get(sk) {
+          Some(v) => out.push((sk, v))
+          None => ()
+        }
       }
       base_codec::json_obj(out)
     }

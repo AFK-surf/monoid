@@ -187,13 +187,7 @@ pub fn nan() -> Double {
 }
 
 pub fn parsed_number(s : String) -> base_codec::Json {
-  if builders_core::has_lone_surrogate(s) {
-    return base_codec::json_num(nan())
-  }
-  match sql_db::parse_json(s) {
-    base_codec::JsonParseResult::Ok(base_codec::Json::Num(d, r)) => base_codec::Json::Num(d, r)
-    _ => base_codec::json_num(nan())
-  }
+  builders_usage::parsed_number(s)
 }
 
 pub fn arg_number(v : Option[base_codec::Json]) -> base_codec::Json {

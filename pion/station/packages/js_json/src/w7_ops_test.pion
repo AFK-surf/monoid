@@ -119,6 +119,21 @@ test "js_json: chars counts surrogate pairs and lone surrogates as 1" {
   assert(units_eq(c9, units))
 }
 
+test "js_json: JValue::to_json_lossy preserves insertion order and deduplicates sanitized keys" {
+  let jv = match parse("{\"b\":1,\"2\":2,\"0\":3,\"b\":4}") {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  assert(base_codec::json_stringify(jv.to_json_lossy()) == "{\"b\":4,\"2\":2,\"0\":3}")
+  // Escaped lone high surrogate and literal U+FFFD sanitize to the same key -> last-wins, no duplicate JSON field
+  let colliding = match parse("{\"\\uD800\":1,\"\\uFFFD\":2,\"a\":3}") {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  assert(base_codec::json_stringify(colliding.to_json_lossy()) == "{\"\u{FFFD}\":2,\"a\":3}")
+  assert(base_codec::json_stringify(colliding.to_json()) == "{\"\u{FFFD}\":2,\"a\":3}")
+}
+
 test "js_json: JValue::to_json orders integer keys and maps non-finite to null" {
   let jv = match parse("{\"b\":1,\"2\":2,\"0\":3,\"b\":4}") {
     Ok(v) => v

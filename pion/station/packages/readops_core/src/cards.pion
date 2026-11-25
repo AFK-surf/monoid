@@ -8,7 +8,7 @@ import "sql_db"
 
 pub let CARD_POSTS_PENDING : String = "card posts pending:"
 
-fn system_card_sql(col_name : String) -> String {
+pub fn system_card_sql(col_name : String) -> String {
   "(CASE WHEN " +
   col_name +
   " IS NULL OR NOT json_valid(" +
@@ -26,7 +26,7 @@ fn system_card_sql(col_name : String) -> String {
   ", '$.signin') = 'object', 0) END)"
 }
 
-fn reached_sql(thread : String, n : String) -> String {
+pub fn reached_sql(thread : String, n : String) -> String {
   "((SELECT surface FROM threads WHERE id = " +
   thread +
   ") = 'chat' OR EXISTS (SELECT 1 FROM deliveries d WHERE d.thread = " +
@@ -111,7 +111,7 @@ pub fn parsed(v : base_codec::Json) -> Option[js_json::JValue] {
 }
 
 pub fn to_json(v : js_json::JValue) -> base_codec::Json {
-  v.to_json()
+  v.to_json_lossy()
 }
 
 pub fn card_of(card : base_codec::Json, options : base_codec::Json) -> Option[base_codec::Json] {
@@ -351,7 +351,7 @@ pub fn pending_card_number(
   )
 }
 
-fn or_empty(v : base_codec::Json) -> base_codec::Json {
+pub fn or_empty(v : base_codec::Json) -> base_codec::Json {
   match v {
     base_codec::Json::Null => base_codec::json_str("")
     t => t

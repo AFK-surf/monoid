@@ -4,7 +4,7 @@ import "base_codec"
 import "builders_core"
 import "js_json"
 
-fn runtime_list(
+pub fn runtime_list(
   op : String,
   value : base_codec::Json,
   runtimes : Option[Array[String]],
@@ -261,7 +261,7 @@ pub fn digest(v : base_codec::Json) -> String {
   base36(cyrb53(sb.to_string()))
 }
 
-fn key_text(v : base_codec::Json) -> String {
+pub fn key_text(v : base_codec::Json) -> String {
   match v {
     base_codec::Json::Str(s) => s
     base_codec::Json::Arr(_) => ""

@@ -53,7 +53,7 @@ pub fn widget_state(
   Ok(base_codec::json_obj([("state", state)]))
 }
 
-fn safe_key(s : String) -> Bool {
+pub fn safe_key(s : String) -> Bool {
   !str_contains_sub(s, "\u{0}") && !str_contains_sub(s, "\u{FFFD}")
 }
 
@@ -87,7 +87,7 @@ pub fn source_of(
   }
 }
 
-fn original_source(
+pub fn original_source(
   db : sql_db::Db,
   key : base_codec::Json,
   id : String,
@@ -109,7 +109,7 @@ fn original_source(
   Ok(None)
 }
 
-fn runtime_source(
+pub fn runtime_source(
   db : sql_db::Db,
   key : base_codec::Json,
   id : String,

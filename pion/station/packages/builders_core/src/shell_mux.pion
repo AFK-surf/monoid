@@ -77,6 +77,8 @@ pub fn ShellMux::new(transport : MuxTransport, start_stdin : Bool = true) -> She
   }
 }
 
+/// Create a production `ShellMux` backed by `host_shim`.
+/// Callers MUST invoke `host_shim::start(shell_dir, start_stdin)` with the exact same `start_stdin` flag.
 pub fn ShellMux::host(start_stdin : Bool = true) -> ShellMux {
   ShellMux::new(MuxTransport::host(), start_stdin=start_stdin)
 }
@@ -247,8 +249,9 @@ pub fn ShellMux::step(
   }
 
   if self.start_stdin {
+    let was_eof_delivered = self.stdin_eof_delivered
     let n = self.drain_stdin_budget(budget, on_line, on_stdin_eof)
-    if n > 0 || self.stdin_eof_delivered {
+    if n > 0 || (!was_eof_delivered && self.stdin_eof_delivered) {
       progressed = true
     }
   }
@@ -257,6 +260,7 @@ pub fn ShellMux::step(
 }
 
 /// Decode `ShellDone` payload into `(Option[Json], Option[Bytes])` preserving `None` vs `Some(empty)`.
+/// Returns `Err` on malformed JSON rather than silently substituting `null`.
 pub fn decode_shell_done(
   done : host_shim::ShellDone,
 ) -> Result[(Option[base_codec::Json], Option[Bytes]), ShellError] {
@@ -268,7 +272,7 @@ pub fn decode_shell_done(
   } else {
     match sql_db::parse_json(done.json) {
       base_codec::JsonParseResult::Ok(j) => Some(j)
-      base_codec::JsonParseResult::Err(_) => Some(base_codec::json_null())
+      base_codec::JsonParseResult::Err(msg) => return Err(shell_error("invalid shell done json: " + msg))
     }
   }
   Ok((j_opt, done.bytes))
@@ -383,13 +387,23 @@ pub fn SerialOutbox::send_raw(
   None
 }
 
-/// Mark the current in-flight call on `handle_id` complete and immediately dispatch the next queued
-/// call (if any) via `mux`. Returns `Some(next_call_id)` when a queued call was dispatched.
+/// Mark the current in-flight call (`call_id`) on `handle_id` complete and immediately dispatch the next queued
+/// call (if any) via `mux`. Verifies `in_flight[handle_id] == Some(call_id)` so stale/late completions
+/// after handle close or re-use never pop the queue. Returns `Some(next_call_id)` when a queued call was dispatched.
 pub fn SerialOutbox::on_complete(
   self : SerialOutbox,
   mux : ShellMux,
   handle_id : Int,
+  call_id : Int64,
 ) -> Option[Int64] {
+  match self.in_flight.get(handle_id) {
+    Some(cur_id) => {
+      if cur_id != call_id {
+        return None
+      }
+    }
+    None => return None
+  }
   self.in_flight.remove(handle_id)
   match self.queues.get(handle_id) {
     Some(q) => {

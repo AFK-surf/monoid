@@ -44,7 +44,7 @@ const SERVERS = 2;
 /// which the next one listens on); one that ends sooner, a second after, so one that keeps ending is not started again
 /// and again.
 export const SERVED_STEADY_MS = 5_000;
-const SERVED_AGAIN_MS = 1_000;
+export const SERVED_AGAIN_MS = 1_000;
 /// How long the programs are given to listen as the station starts: its connections are taken only after (mesh.ts).
 const SERVED_LISTEN_MS = 15_000;
 
@@ -194,18 +194,27 @@ export class Served {
       if (at < 0) return;
       // Off the routes the connections taken from now on go by, till the next one listens.
       if (this.#started) this.onRoutes?.(this.#livePaths());
+      const restartWith = (nextBinary?: string) => {
+        if (this.#closed || this.#servers[at] !== server) return;
+        try {
+          if (nextBinary !== undefined) this.#binary = nextBinary;
+          this.#servers[at] = this.#start(i, nextBinary ?? this.#binary);
+        } catch (err) {
+          if (this.#closed || this.#servers[at] !== server) return;
+          log.warn("served", "starting serving program failed; retrying after backoff", {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          this.#after(SERVED_AGAIN_MS, again); // timer: a retry after a failure, with a backoff
+        }
+      };
       const again = () => {
         if (this.#closed || this.#servers[at] !== server) return;
         if (this.#resolveBinary === undefined) {
-          this.#servers[at] = this.#start(i);
+          restartWith();
           return;
         }
         void this.#resolveBinary().then(
-          (nextBinary) => {
-            if (this.#closed || this.#servers[at] !== server) return;
-            this.#binary = nextBinary;
-            this.#servers[at] = this.#start(i, nextBinary);
-          },
+          (nextBinary) => restartWith(nextBinary),
           (err) => {
             if (this.#closed || this.#servers[at] !== server) return;
             log.warn("served", "resolving serving binary failed; retrying after backoff", {

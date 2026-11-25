@@ -118,7 +118,7 @@ fn or_else(a : base_codec::Json, b : base_codec::Json) -> base_codec::Json {
   }
 }
 
-fn parsed_number(s : String) -> base_codec::Json {
+pub fn parsed_number(s : String) -> base_codec::Json {
   if builders_core::has_lone_surrogate(s) {
     return base_codec::json_num(nan_val())
   }

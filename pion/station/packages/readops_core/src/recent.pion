@@ -19,7 +19,7 @@ pub fn membership_json(r : Map[String, base_codec::Json]) -> base_codec::Json {
   ])
 }
 
-fn state_key(
+pub fn state_key(
   db : sql_db::Db,
   thread : base_codec::Json,
   column : String,

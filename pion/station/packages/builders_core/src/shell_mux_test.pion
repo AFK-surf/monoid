@@ -230,24 +230,63 @@ test "shell_mux: SerialOutbox serializes writes per handle and cleans up on clos
   let c1 = outbox.send_raw(mux, 10, MuxToken::Write(10), "tcp.write", "{}", Some("a".to_bytes()))
   let c2 = outbox.send_raw(mux, 10, MuxToken::Write(10), "tcp.write", "{}", Some("b".to_bytes()))
   let c3 = outbox.send_raw(mux, 20, MuxToken::Write(20), "tcp.write", "{}", Some("c".to_bytes()))
-  assert(c1 is Some(_))
+  let c1_id = match c1 {
+    Some(id) => id
+    None => panic("expected c1")
+  }
   assert(c2 is None)
   assert(c3 is Some(_))
   assert(st.async_calls.length() == 2)
   assert(outbox.in_flight_count() == 2)
   assert(outbox.queued_handles() == 1)
 
-  let c2_dispatched = outbox.on_complete(mux, 10)
-  assert(c2_dispatched is Some(_))
+  // Stale/wrong call_id must NOT pop the queue or clear in_flight
+  assert(outbox.on_complete(mux, 10, c1_id + 999.to_int64()) is None)
+  assert(outbox.is_busy(10))
+  assert(outbox.queued_handles() == 1)
+
+  let c2_id = match outbox.on_complete(mux, 10, c1_id) {
+    Some(id) => id
+    None => panic("expected c2 dispatched")
+  }
   assert(st.async_calls.length() == 3)
   assert(outbox.queued_handles() == 0)
 
-  let none_left = outbox.on_complete(mux, 10)
+  let none_left = outbox.on_complete(mux, 10, c2_id)
   assert(none_left is None)
   assert(!outbox.is_busy(10))
   outbox.close_handle(20)
   assert(outbox.in_flight_count() == 0)
   assert(outbox.queued_handles() == 0)
+}
+
+test "shell_mux: decode_shell_done rejects malformed JSON and step returns false after EOF already delivered" {
+  let bad = host_shim::ShellDone::{ id: 1.to_int64(), error: "", json: "{not-json", bytes: None }
+  match decode_shell_done(bad) {
+    Err(e) => assert(e.message.length() > 0)
+    Ok(_) => panic("expected Err on malformed shell done json")
+  }
+  let st = MockMuxState::new()
+  let mux = ShellMux::new(st.transport(), start_stdin=true)
+  st.push_event(host_shim::HostEvent::StdinEof)
+  let mut eof_n = 0
+  let p1 = mux.step(
+    10.to_int64(),
+    fn(_l : String) -> Unit {},
+    fn() -> Unit { eof_n = eof_n + 1 },
+    fn(_t : MuxToken, _d : host_shim::ShellDone) -> Unit {},
+  )
+  assert(p1)
+  assert(eof_n == 1)
+  // Subsequent idle step after EOF already delivered must return false (no progress)
+  let p2 = mux.step(
+    10.to_int64(),
+    fn(_l : String) -> Unit {},
+    fn() -> Unit { eof_n = eof_n + 1 },
+    fn(_t : MuxToken, _d : host_shim::ShellDone) -> Unit {},
+  )
+  assert(!p2)
+  assert(eof_n == 1)
 }
 
 test "shell_mux: 10000-cycle connect/stream churn leaves pending and owner maps empty" {
@@ -274,10 +313,10 @@ test "shell_mux: 10000-cycle connect/stream churn leaves pending and owner maps 
       0.to_int64(),
       fn(_l : String) -> Unit {},
       fn() -> Unit {},
-      fn(tok : MuxToken, _done : host_shim::ShellDone) -> Unit {
+      fn(tok : MuxToken, done : host_shim::ShellDone) -> Unit {
         match tok {
           MuxToken::Write(h) => {
-            let _ = outbox.on_complete(mux, h)
+            let _ = outbox.on_complete(mux, h, done.id)
             outbox.close_handle(h)
             owners.remove(h)
           }

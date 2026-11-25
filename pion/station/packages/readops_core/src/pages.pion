@@ -57,7 +57,7 @@ pub fn has_legacy_said(db : sql_db::Db) -> Result[Bool, ReadError] {
   Ok(true)
 }
 
-fn said_page_state(db : sql_db::Db, thread : base_codec::Json) -> Result[(Bool, Bool), ReadError] {
+pub fn said_page_state(db : sql_db::Db, thread : base_codec::Json) -> Result[(Bool, Bool), ReadError] {
   let row = match one(
     db,
     "SELECT m.version,m.scanned,CASE WHEN m.scanned=1 THEN EXISTS (\n    SELECT 1 FROM legacy_said_dirty WHERE thread=?1 LIMIT 1 OFFSET 64) ELSE 0 END AS needs_drain\n  FROM legacy_said_meta m WHERE m.id=1",
@@ -89,7 +89,7 @@ fn said_page_state(db : sql_db::Db, thread : base_codec::Json) -> Result[(Bool, 
   Ok((preparing, needs_drain))
 }
 
-fn text_keys(rows : Array[Map[String, base_codec::Json]]) -> Array[String] {
+pub fn text_keys(rows : Array[Map[String, base_codec::Json]]) -> Array[String] {
   let out : Array[String] = []
   for i in 0..<rows.length() {
     match field(rows[i], "n") {
@@ -100,7 +100,7 @@ fn text_keys(rows : Array[Map[String, base_codec::Json]]) -> Array[String] {
   out
 }
 
-fn compare_int_text(a : String, b : String) -> Int {
+pub fn compare_int_text(a : String, b : String) -> Int {
   let neg_a = str_has_prefix(a, "-")
   let neg_b = str_has_prefix(b, "-")
   if neg_a != neg_b {
@@ -114,11 +114,11 @@ fn compare_int_text(a : String, b : String) -> Int {
   if neg_a { -c } else { c }
 }
 
-fn descending_keys(keys : Array[String]) -> Array[String] {
+pub fn descending_keys(keys : Array[String]) -> Array[String] {
   stable_sort(keys, fn(a : String, b : String) -> Int { compare_int_text(b, a) })
 }
 
-fn take_strings(keys : Array[String], limit : Int) -> Array[String] {
+pub fn take_strings(keys : Array[String], limit : Int) -> Array[String] {
   if keys.length() <= limit {
     return keys
   }
@@ -150,7 +150,7 @@ fn filter_message_rows(rows : Array[Map[String, base_codec::Json]]) -> Array[Map
   out
 }
 
-fn bounded_page_keys(
+pub fn bounded_page_keys(
   db : sql_db::Db,
   thread : base_codec::Json,
   before : base_codec::Json,
@@ -244,7 +244,7 @@ fn bounded_page_keys(
   Ok(take_strings(keys, limit))
 }
 
-fn unprepared_page_keys(
+pub fn unprepared_page_keys(
   db : sql_db::Db,
   thread : base_codec::Json,
   before : base_codec::Json,
@@ -288,7 +288,7 @@ fn keys_to_json_str(keys : Array[String]) -> base_codec::Json {
   base_codec::json_str(sql_db::stringify_json(base_codec::json_arr(items)))
 }
 
-fn merged_keys(
+pub fn merged_keys(
   db : sql_db::Db,
   thread : base_codec::Json,
   keys : Array[String],
@@ -322,7 +322,7 @@ fn merged_keys(
   Ok(out)
 }
 
-fn page_limit(v : Option[base_codec::Json]) -> (Int, Bool) {
+pub fn page_limit(v : Option[base_codec::Json]) -> (Int, Bool) {
   match v {
     Some(base_codec::Json::Num(n, _)) => {
       if js_json::is_integer(n) && n >= 0.0 && n <= 9007199254740927.0 {
@@ -340,7 +340,7 @@ fn page_limit(v : Option[base_codec::Json]) -> (Int, Bool) {
   }
 }
 
-fn as_integer(v : base_codec::Json) -> base_codec::Json {
+pub fn as_integer(v : base_codec::Json) -> base_codec::Json {
   match v {
     base_codec::Json::Str(s) => {
       match sql_db::parse_json(s) {
@@ -352,7 +352,7 @@ fn as_integer(v : base_codec::Json) -> base_codec::Json {
   }
 }
 
-fn messages_before(
+pub fn messages_before(
   db : sql_db::Db,
   thread : base_codec::Json,
   before : base_codec::Json,

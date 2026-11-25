@@ -23,7 +23,7 @@ pub fn jstr(v : Option[js_json::JValue]) -> Option[String] {
   }
 }
 
-fn is_u64(v : Option[js_json::JValue]) -> Bool {
+pub fn is_u64(v : Option[js_json::JValue]) -> Bool {
   match v {
     Some(js_json::JValue::Num(n)) => js_json::is_integer(n) && n >= 0.0
     _ => false
@@ -38,7 +38,7 @@ fn is_absent_jv(v : Option[js_json::JValue]) -> Bool {
   }
 }
 
-fn parse_attachment(a : js_json::JValue) -> Option[base_codec::Json] {
+pub fn parse_attachment(a : js_json::JValue) -> Option[base_codec::Json] {
   match a {
     js_json::JValue::Obj(_) => ()
     _ => return None
@@ -101,7 +101,7 @@ fn parse_attachment(a : js_json::JValue) -> Option[base_codec::Json] {
   Some(base_codec::json_obj(out))
 }
 
-fn parse_quote(q : js_json::JValue) -> Option[base_codec::Json] {
+pub fn parse_quote(q : js_json::JValue) -> Option[base_codec::Json] {
   match q {
     js_json::JValue::Obj(_) => ()
     _ => return None
@@ -147,7 +147,7 @@ fn parse_quote(q : js_json::JValue) -> Option[base_codec::Json] {
   Some(base_codec::json_obj(out))
 }
 
-fn json_list(v : base_codec::Json, read : (js_json::JValue) -> Option[base_codec::Json]) -> base_codec::Json {
+pub fn json_list(v : base_codec::Json, read : (js_json::JValue) -> Option[base_codec::Json]) -> base_codec::Json {
   let items = match parsed(v) {
     Some(js_json::JValue::Arr(xs)) => xs
     _ => return base_codec::json_arr([])
@@ -162,7 +162,7 @@ fn json_list(v : base_codec::Json, read : (js_json::JValue) -> Option[base_codec
   base_codec::json_arr(out)
 }
 
-fn with_letter(out : Array[(String, base_codec::Json)], v : base_codec::Json) -> Unit {
+pub fn with_letter(out : Array[(String, base_codec::Json)], v : base_codec::Json) -> Unit {
   let l = match parsed(v) {
     Some(js_json::JValue::Obj(es)) => js_json::JValue::Obj(es)
     Some(js_json::JValue::Arr(xs)) => js_json::JValue::Arr(xs)
@@ -235,7 +235,7 @@ pub fn to_message(r : Map[String, base_codec::Json]) -> base_codec::Json {
   base_codec::json_obj(out)
 }
 
-fn letter_message(r : Map[String, base_codec::Json]) -> base_codec::Json {
+pub fn letter_message(r : Map[String, base_codec::Json]) -> base_codec::Json {
   let out : Array[(String, base_codec::Json)] = [
     ("agentIdentity", base_codec::json_null()),
     ("thread", field(r, "thread")),
@@ -385,7 +385,7 @@ pub fn review_pending_card(
   )
 }
 
-fn is_blank_json_str(v : base_codec::Json) -> Bool {
+pub fn is_blank_json_str(v : base_codec::Json) -> Bool {
   match v {
     base_codec::Json::Str(s) => {
       let units = js_json::utf16_units(s)
@@ -485,7 +485,7 @@ pub fn state_question(
   )
 }
 
-fn created_at_num(v : base_codec::Json) -> Double {
+pub fn created_at_num(v : base_codec::Json) -> Double {
   match v {
     base_codec::Json::Num(n, _) => n
     _ => nan()

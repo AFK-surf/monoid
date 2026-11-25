@@ -40,7 +40,7 @@ import { LAST_MESSAGE_PENDING, LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_L
 import { HttpError } from "./views.ts";
 import { repairMergedEditLookup } from "../store/schema.ts";
 import { EventEmitter } from "node:events";
-import { type Answer, type Ask, type BackfillOptions, MbReader, mbReaderBinary, pionBinary, type ReaderLike, type Ready, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "./mb-reader.ts";
+import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "./mb-reader.ts";
 import { wall } from "../ops/fibers.ts";
 import { roots as machineRoots } from "./machine.ts";
 import { platform } from "../platform/index.ts";
@@ -293,11 +293,11 @@ export class Readers {
   #explicitOverride = false;
   #explicitBinary: string | null = null;
   /// The MoonBit/Pion reader's program (read/mb-reader.ts); `null` where a test's reference answers instead (`reference`).
-  /// In auto-selection mode, returns a non-null identity string without synchronously calling `readerBinary()`.
+  /// In auto-selection mode, returns a stable non-null identity `"auto"` with zero disk probes on the main thread.
   get mbReader(): string | null {
     if (this.#explicitOverride) return this.#explicitBinary;
     if (this.reference !== undefined) return null;
-    return mbReaderBinary() ?? pionBinary() ?? "auto";
+    return "auto";
   }
   set mbReader(v: string | null) {
     this.#explicitOverride = true;
@@ -337,27 +337,37 @@ export class Readers {
     this.minutes.start();
   }
 
-  /// Current synchronously-known binary in auto-selection mode (`null` if pending, reference, explicit, or unavailable).
-  #currentAutoBinary(): string | null {
-    if (this.#explicitOverride || this.reference !== undefined) return null;
+  /// Current synchronous auto-selection state (`bypass` for explicit/reference, `binary`, `pending`, or `unavailable`).
+  #currentAutoSelection():
+    | { kind: "bypass" }
+    | { kind: "pending" }
+    | { kind: "unavailable" }
+    | { kind: "binary"; binary: string } {
+    if (this.#explicitOverride || this.reference !== undefined) return { kind: "bypass" };
     try {
       const sel = resolveReaderSelectionOrPending("data", { config: this.backfill.readers, logAt: "readers" });
-      return sel.pending ? null : sel.primaryBinary;
+      return sel.pending ? { kind: "pending" } : { kind: "binary", binary: sel.primaryBinary };
     } catch {
-      return null;
+      return { kind: "unavailable" };
     }
   }
 
   /// Retire idle slots (including idle `kept` slots) whose spawned binary no longer matches the current
-  /// live `"data"` reader selection. In-flight slots finish cleanly.
+  /// live `"data"` reader selection, or ALL idle slots when hot-switched to an unavailable/pending target.
+  /// In-flight slots finish cleanly; once idle they will be retired on the next pump before serving new reads.
   retireMismatchedIdle(targetLine?: Line): number {
-    if (this.closed || this.#explicitOverride || this.reference !== undefined) return 0;
-    const wanted = this.#currentAutoBinary();
-    if (wanted === null) return 0;
+    if (this.closed) return 0;
+    const cur = this.#currentAutoSelection();
+    if (cur.kind === "bypass") return 0;
     let retired = 0;
     const lines = targetLine !== undefined ? [targetLine] : [this.asked, this.told, this.pages, this.log, this.moved];
     for (const line of lines) {
-      for (const slot of line.slots.filter((s) => s.held === null && !s.retiring && s.binary !== undefined && s.binary !== wanted)) {
+      for (const slot of line.slots.filter((s) => {
+        if (s.held !== null || s.retiring) return false;
+        if (cur.kind === "unavailable") return true;
+        if (cur.kind === "pending") return s.binary !== undefined;
+        return s.binary !== undefined && s.binary !== cur.binary;
+      })) {
         slot.idle?.();
         slot.idle = undefined;
         slot.retiring = true;
@@ -923,12 +933,13 @@ export class Readers {
       if (slot === null && line.slots.length < line.size) {
         const started = this.start(line);
         if ("error" in started) {
-          // Never throw uncaught inside exit/timer/pump callbacks: cleanly reject queued waiters on this line.
+          // Never throw uncaught inside exit/timer/pump callbacks.
+          // If any non-retiring busy slot exists on this line, leave queued waiters in the queue so the busy
+          // slot can take them once free (or retire on mismatch and reject cleanly then).
+          if (line.slots.some((s) => !s.retiring)) break;
           line.waiting.splice(at, 1);
           asked.reject(new HttpError(500, started.error.message));
-          if (line.slots.length === 0) {
-            for (const w of line.waiting.splice(0)) w.reject(new HttpError(500, started.error.message));
-          }
+          for (const w of line.waiting.splice(0)) w.reject(new HttpError(500, started.error.message));
           break;
         }
         slot = started.slot;

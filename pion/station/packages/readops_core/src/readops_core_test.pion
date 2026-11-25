@@ -105,3 +105,27 @@ test "readops_core: common helpers is_mine, said_before, ending_of, parsed_threa
   }
   assert(parsed_thread_links(base_codec::json_str("{}")) is None)
 }
+
+test "readops_core: background tally groups raw UTF-16 selected keys independently (lone surrogate vs U+FFFD)" {
+  let d_lone = js_json::jval_try_parse("{\"result\":{\"selected\":\"\\uD800\"},\"accepted\":true}")
+  let d_fffd = js_json::jval_try_parse("{\"result\":{\"selected\":\"\\uFFFD\"},\"accepted\":false}")
+  let d_lone2 = js_json::jval_try_parse("{\"result\":{\"selected\":\"\\uD800\"},\"accepted\":false}")
+  let (failed, shown) = tally_background_selected([
+    ("s1", base_codec::json_int(1), d_lone),
+    ("s2", base_codec::json_int(2), d_fffd),
+    ("s3", base_codec::json_int(3), d_lone2),
+  ])
+  assert(failed == 0)
+  // Two independent buckets (count 2 for \uD800, count 1 for \uFFFD) — NOT collapsed to count 3!
+  assert(shown.length() == 2)
+  let (_, v0) = shown[0]
+  let (_, v1) = shown[1]
+  match v0 {
+    base_codec::Json::Obj(_) => assert(base_codec::json_stringify(v0).contains("\"count\":2"))
+    _ => panic("expected object")
+  }
+  match v1 {
+    base_codec::Json::Obj(_) => assert(base_codec::json_stringify(v1).contains("\"count\":1"))
+    _ => panic("expected object")
+  }
+}
