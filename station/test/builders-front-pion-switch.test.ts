@@ -487,8 +487,8 @@ async function runMeshParity(bin: string, label: string) {
       frontClient.close();
     }
 
-    // 6b. Non-safe-integer JS number parity (`1e20` vs `100000000000000000000`):
-    //     both MB and Pion echo `100000000000000000000` on `route` and match `connect(id: 1e20)` with `giveUp(of: 100000000000000000000)`.
+    // 6b. Non-safe-integer JS number parity (`1e20`/`2e20` vs expanded integer strings):
+    //     both MB and Pion echo `100000000000000000000` on `route(id: 1e20)` and match `connect(id: 2e20)` with `giveUp(of: 200000000000000000000)`.
     const bigCtl = connect(fA.socket);
     await new Promise<void>((resolve, reject) => bigCtl.once("connect", resolve).once("error", reject));
     try {
