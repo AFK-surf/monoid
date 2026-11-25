@@ -3,7 +3,7 @@ import { Fibers, wall } from "../ops/fibers.ts";
 import { giveBackfill, releaseStoppedBackfill, takeBackfill } from "../store/backfill.ts";
 import { outflowChatScopes } from "../store/outflow-index.ts";
 import type { InWorkspace } from "../store/rows.ts";
-import { type BackfillOptions, MbProcess, engineOfSelection, recordFallbackSpawn, resolveReaderSelection } from "./mb-reader.ts";
+import { type BackfillOptions, MbProcess, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "./mb-reader.ts";
 import { readerTelemetry } from "./reader-telemetry.ts";
 
 type Waiter = { resolve: () => void; reject: (error: Error) => void; done: () => void };
@@ -99,8 +99,7 @@ export class OutflowChatIndex {
       let mb: MbProcess;
       try {
         const sel = resolveReaderSelection("outflow-chats", { binary: this.#mb, config: this.#options.readers, logAt: "readers" });
-        recordFallbackSpawn(sel.selection);
-        mb = new MbProcess(sel.primaryBinary, ["--builder", "outflow-chats", "--db", this.#path], { engine: engineOfSelection(sel) });
+        mb = new MbProcess(sel.primaryBinary, ["--builder", "outflow-chats", "--db", this.#path], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
         log.warn("outflow", "the chat order builder could not start", { mode: "outflow-chats", error: err.message });

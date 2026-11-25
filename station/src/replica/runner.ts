@@ -3,7 +3,7 @@
 // to line by line in the test's thread in tests (test/reference/replica-work.ts `InlineRunner`).
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
-import { MbProcess, type ResolvedReaderSelection, engineOfSelection, recordFallbackSpawn, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import type { Passed, Places, Told } from "./export.ts";
@@ -62,8 +62,7 @@ export function exportThread(o: RunnerOptions, binary?: string | ResolvedReaderS
     return new MbProcess(binary, args);
   }
   const sel = binary ?? resolveReaderSelection("replica-export", { config: o.readers, logAt: "replica" });
-  recordFallbackSpawn(sel.selection);
-  return new MbProcess(sel.primaryBinary, args, { engine: engineOfSelection(sel) });
+  return new MbProcess(sel.primaryBinary, args, { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
 }
 
 /// The work in a process of its own, started again (told the workspaces again) at the next thing asked once
@@ -77,7 +76,7 @@ export class ProgramRunner implements Runner {
   #worker: Thread | null = null;
   #starting: Promise<Thread> | null = null;
   #closing: Thread | null = null;
-  readonly #waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; at: number }>();
+  readonly #waiting = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; at: number; close?: boolean }>();
   #next = 0;
   #places: Places | null = null;
   #closed = false;
@@ -95,7 +94,7 @@ export class ProgramRunner implements Runner {
     worker.on("message", (m: { id: number; answer?: unknown; error?: string }) => {
       const w = this.#waiting.get(m.id);
       this.#waiting.delete(m.id);
-      if (w !== undefined && worker instanceof MbProcess && this.#closing !== worker) {
+      if (w !== undefined && !w.close && worker instanceof MbProcess) {
         readerTelemetry.recordCall(worker.engine, worker.mode, wall.now() - w.at, m.error === undefined);
       }
       if (m.error !== undefined) w?.reject(new Error(m.error));
@@ -180,7 +179,7 @@ export class ProgramRunner implements Runner {
     const id = ++this.#next;
     const ack = new Promise<void>((resolve, reject) => {
       const at = wall.now();
-      this.#waiting.set(id, { resolve, reject, at });
+      this.#waiting.set(id, { resolve, reject, at, close: true });
       try {
         worker.postMessage({ type: "close", id, now: at });
       } catch (e) {

@@ -1,6 +1,6 @@
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { type BackfillOptions, MbProcess, engineOfSelection, recordFallbackSpawn, resolveReaderSelection } from "../read/mb-reader.ts";
+import { type BackfillOptions, MbProcess, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "../read/mb-reader.ts";
 import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { InWorkspace } from "../store/rows.ts";
 
@@ -68,8 +68,7 @@ export class MinuteReader {
   start(): void {
     if (this.#closed || this.#complete || this.#worker !== null) return;
     const sel = resolveReaderSelection("usage-check", { binary: this.#mb, config: this.#readers, logAt: "readers" });
-    recordFallbackSpawn(sel.selection);
-    const worker = new MbProcess(sel.primaryBinary, ["--builder", "usage-check", "--db", this.#path], { engine: engineOfSelection(sel) });
+    const worker = new MbProcess(sel.primaryBinary, ["--builder", "usage-check", "--db", this.#path], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
     this.#worker = worker;
     worker.on("message", (answer: MinuteResponse) => {
       if (answer.complete) {

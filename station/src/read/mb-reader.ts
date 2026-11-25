@@ -273,11 +273,18 @@ export function engineOfSelection(resolved: ResolvedReaderSelection): TelemetryE
   return resolved.engine === "pion" ? "pion" : "mb";
 }
 
-/// Record a fallback counter ONLY when an actual MB process is spawned after requesting `"pion"`.
-export function recordFallbackSpawn(selection: ReaderSelection): void {
-  if (selection.fallback && selection.requested === "pion") {
-    readerTelemetry.recordFallback(selection.mode);
+/// Return the fallback telemetry mode when `selection` fell back from `"pion"` or `"shadow"` to `"mb"`.
+export function fallbackModeOf(selection: ReaderSelection, modeOverride?: string): string | undefined {
+  if (selection.fallback && (selection.requested === "pion" || selection.requested === "shadow")) {
+    return modeOverride ?? selection.mode;
   }
+  return undefined;
+}
+
+/// Record a fallback counter ONLY when an actual MB process is spawned after requesting `"pion"` or `"shadow"`.
+export function recordFallbackSpawn(selection: ReaderSelection, modeOverride?: string): void {
+  const mode = fallbackModeOf(selection, modeOverride);
+  if (mode !== undefined) readerTelemetry.recordFallback(mode);
 }
 
 /// Infer `"pion"` without extra disk I/O when `binary` matches `STILLFAIL_PION_READER` or the cached `pionBinary()`.
@@ -600,6 +607,7 @@ export class MbProcess extends EventEmitter {
   readonly #child: ChildProcess;
   readonly #args: readonly string[];
   readonly #stdinMost: number;
+  #spawned = false;
   #exited = false;
   #stalled = false;
   #intentionalStop = false;
@@ -608,8 +616,9 @@ export class MbProcess extends EventEmitter {
   #behind: { at: number; written: number; unread: number } | null = null;
 
   /// `options.background`: whether it runs as the system's background work (mbSpawned), else as its args say;
-  /// `stdinMost`: STDIN_MOST but in tests; `engine`/`mode`: explicit telemetry identity when known at spawn.
-  constructor(binary: string, args: string[], options: { background?: boolean; stdinMost?: number; engine?: TelemetryEngine; mode?: string } = {}) {
+  /// `stdinMost`: STDIN_MOST but in tests; `engine`/`mode`: explicit telemetry identity when known at spawn;
+  /// `fallbackMode`: when set, records one fallback once the OS child actually emits `"spawn"`.
+  constructor(binary: string, args: string[], options: { background?: boolean; stdinMost?: number; engine?: TelemetryEngine; mode?: string; fallbackMode?: string } = {}) {
     super();
     const identity = classifyProgram(binary, args);
     this.engine = options.engine ?? (isKnownPionBinary(binary) ? "pion" : identity.engine);
@@ -619,7 +628,11 @@ export class MbProcess extends EventEmitter {
     this.#args = args;
     this.#stdinMost = options.stdinMost ?? STDIN_MOST;
     this.#child = spawn(command, given, { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    readerTelemetry.recordSpawn(this.engine, this.mode);
+    this.#child.once("spawn", () => {
+      this.#spawned = true;
+      readerTelemetry.recordSpawn(this.engine, this.mode);
+      if (options.fallbackMode !== undefined) readerTelemetry.recordFallback(options.fallbackMode);
+    });
     if (this.#child.pid !== undefined) MbProcess.#live.set(this, { pid: this.#child.pid, binary, args, background, startedAt: wall.now(), engine: this.engine, mode: this.mode });
     const said = new Said((answer) => this.emit("message", answer));
     this.#child.stdout!.on("data", (bytes: Buffer) => said.push(bytes));
@@ -641,7 +654,7 @@ export class MbProcess extends EventEmitter {
     this.#child.on("close", (code, signal) => {
       this.#exited = true;
       MbProcess.#live.delete(this);
-      if (!this.#intentionalStop && !this.#stalled && (code !== 0 || signal !== null)) {
+      if (this.#spawned && !this.#intentionalStop && !this.#stalled && (code !== 0 || signal !== null)) {
         readerTelemetry.recordUnexpectedExit(this.engine, this.mode);
       }
       this.emit("exit", code ?? (signal !== null ? 1 : 0));
@@ -717,7 +730,7 @@ export class MbProcess extends EventEmitter {
 /// Captures the one-shot `ready` handshake at spawn so both `ReaderPool` and direct callers (`OwnReader`) record
 /// cold-start latency without double-counting.
 export class MbReader extends MbProcess implements ReaderLike {
-  constructor(binary: string, data: string, options?: { engine?: TelemetryEngine }) {
+  constructor(binary: string, data: string, options?: { engine?: TelemetryEngine; fallbackMode?: string }) {
     super(binary, ["--data", data, "--sep", sep], options);
     const startedAt = wall.now();
     let readyRecorded = false;
@@ -750,12 +763,16 @@ export class MbBackfill extends EventEmitter {
   #exited = false;
   #askedAt = 0;
 
-  constructor(binary: string, args: string[], priority: SharedArrayBuffer | undefined, pauseMs: number) {
+  constructor(binary: string | ResolvedReaderSelection, args: string[], priority: SharedArrayBuffer | undefined, pauseMs: number) {
     super();
     this.#priority = priority instanceof SharedArrayBuffer ? new Int32Array(priority) : null;
     this.#pauseMs = pauseMs;
     // (a backfill is the station's own, nobody waiting on it: the system's background work, whatever its kind)
-    this.#process = new MbProcess(binary, args, { background: true });
+    const bin = typeof binary === "string" ? binary : binary.primaryBinary;
+    const opts = typeof binary === "string"
+      ? { background: true }
+      : { background: true, engine: engineOfSelection(binary), fallbackMode: fallbackModeOf(binary.selection) };
+    this.#process = new MbProcess(bin, args, opts);
     this.#process.on("message", (result: { done: boolean; error?: string }) => {
       if (this.#askedAt > 0) {
         readerTelemetry.recordCall(this.#process.engine, this.#process.mode, wall.now() - this.#askedAt, !result.error);

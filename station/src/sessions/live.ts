@@ -16,7 +16,7 @@ import { join } from "node:path";
 import type { BackgroundTask, LiveEvent, PlanItem } from "../agents/runtime.ts";
 import { liveClock, wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { type Answer, MbReader, engineOfSelection, recordFallbackSpawn, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
+import { type Answer, MbReader, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
 import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import type { TailState, TimelineEntry, TranscriptRef } from "../read/transcript.ts";
@@ -528,8 +528,7 @@ export class OwnReader {
       const sel = await resolveReaderSelectionAsync("data", { config: this.#readers, logAt: "live" });
       if (this.#closed) throw new Error("the live view is closed");
       if (this.#reader !== null) return this.#reader;
-      recordFallbackSpawn(sel.selection);
-      const reader = this.#start(sel.primaryBinary, dir, engineOfSelection(sel));
+      const reader = this.#start(sel.primaryBinary, dir, engineOfSelection(sel), fallbackModeOf(sel.selection));
       this.#reader = reader;
       return reader;
     } finally {
@@ -537,8 +536,8 @@ export class OwnReader {
     }
   }
 
-  #start(binary: string, dir: string, engine?: TelemetryEngine): MbReader {
-    const reader = new MbReader(binary, dir, { engine });
+  #start(binary: string, dir: string, engine?: TelemetryEngine, fallbackMode?: string): MbReader {
+    const reader = new MbReader(binary, dir, { engine, fallbackMode });
     const ended = (error: Error) => {
       if (this.#reader === reader) this.#reader = null;
       const now = wall.now();

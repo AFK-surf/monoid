@@ -55,8 +55,8 @@ export type EngineModeSummary = {
   readonly loadedP50Ms?: number;
   readonly openedP50Ms?: number;
   readonly liveCount: number;
-  readonly engineRssKb: number | null;
-  readonly enginePeakRssKb: number | null;
+  readonly engineRssKb?: number;
+  readonly enginePeakRssKb?: number;
 };
 
 const KiB = 1024;
@@ -389,6 +389,8 @@ export class ReaderTelemetry {
         const peakBytes =
           b.peakRssBytes !== null && b.rssBytes !== null ? Math.max(b.peakRssBytes, b.rssBytes)
             : b.peakRssBytes ?? b.rssBytes;
+        const rssKb = bytesToKb(b.rssBytes);
+        const peakKb = bytesToKb(peakBytes);
 
         out.push({
           windowSec,
@@ -407,8 +409,8 @@ export class ReaderTelemetry {
           ...(readyLoaded !== null ? { loadedP50Ms: readyLoaded.p50 } : {}),
           ...(readyOpened !== null ? { openedP50Ms: readyOpened.p50 } : {}),
           liveCount: b.liveCount,
-          engineRssKb: bytesToKb(b.rssBytes),
-          enginePeakRssKb: bytesToKb(peakBytes),
+          ...(rssKb !== null ? { engineRssKb: rssKb } : {}),
+          ...(peakKb !== null ? { enginePeakRssKb: peakKb } : {}),
         });
       }
 

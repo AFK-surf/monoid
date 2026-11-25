@@ -40,7 +40,7 @@ import { LAST_MESSAGE_PENDING, LEGACY_EDITS_PENDING, LEGACY_SAID_PENDING, PAGE_L
 import { HttpError } from "./views.ts";
 import { repairMergedEditLookup } from "../store/schema.ts";
 import { EventEmitter } from "node:events";
-import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, type ResolvedReaderSelection, engineOfSelection, recordFallbackSpawn, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "./mb-reader.ts";
+import { type Answer, type Ask, type BackfillOptions, MbReader, type ReaderLike, type Ready, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "./mb-reader.ts";
 import { type TelemetryEngine, readerTelemetry } from "./reader-telemetry.ts";
 import { wall } from "../ops/fibers.ts";
 import { roots as machineRoots } from "./machine.ts";
@@ -83,8 +83,7 @@ class DeferredMbReader extends EventEmitter implements ReaderLike {
         const engine = engineOfSelection(resolved);
         const spawnedAt = wall.now();
         try {
-          recordFallbackSpawn(resolved.selection);
-          child = new MbReader(resolved.primaryBinary, data, { engine });
+          child = new MbReader(resolved.primaryBinary, data, { engine, fallbackMode: fallbackModeOf(resolved.selection) });
         } catch (err) {
           this.#exited = true;
           this.emit("error", err instanceof Error ? err : new Error(String(err)));
@@ -414,8 +413,7 @@ export class Readers {
         } else {
           spawnedBinary = sel.primaryBinary;
           spawnedAt = wall.now();
-          recordFallbackSpawn(sel.selection);
-          const reader = new MbReader(sel.primaryBinary, this.data, { engine: engineOfSelection(sel) });
+          const reader = new MbReader(sel.primaryBinary, this.data, { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
           spawnedEngine = reader.engine;
           worker = reader;
         }

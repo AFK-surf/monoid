@@ -12,7 +12,7 @@ import { Cause, Effect, FiberSet, Layer, Option, Schedule, Scope, Stream } from 
 import { log } from "../ops/log.ts";
 import { stationLog } from "../ops/log-export.ts";
 import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Paths, Peers, Previous, ReaderConfig, RigSide, ScreenRegistry, StationConfig, Store, Up } from "../services.ts";
-import { resolveReaderSelectionAsync } from "../read/mb-reader.ts";
+import { type ResolvedReaderSelection, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
 import { DeviceTools, accessOf } from "../device/tools.ts";
 import { TOOLS_ALPN, adminSessions, presenceTools, serveTools } from "./tools.ts";
 import { PEER_ALPN, PEER_BYTES_ALPN, STOPPING, peerCall, servePeer } from "./peer.ts";
@@ -205,8 +205,8 @@ export const MeshLive = Layer.effectDiscard(
       const readers = admin?.readers;
       if (route !== undefined && readers != null && readers.mbReader !== null) {
         const explicitBinary = readers.explicitMbReader;
-        let serveBinary: string | null = explicitBinary;
-        let resolveServeBinary: (() => Promise<string>) | undefined;
+        let serveBinary: string | ResolvedReaderSelection | null = explicitBinary;
+        let resolveServeBinary: (() => Promise<ResolvedReaderSelection>) | undefined;
         if (serveBinary === null) {
           const resolved = yield* Effect.promise(() =>
             resolveReaderSelectionAsync("serve", { config: readerConfig, logAt: "mesh" }).catch((e) => {
@@ -215,8 +215,8 @@ export const MeshLive = Layer.effectDiscard(
             }),
           );
           if (resolved !== null) {
-            serveBinary = resolved.primaryBinary;
-            resolveServeBinary = () => resolveReaderSelectionAsync("serve", { config: readerConfig, logAt: "mesh" }).then((r) => r.primaryBinary);
+            serveBinary = resolved;
+            resolveServeBinary = () => resolveReaderSelectionAsync("serve", { config: readerConfig, logAt: "mesh" });
           }
         }
         if (serveBinary !== null) {

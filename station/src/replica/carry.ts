@@ -21,7 +21,7 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
-import { MbProcess, type ResolvedReaderSelection, engineOfSelection, mbReaderBinary, pionBinary, recordFallbackSpawn, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, mbReaderBinary, pionBinary, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import { type ReaderSelectConfig, resolveReaderEngine } from "../read/reader-select.ts";
 import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL, RETIRED_SKILLS } from "../sessions/agent-home.ts";
@@ -131,8 +131,7 @@ export function inProgram<T>(
       const startedAt = wall.now();
       let p: MbProcess;
       try {
-        if (resolved !== undefined) recordFallbackSpawn(resolved.selection);
-        p = new MbProcess(bin, ["--builder", "replica-carry", "--sep", sep, "--shell-dir", join(asked.dataDir, "shell")], { engine });
+        p = new MbProcess(bin, ["--builder", "replica-carry", "--sep", sep, "--shell-dir", join(asked.dataDir, "shell")], { engine, fallbackMode: resolved !== undefined ? fallbackModeOf(resolved.selection) : undefined });
       } catch (e) {
         return reject(e instanceof Error ? e : new Error(String(e)));
       }

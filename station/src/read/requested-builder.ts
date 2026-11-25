@@ -2,7 +2,7 @@ import { setMaxListeners } from "node:events";
 import { Fibers, wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { REQUEST_BACKFILL_PAUSE_MS, giveBackfill, releaseStoppedBackfill, takeBackfill } from "../store/backfill.ts";
-import { type BackfillOptions, MbProcess, type ResolvedReaderSelection, engineOfSelection, recordFallbackSpawn } from "./mb-reader.ts";
+import { type BackfillOptions, MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf } from "./mb-reader.ts";
 import { classifyProgram, readerTelemetry } from "./reader-telemetry.ts";
 
 /// A builder in MoonBit or Pion (read/mb-reader.ts): its program (resolved on each spawn when given as a getter)
@@ -190,8 +190,7 @@ export class RequestedBuilder<K extends number | string> {
         if (typeof resolved === "string") {
           mb = new MbProcess(resolved, this.#mb.args);
         } else {
-          recordFallbackSpawn(resolved.selection);
-          mb = new MbProcess(resolved.primaryBinary, this.#mb.args, { engine: engineOfSelection(resolved) });
+          mb = new MbProcess(resolved.primaryBinary, this.#mb.args, { engine: engineOfSelection(resolved), fallbackMode: fallbackModeOf(resolved.selection) });
         }
       } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));

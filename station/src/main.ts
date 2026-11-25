@@ -412,13 +412,18 @@ function run() {
     }));
     // With how the process is (as health.json says it) and what ops/forewarn.ts looks at: its descriptors, the data
     // directory's disk and the database's log.
-    const rssNow = async () => {
+    let rssInFlight: Promise<ReturnType<typeof readerTelemetry.lastRss>> | null = null;
+    const rssNow = () => {
       const live = MbProcess.live();
-      if (live.length === 0) return readerTelemetry.recordRssSnapshot(null, live, wall.now());
+      if (live.length === 0) return Promise.resolve(readerTelemetry.recordRssSnapshot(null, live, wall.now()));
       const now = wall.now();
-      if (readerTelemetry.lastRssAgeMs(now) <= 60_000) return readerTelemetry.lastRss();
-      const table = await platform.processTable(false).catch(() => null);
-      return readerTelemetry.recordRssSnapshot(table, live, wall.now());
+      if (readerTelemetry.lastRssAgeMs(now) <= 60_000) return Promise.resolve(readerTelemetry.lastRss());
+      if (rssInFlight !== null) return rssInFlight;
+      rssInFlight = platform.processTable(false)
+        .catch(() => null)
+        .then((table) => readerTelemetry.recordRssSnapshot(table, MbProcess.live(), wall.now()))
+        .finally(() => { rssInFlight = null; });
+      return rssInFlight;
     };
     timers.push(wall.every(process.env.STILLFAIL_MEMLOG ? 10_000 : 600_000, () => {
       const m = process.memoryUsage();

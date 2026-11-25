@@ -5,7 +5,7 @@ import { basename, dirname, join, normalize, sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { fileName, samePath, segments, within } from "../ops/paths.ts";
-import { MbProcess, engineOfSelection, recordFallbackSpawn, resolveReaderSelection } from "../read/mb-reader.ts";
+import { MbProcess, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "../read/mb-reader.ts";
 import { type TelemetryEngine, readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
@@ -201,6 +201,7 @@ type Ask = { finding: boolean; strict: boolean; stopAfter?: number };
 const pendingShadows = new Set<Promise<void>>();
 let shadowInFlight = false;
 let activeShadowDeadline: (() => void) | null = null;
+const shadowDeadlineWaiters: (() => void)[] = [];
 let lastShadowPid: number | null = null;
 const SHADOW_HARD_TIMEOUT_PAD_MS = 5_000;
 
@@ -212,6 +213,12 @@ export function isShadowInFlightForTest(): boolean {
 /// Return the OS pid of the most recently spawned shadow child process (tests only).
 export function lastShadowPidForTest(): number | null {
   return lastShadowPid;
+}
+
+/// Resolve once an in-flight background `shadow` run has armed its host deadline (tests only).
+export function waitForShadowDeadlineArmedForTest(): Promise<void> {
+  if (activeShadowDeadline !== null) return Promise.resolve();
+  return new Promise<void>((resolve) => shadowDeadlineWaiters.push(resolve));
 }
 
 /// Immediately fire the active background `shadow` run's host hard-timeout callback (tests only).
@@ -262,6 +269,7 @@ function spawnMeasureBinary(
   budget: MeasureBudget,
   signal?: AbortSignal,
   engine?: TelemetryEngine,
+  fallbackMode?: string,
 ): { result: Promise<Measured>; closed: Promise<void>; kill: () => void; timeout: (error: Error) => void } {
   if (signal?.aborted) {
     return {
@@ -272,7 +280,7 @@ function spawnMeasureBinary(
     };
   }
   const startedAt = wall.now();
-  const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true, engine });
+  const p = new MbProcess(binary, ["--builder", "footprint", "--sep", sep], { background: true, engine, fallbackMode });
   let resolveClosed!: () => void;
   const closed = new Promise<void>((r) => { resolveClosed = r; });
   let onTimeout!: (error: Error) => void;
@@ -415,6 +423,7 @@ async function runShadowComparison(
     shadowAc.abort(err);
   };
   activeShadowDeadline = onDeadline;
+  for (const wake of shadowDeadlineWaiters.splice(0)) wake();
   const stopTimer = wall.after(hardTimeoutMs, onDeadline); // timer: timeout/deadline for shadow footprint process
 
   try {
@@ -483,8 +492,7 @@ function measure(
   if (resolved.engine === "pion") {
     return spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal, "pion").result;
   }
-  recordFallbackSpawn(resolved.selection);
-  const primary = spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal, engineOfSelection(resolved)).result;
+  const primary = spawnMeasureBinary(resolved.primaryBinary, path, ask, budget, signal, engineOfSelection(resolved), fallbackModeOf(resolved.selection)).result;
   const pionBin = resolved.pionBinary;
   if (resolved.engine !== "shadow" || pionBin === null) {
     return primary;

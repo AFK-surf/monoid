@@ -4,7 +4,7 @@
 import { EventEmitter } from "node:events";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf } from "../read/mb-reader.ts";
 import { readerTelemetry } from "../read/reader-telemetry.ts";
 import { BACKFILL_PAUSE_MS, REQUEST_BACKFILL_PAUSE_MS, giveBackfill, takeBackfill } from "../store/backfill.ts";
 import type { PendingPrepare, UseAnswer, UseRead } from "./use-index.ts";
@@ -32,12 +32,14 @@ export class MbUseReader extends EventEmitter {
   /// `known`: what of the background an earlier one of these found done (`settled`), not asked again: one let go
   /// while idle (use-index.ts `trimIdle`) is followed by another, which goes on where the database says (its progress
   /// is kept there), or not at all where it was done or given up.
-  constructor(binary: string, path: string, priority: SharedArrayBuffer | undefined, known: { uses?: boolean; rebox?: boolean } = {}) {
+  constructor(binary: string | ResolvedReaderSelection, path: string, priority: SharedArrayBuffer | undefined, known: { uses?: boolean; rebox?: boolean } = {}) {
     super();
     this.#backgroundComplete = known.uses === true;
     this.#reboxComplete = known.rebox === true;
     this.#priority = priority instanceof SharedArrayBuffer ? new Int32Array(priority) : null;
-    this.#process = new MbProcess(binary, ["--builder", "vault-uses", "--db", path]);
+    const bin = typeof binary === "string" ? binary : binary.primaryBinary;
+    const opts = typeof binary === "string" ? undefined : { engine: engineOfSelection(binary), fallbackMode: fallbackModeOf(binary.selection) };
+    this.#process = new MbProcess(bin, ["--builder", "vault-uses", "--db", path], opts);
     this.#process.on("message", (reply: Reply) => {
       const entry = this.#replies.shift();
       if (entry === undefined) return;

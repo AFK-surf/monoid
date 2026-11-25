@@ -7,7 +7,7 @@ export class CardPostsBuilder extends RequestedBuilder<number> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("card-posts", { binary, config: options.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "card-posts", "--db", path] },
+      { binary: () => resolveReaderSelection("card-posts", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "card-posts", "--db", path] },
       "thread",
       "card post preparation",
     );
@@ -19,7 +19,7 @@ export class ClosedCardsBuilder extends RequestedBuilder<number> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("closed-cards", { binary, config: options.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "closed-cards", "--db", path] },
+      { binary: () => resolveReaderSelection("closed-cards", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "closed-cards", "--db", path] },
       "thread",
       "closed card preparation",
       (thread, cancel) => ({ thread, cancel, closed: true }),
@@ -33,7 +33,7 @@ export class PeopleSinceBuilder extends RequestedBuilder<number> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("people-since", { binary, config: options.readers, logAt: "readers" }).primaryBinary, args: ["--builder", "people-since", "--db", path] },
+      { binary: () => resolveReaderSelection("people-since", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "people-since", "--db", path] },
       "thread",
       "people-time preparation",
       (thread, cancel) => ({ thread, cancel, people: true }),
