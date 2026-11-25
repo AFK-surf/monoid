@@ -67,6 +67,8 @@ export type BrowserOptions = {
 export type OpenTabOptions = {
   /// Where this tab's isolated browser context keeps its cookies and passkeys across sign-ins (null when gone).
   stateFile?: () => string | null;
+  /// Workspace that owns this isolated login tab (null = home workspace, the default when `stateFile` is set).
+  workspace?: string | null;
 };
 
 type LoginTab = {
@@ -81,8 +83,9 @@ type Up = {
   cdp: Cdp;
   tabs: Tabs;
   keys: Authenticators;
-  loginContexts: Set<string>;
+  loginContexts: Map<string, string | null>;
   loginTabs: Map<string, LoginTab>;
+  tabWorkspaces: Map<string, string | null>;
   unlisten: () => void;
   since: number;
 };
@@ -132,7 +135,7 @@ export class StationBrowser implements ScreenBrowser {
   readonly #flushing = new Set<Promise<void>>();
   readonly #userTabs: UserTabs;
   #defaultCreateQueue: Promise<void> = Promise.resolve();
-  #activeLoginContexts: Set<string> | null = null;
+  #activeLoginContexts: Map<string, string | null> | null = null;
   #up: Up | null = null;
   /// A start under way: whoever asks meanwhile waits for it.
   #starting: Promise<Up> | null = null;
@@ -249,14 +252,18 @@ export class StationBrowser implements ScreenBrowser {
   async openTab(url: string, options?: OpenTabOptions): Promise<string> {
     this.used();
     if (!options?.stateFile) {
-      const { targetId, tabs } = await this.#createDefaultTarget(url);
+      const ws = options?.workspace ?? null;
+      const { targetId, tabs } = await this.#createDefaultTarget(url, undefined, (id) => {
+        if (this.#up) this.#up.tabWorkspaces.set(id, ws);
+      });
       await tabs.arrived(targetId);
+      this.#o.screens?.changed?.();
       return targetId;
     }
     const up = await this.#ensure();
     const { browserContextId } = await up.cdp.send("Target.createBrowserContext", { disposeOnDetach: false });
     if (typeof browserContextId !== "string" || browserContextId === "") throw new Error("Chrome made no browser context.");
-    up.loginContexts.add(browserContextId);
+    up.loginContexts.set(browserContextId, options.workspace ?? null);
     const initialPath = options.stateFile();
     if (initialPath !== null) {
       const kept = await readFile(initialPath, "utf8").catch(() => null);
@@ -461,8 +468,9 @@ export class StationBrowser implements ScreenBrowser {
     const cdp = await chrome.connect(running.ws);
     // (each chat's tab and each isolated login tab its authenticator: passkeys.ts; the station's shared context has none)
     const owner = this.#o.contextOwner;
-    const loginContexts = new Set<string>();
+    const loginContexts = new Map<string, string | null>();
     const loginTabs = new Map<string, LoginTab>();
+    const tabWorkspaces = new Map<string, string | null>();
     this.#activeLoginContexts = loginContexts;
     let current: Up | null = null;
     const keys = new Authenticators(
@@ -473,6 +481,8 @@ export class StationBrowser implements ScreenBrowser {
     const tabs: Tabs = new Tabs({
       cdp, screens, connect: () => chrome.connect(running.ws), now: () => this.#fibers.now(), activity: () => this.used(), later: this.#o.later,
       owners: this.#owners, ...(owner ? { contextOwner: owner } : {}),
+      contextWorkspace: (ctx) => (ctx !== undefined ? loginContexts.get(ctx) : undefined),
+      tabWorkspace: (targetId) => tabWorkspaces.get(targetId),
       ownPasskey: (targetId: string, rpId: string): boolean => {
         const ctx = tabs.contextOf(targetId);
         return ctx !== undefined && keys.has(ctx, rpId);
@@ -509,7 +519,7 @@ export class StationBrowser implements ScreenBrowser {
       cdp.close();
       throw new Error("The station is stopping.");
     }
-    const up: Up = { running, cdp, tabs, keys, loginContexts, loginTabs, unlisten, since: this.#fibers.now() };
+    const up: Up = { running, cdp, tabs, keys, loginContexts, loginTabs, tabWorkspaces, unlisten, since: this.#fibers.now() };
     current = up;
     this.#up = up;
     this.#leaving = false;
@@ -602,6 +612,7 @@ export class StationBrowser implements ScreenBrowser {
       if (tab && tab.ending === null) void this.#trackFlush(this.#saveLoginTab(up, tab));
     } else if (e.method === "Target.targetDestroyed") {
       const targetId = e.params?.targetId;
+      if (typeof targetId === "string") up.tabWorkspaces.delete(targetId);
       const tab = typeof targetId === "string" ? up.loginTabs.get(targetId) : undefined;
       if (tab && tab.ending === null) void this.#trackFlush(this.#endLoginTab(up, targetId, false));
     }
@@ -642,10 +653,13 @@ export class StationBrowser implements ScreenBrowser {
     const ending = (async () => {
       await this.#saveLoginTab(up, tab);
       if (closeTarget && up.tabs.has(targetId)) await up.tabs.closeTab(targetId).catch(() => {});
-      up.loginTabs.delete(targetId);
-      up.loginContexts.delete(tab.ctx);
-      up.keys.forget(tab.ctx);
-      await up.cdp.send("Target.disposeBrowserContext", { browserContextId: tab.ctx }).catch(() => {});
+      try {
+        await up.cdp.send("Target.disposeBrowserContext", { browserContextId: tab.ctx }).catch(() => {});
+      } finally {
+        up.loginTabs.delete(targetId);
+        up.loginContexts.delete(tab.ctx);
+        up.keys.forget(tab.ctx);
+      }
     })();
     tab.ending = ending;
     return ending;

@@ -54,7 +54,7 @@ import { previewTarget, proxyPreview } from "../jobs/preview.ts";
 import type { Clock } from "effect";
 import { liveClock } from "../ops/fibers.ts";
 import { readOnly } from "../mesh/credential.ts";
-import { elsewhere, went } from "./seen.ts";
+import { elsewhere, screenSeen, went } from "./seen.ts";
 import { reviewUndecided } from "../sessions/review.ts";
 import { tr } from "../ops/i18n.ts";
 
@@ -215,42 +215,51 @@ export class Admin {
       // The screens members see and drive; a view of one is a stream of its own (mesh/screens.ts).
       ...(deps.screens
         ? [
-            { method: "GET", pattern: /^\/screens$/, handle: async (r: Request) => (await deps.screens!.refresh(), json(200, JSON.stringify(deps.screens!.listed(r.lang)))) },
+            {
+              method: "GET",
+              pattern: /^\/screens$/,
+              handle: async (r: Request) => {
+                await deps.screens!.refresh();
+                const { browser, entries } = deps.screens!.listedEntries(r.lang);
+                const visible = deps.store ? entries.filter((e) => screenSeen(deps.store!, r.viewer, e.source)) : entries;
+                return json(200, JSON.stringify({ ...(browser ? { browser: true } : {}), screens: visible.map((e) => e.data) }));
+              },
+            },
             { method: "POST", pattern: /^\/screens\/browser$/, handle: async (r: Request) => openBrowserScreen(deps.screens!, r) },
             // A person closes one (a tab of the browser): it leaves the list as it goes (`screens` on the event stream).
-            { method: "POST", pattern: /^\/screens\/([^/]+)\/close$/, handle: async (r: Request, [raw]: string[]) => closeScreen(deps.screens!, r, raw!) },
-            { method: "POST", pattern: /^\/screens\/([^/]+)\/open-url$/, handle: async (r: Request, [raw]: string[]) => openScreenUrl(deps.screens!, r, raw!) },
-            { method: "POST", pattern: /^\/screens\/([^/]+)\/reload$/, handle: async (r: Request, [raw]: string[]) => actScreen(deps.screens!, r, raw!, (id) => deps.screens!.reloadScreen(id)) },
-            { method: "POST", pattern: /^\/screens\/([^/]+)\/back$/, handle: async (r: Request, [raw]: string[]) => actScreen(deps.screens!, r, raw!, (id) => deps.screens!.historyScreen(id, -1)) },
-            { method: "POST", pattern: /^\/screens\/([^/]+)\/forward$/, handle: async (r: Request, [raw]: string[]) => actScreen(deps.screens!, r, raw!, (id) => deps.screens!.historyScreen(id, 1)) },
-            { method: "POST", pattern: /^\/screens\/([^/]+)\/sleep$/, handle: async (r: Request, [raw]: string[]) => actScreen(deps.screens!, r, raw!, (id) => deps.screens!.sleepScreen(id)) },
-            { method: "POST", pattern: /^\/screens\/([^/]+)\/views\/end$/, handle: async (r: Request, [raw]: string[]) => screenViews(r, raw!, (id) => ({ ended: deps.screens!.endViews(id, byOf(r)) })) },
-            { method: "POST", pattern: /^\/screens\/([^/]+)\/views\/([^/]+)\/end$/, handle: async (r: Request, [raw, view]: string[]) => screenViews(r, raw!, (id) => (deps.screens!.endView(id, decodeURIComponent(view!), byOf(r)), {})) },
-            { method: "POST", pattern: /^\/screens\/([^/]+)\/views\/([^/]+)\/watch$/, handle: async (r: Request, [raw, view]: string[]) => screenViews(r, raw!, (id) => (deps.screens!.watchOnly(id, decodeURIComponent(view!)), {})) },
+            { method: "POST", pattern: /^\/screens\/([^/]+)\/close$/, handle: async (r: Request, [raw]: string[]) => closeScreen(deps.screens!, deps.store, r, raw!) },
+            { method: "POST", pattern: /^\/screens\/([^/]+)\/open-url$/, handle: async (r: Request, [raw]: string[]) => openScreenUrl(deps.screens!, deps.store, r, raw!) },
+            { method: "POST", pattern: /^\/screens\/([^/]+)\/reload$/, handle: async (r: Request, [raw]: string[]) => actScreen(deps.screens!, deps.store, r, raw!, (id) => deps.screens!.reloadScreen(id)) },
+            { method: "POST", pattern: /^\/screens\/([^/]+)\/back$/, handle: async (r: Request, [raw]: string[]) => actScreen(deps.screens!, deps.store, r, raw!, (id) => deps.screens!.historyScreen(id, -1)) },
+            { method: "POST", pattern: /^\/screens\/([^/]+)\/forward$/, handle: async (r: Request, [raw]: string[]) => actScreen(deps.screens!, deps.store, r, raw!, (id) => deps.screens!.historyScreen(id, 1)) },
+            { method: "POST", pattern: /^\/screens\/([^/]+)\/sleep$/, handle: async (r: Request, [raw]: string[]) => actScreen(deps.screens!, deps.store, r, raw!, (id) => deps.screens!.sleepScreen(id)) },
+            { method: "POST", pattern: /^\/screens\/([^/]+)\/views\/end$/, handle: async (r: Request, [raw]: string[]) => screenViews(deps.screens!, deps.store, r, raw!, (id) => ({ ended: deps.screens!.endViews(id, byOf(r)) })) },
+            { method: "POST", pattern: /^\/screens\/([^/]+)\/views\/([^/]+)\/end$/, handle: async (r: Request, [raw, view]: string[]) => screenViews(deps.screens!, deps.store, r, raw!, (id) => (deps.screens!.endView(id, decodeURIComponent(view!), byOf(r)), {})) },
+            { method: "POST", pattern: /^\/screens\/([^/]+)\/views\/([^/]+)\/watch$/, handle: async (r: Request, [raw, view]: string[]) => screenViews(deps.screens!, deps.store, r, raw!, (id) => (deps.screens!.watchOnly(id, decodeURIComponent(view!)), {})) },
             // A person debugging an app on a simulator: its apps' logs (a poll, `after` from the last answer's `next`) and restart.
-            { method: "GET", pattern: /^\/screens\/([^/]+)\/logs$/, handle: async (r: Request, [raw]: string[]) => screenDebug(deps.screens!, r, raw!, async (d) => d.logs(Math.max(0, Number(r.query.find(([k]) => k === "after")?.[1]) || 0))) },
-            { method: "GET", pattern: /^\/screens\/([^/]+)\/apps$/, handle: async (r: Request, [raw]: string[]) => screenDebug(deps.screens!, r, raw!, async (d) => ({ apps: await d.apps() })) },
-            { method: "GET", pattern: /^\/screens\/([^/]+)\/settings$/, handle: async (r: Request, [raw]: string[]) => screenDebug(deps.screens!, r, raw!, async (d) => d.settings()) },
+            { method: "GET", pattern: /^\/screens\/([^/]+)\/logs$/, handle: async (r: Request, [raw]: string[]) => screenDebug(deps.screens!, deps.store, r, raw!, async (d) => d.logs(Math.max(0, Number(r.query.find(([k]) => k === "after")?.[1]) || 0))) },
+            { method: "GET", pattern: /^\/screens\/([^/]+)\/apps$/, handle: async (r: Request, [raw]: string[]) => screenDebug(deps.screens!, deps.store, r, raw!, async (d) => ({ apps: await d.apps() })) },
+            { method: "GET", pattern: /^\/screens\/([^/]+)\/settings$/, handle: async (r: Request, [raw]: string[]) => screenDebug(deps.screens!, deps.store, r, raw!, async (d) => d.settings()) },
             {
               method: "POST",
               pattern: /^\/screens\/([^/]+)\/settings$/,
               handle: async (r: Request, [raw]: string[]) =>
-                screenDebug(deps.screens!, r, raw!, async (d) => {
+                screenDebug(deps.screens!, deps.store, r, raw!, async (d) => {
                   const { name, value } = JSON.parse(r.body.toString("utf8") || "{}") as { name?: unknown; value?: unknown };
                   if (typeof name !== "string" || typeof value !== "string" || !(await d.setSetting(name, value))) throw new ScreenRefused(400, "station.screen.noSetting");
                   return d.settings();
                 }),
             },
-            { method: "GET", pattern: /^\/screens\/([^/]+)\/chrome\/(\d)\/(\d)$/, handle: async (r: Request, [raw, panel, turn]: string[]) => screenChrome(deps.screens!, r, raw!, Number(panel), Number(turn)) },
-            { method: "POST", pattern: /^\/screens\/([^/]+)\/screenshot$/, handle: async (r: Request, [raw]: string[]) => screenDebug(deps.screens!, r, raw!, async (d) => ({ png: (await d.screenshot()).toString("base64") })) },
-            ...simActions(deps.screens),
+            { method: "GET", pattern: /^\/screens\/([^/]+)\/chrome\/(\d)\/(\d)$/, handle: async (r: Request, [raw, panel, turn]: string[]) => screenChrome(deps.screens!, deps.store, r, raw!, Number(panel), Number(turn)) },
+            { method: "POST", pattern: /^\/screens\/([^/]+)\/screenshot$/, handle: async (r: Request, [raw]: string[]) => screenDebug(deps.screens!, deps.store, r, raw!, async (d) => ({ png: (await d.screenshot()).toString("base64") })) },
+            ...simActions(deps.screens, deps.store),
             // Its movie, the drive's way for the viewer to download (none: nothing was going on).
-            { method: "POST", pattern: /^\/screens\/([^/]+)\/record\/stop$/, handle: async (r: Request, [raw]: string[]) => screenDebug(deps.screens!, r, raw!, async (d) => (await d.recordStop()) ?? {}) },
+            { method: "POST", pattern: /^\/screens\/([^/]+)\/record\/stop$/, handle: async (r: Request, [raw]: string[]) => screenDebug(deps.screens!, deps.store, r, raw!, async (d) => (await d.recordStop()) ?? {}) },
             {
               method: "POST",
               pattern: /^\/screens\/([^/]+)\/install$/,
               handle: async (r: Request, [raw]: string[]) =>
-                screenDebug(deps.screens!, r, raw!, async (d) => {
+                screenDebug(deps.screens!, deps.store, r, raw!, async (d) => {
                   const path = (JSON.parse(r.body.toString("utf8") || "{}") as { path?: unknown }).path;
                   const app = typeof path === "string" ? await d.install(path) : null;
                   if (app === null) throw new ScreenRefused(400, "station.screen.notAnApp");
@@ -261,7 +270,7 @@ export class Admin {
               method: "POST",
               pattern: /^\/screens\/([^/]+)\/relaunch$/,
               handle: async (r: Request, [raw]: string[]) =>
-                screenDebug(deps.screens!, r, raw!, async (d) => {
+                screenDebug(deps.screens!, deps.store, r, raw!, async (d) => {
                   const app = (JSON.parse(r.body.toString("utf8") || "{}") as { app?: unknown }).app;
                   if (typeof app !== "string" || !(await d.relaunch(app))) throw new ScreenRefused(404, "station.screen.noApp");
                   return {};
@@ -635,15 +644,22 @@ export function agentsRoutes(agents: AgentsParts, deps: { store?: Store; events?
   ];
 }
 
+/// Whether `r.viewer` may see screen `id` (false when `id` exists and belongs to another workspace).
+function screenVisible(screens: ScreenHub, store: Store | undefined, r: Request, id: string): boolean {
+  if (store === undefined) return true;
+  const source = screens.get(id);
+  return source === undefined || screenSeen(store, r.viewer, source);
+}
+
 /// A simulator's logs, apps and restart: only for those who may drive it (what apps log may be private; a read-only
 /// member only sees the screen). 404 no such screen, 405 nothing to debug on it, 502 simctl failed.
 /// What a person does of a device as Device Hub would, each with what it is told.
-function simActions(screens: ScreenHub) {
+function simActions(screens: ScreenHub, store: Store | undefined) {
   const route = (path: string, act: (d: SimDebug, said: Record<string, unknown>) => Promise<void>) => ({
     method: "POST",
     pattern: new RegExp(`^/screens/([^/]+)/${path}$`),
     handle: async (r: Request, [raw]: string[]) =>
-      screenDebug(screens, r, raw!, async (d) => {
+      screenDebug(screens, store, r, raw!, async (d) => {
         await act(d, JSON.parse(r.body.toString("utf8") || "{}"));
         return {};
       }),
@@ -666,14 +682,15 @@ function simActions(screens: ScreenHub) {
   ];
 }
 
-async function screenDebug(screens: ScreenHub, r: Request, raw: string, answer: (debug: SimDebug) => Promise<unknown>): Promise<Answer> {
-  if (readOnly(r.viewer)) return error(403, "a read-only member does not read an app's logs");
+async function screenDebug(screens: ScreenHub, store: Store | undefined, r: Request, raw: string, answer: (debug: SimDebug) => Promise<unknown>): Promise<Answer> {
   let id: string;
   try {
     id = decodeURIComponent(raw);
   } catch {
     return error(404, tr(r.lang, "station.screen.notFound"));
   }
+  if (!screenVisible(screens, store, r, id)) return error(404, tr(r.lang, "station.screen.notFound"));
+  if (readOnly(r.viewer)) return error(403, "a read-only member does not read an app's logs");
   try {
     return json(200, JSON.stringify(await answer(screens.debugOf(id))));
   } catch (e) {
@@ -685,13 +702,14 @@ async function screenDebug(screens: ScreenHub, r: Request, raw: string, answer: 
 }
 
 /// GET /screens/<id>/chrome/<panel>/<turn>: a simulator's case, its pictures made of what Xcode has on this Mac.
-async function screenChrome(screens: ScreenHub, r: Request, raw: string, panel: number, turn: number): Promise<Answer> {
+async function screenChrome(screens: ScreenHub, store: Store | undefined, r: Request, raw: string, panel: number, turn: number): Promise<Answer> {
   let id: string;
   try {
     id = decodeURIComponent(raw);
   } catch {
     return error(404, tr(r.lang, "station.screen.notFound"));
   }
+  if (!screenVisible(screens, store, r, id)) return error(404, tr(r.lang, "station.screen.notFound"));
   try {
     return json(200, JSON.stringify(await screens.chromeOf(id, panel, turn)));
   } catch (e) {
@@ -705,9 +723,16 @@ const byOf = (r: Request) => r.viewer.name || r.viewer.email;
 
 /// POST /screens/<id>/views/…: a view ended or made to only look, by a member who may drive the screen (a read-only one
 /// is refused with every other write, Admin's own check). 404 no such screen or view (it ended meanwhile), 405 an agent's.
-async function screenViews(r: Request, raw: string, act: (id: string) => unknown): Promise<Answer> {
+async function screenViews(screens: ScreenHub, store: Store | undefined, r: Request, raw: string, act: (id: string) => unknown): Promise<Answer> {
+  let id: string;
   try {
-    return json(200, JSON.stringify(act(decodeURIComponent(raw))));
+    id = decodeURIComponent(raw);
+  } catch {
+    return error(404, tr(r.lang, "station.screen.notFound"));
+  }
+  if (!screenVisible(screens, store, r, id)) return error(404, tr(r.lang, "station.screen.notFound"));
+  try {
+    return json(200, JSON.stringify(act(id)));
   } catch (e) {
     if (e instanceof ScreenRefused) return error(e.status, tr(r.lang, e.key, e.args));
     if (e instanceof URIError) return error(404, tr(r.lang, "station.screen.notFound"));
@@ -716,17 +741,18 @@ async function screenViews(r: Request, raw: string, act: (id: string) => unknown
 }
 
 /// POST /screens/<id>/close: 404 no such screen, 405 one not closed from here (the desktop), 502 the browser refused.
-async function closeScreen(screens: ScreenHub, r: Request, raw: string): Promise<Answer> {
-  return actScreen(screens, r, raw, (id) => screens.closeScreen(id));
+async function closeScreen(screens: ScreenHub, store: Store | undefined, r: Request, raw: string): Promise<Answer> {
+  return actScreen(screens, store, r, raw, (id) => screens.closeScreen(id));
 }
 
-async function actScreen(screens: ScreenHub, r: Request, raw: string, act: (id: string) => Promise<void>): Promise<Answer> {
+async function actScreen(screens: ScreenHub, store: Store | undefined, r: Request, raw: string, act: (id: string) => Promise<void>): Promise<Answer> {
   let id: string;
   try {
     id = decodeURIComponent(raw);
   } catch {
     return error(404, tr(r.lang, "station.screen.notFound"));
   }
+  if (!screenVisible(screens, store, r, id)) return error(404, tr(r.lang, "station.screen.notFound"));
   try {
     await act(id);
     return json(200, "{}");
@@ -756,14 +782,15 @@ async function openBrowserScreen(screens: ScreenHub, r: Request): Promise<Answer
   }
 }
 
-async function openScreenUrl(screens: ScreenHub, r: Request, raw: string): Promise<Answer> {
-  if (readOnly(r.viewer)) return error(403, "a read-only member does not open a link on a screen");
+async function openScreenUrl(screens: ScreenHub, store: Store | undefined, r: Request, raw: string): Promise<Answer> {
   let id: string;
   try {
     id = decodeURIComponent(raw);
   } catch {
     return error(404, tr(r.lang, "station.screen.notFound"));
   }
+  if (!screenVisible(screens, store, r, id)) return error(404, tr(r.lang, "station.screen.notFound"));
+  if (readOnly(r.viewer)) return error(403, "a read-only member does not open a link on a screen");
   let url: unknown;
   try {
     url = (JSON.parse(r.body.toString("utf8") || "{}") as { url?: unknown }).url;

@@ -1502,7 +1502,10 @@ test("an agent operating a browser tab joins ScreenHub, yields passive viewers w
   g.fromChrome(JSON.stringify({ method: "Target.attachedToTarget", params: { sessionId: "ST1", targetInfo: { targetId: "T1", browserContextId: "C1" } } }));
 
   // Passive person view opens (taken = false).
-  assert.deepEqual(hub.drive("browser:T1", "dev-1", false, "Alice"), { control: true, took: [] });
+  {
+    const d = hub.drive("browser:T1", "dev-1", false, "Alice");
+    assert.deepEqual({ control: d.control, took: d.took }, { control: true, took: [] });
+  }
   let yieldedBy: string | undefined;
   let leaveAlice = hub.join("browser:T1", { name: "Alice", device: "dev-1", control: true, tell: () => {}, watchOnly: (by) => { yieldedBy = by; } });
 
@@ -1516,14 +1519,20 @@ test("an agent operating a browser tab joins ScreenHub, yields passive viewers w
   hold.releaseSession("查询账号");
   assert.deepEqual(hub.people("browser:T1").controlledBy, []);
   leaveAlice();
-  assert.deepEqual(hub.drive("browser:T1", "dev-1", false, "Alice"), { control: true, took: [] });
+  {
+    const d = hub.drive("browser:T1", "dev-1", false, "Alice");
+    assert.deepEqual({ control: d.control, took: d.took }, { control: true, took: [] });
+  }
   leaveAlice = hub.join("browser:T1", { name: "Alice", device: "dev-1", control: true, tell: () => {}, watchOnly: () => {} });
 
   // Now agent acts again, then Alice explicitly clicks [接管] (taken = true).
   assert.equal(g.fromClient(JSON.stringify({ id: 2, sessionId: "ST1", method: "Input.dispatchMouseEvent", params: { type: "mousePressed" } })).up.length, 1);
   leaveAlice();
-  assert.deepEqual(hub.drive("browser:T1", "dev-1", true, "Alice"), { control: true, took: [] });
-  leaveAlice = hub.join("browser:T1", { name: "Alice", device: "dev-1", control: true, tell: () => {}, watchOnly: () => {} });
+  {
+    const d = hub.drive("browser:T1", "dev-1", true, "Alice");
+    assert.deepEqual({ control: d.control, took: d.took }, { control: true, took: [] });
+    leaveAlice = hub.join("browser:T1", { name: "Alice", device: "dev-1", control: true, takenToken: d.takenToken, tell: () => {}, watchOnly: () => {} });
+  }
   assert.equal(hub.hasTakenView("browser:T1"), true);
 
   // Read-only screenshot still passes, while operating commands and closing the tab are refused!
