@@ -145,9 +145,10 @@ export type Notify = (session: string, text: string) => void;
 /// service), when the station is in a workspace.
 export type Link = (session: string, job: string) => string | null;
 
-/// What the queue (jobs/admit.ts) measures of the machine: what the system says of its memory, and how long its input
-/// has been idle (ms; none where it is not read: no person is seen at it).
-export type Machine = { pressure(): Promise<Pressure | null>; inputIdle?(): Promise<number | null> };
+/// What the queue (jobs/admit.ts) measures of the machine: what the system says of its memory, how long its input
+/// has been idle (ms; none where it is not read: no person is seen at it), and whether its screen is locked with
+/// nothing to open it for a task (screens/locked-use.ts; none where it is not read: not locked).
+export type Machine = { pressure(): Promise<Pressure | null>; inputIdle?(): Promise<number | null>; locked?(): Promise<boolean> };
 
 export const liveMachine: Machine = {
   pressure: () => platform.memoryPressure(),
@@ -397,6 +398,8 @@ export class Jobs {
         return await this.machine.pressure().catch(() => null);
       case "node.inputIdle":
         return this.machine.inputIdle === undefined ? null : await this.machine.inputIdle();
+      case "node.locked":
+        return this.machine.locked === undefined ? false : await this.machine.locked().catch(() => false);
       case "node.pidAlive":
         return pidAlive(a);
       case "node.keepClaims":

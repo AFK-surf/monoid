@@ -14,13 +14,13 @@ pub fn overstaying(Array[Claim], Double) -> Array[Claim]
 
 pub let person_idle_ms : Double
 
-pub fn pick(Array[Waiting], Array[Started], String?, Bool, (String) -> Double?, Claims) -> Picked?
+pub fn pick(Array[Waiting], Array[Started], String?, Bool, (String) -> Double?, Claims, locked? : Bool) -> Picked?
 
 pub fn place(Array[Waiting], String, (String) -> Double?) -> Int32?
 
 pub fn restart_pause(Int32, Double) -> Double
 
-pub fn served(Array[Claim], Array[String], Double, Bool) -> Array[Claim]
+pub fn served(Array[Claim], Array[String], Double, Bool, locked? : Bool) -> Array[Claim]
 
 // Errors
 

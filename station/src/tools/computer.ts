@@ -9,11 +9,16 @@
 // and acts on its elements by ref (`ref` with click, type, set, scroll; `app` with key): through the accessibility API,
 // not the pointer or the keyboard focus, so it needs no picture, works on a window behind others, and goes on while a
 // person drives the screen. Each such action answers with the app's tree again.
+//
+// A Mac whose screen is locked shows nothing but its lock screen: the agent is told so and what to do, never handed a
+// picture of it. Where locked use lets it (screens/locked-use.ts: the owner's chat, the switch on), the session takes a
+// lease first, the Helper unlocks behind its Guard's overlay, and the lease lives as the view does (IDLE_MS unused).
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { tr } from "../ops/i18n.ts";
 import { type ScreenHub, ScreenRefused, accessShown, viewOn } from "../screens/hub.ts";
 import { treeText } from "../screens/ui.ts";
+import { type Leases, type Verdict, UnlockRefused, refusedText } from "../screens/locked-use.ts";
 import type { Frame, ScreenInput, ScreenSource, ScreenView } from "../screens/source.ts";
 import type { Content, Tool, ToolReply } from "./mcp.ts";
 
@@ -82,7 +87,12 @@ export type ComputerParts = {
   /// What a session's view is named among the screen's people: "agent: <its chat's title>".
   name: (session: string) => string;
   timers?: Timers;
+  /// The desktop's locked use (a Mac's, with its Helper): whether its screen is locked now (as last refreshed), its
+  /// leases, and whether a session may have it unlocked (locked-use.ts `mayUnlock`, its asker found).
+  locked?: LockedDesktop;
 };
+
+export type LockedDesktop = { locked(): boolean; leases: Leases; verdict(session: string): Promise<Verdict> };
 
 type Point = { x: number; y: number };
 type Size = { width: number; height: number };
@@ -347,11 +357,38 @@ export class Computer {
   /// A session ended: its views close.
   closeSession(session: string) {
     for (const v of [...this.#views.values()]) if (v.session === session) v.close();
+    for (const s of this.#p.hub.list()) this.#p.locked?.leases.release(`${session}\n${s.id}`);
     for (const key of [...this.#trees.keys()]) if (key.startsWith(`${session}\n`)) this.#trees.delete(key);
   }
 
   closeAll() {
-    for (const v of [...this.#views.values()]) v.close();
+    for (const v of [...this.#views.values()]) {
+      v.close();
+      this.#p.locked?.leases.release(`${v.session}\n${v.id}`);
+    }
+  }
+
+  /// The desktop unlocked for `session` where its screen is locked (a lease taken, or the one it has used again), or
+  /// refused saying what to do next.
+  async #unlocked(session: string, source: ScreenSource) {
+    const lock = this.#p.locked;
+    if (lock === undefined || source.kind !== "desktop") return;
+    const lease = `${session}\n${source.id}`;
+    if (lock.leases.holds(lease)) return lock.leases.touch(lease);
+    if (!lock.locked()) return;
+    const verdict = await lock.verdict(session);
+    if (!verdict.ok) throw new Refused(refusedText(verdict.why));
+    try {
+      await lock.leases.take(lease, this.#p.name(session), IDLE_MS);
+    } catch (error) {
+      if (error instanceof UnlockRefused) throw new Refused(error.message);
+      throw error;
+    }
+    // (a view open since before shows the lock screen: a new one shows the desktop; no person sees it meanwhile)
+    this.#views.get(lease)?.close();
+    try {
+      this.#p.hub.endViews(source.id, this.#p.name(session));
+    } catch {}
   }
 
   /// The link a person opens the screen with, and what to do with it.
@@ -441,6 +478,7 @@ export class Computer {
         throw new Refused(`${accessShown(access, "en")?.message ?? ""}\nYour input was not sent.\n${this.#handOver(id)}`);
       }
     }
+    await this.#unlocked(session, source);
 
     const view = await this.#view(session, source);
     view.touch();
@@ -476,6 +514,7 @@ export class Computer {
       const access = source.access();
       if (!access.control) throw new Refused(`${accessShown(access, "en")?.message ?? `The screen ${id} cannot be driven now.`}\n${this.#handOver(id)}`);
     }
+    await this.#unlocked(session, source);
     const ui = (cmd: string[]) => source.ui!(cmd).catch((error) => {
       if (error instanceof Refused) throw error;
       throw new Refused(`The screen ${id}'s apps could not be read: ${error instanceof ScreenRefused ? (accessShown(error.access, "en")?.message ?? error.message) : (error as Error).message}`);

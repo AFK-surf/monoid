@@ -419,3 +419,56 @@ test("by ref: agent-desktop's refusal as the agent reads it, whether it may be t
   await assert.rejects(computer.act("s1", { screen: "desktop", action: "tree", app: "Calculator" }), (e: Error) => /control it yet \(Accessibility\)/.test(e.message) && e.message.includes("/screen/desktop"));
   await assert.rejects(setup().computer.act("s1", { screen: "browser:T1", action: "tree", app: "Calculator" }), /The screen browser:T1 has no accessibility trees: use screenshots/);
 });
+
+test("a locked Mac: refused with what to do, never its lock screen; let in, a lease is taken first and kept as the view is used", async () => {
+  const { Leases } = await import("../src/screens/locked-use.ts");
+  const source = new FakeSource("desktop", "desktop");
+  const hub = new ScreenHub();
+  hub.add(source);
+  const timers = new FakeTimers();
+  const begun: Record<string, unknown>[] = [];
+  const lines: { destroyed: boolean }[] = [];
+  const leases = new Leases({
+    clock: { now: () => timers.now, later: (ms, f) => timers.later(ms, f) },
+    helper: {
+      async connect(op) {
+        begun.push(op);
+        const listeners: Record<string, ((x?: any) => void)[]> = {};
+        const line = {
+          destroyed: false,
+          setEncoding: () => line,
+          // (its answer given once it is read, as a socket's)
+          on: (e: string, f: (x?: any) => void) => ((listeners[e] ??= []).push(f), e === "data" && f('{"ok":true}\n'), line),
+          destroy: () => ((line.destroyed = true), listeners.close?.forEach((f) => f())),
+        };
+        lines.push(line);
+        return line;
+      },
+    },
+  });
+  let locked = true;
+  let allowed = false;
+  const computer = new Computer({
+    hub, base: () => null, name: (s) => `agent: Chat ${s}`, timers,
+    locked: { locked: () => locked, leases, verdict: async () => (allowed ? { ok: true } : { ok: false, why: "off" }) },
+  });
+  await assert.rejects(computer.act("s1", { screen: "desktop" }), /screen is locked.*Ask its owner.*turn on locked use/s);
+  assert.equal(source.views.length, 0);
+  assert.equal(begun.length, 0);
+
+  allowed = true;
+  const shot = await computer.act("s1", { screen: "desktop" });
+  assert.equal(shot.content[1]?.type, "image");
+  assert.deepEqual(begun.map((o) => o.op), ["lockuse.begin"]);
+  assert.equal(leases.holds("s1\ndesktop"), true);
+  // Unlocked now: used again, the same lease, kept alive.
+  locked = false;
+  timers.advance(IDLE_MS - 1);
+  await computer.act("s1", { screen: "desktop" });
+  timers.advance(IDLE_MS - 1);
+  assert.equal(leases.holds("s1\ndesktop"), true);
+  // Unused, it ends with the view, and the Helper's connection closes (it locks again).
+  timers.advance(1);
+  assert.equal(leases.held(), false);
+  assert.equal(lines[0]!.destroyed, true);
+});

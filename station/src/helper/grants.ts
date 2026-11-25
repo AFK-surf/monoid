@@ -60,6 +60,8 @@ export type HelperStatus = {
   asked?: string[];
   /// The drive's folder grants (granted, denied, unknown; Full Disk Access as `all`, counted in each).
   files?: Record<string, string>;
+  /// Whether the Mac's screen is locked now (a Helper from before it says nothing: not locked).
+  locked?: boolean;
 };
 
 /// The grants as the station's page and the agents are told them: each with its state, those the window asks for now,

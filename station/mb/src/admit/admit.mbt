@@ -27,7 +27,8 @@
 // free, opens, and holds nothing; a Mac VM held the screen 23 hours as a claim, every task with pictures to take in
 // line behind it, 2026-10-27). And while a person uses the screen (the machine's input not idle: someone at it, or
 // working it through still.fail), it is theirs: nothing more is given it, so no window comes up under their hand; what
-// holds it goes on.
+// holds it goes on. Nor while a Mac's screen is locked with nothing to open it for a task (`locked`,
+// station/src/screens/locked-use.ts): its pictures would be the lock screen's; it waits for its owner to unlock it.
 //
 // One explicitly small offscreen task may run beside busy builds. Its own slot is bounded to one task, it is told to
 // use one CPU, and it waits only when memory is critical. This is for brief work such as drawing with a prebuilt renderer.
@@ -77,7 +78,7 @@ pub(all) struct Claims {
 } derive(Eq, Show, Debug)
 
 ///|
-/// The task to start now, or why the first waiting waits (memory, small, screen, person).
+/// The task to start now, or why the first waiting waits (memory, small, screen, person, locked).
 pub(all) enum Picked {
   Start(Waiting)
   Wait(String)
@@ -100,7 +101,13 @@ pub fn claims_held(claims : Array[Claim]) -> Claims {
 /// uses it, and at once to a job's that has it already (`screen_jobs`: those running that use it throughout; or a
 /// command of its own holds it), so a command inside another, or inside a task that has the screen throughout, does not
 /// wait for itself.
-pub fn served(claims : Array[Claim], screen_jobs : Array[String], now : Double, person : Bool) -> Array[Claim] {
+pub fn served(
+  claims : Array[Claim],
+  screen_jobs : Array[String],
+  now : Double,
+  person : Bool,
+  locked? : Bool = false,
+) -> Array[Claim] {
   let having : Map[String, Bool] = {}
   for j in screen_jobs {
     having[j] = true
@@ -111,7 +118,7 @@ pub fn served(claims : Array[Claim], screen_jobs : Array[String], now : Double, 
     }
   }
   claims.map(c => {
-    if c.held || (having.length() > 0 && !having.contains(c.job)) || (person && !having.contains(c.job)) {
+    if c.held || (having.length() > 0 && !having.contains(c.job)) || ((person || locked) && !having.contains(c.job)) {
       return c
     }
     having[c.job] = true
@@ -158,6 +165,7 @@ pub fn pick(
   person : Bool,
   last_of : (String) -> Double?,
   claims : Claims,
+  locked? : Bool = false,
 ) -> Picked? {
   if waiting.length() == 0 {
     return None
@@ -178,6 +186,7 @@ pub fn pick(
       (
         screen_busy ||
         person ||
+        locked ||
         (match claims.asked {
           Some(a) => a <= w.queued_at
           None => false
@@ -189,7 +198,17 @@ pub fn pick(
     return Some(Wait("memory"))
   }
   if able.length() == 0 {
-    return Some(Wait(if !screen_busy && person { "person" } else { "screen" }))
+    return Some(
+      Wait(
+        if !screen_busy && person {
+          "person"
+        } else if !screen_busy && locked {
+          "locked"
+        } else {
+          "screen"
+        },
+      ),
+    )
   }
   // (one small task at a time beside the rest)
   let small_busy = running.iter().any(r => r.small)

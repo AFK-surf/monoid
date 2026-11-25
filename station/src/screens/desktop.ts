@@ -26,6 +26,7 @@ import { log } from "../ops/log.ts";
 import { ScreenRefused } from "./hub.ts";
 import { MacInput } from "./mac-input.ts";
 import { helperUi } from "./ui.ts";
+import { Leases } from "./locked-use.ts";
 export type { HelperStatus } from "../helper/grants.ts";
 import { type AudioCodec, type AudioFrame, type Clip, type ClipType, PRIVACY_CODE, privacyOf, type Codec, type Frame, type FrameConfig, type Region, type ScreenAccess, type ScreenCursor, type ScreenInput, type ScreenMic, type ScreenResolution, type ScreenVideo, type ScreenSource, type ScreenView, type ScreenWindows, type ViewOptions, CURSOR_IMAGES_MOST, CURSOR_SHAPE, MIC_PCM_MAX, OPUS_MAX, clipFits, codecFor, cursorImageShape, regionOf, resolutionOf, windowsOf } from "./source.ts";
 
@@ -86,12 +87,20 @@ export class Desktop implements ScreenSource {
   #originalMode: { width: number; height: number; modeID?: number } | null = null;
   /// Resolution changes, one after another.
   #sizing: Promise<unknown> = Promise.resolve();
+  /// The agents' leases on it while its screen is locked (locked-use.ts); null without a helper.
+  readonly leases: Leases | null;
 
   constructor(options: DesktopOptions) {
     this.#o = options;
     this.#grants = options.helper === null ? null : (options.grants ?? new HelperGrants({ helper: options.helper }));
     // Its grants or display changed: told with the screens.
     this.#grants?.onChange(() => this.#o.changed());
+    this.leases = options.helper === null ? null : new Leases({ helper: options.helper });
+  }
+
+  /// Whether the Mac's screen is locked, as the helper last said.
+  locked(): boolean {
+    return this.#status?.locked === true;
   }
 
   get #status() {
@@ -131,6 +140,8 @@ export class Desktop implements ScreenSource {
     const helper = this.#o.helper;
     if (!this.#o.supported) throw new ScreenRefused(501, "station.screen.unsupported", {}, this.access());
     if (helper === null) throw new ScreenRefused(501, "station.screen.noHelper", {}, this.access());
+    // An agent has the locked Mac unlocked behind the Guard's overlay: no person sees it meanwhile (locked-use.ts).
+    if (options.agent !== true && this.leases?.held() === true) throw new ScreenRefused(423, "station.screen.lockedUse");
     // H.265 where it is taken (the hardware's, smallest; the helper makes H.264 where this Mac encodes no H.265), H.264,
     // else a JPEG a picture (an agent's view, a client without either).
     const codec = codecFor(options, ["h265", "h264", "jpeg"]);

@@ -8,5 +8,5 @@
 export type Pressure = "normal" | "high" | "critical";
 
 /// Why a task waits, for its agent (station_task's answer): the memory under pressure, the small tasks' slot taken, the
-/// screen another task's, or a person's.
-export type Why = "memory" | "small" | "screen" | "person";
+/// screen another task's, a person's, or locked (a Mac's lock screen up, until its owner unlocks it).
+export type Why = "memory" | "small" | "screen" | "person" | "locked";

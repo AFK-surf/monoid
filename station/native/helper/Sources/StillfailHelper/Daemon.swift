@@ -67,7 +67,8 @@ final class Daemon {
       lock.lock()
       let quiet = connections == 0 && Date().timeIntervalSince(lastSeen) > IDLE
       lock.unlock()
-      if quiet && !MainActor.assumeIsolated({ Permissions.shared.isShown }) { exit(0) }
+      // (never while a locked use is held: ending would relock under the station's feet)
+      if quiet && !LockedUse.shared.active && !MainActor.assumeIsolated({ Permissions.shared.isShown }) { exit(0) }
     }
     idle.resume()
     idleTimer = idle
@@ -106,12 +107,13 @@ final class Daemon {
     }
     switch request["op"] as? String {
     case "hello":
-      channel.line(["ok": true, "v": 1, "pid": Int(getpid()), "app": Bundle.main.bundlePath, "capabilities": ["screen", "files", "simulator", "ui", "resolution", "encode"]])
+      channel.line(["ok": true, "v": 1, "pid": Int(getpid()), "app": Bundle.main.bundlePath, "capabilities": ["screen", "files", "simulator", "ui", "resolution", "encode", "lockuse"]])
     case "status":
       var status = Status.fresh() ?? Status.now()
       // (the display a view captures: still.fail's own where there is one, which a new process knows nothing of)
       if let own = VirtualDisplays.shared.id { status["display"] = Status.display(own) }
       status["live"] = ["capture": CGPreflightScreenCaptureAccess(), "control": Status.inputAllowed()]
+      status["locked"] = Status.screenLocked()
       let window = DispatchQueue.main.sync { MainActor.assumeIsolated { (Permissions.shared.isShown, Permissions.shared.asked) } }
       status["asking"] = window.0
       // What its window asks for, while it is up.
@@ -175,7 +177,20 @@ final class Daemon {
       lock.lock()
       watchers.removeAll { $0 === channel }
       lock.unlock()
+    case "lockuse.status":
+      channel.line(LockedUse.status())
+    case "lockuse.begin":
+      // A lease on the locked screen (LockedUse.swift): held for as long as this connection is.
+      LockedUse.shared.serve(request, channel)
+    case "lockuse.end":
+      if let lease = request["lease"] as? String { LockedUse.shared.end(lease) }
+      channel.line(["ok": true])
     case "restart":
+      // Not while a locked use is held: the new process would hold no lease.
+      if LockedUse.shared.active {
+        channel.line(["error": "a locked use is held: restart once it ends", "code": "busy"])
+        return
+      }
       channel.line(["ok": true])
       DispatchQueue.main.async { self.restart() }
     case "quit":

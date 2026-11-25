@@ -25,7 +25,7 @@ import { AGY_TOOL_BUDGET, AgyDriver, agyRenew } from "../agents/agy.ts";
 import { type RuntimeKind, runtimeKind } from "../agents/runtime.ts";
 import { DevinDriver } from "../agents/devin.ts";
 import { CopilotDriver } from "../agents/copilot.ts";
-import { Jobs, notifyEndpoint, screenEndpoint } from "../jobs/jobs.ts";
+import { Jobs, liveMachine, notifyEndpoint, screenEndpoint } from "../jobs/jobs.ts";
 import { liveMemory } from "../jobs/memory.ts";
 import { WorkspaceWatch, workspaceWorking, type WorkspaceReading } from "../jobs/workspace-size.ts";
 import { Remote, followRoster } from "../jobs/remote.ts";
@@ -48,6 +48,8 @@ import { HelperFiles } from "../helper/files.ts";
 import { Places } from "../ops/places.ts";
 import { platform } from "../platform/index.ts";
 import { Computer, computerTools } from "../tools/computer.ts";
+import { Desktop } from "../screens/desktop.ts";
+import { type LockUseStatus, askerOf, mayUnlock, switchOn } from "../screens/locked-use.ts";
 import { archiveTools } from "../tools/archive.ts";
 import { chatTools } from "../tools/chat.ts";
 import { projectTools } from "../tools/projects.ts";
@@ -390,6 +392,12 @@ export const AgentsLive = (control: Control) =>
       const jobs = new Jobs({
         store,
         data,
+        // A Mac's screen locked holds screen tasks back (`locked`): locked use does not open it for tasks yet.
+        machine: { ...liveMachine, locked: async () => {
+          if (grants === null) return false;
+          await grants.refresh().catch(() => {});
+          return grants.status()?.locked === true;
+        } },
         program: hub.program(),
         notify: (session, text) => {
           try {
@@ -566,8 +574,31 @@ export const AgentsLive = (control: Control) =>
         return `agent: ${title}`;
       };
       // The agents' own hands on the screens: a session's view of one shows among its people as its chat.
+      // Locked use of this Mac's desktop (screens/locked-use.ts): the gate's word on each session that asks.
+      const desktop = screens.get("desktop");
+      const leases = desktop instanceof Desktop ? desktop.leases : null;
+      const locked = desktop instanceof Desktop && leases !== null && grants !== null
+        ? {
+          locked: () => desktop.locked(),
+          leases,
+          verdict: async (session: string) => {
+            const status: LockUseStatus | null = await grants.helper.request({ op: "lockuse.status" }).catch(() => null);
+            // TODO(locked use): the sender of the message this turn answers (its sub) is not kept per turn yet, so
+            // `sender` refuses every chat for now; a remote task's requester sub is not sent yet (jobs/remote.ts
+            // `requestedBySub`), so `requester` refuses every remote one.
+            const asker = askerOf(session, {
+              connect: store.getSession(session)?.connect ?? null,
+              createdBySub: store.sessionCreatorSub(session),
+              senderSub: null,
+              openedBy: store.openerOf(session)?.parentStation || null,
+            });
+            return mayUnlock("computer", asker, { enabled: switchOn(config.raw()?.lockedUse, wall.now()), status });
+          },
+        }
+        : undefined;
       const computer = new Computer({
         hub: screens,
+        ...(locked ? { locked } : {}),
         base: () => {
           const s = pages();
           return s ? `${s.origin}/w/${s.workspace}/s/${s.station}` : null;

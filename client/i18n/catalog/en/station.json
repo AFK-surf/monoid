@@ -91,6 +91,7 @@
   "station.screen.captureEnded": "The picture stopped: {said}. Tap Open again to retry; if it keeps happening, check that this station's desktop is still signed in.",
   "station.screen.captureEndedUnsaid": "the capture exited",
   "station.screen.captureOff": "This Mac hasn't let {app} record its screen yet.",
+  "station.screen.lockedUse": "An agent is using this Mac while its screen is locked. Look again once it is done, or unlock the Mac on the Mac itself first.",
   "station.screen.controlOff": "This Mac hasn't allowed {app} to control it yet (Accessibility), so the screen can be viewed but not controlled.",
   "station.screen.bothOff": "This Mac hasn't let {app} record its screen or control it yet.",
   "station.screen.asking": "A permission window is open on that Mac: click Allow there, drag {app} into the list in System Settings, then open the screen again.",
