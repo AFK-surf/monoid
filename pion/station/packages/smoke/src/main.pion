@@ -1067,7 +1067,7 @@ fn run_smoke_sql_db(world : World, db_path : String) -> Unit {
   io_println(world, "{\"ok\":true,\"suite\":\"sql_db+js_json+builders_core+builders_stateful+builders_legacy+builders_recent+builders_vault\"}")
 }
 
-fn run_smoke_mux_churn(world : World, cycles : Int) -> Unit {
+fn run_smoke_mux_churn(world : World, cycles : Int, shell_dir : String) -> Unit {
   if !front::skeleton_ready() || !reader_data::skeleton_ready() || !reader_serve::skeleton_ready() {
     let _ = host_shim::write_stderr_line("smoke-mux-churn: skeleton check failed")
     host_shim::exit_process(1)
@@ -1191,11 +1191,36 @@ fn run_smoke_mux_churn(world : World, cycles : Int) -> Unit {
   }
 
   // Real native loopback TCP socket FD open/close churn through libstillfail_shell.a + ShellMux::host.
-  if !host_shim::start("/tmp", false) {
-    let _ = host_shim::write_stderr_line("smoke-mux-churn: host_shim::start failed")
+  if !host_shim::start(shell_dir, false) {
+    let _ = host_shim::write_stderr_line("smoke-mux-churn: host_shim::start failed for " + shell_dir)
     host_shim::exit_process(1)
   }
   let real_mux = builders_core::ShellMux::host(start_stdin=false)
+
+  let close_listener_best_effort = fn(lid : Int64) -> Unit {
+    if lid < 0.to_int64() {
+      return
+    }
+    let lc = real_mux.call_async(
+      builders_core::MuxToken::Close(-1),
+      "listen.close",
+      base_codec::json_obj([("id", sql_db::int64_to_json(lid))]),
+      None,
+    )
+    let mut guard_steps = 0
+    while real_mux.has_pending(lc) && guard_steps < 16 {
+      guard_steps = guard_steps + 1
+      let progressed = real_mux.step(
+        1000.to_int64(),
+        fn(_l : String) -> Unit {},
+        fn() -> Unit {},
+        fn(_tok : builders_core::MuxToken, _done : host_shim::ShellDone) -> Unit {},
+      )
+      if !progressed {
+        break
+      }
+    }
+  }
 
   let run_native_tcp_churn = fn(n_iters : Int) -> Unit {
     let l_id_call = real_mux.call_async(
@@ -1206,12 +1231,17 @@ fn run_smoke_mux_churn(world : World, cycles : Int) -> Unit {
     )
     let mut listener_id : Int64 = -1.to_int64()
     let mut port_num : Int = 0
+    let mut listen_err = ""
     while real_mux.has_pending(l_id_call) {
-      let _ = real_mux.step(
+      let progressed = real_mux.step(
         5000.to_int64(),
         fn(_l : String) -> Unit {},
         fn() -> Unit {},
         fn(_tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+          if done.error.length() > 0 {
+            listen_err = done.error
+            return
+          }
           match builders_core::decode_shell_done(done) {
             Ok((Some(j), _)) => {
               match j {
@@ -1234,13 +1264,18 @@ fn run_smoke_mux_churn(world : World, cycles : Int) -> Unit {
                 _ => ()
               }
             }
+            Err(e) => listen_err = e.message
             _ => ()
           }
         },
       )
+      if !progressed {
+        listen_err = "timed out waiting for tcp.listen"
+        break
+      }
     }
-    if listener_id < 0.to_int64() || port_num <= 0 {
-      let _ = host_shim::write_stderr_line("smoke-mux-churn: tcp.listen failed")
+    if listen_err.length() > 0 || listener_id < 0.to_int64() || port_num <= 0 {
+      let _ = host_shim::write_stderr_line("smoke-mux-churn: tcp.listen failed: " + listen_err)
       host_shim::stop()
       host_shim::exit_process(1)
     }
@@ -1259,12 +1294,22 @@ fn run_smoke_mux_churn(world : World, cycles : Int) -> Unit {
       )
       let mut acc_conn : Int64 = -1.to_int64()
       let mut cli_conn : Int64 = -1.to_int64()
-      while real_mux.has_pending(acc_call) || real_mux.has_pending(open_call) {
-        let _ = real_mux.step(
+      let mut fail_msg = ""
+      while (real_mux.has_pending(acc_call) || real_mux.has_pending(open_call)) && fail_msg.length() == 0 {
+        let progressed = real_mux.step(
           5000.to_int64(),
           fn(_l : String) -> Unit {},
           fn() -> Unit {},
           fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+            let op_name = match tok {
+              builders_core::MuxToken::Accept(_) => "tcp.accept"
+              builders_core::MuxToken::Connect(_, _) => "tcp.open"
+              _ => "tcp.unknown"
+            }
+            if done.error.length() > 0 {
+              fail_msg = op_name + " failed at iter " + iter.to_string() + ": " + done.error
+              return
+            }
             match builders_core::decode_shell_done(done) {
               Ok((Some(base_codec::Json::Obj(fs)), _)) => {
                 for fi in 0..<fs.length() {
@@ -1283,13 +1328,22 @@ fn run_smoke_mux_churn(world : World, cycles : Int) -> Unit {
                   }
                 }
               }
-              _ => ()
+              Err(e) => fail_msg = op_name + " decode failed at iter " + iter.to_string() + ": " + e.message
+              _ => fail_msg = op_name + " unexpected payload at iter " + iter.to_string()
             }
           },
         )
+        if !progressed {
+          fail_msg = "timeout waiting for tcp.accept/tcp.open at iter " + iter.to_string()
+          break
+        }
       }
-      if acc_conn < 0.to_int64() || cli_conn < 0.to_int64() {
-        let _ = host_shim::write_stderr_line("smoke-mux-churn: tcp.accept/open failed at iter " + iter.to_string())
+      if fail_msg.length() > 0 || acc_conn < 0.to_int64() || cli_conn < 0.to_int64() {
+        let _ = host_shim::write_stderr_line(
+          "smoke-mux-churn: " +
+          (if fail_msg.length() > 0 { fail_msg } else { "tcp.accept/open missing conn id at iter " + iter.to_string() }),
+        )
+        close_listener_best_effort(listener_id)
         host_shim::stop()
         host_shim::exit_process(1)
       }
@@ -1358,7 +1412,7 @@ fn run_smoke_mux_churn(world : World, cycles : Int) -> Unit {
     host_shim::exit_process(1)
   }
 
-  let native_fd_cycles = 200
+  let native_fd_cycles = cycles
   run_batch(1000, cycles)
   run_native_tcp_churn(native_fd_cycles)
 
@@ -1514,7 +1568,12 @@ fn main(world : World) -> Unit {
     run_smoke_rc_soak(world, iters)
   } else if cmd == "--smoke-mux-churn" {
     let cycles = if argv.length() >= 3 { parse_positive_int(argv[2], 10000) } else { 10000 }
-    run_smoke_mux_churn(world, cycles)
+    let shell_dir = if argv.length() >= 4 {
+      argv[3]
+    } else {
+      "/tmp/stillfail-pion-mux-" + host_shim::pid().to_string()
+    }
+    run_smoke_mux_churn(world, cycles, shell_dir)
   } else if cmd == "--smoke-readops" {
     if argv.length() < 3 {
       usage_exit()

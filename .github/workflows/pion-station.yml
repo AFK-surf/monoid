@@ -548,7 +548,8 @@ jobs:
           "$BIN_PION" --smoke-sql-db "$RUNNER_TEMP/smoke-sql-db.db"
           "$BIN_PION" --smoke-shell "$RUNNER_TEMP/shell-dir"
           "$BIN_PION" --smoke-rc-soak 50000
-          "$BIN_PION" --smoke-mux-churn 10000
+          mkdir -p "$RUNNER_TEMP/mux-smoke"
+          "$BIN_PION" --smoke-mux-churn 10000 "$RUNNER_TEMP/mux-smoke"
           mkdir -p "$RUNNER_TEMP/smoke-readops"
           "$BIN_PION" --smoke-readops "$RUNNER_TEMP/smoke-readops"
 

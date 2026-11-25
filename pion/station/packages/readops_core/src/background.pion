@@ -87,22 +87,22 @@ pub fn has_legacy_decision_time(db : sql_db::Db) -> Result[Bool, ReadError] {
   Ok(true)
 }
 
-pub fn policy_checks(
+pub fn policy_checks_jval(
   db : sql_db::Db,
   args : base_codec::Json,
-) -> Result[base_codec::Json, ReadError] {
+) -> Result[js_json::JValue, ReadError] {
   match has_legacy_decision_time(db) {
-    Ok(true) => return Ok(base_codec::json_null())
+    Ok(true) => return Ok(js_json::JValue::Null)
     Ok(false) => ()
     Err(e) => return Err(e)
   }
   match exists_in(db, "index", "decision_checks_lately") {
-    Ok(false) => return Ok(base_codec::json_null())
+    Ok(false) => return Ok(js_json::JValue::Null)
     Ok(true) => ()
     Err(e) => return Err(e)
   }
   match exists_in(db, "index", "decision_checks_session") {
-    Ok(false) => return Ok(base_codec::json_null())
+    Ok(false) => return Ok(js_json::JValue::Null)
     Ok(true) => ()
     Err(e) => return Err(e)
   }
@@ -121,7 +121,7 @@ pub fn policy_checks(
     Ok(rs) => rs
     Err(e) => {
       if str_contains_sub(e.message, "no such index") || str_contains_sub(e.message, "no such table") {
-        return Ok(base_codec::json_null())
+        return Ok(js_json::JValue::Null)
       }
       return Err(ReadError::Sql(e))
     }
@@ -149,14 +149,62 @@ pub fn policy_checks(
       None => ()
     }
   }
-  let (failed, shown) = tally_background_selected(rev_entries)
+  let (failed, options_jv) = tally_background_selected_jval(rev_entries)
   Ok(
-    base_codec::json_obj([
-      ("checked", base_codec::json_num(order.length().to_double())),
-      ("failed", base_codec::json_num(failed.to_double())),
-      ("options", base_codec::json_obj(shown)),
+    js_json::JValue::Obj([
+      (js_json::utf16_units("checked"), js_json::JValue::Num(order.length().to_double())),
+      (js_json::utf16_units("failed"), js_json::JValue::Num(failed.to_double())),
+      (js_json::utf16_units("options"), options_jv),
     ]),
   )
+}
+
+/// Lossless `policyChecks` wire JSON string (preserves lone UTF-16 surrogates in `options` keys
+/// without collapsing `\uD800` and `\uFFFD`).
+pub fn policy_checks_json_str(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[String, ReadError] {
+  match policy_checks_jval(db, args) {
+    Ok(jv) => Ok(js_json::stringify(jv))
+    Err(e) => Err(e)
+  }
+}
+
+/// `policyChecks` as `base_codec::Json` (for callers that do not need raw lone-surrogate keys;
+/// production wire responses MUST use `policy_checks_jval` / `policy_checks_json_str`).
+pub fn policy_checks(
+  db : sql_db::Db,
+  args : base_codec::Json,
+) -> Result[base_codec::Json, ReadError] {
+  match policy_checks_jval(db, args) {
+    Ok(jv) => Ok(jv.to_json_lossy())
+    Err(e) => Err(e)
+  }
+}
+
+fn json_to_jval(v : base_codec::Json) -> js_json::JValue {
+  match v {
+    base_codec::Json::Null => js_json::JValue::Null
+    base_codec::Json::Bool(b) => js_json::JValue::Bool(b)
+    base_codec::Json::Num(d, _) => js_json::JValue::Num(d)
+    base_codec::Json::Str(s) => js_json::JValue::Str(js_json::utf16_units(s))
+    base_codec::Json::Arr(xs) => {
+      let out : Array[js_json::JValue] = []
+      for i in 0..<xs.length() {
+        out.push(json_to_jval(xs[i]))
+      }
+      js_json::JValue::Arr(out)
+    }
+    base_codec::Json::Obj(fs) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      for i in 0..<fs.length() {
+        let (k, fv) = fs[i]
+        out.push((js_json::utf16_units(k), json_to_jval(fv)))
+      }
+      js_json::JValue::Obj(out)
+    }
+  }
 }
 
 fn utf16_units_map_key(units : Array[Int]) -> String {
@@ -172,14 +220,20 @@ fn utf16_units_map_key(units : Array[Int]) -> String {
   sb.to_string()
 }
 
-/// Pure tally helper grouping `selected` by raw UTF-16 code units before sanitization so an escaped
-/// lone surrogate (`\uD800`) and literal `U+FFFD` stay independent buckets (1:1 MB `background.mbt:176-202`).
-pub fn tally_background_selected(
+/// Pure lossless tally helper grouping `selected` by raw UTF-16 code units and returning a
+/// `js_json::JValue::Obj` with raw UTF-16 `Array[Int]` keys so escaped lone surrogates (`\uD800`)
+/// and literal `U+FFFD` serialize as two distinct JSON keys (1:1 MB `background.mbt:176-202`).
+pub fn tally_background_selected_jval(
   rev_entries : Array[(String, base_codec::Json, Option[js_json::JValue])],
-) -> (Int, Array[(String, base_codec::Json)]) {
-  let options : Map[String, (Int, Array[base_codec::Json], String)] = Map::new()
+) -> (Int, js_json::JValue) {
+  let options : Map[String, (Int, Array[js_json::JValue], Array[Int])] = Map::new()
   let picks : Array[String] = []
   let mut failed = 0
+  let k_session = js_json::utf16_units("session")
+  let k_at = js_json::utf16_units("at")
+  let k_recommended = js_json::utf16_units("recommended")
+  let k_count = js_json::utf16_units("count")
+  let k_chats = js_json::utf16_units("chats")
   for i in 0..<rev_entries.length() {
     let (session, at, detail) = rev_entries[i]
     let picked_units = match jget(jget(detail, "result"), "selected") {
@@ -190,11 +244,11 @@ pub fn tally_background_selected(
       }
     }
     let raw_key = utf16_units_map_key(picked_units)
-    let (count, chats, label) = match options.get(raw_key) {
+    let (count, chats, raw_units) = match options.get(raw_key) {
       Some(o) => o
       None => {
         picks.push(raw_key)
-        (0, [], js_json::sanitize_str(picked_units))
+        (0, [], picked_units)
       }
     }
     if chats.length() < VIEW_CHATS {
@@ -203,26 +257,26 @@ pub fn tally_background_selected(
         _ => false
       }
       chats.push(
-        base_codec::json_obj([
-          ("session", base_codec::json_str(session)),
-          ("at", at),
-          ("recommended", base_codec::json_bool(rec)),
+        js_json::JValue::Obj([
+          (k_session, js_json::JValue::Str(js_json::utf16_units(session))),
+          (k_at, json_to_jval(at)),
+          (k_recommended, js_json::JValue::Bool(rec)),
         ]),
       )
     }
-    options.set(raw_key, (count + 1, chats, label))
+    options.set(raw_key, (count + 1, chats, raw_units))
   }
-  let shown : Array[(String, base_codec::Json)] = []
+  let shown : Array[(Array[Int], js_json::JValue)] = []
   for i in 0..<picks.length() {
     let raw_key = picks[i]
     match options.get(raw_key) {
-      Some((count, chats, label)) => {
+      Some((count, chats, raw_units)) => {
         shown.push(
           (
-            label,
-            base_codec::json_obj([
-              ("count", base_codec::json_num(count.to_double())),
-              ("chats", base_codec::json_arr(chats)),
+            raw_units,
+            js_json::JValue::Obj([
+              (k_count, js_json::JValue::Num(count.to_double())),
+              (k_chats, js_json::JValue::Arr(chats)),
             ]),
           ),
         )
@@ -230,7 +284,7 @@ pub fn tally_background_selected(
       None => ()
     }
   }
-  (failed, shown)
+  (failed, js_json::JValue::Obj(shown))
 }
 
 pub fn recent_connect_people(

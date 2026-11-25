@@ -106,26 +106,47 @@ test "readops_core: common helpers is_mine, said_before, ending_of, parsed_threa
   assert(parsed_thread_links(base_codec::json_str("{}")) is None)
 }
 
-test "readops_core: background tally groups raw UTF-16 selected keys independently (lone surrogate vs U+FFFD)" {
+test "readops_core: background tally preserves distinct raw UTF-16 keys through lossless JSON roundtrip" {
   let d_lone = js_json::jval_try_parse("{\"result\":{\"selected\":\"\\uD800\"},\"accepted\":true}")
   let d_fffd = js_json::jval_try_parse("{\"result\":{\"selected\":\"\\uFFFD\"},\"accepted\":false}")
   let d_lone2 = js_json::jval_try_parse("{\"result\":{\"selected\":\"\\uD800\"},\"accepted\":false}")
-  let (failed, shown) = tally_background_selected([
+  let (failed, opts_jv) = tally_background_selected_jval([
     ("s1", base_codec::json_int(1), d_lone),
     ("s2", base_codec::json_int(2), d_fffd),
     ("s3", base_codec::json_int(3), d_lone2),
   ])
   assert(failed == 0)
-  // Two independent buckets (count 2 for \uD800, count 1 for \uFFFD) — NOT collapsed to count 3!
-  assert(shown.length() == 2)
-  let (_, v0) = shown[0]
-  let (_, v1) = shown[1]
-  match v0 {
-    base_codec::Json::Obj(_) => assert(base_codec::json_stringify(v0).contains("\"count\":2"))
-    _ => panic("expected object")
+  // Serialize losslessly via js_json::stringify_with_num and parse back to assert distinct keys, counts, and sessions.
+  let wire = js_json::stringify_with_num(opts_jv, test_fmt_num)
+  let reparsed = match js_json::parse(wire) {
+    Ok(v) => v
+    Err(e) => panic("roundtrip parse failed: " + e)
   }
-  match v1 {
-    base_codec::Json::Obj(_) => assert(base_codec::json_stringify(v1).contains("\"count\":1"))
-    _ => panic("expected object")
+  match reparsed {
+    js_json::JValue::Obj(entries) => {
+      assert(entries.length() == 2)
+      let (k0, v0) = entries[0]
+      let (k1, v1) = entries[1]
+      // Key 0 is raw lone high surrogate 0xD800 (count=2, sessions s1 & s3)
+      assert(k0.length() == 1 && k0[0] == 0xD800)
+      match js_json::jval_num_of(js_json::jval_at(Some(v0), "count")) {
+        Some(c) => assert(c == 2.0)
+        None => panic("expected count 2")
+      }
+      let chats0 = js_json::jval_arr(js_json::jval_at(Some(v0), "chats"))
+      assert(chats0.length() == 2)
+      assert(opt_str_eq(str_of(js_json::jval_at(Some(chats0[0]), "session")), Some("s1")))
+      assert(opt_str_eq(str_of(js_json::jval_at(Some(chats0[1]), "session")), Some("s3")))
+      // Key 1 is literal U+FFFD (count=1, session s2)
+      assert(k1.length() == 1 && k1[0] == 0xFFFD)
+      match js_json::jval_num_of(js_json::jval_at(Some(v1), "count")) {
+        Some(c) => assert(c == 1.0)
+        None => panic("expected count 1")
+      }
+      let chats1 = js_json::jval_arr(js_json::jval_at(Some(v1), "chats"))
+      assert(chats1.length() == 1)
+      assert(opt_str_eq(str_of(js_json::jval_at(Some(chats1[0]), "session")), Some("s2")))
+    }
+    _ => panic("expected JValue::Obj")
   }
 }

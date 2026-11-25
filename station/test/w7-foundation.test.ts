@@ -762,10 +762,12 @@ function walkPionFiles(dir: string): string[] {
 function findForbiddenShellCalls(source: string): string[] {
   const forbidden = [
     /\bshell_call_wait\b/,
+    /\bshell_call_wait_with\b/,
     /\bread_bytes_range\b/,
     /\bwrite_atomic\b/,
     /\bhost_shim::wait\b/,
     /\bhost_shim::shell_call\b/,
+    /\bbuilders_usage::(?:unpacked|read_from|packed_from|parts_of|anchor_at|first_line)\b/,
   ];
   const stripped = stripPionCommentsLexical(source);
   const hits: string[] = [];
@@ -786,8 +788,11 @@ test("Static guard: recursive lexical scan forbids blocking shell ops & raw host
     "URL string literal before forbidden call must NOT hide the call",
   );
   assert.equal(findForbiddenShellCalls("// shell_call_wait(x)\n/* host_shim::wait(0) */\nlet ok = 1").length, 0);
+  assert.ok(findForbiddenShellCalls("let _ = shell_call_wait_with(c, op, j, None)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = host_shim::wait(10)").length === 1);
   assert.ok(findForbiddenShellCalls("let _ = host_shim::shell_call(id, op, j, None)").length === 1);
+  assert.ok(findForbiddenShellCalls("let _ = builders_usage::unpacked(sh, p)").length === 1);
+  assert.ok(findForbiddenShellCalls("let _ = builders_usage::read_from(sh, p, 0)").length === 1);
 
   const pkgRoot = join(REPO_ROOT, "pion", "station", "packages");
   const guardedPkgs = readdirSync(pkgRoot).filter(
