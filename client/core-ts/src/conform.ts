@@ -3,7 +3,6 @@
 // naming the field ("items[0].since: invalid type: …"), as serde_path_to_error says it.
 import { SHAPES } from "./shapes/schema.ts";
 import type { Ty } from "./shapes/dsl.ts";
-import { Marks } from "./reactive.ts";
 import { shaped, shapedAs } from "./util.ts";
 import { walked } from "./work.ts";
 
@@ -24,29 +23,39 @@ class Wrong extends Error {
 class Unknown extends Wrong {}
 
 /// The words of open sets a station sent that this core does not know (`RuntimeKind`: a runtime added on a station
-/// newer than this app), by their set, in the order first met: what reads them (views.ts: the chats' list says to
-/// update the app) is made again as one more is met. Never while a value is being made (a topic's, read in a computed):
+/// newer than this app), by their set, in the order first met. Plain data: this file is the station's too
+/// (station/src/read/runtime-view.ts), which has no reactive layer; what reads them (views.ts: the chats' list says to
+/// update the app) is told by `onUnknownWords`, never while a value is being made (a topic's, read in a computed):
 /// after it, in a microtask.
 const unknown = new Map<string, string[]>();
-const unknownMarks = new Marks();
+const unknownTold = new Set<(tys: string[]) => void>();
 
 export function unknownWords(ty: string): readonly string[] {
-  unknownMarks.read(ty);
   return unknown.get(ty) ?? [];
 }
+
+/// `f` told the sets that met a word they did not know, or forgot them; what it gives back stops it.
+export function onUnknownWords(f: (tys: string[]) => void): () => void {
+  unknownTold.add(f);
+  return () => void unknownTold.delete(f);
+}
+
+const tellUnknown = (tys: string[]) => {
+  for (const f of unknownTold) f(tys);
+};
 
 function unknownWord(ty: string, word: string): void {
   const had = unknown.get(ty) ?? [];
   if (had.includes(word)) return;
   unknown.set(ty, [...had, word]);
-  queueMicrotask(() => unknownMarks.touch(ty));
+  queueMicrotask(() => tellUnknown([ty]));
 }
 
 /// Forgets the words met (tests).
 export function forgetUnknownWords(): void {
   const tys = [...unknown.keys()];
   unknown.clear();
-  if (tys.length > 0) unknownMarks.touch(...tys);
+  if (tys.length > 0) tellUnknown(tys);
 }
 
 /// `walk` of an item that an unknown word of an open set leaves out: `left` then.

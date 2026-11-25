@@ -23,7 +23,8 @@ const body = (a: ReturnType<typeof runtimeCompatible>) => JSON.parse(String(a.bo
 test("an old runtime enum rejects Hermes, while the station's legacy view remains readable", () => {
   const before = SHAPES.RuntimeKind;
   assert.equal(before.kind, "enum");
-  SHAPES.RuntimeKind = { ...before, kind: "enum", values: [...clientRuntimes({})], default: null };
+  // (an old app's: a closed set, before RuntimeKind was open)
+  SHAPES.RuntimeKind = { kind: "enum", values: [...clientRuntimes({})], default: null, client: before.client, doc: before.doc };
   try {
     const value = overview();
     assert.match((conform("Overview", value) as {error:string}).error, /profiles\[1\].runtime: unknown variant `hermes`/);
