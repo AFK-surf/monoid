@@ -206,6 +206,8 @@ export type Call =
   /// The board's drafts of 待派发 in a workspace as it has them now (views/board-drafts.ts): kept on this device at once,
   /// carried to the workspace's stations after.
   | { kind: "boardDrafts"; workspace: string; drafts: unknown }
+  /// How the person's agents are asked for progress, changed (views/progress.ts): `minutes`, `strength`, one or both.
+  | { kind: "progress"; workspace: string; params: Record<string, unknown> }
   | { kind: "driveTransfer"; action: "start" | "cancel" | "retry"; params: Record<string, unknown> }
   /// A station's files as they are browsed (views/browse.ts): `drive.browse` and the rest of drive-browse.ts's CALLS,
   /// with what each takes.
@@ -448,6 +450,10 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
   if (name === "workspace.renameStation") {
     const p = read(params, [["workspace", S, "req"], ["station", S, "req"]]);
     return { kind: "stationMark", workspace: p.workspace as string, station: p.station as string, params: isObject(params) ? (params as Record<string, unknown>) : {} };
+  }
+  if (name === "progress.set") {
+    const p = read(params, [["workspace", S, "req"]]);
+    return { kind: "progress", workspace: p.workspace as string, params: isObject(params) ? (params as Record<string, unknown>) : {} };
   }
   if (name === "board.drafts") {
     const p = read(params, [["workspace", S, "req"]]);

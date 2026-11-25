@@ -32,6 +32,7 @@ import { pageRestart } from "../ops/restart.ts";
 import { routes as contextSettings } from "./routes/context.ts";
 import { routes as presetRoutes } from "./routes/presets.ts";
 import { routes as presetProjectRoutes } from "./routes/preset-projects.ts";
+import { routes as progressRoutes } from "./routes/progress.ts";
 import { routes as starRoutes } from "./routes/stars.ts";
 import { routes as boardRoutes } from "./routes/board.ts";
 import { routes as diagnosticsSettings } from "./routes/diagnostics.ts";
@@ -611,6 +612,7 @@ export function agentsRoutes(agents: AgentsParts, deps: { store?: Store; events?
     ...(agents.config ? agentEnv({ config: agents.config, changed: () => deps.events?.overviewChanged(), restart: () => agents.hub.everyChanged() }) : []),
     ...(agents.hub ? presetRoutes({ presets: agents.hub.presets, reposDir: () => agents.hub.reposDir(), index: agents.hub.repoIndex, clones: agents.hub.clones, changed: () => deps.events?.presetsChanged() }) : []),
     ...(agents.hub ? starRoutes({ kept: agents.hub.store, told: (ws, sub) => deps.events?.tell("stars", { workspace: ws }, `stars\0${ws}\0${sub}`, { workspace: ws, subs: [sub] }) }) : []),
+    ...(agents.hub ? progressRoutes({ kept: agents.hub.store, told: (ws, sub) => deps.events?.tell("progress", { workspace: ws }, `progress\0${ws}\0${sub}`, { workspace: ws, subs: [sub] }) }) : []),
     ...(agents.hub
       ? presetProjectRoutes({
           kept: agents.hub.store,

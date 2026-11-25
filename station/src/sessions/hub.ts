@@ -2528,6 +2528,12 @@ export class Hub {
       siteInstructions: () => this.options.siteInstructions ?? "",
       moveOn: () => this.options.moveOn?.() ?? true,
       projectsOn: () => this.projectsOn(),
+      homeWorkspace: () => this.homeWorkspace(),
+      starterEmail: async (key) => {
+        // (`slack:<connect>:<user>`: a platform's person, each platform's the same)
+        const on = /^slack:([^:]+):(.+)$/.exec(this.store.getSession(key)?.createdBy ?? "");
+        return on === null ? null : ((await this.chatOf(on[1]!)?.userEmail?.(on[2]!)) ?? null);
+      },
       untoldProjects: (key) => formatWorkspaceProjectsDelta(this, key, this.projectsTold),
       ownName: () => {
         const me = this.options.station?.() ?? null;

@@ -106,6 +106,7 @@ fn setting_made(p : @view.View, src : Source, route : @settings.Route, width : (
     StationArchiving(st) => station_archiving_node(p, core, here, st, on_back=core.pop, frame~, width~)
     Backup => backup_node(p, core, here, on_back=core.pop, frame~, stint=fn() { 0 }, width~)
     StationBackup(st) => station_backup_node(p, core, here, st, on_back=core.pop, frame~, width~)
+    Progress => progress_node(p, core, here, on_back=core.pop, frame~, width~)
     AutoDecisions => decisions_node(p, core, here, on_back=core.pop, frame~, width~)
     AutoCompletion => completion_node(p, core, here, on_back=core.pop, frame~, width~)
     Usage => usage_node(p, core, src, here, on_back=core.pop, frame~, width~)

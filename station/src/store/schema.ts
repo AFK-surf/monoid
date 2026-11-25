@@ -504,6 +504,17 @@ CREATE TABLE IF NOT EXISTS model_stars (
   stars TEXT NOT NULL,
   PRIMARY KEY (ws, sub)
 );
+-- How a person's agents are asked for progress, as their devices carry it (api/routes/progress.ts; JSON, the
+-- ProgressPrefs of core-ts/src/progress-prefs.ts): one row a person a workspace, read by its key, or by their email
+-- (lower case) where only that is known of who started a chat.
+CREATE TABLE IF NOT EXISTS progress_prefs (
+  ws TEXT NOT NULL,
+  sub TEXT NOT NULL,
+  email TEXT NOT NULL,
+  json TEXT NOT NULL,
+  PRIMARY KEY (ws, sub)
+);
+CREATE INDEX IF NOT EXISTS progress_prefs_by_email ON progress_prefs (ws, email);
 -- A person's default project preference per preset in a workspace, as their devices carry them
 -- (api/routes/preset-projects.ts; PresetProjects JSON of core-ts/src/preset-records.ts).
 CREATE TABLE IF NOT EXISTS preset_projects (

@@ -457,6 +457,10 @@ let fixture_open : FixtureOpen = { sheet: "", desk: "" }
 let fx_connect_step : Ref[String] = Ref("team")
 
 ///|
+/// How the person's agents are asked for progress (minutes, strength), as `progress.set` last said.
+let fx_progress : Ref[(Double, String)] = Ref((10.0, "require"))
+
+///|
 /// What is typed on a new group connect's server step (its fields by name), as the page sends it; and whether one was
 /// added (k1 is it then).
 // kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
@@ -552,6 +556,7 @@ let fx_connect_auto : Map[String, Bool] = Map([])
 ///|
 /// The made-up settings as a run starts (reset): none changed, no sheet or scroll to put up.
 fn fixture_reset() -> Unit {
+  fx_progress.val = (10.0, "require")
   fx.names.clear()
   fx_connect_stations.clear()
   fx_connect_auto.clear()
@@ -3892,6 +3897,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           // (Willow reviews, Maple is offline: nothing to say of the hint)
           ("hintNoReview", Json::boolean(false)),
           ("hintReviewText", str("")),
+          ("progressMinutes", Json::number(fx_progress.val.0)),
+          ("progressStrength", str(fx_progress.val.1)),
         ]),
       )
     // (as the core answers it: every tab, the one asked (`part`, the first where none or another is said) with its
@@ -4421,6 +4428,21 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
   // (验证 on a device whose person's lock was begun anew elsewhere: refused, as the core did before it offered none)
   if name == "lock.confirmSigner" && fx.lock_case == "replaced-was" {
     return Some(Err(obj([("code", str("personal_outside")), ("message", str("此设备尚未获批：先在这台设备上发送批准请求，输入你的受信任设备上显示的安全码"))])))
+  }
+  if name == "progress.set" {
+    let (minutes, strength) = fx_progress.val
+    fx_progress.val = (
+      match number(p, "minutes") {
+        0.0 => minutes
+        n => n
+      },
+      match text(p, "strength") {
+        "" => strength
+        s => s
+      },
+    )
+    fx_changed()
+    return Some(Ok(obj([])))
   }
   match rigs_fixture_call(name, p) {
     Some(r) => return Some(r)
