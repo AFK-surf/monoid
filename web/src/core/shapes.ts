@@ -385,7 +385,7 @@ export interface KeymapView {
 	send?: SendKeys;
 }
 
-/** A runtime: Claude Code, Codex, DeepSeek Harness, Grok Build, Cursor, Devin, Hermes Agent, Antigravity CLI or Pi. */
+/** A runtime: Claude Code, Codex, DeepSeek Harness, Grok Build, Cursor, Devin, Hermes Agent, Antigravity CLI, Pi or GitHub Copilot. */
 export type RuntimeKind = "claude" | "codex" | "dsh" | "grok" | "cursor" | "devin" | "hermes" | "agy" | "pi" | "copilot";
 
 export interface LoginJob {
