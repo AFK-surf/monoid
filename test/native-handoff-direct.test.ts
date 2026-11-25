@@ -334,8 +334,10 @@ test("restore filters by --targets, downloads chunks concurrently in order, and 
   writeFileSync(join(dir, "natives-mac-reader.r2.json"), JSON.stringify([
     { name: macName, sha256: macSha, chunks: [mkReceipt(4)] },
   ]));
-  writeFileSync(join(dir, "natives.r2.json"), JSON.stringify([
+  writeFileSync(join(dir, "natives-wasm32.r2.json"), JSON.stringify([
     { name: wasmName, sha256: wasmSha, chunks: [mkReceipt(5)] },
+  ]));
+  writeFileSync(join(dir, "natives.r2.json"), JSON.stringify([
     { name: unknownName, sha256: unknownSha, chunks: [mkReceipt(6)] },
     { name: linuxName, sha256: linuxSha, chunks: [0, 1, 2, 3].map((i) => mkReceipt(i)) },
   ]));

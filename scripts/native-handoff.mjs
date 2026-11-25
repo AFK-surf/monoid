@@ -370,7 +370,7 @@ export async function restore(dir, sha, options = {}) {
   };
   const restored = new Set();
   const files = await readdir(dir).catch((error) => { if (error.code === "ENOENT") return []; throw error; });
-  for (const manifest of files.filter((f) => /^natives(-mac|-mac-reader|-win-reader|-harness)?\.r2\.json$/.test(f))) {
+  for (const manifest of files.filter((f) => /^natives(?:-mac|-mac-reader|-win-reader|-harness|-(?:linux-x64|linux-arm64|win32-x64|android-arm64|wasm32))?\.r2\.json$/.test(f))) {
     const entries = JSON.parse(await readFile(join(dir, manifest), "utf8"));
     for (const { name, sha256, chunks } of entries) {
       if (!asset.test(name) || !/^[a-f0-9]{64}$/.test(sha256) || !Array.isArray(chunks) || !chunks.length ||
