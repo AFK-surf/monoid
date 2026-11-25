@@ -54,6 +54,7 @@ import { request } from "../ops.ts";
 import { conform } from "../conform.ts";
 import { get, isObject } from "../util.ts";
 import { concat } from "../station/wire.ts";
+import { FLOW_TELL_MS, Flow } from "../flow.ts";
 
 type Of = Extract<Call, { kind: "download" }>;
 
@@ -88,8 +89,13 @@ type Download = {
   startedAt: number;
   /// A chat's file's: where it was opened (KeptFrom), as the page that asked said it.
   opened?: unknown;
-  /// The percent last told (the list is told again as it moves on a whole percent, not at every piece).
+  /// The percent last told (the list is told again as it moves on a whole percent, not at every piece), when, and the
+  /// speed then (bytes a second; 0 not known yet): told again for it at most every FLOW_TELL_MS as it comes.
   told: number;
+  toldAt: number;
+  rate: number;
+  /// How fast what is fetched for it comes off the wire.
+  flow: Flow;
   fiber: Fiber.Fiber<void, never> | null;
 };
 
@@ -158,12 +164,16 @@ export function titleOf(name: string): string {
   return name.replace(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-[0-9a-f]{6}-(?=.)/, "");
 }
 
-/// A download as the list shows it: `active` while it is not failed (its progress shown, it can be called off).
+/// A download as the list shows it: `active` while it is not failed (its progress shown, it can be called off); how big
+/// it is in every state but zipping, and how fast it comes while it does (`rate`, once known).
 export function shown(d: Download): Record<string, unknown> {
+  const zipping = d.state === "going" && d.from.kind === "zip" && d.from.made === null;
+  const rate = d.state === "going" && !zipping && d.rate > 0 ? d.rate : 0;
   const statusText =
-    d.state === "going" && d.from.kind === "zip" && d.from.made === null ? t("core-logic.download.zipping")
+    zipping ? t("core-logic.download.zipping")
+    : rate > 0 ? t("core-logic.download.goingRate", { percent: percent(d), total: bytes(d.size), rate: bytes(rate) })
     : d.state === "going" ? t("core-logic.download.going", { percent: percent(d), total: bytes(d.size) })
-    : d.state === "waiting" ? t("core-logic.download.waiting", { percent: percent(d) })
+    : d.state === "waiting" ? t("core-logic.download.waiting", { percent: percent(d), total: bytes(d.size) })
     : d.state === "ready" ? t("core-logic.download.ready", { total: bytes(d.size) })
     : d.state === "saving" ? t("core-logic.download.saving", { total: bytes(d.size) })
     : t("core-logic.download.failed", { error: d.error ?? "" });
@@ -179,6 +189,7 @@ export function shown(d: Download): Record<string, unknown> {
     progress: d.size > 0 ? d.loaded / d.size : d.state === "going" || d.state === "waiting" ? 0 : 1,
     state: d.state,
     active: d.state !== "failed",
+    ...(rate > 0 ? { rate } : {}),
     statusText,
     ...(d.error !== null ? { error: d.error } : {}),
     startedAt: d.startedAt,
@@ -209,12 +220,22 @@ export class Downloads {
     return { downloads: [...this.#held.values()].sort((a, b) => b.startedAt - a.startedAt).map(shown), keeping: (this.#inner.fill?.shown() ?? []).filter((f) => !this.#held.has(String(f.id))) };
   }
 
-  /// How far it has come: told again as it moves on a whole percent.
+  /// How far it has come: told again as it moves on a whole percent, or as its speed changes FLOW_TELL_MS after it was
+  /// last told.
   #moved(d: Download, loaded: number): void {
     d.loaded = Math.min(loaded, d.size);
-    if (percent(d) === d.told) return;
+    const now = this.#inner.host.nowMs();
+    const rate = d.flow.perSecond(now);
+    if (percent(d) === d.told && (rate === d.rate || now - d.toldAt < FLOW_TELL_MS)) return;
     d.told = percent(d);
+    d.toldAt = now;
+    d.rate = rate;
     this.#invalidate();
+  }
+
+  /// `more` bytes of it came off the wire (not what was kept already: that did not come).
+  #came(d: Download, more: number): void {
+    d.flow.came(this.#inner.host.nowMs(), more);
   }
 
   #note(d: Download): Effect.Effect<void> {
@@ -324,6 +345,7 @@ export class Downloads {
         const fetchPart = (part: { at: number; length: number }, lane?: number): Effect.Effect<void, CoreError | Restart> =>
           Effect.gen(function* () {
             const heard = (n: number) => {
+              self.#came(d, n - (inflight.get(part.at) ?? 0));
               inflight.set(part.at, n);
               report();
             };
@@ -347,6 +369,7 @@ export class Downloads {
                 return;
               }
               yield* inner.driveKept.keep(file.id, "chat", 0, d.size, ans.type, part.at, bytes);
+              self.#came(d, bytes.length - (inflight.get(part.at) ?? 0));
               inflight.delete(part.at);
               keptDone += bytes.length;
               report();
@@ -374,6 +397,7 @@ export class Downloads {
                 return;
               }
               yield* inner.driveKept.keep(file.id, "file", file.mtime, expectedSize, ans.type, part.at, bytes);
+              self.#came(d, bytes.length - (inflight.get(part.at) ?? 0));
               inflight.delete(part.at);
               keptDone += bytes.length;
               report();
@@ -434,6 +458,7 @@ export class Downloads {
     d.state = "going";
     d.error = null;
     d.told = -1;
+    d.rate = 0;
     this.#moved(d, 0);
     d.fiber = this.#inner.runner.fork(
       Effect.flatMap(Effect.result(this.#fetching(d)), (r) => {
@@ -475,7 +500,7 @@ export class Downloads {
           }
           // (asked again before this was read: that one)
           if (this.#held.has(n.id)) continue;
-          const d: Download = { id: n.id, station: n.station, from, name: n.name, size: n.size, loaded: 0, state: "going", error: null, startedAt: Math.floor(n.startedAt ?? 0), told: -1, fiber: null, ...(n.opened !== undefined ? { opened: n.opened } : {}) };
+          const d: Download = { id: n.id, station: n.station, from, name: n.name, size: n.size, loaded: 0, state: "going", error: null, startedAt: Math.floor(n.startedAt ?? 0), told: -1, toldAt: 0, rate: 0, flow: new Flow(), fiber: null, ...(n.opened !== undefined ? { opened: n.opened } : {}) };
           this.#held.set(d.id, d);
           this.#go(d);
         }
@@ -519,7 +544,7 @@ export class Downloads {
           if (was.state === "failed" || was.state === "waiting") self.#go(was);
           return yield* that(was);
         }
-        const d: Download = { id, station, from, name, size, loaded: 0, state: "going", error: null, startedAt: Math.floor(self.#inner.host.nowMs()), told: -1, fiber: null, ...(opened !== undefined ? { opened } : {}) };
+        const d: Download = { id, station, from, name, size, loaded: 0, state: "going", error: null, startedAt: Math.floor(self.#inner.host.nowMs()), told: -1, toldAt: 0, rate: 0, flow: new Flow(), fiber: null, ...(opened !== undefined ? { opened } : {}) };
         held.set(id, d);
         yield* self.#note(d);
         self.#go(d);

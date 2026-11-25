@@ -210,9 +210,10 @@ export type Call =
   /// A chat's file downloaded to this device (views/downloads.ts): its params read there.
   | { kind: "download"; action: "start" | "retry" | "take" | "read" | "done" | "cancel" | "saved"; params: Record<string, unknown> }
   /// What was opened and let go, brought after everything else, and what a person asked to load, before it (fill.ts): a
-  /// chat's file to load (`fill.want {station, key, name, size, from?}`), one no longer brought (`fill.stop {id}`), or
-  /// all (`fill.stopAll`), what was kept of each kept.
-  | { kind: "fill"; action: "want" | "stop" | "stopAll"; params: Record<string, unknown> }
+  /// chat's file to load (`fill.want {station, key, name, size, from?}`), one listed as given way or after the others
+  /// started now (`fill.start {id}`), one no longer brought (`fill.stop {id}`), or all (`fill.stopAll`), what was kept
+  /// of each kept.
+  | { kind: "fill"; action: "want" | "start" | "stop" | "stopAll"; params: Record<string, unknown> }
 
 /// Where a file read was opened (`from`, as KeptFrom has it), as a call has it; none where it says none, or one that
 /// is not that.
@@ -440,7 +441,7 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
   if (name === "download.start" || name === "download.retry" || name === "download.take" || name === "download.read" || name === "download.done" || name === "download.cancel" || name === "download.saved") {
     return { kind: "download", action: name.slice(9) as "start" | "retry" | "take" | "read" | "done" | "cancel" | "saved", params: isObject(params) ? (params as Record<string, unknown>) : {} };
   }
-  if (name === "fill.want" || name === "fill.stop" || name === "fill.stopAll") return { kind: "fill", action: name === "fill.want" ? "want" : name === "fill.stop" ? "stop" : "stopAll", params: isObject(params) ? (params as Record<string, unknown>) : {} };
+  if (name === "fill.want" || name === "fill.start" || name === "fill.stop" || name === "fill.stopAll") return { kind: "fill", action: name.slice(5) as "want" | "start" | "stop" | "stopAll", params: isObject(params) ? (params as Record<string, unknown>) : {} };
   if (name === "workspace.renameStation") {
     const p = read(params, [["workspace", S, "req"], ["station", S, "req"]]);
     return { kind: "stationMark", workspace: p.workspace as string, station: p.station as string, params: isObject(params) ? (params as Record<string, unknown>) : {} };

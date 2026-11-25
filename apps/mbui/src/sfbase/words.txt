@@ -2427,6 +2427,7 @@ web-pages.files.showPreview
 web-pages.files.size
 web-pages.files.skip
 web-pages.files.split
+web-pages.files.startKeeping
 web-pages.files.stopKeeping
 web-pages.files.switchNote
 web-pages.files.switchStation
@@ -2437,6 +2438,7 @@ web-pages.files.toDevice
 web-pages.files.transferWhat
 web-pages.files.transfers
 web-pages.files.transfersGoing
+web-pages.files.transfersGoingRate
 web-pages.files.unfavorite
 web-pages.files.unsplit
 web-pages.files.where

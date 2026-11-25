@@ -2145,14 +2145,19 @@
   "web-pages.files.unsplit": "取消分栏",
   "web-pages.files.transfers": "传输",
   "web-pages.files.transfersGoing": {
-    "one": "{n} 个传输 · {percent}%",
-    "other": "{n} 个传输 · {percent}%"
+    "one": "{n} 个传输 · {percent}% · {total}",
+    "other": "{n} 个传输 · {percent}% · {total}"
+  },
+  "web-pages.files.transfersGoingRate": {
+    "one": "{n} 个传输 · {percent}% · {total} · {rate}/s",
+    "other": "{n} 个传输 · {percent}% · {total} · {rate}/s"
   },
   "web-pages.files.transferWhat": "传输",
   "web-pages.files.copyWhat": "复制",
   "web-pages.files.into": "→ {to}",
   "web-pages.files.toDevice": "到此设备",
   "web-pages.files.stopKeeping": "停止缓存",
+  "web-pages.files.startKeeping": "开始缓存",
   "web-pages.files.fromInto": "{from} → {to}",
   "web-pages.files.moving": "移动 {way}",
   "web-pages.files.filesCount": {

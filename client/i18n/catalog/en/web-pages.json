@@ -2196,14 +2196,19 @@
   "web-pages.files.unsplit": "Unsplit",
   "web-pages.files.transfers": "Transfers",
   "web-pages.files.transfersGoing": {
-    "one": "{n} transfer · {percent}%",
-    "other": "{n} transfers · {percent}%"
+    "one": "{n} transfer · {percent}% · {total}",
+    "other": "{n} transfers · {percent}% · {total}"
+  },
+  "web-pages.files.transfersGoingRate": {
+    "one": "{n} transfer · {percent}% · {total} · {rate}/s",
+    "other": "{n} transfers · {percent}% · {total} · {rate}/s"
   },
   "web-pages.files.transferWhat": "transfer",
   "web-pages.files.copyWhat": "copy",
   "web-pages.files.into": "→ {to}",
   "web-pages.files.toDevice": "To this device",
   "web-pages.files.stopKeeping": "Stop caching",
+  "web-pages.files.startKeeping": "Start caching",
   "web-pages.files.fromInto": "{from} → {to}",
   "web-pages.files.moving": "move {way}",
   "web-pages.files.filesCount": {

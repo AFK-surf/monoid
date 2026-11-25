@@ -150,6 +150,13 @@ pub fn fill_want(src : Source, station : String, key : String, name : String, si
 }
 
 ///|
+/// The file `id`, given way or waiting after the others, brought at once from now on, as one asked to load
+/// (`fill.start`).
+pub fn keeping_start(src : Source, id : String) -> Unit {
+  (src.call)("fill.start", { "id": Json::string(id) }, answer_unread)
+}
+
+///|
 /// The file `id` no longer brought (loaded, or after everything else), what came of it kept (`fill.stop`).
 pub fn keeping_stop(src : Source, id : String) -> Unit {
   (src.call)("fill.stop", { "id": Json::string(id) }, answer_unread)
