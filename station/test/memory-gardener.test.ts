@@ -18,7 +18,9 @@ import {
   NO_PROGRESS_GROWTH_BYTES,
   NO_PROGRESS_WINDOW_MS,
   TIMEOUT_MS,
+  attributedMigratedBytes,
   gardenerRank,
+  hasValidSkillFrontmatter,
   inspectMemoryHealth,
   isAllowedDeletePath,
   isAllowedWritePath,
@@ -1016,6 +1018,7 @@ test("P0-B: blocks writes/appends to non-.md scripts (run.sh) and executable-bit
   const dir = tempDir();
   const origMem = "- bloat\n".repeat(1500);
   writeRel(dir, "MEMORY.md", origMem);
+  writeRel(dir, "skills/proj/SKILL.md", "---\nname: proj\ndescription: p\n---\n- main\n");
   writeRel(dir, "skills/proj/run.sh", "#!/bin/sh\necho hi\n", 0o755);
   writeRel(dir, "skills/proj/exec.md", "# Exec markdown\n", 0o755);
   const { clock, advance } = makeClock();
@@ -1190,4 +1193,206 @@ test("P2-1, P2-2, P2-3: stop() waits for compactor finally cleanup, gemini-pro d
   await started.promise;
   await gStop.stop();
   assert.equal(finallyFinished, true, "stop() must wait for compactor finally cleanup");
+});
+
+// ── 13. R3 Regression tests: P1-1, P1-2, P2-1, P2-2 ──
+
+test("P1-1: attributedMigratedBytes blocks unrelated padding bypass and credits genuine English/CJK migrations", async () => {
+  // 39 KB unique MEMORY.md shrunk to 2.2 KB + 10 KB unrelated padding in skills/machines/x.md -> REJECTED
+  const dir = tempDir();
+  const unique39k = Array.from(
+    { length: 650 },
+    (_, i) => `- [pvg-office-2] 服务器节点 ${i} 的构建目录 /opt/builds/node-${i} 需要保留磁盘配额`,
+  ).join("\n") + "\n";
+  writeRel(dir, "MEMORY.md", unique39k);
+  const report = await inspectMemoryHealth(dir);
+
+  const kept2k = Array.from(
+    { length: 28 },
+    (_, i) => `- [pvg-office-2] 服务器节点 ${i} 的构建目录 /opt/builds/node-${i} 需要保留磁盘配额`,
+  ).join("\n") + "\n";
+  const unrelatedPadding = Array.from(
+    { length: 250 },
+    (_, i) => `- Completely unrelated filler paragraph about banana smoothies recipe #${i}`,
+  ).join("\n") + "\n";
+
+  const badRes = validateCompactionOutput(
+    {
+      memoryMd: kept2k,
+      writes: [{ path: "skills/machines/x.md", content: unrelatedPadding }],
+    },
+    report,
+  );
+  assert.equal(badRes.ok, false, "unrelated 10 KB padding must not bypass 25% retention floor");
+
+  // Same 39 KB MEMORY.md with genuine migrated lines (prefix-stripped + lightly edited Chinese/English) -> ALLOWED
+  const genuineMigrated = Array.from(
+    { length: 220 },
+    (_, i) => `- 服务器节点 ${i} 构建目录 /opt/builds/node-${i} 保留磁盘配额`,
+  ).join("\n") + "\n";
+  const okRes = validateCompactionOutput(
+    {
+      memoryMd: kept2k,
+      writes: [{ path: "skills/machines/pvg-office-2.md", content: genuineMigrated }],
+      dropped: ["stale status line 1", "stale status line 2"],
+    },
+    report,
+  );
+  assert.equal(okRes.ok, true, "genuine migrated rules with prefix stripping must be credited and allowed");
+
+  // Direct check: unrelated padding yields 0 attributed bytes
+  assert.equal(
+    attributedMigratedBytes(
+      ["- Always run cargo test with --locked on pvg-office-2"],
+      ["- Totally unrelated text about weather and coffee"],
+    ),
+    0,
+  );
+});
+
+test("P1-2: stop() returns within stopGraceMs even when compactor hangs without honoring AbortSignal", async () => {
+  const dir = tempDir();
+  writeRel(dir, "MEMORY.md", "- bloat\n".repeat(1500));
+  const { clock, advance } = makeClock();
+  const started = Promise.withResolvers<void>();
+
+  const g = new MemoryGardener({
+    cloud: makeCloud({ station: A }),
+    clock,
+    stopGraceMs: 80,
+    compact: async () => {
+      started.resolve();
+      // Simulates a stuck driver.open() that ignores AbortSignal forever
+      return await new Promise<string>(() => {});
+    },
+  });
+  gardeners.push(g);
+
+  g.onSettled(settledEvent(dir));
+  await advance(DEBOUNCE_MS);
+  await started.promise;
+
+  const t0 = Date.now();
+  await g.stop();
+  const elapsed = Date.now() - t0;
+  assert.ok(elapsed < 1000, `stop() should return promptly after stopGraceMs (took ${elapsed}ms)`);
+});
+
+test("P2-1: rank-1 takeover timer ignores tiny <1KB drops and resets only on >=1KB shrinkage or fewer conflicts", async () => {
+  const dir = tempDir();
+  writeRel(dir, "MEMORY.md", "- repeated bloat\n".repeat(700)); // ~11.9 KB
+  writeRel(dir, "skills/proj/SKILL.md", "---\nname: proj\ndescription: p\n---\n- main\n");
+  writeRel(dir, "skills/proj/SKILL.conflict-Studio.md", "- conflict\n");
+  const { clock, advance } = makeClock();
+  const peers = [
+    { id: A, name: "alpha" },
+    { id: B, name: "beta" },
+  ];
+  let calls = 0;
+  const takeoverStepMs = 60_000;
+
+  const g = new MemoryGardener({
+    cloud: makeCloud({ station: B, name: "beta", peers }),
+    clock,
+    takeoverStepMs,
+    compact: async () => {
+      calls++;
+      return { memoryMd: "# Compact\n- repeated bloat\n" };
+    },
+  });
+  gardeners.push(g);
+
+  // t=0: rank-1 observes unhealthy (11.9 KB + 1 conflict)
+  g.onSettled(settledEvent(dir));
+  await advance(DEBOUNCE_MS);
+  await g.idle();
+  assert.equal(calls, 0);
+
+  // t=30s: tiny 34-byte edit (< 1 KB) must NOT reset takeover timer
+  await advance(30_000);
+  writeRel(dir, "MEMORY.md", "- repeated bloat\n".repeat(698));
+  g.onSettled(settledEvent(dir));
+  await advance(DEBOUNCE_MS);
+  await g.idle();
+  assert.equal(calls, 0);
+
+  // t=45s: resolving the conflict file (fewer conflicts) DOES reset takeover timer
+  await advance(15_000);
+  rmSync(join(dir, "skills/proj/SKILL.conflict-Studio.md"), { force: true });
+  g.onSettled(settledEvent(dir));
+  await advance(DEBOUNCE_MS);
+  await g.idle();
+  assert.equal(calls, 0);
+
+  // Advance 40s (past original 60s, but only 40s after conflict-reduced reset) -> still NO takeover
+  await advance(40_000);
+  await g.idle();
+  assert.equal(calls, 0, "conflict reduction must have reset takeover timer");
+
+  // Advance another 25s without >=1KB shrinkage -> rank-1 takes over
+  await advance(25_000);
+  await g.idle();
+  assert.equal(calls, 1);
+});
+
+test("P2-2: refuses creating SKILL.md without frontmatter and refuses appending to orphan project skill dir", async () => {
+  assert.equal(hasValidSkillFrontmatter("---\nname: x\ndescription: y\n---\nbody\n"), true);
+  assert.equal(hasValidSkillFrontmatter("# No frontmatter\nbody\n"), false);
+  assert.equal(hasValidSkillFrontmatter("---\nname: x\n---\nmissing desc\n"), false);
+
+  const dir = tempDir();
+  const origMem = "- bloat\n".repeat(1500);
+  writeRel(dir, "MEMORY.md", origMem);
+  const { clock, advance } = makeClock();
+
+  // New SKILL.md without frontmatter -> rejected, zero writes
+  const g1 = new MemoryGardener({
+    cloud: makeCloud({ station: A }),
+    clock,
+    compact: async () => ({
+      memoryMd: "# Clean\n- bloat\n",
+      writes: [{ path: "skills/newproj/SKILL.md", content: "# Missing frontmatter\n- rule\n" }],
+    }),
+  });
+  gardeners.push(g1);
+  g1.onSettled(settledEvent(dir));
+  await advance(DEBOUNCE_MS);
+  await g1.idle();
+  assert.equal(readRel(dir, "skills/newproj/SKILL.md"), null);
+  assert.equal(readRel(dir, "MEMORY.md"), origMem);
+
+  // Appending non-SKILL.md into orphan project skill dir (no SKILL.md) -> rejected
+  const g2 = new MemoryGardener({
+    cloud: makeCloud({ station: A }),
+    clock,
+    compact: async () => ({
+      memoryMd: "# Clean\n- bloat\n",
+      appends: [{ path: "skills/orphan-proj/notes.md", content: "- orphan note\n" }],
+    }),
+  });
+  gardeners.push(g2);
+  g2.onSettled(settledEvent(dir));
+  await advance(DEBOUNCE_MS);
+  await g2.idle();
+  assert.equal(readRel(dir, "skills/orphan-proj/notes.md"), null);
+  assert.equal(readRel(dir, "MEMORY.md"), origMem);
+
+  // Appending to skills/machines/*.md or skills/people/*.md without SKILL.md -> still allowed
+  const g3 = new MemoryGardener({
+    cloud: makeCloud({ station: A }),
+    clock,
+    compact: async () => ({
+      memoryMd: "# Clean\n- bloat\n",
+      appends: [
+        { path: "skills/machines/pvg-office-2.md", content: "- overlay root\n" },
+        { path: "skills/people/alice.md", content: "- prefers concise replies\n" },
+      ],
+    }),
+  });
+  gardeners.push(g3);
+  g3.onSettled(settledEvent(dir));
+  await advance(DEBOUNCE_MS);
+  await g3.idle();
+  assert.equal(readRel(dir, "skills/machines/pvg-office-2.md"), "- overlay root\n");
+  assert.equal(readRel(dir, "skills/people/alice.md"), "- prefers concise replies\n");
 });

@@ -31,7 +31,11 @@ export const NO_PROGRESS_GROWTH_BYTES = 2 * 1024;
 export const BACKOFF_MAX_MS = 24 * 60 * 60_000;
 export const TAKEOVER_STEP_MS = 6 * 60 * 60_000;
 export const TAKEOVER_MAX_MS = 24 * 60 * 60_000;
+export const TAKEOVER_PROGRESS_BYTES = 1024;
+export const STOP_GRACE_MS = 3_000;
 export const MAX_MEMORY_INPUT_BYTES = 120 * 1024;
+const MAX_DROPPED_ENTRIES = 100;
+const MAX_DROPPED_ENTRY_CHARS = 200;
 
 const MAX_SCAN_SKILLS = 256;
 const MAX_SCAN_FILES_PER_SKILL = 128;
@@ -145,6 +149,7 @@ export type MemoryGardenerDeps = {
   backoffMaxMs?: number;
   takeoverStepMs?: number;
   takeoverMaxMs?: number;
+  stopGraceMs?: number;
 };
 
 /// Returns the original target relative path if `relPath` matches `MemorySync` `conflictPath` format inside a team
@@ -202,6 +207,110 @@ export function uniqueContentBytes(text: string): number {
     bytes += utf8Bytes(norm) + 1;
   }
   return bytes;
+}
+
+function normalizedUniqueLines(text: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const norm = raw.trim();
+    if (norm === "" || STRUCTURAL_LINE_RE.test(norm) || seen.has(norm)) continue;
+    seen.add(norm);
+    out.push(norm);
+  }
+  return out;
+}
+
+function removedSourceLines(before: string, after: string): string[] {
+  const afterSet = new Set(normalizedUniqueLines(after));
+  return normalizedUniqueLines(before).filter((l) => !afterSet.has(l));
+}
+
+function addedDestLines(before: string, after: string): string[] {
+  const beforeSet = new Set(normalizedUniqueLines(before));
+  return normalizedUniqueLines(after).filter((l) => !beforeSet.has(l));
+}
+
+function extractAttributionTokens(line: string): Set<string> {
+  const tokens = new Set<string>();
+  const lower = line.toLowerCase();
+  for (const m of lower.matchAll(/[a-z0-9]{2,}/g)) {
+    tokens.add(m[0]);
+  }
+  for (const m of lower.matchAll(/\p{Script=Han}+/gu)) {
+    const chars = [...m[0]];
+    if (chars.length === 1) {
+      tokens.add(chars[0]!);
+    } else {
+      for (let i = 0; i < chars.length - 1; i++) {
+        tokens.add(`${chars[i]!}${chars[i + 1]!}`);
+      }
+    }
+  }
+  return tokens;
+}
+
+/// Attributes migrated bytes by matching removed unique source lines against newly added destination lines.
+/// Prevents unrelated padding written into destination files from bypassing retention floors while accurately
+/// crediting verbatim or lightly edited (e.g., prefix-stripped / paraphrased) migrations in both English and CJK.
+export function attributedMigratedBytes(removedLines: string[], destAddedLines: string[]): number {
+  const destUnique = normalizedUniqueLines(destAddedLines.join("\n"));
+  if (destUnique.length === 0) return 0;
+
+  let destAddedUniqueBytes = 0;
+  const destLower: string[] = [];
+  const destTokenSets: Set<string>[] = [];
+  for (const d of destUnique) {
+    destAddedUniqueBytes += utf8Bytes(d) + 1;
+    const low = d.toLowerCase();
+    destLower.push(low);
+    destTokenSets.push(extractAttributionTokens(low));
+  }
+
+  // Precompute adjacent 2-line windows so a source line split across two destination lines still matches.
+  const windowLower: string[] = [...destLower];
+  const windowTokens: Set<string>[] = [...destTokenSets];
+  for (let i = 0; i < destLower.length - 1; i++) {
+    windowLower.push(`${destLower[i]!} ${destLower[i + 1]!}`);
+    windowTokens.push(new Set([...destTokenSets[i]!, ...destTokenSets[i + 1]!]));
+  }
+
+  const uniqueRemoved = normalizedUniqueLines(removedLines.join("\n"));
+  let matchedRemovedBytes = 0;
+  for (const line of uniqueRemoved) {
+    const normLow = line.toLowerCase();
+    const tokens = extractAttributionTokens(normLow);
+    let matched = false;
+    for (let i = 0; i < windowLower.length; i++) {
+      if (windowLower[i]!.includes(normLow)) {
+        matched = true;
+        break;
+      }
+      if (tokens.size >= 3) {
+        const target = windowTokens[i]!;
+        let hits = 0;
+        const needed = Math.ceil(tokens.size * 0.45);
+        for (const t of tokens) {
+          if (target.has(t) && ++hits >= needed) {
+            matched = true;
+            break;
+          }
+        }
+        if (matched) break;
+      }
+    }
+    if (matched) matchedRemovedBytes += utf8Bytes(line) + 1;
+  }
+
+  return Math.min(matchedRemovedBytes, destAddedUniqueBytes);
+}
+
+/// Whether `text` starts with valid YAML frontmatter containing both `name:` and `description:`.
+export function hasValidSkillFrontmatter(text: string): boolean {
+  const m = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text);
+  if (!m) return false;
+  const fm = m[1]!;
+  return /^name:\s*\S/m.test(fm) && /^description:\s*\S/m.test(fm);
 }
 
 function extractFrontmatterDescription(text: string): string {
@@ -488,7 +597,10 @@ export function validateCompactionOutput(
     if (!Array.isArray(output.dropped) || !output.dropped.every((d) => typeof d === "string")) {
       return { ok: false, error: "dropped must be an array of strings" };
     }
-    dropped.push(...output.dropped);
+    for (const d of output.dropped.slice(0, MAX_DROPPED_ENTRIES)) {
+      const trimmed = d.trim();
+      if (trimmed !== "") dropped.push([...trimmed].slice(0, MAX_DROPPED_ENTRY_CHARS).join(""));
+    }
   }
 
   if (output.memoryMd !== undefined) {
@@ -559,21 +671,23 @@ export function validateCompactionOutput(
     return { ok: true, plan: { writes, appends, deletes, dropped }, meaningfulProgress: false };
   }
 
-  // P0-A: Guard against destructive shortening of unique durable content in MEMORY.md (whether oversized or healthy)
-  // and in every overwritten existing skill file.
+  // P0-A & P1-1: Guard against destructive shortening of unique durable content in MEMORY.md (whether oversized or
+  // healthy) and in every overwritten existing skill file, crediting only destination additions attributable to
+  // removed source lines (blocking unrelated padding).
   const nextMemory = writes.get("MEMORY.md");
   if (nextMemory !== undefined) {
     const uniqueOrigMemoryBytes = uniqueContentBytes(report.memoryMd);
-    let migratedUniqueDeltaBytes = 0;
+    const removedMem = removedSourceLines(report.memoryMd, nextMemory);
+    const destAdded: string[] = [];
     for (const [p, content] of writes) {
       if (p === "MEMORY.md") continue;
-      const before = sentFullTexts.get(p) ?? "";
-      migratedUniqueDeltaBytes += Math.max(0, uniqueContentBytes(content) - uniqueContentBytes(before));
+      destAdded.push(...addedDestLines(sentFullTexts.get(p) ?? "", content));
     }
     for (const content of appends.values()) {
-      migratedUniqueDeltaBytes += uniqueContentBytes(content);
+      destAdded.push(...normalizedUniqueLines(content));
     }
-    const retainedBytes = uniqueContentBytes(nextMemory) + migratedUniqueDeltaBytes;
+    const migratedAttributedBytes = attributedMigratedBytes(removedMem, destAdded);
+    const retainedBytes = uniqueContentBytes(nextMemory) + migratedAttributedBytes;
     if (!report.memoryOverLimit) {
       if (uniqueOrigMemoryBytes > 256 && retainedBytes < Math.floor(uniqueOrigMemoryBytes * 0.5)) {
         return {
@@ -584,7 +698,7 @@ export function validateCompactionOutput(
     } else if (uniqueOrigMemoryBytes > 512 && retainedBytes < Math.floor(uniqueOrigMemoryBytes * 0.25)) {
       return {
         ok: false,
-        error: `refusing destructive shortening of MEMORY.md (unique=${uniqueOrigMemoryBytes}B, retained=${retainedBytes}B, migrated=${migratedUniqueDeltaBytes}B)`,
+        error: `refusing destructive shortening of MEMORY.md (unique=${uniqueOrigMemoryBytes}B, retained=${retainedBytes}B, migrated=${migratedAttributedBytes}B)`,
       };
     }
   }
@@ -597,17 +711,18 @@ export function validateCompactionOutput(
     if (uniqueOrigSkillBytes <= 512) continue;
     const skillName = p.split("/")[1]!;
     const skillPrefix = `skills/${skillName}/`;
-    let sameSkillSiblingMigratedBytes = 0;
+    const removedSkill = removedSourceLines(origText, newContent);
+    const siblingDestAdded: string[] = [];
     for (const [other, otherContent] of writes) {
       if (other === p || !other.startsWith(skillPrefix)) continue;
-      const otherBefore = sentFullTexts.get(other) ?? "";
-      sameSkillSiblingMigratedBytes += Math.max(0, uniqueContentBytes(otherContent) - uniqueContentBytes(otherBefore));
+      siblingDestAdded.push(...addedDestLines(sentFullTexts.get(other) ?? "", otherContent));
     }
     for (const [other, appendContent] of appends) {
       if (other === p || !other.startsWith(skillPrefix)) continue;
-      sameSkillSiblingMigratedBytes += uniqueContentBytes(appendContent);
+      siblingDestAdded.push(...normalizedUniqueLines(appendContent));
     }
-    const skillRetained = uniqueContentBytes(newContent) + sameSkillSiblingMigratedBytes;
+    const sameSkillAttributed = attributedMigratedBytes(removedSkill, siblingDestAdded);
+    const skillRetained = uniqueContentBytes(newContent) + sameSkillAttributed;
     if (skillRetained < Math.floor(uniqueOrigSkillBytes * 0.25)) {
       return {
         ok: false,
@@ -792,7 +907,8 @@ type WorkspaceState = {
   cooldownUntil: number;
   consecutiveFailures: number;
   firstUnhealthyAt: number | null;
-  lastObservedBytes: number | null;
+  progressBaselineBytes: number | null;
+  progressBaselineConflicts: number | null;
   noProgress: { sizeAtRun: number; conflictPaths: string[]; at: number } | null;
 };
 
@@ -814,6 +930,7 @@ export class MemoryGardener {
   readonly #backoffMaxMs: number;
   readonly #takeoverStepMs: number;
   readonly #takeoverMaxMs: number;
+  readonly #stopGraceMs: number;
   readonly #states = new Map<string, WorkspaceState>();
   readonly #aborts = new Set<AbortController>();
   readonly #running = new Set<Promise<void>>();
@@ -830,6 +947,7 @@ export class MemoryGardener {
     this.#backoffMaxMs = deps.backoffMaxMs ?? BACKOFF_MAX_MS;
     this.#takeoverStepMs = deps.takeoverStepMs ?? TAKEOVER_STEP_MS;
     this.#takeoverMaxMs = deps.takeoverMaxMs ?? TAKEOVER_MAX_MS;
+    this.#stopGraceMs = deps.stopGraceMs ?? STOP_GRACE_MS;
   }
 
   #state(ws: string): WorkspaceState {
@@ -844,7 +962,8 @@ export class MemoryGardener {
         cooldownUntil: 0,
         consecutiveFailures: 0,
         firstUnhealthyAt: null,
-        lastObservedBytes: null,
+        progressBaselineBytes: null,
+        progressBaselineConflicts: null,
         noProgress: null,
       };
       this.#states.set(ws, s);
@@ -912,23 +1031,32 @@ export class MemoryGardener {
     if (!report.needed) {
       state.noProgress = null;
       state.firstUnhealthyAt = null;
-      state.lastObservedBytes = null;
+      state.progressBaselineBytes = null;
+      state.progressBaselineConflicts = null;
       state.takeoverCancel?.();
       state.takeoverCancel = null;
       return;
     }
 
-    // P1-8 & P1-C: Fallback takeover for rank > 0 stations when rank 0 is offline, older, or lacks usable accounts.
-    // Reset takeover timer whenever totalRelevantBytes decreases (indicating rank-0 is actively shrinking memory).
+    // P1-8, P1-C & P2-1: Fallback takeover for rank > 0 stations when rank 0 is offline, older, or lacks usable
+    // accounts. Reset takeover timer only on substantive progress (>= 1 KiB cumulative shrinkage or fewer conflicts).
     if (rank > 0) {
+      const conflictCount = report.conflictFiles.length;
       if (state.firstUnhealthyAt === null) {
         state.firstUnhealthyAt = now;
-        state.lastObservedBytes = report.totalRelevantBytes;
-      } else if (state.lastObservedBytes !== null && report.totalRelevantBytes < state.lastObservedBytes) {
-        state.firstUnhealthyAt = now;
-        state.lastObservedBytes = report.totalRelevantBytes;
+        state.progressBaselineBytes = report.totalRelevantBytes;
+        state.progressBaselineConflicts = conflictCount;
       } else {
-        state.lastObservedBytes = Math.max(state.lastObservedBytes ?? 0, report.totalRelevantBytes);
+        const shrankSubstantively =
+          state.progressBaselineBytes !== null &&
+          report.totalRelevantBytes <= state.progressBaselineBytes - TAKEOVER_PROGRESS_BYTES;
+        const conflictsReduced =
+          state.progressBaselineConflicts !== null && conflictCount < state.progressBaselineConflicts;
+        if (shrankSubstantively || conflictsReduced) {
+          state.firstUnhealthyAt = now;
+          state.progressBaselineBytes = report.totalRelevantBytes;
+          state.progressBaselineConflicts = conflictCount;
+        }
       }
       const delay = Math.min(rank * this.#takeoverStepMs, this.#takeoverMaxMs);
       const elapsed = now - state.firstUnhealthyAt;
@@ -947,7 +1075,8 @@ export class MemoryGardener {
       }
     } else {
       state.firstUnhealthyAt = null;
-      state.lastObservedBytes = null;
+      state.progressBaselineBytes = null;
+      state.progressBaselineConflicts = null;
       state.takeoverCancel?.();
       state.takeoverCancel = null;
     }
@@ -1049,6 +1178,10 @@ export class MemoryGardener {
             // P1-10: Never overwrite an existing file whose full text was not provided to the model.
             throw new Error(`refusing to overwrite unread existing file (use appends instead): ${relPath}`);
           }
+          if (st === null && /^skills\/[^/]+\/SKILL\.md$/.test(relPath) && !hasValidSkillFrontmatter(compactedText)) {
+            // P2-2: Newly created SKILL.md must carry valid YAML frontmatter (name + description).
+            throw new Error(`refusing to create SKILL.md without valid YAML frontmatter: ${relPath}`);
+          }
 
           let finalText = compactedText;
           if (snap !== undefined) {
@@ -1073,6 +1206,23 @@ export class MemoryGardener {
           if (st === null && relPath.endsWith("/SKILL.md")) {
             // P2-3: New SKILL.md files must be created via `writes` with YAML frontmatter, never `appends`.
             throw new Error(`refusing to create missing SKILL.md via appends: ${relPath}`);
+          }
+          // P2-2: Prevent orphan project skill directories (non-machines/people skill subfiles require an existing or co-created SKILL.md).
+          const parts = relPath.split("/");
+          const skillDirName = parts[1] ?? "";
+          if (
+            parts[0] === "skills" &&
+            skillDirName !== "machines" &&
+            skillDirName !== "people" &&
+            !relPath.endsWith("/SKILL.md")
+          ) {
+            const skillMdRel = `skills/${skillDirName}/SKILL.md`;
+            if (!checked.plan.writes.has(skillMdRel)) {
+              const skillMdStat = await lstat(join(event.dir, "skills", skillDirName, "SKILL.md")).catch(() => null);
+              if (skillMdStat === null || !skillMdStat.isFile()) {
+                throw new Error(`refusing to append to orphan skill directory without SKILL.md: ${relPath}`);
+              }
+            }
           }
           if (st !== null) {
             if (!st.isFile()) throw new Error(`refusing to append to non-regular file or symlink: ${relPath}`);
@@ -1129,6 +1279,8 @@ export class MemoryGardener {
 
       state.consecutiveFailures = 0;
       state.firstUnhealthyAt = null;
+      state.progressBaselineBytes = null;
+      state.progressBaselineConflicts = null;
       state.takeoverCancel?.();
       state.takeoverCancel = null;
       state.cooldownUntil = this.#time.now() + this.#cooldownMs;
@@ -1148,6 +1300,9 @@ export class MemoryGardener {
         writes: committed.writes,
         deletes: committed.deletes,
         stillNeeded: after.needed,
+        ...(checked.plan.dropped.length > 0
+          ? { droppedCount: checked.plan.dropped.length, droppedSummary: checked.plan.dropped.slice(0, 5) }
+          : {}),
       });
     } catch (e) {
       if (this.#stopped) return;
@@ -1175,6 +1330,7 @@ export class MemoryGardener {
   }
 
   async stop(): Promise<void> {
+    if (this.#stopped) return;
     this.#stopped = true;
     for (const s of this.#states.values()) {
       s.debounceCancel?.();
@@ -1188,7 +1344,17 @@ export class MemoryGardener {
     for (const a of this.#aborts) a.abort(new Error("memory gardener stopped"));
     this.#aborts.clear();
     await this.#time.close();
-    await this.idle();
+    if (this.#running.size === 0) return;
+    // P1-2: Bound shutdown wait so a hung `driver.open()` (which does not accept AbortSignal) cannot block station handover.
+    let cancelGrace = () => {};
+    const grace = new Promise<void>((resolve) => {
+      cancelGrace = wall.after(this.#stopGraceMs, resolve); // timer: bounded shutdown grace deadline for in-flight compaction
+    });
+    try {
+      await Promise.race([this.idle(), grace]);
+    } finally {
+      cancelGrace();
+    }
   }
 }
 
