@@ -581,7 +581,7 @@ fn composer_node_of(
       seam_backdrop_top,
       backdrop_top,
       lift_backdrop_top,
-      fn(u) { shared.morph.shown(u) > 0.001 },
+      fn(u) { shared.morph.shown(u) > 0.001 || shared.sent_over.shown(u) > 0.001 },
       fn(u) { shared.sent_over.shown(u) },
     )
     match made {
@@ -737,7 +737,7 @@ fn composer_foot_scrim_node(
           .width_share(Is(1.0))
           .height_share(Is(1.0))
           .points(Is(false))
-          .ground_drawn(Is({ dx: 0.0, dy: 0.0, dw: 0.0, dh: 300.0, corners: None }))
+          .ground_drawn(By(fn() { { dx: 0.0, dy: 0.0, dw: 0.0, dh: 300.0 + sent_over(fill), corners: None } }))
           |> ignore
         })
         |> ignore

@@ -293,6 +293,33 @@ test "tall multiline composer taller than the viewport stays covered to its bott
     a[1] + a[3] >= 600.0,
     msg="expected backdrop bottom (\{a[1] + a[3]}) to reach viewport bottom (600)",
   )
+  // Sending a tall multiline+quoted draft on keyboard/mouse must keep the blur covering the drawn glass bottom
+  // on the send frame, +16.7ms, and +50ms while sent_over animates the composer back down.
+  tap_send(t)
+  assert_eq(draft.quotes.get().length(), 0, msg="expected quotes cleared on send")
+  let check_send_cover = fn(label : String) raise {
+    let (_, sgy, _, sgh) = composer_cover_glass_box(t)
+    guard composer_cover_backdrop(t) is [sa, ..] else {
+      fail("\{label}: expected backdrop blur during tall send flight")
+    }
+    assert_true(
+      sa[1] + sa[3] >= sgy + sgh,
+      msg="\{label}: expected backdrop bottom (\{sa[1] + sa[3]}) >= drawn glass bottom (\{sgy + sgh})",
+    )
+    assert_true(
+      sa[1] + sa[3] >= 600.0,
+      msg="\{label}: expected backdrop bottom (\{sa[1] + sa[3]}) >= viewport bottom (600)",
+    )
+  }
+  check_send_cover("send-0ms")
+  t.frame()
+  check_send_cover("send-16ms")
+  t.frame()
+  t.frame()
+  check_send_cover("send-50ms")
+  t.ctx().blur()
+  t.run_for(@sfpages.let_go_ms + @ui.move_most_ms)
+  assert_eq(composer_cover_backdrop(t).length(), 0, msg="expected backdrop gone once collapsed after send")
 }
 
 ///|

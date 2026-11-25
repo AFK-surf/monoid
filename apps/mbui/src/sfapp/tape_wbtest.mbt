@@ -1307,6 +1307,9 @@ test "on the tape 新建对话 lit stands over the search's field: its ground's 
   t.run_for(@ui.move_most_ms)
   t.tap(30.0, 400.0)
   t.run_for(@ui.move_most_ms)
+  // Pull the tucked search field out from under the progressive-blur top band so its drawn words are visible.
+  t.drag(150.0, 240.0, 150.0, 360.0)
+  t.run_for(@ui.move_most_ms)
   let (sx, _, _, _) = said_at(t, "搜索全部内容").unwrap()
   let (nx, _, _, _) = said_at(t, "新建对话").unwrap()
   assert_eq(nx, sx)

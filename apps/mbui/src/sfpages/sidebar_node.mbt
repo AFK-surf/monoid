@@ -636,7 +636,10 @@ fn chats_pane_node(
               let revealed = @signals.computed(fn(_) { reveal_at(frame.under) })
               fn() { revealed.get() }
             }
-            Side | Tape => fn() { reveal_at(frame.top) }
+            Side | Tape => {
+              let revealed = @signals.computed(fn(_) { reveal_at(frame.top) })
+              fn() { revealed.get() }
+            }
           }
           let field = search_field_node(line, frame.at, reveal~)
           // the list's first time with its rows: the search tucked over them out of view, the first line after it at the
