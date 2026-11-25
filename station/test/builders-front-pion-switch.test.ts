@@ -507,15 +507,16 @@ async function runMeshParity(bin: string, label: string) {
         while (bigLines.length < n) await new Promise<void>((r) => waiters.push(r));
       };
       bigCtl.write(
-        `{"id":1e20,"op":"route","front":[],"routes":[],"alpn":null}\n{"id":1e20,"op":"connect","alpn":${JSON.stringify(ALPN_MAIN.toString("hex"))},"addr":{"id":${JSON.stringify(dialer.id())},"ips":["127.0.0.1:1"]}}\n{"id":2,"op":"giveUp","of":100000000000000000000}\n`,
+        `{"id":1e20,"op":"route","front":[],"routes":[],"alpn":null}\n{"id":2e20,"op":"connect","alpn":${JSON.stringify(ALPN_MAIN.toString("hex"))},"addr":{"id":${JSON.stringify(dialer.id())},"ips":["127.0.0.1:1"]}}\n{"id":2,"op":"giveUp","of":200000000000000000000}\n`,
       );
       await waitCount(3);
+      const routeReplyLine = bigLines.find((l) => l.includes("100000000000000000000"));
       assert.ok(
-        bigLines[0]!.includes("100000000000000000000"),
-        `route id 1e20 must serialize as 100000000000000000000, got: ${bigLines[0]}`,
+        routeReplyLine,
+        `route id 1e20 must serialize as 100000000000000000000, got: ${JSON.stringify(bigLines)}`,
       );
-      const connectCancelLine = bigLines.slice(1).find((l) => l.includes("100000000000000000000"));
-      assert.ok(connectCancelLine, `expected connect reply with 100000000000000000000 in ${JSON.stringify(bigLines)}`);
+      const connectCancelLine = bigLines.find((l) => l.includes("200000000000000000000"));
+      assert.ok(connectCancelLine, `expected connect reply with 200000000000000000000 in ${JSON.stringify(bigLines)}`);
       assert.match(String(JSON.parse(connectCancelLine).error ?? ""), /cancel/i);
     } finally {
       bigCtl.destroy();

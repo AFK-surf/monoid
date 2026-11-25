@@ -6,7 +6,7 @@
 //    packages must have zero violations).
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -746,12 +746,13 @@ function collectSqlPackages(pkgsDir: string, allFiles: string[]): Set<string> {
     depsByPkg.set(entry.name, deps);
   }
   const sqlPackages = new Set<string>(["sql_db", "sqlite_ffi"]);
-  // Also seed any package that directly declares or references sqlite3_*/stq_* FFI symbols.
+  // Also seed any package that directly declares or references SQLite FFI symbols, `sql_db::`,
+  // `sqlite_ffi::`, or a `SessionHost.db` / `.db` handle.
   for (const rel of allFiles) {
     const pkg = rel.split("/")[0]!;
     if (sqlPackages.has(pkg)) continue;
     const src = readFileSync(join(pkgsDir, rel), "utf8");
-    if (/\b(?:sqlite3_|stq_)\w+\b/.test(src)) sqlPackages.add(pkg);
+    if (/\b(?:sqlite3_|stq_)\w+\b|\bsql_db::|\bsqlite_ffi::|\.(?:db)\b/.test(src)) sqlPackages.add(pkg);
   }
   // Precondition guard for `js_json` non-propagation below: `js_json` may ONLY call
   // `sqlite_ffi::format_js_double` (pure double formatting, zero SQLite handle exposure).
@@ -768,14 +769,17 @@ function collectSqlPackages(pkgsDir: string, allFiles: string[]): Set<string> {
   }
 
   // `js_json` depends on `sqlite_ffi` solely for `format_js_double` and does not expose any SQLite handle;
-  // still scan `js_json` itself, but do not propagate SQLite-linked taint through `js_json` into pure JSON packages
-  // (such as `live_wire`, which emits protocol literals like `"end"`).
+  // `sessions_core` holds `SessionHost.db` on behalf of SQLite-backed subsystems (`sessions_actors`), while pure
+  // protocol packages (`sessions_agents`, `sessions_jobs_live`, `sessions_remote`) never touch `.db` / `sql_db::`.
+  // Still scan `js_json` and `sessions_core` themselves, and any downstream package that actually references
+  // `sql_db::`, `sqlite_ffi::`, `sqlite3_*`, `stq_*`, or `.db` is already seeded above; do not propagate taint
+  // purely through `js_json` or `sessions_core` into protocol packages that emit literals like `"begin"` / `"end"`.
   let changed = true;
   while (changed) {
     changed = false;
     for (const [pkg, deps] of depsByPkg) {
       if (sqlPackages.has(pkg)) continue;
-      if (deps.some((d) => d !== "js_json" && sqlPackages.has(d))) {
+      if (deps.some((d) => d !== "js_json" && d !== "sessions_core" && sqlPackages.has(d))) {
         sqlPackages.add(pkg);
         changed = true;
       }
@@ -803,7 +807,40 @@ test("recursive zero-exception static SQLite transaction guard across ALL SQLite
   assert.ok(checkedFiles.includes("builders_usage/src/record.pion"), "must discover builders_usage/src/record.pion");
   assert.ok(checkedFiles.includes("builders_search/src/search_docs.pion"), "must discover search_docs.pion");
   assert.ok(checkedFiles.includes("builders_search/src/history_search.pion"), "must discover history_search.pion");
+  assert.ok(checkedFiles.includes("sessions_core/src/host.pion"), "must discover sessions_core/src/host.pion");
+  assert.ok(checkedFiles.includes("sessions_actors/src/actor_store.pion"), "must discover sessions_actors/src/actor_store.pion");
   assert.ok(checkedFiles.includes("smoke/src/main.pion"), "must discover smoke/src/main.pion");
+
+  // Positive + negative unit checks for `sessions_core` non-propagation:
+  // a pure protocol package depending only on `sessions_core` with `"begin"`/`"end"` is not tainted,
+  // while one touching `.db` or `sql_db::` IS tainted and `db.exec("begin")` is flagged.
+  const synthDir = mkdtempSync(join(tmpdir(), "w5-sql-taint-"));
+  try {
+    mkdirSync(join(synthDir, "sessions_core/src"), { recursive: true });
+    writeFileSync(join(synthDir, "sessions_core/pion.toml"), '[dependencies]\nsql_db = { path = "../sql_db" }\n');
+    writeFileSync(join(synthDir, "sessions_core/src/host.pion"), "pub fn ok() -> Unit { () }\n");
+
+    mkdirSync(join(synthDir, "pure_proto/src"), { recursive: true });
+    writeFileSync(join(synthDir, "pure_proto/pion.toml"), '[dependencies]\nsessions_core = { path = "../sessions_core" }\n');
+    writeFileSync(join(synthDir, "pure_proto/src/proto.pion"), 'pub fn f(k : String) -> Bool { k == "begin" || k == "end" }\n');
+
+    mkdirSync(join(synthDir, "db_consumer/src"), { recursive: true });
+    writeFileSync(join(synthDir, "db_consumer/pion.toml"), '[dependencies]\nsessions_core = { path = "../sessions_core" }\n');
+    writeFileSync(join(synthDir, "db_consumer/src/store.pion"), 'pub fn bad(host : Host) -> Unit { let _ = host.db; let _ = db.exec("begin") }\n');
+
+    const synthFiles = collectPionSources(synthDir);
+    const synthSqlPkgs = collectSqlPackages(synthDir, synthFiles);
+    assert.ok(synthSqlPkgs.has("sessions_core"), "sessions_core itself must stay in sqlPackages");
+    assert.ok(!synthSqlPkgs.has("pure_proto"), "pure protocol package depending only on sessions_core must not be tainted");
+    assert.ok(synthSqlPkgs.has("db_consumer"), "package touching host.db must be tainted");
+    assert.equal(
+      findRawTxControlViolations("db_consumer/src/store.pion", readFileSync(join(synthDir, "db_consumer/src/store.pion"), "utf8")).length,
+      1,
+      'db.exec("begin") in tainted package must be flagged',
+    );
+  } finally {
+    rmSync(synthDir, { recursive: true, force: true });
+  }
 
   for (const rel of checkedFiles) {
     if (rel === "sql_db/src/sql_db.pion") continue;
