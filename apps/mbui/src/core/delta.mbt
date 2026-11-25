@@ -6,18 +6,16 @@
 // An op that does not fit its value (a path through what is not there) is skipped, as the core skips it.
 
 ///|
-/// Structural equality on `Json` that short-circuits via `physical_equal` at every container and string node,
-/// avoiding deep re-walks over unchanged subtrees shared across `apply_delta` updates.
-pub fn json_same(a : Json, b : Json) -> Bool {
-  if physical_equal(a, b) {
-    return true
-  }
+/// Structural equality on `Json` matching MoonBit `Json::op_equal` (including `NaN != NaN` and `Number` repr
+/// insensitivity), while short-circuiting via `physical_equal` at every container and string node to avoid deep
+/// re-walks over unchanged subtrees shared across `apply_delta` updates.
+fn json_same(a : Json, b : Json) -> Bool {
   match (a, b) {
-    (Null, Null) | (True, True) | (False, False) => true
     (Number(x, ..), Number(y, ..)) => x == y
+    (Null, Null) | (True, True) | (False, False) => true
     (String(x), String(y)) => physical_equal(x, y) || x == y
     (Array(x), Array(y)) => {
-      if physical_equal(x, y) {
+      if physical_equal(a, b) || physical_equal(x, y) {
         return true
       }
       if x.length() != y.length() {
@@ -31,7 +29,7 @@ pub fn json_same(a : Json, b : Json) -> Bool {
       true
     }
     (Object(x), Object(y)) => {
-      if physical_equal(x, y) {
+      if physical_equal(a, b) || physical_equal(x, y) {
         return true
       }
       if x.length() != y.length() {
@@ -96,6 +94,27 @@ fn CowArr::invalidate_index(self : CowArr) -> Unit {
 }
 
 ///|
+fn CowArr::index_append(self : CowArr, item : Json, at_idx : Int) -> Unit {
+  match (self.key_fields, self.key_index) {
+    (Some(fields), Some(m)) => {
+      let idx = if self.index_owned {
+        m
+      } else {
+        let c = m.copy()
+        self.key_index = Some(c)
+        self.index_owned = true
+        c
+      }
+      let pk = key_text(item, fields)
+      if !idx.contains(pk) {
+        idx[pk] = at_idx
+      }
+    }
+    _ => ()
+  }
+}
+
+///|
 fn cow_freeze(node : Cow) -> Json {
   match node {
     Shared(j) => j
@@ -152,8 +171,8 @@ pub fn apply_delta(value : Json, ops : Array[Json]) -> Json {
               i += drops
               continue
             }
-            let next_same_keyed = has_following_index_preserving(ops, i, o)
-            let (next, _) = cow_apply_op(root, o, path, 0, next_same_keyed)
+            let build_index = should_build_index(ops, i, o)
+            let (next, _) = cow_apply_op(root, o, path, 0, build_index)
             root = next
           }
           _ => ()
@@ -166,9 +185,13 @@ pub fn apply_delta(value : Json, ops : Array[Json]) -> Json {
 }
 
 ///|
-/// How many ops from `at` (`first`, its own) are keyed drops at the same path by the same key: 0 when it is none.
+/// How many ops from `at` (`first`, its own) are unambiguous keyed drops at the same path by the same key:
+/// ops also carrying `remove` or `set` are excluded because object descent rules treat them specially.
 fn drop_run(ops : Array[Json], at : Int, first : Map[String, Json]) -> Int {
-  guard first.get("drop") is Some(_) && first.get("key") is Some(Array(_)) else {
+  guard first.get("drop") is Some(_) &&
+    !first.contains("remove") &&
+    !first.contains("set") &&
+    first.get("key") is Some(Array(_)) else {
     return 0
   }
   let key = first.get("key")
@@ -177,6 +200,8 @@ fn drop_run(ops : Array[Json], at : Int, first : Map[String, Json]) -> Int {
   while at + n < ops.length() {
     guard ops[at + n] is Object(o) &&
       o.get("drop") is Some(_) &&
+      !o.contains("remove") &&
+      !o.contains("set") &&
       o.get("key") == key &&
       o.get("path") == path else {
       break
@@ -187,31 +212,37 @@ fn drop_run(ops : Array[Json], at : Int, first : Map[String, Json]) -> Int {
 }
 
 ///|
-/// Whether an index-preserving keyed op (`patch` or `put` without shift) at `at` is worth building a key index for:
-/// either another keyed op on the same list follows, or this is the final op so the index is cached for the next delta.
-fn has_following_index_preserving(ops : Array[Json], at : Int, cur : Map[String, Json]) -> Bool {
+/// Whether a keyed op at `at` should lazily build a key index when none is cached yet:
+/// - `patch` and in-place `put` (no `before`) always preserve positions, so building once serves both subsequent
+///   (even interleaved) ops on this list and the next delta via `keyed_ats`.
+/// - `put` with `before: null` only builds on the final op or when another op on the same list follows.
+/// - `drop`, `move`, and `put` with a non-null `before` shift indices and never build a throwaway index.
+fn should_build_index(ops : Array[Json], at : Int, cur : Map[String, Json]) -> Bool {
   guard cur.get("key") is Some(Array(_)) else { return false }
   guard cur.get("drop") is None && cur.get("move") is None else { return false }
-  if cur.get("patch") is None {
-    guard cur.get("put") is Some(_) else { return false }
-    if cur.contains("before") {
-      match cur.get("before") {
-        None | Some(Null) => ()
-        Some(_) => return false
-      }
-    }
-  }
-  if at + 1 >= ops.length() {
+  if cur.get("patch") is Some(_) {
     return true
   }
-  match ops[at + 1] {
-    Object(next) => next.get("key") == cur.get("key") && next.get("path") == cur.get("path")
-    _ => false
+  guard cur.get("put") is Some(_) else { return false }
+  if !cur.contains("before") {
+    return true
+  }
+  match cur.get("before") {
+    None | Some(Null) =>
+      if at + 1 >= ops.length() {
+        true
+      } else {
+        match ops[at + 1] {
+          Object(next) => next.get("key") == cur.get("key") && next.get("path") == cur.get("path")
+          _ => false
+        }
+      }
+    Some(_) => false
   }
 }
 
 ///|
-/// Apply a consecutive run of keyed `drop` ops at `path` in a single O(N + K) pass.
+/// Apply a consecutive run of unambiguous keyed `drop` ops at `path` in a single O(N + K) pass.
 fn cow_drop_run(
   node : Cow,
   path : Array[Json],
@@ -235,7 +266,7 @@ fn cow_drop_run(
     let counts : Map[String, Int] = Map([])
     for op in run {
       guard op is Object(o) && o.get("drop") is Some(k) else { continue }
-      let ks = k.stringify()
+      let ks = json_key_text(k)
       counts[ks] = counts.get(ks).unwrap_or(0) + 1
     }
     if counts.is_empty() {
@@ -367,13 +398,48 @@ fn cow_apply_op(
             Some(Array(f)) => f
             _ => return (node, false)
           }
-          let cached = if list.length() >= keyed_at_least {
-            keyed_at_lookup(list, fields)
+          // Look up or lazily build an authoritative key index on `list` before copying it:
+          // consecutive missed patches/drops/moves then resolve in O(1) without copying `list` or rebuilding the index.
+          let (idx_opt, from_cache) = if list.length() >= keyed_at_least {
+            match keyed_at_lookup(list, fields) {
+              Some(at) => (Some(at), true)
+              None =>
+                if build_index {
+                  let built = build_key_index(list, fields)
+                  keyed_at_keep(list, fields, Some(built))
+                  (Some(built), true)
+                } else {
+                  (None, false)
+                }
+            }
           } else {
-            None
+            (None, false)
           }
-          let ca = match cached {
-            Some(at) => cow_arr_new(list.copy(), key_fields=Some(fields), key_index=Some(at), index_owned=false)
+          // Pre-check missing targets for drop/patch/move to avoid allocating `list.copy()` on a no-op miss.
+          match (op.get("drop"), op.get("patch"), op.get("move")) {
+            (Some(k), _, _) =>
+              if keyed_find_in(list, fields, idx_opt, k) < 0 {
+                return (node, false)
+              }
+            (None, Some(k), _) =>
+              match op.get("ops") {
+                Some(Array(_)) =>
+                  if keyed_find_in(list, fields, idx_opt, k) < 0 {
+                    return (node, false)
+                  }
+                _ => return (node, false)
+              }
+            (None, None, Some(k)) =>
+              if keyed_find_in(list, fields, idx_opt, k) < 0 {
+                return (node, false)
+              }
+            (None, None, None) =>
+              if op.get("put") is None {
+                return (node, false)
+              }
+          }
+          let ca = match idx_opt {
+            Some(at) => cow_arr_new(list.copy(), key_fields=Some(fields), key_index=Some(at), index_owned=!from_cache)
             None => cow_arr_new(list.copy())
           }
           let changed = cow_apply_keyed(ca, op, fields, build_index)
@@ -410,9 +476,10 @@ fn cow_apply_op(
           }
           Arr(ca) => {
             for x in more {
+              let idx = ca.items.length()
               ca.items.push(x)
+              ca.index_append(x, idx)
             }
-            ca.invalidate_index()
             (node, true)
           }
           _ => (node, false)
@@ -562,8 +629,34 @@ fn cow_apply_op(
 }
 
 ///|
+/// Look up the first index in `list` whose wire key matches `k`, using authoritative `idx` in O(1) when present
+/// and falling back to zero-allocation `key_match` linear scan when `idx` is `None`.
+fn keyed_find_in(
+  list : Array[Json],
+  fields : Array[Json],
+  idx : Map[String, Int]?,
+  k : Json,
+) -> Int {
+  match idx {
+    Some(at) =>
+      match at.get(json_key_text(k)) {
+        Some(i) if i < list.length() => i
+        _ => -1
+      }
+    None => {
+      for i, item in list {
+        if key_match(item, fields, k) {
+          return i
+        }
+      }
+      -1
+    }
+  }
+}
+
+///|
 /// Apply one keyed op directly onto an owned `CowArr` (no array copy).
-/// Reuses an existing key index when valid, builds one only for index-preserving ops when worthwhile,
+/// Reuses an existing authoritative key index when valid, builds one lazily for index-preserving ops,
 /// and falls back to zero-allocation `key_match` linear scan on shifting ops (`drop`, `move`, `put` with `before`).
 fn cow_apply_keyed(
   ca : CowArr,
@@ -584,22 +677,7 @@ fn cow_apply_keyed(
       ca.index_owned = true
     }
   }
-  let find = fn(k : Json) -> Int {
-    match ca.key_index {
-      Some(at) =>
-        match at.get(k.stringify()) {
-          Some(i) if i < out.length() && key_match(out[i], fields, k) => return i
-          _ => ()
-        }
-      None => ()
-    }
-    for i, item in out {
-      if key_match(item, fields, k) {
-        return i
-      }
-    }
-    -1
-  }
+  let find = fn(k : Json) -> Int { keyed_find_in(out, fields, ca.key_index, k) }
   let place = fn(item : Json, before : Json?) {
     let at = match before {
       None | Some(Null) => -1
@@ -663,23 +741,7 @@ fn cow_apply_keyed(
         }
         place(put, op.get("before"))
         if i < 0 && out.length() > 0 && physical_equal(out[out.length() - 1], put) {
-          match ca.key_index {
-            Some(m) => {
-              let idx = if ca.index_owned {
-                m
-              } else {
-                let c = m.copy()
-                ca.key_index = Some(c)
-                ca.index_owned = true
-                c
-              }
-              let pk = key_text(put, fields)
-              if !idx.contains(pk) {
-                idx[pk] = out.length() - 1
-              }
-            }
-            None => ()
-          }
+          ca.index_append(put, out.length() - 1)
         } else {
           ca.invalidate_index()
         }
@@ -764,6 +826,90 @@ fn index_of(seg : Json) -> Int? {
 }
 
 ///|
+/// Canonical wire-key JSON text matching JS `JSON.stringify` (`client/core-ts/src/collections.ts:text`):
+/// - `Number` formats by its IEEE-754 `Double` value (normalizing `-0.0` to `0.0` and ignoring raw `repr`),
+/// - `Object` preserves insertion order,
+/// so `key_index`, `cow_drop_run`, `key_match`, and `same_key` all share one exact equivalence relation.
+fn json_key_text(j : Json) -> String {
+  match j {
+    Null => "null"
+    True => "true"
+    False => "false"
+    Number(d, ..) => {
+      if d != d {
+        return "NaN"
+      }
+      let norm = if d == 0.0 { 0.0 } else { d }
+      Json::number(norm).stringify()
+    }
+    String(_) => j.stringify()
+    Array(xs) => {
+      let buf = StringBuilder()
+      buf.write_char('[')
+      for i = 0; i < xs.length(); i = i + 1 {
+        if i > 0 {
+          buf.write_char(',')
+        }
+        buf.write_string(json_key_text(xs[i]))
+      }
+      buf.write_char(']')
+      buf.to_string()
+    }
+    Object(m) => {
+      let buf = StringBuilder()
+      buf.write_char('{')
+      let mut first = true
+      for k, v in m {
+        if !first {
+          buf.write_char(',')
+        }
+        first = false
+        buf.write_string(Json::string(k).stringify())
+        buf.write_char(':')
+        buf.write_string(json_key_text(v))
+      }
+      buf.write_char('}')
+      buf.to_string()
+    }
+  }
+}
+
+///|
+/// Wire-key equality matching `json_key_text(a) == json_key_text(b)` with zero allocation for primitive keys
+/// (`String`, `Number`, `Bool`, `Null`) and insertion-order sensitivity for `Object` keys.
+fn key_val_eq(a : Json, b : Json) -> Bool {
+  match (a, b) {
+    (Null, Null) | (True, True) | (False, False) => true
+    (Number(x, ..), Number(y, ..)) => x == y
+    (String(x), String(y)) => physical_equal(x, y) || x == y
+    (Array(x), Array(y)) => {
+      if physical_equal(x, y) {
+        return true
+      }
+      if x.length() != y.length() {
+        return false
+      }
+      for i = 0; i < x.length(); i = i + 1 {
+        if !key_val_eq(x[i], y[i]) {
+          return false
+        }
+      }
+      true
+    }
+    (Object(x), Object(y)) => {
+      if physical_equal(x, y) {
+        return true
+      }
+      if x.length() != y.length() {
+        return false
+      }
+      json_key_text(a) == json_key_text(b)
+    }
+    _ => false
+  }
+}
+
+///|
 /// An item's key: the one field's value, or the fields' values in order (a field missing is null).
 fn key_of(item : Json, fields : Array[Json]) -> Json {
   if fields.length() == 1 {
@@ -774,14 +920,14 @@ fn key_of(item : Json, fields : Array[Json]) -> Json {
 }
 
 ///|
-/// The JSON text of `key_of(item, fields)` without allocating an intermediate `Array[Json]` for composite keys.
+/// The canonical wire-key text of `key_of(item, fields)` without allocating an intermediate `Array[Json]` for composite keys.
 fn key_text(item : Json, fields : Array[Json]) -> String {
   let n = fields.length()
   if n == 1 {
-    return key_field(item, fields[0]).stringify()
+    return json_key_text(key_field(item, fields[0]))
   }
   if n == 2 {
-    return "[" + key_field(item, fields[0]).stringify() + "," + key_field(item, fields[1]).stringify() + "]"
+    return "[" + json_key_text(key_field(item, fields[0])) + "," + json_key_text(key_field(item, fields[1])) + "]"
   }
   let buf = StringBuilder()
   buf.write_char('[')
@@ -789,7 +935,7 @@ fn key_text(item : Json, fields : Array[Json]) -> String {
     if i > 0 {
       buf.write_char(',')
     }
-    buf.write_string(key_field(item, fields[i]).stringify())
+    buf.write_string(json_key_text(key_field(item, fields[i])))
   }
   buf.write_char(']')
   buf.to_string()
@@ -805,16 +951,14 @@ fn key_field(item : Json, f : Json) -> Json {
 }
 
 ///|
-/// Whether `item`'s key is `target` (key_of's, an op's `patch`, `drop`, `move` or `before`), nothing made to tell: a
-/// list's items are looked through for one, and an array made of each one's fields (a chat's messages' `seq` and
-/// `outgoing`) was an allocation an item, hundreds per message patch.
+/// Whether `item`'s key is `target` (wire-key equality matching `json_key_text`), with zero allocation for primitive keys.
 fn key_match(item : Json, fields : Array[Json], target : Json) -> Bool {
   if fields.length() == 1 {
-    return key_field(item, fields[0]) == target
+    return key_val_eq(key_field(item, fields[0]), target)
   }
   guard target is Array(t) && t.length() == fields.length() else { return false }
   for i, f in fields {
-    if key_field(item, f) != t[i] {
+    if !key_val_eq(key_field(item, f), t[i]) {
       return false
     }
   }
@@ -822,10 +966,10 @@ fn key_match(item : Json, fields : Array[Json], target : Json) -> Bool {
 }
 
 ///|
-/// Whether items `a` and `b` have the same key (key_of's), nothing made to tell.
+/// Whether items `a` and `b` have the same wire key (key_of's), including object key order.
 fn same_key(a : Json, b : Json, fields : Array[Json]) -> Bool {
   for f in fields {
-    if key_field(a, f) != key_field(b, f) {
+    if !key_val_eq(key_field(a, f), key_field(b, f)) {
       return false
     }
   }
@@ -844,7 +988,7 @@ fn apply_keyed(list : Array[Json], op : Map[String, Json]) -> Array[Json] {
   // preserves positions so the index is worth keeping, otherwise reuse a cached one or fall back to zero-alloc scan)
   let preserves = op.get("drop") is None &&
     op.get("move") is None &&
-    (op.get("patch") is Some(_) || !op.contains("before") || op.get("before") is Some(Null))
+    (op.get("patch") is Some(_) || !op.contains("before"))
   let (init_at, from_cache) = if list.length() >= keyed_at_least {
     match keyed_at_lookup(list, fields) {
       Some(m) => (Some(m), true)
@@ -854,32 +998,17 @@ fn apply_keyed(list : Array[Json], op : Map[String, Json]) -> Array[Json] {
     (None, false)
   }
   let mut at = init_at
-  let find = fn(k : Json) -> Int {
-    match at {
-      Some(at) =>
-        match at.get(k.stringify()) {
-          Some(i) if i < out.length() && key_match(out[i], fields, k) => return i
-          _ => ()
-        }
-      None => ()
-    }
-    for i, item in out {
-      if key_match(item, fields, k) {
-        return i
-      }
-    }
-    -1
-  }
+  let find = fn(k : Json) -> Int { keyed_find_in(out, fields, at, k) }
   // Before the item keyed `before`; at the end when that is null, absent or not there.
   let place = fn(item : Json, before : Json?) {
-    let at = match before {
+    let pos = match before {
       None | Some(Null) => -1
       Some(b) => find(b)
     }
-    if at < 0 {
+    if pos < 0 {
       out.push(item)
     } else {
-      out.insert(at, item)
+      out.insert(pos, item)
     }
   }
   match (op.get("drop"), op.get("patch"), op.get("move")) {
@@ -948,12 +1077,12 @@ fn apply_keyed(list : Array[Json], op : Map[String, Json]) -> Array[Json] {
 }
 
 ///|
-/// How long a keyed list is before where each of its keys is is kept for it (keyed_at_of): a shorter one is walked.
+/// How long a keyed list is before where each of its keys is is kept for it (keyed_at_lookup): a shorter one is walked.
 let keyed_at_least : Int = 32
 
 ///|
-/// Where each key of a keyed list is (by its key's JSON text, the first where it is there twice), of the list it was
-/// worked out of: the lists apply_keyed made last, each looked for by itself.
+/// Where each key of a keyed list is (by its canonical wire-key text, the first where it is there twice), of the list
+/// it was worked out of: the lists apply_keyed made last, each looked for by itself.
 priv struct KeyedAt {
   list : Array[Json]
   fields : Array[Json]
@@ -980,7 +1109,7 @@ fn keyed_at_lookup(list : Array[Json], fields : Array[Json]) -> Map[String, Int]
 }
 
 ///|
-/// Build a fresh key-to-first-index map for `list`.
+/// Build a fresh canonical-wire-key-to-first-index map for `list`.
 fn build_key_index(list : Array[Json], fields : Array[Json]) -> Map[String, Int] {
   let at : Map[String, Int] = Map([])
   for i, item in list {
