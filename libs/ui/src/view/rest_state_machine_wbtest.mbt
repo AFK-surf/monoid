@@ -250,12 +250,57 @@ test "rest state machine: strict sleep (LIFO per node, child -> parent) and wake
   assert_eq(log, ["c:hook2:rest", "c:hook1:rest", "p:hook2:rest", "p:hook1:rest"])
 
   log.clear()
+  let when_active_leaves = Ref(0)
+  p.when_active(fn() { fn() { when_active_leaves.val += 1 } }) |> ignore
   t.event(80.0, fn() {
     p.let_go()
     (wake2.val)()
   })
   t.frame(300.0, 200.0, now=80.0) |> ignore
-  assert_eq(log, [], msg="evicting already-parked node must not double-call on_rest or allow stale wake")
+  // `View::on_rest` runs once on disposal (cleaning up any untracked computed re-dirtied while parked);
+  // stale `wake2()` after `let_go()` must be a no-op, and `when_active` registered while parked never double-leaves.
+  assert_eq(log, ["c:hook2:rest", "c:hook1:rest", "p:hook2:rest", "p:hook1:rest"])
+  assert_eq(when_active_leaves.val, 0, msg="when_active registered while parked never leaves on disposal")
+}
+
+///|
+test "rest state machine: parked node with untracked computed re-read while parked still disposes it on let_go while when_active stays 1:1" {
+  let keys = @signals.signal(["p"], same=fn(a, b) { a == b })
+  let kept = @signals.signal(["p"], same=fn(a, b) { a == b })
+  let src = @signals.signal(1, same=fn(a, b) { a == b })
+  let unheld = Ref(0)
+  src.on_unwatched(fn() { unheld.val += 1 })
+  let read = @signals.computed(fn(_) { src.get() }, same=fn(a, b) { a == b })
+  let leaves = Ref(0)
+  let t = Tree::new(fn(root) {
+    root.each(
+      at_once=true,
+      fn() { keys.get() },
+      fn(k) { k },
+      keeps=fn() { kept.get() },
+      keeps_holds=fn(_) { false },
+      fn(p, _) {
+        p.on_rest(fn() { if !read.watched() { read.dispose() } }) |> ignore
+        p.when_active(fn() { fn() { leaves.val += 1 } }) |> ignore
+        p.height(Is(Some(20.0))).words(By(fn() { "v=\{read.get()}" })) |> ignore
+      },
+    )
+  })
+  t.frame(300.0, 200.0, now=0.0) |> ignore
+  assert_true(src.watched())
+  // Park `p` into deep sleep: bindings rest, `on_rest` disposes `read`, `when_active` leaves once.
+  t.event(16.0, fn() { keys.set([]) })
+  t.frame(300.0, 200.0, now=16.0) |> ignore
+  assert_false(src.watched(), msg="park releases computed subscription (read.watched=\{read.watched()}, leaves=\{leaves.val})")
+  assert_eq(leaves.val, 1)
+  // Simulate `chat_read_left` reading `read.get()` untracked while `p` is parked, re-attaching `read` to `src`.
+  @signals.untracked(fn() { read.get() }) |> ignore
+  assert_true(src.watched(), msg="untracked read while parked re-attaches computed")
+  // Evicting/disposing `p` must still run `on_rest` to dispose `read`, while `when_active` must NOT double-leave!
+  t.event(32.0, fn() { kept.set([]) })
+  t.frame(300.0, 200.0, now=32.0) |> ignore
+  assert_false(src.watched(), msg="let_go runs on_rest cleanup to release re-attached computed")
+  assert_eq(leaves.val, 1, msg="when_active strictly enforces 1:1 leave without double-leave on let_go")
 }
 
 ///|
@@ -333,11 +378,10 @@ test "park-aware timers: at_moment(while_active=true) & while_active_every clear
       holder.val = Some(h)
       h.box(fn(p) {
         page.val = Some(p)
-        p.at_moment(
+        p.at_moment_active(
           100.0,
           fn() { ticks.push(p.cause_at()) },
           later=true,
-          while_active=true,
         )
         |> ignore
         p.while_active_every(100.0, fn() { every_ticks.push(p.cause_at()) }, later=true, run_on_wake=true) |> ignore
@@ -430,7 +474,7 @@ test "View::pick(keeps=true, keeps_max=4, pin, keep_if, on_take): exact non-pin 
   let nodes : Map[String, View] = Map([])
   let events : Array[String] = []
   let t = Tree::new(fn(root) {
-    root.pick(
+    root.pick_kept(
       at_once=true,
       fn() { key.get() },
       fn(v, k) {
@@ -505,14 +549,13 @@ test "chained at_moment(while_active=true) 20 times does not leak View::owns ent
         if n <= 0 {
           return
         }
-        p.at_moment(
+        p.at_moment_active(
           p.cause_at() + 10.0,
           fn() {
             fired.val += 1
             chain(n - 1)
           },
           later=true,
-          while_active=true,
         )
         |> ignore
       }

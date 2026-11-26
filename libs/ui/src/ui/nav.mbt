@@ -288,13 +288,7 @@ pub fn[P] Nav::new(
   from_left? : (P, P?) -> Bool = fn(_, _) { false },
   on_entry_park? : (Int, P) -> Unit = fn(_, _) {  },
   on_entry_gone? : (Int, P) -> Unit = fn(_, _) {  },
-  kept_left_most? : (String) -> Int,
-  kept_left_total? : Int = nav_kept_left_most,
 ) -> Nav[P] {
-  let said = @signals.signal(0)
-  if kept_left_most is Some(_) || kept_left_total != nav_kept_left_most {
-    nav_limits_set(said, kept_left_most, kept_left_total)
-  }
   {
     pages: [nav_page(root, None)],
     mode: 0,
@@ -302,7 +296,7 @@ pub fn[P] Nav::new(
     gone: [],
     p: 0.0,
     finger: @signals.signal(0.0),
-    said,
+    said: @signals.signal(0),
     p0: 0.0,
     p1: 0.0,
     t0: -1.0,

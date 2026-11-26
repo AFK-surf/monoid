@@ -1771,7 +1771,9 @@ pub fn View::ask_focus(Self, visible? : Bool) -> Bool
 #callsite(autofill(loc))
 pub fn View::aspect(Self, Live[Double], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
-pub fn View::at_moment(Self, Double, () -> Unit, later? : Bool, while_active? : Bool, while_covered? : Bool, loc~ : SourceLoc) -> () -> Unit
+pub fn View::at_moment(Self, Double, () -> Unit, later? : Bool, loc~ : SourceLoc) -> () -> Unit
+#callsite(autofill(loc))
+pub fn View::at_moment_active(Self, Double, () -> Unit, later? : Bool, while_covered? : Bool, loc~ : SourceLoc) -> () -> Unit
 pub fn View::bar_near(Self, Double, across? : Bool) -> Bool
 #callsite(autofill(loc))
 pub fn View::basis(Self, Live[Double?], loc~ : SourceLoc) -> Self
@@ -2065,7 +2067,9 @@ pub fn View::pad(Self, Live[Double], loc~ : SourceLoc) -> Self
 pub fn View::padding(Self, Live[(Double, Double, Double, Double)], loc~ : SourceLoc) -> Self
 pub fn View::parent(Self) -> Self?
 #callsite(autofill(loc))
-pub fn[K : Eq] View::pick(Self, () -> K, (Self, K) -> Unit, at_once? : Bool, along_row? : Bool, leave? : Double, leave_of? : (K, K) -> Double, keeps? : Bool, keeps_max? : Int32, keep_if? : (K) -> Bool, pin? : (K) -> Bool, on_take? : (Self, K) -> Unit, loc~ : SourceLoc) -> Unit
+pub fn[K : Eq] View::pick(Self, () -> K, (Self, K) -> Unit, at_once? : Bool, along_row? : Bool, leave? : Double, leave_of? : (K, K) -> Double, keeps? : Bool, keeps_max? : Int32, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn[K : Eq] View::pick_kept(Self, () -> K, (Self, K) -> Unit, at_once? : Bool, along_row? : Bool, leave? : Double, leave_of? : (K, K) -> Double, keeps? : Bool, keeps_max? : Int32, keep_if? : (K) -> Bool, pin? : (K) -> Bool, on_take? : (Self, K) -> Unit, loc~ : SourceLoc) -> Unit
 #callsite(autofill(loc))
 pub fn View::picture(Self, Live[@pixels.Vector?], loc~ : SourceLoc) -> Self
 pub fn View::pixel_scale(Self) -> Double
@@ -2162,7 +2166,9 @@ pub fn View::sticky(Self, Live[Double?], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::stretches(Self, Live[Double], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
-pub fn[K : Eq] View::switch_by(Self, () -> K, (Self, K) -> Unit, leave? : Double, keeps? : Bool, keeps_max? : Int32, keep_if? : (K) -> Bool, pin? : (K) -> Bool, on_take? : (Self, K) -> Unit, loc~ : SourceLoc) -> Unit
+pub fn[K : Eq] View::switch_by(Self, () -> K, (Self, K) -> Unit, leave? : Double, keeps? : Bool, keeps_max? : Int32, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn[K : Eq] View::switch_kept(Self, () -> K, (Self, K) -> Unit, leave? : Double, keeps? : Bool, keeps_max? : Int32, keep_if? : (K) -> Bool, pin? : (K) -> Bool, on_take? : (Self, K) -> Unit, loc~ : SourceLoc) -> Unit
 pub fn View::tab_stop(Self, Live[Bool]) -> Self
 pub fn View::takes(Self, (Double, Double, Double) -> Array[(Double, Double, Double, Double)]) -> Self
 pub fn View::takes_back(Self, () -> Unit) -> Self

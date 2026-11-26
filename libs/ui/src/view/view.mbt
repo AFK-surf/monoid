@@ -9953,8 +9953,8 @@ pub fn View::owns(self : View, f : () -> Unit) -> View {
 }
 
 ///|
-/// Per-`Tree` rest/wake state kept beside `Tree` (keyed by `Tree` identity, 1-2 live trees per process, cleared on
-/// `Tree::let_go`) so `Tree`'s C struct layout in `decls.h` stays unchanged across `MBC_STORE` cached units.
+/// Per-`Tree` rest/wake state kept beside `Tree` (keyed by `Tree` identity, cleared on `Tree::dispose`) so `Tree`'s C
+/// struct layout in `decls.h` stays unchanged across `MBC_STORE` cached units.
 priv struct RestBook {
   hooks : Map[Int, (Int, Array[NodeRestHook])]
   mut hook_next : Int
@@ -9964,16 +9964,26 @@ priv struct RestBook {
   signal_wakes : Map[Int, (Int, Array[() -> Unit])]
   nested_pools : Map[Int, Array[(Int, Int, () -> () -> Unit)]]
   mut nested_pool_next : Int
+  timeline_owners : Array[(Ref[Bool], NodeId)]
 }
 
 ///|
-// kept across runs: per-Tree side table (1-2 live trees per process), entry removed on `Tree::let_go`
+// kept across runs: per-Tree side table + 1-slot MRU cache, cleared on `Tree::dispose`
 let tree_rest_books : Array[(Tree, RestBook)] = []
 
 ///|
+// kept across runs: 1-slot MRU cache for `Tree::rest_book` / `rest_book_opt`, cleared on `Tree::dispose`
+let last_rest_book : Ref[(Tree, RestBook)?] = Ref(None)
+
+///|
 fn Tree::rest_book_opt(self : Tree) -> RestBook? {
+  match last_rest_book.val {
+    Some((t, book)) if physical_equal(t, self) => return Some(book)
+    _ => ()
+  }
   for entry in tree_rest_books {
     if physical_equal(entry.0, self) {
+      last_rest_book.val = Some(entry)
       return Some(entry.1)
     }
   }
@@ -9982,8 +9992,13 @@ fn Tree::rest_book_opt(self : Tree) -> RestBook? {
 
 ///|
 fn Tree::rest_book(self : Tree) -> RestBook {
+  match last_rest_book.val {
+    Some((t, book)) if physical_equal(t, self) => return book
+    _ => ()
+  }
   for entry in tree_rest_books {
     if physical_equal(entry.0, self) {
+      last_rest_book.val = Some(entry)
       return entry.1
     }
   }
@@ -9996,13 +10011,20 @@ fn Tree::rest_book(self : Tree) -> RestBook {
     signal_wakes: {},
     nested_pools: {},
     nested_pool_next: 0,
+    timeline_owners: [],
   }
-  tree_rest_books.push((self, book))
+  let pair = (self, book)
+  tree_rest_books.push(pair)
+  last_rest_book.val = Some(pair)
   book
 }
 
 ///|
 fn Tree::rest_book_clear(self : Tree) -> Unit {
+  match last_rest_book.val {
+    Some((t, _)) if physical_equal(t, self) => last_rest_book.val = None
+    _ => ()
+  }
   match tree_rest_books.search_by(fn(e) { physical_equal(e.0, self) }) {
     Some(i) => {
       let (_, book) = tree_rest_books.remove(i)
@@ -10010,6 +10032,7 @@ fn Tree::rest_book_clear(self : Tree) -> Unit {
       book.roots.clear()
       book.signal_wakes.clear()
       book.nested_pools.clear()
+      book.timeline_owners.clear()
       if tree_rest_books.is_empty() {
         tree_rest_books.shrink_to_fit()
       }
@@ -10139,10 +10162,8 @@ fn View::on_rest_hook(
             let h = list[i]
             if !h.disposed {
               h.disposed = true
-              if h.active {
-                h.active = false
-                (h.rest)()
-              }
+              h.active = false
+              (h.rest)()
             }
             i = i - 1
           }
@@ -10212,10 +10233,12 @@ fn View::register_nested_pool(self : View, on_outer_deep : () -> () -> Unit) -> 
 }
 
 ///|
-/// `f` run once as this node enters rest (`View::park`, `View::rests`, `EachKept`: after bindings in the subtree rest,
-/// in post-order children-before-parent and LIFO on the same node) or once as it is let go if still active (`View::owns`:
-/// never called a second time when an already-resting node is evicted). `wake` runs in pre-order (ancestors before
-/// descendants, FIFO on the same node) when the last blocking sleep reason clears.
+/// `f` run as this node enters rest (`View::park`, `View::rests`, `EachKept`: after bindings in the subtree rest,
+/// in post-order children-before-parent and LIFO on the same node) and once as it is let go (`View::owns`: so
+/// idempotent cleanup hooks that may be re-dirtied by untracked reads while parked still clean up on disposal).
+/// `wake` runs in pre-order (ancestors before descendants, FIFO on the same node) when the last blocking sleep reason clears.
+/// Registering on an already-sleeping node does not retroactively invoke `f`; a subsequent wake still invokes `wake`.
+/// For strict 1:1 paired acquire/release resources (never double-leaving on disposal of an already-resting node), use `View::when_active`.
 /// `while_covered` defaults to `false`: only deep sleep rests the hook; pass `true` to also rest while covered in a stack.
 pub fn View::on_rest(
   self : View,
@@ -11099,12 +11122,12 @@ fn View::rests(self : View) -> () -> Unit {
 
 ///|
 /// Begin a sleep scope (`covered` when `drop_holds=false`, `deep` when `drop_holds=true`) on subtree `at`.
-/// Order:
-/// 1. Pre-order freeze of bindings via `@signals.rest(o, drop_holds~)` (preserving earlier wake closures across
-///    `covered -> deep` upgrades) while collecting any nested parking pools in the same walk.
-/// 2. For `deep` sleep, propagate outer `deep` into nested parking pools (`EachKept`) BEFORE outer hooks rest so
-///    inner parked descendants rest strictly before outer ancestors (children -> parent).
-/// 3. Post-order invocation of `rest_hooks` (children before parent, LIFO on the same node).
+/// Single-pass DFS order:
+/// 1. Pre-order freeze of `at`'s reactive bindings via `@signals.rest(o, drop_holds~)` (preserving earlier wake
+///    closures across `covered -> deep` upgrades).
+/// 2. For `deep` sleep, propagate outer `deep` into any nested parking pools (`EachKept`) registered on `at`.
+/// 3. Recurse into `at`'s children (each child freezes its bindings, propagates its nested pools, and rests its hooks).
+/// 4. Post-order invocation of `at`'s `rest_hooks` in LIFO order (descendants before ancestors, nested pools before outer).
 /// Returns a one-shot release closure that reverses this sleep reason and wakes the subtree in pre-order (ancestors
 /// before descendants, FIFO on the same node) once the last blocking reason clears.
 fn Tree::rest_begin(self : Tree, at : Int, drop_holds? : Bool = true) -> () -> Unit {
@@ -11136,21 +11159,9 @@ fn Tree::rest_begin(self : Tree, at : Int, drop_holds? : Bool = true) -> () -> U
   }
   book.epoch = book.epoch + 1
   let my_gen = scope.sleep_gen
-  // Phase 1: pre-order freeze of reactive bindings + collect nested pool propagators in one walk.
-  let pool_cbs : Array[() -> () -> Unit] = []
-  self.rest_signals_preorder(book, at, drop_holds, pool_cbs)
-  // Phase 2: propagate outer deep sleep into nested parking pools BEFORE outer hooks rest (children -> parent).
   let nested_releases : Array[() -> Unit] = []
-  if drop_holds {
-    for cb in pool_cbs {
-      nested_releases.push(cb())
-    }
-  }
-  // Phase 3: post-order rest of node hooks (descendants before ancestors, LIFO per node).
-  if at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen {
-    let (has_covered, has_deep) = self.effective_sleep(at)
-    self.rest_hooks_postorder(book, at, has_covered, has_deep)
-  }
+  let (parent_covered, parent_deep) = self.effective_sleep(n.parent)
+  self.rest_subtree_dfs(book, at, drop_holds, parent_covered, parent_deep, nested_releases)
   let done = Ref(false)
   fn() {
     if done.val {
@@ -11162,48 +11173,15 @@ fn Tree::rest_begin(self : Tree, at : Int, drop_holds? : Bool = true) -> () -> U
 }
 
 ///|
-fn Tree::rest_signals_preorder(
+fn Tree::rest_subtree_dfs(
   self : Tree,
   book : RestBook,
   at : Int,
   drop_holds : Bool,
-  pool_cbs : Array[() -> () -> Unit],
+  parent_covered : Bool,
+  parent_deep : Bool,
+  nested_releases : Array[() -> Unit],
 ) -> Unit {
-  guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return }
-  let n = self.nodes[at]
-  match n.owner {
-    Some(o) => {
-      let w = @signals.rest(o, drop_holds~)
-      match book.signal_wakes.get(at) {
-        Some((g, ws)) if g == n.gen => ws.push(w)
-        _ => book.signal_wakes[at] = (n.gen, [w])
-      }
-    }
-    None => ()
-  }
-  if drop_holds && book.nested_pools.length() > 0 {
-    match book.nested_pools.get(at) {
-      Some(list) if list.length() > 0 && list[0].1 == n.gen =>
-        for entry in list {
-          if entry.1 == n.gen {
-            pool_cbs.push(entry.2)
-          }
-        }
-      _ => ()
-    }
-  }
-  let mut i = 0
-  while i < n.kids.length() {
-    let k = n.kids[i]
-    if k >= 0 && k < self.nodes.length() && self.nodes[k].live && self.nodes[k].parent == at {
-      self.rest_signals_preorder(book, k, drop_holds, pool_cbs)
-    }
-    i = i + 1
-  }
-}
-
-///|
-fn Tree::rest_hooks_postorder(self : Tree, book : RestBook, at : Int, parent_covered : Bool, parent_deep : Bool) -> Unit {
   guard at >= 0 && at < self.nodes.length() && self.nodes[at].live else { return }
   let n = self.nodes[at]
   let node_gen = n.gen
@@ -11220,22 +11198,66 @@ fn Tree::rest_hooks_postorder(self : Tree, book : RestBook, at : Int, parent_cov
     }
     _ => ()
   }
+  // 1. Pre-order freeze of reactive bindings on `at`.
+  match n.owner {
+    Some(o) => {
+      let w = @signals.rest(o, drop_holds~)
+      match book.signal_wakes.get(at) {
+        Some((g, ws)) if g == node_gen => ws.push(w)
+        _ => book.signal_wakes[at] = (node_gen, [w])
+      }
+    }
+    None => ()
+  }
+  let mut epoch = book.epoch
+  // 2. For `deep` sleep, propagate into nested parking pools registered on `at` before `at`'s own hooks rest.
+  if drop_holds && book.nested_pools.length() > 0 {
+    match book.nested_pools.get(at) {
+      Some(list) if list.length() > 0 && list[0].1 == node_gen => {
+        let mut pi = 0
+        while pi < list.length() {
+          let entry = list[pi]
+          if entry.1 == node_gen {
+            nested_releases.push((entry.2)())
+            guard at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen else { return }
+            if book.epoch != epoch {
+              let (c, d) = self.effective_sleep(at)
+              has_covered = c
+              has_deep = d
+              epoch = book.epoch
+            }
+          }
+          if pi < list.length() && list[pi].0 == entry.0 {
+            pi = pi + 1
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  // 3. Recurse into children (index loop, zero `kids.copy()`).
   let mut i = 0
   while i < self.nodes[at].kids.length() {
     let k = self.nodes[at].kids[i]
     if k >= 0 && k < self.nodes.length() && self.nodes[k].live && self.nodes[k].parent == at {
-      self.rest_hooks_postorder(book, k, has_covered, has_deep)
+      self.rest_subtree_dfs(book, k, drop_holds, has_covered, has_deep, nested_releases)
       guard at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen else { return }
+      if book.epoch != epoch {
+        let (c, d) = self.effective_sleep(at)
+        has_covered = c
+        has_deep = d
+        epoch = book.epoch
+      }
     }
     if i < self.nodes[at].kids.length() && self.nodes[at].kids[i] == k {
       i = i + 1
     }
   }
   guard at < self.nodes.length() && self.nodes[at].live && self.nodes[at].gen == node_gen else { return }
+  // 4. Post-order rest of `rest_hooks` on `at` in LIFO order.
   match book.hooks.get(at) {
     Some((g, list)) if g == node_gen && list.length() > 0 => {
       let mut idx = list.length() - 1
-      let mut epoch = book.epoch
       while idx >= 0 {
         if idx < list.length() {
           let h = list[idx]
@@ -11547,6 +11569,27 @@ pub fn[K : Eq] View::pick(
   leave_of? : (K, K) -> Double,
   keeps? : Bool = false,
   keeps_max? : Int = 0,
+  loc~ : SourceLoc,
+) -> Unit {
+  guard self.alive() else { return }
+  let (which, leave_of, keep_if, pin, on_take) = Picked::of(which, make, leave_of, None, None, None)
+  self.pick_by(which, at_once, along_row, leave, leave_of, keeps, keeps_max, keep_if, pin, on_take, loc)
+}
+
+///|
+/// Extended `View::pick` with parking policies (`keep_if`, `pin`, `on_take`, `keeps_max` counting total non-`pin`
+/// kept branches including the incoming active one, and deferred `retire_parked` eviction during events/ways).
+#callsite(autofill(loc))
+pub fn[K : Eq] View::pick_kept(
+  self : View,
+  which : () -> K,
+  make : (View, K) -> Unit,
+  at_once? : Bool = false,
+  along_row? : Bool = false,
+  leave? : Double = 0.0,
+  leave_of? : (K, K) -> Double,
+  keeps? : Bool = true,
+  keeps_max? : Int = 0,
   keep_if? : (K) -> Bool,
   pin? : (K) -> Bool,
   on_take? : (View, K) -> Unit,
@@ -11847,12 +11890,27 @@ pub fn[K : Eq] View::switch_by(
   leave? : Double = 0.0,
   keeps? : Bool = false,
   keeps_max? : Int = 0,
+  loc~ : SourceLoc,
+) -> Unit {
+  self.pick(which, make, at_once=true, leave~, keeps~, keeps_max~, loc~)
+}
+
+///|
+/// Extended `View::switch_by` with parking policies (`keep_if`, `pin`, `on_take`, `keeps_max`).
+#callsite(autofill(loc))
+pub fn[K : Eq] View::switch_kept(
+  self : View,
+  which : () -> K,
+  make : (View, K) -> Unit,
+  leave? : Double = 0.0,
+  keeps? : Bool = true,
+  keeps_max? : Int = 0,
   keep_if? : (K) -> Bool,
   pin? : (K) -> Bool,
   on_take? : (View, K) -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
-  self.pick(which, make, at_once=true, leave~, keeps~, keeps_max~, keep_if?, pin?, on_take?, loc~)
+  self.pick_kept(which, make, at_once=true, leave~, keeps~, keeps_max~, keep_if?, pin?, on_take?, loc~)
 }
 
 ///|
@@ -13481,6 +13539,26 @@ pub fn Tree::parked_retired_count(self : Tree) -> Int {
 }
 
 ///|
+fn Tree::timeline_owner_set(self : Tree, live : Ref[Bool], owner : NodeId) -> Unit {
+  let book = self.rest_book()
+  if book.timeline_owners.length() >= 32 {
+    book.timeline_owners.retain(fn(e) { e.0.val })
+  }
+  book.timeline_owners.push((live, owner))
+}
+
+///|
+fn Tree::timeline_owner_of(self : Tree, live : Ref[Bool]) -> NodeId? {
+  guard self.rest_book_opt() is Some(book) else { return None }
+  for e in book.timeline_owners {
+    if physical_equal(e.0, live) {
+      return Some(e.1)
+    }
+  }
+  None
+}
+
+///|
 /// How many live timeline entries (including `later=true`) are owned by `root` or any descendant of `root`.
 /// Works both while `root` is mounted and while `root` is parked (`parent == -1`).
 pub fn Tree::subtree_timeline_count(self : Tree, root : View) -> Int {
@@ -13493,9 +13571,9 @@ pub fn Tree::subtree_timeline_count(self : Tree, root : View) -> Int {
     }
     let owner : NodeId? = match d {
       Leaves(id, _) => Some(id)
-      Once(o, _) => o.owner
-      Holds(h, _) => h.owner
-      Steps(s, _) => s.owner
+      Once(o, _) => self.timeline_owner_of(o.live)
+      Holds(h, _) => self.timeline_owner_of(h.live)
+      Steps(s, _) => self.timeline_owner_of(s.live)
     }
     match owner {
       Some(oid) if self.holds(rid, oid) => count = count + 1
@@ -13517,9 +13595,9 @@ pub fn Tree::subtree_timeline_bys(self : Tree, root : View) -> Array[String] {
     }
     let (owner, by) : (NodeId?, String) = match d {
       Leaves(id, _) => (Some(id), "")
-      Once(o, _) => (o.owner, o.by)
-      Holds(h, _) => (h.owner, "")
-      Steps(s, _) => (s.owner, "")
+      Once(o, _) => (self.timeline_owner_of(o.live), o.by)
+      Holds(h, _) => (self.timeline_owner_of(h.live), "")
+      Steps(s, _) => (self.timeline_owner_of(s.live), "")
     }
     match owner {
       Some(oid) if self.holds(rid, oid) => out.push(by)
@@ -14069,8 +14147,6 @@ priv struct Hold {
   live : Ref[Bool]
   /// not waited for (View::holds_for's `later`)
   later : Bool
-  /// owning node id for subtree timeline queries
-  owner : NodeId?
 }
 
 ///|
@@ -14083,8 +14159,6 @@ priv struct Once {
   later : Bool
   /// where it was said (View::at_moment's caller): which timer it is (Tree::wake_waited_by)
   by : String
-  /// owning node id for subtree timeline queries
-  owner : NodeId?
 }
 
 ///|
@@ -14099,8 +14173,6 @@ priv struct Stepper {
   mut k : Int
   step : (Int, Double) -> Unit
   live : Ref[Bool]
-  /// owning node id for subtree timeline queries
-  owner : NodeId?
 }
 
 ///|
@@ -14455,7 +14527,8 @@ pub fn View::steps(self : View, per_second : Int, count : Int, step : (Int, Doub
       tree.unschedule(live)
     }
   }
-  tree.timeline.push(Steps({ first: tick_after(tree.cause_now(), per_second), per_second, count, k: 0, step: last, live, owner: Some(self.id()) }, tree.told))
+  tree.timeline_owner_set(live, self.id())
+  tree.timeline.push(Steps({ first: tick_after(tree.cause_now(), per_second), per_second, count, k: 0, step: last, live }, tree.told))
   tree.told = tree.told + 1
   tree.marked()
   stop
@@ -17889,41 +17962,55 @@ pub fn View::at_moment(
   when : Double,
   f : () -> Unit,
   later? : Bool = false,
-  while_active? : Bool = false,
+  loc~ : SourceLoc,
+) -> () -> Unit {
+  guard self.live() is Some(_) else { return fn() {  } }
+  let live = Ref(true)
+  let tree = self.tree
+  // (kept by the node till done, called off, or the node goes: once, whichever comes first)
+  let unkeep : Ref[() -> Unit] = Ref(fn() {  })
+  let stop = fn() {
+    if live.val {
+      live.val = false
+      (unkeep.val)()
+      tree.unschedule(live)
+    }
+  }
+  unkeep.val = self.owns_while(stop)
+  let done = fn() {
+    live.val = false
+    (unkeep.val)()
+    f()
+  }
+  // (a moment gone by as it is asked (a way's end that never set out: 0) is done at the moment it is asked, its cause's
+  // that one, never at the one gone by: what is committed with it is not told as of before what asked it; one between
+  // two frames, at its own (the coordinator of the migration, 2026-11-12))
+  let at = dmax(when, tree.cause_now())
+  tree.timeline_owner_set(live, self.id())
+  tree.timeline.push(Once({ at, f: done, live, later, by: loc.to_string() }, tree.told))
+  tree.told = tree.told + 1
+  tree.marked()
+  stop
+}
+
+///|
+/// Park-aware `View::at_moment`: resting removes this entry from `Tree::timeline` immediately and invalidates any queued
+/// tick; waking reschedules at `max(when, now)` at most once (never bursting catch-up ticks).
+/// `while_covered` defaults to `true` (unlike `View::when_active`'s `false`) because timers should stop waking the host
+/// while a page is covered in a navigation stack, whereas data subscriptions stay warm while covered.
+#callsite(autofill(loc))
+pub fn View::at_moment_active(
+  self : View,
+  when : Double,
+  f : () -> Unit,
+  later? : Bool = false,
   while_covered? : Bool = true,
   loc~ : SourceLoc,
 ) -> () -> Unit {
   guard self.live() is Some(_) else { return fn() {  } }
   let tree = self.tree
   let by = loc.to_string()
-  let owner = Some(self.id())
-  if !while_active {
-    let live = Ref(true)
-    // (kept by the node till done, called off, or the node goes: once, whichever comes first)
-    let unkeep : Ref[() -> Unit] = Ref(fn() {  })
-    let stop = fn() {
-      if live.val {
-        live.val = false
-        (unkeep.val)()
-        tree.unschedule(live)
-      }
-    }
-    unkeep.val = self.owns_while(stop)
-    let done = fn() {
-      live.val = false
-      (unkeep.val)()
-      f()
-    }
-    // (a moment gone by as it is asked (a way's end that never set out: 0) is done at the moment it is asked, its cause's
-    // that one, never at the one gone by: what is committed with it is not told as of before what asked it; one between
-    // two frames, at its own (the coordinator of the migration, 2026-11-12))
-    let at = dmax(when, tree.cause_now())
-    tree.timeline.push(Once({ at, f: done, live, later, by, owner }, tree.told))
-    tree.told = tree.told + 1
-    tree.marked()
-    return stop
-  }
-  // Park-aware scheduling (`while_active=true`)
+  let owner = self.id()
   let finished = Ref(false)
   let cur_live : Ref[(Ref[Bool], Ref[Bool])?] = Ref(None)
   let unkeep : Ref[() -> Unit] = Ref(fn() {  })
@@ -17978,7 +18065,8 @@ pub fn View::at_moment(
       f()
     }
     let at = dmax(when, tree.cause_now())
-    tree.timeline.push(Once({ at, f: done, live, later, by, owner }, tree.told))
+    tree.timeline_owner_set(live, owner)
+    tree.timeline.push(Once({ at, f: done, live, later, by }, tree.told))
     tree.told = tree.told + 1
     tree.marked()
   }
@@ -18021,7 +18109,7 @@ pub fn View::while_active_every(
           return
         }
         next_due.val = target
-        cancel.val = self.at_moment(
+        cancel.val = self.at_moment_active(
           target,
           fn() {
             if !active.val || !self.alive() {
@@ -18034,7 +18122,6 @@ pub fn View::while_active_every(
             }
           },
           later~,
-          while_active=true,
           while_covered=true,
           loc~,
         )
@@ -18069,9 +18156,10 @@ pub fn View::while_active_every(
 /// time what is shown does not wait for, as View::at_moment's). Let go with the node: its end taken off the timeline,
 /// told no more.
 pub fn View::holds_for(self : View, ms : Double, later? : Bool = false) -> (() -> Unit, () -> Bool) {
-  let h : Hold = { ms, on: @signals.signal(false, same=fn(a, b) { a == b }), until: -1.0, live: Ref(true), later, owner: Some(self.id()) }
+  let h : Hold = { ms, on: @signals.signal(false, same=fn(a, b) { a == b }), until: -1.0, live: Ref(true), later }
   let tree = self.tree
   guard self.live() is Some(_) else { return (fn() {  }, fn() { h.on.get() }) }
+  tree.timeline_owner_set(h.live, self.id())
   let unkeep = self.owns_while(fn() {
     if h.live.val {
       h.live.val = false
@@ -18702,7 +18790,6 @@ pub fn Tree::hand_at_end(self : Tree, at : Double) -> Unit {
         live,
         later: true,
         by: "",
-        owner: None,
       },
       self.told,
     ),

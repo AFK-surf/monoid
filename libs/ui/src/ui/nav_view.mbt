@@ -210,27 +210,12 @@ pub fn[P] nav_view(
   made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int, Int) -> Unit)? = fn(_) { None },
   keeps_made? : Bool = false,
   keeps_left? : (P) -> (String, String)?,
-  kept_left_most? : (String) -> Int,
-  kept_left_total? : Int,
   transition? : NavTransition = NavTransition::flat(),
   tab_moves_slot? : Bool = true,
 ) -> @view.View {
   v.box(fn(s) {
     s.grow(Is(1.0)) |> ignore
     nav.floor = 0
-    if kept_left_most is Some(_) || kept_left_total is Some(_) {
-      let (prev_most, prev_total) = match nav_limits_get(nav.said) {
-        Some(lim) => (lim.most_of, lim.total)
-        None => (None, nav_kept_left_most)
-      }
-      let next_most = if kept_left_most is Some(_) { kept_left_most } else { prev_most }
-      let next_total = match kept_left_total {
-        Some(t) => t
-        None => prev_total
-      }
-      nav_limits_set(nav.said, next_most, next_total)
-      s.owns(fn() { nav_limits_set(nav.said, prev_most, prev_total) }) |> ignore
-    }
     if keeps_left is Some(_) {
       nav.keeps_left = keeps_left
       // (its kept left this node's: let go with it, what it put by let go by the each below, each left for good)

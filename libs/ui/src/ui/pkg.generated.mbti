@@ -596,15 +596,15 @@ pub fn native_pointing() -> Pointing
 
 pub let native_unsupported : String
 
-pub fn[P] nav_flat_view(@view.View, Nav[P], (Ctx, P) -> Unit, (P) -> Bool, Double, bg? : () -> Int64, edge? : Double, takes_back? : () -> Bool, stacks? : () -> Bool, page_key? : (P) -> String, page_for? : (@view.View, Int32) -> (@view.View) -> (Ctx, P) -> Unit, head? : (@view.View, Int32, Bool) -> Unit, gone? : (Int32) -> Unit, made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int32, Int32) -> Unit)?, keeps_made? : Bool, shown? : (Array[Int32]) -> Unit, keeps_left? : (P) -> (String, String)?, kept_left_most? : (String) -> Int32, kept_left_total? : Int32, transition? : NavTransition) -> @view.View
+pub fn[P] nav_flat_view(@view.View, Nav[P], (Ctx, P) -> Unit, (P) -> Bool, Double, bg? : () -> Int64, edge? : Double, takes_back? : () -> Bool, stacks? : () -> Bool, page_key? : (P) -> String, page_for? : (@view.View, Int32) -> (@view.View) -> (Ctx, P) -> Unit, head? : (@view.View, Int32, Bool) -> Unit, gone? : (Int32) -> Unit, made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int32, Int32) -> Unit)?, keeps_made? : Bool, shown? : (Array[Int32]) -> Unit, keeps_left? : (P) -> (String, String)?, transition? : NavTransition) -> @view.View
 
 pub let nav_late_most : Double
 
 pub fn nav_rest() -> Double
 
-pub fn[P] nav_tree_view(@view.View, Nav[P], (P) -> String, (@view.View, () -> P, P?, () -> Int32, Int32) -> Unit, bg? : () -> Int64, edge? : Double, ready? : (P) -> Bool, most? : Double, keeps_made? : Bool, keeps_left? : (P) -> String?, kept_left_most? : (String) -> Int32, kept_left_total? : Int32, transition? : NavTransition, tab_moves_slot? : Bool) -> @view.View
+pub fn[P] nav_tree_view(@view.View, Nav[P], (P) -> String, (@view.View, () -> P, P?, () -> Int32, Int32) -> Unit, bg? : () -> Int64, edge? : Double, ready? : (P) -> Bool, most? : Double, keeps_made? : Bool, keeps_left? : (P) -> String?, transition? : NavTransition, tab_moves_slot? : Bool) -> @view.View
 
-pub fn[P] nav_view(@view.View, Nav[P], (Ctx, P) -> Unit, bg? : () -> Int64, edge? : Double, ready? : (P) -> Bool, most? : Double, page_key? : (P) -> String, page_for? : (@view.View, Int32) -> (@view.View) -> (Ctx, P) -> Unit, made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int32, Int32) -> Unit)?, keeps_made? : Bool, keeps_left? : (P) -> (String, String)?, kept_left_most? : (String) -> Int32, kept_left_total? : Int32, transition? : NavTransition, tab_moves_slot? : Bool) -> @view.View
+pub fn[P] nav_view(@view.View, Nav[P], (Ctx, P) -> Unit, bg? : () -> Int64, edge? : Double, ready? : (P) -> Bool, most? : Double, page_key? : (P) -> String, page_for? : (@view.View, Int32) -> (@view.View) -> (Ctx, P) -> Unit, made? : (P) -> (String, (@view.View, () -> P, P?, () -> Int32, Int32) -> Unit)?, keeps_made? : Bool, keeps_left? : (P) -> (String, String)?, transition? : NavTransition, tab_moves_slot? : Bool) -> @view.View
 
 pub fn notice_answer() -> Bool?
 
@@ -2592,7 +2592,7 @@ pub fn[P : Eq] Nav::is_root_place(Self[P], P) -> Bool
 pub fn[P] Nav::is_swapping_in(Self[P], Int32) -> Bool
 pub fn[P] Nav::is_swapping_out(Self[P], Int32) -> Bool
 pub fn[P] Nav::moving(Self[P]) -> Bool
-pub fn[P] Nav::new(P, on_leave? : (P) -> Unit, on_entry_leave? : (Int32, P) -> Unit, went_back? : (P, Bool, Bool, Array[P]) -> Unit, from_left? : (P, P?) -> Bool, on_entry_park? : (Int32, P) -> Unit, on_entry_gone? : (Int32, P) -> Unit, kept_left_most? : (String) -> Int32, kept_left_total? : Int32) -> Self[P]
+pub fn[P] Nav::new(P, on_leave? : (P) -> Unit, on_entry_leave? : (Int32, P) -> Unit, went_back? : (P, Bool, Bool, Array[P]) -> Unit, from_left? : (P, P?) -> Bool, on_entry_park? : (Int32, P) -> Unit, on_entry_gone? : (Int32, P) -> Unit) -> Self[P]
 pub fn[P] Nav::offset(Self[P]) -> Double
 pub fn[P] Nav::page_island(Self[P], @view.View, Int32, (Ctx, P) -> Unit, key? : () -> String, natural? : Bool, gives? : Bool, over? : Bool, reshaped? : (Double, Double) -> Unit) -> @view.View
 pub fn[P] Nav::page_of(Self[P], Int32) -> (P, P?)?

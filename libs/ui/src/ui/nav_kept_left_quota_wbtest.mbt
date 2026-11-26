@@ -4,9 +4,9 @@
 
 ///|
 test "Nav kept_left per-kind quota evicts within kind without clobbering other kinds and respects total cap" {
-  let nav : Nav[String] = Nav::new(
-    "root",
-    kept_left_most=fn(k) {
+  let nav : Nav[String] = Nav::new("root")
+  nav.set_kept_left_limits(
+    most_of=fn(k) {
       if k == "chat" {
         2
       } else if k == "setting" {
@@ -15,7 +15,7 @@ test "Nav kept_left per-kind quota evicts within kind without clobbering other k
         0
       }
     },
-    kept_left_total=4,
+    total=4,
   )
   let t = Tester::tree(
     fn(v) {
