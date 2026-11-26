@@ -279,29 +279,110 @@ test "scrolls_window curtain mid-viewport expand never flashes offscreen tail ro
       None => ()
     }
   }
-  // Pressing the list mid-expand (`in_hand`) must NOT release offscreen tail spans early and flash r/10 into view
-  match tree.claimers_at(150.0, 120.0) {
-    [(cid, _), ..] => {
-      tree.drag_at(cid, Down, 150.0, 120.0, 160.0, finger=0) |> ignore
-      clock.val = 176.0
-      tree.frame(300.0, 240.0, now=clock.val) |> ignore
-      match find_word_top(tree, row_views, "r/10") {
-        Some(y) => assert_true(y >= 240.0, msg="tail row r/10 flashed into viewport on in_hand at +76ms: y=\{y}")
-        None => ()
-      }
-      match find_word_top(tree, row_views, "r/15") {
-        Some(y) => assert_true(y >= 240.0, msg="tail row r/15 flashed into viewport on in_hand at +76ms: y=\{y}")
-        None => ()
-      }
-      tree.drag_at(cid, Up, 150.0, 120.0, 176.0, finger=0) |> ignore
-    }
-    _ => fail("expected a scroll claimer at (150, 120)")
-  }
   // Settle: r/0..r/2 visible under h/Mid, r/10 still offscreen below viewport
   clock.val = 700.0
   tree.frame(300.0, 240.0, now=clock.val) |> ignore
   let m0_end = find_word_top(tree, row_views, "r/0").unwrap()
   assert_true((m0_end - (mid_y0 + 32.0)).abs() <= 0.5, msg="r/0 should settle right under h/Mid: \{m0_end}")
+}
+
+///|
+test "scrolls_window curtain pressing list mid-expand (in_hand) keeps h/After and first hidden tail row r/4 identical to unheld (Opus/Astra)" {
+  let collapsed = ["h/Top", "t/top0", "t/top1", "h/Mid", "h/After"]
+  let expanded : Array[String] = ["h/Top", "t/top0", "t/top1", "h/Mid"]
+  for i in 0..<20 {
+    expanded.push("r/" + i.to_string())
+  }
+  expanded.push("h/After")
+  let mk = fn() {
+    let clock = Ref(0.0)
+    let keys = @signals.signal(collapsed, same=fn(a, b) { a == b })
+    let scroll = Scroll::list()
+    let list_v : Ref[View?] = Ref(None)
+    let rows : Map[String, View] = Map([])
+    let tree = Tree::new(
+      fn(root) {
+        root.box(fn(o) {
+          o.width(Is(Some(300.0))).height(Is(Some(240.0))) |> ignore
+          let lv = o.scrolls_window(
+            scroll,
+            fn() { keys.get() },
+            est=40.0,
+            comes=fn(k) { k.has_prefix("r/") },
+            goes=fn(k) { k.has_prefix("r/") },
+            curtain=fn(k) { k.has_prefix("r/") },
+            fn(b, k) {
+              b.box(fn(l) {
+                rows[k] = l
+                l.height(Is(Some(if k.has_prefix("h/") { 32.0 } else { 40.0 }))).words(Is(k)) |> ignore
+              })
+              |> ignore
+            },
+          )
+          list_v.val = Some(lv)
+        })
+        |> ignore
+      },
+      time=fn() { clock.val },
+    )
+    tree.set_rows_grid(2.0)
+    tree.frame(300.0, 240.0, now=0.0) |> ignore
+    tree.frame(300.0, 240.0, now=0.0) |> ignore
+    (tree, list_v.val.unwrap(), keys, clock, scroll, rows)
+  }
+  let (t_unheld, lv_u, keys_u, clk_u, _, rows_u) = mk()
+  let (t_held, lv_h, keys_h, clk_h, scroll_h, rows_h) = mk()
+
+  // Expand 20 rows on both trees at t = 100 and advance to t = 108ms (h/After still in viewport, r/4..r/19 hidden tail)
+  clk_u.val = 100.0
+  clk_h.val = 100.0
+  t_unheld.event(100.0, fn() { transition(within=lv_u, fn() { keys_u.set(expanded) }) })
+  t_held.event(100.0, fn() { transition(within=lv_h, fn() { keys_h.set(expanded) }) })
+  t_unheld.frame(300.0, 240.0, now=100.0) |> ignore
+  t_held.frame(300.0, 240.0, now=100.0) |> ignore
+  clk_u.val = 108.0
+  clk_h.val = 108.0
+  t_unheld.frame(300.0, 240.0, now=108.0) |> ignore
+  t_held.frame(300.0, 240.0, now=108.0) |> ignore
+
+  // Press the held list at t = 108ms and verify `scroll_h.in_hand()` is genuinely true
+  let cid = match t_held.claimers_at(150.0, 120.0) {
+    [(id, _), ..] => id
+    _ => fail("expected a scroll claimer at (150, 120)")
+  }
+  t_held.drag_at(cid, Down, 150.0, 120.0, 108.0, finger=0) |> ignore
+  assert_true(scroll_h.in_hand(), msg="expected scroll_h.in_hand() == true after Down")
+
+  // Next animation frame at t = 116ms: held tree MUST match unheld tree on h/After and first hidden tail row r/4
+  clk_u.val = 116.0
+  clk_h.val = 116.0
+  t_unheld.frame(300.0, 240.0, now=116.0) |> ignore
+  t_held.frame(300.0, 240.0, now=116.0) |> ignore
+  let after_u = match find_word_top(t_unheld, rows_u, "h/After") {
+    Some(y) => y
+    None => fail("unheld h/After must be visible at t=116ms")
+  }
+  let after_h = match find_word_top(t_held, rows_h, "h/After") {
+    Some(y) => y
+    None => fail("held h/After vanished on in_hand at t=116ms (old tail-clear regression)")
+  }
+  assert_eq(after_h, after_u, msg="held h/After drifted from unheld at t=116ms: \{after_h} vs \{after_u}")
+  match find_word_top(t_held, rows_h, "r/4") {
+    Some(y) => assert_true(y >= 240.0, msg="first hidden tail row r/4 flashed into viewport on in_hand at y=\{y}")
+    None => ()
+  }
+  assert_eq(
+    find_word_top(t_held, rows_h, "r/4"),
+    find_word_top(t_unheld, rows_u, "r/4"),
+    msg="held r/4 placement diverged from unheld at t=116ms",
+  )
+
+  // Release and settle cleanly
+  t_held.drag_at(cid, Up, 150.0, 120.0, 116.0, finger=0) |> ignore
+  assert_false(scroll_h.in_hand())
+  clk_h.val = 700.0
+  t_held.frame(300.0, 240.0, now=700.0) |> ignore
+  assert_true(find_word_top(t_held, rows_h, "r/0") is Some(_))
 }
 
 ///|
