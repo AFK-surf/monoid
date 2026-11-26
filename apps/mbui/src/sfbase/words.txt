@@ -1935,8 +1935,10 @@ web-main.versions.restoreDo
 web-main.versions.restoreNote
 web-main.versions.restoreNoteNoLatest
 web-main.versions.restoreOfficial
-web-main.versions.runtimeEnableLabel
-web-main.versions.runtimeEnableTip
+web-main.versions.runtimeDisable
+web-main.versions.runtimeDisableAsk
+web-main.versions.runtimeDisableNote
+web-main.versions.runtimeEnable
 web-main.versions.update
 web-main.video.pauseKey
 web-main.video.playKey

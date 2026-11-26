@@ -143,6 +143,11 @@ let sw_glyph : Double = 16.0
 let sw_line_least : Double = 44.0
 
 ///|
+/// A software row's version line: its version, and at its end whether a runtime is offered (停用 / 启用).
+// kept across runs: a value (no field of it changes)
+let sw_version_line : @ui.Style = @ui.css("row w=Full justify=JBetween align=ACenter gap=S3")
+
+///|
 let sw_progress_w : Double = 60.0
 
 ///|
