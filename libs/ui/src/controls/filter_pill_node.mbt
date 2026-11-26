@@ -92,7 +92,7 @@ pub fn count_chip_node(
   lead? : (@view.View) -> Unit,
   alarm? : () -> Bool = fn() { false },
   look? : ChipLook = Fill,
-  corner? : () -> Double = fn() { @ui.tree_theme().corner(Lg) },
+  corner? : () -> Double = fn() { 1.0e6 },
   named? : () -> String,
   loc~ : SourceLoc,
 ) -> @view.View {

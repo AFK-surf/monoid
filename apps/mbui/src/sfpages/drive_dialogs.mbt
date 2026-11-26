@@ -641,8 +641,8 @@ let roots_list : @ui.Style = @ui.css("w=Full")
 /// under the pointer.
 // kept across runs: a value (no field of it changes)
 let pick_row : @ui.Style = @ui.css((
-  #|row w=Full min_h=S10 px=S2_5 py=S1_5 gap=S2_5 align=ACenter radius=Lg hovered{bg=Hover}
-))
+  #|row w=Full min_h=S10 px=S2_5 py=S1_5 gap=S2_5 align=ACenter hovered{bg=Hover}
+)).then(@ui.style(radius=@sf.row_radius))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -680,7 +680,7 @@ let picker_trail : @ui.Style = @ui.css("row w=Full gap=SPx align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let crumb_box : @ui.Style = @ui.css("px=S1 py=S0_5 radius=Md")
+let crumb_box : @ui.Style = @ui.css("px=S1 py=S0_5 radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -685,3 +685,119 @@ test "proposal accept with infoError stays retryable until PROJECTS.jsonl sync s
   assert_true(cp_has_substr(t, "已创建项目「chat-projects」"))
   @sffixture.fx_projects_reset()
 }
+
+///|
+test "chat info projects section: capsule radii, read-only non-button, and zero audit faults" {
+  cp_reset()
+  let src = cp_source(fn(_, _, done) { done(Ok(Json::object({ "ok": Json::boolean(true) }))) })
+  let make_cv = fn(w : Bool) {
+    let cv = cp_chat_view(true, [], project=Some("monoid"), tags=["ui-review"])
+    { ..cv, projects_writable: w }
+  }
+  let view = @signals.signal(make_cv(true))
+  let chat_ref : ChatRef = { station: "ws1/st1", session: "s-c7", title: "Projects", station_name: "st1" }
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.box(fn(col) {
+        col.width(Is(Some(320.0))) |> ignore
+        chat_info_projects_section_node(col, src, chat_ref, fn() { Some(view.get()) }, in_sheet=false)
+      })
+      |> ignore
+      @sf.presented_nodes(root)
+    },
+    w=400.0,
+    h=400.0,
+    platform=0,
+    scale=2.0,
+  )
+  t.set_rows_on_pixels(true)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.audit(), [])
+  // Editable wide panel: project row is Button, hover draws panel_in (18.0) radius
+  let proj_btn = t.get(Button, label="monoid")
+  t.move_to(proj_btn.rect.0 + proj_btn.rect.2 / 2.0, proj_btn.rect.1 + proj_btn.rect.3 / 2.0)
+  t.draw()
+  let proj_drawn = @ui.view_tree().unwrap().drawn().filter(fn(d) {
+    (d.x - proj_btn.rect.0).abs() < 1.0 && (d.y - proj_btn.rect.1).abs() < 1.0 && (d.h - proj_btn.rect.3).abs() < 1.0
+  })
+  assert_true(proj_drawn.iter().any(fn(d) { d.radius >= 17.5 }), msg="wide project row uses panel_in radius")
+  // Tag chip `#ui-review` uses full capsule (r >= 13.0)
+  let tag_word = cp_find_word(t, "#ui-review").unwrap()
+  let chip_drawn = @ui.view_tree().unwrap().drawn().filter(fn(d) {
+    d.x <= tag_word.1 && d.x + d.w >= tag_word.1 + tag_word.3 && d.y <= tag_word.2 && d.y + d.h >= tag_word.2 + tag_word.4 && d.h >= 25.0 && d.h <= 30.0
+  })
+  assert_true(chip_drawn.iter().any(fn(d) { d.radius >= 13.0 }), msg="tag chip uses full capsule radius")
+  // Remove `×` button uses full capsule (r >= 9.0)
+  let rm_btn = t.get(Button, label=@sf.t("common.remove") + " #ui-review")
+  t.move_to(rm_btn.rect.0 + rm_btn.rect.2 / 2.0, rm_btn.rect.1 + rm_btn.rect.3 / 2.0)
+  t.draw()
+  let rm_drawn = @ui.view_tree().unwrap().drawn().filter(fn(d) {
+    (d.x - rm_btn.rect.0).abs() < 1.0 && (d.y - rm_btn.rect.1).abs() < 1.0 && (d.h - rm_btn.rect.3).abs() < 1.0
+  })
+  assert_true(rm_drawn.iter().any(fn(d) { d.radius >= 9.0 }), msg="tag remove button uses full capsule radius")
+  // `+ 添加标签` button uses full capsule (r >= 13.0)
+  let add_btn = t.get(Button, label="添加标签")
+  t.move_to(add_btn.rect.0 + add_btn.rect.2 / 2.0, add_btn.rect.1 + add_btn.rect.3 / 2.0)
+  t.draw()
+  let add_drawn = @ui.view_tree().unwrap().drawn().filter(fn(d) {
+    (d.x - add_btn.rect.0).abs() < 1.0 && (d.y - add_btn.rect.1).abs() < 1.0 && (d.h - add_btn.rect.3).abs() < 1.0
+  })
+  assert_true(add_drawn.iter().any(fn(d) { d.radius >= 13.0 }), msg="add tag button uses full capsule radius")
+  assert_eq(t.audit(), [])
+  // Read-only state: project row is NOT a Button, shows no hover ground, hides remove/add buttons, and click does not open picker
+  view.set(make_cv(false))
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="monoid") is None, msg="read-only project row must not expose Button role")
+  assert_true(t.query(Button, label=@sf.t("common.remove") + " #ui-review") is None, msg="read-only hides tag remove button")
+  assert_true(t.query(Button, label="添加标签") is None, msg="read-only hides add tag button")
+  let ro_word = cp_find_word(t, "monoid").unwrap()
+  let ro_cx = ro_word.1 + ro_word.3 / 2.0
+  let ro_cy = ro_word.2 + ro_word.4 / 2.0
+  t.move_to(ro_cx, ro_cy)
+  t.draw()
+  let ro_hover_drawn = @ui.view_tree().unwrap().drawn().filter(fn(d) {
+    d.x <= ro_cx && d.x + d.w >= ro_cx && d.y <= ro_cy && d.y + d.h >= ro_cy && d.h >= 30.0 && d.h <= 44.0 && d.ground != 0L
+  })
+  assert_eq(ro_hover_drawn.length(), 0, msg="read-only project row must not paint hover ground")
+  t.tap(ro_cx, ro_cy)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label=@sf.t("web-main.projects.project_none")) is None, msg="read-only click must not open project picker")
+  assert_eq(t.audit(), [])
+  // Sheet mode: project row min_height=44 and full capsule radius (>= 22.0)
+  let view_s = @signals.signal(make_cv(true))
+  let ts = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.box(fn(col) {
+        col.width(Is(Some(360.0))) |> ignore
+        chat_info_projects_section_node(col, src, chat_ref, fn() { Some(view_s.get()) }, in_sheet=true)
+      })
+      |> ignore
+      @sf.presented_nodes(root)
+    },
+    w=390.0,
+    h=400.0,
+    platform=1,
+    scale=2.0,
+  )
+  ts.set_rows_on_pixels(true)
+  ts.run_for(@ui.move_most_ms)
+  let s_btn = ts.get(Button, label="monoid")
+  assert_true(s_btn.rect.3 >= 44.0, msg="sheet project row min height 44")
+  ts.move_to(s_btn.rect.0 + s_btn.rect.2 / 2.0, s_btn.rect.1 + s_btn.rect.3 / 2.0)
+  ts.draw()
+  let s_drawn = @ui.view_tree().unwrap().drawn().filter(fn(d) {
+    (d.x - s_btn.rect.0).abs() < 1.0 && (d.y - s_btn.rect.1).abs() < 1.0 && (d.h - s_btn.rect.3).abs() < 1.0
+  })
+  assert_true(s_drawn.iter().any(fn(d) { d.radius >= 22.0 }), msg="sheet project row uses full capsule radius")
+  assert_eq(ts.audit(), [])
+}

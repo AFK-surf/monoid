@@ -418,7 +418,7 @@ fn station_row_node(
           |> ignore
         })
         |> ignore
-        station_mark_of_node(r, s, nav_icon, if here { station } else { "" })
+        station_mark_of_node(r, s, Row)
         r.box(fn(w) {
           w.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
           @sf.nav_words_node(w, fn() { s().name }, faint=fn() { !s().online })

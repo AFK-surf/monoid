@@ -49,8 +49,8 @@ test("a clone answers at once, runs git so that it asks nobody, and comes into t
   await settle();
   assert.equal(git.runs.length, 1);
   const [run] = git.runs;
-  assert.deepEqual(run!.args.slice(0, 8), ["-c", "protocol.ext.allow=never", "-c", "protocol.file.allow=never", "clone", "--quiet", "--", "https://github.com/acme/app.git"]);
-  assert.match(run!.args[8]!, /\/\.cloning-c-[0-9a-f]+$/);
+  assert.deepEqual(run!.args.slice(0, 12), ["-c", "protocol.ext.allow=never", "-c", "protocol.file.allow=never", "clone", "--quiet", "--config", "maintenance.auto=false", "--config", "gc.auto=0", "--", "https://github.com/acme/app.git"]);
+  assert.match(run!.args[12]!, /\/\.cloning-c-[0-9a-f]+$/);
   assert.equal(run!.env.GIT_TERMINAL_PROMPT, "0");
   assert.equal(run!.env.GIT_SSH_COMMAND, "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new");
   assert.ok(!existsSync(join(repos, ".cloning-old")), "what a stopped station left is removed");
@@ -78,7 +78,7 @@ test("a failed clone says git's last words without a credential, and leaves noth
   assert.equal((started as { url: string }).url, "https://git.example.com/team/lib.git", "kept without its name and password");
   assert.equal((started as { repo: string }).repo, "git.example.com/team/lib");
   await settle();
-  assert.equal(git.runs[0]!.args[7], "https://bob:s3cret@git.example.com/team/lib.git", "git is given them");
+  assert.equal(git.runs[0]!.args[11], "https://bob:s3cret@git.example.com/team/lib.git", "git is given them");
   git.runs[0]!.end(false, "remote: Repository not found.\nfatal: repository 'https://bob:s3cret@git.example.com/team/lib.git/' not found\n\n");
   await settle();
   const [failed] = clones.list("ws");

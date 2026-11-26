@@ -404,7 +404,7 @@ pub let chip_label_text : @ui.TextStyle
 pub fn chip_left(@json.Json?) -> Int32
 
 #callsite(autofill(loc))
-pub fn chip_node(@view.View, () -> String, () -> Unit, icon? : String, ink? : () -> Int64, said? : () -> String, tips? : TipLayer, disabled? : () -> Bool, capsule? : Bool, loc~ : SourceLoc) -> @view.View
+pub fn chip_node(@view.View, () -> String, () -> Unit, icon? : String, ink? : () -> Int64, said? : () -> String, tips? : TipLayer, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub let chip_refill_label_text : @ui.TextStyle
 
@@ -1930,6 +1930,8 @@ pub let panel_pill : Double
 pub fn panel_popover_note_node(@view.View, () -> String, loc~ : SourceLoc) -> Unit
 
 pub fn panel_reshaped_node(@view.View) -> Unit
+
+pub fn panel_row_hover_color(@view.View) -> () -> Int64
 
 pub fn panel_row_in_node(@view.View) -> @ui.Style
 

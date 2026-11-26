@@ -75,10 +75,10 @@ let held_buttons : @ui.Style = @ui.css("row gap=SPx align=ACenter")
 let unsent_words : @ui.TextStyle = @ui.text_style(size=Caption, leading=L5, color=Danger, wrap=false)
 
 ///|
-/// Its buttons (msgUnsentBtn): 6 in across, 18pt line height matching the other under-message lines, 4 apart, 7 round;
-/// the hover ground under the pointer; at 55% when they may not be pressed.
+/// Its buttons (msgUnsentBtn): 8 in across, 18pt line height matching the other under-message lines, 4 apart, full
+/// capsule; the hover ground under the pointer; at 55% when they may not be pressed.
 // kept across runs: a value (no field of it changes)
-let unsent_button_box : @ui.Style = @ui.css("row px=S1_5 gap=S1 radius=Md align=ACenter")
+let unsent_button_box : @ui.Style = @ui.css("row px=S2 gap=S1 radius=Full align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -99,15 +99,15 @@ let activity_row_box : @ui.Style = @ui.css("row w=Full gap=S1 align=ACenter")
 
 ///|
 /// Its line (activityLine): its picture where the messages' pictures are, out in the margin before the words
-/// (message_avatar_out), the picture and what it does 8 apart, 6 round; fills the row so shrinking words during a
+/// (message_avatar_out), the picture and what it does 8 apart, full capsule; fills the row so shrinking words during a
 /// click never drop the press.
 // kept across runs: a value (no field of it changes)
-let activity_line : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=S2, radius=Md, align=ACenter, ml=@sf.message_avatar_out)
+let activity_line : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=S2, radius=Full, align=ACenter, ml=@sf.message_avatar_out)
 
 ///|
 /// Narrow: its picture at the row's start, as the messages' are there (inlineHeads).
 // kept across runs: a value (no field of it changes)
-let activity_line_narrow : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=S2, radius=Md, align=ACenter)
+let activity_line_narrow : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=S2, radius=Full, align=ACenter)
 
 ///|
 /// Its picture with the ring round it (activityAvatar): 24 across, the picture in its middle; the ring reaching 3 past
@@ -150,9 +150,9 @@ let now_words_hot : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=fal
 let activity_clock : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, wrap=false)
 
 ///|
-/// Its stop (activityStop): 24 round in 6, the muted ink; the hover ground and the text's under the pointer.
+/// Its stop (activityStop): 24 circle, the muted ink; the hover ground and the text's under the pointer.
 // kept across runs: a value (no field of it changes)
-let activity_stop : @ui.Style = @ui.css("w=S6 h=S6 radius=Md align=ACenter justify=JCenter")
+let activity_stop : @ui.Style = @ui.css("w=S6 h=S6 radius=Full align=ACenter justify=JCenter")
 
 ///|
 // kept across runs: a value (no field of it changes)

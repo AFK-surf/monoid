@@ -342,7 +342,31 @@
     "headless-on-drag": {},
     "page-headless": {},
     "page-control-by-hand": {},
-    "structure-box": {}
+    "structure-box": {},
+    "node-radius-literal": {
+      "src/controls/accent_pick.mbt": 1,
+      "src/controls/bar_place_node.mbt": 1,
+      "src/controls/chat_notice_pill_node.mbt": 3,
+      "src/controls/check_row_node.mbt": 1,
+      "src/controls/mark_node.mbt": 1,
+      "src/controls/markdown_node.mbt": 1,
+      "src/controls/waiting.mbt": 1,
+      "src/demo/main.mbt": 2,
+      "src/glass/liquid_slider.mbt": 2,
+      "src/glass/liquid_toggle.mbt": 1,
+      "src/ios27_parity/main.mbt": 5,
+      "src/studio_pages/studio.mbt": 13
+    },
+    "small-radius-token": {
+      "src/controls/change_node.mbt": 1,
+      "src/controls/form_swatch_node.mbt": 2,
+      "src/controls/found.mbt": 1,
+      "src/controls/notify_node.mbt": 8,
+      "src/controls/page.mbt": 4,
+      "src/controls/player_node.mbt": 1,
+      "src/controls/player_parts.mbt": 1,
+      "src/controls/tag_node.mbt": 3
+    }
   },
   "excused": {
     "frame-request": {},
@@ -452,7 +476,9 @@
     "headless-on-drag": {},
     "page-headless": {},
     "page-control-by-hand": {},
-    "structure-box": {}
+    "structure-box": {},
+    "node-radius-literal": {},
+    "small-radius-token": {}
   },
   "tester": {
     "names": [
