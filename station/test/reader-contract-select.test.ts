@@ -468,7 +468,7 @@ function parseRustDefaultPolicyTable(): Record<string, string[]> {
   return result;
 }
 
-test("cross-language contract: TS and Rust front.rs PION_DEFAULT_TARGETS_BY_CHANNEL match 1:1 and Stage 9A keeps Zero Default Flip", () => {
+test("cross-language contract: TS and Rust front.rs PION_DEFAULT_TARGETS_BY_CHANNEL match 1:1 for Stage 9B-unix-beta", () => {
   const rustTable = parseRustDefaultPolicyTable();
   assert.deepEqual(
     rustTable,
@@ -478,11 +478,14 @@ test("cross-language contract: TS and Rust front.rs PION_DEFAULT_TARGETS_BY_CHAN
     },
     "TS and Rust front.rs PION_DEFAULT_TARGETS_BY_CHANNEL must stay identical",
   );
-  // Stage 9A Zero Default Flip invariant: both channels remain empty.
-  assert.deepEqual(PION_DEFAULT_TARGETS_BY_CHANNEL, { beta: [], stable: [] });
+  // Stage 9B-unix-beta: beta flips darwin-arm64 + linux-x64; stable, linux-arm64, and win32-x64 stay mb.
+  assert.deepEqual(PION_DEFAULT_TARGETS_BY_CHANNEL, {
+    beta: ["darwin-arm64", "linux-x64"],
+    stable: [],
+  });
 });
 
-test("default policy matrix across all 4 targets x (stable, beta, missing, unknown CHANNEL) with injected 9B table", () => {
+test("default policy matrix across all 4 targets x (stable, beta, missing, unknown CHANNEL) for production 9B-unix-beta and injected full table", () => {
   const targets = ["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"] as const;
   const stage9bTable: DefaultPolicyTable = {
     beta: ["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"],
@@ -490,10 +493,38 @@ test("default policy matrix across all 4 targets x (stable, beta, missing, unkno
   };
 
   for (const target of targets) {
-    // Production Stage 9A table always resolves to mb.
-    for (const ch of ["beta", "stable", "nightly", null, undefined] as const) {
+    // Production Stage 9B-unix-beta table: beta enables darwin-arm64 & linux-x64; stable, arm64, win32, and missing/unknown stay mb.
+    const expectedBeta = target === "darwin-arm64" || target === "linux-x64" ? "pion" : "mb";
+    assert.equal(defaultEngineFor("beta", target), expectedBeta);
+    for (const ch of ["stable", "nightly", null, undefined] as const) {
       assert.equal(defaultEngineFor(ch, target), "mb");
     }
+
+    const prodBetaSel = resolveReaderEngine("data", {
+      config: { channel: "beta" },
+      env: {},
+      hasPionBinary: true,
+      target,
+    });
+    assert.equal(prodBetaSel.engine, expectedBeta);
+    assert.equal(prodBetaSel.source, "default");
+    assert.equal(prodBetaSel.fallback, false);
+
+    // Unimplemented mode (`forward`) under production beta default stays silent (`fallback: false`).
+    const prodForwardSel = resolveReaderEngine("forward", {
+      config: { channel: "beta" },
+      env: {},
+      hasPionBinary: true,
+      target,
+    });
+    assert.deepEqual(prodForwardSel, {
+      mode: "forward",
+      engine: "mb",
+      requested: null,
+      rawRequested: null,
+      source: "default",
+      fallback: false,
+    });
 
     // Injected 9B table: beta enables all 4 targets; missing/unknown channel stays mb.
     assert.equal(defaultEngineFor("beta", target, stage9bTable), "pion");

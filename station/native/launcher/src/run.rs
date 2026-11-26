@@ -729,6 +729,7 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
         Some(crate::front::CurrentFront::Kept(f)) => Some(f),
         Some(crate::front::CurrentFront::SwitchTo(resolved)) => crate::front::Front::start_resolved(resolved, &options.app, &options.data),
         Some(crate::front::CurrentFront::Ended) | None => crate::front::Front::start(&options.app, &options.data),
+        Some(crate::front::CurrentFront::EndedForDirectBind) => None,
     };
     // Kept: any other of this data directory's is left from before (one a launcher before front.pid lost, 2026-11-16).
     if let Some(kept) = &front {

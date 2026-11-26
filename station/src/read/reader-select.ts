@@ -21,10 +21,11 @@ export type DefaultPolicyTable = Readonly<Record<InstalledChannel, readonly stri
 /**
  * Unified default Pion rollout table by installed `<app>/CHANNEL` and canonical target.
  * Must stay 1:1 with `PION_DEFAULT_TARGETS_BY_CHANNEL` in `station/native/launcher/src/front.rs`.
- * Stage 9A keeps both channels empty (Zero Default Flip: all 4 targets default to `"mb"`).
+ * Stage 9B-unix-beta enables `darwin-arm64` and `linux-x64` on `beta`, while keeping `stable`,
+ * `linux-arm64`, `win32-x64`, and missing/unknown `CHANNEL` on `"mb"`.
  */
 export const PION_DEFAULT_TARGETS_BY_CHANNEL: DefaultPolicyTable = {
-  beta: [],
+  beta: ["darwin-arm64", "linux-x64"],
   stable: [],
 };
 
