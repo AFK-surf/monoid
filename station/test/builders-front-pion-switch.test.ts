@@ -495,8 +495,10 @@ async function runMeshParity(bin: string, label: string) {
           },
         );
         assert.ok(connectAskId > 0);
+        // Attach the rejection handler before asking `giveUp` so an early cancel reply never fires unhandledRejection.
+        const rejected = assert.rejects(connectP, /cancel/i);
         await frontClient.ask("giveUp", { of: connectAskId });
-        await assert.rejects(connectP, /cancel/i);
+        await rejected;
         const relays = await frontClient.ask("relayStatus");
         assert.ok(Array.isArray(relays));
       } finally {
