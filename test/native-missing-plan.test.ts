@@ -96,6 +96,11 @@ test("plan splits one missing by what its lists name, as each list asked alone d
   assert.ok(mac.length > 0 && mac.every(([, t]) => /^(darwin|ios)-/.test(t)), JSON.stringify(mac));
   assert.ok(linux.length > 0 && linux.every(([, t]) => !/^(darwin|ios)-/.test(t)), JSON.stringify(linux));
   assert.ok(linux.some(([p, t]) => p === "shell-station" && t === "linux-x64"));
+  assert.ok(mac.some(([p, t]) => p === "shell-apple-station" && t === "darwin-arm64"));
+  assert.ok(mac.some(([p, t]) => p === "station-pion" && t === "darwin-arm64"));
+  for (const t of ["linux-x64", "linux-arm64", "win32-x64"]) {
+    assert.ok(linux.some(([p, target]) => p === "station-pion" && target === t), `missing station-pion:${t} in --linux defaults`);
+  }
   assert.deepEqual(missingWanted(["--linux", "--mac"]).map(String).sort(), [...mac, ...linux].map(String).sort());
   // The BRANCH_ lists say each part:target as missing answers it.
   assert.deepEqual(Object.keys(BRANCH).sort(), ["BRANCH_HARNESS", "BRANCH_MAC_NATIVES", "BRANCH_MAC_READER", "BRANCH_NATIVES", "BRANCH_WIN_READER"]);
@@ -150,7 +155,7 @@ test("one missing for every list plan asks lists the release once and answers ea
   assert.deepEqual(missing(...want), ["shell-station:linux-x64", "reader:linux-x64", "mesh:darwin-arm64"]);
 });
 
-test("plan.sh triggers station on pion-reader production inputs and ignores its tests and docs", { skip: process.platform === "win32" }, () => {
+test("plan.sh triggers station on pion-reader and station-pion production inputs and ignores tests and docs", { skip: process.platform === "win32" }, () => {
   const cases: [string, boolean][] = [
     ["pion/station/TOOLCHAIN", true],
     ["pion/station/pion.toml", true],
@@ -160,11 +165,25 @@ test("plan.sh triggers station on pion-reader production inputs and ignores its 
     ["pion/station/packages/smoke/src/main.pion", true],
     ["pion/station/packages/readops_core/src/selftest.pion", true],
     ["pion/base/packages/base_codec/src/lib.pion", true],
+    ["pion/station-main/pion.toml", true],
+    ["pion/station-main/scripts/build.sh", true],
+    ["pion/station-main/packages/station_main/src/main.pion", true],
+    ["pion/rules/packages/lock/src/lock.pion", true],
+    ["client/i18n/catalog/zh/station.json", true],
+    ["client/i18n/brand.ts", true],
     ["pion/station/packages/readops_chats/src/readops_chats_test.pion", false],
     ["pion/station/packages/host_shim/native/host_shim_test.c", false],
     ["pion/base/packages/base_codec/src/lib_test.pion", false],
     ["pion/station/AGENTS.md", false],
     ["pion/station/README.md", false],
+    ["pion/station-main/packages/station_main/src/main_test.pion", false],
+    ["pion/station-main/packages/station_sys/native/station_sys_test.c", false],
+    ["pion/station-main/AGENTS.md", false],
+    ["pion/station-main/CLAUDE.md", false],
+    ["pion/station-main/README.md", false],
+    ["pion/rules/packages/lock/src/lock_test.pion", false],
+    ["pion/rules/packages/AGENTS.md", false],
+    ["pion/rules/packages/README.md", false],
   ];
   const script = `PLAN_SOURCE=1; . scripts/plan.sh; range=
 while IFS= read -r changed; do decide; echo "$changed $station"; done`;

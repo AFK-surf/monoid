@@ -29,11 +29,12 @@ permissions:
 env:
   # The parts a branch consumes, split between GitHub Linux and the Apple runners.
   BRANCH_NATIVES: archive-rs:linux-x64 shell-station:linux-x64 reader:linux-x64 iroh-wasm:wasm32 shell:android-arm64 engine:android-arm64 mesh:linux-x64 runner:linux-x64 launcher:linux-x64 mesh:win32-x64 launcher:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
-  BRANCH_WIN_READER: reader:win32-x64 pion-reader:win32-x64
+  BRANCH_WIN_READER: reader:win32-x64 pion-reader:win32-x64 station-pion:win32-x64
   BRANCH_MAC_NATIVES: mesh:darwin-arm64 launcher:darwin-arm64 runner:darwin-arm64 archive-rs:darwin-arm64 shell-apple:darwin-arm64 helper:darwin-arm64
-  # The Mac's readers, built in a job of their own (natives-mac-reader) beside natives-mac: desktop-build uses none of them
-  # and waits for natives-mac alone, never for the reader's minutes; check-mac, mac-build and the station wait for both.
-  BRANCH_MAC_READER: reader:darwin-arm64 pion-reader:darwin-arm64
+  # The Mac's readers and opt-in Pion station (plus its Apple station shell), built in a job of their own
+  # (natives-mac-reader) beside natives-mac: desktop-build uses none of them and waits for natives-mac alone,
+  # never for the reader's or station-pion's minutes; check-mac, mac-build and the station wait for both.
+  BRANCH_MAC_READER: reader:darwin-arm64 pion-reader:darwin-arm64 shell-apple-station:darwin-arm64 station-pion:darwin-arm64
   # The tests' MoonBit program (every package's harness, kept out of the reader: station/mb/src/reader_harness), which
   # only check-station runs, built beside natives in a job of its own (natives-harness), never in natives' list: there
   # it would hold every job that waits for the readers, and a branch missing only reader:linux-x64 off ubuntu-24.04.
@@ -116,7 +117,7 @@ jobs:
           else
             want="$BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_HARNESS"
             if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then
-              want="$want pion-reader:linux-x64 pion-reader:linux-arm64 shell-station:linux-arm64 shell-station:win32-x64"
+              want="$want pion-reader:linux-x64 pion-reader:linux-arm64 station-pion:linux-x64 station-pion:linux-arm64 shell-station:linux-arm64 shell-station:win32-x64"
             fi
             # (check-station runs the Pion reader beside MoonBit's, scripts/check.sh station_natives: built for its tests
             # where the station's own release is not planned, a change to its tests alone)
@@ -127,16 +128,16 @@ jobs:
           fi
           if [ "$GITHUB_REF" = refs/heads/main ]; then
             all_linux=$(non_apple)
-            missing=$(printf '%s\n' $all_linux | grep -vE '^(pion-)?reader:win32-x64$|^reader-harness:' || true)
-            missing_win=$(printf '%s\n' $all_linux | grep -E '^(pion-)?reader:win32-x64$' || true)
+            missing=$(printf '%s\n' $all_linux | grep -vE '^(pion-)?reader:win32-x64$|^station-pion:win32-x64$|^reader-harness:' || true)
+            missing_win=$(printf '%s\n' $all_linux | grep -E '^(pion-)?reader:win32-x64$|^station-pion:win32-x64$' || true)
             missing_harness=$(printf '%s\n' $all_linux | grep '^reader-harness:' || true)
             all_mac=$(apple)
-            missing_mac=$(printf '%s\n' $all_mac | grep -vE '^(pion-)?reader:darwin-arm64$' || true)
-            missing_mac_reader=$(printf '%s\n' $all_mac | grep -E '^(pion-)?reader:darwin-arm64$' || true)
+            missing_mac=$(printf '%s\n' $all_mac | grep -vE '^(pion-)?reader:darwin-arm64$|^(shell-apple-station|station-pion):darwin-arm64$' || true)
+            missing_mac_reader=$(printf '%s\n' $all_mac | grep -E '^(pion-)?reader:darwin-arm64$|^(shell-apple-station|station-pion):darwin-arm64$' || true)
           else
             missing_want="$BRANCH_NATIVES"
             if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then
-              missing_want="$missing_want pion-reader:linux-x64 pion-reader:linux-arm64 shell-station:linux-arm64 shell-station:win32-x64"
+              missing_want="$missing_want pion-reader:linux-x64 pion-reader:linux-arm64 station-pion:linux-x64 station-pion:linux-arm64 shell-station:linux-arm64 shell-station:win32-x64"
               missing_win=$(pick $BRANCH_WIN_READER)
             else
               missing_win=""
@@ -165,11 +166,11 @@ jobs:
               if [ -n "$has_mesh" ]; then
                 matrix_entries+=("$(jq -cn --arg target "$target" --arg slot "mesh" --arg label "$target · mesh" --arg parts "$has_mesh" '{target: $target, slot: $slot, label: $label, parts: $parts}')")
               fi
-              readers=$({ printf '%s\n' "$target_parts" | grep -E '^(pion-)?reader:' || true; } | xargs)
+              readers=$({ printf '%s\n' "$target_parts" | grep -E '^(pion-)?reader:|^station-pion:' || true; } | xargs)
               if [ -n "$readers" ]; then
                 reader_entries+=("$(jq -cn --arg target "$target" --arg parts "$readers" '{target: $target, parts: $parts}')")
               fi
-              other=$({ printf '%s\n' "$target_parts" | grep -vE '^(shell-station|mesh|reader|pion-reader):' || true; } | xargs)
+              other=$({ printf '%s\n' "$target_parts" | grep -vE '^(shell-station|mesh|reader|pion-reader|station-pion):' || true; } | xargs)
               if [ -n "$other" ]; then
                 matrix_entries+=("$(jq -cn --arg target "$target" --arg slot "other" --arg label "$target · other" --arg parts "$other" '{target: $target, slot: $slot, label: $label, parts: $parts}')")
               fi
@@ -303,7 +304,7 @@ jobs:
           path: ${{ runner.temp }}/native-target/native/mesh-${{ matrix.target }}
           key: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('station/native/mesh/Cargo.lock') }}
           restore-keys: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-
-      - if: contains(matrix.parts, 'pion-reader:')
+      - if: contains(matrix.parts, 'pion-reader:') || contains(matrix.parts, 'station-pion:')
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-toolchain
@@ -329,6 +330,9 @@ jobs:
           fi
           if printf '%s\n' "${parts[@]}" | grep -qx 'pion-reader:linux-arm64'; then
             file "$(node scripts/native.ts file pion-reader linux-arm64)" | grep -E 'ELF 64-bit.*ARM aarch64'
+          fi
+          if printf '%s\n' "${parts[@]}" | grep -qx 'station-pion:linux-arm64'; then
+            file "$(node scripts/native.ts file station-pion linux-arm64)" | grep -E 'ELF 64-bit.*ARM aarch64'
           fi
       - name: Stage native archives in R2
         if: github.ref != 'refs/heads/main'
@@ -408,7 +412,7 @@ jobs:
         with: { tools: mbc }
       - uses: ./.github/actions/setup-native-linux
         with: { parts: "${{ env.PARTS }}" }
-      - if: contains(env.PARTS, 'pion-reader:')
+      - if: contains(env.PARTS, 'pion-reader:') || contains(env.PARTS, 'station-pion:')
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-toolchain
@@ -434,6 +438,9 @@ jobs:
           fi
           if printf '%s\n' "${parts[@]}" | grep -qx 'pion-reader:linux-arm64'; then
             file "$(node scripts/native.ts file pion-reader linux-arm64)" | grep -E 'ELF 64-bit.*ARM aarch64'
+          fi
+          if printf '%s\n' "${parts[@]}" | grep -qx 'station-pion:linux-arm64'; then
+            file "$(node scripts/native.ts file station-pion linux-arm64)" | grep -E 'ELF 64-bit.*ARM aarch64'
           fi
       - name: Stage native archives in R2
         if: github.ref != 'refs/heads/main'

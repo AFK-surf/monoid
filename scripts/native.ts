@@ -610,12 +610,12 @@ const PARTS: Record<string, Part> = {
     },
   },
   // The full station in Pion (pion/station-main/packages/station_main): built with the same pinned pionc toolchain
-  // (pion/station-main/scripts/build.sh) and linked against libstillfail_shell.a. Built/tested in its own workflow
-  // until Wave 12 signed opt-in bundling ships.
+  // (pion/station-main/scripts/build.sh) and linked against libstillfail_shell.a (`shell-apple-station` on macOS,
+  // `shell-station` elsewhere). Bundled beside Node and enabled only on explicit `config.json` `"engine": "pion"` opt-in.
   "station-pion": {
     files: (t) => [exe("stillfail-station-pion")(t)],
     targets: STATION_BINS,
-    publish: [],
+    publish: STATION_BINS,
     env: "STILLFAIL_STATION_PION",
     rust: false,
     inputs: STATION_PION_INPUTS,
@@ -703,7 +703,7 @@ const PARTS: Record<string, Part> = {
   "shell-apple-station": {
     files: () => ["libstillfail_shell.a", "libstillfail_shell.libs"],
     targets: ["darwin-arm64"],
-    publish: [],
+    publish: ["darwin-arm64"],
     inputs: ["client/shell", "libs/mesh-transport/src", "libs/mesh-transport/Cargo.toml", "client/Cargo.toml", "client/Cargo.lock", "vendor/libadb", ...VENDORED],
     recipe: (t) => ({ cargo: shellAppleStation(t), min: APPLE_MIN[t], c: appleCOldest(t) }),
     build(t, out) {
