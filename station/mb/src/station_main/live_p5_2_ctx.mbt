@@ -1211,6 +1211,8 @@ async fn P52::deps(self : P52, _key : String, name : String, args : Array[Json])
       }
     "recheck" => self.bus.jobs_accounts_recheck(a(0), a(1))
     "canAuthRetry" => self.bus.jobs_accounts_can_auth_retry(a(0), a(1), a(2))
+    // (frozen: a session whose processes keep missing the station's tools is not moved here, it is given up on as before)
+    "toolsUnreachable" => Json::null()
     "runtimeMissing" => {
       hub.runtime_updated(s(0))
       self.bus.coord_updates_runtime_missing(a(0))

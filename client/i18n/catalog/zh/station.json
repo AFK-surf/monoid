@@ -387,6 +387,7 @@
   "station.notice.refused": "模型服务不支持此 station 所在地区：设置代理",
   "station.notice.runtimeMissing": "无法启动 agent：此 station 尚未安装 {name}",
   "station.notice.stopped": "已停止当前任务",
+  "station.notice.toolsOutOfReach": "{runtime} 的进程连不上 station 的工具（账号 {profile}），连试 3 次都没成，也没有别的账号或运行时可以接着跑。请在对话设置里换个运行时或账号（或取消固定账号），再回复即可继续",
   "station.notice.profileLogin": "账号 {profile}（{runtime} · {station}）登录已失效，请重新登录",
   "station.notice.profileRestricted": "账号 {profile}（{runtime} · {station}）已被服务商限制，请前往验证或从共享池移除",
   "station.notice.cutOffRestart": "station 重启导致本轮中断，回复即可继续",
