@@ -652,6 +652,7 @@ fn tape_made(
           on_back=core.pop,
           frame=fn() { tape_made_frame },
           active=fn() { app.nav.top_stay().1 == stint() },
+          stay=fn() { app.nav.top_stay().1 },
           said=told,
           width~,
           tips~,

@@ -527,7 +527,19 @@ fn pane_made(
     // (by its vault and item: another's another page)
     Setting(VaultItem(vault, item)) =>
       made("vault-item/" + vault + "/" + item, fn(a, core, here, stint, frame, width) {
-        @sfpages.vault_item_node(a, core, here, vault, item, on_back=core.pop, frame~, width~, tips~, active=fn() { app.nav.top_stay().1 == stint() })
+        @sfpages.vault_item_node(
+          a,
+          core,
+          here,
+          vault,
+          item,
+          on_back=core.pop,
+          frame~,
+          width~,
+          tips~,
+          active=fn() { app.nav.top_stay().1 == stint() },
+          stay=fn() { app.nav.top_stay().1 },
+        )
       })
     // (by its station and id: another's another page)
     Setting(Connects(only)) =>

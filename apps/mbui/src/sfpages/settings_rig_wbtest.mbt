@@ -149,8 +149,19 @@ fn setting_made(p : @view.View, src : Source, route : @settings.Route, width : (
     AdbShare(focus) => @settings.adb_node(p, core, focus, on_back=core.pop, frame~, width~)
     Vault => vault_node(p, core, here, on_back=core.pop, frame~, width~)
     VaultItem(v, item) => {
-      let stay = @signals.untracked(fn() { app.nav.top_stay().1 })
-      vault_item_node(p, core, here, v, item, on_back=core.pop, frame~, active=fn() { app.nav.top_stay().1 == stay }, width~)
+      let serial = @signals.untracked(fn() { app.nav.top_stay().0 })
+      vault_item_node(
+        p,
+        core,
+        here,
+        v,
+        item,
+        on_back=core.pop,
+        frame~,
+        active=fn() { app.nav.top_stay().0 == serial },
+        stay=fn() { app.nav.top_stay().1 },
+        width~,
+      )
     }
     _ => ()
   }

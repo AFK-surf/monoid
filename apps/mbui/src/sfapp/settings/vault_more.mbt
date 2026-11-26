@@ -81,7 +81,7 @@ pub fn vault_act(
     p.push(x)
   }
   if name == "lock" {
-    vault_lock_bump(ws)
+    vault_lock_bump_all()
   }
   (core.call)("vault." + name, obj(p), fn(r) {
     match r {
@@ -141,6 +141,7 @@ pub(all) struct VaultScope {
   vault : String
   item : String
   vault_gen : Int
+  stay_id : Int
 }
 
 ///|
@@ -164,10 +165,11 @@ priv struct VaultInstance {
 priv struct VaultInstances {
   mut next_id : Int
   mut next_pending : Int
+  mut all_lock_gen : Int
   instances : Map[Int, VaultInstance]
-  /// Workspace-level lock generation (bumped by explicit `vault.lock`).
+  /// Workspace-level lock generation.
   ws_gen : Map[String, Int]
-  /// Per-(workspace, vault) lock generation (bumped when that vault locks).
+  /// Per-(workspace, vault) lock generation (bumped when that single vault locks).
   vault_gen : Map[String, Int]
 }
 
@@ -175,6 +177,7 @@ priv struct VaultInstances {
 let vault_instances : VaultInstances = {
   next_id: 1,
   next_pending: 1,
+  all_lock_gen: 0,
   instances: {},
   ws_gen: {},
   vault_gen: {},
@@ -195,18 +198,29 @@ fn vault_gen_key(ws : String, vault : String) -> String {
 ///|
 /// Current monotonic lock generation for `(ws, vault)`.
 pub fn vault_gen_of(ws : String, vault : String) -> Int {
-  vault_instances.ws_gen.get(ws).unwrap_or(0) + vault_instances.vault_gen.get(vault_gen_key(ws, vault)).unwrap_or(0)
+  vault_instances.all_lock_gen +
+  vault_instances.ws_gen.get(ws).unwrap_or(0) +
+  vault_instances.vault_gen.get(vault_gen_key(ws, vault)).unwrap_or(0)
+}
+
+///|
+fn vault_batched(f : () -> Unit) -> Unit {
+  @signals.start_batch()
+  f()
+  @signals.end_batch()
 }
 
 ///|
 fn invalidate_vault_instance(inst : VaultInstance) -> Unit {
   inst.pending_id = next_vault_pending()
   inst.in_flight = None
-  inst.opening.set(false)
-  inst.plain.set(None)
-  inst.fields.set([])
-  inst.reveal_field.set(None)
-  inst.shown.clear()
+  vault_batched(fn() {
+    inst.opening.set(false)
+    inst.plain.set(None)
+    inst.fields.set([])
+    inst.reveal_field.set(None)
+    inst.shown.clear()
+  })
   (inst.on_invalidate)()
 }
 
@@ -295,9 +309,26 @@ pub fn vault_lock_bump(ws : String, vault? : String = "") -> Unit {
 }
 
 ///|
+/// Advances global lock generation across all workspaces (matching core's explicit `vault.lock` which clears all
+/// in-memory vault keys across workspaces) and immediately invalidates every live `VaultItem` instance.
+pub fn vault_lock_bump_all() -> Unit {
+  vault_instances.all_lock_gen = vault_instances.all_lock_gen + 1
+  let affected : Array[VaultInstance] = []
+  for _, inst in vault_instances.instances {
+    if inst.alive {
+      affected.push(inst)
+    }
+  }
+  for inst in affected {
+    let next_gen = vault_gen_of(inst.scope.workspace, inst.scope.vault)
+    inst.scope = { ..inst.scope, vault_gen: next_gen }
+    invalidate_vault_instance(inst)
+  }
+}
+
+///|
 fn vault_instances_reset() -> Unit {
-  vault_instances.next_id = 1
-  vault_instances.next_pending = 1
+  // Keep next_id, next_pending, and all_lock_gen monotonic across resets so stale callbacks never collide.
   vault_instances.instances.clear()
   vault_instances.ws_gen.clear()
   vault_instances.vault_gen.clear()
@@ -343,22 +374,34 @@ pub fn open_item(
     guard cur.scope == captured && live_scope == captured else { return }
     guard vault_gen_of(captured.workspace, captured.vault) == captured.vault_gen else { return }
     cur.in_flight = None
-    cur.opening.set(false)
-    cur.reveal_field.set(None)
     match r {
       Ok(v) =>
         match field(Some(v), "plain") {
           Some(Object(_) as p) => {
-            cur.plain.set(Some(p))
-            cur.fields.set(items(Some(v), "shown"))
+            // Update fields and plain atomically in one batch so VaultItem's fs.pick never renders an empty
+            // opened-fields frame between setting plain and fields (which would bounce following rows).
+            vault_batched(fn() {
+              cur.opening.set(false)
+              cur.reveal_field.set(None)
+              cur.fields.set(items(Some(v), "shown"))
+              cur.plain.set(Some(p))
+            })
             then(p)
           }
-          _ => ()
+          _ =>
+            vault_batched(fn() {
+              cur.opening.set(false)
+              cur.reveal_field.set(None)
+            })
         }
       Err(e) => {
-        if reveal != "" {
-          cur.shown.remove(reveal)
-        }
+        vault_batched(fn() {
+          cur.opening.set(false)
+          cur.reveal_field.set(None)
+          if reveal != "" {
+            cur.shown.remove(reveal)
+          }
+        })
         match vault_said(e) {
           Some(why) =>
             (core.say)(fill("android-misc.act.failed", [("what", tr("android-settings.vault.openWhat")), ("error", why)]))

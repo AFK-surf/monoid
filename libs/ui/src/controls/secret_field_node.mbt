@@ -40,6 +40,7 @@ pub fn secret_value_row_node(
   shown? : () -> Bool = fn() { true },
   mono? : () -> Bool = fn() { false },
   one_line? : Bool = false,
+  selectable? : Bool = true,
   loc~ : SourceLoc,
 ) -> Unit {
   style_node(row, fn() { secret_row }, loc~)
@@ -53,6 +54,9 @@ pub fn secret_value_row_node(
       node_sp(l, th.leading(L6).unwrap_or(th.text_size(Ui).1))
     }
     l.box(fn(w) {
+      if !selectable {
+        w.lends(@view.runs_picker, fn(_) { Is((0, 0)) }) |> ignore
+      }
       w
       .grow(Is(1.0))
       .basis(Is(Some(0.0)))

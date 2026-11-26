@@ -966,3 +966,374 @@ test "PR-B0: account switch, workspace switch, and vault lock immediately clear 
   t.draw()
   assert_true(t.find("ghp_after_explicit_lock_late") is None, msg="Late callback after explicit vault.lock must be rejected")
 }
+
+///|
+test "PR-B0: explicit vault.lock clears all workspaces while single-vault lock clears only that vault" {
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let captured_core : Ref[Core?] = Ref(None)
+  let t = vault_isolation_tester(pending, w=1200.0, fn(root, core) {
+    captured_core.val = Some(core)
+    let here_ws1 = fn() -> @settings.Here {
+      { workspace: "ws1", name: "WS1", sub: "u1", email: "u1@example.com", person: "User", picture: "" }
+    }
+    let here_ws2 = fn() -> @settings.Here {
+      { workspace: "ws2", name: "WS2", sub: "u1", email: "u1@example.com", person: "User", picture: "" }
+    }
+    let frame = fn() -> PageFrame { { back: None, top: 0.0, foot: 0.0, named: false } }
+    root.row(Is(true)).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    root.box(fn(left) {
+      left.width(Is(Some(600.0))).height(Is(Some(900.0))) |> ignore
+      vault_item_node(left, core, here_ws1, "v1", "it1", on_back=fn() {  }, frame~, width=fn() { 600.0 })
+    })
+    |> ignore
+    root.box(fn(right) {
+      right.width(Is(Some(600.0))).height(Is(Some(900.0))) |> ignore
+      vault_item_node(right, core, here_ws2, "v1", "it1", on_back=fn() {  }, frame~, width=fn() { 600.0 })
+    })
+    |> ignore
+  })
+  let core = captured_core.val.unwrap()
+  // Open both workspaces
+  let eyes = t.all(Button, label="显示")
+  assert_eq(eyes.length(), 2)
+  let eye_ws1 = eyes.iter().find_first(fn(n) { n.rect.0 < 600.0 }).unwrap()
+  let eye_ws2 = eyes.iter().find_first(fn(n) { n.rect.0 >= 600.0 }).unwrap()
+  t.tap(eye_ws1.rect.0 + eye_ws1.rect.2 / 2.0, eye_ws1.rect.1 + eye_ws1.rect.3 / 2.0)
+  t.draw()
+  pending[0](vault_open_ok("ghp_ws1_open"))
+  t.draw()
+  t.tap(eye_ws2.rect.0 + eye_ws2.rect.2 / 2.0, eye_ws2.rect.1 + eye_ws2.rect.3 / 2.0)
+  t.draw()
+  pending[1](vault_open_ok("ghp_ws2_open"))
+  t.draw()
+  assert_true(t.find("ghp_ws1_open") is Some(_))
+  assert_true(t.find("ghp_ws2_open") is Some(_))
+  // Single-vault lock on (ws1, v1) clears ONLY ws1 and leaves ws2 intact
+  @settings.vault_lock_bump("ws1", vault="v1")
+  t.draw()
+  assert_true(t.find("ghp_ws1_open") is None, msg="Single-vault lock must clear (ws1, v1)")
+  assert_true(t.find("ghp_ws2_open") is Some(_), msg="Single-vault lock on ws1 must not clear ws2")
+  // Re-open ws1, then trigger explicit vault.lock -> clears BOTH ws1 and ws2
+  let eye_ws1_again = t.all(Button, label="显示")[0]
+  t.tap(eye_ws1_again.rect.0 + eye_ws1_again.rect.2 / 2.0, eye_ws1_again.rect.1 + eye_ws1_again.rect.3 / 2.0)
+  t.draw()
+  pending[2](vault_open_ok("ghp_ws1_reopen"))
+  t.draw()
+  assert_true(t.find("ghp_ws1_reopen") is Some(_))
+  @settings.vault_act(core, "ws1", "lock", [], "锁定")
+  t.draw()
+  assert_true(t.find("ghp_ws1_reopen") is None, msg="Explicit vault.lock must clear ws1")
+  assert_true(t.find("ghp_ws2_open") is None, msg="Explicit vault.lock must clear ws2 across workspaces")
+  // Late callbacks in both workspaces after explicit vault.lock are rejected
+  let eyes2 = t.all(Button, label="显示")
+  assert_eq(eyes2.length(), 2)
+  for e in eyes2 {
+    t.tap(e.rect.0 + e.rect.2 / 2.0, e.rect.1 + e.rect.3 / 2.0)
+    t.draw()
+  }
+  assert_eq(pending.length(), 5)
+  @settings.vault_act(core, "ws1", "lock", [], "锁定")
+  t.draw()
+  pending[3](vault_open_ok("ghp_ws1_late_after_all_lock"))
+  pending[4](vault_open_ok("ghp_ws2_late_after_all_lock"))
+  t.draw()
+  assert_true(t.find("ghp_ws1_late_after_all_lock") is None)
+  assert_true(t.find("ghp_ws2_late_after_all_lock") is None)
+}
+
+///|
+test "PR-B0: real Nav cover and same-batch cover+return invalidate plaintext, late vault.open, and stale edit" {
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let built_count : Ref[Int] = Ref(0)
+  let t = vault_isolation_tester(pending, w=1100.0, fn(root, core) {
+    app.nav.push(Settings)
+    app.nav.push(Setting(VaultItem("v1", "it1")))
+    let vault_serial = @signals.untracked(fn() { app.nav.top_stay().0 })
+    let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
+    let frame = fn() -> PageFrame { { back: app.nav.under().map(@sfbase.back_label), top: 0.0, foot: 0.0, named: false } }
+    // Host real app.nav entries with keeps so covered VaultItem stays mounted (not destroyed) like nav_view
+    let top_serial = fn() { app.nav.top_stay().0 }
+    let kept_serials = fn() {
+      app.nav.top_stay() |> ignore
+      let out : Array[Int] = []
+      let top = top_serial()
+      // keep the VaultItem entry while covered by a pushed page
+      if app.nav.pages().length() > 2 && top != vault_serial {
+        out.push(vault_serial)
+      }
+      out
+    }
+    root.each(
+      at_once=true,
+      fn() { [top_serial()] },
+      fn(k) { k },
+      keeps=kept_serials,
+      fn(p, key) {
+        let serial = key.untracked()
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        if serial == vault_serial {
+          built_count.val += 1
+          vault_item_node(
+            p,
+            core,
+            here,
+            "v1",
+            "it1",
+            on_back=core.pop,
+            frame~,
+            active=fn() { app.nav.top_stay().0 == serial },
+            stay=fn() { app.nav.top_stay().1 },
+            width=fn() { 1100.0 },
+          )
+        } else {
+          @sf.page_note_node(p, fn() { "覆盖页 About" })
+        }
+      },
+    )
+  })
+  assert_eq(built_count.val, 1)
+  // 1. Real Nav push covers VaultItem without destroying it -> clears plaintext and rejects late callback
+  t.click(Button, label="显示")
+  t.draw()
+  pending[0](vault_open_ok("ghp_nav_open"))
+  t.draw()
+  assert_true(t.find("ghp_nav_open") is Some(_))
+  app.nav.push(Setting(About))
+  t.draw()
+  assert_true(t.find("覆盖页 About") is Some(_))
+  app.nav.pop() |> ignore
+  t.draw()
+  assert_eq(built_count.val, 1, msg="VaultItem instance should be reused after Nav pop")
+  assert_true(t.find("ghp_nav_open") is None, msg="Real Nav cover must clear plaintext")
+  // In-flight vault.open across real Nav cover + pop is rejected
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 2)
+  app.nav.push(Setting(About))
+  t.draw()
+  app.nav.pop() |> ignore
+  t.draw()
+  pending[1](vault_open_ok("ghp_nav_late"))
+  t.draw()
+  assert_true(t.find("ghp_nav_late") is None, msg="Late callback across real Nav cover+pop must be rejected")
+  // 2. Same-batch cover + return (no draw in between; active() stays true before & after, stay_id advances)
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 3)
+  @signals.start_batch()
+  app.nav.push(Setting(About))
+  app.nav.pop() |> ignore
+  @signals.end_batch()
+  // Even without drawing first, late callback must be rejected because stay_id changed
+  pending[2](vault_open_ok("ghp_same_batch_late"))
+  t.draw()
+  assert_true(t.find("ghp_same_batch_late") is None, msg="Same-batch cover+return must reject stale vault.open via stay_id")
+  // Same-batch cover + return must also prevent stale edit from opening editor with old plaintext
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 4)
+  pending[3](vault_open_ok("ghp_before_batch_edit"))
+  t.draw()
+  assert_true(t.find("ghp_before_batch_edit") is Some(_))
+  @signals.start_batch()
+  app.nav.push(Setting(About))
+  app.nav.pop() |> ignore
+  @signals.end_batch()
+  t.click(Button, label="编辑")
+  t.draw()
+  assert_false(@sf.presenting(), msg="Same-batch cover+return must not open editor from stale plaintext")
+  assert_eq(pending.length(), 5, msg="Edit after same-batch cover+return must issue a fresh vault.open")
+}
+
+///|
+test "PR-B0: revoking open editor and about dialogs hides plaintext on first exit frame and blocks vault.putItem" {
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let puts : Array[Json] = []
+  let vault_open : @signals.Signal[Bool] = @signals.signal(true)
+  let t = vault_isolation_tester(
+    pending,
+    w=1100.0,
+    over=fn(base) {
+      {
+        ..base,
+        call: fn(name, params, done) {
+          if name == "vault.putItem" {
+            puts.push(params)
+          } else {
+            (base.call)(name, params, done)
+          }
+        },
+        topic_read: fn(name, params) {
+          let read = (base.topic_read)(name, params)
+          if name == "vaultItems" {
+            let open_now = vault_open.get()
+            match read.value {
+              Some(Object(m)) => {
+                let out = Map::from_iter(m.iter())
+                out["open"] = Json::boolean(open_now)
+                { ..read, value: Some(Json::object(out)) }
+              }
+              _ => read
+            }
+          } else {
+            read
+          }
+        },
+      }
+    },
+    fn(root, core) {
+      let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
+      let frame = fn() -> PageFrame { { back: None, top: 0.0, foot: 0.0, named: false } }
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      vault_item_node(root, core, here, "v1", "it1", on_back=fn() {  }, frame~, width=fn() { 1100.0 })
+    },
+  )
+  let open_with_note = fn(value : String, note : String) -> Result[Json, Json] {
+    Ok(
+      obj([
+        (
+          "plain",
+          obj([
+            ("kind", str("token")),
+            ("name", str("GitHub token")),
+            ("fields", obj([("value", str(value))])),
+            ("domains", []),
+            ("notes", str(note)),
+          ]),
+        ),
+        (
+          "shown",
+          Json::array([
+            obj([
+              ("key", str("value")),
+              ("label", str("值")),
+              ("value", str(value)),
+              ("secret", Json::boolean(true)),
+              ("mono", Json::boolean(true)),
+            ]),
+          ]),
+        ),
+      ]),
+    )
+  }
+  // 1. About dialog: on lock, plaintext note disappears on the VERY FIRST exit frame (without running out animation)
+  t.click(Button, label="显示")
+  t.draw()
+  pending[0](open_with_note("ghp_about_secret", "secret_note_42"))
+  t.draw()
+  t.click(Button, label="说明")
+  t.draw()
+  presented_in(t)
+  assert_eq(t.get(TextField, label="说明").value, "secret_note_42", msg="About dialog should show note before lock")
+  vault_open.set(false)
+  t.draw()
+  assert_true(t.find("secret_note_42") is None, msg="About dialog plaintext must be gone on first exit frame")
+  assert_true(t.find("ghp_about_secret") is None, msg="Page plaintext must be gone on first exit frame")
+  assert_true(t.query(TextField, label="说明") is None, msg="About dialog field must be hidden on first exit frame")
+  assert_false(t.semantics().iter().any(fn(n) { n.value.contains("secret_note_42") }), msg="About dialog field buffer must be cleared on first exit frame")
+  if t.query(Button, label="保存") is Some(_) {
+    t.click(Button, label="保存")
+    t.draw()
+  }
+  assert_eq(puts.length(), 0, msg="Revoked about dialog must never submit vault.putItem")
+  // 2. Editor dialog: on lock, plaintext disappears on first exit frame and save is blocked
+  vault_open.set(true)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="显示")
+  t.draw()
+  pending[1](open_with_note("ghp_editor_secret", "editor_note_99"))
+  t.draw()
+  t.click(Button, label="编辑")
+  t.draw()
+  presented_in(t)
+  assert_true(@sf.presenting(), msg="Editor dialog should be open")
+  assert_true(t.query(TextField, label="值") is Some(_), msg="Editor secret value field should be present before lock")
+  vault_open.set(false)
+  t.draw()
+  assert_true(t.find("ghp_editor_secret") is None, msg="Editor dialog plaintext must be gone on first exit frame")
+  assert_true(t.query(TextField, label="值") is None, msg="Editor dialog body must be hidden on first exit frame")
+  assert_false(t.semantics().iter().any(fn(n) { n.value.contains("ghp_editor_secret") }), msg="Editor field buffer must be cleared on first exit frame")
+  if t.query(Button, label="保存") is Some(_) {
+    t.click(Button, label="保存")
+    t.draw()
+  }
+  assert_eq(puts.length(), 0, msg="Revoked editor dialog must never submit vault.putItem")
+}
+
+///|
+test "PR-B0: revealed secret is not selectable via tree text selection while explicit copy button still copies" {
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let t = vault_isolation_tester(pending, w=1100.0, fn(root, core) {
+    // Enable tree text selection on the page root (just like the narrow and wide app shells)
+    @ui.words_picked(root)
+    let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
+    let frame = fn() -> PageFrame { { back: None, top: 0.0, foot: 0.0, named: false } }
+    root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    vault_item_node(root, core, here, "v1", "it1", on_back=fn() {  }, frame~, width=fn() { 1100.0 })
+  })
+  t.click(Button, label="显示")
+  t.draw()
+  pending[0](vault_open_ok("ghp_no_select_99"))
+  t.draw()
+  let (sx, sy) = t.find("ghp_no_select_99").unwrap()
+  // Drag across the revealed secret value and press Cmd+C -> must NOT select or copy it
+  t.drag(sx - 4.0, sy, sx + 140.0, sy)
+  t.draw()
+  t.key(@ui.key_of_char('c'), mods=@ui.mod_cmd)
+  t.draw()
+  assert_false(t.clipboard().contains("ghp_no_select_99"), msg="Revealed secret must not be selectable via tree text selection")
+  // Explicit 30s copy button still copies as a secret
+  t.click(Button, label="复制")
+  t.draw()
+  assert_eq(t.clipboard(), "ghp_no_select_99")
+  assert_eq(t.clipboard_secret(), Some(@sf.secret_copied_life))
+}
+
+///|
+test "PR-B0: invalidating or closing VaultItem does not steal keyboard focus from another input" {
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let show_vault : @signals.Signal[Bool] = @signals.signal(true)
+  let other_field = @ui.Field::new()
+  let t = vault_isolation_tester(pending, w=1200.0, fn(root, core) {
+    let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
+    let frame = fn() -> PageFrame { { back: None, top: 0.0, foot: 0.0, named: false } }
+    root.row(Is(true)).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+    root.box(fn(left) {
+      left.width(Is(Some(600.0))).height(Is(Some(900.0))) |> ignore
+      left.show(fn() { show_vault.get() }, fn(p) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        vault_item_node(p, core, here, "v1", "it1", on_back=fn() {  }, frame~, width=fn() { 600.0 })
+      })
+    })
+    |> ignore
+    root.box(fn(right) {
+      right.width(Is(Some(600.0))).height(Is(Some(900.0))) |> ignore
+      @sf.input_node(right, other_field, label="其他输入框") |> ignore
+    })
+    |> ignore
+  })
+  // Open VaultItem plaintext
+  t.click(Button, label="显示")
+  t.draw()
+  pending[0](vault_open_ok("ghp_focus_test"))
+  t.draw()
+  assert_true(t.find("ghp_focus_test") is Some(_))
+  // Focus the sibling input and type "ab"
+  t.click(TextField, label="其他输入框")
+  t.draw()
+  t.type_text("ab")
+  t.draw()
+  assert_eq(other_field.text(), "ab")
+  // Lock VaultItem and then close it -> sibling input MUST keep keyboard focus
+  @settings.vault_lock_bump("ws1", vault="v1")
+  t.draw()
+  assert_true(t.find("ghp_focus_test") is None)
+  t.type_text("cd")
+  t.draw()
+  assert_eq(other_field.text(), "abcd", msg="Invalidating VaultItem must not steal focus from sibling input")
+  show_vault.set(false)
+  t.draw()
+  t.type_text("ef")
+  t.draw()
+  assert_eq(other_field.text(), "abcdef", msg="Closing VaultItem must not steal focus from sibling input")
+}

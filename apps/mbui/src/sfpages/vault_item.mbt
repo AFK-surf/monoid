@@ -3,7 +3,7 @@
 // is kept; in a library not locked, that it is not encrypted and the way to lock it; its content masked until shown
 // (each field's eye opens it, `vault.open`, and shows that field), copied; how agents may use it; when they did, each
 // use leading to its chat. 编辑 opens it first, then its editor (the presenters'). What it says is the core's
-// (vault-words.ts); what it held goes as its page is left (the settings package's opened item).
+// (vault-words.ts); what it held goes as its page is left, covered, switched, or locked (per-instance state in settings).
 
 ///|
 /// A secret's page (VaultItemPage, VaultItemScreen) made once as nodes in node `v` (page_node, as vault_node is), item
@@ -22,6 +22,7 @@ pub fn vault_item_node(
   on_back~ : () -> Unit,
   frame~ : () -> PageFrame,
   active? : () -> Bool = fn() { true },
+  stay? : () -> Int = fn() { 0 },
   said? : (@sf.PageSaid) -> Unit,
   width? : () -> Double,
   tips? : @sf.TipLayer,
@@ -33,24 +34,40 @@ pub fn vault_item_node(
   }
   let scope_now = fn() -> @settings.VaultScope {
     let w = ws()
-    { account: account(), workspace: w, vault, item, vault_gen: @settings.vault_gen_of(w, vault) }
+    { account: account(), workspace: w, vault, item, vault_gen: @settings.vault_gen_of(w, vault), stay_id: stay() }
   }
+  let dialog_revoked : Ref[@signals.Signal[Bool]?] = Ref(None)
+  let dialog_close : Ref[(() -> Unit)?] = Ref(None)
   let dialog_serial : Ref[Int?] = Ref(None)
   let close_own_dialog = fn() {
-    match dialog_serial.val {
-      Some(s) => {
-        dialog_serial.val = None
-        @sf.close_presented_of(s)
+    match dialog_revoked.val {
+      Some(r) => {
+        dialog_revoked.val = None
+        r.set(true)
       }
       None => ()
     }
-    v.focus_let_go()
+    match dialog_close.val {
+      Some(close) => {
+        dialog_close.val = None
+        dialog_serial.val = None
+        close()
+      }
+      None =>
+        match dialog_serial.val {
+          Some(s) => {
+            dialog_serial.val = None
+            @sf.close_presented_of(s)
+          }
+          None => ()
+        }
+    }
   }
   let inst_id = @settings.vault_instance_new(@signals.untracked(scope_now), on_invalidate=close_own_dialog)
   v.on_rest(fn() { @settings.vault_instance_invalidate(inst_id) }) |> ignore
   v.owns(fn() { @settings.vault_instance_dispose(inst_id) }) |> ignore
   v.reacts(active, fn(on) { if !on { @settings.vault_instance_invalidate(inst_id) } }, at_start=false)
-  v.reacts(fn() { (account(), ws()) }, fn(_) { @settings.vault_instance_sync_scope(inst_id, @signals.untracked(scope_now)) }, at_start=false)
+  v.reacts(fn() { (account(), ws(), stay()) }, fn(_) { @settings.vault_instance_sync_scope(inst_id, @signals.untracked(scope_now)) }, at_start=false)
   let view = fn() { (core.topic)("vaults", { "workspace": str(ws()) }).get().value }
   let list = fn() { (core.topic)("vaultItems", { "workspace": str(ws()), "vault": str(vault) }).get().value }
   let uses = fn() { (core.topic)("vaultUses", { "workspace": str(ws()), "vault": str(vault), "item": str(item) }).get().value }
@@ -64,18 +81,20 @@ pub fn vault_item_node(
   let rv = fn() { items(list(), "items").iter().find_first(fn(x) { text(Some(x), "id") == item }) }
   let plain = fn() { plain_now.get() }
   let lock_state = fn() {
-    let has = vv() is Some(_) && rv() is Some(_)
-    (flag(vv(), "open"), flag(list(), "open"), has, plain())
+    let has_v = vv() is Some(_)
+    let has_l = list() is Some(_)
+    let has = has_v && rv() is Some(_)
+    (has_v, flag(vv(), "open"), has_l, flag(list(), "open"), has, plain())
   }
-  let prev_lock : Ref[(Bool, Bool, Bool, Bool)] = Ref(@signals.untracked(lock_state))
+  let prev_lock : Ref[(Bool, Bool, Bool, Bool, Bool, Bool)] = Ref(@signals.untracked(lock_state))
   v.reacts(
     lock_state,
     fn(now) {
       let was = prev_lock.val
       prev_lock.val = now
-      let (was_v_open, was_l_open, was_has, was_plain) = was
-      let (v_open, l_open, has, is_plain) = now
-      if (was_v_open && !v_open) || (was_l_open && !l_open) {
+      let (was_has_v, was_v_open, was_has_l, was_l_open, was_has, was_plain) = was
+      let (has_v, v_open, has_l, l_open, has, is_plain) = now
+      if (was_has_v && has_v && was_v_open && !v_open) || (was_has_l && has_l && was_l_open && !l_open) {
         @settings.vault_lock_bump(@signals.untracked(ws), vault~)
       } else if (was_has && !has) || was_plain != is_plain {
         @settings.vault_instance_invalidate(inst_id)
@@ -97,6 +116,7 @@ pub fn vault_item_node(
   // 编辑 and 说明: opened first (its content is what is edited; the rest of it is written as it was by 说明)
   let opened_then = fn(f : (Json, Json) -> Unit) {
     guard @signals.untracked(active) else { return }
+    @settings.vault_instance_sync_scope(inst_id, @signals.untracked(scope_now))
     let r = @signals.untracked(rv)
     match (r, @signals.untracked(fn() { @settings.opened_plain(inst_id) })) {
       (Some(r), Some(p)) => f(r, p)
@@ -106,13 +126,35 @@ pub fn vault_item_node(
   }
   let edit = fn() {
     opened_then(fn(r, p) {
-      vault_editor_dialog(core, @signals.untracked(ws), vault, Some((r, p)), plain=@signals.untracked(plain))
+      close_own_dialog()
+      let rev : @signals.Signal[Bool] = @signals.signal(false)
+      dialog_revoked.val = Some(rev)
+      vault_editor_dialog(
+        core,
+        @signals.untracked(ws),
+        vault,
+        Some((r, p)),
+        plain=@signals.untracked(plain),
+        revoked=rev,
+        on_close_handle=fn(close) { dialog_close.val = Some(close) },
+      )
       dialog_serial.val = Some(@sf.last_presented())
     })
   }
   let about = fn() {
     opened_then(fn(r, p) {
-      vault_about_dialog(core, @signals.untracked(ws), vault, r, p)
+      close_own_dialog()
+      let rev : @signals.Signal[Bool] = @signals.signal(false)
+      dialog_revoked.val = Some(rev)
+      vault_about_dialog(
+        core,
+        @signals.untracked(ws),
+        vault,
+        r,
+        p,
+        revoked=rev,
+        on_close_handle=fn(close) { dialog_close.val = Some(close) },
+      )
       dialog_serial.val = Some(@sf.last_presented())
     })
   }
@@ -411,7 +453,7 @@ fn uses_sample() -> Array[Json] {
 fn secret_field_node(row : @view.View, inst_id : Int, fk : String, fv : () -> Json?) -> Unit {
   let secret = fn() { flag(fv(), "secret") }
   let shown = fn() { !secret() || @settings.item_field_shown(inst_id, fk) }
-  @sf.secret_value_row_node(row, fn() { text(fv(), "label") }, fn() { text(fv(), "value") }, shown~, mono=fn() { flag(fv(), "mono") }, fn(l) {
+  @sf.secret_value_row_node(row, fn() { text(fv(), "label") }, fn() { text(fv(), "value") }, shown~, mono=fn() { flag(fv(), "mono") }, selectable=false, fn(l) {
     l.show(secret, fn(e) {
       @sf.secret_key_node(
         e,
@@ -430,7 +472,7 @@ fn secret_field_node(row : @view.View, inst_id : Int, fk : String, fv : () -> Js
 /// A field of an item not opened yet (`fv`, as it is now) in `row`: its name over its value as the core masks it, its
 /// eye (opening the item, `open`, this field then shown), a spinner in its place while it opens.
 fn shut_field_node(row : @view.View, inst_id : Int, fk : String, fv : () -> Json?, open : (String, (Json) -> Unit) -> Unit) -> Unit {
-  @sf.secret_value_row_node(row, fn() { text(fv(), "label") }, fn() { text(fv(), "value") }, mono=fn() { true }, one_line=true, fn(l) {
+  @sf.secret_value_row_node(row, fn() { text(fv(), "label") }, fn() { text(fv(), "value") }, mono=fn() { true }, one_line=true, selectable=false, fn(l) {
     l.pick(fn() { @settings.item_opening(inst_id) }, fn(p, opening) {
       // (the spinner in the eye's room while it opens: the line no lower for it)
       p.width(Is(Some(@sf.secret_key_side))).height(Is(Some(@sf.secret_key_side))).lies_along(Is(Middle)).lines_up(Is(Some(Middle))) |> ignore
