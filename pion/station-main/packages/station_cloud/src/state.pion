@@ -286,7 +286,7 @@ fn bytes_to_utf8_str(b : Bytes) -> String {
 pub fn CloudFs::from_shell(client : builders_core::ShellClient, sep : String = "/") -> CloudFs {
   CloudFs::{
     read_text: fn(p : String) -> Result[Option[String], String] {
-      match shell_read_bytes_strict(client, p) {
+      match shell_read_bytes_strict(client, p, sep=sep) {
         Ok(Some(b)) => Ok(Some(bytes_to_utf8_str(b)))
         Ok(None) => Ok(None)
         Err(e) => Err(e)
@@ -1159,16 +1159,6 @@ pub fn write_person_chains_doc(
   (fs.write_private_text)(path, body)
 }
 
-/// Persist personal lock chains to `<data>/mesh/person-chains.json`.
-pub fn write_person_chains(
-  data : String,
-  chains : Array[(String, Array[form::Json])],
-  fs : CloudFs,
-  sep : String = "/",
-) -> Result[Unit, String] {
-  write_person_chains_doc(data, PersonChainsDoc::{ chains: chains, heard: None, aside: None }, fs, sep=sep)
-}
-
 pub fn read_off(path : String, fs : CloudFs) -> OffRecord {
   let text = match (fs.read_text)(turned_off_path(path)) {
     Ok(Some(t)) => t
@@ -1947,24 +1937,31 @@ pub fn CloudStore::save_state(self : CloudStore) -> Result[Unit, String] {
 
 /// The lock's state after entry `h`, built from the nearest cached state in `states` along its parents.
 /// 1:1 with `stateAt` in `station/src/cloud/state.ts`.
+/// The lock's state after entry `h`, built from the nearest cached state in `states` along its parents.
+/// Fails closed with `Err(reason)` on missing parent, cycle, or invalid ancestor (never returns `None`
+/// to silently bypass clock/signature checks on long chains).
 fn state_at(
   h : String,
   find : (String) -> Option[form::Json],
   states : Map[String, lock::LockState],
   verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
-) -> Option[lock::LockState] {
+) -> Result[lock::LockState, String] {
   let path : Array[form::Json] = []
+  let visited : Map[String, Bool] = Map::new()
   let mut at : Option[String] = Some(h)
-  let mut steps = 0
-  while steps < 10000 {
+  while true {
     match at {
       None => break
       Some(cur) => {
         if states.contains(cur) {
           break
         }
+        if visited.contains(cur) {
+          return Err("cycle in lock parent chain")
+        }
+        visited.set(cur, true)
         match find(cur) {
-          None => return None
+          None => return Err("parent entry missing")
           Some(e) => {
             path.push(e)
             at = entry_prev(e)
@@ -1972,7 +1969,6 @@ fn state_at(
         }
       }
     }
-    steps = steps + 1
   }
   let mut s : Option[lock::LockState] = match at {
     None => None
@@ -1984,18 +1980,21 @@ fn state_at(
     let next_s = match s {
       None => match station_rules_bridge::genesis(e, verify_fn=verify_fn) {
         Ok(st) => st
-        Err(_) => return None
+        Err(err) => return Err(lock::error_msg(err))
       }
       Some(prev_st) => match station_rules_bridge::apply(prev_st, e, None, verify_fn=verify_fn) {
         Ok(st) => st
-        Err(_) => return None
+        Err(err) => return Err(lock::error_msg(err))
       }
     }
     states.set(hash_of_entry(e), next_s)
     s = Some(next_s)
     i = i - 1
   }
-  s
+  match s {
+    Some(st) => Ok(st)
+    None => Err("parent state unavailable")
+  }
 }
 
 fn make_now_cb(
@@ -2007,8 +2006,8 @@ fn make_now_cb(
     None => None
     Some(now_val) => Some(fn(parent : String, e : form::Json, find : (String) -> Option[form::Json]) -> Option[String] {
       match state_at(parent, find, states, verify_fn) {
-        None => None
-        Some(at_st) => match station_rules_bridge::apply(at_st, e, Some(now_val), verify_fn=verify_fn) {
+        Err(msg) => Some(msg)
+        Ok(at_st) => match station_rules_bridge::apply(at_st, e, Some(now_val), verify_fn=verify_fn) {
           Ok(_) => None
           Err(err) => Some(lock::error_msg(err))
         }

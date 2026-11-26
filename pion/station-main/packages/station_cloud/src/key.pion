@@ -72,21 +72,113 @@ pub fn classify_read_none(
   }
 }
 
-/// Read raw bytes from `client/shell` with fail-closed `fs.lstat` disambiguation on `null`.
+fn readdir_has_name(items : Array[base_codec::Json], target : String) -> Bool {
+  let mut i = 0
+  while i < items.length() {
+    match items[i] {
+      base_codec::Json::Str(s) => if s == target { return true }
+      base_codec::Json::Obj(fields) => {
+        match base_codec::json_obj_get(fields, "name") {
+          Some(base_codec::Json::Str(s)) => if s == target { return true }
+          _ => ()
+        }
+      }
+      _ => ()
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Classify a `None` result from `client/shell` `fs.bytes` by walking `fs.lstat` and `fs.readdir`
+/// up the ancestor chain:
+/// - If `fs.lstat(path)` is non-null -> file exists -> fail closed (`Err`).
+/// - If both `fs.bytes(path)` and `fs.lstat(path)` are null, walk up to the nearest existing ancestor
+///   directory (`lstat(dir) != null`):
+///   - If `fs.readdir(dir)` is null/error (e.g. `chmod 0000` untraversable parent) or lists the next
+///     path component -> fail closed (`Err("cannot read existing file or directory: ...")`).
+///   - Only when the nearest existing ancestor is readable via `fs.readdir` and confirms the next
+///     component is absent -> return `Ok(None)` (genuine NotFound).
+pub fn classify_read_none_with_ancestors(
+  path : String,
+  sep : String,
+  lstat_fn : (String) -> Result[base_codec::Json, String],
+  readdir_fn : (String) -> Result[base_codec::Json, String],
+) -> Result[Option[Bytes], String] {
+  match lstat_fn(path) {
+    Ok(base_codec::Json::Null) => ()
+    Ok(_) => return Err("cannot read existing file or directory: " + path)
+    Err(e) => return Err(e)
+  }
+  let mut child_path = path
+  let mut depth = 0
+  while depth < 256 {
+    let parent = nodepath::dirname(sep, child_path)
+    let child_name = nodepath::basename(sep, child_path)
+    if parent == child_path {
+      match readdir_fn(parent) {
+        Ok(base_codec::Json::Arr(items)) => {
+          if child_name != "" && readdir_has_name(items, child_name) {
+            return Err("cannot read existing file or directory: " + child_path)
+          }
+          return Ok(None)
+        }
+        Ok(_) => return Err("cannot read existing file or directory: " + parent)
+        Err(e) => return Err(e)
+      }
+    }
+    match lstat_fn(parent) {
+      Err(e) => return Err(e)
+      Ok(base_codec::Json::Null) => {
+        child_path = parent
+      }
+      Ok(_) => {
+        match readdir_fn(parent) {
+          Ok(base_codec::Json::Arr(items)) => {
+            if readdir_has_name(items, child_name) {
+              return Err("cannot read existing file or directory: " + child_path)
+            }
+            return Ok(None)
+          }
+          Ok(_) => return Err("cannot read existing file or directory: " + parent)
+          Err(e) => return Err(e)
+        }
+      }
+    }
+    depth = depth + 1
+  }
+  Err("cannot read existing file or directory: " + path)
+}
+
+/// Read raw bytes from `client/shell` with fail-closed `fs.lstat` + ancestor `fs.readdir` disambiguation on `null`.
 pub fn shell_read_bytes_strict(
   client : builders_core::ShellClient,
   path : String,
+  sep : String = "/",
 ) -> Result[Option[Bytes], String] {
   match client.read_bytes(path) {
     Ok(Some(b)) => Ok(Some(b))
     Ok(None) => {
-      let args = base_codec::json_obj([("path", base_codec::json_str(path))])
-      // sync: distinguish ENOENT from EACCES/IO error when fs.bytes returns null
-      let lstat_res = match client.shell_sync_json("fs.lstat", args) {
-        Ok(v) => Ok(v)
-        Err(e) => Err(e.message)
-      }
-      classify_read_none(path, lstat_res)
+      classify_read_none_with_ancestors(
+        path,
+        sep,
+        fn(p : String) -> Result[base_codec::Json, String] {
+          let args = base_codec::json_obj([("path", base_codec::json_str(p))])
+          // sync: distinguish ENOENT from EACCES/IO error when fs.bytes returns null
+          match client.shell_sync_json("fs.lstat", args) {
+            Ok(v) => Ok(v)
+            Err(e) => Err(e.message)
+          }
+        },
+        fn(d : String) -> Result[base_codec::Json, String] {
+          let args = base_codec::json_obj([("path", base_codec::json_str(d))])
+          // sync: verify nearest existing ancestor directory is readable before treating null as ENOENT
+          match client.shell_sync_json("fs.readdir", args) {
+            Ok(v) => Ok(v)
+            Err(e) => Err(e.message)
+          }
+        },
+      )
     }
     Err(e) => Err(e.message)
   }
@@ -95,7 +187,7 @@ pub fn shell_read_bytes_strict(
 pub fn KeyFs::from_shell(client : builders_core::ShellClient, sep : String = "/") -> KeyFs {
   KeyFs::{
     read_bytes: fn(path : String) -> Result[Option[Bytes], String] {
-      shell_read_bytes_strict(client, path)
+      shell_read_bytes_strict(client, path, sep=sep)
     },
     write_private: fn(path : String, data : Bytes) -> Result[Unit, String] {
       match client.write_atomic(path, data, mode=PRIVATE_FILE_MODE, sync=true, mkdir=true, sep=sep) {

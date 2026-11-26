@@ -1738,3 +1738,117 @@ test "R4 #3: fs.bytes null + fs.lstat non-null fails closed on read_lock and loa
   }
   assert_true(!overwrote_key)
 }
+
+// ── R5 Final 2-Item Regression Tests ──
+
+test "R5 #1: state_at / make_now_cb fails closed on missing parent and cycle (never returns None)" {
+  let empty_states : Map[String, lock::LockState] = Map::new()
+  let now_cb = match make_now_cb(Some(1700000050.0), empty_states, None) {
+    Some(f) => f
+    None => {
+      assert_true(false)
+      fn(_p : String, _e : form::Json, _find : (String) -> Option[form::Json]) -> Option[String] { None }
+    }
+  }
+  let dummy_entry = make_genesis_entry("ws_cycle")
+
+  // 1. Broken/missing parent returns explicit refusal reason (Some), never None
+  match now_cb("deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef", dummy_entry, fn(_h : String) -> Option[form::Json] { None }) {
+    Some(msg) => assert_true(msg.contains("parent entry missing"))
+    None => assert_true(false)
+  }
+
+  // 2. Cycle in parent chain (a -> b -> a) returns explicit refusal reason (Some), never None
+  let ha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  let hb = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  let ea = form::Json::Obj([("prev", form::Json::Str(hb))])
+  let eb = form::Json::Obj([("prev", form::Json::Str(ha))])
+  let cyclic_find = fn(h : String) -> Option[form::Json] {
+    if h == ha { Some(ea) } else if h == hb { Some(eb) } else { None }
+  }
+  match now_cb(ha, dummy_entry, cyclic_find) {
+    Some(msg) => assert_true(msg.contains("cycle"))
+    None => assert_true(false)
+  }
+}
+
+test "R5 #2: untraversable parent dir (chmod 0000: bytes=null, lstat(path)=null, lstat(dir)!=null, readdir(dir)=null) fails closed" {
+  let dir_stat = base_codec::json_obj([("kind", base_codec::json_str("dir"))])
+  // Simulate chmod 0000 on /d/mesh:
+  // - fs.lstat("/d/mesh/lock.json") -> null (EACCES)
+  // - fs.lstat("/d/mesh") -> dir_stat (exists!)
+  // - fs.readdir("/d/mesh") -> null (EACCES!)
+  let lstat_chmod0 = fn(p : String) -> Result[base_codec::Json, String] {
+    if p == "/d/mesh" || p == "/d" {
+      Ok(dir_stat)
+    } else {
+      Ok(base_codec::json_null())
+    }
+  }
+  let readdir_chmod0 = fn(_d : String) -> Result[base_codec::Json, String] {
+    Ok(base_codec::json_null())
+  }
+
+  // CloudFs::read_text & read_lock fail closed
+  let cloud_fs_chmod0 = CloudFs::{
+    read_text: fn(p : String) -> Result[Option[String], String] {
+      match classify_read_none_with_ancestors(p, "/", lstat_chmod0, readdir_chmod0) {
+        Ok(None) => Ok(None)
+        Ok(Some(_)) => Ok(Some(""))
+        Err(e) => Err(e)
+      }
+    },
+    write_private_text: fn(_p : String, _t : String) -> Result[Unit, String] { Ok(()) },
+    remove_file: fn(_p : String) -> Result[Unit, String] { Ok(()) },
+    rename_file: fn(_a : String, _b : String) -> Result[Unit, String] { Ok(()) },
+    mkdir_p: fn(_p : String) -> Result[Unit, String] { Ok(()) },
+    exists: fn(_p : String) -> Bool { false },
+  }
+  match (cloud_fs_chmod0.read_text)("/d/mesh/lock.json") {
+    Err(msg) => assert_true(msg.contains("cannot read existing file or directory"))
+    _ => assert_true(false)
+  }
+  match read_lock("/d", cloud_fs_chmod0) {
+    Some(kl) => match kl.state {
+      None => ()
+      Some(_) => assert_true(false)
+    }
+    None => assert_true(false)
+  }
+
+  // KeyFs::read_bytes & load_key fail closed (never regenerate identity!)
+  let mut wrote_key = false
+  let key_fs_chmod0 = KeyFs::{
+    read_bytes: fn(p : String) -> Result[Option[Bytes], String] {
+      classify_read_none_with_ancestors(p, "/", lstat_chmod0, readdir_chmod0)
+    },
+    write_private: fn(_p : String, _b : Bytes) -> Result[Unit, String] {
+      wrote_key = true
+      Ok(())
+    },
+    random_bytes: fn(_n : Int) -> Result[Bytes, String] { Ok(must_hex(test_station_seed)) },
+  }
+  match load_key("/d", key_fs_chmod0) {
+    Ok(_) => assert_true(false)
+    Err(msg) => assert_true(msg.contains("cannot read existing file or directory"))
+  }
+  assert_true(!wrote_key)
+
+  // Genuine ENOENT: ancestor /d/mesh exists & readdir succeeds without "lock.json" -> Ok(None)
+  let readdir_ok_missing = fn(_d : String) -> Result[base_codec::Json, String] {
+    Ok(base_codec::json_arr([base_codec::json_str("cloud.json")]))
+  }
+  match classify_read_none_with_ancestors("/d/mesh/lock.json", "/", lstat_chmod0, readdir_ok_missing) {
+    Ok(None) => ()
+    _ => assert_true(false)
+  }
+
+  // Parent readdir lists "lock.json" even though lstat returned null -> fail closed!
+  let readdir_has_lock = fn(_d : String) -> Result[base_codec::Json, String] {
+    Ok(base_codec::json_arr([base_codec::json_str("lock.json")]))
+  }
+  match classify_read_none_with_ancestors("/d/mesh/lock.json", "/", lstat_chmod0, readdir_has_lock) {
+    Err(msg) => assert_true(msg.contains("cannot read existing file or directory"))
+    _ => assert_true(false)
+  }
+}
