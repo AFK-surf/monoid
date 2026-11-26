@@ -54,7 +54,7 @@ async fn upstream_eval(host : @host.Host, ask : Json) -> Json {
       Json::string(@nodepath.with_extension(std_str(ask, "sep"), std_str(ask, "path"), std_str(ask, "ext")))
     "path.relative_parts" =>
       match @nodepath.relative_parts(std_str(ask, "sep"), std_str(ask, "path")) {
-        Some(parts) => Json::array(parts.map(Json::string(_)))
+        Some(parts) => Json::array(parts.map(x => Json::string(x)))
         None => Json::null()
       }
     "url.parse" =>

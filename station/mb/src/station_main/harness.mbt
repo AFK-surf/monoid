@@ -59,7 +59,7 @@ pub async fn harness(host : @host.Host) -> Unit {
     let answer : Result[Json, String] = match op {
       "prepareLocalLinks" =>
         match prepare_local_links(s("text"), strs("paths"), s("workspace")) {
-          Ok((text, paths)) => Ok({ "text": Json::string(text), "paths": Json::array(paths.map(Json::string(_))) })
+          Ok((text, paths)) => Ok({ "text": Json::string(text), "paths": Json::array(paths.map(x => Json::string(x))) })
           Err(why) => Err(why)
         }
       "thumbnail" =>

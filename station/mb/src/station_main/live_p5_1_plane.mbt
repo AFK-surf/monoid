@@ -481,7 +481,7 @@ async fn Plane::call(self : Plane, op : String, arg : Json) -> Json {
       Json::null()
     }
     // (the relays tool's: still.fail's own relays; a workspace's own added or taken away, mesh/ways.ts)
-    "stillFails" => Json::array(@cloud_net.still_fails(self.state.view()).map(Json::string(_)))
+    "stillFails" => Json::array(@cloud_net.still_fails(self.state.view()).map(x => Json::string(x)))
     "addRelay" =>
       @cloud_net.add_relay(self.ways, text("workspace").unwrap_or(""), text("url").unwrap_or(""), text("by")).to_json() catch {
         @cloud_net.WaysRefusal(m) => raise @api_routes.Thrown("WaysRefusal", to_jv({ "message": Json::string(m) }))
@@ -567,7 +567,7 @@ fn lock_state_json(st : @lock.LockState, member_objects? : Bool = false) -> Json
   }
   let sign_keys : Map[String, Json] = {}
   for id, ks in st.sign_keys {
-    sign_keys[id] = Json::array(ks.map(Json::string(_)))
+    sign_keys[id] = Json::array(ks.map(x => Json::string(x)))
   }
   let members : Map[String, Json] = {}
   for sub, m in st.members {

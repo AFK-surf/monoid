@@ -181,7 +181,7 @@ async fn P55::start_copies(self : P55) -> Unit {
     },
     accounts_move: async fn(id, to) { to_jv(self.jobs("sharing.moveProfile", [Json::string(id), Json::string(to)])) },
     follow_accounts: Some(async fn(keys, map) {
-      match self.hub("hub.followAccounts", [Json::array(keys.map(Json::string(_))), Json::array(map.map(p => Json::array([Json::string(p.0), Json::string(p.1)])))]) {
+      match self.hub("hub.followAccounts", [Json::array(keys.map(x => Json::string(x))), Json::array(map.map(p => Json::array([Json::string(p.0), Json::string(p.1)])))]) {
         Number(n, ..) => n.to_int()
         _ => 0
       }
@@ -336,7 +336,7 @@ async fn P55::start_copies(self : P55) -> Unit {
   self.op("copies.overview", async fn(arg) { of_jv(copies.overview(jtext_or_empty(arg, "workspace"), manage=jtrue(arg, "manage"))) })
   self.op("copies.now", async fn(arg) { Json::string(copies.now(jtext(arg, "workspace"), jtext_or_empty(arg, "station"))) })
   self.op("copies.heard", async fn(arg) {
-    Json::array(copies.heard(jtext_or_empty(arg, "station"), jtext_or_empty(arg, "workspace"), core_strs(jfield(arg, "gens"))).map(Json::string(_)))
+    Json::array(copies.heard(jtext_or_empty(arg, "station"), jtext_or_empty(arg, "workspace"), core_strs(jfield(arg, "gens"))).map(x => Json::string(x)))
   })
   self.op("retireAsks.tool", async fn(arg) {
     match arg {
