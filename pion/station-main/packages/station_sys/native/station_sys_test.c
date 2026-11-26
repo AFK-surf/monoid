@@ -124,9 +124,21 @@ static void win_make_temp_dir(char *out, size_t cap) {
     assert(tmp != NULL && tlen > 0);
     static unsigned seq = 0;
     seq += 1;
-    snprintf(out, cap, "%s\\sts_test_%lu_%u", tmp, (unsigned long)GetCurrentProcessId(), seq);
+    int n = snprintf(out, cap, "%.*s\\sts_test_%lu_%u", (int)tlen, tmp, (unsigned long)GetCurrentProcessId(), seq);
     sts_free(tmp);
-    assert(CreateDirectoryA(out, NULL) != 0);
+    assert(n > 0 && (size_t)n < cap);
+    int wn = MultiByteToWideChar(CP_UTF8, 0, out, -1, NULL, 0);
+    assert(wn > 0);
+    wchar_t *wout = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)wn);
+    assert(wout != NULL);
+    assert(MultiByteToWideChar(CP_UTF8, 0, out, -1, wout, wn) > 0);
+    BOOL ok = CreateDirectoryW(wout, NULL);
+    DWORD err = ok ? 0 : GetLastError();
+    free(wout);
+    if (!ok) {
+        fprintf(stderr, "CreateDirectoryW(%s) failed: err=%lu\n", out, (unsigned long)err);
+    }
+    assert(ok != 0);
 }
 
 static void win_write_file_str(const char *path, const char *s, int append) {
@@ -246,26 +258,35 @@ static void test_win_proc_and_pty(void) {
     drain_queue();
 
     // 2. Full-queue non-blocking sts_proc_close (adversarial deadlock regression).
-    // Pre-fill bounded queue to just below 2 MiB (30 * 64 KiB = 1.875 MiB, never self-blocks
-    // the consumer thread), then let child stdout push past 2 MiB so reader blocks.
+    // Pre-fill bounded queue to just below 2 MiB (31 * 64 KiB, never self-blocks consumer),
+    // then spawn flooder and deterministically wait until reader parks in sth_push_sys_bounded.
     uint8_t junk[65536];
     memset(junk, 'x', sizeof(junk));
-    for (int i = 0; i < 30; i++) {
+    for (int i = 0; i < 31; i++) {
         sth_push_sys_bounded(999, junk, sizeof(junk));
     }
-    const uint8_t flood_args[] = "/c\0for /L %i in (1,1,4000) do @echo FLOOD_LINE_012345678901234567890123456789\0";
+    const uint8_t flood_args[] = "/c\0for /L %i in (1,1,8000) do @echo FLOOD_LINE_0123456789012345678901234567890123456789\0";
     int64_t fpid = 0;
     int64_t fh = sts_proc_spawn(
         202, "cmd.exe", flood_args, (int64_t)(sizeof(flood_args) - 1), NULL, 0, NULL,
         STS_PROC_PIPE_STDOUT, &fpid, err, sizeof(err));
     assert(fh > 0);
-    assert(sts_proc_kill_handle(fh, STS_SIG_KILL, 0) == 0);
-    // Must return immediately even while queue is full.
+    for (int64_t wdl = sth_now_ms() + 5000; sth_now_ms() < wdl; ) {
+        if (sts_bounded_push_inflight_for_test() > 0) break;
+        SwitchToThread();
+    }
+    assert(sts_bounded_push_inflight_for_test() > 0);
     int64_t t0 = sth_now_ms();
+    assert(sts_proc_kill_handle(fh, STS_SIG_KILL, 0) == 0);
     assert(sts_proc_close(fh) == 1);
-    assert(sth_now_ms() - t0 < 2000);
+    assert(sth_now_ms() - t0 < 500);
+    for (int i = 0; i < 200; i++) {
+        drain_queue();
+        if (sts_active_workers() == 0) break;
+        sts_wait_detached_for_test(25);
+    }
+    assert(sts_active_workers() == 0);
     drain_queue();
-    assert(sts_wait_detached_for_test(5000) == 1);
 
     // 3. ConPTY: STS_SIG_PROBE must NOT kill the child; write + resize + close work.
     const uint8_t pty_args[] = "/k\0echo PTY_READY\0";
@@ -315,21 +336,19 @@ static void test_win_udp_and_info(void) {
     assert(got == 1);
     assert(sts_udp_close(u2) == 1);
     assert(sts_udp_close(u2) == 0);
-    // Explicit close must emit exactly one STS_EV_UDP_CLOSED event.
+    // Wait for worker exit, then drain entire queue and assert strictly 1 STS_EV_UDP_CLOSED.
+    assert(sts_wait_detached_for_test(5000) == 1);
     int closed_cnt = 0;
-    deadline = sth_now_ms() + 5000;
-    while (closed_cnt == 0 && sth_now_ms() < deadline) {
+    for (;;) {
         int64_t len = 0;
-        uint8_t *ev = (uint8_t *)sth_wait(500, &len);
-        if (ev == NULL) continue;
+        uint8_t *ev = (uint8_t *)sth_wait(0, &len);
+        if (ev == NULL) break;
         if (ev[0] == STH_EV_SYS && read_u64_le(ev + 1) == 602 && len == 10 && ev[9] == STS_EV_UDP_CLOSED) {
             closed_cnt += 1;
         }
         sth_free(ev);
     }
     assert(closed_cnt == 1);
-    drain_queue();
-    assert(sts_wait_detached_for_test(5000) == 1);
 
     assert(sts_os_kind() == 2);
     assert(sts_env_set("STS_WIN_VAR", "ok_val") == 1);
@@ -862,10 +881,12 @@ static void test_proc_adversarial(void) {
         STS_PROC_NEW_PGID | STS_PROC_PIPE_STDOUT, &fpid, err, sizeof(err));
     free(fargs);
     assert(fh > 0 && fpid > 0);
-    // Give dd a brief moment to push past the remaining 64 KiB and park the reader.
-    for (int64_t wdl = sth_now_ms() + 50; sth_now_ms() < wdl; ) {
+    // Deterministically wait until reader thread is parked inside sth_push_sys_bounded.
+    for (int64_t wdl = sth_now_ms() + 5000; sth_now_ms() < wdl; ) {
+        if (sts_bounded_push_inflight_for_test() > 0) break;
         sched_yield();
     }
+    assert(sts_bounded_push_inflight_for_test() > 0);
     int64_t t0 = sth_now_ms();
     assert(sts_proc_close(fh) == 1);
     assert(sth_now_ms() - t0 < 100); // MUST return immediately while queue is saturated!
@@ -884,12 +905,13 @@ static void test_proc_adversarial(void) {
     assert(zh > 0 && zpid > 0);
     assert(sts_proc_close(zh) == 1);
 
-    // Drain so the parked reader exits, closes stdout -> SIGPIPE kills dd -> reaper finishes.
-    for (int i = 0; i < 100; i++) {
+    // Shutdown completion contract: drain until sts_active_workers() == 0 AND queue is empty.
+    for (int i = 0; i < 200; i++) {
         drain_queue();
-        if (sts_wait_detached_for_test(50) == 1) break;
+        if (sts_active_workers() == 0) break;
+        sts_wait_detached_for_test(25);
     }
-    assert(sts_wait_detached_for_test(5000) == 1);
+    assert(sts_active_workers() == 0);
     drain_queue();
     assert(waitpid((pid_t)fpid, &st, WNOHANG) == -1 && errno == ECHILD);
     assert(waitpid((pid_t)zpid, &st, WNOHANG) == -1 && errno == ECHILD);
@@ -1262,13 +1284,13 @@ static void test_udp(void) {
     assert(sts_udp_close(u1) == 1);
     assert(sts_udp_close(u2) == 1);
     assert(sts_udp_close(u2) == 0); // double close is a no-op
-    // Explicit close must emit exactly one STS_EV_UDP_CLOSED per closed socket.
+    // Wait for both UDP reader threads to exit, then drain entire queue and assert strictly 1 closed per ID.
+    assert(sts_wait_detached_for_test(5000) == 1);
     int closed_601 = 0, closed_602 = 0;
-    deadline = sth_now_ms() + 5000;
-    while ((closed_601 == 0 || closed_602 == 0) && sth_now_ms() < deadline) {
+    for (;;) {
         int64_t len = 0;
-        uint8_t *ev = (uint8_t *)sth_wait(500, &len);
-        if (ev == NULL) continue;
+        uint8_t *ev = (uint8_t *)sth_wait(0, &len);
+        if (ev == NULL) break;
         if (ev[0] == STH_EV_SYS && len == 10 && ev[9] == STS_EV_UDP_CLOSED) {
             uint64_t eid = read_u64_le(ev + 1);
             if (eid == 601) closed_601 += 1;
@@ -1277,8 +1299,6 @@ static void test_udp(void) {
         sth_free(ev);
     }
     assert(closed_601 == 1 && closed_602 == 1);
-    drain_queue();
-    assert(sts_wait_detached_for_test(5000) == 1);
     printf("  [PASS] udp (bind/port guard, loopback send/recv, send_once, explicit UdpClosed)\n");
 }
 

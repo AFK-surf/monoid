@@ -90,6 +90,7 @@ extern "C" fn sts_disk_of(path : Ptr, out_len : Ptr) -> Ptr
 extern "C" fn sts_machine_stats(out_len : Ptr) -> Ptr
 extern "C" fn sts_psi_pressure(out_len : Ptr) -> Ptr
 extern "C" fn sts_network_interfaces(out_len : Ptr) -> Ptr
+extern "C" fn sts_active_workers() -> Int
 extern "C" fn sts_free(ptr : Ptr) -> Unit
 
 // ---------------------------------------------------------------------------
@@ -694,7 +695,7 @@ pub fn PtyHandle::resize(self : PtyHandle, cols : Int, rows : Int) -> Bool {
 }
 
 pub fn PtyHandle::kill(self : PtyHandle, sig : Int) -> Bool {
-  sts_pty_kill(self.handle, sig) != 0
+  sts_pty_kill(self.handle, sig) > 0
 }
 
 pub fn PtyHandle::close(self : PtyHandle) -> Bool {
@@ -755,6 +756,10 @@ pub fn udp_send_once(addr : String, port : Int, data : Bytes) -> Int {
   let _ = addr.length()
   let _ = data.length()
   rc
+}
+
+pub fn active_workers() -> Int {
+  sts_active_workers()
 }
 
 // ---------------------------------------------------------------------------

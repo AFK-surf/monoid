@@ -213,7 +213,7 @@ static void *dup_bytes(const void *src, size_t len, int64_t *out_len) {
     if (out_len != NULL) {
         *out_len = (int64_t)len;
     }
-    uint8_t *out = (uint8_t *)malloc(len > 0 ? len : 1);
+    uint8_t *out = (uint8_t *)malloc(len + 1);
     if (out == NULL) {
         if (out_len != NULL) {
             *out_len = 0;
@@ -223,6 +223,7 @@ static void *dup_bytes(const void *src, size_t len, int64_t *out_len) {
     if (len > 0 && src != NULL) {
         memcpy(out, src, len);
     }
+    out[len] = 0;
     return out;
 }
 
@@ -327,10 +328,29 @@ void sts_free(void *ptr) {
 // Global detached worker tracker (for deterministic test synchronization)
 // ===========================================================================
 
+static _Atomic int32_t g_bounded_push_inflight = 0;
+
+static void push_sys_bounded_tracked(uint64_t event_id, const void *data, size_t len) {
+    atomic_fetch_add_explicit(&g_bounded_push_inflight, 1, memory_order_acq_rel);
+    sth_push_sys_bounded(event_id, data, len);
+    atomic_fetch_sub_explicit(&g_bounded_push_inflight, 1, memory_order_release);
+}
+
+int32_t sts_bounded_push_inflight_for_test(void) {
+    return atomic_load_explicit(&g_bounded_push_inflight, memory_order_acquire);
+}
+
 #ifdef _WIN32
 static SRWLOCK g_det_lock = SRWLOCK_INIT;
 static CONDITION_VARIABLE g_det_cond = CONDITION_VARIABLE_INIT;
 static int64_t g_det_active = 0;
+
+int32_t sts_active_workers(void) {
+    AcquireSRWLockExclusive(&g_det_lock);
+    int32_t n = (int32_t)g_det_active;
+    ReleaseSRWLockExclusive(&g_det_lock);
+    return n;
+}
 
 static void sts_detached_begin(void) {
     AcquireSRWLockExclusive(&g_det_lock);
@@ -381,6 +401,13 @@ static pthread_mutex_t g_det_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_det_cond;
 static pthread_once_t g_det_once = PTHREAD_ONCE_INIT;
 static int64_t g_det_active = 0;
+
+int32_t sts_active_workers(void) {
+    pthread_mutex_lock(&g_det_lock);
+    int32_t n = (int32_t)g_det_active;
+    pthread_mutex_unlock(&g_det_lock);
+    return n;
+}
 
 static void sts_det_init_once(void) {
     pthread_condattr_t attr;
@@ -677,6 +704,8 @@ typedef struct {
     uint64_t event_id;
     HANDLE h_dir;
     HANDLE h_stop;
+    HANDLE h_ready;
+    int ready_ok;
     HANDLE h_thread;
     char *filter_name; // non-NULL when watching a single file
 } win_fsw_t;
@@ -696,28 +725,29 @@ static int ascii_strcasecmp(const char *a, const char *b) {
 static DWORD WINAPI win_fsw_thread(LPVOID arg) {
     win_fsw_t *w = (win_fsw_t *)arg;
     HANDLE h_io = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (h_io == NULL) {
-        push_tag_ctrl(w->event_id, STS_EV_FS_CLOSED, NULL, 0);
+    uint8_t *buf = (uint8_t *)malloc(65536);
+    if (h_io == NULL || buf == NULL) {
+        free(buf);
+        if (h_io != NULL) CloseHandle(h_io);
+        w->ready_ok = 0;
+        SetEvent(w->h_ready);
         return 0;
     }
-    uint8_t *buf = (uint8_t *)malloc(65536);
-    if (buf == NULL) {
+    const DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
+                         FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_SIZE |
+                         FILE_NOTIFY_CHANGE_LAST_WRITE;
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof(ov));
+    ov.hEvent = h_io;
+    BOOL first_ok = ReadDirectoryChangesW(w->h_dir, buf, 65536, FALSE, filter, NULL, &ov, NULL);
+    w->ready_ok = first_ok ? 1 : 0;
+    SetEvent(w->h_ready);
+    if (!first_ok) {
+        free(buf);
         CloseHandle(h_io);
-        push_tag_ctrl(w->event_id, STS_EV_FS_CLOSED, NULL, 0);
         return 0;
     }
     for (;;) {
-        ResetEvent(h_io);
-        OVERLAPPED ov;
-        memset(&ov, 0, sizeof(ov));
-        ov.hEvent = h_io;
-        DWORD filter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
-                       FILE_NOTIFY_CHANGE_ATTRIBUTES | FILE_NOTIFY_CHANGE_SIZE |
-                       FILE_NOTIFY_CHANGE_LAST_WRITE;
-        BOOL ok = ReadDirectoryChangesW(w->h_dir, buf, 65536, FALSE, filter, NULL, &ov, NULL);
-        if (!ok) {
-            break;
-        }
         HANDLE waits[2] = { h_io, w->h_stop };
         DWORD wr = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
         if (wr == WAIT_OBJECT_0 + 1) {
@@ -736,42 +766,48 @@ static DWORD WINAPI win_fsw_thread(LPVOID arg) {
         if (bytes == 0) {
             uint8_t ovf[2] = { STS_EV_FS_CHANGE, STS_FS_OVERFLOW };
             sth_push_sys(w->event_id, ovf, sizeof(ovf));
-            continue;
-        }
-        size_t off = 0;
-        const size_t hdr = offsetof(FILE_NOTIFY_INFORMATION, FileName);
-        for (;;) {
-            if (off + hdr > (size_t)bytes) {
-                break;
-            }
-            const FILE_NOTIFY_INFORMATION *fni = (const FILE_NOTIFY_INFORMATION *)(buf + off);
-            if ((size_t)fni->FileNameLength > (size_t)bytes - off - hdr) {
-                break;
-            }
-            int wchars = (int)(fni->FileNameLength / sizeof(wchar_t));
-            char *name = wide_to_utf8_len(fni->FileName, wchars);
-            if (w->filter_name == NULL || (name != NULL && ascii_strcasecmp(name, w->filter_name) == 0)) {
-                size_t nlen = name != NULL ? strlen(name) : 0;
-                uint8_t kind = (fni->Action == FILE_ACTION_MODIFIED) ? STS_FS_CHANGE : STS_FS_RENAME;
-                uint8_t *msg = (uint8_t *)malloc(2 + nlen);
-                if (msg != NULL) {
-                    msg[0] = STS_EV_FS_CHANGE;
-                    msg[1] = kind;
-                    if (nlen > 0) {
-                        memcpy(msg + 2, name, nlen);
-                    }
-                    sth_push_sys(w->event_id, msg, 2 + nlen);
-                    free(msg);
+        } else {
+            size_t off = 0;
+            const size_t hdr = offsetof(FILE_NOTIFY_INFORMATION, FileName);
+            for (;;) {
+                if (off + hdr > (size_t)bytes) {
+                    break;
                 }
+                const FILE_NOTIFY_INFORMATION *fni = (const FILE_NOTIFY_INFORMATION *)(buf + off);
+                if ((size_t)fni->FileNameLength > (size_t)bytes - off - hdr) {
+                    break;
+                }
+                int wchars = (int)(fni->FileNameLength / sizeof(wchar_t));
+                char *name = wide_to_utf8_len(fni->FileName, wchars);
+                if (w->filter_name == NULL || (name != NULL && ascii_strcasecmp(name, w->filter_name) == 0)) {
+                    size_t nlen = name != NULL ? strlen(name) : 0;
+                    uint8_t kind = (fni->Action == FILE_ACTION_MODIFIED) ? STS_FS_CHANGE : STS_FS_RENAME;
+                    uint8_t *msg = (uint8_t *)malloc(2 + nlen);
+                    if (msg != NULL) {
+                        msg[0] = STS_EV_FS_CHANGE;
+                        msg[1] = kind;
+                        if (nlen > 0) {
+                            memcpy(msg + 2, name, nlen);
+                        }
+                        sth_push_sys(w->event_id, msg, 2 + nlen);
+                        free(msg);
+                    }
+                }
+                free(name);
+                if (fni->NextEntryOffset == 0 ||
+                    (fni->NextEntryOffset & 3u) != 0 ||
+                    (size_t)fni->NextEntryOffset < hdr ||
+                    (size_t)fni->NextEntryOffset > (size_t)bytes - off) {
+                    break;
+                }
+                off += fni->NextEntryOffset;
             }
-            free(name);
-            if (fni->NextEntryOffset == 0 ||
-                (fni->NextEntryOffset & 3u) != 0 ||
-                (size_t)fni->NextEntryOffset < hdr ||
-                (size_t)fni->NextEntryOffset > (size_t)bytes - off) {
-                break;
-            }
-            off += fni->NextEntryOffset;
+        }
+        ResetEvent(h_io);
+        memset(&ov, 0, sizeof(ov));
+        ov.hEvent = h_io;
+        if (!ReadDirectoryChangesW(w->h_dir, buf, 65536, FALSE, filter, NULL, &ov, NULL)) {
+            break;
         }
     }
     free(buf);
@@ -841,7 +877,10 @@ int64_t sts_fs_watch_open(uint64_t event_id, const char *path) {
     w->h_dir = h_dir;
     w->filter_name = filter_name;
     w->h_stop = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (w->h_stop == NULL) {
+    w->h_ready = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (w->h_stop == NULL || w->h_ready == NULL) {
+        if (w->h_ready != NULL) CloseHandle(w->h_ready);
+        if (w->h_stop != NULL) CloseHandle(w->h_stop);
         free(w->filter_name);
         CloseHandle(h_dir);
         free(w);
@@ -849,6 +888,19 @@ int64_t sts_fs_watch_open(uint64_t event_id, const char *path) {
     }
     w->h_thread = CreateThread(NULL, 0, win_fsw_thread, w, 0, NULL);
     if (w->h_thread == NULL) {
+        CloseHandle(w->h_ready);
+        CloseHandle(w->h_stop);
+        CloseHandle(h_dir);
+        free(w->filter_name);
+        free(w);
+        return -1;
+    }
+    WaitForSingleObject(w->h_ready, INFINITE);
+    CloseHandle(w->h_ready);
+    w->h_ready = NULL;
+    if (!w->ready_ok) {
+        WaitForSingleObject(w->h_thread, INFINITE);
+        CloseHandle(w->h_thread);
         CloseHandle(w->h_stop);
         CloseHandle(h_dir);
         free(w->filter_name);
@@ -1030,7 +1082,7 @@ static DWORD WINAPI win_pipe_reader_thread(LPVOID arg) {
             if (atomic_load_explicit(&p->closing, memory_order_acquire)) {
                 break;
             }
-            sth_push_sys_bounded(p->event_id, buf, (size_t)n + 1);
+            push_sys_bounded_tracked(p->event_id, buf, (size_t)n + 1);
             if (atomic_load_explicit(&p->closing, memory_order_acquire)) {
                 break;
             }
@@ -1573,8 +1625,7 @@ int32_t sts_proc_kill_handle(int64_t handle, int32_t sig, int32_t group) {
     }
     int32_t rc = -1;
     if (sig == STS_SIG_PROBE) {
-        DWORD code = 0;
-        rc = (GetExitCodeProcess(p->h_proc, &code) && code == STILL_ACTIVE) ? 0 : -1;
+        rc = (WaitForSingleObject(p->h_proc, 0) == WAIT_TIMEOUT) ? 0 : -1;
     } else if (group) {
         DWORD pid = p->pid;
         ReleaseSRWLockExclusive(&p->kill_lock);
@@ -1605,10 +1656,9 @@ int32_t sts_proc_close(int64_t handle) {
 int32_t sts_proc_kill(int32_t pid, int32_t sig, int32_t group) {
     if (pid <= 0) return -1;
     if (sig == STS_SIG_PROBE) {
-        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
+        HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
         if (h == NULL) return GetLastError() == ERROR_ACCESS_DENIED ? 0 : -1;
-        DWORD code = 0;
-        int alive = GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
+        int alive = (WaitForSingleObject(h, 0) == WAIT_TIMEOUT);
         CloseHandle(h);
         return alive ? 0 : -1;
     }
@@ -2173,7 +2223,7 @@ static DWORD WINAPI win_pty_read_thread(LPVOID arg) {
             if (atomic_load_explicit(&pt->closing, memory_order_acquire)) {
                 break;
             }
-            sth_push_sys_bounded(pt->event_id, buf, (size_t)n + 1);
+            push_sys_bounded_tracked(pt->event_id, buf, (size_t)n + 1);
             if (atomic_load_explicit(&pt->closing, memory_order_acquire)) {
                 break;
             }
@@ -2581,7 +2631,7 @@ static DWORD WINAPI win_udp_recv_thread(LPVOID arg) {
                     put_u16_le(msg + 3, (uint16_t)alen);
                     memcpy(msg + 5, addr_str, alen);
                     if (n > 0) memcpy(msg + 5 + alen, buf, (size_t)n);
-                    sth_push_sys_bounded(u->event_id, msg, total);
+                    push_sys_bounded_tracked(u->event_id, msg, total);
                     free(msg);
                 }
             }
@@ -3715,7 +3765,7 @@ static void *posix_pipes_thread(void *arg) {
                     }
                 } else {
                     buf[0] = (uint8_t)(idx == 0 ? STS_EV_PROC_STDOUT : STS_EV_PROC_STDERR);
-                    sth_push_sys_bounded(p->event_id, buf, (size_t)got + 1);
+                    push_sys_bounded_tracked(p->event_id, buf, (size_t)got + 1);
                     if (atomic_load_explicit(&p->closing, memory_order_acquire)) break;
                 }
             }
@@ -3855,17 +3905,27 @@ static void *posix_wait_thread(void *arg) {
 
     int status = 0;
     pid_t wr = -1;
-    pthread_mutex_lock(&p->kill_lock);
-    p->exited = 1;
-    do {
-        wr = waitpid(p->pid, &status, WNOHANG);
-    } while (wr < 0 && errno == EINTR);
-    if (wr == 0) {
+    if (wid == 0) {
+        pthread_mutex_lock(&p->kill_lock);
+        p->exited = 1;
+        do {
+            wr = waitpid(p->pid, &status, WNOHANG);
+        } while (wr < 0 && errno == EINTR);
+        pthread_mutex_unlock(&p->kill_lock);
+        if (wr == 0) {
+            do {
+                wr = waitpid(p->pid, &status, 0);
+            } while (wr < 0 && errno == EINTR);
+        }
+    } else {
+        // waitid failed (non-EINTR): block in waitpid WITHOUT holding kill_lock.
         do {
             wr = waitpid(p->pid, &status, 0);
         } while (wr < 0 && errno == EINTR);
+        pthread_mutex_lock(&p->kill_lock);
+        p->exited = 1;
+        pthread_mutex_unlock(&p->kill_lock);
     }
-    pthread_mutex_unlock(&p->kill_lock);
 
     pthread_mutex_lock(&p->stdin_lock);
     p->stdin_aborted = 1;
@@ -4035,24 +4095,49 @@ static char *resolve_program_for_cwd(const char *program, char **envp, const cha
         if (path == NULL) path = "/usr/bin:/bin";
     }
     size_t pl = strlen(program);
-    char cwd_buf[PATH_MAX];
-    char abs_base[PATH_MAX * 2];
-    const char *base_dir = ".";
+    char *dyn_base = NULL;
+    const char *base_dir = NULL;
     if (cwd != NULL && cwd[0] == '/') {
         base_dir = cwd;
-    } else if (getcwd(cwd_buf, sizeof(cwd_buf)) != NULL) {
-        if (cwd != NULL && cwd[0] != '\0') {
-            int n = snprintf(abs_base, sizeof(abs_base), "%s/%s", cwd_buf, cwd);
-            if (n > 0 && (size_t)n < sizeof(abs_base)) {
-                base_dir = abs_base;
-            } else {
-                base_dir = cwd;
+    } else {
+        size_t cap = PATH_MAX;
+        char *gbuf = NULL;
+        for (;;) {
+            char *next = (char *)realloc(gbuf, cap);
+            if (next == NULL) {
+                free(gbuf);
+                if (out_err != NULL) *out_err = ENOMEM;
+                return NULL;
             }
-        } else {
-            base_dir = cwd_buf;
+            gbuf = next;
+            if (getcwd(gbuf, cap) != NULL) {
+                break;
+            }
+            if (errno != ERANGE || cap >= (1u << 20)) {
+                int e = errno;
+                free(gbuf);
+                if (out_err != NULL) *out_err = e;
+                return NULL;
+            }
+            cap *= 2;
         }
-    } else if (cwd != NULL && cwd[0] != '\0') {
-        base_dir = cwd;
+        if (cwd != NULL && cwd[0] != '\0') {
+            size_t gl = strlen(gbuf);
+            size_t cl = strlen(cwd);
+            dyn_base = (char *)malloc(gl + 1 + cl + 1);
+            if (dyn_base == NULL) {
+                free(gbuf);
+                if (out_err != NULL) *out_err = ENOMEM;
+                return NULL;
+            }
+            memcpy(dyn_base, gbuf, gl);
+            dyn_base[gl] = '/';
+            memcpy(dyn_base + gl + 1, cwd, cl + 1);
+            free(gbuf);
+        } else {
+            dyn_base = gbuf;
+        }
+        base_dir = dyn_base;
     }
 
     int saved_err = 0;
@@ -4089,6 +4174,7 @@ static char *resolve_program_for_cwd(const char *program, char **envp, const cha
             }
         }
         if (full == NULL) {
+            free(dyn_base);
             if (out_err != NULL) *out_err = ENOMEM;
             return NULL;
         }
@@ -4096,6 +4182,7 @@ static char *resolve_program_for_cwd(const char *program, char **envp, const cha
         if (stat(full, &st) == 0) {
             if (S_ISREG(st.st_mode)) {
                 if (access(full, X_OK) == 0) {
+                    free(dyn_base);
                     return full;
                 }
                 saved_err = EACCES;
@@ -4107,6 +4194,7 @@ static char *resolve_program_for_cwd(const char *program, char **envp, const cha
         if (end == NULL) break;
         p = end + 1;
     }
+    free(dyn_base);
     if (out_err != NULL) *out_err = saved_err ? saved_err : ENOENT;
     return NULL;
 }
@@ -4319,8 +4407,14 @@ int64_t sts_proc_spawn(
     int64_t id = workers_ok ? ht_insert(STS_HK_PROC, p) : -1;
     if (id < 0) {
         atomic_store_explicit(&p->closing, 1, memory_order_release);
-        kill((flags & STS_PROC_NEW_PGID) ? -pid : pid, SIGKILL);
-        if (!wait_started) {
+        if (wait_started) {
+            pthread_mutex_lock(&p->kill_lock);
+            if (!p->exited) {
+                kill((flags & STS_PROC_NEW_PGID) ? -pid : pid, SIGKILL);
+            }
+            pthread_mutex_unlock(&p->kill_lock);
+        } else {
+            kill((flags & STS_PROC_NEW_PGID) ? -pid : pid, SIGKILL);
             int st = 0;
             while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
         }
@@ -5082,7 +5176,7 @@ static void *posix_pty_read_thread(void *arg) {
                     }
                     break;
                 }
-                sth_push_sys_bounded(pt->event_id, buf, (size_t)got + 1);
+                push_sys_bounded_tracked(pt->event_id, buf, (size_t)got + 1);
                 if (atomic_load_explicit(&pt->closing, memory_order_acquire)) break;
             }
         }
@@ -5112,17 +5206,27 @@ static void *posix_pty_wait_thread(void *arg) {
 
     int status = 0;
     pid_t wr = -1;
-    pthread_mutex_lock(&pt->kill_lock);
-    pt->exited = 1;
-    do {
-        wr = waitpid(pt->pid, &status, WNOHANG);
-    } while (wr < 0 && errno == EINTR);
-    if (wr == 0) {
+    if (wid == 0) {
+        pthread_mutex_lock(&pt->kill_lock);
+        pt->exited = 1;
+        do {
+            wr = waitpid(pt->pid, &status, WNOHANG);
+        } while (wr < 0 && errno == EINTR);
+        pthread_mutex_unlock(&pt->kill_lock);
+        if (wr == 0) {
+            do {
+                wr = waitpid(pt->pid, &status, 0);
+            } while (wr < 0 && errno == EINTR);
+        }
+    } else {
+        // waitid failed (non-EINTR): block in waitpid WITHOUT holding kill_lock.
         do {
             wr = waitpid(pt->pid, &status, 0);
         } while (wr < 0 && errno == EINTR);
+        pthread_mutex_lock(&pt->kill_lock);
+        pt->exited = 1;
+        pthread_mutex_unlock(&pt->kill_lock);
     }
-    pthread_mutex_unlock(&pt->kill_lock);
 
     if (wr == pt->pid && !atomic_load_explicit(&pt->closing, memory_order_acquire)) {
         if (WIFSIGNALED(status)) {
@@ -5315,8 +5419,14 @@ int64_t sts_pty_spawn(
     int64_t id = workers_ok ? ht_insert(STS_HK_PTY, pt) : -1;
     if (id < 0) {
         atomic_store_explicit(&pt->closing, 1, memory_order_release);
-        kill(-pid, SIGKILL);
-        if (!wait_started) {
+        if (wait_started) {
+            pthread_mutex_lock(&pt->kill_lock);
+            if (!pt->exited) {
+                kill(-pid, SIGKILL);
+            }
+            pthread_mutex_unlock(&pt->kill_lock);
+        } else {
+            kill(-pid, SIGKILL);
             int st = 0;
             while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
         }
@@ -5481,7 +5591,7 @@ static void *posix_udp_recv_thread(void *arg) {
                     put_u16_le(msg + 3, (uint16_t)alen);
                     memcpy(msg + 5, addr_str, alen);
                     if (n > 0) memcpy(msg + 5 + alen, buf, (size_t)n);
-                    sth_push_sys_bounded(u->event_id, msg, total);
+                    push_sys_bounded_tracked(u->event_id, msg, total);
                     free(msg);
                 }
             }

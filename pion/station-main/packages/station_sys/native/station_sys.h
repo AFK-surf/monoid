@@ -16,11 +16,12 @@ extern "C" {
 // Bounded-queue close & shutdown contract:
 // - `sts_proc_close`, `sts_pty_close`, and `sts_udp_close` detach I/O teardown and
 //   return immediately even when `sth_push_sys_bounded` is saturated (zero deadlock).
-// - If a reader thread was already parked inside `sth_push_sys_bounded`, draining via
-//   `sth_wait` may surface at most one in-flight data frame for that closed `event_id`;
-//   callers must ignore frames belonging to closed `event_id`s.
-// - Before process shutdown, the sole consumer must drain `sth_wait(0)` to release any
-//   parked detached workers.
+// - Each independent reader thread (e.g. Windows proc stdout and stderr each have
+//   their own reader) that was already parked inside `sth_push_sys_bounded` may
+//   surface at most one in-flight data frame for that closed `event_id` (in addition
+//   to frames queued before `close`); callers must ignore frames for closed `event_id`s.
+// - Shutdown completion condition: the sole consumer loops draining `sth_wait` until
+//   both `sts_active_workers() == 0` and `sth_wait(0) == NULL`.
 // ---------------------------------------------------------------------------
 
 // fs.watch events (pushed via sth_push_sys):
@@ -179,9 +180,14 @@ void *sts_machine_stats(int64_t *out_len);
 void *sts_psi_pressure(int64_t *out_len);
 void *sts_network_interfaces(int64_t *out_len);
 
-// Deterministic test helper: wait until all detached background workers have exited (0 sleeps).
-// Returns 1 when active detached worker count reaches 0, 0 on timeout.
+// Active detached background worker count (0 when all detached workers have exited).
+int32_t sts_active_workers(void);
+
+// Deterministic test helpers:
+// - `sts_wait_detached_for_test`: wait until `sts_active_workers() == 0` (1=done, 0=timeout).
+// - `sts_bounded_push_inflight_for_test`: count of reader threads currently inside `sth_push_sys_bounded`.
 int32_t sts_wait_detached_for_test(int64_t timeout_ms);
+int32_t sts_bounded_push_inflight_for_test(void);
 
 // Free any buffer returned by `sts_*`.
 void sts_free(void *ptr);
