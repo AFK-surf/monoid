@@ -201,7 +201,11 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
             fn() { dismissed_now(serial) },
             shown~,
             gone~,
-            covered_by=fn() { sheet_over(serial) },
+            covered_by=fn() {
+              let out : Ref[Double?] = Ref(None)
+              in_win(fn() { out.val = sheet_over(serial) })
+              out.val
+            },
             // (how tall it rises, for a sheet under it pushed up out of its way so far: sheet_over's, as the host's)
             rises=fn(h) { p.sheet_h.set(h) },
             in_place?=p.in_place,

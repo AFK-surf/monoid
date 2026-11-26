@@ -128,7 +128,9 @@ pub fn vault_item_node(
       close_own_dialog()
       let rev : @signals.Signal[Bool] = @signals.signal(false)
       let open_stay = @signals.untracked(stay)
+      let open_scope = @signals.untracked(scope_now)
       let my_serial : Ref[Int] = Ref(0)
+      let my_clear : Ref[(() -> Unit)?] = Ref(None)
       dialog_revoked.val = Some(rev)
       vault_editor_dialog(
         core,
@@ -137,16 +139,29 @@ pub fn vault_item_node(
         Some((r, p)),
         plain=@signals.untracked(plain),
         revoked=rev,
-        on_clear_handle=fn(clear) { dialog_clear.val = Some(clear) },
+        on_clear_handle=fn(clear) {
+          my_clear.val = Some(clear)
+          dialog_clear.val = Some(clear)
+        },
         can_pop=fn() {
+          let now_scope = @signals.untracked(scope_now)
           @signals.untracked(stay) == open_stay &&
-          @settings.vault_instance_alive_stay(inst_id, open_stay)
+          @settings.vault_instance_alive_stay(inst_id, open_stay) &&
+          now_scope.account == open_scope.account &&
+          now_scope.workspace == open_scope.workspace &&
+          now_scope.vault == open_scope.vault &&
+          now_scope.vault_gen == open_scope.vault_gen
         },
         on_gone=fn() {
+          rev.set(true)
+          match my_clear.val {
+            Some(clear) => clear()
+            None => ()
+          }
+          // Keep dialog_serial.val so a lock during pop_out_ms exit animation still hard-drops the overlay.
           if dialog_serial.val == Some(my_serial.val) {
             dialog_revoked.val = None
             dialog_clear.val = None
-            dialog_serial.val = None
           }
         },
       )
@@ -159,6 +174,7 @@ pub fn vault_item_node(
       close_own_dialog()
       let rev : @signals.Signal[Bool] = @signals.signal(false)
       let my_serial : Ref[Int] = Ref(0)
+      let my_clear : Ref[(() -> Unit)?] = Ref(None)
       dialog_revoked.val = Some(rev)
       vault_about_dialog(
         core,
@@ -167,12 +183,20 @@ pub fn vault_item_node(
         r,
         p,
         revoked=rev,
-        on_clear_handle=fn(clear) { dialog_clear.val = Some(clear) },
+        on_clear_handle=fn(clear) {
+          my_clear.val = Some(clear)
+          dialog_clear.val = Some(clear)
+        },
         on_gone=fn() {
+          rev.set(true)
+          match my_clear.val {
+            Some(clear) => clear()
+            None => ()
+          }
+          // Keep dialog_serial.val so a lock during pop_out_ms exit animation still hard-drops the overlay.
           if dialog_serial.val == Some(my_serial.val) {
             dialog_revoked.val = None
             dialog_clear.val = None
-            dialog_serial.val = None
           }
         },
       )

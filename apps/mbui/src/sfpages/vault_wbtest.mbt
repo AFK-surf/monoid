@@ -1691,3 +1691,110 @@ test "PR-B0: real dual-window button lock from window A drops window B editor on
   assert_true(b_reopen_ok.val, msg="Window B should display its newly opened dialog")
   assert_true(b_reopen_no_a.val, msg="Window B must still not display Window A's dialog")
 }
+
+///|
+test "PR-B0: lock during normal-close pop_out_ms hard-drops private title on frame 1 and blocks late file pick" {
+  let pending : Array[(Result[Json, Json]) -> Unit] = []
+  let vault_open : @signals.Signal[Bool] = @signals.signal(true)
+  let private_name = "绝密证书-退场锁库"
+  let t = vault_isolation_tester(
+    pending,
+    w=1100.0,
+    over=fn(base) {
+      {
+        ..base,
+        topic_read: fn(name, params) {
+          let read = (base.topic_read)(name, params)
+          if name == "vaultItems" {
+            let open_now = vault_open.get()
+            match read.value {
+              Some(Object(m)) => {
+                let out = Map::from_iter(m.iter())
+                out["open"] = Json::boolean(open_now)
+                { ..read, value: Some(Json::object(out)) }
+              }
+              _ => read
+            }
+          } else {
+            read
+          }
+        },
+      }
+    },
+    fn(root, core) {
+      let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
+      let frame = fn() -> PageFrame { { back: None, top: 0.0, foot: 0.0, named: false } }
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      vault_item_node(root, core, here, "v1", "it1", on_back=fn() {  }, frame~, width=fn() { 1100.0 })
+    },
+  )
+  let open_file = fn() -> Result[Json, Json] {
+    Ok(
+      obj([
+        (
+          "plain",
+          obj([
+            ("kind", str("file")),
+            ("name", str(private_name)),
+            ("fields", obj([("content", str("T1JJR19TRUNSRVRfQ09OVEVOVA==")), ("filename", str("orig-secret.pem"))])),
+            ("domains", []),
+            ("notes", str("file_note_99")),
+          ]),
+        ),
+        (
+          "shown",
+          Json::array([
+            obj([
+              ("key", str("content")),
+              ("label", str("文件")),
+              ("value", str("orig-secret.pem")),
+              ("secret", Json::boolean(true)),
+              ("mono", Json::boolean(true)),
+            ]),
+          ]),
+        ),
+      ]),
+    )
+  }
+  // Open item and open editor dialog
+  t.click(Button, label="显示")
+  t.draw()
+  assert_eq(pending.length(), 1)
+  pending[0](open_file())
+  t.draw()
+  t.click(Button, label="编辑")
+  t.draw()
+  presented_in(t)
+  assert_true(@sf.presenting(), msg="editor dialog should be open")
+  assert_true(t.find(private_name) is Some(_), msg="editor title should display private name before close")
+  // Start a manual file pick before normal close
+  t.picks_by_hand()
+  t.picks([("late-cert.pem", b"LATE_SECRET_BYTES")])
+  t.click(Button, label=@sf.t("web-pages.vault.editor.pickFile"))
+  t.draw()
+  // Trigger normal close via Escape -> enters pop_out_ms exit animation
+  t.key(@ui.key_escape)
+  t.draw()
+  assert_true(@sf.presented_drawn(), msg="dialog should still be drawing during pop_out_ms exit animation")
+  // Late file pick arrives during exit animation: on_gone already revoked & cleared it, so it must NOT be written
+  t.pick_answer(1)
+  t.draw()
+  assert_true(t.find("late-cert.pem") is None, msg="late file pick must not write into closing editor")
+  // Lock vault mid-exit-animation: must hard-drop the closing overlay on the very next frame!
+  vault_open.set(false)
+  t.draw()
+  assert_false(@sf.presenting(), msg="presenting must be false after lock during pop_out_ms")
+  assert_false(@sf.presented_drawn(), msg="closing overlay must be hard-dropped immediately on lock during pop_out_ms")
+  assert_true(t.find(private_name) is None, msg="private name must not appear on first frame after lock")
+  assert_true(t.find("orig-secret.pem") is None, msg="plaintext filename must not appear on first frame after lock")
+  assert_true(t.find("late-cert.pem") is None, msg="late picked file must not appear after lock")
+  let sem_leak = t.semantics().iter().any(fn(n) {
+    n.label.contains(private_name) ||
+    n.value.contains(private_name) ||
+    n.label.contains("orig-secret.pem") ||
+    n.value.contains("orig-secret.pem") ||
+    n.label.contains("late-cert.pem") ||
+    n.value.contains("late-cert.pem")
+  })
+  assert_false(sem_leak, msg="semantics must have zero private name or plaintext on frame 1 after lock")
+}
