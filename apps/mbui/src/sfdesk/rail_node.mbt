@@ -899,8 +899,8 @@ fn rail_workspaces_node(
               square=true,
               lit=false,
               fn(k) {
-                // a letter's square: ringed at rest (an outlined control's hairline, Border pointed at), never the
-                // pointer's ground, so resting and pointed at read apart; a mark stands on nothing. The ring a box of
+                // a letter's square: bare at rest as the switcher's rows have it, ringed only pointed at (an outlined
+                // control's hairline in Border), never the pointer's ground; a mark stands on nothing. The ring a box of
                 // its own under what is hung on its corner (an edge is drawn over what its node holds), as round as
                 // the square it fills: linked again, it would follow the window's corner as if it stood apart.
                 k.sq.box(fn(ring) {
@@ -908,10 +908,10 @@ fn rail_workspaces_node(
                   @sf.style_node(ring, fn() { rail_sq })
                   ring.radius(By(fn() { rail_drawn_corner(at().bar) })) |> ignore
                   ring.edge(By(fn() {
-                    if marked() {
+                    if marked() || !@sf.lit_node(k.sq) {
                       (0.0, 0L)
                     } else {
-                      @sf.control_edge(hot=@sf.lit_node(k.sq))
+                      @sf.control_edge(hot=true)
                     }
                   }))
                   |> ignore

@@ -297,20 +297,15 @@ pub fn profiles_list_node(
             |> ignore
           })
         k if k.has_prefix("g/") => {
-          let group = k.exact_view(start=2).to_owned()
           let title = fn() {
             match parts.get(k) {
               Some((_, PlGroup(t))) => t
               _ => ""
             }
           }
-          // (a station's: its kind's mark before its title, 6 from it, as its old page had it; the workspace's: its name
-          // alone, each account's mark its row's, as the sidebar's rows have it; the user, 2026-11-14)
-          if only == "" {
-            @sf.section_heading_node(b, title)
-          } else {
-            @sf.section_heading_node(b, title, lead=fn(l) { vt_group_mark_node(l, group) })
-          }
+          // (its name alone, each account's mark its row's, as the sidebar's rows have it, a station's as the
+          // workspace's: a group of keys holds several vendors'; the user, 2026-11-14 and 2026-11-26)
+          @sf.section_heading_node(b, title)
         }
         k if k.has_prefix("p/") => pl_row_block(b, core, only, parts, tips, fn() { k }, batch, batch_rows, width?)
         k if k.has_prefix("o/") => {
@@ -604,16 +599,14 @@ fn pl_quota_node(
 }
 
 ///|
-/// A station's profile in a row (profile_row's), with its state, name and tier above its check and models.
-/// Scoped allowance windows go below the row's text. Pressing the row opens the profile's page.
+/// A station's profile in a row (profile_row's), as the workspace's rows are (pl_account_row_node): its vendor's mark by
+/// its first line, its name, its tier, check and models under it, its allowance's windows in words a line of their own.
+/// Pressing the row opens the profile's page.
 fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () -> Json?, tips : @sf.TipLayer) -> Unit {
   let id = fn() { text(pv(), "id") }
   let on = fn() { [("station", station), ("id", id())] }
   let calls = ["profile.check", "profile.quota"]
   let quota = fn() { field(pv(), "quota") }
-  let grouped = fn() {
-    @sfbase.has_quota(quota()) && items(quota(), "windows").iter().any(fn(w) { text(Some(w), "scope") != "" })
-  }
   let trouble = fn() { pl_trouble_of(pv()) }
   // (its menu where the pointer's other button is pressed on it: its page opened, its name copied)
   r.on_menu(fn(m) { pl_menu(fn() { (core.push)(Profile(station, @signals.untracked(id))) }, text(@signals.untracked(pv), "name"), m) })
@@ -645,7 +638,10 @@ fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () ->
         " · ",
       )
     },
-    lead=LeadLine(fn(l) { @sf.state_dot_node(l, fn() { pl_tone_dot(text(pv(), "checkTone")) }) }),
+    // (its vendor's mark, as the workspace's rows have it: a group of keys holds several vendors' (pl_account_row_node))
+    lead=LeadLine(fn(l) {
+      @sfbase.provider_mark_node(l, fn() { (text(pv(), "runtime"), text(field(pv(), "access"), "kind"), text(pv(), "providerMark")) }, pl_logo)
+    }),
     title_cut=true,
     // (why its provider refuses it, quiet as the line over it, and where that is the station's trouble, how to mend it
     // in the link's ink: profile_row's)
@@ -659,19 +655,21 @@ fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () ->
           @sf.words_node(f, fn() { @sf.t("android-settings.profile.seeFix") }, fn() { pl_see_fix }) |> ignore
         })
       })
-      q.show(grouped, fn(w) { pl_quota_node(w, quota, tips) })
+      // (its allowance's windows in words a line of their own, as the workspace's rows have them: their names where
+      // they fit, else their marks, quota_worded_node's)
+      q.show(fn() { @sfbase.has_quota(quota()) }, fn(w) { pl_quota_node(w, quota, tips) })
     },
-    below_open=fn() { if trouble() != "" || grouped() { 1.0 } else { 0.0 } },
+    below_open=fn() { if trouble() != "" || @sfbase.has_quota(quota()) { 1.0 } else { 0.0 } },
     tail=fn(t) {
       t.box(fn(e) {
         @sf.style_node(e, fn() { pl_tail }, in_row=true)
         doing_mark_node(e, fn() { is_doing(core, calls, on()) }, fn() { failed_of(core, calls, on()) }, tips~)
-        @sfbase.quota_chips_node(e, fn() { if grouped() { None } else { quota() } }, small=true, tips~)
       })
       |> ignore
     },
-    // (its tail's room only while it holds something: what is under way, or its allowance's chips)
-    tail_shown=fn() { is_doing(core, calls, on()) || failed_of(core, calls, on()) is Some(_) || (!grouped() && @sfbase.has_quota(quota())) },
+    // (its tail's room only while it holds something: what is under way)
+    tail_shown=fn() { is_doing(core, calls, on()) || failed_of(core, calls, on()) is Some(_) },
+    lines_from_lead=true,
   )
 }
 
