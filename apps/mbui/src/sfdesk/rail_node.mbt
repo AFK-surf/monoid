@@ -223,20 +223,36 @@ fn rail_gear(src : Source) -> Unit {
   if lit == "settings" && wide.crowded {
     wide.peeking.set(!wide.peeking.get())
   } else if lit == "settings" {
-    @sfbase.history_push()
-    while app.nav.depth() > 1 {
-      if !app.nav.pop() {
-        break
+    let dest = match app.nav.pages().get(0) {
+      Some(Home) =>
+        match @sfbase.workspace_in_view(src).0 {
+          Some(w) if @sfbase.board_on_of(src, w.id) => "board"
+          _ => "chats"
+        }
+      Some(Files | Drive(_)) => "files"
+      Some(Archived) => "archive"
+      Some(Place(p)) => p
+      _ => "chats"
+    }
+    @sfbase.history_act(fn() {
+      while app.nav.depth() > 1 {
+        if !app.nav.pop() {
+          break
+        }
       }
-    }
-    wide.landed.set("")
-    match @sfbase.workspace_in_view(src).0 {
-      Some(w) => land_chat(src, w)
-      None => ()
-    }
+      wide.landed.set("")
+      match @sfbase.workspace_in_view(src).0 {
+        Some(w) => land_chat(src, w)
+        None => ()
+      }
+    })
+    let target_serial = if app.nav.top() is Home && dest != "board" { None } else { Some(app.nav.top_stay().0) }
+    @sfbase.bar_placed_wide("settings", dest, target_serial?)
   } else {
+    let from = if app.nav.pages().contains(Archived) { "archive" } else { lit }
     open_settings()
     wide.peek_next.set(wide.crowded)
+    @sfbase.bar_placed_wide(from, "settings", target_serial=app.nav.top_stay().0)
   }
 }
 
