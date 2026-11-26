@@ -48,6 +48,7 @@
 #include <io.h>
 #include <iphlpapi.h>
 #include <psapi.h>
+#include <sys/stat.h>
 #include <tlhelp32.h>
 #else
 #include <arpa/inet.h>
@@ -4264,14 +4265,33 @@ static void *posix_stdin_thread(void *arg) {
     return NULL;
 }
 
+static int posix_wait_exited_nowait(pid_t pid) {
+    for (;;) {
+        siginfo_t si;
+        memset(&si, 0, sizeof(si));
+        int wid = waitid(P_PID, (id_t)pid, &si, WEXITED | WNOWAIT);
+        if (wid < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (si.si_pid == pid &&
+            (si.si_code == CLD_EXITED || si.si_code == CLD_KILLED || si.si_code == CLD_DUMPED)) {
+            return 0;
+        }
+        // macOS XNU wakes waitid(WEXITED | WNOWAIT) on CLD_STOPPED / CLD_CONTINUED
+        // despite WEXITED alone; consume only stop/continue without reaping an exit.
+        siginfo_t drain;
+        memset(&drain, 0, sizeof(drain));
+        int dr = waitid(P_PID, (id_t)pid, &drain, WSTOPPED | WCONTINUED | WNOHANG);
+        if (dr < 0 || drain.si_pid == 0) {
+            return -1;
+        }
+    }
+}
+
 static void *posix_wait_thread(void *arg) {
     posix_proc_t *p = (posix_proc_t *)arg;
-    siginfo_t si;
-    memset(&si, 0, sizeof(si));
-    int wid;
-    do {
-        wid = waitid(P_PID, (id_t)p->pid, &si, WEXITED | WNOWAIT);
-    } while (wid < 0 && errno == EINTR);
+    int wid = posix_wait_exited_nowait(p->pid);
 
     int status = 0;
     pid_t wr = -1;
@@ -5811,12 +5831,7 @@ static void *posix_pty_read_thread(void *arg) {
 
 static void *posix_pty_wait_thread(void *arg) {
     posix_pty_t *pt = (posix_pty_t *)arg;
-    siginfo_t si;
-    memset(&si, 0, sizeof(si));
-    int wid;
-    do {
-        wid = waitid(P_PID, (id_t)pt->pid, &si, WEXITED | WNOWAIT);
-    } while (wid < 0 && errno == EINTR);
+    int wid = posix_wait_exited_nowait(pt->pid);
 
     int status = 0;
     pid_t wr = -1;
