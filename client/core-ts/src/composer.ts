@@ -249,7 +249,7 @@ export class Composers {
 
   #db(key: string): AccountDb | undefined {
     const at = this.#at(key);
-    return at ? this.#inner.data.of(at[0]) : undefined;
+    return at ? this.#inner.data.verifiedOf(at[0]) : undefined;
   }
 
   #cached(key: string): State | undefined {
@@ -1087,7 +1087,7 @@ export function install(): void {
     const a = c.act;
     // (its bytes beside the answer, read from what the device keeps)
     if ("picture" in a) return all.picture(c.key, a.picture);
-    return Effect.sync(() => {
+    const runAct = () => {
       if ("text" in a) return { version: all.text(c.key, a.text) };
       if ("append" in a) return { version: all.append(c.key, a.append) };
       if ("quote" in a) return { version: all.quote(c.key, a.quote, a.focus, a.attachment, a.fileId) };
@@ -1104,6 +1104,29 @@ export function install(): void {
       if ("restore" in a) return all.restore(c.key, a.error, a.unlessWritten);
       if ("carry" in a) return { version: all.carry(c.key, a.carry) };
       return null;
-    });
+    };
+    if (inner.data.hasDeferred()) {
+      const workspaces = new Set<string>();
+      const addWs = (stationOrWs: string) => {
+        const at = stationOrWs.indexOf("/");
+        const ws = at >= 0 ? stationOrWs.slice(0, at) : stationOrWs;
+        if (ws) workspaces.add(ws);
+      };
+      const addKeyWs = (k: string) => {
+        const at = draftAt(k);
+        if (at) addWs(at[0]);
+      };
+      addKeyWs(c.key);
+      if ("carry" in a) addKeyWs(a.carry);
+      if ("add" in a && a.station) addWs(a.station);
+      if ("take" in a && a.station) addWs(a.station);
+      if (workspaces.size > 0) {
+        return Effect.gen(function* () {
+          for (const ws of workspaces) yield* inner.cloudSync.ensureVerifiedOwner(ws);
+          return runAct();
+        });
+      }
+    }
+    return Effect.sync(runAct);
   };
 }

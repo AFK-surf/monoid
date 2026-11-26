@@ -664,3 +664,218 @@ test("R2 regressions: caller cancel safety, serialized delete/re-sign-in, verifi
     assert.equal(completed, false, "runner.shutdown() must interrupt pending Signer.load cleanup fiber");
   }
 });
+
+test("R3 regressions: composer.text verified routing/close/sign-out, sole-caller cancel outbox resume, deferred workspace+feedback sync, durable credential delete queue", async () => {
+  // 1) P0-1: composer.text(key="new:ws-both") with stale cache pointing to s2 must verify owner -> write to s1 (never s2),
+  //    survive immediate Core.close(), and never leak pending drafts into s2 if s1 signs out.
+  {
+    const { host } = setupTwoAccountHost();
+    const first = await Core.create(host, { clock: host.time.clock });
+    first.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-both", name: "Both" }] });
+    first.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-both", name: "Both" }] });
+    await run(first.inner.data.written);
+    // Corrupt cache so ws-both points to later account s2 while s1 is earlier & deferred.
+    first.inner.data.device.put("choice", "workspaceOwners", { ws1: "s1", ws2: "s2", "ws-both": "s2" });
+    await first.close();
+
+    const second = await Core.create(host, { clock: host.time.clock });
+    assert.equal(second.inner.data.isDeferred("s1"), true, "s1 starts deferred");
+    const ui = second.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = second.inner.host.emit.bind(second.inner.host);
+    second.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 101 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    second.receive(ui, { kind: "call", id: 101, call: "composer.text", params: { key: "new:ws-both", text: "from-composer-verified" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res, `composer.text succeeded: ${JSON.stringify(res)}`);
+    await host.time.pass(350);
+    await run(second.inner.data.written);
+    // Must be in s1's SQLite DB and NEVER in s2's DB.
+    assert.equal(second.inner.data.db("s2")!.draft("ws-both", "new"), undefined, "s2 DB must NOT receive shared workspace draft");
+    assert.equal((second.inner.data.db("s1")!.draft("ws-both", "new") as J)?.text, "from-composer-verified", "s1 DB holds verified draft");
+    await second.close();
+
+    // Restart and confirm draft survives restart.
+    const third = await Core.create(host, { clock: host.time.clock });
+    await run(third.inner.cloudSync.ensureVerifiedOwner("ws-both"));
+    assert.equal(third.inner.composers.readDraft("ws-both", "new").text, "from-composer-verified", "draft survives restart");
+    await third.close();
+
+    // Subcase 1b: Accurate cache -> composer.text followed by IMMEDIATE Core.close() (before 300ms debounce) still persists to s1!
+    const fourth = await Core.create(host, { clock: host.time.clock });
+    assert.equal(fourth.inner.data.isDeferred("s1"), true);
+    const ui4 = fourth.connect();
+    const ack4 = Deferred.makeUnsafe<J>();
+    const origEmit4 = fourth.inner.host.emit.bind(fourth.inner.host);
+    fourth.inner.host.emit = (c, m) => {
+      origEmit4(c, m);
+      if (m.id === 102 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack4, Effect.succeed(m));
+    };
+    fourth.receive(ui4, { kind: "call", id: 102, call: "composer.text", params: { key: "new:ws-both", text: "close-immediately" } });
+    await Effect.runPromise(Deferred.await(ack4));
+    await fourth.close();
+    const fifth = await Core.create(host, { clock: host.time.clock });
+    await run(fifth.inner.cloudSync.ensureVerifiedOwner("ws-both"));
+    assert.equal(fifth.inner.composers.readDraft("ws-both", "new").text, "close-immediately", "immediate close persists composer draft");
+    await fifth.close();
+
+    // Subcase 1c: Direct buffered pending draft while s1 deferred must NOT flush into s2 if s1 signs out.
+    const sixth = await Core.create(host, { clock: host.time.clock });
+    assert.equal(sixth.inner.data.isDeferred("s1"), true);
+    sixth.inner.data.set({ topic: "draft", station: "ws-both", chat: "new" }, { text: "s1-secret-draft", quotes: [], files: [] }, false);
+    await run(sixth.inner.data.accounts(["s2"]));
+    sixth.inner.cloudSync.recomputeOwners();
+    await run(sixth.inner.data.written);
+    assert.equal(sixth.inner.data.db("s2")!.draft("ws-both", "new"), undefined, "signing out s1 must discard its pending draft rather than flushing to s2");
+    await sixth.close();
+  }
+
+  // 2) P0-2: Cancelling the SOLE on-demand caller of cloudSync.owner(ws1) mid-IO still publishes s1 AND resumes its outbox.
+  {
+    const { host } = setupTwoAccountHost();
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    seed.inner.data.db("s1")!.setChats("ws1/st1", false, [{ id: "c-s1", session: "c-s1", title: "S1 Chat", agents: [], unread: false, lastActiveAt: 1000, thread: 7 }], 1000);
+    seed.inner.data.putLocal("outbox", "ws1/st1", "7", [{ id: "out-sole-cancel", text: "must deliver", at: 1000, state: "sending", uploads: [] }]);
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const gateS1 = Deferred.makeUnsafe<void>();
+    const s1Started = Deferred.makeUnsafe<void>();
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      Effect.gen(function* () {
+        if (name === dbName("s1")) {
+          Deferred.doneUnsafe(s1Started, Effect.void);
+          yield* Deferred.await(gateS1);
+        }
+        return yield* origOpen(name);
+      });
+    const delivered = Deferred.makeUnsafe<[string, number, string]>();
+    const core = await Core.create(host, { clock: host.time.clock });
+    const origDeliver = core.inner.viewCalls.deliver.bind(core.inner.viewCalls);
+    core.inner.viewCalls.deliver = (station, thread, id, ctx, retry, trace) => {
+      Deferred.doneUnsafe(delivered, Effect.succeed([station, thread, id]));
+      return origDeliver(station, thread, id, ctx, retry, trace);
+    };
+    assert.equal(core.inner.data.isDeferred("s1"), true);
+    const soleCaller = core.inner.runner.fork(core.inner.cloudSync.owner("ws1"));
+    await Effect.runPromise(Deferred.await(s1Started));
+    core.inner.runner.interrupt(soleCaller);
+    await host.settle();
+    // Release disk IO BEFORE the 1200ms fallback deadline: account-owned onPublished must still resume outbox!
+    Deferred.doneUnsafe(gateS1, Effect.void);
+    const resumed = await Effect.runPromise(Deferred.await(delivered));
+    assert.deepEqual(resumed, ["ws1/st1", 7, "out-sole-cancel"], "outbox must resume even when sole on-demand caller was cancelled");
+    await core.close();
+  }
+
+  // 3) P1-1 / Opus P1-C: Exclusive workspace ws2 on active account #2 (s2) skipped while earlier s1 is deferred
+  //    MUST replay GET /v1/workspaces/ws2 and GET /v1/workspaces/ws2/feedback exactly once after s1 opens.
+  {
+    const { host } = setupTwoAccountHost();
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    let ws2Fetches = 0;
+    let ws2FeedbackFetches = 0;
+    const origFetch = host.fetch.bind(host);
+    host.fetch = (req) => {
+      if (req.url.endsWith("/v1/workspaces/ws2")) ws2Fetches++;
+      if (req.url.endsWith("/v1/workspaces/ws2/feedback")) ws2FeedbackFetches++;
+      return origFetch(req);
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    assert.equal(core.inner.data.isDeferred("s1"), true);
+    // Let s2's initial socket /v1/me finish while s1 is still deferred.
+    await host.settle();
+    assert.equal(ws2Fetches, 0, "ws2 fetch deferred while earlier s1 is unopened");
+    assert.equal(ws2FeedbackFetches, 0, "ws2 feedback deferred while earlier s1 is unopened");
+    // Advance past 1200ms fallback so s1 opens -> deferred ws2 syncs must replay once!
+    await host.time.pass(1500);
+    await host.settle();
+    assert.equal(core.inner.data.isDeferred("s1"), false);
+    assert.equal(ws2Fetches, 1, "ws2 workspace fetch must replay exactly once after s1 opens");
+    assert.equal(ws2FeedbackFetches, 1, "ws2 feedback fetch must replay exactly once after s1 opens");
+    assert.equal((core.inner.data.db("s2")!.workspace("ws2") as J)?.name, "WS 2", "s2 DB receives fetched ws2 details");
+    await core.close();
+  }
+
+  // 4) P1-2 / Opus P2-2: Concurrent startup drain + sign-out failure never clobbers pending deletes, and Core.close()
+  //    mid-delete preserves delete intent so next start removes the credential.
+  {
+    const { host } = setupTwoAccountHost();
+    host.store("device/choice", {
+      workspaceOwners: { ws1: "s1", ws2: "s2" },
+      pendingCredentialDeletes: ["credential/s-old/ws-old"],
+    });
+    host.store("credential/s-old/ws-old", { device: "d0", token: "old", issued_at: 1, expires_at: 9999999999 });
+    host.store("credential/s1/ws1", { device: "d1", token: "s1-tok", issued_at: 1, expires_at: 9999999999 });
+
+    const oldGate = Deferred.makeUnsafe<void>();
+    const oldStarted = Deferred.makeUnsafe<void>();
+    let failS1 = true;
+    const origDel = host.storageDelete.bind(host);
+    host.storageDelete = (key: string) =>
+      Effect.gen(function* () {
+        if (key === "credential/s-old/ws-old") {
+          Deferred.doneUnsafe(oldStarted, Effect.void);
+          yield* Deferred.await(oldGate);
+        }
+        if (key === "credential/s1/ws1" && failS1) {
+          return yield* Effect.fail(new HostError("transient delete fail"));
+        }
+        return yield* origDel(key);
+      });
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await Effect.runPromise(Deferred.await(oldStarted));
+    // Sign out s1 while old drain is paused, and fail s1's delete.
+    await run(core.inner.data.accounts(["s2"]));
+    await host.settle();
+    // Release old drain: it must remove ONLY s-old and NEVER wipe s1's pending delete!
+    Deferred.doneUnsafe(oldGate, Effect.void);
+    await host.settle();
+    const pendingAfter = core.inner.data.device.get("choice", "pendingCredentialDeletes") as string[];
+    assert.ok(Array.isArray(pendingAfter) && pendingAfter.includes("credential/s1/ws1"), `s1 delete preserved: ${JSON.stringify(pendingAfter)}`);
+    assert.ok(!pendingAfter.includes("credential/s-old/ws-old"), "completed old delete removed");
+    await core.close();
+
+    // Subcase 4b: Re-enable delete and restart; also test interrupting a fresh sign-out delete via Core.close().
+    failS1 = false;
+    const hangS2 = Deferred.makeUnsafe<void>();
+    const s2DelStarted = Deferred.makeUnsafe<void>();
+    host.store("credential/s2/ws2", { device: "d2", token: "s2-tok", issued_at: 1, expires_at: 9999999999 });
+    host.storageDelete = (key: string) =>
+      Effect.gen(function* () {
+        if (key === "credential/s2/ws2") {
+          Deferred.doneUnsafe(s2DelStarted, Effect.void);
+          yield* Deferred.await(hangS2);
+        }
+        return yield* origDel(key);
+      });
+    const core2 = await Core.create(host, { clock: host.time.clock });
+    await host.settle();
+    assert.equal(host.stored("credential/s1/ws1"), undefined, "s1 credential drained on restart");
+    // Sign out s2, let delete hang in host IO, then immediately close core2!
+    await run(core2.inner.data.accounts([]));
+    await Effect.runPromise(Deferred.await(s2DelStarted));
+    await core2.close();
+    Deferred.doneUnsafe(hangS2, Effect.void);
+    // Restart core3 with normal storageDelete -> s2's pre-persisted delete intent MUST drain and remove credential/s2/ws2!
+    host.storageDelete = origDel;
+    const core3 = await Core.create(host, { clock: host.time.clock });
+    await host.settle();
+    assert.equal(host.stored("credential/s2/ws2"), undefined, "interrupted sign-out delete intent drained on restart");
+    await core3.close();
+  }
+});

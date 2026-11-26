@@ -338,6 +338,10 @@ export class Core {
       // Each signed-in account's database, opened before any network: the first view is answered from it.
       inner.data = new Data(inner.host, inner.runner, {
         owner: (workspace) => inner.workspaces.owner(workspace),
+        ownerVerified: (workspace) => {
+          const sub = inner.workspaces.owner(workspace);
+          return sub !== null && !inner.cloudSync?.hasEarlierDeferred(sub);
+        },
         derive: chatDerive,
       });
       // What the former records store and the Rust core's kept chunks held, brought into an account's new database once
@@ -684,6 +688,20 @@ export class Core {
       inner.provider.start();
       inner.cloudSync.start();
       inner.stations.reconcile();
+      // Account-owned post-publish lifecycle: runs inside Data's runner-owned open fiber once per published DB (or
+      // unrecoverable deferred failure) so cancelling an on-demand caller can never drop resumeFor/syncSockets/reconcile.
+      inner.data.onPublished = (db) => {
+        inner.views.local.opened(db);
+        inner.cloudSync.recomputeOwners();
+        inner.viewCalls.resumeFor(db);
+        inner.cloudSync.syncSockets();
+        inner.stations.reconcile();
+      };
+      inner.data.onDeferredCleared = () => {
+        inner.cloudSync.recomputeOwners();
+        inner.cloudSync.syncSockets();
+        inner.stations.reconcile();
+      };
       if (restSubs.length > 0) {
         const firstChats = Deferred.makeUnsafe<void>();
         inner.store.onFirstChats = (scope) => {
@@ -691,14 +709,7 @@ export class Core {
           Deferred.doneUnsafe(firstChats, Effect.void);
           return true;
         };
-        const activateDeferred = (sub: string) =>
-          Effect.gen(function* () {
-            const db = yield* inner.data.openAccount(sub);
-            inner.cloudSync.recomputeOwners();
-            if (db) inner.viewCalls.resumeFor(db);
-            inner.cloudSync.syncSockets();
-            inner.stations.reconcile();
-          });
+        const activateDeferred = (sub: string) => Effect.asVoid(inner.data.openAccount(sub));
         inner.cloudSync.onNeedDeferred = (workspace: string, beforeSub?: string | null) =>
           Effect.gen(function* () {
             const ordered = inner.accounts.list().map((a) => a.sub);

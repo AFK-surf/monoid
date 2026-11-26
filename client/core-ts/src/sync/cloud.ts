@@ -96,6 +96,13 @@ export class CloudSync {
   /// How many times a workspace's kept credentials were removed (an account signed out), by key: an ask answered after
   /// keeps nothing.
   readonly #removed = new Map<string, number>();
+  /// Monotonic generation bumped whenever a fresh credential is saved to a specific storage key, so a stale queued
+  /// delete never overwrites a credential saved after re-sign-in.
+  readonly #credSaved = new Map<string, number>();
+  /// Workspaces whose initial or live workspace/feedback sync was deferred while an earlier account DB was still
+  /// unopened; re-dispatched in `recomputeOwners` once verified ownership is established.
+  readonly #deferredWorkspaceSync = new Set<string>();
+  readonly #deferredFeedbackSync = new Set<string>();
   /// An account's credential asks out at once, by account (`CREDENTIAL_ASK_CONCURRENCY`).
   readonly #askTurn = new Map<string, ReturnType<typeof Semaphore.makeUnsafe>>();
   /// Until when (ms) an account asks no credential, the cloud having refused one for too many (`CREDENTIAL_429_COOLDOWN_MS`).
@@ -113,22 +120,56 @@ export class CloudSync {
     this.syncSockets();
   }
 
-  /// Retries any credential storage deletes that failed on an earlier sign-out.
+  #baseCredKey(storageKey: string): string {
+    const suffix = `/${CREDENTIAL_OTHERS}`;
+    return storageKey.endsWith(suffix) ? storageKey.slice(0, -suffix.length) : storageKey;
+  }
+
+  #readPendingCredentialDeletes(): string[] {
+    const raw = this.#core.data.device.get("choice", "pendingCredentialDeletes");
+    return Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string" && k.length > 0) : [];
+  }
+
+  #addPendingCredentialDeletes(keys: readonly string[]): void {
+    if (keys.length === 0) return;
+    const prev = this.#readPendingCredentialDeletes();
+    const next = [...new Set([...prev, ...keys])];
+    if (next.length !== prev.length) this.#core.data.device.put("choice", "pendingCredentialDeletes", next);
+  }
+
+  #removePendingCredentialDelete(key: string): void {
+    const prev = this.#readPendingCredentialDeletes();
+    if (!prev.includes(key)) return;
+    const next = prev.filter((k) => k !== key);
+    this.#core.data.device.put("choice", "pendingCredentialDeletes", next.length > 0 ? next : undefined);
+  }
+
+  /// Retries any credential storage deletes persisted before/during an earlier sign-out.
+  /// Serialized per credential key alongside fresh writes and removes only individually confirmed keys.
   #drainPendingCredentialDeletes(): void {
     const core = this.#core;
-    const raw = core.data.device.get("choice", "pendingCredentialDeletes");
-    const keys = Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string" && k.length > 0) : [];
+    const keys = this.#readPendingCredentialDeletes();
     if (keys.length === 0) return;
-    core.runner.fork(
-      Effect.gen({ self: this }, function* () {
-        const remaining: string[] = [];
-        for (const k of keys) {
-          const r = yield* Effect.result(core.host.storageDelete(k));
-          if (r._tag === "Failure") remaining.push(k);
-        }
-        core.data.device.put("choice", "pendingCredentialDeletes", remaining.length > 0 ? remaining : undefined);
-      }),
-    );
+    const byBase = new Map<string, Array<[string, number]>>();
+    for (const k of keys) {
+      const base = this.#baseCredKey(k);
+      let list = byBase.get(base);
+      if (!list) byBase.set(base, (list = []));
+      list.push([k, this.#credSaved.get(k) ?? 0]);
+    }
+    for (const [base, list] of byBase) {
+      core.runner.fork(
+        this.#keepingOf(base).withPermits(1)(
+          Effect.gen({ self: this }, function* () {
+            for (const [k, savedAt] of list) {
+              if ((this.#credSaved.get(k) ?? 0) !== savedAt) continue;
+              const r = yield* Effect.result(core.host.storageDelete(k));
+              if (r._tag === "Success") this.#removePendingCredentialDelete(k);
+            }
+          }),
+        ),
+      );
+    }
   }
 
   /// Whether any non-console account strictly earlier than `sub` in sign-in order still has a deferred DB.
@@ -226,9 +267,19 @@ export class CloudSync {
       const scheduler = this.#core.scheduler;
       // (the console's origin serves none of these: only its operator's lists, `#isConsole`)
       if (!this.#isConsole(sub)) {
-        for (const id of ids) if (this.#core.workspaces.owner(id) === sub) scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
+        for (const id of ids) {
+          const o = this.#core.workspaces.owner(id);
+          if (o === sub && !this.hasEarlierDeferred(sub)) scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
+          else if (this.#core.data.hasDeferred()) this.#deferredWorkspaceSync.add(id);
+        }
         // The team's replies on bug reports from each one's chats: what changed while the socket was closed.
-        if (this.#core.provider.supports("feedback")) for (const id of ids) if (this.#core.workspaces.owner(id) === sub) this.feedbackChanged(id);
+        if (this.#core.provider.supports("feedback")) {
+          for (const id of ids) {
+            const o = this.#core.workspaces.owner(id);
+            if (o === sub && !this.hasEarlierDeferred(sub)) this.feedbackChanged(id);
+            else if (this.#core.data.hasDeferred()) this.#deferredFeedbackSync.add(id);
+          }
+        }
         // What only some providers have: login sessions, an operator's lists.
         if (this.#core.provider.supports("loginSessions")) scheduler.enqueue("cloud", `sessions/${sub}`, Priority.background, this.#loginSessions(sub));
       }
@@ -250,8 +301,14 @@ export class CloudSync {
       const me = this.#core.data.record("me", sub);
       const ids = (isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []).flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []));
       for (const id of ids) {
-        if (this.#core.workspaces.owner(id) !== sub || isObject(this.#core.data.shared({ topic: "workspace", workspace: id }))) continue;
-        this.#core.scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
+        const o = this.#core.workspaces.owner(id);
+        if (o === sub && !this.hasEarlierDeferred(sub)) {
+          if (!isObject(this.#core.data.shared({ topic: "workspace", workspace: id }))) {
+            this.#core.scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
+          }
+        } else if (this.#core.data.hasDeferred()) {
+          this.#deferredWorkspaceSync.add(id);
+        }
       }
     });
   }
@@ -388,10 +445,16 @@ export class CloudSync {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       const sub = core.workspaces.owner(id);
-      if (sub === null || this.hasEarlierDeferred(sub)) return;
+      if (sub === null || this.hasEarlierDeferred(sub)) {
+        if (core.data.hasDeferred()) this.#deferredWorkspaceSync.add(id);
+        return;
+      }
       const topic: Topic = { topic: "workspace", workspace: id };
       const answer = yield* Effect.result(core.provider.request(sub, "GET", `/v1/workspaces/${encode(id)}`, null));
-      if (core.workspaces.owner(id) !== sub) return;
+      if (core.workspaces.owner(id) !== sub) {
+        if (core.data.hasDeferred()) this.#deferredWorkspaceSync.add(id);
+        return;
+      }
       if (answer._tag === "Success") this.#took(id, answer.success);
       else {
         const error = answer.failure;
@@ -411,7 +474,12 @@ export class CloudSync {
   /// The team's replies on bug reports from a workspace's chats changed (its event, or this device answered one): read
   /// again.
   feedbackChanged(id: string): void {
-    if (this.#core.workspaces.owner(id) === null || !this.#core.provider.supports("feedback")) return;
+    if (!this.#core.provider.supports("feedback")) return;
+    const sub = this.#core.workspaces.owner(id);
+    if (sub === null || this.hasEarlierDeferred(sub)) {
+      if (this.#core.data.hasDeferred()) this.#deferredFeedbackSync.add(id);
+      return;
+    }
     this.#core.scheduler.enqueue("cloud", `feedback/${id}`, Priority.background, this.#feedback(id));
   }
 
@@ -421,9 +489,15 @@ export class CloudSync {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       const sub = core.workspaces.owner(id);
-      if (sub === null || this.hasEarlierDeferred(sub)) return;
+      if (sub === null || this.hasEarlierDeferred(sub)) {
+        if (core.data.hasDeferred()) this.#deferredFeedbackSync.add(id);
+        return;
+      }
       const answer = yield* Effect.result(core.provider.request(sub, "GET", `/v1/workspaces/${encode(id)}/feedback`, null));
-      if (core.workspaces.owner(id) !== sub) return;
+      if (core.workspaces.owner(id) !== sub) {
+        if (core.data.hasDeferred()) this.#deferredFeedbackSync.add(id);
+        return;
+      }
       if (answer._tag === "Success") core.data.put("feedback", id, isObject(answer.success) ? answer.success : { feedback: [] });
       else if (answer.failure.status === 404 || answer.failure.status === 403) {
         core.data.forgetRecord("feedback", id);
@@ -553,6 +627,28 @@ export class CloudSync {
     if (!hasDeferred) {
       core.data.device.put("choice", "workspaceOwners", Object.fromEntries(owners));
     }
+    if (this.#deferredWorkspaceSync.size > 0) {
+      for (const id of [...this.#deferredWorkspaceSync]) {
+        const o = core.workspaces.owner(id);
+        if (o !== null && !this.hasEarlierDeferred(o)) {
+          this.#deferredWorkspaceSync.delete(id);
+          core.scheduler.enqueue("cloud", `workspace/${id}`, Priority.background, this.#workspace(id));
+        } else if (!hasDeferred) {
+          this.#deferredWorkspaceSync.delete(id);
+        }
+      }
+    }
+    if (this.#deferredFeedbackSync.size > 0) {
+      for (const id of [...this.#deferredFeedbackSync]) {
+        const o = core.workspaces.owner(id);
+        if (o !== null && !this.hasEarlierDeferred(o)) {
+          this.#deferredFeedbackSync.delete(id);
+          if (core.provider.supports("feedback")) core.scheduler.enqueue("cloud", `feedback/${id}`, Priority.background, this.#feedback(id));
+        } else if (!hasDeferred) {
+          this.#deferredFeedbackSync.delete(id);
+        }
+      }
+    }
     core.data.flushPendingDrafts();
     core.views?.vaultChanged(null);
     this.onReach?.();
@@ -566,16 +662,6 @@ export class CloudSync {
     const raw = device.get("choice", indexKey);
     const list = Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
     if (!list.includes(workspace)) device.put("choice", indexKey, [...list, workspace]);
-  }
-
-  /// Persists credential storage keys whose delete failed so they are retried on the next start.
-  #recordFailedCredentialDeletes(failed: string[]): void {
-    if (failed.length === 0) return;
-    const device = this.#core.data.device;
-    const raw = device.get("choice", "pendingCredentialDeletes");
-    const prev = Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
-    const next = [...new Set([...prev, ...failed])];
-    device.put("choice", "pendingCredentialDeletes", next);
   }
 
   /// An account signed out (its database goes with all it held): the credentials it had for its workspaces go too.
@@ -598,17 +684,27 @@ export class CloudSync {
       }
     }
     core.data.device.put("choice", `credWorkspaces/${sub}`, undefined);
+    const allDeleteKeys: string[] = [];
+    for (const ws of wsIds) {
+      const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
+      allDeleteKeys.push(`${key}/${CREDENTIAL_OTHERS}`, key);
+    }
+    // Persist delete intent BEFORE starting async host IO so Core.close()/crash mid-delete still retries on next start.
+    this.#addPendingCredentialDeletes(allDeleteKeys);
     for (const ws of wsIds) {
       const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
       const othersKey = `${key}/${CREDENTIAL_OTHERS}`;
       this.#removed.set(key, (this.#removed.get(key) ?? 0) + 1);
+      const targets: Array<[string, number]> = [
+        [othersKey, this.#credSaved.get(othersKey) ?? 0],
+        [key, this.#credSaved.get(key) ?? 0],
+      ];
       const removing = Effect.gen({ self: this }, function* () {
-        const failed: string[] = [];
-        const r1 = yield* Effect.result(core.host.storageDelete(othersKey));
-        if (r1._tag === "Failure") failed.push(othersKey);
-        const r2 = yield* Effect.result(core.host.storageDelete(key));
-        if (r2._tag === "Failure") failed.push(key);
-        this.#recordFailedCredentialDeletes(failed);
+        for (const [k, savedAt] of targets) {
+          if ((this.#credSaved.get(k) ?? 0) !== savedAt) continue;
+          const r = yield* Effect.result(core.host.storageDelete(k));
+          if (r._tag === "Success") this.#removePendingCredentialDelete(k);
+        }
       });
       core.runner.fork(this.#keepingOf(key).withPermits(1)(removing));
     }
@@ -797,6 +893,9 @@ export class CloudSync {
         // (the keeping takes turns of its own, apart from the asks': a write waits on no ask)
         yield* keeping.withPermits(1)(Effect.gen(function* () {
           if ((self.#removed.get(key) ?? 0) !== removed || !core.accounts.list().some((a) => a.sub === sub)) return;
+          const targetKey = other ? othersKey : key;
+          self.#credSaved.set(targetKey, (self.#credSaved.get(targetKey) ?? 0) + 1);
+          self.#removePendingCredentialDelete(targetKey);
           self.#rememberCredentialWorkspace(sub, workspace);
           if (other) {
             // (read again, in turn: another endpoint's may have been kept while this one's was asked)
@@ -955,7 +1054,11 @@ export class CloudSync {
     }
     else if (event.type === "feedback" && typeof event.workspace === "string") this.feedbackChanged(event.workspace);
     else if (event.type === "workspace" && typeof event.id === "string") {
-      if (core.workspaces.owner(event.id) === null) return;
+      const owner = core.workspaces.owner(event.id);
+      if (owner === null || this.hasEarlierDeferred(owner)) {
+        if (core.data.hasDeferred()) this.#deferredWorkspaceSync.add(event.id);
+        return;
+      }
       const lock = event.lock;
       const topic = { topic: "workspace", workspace: event.id } as const;
       // Only its lock moved on, as the event says: in place, no request (the lock itself is read of the stations,

@@ -186,6 +186,8 @@ class Device {
 export type DataOptions = {
   /// The signed-in account that reaches a workspace (Workspaces' owner): its database keeps the workspace's.
   owner: (workspace: string) => string | null;
+  /// Whether `workspace`'s current owner is verified against sign-in order (no earlier deferred account remaining).
+  ownerVerified?: (workspace: string) => boolean;
   derive?: Derive;
   /// The most an account's database may take on the device (KEPT by default).
   kept?: number;
@@ -316,6 +318,7 @@ export class Data {
   readonly #host: Host;
   readonly #runner: Runner;
   readonly #owner: (workspace: string) => string | null;
+  readonly #ownerVerified: (workspace: string) => boolean;
   readonly #derive: Derive;
   readonly #dbs = new Map<string, AccountDb>();
   /// Signed-in account order, preserved by `dbs()`, `mes()`, and `locals()` even when an active account's database
@@ -333,8 +336,9 @@ export class Data {
   readonly #subLocks = new Map<string, Semaphore.Semaphore>();
   /// Monotonic per-sub generation bumped on sign-out and sign-in so stale opens never publish into a newer session.
   readonly #subGen = new Map<string, number>();
-  /// Drafts written or flushed while their owning account DB was still deferred: flushed once ownership resolves.
-  readonly #pendingDrafts = new Map<string, [Topic, unknown]>();
+  /// Drafts written or flushed while their owning account DB was still deferred: flushed once verified ownership
+  /// resolves, and discarded if any potentially owning account signs out.
+  readonly #pendingDrafts = new Map<string, { topic: Topic; value: unknown; deferred: ReadonlySet<string>; provisional: string | null }>();
   #closed = false;
   readonly device: Device;
   readonly #changed: ((topic: Topic) => void)[] = [];
@@ -389,6 +393,8 @@ export class Data {
   onOpened: (db: AccountDb) => Effect.Effect<void> = () => Effect.void;
   /// Told once an opened database is published in `#dbs` and readable by views.
   onPublished: (db: AccountDb) => void = () => {};
+  /// Told when a deferred account clears without publishing a DB (unrecoverable open failure) so callers can re-verify owners.
+  onDeferredCleared: (sub: string) => void = () => {};
   /// The marks of databases found damaged as the core ran, as they are written (damageKept).
   readonly #damaged = new Map<string, Promise<void>>();
 
@@ -414,6 +420,7 @@ export class Data {
     this.#runner = runner;
     this.#kept = options.kept ?? KEPT;
     this.#owner = options.owner;
+    this.#ownerVerified = options.ownerVerified ?? ((ws) => this.#owner(ws) !== null);
     this.#derive = options.derive ?? NO_DERIVE;
     this.device = new Device(host, runner);
     this.device.onChange = (table, key) => this.#tellQuery({ topic: "$device-record", table, key });
@@ -571,6 +578,14 @@ export class Data {
         this.#deferred.delete(sub);
         this.#subGen.set(sub, (this.#subGen.get(sub) ?? 0) + 1);
       }
+      if (removed.size > 0 && this.#pendingDrafts.size > 0) {
+        for (const [key, entry] of [...this.#pendingDrafts]) {
+          if ([...removed].some((sub) => entry.deferred.has(sub) || entry.provisional === sub)) {
+            this.#pendingDrafts.delete(key);
+            this.#tell(entry.topic);
+          }
+        }
+      }
       for (const sub of subs) {
         if (!prevOrder.has(sub)) this.#subGen.set(sub, (this.#subGen.get(sub) ?? 0) + 1);
       }
@@ -668,6 +683,7 @@ export class Data {
               if (stillValid()) {
                 this.#deferred.delete(sub);
                 if (note) this.#setNote(sub, note);
+                this.onDeferredCleared(sub);
               }
               return undefined;
             }
@@ -681,6 +697,7 @@ export class Data {
               if (stillValid()) {
                 this.#deferred.delete(sub);
                 this.#setNote(sub, { kind: "failed", detail: e instanceof Error ? e.message : String(e) });
+                this.onDeferredCleared(sub);
               }
               return undefined;
             }
@@ -1084,8 +1101,8 @@ export class Data {
       const soon = this.#soon.get(key);
       if (soon) return soon[1];
       const pending = this.#pendingDrafts.get(key);
-      if (pending) return pending[1];
-      return this.of(s("station"))?.draft(s("station"), s("chat"));
+      if (pending) return pending.value;
+      return this.verifiedOf(s("station"))?.draft(s("station"), s("chat"));
     }
     if (topic.topic === "loginSessions") return this.#dbs.get(s("account"))?.accountDoc("login_sessions");
     if (topic.topic === "admin") return this.#dbs.get(s("account"))?.accountDoc(`admin/${s("list")}`);
@@ -1254,12 +1271,21 @@ export class Data {
       const station = s("station");
       const chat = s("chat");
       const key = `${station}${SEP}${chat}`;
-      const db = this.of(station);
+      const atSlash = station.indexOf("/");
+      const ws = atSlash >= 0 ? station.slice(0, atSlash) : station;
+      const db = this.verifiedOf(station);
       if (db) {
         this.#pendingDrafts.delete(key);
         return db.putDraft(station, chat, value);
       }
-      if (this.hasDeferred()) this.#pendingDrafts.set(key, [topic, frozen(structuredClone(value))]);
+      if (this.hasDeferred()) {
+        this.#pendingDrafts.set(key, {
+          topic,
+          value: frozen(structuredClone(value)),
+          deferred: new Set(this.#deferred),
+          provisional: this.#owner(ws),
+        });
+      }
       return;
     }
     if (topic.topic === "loginSessions") return this.#dbs.get(s("account"))?.putAccountDoc("login_sessions", value, at, topic);
@@ -1337,15 +1363,23 @@ export class Data {
     this.set(topic, next === undefined ? value : next);
   }
 
-  /// Flushes any drafts buffered while their owning account DB was deferred once ownership becomes available.
+  /// The database of `station`'s workspace only once its owner is verified against sign-in order.
+  verifiedOf(station: string): AccountDb | undefined {
+    const at = station.indexOf("/");
+    const ws = at >= 0 ? station.slice(0, at) : station;
+    if (!this.#ownerVerified(ws)) return undefined;
+    return this.of(station);
+  }
+
+  /// Flushes any drafts buffered while their owning account DB was deferred once verified ownership resolves.
   flushPendingDrafts(): void {
     if (this.#pendingDrafts.size === 0) return;
-    for (const [key, [topic, value]] of [...this.#pendingDrafts]) {
-      const station = String(topic.station);
-      const db = this.of(station);
+    for (const [key, entry] of [...this.#pendingDrafts]) {
+      const station = String(entry.topic.station);
+      const db = this.verifiedOf(station);
       if (db) {
         this.#pendingDrafts.delete(key);
-        db.putDraft(station, String(topic.chat), value);
+        db.putDraft(station, String(entry.topic.chat), entry.value);
       } else if (!this.hasDeferred()) {
         this.#pendingDrafts.delete(key);
       }
@@ -1372,7 +1406,7 @@ export class Data {
     const soon = this.#soon.delete(key);
     const pending = this.#pendingDrafts.delete(key);
     const station = String(topic.station);
-    const db = this.of(station);
+    const db = this.verifiedOf(station);
     if (db && db.draft(station, String(topic.chat)) !== undefined) db.putDraft(station, String(topic.chat), undefined);
     else if (soon || pending) this.#tell(topic);
   }
@@ -2562,6 +2596,7 @@ export class Data {
   /// so what was read is kept by the core that follows.
   closing(): void {
     this.#closed = true;
+    this.flushSoon();
     this.flushMd();
     for (const db of this.#dbs.values()) db.commitNow();
   }
