@@ -2528,7 +2528,7 @@ export class Hub {
       releaseClaim: (key) => this.releaseClaim(key),
       spend: (key, ranOn, model) => this.accounts.spend(key, ranOn, model),
       refillsAt: (key) => this.accounts.refillsAt(key),
-      recheck: (profile, force) => this.accounts.recheck(profile, force === true),
+      recheck: (profile, force, reason) => this.accounts.recheck(profile, force === true, typeof reason === "string" ? reason : undefined),
       canAuthRetry: (key, failedProfile, tried) => this.accounts.canAuthRetry(key, failedProfile, Array.isArray(tried) ? tried.filter((t): t is string => typeof t === "string") : []),
       limitAfter: (profile, model) => this.accounts.limitAfter(profile, model),
       mcpUrl: () => (typeof this.options.mcpUrl === "string" ? this.options.mcpUrl : this.options.mcpUrl()),

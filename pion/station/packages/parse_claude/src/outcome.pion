@@ -209,7 +209,10 @@ pub fn classify_result(text : String) -> String {
   if jscase::has_word(lower, "401") ||
   jscase::has_word(lower, "403") ||
   lower.contains("authenticat") ||
-  lower.contains("api key") {
+  lower.contains("api key") ||
+  lower.contains("can't receive replies") ||
+  lower.contains("cannot receive replies") ||
+  lower.contains("verification portal") {
     return "auth"
   }
   let rate_words : Array[String] = [
@@ -293,6 +296,9 @@ pub fn failure_of(
     "api key",
     "permission_denied",
     "invalid credential",
+    "can't receive replies",
+    "cannot receive replies",
+    "verification portal",
   ]
   let refused_words : Array[String] = [
     "request not allowed",

@@ -466,10 +466,14 @@ pub fn ActorsGen::open_over_k(
                     return
                   }
                   let already = array_contains_str(a.auth_tried, id)
+                  let err_msg = match sessions_core::jget(j, "message") {
+                    Some(v) => v
+                    None => sessions_core::jstr("")
+                  }
                   self.deps_k(
                     a,
                     "recheck",
-                    [sessions_core::jstr(id), sessions_core::jbool(already)],
+                    [sessions_core::jstr(id), sessions_core::jbool(already), err_msg],
                     fn(ex_rc : effect::Exit[base_codec::Json]) -> Unit {
                       match ex_rc {
                         effect::Exit::Interrupted => sk(effect::Exit::Interrupted)

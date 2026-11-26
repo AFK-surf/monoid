@@ -86,6 +86,9 @@ export type ProfileQuota = {
   unanswered?: boolean;
   /// Renewal failed during a Claude quota check: trigger a profile check if currently ok. Not kept in the allowance.
   recheck?: boolean;
+  /// Refused by the provider during a turn (e.g. Anthropic Verification Portal, FB-68) while its usage endpoint still
+  /// answers ok: kept blocked across background quota rounds until re-signed in or explicitly checked again.
+  restricted?: boolean;
 };
 
 /// Where the providers are: the real ones unless a test says otherwise.

@@ -20,7 +20,7 @@ import { shareRefusal } from "../share/index.ts";
 import { HERMES_MODEL_LIMIT } from "../agents/hermes.ts";
 import { agyAccountFile, agyCompany, agyEmailIn, agyToken, classifyFailure as agyClassifyFailure, type AgyCatalog } from "../agents/agy.ts";
 import { expandDevinFusion } from "../agents/devin.ts";
-import { runtimeKind, runtimeLabel } from "../agents/runtime.ts";
+import { accountRestricted, runtimeKind, runtimeLabel } from "../agents/runtime.ts";
 import type { Clock } from "effect";
 import { createHash, randomBytes } from "node:crypto";
 import { access as accessFile, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
@@ -114,9 +114,9 @@ export type CheckRequest = { runtime?: Runtime; kind: AccessKind; key: string; v
 /// The subscription runtimes whose allowance is read (quota.ts): a login of theirs still good answers it.
 const QUOTA_RUNTIMES: readonly (Runtime | undefined)[] = ["claude", "codex", "agy", "cursor", "grok"];
 
-/// A subscription's login found over here, for the workspace's managers to sign it in again (`station`: the station
-/// whose login it is, a borrowed one's host).
-export type LoginLost = { id: string; profile: Profile; station: string | null };
+/// A subscription's login found over or account restricted here, for the workspace's managers (`station`: the station
+/// whose login it is, a borrowed one's host; `restricted`: provider restricted the account, FB-68).
+export type LoginLost = { id: string; profile: Profile; station: string | null; restricted?: boolean };
 
 /// The profile's codex app-server, for what only it says (the agents' CodexDriver: rateLimits, resetQuota, models).
 export type CodexAccess = {
@@ -134,7 +134,7 @@ export type AccountsDeps = {
   /// Starts reviewing the done chats no decision has answered (review.ts): how many, or null without a usable model.
   reviewUndecided?: () => number | null | Promise<number | null>;
   hub?: {
-    accounts: { setHealth(health: (id: string) => ProfileHealth): void; healthOf(id: string): ProfileHealth; setRecheck?(recheck: (id: string, force?: boolean) => Promise<unknown>): void; setQuotaAgain?(read: (id: string) => Promise<unknown>): void };
+    accounts: { setHealth(health: (id: string) => ProfileHealth): void; healthOf(id: string): ProfileHealth; setRecheck?(recheck: (id: string, force?: boolean, reason?: string) => Promise<unknown>): void; setQuotaAgain?(read: (id: string) => Promise<unknown>): void };
     /// A profile was deleted: its sessions are taken on by another, or stopped.
     profileGone?(id: string): Promise<void>;
     /// A manual reset lets sessions waiting on this account continue.
@@ -183,7 +183,7 @@ export type AccountsDeps = {
   /// Profiles other stations share with this one (share/index.ts): how they are doing is their host's to say, and
   /// what the overview says of each profile's sharing. `recheck`: its host asks its provider again first.
   shared?: {
-    status(profile: Profile, recheck?: boolean): Promise<{ check: Json; quota: Json }>;
+    status(profile: Profile, recheck?: boolean, restricted?: string): Promise<{ check: Json; quota: Json }>;
     /// `workspace`: the viewer's, whose stations alone it names (null: all).
     view(profile: Json, workspace: string | null): Json | null;
     lendCodex?(profile: Profile, rejected: boolean): Promise<number>;
@@ -194,6 +194,8 @@ export type AccountsDeps = {
     lendClaude?(profile: Profile, rejected?: string): Promise<MachineToken>;
     /// A sign-in changed here: its copies on other stations are told (`profileId`: a profile signed in anew).
     loginUpdated?(profileId?: string): void;
+    /// A hosted profile's availability changed (restricted or recovered, FB-68): copies on other stations are told.
+    statusUpdated?(profileId: string): void;
     /// Whether the station the profile is another's of did not answer lately.
     hostName?(profile: Json): string | null;
   };
@@ -374,7 +376,7 @@ export class Accounts {
     this.deps.hub?.accounts.setHealth((id) => this.health(id));
     // (which Codex account each is on, for the pool's first picks)
     void this.codexAccountsRead().catch(() => {});
-    this.deps.hub?.accounts.setRecheck?.((id, force) => this.recheckProfile(id, force === true));
+    this.deps.hub?.accounts.setRecheck?.((id, force, reason) => this.recheckProfile(id, force === true, reason));
     // Asked after a turn failed for no reason its words gave: the one on its way waited for, else a new one.
     this.deps.hub?.accounts.setQuotaAgain?.(async (id) => {
       const busy = this.quotaBusy.get(id);
@@ -533,9 +535,10 @@ export class Accounts {
   /// How a profile is doing, told to a station borrowing it: its allowance asked again first when older than a round
   /// (the rounds run only while someone follows this station, and the borrower is not someone).
   /// `recheck`: the borrower was refused on it, so it is asked of its provider again first (`recheckProfile`).
-  async lentHealth(id: string, recheck = false): Promise<ProfileHealth> {
-    if (recheck) {
-      await this.recheckProfile(id).catch(() => {});
+  /// `restricted`: a borrower hit a provider account-restriction error (FB-68), so this host marks it blocked at once.
+  async lentHealth(id: string, recheck = false, restricted?: string): Promise<ProfileHealth> {
+    if (recheck || (typeof restricted === "string" && restricted !== "")) {
+      await this.recheckProfile(id, false, restricted).catch(() => {});
       return this.health(id);
     }
     if (!this.quotas.has(id) || this.background.now() - this.quotaAskedAt(id) >= QUOTA_EVERY_MS) await this.refreshQuota(id).catch(() => null);
@@ -1286,6 +1289,10 @@ export class Accounts {
   /// shows them at once.
   private afterSignIn(id: string, loginStartedAt?: number) {
     this.authRevoked.delete(id);
+    if (this.quotas.get(id)?.restricted === true) {
+      this.quotas.delete(id);
+      this.deps.loginBack?.(id);
+    }
     const profile = this.profile(id);
     // A completed Codex sign-in replaces the login which the provider refused. If the allowance service happens to be
     // unreachable now, keep the new sign-in's status; a new refusal will mark it again.
@@ -1459,13 +1466,47 @@ export class Accounts {
     this.revoke(id, profile !== undefined && !borrowed(profile));
   }
 
+  /// Marks a profile blocked after a turn hit a provider account-restriction error (e.g. Anthropic Verification
+  /// Portal, FB-68) while its usage endpoint still answers ok: kept blocked across background quota rounds until
+  /// re-signed in or explicitly checked/refreshed, notified once to workspace managers, and pushed to borrowers.
+  private blockRestricted(id: string, reason: string, notify: boolean) {
+    const profile = this.profile(id);
+    if (!profile || profile.enabled === false) return;
+    const cleaned = reason.replace(/^\s*API Error:\s*/i, "").replace(/\s+/g, " ").trim();
+    const said = [...cleaned].slice(0, 200).join("");
+    const detail = said !== "" ? tr(stationLang(), "station.quota.accountRestrictedSaying", { said }) : tr(stationLang(), "station.quota.accountRestricted");
+    const wasBlocked = this.quotas.get(id)?.state === "blocked" && this.quotas.get(id)?.restricted === true;
+    const read: ProfileQuota = { state: "blocked", windows: [], detail, checkedAt: this.background.now(), restricted: true };
+    this.quotas.set(id, read);
+    this.#keepQuota(id, read);
+    this.changed();
+    if (!wasBlocked && notify) {
+      this.deps.loginLost?.({ id, profile, station: borrowed(profile) ? (this.deps.shared?.hostName?.(profile) ?? null) : null, restricted: true });
+    }
+    if (!wasBlocked && !borrowed(profile)) {
+      this.deps.shared?.statusUpdated?.(id);
+    }
+  }
+
   /// Profile `id` asked again after a runtime on it was refused (sessions/accounts.ts `recheck`): its login is good only
   /// where its check says so and, for a runtime whose allowance is read, an allowance read now does too; a borrowed one
   /// where its host says so having read it again (a host from before answers what it had: not taken for a reading). Else
   /// it is over (`revoke`). `force`: refused again after a recheck and a retry in the same turn, it is over.
-  async recheckProfile(id: string, force = false): Promise<void> {
+  /// `reason`: the failure message, so an explicit account restriction (FB-68) blocks the profile immediately.
+  async recheckProfile(id: string, force = false, reason?: string): Promise<void> {
     const profile = this.profile(id);
     if (!profile || profile.enabled === false) return;
+    if (typeof reason === "string" && accountRestricted(reason)) {
+      if (this.quotas.get(id)?.state === "blocked" && this.quotas.get(id)?.restricted === true) return;
+      if (borrowed(profile) && this.deps.shared) {
+        const got = await this.deps.shared.status(profile, true, reason).catch(() => null);
+        const hostBlocked = isObject(got?.quota) && got.quota.state === "blocked";
+        this.blockRestricted(id, reason, !hostBlocked);
+        return;
+      }
+      this.blockRestricted(id, reason, true);
+      return;
+    }
     if (accessKind(profile) !== "subscription") {
       await this.check(id).catch(() => undefined);
       return;
@@ -1525,13 +1566,23 @@ export class Accounts {
   async askedCheck(id: string, lang: Lang = stationLang()): Promise<ProfileCheck> {
     const profile = this.profile(id);
     if (!profile || profile.enabled === false) return this.check(id, lang);
+    const wasRestricted = this.quotas.get(id)?.restricted === true;
+    if (wasRestricted) {
+      this.quotas.delete(id);
+      this.deps.loginBack?.(id);
+    }
     const key = JSON.stringify([id, lang, this.loginGeneration.get(id) ?? 0, fingerprint(profile)]);
     const asked = this.checksAsked.get(key);
     if (asked !== undefined) return asked;
     const now = this.check(id, lang);
     this.checksAsked.set(key, now);
     try {
-      return await now;
+      const done = await now;
+      if (wasRestricted && !borrowed(profile)) {
+        await this.readQuota(id, true).catch(() => undefined);
+        this.deps.shared?.statusUpdated?.(id);
+      }
+      return done;
     } finally {
       if (this.checksAsked.get(key) === now) this.checksAsked.delete(key);
     }
@@ -1683,9 +1734,13 @@ export class Accounts {
         mine.checkedAt <= now && now - mine.checkedAt < QUOTA_EVERY_MS;
       // A reading the same as the one kept (rechecks while the host has not read again) is not written again.
       const same = mine !== undefined && JSON.stringify(got.quota) === JSON.stringify(mine);
-      if (isObject(got.quota) && !local?.codexRevoked && !completeHere && !same && !(mine !== undefined && Number(got.quota.checkedAt ?? 0) < mine.checkedAt)) {
+      const hostBlocked = isObject(got.quota) && got.quota.state === "blocked";
+      // Keep a local provider-restriction block across background checks against an older host that still reports ok.
+      const locallyRestricted = stands && mine?.state === "blocked" && mine?.restricted === true && !hostBlocked;
+      if (isObject(got.quota) && !local?.codexRevoked && !completeHere && !same && !locallyRestricted && (hostBlocked || !(mine !== undefined && Number(got.quota.checkedAt ?? 0) < mine.checkedAt))) {
         this.quotas.set(profile.id, got.quota as ProfileQuota);
         this.#keepQuota(profile.id, got.quota);
+        if (mine?.state === "blocked" && got.quota.state === "ok") this.deps.loginBack?.(profile.id);
       }
       this.refreshMissingBorrowedResetDetails(profile);
     } catch (e) {
@@ -1758,9 +1813,16 @@ export class Accounts {
   /// The same asked by a person (the route's), who is told what came of it: the question on its way waited for, and
   /// one that got no answer refused saying so, the allowance read before left standing.
   async askedQuota(id: string): Promise<ProfileQuota | null> {
+    const profile = this.profile(id);
+    const wasRestricted = this.quotas.get(id)?.restricted === true;
+    if (wasRestricted) {
+      this.quotas.delete(id);
+      this.deps.loginBack?.(id);
+    }
     const busy = this.quotaBusy.get(id);
-    if (busy) await busy;
-    else await this.readQuota(id, false);
+    if (busy && !wasRestricted) await busy;
+    else await this.readQuota(id, wasRestricted);
+    if (wasRestricted && profile && !borrowed(profile)) this.deps.shared?.statusUpdated?.(id);
     const unanswered = this.quotaUnanswered.get(id);
     if (unanswered !== undefined) throw new Refusal(502, unanswered.detail);
     return this.quotas.get(id) ?? null;
@@ -1831,10 +1893,14 @@ export class Accounts {
         this.changed();
         return read;
       }
-      await this.checkBorrowed(profile, stationLang(), true).catch(() => {});
+      await this.checkBorrowed(profile, stationLang(), stands).catch(() => {});
       return this.quotas.get(id) ?? null;
     }
     if (!this.quotaFn) return this.quotas.get(id) ?? null;
+    const existing = this.quotas.get(id);
+    // A provider account restriction (e.g. Anthropic Verification Portal, FB-68) stays blocked across routine quota
+    // rounds even when `/api/oauth/usage` still answers 200 OK; cleared only by sign-in or explicit user check/refresh.
+    if (stands && existing?.state === "blocked" && existing.restricted === true) return existing;
     const { signedOut, unanswered, recheck, ...asked } = await this.quotaFn(profile);
     if ((this.loginGeneration.get(id) ?? 0) !== generation) return this.quotas.get(id) ?? null;
     // No answer (the provider not reached, or in trouble itself) says nothing of the allowance: the one read before
@@ -1863,6 +1929,7 @@ export class Accounts {
     const read = { ...current, checkedAt: this.background.now() };
     this.quotas.set(id, read);
     this.#keepQuota(id, read);
+    if (before?.state === "blocked" && read.state === "ok") this.deps.loginBack?.(id);
     this.changed();
     // Its login found over: its check says so, and the pool passes it over (as a Console or Kimi sign-in refused).
     if (profile.runtime === "codex" && accessKind(profile) === "subscription") {
@@ -1917,8 +1984,9 @@ export class Accounts {
   /// A shared profile changed on its host. Get the new login even when the old access token has not expired yet, and
   /// retire app-servers that cached it after their current turns. A reset also wakes sessions once its allowance is read.
   async sharedChanged(id: string, reset: boolean): Promise<void> {
-    // (changed on its host, signed in anew there perhaps: what its host says is asked again, nothing kept against it)
+    // (changed on its host, signed in anew or restricted/recovered there: what its host says is asked again)
     this.authRevoked.delete(id);
+    if (this.quotas.get(id)?.restricted === true) this.quotas.delete(id);
     const profile = this.profile(id);
     if (profile?.enabled === false) await this.deps.hub?.profileGone?.(id);
     if (!profile || !borrowed(profile)) return;
@@ -1927,8 +1995,9 @@ export class Accounts {
       return;
     }
     if (!this.deps.shared) return;
-    // A host that signed out may have no login to lend; its status must still reach the copy.
-    await this.checkBorrowed(profile, stationLang(), true);
+    // A host that signed out or marked the account restricted may have no usable login to lend; its status must still reach the copy.
+    await this.checkBorrowed(profile, stationLang(), false);
+    if (this.quotas.get(id)?.state === "blocked") return;
     if (profile.runtime === "codex" && this.deps.shared.lendCodex) {
       const before = this.borrowedLogin.has(id) ? this.borrowedLogin.get(id) : await lentLoginVersion(profile.home);
       if (!this.borrowedLogin.has(id)) this.borrowedLogin.set(id, before ?? null);

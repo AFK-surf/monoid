@@ -388,6 +388,7 @@
   "station.notice.runtimeMissing": "Couldn't start the agent: {name} isn't installed on this station",
   "station.notice.stopped": "Stopped the current task",
   "station.notice.profileLogin": "Account {profile} ({runtime} · {station}) signed out; please sign in again",
+  "station.notice.profileRestricted": "Account {profile} ({runtime} · {station}) is restricted by the provider; verify it or remove it from sharing",
   "station.notice.cutOffRestart": "Station restarted and interrupted this turn; reply to continue",
   "station.port.mcp": "the agent MCP endpoint",
   "station.port.taken": "Port {host}:{port} for {what} is in use by another program (set in the config). Run `lsof -nP -iTCP:{port} -sTCP:LISTEN` to find it, or choose another port in the config.",
@@ -435,6 +436,8 @@
     "one": "Works, 1 model",
     "other": "Works, {n} models"
   },
+  "station.quota.accountRestricted": "This account is restricted by the provider; complete verification first",
+  "station.quota.accountRestrictedSaying": "Account restricted: {said}",
   "station.quota.chatgptNoWindows": "ChatGPT returned no usage limits",
   "station.quota.codexBlocked": "The ChatGPT account has been suspended",
   "station.quota.codexFailed": "Couldn't check the ChatGPT allowance. Try again later.",

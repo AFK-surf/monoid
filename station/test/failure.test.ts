@@ -3,10 +3,15 @@
 // own are told apart by the MoonBit program: station/mb/src/claude/frames_test.mbt.)
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { failureOf } from "../src/agents/runtime.ts";
+import { accountRestricted, failureOf } from "../src/agents/runtime.ts";
 
 test("a failure is told apart by what it means to people", () => {
   assert.equal(failureOf("401 Unauthorized"), "auth");
+  const restricted = "API Error: Your account can't receive replies from Claude right now. You can find the next step in the Anthropic Verification Portal";
+  assert.equal(failureOf(restricted), "auth");
+  assert.equal(accountRestricted(restricted), true);
+  assert.equal(accountRestricted("Your account cannot receive replies right now"), true);
+  assert.equal(accountRestricted("401 Unauthorized"), false);
   // A 403 is the account's where it says so, where the request comes from where it says that (a region, the CDN's page
   // for a blocked address); else it is not known why, and not guessed (2026-11-02: "unexpected status 403 Forbidden:").
   assert.equal(failureOf("unexpected status 403 Forbidden: "), "denied");

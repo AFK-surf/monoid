@@ -743,7 +743,7 @@ export const AgentsLive = (control: Control) =>
         claudeVersion: () => updates.get().find((v) => v.id === "claude")?.version ?? null,
         loginLost: (lost) => loginLost?.(lost),
         loginBack: (id) => loginBack?.(id),
-        shared: { status: (p, recheck) => sharing!.status(p, recheck === true), lendCodex: (p, rejected) => sharing!.lendCodex(p, rejected), lendAgy: (p, rejected) => sharing!.lendAgy(p, rejected), lendClaude: (p, rejected) => sharing!.lendClaude(p, rejected), quotaReset: (p, key) => sharing!.quotaReset(p.id, key), loginUpdated: (id) => { sharing?.loginUpdated(id); }, view: (p, ws) => sharing?.profileView(p, ws) ?? null, hostName },
+        shared: { status: (p, recheck, restricted) => sharing!.status(p, recheck === true, restricted), lendCodex: (p, rejected) => sharing!.lendCodex(p, rejected), lendAgy: (p, rejected) => sharing!.lendAgy(p, rejected), lendClaude: (p, rejected) => sharing!.lendClaude(p, rejected), quotaReset: (p, key) => sharing!.quotaReset(p.id, key), loginUpdated: (id) => { sharing?.loginUpdated(id); }, statusUpdated: (id) => { sharing?.statusUpdated(id); }, view: (p, ws) => sharing?.profileView(p, ws) ?? null, hostName },
       });
       read = () => accounts.settings();
       accounts.start();
@@ -765,7 +765,7 @@ export const AgentsLive = (control: Control) =>
         // In sandboxes no Codex here holds the refresh token: it is renewed here whenever it runs out.
         codexRenewRunning: async (id) => await codex.renewLogin(id),
         agyRenew: (home) => agyRenew(home),
-        status: async (id, recheck) => { const h = await accounts.lentHealth(id, recheck === true); return { check: h.check ?? null, quota: h.quota ?? null }; },
+        status: async (id, recheck, restricted) => { const h = await accounts.lentHealth(id, recheck === true, restricted); return { check: h.check ?? null, quota: h.quota ?? null }; },
         loginExpired: (id) => accounts.markLoginExpired(id),
         changed: () => events.overviewChanged(),
         recheck: () => accounts.recheckBorrowed(),
@@ -1129,13 +1129,13 @@ export const AgentsLive = (control: Control) =>
       const billedCooldown = new BilledCooldown();
       // A profile's login over: the managers of each workspace it serves are told whose it is, to sign it in again.
       const profileLoginCooldown = new ProfileLoginCooldown();
-      loginLost = ({ id, profile, station }) => {
+      loginLost = ({ id, profile, station, restricted }) => {
         if (cloud.provider() !== "stillfail") return;
         const home = cloud.home();
         const workspaces = cloud.fullMemberships().map((m) => m.workspace).filter((ws) => allowedIn(profile, ws, home));
         const runtime = profile.runtime;
         const stationName = station ?? cloud.state?.name ?? "still.fail";
-        notifier.notifyProfileLogin({ workspaces, profileId: id, profile: profile.name, runtimeTitle: runtime === undefined ? "" : runtimeTitle(runtime), stationName, at: hub.now() }, profileLoginCooldown);
+        notifier.notifyProfileLogin({ workspaces, profileId: id, profile: profile.name, runtimeTitle: runtime === undefined ? "" : runtimeTitle(runtime), stationName, at: hub.now(), ...(restricted ? { restricted: true } : {}) }, profileLoginCooldown);
       };
       loginBack = (id) => profileLoginCooldown.clear(id);
       hub.onBilledFallback = (info) => {

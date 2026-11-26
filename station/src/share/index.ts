@@ -152,7 +152,8 @@ export type SharingDeps = {
   agyRenew?: (home: string) => Promise<void>;
   /// A profile's check and allowance as this station has them, its allowance asked again when old (for the stations
   /// borrowing it). `recheck`: a borrower was refused on it, so its login is asked of its provider again first.
-  status: (profileId: string, recheck?: boolean) => Promise<{ check: Json; quota: Json }>;
+  /// `restricted`: a borrower hit a provider account-restriction error (e.g. Anthropic Verification Portal, FB-68).
+  status: (profileId: string, recheck?: boolean, restricted?: string) => Promise<{ check: Json; quota: Json }>;
   /// A borrowed profile's host said its login is over (LOGIN_OVER): its check here says to sign in again at once.
   loginExpired?: (id: string) => void;
   /// Something the overview shows changed.
@@ -1455,7 +1456,10 @@ export class Sharing {
         if (this.moving.has(id)) throw new Error("the login is being moved to another station");
         return this.lend(p, typeof request.rejected === "string" ? request.rejected : undefined);
       }
-      if (method === "share.status") return this.deps.status(p.id, request.recheck === true);
+      if (method === "share.status") {
+        const restricted = typeof request.restricted === "string" && request.restricted !== "" ? request.restricted : undefined;
+        return this.deps.status(p.id, request.recheck === true, restricted);
+      }
       if (method === "share.quotaReset") {
         const key = typeof request.key === "string" ? request.key : "";
         if (!key || p.runtime !== "codex" || p.access?.kind !== "subscription") throw new Error("invalid allowance reset");
@@ -2324,18 +2328,40 @@ export class Sharing {
   }
 
   /// A borrowed profile's check and allowance, as its host has them; `recheck`: its login asked of its provider again
-  /// there first (a host from before asks nothing again: its answer is what it had).
-  async status(profile: Json, recheck = false): Promise<{ check: Json; quota: Json }> {
+  /// there first (a host from before asks nothing again: its answer is what it had). `restricted`: the provider
+  /// restriction error hit by this borrower, so an upgraded host blocks the account for every borrower at once (FB-68).
+  async status(profile: Json, recheck = false, restricted?: string): Promise<{ check: Json; quota: Json }> {
     const host = this.hostOf(profile);
     await this.rosterSaid();
     try {
-      const got = await this.deps.ask(host, null, { method: "share.status", id: profile.share.id, ...(recheck ? { recheck: true } : {}) });
+      const got = await this.deps.ask(host, null, {
+        method: "share.status",
+        id: profile.share.id,
+        ...(recheck ? { recheck: true } : {}),
+        ...(typeof restricted === "string" && restricted !== "" ? { restricted } : {}),
+      });
       this.unreachable.delete(host);
       return { check: got?.check ?? null, quota: got?.quota ?? null };
     } catch (e) {
       this.unreachable.set(host, this.time.now());
       this.scheduleRetry();
       throw e;
+    }
+  }
+
+  /// A hosted profile's availability status changed (for example restricted or recovered after verification, FB-68):
+  /// bump its share version so every borrower pulls the updated status right away instead of waiting for its next round.
+  statusUpdated(profileId: string): void {
+    const profile = this.profiles().find((p) => p.id === profileId);
+    const id = profile?.share?.id;
+    if (profile && typeof id === "string" && profile.share.borrowed !== true) {
+      const state = this.readState();
+      const hosted = state.hosted[id];
+      if (hosted) {
+        hosted.version++;
+        this.writeState(state);
+      }
+      void this.reconcile();
     }
   }
 

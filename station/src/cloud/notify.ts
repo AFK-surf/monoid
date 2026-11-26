@@ -54,8 +54,9 @@ export class ProfileLoginCooldown {
   }
 }
 
-/// A profile whose login is over, as its alert names it: `station` the station whose login it is.
-export type ProfileLoginNotice = { workspaces: string[]; profileId: string; profile: string; runtimeTitle: string; stationName: string; at: number };
+/// A profile whose login is over or whose account is restricted by the provider, as its alert names it (`station`:
+/// the station whose login it is).
+export type ProfileLoginNotice = { workspaces: string[]; profileId: string; profile: string; runtimeTitle: string; stationName: string; at: number; restricted?: boolean };
 
 export class Notifier {
   private since: number;
@@ -190,7 +191,7 @@ export class Notifier {
         seq: null,
         title: info.stationName,
         by: info.runtimeTitle,
-        text: tr(stationLang(), "station.notice.profileLogin", { profile: info.profile, runtime: info.runtimeTitle, station: info.stationName }),
+        text: tr(stationLang(), info.restricted ? "station.notice.profileRestricted" : "station.notice.profileLogin", { profile: info.profile, runtime: info.runtimeTitle, station: info.stationName }),
         at: info.at,
         ws,
       });

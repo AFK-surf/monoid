@@ -161,8 +161,15 @@ export const stationTool = (name: string) => TOOL_SERVERS.some((s) => name.start
 /// are about its account, or about its limits.
 export type FailureWords = { authCodes?: string[]; auth?: string[]; limitCodes?: string[]; limit?: string[] };
 
-/// What its messages (any runtime's) say when it is the account: signed out, a key refused, not allowed.
-const AUTH = ["unauthorized", "authenticat", "not logged in", "sign in", "log in", "api key", "permission_denied", "invalid credential"];
+/// What a provider says when an account itself is restricted (for example Anthropic's Verification Portal), even while
+/// its OAuth token still answers `/v1/models` and `/api/oauth/usage` (FB-68).
+const ACCOUNT_RESTRICTED = ["can't receive replies", "cannot receive replies", "verification portal"];
+export function accountRestricted(text: string): boolean {
+  const lower = text.toLowerCase();
+  return ACCOUNT_RESTRICTED.some((s) => lower.includes(s));
+}
+/// What its messages (any runtime's) say when it is the account: signed out, a key refused, not allowed, or restricted.
+const AUTH = ["unauthorized", "authenticat", "not logged in", "sign in", "log in", "api key", "permission_denied", "invalid credential", ...ACCOUNT_RESTRICTED];
 /// What they say when the provider turns away where the request comes from, whoever asks: its region. Only what says
 /// so: a 403 that does not is `denied`, its cause not known.
 const REFUSED = ["request not allowed", "unsupported_country", "unsupported country", "not available in your region", "region is not supported", "not authorized in this region"];

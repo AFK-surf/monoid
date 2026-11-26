@@ -127,6 +127,12 @@ test "parse_claude: a failure's reason, as the TypeScript station told it" {
     ("API Error: 403 OAuth token does not meet scope requirement", "auth", false, 58),
     ("API Error: 401 invalid x-api-key", "auth", false, 32),
     (
+      "API Error: Your account can't receive replies from Claude right now. You can find the next step in the Anthropic Verification Portal",
+      "auth",
+      false,
+      132,
+    ),
+    (
       "API Error: 529 {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}",
       "overloaded",
       false,

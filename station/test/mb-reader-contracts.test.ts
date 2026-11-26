@@ -550,7 +550,7 @@ const MB_READER_SHA256_MANIFEST: Record<string, string> = {
   "actors.mbt": "4a56a8bfa195096c8299dd29800cfa1a6fcb65387cf0e17300569ca23271201a",
   "actor_base.mbt": "185a1015d8625ff90beea0c68d7f1f352b1f132085efa561799872e029393344",
   "actor_store.mbt": "ff1a2ed085f37d4db234e76c29aea86f563aaa219bd5b148871064cd602313cd",
-  "actor_run.mbt": "d773c1edb09d60fa18f1260ca17be6cc6ff52f9414d0c9f898ea2770a02b20ee",
+  "actor_run.mbt": "54ef7c50c718d3238b74dcc547bfbd1c79399d33b20298a3433b85f69b4d2854",
   "jobs.mbt": "736b7df74c87a85c343e343afd9666a46d9c161a3cbe93ef3fe29b01ef90b818",
   "live.mbt": "adca5f31d70d745251d1768939d282269f67114bca3e565d598bfd12993f2171",
   "remote.mbt": "d8573ab63fd84f6d89b47d7a427c3a3a5c592282af00f9b94e6d713a32f4bc7a",

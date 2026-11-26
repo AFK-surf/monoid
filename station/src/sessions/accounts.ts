@@ -13,7 +13,7 @@ import { type HubConfig, noProfileHere, type Profile, runs, runtimeNamed, runtim
 import { modelKey } from "../read/usage.ts";
 import { availableEfforts, cheapToLeave, commonEfforts, isSessionCapped, type ProfileHealth, pickProfile, quotaUnavailable, reportedEfforts, serves, signsIn, urgency, usable, windowsOf } from "./pool.ts";
 import { agyScopeForModel } from "../accounts/agy-quota.ts";
-import type { RuntimeKind } from "../agents/runtime.ts";
+import { accountRestricted, type RuntimeKind } from "../agents/runtime.ts";
 import { accessKind, billedPerUse, FAST_RUNTIMES } from "../agents/profiles.ts";
 
 /// How long a profile a turn ran into the allowance of is passed over when its allowance is not read again.
@@ -82,7 +82,7 @@ export type AccountsDeps = {
 export class Accounts {
   private deps: AccountsDeps;
   private health: (id: string) => ProfileHealth = () => ({});
-  private checkAgain: (id: string, force?: boolean) => Promise<unknown> = async () => {};
+  private checkAgain: (id: string, force?: boolean, reason?: string) => Promise<unknown> = async () => {};
   private quotaAgain: (id: string) => Promise<unknown> = async () => {};
   private rechecking = new Map<string, Promise<void>>();
   private picked = new Map<string, number>();
@@ -112,7 +112,7 @@ export class Accounts {
   }
 
   /// Lets the pool have a profile checked again after a runtime on it was refused (accounts/index.ts `recheckProfile`).
-  setRecheck(recheck: (id: string, force?: boolean) => Promise<unknown>) {
+  setRecheck(recheck: (id: string, force?: boolean, reason?: string) => Promise<unknown>) {
     this.checkAgain = recheck;
   }
 
@@ -144,11 +144,13 @@ export class Accounts {
   /// Profile `id` checked again, a runtime on it having failed to sign in (once at a time): one whose login is over is
   /// passed over from then on, and a session left to the station goes on on another (`runOn`). `force`: refused again
   /// on it after it was checked and tried again in the same turn, so its login is taken as over whatever a check says.
-  recheck(id: string, force = false): Promise<void> {
+  /// `reason`: the failure message, so an explicit account restriction (FB-68) blocks the profile immediately.
+  recheck(id: string, force = false, reason?: string): Promise<void> {
     const busy = this.rechecking.get(id);
-    if (busy && !force) return busy;
+    const urgent = force || (typeof reason === "string" && accountRestricted(reason));
+    if (busy && !urgent) return busy;
     const run: Promise<void> = (busy ?? Promise.resolve())
-      .then(() => this.checkAgain(id, force))
+      .then(() => this.checkAgain(id, force, reason))
       .then(
         () => {},
         () => {},
@@ -162,13 +164,13 @@ export class Accounts {
 
   /// Read-only check whether a turn that failed with `auth` on `failedProfile` should automatically reopen and retry.
   /// `tried`: the profiles this turn was already refused on before (the session's chain of retries, FB-44: several
-  /// revoked logins in one pool). Allowed once more on `failedProfile` itself while `recheck` did not mark it `"login"` /
-  /// `"failed"` and it was not tried already; else when a profile not tried yet can run it; false when none is left.
+  /// revoked logins in one pool). Allowed once more on `failedProfile` itself while `recheck` did not mark it unusable
+  /// (`signsIn`: neither `"login"`, `"failed"`, nor `quota.state === "blocked"`) and it was not tried already; else
+  /// when a profile not tried yet can run it; false when none is left.
   canAuthRetry(key: string, failedProfile: string, tried: readonly string[] = []): boolean {
     const alreadyTried = tried.includes(failedProfile);
     const excluded = new Set([...tried, failedProfile]);
-    const state = this.healthOf(failedProfile).check?.state;
-    if (state !== "login" && state !== "failed" && !alreadyTried) return true;
+    if (signsIn(this.healthOf(failedProfile)) && !alreadyTried) return true;
     const row = this.deps.store.getSession(key);
     if (!row) return false;
     if (row.profile !== failedProfile && !excluded.has(row.profile) && this.can(row.profile, row.model)) return true;
@@ -211,7 +213,7 @@ export class Accounts {
     const key = this.accountKey(id, health);
     // Another profile of the same account may have read its allowance more recently. A failed read does not replace a
     // successful one; sign-in checks remain specific to each profile.
-    if (key.startsWith("account:")) {
+    if (key.startsWith("account:") && health.quota?.state !== "blocked") {
       for (const other of this.deps.config().profiles) {
         if (other.id === id) continue;
         const candidate = this.health(other.id);
@@ -565,7 +567,25 @@ export class Accounts {
     if (workspaceCandidates.length === 0) throw new Error(noProfileHere(stationLang(), runtime, all));
     const [candidates, keptProfiles] = this.poolFor(row.profilePinned ? { ...row, profiles: null } : row, workspaceCandidates);
     if (row.speed === "ultrafast" && candidates.length === 0) throw new Error(tr(stationLang(), "station.speed.ultrafast_unavailable"));
-    const next = this.pick(candidates, row.model, false, key);
+    let pool = candidates;
+    // After a failed turn, repick moves off the profile that just failed whenever another healthy, uncapped,
+    // same-or-better billing tier profile can serve the model (FB-68: an unrecognized failing account has 0% usage
+    // and would otherwise win pickProfile again and again).
+    if (row.profile !== "" && store.lastTurn(key)?.outcome === "failed") {
+      const current = candidates.find((p) => p.id === row.profile);
+      const strict = candidates.some((p) => serves(p, row.model));
+      const active = this.activeMap(key);
+      const others = candidates.filter((p) => {
+        if (p.id === row.profile) return false;
+        if (strict && !serves(p, row.model)) return false;
+        if (!this.can(p.id, row.model) || quotaUnavailable(this.healthOf(p.id))) return false;
+        if (current && !billedPerUse(current) && billedPerUse(p)) return false;
+        const cap = billedPerUse(p) ? undefined : this.accountMaxSessions(p.id);
+        return !isSessionCapped(p, cap, active.get(this.accountKey(p.id)) ?? 0);
+      });
+      if (others.length > 0) pool = others;
+    }
+    const next = this.pick(pool, row.model, false, key);
     store.setSessionProfile(key, next.id, false, keptProfiles);
     if (next.id !== row.profile) log.info("hub", "session's account picked again", { session: key, from: row.profile, to: next.id });
   }

@@ -170,8 +170,8 @@ export type SessionDeps = {
   /// When session `key`'s profile, its allowance run out, is expected to run again (absent: in an hour).
   refillsAt?(key: string): number;
   /// A runtime failed to sign in on `profile`: it is checked again (the pool passes over one whose login is over);
-  /// `force`: refused on it again in the same turn, its login taken as over.
-  recheck?(profile: string, force?: boolean): Promise<void>;
+  /// `force`: refused on it again in the same turn, its login taken as over; `reason`: the failure text (FB-68).
+  recheck?(profile: string, force?: boolean, reason?: string): Promise<void>;
   /// Read-only check whether a turn that failed with `auth` on `failedProfile` should automatically reopen and retry,
   /// `tried` the profiles it was refused on before in the same turn.
   canAuthRetry?(key: string, failedProfile: string, tried?: readonly string[]): boolean;
