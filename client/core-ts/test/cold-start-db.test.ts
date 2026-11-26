@@ -2143,3 +2143,191 @@ test("R10 regressions: SQLITE_FULL on adoptDb statement/COMMIT keeps owner A, re
     await core.close();
   }
 });
+
+test("R11 regressions: SQLITE_FULL recovery persists live /v1/me before offline restart, NOT_BETA+503 keeps B editable, and NOT_BETA before sign-out cleans legacy credentials", async () => {
+  // 1) P0-1: A's disk DB has stale me without ws-w, B holds ws-w. Live /v1/me assigns ws-w -> A.
+  //    On DB recovery, inject SQLITE_FULL once on account_doc write, then allow all subsequent writes.
+  //    Write first draft -> close cleanly -> restart offline -> owner MUST stay A and BOTH drafts live only in A!
+  {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = undefined;
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    let failA = true;
+    let injectOnce = true;
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) => {
+      if (name === dbName("s1") && failA) return Effect.fail(new HostError("disk unavailable"));
+      return Effect.map(origOpen(name), (raw) => {
+        if (name !== dbName("s1")) return raw;
+        return {
+          exec(sql: string) { raw.exec(sql); },
+          run(sql: string, params?: readonly SqlValue[]) {
+            if (injectOnce && /account_doc/i.test(sql)) {
+              injectOnce = false;
+              throw new Error("SQLITE_FULL: database or disk is full");
+            }
+            return raw.run(sql, params);
+          },
+          all(sql: string, params?: readonly SqlValue[]) { return raw.all(sql, params); },
+          close() { raw.close(); },
+        };
+      });
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccount("s1"));
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.workspaces.owner("ws-w"), "s1");
+
+    failA = false;
+    const nowSec = Math.floor(host.nowMs() / 1000);
+    await run(core.inner.accounts.migrate([
+      { sub: "s1", email: "s1@example.com", name: "s1", picture: "", access: "access-s1", refresh: "refresh-s1", accessExpires: nowSec + 7200 },
+    ]));
+    await host.settle();
+    await run(core.inner.data.written);
+
+    const ui = core.connect();
+    const ack1 = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 901 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack1, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 901, call: "composer.text", params: { key: "new:ws-w", text: "first-edit-a" } });
+    const res1 = await Effect.runPromise(Deferred.await(ack1));
+    assert.ok("ok" in res1);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s1")!.draft("ws-w", "new")?.text, "first-edit-a", "first draft landed in A");
+    assert.equal(core.inner.data.db("s2")!.draft("ws-w", "new"), undefined, "B has no draft online");
+    await core.close();
+
+    // Offline restart with both DBs open -> A's disk DB must now have ws-w, owner stays A, second edit lands ONLY in A!
+    host.onFetch(() => jsonResponse(503, {}));
+    const core2 = await Core.create(host, { clock: host.time.clock });
+    await run(core2.inner.data.openAccounts(["s1", "s2"]));
+    assert.equal(core2.inner.workspaces.owner("ws-w"), "s1", "owner MUST stay A after offline restart");
+    const ui2 = core2.connect();
+    const ack2 = Deferred.makeUnsafe<J>();
+    const origEmit2 = core2.inner.host.emit.bind(core2.inner.host);
+    core2.inner.host.emit = (c, m) => {
+      origEmit2(c, m);
+      if (m.id === 902 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack2, Effect.succeed(m));
+    };
+    core2.receive(ui2, { kind: "call", id: 902, call: "composer.text", params: { key: "new:ws-w", text: "second-edit-offline-a" } });
+    const res2 = await Effect.runPromise(Deferred.await(ack2));
+    assert.ok("ok" in res2);
+    await host.time.pass(350);
+    await run(core2.inner.data.written);
+    assert.equal(core2.inner.data.db("s1")!.draft("ws-w", "new")?.text, "second-edit-offline-a", "second draft landed in A offline");
+    assert.equal(core2.inner.data.db("s2")!.draft("ws-w", "new"), undefined, "B SQLite stays completely empty after offline restart");
+    await core2.close();
+  }
+
+  // 2) P1-2: A before B without DB; A receives NOT_BETA (403) then 503 on next refresh ->
+  //    hasUnverifiedAccounts() MUST stay false and B's exclusive ws2 remains editable!
+  {
+    let aStatus: 403 | 503 = 403;
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = undefined;
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") {
+          return aStatus === 403 ? jsonResponse(403, { error: "not_beta" }) : jsonResponse(503, { error: "unavailable" });
+        }
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      name === dbName("s1") ? Effect.fail(new HostError("disk unavailable")) : origOpen(name);
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccount("s1"));
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.cloudSync.hasUnverifiedAccounts(), false, "NOT_BETA clears unverified state");
+
+    aStatus = 503;
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.cloudSync.hasUnverifiedAccounts(), false, "subsequent 503 must NOT re-block B after same-gen NOT_BETA");
+
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 903 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 903, call: "composer.text", params: { key: "new:ws2", text: "b-still-editable" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res, `B exclusive ws2 must remain editable after A NOT_BETA+503, got: ${JSON.stringify(res)}`);
+    await core.close();
+  }
+
+  // 3) P1-3: B before A, both share ws-w; A has no DB, legacy credential at credential/s1/ws-w without index;
+  //    A learns ws-w via /v1/me, then receives NOT_BETA, then signs out -> legacy credential MUST still be deleted!
+  {
+    let aNotBeta = false;
+    const host = new FakeHost();
+    host.memoryDb = undefined;
+    const now = Math.floor(host.nowMs() / 1000);
+    host.store(STORAGE_KEY, [storedAccount("s2", now + 3600), storedAccount("s1", now + 3600)]);
+    host.store("device/prefs", { device: { workspace: "ws2" } });
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s1") {
+          return aNotBeta
+            ? jsonResponse(403, { error: "not_beta" })
+            : jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        }
+      }
+      return jsonResponse(200, {});
+    });
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      name === dbName("s1") ? Effect.fail(new HostError("disk unavailable")) : origOpen(name);
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccount("s1"));
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await run(core.inner.cloudSync.refreshAccount("s2"));
+    assert.equal(core.inner.workspaces.owner("ws-w"), "s2");
+
+    const legacyKey = "credential/s1/ws-w";
+    host.store(legacyKey, { token: "legacy-marker", expires_at: now + 3600 });
+
+    // A receives NOT_BETA BEFORE signing out -> ws-w must be preserved into cleanup index!
+    aNotBeta = true;
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await run(core.inner.accounts.signOut("s1"));
+    await host.settle();
+    assert.equal(host.stored(legacyKey), undefined, "A's legacy credential for shared ws-w MUST be deleted even after NOT_BETA preceded sign-out");
+    await core.close();
+  }
+});

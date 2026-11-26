@@ -704,6 +704,9 @@ export class Core {
         inner.cloudSync.syncSockets();
         inner.stations.reconcile();
       };
+      inner.data.onDbCommitted = (db) => {
+        inner.cloudSync.retryPendingLiveMe(db);
+      };
       if (restSubs.length > 0) {
         const firstChats = Deferred.makeUnsafe<void>();
         inner.store.onFirstChats = (scope) => {
@@ -957,6 +960,7 @@ export class Core {
     const { runner, data } = this.inner;
     // (the trees read and not yet written, and what is written and not yet committed: kept for the core that follows)
     this.inner.sendTrace.close();
+    this.inner.cloudSync.flushLiveMe();
     data.closing();
     runner.shutdown();
     this.#closing = runner.run(data.device.close());

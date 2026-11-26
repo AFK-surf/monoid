@@ -397,6 +397,8 @@ export class Data {
   onPublished: (db: AccountDb) => void = () => {};
   /// Told when a deferred account clears without publishing a DB (unrecoverable open failure) so callers can re-verify owners.
   onDeferredCleared: (sub: string) => void = () => {};
+  /// Told after an account database settles a commit without being full (used to retry unpersisted `#liveMe`).
+  onDbCommitted: (db: AccountDb) => void = () => {};
   /// The marks of databases found damaged as the core ran, as they are written (damageKept).
   readonly #damaged = new Map<string, Promise<void>>();
 
@@ -908,6 +910,7 @@ export class Data {
   }
 
   #committed(db: AccountDb, changes: Changes): void {
+    if (!db.full) this.onDbCommitted(db);
     // (asked at each commit of its own while one is owed, a few numbers of SQLite's: the commit that made the room
     // may be the last for long; never as another database commits, its own burst maybe still to be rolled back)
     if (this.#roomOwed.has(db)) {

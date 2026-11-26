@@ -108,6 +108,11 @@ export class CloudSync {
   /// an account has no writable DB or its DB write has not yet been confirmed committed on disk. Always takes
   /// precedence over stale disk rows in `#meOf(sub)` and is cleared only after `db.written` confirms persistence.
   readonly #liveMe = new Map<string, { gen: number; me: unknown | null }>();
+  /// Accounts currently running `#persistLiveMe` (prevents re-entrant retries during the same commit settlement).
+  readonly #persistingLiveMe = new Set<string>();
+  /// Login generation at which `sub` received `NOT_BETA` (preserved independently of `this.mes`, so a subsequent
+  /// transient 503 never causes a `NOT_BETA`-rejected account without a DB to re-block other accounts).
+  readonly #notBetaGen = new Map<string, number>();
   /// An account's credential asks out at once, by account (`CREDENTIAL_ASK_CONCURRENCY`).
   readonly #askTurn = new Map<string, ReturnType<typeof Semaphore.makeUnsafe>>();
   /// Until when (ms) an account asks no credential, the cloud having refused one for too many (`CREDENTIAL_429_COOLDOWN_MS`).
@@ -194,8 +199,37 @@ export class CloudSync {
     return fromDb;
   }
 
+  #rememberWorkspacesOf(sub: string, me: unknown): void {
+    if (!isObject(me) || !Array.isArray(me.workspaces)) return;
+    for (const w of me.workspaces) {
+      if (isObject(w) && typeof w.id === "string" && w.id.length > 0) {
+        this.#rememberCredentialWorkspace(sub, w.id);
+      }
+    }
+  }
+
   #setLiveMe(sub: string, me: unknown | null): { gen: number; me: unknown | null } {
-    const entry = { gen: this.#core.data.accountGen(sub), me };
+    const gen = this.#core.data.accountGen(sub);
+    if (me === null) {
+      // Preserve every workspace previously known for `sub` into the durable credential-cleanup index before
+      // overwriting `#liveMe` with the `NOT_BETA` tombstone so legacy credentials are still deleted on sign-out.
+      this.#rememberWorkspacesOf(sub, this.#meOf(sub));
+    } else {
+      const prev = this.#liveMe.get(sub);
+      if (prev !== undefined && prev.gen === gen && isObject(prev.me) && Array.isArray(prev.me.workspaces)) {
+        const nextIds = new Set(
+          isObject(me) && Array.isArray(me.workspaces)
+            ? me.workspaces.flatMap((w) => (isObject(w) && typeof w.id === "string" ? [w.id] : []))
+            : [],
+        );
+        for (const w of prev.me.workspaces) {
+          if (isObject(w) && typeof w.id === "string" && w.id.length > 0 && !nextIds.has(w.id)) {
+            this.#rememberCredentialWorkspace(sub, w.id);
+          }
+        }
+      }
+    }
+    const entry = { gen, me };
     this.#liveMe.set(sub, entry);
     this.#core.data.notifyAccountRecord(sub, "me");
     return entry;
@@ -210,6 +244,7 @@ export class CloudSync {
   #persistLiveMe(sub: string, db: AccountDb, live: { gen: number; me: unknown | null }): void {
     const core = this.#core;
     if (db.readOnly || live.gen !== core.data.accountGen(sub)) return;
+    this.#persistingLiveMe.add(sub);
     const topic: Topic = { topic: "$account-record", account: sub, name: "me" };
     if (live.me === null) db.dropAccountDoc("me", topic);
     else db.putAccountDoc("me", live.me, core.host.nowMs(), topic);
@@ -217,6 +252,7 @@ export class CloudSync {
       Effect.andThen(
         Effect.ignore(db.written),
         Effect.sync(() => {
+          this.#persistingLiveMe.delete(sub);
           if (this.#liveMe.get(sub) !== live) return;
           if (core.data.db(sub) !== db || db.readOnly || live.gen !== core.data.accountGen(sub)) return;
           const persisted = db.accountDoc("me");
@@ -240,15 +276,45 @@ export class CloudSync {
     if (!db.readOnly) this.#persistLiveMe(sub, db, live);
   }
 
+  /// Retries persisting an unconfirmed `#liveMe` record once `db` commits cleanly again (e.g. after transient
+  /// `SQLITE_FULL` clears) so subsequent offline restarts see the authoritative `/v1/me` on disk.
+  retryPendingLiveMe(db: AccountDb): void {
+    const sub = db.sub;
+    if (db.readOnly || db.full || this.#persistingLiveMe.has(sub)) return;
+    const live = this.#liveMe.get(sub);
+    if (live === undefined || live.gen !== this.#core.data.accountGen(sub)) return;
+    this.#persistLiveMe(sub, db, live);
+  }
+
+  /// Synchronously queues any still-unpersisted `#liveMe` writes/drops before `Data.closing()` runs `commitNow()`.
+  flushLiveMe(): void {
+    const core = this.#core;
+    for (const [sub, live] of this.#liveMe) {
+      if (live.gen !== core.data.accountGen(sub)) continue;
+      const db = core.data.db(sub);
+      if (!db || db.readOnly) continue;
+      const persisted = db.accountDoc("me");
+      const matches = live.me === null ? persisted === undefined : equal(persisted, live.me);
+      if (matches) continue;
+      const topic: Topic = { topic: "$account-record", account: sub, name: "me" };
+      if (live.me === null) db.dropAccountDoc("me", topic);
+      else db.putAccountDoc("me", live.me, core.host.nowMs(), topic);
+    }
+  }
+
   /// Whether `sub`'s workspace memberships are currently unknown because its disk DB was busy/failed (fell back
   /// to an empty memory DB or failed to open) and cloud `/v1/me` has not yet populated a readable `me` record
-  /// (nor rejected the account with `NOT_BETA`).
+  /// (nor rejected the account with `NOT_BETA` in the current login generation).
   #meUnreadable(sub: string): boolean {
     const core = this.#core;
     if (core.data.notes.size === 0) return false;
     const note = core.data.notes.get(sub);
     if (note?.kind !== "busy" && note?.kind !== "failed") return false;
-    if (this.#meOf(sub) !== undefined) return false;
+    const gen = core.data.accountGen(sub);
+    if (this.#notBetaGen.get(sub) === gen) return false;
+    const live = this.#liveMe.get(sub);
+    if (live !== undefined && live.gen === gen) return false;
+    if (core.data.record("me", sub) !== undefined) return false;
     return this.mes.get(sub)?.code !== NOT_BETA;
   }
 
@@ -603,6 +669,7 @@ export class CloudSync {
         if (first) this.#relaySource = sub;
         if (relays !== null && this.#relaySource === sub) this.relays = relays;
         const db = core.data.db(sub);
+        this.#notBetaGen.delete(sub);
         const live = this.#setLiveMe(sub, answer.success);
         if (db !== undefined && !db.readOnly) this.#persistLiveMe(sub, db, live);
         if (relays !== null && this.#relaySource === sub) this.onRelays?.(relays, entriesOf(answer.success), entryTargetsOf(answer.success));
@@ -611,6 +678,7 @@ export class CloudSync {
         // A beta app the account may not use: what it reached is not reached through this app.
         if (answer.failure.code === NOT_BETA) {
           const db = core.data.db(sub);
+          this.#notBetaGen.set(sub, core.data.accountGen(sub));
           const live = this.#setLiveMe(sub, null);
           if (db !== undefined && !db.readOnly) this.#persistLiveMe(sub, db, live);
         }
@@ -866,6 +934,8 @@ export class CloudSync {
   /// An account signed out (its database goes with all it held): the credentials it had for its workspaces go too.
   signedOut(sub: string, me: unknown): void {
     const core = this.#core;
+    this.#notBetaGen.delete(sub);
+    this.#persistingLiveMe.delete(sub);
     const live = this.#liveMe.get(sub);
     const useLive = live !== undefined && (live.gen < core.data.accountGen(sub) || !core.accounts.list().some((a) => a.sub === sub));
     if (useLive) this.#clearLiveMe(sub);
