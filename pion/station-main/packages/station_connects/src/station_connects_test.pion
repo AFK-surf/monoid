@@ -396,10 +396,10 @@ test "Feishu: 64-bit length overflow vector 42 81 80 80 80 10 41, routing, textP
     },
   )
   match conn.handle_frame(tr, WsFrame::Binary(f1)) {
-    FeishuStep::Event(pb, ChatEvent::Message(m)) => {
+    FeishuStep::Event(pb, dk, ChatEvent::Message(m)) => {
       debug_assert(m.thread_ts == "om_1", "first addressed msg starts current thread")
       debug_assert(mock.ws_sent.length() == 1, "MUST NOT ACK before caller handles")
-      let _ = conn.ack_frame(tr, pb, 200, Some("{\"toast\":{\"type\":\"success\"}}"))
+      let _ = conn.ack_frame(tr, pb, 200, Some("{\"toast\":{\"type\":\"success\"}}"), dk)
       debug_assert(mock.ws_sent.length() == 2, "explicit ACK sent after handling")
     }
     _ => debug_assert(false, "expected FeishuStep::Event")
@@ -420,7 +420,7 @@ test "Feishu: 64-bit length overflow vector 42 81 80 80 80 10 41, routing, textP
     },
   )
   match conn.handle_frame(tr, WsFrame::Binary(f2)) {
-    FeishuStep::Event(_, ChatEvent::Message(m)) => {
+    FeishuStep::Event(_, _, ChatEvent::Message(m)) => {
       debug_assert(m.thread_ts == "om_1", "default group follow-up stays in current thread om_1")
     }
     _ => debug_assert(false, "expected second group event")
@@ -792,18 +792,63 @@ test "at-least-once dedupe: un-ACKed redelivery delivers again on Slack, Feishu,
     )
   }
   match feishu.handle_frame(ftr, WsFrame::Binary(make_ff(1))) {
-    FeishuStep::Event(_, _) => {}
+    FeishuStep::Event(_, _, _) => {}
     _ => debug_assert(false, "expected first feishu event (not ACKed)")
   }
   match feishu.handle_frame(ftr, WsFrame::Binary(make_ff(2))) {
-    FeishuStep::Event(pb, _) => {
-      let _ = feishu.ack_frame(ftr, pb, 200)
+    FeishuStep::Event(pb, dk, _) => {
+      let _ = feishu.ack_frame(ftr, pb, 200, None, dk)
     }
     _ => debug_assert(false, "un-ACKed feishu redelivery was falsely dropped!")
   }
   match feishu.handle_frame(ftr, WsFrame::Binary(make_ff(3))) {
     FeishuStep::DuplicateIgnored(_, _) => {}
     _ => debug_assert(false, "post-ACK feishu redelivery must be deduplicated")
+  }
+
+  // 2b. Feishu concurrent frames sharing SeqID=0: A arrives, B arrives, A ACKs, B does NOT ACK -> B redelivered MUST NOT be dropped!
+  let make_ff_msg = fn(seq : Int, msg_id : String, ev_id : String) -> Bytes {
+    let body = "{\"header\":{\"event_type\":\"im.message.receive_v1\",\"event_id\":\"" + ev_id + "\"},\"event\":{\"sender\":{\"sender_type\":\"user\",\"sender_id\":{\"open_id\":\"ou_u1\"}},\"message\":{\"message_id\":\"" + msg_id + "\",\"chat_id\":\"oc_1\",\"chat_type\":\"p2p\",\"message_type\":\"text\",\"content\":\"{\\\"text\\\":\\\"hi\\\"}\"}}}"
+    encode_feishu_frame(
+      FeishuFrame::{
+        seq_id: i64(seq),
+        log_id: i64(seq),
+        service: 1,
+        method: FEISHU_DATA,
+        headers: [("type", "event")],
+        payload_encoding: None,
+        payload_type: None,
+        payload: Some(body.to_bytes()),
+        log_id_new: None,
+      },
+    )
+  }
+  let mut pb_a : Option[(FeishuFrame, String)] = None
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff_msg(0, "om_a", "ev_a"))) {
+    FeishuStep::Event(pb, dk, _) => pb_a = Some((pb, dk))
+    _ => debug_assert(false, "expected message A at SeqID=0")
+  }
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff_msg(0, "om_b", "ev_b"))) {
+    FeishuStep::Event(_, _, _) => {}
+    _ => debug_assert(false, "expected message B at SeqID=0")
+  }
+  // ACK only A; do NOT ACK B
+  match pb_a {
+    Some((pb, dk)) => {
+      let _ = feishu.ack_frame(ftr, pb, 200, None, dk)
+    }
+    None => debug_assert(false, "missing pb_a")
+  }
+  // A redelivered -> DuplicateIgnored; B redelivered -> MUST still deliver!
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff_msg(0, "om_a", "ev_a"))) {
+    FeishuStep::DuplicateIgnored(_, _) => {}
+    _ => debug_assert(false, "ACKed message A must be deduplicated")
+  }
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff_msg(0, "om_b", "ev_b"))) {
+    FeishuStep::Event(_, _, ChatEvent::Message(m)) => {
+      debug_assert(m.ts == "om_b", "un-ACKed message B with colliding SeqID=0 MUST deliver again")
+    }
+    _ => debug_assert(false, "un-ACKed message B with colliding SeqID=0 was falsely swallowed!")
   }
 
   // 3. Comma: task.put WITHOUT commit_put -> redelivered task.put MUST still yield msg -> commit_put -> redelivery yields 0
