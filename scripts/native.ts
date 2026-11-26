@@ -698,8 +698,8 @@ const PARTS: Record<string, Part> = {
     },
   },
   // The station-enabled Apple shell (`--features station`, adding `image.thumb` image codecs): used only by
-  // `station-pion` on darwin-arm64 so macOS/iOS apps and `pion-reader` (`shell-apple`) keep 0 KB image codec overhead
-  // and unchanged cache keys.
+  // `station-pion` on darwin-arm64 (Linux/Windows stations use `shell-station`, which also enables `station`), so
+  // macOS/iOS apps and `pion-reader` (`shell-apple`) keep 0 KB image codec overhead and an unchanged recipe.
   "shell-apple-station": {
     files: () => ["libstillfail_shell.a", "libstillfail_shell.libs"],
     targets: ["darwin-arm64"],

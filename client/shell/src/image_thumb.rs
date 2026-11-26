@@ -46,12 +46,15 @@ pub(crate) const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 pub(crate) const MAX_DECODE_DIM: u32 = u16::MAX as u32;
 /// Maximum accepted decoded pixel count (128 MP; covers 33–50 MP phone/panorama photos while rejecting bombs).
 pub(crate) const MAX_DECODE_PIXELS: u64 = 128 * 1024 * 1024;
-/// Maximum decoded buffer allocation (512 MiB, aligned with `image::Limits::default()`).
-pub(crate) const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
+/// Maximum decoded buffer allocation (768 MiB: accommodates 108 MP portrait photos with 90°/270°
+/// EXIF copy = 648 MiB while still rejecting 128 MP RGBA16 = 1 GiB and decompression bombs).
+pub(crate) const MAX_DECODE_ALLOC: u64 = 768 * 1024 * 1024;
 /// Maximum size of a single WebP metadata chunk (`EXIF` / `ICCP` / `XMP `) before decoding (8 MiB).
 const MAX_WEBP_METADATA_CHUNK: usize = 8 * 1024 * 1024;
 /// Maximum combined size of all WebP metadata chunks before decoding (16 MiB).
 const MAX_WEBP_METADATA_TOTAL: usize = 16 * 1024 * 1024;
+/// Exclusive filename prefix for temporary `.part` files owned by this module.
+const PART_PREFIX: &str = ".stillfail-thumb-";
 /// Maximum requested output width, height, minShort, or maxLong (matches `thumbs.rs` `max_long`).
 pub(crate) const MAX_TARGET_DIM: u32 = 8192;
 /// Maximum size-savings ratio multiplier (`out.len() * ratio < input_len`).
@@ -393,25 +396,36 @@ fn read_open_file(file: std::fs::File, hint_len: u64) -> Result<(Vec<u8>, u64), 
     Ok((buf, len))
 }
 
-/// Pre-validates WebP RIFF container chunks so malformed or oversized metadata chunks (`EXIF`,
-/// `ICCP`, `XMP `) cannot trigger unbounded allocations inside `image-webp`.
-fn validate_webp_container(raw: &[u8]) -> Result<(), String> {
+/// Pre-validates WebP RIFF container chunks and returns the strictly bounded `&raw[..riff_end]`
+/// slice so `image-webp` decodes the exact validated window with zero unvalidated trailing bytes.
+fn validate_webp_container(raw: &[u8]) -> Result<&[u8], String> {
     if raw.len() < 12 || &raw[0..4] != b"RIFF" || &raw[8..12] != b"WEBP" {
         return Err("invalid webp RIFF header".into());
     }
     let riff_size = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]) as usize;
+    if riff_size < 4 {
+        return Err("webp RIFF size too small".into());
+    }
     let riff_end = riff_size.checked_add(8).ok_or_else(|| "webp RIFF size overflow".to_string())?;
-    let limit = riff_end.min(raw.len());
+    if riff_end > raw.len() {
+        return Err("webp RIFF size exceeds input length".into());
+    }
     let mut pos = 12usize;
     let mut meta_total = 0usize;
-    while pos + 8 <= limit {
+    while pos < riff_end {
+        if pos + 8 > riff_end {
+            return Err("truncated webp chunk header".into());
+        }
         let fourcc = &raw[pos..pos + 4];
         let chunk_size = u32::from_le_bytes([raw[pos + 4], raw[pos + 5], raw[pos + 6], raw[pos + 7]]) as usize;
         let data_start = pos + 8;
-        let padded = chunk_size.checked_add(chunk_size & 1).ok_or_else(|| "webp chunk size overflow".to_string())?;
-        let next = data_start.checked_add(padded).ok_or_else(|| "webp chunk offset overflow".to_string())?;
-        if data_start.checked_add(chunk_size).is_none_or(|end| end > raw.len()) {
-            return Err("webp chunk exceeds input length".into());
+        let data_end = data_start.checked_add(chunk_size).ok_or_else(|| "webp chunk size overflow".to_string())?;
+        if data_end > riff_end {
+            return Err("webp chunk exceeds RIFF container".into());
+        }
+        let padded_end = data_end.checked_add(chunk_size & 1).ok_or_else(|| "webp chunk padding overflow".to_string())?;
+        if padded_end > riff_end {
+            return Err("webp chunk padding exceeds RIFF container".into());
         }
         if matches!(fourcc, b"EXIF" | b"ICCP" | b"XMP ") {
             if chunk_size > MAX_WEBP_METADATA_CHUNK {
@@ -422,7 +436,35 @@ fn validate_webp_container(raw: &[u8]) -> Result<(), String> {
                 return Err(format!("webp metadata total exceeds limit {MAX_WEBP_METADATA_TOTAL}"));
             }
         }
-        pos = next;
+        pos = padded_end;
+    }
+    Ok(&raw[..riff_end])
+}
+
+/// EXIF orientations 5–8 (90°/270° rotations and transposed flips) allocate a second image buffer
+/// in `DynamicImage::apply_orientation`; orientations 1–4 (`NoTransforms`, flips, 180°) are in-place.
+fn orientation_allocates_copy(o: Orientation) -> bool {
+    matches!(
+        o,
+        Orientation::Rotate90
+            | Orientation::Rotate270
+            | Orientation::Rotate90FlipH
+            | Orientation::Rotate270FlipH
+    )
+}
+
+fn check_decode_budget(total_bytes: u64, orientation: Option<Orientation>) -> Result<(), String> {
+    if total_bytes == 0 {
+        return Err("image has zero decoded byte size".into());
+    }
+    if total_bytes > MAX_DECODE_ALLOC {
+        return Err(format!("decoded image buffer {total_bytes} bytes exceeds limit {MAX_DECODE_ALLOC}"));
+    }
+    if orientation.is_some_and(orientation_allocates_copy) && total_bytes.saturating_mul(2) > MAX_DECODE_ALLOC {
+        return Err(format!(
+            "decoded image buffer with orientation transform ({} bytes) exceeds limit {MAX_DECODE_ALLOC}",
+            total_bytes.saturating_mul(2)
+        ));
     }
     Ok(())
 }
@@ -433,18 +475,21 @@ fn decode_image(raw: &[u8]) -> Result<DynamicImage, String> {
     limits.max_image_height = Some(MAX_DECODE_DIM);
     limits.max_alloc = Some(MAX_DECODE_ALLOC);
 
-    let mut reader = ImageReader::new(Cursor::new(raw))
+    let probed = ImageReader::new(Cursor::new(raw))
         .with_guessed_format()
         .map_err(|e| format!("cannot detect image format: {e}"))?;
-    reader.limits(limits);
-
-    let format = reader.format().ok_or_else(|| "unsupported or unknown image format".to_string())?;
+    let format = probed.format().ok_or_else(|| "unsupported or unknown image format".to_string())?;
     if !matches!(format, ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP) {
         return Err(format!("unsupported image format: {format:?}"));
     }
-    if format == ImageFormat::WebP {
-        validate_webp_container(raw)?;
-    }
+
+    let mut reader = if format == ImageFormat::WebP {
+        let validated = validate_webp_container(raw)?;
+        ImageReader::with_format(Cursor::new(validated), ImageFormat::WebP)
+    } else {
+        probed
+    };
+    reader.limits(limits);
 
     let mut decoder = reader.into_decoder().map_err(|e| format!("image decode init failed: {e}"))?;
     let (dw, dh) = decoder.dimensions();
@@ -462,19 +507,8 @@ fn decode_image(raw: &[u8]) -> Result<DynamicImage, String> {
     // Explicit pre-decode memory check by actual color depth: `into_decoder -> from_decoder` does
     // not automatically reserve `decoder.total_bytes()` against `Limits::max_alloc`.
     let total_bytes = decoder.total_bytes();
-    if total_bytes == 0 {
-        return Err("image has zero decoded byte size".into());
-    }
-    if total_bytes > MAX_DECODE_ALLOC {
-        return Err(format!("decoded image buffer {total_bytes} bytes exceeds limit {MAX_DECODE_ALLOC}"));
-    }
     let orientation = decoder.orientation().ok();
-    if orientation.is_some_and(|o| o != Orientation::NoTransforms) && total_bytes.saturating_mul(2) > MAX_DECODE_ALLOC {
-        return Err(format!(
-            "decoded image buffer with orientation transform ({} bytes) exceeds limit {MAX_DECODE_ALLOC}",
-            total_bytes.saturating_mul(2)
-        ));
-    }
+    check_decode_budget(total_bytes, orientation)?;
 
     let mut decoded = DynamicImage::from_decoder(decoder).map_err(|e| format!("image decode failed: {e}"))?;
     if let Some(orientation) = orientation {
@@ -539,7 +573,12 @@ fn resize_for(decoded: DynamicImage, spec: &SizeSpec) -> DynamicImage {
     }
 }
 
-/// Opportunistically removes regular `*.part` files in `dir` older than `max_age` (best-effort).
+fn is_own_part_file(name: &str) -> bool {
+    name.starts_with(PART_PREFIX) && name.ends_with(".part")
+}
+
+/// Opportunistically removes only stale temp files created by this module (`PART_PREFIX` + `.part`)
+/// older than `max_age` (best-effort); never touches unrelated `*.part` files in `dir`.
 fn cleanup_stale_parts(dir: &Path, max_age: Duration) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -547,7 +586,7 @@ fn cleanup_stale_parts(dir: &Path, max_age: Duration) {
     let now = SystemTime::now();
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".part")) {
+        if !path.file_name().and_then(|n| n.to_str()).is_some_and(is_own_part_file) {
             continue;
         }
         let Ok(meta) = std::fs::symlink_metadata(&path) else {
@@ -566,13 +605,13 @@ fn cleanup_stale_parts(dir: &Path, max_age: Duration) {
 }
 
 /// Atomically writes `bytes` to `{dir}/{id}{suffix}.{ext}` via an exclusively created (`O_EXCL`)
-/// `.part` file so symlinks are never followed and existing files are never clobbered.
+/// `.stillfail-thumb-*.part` file so symlinks are never followed and existing files are never clobbered.
 fn write_atomic(dir: &Path, id: &str, suffix: &str, ext: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot create thumb dir: {e}"))?;
     cleanup_stale_parts(dir, STALE_PART_AGE);
     let path = dir.join(format!("{id}{suffix}.{ext}"));
     let seq = PART_SEQ.fetch_add(1, Ordering::Relaxed);
-    let partial = dir.join(format!("{id}{suffix}.{ext}.{}.{seq}.part", std::process::id()));
+    let partial = dir.join(format!("{PART_PREFIX}{id}{suffix}.{ext}.{}.{seq}.part", std::process::id()));
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -591,39 +630,56 @@ fn write_atomic(dir: &Path, id: &str, suffix: &str, ext: &str, bytes: &[u8]) -> 
     Ok(path)
 }
 
-fn execute(req: Request) -> Done {
-    // Path-based preset modes filter by case-insensitive image extension first (matching `thumbs.rs::wanted`).
+enum FastPath {
+    Done(Answer),
+    NeedDecode { req: Request, opened: Option<(std::fs::File, u64)> },
+}
+
+/// Pure-memory fast paths (extension filter and small-bytes skip) that run without I/O or decode permits.
+fn try_memory_fast_path(req: &Request) -> Option<Answer> {
     if let Input::Path(path) = &req.input
         && matches!(req.mode, Mode::Thumb | Mode::Box | Mode::Preview)
         && !wanted_extension(path)
     {
-        return Ok(Answer::json(json!({ "skipped": true, "reason": "unsupported_extension" })));
+        return Some(Answer::json(json!({ "skipped": true, "reason": "unsupported_extension" })));
     }
+    if let (Input::Bytes(b), Some(spec)) = (&req.input, &req.spec)
+        && !req.thumbhash
+        && spec.small_bytes > 0
+        && (b.len() as u64) <= spec.small_bytes
+    {
+        return Some(Answer::json(json!({ "skipped": true, "reason": "small" })));
+    }
+    None
+}
 
-    let mut opened_file: Option<(std::fs::File, u64)> = None;
-
-    // Fast path for path-backed small-file skip and cache hit when thumbhash is not requested.
+/// Cheap stat / cache-hit fast path for path inputs when `thumbhash` is not requested,
+/// run before acquiring the bounded decode concurrency semaphore.
+fn try_path_fast_path(req: Request) -> Result<FastPath, String> {
     if let (Input::Path(path), Some(spec)) = (&req.input, &req.spec)
         && !req.thumbhash
     {
         let (file, len) = open_regular_file(path)?;
         if spec.small_bytes > 0 && len <= spec.small_bytes {
-            return Ok(Answer::json(json!({ "skipped": true, "reason": "small" })));
+            return Ok(FastPath::Done(Answer::json(json!({ "skipped": true, "reason": "small" }))));
         }
         if let Some(dir) = &req.dir {
             let id = id_of_path(path);
             if let Some((found, kind)) = kept(dir, &id, spec.suffix) {
-                return Ok(Answer::json(json!({
+                return Ok(FastPath::Done(Answer::json(json!({
                     "skipped": false,
                     "cached": true,
                     "path": found.to_string_lossy(),
                     "mime": kind,
-                })));
+                }))));
             }
         }
-        opened_file = Some((file, len));
+        return Ok(FastPath::NeedDecode { req, opened: Some((file, len)) });
     }
+    Ok(FastPath::NeedDecode { req, opened: None })
+}
 
+fn execute_decode(req: Request, opened_file: Option<(std::fs::File, u64)>) -> Done {
     let owned_raw;
     let (raw, input_len): (&[u8], u64) = match &req.input {
         Input::Path(path) => {
@@ -635,16 +691,7 @@ fn execute(req: Request) -> Done {
             owned_raw = buf;
             (&owned_raw, len)
         }
-        Input::Bytes(b) => {
-            if let Some(spec) = &req.spec
-                && !req.thumbhash
-                && spec.small_bytes > 0
-                && (b.len() as u64) <= spec.small_bytes
-            {
-                return Ok(Answer::json(json!({ "skipped": true, "reason": "small" })));
-            }
-            (b.as_slice(), b.len() as u64)
-        }
+        Input::Bytes(b) => (b.as_slice(), b.len() as u64),
     };
 
     let decoded = decode_image(raw)?;
@@ -763,13 +810,37 @@ fn execute(req: Request) -> Done {
     }
 }
 
+#[cfg(test)]
+fn execute(req: Request) -> Done {
+    if let Some(ans) = try_memory_fast_path(&req) {
+        return Ok(ans);
+    }
+    match try_path_fast_path(req)? {
+        FastPath::Done(ans) => Ok(ans),
+        FastPath::NeedDecode { req, opened } => execute_decode(req, opened),
+    }
+}
+
 pub(crate) async fn run(a: Value, bytes: Option<Vec<u8>>) -> Done {
     let req = parse_request(&a, bytes)?;
+    // Cheap extension/small-bytes skips run immediately without acquiring decode permits.
+    if let Some(ans) = try_memory_fast_path(&req) {
+        return Ok(ans);
+    }
+    // Cheap stat/cache-hit fast path runs off the async executor without waiting behind heavy decodes.
+    let (req, opened) = if matches!(req.input, Input::Path(_)) && !req.thumbhash && req.spec.is_some() {
+        match tokio::task::spawn_blocking(move || try_path_fast_path(req)).await.map_err(err)?? {
+            FastPath::Done(ans) => return Ok(ans),
+            FastPath::NeedDecode { req, opened } => (req, opened),
+        }
+    } else {
+        (req, None)
+    };
     let _permit = DECODE_PERMITS
         .acquire()
         .await
         .map_err(|_| "image.thumb concurrency limiter closed".to_string())?;
-    tokio::task::spawn_blocking(move || execute(req)).await.map_err(err)?
+    tokio::task::spawn_blocking(move || execute_decode(req, opened)).await.map_err(err)?
 }
 
 #[cfg(test)]
@@ -980,7 +1051,7 @@ mod tests {
             .expect("1 GiB RGBA16 image must be rejected by total_bytes pre-check");
         assert!(err.contains("decoded image buffer") && err.contains("exceeds limit"), "unexpected err: {err}");
 
-        // Oversized WebP EXIF metadata chunk (> 8 MiB) rejected before image-webp decodes
+        // Oversized WebP EXIF metadata chunk (> 8 MiB) inside RIFF container rejected before image-webp decodes
         let exif_len = (MAX_WEBP_METADATA_CHUNK + 16) as u32;
         let mut big_webp = Vec::with_capacity(12 + 8 + exif_len as usize);
         big_webp.extend_from_slice(b"RIFF");
@@ -991,6 +1062,43 @@ mod tests {
         big_webp.resize(12 + 8 + exif_len as usize, 0);
         let err = validate_webp_container(&big_webp).expect_err("oversized WebP EXIF must be rejected");
         assert!(err.contains("metadata chunk exceeds limit"), "unexpected err: {err}");
+
+        // WebP RIFF size claiming more bytes than input length must be rejected
+        let mut lying_webp = Vec::new();
+        lying_webp.extend_from_slice(b"RIFF");
+        lying_webp.extend_from_slice(&1000u32.to_le_bytes());
+        lying_webp.extend_from_slice(b"WEBP");
+        let err = validate_webp_container(&lying_webp).expect_err("lying RIFF length must be rejected");
+        assert!(err.contains("exceeds input length"), "unexpected err: {err}");
+
+        // WebP with hidden trailing huge EXIF chunk past declared RIFF end: validator returns strictly
+        // `&raw[..riff_end]`, so the decoder never sees unvalidated trailing bytes.
+        let flat_small = make_flat_screenshot_png(64, 64);
+        let valid_webp = encode_webp(&decode_image(&flat_small).unwrap(), false).unwrap();
+        let valid_len = valid_webp.len();
+        let mut trailed = valid_webp.clone();
+        trailed.extend_from_slice(b"EXIF");
+        trailed.extend_from_slice(&exif_len.to_le_bytes());
+        trailed.extend_from_slice(&[0u8; 64]);
+        let sliced = validate_webp_container(&trailed).expect("valid RIFF prefix slices cleanly");
+        assert_eq!(sliced.len(), valid_len);
+        assert_eq!(sliced, valid_webp.as_slice());
+
+        // EXIF 1x in-place (orientations 1-4) vs 2x copy (orientations 5-8) memory budget checks
+        let mib = 1024 * 1024;
+        assert!(check_decode_budget(400 * mib, Some(Orientation::Rotate180)).is_ok());
+        assert!(check_decode_budget(400 * mib, Some(Orientation::FlipHorizontal)).is_ok());
+        assert!(check_decode_budget(400 * mib, Some(Orientation::FlipVertical)).is_ok());
+        assert!(check_decode_budget(324 * mib, Some(Orientation::Rotate90)).is_ok()); // 108 MP portrait: 648 MiB <= 768 MiB
+        assert!(check_decode_budget(400 * mib, Some(Orientation::Rotate90)).is_err()); // 800 MiB > 768 MiB
+        assert!(check_decode_budget(400 * mib, Some(Orientation::Rotate270)).is_err());
+        assert!(check_decode_budget(1024 * mib, None).is_err()); // 1 GiB > 768 MiB
+
+        // Orientation 3 (180 deg) JPEG decodes in-place preserving 1200x800 dimensions
+        let exif3_jpg = make_jpeg_with_exif_orientation(1200, 800, 3);
+        let h3 = execute(parse_request(&json!({ "mode": "hash" }), Some(exif3_jpg)).unwrap()).unwrap();
+        assert_eq!(h3.json["width"], 1200);
+        assert_eq!(h3.json["height"], 800);
 
         // Unsupported format (GIF89a)
         let gif = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;".to_vec();
@@ -1096,15 +1204,18 @@ mod tests {
             assert!(kept(&cache_dir, &id, "").is_none(), "symlink must not match kept()");
         }
 
-        // 3. Stale `.part` cleanup removes old `.part` files and keeps regular non-part files.
+        // 3. Stale `.part` cleanup removes ONLY `.stillfail-thumb-*.part` files and NEVER touches unrelated `*.part`.
         let stale_dir = tmp.path().join("stale");
         std::fs::create_dir_all(&stale_dir).unwrap();
-        let part_file = stale_dir.join("abandoned.jpg.1.1.part");
+        let own_part = stale_dir.join(format!("{PART_PREFIX}0123456789abcdef0123456789abcdef.jpg.1.1.part"));
+        let other_part = stale_dir.join("other.part");
         let real_file = stale_dir.join("keep.jpg");
-        std::fs::write(&part_file, b"partial").unwrap();
+        std::fs::write(&own_part, b"partial").unwrap();
+        std::fs::write(&other_part, b"unrelated-caller-temp").unwrap();
         std::fs::write(&real_file, b"real").unwrap();
         cleanup_stale_parts(&stale_dir, Duration::ZERO);
-        assert!(!part_file.exists(), "stale .part file must be removed");
+        assert!(!own_part.exists(), "stale own .stillfail-thumb-*.part file must be removed");
+        assert!(other_part.exists(), "unrelated other.part must NEVER be deleted");
         assert!(real_file.exists(), "non-.part file must be kept");
     }
 
