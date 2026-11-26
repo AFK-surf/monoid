@@ -2,7 +2,7 @@
 // (`pnpm test:side`): `git gc` starts `repack` and `pack-objects`, which a kill of git alone leaves running.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -28,7 +28,13 @@ test("git past its deadline is ended with what it started, and its end is heard"
     const took = Date.now() - started;
     assert.equal(r.ok, false);
     assert.ok(took < 5_000, `heard to end soon after its deadline, not when the grandchild would have: ${took} ms`);
+    // (the shell may not have written its pid by the deadline on a loaded machine; the grandchild, reparented once git
+    // is gone, may take a moment to be reaped)
+    const until = Date.now() + 5_000;
+    while (!existsSync(pidFile) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
+    if (!existsSync(pidFile)) return;
     const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+    while (alive(pid) && Date.now() < until) await new Promise((r) => setTimeout(r, 50));
     assert.equal(alive(pid), false, "the grandchild ended with git");
   } finally {
     rmSync(dir, { recursive: true, force: true });

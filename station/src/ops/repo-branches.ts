@@ -387,8 +387,8 @@ export async function pruneAllRepoBranches(
 }
 
 /// `keepSharedClonePacks` for every shared clone in `<data>/repos` (as `pruneAllRepoBranches` finds them), one at a
-/// time, each `Upkeep` round: below git's thresholds its `gc --auto` returns at once.
-export async function keepAllSharedClonePacks(data: string, options?: { clonesActive?: () => boolean; git?: RepoGitRun }): Promise<void> {
+/// time, each `Upkeep` round; `daily` on the round that also cleans branches.
+export async function keepAllSharedClonePacks(data: string, options?: { daily?: boolean; clonesActive?: () => boolean; git?: RepoGitRun }): Promise<void> {
   if (options?.clonesActive?.()) return;
   const realData = await realpath(data).catch(() => null);
   if (realData === null) return;
@@ -403,9 +403,16 @@ export async function keepAllSharedClonePacks(data: string, options?: { clonesAc
     const realRepo = await realpath(repoPath).catch(() => null);
     if (realRepo === null || !inside(realRepo, realData)) continue;
     if ((await stat(join(realRepo, ".git")).catch(() => null)) === null) continue;
-    await keepSharedClonePacks(name, realRepo, options?.git);
+    await keepSharedClonePacks(name, realRepo, options?.daily ?? false, options?.git);
     await yieldLoop();
   }
+}
+
+/// The packs of a clone git counts toward `gc.autoPackLimit`: those without a `.keep`.
+async function packsCounted(repoPath: string): Promise<number> {
+  const names = await readdir(join(repoPath, ".git", "objects", "pack")).catch(() => [] as string[]);
+  const kept = new Set(names.filter((n) => n.endsWith(".keep")).map((n) => n.slice(0, -".keep".length)));
+  return names.filter((n) => n.endsWith(".pack") && !kept.has(n.slice(0, -".pack".length))).length;
 }
 
 /// Keeps a shared clone's packs in bounds with a gc run by the station, and none run by git on its own.
@@ -415,14 +422,18 @@ export async function keepAllSharedClonePacks(data: string, options?: { clonesAc
 /// (50 packs; each fetch adds one) every such command starts another full cruft repack, none waiting for the one before:
 /// on a 16 GB machine dozens of them (several hundred MB each) swapped it until its station stopped answering. So the
 /// clone's own config turns git's automatic maintenance off (`maintenance.auto=false`, `gc.auto=0`, inherited by every
-/// worktree), and this runs the same `gc --auto` once, in the foreground under a deadline, with git's default thresholds,
-/// as background work.
-export async function keepSharedClonePacks(repoName: string, repoPath: string, git: RepoGitRun = runRepoGit): Promise<void> {
+/// worktree), and the station runs `gc --auto` itself, in the foreground under a deadline, as background work: every
+/// round once the clone is past the pack limit (a gc leaves one pack, so the next round does not run it), and `daily`
+/// with git's loose-object threshold too. That one is once a day as git's own detached gc keeps it (`gc.log`): loose
+/// objects no longer reachable but younger than `gc.pruneExpire` stay loose after a gc, so a gc for them every round
+/// would walk the whole clone again every round.
+export async function keepSharedClonePacks(repoName: string, repoPath: string, daily = true, git: RepoGitRun = runRepoGit): Promise<void> {
   for (const [key, value] of [["maintenance.auto", "false"], ["gc.auto", "0"]] as const) {
     const now = await git(repoPath, ["config", "--local", "--get", key]);
     if (now.ok && now.stdout.trim() === value) continue;
     if (!(await git(repoPath, ["config", "--local", key, value])).ok) log.warn("upkeep", "could not turn off git's automatic maintenance in shared clone", { repo: repoName, key });
   }
+  if (!daily && (await packsCounted(repoPath)) <= GC_PACKS_MOST) return;
   const gc = await git(
     repoPath,
     ["-c", `gc.auto=${GC_LOOSE_MOST}`, "-c", `gc.autoPackLimit=${GC_PACKS_MOST}`, "-c", "gc.autoDetach=false", "-c", "maintenance.auto=false", "gc", "--auto", "--quiet"],

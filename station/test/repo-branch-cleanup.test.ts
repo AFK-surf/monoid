@@ -135,6 +135,32 @@ describe("shared clone packs", () => {
     assert.equal(git(wt, ["config", "gc.auto"]), "0", "nor a background gc");
     assert.ok(packs() <= 2, `the station's gc compacted the packs: ${packs()}`);
   });
+
+  test("an Upkeep round runs the gc past the pack limit or once a day, and not again for what a gc leaves", async () => {
+    const data = makeTemp("sf-repo-packs-upkeep-");
+    const baseNow = 1_800_000_000_000;
+    const { clock, adjust } = testClock();
+    await adjust(baseNow);
+    initCloneWithRemote(join(data, "repos", "demo"), join(data, "remote.git"), baseNow);
+    let gcs = 0;
+    const repoGit: typeof runRepoGit = (dir, args, timeoutMs, background) => {
+      if (args.includes("gc") && args.includes("--auto")) gcs++;
+      return runRepoGit(dir, args, timeoutMs, background);
+    };
+    const upkeep = new Upkeep({ data, clock, repoGit });
+    try {
+      await upkeep.run();
+      assert.equal(gcs, 1, "the first round is the day's: git's thresholds checked");
+      await adjust(HOUR);
+      await upkeep.run();
+      assert.equal(gcs, 1, "a round within the day, below the pack limit, runs no gc (unreachable loose objects a gc keeps would have it run every round)");
+      await adjust(REPO_BRANCHES_EVERY_MS);
+      await upkeep.run();
+      assert.equal(gcs, 2, "the next day's round runs it again");
+    } finally {
+      await upkeep.close();
+    }
+  });
 });
 
 describe("PR B: shared clone local branch cleanup & repo-bundles", () => {
