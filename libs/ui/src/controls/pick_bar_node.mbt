@@ -50,6 +50,8 @@ pub fn pick_bar_node(
   bar
   .edge(By(fn() { if bar.glass_solid() { (control_edge_w, theme().p.line) } else { (0.0, 0L) } }))
   .shadow(By(fn() { glass_control_shadow() }))
+  // (it floats over what was picked: a wheel turned over it scrolls what is under it, as over the words themselves)
+  .wheel_passes()
   |> ignore
   bar
 }
@@ -161,6 +163,8 @@ pub fn pick_bar_desk_node(
     loc~,
   )
   floating_host_lend(bar)
+  // (it floats over what was picked: a wheel turned over it scrolls what is under it, as over the words themselves)
+  bar.wheel_passes() |> ignore
   bar
 }
 
