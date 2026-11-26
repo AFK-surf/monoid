@@ -309,6 +309,8 @@ priv struct Places[K] {
   /// the blocks on their way in, each as tall as its way has it then
   own_at : Array[Int]
   own_h : Array[Double]
+  /// contiguous offscreen entering-curtain tail ranges `(first, last, total_h)` held at 0 height until `run.ends`
+  tail_spans : Array[(Int, Int, Double)]
 }
 
 ///|
@@ -319,6 +321,9 @@ let places_none_at : Array[Int] = []
 let places_none_h : Array[Double] = []
 
 ///|
+let places_none_spans : Array[(Int, Int, Double)] = []
+
+///|
 /// How many of a page's list's last keys a change of its keys looks back over for the last that stays (the floor's,
 /// list_sent_up_test): more taken at its foot at once than that, nothing held.
 let floor_tail : Int = 8
@@ -326,7 +331,49 @@ let floor_tail : Int = 8
 ///|
 /// The column as it is counted: where its blocks are with none on its way, or once all of them are there.
 fn[K] Places::counted(col : Column[K]) -> Places[K] {
-  { col, froms: places_none_at, lefts: places_none_h, own_at: places_none_at, own_h: places_none_h }
+  { col, froms: places_none_at, lefts: places_none_h, own_at: places_none_at, own_h: places_none_h, tail_spans: places_none_spans }
+}
+
+///|
+fn[K] Places::in_tail_span(self : Places[K], i : Int) -> Bool {
+  for sp in self.tail_spans {
+    if i >= sp.0 && i <= sp.1 {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn[K] Places::tail_skip_fwd(self : Places[K], i : Int) -> Int {
+  let mut cur = i
+  let mut moved = true
+  while moved {
+    moved = false
+    for sp in self.tail_spans {
+      if cur >= sp.0 && cur <= sp.1 {
+        cur = sp.1 + 1
+        moved = true
+      }
+    }
+  }
+  cur
+}
+
+///|
+fn[K] Places::tail_skip_bwd(self : Places[K], i : Int) -> Int {
+  let mut cur = i
+  let mut moved = true
+  while moved {
+    moved = false
+    for sp in self.tail_spans {
+      if cur >= sp.0 && cur <= sp.1 {
+        cur = sp.0 - 1
+        moved = true
+      }
+    }
+  }
+  cur
 }
 
 ///|
@@ -345,8 +392,12 @@ fn[K] Places::known(self : Places[K], i : Int) -> Bool {
 }
 
 ///|
-/// Block `i`'s height: as its way has it, where it is on its way in; else as it is counted.
+/// Block `i`'s height: 0 while hidden in an offscreen entering-curtain tail span, as its way has it where on its way
+/// in, else as counted.
 fn[K] Places::h(self : Places[K], i : Int) -> Double {
+  if !self.tail_spans.is_empty() && self.in_tail_span(i) {
+    return 0.0
+  }
   for j, at in self.own_at {
     if at == i {
       return self.own_h[j]
@@ -356,12 +407,20 @@ fn[K] Places::h(self : Places[K], i : Int) -> Double {
 }
 
 ///|
-/// How much less than counted the ways over block `i` (or at it, one closing over it) have its top.
+/// How much less than counted the ways and hidden entering-curtain tail spans over block `i` have its top.
 fn[K] Places::left_over(self : Places[K], i : Int) -> Double {
   let mut l = 0.0
   for j, f in self.froms {
     if f <= i {
       l = l + self.lefts[j]
+    }
+  }
+  for sp in self.tail_spans {
+    let (sa, sb, tot) = sp
+    if i > sb {
+      l = l + tot
+    } else if i > sa {
+      l = l + (self.col.top_summed(i) - self.col.top_summed(sa))
     }
   }
   l
@@ -371,7 +430,7 @@ fn[K] Places::left_over(self : Places[K], i : Int) -> Double {
 /// Where block `i`'s top is: as it is counted, less what the ways over it have still to open, on the grid's own number
 /// for its pixel where there is one, as flex puts a row's top.
 fn[K] Places::top(self : Places[K], i : Int) -> Double {
-  if self.froms.is_empty() {
+  if self.froms.is_empty() && self.tail_spans.is_empty() {
     return self.col.top(i)
   }
   let l = self.left_over(i)
@@ -391,7 +450,7 @@ fn[K] Places::top(self : Places[K], i : Int) -> Double {
 /// Where its blocks end, what is on its way at its foot with them.
 fn[K] Places::foot(self : Places[K]) -> Double {
   let n = self.col.length()
-  if self.froms.is_empty() {
+  if self.froms.is_empty() && self.tail_spans.is_empty() {
     return if n == 0 { self.col.start } else { self.col.top(n - 1) + self.col.h(n - 1) }
   }
   let t = self.col.start + self.col.sums[1] - self.left_over(n)
@@ -406,7 +465,7 @@ fn[K] Places::foot(self : Places[K]) -> Double {
 ///|
 /// The first block whose foot is past `y`, as they go down; as many as there are where none is (Column::first_past).
 fn[K] Places::first_past(self : Places[K], y : Double) -> Int {
-  if self.froms.is_empty() {
+  if self.froms.is_empty() && self.tail_spans.is_empty() {
     return self.col.first_past(y)
   }
   let mut lo = 0
@@ -427,7 +486,7 @@ fn[K] Places::first_past(self : Places[K], y : Double) -> Int {
 /// first at or under `y` on its way in from none (`col.h > 0`); as many as there are where none is.
 fn[K] Places::first_at(self : Places[K], y : Double) -> Int {
   let past = self.first_past(y)
-  if self.froms.is_empty() || past == 0 {
+  if (self.froms.is_empty() && self.tail_spans.is_empty()) || past == 0 {
     return past
   }
   let mut lo = 0
@@ -440,10 +499,19 @@ fn[K] Places::first_at(self : Places[K], y : Double) -> Int {
       lo = mid + 1
     }
   }
-  for i in lo..<past {
+  let mut i = lo
+  while i < past {
+    if !self.tail_spans.is_empty() {
+      let next = self.tail_skip_fwd(i)
+      if next != i {
+        i = next
+        continue
+      }
+    }
     if self.col.h(i) > 0.0 {
       return i
     }
+    i = i + 1
   }
   past
 }
@@ -451,6 +519,9 @@ fn[K] Places::first_at(self : Places[K], y : Double) -> Int {
 ///|
 /// Whether block `i` is not above `y`: its foot past `y`, or at or under `y` on its way in from none (`col.h > 0`).
 fn[K] Places::meets_top(self : Places[K], i : Int, y : Double) -> Bool {
+  if !self.tail_spans.is_empty() && self.in_tail_span(i) {
+    return false
+  }
   let top = self.top(i)
   top + self.h(i) > y || (!self.froms.is_empty() && top >= y && self.col.h(i) > 0.0)
 }
@@ -1342,17 +1413,11 @@ fn View::scrolls_window_ids(
   let flip_items : Map[Int, @flex.FlipItem] = Map([])
   let flip_new : Map[Int, Bool] = Map([])
   let gone_from : Ref[Map[Int, (Double, Int?)]] = Ref(Map([]))
-  // (curtain segments: per-key (CurtainRun, idx) for the current diff, offscreen tail keys held at 0 height while their
-  // entering run opens, active runs keyed by (prev_survivor, next_survivor) for mid-flight reversal, and forward hook to
-  // rebind surviving leaving slots on come_back)
+  // (curtain segments: per-key (CurtainRun, idx) for the current diff, contiguous offscreen entering-curtain tail spans
+  // `(first_key, last_key, run)` held at 0 height in O(1) while their run opens, active runs keyed by
+  // `(prev_survivor, next_survivor)` for mid-flight reversal, and forward hook to rebind surviving leaving slots)
   let curtain_for_key : Map[Int, (@flex.CurtainRun, Int)] = Map([])
-  let curtain_tails : Map[Int, @flex.CurtainRun] = Map([])
-  let is_curtain_tail = fn(k : Int, t : Double) -> Bool {
-    match curtain_tails.get(k) {
-      Some(run) => run.ends > t
-      None => false
-    }
-  }
+  let curtain_tail_spans : Array[(Int, Int, @flex.CurtainRun)] = []
   let active_curtains : Map[(Int?, Int?), (@flex.CurtainRun, Array[Int])] = Map([])
   let curtain_rebind : Ref[(Int, @flex.CurtainRun, Int) -> Unit] = Ref(fn(_, _, _) {  })
   // (the keys that stay moved among them by the last change of its keys that its page says reorder (`reorders`): each
@@ -1558,51 +1623,76 @@ fn View::scrolls_window_ids(
       }
       if curtain_ok && vh_now > 0.0 && (!came_curtain.is_empty() || !gone_curtain.is_empty()) {
         let now = self.tree.cause_now()
-        // Prune finished curtain runs and expired offscreen tails.
+        // Prune finished curtain runs and expired offscreen tail spans.
         let done_segs = active_curtains.iter().filter(fn(e) { e.1.0.ends <= now }).map(fn(e) { e.0 }).collect()
         for ds in done_segs {
           active_curtains.remove(ds)
         }
-        let done_tails = curtain_tails.iter().filter(fn(e) { e.1.ends <= now }).map(fn(e) { e.0 }).collect()
-        for dk in done_tails {
-          curtain_tails.remove(dk)
+        if !curtain_tail_spans.is_empty() {
+          let kept_spans = curtain_tail_spans.filter(fn(sp) { sp.2.ends > now })
+          if kept_spans.length() != curtain_tail_spans.length() {
+            curtain_tail_spans.clear()
+            curtain_tail_spans.append(kept_spans)
+          }
         }
         let vis_top = @signals.untracked(fn() { s.drawn(self.tree) })
         let win_lo = vis_top - cur_est
         let win_hi = vis_top + vh_now + cur_est
         // Remap `(r_now, v_now)` onto `new_keys` when scrolling shifted the viewport-truncated slice between
-        // an in-flight run and its reversal, preserving exact slot height and frontier velocity for overlapping keys.
+        // an in-flight run and its reversal: anchor R' at `new_prefix(ni) + visible_height_of_frontier` so
+        // overlapping rows preserve exact height and position across both scroll-up and scroll-down reversals.
         let curtain_remap_state = fn(
           old_run : @flex.CurtainRun,
           old_keys : Array[Int],
           new_keys : Array[Int],
+          new_wholes : Array[Double],
         ) -> (Double, Double) {
           if new_keys == old_keys {
             return old_run.state_at(now)
           }
           let (r_old, v_old) = old_run.state_at(now)
-          let mut r_mapped = 0.0
-          for k in new_keys {
-            match old_keys.search(k) {
-              Some(oi) if oi < old_run.wholes.length() =>
-                r_mapped = r_mapped + old_run.slot_height_at(oi, now)
-              _ => ()
+          let prefix_before = fn(ni : Int) -> Double {
+            let mut acc = 0.0
+            for idx in 0..<ni {
+              acc = acc + new_wholes[idx]
             }
+            acc
           }
-          let mut v_mapped = 0.0
+          // 1. If the active partial frontier key survives in `new_keys`, preserve its exact visible height + velocity.
           for oi in 0..<old_keys.length() {
             if oi < old_run.offs.length() && oi < old_run.wholes.length() {
               let off_i = old_run.offs[oi]
               let h_i = old_run.wholes[oi]
               if r_old > off_i && r_old < off_i + h_i {
-                if new_keys.contains(old_keys[oi]) {
-                  v_mapped = v_old
+                match new_keys.search(old_keys[oi]) {
+                  Some(ni) => return (prefix_before(ni) + (r_old - off_i), v_old)
+                  None => break
                 }
-                break
               }
             }
           }
-          (r_mapped, v_mapped)
+          // 2. Otherwise (exact boundary or frontier scrolled out), anchor at the last overlapping visible key in `new_keys`.
+          let mut ni = new_keys.length() - 1
+          while ni >= 0 {
+            match old_keys.search(new_keys[ni]) {
+              Some(oi) if oi < old_run.wholes.length() => {
+                let h_vis = old_run.slot_height_at(oi, now)
+                if h_vis > 0.0 {
+                  let v_keep = if oi < old_run.offs.length() &&
+                    r_old >= old_run.offs[oi] &&
+                    r_old <= old_run.offs[oi] + old_run.wholes[oi] {
+                    v_old
+                  } else {
+                    0.0
+                  }
+                  return (prefix_before(ni) + h_vis, v_keep)
+                }
+              }
+              _ => ()
+            }
+            ni = ni - 1
+          }
+          (0.0, 0.0)
         }
         // Build `was` lookup for survivor detection.
         let was_set : Map[Int, Bool] = Map([])
@@ -1626,30 +1716,27 @@ fn View::scrolls_window_ids(
               }
               let next_s : Int? = if t < ks.length() { Some(ks[t]) } else { None }
               let seg_id = (prev_s, next_s)
-              // Viewport truncation: members intersecting [win_lo, win_hi] enter CurtainRun; offscreen tail members
-              // (`top_i >= win_hi`) stay at 0 height until `run.ends` so they never flash below the header on expand.
+              // Viewport truncation in O(log N + V): find visible slice `[vis_lo..<vis_hi)` via binary search;
+              // any offscreen tail `[vis_hi..<b)` is recorded as ONE O(1) contiguous span until `run.ends`.
+              let vis_lo = column.first_past(win_lo).max(a).min(b)
+              let mut vis_hi = vis_lo
               let vis_seg : Array[Int] = []
-              let tail_seg : Array[Int] = []
-              for idx in a..<b {
-                let k = ks[idx]
-                let top_i = column.top(idx)
-                let h_i = column.h(idx)
-                if top_i + h_i > win_lo && top_i < win_hi {
-                  vis_seg.push(k)
-                } else if top_i >= win_hi {
-                  tail_seg.push(k)
-                }
+              while vis_hi < b && column.top(vis_hi) < win_hi {
+                vis_seg.push(ks[vis_hi])
+                vis_hi = vis_hi + 1
               }
               if !vis_seg.is_empty() {
+                let mut replaced_run : @flex.CurtainRun? = None
                 let run = match active_curtains.get(seg_id) {
                   Some((old_run, old_keys)) if old_run.ends > now => {
-                    let (r_now, v_now) = curtain_remap_state(old_run, old_keys, vis_seg)
+                    replaced_run = Some(old_run)
                     let wholes = vis_seg.map(fn(k) {
                       match old_keys.search(k) {
                         Some(oi) if oi < old_run.wholes.length() => old_run.wholes[oi]
                         _ => column.h(laid_at.get(k).unwrap_or(0))
                       }
                     })
+                    let (r_now, v_now) = curtain_remap_state(old_run, old_keys, vis_seg, wholes)
                     let mut tot = 0.0
                     for h in wholes {
                       tot = tot + h
@@ -1665,15 +1752,21 @@ fn View::scrolls_window_ids(
                     @flex.CurtainRun::new(wholes, 0.0, 0.0, tot, now, grid=g)
                   }
                 }
+                if replaced_run is Some(old_r) && !curtain_tail_spans.is_empty() {
+                  let kept = curtain_tail_spans.filter(fn(sp) { !physical_equal(sp.2, old_r) })
+                  if kept.length() != curtain_tail_spans.length() {
+                    curtain_tail_spans.clear()
+                    curtain_tail_spans.append(kept)
+                  }
+                }
                 active_curtains[seg_id] = (run, vis_seg)
                 for j, k in vis_seg {
-                  curtain_tails.remove(k)
                   came_by_data.val[k] = true
                   curtain_for_key[k] = (run, j)
                   (curtain_rebind.val)(k, run, j)
                 }
-                for tk in tail_seg {
-                  curtain_tails[tk] = run
+                if vis_hi < b {
+                  curtain_tail_spans.push((ks[vis_hi], ks[b - 1], run))
                 }
               }
               i = b
@@ -1707,15 +1800,17 @@ fn View::scrolls_window_ids(
                 vis_seg.push(was[idx])
               }
               if !vis_seg.is_empty() {
+                let mut replaced_run : @flex.CurtainRun? = None
                 let run = match active_curtains.get(seg_id) {
                   Some((old_run, old_keys)) if old_run.ends > now => {
-                    let (r_now, v_now) = curtain_remap_state(old_run, old_keys, vis_seg)
+                    replaced_run = Some(old_run)
                     let wholes = vis_seg.map(fn(k) {
                       match old_keys.search(k) {
                         Some(oi) if oi < old_run.wholes.length() => old_run.wholes[oi]
                         _ => rows_slot_on(height_of(k).0, g)
                       }
                     })
+                    let (r_now, v_now) = curtain_remap_state(old_run, old_keys, vis_seg, wholes)
                     @flex.CurtainRun::new(wholes, r_now, v_now, 0.0, now, grid=g)
                   }
                   _ => {
@@ -1727,9 +1822,15 @@ fn View::scrolls_window_ids(
                     @flex.CurtainRun::new(wholes, tot, 0.0, 0.0, now, grid=g)
                   }
                 }
+                if replaced_run is Some(old_r) && !curtain_tail_spans.is_empty() {
+                  let kept = curtain_tail_spans.filter(fn(sp) { !physical_equal(sp.2, old_r) })
+                  if kept.length() != curtain_tail_spans.length() {
+                    curtain_tail_spans.clear()
+                    curtain_tail_spans.append(kept)
+                  }
+                }
                 active_curtains[seg_id] = (run, vis_seg)
                 for idx, k in vis_seg {
-                  curtain_tails.remove(k)
                   if gone_curtain.get(k) is Some(gf) {
                     gone_from.val[k] = gf
                   }
@@ -1888,7 +1989,10 @@ fn View::scrolls_window_ids(
   let plain = Places::counted(column)
   let counted = fn(all : Column[Int]) { if physical_equal(all, column) { plain } else { Places::counted(all) } }
   let places = fn(all : Column[Int]) -> Places[Int] {
-    if ways.is_empty() && curtain_tails.is_empty() {
+    if !curtain_tail_spans.is_empty() && @signals.untracked(fn() { s.in_hand() }) {
+      curtain_tail_spans.clear()
+    }
+    if ways.is_empty() && curtain_tail_spans.is_empty() {
       return counted(all)
     }
     // (those let go: no more; one past its end is where it ends, its way's own at any moment after it)
@@ -1896,7 +2000,7 @@ fn View::scrolls_window_ids(
     if live.length() != ways.length() {
       ways.clear()
       ways.append(live)
-      if ways.is_empty() && curtain_tails.is_empty() {
+      if ways.is_empty() && curtain_tail_spans.is_empty() {
         return counted(all)
       }
     }
@@ -1908,6 +2012,7 @@ fn View::scrolls_window_ids(
     let lefts = []
     let own_at = []
     let own_h = []
+    let tail_spans : Array[(Int, Int, Double)] = []
     for w in ways {
       guard w.0.live() is Some(m) else { continue }
       let st = m.flex.style
@@ -1939,26 +2044,24 @@ fn View::scrolls_window_ids(
         lefts.push(-rows_way_on(st, @flex.come_tall_at(st, 0.0, at), 0.0, at, g))
       }
     }
-    if !curtain_tails.is_empty() {
-      for k, run in curtain_tails {
+    if !curtain_tail_spans.is_empty() {
+      for sp in curtain_tail_spans {
+        let (fk, lk, run) = sp
         if run.ends > t {
-          match laid_at.get(k) {
-            Some(i) if i < n => {
-              let h = all.h(i)
-              froms.push(i + 1)
-              lefts.push(h)
-              own_at.push(i)
-              own_h.push(0.0)
+          match (laid_at.get(fk), laid_at.get(lk)) {
+            (Some(sa), Some(sb)) if sa <= sb && sb < n => {
+              let tot = all.top_summed(sb) + all.h(sb) - all.top_summed(sa)
+              tail_spans.push((sa, sb, tot))
             }
             _ => ()
           }
         }
       }
     }
-    if froms.is_empty() && own_at.is_empty() {
+    if froms.is_empty() && own_at.is_empty() && tail_spans.is_empty() {
       return counted(all)
     }
-    { col: all, froms, lefts, own_at, own_h }
+    { col: all, froms, lefts, own_at, own_h, tail_spans }
   }
   // (where it is scrolled to, as what it holds is drawn now)
   let at = fn() { s.drawn(self.tree) }
@@ -3226,8 +3329,7 @@ fn View::scrolls_window_ids(
         (j == hi || all.top(j) <= top + vh + slots_far * vh)
       ))
     }
-    let t_now = self.tree.logic_said()
-    let has_tails = !curtain_tails.is_empty()
+    let has_tails = !all.tail_spans.is_empty()
     // (the column filled no more since the slots were found: where they are, its places alone)
     let found_at = if has_tails {
       None
@@ -3318,11 +3420,17 @@ fn View::scrolls_window_ids(
       }
     }
     let ks = []
-    for i in a..=b {
-      let ki = all.key(i)
-      if !has_tails || !is_curtain_tail(ki, t_now) {
-        ks.push(ki)
+    let mut i = a
+    while i <= b {
+      if has_tails {
+        let ni = all.tail_skip_fwd(i)
+        if ni != i {
+          i = ni
+          continue
+        }
       }
+      ks.push(all.key(i))
+      i = i + 1
     }
     keep_leaving(with_pinned(ks))
     slots_found.val = if !has_tails && a <= b { Some((all.col, all.col.refills, a)) } else { None }
@@ -3353,20 +3461,12 @@ fn View::scrolls_window_ids(
       }
       return
     }
-    let t_now = self.tree.logic_said()
-    let has_tails = !curtain_tails.is_empty()
+    let has_tails = !all.tail_spans.is_empty()
     let mut j = i
     for k in visible[1:] {
       guard laid_at.get(k) is Some(next_j) else { break }
       if next_j != j + 1 {
-        if !has_tails {
-          break
-        }
-        let mut step = j + 1
-        while step < next_j && is_curtain_tail(all.key(step), t_now) {
-          step += 1
-        }
-        guard step == next_j else { break }
+        guard has_tails && all.tail_skip_fwd(j + 1) == next_j else { break }
       }
       j = next_j
     }
@@ -3388,8 +3488,7 @@ fn View::scrolls_window_ids(
   let window = fn(all : Places[Int], top : Double, vh : Double, lo : Int, hi : Int, up_first : Bool) -> Array[Int] {
     let now = []
     window_short.val = false
-    let t_now = self.tree.logic_said()
-    let has_tails = !curtain_tails.is_empty()
+    let has_tails = !all.tail_spans.is_empty()
     // (whether `i` meets where it shows, as it is counted)
     let meets = fn(i : Int) { i >= 0 && i < all.length() && all.meets_top(i, top) && all.top(i) < top + vh }
     // (showing none of it, a page under another: none made, the one it is held by neither, what it reads let go)
@@ -3401,15 +3500,23 @@ fn View::scrolls_window_ids(
       let first = all.first_at(top)
       let mut i = first
       let mut last = first - 1
-      while i < all.length() && all.top(i) < top + vh {
-        let ki = all.key(i)
-        if !has_tails || !is_curtain_tail(ki, t_now) {
-          now.push(ki)
-          last = i
-          if !all.known(i) {
-            window_short.val = meets(i + 1)
-            break
+      while i < all.length() {
+        if has_tails {
+          let ni = all.tail_skip_fwd(i)
+          if ni != i {
+            i = ni
+            continue
           }
+        }
+        if all.top(i) >= top + vh {
+          break
+        }
+        now.push(all.key(i))
+        last = i
+        if !all.known(i) {
+          let nxt = if has_tails { all.tail_skip_fwd(i + 1) } else { i + 1 }
+          window_short.val = meets(nxt)
+          break
         }
         i = i + 1
       }
@@ -3419,36 +3526,64 @@ fn View::scrolls_window_ids(
     let mut a = lo
     if all.known(lo) || up_first {
       let mut i = lo - 1
-      while i >= 0 && all.meets_top(i, top) {
+      while i >= 0 {
+        if has_tails {
+          let ni = all.tail_skip_bwd(i)
+          if ni != i {
+            i = ni
+            continue
+          }
+        }
+        if !all.meets_top(i, top) {
+          break
+        }
         a = i
-        if !all.known(i) && (!has_tails || !is_curtain_tail(all.key(i), t_now)) {
-          window_short.val = meets(i - 1)
+        if !all.known(i) {
+          let prv = if has_tails { all.tail_skip_bwd(i - 1) } else { i - 1 }
+          window_short.val = meets(prv)
           break
         }
         i = i - 1
       }
     } else {
-      window_short.val = meets(lo - 1)
+      window_short.val = meets(if has_tails { all.tail_skip_bwd(lo - 1) } else { lo - 1 })
     }
     let mut b = hi
     if all.known(hi) {
       let mut i = hi + 1
-      while i < all.length() && all.top(i) < top + vh {
+      while i < all.length() {
+        if has_tails {
+          let ni = all.tail_skip_fwd(i)
+          if ni != i {
+            i = ni
+            continue
+          }
+        }
+        if all.top(i) >= top + vh {
+          break
+        }
         b = i
-        if !all.known(i) && (!has_tails || !is_curtain_tail(all.key(i), t_now)) {
-          window_short.val = window_short.val || meets(i + 1)
+        if !all.known(i) {
+          let nxt = if has_tails { all.tail_skip_fwd(i + 1) } else { i + 1 }
+          window_short.val = window_short.val || meets(nxt)
           break
         }
         i = i + 1
       }
     } else {
-      window_short.val = window_short.val || meets(hi + 1)
+      window_short.val = window_short.val || meets(if has_tails { all.tail_skip_fwd(hi + 1) } else { hi + 1 })
     }
-    for i in a..=b {
-      let ki = all.key(i)
-      if !has_tails || !is_curtain_tail(ki, t_now) {
-        now.push(ki)
+    let mut wi = a
+    while wi <= b {
+      if has_tails {
+        let ni = all.tail_skip_fwd(wi)
+        if ni != wi {
+          wi = ni
+          continue
+        }
       }
+      now.push(all.key(wi))
+      wi = wi + 1
     }
     // (past one never measured, come in among those that show: those made under it that meet where it shows as they
     // are counted kept made, not let go to be made again once it is measured; where they are is worked out then, and
@@ -3456,9 +3591,19 @@ fn View::scrolls_window_ids(
     let mut last = b
     if !all.known(b) {
       let mut i = b + 1
-      while i < all.length() && all.top(i) < top + vh {
+      while i < all.length() {
+        if has_tails {
+          let ni = all.tail_skip_fwd(i)
+          if ni != i {
+            i = ni
+            continue
+          }
+        }
+        if all.top(i) >= top + vh {
+          break
+        }
         let ki = all.key(i)
-        if showing.contains(ki) && (!has_tails || !is_curtain_tail(ki, t_now)) {
+        if showing.contains(ki) {
           now.push(ki)
           last = i
         }
@@ -4844,10 +4989,11 @@ fn View::scrolls_window_ids(
       ways.append(left)
       need_relayout = true
     }
-    if !curtain_tails.is_empty() {
-      let done_tails = curtain_tails.iter().filter(fn(e) { e.1.ends <= t }).map(fn(e) { e.0 }).collect()
-      for dk in done_tails {
-        curtain_tails.remove(dk)
+    if !curtain_tail_spans.is_empty() {
+      let kept_spans = curtain_tail_spans.filter(fn(sp) { sp.2.ends > t })
+      if kept_spans.length() != curtain_tail_spans.length() {
+        curtain_tail_spans.clear()
+        curtain_tail_spans.append(kept_spans)
         need_relayout = true
       }
     }
@@ -4865,9 +5011,9 @@ fn View::scrolls_window_ids(
         end = dmax(end, way_ends(n))
       }
     }
-    for _, run in curtain_tails {
-      if run.ends > t {
-        end = dmax(end, run.ends)
+    for sp in curtain_tail_spans {
+      if sp.2.ends > t {
+        end = dmax(end, sp.2.ends)
       }
     }
     if end > t {

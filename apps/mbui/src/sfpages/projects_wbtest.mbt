@@ -1634,3 +1634,164 @@ test "PR2 regressions: serial collapse persistence rollback, UTF-8 16KiB trim, a
   @sfbase.projects_reset()
   @sfbase.reset()
 }
+
+///|
+test "grouped list load_more stays reachable when expanded group has >=8 rows and next page lands in collapsed group (Astra M3)" {
+  @sfbase.projects_reset()
+  @sfbase.reset()
+  reset()
+  @sf.set_words(@sfbase.fill)
+  let ws = "ws-load-more-m3"
+  let page = @signals.signal(1)
+  let mk_chat = fn(id : String, title : String, proj : String) -> Json {
+    { "id": Json::string(id), "session": Json::string(id), "title": Json::string(title), "station": "ws/s1", "stationName": "S1", "project": Json::string(proj) }
+  }
+  let a_items : Array[Json] = []
+  for i in 0..<8 {
+    a_items.push(mk_chat("c-a" + i.to_string(), "Alpha Chat " + i.to_string(), "alpha"))
+  }
+  let grouped_json = fn() -> Json {
+    let p = page.get()
+    let b_count = if p >= 3 { 120 } else if p >= 2 { 80 } else { 40 }
+    let b_items : Array[Json] = []
+    for i in 0..<b_count {
+      b_items.push(mk_chat("c-b" + i.to_string(), "Beta Chat " + i.to_string(), "beta"))
+    }
+    let groups : Array[Json] = [
+      {
+        "key": "project:alpha",
+        "kind": "project",
+        "label": "alpha",
+        "project": "alpha",
+        "chatCount": 8.0,
+        "runningCount": 0.0,
+        "alertCount": 0.0,
+        "askingCount": 0.0,
+        "unreadCount": 0.0,
+        "items": Json::array(a_items),
+      },
+      {
+        "key": "project:beta",
+        "kind": "project",
+        "label": "beta",
+        "project": "beta",
+        "chatCount": Json::number(b_items.length().to_double()),
+        "runningCount": 0.0,
+        "alertCount": 0.0,
+        "askingCount": 0.0,
+        "unreadCount": 0.0,
+        "items": Json::array(b_items),
+      },
+    ]
+    if p >= 4 {
+      groups.push({
+        "key": "project:gamma",
+        "kind": "project",
+        "label": "gamma",
+        "project": "gamma",
+        "chatCount": 1.0,
+        "runningCount": 0.0,
+        "alertCount": 0.0,
+        "askingCount": 0.0,
+        "unreadCount": 0.0,
+        "items": [mk_chat("c-g1", "Gamma Chat 1", "gamma")],
+      })
+    }
+    let more_n = if p == 1 { 81.0 } else if p == 2 { 41.0 } else if p == 3 { 1.0 } else { 0.0 }
+    {
+      "stations": [{ "station": "ws/s1", "state": "online" }],
+      "leading": "agents",
+      "projects": true,
+      "projectsWritable": true,
+      "more": Json::number(more_n),
+      "days": [],
+      "groups": Json::array(groups),
+    }
+  }
+  let base_src = proj_test_source(fn(name, params) {
+    if name == "prefs" {
+      Some({
+        "listGroups": { "ws-load-more-m3": "project" },
+        "groupCollapsed": { "ws-load-more-m3": "{\"d\":false,\"x\":[\"project:beta\"]}" },
+      })
+    } else if name == "chats" {
+      if params.get("groupBy") == Some(Json::string("project")) {
+        Some(grouped_json())
+      } else {
+        Some({ "projects": true, "projectsWritable": true, "days": [] })
+      }
+    } else {
+      None
+    }
+  })
+  let src : Source = {
+    ..base_src,
+    call: fn(cmd, _params, done) {
+      if cmd == "chats.window" {
+        page.set(page.untracked() + 1)
+      }
+      done(Ok({}))
+    },
+  }
+  let ws_obj : Workspace = { id: ws, name: "LoadMore WS", emoji: "", icon: "", email: "" }
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { None })
+      let frame : ListsNodeFrame = {
+        top: fn() { 0.0 },
+        under: fn() { 0.0 },
+        foot: fn() { 0.0 },
+        ground: fn() { @sf.theme().p.bg },
+        before: fn(_, _) { [] },
+        after: fn(_, _) { [] },
+        others: [],
+        shown: fn() { 0 },
+        at: Side,
+        watched: fn() { true },
+      }
+      root.box(fn(o) {
+        o.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        chats_lists_node(o, src, fn() { Some(ws_obj) }, frame, tips, fn() { 0 })
+      })
+      |> ignore
+    },
+    w=320.0,
+    h=900.0,
+    platform=0,
+    scale=2.0,
+  )
+  t.run_for(@ui.move_most_ms)
+  // Initial bottom reach auto-grows once into collapsed Beta (page 1 -> 2), leaving Alpha expanded (8 rows),
+  // Beta collapsed, Gamma still unloaded, and more > 0: load_more MUST remain visible (not gated by vis_rows < 8)!
+  let p_after_mount = page.untracked()
+  assert_true(p_after_mount <= 2, msg="initial mount should not exhaust pages before user clicks load_more: p=\{p_after_mount}")
+  assert_true(t.find("Alpha Chat 7") is Some(_))
+  assert_true(t.find("Beta Chat 1") is None)
+  assert_true(t.find("Gamma Chat 1") is None)
+  let lm1 = t.query(Button, label=@sf.t("web-pages.projects.load_more"))
+  assert_true(lm1 is Some(_), msg="load_more missing when alpha has 8 visible rows and beta is collapsed")
+  // Click load_more -> next page adds chats strictly into collapsed Beta (visible rows stay 8), more > 0 -> load_more MUST stay!
+  t.click(Button, label=@sf.t("web-pages.projects.load_more"))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(page.untracked(), p_after_mount + 1)
+  assert_true(t.find("Gamma Chat 1") is None)
+  let lm2 = t.query(Button, label=@sf.t("web-pages.projects.load_more"))
+  assert_true(lm2 is Some(_), msg="load_more disappeared after page landed solely in collapsed group beta")
+  // Click load_more until group C (gamma) is reached -> more=0 hides load_more and Gamma Chat 1 is visible!
+  while page.untracked() < 4 {
+    t.click(Button, label=@sf.t("web-pages.projects.load_more"))
+    t.run_for(@ui.move_most_ms)
+  }
+  assert_eq(page.untracked(), 4)
+  assert_true(t.find("gamma") is Some(_), msg="group C (gamma) must become reachable")
+  assert_true(t.find("Gamma Chat 1") is Some(_), msg="Gamma Chat 1 must become visible")
+  assert_true(t.query(Button, label=@sf.t("web-pages.projects.load_more")) is None)
+  @sfbase.projects_reset()
+  @sfbase.reset()
+  reset()
+}

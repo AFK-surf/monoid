@@ -286,86 +286,272 @@ test "scrolls_window curtain mid-viewport expand never flashes offscreen tail ro
 }
 
 ///|
-test "scrolls_window curtain reversal after scroll remaps R across overlapping keys continuously (Astra M3)" {
-  let collapsed = ["h/Big", "h/Next"]
-  let expanded : Array[String] = ["h/Big"]
+test "scrolls_window curtain reversal after scroll-down and scroll-up remaps R across overlapping keys continuously (Astra M1/M3)" {
+  // Surround h/Big with surviving rows above (p/0..p/9 = 400pt) and below (q/0..q/9 = 400pt) so scroll never clamps to 0.
+  let collapsed : Array[String] = []
+  let expanded : Array[String] = []
+  for i in 0..<10 {
+    collapsed.push("p/" + i.to_string())
+    expanded.push("p/" + i.to_string())
+  }
+  collapsed.push("h/Big")
+  expanded.push("h/Big")
   for i in 0..<200 {
     expanded.push("r/" + i.to_string())
   }
+  collapsed.push("h/Next")
   expanded.push("h/Next")
-  let clock = Ref(0.0)
-  let keys = @signals.signal(expanded, same=fn(a, b) { a == b })
-  let s = Scroll::list()
-  let row_views : Map[String, View] = Map([])
-  let list_v : Ref[View?] = Ref(None)
-  let tree = Tree::new(
-    fn(root) {
-      root.box(fn(o) {
-        o.width(Is(Some(300.0))).height(Is(Some(240.0))) |> ignore
-        let lv = o.scrolls_window(
-          s,
-          fn() { keys.get() },
-          est=40.0,
-          comes=fn(k) { k.has_prefix("r/") },
-          goes=fn(k) { k.has_prefix("r/") },
-          curtain=fn(k) { k.has_prefix("r/") },
-          fn(b, k) {
-            b.box(fn(l) {
-              row_views[k] = l
-              l.height(Is(Some(if k.has_prefix("h/") { 32.0 } else { 40.0 }))).words(Is(k)) |> ignore
-            })
-            |> ignore
-          },
-        )
-        list_v.val = Some(lv)
-      })
-      |> ignore
-    },
-    time=fn() { clock.val },
-  )
-  tree.set_rows_grid(2.0)
-  tree.frame(300.0, 240.0, now=0.0) |> ignore
-  tree.frame(300.0, 240.0, now=0.0) |> ignore
-  // Scroll down into the 200-row group so r/2..r/7 are in view
-  s.put(112.0)
-  clock.val = 20.0
-  tree.frame(300.0, 240.0, now=clock.val) |> ignore
-  let lv = list_v.val.unwrap()
-
-  // Start collapsing at t = 100
-  clock.val = 100.0
-  tree.event(100.0, fn() { transition(within=lv, fn() { keys.set(collapsed) }) })
-  tree.frame(300.0, 240.0, now=clock.val) |> ignore
-  clock.val = 160.0
-  tree.frame(300.0, 240.0, now=clock.val) |> ignore
-
-  // Mid-flight at t = 165, shift scroll slightly so the viewport-truncated slice changes, then reverse back to expanded
-  s.put(152.0)
-  clock.val = 165.0
-  tree.frame(300.0, 240.0, now=clock.val) |> ignore
-  // Record height of a visible surviving row slot before reversal
-  let mut common_key = ""
-  let mut common_h_before = -1.0
-  for k, rv in row_views {
-    if k.has_prefix("r/") && rv.live() is Some(rn) && rn.parent >= 0 {
-      let slot = tree.nodes[rn.parent]
-      if slot.flex.style.come_curtain is Some(_) && slot.flex.height > 1.0 && slot.flex.height < 39.0 {
-        common_key = k
-        common_h_before = slot.flex.height
-        break
+  for i in 0..<10 {
+    collapsed.push("q/" + i.to_string())
+    expanded.push("q/" + i.to_string())
+  }
+  let find_curtain_slot = fn(tree : Tree, rv : View) -> Int? {
+    match rv.live() {
+      Some(rn) => {
+        let mut p = rn.parent
+        while p >= 0 {
+          if tree.nodes[p].flex.style.come_curtain is Some(_) {
+            return Some(p)
+          }
+          p = tree.nodes[p].parent
+        }
+        None
       }
+      None => None
     }
   }
-  tree.event(165.0, fn() { transition(within=lv, fn() { keys.set(expanded) }) })
-  tree.frame(300.0, 240.0, now=clock.val) |> ignore
-  if common_key != "" && row_views.get(common_key) is Some(rv) && rv.live() is Some(rn) && rn.parent >= 0 {
-    let slot_after = tree.nodes[rn.parent]
-    assert_true(
-      (slot_after.flex.height - common_h_before).abs() <= 1.5,
-      msg="common row \{common_key} height jumped across scrolled reversal: \{common_h_before} -> \{slot_after.flex.height}",
+  // Verify BOTH scroll directions:
+  //   Case 1 (scroll down): start at y=472 (r/0..r/6), scroll down to y=552 (drops r/0,r/1, adds lower rows)
+  //   Case 2 (scroll up):   start at y=592 (r/3..r/9), scroll up to y=472 (prepends r/0,r/1,r/2 before frontier)
+  for case in [(472.0, 552.0, "down"), (592.0, 472.0, "up")] {
+    let (y_start, y_mid, dir) = case
+    let clock = Ref(0.0)
+    let keys = @signals.signal(expanded, same=fn(a, b) { a == b })
+    let s = Scroll::list()
+    let row_views : Map[String, View] = Map([])
+    let list_v : Ref[View?] = Ref(None)
+    let tree = Tree::new(
+      fn(root) {
+        root.box(fn(o) {
+          o.width(Is(Some(300.0))).height(Is(Some(240.0))) |> ignore
+          let lv = o.scrolls_window(
+            s,
+            fn() { keys.get() },
+            est=40.0,
+            comes=fn(k) { k.has_prefix("r/") },
+            goes=fn(k) { k.has_prefix("r/") },
+            curtain=fn(k) { k.has_prefix("r/") },
+            fn(b, k) {
+              b.box(fn(l) {
+                row_views[k] = l
+                l.height(Is(Some(if k.has_prefix("h/") { 32.0 } else { 40.0 }))).words(Is(k)) |> ignore
+              })
+              |> ignore
+            },
+          )
+          list_v.val = Some(lv)
+        })
+        |> ignore
+      },
+      time=fn() { clock.val },
     )
+    tree.set_rows_grid(2.0)
+    tree.frame(300.0, 240.0, now=0.0) |> ignore
+    tree.frame(300.0, 240.0, now=0.0) |> ignore
+    s.put(y_start)
+    clock.val = 20.0
+    tree.frame(300.0, 240.0, now=clock.val) |> ignore
+    let lv = list_v.val.unwrap()
+
+    // Start collapsing at t = 100
+    clock.val = 100.0
+    tree.event(100.0, fn() { transition(within=lv, fn() { keys.set(collapsed) }) })
+    tree.frame(300.0, 240.0, now=clock.val) |> ignore
+    clock.val = 160.0
+    tree.frame(300.0, 240.0, now=clock.val) |> ignore
+
+    // Record active curtain keys & heights BEFORE shifting scroll and reversing
+    let before_keys : Array[String] = []
+    let mut partial_key = ""
+    let mut partial_h = -1.0
+    for i in 0..<200 {
+      let k = "r/" + i.to_string()
+      match row_views.get(k) {
+        Some(rv) =>
+          match find_curtain_slot(tree, rv) {
+            Some(sp) => {
+              let slot = tree.nodes[sp]
+              before_keys.push(k)
+              if partial_key == "" && slot.flex.height > 2.0 && slot.flex.height < 38.0 {
+                partial_key = k
+                partial_h = slot.flex.height
+              }
+            }
+            None => ()
+          }
+        None => ()
+      }
+    }
+    let before_s = before_keys.join(",")
+    assert_true(
+      partial_key != "",
+      msg="dir=\{dir}: expected a strictly partial frontier row at t=160ms, before_keys=\{before_s}",
+    )
+
+    // Mid-flight at t = 165, shift scroll to `y_mid` so the viewport-truncated slice changes, then reverse back to expanded
+    s.put(y_mid)
+    clock.val = 165.0
+    tree.frame(300.0, 240.0, now=clock.val) |> ignore
+    // Re-read the frontier row's exact curtain index, height, and screen y right before reversal at t=165
+    let pre_rv = row_views.get(partial_key).unwrap()
+    let pre_slot = tree.nodes[find_curtain_slot(tree, pre_rv).unwrap()]
+    let old_idx = match pre_slot.flex.style.come_curtain {
+      Some((_, i)) => i
+      None => -1
+    }
+    partial_h = pre_slot.flex.height
+    let partial_sy = find_word_top(tree, row_views, partial_key).unwrap() - s.drawn(tree)
+    assert_true(
+      partial_h > 0.0 && partial_h < 40.0 && old_idx >= 0,
+      msg="dir=\{dir}: frontier row \{partial_key} not partial before reversal: h=\{partial_h}, idx=\{old_idx}",
+    )
+
+    tree.event(165.0, fn() { transition(within=lv, fn() { keys.set(expanded) }) })
+    tree.frame(300.0, 240.0, now=clock.val) |> ignore
+
+    // Hard assertions (no silent skip!):
+    // 1. Frontier row MUST survive in the rebound CurtainRun with a shifted index (`new_idx < old_idx` on down,
+    //    `new_idx > old_idx` on up — proving earlier rows were dropped/prepended in `vis_seg`!).
+    // 2. Frontier row height & screen-y MUST remain continuous (`<= 2.0pt`).
+    // 3. Every visible curtain row before frontier MUST stay full 40pt (no shrinkage jump on scroll-up prepend!).
+    // 4. Every visible curtain row after frontier MUST stay 0pt (no premature reveal!).
+    let post_rv = row_views.get(partial_key).unwrap()
+    let post_slot = tree.nodes[find_curtain_slot(tree, post_rv).unwrap()]
+    let (post_run, new_idx) = match post_slot.flex.style.come_curtain {
+      Some((r, i)) => (r, i)
+      None => fail("dir=\{dir}: frontier row \{partial_key} lost come_curtain after reversal")
+    }
+    if dir == "down" {
+      assert_true(
+        new_idx < old_idx,
+        msg="dir=down: expected curtain index of \{partial_key} to decrease after scrolling down: old=\{old_idx}, new=\{new_idx}",
+      )
+    } else {
+      assert_true(
+        new_idx > old_idx,
+        msg="dir=up: expected curtain index of \{partial_key} to increase (prepended prefix) after scrolling up: old=\{old_idx}, new=\{new_idx}",
+      )
+    }
+    assert_true(
+      (post_slot.flex.height - partial_h).abs() <= 2.0,
+      msg="dir=\{dir}: frontier row \{partial_key} height jumped across reversal: \{partial_h} -> \{post_slot.flex.height} (old_idx=\{old_idx}, new_idx=\{new_idx})",
+    )
+    let post_sy = find_word_top(tree, row_views, partial_key).unwrap() - s.drawn(tree)
+    assert_true(
+      (post_sy - partial_sy).abs() <= 2.0,
+      msg="dir=\{dir}: frontier row \{partial_key} screen-y jumped across reversal: \{partial_sy} -> \{post_sy}",
+    )
+    // Verify EVERY slot in the new CurtainRun matches the invariant (full 40pt before frontier, 0pt after frontier)
+    for j in 0..<post_run.wholes.length() {
+      let sh = post_run.slot_height_at(j, clock.val)
+      if j < new_idx {
+        assert_true(
+          (sh - 40.0).abs() <= 1.0,
+          msg="dir=\{dir}: new CurtainRun slot \{j} before frontier \{new_idx} shrank to \{sh}",
+        )
+      } else if j == new_idx {
+        assert_true(
+          (sh - partial_h).abs() <= 2.0,
+          msg="dir=\{dir}: new CurtainRun frontier slot \{j} jumped: \{partial_h} -> \{sh}",
+        )
+      } else {
+        assert_true(
+          sh <= 1.0,
+          msg="dir=\{dir}: new CurtainRun slot \{j} after frontier \{new_idx} prematurely opened to \{sh}",
+        )
+      }
+    }
+    // Settle cleanly
+    clock.val = 800.0
+    tree.frame(300.0, 240.0, now=clock.val) |> ignore
   }
-  // Settle cleanly
-  clock.val = 800.0
-  tree.frame(300.0, 240.0, now=clock.val) |> ignore
+}
+
+///|
+test "scrolls_window entering curtain offscreen tail spans stay O(1) across 30, 200, and 15000 rows (Astra M2)" {
+  let counts : Array[Int] = []
+  for total_rows in [30, 200, 15000] {
+    let collapsed = ["h/Top", "h/Mid", "h/Next"]
+    let expanded : Array[String] = ["h/Top", "h/Mid"]
+    for i in 0..<total_rows {
+      expanded.push("r/" + i.to_string())
+    }
+    expanded.push("h/Next")
+    let clock = Ref(0.0)
+    let keys = @signals.signal(collapsed, same=fn(a, b) { a == b })
+    let s = Scroll::list()
+    let row_views : Map[String, View] = Map([])
+    let list_v : Ref[View?] = Ref(None)
+    let made_count = Ref(0)
+    let tree = Tree::new(
+      fn(root) {
+        root.box(fn(o) {
+          o.width(Is(Some(300.0))).height(Is(Some(240.0))) |> ignore
+          let lv = o.scrolls_window(
+            s,
+            fn() { keys.get() },
+            est=40.0,
+            comes=fn(k) { k.has_prefix("r/") },
+            goes=fn(k) { k.has_prefix("r/") },
+            curtain=fn(k) { k.has_prefix("r/") },
+            fn(b, k) {
+              made_count.val += 1
+              b.box(fn(l) {
+                row_views[k] = l
+                l.height(Is(Some(if k.has_prefix("h/") { 32.0 } else { 40.0 }))).words(Is(k)) |> ignore
+              })
+              |> ignore
+            },
+          )
+          list_v.val = Some(lv)
+        })
+        |> ignore
+      },
+      time=fn() { clock.val },
+    )
+    tree.set_rows_grid(2.0)
+    tree.frame(300.0, 240.0, now=0.0) |> ignore
+    tree.frame(300.0, 240.0, now=0.0) |> ignore
+    let lv = list_v.val.unwrap()
+    let mid_y0 = find_word_top(tree, row_views, "h/Mid").unwrap()
+    made_count.val = 0
+
+    // Expand `total_rows` rows at t=100
+    clock.val = 100.0
+    tree.event(100.0, fn() { transition(within=lv, fn() { keys.set(expanded) }) })
+    tree.frame(300.0, 240.0, now=clock.val) |> ignore
+
+    // Step through opening frames: tail rows must never materialize or flash, and h/Mid stays pinned
+    for dt in [16.0, 60.0, 120.0] {
+      clock.val = 100.0 + dt
+      tree.frame(300.0, 240.0, now=clock.val) |> ignore
+      let mid_y = find_word_top(tree, row_views, "h/Mid").unwrap()
+      assert_true((mid_y - mid_y0).abs() <= 0.5, msg="N=\{total_rows} h/Mid drifted at +\{dt}ms")
+      let last_tail = "r/" + (total_rows - 1).to_string()
+      assert_true(
+        find_word_top(tree, row_views, last_tail) is None,
+        msg="N=\{total_rows} tail row \{last_tail} materialized mid-expand at +\{dt}ms",
+      )
+    }
+    counts.push(made_count.val)
+    // Settle cleanly
+    clock.val = 700.0
+    tree.frame(300.0, 240.0, now=clock.val) |> ignore
+    assert_true(find_word_top(tree, row_views, "r/0") is Some(_), msg="N=\{total_rows} r/0 missing after settle")
+  }
+  // O(1) materialized work across 30, 200, and 15,000 rows in the same viewport!
+  let cstr = counts.map(fn(x) { x.to_string() }).join(",")
+  assert_eq(counts[0], counts[1], msg="materialized count grew from 30 to 200 rows: \{cstr}")
+  assert_eq(counts[1], counts[2], msg="materialized count grew from 200 to 15000 rows: \{cstr}")
+  assert_true(counts[2] <= 24, msg="materialized count exceeded O(V) budget for 15000 rows: \{counts[2]}")
 }

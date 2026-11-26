@@ -200,31 +200,31 @@ pub fn chats_lists_node(
 ///|
 /// One-shot exact key diff projected before a group collapse/expand toggle and consumed once by `scrolls_window`'s `laid`.
 priv struct CurtainPlan {
-  come : Set[String]
-  go : Set[String]
-  curtain : Set[String]
+  come : Map[String, Bool]
+  go : Map[String, Bool]
+  curtain : Map[String, Bool]
 }
 
 ///|
-/// Project the exact visible `"r/..."` and `"gmore/..."` keys in grouped mode for a given collapse predicate `is_collapsed`.
+/// Project the exact visible `"sub/..."`, `"r/..."`, and `"gmore/..."` keys in grouped mode for a given collapse predicate `is_collapsed`.
 fn grouped_visible_curtain_keys(
   cur_days : Array[ChatDay],
   mlines : Array[String],
   active_row_key : String,
   gone_item : (String) -> ChatItem?,
   is_collapsed : (String) -> Bool,
-) -> Set[String] {
+) -> Map[String, Bool] {
   let day_by_key : Map[String, ChatDay] = Map([])
   for d in cur_days {
     day_by_key[d.key] = d
   }
-  let vis : Set[String] = Set([])
+  let vis : Map[String, Bool] = Map([])
   let mut cur_gkey = ""
   let mut cur_collapsed = false
   let flush_gmore = fn(gk : String, col : Bool) {
     if gk != "" && !col {
       match day_by_key.get(gk) {
-        Some(d) if d.chat_count > d.items.length() => vis.add("gmore/" + gk)
+        Some(d) if d.chat_count > d.items.length() => vis["gmore/" + gk] = true
         _ => ()
       }
     }
@@ -236,11 +236,11 @@ fn grouped_visible_curtain_keys(
       cur_collapsed = is_collapsed(cur_gkey)
     } else if lk.has_prefix("sub/") {
       if !cur_collapsed {
-        vis.add(lk)
+        vis[lk] = true
       }
     } else if lk.has_prefix("r/") {
       if !cur_collapsed || lk == active_row_key || gone_item(lk) is Some(_) {
-        vis.add(lk)
+        vis[lk] = true
       }
     }
   }
@@ -459,19 +459,19 @@ fn chats_pane_node(
       fn(k) { motion.gone_item(k) },
       next_collapsed,
     )
-    let come : Set[String] = Set([])
-    let go : Set[String] = Set([])
-    let curtain : Set[String] = Set([])
-    for k in after {
+    let come : Map[String, Bool] = Map([])
+    let go : Map[String, Bool] = Map([])
+    let curtain : Map[String, Bool] = Map([])
+    for k, _ in after {
       if !before.contains(k) {
-        come.add(k)
-        curtain.add(k)
+        come[k] = true
+        curtain[k] = true
       }
     }
-    for k in before {
+    for k, _ in before {
       if !after.contains(k) {
-        go.add(k)
-        curtain.add(k)
+        go[k] = true
+        curtain[k] = true
       }
     }
     curtain_plan_gen.val += 1
@@ -555,7 +555,6 @@ fn chats_pane_node(
         let mut cur_gkey = ""
         let mut cur_collapsed = false
         let mut any_collapsed = false
-        let mut vis_rows = 0
         let mut kept_now = ""
         let mut prev_listed = false
         let prev_kept = collapsed_kept.val
@@ -590,7 +589,6 @@ fn chats_pane_node(
             }
             if !cur_collapsed || lk == active_row_key || motion.gone_item(lk) is Some(_) {
               out.push(lk)
-              vis_rows += 1
             }
           } else {
             out.push(lk)
@@ -609,8 +607,9 @@ fn chats_pane_node(
           }
           collapsed_kept.val = kept_now
         }
-        // Reachability when all/most groups are collapsed and more rows remain beyond the current window.
-        if more.get() > 0 && any_collapsed && vis_rows < 8 {
+        // Reachability when any group is collapsed and more rows remain beyond the current window (a subsequent page
+        // can land exclusively inside collapsed groups without growing visible keys, so near_foot alone cannot advance).
+        if more.get() > 0 && any_collapsed {
           out.push("load_more")
         }
       }
@@ -1375,7 +1374,7 @@ fn day_keys(days : Array[ChatDay]) -> Array[String] {
           let sk = if n == 0 {
             "sub/" + d.key + "\u{1}" + lbl
           } else {
-            "sub/" + d.key + "\u{1}" + lbl + "\u{1}" + n.to_string()
+            "sub/" + d.key + "\u{1}" + lbl + "\u{1}" + @sfbase.row_name(item)
           }
           out.push(sk)
         }
