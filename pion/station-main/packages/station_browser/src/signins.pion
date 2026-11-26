@@ -41,7 +41,7 @@ pub fn passkey_of(v : base_codec::Json) -> Option[Passkey] {
   }
   let sign_count = match json_int64_field(v, "signCount") {
     Some(n) => {
-      if n >= 0L {
+      if n >= 0L && n <= 9007199254740991L {
         n
       } else {
         0L
@@ -447,11 +447,13 @@ pub enum Driven {
 }
 
 /// Injectable sign-in form driver port (Chrome `TabForm` or Farview `FarviewForm`).
+/// `type_field(kind, value, expected_origin)` must atomically verify `location.origin === expected_origin`
+/// before inserting credentials (aligns `signin-form.ts::atomicTypeScript`).
 pub struct SignInFormPort {
   pub get_url : () -> String
   pub on_site : (String) -> Bool
   pub look : () -> FormAsks
-  pub type_field : (FormField, String) -> Bool
+  pub type_field : (FormField, String, String) -> Bool
   pub enter : () -> Unit
   pub press : () -> Bool
   pub mark : () -> Unit
@@ -486,8 +488,16 @@ fn form_value_for(values : FormValues, field : FormField) -> Option[String] {
   }
 }
 
+fn verify_signin_origin(cur_url : String, site : String) -> Option[String] {
+  if !is_secure_autofill_url(cur_url) || !same_site_host(host_of(cur_url), site) {
+    return None
+  }
+  origin_of_url(cur_url)
+}
+
 /// Deterministic sign-in form driver matching `signin-form.ts::drive`.
-/// `wait_step(ms)` advances a virtual clock in tests (zero real sleeps).
+/// Actively enforces `is_secure_autofill_url` + `same_site_host` and locks `expected_origin`
+/// on every step and before each credential insertion (zero real sleeps).
 pub fn drive_signin_form(
   form : SignInFormPort,
   site : String,
@@ -497,11 +507,23 @@ pub fn drive_signin_form(
 ) -> Driven {
   let mut step = 0
   while step < SIGNIN_MAX_STEPS {
-    if !(form.on_site)(site) {
-      if step == 0 {
-        return Driven::Person(DrivenWhy::Elsewhere)
+    let cur_url = (form.get_url)()
+    let expected_origin = match verify_signin_origin(cur_url, site) {
+      Some(orig) => {
+        if !(form.on_site)(site) {
+          if step == 0 {
+            return Driven::Person(DrivenWhy::Elsewhere)
+          }
+          return Driven::Left
+        }
+        orig
       }
-      return Driven::Left
+      None => {
+        if step == 0 {
+          return Driven::Person(DrivenWhy::Elsewhere)
+        }
+        return Driven::Left
+      }
     }
     let asks = (form.look)()
     if asks.blocked {
@@ -519,8 +541,15 @@ pub fn drive_signin_form(
       if form_asks_field(asks, kind) && !used.contains(kname) {
         match form_value_for(values, kind) {
           Some(fval) => {
-            if fval.length() > 0 && (form.type_field)(kind, fval) {
-              typed.push(kname)
+            if fval.length() > 0 {
+              // Re-verify locked origin immediately before inserting any credential.
+              let live_origin = verify_signin_origin((form.get_url)(), site)
+              if !opt_str_is(live_origin, expected_origin) {
+                return Driven::Person(DrivenWhy::Elsewhere)
+              }
+              if (form.type_field)(kind, fval, expected_origin) {
+                typed.push(kname)
+              }
             }
           }
           None => ()

@@ -126,11 +126,13 @@ pub struct CdpSession {
   mut next_id : Int64
   mut next_sub : Int
   mut closed : Bool
+  mut open_deadline_ms : Option[Int64]
   pending : Map[Int64, CdpPending]
   attached_sessions : Map[String, String]
   listeners : Map[Int, (CdpEvent) -> Unit]
   settled : Array[CdpSettled]
   answer_timeout_ms : Int64
+  max_payload : Int
 }
 
 pub fn CdpSession::new(ws : CdpWsPort) -> CdpSession {
@@ -139,11 +141,13 @@ pub fn CdpSession::new(ws : CdpWsPort) -> CdpSession {
     next_id: 0L,
     next_sub: 0,
     closed: false,
+    open_deadline_ms: None,
     pending: Map::new(),
     attached_sessions: Map::new(),
     listeners: Map::new(),
     settled: [],
     answer_timeout_ms: CDP_ANSWER_MS,
+    max_payload: CDP_MAX_PAYLOAD,
   }
 }
 
@@ -153,12 +157,35 @@ pub fn CdpSession::with_timeout(ws : CdpWsPort, answer_timeout_ms : Int64) -> Cd
     next_id: 0L,
     next_sub: 0,
     closed: false,
+    open_deadline_ms: None,
     pending: Map::new(),
     attached_sessions: Map::new(),
     listeners: Map::new(),
     settled: [],
     answer_timeout_ms: answer_timeout_ms,
+    max_payload: CDP_MAX_PAYLOAD,
   }
+}
+
+/// Create a `CdpSession` in connecting state with `CDP_OPEN_MS` open deadline.
+pub fn CdpSession::connecting(ws : CdpWsPort, now_ms : Int64) -> CdpSession {
+  CdpSession::{
+    ws: ws,
+    next_id: 0L,
+    next_sub: 0,
+    closed: false,
+    open_deadline_ms: Some(now_ms + CDP_OPEN_MS),
+    pending: Map::new(),
+    attached_sessions: Map::new(),
+    listeners: Map::new(),
+    settled: [],
+    answer_timeout_ms: CDP_ANSWER_MS,
+    max_payload: CDP_MAX_PAYLOAD,
+  }
+}
+
+pub fn CdpSession::mark_open(self : CdpSession) -> Unit {
+  self.open_deadline_ms = None
 }
 
 pub fn CdpSession::is_closed(self : CdpSession) -> Bool {
@@ -223,6 +250,10 @@ pub fn CdpSession::send(
 /// Feed an incoming WebSocket text frame from Chrome.
 pub fn CdpSession::on_message(self : CdpSession, raw : String) -> Unit {
   if self.closed {
+    return
+  }
+  if raw.to_bytes().length() > self.max_payload {
+    let _ = self.close()
     return
   }
   match decode_cdp_message(raw) {
@@ -294,8 +325,21 @@ pub fn CdpSession::on_message(self : CdpSession, raw : String) -> Unit {
   }
 }
 
-/// Expire any pending requests whose deadline <= `now_ms`.
+/// Expire any pending requests (or connecting handshake) whose deadline <= `now_ms`.
+/// Outcomes are delivered solely via the returned array (never duplicated in `self.settled`).
 pub fn CdpSession::tick(self : CdpSession, now_ms : Int64) -> Array[CdpSettled] {
+  if self.closed {
+    return []
+  }
+  match self.open_deadline_ms {
+    Some(dl) => {
+      if now_ms >= dl {
+        self.open_deadline_ms = None
+        return self.close()
+      }
+    }
+    None => ()
+  }
   let expired_ids : Array[Int64] = []
   let pkeys = self.pending.keys()
   let mut pi = 0
@@ -318,13 +362,13 @@ pub fn CdpSession::tick(self : CdpSession, now_ms : Int64) -> Array[CdpSettled] 
     match self.pending.get(id) {
       Some(p) => {
         self.pending.remove(id)
-        let s = CdpSettled::{
-          id: id,
-          method: p.method,
-          outcome: CdpOutcome::Err("the browser did not answer " + p.method),
-        }
-        self.settled.push(s)
-        out.push(s)
+        out.push(
+          CdpSettled::{
+            id: id,
+            method: p.method,
+            outcome: CdpOutcome::Err("the browser did not answer " + p.method),
+          },
+        )
       }
       None => ()
     }
@@ -333,7 +377,7 @@ pub fn CdpSession::tick(self : CdpSession, now_ms : Int64) -> Array[CdpSettled] 
   out
 }
 
-/// Drain settled request outcomes.
+/// Drain response outcomes settled by `on_message`.
 pub fn CdpSession::take_settled(self : CdpSession) -> Array[CdpSettled] {
   let out : Array[CdpSettled] = []
   let mut i = 0
@@ -346,11 +390,13 @@ pub fn CdpSession::take_settled(self : CdpSession) -> Array[CdpSettled] {
 }
 
 /// Handle transport disconnect or explicit close: fail all pending requests and clean up.
+/// Failed pending outcomes are delivered solely via the returned array.
 pub fn CdpSession::close(self : CdpSession) -> Array[CdpSettled] {
   if self.closed {
     return []
   }
   self.closed = true
+  self.open_deadline_ms = None
   (self.ws.close_ws)()
   let out : Array[CdpSettled] = []
   let pkeys = self.pending.keys()
@@ -359,13 +405,13 @@ pub fn CdpSession::close(self : CdpSession) -> Array[CdpSettled] {
     let id = pkeys[pi]
     match self.pending.get(id) {
       Some(p) => {
-        let s = CdpSettled::{
-          id: id,
-          method: p.method,
-          outcome: CdpOutcome::Err("the browser's DevTools connection closed"),
-        }
-        self.settled.push(s)
-        out.push(s)
+        out.push(
+          CdpSettled::{
+            id: id,
+            method: p.method,
+            outcome: CdpOutcome::Err("the browser's DevTools connection closed"),
+          },
+        )
       }
       None => ()
     }

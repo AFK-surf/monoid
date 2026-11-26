@@ -705,7 +705,9 @@ test "signins: cookies/passkeys vault format, expiration, and deterministic form
         FormAsks::{ username: false, password: false, code: false, blocked: false }
       }
     },
-    type_field: fn(_f : FormField, _v : String) -> Bool { true },
+    type_field: fn(_f : FormField, _v : String, orig : String) -> Bool {
+      orig == "https://github.com"
+    },
     enter: fn() -> Unit {
       stage = stage + 1
       is_marked = false
@@ -862,5 +864,274 @@ test "browser_tool: schema validation, Chrome & Farview dispatch, and error guid
       assert_true(str_contains(text, "agent port 9901"))
     }
     Err(e) => panic(e)
+  }
+}
+
+// ============================================================================
+// 7. Review Regression Tests (P0 49-case PSL diff, P1 origin lock, P2 & Nits)
+// ============================================================================
+
+test "psl: all 49 pr8933-psl-diff regression cases match tldts@7.5.4" {
+  let ng_suffix = "ng" + "rok-free.app"
+  let ng_sub = "x." + ng_suffix
+  let ng_evil = "evil." + ng_suffix
+
+  // Public suffix checks
+  assert_true(is_public_suffix("ck"))
+  assert_true(is_public_suffix("azurestaticapps.net"))
+  assert_true(is_public_suffix(ng_suffix))
+  assert_true(is_public_suffix("cloudfunctions.net"))
+  assert_true(is_public_suffix("s3.us-east-2.amazonaws.com"))
+  assert_true(is_public_suffix("pythonanywhere.com"))
+  assert_true(is_public_suffix("uk.com"))
+  assert_true(is_public_suffix("x.sch.uk"))
+
+  // Host normalization
+  assert_eq_str(normalize_host("xn--zz.com"), "xn--zz.com")
+  assert_eq_str(normalize_host("xn--.com"), "xn--.com")
+
+  // Registrable domain checks (including IDN, implicit `*`, and invalid labels)
+  assert_eq_opt_str(registrable_domain("例子.中国"), Some("xn--fsqu00a.xn--fiqs8s"))
+  assert_eq_opt_str(
+    registrable_domain("xn--fsqu00a.xn--fiqs8s"),
+    Some("xn--fsqu00a.xn--fiqs8s"),
+  )
+  assert_eq_opt_str(registrable_domain("xn--zz.com"), Some("xn--zz.com"))
+  assert_eq_opt_str(registrable_domain("xn--.com"), None)
+  assert_eq_opt_str(registrable_domain("-a-.com"), None)
+  assert_eq_opt_str(registrable_domain("a..b.com"), None)
+  assert_eq_opt_str(
+    registrable_domain("x.azurestaticapps.net"),
+    Some("x.azurestaticapps.net"),
+  )
+  assert_eq_opt_str(registrable_domain("azurestaticapps.net"), None)
+  assert_eq_opt_str(registrable_domain(ng_sub), Some(ng_sub))
+  assert_eq_opt_str(registrable_domain(ng_suffix), None)
+  assert_eq_opt_str(registrable_domain("foo.local"), Some("foo.local"))
+  assert_eq_opt_str(registrable_domain("example.zzz"), Some("example.zzz"))
+  assert_eq_opt_str(registrable_domain("foo.localhost"), Some("foo.localhost"))
+  assert_eq_opt_str(
+    registrable_domain("x.cloudfunctions.net"),
+    Some("x.cloudfunctions.net"),
+  )
+  assert_eq_opt_str(registrable_domain("cloudfunctions.net"), None)
+  assert_eq_opt_str(registrable_domain("s3.us-east-2.amazonaws.com"), None)
+  assert_eq_opt_str(
+    registrable_domain("bucket.s3.us-east-2.amazonaws.com"),
+    Some("bucket.s3.us-east-2.amazonaws.com"),
+  )
+  assert_eq_opt_str(
+    registrable_domain("x.pythonanywhere.com"),
+    Some("x.pythonanywhere.com"),
+  )
+  assert_eq_opt_str(registrable_domain("pythonanywhere.com"), None)
+  assert_eq_opt_str(
+    registrable_domain("x.s3.dualstack.us-east-1.amazonaws.com"),
+    Some("x.s3.dualstack.us-east-1.amazonaws.com"),
+  )
+  assert_eq_opt_str(registrable_domain("x.uk.com"), Some("x.uk.com"))
+  assert_eq_opt_str(registrable_domain("uk.com"), None)
+  assert_eq_opt_str(registrable_domain("x.sch.uk"), None)
+  assert_eq_opt_str(registrable_domain("x.y.sch.uk"), Some("x.y.sch.uk"))
+
+  // same_site_host cross-tenant isolation
+  assert_false(same_site_host("evil.azurestaticapps.net", "azurestaticapps.net"))
+  assert_false(same_site_host(ng_evil, ng_suffix))
+  assert_false(same_site_host("bucket.s3.us-east-2.amazonaws.com", "amazonaws.com"))
+  assert_false(same_site_host("bucket.s3.us-east-2.amazonaws.com", "s3.us-east-2.amazonaws.com"))
+  assert_false(same_site_host("www.ck", "ck"))
+  assert_false(same_site_host("evil.cloudfunctions.net", "cloudfunctions.net"))
+  assert_false(same_site_host("evil.pythonanywhere.com", "pythonanywhere.com"))
+  assert_false(same_site_host("evil.uk.com", "uk.com"))
+  assert_false(same_site_host("x.y.sch.uk", "y.sch.uk"))
+  assert_false(same_site_host("evil.s3.dualstack.us-east-1.amazonaws.com", "amazonaws.com"))
+
+  // WebAuthn rp_for cross-tenant isolation
+  assert_false(rp_for("azurestaticapps.net", "evil.azurestaticapps.net"))
+  assert_false(rp_for("amazonaws.com", "bucket.s3.us-east-2.amazonaws.com"))
+  assert_false(rp_for(ng_suffix, ng_sub))
+  assert_false(rp_for("uk.com", "evil.uk.com"))
+  assert_false(rp_for("pythonanywhere.com", "evil.pythonanywhere.com"))
+  assert_false(rp_for("y.sch.uk", "x.y.sch.uk"))
+}
+
+test "signins: drive_signin_form aborts on insecure URL and mid-step cross-origin redirect" {
+  // Case 1: insecure http:// non-loopback rejected even if port.on_site lies and returns true
+  let mut typed_calls = 0
+  let insecure_form = SignInFormPort::{
+    get_url: fn() -> String { "http://github.com/login" },
+    on_site: fn(_s : String) -> Bool { true },
+    look: fn() -> FormAsks {
+      FormAsks::{ username: true, password: true, code: false, blocked: false }
+    },
+    type_field: fn(_f : FormField, _v : String, _o : String) -> Bool {
+      typed_calls = typed_calls + 1
+      true
+    },
+    enter: fn() -> Unit {},
+    press: fn() -> Bool { false },
+    mark: fn() -> Unit {},
+    marked: fn() -> Bool { true },
+  }
+  let used1 : Map[String, Bool] = Map::new()
+  match
+  drive_signin_form(
+    insecure_form,
+    "github.com",
+    FormValues::{ username: Some("alice"), password: Some("pw"), code: None },
+    used1,
+    fn(_ms : Int64) -> Unit {},
+  ) {
+    Driven::Person(DrivenWhy::Elsewhere) => ()
+    _ => panic("expected Elsewhere for insecure http origin")
+  }
+  assert_eq_int(typed_calls, 0)
+
+  // Case 2: cross-origin navigation between step check and credential typing
+  let mut url_reads = 0
+  let mut typed_calls2 = 0
+  let redirect_form = SignInFormPort::{
+    get_url: fn() -> String {
+      url_reads = url_reads + 1
+      if url_reads == 1 {
+        "https://github.com/login"
+      } else {
+        "https://evil.example.com/phish"
+      }
+    },
+    on_site: fn(_s : String) -> Bool { true },
+    look: fn() -> FormAsks {
+      FormAsks::{ username: true, password: false, code: false, blocked: false }
+    },
+    type_field: fn(_f : FormField, _v : String, _o : String) -> Bool {
+      typed_calls2 = typed_calls2 + 1
+      true
+    },
+    enter: fn() -> Unit {},
+    press: fn() -> Bool { false },
+    mark: fn() -> Unit {},
+    marked: fn() -> Bool { true },
+  }
+  let used2 : Map[String, Bool] = Map::new()
+  match
+  drive_signin_form(
+    redirect_form,
+    "github.com",
+    FormValues::{ username: Some("alice"), password: None, code: None },
+    used2,
+    fn(_ms : Int64) -> Unit {},
+  ) {
+    Driven::Person(DrivenWhy::Elsewhere) => ()
+    _ => panic("expected Elsewhere on mid-step cross-origin redirect")
+  }
+  assert_eq_int(typed_calls2, 0)
+}
+
+test "gate: wants anchors trailing sessionId even when result contains nested sessionId" {
+  let hooks = GateHooks::{
+    context_of: fn(tid : String) -> Option[String] {
+      if tid == "t1" || tid == "t2" {
+        Some("ctx-1")
+      } else {
+        None
+      }
+    },
+    on_opened: fn(_tid : String) -> Unit {},
+    on_used: fn(_tid : String, _u : Option[String]) -> Unit {},
+    on_act: fn(_tid : String, _m : String) -> Option[String] { None },
+  }
+  let gate = Gate::new("ctx-1", hooks)
+  // Attach to t1 -> session S1
+  let _ = gate.from_client(
+    "{\"id\":1,\"method\":\"Target.attachToTarget\",\"params\":{\"targetId\":\"t1\",\"flatten\":true}}",
+  )
+  let _ = gate.from_chrome("{\"id\":1,\"result\":{\"sessionId\":\"S1\"}}")
+  // Session-scoped Target.attachToTarget on S1 for t2 -> answer has nested result.sessionId="S2" AND trailing sessionId="S1"
+  let req = gate.from_client(
+    "{\"id\":3,\"sessionId\":\"S1\",\"method\":\"Target.attachToTarget\",\"params\":{\"targetId\":\"t2\",\"flatten\":true}}",
+  )
+  assert_eq_int(req.up.length(), 1)
+  let resp_text = "{\"id\":3,\"result\":{\"sessionId\":\"S2\"},\"sessionId\":\"S1\"}"
+  assert_true(gate.wants(resp_text))
+  let passed = gate.from_chrome(resp_text)
+  assert_eq_int(passed.down.length(), 1)
+  // S2 is now registered as a valid session of this chat
+  let front = gate.from_client(
+    "{\"id\":4,\"sessionId\":\"S2\",\"method\":\"Page.bringToFront\",\"params\":{}}",
+  )
+  assert_eq_int(front.down.length(), 1)
+  assert_true(str_contains(front.down[0], "\"result\":{}"))
+}
+
+test "p2_and_nits: cdp no-dup settled & open timeout, proxy open timeout & utf8, gh_source, same_client_data, passkey signCount" {
+  // CDP: tick/close outcomes are NOT duplicated into take_settled()
+  let cdp = CdpSession::with_timeout(CdpWsPort::noop(), 1000L)
+  let _ = cdp.send("Page.navigate", base_codec::json_obj([]), None, 100L)
+  let _ = cdp.send("Runtime.evaluate", base_codec::json_obj([]), None, 500L)
+  let t_out = cdp.tick(1100L)
+  assert_eq_int(t_out.length(), 1)
+  assert_eq_int(cdp.take_settled().length(), 0)
+  let c_out = cdp.close()
+  assert_eq_int(c_out.length(), 1)
+  assert_eq_int(cdp.take_settled().length(), 0)
+
+  // CDP: connecting open timeout closes session after CDP_OPEN_MS
+  let cdp_conn = CdpSession::connecting(CdpWsPort::noop(), 1000L)
+  assert_false(cdp_conn.is_closed())
+  let _ = cdp_conn.tick(11000L)
+  assert_true(cdp_conn.is_closed())
+
+  // Proxy: session_of_path rejects invalid UTF-8 ("_w" decodes to 0xFF)
+  assert_eq_opt_str(session_of_path("/browser/_w"), None)
+
+  // Proxy: pending upgrade timeout cleans up pending maps
+  let proxy = BrowserProxy::new(
+    fn(_s : String) -> Bool { true },
+    fn(_s : String) -> Result[OpenedBrowser, String] {
+      Ok(
+        OpenedBrowser::{
+          ws_url: "ws://127.0.0.1:9222/devtools/browser/1",
+          gate: Gate::new("ctx-1", GateHooks::default()),
+        },
+      )
+    },
+  )
+  let ws_headers : Array[http1::Header] = [
+    http1::Header::new("Upgrade", "websocket"),
+    http1::Header::new("Connection", "Upgrade"),
+    http1::Header::new("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="),
+    http1::Header::new("Sec-WebSocket-Version", "13"),
+  ]
+  let _ = proxy.handle_http_at(make_http_req(99, "GET", session_path("chat:t"), ws_headers), 1000L)
+  assert_eq_int(proxy.pending_count(), 1)
+  let exp_acts = proxy.tick(11000L)
+  assert_eq_int(exp_acts.length(), 1)
+  assert_eq_int(proxy.pending_count(), 0)
+
+  // gh_source rejects 3-segment repo
+  match gh_source("gh:a/b/c@builds/file.tar.gz") {
+    None => ()
+    Some(_) => panic("expected None for 3-segment repo")
+  }
+
+  // same_client_data rejects empty objects where both sides are None
+  assert_false(same_client_data("{}", "{}"))
+  assert_true(
+    same_client_data(
+      "{\"type\":\"webauthn.get\",\"challenge\":\"abc\",\"origin\":\"https://example.com\"}",
+      "{\"type\":\"webauthn.get\",\"challenge\":\"abc\",\"origin\":\"https://example.com\"}",
+    ),
+  )
+
+  // passkey_of clamps signCount > 2^53 - 1 to 0
+  let pk_json = match base_codec::json_parse(
+    "{\"credentialId\":\"c1\",\"rpId\":\"example.com\",\"privateKey\":\"k1\",\"signCount\":9007199254740992}",
+  ) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => panic(e)
+  }
+  match passkey_of(pk_json) {
+    Some(pk) => assert_eq_i64(pk.sign_count, 0L)
+    None => panic("expected Some(Passkey)")
   }
 }

@@ -925,27 +925,42 @@ fn Gate::handle_browser_method(
 }
 
 fn extract_tail_session_id(tail : String) -> Option[String] {
-  let needle = "\"sessionId\":\""
-  let idx = tail.index_of(needle)
-  if idx < 0 {
-    return None
-  }
   let tb = tail.to_bytes()
-  let start = idx + needle.to_bytes().length()
-  let mut end = start
-  while end < tb.length() && (tb[end].to_int() & 0xFF) != 34 {
-    end = end + 1
-  }
-  if end >= tb.length() || end == start {
+  let needle = "\"sessionId\":\"".to_bytes()
+  let nlen = needle.length()
+  if tb.length() < nlen + 2 {
     return None
   }
-  // Ensure only optional whitespace and `}` follow
-  let mut k = end + 1
-  while k < tb.length() && is_ascii_space(tb[k].to_int() & 0xFF) {
-    k = k + 1
-  }
-  if k + 1 == tb.length() && (tb[k].to_int() & 0xFF) == 125 {
-    return Some(tb.slice(start, end).to_string())
+  // Scan from the end to find the LAST `"sessionId":"` so nested `result.sessionId`
+  // never shadows the trailing top-level `sessionId` (aligns /"sessionId":"([^"]+)"\s*\}$/).
+  let mut idx = tb.length() - nlen
+  while idx >= 0 {
+    let mut matched = true
+    let mut j = 0
+    while j < nlen {
+      if tb[idx + j] != needle[j] {
+        matched = false
+        break
+      }
+      j = j + 1
+    }
+    if matched {
+      let start = idx + nlen
+      let mut end = start
+      while end < tb.length() && (tb[end].to_int() & 0xFF) != 34 {
+        end = end + 1
+      }
+      if end < tb.length() && end > start {
+        let mut k = end + 1
+        while k < tb.length() && is_ascii_space(tb[k].to_int() & 0xFF) {
+          k = k + 1
+        }
+        if k + 1 == tb.length() && (tb[k].to_int() & 0xFF) == 125 {
+          return Some(tb.slice(start, end).to_string())
+        }
+      }
+    }
+    idx = idx - 1
   }
   None
 }

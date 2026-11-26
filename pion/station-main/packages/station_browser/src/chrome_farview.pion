@@ -310,6 +310,10 @@ pub fn gh_source(url_str : String) -> Option[GhReleaseSource] {
   if slash_in_repo <= 0 || slash_in_repo == repo.length() - 1 {
     return None
   }
+  let repo_tail = repo.to_bytes().slice(slash_in_repo + 1, repo.to_bytes().length()).to_string()
+  if repo_tail.index_of("/") >= 0 {
+    return None
+  }
   let rest = bb.slice(at + 1, bb.length()).to_string()
   let slash = rest.index_of("/")
   if slash <= 0 || slash == rest.length() - 1 {
@@ -1449,10 +1453,9 @@ pub fn AuthenticatorsState::forget(self : AuthenticatorsState, ctx : String) -> 
   self.by_ctx.remove(ctx)
 }
 
-fn opt_str_eq(a : Option[String], b : Option[String]) -> Bool {
+fn opt_str_some_eq(a : Option[String], b : Option[String]) -> Bool {
   match (a, b) {
     (Some(x), Some(y)) => x == y
-    (None, None) => true
     _ => false
   }
 }
@@ -1467,9 +1470,9 @@ pub fn same_client_data(theirs : String, ours : String) -> Bool {
     base_codec::JsonParseResult::Ok(j) => j
     base_codec::JsonParseResult::Err(_) => return false
   }
-  opt_str_eq(json_str_field(a, "type"), json_str_field(b, "type")) &&
-  opt_str_eq(json_str_field(a, "challenge"), json_str_field(b, "challenge")) &&
-  opt_str_eq(json_str_field(a, "origin"), json_str_field(b, "origin")) &&
+  opt_str_some_eq(json_str_field(a, "type"), json_str_field(b, "type")) &&
+  opt_str_some_eq(json_str_field(a, "challenge"), json_str_field(b, "challenge")) &&
+  opt_str_some_eq(json_str_field(a, "origin"), json_str_field(b, "origin")) &&
   !opt_bool_is(json_bool_field(a, "crossOrigin"), true)
 }
 

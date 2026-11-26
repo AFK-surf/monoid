@@ -1,18 +1,15 @@
 // Public Suffix List (PSL) and secure-origin checks for browser sign-ins,
 // autofill, and WebAuthn relying parties (aligns `station/src/browser/psl.ts`
-// and `hostOf`/`rpFor` in `view.ts`).
+// backed by full `tldts@7.5.4` Mozilla PSL + implicit `*` rule, O(1) HashMap
+// lookup, and `hostOf`/`rpFor` in `view.ts`).
 
+import "base_codec"
+import "flate"
 import "url"
 
 pub enum PslSection {
   Icann
   Private
-}
-
-pub struct PslRule {
-  pub labels : Array[String]
-  pub is_exception : Bool
-  pub section : PslSection
 }
 
 pub struct PslParsed {
@@ -24,9 +21,20 @@ pub struct PslParsed {
   pub domain : Option[String]
 }
 
+// Bit flags for PSL rule entries: 1 = ICANN, 2 = Private.
+let PSL_FLAG_ICANN : Int = 1
+let PSL_FLAG_PRIVATE : Int = 2
+
 pub struct PslEngine {
-  rules : Array[PslRule]
+  rules : Map[String, Int]
+  exceptions : Map[String, Int]
 }
+
+struct PslCacheCell {
+  mut engine : Option[PslEngine]
+}
+
+let STD_PSL_CACHE : PslCacheCell = PslCacheCell::{ engine: None }
 
 fn ascii_lower(s : String) -> String {
   let b = s.to_bytes()
@@ -99,6 +107,27 @@ fn has_forbidden_host_char(s : String) -> Bool {
     i = i + 1
   }
   false
+}
+
+fn is_pure_ascii_host_chars(s : String) -> Bool {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    let ok = (c >= 97 && c <= 122) ||
+    (c >= 48 && c <= 57) ||
+    c == 45 || // -
+    c == 46 || // .
+    c == 95 // _
+    if !ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
 }
 
 fn is_ipv6_literal_chars(s : String) -> Bool {
@@ -185,6 +214,51 @@ fn is_ip_host(h : String) -> Bool {
   is_ipv4_host(h)
 }
 
+/// Validate hostname labels (aligns `tldts-core::isValidHostname`):
+/// rejects empty labels (`a..b.com`), labels starting or ending with `-` (`-a-.com`, `xn--.com`),
+/// labels > 63 bytes, hostnames > 255 bytes, and invalid characters.
+pub fn is_valid_hostname(h : String) -> Bool {
+  let b = h.to_bytes()
+  if b.length() == 0 || b.length() > 255 {
+    return false
+  }
+  let mut label_len = 0
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 46 {
+      if label_len == 0 || label_len > 63 {
+        return false
+      }
+      if (b[i - 1].to_int() & 0xFF) == 45 {
+        return false
+      }
+      label_len = 0
+    } else {
+      if label_len == 0 && c == 45 {
+        return false
+      }
+      let ok = (c >= 97 && c <= 122) ||
+      (c >= 48 && c <= 57) ||
+      c == 45 || // -
+      c == 95 || // _
+      c >= 128
+      if !ok {
+        return false
+      }
+      label_len = label_len + 1
+      if label_len > 63 {
+        return false
+      }
+    }
+    i = i + 1
+  }
+  if label_len == 0 || (b[b.length() - 1].to_int() & 0xFF) == 45 {
+    return false
+  }
+  true
+}
+
 /// Normalizes a hostname (or cookie domain with leading dot, trailing dot, or IDN labels)
 /// into lowercase ASCII form. Rejects strings containing URL delimiters, credentials,
 /// whitespace, or non-IPv6 colons. Returns `""` when invalid.
@@ -210,7 +284,16 @@ pub fn normalize_host(host : String) -> String {
   }
   match url::Url::parse("http://" + stripped) {
     Ok(u) => strip_trailing_dots(u.hostname())
-    Err(_) => ""
+    Err(_) => {
+      // Align with V8/Node `new URL("http://" + stripped).hostname` (UTS #46 non-strict):
+      // pure ASCII labels such as `xn--zz.com` or `xn--.com` pass through `normalizeHost`
+      // and are subsequently validated by `is_valid_hostname` in `PslEngine::parse`.
+      if is_pure_ascii_host_chars(stripped) {
+        stripped
+      } else {
+        ""
+      }
+    }
   }
 }
 
@@ -222,10 +305,37 @@ pub fn host_of(raw_url : String) -> String {
   }
 }
 
-fn parse_rule_line(line : String, section : PslSection) -> Option[PslRule] {
+/// The canonical ASCII origin (`scheme://host[:port]`) of an `http:` or `https:` URL.
+pub fn origin_of_url(raw_url : String) -> Option[String] {
+  match url::Url::parse(raw_url) {
+    Ok(u) => {
+      let scheme = u.scheme()
+      if (scheme != "http" && scheme != "https") || u.hostname().length() == 0 {
+        return None
+      }
+      Some(scheme + "://" + ascii_lower(u.host_and_port()))
+    }
+    Err(_) => None
+  }
+}
+
+fn add_rule_entry(map : Map[String, Int], key : String, flag : Int) -> Unit {
+  let prev = match map.get(key) {
+    Some(f) => f
+    None => 0
+  }
+  map.set(key, prev | flag)
+}
+
+fn add_raw_rule(
+  rules : Map[String, Int],
+  exceptions : Map[String, Int],
+  line : String,
+  flag : Int,
+) -> Unit {
   let trimmed = trim_ascii(line)
   if trimmed.length() == 0 || trimmed.starts_with("//") {
-    return None
+    return
   }
   let mut is_exc = false
   let mut body = trimmed
@@ -235,303 +345,103 @@ fn parse_rule_line(line : String, section : PslSection) -> Option[PslRule] {
     body = b.slice(1, b.length()).to_string()
   }
   let raw_labels = split_dots(ascii_lower(body))
-  let labels : Array[String] = []
+  let sb = StringBuilder::with_capacity(body.length())
   let mut i = 0
   while i < raw_labels.length() {
     let lbl = raw_labels[i]
     if lbl.length() == 0 {
-      return None
+      return
+    }
+    if i > 0 {
+      sb.write_string(".")
     }
     if lbl == "*" {
-      labels.push("*")
+      sb.write_string("*")
     } else {
       match url::domain_to_ascii(lbl) {
-        Ok(asc) => labels.push(ascii_lower(asc))
-        Err(_) => labels.push(lbl)
+        Ok(asc) => sb.write_string(ascii_lower(asc))
+        Err(_) => sb.write_string(lbl)
       }
     }
     i = i + 1
   }
-  if labels.length() == 0 {
-    return None
+  let norm = sb.to_string()
+  if norm.length() == 0 {
+    return
   }
-  Some(PslRule::{ labels: labels, is_exception: is_exc, section: section })
+  if is_exc {
+    add_rule_entry(exceptions, norm, flag)
+  } else {
+    add_rule_entry(rules, norm, flag)
+  }
 }
 
 pub fn PslEngine::from_rules(icann : Array[String], private_rules : Array[String]) -> PslEngine {
-  let rules : Array[PslRule] = []
+  let rules : Map[String, Int] = Map::new()
+  let exceptions : Map[String, Int] = Map::new()
   let mut i = 0
   while i < icann.length() {
-    match parse_rule_line(icann[i], PslSection::Icann) {
-      Some(r) => rules.push(r)
-      None => ()
-    }
+    add_raw_rule(rules, exceptions, icann[i], PSL_FLAG_ICANN)
     i = i + 1
   }
   let mut j = 0
   while j < private_rules.length() {
-    match parse_rule_line(private_rules[j], PslSection::Private) {
-      Some(r) => rules.push(r)
-      None => ()
-    }
+    add_raw_rule(rules, exceptions, private_rules[j], PSL_FLAG_PRIVATE)
     j = j + 1
   }
-  PslEngine::{ rules: rules }
+  PslEngine::{ rules: rules, exceptions: exceptions }
 }
 
-/// Built-in Mozilla Public Suffix List rule table (ICANN + Private hosting domains).
-pub fn PslEngine::standard() -> PslEngine {
-  let icann : Array[String] = [
-    // Common gTLDs & new gTLDs
-    "com",
-    "org",
-    "net",
-    "edu",
-    "gov",
-    "mil",
-    "int",
-    "info",
-    "biz",
-    "name",
-    "pro",
-    "io",
-    "ai",
-    "app",
-    "dev",
-    "me",
-    "co",
-    "xyz",
-    "gg",
-    "sh",
-    "to",
-    "cc",
-    "tv",
-    "ly",
-    "so",
-    "page",
-    "cloud",
-    "site",
-    "tech",
-    "online",
-    "store",
-    "surf",
-    "fail",
-    "wtf",
-    "build",
-    "computer",
-    "run",
-    "link",
-    "bot",
-    "chat",
-    // Major ccTLDs & multi-level ICANN public suffixes
-    "us",
-    "uk",
-    "co.uk",
-    "org.uk",
-    "ac.uk",
-    "gov.uk",
-    "me.uk",
-    "net.uk",
-    "ltd.uk",
-    "plc.uk",
-    "sch.uk",
-    "de",
-    "fr",
-    "nl",
-    "se",
-    "no",
-    "dk",
-    "fi",
-    "ch",
-    "at",
-    "be",
-    "es",
-    "it",
-    "pt",
-    "pl",
-    "com.pl",
-    "net.pl",
-    "org.pl",
-    "cz",
-    "ie",
-    "eu",
-    "ru",
-    "ua",
-    "com.ua",
-    "ca",
-    "au",
-    "com.au",
-    "net.au",
-    "org.au",
-    "edu.au",
-    "gov.au",
-    "nz",
-    "co.nz",
-    "org.nz",
-    "net.nz",
-    "govt.nz",
-    "ac.nz",
-    "jp",
-    "co.jp",
-    "or.jp",
-    "ne.jp",
-    "ac.jp",
-    "go.jp",
-    "ed.jp",
-    "gr.jp",
-    "lg.jp",
-    "*.kawasaki.jp",
-    "!city.kawasaki.jp",
-    "*.kobe.jp",
-    "!city.kobe.jp",
-    "*.nagoya.jp",
-    "!city.nagoya.jp",
-    "*.sapporo.jp",
-    "!city.sapporo.jp",
-    "*.sendai.jp",
-    "!city.sendai.jp",
-    "*.yokohama.jp",
-    "!city.yokohama.jp",
-    "cn",
-    "com.cn",
-    "net.cn",
-    "org.cn",
-    "gov.cn",
-    "edu.cn",
-    "ac.cn",
-    "hk",
-    "com.hk",
-    "org.hk",
-    "edu.hk",
-    "gov.hk",
-    "tw",
-    "com.tw",
-    "org.tw",
-    "net.tw",
-    "edu.tw",
-    "gov.tw",
-    "sg",
-    "com.sg",
-    "org.sg",
-    "edu.sg",
-    "gov.sg",
-    "kr",
-    "co.kr",
-    "or.kr",
-    "go.kr",
-    "ac.kr",
-    "in",
-    "co.in",
-    "net.in",
-    "org.in",
-    "gov.in",
-    "ac.in",
-    "br",
-    "com.br",
-    "org.br",
-    "net.br",
-    "gov.br",
-    "edu.br",
-    "mx",
-    "com.mx",
-    "org.mx",
-    "gob.mx",
-    "ar",
-    "com.ar",
-    "il",
-    "co.il",
-    "org.il",
-    "tr",
-    "com.tr",
-    "org.tr",
-    "za",
-    "co.za",
-    "org.za",
-    "gov.za",
-    // Wildcard & exception ICANN rules
-    "*.ck",
-    "!www.ck",
-    "*.bd",
-    "*.bn",
-    "*.er",
-    "*.fj",
-    "*.fk",
-    "*.jm",
-    "*.ke",
-    "*.kh",
-    "*.kw",
-    "*.mm",
-    "*.np",
-    "*.pg",
-    "*.ye",
-    "*.zw",
-  ]
-  let private_rules : Array[String] = [
-    "github.io",
-    "githubusercontent.com",
-    "gitlab.io",
-    "vercel.app",
-    "now.sh",
-    "netlify.app",
-    "pages.dev",
-    "workers.dev",
-    "r2.dev",
-    "fly.dev",
-    "herokuapp.com",
-    "appspot.com",
-    "web.app",
-    "firebaseapp.com",
-    "cloudfront.net",
-    "s3.amazonaws.com",
-    "s3-us-west-1.amazonaws.com",
-    "s3-us-west-2.amazonaws.com",
-    "s3-eu-west-1.amazonaws.com",
-    "s3-ap-northeast-1.amazonaws.com",
-    "s3.us-east-1.amazonaws.com",
-    "s3.us-west-2.amazonaws.com",
-    "s3.eu-west-1.amazonaws.com",
-    "s3.ap-northeast-1.amazonaws.com",
-    "*.compute.amazonaws.com",
-    "*.compute-1.amazonaws.com",
-    "*.elb.amazonaws.com",
-    "azurewebsites.net",
-    "blob.core.windows.net",
-    "supabase.co",
-    "railway.app",
-    "onrender.com",
-    "surge.sh",
-    "glitch.me",
-    "replit.dev",
-    "repl.co",
-    "blogspot.com",
-    "wordpress.com",
-    "tumblr.com",
-    "myshopify.com",
-    "webflow.io",
-    "deno.dev",
-    "val.run",
-    "koyeb.app",
-    "up.railway.app",
-  ]
-  PslEngine::from_rules(icann, private_rules)
-}
-
-fn rule_matches(rule : PslRule, host_labels : Array[String]) -> Bool {
-  let rlen = rule.labels.length()
-  let hlen = host_labels.length()
-  if hlen < rlen {
-    return false
+fn load_standard_psl() -> PslEngine {
+  let rules : Map[String, Int] = Map::new()
+  let exceptions : Map[String, Int] = Map::new()
+  let comp = match base_codec::base64_decode(psl_compressed_b64()) {
+    Some(b) => b
+    None => return PslEngine::{ rules: rules, exceptions: exceptions }
   }
+  let raw = match flate::deflate_decompress(comp) {
+    Ok(b) => b
+    Err(_) => return PslEngine::{ rules: rules, exceptions: exceptions }
+  }
+  let mut start = 0
   let mut i = 0
-  while i < rlen {
-    let r = rule.labels[rlen - 1 - i]
-    let h = host_labels[hlen - 1 - i]
-    if r != "*" && r != h {
-      return false
+  while i <= raw.length() {
+    if i == raw.length() || (raw[i].to_int() & 0xFF) == 10 {
+      if i > start + 1 {
+        let tag = raw[start].to_int() & 0xFF
+        let rule = raw.slice(start + 1, i).to_string()
+        if tag == 73 {
+          // 'I' ICANN rule
+          add_rule_entry(rules, rule, PSL_FLAG_ICANN)
+        } else if tag == 80 {
+          // 'P' Private rule
+          add_rule_entry(rules, rule, PSL_FLAG_PRIVATE)
+        } else if tag == 69 {
+          // 'E' ICANN exception
+          add_rule_entry(exceptions, rule, PSL_FLAG_ICANN)
+        } else if tag == 70 {
+          // 'F' Private exception
+          add_rule_entry(exceptions, rule, PSL_FLAG_PRIVATE)
+        }
+      }
+      start = i + 1
     }
     i = i + 1
   }
-  true
+  PslEngine::{ rules: rules, exceptions: exceptions }
+}
+
+/// Global cached Mozilla Public Suffix List engine (`tldts@7.5.4` full ICANN + Private table).
+/// Decompressed and indexed into O(1) HashMaps once on first call.
+pub fn PslEngine::standard() -> PslEngine {
+  match STD_PSL_CACHE.engine {
+    Some(e) => e
+    None => {
+      let e = load_standard_psl()
+      STD_PSL_CACHE.engine = Some(e)
+      e
+    }
+  }
 }
 
 pub fn PslEngine::parse(self : PslEngine, raw_host : String) -> PslParsed {
@@ -556,84 +466,116 @@ pub fn PslEngine::parse(self : PslEngine, raw_host : String) -> PslParsed {
       domain: None,
     }
   }
-  let labels = split_dots(h)
-  let mut best_exc : Option[PslRule] = None
-  let mut best_norm : Option[PslRule] = None
-  let mut i = 0
-  while i < self.rules.length() {
-    let rule = self.rules[i]
-    if rule_matches(rule, labels) {
-      if rule.is_exception {
-        match best_exc {
-          None => best_exc = Some(rule)
-          Some(prev) => {
-            if rule.labels.length() > prev.labels.length() {
-              best_exc = Some(rule)
-            }
-          }
-        }
-      } else {
-        match best_norm {
-          None => best_norm = Some(rule)
-          Some(prev) => {
-            if rule.labels.length() > prev.labels.length() {
-              best_norm = Some(rule)
-            }
-          }
-        }
-      }
-    }
-    i = i + 1
-  }
-  let chosen : Option[PslRule] = match best_exc {
-    Some(r) => Some(r)
-    None => best_norm
-  }
-  match chosen {
-    None => PslParsed::{
-      host: h,
+  if !is_valid_hostname(h) {
+    return PslParsed::{
+      host: "",
       is_ip: false,
       is_icann: false,
       is_private: false,
       public_suffix: None,
       domain: None,
     }
-    Some(rule) => {
-      let suffix_len = if rule.is_exception {
-        rule.labels.length() - 1
-      } else {
-        rule.labels.length()
+  }
+  let labels = split_dots(h)
+  let n = labels.length()
+  let mut exc_start = -1
+  let mut exc_flags = 0
+  let mut rule_start = -1
+  let mut rule_flags = 0
+
+  // Scan suffixes from longest (start = 0) to shortest (start = n - 1): O(n) HashMap lookups.
+  let mut start = 0
+  while start < n {
+    let suffix = join_labels_from(labels, start)
+    if exc_start < 0 {
+      match self.exceptions.get(suffix) {
+        Some(f) => {
+          exc_start = start
+          exc_flags = f
+        }
+        None => ()
       }
-      let is_icann = match rule.section {
-        PslSection::Icann => true
-        PslSection::Private => false
+    }
+    if rule_start < 0 {
+      let mut matched_flags = 0
+      match self.rules.get(suffix) {
+        Some(f) => matched_flags = matched_flags | f
+        None => ()
       }
-      let is_private = !is_icann
-      if suffix_len <= 0 || suffix_len > labels.length() {
-        return PslParsed::{
-          host: h,
-          is_ip: false,
-          is_icann: is_icann,
-          is_private: is_private,
-          public_suffix: None,
-          domain: None,
+      if start + 1 < n {
+        let wild = "*." + join_labels_from(labels, start + 1)
+        match self.rules.get(wild) {
+          Some(f) => matched_flags = matched_flags | f
+          None => ()
         }
       }
-      let suffix = join_labels_from(labels, labels.length() - suffix_len)
-      let domain = if labels.length() > suffix_len {
-        Some(join_labels_from(labels, labels.length() - suffix_len - 1))
-      } else {
-        None
+      if matched_flags != 0 {
+        rule_start = start
+        rule_flags = matched_flags
       }
-      PslParsed::{
+    }
+    start = start + 1
+  }
+
+  // 1. Exception rule always takes highest priority.
+  if exc_start >= 0 {
+    let suffix_start = exc_start + 1
+    let is_icann = (exc_flags & PSL_FLAG_ICANN) != 0
+    let is_private = (exc_flags & PSL_FLAG_PRIVATE) != 0
+    if suffix_start >= n {
+      return PslParsed::{
         host: h,
         is_ip: false,
         is_icann: is_icann,
         is_private: is_private,
-        public_suffix: Some(suffix),
-        domain: domain,
+        public_suffix: None,
+        domain: None,
       }
     }
+    return PslParsed::{
+      host: h,
+      is_ip: false,
+      is_icann: is_icann,
+      is_private: is_private,
+      public_suffix: Some(join_labels_from(labels, suffix_start)),
+      domain: Some(join_labels_from(labels, exc_start)),
+    }
+  }
+
+  // 2. Longest matching ICANN or Private rule.
+  if rule_start >= 0 {
+    let is_icann = (rule_flags & PSL_FLAG_ICANN) != 0
+    let is_private = (rule_flags & PSL_FLAG_PRIVATE) != 0
+    let suffix = join_labels_from(labels, rule_start)
+    let domain = if rule_start > 0 {
+      Some(join_labels_from(labels, rule_start - 1))
+    } else {
+      None
+    }
+    return PslParsed::{
+      host: h,
+      is_ip: false,
+      is_icann: is_icann,
+      is_private: is_private,
+      public_suffix: Some(suffix),
+      domain: domain,
+    }
+  }
+
+  // 3. Implicit `*` default PSL rule: rightmost label is public suffix (not ICANN/Private).
+  let fallback_suffix = labels[n - 1]
+  let fallback_domain = if n >= 2 {
+    Some(labels[n - 2] + "." + labels[n - 1])
+  } else {
+    None
+  }
+  PslParsed::{
+    host: h,
+    is_ip: false,
+    is_icann: false,
+    is_private: false,
+    public_suffix: Some(fallback_suffix),
+    domain: fallback_domain,
   }
 }
 
