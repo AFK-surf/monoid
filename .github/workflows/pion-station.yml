@@ -607,7 +607,7 @@ jobs:
             echo "shell-station:linux-x64 not published yet; waiting for same-SHA pipeline natives"
             api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
             t0=$SECONDS
-            # Leave >= 55 s after the wait for R2 restore (~6 s), pion build + smoke (~37 s), and artifact upload (~4 s).
+            # Leave >= 55 s before starting a restore for R2 (~6 s), pion build + smoke (~37 s), and artifact upload (~4 s).
             deadline=$(( JOB_END - 55 ))
             while :; do
               if [ "$GITHUB_REF" = refs/heads/main ]; then
@@ -617,18 +617,30 @@ jobs:
                   echo "(shell-station and reader published after $((SECONDS - t0)) s)"
                   break
                 fi
+                if [ -z "$missing_shell" ]; then
+                  left_now=$(( JOB_END - $(date +%s) ))
+                  if [ "$left_now" -ge 100 ]; then
+                    echo "(shell-station published after $((SECONDS - t0)) s with ${left_now} s left; building -O0 reader:linux-x64 locally)"
+                    break
+                  fi
+                fi
+              fi
+              if [ "$(date +%s)" -ge "$deadline" ]; then
+                echo "pipeline natives not ready after $((SECONDS - t0)) s (run=${run:-none}, shell=${shell_state:-none}, reader=${reader_state:-none}, natives=${natives_state:-none})"
+                break
               fi
               [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)"
               if [ -n "$run" ]; then
-                jobs_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" 2>/dev/null || true)"
+                jobs_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" || true)"
                 shell_state="$(printf '%s' "$jobs_json" | jq -r '[.jobs[]? | select(.name == "natives-build (linux-x64 · shell)" or .name == "natives-build (linux-x64)" or .name == "natives") | "\(.status) \(.conclusion // "")"] | (map(select(. == "completed success"))[0] // map(select(startswith("completed ") and . != "completed skipped"))[0] // .[0] // empty)' 2>/dev/null || true)"
                 reader_state="$(printf '%s' "$jobs_json" | jq -r '[.jobs[]? | select(.name == "natives-linux-readers (linux-x64)" or .name == "natives-build (linux-x64)" or .name == "natives") | "\(.status) \(.conclusion // "")"] | (map(select(. == "completed success"))[0] // map(select(startswith("completed ") and . != "completed skipped"))[0] // .[0] // empty)' 2>/dev/null || true)"
                 natives_state="$(printf '%s' "$jobs_json" | jq -r '[.jobs[]? | select(.name == "natives") | "\(.status) \(.conclusion // "")"] | .[0] // empty' 2>/dev/null || true)"
                 if [ "$GITHUB_REF" != refs/heads/main ]; then
-                  arts_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" 2>/dev/null || true)"
+                  arts_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" || true)"
                   if [ ! -f "$inbox/$shell_asset" ]; then
-                    shell_art="$(printf '%s' "$arts_json" | jq -r '[.artifacts[]? | select((.expired | not) and (.name == "natives-linux-x64-shell-'"$GITHUB_SHA"'" or .name == "natives-linux-x64-'"$GITHUB_SHA"'" or .name == "natives-'"$GITHUB_SHA"'")) | .name][0] // empty' 2>/dev/null || true)"
+                    shell_art="$(printf '%s' "$arts_json" | jq -r '[.artifacts[]? | select((.expired | not) and .name == "natives-linux-x64-shell-'"$GITHUB_SHA"'") | .name][0] // empty' 2>/dev/null || true)"
                     if [ -n "$shell_art" ] || [ "$shell_state" = "completed success" ]; then
+                      [ "$(date +%s)" -ge "$deadline" ] && break
                       dl="$RUNNER_TEMP/natives-dl"
                       rm -rf "$dl" && mkdir -p "$dl"
                       if ( { [ -n "$shell_art" ] && gh run download "$run" -R "$GITHUB_REPOSITORY" -n "$shell_art" -D "$dl"; } ||
@@ -638,6 +650,7 @@ jobs:
                          rm -rf "$dl" && \
                          node scripts/native-handoff.mjs get "$inbox" "$GITHUB_SHA" --targets linux-x64 --exclude-parts mesh && \
                          [ -f "$inbox/$shell_asset" ]; then
+                        rm -f "$inbox"/*.r2.json
                         echo "(restored $shell_asset after $((SECONDS - t0)) s: run $run)"
                       else
                         echo "warning: failed to restore $shell_asset from run $run; clearing partial inbox"
@@ -652,6 +665,7 @@ jobs:
                     fi
                     reader_art="$(printf '%s' "$arts_json" | jq -r '[.artifacts[]? | select((.expired | not) and (.name == "natives-linux-x64-readers-'"$GITHUB_SHA"'" or .name == "natives-linux-x64-'"$GITHUB_SHA"'" or .name == "natives-'"$GITHUB_SHA"'")) | .name][0] // empty' 2>/dev/null || true)"
                     if [ -n "$reader_art" ] || [ "$reader_state" = "completed success" ]; then
+                      [ "$(date +%s)" -ge "$deadline" ] && break
                       dl="$RUNNER_TEMP/natives-dl-readers"
                       rm -rf "$dl" && mkdir -p "$dl"
                       if ( { [ -n "$reader_art" ] && gh run download "$run" -R "$GITHUB_REPOSITORY" -n "$reader_art" -D "$dl"; } ||
@@ -660,14 +674,15 @@ jobs:
                          rm -rf "$dl" && \
                          node scripts/native-handoff.mjs get "$inbox" "$GITHUB_SHA" --targets linux-x64 --exclude-parts mesh && \
                          [ -f "$inbox/$reader_asset" ]; then
+                        rm -f "$inbox"/*.r2.json
                         echo "(restored $reader_asset after $((SECONDS - t0)) s: run $run)"
                         break
                       fi
-                      rm -rf "$dl"
+                      rm -rf "$dl" "$inbox"/*.r2.json
                     fi
                     left_now=$(( JOB_END - $(date +%s) ))
                     if [ "$left_now" -ge 100 ]; then
-                      echo "(shell-station ready after $((SECONDS - t0)) s with ${left_now} s left; building reader:linux-x64 locally)"
+                      echo "(shell-station ready after $((SECONDS - t0)) s with ${left_now} s left; building -O0 reader:linux-x64 locally)"
                       break
                     fi
                     case "$reader_state" in
@@ -717,7 +732,6 @@ jobs:
               fi
               sleep 5
             done
-            natives_state="${shell_state:-${natives_state:-none}}"
             missing_shell="$(node scripts/native.ts missing shell-station:linux-x64)"
             missing_reader="$(node scripts/native.ts missing reader:linux-x64)"
           fi
@@ -725,13 +739,13 @@ jobs:
           if [ -f "$inbox/$shell_asset" ]; then missing_shell=""; fi
           if [ -f "$inbox/$reader_asset" ]; then missing_reader=""; fi
           if [ -n "$missing_shell" ]; then
-            echo "::error::shell-station:linux-x64 ($shell_key) is not prebuilt and same-SHA pipeline natives did not provide it (run=${run:-none}, state=${natives_state:-none}; may have failed, been cancelled/superseded by a newer push, or timed out). Cold-building Rust shell-station does not fit in this 5m job."
+            echo "::error::shell-station:linux-x64 ($shell_key) is not prebuilt and same-SHA pipeline natives did not provide it (run=${run:-none}, state=${shell_state:-${natives_state:-none}}; may have failed, been cancelled/superseded by a newer push, or timed out). Cold-building Rust shell-station does not fit in this 5m job."
             exit 1
           fi
           if [ -n "$missing_reader" ]; then
             left=$(( JOB_END - $(date +%s) ))
             if [ "$left" -lt 100 ]; then
-              echo "::error::reader:linux-x64 ($reader_key) still missing after waiting for pipeline natives (run=${run:-none}, state=${natives_state:-none}); only ${left} s left in 5m job, not enough to build reader locally"
+              echo "::error::reader:linux-x64 ($reader_key) still missing after waiting for pipeline natives (run=${run:-none}, state=${reader_state:-${natives_state:-none}}); only ${left} s left in 5m job, not enough to build reader locally"
               exit 1
             fi
           fi
@@ -764,9 +778,11 @@ jobs:
       - if: steps.reader.outputs.missing == 'true'
         uses: actions/cache/restore@v4
         with:
-          path: ~/.cache/stillfail-reader-mbc
-          key: mbui-reader-linux-branch-v2-${{ github.sha }}
-          restore-keys: mbui-reader-linux-branch-v2-
+          path: |
+            ~/.cache/stillfail-reader-mbc
+            ~/.cache/zig
+          key: native-reader-v1-linux-x64-branch-${{ github.sha }}
+          restore-keys: native-reader-v1-linux-x64-branch-
 
       - name: Build linux-x64 Pion + MB reader binaries, run smoke suite, and stage artifact
         env:
@@ -809,7 +825,7 @@ jobs:
 
           # Acquire this SHA's real MoonBit stillfail-reader-linux-x64 once for all downstream gate jobs.
           if [ "${{ steps.reader.outputs.missing }}" = "true" ]; then
-            MB_SRC="$(PATH="$RUNNER_TEMP/zig-bin:$PATH" MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0 node scripts/native.ts run reader -- sh -c 'printf "%s" "$STILLFAIL_MB_READER"')"
+            MB_SRC="$(PATH="$RUNNER_TEMP/zig-bin:$PATH" STATION_READER_OPT=-O0 MBC_UNIT_KB=8192 MBC_INIT_SPLIT=0 node scripts/native.ts run reader -- sh -c 'printf "%s" "$STILLFAIL_MB_READER"')"
           else
             MB_SRC="$(node scripts/native.ts file reader linux-x64)"
           fi

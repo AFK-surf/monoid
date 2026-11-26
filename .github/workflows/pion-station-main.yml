@@ -157,19 +157,21 @@ jobs:
             echo "shell-station:$target not published yet; waiting for same-SHA pipeline natives"
             api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
             t0=$SECONDS
-            # Leave >= 35 s for R2 restore (~6 s), build.sh (~5-18 s), and cache save (~2 s).
-            deadline=$(( JOB_END - 35 ))
+            # Leave >= 40 s for R2 restore (~6 s), build.sh (~5-18 s, capped at JOB_END-15), and cache save (~2 s).
+            deadline=$(( JOB_END - 40 ))
             while :; do
               if [ "$GITHUB_REF" = refs/heads/main ]; then
                 missing_shell="$(node scripts/native.ts missing "shell-station:$target")"
                 [ -z "$missing_shell" ] && break
               fi
+              [ "$(date +%s)" -ge "$deadline" ] && break
               [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)"
               if [ -n "$run" ]; then
                 natives_state="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" --jq '[.jobs[] | select(.name == "natives-build ('"$target"' · shell)" or .name == "natives-build ('"$target"')" or .name == "natives") | "\(.status) \(.conclusion // "")"] | (map(select(. == "completed success"))[0] // map(select(startswith("completed ") and . != "completed skipped"))[0] // .[0] // empty)' || true)"
                 if [ "$GITHUB_REF" != refs/heads/main ]; then
-                  shell_art="$(api "actions/runs/$run/artifacts?per_page=100" '[.artifacts[] | select((.expired | not) and (.name == "natives-'"$target"'-shell-'"$GITHUB_SHA"'" or .name == "natives-'"$target"'-'"$GITHUB_SHA"'" or .name == "natives-'"$GITHUB_SHA"'")) | .name][0] // empty' || true)"
+                  shell_art="$(api "actions/runs/$run/artifacts?per_page=100" '[.artifacts[] | select((.expired | not) and .name == "natives-'"$target"'-shell-'"$GITHUB_SHA"'") | .name][0] // empty' || true)"
                   if [ -n "$shell_art" ]; then
+                    [ "$(date +%s)" -ge "$deadline" ] && break
                     if gh run download "$run" -R "$GITHUB_REPOSITORY" -n "$shell_art" -D "$inbox" && \
                        node scripts/native-handoff.mjs get "$inbox" "$GITHUB_SHA" --targets "$target" && \
                        [ -f "$inbox/$shell_asset" ]; then
@@ -180,6 +182,7 @@ jobs:
                   fi
                   case "$natives_state" in
                     "completed success")
+                      [ "$(date +%s)" -ge "$deadline" ] && break
                       if ! ( (gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-shell-$GITHUB_SHA" -D "$inbox" ||
                              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-$GITHUB_SHA" -D "$inbox" ||
                              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$inbox") && \
@@ -305,19 +308,21 @@ jobs:
             echo "shell-station:$target not published yet; waiting for same-SHA pipeline natives"
             api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
             t0=$SECONDS
-            # Leave >= 35 s for R2 restore (~6 s), build.sh (~5-18 s), and cache save (~2 s).
-            deadline=$(( JOB_END - 35 ))
+            # Leave >= 40 s for R2 restore (~6 s), build.sh (~5-18 s, capped at JOB_END-15), and cache save (~2 s).
+            deadline=$(( JOB_END - 40 ))
             while :; do
               if [ "$GITHUB_REF" = refs/heads/main ]; then
                 missing_shell="$(node scripts/native.ts missing "shell-station:$target")"
                 [ -z "$missing_shell" ] && break
               fi
+              [ "$(date +%s)" -ge "$deadline" ] && break
               [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)"
               if [ -n "$run" ]; then
                 natives_state="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" --jq '[.jobs[] | select(.name == "natives-build ('"$target"' · shell)" or .name == "natives-build ('"$target"')" or .name == "natives") | "\(.status) \(.conclusion // "")"] | (map(select(. == "completed success"))[0] // map(select(startswith("completed ") and . != "completed skipped"))[0] // .[0] // empty)' || true)"
                 if [ "$GITHUB_REF" != refs/heads/main ]; then
-                  shell_art="$(api "actions/runs/$run/artifacts?per_page=100" '[.artifacts[] | select((.expired | not) and (.name == "natives-'"$target"'-shell-'"$GITHUB_SHA"'" or .name == "natives-'"$target"'-'"$GITHUB_SHA"'" or .name == "natives-'"$GITHUB_SHA"'")) | .name][0] // empty' || true)"
+                  shell_art="$(api "actions/runs/$run/artifacts?per_page=100" '[.artifacts[] | select((.expired | not) and .name == "natives-'"$target"'-shell-'"$GITHUB_SHA"'") | .name][0] // empty' || true)"
                   if [ -n "$shell_art" ]; then
+                    [ "$(date +%s)" -ge "$deadline" ] && break
                     if gh run download "$run" -R "$GITHUB_REPOSITORY" -n "$shell_art" -D "$inbox" && \
                        node scripts/native-handoff.mjs get "$inbox" "$GITHUB_SHA" --targets "$target" && \
                        [ -f "$inbox/$shell_asset" ]; then
@@ -328,6 +333,7 @@ jobs:
                   fi
                   case "$natives_state" in
                     "completed success")
+                      [ "$(date +%s)" -ge "$deadline" ] && break
                       if ! ( (gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-shell-$GITHUB_SHA" -D "$inbox" ||
                              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-$GITHUB_SHA" -D "$inbox" ||
                              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$inbox") && \
@@ -435,19 +441,21 @@ jobs:
             echo "shell-station:$target not published yet; waiting for same-SHA pipeline natives"
             api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
             t0=$SECONDS
-            # Leave >= 35 s for R2 restore (~6 s), build.sh (~5-18 s), and cache save (~2 s).
-            deadline=$(( JOB_END - 35 ))
+            # Leave >= 40 s for R2 restore (~6 s), build.sh (~5-18 s, capped at JOB_END-15), and cache save (~2 s).
+            deadline=$(( JOB_END - 40 ))
             while :; do
               if [ "$GITHUB_REF" = refs/heads/main ]; then
                 missing_shell="$(node scripts/native.ts missing "shell-station:$target")"
                 [ -z "$missing_shell" ] && break
               fi
+              [ "$(date +%s)" -ge "$deadline" ] && break
               [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)"
               if [ -n "$run" ]; then
                 natives_state="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" --jq '[.jobs[] | select(.name == "natives-build ('"$target"' · shell)" or .name == "natives-build ('"$target"')" or .name == "natives") | "\(.status) \(.conclusion // "")"] | (map(select(. == "completed success"))[0] // map(select(startswith("completed ") and . != "completed skipped"))[0] // .[0] // empty)' || true)"
                 if [ "$GITHUB_REF" != refs/heads/main ]; then
-                  shell_art="$(api "actions/runs/$run/artifacts?per_page=100" '[.artifacts[] | select((.expired | not) and (.name == "natives-'"$target"'-shell-'"$GITHUB_SHA"'" or .name == "natives-'"$target"'-'"$GITHUB_SHA"'" or .name == "natives-'"$GITHUB_SHA"'")) | .name][0] // empty' || true)"
+                  shell_art="$(api "actions/runs/$run/artifacts?per_page=100" '[.artifacts[] | select((.expired | not) and .name == "natives-'"$target"'-shell-'"$GITHUB_SHA"'") | .name][0] // empty' || true)"
                   if [ -n "$shell_art" ]; then
+                    [ "$(date +%s)" -ge "$deadline" ] && break
                     if gh run download "$run" -R "$GITHUB_REPOSITORY" -n "$shell_art" -D "$inbox" && \
                        node scripts/native-handoff.mjs get "$inbox" "$GITHUB_SHA" --targets "$target" && \
                        [ -f "$inbox/$shell_asset" ]; then
@@ -458,6 +466,7 @@ jobs:
                   fi
                   case "$natives_state" in
                     "completed success")
+                      [ "$(date +%s)" -ge "$deadline" ] && break
                       if ! ( (gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-shell-$GITHUB_SHA" -D "$inbox" ||
                              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-$GITHUB_SHA" -D "$inbox" ||
                              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$inbox") && \

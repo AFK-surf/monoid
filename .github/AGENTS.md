@@ -38,8 +38,8 @@
   shard uses its own GitHub runner and Cargo target. `plan.sh` selects Rust checks when their inputs changed.
 - Keep the Apple native jobs and Xcode or simulator tasks on their existing Mac pools. A branch's `check-mac`
   runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`). A branch plans `natives-mac` only when a
-  job uses those parts, and `natives-mac-reader` only for `check-mac` and `mac-build`. On main, those two jobs on the
-  self-hosted Macs put what the store lacks in the store (`native.ts ensure --publish-store`, the `production`
+  job uses those parts, and `natives-mac-reader` only for `check-mac` and `mac-build`. On main, those two jobs — and
+  `workflows/mbui-figure.yml`'s `renderer` and `film` — on the self-hosted Macs put what the store lacks in the store (`native.ts ensure --publish-store`, the `production`
   environment's Cloudflare token), never in the release: `gh release upload` from Shanghai timed out at the job's 5
   minutes. GitHub's `macos-26`, or a run without the token, still uses `--publish`. Android release builds
   and `station-update` use Mini1; Mac app and station release signing use GitHub's `macos-26`.
