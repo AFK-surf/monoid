@@ -14,8 +14,6 @@ use serde_json::{Value, json};
 use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
 use tokio::sync::Mutex;
 
-use crate::net::SocketClose;
-
 pub struct Scopes {
     pub hub: Arc<Hub>,
     scopes: Arc<Mutex<BTreeMap<Scope, Kept>>>,
@@ -88,62 +86,59 @@ fn restrict_peer(peer: &mut Peer, allowed: &[RelayUrl]) -> Result<(), String> {
 impl Scopes {
     /// Push one bounded snapshot per change over the front's existing control
     /// socket. No timer, repeated status request, or separate public listener.
-    pub(crate) fn subscribe<W: tokio::io::AsyncWrite + Unpin + Send + 'static>(
-        &self,
-        id: u64,
-        write: Arc<Mutex<W>>,
-        close: Arc<SocketClose>,
-    ) -> Result<(), String> {
-        let send_close = close.clone();
-        self.subscribe_updates(id, close, move |snapshot| {
+    #[allow(dead_code)]
+    pub fn subscribe<W: tokio::io::AsyncWrite + Unpin + Send + 'static>(&self, id: u64, write: Arc<Mutex<W>>) -> Result<(), String> {
+        self.subscribe_until(id, write, std::future::pending())
+    }
+    /// Same as `subscribe`, exiting immediately and releasing `write` when `cancel` resolves.
+    #[allow(dead_code)]
+    pub fn subscribe_until<W, C>(&self, id: u64, write: Arc<Mutex<W>>, cancel: C) -> Result<(), String>
+    where
+        W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+        C: std::future::Future<Output = ()> + Send + 'static,
+    {
+        self.subscribe_updates_until(id, cancel, move |snapshot| {
             let write = write.clone();
-            let close = send_close.clone();
             async move {
-                if close.is_closed() {
-                    return Err("tcp socket closed".into());
-                }
                 let mut bytes = serde_json::to_vec(&json!({"event":"meshScopes", "scopes":snapshot})).unwrap();
                 bytes.push(b'\n');
-                let mut guard = tokio::select! {
-                    biased;
-                    _ = close.cancelled() => return Err("tcp socket closed".into()),
-                    guard = write.lock() => guard,
-                };
-                if close.is_closed() {
-                    return Err("tcp socket closed".into());
-                }
-                tokio::select! {
-                    biased;
-                    _ = close.cancelled() => return Err("tcp socket closed".into()),
-                    r = guard.write_all(&bytes) => r.map_err(|e| e.to_string())?,
-                }
-                Ok(())
+                write.lock().await.write_all(&bytes).await.map_err(|e| e.to_string())
             }
         })
     }
     /// Every consumer has at most one snapshot being delivered. Changes during
     /// delivery coalesce in the watch channel, preserving the newest state.
-    pub(crate) fn subscribe_updates<F, U>(&self, id: u64, close: Arc<SocketClose>, send: F) -> Result<(), String>
+    /// Kept for `station/native/mesh`, which compiles this file directly.
+    #[allow(dead_code)]
+    pub fn subscribe_updates<F, U>(&self, id: u64, send: F) -> Result<(), String>
     where F: Fn(Vec<Value>) -> U + Send + 'static,
           U: std::future::Future<Output=Result<(),String>> + Send + 'static {
+        self.subscribe_updates_until(id, std::future::pending(), send)
+    }
+    /// Same as `subscribe_updates`, cancelling the entire delivery loop (including `scopes.lock()`,
+    /// `send`, and idle `changed` waits) as soon as `cancel` resolves.
+    pub fn subscribe_updates_until<C, F, U>(&self, id: u64, cancel: C, send: F) -> Result<(), String>
+    where C: std::future::Future<Output = ()> + Send + 'static,
+          F: Fn(Vec<Value>) -> U + Send + 'static,
+          U: std::future::Future<Output=Result<(),String>> + Send + 'static {
         let mut subscriptions = self.subscriptions.lock().unwrap();
+        subscriptions.retain(|_, task| !task.0.is_finished());
         if subscriptions.len() >= 32 && !subscriptions.contains_key(&id) { return Err("too many mesh subscribers".into()); }
         let scopes = self.scopes.clone();
         let mut changed = self.changed.subscribe();
         let task = tokio::spawn(async move {
-            loop {
-                if close.is_closed() { break; }
-                changed.borrow_and_update();
-                let snapshot: Vec<Value> = scopes.lock().await.iter().map(|(scope, kept)|
-                    json!({"scope":hex::encode(scope), "descriptor":{"binding":kept.binding,"address":bounded_address(kept.endpoint.addr())}})).collect();
-                if send(snapshot).await.is_err() { break; }
-                if close.is_closed() { break; }
-                let next = tokio::select! {
-                    biased;
-                    _ = close.cancelled() => break,
-                    r = changed.changed() => r,
-                };
-                if next.is_err() { break; }
+            tokio::select! {
+                biased;
+                _ = cancel => {}
+                _ = async move {
+                    loop {
+                        changed.borrow_and_update();
+                        let snapshot: Vec<Value> = scopes.lock().await.iter().map(|(scope, kept)|
+                            json!({"scope":hex::encode(scope), "descriptor":{"binding":kept.binding,"address":bounded_address(kept.endpoint.addr())}})).collect();
+                        if send(snapshot).await.is_err() { break; }
+                        if changed.changed().await.is_err() { break; }
+                    }
+                } => {}
             }
         });
         subscriptions.insert(id, Task(task));
@@ -151,8 +146,14 @@ impl Scopes {
     }
     pub fn unsubscribe(&self, id: u64) { self.subscriptions.lock().unwrap().remove(&id); }
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn notify_changed(&self) {
         self.changed.send_modify(|version| *version = version.wrapping_add(1));
+    }
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) async fn lock_scopes_for_test(&self) -> impl Drop + '_ {
+        self.scopes.lock().await
     }
     /// Called only with the station's admitted directory. A self-signed binding
     /// confirms identities; it does not grant workspace membership.
@@ -587,7 +588,7 @@ mod tests {
             let (writer, reader) = tokio::io::duplex(64 * 1024);
             let writer = Arc::new(Mutex::new(writer));
             let mut events = tokio::io::BufReader::new(reader);
-            a.subscribe(17, writer, SocketClose::new()).unwrap();
+            a.subscribe(17, writer).unwrap();
             let mut line = String::new();
             tokio::io::AsyncBufReadExt::read_line(&mut events, &mut line).await.unwrap();
             assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["scopes"], json!([]));

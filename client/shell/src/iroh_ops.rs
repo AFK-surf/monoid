@@ -417,7 +417,7 @@ impl Inner {
                 if op == "iroh.meshUnsubscribe" { kept.mesh.unsubscribe(socket); }
                 else {
                     let Handle::Tcp { write, close, .. } = self.handle(socket)? else { return Err("not a control socket".into()) };
-                    kept.mesh.subscribe(socket, write, close)?;
+                    kept.mesh.subscribe_until(socket, write, async move { close.cancelled().await })?;
                 }
                 Ok(Answer::json(json!({})))
             }
