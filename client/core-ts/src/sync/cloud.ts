@@ -188,16 +188,16 @@ export class CloudSync {
   }
 
   /// Latest known `/v1/me` payload for `sub`: prefers same-generation in-memory authoritative `/v1/me` (including
-  /// `null` tombstone for `NOT_BETA`) over the account DB, while always registering the reactive `$account-record/me`
-  /// read dependency so live `workspaces` subscriptions stay current.
+  /// `null` tombstone for `NOT_BETA`) without querying SQLite, while always registering the reactive
+  /// `$account-record/me` dependency so live `workspaces` subscriptions stay current even if disk SELECT fails.
   #meOf(sub: string): unknown {
     const core = this.#core;
-    const fromDb = core.data.record("me", sub);
     const live = this.#liveMe.get(sub);
     if (live !== undefined && live.gen === core.data.accountGen(sub)) {
+      core.data.trackAccountRecord(sub, "me");
       return live.me === null ? undefined : live.me;
     }
-    return fromDb;
+    return core.data.record("me", sub);
   }
 
   #rememberWorkspacesOf(sub: string, me: unknown): void {
@@ -278,7 +278,7 @@ export class CloudSync {
     const entry = { gen, me };
     this.#liveMe.set(sub, entry);
     const db = this.#core.data.db(sub);
-    if (!db || db.readOnly) this.#savePendingMe(sub, me);
+    if (!this.#core.data.isPersistentDb(db)) this.#savePendingMe(sub, me);
     this.#core.data.notifyAccountRecord(sub, "me");
     return entry;
   }
@@ -289,10 +289,12 @@ export class CloudSync {
   }
 
   /// Writes or drops `live.me` in `db` and removes the in-memory + device-pending copy ONLY once `db.written`
-  /// finishes and the committed on-disk row actually matches `live.me` (keeping `#liveMe` intact if `SQLITE_FULL` rolls back).
+  /// finishes on a persistent disk DB and the committed on-disk row actually matches `live.me` (keeping `#liveMe`
+  /// and `pendingMe` intact for ephemeral memory DBs or if `SQLITE_FULL` rolls back).
   #persistLiveMe(sub: string, db: AccountDb, live: { gen: number; me: unknown | null }): void {
     const core = this.#core;
     if (db.readOnly || live.gen !== core.data.accountGen(sub)) return;
+    const persistent = core.data.isPersistentDb(db);
     this.#persistingLiveMe.add(sub);
     const topic: Topic = { topic: "$account-record", account: sub, name: "me" };
     if (live.me === null) db.dropAccountDoc("me", topic);
@@ -302,6 +304,7 @@ export class CloudSync {
         Effect.ignore(db.written),
         Effect.sync(() => {
           this.#persistingLiveMe.delete(sub);
+          if (!persistent) return;
           if (this.#liveMe.get(sub) !== live) return;
           if (core.data.db(sub) !== db || db.readOnly || live.gen !== core.data.accountGen(sub)) return;
           try {
@@ -332,11 +335,11 @@ export class CloudSync {
     if (!db.readOnly) this.#persistLiveMe(sub, db, live);
   }
 
-  /// Retries persisting an unconfirmed `#liveMe` record once `db` commits cleanly again (e.g. after transient
-  /// `SQLITE_FULL` clears) so subsequent offline restarts see the authoritative `/v1/me` on disk.
+  /// Retries persisting an unconfirmed `#liveMe` record once a persistent disk `db` commits cleanly again (e.g.
+  /// after transient `SQLITE_FULL` clears) so subsequent offline restarts see the authoritative `/v1/me` on disk.
   retryPendingLiveMe(db: AccountDb): void {
     const sub = db.sub;
-    if (db.readOnly || db.full || this.#persistingLiveMe.has(sub)) return;
+    if (!this.#core.data.isPersistentDb(db) || db.full || this.#persistingLiveMe.has(sub)) return;
     const live = this.#liveMe.get(sub);
     if (live === undefined || live.gen !== this.#core.data.accountGen(sub)) return;
     this.#persistLiveMe(sub, db, live);
@@ -344,15 +347,16 @@ export class CloudSync {
 
   /// Verifies every pending `#liveMe` record against on-disk SQLite after `Data.closing()` has settled in-flight
   /// transactions; retries and commits any rolled-back/unpersisted entry per account (never letting one account's
-  /// SQLite read/write error abort others), persists DB-less/read-only entries into `device/choice["pendingMe"]`
-  /// before `device.close()` flushes, and returns a `HostError` if any writable DB still fails to persist.
+  /// SQLite read/write error abort others), persists DB-less/read-only/ephemeral-memory entries into
+  /// `device/choice["pendingMe"]` before `device.close()` flushes, and returns a `HostError` if any persistent
+  /// writable disk DB still fails to persist.
   flushLiveMe(): HostError | null {
     const core = this.#core;
     const failed: string[] = [];
     for (const [sub, live] of [...this.#liveMe]) {
       if (live.gen !== core.data.accountGen(sub)) continue;
       const db = core.data.db(sub);
-      if (!db || db.readOnly) {
+      if (!core.data.isPersistentDb(db)) {
         try {
           this.#savePendingMe(sub, live.me);
         } catch {
@@ -422,9 +426,11 @@ export class CloudSync {
     return note?.kind === "busy" || note?.kind === "failed";
   }
 
-  /// Whether any signed-in non-console account currently has unverified workspace memberships.
+  /// Whether any signed-in non-console account currently has unverified workspace memberships (or `device/choice`,
+  /// which holds `pendingMe` / `workspaceOwners`, failed its initial disk read and has not yet been reloaded).
   hasUnverifiedAccounts(): boolean {
     const core = this.#core;
+    if (core.data.device.isUnloaded("choice")) return true;
     if (core.data.hasDeferred()) return true;
     if (core.data.notes.size === 0) return false;
     return core.accounts.list().some((a) => !this.#isConsole(a.sub) && this.#meUnreadable(a.sub));
@@ -443,9 +449,10 @@ export class CloudSync {
   }
 
   /// Whether any non-console account strictly earlier than `sub` in sign-in order still has unverified memberships
-  /// (deferred DB or unreadable busy/failed disk DB without cloud `/v1/me`).
+  /// (deferred DB, unreadable busy/failed disk DB without cloud `/v1/me`, or unread `device/choice` recovery state).
   hasEarlierDeferred(sub: string): boolean {
     const core = this.#core;
+    if (core.data.device.isUnloaded("choice")) return true;
     if (!this.hasUnverifiedAccounts()) return false;
     for (const account of core.accounts.list()) {
       if (this.#isConsole(account.sub)) continue;
@@ -495,6 +502,15 @@ export class CloudSync {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       if (!this.needsWriteVerification()) return;
+      if (core.data.device.isUnloaded("choice")) {
+        if (yield* core.data.device.reload("choice")) {
+          this.#hydratePendingMe();
+          this.recomputeOwners();
+          if (!this.needsWriteVerification()) return;
+        } else {
+          return yield* Effect.fail(new CoreError("cancelled", t("core-misc.call.cancelled")));
+        }
+      }
       const list = [...new Set(workspaces)].filter((ws) => ws.length > 0);
       if (list.length === 0) return;
       const allCandidates = new Set<string>();
@@ -961,7 +977,7 @@ export class CloudSync {
     const cachedRaw = hasUnverified ? core.data.device.get("choice", "workspaceOwners") : null;
     const cachedOwners = isObject(cachedRaw) ? (cachedRaw as Record<string, unknown>) : null;
     const owners = new Map<string, string>();
-    let sawEarlierUnverified = false;
+    let sawEarlierUnverified = core.data.device.isUnloaded("choice");
     for (const account of accounts) {
       // (a console's account reaches no workspace from here: nothing of it is asked there, no station dialled)
       if (this.#isConsole(account.sub)) continue;
@@ -1103,6 +1119,12 @@ export class CloudSync {
   owner(workspace: string): Effect.Effect<string, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
+      if (core.data.device.isUnloaded("choice")) {
+        if (yield* core.data.device.reload("choice")) {
+          this.#hydratePendingMe();
+          this.recomputeOwners();
+        }
+      }
       const verified = () => {
         const sub = core.workspaces.owner(workspace);
         return sub !== null && core.accounts.list().some((a) => a.sub === sub) && !this.hasEarlierDeferred(sub) ? sub : null;

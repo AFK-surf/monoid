@@ -2715,3 +2715,217 @@ test("R13 regressions: DB-less close persists pendingMe across post-close disk r
     }
   }
 });
+
+test("R14 regressions: ephemeral memoryDb keeps pendingMe until disk DB persists, unread device/choice never clobbers pendingMe or leaks to B, and IOERR on SELECT still runs resumeFor with zero unhandled fiber failures", async () => {
+  // 1) P0-1: A before B; A's disk DB has stale me without ws-w, B holds ws-w. On busy disk, host provides writable
+  //    ephemeral memoryDb(); authoritative /v1/me gives A ws-w -> online owner is A, pendingMe[A] MUST stay saved.
+  //    Close cleanly, disk recovers, restart offline -> owner MUST stay A and draft lands ONLY in A (never B)!
+  {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = () => new NodeSql(new DatabaseSync(":memory:"));
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+
+    let busyA = true;
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      name === dbName("s1") && busyA
+        ? Effect.succeed({
+            exec() { throw new SqlError("SQLITE_BUSY: database is locked", "busy"); },
+            run() { throw new SqlError("SQLITE_BUSY: database is locked", "busy"); },
+            all() { throw new SqlError("SQLITE_BUSY: database is locked", "busy"); },
+            close() {},
+          })
+        : origOpen(name);
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccount("s1"));
+    assert.equal(core.inner.data.notes.get("s1")?.kind, "busy", "s1 fell back to ephemeral memoryDb");
+    assert.equal(core.inner.data.isPersistentDb(core.inner.data.db("s1")), false, "memoryDb is ephemeral");
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await run(core.inner.data.written);
+    await host.settle();
+    assert.equal(core.inner.workspaces.owner("ws-w"), "s1");
+    assert.ok((core.inner.data.device.get("choice", "pendingMe") as J)?.s1 !== undefined, "pendingMe[s1] MUST remain saved while on ephemeral memoryDb");
+    await core.close();
+
+    // Disk recovers; restart completely offline!
+    busyA = false;
+    host.onFetch(() => jsonResponse(503, {}));
+    const core2 = await Core.create(host, { clock: host.time.clock });
+    await run(core2.inner.data.openAccounts(["s1", "s2"]));
+    await run(core2.inner.data.written);
+    assert.equal(core2.inner.workspaces.owner("ws-w"), "s1", "owner MUST stay A on offline restart after memoryDb run");
+
+    const ui2 = core2.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core2.inner.host.emit.bind(core2.inner.host);
+    core2.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 1201 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core2.receive(ui2, { kind: "call", id: 1201, call: "composer.text", params: { key: "new:ws-w", text: "after-memorydb-only-a" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res);
+    await host.time.pass(350);
+    await run(core2.inner.data.written);
+    assert.equal(core2.inner.data.db("s1")!.draft("ws-w", "new")?.text, "after-memorydb-only-a", "draft landed ONLY in A");
+    assert.equal(core2.inner.data.db("s2")!.draft("ws-w", "new"), undefined, "B SQLite stayed empty");
+    await core2.close();
+  }
+
+  // 2) P0-2: Saved pendingMe[A] exists in device/choice. On offline restart, FIRST storageGet("device/choice") fails,
+  //    all subsequent reads/writes succeed. Device MUST NOT overwrite device/choice with empty table and MUST reload
+  //    pendingMe[A] before allowing writes (so owner resolves to A and draft lands ONLY in A, never B)!
+  {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = undefined;
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] });
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+
+    let failA = true;
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      name === dbName("s1") && failA ? Effect.fail(new HostError("disk unavailable")) : origOpen(name);
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccount("s1"));
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await core.close();
+
+    // Disk recovers, restart offline, and fail ONLY the first storageGet("device/choice")!
+    failA = false;
+    host.onFetch(() => jsonResponse(503, {}));
+    let failChoiceOnce = true;
+    const origGet = host.storageGet.bind(host);
+    host.storageGet = (key: string) => {
+      if (key === "device/choice" && failChoiceOnce) {
+        failChoiceOnce = false;
+        return Effect.fail(new HostError("transient device/choice read error"));
+      }
+      return origGet(key);
+    };
+
+    const core2 = await Core.create(host, { clock: host.time.clock });
+    await run(core2.inner.data.openAccounts(["s1", "s2"]));
+    assert.equal(core2.inner.data.device.isUnloaded("choice"), true, "choice marked unloaded on read error");
+    assert.equal(core2.inner.workspaces.owner("ws-w"), null, "B must NOT steal ws-w while device/choice is unloaded");
+
+    // First write retries reload("choice") -> hydrates pendingMe[s1] -> adopts into s1 -> lands ONLY in A!
+    const ui2 = core2.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core2.inner.host.emit.bind(core2.inner.host);
+    core2.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 1202 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core2.receive(ui2, { kind: "call", id: 1202, call: "composer.text", params: { key: "new:ws-w", text: "after-choice-reload-only-a" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res, `write after transient choice reload must succeed into A, got: ${JSON.stringify(res)}`);
+    await host.time.pass(350);
+    await run(core2.inner.data.written);
+    assert.equal(core2.inner.workspaces.owner("ws-w"), "s1", "owner resolved to A after choice reload");
+    assert.equal(core2.inner.data.db("s1")!.draft("ws-w", "new")?.text, "after-choice-reload-only-a", "draft landed ONLY in A");
+    assert.equal(core2.inner.data.db("s2")!.draft("ws-w", "new"), undefined, "B SQLite stayed empty");
+    await core2.close();
+  }
+
+  // 3) P1-3: When A holds authoritative #liveMe and disk SELECT on account_doc throws SQLITE_IOERR during publish,
+  //    recomputeOwners() MUST NOT throw, viewCalls.resumeFor(A) MUST execute, and ZERO unhandled fiber failures occur!
+  {
+    const origError = console.error;
+    const errors: string[] = [];
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+      origError(...args);
+    };
+    try {
+      const { host } = setupTwoAccountHost();
+      host.memoryDb = undefined;
+      const seed = await Core.create(host, { clock: host.time.clock });
+      await run(seed.inner.data.openAccounts(["s1", "s2"]));
+      seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+      seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+      await run(seed.inner.data.written);
+      await seed.close();
+
+      host.onFetch((req) => {
+        const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+        if (req.url.endsWith("/v1/me")) {
+          if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+          if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }], invitations: [], relay_url: "https://relay.test" });
+        }
+        return jsonResponse(200, {});
+      });
+
+      let failA = true;
+      let ioerrSelect = false;
+      const origOpen = host.openDb.bind(host);
+      host.openDb = (name: string) => {
+        if (name === dbName("s1") && failA) return Effect.fail(new HostError("disk unavailable"));
+        return Effect.map(origOpen(name), (raw) => {
+          if (name !== dbName("s1")) return raw;
+          return {
+            exec(sql: string) { raw.exec(sql); },
+            run(sql: string, params?: readonly SqlValue[]) { return raw.run(sql, params); },
+            all(sql: string, params?: readonly SqlValue[]) {
+              if (ioerrSelect && /account_doc/i.test(sql)) {
+                throw new SqlError("SQLITE_IOERR: disk I/O error", "other");
+              }
+              return raw.all(sql, params);
+            },
+            close() { raw.close(); },
+          };
+        });
+      };
+
+      const core = await Core.create(host, { clock: host.time.clock });
+      await run(core.inner.data.openAccount("s1"));
+      await run(core.inner.cloudSync.refreshAccount("s1"));
+      const resumedSubs: string[] = [];
+      const origResume = core.inner.viewCalls.resumeFor.bind(core.inner.viewCalls);
+      core.inner.viewCalls.resumeFor = (db) => {
+        resumedSubs.push(db.sub);
+        origResume(db);
+      };
+
+      failA = false;
+      ioerrSelect = true;
+      await run(core.inner.data.openAccount("s1"));
+      assert.ok(resumedSubs.includes("s1"), `viewCalls.resumeFor(s1) MUST execute despite account_doc SELECT SQLITE_IOERR, got: ${JSON.stringify(resumedSubs)}`);
+      assert.equal(core.inner.workspaces.owner("ws-w"), "s1", "owner stays A from #liveMe despite SQLITE_IOERR");
+      assert.equal(errors.some((e) => e.includes("core fiber failed")), false, `expected zero unhandled fiber failures during IOERR publish, got: ${errors.join("; ")}`);
+      ioerrSelect = false;
+      await core.close();
+    } finally {
+      console.error = origError;
+    }
+  }
+});

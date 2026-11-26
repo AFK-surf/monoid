@@ -96,6 +96,9 @@ class Device {
   readonly #host: Host;
   readonly #tables = new Map<string, Record<string, unknown>>();
   readonly #dirty = new Set<string>();
+  /// Tables whose initial `storageGet` failed (distinct from reading `null`/empty): never overwritten on disk until
+  /// a retry read (`reload`) succeeds and merges existing keys.
+  readonly #unloaded = new Set<string>();
   readonly #writes: Queue.Queue<string>;
   readonly #writer: Fiber.Fiber<never, never>;
   onChange: (table: string, key: string) => void = () => {};
@@ -109,14 +112,50 @@ class Device {
     this.#writer = runner.fork(
       Effect.forever(
         Effect.flatMap(Queue.take(this.#writes), (table) =>
-          Effect.uninterruptible(Effect.suspend(() => (this.#dirty.has(table) ? Effect.ignore(this.#write(table), { log: "Unhandled", message: "table written" }) : Effect.void))),
+          Effect.uninterruptible(Effect.suspend(() => (this.#dirty.has(table) && !this.#unloaded.has(table) ? Effect.ignore(this.#write(table), { log: "Unhandled", message: "table written" }) : Effect.void))),
         ),
       ),
     );
   }
 
-  /// A table's latest value written; still to be written if it fails.
+  /// Whether `table`'s initial disk read failed and has not yet been successfully reloaded.
+  isUnloaded(table: string): boolean {
+    return this.#unloaded.has(table);
+  }
+
+  /// Retries reading an unloaded device table from host storage and merges any in-memory mutations on top of the
+  /// persisted keys without clobbering existing keys (such as `pendingMe`). Returns true once loaded.
+  reload(table: string): Effect.Effect<boolean> {
+    return Effect.gen({ self: this }, function* () {
+      if (!this.#unloaded.has(table)) return true;
+      const r = yield* Effect.result(this.#host.storageGet(`device/${table}`));
+      if (r._tag === "Failure") return false;
+      this.#unloaded.delete(table);
+      const v = r.success ? parseJson(r.success) : undefined;
+      if (isObject(v)) {
+        const cur = this.#tables.get(table) ?? {};
+        const merged: Record<string, unknown> = {};
+        for (const key of Object.keys(v)) merged[key] = frozen(v[key]);
+        for (const key of Object.keys(cur)) {
+          if (table === "choice" && key === "pendingMe" && isObject(merged[key]) && isObject(cur[key])) {
+            merged[key] = frozen({ ...(merged[key] as Record<string, unknown>), ...(cur[key] as Record<string, unknown>) });
+          } else if (table === "choice" && key === "pendingCredentialDeletes" && Array.isArray(merged[key]) && Array.isArray(cur[key])) {
+            merged[key] = frozen([...new Set([...(merged[key] as unknown[]), ...(cur[key] as unknown[])])]);
+          } else {
+            merged[key] = cur[key];
+          }
+        }
+        this.#tables.set(table, merged);
+      }
+      if (this.#dirty.has(table)) Queue.offerUnsafe(this.#writes, table);
+      return true;
+    });
+  }
+
+  /// A table's latest value written; still to be written if it fails. Refuses to overwrite a table whose original
+  /// persisted contents have not been read yet.
   #write(table: string): Effect.Effect<void, HostError> {
+    if (this.#unloaded.has(table)) return Effect.fail(new HostError(`device/${table} has not been read`));
     this.#dirty.delete(table);
     return Effect.tapError(this.#host.storageSet(`device/${table}`, toJsonBytes(this.#tables.get(table) ?? {})), () => Effect.sync(() => void this.#dirty.add(table)));
   }
@@ -128,6 +167,7 @@ class Device {
       yield* Fiber.interrupt(this.#writer);
       const failed: string[] = [];
       for (const table of [...this.#dirty]) {
+        if (this.#unloaded.has(table)) yield* this.reload(table);
         const written = yield* Effect.result(this.#write(table));
         if (written._tag === "Failure") failed.push(`device/${table}: ${written.failure.message}`);
       }
@@ -140,11 +180,17 @@ class Device {
       // (read together and taken in order: at a start each read waits its turn on the host's disk behind what else is read
       // or written then, and the first view waits on all of them; core.start `ms.db`)
       const read = yield* Effect.all(
-        DEVICE_TABLES.map((table) => Effect.orElseSucceed(host.storageGet(`device/${table}`), () => null)),
+        DEVICE_TABLES.map((table) => Effect.result(host.storageGet(`device/${table}`))),
         { concurrency: "unbounded" },
       );
       for (const [i, table] of DEVICE_TABLES.entries()) {
-        const bytes = read[i];
+        const r = read[i];
+        if (r._tag === "Failure") {
+          this.#unloaded.add(table);
+          continue;
+        }
+        this.#unloaded.delete(table);
+        const bytes = r.success;
         const v = bytes ? parseJson(bytes) : undefined;
         if (!isObject(v) || this.#tables.has(table)) continue;
         // Each value frozen, as `put` keeps it: shared by whoever reads it (`shared`).
@@ -321,6 +367,8 @@ export class Data {
   readonly #ownerVerified: (workspace: string) => boolean;
   readonly #derive: Derive;
   readonly #dbs = new Map<string, AccountDb>();
+  /// Ephemeral in-memory fallback DBs opened via `host.memoryDb()` (do not persist across restarts).
+  readonly #ephemeral = new WeakSet<AccountDb>();
   /// Signed-in account order, preserved by `dbs()`, `mes()`, and `locals()` even when an active account's database
   /// opens ahead of others on cold start.
   #order: string[] = [];
@@ -731,6 +779,7 @@ export class Data {
             const tEnsure = timing ? this.#host.monotonicMs() : 0;
             try {
               db = new AccountDb(sub, name, sql, this.#runner, this.#derive);
+              this.#ephemeral.add(db);
               unstored = db;
             } catch (e) {
               closeUnstored();
@@ -886,6 +935,11 @@ export class Data {
   /// The database of an account.
   db(sub: string): AccountDb | undefined {
     return this.#dbs.get(sub);
+  }
+
+  /// Whether `db` is a writable persistent disk DB (not absent, not read-only, and not an ephemeral memory fallback).
+  isPersistentDb(db: AccountDb | undefined): db is AccountDb {
+    return db !== undefined && !db.readOnly && !this.#ephemeral.has(db);
   }
 
   /// The databases open now, in signed-in account order.
@@ -1087,6 +1141,12 @@ export class Data {
   #tellQuery(topic: Topic): void {
     const read = this.#queryReads.get(topicKey(topic));
     if (read) read.signal.set((read.revision = ++this.#revisions));
+  }
+
+  /// Registers a reactive read dependency on `record(name, sub)` without querying SQLite (used when an authoritative
+  /// in-memory `/v1/me` is already held in `#liveMe`).
+  trackAccountRecord(sub: string, name: string): void {
+    this.#readQuery({ topic: "$account-record", account: sub, name });
   }
 
   /// Notifies reactive readers subscribed to `record(name, sub)` when an account's in-memory record changes without a
