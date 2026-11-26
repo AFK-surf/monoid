@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1afb96bec](https://github.com/AFK-surf/monoid/commit/1afb96bec74ed022c8ac2856f9526d6578da8830) feat(station): bundle and sign opt-in stillfail-st | 2.64 | 3.57 | 14.78 | 37.74 | 57.62 | 33.05 | 67.5 | 101.65 | 131.48 |
 | [d79f39aa4](https://github.com/AFK-surf/monoid/commit/d79f39aa42f44a7379be26c2ec3297218e6fc561) fix(mbui): build the Apple core for local Mac e2e  | 2.64 | 3.57 | 14.78 | 37.74 | 57.62 | 33.05 | 67.5 | 101.6 | 129.9 |
 | [4434a902f](https://github.com/AFK-surf/monoid/commit/4434a902ffce7f55898c765c51cfc73bf6ad5c6e) perf(ui,mbui): optimize composite CJK text shaping | 2.64 | 3.57 | 14.78 | 37.74 | 57.62 | 33.05 | 67.5 | 101.6 | 129.9 |
 | [199a359ec](https://github.com/AFK-surf/monoid/commit/199a359ec39bdd4f6691d5b6b1474c5f6249cadf) fix(ci): keep the halt reason in native test failu | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.05 | 67.49 | 101.6 | 115.56 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [94b4edb34](https://github.com/AFK-surf/monoid/commit/94b4edb34facbd730d75fe2544b39d44207af9d0) station: keep failed Feishu messages in the reconn | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.79 | 66.77 | 101.27 | 131.05 |
 | [b361c3fa4](https://github.com/AFK-surf/monoid/commit/b361c3fa47a916633e9a6bcd9fcddaff09f2abfe) station: preserve dangling links already in the tr | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.79 | 66.77 | 101.27 | 131.05 |
 | [fee10277e](https://github.com/AFK-surf/monoid/commit/fee10277e9b088e70d65f6c7dfa95f060f9b6481) fix(mbui): open Mermaid charts when the picture is | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.79 | 66.77 | 101.27 | 131.05 |
-| [69d71266c](https://github.com/AFK-surf/monoid/commit/69d71266c7bffde6e33c16ad9ec41aedc605affd) fix(station): retry the frozen station's vault bac | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.79 | 66.77 | 101.27 | 131.05 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1afb96bec](https://github.com/AFK-surf/monoid/commit/1afb96bec74ed022c8ac2856f9526d6578da8830) feat(station): bundle and sign opt-in stillfail-st | 0.59 | 0.77 | 2.98 | 4.02 | 7.42 | 2.21 | 6.24 | 57.48 |
 | [d79f39aa4](https://github.com/AFK-surf/monoid/commit/d79f39aa42f44a7379be26c2ec3297218e6fc561) fix(mbui): build the Apple core for local Mac e2e  | 0.59 | 0.77 | 2.98 | 4.02 | 7.42 | 2.21 | 6.24 | 57.61 |
 | [4434a902f](https://github.com/AFK-surf/monoid/commit/4434a902ffce7f55898c765c51cfc73bf6ad5c6e) perf(ui,mbui): optimize composite CJK text shaping | 0.59 | 0.77 | 2.98 | 4.02 | 7.42 | 2.21 | 6.24 | 57.57 |
 | [199a359ec](https://github.com/AFK-surf/monoid/commit/199a359ec39bdd4f6691d5b6b1474c5f6249cadf) fix(ci): keep the halt reason in native test failu | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.72 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [94b4edb34](https://github.com/AFK-surf/monoid/commit/94b4edb34facbd730d75fe2544b39d44207af9d0) station: keep failed Feishu messages in the reconn | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.53 |
 | [b361c3fa4](https://github.com/AFK-surf/monoid/commit/b361c3fa47a916633e9a6bcd9fcddaff09f2abfe) station: preserve dangling links already in the tr | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.54 |
 | [fee10277e](https://github.com/AFK-surf/monoid/commit/fee10277e9b088e70d65f6c7dfa95f060f9b6481) fix(mbui): open Mermaid charts when the picture is | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.54 |
-| [69d71266c](https://github.com/AFK-surf/monoid/commit/69d71266c7bffde6e33c16ad9ec41aedc605affd) fix(station): retry the frozen station's vault bac | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.43 |
