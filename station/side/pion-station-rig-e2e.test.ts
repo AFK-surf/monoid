@@ -18,6 +18,7 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, sign as nodeSign } from "node:crypto";
+import { createSocket as createUdpSocket } from "node:dgram";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
@@ -26,6 +27,7 @@ import type { Duplex } from "node:stream";
 import { after, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { zstdCompressSync } from "node:zlib";
 import { type GrantBody, type Kind, type Timeout, latest, signedBytes } from "../../client/core-ts/src/rig-form.ts";
 import { type Entry, entryHash, signedBytes as entryBytes } from "../../shared/lock.ts";
 import { loadMesh, type Endpoint } from "../src/mesh/native.ts";
@@ -343,7 +345,10 @@ function seedRigDataDir(
   writeFileSync(join(data, "mesh/cloud.json"), JSON.stringify(cloudObj), { mode: 0o600 });
 }
 
-function startInboundTellCollector(ep: Endpoint): Array<{ workspace: string; request: any }> {
+function startInboundTellCollector(
+  ep: Endpoint,
+  replyFor?: (msg: { workspace: string; request: any }) => Record<string, unknown>,
+): Array<{ workspace: string; request: any }> {
   const received: Array<{ workspace: string; request: any }> = [];
   (async () => {
     for (;;) {
@@ -366,14 +371,33 @@ function startInboundTellCollector(ep: Endpoint): Array<{ workspace: string; req
             chunks.push(c);
           }
           const line = Buffer.concat(chunks).toString("utf8").trim();
+          let replyObj: Record<string, unknown> = { result: { ok: true } };
           if (line) {
-            try { received.push(JSON.parse(line)); } catch {}
+            try {
+              const parsed = JSON.parse(line);
+              received.push(parsed);
+              if (replyFor) replyObj = replyFor(parsed);
+            } catch {}
           }
+          await stream.write(Buffer.from(JSON.stringify(replyObj) + "\n"));
+          await stream.finish();
         } catch {}
       })();
     }
   })();
   return received;
+}
+
+async function pickFreeUdpPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const s = createUdpSocket("udp4");
+    s.once("error", reject);
+    s.bind(0, "127.0.0.1", () => {
+      const addr = s.address();
+      const port = typeof addr === "object" ? addr.port : 0;
+      s.close(() => resolve(port));
+    });
+  });
 }
 
 const bin = resolvePionBinary();
@@ -463,6 +487,23 @@ test("Gate 12.2: rig daemon rejects non-rig & removed_at:null dirs, emits ready 
   rig.sendCtrl({ op: "stop" });
   assert.equal(await rig.waitExit(), 0, rig.stderr());
   assert.equal(existsSync(join(data, "run/hub.json")), false);
+
+  // (d) Stale `{ "pid": 1 }` in `hub.json` MUST be taken over in <2s (never deadlock on init PID!).
+  const pid1Dir = freshDir("handover-pid1");
+  seedRigDataDir(pid1Dir, owner.genesis(), randomBytes(32), "44".repeat(32), "55".repeat(32));
+  const pid1Store = Store.open(join(pid1Dir, "stillfail.db"));
+  pid1Store.close();
+  mkdirSync(join(pid1Dir, "run"), { recursive: true });
+  writeFileSync(join(pid1Dir, "run/hub.json"), JSON.stringify({ pid: 1 }) + "\n");
+  const t0 = Date.now();
+  const rigPid1 = startPionRig(bin, pid1Dir);
+  await until("mcp serving immediately with stale pid:1", () => rigPid1.messages.find((m) => m.serving === "mcp"), 3_000);
+  assert.ok(Date.now() - t0 < 3_000, "pid:1 handover must take over immediately");
+  const hubAfterPid1 = JSON.parse(readFileSync(join(pid1Dir, "run/hub.json"), "utf8"));
+  assert.equal(hubAfterPid1.pid, rigPid1.child.pid);
+  assert.ok(typeof hubAfterPid1.procStartTimeMs === "number" && hubAfterPid1.procStartTimeMs > 0);
+  rigPid1.sendCtrl({ op: "stop" });
+  assert.equal(await rigPid1.waitExit(), 0, rigPid1.stderr());
 });
 
 test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion hot upgrades via SIGUSR2 with zero deadlock", { skip: process.platform === "win32" }, async () => {
@@ -486,12 +527,27 @@ test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion h
   );
   writeFileSync(join(app, "BUILD"), "9900\n");
 
-  const owner = makeOwner("owner-launcher");
+  const owner = makeOwner("owner-1");
   const rigSeed = randomBytes(32);
   const probeEp = await addon.bind({ secretKey: rigSeed, alpns: [], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
   const rigId = probeEp.id();
   await probeEp.close();
-  seedRigDataDir(data, owner.genesis(), rigSeed, rigId, "33".repeat(32), "ws-launcher");
+  const peerL = await addon.bind({
+    secretKey: randomBytes(32),
+    alpns: [PEER_BYTES_ALPN, PEER_ALPN],
+    relayUrls: [],
+    discovery: false,
+    dht: false,
+    bindAddr: "127.0.0.1:0",
+  });
+  endpoints.push(peerL);
+  const peerLId = peerL.id();
+  const peerLSockets = peerL.sockets().filter((s: string) => s.startsWith("127.0.0.1:"));
+  const tellsL = startInboundTellCollector(peerL);
+  const frontPort = await pickFreeUdpPort();
+  const frontAddr = `127.0.0.1:${frontPort}`;
+  const wsL = "ws-launcher";
+  seedRigDataDir(data, owner.genesis(), rigSeed, rigId, peerLId, wsL, [], peerLSockets);
   writeFileSync(join(data, "config.json"), JSON.stringify({ engine: "node" }) + "\n");
 
   let logs = "";
@@ -505,7 +561,7 @@ test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion h
       STILLFAIL_STATION_PION: join(app, "station", "stillfail-station-pion"),
       STILLFAIL_NO_DISCOVERY: "1",
       STILLFAIL_NO_DHT: "1",
-      STILLFAIL_MESH_BIND_ADDR: "127.0.0.1:0",
+      STILLFAIL_MESH_BIND_ADDR: frontAddr,
     },
   });
   children.push(lc);
@@ -530,7 +586,58 @@ test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion h
     }
   };
 
-  // 1. Wait for initial Node rig to start and serve `/healthz`.
+  const verifyMeshStage = async (stage: string, grantReqId: string, taskKey: string) => {
+    const desc = await until(`${stage}: describe via front`, async () => {
+      try {
+        const r = (await peerRpc(peerL, rigId, frontAddr, wsL, { method: "describe" })).result;
+        return r && typeof r.rev === "number" ? r : null;
+      } catch {
+        return null;
+      }
+    }, 10_000);
+    assert.ok(desc);
+    const nowS = Math.floor(Date.now() / 1000);
+    const to: Timeout = { kind: "fixed", seconds: 600 };
+    const gb: GrantBody = {
+      v: 1, sub: owner.sub, rig: rigId, ws: wsL, request: grantReqId,
+      station: peerLId, session: "chat:front", chat: "CHAT/front", title: `Front ${stage}`,
+      by: "owner@example.com", timeout: to, at: nowS, exp: latest(nowS, to),
+    };
+    await peerRpc(peerL, rigId, frontAddr, wsL, { method: "rig.grant", signed: owner.says("grant", gb), chain: owner.chain });
+    await peerRpc(peerL, rigId, frontAddr, wsL, {
+      method: "task.prepare",
+      session: "chat:front",
+      key: taskKey,
+      spec: { name: taskKey, command: `printf '%s' 'front-${stage}-ok' > out_${taskKey}.txt` },
+    });
+    const refHex = createHash("sha256").update(`ref-${stage}-${taskKey}`).digest("hex");
+    await peerRpc(peerL, rigId, frontAddr, wsL, {
+      method: "task.start",
+      session: "chat:front",
+      key: taskKey,
+      push: refHex,
+    });
+    const done = await until(`${stage}: task ${taskKey} exited via front`, async () => {
+      const r = (await peerRpc(peerL, rigId, frontAddr, wsL, { method: "task.get", session: "chat:front", key: taskKey })).result;
+      return r.job?.state === "exited" ? r : null;
+    }, 10_000);
+    assert.equal(done.job.exitCode, 0);
+    const dl = await peerRpc(peerL, rigId, frontAddr, wsL, {
+      method: "file.get",
+      session: "chat:front",
+      key: taskKey,
+      path: `out_${taskKey}.txt`,
+      whole: true,
+    });
+    assert.equal(dl.binary?.toString("utf8"), `front-${stage}-ok`);
+    if (stage !== "node") {
+      await until(`${stage}: outbound task.changed tell via front`, () =>
+        tellsL.find((t) => t.request?.method === "task.changed" && t.request?.ref === refHex),
+      8_000);
+    }
+  };
+
+  // 1. Wait for initial Node rig to start and serve `/healthz` + mesh via front.
   let nodePid: number;
   try {
     nodePid = await until("Node rig hub.json pid", () => readHubPidNow(), 15_000);
@@ -539,6 +646,7 @@ test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion h
   }
   const adminPort = await until("launcher admin port", () => readAdminPort(), 10_000);
   await until("Node /healthz 200", async () => (await httpGet(adminPort, "/healthz")).status === 200, 10_000);
+  await verifyMeshStage("node", "req-front-node", "k-front-node");
 
   // 2. Live `Node -> Pion` hot upgrade via `SIGUSR2` (launcher-coordinated, zero manual kill!).
   writeFileSync(join(data, "config.json"), JSON.stringify({ engine: "pion" }) + "\n");
@@ -553,6 +661,7 @@ test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion h
   );
   await until("old Node process exited after handover", () => !isAlive(nodePid), 10_000);
   assert.equal((await httpGet(adminPort, "/healthz")).status, 200);
+  await verifyMeshStage("pion1", "req-front-pion1", "k-front-pion1");
 
   // 3. Live `Pion -> Pion` hot upgrade via `SIGUSR2` (launcher-coordinated, zero manual kill!).
   lc.kill("SIGUSR2");
@@ -566,6 +675,7 @@ test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion h
   );
   await until("old Pion process exited after handover", () => !isAlive(pionPid1), 10_000);
   assert.equal((await httpGet(adminPort, "/healthz")).status, 200);
+  await verifyMeshStage("pion2", "req-front-pion2", "k-front-pion2");
 
   // 4. Clean shutdown via SIGTERM.
   lc.kill("SIGTERM");
@@ -607,7 +717,12 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   const peerBId = peerB.id();
   const peerASockets = peerA.sockets().filter((s: string) => s.startsWith("127.0.0.1:"));
   assert.ok(peerASockets.length > 0, "peerA loopback socket available");
-  const tellsA = startInboundTellCollector(peerA);
+  const tellsA = startInboundTellCollector(peerA, (msg) => {
+    if (msg.request?.method === "vault.used") {
+      return { result: { ok: true, until: Math.floor(Date.now() / 1000) + 30 } };
+    }
+    return { result: { ok: true } };
+  });
 
   const rigSeed = randomBytes(32);
   const probeEp = await addon.bind({
@@ -810,6 +925,30 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   const proofRes = await peerRpc(peerA, rigId, rigAddr, wsA, { method: "file.get", session: "chat:c1", path: "vault_proof.txt" });
   assert.equal(proofRes.binary?.toString("utf8"), secretVal);
 
+  // Vault `vault.used` renewal: 4s command, 10s command timeout, initial 2s grant expiry, `vault.used` returns `until = now + 30s` -> MUST exit 0!
+  const renewRunRes = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "vault.run",
+    id: "x_01TESTRENEW000000000000000",
+    session: "chat:c1",
+    command: "sleep 4 && echo renewed_ok",
+    mode: "env",
+    env: "TEST_API_KEY",
+    grant: "g-renew-1",
+    timeoutMs: 10_000,
+    expires: Math.floor(Date.now() / 1000) + 2,
+    grantTimeout: { kind: "idle", seconds: 20 },
+    secret: { kind: "token", name: "api", fields: { value: secretVal } },
+  })).result;
+  assert.equal(renewRunRes.started, true);
+  const renewDone = await until(
+    "renewed vault.done after 4s sleep",
+    () => tellsA.find((t) => t.request?.method === "vault.done" && t.request?.id === "x_01TESTRENEW000000000000000"),
+    10_000,
+  );
+  assert.equal(renewDone.request.result.code, 0);
+  assert.equal(renewDone.request.result.timedOut, false);
+  assert.match(String(renewDone.request.result.output), /renewed_ok/);
+
   // ── Gate 12.5: Node/MB wire protocol + REAL dirsync + 2-chunk `file.put` + 300 KiB `file.get whole:true` + `task.changed` ref ──
   // Fail-closed on explicit sandbox request.
   await assert.rejects(
@@ -867,6 +1006,50 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   });
   assert.equal(dirDone.job.exitCode, 0);
   assert.match(String(dirDone.log), /real-dirsync-content-r4/);
+
+  // Incremental dirsync rename WITHOUT re-uploading blob + Base64+zstd `sync.put`!
+  const dirPrep2 = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "task.prepare",
+    session: "chat:c1",
+    key: "k-dir-rename",
+    spec: { name: "dir-rename", command: "cat synced/renamed.txt && cat synced/zstd.txt", dir: "/Users/dev/my:project" },
+  })).result;
+  assert.equal(dirPrep2.dir, "my_project");
+  const sb2 = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-rename" })).result;
+  const zstdPlain = Buffer.from("zstd-base64-payload-r5\n", "utf8");
+  const zstdHash = createHash("sha1").update(Buffer.concat([Buffer.from(`blob ${zstdPlain.length}\0`), zstdPlain])).digest("hex");
+  const zstdCompB64 = zstdCompressSync(zstdPlain).toString("base64");
+  const sp2 = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.put",
+    session: "chat:c1",
+    key: "k-dir-rename",
+    id: sb2.id,
+    blobs: [[zstdHash, zstdPlain.length, 0, zstdPlain.length]],
+    data: zstdCompB64,
+  })).result;
+  assert.equal(sp2.pieces, 1);
+  // Commit reuses `blobHash` from existing `synced/hello.txt` without re-uploading it, removes old path, and writes `synced/zstd.txt`!
+  const sc2 = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.commit",
+    session: "chat:c1",
+    key: "k-dir-rename",
+    id: sb2.id,
+    set: [["synced/renamed.txt", blobHash, "100644"], ["synced/zstd.txt", zstdHash, "100644"]],
+    remove: ["synced/hello.txt"],
+    final: true,
+  })).result;
+  assert.equal(sc2.synced, true);
+  assert.equal(sc2.written, 2);
+  assert.equal(sc2.removed, 1);
+  assert.equal(sc2.version, 2);
+  await peerRpc(peerA, rigId, rigAddr, wsA, { method: "task.start", session: "chat:c1", key: "k-dir-rename" });
+  const dirDone2 = await until("k-dir-rename exited", async () => {
+    const r = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "task.get", session: "chat:c1", key: "k-dir-rename" })).result;
+    return r.job?.state === "exited" ? r : null;
+  });
+  assert.equal(dirDone2.job.exitCode, 0);
+  assert.match(String(dirDone2.log), /real-dirsync-content-r4/);
+  assert.match(String(dirDone2.log), /zstd-base64-payload-r5/);
 
   // Conflicting re-prepare on same key MUST be rejected!
   await assert.rejects(
@@ -929,7 +1112,7 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     /offset mismatch/i,
   );
 
-  // Finalize 2nd chunk -> `uploads["inputs/in.txt"] === true`!
+  // Finalize 2nd chunk + same-offset retry + Node whole-file `size` upload (no `final` field) + shorter overwrite!
   const putRes2 = (await peerRpc(peerA, rigId, rigAddr, wsA, {
     method: "file.put",
     session: "chat:c1",
@@ -939,8 +1122,30 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     final: true,
   }, chunk2)).result;
   assert.equal(putRes2.bytes, chunk2.length);
+  // Same-offset retry must succeed (`offset <= size`).
+  const putRetry = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "file.put",
+    session: "chat:c1",
+    key: "k-proto",
+    path: "inputs/in.txt",
+    offset: chunk1.length,
+    final: true,
+  }, chunk2)).result;
+  assert.equal(putRetry.bytes, chunk2.length);
+  // Node whole-file upload (`size` without `final`) marks `uploads[path] = true` automatically!
+  const wholeBytes = Buffer.from("node-whole-file-r5", "utf8");
+  const putWhole = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "file.put",
+    session: "chat:c1",
+    key: "k-proto",
+    path: "inputs/whole.txt",
+    offset: 0,
+    size: wholeBytes.length,
+  }, wholeBytes)).result;
+  assert.equal(putWhole.bytes, wholeBytes.length);
   const taskJsonAfter = JSON.parse(readFileSync(join(data, "remote/incoming", taskIdProto, "task.json"), "utf8"));
   assert.equal(taskJsonAfter.uploads?.["inputs/in.txt"], true);
+  assert.equal(taskJsonAfter.uploads?.["inputs/whole.txt"], true);
 
   // Pass 64-hex `push` ref on `task.start` -> UNCONDITIONAL `task.changed` `{ method: "task.changed", ref }`!
   const pushRef = createHash("sha256").update("push-ref-k-proto").digest("hex");

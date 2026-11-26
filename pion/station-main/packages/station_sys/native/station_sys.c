@@ -2260,17 +2260,78 @@ void *sts_read_range(const char *path, int64_t offset, int64_t len, int64_t *out
 
 static int sts_win_rel_safe(const char *rel) {
     if (rel == NULL || rel[0] == '\0' || rel[0] == '/' || rel[0] == '\\') return 0;
-    if (rel[1] == ':') return 0;
+    const char *p = rel;
+    while (*p != '\0') {
+        while (*p == '/' || *p == '\\') p++;
+        if (*p == '\0') break;
+        const char *seg = p;
+        while (*p != '\0' && *p != '/' && *p != '\\') {
+            if (*p == ':') return 0;
+            p++;
+        }
+        size_t n = (size_t)(p - seg);
+        if ((n == 1 && seg[0] == '.') || (n == 2 && seg[0] == '.' && seg[1] == '.')) return 0;
+    }
+    return 1;
+}
+
+static int sts_win_check_dir_no_reparse(const char *dir_utf8) {
+    wchar_t *w = utf8_to_wide(dir_utf8);
+    if (w == NULL) return 0;
+    HANDLE h = CreateFileW(
+        w, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    BY_HANDLE_FILE_INFORMATION info;
+    int ok = GetFileInformationByHandle(h, &info)
+        && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0
+        && (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+    CloseHandle(h);
+    return ok;
+}
+
+static char *sts_win_walk_no_reparse(const char *root, const char *rel, int create_parents) {
+    if (root == NULL || root[0] == '\0' || !sts_win_rel_safe(rel)) return NULL;
+    if (!sts_win_check_dir_no_reparse(root)) return NULL;
+    size_t rlen = strlen(root), lrel = strlen(rel);
+    char *cur = (char *)malloc(rlen + lrel + 4);
+    if (cur == NULL) return NULL;
+    memcpy(cur, root, rlen);
+    size_t cur_len = rlen;
+    while (cur_len > 0 && (cur[cur_len - 1] == '\\' || cur[cur_len - 1] == '/')) cur_len--;
+    cur[cur_len] = '\0';
     const char *p = rel;
     while (*p != '\0') {
         while (*p == '/' || *p == '\\') p++;
         if (*p == '\0') break;
         const char *seg = p;
         while (*p != '\0' && *p != '/' && *p != '\\') p++;
-        size_t n = (size_t)(p - seg);
-        if ((n == 1 && seg[0] == '.') || (n == 2 && seg[0] == '.' && seg[1] == '.')) return 0;
+        size_t slen = (size_t)(p - seg);
+        const char *rest = p;
+        while (*rest == '/' || *rest == '\\') rest++;
+        cur[cur_len++] = '\\';
+        memcpy(cur + cur_len, seg, slen);
+        cur_len += slen;
+        cur[cur_len] = '\0';
+        if (*rest == '\0') {
+            return cur;
+        }
+        if (create_parents) {
+            wchar_t *wd = utf8_to_wide(cur);
+            if (wd != NULL) {
+                (void)CreateDirectoryW(wd, NULL);
+                free(wd);
+            }
+        }
+        if (!sts_win_check_dir_no_reparse(cur)) {
+            free(cur);
+            return NULL;
+        }
+        p = rest;
     }
-    return 1;
+    free(cur);
+    return NULL;
 }
 
 void *sts_read_under_nofollow(
@@ -2282,16 +2343,9 @@ void *sts_read_under_nofollow(
     int64_t *out_size) {
     if (out_len != NULL) *out_len = 0;
     if (out_size != NULL) *out_size = 0;
-    if (root == NULL || !sts_win_rel_safe(rel) || offset < 0 || len < 0) return NULL;
-    size_t rlen = strlen(root), lrel = strlen(rel);
-    char *full = (char *)malloc(rlen + lrel + 2);
+    if (root == NULL || offset < 0 || len < 0) return NULL;
+    char *full = sts_win_walk_no_reparse(root, rel, 0);
     if (full == NULL) return NULL;
-    memcpy(full, root, rlen);
-    full[rlen] = '\\';
-    memcpy(full + rlen + 1, rel, lrel + 1);
-    for (size_t i = rlen + 1; i < rlen + 1 + lrel; i++) {
-        if (full[i] == '/') full[i] = '\\';
-    }
     wchar_t *w = utf8_to_wide(full);
     free(full);
     if (w == NULL) return NULL;
@@ -2349,22 +2403,9 @@ int32_t sts_write_under_nofollow(
     int32_t mode,
     int32_t truncate_end) {
     (void)mode;
-    if (root == NULL || !sts_win_rel_safe(rel) || len < 0 || offset < 0) return 0;
-    size_t rlen = strlen(root), lrel = strlen(rel);
-    char *full = (char *)malloc(rlen + lrel + 2);
+    if (root == NULL || len < 0 || offset < 0) return 0;
+    char *full = sts_win_walk_no_reparse(root, rel, 1);
     if (full == NULL) return 0;
-    memcpy(full, root, rlen);
-    full[rlen] = '\\';
-    memcpy(full + rlen + 1, rel, lrel + 1);
-    for (size_t i = rlen + 1; i < rlen + 1 + lrel; i++) {
-        if (full[i] == '/') full[i] = '\\';
-    }
-    char *last_sep = strrchr(full, '\\');
-    if (last_sep != NULL && last_sep > full + rlen) {
-        *last_sep = '\0';
-        (void)sts_mkdir_p(full);
-        *last_sep = '\\';
-    }
     wchar_t *w = utf8_to_wide(full);
     free(full);
     if (w == NULL) return 0;
@@ -2380,7 +2421,7 @@ int32_t sts_write_under_nofollow(
         return 0;
     }
     int64_t fsize = ((int64_t)info.nFileSizeHigh << 32) | (int64_t)info.nFileSizeLow;
-    if (offset > 0 && fsize != offset) {
+    if (offset > fsize) {
         CloseHandle(h);
         return -2;
     }
@@ -5687,7 +5728,7 @@ void *sts_read_under_nofollow(
     char leaf[512];
     int dirfd = sts_open_dir_nofollow_walk(root, rel, 0, leaf, sizeof(leaf));
     if (dirfd < 0) return NULL;
-    int fd = openat(dirfd, leaf, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    int fd = openat(dirfd, leaf, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
     close(dirfd);
     if (fd < 0) return NULL;
     struct stat st;
@@ -5742,7 +5783,7 @@ int32_t sts_write_under_nofollow(
     int dirfd = sts_open_dir_nofollow_walk(root, rel, 1, leaf, sizeof(leaf));
     if (dirfd < 0) return 0;
     mode_t m = mode > 0 ? (mode_t)mode : (mode_t)0600;
-    int fd = openat(dirfd, leaf, O_WRONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, m);
+    int fd = openat(dirfd, leaf, O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, m);
     close(dirfd);
     if (fd < 0) return 0;
     struct stat st;
@@ -5750,7 +5791,7 @@ int32_t sts_write_under_nofollow(
         close(fd);
         return 0;
     }
-    if (offset > 0 && (int64_t)st.st_size != offset) {
+    if (offset > (int64_t)st.st_size) {
         close(fd);
         return -2;
     }

@@ -1598,10 +1598,16 @@ int main(void) {
         assert(sts_write_under_nofollow(root_dir, "sub/a.txt", msg1, 6, 0, 0600, 0) == 1);
         assert(sts_write_under_nofollow(root_dir, "sub/a.txt", msg2, 6, 99, 0600, 1) == -2);
         assert(sts_write_under_nofollow(root_dir, "sub/a.txt", msg2, 6, 6, 0600, 1) == 1);
+        // Same-offset retry and shorter overwrite at offset 0 with truncate_end=1.
+        assert(sts_write_under_nofollow(root_dir, "sub/a.txt", msg2, 6, 6, 0600, 1) == 1);
         int64_t rlen = 0, rsz = 0;
         void *rbuf = sts_read_under_nofollow(root_dir, "sub/a.txt", 0, 64, &rlen, &rsz);
         assert(rbuf != NULL && rlen == 12 && rsz == 12);
         assert(memcmp(rbuf, "hello world!", 12) == 0);
+        sts_free(rbuf);
+        assert(sts_write_under_nofollow(root_dir, "sub/a.txt", (const uint8_t *)"hi", 2, 0, 0600, 1) == 1);
+        rbuf = sts_read_under_nofollow(root_dir, "sub/a.txt", 0, 64, &rlen, &rsz);
+        assert(rbuf != NULL && rlen == 2 && rsz == 2 && memcmp(rbuf, "hi", 2) == 0);
         sts_free(rbuf);
         assert(sts_read_under_nofollow(root_dir, "../etc/passwd", 0, 16, &rlen, &rsz) == NULL);
         char link_path[320];
@@ -1610,6 +1616,13 @@ int main(void) {
         assert(sts_read_under_nofollow(root_dir, "sym.txt", 0, 16, &rlen, &rsz) == NULL);
         assert(sts_write_under_nofollow(root_dir, "sym.txt", msg1, 6, 0, 0600, 1) == 0);
         unlink(link_path);
+        // FIFO leaf MUST fail immediately via O_NONBLOCK + !S_ISREG without hanging.
+        char fifo_path[320];
+        snprintf(fifo_path, sizeof(fifo_path), "%s/pipe.fifo", root_dir);
+        assert(mkfifo(fifo_path, 0600) == 0);
+        assert(sts_read_under_nofollow(root_dir, "pipe.fifo", 0, 16, &rlen, &rsz) == NULL);
+        assert(sts_write_under_nofollow(root_dir, "pipe.fifo", msg1, 6, 0, 0600, 1) == 0);
+        unlink(fifo_path);
         char sub_file[320], sub_dir[320];
         snprintf(sub_file, sizeof(sub_file), "%s/sub/a.txt", root_dir);
         snprintf(sub_dir, sizeof(sub_dir), "%s/sub", root_dir);

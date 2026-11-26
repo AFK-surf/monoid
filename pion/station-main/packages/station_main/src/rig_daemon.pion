@@ -3,6 +3,7 @@
 // `station_cloud`, `mesh_wire`/`mesh_door`/`mesh_accept`, `station_mesh`, `station_jobs`,
 // `station_vault`, and `station_rig` aligned with `station/src/rig/main.ts`.
 
+import "base64"
 import "base_codec"
 import "builders_core"
 import "form"
@@ -59,6 +60,7 @@ let FRONT_TOK_STREAM_ACCEPT : Int = 4034
 let FRONT_TOK_STREAM_READ : Int = 4035
 let FRONT_TOK_STREAM_WRITE : Int = 4036
 let FRONT_TOK_STREAM_END : Int = 4037
+let FRONT_TOK_OUT_WRITE : Int = 4038
 
 // Hardening caps for inbound mesh connections, streams, outbound tell retries, and vault output.
 let MAX_ACTIVE_CONNS : Int = 64
@@ -67,11 +69,13 @@ let STREAM_READ_TIMEOUT_MS : Int64 = 15000L
 let MAX_OUTBOUND_TELLS : Int = 128
 let TELL_RETRY_MAX_MS : Int64 = 3600000L
 let TELL_BACKOFF_CAP_MS : Int64 = 60000L
+let TELL_SLOT_TIMEOUT_MS : Int64 = 15000L
 let VAULT_OUTPUT_MAX : Int = 65536
 let MAX_ACTIVE_VAULT_RUNS : Int = 16
 let UPKEEP_EVERY_MS : Int64 = 600000L
-let FRONT_FRAME_END : Int64 = 4294967295L // 0xFFFFFFFF
-let FRONT_FRAME_FAILED : Int64 = 4294967294L // 0xFFFFFFFE
+// Exact `client/shell/src/istream.rs:264,265` & `station/src/mesh/front.ts:21,22` frame markers!
+let FRONT_FRAME_END : Int64 = 4294967294L // 0xFFFFFFFE
+let FRONT_FRAME_FAILED : Int64 = 4294967293L // 0xFFFFFFFD
 let FRONT_FRAME_MOST : Int = 65536
 
 struct MuxSlot {
@@ -116,6 +120,8 @@ struct ActivePeerStream {
 
 struct OutboundTell {
   peer : String
+  method : String
+  ref_id : String
   payload : Bytes
   attempts : Int
   next_at_ms : Int64
@@ -125,11 +131,16 @@ struct OutboundTell {
 struct ActiveOutbound {
   id : Int64
   peer : String
+  method : String
+  ref_id : String
   payload : Bytes
   attempts : Int
   created_at_ms : Int64
+  started_at_ms : Int64
   mut conn_id : Option[Int64]
   mut stream_id : Option[Int64]
+  mut sock_id : Option[Int64]
+  mut reply_buf : Bytes
 }
 
 struct PendingZstdPut {
@@ -149,6 +160,7 @@ struct PendingFileStream {
 
 struct FrontStreamState {
   sock_id : Int64
+  opened_at : Int64
   mut header_done : Bool
   mut conn_id : Int64
   mut stream_id : Int64
@@ -169,6 +181,7 @@ struct ActiveVaultRun {
   handle : station_sys::ChildProcess
   secret_values : Array[String]
   deadline_ms : Int64
+  mut grant_exp_sec : Int64
   capture : Bool
   used : Bool
   mut stdout_buf : Bytes
@@ -242,6 +255,51 @@ fn front_encode_end_frame() -> Bytes {
   let out = Bytes::new(4)
   write_u32_be(out, 0, FRONT_FRAME_END)
   out
+}
+
+fn front_encode_failed_frame(msg : String) -> Bytes {
+  let mb = msg.to_bytes()
+  let out = Bytes::new(8 + mb.length())
+  write_u32_be(out, 0, FRONT_FRAME_FAILED)
+  write_u32_be(out, 4, mb.length().to_int64())
+  for i in 0..<mb.length() {
+    out[8 + i] = mb[i]
+  }
+  out
+}
+
+/// Inspect a completed outbound tell reply JSON: returns `(should_retry, optional_vault_until_sec)`.
+fn parse_tell_reply(reply_str : String) -> (Bool, Option[Int64]) {
+  let trimmed = reply_str.trim()
+  if trimmed.length() == 0 {
+    return (true, None)
+  }
+  match base_codec::json_parse(trimmed) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Obj(_)) => {
+      let rj = match base_codec::json_parse(trimmed) {
+        base_codec::JsonParseResult::Ok(j) => j
+        _ => base_codec::json_null()
+      }
+      match base_codec::json_get(rj, "error") {
+        Some(base_codec::Json::Str(emsg)) => (!is_permanent_tell_refusal(emsg), None)
+        Some(_) => (true, None)
+        None => {
+          let until_opt : Option[Int64] = match base_codec::json_get(rj, "result") {
+            Some(res_obj) => match base_codec::json_get(res_obj, "until") {
+              Some(base_codec::Json::Num(d, _)) => if d.to_int64() > 0L { Some(d.to_int64()) } else { None }
+              _ => None
+            }
+            None => match base_codec::json_get(rj, "until") {
+              Some(base_codec::Json::Num(d, _)) => if d.to_int64() > 0L { Some(d.to_int64()) } else { None }
+              _ => None
+            }
+          }
+          (false, until_opt)
+        }
+      }
+    }
+    _ => (true, None)
+  }
 }
 
 fn concat_bytes_local(a : Bytes, b : Bytes) -> Bytes {
@@ -528,12 +586,17 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     }
   }
 
-  // Handover barrier: wait for previous `hub.json` PID before writing `hub.json` or adopting jobs.
+  // Handover barrier: verify previous `hub.json` process identity (`pid > 1`, same UID, matching
+  // `procStartTimeMs` or `mtime` within 5s) before waiting; dead/reused/{pid:1} takes over in 0ms.
   // Crucially, `control.ready` is emitted as soon as loopback admin listens (BEFORE waiting for
   // previous PID) so the Rust launcher stops the old process without deadlocking (`lifecycle.rs:653`).
-  let prev_pid = station_ops::read_previous_pid(ops_fs, run_dir, self_pid, sep=sep)
-  let prev_proc = station_ops::PreviousProcess::new(prev_pid, host_shim::now_ms())
-  let mut handover_done = prev_pid is None
+  let prev_identity = station_ops::read_previous_identity(ops_fs, run_dir, self_pid, sep=sep)
+  let prev_pid_opt : Option[Int] = match prev_identity {
+    Some(id) => if station_ops::is_same_predecessor_alive(id) { Some(id.pid) } else { None }
+    None => None
+  }
+  let prev_proc = station_ops::PreviousProcess::new(prev_pid_opt, host_shim::now_ms())
+  let mut handover_done = prev_pid_opt is None
   let mut handover_failed = false
 
   let boot_id = match generate_boot_id() {
@@ -575,6 +638,10 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     if outbound_queue.length() >= MAX_OUTBOUND_TELLS {
       return
     }
+    let ref_id = match base_codec::json_get(request, "id") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
     let env = base_codec::json_obj([
       ("workspace", base_codec::json_str(ws)),
       ("request", request),
@@ -583,6 +650,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     let now_t = host_shim::now_ms()
     outbound_queue.push(OutboundTell::{
       peer: peer,
+      method: method,
+      ref_id: ref_id,
       payload: payload,
       attempts: 0,
       next_at_ms: now_t,
@@ -598,6 +667,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     let delay = tell_backoff_ms(ob.attempts)
     outbound_queue.push(OutboundTell::{
       peer: ob.peer,
+      method: ob.method,
+      ref_id: ob.ref_id,
       payload: ob.payload,
       attempts: ob.attempts + 1,
       next_at_ms: now_t + delay,
@@ -1078,6 +1149,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
             handle: cp,
             secret_values: req.secret_values,
             deadline_ms: host_shim::now_ms() + req.timeout_ms,
+            grant_exp_sec: req.grant_exp_sec,
             capture: req.capture,
             used: was_used,
             stdout_buf: Bytes::new(0),
@@ -1207,6 +1279,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
   let front_streams : Map[Int64, FrontStreamState] = Map::new()
   let front_out_by_stream : Map[Int64, Int64] = Map::new()
   let front_out_by_sock : Map[Int64, Int64] = Map::new()
+  let front_early_out_socks : Map[Int64, Int64] = Map::new()
 
   control.on("drain", fn() -> Unit {
     let drained_path = nodepath::join(sep, [run_dir, "drained"])
@@ -1405,7 +1478,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
   let begin_handover_takeover = fn() -> Bool {
     if !hub_written {
       let hub_path = nodepath::join(sep, [run_dir, "hub.json"])
-      match ops_fs.write_text(hub_path, format_hub_json(self_pid), 420) {
+      let hub_body = format_hub_json_with_start(self_pid, station_sys::proc_start_time_ms(self_pid))
+      match ops_fs.write_text(hub_path, hub_body, 420) {
         Ok(_) => hub_written = true
         Err(_) => {
           let msg = "failed to write hub.json"
@@ -1535,23 +1609,35 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     v2_bytes : Bool,
     is_front : Bool,
   ) -> Unit {
-    // Check if this is a zstd-compressed `sync.put` that needs async Tokio `zstd.unpack`.
+    // Check if this is a zstd-compressed `sync.put` (binary tail OR base64 `data`) that needs async Tokio `zstd.unpack`.
     let zstd_payload : Option[Bytes] = match base_codec::json_parse(line) {
       base_codec::JsonParseResult::Ok(j) => {
-        let is_sync_put = match base_codec::json_get(j, "request") {
-          Some(req) => match base_codec::json_get(req, "method") {
-            Some(base_codec::Json::Str("sync.put")) => true
-            _ => false
+        match base_codec::json_get(j, "request") {
+          Some(req) => {
+            let is_sync_put = match base_codec::json_get(req, "method") {
+              Some(base_codec::Json::Str("sync.put")) => true
+              _ => false
+            }
+            if is_sync_put {
+              match bin_opt {
+                Some(b) => if is_zstd_magic(b) { Some(b) } else { None }
+                None => {
+                  match base_codec::json_get(req, "data") {
+                    Some(base_codec::Json::Str(b64)) => {
+                      match base64::decode(b64) {
+                        Ok(dec) => if is_zstd_magic(dec) { Some(dec) } else { None }
+                        Err(_) => None
+                      }
+                    }
+                    _ => None
+                  }
+                }
+              }
+            } else {
+              None
+            }
           }
-          None => false
-        }
-        if is_sync_put {
-          match bin_opt {
-            Some(b) => if is_zstd_magic(b) { Some(b) } else { None }
-            None => None
-          }
-        } else {
-          None
+          None => None
         }
       }
       _ => None
@@ -1606,7 +1692,13 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     // On `GoneTimedOut` (40s), log a warning once and KEEP WAITING while `prior_pid` is still alive
     // so we never overwrite `hub.json`, lift `rig.held`, or double-own jobs while the old daemon runs.
     if !handover_done {
-      match prev_proc.rig_barrier(now, station_ops::is_pid_alive) {
+      let check_prev = fn(_p : Int) -> Bool {
+        match prev_identity {
+          Some(id) => station_ops::is_same_predecessor_alive(id)
+          None => false
+        }
+      }
+      match prev_proc.rig_barrier(now, check_prev) {
         station_ops::PreviousStatus::Waiting => ()
         station_ops::PreviousStatus::Exited => {
           handover_done = true
@@ -1684,11 +1776,16 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
             ActiveOutbound::{
               id: oid,
               peer: tell.peer,
+              method: tell.method,
+              ref_id: tell.ref_id,
               payload: tell.payload,
               attempts: tell.attempts,
               created_at_ms: tell.created_at_ms,
+              started_at_ms: now,
               conn_id: None,
               stream_id: None,
+              sock_id: None,
+              reply_buf: Bytes::new(0),
             },
           )
           let ips = match peer_ips.get(tell.peer) {
@@ -1721,8 +1818,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                     "addr",
                     base_codec::json_obj([
                       ("id", base_codec::json_str(tell.peer)),
-                      ("relayUrls", base_codec::json_arr(relays_j)),
-                      ("addrs", base_codec::json_arr(ips_j)),
+                      ("relays", base_codec::json_arr(relays_j)),
+                      ("ips", base_codec::json_arr(ips_j)),
                     ]),
                   ),
                   ("alpn", base_codec::json_str(base_codec::hex_encode(station_mesh::PEER_ALPN.to_bytes()))),
@@ -1785,14 +1882,72 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       let _ = job_mgr.poll_followed(wall)
       let _ = remote_mgr.drain_queue(wall)
 
-      // Enforce `vault.run` / `vault.capture` deadlines over active runs only (bounded).
+      // Enforce `vault.run` / `vault.capture` command + grant deadlines over active runs only (bounded).
+      let wall_sec = wall / 1000L
       for vi in 0..<active_vault_ev_ids.length() {
         let vev = active_vault_ev_ids[vi]
         match active_vault_runs.get(vev) {
           Some(run) => {
-            if !run.exited && !run.timed_out && now >= run.deadline_ms {
+            let expired_grant = run.grant_exp_sec > 0L && wall_sec >= run.grant_exp_sec
+            if !run.exited && !run.timed_out && (now >= run.deadline_ms || expired_grant) {
               run.timed_out = true
               let _ = run.handle.kill(station_sys::SIG_KILL, true)
+            }
+          }
+          None => ()
+        }
+      }
+
+      // Enforce 15s timeout on in-flight outbound tell slots so silent peers cannot permanently occupy slots.
+      let ob_keys = active_outbounds.keys()
+      for oi in 0..<ob_keys.length() {
+        let oid = ob_keys[oi]
+        match active_outbounds.get(oid) {
+          Some(ob) => {
+            if now - ob.started_at_ms >= TELL_SLOT_TIMEOUT_MS {
+              active_outbounds.remove(oid)
+              match ob.conn_id {
+                Some(cid) => {
+                  if mesh_ep_id is Some(_) {
+                    call_envelope(mux_mesh, 0, MESH_TOK_OUT_CLOSE, oid, mesh_door::direct_conn_close(cid, 0, ""))
+                  }
+                }
+                None => ()
+              }
+              match ob.sock_id {
+                Some(sid) => {
+                  front_out_by_sock.remove(sid)
+                  front_streams.remove(sid)
+                  let _ = mux_mesh.call_async_raw(
+                    builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sid),
+                    "tcp.close",
+                    base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+                    None,
+                  )
+                }
+                None => ()
+              }
+              requeue_outbound(ob)
+            }
+          }
+          None => ()
+        }
+      }
+
+      // Enforce 15s inbound front stream read timeout.
+      let f_keys = front_streams.keys()
+      for fi in 0..<f_keys.length() {
+        let fsid = f_keys[fi]
+        match front_streams.get(fsid) {
+          Some(fs) => {
+            if fs.kind != 1 && !fs.rpc_dispatched && now - fs.opened_at >= STREAM_READ_TIMEOUT_MS {
+              front_streams.remove(fsid)
+              let _ = mux_mesh.call_async_raw(
+                builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, fsid),
+                "tcp.close",
+                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(fsid))])),
+                None,
+              )
             }
           }
           None => ()
@@ -2254,12 +2409,12 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                     call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, chunk))
                                   } else {
                                     pending_file_streams.remove(sid)
-                                    call_envelope(mux_mesh, 0, MESH_TOK_FINISH, sid, mesh_door::direct_istream_finish(sid))
+                                    call_envelope(mux_mesh, 0, MESH_TOK_FINISH, sid, mesh_door::direct_istream_reset(sid, 1))
                                   }
                                 }
                                 None => {
                                   pending_file_streams.remove(sid)
-                                  call_envelope(mux_mesh, 0, MESH_TOK_FINISH, sid, mesh_door::direct_istream_finish(sid))
+                                  call_envelope(mux_mesh, 0, MESH_TOK_FINISH, sid, mesh_door::direct_istream_reset(sid, 1))
                                 }
                               }
                             } else {
@@ -2398,34 +2553,56 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                     let oid = tag
                     match active_outbounds.get(oid) {
                       Some(ob) => {
-                        let mut should_retry = false
+                        let mut done_read = false
+                        let mut read_err = false
                         match builders_core::decode_shell_done(d) {
                           Ok((_, Some(reply_b))) => {
-                            let reply_str = bytes_to_str_local(reply_b, reply_b.length())
-                            match base_codec::json_parse(reply_str) {
-                              base_codec::JsonParseResult::Ok(rj) => {
-                                match base_codec::json_get(rj, "error") {
-                                  Some(base_codec::Json::Str(emsg)) => {
-                                    if !is_permanent_tell_refusal(emsg) {
-                                      should_retry = true
-                                    }
-                                  }
-                                  _ => ()
-                                }
+                            if reply_b.length() > 0 {
+                              if ob.reply_buf.length() + reply_b.length() <= mesh_wire::MAX_PEER_MESSAGE {
+                                ob.reply_buf = concat_bytes_local(ob.reply_buf, reply_b)
                               }
-                              _ => ()
+                              match ob.stream_id {
+                                Some(sid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_READ, oid, mesh_door::direct_istream_read(sid))
+                                None => done_read = true
+                              }
+                            } else {
+                              done_read = true
                             }
                           }
-                          Err(_) => should_retry = true
-                          _ => ()
+                          Ok((_, None)) => done_read = true
+                          Err(_) => {
+                            done_read = true
+                            read_err = true
+                          }
                         }
-                        match ob.conn_id {
-                          Some(cid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_CLOSE, oid, mesh_door::direct_conn_close(cid, 0, ""))
-                          None => ()
-                        }
-                        active_outbounds.remove(oid)
-                        if should_retry {
-                          requeue_outbound(ob)
+                        if done_read {
+                          let (should_retry, until_opt) = if read_err {
+                            (true, None)
+                          } else {
+                            parse_tell_reply(bytes_to_str_local(ob.reply_buf, ob.reply_buf.length()))
+                          }
+                          if !should_retry && ob.method == "vault.used" && ob.ref_id.length() > 0 {
+                            match until_opt {
+                              Some(until_sec) => {
+                                match vault_id_to_ev.get(ob.ref_id) {
+                                  Some(vev) => match active_vault_runs.get(vev) {
+                                    Some(run) => run.grant_exp_sec = until_sec
+                                    None => ()
+                                  }
+                                  None => ()
+                                }
+                              }
+                              None => ()
+                            }
+                          }
+                          match ob.conn_id {
+                            Some(cid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_CLOSE, oid, mesh_door::direct_conn_close(cid, 0, ""))
+                            None => ()
+                          }
+                          active_outbounds.remove(oid)
+                          if should_retry {
+                            requeue_outbound(ob)
+                          }
                         }
                       }
                       None => ()
@@ -2592,8 +2769,11 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                     }
                                     if fconn >= 0L {
                                       front_conns.set(fconn, ActivePeerConn::{ id: fconn, remote_id: remote_id, alpn: alpn })
+                                      front_send_ask("conn.closed", [("conn", base_codec::json_int64(fconn))], "conn_closed", fconn)
                                     }
                                   }
+                                } else if k == "conn_closed" && oid > 0L {
+                                  front_conns.remove(oid)
                                 } else if k == "out_connect" && oid > 0L {
                                   match active_outbounds.get(oid) {
                                     Some(ob) => {
@@ -2604,8 +2784,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                       if fconn >= 0L {
                                         ob.conn_id = Some(fconn)
                                         front_send_ask(
-                                          "open",
-                                          [("conn", base_codec::json_int64(fconn)), ("both", base_codec::json_bool(true))],
+                                          "openBi",
+                                          [("conn", base_codec::json_int64(fconn))],
                                           "out_open",
                                           oid,
                                         )
@@ -2621,14 +2801,31 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                     Some(ob) => {
                                       let fsid = match ok_val {
                                         base_codec::Json::Num(n, _) => n.to_int64()
-                                        _ => match base_codec::json_get(ok_val, "id") {
+                                        _ => match base_codec::json_get(ok_val, "stream") {
                                           Some(base_codec::Json::Num(n, _)) => n.to_int64()
-                                          _ => -1L
+                                          _ => match base_codec::json_get(ok_val, "id") {
+                                            Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                                            _ => -1L
+                                          }
                                         }
                                       }
                                       if fsid >= 0L {
                                         ob.stream_id = Some(fsid)
-                                        front_out_by_stream.set(fsid, oid)
+                                        match front_early_out_socks.get(fsid) {
+                                          Some(early_sock) => {
+                                            front_early_out_socks.remove(fsid)
+                                            front_out_by_sock.set(early_sock, oid)
+                                            ob.sock_id = Some(early_sock)
+                                            let framed = concat_bytes_local(front_encode_frames(ob.payload), front_encode_end_frame())
+                                            let _ = mux_mesh.call_async_raw(
+                                              builders_core::MuxToken::Tagged(0, FRONT_TOK_OUT_WRITE, oid),
+                                              "tcp.write",
+                                              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(early_sock))])),
+                                              Some(framed),
+                                            )
+                                          }
+                                          None => front_out_by_stream.set(fsid, oid)
+                                        }
                                       } else {
                                         active_outbounds.remove(oid)
                                         requeue_outbound(ob)
@@ -2652,6 +2849,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                 if k == "bind" {
                                   mesh_binding = false
                                   rig_log("front bind error: " + msg)
+                                } else if k == "conn_closed" && oid > 0L {
+                                  front_conns.remove(oid)
                                 } else if (k == "out_connect" || k == "out_open") && oid > 0L {
                                   match active_outbounds.get(oid) {
                                     Some(ob) => {
@@ -2677,12 +2876,52 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                           front_ctrl_id = None
                           mesh_bound = false
                           mesh_binding = false
+                          let fc_ks = front_conns.keys()
+                          for fci in 0..<fc_ks.length() {
+                            front_conns.remove(fc_ks[fci])
+                          }
+                          match front_stream_srv_id {
+                            Some(srv_id) => {
+                              front_stream_srv_id = None
+                              let _ = mux_mesh.call_async_raw(
+                                builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, srv_id),
+                                "tcp.close",
+                                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(srv_id))])),
+                                None,
+                              )
+                            }
+                            None => ()
+                          }
+                          if !stopping {
+                            // timer: front control disconnect reconnect backoff
+                            next_mesh_bind_ms = host_shim::now_ms() + 250L
+                          }
                         }
                       }
                       _ => {
                         front_ctrl_id = None
                         mesh_bound = false
                         mesh_binding = false
+                        let fc_ks = front_conns.keys()
+                        for fci in 0..<fc_ks.length() {
+                          front_conns.remove(fc_ks[fci])
+                        }
+                        match front_stream_srv_id {
+                          Some(srv_id) => {
+                            front_stream_srv_id = None
+                            let _ = mux_mesh.call_async_raw(
+                              builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, srv_id),
+                              "tcp.close",
+                              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(srv_id))])),
+                              None,
+                            )
+                          }
+                          None => ()
+                        }
+                        if !stopping {
+                          // timer: front control error reconnect backoff
+                          next_mesh_bind_ms = host_shim::now_ms() + 250L
+                        }
                       }
                     }
                   } else if kind == FRONT_TOK_STREAM_ACCEPT {
@@ -2702,10 +2941,20 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                           _ => -1L
                         }
                         if sock_id >= 0L {
+                          if front_streams.length() >= MAX_ACTIVE_STREAMS {
+                            let _ = mux_mesh.call_async_raw(
+                              builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
+                              "tcp.close",
+                              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                              None,
+                            )
+                            return
+                          }
                           front_streams.set(
                             sock_id,
                             FrontStreamState::{
                               sock_id: sock_id,
+                              opened_at: host_shim::now_ms(),
                               header_done: false,
                               conn_id: -1L,
                               stream_id: -1L,
@@ -2791,9 +3040,10 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                     front_out_by_sock.set(sock_id, oid)
                                     match active_outbounds.get(oid) {
                                       Some(ob) => {
+                                        ob.sock_id = Some(sock_id)
                                         let framed = concat_bytes_local(front_encode_frames(ob.payload), front_encode_end_frame())
                                         let _ = mux_mesh.call_async_raw(
-                                          builders_core::MuxToken::Tagged(0, FRONT_TOK_CTRL_WRITE, 0L),
+                                          builders_core::MuxToken::Tagged(0, FRONT_TOK_OUT_WRITE, oid),
                                           "tcp.write",
                                           base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
                                           Some(framed),
@@ -2802,14 +3052,29 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                       None => ()
                                     }
                                   }
-                                  None => ()
+                                  None => front_early_out_socks.set(fs.stream_id, sock_id)
                                 }
                               }
                             }
                             let mut stream_eof = false
+                            let max_fbuf = if fs.rpc_expect_binary {
+                              station_jobs::REMOTE_CHUNK + 65536
+                            } else {
+                              mesh_wire::MAX_PEER_MESSAGE
+                            }
                             while data.length() > 0 && !stream_eof {
                               if fs.frame_left > 0 {
                                 let take = if fs.frame_left < data.length() { fs.frame_left } else { data.length() }
+                                if fs.payload_buf.length() + take > max_fbuf {
+                                  front_streams.remove(sock_id)
+                                  let _ = mux_mesh.call_async_raw(
+                                    builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
+                                    "tcp.close",
+                                    base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
+                                    None,
+                                  )
+                                  return
+                                }
                                 fs.payload_buf = concat_bytes_local(fs.payload_buf, slice_bytes_local(data, 0, take))
                                 fs.frame_left = fs.frame_left - take
                                 data = slice_bytes_local(data, take, data.length())
@@ -2844,20 +3109,36 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                     front_out_by_sock.remove(sock_id)
                                     match active_outbounds.get(oid) {
                                       Some(ob) => {
-                                        let mut should_retry = false
                                         let rstr = bytes_to_str_local(fs.payload_buf, fs.payload_buf.length())
-                                        match base_codec::json_parse(rstr) {
-                                          base_codec::JsonParseResult::Ok(rj) => {
-                                            match base_codec::json_get(rj, "error") {
-                                              Some(base_codec::Json::Str(emsg)) => {
-                                                if !is_permanent_tell_refusal(emsg) {
-                                                  should_retry = true
+                                        let (should_retry, until_opt) = parse_tell_reply(rstr)
+                                        if !should_retry && ob.method == "vault.used" && ob.ref_id.length() > 0 {
+                                          match until_opt {
+                                            Some(until_sec) => {
+                                              match vault_id_to_ev.get(ob.ref_id) {
+                                                Some(vev) => match active_vault_runs.get(vev) {
+                                                  Some(run) => run.grant_exp_sec = until_sec
+                                                  None => ()
                                                 }
+                                                None => ()
                                               }
-                                              _ => ()
                                             }
+                                            None => ()
                                           }
-                                          _ => ()
+                                        }
+                                        match ob.conn_id {
+                                          Some(fconn) => {
+                                            front_send_ask(
+                                              "conn.close",
+                                              [
+                                                ("conn", base_codec::json_int64(fconn)),
+                                                ("code", base_codec::json_int(0)),
+                                                ("reason", base_codec::json_str("")),
+                                              ],
+                                              "out_close",
+                                              0L,
+                                            )
+                                          }
+                                          None => ()
                                         }
                                         active_outbounds.remove(oid)
                                         if should_retry {
@@ -2976,17 +3257,17 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                       builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_WRITE, sock_id),
                                       "tcp.write",
                                       base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
-                                      Some(front_encode_end_frame()),
+                                      Some(front_encode_failed_frame("file truncated during read")),
                                     )
                                   }
                                 }
                                 None => {
                                   pending_file_streams.remove(sock_id)
                                   let _ = mux_mesh.call_async_raw(
-                                    builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sock_id),
-                                    "tcp.close",
+                                    builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_WRITE, sock_id),
+                                    "tcp.write",
                                     base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
-                                    None,
+                                    Some(front_encode_failed_frame("file read failed")),
                                   )
                                 }
                               }

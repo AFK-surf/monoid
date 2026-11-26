@@ -153,6 +153,19 @@ pub fn format_hub_json(pid : Int) -> String {
   "{\"pid\":" + pid.to_string() + "}\n"
 }
 
+pub fn format_hub_json_with_start(pid : Int, proc_start_time_ms : Option[Int64]) -> String {
+  match proc_start_time_ms {
+    Some(st) => {
+      if st > 0L {
+        "{\"pid\":" + pid.to_string() + ",\"procStartTimeMs\":" + st.to_string() + "}\n"
+      } else {
+        format_hub_json(pid)
+      }
+    }
+    None => format_hub_json(pid)
+  }
+}
+
 pub fn format_ports_json(port : Int) -> String {
   "{\"admin\":" + port.to_string() + "}\n"
 }
@@ -584,6 +597,7 @@ pub struct VaultExecRequest {
   pub env_pairs : Array[(String, String)]
   pub secret_values : Array[String]
   pub timeout_ms : Int64
+  pub grant_exp_sec : Int64
   pub idle_timeout_sec : Int64
   pub capture : Bool
 }
@@ -740,8 +754,8 @@ fn safe_write_under(
             if st.is_symlink() || !st.is_file() {
               return Err("file path is not a regular file")
             }
-            if st.size != offset {
-              return Err("offset mismatch: expected " + st.size.to_string())
+            if offset > st.size {
+              return Err("offset mismatch: expected <= " + st.size.to_string())
             }
           }
           None => return Err("offset mismatch: file does not exist")
@@ -764,9 +778,11 @@ fn safe_write_under(
   }
 }
 
-/// Recursively scan `mirror_dir` for regular files (skipping symlinks), returning sorted `[path, blobId, mode]` tuples.
+/// Recursively scan `mirror_dir` for regular files (skipping symlinks), returning sorted `[path, blobId, mode]` tuples
+/// and using FD-level `safe_read_under` (`O_NOFOLLOW`) to avoid TOCTOU/FIFO hangs.
 fn scan_mirror_entries(
   fs : station_jobs::FsPort,
+  hooks : RigDispatchHooks,
   mirror_dir : String,
   rel_prefix : String,
   out : Array[base_codec::Json],
@@ -799,18 +815,19 @@ fn scan_mirror_entries(
           continue
         }
         if st.is_dir() {
-          scan_mirror_entries(fs, mirror_dir, child_rel, out)
+          scan_mirror_entries(fs, hooks, mirror_dir, child_rel, out)
         } else if st.is_file() {
-          let bytes = match (fs.read_range)(full, 0L, st.size) {
-            Some(b) => b
-            None => Bytes::new(0)
+          match safe_read_under(fs, hooks, mirror_dir, child_rel, 0L, st.size.to_int()) {
+            Ok((bytes, _)) => {
+              let bid = station_jobs::dirsync_blob_id(bytes)
+              out.push(base_codec::json_arr([
+                base_codec::json_str(child_rel),
+                base_codec::json_str(bid),
+                base_codec::json_str(station_jobs::DIRSYNC_FILE_MODE),
+              ]))
+            }
+            Err(_) => ()
           }
-          let bid = station_jobs::dirsync_blob_id(bytes)
-          out.push(base_codec::json_arr([
-            base_codec::json_str(child_rel),
-            base_codec::json_str(bid),
-            base_codec::json_str(station_jobs::DIRSYNC_FILE_MODE),
-          ]))
         }
       }
       None => ()
@@ -1074,7 +1091,7 @@ pub fn dispatch_rig_peer_rpc_ext(
         None => ()
       }
       let actual_entries : Array[base_codec::Json] = []
-      scan_mirror_entries(remote.fs, mirror_dir, "", actual_entries)
+      scan_mirror_entries(remote.fs, hooks, mirror_dir, "", actual_entries)
       let sid = station_jobs::remote_task_id(ws, peer, session, rec.key + ":" + now_ms.to_string())
       let _ = (remote.fs.remove_dir_all)(sync_dir)
       if !(remote.fs.mkdir_p)(blobs_dir) {
@@ -1279,8 +1296,31 @@ pub fn dispatch_rig_peer_rpc_ext(
         None => ""
       }
       let plan_lines = plan_raw.split("\n")
-      let mut written = 0
-      let mut removed = 0
+      // Phase 1: parse and validate the ENTIRE plan (both removes and sets) and resolve all blob contents
+      // (reusing existing mirror files by Git SHA-1 for renames/unchanged blobs) BEFORE mutating any file on disk.
+      let existing_entries : Array[base_codec::Json] = []
+      scan_mirror_entries(remote.fs, hooks, mirror_dir, "", existing_entries)
+      let by_hash : Map[String, String] = Map::new()
+      for ei in 0..<existing_entries.length() {
+        match existing_entries[ei] {
+          base_codec::Json::Arr(et) => {
+            if et.length() >= 2 {
+              match (et[0], et[1]) {
+                (base_codec::Json::Str(ep), base_codec::Json::Str(eh)) => {
+                  if !by_hash.contains(eh) {
+                    by_hash.set(eh, ep)
+                  }
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+      let all_removes : Array[String] = []
+      let resolved_sets : Array[(String, Bytes, Int)] = []
+      let set_paths : Map[String, Bool] = Map::new()
       for li in 0..<plan_lines.length() {
         let ln = plan_lines[li]
         if ln.length() == 0 {
@@ -1295,17 +1335,12 @@ pub fn dispatch_rig_peer_rpc_ext(
             for ri in 0..<rems.length() {
               match rems[ri] {
                 base_codec::Json::Str(rel) => {
-                  let abs = match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
-                    Ok(p) => p
+                  match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+                    Ok(_) => all_removes.push(rel)
                     Err(e) => return Err(e)
                   }
-                  if (remote.fs.lstat)(abs) is Some(_) {
-                    if (remote.fs.remove_file)(abs) {
-                      removed = removed + 1
-                    }
-                  }
                 }
-                _ => ()
+                _ => return Err("invalid remove entry")
               }
             }
           }
@@ -1334,23 +1369,36 @@ pub fn dispatch_rig_peer_rpc_ext(
                   if !is_hex40(hash) {
                     return Err("invalid blob hash in plan")
                   }
-                  let blob_path = nodepath::join(remote.fs.sep, [blobs_dir, hash])
-                  let bst = match (remote.fs.lstat)(blob_path) {
-                    Some(st) => st
-                    None => return Err("the content of " + rel + " was not sent")
+                  match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+                    Ok(_) => ()
+                    Err(e) => return Err(e)
                   }
-                  let content = match (remote.fs.read_range)(blob_path, 0L, bst.size) {
-                    Some(b) => b
-                    None => return Err("failed to read staged blob for " + rel)
+                  let blob_path = nodepath::join(remote.fs.sep, [blobs_dir, hash])
+                  let content : Bytes = match (remote.fs.lstat)(blob_path) {
+                    Some(bst) => {
+                      match (remote.fs.read_range)(blob_path, 0L, bst.size) {
+                        Some(b) => b
+                        None => return Err("failed to read staged blob for " + rel)
+                      }
+                    }
+                    None => {
+                      match by_hash.get(hash) {
+                        Some(src_rel) => {
+                          match safe_read_under(remote.fs, hooks, mirror_dir, src_rel, 0L, station_jobs::DIRSYNC_RAW_MAX) {
+                            Ok((b, _)) => b
+                            Err(_) => return Err("the content of " + rel + " was not sent")
+                          }
+                        }
+                        None => return Err("the content of " + rel + " was not sent")
+                      }
+                    }
                   }
                   if station_jobs::dirsync_blob_id(content) != hash {
                     return Err("staged blob hash mismatch for " + rel)
                   }
                   let fmode = if mode_s == station_jobs::DIRSYNC_EXEC_MODE { 493 } else { 420 }
-                  match safe_write_under(remote.fs, hooks, mirror_dir, rel, content, 0L, fmode, true) {
-                    Ok(_) => written = written + 1
-                    Err(e) => return Err(e)
-                  }
+                  resolved_sets.push((rel, content, fmode))
+                  set_paths.set(rel, true)
                 }
                 _ => return Err("invalid set entry")
               }
@@ -1359,8 +1407,33 @@ pub fn dispatch_rig_peer_rpc_ext(
           _ => ()
         }
       }
+      // Phase 2: apply all validated writes and removals only after full verification succeeded.
+      let mut written = 0
+      let mut removed = 0
+      for si in 0..<resolved_sets.length() {
+        let (rel, content, fmode) = resolved_sets[si]
+        match safe_write_under(remote.fs, hooks, mirror_dir, rel, content, 0L, fmode, true) {
+          Ok(_) => written = written + 1
+          Err(e) => return Err(e)
+        }
+      }
+      for ri in 0..<all_removes.length() {
+        let rel = all_removes[ri]
+        if set_paths.contains(rel) {
+          continue
+        }
+        let abs = match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+          Ok(p) => p
+          Err(e) => return Err(e)
+        }
+        if (remote.fs.lstat)(abs) is Some(_) {
+          if (remote.fs.remove_file)(abs) {
+            removed = removed + 1
+          }
+        }
+      }
       let new_entries : Array[base_codec::Json] = []
-      scan_mirror_entries(remote.fs, mirror_dir, "", new_entries)
+      scan_mirror_entries(remote.fs, hooks, mirror_dir, "", new_entries)
       let new_ver = prev_ver + 1
       let m_json = base_codec::json_stringify(base_codec::json_obj([
         ("version", base_codec::json_int(new_ver)),
@@ -1717,12 +1790,36 @@ pub fn dispatch_rig_peer_rpc_ext(
     if offset < 0L {
       return Err("invalid negative offset")
     }
-    let is_final = json_bool_field(env.request, "final", fallback=false)
+    let explicit_final : Option[Bool] = match base_codec::json_get(env.request, "final") {
+      Some(base_codec::Json::Bool(b)) => Some(b)
+      _ => None
+    }
+    let req_size_opt : Option[Int64] = match base_codec::json_get(env.request, "size") {
+      Some(base_codec::Json::Num(d, _)) => Some(d.to_int64())
+      _ => None
+    }
+    let is_whole = match (req_size_opt, explicit_final) {
+      (Some(expected_sz), None) => {
+        if offset != 0L || data_bytes.length().to_int64() != expected_sz {
+          return Err("file size mismatch: expected " + expected_sz.to_string())
+        }
+        true
+      }
+      (Some(expected_sz), Some(true)) => {
+        if offset == 0L && data_bytes.length().to_int64() != expected_sz {
+          return Err("file size mismatch: expected " + expected_sz.to_string())
+        }
+        true
+      }
+      _ => false
+    }
+    let is_final = is_whole || (match explicit_final { Some(b) => b; None => false })
+    let truncate_end = is_final || offset == 0L
     match remote.record_task_upload(rec, rel, false) {
       Ok(_) => ()
       Err(e) => return Err(e)
     }
-    match safe_write_under(remote.fs, hooks, work, rel, data_bytes, offset, 384, is_final && offset == 0L) {
+    match safe_write_under(remote.fs, hooks, work, rel, data_bytes, offset, 384, truncate_end) {
       Ok(_) => ()
       Err(e) => return Err(e)
     }
@@ -1877,6 +1974,7 @@ pub fn dispatch_rig_peer_rpc_ext(
         env_pairs: [],
         secret_values: [],
         timeout_ms: timeout_ms,
+        grant_exp_sec: 0L,
         idle_timeout_sec: 0L,
         capture: true,
       }
@@ -1949,12 +2047,6 @@ pub fn dispatch_rig_peer_rpc_ext(
     } else {
       now_sec + (timeout_ms / 1000L) + 60L
     }
-    let max_by_grant_ms = (exp_sec - now_sec) * 1000L
-    let eff_timeout_ms = if max_by_grant_ms > 0L && max_by_grant_ms < timeout_ms {
-      max_by_grant_ms
-    } else {
-      timeout_ms
-    }
     match incoming.start_run(id, peer, session, command, under, grant_id, exp_sec, req_grant_timeout) {
       Ok(_) => ()
       Err(e) => return Err(e)
@@ -1968,7 +2060,8 @@ pub fn dispatch_rig_peer_rpc_ext(
       cwd: cwd,
       env_pairs: [(env_name, secret_val)],
       secret_values: secret_values,
-      timeout_ms: eff_timeout_ms,
+      timeout_ms: timeout_ms,
+      grant_exp_sec: exp_sec,
       idle_timeout_sec: req_grant_timeout,
       capture: false,
     }

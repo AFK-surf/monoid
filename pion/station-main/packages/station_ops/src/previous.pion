@@ -28,6 +28,80 @@ pub fn is_pid_alive(pid : Int) -> Bool {
   )
 }
 
+/// Identity of a previous station process read from `<run>/hub.json`, including optional
+/// `procStartTimeMs` and file mtime to defeat PID-reuse and `{pid: 1}` deadlocks.
+pub struct PreviousIdentity {
+  pub pid : Int
+  pub start_time_ms : Option[Int64]
+  pub file_mtime_ms : Option[Int64]
+}
+
+/// Read the previous station process identity from `<run>/hub.json`, returning `None` if absent,
+/// `pid <= 1`, or equal to `self_pid`.
+pub fn read_previous_identity(
+  fs : OpsFs,
+  run_dir : String,
+  self_pid : Int,
+  sep : String = "/",
+) -> Option[PreviousIdentity] {
+  let hub_path = nodepath::join(sep, [run_dir, "hub.json"])
+  match fs.read_text(hub_path) {
+    Ok(text) => match base_codec::json_parse(text) {
+      base_codec::JsonParseResult::Ok(v) => match base_codec::json_get(v, "pid") {
+        Some(base_codec::Json::Num(d, _)) => {
+          let pid = d.to_int()
+          if pid.to_double() == d && pid > 1 && pid != self_pid {
+            let start_ms : Option[Int64] = match base_codec::json_get(v, "procStartTimeMs") {
+              Some(base_codec::Json::Num(sd, _)) => {
+                let sv = sd.to_int64()
+                if sv > 0L { Some(sv) } else { None }
+              }
+              _ => None
+            }
+            let mtime_ms : Option[Int64] = match (fs.stat)(hub_path) {
+              Ok(meta) => if meta.mtime_ms > 0L { Some(meta.mtime_ms) } else { None }
+              Err(_) => None
+            }
+            Some(PreviousIdentity::{ pid: pid, start_time_ms: start_ms, file_mtime_ms: mtime_ms })
+          } else {
+            None
+          }
+        }
+        _ => None
+      }
+      _ => None
+    }
+    Err(_) => None
+  }
+}
+
+/// Returns `true` iff `id` still refers to a live same-UID predecessor process (rejects `pid <= 1`,
+/// `ESRCH`/`EPERM`, and PID reuse where `proc_start_time_ms` differs by >5s from `procStartTimeMs`
+/// or exceeds `hub.json` mtime + 5s).
+pub fn is_same_predecessor_alive(id : PreviousIdentity) -> Bool {
+  if id.pid <= 1 {
+    return false
+  }
+  // Only rc == 0 means a live process we can signal (same UID); ESRCH and EPERM both return != 0.
+  if station_sys::proc_kill(id.pid, station_sys::SIG_PROBE, false) != 0 {
+    return false
+  }
+  match (id.start_time_ms, station_sys::proc_start_time_ms(id.pid)) {
+    (Some(expected), Some(actual)) => {
+      let diff = if actual >= expected { actual - expected } else { expected - actual }
+      diff <= 5000L
+    }
+    (Some(_), None) => false
+    (None, Some(actual)) => {
+      match id.file_mtime_ms {
+        Some(mtime) => actual <= mtime + 5000L
+        None => true
+      }
+    }
+    _ => false
+  }
+}
+
 /// Read the previous station process PID from `<run>/hub.json`, returning `None` if absent
 /// or equal to `self_pid`.
 pub fn read_previous_pid(

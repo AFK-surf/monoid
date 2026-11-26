@@ -416,7 +416,7 @@ pub fn derive_mirror_name(dir : String, claimed : Map[String, String]) -> String
     } else {
       (1, 1)
     }
-    if utf16_units + units > 100 {
+    if utf16_units >= 100 {
       break
     }
     if seq_len == 1 && b0 < 0x80 {
@@ -2189,25 +2189,51 @@ pub fn RemoteManager::record_task_upload(
   rel_path : String,
   complete : Bool,
 ) -> Result[Unit, String] {
+  let prev = task.uploads.get(rel_path)
   task.uploads.set(rel_path, complete)
-  self.persist_incoming_task(task)
+  match self.persist_incoming_task(task) {
+    Ok(_) => Ok(())
+    Err(e) => {
+      match prev {
+        Some(v) => task.uploads.set(rel_path, v)
+        None => task.uploads.remove(rel_path)
+      }
+      Err(e)
+    }
+  }
 }
 
 pub fn RemoteManager::mark_task_synced(
   self : RemoteManager,
   task : RemoteTaskRecord,
 ) -> Result[Unit, String] {
+  let prev = task.synced
   task.synced = true
-  self.persist_incoming_task(task)
+  match self.persist_incoming_task(task) {
+    Ok(_) => Ok(())
+    Err(e) => {
+      task.synced = prev
+      Err(e)
+    }
+  }
 }
 
 pub fn RemoteManager::mark_task_collected(
   self : RemoteManager,
   task : RemoteTaskRecord,
 ) -> Result[Unit, String] {
+  let prev_c = task.collected
+  let prev_p = task.pending_results
   task.collected = true
   task.pending_results = false
-  self.persist_incoming_task(task)
+  match self.persist_incoming_task(task) {
+    Ok(_) => Ok(())
+    Err(e) => {
+      task.collected = prev_c
+      task.pending_results = prev_p
+      Err(e)
+    }
+  }
 }
 
 pub fn RemoteManager::start_scoped(
