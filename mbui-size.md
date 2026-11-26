@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bf32a2d88](https://github.com/AFK-surf/monoid/commit/bf32a2d884598c30ce17eaddf4032bad1ae3d870) test(mbui): replay draft recovery after the core s | 2.64 | 3.57 | 14.78 | 37.74 | 57.62 | 33.05 | 67.5 | 101.79 | 129.3 |
 | [1afb96bec](https://github.com/AFK-surf/monoid/commit/1afb96bec74ed022c8ac2856f9526d6578da8830) feat(station): bundle and sign opt-in stillfail-st | 2.64 | 3.57 | 14.78 | 37.74 | 57.62 | 33.05 | 67.5 | 101.65 | 131.48 |
 | [d79f39aa4](https://github.com/AFK-surf/monoid/commit/d79f39aa42f44a7379be26c2ec3297218e6fc561) fix(mbui): build the Apple core for local Mac e2e  | 2.64 | 3.57 | 14.78 | 37.74 | 57.62 | 33.05 | 67.5 | 101.6 | 129.9 |
 | [4434a902f](https://github.com/AFK-surf/monoid/commit/4434a902ffce7f55898c765c51cfc73bf6ad5c6e) perf(ui,mbui): optimize composite CJK text shaping | 2.64 | 3.57 | 14.78 | 37.74 | 57.62 | 33.05 | 67.5 | 101.6 | 129.9 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a3ee70d28](https://github.com/AFK-surf/monoid/commit/a3ee70d284d95d6e735a18f823da4c0727a88ce9) fix(station): cancel CommaSurface.ask timeout time | 2.62 | 3.54 | 14.65 | 37.47 | 57.24 | 32.79 | 66.79 | 101.24 | 120.23 |
 | [94b4edb34](https://github.com/AFK-surf/monoid/commit/94b4edb34facbd730d75fe2544b39d44207af9d0) station: keep failed Feishu messages in the reconn | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.79 | 66.77 | 101.27 | 131.05 |
 | [b361c3fa4](https://github.com/AFK-surf/monoid/commit/b361c3fa47a916633e9a6bcd9fcddaff09f2abfe) station: preserve dangling links already in the tr | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.79 | 66.77 | 101.27 | 131.05 |
-| [fee10277e](https://github.com/AFK-surf/monoid/commit/fee10277e9b088e70d65f6c7dfa95f060f9b6481) fix(mbui): open Mermaid charts when the picture is | 2.62 | 3.54 | 14.65 | 37.46 | 57.23 | 32.79 | 66.77 | 101.27 | 131.05 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bf32a2d88](https://github.com/AFK-surf/monoid/commit/bf32a2d884598c30ce17eaddf4032bad1ae3d870) test(mbui): replay draft recovery after the core s | 0.59 | 0.77 | 2.98 | 4.02 | 7.42 | 2.21 | 6.24 | 57.67 |
 | [1afb96bec](https://github.com/AFK-surf/monoid/commit/1afb96bec74ed022c8ac2856f9526d6578da8830) feat(station): bundle and sign opt-in stillfail-st | 0.59 | 0.77 | 2.98 | 4.02 | 7.42 | 2.21 | 6.24 | 57.48 |
 | [d79f39aa4](https://github.com/AFK-surf/monoid/commit/d79f39aa42f44a7379be26c2ec3297218e6fc561) fix(mbui): build the Apple core for local Mac e2e  | 0.59 | 0.77 | 2.98 | 4.02 | 7.42 | 2.21 | 6.24 | 57.61 |
 | [4434a902f](https://github.com/AFK-surf/monoid/commit/4434a902ffce7f55898c765c51cfc73bf6ad5c6e) perf(ui,mbui): optimize composite CJK text shaping | 0.59 | 0.77 | 2.98 | 4.02 | 7.42 | 2.21 | 6.24 | 57.57 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a3ee70d28](https://github.com/AFK-surf/monoid/commit/a3ee70d284d95d6e735a18f823da4c0727a88ce9) fix(station): cancel CommaSurface.ask timeout time | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.72 |
 | [94b4edb34](https://github.com/AFK-surf/monoid/commit/94b4edb34facbd730d75fe2544b39d44207af9d0) station: keep failed Feishu messages in the reconn | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.53 |
 | [b361c3fa4](https://github.com/AFK-surf/monoid/commit/b361c3fa47a916633e9a6bcd9fcddaff09f2abfe) station: preserve dangling links already in the tr | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.54 |
-| [fee10277e](https://github.com/AFK-surf/monoid/commit/fee10277e9b088e70d65f6c7dfa95f060f9b6481) fix(mbui): open Mermaid charts when the picture is | 0.57 | 0.75 | 2.92 | 3.98 | 7.3 | 2.17 | 6.14 | 57.54 |
