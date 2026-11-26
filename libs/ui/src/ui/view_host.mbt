@@ -3975,7 +3975,7 @@ fn Ctx::view_blit(
     self.segs_put(made.segs, made.pack)
     base
   }
-  // (bare adaptive words: a soft ground under them first, seen only where what is behind them leaves their ink too
+  // (bare adaptive words: a capsule under them first, seen only where what is behind them leaves their ink too
   // little contrast, bare_text_veil)
   if glass_paint.ink_bare && glass_paint.ink_r > 0.0 {
     self.bare_text_veil(id, block, x, y, made.w, made.h, a)

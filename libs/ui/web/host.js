@@ -642,7 +642,7 @@
   vec3 vs_bare_adaptive_ink_at(vec3 rgb, vec2 ac, vec2 h) {
     return vs_bare_ink_pick(rgb, vs_backdrop_wcag_range(ac, max(h, vec2(1.0))));
   }
-  // (the soft ground under bare words of ink col, their box ac ± h: the blurred backdrop's own colour across the
+  // (the capsule under bare words of ink col, their box ac ± h: the blurred backdrop's own colour across the
   // middle of the box, pulled to the side opposite the words' ink (the frost it is drawn on, thicker there), as
   // opaque as the worst of what is behind them leaves them short of 4.5:1, from none there to all of it at 2:1)
   vec4 vs_bare_veil_at(vec4 col, vec2 ac, vec2 h) {

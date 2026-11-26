@@ -75,19 +75,20 @@ fn bare_text_ink(hw : Double, hh : Double) -> Double {
 }
 
 ///|
-/// How far the soft ground under bare adaptive words reaches past them (across, down) and how soft its edge is
-/// (a shadow's sigma), in points.
-let bare_veil_pad : (Double, Double) = (10.0, 6.0)
+/// How far the capsule under bare adaptive words reaches past them (across, down), in points, and its edge (a
+/// shadow's sigma: as sharp as a box's, a capsule, not a haze spreading out).
+let bare_veil_pad : (Double, Double) = (12.0, 5.0)
 
 ///|
-let bare_veil_soft : Double = 9.0
+let bare_veil_soft : Double = 0.5
 
 ///|
-/// Under bare adaptive words (a block of node `id` drawn at x, y, w × h, as opaque as `a`), a soft ground (kind 2, a
-/// shadow's blur) of their own ink, with their box in 21-23 as theirs (bare_text_ink): the hosts give it the blurred
-/// backdrop's own colour pulled to the side opposite the words' ink (the frost it is drawn on, thicker there) and an
-/// opacity rising as the worst of what is behind them leaves the words less than 4.5:1 (none above it), so a busy
-/// backdrop gets a ground that comes and goes with it as it moves, and a quiet one none. None for a block with no words.
+/// Under bare adaptive words (a block of node `id` drawn at x, y, w × h, as opaque as `a`), a capsule (kind 2, its
+/// edge sharp: bare_veil_soft) of their own ink, with their box in 21-23 as theirs (bare_text_ink): the hosts give it
+/// the blurred backdrop's own colour pulled to the side opposite the words' ink (the frost it is drawn on, thicker
+/// there) and an opacity rising as the worst of what is behind them leaves the words less than 4.5:1 (none above it),
+/// so over a busy backdrop a capsule fades in and out with it as it moves, and over a quiet one there is none. None for
+/// a block with no words.
 fn Ctx::bare_text_veil(
   self : Ctx,
   id : @view.NodeId,

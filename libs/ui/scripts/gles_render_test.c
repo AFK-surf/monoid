@@ -2541,14 +2541,14 @@ int main(void) {
           free(upx);
         }
 
-        // The soft ground under bare words (kind 2, slot 23 their box, as the tree's bare_text_veil puts it): over the
+        // The capsule under bare words (kind 2, slot 23 their box, as the tree's bare_text_veil puts it): over the
         // split the worst of what is behind them leaves their ink far short of 4.5:1, so it shows, opposite their ink,
         // where no glyph is (x=300 over the dark side); over one quiet colour it is not there at all
         {
           double vl[6 * MB_INST];
           memcpy(vl, wt, 3 * MB_INST * sizeof(double));
           rect_at(vl + 3 * MB_INST, 42, 6, 316, 28, 2, 0.11, 0.11, 0.11, 0);
-          vl[3 * MB_INST + 4] = 14.0; vl[3 * MB_INST + 7] = 6.0;
+          vl[3 * MB_INST + 4] = 14.0; vl[3 * MB_INST + 7] = 0.5;
           vl[3 * MB_INST + 21] = 200.0; vl[3 * MB_INST + 22] = 20.0; vl[3 * MB_INST + 23] = bare_ink(150, 10);
           memcpy(vl + 4 * MB_INST, wt + 3 * MB_INST, 2 * MB_INST * sizeof(double));
           for (int i = 0; i < 6; i++) { vl[i * MB_INST + 18] = 400.0; vl[i * MB_INST + 19] = 120.0; }

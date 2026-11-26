@@ -463,7 +463,7 @@ static NSString *shader_src = @
 "static float3 mb_bare_adaptive_ink_at(texture2d<float> bd, constant G& g, float3 rgb, float2 ac, float2 h) {\n"
 "  return mb_bare_ink_pick(rgb, mb_backdrop_wcag_range(bd, g, ac, max(h, float2(1.0))));\n"
 "}\n"
-"// (the soft ground under bare words of ink col, their box ac ± h: the blurred backdrop's own colour across the\n"
+"// (the capsule under bare words of ink col, their box ac ± h: the blurred backdrop's own colour across the\n"
 "// middle of the box, pulled to the side opposite the words' ink (the frost it is drawn on, thicker there), as\n"
 "// opaque as the worst of what is behind them leaves them short of 4.5:1, from none there to all of it at 2:1)\n"
 "static float4 mb_bare_veil_at(texture2d<float> bd, constant G& g, float4 col, float2 ac, float2 h) {\n"
