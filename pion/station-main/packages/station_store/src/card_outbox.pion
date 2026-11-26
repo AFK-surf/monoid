@@ -1,0 +1,482 @@
+// Card outcome outbox matching `station/src/store/card-outbox.ts`.
+// Provides atomic transactional enqueue (with idempotent dedup), head leasing,
+// atomic completion with successor promotion, rig CHECK widening, and crash recovery.
+// All transactions use `sql_db::Db::tx_err` / `Db::savepoint_err` (zero raw tx SQL).
+
+import "base_codec"
+import "sql_db"
+
+pub struct CardOutcome {
+  pub id : String
+  pub thread : Int64
+  pub ts : String
+  pub agent : String
+  pub field : String
+  pub close : Bool
+  pub outcome_json : String
+}
+
+pub enum CardPageResult {
+  Found(String)
+  Next(String)
+  End
+}
+
+pub let CARD_OUTBOX_DONE_KEEP : Int64 = 10000.to_int64()
+
+fn outbox_table_ddl(name : String) -> String {
+  "CREATE TABLE IF NOT EXISTS " +
+  name +
+  "(thread INTEGER NOT NULL, ts TEXT NOT NULL, id INTEGER NOT NULL," +
+  " agent TEXT NOT NULL, field TEXT NOT NULL CHECK(field IN ('adb','rig','signin','vault'))," +
+  " close_card INTEGER NOT NULL CHECK(close_card IN (0,1)), outcome TEXT NOT NULL," +
+  " PRIMARY KEY(thread, ts, id)) WITHOUT ROWID"
+}
+
+/// Lazily install `card_outbox_done` and its `AFTER DELETE ON card_outbox` trigger
+/// so both Pion and Node consumers automatically record completed dedup keys in the
+/// same transaction, with bounded retention (`CARD_OUTBOX_DONE_KEEP` = 10,000 IDs).
+fn ensure_card_outbox_done_in_tx(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS card_outbox_done(" +
+    "thread INTEGER NOT NULL, ts TEXT NOT NULL, agent TEXT NOT NULL, field TEXT NOT NULL," +
+    " close_card INTEGER NOT NULL, outcome TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL DEFAULT 0," +
+    " PRIMARY KEY(thread, ts, agent, field, close_card, outcome)) WITHOUT ROWID;" +
+    "CREATE INDEX IF NOT EXISTS card_outbox_done_seq ON card_outbox_done(seq);" +
+    "CREATE TRIGGER IF NOT EXISTS card_outbox_record_done AFTER DELETE ON card_outbox BEGIN INSERT OR IGNORE INTO card_outbox_done(thread, ts, agent, field, close_card, outcome, id, seq) VALUES(OLD.thread, OLD.ts, OLD.agent, OLD.field, OLD.close_card, OLD.outcome, CAST(OLD.id AS TEXT), OLD.id); DELETE FROM card_outbox_done WHERE seq <= OLD.id - 10000; END;",
+  )
+}
+
+fn is_valid_card_field(field : String) -> Bool {
+  field == "adb" || field == "rig" || field == "signin" || field == "vault"
+}
+
+fn validate_outcome_json(outcome_json : String) -> Result[Unit, sql_db::SqlError] {
+  match base_codec::json_parse(outcome_json) {
+    Ok(base_codec::Json::Obj(_)) => Ok(())
+    _ => Err(sql_db::sql_error(1, "card outcome must be a valid JSON object"))
+  }
+}
+
+fn find_dedup_outcome(
+  db : sql_db::Db,
+  thread : Int64,
+  ts : String,
+  agent : String,
+  field : String,
+  close_int : Int,
+  outcome_json : String,
+) -> Result[Option[String], sql_db::SqlError] {
+  let args : Array[base_codec::Json] = [
+    sql_db::int64_to_json(thread),
+    base_codec::json_str(ts),
+    base_codec::json_str(agent),
+    base_codec::json_str(field),
+    base_codec::json_int(close_int),
+    base_codec::json_str(outcome_json),
+  ]
+  match db.first(
+    "SELECT CAST(id AS TEXT) AS id FROM card_outbox WHERE thread = ?1 AND ts = ?2 AND agent = ?3 AND field = ?4 AND close_card = ?5 AND outcome = ?6 ORDER BY id LIMIT 1",
+    args,
+  ) {
+    Ok(Some(r)) => return Ok(Some(row_str(r, "id", "")))
+    Ok(None) => ()
+    Err(e) => return Err(e)
+  }
+  let has_done = match db.has_schema("table", "card_outbox_done") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !has_done {
+    return Ok(None)
+  }
+  match db.first(
+    "SELECT id FROM card_outbox_done WHERE thread = ?1 AND ts = ?2 AND agent = ?3 AND field = ?4 AND close_card = ?5 AND outcome = ?6 LIMIT 1",
+    args,
+  ) {
+    Ok(Some(r)) => Ok(Some(row_str(r, "id", "")))
+    Ok(None) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+/// Widen an older `card_outbox` table whose CHECK constraint pre-dated `'rig'`.
+fn take_rig_outcomes_in_tx(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  let sql = match db.sqlite_master_sql("table", "card_outbox") {
+    Ok(Some(s)) => s
+    Ok(None) => return Ok(())
+    Err(e) => return Err(e)
+  }
+  if str_contains(sql, "'rig'") {
+    return Ok(())
+  }
+  db.exec(
+    outbox_table_ddl("card_outbox_wider") +
+    "; INSERT INTO card_outbox_wider SELECT thread, ts, id, agent, field, close_card, outcome FROM card_outbox;" +
+    " DROP TABLE card_outbox;" +
+    " ALTER TABLE card_outbox_wider RENAME TO card_outbox;",
+  )
+}
+
+/// Check whether the card outbox tables are installed and version-compatible (`version == 1`).
+pub fn has_card_outbox(db : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+  let has_meta = match db.has_schema("table", "card_outbox_meta") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !has_meta {
+    return Ok(false)
+  }
+  let ver = match db.first("SELECT version FROM card_outbox_meta WHERE id = 1", []) {
+    Ok(Some(r)) => row_i64(r, "version", -1.to_int64()).to_int()
+    Ok(None) => -1
+    Err(e) => return Err(e)
+  }
+  if ver != 1 {
+    return Err(sql_db::sql_error(1, "card outcome outbox has an unsupported version"))
+  }
+  let count = match db.first(
+    "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('card_outbox', 'card_outbox_head')",
+    [],
+  ) {
+    Ok(Some(r)) => row_i64(r, "n", 0.to_int64()).to_int()
+    Ok(None) => 0
+    Err(e) => return Err(e)
+  }
+  if count != 2 {
+    return Err(sql_db::sql_error(1, "card outcome outbox tables are missing"))
+  }
+  Ok(true)
+}
+
+/// Install or upgrade constant-size card outbox tables inside a savepoint.
+/// Even when `card_outbox` already exists (e.g. created by an older Node station),
+/// always widens any pre-`'rig'` CHECK constraint BEFORE installing `card_outbox_done`
+/// and the `card_outbox_record_done` trigger so a subsequent `takeRigOutcomes` table
+/// rebuild cannot drop the trigger.
+pub fn install_card_outbox(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+  db.savepoint_err(
+    "card_outbox_install",
+    fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+      let already = match has_card_outbox(t) {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      if !already {
+        match t.exec(
+          "CREATE TABLE IF NOT EXISTS card_outbox_meta(id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, next_id INTEGER NOT NULL) WITHOUT ROWID;" +
+          "INSERT OR IGNORE INTO card_outbox_meta VALUES(1, 1, 0);",
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        let ver = match t.first("SELECT version FROM card_outbox_meta WHERE id = 1", []) {
+          Ok(Some(r)) => row_i64(r, "version", -1.to_int64()).to_int()
+          Ok(None) => -1
+          Err(e) => return Err(e)
+        }
+        if ver != 1 {
+          return Err(sql_db::sql_error(1, "card outcome outbox has an unsupported version"))
+        }
+        match t.exec(
+          outbox_table_ddl("card_outbox") +
+          "; CREATE TABLE IF NOT EXISTS card_outbox_head(id INTEGER PRIMARY KEY, thread INTEGER NOT NULL, ts TEXT NOT NULL);",
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      match take_rig_outcomes_in_tx(t) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      ensure_card_outbox_done_in_tx(t)
+    },
+    fn(e : sql_db::SqlError) -> sql_db::SqlError { e },
+  )
+}
+
+/// Enqueue a card outcome inside an already-open transaction.
+/// If `dedup` is true and an identical `(thread, ts, agent, field, close_card, outcome)` row
+/// is already queued in `card_outbox` or recorded in `card_outbox_done`, returns its existing id
+/// without inserting a duplicate.
+pub fn enqueue_card_outcome(
+  db : sql_db::Db,
+  thread : Int64,
+  ts : String,
+  agent : String,
+  field : String,
+  close : Bool,
+  outcome_json : String,
+  dedup : Bool = false,
+) -> Result[String, sql_db::SqlError] {
+  if db.autocommit() {
+    return Err(sql_db::sql_error(1, "card outcome must be queued with its request in a transaction"))
+  }
+  if !is_valid_card_field(field) {
+    return Err(sql_db::sql_error(1, "invalid card outcome field: " + field))
+  }
+  match validate_outcome_json(outcome_json) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match take_rig_outcomes_in_tx(db) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match ensure_card_outbox_done_in_tx(db) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let close_int = if close { 1 } else { 0 }
+  if dedup {
+    match find_dedup_outcome(db, thread, ts, agent, field, close_int, outcome_json) {
+      Ok(Some(existing_id)) => return Ok(existing_id)
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let next_row = match db.first(
+    "UPDATE card_outbox_meta SET next_id = next_id + 1 WHERE id = 1 AND next_id < 9223372036854775807 RETURNING CAST(next_id AS TEXT) AS id",
+    [],
+  ) {
+    Ok(Some(r)) => r
+    Ok(None) => return Err(sql_db::sql_error(1, "card outcome sequence is exhausted"))
+    Err(e) => return Err(e)
+  }
+  let id_str = row_str(next_row, "id", "")
+  match db.run(
+    "INSERT INTO card_outbox_head(id, thread, ts) SELECT CAST(?1 AS INTEGER), ?2, ?3 WHERE NOT EXISTS (SELECT 1 FROM card_outbox WHERE thread = ?2 AND ts = ?3 LIMIT 1)",
+    [base_codec::json_str(id_str), sql_db::int64_to_json(thread), base_codec::json_str(ts)],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match db.run(
+    "INSERT INTO card_outbox(thread, ts, id, agent, field, close_card, outcome) VALUES(?1, ?2, CAST(?3 AS INTEGER), ?4, ?5, ?6, ?7)",
+    [
+      sql_db::int64_to_json(thread),
+      base_codec::json_str(ts),
+      base_codec::json_str(id_str),
+      base_codec::json_str(agent),
+      base_codec::json_str(field),
+      base_codec::json_int(close_int),
+      base_codec::json_str(outcome_json),
+    ],
+  ) {
+    Ok(_) => Ok(id_str)
+    Err(e) => Err(e)
+  }
+}
+
+/// Atomically run `save(db)` and enqueue a card outcome in one savepoint (or outer tx).
+/// Validates `outcome_json` as a JSON object before invoking `save(db)`.
+/// When `dedup` is true, checks for an existing identical queued outcome BEFORE invoking `save(db)`,
+/// so duplicate retries short-circuit without re-running `save(db)` side effects.
+pub fn save_with_card_outcome(
+  db : sql_db::Db,
+  thread : Int64,
+  ts : String,
+  agent : String,
+  field : String,
+  close : Bool,
+  outcome_json : String,
+  save : (sql_db::Db) -> Result[Unit, sql_db::SqlError],
+  dedup : Bool = false,
+) -> Result[String, sql_db::SqlError] {
+  if !is_valid_card_field(field) {
+    return Err(sql_db::sql_error(1, "invalid card outcome field: " + field))
+  }
+  match validate_outcome_json(outcome_json) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let close_int = if close { 1 } else { 0 }
+  let body = fn(t : sql_db::Db) -> Result[String, sql_db::SqlError] {
+    match install_card_outbox(t) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    if dedup {
+      match find_dedup_outcome(t, thread, ts, agent, field, close_int, outcome_json) {
+        Ok(Some(existing_id)) => return Ok(existing_id)
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    match save(t) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    enqueue_card_outcome(t, thread, ts, agent, field, close, outcome_json, dedup=dedup)
+  }
+  with_write_tx(db, "card_outbox_save", body)
+}
+
+/// Read one oldest queued outcome per card after cursor `after` (pass `"0"` from start).
+pub fn card_outcome_heads(
+  db : sql_db::Db,
+  after : String,
+  limit : Int = 64,
+) -> Result[Array[CardOutcome], sql_db::SqlError] {
+  if limit < 1 || limit > 64 {
+    return Err(sql_db::sql_error(1, "card outcome page must contain 1 to 64 cards"))
+  }
+  let installed = match has_card_outbox(db) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !installed {
+    return Ok([])
+  }
+  let rows = match db.all(
+    "SELECT CAST(q.id AS TEXT) AS id, q.thread, q.ts, q.agent, q.field, q.close_card, q.outcome" +
+    " FROM card_outbox_head h CROSS JOIN card_outbox q ON q.thread = h.thread AND q.ts = h.ts AND q.id = h.id" +
+    " WHERE h.id > CAST(?1 AS INTEGER) ORDER BY h.id LIMIT ?2",
+    [base_codec::json_str(after), base_codec::json_int(limit)],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  let out : Array[CardOutcome] = []
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    out.push(
+      CardOutcome::{
+        id: row_str(r, "id", ""),
+        thread: row_i64(r, "thread", 0.to_int64()),
+        ts: row_str(r, "ts", ""),
+        agent: row_str(r, "agent", ""),
+        field: row_str(r, "field", ""),
+        close: row_i64(r, "close_card", 0.to_int64()) == 1.to_int64(),
+        outcome_json: row_str(r, "outcome", "{}"),
+      },
+    )
+  }
+  Ok(out)
+}
+
+/// Atomically complete an observed outbox head and promote its successor (must run in a tx).
+/// The `card_outbox_record_done` `AFTER DELETE` trigger automatically records the completed
+/// dedup key in `card_outbox_done` (for both Pion and Node consumers) and prunes old entries.
+/// Returns `true` if this consumer removed the head, `false` if already completed by another.
+pub fn complete_card_outcome(
+  db : sql_db::Db,
+  id : String,
+  thread : Int64,
+  ts : String,
+) -> Result[Bool, sql_db::SqlError] {
+  if db.autocommit() {
+    return Err(sql_db::sql_error(1, "card outcome must be completed with its message edit in a transaction"))
+  }
+  match ensure_card_outbox_done_in_tx(db) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let removed = match db.run(
+    "DELETE FROM card_outbox_head WHERE thread = ?1 AND ts = ?2 AND id = CAST(?3 AS INTEGER)",
+    [sql_db::int64_to_json(thread), base_codec::json_str(ts), base_codec::json_str(id)],
+  ) {
+    Ok(n) => n
+    Err(e) => return Err(e)
+  }
+  if removed == 0 {
+    return Ok(false)
+  }
+  match db.run(
+    "DELETE FROM card_outbox WHERE thread = ?1 AND ts = ?2 AND id = CAST(?3 AS INTEGER)",
+    [sql_db::int64_to_json(thread), base_codec::json_str(ts), base_codec::json_str(id)],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  match db.run(
+    "INSERT INTO card_outbox_head(id, thread, ts) SELECT id, thread, ts FROM card_outbox WHERE thread = ?1 AND ts = ?2 ORDER BY id LIMIT 1",
+    [sql_db::int64_to_json(thread), base_codec::json_str(ts)],
+  ) {
+    Ok(_) => Ok(true)
+    Err(e) => Err(e)
+  }
+}
+
+/// Bounded scan for a target message's latest edit (`cardMessagePage`).
+pub fn card_message_page(
+  db : sql_db::Db,
+  thread : Int64,
+  target : String,
+  before : Option[String],
+) -> Result[CardPageResult, sql_db::SqlError] {
+  let (sql, args) = match before {
+    None => (
+      "WITH page AS MATERIALIZED (SELECT n, target FROM entries WHERE thread = ?1 ORDER BY n DESC LIMIT 512)" +
+      " SELECT (SELECT CAST(n AS TEXT) FROM page WHERE target = CAST(?2 AS INTEGER) ORDER BY n DESC LIMIT 1) AS edit," +
+      " CAST(MIN(n) AS TEXT) AS before, COUNT(*) AS count FROM page",
+      [sql_db::int64_to_json(thread), base_codec::json_str(target)],
+    )
+    Some(b) => (
+      "WITH page AS MATERIALIZED (SELECT n, target FROM entries WHERE thread = ?1 AND n < CAST(?3 AS INTEGER) ORDER BY n DESC LIMIT 512)" +
+      " SELECT (SELECT CAST(n AS TEXT) FROM page WHERE target = CAST(?2 AS INTEGER) ORDER BY n DESC LIMIT 1) AS edit," +
+      " CAST(MIN(n) AS TEXT) AS before, COUNT(*) AS count FROM page",
+      [sql_db::int64_to_json(thread), base_codec::json_str(target), base_codec::json_str(b)],
+    )
+  }
+  let row = match db.first(sql, args) {
+    Ok(Some(r)) => r
+    Ok(None) => return Ok(CardPageResult::End)
+    Err(e) => return Err(e)
+  }
+  match row_str_opt(row, "edit") {
+    Some(n) => Ok(CardPageResult::Found(n))
+    None => {
+      let count = row_i64(row, "count", 0.to_int64()).to_int()
+      if count < 512 {
+        Ok(CardPageResult::End)
+      } else {
+        Ok(CardPageResult::Next(row_str(row, "before", "0")))
+      }
+    }
+  }
+}
+
+/// Bounded scan for a card's latest edit (`cardEditPage`).
+pub fn card_edit_page(
+  db : sql_db::Db,
+  thread : Int64,
+  target : String,
+  before : Option[String],
+) -> Result[CardPageResult, sql_db::SqlError] {
+  let indexed = match db.has_schema("index", "entries_cards") {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  let from_clause = if indexed { "entries INDEXED BY entries_cards" } else { "entries" }
+  let card_filter = if indexed { " AND card IS NOT NULL" } else { "" }
+  let (range, args) = match before {
+    None => ("", [sql_db::int64_to_json(thread), base_codec::json_str(target)])
+    Some(b) => (" AND n < CAST(?3 AS INTEGER)", [sql_db::int64_to_json(thread), base_codec::json_str(target), base_codec::json_str(b)])
+  }
+  let rows = match db.all(
+    "SELECT CAST(n AS TEXT) AS position, CASE WHEN kind = 'edit' AND target = CAST(?2 AS INTEGER) THEN card ELSE NULL END AS card" +
+    " FROM (SELECT n, kind, target, card FROM " +
+    from_clause +
+    " WHERE thread = ?1" +
+    card_filter +
+    range +
+    " ORDER BY n DESC LIMIT 64) ORDER BY n DESC",
+    args,
+  ) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  for i in 0..<rows.length() {
+    match row_str_opt(rows[i], "card") {
+      Some(c) => return Ok(CardPageResult::Found(c))
+      None => ()
+    }
+  }
+  if rows.length() < 64 {
+    Ok(CardPageResult::End)
+  } else {
+    Ok(CardPageResult::Next(row_str(rows[rows.length() - 1], "position", "0")))
+  }
+}

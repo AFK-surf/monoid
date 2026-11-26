@@ -47,6 +47,7 @@ pub fn place_beside(
   padding? : Double = 8.0,
   flip? : Bool = true,
   on? : Side,
+  lock_side? : Bool = false,
   rtl? : Bool = false,
   clear? : (Double, Double, Double, Double) = (0.0, 0.0, 0.0, 0.0),
   away? : (Double, Double, Double, Double),
@@ -77,8 +78,8 @@ pub fn place_beside(
     }
   }
   let side = match on {
-    // (on that side still, where it has the room there: kept there, never back to its own for having the room again)
-    Some(s) if room(s) >= need(s) => s
+    // (on that side still, where locked or where it has the room there: kept there, never back to its own for having the room again)
+    Some(s) if lock_side || room(s) >= need(s) => s
     _ =>
       if flip && room(side) < need(side) && room(opposite(side)) > room(side) {
         opposite(side)
@@ -165,6 +166,8 @@ pub(all) struct Beside {
   along_offset : Double
   /// on the side it is on while it has the room there (View::beside's `holds_side`)
   holds_side : Bool
+  /// unconditionally stay on the side it is already on (`n.went`), clamping into the viewport instead of flipping mid-transition
+  lock_side : Bool
   /// optional outer host container whose left/right edges are cleared when `side` is `Left` or `Right`
   host : NodeId?
   /// whether to flip to the opposite side when `side` does not have room (default true)
@@ -259,6 +262,7 @@ pub fn View::beside(
     width,
     along_offset,
     holds_side,
+    lock_side: false,
     host,
     flip,
     while_seen,
@@ -274,6 +278,33 @@ pub fn View::beside(
   st.set_inset_right(Auto)
   st.set_inset_bottom(Auto)
   self.tree.layout_marked_at(self.at)
+  self
+}
+
+///|
+/// Reactively locks or unlocks this `beside` node's chosen side (`lock_side`), preventing mid-transition flips when
+/// content grows (e.g. a menu sliding into a wider inline confirm level) while still clamping smoothly inside the viewport.
+pub fn View::beside_lock_side(self : View, lock : () -> Bool) -> View {
+  self.reacts(lock, fn(on) {
+    guard self.live() is Some(n) else { return }
+    match n.beside {
+      Some(b) if b.lock_side != on => {
+        n.beside = Some({ ..b, lock_side: on })
+        self.tree.layout_marked_at(self.at)
+      }
+      _ => ()
+    }
+  })
+  self
+}
+
+///|
+/// Registers an optional slide-interpolation query `(x_from, y_from, w_to, h_to, sp)` for a `beside` node so
+/// `Tree::besides_placed` smoothly interpolates viewport edge-clamped `(x, y)` using the exact same `rect`, `clear`,
+/// `away`, `offset`, and `along_offset` without affecting any other `Beside` node.
+pub fn View::beside_slide(self : View, slide : () -> (Double, Double, Double, Double, Double)?) -> View {
+  guard self.live() is Some(n) else { return self }
+  n.beside_slide = Some(slide)
   self
 }
 
@@ -483,7 +514,7 @@ fn Tree::beside_laid(self : Tree, at : Int, seen : Array[Int]) -> (Double, Doubl
     }
     _ => rect
   }
-  let on = if b.holds_side { n.went } else { None }
+  let on = if b.holds_side || b.lock_side { n.went } else { None }
   let (x, y, _) = place_beside(
     rect,
     self.laid_width_of(at),
@@ -492,6 +523,7 @@ fn Tree::beside_laid(self : Tree, at : Int, seen : Array[Int]) -> (Double, Doubl
     self.last_h,
     side=b.side,
     on?,
+    lock_side=b.lock_side,
     along=b.along,
     offset=b.offset,
     along_offset=b.along_offset,
@@ -729,8 +761,8 @@ fn Tree::besides_placed(self : Tree) -> Unit {
         }
       _ => rect
     }
-    // (holding the side it is on: kept there while it has the room there)
-    let on = if b.holds_side { n.went } else { None }
+    // (holding the side it is on: kept there while it has the room there, or unconditionally while locked)
+    let on = if b.holds_side || b.lock_side { n.went } else { None }
     let (x, y, went) = place_beside(
       rect,
       n.lw * hs,
@@ -739,6 +771,7 @@ fn Tree::besides_placed(self : Tree) -> Unit {
       self.last_h,
       side=b.side,
       on?,
+      lock_side=b.lock_side,
       along=b.along,
       offset=b.offset,
       along_offset=b.along_offset * hs,
@@ -747,6 +780,36 @@ fn Tree::besides_placed(self : Tree) -> Unit {
       clear=self.clear.untracked(),
       away?=self.away,
     )
+    let (x, y) = match n.beside_slide {
+      Some(f) =>
+        match @signals.untracked(f) {
+          Some((x_from, y_from, w_to, h_to, sp)) if sp < 0.999 =>
+            if w_to > 0.0 && h_to > 0.0 {
+              let (x_to, y_to, _) = place_beside(
+                rect,
+                w_to * hs,
+                h_to * hs,
+                self.last_w,
+                self.last_h,
+                side=b.side,
+                on=went,
+                lock_side=true,
+                along=b.along,
+                offset=b.offset,
+                along_offset=b.along_offset * hs,
+                padding=b.padding,
+                flip=b.flip,
+                clear=self.clear.untracked(),
+                away?=self.away,
+              )
+              (x_from + (x_to - x_from) * sp, y_from + (y_to - y_from) * sp)
+            } else {
+              (x_from, y_from)
+            }
+          _ => (x, y)
+        }
+      None => (x, y)
+    }
     // (where it grows from, where it is drawn bigger or smaller about the side it went on: View::scale's FromBeside)
     if n.went != Some(went) {
       self.sizes_due = true

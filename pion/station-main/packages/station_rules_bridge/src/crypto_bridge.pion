@@ -1,0 +1,753 @@
+// Native pure-Pion cryptographic bridge for `pion/rules/packages/{lock,vault}` over
+// `pion-packages/crypto` and `pion-packages/base64` (zero C crypto, zero Wasm glue).
+// Matches `shared/lock.ts` and `station/src/vault/crypto.ts` byte-for-byte.
+
+import "base64"
+import "base_codec"
+import "crypto"
+import "form"
+import "lock"
+import "vault"
+
+// ── Byte & hex helpers ──
+
+pub fn is_lower_hex_of(s : String, n : Int) -> Bool {
+  if s.length() != n {
+    return false
+  }
+  let mut i = 0
+  while i < n {
+    let c = s.code_unit_at(i)
+    if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+pub fn is_hex32(s : String) -> Bool {
+  is_lower_hex_of(s, 64)
+}
+
+pub fn is_hex16(s : String) -> Bool {
+  is_lower_hex_of(s, 16)
+}
+
+fn concat_bytes(a : Bytes, b : Bytes) -> Bytes {
+  let na = a.length()
+  let nb = b.length()
+  let out = Bytes::new(na + nb)
+  let mut i = 0
+  while i < na {
+    out[i] = a[i]
+    i = i + 1
+  }
+  let mut j = 0
+  while j < nb {
+    out[na + j] = b[j]
+    j = j + 1
+  }
+  out
+}
+
+fn bytes_eq(a : Bytes, b : Bytes) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  let mut i = 0
+  while i < a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn bytes_prefix_eq(buf : Bytes, expected : Bytes) -> Bool {
+  if buf.length() < expected.length() {
+    return false
+  }
+  let mut i = 0
+  while i < expected.length() {
+    if buf[i] != expected[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn bytes_to_string_raw(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < b.length() {
+    sb.write_byte(b[i])
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+pub fn sha256_bytes(data : Bytes) -> Bytes {
+  crypto::sha256(data)
+}
+
+pub fn sha256_hex_bytes(data : Bytes) -> String {
+  crypto::sha256_hex(data)
+}
+
+pub fn sha256_hex_str(s : String) -> String {
+  crypto::sha256_hex(s.to_bytes())
+}
+
+// ── Key parsing & signature verification ──
+
+/// Decode Base64url accepting both unpadded and standard `=`-padded inputs (1:1 with Node `Buffer.from(s, "base64url")`).
+pub fn decode_base64url_flex(s : String) -> Result[Bytes, String] {
+  let n = s.length()
+  let mut end = n
+  if end > 0 && s.code_unit_at(end - 1) == 61 {
+    end = end - 1
+    if end > 0 && s.code_unit_at(end - 1) == 61 {
+      end = end - 1
+    }
+    // Padded base64url must be a multiple of 4 and have at most 2 '=' chars.
+    if (n % 4) != 0 || (end > 0 && s.code_unit_at(end - 1) == 61) {
+      return Err("invalid base64url padding")
+    }
+  }
+  let trimmed = if end == n { s } else { s.slice(0, end) }
+  match base64::url_decode_no_pad(trimmed) {
+    Ok(b) => Ok(b)
+    Err(_) => Err("invalid base64url")
+  }
+}
+
+enum ParsedKey {
+  Ed25519(Bytes)
+  P256(Bytes)
+}
+
+fn parse_public_key(id : String) -> Option[ParsedKey] {
+  if id.length() > 200 {
+    return None
+  }
+  if id.starts_with("ed25519:") {
+    let hex_part = id.slice(8, id.length())
+    if !is_hex32(hex_part) {
+      return None
+    }
+    match crypto::hex_to_bytes(hex_part) {
+      Some(b) => if b.length() == 32 { Some(ParsedKey::Ed25519(b)) } else { None }
+      None => None
+    }
+  } else if id.starts_with("p256:") {
+    let b64_part = id.slice(5, id.length())
+    match decode_base64url_flex(b64_part) {
+      Ok(point) => {
+        if point.length() != 65 || (point[0].to_int() & 0xFF) != 4 {
+          return None
+        }
+        if !crypto::p256_validate_pubkey(point) {
+          return None
+        }
+        Some(ParsedKey::P256(point))
+      }
+      Err(_) => None
+    }
+  } else {
+    None
+  }
+}
+
+/// Whether `id` is a valid lock signing key id: `ed25519:<64-hex>` or `p256:<base64url uncompressed point>`.
+pub fn valid_key_id(id : String) -> Bool {
+  match parse_public_key(id) {
+    Some(_) => true
+    None => false
+  }
+}
+
+/// Build a verifier callback backed by `client/shell`'s formally verified `libcrux` `crypto.verify` op.
+/// `call_sync` is `(op, args_json) -> raw_envelope_json` (e.g. `host_shim::shell_sync` or mock).
+pub fn shell_verifier(
+  call_sync : (String, String) -> String,
+) -> (String, Bytes, Bytes, Bytes) -> Bool {
+  fn(alg : String, key : Bytes, signature : Bytes, message : Bytes) -> Bool {
+    let args = base_codec::json_obj([
+      ("alg", base_codec::json_str(alg)),
+      ("key", base_codec::json_str(crypto::bytes_to_hex(key))),
+      ("signature", base_codec::json_str(crypto::bytes_to_hex(signature))),
+      ("message", base_codec::json_str(crypto::bytes_to_hex(message))),
+    ])
+    let raw = call_sync("crypto.verify", base_codec::json_stringify(args))
+    match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => {
+        match base_codec::json_get(j, "value") {
+          Some(base_codec::Json::Bool(true)) => true
+          _ => false
+        }
+      }
+      base_codec::JsonParseResult::Err(_) => false
+    }
+  }
+}
+
+/// Whether `signature` is key `id`'s valid signature over `message`, optionally delegating to `verify_fn`
+/// (e.g. `shell_verifier` for `libcrux`), falling back to pure-Pion `pion-packages/crypto`.
+/// When `der` is true for P-256, `signature` is ASN.1 DER (WebAuthn); otherwise IEEE P1363 (64-byte r||s).
+pub fn signature_ok_with(
+  id : String,
+  signature : Bytes,
+  message : Bytes,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+  der : Bool = false,
+) -> Bool {
+  match parse_public_key(id) {
+    Some(ParsedKey::Ed25519(pk)) => {
+      match verify_fn {
+        Some(vf) => vf("Ed25519", pk, signature, message)
+        None => crypto::ed25519_verify(pk, message, signature)
+      }
+    }
+    Some(ParsedKey::P256(point)) => {
+      match verify_fn {
+        Some(vf) => vf(if der { "ES256-der" } else { "ES256" }, point, signature, message)
+        None => {
+          if der {
+            match crypto::p256_verify_der(point, message, signature) {
+              Ok(_) => true
+              Err(_) => false
+            }
+          } else {
+            match crypto::p256_verify_es256(point, message, signature) {
+              Ok(_) => true
+              Err(_) => false
+            }
+          }
+        }
+      }
+    }
+    None => false
+  }
+}
+
+/// Whether `signature` is key `id`'s valid signature over `message`.
+/// When `der` is true for P-256, `signature` is ASN.1 DER (WebAuthn); otherwise IEEE P1363 (64-byte r||s).
+pub fn signature_ok(id : String, signature : Bytes, message : Bytes, der : Bool = false) -> Bool {
+  signature_ok_with(id, signature, message, None, der=der)
+}
+
+/// What a device or app key signs for an entry: `"stillfail-lock/1 sig\0"` || raw 32-byte hash.
+pub fn signed_bytes(hash_hex : String) -> Option[Bytes] {
+  if !is_hex32(hash_hex) {
+    return None
+  }
+  match crypto::hex_to_bytes(hash_hex) {
+    Some(hash_raw) => Some(concat_bytes("stillfail-lock/1 sig\x00".to_bytes(), hash_raw))
+    None => None
+  }
+}
+
+/// What a device's base key signs to bind an endpoint in workspace `ws`.
+pub fn endpoint_bytes(ws : String, endpoint : String) -> Bytes {
+  ("stillfail-lock-endpoint/1\x00" + ws + "\x00" + endpoint).to_bytes()
+}
+
+/// What a key signs for a tagged 32-byte digest: `"<tag>\0"` || raw 32-byte digest.
+pub fn tagged_bytes(tag : String, digest_hex : String) -> Option[Bytes] {
+  if !is_hex32(digest_hex) {
+    return None
+  }
+  match crypto::hex_to_bytes(digest_hex) {
+    Some(dig_raw) => Some(concat_bytes((tag + "\x00").to_bytes(), dig_raw))
+    None => None
+  }
+}
+
+fn str_in(xs : Array[String], target : String) -> Bool {
+  let mut i = 0
+  while i < xs.length() {
+    if xs[i] == target {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Whether `sig` is the key's valid signature over entry `hash`; a passkey's also checks WebAuthn
+/// clientDataJSON (`type`, `challenge`, `origin`) and authenticatorData (`rpIdHash`, UP bit).
+pub fn sig_valid_with(
+  sig : form::Json,
+  hash : String,
+  origins : Array[String],
+  rp_id : String,
+  passkey : Bool,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Bool {
+  let entries = match sig {
+    form::Json::Obj(m) => m
+    _ => return false
+  }
+  let key_id = match form::json_obj_get(entries, "key") {
+    Some(form::Json::Str(s)) => s
+    _ => return false
+  }
+  let alg = match form::json_obj_get(entries, "alg") {
+    Some(form::Json::Str(s)) => s
+    _ => return false
+  }
+  let sig_str = match form::json_obj_get(entries, "sig") {
+    Some(form::Json::Str(s)) => s
+    _ => return false
+  }
+  let key_alg = match parse_public_key(key_id) {
+    Some(ParsedKey::Ed25519(_)) => "Ed25519"
+    Some(ParsedKey::P256(_)) => "ES256"
+    None => return false
+  }
+  if alg == "webauthn" {
+    if !passkey || key_alg != "ES256" {
+      return false
+    }
+    let client_b64 = match form::json_obj_get(entries, "client_data") {
+      Some(form::Json::Str(s)) => s
+      _ => return false
+    }
+    let auth_b64 = match form::json_obj_get(entries, "authenticator_data") {
+      Some(form::Json::Str(s)) => s
+      _ => return false
+    }
+    let hash_raw = match crypto::hex_to_bytes(hash) {
+      Some(b) => if b.length() == 32 { b } else { return false }
+      None => return false
+    }
+    let client_bytes = match decode_base64url_flex(client_b64) {
+      Ok(b) => b
+      Err(_) => return false
+    }
+    let client_json = match form::parse_json(bytes_to_string_raw(client_bytes)) {
+      Ok(j) => j
+      Err(_) => return false
+    }
+    let c_type = match form::json_field(Some(client_json), "type") {
+      Some(form::Json::Str(s)) => s
+      _ => return false
+    }
+    let c_challenge = match form::json_field(Some(client_json), "challenge") {
+      Some(form::Json::Str(s)) => s
+      _ => return false
+    }
+    let c_origin = match form::json_field(Some(client_json), "origin") {
+      Some(form::Json::Str(s)) => s
+      _ => return false
+    }
+    let expected_challenge = base64::url_encode_no_pad(hash_raw)
+    if c_type != "webauthn.get" || c_challenge != expected_challenge || !str_in(origins, c_origin) {
+      return false
+    }
+    let auth_bytes = match decode_base64url_flex(auth_b64) {
+      Ok(b) => b
+      Err(_) => return false
+    }
+    if auth_bytes.length() < 37 {
+      return false
+    }
+    let rp_hash = crypto::sha256(rp_id.to_bytes())
+    if !bytes_prefix_eq(auth_bytes, rp_hash) {
+      return false
+    }
+    if ((auth_bytes[32].to_int() & 0xFF) & 1) == 0 {
+      return false
+    }
+    let sig_bytes = match decode_base64url_flex(sig_str) {
+      Ok(b) => b
+      Err(_) => return false
+    }
+    let client_hash = crypto::sha256(client_bytes)
+    let msg = concat_bytes(auth_bytes, client_hash)
+    return signature_ok_with(key_id, sig_bytes, msg, verify_fn, der=true)
+  }
+  if alg != key_alg || passkey {
+    return false
+  }
+  let sig_bytes = if alg == "Ed25519" {
+    match crypto::hex_to_bytes(sig_str) {
+      Some(b) => b
+      None => return false
+    }
+  } else {
+    match decode_base64url_flex(sig_str) {
+      Ok(b) => b
+      Err(_) => return false
+    }
+  }
+  match signed_bytes(hash) {
+    Some(msg) => signature_ok_with(key_id, sig_bytes, msg, verify_fn, der=false)
+    None => false
+  }
+}
+
+pub fn sig_valid(
+  sig : form::Json,
+  hash : String,
+  origins : Array[String],
+  rp_id : String,
+  passkey : Bool,
+) -> Bool {
+  sig_valid_with(sig, hash, origins, rp_id, passkey, None)
+}
+
+/// Whether a device's base key (`base`, 64-hex Ed25519) proves `endpoint` in workspace `ws`.
+pub fn endpoint_proof_with(
+  ws : String,
+  base : String,
+  endpoint : String,
+  proof_hex : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Bool {
+  if !is_hex32(base) {
+    return false
+  }
+  match crypto::hex_to_bytes(proof_hex) {
+    Some(sig_bytes) => signature_ok_with("ed25519:" + base, sig_bytes, endpoint_bytes(ws, endpoint), verify_fn, der=false)
+    None => false
+  }
+}
+
+pub fn endpoint_proof(ws : String, base : String, endpoint : String, proof_hex : String) -> Bool {
+  endpoint_proof_with(ws, base, endpoint, proof_hex, None)
+}
+
+/// Whether `sig_hex` is `key`'s valid Ed25519 signature over `"<tag>\0"` || `hex_decode(digest_hex)`.
+pub fn tagged_sig_valid_with(
+  key : String,
+  sig_hex : String,
+  tag : String,
+  digest_hex : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Bool {
+  if !is_hex32(digest_hex) || !key.starts_with("ed25519:") || !is_hex32(key.slice(8, key.length())) {
+    return false
+  }
+  let sig_bytes = match crypto::hex_to_bytes(sig_hex) {
+    Some(b) => b
+    None => return false
+  }
+  match tagged_bytes(tag, digest_hex) {
+    Some(msg) => signature_ok_with(key, sig_bytes, msg, verify_fn, der=false)
+    None => false
+  }
+}
+
+pub fn tagged_sig_valid(key : String, sig_hex : String, tag : String, digest_hex : String) -> Bool {
+  tagged_sig_valid_with(key, sig_hex, tag, digest_hex, None)
+}
+
+/// Whether `sig` is its key's valid signature over `"<tag>\0"` || `sha256(text)` (vault records).
+pub fn record_sig_valid_with(
+  sig : form::Json,
+  tag : String,
+  text : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Bool {
+  let entries = match sig {
+    form::Json::Obj(m) => m
+    _ => return false
+  }
+  let key_id = match form::json_obj_get(entries, "key") {
+    Some(form::Json::Str(s)) => s
+    _ => return false
+  }
+  let alg = match form::json_obj_get(entries, "alg") {
+    Some(form::Json::Str(s)) => s
+    _ => return false
+  }
+  let sig_str = match form::json_obj_get(entries, "sig") {
+    Some(form::Json::Str(s)) => s
+    _ => return false
+  }
+  let key_alg = match parse_public_key(key_id) {
+    Some(ParsedKey::Ed25519(_)) => "Ed25519"
+    Some(ParsedKey::P256(_)) => "ES256"
+    None => return false
+  }
+  if alg != key_alg {
+    return false
+  }
+  let sig_bytes = if alg == "Ed25519" {
+    match crypto::hex_to_bytes(sig_str) {
+      Some(b) => b
+      None => return false
+    }
+  } else {
+    match decode_base64url_flex(sig_str) {
+      Ok(b) => b
+      Err(_) => return false
+    }
+  }
+  let digest = crypto::sha256(text.to_bytes())
+  let msg = concat_bytes((tag + "\x00").to_bytes(), digest)
+  signature_ok_with(key_id, sig_bytes, msg, verify_fn, der=false)
+}
+
+pub fn record_sig_valid(sig : form::Json, tag : String, text : String) -> Bool {
+  record_sig_valid_with(sig, tag, text, None)
+}
+
+// ── Native `lock::Crypto` and `vault::Crypto` providers ──
+
+pub fn lock_crypto_with(
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> lock::Crypto {
+  lock::Crypto::{
+    sha256_hex: sha256_hex_str,
+    sig_valid: fn(sig : form::Json, hash : String, origins : Array[String], rp_id : String, passkey : Bool) -> Bool {
+      sig_valid_with(sig, hash, origins, rp_id, passkey, verify_fn)
+    },
+    valid_key_id: valid_key_id,
+    endpoint_proof: fn(ws : String, base : String, endpoint : String, proof : String) -> Bool {
+      endpoint_proof_with(ws, base, endpoint, proof, verify_fn)
+    },
+    tagged_sig_valid: fn(key : String, sig : String, tag : String, digest : String) -> Bool {
+      tagged_sig_valid_with(key, sig, tag, digest, verify_fn)
+    },
+  }
+}
+
+pub fn lock_crypto() -> lock::Crypto {
+  lock_crypto_with(None)
+}
+
+pub fn vault_crypto_with(
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> vault::Crypto {
+  vault::Crypto::{
+    record_sig_valid: fn(sig : form::Json, tag : String, text : String) -> Bool {
+      record_sig_valid_with(sig, tag, text, verify_fn)
+    },
+  }
+}
+
+pub fn vault_crypto() -> vault::Crypto {
+  vault_crypto_with(None)
+}
+
+// ── High-level lock & form wrappers (1:1 with `shared/lock.ts` and `lock-form.ts`) ──
+
+pub fn canonical(v : form::Json) -> Result[String, String] {
+  form::canonical(v)
+}
+
+pub fn entry_text(e : form::Json) -> Result[String, String] {
+  form::entry_text(e)
+}
+
+pub fn entry_hash(e : form::Json) -> Result[String, lock::LockError] {
+  lock::entry_hash(e, lock_crypto())
+}
+
+pub fn code_text(base : String) -> String {
+  "stillfail-lock-code/1\x00" + base
+}
+
+let short_code_alphabet : String = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+
+pub fn short_code_of(hash : Bytes) -> String {
+  if hash.length() < 6 {
+    return ""
+  }
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < 6 {
+    if i == 3 {
+      sb.write_byte(45 as Byte) // '-'
+    }
+    let idx = (hash[i].to_int() & 0xFF) % 32
+    sb.write_byte(short_code_alphabet.code_unit_at(idx) as Byte)
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+pub fn short_code(base : String) -> String {
+  short_code_of(crypto::sha256(code_text(base).to_bytes()))
+}
+
+let max_safe_int : Double = 9007199254740991.0
+
+fn is_safe_int_double(n : Double) -> Bool {
+  n >= -max_safe_int && n <= max_safe_int && n.to_int64().to_double() == n
+}
+
+/// Wire shape check for a lock entry (does not check signature), 1:1 with `shared/lock.ts` `asEntry`.
+pub fn as_entry(v : form::Json) -> Option[form::Json] {
+  let entries = match v {
+    form::Json::Obj(m) => m
+    _ => return None
+  }
+  match form::json_obj_get(entries, "v") {
+    Some(form::Json::Num(n)) => if n != 1.0 { return None }
+    _ => return None
+  }
+  match form::json_obj_get(entries, "ws") {
+    Some(form::Json::Str(_)) => ()
+    _ => return None
+  }
+  match form::json_obj_get(entries, "seq") {
+    Some(form::Json::Num(n)) => if !is_safe_int_double(n) || n < 0.0 { return None }
+    _ => return None
+  }
+  match form::json_obj_get(entries, "prev") {
+    Some(form::Json::Null) => ()
+    Some(form::Json::Str(p)) => if !is_hex32(p) { return None }
+    _ => return None
+  }
+  match form::json_obj_get(entries, "at") {
+    Some(form::Json::Num(n)) => if !is_safe_int_double(n) { return None }
+    _ => return None
+  }
+  match form::json_obj_get(entries, "kind") {
+    Some(form::Json::Str(_)) => ()
+    _ => return None
+  }
+  let sig_entries = match form::json_obj_get(entries, "sig") {
+    Some(form::Json::Obj(m)) => m
+    _ => return None
+  }
+  match form::json_obj_get(sig_entries, "key") {
+    Some(form::Json::Str(_)) => ()
+    _ => return None
+  }
+  match form::json_obj_get(sig_entries, "sig") {
+    Some(form::Json::Str(_)) => ()
+    _ => return None
+  }
+  let alg = match form::json_obj_get(sig_entries, "alg") {
+    Some(form::Json::Str(a)) => a
+    _ => return None
+  }
+  if alg == "webauthn" {
+    match (
+      form::json_obj_get(sig_entries, "authenticator_data"),
+      form::json_obj_get(sig_entries, "client_data"),
+    ) {
+      (Some(form::Json::Str(_)), Some(form::Json::Str(_))) => ()
+      _ => return None
+    }
+  } else if alg != "Ed25519" && alg != "ES256" {
+    return None
+  }
+  let body = match form::json_obj_get(entries, "body") {
+    Some(b) => b
+    None => form::Json::Null
+  }
+  match form::canonical(body) {
+    Ok(_) => Some(v)
+    Err(_) => None
+  }
+}
+
+pub fn genesis(
+  e : form::Json,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Result[lock::LockState, lock::LockError] {
+  lock::genesis(e, lock_crypto_with(verify_fn))
+}
+
+pub fn apply(
+  prev : lock::LockState,
+  e : form::Json,
+  now : Option[Double],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Result[lock::LockState, lock::LockError] {
+  lock::apply(prev, e, now, lock_crypto_with(verify_fn))
+}
+
+pub fn fold(
+  entries : Array[form::Json],
+  now : Option[Double],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Result[lock::LockState, lock::LockError] {
+  lock::fold(entries, now, lock_crypto_with(verify_fn))
+}
+
+pub fn person_fold(
+  entries : Array[form::Json],
+  sub : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Result[lock::Person, lock::LockError] {
+  lock::fold_person(entries, sub, lock_crypto_with(verify_fn))
+}
+
+pub fn lock_chain(
+  entries : Array[form::Json],
+  root : String,
+  now : Option[Double] = None,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Result[lock::Chain, lock::LockError] {
+  lock::lock_chain(entries, root, lock::Votes::Roles, now, lock_crypto_with(verify_fn))
+}
+
+pub fn person_chain(
+  entries : Array[form::Json],
+  root : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Result[lock::Chain, lock::LockError] {
+  lock::person_chain(entries, root, lock_crypto_with(verify_fn))
+}
+
+pub fn ws_tag(ws : String, genesis_hash : String) -> String {
+  lock::ws_tag(ws, genesis_hash, lock_crypto())
+}
+
+pub fn body_hash(body : form::Json) -> Option[String] {
+  match lock::body_hash(body, lock_crypto()) {
+    Ok(h) => Some(h)
+    Err(_) => None
+  }
+}
+
+pub fn body_refusal(
+  ws : String,
+  body : form::Json,
+  commits : Array[lock::Commit],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Option[String] {
+  lock::body_refusal(ws, body, commits, lock_crypto_with(verify_fn))
+}
+
+pub fn state4(
+  ws : String,
+  root : String,
+  chains : Array[Array[form::Json]],
+  bodies : Array[form::Json],
+  now : Double,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> lock::State4 {
+  lock::state4(ws, root, chains, bodies, now, lock_crypto_with(verify_fn))
+}
+
+pub fn state4_moved(
+  ws : String,
+  chain : Array[form::Json],
+  chains : Array[Array[form::Json]],
+  bodies : Array[form::Json],
+  now : Double,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> lock::State4 {
+  lock::state4_moved(ws, chain, chains, bodies, now, lock_crypto_with(verify_fn))
+}
+
+pub fn roster_moved(
+  ws : String,
+  chain : Array[form::Json],
+  chains : Array[Array[form::Json]],
+  bodies : Array[form::Json],
+  without : Array[String] = [],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> lock::Roster {
+  lock::roster_moved(ws, chain, chains, bodies, without, lock_crypto_with(verify_fn))
+}

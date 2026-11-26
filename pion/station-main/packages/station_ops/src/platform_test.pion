@@ -1,0 +1,123 @@
+test "platform: backgrounded wrappers (macOS taskpolicy, Linux ionice+nice, fallback nice, Windows)" {
+  // macOS taskpolicy -b
+  let mac_how = detect_background(
+    PlatformOs::Macos,
+    fn(p : String) -> Bool { p == "/usr/sbin/taskpolicy" },
+    fn(_p : String) -> Option[String] { None },
+  )
+  let (mp, ma) = backgrounded_on(mac_how, "/bin/mb", ["--builder", "footprint"])
+  assert_eq_str(mp, "/usr/sbin/taskpolicy", "mac taskpolicy prog")
+  assert_true(ma.length() == 4 && ma[0] == "-b" && ma[1] == "/bin/mb" && ma[3] == "footprint", "mac taskpolicy args")
+
+  // Linux util-linux ionice + nice
+  let lin_how = detect_background(
+    PlatformOs::Linux,
+    fn(p : String) -> Bool { p == "/usr/bin/ionice" || p == "/usr/bin/nice" },
+    fn(p : String) -> Option[String] { Some(p) },
+  )
+  let (lp, la) = backgrounded_on(lin_how, "/bin/mb", ["--data"])
+  assert_eq_str(lp, "/usr/bin/ionice", "linux ionice prog")
+  assert_true(
+    la.length() == 8 &&
+    la[0] == "-t" && la[1] == "-c2" && la[2] == "-n7" &&
+    la[3] == "/usr/bin/nice" && la[4] == "-n" && la[5] == "10" &&
+    la[6] == "/bin/mb" && la[7] == "--data",
+    "linux ionice+nice args",
+  )
+
+  // Linux busybox ionice skipped -> falls back to nice alone
+  let bb_how = detect_background(
+    PlatformOs::Linux,
+    fn(p : String) -> Bool { p == "/bin/ionice" || p == "/usr/bin/nice" },
+    fn(p : String) -> Option[String] { if p == "/bin/ionice" { Some("/bin/busybox") } else { Some(p) } },
+  )
+  let (bp, ba) = backgrounded_on(bb_how, "/bin/mb", [])
+  assert_eq_str(bp, "/usr/bin/nice", "busybox ionice skipped -> nice")
+  assert_true(ba.length() == 3 && ba[0] == "-n" && ba[1] == "10" && ba[2] == "/bin/mb", "nice args")
+
+  // Windows none
+  let win_how = detect_background(PlatformOs::Windows, fn(_p : String) -> Bool { true }, fn(_p : String) -> Option[String] { None })
+  let (wp, wa) = backgrounded_on(win_how, "mb.exe", ["a"])
+  assert_eq_str(wp, "mb.exe", "windows unboxed")
+  assert_true(wa.length() == 1 && wa[0] == "a", "windows args")
+
+  // Wrapper exec failure detection
+  assert_true(
+    is_background_wrapper_exec_failure("/usr/sbin/taskpolicy", Some(1), None, ["taskpolicy: posix_spawn: No such file"]),
+    "taskpolicy exec failure",
+  )
+  assert_true(
+    is_background_wrapper_exec_failure("/usr/bin/nice", Some(127), None, ["/usr/bin/nice: 'foo': No such file"]),
+    "nice exec failure",
+  )
+  assert_true(
+    !is_background_wrapper_exec_failure("/usr/bin/nice", Some(1), None, ["/usr/bin/nice: something"]),
+    "nice exit 1 is target exit not exec failure",
+  )
+}
+
+test "platform_text: pressure, ps, top, proc_stat, lsof, ioreg, mounts, elastic_memory, cpu_share" {
+  assert_true(
+    match pressure_of_available(Some(3.0), Some(100.0)) { Some(MemoryPressure::Critical) => true _ => false },
+    "3% critical",
+  )
+  assert_true(
+    match pressure_of_available(Some(8.0), Some(100.0)) { Some(MemoryPressure::High) => true _ => false },
+    "8% high",
+  )
+  assert_true(
+    match pressure_of_memory_psi(Some("full avg10=25.00 total=100\n"), Some(10.0), Some(100.0)) {
+      Some(MemoryPressure::Critical) => true
+      _ => false
+    },
+    "psi full 25% tight -> critical",
+  )
+  assert_true(
+    match worse_pressure(Some(MemoryPressure::Normal), Some(MemoryPressure::High)) {
+      Some(MemoryPressure::High) => true
+      _ => false
+    },
+    "worse_pressure",
+  )
+
+  let ps = parse_ps("  123 1 123 4096 /usr/bin/node\n")
+  assert_true(ps.length() == 1 && ps[0].pid == 123 && ps[0].bytes == (4096 * 1024).to_int64(), "parse_ps")
+  let top = parse_top_mem("123 27M+\n456 1024K\n")
+  assert_true(
+    match top.get(123) { Some(b) => b == (27 * 1048576).to_int64() None => false },
+    "parse_top_mem",
+  )
+  match proc_stat_ticks("cpu  100 10 50 800 40 0 0 0\n") {
+    Some((busy, total)) => assert_true(busy == 160.to_int64() && total == 1000.to_int64(), "proc_stat_ticks")
+    None => panic("expected proc_stat_ticks")
+  }
+  let addrs = parse_lsof("p100\nn127.0.0.1:8085\nn[::1]:8085\nn127.0.0.1:9999\n", 8085)
+  assert_true(addrs.length() == 2 && addrs[0] == "127.0.0.1" && addrs[1] == "::1", "parse_lsof")
+  assert_true(
+    match idle_of_ioreg("\"HIDIdleTime\" = 2500000000") { Some(ms) => ms == 2500.0 None => false },
+    "idle_of_ioreg",
+  )
+  let mps = parse_mounts("/dev/disk1 on / (apfs)\nmap auto on /Volumes/Backup (smbfs)\n")
+  assert_true(mps.length() == 1 && mps[0] == "/Volumes/Backup", "parse_mounts")
+
+  assert_true(is_monoid_station_vm("root=/dev/vda monoid.vm=station quiet"), "is_monoid_station_vm")
+  let mem = MemorySample::{ total_bytes: 1000.to_int64(), used_bytes: 400.to_int64(), swap_used_bytes: None, known: true }
+  let el = elastic_memory(mem, Some(Dom0MemAnswer::{ boot: 500.to_int64(), plugged: 500.to_int64(), max: 3000.to_int64() }))
+  assert_true(el.total_bytes == 3000.to_int64(), "elastic_memory adds headroom")
+
+  assert_true(
+    match cpu_share(10.to_int64(), 100.to_int64(), 35.to_int64(), 200.to_int64()) { Some(s) => s == 0.25 None => false },
+    "cpu_share 0.25",
+  )
+
+  // Windows helpers
+  assert_true(
+    match win_winget_package("C:\\Users\\a\\AppData\\Local\\Microsoft\\WinGet\\Packages\\OpenAI.Codex_Microsoft.Winget.Source_8wekyb3d8bbwe\\codex.exe") {
+      Some(id) => id == "OpenAI.Codex"
+      None => false
+    },
+    "win_winget_package",
+  )
+  assert_eq_str(win_default_task("C:\\Users\\a\\.monoid"), "monoid station", "win_default_task monoid")
+  assert_eq_str(win_default_task("C:\\Users\\a\\.stillfail"), "still.fail station", "win_default_task stillfail")
+}

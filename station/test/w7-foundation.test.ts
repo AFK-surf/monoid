@@ -13,7 +13,7 @@
 
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, resolve } from "node:path";
 import test from "node:test";
@@ -27,7 +27,9 @@ import {
   setPionProbeRunnerForTest,
 } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
-import { READER_MODES, type ReaderSelectConfig } from "../src/read/reader-select.ts";
+import { PionCircuitBreaker, pionBinaryStamp } from "../src/read/pion-breaker.ts";
+import { timeFiles } from "../src/ops/file-waits.ts";
+import { READER_MODES, type ReaderSelectConfig, resolveReaderEngine } from "../src/read/reader-select.ts";
 import { OwnReader } from "../src/sessions/live.ts";
 import { SERVED_AGAIN_MS, SERVED_STEADY_MS, Served, type ServingProcess } from "../src/mesh/served.ts";
 import { MeshLive } from "../src/mesh/mesh.ts";
@@ -293,6 +295,78 @@ test("Readers: Pion-only cold-start concurrent share/cancel, close-during-probe,
       const readers = new Readers(dir, 1);
       try {
         await assert.rejects(readers.read("latestMessages", { thread: 1, limit: 1 }, "en"), /stillfail-reader|reader stopped/);
+      } finally {
+        readers.close();
+        resetReaderSelectionStateForTest();
+      }
+    });
+
+    // 4b. Steady-state Pion pump makes 0 sync fs calls, keeps warm idle slots across swap_app binary
+    //     disappearance/replacement, and still retires immediately on default circuit-breaker demotion.
+    {
+      const swapStub = makeStubReaderScript(dir, "pion-swap-stub.cjs", "pion-swap");
+      await withEnv({ STILLFAIL_PION_READER: swapStub, STILLFAIL_READER_DATA: undefined, STILLFAIL_READER_ENGINE: undefined }, async () => {
+        setMbReaderBinaryOverrideForTest(() => mbStubB);
+        setPionProbeRunnerForTest(async () => new Set(["data"]));
+        const breaker = new PionCircuitBreaker({ stateFile: null });
+        const defaultBetaCfg: ReaderSelectConfig = { channel: "beta", breaker };
+        const isDefaultBetaTarget = resolveReaderEngine("data", { config: defaultBetaCfg, hasPionBinary: true }).source === "default";
+        let cfg: ReaderSelectConfig = isDefaultBetaTarget ? defaultBetaCfg : { readers: { data: "pion" }, breaker };
+        const readers = new Readers(dir, 1, undefined, 1, { readers: () => cfg });
+        const files = timeFiles();
+        try {
+          const first = JSON.parse(await readers.read("latestMessages", { thread: 1, limit: 1 }, "en"));
+          assert.equal(first.tag, "pion-swap");
+          const stamp = pionBinaryStamp(swapStub);
+          assert.ok(stamp !== null, "expected binary stamp before swap");
+          // Drain startup/spawn sync fs calls, then verify steady-state reads perform ZERO sync fs calls.
+          files.take();
+          for (let i = 0; i < 10; i++) {
+            const res = JSON.parse(await readers.read("latestMessages", { thread: i + 2, limit: 1 }, "en"));
+            assert.equal(res.pid, first.pid, "steady-state reads must reuse the warm Pion slot");
+          }
+          assert.equal(files.take().calls, 0, "steady-state Pion pump must not call sync node:fs on every read");
+
+          // Simulate auto-update swap_app removing the binary momentarily: warm idle slot stays alive.
+          unlinkSync(swapStub);
+          files.take();
+          const duringSwap = JSON.parse(await readers.read("latestMessages", { thread: 99, limit: 1 }, "en"));
+          assert.equal(duringSwap.pid, first.pid, "warm idle Pion slot must survive swap_app without retiring");
+          assert.equal(files.take().calls, 0, "swap_app survival check must stay stat-free");
+
+          // Tripping the default circuit breaker retires the idle Pion slot in memory and switches to MB.
+          if (isDefaultBetaTarget) {
+            breaker.recordUnexpectedExit("data", stamp, "default");
+            breaker.recordUnexpectedExit("data", stamp, "default");
+            breaker.recordUnexpectedExit("data", stamp, "default");
+            const afterDemote = JSON.parse(await readers.read("latestMessages", { thread: 100, limit: 1 }, "en"));
+            assert.equal(afterDemote.tag, "mb-b", "demoted default Pion slot must retire and fall back to MB");
+          } else {
+            // Wildcard emergency rollback {"*": "mb"} still retires warm Pion slots immediately.
+            cfg = { readers: { "*": "mb" }, breaker };
+            const afterRollback = JSON.parse(await readers.read("latestMessages", { thread: 100, limit: 1 }, "en"));
+            assert.equal(afterRollback.tag, "mb-b", "wildcard rollback to mb must retire warm Pion slot immediately");
+          }
+        } finally {
+          files.stop();
+          readers.close();
+          resetReaderSelectionStateForTest();
+        }
+      });
+    }
+
+    // 4c. Wildcard emergency rollback {"*": "mb"} immediately retires a warm Pion slot on the next read.
+    await withEnv({ STILLFAIL_PION_READER: pionStubA, STILLFAIL_READER_DATA: undefined, STILLFAIL_READER_ENGINE: undefined }, async () => {
+      setMbReaderBinaryOverrideForTest(() => mbStubB);
+      setPionProbeRunnerForTest(async () => new Set(["data"]));
+      let cfg: ReaderSelectConfig = { readers: { "*": "pion" } };
+      const readers = new Readers(dir, 1, undefined, 1, { readers: () => cfg });
+      try {
+        const pRes = JSON.parse(await readers.read("latestMessages", { thread: 1, limit: 1 }, "en"));
+        assert.equal(pRes.tag, "pion-a");
+        cfg = { readers: { "*": "mb" } };
+        const mRes = JSON.parse(await readers.read("latestMessages", { thread: 2, limit: 1 }, "en"));
+        assert.equal(mRes.tag, "mb-b", "wildcard rollback {\"*\": \"mb\"} must immediately retire warm Pion slot");
       } finally {
         readers.close();
         resetReaderSelectionStateForTest();

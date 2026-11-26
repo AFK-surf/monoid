@@ -1,0 +1,24 @@
+// 1:1 port of `station/src/ops/nice.ts`:
+// Lowers CPU priority of agent runtimes and jobs via `STILLFAIL_AGENT_NICE` (0..19, default 10).
+
+/// Parse `STILLFAIL_AGENT_NICE` (integer 0..19; default 10).
+pub fn agent_nice(env_val : Option[String]) -> Int {
+  match env_val {
+    Some(raw) => match parse_int_strict(raw) {
+      Some(n) => if n >= 0 && n <= 19 { n } else { 10 }
+      None => 10
+    }
+    None => 10
+  }
+}
+
+/// Wrap `(command, args)` with `nice -n <by>` when supported on this platform.
+pub fn niced(
+  command : String,
+  args : Array[String],
+  env_val : Option[String],
+  os : PlatformOs,
+  has_nice : Bool,
+) -> (String, Array[String]) {
+  platform_lowered(os, has_nice, command, args, agent_nice(env_val))
+}

@@ -419,9 +419,35 @@ fn unpremul_pixmap(pixmap : @skia.Pixmap) -> FixedArray[Byte] {
 }
 
 ///|
-/// An SVG document's bytes drawn with its longer side `long_side` pixels: (width, height, straight RGBA). None where
-/// they are not one, or it says no size.
-pub fn rasterize(data : Bytes, long_side : Int, opt? : Options = Options::default()) -> (Int, Int, FixedArray[Byte])? {
+/// A parsed SVG document ready to be rasterized at multiple sizes without re-parsing XML/CSS/paths.
+pub struct SvgDoc {
+  priv tree : Tree
+}
+
+///|
+/// Target pixel dimensions for `rasterize_premul`: sized strictly from the longer side and clamped to [1, min(long_side, 16384)],
+/// guaranteeing `max(tw, th) == min(long_side, 16384)` for all aspect ratios including portrait and extreme-aspect SVGs.
+fn premul_target_size(w : Float, h : Float, long_side : Int) -> (Int, Int)? {
+  let wd = w.to_double()
+  let hd = h.to_double()
+  if !(wd > 0.0 && hd > 0.0 && wd - wd == 0.0 && hd - hd == 0.0) || long_side <= 0 {
+    return None
+  }
+  let side = if long_side > 16384 { 16384 } else { long_side }
+  if wd >= hd {
+    let raw_h = (side.to_double() * (hd / wd)).round().to_int()
+    let th = if raw_h < 1 { 1 } else if raw_h > side { side } else { raw_h }
+    Some((side, th))
+  } else {
+    let raw_w = (side.to_double() * (wd / hd)).round().to_int()
+    let tw = if raw_w < 1 { 1 } else if raw_w > side { side } else { raw_w }
+    Some((tw, side))
+  }
+}
+
+///|
+/// Parses an SVG (or gzipped `.svgz`) document into a reusable `SvgDoc`. None where the bytes are not a valid SVG.
+pub fn SvgDoc::parse(data : Bytes, opt? : Options = Options::default()) -> SvgDoc? {
   let data = if data.length() >= 2 && data[0] == b'\x1F' && data[1] == b'\x8B' {
     match @zip.gunzip(data) {
       Some(d) => d
@@ -431,17 +457,56 @@ pub fn rasterize(data : Bytes, long_side : Int, opt? : Options = Options::defaul
     data
   }
   let text = @utf8.decode(data) catch { _ => return None }
-  guard tree_from_str(text, opt) is Some(tree) else { return None }
-  let (w, h) = (tree.size.width, tree.size.height)
+  match tree_from_str(text, opt) {
+    Some(tree) => Some({ tree, })
+    None => None
+  }
+}
+
+///|
+/// Draws this parsed SVG with its longer side `long_side` pixels (clamped to 16384): (width, height, premultiplied RGBA).
+pub fn SvgDoc::rasterize_premul(self : SvgDoc, long_side : Int) -> (Int, Int, FixedArray[Byte])? {
+  let (w, h) = (self.tree.size.width, self.tree.size.height)
+  guard premul_target_size(w, h, long_side) is Some((tw, th)) else { return None }
+  guard @skia.Pixmap::new(tw, th) is Some(pixmap) else { return None }
+  let ts = @skia.Transform::from_scale(fi(tw) / w, fi(th) / h)
+  render_tree(self.tree, ts, pixmap)
+  Some((tw, th, pixmap.data))
+}
+
+///|
+/// Draws this parsed SVG with its longer side `long_side` pixels: (width, height, straight RGBA).
+pub fn SvgDoc::rasterize(self : SvgDoc, long_side : Int) -> (Int, Int, FixedArray[Byte])? {
+  let (w, h) = (self.tree.size.width, self.tree.size.height)
   if !(w > 0.0 && h > 0.0) || long_side <= 0 {
     return None
   }
   let width = if w >= h { long_side } else { f2i(fround(fi(long_side) * w / h)) }
   let width = if width < 1 { 1 } else { width }
-  guard size_to_int_size(tree.size).scale_to_width(width) is Some(size) else { return None }
+  guard size_to_int_size(self.tree.size).scale_to_width(width) is Some(size) else { return None }
   guard @skia.Pixmap::new(size.width, size.height) is Some(pixmap) else { return None }
   let ts = @skia.Transform::from_scale(fi(size.width) / w, fi(size.height) / h)
-  render_tree(tree, ts, pixmap)
+  render_tree(self.tree, ts, pixmap)
   // premultiplied to straight
   Some((size.width, size.height, unpremul_pixmap(pixmap)))
+}
+
+///|
+/// An SVG document's bytes drawn with its longer side `long_side` pixels: (width, height, premultiplied RGBA). None
+/// where they are not one, or it says no size.
+pub fn rasterize_premul(data : Bytes, long_side : Int, opt? : Options = Options::default()) -> (Int, Int, FixedArray[Byte])? {
+  match SvgDoc::parse(data, opt~) {
+    Some(doc) => doc.rasterize_premul(long_side)
+    None => None
+  }
+}
+
+///|
+/// An SVG document's bytes drawn with its longer side `long_side` pixels: (width, height, straight RGBA). None where
+/// they are not one, or it says no size.
+pub fn rasterize(data : Bytes, long_side : Int, opt? : Options = Options::default()) -> (Int, Int, FixedArray[Byte])? {
+  match SvgDoc::parse(data, opt~) {
+    Some(doc) => doc.rasterize(long_side)
+    None => None
+  }
 }

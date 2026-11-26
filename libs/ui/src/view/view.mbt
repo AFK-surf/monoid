@@ -557,6 +557,8 @@ struct Node {
   /// where it was last placed beside its anchor (its place in what holds it, and the point it is drawn bigger or
   /// smaller about): where it stays once it is leaving or its anchor is drawn nowhere (View::beside)
   mut beside_last : (Double, Double, Double, Double)?
+  /// optional slide interpolation `(x_from, y_from, w_to, h_to, sp)` for a menu sliding levels beside its anchor
+  mut beside_slide : (() -> (Double, Double, Double, Double, Double)?)?
   /// whether it is hidden because it goes beside an anchor that has not been placeable yet (beside_last is None)
   mut beside_unplaced : Bool
   /// the point of its anchor the pointer was last at, in the anchor's own terms (View::beside's `at_pointer`)
@@ -2167,6 +2169,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.as_ground = false
       n.beside = None
       n.beside_last = None
+      n.beside_slide = None
       n.beside_unplaced = false
       n.beside_point = None
       n.beside_piece = None
@@ -2322,6 +2325,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         beside: None,
         went: None,
         beside_last: None,
+        beside_slide: None,
         beside_unplaced: false,
         beside_point: None,
         beside_piece: None,
@@ -10216,6 +10220,7 @@ fn View::let_go(self : View) -> Unit {
   n.as_ground = false
   n.beside = None
   n.beside_last = None
+  n.beside_slide = None
   n.beside_unplaced = false
   n.beside_point = None
   n.beside_piece = None
@@ -13113,6 +13118,7 @@ fn Tree::drain_parked_garbage(self : Tree) -> Unit {
     n.as_ground = false
     n.beside = None
     n.beside_last = None
+    n.beside_slide = None
     n.beside_unplaced = false
     n.beside_point = None
     n.beside_piece = None

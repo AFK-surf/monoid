@@ -2,13 +2,15 @@
 package "ui/svg"
 
 import {
+  "moonbitlang/core/debug",
   "ui/font",
   "ui/skia",
-  "moonbitlang/core/debug",
 }
 
 // Values
 pub fn rasterize(Bytes, Int32, opt? : Options) -> (Int32, Int32, FixedArray[Byte])?
+
+pub fn rasterize_premul(Bytes, Int32, opt? : Options) -> (Int32, Int32, FixedArray[Byte])?
 
 pub fn render_svg(String, Options, @skia.Transform, @skia.Pixmap) -> Bool
 
@@ -129,6 +131,13 @@ pub(all) enum SimpleSeg {
   SQuadTo(Double, Double, Double, Double)
   SClose
 }
+
+pub struct SvgDoc {
+  // private fields
+}
+pub fn SvgDoc::parse(Bytes, opt? : Options) -> Self?
+pub fn SvgDoc::rasterize(Self, Int32) -> (Int32, Int32, FixedArray[Byte])?
+pub fn SvgDoc::rasterize_premul(Self, Int32) -> (Int32, Int32, FixedArray[Byte])?
 
 #derive(Eq, @debug.Debug)
 pub(all) enum TextRendering {

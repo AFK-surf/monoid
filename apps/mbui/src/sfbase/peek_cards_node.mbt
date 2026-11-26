@@ -645,7 +645,7 @@ pub fn peek_chat_where_node(
     m.box(fn(w) {
       @sf.style_node(w, fn() { peek_chat_where }, in_row=true)
       w.show(elsewhere, fn(s) {
-        @sf.station_mark_node(s, emoji, icon, peek_station_mark, fn() { @sf.theme().p.muted }, fn() { 0 })
+        station_mark_at_node(s, fn() { "" }, emoji, icon, Inline)
       })
       @sf.words_node(w, words, fn() { peek_meta_words }) |> ignore
     })
@@ -965,12 +965,9 @@ let peek_state_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, 
 let peek_chat_title : @ui.Style = @ui.css("row w=Full gap=S1_5 align=ACenter")
 
 ///|
-/// Where a chat is: its station's mark (11) 4 from its name, then that it is the history, one line.
+/// Where a chat is: its station's mark (a line's: station_mark_at_node) 4 from its name, then that it is the history, one line.
 // kept across runs: a value (no field of it changes)
 let peek_chat_where : @ui.Style = @ui.css("row gap=S1 align=ACenter clip=true").then(@ui.style(w=@sf.grow))
-
-///|
-let peek_station_mark : Double = 11.0
 
 ///|
 /// What it says (excerpt): the card's words, three lines at most.

@@ -1,0 +1,15 @@
+[package]
+name = "station_rules_bridge"
+version = "0.1.0"
+
+[dependencies]
+base64 = { workspace = true }
+base_codec = { workspace = true }
+crypto = { workspace = true }
+form = { workspace = true }
+fork = { workspace = true }
+history = { workspace = true }
+js_json = { workspace = true }
+lock = { workspace = true }
+role = { workspace = true }
+vault = { workspace = true }

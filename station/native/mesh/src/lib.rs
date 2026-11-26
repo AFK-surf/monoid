@@ -1676,4 +1676,94 @@ mod tests {
         assert!(!addrs2.contains(&iroh::TransportAddr::Relay(stale_dht)));
     }
 
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn an_oversized_udp_datagram_does_not_spin_noq_udp() {
+        let receiver = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let recv_addr = receiver.local_addr().unwrap();
+        let state = noq_udp::UdpSocketState::new((&receiver).into()).unwrap();
+
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        receiver.set_nonblocking(false).unwrap();
+        receiver.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        sender.send_to(&[0xAB; 256], recv_addr).unwrap();
+        let mut peek_buf = [0u8; 256];
+        assert_eq!(receiver.peek(&mut peek_buf).unwrap(), 256);
+        receiver.set_nonblocking(true).unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let mut buf = [0u8; 64];
+            let mut meta = noq_udp::RecvMeta::default();
+            let res = state.recv(
+                (&receiver).into(),
+                &mut [std::io::IoSliceMut::new(&mut buf)],
+                std::slice::from_mut(&mut meta),
+            );
+            let _ = tx.send(res);
+        });
+
+        let res = rx.recv_timeout(Duration::from_secs(1));
+        if res.is_err() {
+            let _ = sender.send_to(b"unstick", recv_addr);
+        }
+        let _ = handle.join();
+
+        assert!(
+            matches!(res, Ok(Err(e)) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "oversized UDP datagram must return WouldBlock once drained, not spin",
+        );
+    }
+
+    /// One UDP datagram larger than noq's receive buffer (1472 B) must not leave `recv_single`
+    /// spinning on `MSG_TRUNC` while holding the endpoint state mutex, which would deadlock
+    /// `endpoint.close()`.
+    #[test]
+    fn an_oversized_udp_datagram_does_not_hang_the_endpoint() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let local = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
+        let endpoint = runtime.block_on(async {
+            IrohEndpoint::builder(Minimal)
+                .relay_mode(RelayMode::Disabled)
+                .bind_addr(local)
+                .unwrap()
+                .bind()
+                .await
+                .unwrap()
+        });
+        let v4 = std::net::SocketAddr::from((
+            [127, 0, 0, 1],
+            endpoint
+                .bound_sockets()
+                .iter()
+                .find(|s| s.is_ipv4())
+                .unwrap()
+                .port(),
+        ));
+
+        let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender.send_to(&[0xCD; 2048], v4).unwrap();
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        runtime.spawn(async move {
+            endpoint.close().await;
+            let _ = done_tx.send(());
+        });
+
+        let closed = done_rx.recv_timeout(Duration::from_secs(2));
+        if closed.is_err() {
+            let _ = sender.send_to(b"ok", v4);
+        }
+        runtime.shutdown_background();
+
+        assert!(
+            closed.is_ok(),
+            "endpoint.close() hung after an oversized UDP datagram",
+        );
+    }
 }

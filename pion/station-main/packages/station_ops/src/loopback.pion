@@ -1,0 +1,200 @@
+// 1:1 port of `station/src/ops/loopback.ts`:
+// Pure-data response construction for `/healthz`, `/admin/api*`, and `/admin/*` redirects
+// (zero `station_http` dependency).
+
+import "base_codec"
+import "js_json"
+
+pub struct LoopbackPlace {
+  pub origin : String
+  pub workspace : String
+  pub workspace_name : String
+  pub station : String
+  pub removed_at : Option[Int64]
+}
+
+pub struct LoopbackReply {
+  pub status : Int
+  pub headers : Array[(String, String)]
+  pub body : String
+}
+
+fn plain_reply(status : Int, body : String) -> LoopbackReply {
+  LoopbackReply::{
+    status: status,
+    headers: [("content-type", "text/plain; charset=utf-8")],
+    body: body,
+  }
+}
+
+fn header_get_ci(headers : Array[(String, String)], name : String) -> Option[String] {
+  let target = ascii_lower(name)
+  for i in 0..<headers.length() {
+    let (k, v) = headers[i]
+    if ascii_lower(k) == target {
+      return Some(v)
+    }
+  }
+  None
+}
+
+/// Determine browser language from `stillfail-lang` header, else first `Accept-Language` entry.
+pub fn lang_of_browser(headers : Array[(String, String)]) -> Lang {
+  match header_get_ci(headers, "stillfail-lang") {
+    Some(said) => return lang_of(Some(said))
+    None => ()
+  }
+  let raw = match header_get_ci(headers, "accept-language") {
+    Some(v) => v
+    None => ""
+  }
+  let mut end = raw.length()
+  for i in 0..<raw.length() {
+    let c = raw.code_unit_at(i) & 0xFF
+    if c == 44 || c == 59 { // ',' or ';'
+      end = i
+      break
+    }
+  }
+  let first = ascii_trim(ops_slice_str(raw, 0, end))
+  lang_of(Some(if first == "*" { "" } else { first }))
+}
+
+fn strip_trailing_slashes(s : String) -> String {
+  let mut end = s.length()
+  while end > 0 && (s.code_unit_at(end - 1) & 0xFF) == 47 {
+    end = end - 1
+  }
+  ops_slice_str(s, 0, end)
+}
+
+/// Strip ASCII control characters (including CR `\r`, LF `\n`, NUL, DEL) to prevent HTTP header / response splitting.
+fn sanitize_header_value(s : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i) & 0xFF
+    if c >= 32 && c != 127 {
+      sb.write_byte(c as Byte)
+    }
+  }
+  sb.to_string()
+}
+
+/// Compute the cloud web app redirect URL for a legacy station `/admin/...` path.
+pub fn loopback_moved(
+  path : String,
+  query : Option[String],
+  place : LoopbackPlace,
+) -> String {
+  let w = strip_trailing_slashes(place.origin) + "/w/" + place.workspace
+  let s = place.station
+  let raw_parts = split_by_byte(path, 47)
+  let parts : Array[String] = []
+  for i in 0..<raw_parts.length() {
+    if raw_parts[i] != "" {
+      parts.push(raw_parts[i])
+    }
+  }
+  let n = parts.length()
+  let a = if n >= 1 { parts[0] } else { "" }
+  let b = if n >= 2 { parts[1] } else { "" }
+  let c = if n >= 3 { parts[2] } else { "" }
+  let to = if n == 2 && a == "chats" {
+    w + "/s/" + s + "/chats/" + b
+  } else if n == 2 && a == "services" {
+    w + "/s/" + s + "/services/" + b
+  } else if n == 2 && (a == "connects" || a == "bots") {
+    w + "/s/" + s + "/connects/" + b
+  } else if n == 2 && a == "settings" && b == "accounts" {
+    w + "/s/" + s + "/settings/accounts"
+  } else if n == 3 && a == "settings" && b == "accounts" {
+    w + "/s/" + s + "/settings/accounts/" + c
+  } else if n == 2 && a == "settings" && (b == "connects" || b == "memory" || b == "appearance" || b == "shortcuts") {
+    w + "/settings/" + b
+  } else if n == 2 && a == "settings" && b == "device" {
+    w + "/settings/stations"
+  } else if n == 1 && a == "settings" {
+    w + "/settings"
+  } else if n == 1 && a == "new" {
+    w + "/new"
+  } else if n == 1 && a == "archive" {
+    w + "/archive"
+  } else {
+    w + "/"
+  }
+  let base_to = sanitize_header_value(to)
+  match query {
+    Some(q) => {
+      let safe_q = sanitize_header_value(q)
+      if safe_q != "" { base_to + "?" + safe_q } else { base_to }
+    }
+    None => base_to
+  }
+}
+
+fn loopback_unbound(
+  place : Option[LoopbackPlace],
+  lang : Lang,
+  product : Product,
+) -> String {
+  match place {
+    Some(p) => match p.removed_at {
+      Some(secs) => tr_with_product(lang, product, "station.local.removed", [
+        ("workspace", p.workspace_name),
+        ("at", js_json::format_iso_ms(secs * 1000.to_int64())),
+      ])
+      None => tr_with_product(lang, product, "station.local.unjoined", [])
+    }
+    None => tr_with_product(lang, product, "station.local.unjoined", [])
+  }
+}
+
+/// Pure-data response builder for the station loopback port (`/healthz`, `/admin/api`, `/`, `/admin*`).
+pub fn loopback_answer(
+  path : String,
+  query : Option[String],
+  ready : Bool,
+  place : Option[LoopbackPlace],
+  lang : Lang,
+  product : Product = stillfail_product(),
+) -> LoopbackReply {
+  if path == "/healthz" {
+    return plain_reply(if ready { 200 } else { 503 }, "")
+  }
+  if path == "/admin/api" || path.starts_with("/admin/api/") {
+    let body = base_codec::json_stringify(base_codec::json_obj([
+      ("error", base_codec::json_str(tr_with_product(lang, product, "station.local.noAdminApi", []))),
+    ]))
+    return LoopbackReply::{
+      status: 404,
+      headers: [("content-type", "application/json")],
+      body: body,
+    }
+  }
+  if path != "/" && path != "/admin" && !path.starts_with("/admin/") {
+    return plain_reply(404, "")
+  }
+  match place {
+    Some(p) => {
+      let is_removed = match p.removed_at {
+        Some(_) => true
+        None => false
+      }
+      if !is_removed && p.origin != "" && p.workspace != "" {
+        let sub = if path.starts_with("/admin") {
+          ops_slice_str(path, 6, path.length())
+        } else {
+          path
+        }
+        let to = sanitize_header_value(loopback_moved(sub, query, p))
+        return LoopbackReply::{
+          status: 302,
+          headers: [("location", to), ("cache-control", "no-store")],
+          body: "",
+        }
+      }
+    }
+    None => ()
+  }
+  plain_reply(404, loopback_unbound(place, lang, product))
+}

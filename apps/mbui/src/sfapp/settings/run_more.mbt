@@ -47,7 +47,7 @@ pub fn machine_sessions_offer_node(
       @sf.icon_node(b, "monitor", machine_offer_mark, By(fn() { if lit() { @sf.theme().p.text } else { @sf.theme().p.muted } }))
       |> ignore
       @sf.words_node(b, words, fn() { if lit() { machine_offer_words_lit } else { machine_offer_words } }) |> ignore
-      Is(@sf.small_corner)
+      Is(1.0e6)
     })
     |> ignore
   })
@@ -56,9 +56,7 @@ pub fn machine_sessions_offer_node(
 ///|
 /// The offer (offer: 4 by 10 in, its parts 6 apart, the hover's ground; 13 on 20, muted) and its mark (Monitor 14).
 // kept across runs: a value (no field of it changes)
-let machine_offer_box : @ui.Style = @ui.css("row px=S2_5 py=S1 gap=S1_5 align=ACenter hovered{bg=Hover}").then(
-  @ui.style(radius=@sf.small_radius),
-)
+let machine_offer_box : @ui.Style = @ui.css("row px=S2_5 py=S1 gap=S1_5 align=ACenter radius=Full hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)

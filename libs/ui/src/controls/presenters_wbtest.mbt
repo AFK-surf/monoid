@@ -940,18 +940,20 @@ test "what a sheet's item opens with a finger at Small: a sheet in its place, fr
       from=beside_of(from),
     )
   }, button_at=JEnd)
-  for opened in [("删掉", "删掉吗？", "删掉它"), ("重命名", "保存", "保存")] {
-    let (item, words, action) = opened
+  for opened in [("删掉", "删掉吗？", "删掉它", true), ("重命名", "保存", "保存", false)] {
+    let (item, words, action, same_sheet_page) = opened
     open_it(t)
     let (top0, _) = one_sheet(t)
     let dim = scrim_alpha(t, phone)
     assert_true(dim > 0L)
     t.tap_text(item)
-    // (the frame it was chosen in: what it opened where the menu stood, the menu gone, the window as dim)
+    // (the frame it was chosen in: same sheet or replacement where the menu stood, the window as dim)
     assert_eq(presented_how, [AsSheet], msg=item)
     assert_true((one_sheet(t).0 - top0).abs() < 0.5, msg="\{item}: \{Repr(one_sheet(t))} \{top0}")
     assert_eq(scrim_alpha(t, phone), dim, msg=item)
-    assert_true(t.find(words) is Some(_) && t.find("归档") is None, msg=item)
+    if !same_sheet_page {
+      assert_true(t.find(words) is Some(_) && t.find("归档") is None, msg=item)
+    }
     // (on its way to its own height, shorter: down only, never two sheets, the window never brighter)
     let mut last = top0
     for _ in 0..<way_frames {
@@ -961,10 +963,17 @@ test "what a sheet's item opens with a finger at Small: a sheet in its place, fr
       assert_true(top >= last - 0.5, msg="\{item}: \{top} after \{last}")
       last = top
     }
+    assert_true(t.find(words) is Some(_) && t.find("归档") is None, msg=item)
     assert_true(last > top0 + 20.0, msg="\{item}: \{last} \{top0}")
     // (as tall as what it holds: its action over the window's foot)
     assert_true(where_is(t, action).1 < phone.2, msg=item)
     t.back()
+    if same_sheet_page {
+      assert_true(presenting(), msg="\{item}: back returns to menu page")
+      t.run_for(@ui.move_most_ms)
+      assert_true(t.find("归档") is Some(_), msg="\{item}: menu items back after back")
+      t.back()
+    }
     assert_true(!presenting(), msg=item)
     t.run_for(@ui.move_most_ms)
   }
@@ -1546,4 +1555,539 @@ test "Small sheet_node: last_presented returns the reused sheet serial after pan
   t.run_for(@ui.move_most_ms)
   assert_eq(reused_serial.val, base_serial)
   assert_true(presented_open_of(reused_serial.val))
+}
+
+///|
+test "Large Menu -> Confirm: inline popover slide, no AsDialog/scrim, Dialog a11y, danger vs non-danger keyboard, Back/Esc/Cmd+., and single-shot execution" {
+  let back_label = t("common.back")
+  let cancel_label = t("common.cancel")
+  let runs = Ref(0)
+  let non_danger_runs = Ref(0)
+  let t = presenting_tester(desk, fn(from) {
+    menu(
+      [
+        Some(menu_item_of("编辑", fn() {  })),
+        Some(
+          menu_item_of(
+            "删除",
+            fn() {
+              confirm(
+                "删除预设？",
+                "删除后无法恢复。",
+                "确认删除",
+                fn() { runs.val += 1 },
+                danger=true,
+                warning="关联的快捷入口也将移除。",
+              )
+            },
+            danger=true,
+          ),
+        ),
+        Some(
+          menu_item_of("归档", fn() {
+            confirm("归档对话？", "可随时在归档列表中恢复。", "确认归档", fn() { non_danger_runs.val += 1 }, danger=false)
+          }),
+        ),
+      ],
+      from=beside_of(from),
+    )
+  })
+  // 1) Danger inline confirm: same AsPopover, zero scrim, Dialog a11y, Enter/Space on container does nothing
+  open_it(t)
+  let menu_serial = last_presented()
+  t.tap_text("删除")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(presented_how, [AsPopover])
+  assert_eq(last_presented(), menu_serial)
+  assert_eq(scrim_alpha(t, desk), 0L)
+  assert_true(t.query(MenuItem) is None, msg="old menu items hidden while confirm active")
+  let dlg = t.get(@ui.Role::Dialog)
+  assert_eq(dlg.label, "删除预设？")
+  assert_true(dlg.focused, msg="danger confirm explicitly focuses Dialog container before Enter/Space")
+  // Enter and Space on danger confirm container must NOT trigger deletion
+  t.key_named("enter") |> ignore
+  t.key(@ui.key_of_char(' '))
+  t.run_for(@ui.move_most_ms)
+  assert_eq(runs.val, 0, msg="danger confirm must not fire on Enter/Space from container")
+  assert_true(presenting(), msg="danger confirm still open")
+  // Tab / Shift+Tab cycles strictly among [< Back, Cancel, Action] without stopping on outer Dialog container
+  t.key_named("tab") |> ignore
+  assert_true(t.get(Button, label=back_label).focused, msg="first Tab lands on Back button")
+  t.key_named("tab") |> ignore
+  assert_true(t.get(Button, label=cancel_label).focused, msg="second Tab lands on Cancel button")
+  t.key_named("tab") |> ignore
+  assert_true(t.get(Button, label="确认删除").focused, msg="third Tab lands on Confirm button")
+  t.key_named("tab") |> ignore
+  assert_true(t.get(Button, label=back_label).focused, msg="Tab wraps directly to Back without stopping on outer container")
+  t.key(@ui.key_tab, mods=@ui.mod_shift_key)
+  assert_true(t.get(Button, label="确认删除").focused, msg="Shift+Tab wraps back to Confirm button")
+  // Back returns to menu; arrow keys and typeahead work again
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("编辑") is Some(_) && t.find("删除预设？") is None)
+  t.key(@ui.key_code_down)
+  assert_true(t.get(MenuItem, label="编辑").focused, msg="Down arrow focuses first menu item after Back")
+  t.key(@ui.key_code_down)
+  assert_true(t.get(MenuItem, label="删除").focused, msg="Down arrow moves to second menu item")
+  t.key(@ui.key_of_char('归'))
+  assert_true(t.get(MenuItem, label="归档").focused, msg="typeahead works after returning from confirm")
+  // Re-enter danger confirm, click `<` back button
+  t.tap_text("删除")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label=back_label)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("编辑") is Some(_))
+  // Re-enter danger confirm, Escape closes whole menu
+  t.tap_text("删除")
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_false(presenting())
+  assert_eq(runs.val, 0)
+  // Re-open, enter danger confirm, Cmd+. closes whole menu
+  open_it(t)
+  t.tap_text("删除")
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_of_char('.'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  assert_false(presenting())
+  // Re-open, enter danger confirm, click 取消 closes whole menu
+  open_it(t)
+  t.tap_text("删除")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label=cancel_label)
+  t.run_for(@ui.move_most_ms)
+  assert_false(presenting())
+  assert_eq(runs.val, 0)
+  // Re-open, enter danger confirm, tap action twice rapidly at same coords: runs only once
+  open_it(t)
+  t.tap_text("删除")
+  t.run_for(@ui.move_most_ms)
+  let del_rect = t.get(Button, label="确认删除").rect
+  let (dx, dy) = (del_rect.0 + del_rect.2 / 2.0, del_rect.1 + del_rect.3 / 2.0)
+  t.tap(dx, dy)
+  t.tap(dx, dy)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(runs.val, 1, msg="confirm action executes at most once")
+  assert_false(presenting())
+  // 2) Non-danger inline confirm: Enter triggers default action
+  open_it(t)
+  t.tap_text("归档")
+  t.run_for(@ui.move_most_ms)
+  t.key_named("enter") |> ignore
+  t.run_for(@ui.move_most_ms)
+  assert_eq(non_danger_runs.val, 1, msg="non-danger confirm triggers on Enter")
+  assert_false(presenting())
+  assert_eq(t.audit(), [])
+}
+
+///|
+test "Menu -> Confirm lifecycle: run() opening another confirm does not reuse closing menu; ChoiceHeld delayed confirm pushes inline and stale ChoiceHeld calls let_go; lower panel closing falls back to AsDialog" {
+  // 1) run() synchronously opening another confirm opens a fresh AsDialog (does not reuse consumed menu)
+  let second_ran = Ref(0)
+  let t1 = presenting_tester(desk, fn(from) {
+    menu(
+      [
+        Some(
+          menu_item_of("第一步", fn() {
+            confirm("确认第一步", "说明一", "继续", fn() {
+              confirm("确认第二步", "说明二", "完成", fn() { second_ran.val += 1 })
+            })
+          }),
+        ),
+      ],
+      from=beside_of(from),
+    )
+  })
+  open_it(t1)
+  let s1 = last_presented()
+  t1.tap_text("第一步")
+  t1.run_for(@ui.move_most_ms)
+  assert_eq(last_presented(), s1)
+  t1.click(Button, label="继续")
+  t1.run_for(@ui.move_most_ms)
+  assert_true(last_presented() != s1, msg="confirm run() must not reuse consumed menu")
+  assert_eq(presented_how, [AsDialog])
+  t1.click(Button, label="完成")
+  t1.run_for(@ui.move_most_ms)
+  assert_eq(second_ran.val, 1)
+  assert_false(presenting())
+
+  // 2) ChoiceHeld delayed confirm pushes inline; stale ChoiceHeld after dismiss calls let_go()
+  let held_ref : Ref[ChoiceHeld?] = Ref(None)
+  let let_go_count = Ref(0)
+  let t2 = presenting_tester(desk, fn(from) {
+    menu(
+      [
+        Some(
+          menu_item_of("异步检查", fn() {
+            held_ref.val = choice_held()
+          }),
+        ),
+      ],
+      from=beside_of(from),
+    )
+  })
+  open_it(t2)
+  let s2 = last_presented()
+  t2.tap_text("异步检查")
+  t2.run_for(@ui.move_most_ms)
+  assert_true(held_ref.val is Some(_))
+  held_ref.val.unwrap().answer(
+    fn() { true },
+    fn() { confirm("延迟确认", "异步结果需要确认", "确认", fn() {  }) },
+    fn() { let_go_count.val += 1 },
+  )
+  t2.run_for(@ui.move_most_ms)
+  assert_eq(last_presented(), s2, msg="ChoiceHeld delayed confirm pushes into held menu")
+  assert_eq(presented_how, [AsPopover])
+  assert_true(t2.find("延迟确认") is Some(_))
+  t2.key(@ui.key_escape)
+  t2.run_for(@ui.move_most_ms)
+  // Now dismiss while held -> late answer must call let_go
+  open_it(t2)
+  t2.tap_text("异步检查")
+  t2.run_for(@ui.move_most_ms)
+  let stale = held_ref.val.unwrap()
+  t2.key(@ui.key_escape)
+  t2.run_for(@ui.move_most_ms)
+  stale.answer(
+    fn() { true },
+    fn() { confirm("不应出现", "过期", "确认", fn() {  }) },
+    fn() { let_go_count.val += 1 },
+  )
+  t2.run_for(@ui.move_most_ms)
+  assert_eq(let_go_count.val, 1)
+  assert_false(presenting())
+
+  // 3) Lower panel closing in the same event before confirm falls back to centered AsDialog
+  let t3 = presenting_tester(desk, fn(from) {
+    panel_nodes(
+      "外层面板",
+      from~,
+      fn(body, close_panel) {
+        body.box(fn(b) {
+          style_node(b, panel_words_in)
+          words_node(b, fn() { "面板正文" }, fn() { paragraph }) |> ignore
+        })
+        |> ignore
+        ignore(close_panel)
+      },
+      foot=fn(f, close_panel) {
+        button_opens_node(f, fn() { "更多" }, fn(b) {
+          menu(
+            [
+              Some(
+                menu_item_of("关面板再确认", fn() {
+                  close_panel()
+                  confirm("居中确认", "外层面板已关，应回退居中弹窗", "好", fn() {  })
+                }),
+              ),
+            ],
+            from=Node(b),
+          )
+        })
+        |> ignore
+      },
+    )
+  })
+  open_it(t3)
+  t3.click(Button, label="更多")
+  t3.run_for(@ui.move_most_ms)
+  t3.tap_text("关面板再确认")
+  t3.run_for(@ui.move_most_ms)
+  assert_eq(presented_how, [AsDialog], msg="must fall back to AsDialog when lower panel closed in same event")
+  assert_true(t3.find("居中确认") is Some(_))
+  t3.key(@ui.key_escape)
+  t3.run_for(@ui.move_most_ms)
+  assert_false(presenting())
+}
+
+///|
+test "Small Sheet Menu -> Confirm: Escape/Back returns to menu page, Cancel closes menu sheet, Confirm executes once" {
+  let cancel_label = t("common.cancel")
+  let ran = Ref(0)
+  let t = presenting_tester(
+    phone,
+    fn(from) {
+      menu(
+        [
+          Some(menu_item_of("编辑", fn() {  })),
+          Some(
+            menu_item_of(
+              "删除",
+              fn() { confirm("删除项？", "无法恢复。", "删除", fn() { ran.val += 1 }, danger=true) },
+              danger=true,
+            ),
+          ),
+        ],
+        from=beside_of(from),
+      )
+    },
+    button_at=JEnd,
+  )
+  open_it(t)
+  let s = last_presented()
+  t.tap_text("删除")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(last_presented(), s)
+  assert_eq(presented_how, [AsSheet])
+  assert_true(t.find("删除项？") is Some(_))
+  let sdlg = t.get(@ui.Role::Dialog)
+  assert_true(sdlg.description.contains("无法恢复。"), msg="Small confirm sheet Dialog exposes description: \{sdlg.description}")
+  // Escape on Small sheet pops back to menu page
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(presenting() && t.find("编辑") is Some(_))
+  // Re-enter and click Cancel: closes whole menu sheet
+  t.tap_text("删除")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label=cancel_label)
+  t.run_for(@ui.move_most_ms)
+  assert_false(presenting())
+  assert_eq(ran.val, 0)
+  // Re-enter and confirm: runs once and closes
+  open_it(t)
+  t.tap_text("删除")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="删除")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(ran.val, 1)
+  assert_false(presenting())
+}
+
+///|
+test "Nested Menu -> Submenu -> Confirm, Small Menu -> short Pick -> Confirm, ChoiceHeld pop invalidation (Large & Small), and keep_field focus preservation" {
+  // 1) Nested Menu -> Submenu -> Confirm on both Large (AsPopover) and Small (AsSheet)
+  for tier in [desk, phone] {
+    let confirmed = Ref(0)
+    let t = presenting_tester(
+      tier,
+      fn(from) {
+        menu(
+          [
+            Some(
+              menu_item_of(
+                "更多",
+                fn() {
+                  menu(
+                    [
+                      Some(
+                        menu_item_of(
+                          "危险删除",
+                          fn() { confirm("彻底删除？", "不可撤销。", "删除", fn() { confirmed.val += 1 }, danger=true) },
+                          danger=true,
+                        ),
+                      ),
+                    ],
+                    from=beside_of(from),
+                    title="更多",
+                  )
+                },
+                further=true,
+              ),
+            ),
+          ],
+          from=beside_of(from),
+        )
+      },
+      button_at=JEnd,
+    )
+    open_it(t)
+    let s = last_presented()
+    t.tap_text("更多")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(last_presented(), s)
+    t.tap_text("危险删除")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(last_presented(), s, msg="nested Menu -> Submenu -> Confirm keeps same serial")
+    assert_true(t.find("彻底删除？") is Some(_))
+    t.back()
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("危险删除") is Some(_), msg="first Back returns to submenu")
+    t.back()
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("更多") is Some(_), msg="second Back returns to root menu")
+    t.key(@ui.key_escape)
+    t.run_for(@ui.move_most_ms)
+    assert_false(presenting())
+  }
+
+  // 2) Small Menu -> short Pick -> Confirm keeps same serial and supports step-by-step Back
+  let pick_confirmed = Ref(0)
+  let tp = presenting_tester(
+    phone,
+    fn(from) {
+      menu(
+        [
+          Some(
+            menu_item_of(
+              "选择目标",
+              fn() {
+                pick(
+                  "目标",
+                  [choice("a", "选项 A"), choice("b", "选项 B")],
+                  "a",
+                  fn(k) { confirm("确认「\{k}」？", "应用此选择。", "应用", fn() { pick_confirmed.val += 1 }) },
+                  from=beside_of(from),
+                )
+              },
+              further=true,
+            ),
+          ),
+        ],
+        from=beside_of(from),
+      )
+    },
+    button_at=JEnd,
+  )
+  open_it(tp)
+  let sp = last_presented()
+  tp.tap_text("选择目标")
+  tp.run_for(@ui.move_most_ms)
+  assert_eq(last_presented(), sp)
+  tp.tap_text("选项 B")
+  tp.run_for(@ui.move_most_ms)
+  assert_eq(last_presented(), sp, msg="Small Menu -> short Pick -> Confirm keeps same sheet serial")
+  assert_eq(presented_how, [AsSheet])
+  assert_true(tp.find("确认「b」？") is Some(_))
+  tp.back()
+  tp.run_for(@ui.move_most_ms)
+  assert_true(tp.find("选项 B") is Some(_), msg="Back from confirm returns to short Pick")
+  tp.back()
+  tp.run_for(@ui.move_most_ms)
+  assert_true(tp.find("选择目标") is Some(_), msg="Back from short Pick returns to root menu")
+  tp.key(@ui.key_escape)
+  tp.run_for(@ui.move_most_ms)
+  assert_false(presenting())
+
+  // 3) ChoiceHeld pop-during-wait invalidation on both Large and Small
+  for tier in [desk, phone] {
+    let held_ref : Ref[ChoiceHeld?] = Ref(None)
+    let let_go_n = Ref(0)
+    let pushed_n = Ref(0)
+    let tc = presenting_tester(
+      tier,
+      fn(from) {
+        menu(
+          [
+            Some(
+              menu_item_of(
+                "二级",
+                fn() {
+                  menu(
+                    [
+                      Some(
+                        menu_item_of("异步操作", fn() {
+                          held_ref.val = choice_held()
+                        }),
+                      ),
+                    ],
+                    from=beside_of(from),
+                    title="二级",
+                  )
+                },
+                further=true,
+              ),
+            ),
+          ],
+          from=beside_of(from),
+        )
+      },
+      button_at=JEnd,
+    )
+    open_it(tc)
+    tc.tap_text("二级")
+    tc.run_for(@ui.move_most_ms)
+    tc.tap_text("异步操作")
+    tc.run_for(@ui.move_most_ms)
+    let h = held_ref.val.unwrap()
+    assert_true(h.still(), msg="held before pop")
+    // User pops back to root menu while async request is still in flight
+    tc.back()
+    tc.run_for(@ui.move_most_ms)
+    assert_false(h.still(), msg="ChoiceHeld invalidated immediately when popped back to parent level")
+    h.answer(
+      fn() { true },
+      fn() {
+        pushed_n.val += 1
+        confirm("不应串级", "过期", "好", fn() {  })
+      },
+      fn() { let_go_n.val += 1 },
+    )
+    tc.run_for(@ui.move_most_ms)
+    assert_eq(pushed_n.val, 0, msg="late answer must not push onto parent level")
+    assert_eq(let_go_n.val, 1, msg="late answer runs let_go()")
+    assert_true(tc.find("不应串级") is None)
+    tc.key(@ui.key_escape)
+    tc.run_for(@ui.move_most_ms)
+  }
+
+  // 4) Real production `presented_nodes` + `pointing=Finger` + `input_node` + `menu(...)` -> `confirm(...)` -> `Back`:
+  //    `menu_anchor_now` automatically derives `keep_field=true`. Verifies focus & Down key behavior matches freshly
+  //    opened `keep_field=true` menu (per `headless/menu.mbt:124-128`, input keeps focus until a menu item is focused),
+  //    and once a menu item is focused via Tab, Down navigates to the next menu item normally.
+  presenters_reset()
+  let input_field = @ui.Field::new(text="hello")
+  let tk = @ui.Tester::new(fn(_c) {  }, w=800.0, h=600.0, dark=false, platform=0, pointing=@ui.Pointing::Finger)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(page) {
+      page.grow(Is(1.0)).ground(By(fn() { theme().p.bg })).row(Is(true)).gap(Is(8.0)).padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+      input_node(page, input_field, label="输入框") |> ignore
+      button_opens_node(page, fn() { "更多" }, fn(from) {
+        menu(
+          [
+            Some(menu_item_of("编辑", fn() {  })),
+            Some(
+              menu_item_of(
+                "删除",
+                fn() { confirm("确认？", "说明", "删除", danger=true, fn() {  }) },
+                danger=true,
+                further=true,
+              ),
+            ),
+          ],
+          from=Node(from),
+        )
+      })
+      |> ignore
+    })
+    |> ignore
+    presented_nodes(root)
+  })
+  tk.draw()
+  let ir = tk.get(TextField, label="输入框").rect
+  tk.tap(ir.0 + 20.0, ir.1 + ir.3 / 2.0)
+  tk.frame()
+  assert_true(@ui.field_has_focus(), msg="real input_node initially focused")
+  let br = tk.get(Button, label="更多").rect
+  tk.tap(br.0 + br.2 / 2.0, br.1 + br.3 / 2.0)
+  tk.run_for(@ui.move_most_ms)
+  assert_true(tk.find("删除") is Some(_), msg="production menu opened via presented_nodes")
+  assert_true(@ui.field_has_focus(), msg="production keep_field=true preserves input_node focus on menu open")
+  tk.key(@ui.key_code_down)
+  assert_true(@ui.field_has_focus(), msg="freshly opened keep_field=true menu keeps focus in input_node on Down")
+  tk.tap_text("删除")
+  tk.run_for(@ui.move_most_ms)
+  assert_true(tk.find("确认？") is Some(_), msg="tapping menu item pushed inline confirm")
+  assert_true(@ui.field_has_focus(), msg="keep_field=true preserves input_node focus on entering confirm")
+  tk.back()
+  tk.run_for(@ui.move_most_ms)
+  assert_true(tk.find("删除") is Some(_), msg="Back returned to root menu")
+  assert_true(@ui.field_has_focus(), msg="keep_field=true preserves input_node focus on returning to menu")
+  tk.key(@ui.key_code_down)
+  assert_true(@ui.field_has_focus(), msg="after Back, keep_field=true matches freshly opened Down behavior")
+  // Once focus moves into a menu item via Tab, Down navigates normally to the next item
+  for _ in 0..<6 {
+    if tk.get(MenuItem, label="编辑").focused {
+      break
+    }
+    tk.tab()
+  }
+  assert_true(tk.get(MenuItem, label="编辑").focused, msg="Tab can focus menu item 编辑")
+  tk.key(@ui.key_code_down)
+  assert_true(tk.get(MenuItem, label="删除").focused, msg="Down navigates from 编辑 to 删除 once menu item is focused")
+  tk.key(@ui.key_escape)
+  tk.run_for(@ui.move_most_ms)
 }

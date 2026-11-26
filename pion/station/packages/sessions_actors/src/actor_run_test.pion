@@ -3307,3 +3307,171 @@ test "R10 review: prompt interrupted by snapshot emits store.deliverySettled wit
   assert_run(!s.has_rpc("store.markUndelivered"), "interrupted prompt must not markUndelivered")
   assert_run(settled_batch_id == mark_batch_id, "snapshot during prompt must emit store.deliverySettled with matching batch_id")
 }
+
+test "stop during stuck warm clears snapshotted pending messages and notifies" {
+  let s = r2_new()
+  let mut marked_args : Array[base_codec::Json] = []
+  let responder = fn(f : String, args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.open" {
+      return None
+    }
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.markDelivered" {
+      marked_args = args
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "t" {
+      return Some(Ok(sessions_core::jstr("Stopped")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"warm\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+  assert_run(s.has_rpc("node.open"), "node.open must be in flight")
+
+  s.actors.heard(
+    "{\"call\":2,\"actor\":\"s1\",\"method\":\"stop\",\"args\":[[{\"thread\":1,\"n\":2,\"apart\":false}]],\"now\":1001}",
+    s.disp,
+  )
+  s.drive(responder)
+  assert_run(s.has_tell_fn("node.cancelOpen"), "stop must cancel warm open")
+  assert_run(s.has_rpc("store.markDelivered") && marked_args.length() == 2, "stop during warm must mark snapshotted handed")
+  assert_run(s.has_rpc("store.notify"), "stop during warm must notify store")
+  assert_run(s.has_rpc("node.notice"), "stop during warm must post stopped notice")
+  assert_run(s.returned.length() == 2, "both warm and stop must return")
+}
+
+test "stop with only failed_handed and !was_queued keeps pending messages for retry" {
+  let s = r2_new()
+  let mut mark_calls = 0
+  let mut notice_calls = 0
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.open" {
+      return Some(Err(base_codec::json_obj([("message", sessions_core::jstr("boom"))])))
+    }
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "node.pendingAndFormat" {
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            (
+              "pending",
+              base_codec::json_arr([
+                base_codec::json_obj([
+                  ("handed", base_codec::json_obj([("thread", sessions_core::jint(1)), ("n", sessions_core::jint(2)), ("apart", sessions_core::jbool(false))])),
+                  ("surface", sessions_core::jstr("stillfail")),
+                ]),
+              ]),
+            ),
+            ("text", sessions_core::jstr("hello")),
+            ("widgets", base_codec::json_arr([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.words" {
+      return Some(Ok(sessions_core::jstr("cannot start")))
+    }
+    if f == "store.markDelivered" {
+      mark_calls = mark_calls + 1
+      return Some(Ok(sessions_core::jint(1)))
+    }
+    if f == "node.notice" {
+      notice_calls = notice_calls + 1
+      return Some(Ok(base_codec::json_null()))
+    }
+    if f == "t" {
+      return Some(Ok(sessions_core::jstr("Stopped")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+  assert_run(mark_calls == 0 && notice_calls == 1, "failed start must record failed_handed without marking delivered")
+
+  notice_calls = 0
+  s.actors.heard(
+    "{\"call\":2,\"actor\":\"s1\",\"method\":\"stop\",\"args\":[[{\"thread\":1,\"n\":2,\"apart\":false}]],\"now\":1001}",
+    s.disp,
+  )
+  s.drive(responder)
+  assert_run(mark_calls == 0, "stop after failed start must not mark delivered")
+  assert_run(notice_calls == 0, "stop after failed start must not post stopped notice")
+  assert_run(s.returned.length() == 2, "both kick and stop must return")
+}
+
+test "stop when markDelivered returns 0 skips notify and stopped notice" {
+  let s = r2_new()
+  let mut notify_after_mark = false
+  let mut mark_called = false
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.open" {
+      return None
+    }
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.markDelivered" {
+      mark_called = true
+      return Some(Ok(sessions_core::jint(0)))
+    }
+    if f == "store.notify" && mark_called {
+      notify_after_mark = true
+      return Some(Ok(base_codec::json_null()))
+    }
+    if f == "t" {
+      return Some(Ok(sessions_core::jstr("Stopped")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"warm\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+  assert_run(s.has_rpc("node.open"), "node.open must be in flight")
+
+  s.actors.heard(
+    "{\"call\":2,\"actor\":\"s1\",\"method\":\"stop\",\"args\":[[{\"thread\":1,\"n\":2,\"apart\":false}]],\"now\":1001}",
+    s.disp,
+  )
+  s.drive(responder)
+  assert_run(mark_called, "stop_pending must call markDelivered")
+  assert_run(!notify_after_mark, "already-delivered race must skip store.notify")
+  assert_run(!s.has_rpc("node.notice"), "already-delivered race must skip stopped notice")
+  assert_run(s.returned.length() == 2, "both warm and stop must return")
+}
+
+test "stop during kick pendingAndFormat keeps pending messages when was_starting_turn is true" {
+  let s = r2_new()
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "node.pendingAndFormat" {
+      return None
+    }
+    if f == "deps.held" || f == "store.getSession" || f == "agent.holding" || f == "agent.busy" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "store.hasPending" {
+      return Some(Ok(sessions_core::jbool(true)))
+    }
+    if f == "t" {
+      return Some(Ok(sessions_core::jstr("Stopped")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  s.actors.heard("{\"call\":1,\"actor\":\"s1\",\"runtime\":\"claude\",\"method\":\"kick\",\"args\":[],\"now\":1000}", s.disp)
+  s.drive(responder)
+  assert_run(s.has_rpc("node.pendingAndFormat"), "pendingAndFormat must be in flight")
+
+  s.actors.heard(
+    "{\"call\":2,\"actor\":\"s1\",\"method\":\"stop\",\"args\":[[{\"thread\":1,\"n\":2,\"apart\":false}]],\"now\":1001}",
+    s.disp,
+  )
+  s.drive(responder)
+  assert_run(!s.has_rpc("store.markDelivered"), "stop during kick pendingAndFormat must not mark delivered")
+  assert_run(!s.has_rpc("node.notice"), "stop during kick pendingAndFormat must not post stopped notice")
+}

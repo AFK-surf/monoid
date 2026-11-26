@@ -1,0 +1,429 @@
+// 1:1 port of `station/src/ops/config.ts`:
+// `ConfigFile` live editable JSON document with atomic 0600 writes, validation check,
+// `InvalidJsonFile` error preservation, and non-recursive `station_sys::fs_watch_open` hot reload.
+
+import "base_codec"
+import "nodepath"
+import "station_sys"
+
+pub enum ConfigError {
+  InvalidJson(InvalidJsonFile)
+  CheckFailed(String)
+  Io(FsErr)
+}
+
+pub fn config_err_msg(e : ConfigError) -> String {
+  match e {
+    ConfigError::InvalidJson(inv) => inv.message
+    ConfigError::CheckFailed(m) => m
+    ConfigError::Io(f) => fs_err_msg(f)
+  }
+}
+
+fn clone_json(j : base_codec::Json) -> base_codec::Json {
+  match j {
+    base_codec::Json::Null => base_codec::Json::Null
+    base_codec::Json::Bool(b) => base_codec::Json::Bool(b)
+    base_codec::Json::Num(d, r) => base_codec::Json::Num(d, r)
+    base_codec::Json::Str(s) => base_codec::Json::Str(s)
+    base_codec::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        out.push(clone_json(items[i]))
+      }
+      base_codec::Json::Arr(out)
+    }
+    base_codec::Json::Obj(fields) => {
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        out.push((k, clone_json(v)))
+      }
+      base_codec::Json::Obj(out)
+    }
+  }
+}
+
+fn write_indent(sb : StringBuilder, depth : Int) -> Unit {
+  for _ in 0..<(depth * 2) {
+    sb.write_byte(32 as Byte)
+  }
+}
+
+fn write_pretty_json(sb : StringBuilder, j : base_codec::Json, depth : Int) -> Unit {
+  match j {
+    base_codec::Json::Arr(items) => {
+      if items.length() == 0 {
+        sb.write_string("[]")
+        return
+      }
+      sb.write_string("[\n")
+      for i in 0..<items.length() {
+        if i > 0 {
+          sb.write_string(",\n")
+        }
+        write_indent(sb, depth + 1)
+        write_pretty_json(sb, items[i], depth + 1)
+      }
+      sb.write_byte(10 as Byte)
+      write_indent(sb, depth)
+      sb.write_byte(93 as Byte)
+    }
+    base_codec::Json::Obj(fields) => {
+      if fields.length() == 0 {
+        sb.write_string("{}")
+        return
+      }
+      sb.write_string("{\n")
+      for i in 0..<fields.length() {
+        if i > 0 {
+          sb.write_string(",\n")
+        }
+        let (k, v) = fields[i]
+        write_indent(sb, depth + 1)
+        sb.write_string(base_codec::json_stringify(base_codec::json_str(k)))
+        sb.write_string(": ")
+        write_pretty_json(sb, v, depth + 1)
+      }
+      sb.write_byte(10 as Byte)
+      write_indent(sb, depth)
+      sb.write_byte(125 as Byte)
+    }
+    _ => sb.write_string(base_codec::json_stringify(j))
+  }
+}
+
+/// Format JSON with 2-space indentation + trailing newline (matching `JSON.stringify(v, null, 2) + "\n"`).
+pub fn format_config_json(v : base_codec::Json) -> String {
+  let sb = StringBuilder::new()
+  write_pretty_json(sb, v, 0)
+  sb.write_byte(10 as Byte)
+  sb.to_string()
+}
+
+fn stamp_of_meta(res : Result[FileMeta, FsErr]) -> Result[String, FsErr] {
+  match res {
+    Ok(m) => {
+      let mt = if m.mtime_exact != "" { m.mtime_exact } else { m.mtime_ms.to_string() }
+      Ok(m.size.to_string() + ":" + mt + ":" + m.ino.to_string())
+    }
+    Err(FsErr::NotFound) => Ok("none")
+    Err(e) => Err(e)
+  }
+}
+
+fn language_field(v : base_codec::Json) -> Option[String] {
+  match base_codec::json_get(v, "language") {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+pub struct ConfigFile {
+  pub path : String
+  pub data : String
+  pub sep : String
+  pub fs : OpsFs
+  pub i18n : I18nState
+  pub pid : Int
+  pub mut check : (base_codec::Json, String) -> Option[String]
+  pub mut seen : String
+  pub mut value : base_codec::Json
+  pub mut invalid : Option[InvalidJsonFile]
+  pub mut last_written_text : Option[String]
+  pub mut watching : Bool
+  pub mut watch_close : Option[() -> Unit]
+  pub mut writing : Int
+  pub mut edits : Int
+  pub mut asked : Int
+  pub mut written_seq : Int
+  pub mut reloading : Bool
+  pub mut reload_again : Bool
+  pub mut write_seq : Int
+  pub listeners : Array[(base_codec::Json) -> Unit]
+}
+
+/// Create and perform initial read of `config.json` (or `env_config` if non-empty).
+/// Returns `Err(ConfigError::InvalidJson(_))` if the initial file is malformed JSON.
+pub fn ConfigFile::open(
+  fs : OpsFs,
+  data : String,
+  env_config : Option[String] = None,
+  i18n : I18nState = I18nState::new(),
+  pid : Int = 0,
+  sep : String = "/",
+) -> Result[ConfigFile, ConfigError] {
+  let path = match env_config {
+    Some(p) => if p != "" { p } else { nodepath::join(sep, [data, "config.json"]) }
+    None => nodepath::join(sep, [data, "config.json"])
+  }
+  let cfg = ConfigFile::{
+    path: path,
+    data: data,
+    sep: sep,
+    fs: fs,
+    i18n: i18n,
+    pid: pid,
+    check: fn(_raw : base_codec::Json, _data : String) -> Option[String] { None },
+    seen: "",
+    value: base_codec::json_obj([]),
+    invalid: None,
+    last_written_text: None,
+    watching: false,
+    watch_close: None,
+    writing: 0,
+    edits: 0,
+    asked: 0,
+    written_seq: 0,
+    reloading: false,
+    reload_again: false,
+    write_seq: 0,
+    listeners: [],
+  }
+  match cfg.reload_now() {
+    Ok(_) => Ok(cfg)
+    Err(e) => Err(e)
+  }
+}
+
+pub fn ConfigFile::set_check(
+  self : ConfigFile,
+  check : (base_codec::Json, String) -> Option[String],
+) -> Unit {
+  self.check = check
+}
+
+pub fn ConfigFile::listen(self : ConfigFile, listener : (base_codec::Json) -> Unit) -> Int {
+  let id = self.listeners.length()
+  self.listeners.push(listener)
+  id
+}
+
+fn ConfigFile::tell(self : ConfigFile) -> Unit {
+  for i in 0..<self.listeners.length() {
+    (self.listeners[i])(self.value)
+  }
+}
+
+fn ConfigFile::stamp(self : ConfigFile) -> Result[String, FsErr] {
+  stamp_of_meta((self.fs.stat)(self.path))
+}
+
+fn ConfigFile::read_text_or_none(self : ConfigFile) -> Result[Option[String], FsErr] {
+  match self.fs.read_text(self.path) {
+    Ok(s) => Ok(Some(s))
+    Err(FsErr::NotFound) => Ok(None)
+    Err(e) => Err(e)
+  }
+}
+
+/// Apply a freshly read file (`text`, `None` when absent) at stamp `now`.
+fn ConfigFile::take(
+  self : ConfigFile,
+  now : String,
+  text : Option[String],
+) -> Result[Unit, ConfigError] {
+  let first = self.seen == ""
+  match (text, self.last_written_text) {
+    (Some(t), Some(w)) => {
+      if t == w {
+        self.seen = now
+        self.invalid = None
+        return Ok(())
+      }
+    }
+    _ => ()
+  }
+  // External edit: clear self-write marker so writing the same text later is still noticed.
+  self.last_written_text = None
+  match text {
+    None => {
+      self.value = base_codec::json_obj([])
+      self.seen = now
+      self.invalid = None
+    }
+    Some(t) => match parse_json_text(self.path, t, self.i18n.lang, self.i18n.product, self.i18n.product.id) {
+      Ok(v) => {
+        self.value = v
+        self.seen = now
+        self.invalid = None
+      }
+      Err(inv) => {
+        self.seen = now
+        self.invalid = Some(inv)
+        if first {
+          return Err(ConfigError::InvalidJson(inv))
+        }
+        // Keep last good `self.value` for readers; edits refused until valid again.
+        return Ok(())
+      }
+    }
+  }
+  let _ = self.i18n.set_station_lang(language_field(self.value))
+  if !first {
+    self.tell()
+  }
+  Ok(())
+}
+
+/// Force a stamp check & reload from disk.
+pub fn ConfigFile::reload_now(self : ConfigFile) -> Result[Unit, ConfigError] {
+  let now = match self.stamp() {
+    Ok(s) => s
+    Err(e) => return Err(ConfigError::Io(e))
+  }
+  if now == self.seen {
+    return Ok(())
+  }
+  let text = if now == "none" {
+    None
+  } else {
+    match self.read_text_or_none() {
+      Ok(t) => t
+      Err(e) => return Err(ConfigError::Io(e))
+    }
+  }
+  self.take(now, text)
+}
+
+/// Current config value. When watched or writing, returns in-memory snapshot directly;
+/// otherwise checks disk stamp and reloads if changed.
+pub fn ConfigFile::raw(self : ConfigFile) -> base_codec::Json {
+  if self.watching || self.writing > 0 {
+    return self.value
+  }
+  let _ = self.reload_now()
+  self.value
+}
+
+/// Start non-recursive directory watch via `station_sys::fs_watch_open`.
+pub fn ConfigFile::watch(self : ConfigFile, event_id : Int64) -> Bool {
+  if self.watching {
+    return true
+  }
+  let dir = nodepath::dirname(self.sep, self.path)
+  let _ = (self.fs.mkdir_p)(dir)
+  match station_sys::fs_watch_open(event_id, dir) {
+    Some(h) => {
+      self.watch_close = Some(fn() -> Unit {
+        let _ = h.close()
+      })
+      self.watching = true
+      let _ = self.reload_now()
+      true
+    }
+    None => {
+      self.watch_close = None
+      self.watching = false
+      let _ = self.reload_now()
+      false
+    }
+  }
+}
+
+/// Mark as watched in tests without opening an OS watcher handle.
+pub fn ConfigFile::enable_virtual_watch(self : ConfigFile) -> Unit {
+  self.watching = true
+  let _ = self.reload_now()
+}
+
+pub fn ConfigFile::unwatch(self : ConfigFile) -> Unit {
+  match self.watch_close {
+    Some(close_fn) => close_fn()
+    None => ()
+  }
+  self.watch_close = None
+  self.watching = false
+}
+
+/// Whether an fs.watch filename event may pertain to this config file
+/// (exact name, empty name on overflow/FSEvents, or temp sibling `<name>.*`).
+pub fn ConfigFile::matches_watch_name(self : ConfigFile, name : String) -> Bool {
+  if name == "" {
+    return true
+  }
+  let base = nodepath::basename(self.sep, self.path)
+  name == base || name.starts_with(base + ".")
+}
+
+/// Handle a `station_sys::FsChangeKind` event for this config's watched directory:
+/// - `Error` -> unwatch (falls back to stamp-on-read)
+/// - `Overflow` or matching `Rename`/`Change` -> debounced/coalesced reload (re-runs if another event arrived while reloading)
+pub fn ConfigFile::on_fs_event(self : ConfigFile, kind : station_sys::FsChangeKind, name : String) -> Bool {
+  if !self.watching {
+    return false
+  }
+  match kind {
+    station_sys::FsChangeKind::Error => {
+      self.unwatch()
+      return false
+    }
+    station_sys::FsChangeKind::Overflow => ()
+    _ => {
+      if !self.matches_watch_name(name) {
+        return false
+      }
+    }
+  }
+  if self.reloading {
+    self.reload_again = true
+    return false
+  }
+  self.reloading = true
+  let mut changed = false
+  while true {
+    self.reload_again = false
+    if self.writing == 0 {
+      let prev_seen = self.seen
+      let _ = self.reload_now()
+      if self.seen != prev_seen {
+        changed = true
+      }
+    }
+    if !self.reload_again || !self.watching {
+      break
+    }
+  }
+  self.reloading = false
+  changed
+}
+
+/// Apply an edit to a cloned copy of `raw()`, validate with `check`, write atomically (0600),
+/// update `last_written_text`/`seen`/`i18n`, and notify listeners.
+pub fn ConfigFile::update(
+  self : ConfigFile,
+  edit : (base_codec::Json) -> base_codec::Json,
+) -> Result[base_codec::Json, ConfigError] {
+  let cur = self.raw()
+  match self.invalid {
+    Some(inv) => return Err(ConfigError::InvalidJson(inv))
+    None => ()
+  }
+  let next = edit(clone_json(cur))
+  match (self.check)(next, self.data) {
+    Some(err_msg) => return Err(ConfigError::CheckFailed(err_msg))
+    None => ()
+  }
+  let text = format_config_json(next)
+  self.write_seq = self.write_seq + 1
+  self.writing = self.writing + 1
+  let write_res = write_private(self.fs, self.path, text.to_bytes(), self.pid, self.write_seq)
+  self.writing = self.writing - 1
+  match write_res {
+    Ok(_) => ()
+    Err(e) => return Err(ConfigError::Io(e))
+  }
+  self.value = next
+  self.last_written_text = Some(text)
+  self.edits = self.edits + 1
+  self.asked = self.asked + 1
+  self.written_seq = self.asked
+  // Do NOT stamp the post-write disk state here (aligning with `station/src/ops/config.ts:176`):
+  // another process may have written concurrently right after our rename. Leaving `seen`
+  // invalidated ensures the next `reload_now()` / fs event reads disk and either recognizes
+  // `last_written_text` as our own write or applies the concurrent external edit.
+  self.seen = "written:" + self.write_seq.to_string()
+  let _ = self.i18n.set_station_lang(language_field(self.value))
+  self.tell()
+  Ok(next)
+}

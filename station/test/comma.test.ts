@@ -448,3 +448,67 @@ test("validTaskLinks accepts https web and comma*://task app links and rejects u
   assert.equal(validTaskLinks({ app: "comma://task" }), null);
   assert.equal(validTaskLinks({ app: "comma://task?x=1#frag" }), null);
 });
+
+test("CommaSurface.ask cancels its timeout timer immediately when answered or closed, and rejects on timeout", async () => {
+  const realSetTimeout = globalThis.setTimeout;
+  const realClearTimeout = globalThis.clearTimeout;
+  const activeLong = new Set<ReturnType<typeof setTimeout>>();
+  globalThis.setTimeout = ((fn: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+    const handle = realSetTimeout((...cbArgs: any[]) => {
+      activeLong.delete(handle);
+      fn(...cbArgs);
+    }, delay, ...args);
+    if (typeof delay === "number" && delay >= 60_000) activeLong.add(handle);
+    return handle;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((handle?: ReturnType<typeof setTimeout>) => {
+    if (handle !== undefined) activeLong.delete(handle);
+    return realClearTimeout(handle);
+  }) as typeof clearTimeout;
+
+  try {
+    const surface = new CommaSurface({
+      connect: "cm-timer",
+      server: "http://127.0.0.1:1",
+      token: "tok",
+      name: "st-timer",
+      tasks: { byThread: () => null, get: () => null, setLinks: () => {}, given: () => {} } as any,
+      store: {} as any,
+      models: () => ({}),
+      lang: "en",
+    } as any);
+
+    // 1. Answered via response frame: long timeout must be scheduled then cleared immediately.
+    let respond!: () => void;
+    (surface as any).socket_ = {
+      send: (raw: string) => {
+        const f = JSON.parse(raw);
+        respond = () => (surface as any).frame((surface as any).socket_, { type: "response", id: f.id, result: { ok: true } }, () => {});
+      },
+    };
+    const p1 = (surface as any).ask("task.post", { text: "hi" }, 60_000);
+    await settle();
+    assert.equal(activeLong.size, 1, "pending ask() should hold one timeout timer");
+    respond();
+    assert.deepEqual(await p1, { ok: true });
+    await settle();
+    assert.equal(activeLong.size, 0, "answering ask() must cancel its pending timeout timer");
+
+    // 2. Rejected via closed(): long timeout must also be cleared immediately.
+    (surface as any).socket_ = { send: () => {} };
+    const p2 = (surface as any).ask("task.post", { text: "bye" }, 60_000);
+    await settle();
+    assert.equal(activeLong.size, 1, "pending ask() should hold one timeout timer before close");
+    (surface as any).closed();
+    await assert.rejects(() => p2, /Comma is not connected/);
+    await settle();
+    assert.equal(activeLong.size, 0, "closed() rejecting ask() must cancel its pending timeout timer");
+
+    // 3. Unanswered request still rejects when its timeout expires.
+    (surface as any).socket_ = { send: () => {} };
+    await assert.rejects(() => (surface as any).ask("task.post", { text: "late" }, 20), /Comma did not answer task\.post in time/);
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+    globalThis.clearTimeout = realClearTimeout;
+  }
+});
