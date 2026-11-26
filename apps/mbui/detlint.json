@@ -309,6 +309,8 @@
     "headless-on-drag",
     "page-headless",
     "page-control-by-hand",
-    "structure-box"
+    "structure-box",
+    "node-radius-literal",
+    "small-radius-token"
   ]
 }

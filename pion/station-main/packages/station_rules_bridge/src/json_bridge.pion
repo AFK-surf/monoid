@@ -1,0 +1,157 @@
+// Lossless JSON bridges between `form::Json`, `js_json::JValue`, and `base_codec::Json`.
+// Preserves object key insertion order, safe integer precision, and WTF-8 / UTF-16 lone-surrogate semantics.
+
+import "base_codec"
+import "form"
+import "js_json"
+
+/// Encode UTF-16 code units (`js_json::JValue` string representation) into a WTF-8 `String`
+/// (`form::Json` string representation), preserving lone surrogates (`0xD800..0xDFFF`) and NUL losslessly.
+pub fn utf16_units_to_wtf8(units : Array[Int]) -> String {
+  let sb = StringBuilder::new()
+  let n = units.length()
+  let mut i = 0
+  while i < n {
+    let u = units[i]
+    if u >= 0xD800 && u <= 0xDBFF && i + 1 < n {
+      let lo = units[i + 1]
+      if lo >= 0xDC00 && lo <= 0xDFFF {
+        let cp = 0x10000 + ((u - 0xD800) << 10) + (lo - 0xDC00)
+        form::write_wtf8(sb, cp)
+        i = i + 2
+        continue
+      }
+    }
+    form::write_wtf8(sb, u)
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+/// Decode a WTF-8 `String` (`form::Json`) into UTF-16 code units (`js_json::JValue`),
+/// preserving lone surrogates and supplementary pairs losslessly.
+pub fn wtf8_to_utf16_units(s : String) -> Array[Int] {
+  form::utf16_units(s)
+}
+
+/// Convert `js_json::JValue` to `form::Json` losslessly (key order, numbers, UTF-16/surrogates).
+pub fn jvalue_to_form(v : js_json::JValue) -> form::Json {
+  match v {
+    js_json::JValue::Null => form::Json::Null
+    js_json::JValue::Bool(b) => form::Json::Bool(b)
+    js_json::JValue::Num(n) => form::Json::Num(n)
+    js_json::JValue::Str(units) => form::Json::Str(utf16_units_to_wtf8(units))
+    js_json::JValue::Arr(items) => {
+      let out : Array[form::Json] = []
+      let mut i = 0
+      while i < items.length() {
+        out.push(jvalue_to_form(items[i]))
+        i = i + 1
+      }
+      form::Json::Arr(out)
+    }
+    js_json::JValue::Obj(entries) => {
+      let out : Array[(String, form::Json)] = []
+      let mut i = 0
+      while i < entries.length() {
+        let (k, item_v) = entries[i]
+        out.push((utf16_units_to_wtf8(k), jvalue_to_form(item_v)))
+        i = i + 1
+      }
+      form::Json::Obj(out)
+    }
+  }
+}
+
+/// Convert `form::Json` to `js_json::JValue` losslessly (key order, numbers, WTF-8/surrogates).
+pub fn form_to_jvalue(v : form::Json) -> js_json::JValue {
+  match v {
+    form::Json::Null => js_json::JValue::Null
+    form::Json::Bool(b) => js_json::JValue::Bool(b)
+    form::Json::Num(n) => js_json::JValue::Num(n)
+    form::Json::Str(s) => js_json::JValue::Str(wtf8_to_utf16_units(s))
+    form::Json::Arr(items) => {
+      let out : Array[js_json::JValue] = []
+      let mut i = 0
+      while i < items.length() {
+        out.push(form_to_jvalue(items[i]))
+        i = i + 1
+      }
+      js_json::JValue::Arr(out)
+    }
+    form::Json::Obj(entries) => {
+      let out : Array[(Array[Int], js_json::JValue)] = []
+      let mut i = 0
+      while i < entries.length() {
+        let (k, item_v) = entries[i]
+        out.push((wtf8_to_utf16_units(k), form_to_jvalue(item_v)))
+        i = i + 1
+      }
+      js_json::JValue::Obj(out)
+    }
+  }
+}
+
+/// Convert `base_codec::Json` to `form::Json` (preserving key order and numeric values).
+pub fn base_to_form(v : base_codec::Json) -> form::Json {
+  match v {
+    base_codec::Json::Null => form::Json::Null
+    base_codec::Json::Bool(b) => form::Json::Bool(b)
+    base_codec::Json::Num(n, _) => form::Json::Num(n)
+    base_codec::Json::Str(s) => form::Json::Str(s)
+    base_codec::Json::Arr(items) => {
+      let out : Array[form::Json] = []
+      let mut i = 0
+      while i < items.length() {
+        out.push(base_to_form(items[i]))
+        i = i + 1
+      }
+      form::Json::Arr(out)
+    }
+    base_codec::Json::Obj(entries) => {
+      let out : Array[(String, form::Json)] = []
+      let mut i = 0
+      while i < entries.length() {
+        let (k, item_v) = entries[i]
+        out.push((k, base_to_form(item_v)))
+        i = i + 1
+      }
+      form::Json::Obj(out)
+    }
+  }
+}
+
+/// Convert `form::Json` to `base_codec::Json` (preserving key order and exact safe-integer `repr`).
+pub fn form_to_base(v : form::Json) -> base_codec::Json {
+  match v {
+    form::Json::Null => base_codec::json_null()
+    form::Json::Bool(b) => base_codec::json_bool(b)
+    form::Json::Num(n) => {
+      if js_json::is_safe_integer(n) {
+        base_codec::json_int64(n.to_int64())
+      } else {
+        base_codec::json_num(n)
+      }
+    }
+    form::Json::Str(s) => base_codec::json_str(s)
+    form::Json::Arr(items) => {
+      let out : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < items.length() {
+        out.push(form_to_base(items[i]))
+        i = i + 1
+      }
+      base_codec::json_arr(out)
+    }
+    form::Json::Obj(entries) => {
+      let out : Array[(String, base_codec::Json)] = []
+      let mut i = 0
+      while i < entries.length() {
+        let (k, item_v) = entries[i]
+        out.push((k, form_to_base(item_v)))
+        i = i + 1
+      }
+      base_codec::json_obj(out)
+    }
+  }
+}

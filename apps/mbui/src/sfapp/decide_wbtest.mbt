@@ -806,3 +806,31 @@ test "agent sheet working: 3-row header (mark + top-right compact stop, full-wid
     assert_eq(text(Some(stopped[0].params), "key"), "s-c1")
   }
 }
+
+///|
+test "小屏: chat info sheet project row folder icon and chevron align with Station 文件 row" {
+  let t = screen_in("projects-chat", ("phone", 390.0, 844.0, 2, "phone"), "zh")
+  t.click(Button, label=@sf.t("web-pages.chat.info"))
+  t.run_for(@sf.presented_rest() - t.time())
+  t.run_for(@ui.move_most_ms)
+  let proj_btn = t.get(Button, label="monoid")
+  let files_btn = t.get(Button, label=@sf.t("web-pages.chat.files"))
+  guard @ui.view_tree() is Some(tree) else { fail("no tree") }
+  let icon_in = fn(prefix : String, row : (Double, Double, Double, Double)) {
+    tree
+    .drawn()
+    .iter()
+    .find_first(fn(d) {
+      tree.drawn_name(d.id).has_prefix(prefix) &&
+      d.y + d.h / 2.0 >= row.1 &&
+      d.y + d.h / 2.0 <= row.1 + row.3
+    })
+  }
+  guard icon_in("/icon/folder/", proj_btn.rect) is Some(pf) else { fail("no project folder icon") }
+  guard icon_in("/icon/folder/", files_btn.rect) is Some(ff) else { fail("no Station 文件 folder icon") }
+  guard icon_in("/icon/chevron-right/", proj_btn.rect) is Some(pc) else { fail("no project chevron") }
+  guard icon_in("/icon/chevron-right/", files_btn.rect) is Some(fc) else { fail("no Station 文件 chevron") }
+  assert_true((pf.x - ff.x).abs() < 0.5, msg="folder x mismatch: project=\{pf.x}, files=\{ff.x}")
+  assert_true((pc.x - fc.x).abs() < 0.5, msg="chevron x mismatch: project=\{pc.x}, files=\{fc.x}")
+  assert_eq(t.audit(), [])
+}

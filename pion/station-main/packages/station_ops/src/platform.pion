@@ -1,0 +1,498 @@
+// 1:1 port of `station/src/platform/{index,unix,windows,processes}.ts`:
+// Cross-platform OS detection, `backgrounded` (`taskpolicy -b` / `ionice`+`nice` / `nice`),
+// `lowered`, `grouped`, `flushing`, PATH helpers, platform path operations, process tree,
+// and Windows shim/winget/registry PATH helpers.
+
+import "nodepath"
+import "station_sys"
+
+pub enum PlatformOs {
+  Macos
+  Linux
+  Windows
+  Other
+}
+
+pub fn detect_os() -> PlatformOs {
+  let name = station_sys::os_name()
+  if name == "darwin" {
+    PlatformOs::Macos
+  } else if name == "linux" {
+    PlatformOs::Linux
+  } else if name == "win32" {
+    PlatformOs::Windows
+  } else {
+    PlatformOs::Other
+  }
+}
+
+pub fn platform_os_name(os : PlatformOs) -> String {
+  match os {
+    PlatformOs::Macos => "macos"
+    PlatformOs::Linux => "linux"
+    PlatformOs::Windows => "windows"
+    PlatformOs::Other => "other"
+  }
+}
+
+pub fn platform_build_os(os : PlatformOs) -> Option[String] {
+  match os {
+    PlatformOs::Macos => Some("darwin")
+    PlatformOs::Linux => Some("linux")
+    PlatformOs::Windows => Some("win32")
+    PlatformOs::Other => None
+  }
+}
+
+pub fn platform_exe(os : PlatformOs, name : String) -> String {
+  match os {
+    PlatformOs::Windows => name + ".exe"
+    _ => name
+  }
+}
+
+pub fn platform_has_folder_permissions(os : PlatformOs) -> Bool {
+  match os {
+    PlatformOs::Macos => true
+    _ => false
+  }
+}
+
+pub fn platform_has_unix_sockets(os : PlatformOs) -> Bool {
+  match os {
+    PlatformOs::Windows => false
+    _ => true
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Background / lowered / grouped / flushing wrappers
+// ---------------------------------------------------------------------------
+
+pub enum BackgroundWrapper {
+  Taskpolicy
+  Ionice(String, String)
+  Nice(String)
+  None
+}
+
+/// Detect which backgrounding wrapper is available on this OS.
+pub fn detect_background(
+  os : PlatformOs,
+  exists : (String) -> Bool,
+  realpath_opt : (String) -> Option[String],
+) -> BackgroundWrapper {
+  match os {
+    PlatformOs::Windows => return BackgroundWrapper::None
+    PlatformOs::Macos => {
+      if exists("/usr/sbin/taskpolicy") {
+        return BackgroundWrapper::Taskpolicy
+      }
+    }
+    _ => ()
+  }
+  let nice = if exists("/usr/bin/nice") {
+    Some("/usr/bin/nice")
+  } else if exists("/bin/nice") {
+    Some("/bin/nice")
+  } else {
+    None
+  }
+  let ionice = match os {
+    PlatformOs::Macos => None
+    _ => {
+      let candidates = ["/usr/bin/ionice", "/bin/ionice"]
+      let mut found : Option[String] = None
+      for i in 0..<candidates.length() {
+        let p = candidates[i]
+        if exists(p) {
+          let resolved = match realpath_opt(p) {
+            Some(r) => r
+            None => p
+          }
+          if !resolved.contains("busybox") {
+            found = Some(p)
+            break
+          }
+        }
+      }
+      found
+    }
+  }
+  match (ionice, nice) {
+    (Some(io), Some(ni)) => BackgroundWrapper::Ionice(io, ni)
+    (None, Some(ni)) => BackgroundWrapper::Nice(ni)
+    _ => BackgroundWrapper::None
+  }
+}
+
+/// Wrap `(program, args)` under the detected `BackgroundWrapper`:
+/// - macOS: `["/usr/sbin/taskpolicy", ["-b", program, ...args]]`
+/// - Linux: `[ionice, ["-t", "-c2", "-n7", nice, "-n", "10", program, ...args]]`
+/// - fallback nice: `[nice, ["-n", "10", program, ...args]]`
+/// - none/Windows: `[program, args]`
+pub fn backgrounded_on(
+  how : BackgroundWrapper,
+  program : String,
+  args : Array[String],
+) -> (String, Array[String]) {
+  match how {
+    BackgroundWrapper::Taskpolicy => {
+      let out : Array[String] = ["-b", program]
+      for i in 0..<args.length() {
+        out.push(args[i])
+      }
+      ("/usr/sbin/taskpolicy", out)
+    }
+    BackgroundWrapper::Ionice(io, ni) => {
+      let out : Array[String] = ["-t", "-c2", "-n7", ni, "-n", "10", program]
+      for i in 0..<args.length() {
+        out.push(args[i])
+      }
+      (io, out)
+    }
+    BackgroundWrapper::Nice(ni) => {
+      let out : Array[String] = ["-n", "10", program]
+      for i in 0..<args.length() {
+        out.push(args[i])
+      }
+      (ni, out)
+    }
+    BackgroundWrapper::None => (program, args)
+  }
+}
+
+fn ends_with_cmd_name(command : String, name : String) -> Bool {
+  command == name || command.ends_with("/" + name)
+}
+
+/// Whether a stderr line looks like a diagnostic from `taskpolicy`, `nice`, or `ionice`.
+pub fn is_background_wrapper_stderr_line(command : String, line : String) -> Bool {
+  if ends_with_cmd_name(command, "taskpolicy") {
+    if !line.starts_with("taskpolicy:") {
+      return false
+    }
+    let rest = trim_ws(ops_slice_str(line, 11, line.length()))
+    return rest.starts_with("posix_spawn:")
+  }
+  if ends_with_cmd_name(command, "nice") {
+    return line.starts_with("nice: ") || line.contains("/nice: ")
+  }
+  if ends_with_cmd_name(command, "ionice") {
+    return line.starts_with("ionice: ") ||
+    line.contains("/ionice: ") ||
+    line.starts_with("nice: ") ||
+    line.contains("/nice: ")
+  }
+  false
+}
+
+/// Whether a backgrounded wrapper failed to exec its target binary.
+pub fn is_background_wrapper_exec_failure(
+  command : String,
+  code : Option[Int],
+  signal : Option[String],
+  stderr_lines : Array[String],
+) -> Bool {
+  match signal {
+    Some(_) => return false
+    None => ()
+  }
+  let c = match code {
+    Some(v) => if v == 0 { return false } else { v }
+    None => return false
+  }
+  let mut has_diag = false
+  for i in 0..<stderr_lines.length() {
+    if is_background_wrapper_stderr_line(command, stderr_lines[i]) {
+      has_diag = true
+      break
+    }
+  }
+  if !has_diag {
+    return false
+  }
+  if ends_with_cmd_name(command, "taskpolicy") {
+    true
+  } else if ends_with_cmd_name(command, "nice") {
+    c == 126 || c == 127
+  } else if ends_with_cmd_name(command, "ionice") {
+    c == 126 || c == 127 || c == 1
+  } else {
+    false
+  }
+}
+
+pub fn platform_lowered(
+  os : PlatformOs,
+  has_nice : Bool,
+  program : String,
+  args : Array[String],
+  by : Int,
+) -> (String, Array[String]) {
+  match os {
+    PlatformOs::Windows => return (program, args)
+    _ => ()
+  }
+  if by == 0 || !has_nice {
+    return (program, args)
+  }
+  let out : Array[String] = ["-n", by.to_string(), program]
+  for i in 0..<args.length() {
+    out.push(args[i])
+  }
+  ("/usr/bin/nice", out)
+}
+
+pub fn platform_grouped(
+  os : PlatformOs,
+  runner_bin : String,
+  program : String,
+  args : Array[String],
+) -> (String, Array[String]) {
+  match os {
+    PlatformOs::Windows => {
+      let out : Array[String] = ["--job", "--", program]
+      for i in 0..<args.length() {
+        out.push(args[i])
+      }
+      (runner_bin, out)
+    }
+    _ => (program, args)
+  }
+}
+
+pub fn platform_flushing(os : PlatformOs, dir : String) -> Option[(String, Array[String])] {
+  match os {
+    PlatformOs::Macos => Some(("sync", []))
+    PlatformOs::Windows => None
+    _ => Some(("sync", ["-f", dir]))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Platform path semantics (Unix vs Windows)
+// ---------------------------------------------------------------------------
+
+fn is_win_drive_prefix(path : String) -> Bool {
+  if path.length() < 2 {
+    return false
+  }
+  let c0 = path.code_unit_at(0) & 0xFF
+  let is_alpha = (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122)
+  is_alpha && (path.code_unit_at(1) & 0xFF) == 58 // ':'
+}
+
+pub fn platform_path_clean(is_win : Bool, path : String) -> String {
+  if !is_win {
+    return clean_posix(path, false)
+  }
+  nodepath::join("\\", [if path == "" { "\\" } else { path }])
+}
+
+pub fn platform_path_key(is_win : Bool, path : String) -> String {
+  if is_win { ascii_lower(path) } else { path }
+}
+
+pub fn platform_path_within(is_win : Bool, path : String, dir : String) -> Bool {
+  if !is_win {
+    return dir == "/" || path == dir || path.starts_with(dir + "/")
+  }
+  let p = ascii_lower(path)
+  let d = ascii_lower(dir)
+  if p == d {
+    return true
+  }
+  let prefix = if d.ends_with("\\") || d.ends_with("/") { d } else { d + "\\" }
+  p.starts_with(prefix)
+}
+
+pub fn platform_path_is_root_name(is_win : Bool, part : String) -> Bool {
+  is_win && part.length() == 2 && is_win_drive_prefix(part)
+}
+
+pub fn platform_path_rooted(is_win : Bool, path : String) -> Bool {
+  if !is_win {
+    return path.starts_with("/")
+  }
+  path.starts_with("/") || nodepath::is_absolute("\\", path) || path.contains(":")
+}
+
+pub fn platform_path_join(is_win : Bool, base : String, given : String) -> String {
+  if !is_win {
+    if given.starts_with("/") || base == "" {
+      return given
+    }
+    if base.ends_with("/") {
+      return base + given
+    }
+    return base + "/" + given
+  }
+  if nodepath::is_absolute("\\", given) || base == "" {
+    return given
+  }
+  if base.ends_with("\\") || base.ends_with("/") {
+    return base + given
+  }
+  base + "\\" + given
+}
+
+pub fn platform_path_is_drive_path(is_win : Bool, text : String) -> Bool {
+  if !is_win || text.length() < 3 || !is_win_drive_prefix(text) {
+    return false
+  }
+  let c2 = text.code_unit_at(2) & 0xFF
+  c2 == 92 || c2 == 47
+}
+
+// ---------------------------------------------------------------------------
+// Process tree & environment PATH helpers
+// ---------------------------------------------------------------------------
+
+pub struct ProcessTree {
+  pub by_pid : Map[Int, ProcessInfo]
+  pub children : Map[Int, Array[Int]]
+}
+
+pub fn tree_of(table : Array[ProcessInfo]) -> ProcessTree {
+  let by_pid : Map[Int, ProcessInfo] = Map::new()
+  let children : Map[Int, Array[Int]] = Map::new()
+  for i in 0..<table.length() {
+    let p = table[i]
+    by_pid.set(p.pid, p)
+    if p.pid != p.ppid {
+      let kids = match children.get(p.ppid) {
+        Some(existing) => existing
+        None => []
+      }
+      kids.push(p.pid)
+      children.set(p.ppid, kids)
+    }
+  }
+  ProcessTree::{ by_pid: by_pid, children: children }
+}
+
+pub fn env_path_of(os : PlatformOs, env : Array[(String, String)]) -> String {
+  let is_win = match os {
+    PlatformOs::Windows => true
+    _ => false
+  }
+  for i in 0..<env.length() {
+    let (k, v) = env[i]
+    if is_win {
+      if ascii_upper(k) == "PATH" {
+        return v
+      }
+    } else if k == "PATH" {
+      return v
+    }
+  }
+  ""
+}
+
+pub fn env_prepend_path(
+  os : PlatformOs,
+  env : Array[(String, String)],
+  dir : String,
+) -> Array[(String, String)] {
+  let is_win = match os {
+    PlatformOs::Windows => true
+    _ => false
+  }
+  let delim = if is_win { ";" } else { ":" }
+  let rest = env_path_of(os, env)
+  let out : Array[(String, String)] = []
+  for i in 0..<env.length() {
+    let (k, v) = env[i]
+    let skip = if is_win { ascii_upper(k) == "PATH" } else { k == "PATH" }
+    if !skip {
+      out.push((k, v))
+    }
+  }
+  out.push(("PATH", dir + delim + rest))
+  out
+}
+
+pub fn env_append_path(
+  os : PlatformOs,
+  env : Array[(String, String)],
+  dir : String,
+) -> Array[(String, String)] {
+  let is_win = match os {
+    PlatformOs::Windows => true
+    _ => false
+  }
+  let delim_byte = if is_win { 59 } else { 58 }
+  let delim = if is_win { ";" } else { ":" }
+  let cur = env_path_of(os, env)
+  let parts = split_by_byte(cur, delim_byte)
+  for i in 0..<parts.length() {
+    let same = if is_win { ascii_lower(parts[i]) == ascii_lower(dir) } else { parts[i] == dir }
+    if same {
+      return env
+    }
+  }
+  let next_val = if cur == "" { dir } else { cur + delim + dir }
+  let out : Array[(String, String)] = []
+  let mut replaced = false
+  for i in 0..<env.length() {
+    let (k, v) = env[i]
+    let is_path = if is_win { ascii_upper(k) == "PATH" } else { k == "PATH" }
+    if is_path && !replaced {
+      out.push((k, next_val))
+      replaced = true
+    } else if !is_path {
+      out.push((k, v))
+    }
+  }
+  if !replaced {
+    out.push(("PATH", next_val))
+  }
+  out
+}
+
+// ---------------------------------------------------------------------------
+// Windows helpers (pure Pion, testable on every OS)
+// ---------------------------------------------------------------------------
+
+/// Extract WinGet package id from `...\WinGet\Packages\<Id>_<Source>_<hash>\...`.
+pub fn win_winget_package(real_path : String) -> Option[String] {
+  let parts = path_segments(real_path, true)
+  for i in 0..<parts.length() {
+    if i + 2 < parts.length() &&
+    ascii_lower(parts[i]) == "winget" &&
+    ascii_lower(parts[i + 1]) == "packages" {
+      let dir = parts[i + 2]
+      let segs = split_by_byte(dir, 95) // '_'
+      if segs.length() >= 3 {
+        let sb = StringBuilder::new()
+        for j in 0..<(segs.length() - 2) {
+          if j > 0 {
+            sb.write_byte(95 as Byte)
+          }
+          sb.write_string(segs[j])
+        }
+        return Some(sb.to_string())
+      }
+    }
+  }
+  None
+}
+
+/// Default Windows scheduled task name for `data` (`.monoid` -> `monoid station`, else `still.fail station`).
+pub fn win_default_task(data : String) -> String {
+  let leaf = ascii_lower(any_base_name(data))
+  let products = branded_products()
+  for i in 0..<products.length() {
+    let p = products[i].product
+    if leaf == "." + p.id {
+      return p.name + " station"
+    }
+  }
+  stillfail_product().name + " station"
+}
+
+/// Live process probe via `station_sys::proc_kill`.
+pub fn pid_alive(pid : Int) -> Bool {
+  station_sys::proc_kill(pid, station_sys::SIG_PROBE, false) == 0
+}

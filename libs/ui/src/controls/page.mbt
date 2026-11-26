@@ -606,7 +606,7 @@ let wide_block : @ui.Style = @ui.css("w=Full gap=S3")
 ///|
 /// A heading's words that do something: room round them for a finger (4), the link's ink.
 // kept across runs: a value (no field of it changes)
-let pg_action : @ui.Style = @ui.css("p=S1 radius=Lg")
+let pg_action : @ui.Style = @ui.css("p=S1 radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -271,8 +271,6 @@ class Station {
   readonly app: string;
   readonly data: string;
   readonly out: string;
-  /// The UDP port its mesh is bound on now (the system's pick of `127.0.0.1:0`, read from its `mesh listening`).
-  meshPort = 0;
   readonly id: string;
   readonly bin: string;
   constructor(o: { kind: "node" | "mb"; app: string; data: string; out: string; id: string; bin: string }) {
@@ -284,10 +282,11 @@ class Station {
     this.bin = o.bin;
   }
 
-  tail = () => this.said.slice(-6000);
-  takenOver = () => [...this.said.matchAll(/(?:Node|station) (\d+) has taken over/g)].map((m) => Number(m[1]));
-  /// The port each process it ran bound its mesh on, in order.
-  meshPorts = () => [...this.said.matchAll(/mesh listening[^\n]*?sockets=[^\n]*?127\.0\.0\.1:(\d+)/g)].map((m) => Number(m[1]));
+  logs = () => this.said;
+  tail = () => this.logs().slice(-6000);
+  takenOver = () => [...this.logs().matchAll(/(?:Node|station) (\d+) has taken over/g)].map((m) => Number(m[1]));
+  /// A process can bind again after startup fails. Its latest port is last.
+  meshPorts = () => [...this.logs().matchAll(/mesh listening[^\n]*?sockets=[^\n]*?127\.0\.0\.1:(\d+)/g)].map((m) => Number(m[1]));
   /// Why the launcher is no more, once it is not.
   exited = () => (this.child && (this.child.exitCode !== null || this.child.signalCode !== null) ? `launcher exited (code=${this.child.exitCode}, signal=${this.child.signalCode})` : "");
 
@@ -420,7 +419,7 @@ class Twins {
     s.ended = new Promise((resolve) => s.child.on("exit", (code) => resolve(code)));
     await until(`${s.kind}: taken over`, () => s.takenOver()[0], s.tail, 60_000, s.exited);
     // (its mesh bound where the system put it: dialled only once it listens there)
-    s.meshPort = await until(`${s.kind}: mesh listening`, () => s.meshPorts()[0], s.tail, 30_000, s.exited);
+    await until(`${s.kind}: mesh listening`, () => s.meshPorts()[0], s.tail, 30_000, s.exited);
     await this.connect(s);
   }
 
@@ -433,13 +432,15 @@ class Twins {
       try { old.close?.(0, "reconnecting"); } catch {}
     }
     s.conn = await until(`${s.kind}: connected on the mesh`, async () => {
+      const port = s.meshPorts().at(-1);
+      if (port === undefined) return null;
       let giveUp!: () => void;
       const givenUp = new Promise<void>((r) => (giveUp = r));
       const timer = setTimeout(() => giveUp(), 5_000);
       timer.unref?.();
       let conn: Connection | undefined;
       try {
-        conn = await withTimeout(this.client.connect({ id: s.id, ips: [`127.0.0.1:${s.meshPort}`] }, Buffer.from("stillfail/admin/1"), undefined, givenUp), 5_000, `${s.kind}: connect`);
+        conn = await withTimeout(this.client.connect({ id: s.id, ips: [`127.0.0.1:${port}`] }, Buffer.from("stillfail/admin/1"), undefined, givenUp), 5_000, `${s.kind}: connect`);
         const first = await withTimeout(conn.openBi(), 5_000, `${s.kind}: the hello's stream`);
         await withTimeout(line(first, { credential, protocol: 2 }), 5_000, `${s.kind}: the hello sent`);
         const hello = await withTimeout(new Reader(first).line(), 5_000, `${s.kind}: the hello's answer`);
@@ -458,6 +459,26 @@ class Twins {
 
 }
 
+
+test("a mesh bind reported during a failed dial supplies the next dial's port", async () => {
+  const s = new Station({ kind: "node", app: "", data: "", out: "", id: "station", bin: "" });
+  const bound = (port: number) => `mesh listening sockets=["127.0.0.1:${port}"]\n`;
+  let output = bound(42001);
+  s.logs = () => output;
+  const dialed: string[] = [];
+  s.exited = () => dialed.length === 2 ? "both dials recorded" : "";
+  const twins = new Twins();
+  Object.assign(twins, { client: {
+    id: () => "device",
+    connect: async (address: { ips: string[] }) => {
+      dialed.push(...address.ips);
+      output += bound(42002);
+      throw new Error("the fixture closed the connection");
+    },
+  } });
+  await assert.rejects(twins.connect(s), /both dials recorded/);
+  assert.deepEqual(dialed, ["127.0.0.1:42001", "127.0.0.1:42002"]);
+});
 
 /// A session made through the admin API, its key and thread.
 type Made = { key: string; thread: number };
@@ -587,7 +608,7 @@ test("a handover by the launcher: Node → MoonBit → MoonBit → Node, the ses
       const next = await until(`${hop.name}: the next process took over`, () => s.takenOver()[seen], s.tail, 60_000, s.exited);
       await until(`${hop.name}: the process before gone`, () => !alive(before), s.tail, 30_000, s.exited);
       // (no front here: each process binds a mesh of its own, on a port of the system's)
-      s.meshPort = await until(`${hop.name}: mesh listening`, () => s.meshPorts()[seenMesh], s.tail, 30_000, s.exited);
+      await until(`${hop.name}: mesh listening`, () => s.meshPorts()[seenMesh], s.tail, 30_000, s.exited);
       const failed = s.said.split("\n").filter((l) => /memory is not carried over|carried over is not taken up/.test(l));
       assert.deepEqual(failed, [], `${hop.name}: every part's memory carried over and taken up: ${failed.join("\n")}`);
       const cmd = commandOf(next);
@@ -761,9 +782,9 @@ test("simulated un-renewed old launcher hot-upgrade: config.json engine=moonbit 
     const s = new Station({ kind: "node", app, data, out, id, bin });
     s.child = first.child;
     s.ended = first.ended;
-    const syncLogs = () => { s.said = first.logs(); };
+    s.logs = first.logs;
     twins.stations = [s];
-    s.meshPort = await until("first mesh listening", () => { syncLogs(); return s.meshPorts()[0]; }, first.logs, 30_000);
+    await until("first mesh listening", () => s.meshPorts()[0], s.tail, 30_000, s.exited);
     await twins.connect(s);
 
     const created = await s.ask("POST", "/sessions", { runtime: "claude", profile: "cc" });
@@ -805,7 +826,8 @@ test("simulated un-renewed old launcher hot-upgrade: config.json engine=moonbit 
     // Reconnect on mesh to second process, verify event stream resumes without `missed` and job PGID survives
     s.child = second.child;
     s.ended = second.ended;
-    s.meshPort = await until("second mesh listening", () => { s.said = second.logs(); return s.meshPorts()[0]; }, second.logs, 30_000);
+    s.logs = second.logs;
+    await until("second mesh listening", () => s.meshPorts()[0], s.tail, 30_000, s.exited);
     await twins.connect(s);
     const streamAfter = await events(s, lastId);
     await until("resumed event stream first id", () => streamAfter.ids().length > 0, () => streamAfter.text().slice(0, 400), 10_000);
@@ -933,7 +955,7 @@ test("real new launcher with config.json engine=moonbit and full release layout 
       assert.equal((await httpGet(ports0.admin, "/healthz")).status, 200);
       assert.equal((await httpGet(mcp0.port, "/health")).status, 200);
 
-      s.meshPort = await until(`hop #${hop}: mesh listening`, () => s.meshPorts()[seenMesh], s.tail, 30_000, s.exited);
+      await until(`hop #${hop}: mesh listening`, () => s.meshPorts()[seenMesh], s.tail, 30_000, s.exited);
       await twins.connect(s);
       stream = await events(s, lastId);
       await until(`hop #${hop}: resumed stream id`, () => stream.ids().length > 0, () => stream.text().slice(0, 400), 10_000);

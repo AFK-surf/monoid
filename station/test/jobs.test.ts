@@ -215,7 +215,8 @@ describe("jobs", { concurrency: true }, () => {
       // `nice` lowers itself, then execs the job: looked at until it has (it is this process's niceness till then), and
       // compared with this process's (a shell's background job here may run lowered already).
       const baseNice = nice(process.pid);
-      const wantNice = Math.min(19, baseNice + agentNice());
+      const maxNice = process.platform === "darwin" ? 20 : 19;
+      const wantNice = Math.min(maxNice, baseNice + agentNice());
       let got = nice(pgid);
       while (wantNice !== baseNice && got === baseNice) {
         await new Promise((r) => setTimeout(r, 10));

@@ -2072,6 +2072,7 @@ pub fn switch_node(
   label : () -> String,
   small? : Bool = false,
   disabled? : () -> Bool = fn() { false },
+  controlled? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(at) {
@@ -2111,6 +2112,7 @@ pub fn switch_node(
       track_color=track_glass_ink,
       on_color=fn() { theme().p.accent },
       finger_only_lens=true,
+      controlled~,
       loc~,
     )
     |> ignore
@@ -2119,30 +2121,19 @@ pub fn switch_node(
 }
 
 ///|
-/// A row on a group's card that turns something on or off (switch_row's; narrow, in a card: its title, `note` quieter
-/// under it, its switch at its end on the title's line where there is a note, else in the row's middle; wide:
-/// wide_control_row_node's, the same); the switch alone answers. `on`,
-/// `turn`: switch_node's. `in_words`: on a page's card of words (page_card_node), where narrow it is a row of its words
-/// (16 between them and the switch), not a group's row. `busy`: what it set is on its way (switch_row's: a spinner
-/// before its switch, not turned again meanwhile).
+/// A group's row with an arbitrary trailing `control` on the title's first line when `note` is non-empty, else
+/// vertically centered in the row (narrow: `switch_row_node`'s exact row geometry; wide: `wide_control_row_node`).
 #callsite(autofill(loc))
-pub fn switch_row_node(
+pub fn control_row_node(
   parent : @view.View,
   title : () -> String,
-  on : () -> Bool,
-  turn : (Bool) -> Unit,
+  control : (@view.View) -> Unit,
   note? : () -> String = fn() { "" },
-  disabled? : () -> Bool = fn() { false },
   lead? : (@view.View) -> Unit,
   in_words? : Bool = false,
-  busy? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> Unit {
-  let control = fn(r : @view.View) {
-    r.show(busy, fn(s) { spinner_node(s, size=spinner_size) |> ignore })
-    switch_node(r, on, turn, title, disabled=fn() { disabled() || busy() })
-  }
-  // (with a note under its title the switch is on the title's first line, never across their middle; alone, in the
+  // (with a note under its title the control is on the title's first line, never across their middle; alone, in the
   // row's middle as it was)
   let noted = fn() { note() != "" }
   let in_overlay = parent.lent(floating_host_lent) is Some(_)
@@ -2164,7 +2155,7 @@ pub fn switch_row_node(
     }
     return
   }
-  // (narrow, among a card's words: a row of words with its switch, no row's ground or room of its own, switch_row's
+  // (narrow, among a card's words: a row of words with its control, no row's ground or room of its own, switch_row's
   // in_words)
   if in_words {
     wide_control_row_node(
@@ -2222,6 +2213,32 @@ pub fn switch_row_node(
     })
   })
   |> ignore
+}
+
+///|
+/// A group's switch row as nodes of the window's tree (switch_row's: narrow: its title, its note under it, its switch
+/// at its end on the title's line where there is a note, else in the row's middle; wide: wide_control_row_node's, the
+/// same); the switch alone answers. `on`, `turn`: switch_node's. `in_words`: on a page's card of words
+/// (page_card_node), where narrow it is a row of its words (16 between them and the switch), not a group's row.
+/// `busy`: what it set is on its way (switch_row's: a spinner before its switch, not turned again meanwhile).
+#callsite(autofill(loc))
+pub fn switch_row_node(
+  parent : @view.View,
+  title : () -> String,
+  on : () -> Bool,
+  turn : (Bool) -> Unit,
+  note? : () -> String = fn() { "" },
+  disabled? : () -> Bool = fn() { false },
+  lead? : (@view.View) -> Unit,
+  in_words? : Bool = false,
+  busy? : () -> Bool = fn() { false },
+  loc~ : SourceLoc,
+) -> Unit {
+  let control = fn(r : @view.View) {
+    r.show(busy, fn(s) { spinner_node(s, size=spinner_size) |> ignore })
+    switch_node(r, on, turn, title, disabled=fn() { disabled() || busy() })
+  }
+  control_row_node(parent, title, control, note~, lead?, in_words~, loc~)
 }
 
 ///|

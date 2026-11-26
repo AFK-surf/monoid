@@ -293,15 +293,41 @@ fn chats_pane_node(
       None => false
     }
   }
-  // (the open chat as the collapsed groups keep it: told in a transition as another opens, so the row kept for it
-  // makes its way out, or in, as rows do, not at once)
+  // (the open chat as the collapsed groups keep it: told in a transition as another opens only when grouped and a
+  // collapsed group is actually affected, avoiding synchronous pointer-phase layout on ordinary tab switches)
   let kept_open : @signals.Signal[ChatRef?] = @signals.signal(@signals.untracked(open_chat))
-  v.reacts(fn() { open_chat() }, fn(r) { @view.transition(within=v, fn() { kept_open.set(r) }) }, at_start=false)
   // (while the hand is on the list or it glides, its rows keep their places; a row the viewer moved goes at once)
   let held = fn() { v.pointed_in() || scroll.in_hand() || scroll.goes_on() }
   // its days in the order shown, and its rows by their names: worked out once as what is read, or the hand on it,
   // changes (held_order), what its lines and rows read
   let ordered : @signals.Signal[Array[ChatDay]] = @signals.signal([])
+  let chat_in_collapsed = fn(ref_opt : ChatRef?) -> Bool {
+    guard ref_opt is Some(chat_ref) else { return false }
+    for d in ordered.untracked() {
+      if @sfbase.group_collapsed(src, id, d.key) {
+        for it in d.items {
+          if @sfbase.row_is(it, chat_ref) {
+            return true
+          }
+        }
+      }
+    }
+    false
+  }
+  v.reacts(
+    fn() { open_chat() },
+    fn(r) {
+      let old = kept_open.untracked()
+      let grouped = @signals.untracked(fn() { query().group_by == "project" })
+      let needs_transition = grouped && (collapsed_kept.val != "" || chat_in_collapsed(old) || chat_in_collapsed(r))
+      if needs_transition {
+        @view.transition(within=v, fn() { kept_open.set(r) })
+      } else {
+        kept_open.set(r)
+      }
+    },
+    at_start=false,
+  )
   // (by name, each row told only as its own chat changes, comes or goes: one row's words changed wake no other row)
   let rows : @signals.KeyedList[String, ChatItem] = @signals.keyed_list(same=fn(a, b) { physical_equal(a, b) || a == b })
   // (its days' lines by their keys, told only as a row or a day comes, goes or moves: not as a row's words change)

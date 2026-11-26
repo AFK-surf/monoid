@@ -14,6 +14,9 @@ on:
       - "libs/ui/src/kitdemo/gallery/a11ycheck.mbt"
       - "libs/ui/src/kitdemo/gallery/fontscalecheck.mbt"
       - "libs/ui/src/host/win_*"
+      - "libs/ui/src/host/raw_premul.h"
+      - "libs/ui/scripts/raw_premul_test.c"
+      - "libs/ui/scripts/win_image_test.cpp"
       - "libs/ui/src/host/glass_damage.h"
       - "libs/ui/src/host/win.h"
       - "libs/ui/src/host/log_files.h"
@@ -69,6 +72,16 @@ jobs:
         working-directory: ${{ github.workspace }}
       - uses: actions/checkout@v4
       - uses: ./.github/actions/msvc
+      - name: "MBRAWPRE header parser, bounds validator, and premultiplied downscaler (src/host/raw_premul.h)"
+        run: |
+          mkdir -p out/raw_premul
+          cl.exe -nologo -W4 -WX -Isrc/host scripts/raw_premul_test.c -Foout/raw_premul/ -Feout/raw_premul/raw_premul_test.exe
+          out/raw_premul/raw_premul_test.exe
+      - name: "D3D11 WARP image upload and 3-format readback (src/host/win_image.cpp: R8G8B8A8, B8G8R8X8, B8G8R8A8)"
+        run: |
+          mkdir -p out/win_image
+          cl.exe -nologo -EHsc -W3 -WX -D_CRT_SECURE_NO_WARNINGS -Isrc/host scripts/win_image_test.cpp -Foout/win_image/ -Feout/win_image/win_image_test.exe -link d3d11.lib windowscodecs.lib ole32.lib urlmon.lib shlwapi.lib shcore.lib runtimeobject.lib
+          out/win_image/win_image_test.exe
       - name: "A screen's Windows shortcuts stay on its canvas; the shell gets its keys back as it leaves"
         run: |
           mkdir -p out/keys

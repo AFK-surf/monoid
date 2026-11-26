@@ -1,0 +1,257 @@
+import "base_codec"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+test "line stream reader handles byte-by-byte split and preserves binary carry" {
+  let r = LineStreamReader::new(max_line=1024, max_body=4096)
+  let raw = "{\"ok\":true,\"n\":42}\nBINARY_TAIL".to_bytes()
+  let mut parsed : Option[base_codec::Json] = None
+  for i in 0..<raw.length() {
+    r.feed(bytes_slice(raw, i, 1))
+    match parsed {
+      None => {
+        match r.try_line() {
+          Ok(Some(j)) => parsed = Some(j)
+          Ok(None) => ()
+          Err(e) => panic("unexpected error: " + wire_error_message(e))
+        }
+      }
+      Some(_) => ()
+    }
+  }
+  match parsed {
+    Some(j) => assert(base_codec::json_stringify(j) == "{\"ok\":true,\"n\":42}")
+    None => panic("expected parsed json line")
+  }
+  r.mark_eof()
+  match r.try_rest() {
+    Ok(Some(tail)) => assert(bytes_to_str(tail) == "BINARY_TAIL")
+    _ => panic("expected binary tail")
+  }
+}
+
+test "line stream reader handles 64 MiB chunked body in linear time" {
+  let r = LineStreamReader::new(max_line=1024, max_body=MAX_BODY)
+  r.feed("{\"ok\":true}\n".to_bytes())
+  match r.try_line() {
+    Ok(Some(_)) => ()
+    _ => panic("expected head line")
+  }
+  let chunk = Bytes::new(16384)
+  for _ in 0..<4096 {
+    r.feed(chunk)
+  }
+  assert(r.carry_len() == 67108864)
+  r.mark_eof()
+  match r.try_rest() {
+    Ok(Some(body)) => assert(body.length() == 67108864)
+    _ => panic("expected 64 MiB body")
+  }
+}
+
+test "line stream reader rejects head too large, body too large, and mid-line eof" {
+  let r1 = LineStreamReader::new(max_line=8, max_body=16)
+  r1.feed("{\"too\":\"long\"}\n".to_bytes())
+  match r1.try_line() {
+    Err(WireError::HeadTooLarge(8)) => ()
+    _ => panic("expected HeadTooLarge")
+  }
+
+  let r2 = LineStreamReader::new(max_line=64, max_body=4)
+  r2.feed("{\"a\":1}\n12345".to_bytes())
+  match r2.try_line() {
+    Ok(Some(_)) => ()
+    _ => panic("expected line")
+  }
+  r2.mark_eof()
+  match r2.try_rest() {
+    Err(WireError::BodyTooLarge(4)) => ()
+    _ => panic("expected BodyTooLarge")
+  }
+
+  let r3 = LineStreamReader::new(max_line=64, max_body=64)
+  r3.feed("{\"partial\":".to_bytes())
+  r3.mark_eof()
+  match r3.try_line() {
+    Err(WireError::EndedMidLine) => ()
+    _ => panic("expected EndedMidLine")
+  }
+
+  let r4 = LineStreamReader::new(max_line=64, max_body=64)
+  r4.mark_eof()
+  match r4.try_line() {
+    Ok(None) => ()
+    _ => panic("expected clean EOF None")
+  }
+}
+
+test "encode_answer_head injects content-length unless content-encoding is present" {
+  let h1 = encode_answer_head(200, [("content-type", "text/plain")], Some(5))
+  assert(
+    bytes_to_str(h1) == "{\"status\":200,\"headers\":{\"content-type\":\"text/plain\",\"content-length\":\"5\"}}\n",
+  )
+
+  let h2 = encode_answer_head(200, [("Content-Encoding", "gzip")], Some(5))
+  assert(bytes_to_str(h2) == "{\"status\":200,\"headers\":{\"Content-Encoding\":\"gzip\"}}\n")
+}
+
+test "pipe frame decoder enforces irreversible terminal state on END, FAILED, cancel, and partial EOF" {
+  let dec = PipeFrameDecoder::new(max_frame=16)
+  let f1 = encode_pipe_frame(PipeFrame::Data("hello".to_bytes()))
+  let f2 = encode_pipe_frame(PipeFrame::End)
+  let f3 = encode_pipe_frame(PipeFrame::Data("trailing".to_bytes()))
+  let wire = bytes_concat(bytes_concat(f1, f2), f3)
+
+  let got : Array[String] = []
+  for i in 0..<wire.length() {
+    dec.feed(bytes_slice(wire, i, 1))
+    while true {
+      match dec.next_frame() {
+        Ok(Some(PipeFrame::Data(d))) => got.push("data:" + bytes_to_str(d))
+        Ok(Some(PipeFrame::End)) => got.push("end")
+        Ok(Some(PipeFrame::Failed(m))) => got.push("failed:" + m)
+        Ok(None) => break
+        Err(e) => panic("unexpected error: " + wire_error_message(e))
+      }
+    }
+  }
+  // Trailing Data after End MUST NOT be delivered
+  assert(got.length() == 2)
+  assert(got[0] == "data:hello")
+  assert(got[1] == "end")
+  assert(dec.is_closed())
+
+  // Failed frame also closes decoder permanently
+  let dec_fail = PipeFrameDecoder::new(max_frame=16)
+  dec_fail.feed(
+    bytes_concat(
+      encode_pipe_frame(PipeFrame::Failed("boom")),
+      encode_pipe_frame(PipeFrame::Data("never".to_bytes())),
+    ),
+  )
+  match dec_fail.next_frame() {
+    Ok(Some(PipeFrame::Failed("boom"))) => ()
+    _ => panic("expected Failed(boom)")
+  }
+  assert(dec_fail.is_closed())
+  match dec_fail.next_frame() {
+    Ok(None) => ()
+    _ => panic("expected None after terminal Failed")
+  }
+
+  // Partial frame at physical EOF returns EndedMidLine and closes permanently
+  let dec_eof = PipeFrameDecoder::new(max_frame=16)
+  dec_eof.feed(bytes_slice(encode_pipe_frame(PipeFrame::Data("hello".to_bytes())), 0, 6))
+  match dec_eof.finish_eof() {
+    Err(WireError::EndedMidLine) => ()
+    _ => panic("expected EndedMidLine on partial frame EOF")
+  }
+  assert(dec_eof.is_closed())
+  dec_eof.feed(encode_pipe_frame(PipeFrame::Data("after".to_bytes())))
+  match dec_eof.next_frame() {
+    Ok(None) => ()
+    _ => panic("expected None after finish_eof")
+  }
+
+  // Clean EOF after protocol END succeeds
+  assert(dec.saw_clean_end())
+  match dec.finish_eof() {
+    Ok(_) => ()
+    Err(_) => panic("expected Ok on finish_eof after clean END")
+  }
+
+  // Frame-boundary EOF after DATA without END MUST return error (never mask truncation as clean EOF)
+  let dec_trunc = PipeFrameDecoder::new(max_frame=16)
+  dec_trunc.feed(encode_pipe_frame(PipeFrame::Data("part1".to_bytes())))
+  match dec_trunc.next_frame() {
+    Ok(Some(PipeFrame::Data(d))) => assert(bytes_to_str(d) == "part1")
+    _ => panic("expected Data(part1)")
+  }
+  match dec_trunc.finish_eof() {
+    Err(WireError::FrameFailed(_)) => ()
+    _ => panic("expected FrameFailed on premature EOF without END")
+  }
+  assert(dec_trunc.is_closed())
+  assert(!dec_trunc.saw_clean_end())
+
+  // Send-only unidirectional stream (`both = false`) allows clean EOF with no partial bytes
+  let dec_uni = PipeFrameDecoder::new(max_frame=16)
+  match dec_uni.finish_eof(both=false) {
+    Ok(_) => ()
+    Err(_) => panic("expected Ok for send-only half-close")
+  }
+
+  // Over-limit frame rejected
+  let dec2 = PipeFrameDecoder::new(max_frame=4)
+  dec2.feed(encode_pipe_frame(PipeFrame::Data("12345".to_bytes())))
+  match dec2.next_frame() {
+    Err(WireError::FrameTooLarge(4)) => ()
+    _ => panic("expected FrameTooLarge")
+  }
+  assert(dec2.is_closed())
+}
+
+test "stream handoff header encodes and decodes 17-byte and 25-byte forms with carry" {
+  let h_out = StreamHandHeader::{
+    conn_id: 7.to_int64(),
+    stream_id: 99.to_int64(),
+    kind: StreamHandKind::Outgoing,
+  }
+  let raw_out = bytes_concat(encode_stream_hand(h_out), "abc".to_bytes())
+  assert(raw_out.length() == 20)
+  match decode_stream_hand(bytes_slice(raw_out, 0, 16)) {
+    Ok(None) => ()
+    _ => panic("expected partial header None")
+  }
+  match decode_stream_hand(raw_out) {
+    Ok(Some((h, carry))) => {
+      assert(h.conn_id == 7.to_int64())
+      assert(h.stream_id == 99.to_int64())
+      assert(bytes_to_str(carry) == "abc")
+    }
+    _ => panic("expected decoded outgoing header")
+  }
+
+  let h_ord = StreamHandHeader::{
+    conn_id: 11.to_int64(),
+    stream_id: 22.to_int64(),
+    kind: StreamHandKind::IncomingOrdered(3.to_int64()),
+  }
+  let raw_ord = bytes_concat(encode_stream_hand(h_ord), "xy".to_bytes())
+  assert(raw_ord.length() == 27)
+  match decode_stream_hand(bytes_slice(raw_ord, 0, 24)) {
+    Ok(None) => ()
+    _ => panic("expected partial 25-byte header None")
+  }
+  match decode_stream_hand(raw_ord) {
+    Ok(Some((h, carry))) => {
+      assert(h.conn_id == 11.to_int64())
+      assert(h.stream_id == 22.to_int64())
+      match h.kind {
+        StreamHandKind::IncomingOrdered(idx) => assert(idx == 3.to_int64())
+        _ => panic("expected IncomingOrdered")
+      }
+      assert(bytes_to_str(carry) == "xy")
+    }
+    _ => panic("expected decoded ordered header")
+  }
+}
+
+test "filter_hop_headers strips hop-by-hop and Connection-named headers" {
+  let kept = filter_hop_headers(
+    [
+      ("Host", "example.com"),
+      ("Connection", "keep-alive, X-Secret-Hop"),
+      ("X-Secret-Hop", "drop"),
+      ("X-Custom", "keep"),
+    ],
+    ["expect"],
+  )
+  assert(kept.length() == 1)
+  assert(kept[0].0 == "x-custom")
+  assert(kept[0].1 == "keep")
+}

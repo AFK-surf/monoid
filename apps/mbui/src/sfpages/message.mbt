@@ -397,7 +397,11 @@ let route_place : @ui.Style = @ui.css("row px=S1_5 py=SPx gap=S1 radius=Md bg=Ne
 
 ///|
 // kept across runs: a value (no field of it changes)
-let route_place_hot : @ui.Style = route_place.then(@ui.css("bg=Hover"))
+let route_place_link : @ui.Style = route_place.then(@ui.css("radius=Full"))
+
+///|
+// kept across runs: a value (no field of it changes)
+let route_place_hot : @ui.Style = route_place_link.then(@ui.css("bg=Hover"))
 
 ///|
 // kept across runs: a value (no field of it changes)

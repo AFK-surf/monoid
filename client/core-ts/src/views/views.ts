@@ -1066,7 +1066,7 @@ export type ViewsEnv = {
   /// The email of the signed-in account that reaches a workspace.
   emailOf: (workspace: string) => string | null;
   /// How its person's agents are asked for progress (views/progress.ts).
-  progressOf: (workspace: string) => ProgressChoice;
+  progressOf: (workspace: string) => ProgressChoice & { seq?: number };
   /// Whether that account is in the beta.
   betaOf: (workspace: string) => boolean;
   /// That account's sub; none where not given.

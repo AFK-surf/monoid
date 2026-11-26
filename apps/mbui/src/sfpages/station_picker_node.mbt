@@ -1031,7 +1031,7 @@ fn sp_narrow_drawer_node(
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sp_compact_row : @ui.Style = @ui.css("row w=Full px=S2 py=S2_5 gap=S2_5 align=AStart radius=Lg")
+let sp_compact_row : @ui.Style = @ui.css("row w=Full px=S2 py=S2_5 gap=S2_5 align=AStart").then(@ui.style(radius=@sf.panel_in))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1079,7 +1079,7 @@ let sp_header_rule_wrap : @ui.Style = @ui.css("w=Full pb=S1_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sp_table_row : @ui.Style = @ui.css("row w=Full px=S2 py=S1_5 gap=S2 align=ACenter radius=Lg")
+let sp_table_row : @ui.Style = @ui.css("row w=Full px=S2 py=S1_5 gap=S2 align=ACenter").then(@ui.style(radius=@sf.panel_in))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1091,11 +1091,11 @@ let sp_cell_num : @ui.Style = @ui.css("row pr=S1_5 gap=S1_25 align=ACenter justi
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sp_head_left : @ui.Style = @ui.css("row px=S1_5 py=S0_5 align=ACenter justify=JStart radius=Md")
+let sp_head_left : @ui.Style = @ui.css("row px=S1_5 py=S0_5 align=ACenter justify=JStart radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sp_head_right : @ui.Style = @ui.css("row px=S1_5 py=S0_5 align=ACenter justify=JEnd radius=Md")
+let sp_head_right : @ui.Style = @ui.css("row px=S1_5 py=S0_5 align=ACenter justify=JEnd radius=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)

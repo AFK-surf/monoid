@@ -9,8 +9,15 @@
 // An agent finds them with device_list and asks with device_use (tool.ts). What it is given is a port of 127.0.0.1 on
 // its own station, which only its own processes connect to (adb/door.ts's gate), carried to the device by the station
 // it is attached to (connect.ts) over the mesh (mesh/peer-http.ts, a tunnel's `device`).
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Effect, Layer } from "effect";
-import { AIRPLAY_PROTOCOLS, type AirPlayProtocol } from "../../../client/core-ts/src/rig-form.ts";
+import {
+  AIRPLAY_PROTOCOLS,
+  ANDROID_TV_PROTOCOLS,
+  type AirPlayProtocol,
+  type AndroidTvProtocol,
+} from "../../../client/core-ts/src/rig-form.ts";
 import type { Route } from "../api/admin.ts";
 import { type Answer, type Request, error, json } from "../api/request.ts";
 import { gate } from "../adb/door.ts";
@@ -28,11 +35,25 @@ import { ControlPlane, type DeviceEntry, DeviceSources, Events, Key, MeshSide, P
 import { Agents } from "../sessions/agents.ts";
 import type { Json } from "../store/store.ts";
 import { AirPlayCredentialStore } from "./airplay/credentials.ts";
-import { AirPlayPairingManager, commitAirPlayRebind, commitDeviceAdd } from "./airplay/pairing.ts";
+import { AirPlayPairingManager } from "./airplay/pairing.ts";
 import { AirPlayControlServer, sendAirPlayAction, sendAirPlayAudio } from "./airplay/server.ts";
 import { AirPlayError, type AirPlayAdapter } from "./airplay/types.ts";
 import { PyAtvAdapter } from "./airplay/worker.ts";
+import { LocalAndroidTvAdapter } from "./android-tv/adapter.ts";
+import {
+  ANDROID_TV_PAIR_PREFIX,
+  AndroidTvPairingManager,
+  commitAnyDeviceAdd,
+  commitDeviceRebind,
+} from "./android-tv/pairing.ts";
+import {
+  AndroidTvControlServer,
+  fetchAndroidTvScreenshot,
+  sendAndroidTvAction,
+} from "./android-tv/server.ts";
+import { AndroidTvError, type AndroidTvAdapter, type AndroidTvAdbMode } from "./android-tv/types.ts";
 import { reachDevice } from "./connect.ts";
+import { DeviceCredentialStore } from "./credentials.ts";
 import { DeviceRegistry, type Kept } from "./registry.ts";
 import { deviceTools, reachedAt } from "./tool.ts";
 
@@ -62,14 +83,41 @@ export function airplayCapabilities(protocols?: readonly string[]): string[] {
   return [...caps];
 }
 
-function airplayErrorAnswer(err: unknown): Answer {
-  if (err instanceof AirPlayError) {
+/// Desensitized capability summary derived from an Android TV device's paired/supported protocols.
+export function androidTvCapabilities(protocols?: readonly string[]): string[] {
+  if (!protocols || protocols.length === 0) return [];
+  const caps = new Set<string>();
+  if (protocols.includes("atv_remote")) {
+    caps.add("remote");
+    caps.add("power");
+    caps.add("launch");
+    caps.add("volume");
+    caps.add("keyboard");
+  }
+  if (protocols.includes("adb")) {
+    caps.add("remote");
+    caps.add("power");
+    caps.add("apps");
+    caps.add("launch");
+    caps.add("volume");
+    caps.add("keyboard");
+    caps.add("play_url");
+    caps.add("screenshot");
+    caps.add("adb");
+  }
+  return [...caps];
+}
+
+function deviceErrorAnswer(err: unknown): Answer {
+  if (err instanceof AirPlayError || err instanceof AndroidTvError) {
     const status =
       err.code === "invalid_params" || err.code === "invalid_pin" || err.code === "invalid_pair_id" || err.code === "invalid_pair_token"
         ? 422
+        : err.code === "adb_unauthorized" || err.code === "auth_failed"
+        ? 401
         : err.code === "device_not_found"
         ? 404
-        : err.code === "pyatv_missing"
+        : err.code === "pyatv_missing" || err.code === "adb_missing"
         ? 503
         : 502;
     return json(status, JSON.stringify({ error: err.message, code: err.code }));
@@ -90,22 +138,35 @@ export const DevicesLive = Layer.effectDiscard(
     const { data } = yield* Paths;
     const { hub, remote, forwards } = yield* Agents;
     const registry = new DeviceRegistry(store.db);
-    const credentials = new AirPlayCredentialStore(data, key);
+    const sharedCredentials = new DeviceCredentialStore<Record<string, unknown>>(data, key);
+    const airplayCredentials = new AirPlayCredentialStore(data, key);
     const adapter: AirPlayAdapter = new PyAtvAdapter({ dataDir: data });
     const pairing = new AirPlayPairingManager(adapter);
-    const airplayServer = new AirPlayControlServer(adapter, credentials);
+    const airplayServer = new AirPlayControlServer(adapter, airplayCredentials);
+    const androidTvAdapter: AndroidTvAdapter = new LocalAndroidTvAdapter({ dataDir: data });
+    const androidTvPairing = new AndroidTvPairingManager(androidTvAdapter);
+    const androidTvServer = new AndroidTvControlServer(androidTvAdapter, sharedCredentials);
     const self = () => cloud.state?.station ?? "";
 
     yield* Effect.addFinalizer(() =>
       Effect.promise(async () => {
         airplayServer.close();
-        await pairing.close();
-        await adapter.close();
+        androidTvServer.close();
+        await Promise.all([
+          pairing.close(),
+          androidTvPairing.close(),
+          adapter.close(),
+          androidTvAdapter.close(),
+        ]);
       }),
     );
 
     const entryOf = (k: Kept, station: string): DeviceEntry => {
-      const caps = k.kind === "airplay" ? airplayCapabilities(k.protocols) : [];
+      const caps = k.kind === "airplay"
+        ? airplayCapabilities(k.protocols)
+        : k.kind === "android_tv"
+        ? androidTvCapabilities(k.protocols)
+        : [];
       return {
         id: k.id, name: k.name, kind: k.kind, target: k.target,
         ...(k.baud !== undefined ? { baud: k.baud } : {}),
@@ -131,7 +192,7 @@ export const DevicesLive = Layer.effectDiscard(
       const d = registry.get(workspace, id);
       if (d === null) throw new DeviceRefused(404, "no such device on this station");
       if (probe) return null;
-      return reachDevice(d, airplayServer);
+      return reachDevice(d, airplayServer, androidTvServer);
     };
     yield* Effect.addFinalizer(() => Effect.sync(() => void (side.device = null)));
 
@@ -199,7 +260,7 @@ export const DevicesLive = Layer.effectDiscard(
       const target: DeviceTarget = {
         id: e.id,
         name: e.name,
-        here: kept === null ? null : () => reachDevice(kept, airplayServer),
+        here: kept === null ? null : () => reachDevice(kept, airplayServer, androidTvServer),
         admit: admitFor(session),
       };
       const v = await forwards.openDevice(session, e.station, target, here);
@@ -263,8 +324,8 @@ export const DevicesLive = Layer.effectDiscard(
           if (!action) return "action is required.";
           const ws = workspaceOf(session);
           const e = named(await all(ws, session), given);
-          if (e.kind !== "airplay") {
-            return `${e.name} is a ${e.kind} device, not an airplay device: use device_use instead.`;
+          if (e.kind !== "airplay" && e.kind !== "android_tv") {
+            return `${e.name} is a ${e.kind} device, not an airplay or android_tv device: use device_use instead.`;
           }
           let port = forwards.devicePort(session, e.id);
           if (port === null) {
@@ -274,6 +335,16 @@ export const DevicesLive = Layer.effectDiscard(
               return `${e.name} requires owner approval before control: call device_use {device: ${JSON.stringify(e.name)}, reason: "..."} first.`;
             }
           }
+          if (e.kind === "android_tv") {
+            if (action === "screenshot") {
+              const dir = store.getSession(session)?.workspace ?? tmpdir();
+              const destPath = join(dir, `android-tv-${e.id}-${wall.now()}.png`);
+              const shot = await fetchAndroidTvScreenshot(port, destPath, signal);
+              return JSON.stringify(shot);
+            }
+            const result = await sendAndroidTvAction(port, action, args, signal);
+            return JSON.stringify(result);
+          }
           const result = action === "stream_audio"
             ? (audioPath
                 ? await sendAirPlayAudio(port, audioPath, signal)
@@ -281,7 +352,7 @@ export const DevicesLive = Layer.effectDiscard(
             : await sendAirPlayAction(port, action, args, signal);
           return JSON.stringify(result);
         } catch (err) {
-          if (err instanceof DeviceAsk || err instanceof PeerRefused || err instanceof AirPlayError) {
+          if (err instanceof DeviceAsk || err instanceof PeerRefused || err instanceof AirPlayError || err instanceof AndroidTvError) {
             return err.message;
           }
           throw err;
@@ -302,18 +373,39 @@ export const DevicesLive = Layer.effectDiscard(
     const routes: Route[] = [
       { method: "GET", pattern: /^\/devices$/, handle: async (r) => answered({ workspace: r.viewer.workspace, station: self(), devices: listed(r.viewer.workspace), phones: phones(r.viewer.workspace) }) },
       {
-        // Discover AirPlay receivers on this station's LAN.
+        // Discover AirPlay or Android TV receivers on this station's LAN.
         method: "POST", pattern: /^\/devices\/scan$/,
         handle: async (r) => {
           const ws = r.viewer.workspace;
           const b = body(r);
           const kind = typeof b.kind === "string" ? b.kind.trim() : "airplay";
-          if (kind !== "airplay") return error(422, "scan currently supports kind: airplay only");
+          if (kind !== "airplay" && kind !== "android_tv") {
+            return error(422, "scan supports kind: airplay or android_tv");
+          }
+          const timeoutMs = typeof b.timeoutMs === "number" ? b.timeoutMs : undefined;
+          const host = typeof b.host === "string" && b.host.trim() !== "" ? b.host.trim() : undefined;
+          if (kind === "android_tv") {
+            const env = await androidTvAdapter.envStatus();
+            try {
+              const raw = await androidTvAdapter.scan({
+                ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+                ...(host !== undefined ? { host } : {}),
+              });
+              const existingTargets = new Set(
+                registry.of(ws).filter((d) => d.kind === "android_tv").map((d) => d.target.toLowerCase()),
+              );
+              const candidates = raw.map((c) => ({
+                ...c,
+                alreadyAdded: existingTargets.has(c.identifier.toLowerCase()) || (c.address !== "" && existingTargets.has(c.address.toLowerCase())),
+              }));
+              return answered({ candidates, env });
+            } catch (err) {
+              return deviceErrorAnswer(err);
+            }
+          }
           const env = await adapter.envStatus();
           if (!env.ready) return answered({ candidates: [], env });
           try {
-            const timeoutMs = typeof b.timeoutMs === "number" ? b.timeoutMs : undefined;
-            const host = typeof b.host === "string" && b.host.trim() !== "" ? b.host.trim() : undefined;
             const raw = await adapter.scan({
               ...(timeoutMs !== undefined ? { timeoutMs } : {}),
               ...(host !== undefined ? { host } : {}),
@@ -325,7 +417,7 @@ export const DevicesLive = Layer.effectDiscard(
             }));
             return answered({ candidates, env });
           } catch (err) {
-            return airplayErrorAnswer(err);
+            return deviceErrorAnswer(err);
           }
         },
       },
@@ -337,20 +429,46 @@ export const DevicesLive = Layer.effectDiscard(
             const res = await adapter.installEnv();
             return answered(res);
           } catch (err) {
-            return airplayErrorAnswer(err);
+            return deviceErrorAnswer(err);
           }
         },
       },
       {
-        // Start multi-protocol AirPlay PIN pairing.
+        // Start multi-protocol AirPlay or Android TV pairing.
         method: "POST", pattern: /^\/devices\/pair\/start$/,
         handle: async (r) => {
           const ws = r.viewer.workspace;
           const b = body(r);
+          const kind = typeof b.kind === "string" && b.kind.trim() !== "" ? b.kind.trim() : "airplay";
           const identifier = typeof b.identifier === "string" ? b.identifier.trim() : "";
           const address = typeof b.address === "string" && b.address.trim() !== "" ? b.address.trim() : undefined;
           const name = typeof b.name === "string" && b.name.trim() !== "" ? b.name.trim() : undefined;
           const model = typeof b.model === "string" && b.model.trim() !== "" ? b.model.trim() : undefined;
+          if (kind === "android_tv") {
+            const protocols = Array.isArray(b.protocols)
+              ? b.protocols.filter((p: unknown): p is AndroidTvProtocol => typeof p === "string" && ANDROID_TV_PROTOCOLS.includes(p as AndroidTvProtocol))
+              : [];
+            const pairPort = typeof b.pairPort === "number" ? b.pairPort : undefined;
+            const adbPort = typeof b.adbPort === "number" ? b.adbPort : undefined;
+            const adbMode: AndroidTvAdbMode | undefined = b.adbMode === "legacy_tcp" || b.adbMode === "tls_wireless" ? b.adbMode : undefined;
+            try {
+              const step = await androidTvPairing.start({
+                ws,
+                identifier,
+                ...(address ? { address } : {}),
+                ...(name ? { name } : {}),
+                ...(model ? { model } : {}),
+                protocols,
+                ...(pairPort !== undefined ? { pairPort } : {}),
+                ...(adbPort !== undefined ? { adbPort } : {}),
+                ...(adbMode !== undefined ? { adbMode } : {}),
+              });
+              return answered(step);
+            } catch (err) {
+              return deviceErrorAnswer(err);
+            }
+          }
+          if (kind !== "airplay") return error(422, "pair/start supports kind: airplay or android_tv");
           const protocols = Array.isArray(b.protocols)
             ? (b.protocols.filter((p: unknown): p is AirPlayProtocol => typeof p === "string" && AIRPLAY_PROTOCOLS.includes(p as AirPlayProtocol)))
             : [];
@@ -365,12 +483,12 @@ export const DevicesLive = Layer.effectDiscard(
             });
             return answered(step);
           } catch (err) {
-            return airplayErrorAnswer(err);
+            return deviceErrorAnswer(err);
           }
         },
       },
       {
-        // Submit PIN or skip current protocol step in an active AirPlay pairing session.
+        // Submit PIN or skip current protocol step in an active pairing session.
         method: "POST", pattern: /^\/devices\/pair\/finish$/,
         handle: async (r) => {
           const ws = r.viewer.workspace;
@@ -378,22 +496,35 @@ export const DevicesLive = Layer.effectDiscard(
           const pairId = typeof b.pairId === "string" ? b.pairId.trim() : "";
           const pin = typeof b.pin === "string" ? b.pin : undefined;
           const skip = b.skip === true;
+          const pairPort = typeof b.pairPort === "number" ? b.pairPort : undefined;
+          const adbPort = typeof b.adbPort === "number" ? b.adbPort : undefined;
           try {
-            const step = await pairing.finish(ws, pairId, { ...(pin !== undefined ? { pin } : {}), skip });
+            const step = pairId.startsWith(ANDROID_TV_PAIR_PREFIX)
+              ? await androidTvPairing.finish(ws, pairId, {
+                  ...(pin !== undefined ? { pin } : {}),
+                  skip,
+                  ...(pairPort !== undefined ? { pairPort } : {}),
+                  ...(adbPort !== undefined ? { adbPort } : {}),
+                })
+              : await pairing.finish(ws, pairId, { ...(pin !== undefined ? { pin } : {}), skip });
             return answered(step);
           } catch (err) {
-            return airplayErrorAnswer(err);
+            return deviceErrorAnswer(err);
           }
         },
       },
       {
-        // Cancel an active AirPlay pairing session and close the TV's PIN dialog.
+        // Cancel an active pairing session and close the TV's PIN dialog.
         method: "POST", pattern: /^\/devices\/pair\/cancel$/,
         handle: async (r) => {
           const ws = r.viewer.workspace;
           const b = body(r);
           const pairId = typeof b.pairId === "string" ? b.pairId.trim() : "";
-          await pairing.cancel(ws, pairId);
+          if (pairId.startsWith(ANDROID_TV_PAIR_PREFIX)) {
+            await androidTvPairing.cancel(ws, pairId);
+          } else {
+            await pairing.cancel(ws, pairId);
+          }
           return answered({ ok: true });
         },
       },
@@ -402,14 +533,22 @@ export const DevicesLive = Layer.effectDiscard(
         method: "POST", pattern: /^\/devices$/,
         handle: async (r) => {
           const ws = r.viewer.workspace;
-          const res = await commitDeviceAdd(registry, pairing, credentials, ws, r.viewer, body(r) as Record<string, unknown>, Math.floor(wall.now() / 1000));
+          const res = await commitAnyDeviceAdd(
+            registry,
+            { airplay: pairing, androidTv: androidTvPairing },
+            sharedCredentials,
+            ws,
+            r.viewer,
+            body(r) as Record<string, unknown>,
+            Math.floor(wall.now() / 1000),
+          );
           if (!res.ok) return error(res.status, res.message);
           tell(ws);
           return answered({ device: { ...res.device, station: self(), stationName: nameOf(cloud, self()) } });
         },
       },
       {
-        // Re-pair an existing AirPlay device: replaces its encrypted credentials and updates metadata.
+        // Re-pair an existing AirPlay or Android TV device: replaces/merges encrypted credentials and updates metadata.
         method: "POST", pattern: /^\/devices\/([0-9a-f]{16})\/pair$/,
         handle: async (r, [id]) => {
           const ws = r.viewer.workspace;
@@ -420,7 +559,14 @@ export const DevicesLive = Layer.effectDiscard(
           }
           const b = body(r);
           const pairId = typeof b.pairId === "string" ? b.pairId.trim() : "";
-          const res = await commitAirPlayRebind(registry, pairing, credentials, ws, id!, pairId);
+          const res = await commitDeviceRebind(
+            registry,
+            { airplay: pairing, androidTv: androidTvPairing },
+            sharedCredentials,
+            ws,
+            id!,
+            pairId,
+          );
           if (!res.ok) return error(res.status, res.message);
           tell(ws);
           return answered({ device: { ...res.device, station: self(), stationName: nameOf(cloud, self()) } });
@@ -436,7 +582,7 @@ export const DevicesLive = Layer.effectDiscard(
           if (d === null) return error(404, "no such device on this station");
           if (d.owner !== r.viewer.sub && !managesStation(r.viewer)) return error(403, "only the device's owner, or the workspace's owners and admins, take it off");
           registry.remove(ws, id!);
-          await credentials.delete(ws, id!);
+          await sharedCredentials.delete(ws, id!);
           forwards.closeDevice(null, id!, "the device was taken off its station");
           tell(ws);
           return answered({ ok: true });

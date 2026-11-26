@@ -1,52 +1,82 @@
 // Tests for clear liquid glass press/drag lens across all four segmented/pill-tab controls:
-// `seg_node`, `seg_icons_node`, `seg_fill_node` (mouse press alongside existing finger drag), and `tabs_node(look=Pill)`.
-// Verifies in both Light and Dark themes:
-// 1. At rest: zero hidden glass instances (`drawn_glass().length() == 0`), solid lifted thumb intact, `audit() == []`.
-// 2. While pressed: exactly 1 clear `kind == 6` liquid glass lens (`blur == 0`, `shadow_outside`), solid thumb faded, `audit() == []`.
-// 3. On release: lens settles back to 0 glass instances, selection updates cleanly, `audit() == []`.
-// 4. `MBUI_GLASS=solid`: zero glass instances while pressed, solid thumb stays opaque.
-// 5. `reduced_motion`: the same lens while pressed (only its motions at once), selection still works.
-// 6. `tabs_node(look=Underline)` stays unaffected (zero glass instances while pressed).
+// `seg_node`, `seg_icons_node`, `seg_fill_node`, and `tabs_node(look=Pill)`.
+// Verifies the intentional mouse vs touch contract in both Light and Dark themes:
+// 1. Mouse click on an unselected segment switches cleanly with 0 glass lens at all times (cold/warm, 0 relayout).
+// 2. Holding (200ms) or horizontally dragging from the ALREADY-SELECTED segment lifts 1 clear `kind == 6`
+//    liquid glass lens (`blur == 0`, `droplet_role = 3`, `refraction > 0`, `chroma == 0.04 * p`) and settles back to 0.
+// 3. `MBUI_GLASS=solid`: zero glass instances while held/dragged, solid thumb stays opaque, selection still works.
+// 4. `reduced_motion`: the same lens while held/dragged (only its motions end at once), selection still works.
+// 5. `tabs_node(look=Underline)` stays glass-free.
 
 ///|
-fn seg_glass_assert_cycle(
+let seg_hold_wait_ms : Double = 220.0
+
+///|
+fn seg_glass_assert_mouse_tap_zero_lens(
   t : @ui.Tester,
   target : @ui.SemNode,
   verify_selected : () -> Bool,
-  solid : Bool,
   label : String,
 ) -> Unit raise {
   let has_lifted_thumb = fn() {
     let lifted = @ui.tree_theme().lifted
     t.drawn_rects().iter().any(fn(r) { r.4 == lifted && r.2 > 10.0 && r.3 > 10.0 })
   }
-  // 1. Rest: zero glass instances, solid thumb present, and clean audit.
   assert_eq(t.drawn_glass().length(), 0, msg="\{label}: rest must have 0 glass")
   if !label.has_prefix("tabs_node(Underline)") {
     assert_true(has_lifted_thumb(), msg="\{label}: rest must draw solid lifted thumb")
   }
-  let rest_audits = t.audit()
-  assert_eq(rest_audits, [], msg="\{label}: rest audit: \{Repr(rest_audits)}")
+  assert_eq(t.audit(), [], msg="\{label}: rest audit")
   let (x, y, w, h) = target.rect
   let px = x + w / 2.0
   let py = y + h / 2.0
-
-  // 2. Press and hold to peak of backdrop_press_spring.
+  // Mouse press & hold on an unselected option must never lift a lens.
   t.press_at(px, py)
   t.run_for(part_whole_ms)
+  assert_eq(t.drawn_glass().length(), 0, msg="\{label}: mouse press on unselected must stay 0 glass")
+  assert_eq(t.audit(), [], msg="\{label}: pressed audit")
+  t.release(px, py)
+  t.run_for(part_whole_ms / 2.0)
+  assert_eq(t.drawn_glass().length(), 0, msg="\{label}: mid-slide after mouse tap must stay 0 glass")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.drawn_glass().length(), 0, msg="\{label}: settled after mouse tap must have 0 glass")
+  assert_true(verify_selected(), msg="\{label}: release must switch selection")
+  assert_eq(t.audit(), [], msg="\{label}: settled audit")
+}
+
+///|
+fn seg_glass_assert_selected_hold_drag_lens(
+  t : @ui.Tester,
+  selected_node : @ui.SemNode,
+  target_node : @ui.SemNode,
+  verify_selected : () -> Bool,
+  solid : Bool,
+  label : String,
+) -> Unit raise {
+  let (sx, sy, sw, sh) = selected_node.rect
+  let (tx, ty, tw, th) = target_node.rect
+  let spx = sx + sw / 2.0
+  let spy = sy + sh / 2.0
+  let tpx = tx + tw / 2.0
+  let tpy = ty + th / 2.0
+  assert_eq(t.drawn_glass().length(), 0, msg="\{label}: rest before selected hold must have 0 glass")
+  // Press on already-selected segment and hold past ctrl_seg_hold_ms (200ms) to lift the clear lens.
+  t.press_at(spx, spy)
+  t.run_for(seg_hold_wait_ms + part_whole_ms)
   let glass = t.drawn_glass()
   if solid {
-    assert_eq(glass.length(), 0, msg="\{label}: solid must have 0 glass while pressed")
-    if !label.has_prefix("tabs_node(Underline)") {
-      assert_true(has_lifted_thumb(), msg="\{label}: solid must keep opaque lifted thumb while pressed")
-    }
+    assert_eq(glass.length(), 0, msg="\{label}: solid must have 0 glass while held")
+    let lifted = @ui.tree_theme().lifted
+    let raised = theme().p.raised
+    let opaque_thumbs = t.drawn_rects().filter(fn(r) { (r.4 == lifted || r.4 == raised) && r.2 > 10.0 && r.3 > 10.0 })
+    assert_true(opaque_thumbs.length() >= 1, msg="\{label}: solid held frame must still draw opaque thumb")
   } else {
-    assert_eq(glass.length(), 1, msg="\{label}: pressed must draw exactly 1 glass lens, got \{Repr(glass)}")
-    assert_eq(glass[0].4, 6, msg="\{label}: glass lens must be kind == 6 liquid glass")
+    assert_eq(glass.length(), 1, msg="\{label}: holding selected must draw 1 glass lens, got \{Repr(glass)}")
+    assert_eq(glass[0].4, 6, msg="\{label}: glass lens must be kind == 6")
     let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
-    assert_eq(lenses.length(), 1, msg="\{label}: pressed must emit 1 kind == 6 instance")
+    assert_eq(lenses.length(), 1, msg="\{label}: must emit 1 kind == 6 instance")
     assert_eq(lenses[0][14], 0.0, msg="\{label}: clear lens must have blur == 0")
-    assert_true((lenses[0][7] - -48.0).abs() < 0.01, msg="\{label}: segmented lens must emit droplet_role=3 (slot 7 == -48.0), got \{lenses[0][7]}")
+    assert_true((lenses[0][7] - -48.0).abs() < 0.01, msg="\{label}: segmented lens must emit droplet_role=3, got \{lenses[0][7]}")
     assert_true(lenses[0][21] > 0.0, msg="\{label}: clear lens must have refraction > 0")
     let p_press = lenses[0][12]
     assert_true(
@@ -54,26 +84,25 @@ fn seg_glass_assert_cycle(
       msg="\{label}: segmented lens must emit chroma == 0.04 * p (p=\{p_press}), got \{lenses[0][22]}",
     )
   }
-  let pressed_audits = t.audit()
-  assert_eq(pressed_audits, [], msg="\{label}: pressed audit: \{Repr(pressed_audits)}")
-
-  // 3. Release and settle back to rest.
-  t.release(px, py)
+  assert_eq(t.audit(), [], msg="\{label}: held audit")
+  // Drag horizontally to target and release -> switches selection and settles back to 0 glass.
+  t.move_to(tpx, tpy)
+  t.run_for(part_whole_ms / 2.0)
+  t.release(tpx, tpy)
   t.run_for(@ui.move_most_ms)
   assert_eq(t.drawn_glass().length(), 0, msg="\{label}: settled must return to 0 glass")
-  assert_true(verify_selected(), msg="\{label}: release must switch selection")
-  let settled_audits = t.audit()
-  assert_eq(settled_audits, [], msg="\{label}: settled audit: \{Repr(settled_audits)}")
+  assert_true(verify_selected(), msg="\{label}: drag release must switch selection")
+  assert_eq(t.audit(), [], msg="\{label}: settled audit")
 }
 
 ///|
-test "seg_node: clear liquid glass lens on press in light/dark, solid, and reduced_motion" {
+test "seg_node: mouse tap 0-lens and selected hold/drag lens in light/dark, solid, and reduced_motion" {
   for dark in [false, true] {
     for mode in [0, 1, 2] {
       let solid = mode == 1
       let reduced = mode == 2
       let chosen = @signals.signal(0)
-      let t = @ui.Tester::new(fn(_c) {  }, w=420.0, h=200.0, dark~, platform=0)
+      let t = @ui.Tester::new(fn(_c) {  }, w=420.0, h=200.0, dark~, platform=0, pointing=Mouse, native=Mouse)
       set_dark(Some(dark))
       @ui.set_glass_solid(if solid { Some(true) } else { None })
       if reduced {
@@ -91,8 +120,17 @@ test "seg_node: clear liquid glass lens on press in light/dark, solid, and reduc
         theme=ui_theme_now,
       )
       t.draw()
-      let target = t.get(Radio, label="30 天")
-      seg_glass_assert_cycle(t, target, fn() { chosen.get() == 2 }, solid, "seg_node dark=\{dark} mode=\{mode}")
+      let opt0 = t.get(Radio, label="今天")
+      let opt2 = t.get(Radio, label="30 天")
+      seg_glass_assert_mouse_tap_zero_lens(t, opt2, fn() { chosen.get() == 2 }, "seg_node tap dark=\{dark} mode=\{mode}")
+      seg_glass_assert_selected_hold_drag_lens(
+        t,
+        opt2,
+        opt0,
+        fn() { chosen.get() == 0 },
+        solid,
+        "seg_node drag dark=\{dark} mode=\{mode}",
+      )
       @ui.set_glass_solid(None)
     }
   }
@@ -100,13 +138,13 @@ test "seg_node: clear liquid glass lens on press in light/dark, solid, and reduc
 }
 
 ///|
-test "seg_icons_node: clear liquid glass lens on press in light/dark, solid, and reduced_motion" {
+test "seg_icons_node: mouse tap 0-lens and selected hold/drag lens in light/dark, solid, and reduced_motion" {
   for dark in [false, true] {
     for mode in [0, 1, 2] {
       let solid = mode == 1
       let reduced = mode == 2
       let chosen = @signals.signal("list")
-      let t = @ui.Tester::new(fn(_c) {  }, w=420.0, h=200.0, dark~, platform=0)
+      let t = @ui.Tester::new(fn(_c) {  }, w=420.0, h=200.0, dark~, platform=0, pointing=Mouse, native=Mouse)
       set_dark(Some(dark))
       @ui.set_glass_solid(if solid { Some(true) } else { None })
       if reduced {
@@ -152,25 +190,27 @@ test "seg_icons_node: clear liquid glass lens on press in light/dark, solid, and
       )
       if mode == 0 {
         t.press_at(acx, acy)
-        t.run_for(part_whole_ms)
+        t.run_for(seg_hold_wait_ms + part_whole_ms)
         let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
-        assert_eq(lenses.length(), 1, msg="seg_icons_node pressed lens count")
+        assert_eq(lenses.length(), 1, msg="seg_icons_node held selected lens count")
         let lcx = lenses[0][0] + lenses[0][2] / 2.0
         let lcy = lenses[0][1] + lenses[0][3] / 2.0
         assert_true(
           (lcx - acx).abs() < 0.5 && (lcy - acy).abs() < 0.5,
-          msg="seg_icons_node pressed lens center (\{lcx}, \{lcy}) must match active option center (\{acx}, \{acy})",
+          msg="seg_icons_node held lens center (\{lcx}, \{lcy}) must match active option center (\{acx}, \{acy})",
         )
         t.release(acx, acy)
         t.run_for(@ui.move_most_ms)
       }
       let target = t.get(Radio, label="看板")
-      seg_glass_assert_cycle(
+      seg_glass_assert_mouse_tap_zero_lens(t, target, fn() { chosen.get() == "grid" }, "seg_icons_node tap dark=\{dark} mode=\{mode}")
+      seg_glass_assert_selected_hold_drag_lens(
         t,
         target,
-        fn() { chosen.get() == "grid" },
+        active,
+        fn() { chosen.get() == "list" },
         solid,
-        "seg_icons_node dark=\{dark} mode=\{mode}",
+        "seg_icons_node drag dark=\{dark} mode=\{mode}",
       )
       @ui.set_glass_solid(None)
     }
@@ -179,7 +219,7 @@ test "seg_icons_node: clear liquid glass lens on press in light/dark, solid, and
 }
 
 ///|
-test "seg_fill_node: clear liquid glass lens on mouse press in light/dark, solid, and reduced_motion" {
+test "seg_fill_node: mouse tap 0-lens and selected hold/drag lens in light/dark, solid, and reduced_motion" {
   for dark in [false, true] {
     for mode in [0, 1, 2] {
       let solid = mode == 1
@@ -203,13 +243,16 @@ test "seg_fill_node: clear liquid glass lens on mouse press in light/dark, solid
         theme=ui_theme_now,
       )
       t.draw()
-      let target = t.get(Radio, label="深色")
-      seg_glass_assert_cycle(
+      let opt0 = t.get(Radio, label="系统")
+      let opt2 = t.get(Radio, label="深色")
+      seg_glass_assert_mouse_tap_zero_lens(t, opt2, fn() { chosen.get() == 2 }, "seg_fill_node tap dark=\{dark} mode=\{mode}")
+      seg_glass_assert_selected_hold_drag_lens(
         t,
-        target,
-        fn() { chosen.get() == 2 },
+        opt2,
+        opt0,
+        fn() { chosen.get() == 0 },
         solid,
-        "seg_fill_node dark=\{dark} mode=\{mode}",
+        "seg_fill_node drag dark=\{dark} mode=\{mode}",
       )
       @ui.set_glass_solid(None)
     }
@@ -218,13 +261,13 @@ test "seg_fill_node: clear liquid glass lens on mouse press in light/dark, solid
 }
 
 ///|
-test "tabs_node(Pill): clear liquid glass lens on press in light/dark, solid, and reduced_motion; Underline stays glass-free" {
+test "tabs_node(Pill): mouse tap 0-lens and selected hold/drag lens; Underline stays glass-free" {
   for dark in [false, true] {
     for mode in [0, 1, 2] {
       let solid = mode == 1
       let reduced = mode == 2
       let chosen = @signals.signal("a")
-      let t = @ui.Tester::new(fn(_c) {  }, w=480.0, h=240.0, dark~, platform=0)
+      let t = @ui.Tester::new(fn(_c) {  }, w=480.0, h=240.0, dark~, platform=0, pointing=Mouse, native=Mouse)
       set_dark(Some(dark))
       @ui.set_glass_solid(if solid { Some(true) } else { None })
       if reduced {
@@ -250,20 +293,23 @@ test "tabs_node(Pill): clear liquid glass lens on press in light/dark, solid, an
         theme=ui_theme_now,
       )
       t.draw()
-      let target = t.get(Tab, label="任务")
-      seg_glass_assert_cycle(
+      let opt_a = t.get(Tab, label="概览")
+      let opt_c = t.get(Tab, label="任务")
+      seg_glass_assert_mouse_tap_zero_lens(t, opt_c, fn() { chosen.get() == "c" }, "tabs_node(Pill) tap dark=\{dark} mode=\{mode}")
+      seg_glass_assert_selected_hold_drag_lens(
         t,
-        target,
-        fn() { chosen.get() == "c" },
+        opt_c,
+        opt_a,
+        fn() { chosen.get() == "a" },
         solid,
-        "tabs_node(Pill) dark=\{dark} mode=\{mode}",
+        "tabs_node(Pill) drag dark=\{dark} mode=\{mode}",
       )
       @ui.set_glass_solid(None)
     }
   }
   // Underline variant must never mount a glass lens on press.
   let chosen = @signals.signal("a")
-  let t = @ui.Tester::new(fn(_c) {  }, w=480.0, h=240.0, dark=false, platform=0)
+  let t = @ui.Tester::new(fn(_c) {  }, w=480.0, h=240.0, dark=false, platform=0, pointing=Mouse, native=Mouse)
   set_dark(Some(false))
   @ui.set_view_app(
     fn(root) {
@@ -286,12 +332,12 @@ test "tabs_node(Pill): clear liquid glass lens on press in light/dark, solid, an
   )
   t.draw()
   let target = t.get(Tab, label="任务")
-  seg_glass_assert_cycle(t, target, fn() { chosen.get() == "b" }, true, "tabs_node(Underline)")
+  seg_glass_assert_mouse_tap_zero_lens(t, target, fn() { chosen.get() == "b" }, "tabs_node(Underline)")
   set_dark(None)
 }
 
 ///|
-test "seg_node (each_own=true): pressing unselected option moves lens onto pressed option, mouse drag switches with laid == 0, and keyboard switch keeps 0 glass" {
+test "seg_node (each_own=true): dragging from selected lifts lens with laid == 0; mouse press on unselected keeps 0 lens; keyboard keeps 0 glass" {
   let chosen = @signals.signal(1)
   let t = @ui.Tester::new(fn(_c) {  }, w=460.0, h=200.0, dark=false, platform=0, pointing=Mouse, native=Mouse)
   set_dark(Some(false))
@@ -324,16 +370,18 @@ test "seg_node (each_own=true): pressing unselected option moves lens onto press
     let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
     (lenses.length(), if lenses.is_empty() { -1.0 } else { lenses[0][0] + lenses[0][2] / 2.0 })
   }
-  // 1. Press unselected "本机" while "所有 station" is selected -> lens must move onto "本机".
+  // 1. Pressing unselected "本机" keeps 0 glass; dragging away cancels with 0 commit.
   t.press_at(c0x, cy)
   t.run_for(part_whole_ms)
-  let (n_hold, hold_cx) = lens_center()
-  assert_eq(n_hold, 1, msg="holding unselected seg_node must show 1 clear glass lens")
-  assert_true(
-    (hold_cx - c0x).abs() < 4.0,
-    msg="lens center \{hold_cx} must move onto pressed 本机 (\{c0x}), not stay on 所有 station (\{c1x})",
-  )
-  // 2. Drag continuously to midpoint and back to "所有 station" with zero relayout.
+  assert_eq(lens_center().0, 0, msg="holding unselected seg_node with mouse must keep 0 glass")
+  t.move_to(c1x, cy)
+  t.release(c1x, cy)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(chosen.get(), 1, msg="dragging off unselected option must not commit")
+  // 2. Drag from selected "所有 station" to midpoint and back with zero relayout.
+  t.press_at(c1x, cy)
+  t.run_for(seg_hold_wait_ms + part_whole_ms)
+  assert_eq(lens_center().0, 1, msg="holding selected seg_node must lift 1 clear glass lens")
   t.tree_frames_from_now()
   t.move_to(mid_x, cy)
   t.run_for(part_whole_ms / 2.0)
@@ -353,9 +401,8 @@ test "seg_node (each_own=true): pressing unselected option moves lens onto press
   assert_eq(chosen.get(), 1, msg="releasing on 所有 station keeps 1")
   assert_eq(t.drawn_glass().length(), 0, msg="settled after drag must have 0 glass")
   assert_eq(t.audit(), [])
-  // 3. Drag from "所有 station" to "本机" and release -> switches to 0.
+  // 3. Drag from selected "所有 station" to "本机" and release -> switches to 0.
   t.press_at(c1x, cy)
-  t.run_for(part_whole_ms / 2.0)
   t.move_to(mid_x, cy)
   t.run_for(part_whole_ms / 2.0)
   t.move_to(c0x, cy)
@@ -378,7 +425,7 @@ test "seg_node (each_own=true): pressing unselected option moves lens onto press
 }
 
 ///|
-test "seg_icons_node: pressing unselected icon moves lens onto pressed icon and mouse drag switches" {
+test "seg_icons_node: mouse tap switches with 0 lens and dragging from selected lifts lens and switches" {
   let chosen = @signals.signal("grid")
   let t = @ui.Tester::new(fn(_c) {  }, w=420.0, h=200.0, dark=false, platform=0, pointing=Mouse, native=Mouse)
   set_dark(Some(false))
@@ -414,17 +461,14 @@ test "seg_icons_node: pressing unselected icon moves lens onto pressed icon and 
   let cy = r0.1 + r0.3 / 2.0
   t.press_at(c0x, cy)
   t.run_for(part_whole_ms)
-  let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
-  assert_eq(lenses.length(), 1)
-  let hold_cx = lenses[0][0] + lenses[0][2] / 2.0
-  assert_true((hold_cx - c0x).abs() < 4.0, msg="seg_icons_node lens \{hold_cx} must move onto pressed 列表 (\{c0x})")
+  assert_eq(t.drawn_glass().length(), 0, msg="mouse press on unselected icon must keep 0 lens")
   t.release(c0x, cy)
   t.run_for(@ui.move_most_ms)
   assert_eq(chosen.get(), "list")
   t.press_at(c0x, cy)
-  t.run_for(part_whole_ms / 2.0)
   t.move_to(c1x, cy)
   t.run_for(part_whole_ms / 2.0)
+  assert_eq(t.drawn_instances().filter(fn(i) { i[5] == 6.0 }).length(), 1, msg="drag from selected icon must lift 1 lens")
   t.release(c1x, cy)
   t.run_for(@ui.move_most_ms)
   assert_eq(chosen.get(), "grid")
@@ -434,7 +478,7 @@ test "seg_icons_node: pressing unselected icon moves lens onto pressed icon and 
 }
 
 ///|
-test "tabs_node(Pill): pressing unselected tab moves lens onto pressed tab and mouse drag switches" {
+test "tabs_node(Pill): mouse tap switches with 0 lens and dragging from selected lifts lens and switches" {
   let chosen = @signals.signal("c")
   let t = @ui.Tester::new(fn(_c) {  }, w=480.0, h=240.0, dark=false, platform=0, pointing=Mouse, native=Mouse)
   set_dark(Some(false))
@@ -460,27 +504,40 @@ test "tabs_node(Pill): pressing unselected tab moves lens onto pressed tab and m
   t.draw()
   let r0 = t.get(Tab, label="概览").rect
   let r1 = t.get(Tab, label="文件").rect
+  let r2 = t.get(Tab, label="任务").rect
   let c0x = r0.0 + r0.2 / 2.0
   let c1x = r1.0 + r1.2 / 2.0
+  let c2x = r2.0 + r2.2 / 2.0
   let cy = r0.1 + r0.3 / 2.0
+  // Mouse press on unselected "概览" stays 0 glass and switches on release.
   t.press_at(c0x, cy)
   t.run_for(part_whole_ms)
-  let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
-  assert_eq(lenses.length(), 1)
-  let hold_cx = lenses[0][0] + lenses[0][2] / 2.0
-  assert_true((hold_cx - c0x).abs() < 4.0, msg="tabs_node(Pill) lens \{hold_cx} must move onto pressed 概览 (\{c0x})")
+  assert_eq(t.drawn_glass().length(), 0)
+  t.release(c0x, cy)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(chosen.get(), "a")
+  // Drag from now-selected "概览" to "文件" lifts lens and switches.
+  t.press_at(c0x, cy)
   t.move_to(c1x, cy)
   t.run_for(part_whole_ms / 2.0)
+  assert_eq(t.drawn_instances().filter(fn(i) { i[5] == 6.0 }).length(), 1)
   t.release(c1x, cy)
   t.run_for(@ui.move_most_ms)
   assert_eq(chosen.get(), "b")
+  // Drag from "文件" to "任务" works too.
+  t.press_at(c1x, cy)
+  t.move_to(c2x, cy)
+  t.run_for(part_whole_ms / 2.0)
+  t.release(c2x, cy)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(chosen.get(), "c")
   assert_eq(t.drawn_glass().length(), 0)
   assert_eq(t.audit(), [])
   set_dark(None)
 }
 
 ///|
-test "seg_fill_node: mouse press on unselected option moves lens onto pressed option and mouse drag switches" {
+test "seg_fill_node: mouse tap switches with 0 lens and dragging from selected lifts lens and switches" {
   let chosen = @signals.signal(2)
   let t = @ui.Tester::new(fn(_c) {  }, w=420.0, h=200.0, dark=false, platform=0, pointing=Mouse, native=Mouse)
   set_dark(Some(false))
@@ -503,12 +560,14 @@ test "seg_fill_node: mouse press on unselected option moves lens onto pressed op
   let cy = r0.1 + r0.3 / 2.0
   t.press_at(c0x, cy)
   t.run_for(part_whole_ms)
-  let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
-  assert_eq(lenses.length(), 1)
-  let hold_cx = lenses[0][0] + lenses[0][2] / 2.0
-  assert_true((hold_cx - c0x).abs() < 4.0, msg="seg_fill_node mouse lens \{hold_cx} must move onto pressed 系统 (\{c0x})")
+  assert_eq(t.drawn_glass().length(), 0)
+  t.release(c0x, cy)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(chosen.get(), 0)
+  t.press_at(c0x, cy)
   t.move_to(c1x, cy)
   t.run_for(part_whole_ms / 2.0)
+  assert_eq(t.drawn_instances().filter(fn(i) { i[5] == 6.0 }).length(), 1)
   t.release(c1x, cy)
   t.run_for(@ui.move_most_ms)
   assert_eq(chosen.get(), 1)

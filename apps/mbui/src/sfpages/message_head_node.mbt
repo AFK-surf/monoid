@@ -246,7 +246,16 @@ fn elsewhere_route_node(v : @view.View, s : () -> Elsewhere) -> Unit {
       r,
       fn() { place().0 },
       fn() { place().1 },
-      fn(hot) { if hot { route_place_hot } else { route_place } },
+      fn(hot) {
+        let (_, _, url, app) = place()
+        if hot {
+          route_place_hot
+        } else if url != "" || app != "" {
+          route_place_link
+        } else {
+          route_place
+        }
+      },
       route_place_words,
       mark=route_mark,
       press=Some(fn() {

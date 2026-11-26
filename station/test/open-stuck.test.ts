@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { sessionKey } from "../src/sessions/hub.ts";
-import { type FakeDriver, Rig, message, reply, settle, testClock } from "./hub-fakes.ts";
+import { type FakeDriver, Rig, message, reply, say, settle, testClock } from "./hub-fakes.ts";
 
 const STOPPED = "已停止当前任务";
 const TIMED_OUT = "⚠️ 无法启动 agent：启动超时，回复即可重试";
@@ -296,6 +296,184 @@ test("a warm whose runtime never opens, with nothing waiting on it, says nothing
     assert.equal(stuck.asked, 1, "opened at once, not held");
   } finally {
     stuck.release();
+    await r.close();
+  }
+});
+
+for (const how of ["the app", "-stop"] as const) {
+  const stop = async (r: Rig, m: ReturnType<typeof message>, key: string) => {
+    if (how === "the app") await r.hub.stop(key);
+    else await r.accept(reply(m, "9999.5", "-stop"));
+  };
+
+  test(`a stop from ${how} during stuck warm clears pending messages, says stopped once, and unblocks next reply`, async () => {
+    const { r, stuck, m, key, first } = await idleSession();
+    try {
+      stuck.hold();
+      const warmed = r.hub.warm(key).catch(() => undefined);
+      await stuck.started;
+      const signal = stuck.signals.at(-1);
+      assert.ok(signal !== undefined && !signal.aborted, "warm open signal starts active");
+      await r.accept(reply(m, "9999.1", "warm-hello"));
+      assert.equal(r.store.hasPending(key), true);
+
+      const before = r.chat.texts().length;
+      await stop(r, m, key);
+      await settle();
+      await warmed;
+
+      assert.equal(r.store.hasPending(key), false);
+      assert.equal(r.session(key).running, false);
+      assert.equal(await phaseOf(r, key), null);
+      assert.deepEqual(r.chat.texts().slice(before), [STOPPED]);
+      assert.equal(signal.aborted, true, "warm open aborted immediately");
+
+      stuck.release();
+      await settle();
+      assert.ok(r.claude.last().disposed, "late warmed process disposed");
+      const handedHello = r.claude.sessions.flatMap((s) => [...s.prompts, ...s.steers]).some((p) => p.includes("warm-hello"));
+      assert.equal(handedHello, false, "cleared message must never reach runtime");
+
+      await r.accept(reply(m, "9999.2", "world"));
+      await settle();
+      const now = r.claude.last();
+      assert.ok(!now.disposed);
+      assert.equal(now.sessionId, first.sessionId);
+      const prompt = now.prompts.at(-1)!;
+      assert.ok(prompt.includes("world"), prompt);
+      assert.ok(!prompt.includes("warm-hello"), `cleared message stays out of later turn: ${prompt}`);
+    } finally {
+      stuck.release();
+      await r.close();
+    }
+  });
+}
+
+test("stop during stuck warm with nothing pending stays silent and unblocks next reply", async () => {
+  const { r, stuck, m, key, first } = await idleSession();
+  try {
+    stuck.hold();
+    const warmed = r.hub.warm(key).catch(() => undefined);
+    await stuck.started;
+    const before = r.chat.texts().length;
+    await r.hub.stop(key);
+    await settle();
+    await warmed;
+
+    assert.deepEqual(r.chat.texts().slice(before), []);
+    assert.equal(r.session(key).running, false);
+    assert.equal(r.store.hasPending(key), false);
+    assert.equal(await phaseOf(r, key), null);
+
+    stuck.release();
+    await settle();
+    assert.ok(r.claude.last().disposed);
+
+    await r.accept(reply(m, "9999.2", "world"));
+    await settle();
+    const now = r.claude.last();
+    assert.ok(!now.disposed);
+    assert.equal(now.sessionId, first.sessionId);
+    assert.ok(now.prompts.at(-1)!.includes("world"), now.prompts.at(-1));
+  } finally {
+    stuck.release();
+    await r.close();
+  }
+});
+
+test("message arriving right after stop during warm is not swallowed", async () => {
+  const { r, stuck, m, key } = await idleSession();
+  try {
+    stuck.hold();
+    const warmed = r.hub.warm(key).catch(() => undefined);
+    await stuck.started;
+    await r.accept(reply(m, "9999.1", "hello"));
+    assert.equal(r.store.hasPending(key), true);
+
+    const before = r.chat.texts().length;
+    const stopping = r.hub.stop(key);
+    await r.accept(reply(m, "9999.2", "after-stop"));
+    stuck.release();
+    await Promise.all([warmed, stopping]);
+    await settle();
+
+    assert.deepEqual(r.chat.texts().slice(before), [STOPPED]);
+    assert.equal(r.store.hasPending(key), false);
+    const now = r.claude.last();
+    assert.ok(!now.disposed);
+    const prompt = now.prompts.at(-1)!;
+    assert.ok(prompt.includes("after-stop"), `post-stop message must run: ${prompt}`);
+    assert.ok(!prompt.includes("hello"), `pre-stop message must stay cleared: ${prompt}`);
+  } finally {
+    stuck.release();
+    await r.close();
+  }
+});
+
+test("stop clears a session queued on maxConcurrentTurns without leaking pending messages", async () => {
+  const time = testClock();
+  await time.adjust(1_700_000_000_000);
+  const r = new Rig({ clock: time.clock, maxConcurrentTurns: 1 });
+  try {
+    const m1 = say("<@UBOT> active");
+    const m2 = say("<@UBOT> queued");
+    const [k1, k2] = [m1, m2].map((m) => sessionKey("cl", "C1", m.threadTs));
+    await r.accept(m1);
+    await r.accept(m2);
+    await settle();
+    assert.equal(r.hub.running(), 1);
+    assert.equal(r.claude.count(), 1);
+    assert.equal(r.store.hasPending(k2!), true);
+
+    const before = r.chat.texts().length;
+    await r.hub.stop(k2!);
+    await settle();
+    assert.equal(r.store.hasPending(k2!), false);
+    assert.equal(r.session(k2!).running, false);
+    assert.deepEqual(r.chat.texts().slice(before), [STOPPED]);
+
+    const s1 = r.claude.sessions[0]!;
+    await r.call(k1!, "chat_state", { kind: "all_done", done: "完成第一个任务" });
+    s1.complete();
+    await settle();
+    assert.equal(r.claude.count(), 1, "stopped queued session does not open when slot frees");
+
+    await r.accept(reply(m2, "9999.2", "after-queue-stop"));
+    await settle();
+    assert.equal(r.claude.count(), 2);
+    const prompt = r.claude.last().prompts.at(-1)!;
+    assert.ok(prompt.includes("after-queue-stop"), prompt);
+    assert.ok(!prompt.includes("queued"), prompt);
+  } finally {
+    await r.close();
+  }
+});
+
+test("stop after a failed start with no new message or queue hold keeps pending message for retry", async () => {
+  const time = testClock();
+  await time.adjust(1_700_000_000_000);
+  const r = new Rig({ clock: time.clock });
+  try {
+    r.claude.refuses = "runner refused to start";
+    const m = message({ text: "hello" });
+    await r.accept(m);
+    await settle();
+    const key = sessionKey("cl", "C1", m.threadTs);
+    assert.equal(r.store.hasPending(key), true);
+
+    const before = r.chat.texts().length;
+    await r.hub.stop(key);
+    await settle();
+    assert.deepEqual(r.chat.texts().slice(before), [], "no stopped notice when keeping failed start for retry");
+    assert.equal(r.store.hasPending(key), true, "failed-start message remains pending for retry");
+
+    r.claude.refuses = null;
+    await r.accept(reply(m, "9999.2", "world"));
+    await settle();
+    assert.equal(r.claude.count(), 1);
+    const prompt = r.claude.last().prompts.at(-1)!;
+    assert.ok(prompt.includes("hello") && prompt.includes("world"), prompt);
+  } finally {
     await r.close();
   }
 });

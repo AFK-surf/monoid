@@ -1,0 +1,328 @@
+// 1:1 port of `station/src/ops/files.ts`:
+// Data directory resolution, CLI flags/positionals, private atomic 0600 writes with rename retry,
+// coalescing `PrivateFile`, `now_secs`, and unreadable directory messages.
+
+import "base_codec"
+import "host_shim"
+import "nodepath"
+
+pub let RENAME_BACKOFF : Array[Int] = [20, 40, 80, 160]
+
+/// The value after `name` in `args`, wherever it is.
+pub fn flag(args : Array[String], name : String) -> Option[String] {
+  for i in 0..<args.length() {
+    if args[i] == name {
+      if i + 1 < args.length() {
+        return Some(args[i + 1])
+      }
+      return None
+    }
+  }
+  None
+}
+
+/// Whether `args` contains `name`.
+pub fn has_flag(args : Array[String], name : String) -> Bool {
+  for i in 0..<args.length() {
+    if args[i] == name {
+      return true
+    }
+  }
+  false
+}
+
+/// Whether an argument is a CLI flag (`^--[a-z][a-z-]{0,23}$`), not a value (like a base64url token starting with `--`).
+pub fn is_flag(a : String) -> Bool {
+  let n = a.length()
+  if n < 3 || n > 26 {
+    return false
+  }
+  if (a.code_unit_at(0) & 0xFF) != 45 || (a.code_unit_at(1) & 0xFF) != 45 {
+    return false
+  }
+  let c2 = a.code_unit_at(2) & 0xFF
+  if c2 < 97 || c2 > 122 {
+    return false
+  }
+  for i in 3..<n {
+    let c = a.code_unit_at(i) & 0xFF
+    if !((c >= 97 && c <= 122) || c == 45) {
+      return false
+    }
+  }
+  true
+}
+
+fn arr_contains_str(items : Array[String], target : String) -> Bool {
+  for i in 0..<items.length() {
+    if items[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+/// Positional arguments besides flags (`valued` flags consume the following arg).
+/// After a bare `--`, everything is kept as-is.
+pub fn positionals(args : Array[String], valued : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  let mut i = 0
+  while i < args.length() {
+    let a = args[i]
+    if a == "--" {
+      for j in (i + 1)..<args.length() {
+        out.push(args[j])
+      }
+      break
+    }
+    if !is_flag(a) {
+      out.push(a)
+    } else if arr_contains_str(valued, a) {
+      i = i + 1
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// The data directory: `--data`, else `env_data` (`$STILLFAIL_DATA`), else `<home>/.stillfail`.
+pub fn data_dir(
+  args : Array[String],
+  env_data : Option[String],
+  home : String,
+  sep : String = "/",
+) -> String {
+  match flag(args, "--data") {
+    Some(d) => if d != "" { return d }
+    None => ()
+  }
+  match env_data {
+    Some(d) => if d != "" { return d }
+    None => ()
+  }
+  nodepath::join(sep, [home, ".stillfail"])
+}
+
+/// Whether `data` is the machine's own data directory (`~/.stillfail`).
+pub fn own_data(data : String, home : String, is_win : Bool = false) -> Bool {
+  let sep = if is_win { "\\" } else { "/" }
+  let default_dir = nodepath::join(sep, [home, ".stillfail"])
+  let k1 = platform_path_key(is_win, platform_path_clean(is_win, default_dir))
+  let k2 = platform_path_key(is_win, platform_path_clean(is_win, data))
+  k1 == k2
+}
+
+/// Where the MCP endpoint's port is remembered (`<data>/run/mcp.json`).
+pub fn mcp_port_file(data : String, sep : String = "/") -> String {
+  nodepath::join(sep, [data, "run", "mcp.json"])
+}
+
+/// Read the remembered MCP port (1..65535), or `None`.
+pub fn remembered_mcp_port(fs : OpsFs, data : String, sep : String = "/") -> Option[Int] {
+  match fs.read_text(mcp_port_file(data, sep)) {
+    Ok(text) => match base_codec::json_parse(text) {
+      base_codec::JsonParseResult::Ok(v) => match base_codec::json_get(v, "port") {
+        Some(base_codec::Json::Num(d, _)) => {
+          let p = d.to_int()
+          if p.to_double() == d && p > 0 && p < 65536 {
+            Some(p)
+          } else {
+            None
+          }
+        }
+        _ => None
+      }
+      _ => None
+    }
+    Err(_) => None
+  }
+}
+
+/// The ports to try, in order, for a listener of the station's own (no launcher).
+pub fn ports_to_try(
+  named : Option[Int],
+  remembered : Option[Int],
+  usual : Int,
+  own : Bool,
+) -> Array[Int] {
+  match named {
+    Some(p) => return [p]
+    None => ()
+  }
+  let out : Array[Int] = []
+  let push_unique = fn(p : Int) -> Unit {
+    for i in 0..<out.length() {
+      if out[i] == p {
+        return
+      }
+    }
+    out.push(p)
+  }
+  match remembered {
+    Some(p) => push_unique(p)
+    None => ()
+  }
+  if own {
+    push_unique(usual)
+  }
+  push_unique(0)
+  out
+}
+
+/// Rename `from` to `to`, retrying on transient lock errors (`EPERM`, `EBUSY`, `EACCES`)
+/// across `backoff` delays (in ms).
+pub fn rename_retrying(
+  fs : OpsFs,
+  from : String,
+  to : String,
+  wait : (Int) -> Unit,
+  backoff : Array[Int] = RENAME_BACKOFF,
+) -> Result[Unit, FsErr] {
+  let mut attempt = 0
+  while true {
+    match (fs.rename)(from, to) {
+      Ok(_) => return Ok(())
+      Err(e) => {
+        if attempt >= backoff.length() || !fs_err_is_transient_rename(e) {
+          return Err(e)
+        }
+        wait(backoff[attempt])
+        attempt = attempt + 1
+      }
+    }
+  }
+  Ok(())
+}
+
+/// Write `data` atomically to `path` with mode 0600: write to `<path>.<pid>.<seq>.tmp`
+/// and rename into place (retrying transient lock errors), removing temp file on failure.
+pub fn write_private(
+  fs : OpsFs,
+  path : String,
+  data : Bytes,
+  pid : Int,
+  seq : Int,
+  wait : (Int) -> Unit = fn(_ms : Int) -> Unit { () },
+  sep : String = "/",
+) -> Result[Unit, FsErr] {
+  let dir = nodepath::dirname(sep, path)
+  if dir != "" && dir != "." && dir != path {
+    match (fs.mkdir_p)(dir) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  let tmp = path + "." + pid.to_string() + "." + seq.to_string() + ".tmp"
+  match (fs.write_bytes)(tmp, data, 384) {
+    Ok(_) => ()
+    Err(e) => {
+      let _ = (fs.remove)(tmp)
+      return Err(e)
+    }
+  }
+  match rename_retrying(fs, tmp, path, wait) {
+    Ok(_) => Ok(())
+    Err(e) => {
+      let _ = (fs.remove)(tmp)
+      Err(e)
+    }
+  }
+}
+
+/// Coalescing private file writer: keeps only the latest pending payload and writes
+/// atomically with mode 0600 on flush.
+pub struct PrivateFile {
+  pub path : String
+  pub fs : OpsFs
+  pub pid : Int
+  pub mut seq : Int
+  pub mut latest : Option[Bytes]
+  pub mut writing : Bool
+}
+
+pub fn PrivateFile::new(fs : OpsFs, path : String, pid : Int = 0) -> PrivateFile {
+  PrivateFile::{
+    path: path,
+    fs: fs,
+    pid: pid,
+    seq: 0,
+    latest: None,
+    writing: false,
+  }
+}
+
+pub fn PrivateFile::enqueue(self : PrivateFile, data : Bytes) -> Unit {
+  self.latest = Some(data)
+}
+
+pub fn PrivateFile::flush(
+  self : PrivateFile,
+  wait : (Int) -> Unit = fn(_ms : Int) -> Unit { () },
+) -> Result[Bool, FsErr] {
+  if self.writing {
+    return Ok(false)
+  }
+  self.writing = true
+  let mut wrote = false
+  while true {
+    match self.latest {
+      None => break
+      Some(data) => {
+        self.latest = None
+        self.seq = self.seq + 1
+        match write_private(self.fs, self.path, data, self.pid, self.seq, wait) {
+          Ok(_) => {
+            wrote = true
+          }
+          Err(e) => {
+            self.writing = false
+            return Err(e)
+          }
+        }
+      }
+    }
+  }
+  self.writing = false
+  Ok(wrote)
+}
+
+/// Seconds since Unix epoch from a wall-clock millisecond timestamp.
+pub fn now_secs_from_ms(ms : Int64) -> Int64 {
+  ms / 1000.to_int64()
+}
+
+/// Current Unix timestamp in whole seconds (machine wall clock).
+pub fn now_secs() -> Int64 {
+  now_secs_from_ms(host_shim::wall_ms())
+}
+
+/// Message shown when an agent's directory is unreadable (`unreadableDirMessage`).
+pub fn unreadable_dir_message(
+  lang : Lang,
+  dir : String,
+  argv : Array[String],
+  has_folder_permissions : Bool,
+  product : Product = stillfail_product(),
+  sep : String = "/",
+) -> String {
+  if !has_folder_permissions {
+    return tr_with_product(lang, product, "station.session.cwdDenied", [("cwd", dir)])
+  }
+  let app = flag(argv, "--app")
+  let program = if has_flag(argv, "--with-parent") {
+    "still.fail"
+  } else {
+    match app {
+      Some(a) => if a == "" {
+        "still.fail"
+      } else {
+        nodepath::join(sep, [a, "mesh", "target", "release", "stillfail-station"])
+      }
+      None => "still.fail"
+    }
+  }
+  tr_with_product(lang, product, "station.session.cwdDeniedMac", [
+    ("cwd", dir),
+    ("program", program),
+  ])
+}

@@ -223,20 +223,36 @@ fn rail_gear(src : Source) -> Unit {
   if lit == "settings" && wide.crowded {
     wide.peeking.set(!wide.peeking.get())
   } else if lit == "settings" {
-    @sfbase.history_push()
-    while app.nav.depth() > 1 {
-      if !app.nav.pop() {
-        break
+    let dest = match app.nav.pages().get(0) {
+      Some(Home) =>
+        match @sfbase.workspace_in_view(src).0 {
+          Some(w) if @sfbase.board_on_of(src, w.id) => "board"
+          _ => "chats"
+        }
+      Some(Files | Drive(_)) => "files"
+      Some(Archived) => "archive"
+      Some(Place(p)) => p
+      _ => "chats"
+    }
+    @sfbase.history_act(fn() {
+      while app.nav.depth() > 1 {
+        if !app.nav.pop() {
+          break
+        }
       }
-    }
-    wide.landed.set("")
-    match @sfbase.workspace_in_view(src).0 {
-      Some(w) => land_chat(src, w)
-      None => ()
-    }
+      wide.landed.set("")
+      match @sfbase.workspace_in_view(src).0 {
+        Some(w) => land_chat(src, w)
+        None => ()
+      }
+    })
+    let target_serial = if app.nav.top() is Home && dest != "board" { None } else { Some(app.nav.top_stay().0) }
+    @sfbase.bar_placed_wide("settings", dest, target_serial?)
   } else {
+    let from = if app.nav.pages().contains(Archived) { "archive" } else { lit }
     open_settings()
     wide.peek_next.set(wide.crowded)
+    @sfbase.bar_placed_wide(from, "settings", target_serial=app.nav.top_stay().0)
   }
 }
 
@@ -899,8 +915,8 @@ fn rail_workspaces_node(
               square=true,
               lit=false,
               fn(k) {
-                // a letter's square: ringed at rest (an outlined control's hairline, Border pointed at), never the
-                // pointer's ground, so resting and pointed at read apart; a mark stands on nothing. The ring a box of
+                // a letter's square: bare at rest as the switcher's rows have it, ringed only pointed at (an outlined
+                // control's hairline in Border), never the pointer's ground; a mark stands on nothing. The ring a box of
                 // its own under what is hung on its corner (an edge is drawn over what its node holds), as round as
                 // the square it fills: linked again, it would follow the window's corner as if it stood apart.
                 k.sq.box(fn(ring) {
@@ -908,10 +924,10 @@ fn rail_workspaces_node(
                   @sf.style_node(ring, fn() { rail_sq })
                   ring.radius(By(fn() { rail_drawn_corner(at().bar) })) |> ignore
                   ring.edge(By(fn() {
-                    if marked() {
+                    if marked() || !@sf.lit_node(k.sq) {
                       (0.0, 0L)
                     } else {
-                      @sf.control_edge(hot=@sf.lit_node(k.sq))
+                      @sf.control_edge(hot=true)
                     }
                   }))
                   |> ignore

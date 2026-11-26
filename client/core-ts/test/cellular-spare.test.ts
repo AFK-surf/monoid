@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { observe } from "../src/reactive.ts";
+import { transcriptOf } from "../src/station/channel-kinds.ts";
 import { apply, call, subscribe, v } from "./helpers.ts";
 import { base, session, started, stationReplies, status } from "./station-fixture.ts";
 
@@ -110,6 +111,57 @@ test("cellular network spares unopened live streams, skips unopened transcript w
     s.core.close();
   }
 });
+
+for (const [name, keep, replacement] of [
+  ["replaces two items without changing the length", 1, ["new middle", "new last"]],
+  ["cuts the last item", 2, []],
+  ["cuts the whole transcript", 0, []],
+] as const) {
+  test(`opening a chat after the station ${name} while its transcript is spared`, async () => {
+    const original = ["first", "old middle", "old last"];
+    const steps = (texts: readonly string[]) => texts.map((text) => ({ kind: "step", text }));
+    let timeline = steps(original);
+    let reads = 0;
+    const s = await started(threeSessions(), 0, undefined, (f) => {
+      f.gate.marks = true;
+      f.gate.resumes = true;
+      stationReplies(f.host, (req) => {
+        const url = new URL(req.url);
+        if (!url.pathname.endsWith("/sessions/k2/timeline")) return undefined;
+        reads++;
+        const after = url.searchParams.get("after");
+        const from = after !== null ? Number(after) + 1 : Number(url.searchParams.get("from") ?? 0);
+        return { start: from, end: timeline.length, entries: timeline.slice(from) };
+      });
+    });
+    const ui = s.core.connect();
+    const held = () => [...s.core.inner.data.logRange("transcript", S, "k2", 0, 2).values()];
+    try {
+      await s.host.time.pass(500, 10);
+      assert.deepEqual(held(), steps(original));
+      s.core.inner.data.raiseTranscript(S, "k2", original.length);
+      const pending = s.core.inner.stations.channels.batched(transcriptOf(S, "k2"));
+      assert.ok(pending);
+      assert.match(pending.path, /after=2/);
+      call(s.core, ui, 1, "client.network", { cellular: true });
+      await s.host.time.pass(500, 10);
+      const before = reads;
+      timeline = steps([...original.slice(0, keep), ...replacement]);
+      s.push("live", { key: "k2", type: "timeline", start: keep, entries: steps(replacement) });
+      await s.host.time.pass(500, 10);
+      assert.equal(reads, before, "spared transcripts do not make a network request");
+      const cached = held();
+      assert.deepEqual(cached, steps(original.slice(0, cached.length)), "new items wait until open");
+      subscribe(s.core, ui, 2, { topic: "live", station: S, key: "k2" });
+      await s.host.time.pass(2_000, 40);
+      assert.deepEqual(held(), timeline);
+      pending.took({ _tag: "Success", success: { start: 3, end: 4, entries: steps(["outdated reply"]) } });
+      assert.deepEqual([...s.core.inner.data.logRange("transcript", S, "k2", 0, 3).values()], timeline);
+    } finally {
+      s.core.close();
+    }
+  });
+}
 
 // A session's steps keep coming while its transcript is not taken here (spared on cellular while its stream follows
 // every session, as with stationRates in use; or let go for room). What is held stays where it was, so the steps that

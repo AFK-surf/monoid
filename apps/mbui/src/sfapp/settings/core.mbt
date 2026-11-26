@@ -23,6 +23,8 @@ pub impl Eq for Read with equal(a, b) {
 pub(all) struct Core {
   /// the topic `name` with its params (the core's `subscribe`)
   topic : (String, Map[String, Json]) -> @signals.Computed[Read]
+  /// the core's lifetime generation and whether a retained topic value came from it; does not acquire the topic
+  generation : (String, Map[String, Json]) -> (Int, Bool)
   /// a call to the core, its answer or its error to `done`
   call : (String, Json, (Result[Json, Json]) -> Unit) -> Unit
   /// a page pushed over this one
@@ -603,6 +605,7 @@ pub fn reset() -> Unit {
   notify_switched.set(None)
   connects_mine.val = false
   chosen.clear()
+  chosen_seq.clear()
   features_reset()
   builtin_open.clear()
   panels_core.set(None)
@@ -769,7 +772,13 @@ fn int_of(s : String, or_else : Int) -> Int {
 /// `core` as what a page will show is drawn over it in its bones (@sf.waiting's `sample`: made of made-up words): its
 /// topics say nothing and its calls are never answered, so what is only shown asks the real core for nothing.
 pub fn Core::quiet(self : Core) -> Core {
-  { ..self, topic: fn(_, _) { @signals.computed(fn(_) { { value: None, error: None, version: 0 } }) }, call: fn(_, _, _) {  }, picture: fn(_, _) { "" } }
+  {
+    ..self,
+    topic: fn(_, _) { @signals.computed(fn(_) { { value: None, error: None, version: 0 } }) },
+    generation: fn(_, _) { (0, true) },
+    call: fn(_, _, _) {  },
+    picture: fn(_, _) { "" },
+  }
 }
 
 ///|

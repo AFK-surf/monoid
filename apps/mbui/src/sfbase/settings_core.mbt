@@ -72,6 +72,7 @@ fn settings_core_of(
         if held_building.val { Some(read()) } else { None }
       }))
     },
+    generation: src.generation,
     call: fn(name, params, done) { (src.call)(name, params, done) },
     push: fn(r) {
       match r {

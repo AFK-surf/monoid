@@ -27,6 +27,12 @@ pub let clear : Int64
 
 pub fn colors() -> Colors
 
+pub fn ctrl_seg_embedded_track_ink() -> Int64
+
+pub let ctrl_seg_held_scale : Double
+
+pub let ctrl_seg_hold_ms : Double
+
 pub let dark : Colors
 
 #callsite(autofill(loc))
@@ -118,6 +124,9 @@ pub fn liquid_scroll_edge_node(@view.View, (@view.View) -> Double, (@view.View) 
 #callsite(autofill(loc))
 pub fn liquid_segmented_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, width? : Double, height? : Double, drag? : DampedDrag, glass_track? : Bool, pad? : Double, gap? : Double, widths? : () -> Array[Double], height_by? : () -> Double, text_size? : () -> Double, kind? : @headless.GroupKind, said? : String, shown? : () -> Bool, in_node? : Bool, render_item? : (@view.View, Int32, () -> Bool) -> Unit, loc~ : SourceLoc) -> @view.View
 
+#callsite(autofill(loc))
+pub fn liquid_segmented_thumb_look(@view.View, (@view.View) -> (Double, Double, Double, Double)?, (@view.View) -> Double, look? : SegThumbLook, loc~ : SourceLoc) -> () -> Unit
+
 pub fn liquid_sheet_glass(solid? : Int64) -> @paint.Glass
 
 pub fn liquid_sheet_surface_decorate(@view.View, radius? : Double, active? : () -> Bool, solid? : () -> Int64, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64)) -> @view.View
@@ -143,7 +152,7 @@ pub fn liquid_toast_glass(solid? : Int64) -> @paint.Glass
 pub fn liquid_toast_surface_decorate(@view.View, radius? : Double, active? : () -> Bool, solid? : () -> Int64, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64)) -> @view.View
 
 #callsite(autofill(loc))
-pub fn liquid_toggle_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String, disabled? : () -> Bool, width? : Double, height? : Double, track_color? : () -> Int64, on_color? : () -> Int64, finger_only_lens? : Bool, drag? : DampedDrag, loc~ : SourceLoc) -> @view.View
+pub fn liquid_toggle_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String, disabled? : () -> Bool, width? : Double, height? : Double, track_color? : () -> Int64, on_color? : () -> Int64, finger_only_lens? : Bool, controlled? : Bool, drag? : DampedDrag, loc~ : SourceLoc) -> @view.View
 
 pub fn liquid_tooltip_surface_decorate(@view.View, radius? : Double, active? : () -> Bool, solid? : () -> Int64, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), panel? : Bool) -> @view.View
 
@@ -293,20 +302,27 @@ pub(all) struct Colors {
 pub struct DampedDrag {
   // private fields
 }
-pub fn DampedDrag::animate_to(Self, Double) -> Unit
+pub fn DampedDrag::animate_to(Self, Double, within_frac? : Double, relative_trip? : Bool) -> Unit
 pub fn DampedDrag::attach(Self, @view.View) -> Unit
-pub fn DampedDrag::cancel_to(Self, Double) -> Unit
+pub fn DampedDrag::cancel_to(Self, Double, spec? : @motion.Spec, within_frac? : Double, relative_trip? : Bool) -> Unit
+pub fn DampedDrag::claim_gesture(Self, @view.View) -> Unit
+pub fn DampedDrag::drop_lens(Self) -> Unit
+pub fn DampedDrag::gesture_owned_by(Self, @view.View) -> Bool
+pub fn DampedDrag::has_pending_release(Self) -> Bool
+pub fn DampedDrag::host_node(Self) -> @view.View?
 pub fn DampedDrag::jelly(Self, @view.View, Double) -> (Double, Double)
 pub fn DampedDrag::new(Double, lo~ : Double, hi~ : Double, threshold? : Double, rest_scale? : Double, held_scale~ : Double) -> Self
 pub fn DampedDrag::press(Self) -> Unit
 pub fn DampedDrag::pressed(Self, @view.View) -> Double
 pub fn DampedDrag::pressing(Self) -> Bool
 pub fn DampedDrag::progress(Self, @view.View) -> Double
-pub fn DampedDrag::release(Self) -> Unit
+pub fn DampedDrag::release(Self, within_frac? : Double, relative_trip? : Bool) -> Unit
+pub fn DampedDrag::same_host(Self, @view.View?) -> Bool
 pub fn DampedDrag::set_bounds(Self, lo~ : Double, hi~ : Double) -> Unit
-pub fn DampedDrag::slide_to(Self, Double) -> Unit
+pub fn DampedDrag::settle_to(Self, Double, spec? : @motion.Spec, within_frac? : Double, relative_trip? : Bool) -> Unit
+pub fn DampedDrag::slide_to(Self, Double, spec? : @motion.Spec) -> Unit
 pub fn DampedDrag::target(Self) -> Double
-pub fn DampedDrag::update_value(Self, Double) -> Unit
+pub fn DampedDrag::update_value(Self, Double, spec? : @motion.Spec) -> Unit
 pub fn DampedDrag::value(Self, @view.View) -> Double
 pub fn DampedDrag::velocity(Self, @view.View) -> Double
 
@@ -410,6 +426,17 @@ pub(all) struct ScrubberLook {
   disabled : () -> Bool
 }
 pub fn ScrubberLook::new(heights? : (Double, Double, Double), track_color? : () -> Int64, fill_color? : () -> Int64, buffered? : (() -> Double)?, buffered_color? : (() -> Int64)?, focus_shown? : (() -> Bool)?, focus_color? : (() -> Int64)?, disabled? : () -> Bool) -> Self
+
+pub struct SegThumbLook {
+  glass_track : Bool
+  jelly : ((@view.View) -> (Double, Double))?
+  active : (() -> Bool)?
+  solid : (() -> Int64)?
+  track_h : (() -> Double)?
+  overhang_x : Double
+  overhang_y : Double
+}
+pub fn SegThumbLook::default(glass_track? : Bool, jelly? : (@view.View) -> (Double, Double), active? : () -> Bool, solid? : () -> Int64, track_h? : () -> Double, overhang_x? : Double, overhang_y? : Double) -> Self
 
 pub(all) struct SliderLook {
   track_h : Double

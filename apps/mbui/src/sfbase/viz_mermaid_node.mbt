@@ -1,7 +1,8 @@
-// A ```mermaid block's chart as nodes of the window's tree, made once (viz_mermaid.mbt's viz_mermaid_block and
-// mermaid_ways, their styles the same): the core makes it as an SVG in the theme's colours (mermaid.chart, asked as its
-// code or the theme changes), drawn as a picture as wide as it is written, the column's where that is less, a way under
-// it to open it over the whole screen; while the core makes it, a page's place breathing; refused, its code.
+// The core makes a Mermaid chart as SVG in the theme's colours. Press the picture or the button below it to open
+// the viewer. While the core makes the chart, show a placeholder. If it refuses, show the code.
+
+///|
+const MERMAID_FILE : String = "Mermaid.svg"
 
 ///|
 /// How a chart stands as the core has said (mermaid_charts, as mermaid_made says it changed): made (its SVG, its
@@ -57,13 +58,15 @@ pub fn viz_mermaid_node(
       NowRefused => @sf.code_block_node(b, code, fn() { "mermaid" }, fn() { None })
       NowMade(svg, picture, w, h) =>
         b.box(fn(m) {
+          let open = fn() { mermaid_full(station, svg, w, h) }
           @sf.style_node(m, fn() { viz_mermaid_box })
           m.box(fn(p) {
             @sf.style_node(p, fn() { @ui.style(w=Full, max_w=Fixed(w)) })
             p.aspect(Is(w / h)).image(Is(Some((picture, "", 8192)))).image_contains(Is(true)) |> ignore
+            @sf.rippled_node(p, open, 6.0, fn() { MERMAID_FILE })
           })
           |> ignore
-          mermaid_ways_node(m, station, svg, w, h, subtle, tips)
+          mermaid_ways_node(m, open, subtle, tips)
         })
         |> ignore
       NowComing =>
@@ -91,15 +94,10 @@ pub fn viz_mermaid_node(
 }
 
 ///|
-/// Under a chart, at its end (mermaid_ways'), in `v`: 全屏, its mark 14 in `subtle` in a key 22 across, rippling as it
-/// is pressed, its words a tip (in `tips`): the chart over the whole screen, the viewer's (from its bytes `svg`, a path
-/// of its own, no session's; `w` × `h`).
+/// Under a chart, at its end (as other visualizations' ways): 全屏, its tip in `tips`, opening the chart as pressing it does.
 fn mermaid_ways_node(
   v : @view.View,
-  station : String,
-  svg : Bytes,
-  w : Double,
-  h : Double,
+  open : () -> Unit,
   subtle : () -> Int64,
   tips : @sf.TipLayer,
 ) -> Unit {
@@ -108,7 +106,7 @@ fn mermaid_ways_node(
     @sf.style_node(ways, fn() { viz_ways })
     ways.box(fn(k) {
       @sf.style_node(k, fn() { viz_way }, in_row=true)
-      @sf.rippled_node(k, fn() { mermaid_full(station, svg, w, h) }, 6.0, label)
+      @sf.rippled_node(k, open, 6.0, label)
       @sf.icon_node(k, "expand", 14.0, By(subtle)) |> ignore
       @sf.tip_node(tips, k, label) |> ignore
     })
@@ -122,7 +120,7 @@ fn mermaid_ways_node(
 /// opens, from its bytes, a path of its own, no session's), on `station`.
 fn mermaid_full(station : String, svg : Bytes, w : Double, h : Double) -> Unit {
   let a : Attachment = {
-    name: "Mermaid.svg",
+    name: MERMAID_FILE,
     path: "draft:mermaid/" + @zip.sha256(svg).exact_view(end=16).to_owned(),
     size: svg.length().to_double(),
     width: w,

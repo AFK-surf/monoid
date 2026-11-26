@@ -2297,6 +2297,15 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       }
       None => ()
     }
+    if tree.is_section_slot_id(c.id) {
+      match tree.section_clip_of(c.id) {
+        Some((sx0, sy0, sx1, sy1)) => {
+          push_clip(sx0, sy0, sx1, sy1)
+          clipping.push(c.id)
+        }
+        None => ()
+      }
+    }
     if nav_clip is Some(_) || nav_veil is Some(_) {
       nav_scope_gen += 1
       nav_scope_stack.push((c.id, nav_scope_gen))

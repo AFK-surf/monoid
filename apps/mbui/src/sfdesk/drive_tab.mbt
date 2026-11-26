@@ -155,9 +155,9 @@ let ftab_head : @ui.Style = @ui.css("row w=Full pt=S1 pr=S2 pb=S1_5 pl=S3 gap=S2
 let ftab_trail_box : @ui.Style = @ui.style(row=true, w=@sf.grow, gap=SPx, align=ACenter, clip=true)
 
 ///|
-/// A step of it (3 by 4 in, the option's corner); the folder shown bold in the words' ink.
+/// A step of it (3 by 4 in, full capsule); the folder shown bold in the words' ink.
 // kept across runs: a value (no field of it changes)
-let ftab_step : @ui.Style = @ui.css("px=S1 py=SPx radius=Md hovered{bg=Hover}")
+let ftab_step : @ui.Style = @ui.css("px=S1 py=SPx radius=Full hovered{bg=Hover}")
 
 ///|
 // kept across runs: a value (no field of it changes)

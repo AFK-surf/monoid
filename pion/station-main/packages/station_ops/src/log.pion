@@ -1,0 +1,200 @@
+// 1:1 port of `station/src/ops/log.ts` + in-place log rotation (`rotateInPlace` from `storage.ts`):
+// Structured stderr logging with hooks (`hear_lines`, `hear_errors`) and strict in-place
+// truncation rotation that NEVER renames or unlinks the active log file (preserving its inode
+// for launchd/systemd O_APPEND writers).
+
+import "base_codec"
+import "host_shim"
+import "js_json"
+
+pub let STATION_LOG_CAP : Int64 = (64 * 1024 * 1024).to_int64()
+pub let UPDATE_LOG_CAP : Int64 = (16 * 1024 * 1024).to_int64()
+pub let JOB_LOG_CAP : Int64 = (64 * 1024 * 1024).to_int64()
+
+pub enum LogLevel {
+  Info
+  Warn
+  Error
+}
+
+pub fn log_level_text(level : LogLevel) -> String {
+  match level {
+    LogLevel::Info => "INFO"
+    LogLevel::Warn => "WARN"
+    LogLevel::Error => "ERROR"
+  }
+}
+
+pub fn log_level_padded(level : LogLevel) -> String {
+  match level {
+    LogLevel::Info => " INFO"
+    LogLevel::Warn => " WARN"
+    LogLevel::Error => "ERROR"
+  }
+}
+
+pub struct LogLine {
+  pub ms : Int64
+  pub level : LogLevel
+  pub at : String
+  pub message : String
+  pub fields : Array[(String, base_codec::Json)]
+}
+
+fn format_field_val(v : base_codec::Json) -> String {
+  match v {
+    base_codec::Json::Str(s) => s
+    _ => base_codec::json_stringify(v)
+  }
+}
+
+/// Format a structured log line matching `station/src/ops/log.ts`:
+/// `<ISO-8601> <LEVEL.padStart(5)> <at>: <message> k=v...\n`
+pub fn format_log_line(line : LogLine) -> String {
+  let sb = StringBuilder::new()
+  sb.write_string(js_json::format_iso_ms(line.ms))
+  sb.write_byte(32 as Byte)
+  sb.write_string(log_level_padded(line.level))
+  sb.write_byte(32 as Byte)
+  sb.write_string(line.at)
+  sb.write_string(": ")
+  sb.write_string(line.message)
+  for i in 0..<line.fields.length() {
+    let (k, v) = line.fields[i]
+    sb.write_byte(32 as Byte)
+    sb.write_string(k)
+    sb.write_byte(61 as Byte)
+    sb.write_string(format_field_val(v))
+  }
+  sb.write_byte(10 as Byte)
+  sb.to_string()
+}
+
+pub struct Logger {
+  pub now_ms : () -> Int64
+  pub write_out : (String) -> Unit
+  pub mut on_line : Option[(LogLine) -> Unit]
+  pub mut on_error : Option[(String, Option[String]) -> Unit]
+}
+
+pub fn Logger::new(
+  now_ms : () -> Int64 = host_shim::wall_ms,
+  write_out : (String) -> Unit = fn(s : String) -> Unit {
+    let _ = host_shim::write_stderr(s.to_bytes())
+  },
+) -> Logger {
+  Logger::{
+    now_ms: now_ms,
+    write_out: write_out,
+    on_line: None,
+    on_error: None,
+  }
+}
+
+pub fn Logger::hear_lines(self : Logger, f : Option[(LogLine) -> Unit]) -> Unit {
+  self.on_line = f
+}
+
+pub fn Logger::hear_errors(self : Logger, f : Option[(String, Option[String]) -> Unit]) -> Unit {
+  self.on_error = f
+}
+
+fn Logger::emit(
+  self : Logger,
+  level : LogLevel,
+  at : String,
+  message : String,
+  fields : Array[(String, base_codec::Json)],
+) -> Unit {
+  let line = LogLine::{
+    ms: (self.now_ms)(),
+    level: level,
+    at: at,
+    message: message,
+    fields: fields,
+  }
+  (self.write_out)(format_log_line(line))
+  match self.on_line {
+    Some(f) => f(line)
+    None => ()
+  }
+}
+
+pub fn Logger::info(
+  self : Logger,
+  at : String,
+  message : String,
+  fields : Array[(String, base_codec::Json)] = [],
+) -> Unit {
+  self.emit(LogLevel::Info, at, message, fields)
+}
+
+pub fn Logger::warn(
+  self : Logger,
+  at : String,
+  message : String,
+  fields : Array[(String, base_codec::Json)] = [],
+) -> Unit {
+  self.emit(LogLevel::Warn, at, message, fields)
+}
+
+pub fn Logger::error(
+  self : Logger,
+  at : String,
+  message : String,
+  fields : Array[(String, base_codec::Json)] = [],
+) -> Unit {
+  self.emit(LogLevel::Error, at, message, fields)
+  match self.on_error {
+    None => ()
+    Some(f) => {
+      let mut err_field : Option[String] = None
+      let others : Array[String] = []
+      for i in 0..<fields.length() {
+        let (k, v) = fields[i]
+        if k == "error" {
+          err_field = Some(format_field_val(v))
+        } else {
+          others.push(k + "=" + format_field_val(v))
+        }
+      }
+      let summary = if others.length() == 0 {
+        message
+      } else {
+        let sb = StringBuilder::new()
+        sb.write_string(message)
+        sb.write_string(" (")
+        for i in 0..<others.length() {
+          if i > 0 {
+            sb.write_string(", ")
+          }
+          sb.write_string(others[i])
+        }
+        sb.write_byte(41 as Byte)
+        sb.to_string()
+      }
+      f(summary, err_field)
+    }
+  }
+}
+
+/// Rotate `path` in place once its size exceeds `cap`:
+/// - Production (`shell_ops_fs()`): delegates directly to `client/shell`'s streaming `"fs.rotate"`
+///   op (64 KiB buffer into `<path>.1.tmp` mode 0600 -> rename `<path>.1` -> in-place `set_len(0)`
+///   keeping the active file's inode for launchd/systemd `O_APPEND` writers; never reads the whole
+///   file into memory and never calls non-existent `fs.truncate`).
+/// - Tests (`MemFs::ops()`): uses `MemFs`'s in-memory `rotate_in_place_native` with identical
+///   inode-preserving semantics.
+/// Returns `Ok(true)` if rotated, `Ok(false)` if missing or `size <= cap`.
+pub fn rotate_in_place(
+  fs : OpsFs,
+  path : String,
+  cap : Int64,
+  keep : Int64 = -1.to_int64(),
+) -> Result[Bool, FsErr] {
+  let keep_bytes = if keep < 0.to_int64() { cap } else { keep }
+  match fs.rotate_in_place_native {
+    Some(native_fn) => native_fn(path, cap, keep_bytes)
+    None => Err(FsErr::Other("rotate_in_place is async in production: submit fs.rotate via shell_rotate_request and parse_rotate_reply"))
+  }
+}

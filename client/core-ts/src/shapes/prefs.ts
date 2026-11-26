@@ -275,6 +275,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["hintReviewText", "String", { default: true, doc: "What the stations' archive reviews mean for 按模型判断 (none on, or whose are off); \"\"\nwhile none is known or every one has it on." }],
     ["progressMinutes", "u32", { default: true, doc: "How long the person's agents may wait and post nothing before they are told so, in minutes (`progress.set`)." }],
     ["progressStrength", "String", { default: true, doc: "What they are told then: `require`, to post progress; `remind`, to post it where there is some." }],
+    ["progressSeq", "i64", { client: "I54", default: true, doc: "Monotonic publication sequence of progress settings in this core generation." }],
   ], { doc: "What the settings say of the workspace as a whole (the `settings` view), over its stations." }),
   WorkspaceMarksView: struct([
     ["workspaces", map("WorkspaceMark")],
