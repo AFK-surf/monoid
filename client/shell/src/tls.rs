@@ -22,14 +22,13 @@ pub(crate) fn tls_config() -> rustls::ClientConfig {
 }
 
 /// Client TLS config using ring + Mozilla webpki roots, plus optional extra CA PEM certificates and ALPN protocols.
+/// Invalid PEM blocks are ignored (preserving existing `custom_http_client` compatibility).
 pub(crate) fn tls_config_with_ca(ca_pem: Option<&str>, alpn: Option<&[String]>) -> rustls::ClientConfig {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let mut roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
     if let Some(pem) = ca_pem {
-        for item in CertificateDer::pem_slice_iter(pem.as_bytes()) {
-            if let Ok(cert) = item {
-                let _ = roots.add(cert);
-            }
+        for cert in CertificateDer::pem_slice_iter(pem.as_bytes()).flatten() {
+            let _ = roots.add(cert);
         }
     }
     let mut config = rustls::ClientConfig::builder_with_provider(provider)
@@ -41,6 +40,31 @@ pub(crate) fn tls_config_with_ca(ca_pem: Option<&str>, alpn: Option<&[String]>) 
         config.alpn_protocols = protos.iter().map(|s| s.as_bytes().to_vec()).collect();
     }
     config
+}
+
+/// Strict client TLS config for explicit `caPem` inputs (`tls.connect`, `race: true`, `ws.open`):
+/// fails if `ca_pem` contains invalid PEM or zero valid certificates.
+pub(crate) fn tls_config_with_strict_ca(ca_pem: &str, alpn: Option<&[String]>) -> Result<rustls::ClientConfig, String> {
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let mut roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
+    let mut added = 0usize;
+    for item in CertificateDer::pem_slice_iter(ca_pem.as_bytes()) {
+        let cert = item.map_err(|e| format!("invalid caPem: {e}"))?;
+        roots.add(cert).map_err(|e| format!("invalid caPem: {e}"))?;
+        added += 1;
+    }
+    if added == 0 {
+        return Err("invalid caPem: no certificates found".into());
+    }
+    let mut config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .expect("ring supports the default protocol versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    if let Some(protos) = alpn.filter(|p| !p.is_empty()) {
+        config.alpn_protocols = protos.iter().map(|s| s.as_bytes().to_vec()).collect();
+    }
+    Ok(config)
 }
 
 /// Server TLS config using ring, PEM certificate chain, PEM private key (PKCS#8, PKCS#1, or SEC1), and optional ALPN.
@@ -235,17 +259,15 @@ pub(crate) async fn race_tls_stream(
         .map_err(|_| format!("TLS race timed out within {} ms", budget.as_millis()))?
 }
 
-/// Upgrade an accepted raw TCP socket (plus optional pre-read `head` bytes) to a server-side TLS stream.
-pub(crate) async fn upgrade_server_tls(
+/// Upgrade an accepted raw TCP socket (plus optional pre-read `head` bytes) to a server-side TLS stream
+/// using a pre-validated `rustls::ServerConfig`.
+pub(crate) async fn upgrade_server_tls_with_config(
     read: Box<dyn AsyncRead + Send + Unpin>,
     write: Box<dyn AsyncWrite + Send + Unpin>,
     head: Vec<u8>,
-    cert_pem: &str,
-    key_pem: &str,
-    alpn: Option<&[String]>,
+    config: Arc<rustls::ServerConfig>,
     timeout: Option<Duration>,
 ) -> Result<Handle, String> {
-    let config = Arc::new(server_tls_config(cert_pem, key_pem, alpn)?);
     let io = PrefixedIo::new(head, CombinedIo::new(read, write));
     let accept = TlsAcceptor::from(config).accept(io);
     let tls_stream = match timeout {
@@ -271,7 +293,10 @@ pub(crate) async fn connect_client_tls(
     head: Option<Vec<u8>>,
 ) -> Result<Handle, String> {
     let sni_name = server_name_of(sni.unwrap_or(host))?;
-    let config = Arc::new(tls_config_with_ca(ca_pem, alpn));
+    let config = Arc::new(match ca_pem {
+        Some(pem) => tls_config_with_strict_ca(pem, alpn)?,
+        None => tls_config_with_ca(None, alpn),
+    });
     let host_owned = host.to_string();
     let work = async move {
         let tcp = tcp_connect_keepalive(&host_owned, port).await?;
@@ -532,13 +557,13 @@ mod tests {
             tls.shutdown().await.unwrap();
         });
 
-        let client_cfg = Arc::new(tls_config_with_ca(Some(CA_PEM), None));
+        let client_cfg = Arc::new(tls_config_with_strict_ca(CA_PEM, None).unwrap());
         let mut stream = race_tls_stream(
             ("127.0.0.1".into(), direct_port),
             ("127.0.0.1".into(), entry_port),
             "cloud.test",
             client_cfg,
-            Duration::from_millis(50),
+            Duration::from_millis(20),
             Duration::from_secs(5),
         )
         .await
@@ -575,20 +600,19 @@ mod tests {
             tls.shutdown().await.unwrap();
         });
 
-        let start = tokio::time::Instant::now();
-        let client_cfg = Arc::new(tls_config_with_ca(Some(CA_PEM), None));
+        // Hedge (60s) exceeds budget (5s): if direct failure did not bypass hedge immediately,
+        // the race would time out instead of succeeding via entry.
+        let client_cfg = Arc::new(tls_config_with_strict_ca(CA_PEM, None).unwrap());
         let mut stream = race_tls_stream(
             ("127.0.0.1".into(), closed_port),
             ("127.0.0.1".into(), entry_port),
             "cloud.test",
             client_cfg,
-            // Long hedge: must NOT wait 10s when direct fails immediately.
-            Duration::from_secs(10),
+            Duration::from_secs(60),
             Duration::from_secs(5),
         )
         .await
         .unwrap();
-        assert!(start.elapsed() < Duration::from_secs(2), "should switch to entry immediately on direct failure");
 
         let mut buf = Vec::new();
         stream.read_to_end(&mut buf).await.unwrap();
@@ -618,13 +642,13 @@ mod tests {
             }
         });
 
-        let client_cfg = Arc::new(tls_config_with_ca(Some(CA_PEM), None));
+        let client_cfg = Arc::new(tls_config_with_strict_ca(CA_PEM, None).unwrap());
         let res = race_tls_stream(
             ("127.0.0.1".into(), direct_port),
             ("127.0.0.1".into(), entry_port),
             "cloud.test",
             client_cfg,
-            Duration::from_millis(50),
+            Duration::from_millis(20),
             Duration::from_secs(5),
         )
         .await;
@@ -654,21 +678,28 @@ mod tests {
         let d_eof = wait_eof(direct_listener);
         let e_eof = wait_eof(entry_listener);
 
-        let client_cfg = Arc::new(tls_config_with_ca(Some(CA_PEM), None));
+        let client_cfg = Arc::new(tls_config_with_strict_ca(CA_PEM, None).unwrap());
         let res = race_tls_stream(
             ("127.0.0.1".into(), direct_port),
             ("127.0.0.1".into(), entry_port),
             "cloud.test",
             client_cfg,
-            Duration::from_millis(30),
-            Duration::from_millis(120),
+            Duration::from_millis(20),
+            Duration::from_millis(100),
         )
         .await;
-        let err_msg = res.err().expect("race must time out when both stall");
+        let err_msg = res.expect_err("race must time out when both stall");
         assert!(err_msg.contains("timed out"), "unexpected error: {err_msg}");
         // timer: test assertion deadline verifying both pending sockets closed on timeout
         assert!(tokio::time::timeout(Duration::from_secs(2), d_eof).await.unwrap().unwrap());
         // timer: test assertion deadline verifying both pending sockets closed on timeout
         assert!(tokio::time::timeout(Duration::from_secs(2), e_eof).await.unwrap().unwrap());
+    }
+
+    #[test]
+    fn tls_config_with_strict_ca_rejects_empty_or_malformed_pem() {
+        assert!(tls_config_with_strict_ca(CA_PEM, None).is_ok());
+        assert!(tls_config_with_strict_ca("", None).is_err());
+        assert!(tls_config_with_strict_ca("-----BEGIN CERTIFICATE-----\nnot-base64!!!\n-----END CERTIFICATE-----\n", None).is_err());
     }
 }

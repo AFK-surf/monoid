@@ -162,6 +162,8 @@ pub(crate) struct Inner {
     disk: Mutex<mpsc::Sender<Job>>,
     pub(crate) db: Arc<Mutex<DbHandle>>,
     pub(crate) tls: Arc<rustls::ClientConfig>,
+    /// Cached client TLS config with `http/1.1` ALPN for raced HTTPS requests (reuses TLS session cache).
+    pub(crate) tls_h1: Arc<rustls::ClientConfig>,
     pub(crate) http: Mutex<reqwest::Client>,
     /// The pool of requests that follow redirects (`redirect: "follow"`, up to ten); `http` follows none.
     pub(crate) http_follow: Mutex<reqwest::Client>,
@@ -454,11 +456,12 @@ impl Shell {
             }
         })?;
         let tls = Arc::new(tls_config());
+        let tls_h1 = Arc::new(tls::tls_config_with_ca(None, Some(&["http/1.1".to_string()])));
         let http = Mutex::new(http_client(&tls, false));
         let http_follow = Mutex::new(http_client(&tls, true));
         let db = Arc::new(Mutex::new(DbHandle { path: dir.join("core.db"), conn: None }));
         let adb = adb::Adb::new(dir.clone());
-        let inner = Arc::new(Inner { complete, ctx: Ctx(ctx), dir, disk: Mutex::new(jobs), db, tls, http, http_follow, entries: Mutex::default(), fetches: Mutex::default(), handles: Mutex::default(), next: AtomicU64::new(1), sqls: Mutex::default(), texts: Mutex::default(), open_wait, say: Mutex::default(), media: Mutex::default(), adb, demuxes: Mutex::default(), inputs: Mutex::default() });
+        let inner = Arc::new(Inner { complete, ctx: Ctx(ctx), dir, disk: Mutex::new(jobs), db, tls, tls_h1, http, http_follow, entries: Mutex::default(), fetches: Mutex::default(), handles: Mutex::default(), next: AtomicU64::new(1), sqls: Mutex::default(), texts: Mutex::default(), open_wait, say: Mutex::default(), media: Mutex::default(), adb, demuxes: Mutex::default(), inputs: Mutex::default() });
         STATS.lock().unwrap().shells.push(Arc::downgrade(&inner));
         Ok(Shell { runtime, inner })
     }
