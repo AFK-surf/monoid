@@ -278,9 +278,40 @@ fn mirror_compound_key(room_id : String, mirror_name : String) -> String {
   room_id + "/" + mirror_name
 }
 
+fn RemoteManager::path_has_live_remote_job(self : RemoteManager, dir : String) -> Bool {
+  for i in 0..<self.jobs.job_ids.length() {
+    match self.jobs.jobs.get(self.jobs.job_ids[i]) {
+      Some(j) => {
+        if job_state_is_up(j.state)
+        && (sj_starts_with(j.id, "remote_") || sj_starts_with(j.session, "remote:"))
+        && j.cwd.length() > 0
+        && path_is_within(self.fs.sep, j.cwd, dir)
+        {
+          return true
+        }
+      }
+      None => ()
+    }
+  }
+  false
+}
+
+fn RemoteManager::room_has_live_job(self : RemoteManager, rid : String) -> Bool {
+  let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
+  self.path_has_live_remote_job(room_dir)
+}
+
 /// Scans `<data>/remote/sessions/*` and `<room>/mirrors/*` on startup to adopt rooms & mirrors
 /// created before a station restart so `sweep` and `remote_budget` govern them.
-pub fn RemoteManager::adopt_existing(self : RemoteManager, now_ms : Int64) -> Int {
+/// - When `latest_in_checked` truncates past `latest_limit`, preserves the room/mirror (`last_used_at = now_ms`,
+///   aligned with TS `Infinity`) rather than falling back to a stale directory mtime.
+/// - Cross-checks `self.jobs` for any active `remote_*` job whose `cwd` lies inside a room or mirror
+///   so live remote work is never evicted.
+pub fn RemoteManager::adopt_existing(
+  self : RemoteManager,
+  now_ms : Int64,
+  latest_limit : Int = 4096,
+) -> Int {
   let sessions_root = nodepath::join(self.fs.sep, [self.root, "sessions"])
   let dirs = match (self.fs.read_dir)(sessions_root) {
     Some(ds) => ds
@@ -300,9 +331,15 @@ pub fn RemoteManager::adopt_existing(self : RemoteManager, now_ms : Int64) -> In
     if !st.is_dir() || st.is_symlink() {
       continue
     }
-    let last_used = match latest_in(self.fs, room_dir, 4096) {
-      Some(ts) => ts
-      None => if st.mtime_ms > 0.to_int64() { st.mtime_ms } else { now_ms }
+    let live_in_room = self.path_has_live_remote_job(room_dir)
+    let last_used = if live_in_room {
+      now_ms
+    } else {
+      match latest_in_checked(self.fs, room_dir, latest_limit) {
+        LatestInStatus::Found(ts) => ts
+        LatestInStatus::Truncated => now_ms
+        LatestInStatus::Empty => if st.mtime_ms > 0.to_int64() { st.mtime_ms } else { now_ms }
+      }
     }
     if !self.rooms.contains(rid) {
       let work_dir = nodepath::join(self.fs.sep, [room_dir, "work"])
@@ -320,6 +357,11 @@ pub fn RemoteManager::adopt_existing(self : RemoteManager, now_ms : Int64) -> In
       )
       self.room_ids.push(rid)
       count = count + 1
+    } else if live_in_room {
+      match self.rooms.get(rid) {
+        Some(r) => r.last_used_at = now_ms
+        None => ()
+      }
     }
     let mirrors_dir = nodepath::join(self.fs.sep, [room_dir, "mirrors"])
     match (self.fs.read_dir)(mirrors_dir) {
@@ -338,10 +380,16 @@ pub fn RemoteManager::adopt_existing(self : RemoteManager, now_ms : Int64) -> In
             continue
           }
           let mk = mirror_compound_key(rid, mname)
+          let live_in_mirror = self.path_has_live_remote_job(mpath)
           if !self.mirrors_map.contains(mk) {
-            let m_used = match latest_in(self.fs, mpath, 4096) {
-              Some(ts) => ts
-              None => if mst.mtime_ms > 0.to_int64() { mst.mtime_ms } else { now_ms }
+            let m_used = if live_in_mirror {
+              now_ms
+            } else {
+              match latest_in_checked(self.fs, mpath, latest_limit) {
+                LatestInStatus::Found(ts) => ts
+                LatestInStatus::Truncated => now_ms
+                LatestInStatus::Empty => if mst.mtime_ms > 0.to_int64() { mst.mtime_ms } else { now_ms }
+              }
             }
             self.mirrors_map.set(
               mk,
@@ -349,7 +397,7 @@ pub fn RemoteManager::adopt_existing(self : RemoteManager, now_ms : Int64) -> In
                 name: mname,
                 room_id: rid,
                 path: mpath,
-                state: MirrorState::Idle,
+                state: if live_in_mirror { MirrorState::InUse } else { MirrorState::Idle },
                 active_task: None,
                 last_used_at: m_used,
                 bytes: 0.to_int64(),
@@ -357,6 +405,14 @@ pub fn RemoteManager::adopt_existing(self : RemoteManager, now_ms : Int64) -> In
               },
             )
             self.mirror_keys.push(mk)
+          } else if live_in_mirror {
+            match self.mirrors_map.get(mk) {
+              Some(m) => {
+                m.state = MirrorState::InUse
+                m.last_used_at = now_ms
+              }
+              None => ()
+            }
           }
         }
       }
@@ -946,6 +1002,9 @@ pub fn RemoteManager::clean_mirror(
 }
 
 fn RemoteManager::room_has_active_tasks(self : RemoteManager, rid : String) -> Bool {
+  if self.room_has_live_job(rid) {
+    return true
+  }
   for ti in 0..<self.task_keys.length() {
     match self.tasks.get(self.task_keys[ti]) {
       Some(t) => {
@@ -965,139 +1024,409 @@ struct RoomUsage {
   bytes : Int64
 }
 
-/// Sweeps expired remote rooms, idle mirrors, old finished task records (compacting `task_keys`
-/// and `job_to_task`), and enforces `remote_budget(disk_total)` by evicting oldest idle rooms.
+pub enum SweepStep {
+  Yielded(Int)
+  Done(RemoteSweepReport)
+}
+
+/// Resumable cooperative cursor for `RemoteManager::step_sweep` so directory traversal and
+/// recursive deletion yield back to the single-threaded event loop every `budget` entries (default 256).
+pub struct RemoteSweepCursor {
+  now_ms : Int64
+  low_disk : Bool
+  disk_total : Option[Int64]
+  mut phase : Int // 0=mirrors, 1=idle_rooms, 2=measure_rooms, 3=budget_evict, 4=expire_tasks, 5=done
+  mut idx : Int
+  mut rm_cursor : Option[RemoveTreeCursor]
+  mut walk_cursor : Option[WalkCursor]
+  mut cur_room_bytes : Int64
+  usages : Array[RoomUsage]
+  mut total_bytes : Int64
+  budget : Int64
+  rooms_removed : Array[String]
+  mirrors_removed : Array[String]
+  tasks_expired : Array[String]
+  budget_evicted_rooms : Array[String]
+  pub mut processed : Int
+  mut finished : Option[RemoteSweepReport]
+}
+
+pub fn RemoteManager::begin_sweep(
+  self : RemoteManager,
+  now_ms : Int64,
+  low_disk : Bool = false,
+  disk_total : Option[Int64] = None,
+) -> RemoteSweepCursor {
+  let _ = self.root.length()
+  RemoteSweepCursor::{
+    now_ms: now_ms,
+    low_disk: low_disk,
+    disk_total: disk_total,
+    phase: 0,
+    idx: 0,
+    rm_cursor: None,
+    walk_cursor: None,
+    cur_room_bytes: 0.to_int64(),
+    usages: [],
+    total_bytes: 0.to_int64(),
+    budget: remote_budget(disk_total),
+    rooms_removed: [],
+    mirrors_removed: [],
+    tasks_expired: [],
+    budget_evicted_rooms: [],
+    processed: 0,
+    finished: None,
+  }
+}
+
+/// Advances a remote sweep by at most `budget` filesystem entries (default `WALK_YIELD_EVERY = 256`)
+/// before returning `SweepStep::Yielded` so the main event loop is never blocked.
+pub fn RemoteManager::step_sweep(
+  self : RemoteManager,
+  cur : RemoteSweepCursor,
+  budget : Int = WALK_YIELD_EVERY,
+) -> SweepStep {
+  match cur.finished {
+    Some(rep) => return SweepStep::Done(rep)
+    None => ()
+  }
+  let limit = if budget > 0 { budget } else { WALK_YIELD_EVERY }
+  let mut used = 0
+
+  while true {
+    if used >= limit {
+      return SweepStep::Yielded(cur.processed)
+    }
+    if cur.phase == 0 {
+      // Phase 0: remove idle mirrors past mirror_age using cooperative RemoveTreeCursor
+      match cur.rm_cursor {
+        Some(rmc) => {
+          let before = rmc.visited
+          let rem = limit - used
+          match rmc.step(rem) {
+            RemoveTreeStep::Yielded(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              return SweepStep::Yielded(cur.processed)
+            }
+            RemoveTreeStep::Done(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              cur.rm_cursor = None
+              let mk = self.mirror_keys[cur.idx]
+              match self.mirrors_map.get(mk) {
+                Some(m) => {
+                  m.state = MirrorState::Cleaned
+                  m.bytes = 0.to_int64()
+                  cur.mirrors_removed.push(mk)
+                }
+                None => ()
+              }
+              cur.idx = cur.idx + 1
+            }
+          }
+          continue
+        }
+        None => ()
+      }
+      if cur.idx >= self.mirror_keys.length() {
+        cur.phase = 1
+        cur.idx = 0
+        continue
+      }
+      let mirror_age = if cur.low_disk { MIRROR_RECENT_MS } else { MIRROR_IDLE_MS }
+      let mk = self.mirror_keys[cur.idx]
+      match self.mirrors_map.get(mk) {
+        Some(m) => {
+          let can_clean = match m.state {
+            MirrorState::Idle => {
+              cur.now_ms - m.last_used_at >= mirror_age && !self.path_has_live_remote_job(m.path)
+            }
+            _ => false
+          }
+          if can_clean {
+            cur.rm_cursor = Some(RemoveTreeCursor::new(self.fs, m.path))
+          } else {
+            cur.idx = cur.idx + 1
+            used = used + 1
+            cur.processed = cur.processed + 1
+          }
+        }
+        None => {
+          cur.idx = cur.idx + 1
+          used = used + 1
+          cur.processed = cur.processed + 1
+        }
+      }
+    } else if cur.phase == 1 {
+      // Phase 1: remove expired idle rooms past REMOTE_IDLE_MS
+      match cur.rm_cursor {
+        Some(rmc) => {
+          let before = rmc.visited
+          let rem = limit - used
+          match rmc.step(rem) {
+            RemoveTreeStep::Yielded(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              return SweepStep::Yielded(cur.processed)
+            }
+            RemoveTreeStep::Done(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              cur.rm_cursor = None
+              let rid = self.room_ids[cur.idx]
+              match self.rooms.get(rid) {
+                Some(r) => {
+                  r.closed = true
+                  cur.rooms_removed.push(rid)
+                }
+                None => ()
+              }
+              cur.idx = cur.idx + 1
+            }
+          }
+          continue
+        }
+        None => ()
+      }
+      if cur.idx >= self.room_ids.length() {
+        cur.phase = 2
+        cur.idx = 0
+        continue
+      }
+      let rid = self.room_ids[cur.idx]
+      match self.rooms.get(rid) {
+        Some(r) => {
+          if !r.closed && cur.now_ms - r.last_used_at >= REMOTE_IDLE_MS && !self.room_has_active_tasks(rid) {
+            let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
+            cur.rm_cursor = Some(RemoveTreeCursor::new(self.fs, room_dir))
+          } else {
+            cur.idx = cur.idx + 1
+            used = used + 1
+            cur.processed = cur.processed + 1
+          }
+        }
+        None => {
+          cur.idx = cur.idx + 1
+          used = used + 1
+          cur.processed = cur.processed + 1
+        }
+      }
+    } else if cur.phase == 2 {
+      // Phase 2: measure remaining open rooms cooperatively via WalkCursor
+      match cur.walk_cursor {
+        Some(wc) => {
+          let before = wc.visited
+          let rem = limit - used
+          match wc.step(fn(e : WalkEntry) -> VisitAction {
+            match e.stats {
+              Some(st) => {
+                if st.size > 0.to_int64() {
+                  cur.cur_room_bytes = cur.cur_room_bytes + st.size
+                }
+              }
+              None => ()
+            }
+            VisitAction::Continue
+          }, rem, false) {
+            WalkStep::Yielded(_) => {
+              let delta = wc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              return SweepStep::Yielded(cur.processed)
+            }
+            WalkStep::Done(_) => {
+              let delta = wc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              cur.walk_cursor = None
+              let rid = self.room_ids[cur.idx]
+              match self.rooms.get(rid) {
+                Some(r) => {
+                  cur.total_bytes = cur.total_bytes + cur.cur_room_bytes
+                  cur.usages.push(RoomUsage::{
+                    room_id: rid,
+                    last_used_at: r.last_used_at,
+                    bytes: cur.cur_room_bytes,
+                  })
+                }
+                None => ()
+              }
+              cur.cur_room_bytes = 0.to_int64()
+              cur.idx = cur.idx + 1
+            }
+          }
+          continue
+        }
+        None => ()
+      }
+      if cur.idx >= self.room_ids.length() {
+        // Sort oldest last_used_at first for phase 3 budget eviction.
+        for i in 1..<cur.usages.length() {
+          let item = cur.usages[i]
+          let mut j = i - 1
+          while j >= 0 && cur.usages[j].last_used_at > item.last_used_at {
+            cur.usages[j + 1] = cur.usages[j]
+            j = j - 1
+          }
+          cur.usages[j + 1] = item
+        }
+        cur.phase = 3
+        cur.idx = 0
+        continue
+      }
+      let rid = self.room_ids[cur.idx]
+      match self.rooms.get(rid) {
+        Some(r) => {
+          if r.closed {
+            cur.idx = cur.idx + 1
+            used = used + 1
+            cur.processed = cur.processed + 1
+          } else {
+            let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
+            let opts = WalkOptions::{
+              same_device: true,
+              max_entries: 200000,
+              max_depth: 256,
+              max_duration_ms: 60000.to_int64(),
+              yield_every: limit,
+              need_stat: true,
+              follow_root: false,
+              follow_links: false,
+            }
+            cur.cur_room_bytes = 0.to_int64()
+            cur.walk_cursor = Some(WalkCursor::new(self.fs, [room_dir], opts))
+          }
+        }
+        None => {
+          cur.idx = cur.idx + 1
+          used = used + 1
+          cur.processed = cur.processed + 1
+        }
+      }
+    } else if cur.phase == 3 {
+      // Phase 3: evict oldest idle rooms exceeding remote_budget(disk_total)
+      match cur.rm_cursor {
+        Some(rmc) => {
+          let before = rmc.visited
+          let rem = limit - used
+          match rmc.step(rem) {
+            RemoveTreeStep::Yielded(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              return SweepStep::Yielded(cur.processed)
+            }
+            RemoveTreeStep::Done(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              cur.rm_cursor = None
+              let u = cur.usages[cur.idx]
+              match self.rooms.get(u.room_id) {
+                Some(r) => {
+                  r.closed = true
+                  cur.total_bytes = cur.total_bytes - u.bytes
+                  cur.budget_evicted_rooms.push(u.room_id)
+                }
+                None => ()
+              }
+              cur.idx = cur.idx + 1
+            }
+          }
+          continue
+        }
+        None => ()
+      }
+      if cur.total_bytes <= cur.budget || cur.idx >= cur.usages.length() {
+        cur.phase = 4
+        cur.idx = 0
+        continue
+      }
+      let u = cur.usages[cur.idx]
+      if cur.now_ms - u.last_used_at < ROOM_RECENT_MS || self.room_has_active_tasks(u.room_id) {
+        cur.idx = cur.idx + 1
+        used = used + 1
+        cur.processed = cur.processed + 1
+      } else {
+        let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", u.room_id])
+        cur.rm_cursor = Some(RemoveTreeCursor::new(self.fs, room_dir))
+      }
+    } else {
+      // Phase 4: expire old finished tasks and compact `task_keys` + `job_to_task`
+      let kept_keys : Array[String] = []
+      for i in 0..<self.task_keys.length() {
+        let k = self.task_keys[i]
+        match self.tasks.get(k) {
+          Some(t) => {
+            let expired = if remote_task_is_done(t.state) && !t.pending_results {
+              match t.ended_at {
+                Some(ended) => cur.now_ms - ended >= TASKS_KEPT_MS
+                None => false
+              }
+            } else {
+              false
+            }
+            if expired {
+              match t.job_id {
+                Some(jid) => self.job_to_task.remove(jid)
+                None => ()
+              }
+              self.tasks.remove(k)
+              cur.tasks_expired.push(k)
+            } else {
+              kept_keys.push(k)
+            }
+          }
+          None => ()
+        }
+      }
+      self.task_keys = kept_keys
+      let rep = RemoteSweepReport::{
+        rooms_removed: cur.rooms_removed,
+        mirrors_removed: cur.mirrors_removed,
+        tasks_expired: cur.tasks_expired,
+        budget_evicted_rooms: cur.budget_evicted_rooms,
+      }
+      cur.phase = 5
+      cur.finished = Some(rep)
+      return SweepStep::Done(rep)
+    }
+  }
+  SweepStep::Yielded(cur.processed)
+}
+
+/// Convenience wrapper driving `begin_sweep` + `step_sweep` to completion.
+/// Main event-loop callers should drive `step_sweep(cursor, WALK_YIELD_EVERY)` per tick.
 pub fn RemoteManager::sweep(
   self : RemoteManager,
   now_ms : Int64,
   low_disk : Bool = false,
   disk_total : Option[Int64] = None,
 ) -> RemoteSweepReport {
-  let mirrors_removed : Array[String] = []
-  let mirror_age = if low_disk { MIRROR_RECENT_MS } else { MIRROR_IDLE_MS }
-  for i in 0..<self.mirror_keys.length() {
-    let mk = self.mirror_keys[i]
-    match self.mirrors_map.get(mk) {
-      Some(m) => {
-        match m.state {
-          MirrorState::Idle => {
-            if now_ms - m.last_used_at >= mirror_age {
-              let _ = (self.fs.remove_dir_all)(m.path)
-              m.state = MirrorState::Cleaned
-              m.bytes = 0.to_int64()
-              mirrors_removed.push(mk)
-            }
-          }
-          _ => ()
-        }
-      }
-      None => ()
+  let cur = self.begin_sweep(now_ms, low_disk, disk_total)
+  while true {
+    match self.step_sweep(cur, WALK_YIELD_EVERY) {
+      SweepStep::Yielded(_) => ()
+      SweepStep::Done(rep) => return rep
     }
   }
-
-  let rooms_removed : Array[String] = []
-  for i in 0..<self.room_ids.length() {
-    let rid = self.room_ids[i]
-    match self.rooms.get(rid) {
-      Some(r) => {
-        if !r.closed && now_ms - r.last_used_at >= REMOTE_IDLE_MS && !self.room_has_active_tasks(rid) {
-          let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
-          let _ = (self.fs.remove_dir_all)(room_dir)
-          r.closed = true
-          rooms_removed.push(rid)
-        }
-      }
-      None => ()
-    }
-  }
-
-  // Enforce `remote_budget(disk_total)`: evict oldest idle rooms (older than ROOM_RECENT_MS).
-  let budget_evicted_rooms : Array[String] = []
-  let budget = remote_budget(disk_total)
-  let usages : Array[RoomUsage] = []
-  let mut total_bytes : Int64 = 0.to_int64()
-  for i in 0..<self.room_ids.length() {
-    let rid = self.room_ids[i]
-    match self.rooms.get(rid) {
-      Some(r) => {
-        if r.closed {
-          continue
-        }
-        let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
-        let sz = tree_bytes(self.fs, room_dir, 200000)
-        total_bytes = total_bytes + sz.bytes
-        usages.push(RoomUsage::{ room_id: rid, last_used_at: r.last_used_at, bytes: sz.bytes })
-      }
-      None => ()
-    }
-  }
-  if total_bytes > budget {
-    // Sort oldest last_used_at first.
-    for i in 1..<usages.length() {
-      let cur = usages[i]
-      let mut j = i - 1
-      while j >= 0 && usages[j].last_used_at > cur.last_used_at {
-        usages[j + 1] = usages[j]
-        j = j - 1
-      }
-      usages[j + 1] = cur
-    }
-    for i in 0..<usages.length() {
-      if total_bytes <= budget {
-        break
-      }
-      let u = usages[i]
-      if now_ms - u.last_used_at < ROOM_RECENT_MS || self.room_has_active_tasks(u.room_id) {
-        continue
-      }
-      match self.rooms.get(u.room_id) {
-        Some(r) => {
-          let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", u.room_id])
-          let _ = (self.fs.remove_dir_all)(room_dir)
-          r.closed = true
-          total_bytes = total_bytes - u.bytes
-          budget_evicted_rooms.push(u.room_id)
-        }
-        None => ()
-      }
-    }
-  }
-
-  // Expire old finished tasks and compact `task_keys` + `job_to_task`.
-  let tasks_expired : Array[String] = []
-  let kept_keys : Array[String] = []
-  for i in 0..<self.task_keys.length() {
-    let k = self.task_keys[i]
-    match self.tasks.get(k) {
-      Some(t) => {
-        let expired = if remote_task_is_done(t.state) && !t.pending_results {
-          match t.ended_at {
-            Some(ended) => now_ms - ended >= TASKS_KEPT_MS
-            None => false
-          }
-        } else {
-          false
-        }
-        if expired {
-          match t.job_id {
-            Some(jid) => self.job_to_task.remove(jid)
-            None => ()
-          }
-          self.tasks.remove(k)
-          tasks_expired.push(k)
-        } else {
-          kept_keys.push(k)
-        }
-      }
-      None => ()
-    }
-  }
-  self.task_keys = kept_keys
-
   RemoteSweepReport::{
-    rooms_removed: rooms_removed,
-    mirrors_removed: mirrors_removed,
-    tasks_expired: tasks_expired,
-    budget_evicted_rooms: budget_evicted_rooms,
+    rooms_removed: [],
+    mirrors_removed: [],
+    tasks_expired: [],
+    budget_evicted_rooms: [],
   }
 }

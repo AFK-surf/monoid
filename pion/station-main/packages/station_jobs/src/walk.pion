@@ -407,7 +407,7 @@ pub fn sys_fs(sep : String = "/") -> FsPort {
       station_sys::mkdir_p(p)
     },
     readlink: fn(p : String) -> Option[String] {
-      station_sys::realpath(p)
+      station_sys::readlink(p)
     },
     realpath: fn(p : String) -> Option[String] {
       station_sys::realpath(p)
@@ -416,7 +416,7 @@ pub fn sys_fs(sep : String = "/") -> FsPort {
       station_sys::chmod(p, mode)
     },
     exists: fn(p : String) -> Bool {
-      match lstat_fn(p) {
+      match stat_fn(p) {
         Some(_) => true
         None => false
       }
@@ -842,7 +842,112 @@ pub fn WalkCursor::step(
   WalkStep::Done(res)
 }
 
+/// Cooperative chunked recursive removal cursor (uses `rmdir` for directories and `remove_file`
+/// for files/symlinks; yields every `budget` entries so the main event loop is never blocked).
+pub enum RemoveTreeStep {
+  Yielded(Int)
+  Done(Bool)
+}
+
+pub struct RemoveTreeCursor {
+  fs : FsPort
+  root : String
+  max_entries : Int
+  stack : Array[(String, Bool)]
+  mut initialized : Bool
+  pub mut visited : Int
+  mut finished : Option[Bool]
+}
+
+pub fn RemoveTreeCursor::new(
+  fs : FsPort,
+  path : String,
+  max_entries : Int = 200000,
+) -> RemoveTreeCursor {
+  RemoveTreeCursor::{
+    fs: fs,
+    root: path,
+    max_entries: max_entries,
+    stack: [],
+    initialized: false,
+    visited: 0,
+    finished: None,
+  }
+}
+
+pub fn RemoveTreeCursor::step(
+  self : RemoveTreeCursor,
+  budget : Int = WALK_YIELD_EVERY,
+) -> RemoveTreeStep {
+  match self.finished {
+    Some(ok) => return RemoveTreeStep::Done(ok)
+    None => ()
+  }
+  let limit = if budget > 0 { budget } else { WALK_YIELD_EVERY }
+  if !self.initialized {
+    self.initialized = true
+    let st = match (self.fs.lstat)(self.root) {
+      Some(s) => s
+      None => {
+        self.finished = Some(true)
+        return RemoveTreeStep::Done(true)
+      }
+    }
+    if !st.is_dir() || st.is_symlink() {
+      let ok = (self.fs.remove_file)(self.root)
+      self.visited = self.visited + 1
+      self.finished = Some(ok)
+      return RemoveTreeStep::Done(ok)
+    }
+    self.stack.push((self.root, false))
+  }
+  let mut slice = 0
+  while self.stack.length() > 0 && self.visited < self.max_entries {
+    if slice >= limit {
+      return RemoveTreeStep::Yielded(self.visited)
+    }
+    let last_idx = self.stack.length() - 1
+    let (cur, expanded) = self.stack[last_idx]
+    let _ = self.stack.pop()
+    self.visited = self.visited + 1
+    slice = slice + 1
+    if expanded {
+      let _ = (self.fs.rmdir)(cur)
+      continue
+    }
+    self.stack.push((cur, true))
+    match (self.fs.read_dir)(cur) {
+      Some(names) => {
+        for i in 0..<names.length() {
+          let child = nodepath::join(self.fs.sep, [cur, names[i]])
+          match (self.fs.lstat)(child) {
+            Some(cst) => {
+              if cst.is_dir() && !cst.is_symlink() {
+                self.stack.push((child, false))
+              } else {
+                let _ = (self.fs.remove_file)(child)
+                self.visited = self.visited + 1
+                slice = slice + 1
+              }
+            }
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let ok = match (self.fs.lstat)(self.root) {
+    None => true
+    Some(_) => false
+  }
+  self.finished = Some(ok)
+  RemoveTreeStep::Done(ok)
+}
+
 /// Convenience wrapper driving `WalkCursor` to completion.
+/// ONLY for background workers, CLI commands, or tests; main event-loop code MUST use
+/// `WalkCursor::step` (or `Upkeep::step_upkeep` / `RemoteManager::step_sweep`) to yield every 256 entries.
 pub fn walk_bounded(
   fs : FsPort,
   roots : Array[String],
@@ -866,6 +971,7 @@ pub struct TreeSize {
 }
 
 /// Bounded tree byte measurement (`station/src/ops/storage.ts` `treeBytes`).
+/// Background/CLI convenience wrapper; main-loop callers use `WalkCursor::step` via `step_sweep`.
 pub fn tree_bytes(fs : FsPort, path : String, most : Int = 1000000) -> TreeSize {
   let mut total : Int64 = 0.to_int64()
   let opts = WalkOptions::{
@@ -896,8 +1002,15 @@ pub fn tree_bytes(fs : FsPort, path : String, most : Int = 1000000) -> TreeSize 
   }
 }
 
-/// Newest mtime under `path`, or `None` if the walk was truncated or found nothing.
-pub fn latest_in(fs : FsPort, path : String, most : Int = LATEST_MOST) -> Option[Int64] {
+pub enum LatestInStatus {
+  Found(Int64)
+  Empty
+  Truncated
+}
+
+/// Newest mtime under `path`, distinguishing `Truncated` (walk hit limit -> caller should keep/preserve)
+/// from `Empty` (directory missing or empty).
+pub fn latest_in_checked(fs : FsPort, path : String, most : Int = LATEST_MOST) -> LatestInStatus {
   let mut has_any = false
   let mut latest : Int64 = 0.to_int64()
   let opts = WalkOptions::{
@@ -922,9 +1035,19 @@ pub fn latest_in(fs : FsPort, path : String, most : Int = LATEST_MOST) -> Option
     }
     VisitAction::Continue
   })
-  if res.truncated || !has_any {
-    None
+  if res.truncated {
+    LatestInStatus::Truncated
+  } else if !has_any {
+    LatestInStatus::Empty
   } else {
-    Some(latest)
+    LatestInStatus::Found(latest)
+  }
+}
+
+/// Newest mtime under `path`, or `None` if the walk was truncated or found nothing.
+pub fn latest_in(fs : FsPort, path : String, most : Int = LATEST_MOST) -> Option[Int64] {
+  match latest_in_checked(fs, path, most) {
+    LatestInStatus::Found(ts) => Some(ts)
+    _ => None
   }
 }

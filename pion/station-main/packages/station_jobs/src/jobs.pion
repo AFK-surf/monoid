@@ -21,6 +21,7 @@ pub let JOB_LOG_LINES_DEFAULT : Int = 50
 pub let JOB_NOTICES_SHOWN : Int = 20
 pub let JOB_NOTIFY_BODY_LIMIT : Int = 64 * 1024
 pub let JOB_STOP_GRACE_MS : Int64 = 5000.to_int64()
+pub let STILL_OURS_TOLERANCE_MS : Int64 = 5000.to_int64()
 pub let JOB_COMMAND_NAME : String = "stillfail-job"
 let TAIL_INIT_CHUNK : Int64 = (64 * 1024).to_int64()
 let TAIL_MAX_SCAN : Int64 = (4 * 1024 * 1024).to_int64()
@@ -140,6 +141,7 @@ pub struct JobRecord {
   pub token : String
   pub mut state : JobState
   pub mut pgid : Option[Int]
+  pub mut start_time_ms : Option[Int64]
   pub mut exit_code : Option[Int]
   pub mut started_at : Int64
   pub mut ended_at : Option[Int64]
@@ -239,6 +241,7 @@ fn job_state_persist_json(j : JobRecord) -> String {
       },
     ),
     ("startedAt", base_codec::json_int64(j.started_at)),
+    ("startTimeMs", opt_i64_json(j.start_time_ms)),
     ("endedAt", opt_i64_json(j.ended_at)),
     ("restarts", base_codec::json_int(j.restarts)),
     ("log", base_codec::json_str(j.log_path)),
@@ -303,6 +306,7 @@ fn parse_persisted_job(text : String) -> Option[JobRecord] {
     token: job_json_str(j, "token"),
     state: job_state_from_str(job_json_str(j, "state")),
     pgid: pgid,
+    start_time_ms: json_opt_i64(j, "startTimeMs"),
     exit_code: exit_code,
     started_at: started_at,
     ended_at: json_opt_i64(j, "endedAt"),
@@ -329,6 +333,7 @@ pub struct ProcBackend {
   pub kill_handle : (station_sys::ChildProcess, Int, Bool) -> Int
   pub close_handle : (station_sys::ChildProcess) -> Bool
   pub kill_pid : (Int, Int, Bool) -> Int
+  pub proc_start_time_ms : (Int) -> Option[Int64]
   pub base_env : () -> Array[String]
   pub random_token : () -> Result[String, String]
 }
@@ -347,6 +352,9 @@ pub fn real_proc_backend() -> ProcBackend {
     },
     kill_pid: fn(pid : Int, sig : Int, group : Bool) -> Int {
       station_sys::proc_kill(pid, sig, group)
+    },
+    proc_start_time_ms: fn(pid : Int) -> Option[Int64] {
+      station_sys::proc_start_time_ms(pid)
     },
     base_env: fn() -> Array[String] {
       station_sys::env_all()
@@ -410,6 +418,9 @@ pub struct JobManager {
   event_to_job : Map[Int64, String]
   /// Jobs adopted across station restart (not direct children of this process).
   followed_jobs : Map[String, Int]
+  /// Lingering process groups after leader exit awaiting grace-period SIGKILL (`endGroup`).
+  ending_groups : Map[Int, Int64]
+  mut ending_group_pgids : Array[Int]
   pub mut screen_claims : Array[admit::Claim]
   pub mut next_seq : Int64
   pub mut next_event_id : Int64
@@ -446,6 +457,8 @@ pub fn JobManager::new(
     active_by_job: Map::new(),
     event_to_job: Map::new(),
     followed_jobs: Map::new(),
+    ending_groups: Map::new(),
+    ending_group_pgids: [],
     screen_claims: [],
     next_seq: 1.to_int64(),
     next_event_id: 1000.to_int64(),
@@ -597,6 +610,10 @@ fn JobManager::spawn_job_record(
     Ok(child) => {
       job.state = JobState::Running
       job.pgid = Some(child.pid)
+      job.start_time_ms = match (self.backend.proc_start_time_ms)(child.pid) {
+        Some(ts) => Some(ts)
+        None => Some(now_ms)
+      }
       job.started_at = now_ms
       job.ended_at = None
       job.exit_code = None
@@ -670,6 +687,7 @@ pub fn JobManager::start(
     token: token,
     state: JobState::Running,
     pgid: None,
+    start_time_ms: None,
     exit_code: None,
     started_at: now_ms,
     ended_at: None,
@@ -723,11 +741,15 @@ fn JobManager::finalize_job_exit(
   job.exit_code = exit_code
   job.ended_at = Some(now_ms)
   job.stop_deadline_at = None
-  // Clean up any lingering process-group members after leader exited (`endGroup`).
+  // Clean up any lingering process-group members after leader exited (`endGroup`: SIGTERM + grace -> SIGKILL).
   match job.pgid {
     Some(pgid) => {
       if pgid > 0 && (self.backend.kill_pid)(pgid, station_sys::SIG_PROBE, true) == 0 {
         let _ = (self.backend.kill_pid)(pgid, station_sys::SIG_TERM, true)
+        if !self.ending_groups.contains(pgid) {
+          self.ending_group_pgids.push(pgid)
+        }
+        self.ending_groups.set(pgid, now_ms + JOB_STOP_GRACE_MS)
       }
     }
     None => ()
@@ -840,11 +862,35 @@ pub fn JobManager::handle_sys_event(
   }
 }
 
+/// Checks whether a persisted `pgid` still belongs to `job` (`station/src/ops/group.ts` `stillOurs`):
+/// verifies the process start time matches within `STILL_OURS_TOLERANCE_MS` (5 seconds) so a reused
+/// PID is never adopted or signalled.
+fn JobManager::still_ours(self : JobManager, job : JobRecord, pgid : Int) -> Bool {
+  if pgid <= 0 {
+    return false
+  }
+  let expected = match job.start_time_ms {
+    Some(t) => t
+    None => job.started_at
+  }
+  match (self.backend.proc_start_time_ms)(pgid) {
+    Some(actual) => {
+      let diff = if actual >= expected { actual - expected } else { expected - actual }
+      diff < STILL_OURS_TOLERANCE_MS && (self.backend.kill_pid)(pgid, station_sys::SIG_PROBE, true) == 0
+    }
+    None => {
+      // Leader exited; on Unix a pgid cannot be reused while any member remains.
+      (self.backend.kill_pid)(pgid, station_sys::SIG_PROBE, true) == 0
+    }
+  }
+}
+
 /// Station restart/handover adoption (`jobs.ts` `relaunch`):
 /// loads persisted job records from `<data>/jobs/state/*.json`, checks `.exit` files and
-/// `kill_pid(pgid, SIG_PROBE, false)`, adopts still-running jobs into `followed_jobs`,
-/// finalizes jobs that ended while the station was down, and relaunches jobs whose process died
-/// without an exit file (e.g. machine reboot).
+/// `still_ours(job, pgid)` (start-time check within 5s, preventing PID-reuse hijacking),
+/// adopts still-running jobs into `followed_jobs`, finalizes jobs that ended while the station
+/// was down, marks lost `remote_*` jobs as `Failed` (never re-spawning remote tasks), and
+/// relaunches non-remote jobs whose process died without an exit file (e.g. machine reboot).
 pub fn JobManager::relaunch(self : JobManager, now_ms : Int64) -> JobRelaunchReport {
   let adopted : Array[String] = []
   let finished : Array[String] = []
@@ -882,19 +928,22 @@ pub fn JobManager::relaunch(self : JobManager, now_ms : Int64) -> JobRelaunchRep
       JobState::Stopping => true
       _ => false
     }
+    let ours = match job.pgid {
+      Some(pgid) => self.still_ours(job, pgid)
+      None => false
+    }
     match self.read_exit_file(job.id) {
       Some(code) => {
+        if !ours {
+          job.pgid = None
+        }
         self.finalize_job_exit(job, Some(code), was_stopping, now_ms)
         finished.push(job.id)
         continue
       }
       None => ()
     }
-    let alive = match job.pgid {
-      Some(pgid) => pgid > 0 && (self.backend.kill_pid)(pgid, station_sys::SIG_PROBE, false) == 0
-      None => false
-    }
-    if alive {
+    if ours {
       match job.pgid {
         Some(pgid) => {
           self.followed_jobs.set(job.id, pgid)
@@ -903,10 +952,24 @@ pub fn JobManager::relaunch(self : JobManager, now_ms : Int64) -> JobRelaunchRep
         None => ()
       }
     } else if was_stopping {
+      // Clear pgid so finalize_job_exit never signals a reused PID!
+      job.pgid = None
       self.finalize_job_exit(job, None, true, now_ms)
       finished.push(job.id)
+    } else if sj_starts_with(job.id, "remote_") || sj_starts_with(job.session, "remote:") {
+      // Remote tasks are never re-spawned after loss (`jobs*.mbt:787-791`).
+      job.pgid = None
+      job.exit_code = None
+      job.state = JobState::Failed
+      job.ended_at = Some(now_ms)
+      job.next_restart_at = None
+      job.stop_deadline_at = None
+      self.persist_job(job)
+      (self.on_remote_changed)(job)
+      finished.push(job.id)
     } else {
-      // Process gone without exit file (machine restarted): relaunch in persistent mode.
+      // Non-remote process gone without exit file (machine restarted): relaunch in persistent mode.
+      job.pgid = None
       job.restarts = job.restarts + 1
       match self.spawn_job_record(job, now_ms, false) {
         Ok(_) => {
@@ -989,7 +1052,8 @@ pub fn JobManager::tick_restarts(self : JobManager, now_ms : Int64) -> Array[Str
   restarted
 }
 
-/// Escalates stopping jobs past `JOB_STOP_GRACE_MS` from `SIG_TERM` to `SIG_KILL` on the process group.
+/// Escalates stopping jobs and lingering exited process groups (`endGroup`) past `JOB_STOP_GRACE_MS`
+/// from `SIG_TERM` to `SIG_KILL` on the process group.
 pub fn JobManager::tick_stops(self : JobManager, now_ms : Int64) -> Array[String] {
   let escalated : Array[String] = []
   for i in 0..<self.job_ids.length() {
@@ -1023,6 +1087,26 @@ pub fn JobManager::tick_stops(self : JobManager, now_ms : Int64) -> Array[String
       None => ()
     }
   }
+  // Escalate lingering process groups from `finalize_job_exit` (`endGroup`) past grace period.
+  let kept_pgids : Array[Int] = []
+  for i in 0..<self.ending_group_pgids.length() {
+    let pgid = self.ending_group_pgids[i]
+    match self.ending_groups.get(pgid) {
+      Some(deadline) => {
+        if (self.backend.kill_pid)(pgid, station_sys::SIG_PROBE, true) != 0 {
+          self.ending_groups.remove(pgid)
+        } else if now_ms >= deadline {
+          let _ = (self.backend.kill_pid)(pgid, station_sys::SIG_KILL, true)
+          self.ending_groups.remove(pgid)
+          escalated.push("pgid:" + pgid.to_string())
+        } else {
+          kept_pgids.push(pgid)
+        }
+      }
+      None => ()
+    }
+  }
+  self.ending_group_pgids = kept_pgids
   escalated
 }
 
@@ -1393,8 +1477,19 @@ fn exit_file_job_id(name : String) -> Option[String] {
   }
 }
 
+fn state_file_job_id(name : String) -> Option[String] {
+  if sj_ends_with(name, ".json.tmp") {
+    Some(sj_slice_str(name, 0, name.length() - 9))
+  } else if sj_ends_with(name, ".json") {
+    Some(sj_slice_str(name, 0, name.length() - 5))
+  } else {
+    None
+  }
+}
+
 /// Rotates running job logs in place (`JOB_LOG_CAP`) and collects expired/orphan files in
-/// `jobs/logs/` (`.log`, `.log.1`, `.log.1.tmp`) and `jobs/exit/` (`<id>`, `<id>.tmp`, `<id>.lost`).
+/// `jobs/logs/` (`.log`, `.log.1`, `.log.1.tmp`), `jobs/exit/` (`<id>`, `<id>.tmp`, `<id>.lost`),
+/// and `jobs/state/` (`<id>.json`, `<id>.json.tmp`).
 pub fn JobManager::upkeep(self : JobManager, now_ms : Int64) -> JobUpkeepResult {
   let mut capped = 0
   for i in 0..<self.job_ids.length() {
@@ -1412,9 +1507,9 @@ pub fn JobManager::upkeep(self : JobManager, now_ms : Int64) -> JobUpkeepResult 
   }
   let collected_map : Map[String, Bool] = Map::new()
   let collected : Array[String] = []
-  let subs : Array[(String, Bool)] = [("logs", true), ("exit", false)]
+  let subs : Array[(String, Int)] = [("logs", 0), ("exit", 1), ("state", 2)]
   for si in 0..<subs.length() {
-    let (sub, is_logs) = subs[si]
+    let (sub, kind) = subs[si]
     let dir = nodepath::join(self.fs.sep, [self.jobs_dir, sub])
     let names = match (self.fs.read_dir)(dir) {
       Some(ns) => ns
@@ -1422,7 +1517,13 @@ pub fn JobManager::upkeep(self : JobManager, now_ms : Int64) -> JobUpkeepResult 
     }
     for i in 0..<names.length() {
       let name = names[i]
-      let id_opt = if is_logs { log_file_job_id(name) } else { exit_file_job_id(name) }
+      let id_opt = if kind == 0 {
+        log_file_job_id(name)
+      } else if kind == 1 {
+        exit_file_job_id(name)
+      } else {
+        state_file_job_id(name)
+      }
       let id = match id_opt {
         Some(v) => if v.length() > 0 { v } else { continue }
         None => continue

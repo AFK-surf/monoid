@@ -449,7 +449,10 @@ fn MemFs::to_port(self : MemFs) -> FsPort {
       }
     },
     exists: fn(p : String) -> Bool {
-      self.nodes.contains(norm_mem_path(p))
+      match stat_fn(p) {
+        Some(_) => true
+        None => false
+      }
     },
     now_ms: fn() -> Int64 {
       self.now_ms
@@ -457,12 +460,14 @@ fn MemFs::to_port(self : MemFs) -> FsPort {
   }
 }
 
-fn make_test_backend(
+fn make_test_backend_with_starts(
   base_env : Array[String] = ["PATH=/usr/bin:/bin", "HOME=/home/tester", "LANG=C.UTF-8"],
-) -> (ProcBackend, Array[(Int, Int)], Array[station_sys::SpawnOptions], Map[Int, Bool]) {
+  default_start_ms : Int64 = 1000.to_int64(),
+) -> (ProcBackend, Array[(Int, Int)], Array[station_sys::SpawnOptions], Map[Int, Bool], Map[Int, Int64]) {
   let killed_sigs : Array[(Int, Int)] = []
   let spawned_opts : Array[station_sys::SpawnOptions] = []
   let alive_pids : Map[Int, Bool] = Map::new()
+  let start_times : Map[Int, Int64] = Map::new()
   let mut next_pid = 500
   let mut tok_n = 0
   let backend = ProcBackend::{
@@ -471,12 +476,14 @@ fn make_test_backend(
       let pid = next_pid
       next_pid = next_pid + 1
       alive_pids.set(pid, true)
+      start_times.set(pid, default_start_ms)
       Ok(station_sys::ChildProcess::{ handle: pid.to_int64(), pid: pid })
     },
     kill_handle: fn(cp : station_sys::ChildProcess, sig : Int, _group : Bool) -> Int {
       killed_sigs.push((cp.pid, sig))
       if sig == station_sys::SIG_KILL {
         alive_pids.remove(cp.pid)
+        start_times.remove(cp.pid)
       }
       0
     },
@@ -488,9 +495,13 @@ fn make_test_backend(
         killed_sigs.push((pid, sig))
         if sig == station_sys::SIG_KILL {
           alive_pids.remove(pid)
+          start_times.remove(pid)
         }
         0
       }
+    },
+    proc_start_time_ms: fn(pid : Int) -> Option[Int64] {
+      start_times.get(pid)
     },
     base_env: fn() -> Array[String] { base_env },
     random_token: fn() -> Result[String, String] {
@@ -499,7 +510,14 @@ fn make_test_backend(
       Ok(pad + tok_n.to_string())
     },
   }
-  (backend, killed_sigs, spawned_opts, alive_pids)
+  (backend, killed_sigs, spawned_opts, alive_pids, start_times)
+}
+
+fn make_test_backend(
+  base_env : Array[String] = ["PATH=/usr/bin:/bin", "HOME=/home/tester", "LANG=C.UTF-8"],
+) -> (ProcBackend, Array[(Int, Int)], Array[station_sys::SpawnOptions], Map[Int, Bool]) {
+  let (b, ks, so, ap, _st) = make_test_backend_with_starts(base_env)
+  (b, ks, so, ap)
 }
 
 // ---------------------------------------------------------------------------
@@ -881,6 +899,10 @@ test "JobManager piped mode waits for stdout+stderr EOF, stop() never kills Queu
   expect(job_state_to_str(piped.state) == "running", "waits for stdout/stderr EOF before finalizing")
   let _ = jm.handle_sys_event(ev_id, station_sys::SysEvent::ProcStdout("trailing_line\n".to_bytes()), 1105.to_int64())
   let _ = jm.handle_sys_event(ev_id, station_sys::SysEvent::ProcStdoutEof, 1110.to_int64())
+  match piped.pgid {
+    Some(p) => _alive.remove(p)
+    None => ()
+  }
   let _ = jm.handle_sys_event(ev_id, station_sys::SysEvent::ProcStderrEof, 1115.to_int64())
   expect(job_state_to_str(piped.state) == "queued", "web service enters Queued backoff after all 3 events")
 
@@ -1124,4 +1146,306 @@ test "measure, dirsync_blob_id, STORAGE_MANIFEST, and preview codec" {
     Some((kind, payload)) => expect(kind == PREVIEW_FRAME_TEXT && sj_bytes_to_str(payload) == "hello", "frame roundtrip")
     None => panic("expected decoded frame")
   }
+}
+
+// ---------------------------------------------------------------------------
+// 6. R2 Review Regression Tests (stillOurs PID reuse, remote_* never respawned,
+//    adopt_existing truncation + active job protection, cooperative step_upkeep /
+//    step_sweep, endGroup SIGKILL escalation, jobs/state pruning, dangling symlink)
+// ---------------------------------------------------------------------------
+
+test "relaunch verifies start_time_ms (stillOurs prevents PID-reuse hijack) and never respawns lost remote_* jobs" {
+  let mfs = MemFs::new(1000.to_int64())
+  let fs = mfs.to_port()
+  let (backend, killed_sigs, spawned_opts, alive_pids, start_times) = make_test_backend_with_starts(
+    ["PATH=/usr/bin:/bin"],
+    1000.to_int64(),
+  )
+  let remote_events : Array[String] = []
+  let jm = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(j : JobRecord) -> Unit { remote_events.push(j.id + ":" + job_state_to_str(j.state)) },
+  )
+
+  // Start a regular job (pid 500) and a remote_* job (pid 501)
+  let j_norm = match jm.start(
+    JobStartRequest::{
+      session: "chat:1",
+      name: "norm",
+      command: "sleep 60",
+      cwd: "/w",
+      port: None,
+      watch: false,
+      id: None,
+      queued: false,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    1000.to_int64(),
+  ) {
+    Ok(j) => j
+    Err(e) => panic("start norm failed: " + e)
+  }
+  let j_rem = match jm.start(
+    JobStartRequest::{
+      session: "remote:ws:st:s1",
+      name: "build",
+      command: "cargo build",
+      cwd: "/data/remote/sessions/r1/work",
+      port: None,
+      watch: false,
+      id: Some("remote_task1"),
+      queued: true,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    1000.to_int64(),
+  ) {
+    Ok(j) => j
+    Err(e) => panic("start remote failed: " + e)
+  }
+  let p_norm = match j_norm.pgid {
+    Some(p) => p
+    None => 0
+  }
+  let p_rem = match j_rem.pgid {
+    Some(p) => p
+    None => 0
+  }
+
+  // Simulate PID reuse on p_norm: OS assigned pid 500 to an unrelated process started 60s later!
+  start_times.set(p_norm, 61000.to_int64())
+  // Simulate p_rem completely gone without an exit file
+  alive_pids.remove(p_rem)
+  start_times.remove(p_rem)
+
+  let spawns_before = spawned_opts.length()
+  let kills_before = killed_sigs.length()
+
+  let jm2 = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(j : JobRecord) -> Unit { remote_events.push(j.id + ":" + job_state_to_str(j.state)) },
+  )
+  let rel = jm2.relaunch(62000.to_int64())
+
+  // 1. Reused PID was NOT adopted and NEVER signalled!
+  expect(rel.adopted.length() == 0, "reused PID must NOT be adopted")
+  expect(killed_sigs.length() == kills_before, "reused PID must NEVER be signalled")
+  // Non-remote job was relaunched cleanly (1 new spawn)
+  expect(rel.relaunched.length() == 1 && rel.relaunched[0] == j_norm.id, "non-remote job relaunched")
+  expect(spawned_opts.length() == spawns_before + 1, "only non-remote job spawned")
+
+  // 2. Lost remote_* job was marked Failed, triggered on_remote_changed, and NEVER respawned!
+  expect(rel.finished.length() == 1 && rel.finished[0] == "remote_task1", "lost remote job finished")
+  match jm2.get("remote_task1") {
+    Some(r) => expect(job_state_to_str(r.state) == "failed", "lost remote job marked Failed")
+    None => panic("missing remote_task1")
+  }
+  expect(remote_events.length() == 1 && remote_events[0] == "remote_task1:failed", "on_remote_changed fired")
+}
+
+test "RemoteManager::adopt_existing preserves truncated rooms and rooms with active remote_* jobs" {
+  let now : Int64 = 100.to_int64() * DAY_MS
+  let mfs = MemFs::new(now)
+  let ancient = 1000.to_int64()
+
+  // Room 1: 6 ancient entries so latest_in_checked(..., limit=3) truncates -> must preserve (last_used_at = now)!
+  mfs.put_dir("/data/remote/sessions/room_big", 1.to_int64(), ancient)
+  mfs.put_dir("/data/remote/sessions/room_big/work", 1.to_int64(), ancient)
+  mfs.put_file("/data/remote/sessions/room_big/work/a.txt", "0123456789", ancient)
+  mfs.put_file("/data/remote/sessions/room_big/work/b.txt", "0123456789", ancient)
+  mfs.put_file("/data/remote/sessions/room_big/work/c.txt", "0123456789", ancient)
+  mfs.put_file("/data/remote/sessions/room_big/work/d.txt", "0123456789", ancient)
+
+  // Room 2: ancient room with a live adopted remote_* job running inside it -> must NEVER be evicted!
+  mfs.put_dir("/data/remote/sessions/room_live", 1.to_int64(), ancient)
+  mfs.put_dir("/data/remote/sessions/room_live/work", 1.to_int64(), ancient)
+  mfs.put_file("/data/remote/sessions/room_live/work/x.txt", "01234567890123456789", ancient)
+
+  // Room 3: ancient idle room with 3 entries (within limit=3, no live job) -> SHOULD be evicted!
+  mfs.put_dir("/data/remote/sessions/room_dead", 1.to_int64(), ancient)
+  mfs.put_dir("/data/remote/sessions/room_dead/work", 1.to_int64(), ancient)
+  mfs.put_file("/data/remote/sessions/room_dead/work/old.txt", "01234567890123456789", ancient)
+
+  let fs = mfs.to_port()
+  let (backend, _ks, _so, _ap, _st) = make_test_backend_with_starts(["PATH=/usr/bin"], now)
+  let jm = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(_j : JobRecord) -> Unit {},
+  )
+  let _ = jm.start(
+    JobStartRequest::{
+      session: "remote:ws:st:s1",
+      name: "live-build",
+      command: "sleep 60",
+      cwd: "/data/remote/sessions/room_live/work",
+      port: None,
+      watch: false,
+      id: Some("remote_live1"),
+      queued: true,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    now,
+  )
+  let rm = RemoteManager::new("/data", fs, jm, noop_remote_callbacks())
+  let adopted = rm.adopt_existing(now, 3)
+  expect(adopted == 3, "adopted 3 rooms")
+  match rm.rooms.get("room_big") {
+    Some(r) => expect(r.last_used_at == now, "truncated room preserved with now_ms")
+    None => panic("missing room_big")
+  }
+  match rm.rooms.get("room_live") {
+    Some(r) => expect(r.last_used_at == now, "room with live remote job preserved with now_ms")
+    None => panic("missing room_live")
+  }
+
+  // Tiny disk budget (total = 10 bytes -> budget = 1 byte) + cooperative step_sweep with budget=2 entries/tick!
+  let cur = rm.begin_sweep(now, false, Some(10.to_int64()))
+  let mut yields = 0
+  let mut rep_opt : Option[RemoteSweepReport] = None
+  for _ in 0..<200 {
+    match rm.step_sweep(cur, 2) {
+      SweepStep::Yielded(_) => yields = yields + 1
+      SweepStep::Done(r) => {
+        rep_opt = Some(r)
+        break
+      }
+    }
+  }
+  expect(yields >= 2, "step_sweep yielded across multiple ticks")
+  match rep_opt {
+    Some(rep) => {
+      expect(rep.rooms_removed.length() == 1 && rep.rooms_removed[0] == "room_dead", "only room_dead removed")
+    }
+    None => panic("step_sweep did not finish")
+  }
+  expect((fs.exists)("/data/remote/sessions/room_big/work/a.txt"), "truncated room_big kept")
+  expect((fs.exists)("/data/remote/sessions/room_live/work/x.txt"), "active room_live kept")
+  expect(!(fs.exists)("/data/remote/sessions/room_dead"), "idle room_dead removed")
+}
+
+test "Upkeep step_upkeep yields across ticks, prunes stale jobs/state/*.json, finalize_job_exit escalates SIGKILL, and dangling symlink exists=false" {
+  let now : Int64 = 50.to_int64() * DAY_MS
+  let mfs = MemFs::new(now)
+  // Populate thumbs to force multi-tick stepping in Upkeep::step_upkeep(budget=2)
+  mfs.put_file("/data/thumbs/t1.png", "aaaa", now - 5.to_int64())
+  mfs.put_file("/data/thumbs/t2.png", "bbbb", now - 4.to_int64())
+  mfs.put_file("/data/thumbs/t3.png", "cccc", now - 3.to_int64())
+  mfs.put_file("/data/thumbs/t4.png", "dddd", now - 2.to_int64())
+  // Populate jobs/state/*.json: one expired finished, one active running, one orphan .tmp
+  let old_ts = now - (20.to_int64() * DAY_MS)
+  mfs.put_file(
+    "/data/jobs/state/old_done.json",
+    "{\"id\":\"old_done\",\"state\":\"exited\",\"endedAt\":" + old_ts.to_string() + "}",
+    old_ts,
+  )
+  mfs.put_file(
+    "/data/jobs/state/active_run.json",
+    "{\"id\":\"active_run\",\"state\":\"running\",\"endedAt\":null}",
+    old_ts,
+  )
+  mfs.put_file("/data/jobs/state/crash.json.tmp", "{", now - (2.to_int64() * HOUR_MS))
+  // Dangling symlink check: lstat = Some(link), readlink = Some(target), exists = false
+  mfs.put_link("/data/dangling", "/data/does_not_exist")
+
+  let fs = mfs.to_port()
+  expect(!(fs.exists)("/data/dangling"), "dangling symlink exists() is false")
+  match (fs.lstat)("/data/dangling") {
+    Some(st) => expect(st.is_symlink(), "dangling symlink lstat is link")
+    None => panic("expected lstat on dangling symlink")
+  }
+  match (fs.readlink)("/data/dangling") {
+    Some(t) => expect(t == "/data/does_not_exist", "readlink returns raw target")
+    None => panic("expected readlink on dangling symlink")
+  }
+
+  let up = Upkeep::new("/data", 42, fs)
+  let cur = up.begin_round(now, empty_upkeep_hooks())
+  let mut yields = 0
+  let mut urep : Option[UpkeepReport] = None
+  for _ in 0..<100 {
+    match up.step_upkeep(cur, 2) {
+      UpkeepStep::Yielded(_) => yields = yields + 1
+      UpkeepStep::Done(r) => {
+        urep = Some(r)
+        break
+      }
+    }
+  }
+  expect(yields >= 2, "step_upkeep yielded across multiple ticks")
+  match urep {
+    Some(r) => expect(r.job_states_pruned == 2, "pruned expired exited state + orphan .tmp")
+    None => panic("step_upkeep did not finish")
+  }
+  expect(!(fs.exists)("/data/jobs/state/old_done.json"), "expired job state removed")
+  expect(!(fs.exists)("/data/jobs/state/crash.json.tmp"), "orphan .tmp removed")
+  expect((fs.exists)("/data/jobs/state/active_run.json"), "active job state kept")
+
+  // finalize_job_exit lingering process group: SIGTERM on exit, SIGKILL in tick_stops after grace
+  let (backend, killed_sigs, _so, alive_pids, _st) = make_test_backend_with_starts(["PATH=/usr/bin"], 1000.to_int64())
+  let jm = JobManager::new(
+    "/data",
+    fs,
+    backend,
+    "",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(_j : JobRecord) -> Unit {},
+  )
+  let j = match jm.start(
+    JobStartRequest::{
+      session: "s1",
+      name: "subproc",
+      command: "bg & exit 0",
+      cwd: "/",
+      port: None,
+      watch: false,
+      id: None,
+      queued: false,
+      screen: false,
+      small: false,
+      pipe_stdio: false,
+    },
+    1000.to_int64(),
+  ) {
+    Ok(x) => x
+    Err(e) => panic("start failed: " + e)
+  }
+  let pgid = match j.pgid {
+    Some(p) => p
+    None => 0
+  }
+  // Leader exits while process group is still alive (alive_pids still contains pgid)
+  let _ = jm.handle_sys_event(
+    1000.to_int64(),
+    station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 0, signal: 0, signal_name: "" }),
+    1500.to_int64(),
+  )
+  // Must have sent SIG_TERM immediately and armed grace deadline
+  let mut saw_term = false
+  for i in 0..<killed_sigs.length() {
+    let (p, sig) = killed_sigs[i]
+    if p == pgid && sig == station_sys::SIG_TERM {
+      saw_term = true
+    }
+  }
+  expect(saw_term, "finalize_job_exit sent SIG_TERM to lingering group")
+  expect(jm.tick_stops(1500.to_int64() + 1000.to_int64()).length() == 0, "no SIG_KILL before grace")
+  let esc = jm.tick_stops(1500.to_int64() + JOB_STOP_GRACE_MS)
+  expect(esc.length() == 1 && !alive_pids.contains(pgid), "tick_stops escalated lingering group to SIG_KILL")
 }

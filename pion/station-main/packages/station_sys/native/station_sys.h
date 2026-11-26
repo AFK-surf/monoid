@@ -138,6 +138,7 @@ int64_t sts_flock_try(const char *path);
 int32_t sts_flock_unlock(int64_t handle);
 int32_t sts_unlink(const char *path);
 int32_t sts_rmdir(const char *path);
+void *sts_readlink(const char *path, int64_t *out_len);
 void *sts_realpath(const char *path, int64_t *out_len);
 void *sts_lstat(const char *path, int64_t *out_len);
 int32_t sts_chmod(const char *path, int32_t mode);

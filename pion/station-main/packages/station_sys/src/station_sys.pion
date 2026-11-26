@@ -42,6 +42,7 @@ extern "C" fn sts_flock_try(path : Ptr) -> Int64
 extern "C" fn sts_flock_unlock(handle : Int64) -> Int
 extern "C" fn sts_unlink(path : Ptr) -> Int
 extern "C" fn sts_rmdir(path : Ptr) -> Int
+extern "C" fn sts_readlink(path : Ptr, out_len : Ptr) -> Ptr
 extern "C" fn sts_realpath(path : Ptr, out_len : Ptr) -> Ptr
 extern "C" fn sts_lstat(path : Ptr, out_len : Ptr) -> Ptr
 extern "C" fn sts_chmod(path : Ptr, mode : Int) -> Int
@@ -612,6 +613,16 @@ pub fn rmdir(path : String) -> Bool {
   let ok = sts_rmdir(path.as_cstr())
   let _ = path.length()
   ok != 0
+}
+
+pub fn readlink(path : String) -> Option[String] {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_readlink(path.as_cstr(), out_len)
+  let _ = path.length()
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  take_owned_string(p, n)
 }
 
 pub fn realpath(path : String) -> Option[String] {

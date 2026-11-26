@@ -1679,6 +1679,9 @@ int32_t sts_proc_close_stdin(int64_t handle) {
 }
 
 int32_t sts_proc_kill_handle(int64_t handle, int32_t sig, int32_t group) {
+    if (sig == STS_SIG_STOP || sig == STS_SIG_CONT) {
+        return -1;
+    }
     win_proc_t *p = win_proc_get(handle);
     if (p == NULL) return -1;
     AcquireSRWLockExclusive(&p->kill_lock);
@@ -1721,6 +1724,9 @@ int32_t sts_proc_close(int64_t handle) {
 
 int32_t sts_proc_kill(int32_t pid, int32_t sig, int32_t group) {
     if (pid <= 0) return -1;
+    if (sig == STS_SIG_STOP || sig == STS_SIG_CONT) {
+        return -1;
+    }
     if (sig == STS_SIG_PROBE) {
         HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
         if (h == NULL) return GetLastError() == ERROR_ACCESS_DENIED ? 0 : -1;
@@ -2087,6 +2093,12 @@ int32_t sts_rmdir(const char *path) {
     return ok ? 1 : 0;
 }
 
+void *sts_readlink(const char *path, int64_t *out_len) {
+    (void)path;
+    if (out_len != NULL) *out_len = 0;
+    return NULL;
+}
+
 void *sts_realpath(const char *path, int64_t *out_len) {
     if (out_len != NULL) *out_len = 0;
     if (path == NULL || path[0] == '\0') return NULL;
@@ -2119,7 +2131,10 @@ void *sts_realpath(const char *path, int64_t *out_len) {
         return NULL;
     }
     wchar_t *src = buf;
-    if (wcsncmp(src, L"\\\\?\\", 4) == 0) {
+    if (wcsncmp(src, L"\\\\?\\UNC\\", 8) == 0) {
+        src[6] = L'\\';
+        src += 6;
+    } else if (wcsncmp(src, L"\\\\?\\", 4) == 0) {
         src += 4;
     }
     char *u8 = wide_to_utf8(src);
@@ -5282,6 +5297,29 @@ int32_t sts_unlink(const char *path) {
 int32_t sts_rmdir(const char *path) {
     if (path == NULL || path[0] == '\0') return 0;
     return rmdir(path) == 0 ? 1 : 0;
+}
+
+void *sts_readlink(const char *path, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    if (path == NULL || path[0] == '\0') return NULL;
+    size_t cap = 512;
+    while (cap <= 65536) {
+        char *buf = (char *)malloc(cap);
+        if (buf == NULL) return NULL;
+        ssize_t n = readlink(path, buf, cap);
+        if (n < 0) {
+            free(buf);
+            return NULL;
+        }
+        if ((size_t)n < cap) {
+            void *res = dup_bytes(buf, (size_t)n, out_len);
+            free(buf);
+            return res;
+        }
+        free(buf);
+        cap *= 2;
+    }
+    return NULL;
 }
 
 void *sts_realpath(const char *path, int64_t *out_len) {

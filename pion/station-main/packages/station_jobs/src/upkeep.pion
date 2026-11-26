@@ -1137,6 +1137,76 @@ pub fn empty_upkeep_hooks() -> UpkeepHooks {
   }
 }
 
+/// Removes stale or orphaned `<data>/jobs/state/*.json` and `*.json.tmp` files whose job is
+/// no longer active and past retention (`JOB_LOGS_KEPT_MS` for terminal records, `JOB_FILES_ORPHAN_MS`
+/// for `.tmp` or unreadable files).
+pub fn prune_stale_job_states(
+  fs : FsPort,
+  data_dir : String,
+  now_ms : Int64,
+  keep_ms : Int64 = 1209600000.to_int64(),
+  orphan_ms : Int64 = 3600000.to_int64(),
+) -> Array[String] {
+  let state_dir = nodepath::join(fs.sep, [data_dir, "jobs", "state"])
+  let names = match (fs.read_dir)(state_dir) {
+    Some(ns) => ns
+    None => return []
+  }
+  let gone : Array[String] = []
+  for i in 0..<names.length() {
+    let n = names[i]
+    let full = nodepath::join(fs.sep, [state_dir, n])
+    if sj_ends_with(n, ".json.tmp") {
+      match (fs.lstat)(full) {
+        Some(st) => {
+          if now_ms - st.mtime_ms >= orphan_ms && (fs.remove_file)(full) {
+            gone.push(n)
+          }
+        }
+        None => ()
+      }
+      continue
+    }
+    if !sj_ends_with(n, ".json") {
+      continue
+    }
+    let st = match (fs.lstat)(full) {
+      Some(s) => s
+      None => continue
+    }
+    if !st.is_file() || st.is_symlink() {
+      continue
+    }
+    let should_remove = match (fs.read_file)(full) {
+      Some(text) => {
+        match base_codec::json_parse(text) {
+          base_codec::JsonParseResult::Ok(j) => {
+            let state_s = match base_codec::json_get(j, "state") {
+              Some(base_codec::Json::Str(s)) => s
+              _ => ""
+            }
+            if state_s == "queued" || state_s == "running" || state_s == "stopping" {
+              false
+            } else {
+              let ref_ts = match json_opt_i64(j, "endedAt") {
+                Some(t) => t
+                None => st.mtime_ms
+              }
+              now_ms - ref_ts >= keep_ms
+            }
+          }
+          _ => now_ms - st.mtime_ms >= orphan_ms
+        }
+      }
+      None => now_ms - st.mtime_ms >= orphan_ms
+    }
+    if should_remove && (fs.remove_file)(full) {
+      gone.push(n)
+    }
+  }
+  gone
+}
+
 pub struct UpkeepReport {
   pub station_log_rotated : Bool
   pub update_log_rotated : Bool
@@ -1148,7 +1218,37 @@ pub struct UpkeepReport {
   pub board_files_removed : Int
   pub repo_worktrees_pruned : Int
   pub repo_bundles_pruned : Int
+  pub job_states_pruned : Int
   pub state_persisted : Bool
+}
+
+pub enum UpkeepStep {
+  Yielded(Int)
+  Done(UpkeepReport)
+}
+
+/// Resumable cooperative cursor for `Upkeep::step_upkeep`, slicing directory scans & deletions
+/// into chunks of at most `budget` entries (default `WALK_YIELD_EVERY = 256`) per event-loop turn.
+pub struct UpkeepCursor {
+  now_ms : Int64
+  hooks : UpkeepHooks
+  mut phase : Int
+  mut thumbs_cursor : Option[WalkCursor]
+  thumbs_files : Array[AgedFile]
+  mut thumbs_total : Int64
+  mut thumbs_freed : Int64
+  mut station_log_rotated : Bool
+  mut update_log_rotated : Bool
+  mut wal_checkpointed : Bool
+  mut node_parts_removed : Int
+  mut config_backups_removed : Int
+  mut orphan_marks_removed : Int
+  mut board_files_removed : Int
+  mut repo_worktrees_pruned : Int
+  mut repo_bundles_pruned : Int
+  mut job_states_pruned : Int
+  pub mut processed : Int
+  mut finished : Option[UpkeepReport]
 }
 
 pub struct Upkeep {
@@ -1201,12 +1301,13 @@ pub fn Upkeep::renewables(self : Upkeep, now_ms : Int64) -> UpkeepReport {
     board_files_removed: 0,
     repo_worktrees_pruned: 0,
     repo_bundles_pruned: 0,
+    job_states_pruned: 0,
     state_persisted: false,
   }
 }
 
-/// Runs one full upkeep round, enforcing every bounded-ephemeral cap and daily cadence.
-pub fn Upkeep::run_round(self : Upkeep, now_ms : Int64, hooks : UpkeepHooks) -> UpkeepReport {
+/// Starts a cooperative upkeep round. Drive with `Upkeep::step_upkeep(cur, budget)` on each tick.
+pub fn Upkeep::begin_round(self : Upkeep, now_ms : Int64, hooks : UpkeepHooks) -> UpkeepCursor {
   if !self.state_loaded {
     let saved = read_upkeep_state(self.fs, self.data_dir)
     match self.last_repo_branches_at {
@@ -1219,148 +1320,309 @@ pub fn Upkeep::run_round(self : Upkeep, now_ms : Int64, hooks : UpkeepHooks) -> 
     }
     self.state_loaded = true
   }
-
-  let st_rot = match rotate_in_place(
-    self.fs,
-    nodepath::join(self.fs.sep, [self.data_dir, "stillfail.log"]),
-    STATION_LOG_CAP,
-  ) {
-    Ok(v) => v
-    Err(_) => false
+  UpkeepCursor::{
+    now_ms: now_ms,
+    hooks: hooks,
+    phase: 0,
+    thumbs_cursor: None,
+    thumbs_files: [],
+    thumbs_total: 0.to_int64(),
+    thumbs_freed: 0.to_int64(),
+    station_log_rotated: false,
+    update_log_rotated: false,
+    wal_checkpointed: false,
+    node_parts_removed: 0,
+    config_backups_removed: 0,
+    orphan_marks_removed: 0,
+    board_files_removed: 0,
+    repo_worktrees_pruned: 0,
+    repo_bundles_pruned: 0,
+    job_states_pruned: 0,
+    processed: 0,
+    finished: None,
   }
-  let upd_rot = match rotate_in_place(
-    self.fs,
-    nodepath::join(self.fs.sep, [self.data_dir, "run", "update.log"]),
-    UPDATE_LOG_CAP,
-  ) {
-    Ok(v) => v
-    Err(_) => false
-  }
+}
 
-  match hooks.on_runners {
-    Some(f) => f(now_ms)
+/// Advances one upkeep round by at most `budget` entries (default `WALK_YIELD_EVERY = 256`) before
+/// returning `UpkeepStep::Yielded` so the main event loop stays responsive.
+pub fn Upkeep::step_upkeep(
+  self : Upkeep,
+  cur : UpkeepCursor,
+  budget : Int = WALK_YIELD_EVERY,
+) -> UpkeepStep {
+  match cur.finished {
+    Some(rep) => return UpkeepStep::Done(rep)
     None => ()
   }
-  match hooks.on_jobs {
-    Some(f) => f(now_ms)
-    None => ()
-  }
-  match hooks.on_remote {
-    Some(f) => {
-      let disk = match hooks.disk_probe {
-        Some(dp) => dp(self.data_dir)
-        None => ParsedDisk::{ free: None, total: None }
-      }
-      f(now_ms, disk.free, disk.total)
+  let limit = if budget > 0 { budget } else { WALK_YIELD_EVERY }
+  let mut used = 0
+
+  while true {
+    if used >= limit {
+      return UpkeepStep::Yielded(cur.processed)
     }
-    None => ()
-  }
-
-  let mut wal_did = false
-  match hooks.on_checkpoint {
-    Some(f) => {
-      let wal_path = nodepath::join(self.fs.sep, [self.data_dir, "stillfail.db-wal"])
-      match (self.fs.stat)(wal_path) {
-        Some(st) => {
-          if st.size > WAL_CAP {
-            f()
-            wal_did = true
+    if cur.phase == 0 {
+      // Phase 0: log rotation + WAL checkpoint + callbacks
+      cur.station_log_rotated = match rotate_in_place(
+        self.fs,
+        nodepath::join(self.fs.sep, [self.data_dir, "stillfail.log"]),
+        STATION_LOG_CAP,
+      ) {
+        Ok(v) => v
+        Err(_) => false
+      }
+      cur.update_log_rotated = match rotate_in_place(
+        self.fs,
+        nodepath::join(self.fs.sep, [self.data_dir, "run", "update.log"]),
+        UPDATE_LOG_CAP,
+      ) {
+        Ok(v) => v
+        Err(_) => false
+      }
+      match cur.hooks.on_runners {
+        Some(f) => f(cur.now_ms)
+        None => ()
+      }
+      match cur.hooks.on_jobs {
+        Some(f) => f(cur.now_ms)
+        None => ()
+      }
+      match cur.hooks.on_remote {
+        Some(f) => {
+          let disk = match cur.hooks.disk_probe {
+            Some(dp) => dp(self.data_dir)
+            None => ParsedDisk::{ free: None, total: None }
+          }
+          f(cur.now_ms, disk.free, disk.total)
+        }
+        None => ()
+      }
+      match cur.hooks.on_checkpoint {
+        Some(f) => {
+          let wal_path = nodepath::join(self.fs.sep, [self.data_dir, "stillfail.db-wal"])
+          match (self.fs.stat)(wal_path) {
+            Some(st) => {
+              if st.size > WAL_CAP {
+                f()
+                cur.wal_checkpointed = true
+              }
+            }
+            None => ()
           }
         }
         None => ()
       }
-    }
-    None => ()
-  }
-
-  let thumbs_freed = cap_by_age(
-    self.fs,
-    nodepath::join(self.fs.sep, [self.data_dir, "thumbs"]),
-    THUMBS_CAP,
-  )
-  let node_parts = remove_stale(
-    self.fs,
-    nodepath::join(self.fs.sep, [self.data_dir, "node"]),
-    ".part-",
-    NODE_PART_MS,
-    now_ms,
-  )
-  let cfg_baks = keep_newest(self.fs, self.data_dir, "config.json.bak-", CONFIG_BACKUPS_KEPT)
-  let marks = orphan_marks(
-    self.fs,
-    nodepath::join(self.fs.sep, [self.data_dir, "transcript-marks"]),
-  )
-  let board_gone = gone_board_files(
-    self.fs,
-    nodepath::join(self.fs.sep, [self.data_dir, "board-files"]),
-    BOARD_FILES_GONE_MS,
-    now_ms,
-  )
-  let wt_pruned = prune_repo_worktrees(self.fs, self.data_dir)
-  let bundles_pruned = prune_expired_repo_bundles(self.fs, self.data_dir, now_ms, REPO_BUNDLE_MS)
-
-  let mut state_changed = false
-  let mut patch_branches : Option[Option[Int64]] = None
-  let mut patch_orphans : Option[Option[Int64]] = None
-
-  let due_branches = match self.last_repo_branches_at {
-    None => true
-    Some(last) => now_ms - last >= REPO_BRANCHES_EVERY_MS
-  }
-  if due_branches {
-    self.last_repo_branches_at = Some(now_ms)
-    patch_branches = Some(Some(now_ms))
-    state_changed = true
-    match hooks.on_repo_branches {
-      Some(f) => f(now_ms)
-      None => ()
-    }
-  }
-
-  let due_orphans = match self.last_orphan_rooms_at {
-    None => true
-    Some(last) => now_ms - last >= ORPHAN_ROOM_EVERY_MS
-  }
-  if due_orphans {
-    match hooks.on_orphan_rooms {
-      Some(f) => {
-        self.last_orphan_rooms_at = Some(now_ms)
-        patch_orphans = Some(Some(now_ms))
-        state_changed = true
-        f(now_ms)
+      cur.phase = 1
+      used = used + 1
+      cur.processed = cur.processed + 1
+    } else if cur.phase == 1 {
+      // Phase 1: cooperative WalkCursor scan of `<data>/thumbs`
+      let wc = match cur.thumbs_cursor {
+        Some(c) => c
+        None => {
+          let thumbs_dir = nodepath::join(self.fs.sep, [self.data_dir, "thumbs"])
+          let opts = WalkOptions::{
+            same_device: true,
+            max_entries: WALK_MAX_ENTRIES,
+            max_depth: 1,
+            max_duration_ms: WALK_MAX_DURATION_MS,
+            yield_every: limit,
+            need_stat: true,
+            follow_root: false,
+            follow_links: false,
+          }
+          let c = WalkCursor::new(self.fs, [thumbs_dir], opts)
+          cur.thumbs_cursor = Some(c)
+          c
+        }
       }
-      None => ()
+      let before = wc.visited
+      let rem = limit - used
+      match wc.step(fn(e : WalkEntry) -> VisitAction {
+        if e.depth == 1 && e.file && !e.symlink {
+          match e.stats {
+            Some(st) => {
+              cur.thumbs_total = cur.thumbs_total + st.size
+              cur.thumbs_files.push(AgedFile::{ path: e.path, bytes: st.size, mtime_ms: st.mtime_ms })
+            }
+            None => ()
+          }
+        }
+        VisitAction::Continue
+      }, rem, false) {
+        WalkStep::Yielded(_) => {
+          let delta = wc.visited - before
+          let inc = if delta > 0 { delta } else { 1 }
+          used = used + inc
+          cur.processed = cur.processed + inc
+          return UpkeepStep::Yielded(cur.processed)
+        }
+        WalkStep::Done(_) => {
+          let delta = wc.visited - before
+          let inc = if delta > 0 { delta } else { 1 }
+          used = used + inc
+          cur.processed = cur.processed + inc
+          if cur.thumbs_total > THUMBS_CAP {
+            for i in 1..<cur.thumbs_files.length() {
+              let item = cur.thumbs_files[i]
+              let mut j = i - 1
+              while j >= 0 && cur.thumbs_files[j].mtime_ms > item.mtime_ms {
+                cur.thumbs_files[j + 1] = cur.thumbs_files[j]
+                j = j - 1
+              }
+              cur.thumbs_files[j + 1] = item
+            }
+            for i in 0..<cur.thumbs_files.length() {
+              if cur.thumbs_total <= THUMBS_CAP {
+                break
+              }
+              let f = cur.thumbs_files[i]
+              let _ = (self.fs.remove_file)(f.path)
+              cur.thumbs_total = cur.thumbs_total - f.bytes
+              cur.thumbs_freed = cur.thumbs_freed + f.bytes
+            }
+          }
+          cur.thumbs_cursor = None
+          cur.phase = 2
+        }
+      }
+    } else if cur.phase == 2 {
+      // Phase 2: node parts + config backups + orphan marks + board files
+      let node_parts = remove_stale(
+        self.fs,
+        nodepath::join(self.fs.sep, [self.data_dir, "node"]),
+        ".part-",
+        NODE_PART_MS,
+        cur.now_ms,
+      )
+      cur.node_parts_removed = node_parts.length()
+      let cfg_baks = keep_newest(self.fs, self.data_dir, "config.json.bak-", CONFIG_BACKUPS_KEPT)
+      cur.config_backups_removed = cfg_baks.length()
+      let marks = orphan_marks(
+        self.fs,
+        nodepath::join(self.fs.sep, [self.data_dir, "transcript-marks"]),
+      )
+      cur.orphan_marks_removed = marks.length()
+      let board_gone = gone_board_files(
+        self.fs,
+        nodepath::join(self.fs.sep, [self.data_dir, "board-files"]),
+        BOARD_FILES_GONE_MS,
+        cur.now_ms,
+      )
+      cur.board_files_removed = board_gone.length()
+      cur.phase = 3
+      let inc = 1 + cur.node_parts_removed + cur.config_backups_removed + cur.orphan_marks_removed + cur.board_files_removed
+      used = used + inc
+      cur.processed = cur.processed + inc
+    } else if cur.phase == 3 {
+      // Phase 3: repo worktrees + repo bundles + stale jobs/state/*.json
+      let wt_pruned = prune_repo_worktrees(self.fs, self.data_dir)
+      cur.repo_worktrees_pruned = wt_pruned.length()
+      let bundles_pruned = prune_expired_repo_bundles(self.fs, self.data_dir, cur.now_ms, REPO_BUNDLE_MS)
+      cur.repo_bundles_pruned = bundles_pruned.length()
+      let job_states = prune_stale_job_states(self.fs, self.data_dir, cur.now_ms)
+      cur.job_states_pruned = job_states.length()
+      cur.phase = 4
+      let inc = 1 + cur.repo_worktrees_pruned + cur.repo_bundles_pruned + cur.job_states_pruned
+      used = used + inc
+      cur.processed = cur.processed + inc
+    } else {
+      // Phase 4: daily cadence + upkeep-state persistence
+      let mut state_changed = false
+      let mut patch_branches : Option[Option[Int64]] = None
+      let mut patch_orphans : Option[Option[Int64]] = None
+
+      let due_branches = match self.last_repo_branches_at {
+        None => true
+        Some(last) => cur.now_ms - last >= REPO_BRANCHES_EVERY_MS
+      }
+      if due_branches {
+        self.last_repo_branches_at = Some(cur.now_ms)
+        patch_branches = Some(Some(cur.now_ms))
+        state_changed = true
+        match cur.hooks.on_repo_branches {
+          Some(f) => f(cur.now_ms)
+          None => ()
+        }
+      }
+
+      let due_orphans = match self.last_orphan_rooms_at {
+        None => true
+        Some(last) => cur.now_ms - last >= ORPHAN_ROOM_EVERY_MS
+      }
+      if due_orphans {
+        match cur.hooks.on_orphan_rooms {
+          Some(f) => {
+            self.last_orphan_rooms_at = Some(cur.now_ms)
+            patch_orphans = Some(Some(cur.now_ms))
+            state_changed = true
+            f(cur.now_ms)
+          }
+          None => ()
+        }
+      }
+
+      let persisted = if state_changed {
+        patch_upkeep_state(
+          self.fs,
+          self.data_dir,
+          UpkeepStatePatch::{
+            idle_measured: None,
+            last_repo_branches_at: patch_branches,
+            last_orphan_rooms_at: patch_orphans,
+            last_full_relieve_at: None,
+            last_archive_upkeep_at: None,
+          },
+          self.pid,
+        )
+      } else {
+        false
+      }
+
+      let rep = UpkeepReport::{
+        station_log_rotated: cur.station_log_rotated,
+        update_log_rotated: cur.update_log_rotated,
+        wal_checkpointed: cur.wal_checkpointed,
+        thumbs_freed: cur.thumbs_freed,
+        node_parts_removed: cur.node_parts_removed,
+        config_backups_removed: cur.config_backups_removed,
+        orphan_marks_removed: cur.orphan_marks_removed,
+        board_files_removed: cur.board_files_removed,
+        repo_worktrees_pruned: cur.repo_worktrees_pruned,
+        repo_bundles_pruned: cur.repo_bundles_pruned,
+        job_states_pruned: cur.job_states_pruned,
+        state_persisted: persisted,
+      }
+      cur.phase = 5
+      cur.finished = Some(rep)
+      return UpkeepStep::Done(rep)
     }
   }
+  UpkeepStep::Yielded(cur.processed)
+}
 
-  let persisted = if state_changed {
-    patch_upkeep_state(
-      self.fs,
-      self.data_dir,
-      UpkeepStatePatch::{
-        idle_measured: None,
-        last_repo_branches_at: patch_branches,
-        last_orphan_rooms_at: patch_orphans,
-        last_full_relieve_at: None,
-        last_archive_upkeep_at: None,
-      },
-      self.pid,
-    )
-  } else {
-    false
+/// Runs one full upkeep round, enforcing every bounded-ephemeral cap and daily cadence.
+/// Convenience wrapper over `begin_round` + `step_upkeep`; main-loop callers should step per tick.
+pub fn Upkeep::run_round(self : Upkeep, now_ms : Int64, hooks : UpkeepHooks) -> UpkeepReport {
+  let cur = self.begin_round(now_ms, hooks)
+  while true {
+    match self.step_upkeep(cur, WALK_YIELD_EVERY) {
+      UpkeepStep::Yielded(_) => ()
+      UpkeepStep::Done(rep) => return rep
+    }
   }
-
   UpkeepReport::{
-    station_log_rotated: st_rot,
-    update_log_rotated: upd_rot,
-    wal_checkpointed: wal_did,
-    thumbs_freed: thumbs_freed,
-    node_parts_removed: node_parts.length(),
-    config_backups_removed: cfg_baks.length(),
-    orphan_marks_removed: marks.length(),
-    board_files_removed: board_gone.length(),
-    repo_worktrees_pruned: wt_pruned.length(),
-    repo_bundles_pruned: bundles_pruned.length(),
-    state_persisted: persisted,
+    station_log_rotated: false,
+    update_log_rotated: false,
+    wal_checkpointed: false,
+    thumbs_freed: 0.to_int64(),
+    node_parts_removed: 0,
+    config_backups_removed: 0,
+    orphan_marks_removed: 0,
+    board_files_removed: 0,
+    repo_worktrees_pruned: 0,
+    repo_bundles_pruned: 0,
+    job_states_pruned: 0,
+    state_persisted: false,
   }
 }
