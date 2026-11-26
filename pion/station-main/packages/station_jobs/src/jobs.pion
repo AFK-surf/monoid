@@ -1016,7 +1016,7 @@ pub fn JobManager::adopt_from_store(
   if job_state_is_up(rec.state) {
     match rec.pgid {
       Some(pg) => {
-        if pg > 0 && (self.backend.kill_pid)(pg, 0, false) == 0 {
+        if pg > 0 && self.still_ours(rec, pg) {
           self.followed_jobs.set(rec.id, pg)
           return true
         }
@@ -1298,12 +1298,15 @@ pub fn JobManager::stop(
   }
   match self.followed_jobs.get(id) {
     Some(pgid) => {
-      job.state = JobState::Stopping
-      let sig = if force_kill { station_sys::SIG_KILL } else { station_sys::SIG_TERM }
-      let _ = (self.backend.kill_pid)(pgid, sig, true)
-      job.stop_deadline_at = if force_kill { None } else { Some(now_ms + JOB_STOP_GRACE_MS) }
-      self.persist_job(job)
-      return Ok(job)
+      if self.still_ours(job, pgid) {
+        job.state = JobState::Stopping
+        let sig = if force_kill { station_sys::SIG_KILL } else { station_sys::SIG_TERM }
+        let _ = (self.backend.kill_pid)(pgid, sig, true)
+        job.stop_deadline_at = if force_kill { None } else { Some(now_ms + JOB_STOP_GRACE_MS) }
+        self.persist_job(job)
+        return Ok(job)
+      }
+      self.followed_jobs.remove(id)
     }
     None => ()
   }

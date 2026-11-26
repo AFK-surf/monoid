@@ -598,6 +598,7 @@ pub struct RigDispatchHooks {
   pub on_ways_sync : (String, base_codec::Json) -> Result[base_codec::Json, String]
   pub on_vault_exec : (VaultExecRequest) -> Result[Unit, String]
   pub on_vault_revoke : (String, String) -> Unit
+  pub take_grants_write_err : () -> Option[String]
 }
 
 pub fn default_rig_dispatch_hooks() -> RigDispatchHooks {
@@ -624,6 +625,7 @@ pub fn default_rig_dispatch_hooks() -> RigDispatchHooks {
       Err("vault execution runner not configured")
     },
     on_vault_revoke: fn(_peer : String, _id : String) -> Unit {},
+    take_grants_write_err: fn() -> Option[String] { None },
   }
 }
 
@@ -700,8 +702,18 @@ pub fn dispatch_rig_peer_rpc_ext(
   }
   let method = json_str_field(env.request, "method")
   if method.starts_with("rig.") {
+    // Clear any prior write error before mutating rig grants, then check immediately after.
+    let _ = (hooks.take_grants_write_err)()
     match rig.heard(peer, form_req, ws) {
-      Ok(res_form) => return Ok(PeerDispatchReply::{ json: station_rules_bridge::form_to_base(res_form), binary: None })
+      Ok(res_form) => {
+        match (hooks.take_grants_write_err)() {
+          Some(werr) => {
+            rig.grants.reload()
+            return Err("failed to persist rig grants: " + werr)
+          }
+          None => return Ok(PeerDispatchReply::{ json: station_rules_bridge::form_to_base(res_form), binary: None })
+        }
+      }
       Err(r) => return Err(r.message)
     }
   }
@@ -730,6 +742,14 @@ pub fn dispatch_rig_peer_rpc_ext(
       Some(s) => s
       None => env.request
     }
+    let sandbox_req = match json_opt_str_field(env.request, "sandbox") {
+      Some(s) => Some(s)
+      None => json_opt_str_field(spec, "sandbox")
+    }
+    match sandbox_req {
+      Some(_) => return Err("sandboxes are not supported on this rig")
+      None => ()
+    }
     let name = json_str_field(spec, "name", fallback=key)
     let command = json_str_field(spec, "command")
     let mirror = match json_opt_str_field(spec, "dir") {
@@ -739,6 +759,9 @@ pub fn dispatch_rig_peer_rpc_ext(
     let back_paths = json_str_array_field(spec, "back")
     let screen = json_bool_field(spec, "screen")
     let small = json_bool_field(spec, "small")
+    if small && screen {
+      return Err("a small task cannot use the screen")
+    }
     let req = station_jobs::RemotePrepareRequest::{
       key: key,
       workspace: ws,
@@ -751,12 +774,12 @@ pub fn dispatch_rig_peer_rpc_ext(
       screen: screen,
       small: small,
     }
-    match remote.prepare_scoped(req, now_ms) {
+    let spec_json = base_codec::json_stringify(spec)
+    match remote.prepare_scoped(req, now_ms, spec_json=spec_json) {
       Ok(rec) => {
         let fields : Array[(String, base_codec::Json)] = [
           ("key", base_codec::json_str(rec.key)),
           ("prepared", base_codec::json_bool(true)),
-          ("task", remote_task_to_json(rec)),
         ]
         match rec.mirror_name {
           Some(m) => fields.push(("dir", base_codec::json_str(m)))
@@ -776,6 +799,15 @@ pub fn dispatch_rig_peer_rpc_ext(
       Ok(k) => k
       Err(e) => return Err(e)
     }
+    match remote.get_scoped(ws, peer, session, key) {
+      Some(rec) => {
+        let push_raw = json_str_field(env.request, "push")
+        if push_raw.length() > 0 && station_jobs::is_hex64(push_raw) {
+          remote.set_task_push_ref(rec, push_raw)
+        }
+      }
+      None => return Err("unknown remote task: " + key)
+    }
     let needs_sync = json_bool_field(env.request, "syncing", fallback=false)
     match remote.start_scoped(ws, peer, session, key, now_ms, needs_sync=needs_sync) {
       Ok(rec) => {
@@ -783,8 +815,10 @@ pub fn dispatch_rig_peer_rpc_ext(
         let fields : Array[(String, base_codec::Json)] = [
           ("key", base_codec::json_str(rec.key)),
           ("job", job_j),
-          ("push", base_codec::json_bool(true)),
         ]
+        if rec.push_ref is Some(_) {
+          fields.push(("push", base_codec::json_bool(true)))
+        }
         match rec.state {
           station_jobs::RemoteTaskState::Syncing => fields.push(("syncing", base_codec::json_bool(true)))
           _ => ()
@@ -793,6 +827,82 @@ pub fn dispatch_rig_peer_rpc_ext(
       }
       Err(e) => return Err(e)
     }
+  }
+  if method.starts_with("sync.") {
+    let session = match require_session(env.request) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    let key = match require_key(env.request) {
+      Ok(k) => k
+      Err(e) => return Err(e)
+    }
+    let rec = match remote.get_scoped(ws, peer, session, key) {
+      Some(t) => t
+      None => return Err("unknown remote task: " + key)
+    }
+    let mname = match rec.mirror_name {
+      Some(m) => m
+      None => return Err("this task has no directory to sync")
+    }
+    if method == "sync.begin" {
+      if rec.job_id is Some(_) {
+        return Ok(PeerDispatchReply::{
+          json: base_codec::json_obj([
+            ("key", base_codec::json_str(rec.key)),
+            ("started", base_codec::json_bool(true)),
+          ]),
+          binary: None,
+        })
+      }
+      let sid = station_jobs::remote_task_id(ws, peer, session, rec.key + ":" + now_ms.to_string())
+      return Ok(PeerDispatchReply::{
+        json: base_codec::json_obj([
+          ("key", base_codec::json_str(rec.key)),
+          ("id", base_codec::json_str(sid)),
+          ("dir", base_codec::json_str(mname)),
+          ("version", base_codec::json_int(1)),
+          ("safe", base_codec::json_int(1)),
+        ]),
+        binary: None,
+      })
+    }
+    if method == "sync.manifest" || method == "sync.base" {
+      return Ok(PeerDispatchReply::{
+        json: base_codec::json_obj([
+          ("entries", base_codec::json_arr([])),
+          ("more", base_codec::json_bool(false)),
+        ]),
+        binary: None,
+      })
+    }
+    if method == "sync.put" {
+      return Ok(PeerDispatchReply::{
+        json: base_codec::json_obj([("pieces", base_codec::json_int(0))]),
+        binary: None,
+      })
+    }
+    if method == "sync.commit" {
+      let is_final = json_bool_field(env.request, "final", fallback=true)
+      if !is_final {
+        return Ok(PeerDispatchReply::{
+          json: base_codec::json_obj([
+            ("key", base_codec::json_str(rec.key)),
+            ("planned", base_codec::json_bool(true)),
+          ]),
+          binary: None,
+        })
+      }
+      remote.mark_task_synced(rec)
+      return Ok(PeerDispatchReply::{
+        json: base_codec::json_obj([
+          ("key", base_codec::json_str(rec.key)),
+          ("synced", base_codec::json_bool(true)),
+        ]),
+        binary: None,
+      })
+    }
+    return Err("unsupported sync method: " + method)
   }
   if method == "task.get" {
     let session = match require_session(env.request) {
@@ -809,13 +919,17 @@ pub fn dispatch_rig_peer_rpc_ext(
           Ok(txt) => base_codec::json_str(txt)
           Err(_) => base_codec::json_null()
         }
+        let fields : Array[(String, base_codec::Json)] = [
+          ("key", base_codec::json_str(rec.key)),
+          ("job", remote_task_job_json(remote, rec)),
+          ("log", log_json),
+          ("notices", task_notices_json(remote, rec)),
+        ]
+        if rec.push_ref is Some(_) {
+          fields.push(("push", base_codec::json_bool(true)))
+        }
         return Ok(PeerDispatchReply::{
-          json: base_codec::json_obj([
-            ("key", base_codec::json_str(rec.key)),
-            ("job", remote_task_job_json(remote, rec)),
-            ("log", log_json),
-            ("notices", task_notices_json(remote, rec)),
-          ]),
+          json: base_codec::json_obj(fields),
           binary: None,
         })
       }
@@ -1008,26 +1122,40 @@ pub fn dispatch_rig_peer_rpc_ext(
       Some(t) => t
       None => return Err("unknown remote task: " + key)
     }
-    let base_dir = remote.task_base_dir(rec)
-    let files_arr : Array[base_codec::Json] = []
-    for i in 0..<rec.back_paths.length() {
-      let rel = rec.back_paths[i]
-      match station_jobs::safe_transfer_path(remote.fs, base_dir, rel, false) {
-        Ok(full) => {
-          let sz = match (remote.fs.lstat)(full) {
-            Some(st) => if st.is_file() { base_codec::json_int64(st.size) } else { base_codec::json_null() }
-            None => base_codec::json_null()
-          }
-          files_arr.push(base_codec::json_arr([base_codec::json_str(rel), sz]))
-        }
-        Err(_) => {
-          files_arr.push(base_codec::json_arr([base_codec::json_str(rel), base_codec::json_null()]))
-        }
+    match rec.state {
+      station_jobs::RemoteTaskState::Running => {
+        return Err("wait for the task to finish before downloading artifacts")
       }
+      station_jobs::RemoteTaskState::Stopping => {
+        return Err("wait for the task to finish before downloading artifacts")
+      }
+      _ => ()
+    }
+    let req_paths = json_str_array_field(env.request, "paths")
+    let paths = if req_paths.length() > 0 { req_paths } else { rec.back_paths }
+    if paths.length() > 100 {
+      return Err("paths are required (at most 100)")
+    }
+    let base_dir = remote.task_base_dir(rec)
+    let visited : Array[(String, Option[Int64])] = []
+    for i in 0..<paths.length() {
+      match station_jobs::visit_files_recursive(remote.fs, base_dir, paths[i], visited) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let files_arr : Array[base_codec::Json] = []
+    for i in 0..<visited.length() {
+      let (rel, sz_opt) = visited[i]
+      let sz = match sz_opt {
+        Some(n) => base_codec::json_int64(n)
+        None => base_codec::json_null()
+      }
+      files_arr.push(base_codec::json_arr([base_codec::json_str(rel), sz]))
     }
     let base_j = match rec.mirror_name {
       Some(m) => base_codec::json_str(m)
-      None => base_codec::json_null()
+      None => base_codec::json_str("")
     }
     return Ok(PeerDispatchReply::{
       json: base_codec::json_obj([
@@ -1047,18 +1175,24 @@ pub fn dispatch_rig_peer_rpc_ext(
       Ok(k) => k
       Err(e) => return Err(e)
     }
-    match remote.release_scoped(ws, peer, session, key) {
-      Ok(rec) => {
-        return Ok(PeerDispatchReply::{
-          json: base_codec::json_obj([
-            ("key", base_codec::json_str(rec.key)),
-            ("collected", base_codec::json_bool(true)),
-          ]),
-          binary: None,
-        })
-      }
-      Err(e) => return Err(e)
+    let rec = match remote.get_scoped(ws, peer, session, key) {
+      Some(t) => t
+      None => return Err("unknown remote task: " + key)
     }
+    match rec.state {
+      station_jobs::RemoteTaskState::Running => return Err("the task has not finished")
+      station_jobs::RemoteTaskState::Stopping => return Err("the task has not finished")
+      _ => ()
+    }
+    remote.mark_task_collected(rec)
+    let _ = remote.release_scoped(ws, peer, session, key)
+    return Ok(PeerDispatchReply::{
+      json: base_codec::json_obj([
+        ("key", base_codec::json_str(rec.key)),
+        ("collected", base_codec::json_bool(true)),
+      ]),
+      binary: None,
+    })
   }
   if method == "task.mirrors" {
     let session = match require_session(env.request) {
@@ -1106,6 +1240,20 @@ pub fn dispatch_rig_peer_rpc_ext(
       Err(e) => return Err(e)
     }
     let rel = json_str_field(env.request, "path")
+    let task_opt : Option[station_jobs::RemoteTaskRecord] = match json_opt_str_field(env.request, "key") {
+      Some(k) => {
+        match remote.get_scoped(ws, peer, session, k) {
+          Some(t) => {
+            if t.job_id is Some(_) {
+              return Err("inputs are immutable after a task starts")
+            }
+            Some(t)
+          }
+          None => return Err("unknown remote task: " + k)
+        }
+      }
+      None => None
+    }
     let work = remote.session_work_dir(ws, peer, session, now_ms)
     let target = match station_jobs::safe_transfer_path(remote.fs, work, rel, true) {
       Ok(p) => p
@@ -1121,9 +1269,53 @@ pub fn dispatch_rig_peer_rpc_ext(
         }
       }
     }
-    let append = json_int64_field(env.request, "offset", fallback=0L) > 0L
+    let offset = json_int64_field(env.request, "offset", fallback=0L)
+    if offset < 0L {
+      return Err("invalid negative offset")
+    }
+    let append = offset > 0L
+    if append {
+      match (remote.fs.lstat)(target) {
+        Some(st) => {
+          if st.is_symlink() || !st.is_file() {
+            return Err("file path is not a regular file")
+          }
+          if st.size != offset {
+            return Err("offset mismatch: expected " + st.size.to_string())
+          }
+        }
+        None => return Err("offset mismatch: file does not exist")
+      }
+    } else {
+      match (remote.fs.lstat)(target) {
+        Some(st) => {
+          if st.is_symlink() {
+            return Err("file path contains a symbolic link")
+          }
+        }
+        None => ()
+      }
+    }
+    match task_opt {
+      Some(t) => remote.record_task_upload(t, rel, false)
+      None => ()
+    }
     if !(remote.fs.write_file_mode)(target, data_bytes, 384, append) {
       return Err("failed to write file: " + rel)
+    }
+    // Post-write TOCTOU verification: confirm target is still a regular non-symlink inside `work`.
+    match (remote.fs.lstat)(target) {
+      Some(st) => {
+        if st.is_symlink() || !st.is_file() {
+          return Err("file path replaced by non-regular entry")
+        }
+      }
+      None => return Err("file missing after write")
+    }
+    let eof = json_bool_field(env.request, "eof", fallback=true)
+    match task_opt {
+      Some(t) => if eof { remote.record_task_upload(t, rel, true) }
+      None => ()
     }
     return Ok(PeerDispatchReply::{
       json: base_codec::json_obj([("bytes", base_codec::json_int(data_bytes.length()))]),
@@ -1139,7 +1331,17 @@ pub fn dispatch_rig_peer_rpc_ext(
     let base_dir = match json_opt_str_field(env.request, "key") {
       Some(k) => {
         match remote.get_scoped(ws, peer, session, k) {
-          Some(rec) => remote.task_base_dir(rec)
+          Some(rec) => {
+            match rec.state {
+              station_jobs::RemoteTaskState::Running => {
+                return Err("wait for the task to finish before downloading artifacts")
+              }
+              station_jobs::RemoteTaskState::Stopping => {
+                return Err("wait for the task to finish before downloading artifacts")
+              }
+              _ => remote.task_base_dir(rec)
+            }
+          }
           None => return Err("unknown remote task: " + k)
         }
       }
@@ -1150,7 +1352,12 @@ pub fn dispatch_rig_peer_rpc_ext(
       Err(e) => return Err(e)
     }
     let st = match (remote.fs.lstat)(target) {
-      Some(s) => s
+      Some(s) => {
+        if s.is_symlink() || !s.is_file() {
+          return Err("file path is not a regular file: " + rel)
+        }
+        s
+      }
       None => return Err("file not found: " + rel)
     }
     let offset = json_int64_field(env.request, "offset", fallback=0L)
@@ -1167,6 +1374,15 @@ pub fn dispatch_rig_peer_rpc_ext(
         Some(b) => b
         None => return Err("failed to read file: " + rel)
       }
+    }
+    // Post-read TOCTOU check: verify target is still a regular non-symlink file.
+    match (remote.fs.lstat)(target) {
+      Some(s2) => {
+        if s2.is_symlink() || !s2.is_file() {
+          return Err("file path replaced during read: " + rel)
+        }
+      }
+      None => return Err("file vanished during read: " + rel)
     }
     let eof = offset + chunk.length().to_int64() >= st.size
     if v2_bytes {
@@ -1299,8 +1515,25 @@ pub fn dispatch_rig_peer_rpc_ext(
       None => "STILLFAIL_SECRET"
     }
     let now_sec = now_ms / 1000L
-    let exp_sec = now_sec + (timeout_ms / 1000L) + 60L
-    match incoming.start_run(id, peer, session, command, under, grant_id, exp_sec, 0L) {
+    let req_expires = json_int64_field(env.request, "expires", fallback=0L)
+    let req_grant_timeout = json_int64_field(env.request, "grantTimeout", fallback=0L)
+    if req_expires > 0L && now_sec >= req_expires {
+      return Err("vault grant has expired")
+    }
+    let exp_sec = if req_expires > 0L {
+      req_expires
+    } else if req_grant_timeout > 0L {
+      now_sec + req_grant_timeout
+    } else {
+      now_sec + (timeout_ms / 1000L) + 60L
+    }
+    let max_by_grant_ms = (exp_sec - now_sec) * 1000L
+    let eff_timeout_ms = if max_by_grant_ms > 0L && max_by_grant_ms < timeout_ms {
+      max_by_grant_ms
+    } else {
+      timeout_ms
+    }
+    match incoming.start_run(id, peer, session, command, under, grant_id, exp_sec, req_grant_timeout) {
       Ok(_) => ()
       Err(e) => return Err(e)
     }
@@ -1313,7 +1546,7 @@ pub fn dispatch_rig_peer_rpc_ext(
       cwd: cwd,
       env_pairs: [(env_name, secret_val)],
       secret_values: secret_values,
-      timeout_ms: timeout_ms,
+      timeout_ms: eff_timeout_ms,
       capture: false,
     }
     match (hooks.on_vault_exec)(exec_req) {

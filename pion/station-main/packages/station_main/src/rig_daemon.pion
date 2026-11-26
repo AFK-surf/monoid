@@ -5,8 +5,10 @@
 
 import "base_codec"
 import "builders_core"
+import "form"
 import "host_shim"
 import "http1"
+import "lock"
 import "mesh_door"
 import "mesh_wire"
 import "nodepath"
@@ -16,6 +18,7 @@ import "station_jobs"
 import "station_mesh"
 import "station_ops"
 import "station_rig"
+import "station_rules_bridge"
 import "station_store"
 import "station_sys"
 import "station_vault"
@@ -26,11 +29,11 @@ let MUX_TAG_LOOPBACK : Int64 = 0L
 let MUX_TAG_DOOR : Int64 = 1L
 let MUX_TAG_MESH : Int64 = 2L
 
-// Fixed `station_sys` event IDs (non-overlapping with `JobManager`'s `next_event_id` starting at 1000
-// and `ActiveVaultRun` event IDs starting at 500000).
+// Fixed `station_sys` event IDs.
 let EV_CTRL : Int64 = 10L
 let EV_SIG : Int64 = 11L
-let VAULT_EV_BASE : Int64 = 500000L
+// Disjoint positive event IDs for Vault subprocesses (matched via `active_vault_runs.contains(ev_id)`).
+let VAULT_EV_START : Int64 = 1000000001L
 
 // Mesh/iroh `MuxToken::Tagged` kinds on `mux_mesh`.
 let MESH_TOK_BIND : Int = 4001
@@ -47,11 +50,13 @@ let MESH_TOK_OUT_WRITE : Int = 4022
 let MESH_TOK_OUT_FINISH : Int = 4023
 let MESH_TOK_OUT_CLOSE : Int = 4024
 
-// Hardening caps for inbound mesh connections, streams, and vault output.
+// Hardening caps for inbound mesh connections, streams, outbound tell retries, and vault output.
 let MAX_ACTIVE_CONNS : Int = 64
 let MAX_ACTIVE_STREAMS : Int = 128
 let STREAM_READ_TIMEOUT_MS : Int64 = 15000L
 let MAX_OUTBOUND_TELLS : Int = 128
+let TELL_RETRY_MAX_MS : Int64 = 3600000L
+let TELL_BACKOFF_CAP_MS : Int64 = 60000L
 let VAULT_OUTPUT_MAX : Int = 65536
 let UPKEEP_EVERY_MS : Int64 = 600000L
 
@@ -98,12 +103,17 @@ struct ActivePeerStream {
 struct OutboundTell {
   peer : String
   payload : Bytes
+  attempts : Int
+  next_at_ms : Int64
+  created_at_ms : Int64
 }
 
 struct ActiveOutbound {
   id : Int64
   peer : String
   payload : Bytes
+  attempts : Int
+  created_at_ms : Int64
   mut conn_id : Option[Int64]
   mut stream_id : Option[Int64]
 }
@@ -202,6 +212,49 @@ fn append_capped(buf : Bytes, chunk : Bytes, max_len : Int) -> (Bytes, Bool) {
   } else {
     (concat_bytes_local(buf, slice_bytes_local(chunk, 0, avail)), true)
   }
+}
+
+fn tell_backoff_ms(attempts : Int) -> Int64 {
+  let mut ms = 1000L
+  let mut i = 0
+  while i < attempts && ms < TELL_BACKOFF_CAP_MS {
+    ms = ms * 2L
+    i = i + 1
+  }
+  if ms > TELL_BACKOFF_CAP_MS { TELL_BACKOFF_CAP_MS } else { ms }
+}
+
+fn extract_peer_ips(cloud : station_cloud::CloudStore, now_secs : Double) -> Map[String, Array[String]] {
+  let out : Map[String, Array[String]] = Map::new()
+  let ms = cloud.memberships(now_secs)
+  for i in 0..<ms.length() {
+    for pi in 0..<ms[i].peers.length() {
+      let p = ms[i].peers[pi]
+      let pid = match base_codec::json_get(p, "id") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
+      if pid.length() == 0 {
+        continue
+      }
+      match base_codec::json_get(p, "ips") {
+        Some(base_codec::Json::Arr(arr)) => {
+          let ips : Array[String] = []
+          for ii in 0..<arr.length() {
+            match arr[ii] {
+              base_codec::Json::Str(ip) => if ip.length() > 0 { ips.push(ip) }
+              _ => ()
+            }
+          }
+          if ips.length() > 0 {
+            out.set(pid, ips)
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  out
 }
 
 /// Entrypoint for `stillfail-station-pion run ...`.
@@ -370,6 +423,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
   }
 
   // Handover barrier: wait for previous `hub.json` PID before writing `hub.json` or adopting jobs.
+  // Crucially, `control.ready` is emitted as soon as loopback admin listens (BEFORE waiting for
+  // previous PID) so the Rust launcher stops the old process without deadlocking (`lifecycle.rs:653`).
   let prev_pid = station_ops::read_previous_pid(ops_fs, run_dir, self_pid, sep=sep)
   let prev_proc = station_ops::PreviousProcess::new(prev_pid, host_shim::now_ms())
   let mut handover_done = prev_pid is None
@@ -394,10 +449,11 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     }
   }
 
-  // Outbound peer notification queue (`rig.changed`, `task.changed`, `vault.done`, etc.).
+  // Outbound peer notification queue with exponential backoff retry up to 1 hour.
   let outbound_queue : Array[OutboundTell] = []
   let active_outbounds : Map[Int64, ActiveOutbound] = Map::new()
   let mut next_outbound_id : Int64 = 1L
+  let mut peer_ips = extract_peer_ips(cloud, now_secs)
 
   let enqueue_tell = fn(peer : String, ws : String, request : base_codec::Json) -> Unit {
     if peer.length() == 0 || peer == station_key.id {
@@ -418,11 +474,35 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       ("request", request),
     ])
     let payload = (base_codec::json_stringify(env) + "\n").to_bytes()
-    outbound_queue.push(OutboundTell::{ peer: peer, payload: payload })
+    let now_t = host_shim::now_ms()
+    outbound_queue.push(OutboundTell::{
+      peer: peer,
+      payload: payload,
+      attempts: 0,
+      next_at_ms: now_t,
+      created_at_ms: now_t,
+    })
+  }
+
+  let requeue_outbound = fn(ob : ActiveOutbound) -> Unit {
+    let now_t = host_shim::now_ms()
+    if now_t - ob.created_at_ms >= TELL_RETRY_MAX_MS || outbound_queue.length() >= MAX_OUTBOUND_TELLS {
+      return
+    }
+    let delay = tell_backoff_ms(ob.attempts)
+    outbound_queue.push(OutboundTell::{
+      peer: ob.peer,
+      payload: ob.payload,
+      attempts: ob.attempts + 1,
+      next_at_ms: now_t + delay,
+      created_at_ms: ob.created_at_ms,
+    })
   }
 
   let jobs_fs = station_jobs::sys_fs(sep)
   let mut remote_opt : Option[station_jobs::RemoteManager] = None
+  let mut rig_opt : Option[station_rig::Rig] = None
+
   let job_mgr = station_jobs::JobManager::new(
     data,
     jobs_fs,
@@ -454,17 +534,16 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
           }
           None => ()
         }
-        match remote_opt {
-          Some(rm) => {
+        // P0-2: emit exact `{ method: "task.changed", ref }` when task holds a 64-hex `push` ref.
+        match t.push_ref {
+          Some(ref_hex) => {
             if t.source_station.length() > 0 && t.workspace.length() > 0 {
               enqueue_tell(
                 t.source_station,
                 t.workspace,
                 base_codec::json_obj([
                   ("method", base_codec::json_str("task.changed")),
-                  ("session", base_codec::json_str(t.source_session)),
-                  ("key", base_codec::json_str(t.key)),
-                  ("job", remote_task_job_json(rm, t)),
+                  ("ref", base_codec::json_str(ref_hex)),
                 ]),
               )
             }
@@ -480,7 +559,43 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
 
   let grants_path = station_cloud::rig_grants_path(data, sep=sep)
   let mut write_seq = 0
-  let mut grants_write_failed = false
+  let mut last_grants_write_err : Option[String] = None
+
+  let build_rig_changed_payload = fn(ws : String, ended_opt : Option[station_rig::Ended]) -> base_codec::Json {
+    let fields : Array[(String, base_codec::Json)] = [
+      ("method", base_codec::json_str("rig.changed")),
+      ("workspace", base_codec::json_str(ws)),
+    ]
+    match rig_opt {
+      Some(r) => {
+        let desc = station_rules_bridge::form_to_base(r.described(ws))
+        match desc {
+          base_codec::Json::Obj(dfs) => {
+            for i in 0..<dfs.length() {
+              fields.push(dfs[i])
+            }
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+    match ended_opt {
+      Some(e) => {
+        fields.push((
+          "ended",
+          base_codec::json_obj([
+            ("request", base_codec::json_str(e.request)),
+            ("station", base_codec::json_str(e.station)),
+            ("why", base_codec::json_str(station_rig::ended_why_str(e.why))),
+          ]),
+        ))
+      }
+      None => ()
+    }
+    base_codec::json_obj(fields)
+  }
+
   let rig_grants = station_rig::RigGrants::new(station_rig::GrantsDeps::{
     read_text: fn() -> Option[String] {
       match ops_fs.read_text(grants_path) {
@@ -498,9 +613,9 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         write_seq,
         sep=sep,
       ) {
-        Ok(_) => grants_write_failed = false
+        Ok(_) => last_grants_write_err = None
         Err(_) => {
-          grants_write_failed = true
+          last_grants_write_err = Some("failed to write grants.json")
           rig_log("failed to persist grants.json")
         }
       }
@@ -573,9 +688,13 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       }
       out
     },
-    ended: fn(_e : station_rig::Ended) -> Unit {},
+    ended: fn(e : station_rig::Ended) -> Unit {
+      let payload = build_rig_changed_payload(e.workspace, Some(e))
+      enqueue_tell(e.station, e.workspace, payload)
+    },
     cut: fn(_ws : String, _dev : String, _st : Option[String], _sess : Option[String]) -> Unit {},
     changed: fn(ws : String) -> Unit {
+      let payload = build_rig_changed_payload(ws, None)
       let w_s = (host_shim::wall_ms() / 1000L).to_double()
       let ms = cloud.memberships(w_s)
       for mi in 0..<ms.length() {
@@ -586,11 +705,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
               _ => ""
             }
             if pid.length() > 0 && pid != station_key.id {
-              enqueue_tell(
-                pid,
-                ws,
-                base_codec::json_obj([("method", base_codec::json_str("rig.changed"))]),
-              )
+              enqueue_tell(pid, ws, payload)
             }
           }
         }
@@ -669,9 +784,9 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       },
     },
   )
-  // Pure rig fail-closed flags (P2-12).
   rig.pure_rig = true
   rig.devices_enabled = false
+  rig_opt = Some(rig)
 
   // Pre-spawn grant recheck for queued remote tasks (P1-2).
   remote_mgr.can_start = Some(fn(ws : String, st : String, sess : String) -> Bool {
@@ -685,17 +800,31 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
   }
   let ways_store = station_mesh::WaysStore::new(station_key.id, stillfail_relays)
 
-  // Real `vault.run` / `vault.capture` process runner state (P0-2).
+  // Real `vault.run` / `vault.capture` process runner state with bounded active tracking (P0-2, P2-11).
   let active_vault_runs : Map[Int64, ActiveVaultRun] = Map::new()
   let vault_id_to_ev : Map[String, Int64] = Map::new()
-  let vault_ev_ids : Array[Int64] = []
-  let mut next_vault_ev_id : Int64 = VAULT_EV_BASE
+  let active_vault_ev_ids : Array[Int64] = []
+  let mut next_vault_ev_id : Int64 = VAULT_EV_START
+
+  let remove_active_vault_ev = fn(target_ev : Int64) -> Unit {
+    let kept : Array[Int64] = []
+    for i in 0..<active_vault_ev_ids.length() {
+      if active_vault_ev_ids[i] != target_ev {
+        kept.push(active_vault_ev_ids[i])
+      }
+    }
+    active_vault_ev_ids.clear()
+    for i in 0..<kept.length() {
+      active_vault_ev_ids.push(kept[i])
+    }
+  }
 
   let finish_vault_run = fn(run : ActiveVaultRun) -> Unit {
     let _ = run.handle.close()
     let _ = incoming_vault.finish_run(run.id)
     active_vault_runs.remove(run.ev_id)
     vault_id_to_ev.remove(run.id)
+    remove_active_vault_ev(run.ev_id)
     let result_json = if run.capture {
       let out_s = bytes_to_str_local(run.stdout_buf, run.stdout_buf.length())
       let err_s = bytes_to_str_local(run.stderr_buf, run.stderr_buf.length())
@@ -731,25 +860,75 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     )
   }
 
+  let lock_crypto = station_rules_bridge::lock_crypto_with(
+    Some(station_cloud::shell_verifier_of_client(shell_client)),
+  )
+
   let dispatch_hooks = RigDispatchHooks::{
     on_lock_sync: fn(ws : String, req : base_codec::Json) -> Result[base_codec::Json, String] {
       let is_home = cloud.is_home(Some(ws))
       let ws_opt : Option[String] = if is_home { None } else { Some(ws) }
       let (seq, head, genesis) = match cloud.chain(ws=ws_opt) {
-        Some(ch) => (ch.entries.length(), None, None)
+        Some(ch) => {
+          match ch.state {
+            Some(st) => (st.seq.to_int(), Some(st.head), Some(st.genesis))
+            None => (ch.entries.length(), None, None)
+          }
+        }
         None => (0, None, None)
+      }
+      let kept_form = cloud.lock_kept(ws=ws_opt)
+      let kept_items : Array[station_mesh::LockEntryItem] = []
+      for i in 0..<kept_form.length() {
+        let h = match lock::entry_hash(kept_form[i], lock_crypto) {
+          Ok(hh) => hh
+          Err(_) => ""
+        }
+        let raw_b = station_rules_bridge::form_to_base(kept_form[i])
+        let s_n = match base_codec::json_get(raw_b, "seq") {
+          Some(base_codec::Json::Num(d, _)) => d.to_int()
+          _ => i
+        }
+        if h.length() > 0 {
+          kept_items.push(station_mesh::LockEntryItem::{ hash: h, seq: s_n, raw: raw_b })
+        }
+      }
+      let apply_entries = fn(entries : Array[base_codec::Json], fork : Bool) -> Result[station_mesh::LockWriteResult, String] {
+        let form_entries : Array[form::Json] = []
+        for i in 0..<entries.length() {
+          form_entries.push(station_rules_bridge::base_to_form(entries[i]))
+        }
+        let now_s = (host_shim::wall_ms() / 1000L).to_double()
+        match cloud.keep_lock(form_entries, Some(now_s), ws=ws_opt, fork=fork) {
+          Ok(took) => {
+            let (n_seq, n_head) = match cloud.chain(ws=ws_opt) {
+              Some(ch2) => {
+                match ch2.state {
+                  Some(st2) => (st2.seq.to_int(), Some(st2.head))
+                  None => (ch2.entries.length(), None)
+                }
+              }
+              None => (0, None)
+            }
+            match took.refusal {
+              Some(msg) => if took.taken == 0 { Err(msg) } else { Ok(station_mesh::LockWriteResult::{ taken: took.taken, seq: n_seq, hash: n_head }) }
+              None => Ok(station_mesh::LockWriteResult::{ taken: took.taken, seq: n_seq, hash: n_head })
+            }
+          }
+          Err(e) => Err(e)
+        }
       }
       station_mesh::answer_lock(
         seq,
         head,
         genesis,
-        [],
+        kept_items,
         req,
-        fn(_entries : Array[base_codec::Json]) -> Result[station_mesh::LockWriteResult, String] {
-          Ok(station_mesh::LockWriteResult::{ taken: 0, seq: seq, hash: head })
+        fn(entries : Array[base_codec::Json]) -> Result[station_mesh::LockWriteResult, String] {
+          apply_entries(entries, false)
         },
-        fn(_entries : Array[base_codec::Json]) -> Result[station_mesh::LockWriteResult, String] {
-          Ok(station_mesh::LockWriteResult::{ taken: 0, seq: seq, hash: head })
+        fn(entries : Array[base_codec::Json]) -> Result[station_mesh::LockWriteResult, String] {
+          apply_entries(entries, true)
         },
       )
     },
@@ -762,7 +941,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         let (k, v) = req.env_pairs[i]
         env_strs.push(k + "=" + v)
       }
-      next_vault_ev_id = next_vault_ev_id + 1L
+      next_vault_ev_id = next_vault_ev_id + 2L
       let ev_id = next_vault_ev_id
       let opts = station_sys::SpawnOptions::{
         program: "/bin/sh",
@@ -798,7 +977,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
           }
           active_vault_runs.set(ev_id, run)
           vault_id_to_ev.set(req.id, ev_id)
-          vault_ev_ids.push(ev_id)
+          active_vault_ev_ids.push(ev_id)
           Ok(())
         }
         Err(e) => Err("failed to spawn vault command: " + e)
@@ -819,14 +998,21 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         None => ()
       }
     },
+    take_grants_write_err: fn() -> Option[String] {
+      let e = last_grants_write_err
+      last_grants_write_err = None
+      e
+    },
   }
 
   let awake = station_ops::AwakeState::new(fn(_why : String) -> Option[() -> Unit] { None })
 
-  // Track previous roster peers per workspace for `followRoster` cleanup.
+  // Track previous roster workspaces & peers for `followRoster` cleanup (P1-8).
   let prev_peers_by_ws : Map[String, Array[String]] = Map::new()
+  let prev_workspaces : Array[String] = []
   let init_ms = cloud.memberships(now_secs)
   for i in 0..<init_ms.length() {
+    prev_workspaces.push(init_ms[i].workspace)
     let ids : Array[String] = []
     for pi in 0..<init_ms[i].peers.length() {
       match base_codec::json_get(init_ms[i].peers[pi], "id") {
@@ -979,6 +1165,11 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     _ => true
   }
   let bind_addr = station_sys::env_get("STILLFAIL_MESH_BIND_ADDR")
+  // Only defer direct mesh bind until `previous.gone` when a fixed non-ephemeral bind address is configured.
+  let fixed_bind_addr = match bind_addr {
+    Some(a) => a.length() > 0 && !a.ends_with(":0")
+    None => false
+  }
   let cong = station_mesh::congestion_to_str(station_mesh::congestion_of(cfg_raw))
   let start_mesh_bind = fn() -> Unit {
     if mesh_bound || mesh_binding {
@@ -995,6 +1186,9 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       bind_addr=bind_addr,
     )
     call_envelope(mux_mesh, 0, MESH_TOK_BIND, 0L, bind_env)
+  }
+  if !fixed_bind_addr {
+    start_mesh_bind()
   }
 
   // 4. Cloud presence WebSocket client (connects when `origin` is configured).
@@ -1031,7 +1225,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     ])
   }
 
-  // Helper to start handover phase 1 (write hub.json + start door_srv + bind mesh).
+  // Handover takeover once previous process exited (or after 40s fallback): write hub.json, start AgentsDoor, bind deferred mesh.
   let begin_handover_takeover = fn() -> Bool {
     if !hub_written {
       let hub_path = nodepath::join(sep, [run_dir, "hub.json"])
@@ -1061,13 +1255,13 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         door_srv.listen_loopback(0)
       }
     }
-    if !mesh_bound && mesh_ep_id is None && next_mesh_bind_ms == 0L {
+    if !mesh_bound && !mesh_binding && next_mesh_bind_ms == 0L {
       start_mesh_bind()
     }
     true
   }
 
-  // Helper to adopt existing jobs (both Pion state JSON and Node `stillfail.db` rows) once door_srv is listening.
+  // Adopt existing jobs (Pion state JSON + Node `stillfail.db` rows + incoming task.json) once door_srv is listening, then open grants.
   let complete_job_adoption = fn() -> Unit {
     if jobs_adopted {
       return
@@ -1103,7 +1297,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     let now = host_shim::now_ms()
     let wall = host_shim::wall_ms()
 
-    // Check handover barrier if still waiting for previous process (`rig_barrier` fails closed on timeout).
+    // Check handover barrier if still waiting for previous process.
+    // On `GoneTimedOut` (40s), log and continue takeover matching TS `previous.ts` so launcher never rollback-loops.
     if !handover_done {
       match prev_proc.rig_barrier(now, station_ops::is_pid_alive) {
         station_ops::PreviousStatus::Waiting => ()
@@ -1116,18 +1311,19 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
           }
         }
         station_ops::PreviousStatus::GoneTimedOut => {
-          let msg = "previous rig process did not exit before handover timeout"
-          rig_log(msg)
-          let _ = control.failed(msg)
-          handover_failed = true
-          stopping = true
-          continue
+          rig_log("previous process did not exit before handover wait; continuing takeover")
+          handover_done = true
+          if !begin_handover_takeover() {
+            handover_failed = true
+            stopping = true
+            continue
+          }
         }
       }
     }
 
     // Retry mesh bind with backoff if previous process held the fixed UDP port briefly.
-    if handover_done && !mesh_bound && next_mesh_bind_ms > 0L && now >= next_mesh_bind_ms {
+    if !mesh_bound && !mesh_binding && next_mesh_bind_ms > 0L && now >= next_mesh_bind_ms {
       next_mesh_bind_ms = 0L
       start_mesh_bind()
     }
@@ -1141,7 +1337,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       }
     }
 
-    // Announce loopback port once listening, and send `control.ready` only after BOTH loopback AND mesh are bound.
+    // Announce loopback port + `control.ready` immediately once loopback listens (never block `ready` on `previous.gone`!).
     if !loopback_announced && loopback_srv.is_listening() {
       loopback_announced = true
       let port = loopback_srv.port()
@@ -1151,11 +1347,11 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       }
       let _ = ops_fs.write_text(nodepath::join(sep, [run_dir, "ports.json"]), format_ports_json(shown), 420)
       let _ = control.serving("admin", port)
+      if !ready_sent {
+        ready_sent = true
+        let _ = control.ready("0.1.0")
+      }
       rig_log("loopback listening on 127.0.0.1:" + port.to_string())
-    }
-    if !ready_sent && loopback_announced && mesh_bound {
-      ready_sent = true
-      let _ = control.ready("0.1.0")
     }
 
     // Announce AgentsDoor port once listening, wire `jobs.notify_url`, THEN adopt jobs & open grants.
@@ -1169,37 +1365,42 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       complete_job_adoption()
     }
 
-    // Dispatch queued outbound peer tells (`rig.changed`, `task.changed`, `vault.done`).
+    // Dispatch due outbound peer tells (`rig.changed`, `task.changed`, `vault.done`).
     match mesh_ep_id {
       Some(ep) => {
-        let mut dispatched = 0
-        while dispatched < outbound_queue.length() && active_outbounds.length() < 8 {
-          let tell = outbound_queue[dispatched]
-          dispatched = dispatched + 1
-          next_outbound_id = next_outbound_id + 1L
-          let oid = next_outbound_id
-          active_outbounds.set(
-            oid,
-            ActiveOutbound::{
-              id: oid,
-              peer: tell.peer,
-              payload: tell.payload,
-              conn_id: None,
-              stream_id: None,
-            },
-          )
-          call_envelope(
-            mux_mesh,
-            0,
-            MESH_TOK_OUT_CONNECT,
-            oid,
-            mesh_door::direct_iroh_connect(ep, tell.peer, station_mesh::PEER_ALPN, [], relay_urls),
-          )
-        }
-        if dispatched > 0 {
+        if outbound_queue.length() > 0 && active_outbounds.length() < 8 {
           let rem_q : Array[OutboundTell] = []
-          for qi in dispatched..<outbound_queue.length() {
-            rem_q.push(outbound_queue[qi])
+          for qi in 0..<outbound_queue.length() {
+            let tell = outbound_queue[qi]
+            if active_outbounds.length() < 8 && now >= tell.next_at_ms {
+              next_outbound_id = next_outbound_id + 1L
+              let oid = next_outbound_id
+              active_outbounds.set(
+                oid,
+                ActiveOutbound::{
+                  id: oid,
+                  peer: tell.peer,
+                  payload: tell.payload,
+                  attempts: tell.attempts,
+                  created_at_ms: tell.created_at_ms,
+                  conn_id: None,
+                  stream_id: None,
+                },
+              )
+              let ips = match peer_ips.get(tell.peer) {
+                Some(list) => list
+                None => []
+              }
+              call_envelope(
+                mux_mesh,
+                0,
+                MESH_TOK_OUT_CONNECT,
+                oid,
+                mesh_door::direct_iroh_connect(ep, tell.peer, station_mesh::PEER_ALPN, [], relay_urls, ips=ips),
+              )
+            } else {
+              rem_q.push(tell)
+            }
           }
           outbound_queue.clear()
           for qi in 0..<rem_q.length() {
@@ -1252,9 +1453,9 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       let _ = job_mgr.poll_followed(wall)
       let _ = remote_mgr.drain_queue(wall)
 
-      // Enforce `vault.run` / `vault.capture` deadlines.
-      for vi in 0..<vault_ev_ids.length() {
-        let vev = vault_ev_ids[vi]
+      // Enforce `vault.run` / `vault.capture` deadlines over active runs only (bounded).
+      for vi in 0..<active_vault_ev_ids.length() {
+        let vev = active_vault_ev_ids[vi]
         match active_vault_runs.get(vev) {
           Some(run) => {
             if !run.exited && !run.timed_out && now >= run.deadline_ms {
@@ -1354,7 +1555,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
           Some(sev) => {
             if ev_id == EV_CTRL || ev_id == EV_SIG {
               control.feed_sys_event(sev)
-            } else if ev_id >= VAULT_EV_BASE {
+            } else if active_vault_runs.contains(ev_id) {
               match active_vault_runs.get(ev_id) {
                 Some(run) => {
                   match sev {
@@ -1650,7 +1851,6 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                       vault_grants,
                                       load_json_fn,
                                       dispatch_hooks,
-                                      grants_write_failed,
                                     )
                                     call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, reply_bytes))
                                   }
@@ -1661,7 +1861,6 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                 call_envelope(mux_mesh, 0, MESH_TOK_READ, sid, mesh_door::direct_istream_read(sid))
                               }
                             } else {
-                              // EOF on stream
                               let (line, bin_opt) = match st.header_line {
                                 Some(hl) => (hl, Some(st.rx_buf))
                                 None => (bytes_to_str_local(st.rx_buf, st.rx_buf.length()), None)
@@ -1680,7 +1879,6 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                 vault_grants,
                                 load_json_fn,
                                 dispatch_hooks,
-                                grants_write_failed,
                               )
                               call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, reply_bytes))
                             }
@@ -1704,7 +1902,6 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                               vault_grants,
                               load_json_fn,
                               dispatch_hooks,
-                              grants_write_failed,
                             )
                             call_envelope(mux_mesh, 0, MESH_TOK_WRITE, sid, mesh_door::direct_istream_write(sid, reply_bytes))
                           }
@@ -1735,9 +1932,13 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                               call_envelope(mux_mesh, 0, MESH_TOK_OUT_OPEN_BI, oid, mesh_door::direct_conn_open_bi(cid))
                             } else {
                               active_outbounds.remove(oid)
+                              requeue_outbound(ob)
                             }
                           }
-                          _ => active_outbounds.remove(oid)
+                          _ => {
+                            active_outbounds.remove(oid)
+                            requeue_outbound(ob)
+                          }
                         }
                       }
                       None => ()
@@ -1764,6 +1965,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                                 None => ()
                               }
                               active_outbounds.remove(oid)
+                              requeue_outbound(ob)
                             }
                           }
                           _ => {
@@ -1772,6 +1974,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                               None => ()
                             }
                             active_outbounds.remove(oid)
+                            requeue_outbound(ob)
                           }
                         }
                       }
@@ -1819,14 +2022,29 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                         let w_s = host_shim::wall_ms() / 1000L
                         let w_ms = host_shim::wall_ms()
                         let res = presence.on_text_frame(txt, w_s)
-                        peers_current = true
+                        // Only mark `peers_current = true` when a genuine roster/state frame arrives (P1-8).
+                        let is_roster_frame = match base_codec::json_parse(txt) {
+                          base_codec::JsonParseResult::Ok(fj) => {
+                            match base_codec::json_get(fj, "type") {
+                              Some(base_codec::Json::Str(ft)) => ft == "state" || ft == "peers" || ft == "roster"
+                              _ => base_codec::json_get(fj, "peers") is Some(_)
+                            }
+                          }
+                          _ => false
+                        }
+                        if is_roster_frame {
+                          peers_current = true
+                          peer_ips = extract_peer_ips(cloud, w_s.to_double())
+                        }
                         for oi in 0..<res.outbound.length() {
                           let _ = ws_client.send_text_async(owner_id, base_codec::json_stringify(res.outbound[oi]))
                         }
-                        // `followRoster`: cancel tasks of any peer removed from a workspace.
+                        // `followRoster`: diff workspaces & peers; cancel tasks for disappeared workspaces AND peers.
                         let cur_ms = cloud.memberships(w_s.to_double())
+                        let cur_ws_set : Map[String, Bool] = Map::new()
                         for ci in 0..<cur_ms.length() {
                           let ws_id = cur_ms[ci].workspace
+                          cur_ws_set.set(ws_id, true)
                           let cur_ids : Array[String] = []
                           let cur_set : Map[String, Bool] = Map::new()
                           for pi in 0..<cur_ms[ci].peers.length() {
@@ -1852,6 +2070,18 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                           }
                           prev_peers_by_ws.set(ws_id, cur_ids)
                         }
+                        for wi in 0..<prev_workspaces.length() {
+                          let old_ws = prev_workspaces[wi]
+                          if !cur_ws_set.contains(old_ws) {
+                            let _ = remote_mgr.cancel_workspace_tasks(old_ws, w_ms)
+                            prev_peers_by_ws.remove(old_ws)
+                          }
+                        }
+                        prev_workspaces.clear()
+                        for ci in 0..<cur_ms.length() {
+                          prev_workspaces.push(cur_ms[ci].workspace)
+                        }
+
                         // Check if station gained a full workspace -> hand over to whole process (`becomeOther`), latched by `giving`.
                         if cloud.full_memberships(w_s.to_double()).length() > 0 {
                           if !giving {
@@ -1865,11 +2095,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                             }
                           }
                         } else if cloud.rig_memberships(w_s.to_double()).length() == 0 {
-                          let js = job_mgr.list()
-                          for ji in 0..<js.length() {
-                            if station_jobs::job_state_is_up(js[ji].state) {
-                              let _ = job_mgr.stop(js[ji].id, w_ms, false)
-                            }
+                          for wi in 0..<prev_workspaces.length() {
+                            let _ = remote_mgr.cancel_workspace_tasks(prev_workspaces[wi], w_ms)
                           }
                         }
                         let _ = ws_client.recv_async(owner_id)
@@ -1877,8 +2104,17 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                       Ok(station_http::WsClientEvent::Closed(code_opt, why)) => {
                         ws_handle = None
                         let _ = ws_client.close_async(owner_id)
+                        if has_origin {
+                          peers_current = false
+                        }
                         let now_c = host_shim::now_ms()
-                        let phase = presence.on_close(code_opt, why, host_shim::wall_ms() / 1000L, now_c)
+                        let w_ms = host_shim::wall_ms()
+                        let phase = presence.on_close(code_opt, why, w_ms / 1000L, now_c)
+                        if cloud.removed() {
+                          for wi in 0..<prev_workspaces.length() {
+                            let _ = remote_mgr.cancel_workspace_tasks(prev_workspaces[wi], w_ms)
+                          }
+                        }
                         let delay = match phase {
                           station_cloud::PresencePhase::BackingOff(ms) => ms
                           _ => 3000L
@@ -1892,6 +2128,9 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
                       Err(_) => {
                         ws_handle = None
                         let _ = ws_client.close_async(owner_id)
+                        if has_origin {
+                          peers_current = false
+                        }
                         // timer: presence reconnect backoff
                         next_ws_connect_ms = host_shim::now_ms() + 3000L
                       }
@@ -1909,8 +2148,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
   }
 
   // Graceful shutdown: kill any in-flight vault subprocesses, close listeners, mesh endpoint, grants, DB, and clean up `hub.json`.
-  for vi in 0..<vault_ev_ids.length() {
-    match active_vault_runs.get(vault_ev_ids[vi]) {
+  for vi in 0..<active_vault_ev_ids.length() {
+    match active_vault_runs.get(active_vault_ev_ids[vi]) {
       Some(run) => {
         let _ = run.handle.kill(station_sys::SIG_KILL, true)
         let _ = run.handle.close()
@@ -1986,7 +2225,6 @@ fn handle_peer_rpc_line(
   vault_grants : station_vault::GrantStore,
   load_json_fn : () -> base_codec::Json,
   hooks : RigDispatchHooks,
-  grants_write_failed : Bool,
 ) -> Bytes {
   let parsed = match base_codec::json_parse(line) {
     base_codec::JsonParseResult::Ok(j) => j
@@ -2015,13 +2253,6 @@ fn handle_peer_rpc_line(
     now_ms,
   ) {
     Ok(rep) => {
-      let method = match base_codec::json_get(env.request, "method") {
-        Some(base_codec::Json::Str(m)) => m
-        _ => ""
-      }
-      if grants_write_failed && (method == "rig.grant" || method == "rig.revoke" || method == "rig.settings") {
-        return station_mesh::encode_peer_answer_err("failed to persist rig grants", v2_bytes)
-      }
       match rep.binary {
         Some(bin) => {
           let hdr = station_mesh::encode_peer_answer_ok(rep.json, true, v2_bytes)

@@ -9,6 +9,7 @@ builders_core = { workspace = true }
 form = { workspace = true }
 host_shim = { workspace = true }
 http1 = { workspace = true }
+lock = { workspace = true }
 mesh_accept = { workspace = true }
 mesh_door = { workspace = true }
 mesh_wire = { workspace = true }

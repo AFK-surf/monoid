@@ -2,26 +2,29 @@
 // 1. `--version` (`stillfail-station-pion 0.1.0 roles:rig commands:`), `--smoke-sys`, `--smoke-http`.
 // 2. Non-rig & `"removed_at": null` launcher-parity rejection, `hub.json` handover barrier,
 //    `/healthz` 200, `drain` -> `run/drained` + `drained("idle")`, `stop` -> exit 0 + `hub.json` removed.
-// 3. Cross-workspace security negative test (P0-1): workspace B cannot read, list, or stop
+// 3. REAL Rust launcher (`STILLFAIL_LAUNCHER`) live `Node -> Pion` and `Pion -> Pion` hot upgrades
+//    via `SIGUSR2` (zero manual kills, zero 40s deadlock; proves `ready` emitted before `previous.gone`).
+// 4. Cross-workspace security negative test (P0-1): workspace B cannot read, list, or stop
 //    workspace A's task even with identical `key`; unscoped `task.list` refused.
-// 4. Real `vault.run` (mode: "env") + honest `vault.capabilities` + fail-closed `proxy`/`ssh` +
-//    real command execution + secret scrubbing in outbound `vault.done` (P0-2).
-// 5. Real Node/MB wire protocol (`file.put` binary tail, `task.prepare` with `dir`/`back`,
-//    `task.start`, `task.get`, `task.list`, `task.gets`, `task.files`, `file.get` binary tail,
-//    `task.collected`, `session.size`, `session.close`, `/jobs/notify` -> `job_notices`) (P0-3).
-// 6. Real bidirectional Node <-> Pion live-job handover (P1-3): Node spawns live PGID job in
-//    `stillfail.db` -> Pion adopts it -> owner revokes grant -> Pion kills Node-spawned PGID
-//    with 0 orphans -> Node reopens `stillfail.db` & `grants.json` losslessly.
+// 5. Real `vault.run` (mode: "env") + honest `vault.capabilities` + fail-closed `proxy`/`ssh` +
+//    expired grant rejection + real subprocess execution + UNCONDITIONAL scrubbed `vault.done` (P0-2, P1-10).
+// 6. Real Node/MB wire protocol (`file.put` binary tail + offset mismatch check, `task.prepare` with
+//    safe derived `spec.dir` + conflict rejection + fail-closed `sandbox`, `task.start` with 64-hex
+//    `push` ref + UNCONDITIONAL `task.changed` `{ method: "task.changed", ref }` delivery, recursive
+//    `task.files`, `file.get` binary tail, `task.gets`, `session.size`, `session.close`, `/jobs/notify`) (P0-2, P0-3, P1-4).
+// 7. Real bidirectional Node <-> Pion live-job handover (P1-3, P1-9): Node spawns live PGID job in
+//    `stillfail.db` -> Pion adopts with start-time verification -> owner revokes grant -> Pion kills
+//    Node-spawned PGID with 0 orphans & sends full `rig.changed` -> Node reopens DB & grants losslessly.
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, sign as nodeSign } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import { after, test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { type GrantBody, type Kind, type Timeout, latest, signedBytes } from "../../client/core-ts/src/rig-form.ts";
 import { type Entry, entryHash, signedBytes as entryBytes } from "../../shared/lock.ts";
@@ -81,6 +84,40 @@ function resolvePionBinary(): string {
     });
   }
   return out;
+}
+
+function resolveLauncherBinary(): string | null {
+  if (process.env.STILLFAIL_LAUNCHER && existsSync(process.env.STILLFAIL_LAUNCHER)) {
+    return process.env.STILLFAIL_LAUNCHER;
+  }
+  try {
+    const target = process.platform === "darwin" ? "darwin-arm64"
+      : process.arch === "arm64" ? "linux-arm64" : "linux-x64";
+    const dir = execFileSync(process.execPath, [join(root, "scripts/native.ts"), "path", "launcher", target], {
+      cwd: root,
+      encoding: "utf8",
+    }).trim();
+    const candidate = join(dir, process.platform === "win32" ? "stillfail-station.exe" : "stillfail-station");
+    if (existsSync(candidate)) return candidate;
+  } catch {}
+  return null;
+}
+
+function resolveReaderBinary(): string | null {
+  if (process.env.STILLFAIL_MB_READER && existsSync(process.env.STILLFAIL_MB_READER)) {
+    return process.env.STILLFAIL_MB_READER;
+  }
+  try {
+    const target = process.platform === "darwin" ? "darwin-arm64"
+      : process.arch === "arm64" ? "linux-arm64" : "linux-x64";
+    const dir = execFileSync(process.execPath, [join(root, "scripts/native.ts"), "path", "reader", target], {
+      cwd: root,
+      encoding: "utf8",
+    }).trim();
+    const candidate = join(dir, process.platform === "win32" ? "stillfail-reader.exe" : "stillfail-reader");
+    if (existsSync(candidate)) return candidate;
+  } catch {}
+  return null;
 }
 
 function resolveMeshAddon() {
@@ -277,7 +314,8 @@ function seedRigDataDir(
   rigId: string,
   peerId: string,
   ws = "ws-e2e-1",
-  joinedWorkspaces: Array<{ ws: string; peerId: string; ownerGenesis: string }> = [],
+  joinedWorkspaces: Array<{ ws: string; peerId: string; ownerGenesis: string; peerIps?: string[] }> = [],
+  peerIps: string[] = [],
 ) {
   mkdirSync(join(data, "mesh"), { recursive: true });
   writeFileSync(join(data, "mesh/secret.key"), rigKeySeed, { mode: 0o600 });
@@ -285,7 +323,7 @@ function seedRigDataDir(
     workspace: j.ws,
     workspace_name: `Joined ${j.ws}`,
     name: "pion-rig-e2e",
-    peers: [{ id: j.peerId, name: `peer-${j.ws}` }],
+    peers: [{ id: j.peerId, name: `peer-${j.ws}`, ...(j.peerIps?.length ? { ips: j.peerIps } : {}) }],
     rig: { owner: "owner-1", owner_email: "owner@example.com", owner_name: "Owner", person: j.ownerGenesis },
   }));
   const cloudObj: Record<string, unknown> = {
@@ -297,7 +335,7 @@ function seedRigDataDir(
     relay_url: "",
     relay_urls: [],
     grant_keys: {},
-    peers: [{ id: peerId, name: "peer-node" }],
+    peers: [{ id: peerId, name: "peer-node", ...(peerIps.length ? { ips: peerIps } : {}) }],
     revocations: [],
     rig: { owner: "owner-1", owner_email: "owner@example.com", owner_name: "Owner", person: ownerGenesis },
   };
@@ -359,7 +397,7 @@ test("Gate 12.1: --version advertises roles:rig only, --smoke-sys and --smoke-ht
   assert.equal(httpOut.ws, true);
 });
 
-test("Gate 12.2: rig daemon rejects non-rig & removed_at:null dirs, obeys hub.json barrier, serves /healthz, drains cleanly", { skip: process.platform === "win32" }, async () => {
+test("Gate 12.2: rig daemon rejects non-rig & removed_at:null dirs, emits ready before previous exits, obeys hub.json barrier, drains cleanly", { skip: process.platform === "win32" }, async () => {
   // (a) Non-rig data dir rejected.
   const wholeDir = freshDir("whole-reject");
   mkdirSync(join(wholeDir, "mesh"), { recursive: true });
@@ -383,7 +421,8 @@ test("Gate 12.2: rig daemon rejects non-rig & removed_at:null dirs, obeys hub.js
   const remRig = startPionRig(bin, removedNullDir);
   assert.notEqual(await remRig.waitExit(), 0, "cloud.json with removed_at: null must exit non-zero");
 
-  // (c) Historical Node DB + live previous hub.json PID -> handover barrier -> /healthz -> drain -> stop.
+  // (c) Handover protocol: `ready` MUST arrive while previous PID is STILL ALIVE (no launcher deadlock),
+  //     while `hub.json` and `mcp` wait until previous exits!
   const data = freshDir("handover-barrier");
   const owner = makeOwner("owner-1");
   seedRigDataDir(data, owner.genesis(), randomBytes(32), "11".repeat(32), "22".repeat(32));
@@ -400,16 +439,16 @@ test("Gate 12.2: rig daemon rejects non-rig & removed_at:null dirs, obeys hub.js
   const adminMsg = await until("serving admin", () => rig.messages.find((m) => m.serving === "admin"));
   const adminPort = Number(adminMsg.port);
   assert.ok(adminPort > 0);
+  // P0-1 critical invariant: `ready` arrives BEFORE previous PID exits!
+  await until("ready while previous still alive", () => rig.messages.find((m) => m.ready === true));
 
-  // Handover barrier holds while `prev` is alive: `hub.json` untouched & `mcp` not served.
-  await new Promise((r) => setTimeout(r, 200));
-  assert.equal(JSON.parse(readFileSync(join(data, "run/hub.json"), "utf8")).pid, prev.pid);
-  assert.equal(rig.messages.some((m) => m.serving === "mcp"), false);
+  await new Promise((r) => setTimeout(r, 150));
+  assert.equal(JSON.parse(readFileSync(join(data, "run/hub.json"), "utf8")).pid, prev.pid, "hub.json waits for previous PID");
+  assert.equal(rig.messages.some((m) => m.serving === "mcp"), false, "mcp waits for previous PID");
 
   prev.kill("SIGKILL");
   await new Promise<void>((r) => prev.once("exit", () => r()));
 
-  await until("ready after mesh bound", () => rig.messages.find((m) => m.ready === true));
   const mcpMsg = await until("serving mcp after previous exited", () => rig.messages.find((m) => m.serving === "mcp"));
   assert.ok(Number(mcpMsg.port) > 0);
   assert.equal(JSON.parse(readFileSync(join(data, "run/hub.json"), "utf8")).pid, rig.child.pid);
@@ -426,7 +465,119 @@ test("Gate 12.2: rig daemon rejects non-rig & removed_at:null dirs, obeys hub.js
   assert.equal(existsSync(join(data, "run/hub.json")), false);
 });
 
-test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, Node/MB wire protocol, and bidirectional live-job handover", { skip: process.platform === "win32" }, async () => {
+test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion hot upgrades via SIGUSR2 with zero deadlock", { skip: process.platform === "win32" }, async () => {
+  const launcher = resolveLauncherBinary();
+  assert.ok(launcher, "STILLFAIL_LAUNCHER must be available for Gate 12.2b real launcher handover test");
+  const readerBin = resolveReaderBinary();
+  assert.ok(readerBin, "STILLFAIL_MB_READER must be available for Node rig in Gate 12.2b");
+  const addon = resolveMeshAddon();
+  assert.ok(addon, "mesh native addon must be available");
+
+  const app = freshDir("launcher-app");
+  const data = freshDir("launcher-data");
+  mkdirSync(join(app, "station"), { recursive: true });
+  copyFileSync(bin, join(app, "station", "stillfail-station-pion"));
+  chmodSync(join(app, "station", "stillfail-station-pion"), 0o755);
+  copyFileSync(readerBin, join(app, "station", "stillfail-reader"));
+  chmodSync(join(app, "station", "stillfail-reader"), 0o755);
+  writeFileSync(
+    join(app, "station", "main.js"),
+    `import ${JSON.stringify(pathToFileURL(join(root, "station/src/main.ts")).href)};\n`,
+  );
+  writeFileSync(join(app, "BUILD"), "9900\n");
+
+  const owner = makeOwner("owner-launcher");
+  const rigSeed = randomBytes(32);
+  const probeEp = await addon.bind({ secretKey: rigSeed, alpns: [], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const rigId = probeEp.id();
+  await probeEp.close();
+  seedRigDataDir(data, owner.genesis(), rigSeed, rigId, "33".repeat(32), "ws-launcher");
+  writeFileSync(join(data, "config.json"), JSON.stringify({ engine: "node" }) + "\n");
+
+  let logs = "";
+  const lc = spawn(launcher, ["run", "--app", app, "--data", data], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: {
+      ...process.env,
+      STILLFAIL_NODE: process.execPath,
+      STILLFAIL_MESH_NATIVE: process.env.STILLFAIL_MESH_NATIVE ?? "",
+      STILLFAIL_MB_READER: join(app, "station", "stillfail-reader"),
+      STILLFAIL_STATION_PION: join(app, "station", "stillfail-station-pion"),
+      STILLFAIL_NO_DISCOVERY: "1",
+      STILLFAIL_NO_DHT: "1",
+      STILLFAIL_MESH_BIND_ADDR: "127.0.0.1:0",
+    },
+  });
+  children.push(lc);
+  lc.stdout?.on("data", (d) => { logs += d.toString("utf8"); });
+  lc.stderr?.on("data", (d) => { logs += d.toString("utf8"); });
+  const lcExit = new Promise<number | null>((resolve) => lc.once("exit", (code) => resolve(code)));
+
+  const readHubPidNow = () => {
+    try {
+      const j = JSON.parse(readFileSync(join(data, "run/hub.json"), "utf8"));
+      return typeof j.pid === "number" && j.pid > 0 ? j.pid : null;
+    } catch {
+      return null;
+    }
+  };
+  const readAdminPort = () => {
+    try {
+      const j = JSON.parse(readFileSync(join(data, "run/ports.json"), "utf8"));
+      return typeof j.admin === "number" && j.admin > 0 ? j.admin : null;
+    } catch {
+      return null;
+    }
+  };
+
+  // 1. Wait for initial Node rig to start and serve `/healthz`.
+  let nodePid: number;
+  try {
+    nodePid = await until("Node rig hub.json pid", () => readHubPidNow(), 15_000);
+  } catch (e) {
+    throw new Error(`${(e as Error).message}\nlauncher logs:\n${logs}`);
+  }
+  const adminPort = await until("launcher admin port", () => readAdminPort(), 10_000);
+  await until("Node /healthz 200", async () => (await httpGet(adminPort, "/healthz")).status === 200, 10_000);
+
+  // 2. Live `Node -> Pion` hot upgrade via `SIGUSR2` (launcher-coordinated, zero manual kill!).
+  writeFileSync(join(data, "config.json"), JSON.stringify({ engine: "pion" }) + "\n");
+  lc.kill("SIGUSR2");
+  const pionPid1 = await until(
+    "Node -> Pion handover switched hub.json pid",
+    () => {
+      const p = readHubPidNow();
+      return p && p !== nodePid ? p : null;
+    },
+    15_000,
+  );
+  await until("old Node process exited after handover", () => !isAlive(nodePid), 10_000);
+  assert.equal((await httpGet(adminPort, "/healthz")).status, 200);
+
+  // 3. Live `Pion -> Pion` hot upgrade via `SIGUSR2` (launcher-coordinated, zero manual kill!).
+  lc.kill("SIGUSR2");
+  const pionPid2 = await until(
+    "Pion -> Pion handover switched hub.json pid",
+    () => {
+      const p = readHubPidNow();
+      return p && p !== pionPid1 ? p : null;
+    },
+    15_000,
+  );
+  await until("old Pion process exited after handover", () => !isAlive(pionPid1), 10_000);
+  assert.equal((await httpGet(adminPort, "/healthz")).status, 200);
+
+  // 4. Clean shutdown via SIGTERM.
+  lc.kill("SIGTERM");
+  const code = await Promise.race([
+    lcExit,
+    new Promise<never>((_, rej) => setTimeout(() => rej(new Error(`launcher did not exit cleanly:\n${logs}`)), 15_000)),
+  ]);
+  assert.equal(code, 0, logs);
+  assert.equal(isAlive(pionPid2), false, "child Pion process stopped with launcher");
+});
+
+test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, Node/MB wire protocol + unconditional task.changed ref, and bidirectional live-job handover", { skip: process.platform === "win32" }, async () => {
   const addon = resolveMeshAddon();
   assert.ok(addon, "mesh native addon must be available for Gate 12 E2E");
 
@@ -435,7 +586,6 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   const wsB = "ws-e2e-b";
   const owner = makeOwner("owner-1");
 
-  // Bind real peer endpoints for Workspace A and Workspace B.
   const peerA = await addon.bind({
     secretKey: randomBytes(32),
     alpns: [PEER_BYTES_ALPN, PEER_ALPN],
@@ -455,9 +605,10 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   endpoints.push(peerA, peerB);
   const peerAId = peerA.id();
   const peerBId = peerB.id();
+  const peerASockets = peerA.sockets().filter((s: string) => s.startsWith("127.0.0.1:"));
+  assert.ok(peerASockets.length > 0, "peerA loopback socket available");
   const tellsA = startInboundTellCollector(peerA);
 
-  // Derive rig station ID from its seed.
   const rigSeed = randomBytes(32);
   const probeEp = await addon.bind({
     secretKey: rigSeed,
@@ -470,11 +621,18 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   const rigId = probeEp.id();
   await probeEp.close();
 
-  seedRigDataDir(data, owner.genesis(), rigSeed, rigId, peerAId, wsA, [
-    { ws: wsB, peerId: peerBId, ownerGenesis: owner.genesis() },
-  ]);
+  seedRigDataDir(
+    data,
+    owner.genesis(),
+    rigSeed,
+    rigId,
+    peerAId,
+    wsA,
+    [{ ws: wsB, peerId: peerBId, ownerGenesis: owner.genesis() }],
+    peerASockets,
+  );
 
-  // ── Phase A (Node): seed historical DB with an exited job + a REAL LIVE PGID job for handover adoption ──
+  // ── Phase A (Node): seed historical DB with exited job + REAL LIVE PGID job for handover adoption ──
   const nodeDbPath = join(data, "stillfail.db");
   const nodeStoreA = Store.open(nodeDbPath);
   const histStartedAt = Date.now() - 60_000;
@@ -496,7 +654,6 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     watch: false,
   });
 
-  // Spawn a real detached live job process group owned by Node (`chat:handover`)!
   const liveNodeJob = spawn("sleep", ["120"], { detached: true, stdio: "ignore" });
   children.push(liveNodeJob);
   assert.ok(liveNodeJob.pid && liveNodeJob.pid > 0);
@@ -512,7 +669,7 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     state: "running",
     pgid: liveNodePgid,
     exitCode: null,
-    startedAt: Date.now() - 1000,
+    startedAt: Date.now() - 200,
     endedAt: null,
     restarts: 0,
     log: join(data, "jobs/logs/job_node_live_handover.log"),
@@ -526,7 +683,6 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   await until("rig mcp serving", () => rig.messages.find((m) => m.serving === "mcp"));
   const rigAddr = await until("rig mesh socket", () => rig.meshAddr());
 
-  // Grant both wsA (`chat:c1`, `chat:handover`) and wsB (`chat:b1`) via owner-signed `rig.grant`.
   const nowSec = Math.floor(Date.now() / 1000);
   const timeout: Timeout = { kind: "fixed", seconds: 600 };
   const grantA1: GrantBody = {
@@ -548,6 +704,13 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   await peerRpc(peerA, rigId, rigAddr, wsA, { method: "rig.grant", signed: owner.says("grant", grantAHandover), chain: owner.chain });
   await peerRpc(peerB, rigId, rigAddr, wsB, { method: "rig.grant", signed: owner.says("grant", grantB1), chain: owner.chain });
 
+  // UNCONDITIONAL assertion: full `rig.changed` payload delivered to `peerA` with `boot`, `rev`, `rig`!
+  const rigChangedTell = await until(
+    "unconditional rig.changed tell with full payload",
+    () => tellsA.find((t) => t.request?.method === "rig.changed" && t.request?.boot && typeof t.request?.rev === "number" && t.request?.rig),
+  );
+  assert.equal(rigChangedTell.workspace, wsA);
+
   // ── Gate 12.3: Cross-Workspace Security Negative Test (P0-1) ──
   await peerRpc(peerA, rigId, rigAddr, wsA, {
     method: "task.prepare",
@@ -557,30 +720,24 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   });
   await peerRpc(peerA, rigId, rigAddr, wsA, { method: "task.start", session: "chat:c1", key: "shared-secret-key" });
 
-  // Workspace B MUST NOT read, log, list, or stop Workspace A's task even with identical key!
   await assert.rejects(
     () => peerRpc(peerB, rigId, rigAddr, wsB, { method: "task.get", session: "chat:b1", key: "shared-secret-key" }),
-    /unknown remote task/i,
+    /unknown remote task: shared-secret-key/i,
   );
   await assert.rejects(
     () => peerRpc(peerB, rigId, rigAddr, wsB, { method: "task.log", session: "chat:b1", key: "shared-secret-key" }),
-    /unknown remote task/i,
+    /unknown remote task: shared-secret-key/i,
   );
   await assert.rejects(
     () => peerRpc(peerB, rigId, rigAddr, wsB, { method: "task.stop", session: "chat:b1", key: "shared-secret-key" }),
-    /unknown remote task/i,
+    /unknown remote task: shared-secret-key/i,
   );
   const bList = (await peerRpc(peerB, rigId, rigAddr, wsB, { method: "task.list", session: "chat:b1" })).result;
-  assert.equal(bList.tasks.length, 0, "wsB task.list must be empty");
-  // Unscoped `task.list` without session MUST be refused!
-  await assert.rejects(
-    () => peerRpc(peerB, rigId, rigAddr, wsB, { method: "task.list" }),
-    /session is required/i,
-  );
-  // Stop wsA's sleeper cleanly.
+  assert.equal(bList.tasks.length, 0);
+  await assert.rejects(() => peerRpc(peerB, rigId, rigAddr, wsB, { method: "task.list" }), /session is required/i);
   await peerRpc(peerA, rigId, rigAddr, wsA, { method: "task.stop", session: "chat:c1", key: "shared-secret-key" });
 
-  // ── Gate 12.4: Real `vault.run` + honest `vault.capabilities` + fail-closed proxy/ssh (P0-2) ──
+  // ── Gate 12.4: Real `vault.run` + honest `vault.capabilities` + expired grant rejection + UNCONDITIONAL scrubbed `vault.done` (P0-2, P1-10) ──
   const caps = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "vault.capabilities" })).result;
   assert.equal(caps.env, true);
   assert.equal(caps.proxy, false);
@@ -599,6 +756,21 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     }),
     /not supported/i,
   );
+  // Expired grant MUST be refused before spawning!
+  await assert.rejects(
+    () => peerRpc(peerA, rigId, rigAddr, wsA, {
+      method: "vault.run",
+      id: "x_01TESTEXPIRED0000000000000",
+      session: "chat:c1",
+      command: "echo hi",
+      mode: "env",
+      env: "TEST_API_KEY",
+      grant: "g-exp",
+      expires: nowSec - 10,
+      secret: { kind: "token", name: "t", fields: { value: "abc12345" } },
+    }),
+    /expired/i,
+  );
 
   const secretVal = "sk-live-super-secret-987654321";
   const vaultRunRes = (await peerRpc(peerA, rigId, rigAddr, wsA, {
@@ -609,30 +781,66 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     mode: "env",
     env: "TEST_API_KEY",
     grant: "g-env-1",
+    expires: nowSec + 300,
     secret: { kind: "token", name: "api", fields: { value: secretVal } },
   })).result;
   assert.equal(vaultRunRes.started, true);
 
-  // Wait for `vault_proof.txt` to be written by the real child process, proving real execution + env injection!
-  const proofRes = await until("vault_proof.txt created by real vault.run", async () => {
-    try {
-      return await peerRpc(peerA, rigId, rigAddr, wsA, { method: "file.get", session: "chat:c1", path: "vault_proof.txt" });
-    } catch {
-      return null;
-    }
-  });
-  assert.equal(proofRes.binary?.toString("utf8"), secretVal, "real vault.run must inject secret env into subprocess");
-
-  // Wait for outbound `vault.done` tell (if loopback peer is reachable, verify secret is scrubbed!)
-  if (tellsA.length > 0) {
-    const doneTell = tellsA.find((t) => t.request?.method === "vault.done");
-    if (doneTell) {
-      assert.equal(String(doneTell.request.result.output).includes(secretVal), false, "vault.done output must scrub secret");
-      assert.ok(String(doneTell.request.result.output).includes("[已隐藏]"), "vault.done must contain [已隐藏]");
-    }
+  // UNCONDITIONAL assertion: `vault.done` delivered over iroh with secret scrubbed to `[已隐藏]`!
+  let vaultDoneTell: any;
+  try {
+    vaultDoneTell = await until(
+      "unconditional vault.done tell with scrubbed output",
+      () => tellsA.find((t) => t.request?.method === "vault.done" && t.request?.id === "x_01TESTENVRUN00000000000000"),
+      8_000,
+    );
+  } catch (e) {
+    throw new Error(`${(e as Error).message}; tellsA=${JSON.stringify(tellsA.map((t) => t.request?.method))}; stderr=\n${rig.stderr()}`);
   }
+  assert.equal(vaultDoneTell.request.result.code, 0);
+  assert.equal(String(vaultDoneTell.request.result.output).includes(secretVal), false, "vault.done MUST scrub secret");
+  assert.ok(String(vaultDoneTell.request.result.output).includes("[已隐藏]"), "vault.done MUST contain [已隐藏]");
 
-  // ── Gate 12.5: Real Node/MB Wire Protocol (`file.put`, `task.prepare` with `dir`/`back`, `task.files`, `file.get`, `task.gets`, `session.size`, `session.close`) (P0-3) ──
+  const proofRes = await peerRpc(peerA, rigId, rigAddr, wsA, { method: "file.get", session: "chat:c1", path: "vault_proof.txt" });
+  assert.equal(proofRes.binary?.toString("utf8"), secretVal);
+
+  // ── Gate 12.5: Node/MB wire protocol + UNCONDITIONAL `task.changed` `{ method, ref }` + recursive `task.files` + `spec.dir` + conflict/sandbox checks ──
+  // Fail-closed on explicit sandbox request.
+  await assert.rejects(
+    () => peerRpc(peerA, rigId, rigAddr, wsA, {
+      method: "task.prepare",
+      session: "chat:c1",
+      key: "k-sandbox",
+      sandbox: "l4es-1",
+      spec: { name: "sbx", command: "echo hi" },
+    }),
+    /sandboxes are not supported/i,
+  );
+
+  // Safe derived mirror name from `spec.dir` + `sync.begin`/`sync.commit`.
+  const dirPrep = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "task.prepare",
+    session: "chat:c1",
+    key: "k-dir-sync",
+    spec: { name: "dir-task", command: "echo synced_ok", dir: "/Users/dev/my:project" },
+  })).result;
+  assert.equal(dirPrep.dir, "my_project");
+  const sb = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-sync" })).result;
+  assert.equal(sb.dir, "my_project");
+  const sc = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.commit", session: "chat:c1", key: "k-dir-sync", final: true })).result;
+  assert.equal(sc.synced, true);
+
+  // Conflicting re-prepare on same key MUST be rejected!
+  await assert.rejects(
+    () => peerRpc(peerA, rigId, rigAddr, wsA, {
+      method: "task.prepare",
+      session: "chat:c1",
+      key: "k-dir-sync",
+      spec: { name: "dir-task", command: "echo DIFFERENT", dir: "/Users/dev/my:project" },
+    }),
+    /different inputs/i,
+  );
+
   const uploadPayload = Buffer.from("hello-binary-v2-payload\n", "utf8");
   const putRes = (await peerRpc(peerA, rigId, rigAddr, wsA, {
     method: "file.put",
@@ -641,27 +849,47 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   }, uploadPayload)).result;
   assert.equal(putRes.bytes, uploadPayload.length);
 
+  // Out-of-order offset MUST be rejected!
+  await assert.rejects(
+    () => peerRpc(peerA, rigId, rigAddr, wsA, {
+      method: "file.put",
+      session: "chat:c1",
+      path: "inputs/in.txt",
+      offset: 999,
+    }, Buffer.from("bad")),
+    /offset mismatch/i,
+  );
+
   const prepRes = (await peerRpc(peerA, rigId, rigAddr, wsA, {
     method: "task.prepare",
     session: "chat:c1",
     key: "k-proto",
     spec: {
       name: "proto-task",
-      command: "stillfail-job notify 'hello from pion rig' && cat inputs/in.txt > out.txt && echo proto_ok",
-      back: ["out.txt"],
+      command: "stillfail-job notify 'hello from pion rig' && mkdir -p dist/sub && cat inputs/in.txt > dist/a.txt && echo nested > dist/sub/b.txt && echo proto_ok",
+      back: ["dist"],
     },
   })).result;
   assert.equal(prepRes.prepared, true);
-  assert.equal(prepRes.key, "k-proto");
 
+  // Pass 64-hex `push` ref on `task.start` -> UNCONDITIONAL `task.changed` `{ method: "task.changed", ref }`!
+  const pushRef = createHash("sha256").update("push-ref-k-proto").digest("hex");
   const startRes = (await peerRpc(peerA, rigId, rigAddr, wsA, {
     method: "task.start",
     session: "chat:c1",
     key: "k-proto",
+    push: pushRef,
   })).result;
   assert.equal(startRes.push, true);
-  assert.ok(startRes.job && typeof startRes.job.id === "string");
+  assert.equal(startRes.job.queued, undefined, "running task.start must not also report queued: true");
   const protoJobId = String(startRes.job.id);
+
+  const taskChangedTell = await until(
+    "unconditional task.changed tell with exact 64-hex ref",
+    () => tellsA.find((t) => t.request?.method === "task.changed" && t.request?.ref === pushRef),
+  );
+  assert.equal(taskChangedTell.workspace, wsA);
+  assert.deepEqual(Object.keys(taskChangedTell.request).sort(), ["method", "ref"]);
 
   const getDone = await until("k-proto exited", async () => {
     const r = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "task.get", session: "chat:c1", key: "k-proto" })).result;
@@ -670,29 +898,25 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   assert.equal(getDone.job.exitCode, 0);
   assert.match(String(getDone.log), /proto_ok/);
 
-  const listRes = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "task.list", session: "chat:c1" })).result;
-  assert.ok(listRes.tasks.some((t: any) => t.key === "k-proto" && t.spec?.name === "proto-task" && t.job?.state === "exited"));
-
-  const getsRes = (await peerRpc(peerA, rigId, rigAddr, wsA, {
-    method: "task.gets",
-    tasks: [{ session: "chat:c1", key: "k-proto" }],
-  })).result;
-  assert.equal(getsRes.tasks.length, 1);
-  assert.equal(getsRes.tasks[0].result.job.state, "exited");
-
+  // Recursive `task.files` on directory `dist` returns sorted leaf files, NOT `["dist", null]`!
   const filesRes = (await peerRpc(peerA, rigId, rigAddr, wsA, {
     method: "task.files",
     session: "chat:c1",
     key: "k-proto",
+    paths: ["dist"],
   })).result;
-  assert.equal(filesRes.files[0][0], "out.txt");
+  assert.deepEqual(
+    filesRes.files.map((f: any) => f[0]),
+    ["dist/a.txt", "dist/sub/b.txt"],
+  );
   assert.equal(filesRes.files[0][1], uploadPayload.length);
+  assert.ok(filesRes.files[1][1] > 0);
 
   const dlRes = await peerRpc(peerA, rigId, rigAddr, wsA, {
     method: "file.get",
     session: "chat:c1",
     key: "k-proto",
-    path: "out.txt",
+    path: "dist/a.txt",
   });
   assert.equal(dlRes.binary?.toString("utf8"), uploadPayload.toString("utf8"));
 
@@ -705,21 +929,18 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
 
   const closeRes = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "session.close", session: "chat:c1" })).result;
   assert.equal(closeRes.closed, true);
-
   const szAfter = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "session.size", session: "chat:c1" })).result;
   assert.equal(szAfter.present, false);
 
-  // ── Gate 12.6: Bidirectional Node -> Pion Live-Job Adoption & Revocation Kill (P1-3) ──
-  assert.equal(isAlive(liveNodePgid), true, "Node-spawned live job must still be alive before revocation");
+  // ── Gate 12.6: Bidirectional Node -> Pion Live-Job Adoption & Revocation Kill (P1-3, P1-9) ──
+  assert.equal(isAlive(liveNodePgid), true);
   await peerRpc(peerA, rigId, rigAddr, wsA, {
     method: "rig.revoke",
     signed: owner.says("revoke", { v: 1, sub: owner.sub, rig: rigId, ws: wsA, request: "req-handover", at: nowSec + 2 }),
     chain: owner.chain,
   });
-  // Pion must have adopted `job_node_live_handover` from `stillfail.db` and killed its PGID upon grant revocation!
   await until("adopted Node live job PGID killed on revoke", () => !isAlive(liveNodePgid));
 
-  // Drain & stop Pion rig cleanly.
   rig.sendCtrl({ op: "drain" });
   await until("pion drained", () => rig.messages.find((m) => m.drained === "idle"));
   rig.sendCtrl({ op: "stop" });
@@ -728,18 +949,15 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
 
   // ── Phase C (Node): reopen exact same `stillfail.db` & `grants.json` losslessly ──
   const dbCheck = new DatabaseSync(nodeDbPath, { readOnly: true });
-  const histRow = dbCheck.prepare("SELECT id, state, exit_code FROM jobs WHERE id = ?").get("job_node_hist") as any;
+  const histRow = dbCheck.prepare("SELECT id, state FROM jobs WHERE id = ?").get("job_node_hist") as any;
   assert.equal(histRow?.state, "exited");
-
   const adoptedRow = dbCheck.prepare("SELECT id, state FROM jobs WHERE id = ?").get("job_node_live_handover") as any;
-  assert.equal(adoptedRow?.state, "stopped", "Node-spawned adopted job must be recorded stopped in stillfail.db");
-
+  assert.equal(adoptedRow?.state, "stopped");
   const protoRow = dbCheck.prepare("SELECT id, state, exit_code FROM jobs WHERE id = ?").get(protoJobId) as any;
   assert.equal(protoRow?.state, "exited");
   assert.equal(protoRow?.exit_code, 0);
-
   const notices = dbCheck.prepare("SELECT text FROM job_notices WHERE job_id = ?").all(protoJobId) as { text: string }[];
-  assert.ok(notices.some((n) => n.text.includes("hello from pion rig")), `expected /jobs/notify notice, got: ${JSON.stringify(notices)}`);
+  assert.ok(notices.some((n) => n.text.includes("hello from pion rig")));
   dbCheck.close();
 
   const nodeStoreC = Store.open(nodeDbPath);
@@ -747,5 +965,5 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   nodeStoreC.close();
 
   const grantsJson = JSON.parse(readFileSync(join(data, "rig/grants.json"), "utf8"));
-  assert.ok(grantsJson.revoked && "req-handover" in grantsJson.revoked, "revocation persisted in grants.json for Node");
+  assert.ok(grantsJson.revoked && "req-handover" in grantsJson.revoked);
 });

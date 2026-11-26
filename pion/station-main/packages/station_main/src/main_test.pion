@@ -361,6 +361,33 @@ test "RemoteManager scoped tasks isolate identical keys across workspaces and se
   assert_true(rm.get_scoped("ws-a", "peer-a", "sess-other", "shared-key") is None, "other session cannot get sess-a task")
   assert_true(rm.list_scoped("ws-b", "peer-b", "sess-b").length() == 0, "ws-b list is empty")
   assert_true(rm.list_scoped("ws-a", "peer-a", "sess-a").length() == 1, "ws-a list has 1 task")
+  // Full 64-char SHA-256 hex parity with remote_target.mbt rhash.
+  assert_true(station_jobs::is_hex64(station_jobs::remote_task_id("ws-a", "peer-a", "sess-a", "shared-key")), "task_id is 64-char hex")
+  assert_true(station_jobs::is_hex64(station_jobs::remote_room_id_v2("ws-a", "peer-a", "sess-a")), "room_id is 64-char hex")
+  // Conflicting re-prepare on same key must be rejected.
+  let req_a_conflict = station_jobs::RemotePrepareRequest::{
+    key: "shared-key",
+    workspace: "ws-a",
+    source_station: "peer-a",
+    source_session: "sess-a",
+    name: "task-a",
+    command: "echo DIFFERENT_COMMAND",
+    mirror_name: None,
+    back_paths: [],
+    screen: false,
+    small: true,
+  }
+  match rm.prepare_scoped(req_a_conflict, now) {
+    Err(msg) => assert_true(msg.contains("different inputs"), "conflicting prepare rejected: " + msg)
+    Ok(_) => panic("expected conflicting prepare_scoped to fail")
+  }
+  // Safe mirror name derivation from spec.dir with collision disambiguation.
+  let claimed : Map[String, String] = Map::new()
+  let m1 = station_jobs::derive_mirror_name("/Users/dev/my:repo", claimed)
+  assert_str_eq(m1, "my_repo")
+  claimed.set(m1, "/Users/dev/my:repo")
+  let m2 = station_jobs::derive_mirror_name("/other/my:repo", claimed)
+  assert_str_eq(m2, "my_repo-2")
 }
 
 test "vault.capabilities is honest and vault.run fails closed on unsupported delivery modes" {

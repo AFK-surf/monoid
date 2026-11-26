@@ -168,9 +168,15 @@ pub struct RemoteTaskRecord {
   pub name : String
   pub command : String
   pub mirror_name : Option[String]
+  pub dir_source : Option[String]
+  pub spec_json : String
   pub back_paths : Array[String]
   pub screen : Bool
   pub small : Bool
+  pub mut push_ref : Option[String]
+  pub uploads : Map[String, Bool]
+  pub mut synced : Bool
+  pub mut collected : Bool
   pub mut state : RemoteTaskState
   pub mut job_id : Option[String]
   pub mut exit_code : Option[Int]
@@ -303,8 +309,18 @@ pub fn remote_room_id(workspace : String, source_station : String, source_sessio
   sj_slice_str(crypto::sha256_hex(raw), 0, 16)
 }
 
-/// Computes the globally scoped incoming task ID (`rhash([workspace, peer, session, key])`)
-/// so tasks from different workspaces, peers, or sessions can never collide on raw `key`.
+/// Computes the Node/MB-compatible full 64-char SHA-256 hex room ID (`rhash([workspace, peer, session])`).
+pub fn remote_room_id_v2(workspace : String, source_station : String, source_session : String) -> String {
+  let arr = base_codec::json_arr([
+    base_codec::json_str(workspace),
+    base_codec::json_str(source_station),
+    base_codec::json_str(source_session),
+  ])
+  crypto::sha256_hex(base_codec::json_stringify(arr).to_bytes())
+}
+
+/// Computes the Node/MB-compatible full 64-char SHA-256 hex incoming task ID
+/// (`rhash([workspace, peer, session, key])`, matching `remote_target.mbt:136`).
 pub fn remote_task_id(
   workspace : String,
   source_station : String,
@@ -317,8 +333,69 @@ pub fn remote_task_id(
     base_codec::json_str(source_session),
     base_codec::json_str(key),
   ])
-  let raw = base_codec::json_stringify(arr).to_bytes()
-  sj_slice_str(crypto::sha256_hex(raw), 0, 24)
+  crypto::sha256_hex(base_codec::json_stringify(arr).to_bytes())
+}
+
+/// Returns `true` iff `s` is a 64-char lowercase hex string (`remote_target.mbt:444`).
+pub fn is_hex64(s : String) -> Bool {
+  if s.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    let b = s.code_unit_at(i) & 0xFF
+    if !((b >= 48 && b <= 57) || (b >= 97 && b <= 102)) {
+      return false
+    }
+  }
+  true
+}
+
+/// Derives a safe mirror directory name from a caller-provided source `dir` path
+/// (`remote_target.mbt:667` `mirror_name`), disambiguating collisions with `-2`, `-3`, ...
+pub fn derive_mirror_name(dir : String, claimed : Map[String, String]) -> String {
+  let slash_parts = dir.split("/")
+  let mut last = ""
+  for i in 0..<slash_parts.length() {
+    let sub = slash_parts[i].split("\\")
+    for j in 0..<sub.length() {
+      if sub[j].length() > 0 {
+        last = sub[j]
+      }
+    }
+  }
+  let sb = StringBuilder::new()
+  let raw = last.to_bytes()
+  let lim = if raw.length() > 100 { 100 } else { raw.length() }
+  for i in 0..<lim {
+    let b = raw[i].to_int() & 0xFF
+    let ok = (b >= 65 && b <= 90)
+    || (b >= 97 && b <= 122)
+    || (b >= 48 && b <= 57)
+    || b == 46
+    || b == 95
+    || b == 32
+    || b == 45
+    || b > 127
+    sb.write_byte(if ok { raw[i] } else { 95 as Byte })
+  }
+  let mut base = sb.to_string()
+  if base.length() == 0 || base == "." || base == ".." {
+    base = "dir"
+  }
+  match claimed.get(base) {
+    None => return base
+    Some(prev) => if prev == dir { return base }
+  }
+  let mut n = 2
+  while n < 10000 {
+    let cand = base + "-" + n.to_string()
+    match claimed.get(cand) {
+      None => return cand
+      Some(prev) => if prev == dir { return cand }
+    }
+    n = n + 1
+  }
+  base + "-" + sj_slice_str(crypto::sha256_hex(dir.to_bytes()), 0, 8)
 }
 
 fn mirror_compound_key(room_id : String, mirror_name : String) -> String {
@@ -570,9 +647,15 @@ pub fn RemoteManager::prepare(
     name: if req.name.length() > 0 { req.name } else { req.key },
     command: req.command,
     mirror_name: req.mirror_name,
+    dir_source: req.mirror_name,
+    spec_json: "",
     back_paths: req.back_paths,
     screen: req.screen,
     small: req.small,
+    push_ref: None,
+    uploads: Map::new(),
+    synced: false,
+    collected: false,
     state: RemoteTaskState::Prepared,
     job_id: None,
     exit_code: None,
@@ -625,7 +708,7 @@ fn RemoteManager::spawn_task_job(
     port: None,
     watch: false,
     id: Some(jid),
-    queued: true,
+    queued: false,
     screen: task.screen,
     small: task.small,
     pipe_stdio: false,
@@ -1538,6 +1621,42 @@ fn RemoteManager::release_task_mirror_idle(self : RemoteManager, task : RemoteTa
   }
 }
 
+fn RemoteManager::ensure_room_v2(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  now_ms : Int64,
+) -> RemoteRoomRecord {
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
+  match self.rooms.get(rid) {
+    Some(r) => {
+      if r.closed {
+        let _ = (self.fs.mkdir_p)(r.work_dir)
+      }
+      r.last_used_at = now_ms
+      r.closed = false
+      r
+    }
+    None => {
+      let work_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid, "work"])
+      let _ = (self.fs.mkdir_p)(work_dir)
+      let room = RemoteRoomRecord::{
+        room_id: rid,
+        workspace: workspace,
+        source_station: source_station,
+        source_session: source_session,
+        work_dir: work_dir,
+        last_used_at: now_ms,
+        closed: false,
+      }
+      self.rooms.set(rid, room)
+      self.room_ids.push(rid)
+      room
+    }
+  }
+}
+
 fn RemoteManager::persist_incoming_task(self : RemoteManager, task : RemoteTaskRecord) -> Unit {
   if task.task_id.length() == 0 || task.workspace.length() == 0 || task.source_station.length() == 0 || task.source_session.length() == 0 {
     return
@@ -1548,24 +1667,43 @@ fn RemoteManager::persist_incoming_task(self : RemoteManager, task : RemoteTaskR
   for i in 0..<task.back_paths.length() {
     back_arr.push(base_codec::json_str(task.back_paths[i]))
   }
+  let spec_obj = match base_codec::json_parse(task.spec_json) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => {
+      let sf : Array[(String, base_codec::Json)] = [
+        ("name", base_codec::json_str(task.name)),
+        ("command", base_codec::json_str(task.command)),
+        ("back", base_codec::json_arr(back_arr)),
+        ("screen", base_codec::json_bool(task.screen)),
+        ("small", base_codec::json_bool(task.small)),
+      ]
+      match task.dir_source {
+        Some(ds) => sf.push(("dir", base_codec::json_str(ds)))
+        None => ()
+      }
+      base_codec::json_obj(sf)
+    }
+  }
+  // 1:1 Node/MB `remote_target.mbt:166` field names (`spec`, `workspace`, `station`, `session`, `key`, `layout`, `mirror`, `push`, `synced`, `collected`).
   let fields : Array[(String, base_codec::Json)] = [
-    ("task_id", base_codec::json_str(task.task_id)),
-    ("key", base_codec::json_str(task.key)),
-    ("room_id", base_codec::json_str(task.room_id)),
+    ("spec", spec_obj),
     ("workspace", base_codec::json_str(task.workspace)),
-    ("source_station", base_codec::json_str(task.source_station)),
-    ("source_session", base_codec::json_str(task.source_session)),
-    ("name", base_codec::json_str(task.name)),
-    ("command", base_codec::json_str(task.command)),
-    ("back_paths", base_codec::json_arr(back_arr)),
-    ("screen", base_codec::json_bool(task.screen)),
-    ("small", base_codec::json_bool(task.small)),
+    ("station", base_codec::json_str(task.source_station)),
+    ("session", base_codec::json_str(task.source_session)),
+    ("key", base_codec::json_str(task.key)),
+    ("layout", base_codec::json_str("session")),
     ("state", base_codec::json_str(remote_task_state_str(task.state))),
     ("created_at", base_codec::json_int64(task.created_at)),
+    ("synced", base_codec::json_bool(task.synced)),
+    ("collected", base_codec::json_bool(task.collected)),
     ("pending_results", base_codec::json_bool(task.pending_results)),
   ]
   match task.mirror_name {
-    Some(m) => fields.push(("mirror_name", base_codec::json_str(m)))
+    Some(m) => fields.push(("mirror", base_codec::json_str(m)))
+    None => ()
+  }
+  match task.push_ref {
+    Some(p) => fields.push(("push", base_codec::json_str(p)))
     None => ()
   }
   match task.job_id {
@@ -1596,9 +1734,8 @@ fn RemoteManager::persist_incoming_task(self : RemoteManager, task : RemoteTaskR
   }
 }
 
-/// Reloads persisted `<data>/remote/incoming/<task_id>/task.json` records on startup and
-/// reconciles them against adopted `self.jobs` records so `task.get`/`task.list`/`task.stop`
-/// survive station restarts and handovers.
+/// Reloads persisted `<data>/remote/incoming/<task_id>/task.json` records (both Node/MB and Pion format)
+/// and reconciles them against adopted `self.jobs` records.
 pub fn RemoteManager::adopt_incoming_tasks(self : RemoteManager, now_ms : Int64) -> Int {
   let inc_root = nodepath::join(self.fs.sep, [self.root, "incoming"])
   let dirs = match (self.fs.read_dir)(inc_root) {
@@ -1620,10 +1757,7 @@ pub fn RemoteManager::adopt_incoming_tasks(self : RemoteManager, now_ms : Int64)
       base_codec::JsonParseResult::Ok(j) => j
       base_codec::JsonParseResult::Err(_) => continue
     }
-    let task_id = match base_codec::json_get(parsed, "task_id") {
-      Some(base_codec::Json::Str(s)) => s
-      _ => tid
-    }
+    let task_id = tid
     if self.tasks.contains(task_id) {
       continue
     }
@@ -1635,28 +1769,50 @@ pub fn RemoteManager::adopt_incoming_tasks(self : RemoteManager, now_ms : Int64)
       Some(base_codec::Json::Str(s)) => s
       _ => ""
     }
-    let src_st = match base_codec::json_get(parsed, "source_station") {
+    let src_st = match base_codec::json_get(parsed, "station") {
       Some(base_codec::Json::Str(s)) => s
-      _ => ""
+      _ => match base_codec::json_get(parsed, "source_station") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
     }
-    let src_sess = match base_codec::json_get(parsed, "source_session") {
+    let src_sess = match base_codec::json_get(parsed, "session") {
       Some(base_codec::Json::Str(s)) => s
-      _ => ""
+      _ => match base_codec::json_get(parsed, "source_session") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
     }
-    let name = match base_codec::json_get(parsed, "name") {
+    let spec_v = match base_codec::json_get(parsed, "spec") {
+      Some(s) => s
+      None => parsed
+    }
+    let spec_json = base_codec::json_stringify(spec_v)
+    let name = match base_codec::json_get(spec_v, "name") {
       Some(base_codec::Json::Str(s)) => s
       _ => key
     }
-    let command = match base_codec::json_get(parsed, "command") {
+    let command = match base_codec::json_get(spec_v, "command") {
       Some(base_codec::Json::Str(s)) => s
       _ => ""
     }
-    let mirror_name : Option[String] = match base_codec::json_get(parsed, "mirror_name") {
+    let dir_source : Option[String] = match base_codec::json_get(spec_v, "dir") {
       Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
       _ => None
     }
+    let mirror_name : Option[String] = match base_codec::json_get(parsed, "mirror") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+      _ => match base_codec::json_get(parsed, "mirror_name") {
+        Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+        _ => None
+      }
+    }
+    let push_ref : Option[String] = match base_codec::json_get(parsed, "push") {
+      Some(base_codec::Json::Str(s)) => if is_hex64(s) { Some(s) } else { None }
+      _ => None
+    }
     let back_paths : Array[String] = []
-    match base_codec::json_get(parsed, "back_paths") {
+    match base_codec::json_get(spec_v, "back") {
       Some(base_codec::Json::Arr(arr)) => {
         for ai in 0..<arr.length() {
           match arr[ai] {
@@ -1667,11 +1823,19 @@ pub fn RemoteManager::adopt_incoming_tasks(self : RemoteManager, now_ms : Int64)
       }
       _ => ()
     }
-    let screen = match base_codec::json_get(parsed, "screen") {
+    let screen = match base_codec::json_get(spec_v, "screen") {
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
-    let small = match base_codec::json_get(parsed, "small") {
+    let small = match base_codec::json_get(spec_v, "small") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let synced = match base_codec::json_get(parsed, "synced") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let collected = match base_codec::json_get(parsed, "collected") {
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
@@ -1679,9 +1843,10 @@ pub fn RemoteManager::adopt_incoming_tasks(self : RemoteManager, now_ms : Int64)
       Some(base_codec::Json::Str(s)) => remote_task_state_from_str(s)
       _ => RemoteTaskState::Prepared
     }
-    let job_id : Option[String] = match base_codec::json_get(parsed, "job_id") {
+    let default_jid = "remote_" + task_id
+    let mut job_id : Option[String] = match base_codec::json_get(parsed, "job_id") {
       Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
-      _ => None
+      _ => if self.jobs.get(default_jid) is Some(_) { Some(default_jid) } else { None }
     }
     let mut exit_code : Option[Int] = match base_codec::json_get(parsed, "exit_code") {
       Some(base_codec::Json::Num(d, _)) => Some(d.to_int())
@@ -1707,7 +1872,7 @@ pub fn RemoteManager::adopt_incoming_tasks(self : RemoteManager, now_ms : Int64)
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
-    let room = self.ensure_room(ws, src_st, src_sess, now_ms)
+    let room = self.ensure_room_v2(ws, src_st, src_sess, now_ms)
     match job_id {
       Some(jid) => {
         self.job_to_task.set(jid, task_id)
@@ -1749,9 +1914,15 @@ pub fn RemoteManager::adopt_incoming_tasks(self : RemoteManager, now_ms : Int64)
       name: name,
       command: command,
       mirror_name: mirror_name,
+      dir_source: dir_source,
+      spec_json: spec_json,
       back_paths: back_paths,
       screen: screen,
       small: small,
+      push_ref: push_ref,
+      uploads: Map::new(),
+      synced: synced,
+      collected: collected,
       state: state,
       job_id: job_id,
       exit_code: exit_code,
@@ -1768,12 +1939,14 @@ pub fn RemoteManager::adopt_incoming_tasks(self : RemoteManager, now_ms : Int64)
   count
 }
 
-/// Prepares a scoped remote task keyed by `remote_task_id(workspace, source_station, source_session, key)`
-/// so different workspaces, peers, or sessions can never collide or access each other's tasks.
+/// Prepares a scoped remote task keyed by full 64-char `remote_task_id(ws, peer, session, key)`.
+/// Rejects conflicting re-prepare of the same key with different `spec_json`, and derives safe
+/// mirror names from `spec.dir` (never using raw `spec.dir` as a directory name).
 pub fn RemoteManager::prepare_scoped(
   self : RemoteManager,
   req : RemotePrepareRequest,
   now_ms : Int64,
+  spec_json : String = "",
 ) -> Result[RemoteTaskRecord, String] {
   if req.workspace.length() == 0 || req.source_station.length() == 0 || req.source_session.length() == 0 {
     return Err("workspace, peer, and session are required")
@@ -1786,18 +1959,39 @@ pub fn RemoteManager::prepare_scoped(
   }
   let tid = remote_task_id(req.workspace, req.source_station, req.source_session, req.key)
   match self.tasks.get(tid) {
-    Some(existing) => return Ok(existing)
+    Some(existing) => {
+      if spec_json.length() > 0 && existing.spec_json.length() > 0 && existing.spec_json != spec_json {
+        return Err("task key already used with different inputs; choose a new key for new work")
+      }
+      if existing.command != req.command || existing.name != (if req.name.length() > 0 { req.name } else { req.key }) {
+        return Err("task key already used with different inputs; choose a new key for new work")
+      }
+      return Ok(existing)
+    }
     None => ()
   }
-  let room = self.ensure_room(req.workspace, req.source_station, req.source_session, now_ms)
+  let room = self.ensure_room_v2(req.workspace, req.source_station, req.source_session, now_ms)
+  let mut derived_mirror : Option[String] = None
   match req.mirror_name {
-    Some(mname) => {
-      if !is_valid_mirror_name(mname) {
-        return Err("invalid mirror name: " + mname)
+    Some(raw_dir) => {
+      let claimed : Map[String, String] = Map::new()
+      for ti in 0..<self.task_keys.length() {
+        match self.tasks.get(self.task_keys[ti]) {
+          Some(other) => {
+            if other.room_id == room.room_id {
+              match (other.mirror_name, other.dir_source) {
+                (Some(om), Some(od)) => claimed.set(om, od)
+                _ => ()
+              }
+            }
+          }
+          None => ()
+        }
       }
+      let mname = derive_mirror_name(raw_dir, claimed)
       let mk = mirror_compound_key(room.room_id, mname)
       if !self.mirrors_map.contains(mk) {
-        let mpath = nodepath::join(self.fs.sep, [self.root, "sessions", room.room_id, "mirrors", mname])
+        let mpath = nodepath::join(self.fs.sep, [room.work_dir, mname])
         let _ = (self.fs.mkdir_p)(mpath)
         self.mirrors_map.set(
           mk,
@@ -1814,6 +2008,7 @@ pub fn RemoteManager::prepare_scoped(
         )
         self.mirror_keys.push(mk)
       }
+      derived_mirror = Some(mname)
     }
     None => ()
   }
@@ -1826,10 +2021,16 @@ pub fn RemoteManager::prepare_scoped(
     source_session: req.source_session,
     name: if req.name.length() > 0 { req.name } else { req.key },
     command: req.command,
-    mirror_name: req.mirror_name,
+    mirror_name: derived_mirror,
+    dir_source: req.mirror_name,
+    spec_json: spec_json,
     back_paths: req.back_paths,
     screen: req.screen,
     small: req.small,
+    push_ref: None,
+    uploads: Map::new(),
+    synced: false,
+    collected: false,
     state: RemoteTaskState::Prepared,
     job_id: None,
     exit_code: None,
@@ -1855,6 +2056,44 @@ pub fn RemoteManager::get_scoped(
   self.tasks.get(remote_task_id(workspace, source_station, source_session, key))
 }
 
+pub fn RemoteManager::set_task_push_ref(
+  self : RemoteManager,
+  task : RemoteTaskRecord,
+  push_ref : String,
+) -> Unit {
+  if is_hex64(push_ref) {
+    task.push_ref = Some(push_ref)
+    self.persist_incoming_task(task)
+  }
+}
+
+pub fn RemoteManager::record_task_upload(
+  self : RemoteManager,
+  task : RemoteTaskRecord,
+  rel_path : String,
+  complete : Bool,
+) -> Unit {
+  task.uploads.set(rel_path, complete)
+  self.persist_incoming_task(task)
+}
+
+pub fn RemoteManager::mark_task_synced(
+  self : RemoteManager,
+  task : RemoteTaskRecord,
+) -> Unit {
+  task.synced = true
+  self.persist_incoming_task(task)
+}
+
+pub fn RemoteManager::mark_task_collected(
+  self : RemoteManager,
+  task : RemoteTaskRecord,
+) -> Unit {
+  task.collected = true
+  task.pending_results = false
+  self.persist_incoming_task(task)
+}
+
 pub fn RemoteManager::start_scoped(
   self : RemoteManager,
   workspace : String,
@@ -1867,6 +2106,9 @@ pub fn RemoteManager::start_scoped(
   person_present : Bool = false,
 ) -> Result[RemoteTaskRecord, String] {
   let tid = remote_task_id(workspace, source_station, source_session, key)
+  if !self.tasks.contains(tid) {
+    return Err("unknown remote task: " + key)
+  }
   self.start(tid, now_ms, needs_sync=needs_sync, pressure=pressure, person_present=person_present)
 }
 
@@ -1882,6 +2124,9 @@ pub fn RemoteManager::sync_complete_scoped(
   person_present : Bool = false,
 ) -> Result[RemoteTaskRecord, String] {
   let tid = remote_task_id(workspace, source_station, source_session, key)
+  if !self.tasks.contains(tid) {
+    return Err("unknown remote task: " + key)
+  }
   self.sync_complete(tid, manifest_hash, now_ms, pressure=pressure, person_present=person_present)
 }
 
@@ -1894,6 +2139,9 @@ pub fn RemoteManager::log_scoped(
   lines : Int = JOB_LOG_LINES_DEFAULT,
 ) -> Result[String, String] {
   let tid = remote_task_id(workspace, source_station, source_session, key)
+  if !self.tasks.contains(tid) {
+    return Err("unknown remote task: " + key)
+  }
   self.log(tid, lines=lines)
 }
 
@@ -1906,6 +2154,9 @@ pub fn RemoteManager::stop_scoped(
   now_ms : Int64,
 ) -> Result[RemoteTaskRecord, String] {
   let tid = remote_task_id(workspace, source_station, source_session, key)
+  if !self.tasks.contains(tid) {
+    return Err("unknown remote task: " + key)
+  }
   self.stop(tid, now_ms)
 }
 
@@ -1917,6 +2168,9 @@ pub fn RemoteManager::release_scoped(
   key : String,
 ) -> Result[RemoteTaskRecord, String] {
   let tid = remote_task_id(workspace, source_station, source_session, key)
+  if !self.tasks.contains(tid) {
+    return Err("unknown remote task: " + key)
+  }
   match self.release(tid) {
     Ok(t) => {
       self.persist_incoming_task(t)
@@ -1932,7 +2186,7 @@ pub fn RemoteManager::list_scoped(
   source_station : String,
   source_session : String,
 ) -> Array[RemoteTaskRecord] {
-  let rid = remote_room_id(workspace, source_station, source_session)
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
   self.list(room_id_opt=Some(rid))
 }
 
@@ -1942,7 +2196,7 @@ pub fn RemoteManager::mirrors_scoped(
   source_station : String,
   source_session : String,
 ) -> Array[MirrorRecord] {
-  let rid = remote_room_id(workspace, source_station, source_session)
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
   self.mirrors(room_id_opt=Some(rid))
 }
 
@@ -1953,7 +2207,7 @@ pub fn RemoteManager::clean_mirror_scoped(
   source_session : String,
   mirror_name : String,
 ) -> Result[Bool, String] {
-  let rid = remote_room_id(workspace, source_station, source_session)
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
   self.clean_mirror(rid, mirror_name)
 }
 
@@ -1963,7 +2217,7 @@ pub fn RemoteManager::task_base_dir(self : RemoteManager, task : RemoteTaskRecor
       let mk = mirror_compound_key(task.room_id, mname)
       match self.mirrors_map.get(mk) {
         Some(m) => m.path
-        None => nodepath::join(self.fs.sep, [self.root, "sessions", task.room_id, "mirrors", mname])
+        None => nodepath::join(self.fs.sep, [self.root, "sessions", task.room_id, "work", mname])
       }
     }
     None => {
@@ -1982,7 +2236,7 @@ pub fn RemoteManager::session_work_dir(
   source_session : String,
   now_ms : Int64,
 ) -> String {
-  let room = self.ensure_room(workspace, source_station, source_session, now_ms)
+  let room = self.ensure_room_v2(workspace, source_station, source_session, now_ms)
   room.work_dir
 }
 
@@ -1992,13 +2246,74 @@ pub fn RemoteManager::session_work_size(
   source_station : String,
   source_session : String,
 ) -> (Bool, Int64) {
-  let rid = remote_room_id(workspace, source_station, source_session)
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
   let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
   match (self.fs.lstat)(room_dir) {
     None => (false, 0L)
     Some(_) => {
       let sz = tree_bytes(self.fs, room_dir)
       (true, sz.bytes)
+    }
+  }
+}
+
+/// Recursively lists files under `rel` relative to `cwd` (`remote_target.mbt:460` `visit_files`),
+/// sorting directory entries lexicographically and capping at 1000 files.
+pub fn visit_files_recursive(
+  fs : FsPort,
+  cwd : String,
+  rel : String,
+  out : Array[(String, Option[Int64])],
+) -> Result[Unit, String] {
+  if out.length() >= 1000 {
+    return Err("more than 1000 files to bring back")
+  }
+  let full = match safe_transfer_path(fs, cwd, rel, false) {
+    Ok(p) => p
+    Err(_) => {
+      out.push((rel, None))
+      return Ok(())
+    }
+  }
+  match (fs.lstat)(full) {
+    None => {
+      out.push((rel, None))
+      Ok(())
+    }
+    Some(st) => {
+      if st.is_file() {
+        out.push((rel, Some(st.size)))
+        Ok(())
+      } else if st.is_dir() && !st.is_symlink() {
+        let names = match (fs.read_dir)(full) {
+          Some(ns) => ns
+          None => return Ok(())
+        }
+        // Sort names lexicographically (insertion sort).
+        for i in 1..<names.length() {
+          let cur = names[i]
+          let mut j = i - 1
+          while j >= 0 && names[j] > cur {
+            names[j + 1] = names[j]
+            j = j - 1
+          }
+          names[j + 1] = cur
+        }
+        let mut base = rel
+        while base.ends_with("/") && base.length() > 0 {
+          base = sj_slice_str(base, 0, base.length() - 1)
+        }
+        for i in 0..<names.length() {
+          let child_rel = if base.length() > 0 { base + "/" + names[i] } else { names[i] }
+          match visit_files_recursive(fs, cwd, child_rel, out) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        Ok(())
+      } else {
+        Ok(())
+      }
     }
   }
 }
@@ -2011,7 +2326,7 @@ pub fn RemoteManager::cancel_session_tasks(
   source_session : String,
   now_ms : Int64,
 ) -> Int {
-  let rid = remote_room_id(workspace, source_station, source_session)
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
   let mut count = 0
   for i in 0..<self.task_keys.length() {
     let tid = self.task_keys[i]
@@ -2106,7 +2421,7 @@ pub fn RemoteManager::close_session_room(
   now_ms : Int64,
 ) -> Bool {
   let _ = self.cancel_session_tasks(workspace, source_station, source_session, now_ms)
-  let rid = remote_room_id(workspace, source_station, source_session)
+  let rid = remote_room_id_v2(workspace, source_station, source_session)
   let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
   match self.tombstone_dir(room_dir, now_ms) {
     Some(tomb) => {
