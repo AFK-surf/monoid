@@ -149,8 +149,9 @@ function makeLock(ws: string, from: PersonalSources, held?: VaultsHeld): LockSta
     name(sub);
     persons.set(sub, f.genesis);
     for (const d of f.devices) {
+      const prev = signKeys.get(d.id) ?? [];
       devices.set(d.id, { id: d.id, sub, kind: "app", label: d.label, ...(d.sign_key !== undefined ? { sign_key: d.sign_key } : {}), own: true });
-      signKeys.set(d.id, d.sign_keys);
+      signKeys.set(d.id, prev.length === 0 ? d.sign_keys : [...new Set([...prev, ...d.sign_keys])]);
     }
   }
   return bare(ws, members, devices, signKeys, persons);
