@@ -181,7 +181,7 @@ jobs:
           SYS_C="pion/station-main/packages/station_sys/native/station_sys.c"
           TEST_C="pion/station-main/packages/station_sys/native/station_sys_test.c"
 
-          gcc -std=c11 -O2 -Wall -Wextra -Werror "$HOST_C" "$SYS_C" "$TEST_C" -lws2_32 -liphlpapi -lpsapi -lkernel32 -o "$WORK/test_win.exe"
+          gcc -std=c11 -O2 -Wall -Wextra -Werror "$HOST_C" "$SYS_C" "$TEST_C" -lws2_32 -liphlpapi -lpsapi -lbcrypt -lkernel32 -o "$WORK/test_win.exe"
           "$WORK/test_win.exe"
 
   wait-shell:

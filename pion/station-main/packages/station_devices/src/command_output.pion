@@ -1,0 +1,1651 @@
+// Pure-Pion port of `station/src/ops/command-output.ts`:
+// Strips terminal control sequences, unwraps CLI-wrapped URLs, extracts http(s) URLs,
+// parses OAuth loopback callbacks, extracts RFC 8628 / CLI device codes, detects prompts,
+// Enter-to-open lines, completion phrases, and splits POSIX shell command words.
+
+import "url"
+
+pub struct Loopback {
+  pub host : String
+  pub port : Int
+  pub path : String
+  pub state : Option[String]
+  pub post : Bool
+}
+
+pub struct DeviceUrls {
+  pub url : Option[String]
+  pub code_url : Option[String]
+}
+
+pub struct CommandAssignments {
+  pub env : Array[(String, String)]
+  pub rest : Array[String]
+}
+
+// ── Byte/ASCII helpers ──
+
+fn is_ascii_space(b : Int) -> Bool {
+  b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0D || b == 0x0B || b == 0x0C
+}
+
+fn is_ascii_digit(b : Int) -> Bool {
+  b >= 0x30 && b <= 0x39
+}
+
+fn is_ascii_upper(b : Int) -> Bool {
+  b >= 0x41 && b <= 0x5A
+}
+
+fn is_ascii_lower(b : Int) -> Bool {
+  b >= 0x61 && b <= 0x7A
+}
+
+fn is_ascii_alpha(b : Int) -> Bool {
+  is_ascii_upper(b) || is_ascii_lower(b)
+}
+
+fn is_ascii_alnum(b : Int) -> Bool {
+  is_ascii_alpha(b) || is_ascii_digit(b)
+}
+
+fn is_hex_byte(b : Int) -> Bool {
+  is_ascii_digit(b) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66)
+}
+
+fn hex_val(b : Int) -> Int {
+  if b >= 0x30 && b <= 0x39 {
+    b - 0x30
+  } else if b >= 0x41 && b <= 0x46 {
+    b - 0x41 + 10
+  } else if b >= 0x61 && b <= 0x66 {
+    b - 0x61 + 10
+  } else {
+    -1
+  }
+}
+
+fn to_ascii_lower(s : String) -> String {
+  let bytes = s.to_bytes()
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < bytes.length() {
+    let b = bytes[i].to_int() & 0xFF
+    if b >= 0x41 && b <= 0x5A {
+      out.write_byte((b + 32).to_byte())
+    } else {
+      out.write_byte((b).to_byte())
+    }
+    i = i + 1
+  }
+  out.to_string()
+}
+
+fn slice_bytes_str(raw : Bytes, start : Int, end_excl : Int) -> String {
+  let lo = if start < 0 { 0 } else { start }
+  let hi = if end_excl > raw.length() { raw.length() } else { end_excl }
+  if lo >= hi {
+    return ""
+  }
+  let sub = Bytes::new(hi - lo)
+  let mut i = lo
+  while i < hi {
+    sub[i - lo] = raw[i]
+    i = i + 1
+  }
+  bytes_to_str(sub)
+}
+
+pub fn trim_end_ascii(s : String) -> String {
+  let raw = s.to_bytes()
+  let mut end = raw.length()
+  while end > 0 && is_ascii_space(raw[end - 1].to_int() & 0xFF) {
+    end = end - 1
+  }
+  slice_bytes_str(raw, 0, end)
+}
+
+pub fn trim_start_ascii(s : String) -> String {
+  let raw = s.to_bytes()
+  let mut start = 0
+  while start < raw.length() && is_ascii_space(raw[start].to_int() & 0xFF) {
+    start = start + 1
+  }
+  slice_bytes_str(raw, start, raw.length())
+}
+
+pub fn trim_ascii(s : String) -> String {
+  trim_end_ascii(trim_start_ascii(s))
+}
+
+pub fn split_lines(s : String) -> Array[String] {
+  let raw = s.to_bytes()
+  let out : Array[String] = []
+  let mut start = 0
+  let mut i = 0
+  while i < raw.length() {
+    if (raw[i].to_int() & 0xFF) == 0x0A {
+      out.push(slice_bytes_str(raw, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  out.push(slice_bytes_str(raw, start, raw.length()))
+  out
+}
+
+pub fn join_strings(parts : Array[String], sep : String) -> String {
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < parts.length() {
+    if i > 0 {
+      buf.write_string(sep)
+    }
+    buf.write_string(parts[i])
+    i = i + 1
+  }
+  buf.to_string()
+}
+
+fn str_starts_with_ci(s : String, prefix_lower : String) -> Bool {
+  let sb = s.to_bytes()
+  let pb = prefix_lower.to_bytes()
+  if sb.length() < pb.length() {
+    return false
+  }
+  let mut i = 0
+  while i < pb.length() {
+    let mut c = sb[i].to_int() & 0xFF
+    if c >= 0x41 && c <= 0x5A {
+      c = c + 32
+    }
+    if c != (pb[i].to_int() & 0xFF) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn find_substr(haystack : String, needle : String, from : Int) -> Int {
+  let hb = haystack.to_bytes()
+  let nb = needle.to_bytes()
+  let nlen = nb.length()
+  if nlen == 0 {
+    return from
+  }
+  if from < 0 || from + nlen > hb.length() {
+    return -1
+  }
+  let limit = hb.length() - nlen
+  let mut i = from
+  while i <= limit {
+    let mut j = 0
+    while j < nlen && hb[i + j] == nb[j] {
+      j = j + 1
+    }
+    if j == nlen {
+      return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
+fn contains_substr(haystack : String, needle : String) -> Bool {
+  find_substr(haystack, needle, 0) >= 0
+}
+
+fn contains_ci(haystack : String, needle_lower : String) -> Bool {
+  contains_substr(to_ascii_lower(haystack), needle_lower)
+}
+
+/// Drops CSI sequences, OSC sequences, and 2-byte escapes; `\r` (without `\n`) becomes `\n`.
+pub fn plain_text(text : String) -> String {
+  let raw = text.to_bytes()
+  let len = raw.length()
+  let out : Array[Byte] = []
+  let mut i = 0
+  while i < len {
+    let c = raw[i].to_int() & 0xFF
+    if c == 0x1B {
+      if i + 1 < len {
+        let next = raw[i + 1].to_int() & 0xFF
+        if next == 0x5B {
+          // CSI: ESC [ ... [@-~]
+          i = i + 2
+          while i < len {
+            let b = raw[i].to_int() & 0xFF
+            i = i + 1
+            if b >= 0x40 && b <= 0x7E {
+              break
+            }
+          }
+          continue
+        } else if next == 0x5D {
+          // OSC: ESC ] ... (BEL | ESC \)
+          i = i + 2
+          while i < len {
+            let b = raw[i].to_int() & 0xFF
+            if b == 0x07 {
+              i = i + 1
+              break
+            }
+            if b == 0x1B && i + 1 < len && (raw[i + 1].to_int() & 0xFF) == 0x5C {
+              i = i + 2
+              break
+            }
+            i = i + 1
+          }
+          continue
+        } else {
+          i = i + 2
+          continue
+        }
+      } else {
+        i = i + 1
+        continue
+      }
+    }
+    if c == 0x0D {
+      let mut j = i + 1
+      while j < len && (raw[j].to_int() & 0xFF) == 0x0D {
+        j = j + 1
+      }
+      if j >= len || (raw[j].to_int() & 0xFF) != 0x0A {
+        out.push(0x0A.to_byte())
+      }
+      i = j
+      continue
+    }
+    if c == 0x08 || c == 0x07 || c == 0x0F || c == 0x0E {
+      i = i + 1
+      continue
+    }
+    out.push(raw[i])
+    i = i + 1
+  }
+  let res = Bytes::new(out.length())
+  let mut k = 0
+  while k < out.length() {
+    res[k] = out[k]
+    k = k + 1
+  }
+  bytes_to_str(res)
+}
+
+fn is_url_delim(b : Int) -> Bool {
+  is_ascii_space(b) || b == 0x22 || b == 0x27 || b == 0x3C || b == 0x3E || b == 0x60
+}
+
+fn is_url_char(b : Int) -> Bool {
+  is_ascii_alnum(b) ||
+  b == 0x2E ||
+  b == 0x5F ||
+  b == 0x7E ||
+  b == 0x3A ||
+  b == 0x2F ||
+  b == 0x3F ||
+  b == 0x23 ||
+  b == 0x5B ||
+  b == 0x5D ||
+  b == 0x40 ||
+  b == 0x21 ||
+  b == 0x24 ||
+  b == 0x26 ||
+  b == 0x28 ||
+  b == 0x29 ||
+  b == 0x2A ||
+  b == 0x2B ||
+  b == 0x2C ||
+  b == 0x3B ||
+  b == 0x3D ||
+  b == 0x25 ||
+  b == 0x2D
+}
+
+fn all_url_chars(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  let mut i = 0
+  while i < raw.length() {
+    if !is_url_char(raw[i].to_int() & 0xFF) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn has_url_mark(s : String) -> Bool {
+  let raw = s.to_bytes()
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 0x26 || b == 0x3D || b == 0x2B {
+      return true
+    }
+    if b == 0x25 && i + 2 < raw.length() && is_hex_byte(raw[i + 1].to_int() & 0xFF) && is_hex_byte(raw[i + 2].to_int() & 0xFF) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn is_rule_line(s : String) -> Bool {
+  if s == "" {
+    return false
+  }
+  let raw = s.to_bytes()
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 0x3D || b == 0x2D || b == 0x5F || b == 0x7E || b == 0x2A || b == 0x2E {
+      i = i + 1
+      continue
+    }
+    // UTF-8 box rules: ─ (E2 94 80), ━ (E2 94 81), ═ (E2 95 90), · (C2 B7)
+    if b == 0xC2 && i + 1 < raw.length() && (raw[i + 1].to_int() & 0xFF) == 0xB7 {
+      i = i + 2
+      continue
+    }
+    if b == 0xE2 && i + 2 < raw.length() {
+      let b1 = raw[i + 1].to_int() & 0xFF
+      let b2 = raw[i + 2].to_int() & 0xFF
+      if (b1 == 0x94 && (b2 == 0x80 || b2 == 0x81)) || (b1 == 0x95 && b2 == 0x90) {
+        i = i + 3
+        continue
+      }
+    }
+    return false
+  }
+  true
+}
+
+fn url_at_end(line_trimmed : String) -> Option[String] {
+  let raw = line_trimmed.to_bytes()
+  let len = raw.length()
+  if len == 0 {
+    return None
+  }
+  let mut start = len
+  while start > 0 && !is_url_delim(raw[start - 1].to_int() & 0xFF) {
+    start = start - 1
+  }
+  let candidate = slice_bytes_str(raw, start, len)
+  if str_starts_with_ci(candidate, "https://") || str_starts_with_ci(candidate, "http://") {
+    Some(candidate)
+  } else {
+    None
+  }
+}
+
+fn is_device_code_shape(s : String) -> Bool {
+  let raw = s.to_bytes()
+  let len = raw.length()
+  if len < 9 || len > 11 {
+    return false
+  }
+  if (raw[4].to_int() & 0xFF) != 0x2D {
+    return false
+  }
+  let mut i = 0
+  while i < len {
+    if i != 4 {
+      let b = raw[i].to_int() & 0xFF
+      if !is_ascii_upper(b) && !is_ascii_digit(b) {
+        return false
+      }
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn is_yn_prompt_token(s : String) -> Bool {
+  let lo = to_ascii_lower(s)
+  lo == "y/n" || lo == "n/y" || lo == "(y/n)" || lo == "(n/y)" || lo == "[y/n]" || lo == "[n/y]"
+}
+
+/// Whether `next` continues the URL at the end of `line_trimmed`.
+pub fn url_continuation(
+  prev_raw : String,
+  line_trimmed : String,
+  next : String,
+  cols : Int,
+  wrap_width : Option[Int],
+) -> Option[Int] {
+  let url = match url_at_end(line_trimmed) {
+    Some(u) => u
+    None => return None
+  }
+  let next_trim = trim_ascii(next)
+  if next_trim == "" {
+    return None
+  }
+  let next_first_b = next_trim.to_bytes()[0].to_int() & 0xFF
+  if is_url_delim(next_first_b) {
+    return None
+  }
+  let prev_raw_len = trim_end_ascii(prev_raw).length()
+  if prev_raw_len >= cols - 4 {
+    return Some(match wrap_width {
+      Some(w) => w
+      None => cols
+    })
+  }
+  if url.length() < 40 {
+    return None
+  }
+  if str_starts_with_ci(next_trim, "https://") || str_starts_with_ci(next_trim, "http://") {
+    return None
+  }
+  let goes = match wrap_width {
+    Some(w) => w
+    None => prev_raw_len
+  }
+  // Check if next_trim contains whitespace.
+  let nt_bytes = next_trim.to_bytes()
+  let mut sp_idx = -1
+  let mut k = 0
+  while k < nt_bytes.length() {
+    if is_ascii_space(nt_bytes[k].to_int() & 0xFF) {
+      sp_idx = k
+      break
+    }
+    k = k + 1
+  }
+  if sp_idx >= 0 {
+    let first = slice_bytes_str(nt_bytes, 0, sp_idx)
+    if contains_substr(url, "?") &&
+    !has_quote_or_angle(first) &&
+    !str_starts_with_ci(first, "https://") &&
+    !str_starts_with_ci(first, "http://") &&
+    !is_rule_line(first) &&
+    has_url_mark(first) {
+      return Some(goes)
+    }
+    return None
+  }
+  if has_quote_or_angle(next_trim) || is_rule_line(next_trim) {
+    return None
+  }
+  if is_device_code_shape(next_trim) || is_yn_prompt_token(next_trim) {
+    return None
+  }
+  if ends_with_prompt_punct(next_trim) && !has_url_mark(next_trim) && !contains_substr(next_trim, "%") {
+    return None
+  }
+  let u_chars = all_url_chars(next_trim)
+  let line_ends_mark = ends_with_url_break_char(line_trimmed)
+  let prev_matches_wrap = match wrap_width {
+    Some(w) => prev_raw_len >= w - 4 && u_chars
+    None => false
+  }
+  if has_url_mark(next_trim) ||
+  (contains_substr(next_trim, "/") && next_trim.length() >= 8) ||
+  line_ends_mark ||
+  (contains_substr(url, "?") && prev_raw_len >= 60 && next_trim.length() >= 16 && u_chars) ||
+  prev_matches_wrap {
+    return Some(goes)
+  }
+  None
+}
+
+fn has_quote_or_angle(s : String) -> Bool {
+  let raw = s.to_bytes()
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 0x22 || b == 0x27 || b == 0x3C || b == 0x3E || b == 0x60 {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn ends_with_prompt_punct(s : String) -> Bool {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  if n == 0 {
+    return false
+  }
+  let last = raw[n - 1].to_int() & 0xFF
+  if last == 0x3A || last == 0x3F {
+    return true
+  }
+  // Fullwidth ： (EF BC 9A) or ？ (EF BC 9F)
+  if n >= 3 && (raw[n - 3].to_int() & 0xFF) == 0xEF && (raw[n - 2].to_int() & 0xFF) == 0xBC {
+    return last == 0x9A || last == 0x9F
+  }
+  false
+}
+
+fn ends_with_url_break_char(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  let last = raw[raw.length() - 1].to_int() & 0xFF
+  last == 0x3F || last == 0x26 || last == 0x3D || last == 0x2B || last == 0x25
+}
+
+/// Rejoin URLs wrapped across lines by the terminal or CLI.
+pub fn unwrapped(text : String, cols : Int) -> String {
+  let lines = split_lines(text)
+  let out : Array[String] = []
+  let mut i = 0
+  while i < lines.length() {
+    let mut line = lines[i]
+    let mut prev_raw = line
+    let mut wrap_width : Option[Int] = None
+    while i + 1 < lines.length() {
+      let trimmed = trim_end_ascii(line)
+      let next = lines[i + 1]
+      match url_continuation(prev_raw, trimmed, next, cols, wrap_width) {
+        Some(w) => {
+          line = trimmed + trim_start_ascii(next)
+          prev_raw = next
+          wrap_width = Some(w)
+          i = i + 1
+        }
+        None => break
+      }
+    }
+    out.push(line)
+    i = i + 1
+  }
+  join_strings(out, "\n")
+}
+
+/// Extract all `http://` and `https://` URLs from text, stripping trailing sentence punctuation.
+pub fn urls_in(text : String) -> Array[String] {
+  let raw = text.to_bytes()
+  let len = raw.length()
+  let found : Array[String] = []
+  let mut i = 0
+  while i < len {
+    let matched_http = i + 7 <= len &&
+    (raw[i].to_int() & 0xFF) == 0x68 &&
+    (raw[i + 1].to_int() & 0xFF) == 0x74 &&
+    (raw[i + 2].to_int() & 0xFF) == 0x74 &&
+    (raw[i + 3].to_int() & 0xFF) == 0x70 &&
+    (raw[i + 4].to_int() & 0xFF) == 0x3A &&
+    (raw[i + 5].to_int() & 0xFF) == 0x2F &&
+    (raw[i + 6].to_int() & 0xFF) == 0x2F
+    let matched_https = i + 8 <= len &&
+    (raw[i].to_int() & 0xFF) == 0x68 &&
+    (raw[i + 1].to_int() & 0xFF) == 0x74 &&
+    (raw[i + 2].to_int() & 0xFF) == 0x74 &&
+    (raw[i + 3].to_int() & 0xFF) == 0x70 &&
+    (raw[i + 4].to_int() & 0xFF) == 0x73 &&
+    (raw[i + 5].to_int() & 0xFF) == 0x3A &&
+    (raw[i + 6].to_int() & 0xFF) == 0x2F &&
+    (raw[i + 7].to_int() & 0xFF) == 0x2F
+    if matched_http || matched_https {
+      let start = i
+      let mut end = i
+      while end < len && !is_url_delim(raw[end].to_int() & 0xFF) {
+        end = end + 1
+      }
+      let mut url = strip_trailing_url_punct(slice_bytes_str(raw, start, end))
+      if url.length() > 8 {
+        found.push(url)
+      }
+      i = end
+      continue
+    }
+    i = i + 1
+  }
+  found
+}
+
+fn strip_trailing_url_punct(input : String) -> String {
+  let mut url = input
+  while url.length() > 0 {
+    let raw = url.to_bytes()
+    let n = raw.length()
+    let last = raw[n - 1].to_int() & 0xFF
+    if last == 0x29 && contains_substr(url, "(") {
+      break
+    }
+    if last == 0x2E ||
+    last == 0x2C ||
+    last == 0x3B ||
+    last == 0x3A ||
+    last == 0x21 ||
+    last == 0x3F ||
+    last == 0x29 ||
+    last == 0x5D ||
+    last == 0x7D ||
+    last == 0x27 ||
+    last == 0x22 {
+      url = slice_bytes_str(raw, 0, n - 1)
+      continue
+    }
+    // Ellipsis … (E2 80 A6)
+    if n >= 3 && (raw[n - 3].to_int() & 0xFF) == 0xE2 && (raw[n - 2].to_int() & 0xFF) == 0x80 && last == 0xA6 {
+      url = slice_bytes_str(raw, 0, n - 3)
+      continue
+    }
+    break
+  }
+  let raw2 = url.to_bytes()
+  if raw2.length() >= 3 &&
+  (raw2[raw2.length() - 3].to_int() & 0xFF) == 0x2E &&
+  (raw2[raw2.length() - 2].to_int() & 0xFF) == 0x2E &&
+  (raw2[raw2.length() - 1].to_int() & 0xFF) == 0x2E {
+    url = slice_bytes_str(raw2, 0, raw2.length() - 3)
+  }
+  url
+}
+
+// ── Minimal URL & query parser ──
+
+struct ParsedUrl {
+  scheme : String
+  host : String
+  hostname : String
+  port : Option[Int]
+  pathname : String
+  query : Array[(String, String)]
+}
+
+pub fn percent_decode(s : String, plus_as_space : Bool) -> String {
+  let raw = s.to_bytes()
+  let out : Array[Byte] = []
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if plus_as_space && b == 0x2B {
+      out.push(0x20.to_byte())
+      i = i + 1
+    } else if b == 0x25 && i + 2 < raw.length() {
+      let hi = hex_val(raw[i + 1].to_int() & 0xFF)
+      let lo = hex_val(raw[i + 2].to_int() & 0xFF)
+      if hi >= 0 && lo >= 0 {
+        out.push(((hi << 4) | lo).to_byte())
+        i = i + 3
+      } else {
+        out.push(raw[i])
+        i = i + 1
+      }
+    } else {
+      out.push(raw[i])
+      i = i + 1
+    }
+  }
+  let res = Bytes::new(out.length())
+  let mut k = 0
+  while k < out.length() {
+    res[k] = out[k]
+    k = k + 1
+  }
+  bytes_to_str(res)
+}
+
+pub fn parse_query_params(qs : String) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  let raw = qs.to_bytes()
+  let len = raw.length()
+  let mut start = 0
+  while start < len {
+    let mut end = start
+    while end < len && (raw[end].to_int() & 0xFF) != 0x26 {
+      end = end + 1
+    }
+    if end > start {
+      let mut eq = start
+      while eq < end && (raw[eq].to_int() & 0xFF) != 0x3D {
+        eq = eq + 1
+      }
+      if eq < end {
+        let k = percent_decode(slice_bytes_str(raw, start, eq), true)
+        let v = percent_decode(slice_bytes_str(raw, eq + 1, end), true)
+        out.push((k, v))
+      } else {
+        let k = percent_decode(slice_bytes_str(raw, start, end), true)
+        out.push((k, ""))
+      }
+    }
+    start = end + 1
+  }
+  out
+}
+
+pub fn query_get(params : Array[(String, String)], key : String) -> Option[String] {
+  let mut i = 0
+  while i < params.length() {
+    if params[i].0 == key {
+      return Some(params[i].1)
+    }
+    i = i + 1
+  }
+  None
+}
+
+fn parse_uint_decimal(s : String) -> Option[Int] {
+  let raw = s.to_bytes()
+  if raw.length() == 0 || raw.length() > 9 {
+    return None
+  }
+  let mut acc = 0
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if !is_ascii_digit(b) {
+      return None
+    }
+    acc = acc * 10 + (b - 0x30)
+    i = i + 1
+  }
+  Some(acc)
+}
+
+fn parse_url_simple(raw_url : String) -> Option[ParsedUrl] {
+  match url::Url::parse(raw_url) {
+    Ok(u) => {
+      let hostname = u.hostname()
+      if hostname == "" {
+        return None
+      }
+      let p_raw = u.pathname()
+      let pathname = if p_raw == "" { "/" } else { p_raw }
+      Some(ParsedUrl::{
+        scheme: u.scheme(),
+        host: u.host_and_port(),
+        hostname,
+        port: u.port(),
+        pathname,
+        query: u.query_params().pairs(),
+      })
+    }
+    Err(_) => None
+  }
+}
+
+fn is_redirect_param(name_lower : String) -> Bool {
+  name_lower == "redirect_uri" ||
+  name_lower == "redirect_url" ||
+  name_lower == "redirecturi" ||
+  name_lower == "redirect" ||
+  name_lower == "callback" ||
+  name_lower == "callback_url" ||
+  name_lower == "return_to"
+}
+
+fn is_loopback_host(host : String) -> Bool {
+  host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1"
+}
+
+/// Extract OAuth loopback callback details from a URL (including 1 level of nested URLs).
+pub fn loopback_of(url : String) -> Option[Loopback] {
+  loopback_of_depth(url, 0)
+}
+
+fn loopback_of_depth(url : String, depth : Int) -> Option[Loopback] {
+  let page = match parse_url_simple(url) {
+    Some(p) => p
+    None => return None
+  }
+  let post = match query_get(page.query, "response_mode") {
+    Some(m) => m == "form_post"
+    None => false
+  }
+  let state = query_get(page.query, "state")
+  let mut i = 0
+  while i < page.query.length() {
+    let name = to_ascii_lower(page.query[i].0)
+    let value = page.query[i].1
+    if is_redirect_param(name) {
+      match parse_url_simple(value) {
+        Some(back) => {
+          if back.scheme == "http" && is_loopback_host(back.hostname) {
+            match back.port {
+              Some(p) => {
+                if p > 0 && p <= 65535 {
+                  let h = if back.hostname == "::1" { "[::1]" } else { back.hostname }
+                  return Some(Loopback::{ host: h, port: p, path: back.pathname, state, post })
+                }
+              }
+              None => ()
+            }
+          }
+        }
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  if depth > 0 {
+    return None
+  }
+  let mut j = 0
+  while j < page.query.length() {
+    let value = page.query[j].1
+    if str_starts_with_ci(value, "http://") || str_starts_with_ci(value, "https://") {
+      match loopback_of_depth(value, depth + 1) {
+        Some(inner) => {
+          let merged_state = match inner.state {
+            Some(s) => Some(s)
+            None => state
+          }
+          return Some(Loopback::{
+            host: inner.host,
+            port: inner.port,
+            path: inner.path,
+            state: merged_state,
+            post: inner.post || post,
+          })
+        }
+        None => ()
+      }
+    }
+    j = j + 1
+  }
+  None
+}
+
+/// Host (and port if explicit) of a URL.
+pub fn domain_of(url : String) -> Option[String] {
+  match parse_url_simple(url) {
+    Some(p) => Some(p.host)
+    None => None
+  }
+}
+
+pub fn web_page(url : Option[String]) -> Bool {
+  match url {
+    Some(u) => str_starts_with_ci(u, "http://") || str_starts_with_ci(u, "https://")
+    None => false
+  }
+}
+
+// ── Device code extraction ──
+
+fn is_valid_user_code(s : String) -> Bool {
+  let raw = s.to_bytes()
+  let len = raw.length()
+  let mut dash = -1
+  let mut i = 0
+  while i < len {
+    let b = raw[i].to_int() & 0xFF
+    if b == 0x2D {
+      if dash >= 0 {
+        return false
+      }
+      dash = i
+    } else if !is_ascii_alnum(b) {
+      return false
+    }
+    i = i + 1
+  }
+  if dash < 0 {
+    len >= 4 && len <= 12
+  } else {
+    let left = dash
+    let right = len - dash - 1
+    left >= 4 && left <= 12 && right >= 3 && right <= 8
+  }
+}
+
+fn is_code_word(w : String) -> Bool {
+  let raw = w.to_bytes()
+  let len = raw.length()
+  if len < 6 || len > 12 {
+    return false
+  }
+  let mut has_alpha = false
+  let mut all_lower = true
+  let mut has_upper_after_first = false
+  let mut has_digit = false
+  let mut i = 0
+  while i < len {
+    let b = raw[i].to_int() & 0xFF
+    if !is_ascii_alnum(b) {
+      return false
+    }
+    if is_ascii_alpha(b) {
+      has_alpha = true
+    }
+    if !is_ascii_lower(b) {
+      all_lower = false
+    }
+    if is_ascii_digit(b) {
+      has_digit = true
+    }
+    if i > 0 && is_ascii_upper(b) {
+      has_upper_after_first = true
+    }
+    i = i + 1
+  }
+  if !has_alpha || all_lower {
+    return false
+  }
+  // Reject Capitalized prose words like "Continue", "Devin".
+  if is_ascii_upper(raw[0].to_int() & 0xFF) && !has_upper_after_first && !has_digit {
+    return false
+  }
+  true
+}
+
+fn is_upper_digits(s : String, min_len : Int, max_len : Int) -> Bool {
+  let raw = s.to_bytes()
+  let len = raw.length()
+  if len < min_len || len > max_len {
+    return false
+  }
+  let mut i = 0
+  while i < len {
+    let b = raw[i].to_int() & 0xFF
+    if !is_ascii_upper(b) && !is_ascii_digit(b) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn strip_urls(text : String) -> String {
+  let raw = text.to_bytes()
+  let len = raw.length()
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < len {
+    let is_http = i + 7 <= len &&
+    (raw[i].to_int() & 0xFF) == 0x68 &&
+    (raw[i + 1].to_int() & 0xFF) == 0x74 &&
+    (raw[i + 2].to_int() & 0xFF) == 0x74 &&
+    (raw[i + 3].to_int() & 0xFF) == 0x70 &&
+    (raw[i + 4].to_int() & 0xFF) == 0x3A &&
+    (raw[i + 5].to_int() & 0xFF) == 0x2F &&
+    (raw[i + 6].to_int() & 0xFF) == 0x2F
+    let is_https = i + 8 <= len &&
+    (raw[i].to_int() & 0xFF) == 0x68 &&
+    (raw[i + 1].to_int() & 0xFF) == 0x74 &&
+    (raw[i + 2].to_int() & 0xFF) == 0x74 &&
+    (raw[i + 3].to_int() & 0xFF) == 0x70 &&
+    (raw[i + 4].to_int() & 0xFF) == 0x73 &&
+    (raw[i + 5].to_int() & 0xFF) == 0x3A &&
+    (raw[i + 6].to_int() & 0xFF) == 0x2F &&
+    (raw[i + 7].to_int() & 0xFF) == 0x2F
+    if is_http || is_https {
+      out.write_char(' ')
+      while i < len && !is_url_delim(raw[i].to_int() & 0xFF) {
+        i = i + 1
+      }
+      continue
+    }
+    out.write_byte(raw[i])
+    i = i + 1
+  }
+  out.to_string()
+}
+
+/// Extract a device code from terminal output or opened URLs (`user_code=`, `XXXX-XXXX`, etc.).
+pub fn device_code_in(said : String, opened : Array[String]) -> Option[String] {
+  let all_urls : Array[String] = []
+  let mut i = 0
+  while i < opened.length() {
+    all_urls.push(opened[i])
+    i = i + 1
+  }
+  let printed = urls_in(said)
+  let mut j = 0
+  while j < printed.length() {
+    all_urls.push(printed[j])
+    j = j + 1
+  }
+  // 1. Check `user_code=` query param in URLs.
+  let mut k = 0
+  while k < all_urls.length() {
+    match parse_url_simple(all_urls[k]) {
+      Some(p) => {
+        match query_get(p.query, "user_code") {
+          Some(uc) => {
+            if is_valid_user_code(uc) {
+              return Some(uc)
+            }
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+    k = k + 1
+  }
+  // 2. Check raw `?user_code=` / `&user_code=` in text.
+  let raw_said = said.to_bytes()
+  let mut pos = 0
+  while pos < raw_said.length() {
+    let idx = find_substr(said, "user_code=", pos)
+    if idx < 0 {
+      break
+    }
+    if idx > 0 {
+      let prev = raw_said[idx - 1].to_int() & 0xFF
+      if prev == 0x3F || prev == 0x26 {
+        let val_start = idx + 10
+        let mut val_end = val_start
+        while val_end < raw_said.length() {
+          let b = raw_said[val_end].to_int() & 0xFF
+          if is_ascii_alnum(b) || b == 0x2D || b == 0x5F {
+            val_end = val_end + 1
+          } else {
+            break
+          }
+        }
+        let cand = slice_bytes_str(raw_said, val_start, val_end)
+        if is_valid_user_code(cand) {
+          return Some(cand)
+        }
+      }
+    }
+    pos = idx + 10
+  }
+
+  // 3. Strip URLs and scan for `XXXX-XXXX`..`XXXX-XXXXXX` (gh, Docker, AWS, Cloudflare).
+  let text = strip_urls(said)
+  let tb = text.to_bytes()
+  let mut w_start = 0
+  while w_start < tb.length() {
+    while w_start < tb.length() {
+      let b = tb[w_start].to_int() & 0xFF
+      if is_ascii_alnum(b) || b == 0x5F || b == 0x2D {
+        break
+      }
+      w_start = w_start + 1
+    }
+    let mut w_end = w_start
+    while w_end < tb.length() {
+      let b = tb[w_end].to_int() & 0xFF
+      if is_ascii_alnum(b) || b == 0x5F || b == 0x2D {
+        w_end = w_end + 1
+      } else {
+        break
+      }
+    }
+    if w_end > w_start {
+      let word = slice_bytes_str(tb, w_start, w_end)
+      let parts = split_by_byte(word, 0x2D)
+      let mut p = 0
+      while p + 1 < parts.length() {
+        if is_upper_digits(parts[p], 4, 4) && is_upper_digits(parts[p + 1], 4, 6) {
+          return Some(parts[p] + "-" + parts[p + 1])
+        }
+        p = p + 1
+      }
+    }
+    w_start = w_end + 1
+  }
+
+  // 4. Line ending with `code:` followed by a lone code word on next non-empty line.
+  let lines = split_lines(text)
+  let mut li = 0
+  while li < lines.length() {
+    let trimmed = trim_end_ascii(lines[li])
+    let lower = to_ascii_lower(trimmed)
+    if ends_with_word_code_colon(lower) {
+      let next_idx = if li + 1 < lines.length() && trim_ascii(lines[li + 1]) == "" {
+        li + 2
+      } else {
+        li + 1
+      }
+      if next_idx < lines.length() {
+        let cand = trim_ascii(lines[next_idx])
+        if is_code_word(cand) {
+          return Some(cand)
+        }
+      }
+    }
+    li = li + 1
+  }
+
+  // 5. Line mentioning "code" with `code: <word>`, `code <WORD>`, or 6..10 upper+digit token.
+  let mut lj = 0
+  while lj < lines.length() {
+    let line = lines[lj]
+    let lower = to_ascii_lower(line)
+    let code_pos = find_substr(lower, "code", 0)
+    if code_pos >= 0 {
+      match find_code_after_keyword(line, lower, code_pos) {
+        Some(c) => return Some(c)
+        None => ()
+      }
+      // Fallback: any 6..10 char uppercase+digit token containing both a letter and a digit.
+      let lb = line.to_bytes()
+      let mut s = 0
+      while s < lb.length() {
+        while s < lb.length() && !is_ascii_alnum(lb[s].to_int() & 0xFF) {
+          s = s + 1
+        }
+        let mut e = s
+        while e < lb.length() && is_ascii_alnum(lb[e].to_int() & 0xFF) {
+          e = e + 1
+        }
+        if e - s >= 6 && e - s <= 10 {
+          let tok = slice_bytes_str(lb, s, e)
+          if is_upper_digits(tok, 6, 10) && has_digit_and_upper(tok) {
+            return Some(tok)
+          }
+        }
+        s = e + 1
+      }
+    }
+    lj = lj + 1
+  }
+  None
+}
+
+fn split_by_byte(s : String, sep : Int) -> Array[String] {
+  let raw = s.to_bytes()
+  let out : Array[String] = []
+  let mut start = 0
+  let mut i = 0
+  while i < raw.length() {
+    if (raw[i].to_int() & 0xFF) == sep {
+      out.push(slice_bytes_str(raw, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  out.push(slice_bytes_str(raw, start, raw.length()))
+  out
+}
+
+fn ends_with_word_code_colon(lower : String) -> Bool {
+  let raw = lower.to_bytes()
+  let n = raw.length()
+  if n < 5 || (raw[n - 1].to_int() & 0xFF) != 0x3A {
+    return false
+  }
+  let mut i = n - 2
+  while i >= 0 && is_ascii_space(raw[i].to_int() & 0xFF) {
+    i = i - 1
+  }
+  if i < 3 {
+    return false
+  }
+  let w_end = i + 1
+  let w_start = w_end - 4
+  if slice_bytes_str(raw, w_start, w_end) != "code" {
+    return false
+  }
+  w_start == 0 || !is_ascii_alnum(raw[w_start - 1].to_int() & 0xFF)
+}
+
+fn has_digit_and_upper(s : String) -> Bool {
+  let raw = s.to_bytes()
+  let mut d = false
+  let mut u = false
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if is_ascii_digit(b) {
+      d = true
+    } else if is_ascii_upper(b) {
+      u = true
+    }
+    i = i + 1
+  }
+  d && u
+}
+
+fn has_digit(s : String) -> Bool {
+  let raw = s.to_bytes()
+  let mut i = 0
+  while i < raw.length() {
+    if is_ascii_digit(raw[i].to_int() & 0xFF) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn find_code_after_keyword(line : String, lower : String, start_pos : Int) -> Option[String] {
+  let raw = line.to_bytes()
+  let lb = lower.to_bytes()
+  let mut pos = start_pos
+  while pos >= 0 && pos + 4 <= raw.length() {
+    let mut after = pos + 4
+    // Optional " is"
+    let mut p = after
+    while p < raw.length() && is_ascii_space(raw[p].to_int() & 0xFF) {
+      p = p + 1
+    }
+    if p + 2 <= raw.length() && slice_bytes_str(lb, p, p + 2) == "is" && (p + 2 == raw.length() || !is_ascii_alnum(raw[p + 2].to_int() & 0xFF)) {
+      after = p + 2
+    }
+    // Skip spaces
+    let mut q = after
+    while q < raw.length() && is_ascii_space(raw[q].to_int() & 0xFF) {
+      q = q + 1
+    }
+    let mut marked = false
+    if q < raw.length() && ((raw[q].to_int() & 0xFF) == 0x3A || (raw[q].to_int() & 0xFF) == 0x3D) {
+      marked = true
+      q = q + 1
+      while q < raw.length() && is_ascii_space(raw[q].to_int() & 0xFF) {
+        q = q + 1
+      }
+    }
+    let mut tok_end = q
+    while tok_end < raw.length() && is_ascii_alnum(raw[tok_end].to_int() & 0xFF) {
+      tok_end = tok_end + 1
+    }
+    if tok_end > q {
+      let tok = slice_bytes_str(raw, q, tok_end)
+      if marked && is_code_word(tok) {
+        return Some(tok)
+      }
+      if !marked && (is_upper_digits(tok, 6, 10) || (has_digit(tok) && is_code_word(tok))) {
+        return Some(tok)
+      }
+    }
+    pos = find_substr(lower, "code", pos + 4)
+  }
+  None
+}
+
+/// Choose verification URL and direct `code_url` for a device-code login.
+pub fn device_urls(urls : Array[String], code : String) -> DeviceUrls {
+  let pages : Array[String] = []
+  let mut i = 0
+  while i < urls.length() {
+    let u = urls[i]
+    if str_starts_with_ci(u, "https://") {
+      match loopback_of(u) {
+        None => pages.push(u)
+        Some(_) => ()
+      }
+    }
+    i = i + 1
+  }
+  let mut with_code : Option[String] = None
+  let mut verify : Option[String] = None
+  let mut j = 0
+  while j < pages.length() {
+    let u = pages[j]
+    if with_code is None {
+      if contains_substr(u, code) || contains_substr(u, "?user_code=") || contains_substr(u, "&user_code=") || contains_substr(u, "?code=") || contains_substr(u, "&code=") {
+        with_code = Some(u)
+      }
+    }
+    if verify is None {
+      match parse_url_simple(u) {
+        Some(p) => {
+          let pl = to_ascii_lower(p.pathname)
+          if contains_substr(pl, "device") || contains_substr(pl, "activate") || contains_substr(pl, "verif") {
+            verify = Some(u)
+          }
+        }
+        None => ()
+      }
+    }
+    j = j + 1
+  }
+  let chosen_url = match verify {
+    Some(v) => Some(v)
+    None => if pages.length() > 0 { Some(pages[0]) } else { None }
+  }
+  DeviceUrls::{ url: chosen_url, code_url: with_code }
+}
+
+/// Whether a line asks only for Enter to open a page in a browser.
+pub fn asks_enter(line : String) -> Bool {
+  let lo = to_ascii_lower(line)
+  if contains_substr(lo, "(y/n)") || contains_substr(lo, "(n/y)") || contains_substr(lo, "[y/n]") || contains_substr(lo, "[n/y]") {
+    return false
+  }
+  let press_idx = find_substr(lo, "press", 0)
+  if press_idx < 0 {
+    return false
+  }
+  let enter_idx = find_substr(lo, "enter", press_idx)
+  let ret_idx = find_substr(lo, "return", press_idx)
+  let key_idx = if enter_idx >= 0 { enter_idx } else { ret_idx }
+  if key_idx < 0 {
+    return false
+  }
+  // Must not have '?' between "press enter" and "open"/"browser".
+  let open_idx = find_substr(lo, "open", key_idx)
+  let brow_idx = find_substr(lo, "browser", key_idx)
+  let target_idx = if open_idx >= 0 { open_idx } else { brow_idx }
+  if target_idx < 0 {
+    return false
+  }
+  let between = slice_bytes_str(lo.to_bytes(), key_idx, target_idx)
+  !contains_substr(between, "?")
+}
+
+/// Whether output after a browser step indicates authentication succeeded.
+pub fn says_done(text : String) -> Bool {
+  let lo = to_ascii_lower(text)
+  contains_substr(lo, "authentication complete") ||
+  contains_substr(lo, "authentication completed") ||
+  contains_substr(lo, "authentication succeeded") ||
+  contains_substr(lo, "authentication successful") ||
+  contains_substr(lo, "authentication is complete") ||
+  contains_substr(lo, "authorization complete") ||
+  contains_substr(lo, "authorization succeeded") ||
+  contains_substr(lo, "login complete") ||
+  contains_substr(lo, "login succeeded") ||
+  contains_substr(lo, "login successful") ||
+  contains_substr(lo, "sign in complete") ||
+  contains_substr(lo, "sign-in complete") ||
+  contains_substr(lo, "logged in") ||
+  contains_substr(lo, "signed in") ||
+  contains_substr(lo, "successfully authenticated") ||
+  contains_substr(lo, "successfully logged") ||
+  contains_substr(lo, "successfully signed") ||
+  contains_substr(lo, "successfully authorized") ||
+  contains_substr(lo, "authenticated as") ||
+  contains_substr(lo, "authenticated to") ||
+  contains_substr(lo, "authenticated with")
+}
+
+/// Whether a process name belongs to a credential helper/keychain dialog.
+pub fn stores_secret(name : String) -> Bool {
+  let parts = split_by_byte(name, 0x2F)
+  let base = to_ascii_lower(if parts.length() > 0 { parts[parts.length() - 1] } else { name })
+  contains_substr(base, "credential") ||
+  contains_substr(base, "keychain") ||
+  contains_substr(base, "keyring") ||
+  contains_substr(base, "pinentry") ||
+  contains_substr(base, "askpass") ||
+  contains_substr(base, "secret-tool") ||
+  contains_substr(base, "kwallet")
+}
+
+/// Whether a line looks like an interactive prompt waiting for user/agent input.
+pub fn prompts(line : String) -> Bool {
+  let trimmed = trim_ascii(line)
+  if trimmed == "" {
+    return false
+  }
+  let raw = trimmed.to_bytes()
+  let n = raw.length()
+  let last = raw[n - 1].to_int() & 0xFF
+  if last == 0x3F || last == 0x3A || last == 0x3E || last == 0x29 || last == 0x5D {
+    return true
+  }
+  // Fullwidth ＞ (EF BC 9E), ： (EF BC 9A), ？ (EF BC 9F)
+  if n >= 3 && (raw[n - 3].to_int() & 0xFF) == 0xEF && (raw[n - 2].to_int() & 0xFF) == 0xBC {
+    if last == 0x9E || last == 0x9A || last == 0x9F {
+      return true
+    }
+  }
+  let lo = to_ascii_lower(trimmed)
+  if contains_substr(lo, "(y/n)") || contains_substr(lo, "[y/n]") {
+    return true
+  }
+  // Leading `> ` or `❯ ` (E2 9D AF 20)
+  if n >= 2 && (raw[0].to_int() & 0xFF) == 0x3E && (raw[1].to_int() & 0xFF) == 0x20 {
+    return true
+  }
+  if n >= 4 &&
+  (raw[0].to_int() & 0xFF) == 0xE2 &&
+  (raw[1].to_int() & 0xFF) == 0x9D &&
+  (raw[2].to_int() & 0xFF) == 0xAF &&
+  (raw[3].to_int() & 0xFF) == 0x20 {
+    return true
+  }
+  false
+}
+
+/// Whether a prompt asks for a secret (password/passphrase/token/secret/密码).
+pub fn secret_asked(line : String) -> Bool {
+  contains_ci(line, "password") ||
+  contains_ci(line, "passphrase") ||
+  contains_ci(line, "token") ||
+  contains_ci(line, "secret") ||
+  contains_substr(line, "密码")
+}
+
+fn is_env_assignment(word : String) -> Option[(String, String)] {
+  let raw = word.to_bytes()
+  let eq = find_substr(word, "=", 0)
+  if eq <= 0 {
+    return None
+  }
+  let first = raw[0].to_int() & 0xFF
+  if !is_ascii_alpha(first) && first != 0x5F {
+    return None
+  }
+  let mut i = 1
+  while i < eq {
+    let b = raw[i].to_int() & 0xFF
+    if !is_ascii_alnum(b) && b != 0x5F {
+      return None
+    }
+    i = i + 1
+  }
+  Some((slice_bytes_str(raw, 0, eq), slice_bytes_str(raw, eq + 1, raw.length())))
+}
+
+/// Split leading `NAME=value` env assignments from a command word list, expanding `~/`.
+pub fn assignments_of(words : Array[String], home : Option[String]) -> CommandAssignments {
+  let env : Array[(String, String)] = []
+  let mut i = 0
+  while i < words.length() {
+    match is_env_assignment(words[i]) {
+      Some((k, v)) => {
+        let expanded = match home {
+          Some(h) => {
+            if v == "~" {
+              h
+            } else if str_starts_with_ci(v, "~/") {
+              let vb = v.to_bytes()
+              h + slice_bytes_str(vb, 1, vb.length())
+            } else {
+              v
+            }
+          }
+          None => v
+        }
+        env.push((k, expanded))
+        i = i + 1
+      }
+      None => break
+    }
+  }
+  let rest : Array[String] = []
+  while i < words.length() {
+    rest.push(words[i])
+    i = i + 1
+  }
+  CommandAssignments::{ env, rest }
+}
+
+fn runner_valued_opts(key : String) -> Option[Array[String]] {
+  if key == "env" {
+    Some(["-u", "--unset", "-C", "--chdir", "-S", "--split-string", "-P"])
+  } else if key == "sudo" {
+    Some([
+      "-u", "--user", "-g", "--group", "-C", "--close-from", "-D", "--chdir", "-h", "--host",
+      "-p", "--prompt", "-r", "--role", "-t", "--type", "-T", "--command-timeout", "-U", "--other-user",
+    ])
+  } else if key == "doas" {
+    Some(["-u", "-C"])
+  } else if key == "nohup" || key == "command" || key == "pnpm exec" {
+    Some([])
+  } else if key == "exec" {
+    Some(["-a"])
+  } else if key == "npx" || key == "npm exec" {
+    Some(["-p", "--package", "-c", "--call"])
+  } else if key == "pnpx" || key == "bunx" || key == "pnpm dlx" || key == "yarn dlx" {
+    Some(["-p", "--package"])
+  } else if key == "uvx" {
+    Some(["--from", "--with", "-p", "--python", "--index", "--index-url"])
+  } else if key == "pipx run" {
+    Some(["--spec", "--python"])
+  } else {
+    None
+  }
+}
+
+fn array_contains_str(arr : Array[String], needle : String) -> Bool {
+  let mut i = 0
+  while i < arr.length() {
+    if arr[i] == needle {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn path_basename_any(word : String) -> String {
+  let raw = word.to_bytes()
+  let mut last_sep = -1
+  let mut i = 0
+  while i < raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 0x2F || b == 0x5C {
+      last_sep = i
+    }
+    i = i + 1
+  }
+  slice_bytes_str(raw, last_sep + 1, raw.length())
+}
+
+/// Extract the underlying program name past env assignments and wrappers (`env`, `sudo`, `npx`, etc.).
+pub fn program_of(words : Array[String]) -> String {
+  let mut i = 0
+  while true {
+    while i < words.length() && is_env_assignment(words[i]) is Some(_) {
+      i = i + 1
+    }
+    if i >= words.length() {
+      break
+    }
+    let base = path_basename_any(words[i])
+    let next_word = if i + 1 < words.length() { words[i + 1] } else { "" }
+    let two = runner_valued_opts(base + " " + next_word)
+    let one = runner_valued_opts(base)
+    match two {
+      Some(valued) => {
+        i = i + 2
+        while i < words.length() && words[i] != "-" && str_starts_with_ci(words[i], "-") {
+          let opt = words[i]
+          i = i + 1
+          if opt == "--" {
+            break
+          }
+          if array_contains_str(valued, opt) {
+            i = i + 1
+          }
+        }
+      }
+      None => {
+        match one {
+          Some(valued) => {
+            i = i + 1
+            while i < words.length() && words[i] != "-" && str_starts_with_ci(words[i], "-") {
+              let opt = words[i]
+              i = i + 1
+              if opt == "--" {
+                break
+              }
+              if array_contains_str(valued, opt) {
+                i = i + 1
+              }
+            }
+          }
+          None => break
+        }
+      }
+    }
+  }
+  let word = if i < words.length() {
+    words[i]
+  } else if words.length() > 0 {
+    words[0]
+  } else {
+    ""
+  }
+  let base = path_basename_any(word)
+  // Strip `@version` suffix after index 0 (preserving scoped `@org/pkg` leading `@`).
+  let raw = base.to_bytes()
+  let mut at = 1
+  while at < raw.length() {
+    if (raw[at].to_int() & 0xFF) == 0x40 {
+      return slice_bytes_str(raw, 0, at)
+    }
+    at = at + 1
+  }
+  base
+}
+
+/// Split a POSIX-like command line into words; returns `None` on unclosed quote.
+pub fn command_words(line : String) -> Option[Array[String]] {
+  let raw = line.to_bytes()
+  let len = raw.length()
+  let words : Array[String] = []
+  let mut cur : Array[Byte] = []
+  let mut has = false
+  let mut quote = 0 // 0 = none, 0x27 = ', 0x22 = "
+  let mut i = 0
+  while i < len {
+    let b = raw[i].to_int() & 0xFF
+    if quote == 0x27 {
+      if b == 0x27 {
+        quote = 0
+      } else {
+        cur.push(raw[i])
+      }
+    } else if quote == 0x22 {
+      if b == 0x22 {
+        quote = 0
+      } else if b == 0x5C && i + 1 < len {
+        let nb = raw[i + 1].to_int() & 0xFF
+        if nb == 0x22 || nb == 0x5C || nb == 0x24 || nb == 0x60 {
+          i = i + 1
+          cur.push(raw[i])
+        } else {
+          cur.push(raw[i])
+        }
+      } else {
+        cur.push(raw[i])
+      }
+    } else if b == 0x27 || b == 0x22 {
+      quote = b
+      has = true
+    } else if b == 0x5C && i + 1 < len {
+      i = i + 1
+      cur.push(raw[i])
+      has = true
+    } else if is_ascii_space(b) {
+      if has || cur.length() > 0 {
+        words.push(bytes_arr_to_str(cur))
+      }
+      cur = []
+      has = false
+    } else {
+      cur.push(raw[i])
+    }
+    i = i + 1
+  }
+  if quote != 0 {
+    return None
+  }
+  if has || cur.length() > 0 {
+    words.push(bytes_arr_to_str(cur))
+  }
+  Some(words)
+}
+
+fn bytes_arr_to_str(arr : Array[Byte]) -> String {
+  let out = Bytes::new(arr.length())
+  let mut i = 0
+  while i < arr.length() {
+    out[i] = arr[i]
+    i = i + 1
+  }
+  bytes_to_str(out)
+}

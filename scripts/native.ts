@@ -619,14 +619,14 @@ const PARTS: Record<string, Part> = {
     env: "STILLFAIL_STATION_PION",
     rust: false,
     inputs: STATION_PION_INPUTS,
-    recipe: (t) => ({ pionStationMain: "native release", shell: t === "darwin-arm64" ? key("shell-apple", t) : key("shell-station", t) }),
+    recipe: (t) => ({ pionStationMain: "native release", shell: t === "darwin-arm64" ? key("shell-apple-station", t) : key("shell-station", t) }),
     build(t, out) {
       const mac = osPlatform() === "darwin" && osArch() === "arm64";
       const linux = osPlatform() === "linux" && osArch() === "x64";
       if (!mac && !(linux && t !== "darwin-arm64")) {
         throw new Error(`the pion station for ${t} is built on an Apple Silicon Mac${t !== "darwin-arm64" ? " or a Linux x86-64 machine" : ""}`);
       }
-      const shell = ensure(t === "darwin-arm64" ? "shell-apple" : "shell-station", t);
+      const shell = ensure(t === "darwin-arm64" ? "shell-apple-station" : "shell-station", t);
       const env: NodeJS.ProcessEnv = { ...process.env, SHELL_LIB: join(shell, "libstillfail_shell.a"), PION_REQUIRE_PINNED: "1" };
       for (const k of ["PIONC", "PION_QBE", "PION_RT_DIR", "PION_REPO_URL", "ZIG_BIN"]) delete env[k];
       run("bash", [join(ROOT, "pion/station-main/scripts/build.sh"), t, join(out, exe("stillfail-station-pion")(t))], { env });
@@ -693,6 +693,30 @@ const PARTS: Record<string, Part> = {
       if (done.status !== 0) throw new Error(`cargo ${shellApple(t).join(" ")}: exit ${done.status ?? done.signal}`);
       const libs = /native-static-libs: (.*)/.exec(done.stderr ?? "")?.[1];
       if (!libs) throw new Error("shell-apple: rustc said no native-static-libs");
+      copyFileSync(join(target, triple, "release/libstillfail_shell.a"), join(out, "libstillfail_shell.a"));
+      writeFileSync(join(out, "libstillfail_shell.libs"), libs.trim() + "\n");
+    },
+  },
+  // The station-enabled Apple shell (`--features station`, adding `image.thumb` image codecs): used only by
+  // `station-pion` on darwin-arm64 (Linux/Windows stations use `shell-station`, which also enables `station`), so
+  // macOS/iOS apps and `pion-reader` (`shell-apple`) keep 0 KB image codec overhead and an unchanged recipe.
+  "shell-apple-station": {
+    files: () => ["libstillfail_shell.a", "libstillfail_shell.libs"],
+    targets: ["darwin-arm64"],
+    publish: [],
+    inputs: ["client/shell", "libs/mesh-transport/src", "libs/mesh-transport/Cargo.toml", "client/Cargo.toml", "client/Cargo.lock", "vendor/libadb", ...VENDORED],
+    recipe: (t) => ({ cargo: shellAppleStation(t), min: APPLE_MIN[t], c: appleCOldest(t) }),
+    build(t, out) {
+      const triple = APPLE_TRIPLES[t]!;
+      const target = targetDir(join(ROOT, "client/target"), "shell-apple-station");
+      rustTarget(triple);
+      const env = rustEnv({ CARGO_TARGET_DIR: target, ...appleCOldest(t) });
+      run("cargo", ["clean", "--release", "-p", "stillfail-shell", "--target", triple], { cwd: join(ROOT, "client"), env });
+      const done = spawnSync("cargo", shellAppleStation(t), { cwd: join(ROOT, "client"), env, encoding: "utf8", stdio: ["ignore", "inherit", "pipe"] });
+      process.stderr.write(done.stderr ?? "");
+      if (done.status !== 0) throw new Error(`cargo ${shellAppleStation(t).join(" ")}: exit ${done.status ?? done.signal}`);
+      const libs = /native-static-libs: (.*)/.exec(done.stderr ?? "")?.[1];
+      if (!libs) throw new Error("shell-apple-station: rustc said no native-static-libs");
       copyFileSync(join(target, triple, "release/libstillfail_shell.a"), join(out, "libstillfail_shell.a"));
       writeFileSync(join(out, "libstillfail_shell.libs"), libs.trim() + "\n");
     },
@@ -865,10 +889,14 @@ const shellApple = (t: Target) => [
   "rustc", "--locked", "--release", "-p", "stillfail-shell", "--lib", "--crate-type", "staticlib", "--target", APPLE_TRIPLES[t]!,
   "--", "--print", "native-static-libs",
 ];
+const shellAppleStation = (t: Target) => [
+  "rustc", "--locked", "--release", "-p", "stillfail-shell", "--features", "station", "--lib", "--crate-type", "staticlib", "--target", APPLE_TRIPLES[t]!,
+  "--", "--print", "native-static-libs",
+];
 /// The shell as a static library for a station that is not a Mac (cargo-zigbuild's rustc: `cargo zigbuild` builds what the
-/// manifest says, a cdylib and an rlib; Linux for glibc 2.28 on).
+/// manifest says, a cdylib and an rlib; Linux for glibc 2.28 on). Includes `--features station` (`image.thumb`).
 const shellStation = (t: Target) => [
-  "rustc", "--locked", "--release", "-p", "stillfail-shell", "--lib", "--crate-type", "staticlib",
+  "rustc", "--locked", "--release", "-p", "stillfail-shell", "--features", "station", "--lib", "--crate-type", "staticlib",
   "--target", t === "win32-x64" ? TRIPLE(t) : `${TRIPLE(t)}.2.28`,
 ];
 const SHELL_RUSTFLAGS = "-C link-arg=-Wl,-z,max-page-size=16384";

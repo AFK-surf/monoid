@@ -1,0 +1,9 @@
+[package]
+name = "station_hooks_tui"
+version = "0.1.0"
+
+[dependencies]
+base_codec = { workspace = true }
+crypto = { workspace = true }
+js_json = { workspace = true }
+nodepath = { workspace = true }

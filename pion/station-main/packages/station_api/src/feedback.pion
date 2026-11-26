@@ -1,0 +1,230 @@
+// Bug reports and failure notice reporting (`station/src/feedback/{module,notice}.ts`).
+// HARD REDLINE: Official team replies on bug reports are NEVER automatically delivered to agents!
+// People read team replies in the app; stations only notify sessions when a reported bug is fixed & released.
+
+import "base_codec"
+import "crypto"
+
+/// Hard policy constant: official feedback replies must NEVER be auto-delivered to agents.
+pub let OFFICIAL_REPLY_AUTO_DELIVER : Bool = false
+
+pub let FEEDBACK_LOG_LINES : Int = 300
+pub let FEEDBACK_LOG_MOST_BYTES : Int = 49152
+
+/// Feedback delivery policy enforcing the redline by construction.
+pub struct FeedbackPolicy {
+  pub channel : String
+  pub cloud_feedback_enabled : Bool
+}
+
+pub fn FeedbackPolicy::enabled(self : FeedbackPolicy) -> Bool {
+  self.channel == "stable" && self.cloud_feedback_enabled
+}
+
+/// Official replies on bug reports are NEVER auto-delivered to agents (`station/src/feedback/module.ts`).
+pub fn FeedbackPolicy::should_deliver_reply_to_agent(
+  self : FeedbackPolicy,
+  _reply_author : String,
+) -> Bool {
+  let _ = self
+  OFFICIAL_REPLY_AUTO_DELIVER
+}
+
+/// Whether a thread entry is a station failure notice eligible for `POST /threads/:id/report`.
+pub fn is_failure_notice_entry(author_kind : String, text : String) -> Bool {
+  author_kind == "station" && text.starts_with("⚠️")
+}
+
+/// Scrub home directory path occurrences from diagnostic log text.
+pub fn scrub_home_path(text : String, home : String) -> String {
+  if home.length() == 0 {
+    return text
+  }
+  let mut out = text
+  let sb = StringBuilder::new()
+  let mut pos = 0
+  while pos < out.length() {
+    let rest = out.slice(pos, out.length())
+    let idx = rest.index_of(home)
+    if idx < 0 {
+      sb.write_string(rest)
+      break
+    }
+    sb.write_string(rest.slice(0, idx))
+    sb.write_string("~")
+    pos = pos + idx + home.length()
+  }
+  out = sb.to_string()
+  out
+}
+
+/// Filter log tail lines matching any of `names` or runtime warnings/errors, scrubbing home paths
+/// and bounding output to `FEEDBACK_LOG_LINES` lines and `FEEDBACK_LOG_MOST_BYTES` bytes.
+pub fn filter_feedback_logs(
+  text : String,
+  names : Array[String],
+  runtime : String,
+  home : String,
+) -> String {
+  let kept : Array[String] = []
+  let warn_pat = " WARN agents::" + runtime
+  let err_pat = " ERROR agents::" + runtime
+  let lines = text.split("\n")
+  let mut i = 0
+  while i < lines.length() {
+    let line = lines[i]
+    let mut matched = line.index_of(warn_pat) >= 0 || line.index_of(err_pat) >= 0
+    if !matched {
+      let mut ni = 0
+      while ni < names.length() {
+        if names[ni].length() > 0 && line.index_of(names[ni]) >= 0 {
+          matched = true
+          break
+        }
+        ni = ni + 1
+      }
+    }
+    if matched {
+      kept.push(scrub_home_path(line, home))
+    }
+    i = i + 1
+  }
+  let mut start = if kept.length() > FEEDBACK_LOG_LINES {
+    kept.length() - FEEDBACK_LOG_LINES
+  } else {
+    0
+  }
+  // Bound total UTF-8 byte length to `FEEDBACK_LOG_MOST_BYTES`.
+  let mut result = join_slice_lines(kept, start)
+  while start < kept.length() && result.to_bytes().length() > FEEDBACK_LOG_MOST_BYTES {
+    let rem = kept.length() - start
+    let step = if rem / 10 > 1 { rem / 10 } else { 1 }
+    start = start + step
+    result = join_slice_lines(kept, start)
+  }
+  result
+}
+
+fn join_slice_lines(lines : Array[String], start : Int) -> String {
+  let sb = StringBuilder::new()
+  let mut i = start
+  while i < lines.length() {
+    if i > start {
+      sb.write_string("\n")
+    }
+    sb.write_string(lines[i])
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+pub struct NoticeReportInput {
+  pub thread_id : Int
+  pub thread_channel : String
+  pub thread_ts : String
+  pub entry_n : Int
+  pub entry_text : String
+  pub entry_at_ms : Int64
+  pub session_key : Option[String]
+  pub session_ws : Option[String]
+  pub session_runtime : Option[String]
+  pub session_profile : Option[String]
+  pub session_model : Option[String]
+  pub turn_detail : Option[String]
+  pub viewer_name : String
+  pub viewer_email : String
+  pub os : String
+  pub arch : String
+  pub log_tail : Option[String]
+  pub home : String
+}
+
+/// Build the deterministic bug report JSON payload for `POST /threads/:id/report`.
+pub fn build_notice_report(input : NoticeReportInput) -> base_codec::Json {
+  let clean_text = if input.entry_text.starts_with("⚠️") {
+    input.entry_text.slice("⚠️".length(), input.entry_text.length()).trim()
+  } else if input.entry_text.starts_with("⚠") {
+    input.entry_text.slice("⚠".length(), input.entry_text.length()).trim()
+  } else {
+    input.entry_text.trim()
+  }
+  let said = match input.turn_detail {
+    Some(d) => if d.trim().length() > 0 { d.trim() } else { clean_text }
+    None => clean_text
+  }
+  let title = if said.length() == 0 {
+    "failure notice"
+  } else if codepoint_count(said) > 200 {
+    codepoint_slice(said, 0, 200)
+  } else {
+    said
+  }
+  let sk = match input.session_key {
+    Some(k) => k
+    None => ""
+  }
+  let key_seed = "notice\n" + sk + "\n" + input.thread_id.to_string() + "\n" + input.entry_n.to_string()
+  let digest = crypto::sha256(key_seed.to_bytes())
+  let key_hex = base_codec::hex_encode(digest.slice(0, 16))
+
+  let ctx_fields : Array[(String, base_codec::Json)] = [
+    (
+      "notice",
+      base_codec::json_obj([
+        ("thread", base_codec::json_int(input.thread_id)),
+        ("n", base_codec::json_int(input.entry_n)),
+      ]),
+    ),
+    ("os", base_codec::json_str(input.os)),
+    ("arch", base_codec::json_str(input.arch)),
+    ("thread", base_codec::json_str(input.thread_channel + "/" + input.thread_ts)),
+  ]
+  match input.session_key {
+    Some(k) => ctx_fields.push(("session", base_codec::json_str(k)))
+    None => ()
+  }
+  match input.session_runtime {
+    Some(rt) => ctx_fields.push(("runtime", base_codec::json_str(rt)))
+    None => ()
+  }
+  match input.session_profile {
+    Some(p) => ctx_fields.push(("profile", base_codec::json_str(p)))
+    None => ()
+  }
+  match input.session_model {
+    Some(m) => ctx_fields.push(("model", base_codec::json_str(m)))
+    None => ()
+  }
+
+  let out_fields : Array[(String, base_codec::Json)] = [
+    ("key", base_codec::json_str(key_hex)),
+    ("title", base_codec::json_str(title)),
+    ("body", base_codec::json_str("Reported from a failure notice in a chat.\n\n> " + clean_text)),
+    ("area", base_codec::json_str("station")),
+    ("reporter", base_codec::json_str(input.viewer_name + " (" + input.viewer_email + "), from the chat")),
+    ("context", base_codec::json_obj(ctx_fields)),
+  ]
+  match input.session_ws {
+    Some(ws) => {
+      if ws.length() > 0 {
+        out_fields.push(("workspace", base_codec::json_str(ws)))
+      }
+    }
+    None => ()
+  }
+  match (input.log_tail, input.session_key, input.session_runtime) {
+    (Some(tail), Some(skey), Some(rt)) => {
+      let names : Array[String] = [skey]
+      match input.session_profile {
+        Some(p) => names.push("profile=" + p)
+        None => ()
+      }
+      let filtered = filter_feedback_logs(tail, names, rt, input.home)
+      if filtered.length() > 0 {
+        out_fields.push(("logs", base_codec::json_str(filtered)))
+      }
+    }
+    _ => ()
+  }
+  base_codec::json_obj(out_fields)
+}

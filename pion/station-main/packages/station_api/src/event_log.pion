@@ -1,0 +1,535 @@
+// Resumable bounded SSE event log with `of` deduplication and handover serialization
+// (`station/src/api/event-log.ts`).
+
+import "base_codec"
+
+pub let KEPT_MS : Int64 = 3600000L
+pub let KEPT_MOST : Int = 20000
+pub let KEPT_BYTES : Int = 8388608
+
+/// Retention limits for `EventLog`.
+pub val struct EventKeeps {
+  pub ms : Int64
+  pub most : Int
+  pub bytes : Int
+}
+
+pub fn EventKeeps::default() -> EventKeeps {
+  EventKeeps::{ ms: KEPT_MS, most: KEPT_MOST, bytes: KEPT_BYTES }
+}
+
+/// Target audience filter stored alongside each logged event so handover preserves exact routing.
+pub struct EventTarget {
+  pub lang : Option[String]
+  pub viewer : Option[String]
+  pub email : Option[String]
+  pub workspace : Option[String]
+  pub subs : Option[Array[String]]
+  pub read_only : Option[Bool]
+  pub managers : Option[Bool]
+  pub vault : Option[String]
+  pub sees_ws : Option[Option[String]]
+  pub sees_session : Option[String]
+  pub sees_thread : Option[Int]
+  pub sees_job : Option[String]
+}
+
+pub fn EventTarget::everyone() -> EventTarget {
+  EventTarget::{
+    lang: None,
+    viewer: None,
+    email: None,
+    workspace: None,
+    subs: None,
+    read_only: None,
+    managers: None,
+    vault: None,
+    sees_ws: None,
+    sees_session: None,
+    sees_thread: None,
+    sees_job: None,
+  }
+}
+
+pub fn EventTarget::to_json(self : EventTarget) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = []
+  match self.lang {
+    Some(l) => fields.push(("lang", base_codec::json_str(l)))
+    None => ()
+  }
+  match self.viewer {
+    Some(v) => fields.push(("viewer", base_codec::json_str(v)))
+    None => ()
+  }
+  match self.email {
+    Some(e) => fields.push(("email", base_codec::json_str(e)))
+    None => ()
+  }
+  match self.workspace {
+    Some(w) => fields.push(("workspace", base_codec::json_str(w)))
+    None => ()
+  }
+  match self.subs {
+    Some(arr) => {
+      let out : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < arr.length() {
+        out.push(base_codec::json_str(arr[i]))
+        i = i + 1
+      }
+      fields.push(("subs", base_codec::json_arr(out)))
+    }
+    None => ()
+  }
+  match self.read_only {
+    Some(ro) => fields.push(("readOnly", base_codec::json_bool(ro)))
+    None => ()
+  }
+  match self.managers {
+    Some(m) => fields.push(("managers", base_codec::json_bool(m)))
+    None => ()
+  }
+  match self.vault {
+    Some(v) => fields.push(("vault", base_codec::json_str(v)))
+    None => ()
+  }
+  match self.sees_ws {
+    Some(ws) => {
+      let ws_val = match ws {
+        Some(w) => base_codec::json_str(w)
+        None => base_codec::json_null()
+      }
+      fields.push(("sees", base_codec::json_obj([("ws", ws_val)])))
+    }
+    None => {
+      match self.sees_session {
+        Some(s) => fields.push(("sees", base_codec::json_obj([("session", base_codec::json_str(s))])))
+        None => {
+          match self.sees_thread {
+            Some(tid) => fields.push(("sees", base_codec::json_obj([("thread", base_codec::json_int(tid))])))
+            None => {
+              match self.sees_job {
+                Some(jid) => fields.push(("sees", base_codec::json_obj([("job", base_codec::json_str(jid))])))
+                None => ()
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+pub fn EventTarget::from_json(j : base_codec::Json) -> EventTarget {
+  let subs = match base_codec::json_get(j, "subs") {
+    Some(base_codec::Json::Arr(items)) => {
+      let out : Array[String] = []
+      let mut i = 0
+      while i < items.length() {
+        match items[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+        i = i + 1
+      }
+      Some(out)
+    }
+    _ => None
+  }
+  let mut sees_ws : Option[Option[String]] = None
+  let mut sees_session : Option[String] = None
+  let mut sees_thread : Option[Int] = None
+  let mut sees_job : Option[String] = None
+  match base_codec::json_get(j, "sees") {
+    Some(s_obj) => {
+      match base_codec::json_get(s_obj, "ws") {
+        Some(base_codec::Json::Null) => sees_ws = Some(None)
+        Some(base_codec::Json::Str(w)) => sees_ws = Some(Some(w))
+        _ => ()
+      }
+      sees_session = json_str_field(s_obj, "session")
+      sees_thread = json_int_field(s_obj, "thread")
+      sees_job = json_str_field(s_obj, "job")
+    }
+    None => ()
+  }
+  EventTarget::{
+    lang: json_str_field(j, "lang"),
+    viewer: json_str_field(j, "viewer"),
+    email: json_str_field(j, "email"),
+    workspace: json_str_field(j, "workspace"),
+    subs: subs,
+    read_only: json_bool_field(j, "readOnly"),
+    managers: json_bool_field(j, "managers"),
+    vault: json_str_field(j, "vault"),
+    sees_ws: sees_ws,
+    sees_session: sees_session,
+    sees_thread: sees_thread,
+    sees_job: sees_job,
+  }
+}
+
+pub struct LoggedEvent {
+  pub n : Int64
+  pub to : EventTarget
+  pub mut text : String
+  pub at : Int64
+  pub of_key : Option[String]
+}
+
+pub struct KeptLog {
+  pub run : String
+  pub seq : Int64
+  pub forgotten : Int64
+  pub events : Array[LoggedEvent]
+}
+
+pub struct EventLogState {
+  pub run : String
+  pub forgotten : Int64
+  pub told : Int64
+  pub kept : Int
+  pub bytes : Int
+}
+
+fn is_lower_hex(s : String) -> Bool {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    let ok = (c >= 48 && c <= 57) || (c >= 97 && c <= 102)
+    if !ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Resumable event log preserving ordered SSE frames by `<run>.<n>` id.
+pub struct EventLog {
+  pub run : String
+  pub keeps : EventKeeps
+  mut seq : Int64
+  mut kept : Array[LoggedEvent]
+  mut head : Int
+  mut bytes : Int
+  mut forgotten : Int64
+  latest_keys : Array[String]
+  latest_indices : Array[Int]
+}
+
+pub fn EventLog::new(run : String, keeps : EventKeeps) -> EventLog {
+  EventLog::{
+    run: run,
+    keeps: keeps,
+    seq: 0L,
+    kept: [],
+    head: 0,
+    bytes: 0,
+    forgotten: 0L,
+    latest_keys: [],
+    latest_indices: [],
+  }
+}
+
+fn EventLog::find_latest(self : EventLog, of_key : String) -> Int {
+  let mut i = 0
+  while i < self.latest_keys.length() {
+    if self.latest_keys[i] == of_key {
+      return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
+fn EventLog::set_latest(self : EventLog, of_key : String, idx : Int) -> Unit {
+  let pos = self.find_latest(of_key)
+  if pos >= 0 {
+    self.latest_indices[pos] = idx
+  } else {
+    self.latest_keys.push(of_key)
+    self.latest_indices.push(idx)
+  }
+}
+
+fn EventLog::remove_latest_at(self : EventLog, pos : Int) -> Unit {
+  let last = self.latest_keys.length() - 1
+  if pos < last {
+    self.latest_keys[pos] = self.latest_keys[last]
+    self.latest_indices[pos] = self.latest_indices[last]
+  }
+  let _ = self.latest_keys.pop()
+  let _ = self.latest_indices.pop()
+}
+
+fn EventLog::let_go(self : EventLog, now : Int64) -> Unit {
+  let mut gone = self.head
+  while gone < self.kept.length() &&
+  (self.kept.length() - gone > self.keeps.most ||
+    self.bytes > self.keeps.bytes ||
+    now - self.kept[gone].at > self.keeps.ms) {
+    let e = self.kept[gone]
+    self.bytes = self.bytes - e.text.length()
+    match e.of_key {
+      Some(ok) => {
+        let pos = self.find_latest(ok)
+        if pos >= 0 && self.latest_indices[pos] == gone {
+          self.remove_latest_at(pos)
+        }
+      }
+      None => ()
+    }
+    e.text = ""
+    gone = gone + 1
+  }
+  if gone > self.head {
+    self.forgotten = self.kept[gone - 1].n
+    self.head = gone
+    if self.head * 2 >= self.kept.length() {
+      let shift = self.head
+      let next : Array[LoggedEvent] = []
+      let mut i = shift
+      while i < self.kept.length() {
+        next.push(self.kept[i])
+        i = i + 1
+      }
+      self.kept = next
+      self.head = 0
+      let mut li = 0
+      while li < self.latest_indices.length() {
+        self.latest_indices[li] = self.latest_indices[li] - shift
+        li = li + 1
+      }
+    }
+  }
+}
+
+pub fn EventLog::append(
+  self : EventLog,
+  event : String,
+  data : base_codec::Json,
+  to : EventTarget,
+  now : Int64,
+  of_key : Option[String],
+) -> LoggedEvent {
+  self.seq = self.seq + 1L
+  let n = self.seq
+  let text = "id: " + self.run + "." + n.to_string() + "\nevent: " + event + "\ndata: " + base_codec::json_stringify(data) + "\n\n"
+  let logged = LoggedEvent::{ n: n, to: to, text: text, at: now, of_key: of_key }
+  let new_idx = self.kept.length()
+  match of_key {
+    Some(ok) => {
+      let pos = self.find_latest(ok)
+      if pos >= 0 {
+        let prev_idx = self.latest_indices[pos]
+        if prev_idx >= self.head && prev_idx < self.kept.length() {
+          self.bytes = self.bytes - self.kept[prev_idx].text.length()
+          self.kept[prev_idx].text = ""
+        }
+      }
+      self.set_latest(ok, new_idx)
+    }
+    None => ()
+  }
+  self.kept.push(logged)
+  self.bytes = self.bytes + logged.text.length()
+  self.let_go(now)
+  logged
+}
+
+fn EventLog::parse_since(self : EventLog, since : String) -> Option[Int64] {
+  let dot = since.index_of(".")
+  if dot <= 0 || dot + 1 >= since.length() {
+    return None
+  }
+  let run_part = since.slice(0, dot)
+  let seq_part = since.slice(dot + 1, since.length())
+  if run_part != self.run || !is_lower_hex(run_part) {
+    return None
+  }
+  match parse_digits_i64(seq_part) {
+    Some(n) => {
+      if n >= self.forgotten {
+        Some(n)
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+pub fn EventLog::has(self : EventLog, since : String) -> Bool {
+  match self.parse_since(since) {
+    Some(_) => true
+    None => false
+  }
+}
+
+pub fn EventLog::after(self : EventLog, since : String) -> Array[LoggedEvent] {
+  match self.parse_since(since) {
+    None => []
+    Some(n) => {
+      let out : Array[LoggedEvent] = []
+      let mut i = self.head
+      while i < self.kept.length() {
+        let e = self.kept[i]
+        if e.n > n && e.text.length() > 0 {
+          out.push(e)
+        }
+        i = i + 1
+      }
+      out
+    }
+  }
+}
+
+pub fn EventLog::at(self : EventLog) -> String {
+  self.run + "." + self.seq.to_string()
+}
+
+pub fn EventLog::clear(self : EventLog) -> Unit {
+  self.kept = []
+  self.head = 0
+  self.bytes = 0
+  self.latest_keys.clear()
+  self.latest_indices.clear()
+  self.seq = self.seq + 1L
+  self.forgotten = self.seq
+}
+
+pub fn EventLog::state(self : EventLog) -> EventLogState {
+  EventLogState::{
+    run: self.run,
+    forgotten: self.forgotten,
+    told: self.seq,
+    kept: self.kept.length() - self.head,
+    bytes: self.bytes,
+  }
+}
+
+pub fn EventLog::kept_snapshot(self : EventLog) -> KeptLog {
+  let events : Array[LoggedEvent] = []
+  let mut i = self.head
+  while i < self.kept.length() {
+    if self.kept[i].text.length() > 0 {
+      events.push(self.kept[i])
+    }
+    i = i + 1
+  }
+  KeptLog::{
+    run: self.run,
+    seq: self.seq,
+    forgotten: self.forgotten,
+    events: events,
+  }
+}
+
+pub fn KeptLog::to_json(self : KeptLog) -> base_codec::Json {
+  let arr : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < self.events.length() {
+    let e = self.events[i]
+    let fields : Array[(String, base_codec::Json)] = [
+      ("n", base_codec::json_int64(e.n)),
+      ("to", e.to.to_json()),
+      ("text", base_codec::json_str(e.text)),
+      ("at", base_codec::json_int64(e.at)),
+    ]
+    match e.of_key {
+      Some(ok) => fields.push(("of", base_codec::json_str(ok)))
+      None => ()
+    }
+    arr.push(base_codec::json_obj(fields))
+    i = i + 1
+  }
+  base_codec::json_obj([
+    ("run", base_codec::json_str(self.run)),
+    ("seq", base_codec::json_int64(self.seq)),
+    ("forgotten", base_codec::json_int64(self.forgotten)),
+    ("events", base_codec::json_arr(arr)),
+  ])
+}
+
+/// Restore `EventLog` from a persisted handover snapshot (`EventLog.from`).
+pub fn EventLog::from_json(
+  j : base_codec::Json,
+  now : Int64,
+  keeps : EventKeeps,
+) -> Result[EventLog, String] {
+  let run = match json_str_field(j, "run") {
+    Some(r) => {
+      if is_lower_hex(r) {
+        r
+      } else {
+        return Err("not a log")
+      }
+    }
+    None => return Err("not a log")
+  }
+  let seq = match json_int64_field(j, "seq") {
+    Some(s) => s
+    None => return Err("not a log")
+  }
+  let forgotten = match json_int64_field(j, "forgotten") {
+    Some(f) => f
+    None => return Err("not a log")
+  }
+  if forgotten > seq || seq < 0L || forgotten < 0L {
+    return Err("not a log")
+  }
+  let raw_events = match base_codec::json_get(j, "events") {
+    Some(base_codec::Json::Arr(items)) => items
+    _ => return Err("not a log")
+  }
+  let log = EventLog::new(run, keeps)
+  log.seq = seq
+  log.forgotten = forgotten
+  let mut last = forgotten
+  let mut i = 0
+  while i < raw_events.length() {
+    let ev = raw_events[i]
+    let n = match json_int64_field(ev, "n") {
+      Some(v) => v
+      None => return Err("not a log")
+    }
+    if n <= last || n > seq {
+      return Err("not a log")
+    }
+    let text = match json_str_field(ev, "text") {
+      Some(t) => t
+      None => return Err("not a log")
+    }
+    let at = match json_int64_field(ev, "at") {
+      Some(a) => a
+      None => return Err("not a log")
+    }
+    let to = match base_codec::json_get(ev, "to") {
+      Some(t_obj) => {
+        match t_obj {
+          base_codec::Json::Obj(_) => EventTarget::from_json(t_obj)
+          _ => return Err("not a log")
+        }
+      }
+      None => return Err("not a log")
+    }
+    let of_key = json_str_field(ev, "of")
+    last = n
+    let idx = log.kept.length()
+    log.kept.push(LoggedEvent::{ n: n, to: to, text: text, at: at, of_key: of_key })
+    log.bytes = log.bytes + text.length()
+    match of_key {
+      Some(ok) => log.set_latest(ok, idx)
+      None => ()
+    }
+    i = i + 1
+  }
+  log.let_go(now)
+  Ok(log)
+}

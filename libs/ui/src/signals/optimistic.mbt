@@ -108,6 +108,8 @@ pub fn[T] Optimistic::push(self : Optimistic[T], apply : (T) -> T, loc~ : Source
         if physical_equal(pending, entry) {
           entry.val = None
           self.edits.remove(i) |> ignore
+          let empty_edit : Ref[((T) -> T)?] = Ref(None)
+          self.edits.release_unused(placeholder=empty_edit)
           self.changed(loc)
           break
         }
@@ -137,5 +139,7 @@ pub fn[T] Optimistic::clear(self : Optimistic[T]) -> Unit {
     entry.val = None
   }
   self.edits.clear()
+  let empty_edit : Ref[((T) -> T)?] = Ref(None)
+  self.edits.release_unused(placeholder=empty_edit)
   self.changed(self.value.made_at())
 }

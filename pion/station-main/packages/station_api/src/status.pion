@@ -1,0 +1,375 @@
+// Local status Unix socket API (`station/src/api/status.ts`):
+//   GET /v1/status          -> LocalStatus JSON
+//   GET /v1/status?watch=1  -> NDJSON stream
+//   GET /healthz            -> 200 "ok\n"
+
+import "base_codec"
+import "http1"
+import "station_http"
+
+pub let STATUS_WAITING_DAYS : Int = 7
+pub let STATUS_TASKS_MOST : Int = 50
+pub let STATUS_SETTLE_MS : Int64 = 500L
+
+pub struct StatusCloudState {
+  pub origin : Option[String]
+  pub workspace : Option[String]
+  pub workspace_name : Option[String]
+  pub station : Option[String]
+  pub removed_at : Option[Int64]
+}
+
+pub struct RunningSessionInfo {
+  pub key : String
+  pub title : Option[String]
+  pub since : Option[Int64]
+}
+
+pub struct WaitingSessionInfo {
+  pub key : String
+  pub title : Option[String]
+  pub need : Option[String]
+  pub ended_at : Int64
+}
+
+pub struct HealthStatus {
+  pub front : String
+  pub presence_online : Bool
+}
+
+pub struct StatusInput {
+  pub version : String
+  pub cloud : Option[StatusCloudState]
+  pub reached : Bool
+  pub running : Array[RunningSessionInfo]
+  pub processes : Array[(String, String)]
+  pub waiting : Array[WaitingSessionInfo]
+  pub health : Option[HealthStatus]
+}
+
+pub struct StatusTask {
+  pub session : String
+  pub title : Option[String]
+  pub state : String
+  pub since : Option[Int64]
+  pub need : Option[String]
+}
+
+pub struct LocalStatus {
+  pub version : String
+  pub enrolled : Bool
+  pub origin : Option[String]
+  pub workspace : Option[String]
+  pub workspace_name : Option[String]
+  pub station : Option[String]
+  pub reached : Bool
+  pub busy : Int
+  pub warm : Int
+  pub total : Int
+  pub waiting : Int
+  pub tasks : Array[StatusTask]
+  pub health : Option[HealthStatus]
+}
+
+fn push_unique_str(arr : Array[String], jval : String) -> Unit {
+  if !contains_str(arr, jval) {
+    arr.push(jval)
+  }
+}
+
+/// Compute `LocalStatus` from station state (`station/src/api/status.ts` `statusOf`).
+pub fn status_of(input : StatusInput) -> LocalStatus {
+  let (enrolled, origin, workspace, workspace_name, station) = match input.cloud {
+    None => (false, None, None, None, None)
+    Some(c) => {
+      let has_ws = match c.workspace {
+        Some(w) => w.length() > 0
+        None => false
+      }
+      let not_removed = match c.removed_at {
+        None => true
+        Some(_) => false
+      }
+      (has_ws && not_removed, c.origin, c.workspace, c.workspace_name, c.station)
+    }
+  }
+
+  let busy_keys : Array[String] = []
+  let mut i = 0
+  while i < input.running.length() {
+    push_unique_str(busy_keys, input.running[i].key)
+    i = i + 1
+  }
+  let mut pi = 0
+  while pi < input.processes.length() {
+    let (k, st) = input.processes[pi]
+    if st == "running" {
+      push_unique_str(busy_keys, k)
+    }
+    pi = pi + 1
+  }
+
+  let warm_keys : Array[String] = []
+  let mut wi = 0
+  while wi < input.processes.length() {
+    let (k, st) = input.processes[wi]
+    if st == "warm" && !contains_str(busy_keys, k) {
+      push_unique_str(warm_keys, k)
+    }
+    wi = wi + 1
+  }
+
+  let filtered_waiting : Array[WaitingSessionInfo] = []
+  let mut wj = 0
+  while wj < input.waiting.length() {
+    if !contains_str(busy_keys, input.waiting[wj].key) {
+      filtered_waiting.push(input.waiting[wj])
+    }
+    wj = wj + 1
+  }
+
+  let all_keys : Array[String] = []
+  let mut ai = 0
+  while ai < busy_keys.length() {
+    push_unique_str(all_keys, busy_keys[ai])
+    ai = ai + 1
+  }
+  let mut aj = 0
+  while aj < warm_keys.length() {
+    push_unique_str(all_keys, warm_keys[aj])
+    aj = aj + 1
+  }
+  let mut ak = 0
+  while ak < filtered_waiting.length() {
+    push_unique_str(all_keys, filtered_waiting[ak].key)
+    ak = ak + 1
+  }
+
+  // Sort running sessions newest-first by `since`.
+  let sorted_running : Array[RunningSessionInfo] = []
+  let mut ri = 0
+  while ri < input.running.length() {
+    sorted_running.push(input.running[ri])
+    ri = ri + 1
+  }
+  let mut si = 1
+  while si < sorted_running.length() {
+    let cur = sorted_running[si]
+    let cur_since = match cur.since {
+      Some(v) => v
+      None => 0L
+    }
+    let mut pos = si
+    while pos > 0 {
+      let prev_since = match sorted_running[pos - 1].since {
+        Some(v) => v
+        None => 0L
+      }
+      if prev_since < cur_since {
+        sorted_running[pos] = sorted_running[pos - 1]
+        pos = pos - 1
+      } else {
+        break
+      }
+    }
+    sorted_running[pos] = cur
+    si = si + 1
+  }
+
+  let tasks : Array[StatusTask] = []
+  let mut ti = 0
+  while ti < sorted_running.length() && tasks.length() < STATUS_TASKS_MOST {
+    let r = sorted_running[ti]
+    tasks.push(StatusTask::{
+      session: r.key,
+      title: r.title,
+      state: "working",
+      since: r.since,
+      need: None,
+    })
+    ti = ti + 1
+  }
+  // Unnamed busy processes not yet in `running`.
+  let mut bi = 0
+  while bi < busy_keys.length() && tasks.length() < STATUS_TASKS_MOST {
+    let bk = busy_keys[bi]
+    let mut in_running = false
+    let mut rk = 0
+    while rk < sorted_running.length() {
+      if sorted_running[rk].key == bk {
+        in_running = true
+        break
+      }
+      rk = rk + 1
+    }
+    if !in_running {
+      tasks.push(StatusTask::{
+        session: bk,
+        title: None,
+        state: "working",
+        since: None,
+        need: None,
+      })
+    }
+    bi = bi + 1
+  }
+  let mut wk = 0
+  while wk < filtered_waiting.length() && tasks.length() < STATUS_TASKS_MOST {
+    let w = filtered_waiting[wk]
+    tasks.push(StatusTask::{
+      session: w.key,
+      title: w.title,
+      state: "waiting",
+      since: Some(w.ended_at),
+      need: w.need,
+    })
+    wk = wk + 1
+  }
+
+  LocalStatus::{
+    version: input.version,
+    enrolled: enrolled,
+    origin: origin,
+    workspace: workspace,
+    workspace_name: workspace_name,
+    station: station,
+    reached: input.reached,
+    busy: busy_keys.length(),
+    warm: warm_keys.length(),
+    total: all_keys.length(),
+    waiting: filtered_waiting.length(),
+    tasks: tasks,
+    health: input.health,
+  }
+}
+
+fn opt_str_json(v : Option[String]) -> base_codec::Json {
+  match v {
+    Some(s) => {
+      if s.length() > 0 {
+        base_codec::json_str(s)
+      } else {
+        base_codec::json_null()
+      }
+    }
+    None => base_codec::json_null()
+  }
+}
+
+pub fn LocalStatus::to_json(self : LocalStatus) -> base_codec::Json {
+  let task_arr : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < self.tasks.length() {
+    let t = self.tasks[i]
+    task_arr.push(base_codec::json_obj([
+      ("session", base_codec::json_str(t.session)),
+      ("title", opt_str_json(t.title)),
+      ("state", base_codec::json_str(t.state)),
+      (
+        "since",
+        match t.since {
+          Some(s) => base_codec::json_int64(s)
+          None => base_codec::json_null()
+        },
+      ),
+      ("need", opt_str_json(t.need)),
+    ]))
+    i = i + 1
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("version", base_codec::json_str(self.version)),
+    ("enrolled", base_codec::json_bool(self.enrolled)),
+    ("origin", opt_str_json(self.origin)),
+    ("workspace", opt_str_json(self.workspace)),
+    ("workspaceName", opt_str_json(self.workspace_name)),
+    ("station", opt_str_json(self.station)),
+    ("reached", base_codec::json_bool(self.reached)),
+    (
+      "agents",
+      base_codec::json_obj([
+        ("busy", base_codec::json_int(self.busy)),
+        ("warm", base_codec::json_int(self.warm)),
+        ("total", base_codec::json_int(self.total)),
+      ]),
+    ),
+    ("waiting", base_codec::json_int(self.waiting)),
+    ("tasks", base_codec::json_arr(task_arr)),
+  ]
+  match self.health {
+    Some(h) => {
+      fields.push((
+        "health",
+        base_codec::json_obj([
+          ("front", base_codec::json_str(h.front)),
+          ("presenceOnline", base_codec::json_bool(h.presence_online)),
+        ]),
+      ))
+    }
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+pub enum StatusRoute {
+  Status
+  Watch
+  Health
+  NotFound
+}
+
+pub fn status_route_of(req : station_http::HttpRequest) -> StatusRoute {
+  if req.method != "GET" {
+    return StatusRoute::NotFound
+  }
+  if req.path == "/healthz" {
+    return StatusRoute::Health
+  }
+  if req.path != "/v1/status" {
+    return StatusRoute::NotFound
+  }
+  match req.query_get("watch") {
+    Some(w) => {
+      if w != "0" && w != "false" {
+        StatusRoute::Watch
+      } else {
+        StatusRoute::Status
+      }
+    }
+    None => StatusRoute::Status
+  }
+}
+
+/// Build a `station_http::Router` serving the local status socket endpoints.
+pub fn status_router(get_status : () -> Result[LocalStatus, String]) -> station_http::Router {
+  let router = station_http::Router::new()
+  router.get("/healthz", fn(_req : station_http::HttpRequest) -> station_http::HandlerAction {
+    station_http::HandlerAction::Respond(station_http::HttpResponse::text(200, "ok\n"))
+  })
+  router.get("/v1/status", fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
+    match get_status() {
+      Err(_) => {
+        station_http::HandlerAction::Respond(
+          json_error(503, "the station is starting; ask again"),
+        )
+      }
+      Ok(st) => {
+        let text = base_codec::json_stringify(st.to_json()) + "\n"
+        match status_route_of(req) {
+          StatusRoute::Watch => {
+            station_http::HandlerAction::StartChunked(
+              200,
+              [
+                http1::Header::new("content-type", "application/x-ndjson"),
+                http1::Header::new("cache-control", "no-store"),
+              ],
+            )
+          }
+          _ => {
+            station_http::HandlerAction::Respond(json_response(200, text))
+          }
+        }
+      }
+    }
+  })
+  router
+}

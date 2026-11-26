@@ -79,9 +79,12 @@ test("the releases bucket serves the station's releases and the apps' builds, an
   assert.equal(releaseType("desktop/other-mac.yml"), null);
   // The modules' packages are gone (with the station's modules): nothing under modules/.
   for (const file of ["modules/media/media.json", "modules/media/media-0.1.3600.tar.gz"]) assert.equal(releaseType(file), null, file);
-  // The prebuilt native parts (scripts/native.ts prebuild), by part, target and key.
+  // The prebuilt native parts (scripts/native.ts prebuild / --publish-store), by part, target and key.
   assert.equal(releaseType("natives/shell-win32-x64-e873ee4f2e77b28f78c16a38.tar.gz"), "application/gzip");
   assert.equal(releaseType("natives/engine-win32-x64-95311552b24140105c1a54aa.tar.gz"), "application/gzip");
+  assert.equal(releaseType("natives/shell-apple-ios-arm64-8c6004703d257fe6647bfbf4.tar.gz"), "application/gzip");
+  assert.equal(releaseType("natives/shell-apple-ios-sim-arm64-1f35f3549d224a71d4f46a5b.tar.gz"), "application/gzip");
+  assert.equal(releaseType("natives/ghostty-vt-ios-arm64-8f7b0b02bd7ae453ab1000ef.tar.gz"), "application/gzip");
   for (const file of ["natives/shell-win32-x64-e873.tar.gz", "natives/shell-other-e873ee4f2e77b28f78c16a38.tar.gz", "natives/../station.json", "natives/x/shell-win32-x64-e873ee4f2e77b28f78c16a38.tar.gz"]) {
     assert.equal(releaseType(file), null, file);
   }

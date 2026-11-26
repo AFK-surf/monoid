@@ -459,11 +459,14 @@ fn svg_fonts_for(faces : Array[Bytes]) -> (@font.FontDb, String) {
 }
 
 ///|
-/// An SVG picture drawn at `px` on its longer side, its text set in the app's faces (@sfbase.vector_faces): the app's
-/// own words' face for every generic family but monospace, the code face for that.
-fn draw_svg(data : Bytes, px : Int) -> (Int, Int, FixedArray[Byte])? {
+/// Parses an SVG picture with the app's faces (@sfbase.vector_faces) into a reusable premultiplied rasterizer:
+/// the app's own words' face for every generic family but monospace, the code face for that.
+fn parse_svg_premul(data : Bytes) -> ((Int) -> (Int, Int, FixedArray[Byte])?)? {
   let (fonts, own) = svg_fonts_for(@sfbase.vector_faces(data))
-  @svg.rasterize(data, px, opt={ ..@svg.Options::default(), fonts, font_family: own })
+  match @svg.SvgDoc::parse(data, opt={ ..@svg.Options::default(), fonts, font_family: own }) {
+    Some(doc) => Some(fn(px) { doc.rasterize_premul(px) })
+    None => None
+  }
 }
 
 ///|
@@ -479,8 +482,8 @@ fn main {
   @core.client.show_kept(@sfbase.topic_shown_kept)
   // (a chat list's first window told the core before the list is asked, each time it is; a chat's before the chat)
   @core.client.tells_before(@sfbase.chats_told_before)
-  // SVG pictures (a chat's .svg files) drawn by mbui's own SVG renderer, whatever the system decodes
-  @ui.set_vector_pictures(draw_svg)
+  // SVG pictures (a chat's .svg files) parsed and drawn by mbui's own SVG renderer into premultiplied MBRAWPRE bytes
+  @ui.set_vector_pictures_parsed(parse_svg_premul)
   // MBUI_PLATFORM=android: run as a phone's system has it (a test's trace recorded again on a Mac on the system its
   // Tester plays: scripts/rerecord.sh), and pointed at by a finger as a phone is; MBUI_POINTING=finger or mouse: pointed
   // at so, whatever the system

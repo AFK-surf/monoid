@@ -1,0 +1,421 @@
+// SFB1 streaming end-to-end encryption for S3/R2 backups (ChaCha20-Poly1305 + HMAC-SHA256 nonces).
+// 100% byte-identical with `station/src/replica/crypto.ts`:
+//   Header (20 bytes): "SFB1" (4 bytes) || salt (16 bytes)
+//   Frames (i = 0, 1, ...):
+//     plainLen (uint32 BE, 4 bytes) || flags (1 byte: 0x00 non-final, 0x01 final) || ciphertext (plainLen) || tag (16)
+//   Empty input encodes as 1 frame with plainLen = 0, flags = 0x01.
+//   Frame i nonce (12 bytes): HMAC-SHA256(key32, salt || uint32be(i))[0..12]
+//   Frame i AAD (UTF-8): `${ws}\n${origin}\n${logicalPath}\n${i}\n${isFinal ? "1" : "0"}`
+
+import "crypto"
+
+pub let sfb1_salt_len : Int = 16
+pub let sfb1_header_len : Int = 20
+pub let sfb1_tag_len : Int = 16
+pub let sfb1_frame_header_len : Int = 5
+pub let frame_plain_max : Int = 4 * 1024 * 1024
+pub let flag_more : Int = 0x00
+pub let flag_final : Int = 0x01
+
+pub struct Sfb1Context {
+  pub ws : String
+  pub origin : String
+  pub logical_path : String
+}
+
+fn concat_bytes(parts : Array[Bytes]) -> Bytes {
+  let mut total = 0
+  for i in 0..<parts.length() {
+    total = total + parts[i].length()
+  }
+  let out = Bytes::new(total)
+  let mut off = 0
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    for j in 0..<p.length() {
+      out[off + j] = p[j]
+    }
+    off = off + p.length()
+  }
+  out
+}
+
+fn slice_bytes(b : Bytes, start : Int, end : Int) -> Bytes {
+  let n = end - start
+  if n <= 0 {
+    return Bytes::new(0)
+  }
+  let out = Bytes::new(n)
+  for i in 0..<n {
+    out[i] = b[start + i]
+  }
+  out
+}
+
+fn u32_be_bytes(v : Int) -> Bytes {
+  let out = Bytes::new(4)
+  let u = v.to_uint()
+  out[0] = ((u >> 24U) & 0xFFU).to_int().to_byte()
+  out[1] = ((u >> 16U) & 0xFFU).to_int().to_byte()
+  out[2] = ((u >> 8U) & 0xFFU).to_int().to_byte()
+  out[3] = (u & 0xFFU).to_int().to_byte()
+  out
+}
+
+fn read_u32_be(b : Bytes, off : Int) -> Int {
+  let b0 = b[off].to_int() & 0xFF
+  let b1 = b[off + 1].to_int() & 0xFF
+  let b2 = b[off + 2].to_int() & 0xFF
+  let b3 = b[off + 3].to_int() & 0xFF
+  (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
+}
+
+pub fn parse_encryption_key(hex : String) -> Result[Bytes, String] {
+  if !is_hex64(hex) {
+    return Err("encryptionKey must be a 64-character lowercase hex string")
+  }
+  match crypto::hex_to_bytes(hex) {
+    Some(b) => if b.length() == 32 { Ok(b) } else { Err("SFB1 key must be 32 bytes") }
+    None => Err("encryptionKey must be a 64-character lowercase hex string")
+  }
+}
+
+pub fn frame_nonce(key : Bytes, salt : Bytes, index : Int) -> Bytes {
+  let msg = concat_bytes([salt, u32_be_bytes(index)])
+  let mac = crypto::hmac_sha256(key, msg)
+  slice_bytes(mac, 0, 12)
+}
+
+pub fn frame_aad(ctx : Sfb1Context, index : Int, is_final : Bool) -> Bytes {
+  let fin = if is_final { "1" } else { "0" }
+  let s = ctx.ws + "\n" + ctx.origin + "\n" + ctx.logical_path + "\n" + index.to_string() + "\n" + fin
+  s.to_bytes()
+}
+
+fn seal_frame(
+  key : Bytes,
+  salt : Bytes,
+  ctx : Sfb1Context,
+  index : Int,
+  plain : Bytes,
+  is_final : Bool,
+) -> Result[Bytes, String] {
+  let nonce = frame_nonce(key, salt, index)
+  let aad = frame_aad(ctx, index, is_final)
+  let sealed = match crypto::chacha20_poly1305_seal(key, nonce, aad, plain) {
+    Ok(b) => b
+    Err(e) => return Err(crypto::crypto_error_message(e))
+  }
+  let hdr = Bytes::new(sfb1_frame_header_len)
+  let u = plain.length().to_uint()
+  hdr[0] = ((u >> 24U) & 0xFFU).to_int().to_byte()
+  hdr[1] = ((u >> 16U) & 0xFFU).to_int().to_byte()
+  hdr[2] = ((u >> 8U) & 0xFFU).to_int().to_byte()
+  hdr[3] = (u & 0xFFU).to_int().to_byte()
+  hdr[4] = (if is_final { flag_final } else { flag_more }).to_byte()
+  Ok(concat_bytes([hdr, sealed]))
+}
+
+fn open_frame(
+  key : Bytes,
+  salt : Bytes,
+  ctx : Sfb1Context,
+  index : Int,
+  sealed : Bytes,
+  is_final : Bool,
+) -> Result[Bytes, String] {
+  if sealed.length() < sfb1_tag_len {
+    return Err("SFB1 frame truncated")
+  }
+  let nonce = frame_nonce(key, salt, index)
+  let aad = frame_aad(ctx, index, is_final)
+  match crypto::chacha20_poly1305_open(key, nonce, aad, sealed) {
+    Ok(p) => Ok(p)
+    Err(e) => Err(crypto::crypto_error_message(e))
+  }
+}
+
+fn has_sfb1_magic(data : Bytes) -> Bool {
+  data.length() >= 4 &&
+  (data[0].to_int() & 0xFF) == 83 &&
+  (data[1].to_int() & 0xFF) == 70 &&
+  (data[2].to_int() & 0xFF) == 66 &&
+  (data[3].to_int() & 0xFF) == 49
+}
+
+/// Encrypts a whole buffer in SFB1 format.
+pub fn sfb1_seal(
+  key : Bytes,
+  ctx : Sfb1Context,
+  plain : Bytes,
+  salt : Bytes,
+  frame_max~ : Int = frame_plain_max,
+) -> Result[Bytes, String] {
+  if key.length() != 32 {
+    return Err("SFB1 key must be 32 bytes")
+  }
+  if frame_max <= 0 || frame_max > frame_plain_max {
+    return Err("invalid SFB1 frameMax")
+  }
+  if salt.length() != sfb1_salt_len {
+    return Err("SFB1 salt must be 16 bytes")
+  }
+  let parts : Array[Bytes] = ["SFB1".to_bytes(), salt]
+  if plain.length() == 0 {
+    let f = match seal_frame(key, salt, ctx, 0, Bytes::new(0), true) {
+      Ok(b) => b
+      Err(e) => return Err(e)
+    }
+    parts.push(f)
+    return Ok(concat_bytes(parts))
+  }
+  let mut offset = 0
+  let mut index = 0
+  while offset < plain.length() {
+    let end = if offset + frame_max < plain.length() { offset + frame_max } else { plain.length() }
+    let is_final = end >= plain.length()
+    let f = match seal_frame(key, salt, ctx, index, slice_bytes(plain, offset, end), is_final) {
+      Ok(b) => b
+      Err(e) => return Err(e)
+    }
+    parts.push(f)
+    offset = end
+    index = index + 1
+  }
+  Ok(concat_bytes(parts))
+}
+
+/// Decrypts a whole SFB1 buffer, verifying magic, all frame tags, final flag, and no trailing bytes.
+pub fn sfb1_open(key : Bytes, ctx : Sfb1Context, data : Bytes) -> Result[Bytes, String] {
+  if key.length() != 32 {
+    return Err("SFB1 key must be 32 bytes")
+  }
+  if data.length() < sfb1_header_len {
+    return Err("SFB1 data too short")
+  }
+  if !has_sfb1_magic(data) {
+    return Err("invalid SFB1 magic")
+  }
+  let salt = slice_bytes(data, 4, sfb1_header_len)
+  let out : Array[Bytes] = []
+  let mut offset = sfb1_header_len
+  let mut index = 0
+  let mut saw_final = false
+  while offset < data.length() {
+    if saw_final {
+      return Err("trailing bytes after final SFB1 frame")
+    }
+    if offset + sfb1_frame_header_len > data.length() {
+      return Err("truncated SFB1 frame header")
+    }
+    let plain_len = read_u32_be(data, offset)
+    let flags = data[offset + 4].to_int() & 0xFF
+    if flags != flag_more && flags != flag_final {
+      return Err("invalid SFB1 frame flags: " + flags.to_string())
+    }
+    if plain_len < 0 || plain_len > frame_plain_max {
+      return Err("SFB1 frame too large: " + plain_len.to_string())
+    }
+    offset = offset + sfb1_frame_header_len
+    let sealed_len = plain_len + sfb1_tag_len
+    if offset + sealed_len > data.length() {
+      return Err("truncated SFB1 frame payload")
+    }
+    let is_final = flags == flag_final
+    let plain = match open_frame(key, salt, ctx, index, slice_bytes(data, offset, offset + sealed_len), is_final) {
+      Ok(p) => p
+      Err(e) => return Err(e)
+    }
+    out.push(plain)
+    offset = offset + sealed_len
+    index = index + 1
+    if is_final {
+      saw_final = true
+    }
+  }
+  if !saw_final {
+    return Err("truncated SFB1 stream: missing final frame")
+  }
+  Ok(concat_bytes(out))
+}
+
+/// Incremental streaming SFB1 sealer keeping memory bounded to ~1 frame.
+pub struct Sfb1StreamSealer {
+  key : Bytes
+  salt : Bytes
+  ctx : Sfb1Context
+  frame_max : Int
+  mut header_sent : Bool
+  mut finished : Bool
+  mut index : Int
+  mut pending : Bytes
+}
+
+pub fn Sfb1StreamSealer::new(
+  key : Bytes,
+  ctx : Sfb1Context,
+  salt : Bytes,
+  frame_max~ : Int = frame_plain_max,
+) -> Result[Sfb1StreamSealer, String] {
+  if key.length() != 32 {
+    return Err("SFB1 key must be 32 bytes")
+  }
+  if frame_max <= 0 || frame_max > frame_plain_max {
+    return Err("invalid SFB1 frameMax")
+  }
+  if salt.length() != sfb1_salt_len {
+    return Err("SFB1 salt must be 16 bytes")
+  }
+  Ok(
+    Sfb1StreamSealer::{
+      key: key,
+      salt: salt,
+      ctx: ctx,
+      frame_max: frame_max,
+      header_sent: false,
+      finished: false,
+      index: 0,
+      pending: Bytes::new(0),
+    },
+  )
+}
+
+pub fn Sfb1StreamSealer::push(self : Sfb1StreamSealer, chunk : Bytes) -> Result[Array[Bytes], String] {
+  if self.finished {
+    return Err("SFB1 stream sealer already finished")
+  }
+  let out : Array[Bytes] = []
+  if !self.header_sent {
+    self.header_sent = true
+    out.push(concat_bytes(["SFB1".to_bytes(), self.salt]))
+  }
+  if chunk.length() == 0 {
+    return Ok(out)
+  }
+  self.pending = if self.pending.length() == 0 { chunk } else { concat_bytes([self.pending, chunk]) }
+  // Always keep at least 1 byte buffered until finish() so we know whether a frame is final.
+  while self.pending.length() > self.frame_max {
+    let head = slice_bytes(self.pending, 0, self.frame_max)
+    self.pending = slice_bytes(self.pending, self.frame_max, self.pending.length())
+    let f = match seal_frame(self.key, self.salt, self.ctx, self.index, head, false) {
+      Ok(b) => b
+      Err(e) => return Err(e)
+    }
+    self.index = self.index + 1
+    out.push(f)
+  }
+  Ok(out)
+}
+
+pub fn Sfb1StreamSealer::finish(self : Sfb1StreamSealer) -> Result[Array[Bytes], String] {
+  if self.finished {
+    return Err("SFB1 stream sealer already finished")
+  }
+  self.finished = true
+  let out : Array[Bytes] = []
+  if !self.header_sent {
+    self.header_sent = true
+    out.push(concat_bytes(["SFB1".to_bytes(), self.salt]))
+  }
+  let f = match seal_frame(self.key, self.salt, self.ctx, self.index, self.pending, true) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  self.pending = Bytes::new(0)
+  self.index = self.index + 1
+  out.push(f)
+  Ok(out)
+}
+
+/// Incremental streaming SFB1 opener verifying header, tags, final flag, and rejecting trailing bytes.
+pub struct Sfb1StreamOpener {
+  key : Bytes
+  ctx : Sfb1Context
+  mut salt : Option[Bytes]
+  mut buf : Bytes
+  mut index : Int
+  mut saw_final : Bool
+}
+
+pub fn Sfb1StreamOpener::new(key : Bytes, ctx : Sfb1Context) -> Result[Sfb1StreamOpener, String] {
+  if key.length() != 32 {
+    return Err("SFB1 key must be 32 bytes")
+  }
+  Ok(
+    Sfb1StreamOpener::{
+      key: key,
+      ctx: ctx,
+      salt: None,
+      buf: Bytes::new(0),
+      index: 0,
+      saw_final: false,
+    },
+  )
+}
+
+pub fn Sfb1StreamOpener::push(self : Sfb1StreamOpener, chunk : Bytes) -> Result[Array[Bytes], String] {
+  let out : Array[Bytes] = []
+  if chunk.length() == 0 {
+    return Ok(out)
+  }
+  if self.saw_final {
+    return Err("trailing bytes after final SFB1 frame")
+  }
+  self.buf = if self.buf.length() == 0 { chunk } else { concat_bytes([self.buf, chunk]) }
+  match self.salt {
+    None => {
+      if self.buf.length() < sfb1_header_len {
+        return Ok(out)
+      }
+      if !has_sfb1_magic(self.buf) {
+        return Err("invalid SFB1 magic")
+      }
+      self.salt = Some(slice_bytes(self.buf, 4, sfb1_header_len))
+      self.buf = slice_bytes(self.buf, sfb1_header_len, self.buf.length())
+    }
+    Some(_) => ()
+  }
+  let salt = match self.salt {
+    Some(s) => s
+    None => return Ok(out)
+  }
+  while self.buf.length() >= sfb1_frame_header_len {
+    if self.saw_final {
+      return Err("trailing bytes after final SFB1 frame")
+    }
+    let plain_len = read_u32_be(self.buf, 0)
+    let flags = self.buf[4].to_int() & 0xFF
+    if flags != flag_more && flags != flag_final {
+      return Err("invalid SFB1 frame flags: " + flags.to_string())
+    }
+    if plain_len < 0 || plain_len > frame_plain_max {
+      return Err("SFB1 frame too large: " + plain_len.to_string())
+    }
+    let frame_total = sfb1_frame_header_len + plain_len + sfb1_tag_len
+    if self.buf.length() < frame_total {
+      break
+    }
+    let is_final = flags == flag_final
+    let sealed = slice_bytes(self.buf, sfb1_frame_header_len, frame_total)
+    let plain = match open_frame(self.key, salt, self.ctx, self.index, sealed, is_final) {
+      Ok(p) => p
+      Err(e) => return Err(e)
+    }
+    self.index = self.index + 1
+    self.buf = slice_bytes(self.buf, frame_total, self.buf.length())
+    if is_final {
+      self.saw_final = true
+    }
+    if plain.length() > 0 {
+      out.push(plain)
+    }
+  }
+  Ok(out)
+}
+
+pub fn Sfb1StreamOpener::finish(self : Sfb1StreamOpener) -> Result[Unit, String] {
+  match self.salt {
+    None => Err("truncated SFB1 stream")
+    Some(_) => if !self.saw_final || self.buf.length() > 0 { Err("truncated SFB1 stream") } else { Ok(()) }
+  }
+}

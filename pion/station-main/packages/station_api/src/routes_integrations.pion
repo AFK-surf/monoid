@@ -1,0 +1,165 @@
+// Integrations, drive, transfers, vault, vault-requests, machine-logins, and browser sign-ins routes
+// (`connects`, `slack`, `feishu`, `comma`, `group`, `drive`, `transfers`, `vault`, `vault-requests`,
+// `logins`, `signins`).
+
+/// Dispatch integration, drive, vault, and sign-in routes.
+pub fn dispatch_integration_route(
+  r : ApiRequest,
+  segs : Array[String],
+  host : ApiHost,
+) -> Option[RouteResult] {
+  let m = r.method
+  let n = segs.length()
+  if n == 0 {
+    return None
+  }
+  let head = segs[0]
+
+  // Connects (generic + Slack app sub-routes)
+  if head == "connects" {
+    if m == "POST" && n == 1 {
+      return Some(call_with_json(host, "slack.connects.create", r, []))
+    }
+    if n == 2 {
+      let id = segment_decode(segs[1])
+      if m == "PUT" {
+        return Some(call_with_json(host, "connects.put", r, [id]))
+      }
+      if m == "DELETE" {
+        return Some(call_with_json(host, "connects.delete", r, [id]))
+      }
+    }
+    if n >= 3 {
+      let id = segment_decode(segs[1])
+      let sub = segs[2]
+      if m == "POST" && (sub == "session" || sub == "reconnect") {
+        return Some(call_with_json(host, "connects." + sub, r, [id]))
+      }
+      if sub == "slack-app" && (m == "GET" || m == "PUT" || m == "POST") {
+        return Some(call_with_json(host, "slack.connect.app." + m, r, [id]))
+      }
+    }
+  }
+
+  // Slack
+  if head == "slack" {
+    if m == "POST" && n == 2 &&
+    (segs[1] == "apps" || segs[1] == "installs" || segs[1] == "verify" || segs[1] == "config-tokens") {
+      return Some(call_with_json(host, "slack." + segs[1] + ".post", r, []))
+    }
+    if m == "GET" && n == 2 && (segs[1] == "people" || segs[1] == "create-app-url") {
+      return Some(call_with_json(host, "slack." + segs[1] + ".get", r, []))
+    }
+    if m == "DELETE" && n >= 3 && (segs[1] == "apps" || segs[1] == "config-tokens") {
+      return Some(call_with_json(host, "slack." + segs[1] + ".delete", r, [segment_decode(segs[2])]))
+    }
+  }
+  if head == "me" && n == 3 && segs[1] == "slack" && (m == "PUT" || m == "DELETE") {
+    return Some(call_with_json(host, "slack.me." + m, r, [segment_decode(segs[2])]))
+  }
+
+  // Feishu
+  if head == "feishu" {
+    if m == "POST" && n == 2 && (segs[1] == "verify" || segs[1] == "connects" || segs[1] == "registrations") {
+      return Some(call_with_json(host, "feishu." + segs[1] + ".post", r, []))
+    }
+    if m == "DELETE" && n == 3 && segs[1] == "registrations" {
+      return Some(call_with_json(host, "feishu.registrations.delete", r, [segment_decode(segs[2])]))
+    }
+    if m == "PUT" && n == 4 && segs[1] == "connects" && segs[3] == "secret" {
+      return Some(call_with_json(host, "feishu.connects.secret.put", r, [segment_decode(segs[2])]))
+    }
+  }
+
+  // Comma & Group
+  if head == "comma" && m == "POST" && n == 2 && segs[1] == "connects" {
+    return Some(call_with_json(host, "comma.connects.create", r, []))
+  }
+  if head == "group" && m == "POST" && n == 2 && segs[1] == "connects" {
+    return Some(call_with_json(host, "group.connects.create", r, []))
+  }
+
+  // Drive & Transfers
+  if head == "drive" {
+    if m == "GET" && n == 1 {
+      return Some(call_with_json(host, "drive.view", r, []))
+    }
+    if n == 2 {
+      let sub = segs[1]
+      if m == "PUT" && (sub == "roots" || sub == "upload") {
+        return Some(call_with_json(host, "drive." + sub + ".put", r, []))
+      }
+      if m == "GET" && (sub == "folders" || sub == "list" || sub == "stat" || sub == "read" || sub == "watch" || sub == "transfers") {
+        return Some(call_with_json(host, "drive." + sub + ".get", r, []))
+      }
+      if m == "POST" && (sub == "mkdir" || sub == "rename" || sub == "remove" || sub == "zip" || sub == "stage" || sub == "grant" || sub == "transfers") {
+        return Some(call_with_json(host, "drive." + sub + ".post", r, []))
+      }
+    }
+    if m == "POST" && n == 4 && segs[1] == "transfers" && (segs[3] == "cancel" || segs[3] == "retry") {
+      return Some(call_with_json(host, "transfers." + segs[3], r, [segs[2]]))
+    }
+  }
+
+  // Vault & Vault Requests
+  if head == "vault" {
+    if n == 2 {
+      let sub = segs[1]
+      if (sub == "vaults" || sub == "items" || sub == "boxes" || sub == "plain") && (m == "GET" || m == "PUT") {
+        return Some(call_with_json(host, "vault." + sub + "." + m, r, []))
+      }
+      if m == "GET" && (sub == "requests" || sub == "uses" || sub == "cross-uses") {
+        return Some(call_with_json(host, "vault." + sub + ".get", r, []))
+      }
+      if m == "POST" &&
+      (sub == "grants" || sub == "denials" || sub == "saves" || sub == "described" || sub == "removed" || sub == "browses") {
+        return Some(call_with_json(host, "vault." + sub + ".post", r, []))
+      }
+    }
+    if n == 3 {
+      if m == "POST" && segs[1] == "vaults" && segs[2] == "latest" {
+        return Some(call_with_json(host, "vault.vaults.latest", r, []))
+      }
+      if segs[1] == "plain" {
+        let act = segs[2]
+        if m == "PUT" && act == "lasts" {
+          return Some(call_with_json(host, "vault.plain.lasts.put", r, []))
+        }
+        if m == "GET" && act == "item" {
+          return Some(call_with_json(host, "vault.plain.item.get", r, []))
+        }
+        if m == "POST" && (act == "grants" || act == "denials" || act == "described" || act == "removed" || act == "saves") {
+          return Some(call_with_json(host, "vault.plain." + act + ".post", r, []))
+        }
+      }
+    }
+  }
+
+  // Machine Logins
+  if head == "machine-logins" {
+    if m == "GET" && n == 1 {
+      return Some(call_with_json(host, "logins.machine.list", r, []))
+    }
+    if n == 2 {
+      let id = segment_decode(segs[1])
+      if m == "GET" {
+        return Some(call_with_json(host, "logins.machine.get", r, [id]))
+      }
+      if m == "DELETE" {
+        return Some(call_with_json(host, "logins.machine.delete", r, [id]))
+      }
+    }
+    if m == "POST" && n == 3 &&
+    (segs[2] == "answer" || segs[2] == "again" || segs[2] == "code" || segs[2] == "callback" || segs[2] == "browser") {
+      return Some(call_with_json(host, "logins.machine." + segs[2], r, [segment_decode(segs[1])]))
+    }
+  }
+
+  // Browser Sign-Ins
+  if head == "browser" && m == "POST" && n == 4 && segs[1] == "sign-ins" &&
+  (segs[3] == "fill" || segs[3] == "self" || segs[3] == "deny") {
+    return Some(call_with_json(host, "signins." + segs[3], r, [segment_decode(segs[2])]))
+  }
+
+  None
+}

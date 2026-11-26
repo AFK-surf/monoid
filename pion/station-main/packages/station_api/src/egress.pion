@@ -1,0 +1,109 @@
+// Internet egress country/colo detection via Cloudflare trace (`station/src/api/egress.ts`).
+
+import "base_codec"
+
+pub let EGRESS_TRACE_URL : String = "https://www.cloudflare.com/cdn-cgi/trace"
+pub let EGRESS_EVERY_MS : Int64 = 1800000L
+pub let EGRESS_WAIT_MS : Int64 = 10000L
+
+pub struct Egress {
+  pub country : String
+  pub colo : Option[String]
+}
+
+fn ascii_upper(s : String) -> String {
+  let b = s.to_bytes()
+  let out : Array[Byte] = []
+  let mut i = 0
+  while i < b.length() {
+    let mut c = b[i].to_int() & 0xFF
+    if c >= 97 && c <= 122 {
+      c = c - 32
+    }
+    out.push(c.to_byte())
+    i = i + 1
+  }
+  bytes_from_array(out).to_string()
+}
+
+fn is_upper_alpha_len(s : String, expected_len : Int) -> Bool {
+  let b = s.to_bytes()
+  if b.length() != expected_len {
+    return false
+  }
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c < 65 || c > 90 {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn trace_field(trace : String, key : String) -> String {
+  let prefix = key + "="
+  let lines = trace.split("\n")
+  let mut i = 0
+  while i < lines.length() {
+    let line = lines[i].trim()
+    if line.starts_with(prefix) {
+      return line.slice(prefix.length(), line.length()).trim()
+    }
+    i = i + 1
+  }
+  ""
+}
+
+/// Parse Cloudflare `/cdn-cgi/trace` text into country (ISO-3166 alpha-2, excluding `XX` and `T1`) and 3-letter colo.
+pub fn egress_of(trace : String) -> Option[Egress] {
+  let country = ascii_upper(trace_field(trace, "loc"))
+  if !is_upper_alpha_len(country, 2) || country == "XX" || country == "T1" {
+    return None
+  }
+  let colo_raw = ascii_upper(trace_field(trace, "colo"))
+  let colo = if is_upper_alpha_len(colo_raw, 3) { Some(colo_raw) } else { None }
+  Some(Egress::{ country: country, colo: colo })
+}
+
+pub fn Egress::to_json(self : Egress) -> base_codec::Json {
+  base_codec::json_obj([
+    ("country", base_codec::json_str(self.country)),
+    (
+      "colo",
+      match self.colo {
+        Some(c) => base_codec::json_str(c)
+        None => base_codec::json_null()
+      },
+    ),
+  ])
+}
+
+/// Stateful egress tracker that keeps the previous value on transient lookup failure.
+pub struct EgressLook {
+  mut seen : Option[Egress]
+  mut looking : Bool
+}
+
+pub fn EgressLook::new() -> EgressLook {
+  EgressLook::{ seen: None, looking: false }
+}
+
+pub fn EgressLook::now(self : EgressLook) -> Option[Egress] {
+  self.seen
+}
+
+/// Apply a trace lookup result; errors leave the previous `seen` value intact.
+pub fn EgressLook::apply_result(self : EgressLook, res : Result[String, String]) -> Option[Egress] {
+  if self.looking {
+    return self.seen
+  }
+  self.looking = true
+  match res {
+    Ok(trace) => self.seen = egress_of(trace)
+    Err(_) => ()
+  }
+  self.looking = false
+  self.seen
+}

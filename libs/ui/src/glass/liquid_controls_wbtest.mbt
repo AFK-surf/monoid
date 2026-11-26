@@ -479,6 +479,7 @@ test "real liquid_toggle_node held: liquid keeps slot 7 (-32), frosted frosts it
   t.run_for(glass_springs_out)
   let sw = t.get(Switch, label="Wi-Fi").rect
   t.press_at(sw.0 + sw.2 / 2.0, sw.1 + sw.3 / 2.0)
+  t.move_to(sw.0 + sw.2 / 2.0 - 12.0, sw.1 + sw.3 / 2.0)
   t.run_for(glass_ctrl_hold_ms)
 
   let find_glass = fn() -> (Double, Double, Double)? {
@@ -842,6 +843,40 @@ test "liquid_segmented_node: unattached external DampedDrag binds on mount and s
   dd.release()
   t.run_for(@ui.move_most_ms * 2.0)
   assert_eq(t.drawn_glass().length(), 0, msg="after dd.release() settles, drawn_glass must return to 0")
+  set_dark(None)
+}
+
+///|
+test "the segmented thumb follows unequal widths and stays over the end options when its spring overshoots" {
+  let drag = DampedDrag::new(0.0, lo=0.0, hi=2.0, held_scale=ctrl_seg_held_scale)
+  let t = glass_case(false, false, fn(page) {
+    liquid_segmented_node(
+      page,
+      fn() { ["One", "Two", "Three"] },
+      fn() { 0 },
+      fn(_) {  },
+      width=270.0,
+      widths=fn() { [55.0, 90.0, 125.0] },
+      pad=0.0,
+      drag~,
+      glass_track=false,
+    )
+    |> ignore
+  })
+  let first = t.get(Tab, label="One").rect
+  let middle = t.get(Tab, label="Two").rect
+  let last = t.get(Tab, label="Three").rect
+  for (position, left, width) in [
+    (-0.25, first.0, first.2),
+    (0.5, (first.0 + middle.0) / 2.0, (first.2 + middle.2) / 2.0),
+    (2.25, last.0, last.2),
+  ] {
+    drag.value.put(position)
+    t.draw()
+    let thumb = t.drawn_rects().filter(fn(r) { r.4 == @ui.tree_theme().lifted })
+    assert_eq(thumb.length(), 1)
+    assert_eq((thumb[0].0, thumb[0].2), (left, width), msg="spring at \{position}")
+  }
   set_dark(None)
 }
 

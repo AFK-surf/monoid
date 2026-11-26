@@ -28,6 +28,8 @@ on:
       - "libs/ui/src/kitdemo/gallery/a11ycheck.mbt"
       - "libs/ui/src/ui/a11y.mbt"
       - "libs/ui/src/host/linux*"
+      - "libs/ui/src/host/raw_premul.h"
+      - "libs/ui/scripts/raw_premul_test.c"
       - "libs/ui/src/host/mini_json.h"
       - "libs/ui/src/host/app_calls.h"
       - "apps/mbui/src/host/linux_station.c"
@@ -90,6 +92,11 @@ jobs:
             libsoup-3.0-dev zlib1g-dev libgl1-mesa-dri libegl-mesa0 xvfb xauth fonts-noto-cjk fonts-noto-color-emoji
             fonts-dejavu-core dbus-daemon dbus-bin libwebkitgtk-6.0-4 libpoppler-glib8t64
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+      - name: "MBRAWPRE header parser, bounds validator, and premultiplied downscaler (libs/ui/src/host/raw_premul.h)"
+        run: |
+          mkdir -p out
+          cc -Wall -Werror -O2 -Isrc/host scripts/raw_premul_test.c -lm -o out/raw_premul_test
+          out/raw_premul_test
       - name: "What the app hands this machine's station's installer: the token, the workspace lock's hash, nothing refused dropped (apps/mbui/src/host/station_install.h)"
         working-directory: apps/mbui
         run: |

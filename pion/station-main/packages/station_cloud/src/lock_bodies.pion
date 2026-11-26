@@ -1,0 +1,178 @@
+// Statement bodies kept for one workspace (`mesh/locks/<ws>.bodies.json`), indexed by body hash.
+// 1:1 with `station/src/cloud/lock-bodies.ts`.
+
+import "form"
+import "lock"
+import "nodepath"
+import "station_rules_bridge"
+
+/// Maximum canonical length of a single statement body (16 KiB).
+pub let BODY_MOST : Int = 16384
+
+pub struct BodyRefused {
+  pub hash : Option[String]
+  pub why : String
+}
+
+pub struct TakeBodiesResult {
+  pub taken : Int
+  pub refused : Array[BodyRefused]
+}
+
+pub struct LockBodies {
+  pub path : Option[String]
+  mut bodies : Map[String, form::Json]
+  pub mut version : Int
+}
+
+pub fn LockBodies::new(path : Option[String]) -> LockBodies {
+  LockBodies::{ path: path, bodies: Map::new(), version: 0 }
+}
+
+/// Parse persisted `{ "bodies": [...] }` JSON into a `LockBodies` store, ignoring malformed entries.
+pub fn LockBodies::from_json(path : Option[String], raw_json : String) -> LockBodies {
+  let lb = LockBodies::new(path)
+  match form::parse_json(raw_json) {
+    Ok(form::Json::Obj(fields)) => {
+      match form::json_obj_get(fields, "bodies") {
+        Some(form::Json::Arr(items)) => {
+          let mut i = 0
+          while i < items.length() {
+            let b = items[i]
+            match station_rules_bridge::body_hash(b) {
+              Some(h) => lb.bodies.set(h, b)
+              None => ()
+            }
+            i = i + 1
+          }
+        }
+        _ => ()
+      }
+    }
+    _ => ()
+  }
+  lb
+}
+
+pub fn LockBodies::has(self : LockBodies, h : String) -> Bool {
+  self.bodies.contains(h)
+}
+
+pub fn LockBodies::get(self : LockBodies, h : String) -> Option[form::Json] {
+  self.bodies.get(h)
+}
+
+pub fn LockBodies::len(self : LockBodies) -> Int {
+  self.bodies.length()
+}
+
+pub fn LockBodies::values(self : LockBodies) -> Array[form::Json] {
+  let out : Array[form::Json] = []
+  let keys = self.bodies.keys()
+  let mut i = 0
+  while i < keys.length() {
+    match self.bodies.get(keys[i]) {
+      Some(v) => out.push(v)
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn LockBodies::serialize(self : LockBodies) -> String {
+  let vals = self.values()
+  form::json_stringify(form::Json::Obj([("bodies", form::Json::Arr(vals))]))
+}
+
+/// Accept statement bodies committed by kept person-log entries under `ws`'s tag.
+/// Enforces UTF-16 length limit (`BODY_MOST`, 1:1 with JS `text.length`).
+/// Persists to `self.path` BEFORE mutating in-memory `self.bodies` / `self.version` so a disk
+/// error never pollutes memory and retries succeed cleanly once disk recovers.
+pub fn LockBodies::take(
+  self : LockBodies,
+  ws : String,
+  incoming : Array[form::Json],
+  commits : (String) -> Array[lock::Commit],
+  fs : Option[CloudFs] = None,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+  sep : String = "/",
+) -> Result[TakeBodiesResult, String] {
+  let refused : Array[BodyRefused] = []
+  let staged : Array[(String, form::Json)] = []
+  let staged_set : Map[String, Bool] = Map::new()
+  let mut i = 0
+  while i < incoming.length() {
+    let b = incoming[i]
+    let text = match form::canonical(b) {
+      Ok(s) => s
+      Err(_) => {
+        refused.push(BodyRefused::{ hash: None, why: "a body is {ws, kind, …, salt}" })
+        i = i + 1
+        continue
+      }
+    }
+    if form::utf16_len(text) > BODY_MOST {
+      refused.push(BodyRefused::{ hash: None, why: "a body this long is no statement" })
+      i = i + 1
+      continue
+    }
+    let h = match station_rules_bridge::body_hash(b) {
+      Some(v) => v
+      None => {
+        refused.push(BodyRefused::{ hash: None, why: "a body is {ws, kind, …, salt}" })
+        i = i + 1
+        continue
+      }
+    }
+    if self.bodies.contains(h) || staged_set.contains(h) {
+      i = i + 1
+      continue
+    }
+    match station_rules_bridge::body_refusal(ws, b, commits(h), verify_fn=verify_fn) {
+      Some(why) => {
+        refused.push(BodyRefused::{ hash: Some(h), why: why })
+        i = i + 1
+        continue
+      }
+      None => ()
+    }
+    let stored = match form::parse_json(text) {
+      Ok(parsed) => parsed
+      Err(_) => b
+    }
+    staged.push((h, stored))
+    staged_set.set(h, true)
+    i = i + 1
+  }
+  let taken = staged.length()
+  if taken > 0 {
+    match (self.path, fs) {
+      (Some(p), Some(cfs)) => {
+        let next_vals = self.values()
+        let mut si = 0
+        while si < staged.length() {
+          next_vals.push(staged[si].1)
+          si = si + 1
+        }
+        let serialized = form::json_stringify(form::Json::Obj([("bodies", form::Json::Arr(next_vals))]))
+        match (cfs.mkdir_p)(nodepath::dirname(sep, p)) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match (cfs.write_private_text)(p, serialized) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      _ => ()
+    }
+    let mut si = 0
+    while si < staged.length() {
+      self.bodies.set(staged[si].0, staged[si].1)
+      si = si + 1
+    }
+    self.version = self.version + 1
+  }
+  Ok(TakeBodiesResult::{ taken: taken, refused: refused })
+}

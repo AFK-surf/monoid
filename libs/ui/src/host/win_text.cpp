@@ -78,7 +78,6 @@ struct Target {
   ID2D1SolidColorBrush *fine_black;
   double fine_scale;
   float *fine_a;
-  float *fine_g;
   size_t fine_cap;
 };
 static Target main_target;
@@ -1388,6 +1387,65 @@ static void fine_downsample_nogrow(const uint8_t *src, UINT stride, int pw, int 
   }
 }
 
+static bool fine_downsample_grow(const uint8_t *src, UINT stride, int pw, int ph, double grow, float **fine_a_buf,
+                                 size_t *fine_cap, uint8_t *px) {
+  int fw = pw * FINE, fh = ph * FINE;
+  size_t need = (size_t)fw * (size_t)fh;
+  if (need > *fine_cap) {
+    float *na = (float *)realloc(*fine_a_buf, sizeof(float) * need);
+    if (!na) return false;
+    *fine_a_buf = na;
+    *fine_cap = need;
+  }
+  // the cover, 0..1 (black on white at linear gamma: 255 less the green)
+  float *a = *fine_a_buf;
+  for (int y = 0; y < fh; y++) {
+    const uint8_t *s = src + (size_t)y * stride;
+    float *arow = a + (size_t)y * fw;
+    for (int x = 0; x < fw; x++) arow[x] = (255 - s[x * 4 + 1]) / 255.0f;
+  }
+  // (the step: an edge's cover goes from 0 to 1 within a fine pixel, where a central difference is a half; δ twice
+  // the distance moved)
+  float delta = (float)(2.0 * grow);
+  for (int y = 0; y < ph; y++) {
+    for (int x = 0; x < pw; x++) {
+      float sum = 0.0f;
+      int fy0 = y * FINE;
+      int fx0 = x * FINE;
+      for (int j = 0; j < FINE; j++) {
+        int fy = fy0 + j;
+        const float *row = a + (size_t)fy * fw;
+        const float *row_u = fy > 0 ? row - fw : NULL;
+        const float *row_d = fy + 1 < fh ? row + fw : NULL;
+        for (int k = 0; k < FINE; k++) {
+          int fx = fx0 + k;
+          float a_c = row[fx];
+          if (a_c >= 1.0f) {
+            sum += 1.0f;
+            continue;
+          }
+          float xl = fx > 0 ? row[fx - 1] : 0.0f;
+          float xr = fx + 1 < fw ? row[fx + 1] : 0.0f;
+          float yu = row_u ? row_u[fx] : 0.0f;
+          float yd = row_d ? row_d[fx] : 0.0f;
+          if (xr == xl && yd == yu) {
+            sum += a_c;
+            continue;
+          }
+          float gx = (xr - xl) * 0.5f;
+          float gy = (yd - yu) * 0.5f;
+          float v = a_c + delta * sqrtf(gx * gx + gy * gy);
+          sum += v > 1.0f ? 1.0f : v;
+        }
+      }
+      int c = (int)(sum * (255.0f / (FINE * FINE)) + 0.5f);
+      uint8_t *o = px + ((size_t)y * pw + x) * 4;
+      o[0] = o[1] = o[2] = o[3] = (uint8_t)(c > 255 ? 255 : c);
+    }
+  }
+  return true;
+}
+
 static bool draw_fine(IDWriteTextLayout *l, double sc, double x0, double y0, double dx, int pw, int ph, double grow,
                       Target *t, uint8_t *px) {
   int fw = pw * FINE, fh = ph * FINE;
@@ -1414,55 +1472,9 @@ static bool draw_fine(IDWriteTextLayout *l, double sc, double x0, double y0, dou
     lock->Release();
     return true;
   }
-  size_t need = (size_t)fw * (size_t)fh;
-  if (need > t->fine_cap) {
-    float *na = (float *)realloc(t->fine_a, sizeof(float) * need);
-    if (!na) {
-      lock->Release();
-      return false;
-    }
-    t->fine_a = na;
-    float *ng = (float *)realloc(t->fine_g, sizeof(float) * need);
-    if (!ng) {
-      lock->Release();
-      return false;
-    }
-    t->fine_g = ng;
-    t->fine_cap = need;
-  }
-  // the cover, 0..1 (black on white at linear gamma: 255 less the green)
-  float *a = t->fine_a;
-  for (int y = 0; y < fh; y++) {
-    const BYTE *s = src + (size_t)y * stride;
-    for (int x = 0; x < fw; x++) a[(size_t)y * fw + x] = (255 - s[x * 4 + 1]) / 255.0f;
-  }
+  bool ok = fine_downsample_grow(src, stride, pw, ph, grow, &t->fine_a, &t->fine_cap, px);
   lock->Release();
-  // (the step: an edge's cover goes from 0 to 1 within a fine pixel, where a central difference is a half; δ twice
-  // the distance moved)
-  float delta = (float)(2.0 * grow);
-  float *g = t->fine_g;
-  for (int y = 0; y < fh; y++) {
-    for (int x = 0; x < fw; x++) {
-      size_t i = (size_t)y * fw + x;
-      float gx = ((x + 1 < fw ? a[i + 1] : 0.0f) - (x > 0 ? a[i - 1] : 0.0f)) * 0.5f;
-      float gy = ((y + 1 < fh ? a[i + fw] : 0.0f) - (y > 0 ? a[i - fw] : 0.0f)) * 0.5f;
-      float v = a[i] + delta * sqrtf(gx * gx + gy * gy);
-      g[i] = v > 1.0f ? 1.0f : v;
-    }
-  }
-  for (int y = 0; y < ph; y++) {
-    for (int x = 0; x < pw; x++) {
-      float sum = 0;
-      for (int j = 0; j < FINE; j++) {
-        const float *row = g + (size_t)(y * FINE + j) * fw + x * FINE;
-        for (int k = 0; k < FINE; k++) sum += row[k];
-      }
-      int c = (int)(sum * (255.0f / (FINE * FINE)) + 0.5f);
-      uint8_t *o = px + ((size_t)y * pw + x) * 4;
-      o[0] = o[1] = o[2] = o[3] = (uint8_t)(c > 255 ? 255 : c);
-    }
-  }
-  return true;
+  return ok;
 }
 
 // A cluster's layout drawn in white at `sc` pixels a point (shifted horizontally by `dx` points for its
@@ -1600,6 +1612,7 @@ struct Ahead {
   uint8_t have_mask;
   bool dropped;
   int refs;
+  int order_slot;
   Drawn drawn[SUB_COUNT];
 };
 
@@ -1774,26 +1787,28 @@ static void ahead_drop(Ahead *a) {
 }
 
 static void order_remove_front(void) {
+  ahead_order[order_head] = NULL;
   order_head = (order_head + 1) % order_cap;
   order_n--;
 }
 
 static void order_clear_ptr(Ahead *a) {
-  for (int i = 0; i < order_n; i++) {
-    Ahead **at = &ahead_order[(order_head + i) % order_cap];
-    if (*at == a) {
-      *at = NULL;
-      break;
-    }
+  int slot = a->order_slot;
+  if (slot >= 0 && slot < order_cap && ahead_order[slot] == a) {
+    ahead_order[slot] = NULL;
   }
+  a->order_slot = -1;
 }
 
 // Everything asked for let go: the faces or the scale changed, and what is drawn with them with it.
 static void ahead_forget(void) {
   for (int i = 0; i < n_entries; i++) entries[i].subs_queued = 0;
   for (int i = 0; i < order_n; i++) {
-    Ahead *a = ahead_order[(order_head + i) % order_cap];
+    int slot = (order_head + i) % order_cap;
+    Ahead *a = ahead_order[slot];
+    ahead_order[slot] = NULL;
     if (!a) continue;
+    a->order_slot = -1;
     if (a->key < ahead_of_cap) ahead_of[a->key] = NULL;
     ahead_drop(a);
   }
@@ -1813,6 +1828,7 @@ static bool drop_oldest_drawn(void) {
   if (!idle) return false;
   if (a->key >= 0 && a->key < n_entries) entries[a->key].subs_queued &= (uint8_t)~left_mask;
   ahead_of[a->key] = NULL;
+  a->order_slot = -1;
   order_remove_front();
   ahead_drop(a);
   return true;
@@ -1888,6 +1904,20 @@ static bool ahead_enqueue_one(int k, uint8_t mask, uint8_t first) {
   }
   if (ahead_of[k]) return false;
   if (order_n >= AHEAD_MOST && !drop_oldest_drawn()) return false;
+  if (order_n + 1 > order_cap) {
+    int cap = order_cap ? order_cap * 2 : 256;
+    Ahead **next = (Ahead **)calloc((size_t)cap, sizeof *next);
+    if (!next) return false;
+    for (int j = 0; j < order_n; j++) {
+      Ahead *item = ahead_order[(order_head + j) % order_cap];
+      next[j] = item;
+      if (item) item->order_slot = j;
+    }
+    free(ahead_order);
+    ahead_order = next;
+    order_head = 0;
+    order_cap = cap;
+  }
   glyph_entry *e = &entries[k];
   e->subs_queued |= mask;
   Ahead *a = (Ahead *)calloc(1, sizeof(Ahead));
@@ -1907,17 +1937,11 @@ static bool ahead_enqueue_one(int k, uint8_t mask, uint8_t first) {
   a->first_mask = (uint8_t)(first & mask);
   // (the frames' thread's hold, till it lets go of it)
   a->refs = 1;
+  a->order_slot = -1;
   ahead_of[k] = a;
-  if (order_n + 1 > order_cap) {
-    int cap = order_cap ? order_cap * 2 : 256;
-    Ahead **next = (Ahead **)malloc((size_t)cap * sizeof *next);
-    for (int j = 0; j < order_n; j++) next[j] = ahead_order[(order_head + j) % order_cap];
-    free(ahead_order);
-    ahead_order = next;
-    order_head = 0;
-    order_cap = cap;
-  }
-  ahead_order[(order_head + order_n++) % order_cap] = a;
+  int slot = (order_head + order_n++) % order_cap;
+  ahead_order[slot] = a;
+  a->order_slot = slot;
   EnterCriticalSection(&ahead_lock);
   for (int s = 0; s < SUB_COUNT; s++) {
     if (a->first_mask & (1 << s)) queue_push(&ahead_first, a);

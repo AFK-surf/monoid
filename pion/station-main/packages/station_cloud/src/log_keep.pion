@@ -1,0 +1,461 @@
+// Pure fork-choice & aside storage for workspace locks and personal logs.
+// 1:1 with `shared/log-keep.ts`.
+
+import "form"
+import "fork"
+import "lock"
+import "station_rules_bridge"
+
+pub let ASIDE_MOST : Int = 256
+
+pub struct Kept {
+  pub entries : Array[form::Json]
+  pub aside : Array[form::Json]
+}
+
+pub struct OffChain {
+  pub why : String
+  pub refusal : Option[String]
+  pub winner : Option[String]
+  pub step : Option[String]
+  pub under : Option[String]
+  pub hash : String
+  pub seq : Int64
+  pub kept : Bool
+}
+
+pub struct Took {
+  pub kept : Kept
+  pub taken : Int
+  pub off : Array[OffChain]
+  pub moved : Bool
+  pub changed : Bool
+}
+
+pub fn entry_seq(e : form::Json) -> Int64 {
+  match form::json_field(Some(e), "seq") {
+    Some(form::Json::Num(n)) => n.to_int64()
+    _ => 0.to_int64()
+  }
+}
+
+pub fn entry_prev(e : form::Json) -> Option[String] {
+  match form::json_field(Some(e), "prev") {
+    Some(form::Json::Str(p)) => Some(p)
+    _ => None
+  }
+}
+
+pub fn entry_ws(e : form::Json) -> String {
+  match form::json_field(Some(e), "ws") {
+    Some(form::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+pub fn entry_kind(e : form::Json) -> String {
+  match form::json_field(Some(e), "kind") {
+    Some(form::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+pub fn hash_of_entry_result(e : form::Json) -> Result[String, String] {
+  match station_rules_bridge::entry_hash(e) {
+    Ok(h) => if h != "" { Ok(h) } else { Err("empty entry hash") }
+    Err(err) => Err(lock::error_msg(err))
+  }
+}
+
+pub fn hash_of_entry(e : form::Json) -> String {
+  match hash_of_entry_result(e) {
+    Ok(h) => h
+    Err(_) => ""
+  }
+}
+
+fn step_to_str(s : fork::Step) -> String {
+  match s {
+    fork::Step::Weight => "weight"
+    fork::Step::Removal => "removal"
+    fork::Step::Tie => "tie"
+    fork::Step::Hash => "hash"
+  }
+}
+
+fn sort_by_seq(xs : Array[form::Json]) -> Array[form::Json] {
+  let out : Array[form::Json] = []
+  let mut i = 0
+  while i < xs.length() {
+    out.push(xs[i])
+    i = i + 1
+  }
+  let mut si = 1
+  while si < out.length() {
+    let cur = out[si]
+    let cur_seq = entry_seq(cur)
+    let mut sj = si - 1
+    while sj >= 0 && entry_seq(out[sj]) > cur_seq {
+      out[sj + 1] = out[sj]
+      sj = sj - 1
+    }
+    out[sj + 1] = cur
+    si = si + 1
+  }
+  out
+}
+
+fn off_of_brought(
+  brought : Array[form::Json],
+  why : Map[String, OffChain],
+  on : Map[String, Bool],
+) -> Array[OffChain] {
+  let out : Array[OffChain] = []
+  let seen : Map[String, Bool] = Map::new()
+  let mut i = 0
+  while i < brought.length() {
+    let h = hash_of_entry(brought[i])
+    if on.contains(h) || seen.contains(h) {
+      i = i + 1
+      continue
+    }
+    seen.set(h, true)
+    match why.get(h) {
+      Some(w) => out.push(w)
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn same_entry_list(a : Array[form::Json], b : Array[form::Json]) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  let mut i = 0
+  while i < a.length() {
+    if hash_of_entry(a[i]) != hash_of_entry(b[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn settle_entries(
+  was : Kept,
+  accepted : Array[form::Json],
+  chain_fn : (Array[form::Json]) -> Result[lock::Chain, lock::LockError],
+  brought : Array[form::Json],
+  why : Map[String, OffChain],
+) -> Result[Took, String] {
+  let all : Array[form::Json] = []
+  let mut i = 0
+  while i < was.entries.length() {
+    all.push(was.entries[i])
+    i = i + 1
+  }
+  i = 0
+  while i < was.aside.length() {
+    all.push(was.aside[i])
+    i = i + 1
+  }
+  i = 0
+  while i < accepted.length() {
+    all.push(accepted[i])
+    i = i + 1
+  }
+  let r = match chain_fn(all) {
+    Ok(c) => c
+    Err(e) => return Err(lock::error_msg(e))
+  }
+  let active : Array[form::Json] = []
+  let mut ai = 0
+  while ai < r.at.length() {
+    active.push(all[r.at[ai]])
+    ai = ai + 1
+  }
+  let on : Map[String, Bool] = Map::new()
+  let mut hi = 0
+  while hi < r.hashes.length() {
+    on.set(r.hashes[hi], true)
+    hi = hi + 1
+  }
+  let off_by : Map[String, lock::Off] = Map::new()
+  let mut oi = 0
+  while oi < r.off.length() {
+    let (idx, o) = r.off[oi]
+    off_by.set(hash_of_entry(all[idx]), o)
+    oi = oi + 1
+  }
+  let is_aside = fn(e : form::Json) -> Bool {
+    match off_by.get(hash_of_entry(e)) {
+      Some(lock::Off::Beaten(_, _)) => true
+      Some(lock::Off::Below(_)) => true
+      _ => false
+    }
+  }
+  let old : Array[form::Json] = []
+  i = 0
+  while i < was.aside.length() {
+    if is_aside(was.aside[i]) {
+      old.push(was.aside[i])
+    }
+    i = i + 1
+  }
+  i = 0
+  while i < was.entries.length() {
+    let e = was.entries[i]
+    if !on.contains(hash_of_entry(e)) && is_aside(e) {
+      old.push(e)
+    }
+    i = i + 1
+  }
+  let mut room = ASIDE_MOST - old.length()
+  let fresh : Array[form::Json] = []
+  let sorted_acc = sort_by_seq(accepted)
+  i = 0
+  while i < sorted_acc.length() {
+    let e = sorted_acc[i]
+    if !on.contains(hash_of_entry(e)) && is_aside(e) && room > 0 {
+      fresh.push(e)
+      room = room - 1
+    }
+    i = i + 1
+  }
+  let combined : Array[form::Json] = []
+  i = 0
+  while i < old.length() {
+    combined.push(old[i])
+    i = i + 1
+  }
+  i = 0
+  while i < fresh.length() {
+    combined.push(fresh[i])
+    i = i + 1
+  }
+  let trimmed : Array[form::Json] = []
+  let start_idx = if combined.length() > ASIDE_MOST { combined.length() - ASIDE_MOST } else { 0 }
+  i = start_idx
+  while i < combined.length() {
+    trimmed.push(combined[i])
+    i = i + 1
+  }
+  let kept_now : Map[String, Bool] = Map::new()
+  let on_keys = on.keys()
+  i = 0
+  while i < on_keys.length() {
+    kept_now.set(on_keys[i], true)
+    i = i + 1
+  }
+  let sorted_side = sort_by_seq(trimmed)
+  i = 0
+  while i < sorted_side.length() {
+    let e = sorted_side[i]
+    match entry_prev(e) {
+      Some(p) => if kept_now.contains(p) { kept_now.set(hash_of_entry(e), true) }
+      None => ()
+    }
+    i = i + 1
+  }
+  let side : Array[form::Json] = []
+  i = 0
+  while i < trimmed.length() {
+    if kept_now.contains(hash_of_entry(trimmed[i])) {
+      side.push(trimmed[i])
+    }
+    i = i + 1
+  }
+  let kept = Kept::{ entries: active, aside: side }
+  i = 0
+  while i < brought.length() {
+    let e = brought[i]
+    let h = hash_of_entry(e)
+    if !on.contains(h) && !why.contains(h) {
+      match off_by.get(h) {
+        Some(lock::Off::NotValid(msg)) => {
+          why.set(h, OffChain::{ why: "refused", refusal: Some(msg), winner: None, step: None, under: None, hash: h, seq: entry_seq(e), kept: kept_now.contains(h) })
+        }
+        Some(lock::Off::NoParent) => {
+          why.set(h, OffChain::{ why: "no parent", refusal: None, winner: None, step: None, under: None, hash: h, seq: entry_seq(e), kept: kept_now.contains(h) })
+        }
+        Some(lock::Off::Beaten(w, st)) => {
+          why.set(h, OffChain::{ why: "beaten", refusal: None, winner: Some(w), step: Some(step_to_str(st)), under: None, hash: h, seq: entry_seq(e), kept: kept_now.contains(h) })
+        }
+        Some(lock::Off::Below(u)) => {
+          why.set(h, OffChain::{ why: "below", refusal: None, winner: None, step: None, under: Some(u), hash: h, seq: entry_seq(e), kept: kept_now.contains(h) })
+        }
+        Some(lock::Off::Again) => {
+          why.set(h, OffChain::{ why: "again", refusal: None, winner: None, step: None, under: None, hash: h, seq: entry_seq(e), kept: kept_now.contains(h) })
+        }
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  let was0 : Map[String, Bool] = Map::new()
+  i = 0
+  while i < was.entries.length() {
+    was0.set(hash_of_entry(was.entries[i]), true)
+    i = i + 1
+  }
+  i = 0
+  while i < was.aside.length() {
+    was0.set(hash_of_entry(was.aside[i]), true)
+    i = i + 1
+  }
+  let mut taken = 0
+  i = 0
+  while i < accepted.length() {
+    if kept_now.contains(hash_of_entry(accepted[i])) {
+      taken = taken + 1
+    }
+    i = i + 1
+  }
+  let head_active = if active.length() == 0 { "" } else { hash_of_entry(active[active.length() - 1]) }
+  let head_was = if was.entries.length() == 0 { "" } else { hash_of_entry(was.entries[was.entries.length() - 1]) }
+  let moved = head_active != head_was
+  let mut side_changed = side.length() != was.aside.length()
+  if !side_changed {
+    i = 0
+    while i < side.length() {
+      if !was0.contains(hash_of_entry(side[i])) {
+        side_changed = true
+        break
+      }
+      i = i + 1
+    }
+  }
+  let changed = taken > 0 || !same_entry_list(active, was.entries) || side_changed
+  Ok(Took::{ kept: kept, taken: taken, off: off_of_brought(brought, why, on), moved: moved, changed: changed })
+}
+
+/// Take `brought` entries into `was`, running fork choice among all kept entries.
+pub fn keep_entries(
+  was : Kept,
+  brought : Array[form::Json],
+  chain_fn : (Array[form::Json]) -> Result[lock::Chain, lock::LockError],
+  pre_fn : Option[(form::Json) -> Option[String]] = None,
+  now_fn : Option[(String, form::Json, (String) -> Option[form::Json]) -> Option[String]] = None,
+) -> Result[Took, String] {
+  let kept_map : Map[String, form::Json] = Map::new()
+  let before : Map[String, Bool] = Map::new()
+  let mut i = 0
+  while i < was.entries.length() {
+    let h = hash_of_entry(was.entries[i])
+    kept_map.set(h, was.entries[i])
+    before.set(h, true)
+    i = i + 1
+  }
+  i = 0
+  while i < was.aside.length() {
+    kept_map.set(hash_of_entry(was.aside[i]), was.aside[i])
+    i = i + 1
+  }
+  let why : Map[String, OffChain] = Map::new()
+  let seen : Map[String, Bool] = Map::new()
+  let candidates : Array[form::Json] = []
+  i = 0
+  while i < brought.length() {
+    let e = brought[i]
+    let h = match hash_of_entry_result(e) {
+      Ok(v) => v
+      Err(msg) => {
+        let bad_key = "bad:" + i.to_string()
+        why.set(bad_key, OffChain::{ why: "refused", refusal: Some(msg), winner: None, step: None, under: None, hash: "", seq: entry_seq(e), kept: false })
+        i = i + 1
+        continue
+      }
+    }
+    if kept_map.contains(h) || seen.contains(h) {
+      i = i + 1
+      continue
+    }
+    seen.set(h, true)
+    let pre_err = match pre_fn {
+      Some(f) => f(e)
+      None => None
+    }
+    match pre_err {
+      Some(msg) => {
+        why.set(h, OffChain::{ why: "refused", refusal: Some(msg), winner: None, step: None, under: None, hash: h, seq: entry_seq(e), kept: false })
+      }
+      None => candidates.push(e)
+    }
+    i = i + 1
+  }
+  let accepted : Array[form::Json] = []
+  match now_fn {
+    Some(nf) => {
+      let ok_map : Map[String, form::Json] = Map::new()
+      let sorted_c = sort_by_seq(candidates)
+      let mut ci = 0
+      while ci < sorted_c.length() {
+        let c = sorted_c[ci]
+        let hc = hash_of_entry(c)
+        let mut refused_here = false
+        match entry_prev(c) {
+          Some(p) => {
+            if kept_map.contains(p) || ok_map.contains(p) {
+              let find = fn(x : String) -> Option[form::Json] {
+                match kept_map.get(x) {
+                  Some(v) => Some(v)
+                  None => ok_map.get(x)
+                }
+              }
+              match nf(p, c, find) {
+                Some(msg) => {
+                  why.set(hc, OffChain::{ why: "refused", refusal: Some(msg), winner: None, step: None, under: None, hash: hc, seq: entry_seq(c), kept: false })
+                  refused_here = true
+                }
+                None => ()
+              }
+            }
+          }
+          None => ()
+        }
+        if !refused_here {
+          ok_map.set(hc, c)
+        }
+        ci = ci + 1
+      }
+      let mut k = 0
+      while k < candidates.length() {
+        if !why.contains(hash_of_entry(candidates[k])) {
+          accepted.push(candidates[k])
+        }
+        k = k + 1
+      }
+    }
+    None => {
+      let mut k = 0
+      while k < candidates.length() {
+        accepted.push(candidates[k])
+        k = k + 1
+      }
+    }
+  }
+  let mut brought_aside = false
+  i = 0
+  while i < brought.length() {
+    let h = hash_of_entry(brought[i])
+    if !before.contains(h) && kept_map.contains(h) {
+      brought_aside = true
+      break
+    }
+    i = i + 1
+  }
+  if accepted.length() == 0 && !brought_aside {
+    return Ok(Took::{ kept: was, taken: 0, off: off_of_brought(brought, why, before), moved: false, changed: false })
+  }
+  settle_entries(was, accepted, chain_fn, brought, why)
+}
+
+/// Re-run fork choice on all entries already kept in `was`.
+pub fn rechoose_entries(
+  was : Kept,
+  chain_fn : (Array[form::Json]) -> Result[lock::Chain, lock::LockError],
+) -> Result[Took, String] {
+  settle_entries(was, [], chain_fn, [], Map::new())
+}

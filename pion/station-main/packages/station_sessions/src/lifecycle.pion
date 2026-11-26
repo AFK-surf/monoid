@@ -1,0 +1,333 @@
+// Session & chat lifecycle state machine (`station/src/sessions/lifecycle.ts` 1:1):
+// archive/unarchive transitions, watching-session auto-archive exemption,
+// session deletion safety invariants, and upkeep bounds.
+
+import "nodepath"
+
+pub let MANUAL : String = "manual"
+pub let AUTO : String = "auto"
+pub let STILLFAIL_SURFACE : String = "stillfail"
+
+pub let ARCHIVE_UPKEEP_EVERY_MS : Int64 = 600000L
+pub let ARCHIVE_UPKEEP_STARTUP_GRACE_MS : Int64 = 60000L
+pub let PACK_BACKFILL_MAX_PER_ROUND : Int = 16
+pub let PACK_BACKFILL_CHECK_MAX_PER_ROUND : Int = 256
+pub let IDLE_REBUILD_MS : Int64 = 86400000L
+pub let IDLE_REBUILD_LOW_MS : Int64 = 3600000L
+pub let IDLE_REBUILD_MAX_PER_ROUND : Int = 16
+pub let RELIEVE_FULL_EVERY_MS : Int64 = 1800000L
+pub let ORPHAN_ROOM_MS : Int64 = 86400000L
+pub let REPO_IDLE_MS : Int64 = 259200000L
+pub let REPO_BRANCHES_EVERY_MS : Int64 = 86400000L
+pub let REPO_BUNDLE_MS : Int64 = 2592000000L
+
+/// Plan produced by `plan_archive_by`.
+pub struct ArchiveTransitionPlan {
+  pub set_archived : Bool
+  pub archived_by : String
+  pub members : Array[String]
+  pub cancel_packs : Bool
+  pub restore_in_background : Bool
+  pub only_if_unarchived : Bool
+  pub put_away_and_evict : Bool
+}
+
+/// Plans an archive/unarchive transition for `key` and its conversation `members` (`lifecycle.ts` `archiveBy` 1:1).
+/// - Unarchiving: updates store immediately, cancels in-flight pack, restores in background guarded by `only_if_unarchived`.
+/// - Archiving: updates store with `by` (`MANUAL` / `AUTO`), closes/evicts/packs each member.
+pub fn plan_archive_by(
+  key : String,
+  archived : Bool,
+  by : String,
+  members : Array[String],
+) -> ArchiveTransitionPlan {
+  let effective_members = if members.length() > 0 { members } else { [key] }
+  if !archived {
+    ArchiveTransitionPlan::{
+      set_archived: false,
+      archived_by: by,
+      members: effective_members,
+      cancel_packs: true,
+      restore_in_background: true,
+      only_if_unarchived: true,
+      put_away_and_evict: false,
+    }
+  } else {
+    ArchiveTransitionPlan::{
+      set_archived: true,
+      archived_by: by,
+      members: effective_members,
+      cancel_packs: false,
+      restore_in_background: false,
+      only_if_unarchived: false,
+      put_away_and_evict: true,
+    }
+  }
+}
+
+/// Plan produced by `plan_archive_chat`.
+pub enum ArchiveChatPlan {
+  /// Thread has a home session: archive/unarchive that session directly.
+  ArchiveHomeSession(String, Bool)
+  /// Separate chat: set thread hidden flag, optionally unarchiving member sessions first when showing.
+  SetThreadHidden(Bool, Array[String])
+}
+
+/// Plans archiving or restoring a still.fail chat (`lifecycle.ts` `archiveChat` 1:1):
+/// - If `home_session` is Some(s), delegates to archiving that session.
+/// - Otherwise hides/shows the thread alone; when showing (`archived == false`) and all member
+///   sessions are archived, unarchives them first so the chat appears in lists.
+pub fn plan_archive_chat(
+  home_session : Option[String],
+  archived : Bool,
+  member_sessions : Array[(String, Bool)],
+) -> ArchiveChatPlan {
+  match home_session {
+    Some(home) => ArchiveChatPlan::ArchiveHomeSession(home, archived)
+    None => if archived {
+      ArchiveChatPlan::SetThreadHidden(true, [])
+    } else {
+      let mut any_active = false
+      let all_keys : Array[String] = []
+      for i in 0..<member_sessions.length() {
+        let (s, is_archived) = member_sessions[i]
+        all_keys.push(s)
+        if !is_archived {
+          any_active = true
+        }
+      }
+      if member_sessions.length() == 0 || any_active {
+        ArchiveChatPlan::SetThreadHidden(false, [])
+      } else {
+        ArchiveChatPlan::SetThreadHidden(false, all_keys)
+      }
+    }
+  }
+}
+
+/// Full input for automatic idle archiving (`lifecycle.ts:1185-1245` 1:1).
+pub struct AutoArchiveInput {
+  pub is_archived : Bool
+  pub is_running : Bool
+  pub has_pending : Bool
+  pub has_unfinished_turn : Bool
+  pub declared_block : Bool
+  pub has_active_watch_or_job : Bool
+  pub pinned : Bool
+  pub bound : Bool
+  pub kept : Bool
+  pub unread : Bool
+  pub last_active_ms : Int64
+  pub shown_at_ms : Option[Int64]
+  pub now_ms : Int64
+  pub idle_threshold_ms : Int64
+}
+
+/// Evaluates full auto-archive eligibility (`lifecycle.ts` 1:1):
+/// exempts archived, running, pending, unfinished turn, `declared == "block"`,
+/// active watch/job, pinned, bound, kept, or unread chats, and measures idleness from
+/// `max(last_active_ms, shown_at_ms)`.
+pub fn should_auto_archive_full(input : AutoArchiveInput) -> Bool {
+  if input.is_archived ||
+  input.is_running ||
+  input.has_pending ||
+  input.has_unfinished_turn ||
+  input.declared_block ||
+  input.has_active_watch_or_job ||
+  input.pinned ||
+  input.bound ||
+  input.kept ||
+  input.unread {
+    return false
+  }
+  if input.idle_threshold_ms <= 0L {
+    return false
+  }
+  let base_ms = match input.shown_at_ms {
+    Some(s) => if s > input.last_active_ms { s } else { input.last_active_ms }
+    None => input.last_active_ms
+  }
+  input.now_ms - base_ms >= input.idle_threshold_ms
+}
+
+/// Convenience wrapper for `should_auto_archive_full`.
+pub fn should_auto_archive(
+  is_archived : Bool,
+  is_running : Bool,
+  has_active_watch : Bool,
+  last_active_ms : Int64,
+  now_ms : Int64,
+  idle_threshold_ms : Int64,
+) -> Bool {
+  should_auto_archive_full(
+    AutoArchiveInput::{
+      is_archived: is_archived,
+      is_running: is_running,
+      has_pending: false,
+      has_unfinished_turn: false,
+      declared_block: false,
+      has_active_watch_or_job: has_active_watch,
+      pinned: false,
+      bound: false,
+      kept: false,
+      unread: false,
+      last_active_ms: last_active_ms,
+      shown_at_ms: None,
+      now_ms: now_ms,
+      idle_threshold_ms: idle_threshold_ms,
+    },
+  )
+}
+
+/// Computes the next archive upkeep timestamp, respecting startup grace period (`lifecycle.ts`).
+pub fn next_archive_upkeep_at(
+  started_at_ms : Int64,
+  last_upkeep_at_ms : Option[Int64],
+  every_ms : Int64,
+) -> Int64 {
+  let grace_end = started_at_ms + ARCHIVE_UPKEEP_STARTUP_GRACE_MS
+  match last_upkeep_at_ms {
+    None => grace_end
+    Some(last) => {
+      let next = last + every_ms
+      if next > grace_end { next } else { grace_end }
+    }
+  }
+}
+
+/// Plan for safely deleting a session's workspace and exclusive transcripts (`AGENTS.md` invariants):
+/// - Never deletes workspace directories outside `<data>/sessions` (supports POSIX `/` and Windows `\`,
+///   resolving `..` segments and rejecting symlinks).
+/// - Flushes unread usage before deleting exclusive transcripts under `<data>`.
+/// - Never deletes transcripts outside `<data>` or referenced by any other session.
+pub struct DeleteSessionPlan {
+  pub remove_workspace : Bool
+  pub flush_usage_first : Bool
+  pub transcripts_to_delete : Array[String]
+}
+
+fn is_win_drive_path(p : String) -> Bool {
+  if p.length() < 2 {
+    return false
+  }
+  let c0 = p.code_unit_at(0)
+  let is_alpha = (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122)
+  is_alpha && p.code_unit_at(1) == 58
+}
+
+/// Normalizes a POSIX or Windows path into `(root_prefix_lower, normalized_segments)`:
+/// - Windows drive (`C:\...`, `C:/...`) and UNC (`\\server\...`) treat both `/` and `\` as separators.
+/// - POSIX paths (`/...`) treat ONLY `/` as a separator (`\` is a literal filename character).
+fn normalize_abs_path(raw : String) -> Option[(String, Array[String])] {
+  let n = raw.length()
+  if n == 0 {
+    return None
+  }
+  let mut root = ""
+  let mut start = 0
+  let mut is_win = false
+  if is_win_drive_path(raw) {
+    let drive = ascii_lower_str(raw.slice(0, 2))
+    if n < 3 || (raw.code_unit_at(2) != 47 && raw.code_unit_at(2) != 92) {
+      return None
+    }
+    root = drive + "/"
+    start = 3
+    is_win = true
+  } else if raw.code_unit_at(0) == 92 && n >= 2 && raw.code_unit_at(1) == 92 {
+    root = "//"
+    start = 2
+    is_win = true
+  } else if raw.code_unit_at(0) == 47 {
+    root = "/"
+    start = 1
+    is_win = false
+  } else {
+    return None
+  }
+  let segs : Array[String] = []
+  let mut i = start
+  while i < n {
+    while i < n && (raw.code_unit_at(i) == 47 || (is_win && raw.code_unit_at(i) == 92)) {
+      i = i + 1
+    }
+    if i >= n {
+      break
+    }
+    let seg_start = i
+    while i < n && raw.code_unit_at(i) != 47 && !(is_win && raw.code_unit_at(i) == 92) {
+      i = i + 1
+    }
+    let seg = raw.slice(seg_start, i)
+    if seg == "." {
+      continue
+    } else if seg == ".." {
+      if segs.length() > 0 {
+        let _ = segs.pop()
+      }
+    } else {
+      segs.push(if is_win { ascii_lower_str(seg) } else { seg })
+    }
+  }
+  Some((root, segs))
+}
+
+/// Returns true iff `child` is strictly inside `parent` after cross-platform separator & `..` normalization.
+pub fn is_path_strictly_inside(child : String, parent : String) -> Bool {
+  match (normalize_abs_path(child), normalize_abs_path(parent)) {
+    (Some((c_root, c_segs)), Some((p_root, p_segs))) => {
+      if c_root != p_root || c_segs.length() <= p_segs.length() {
+        return false
+      }
+      for i in 0..<p_segs.length() {
+        if c_segs[i] != p_segs[i] {
+          return false
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+fn path_sep_of(p : String) -> String {
+  if is_win_drive_path(p) || p.starts_with("\\\\") { "\\" } else { "/" }
+}
+
+/// Safe session deletion planner requiring `realpath`-resolved paths and `lstat` symlink flag.
+pub fn plan_delete_session_checked(
+  data_dir_real : String,
+  workspace_real : String,
+  workspace_is_symlink : Bool,
+  session_transcripts_real : Array[String],
+  other_session_transcripts : Map[String, Bool],
+) -> DeleteSessionPlan {
+  let sep = path_sep_of(data_dir_real)
+  let sessions_root = nodepath::join(sep, [data_dir_real, "sessions"])
+  let remove_ws = !workspace_is_symlink && is_path_strictly_inside(workspace_real, sessions_root)
+  let to_delete : Array[String] = []
+  for i in 0..<session_transcripts_real.length() {
+    let t = session_transcripts_real[i]
+    if !is_path_strictly_inside(t, data_dir_real) {
+      continue
+    }
+    match other_session_transcripts.get(t) {
+      Some(true) => continue
+      _ => to_delete.push(t)
+    }
+  }
+  DeleteSessionPlan::{
+    remove_workspace: remove_ws,
+    flush_usage_first: to_delete.length() > 0,
+    transcripts_to_delete: to_delete,
+  }
+}
+
+pub fn plan_delete_session(
+  data_dir : String,
+  workspace_dir : String,
+  session_transcripts : Array[String],
+  other_session_transcripts : Map[String, Bool],
+) -> DeleteSessionPlan {
+  plan_delete_session_checked(data_dir, workspace_dir, false, session_transcripts, other_session_transcripts)
+}

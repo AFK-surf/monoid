@@ -579,7 +579,7 @@ fn motion_stories(tips : @sf.TipLayer) -> Array[Story] {
             let on_b = kept(false)
             side_by_side(card, fn(r) {
               @sf.switch_node(r, fn() { on_a.get() }, fn(v) { on_a.set(v) }, fn() { "主开关" })
-              @sf.switch_node(r, fn() { on_b.get() }, fn(v) { on_b.set(v) }, fn() { "小号开关" }, small=true)
+              @sf.switch_node(r, fn() { on_b.get() }, fn(v) { on_b.set(v) }, fn() { "副开关" })
             })
           },
         ),

@@ -69,12 +69,12 @@ export type RemoteRun = { at: number; session: string; count?: number };
 type Param = "string" | "u64" | "u32" | "u16" | "bool" | "object";
 /// How each param is kept: `req` must be given; `def` is filled in when absent (and always sent); `opt` is null when
 /// absent and sent so; `skip` is left out when absent (`skip_serializing_if`); `skipFalse`, a bool left out when false.
-type Spec = Record<string, [Param, "req" | "def" | "opt" | "skip" | "skipFalse"]>;
+type Spec = Record<string, readonly [Param, "req" | "def" | "opt" | "skip" | "skipFalse"]>;
 
-const S: [Param, "req"] = ["string", "req"];
+const S = ["string", "req"] as const;
 
 /// protocol.rs `Topic`, by its wire name.
-export const TOPICS: Record<string, Spec> = {
+export const TOPICS = {
   accounts: {},
   workspaces: {},
   workspace: { workspace: S },
@@ -228,7 +228,9 @@ export const TOPICS: Record<string, Spec> = {
   filesTabs: { workspace: S },
   downloads: {},
   vaultUses: { workspace: S, vault: S, item: S },
-};
+} as const satisfies Record<string, Spec>;
+
+export type TopicName = keyof typeof TOPICS;
 
 const LIMITS: Record<string, number> = { u64: 2 ** 64, u32: 2 ** 32 - 1, u16: 65535 };
 
@@ -254,8 +256,8 @@ export const STATION_PARTS: readonly string[] = ["archiving", "automaticDecision
 /// A topic as the UI said it, or null when it is none (the subscribe is then no message the core knows).
 export function parseTopic(raw: unknown): Topic | null {
   if (!isObject(raw) || typeof raw.topic !== "string") return null;
-  const spec = TOPICS[raw.topic];
-  if (!spec) return null;
+  if (!Object.hasOwn(TOPICS, raw.topic)) return null;
+  const spec: Spec = TOPICS[raw.topic as TopicName];
   const out: Topic = { topic: raw.topic };
   for (const [name, [kind, how]] of Object.entries(spec)) {
     const value = raw[name];

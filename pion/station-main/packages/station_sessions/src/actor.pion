@@ -1,0 +1,450 @@
+// Serial session actor queue, turn lifecycle state machine, `goesOn` single re-prompt
+// without flashing `stopped`, and `--sessions` abnormal exit (`exit(70)`) contract.
+
+/// Current execution phase of a session's serial actor.
+pub enum ActorPhase {
+  Idle
+  Starting
+  Running
+  Stopping
+  Closed
+}
+
+/// How an incoming message is routed given the actor's current phase.
+pub enum InputRoute {
+  StartPrompt
+  Steer
+  Queue
+}
+
+/// The state an agent declared for its turn (`chat_state` or `chat_post` `kind`).
+pub enum TurnDeclared {
+  None
+  AllDone(String)
+  NeedHuman(String)
+  Waiting(String, Int, Bool)
+}
+
+/// Action to take when a runtime turn finishes (`goesOn` contract).
+pub enum TurnEndAction {
+  /// Turn ended cleanly with a valid state.
+  Finish(TurnDeclared)
+  /// Re-prompt the agent once without flashing `stopped` (`keep_running = true`).
+  Reprompt(String)
+  /// Already re-prompted once and a pending card remains -> end `need_human`.
+  ForceNeedHuman
+  /// Already re-prompted once and the turn posted -> end `all_done`.
+  ForceAllDone
+  /// Already re-prompted once and nothing was posted -> end undeclared.
+  EndUndeclared
+}
+
+/// An item queued on a session's serial actor queue.
+pub enum ActorWork {
+  Prompt(String)
+  Steer(String)
+  Deliver(String)
+  ToolCall(String)
+  LifecycleOp(String)
+  Barrier(Int)
+}
+
+/// Result of evaluating `--sessions` program exit.
+pub struct SessionsExitDecision {
+  pub exit_code : Int
+  pub skip_hub_shutdown : Bool
+  pub keep_runners_for_adopt : Bool
+}
+
+/// Process exit code when `--sessions` ends unexpectedly so launcher restarts and
+/// the next station adopts live `stillfail-runner` children once.
+pub let SESSIONS_CRASH_EXIT_CODE : Int = 70
+
+/// Evaluates how the station handles `--sessions` exit:
+/// - Unplanned exit (`planned_shutdown == false`): exit with code 70, skip `hub_shutdown`,
+///   and leave `stillfail-runner` child processes alive for single-pass adoption on restart.
+/// - Planned shutdown (`planned_shutdown == true`): exit 0, run normal `hub_shutdown`.
+pub fn evaluate_sessions_exit(planned_shutdown : Bool) -> SessionsExitDecision {
+  if planned_shutdown {
+    SessionsExitDecision::{
+      exit_code: 0,
+      skip_hub_shutdown: false,
+      keep_runners_for_adopt: false,
+    }
+  } else {
+    SessionsExitDecision::{
+      exit_code: SESSIONS_CRASH_EXIT_CODE,
+      skip_hub_shutdown: true,
+      keep_runners_for_adopt: true,
+    }
+  }
+}
+
+/// Routes incoming user input based on the actor's current phase:
+/// - `Idle` -> start a new prompt (`StartPrompt`)
+/// - `Running` -> steer the active turn (`Steer`)
+/// - `Starting`, `Stopping`, `Closed` -> queue for later (`Queue`)
+pub fn route_input(phase : ActorPhase) -> InputRoute {
+  match phase {
+    ActorPhase::Idle => InputRoute::StartPrompt
+    ActorPhase::Running => InputRoute::Steer
+    ActorPhase::Starting => InputRoute::Queue
+    ActorPhase::Stopping => InputRoute::Queue
+    ActorPhase::Closed => InputRoute::Queue
+  }
+}
+
+/// Evaluates what to do when a runtime turn ends (`actor_run.mbt:2866-2890` `on_turn_ended` 1:1):
+/// - Plain text answers are never forwarded; turns must declare `all_done`, `need_human`, or `waiting`.
+/// - When a turn ends without a declared state (or posted after a terminal state without declaring anew):
+///   1. If the turn posted AND a pending card it posted still waits (`cardAsks`): IMMEDIATELY end
+///      `ForceNeedHuman` without re-prompting first!
+///   2. Else if the turn posted AND `reprompt_count >= min(max_nudges, 1)`: end `ForceAllDone`.
+///   3. Else if `reprompt_count < max_nudges`: re-prompt while keeping the session running (never flash stopped).
+///   4. Otherwise: `EndUndeclared`.
+pub fn evaluate_turn_end_with_limit(
+  declared : TurnDeclared,
+  posted : Bool,
+  posted_after_terminal : Bool,
+  has_pending_card : Bool,
+  reprompt_count : Int,
+  max_nudges : Int,
+) -> TurnEndAction {
+  let needs_reprompt = match declared {
+    TurnDeclared::None => true
+    TurnDeclared::AllDone(_) => posted_after_terminal
+    TurnDeclared::NeedHuman(_) => posted_after_terminal
+    TurnDeclared::Waiting(_, _, _) => false
+  }
+  if !needs_reprompt {
+    return TurnEndAction::Finish(declared)
+  }
+  // 1:1 with `actor_run.mbt:2867-2877`: check `cardAsks` BEFORE nudging/re-prompting!
+  if posted && has_pending_card {
+    return TurnEndAction::ForceNeedHuman
+  }
+  let post_done_at = if max_nudges < 1 { max_nudges } else { 1 }
+  if posted && reprompt_count >= post_done_at {
+    return TurnEndAction::ForceAllDone
+  }
+  if reprompt_count < max_nudges {
+    let reason = if posted_after_terminal {
+      "posted_after_state"
+    } else {
+      "missing_state"
+    }
+    return TurnEndAction::Reprompt(reason)
+  }
+  TurnEndAction::EndUndeclared
+}
+
+/// Default `evaluate_turn_end` with `max_nudges = 1`.
+pub fn evaluate_turn_end(
+  declared : TurnDeclared,
+  posted : Bool,
+  posted_after_terminal : Bool,
+  has_pending_card : Bool,
+  reprompt_count : Int,
+) -> TurnEndAction {
+  evaluate_turn_end_with_limit(
+    declared,
+    posted,
+    posted_after_terminal,
+    has_pending_card,
+    reprompt_count,
+    1,
+  )
+}
+
+/// Per-session serial actor state.
+pub struct SessionActor {
+  pub key : String
+  pub runtime : String
+  pub mut phase : ActorPhase
+  pub mut generation : Int
+  pub mut in_flight_start : Bool
+  pub mut start_failed : Bool
+  pub mut wake_pending : Bool
+  pub mut has_process : Bool
+  pub mut idle_since_ms : Option[Int64]
+  pub mut reprompt_count : Int
+  pub mut max_nudges : Int
+  pub mut posted_in_turn : Bool
+  pub mut posted_after_terminal : Bool
+  pub mut declared : TurnDeclared
+  pub mut queue : Array[ActorWork]
+  pub mut next_barrier_id : Int
+  pub mut completed_barriers : Array[Int]
+  pub mut running_history : Array[Bool]
+  pub mut started_prompts : Array[String]
+}
+
+pub fn SessionActor::new(key : String, runtime : String) -> SessionActor {
+  SessionActor::{
+    key: key,
+    runtime: runtime,
+    phase: ActorPhase::Idle,
+    generation: 0,
+    in_flight_start: false,
+    start_failed: false,
+    wake_pending: false,
+    has_process: false,
+    idle_since_ms: None,
+    reprompt_count: 0,
+    max_nudges: 1,
+    posted_in_turn: false,
+    posted_after_terminal: false,
+    declared: TurnDeclared::None,
+    queue: [],
+    next_barrier_id: 1,
+    completed_barriers: [],
+    running_history: [],
+    started_prompts: [],
+  }
+}
+
+/// Returns true if the actor is currently busy (starting, running, stopping, or has queued work).
+pub fn SessionActor::is_busy(self : SessionActor) -> Bool {
+  match self.phase {
+    ActorPhase::Idle => self.queue.length() > 0 || self.in_flight_start
+    ActorPhase::Closed => false
+    _ => true
+  }
+}
+
+/// Returns how long the actor's process has been idle in milliseconds, or None if not idle with a process.
+pub fn SessionActor::idle_ms(self : SessionActor, now_ms : Int64) -> Option[Int64] {
+  if !self.has_process {
+    return None
+  }
+  match self.phase {
+    ActorPhase::Idle => match self.idle_since_ms {
+      Some(since) => {
+        let diff = now_ms - since
+        Some(if diff < 0L { 0L } else { diff })
+      }
+      None => None
+    }
+    _ => None
+  }
+}
+
+/// Advances and returns the next generation counter (used during adopt/open).
+pub fn SessionActor::next_generation(self : SessionActor) -> Int {
+  self.generation = self.generation + 1
+  self.generation
+}
+
+/// Enqueues a work item on the serial actor queue.
+pub fn SessionActor::enqueue(self : SessionActor, item : ActorWork) -> Unit {
+  self.queue.push(item)
+}
+
+/// Enqueues a flush barrier and returns its barrier id.
+pub fn SessionActor::enqueue_barrier(self : SessionActor) -> Int {
+  let id = self.next_barrier_id
+  self.next_barrier_id = self.next_barrier_id + 1
+  self.queue.push(ActorWork::Barrier(id))
+  id
+}
+
+/// Pops the next queued work item in strict FIFO order.
+pub fn SessionActor::pop_next(self : SessionActor) -> Option[ActorWork] {
+  if self.queue.length() == 0 {
+    return None
+  }
+  let first = self.queue[0]
+  let rest : Array[ActorWork] = []
+  for i in 1..<self.queue.length() {
+    rest.push(self.queue[i])
+  }
+  self.queue = rest
+  Some(first)
+}
+
+fn SessionActor::start_prompt_now(self : SessionActor, text : String) -> Unit {
+  self.phase = ActorPhase::Running
+  self.idle_since_ms = None
+  self.reprompt_count = 0
+  self.posted_in_turn = false
+  self.posted_after_terminal = false
+  self.declared = TurnDeclared::None
+  self.running_history.push(true)
+  self.started_prompts.push(text)
+}
+
+/// Submits user input according to `route_input` while preserving strict FIFO queue order:
+/// - Idle with empty queue -> transitions to Running, starts prompt immediately (`StartPrompt`)
+/// - Idle with queued work -> enqueues behind existing work, pumps FIFO head, returns `Queue`
+/// - Running -> steers active turn (`Steer`)
+/// - Starting/Stopping/Closed -> enqueues on serial queue (`Queue`)
+pub fn SessionActor::submit_input(self : SessionActor, text : String) -> InputRoute {
+  let route = route_input(self.phase)
+  match route {
+    InputRoute::StartPrompt => {
+      if self.queue.length() == 0 {
+        self.start_prompt_now(text)
+        InputRoute::StartPrompt
+      } else {
+        self.queue.push(ActorWork::Prompt(text))
+        self.pump_next_prompt()
+        InputRoute::Queue
+      }
+    }
+    InputRoute::Steer => {
+      self.queue.push(ActorWork::Steer(text))
+      InputRoute::Steer
+    }
+    InputRoute::Queue => {
+      self.queue.push(ActorWork::Prompt(text))
+      InputRoute::Queue
+    }
+  }
+}
+
+/// Pops and starts the first queued Prompt/Deliver/Steer in strict FIFO order (draining any
+/// leading barriers first). A residual `Steer` left at queue head after a turn ends becomes
+/// the next turn's prompt so the actor never deadlocks in Idle.
+pub fn SessionActor::pump_next_prompt(self : SessionActor) -> Unit {
+  while self.queue.length() > 0 {
+    match self.queue[0] {
+      ActorWork::Barrier(id) => {
+        let _ = self.pop_next()
+        self.completed_barriers.push(id)
+      }
+      ActorWork::Prompt(text) => {
+        let _ = self.pop_next()
+        self.start_prompt_now(text)
+        return
+      }
+      ActorWork::Deliver(text) => {
+        let _ = self.pop_next()
+        self.start_prompt_now(text)
+        return
+      }
+      ActorWork::Steer(text) => {
+        let _ = self.pop_next()
+        self.start_prompt_now(text)
+        return
+      }
+      _ => return
+    }
+  }
+}
+
+/// Records an agent post during the current turn.
+pub fn SessionActor::record_post(self : SessionActor, kind : TurnDeclared) -> Unit {
+  self.posted_in_turn = true
+  match kind {
+    TurnDeclared::None => match self.declared {
+      TurnDeclared::AllDone(_) => self.posted_after_terminal = true
+      TurnDeclared::NeedHuman(_) => self.posted_after_terminal = true
+      _ => ()
+    }
+    _ => {
+      self.declared = kind
+      self.posted_after_terminal = false
+    }
+  }
+}
+
+/// Records an explicit `chat_state` declaration during the current turn.
+pub fn SessionActor::record_state(self : SessionActor, kind : TurnDeclared) -> Unit {
+  self.declared = kind
+  self.posted_after_terminal = false
+}
+
+/// Handles turn completion using the `goesOn` contract.
+/// When re-prompting, `self.phase` stays `ActorPhase::Running` (never flashes stopped).
+pub fn SessionActor::on_turn_ended(
+  self : SessionActor,
+  has_pending_card : Bool,
+  now_ms : Int64,
+) -> TurnEndAction {
+  let action = evaluate_turn_end_with_limit(
+    self.declared,
+    self.posted_in_turn,
+    self.posted_after_terminal,
+    has_pending_card,
+    self.reprompt_count,
+    self.max_nudges,
+  )
+  match action {
+    TurnEndAction::Reprompt(_) => {
+      self.reprompt_count = self.reprompt_count + 1
+      // Keep posted_after_terminal intact until the agent declares a new state.
+      // Stay Running — never flash stopped!
+      self.phase = ActorPhase::Running
+      self.running_history.push(true)
+    }
+    _ => {
+      self.phase = ActorPhase::Idle
+      if self.has_process {
+        self.idle_since_ms = Some(now_ms)
+      }
+      self.running_history.push(false)
+      // If prompts were queued while running/starting, immediately pump the FIFO head.
+      self.pump_next_prompt()
+    }
+  }
+  action
+}
+
+/// Marks an in-flight start as begun.
+pub fn SessionActor::begin_start(self : SessionActor) -> Unit {
+  self.phase = ActorPhase::Starting
+  self.in_flight_start = true
+  self.start_failed = false
+}
+
+/// Marks an in-flight start as completed (either succeeded or failed).
+/// On success, immediately drains any Prompt queued during `Starting` in strict FIFO order
+/// so a subsequent `submit_input` cannot jump ahead of earlier queued prompts.
+pub fn SessionActor::finish_start(self : SessionActor, ok : Bool, now_ms : Int64) -> Unit {
+  self.in_flight_start = false
+  if ok {
+    self.start_failed = false
+    self.has_process = true
+    self.phase = ActorPhase::Idle
+    self.idle_since_ms = Some(now_ms)
+    self.pump_next_prompt()
+  } else {
+    self.start_failed = true
+    self.has_process = false
+    self.phase = ActorPhase::Idle
+    self.idle_since_ms = None
+    let _ = self.drain_barriers()
+  }
+}
+
+/// Evicts an idle process.
+pub fn SessionActor::evict(self : SessionActor) -> Bool {
+  if !self.has_process {
+    return false
+  }
+  match self.phase {
+    ActorPhase::Idle => {
+      self.has_process = false
+      self.idle_since_ms = None
+      true
+    }
+    _ => false
+  }
+}
+
+/// Drains all currently queued barriers and records their ids as completed.
+pub fn SessionActor::drain_barriers(self : SessionActor) -> Array[Int] {
+  let remaining : Array[ActorWork] = []
+  let done : Array[Int] = []
+  for i in 0..<self.queue.length() {
+    match self.queue[i] {
+      ActorWork::Barrier(id) => {
+        self.completed_barriers.push(id)
+        done.push(id)
+      }
+      other => remaining.push(other)
+    }
+  }
+  self.queue = remaining
+  done
+}

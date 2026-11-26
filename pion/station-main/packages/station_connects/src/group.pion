@@ -1,0 +1,1293 @@
+// Group IM (`im/2`) connector: UTF-16 MoonBit-order canonical JSON with JS
+// IEEE-754 number formatting, SHA-256 event IDs, RFC 8032 Ed25519 signing and
+// inbound `stampedOf` verification, direct-space IDs, Hybrid Logical Clock
+// (`Hlc`), incremental `SseLines` parser, `@name` mention matching, `msg.edit`
+// aseq mapping & author/deleted guards, `decision.resolve` ownership filtering,
+// `POST /events` + `why=="dseq"` sync retry, and `POST /spaces/<id>/files`
+// chunked upload contract.
+
+import "base_codec"
+import "crypto"
+
+pub let GROUP_PROTOCOL_VERSION : Int = 2
+pub let GROUP_LOBBY : String = "lobby"
+pub let GROUP_ALPN : String = "im/2"
+pub let GROUP_SECRET_ALPN : String = "im-secret/1"
+pub let GROUP_PING_MS : Int64 = 15000.to_int64()
+pub let GROUP_STALE_MS : Int64 = 45000.to_int64()
+pub let GROUP_TITLE_MAX_CHARS : Int = 60
+pub let GROUP_FILES_MAX : Int = 10
+pub let GROUP_PIECE_BYTES : Int = 1048576
+pub let GROUP_TAIL_MOST : Int = 200
+pub let GROUP_CLOSED_KEPT : Int = 256
+
+// ---------------------------------------------------------------------------
+// Thread / Stream Addressing & Mention / Title Helpers
+// ---------------------------------------------------------------------------
+
+pub fn group_thread_of(space : String, topic : String) -> ThreadRef {
+  let tts = if topic == GROUP_LOBBY || topic == "" { space } else { topic }
+  ThreadRef::new(space, tts)
+}
+
+pub fn group_stream_of(thread : ThreadRef) -> (String, String) {
+  let topic = if thread.thread_ts == thread.channel { GROUP_LOBBY } else { thread.thread_ts }
+  (thread.channel, topic)
+}
+
+pub fn group_stream_key(space : String, topic : String) -> String {
+  if topic == GROUP_LOBBY || topic == "" {
+    space
+  } else {
+    space + "/" + topic
+  }
+}
+
+pub fn is_group_space_id(id : String) -> Bool {
+  (str_starts_with(id, "d_") || str_starts_with(id, "s_"))
+  && is_all_lower_hex(str_slice(id, 2, id.to_bytes().length()), 24)
+}
+
+pub fn is_group_topic_id(id : String) -> Bool {
+  id == GROUP_LOBBY
+  || (str_starts_with(id, "t_") && is_all_lower_hex(str_slice(id, 2, id.to_bytes().length()), 16))
+}
+
+fn is_ascii_word_byte(b : Int) -> Bool {
+  (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 95
+}
+
+pub fn group_mentions(text : String, name : String) -> Bool {
+  if name == "" {
+    return false
+  }
+  let hay = str_to_lower_ascii(text)
+  let needle = "@" + str_to_lower_ascii(name)
+  let hbytes = hay.to_bytes()
+  let nlen = needle.to_bytes().length()
+  let mut pos = 0
+  while pos <= hbytes.length() {
+    let idx = str_index_of(hay, needle, pos)
+    if idx < 0 {
+      return false
+    }
+    let left_ok = idx == 0 || !is_ascii_word_byte(hbytes[idx - 1].to_int() & 0xFF)
+    let after = idx + nlen
+    let right_ok = after >= hbytes.length() || !is_ascii_word_byte(hbytes[after].to_int() & 0xFF)
+    if left_ok && right_ok {
+      return true
+    }
+    pos = idx + 1
+  }
+  false
+}
+
+pub fn group_topic_title(title : String) -> String {
+  let raw = title.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b < 0x20 {
+      sb.write_byte(32 as Byte)
+    } else if b == 0x7F {
+      // skip DEL
+    } else {
+      sb.write_byte(raw[i])
+    }
+  }
+  let trimmed = str_trim(sb.to_string())
+  let cps = utf8_code_points(trimmed)
+  if cps.length() > GROUP_TITLE_MAX_CHARS {
+    str_trim(join_cps(cps, 0, GROUP_TITLE_MAX_CHARS))
+  } else {
+    trimmed
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Canonical JSON (UTF-16 MoonBit key order + JS IEEE-754 number formatting)
+// ---------------------------------------------------------------------------
+
+/// Pure-Pion UTF-8 -> UTF-16 code units decoder (exact match with JS `String`).
+fn utf16_units_of(s : String) -> Array[Int] {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let out : Array[Int] = []
+  let mut i = 0
+  while i < n {
+    let b0 = raw[i].to_int() & 0xFF
+    if b0 < 0x80 {
+      out.push(b0)
+      i = i + 1
+    } else if b0 >= 0xC2 && b0 <= 0xDF && i + 1 < n {
+      let b1 = raw[i + 1].to_int() & 0xFF
+      out.push(((b0 & 0x1F) << 6) | (b1 & 0x3F))
+      i = i + 2
+    } else if b0 >= 0xE0 && b0 <= 0xEF && i + 2 < n {
+      let b1 = raw[i + 1].to_int() & 0xFF
+      let b2 = raw[i + 2].to_int() & 0xFF
+      out.push(((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F))
+      i = i + 3
+    } else if b0 >= 0xF0 && b0 <= 0xF4 && i + 3 < n {
+      let b1 = raw[i + 1].to_int() & 0xFF
+      let b2 = raw[i + 2].to_int() & 0xFF
+      let b3 = raw[i + 3].to_int() & 0xFF
+      let cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+      let v = cp - 0x10000
+      out.push(0xD800 + (v >> 10))
+      out.push(0xDC00 + (v & 0x3FF))
+      i = i + 4
+    } else {
+      out.push(0xFFFD)
+      i = i + 1
+    }
+  }
+  out
+}
+
+/// MoonBit `String::compare` order (1:1 with `station/src/group/event.ts`
+/// `moonOrder`): shorter UTF-16 code-unit length first, then UTF-16 code unit
+/// by code unit (`["", "é", "ab", "😀"]`).
+pub fn moon_order(a : String, b : String) -> Int {
+  let au = utf16_units_of(a)
+  let bu = utf16_units_of(b)
+  if au.length() != bu.length() {
+    return if au.length() < bu.length() { -1 } else { 1 }
+  }
+  for i in 0..<au.length() {
+    if au[i] != bu[i] {
+      return if au[i] < bu[i] { -1 } else { 1 }
+    }
+  }
+  0
+}
+
+/// Canonical JS number formatting (`1.0` -> `"1"`, `1e3` -> `"1000"`, `-0` -> `"0"`).
+fn canon_num_text(n : Double) -> String {
+  if n != n || (n - n) != 0.0 {
+    return "null"
+  }
+  if n == 0.0 {
+    return "0"
+  }
+  if n >= -9007199254740991.0 && n <= 9007199254740991.0 {
+    let i = n.to_int64()
+    if i.to_double() == n {
+      return i.to_string()
+    }
+  }
+  n.to_string()
+}
+
+fn write_canon_string(sb : StringBuilder, s : String) -> Unit {
+  let hex = "0123456789abcdef".to_bytes()
+  sb.write_byte(34 as Byte)
+  let raw = s.to_bytes()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 34 {
+      sb.write_string("\\\"")
+    } else if b == 92 {
+      sb.write_string("\\\\")
+    } else if b == 10 {
+      sb.write_string("\\n")
+    } else if b == 13 {
+      sb.write_string("\\r")
+    } else if b == 9 {
+      sb.write_string("\\t")
+    } else if b < 0x20 {
+      sb.write_string("\\u00")
+      sb.write_byte(hex[(b >> 4) & 0xF])
+      sb.write_byte(hex[b & 0xF])
+    } else {
+      sb.write_byte(raw[i])
+    }
+  }
+  sb.write_byte(34 as Byte)
+}
+
+fn write_canon_json(sb : StringBuilder, j : base_codec::Json) -> Unit {
+  match j {
+    base_codec::Json::Null => sb.write_string("null")
+    base_codec::Json::Bool(b) => sb.write_string(if b { "true" } else { "false" })
+    base_codec::Json::Num(n, _) => {
+      // JS canonical number formatting (`1.0` -> `"1"`, `1e3` -> `"1000"`, `-0` -> `"0"`).
+      sb.write_string(canon_num_text(n))
+    }
+    base_codec::Json::Str(s) => write_canon_string(sb, s)
+    base_codec::Json::Arr(items) => {
+      sb.write_string("[")
+      for i in 0..<items.length() {
+        if i > 0 {
+          sb.write_string(",")
+        }
+        write_canon_json(sb, items[i])
+      }
+      sb.write_string("]")
+    }
+    base_codec::Json::Obj(fields) => {
+      let sorted : Array[(String, base_codec::Json)] = []
+      for i in 0..<fields.length() {
+        sorted.push(fields[i])
+      }
+      for i in 1..<sorted.length() {
+        let cur = sorted[i]
+        let mut j_idx = i - 1
+        while j_idx >= 0 && moon_order(sorted[j_idx].0, cur.0) > 0 {
+          sorted[j_idx + 1] = sorted[j_idx]
+          j_idx = j_idx - 1
+        }
+        sorted[j_idx + 1] = cur
+      }
+      sb.write_string("{")
+      for i in 0..<sorted.length() {
+        if i > 0 {
+          sb.write_string(",")
+        }
+        write_canon_string(sb, sorted[i].0)
+        sb.write_string(":")
+        write_canon_json(sb, sorted[i].1)
+      }
+      sb.write_string("}")
+    }
+  }
+}
+
+pub fn group_canonical_json(j : base_codec::Json) -> String {
+  let sb = StringBuilder::new()
+  write_canon_json(sb, j)
+  sb.to_string()
+}
+
+pub fn group_unsigned_of(ev : base_codec::Json) -> Option[base_codec::Json] {
+  let v = match json_int64_field(ev, "v") {
+    Some(x) => x
+    None => return None
+  }
+  let enc = match json_int64_field(ev, "enc") {
+    Some(x) => x
+    None => return None
+  }
+  if v != GROUP_PROTOCOL_VERSION.to_int64() || enc != 0.to_int64() {
+    return None
+  }
+  let dseq = match json_safe_count_field(ev, "dseq") {
+    Some(d) => {
+      if d < 1.to_int64() {
+        return None
+      }
+      d
+    }
+    None => return None
+  }
+  let hlc = match base_codec::json_get(ev, "hlc") {
+    Some(base_codec::Json::Arr(arr)) => {
+      if arr.length() != 2 {
+        return None
+      }
+      let h0 = match arr[0] {
+        base_codec::Json::Num(n, _) => n
+        _ => return None
+      }
+      let h1 = match arr[1] {
+        base_codec::Json::Num(n, _) => n
+        _ => return None
+      }
+      base_codec::json_arr([base_codec::json_num(h0), base_codec::json_num(h1)])
+    }
+    _ => return None
+  }
+  let body = match base_codec::json_get(ev, "body") {
+    Some(b) => b
+    None => return None
+  }
+  let space = match base_codec::json_get(ev, "space") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return None
+  }
+  let author = match base_codec::json_get(ev, "author") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return None
+  }
+  let device = match base_codec::json_get(ev, "device") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return None
+  }
+  let prev = match base_codec::json_get(ev, "prev") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return None
+  }
+  let topic = match base_codec::json_get(ev, "topic") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return None
+  }
+  let kind = match base_codec::json_get(ev, "kind") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return None
+  }
+  Some(
+    base_codec::json_obj([
+      ("v", base_codec::json_int(GROUP_PROTOCOL_VERSION)),
+      ("space", base_codec::json_str(space)),
+      ("author", base_codec::json_str(author)),
+      ("device", base_codec::json_str(device)),
+      ("dseq", base_codec::json_int64(dseq)),
+      ("hlc", hlc),
+      ("prev", base_codec::json_str(prev)),
+      ("topic", base_codec::json_str(topic)),
+      ("kind", base_codec::json_str(kind)),
+      ("enc", base_codec::json_int(0)),
+      ("body", body),
+    ]),
+  )
+}
+
+pub fn group_event_id(unsigned_event : base_codec::Json) -> String {
+  crypto::sha256_hex(group_canonical_json(unsigned_event).to_bytes())
+}
+
+pub fn group_direct_id(a : String, b : String) -> String {
+  let pair = if moon_order(a, b) < 0 { a + "|" + b } else { b + "|" + a }
+  let digest = crypto::sha256_hex(("im/2 direct " + pair).to_bytes())
+  "d_" + str_slice(digest, 0, 24)
+}
+
+/// Signs an `im/2` event with a 32-byte Ed25519 seed (hex) and returns
+/// `(event_id, signed_event_json)`.
+pub fn group_sign_event(
+  seed_hex : String,
+  space : String,
+  author : String,
+  dseq : Int64,
+  hlc_ms : Int64,
+  hlc_n : Int64,
+  prev : String,
+  topic : String,
+  kind : String,
+  body : base_codec::Json,
+) -> Result[(String, base_codec::Json), String] {
+  let seed = match base_codec::hex_decode(seed_hex) {
+    Some(b) => b
+    None => return Err("invalid ed25519 seed hex")
+  }
+  let kp = match crypto::Ed25519KeyPair::from_seed(seed) {
+    Ok(k) => k
+    Err(_) => return Err("failed to derive ed25519 keypair")
+  }
+  let device_hex = base_codec::hex_encode(kp.public_key())
+  let unsigned = base_codec::json_obj([
+    ("v", base_codec::json_int(GROUP_PROTOCOL_VERSION)),
+    ("space", base_codec::json_str(space)),
+    ("author", base_codec::json_str(author)),
+    ("device", base_codec::json_str(device_hex)),
+    ("dseq", base_codec::json_int64(dseq)),
+    ("hlc", base_codec::json_arr([base_codec::json_int64(hlc_ms), base_codec::json_int64(hlc_n)])),
+    ("prev", base_codec::json_str(prev)),
+    ("topic", base_codec::json_str(topic)),
+    ("kind", base_codec::json_str(kind)),
+    ("enc", base_codec::json_int(0)),
+    ("body", body),
+  ])
+  let text = group_canonical_json(unsigned)
+  let id = crypto::sha256_hex(text.to_bytes())
+  let sig_hex = base_codec::hex_encode(kp.sign(text.to_bytes()))
+  let signed = base_codec::json_obj([
+    ("v", base_codec::json_int(GROUP_PROTOCOL_VERSION)),
+    ("space", base_codec::json_str(space)),
+    ("author", base_codec::json_str(author)),
+    ("device", base_codec::json_str(device_hex)),
+    ("dseq", base_codec::json_int64(dseq)),
+    ("hlc", base_codec::json_arr([base_codec::json_int64(hlc_ms), base_codec::json_int64(hlc_n)])),
+    ("prev", base_codec::json_str(prev)),
+    ("topic", base_codec::json_str(topic)),
+    ("kind", base_codec::json_str(kind)),
+    ("enc", base_codec::json_int(0)),
+    ("body", body),
+    ("sig", base_codec::json_str(sig_hex)),
+  ])
+  Ok((id, signed))
+}
+
+/// Verifies an `im/2` event's Ed25519 signature strictly per RFC 8032.
+pub fn group_verify_event_ed25519(ev : base_codec::Json) -> Bool {
+  let device_hex = json_str_field(ev, "device")
+  let sig_hex = json_str_field(ev, "sig")
+  if !is_all_lower_hex(device_hex, 64) || !is_all_lower_hex(sig_hex, 128) {
+    return false
+  }
+  let unsigned = match group_unsigned_of(ev) {
+    Some(u) => u
+    None => return false
+  }
+  let pk = match base_codec::hex_decode(device_hex) {
+    Some(b) => b
+    None => return false
+  }
+  let sig = match base_codec::hex_decode(sig_hex) {
+    Some(b) => b
+    None => return false
+  }
+  crypto::ed25519_verify(pk, group_canonical_json(unsigned).to_bytes(), sig)
+}
+
+pub struct VerifiedStamped {
+  pub id : String
+  pub aseq : Int64
+  pub event : base_codec::Json
+}
+
+/// 1:1 with `station/src/group/event.ts` `stampedOf`: recomputes `id` from
+/// canonical unsigned JSON and verifies the Ed25519 signature. Returns `None`
+/// if `id` does not match or signature fails.
+pub fn group_stamped_of(j : base_codec::Json) -> Option[VerifiedStamped] {
+  let ev = match base_codec::json_get(j, "event") {
+    Some(e) => e
+    None => return None
+  }
+  let unsigned = match group_unsigned_of(ev) {
+    Some(u) => u
+    None => return None
+  }
+  let computed_id = group_event_id(unsigned)
+  let wire_id = json_str_field(j, "id")
+  if wire_id != computed_id {
+    return None
+  }
+  if !group_verify_event_ed25519(ev) {
+    return None
+  }
+  let aseq = match json_int64_field(j, "aseq") {
+    Some(v) => v
+    None => 0.to_int64()
+  }
+  Some(VerifiedStamped::{ id: computed_id, aseq: aseq, event: ev })
+}
+
+pub struct Hlc {
+  pub mut ms : Int64
+  pub mut n : Int64
+}
+
+pub fn Hlc::new() -> Hlc {
+  Hlc::{ ms: 0.to_int64(), n: 0.to_int64() }
+}
+
+pub fn Hlc::next(self : Hlc, wall_ms : Int64) -> (Int64, Int64) {
+  if wall_ms > self.ms {
+    self.ms = wall_ms
+    self.n = 0.to_int64()
+  } else {
+    self.n = self.n + 1.to_int64()
+  }
+  (self.ms, self.n)
+}
+
+pub fn Hlc::saw(self : Hlc, ms : Int64, n : Int64) -> Unit {
+  if ms > self.ms || (ms == self.ms && n > self.n) {
+    self.ms = ms
+    self.n = n
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Incremental SSE Parser (`SseLines`, aligned with `station/src/group/link.ts`)
+// ---------------------------------------------------------------------------
+
+pub struct SseEvent {
+  pub event : String
+  pub data : String
+  pub id : Option[String]
+}
+
+pub struct SseLines {
+  mut carry : String
+}
+
+pub fn SseLines::new() -> SseLines {
+  SseLines::{ carry: "" }
+}
+
+pub fn SseLines::feed(self : SseLines, chunk : String) -> Array[SseEvent] {
+  self.carry = self.carry + chunk
+  let out : Array[SseEvent] = []
+  while true {
+    let end = str_index_of(self.carry, "\n\n", 0)
+    if end < 0 {
+      break
+    }
+    let block = str_slice(self.carry, 0, end)
+    self.carry = str_slice(self.carry, end + 2, self.carry.to_bytes().length())
+    let mut ev = ""
+    let data_lines : Array[String] = []
+    let mut ev_id : Option[String] = None
+    let lines = str_split(block, "\n")
+    for i in 0..<lines.length() {
+      let line = lines[i]
+      if str_starts_with(line, ":") {
+        continue
+      }
+      let colon = str_index_of(line, ":", 0)
+      let (field, fval) = if colon < 0 {
+        (line, "")
+      } else {
+        let f = str_slice(line, 0, colon)
+        let raw_v = str_slice(line, colon + 1, line.to_bytes().length())
+        let v = if str_starts_with(raw_v, " ") {
+          str_slice(raw_v, 1, raw_v.to_bytes().length())
+        } else {
+          raw_v
+        }
+        (f, v)
+      }
+      if field == "event" {
+        ev = fval
+      } else if field == "data" {
+        data_lines.push(fval)
+      } else if field == "id" {
+        ev_id = Some(fval)
+      }
+    }
+    if ev == "" && data_lines.length() > 0 {
+      ev = "message"
+    }
+    let has_id = match ev_id {
+      Some(_) => true
+      None => false
+    }
+    if ev != "" || has_id {
+      let sb = StringBuilder::new()
+      for i in 0..<data_lines.length() {
+        if i > 0 {
+          sb.write_string("\n")
+        }
+        sb.write_string(data_lines[i])
+      }
+      out.push(SseEvent::{ event: ev, data: sb.to_string(), id: ev_id })
+    }
+  }
+  out
+}
+
+// ---------------------------------------------------------------------------
+// Group IM Connector (Ed25519 verified inbound + `im/2` outbound)
+// ---------------------------------------------------------------------------
+
+pub struct GroupSpace {
+  pub id : String
+  pub direct : Bool
+  pub mut name : String
+}
+
+struct GroupSaid {
+  id : String
+  space : String
+  topic : String
+  aseq : Int64
+  author : String
+  mut text : String
+  mut deleted : Bool
+}
+
+struct SpaceDeviceState {
+  mut dseq : Int64
+  mut prev : String
+}
+
+/// Group IM (`im/2`) connector.
+/// Transport contract: `ConnectTransport::fetch` adapts `{method, url, headers, body}`
+/// onto the `im/2` iroh link stream `{method, path, headers}` authenticated by
+/// this device's Ed25519 endpoint identity (no HTTP Bearer token is used on the wire).
+pub struct GroupConnector {
+  pub connect_id : String
+  pub anchor_url : String
+  pub seed_hex : String
+  pub device_id : String
+  pub mut bot_user_id : String
+  pub mut bot_name : String
+  pub mut hlc : Hlc
+  pub mut sse : SseLines
+  pub mut machine : SocketMachine
+  pub mut dedupe : InboundDedupe
+  mut spaces : Map[String, GroupSpace]
+  mut cursors : Map[String, Int64]
+  mut device_state : Map[String, SpaceDeviceState]
+  mut by_id : Map[String, GroupSaid]
+  mut by_id_order : Array[String]
+  mut own_asks : Map[String, Bool]
+  mut own_asks_order : Array[String]
+  mut closed_asks : Map[String, Bool]
+  mut closed_asks_order : Array[String]
+  mut left_streams : Map[String, Bool]
+}
+
+pub fn GroupConnector::new(
+  connect_id : String,
+  anchor_url : String,
+  seed_hex : String,
+  bot_user_id : String,
+  bot_name : String,
+  ping_ms : Int64 = GROUP_PING_MS,
+  stale_ms : Int64 = GROUP_STALE_MS,
+) -> Result[GroupConnector, String] {
+  let seed = match base_codec::hex_decode(seed_hex) {
+    Some(b) => {
+      if b.length() != 32 {
+        return Err("group.key must be 32-byte hex (64 hex chars)")
+      }
+      b
+    }
+    None => return Err("group.key must be valid hex")
+  }
+  let kp = match crypto::Ed25519KeyPair::from_seed(seed) {
+    Ok(k) => k
+    Err(_) => return Err("invalid ed25519 seed")
+  }
+  Ok(
+    GroupConnector::{
+      connect_id: connect_id,
+      anchor_url: anchor_url,
+      seed_hex: seed_hex,
+      device_id: base_codec::hex_encode(kp.public_key()),
+      bot_user_id: bot_user_id,
+      bot_name: bot_name,
+      hlc: Hlc::new(),
+      sse: SseLines::new(),
+      machine: SocketMachine::new("group", ReconnectPolicy::new(ping_ms, stale_ms)),
+      dedupe: InboundDedupe::new(),
+      spaces: Map::new(),
+      cursors: Map::new(),
+      device_state: Map::new(),
+      by_id: Map::new(),
+      by_id_order: [],
+      own_asks: Map::new(),
+      own_asks_order: [],
+      closed_asks: Map::new(),
+      closed_asks_order: [],
+      left_streams: Map::new(),
+    },
+  )
+}
+
+pub fn GroupConnector::register_space(
+  self : GroupConnector,
+  id : String,
+  direct : Bool,
+  name : String,
+) -> Unit {
+  self.spaces.set(id, GroupSpace::{ id: id, direct: direct, name: name })
+}
+
+pub fn GroupConnector::cursor(self : GroupConnector, space : String) -> Int64 {
+  match self.cursors.get(space) {
+    Some(c) => c
+    None => 0.to_int64()
+  }
+}
+
+pub fn GroupConnector::leave_thread(self : GroupConnector, thread : ThreadRef) -> Unit {
+  let (space, topic) = group_stream_of(thread)
+  self.left_streams.set(group_stream_key(space, topic), true)
+}
+
+pub fn GroupConnector::is_thread_left(self : GroupConnector, thread : ThreadRef) -> Bool {
+  let (space, topic) = group_stream_of(thread)
+  match self.left_streams.get(group_stream_key(space, topic)) {
+    Some(v) => v
+    None => false
+  }
+}
+
+pub fn GroupConnector::track_own_decision(self : GroupConnector, event_id : String) -> Unit {
+  self.own_asks.set(event_id, true)
+  self.own_asks_order.push(event_id)
+  while self.own_asks_order.length() > GROUP_TAIL_MOST {
+    let oldest = self.own_asks_order[0]
+    let next : Array[String] = []
+    for i in 1..<self.own_asks_order.length() {
+      next.push(self.own_asks_order[i])
+    }
+    self.own_asks_order = next
+    self.own_asks.remove(oldest)
+  }
+}
+
+pub fn GroupConnector::close_decision(self : GroupConnector, event_id : String) -> Unit {
+  self.own_asks.remove(event_id)
+  self.closed_asks.set(event_id, true)
+  self.closed_asks_order.push(event_id)
+  while self.closed_asks_order.length() > GROUP_CLOSED_KEPT {
+    let oldest = self.closed_asks_order[0]
+    let next : Array[String] = []
+    for i in 1..<self.closed_asks_order.length() {
+      next.push(self.closed_asks_order[i])
+    }
+    self.closed_asks_order = next
+    self.closed_asks.remove(oldest)
+  }
+}
+
+pub fn GroupConnector::by_id_count(self : GroupConnector) -> Int {
+  self.by_id_order.length()
+}
+
+pub fn GroupConnector::closed_asks_count(self : GroupConnector) -> Int {
+  self.closed_asks_order.length()
+}
+
+pub enum GroupStep {
+  NoOp
+  NeedSync(String, Int64)
+  Event(ChatEvent)
+  LeftSpace(String)
+  DuplicateIgnored(String)
+  InvalidSignature(String)
+}
+
+/// Processes one decoded SSE event from the Group anchor:
+/// - Verifies event id + Ed25519 signature via `group_stamped_of`
+/// - Enforces per-space monotonic `aseq` (emitting `NeedSync` on gaps)
+/// - Maps `msg.edit` back to original `m.aseq` with `m.author == e.author && !m.deleted`
+/// - Filters `decision.resolve` for closed or non-bot decisions
+/// - Enforces `chat_leave` until re-mentioned.
+pub fn GroupConnector::take_sse(
+  self : GroupConnector,
+  sse_ev : SseEvent,
+  now_ms : Int64,
+) -> GroupStep {
+  self.machine.on_heard(now_ms)
+  let told = match base_codec::json_parse(sse_ev.data) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return GroupStep::NoOp
+  }
+  if sse_ev.event == "space" {
+    let sid = json_str_field(told, "id")
+    if sid != "" {
+      let direct = json_str_field(told, "kind") == "direct"
+      self.register_space(sid, direct, json_str_field(told, "name"))
+    }
+    return GroupStep::NoOp
+  }
+  if sse_ev.event == "left" {
+    let sid = json_str_field(told, "space")
+    if sid != "" {
+      self.spaces.remove(sid)
+      self.cursors.remove(sid)
+      return GroupStep::LeftSpace(sid)
+    }
+    return GroupStep::NoOp
+  }
+  if sse_ev.event == "stop" {
+    let space = json_str_field(told, "space")
+    let target = json_str_field(told, "target")
+    if space == "" || (target != "" && target != self.bot_user_id) {
+      return GroupStep::NoOp
+    }
+    let topic_raw = json_str_field(told, "topic")
+    let topic = if topic_raw != "" { topic_raw } else { GROUP_LOBBY }
+    let thread = group_thread_of(space, topic)
+    let ts_raw = json_str_field(told, "message_ts")
+    let ts = if ts_raw != "" { ts_raw } else { now_ms.to_string() }
+    return GroupStep::Event(ChatEvent::Stop(thread.channel, thread.thread_ts, ts, None))
+  }
+  if sse_ev.event != "event" {
+    return GroupStep::NoOp
+  }
+
+  let stamped_raw = match base_codec::json_get(told, "stamped") {
+    Some(s) => s
+    None => return GroupStep::NoOp
+  }
+  let raw_aseq = match json_int64_field(stamped_raw, "aseq") {
+    Some(v) => v
+    None => return GroupStep::NoOp
+  }
+  let raw_ev = match base_codec::json_get(stamped_raw, "event") {
+    Some(e) => e
+    None => return GroupStep::NoOp
+  }
+  let space = json_str_field(raw_ev, "space")
+  if raw_aseq < 1.to_int64() || space == "" {
+    return GroupStep::NoOp
+  }
+  let cur = self.cursor(space)
+  if raw_aseq <= cur {
+    return GroupStep::DuplicateIgnored("group:" + space + "#" + raw_aseq.to_string())
+  }
+  if raw_aseq > cur + 1.to_int64() {
+    return GroupStep::NeedSync(space, cur)
+  }
+
+  // Strong cryptographic verification (`stampedOf`): recompute id and verify Ed25519 signature.
+  let verified = match group_stamped_of(stamped_raw) {
+    Some(s) => s
+    None => {
+      // Advance cursor over rejected event (matching `group/surface.ts:542-546`) and drop it.
+      self.cursors.set(space, raw_aseq)
+      return GroupStep::InvalidSignature(space + "#" + raw_aseq.to_string())
+    }
+  }
+  self.cursors.set(space, verified.aseq)
+
+  let ev = verified.event
+  // Advance HLC with received event HLC.
+  match base_codec::json_get(ev, "hlc") {
+    Some(base_codec::Json::Arr(arr)) => {
+      if arr.length() == 2 {
+        match (arr[0], arr[1]) {
+          (base_codec::Json::Num(m, _), base_codec::Json::Num(n, _)) => {
+            self.hlc.saw(m.to_int64(), n.to_int64())
+          }
+          _ => {}
+        }
+      }
+    }
+    _ => {}
+  }
+
+  // Update own device sequence if this event came from our own device.
+  if json_str_field(ev, "device") == self.device_id {
+    match json_safe_count_field(ev, "dseq") {
+      Some(d) => self.device_state.set(space, SpaceDeviceState::{ dseq: d, prev: verified.id })
+      None => {}
+    }
+  }
+
+  let author = json_str_field(ev, "author")
+  let topic_raw = json_str_field(ev, "topic")
+  let topic = if topic_raw != "" { topic_raw } else { GROUP_LOBBY }
+  let kind = json_str_field(ev, "kind")
+  let body = match base_codec::json_get(ev, "body") {
+    Some(b) => b
+    None => base_codec::json_obj([])
+  }
+
+  // Fold into bounded local `by_id` index (max `GROUP_TAIL_MOST` = 200) BEFORE skipping own messages.
+  if kind == "msg.post" || kind == "decision.ask" {
+    self.by_id.set(
+      verified.id,
+      GroupSaid::{
+        id: verified.id,
+        space: space,
+        topic: topic,
+        aseq: verified.aseq,
+        author: author,
+        text: json_str_field(body, "text"),
+        deleted: false,
+      },
+    )
+    self.by_id_order.push(verified.id)
+    while self.by_id_order.length() > GROUP_TAIL_MOST {
+      let oldest = self.by_id_order[0]
+      let next : Array[String] = []
+      for i in 1..<self.by_id_order.length() {
+        next.push(self.by_id_order[i])
+      }
+      self.by_id_order = next
+      self.by_id.remove(oldest)
+    }
+  } else if kind == "msg.unsend" {
+    let target = json_str_field(body, "target")
+    match self.by_id.get(target) {
+      Some(m) => {
+        if m.author == author {
+          m.deleted = true
+          m.text = ""
+        }
+      }
+      None => {}
+    }
+    return GroupStep::NoOp
+  }
+
+  if author == self.bot_user_id {
+    return GroupStep::NoOp
+  }
+
+  let thread = group_thread_of(space, topic)
+  let stream = group_stream_key(space, topic)
+
+  if kind == "msg.post" || kind == "decision.ask" {
+    let words = json_str_field(body, "text")
+    let is_direct = match self.spaces.get(space) {
+      Some(sp) => sp.direct
+      None => str_starts_with(space, "d_")
+    }
+    let addressed = is_direct || group_mentions(words, self.bot_name)
+    match self.left_streams.get(stream) {
+      Some(true) => {
+        if !addressed {
+          return GroupStep::NoOp
+        }
+        self.left_streams.remove(stream)
+      }
+      _ => {}
+    }
+    let files : Array[InboundFile] = []
+    match base_codec::json_get(body, "files") {
+      Some(base_codec::Json::Arr(farr)) => {
+        for i in 0..<farr.length() {
+          let f = farr[i]
+          let sha = json_str_field(f, "sha256")
+          if is_all_lower_hex(sha, 64) {
+            let fname = json_str_field(f, "name")
+            let fsize = match json_int64_field(f, "size") {
+              Some(v) => v
+              None => 0.to_int64()
+            }
+            files.push(
+              InboundFile::{
+                id: sha,
+                name: if fname != "" { fname } else { sha },
+                size: fsize,
+                url: Some(space + "/" + sha),
+              },
+            )
+          }
+        }
+      }
+      _ => {}
+    }
+    let dedupe_key = "group:" + space + "#" + verified.aseq.to_string()
+    if !self.dedupe.accept(dedupe_key, now_ms) {
+      return GroupStep::DuplicateIgnored(dedupe_key)
+    }
+    return GroupStep::Event(
+      ChatEvent::Message(
+        InboundMessage::{
+          channel: thread.channel,
+          thread_ts: thread.thread_ts,
+          ts: verified.aseq.to_string(),
+          user: author,
+          text: words,
+          addressed: addressed,
+          files: files,
+          quoted: None,
+        },
+      ),
+    )
+  }
+
+  if kind == "msg.edit" {
+    let target = json_str_field(body, "target")
+    match self.by_id.get(target) {
+      Some(m) => {
+        if m.author != author || m.deleted {
+          return GroupStep::NoOp
+        }
+        let new_text = json_str_field(body, "text")
+        m.text = new_text
+        return GroupStep::Event(
+          ChatEvent::Changed(thread.channel, thread.thread_ts, m.aseq.to_string(), new_text),
+        )
+      }
+      None => return GroupStep::NoOp
+    }
+  }
+
+  if kind == "decision.resolve" {
+    let target = json_str_field(body, "target")
+    match self.closed_asks.get(target) {
+      Some(true) => return GroupStep::NoOp
+      _ => {}
+    }
+    let is_own_ask = match self.own_asks.get(target) {
+      Some(true) => true
+      _ => false
+    }
+    let known_bot_ask = match self.by_id.get(target) {
+      Some(m) => {
+        // Someone else's decision: ignore.
+        if !is_own_ask && m.author != self.bot_user_id {
+          return GroupStep::NoOp
+        }
+        true
+      }
+      None => false
+    }
+    self.own_asks.remove(target)
+    // Pre-restart decision (neither in `own_asks` nor `by_id`): still deliver,
+    // addressed in direct spaces (1:1 with `station/src/group/surface.ts:666-671`).
+    let is_direct = match self.spaces.get(space) {
+      Some(sp) => sp.direct
+      None => str_starts_with(space, "d_")
+    }
+    let addressed = is_own_ask || known_bot_ask || is_direct
+    let choice = json_str_field(body, "choice")
+    return GroupStep::Event(
+      ChatEvent::Message(
+        InboundMessage::{
+          channel: thread.channel,
+          thread_ts: thread.thread_ts,
+          ts: verified.aseq.to_string(),
+          user: author,
+          text: choice,
+          addressed: addressed,
+          files: [],
+          quoted: None,
+        },
+      ),
+    )
+  }
+
+  GroupStep::NoOp
+}
+
+/// Uploads a single file to the Group anchor via `im/2` contract:
+/// `POST /spaces/<space>/files?name=<n>&mime=<m>` (<= 1 MiB) or chunked
+/// `GET /spaces/<space>/uploads/<sha>` + `POST /spaces/<space>/files?...&sha256=<sha>&size=<sz>&from=<at>`.
+fn group_upload_file(
+  self : GroupConnector,
+  transport : ConnectTransport,
+  space : String,
+  file : OutboundFile,
+) -> Result[base_codec::Json, String] {
+  let base_path = self.anchor_url
+  + "/spaces/"
+  + url_encode_component(space)
+  + "/files?name="
+  + url_encode_component(file.name)
+  + "&mime="
+  + url_encode_component(file.mime)
+  let headers : Array[(String, String)] = [
+    ("content-type", "application/octet-stream"),
+  ]
+  let parse_file_ref = fn(resp : HttpResponse) -> Result[base_codec::Json, String] {
+    match resp.error {
+      Some(e) => return Err("group file upload: " + e)
+      None => {}
+    }
+    if resp.status != 200 && resp.status != 201 {
+      return Err("group file upload: HTTP " + resp.status.to_string())
+    }
+    match base_codec::json_parse(bytes_to_string(resp.body)) {
+      base_codec::JsonParseResult::Ok(j) => {
+        match base_codec::json_get(j, "file") {
+          Some(fobj) => Ok(fobj)
+          None => Err("group file upload: missing file ref")
+        }
+      }
+      base_codec::JsonParseResult::Err(e) => Err("group file upload: invalid json (" + e + ")")
+    }
+  }
+  let size = file.bytes.length()
+  if size <= GROUP_PIECE_BYTES {
+    let resp = (transport.fetch)(
+      HttpRequest::new("POST", base_path, headers, Some(file.bytes), 60000.to_int64()),
+    )
+    return parse_file_ref(resp)
+  }
+  let sha = crypto::sha256_hex(file.bytes)
+  let probe = (transport.fetch)(
+    HttpRequest::new(
+      "GET",
+      self.anchor_url + "/spaces/" + url_encode_component(space) + "/uploads/" + sha,
+      [],
+      None,
+      30000.to_int64(),
+    ),
+  )
+  let mut have = if probe.status == 200 {
+    match base_codec::json_parse(bytes_to_string(probe.body)) {
+      base_codec::JsonParseResult::Ok(j) => {
+        match json_safe_count_field(j, "have") {
+          Some(v) => v.to_int()
+          None => 0
+        }
+      }
+      base_codec::JsonParseResult::Err(_) => 0
+    }
+  } else {
+    0
+  }
+  let mut stalled = 0
+  while true {
+    let at = if have > size { size } else { have }
+    let rem = size - at
+    let take = if rem > GROUP_PIECE_BYTES { GROUP_PIECE_BYTES } else { rem }
+    let piece = Bytes::new(take)
+    for i in 0..<take {
+      piece[i] = file.bytes[at + i]
+    }
+    let chunk_url = base_path
+    + "&sha256="
+    + sha
+    + "&size="
+    + size.to_string()
+    + "&from="
+    + at.to_string()
+    let resp = (transport.fetch)(
+      HttpRequest::new("POST", chunk_url, headers, Some(piece), 60000.to_int64()),
+    )
+    if resp.status != 202 && resp.status != 409 {
+      return parse_file_ref(resp)
+    }
+    let next_have = match base_codec::json_parse(bytes_to_string(resp.body)) {
+      base_codec::JsonParseResult::Ok(j) => {
+        match json_safe_count_field(j, "have") {
+          Some(v) => v.to_int()
+          None => 0
+        }
+      }
+      base_codec::JsonParseResult::Err(_) => 0
+    }
+    if next_have == have {
+      stalled = stalled + 1
+      if stalled > 3 {
+        return Err("group file upload stalled")
+      }
+    } else {
+      stalled = 0
+    }
+    have = next_have
+  }
+  Err("group file upload unreachable")
+}
+
+/// Syncs `dseq` from the anchor via `POST /sync` (used on `why == "dseq"` retry).
+/// Matches TS `threads.said(connect, space, n, "")`: ignores smaller `dseq`, and
+/// when `dseq` advances clears `prev` to `""` so stale `prev` hashes never cause
+/// the anchor to reject subsequent events.
+fn group_sync_dseq(
+  self : GroupConnector,
+  transport : ConnectTransport,
+  space : String,
+) -> Result[Unit, String] {
+  let req_body = base_codec::json_stringify(
+    base_codec::json_obj([
+      ("since", base_codec::json_obj([(space, base_codec::json_int64(self.cursor(space)))])),
+    ]),
+  )
+  let resp = (transport.fetch)(
+    HttpRequest::new(
+      "POST",
+      self.anchor_url + "/sync",
+      [("content-type", "application/json; charset=utf-8")],
+      Some(req_body.to_bytes()),
+      30000.to_int64(),
+    ),
+  )
+  if resp.status != 200 {
+    return Err("group sync failed: HTTP " + resp.status.to_string())
+  }
+  match base_codec::json_parse(bytes_to_string(resp.body)) {
+    base_codec::JsonParseResult::Ok(j) => {
+      match base_codec::json_get(j, "dseq") {
+        Some(dseq_obj) => {
+          match json_safe_count_field(dseq_obj, space) {
+            Some(n) => {
+              let cur_dseq = match self.device_state.get(space) {
+                Some(st) => st.dseq
+                None => 0.to_int64()
+              }
+              if n > cur_dseq {
+                self.device_state.set(space, SpaceDeviceState::{ dseq: n, prev: "" })
+              }
+            }
+            None => {}
+          }
+        }
+        None => {}
+      }
+      Ok(())
+    }
+    base_codec::JsonParseResult::Err(e) => Err("group sync invalid json: " + e)
+  }
+}
+
+/// Signs and posts an `im/2` `msg.post` event via `POST /events` with
+/// `{"events":[signedEvent]}` (matching `station/src/group/surface.ts:787-806`).
+/// Returns `results[0].aseq` (NEVER fabricates ts from HLC); retries once via
+/// `POST /sync` if the anchor answers `why == "dseq"`.
+pub fn GroupConnector::post_message(
+  self : GroupConnector,
+  transport : ConnectTransport,
+  thread : ThreadRef,
+  markdown : String,
+  files : Array[OutboundFile] = [],
+) -> Result[String, String] {
+  if files.length() > GROUP_FILES_MAX {
+    return Err("group post carries at most " + GROUP_FILES_MAX.to_string() + " files")
+  }
+  let (space, topic) = group_stream_of(thread)
+  let file_refs : Array[base_codec::Json] = []
+  for i in 0..<files.length() {
+    match group_upload_file(self, transport, space, files[i]) {
+      Ok(fref) => file_refs.push(fref)
+      Err(e) => return Err(e)
+    }
+  }
+
+  let body_obj = base_codec::json_obj([
+    ("text", base_codec::json_str(markdown)),
+    ("files", base_codec::json_arr(file_refs)),
+  ])
+
+  for again in 0..<2 {
+    let (cur_dseq, cur_prev) = match self.device_state.get(space) {
+      Some(st) => (st.dseq, st.prev)
+      None => (0.to_int64(), "")
+    }
+    let next_dseq = cur_dseq + 1.to_int64()
+    let (hlc_ms, hlc_n) = self.hlc.next((transport.now_ms)())
+    let (ev_id, signed_ev) = match group_sign_event(
+      self.seed_hex,
+      space,
+      self.bot_user_id,
+      next_dseq,
+      hlc_ms,
+      hlc_n,
+      cur_prev,
+      topic,
+      "msg.post",
+      body_obj,
+    ) {
+      Ok(pair) => pair
+      Err(e) => return Err(e)
+    }
+    self.device_state.set(space, SpaceDeviceState::{ dseq: next_dseq, prev: ev_id })
+
+    let req_body = base_codec::json_stringify(
+      base_codec::json_obj([("events", base_codec::json_arr([signed_ev]))]),
+    )
+    let resp = (transport.fetch)(
+      HttpRequest::new(
+        "POST",
+        self.anchor_url + "/events",
+        [("content-type", "application/json; charset=utf-8")],
+        Some(req_body.to_bytes()),
+        30000.to_int64(),
+      ),
+    )
+    match resp.error {
+      Some(e) => return Err("group post: " + e)
+      None => {}
+    }
+    if resp.status != 200 {
+      return Err("group post: HTTP " + resp.status.to_string())
+    }
+    let parsed = match base_codec::json_parse(bytes_to_string(resp.body)) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(e) => return Err("group post: invalid json (" + e + ")")
+    }
+    let first_res = match base_codec::json_get(parsed, "results") {
+      Some(base_codec::Json::Arr(arr)) => {
+        if arr.length() > 0 { arr[0] } else { base_codec::json_null() }
+      }
+      _ => base_codec::json_null()
+    }
+    match json_safe_count_field(first_res, "aseq") {
+      Some(aseq) => return Ok(aseq.to_string())
+      None => {}
+    }
+    let why = json_str_field(first_res, "why")
+    if why == "dseq" && again == 0 {
+      match group_sync_dseq(self, transport, space) {
+        Ok(_) => continue
+        Err(e) => return Err(e)
+      }
+    }
+    let reason = if why != "" { why } else { "refused" }
+    return Err("the anchor did not take the message (" + reason + ")")
+  }
+  Err("group post: retries exhausted")
+}

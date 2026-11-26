@@ -1,0 +1,476 @@
+// SPEAKS guard, visibility classification, and call-context isolation gates.
+// 1:1 aligned with `station/src/tools/mcp.ts` and `station/test/speaks.test.ts`.
+
+import "base_codec"
+
+/// Tools that reach outside the station, refused while unbound from a workspace.
+pub fn outward_tools() -> Array[String] {
+  [
+    "chat_post",
+    "slack_api",
+    "job_start",
+    "station_list",
+    "station_task",
+    "station_file",
+    "peer_forward",
+    "project_manage",
+  ]
+}
+
+/// Refusal message returned for outward tool calls while the station is unbound.
+pub let UNBOUND_REFUSAL : String = "Refused: this station is not in a still.fail workspace right now (it was removed from it, or has not joined one), so it does not post to chats or Slack, call Slack, or start jobs. Nothing was sent. Stop here and do not retry: when the station is back in its workspace, the interrupted work resumes and you can post then."
+
+/// Tools declared first regardless of runtime tool budget.
+pub fn core_tools() -> Array[String] {
+  [
+    "chat_post",
+    "chat_state",
+    "chat_history",
+    "chat_read",
+    "job_start",
+    "job_log",
+    "job_list",
+    "job_stop",
+    "station_task",
+    "station_file",
+    "skill_read",
+  ]
+}
+
+/// Tools declared next when fitting a runtime budget, before sorting the rest by size.
+pub fn priority_tools() -> Array[String] {
+  [
+    "search",
+    "chat_list",
+    "chat_create",
+    "session_send",
+    "chat_configure",
+    "chat_archive",
+    "session_history",
+    "station_list",
+    "device_list",
+    "device_use",
+    "browser",
+    "screen",
+    "secret_list",
+    "secret_use",
+    "secret_run",
+  ]
+}
+
+/// Superseded tools omitted from tools/list and station_tool, yet kept callable for older sessions.
+pub fn hidden_tools() -> Array[String] {
+  ["adb_devices", "phone_use", "secret_reask", "station_retire"]
+}
+
+/// Tools called on every turn (marked always-loaded for runtimes that defer tool loading).
+pub fn every_turn_tools() -> Array[String] {
+  ["chat_post", "chat_state"]
+}
+
+/// Tools by which a session speaks or acts in chats as itself (refused for subagents).
+pub fn speaks_tools() -> Array[String] {
+  [
+    "chat_post",
+    "chat_state",
+    "session_send",
+    "chat_create",
+    "chat_leave",
+    "chat_archive",
+    "chat_configure",
+    "project_manage",
+  ]
+}
+
+/// Tool that speaks only when its method writes (refused for subagents on write/stream methods).
+pub let SPEAKS_WRITING : String = "slack_api"
+
+/// Tool that exposes undeclared tools when a runtime budget truncates the list.
+pub let INDIRECT_TOOL : String = "station_tool"
+
+/// Default tool-list byte budget for Antigravity CLI (`AGY_TOOL_BUDGET`).
+pub let AGY_TOOL_BUDGET : Int = 22000
+
+/// Tools that post/close/renew approval cards or send feedback (not blocked for subagents).
+pub fn asks_tools() -> Array[String] {
+  [
+    "secret_use",
+    "secret_save",
+    "secret_describe",
+    "secret_delete",
+    "secret_reask",
+    "secret_cancel",
+    "sign_in",
+    "login",
+    "station_use",
+    "device_use",
+    "phone_use",
+    "station_retire",
+    "station_move",
+    "feedback_send",
+    "feedback_reply",
+    "mcp_servers",
+  ]
+}
+
+/// Quiet tools that neither speak in chats nor post approval cards.
+pub fn quiet_tools() -> Array[String] {
+  [
+    "chat_history",
+    "chat_list",
+    "chat_read",
+    "session_history",
+    "archive_policy",
+    "station_list",
+    "station_task",
+    "station_file",
+    "workspace_limit",
+    "job_start",
+    "job_list",
+    "job_log",
+    "job_stop",
+    "screen",
+    "permissions",
+    "computer",
+    "peer_forward",
+    "relays",
+    "phone_send",
+    "adb_devices",
+    "browser",
+    "device_list",
+    "device_control",
+    "feishu_api",
+    "skill_read",
+    "search",
+    "secret_list",
+    "secret_run",
+    "station_version",
+  ]
+}
+
+/// Slack Web API methods (or method prefixes) that write to a thread.
+pub fn slack_writes() -> Array[String] {
+  [
+    "chat.postMessage",
+    "chat.postEphemeral",
+    "chat.scheduleMessage",
+    "chat.update",
+    "chat.delete",
+    "chat.meMessage",
+    "reactions.add",
+    "reactions.remove",
+    "pins.add",
+    "pins.remove",
+    "files.completeUploadExternal",
+    "assistant.threads.",
+  ]
+}
+
+/// Slack Web API methods a subagent is kept from (writes + stream methods).
+pub fn slack_spoken() -> Array[String] {
+  let out = slack_writes()
+  out.push("chat.startStream")
+  out.push("chat.appendStream")
+  out.push("chat.stopStream")
+  out
+}
+
+pub enum ToolSpeechClass {
+  Speak
+  SpeaksInWrites
+  Asks
+  Quiet
+  Unknown
+}
+
+pub fn str_in_list(list : Array[String], needle : String) -> Bool {
+  for i in 0..<list.length() {
+    if list[i] == needle {
+      return true
+    }
+  }
+  false
+}
+
+pub fn str_starts_with(s : String, prefix : String) -> Bool {
+  if prefix.length() > s.length() {
+    return false
+  }
+  for i in 0..<prefix.length() {
+    if s.code_unit_at(i) != prefix.code_unit_at(i) {
+      return false
+    }
+  }
+  true
+}
+
+/// Count UTF-16 code units of a UTF-8 string (matches JS `String.prototype.length`).
+pub fn utf16_len(s : String) -> Int {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let mut i = 0
+  let mut u16 = 0
+  while i < n {
+    let b = raw[i].to_int()
+    if b < 0x80 {
+      i += 1
+      u16 += 1
+    } else if (b & 0xE0) == 0xC0 {
+      i += 2
+      u16 += 1
+    } else if (b & 0xF0) == 0xE0 {
+      i += 3
+      u16 += 1
+    } else if (b & 0xF8) == 0xF0 {
+      i += 4
+      u16 += 2
+    } else {
+      i += 1
+      u16 += 1
+    }
+  }
+  u16
+}
+
+/// Truncate `s` to at most `max_u16` UTF-16 code units without splitting any UTF-8 character
+/// or surrogate pair.
+pub fn slice_utf16_safe(s : String, max_u16 : Int) -> String {
+  if max_u16 <= 0 {
+    return ""
+  }
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let mut i = 0
+  let mut u16 = 0
+  while i < n {
+    let b = raw[i].to_int()
+    let (step, units) = if b < 0x80 {
+      (1, 1)
+    } else if (b & 0xE0) == 0xC0 {
+      (2, 1)
+    } else if (b & 0xF0) == 0xE0 {
+      (3, 1)
+    } else if (b & 0xF8) == 0xF0 {
+      (4, 2)
+    } else {
+      (1, 1)
+    }
+    if u16 + units > max_u16 || i + step > n {
+      break
+    }
+    i += step
+    u16 += units
+  }
+  if i == n {
+    return s
+  }
+  let sb = StringBuilder::new()
+  for k in 0..<i {
+    sb.write_byte(raw[k])
+  }
+  sb.to_string()
+}
+
+/// Strict RFC 3629 UTF-8 validation over raw bytes (rejects overlong sequences, surrogates, > U+10FFFF).
+pub fn is_valid_utf8_bytes(buf : Array[Byte]) -> Bool {
+  let n = buf.length()
+  let mut i = 0
+  while i < n {
+    let b0 = buf[i].to_int()
+    if b0 < 0x80 {
+      i += 1
+    } else if b0 >= 0xC2 && b0 <= 0xDF {
+      if i + 1 >= n {
+        return false
+      }
+      let b1 = buf[i + 1].to_int()
+      if (b1 & 0xC0) != 0x80 {
+        return false
+      }
+      i += 2
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+      if i + 2 >= n {
+        return false
+      }
+      let b1 = buf[i + 1].to_int()
+      let b2 = buf[i + 2].to_int()
+      if (b2 & 0xC0) != 0x80 {
+        return false
+      }
+      if b0 == 0xE0 {
+        if b1 < 0xA0 || b1 > 0xBF {
+          return false
+        }
+      } else if b0 == 0xED {
+        if b1 < 0x80 || b1 > 0x9F {
+          return false
+        }
+      } else {
+        if (b1 & 0xC0) != 0x80 {
+          return false
+        }
+      }
+      i += 3
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+      if i + 3 >= n {
+        return false
+      }
+      let b1 = buf[i + 1].to_int()
+      let b2 = buf[i + 2].to_int()
+      let b3 = buf[i + 3].to_int()
+      if (b2 & 0xC0) != 0x80 || (b3 & 0xC0) != 0x80 {
+        return false
+      }
+      if b0 == 0xF0 {
+        if b1 < 0x90 || b1 > 0xBF {
+          return false
+        }
+      } else if b0 == 0xF4 {
+        if b1 < 0x80 || b1 > 0x8F {
+          return false
+        }
+      } else {
+        if (b1 & 0xC0) != 0x80 {
+          return false
+        }
+      }
+      i += 4
+    } else {
+      return false
+    }
+  }
+  true
+}
+
+pub fn is_outward(name : String, tool_outward : Bool) -> Bool {
+  tool_outward || str_in_list(outward_tools(), name)
+}
+
+pub fn is_core(name : String) -> Bool {
+  str_in_list(core_tools(), name)
+}
+
+pub fn is_priority(name : String) -> Bool {
+  str_in_list(priority_tools(), name)
+}
+
+pub fn is_hidden(name : String) -> Bool {
+  str_in_list(hidden_tools(), name)
+}
+
+pub fn is_every_turn(name : String) -> Bool {
+  str_in_list(every_turn_tools(), name)
+}
+
+pub fn is_speaks(name : String) -> Bool {
+  str_in_list(speaks_tools(), name)
+}
+
+pub fn is_slack_write(method : String) -> Bool {
+  let writes = slack_writes()
+  for i in 0..<writes.length() {
+    if str_starts_with(method, writes[i]) {
+      return true
+    }
+  }
+  false
+}
+
+pub fn speaks_in_slack(method : String) -> Bool {
+  let spoken = slack_spoken()
+  for i in 0..<spoken.length() {
+    if str_starts_with(method, spoken[i]) {
+      return true
+    }
+  }
+  false
+}
+
+pub fn classify_tool_speech(name : String) -> ToolSpeechClass {
+  if str_in_list(speaks_tools(), name) {
+    ToolSpeechClass::Speak
+  } else if name == SPEAKS_WRITING {
+    ToolSpeechClass::SpeaksInWrites
+  } else if str_in_list(asks_tools(), name) {
+    ToolSpeechClass::Asks
+  } else if str_in_list(quiet_tools(), name) {
+    ToolSpeechClass::Quiet
+  } else {
+    ToolSpeechClass::Unknown
+  }
+}
+
+/// Caller context used by the `/mcp` endpoint's workspace gate (`station/src/tools/mcp.ts`).
+/// Subagent `SPEAKS` isolation is enforced in each runtime driver's hook layer rather than by
+/// session token on `/mcp`, because subagent calls arrive with the parent session's bearer token.
+pub struct CallContext {
+  pub session : String
+  pub unbound_reason : Option[String]
+}
+
+pub fn default_call_context(session : String) -> CallContext {
+  CallContext::{ session: session, unbound_reason: None }
+}
+
+/// Returns `Some(refusal_text)` when an outward tool call is blocked while the station is unbound
+/// from its workspace (`station/src/tools/mcp.ts:292-298`); `None` when allowed.
+pub fn check_call_guard(
+  ctx : CallContext,
+  tool_name : String,
+  tool_outward : Bool,
+  _args : base_codec::Json,
+) -> Option[String] {
+  if is_outward(tool_name, tool_outward) {
+    match ctx.unbound_reason {
+      Some(why) => return Some(why)
+      None => ()
+    }
+  }
+  None
+}
+
+/// Whether `tool_name` is included in `tools/list` (`!HIDDEN`, 1:1 with `mcp.ts:231`).
+pub fn is_visible_in_context(_ctx : CallContext, tool_name : String) -> Bool {
+  !is_hidden(tool_name)
+}
+
+/// Claude Code `_meta` marking EVERY_TURN tools always loaded.
+pub fn claude_tool_loaded_meta() -> base_codec::Json {
+  base_codec::json_obj([("anthropic/alwaysLoad", base_codec::json_bool(true))])
+}
+
+/// Claude Code `_meta` ending the turn on a successful tool result.
+pub fn claude_turn_ended_meta() -> base_codec::Json {
+  base_codec::json_obj([("claude/endTurn", base_codec::json_bool(true))])
+}
+
+/// Runtime-specific listing options (`station/src/sessions/agents.ts` `listingFor`).
+pub struct Listing {
+  pub budget : Option[Int]
+  pub loaded : Option[base_codec::Json]
+  pub ended : Option[base_codec::Json]
+}
+
+pub fn empty_listing() -> Listing {
+  Listing::{ budget: None, loaded: None, ended: None }
+}
+
+pub fn listing_for(runtime : String, tui : Bool) -> Option[Listing] {
+  if runtime == "agy" {
+    Some(Listing::{ budget: Some(AGY_TOOL_BUDGET), loaded: None, ended: None })
+  } else if runtime == "claude" {
+    if tui {
+      Some(Listing::{ budget: None, loaded: Some(claude_tool_loaded_meta()), ended: None })
+    } else {
+      Some(
+        Listing::{
+          budget: None,
+          loaded: Some(claude_tool_loaded_meta()),
+          ended: Some(claude_turn_ended_meta()),
+        },
+      )
+    }
+  } else {
+    None
+  }
+}

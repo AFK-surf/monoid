@@ -1,0 +1,381 @@
+///| Pure Pion port of `station/src/rig/log.ts`:
+///| Structured JSONL command audit log with bounded truncation, size-based `.1` rotation,
+///| and tail-bounded newest-first reader.
+
+import "form"
+
+///| The file goes to `.1` past this, the one before it gone.
+pub let command_log_file_max : Int64 = 4194304.to_int64() // 4 * 1024 * 1024
+///| A line's command is cut to this (what was run in full is in the task's own record).
+pub let command_log_command_max : Int = 2000
+///| The most of the file's end read for its last lines.
+pub let command_log_tail_bytes : Int64 = 262144.to_int64() // 256 * 1024
+
+pub enum CommandKind {
+  Task
+  Secret
+  Device
+}
+
+pub fn command_kind_str(k : CommandKind) -> String {
+  match k {
+    CommandKind::Task => "task"
+    CommandKind::Secret => "secret"
+    CommandKind::Device => "device"
+  }
+}
+
+pub fn parse_command_kind(s : String) -> Option[CommandKind] {
+  if s == "task" {
+    Some(CommandKind::Task)
+  } else if s == "secret" {
+    Some(CommandKind::Secret)
+  } else if s == "device" {
+    Some(CommandKind::Device)
+  } else {
+    None
+  }
+}
+
+pub struct Command {
+  pub at : Int64
+  pub workspace : Option[String]
+  pub station : String
+  pub session : String
+  pub key : String
+  pub name : String
+  pub command : String
+  pub kind : CommandKind
+}
+
+pub fn command_to_json(c : Command) -> form::Json {
+  let out : Array[(String, form::Json)] = [
+    ("at", form::Json::Num(c.at.to_double())),
+  ]
+  match c.workspace {
+    Some(ws) => out.push(("workspace", form::Json::Str(ws)))
+    None => ()
+  }
+  out.push(("station", form::Json::Str(c.station)))
+  out.push(("session", form::Json::Str(c.session)))
+  out.push(("key", form::Json::Str(c.key)))
+  out.push(("name", form::Json::Str(c.name)))
+  out.push(("command", form::Json::Str(c.command)))
+  out.push(("kind", form::Json::Str(command_kind_str(c.kind))))
+  form::Json::Obj(out)
+}
+
+pub fn parse_command(v : form::Json) -> Option[Command] {
+  let entries = match v {
+    form::Json::Obj(m) => m
+    _ => return None
+  }
+  let at = match form::json_obj_get(entries, "at") {
+    Some(form::Json::Num(n)) => n.to_int64()
+    _ => return None
+  }
+  let workspace : Option[String] = match form::json_obj_get(entries, "workspace") {
+    Some(form::Json::Str(s)) => Some(s)
+    None | Some(form::Json::Null) => None
+    _ => return None
+  }
+  let station = match form::json_obj_get(entries, "station") {
+    Some(form::Json::Str(s)) => s
+    _ => return None
+  }
+  let session = match form::json_obj_get(entries, "session") {
+    Some(form::Json::Str(s)) => s
+    _ => return None
+  }
+  let key = match form::json_obj_get(entries, "key") {
+    Some(form::Json::Str(s)) => s
+    _ => return None
+  }
+  let name = match form::json_obj_get(entries, "name") {
+    Some(form::Json::Str(s)) => s
+    _ => return None
+  }
+  let command = match form::json_obj_get(entries, "command") {
+    Some(form::Json::Str(s)) => s
+    _ => return None
+  }
+  let kind = match form::json_obj_get(entries, "kind") {
+    Some(form::Json::Str(s)) => {
+      match parse_command_kind(s) {
+        Some(k) => k
+        None => return None
+      }
+    }
+    _ => return None
+  }
+  Some(Command::{
+    at: at,
+    workspace: workspace,
+    station: station,
+    session: session,
+    key: key,
+    name: name,
+    command: command,
+    kind: kind,
+  })
+}
+
+///| Abstract file I/O backend for `CommandLog` (wired to real fs in assembly, or `MemLogBackend` in tests).
+///| Wiring contract: `append` MUST create/write the log file with private `0600` permissions (owner-only),
+///| and `rename` MUST atomically rotate `<path>` -> `<path>.1`.
+pub struct LogBackend {
+  /// Ensure parent directories exist (best-effort).
+  pub ensure_dir : (String) -> Bool
+  /// Current file size in bytes (0 if missing).
+  pub stat_size : (String) -> Int64
+  /// Atomically rename `from` -> `to`.
+  pub rename : (String, String) -> Bool
+  /// Append bytes to file (creating with 0o600 if absent).
+  pub append : (String, Bytes) -> Bool
+  /// Read up to `max_bytes` from the tail of `path`. Returns `Some((bytes, started_from_offset))`.
+  pub read_tail : (String, Int64) -> Option[(Bytes, Int64)]
+}
+
+///| In-memory `LogBackend` for deterministic testing of append, rotation, and tail reads.
+pub struct MemLogFs {
+  pub files : Map[String, Array[Byte]]
+  pub mut fail_writes : Bool
+}
+
+pub fn MemLogFs::new() -> MemLogFs {
+  MemLogFs::{ files: Map::new(), fail_writes: false }
+}
+
+pub fn MemLogFs::get_string(self : MemLogFs, path : String) -> Option[String] {
+  match self.files.get(path) {
+    Some(buf) => {
+      let sb = StringBuilder::new()
+      let mut i = 0
+      while i < buf.length() {
+        sb.write_byte(buf[i])
+        i = i + 1
+      }
+      Some(sb.to_string())
+    }
+    None => None
+  }
+}
+
+pub fn MemLogFs::backend(self : MemLogFs) -> LogBackend {
+  LogBackend::{
+    ensure_dir: fn(_path : String) -> Bool { true },
+    stat_size: fn(path : String) -> Int64 {
+      match self.files.get(path) {
+        Some(buf) => buf.length().to_int64()
+        None => 0.to_int64()
+      }
+    },
+    rename: fn(from : String, to : String) -> Bool {
+      if self.fail_writes {
+        return false
+      }
+      match self.files.get(from) {
+        Some(buf) => {
+          self.files.set(to, buf)
+          self.files.remove(from)
+          true
+        }
+        None => false
+      }
+    },
+    append: fn(path : String, data : Bytes) -> Bool {
+      if self.fail_writes {
+        return false
+      }
+      let buf = match self.files.get(path) {
+        Some(b) => b
+        None => {
+          let fresh : Array[Byte] = []
+          self.files.set(path, fresh)
+          fresh
+        }
+      }
+      let mut i = 0
+      while i < data.length() {
+        buf.push(data[i])
+        i = i + 1
+      }
+      true
+    },
+    read_tail: fn(path : String, max_bytes : Int64) -> Option[(Bytes, Int64)] {
+      let buf = match self.files.get(path) {
+        Some(b) => b
+        None => return None
+      }
+      let size = buf.length().to_int64()
+      let from = if size > max_bytes { size - max_bytes } else { 0.to_int64() }
+      let len = (size - from).to_int()
+      let out = Bytes::new(len)
+      let start = from.to_int()
+      let mut i = 0
+      while i < len {
+        out[i] = buf[start + i]
+        i = i + 1
+      }
+      Some((out, from))
+    },
+  }
+}
+
+///| Truncate a UTF-8/WTF-8 string to at most `max_units` UTF-16 code units without splitting
+///| multi-byte UTF-8 sequences or surrogate pairs (e.g. 1999 ASCII + a 2-unit emoji truncates
+///| to 1999 rather than emitting an unpaired high surrogate), guaranteeing valid UTF-8 output.
+pub fn truncate_utf16(s : String, max_units : Int) -> String {
+  if max_units <= 0 {
+    return ""
+  }
+  let n = s.length()
+  let mut i = 0
+  let mut units = 0
+  while i < n {
+    let b0 = s.code_unit_at(i)
+    let (step, add_units) = if b0 < 0x80 {
+      (1, 1)
+    } else if b0 < 0xE0 && i + 1 < n {
+      (2, 1)
+    } else if b0 < 0xF0 && i + 2 < n {
+      (3, 1)
+    } else if i + 3 < n {
+      (4, 2)
+    } else {
+      (1, 1)
+    }
+    if units + add_units > max_units {
+      break
+    }
+    units = units + add_units
+    i = i + step
+  }
+  if i == n {
+    s
+  } else {
+    s.slice(0, i)
+  }
+}
+
+fn bytes_to_lines(data : Bytes) -> Array[String] {
+  let out : Array[String] = []
+  let mut sb = StringBuilder::new()
+  let mut i = 0
+  while i < data.length() {
+    let b = data[i]
+    if b.to_int() == 10 {
+      out.push(sb.to_string())
+      sb = StringBuilder::new()
+    } else {
+      sb.write_byte(b)
+    }
+    i = i + 1
+  }
+  out.push(sb.to_string())
+  out
+}
+
+pub struct CommandLog {
+  pub path : String
+  pub file_max : Int64
+  pub tail_bytes : Int64
+  backend : LogBackend
+}
+
+pub fn CommandLog::new(path : String, backend : LogBackend) -> CommandLog {
+  let _ = (backend.ensure_dir)(path)
+  CommandLog::{
+    path: path,
+    file_max: command_log_file_max,
+    tail_bytes: command_log_tail_bytes,
+    backend: backend,
+  }
+}
+
+pub fn CommandLog::with_limits(
+  path : String,
+  backend : LogBackend,
+  file_max : Int64,
+  tail_bytes : Int64,
+) -> CommandLog {
+  let _ = (backend.ensure_dir)(path)
+  CommandLog::{
+    path: path,
+    file_max: file_max,
+    tail_bytes: tail_bytes,
+    backend: backend,
+  }
+}
+
+///| Append a structured command record (truncating `command` to `command_log_command_max`,
+///| rotating `<path>` -> `<path>.1` when size > `file_max`). Best-effort on write errors.
+pub fn CommandLog::add(self : CommandLog, c : Command) -> Unit {
+  let clipped = Command::{
+    at: c.at,
+    workspace: c.workspace,
+    station: c.station,
+    session: c.session,
+    key: c.key,
+    name: c.name,
+    command: truncate_utf16(c.command, command_log_command_max),
+    kind: c.kind,
+  }
+  let line = form::json_stringify(command_to_json(clipped)) + "\n"
+  let size = (self.backend.stat_size)(self.path)
+  if size > self.file_max {
+    let _ = (self.backend.rename)(self.path, self.path + ".1")
+  }
+  let _ = (self.backend.append)(self.path, line.to_bytes())
+}
+
+///| Read the last `limit` command records, newest first.
+///| When `workspace` is `Some(ws)`, returns only records of that workspace
+///| (plus legacy records without `workspace` when `include_legacy` is true).
+pub fn CommandLog::last(
+  self : CommandLog,
+  limit : Int,
+  workspace : Option[String],
+  include_legacy : Bool,
+) -> Array[Command] {
+  if limit <= 0 {
+    return []
+  }
+  let (data, from) = match (self.backend.read_tail)(self.path, self.tail_bytes) {
+    Some(pair) => pair
+    None => return []
+  }
+  let lines = bytes_to_lines(data)
+  let start_idx = if from > 0.to_int64() { 1 } else { 0 }
+  let out : Array[Command] = []
+  let mut i = lines.length() - 1
+  while i >= start_idx && out.length() < limit {
+    let line = lines[i]
+    if line != "" {
+      match form::parse_json(line) {
+        Ok(jval) => {
+          match parse_command(jval) {
+            Some(cmd) => {
+              let keep = match workspace {
+                None => true
+                Some(ws) => {
+                  match cmd.workspace {
+                    Some(cws) => cws == ws
+                    None => include_legacy
+                  }
+                }
+              }
+              if keep {
+                out.push(cmd)
+              }
+            }
+            None => ()
+          }
+        }
+        Err(_) => ()
+      }
+    }
+    i = i - 1
+  }
+  out
+}

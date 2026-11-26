@@ -567,7 +567,14 @@ test "Chat Activity Anti-Silent-Snap: Fold->Float->Spit->Return fades ring durin
     { "path": ["messages"], "key": ["seq", "outgoing"], "put": cam_agent_msg_json(351, cam_progress_msg, "") },
   ])
   t.draw()
-  t.run_for(@ui.move_most_ms * 5.0)
+  // At low frame rates the first visible disc can already be close to its resting position.
+  let middle = @sfbase.Pose::Fold.ms() + @sfbase.Pose::Float.ms() / 2.0
+  t.run_for_exact(middle)
+  let middle_y = match float_ys.last() {
+    Some((at, y)) if at == t.time() => y
+    _ => fail("avatar disc missing halfway through Float")
+  }
+  t.run_for(@ui.move_most_ms * 5.0 - middle)
   t.each_frame(None)
   assert_true(msg_appeared, msg="progress message never appeared")
   let dt = if float_ys.length() >= 2 { p4_step_dt(float_ys) } else { 16.7 }
@@ -580,8 +587,8 @@ test "Chat Activity Anti-Silent-Snap: Fold->Float->Spit->Return fades ring durin
   let rest_y = float_ys[float_ys.length() - 1].1
   let from_y = init_wy
   assert_true(
-    float_ys[0].1 > rest_y + 5.0,
-    msg="Float avatar first sample y=\{float_ys[0].1} was not below rest_y=\{rest_y} (missed Float flight)",
+    middle_y > rest_y + 5.0,
+    msg="Float avatar halfway through the flight y=\{middle_y} was not below rest_y=\{rest_y} (missed Float flight)",
   )
   let lo = @sf.dmin(from_y, rest_y) - 1.5
   let hi = @sf.dmax(from_y, rest_y) + 1.5
@@ -603,10 +610,8 @@ test "Chat Activity Anti-Silent-Snap: Fold->Float->Spit->Return fades ring durin
     max_step <= max_step_limit,
     msg="Float avatar snapped with single-frame jump=\{max_step}pt > \{max_step_limit}pt @dt=\{dt}ms",
   )
-  if dt <= 50.0 {
-    assert_true(
-      saw_soft_disc,
-      msg="Float avatar neutral disc popped in without bare_from smooth fade @dt=\{dt}ms neutral_bg=\{neutral_bg} samples=\{Repr(disc_samples)}",
-    )
-  }
+  assert_true(
+    saw_soft_disc,
+    msg="Float avatar neutral disc popped in without bare_from smooth fade @dt=\{dt}ms neutral_bg=\{neutral_bg} samples=\{Repr(disc_samples)}",
+  )
 }
