@@ -258,11 +258,12 @@ static void test_win_proc_and_pty(void) {
     drain_queue();
 
     // 2. Full-queue non-blocking sts_proc_close (adversarial deadlock regression).
-    // Pre-fill bounded queue to just below 2 MiB (31 * 64 KiB, never self-blocks consumer),
+    // Pre-fill bounded queue to exact 2 MiB (32 * 64 KiB = STH_SYS_DATA_MOST, never self-blocks
+    // consumer because sth_push_sys_bounded only blocks when already >= STH_SYS_DATA_MOST),
     // then spawn flooder and deterministically wait until reader parks in sth_push_sys_bounded.
     uint8_t junk[65536];
     memset(junk, 'x', sizeof(junk));
-    for (int i = 0; i < 31; i++) {
+    for (int i = 0; i < 32; i++) {
         sth_push_sys_bounded(999, junk, sizeof(junk));
     }
     const uint8_t flood_args[] = "/c\0for /L %i in (1,1,8000) do @echo FLOOD_LINE_0123456789012345678901234567890123456789\0";
@@ -287,6 +288,7 @@ static void test_win_proc_and_pty(void) {
     }
     assert(sts_active_workers() == 0);
     drain_queue();
+    assert(sts_wait_detached_for_test(5000) == 1);
 
     // 3. ConPTY: STS_SIG_PROBE must NOT kill the child; write + resize + close work.
     const uint8_t pty_args[] = "/k\0echo PTY_READY\0";
@@ -862,12 +864,13 @@ static void test_proc_adversarial(void) {
     assert(waitpid((pid_t)spid, &st, WNOHANG) == -1 && errno == ECHILD);
     drain_queue();
 
-    // 5. Full 2 MiB bounded queue deadlock regression: saturate > 2 MiB so reader parks in
-    //    sth_push_sys_bounded, verify sts_proc_close returns < 100ms before draining, then drain
-    //    and verify SIGPIPE + reaper finish cleanly with zero zombies.
+    // 5. Full 2 MiB bounded queue deadlock regression: saturate exact 2 MiB (32 * 64 KiB =
+    //    STH_SYS_DATA_MOST) so reader's first sth_push_sys_bounded is guaranteed to park,
+    //    verify sts_proc_close returns < 100ms before draining, then drain and verify
+    //    SIGPIPE + reaper finish cleanly with zero zombies.
     uint8_t junk[65536];
     memset(junk, 'Z', sizeof(junk));
-    for (int i = 0; i < 31; i++) {
+    for (int i = 0; i < 32; i++) {
         sth_push_sys_bounded(999, junk, sizeof(junk));
     }
     const char *flood_script = "dd if=/dev/zero bs=65536 count=128 2>/dev/null";
@@ -913,10 +916,45 @@ static void test_proc_adversarial(void) {
     }
     assert(sts_active_workers() == 0);
     drain_queue();
+    assert(sts_wait_detached_for_test(5000) == 1);
     assert(waitpid((pid_t)fpid, &st, WNOHANG) == -1 && errno == ECHILD);
     assert(waitpid((pid_t)zpid, &st, WNOHANG) == -1 && errno == ECHILD);
 
-    printf("  [PASS] adv: empty env, PATH/rel-cwd, stdout-close EPIPE (N1), full-queue <100ms close, zero zombies\n");
+    // 6. Deleted cwd regression (N6): when process cwd is removed, PATH lookup for
+    //    absolute entries (e.g. /usr/bin/true) must still succeed with cwd=NULL.
+    {
+        int orig_cwd = open(".", O_RDONLY);
+        assert(orig_cwd >= 0);
+        char gone_dir[256];
+        snprintf(gone_dir, sizeof(gone_dir), "/tmp/sts_n6_gone_%d_%lld", (int)getpid(), (long long)sth_now_ms());
+        assert(mkdir(gone_dir, 0700) == 0);
+        assert(chdir(gone_dir) == 0);
+        assert(rmdir(gone_dir) == 0);
+        int64_t n6_pid = 0;
+        int64_t n6_h = sts_proc_spawn(
+            216, "true", NULL, 0, NULL, 0, NULL, 0, &n6_pid, err, sizeof(err));
+        assert(fchdir(orig_cwd) == 0);
+        close(orig_cwd);
+        assert(n6_h > 0 && n6_pid > 0);
+        int n6_exited = 0, n6_code = -1;
+        dl = sth_now_ms() + 5000;
+        while (!n6_exited && sth_now_ms() < dl) {
+            int64_t len = 0;
+            uint8_t *ev = (uint8_t *)sth_wait(500, &len);
+            if (ev == NULL) continue;
+            if (ev[0] == STH_EV_SYS && read_u64_le(ev + 1) == 216 && len >= 18 && ev[9] == STS_EV_PROC_EXIT) {
+                n6_code = read_i32_le(ev + 10);
+                n6_exited = 1;
+            }
+            sth_free(ev);
+        }
+        assert(n6_exited == 1 && n6_code == 0);
+        assert(sts_proc_close(n6_h) == 1);
+        assert(sts_wait_detached_for_test(5000) == 1);
+        drain_queue();
+    }
+
+    printf("  [PASS] adv: empty env, PATH/rel-cwd, deleted-cwd (N6), stdout-close EPIPE (N1), full-queue <100ms close, zero zombies\n");
 }
 
 // ---------------------------------------------------------------------------

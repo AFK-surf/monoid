@@ -343,25 +343,41 @@ int32_t sts_bounded_push_inflight_for_test(void) {
 #ifdef _WIN32
 static SRWLOCK g_det_lock = SRWLOCK_INIT;
 static CONDITION_VARIABLE g_det_cond = CONDITION_VARIABLE_INIT;
-static int64_t g_det_active = 0;
+static int64_t g_io_workers = 0;
+static int64_t g_reaper_workers = 0;
 
 int32_t sts_active_workers(void) {
     AcquireSRWLockExclusive(&g_det_lock);
-    int32_t n = (int32_t)g_det_active;
+    int32_t n = (int32_t)g_io_workers;
     ReleaseSRWLockExclusive(&g_det_lock);
     return n;
 }
 
 static void sts_detached_begin(void) {
     AcquireSRWLockExclusive(&g_det_lock);
-    g_det_active += 1;
+    g_io_workers += 1;
     ReleaseSRWLockExclusive(&g_det_lock);
 }
 
 static void sts_detached_end(void) {
     AcquireSRWLockExclusive(&g_det_lock);
-    g_det_active -= 1;
-    if (g_det_active == 0) {
+    g_io_workers -= 1;
+    if (g_io_workers == 0 && g_reaper_workers == 0) {
+        WakeAllConditionVariable(&g_det_cond);
+    }
+    ReleaseSRWLockExclusive(&g_det_lock);
+}
+
+static void sts_reaper_begin(void) {
+    AcquireSRWLockExclusive(&g_det_lock);
+    g_reaper_workers += 1;
+    ReleaseSRWLockExclusive(&g_det_lock);
+}
+
+static void sts_reaper_end(void) {
+    AcquireSRWLockExclusive(&g_det_lock);
+    g_reaper_workers -= 1;
+    if (g_io_workers == 0 && g_reaper_workers == 0) {
         WakeAllConditionVariable(&g_det_cond);
     }
     ReleaseSRWLockExclusive(&g_det_lock);
@@ -370,7 +386,7 @@ static void sts_detached_end(void) {
 int32_t sts_wait_detached_for_test(int64_t timeout_ms) {
     ULONGLONG start = GetTickCount64();
     AcquireSRWLockExclusive(&g_det_lock);
-    while (g_det_active > 0) {
+    while (g_io_workers > 0 || g_reaper_workers > 0) {
         if (timeout_ms <= 0) {
             break;
         }
@@ -381,7 +397,7 @@ int32_t sts_wait_detached_for_test(int64_t timeout_ms) {
         DWORD rem = (DWORD)(timeout_ms - (int64_t)elapsed);
         SleepConditionVariableSRW(&g_det_cond, &g_det_lock, rem, 0);
     }
-    int ok = (g_det_active == 0) ? 1 : 0;
+    int ok = (g_io_workers == 0 && g_reaper_workers == 0) ? 1 : 0;
     ReleaseSRWLockExclusive(&g_det_lock);
     return ok;
 }
@@ -396,15 +412,27 @@ static int win_spawn_detached_thread(LPTHREAD_START_ROUTINE fn, LPVOID arg) {
     CloseHandle(h);
     return 1;
 }
+
+static int win_spawn_reaper_thread(LPTHREAD_START_ROUTINE fn, LPVOID arg) {
+    sts_reaper_begin();
+    HANDLE h = CreateThread(NULL, 0, fn, arg, 0, NULL);
+    if (h == NULL) {
+        sts_reaper_end();
+        return 0;
+    }
+    CloseHandle(h);
+    return 1;
+}
 #else
 static pthread_mutex_t g_det_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_det_cond;
 static pthread_once_t g_det_once = PTHREAD_ONCE_INIT;
-static int64_t g_det_active = 0;
+static int64_t g_io_workers = 0;
+static int64_t g_reaper_workers = 0;
 
 int32_t sts_active_workers(void) {
     pthread_mutex_lock(&g_det_lock);
-    int32_t n = (int32_t)g_det_active;
+    int32_t n = (int32_t)g_io_workers;
     pthread_mutex_unlock(&g_det_lock);
     return n;
 }
@@ -422,15 +450,32 @@ static void sts_det_init_once(void) {
 static void sts_detached_begin(void) {
     pthread_once(&g_det_once, sts_det_init_once);
     pthread_mutex_lock(&g_det_lock);
-    g_det_active += 1;
+    g_io_workers += 1;
     pthread_mutex_unlock(&g_det_lock);
 }
 
 static void sts_detached_end(void) {
     pthread_once(&g_det_once, sts_det_init_once);
     pthread_mutex_lock(&g_det_lock);
-    g_det_active -= 1;
-    if (g_det_active == 0) {
+    g_io_workers -= 1;
+    if (g_io_workers == 0 && g_reaper_workers == 0) {
+        pthread_cond_broadcast(&g_det_cond);
+    }
+    pthread_mutex_unlock(&g_det_lock);
+}
+
+static void sts_reaper_begin(void) {
+    pthread_once(&g_det_once, sts_det_init_once);
+    pthread_mutex_lock(&g_det_lock);
+    g_reaper_workers += 1;
+    pthread_mutex_unlock(&g_det_lock);
+}
+
+static void sts_reaper_end(void) {
+    pthread_once(&g_det_once, sts_det_init_once);
+    pthread_mutex_lock(&g_det_lock);
+    g_reaper_workers -= 1;
+    if (g_io_workers == 0 && g_reaper_workers == 0) {
         pthread_cond_broadcast(&g_det_cond);
     }
     pthread_mutex_unlock(&g_det_lock);
@@ -441,7 +486,7 @@ int32_t sts_wait_detached_for_test(int64_t timeout_ms) {
     struct timespec start;
     clock_gettime(CLOCK_MONOTONIC, &start);
     pthread_mutex_lock(&g_det_lock);
-    while (g_det_active > 0) {
+    while (g_io_workers > 0 || g_reaper_workers > 0) {
         if (timeout_ms <= 0) {
             break;
         }
@@ -472,7 +517,7 @@ int32_t sts_wait_detached_for_test(int64_t timeout_ms) {
             break;
         }
     }
-    int ok = (g_det_active == 0) ? 1 : 0;
+    int ok = (g_io_workers == 0 && g_reaper_workers == 0) ? 1 : 0;
     pthread_mutex_unlock(&g_det_lock);
     return ok;
 }
@@ -487,6 +532,21 @@ static int spawn_detached_thread(void *(*fn)(void *), void *arg) {
     pthread_attr_destroy(&attr);
     if (rc != 0) {
         sts_detached_end();
+        return 0;
+    }
+    return 1;
+}
+
+static int spawn_reaper_thread(void *(*fn)(void *), void *arg) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    sts_reaper_begin();
+    pthread_t th;
+    int rc = pthread_create(&th, &attr, fn, arg);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+        sts_reaper_end();
         return 0;
     }
     return 1;
@@ -1210,7 +1270,7 @@ static DWORD WINAPI win_wait_thread(LPVOID arg) {
         }
     }
     win_proc_unref(p);
-    sts_detached_end();
+    sts_reaper_end();
     return 0;
 }
 
@@ -1517,7 +1577,7 @@ int64_t sts_proc_spawn(
     }
     if (workers_ok) {
         win_proc_ref(p);
-        if (!win_spawn_detached_thread(win_wait_thread, p)) {
+        if (!win_spawn_reaper_thread(win_wait_thread, p)) {
             win_proc_unref(p);
             workers_ok = 0;
         }
@@ -2255,7 +2315,7 @@ static DWORD WINAPI win_pty_wait_thread(LPVOID arg) {
         }
     }
     win_pty_unref(pt);
-    sts_detached_end();
+    sts_reaper_end();
     return 0;
 }
 
@@ -2430,7 +2490,7 @@ int64_t sts_pty_spawn(
     }
     if (workers_ok) {
         win_pty_ref(pt);
-        if (!win_spawn_detached_thread(win_pty_wait_thread, pt)) {
+        if (!win_spawn_reaper_thread(win_pty_wait_thread, pt)) {
             win_pty_unref(pt);
             workers_ok = 0;
         }
@@ -3918,13 +3978,14 @@ static void *posix_wait_thread(void *arg) {
             } while (wr < 0 && errno == EINTR);
         }
     } else {
-        // waitid failed (non-EINTR): block in waitpid WITHOUT holding kill_lock.
-        do {
-            wr = waitpid(p->pid, &status, 0);
-        } while (wr < 0 && errno == EINTR);
+        // waitid failed (non-EINTR): revoke handle-based kill permission BEFORE reaping
+        // so there is zero PID-reuse window, then block in waitpid without holding kill_lock.
         pthread_mutex_lock(&p->kill_lock);
         p->exited = 1;
         pthread_mutex_unlock(&p->kill_lock);
+        do {
+            wr = waitpid(p->pid, &status, 0);
+        } while (wr < 0 && errno == EINTR);
     }
 
     pthread_mutex_lock(&p->stdin_lock);
@@ -3941,7 +4002,7 @@ static void *posix_wait_thread(void *arg) {
         }
     }
     posix_proc_unref(p);
-    sts_detached_end();
+    sts_reaper_end();
     return NULL;
 }
 
@@ -4097,47 +4158,11 @@ static char *resolve_program_for_cwd(const char *program, char **envp, const cha
     size_t pl = strlen(program);
     char *dyn_base = NULL;
     const char *base_dir = NULL;
+    int base_resolved = 0;
+    int base_err = 0;
     if (cwd != NULL && cwd[0] == '/') {
         base_dir = cwd;
-    } else {
-        size_t cap = PATH_MAX;
-        char *gbuf = NULL;
-        for (;;) {
-            char *next = (char *)realloc(gbuf, cap);
-            if (next == NULL) {
-                free(gbuf);
-                if (out_err != NULL) *out_err = ENOMEM;
-                return NULL;
-            }
-            gbuf = next;
-            if (getcwd(gbuf, cap) != NULL) {
-                break;
-            }
-            if (errno != ERANGE || cap >= (1u << 20)) {
-                int e = errno;
-                free(gbuf);
-                if (out_err != NULL) *out_err = e;
-                return NULL;
-            }
-            cap *= 2;
-        }
-        if (cwd != NULL && cwd[0] != '\0') {
-            size_t gl = strlen(gbuf);
-            size_t cl = strlen(cwd);
-            dyn_base = (char *)malloc(gl + 1 + cl + 1);
-            if (dyn_base == NULL) {
-                free(gbuf);
-                if (out_err != NULL) *out_err = ENOMEM;
-                return NULL;
-            }
-            memcpy(dyn_base, gbuf, gl);
-            dyn_base[gl] = '/';
-            memcpy(dyn_base + gl + 1, cwd, cl + 1);
-            free(gbuf);
-        } else {
-            dyn_base = gbuf;
-        }
-        base_dir = dyn_base;
+        base_resolved = 1;
     }
 
     int saved_err = 0;
@@ -4154,6 +4179,59 @@ static char *resolve_program_for_cwd(const char *program, char **envp, const cha
                 memcpy(full + dl + 1, program, pl + 1);
             }
         } else {
+            // Lazily resolve process cwd only when a relative PATH entry is encountered;
+            // if getcwd fails (e.g. deleted cwd), skip relative entries and keep searching absolute ones.
+            if (!base_resolved) {
+                base_resolved = 1;
+                size_t cap = PATH_MAX;
+                char *gbuf = NULL;
+                for (;;) {
+                    char *next = (char *)realloc(gbuf, cap);
+                    if (next == NULL) {
+                        free(gbuf);
+                        base_err = ENOMEM;
+                        gbuf = NULL;
+                        break;
+                    }
+                    gbuf = next;
+                    if (getcwd(gbuf, cap) != NULL) {
+                        break;
+                    }
+                    if (errno != ERANGE || cap >= (1u << 20)) {
+                        base_err = errno;
+                        free(gbuf);
+                        gbuf = NULL;
+                        break;
+                    }
+                    cap *= 2;
+                }
+                if (gbuf != NULL) {
+                    if (cwd != NULL && cwd[0] != '\0') {
+                        size_t gl = strlen(gbuf);
+                        size_t cl = strlen(cwd);
+                        dyn_base = (char *)malloc(gl + 1 + cl + 1);
+                        if (dyn_base == NULL) {
+                            free(gbuf);
+                            base_err = ENOMEM;
+                        } else {
+                            memcpy(dyn_base, gbuf, gl);
+                            dyn_base[gl] = '/';
+                            memcpy(dyn_base + gl + 1, cwd, cl + 1);
+                            free(gbuf);
+                            base_dir = dyn_base;
+                        }
+                    } else {
+                        dyn_base = gbuf;
+                        base_dir = dyn_base;
+                    }
+                }
+            }
+            if (base_dir == NULL) {
+                if (saved_err == 0 && base_err != 0) saved_err = base_err;
+                if (end == NULL) break;
+                p = end + 1;
+                continue;
+            }
             size_t bl = strlen(base_dir);
             if (dl == 0) {
                 full = (char *)malloc(bl + 1 + pl + 1);
@@ -4396,7 +4474,7 @@ int64_t sts_proc_spawn(
     }
     if (workers_ok) {
         posix_proc_ref(p);
-        if (spawn_detached_thread(posix_wait_thread, p)) {
+        if (spawn_reaper_thread(posix_wait_thread, p)) {
             wait_started = 1;
         } else {
             posix_proc_unref(p);
@@ -5219,13 +5297,14 @@ static void *posix_pty_wait_thread(void *arg) {
             } while (wr < 0 && errno == EINTR);
         }
     } else {
-        // waitid failed (non-EINTR): block in waitpid WITHOUT holding kill_lock.
-        do {
-            wr = waitpid(pt->pid, &status, 0);
-        } while (wr < 0 && errno == EINTR);
+        // waitid failed (non-EINTR): revoke handle-based kill permission BEFORE reaping
+        // so there is zero PID-reuse window, then block in waitpid without holding kill_lock.
         pthread_mutex_lock(&pt->kill_lock);
         pt->exited = 1;
         pthread_mutex_unlock(&pt->kill_lock);
+        do {
+            wr = waitpid(pt->pid, &status, 0);
+        } while (wr < 0 && errno == EINTR);
     }
 
     if (wr == pt->pid && !atomic_load_explicit(&pt->closing, memory_order_acquire)) {
@@ -5237,7 +5316,7 @@ static void *posix_pty_wait_thread(void *arg) {
         }
     }
     posix_pty_unref(pt);
-    sts_detached_end();
+    sts_reaper_end();
     return NULL;
 }
 
@@ -5409,7 +5488,7 @@ int64_t sts_pty_spawn(
     }
     if (workers_ok) {
         posix_pty_ref(pt);
-        if (spawn_detached_thread(posix_pty_wait_thread, pt)) {
+        if (spawn_reaper_thread(posix_pty_wait_thread, pt)) {
             wait_started = 1;
         } else {
             posix_pty_unref(pt);

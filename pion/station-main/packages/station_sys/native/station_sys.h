@@ -22,6 +22,10 @@ extern "C" {
 //   to frames queued before `close`); callers must ignore frames for closed `event_id`s.
 // - Shutdown completion condition: the sole consumer loops draining `sth_wait` until
 //   both `sts_active_workers() == 0` and `sth_wait(0) == NULL`.
+// - Child processes meant to stop with the station should be terminated via
+//   `sts_proc_kill_handle` before `sts_proc_close`; background children intentionally
+//   left alive after `close` keep only a silent reaper (no events after `closing == 1`)
+//   which is excluded from `sts_active_workers()`.
 // ---------------------------------------------------------------------------
 
 // fs.watch events (pushed via sth_push_sys):
