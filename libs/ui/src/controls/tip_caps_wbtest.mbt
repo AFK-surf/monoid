@@ -108,13 +108,16 @@ fn caps_drawn(t : @ui.Tester) -> ((Double, Double, Double, Double)?, Array[(Doub
 }
 
 ///|
-test "a tip's keys each a cap at its end, 4 in from its top, foot and end, concentric with its corners, its words 10 from its start, as tall as a tip of words" {
-  assert_eq(tip_round, small_corner)
-  assert_eq(tip_cap_round, @ui.concentric(tip_round, tip_key_in))
+test "a tip's keys each a cap at its end, 4 in from its top, foot and end, concentric with its capsule corners, as tall as a tip of words" {
   for dark in [false, true] {
     let words_alone = {
       let t = caps_tester(dark, "")
       guard caps_drawn(t).0 is Some((_, _, _, h)) else { fail("dark \{dark}: no tip of words alone") }
+      let tip_r = t
+        .drawn_instances()
+        .filter(fn(a) { a.length() > 6 && a[5] == 6.0 && (a[3] - h).abs() < 0.5 })
+        .map(fn(a) { a[4] })
+      assert_eq((dark, tip_r), (dark, [h / 2.0]))
       t.move_to(300.0, 220.0)
       t.run_for(@motion.pop_out_ms * 2.0)
       h
@@ -133,6 +136,17 @@ test "a tip's keys each a cap at its end, 4 in from its top, foot and end, conce
     assert_eq(tx + tw - (last.0 + last.2), tip_key_in)
     assert_eq(last.1 - ty, tip_key_in)
     assert_eq(th, words_alone)
+    // Label words sit vertically centered in the capsule (at ty + tip_py, aligned with cap centers, not flush to ty + tip_key_in)
+    let label_boxes = t.words().filter(fn(w) { w.0 == "在对话里查找" })
+    assert_eq(label_boxes.length(), 1)
+    let (_, _, ly, _, lh, _) = label_boxes[0]
+    assert_true((ly - (ty + tip_py)).abs() < 0.5, msg="dark \{dark}: label y=\{ly} expected \{ty + tip_py}")
+    assert_true(((ly + lh / 2.0) - (ty + th / 2.0)).abs() < 0.5, msg="dark \{dark}: label mid=\{ly + lh / 2.0} tip mid=\{ty + th / 2.0}")
+    let tip_r = t
+      .drawn_instances()
+      .filter(fn(a) { a.length() > 6 && a[5] == 6.0 && (a[3] - th).abs() < 0.5 })
+      .map(fn(a) { a[4] })
+    assert_eq((dark, tip_r), (dark, [th / 2.0]))
     let faults = t.audit()
     assert_true(faults.is_empty(), msg="dark \{dark}: \{Repr(faults)}")
     t.move_to(300.0, 220.0)
@@ -188,5 +202,64 @@ test "tip_node: single-layer liquid glass when shown, zero hidden glass when dis
     }
   }
   @ui.set_glass_solid(None)
+  set_dark(None)
+}
+
+///|
+test "tip_node: stays a full concentric capsule at 1.3x font scale and caps radius at single-line half-height when wrapped" {
+  // 1.3x font scale with shortcut keys
+  let t = caps_tester(false, "⌘⇧F")
+  t.set_font_scale(1.3)
+  t.draw()
+  let (tip, caps) = caps_drawn(t)
+  guard tip is Some((_, _, _, th)) else { fail("1.3x: no tip drawn") }
+  assert_eq(caps.length(), 3)
+  let tip_r = t
+    .drawn_instances()
+    .filter(fn(a) { a.length() > 6 && a[5] == 6.0 && (a[3] - th).abs() < 0.5 })
+    .map(fn(a) { a[4] })
+  assert_eq(tip_r.length(), 1)
+  assert_true((tip_r[0] - th / 2.0).abs() < 0.5, msg="1.3x tip not capsule: r=\{tip_r[0]} h=\{th}")
+  assert_eq(t.audit(), [])
+  t.set_font_scale(1.0)
+  t.move_to(350.0, 220.0)
+  t.run_for(@motion.pop_out_ms * 2.0)
+
+  // Wrapped multi-line tooltip stays capped at single-line capsule radius rather than half of multi-line height
+  let tw = @ui.Tester::new(fn(_c) {  }, w=400.0, h=240.0, platform=0)
+  tw.check_looks(false)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  @ui.set_tree_theme(ui_theme_now)
+  set_shortcuts(fn(_) { "" })
+  @ui.set_view_app(fn(root) {
+    let layer : Ref[@view.View?] = Ref(None)
+    let tips = TipLayer::new(fn() { layer.val })
+    root.box(fn(row) {
+      row.row(Is(true)).pad(Is(60.0)) |> ignore
+      row.box(fn(k) {
+        k.width(Is(Some(34.0))).height(Is(Some(34.0))).says(Is(Some(@view.said(Button, label="说明")))) |> ignore
+        tip_node(tips, k, fn() { "这是一段比较长会自动折成两行显示的提示说明文字用来验证多行圆角不会被撑成巨大半圆" }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    layer.val = Some(root.box(fn(l) { l.over(Is(true)) |> ignore }))
+  })
+  tw.draw()
+  let k = tw.get(Button, label="说明")
+  tw.move_to(k.rect.0 + 17.0, k.rect.1 + 17.0)
+  tw.run_for(tip_delay_ms + tip_settled_ms)
+  guard caps_drawn(tw).0 is Some((_, _, _, mh)) else { fail("multiline: no tip drawn") }
+  assert_true(mh > 40.0, msg="expected wrapped multi-line tooltip height > 40, got \{mh}")
+  let multi_r = tw
+    .drawn_instances()
+    .filter(fn(a) { a.length() > 6 && a[5] == 6.0 && (a[3] - mh).abs() < 0.5 })
+    .map(fn(a) { a[4] })
+  let expected_single_r = (@ui.tree_theme().text_size(Meta).1 + 2.0 * tip_py) / 2.0
+  assert_eq(multi_r, [expected_single_r])
+  assert_eq(tw.audit(), [])
+  tw.move_to(350.0, 220.0)
+  tw.run_for(@motion.pop_out_ms * 2.0)
   set_dark(None)
 }

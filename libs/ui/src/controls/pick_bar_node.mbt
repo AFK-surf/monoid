@@ -111,7 +111,7 @@ fn pick_bar_button(
 
 ///|
 /// One action in a desktop selection bar (`pick_bar_desk_node`): its reactive label (shown and read out,
-/// staying live across language/word-table switches), optional 15pt icon (`""` for none), and activation callback
+/// staying live across language/word-table switches), optional 14pt icon (`""` for none), and activation callback
 /// receiving the button's window rectangle `(x, y, w, h)` synchronously at activation time.
 pub struct PickBarAction {
   label : () -> String
@@ -130,11 +130,11 @@ pub fn pick_bar_action(
 }
 
 ///|
-/// Desktop selection pill bar in `parent` with `actions` separated by hairline `pick_bar_rule`
-/// dividers (none when there is only one action). Matches mobile `pick_bar_node` proportions and optics
-/// (`40pt` tall, `pad=4pt`, `floating=false` → `liquid_bar_pill_glass` instead of oversized `liquid_floating_glass`,
-/// `32pt` round buttons, `panel_ground` + `control_edge_w` in `MBUI_GLASS=solid`, `glass_control_shadow`)
-/// and registers via `floating_host_lend`. Returns the outer capsule node.
+/// Desktop selection pill bar in `parent` with `actions` separated by hairline `pick_bar_desk_rule`
+/// dividers (none when there is only one action). Compact `30pt` capsule matching the composer-top
+/// status pill height while keeping `liquid_bar_pill_glass` (`floating=false`, `pad=3pt`, `24pt`
+/// concentric round buttons, `panel_ground` + `control_edge_w` in `MBUI_GLASS=solid`,
+/// `glass_control_shadow`), registered via `floating_host_lend`. Returns the outer capsule node.
 #callsite(autofill(loc))
 pub fn pick_bar_desk_node(
   parent : @view.View,
@@ -143,8 +143,8 @@ pub fn pick_bar_desk_node(
 ) -> @view.View {
   let bar = @glass.liquid_pill_group_node(
     parent,
-    height=pick_bar_h,
-    pad=pick_bar_pad,
+    height=pick_bar_desk_h,
+    pad=pick_bar_desk_pad,
     gap=0.0,
     floating=false,
     solid=panel_ground,
@@ -153,7 +153,7 @@ pub fn pick_bar_desk_node(
     fn(bar) {
       for i, act in actions {
         if i > 0 {
-          bar.box(fn(sep) { style_node(sep, fn() { pick_bar_rule }) }) |> ignore
+          bar.box(fn(sep) { style_node(sep, fn() { pick_bar_desk_rule }) }) |> ignore
         }
         pick_bar_desk_button(bar, act, loc~) |> ignore
       }
@@ -165,9 +165,10 @@ pub fn pick_bar_desk_node(
 }
 
 ///|
-/// A button of the desktop selection bar (`pick_bar_desk_node`): matches mobile `pick_bar_button`
-/// (`32pt` high, `15pt` icon, `Ui` words, `16pt` round) with hover ground, inset focus ring,
-/// touch-only ripple, mouse drag-past-slop click tolerance, and synchronous `placed_window_now()` delivery.
+/// A button of the desktop selection bar (`pick_bar_desk_node`): compact `24pt` concentric pill
+/// inside the `30pt` capsule (`14pt` icon, `Meta` words, `12pt` round) with hover ground, inset
+/// focus ring, touch-only ripple, mouse drag-past-slop click tolerance, and synchronous
+/// `placed_window_now()` delivery.
 #callsite(autofill(loc))
 fn pick_bar_desk_button(
   parent : @view.View,
@@ -180,15 +181,15 @@ fn pick_bar_desk_button(
     act.label,
     fn(v) { (act.press_at)(v.placed_window_now()) },
     fn(v, b) {
-      style_node(v, fn() { pick_bar_button_look })
+      style_node(v, fn() { pick_bar_desk_button_look })
       hover_ground_node(v)
       focus_ring_node(v)
       if act.icon != "" {
-        icon_node(v, act.icon, pick_bar_icon, By(fn() { theme().p.text })) |> ignore
+        icon_node(v, act.icon, pick_bar_desk_icon, By(fn() { theme().p.text })) |> ignore
       }
-      words_node(v, act.label, fn() { pick_bar_words }) |> ignore
+      words_node(v, act.label, fn() { pick_bar_desk_words }) |> ignore
       @glass.bind_pill_press(v)
-      let rippled = press_look(loc~, v, Is(pick_bar_round), fn() { false }, pointer=false)
+      let rippled = press_look(loc~, v, Is(pick_bar_desk_round), fn() { false }, pointer=false)
       v.gesture(
         @ui.touch_slop(),
         press=fn(d) {
@@ -253,3 +254,29 @@ let pick_bar_icon : Double = 15.0
 
 ///|
 let pick_bar_round : Double = 16.0
+
+///|
+/// Desktop selection bar button: 24pt high, 10pt horizontal pad, 5pt gap, full concentric capsule.
+// kept across runs: a value (no field of it changes)
+let pick_bar_desk_button_look : @ui.Style = @ui.css("row min_h=S6 px=S2_5 gap=S1_25 radius=Full align=ACenter")
+
+///|
+/// Desktop selection bar hairline divider: 12pt tall between adjacent actions.
+// kept across runs: a value (no field of it changes)
+let pick_bar_desk_rule : @ui.Style = rule_down.then(@ui.css("h=S3 mx=S1"))
+
+///|
+// kept across runs: a value (no field of it changes)
+let pick_bar_desk_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false)
+
+///|
+let pick_bar_desk_h : Double = 30.0
+
+///|
+let pick_bar_desk_pad : Double = 3.0
+
+///|
+let pick_bar_desk_icon : Double = 14.0
+
+///|
+let pick_bar_desk_round : Double = 12.0

@@ -310,7 +310,7 @@ test "page_card_node glass=true decorates both layered=true and layered=false wi
 }
 
 ///|
-test "pick_bar_desk_node: 40pt liquid_bar_pill_glass capsule matching pick_bar_node, hairline divider for multiple actions, synchronous placed_window_now on pointer and keyboard, clean solid fallback" {
+test "pick_bar_desk_node: 30pt liquid_bar_pill_glass capsule matching composer-top pill height, hairline divider for multiple actions, synchronous placed_window_now on pointer and keyboard, clean solid fallback" {
   for count in [1, 2] {
     for dark in [false, true] {
       let at = "count=\{count} dark=\{dark}"
@@ -368,9 +368,9 @@ test "pick_bar_desk_node: 40pt liquid_bar_pill_glass capsule matching pick_bar_n
         (at, 1.2, 14.0, 20.0, false),
       )
       assert_eq((at, has_host, glass.length(), liquid.length(), has_outside_shadow(t)), (at, true, 1, 1, true))
-      assert_true((liquid[0].3 - 40.0).abs() < 0.5, msg="\{at}: height=\{liquid[0].3}")
+      assert_true((liquid[0].3 - 30.0).abs() < 0.5, msg="\{at}: height=\{liquid[0].3}")
       // Hairline vertical divider present iff count == 2
-      let seps = t.drawn_rects().filter(fn(r) { (r.2 - rule_w).abs() < 0.1 && (r.3 - 16.0).abs() < 0.5 })
+      let seps = t.drawn_rects().filter(fn(r) { (r.2 - rule_w).abs() < 0.1 && (r.3 - 12.0).abs() < 0.5 })
       assert_eq((at, seps.length()), (at, if count == 2 { 1 } else { 0 }))
       assert_eq((at, t.audit()), (at, []))
 
@@ -391,7 +391,7 @@ test "pick_bar_desk_node: 40pt liquid_bar_pill_glass capsule matching pick_bar_n
       t.run_for(@ui.move_most_ms)
       assert_eq(got_rects.length(), 1)
       let (_, rect) = got_rects[0]
-      assert_true((rect.0 - btn.rect.0).abs() < 1.0 && (rect.3 - 32.0).abs() < 1.0, msg="\{at}: rect=\{Repr(rect)}")
+      assert_true((rect.0 - btn.rect.0).abs() < 1.0 && (rect.3 - 24.0).abs() < 1.0, msg="\{at}: rect=\{Repr(rect)}")
 
       // Keyboard activation also delivers synchronous rect
       t.key(@ui.key_tab)
