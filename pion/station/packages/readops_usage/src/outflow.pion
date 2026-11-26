@@ -712,6 +712,86 @@ fn take_rows(
   out
 }
 
+fn normalize_newlines(s : String) -> String {
+  let b = s.to_bytes()
+  let sb = StringBuilder::new()
+  let mut start = 0
+  let mut i = 0
+  while i < b.length() {
+    if (b[i].to_int() & 0xFF) == 13 {
+      if i > start {
+        sb.write_string(readops_core::str_slice_bytes(s, start, i))
+      }
+      sb.write_string("\n")
+      if i + 1 < b.length() && (b[i + 1].to_int() & 0xFF) == 10 {
+        i = i + 2
+      } else {
+        i = i + 1
+      }
+      start = i
+    } else {
+      i = i + 1
+    }
+  }
+  if start == 0 {
+    return s
+  }
+  if start < b.length() {
+    sb.write_string(readops_core::str_slice_bytes(s, start, b.length()))
+  }
+  sb.to_string()
+}
+
+fn outflow_text(text : base_codec::Json, quotes_json : base_codec::Json) -> base_codec::Json {
+  let quotes = match readops_core::json_list(quotes_json, readops_core::parse_quote) {
+    base_codec::Json::Arr(items) => items
+    _ => return text
+  }
+  if quotes.length() == 0 {
+    return text
+  }
+  let blocks : Array[String] = []
+  for i in 0..<quotes.length() {
+    let q = quotes[i]
+    let parts : Array[String] = []
+    let qtext = match readops_core::json_val(q, "text") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    if !readops_chats::js_blank(qtext) {
+      let raw_lines = readops_core::str_split_byte(normalize_newlines(qtext), 10)
+      let lines : Array[String] = []
+      for j in 0..<raw_lines.length() {
+        let line = raw_lines[j]
+        lines.push(if line == "" { ">" } else { "> " + line })
+      }
+      parts.push(readops_core::join_strings(lines, "\n"))
+    }
+    let comment = match readops_core::json_val(q, "comment") {
+      Some(base_codec::Json::Str(s)) => jscase::trim_white(s)
+      _ => ""
+    }
+    if comment != "" {
+      parts.push(comment)
+    }
+    if parts.length() > 0 {
+      blocks.push(readops_core::join_strings(parts, "\n\n"))
+    }
+  }
+  if blocks.length() == 0 {
+    return text
+  }
+  match text {
+    base_codec::Json::Str(s) => {
+      if !readops_chats::js_blank(s) {
+        blocks.push(s)
+      }
+    }
+    _ => ()
+  }
+  base_codec::json_str(readops_core::join_strings(blocks, "\n\n"))
+}
+
 /// outflow.ts `outflowMessages`: a chat's messages after its message `after`, at most `limit`,
 /// oldest first; null for a chat that is not the workspace's.
 pub fn outflow_messages(
@@ -815,7 +895,7 @@ pub fn outflow_messages(
       ("target", readops_core::field(e, "target")),
       ("authorKind", base_codec::json_str(author_kind)),
       ("author", readops_core::field(e, "author")),
-      ("text", readops_core::field(e, "text")),
+      ("text", outflow_text(readops_core::field(e, "text"), readops_core::field(e, "quotes"))),
       ("at", readops_core::field(e, "at")),
     ]
     if author_kind == "person" {
