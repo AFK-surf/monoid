@@ -3,11 +3,12 @@
 // keeps its files for this app (client/core-ts/src/font-files.ts: `fonts.file`, fetched first where it has none,
 // `fonts.fetch`), each unzipped here and checked by its hash (and given back unzipped: `fonts.keep`; an unzipped file
 // already verified off the UI thread by the core comes back with `zipped: false, verified: true` and skips UI-thread
-// hashing), and given to the host once all are here (@ui.face_add_bytes: @hostapi.face_ui, face_text, face_code). One
-// kept here before (an earlier run's) the prefs say where each of its files is (`path`), and the host reads them there (@ui.face_add) the frame the
-// prefs come, the first page set in it: nothing asked of the core, carried or checked again. Until then, and where none
-// is chosen, the app's own stands in (code's: JetBrains Mono). The fonts page shows each face in its preview
-// (`fonts.preview`: its characters alone), given to a face of its own (4 on, by its place in the list).
+// hashing), and given to the host once all are here (@ui.face_add_bytes: @hostapi.face_ui, face_text, face_code).
+// One kept here before (an earlier run's) the prefs say where each of its files is (`path`), and the host reads them
+// there (@ui.face_add) the frame the prefs come, the first page set in it: nothing asked of the core, carried or
+// checked again. Until then, and where none is chosen, the app's own stands in (code's: JetBrains Mono). The fonts
+// page shows each face in its preview (`fonts.preview`: its characters alone), given to a face of its own (4 on, by
+// its place in the list).
 
 ///|
 /// What of a chosen face is here: being asked for, being fetched, its files whole (each with the weight it is for),

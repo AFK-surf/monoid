@@ -361,3 +361,136 @@ test("FontFiles.file stale damaged result does not delete a concurrent keep/fetc
   await run(r.files.fetch("lxgw-wenkai"));
   assert.equal(r.host.storage.has(key), true);
 });
+
+test("FontFiles.file waits for concurrent keep() format switch and concurrent fetch() shares one network request", async () => {
+  // 1a. Concurrent file() started AFTER keep() began writing TTF (while kept[sha] is still "gz") waits for keep()
+  // and returns { zipped: false, verified: true } + TTF bytes, never { zipped: true } + TTF bytes.
+  {
+    const r = rig();
+    const face = fonts.faceOf("inter")!;
+    const sha = face.files[0].sha256;
+    const key = `fonts/file/${sha}`;
+    await run(r.files.fetch("inter"));
+    const ttfBytes = new Uint8Array([0x00, 0x01, 0x00, 0x00, 99, 88, 77]);
+    const writeStarted = Effect.runSync(Deferred.make<void>());
+    const releaseWrite = Effect.runSync(Deferred.make<void>());
+    const origSet = r.host.storageSet.bind(r.host);
+    r.host.storageSet = (k, v) => {
+      if (k === key) {
+        return Effect.gen(function* () {
+          // Write the new TTF bytes first, then suspend before keep() updates kept[sha] = "ttf".
+          yield* origSet(k, v);
+          yield* Deferred.succeed(writeStarted, undefined);
+          yield* Deferred.await(releaseWrite);
+        });
+      }
+      return origSet(k, v);
+    };
+    r.host.storageGetVerified = (k) => {
+      const cur = r.host.storage.get(k);
+      return Effect.succeed(cur ? { bytes: cur.slice(), verified: true } : null);
+    };
+
+    const keepPromise = run(r.files.keep(sha, ttfBytes));
+    await run(Deferred.await(writeStarted));
+    // Now disk already has ttfBytes while kept[sha] is still "gz": start file() before keep() completes.
+    const filePromise = run(r.files.file(sha));
+    await run(Deferred.succeed(releaseWrite, undefined));
+    await keepPromise;
+    const got = (await filePromise) as Beside;
+    assert.deepEqual(got.value, { zipped: false, verified: true });
+    assert.deepEqual([...got.bytes], [...ttfBytes]);
+  }
+
+  // 1b. Concurrent file() started BEFORE keep() (captured how="gz") whose storageGet resolves after keep() wrote TTF
+  // must detect the version bump and retry, never returning { zipped: true } + TTF bytes.
+  {
+    const r = rig();
+    const face = fonts.faceOf("inter")!;
+    const sha = face.files[0].sha256;
+    const key = `fonts/file/${sha}`;
+    await run(r.files.fetch("inter"));
+    const ttfBytes = new Uint8Array([0x00, 0x01, 0x00, 0x00, 11, 22, 33]);
+    const readHeld = Effect.runSync(Deferred.make<void>());
+    const releaseRead = Effect.runSync(Deferred.make<void>());
+    const origGet = r.host.storageGet.bind(r.host);
+    let firstFileGet = true;
+    r.host.storageGet = (k) => {
+      if (k === key && firstFileGet) {
+        firstFileGet = false;
+        return Effect.gen(function* () {
+          yield* Deferred.succeed(readHeld, undefined);
+          yield* Deferred.await(releaseRead);
+          // Returns the newly overwritten TTF bytes from disk!
+          return yield* origGet(k);
+        });
+      }
+      return origGet(k);
+    };
+    r.host.storageGetVerified = (k) => {
+      const cur = r.host.storage.get(k);
+      return Effect.succeed(cur ? { bytes: cur.slice(), verified: true } : null);
+    };
+
+    const filePromise = run(r.files.file(sha));
+    await run(Deferred.await(readHeld));
+    await run(r.files.keep(sha, ttfBytes));
+    await run(Deferred.succeed(releaseRead, undefined));
+    const got = (await filePromise) as Beside;
+    assert.deepEqual(got.value, { zipped: false, verified: true });
+    assert.deepEqual([...got.bytes], [...ttfBytes]);
+  }
+
+  // 2. Two concurrent callers recovering the same face share one in-flight fetch() and both read the file afterward.
+  {
+    const r = rig();
+    const face = fonts.faceOf("inter")!;
+    const sha = face.files[0].sha256;
+    const fetchStarted = Effect.runSync(Deferred.make<void>());
+    const releaseFetch = Effect.runSync(Deferred.make<void>());
+    let networkCalls = 0;
+    const payload = new Uint8Array([0x1f, 0x8b, 8, 0, 1, 2, 3, 4]);
+    r.host.onFetchStream(() =>
+      Effect.gen(function* () {
+        networkCalls++;
+        yield* Deferred.succeed(fetchStarted, undefined);
+        yield* Deferred.await(releaseFetch);
+        let sent = false;
+        return {
+          status: 200,
+          headers: [],
+          body: {
+            take: Effect.sync(() => {
+              if (sent) return null;
+              sent = true;
+              return payload;
+            }),
+          },
+        };
+      }),
+    );
+
+    const f1 = run(r.files.fetch("inter"));
+    await run(Deferred.await(fetchStarted));
+    let secondSettled = false;
+    const f2 = run(r.files.fetch("inter")).then((v) => {
+      secondSettled = true;
+      return v;
+    });
+    // Flush microtasks: second caller must still be awaiting the in-flight download, not returning early.
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(secondSettled, false);
+    assert.equal(networkCalls, 1);
+
+    await run(Deferred.succeed(releaseFetch, undefined));
+    await Promise.all([f1, f2]);
+    assert.equal(secondSettled, true);
+    assert.equal(networkCalls, 1);
+    const [b1, b2] = (await Promise.all([run(r.files.file(sha)), run(r.files.file(sha))])) as [Beside, Beside];
+    assert.deepEqual(b1.value, { zipped: true });
+    assert.deepEqual([...b1.bytes], [...payload]);
+    assert.deepEqual(b2.value, { zipped: true });
+    assert.deepEqual([...b2.bytes], [...payload]);
+  }
+});

@@ -15,7 +15,7 @@
 // web/public/share-looks/), kept only once it is the file the site's table says (share-looks.ts: a site that has not
 // got it answers its page), how far each being fetched is on the topic (`share`), each one's failure until it is asked
 // again (`shareFailed`).
-import { Effect } from "effect";
+import { Clock, Deferred, Effect } from "effect";
 import { CoreError } from "./error.ts";
 import * as fonts from "./fonts.ts";
 import type { Host } from "./host.ts";
@@ -43,11 +43,15 @@ export class FontFiles implements Owner {
   readonly #store: Store;
   /// A face being fetched: how far, 0 to 1.
   readonly #fetching = new Map<string, number>();
+  /// In-flight face fetch completions shared across concurrent callers (registered before any yield).
+  readonly #fetchingDone = new Map<string, Deferred.Deferred<null, CoreError>>();
   /// A face whose fetch failed: why.
   readonly #failed = new Map<string, string>();
   #kept: Kept | null = null;
-  /// Per-SHA mutation generation so a stale off-thread verification never clears a newer write.
+  /// Per-SHA mutation generation and active-writer gate so concurrent reads never observe mismatched (how, bytes)
+  /// and stale off-thread verifications never clear a newer write.
   readonly #gen = new Map<string, number>();
+  readonly #writing = new Map<string, Deferred.Deferred<void>>();
   /// A share file being fetched: how many of its bytes are here.
   readonly #sharing = new Map<string, number>();
   /// A share file whose fetch failed: why.
@@ -127,33 +131,78 @@ export class FontFiles implements Owner {
     return next;
   }
 
-  /// Clears a stale or damaged index entry (and optionally its file) only if no newer write raced with `expectedGen`.
-  /// Saves the index before deleting the file so a save failure never leaves a stale index pointing at a deleted file.
-  #clearEntry(kept: Kept, sha256: string, how: "gz" | "ttf", expectedGen: number, deleteFile: boolean): Effect.Effect<"cleared" | "raced", CoreError> {
+  #withShaWrite<A, E>(sha256: string, body: Effect.Effect<A, E>): Effect.Effect<A, E> {
     return Effect.gen({ self: this }, function* () {
-      if (this.#version(sha256) !== expectedGen || kept[sha256] !== how) return "raced";
-      const cleanGen = this.#bump(sha256);
-      delete kept[sha256];
-      const saved = yield* Effect.result(this.#save());
-      if (saved._tag === "Failure") {
-        if (this.#version(sha256) === cleanGen) kept[sha256] = how;
-        return yield* Effect.fail(saved.failure);
+      while (true) {
+        const prev = this.#writing.get(sha256);
+        if (prev === undefined) break;
+        yield* Deferred.await(prev);
       }
-      if (deleteFile && this.#version(sha256) === cleanGen) {
-        yield* Effect.ignore(this.#host.storageDelete(fileKey(sha256)));
-      }
-      this.#changed();
-      return "cleared";
+      const gate = Deferred.makeUnsafe<void>();
+      this.#writing.set(sha256, gate);
+      return yield* Effect.ensuring(
+        body,
+        Effect.sync(() => {
+          if (this.#writing.get(sha256) === gate) this.#writing.delete(sha256);
+          Deferred.doneUnsafe(gate, Effect.void);
+        }),
+      );
     });
   }
 
+  /// Clears a stale or damaged index entry (and optionally its file) only if no newer write raced with `expectedGen`.
+  /// Saves the index before deleting the file so a save failure never leaves a stale index pointing at a deleted file.
+  #clearEntry(kept: Kept, sha256: string, how: "gz" | "ttf", expectedGen: number, deleteFile: boolean): Effect.Effect<"cleared" | "raced", CoreError> {
+    return this.#withShaWrite(
+      sha256,
+      Effect.gen({ self: this }, function* () {
+        if (this.#version(sha256) !== expectedGen || kept[sha256] !== how) return "raced" as const;
+        const cleanGen = this.#bump(sha256);
+        delete kept[sha256];
+        const saved = yield* Effect.result(this.#save());
+        if (saved._tag === "Failure") {
+          if (this.#version(sha256) === cleanGen) kept[sha256] = how;
+          return yield* Effect.fail(saved.failure);
+        }
+        if (deleteFile && this.#version(sha256) === cleanGen) {
+          yield* Effect.ignore(this.#host.storageDelete(fileKey(sha256)));
+        }
+        this.#changed();
+        return "cleared" as const;
+      }),
+    );
+  }
+
   /// Face `id`'s files fetched, those not kept yet, each whole; null once all are here (gzipped, or as the app kept
-  /// them). Failed: said on the topic too, until it is fetched again.
+  /// them). Concurrent callers for the same face share the in-flight completion. Failed: said on the topic too, until
+  /// it is fetched again.
   fetch(id: string): Effect.Effect<null, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const face = fonts.faceOf(id);
       if (face === null) return yield* Effect.fail(CoreError.invalid(t("core-misc.params.invalid", { error: `id ${id}` })));
-      if (this.#fetching.has(id)) return null;
+      const existing = this.#fetchingDone.get(id);
+      if (existing !== undefined) return yield* Deferred.await(existing);
+      const doneGate = Deferred.makeUnsafe<null, CoreError>();
+      this.#fetchingDone.set(id, doneGate);
+      const clock = yield* Clock.Clock;
+      Effect.runFork(
+        this.#runFetch(id, face).pipe(
+          Effect.exit,
+          Effect.flatMap((exit) =>
+            Effect.sync(() => {
+              if (this.#fetchingDone.get(id) === doneGate) this.#fetchingDone.delete(id);
+              Deferred.doneUnsafe(doneGate, exit);
+            }),
+          ),
+          Effect.provideService(Clock.Clock, clock),
+        ),
+      );
+      return yield* Deferred.await(doneGate);
+    });
+  }
+
+  #runFetch(id: string, face: NonNullable<ReturnType<typeof fonts.faceOf>>): Effect.Effect<null, CoreError> {
+    return Effect.gen({ self: this }, function* () {
       const kept = yield* this.#index();
       this.#fetching.set(id, 0);
       this.#failed.delete(id);
@@ -192,11 +241,16 @@ export class FontFiles implements Owner {
               whole.set(part, at);
               at += part.length;
             }
-            this.#bump(f.sha256);
-            yield* Effect.mapError(this.#host.storageSet(fileKey(f.sha256), whole), (e) => CoreError.plainly("fonts", e));
-            kept[f.sha256] = "gz";
-            this.#bump(f.sha256);
-            yield* this.#save();
+            yield* this.#withShaWrite(
+              f.sha256,
+              Effect.gen({ self: this }, function* () {
+                this.#bump(f.sha256);
+                yield* Effect.mapError(this.#host.storageSet(fileKey(f.sha256), whole), (e) => CoreError.plainly("fonts", e));
+                kept[f.sha256] = "gz";
+                this.#bump(f.sha256);
+                yield* this.#save();
+              }),
+            );
             done += f.bytes;
           }
         }),
@@ -219,7 +273,12 @@ export class FontFiles implements Owner {
   file(sha256: string): Effect.Effect<Beside, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const kept = yield* this.#index();
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 4; attempt++) {
+        while (true) {
+          const writing = this.#writing.get(sha256);
+          if (writing === undefined) break;
+          yield* Deferred.await(writing);
+        }
         const how = kept[sha256];
         if (how === undefined) return yield* Effect.fail(new CoreError("not_found", t("core-misc.params.invalid", { error: `sha256 ${sha256}` })));
         const gen = this.#version(sha256);
@@ -239,6 +298,7 @@ export class FontFiles implements Owner {
             if (state === "raced") continue;
             return yield* Effect.fail(new CoreError("not_found", t("core-misc.params.invalid", { error: `sha256 ${sha256}` })));
           }
+          if (this.#version(sha256) !== gen || this.#writing.has(sha256)) continue;
           return new Beside(got.verified ? { zipped: false, verified: true } : { zipped: false }, got.bytes);
         }
         const res = yield* Effect.result(this.#host.storageGet(fileKey(sha256)));
@@ -251,6 +311,7 @@ export class FontFiles implements Owner {
           if (state === "raced") continue;
           return yield* Effect.fail(new CoreError("not_found", t("core-misc.params.invalid", { error: `sha256 ${sha256}` })));
         }
+        if (this.#version(sha256) !== gen || this.#writing.has(sha256)) continue;
         return new Beside({ zipped: how === "gz" }, bytes);
       }
       return yield* Effect.fail(new CoreError("not_found", t("core-misc.params.invalid", { error: `sha256 ${sha256}` })));
@@ -261,13 +322,18 @@ export class FontFiles implements Owner {
   keep(sha256: string, bytes: Uint8Array): Effect.Effect<null, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const kept = yield* this.#index();
-      if (kept[sha256] === undefined) return yield* Effect.fail(new CoreError("not_found", t("core-misc.params.invalid", { error: `sha256 ${sha256}` })));
-      this.#bump(sha256);
-      yield* Effect.mapError(this.#host.storageSet(fileKey(sha256), bytes), (e) => CoreError.plainly("fonts", e));
-      kept[sha256] = "ttf";
-      this.#bump(sha256);
-      yield* this.#save();
-      return null;
+      return yield* this.#withShaWrite(
+        sha256,
+        Effect.gen({ self: this }, function* () {
+          if (kept[sha256] === undefined) return yield* Effect.fail(new CoreError("not_found", t("core-misc.params.invalid", { error: `sha256 ${sha256}` })));
+          this.#bump(sha256);
+          yield* Effect.mapError(this.#host.storageSet(fileKey(sha256), bytes), (e) => CoreError.plainly("fonts", e));
+          kept[sha256] = "ttf";
+          this.#bump(sha256);
+          yield* this.#save();
+          return null;
+        }),
+      );
     });
   }
 
