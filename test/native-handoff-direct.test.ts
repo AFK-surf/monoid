@@ -337,6 +337,26 @@ test("restore filters by --targets, downloads chunks concurrently in order, and 
   writeFileSync(join(dir, "natives-wasm32.r2.json"), JSON.stringify([
     { name: wasmName, sha256: wasmSha, chunks: [mkReceipt(5)] },
   ]));
+  const shellName = `shell-station-linux-x64-${"e".repeat(24)}.tar.gz`;
+  const meshName = `mesh-linux-x64-${"f".repeat(24)}.tar.gz`;
+  const readerName = `reader-linux-x64-${"1".repeat(24)}.tar.gz`;
+  const ignoredName = `launcher-linux-x64-${"2".repeat(24)}.tar.gz`;
+  const shellSha = createHash("sha256").update("shell-bytes").digest("hex");
+  const meshSha = createHash("sha256").update("mesh-bytes").digest("hex");
+  const readerSha = createHash("sha256").update("reader-bytes").digest("hex");
+  const ignoredSha = createHash("sha256").update("ignored-bytes").digest("hex");
+  writeFileSync(join(dir, "natives-linux-x64-shell.r2.json"), JSON.stringify([
+    { name: shellName, sha256: shellSha, chunks: [mkReceipt(7)] },
+  ]));
+  writeFileSync(join(dir, "natives-linux-x64-mesh.r2.json"), JSON.stringify([
+    { name: meshName, sha256: meshSha, chunks: [mkReceipt(8)] },
+  ]));
+  writeFileSync(join(dir, "natives-linux-x64-readers.r2.json"), JSON.stringify([
+    { name: readerName, sha256: readerSha, chunks: [mkReceipt(9)] },
+  ]));
+  writeFileSync(join(dir, "natives-linux-x64-unknown.r2.json"), JSON.stringify([
+    { name: ignoredName, sha256: ignoredSha, chunks: [mkReceipt(10)] },
+  ]));
   writeFileSync(join(dir, "natives.r2.json"), JSON.stringify([
     { name: unknownName, sha256: unknownSha, chunks: [mkReceipt(6)] },
     { name: linuxName, sha256: linuxSha, chunks: [0, 1, 2, 3].map((i) => mkReceipt(i)) },
@@ -368,6 +388,10 @@ test("restore filters by --targets, downloads chunks concurrently in order, and 
     if (path.endsWith("000000000004")) throw new Error("darwin archive should have been filtered out");
     if (path.endsWith("000000000005")) return new Response("wasm-bytes");
     if (path.endsWith("000000000006")) return new Response("unknown-bytes");
+    if (path.endsWith("000000000007")) return new Response("shell-bytes");
+    if (path.endsWith("000000000008")) return new Response("mesh-bytes");
+    if (path.endsWith("000000000009")) return new Response("reader-bytes");
+    if (path.endsWith("000000000010")) throw new Error("unrecognized slot manifest should be ignored");
     const idx = Number(path.slice(-1));
     if (idx === 2 && ++chunk2Attempts === 1) {
       // Stall until aborted by the per-attempt GET timeout signal.
@@ -396,9 +420,13 @@ test("restore filters by --targets, downloads chunks concurrently in order, and 
   assert.equal(readFileSync(join(dir, linuxName), "utf8"), linuxPayload.toString("utf8"));
   assert.equal(readFileSync(join(dir, wasmName), "utf8"), "wasm-bytes");
   assert.equal(readFileSync(join(dir, unknownName), "utf8"), "unknown-bytes");
+  assert.equal(readFileSync(join(dir, shellName), "utf8"), "shell-bytes");
+  assert.equal(readFileSync(join(dir, meshName), "utf8"), "mesh-bytes");
+  assert.equal(readFileSync(join(dir, readerName), "utf8"), "reader-bytes");
+  assert.throws(() => readFileSync(join(dir, ignoredName)), { code: "ENOENT" });
   assert.throws(() => readFileSync(join(dir, macName)), { code: "ENOENT" });
-  // Duplicate linuxName entry in natives.r2.json must not be downloaded a second time (5 requests for linux incl. 1 retry + wasm + unknown = 7).
-  assert.equal(requested.length, 7);
+  // Duplicate linuxName entry in natives.r2.json must not be downloaded a second time (5 requests for linux incl. 1 retry + wasm + unknown + shell + mesh + reader = 10).
+  assert.equal(requested.length, 10);
 
   // Sibling chunks are aborted immediately on fatal error (no waiting for other chunks' retries).
   const failDir = mkdtempSync(join(tmpdir(), "native-handoff-abort-"));

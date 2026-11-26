@@ -169,7 +169,8 @@ jobs:
                 if [ "$GITHUB_REF" != refs/heads/main ]; then
                   case "$natives_state" in
                     "completed success")
-                      if ! ( (gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-$GITHUB_SHA" -D "$inbox" ||
+                      if ! ( (gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-shell-$GITHUB_SHA" -D "$inbox" ||
+                             gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-$GITHUB_SHA" -D "$inbox" ||
                              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$inbox") && \
                             node scripts/native-handoff.mjs get "$inbox" "$GITHUB_SHA" --targets "$target"); then
                         rm -rf "$inbox" && mkdir -p "$inbox"
@@ -305,7 +306,8 @@ jobs:
                 if [ "$GITHUB_REF" != refs/heads/main ]; then
                   case "$natives_state" in
                     "completed success")
-                      if ! ( (gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-$GITHUB_SHA" -D "$inbox" ||
+                      if ! ( (gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-shell-$GITHUB_SHA" -D "$inbox" ||
+                             gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-$GITHUB_SHA" -D "$inbox" ||
                              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$inbox") && \
                             node scripts/native-handoff.mjs get "$inbox" "$GITHUB_SHA" --targets "$target"); then
                         rm -rf "$inbox" && mkdir -p "$inbox"
@@ -423,7 +425,8 @@ jobs:
                 if [ "$GITHUB_REF" != refs/heads/main ]; then
                   case "$natives_state" in
                     "completed success")
-                      if ! ( (gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-$GITHUB_SHA" -D "$inbox" ||
+                      if ! ( (gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-shell-$GITHUB_SHA" -D "$inbox" ||
+                             gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$target-$GITHUB_SHA" -D "$inbox" ||
                              gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$inbox") && \
                             node scripts/native-handoff.mjs get "$inbox" "$GITHUB_SHA" --targets "$target"); then
                         rm -rf "$inbox" && mkdir -p "$inbox"
