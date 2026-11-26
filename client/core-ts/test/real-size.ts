@@ -550,7 +550,7 @@ export function overviewOf(now: number, station: number): J {
     // What a chat can be kept to less context on (station/src/api/overview.ts, sessions/context-cap.ts): each model's window.
     contextCaps: { runtimes: ["claude", "codex"], least: 100_000, windows: Object.fromEntries([...new Set(profiles.flatMap((p: J) => p.models as string[]))].map((m) => [m, /haiku|4-5|mini|flash|v3/.test(m) ? 200_000 : /gpt|codex|grok/.test(m) ? 400_000 : 1_000_000])) },
     archiving: { days: 7, slackDays: 14, reviewed: true, canEdit: true },
-    ...(station === 0 ? { autoChats: { enabled: true, canEdit: true } } : {}),
+    ...(station === 0 ? { autoChats: { enabled: true, canEdit: true }, disabledRuntimes: ["hermes"] } : {}),
     automaticDecisions: decisionsOf(now, station, profiles),
     // The `beta` features it runs (station/src/features.ts): a station on the test channel's (its terminals, moving).
     move: { offered: true },

@@ -5,6 +5,7 @@ import { statfs } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { Accounts } from "../accounts/index.ts";
 import { facts } from "../accounts/catalog.ts";
+import { RUNTIME_KINDS, runtimeKind, type RuntimeKind } from "../agents/runtime.ts";
 import type { Cloud } from "../cloud/state.ts";
 import { type Viewer, managesStation, readOnly } from "../mesh/credential.ts";
 import { platform } from "../platform/index.ts";
@@ -187,6 +188,7 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
     automaticDecisions: d.accounts ? await decisionsView(d, viewer) : null,
     archiving: archivingView(raw, viewer),
     autoChats: autoChatsView(raw, viewer),
+    disabledRuntimes: disabledRuntimesView(raw),
     viewer: { via: "mesh", ...viewer },
     mesh: meshStatus(d.cloud, viewer),
     connects,
@@ -274,6 +276,18 @@ function archivingView(raw: any, viewer: Viewer) {
 /// Everyone sees it; its managers change it (PUT /auto-chats).
 function autoChatsView(raw: any, viewer: Viewer) {
   return { enabled: raw?.acceptAutoChats === true, canEdit: managesStation(viewer) };
+}
+
+/// Runtimes disabled on this station (`disabledRuntimes` in config.json).
+/// Everyone sees it; its managers change it (PUT /runtimes).
+function disabledRuntimesView(raw: any): RuntimeKind[] {
+  if (!Array.isArray(raw?.disabledRuntimes)) return [];
+  const set = new Set<RuntimeKind>();
+  for (const r of raw.disabledRuntimes) {
+    const kind = runtimeKind(r);
+    if (kind !== undefined) set.add(kind);
+  }
+  return RUNTIME_KINDS.filter((k) => set.has(k));
 }
 
 function withPermissions(d: OverviewDeps, viewer: Viewer): { permissions?: unknown } {

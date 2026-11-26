@@ -274,7 +274,7 @@ fn station_view_node(
       "moving" => station_moving_node(b, core, here, station_narrowed(s, ["copies"]), manager)
       "move" => station_move_section(b, core, address)
       "software" =>
-        station_software_node(b, core, station_narrowed(s, ["updates"]), manager, fn() { flag(top(), "online") }, tips)
+        station_software_node(b, core, station_narrowed(s, ["updates", "disabledRuntimes"]), manager, fn() { flag(top(), "online") }, tips)
       _ => ()
     }
   }
@@ -2170,10 +2170,24 @@ fn station_workspaces_node(b : @view.View, core : Core, address : String) -> Uni
 fn station_software_node(b : @view.View, core : Core, s : () -> Json?, manager : Bool, online : () -> Bool, tips : @sf.TipLayer) -> Unit {
   let station = text(@signals.untracked(s), "station")
   let updates = fn() { items(field(s(), "overview"), "updates") }
+  let disabled_runtimes = fn() { field(field(s(), "overview"), "disabledRuntimes") }
+  let supports_disable = fn() { disabled_runtimes() is Some(Array(_)) }
+  let is_disabled = fn(id : String) {
+    match disabled_runtimes() {
+      Some(Array(xs)) =>
+        xs.iter().any(fn(x) {
+          match x {
+            String(v) => v == id
+            _ => false
+          }
+        })
+      _ => false
+    }
+  }
   st_section_node(b, fn() { @sf.t("web-pages.stations.software") }, fn(sec) {
     @sf.group_node(sec, fn(g) {
       // (its rows the card's own; offline shows cached software versions read-only, falling back to a note only when none are cached)
-      software_list_node(g, core, station, updates, manager, fn() { flag(s(), "betaOffered") }, online, tips)
+      software_list_node(g, core, station, updates, manager, fn() { flag(s(), "betaOffered") }, online, supports_disable, is_disabled, tips)
       g.show(fn() { !online() && updates().length() == 0 }, fn(r) { said_row_node(r, fn() { @sf.t("web-pages.stations.softwareOffline") }) })
       g.show(fn() { updates().length() == 0 && text(s(), "version") != "" }, fn(r) {
         said_row_node(r, fn() { "Station " + text(s(), "version") })
@@ -2192,6 +2206,8 @@ fn software_list_node(
   manager : Bool,
   beta : () -> Bool,
   online : () -> Bool,
+  supports_disable : () -> Bool,
+  is_disabled : (String) -> Bool,
   tips : @sf.TipLayer,
 ) -> Unit {
   let batch = fn() { is_doing(core, ["software.updateAll"], [("station", station)]) }
@@ -2199,7 +2215,7 @@ fn software_list_node(
     let id = text(Some(u.untracked()), "id")
     software_row_node(row, core, station, fn() { Some(u.get()) }, manager, fn() {
       batch() || is_doing(core, ["software.update"], [("station", station), ("id", id)])
-    }, beta, online, tips)
+    }, beta, online, supports_disable, fn() { is_disabled(id) }, tips)
   })
   // (in lines: checking again after when it was last checked, under it where the line has not the room; why it failed a
   // line of its own)
@@ -2259,6 +2275,8 @@ fn software_row_node(
   busy : () -> Bool,
   beta : () -> Bool,
   online : () -> Bool,
+  supports_disable : () -> Bool,
+  disabled : () -> Bool,
   tips : @sf.TipLayer,
 ) -> Unit {
   let id = text(@signals.untracked(v), "id")
@@ -2269,6 +2287,7 @@ fn software_row_node(
     manager &&
     ((beta() && has(v(), "channel")) || (has(v(), "auto") && !flag(v(), "overridden")) || software_earlier(v()).length() > 0)
   }
+  let runtime_switch = fn() { online() && !own && manager && supports_disable() }
   let call = fn(name : String, params : Array[(String, Json)]) { software_call(core, station, name, params) }
   @sf.item_row_node(row, fn(r) {
     // (its mark on its first line, never centred on the lines under it (its version, what an update says, its switches):
@@ -2295,6 +2314,10 @@ fn software_row_node(
         n.show(fn() { text(v(), "channel") == "beta" && !switches() }, fn(tag) {
           @sf.style_node(tag, fn() { sw_beta })
           @sf.words_node(tag, fn() { @sf.t("web-main.versions.beta") }, fn() { sw_beta_words }) |> ignore
+        })
+        n.show(fn() { !own && disabled() && !runtime_switch() }, fn(tag) {
+          @sf.style_node(tag, fn() { sw_beta })
+          @sf.words_node(tag, fn() { @sf.t("web-main.versions.disabled") }, fn() { sw_beta_words }) |> ignore
         })
       })
       |> ignore
@@ -2335,10 +2358,23 @@ fn software_row_node(
       u.show(fn() { text(v(), "state") == "failed" && text(v(), "message") != "" }, fn(w) {
         @sf.words_node(w, fn() { text(v(), "message") }, fn() { sw_note }) |> ignore
       })
-      // the station's own: which releases it takes, and whether it takes them by itself
-      u.show(switches, fn(sw) {
+      // the station's own: which releases it takes, and whether it takes them by itself; a runtime's: whether it is offered
+      u.show(fn() { switches() || runtime_switch() }, fn(sw) {
         @sf.style_node(sw, fn() { sw_switches })
-        sw.show(fn() { beta() && has(v(), "channel") }, fn(l) {
+        sw.show(runtime_switch, fn(l) {
+          software_switch_node(
+            l,
+            tips,
+            fn() { @sf.t("web-main.versions.enabled") },
+            fn() { @sf.t("web-main.versions.runtimeEnableLabel", args=[("name", text(v(), "name"))]) },
+            fn() { !disabled() },
+            fn(now) { call("runtime.setEnabled", [("runtime", str(id)), ("enabled", Json::boolean(now))]) },
+            fn() { is_doing(core, ["runtime.setEnabled"], [("station", station), ("runtime", id)]) },
+            busy,
+            fn() { @sf.t("web-main.versions.runtimeEnableTip") },
+          )
+        })
+        sw.show(fn() { own && beta() && has(v(), "channel") }, fn(l) {
           software_switch_node(
             l,
             tips,
@@ -2351,7 +2387,7 @@ fn software_row_node(
             fn() { @sf.t("web-main.versions.betaNote") },
           )
         })
-        sw.show(fn() { has(v(), "auto") && !flag(v(), "overridden") }, fn(l) {
+        sw.show(fn() { own && has(v(), "auto") && !flag(v(), "overridden") }, fn(l) {
           software_switch_node(
             l,
             tips,
@@ -2365,7 +2401,7 @@ fn software_row_node(
           )
         })
         // back to a release before (the ones its channel's feed names): which one picked in a menu, then asked
-        sw.show(fn() { software_earlier(v()).length() > 0 }, fn(l) {
+        sw.show(fn() { own && software_earlier(v()).length() > 0 }, fn(l) {
           // (its chevron in the words' own ink: the link's default, the theme's blue, is not the Link words' colour here)
           @sf.link_opens_node(l, fn() { @sf.t("web-main.versions.back") }, chevron=true, ink=fn() { @ui.style_ink(@sf.link) }, on=fn() { !busy() }, fn(b) {
             let now = @signals.untracked(v)

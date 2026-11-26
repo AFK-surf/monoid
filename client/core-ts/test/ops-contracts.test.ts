@@ -74,3 +74,8 @@ test("a_slack_apps_form_writes_only_what_differs_from_what_it_started_from", () 
   assert.deepEqual(put({ input: from, from })?.body, {});
   assert.deepEqual(put({ input: { name: "x" } })?.body, { name: "x" });
 });
+
+test("runtime.setEnabled sends PUT /runtimes with runtime and enabled", () => {
+  const op = request("runtime.setEnabled", { station: "w/s", runtime: "dsh", enabled: false });
+  assert.deepEqual([op?.method, op?.path, op?.body], ["PUT", "/runtimes", { runtime: "dsh", enabled: false }]);
+});
