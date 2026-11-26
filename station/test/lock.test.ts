@@ -464,6 +464,7 @@ test("a station in a second workspace pins that one's lock there: none of its me
   // Joined naming B's lock: asked for it, pinned once the plane brings that one.
   mkdirSync(dirname(joinedPendingPath(cloud.data, B)), { recursive: true });
   writeFileSync(joinedPendingPath(cloud.data, B), JSON.stringify({ hash: entryHash(b.first) }));
+  cloud.reloadJoined(); // (as the locks directory's watch does)
   applyState(cloud, frame([inB]), (f) => sent.push(f));
   assert.deepEqual(sent.pop(), { type: "lock.get", after: -1, workspace: B });
   applyState(cloud, JSON.stringify({ type: "lock", workspace: B, entries: [workspace(B).first] }));
@@ -805,6 +806,42 @@ test("taken out of its home, a workspace it joined takes over: that one's lock g
   assert.equal(stuck.locked()?.state?.genesis, entryHash(w.first));
 });
 
+test("what joining named to pin is read from its file once while the locks directory is watched, and again as the file changes", async () => {
+  const { joinedPendingPath } = await import("../src/cloud/state.ts");
+  const { mkdirSync, rmSync, writeFileSync } = await import("node:fs");
+  const { dirname } = await import("node:path");
+  const B = "01HBBBBBBBBBBBBBBBBBBBBBBB";
+  const w = workspace();
+  const cloud = stationData(w, w.stations[0]!.hex);
+  const path = joinedPendingPath(cloud.data, B);
+  const one = "a".repeat(64);
+  const two = "b".repeat(64);
+  mkdirSync(dirname(path), { recursive: true });
+  // (memberships asks it of every joined workspace on each call: hundreds a second on a busy station, 2026-11-26)
+  assert.equal(cloud.pendingLock(B), null);
+  writeFileSync(path, JSON.stringify({ hash: one }));
+  assert.equal(cloud.pendingLock(B), null, "kept, not read again on each call");
+  cloud.reloadJoined(); // (as the locks directory's watch does)
+  assert.equal(cloud.pendingLock(B), one);
+  writeFileSync(path, JSON.stringify({ hash: two }));
+  cloud.lockNamed(); // (named here: rig/module.ts)
+  assert.equal(cloud.pendingLock(B), two);
+  cloud.pendingTaken(B); // (pinned, its file going off the thread: presence.ts takeFromPlane)
+  assert.equal(cloud.pendingLock(B), null);
+  rmSync(path);
+  cloud.reloadJoined();
+  assert.equal(cloud.pendingLock(B), null);
+  writeFileSync(path, JSON.stringify({ hash: one }));
+  cloud.reload(true); // (cloud.json read again: a join on this machine)
+  assert.equal(cloud.pendingLock(B), one);
+  // Not watched (or the watch given up): read each time.
+  const unwatched = new Cloud(cloud.data, false);
+  assert.equal(unwatched.pendingLock(B), one);
+  writeFileSync(path, JSON.stringify({ hash: two }));
+  assert.equal(unwatched.pendingLock(B), two);
+  cloud.close();
+});
+
 test("joining a locked workspace: the plane's frame comes before the join's answer, and its lock is asked for once joining names it; till then its members are told why", async () => {
   const { joinedPendingPath } = await import("../src/cloud/state.ts");
   const { mkdirSync, writeFileSync } = await import("node:fs");
@@ -835,6 +872,7 @@ test("joining a locked workspace: the plane's frame comes before the join's answ
   // Joining answered, naming B's lock: asked for at once (and once), not at the plane's next frame.
   mkdirSync(dirname(joinedPendingPath(cloud.data, B)), { recursive: true });
   writeFileSync(joinedPendingPath(cloud.data, B), JSON.stringify({ hash: entryHash(b.first) }));
+  cloud.reload(true); // (as the join's route does once joined: api/routes/workspaces.ts)
   assert.equal(cloud.leftOut(B), "pending");
   assert.equal(refused(hello).why, "pending");
   assert.deepEqual(refused(forged), { error: "credential is for another workspace" }, "one that does not check out is told nothing of B");

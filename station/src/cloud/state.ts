@@ -149,6 +149,16 @@ function writeOff(path: string, off: { genesis: string[]; logs: Record<string, K
   writePrivate(turnedOffPath(path), JSON.stringify({ genesis, ...(kept.length > 0 ? { logs: Object.fromEntries(kept.map((h) => [h, off.logs[h]])) } : {}) }));
 }
 export const joinedPendingPath = (data: string, ws: string) => join(meshDir(data), "locks", `${fileOf(ws)}.pending.json`);
+
+/// The lock hash joining `ws` named to pin, as its file has it (null: none, or not a hash).
+function readPendingLock(data: string, ws: string): string | null {
+  try {
+    const hash = JSON.parse(readFileSync(joinedPendingPath(data, ws), "utf8"))?.hash; // sync: a few bytes; Cloud.pendingLock keeps it while the directory is watched
+    return typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash) ? hash : null;
+  } catch {
+    return null;
+  }
+}
 /// The bodies of a workspace's statements kept here (cloud/lock-bodies.ts), beside its lock, by the workspace's id (the
 /// home one's too: it stays where it is when a joined workspace takes over as home).
 export const bodiesPath = (data: string, ws: string) => join(meshDir(data), "locks", `${fileOf(ws)}.bodies.json`);
@@ -489,6 +499,10 @@ export class Cloud {
   lock: KeptLock | null;
   /// The locks of the workspaces it joined, pinned there, by workspace (read from their files on first use).
   private joinedLocks = new Map<string, KeptLock | null>();
+  /// What joining each workspace named to pin (`pendingLock`), as its file has it, by workspace: kept only while the
+  /// locks directory is watched, which tells when another process changes one (`reloadJoined`). `memberships` asks it
+  /// of every joined workspace on each call, hundreds a second on a busy station.
+  private joinedPending = new Map<string, string | null>();
   /// How far the control plane's copy of the lock goes, as its last `state` frame said (null: a plane that keeps none).
   planeLockSeq: number | null = null;
   /// The same of each joined workspace's lock.
@@ -565,6 +579,7 @@ export class Cloud {
         log.warn("cloud", "the joined workspaces' locks no longer watched", { error: error.message });
         this.locksWatcher?.close();
         this.locksWatcher = undefined;
+        this.joinedPending.clear();
       });
     } catch {
       // No mesh directory yet: `enroll` makes it, and the station is started anew after.
@@ -591,6 +606,8 @@ export class Cloud {
     }
     // Written by another (`stillfail` on this machine): what this one last wrote is not what is there.
     this.written = null;
+    // (Joining there may have named a lock to pin beside it.)
+    this.joinedPending?.clear();
     if (tell || JSON.stringify(next) !== JSON.stringify(this.state)) {
       this.state = next;
       setStationCloud(next?.origin);
@@ -614,9 +631,12 @@ export class Cloud {
       const now = readLock(this.data, ws);
       return keptText(now) !== keptText(was) || (now?.state === null) !== (was?.state === null);
     });
-    if (changed.length === 0) return;
+    const pending = (this.joinedPending ??= new Map());
+    const named = [...pending].filter(([ws, was]) => readPendingLock(this.data, ws) !== was);
+    if (changed.length === 0 && named.length === 0) return;
     for (const [ws] of changed) locks.delete(ws);
-    log.info("lock", "a joined workspace's lock was changed on this machine", { workspaces: changed.map(([ws]) => ws) });
+    for (const [ws] of named) pending.delete(ws);
+    if (changed.length > 0) log.info("lock", "a joined workspace's lock was changed on this machine", { workspaces: changed.map(([ws]) => ws) });
     this.tell();
   }
 
@@ -954,13 +974,17 @@ export class Cloud {
   }
 
   /// The lock hash joining `ws` said to pin once the control plane brings that lock (none: it joined an unlocked one).
+  /// Read from its file once while the locks directory is watched (`joinedPending`), else each time.
   pendingLock(ws: string): string | null {
-    try {
-      const hash = JSON.parse(readFileSync(joinedPendingPath(this.data, ws), "utf8"))?.hash;
-      return typeof hash === "string" && /^[0-9a-f]{64}$/.test(hash) ? hash : null;
-    } catch {
-      return null;
-    }
+    if (this.locksWatcher === undefined) return readPendingLock(this.data, ws);
+    const pending = (this.joinedPending ??= new Map());
+    if (!pending.has(ws)) pending.set(ws, readPendingLock(this.data, ws));
+    return pending.get(ws) ?? null;
+  }
+
+  /// The lock joining `ws` named was pinned, and its file is going (presence.ts `takeFromPlane`): read no more.
+  pendingTaken(ws: string): void {
+    if (this.locksWatcher !== undefined) (this.joinedPending ??= new Map()).set(ws, null);
   }
 
   /// A joined workspace the control plane no longer names: not served (memberships), but its lock and what joining
@@ -1005,7 +1029,11 @@ export class Cloud {
     }
     this.lock = readLock(this.data);
     this.joinedLocks.delete(ws);
-    if (demoteOldHome && oldHome !== null && oldHome !== "" && oldHome !== ws) this.joinedLocks.delete(oldHome);
+    this.joinedPending?.delete(ws);
+    if (demoteOldHome && oldHome !== null && oldHome !== "" && oldHome !== ws) {
+      this.joinedLocks.delete(oldHome);
+      this.joinedPending?.delete(oldHome);
+    }
     this.offLogs?.clear();
     this.planeLockSeqs.delete(ws);
     log.info("lock", "a workspace this station joined took over as its home one; its lock is the home one's now", { workspace: ws, locked: this.lock !== null, demoted: demoteOldHome ? oldHome : undefined });
@@ -1418,6 +1446,7 @@ export class Cloud {
   /// A lock to pin named on this machine since it started (rig/module.ts `#added`): what follows it told, so the
   /// control plane is asked for that lock at once (presence.ts `pendingAsks`).
   lockNamed(): void {
+    this.joinedPending?.clear();
     if (this.listeners !== undefined) this.tell();
   }
 
