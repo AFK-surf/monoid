@@ -434,18 +434,22 @@ pub fn normalize_host(raw : String) -> Option[String] {
 }
 
 /// Strictly normalize an allowlist pattern (`api.github.com`, `*.example.com`, `127.0.0.1`, `[::1]`).
+/// Wildcards require at least two DNS labels after `*.` (rejects top-level wildcards like `*.com`).
 pub fn normalize_host_pattern(raw : String) -> Option[String] {
   if raw.length() == 0 || raw.length() > 255 {
     return None
   }
   if raw.starts_with("*.") {
     let rest = raw.slice(2, raw.length())
-    // Wildcards cannot match IP addresses or empty/single-wildcard roots.
+    // Wildcards cannot match IP addresses or empty/single-label roots (e.g. `*.com`).
     if rest.contains(":") || rest.starts_with("[") {
       return None
     }
     match normalize_host(rest) {
       Some(norm) => {
+        if norm.split(".").length() < 2 {
+          return None
+        }
         match parse_ipv4_octets(norm) {
           Some(_) => None
           None => Some("*." + norm)
@@ -930,6 +934,9 @@ pub fn IncomingRegistry::start_run(
   }
   if grant_id.length() == 0 {
     return Err("grant is required")
+  }
+  if self.runs.contains(id) {
+    return Err("command id already exists")
   }
   let clamped_idle = if idle_sec > 0.to_int64() && idle_sec <= MAX_IDLE_SEC {
     idle_sec

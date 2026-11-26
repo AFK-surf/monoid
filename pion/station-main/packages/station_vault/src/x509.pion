@@ -4,6 +4,8 @@
 // DER/PEM codecs, PKCS#8 private key export, and a bounded in-memory `LeafCache`.
 
 import "base64"
+import "base_codec"
+import "builders_core"
 import "crypto"
 import "js_json"
 
@@ -299,22 +301,50 @@ pub fn p256_key_id(pub_uncompressed : Bytes) -> Bytes {
   crypto::sha1(pub_uncompressed)
 }
 
-/// Derive a valid 32-byte P-256 private scalar from arbitrary 32+ bytes of entropy
-/// using SHA-256 domain separation (guaranteed non-zero and < n).
-pub fn derive_p256_secret(entropy : Bytes, domain : String) -> Bytes {
+/// Request `count` cryptographically secure random bytes from the OS CSPRNG
+/// via `client/shell`'s `crypto.random` (`getrandom::fill`).
+pub fn os_random_bytes(mux : builders_core::ShellMux, count : Int) -> Result[Bytes, String] {
+  if count <= 0 || count > 1024 {
+    return Err("invalid random byte count")
+  }
+  // sync: OS CSPRNG via non-blocking getrandom in client/shell
+  let raw = mux.call_sync_raw("crypto.random", "{\"bytes\":" + count.to_string() + "}")
+  let hex_str = match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(v) => {
+      match base_codec::json_get(v, "value") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => return Err("OS CSPRNG returned invalid response")
+      }
+    }
+    _ => return Err("OS CSPRNG returned malformed JSON")
+  }
+  let out = match crypto::hex_to_bytes(hex_str) {
+    Some(b) => b
+    None => return Err("OS CSPRNG returned invalid hex")
+  }
+  if out.length() != count {
+    return Err("OS CSPRNG returned unexpected byte length")
+  }
+  Ok(out)
+}
+
+/// Derive a valid 32-byte P-256 private scalar from at least 32 bytes of high-entropy input
+/// using SHA-256 domain separation. Never falls back to a constant scalar; fails explicitly
+/// if input entropy is insufficient or no valid scalar is found.
+pub fn derive_p256_secret(entropy : Bytes, domain : String) -> Result[Bytes, String] {
+  if entropy.length() < 32 {
+    return Err("P-256 key derivation requires at least 32 bytes of entropy")
+  }
   let mut counter = 0
   while counter < 64 {
     let input = concat_list([domain.to_bytes(), single_byte(counter), entropy])
     let candidate = crypto::sha256(input)
     match crypto::p256_public_key(candidate) {
-      Ok(_) => return candidate
+      Ok(_) => return Ok(candidate)
       Err(_) => counter = counter + 1
     }
   }
-  // Fallback constant scalar 1 (unreachable in practice with SHA-256).
-  let fallback = Bytes::new(32)
-  fallback[31] = 1 as Byte
-  fallback
+  Err("failed to derive valid P-256 scalar from entropy")
 }
 
 /// A generated X.509 certificate and its P-256 key material.
@@ -395,14 +425,43 @@ fn sign_certificate(
   })
 }
 
-/// Generate a self-signed P-256 CA certificate valid for 10 years from `now_ms`.
+/// Generate a self-signed P-256 CA certificate using OS CSPRNG entropy (`crypto.random`),
+/// valid for 10 years from `now_ms`. Use this in production.
+pub fn make_ca_random(
+  mux : builders_core::ShellMux,
+  now_ms : Int64,
+  cn : String = DEFAULT_CA_NAME,
+) -> Result[CertKeyPair, String] {
+  let key_entropy = match os_random_bytes(mux, 32) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let serial_entropy = match os_random_bytes(mux, 16) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  make_ca(now_ms, cn, key_entropy, serial_entropy)
+}
+
+/// Generate a self-signed P-256 CA certificate from explicit entropy (`key_entropy >= 32` bytes,
+/// `serial_entropy >= 16` bytes), valid for 10 years from `now_ms`.
+/// Explicit-seed entrypoint is intended for deterministic unit tests (never persist test seeds).
 pub fn make_ca(
   now_ms : Int64,
   cn : String,
   key_entropy : Bytes,
   serial_entropy : Bytes,
 ) -> Result[CertKeyPair, String] {
-  let secret = derive_p256_secret(key_entropy, "stillfail-vault-ca-key")
+  if key_entropy.length() < 32 {
+    return Err("CA key_entropy must be at least 32 bytes")
+  }
+  if serial_entropy.length() < 16 {
+    return Err("CA serial_entropy must be at least 16 bytes")
+  }
+  let secret = match derive_p256_secret(key_entropy, "stillfail-vault-ca-key") {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
   let pub_uncompressed = match crypto::p256_public_key(secret) {
     Ok(p) => p
     Err(_) => return Err("invalid CA key")
@@ -426,7 +485,28 @@ pub fn make_ca(
   )
 }
 
-/// Generate a P-256 TLS leaf certificate for `host` signed by `ca`, valid for 7 days from `now_ms`.
+/// Generate a P-256 TLS leaf certificate for `host` signed by `ca` using OS CSPRNG entropy,
+/// valid for 7 days from `now_ms`. Use this in production.
+pub fn make_leaf_random(
+  mux : builders_core::ShellMux,
+  ca : CertKeyPair,
+  host : String,
+  now_ms : Int64,
+) -> Result[CertKeyPair, String] {
+  let key_entropy = match os_random_bytes(mux, 32) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let serial_entropy = match os_random_bytes(mux, 16) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  make_leaf(ca, host, now_ms, key_entropy, serial_entropy)
+}
+
+/// Generate a P-256 TLS leaf certificate for `host` signed by `ca` from explicit entropy
+/// (`key_entropy >= 32` bytes, `serial_entropy >= 16` bytes), valid for 7 days from `now_ms`.
+/// Explicit-seed entrypoint is intended for deterministic unit tests (never persist test seeds).
 pub fn make_leaf(
   ca : CertKeyPair,
   host : String,
@@ -434,6 +514,12 @@ pub fn make_leaf(
   key_entropy : Bytes,
   serial_entropy : Bytes,
 ) -> Result[CertKeyPair, String] {
+  if key_entropy.length() < 32 {
+    return Err("leaf key_entropy must be at least 32 bytes")
+  }
+  if serial_entropy.length() < 16 {
+    return Err("leaf serial_entropy must be at least 16 bytes")
+  }
   let norm_host = match normalize_host(host) {
     Some(h) => h
     None => return Err("invalid leaf certificate host")
@@ -442,7 +528,10 @@ pub fn make_leaf(
     Ok(v) => v
     Err(e) => return Err(e)
   }
-  let leaf_secret = derive_p256_secret(key_entropy, "stillfail-vault-leaf-key:" + norm_host)
+  let leaf_secret = match derive_p256_secret(key_entropy, "stillfail-vault-leaf-key:" + norm_host) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
   let leaf_pub = match crypto::p256_public_key(leaf_secret) {
     Ok(p) => p
     Err(_) => return Err("invalid leaf key")
@@ -517,12 +606,16 @@ pub fn LeafCache::len(self : LeafCache) -> Int {
 }
 
 /// Return a cached fresh leaf for `host` (within `LEAF_CACHE_TTL_MS`), or issue and cache a new one.
+/// Requires `entropy_seed.length() >= 32`.
 pub fn LeafCache::get_or_issue(
   self : LeafCache,
   host : String,
   now_ms : Int64,
   entropy_seed : Bytes,
 ) -> Result[CachedLeaf, String] {
+  if entropy_seed.length() < 32 {
+    return Err("LeafCache entropy_seed must be at least 32 bytes")
+  }
   let norm = match normalize_host(host) {
     Some(h) => h
     None => return Err("invalid host for leaf certificate")

@@ -25,6 +25,9 @@ pub let SSH_AGENT_MAX_MSG_LEN : Int = 262144
 /// Unix socket file mode `0600` (owner read/write only).
 pub let SSH_AGENT_SOCKET_MODE : Int = 384
 
+/// Private parent directory mode `0700` (owner rwx only, matching TS `run.ts` `mkdtemp`).
+pub let SSH_AGENT_DIR_MODE : Int = 448
+
 /// MuxToken domain tag for `SshAgentServer` async calls.
 pub let SSH_MUX_TAG_LISTEN : Int = 9101
 pub let SSH_MUX_TAG_ACCEPT : Int = 9102
@@ -32,6 +35,8 @@ pub let SSH_MUX_TAG_READ : Int = 9103
 pub let SSH_MUX_TAG_WRITE : Int = 9104
 pub let SSH_MUX_TAG_CLOSE : Int = 9105
 pub let SSH_MUX_TAG_UNLINK : Int = 9106
+pub let SSH_MUX_TAG_MKDIR : Int = 9107
+pub let SSH_MUX_TAG_CHMOD : Int = 9108
 
 fn mux_call(
   mux : builders_core::ShellMux,
@@ -115,7 +120,7 @@ pub fn SshReader::read_bytes(self : SshReader) -> Result[Bytes, String] {
     Ok(v) => v
     Err(e) => return Err(e)
   }
-  if n < 0 || self.pos + n > self.buf.length() {
+  if n < 0 || n > self.buf.length() - self.pos {
     return Err("truncated bytes")
   }
   let out = Bytes::new(n)
@@ -433,8 +438,22 @@ pub fn SshAgentServer::sign_count(self : SshAgentServer) -> Int {
   self.sign_count
 }
 
-/// Bind the Unix socket at `self.socket_path` with mode `0600` (384) via `ShellMux`.
-pub fn SshAgentServer::start(self : SshAgentServer, mux : builders_core::ShellMux) -> Int64 {
+/// Extract the parent directory of a Unix socket path (empty if none or root `/`).
+pub fn socket_parent_dir(path : String) -> String {
+  let rb = path.to_bytes()
+  let mut last_slash = -1
+  for i in 0..<rb.length() {
+    if (rb[i].to_int() & 0xFF) == 47 {
+      last_slash = i
+    }
+  }
+  if last_slash <= 0 {
+    return ""
+  }
+  path.slice(0, last_slash)
+}
+
+fn SshAgentServer::issue_unix_listen(self : SshAgentServer, mux : builders_core::ShellMux) -> Int64 {
   let args = base_codec::json_obj([
     ("path", base_codec::json_str(self.socket_path)),
     ("mode", base_codec::json_int(SSH_AGENT_SOCKET_MODE)),
@@ -448,7 +467,30 @@ pub fn SshAgentServer::start(self : SshAgentServer, mux : builders_core::ShellMu
   )
 }
 
-/// Tear down the listener, close all active client sockets, and remove the socket file.
+/// Start the per-command Unix socket ssh-agent server:
+/// ensures the private parent directory exists with mode `0700` (`fs.mkdir` -> `fs.chmod`),
+/// then binds `unix.listen` with mode `0600` (384) via `ShellMux`.
+pub fn SshAgentServer::start(self : SshAgentServer, mux : builders_core::ShellMux) -> Int64 {
+  let dir = socket_parent_dir(self.socket_path)
+  if dir.length() > 0 {
+    let args = base_codec::json_obj([
+      ("path", base_codec::json_str(dir)),
+      ("recursive", base_codec::json_bool(true)),
+    ])
+    mux_call(
+      mux,
+      builders_core::MuxToken::Tagged(SSH_MUX_TAG_MKDIR, 0, 0.to_int64()),
+      "fs.mkdir",
+      args,
+      None,
+    )
+  } else {
+    self.issue_unix_listen(mux)
+  }
+}
+
+/// Tear down the listener (`listen.close`), close all active client sockets (`tcp.close`),
+/// and remove the socket file (`fs.remove`).
 pub fn SshAgentServer::close(self : SshAgentServer, mux : builders_core::ShellMux) -> Unit {
   if self.closed {
     return
@@ -460,7 +502,7 @@ pub fn SshAgentServer::close(self : SshAgentServer, mux : builders_core::ShellMu
     let _ = mux_call(
       mux,
       builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, lid, 0.to_int64()),
-      "tcp.close",
+      "listen.close",
       base_codec::json_obj([("id", base_codec::json_int(lid))]),
       None,
     )
@@ -567,7 +609,27 @@ pub fn SshAgentServer::on_shell_done(
 ) -> Bool {
   match token {
     builders_core::MuxToken::Tagged(tag, arg, _) => {
-      if tag == SSH_MUX_TAG_LISTEN {
+      if tag == SSH_MUX_TAG_MKDIR {
+        if done.error.length() == 0 && !self.closed {
+          let dir = socket_parent_dir(self.socket_path)
+          let _ = mux_call(
+            mux,
+            builders_core::MuxToken::Tagged(SSH_MUX_TAG_CHMOD, 0, 0.to_int64()),
+            "fs.chmod",
+            base_codec::json_obj([
+              ("path", base_codec::json_str(dir)),
+              ("mode", base_codec::json_int(SSH_AGENT_DIR_MODE)),
+            ]),
+            None,
+          )
+        }
+        true
+      } else if tag == SSH_MUX_TAG_CHMOD {
+        if done.error.length() == 0 && !self.closed {
+          let _ = self.issue_unix_listen(mux)
+        }
+        true
+      } else if tag == SSH_MUX_TAG_LISTEN {
         if done.error.length() == 0 && !self.closed {
           match json_int_field(done.json, "id") {
             Some(lid) => {
