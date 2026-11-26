@@ -8,6 +8,7 @@ import { test, type TestContext } from "node:test";
 import { RENAME_BACKOFF, renameRetrying, writePrivateSoon } from "../src/ops/files.ts";
 import { healthOf, healthPath, writeHealth, type Health } from "../src/ops/health.ts";
 import { mkdir } from "node:fs/promises";
+import { patchUpkeepState, readUpkeepState, UPKEEP_STATE_FILE } from "../src/ops/upkeep-state.ts";
 
 async function directory(t: TestContext): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "stillfail-rename-"));
@@ -134,4 +135,27 @@ test("writeHealth throws a lock that outlasts the wait and removes its own file"
     wait: async () => {},
   }), (error) => (error as NodeJS.ErrnoException).code === "EPERM");
   assert.deepEqual(await readdir(join(dir, "run")), []);
+});
+
+test("patchUpkeepState waits out a lock on upkeep-state.json, and leaves no file of its own when one outlasts it", async (t) => {
+  const dir = await directory(t);
+  const left = ["EACCES", "EPERM"];
+  const waits: number[] = [];
+  assert.equal(await patchUpkeepState(dir, { lastOrphanRoomsAt: 5 }, {
+    rename: async (from, to) => {
+      const code = left.shift();
+      if (code) throw failing(code);
+      await rename(from, to);
+    },
+    wait: async (ms) => { waits.push(ms); },
+  }), true);
+  assert.deepEqual(waits, [20, 40]);
+  assert.deepEqual(await readdir(dir), [UPKEEP_STATE_FILE]);
+  assert.equal((await readUpkeepState(dir)).lastOrphanRoomsAt, 5);
+  assert.equal(await patchUpkeepState(dir, { lastOrphanRoomsAt: 6 }, {
+    rename: async () => { throw failing("EPERM"); },
+    wait: async () => {},
+  }), false);
+  assert.deepEqual(await readdir(dir), [UPKEEP_STATE_FILE]);
+  assert.equal((await readUpkeepState(dir)).lastOrphanRoomsAt, 5);
 });

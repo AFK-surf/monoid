@@ -4,9 +4,9 @@
 // its chat).
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { mock, test } from "node:test";
+import { mock, test, type TestContext } from "node:test";
 import { DISK_LOW_BYTES } from "../src/ops/disk.ts";
 import { packWorkspaceIf, packed, workspaceArchive, workspaceFile } from "../src/sessions/archive.ts";
 import { ColdRooms, MAX_PACK_WORKSPACE_BYTES, WORKSPACE_BUSY_BACKOFF_MS } from "../src/sessions/cold.ts";
@@ -609,20 +609,31 @@ function heldPacking(code: string, held: () => boolean): typeof packWorkspaceIf 
   };
 }
 
-test("a workspace a lock keeps from being packed has its transcripts packed, no cold mark, and is packed once the lock goes and its wait is over", async (t) => {
-  let now = 1_000_000;
-  mock.method(wall, "now", () => now);
-  t.after(() => mock.restoreAll());
-  let held = true;
-  let tries = 0;
-  const [r, cold] = coldRig({}, { packWorkspace: (room, ready, opts) => (tries++, heldPacking("EPERM", () => held)(room, ready, opts)) });
+/// An idle session with a transcript, a file of its own and one sent in its chat, archived (in the store alone:
+/// `archive` would also pack it on its own, at a time of its own), the wall's clock at its archiving.
+async function archivedHere(t: TestContext, coldOpts: ConstructorParameters<typeof ColdRooms>[1]) {
+  const [r, cold] = coldRig({}, coldOpts);
+  t.after(() => r.close());
   const { key } = await idleSession(r);
   const transcript = transcriptOf(r, key, '{"type":"user","message":{"content":"held"}}\n');
   const workspace = r.session(key).workspace;
-  const room = dirname(workspace);
   writeFileSync(join(workspace, "kept.txt"), "kept");
-  // Archived and packed here alone (`archive` would also pack it on its own, at a time of its own).
+  mkdirSync(join(workspace, "uploads"), { recursive: true });
+  writeFileSync(join(workspace, "uploads", "shot.png"), "pic");
   r.store.setArchived(key, true, MANUAL);
+  const archivedAt = r.session(key).archivedAt!;
+  const clock = { now: archivedAt };
+  mock.method(wall, "now", () => clock.now);
+  t.after(() => mock.restoreAll());
+  return { r, cold, key, transcript, workspace, room: dirname(workspace), archivedAt, clock };
+}
+
+test("a workspace a lock keeps from being packed has its transcripts packed, no cold mark, and is packed once the lock goes and its wait is over", async (t) => {
+  let held = true;
+  let tries = 0;
+  const { cold, key, transcript, workspace, room, clock } = await archivedHere(t, {
+    packWorkspace: (room, ready, opts) => (tries++, heldPacking("EPERM", () => held)(room, ready, opts)),
+  });
   await cold.pack(key);
   assert.equal(tries, 1);
   assert.ok(!existsSync(transcript) && existsSync(packed(transcript)), "its transcripts are packed all the same");
@@ -630,17 +641,17 @@ test("a workspace a lock keeps from being packed has its transcripts packed, no 
   assert.ok(!existsSync(workspaceArchive(room)));
   assert.equal(readFileSync(join(workspace, "kept.txt"), "utf8"), "kept");
   assert.equal(await cold.needsPack(key), false, "not asked again within its wait");
-  now += WORKSPACE_BUSY_BACKOFF_MS[0] - 1;
+  clock.now += WORKSPACE_BUSY_BACKOFF_MS[0] - 1;
   assert.equal(await cold.needsPack(key), false);
   // Still held once its wait is over: waited on longer the second time.
-  now += 1;
+  clock.now += 1;
   assert.equal(await cold.needsPack(key), true);
   await cold.pack(key);
   assert.equal(tries, 2);
   assert.ok(!existsSync(join(room, "cold")));
-  now += WORKSPACE_BUSY_BACKOFF_MS[0];
+  clock.now += WORKSPACE_BUSY_BACKOFF_MS[0];
   assert.equal(await cold.needsPack(key), false, "the second wait is longer");
-  now += WORKSPACE_BUSY_BACKOFF_MS[1] - WORKSPACE_BUSY_BACKOFF_MS[0];
+  clock.now += WORKSPACE_BUSY_BACKOFF_MS[1] - WORKSPACE_BUSY_BACKOFF_MS[0];
   assert.equal(await cold.needsPack(key), true);
   // The lock gone: packed, and marked cold.
   held = false;
@@ -650,20 +661,51 @@ test("a workspace a lock keeps from being packed has its transcripts packed, no 
   assert.ok(existsSync(join(room, "cold")));
   assert.equal(await cold.needsPack(key), false);
   assert.ok(await cold.isCold(key));
-  await r.close();
+});
+
+test("a workspace held by a lock through every wait is marked cold unpacked, and emptied in time", async (t) => {
+  let tries = 0;
+  const { r, cold, key, transcript, workspace, room, archivedAt, clock } = await archivedHere(t, {
+    packWorkspace: (room, ready, opts) => (tries++, heldPacking("EBUSY", () => true)(room, ready, opts)),
+  });
+  for (const wait of WORKSPACE_BUSY_BACKOFF_MS) {
+    assert.equal(await cold.needsPack(key), true);
+    await cold.pack(key);
+    assert.ok(!existsSync(join(room, "cold")), "waited on while it has waits left");
+    assert.equal(await cold.needsPack(key), false);
+    clock.now += wait;
+  }
+  assert.equal(await cold.needsPack(key), true);
+  await cold.pack(key);
+  assert.equal(tries, WORKSPACE_BUSY_BACKOFF_MS.length + 1);
+  assert.ok(existsSync(join(room, "cold")), "its waits spent: marked cold as it is");
+  assert.ok(!existsSync(workspaceArchive(room)) && existsSync(join(workspace, "kept.txt")));
+  assert.ok(existsSync(packed(transcript)));
+  assert.equal(await cold.needsPack(key), false);
+  await expireArchived(r.hub, archivedAt + 7 * DAY);
+  assert.deepEqual(readdirSync(workspace), ["uploads"], "emptied once archived long enough");
+});
+
+test("a workspace held by a lock near the end of its archived days is marked cold unpacked at once", async (t) => {
+  let tries = 0;
+  const { r, cold, key, workspace, room, archivedAt, clock } = await archivedHere(t, {
+    packWorkspace: (room, ready, opts) => (tries++, heldPacking("EPERM", () => true)(room, ready, opts)),
+  });
+  // Its first wait would end after it is due to be emptied.
+  clock.now = archivedAt + 7 * DAY - WORKSPACE_BUSY_BACKOFF_MS[0];
+  await cold.pack(key);
+  assert.equal(tries, 1);
+  assert.ok(existsSync(join(room, "cold")));
+  assert.equal(await cold.needsPack(key), false);
+  await expireArchived(r.hub, archivedAt + 7 * DAY);
+  assert.deepEqual(readdirSync(workspace), ["uploads"]);
 });
 
 test("a session unarchived while its locked workspace waits is restored whole and its wait forgotten", async (t) => {
-  let now = 1_000_000;
-  mock.method(wall, "now", () => now);
-  t.after(() => mock.restoreAll());
   let tries = 0;
-  const [r, cold] = coldRig({}, { packWorkspace: (room, ready, opts) => (tries++, heldPacking("EBUSY", () => true)(room, ready, opts)) });
-  const { key } = await idleSession(r);
-  const transcript = transcriptOf(r, key, '{"type":"user","message":{"content":"back"}}\n');
-  const workspace = r.session(key).workspace;
-  writeFileSync(join(workspace, "kept.txt"), "kept");
-  r.store.setArchived(key, true, MANUAL);
+  const { r, cold, key, transcript, workspace } = await archivedHere(t, {
+    packWorkspace: (room, ready, opts) => (tries++, heldPacking("EBUSY", () => true)(room, ready, opts)),
+  });
   await cold.pack(key);
   assert.ok(existsSync(packed(transcript)));
   assert.ok(await cold.isCold(key), "its packed transcripts say it is put away");
@@ -671,27 +713,47 @@ test("a session unarchived while its locked workspace waits is restored whole an
   archive(r.hub, key, false);
   await r.hub.waitRestore(key);
   assert.ok(existsSync(transcript) && !existsSync(packed(transcript)), "its transcripts restored");
-  assert.equal(new TranscriptTail("claude", transcript).read()[1][0]!.text, "back");
+  assert.equal(new TranscriptTail("claude", transcript).read()[1][0]!.text, "held");
   assert.equal(readFileSync(join(workspace, "kept.txt"), "utf8"), "kept");
   // Archived again at once: packed without waiting out what was left of the wait before.
   r.store.setArchived(key, true, MANUAL);
   assert.equal(await cold.needsPack(key), true, "the wait went with the restore");
   await cold.pack(key);
   assert.equal(tries, 2);
-  await r.close();
 });
 
-test("a workspace packing that fails for anything but a lock throws and leaves no cold mark", async () => {
+test("a workspace packing that fails for anything but a lock leaves it marked cold unpacked, its transcripts packed, and emptied in time", async (t) => {
   for (const code of ["ENOSPC", ""]) {
-    const [r, cold] = coldRig({}, { packWorkspace: async () => { throw code === "" ? new Error("broken") : failing(code); } });
-    const { key } = await idleSession(r);
-    const transcript = transcriptOf(r, key, '{"type":"user","message":{"content":"x"}}\n');
-    const room = dirname(r.session(key).workspace);
-    r.store.setArchived(key, true, MANUAL);
-    await assert.rejects(cold.pack(key), (e: Error) => e.message.startsWith(code === "" ? "broken" : code));
-    assert.ok(!existsSync(join(room, "cold")), "no cold mark: the backfill packs it again");
-    assert.ok(existsSync(transcript), "nothing else done");
-    assert.equal(await cold.needsPack(key), true);
-    await r.close();
+    let tries = 0;
+    const { r, cold, key, transcript, workspace, room, archivedAt } = await archivedHere(t, {
+      packWorkspace: async () => { tries++; throw code === "" ? new Error("broken") : failing(code); },
+    });
+    await cold.pack(key);
+    assert.equal(tries, 1);
+    assert.ok(existsSync(join(room, "cold")), "not compressed again every round");
+    assert.ok(!existsSync(transcript) && existsSync(packed(transcript)));
+    assert.ok(existsSync(join(workspace, "kept.txt")));
+    assert.equal(await cold.needsPack(key), false);
+    await expireArchived(r.hub, archivedAt + 7 * DAY);
+    assert.deepEqual(readdirSync(workspace), ["uploads"]);
+    mock.restoreAll();
   }
+});
+
+test("a workspace that waited on a lock and has grown too large to pack is marked cold, its wait forgotten", async (t) => {
+  let tries = 0;
+  const { cold, key, workspace, room } = await archivedHere(t, {
+    maxPackWorkspaceBytes: 32 * 1024,
+    packWorkspace: (room, ready, opts) => (tries++, heldPacking("EPERM", () => true)(room, ready, opts)),
+  });
+  await cold.pack(key);
+  assert.equal(tries, 1);
+  assert.equal(await cold.needsPack(key), false);
+  writeFileSync(join(workspace, "huge.bin"), Buffer.alloc(64 * 1024, 0x41));
+  // (packed again before its wait is over, as an archive of it asks)
+  await cold.pack(key);
+  assert.equal(tries, 1, "too large: not packed");
+  assert.ok(existsSync(join(room, "cold")));
+  unlinkSync(join(room, "cold"));
+  assert.equal(await cold.needsPack(key), true, "its wait went with the cold mark");
 });

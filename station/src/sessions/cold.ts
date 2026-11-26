@@ -87,7 +87,9 @@ export const MAX_PACK_WORKSPACE_BYTES = 2 * 1024 ** 3;
 
 /// How long an archived workspace whose packing a Windows lock refused (`EPERM`, `EBUSY`, `EACCES` past
 /// `renameRetrying`'s wait: a shared app-server still in it, a scanner) is left before the backfill tries it again, by
-/// how many times it was refused: one held for good is not compressed again every round.
+/// how many times it was refused: one held for good is not compressed again every round. Refused once more than these
+/// (or with the next try past `archivedWorkspaceMs`), it is marked `cold` unpacked, like one too large, so it is still
+/// emptied in time and on a low disk.
 export const WORKSPACE_BUSY_BACKOFF_MS = [10 * 60_000, 30 * 60_000, 2 * 3600_000, 6 * 3600_000] as const;
 
 export class ColdRooms implements ColdStorage {
@@ -429,26 +431,34 @@ export class ColdRooms implements ColdStorage {
         } else {
           shouldPackWorkspace = true;
         }
-        // Marked `cold` only once all is done: a pack cut short (aborted, failed, a lock) is backfilled
-        // (`packUnfinishedArchived`, which asks `needsPack`).
+        // Marked `cold` only once all is done: a pack cut short (aborted, or its workspace held by a lock for now) is
+        // backfilled (`packUnfinishedArchived`, which asks `needsPack`).
         let workspaceDeferred = false;
         if (shouldPackWorkspace) {
           try {
             await this.packWorkspace(room, ready, { signal: ac.signal, readers: this.readers });
-            this.busyRetry.delete(key);
           } catch (error) {
+            if (ac.signal.aborted || !ready()) return;
             const code = (error as NodeJS.ErrnoException)?.code;
-            if (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") throw error;
-            // `packWorkspaceIf` put the workspace back as it was; its transcripts are still packed.
-            const attempts = this.busyRetry.get(key)?.attempts ?? 0;
-            const delay = WORKSPACE_BUSY_BACKOFF_MS[Math.min(attempts, WORKSPACE_BUSY_BACKOFF_MS.length - 1)]!;
-            this.busyRetry.set(key, { until: wall.now() + delay, attempts: attempts + 1 });
-            workspaceDeferred = true;
-            log.warn("hub", "archived workspace busy; left unpacked for backfill", {
-              session: key,
-              retryInMs: delay,
-              error: (error as Error).message,
-            });
+            if (code === "EPERM" || code === "EBUSY" || code === "EACCES") {
+              // Its workspace left whole where it was (the rename into place refused); its transcripts are still packed.
+              const attempts = this.busyRetry.get(key)?.attempts ?? 0;
+              const delay = WORKSPACE_BUSY_BACKOFF_MS[attempts];
+              const afterMs = this.hub().config().archivedWorkspaceMs;
+              const archivedAt = this.hub().store.getSession(key)?.archivedAt ?? null;
+              const inTime = afterMs <= 0 || archivedAt === null || (delay !== undefined && wall.now() + delay < archivedAt + afterMs);
+              if (delay !== undefined && inTime) {
+                this.busyRetry.set(key, { until: wall.now() + delay, attempts: attempts + 1 });
+                workspaceDeferred = true;
+                log.warn("hub", "archived workspace busy; left unpacked for backfill", { session: key, retryInMs: delay, error: (error as Error).message });
+              } else {
+                log.warn("hub", "archived workspace stayed busy; marked cold unpacked", { session: key, attempts: attempts + 1, error: (error as Error).message });
+              }
+            } else {
+              // Tried again every round it would be compressed again whole (up to 2 GiB) and fail the same (a full
+              // disk, a file it cannot read): left as one too large is, emptied in time.
+              log.warn("hub", "archived workspace could not be packed; marked cold unpacked", { session: key, error: (error as Error).message });
+            }
           }
         }
         if (!ready()) return;
