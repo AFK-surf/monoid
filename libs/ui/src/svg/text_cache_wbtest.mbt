@@ -232,6 +232,59 @@ fn make_test_ttf(family : String, chars : Array[(Int, Int)], has_opsz : Bool) ->
     wb_push_u16(fvar, 0)
     wb_push_u16(fvar, 257)
     tables.push(("fvar", fvar))
+
+    // HVAR with 3 variation regions over (wght, opsz) so both axes actually alter glyph advances:
+    // region 0: wght > 400 (+350 at wght=900); region 1: wght < 400 (-200 at wght=100);
+    // region 2: opsz > 14 (+250 at opsz=144).
+    let hvar : Array[Byte] = []
+    wb_push_u16(hvar, 1) // majorVersion
+    wb_push_u16(hvar, 0) // minorVersion
+    wb_push_u32(hvar, 20) // itemVariationStoreOffset
+    wb_push_u32(hvar, 0) // advanceWidthMappingOffset (direct: outer=0, inner=gid)
+    wb_push_u32(hvar, 0) // lsbMappingOffset
+    wb_push_u32(hvar, 0) // rsbMappingOffset
+    // ItemVariationStore at offset 20
+    wb_push_u16(hvar, 1) // format
+    wb_push_u32(hvar, 12) // variationRegionListOffset (from store start)
+    wb_push_u16(hvar, 1) // itemVariationDataCount
+    wb_push_u32(hvar, 52) // itemVariationDataOffsets[0] = 12 + 4 + 3 * 12
+    // VariationRegionList (2 axes, 3 regions)
+    wb_push_u16(hvar, 2) // axisCount
+    wb_push_u16(hvar, 3) // regionCount
+    // Region 0: axis0 [0, 1.0, 1.0], axis1 [0, 0, 0]
+    wb_push_u16(hvar, 0)
+    wb_push_u16(hvar, 0x4000)
+    wb_push_u16(hvar, 0x4000)
+    wb_push_u16(hvar, 0)
+    wb_push_u16(hvar, 0)
+    wb_push_u16(hvar, 0)
+    // Region 1: axis0 [-1.0, -1.0, 0], axis1 [0, 0, 0]
+    wb_push_u16(hvar, (-0x4000) & 0xFFFF)
+    wb_push_u16(hvar, (-0x4000) & 0xFFFF)
+    wb_push_u16(hvar, 0)
+    wb_push_u16(hvar, 0)
+    wb_push_u16(hvar, 0)
+    wb_push_u16(hvar, 0)
+    // Region 2: axis0 [0, 0, 0], axis1 [0, 1.0, 1.0]
+    wb_push_u16(hvar, 0)
+    wb_push_u16(hvar, 0)
+    wb_push_u16(hvar, 0)
+    wb_push_u16(hvar, 0)
+    wb_push_u16(hvar, 0x4000)
+    wb_push_u16(hvar, 0x4000)
+    // ItemVariationData[0]
+    wb_push_u16(hvar, num_glyphs) // itemCount
+    wb_push_u16(hvar, 3) // wordDeltaCount (all 3 deltas are i16)
+    wb_push_u16(hvar, 3) // regionIndexCount
+    wb_push_u16(hvar, 0)
+    wb_push_u16(hvar, 1)
+    wb_push_u16(hvar, 2)
+    for _ in 0..<num_glyphs {
+      wb_push_u16(hvar, 350 & 0xFFFF)
+      wb_push_u16(hvar, (-200) & 0xFFFF)
+      wb_push_u16(hvar, 250 & 0xFFFF)
+    }
+    tables.push(("HVAR", hvar))
   }
   tables.sort_by(fn(a, b) { a.0.compare(b.0) })
 
@@ -316,10 +369,41 @@ test "SVG text cache: key preserves duplicate variation order and rasterize matc
   }
   assert_true(non_white > 100, msg="expected rendered text pixels, got \{non_white}")
 
-  // Verify cache hit reuse directly on a parsed document
+  // 3. Verify HVAR axes actually move rendered glyph positions (so dropping coords or mixing cache keys breaks pixels).
+  let render_one = fn(attrs : String, content : String) -> FixedArray[Byte] raise {
+    let s = "<svg xmlns='http://www.w3.org/2000/svg' width='280' height='70'><rect width='280' height='70' fill='#ffffff'/>" +
+      "<text x='10' y='52' fill='#111111' " +
+      attrs +
+      ">" +
+      content +
+      "</text></svg>"
+    guard rasterize(@utf8.encode(s), 280, opt~) is Some((_, _, px)) else { fail("render_one failed") }
+    px
+  }
+  let px_default = render_one("font-size='28'", "ABCD")
+  let px_wght300 = render_one("font-size='28' style=\"font-variation-settings:'wght' 300\"", "ABCD")
+  let px_wght800 = render_one("font-size='28' style=\"font-variation-settings:'wght' 800\"", "ABCD")
+  let px_dup_300_800 = render_one(
+    "font-size='28' font-optical-sizing='none' style=\"font-variation-settings:'wght' 300,'wght' 800\"",
+    "ABCD",
+  )
+  let px_dup_800_300 = render_one(
+    "font-size='28' font-optical-sizing='none' style=\"font-variation-settings:'wght' 800,'wght' 300\"",
+    "ABCD",
+  )
+  let px_opsz_auto = render_one("font-size='48'", "ABCD")
+  let px_opsz_none = render_one("font-size='48' font-optical-sizing='none'", "ABCD")
+  assert_true(px_wght300 != px_default, msg="wght=300 must differ from default (guards against dropped coords)")
+  assert_true(px_wght800 != px_default, msg="wght=800 must differ from default (guards against dropped coords)")
+  assert_true(px_wght300 != px_wght800, msg="wght=300 and wght=800 must differ")
+  assert_true(px_dup_300_800 != px_dup_800_300, msg="duplicate axis order must change rendered pixels")
+  assert_true(px_opsz_auto != px_opsz_none, msg="optical-sizing auto vs none must change rendered pixels at 48px")
+
+  // 4. True uncached baseline: convert each <text> element using a brand-new empty Cache::new(doc) (zero cache reuse
+  // across elements) and verify 100% byte-identical pixels to converting the whole document with a shared Cache.
   let xml = parse_xml(svg_str).unwrap()
   let doc = parse_svg_tree(xml, opt.style_sheet).unwrap()
-  let cache = Cache::new(doc)
+  let shared_cache = Cache::new(doc)
   let state : State = {
     parent_clip_path: -1,
     parent_markers: [],
@@ -329,24 +413,30 @@ test "SVG text cache: key preserves duplicate variation order and rasterize matc
     use_size: (None, None),
     opt,
   }
-  let g_cached = Group::empty()
-  convert_children(doc, 0, state, cache, g_cached)
-  assert_true(cache.resolved_fonts.length() > 0, msg="expected resolved_fonts cache to be populated")
-  assert_true(cache.varied_shapers.length() > 0, msg="expected varied_shapers cache to be populated")
+  let g_shared = Group::empty()
+  convert_children(doc, 0, state, shared_cache, g_shared)
+  assert_true(shared_cache.resolved_fonts.length() > 0, msg="expected resolved_fonts cache to be populated")
+  assert_true(shared_cache.varied_shapers.length() > 0, msg="expected varied_shapers cache to be populated")
 
-  // Uncached baseline: rasterize a second time and verify every single text element rendered in isolation
-  // onto a fresh document produces 100% byte-identical pixels to rendering with shared document cache
-  let pm_cached = @skia.Pixmap::new(w1, h1).unwrap()
-  let tree_cached = tree_from_str(svg_str, opt).unwrap()
-  let ts = @skia.Transform::from_scale(fi(w1) / tree_cached.size.width, fi(h1) / tree_cached.size.height)
-  render_tree(tree_cached, ts, pm_cached)
-  let rgba_check = unpremul_pixmap(pm_cached)
-  assert_eq(rgba1.length(), rgba_check.length())
-  for i in 0..<rgba1.length() {
-    assert_eq(rgba1[i], rgba_check[i], msg="byte mismatch at \{i}")
+  let g_uncached = Group::empty()
+  for child in doc.children(0) {
+    let fresh_cache = Cache::new(doc)
+    convert_element(doc, child, state, fresh_cache, g_uncached)
   }
+  let sz = @skia.Size::from_wh(300.0, 220.0).unwrap()
+  let pm_shared = @skia.Pixmap::new(300, 220).unwrap()
+  render_tree({ size: sz, root: g_shared }, @skia.Transform::identity(), pm_shared)
+  let pm_uncached = @skia.Pixmap::new(300, 220).unwrap()
+  render_tree({ size: sz, root: g_uncached }, @skia.Transform::identity(), pm_uncached)
+  let rgba_shared = unpremul_pixmap(pm_shared)
+  let rgba_uncached = unpremul_pixmap(pm_uncached)
+  assert_eq(rgba_shared.length(), rgba_uncached.length())
+  for i in 0..<rgba_shared.length() {
+    assert_eq(rgba_shared[i], rgba_uncached[i], msg="shared vs per-element uncached byte mismatch at \{i}")
+  }
+  assert_eq(rgba1, rgba_shared)
 
-  // Compare two identical <text> elements with shared cache vs single-<text> isolated document
+  // 5. Compare two identical <text> elements with shared cache vs single-<text> isolated document
   let single_svg =
     "<svg xmlns='http://www.w3.org/2000/svg' width='200' height='60'>" +
     "<text x='10' y='40' font-size='24' font-weight='700' fill='#112233'>AB 12 ★ 中</text>" +

@@ -415,11 +415,8 @@ fn init_svg_font_families(db : @font.FontDb) -> String {
 }
 
 ///|
-/// An SVG picture drawn at `px` on its longer side, its text set in the app's faces (@sfbase.vector_faces): the app's
-/// own words' face for every generic family but monospace, the code face for that.
-fn draw_svg(data : Bytes, px : Int) -> (Int, Int, FixedArray[Byte])? {
-  let faces = @sfbase.vector_faces(data)
-  let (fonts, own) = match svg_fonts.val {
+fn svg_fonts_for(faces : Array[Bytes]) -> (@font.FontDb, String) {
+  match svg_fonts.val {
     Some((prev, db, own)) if prev.length() == faces.length() &&
       ({
         let mut same = true
@@ -459,6 +456,13 @@ fn draw_svg(data : Bytes, px : Int) -> (Int, Int, FixedArray[Byte])? {
       (db, own)
     }
   }
+}
+
+///|
+/// An SVG picture drawn at `px` on its longer side, its text set in the app's faces (@sfbase.vector_faces): the app's
+/// own words' face for every generic family but monospace, the code face for that.
+fn draw_svg(data : Bytes, px : Int) -> (Int, Int, FixedArray[Byte])? {
+  let (fonts, own) = svg_fonts_for(@sfbase.vector_faces(data))
   @svg.rasterize(data, px, opt={ ..@svg.Options::default(), fonts, font_family: own })
 }
 

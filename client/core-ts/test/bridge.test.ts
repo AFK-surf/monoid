@@ -10,6 +10,7 @@ import { Effect, Fiber } from "effect";
 import { FakeCloud } from "../harness/cloud.ts";
 import { apply } from "../src/delta.ts";
 import { Bridge, BridgeHost, bridgeIroh, startBridged } from "../src/hosts/bridge.ts";
+import { WebHost } from "../src/hosts/web.ts";
 import { ACCESS_CACHE_MS, createAccessCache } from "../src/iroh-access.ts";
 import { loadAddon } from "../src/hosts/node-iroh.ts";
 import { holdLanguage } from "../src/i18n.ts";
@@ -230,6 +231,43 @@ test("bridgeHost_storageGetVerified_protocol_matrix_and_nodeHost_verification", 
   } finally {
     native.host.close();
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("webHost_storageGetVerified_handles_subarray_mismatch_and_digest_rejection", async () => {
+  const { createHash } = await import("node:crypto");
+  const web = new WebHost(() => {}, false, async () => {
+    throw new Error("unused");
+  });
+  // Subarray view with non-zero byteOffset and shorter byteLength than its underlying ArrayBuffer.
+  const backing = new Uint8Array([0xaa, 0xbb, 1, 2, 3, 4, 5, 0xcc, 0xdd]);
+  const view = backing.subarray(2, 7);
+  const viewSha = createHash("sha256").update(view).digest("hex");
+  let stored: Uint8Array | null = view;
+  (web as unknown as { storageGet: (key: string) => Effect.Effect<Uint8Array | null> }).storageGet = () => Effect.succeed(stored);
+
+  // Match on subarray view.
+  const ok = await run(web.storageGetVerified("fonts/file/web-test", viewSha));
+  assert.deepEqual(ok, { bytes: view, verified: true });
+
+  // Digest mismatch -> "damaged".
+  assert.equal(await run(web.storageGetVerified("fonts/file/web-test", "0".repeat(64))), "damaged");
+
+  // Missing -> null.
+  stored = null;
+  assert.equal(await run(web.storageGetVerified("fonts/file/web-test", viewSha)), null);
+
+  // crypto.subtle.digest rejection -> safe fallback { bytes, verified: false }, never "damaged".
+  stored = view;
+  const origDigest = globalThis.crypto.subtle.digest;
+  globalThis.crypto.subtle.digest = async () => {
+    throw new Error("subtle unavailable");
+  };
+  try {
+    const fallback = await run(web.storageGetVerified("fonts/file/web-test", viewSha));
+    assert.deepEqual(fallback, { bytes: view, verified: false });
+  } finally {
+    globalThis.crypto.subtle.digest = origDigest;
   }
 });
 

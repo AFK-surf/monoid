@@ -3,8 +3,8 @@
 // keeps its files for this app (client/core-ts/src/font-files.ts: `fonts.file`, fetched first where it has none,
 // `fonts.fetch`), each unzipped here and checked by its hash (and given back unzipped: `fonts.keep`; an unzipped file
 // already verified off the UI thread by the core comes back with `zipped: false, verified: true` and skips UI-thread
-// hashing), and given to the host once all are here (@ui.face_add_bytes: @hostapi.face_ui, face_text, face_code). One kept here before (an earlier
-// run's) the prefs say where each of its files is (`path`), and the host reads them there (@ui.face_add) the frame the
+// hashing), and given to the host once all are here (@ui.face_add_bytes: @hostapi.face_ui, face_text, face_code). One
+// kept here before (an earlier run's) the prefs say where each of its files is (`path`), and the host reads them there (@ui.face_add) the frame the
 // prefs come, the first page set in it: nothing asked of the core, carried or checked again. Until then, and where none
 // is chosen, the app's own stands in (code's: JetBrains Mono). The fonts page shows each face in its preview
 // (`fonts.preview`: its characters alone), given to a face of its own (4 on, by its place in the list).
@@ -599,7 +599,9 @@ fn face_had(src : Source, id : String, files : Array[Json]) -> Array[(FaceFile, 
 ///|
 /// Face `id`'s files from the `at`th on, each from the core: unzipped and checked where it is as fetched (skipping the
 /// UI-thread SHA-256 when the core already verified an unzipped file off the UI thread: `zipped: false, verified: true`);
-/// where the core has one not (or cleared a damaged file), the face fetched first (once). How far it got is told to `had`.
+/// where the core has one not (or cleared a damaged file), the face is fetched and retried from the current file (at
+/// most once per file so multi-file faces with more than one damaged file recover in one selection). How far it got is
+/// told to `had`.
 fn face_files(
   src : Source,
   id : String,
@@ -623,7 +625,7 @@ fn face_files(
         let verified = field(Some(v), "zipped") is Some(False) && field(Some(v), "verified") is Some(True)
         if verified {
           got.push((Held(bytes), weight))
-          face_files(src, id, files, at + 1, got, fetched, had)
+          face_files(src, id, files, at + 1, got, false, had)
         } else {
           let whole = if zipped { @zip.gunzip(bytes) } else { Some(bytes) }
           match whole {
@@ -633,7 +635,7 @@ fn face_files(
                 (src.call_bytes)("fonts.keep", Json::object({ "sha256": ToJson::to_json(sha) }), b, answer_unread)
               }
               got.push((Held(b), weight))
-              face_files(src, id, files, at + 1, got, fetched, had)
+              face_files(src, id, files, at + 1, got, false, had)
             }
             _ => had(NotHad(@sf.t("android-settings.fonts.damaged")))
           }
@@ -643,7 +645,7 @@ fn face_files(
         had(Fetching)
         (src.call)("fonts.fetch", Json::object({ "id": ToJson::to_json(id) }), fn(r) {
           match r {
-            Ok(_) => face_files(src, id, files, 0, [], true, had)
+            Ok(_) => face_files(src, id, files, at, got, true, had)
             Err(e) => had(NotHad(text(Some(e), "message")))
           }
         })

@@ -1469,3 +1469,41 @@ test "fonts.file returning not_found after core clears a damaged file triggers f
   assert_true(face_here("noto-sans-sc"))
   assert_true(@ui.face_given(@hostapi.face_ui))
 }
+
+///|
+test "multi-file face recovers in one selection when both weights return not_found after damage cleanup" {
+  new_run()
+  let base = fixture("home")
+  (base.call)("prefs.set", { "fonts": { "ui": "lxgw-wenkai" } }, fn(_) {  })
+  let fetched = Ref(0)
+  let reads = Ref(0)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "fonts.fetch" {
+        fetched.val += 1
+      }
+      (base.call)(name, params, done)
+    },
+    read_bytes: fn(name, params, done) {
+      if name == "fonts.file" {
+        reads.val += 1
+        // Read 1 (weight 400) and read 3 (weight 500) each fail with not_found (simulating both files damaged);
+        // reads 2 and 4 succeed after their respective fonts.fetch, without re-reading weight 400 on the second fetch.
+        if reads.val == 1 || reads.val == 3 {
+          done(Err({ "code": "not_found", "message": "damaged and cleared" }))
+        } else {
+          (base.read_bytes)(name, params, done)
+        }
+      } else {
+        (base.read_bytes)(name, params, done)
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.draw()
+  assert_eq(reads.val, 4)
+  assert_eq(fetched.val, 2)
+  assert_true(face_here("lxgw-wenkai"))
+  assert_true(@ui.face_given(@hostapi.face_ui))
+}
