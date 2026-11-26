@@ -2742,7 +2742,9 @@
     }
     const pend = [];
     let runMask = 0;
-    for (const it of items) {
+    const runSids = [];
+    for (let k = 0; k < items.length; k++) {
+      const it = items[k];
       let sid = -1, isNew = 0, modeChanged = false;
       for (let i = 0; i < AD_MAX; i++) {
         const s = adSlots[i];
@@ -2782,6 +2784,12 @@
         s.cx = it.cx; s.cy = it.cy; s.hx = it.hx; s.hy = it.hy; s.seenSerial = serial;
       }
       const s = adSlots[sid];
+      runSids[k] = sid;
+      for (let prev = 0; prev < k; prev++) {
+        if (Math.hypot(it.cx - items[prev].cx, it.cy - items[prev].cy) <= 2.0) {
+          runMask &= ~(1 << runSids[prev]);
+        }
+      }
       runMask |= (1 << sid);
       if (!isNew && !modeChanged && s.updatedSerial === serial) continue;
       const slotChanged = backdropChanged || modeChanged || (s.lastBd !== curBd);
@@ -2794,7 +2802,7 @@
         pend.push({ sid, isNew, isDark: s.isDark, cx: s.cx, cy: s.cy, hx: s.hx, hy: s.hy });
       }
     }
-    if (items.length > 0) adCurMask = runMask;
+    adCurMask = runMask;
     return pend;
   }
   function adRunUpdates(pend, dt) {

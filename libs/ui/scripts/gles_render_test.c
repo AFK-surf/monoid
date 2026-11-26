@@ -5960,6 +5960,42 @@ int main(void) {
         CHECK(abs((int)px1[hl_off] - (int)px30[hl_off]) <= 1);
         free(px1); free(px30);
       }
+      // Shared-capture (same tid, Glass::sharing()) concentric identical-box light-then-dark overlap:
+      // dark neutral ink (0.20) & kind==0 selection highlight (0.15) at the shared center must select the topmost
+      // dark capsule slot (stay unlifted <90 and <=1 LSB frame 1 vs frame 30 while light slot settles).
+      {
+        glass_forget();
+        double sh[5 * MB_INST];
+        rect_at(sh, 0, 0, W, H, 0, 1.0, 1.0, 1.0, 0);
+        // 1: light glass (10..90, 10..50, merge=0, tid=-60)
+        rect_at(sh + MB_INST, 10, 10, 80, 40, 6, 253.0 / 255.0, 252.0 / 255.0, 253.0 / 255.0, -60);
+        sh[MB_INST + 4] = 16.0; sh[MB_INST + 6] = 1.0; sh[MB_INST + 7] = 1.0;
+        sh[MB_INST + 11] = 0x67 / 255.0; sh[MB_INST + 13] = 4.0; sh[MB_INST + 14] = -1.0; sh[MB_INST + 15] = 1.0;
+        // 2: concentric identical-box dark glass sharing tid=-60 (drawn on top of light glass)
+        rect_at(sh + 2 * MB_INST, 10, 10, 80, 40, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -60);
+        sh[2 * MB_INST + 4] = 16.0; sh[2 * MB_INST + 6] = 1.0; sh[2 * MB_INST + 7] = 1.0;
+        sh[2 * MB_INST + 11] = 0x67 / 255.0; sh[2 * MB_INST + 13] = 4.0; sh[2 * MB_INST + 14] = -1.0; sh[2 * MB_INST + 15] = 1.0;
+        // 3: dark neutral ink (0.20) at shared center (x=40..50, y=24..36 -> sample at 45,30)
+        rect_at(sh + 3 * MB_INST, 40, 24, 10, 12, 7, 0.20, 0.20, 0.20, 0);
+        sh[3 * MB_INST + 14] = 4.0 / MB_ATLAS; sh[3 * MB_INST + 15] = 4.0 / MB_ATLAS;
+        sh[3 * MB_INST + 21] = 50.0; sh[3 * MB_INST + 22] = 30.0; sh[3 * MB_INST + 23] = 40.0;
+        // 4: kind==0 selection highlight (0.15, a=0.20) at shared center (x=52..60, y=22..38 -> sample at 56,30)
+        rect_at(sh + 4 * MB_INST, 52, 22, 8, 16, 0, 0.15, 0.15, 0.15, 0);
+        sh[4 * MB_INST + 11] = 0.20;
+        sh[4 * MB_INST + 21] = 50.0; sh[4 * MB_INST + 22] = 30.0; sh[4 * MB_INST + 23] = -40.0;
+        gl_present(sh, 5, 1.0, 1.0, 1.0);
+        rect_at(sh, 0, 0, W, H, 0, 0.0, 0.0, 0.0, 0);
+        gl_present(sh, 5, 0.0, 0.0, 0.0);
+        unsigned char *px1 = pixels_of_fb(surface);
+        for (int k = 0; k < 30; k++) gl_present(sh, 5, 0.0, 0.0, 0.0);
+        unsigned char *px30 = pixels_of_fb(surface);
+        size_t dn_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 45 * S) * 4;
+        size_t hl_off = ((size_t)(fb_h - 1 - 30 * S) * fb_w + 56 * S) * 4;
+        CHECK(px1[dn_off] < 90 && px1[hl_off] < 90);
+        CHECK(abs((int)px1[dn_off] - (int)px30[dn_off]) <= 1);
+        CHECK(abs((int)px1[hl_off] - (int)px30[hl_off]) <= 1);
+        free(px1); free(px30);
+      }
       gl_set_fixed_dt(0.0);
     }
 
@@ -6142,45 +6178,88 @@ int main(void) {
       CHECK(cr_on >= 4.5 && cr_off >= 4.5);
       free(px_bg); free(px_on); free(px_off);
 
-      // Scrolling bright-card flip scenario (CHAT_SCROLL_12F): bright card (0.85) under blur=8.5 progressive top bar,
-      // 40x40 back pill (blur=1.4) on left, bare adaptive title in middle -> verify real composited background CR >= 4.5
+      // Scrolling bright-card ON/OFF polarity-flip scenario (CHAT_SCROLL_12F):
+      // Sweep a bright card (0.85) band across the blur=8.5 progressive top bar until delegated (ON) and
+      // non-delegated (OFF, extra 1.4pt pill blur) straddle WCAG Lbg=0.1792 and flip title polarity at (72,25),
+      // then assert actual ON/OFF opposite polarity AND ON contrast >= 4.5 against hidden-title composited bg.
       {
-        glass_forget();
-        double bc[5 * MB_INST];
-        rect_at(bc, 0, 0, W, H, 0, 0.06, 0.06, 0.06, 0);
-        rect_at(bc + MB_INST, 48, 0, W - 48, H, 0, 0.85, 0.85, 0.85, 0);
-        // Progressive blur=8.5 top bar donor
-        rect_at(bc + 2 * MB_INST, 0, 0, W, 56, 5, 0, 0, 0, -146);
-        bc[2 * MB_INST + 6] = 1.0; bc[2 * MB_INST + 7] = 8.5; bc[2 * MB_INST + 11] = 0.0; bc[2 * MB_INST + 15] = 1.0;
-        bc[2 * MB_INST + 22] = -1.0; bc[2 * MB_INST + 54] = 56.0; bc[2 * MB_INST + 55] = 28.0;
-        // 40x40 back pill (blur=1.4) on left
-        rect_at(bc + 3 * MB_INST, 4, 8, 40, 40, 6, 0.14, 0.14, 0.15, -147);
-        bc[3 * MB_INST + 4] = 20.0; bc[3 * MB_INST + 6] = 1.0; bc[3 * MB_INST + 7] = 1.4;
-        bc[3 * MB_INST + 11] = 0.4; bc[3 * MB_INST + 14] = -1.0; bc[3 * MB_INST + 15] = 1.0;
-        bc[3 * MB_INST + 21] = 4.0; bc[3 * MB_INST + 23] = 2.0;
-        // Bare adaptive light title glyph over bright card (x=64..80, y=18..32 -> center 72,25)
-        rect_at(bc + 4 * MB_INST, 64, 18, 16, 14, 7, 0.93, 0.93, 0.93, 0);
-        bc[4 * MB_INST + 14] = 4.0 / MB_ATLAS; bc[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
-        bc[4 * MB_INST + 23] = -12.0;
-
-        donor_force_off = 0;
-        gl_present(bc, 4, 0.06, 0.06, 0.06);
-        unsigned char *bc_bg = pixels_of_fb(surface);
-
-        glass_forget();
-        gl_present(bc, 5, 0.06, 0.06, 0.06);
-        CHECK(donor_delegated_count == 1);
-        unsigned char *bc_on = pixels_of_fb(surface);
-
+        int found_flip = 0;
+        double best_cr_on = 0.0, best_cr_off = 0.0, best_lbg = 0.0;
+        int flip_edge = -1;
+        unsigned char flip_on = 0, flip_off = 0;
         size_t boff = ((size_t)(fb_h - 1 - 25 * S) * fb_w + 72 * S) * 4;
-        double by_bg = wcag_luma_u8(bc_bg[boff + 0], bc_bg[boff + 1], bc_bg[boff + 2]);
-        double by_on = wcag_luma_u8(bc_on[boff + 0], bc_on[boff + 1], bc_on[boff + 2]);
-        double bcr_on = (fmax(by_on, by_bg) + 0.05) / (fmin(by_on, by_bg) + 0.05);
-        printf("gles_render: perf-51 bright-card flip cr_on=%.2f bg=(%u,%u,%u) fg=(%u,%u,%u)\n",
-               bcr_on, bc_bg[boff + 0], bc_bg[boff + 1], bc_bg[boff + 2],
-               bc_on[boff + 0], bc_on[boff + 1], bc_on[boff + 2]);
-        CHECK(bcr_on >= 4.5);
-        free(bc_bg); free(bc_on);
+        for (int cy = 0; cy <= 46 && !found_flip; cy++) {
+          double bc[5 * MB_INST];
+          rect_at(bc, 0, 0, W, H, 0, 0.06, 0.06, 0.06, 0);
+          // Bright card (0.85) starting at y=cy across title column (x=50..W)
+          rect_at(bc + MB_INST, 50, (double)cy, W - 50, H - cy, 0, 0.85, 0.85, 0.85, 0);
+          // Progressive blur=8.5 top bar donor
+          rect_at(bc + 2 * MB_INST, 0, 0, W, 56, 5, 0, 0, 0, -146);
+          bc[2 * MB_INST + 6] = 1.0; bc[2 * MB_INST + 7] = 8.5; bc[2 * MB_INST + 11] = 0.0; bc[2 * MB_INST + 15] = 1.0;
+          bc[2 * MB_INST + 22] = -1.0; bc[2 * MB_INST + 54] = 56.0; bc[2 * MB_INST + 55] = 28.0;
+          // 40x40 back pill (blur=1.4) on left
+          rect_at(bc + 3 * MB_INST, 4, 8, 40, 40, 6, 0.14, 0.14, 0.15, -147);
+          bc[3 * MB_INST + 4] = 20.0; bc[3 * MB_INST + 6] = 1.0; bc[3 * MB_INST + 7] = 1.4;
+          bc[3 * MB_INST + 11] = 0.4; bc[3 * MB_INST + 14] = -1.0; bc[3 * MB_INST + 15] = 1.0;
+          bc[3 * MB_INST + 21] = 4.0; bc[3 * MB_INST + 23] = 2.0;
+          // Bare adaptive light title glyph (x=64..80, y=18..32 -> center 72,25)
+          rect_at(bc + 4 * MB_INST, 64, 18, 16, 14, 7, 0.93, 0.93, 0.93, 0);
+          bc[4 * MB_INST + 14] = 4.0 / MB_ATLAS; bc[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
+          bc[4 * MB_INST + 23] = -12.0;
+
+          glass_forget();
+          donor_force_off = 0;
+          gl_present(bc, 5, 0.06, 0.06, 0.06);
+          CHECK(donor_delegated_count == 1);
+          unsigned char *bc_on = pixels_of_fb(surface);
+
+          glass_forget();
+          donor_force_off = 1;
+          gl_present(bc, 5, 0.06, 0.06, 0.06);
+          CHECK(donor_delegated_count == 0);
+          unsigned char *bc_off = pixels_of_fb(surface);
+          donor_force_off = 0;
+
+          unsigned char fg_on = bc_on[boff + 0];
+          unsigned char fg_off = bc_off[boff + 0];
+          if (((fg_on < 128) != (fg_off < 128)) && abs((int)fg_on - (int)fg_off) >= 100) {
+            glass_forget();
+            gl_present(bc, 4, 0.06, 0.06, 0.06);
+            unsigned char *bc_bg = pixels_of_fb(surface);
+            // Measure real composited hidden-title background over the glyph's exact 15-point sampling grid (h=(16,14))
+            double sum = 0.0, mx1 = -1.0, mx2 = -1.0, mn1 = 2.0, mn2 = 2.0;
+            for (int iy = -1; iy <= 1; iy++) {
+              int py = (int)lround((25.0 + iy * (14.0 * 0.60)) * S);
+              if (py < 0) py = 0;
+              if (py >= fb_h) py = fb_h - 1;
+              for (int ix = -2; ix <= 2; ix++) {
+                int px = (int)lround((72.0 + ix * (16.0 * 0.38)) * S);
+                if (px < 0) px = 0;
+                if (px >= fb_w) px = fb_w - 1;
+                size_t soff = ((size_t)(fb_h - 1 - py) * fb_w + (size_t)px) * 4;
+                double y = wcag_luma_u8(bc_bg[soff + 0], bc_bg[soff + 1], bc_bg[soff + 2]);
+                sum += y;
+                if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
+                if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
+              }
+            }
+            double by_bg = (sum - mx1 - mx2 - mn1 - mn2) / 11.0;
+            double by_on = wcag_luma_u8(bc_on[boff + 0], bc_on[boff + 1], bc_on[boff + 2]);
+            double by_off = wcag_luma_u8(bc_off[boff + 0], bc_off[boff + 1], bc_off[boff + 2]);
+            best_lbg = by_bg;
+            best_cr_on = (fmax(by_on, by_bg) + 0.05) / (fmin(by_on, by_bg) + 0.05);
+            best_cr_off = (fmax(by_off, by_bg) + 0.05) / (fmin(by_off, by_bg) + 0.05);
+            flip_edge = cy;
+            flip_on = fg_on; flip_off = fg_off;
+            found_flip = 1;
+            free(bc_bg);
+          }
+          free(bc_on); free(bc_off);
+        }
+        printf("gles_render: perf-51 bright-card flip cy=%d Lbg_real=%.4f cr_on=%.2f cr_off=%.2f fg_on=%u fg_off=%u\n",
+               flip_edge, best_lbg, best_cr_on, best_cr_off, flip_on, flip_off);
+        CHECK(found_flip == 1);
+        CHECK(best_cr_on >= 4.5);
       }
 
       // Occlusion margin: bright patch between donor and pill outside sr by 4pt but inside cur_glass blur+refract margin (~12pt)

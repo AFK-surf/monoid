@@ -2706,6 +2706,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
   }
   int n_upd = 0;
   uint32_t run_mask = 0;
+  int run_sids[MB_ADAPTIVE_MAX];
   for (int k = 0; k < ni; k++) {
     int sid = -1, is_new = 0, mode_changed = 0;
     for (int i = 0; i < MB_ADAPTIVE_MAX; i++) {
@@ -2754,6 +2755,12 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       w->ad_slots[sid].seen_serial = serial;
     }
     MBAdSlot *s = &w->ad_slots[sid];
+    run_sids[k] = sid;
+    for (int prev = 0; prev < k; prev++) {
+      if (hypotf(items[k].cx - items[prev].cx, items[k].cy - items[prev].cy) <= 2.0f) {
+        run_mask &= ~(1u << run_sids[prev]);
+      }
+    }
     run_mask |= (1u << sid);
     if (!is_new && !mode_changed && s->updated_serial == serial) continue;
     int slot_changed = backdrop_changed || mode_changed || (s->last_bd != cur_bd);
@@ -2772,7 +2779,7 @@ static int ad_collect_and_match(RenderWin *w, const float *f, int32_t start, int
       out[n_upd++] = {sid, is_new, s->is_dark, s->cx, s->cy, s->hx, s->hy};
     }
   }
-  if (ni > 0) w->ad_cur_mask = run_mask;
+  w->ad_cur_mask = run_mask;
   return n_upd;
 }
 
