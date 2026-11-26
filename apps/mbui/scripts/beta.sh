@@ -96,15 +96,33 @@ moon_tools() {
   else
     dir=$C/moon/$(printf '%s' "$tag" | shasum -a 256 | cut -c1-16)
     if [ ! -x "$dir/bin/moon" ]; then
-      local t0=$(now) tmp=$C/moon/new.$$
+      local t0=$(now) tmp=$C/moon/new.$$ ok=0 attempt=1 prev
       echo "beta: MoonBit has a new release ($tag): installing it"
-      rm -rf "$tmp" && mkdir -p "$tmp"
-      curl -fsSL --max-time 60 --retry 2 https://cli.moonbitlang.com/install/unix.sh -o "$tmp/install.sh"
-      # (its HOME for the download, its bin first on PATH: it leaves the shell's rc files alone)
-      HOME=$tmp MOON_HOME=$tmp PATH="$tmp/bin:$PATH" bash "$tmp/install.sh" > "$C/moon/install.log" 2>&1 \
-        || { tail -20 "$C/moon/install.log"; rm -rf "$tmp"; exit 1; }
+      # install/unix.sh runs curl without --retry, so a transient TLS reset (curl 35) aborts the download mid-install;
+      # retry cleanly and fall back to the existing MoonBit if cli.moonbitlang.com stays unreachable.
+      while [ "$attempt" -le 3 ]; do
+        rm -rf "$tmp" && mkdir -p "$tmp"
+        if curl -fsSL --max-time 60 --retry 2 https://cli.moonbitlang.com/install/unix.sh -o "$tmp/install.sh" \
+          && HOME=$tmp MOON_HOME=$tmp PATH="$tmp/bin:$PATH" bash "$tmp/install.sh" > "$C/moon/install.log" 2>&1; then
+          ok=1
+          break
+        fi
+        tail -20 "$C/moon/install.log" 2>/dev/null || true
+        attempt=$((attempt + 1))
+        [ "$attempt" -le 3 ] && echo "beta: MoonBit install attempt $((attempt - 1)) failed; retrying"
+      done
+      if [ "$ok" != 1 ]; then
+        rm -rf "$tmp"
+        prev=$(readlink "$C/tools/moon" 2>/dev/null || true)
+        if [ -n "$prev" ] && [ -x "$prev/bin/moon" ]; then
+          echo "beta: MoonBit install failed; keeping MoonBit as it is ($(basename "$prev"))"
+          return 0
+        fi
+        exit 1
+      fi
       rm -f "$tmp/install.sh"
-      mv "$tmp" "$dir"
+      mv "$tmp" "$dir" 2>/dev/null || rm -rf "$tmp"
+      [ -x "$dir/bin/moon" ] || { echo "beta: MoonBit install did not produce $dir/bin/moon" >&2; exit 1; }
       echo "beta: MoonBit installed in $(secs $t0) s"
     fi
     ln -sfn "$dir" "$C/tools/moon.new" && mv -fh "$C/tools/moon.new" "$C/tools/moon"

@@ -164,8 +164,8 @@ pub fn Flow::take(self : Flow, bytes : Bytes) -> Unit {
     bytes
   } else {
     let b = Buffer(capacity=self.carry.length() + bytes.length())
-    b.write_bytes(self.carry)
-    b.write_bytes(bytes)
+    b.write_bytesview(self.carry)
+    b.write_bytesview(bytes)
     b.to_bytes()
   }
   let end = if self.whole() { all.length() } else { utf8_whole(all) }

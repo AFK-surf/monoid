@@ -240,7 +240,7 @@ pub fn fix_compose_call(f : Fixture, name : String, params : Json) -> Result[Jso
             if paths.contains(path) {
               None
             } else {
-              paths.add(path)
+              paths.insert(path)
               Some(a)
             }
           }

@@ -323,7 +323,7 @@ fn Ctx::merge_liquid_layers(self : Ctx, n0 : Int, slots : Array[GlassSlot]) -> U
         mk[dst] = saved_mk[src_rel]
       }
       if has_bones && saved_bones[src_rel] {
-        bone_insts.add(dst)
+        bone_insts.insert(dst)
       }
     }
   }

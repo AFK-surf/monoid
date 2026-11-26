@@ -59,9 +59,9 @@ test "wpt eventsource: format-bom and format-bom-2 (single and double UTF-8 BOM)
 test "wpt eventsource: format-comments (leading colon comments, long comments, mixed with data)" {
   let long_comment = Bytes::make(2050, b'x')
   let buf = Buffer()
-  buf.write_bytes(b"data:1\n:")
-  buf.write_bytes(long_comment)
-  buf.write_bytes(b"\n:comment\ndata:2\n\n:comment only\n\ndata:3\n\n")
+  buf.write_bytesview(b"data:1\n:")
+  buf.write_bytesview(long_comment)
+  buf.write_bytesview(b"\n:comment\ndata:2\n\n:comment only\n\ndata:3\n\n")
   assert_wpt(
     buf.to_bytes(),
     [("message", "1\n2", None), ("message", "3", None)],

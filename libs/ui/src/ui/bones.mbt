@@ -61,7 +61,7 @@ fn Ctx::emit_bone(
   }
   self.emit_rect(x, y, w, h, r, color, 0.0, 0L, alpha)
   if inst_owners.on {
-    bone_insts.add(self.ninst - 1)
+    bone_insts.insert(self.ninst - 1)
   }
 }
 

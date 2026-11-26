@@ -146,7 +146,7 @@ fn fake_active_top(t : FakeTerminal) -> Int {
 fn fake_mark_row_dirty(t : FakeTerminal, abs_y : Int) -> Unit {
   let vy = abs_y - t.vp_top
   if vy >= 0 && vy < t.rows {
-    t.dirty_rows.add(vy)
+    t.dirty_rows.insert(vy)
   }
 }
 

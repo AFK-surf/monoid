@@ -419,7 +419,7 @@ fn chats_pane_node(
               day_warmed = true
               let hk = "h/" + d.label
               if !warmed.contains(hk) {
-                warmed.add(hk)
+                warmed.insert(hk)
                 @ui.words_ahead(d.label, heading_look, heading_x, words_scale, tabular=heading_tab) |> ignore
               }
             }
@@ -427,7 +427,7 @@ fn chats_pane_node(
             if warmed.contains(rk) {
               continue
             }
-            warmed.add(rk)
+            warmed.insert(rk)
             count = count + 1
             let title_text = if item.hidden == Some(true) {
               item.title + " · " + @sf.t("web-main.filter.hidden")
@@ -962,7 +962,7 @@ fn RowsMotion::said(
   for k in lines {
     if self.undo_lines.contains(k) {
       self.undo_lines.remove(k)
-      self.quiet.add(k)
+      self.quiet.insert(k)
       back = true
     }
     self.closed.remove(k)
@@ -989,7 +989,7 @@ fn RowsMotion::said(
         match lines.search(l) {
           Some(p) =>
             for i in (p + 1)..<lines.length() {
-              self.quiet.add(lines[i])
+              self.quiet.insert(lines[i])
             }
           None => ()
         }
@@ -998,7 +998,7 @@ fn RowsMotion::said(
     // (archived from its row: its line kept whole after the last line before it that stays, its 撤销 there)
     let here : Set[String] = Set([])
     for k in lines {
-      here.add(k)
+      here.insert(k)
     }
     let mut kept_after = ""
     for k in was {
@@ -1108,7 +1108,7 @@ fn RowsMotion::undo_over(self : RowsMotion, v : @view.View, here : ArchivedHere?
   }
   for k in over {
     self.undo_lines.remove(k)
-    self.closed.add(k)
+    self.closed.insert(k)
   }
   let end = v.cause_at() + @ui.move_most_ms
   if end > rows_rest_at.val {

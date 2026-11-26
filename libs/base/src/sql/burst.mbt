@@ -144,7 +144,7 @@ pub fn[T] query_in_chunks(
   let unique : Array[String] = []
   for k in keys {
     if !seen.contains(k) {
-      seen.add(k)
+      seen.insert(k)
       unique.push(k)
     }
   }

@@ -257,7 +257,7 @@ fn strip_static(text : BytesView, mark : Bytes) -> (Bytes, Bool) {
   }
   let buf = Buffer(capacity=text.length() + mark.length())
   buf.write_bytesview(text[0:a])
-  buf.write_bytes(mark)
+  buf.write_bytesview(mark)
   buf.write_bytesview(text[i:])
   (buf.to_bytes(), true)
 }
@@ -432,7 +432,7 @@ fn package_of(name : BytesView) -> Bytes {
   }
   let buf = Buffer()
   if core {
-    buf.write_bytes(b"core/")
+    buf.write_bytesview(b"core/")
   }
   for c in 0..<count {
     let mut d = i
@@ -487,7 +487,7 @@ fn prelude_definitions(prelude : Bytes) -> (Bytes, Int) {
         starts(lead, b"typedef") ||
         starts(lead, b"extern") ||
         starts(lead, b"#") {
-        out.write_bytes(text)
+        out.write_bytesview(text)
         continue
       }
       let code = text[li:].to_owned() // past the comments before it
@@ -496,27 +496,27 @@ fn prelude_definitions(prelude : Bytes) -> (Bytes, Int) {
       } else {
         let what = try classify(code, 0) catch {
           _ => {
-            out.write_bytes(text)
+            out.write_bytesview(text)
             continue
           }
         }
         match what {
           Data(_, ext) => ext
           _ => {
-            out.write_bytes(text)
+            out.write_bytesview(text)
             continue
           }
         }
       }
       count += 1
-      out.write_bytes(b"#ifdef CSPLIT_DEFS\n")
-      out.write_bytes(text)
+      out.write_bytesview(b"#ifdef CSPLIT_DEFS\n")
+      out.write_bytesview(text)
       if !ends(text, b"\n") {
-        out.write_bytes(b"\n")
+        out.write_bytesview(b"\n")
       }
-      out.write_bytes(b"#else\n")
-      out.write_bytes(decl)
-      out.write_bytes(b"#endif\n")
+      out.write_bytesview(b"#else\n")
+      out.write_bytesview(decl)
+      out.write_bytesview(b"#endif\n")
     }
   }
   let mut depth = 0 // inside #ifdef __cplusplus … #endif

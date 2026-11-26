@@ -283,7 +283,7 @@ async fn P55::coord_connects(self : P55, name : String, args : Array[Json]) -> J
       wc.learn_of({ id: jtext_or_empty(k, "id"), origin: jtext_or_empty(k, "origin") }, s(1), to_jv(args.get(2).unwrap_or(Json::null())))
       Json::null()
     }
-    "retire.of" => Json::array(wc.own_in(s(0)).map(Json::string(_)))
+    "retire.of" => Json::array(wc.own_in(s(0)).map(x => Json::string(x)))
     "retire.named" => ownc(wc.named_in(s(0)))
     "retire.move" => {
       wc.move_all(s(0), s(1))
@@ -483,7 +483,7 @@ async fn P55::start_connects(self : P55) -> Unit {
           _ => id
         }
       },
-      told_bots: async fn(peer, bots) { ignore(self.hub("hub.toldBots", [Json::string(peer), Json::array(bots.map(Json::string(_)))])) },
+      told_bots: async fn(peer, bots) { ignore(self.hub("hub.toldBots", [Json::string(peer), Json::array(bots.map(x => Json::string(x)))])) },
     },
     store: self.connect_threads_store(),
     config,
@@ -909,7 +909,7 @@ fn p55_surface_json(s : @connects_hub.Surface) -> Json {
   let out : Map[String, Json] = {
     "botUserId": got("botUserId"),
     "workspace": got("workspace"),
-    "has": Json::array(p55_surface_calls.filter(c => (s.has)(c)).map(Json::string(_))),
+    "has": Json::array(p55_surface_calls.filter(c => (s.has)(c)).map(x => Json::string(x))),
     "remote": Json::boolean(s.remote),
   }
   // (what answers at once besides, where it has it: the hub's `chatProp`)

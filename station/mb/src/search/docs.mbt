@@ -507,7 +507,7 @@ fn Reading::scope_page(self : Reading, after : Json, end : Json) -> Array[Json]?
   if out.length() > batch {
     out.truncate(batch)
   }
-  Some(out.map(Json::number(_)))
+  Some(out.map(x => Json::number(x)))
 }
 
 ///|

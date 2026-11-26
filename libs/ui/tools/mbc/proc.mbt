@@ -30,7 +30,7 @@ fn tmp_path(what : String) -> Bytes {
 fn spawn(argv : Array[Bytes], out : Bytes) -> Int {
   let words = Buffer()
   for w in argv {
-    words.write_bytes(w)
+    words.write_bytesview(w)
     words.write_byte(b'\x00')
   }
   c_spawn(words.to_bytes(), list2cmdline(argv), out)

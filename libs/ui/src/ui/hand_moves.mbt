@@ -138,7 +138,7 @@ fn Ctx::hand_faults(self : Ctx, rest : Map[String, HandMark]) -> Array[String] {
           (!hand_near(m.size, now.size) || m.weight != now.weight || !hand_near(m.line, now.line)))
         moved[i] = lights && !hand_near(m.y, now.y)
         if grew[i] {
-          grew_in.add(n.parent)
+          grew_in.insert(n.parent)
         }
       }
       // (shown only lit: what it pushes is the fault, and is told)
@@ -173,7 +173,7 @@ fn Ctx::hand_faults(self : Ctx, rest : Map[String, HandMark]) -> Array[String] {
   for i in 0..<self.count {
     let p = self.nodes[i].parent
     if moved[i] && !pushed[i] && !(p >= 0 && p < self.count && (grew[p] || holds_grown[p])) && !told.contains(p) {
-      told.add(p)
+      told.insert(p)
       let m = was[i].unwrap()
       let n = self.hand_mark(i)
       let holder = if p >= 0 { self.named(p) } else { "the window" }
@@ -256,7 +256,7 @@ fn tree_hand_faults(rest : Array[@view.HandNode], now : Array[@view.HandNode]) -
     if grew.contains(n.key) {
       let mut h = n.holder
       while h != "" && !holds_grown.contains(h) {
-        holds_grown.add(h)
+        holds_grown.insert(h)
         h = holder_of.get(h).unwrap_or("")
       }
     }
@@ -285,13 +285,13 @@ fn tree_hand_faults(rest : Array[@view.HandNode], now : Array[@view.HandNode]) -
           !grew.contains(n.holder) &&
           !holds_grown.contains(n.holder) &&
           !told.contains(n.holder) {
-          told.add(n.holder)
+          told.insert(n.holder)
           out.push("the tree's node \{n.key}\{tree_said(n)} moves in \{n.holder} lit, from \{m.y.round()} down in it to \{n.y.round()}")
         }
       None => ()
     }
     if grew.contains(n.key) || holds_grown.contains(n.key) {
-      grown_before.add(n.holder)
+      grown_before.insert(n.holder)
     }
   }
   out
