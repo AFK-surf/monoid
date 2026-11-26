@@ -709,11 +709,26 @@ impl Inner {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir).map_err(err)?;
             }
+            let mode = a.get("mode").and_then(Value::as_u64).map(|m| (m & 0o777) as u32);
             let mut random = [0u8; 4];
             getrandom::fill(&mut random).map_err(err)?;
             let tmp = PathBuf::from(format!("{}.{}.{}.tmp", path.display(), std::process::id(), hex::encode(random)));
             let written = (|| {
-                let mut file = std::fs::File::create(&tmp)?;
+                let mut opts = std::fs::OpenOptions::new();
+                opts.write(true).create_new(true);
+                #[cfg(unix)]
+                if let Some(m) = mode {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    opts.mode(m);
+                }
+                let mut file = opts.open(&tmp)?;
+                #[cfg(unix)]
+                if let Some(m) = mode {
+                    use std::os::unix::fs::PermissionsExt;
+                    file.set_permissions(std::fs::Permissions::from_mode(m))?;
+                }
+                #[cfg(not(unix))]
+                let _ = mode;
                 file.write_all(&bytes)?;
                 file.sync_all()
             })();
@@ -743,7 +758,9 @@ impl Inner {
         // kind, size, mode, inode, and mtime and ctime in ms (seconds and nanoseconds as Node joins them); null when
         // nothing is there.
         if op == "fs.lstat" {
-            let Ok(m) = std::fs::symlink_metadata(str_of(a, "path")?) else { return Ok(Some(Value::Null)) };
+            let follow = a.get("follow").and_then(Value::as_bool).unwrap_or(false);
+            let p = str_of(a, "path")?;
+            let Ok(m) = (if follow { std::fs::metadata(p) } else { std::fs::symlink_metadata(p) }) else { return Ok(Some(Value::Null)) };
             let kind = if m.file_type().is_symlink() { "link" } else if m.is_file() { "file" } else if m.is_dir() { "dir" } else { "other" };
             #[cfg(unix)]
             let (mode, ino, mtime, ctime) = {

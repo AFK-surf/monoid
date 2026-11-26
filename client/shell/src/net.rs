@@ -1554,7 +1554,7 @@ impl Inner {
                     }
                 };
                 let port = listener.local_addr().map_err(err)?.port();
-                Ok(Answer::json(json!({ "id": self.keep(Handle::Listener(Arc::new(Listener::Tcp(listener)))), "port": port })))
+                Ok(Answer::json(json!({ "id": self.keep(Handle::Listener { listener: Arc::new(Listener::Tcp(listener)), close: SocketClose::new() }), "port": port })))
             }
             // A Unix socket to serve at `path` (one there before is replaced).
             "unix.listen" => {
@@ -1562,7 +1562,7 @@ impl Inner {
                 {
                     let path = str_of(a, "path")?;
                     let listener = listen_unix(path, UNIX_LISTEN_BACKLOG)?;
-                    Ok(Answer::json(json!({ "id": self.keep(Handle::Listener(Arc::new(Listener::Unix(listener)))) })))
+                    Ok(Answer::json(json!({ "id": self.keep(Handle::Listener { listener: Arc::new(Listener::Unix(listener)), close: SocketClose::new() }) })))
                 }
                 #[cfg(not(unix))]
                 Err("Unix sockets are Unix's".into())
@@ -1588,8 +1588,15 @@ impl Inner {
             // The next connection to a listening socket: a socket read and written as `tcp.open`'s are (`tcp.read`,
             // `tcp.write`, `tcp.end`, `tcp.close`), and who it came from.
             "tcp.accept" => {
-                let Handle::Listener(listener) = self.handle(id_of(a)?)? else { return Err("not a listening socket".into()) };
-                let (conn, peer) = listener.accept().await?;
+                let Handle::Listener { listener, close } = self.handle(id_of(a)?)? else { return Err("not a listening socket".into()) };
+                if close.is_closed() {
+                    return Err("listener closed".into());
+                }
+                let (conn, peer) = tokio::select! {
+                    biased;
+                    _ = close.cancelled() => return Err("listener closed".into()),
+                    accepted = listener.accept() => accepted?,
+                };
                 Ok(Answer::json(json!({ "id": self.keep(conn), "peer": peer })))
             }
             "tcp.read" => {

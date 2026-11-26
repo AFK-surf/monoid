@@ -2888,7 +2888,7 @@ fn fetch_race_post_body_sent_once_when_direct_stalls_and_entry_wins() {
         98_001,
         "fetch".into(),
         json!({
-            "url": format!("https://localhost:{direct_port}/post"),
+            "url": format!("https://127.0.0.1:{direct_port}/post"),
             "method": "POST",
             "headers": [["content-type", "text/plain"]],
             "entry": { "host": "127.0.0.1", "port": entry_port },
@@ -2949,7 +2949,7 @@ fn stream_open_race_streams_chunks_over_winner() {
         98_010,
         "stream.open".into(),
         json!({
-            "url": format!("https://localhost:{closed_port}/events"),
+            "url": format!("https://127.0.0.1:{closed_port}/events"),
             "method": "GET",
             "entry": { "host": "127.0.0.1", "port": entry_port },
             "race": true,
@@ -3030,7 +3030,7 @@ fn ws_open_race_upgrade_sent_once_when_direct_stalls_and_entry_wins() {
         98_030,
         "ws.open".into(),
         json!({
-            "url": format!("wss://localhost:{direct_port}/ws"),
+            "url": format!("wss://127.0.0.1:{direct_port}/ws"),
             "entry": { "host": "127.0.0.1", "port": entry_port },
             "race": true,
             "hedgeMs": 40,
@@ -3651,7 +3651,7 @@ fn fetch_race_url_normalization_default_accept_and_strict_validation() {
         98_504,
         "fetch".into(),
         json!({
-            "url": format!("https://localhost:{closed_port}/folder/../file?a=1"),
+            "url": format!("https://127.0.0.1:{closed_port}/folder/../file?a=1"),
             "method": "GET",
             "entry": { "host": "127.0.0.1", "port": entry_port },
             "race": true,
@@ -3903,6 +3903,79 @@ async fn ws_close_during_stalled_in_flight_write_exits_at_2s_and_resumed_peer_re
 
     // `Shell` owns a Tokio runtime; drop it off the async worker thread.
     tokio::task::spawn_blocking(move || drop(shell)).await.unwrap();
+}
+
+#[test]
+fn listen_close_cancels_in_flight_tcp_accept_and_releases_port() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    shell.runtime.block_on(async move {
+        let listened = inner.run("tcp.listen", json!({ "port": 0 }), None).await.unwrap().json;
+        let lid = listened["id"].as_u64().unwrap();
+        let port = listened["port"].as_u64().unwrap() as u16;
+
+        let listener_weak = match inner.handle(lid).unwrap() {
+            Handle::Listener { listener, .. } => Arc::downgrade(&listener),
+            _ => unreachable!(),
+        };
+        assert_eq!(listener_weak.strong_count(), 1);
+
+        // Start an in-flight `tcp.accept` that holds a cloned `Arc<Listener>`.
+        let accept_inner = inner.clone();
+        let accept_task = tokio::spawn(async move {
+            accept_inner.run("tcp.accept", json!({ "id": lid }), None).await
+        });
+        // Wait deterministically until `tcp.accept` has cloned `Arc<Listener>` from `handles`.
+        while listener_weak.strong_count() < 2 {
+            tokio::task::yield_now().await;
+        }
+
+        // Closing the listener must wake `tcp.accept` immediately and drop the OS listening socket.
+        inner.run("listen.close", json!({ "id": lid }), None).await.unwrap();
+        // timer: bounded test deadline verifying in-flight tcp.accept wakes promptly on listen.close
+        let accept_res = tokio::time::timeout(std::time::Duration::from_secs(2), accept_task)
+            .await
+            .expect("tcp.accept must wake immediately on listen.close")
+            .unwrap();
+        assert_eq!(accept_res.err().as_deref(), Some("listener closed"));
+        assert_eq!(listener_weak.strong_count(), 0, "listener Arc must be fully dropped after listen.close");
+
+        // The exact same loopback port must be immediately rebindable without any dummy peer connect.
+        let rebound = std::net::TcpListener::bind(("127.0.0.1", port))
+            .expect("listening port must be released immediately after listen.close");
+        drop(rebound);
+    });
+}
+
+#[test]
+fn fs_write_respects_mode_and_lstat_follow_follows_symlink() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    let target = dir.path().join("secret.json");
+    let res = inner
+        .run_sync("fs.write", &json!({ "path": target.to_string_lossy(), "text": "{\"k\":1}", "mode": 0o600 }))
+        .unwrap();
+    assert_eq!(res["size"], 7);
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "{\"k\":1}");
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::symlink_metadata(&target).unwrap();
+        assert_eq!(meta.mode() & 0o777, 0o600, "fs.write with mode 0o600 must create 0600 file");
+
+        let link = dir.path().join("secret-link.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let ls = inner.run_sync("fs.lstat", &json!({ "path": link.to_string_lossy() })).unwrap();
+        assert_eq!(ls["kind"], "link");
+        let st = inner.run_sync("fs.lstat", &json!({ "path": link.to_string_lossy(), "follow": true })).unwrap();
+        assert_eq!(st["kind"], "file");
+        assert_eq!(st["size"], 7);
+    }
 }
 
 #[test]

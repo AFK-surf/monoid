@@ -111,7 +111,7 @@ pub(crate) enum Handle {
     Unbound { id: String },
     IStream(Arc<Halves>),
     /// A socket listening on this machine (`tcp.listen`, `unix.listen`): what a station's program serves (station/mb).
-    Listener(Arc<Listener>),
+    Listener { listener: Arc<Listener>, close: Arc<SocketClose> },
     /// A zstd stream being taken apart (`zstd.open`).
     Unzstd(Arc<Mutex<Unzstd>>),
     /// A zstd stream being made (`zstd.stream`): each piece given flushed out whole (station/mesh/compress.ts's way).
@@ -144,7 +144,7 @@ impl Handle {
             Handle::Gone { .. } => "gone",
             Handle::Unbound { .. } => "unbound",
             Handle::IStream(_) => "stream",
-            Handle::Listener(_) => "listener",
+            Handle::Listener { .. } => "listener",
             Handle::Unzstd(_) => "unzstd",
             Handle::Zstd(_) => "zstd",
             Handle::Pack(_) => "pack",
@@ -321,7 +321,21 @@ impl Inner {
                 drop(removed);
                 Ok(Answer::json(json!({})))
             }
-            "stream.close" | "zstd.close" | "listen.close" | "pack.close" => {
+            "listen.close" => {
+                // Signal cancellation before removing the handle so any in-flight `tcp.accept` wakes
+                // immediately and drops its `Arc<Listener>`, releasing the bound port or Unix socket FD.
+                let id = id_of(&a)?;
+                let removed = {
+                    let mut handles = self.handles.lock().unwrap();
+                    if let Some(Handle::Listener { close, .. }) = handles.get(&id) {
+                        close.close();
+                    }
+                    handles.remove(&id)
+                };
+                drop(removed);
+                Ok(Answer::json(json!({})))
+            }
+            "stream.close" | "zstd.close" | "pack.close" => {
                 // Dropping the response or the halves closes it.
                 self.drop_handle(id_of(&a)?);
                 Ok(Answer::json(json!({})))
