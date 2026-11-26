@@ -1,0 +1,1414 @@
+// Comprehensive security and functional unit tests for `station_vault`.
+
+import "base64"
+import "base_codec"
+import "builders_core"
+import "crypto"
+import "host_shim"
+import "js_json"
+
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+trait TestEq {
+  fn eq_t(self, other : Self) -> Bool
+}
+
+impl TestEq for Int {
+  fn eq_t(self : Int, other : Int) -> Bool {
+    self == other
+  }
+}
+
+impl TestEq for String {
+  fn eq_t(self : String, other : String) -> Bool {
+    self == other
+  }
+}
+
+impl TestEq for Bool {
+  fn eq_t(self : Bool, other : Bool) -> Bool {
+    self == other
+  }
+}
+
+fn assert_eq[T : TestEq](a : T, b : T) -> Unit {
+  if !a.eq_t(b) {
+    panic("assert_eq failed")
+  }
+}
+
+fn make_seed(tag : Int) -> Bytes {
+  let b = Bytes::new(32)
+  for i in 0..<32 {
+    b[i] = ((tag * 31 + i * 17 + 7) & 0xFF) as Byte
+  }
+  b
+}
+
+fn make_secret(kind : String, secret_v : String) -> VaultSecret {
+  let fields : Map[String, String] = Map::new()
+  if kind == "ssh_key" {
+    fields.set("private_key", secret_v)
+  } else if kind == "login" {
+    fields.set("username", "octocat")
+    fields.set("password", secret_v)
+  } else if kind == "file" {
+    fields.set("content", secret_v)
+  } else if kind == "browser" {
+    fields.set("cookies", secret_v)
+  } else {
+    fields.set("value", secret_v)
+  }
+  VaultSecret::{ kind: kind, name: "test-secret", fields: fields }
+}
+
+struct RecordedCall {
+  id : Int64
+  op : String
+  json : String
+  bytes : Option[Bytes]
+}
+
+fn new_mock_mux() -> (builders_core::ShellMux, Array[RecordedCall]) {
+  let calls : Array[RecordedCall] = []
+  let mut rng_counter = 0
+  let transport = builders_core::MuxTransport::{
+    call_async: fn(id : Int64, op : String, json_str : String, payload : Option[Bytes]) -> Unit {
+      calls.push(RecordedCall::{ id: id, op: op, json: json_str, bytes: payload })
+    },
+    call_sync: fn(op : String, json_str : String) -> String {
+      if op == "crypto.random" {
+        rng_counter = rng_counter + 1
+        let n = match json_int_field(json_str, "bytes") {
+          Some(v) => v
+          None => 32
+        }
+        let buf = Bytes::new(n)
+        for i in 0..<n {
+          buf[i] = ((rng_counter * 53 + i * 19 + 11) & 0xFF) as Byte
+        }
+        return "{\"value\":\"" + crypto::bytes_to_hex(buf) + "\"}"
+      }
+      "{\"value\":{}}"
+    },
+    write_stdout_line: fn(_line : String) -> Bool { true },
+    write_stdout_frame: fn(_fields : Array[(String, base_codec::Json)], _body : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { 1790000000.to_int64() * 1000.to_int64() },
+    wall_ms: fn() -> Int64 { 1790000000.to_int64() * 1000.to_int64() },
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] { None },
+  }
+  (builders_core::ShellMux::new(transport, start_stdin=false), calls)
+}
+
+fn bytes_to_str_test(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    sb.write_byte(b[i])
+  }
+  sb.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// 1. Host allowlist & authority adversarial tests
+// ---------------------------------------------------------------------------
+
+test "host_allowed: strict matching and adversarial bypass rejection" {
+  // Exact & case-insensitive & single trailing dot
+  assert(host_allowed("api.github.com", ["api.github.com"]))
+  assert(host_allowed("API.GITHUB.COM", ["api.github.com"]))
+  assert(host_allowed("Api.GitHub.Com.", ["api.github.com"]))
+  assert(host_allowed("api.github.com", ["API.GITHUB.COM."]))
+
+  // Double trailing dot MUST be rejected
+  assert(!host_allowed("api.github.com..", ["api.github.com"]))
+  assert(!host_allowed(".api.github.com", ["api.github.com"]))
+
+  // Wildcard matching: subdomains only, never apex, single-label TLD, or suffix spoofing
+  assert(host_allowed("a.example.com", ["*.example.com"]))
+  assert(host_allowed("a.b.example.com", ["*.example.com"]))
+  assert(host_allowed("A.B.EXAMPLE.COM.", ["*.example.com"]))
+  assert(!host_allowed("example.com", ["*.example.com"]))
+  assert(!host_allowed("evilexample.com", ["*.example.com"]))
+  assert(!host_allowed("evil-example.com", ["*.example.com"]))
+  assert(!host_allowed("evil-api.com", ["api.com", "*.api.com"]))
+  assert(!host_allowed(".example.com", ["*.example.com"]))
+  assert(!host_allowed("evil.com", ["*.com"]))
+  assert(match normalize_host_pattern("*.com") { None => true; Some(_) => false })
+
+  // Userinfo, port, path, whitespace, CRLF smuggling MUST be rejected
+  assert(!host_allowed("user@api.github.com", ["api.github.com"]))
+  assert(!host_allowed("user@api.github.com@evil.com", ["api.github.com"]))
+  assert(!host_allowed("api.github.com@evil.com", ["api.github.com"]))
+  assert(!host_allowed("api.github.com:443", ["api.github.com"]))
+  assert(!host_allowed("api.github.com/path", ["api.github.com"]))
+  assert(!host_allowed("api.github.com ", ["api.github.com"]))
+  assert(!host_allowed("api.github.com\r\n", ["api.github.com"]))
+  assert(!host_allowed("*.example.com", ["*.example.com"]))
+
+  // IPv4 strictness: canonical allowed, octal/hex/wildcard rejected
+  assert(host_allowed("127.0.0.1", ["127.0.0.1"]))
+  assert(!host_allowed("0177.0.0.1", ["127.0.0.1"]))
+  assert(!host_allowed("0x7f000001", ["127.0.0.1"]))
+  assert(!host_allowed("127.0.0.1", ["*.0.0.1"]))
+
+  // IPv6 canonicalization & strictness
+  assert(host_allowed("::1", ["[::1]"]))
+  assert(host_allowed("[::1]", ["::1"]))
+  assert(host_allowed("[0:0:0:0:0:0:0:1]", ["[::1]"]))
+  assert(host_allowed("2001:DB8::1", ["[2001:db8:0:0:0:0:0:1]"]))
+  assert(!host_allowed("[::1]:443", ["[::1]"]))
+  assert(!host_allowed("[::1%eth0]", ["[::1]"]))
+}
+
+test "parse_authority: strict host:port and [ipv6]:port parsing" {
+  match parse_authority("API.GITHUB.COM.:443") {
+    Ok((h, p)) => {
+      assert_eq(h, "api.github.com")
+      assert_eq(p, 443)
+    }
+    Err(e) => assert(false)
+  }
+  match parse_authority("[::1]:8443") {
+    Ok((h, p)) => {
+      assert_eq(h, "[0000:0000:0000:0000:0000:0000:0000:0001]")
+      assert_eq(p, 8443)
+    }
+    Err(_) => assert(false)
+  }
+  // Reject malformed ports, userinfo, paths, missing port
+  match parse_authority("api.github.com:0") {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  match parse_authority("api.github.com:0443") {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  match parse_authority("api.github.com:70000") {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  match parse_authority("user@api.github.com:443") {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  match parse_authority("api.github.com:443/foo") {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  match parse_authority("api.github.com") {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. GrantStore & IncomingRegistry lifecycle tests
+// ---------------------------------------------------------------------------
+
+test "grant_store: expiry auto-revocation, delivery modes, and zero secret leak in errors" {
+  let secret_val = "ghp_SUPER_SECRET_TOKEN_99999"
+  let store = GrantStore::new()
+  let g = GrantRecord::{
+    id: "r_grant_1",
+    session: "s_1",
+    mode: DeliveryMode::Bearer,
+    grant_scope: GrantScope::Hour,
+    hosts: ["api.github.com"],
+    env_var: Some("GH_TOKEN"),
+    secret: make_secret("token", secret_val),
+    expires_sec: 2000.to_int64(),
+    idle_sec: 0.to_int64(),
+    uses: 0,
+    revoked: false,
+  }
+  match store.register(g, 1000.to_int64()) {
+    Ok(_) => ()
+    Err(_) => assert(false)
+  }
+  assert(store.is_active("r_grant_1", 1500.to_int64()))
+
+  // Valid use on allowlisted host
+  match store.authorize_use("r_grant_1", DeliveryMode::Bearer, Some("API.GITHUB.COM."), 1500.to_int64()) {
+    Ok(v) => assert_eq(v, secret_val)
+    Err(_) => assert(false)
+  }
+
+  // Wrong delivery mode rejected without leaking secret
+  match store.authorize_use("r_grant_1", DeliveryMode::Basic, Some("api.github.com"), 1500.to_int64()) {
+    Err(msg) => assert(!msg.contains(secret_val))
+    Ok(_) => assert(false)
+  }
+
+  // Non-allowlisted host rejected without leaking secret
+  match store.authorize_use("r_grant_1", DeliveryMode::Bearer, Some("evil-api.github.com"), 1500.to_int64()) {
+    Err(msg) => assert(!msg.contains(secret_val))
+    Ok(_) => assert(false)
+  }
+
+  // Past expiry auto-revokes and removes grant
+  match store.authorize_use("r_grant_1", DeliveryMode::Bearer, Some("api.github.com"), 2001.to_int64()) {
+    Err(msg) => {
+      assert_eq(msg, "grant expired")
+      assert(!msg.contains(secret_val))
+    }
+    Ok(_) => assert(false)
+  }
+  assert_eq(store.len(), 0)
+
+  // Once scope spent after 1 use
+  let g_once = GrantRecord::{
+    id: "r_once",
+    session: "s_1",
+    mode: DeliveryMode::Env,
+    grant_scope: GrantScope::Once,
+    hosts: [],
+    env_var: None,
+    secret: make_secret("token", secret_val),
+    expires_sec: 3000.to_int64(),
+    idle_sec: 0.to_int64(),
+    uses: 0,
+    revoked: false,
+  }
+  match store.register(g_once, 1000.to_int64()) {
+    Ok(_) => ()
+    Err(_) => assert(false)
+  }
+  match store.authorize_use("r_once", DeliveryMode::Env, None, 1100.to_int64()) {
+    Ok(v) => assert_eq(v, secret_val)
+    Err(_) => assert(false)
+  }
+  assert(!store.is_active("r_once", 1100.to_int64()))
+  match store.authorize_use("r_once", DeliveryMode::Env, None, 1100.to_int64()) {
+    Err(msg) => assert(!msg.contains(secret_val))
+    Ok(_) => assert(false)
+  }
+
+  // Verify DeliveryMode::parse covers all required modes
+  assert(match DeliveryMode::parse("header:X-Api-Key") { Some(DeliveryMode::Header(h)) => h == "x-api-key"; _ => false })
+  assert(match DeliveryMode::parse("bearer") { Some(DeliveryMode::Bearer) => true; _ => false })
+  assert(match DeliveryMode::parse("basic") { Some(DeliveryMode::Basic) => true; _ => false })
+  assert(match DeliveryMode::parse("env") { Some(DeliveryMode::Env) => true; _ => false })
+  assert(match DeliveryMode::parse("ssh") { Some(DeliveryMode::Ssh) => true; _ => false })
+  assert(match DeliveryMode::parse("cookie") { Some(DeliveryMode::Cookie) => true; _ => false })
+
+  // Rules bridge (`pion/rules/packages/vault`)
+  assert(match validate_browser_listing("browser", ["browser"], ["github.com"]) { None => true; Some(_) => false })
+  assert(match validate_browser_listing("browser", ["browser"], ["*.github.com"]) { Some(_) => true; None => false })
+}
+
+test "incoming_registry: command validation, peer-bound revoke, path guard, and base env filter" {
+  let reg = IncomingRegistry::new()
+  let valid_id = "x_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+  // Path traversal rejected
+  match reg.start_run(valid_id, "peer-a", "sess-1", "echo hi", "../escape", "g_1", 2000.to_int64(), 60.to_int64()) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  match reg.start_run(valid_id, "peer-a", "sess-1", "echo hi", "/abs/path", "g_1", 2000.to_int64(), 60.to_int64()) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  // Valid start
+  match reg.start_run(valid_id, "peer-a", "sess-1", "echo hi", "sub/dir", "g_1", 2000.to_int64(), 60.to_int64()) {
+    Ok(_) => ()
+    Err(_) => assert(false)
+  }
+  assert(reg.is_run_allowed(valid_id, 1500.to_int64()))
+  // Another peer cannot revoke peer-a's run
+  match reg.revoke_from_peer("peer-b", valid_id) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  assert(reg.is_run_allowed(valid_id, 1500.to_int64()))
+  // Idle renewal updates expiry
+  reg.record_used(valid_id, Some(2500.to_int64()))
+  assert(reg.is_run_allowed(valid_id, 2200.to_int64()))
+  // Owning peer revokes
+  match reg.revoke_from_peer("peer-a", valid_id) {
+    Ok(_) => ()
+    Err(_) => assert(false)
+  }
+  assert(!reg.is_run_allowed(valid_id, 1500.to_int64()))
+  // Duplicate command id MUST be rejected (cannot overwrite or reset `revoked`)
+  match reg.start_run(valid_id, "peer-a", "sess-1", "echo hi", "sub/dir", "g_1", 3000.to_int64(), 60.to_int64()) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  assert(!reg.is_run_allowed(valid_id, 1500.to_int64()))
+  assert_eq(match reg.finish_run(valid_id) { Some(u) => u; None => false }, true)
+
+  // Base env filter strips station & agent credentials
+  let filtered = filter_base_env([
+    ("PATH", "/usr/bin"),
+    ("STILLFAIL_TOKEN", "bad"),
+    ("ANTHROPIC_API_KEY", "bad"),
+    ("CLAUDE_CODE_OAUTH", "bad"),
+    ("OPENAI_API_KEY", "bad"),
+    ("CODEX_HOME", "bad"),
+    ("HOME", "/home/user"),
+  ])
+  assert_eq(filtered.length(), 2)
+  assert_eq(filtered[0].0, "PATH")
+  assert_eq(filtered[1].0, "HOME")
+}
+
+// ---------------------------------------------------------------------------
+// 3. X.509 CA & Leaf certificate generation, DER/PEM, SAN, and LeafCache tests
+// ---------------------------------------------------------------------------
+
+test "x509: CA and leaf DER/PEM generation, ECDSA P-256 verification, DNS & IP SAN, and LeafCache" {
+  let now_ms = js_json::days_from_civil(2026, 10, 17) * DAY_MS
+  let ca = match make_ca(now_ms, DEFAULT_CA_NAME, make_seed(1), make_seed(2)) {
+    Ok(c) => c
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  // CA DER starts with ASN.1 SEQUENCE (0x30) and self-verifies with P-256 ECDSA
+  assert_eq(ca.cert_der[0].to_int() & 0xFF, 0x30)
+  assert(verify_cert_signature(ca, ca))
+
+  // PEM roundtrip for cert and PKCS#8 private key
+  let ca_pem = ca.cert_pem()
+  assert(ca_pem.starts_with("-----BEGIN CERTIFICATE-----\n"))
+  assert(ca_pem.ends_with("-----END CERTIFICATE-----\n"))
+  match pem_decode(ca_pem, "CERTIFICATE") {
+    Ok(decoded) => assert(crypto::constant_time_eq(decoded, ca.cert_der))
+    Err(_) => assert(false)
+  }
+  match crypto::p256_secret_from_pkcs8_pem(ca.key_pem()) {
+    Ok(sec) => assert(crypto::constant_time_eq(sec, ca.secret))
+    Err(_) => assert(false)
+  }
+
+  // DNS leaf certificate verified by CA
+  let leaf_dns = match make_leaf(ca, "api.github.com", now_ms, make_seed(3), make_seed(4)) {
+    Ok(l) => l
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  assert(verify_cert_signature(leaf_dns, ca))
+  assert(!verify_cert_signature(leaf_dns, leaf_dns))
+  // SAN DNS tag (0x82) followed by "api.github.com" is embedded in TBS
+  let san_dns = match encode_san_extension_value("api.github.com") {
+    Ok(b) => b
+    Err(_) => Bytes::new(0)
+  }
+  assert(san_dns.length() > 14)
+  assert_eq(san_dns[2].to_int() & 0xFF, 0x82)
+
+  // IPv4 SAN uses tag 0x87 and 4 bytes
+  let san_v4 = match encode_san_extension_value("127.0.0.1") {
+    Ok(b) => b
+    Err(_) => Bytes::new(0)
+  }
+  assert_eq(san_v4[2].to_int() & 0xFF, 0x87)
+  assert_eq(san_v4[3].to_int() & 0xFF, 4)
+
+  // IPv6 SAN uses tag 0x87 and 16 bytes
+  let leaf_v6 = match make_leaf(ca, "[::1]", now_ms, make_seed(5), make_seed(6)) {
+    Ok(l) => l
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  assert(verify_cert_signature(leaf_v6, ca))
+  let san_v6 = match encode_san_extension_value("[::1]") {
+    Ok(b) => b
+    Err(_) => Bytes::new(0)
+  }
+  assert_eq(san_v6[2].to_int() & 0xFF, 0x87)
+  assert_eq(san_v6[3].to_int() & 0xFF, 16)
+
+  // UTCTime (< 2050) vs GeneralizedTime (>= 2050)
+  let t2026 = der_time(now_ms)
+  assert_eq(t2026[0].to_int() & 0xFF, 0x17)
+  let t2055 = der_time(js_json::days_from_civil(2055, 1, 1) * DAY_MS)
+  assert_eq(t2055[0].to_int() & 0xFF, 0x18)
+
+  // LeafCache: cache hit, TTL regeneration, and bounded eviction
+  let cache = LeafCache::new(ca, max_entries=2)
+  let c1 = match cache.get_or_issue("api.github.com", now_ms, make_seed(7)) {
+    Ok(c) => c
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let c1_again = match cache.get_or_issue("API.GITHUB.COM.", now_ms + 1000.to_int64(), make_seed(7)) {
+    Ok(c) => c
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  assert(crypto::constant_time_eq(c1.cert_der, c1_again.cert_der))
+  // After 6 days TTL, regenerated with fresh serial/key
+  let c1_fresh = match cache.get_or_issue("api.github.com", now_ms + LEAF_CACHE_TTL_MS + 1.to_int64(), make_seed(7)) {
+    Ok(c) => c
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  assert(!crypto::constant_time_eq(c1.cert_der, c1_fresh.cert_der))
+  // Eviction keeps cache bounded to max_entries=2
+  let _ = cache.get_or_issue("a.example.com", now_ms, make_seed(8))
+  let _ = cache.get_or_issue("b.example.com", now_ms, make_seed(9))
+  assert_eq(cache.len(), 2)
+
+  // Low-entropy (< 32 bytes) inputs MUST be rejected (never silently fall back to constant scalar 1)
+  match derive_p256_secret(Bytes::new(16), "test") {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  match make_ca(now_ms, DEFAULT_CA_NAME, Bytes::new(8), make_seed(2)) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+
+  // Production CSPRNG constructors (`make_ca_random`, `make_leaf_random`)
+  let (rng_mux, _) = new_mock_mux()
+  let rand_ca = match make_ca_random(rng_mux, now_ms) {
+    Ok(c) => c
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let rand_leaf = match make_leaf_random(rng_mux, rand_ca, "api.github.com", now_ms) {
+    Ok(l) => l
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  assert(verify_cert_signature(rand_leaf, rand_ca))
+}
+
+// ---------------------------------------------------------------------------
+// 4. Proxy MITM, CONNECT tunnel, CRLF/Redirect/Auth tests
+// ---------------------------------------------------------------------------
+
+test "proxy: swap_header_value, CRLF rejection, rewrite_mitm_request, and redirect safety" {
+  let ph = placeholder("r_42")
+  let secret = "tok_live_secret_xyz"
+
+  // Bearer swap
+  match swap_header_value("Bearer " + ph, ph, secret) {
+    Ok((out, swapped)) => {
+      assert(swapped)
+      assert_eq(out, "Bearer " + secret)
+    }
+    Err(_) => assert(false)
+  }
+
+  // Basic base64 swap
+  let basic_in = "Basic " + base64::encode(("x-access-token:" + ph).to_bytes())
+  match swap_header_value(basic_in, ph, secret) {
+    Ok((out, swapped)) => {
+      assert(swapped)
+      let expected = "Basic " + base64::encode(("x-access-token:" + secret).to_bytes())
+      assert_eq(out, expected)
+    }
+    Err(_) => assert(false)
+  }
+
+  // CRLF injection rejected
+  match swap_header_value("Bearer " + ph + "\r\nX-Evil: 1", ph, secret) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  match swap_header_value("Bearer " + ph, ph, "bad\r\nval") {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+
+  // Redirect safety
+  assert(is_redirect_target_allowed("/v2/repos", "api.github.com", ["api.github.com"]))
+  assert(is_redirect_target_allowed("https://api.github.com/v2", "api.github.com", ["api.github.com"]))
+  assert(!is_redirect_target_allowed("http://api.github.com/v2", "api.github.com", ["api.github.com"]))
+  assert(!is_redirect_target_allowed("https://evil.com/steal", "api.github.com", ["api.github.com"]))
+  assert(!is_redirect_target_allowed("https://api.github.com@evil.com/steal", "api.github.com", ["api.github.com"]))
+  assert(!is_redirect_target_allowed("//evil.com/steal", "api.github.com", ["api.github.com"]))
+
+  // Request rewrite: strips hop-by-hop + Connection tokens, rejects cross-host absolute URI
+  let run = ProxyRun::{
+    token: "tok",
+    grant_id: "r_42",
+    hosts: ["api.github.com"],
+    mode: DeliveryMode::Proxy,
+    placeholder: ph,
+    value: secret,
+    expires_sec: 9999.to_int64(),
+    revoked: false,
+    uses: 0,
+  }
+  let raw_req = (
+    "GET /user HTTP/1.1\r\n" +
+    "Host: spoofed.evil.com\r\n" +
+    "Authorization: Bearer " + ph + "\r\n" +
+    "Proxy-Authorization: Basic secret\r\n" +
+    "Connection: keep-alive, X-Custom-Hop\r\n" +
+    "X-Custom-Hop: drop-me\r\n\r\n"
+  ).to_bytes()
+  let parsed = match parse_http_head(raw_req) {
+    Ok(Some(r)) => r
+    _ => {
+      assert(false)
+      return
+    }
+  }
+  match rewrite_mitm_request(parsed, "api.github.com", 443, run) {
+    Ok((out_bytes, swapped)) => {
+      assert(swapped)
+      let out = bytes_to_str_test(out_bytes)
+      assert(out.contains("Host: api.github.com\r\n"))
+      assert(out.contains("Authorization: Bearer " + secret + "\r\n"))
+      assert(!out.contains("Proxy-Authorization"))
+      assert(!out.contains("X-Custom-Hop"))
+      assert(!out.contains("spoofed.evil.com"))
+    }
+    Err(_) => assert(false)
+  }
+
+  // Cross-host absolute URI inside tunnel rejected
+  let smuggled = "GET https://evil.com/steal HTTP/1.1\r\nHost: api.github.com\r\n\r\n".to_bytes()
+  let parsed_smug = match parse_http_head(smuggled) {
+    Ok(Some(r)) => r
+    _ => {
+      assert(false)
+      return
+    }
+  }
+  match rewrite_mitm_request(parsed_smug, "api.github.com", 443, run) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+
+  // Absolute URI without `/` before `?query` preserves query string (P2 #11)
+  let abs_q = "GET https://api.github.com?foo=bar&x=1 HTTP/1.1\r\nHost: api.github.com\r\n\r\n".to_bytes()
+  let parsed_q = match parse_http_head(abs_q) {
+    Ok(Some(r)) => r
+    _ => {
+      assert(false)
+      return
+    }
+  }
+  match rewrite_mitm_request(parsed_q, "api.github.com", 443, run) {
+    Ok((out_bytes, _)) => {
+      let out = bytes_to_str_test(out_bytes)
+      assert(out.starts_with("GET /?foo=bar&x=1 HTTP/1.1\r\n"))
+    }
+    Err(_) => assert(false)
+  }
+
+  // Transfer-Encoding: chunked is preserved; TE+CL conflict and non-chunked TE are rejected (P1 #6)
+  let chunked_req = (
+    "POST /upload HTTP/1.1\r\n" +
+    "Host: api.github.com\r\n" +
+    "Transfer-Encoding: chunked\r\n" +
+    "Authorization: Bearer " + ph + "\r\n\r\n" +
+    "5\r\nhello\r\n0\r\n\r\n"
+  ).to_bytes()
+  let parsed_chunked = match parse_http_head(chunked_req) {
+    Ok(Some(r)) => r
+    _ => {
+      assert(false)
+      return
+    }
+  }
+  match rewrite_mitm_request(parsed_chunked, "api.github.com", 443, run) {
+    Ok((out_bytes, swapped)) => {
+      assert(swapped)
+      let out = bytes_to_str_test(out_bytes)
+      assert(out.contains("Transfer-Encoding: chunked\r\n"))
+      assert(out.ends_with("5\r\nhello\r\n0\r\n\r\n"))
+    }
+    Err(_) => assert(false)
+  }
+
+  let te_cl_conflict = (
+    "POST /smuggle HTTP/1.1\r\n" +
+    "Host: api.github.com\r\n" +
+    "Transfer-Encoding: chunked\r\n" +
+    "Content-Length: 5\r\n\r\n" +
+    "0\r\n\r\n"
+  ).to_bytes()
+  let parsed_conflict = match parse_http_head(te_cl_conflict) {
+    Ok(Some(r)) => r
+    _ => {
+      assert(false)
+      return
+    }
+  }
+  match rewrite_mitm_request(parsed_conflict, "api.github.com", 443, run) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+
+  let bad_te = (
+    "POST /smuggle HTTP/1.1\r\n" +
+    "Host: api.github.com\r\n" +
+    "Transfer-Encoding: gzip, chunked\r\n\r\n"
+  ).to_bytes()
+  let parsed_bad_te = match parse_http_head(bad_te) {
+    Ok(Some(r)) => r
+    _ => {
+      assert(false)
+      return
+    }
+  }
+  match rewrite_mitm_request(parsed_bad_te, "api.github.com", 443, run) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+
+  // `Connection: content-length` MUST be rejected (never strip Content-Length while forwarding body)
+  assert(!is_hop_by_hop_header("content-length", ["content-length"]))
+  let conn_cl = (
+    "POST /body HTTP/1.1\r\n" +
+    "Host: api.github.com\r\n" +
+    "Connection: content-length\r\n" +
+    "Content-Length: 5\r\n\r\n" +
+    "hello"
+  ).to_bytes()
+  let parsed_conn_cl = match parse_http_head(conn_cl) {
+    Ok(Some(r)) => r
+    _ => {
+      assert(false)
+      return
+    }
+  }
+  match rewrite_mitm_request(parsed_conn_cl, "api.github.com", 443, run) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+}
+
+test "proxy: VaultProxy ShellMux strict contract (200 serialization, certPem/keyPem/tail, sni, TOCTOU, listen.close)" {
+  let now_ms = js_json::days_from_civil(2026, 10, 17) * DAY_MS
+  let now_sec = now_ms / 1000.to_int64()
+  let ca = match make_ca(now_ms, DEFAULT_CA_NAME, make_seed(11), make_seed(12)) {
+    Ok(c) => c
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let (mux, calls) = new_mock_mux()
+  // Reject < 32-byte seed
+  match VaultProxy::new_with_seed(ca, Bytes::new(8)) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+  let proxy = match VaultProxy::new_random(mux, ca, policy=NonAllowlistedPolicy::TunnelPassthrough) {
+    Ok(p) => p
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+
+  // admit before listening MUST fail (never return `:0`) (P2 #9)
+  let secret = "ghp_REAL_SECRET_VAL"
+  match proxy.admit("r_early", ["api.github.com"], DeliveryMode::Proxy, secret, now_sec + 3600.to_int64()) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+
+  // Start listens on 127.0.0.1
+  let listen_id = proxy.start(mux)
+  assert_eq(calls.length(), 1)
+  assert_eq(calls[0].op, "tcp.listen")
+  assert(calls[0].json.contains("127.0.0.1"))
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_LISTEN, 0, 0.to_int64()),
+    host_shim::ShellDone::{ id: listen_id, error: "", json: "{\"id\":10,\"port\":45678}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert(proxy.is_listening())
+  assert_eq(proxy.port(), 45678)
+
+  // Admit a run for api.github.com
+  let (tok, url) = match proxy.admit("r_9", ["api.github.com"], DeliveryMode::Proxy, secret, now_sec + 3600.to_int64()) {
+    Ok(pair) => pair
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  assert(url.contains("@127.0.0.1:45678"))
+  let auth_b64 = base64::encode(("run:" + tok).to_bytes())
+
+  // Case A: Plain HTTP GET -> 405 Method Not Allowed
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_ACCEPT, 10, 0.to_int64()),
+    host_shim::ShellDone::{ id: 2.to_int64(), error: "", json: "{\"id\":101}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  let before_a = calls.length()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, 101, 0.to_int64()),
+    host_shim::ShellDone::{ id: 3.to_int64(), error: "", json: "{}", bytes: Some("GET http://api.github.com/ HTTP/1.1\r\nHost: api.github.com\r\n\r\n".to_bytes()) },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_a].op, "tcp.write")
+  let resp_a = match calls[before_a].bytes { Some(b) => bytes_to_str_test(b); None => "" }
+  assert(resp_a.starts_with("HTTP/1.1 405 "))
+
+  // Case B: Missing Proxy-Authorization -> 407 Proxy Authentication Required
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_ACCEPT, 10, 0.to_int64()),
+    host_shim::ShellDone::{ id: 4.to_int64(), error: "", json: "{\"id\":102}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  let before_b = calls.length()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, 102, 0.to_int64()),
+    host_shim::ShellDone::{ id: 5.to_int64(), error: "", json: "{}", bytes: Some("CONNECT api.github.com:443 HTTP/1.1\r\nHost: api.github.com:443\r\n\r\n".to_bytes()) },
+    now_ms,
+    now_sec,
+  )
+  let resp_b = match calls[before_b].bytes { Some(b) => bytes_to_str_test(b); None => "" }
+  assert(resp_b.starts_with("HTTP/1.1 407 "))
+
+  // Case C: Allowlisted CONNECT with pre-read TLS ClientHello tail bytes:
+  // 1) ONLY `tcp.write(200)` is issued first (NEVER concurrent `tls.upgrade_server`!)
+  // 2) AFTER `tcp.write(200)` completes, `tls.upgrade_server` is issued with `certPem`, `keyPem`,
+  //    and the pre-read tail bytes as `bytes` payload!
+  // 3) Inner GET issues `tls.connect` with `sni` (NOT `servername`)!
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_ACCEPT, 10, 0.to_int64()),
+    host_shim::ShellDone::{ id: 6.to_int64(), error: "", json: "{\"id\":103}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  let before_c = calls.length()
+  let pre_read_tail = "TLS_CLIENT_HELLO_BYTES".to_bytes()
+  let connect_with_tail = bytes_concat(
+    (
+      "CONNECT API.GITHUB.COM:443 HTTP/1.1\r\n" +
+      "Host: API.GITHUB.COM:443\r\n" +
+      "Proxy-Authorization: Basic " + auth_b64 + "\r\n\r\n"
+    ).to_bytes(),
+    pre_read_tail,
+  )
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, 103, 0.to_int64()),
+    host_shim::ShellDone::{ id: 7.to_int64(), error: "", json: "{}", bytes: Some(connect_with_tail) },
+    now_ms,
+    now_sec,
+  )
+  // Strict serialization: ONLY 1 call (`tcp.write` 200) issued so far — NO `tls.upgrade_server` yet!
+  assert_eq(calls.length(), before_c + 1)
+  assert_eq(calls[before_c].op, "tcp.write")
+  let resp_200 = match calls[before_c].bytes { Some(b) => bytes_to_str_test(b); None => "" }
+  assert(resp_200.starts_with("HTTP/1.1 200 "))
+
+  // Now complete `tcp.write(200)` -> triggers `tls.upgrade_server` with exact `certPem`/`keyPem`/tail payload
+  let before_c_tls = calls.length()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_WRITE_CLIENT, 103, 2.to_int64()),
+    host_shim::ShellDone::{ id: 71.to_int64(), error: "", json: "{}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls.length(), before_c_tls + 1)
+  assert_eq(calls[before_c_tls].op, "tls.upgrade_server")
+  assert(calls[before_c_tls].json.contains("\"certPem\""))
+  assert(calls[before_c_tls].json.contains("\"keyPem\""))
+  assert(!calls[before_c_tls].json.contains("\"cert_pem\""))
+  assert(!calls[before_c_tls].json.contains("\"key_pem\""))
+  match calls[before_c_tls].bytes {
+    Some(b) => assert(crypto::constant_time_eq(b, pre_read_tail))
+    None => assert(false)
+  }
+
+  // TLS upgrade completes with a NEW handle ID (`203` != old plaintext `103`):
+  // ALL subsequent `tcp.read` / `tcp.write` / `tcp.pipe` / `tcp.close` MUST use `203`!
+  let before_c_read = calls.length()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_UPGRADE, 103, 0.to_int64()),
+    host_shim::ShellDone::{ id: 8.to_int64(), error: "", json: "{\"id\":203}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_c_read].op, "tcp.read")
+  assert(calls[before_c_read].json.contains("203"))
+  assert(!calls[before_c_read].json.contains("103"))
+
+  let before_c2 = calls.length()
+  let inner_req = ("GET /user HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Bearer " + placeholder("r_9") + "\r\n\r\n").to_bytes()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, 203, 0.to_int64()),
+    host_shim::ShellDone::{ id: 9.to_int64(), error: "", json: "{}", bytes: Some(inner_req) },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_c2].op, "tls.connect")
+  assert(calls[before_c2].json.contains("\"sni\":\"api.github.com\""))
+  assert(!calls[before_c2].json.contains("\"servername\""))
+
+  // Upstream TLS connect completes (`303`) -> writes rewritten request containing real secret,
+  // then `tcp.pipe` pairs upgraded client handle `203` with upstream `303`!
+  let before_c3 = calls.length()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_CONNECT, 203, 0.to_int64()),
+    host_shim::ShellDone::{ id: 10.to_int64(), error: "", json: "{\"id\":303}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_c3].op, "tcp.write")
+  assert(calls[before_c3].json.contains("303"))
+  let sent_upstream = match calls[before_c3].bytes { Some(b) => bytes_to_str_test(b); None => "" }
+  assert(sent_upstream.contains("Authorization: Bearer " + secret + "\r\n"))
+  let before_c4 = calls.length()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_WRITE_UPSTREAM, 203, 0.to_int64()),
+    host_shim::ShellDone::{ id: 101.to_int64(), error: "", json: "{}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_c4].op, "tcp.pipe")
+  assert(calls[before_c4].json.contains("203"))
+  assert(calls[before_c4].json.contains("303"))
+  assert(!calls[before_c4].json.contains("103"))
+
+  // Case D: Non-allowlisted host in TunnelPassthrough -> strict serialization:
+  // `tcp.dial` -> `tcp.write(200)` ONLY -> after 200 write completes, `tcp.pipe`!
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_ACCEPT, 10, 0.to_int64()),
+    host_shim::ShellDone::{ id: 11.to_int64(), error: "", json: "{\"id\":104}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  let before_d = calls.length()
+  let connect_other = (
+    "CONNECT evil.example.com:443 HTTP/1.1\r\n" +
+    "Proxy-Authorization: Basic " + auth_b64 + "\r\n\r\n"
+  ).to_bytes()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, 104, 0.to_int64()),
+    host_shim::ShellDone::{ id: 12.to_int64(), error: "", json: "{}", bytes: Some(connect_other) },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_d].op, "tcp.dial")
+  let before_d2 = calls.length()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_DIAL_TUNNEL, 104, 0.to_int64()),
+    host_shim::ShellDone::{ id: 13.to_int64(), error: "", json: "{\"id\":204}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  // ONLY `tcp.write(200)` issued so far — NO concurrent `tcp.pipe`!
+  assert_eq(calls.length(), before_d2 + 1)
+  assert_eq(calls[before_d2].op, "tcp.write")
+  let before_d3 = calls.length()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_WRITE_CLIENT, 104, 3.to_int64()),
+    host_shim::ShellDone::{ id: 131.to_int64(), error: "", json: "{}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls.length(), before_d3 + 1)
+  assert_eq(calls[before_d3].op, "tcp.pipe")
+
+  // Case E (P1 #5 TOCTOU): Grant revoked DURING upstream `tls.connect` handshake ->
+  // on `tls.connect` completion, proxy MUST NOT write credentials; closes upstream & returns 403!
+  let (toctou_tok, _) = match proxy.admit("r_toctou", ["api.github.com"], DeliveryMode::Proxy, secret, now_sec + 3600.to_int64()) {
+    Ok(p) => p
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let toctou_auth = base64::encode(("run:" + toctou_tok).to_bytes())
+  let connect_toctou = (
+    "CONNECT api.github.com:443 HTTP/1.1\r\n" +
+    "Proxy-Authorization: Basic " + toctou_auth + "\r\n\r\n"
+  ).to_bytes()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_ACCEPT, 10, 0.to_int64()),
+    host_shim::ShellDone::{ id: 14.to_int64(), error: "", json: "{\"id\":105}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, 105, 0.to_int64()),
+    host_shim::ShellDone::{ id: 15.to_int64(), error: "", json: "{}", bytes: Some(connect_toctou) },
+    now_ms,
+    now_sec,
+  )
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_WRITE_CLIENT, 105, 2.to_int64()),
+    host_shim::ShellDone::{ id: 151.to_int64(), error: "", json: "{}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_UPGRADE, 105, 0.to_int64()),
+    host_shim::ShellDone::{ id: 16.to_int64(), error: "", json: "{\"id\":205}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  let toctou_req = ("GET /user HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Bearer " + placeholder("r_toctou") + "\r\n\r\n").to_bytes()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, 205, 0.to_int64()),
+    host_shim::ShellDone::{ id: 17.to_int64(), error: "", json: "{}", bytes: Some(toctou_req) },
+    now_ms,
+    now_sec,
+  )
+  // Revoke while upstream `tls.connect` is in flight!
+  assert(proxy.revoke_token(toctou_tok))
+  let before_toctou_done = calls.length()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_CONNECT, 205, 0.to_int64()),
+    host_shim::ShellDone::{ id: 171.to_int64(), error: "", json: "{\"id\":305}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  // Must close upstream socket 305 AND reply 403 to upgraded client 205 without ever sending secret!
+  assert_eq(calls[before_toctou_done].op, "tcp.close")
+  assert(calls[before_toctou_done].json.contains("305"))
+  assert_eq(calls[before_toctou_done + 1].op, "tcp.write")
+  assert(calls[before_toctou_done + 1].json.contains("205"))
+  let resp_toctou = match calls[before_toctou_done + 1].bytes { Some(b) => bytes_to_str_test(b); None => "" }
+  assert(resp_toctou.starts_with("HTTP/1.1 403 "))
+  assert(!resp_toctou.contains(secret))
+
+  // Case F (P2 #9): Expired token on non-allowlisted CONNECT MUST be refused BEFORE passthrough tunnel!
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_ACCEPT, 10, 0.to_int64()),
+    host_shim::ShellDone::{ id: 18.to_int64(), error: "", json: "{\"id\":106}", bytes: None },
+    now_ms,
+    now_sec + 3601.to_int64(),
+  )
+  let before_exp_tun = calls.length()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, 106, 0.to_int64()),
+    host_shim::ShellDone::{ id: 19.to_int64(), error: "", json: "{}", bytes: Some(connect_other) },
+    now_ms,
+    now_sec + 3601.to_int64(),
+  )
+  assert_eq(calls[before_exp_tun].op, "tcp.write")
+  let resp_exp = match calls[before_exp_tun].bytes { Some(b) => bytes_to_str_test(b); None => "" }
+  assert(resp_exp.starts_with("HTTP/1.1 403 "))
+  assert(resp_exp.contains("grant expired"))
+
+  // Case G: NonAllowlistedPolicy::Reject returns 403 for non-allowlisted CONNECT
+  let (mux_rej, calls_rej) = new_mock_mux()
+  let proxy_rej = match VaultProxy::new_with_seed(ca, make_seed(14), policy=NonAllowlistedPolicy::Reject) {
+    Ok(p) => p
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let rej_lid = proxy_rej.start(mux_rej)
+  let _ = proxy_rej.on_shell_done(
+    mux_rej,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_LISTEN, 0, 0.to_int64()),
+    host_shim::ShellDone::{ id: rej_lid, error: "", json: "{\"id\":20,\"port\":45679}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  let (rej_tok, _) = match proxy_rej.admit("r_10", ["api.github.com"], DeliveryMode::Proxy, secret, now_sec + 3600.to_int64()) {
+    Ok(p) => p
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let rej_auth = base64::encode(("run:" + rej_tok).to_bytes())
+  let _ = proxy_rej.on_shell_done(
+    mux_rej,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_ACCEPT, 20, 0.to_int64()),
+    host_shim::ShellDone::{ id: 2.to_int64(), error: "", json: "{\"id\":201}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  let before_f = calls_rej.length()
+  let _ = proxy_rej.on_shell_done(
+    mux_rej,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, 201, 0.to_int64()),
+    host_shim::ShellDone::{
+      id: 3.to_int64(),
+      error: "",
+      json: "{}",
+      bytes: Some(("CONNECT evil.example.com:443 HTTP/1.1\r\nProxy-Authorization: Basic " + rej_auth + "\r\n\r\n").to_bytes()),
+    },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls_rej[before_f].op, "tcp.write")
+  let resp_f = match calls_rej[before_f].bytes { Some(b) => bytes_to_str_test(b); None => "" }
+  assert(resp_f.starts_with("HTTP/1.1 403 "))
+  proxy_rej.close(mux_rej)
+
+  // Close cleans up listener via `listen.close` (NOT `tcp.close`!) (P1 #8)
+  let before_close = calls.length()
+  proxy.close(mux)
+  assert_eq(calls[before_close].op, "listen.close")
+  assert(!proxy.is_listening())
+  assert_eq(proxy.active_runs(), 0)
+  assert_eq(proxy.active_conns(), 0)
+
+  // Late completion handle reclamation after proxy close (P2 #2):
+  let before_late = calls.length()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_LISTEN, 0, 0.to_int64()),
+    host_shim::ShellDone::{ id: 901.to_int64(), error: "", json: "{\"id\":901,\"port\":50000}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_late].op, "listen.close")
+  assert(calls[before_late].json.contains("901"))
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_ACCEPT, 10, 0.to_int64()),
+    host_shim::ShellDone::{ id: 902.to_int64(), error: "", json: "{\"id\":902}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_late + 1].op, "tcp.close")
+  assert(calls[before_late + 1].json.contains("902"))
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_UPGRADE, 103, 0.to_int64()),
+    host_shim::ShellDone::{ id: 903.to_int64(), error: "", json: "{\"id\":903}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_late + 2].op, "tcp.close")
+  assert(calls[before_late + 2].json.contains("903"))
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_CONNECT, 203, 0.to_int64()),
+    host_shim::ShellDone::{ id: 904.to_int64(), error: "", json: "{\"id\":904}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_late + 3].op, "tcp.close")
+  assert(calls[before_late + 3].json.contains("904"))
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_DIAL_TUNNEL, 104, 0.to_int64()),
+    host_shim::ShellDone::{ id: 905.to_int64(), error: "", json: "{\"id\":905}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_late + 4].op, "tcp.close")
+  assert(calls[before_late + 4].json.contains("905"))
+}
+
+// ---------------------------------------------------------------------------
+// 5. ssh-agent protocol, OpenSSH Ed25519 key codec, and signing verification
+// ---------------------------------------------------------------------------
+
+test "ssh_agent: OpenSSH Ed25519 key roundtrip, wire framing, identities, sign & verify, and server lifecycle" {
+  let seed = make_seed(21)
+  let key = match SshEd25519Key::from_seed(seed, "vault@station") {
+    Ok(k) => k
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  // OpenSSH PEM encode + parse roundtrip
+  let pem_str = encode_openssh_ed25519_key(key)
+  assert(pem_str.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----\n"))
+  let parsed = match parse_openssh_ed25519_key(pem_str) {
+    Ok(k) => k
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  assert_eq(parsed.comment, "vault@station")
+  assert(crypto::constant_time_eq(parsed.blob, key.blob))
+  assert(crypto::constant_time_eq(parsed.pub_key, key.pub_key))
+
+  // REQUEST_IDENTITIES (11) -> IDENTITIES_ANSWER (12)
+  let req_id = Bytes::new(1)
+  req_id[0] = SSH_AGENTC_REQUEST_IDENTITIES as Byte
+  let (id_reply, did_sign_1) = handle_agent_message(parsed, req_id, true)
+  assert(!did_sign_1)
+  assert_eq(id_reply[0].to_int() & 0xFF, SSH_AGENT_IDENTITIES_ANSWER)
+  let id_tail = bytes_slice(id_reply, 1, id_reply.length())
+  let r1 = SshReader::new(id_tail)
+  assert_eq(match r1.read_u32_be() { Ok(n) => n; Err(_) => 0 }, 1)
+  let got_blob = match r1.read_bytes() { Ok(b) => b; Err(_) => Bytes::new(0) }
+  let got_comment = match r1.read_string() { Ok(s) => s; Err(_) => "" }
+  assert(crypto::constant_time_eq(got_blob, parsed.blob))
+  assert_eq(got_comment, "vault@station")
+
+  // SIGN_REQUEST (13) -> SIGN_RESPONSE (14) -> Ed25519 strict verification passes!
+  let payload_to_sign = "ssh-userauth-challenge-data-12345".to_bytes()
+  let sign_req_buf = SshBuf::new()
+  sign_req_buf.write_byte(SSH_AGENTC_SIGN_REQUEST)
+  sign_req_buf.write_bytes(parsed.blob)
+  sign_req_buf.write_bytes(payload_to_sign)
+  sign_req_buf.write_u32_be(0)
+  let sign_req = sign_req_buf.to_bytes()
+  let (sign_reply, did_sign_2) = handle_agent_message(parsed, sign_req, true)
+  assert(did_sign_2)
+  assert_eq(sign_reply[0].to_int() & 0xFF, SSH_AGENT_SIGN_RESPONSE)
+  let sr_reader = SshReader::new(bytes_slice(sign_reply, 1, sign_reply.length()))
+  let sig_blob = match sr_reader.read_bytes() { Ok(b) => b; Err(_) => Bytes::new(0) }
+  let sb_reader = SshReader::new(sig_blob)
+  let alg_name = match sb_reader.read_string() { Ok(s) => s; Err(_) => "" }
+  let raw_sig = match sb_reader.read_bytes() { Ok(b) => b; Err(_) => Bytes::new(0) }
+  assert_eq(alg_name, "ssh-ed25519")
+  assert_eq(raw_sig.length(), 64)
+  assert(crypto::ed25519_verify(parsed.pub_key, payload_to_sign, raw_sig))
+
+  // Refused when allowed == false, wrong key blob, or unknown message type
+  let (denied_reply, did_sign_3) = handle_agent_message(parsed, sign_req, false)
+  assert(!did_sign_3)
+  assert_eq(denied_reply.length(), 1)
+  assert_eq(denied_reply[0].to_int() & 0xFF, SSH_AGENT_FAILURE)
+
+  let wrong_key_buf = SshBuf::new()
+  wrong_key_buf.write_byte(SSH_AGENTC_SIGN_REQUEST)
+  wrong_key_buf.write_bytes("wrong-blob".to_bytes())
+  wrong_key_buf.write_bytes(payload_to_sign)
+  wrong_key_buf.write_u32_be(0)
+  let (wrong_reply, _) = handle_agent_message(parsed, wrong_key_buf.to_bytes(), true)
+  assert_eq(wrong_reply[0].to_int() & 0xFF, SSH_AGENT_FAILURE)
+
+  let unknown_msg = Bytes::new(1)
+  unknown_msg[0] = 17 as Byte
+  let (unk_reply, _) = handle_agent_message(parsed, unknown_msg, true)
+  assert_eq(unk_reply[0].to_int() & 0xFF, SSH_AGENT_FAILURE)
+
+  // Framing: pipelined + partial chunk + oversized (> 256 KiB) rejection
+  let f1 = frame_agent_message(req_id)
+  let f2 = frame_agent_message(sign_req)
+  let combined = bytes_concat(f1, f2)
+  match unframe_agent_messages(combined) {
+    Ok((msgs, rem)) => {
+      assert_eq(msgs.length(), 2)
+      assert_eq(rem.length(), 0)
+    }
+    Err(_) => assert(false)
+  }
+  let oversized = SshBuf::new()
+  oversized.write_u32_be(SSH_AGENT_MAX_MSG_LEN + 1)
+  match unframe_agent_messages(oversized.to_bytes()) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+
+  // Adversarial 32-bit signed integer overflow in SshReader::read_bytes (pos=4, n=0x7FFFFFFF) (P1 #4)
+  let ovf_buf = SshBuf::new()
+  ovf_buf.write_u32_be(0x11223344)
+  ovf_buf.write_u32_be(0x7FFFFFFF)
+  ovf_buf.write_u32_be(0)
+  let ovf_r = SshReader::new(ovf_buf.to_bytes())
+  let _ = ovf_r.read_u32_be()
+  match ovf_r.read_bytes() {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
+
+  // SshAgentServer::new_in_private_dir over mock ShellMux:
+  // 1) `fs.mkdir` (recursive: false on owned random subdir, NEVER chmods `/tmp`!)
+  // 2) `fs.chmod` (0700 = 448) -> 3) `unix.listen` (0600 = 384)
+  // 4) serves SIGN_REQUEST -> 5) `close` calls `listen.close`, `fs.remove(sock)`, `fs.remove(owned_dir)`
+  let (mux, calls) = new_mock_mux()
+  let server = match SshAgentServer::new_in_private_dir(mux, "/tmp", parsed) {
+    Ok(s) => s
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  assert(server.socket_path.starts_with("/tmp/sf-ssh-"))
+  assert(server.socket_path.ends_with("/agent.sock"))
+  let mkdir_id = server.start(mux)
+  assert_eq(calls[0].op, "fs.mkdir")
+  assert(calls[0].json.contains("/tmp/sf-ssh-"))
+  assert(calls[0].json.contains("\"recursive\":false"))
+  let _ = server.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_MKDIR, 0, 0.to_int64()),
+    host_shim::ShellDone::{ id: mkdir_id, error: "", json: "{}", bytes: None },
+    true,
+  )
+  assert_eq(calls[1].op, "fs.chmod")
+  assert(calls[1].json.contains("/tmp/sf-ssh-"))
+  assert(calls[1].json.contains("448"))
+  let _ = server.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_CHMOD, 0, 0.to_int64()),
+    host_shim::ShellDone::{ id: 2.to_int64(), error: "", json: "{}", bytes: None },
+    true,
+  )
+  assert_eq(calls[2].op, "unix.listen")
+  assert(calls[2].json.contains("384"))
+  let _ = server.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_LISTEN, 0, 0.to_int64()),
+    host_shim::ShellDone::{ id: 3.to_int64(), error: "", json: "{\"id\":50}", bytes: None },
+    true,
+  )
+  assert(server.is_listening())
+  let _ = server.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_ACCEPT, 50, 0.to_int64()),
+    host_shim::ShellDone::{ id: 4.to_int64(), error: "", json: "{\"id\":51}", bytes: None },
+    true,
+  )
+  let _ = server.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_READ, 51, 0.to_int64()),
+    host_shim::ShellDone::{ id: 5.to_int64(), error: "", json: "{}", bytes: Some(f2) },
+    true,
+  )
+  assert_eq(server.sign_count(), 1)
+  let before_ssh_close = calls.length()
+  server.close(mux)
+  assert_eq(calls[before_ssh_close].op, "listen.close")
+  assert_eq(calls[calls.length() - 2].op, "fs.remove")
+  assert(calls[calls.length() - 2].json.contains("/agent.sock"))
+  assert_eq(calls[calls.length() - 1].op, "fs.remove")
+  assert(calls[calls.length() - 1].json.contains("\"recursive\":true"))
+  assert(!server.is_listening())
+
+  // Late completion handle reclamation for SshAgentServer (P2 #2)
+  let before_ssh_late = calls.length()
+  let _ = server.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_LISTEN, 0, 0.to_int64()),
+    host_shim::ShellDone::{ id: 601.to_int64(), error: "", json: "{\"id\":601}", bytes: None },
+    true,
+  )
+  assert_eq(calls[before_ssh_late].op, "listen.close")
+  assert(calls[before_ssh_late].json.contains("601"))
+  let _ = server.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_ACCEPT, 50, 0.to_int64()),
+    host_shim::ShellDone::{ id: 602.to_int64(), error: "", json: "{\"id\":602}", bytes: None },
+    true,
+  )
+  assert_eq(calls[before_ssh_late + 1].op, "tcp.close")
+  assert(calls[before_ssh_late + 1].json.contains("602"))
+
+  // Caller-supplied path (`SshAgentServer::new`) MUST NOT chmod shared `/tmp`,
+  // and `fs.mkdir` failure surfaces via `start_error()` (P2 #4)
+  let (mux_shared, calls_shared) = new_mock_mux()
+  let shared_srv = SshAgentServer::new("/tmp/my-agent.sock", parsed)
+  let _ = shared_srv.start(mux_shared)
+  assert_eq(calls_shared.length(), 1)
+  assert_eq(calls_shared[0].op, "unix.listen")
+
+  let (mux_err, calls_err) = new_mock_mux()
+  let err_srv = match SshAgentServer::new_in_private_dir(mux_err, "/tmp", parsed) {
+    Ok(s) => s
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let em_id = err_srv.start(mux_err)
+  let _ = err_srv.on_shell_done(
+    mux_err,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_MKDIR, 0, 0.to_int64()),
+    host_shim::ShellDone::{ id: em_id, error: "EEXIST", json: "", bytes: None },
+    true,
+  )
+  match err_srv.start_error() {
+    Some(msg) => assert(msg.contains("EEXIST"))
+    None => assert(false)
+  }
+  // Closing after `EEXIST` MUST NOT emit `fs.remove` on the unowned directory!
+  let before_eexist_close = calls_err.length()
+  err_srv.close(mux_err)
+  assert_eq(calls_err.length(), before_eexist_close)
+
+  // Closing while `MKDIR` is in flight: late `MKDIR` success automatically removes the newly-created dir!
+  let (mux_race, calls_race) = new_mock_mux()
+  let race_srv = match SshAgentServer::new_in_private_dir(mux_race, "/tmp", parsed) {
+    Ok(s) => s
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let rm_id = race_srv.start(mux_race)
+  let before_race_close = calls_race.length()
+  race_srv.close(mux_race)
+  assert_eq(calls_race.length(), before_race_close)
+  let _ = race_srv.on_shell_done(
+    mux_race,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_MKDIR, 0, 0.to_int64()),
+    host_shim::ShellDone::{ id: rm_id, error: "", json: "{}", bytes: None },
+    true,
+  )
+  assert_eq(calls_race.length(), before_race_close + 1)
+  assert_eq(calls_race[before_race_close].op, "fs.remove")
+  assert(calls_race[before_race_close].json.contains("\"recursive\":true"))
+}
+
+// ---------------------------------------------------------------------------
+// 6. Secret output scrubber tests
+// ---------------------------------------------------------------------------
+
+test "scrub: hides raw, base64, base64url, URL-encoded, and chunk-split secrets" {
+  let tok = "ghp_SecretToken+123/abc="
+  let b64 = base64::encode(tok.to_bytes())
+  let raw_out = "raw=" + tok + " b64=" + b64 + " ok=yes"
+  let cleaned = scrub(raw_out, [tok])
+  assert(!cleaned.contains(tok))
+  assert(!cleaned.contains(b64))
+  assert(cleaned.contains(HIDDEN))
+  assert(cleaned.contains("ok=yes"))
+
+  // Streaming chunk-split boundary test
+  let s = Scrubber::new([tok])
+  let p1 = s.push(("prefix " + tok.slice(0, 8)).to_bytes())
+  let p2 = s.push((tok.slice(8, tok.length()) + " suffix").to_bytes())
+  let p3 = s.end()
+  let full = bytes_to_str_test(bytes_concat(bytes_concat(p1, p2), p3))
+  assert_eq(full, "prefix " + HIDDEN + " suffix")
+}

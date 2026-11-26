@@ -611,6 +611,7 @@ pub struct NodeWay {
   // private fields
 }
 pub fn NodeWay::end(Self) -> Double
+pub fn NodeWay::end_count(Self) -> Int32
 pub fn NodeWay::ends_at(Self) -> Double
 #callsite(autofill(loc))
 pub fn NodeWay::go(Self, @view.View, Double, Spec, velocity? : Double, loc~ : SourceLoc) -> Unit

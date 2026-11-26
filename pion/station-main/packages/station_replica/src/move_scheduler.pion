@@ -1,0 +1,1015 @@
+// Migration scheduler, dependency ordering, cycle detection, stop/resume, lending, and rollback.
+// 1:1 aligned with `station/src/move/{module,scheduler,routes,accounts,chats,jobs,connects,repos,vault,settings}.ts`.
+
+pub struct MoveNeed {
+  pub module_id : String
+  pub id : String
+}
+
+pub fn need_name(n : MoveNeed) -> String {
+  n.module_id + " " + n.id
+}
+
+pub struct MoveWaits {
+  pub module_id : String
+  pub id : String
+  pub label : Option[String]
+  pub at : Option[String]
+}
+
+pub enum MoveItemStateKind {
+  Here
+  Moving
+  There
+  Failed(String)
+  Stopped(MoveWaits)
+}
+
+pub struct MoveItem {
+  pub module_id : String
+  pub id : String
+  pub label : String
+  pub needs : Array[MoveNeed]
+  pub cannot : Option[String]
+  pub again : Bool
+  pub size : Option[Int64]
+  pub leaves : Option[String]
+}
+
+pub struct PlannedItem {
+  pub item : MoveItem
+  pub state : MoveItemStateKind
+  pub would_stop : Array[MoveNeed]
+  pub lent_to : Option[String]
+}
+
+pub struct MovePlan {
+  pub ws : String
+  pub to : String
+  pub items : Array[PlannedItem]
+}
+
+pub struct MoveSelection {
+  pub module_id : Option[String]
+  pub item : Option[String]
+  pub all : Bool
+  pub with_needs : Bool
+  pub follow : Array[String]
+  pub arrive_stopped : Bool
+}
+
+pub struct MoveRefused {
+  pub item : MoveNeed
+  pub why : String
+}
+
+pub struct MoveStoppedEntry {
+  pub item : MoveNeed
+  pub waits_for : MoveNeed
+}
+
+pub struct MoveFailure {
+  pub item : MoveNeed
+  pub error : String
+}
+
+pub struct MoveOutcome {
+  pub done : Array[MoveNeed]
+  pub refused : Array[MoveRefused]
+  pub stopped : Array[MoveStoppedEntry]
+  pub resumed : Array[MoveNeed]
+  pub failures : Array[MoveFailure]
+  pub returned : Array[MoveNeed]
+  pub lent : Array[MoveNeed]
+}
+
+/// Injectable migration module port (`accounts`, `chats`, `jobs`, `connects`, `repos`, `vault`, `settings`).
+pub struct MoveModule {
+  pub id : String
+  pub needs : Array[String]
+  pub plan : (String, String) -> Result[Array[MoveItem], String]
+  pub move_item : (MoveItem, String, Option[MoveWaits]) -> Result[Unit, String]
+  pub back_item : (MoveItem, String, Option[MoveWaits]) -> Result[Unit, String]
+  pub state : (MoveItem) -> MoveItemStateKind
+  pub usable_here : (MoveItem) -> Bool
+  pub usable_there : (MoveItem) -> Bool
+  pub can_lend : (MoveItem) -> Bool
+  pub lend : (MoveItem, String, Array[MoveNeed]) -> Result[Unit, String]
+  pub left : (Array[MoveNeed]) -> Result[Unit, String]
+  pub has_stop : Bool
+  pub stop_item : (MoveItem, MoveWaits) -> Result[Unit, String]
+  pub resume_item : (MoveItem) -> Result[Unit, String]
+  pub abandon : () -> Unit
+}
+
+struct StoppedRecord {
+  item : MoveNeed
+  waits_for : MoveWaits
+  ws : String
+}
+
+struct TarjanState {
+  by : Map[String, MoveItem]
+  index : Map[String, Int]
+  low : Map[String, Int]
+  on_stack : Map[String, Bool]
+  stack : Array[MoveItem]
+  out : Map[String, Array[MoveNeed]]
+  mut next_idx : Int
+}
+
+fn cycle_through(start : MoveItem, part : Map[String, Bool], by : Map[String, MoveItem]) -> Array[MoveNeed] {
+  let start_name = start.module_id + " " + start.id
+  let from : Map[String, Option[MoveItem]] = Map::new()
+  from.set(start_name, None)
+  let queue : Array[MoveItem] = [start]
+  let mut qi = 0
+  while qi < queue.length() {
+    let x = queue[qi]
+    qi = qi + 1
+    for i in 0..<x.needs.length() {
+      let dep_name = need_name(x.needs[i])
+      match part.get(dep_name) {
+        Some(true) => ()
+        _ => continue
+      }
+      let y = match by.get(dep_name) {
+        Some(v) => v
+        None => continue
+      }
+      if dep_name == start_name {
+        let rev : Array[MoveNeed] = []
+        let mut cur : Option[MoveItem] = Some(x)
+        while true {
+          match cur {
+            Some(z) => {
+              rev.push(MoveNeed::{ module_id: z.module_id, id: z.id })
+              cur = match from.get(z.module_id + " " + z.id) {
+                Some(p) => p
+                None => None
+              }
+            }
+            None => break
+          }
+        }
+        let path : Array[MoveNeed] = []
+        let mut ri = rev.length() - 1
+        while ri >= 0 {
+          path.push(rev[ri])
+          ri = ri - 1
+        }
+        path.push(MoveNeed::{ module_id: start.module_id, id: start.id })
+        return path
+      }
+      match from.get(dep_name) {
+        Some(_) => continue
+        None => {
+          from.set(dep_name, Some(x))
+          queue.push(y)
+        }
+      }
+    }
+  }
+  let sn = MoveNeed::{ module_id: start.module_id, id: start.id }
+  [sn, sn]
+}
+
+fn tarjan_visit(st : TarjanState, x : MoveItem) -> Unit {
+  let k = x.module_id + " " + x.id
+  st.index.set(k, st.next_idx)
+  st.low.set(k, st.next_idx)
+  st.next_idx = st.next_idx + 1
+  st.stack.push(x)
+  st.on_stack.set(k, true)
+  for i in 0..<x.needs.length() {
+    let j = need_name(x.needs[i])
+    let y = match st.by.get(j) {
+      Some(v) => v
+      None => continue
+    }
+    match st.index.get(j) {
+      None => {
+        tarjan_visit(st, y)
+        let lk = match st.low.get(k) {
+          Some(v) => v
+          None => 0
+        }
+        let lj = match st.low.get(j) {
+          Some(v) => v
+          None => 0
+        }
+        st.low.set(k, if lk < lj { lk } else { lj })
+      }
+      Some(idx_j) => {
+        match st.on_stack.get(j) {
+          Some(true) => {
+            let lk = match st.low.get(k) {
+              Some(v) => v
+              None => 0
+            }
+            st.low.set(k, if lk < idx_j { lk } else { idx_j })
+          }
+          _ => ()
+        }
+      }
+    }
+  }
+  let lk = match st.low.get(k) {
+    Some(v) => v
+    None => -1
+  }
+  let ik = match st.index.get(k) {
+    Some(v) => v
+    None => -2
+  }
+  if lk != ik {
+    return
+  }
+  let part : Array[MoveItem] = []
+  let part_set : Map[String, Bool] = Map::new()
+  while st.stack.length() > 0 {
+    match st.stack.pop() {
+      Some(y) => {
+        let yk = y.module_id + " " + y.id
+        st.on_stack.remove(yk)
+        part.push(y)
+        part_set.set(yk, true)
+        if yk == k {
+          break
+        }
+      }
+      None => break
+    }
+  }
+  let mut self_loop = false
+  if part.length() == 1 {
+    for i in 0..<x.needs.length() {
+      if need_name(x.needs[i]) == k {
+        self_loop = true
+        break
+      }
+    }
+  }
+  if part.length() < 2 && !self_loop {
+    return
+  }
+  let chain = cycle_through(x, part_set, st.by)
+  for i in 0..<part.length() {
+    let y = part[i]
+    st.out.set(y.module_id + " " + y.id, chain)
+  }
+}
+
+/// Detects dependency cycles among movable items using Tarjan SCC (`scheduler.ts` `itemCycles`).
+pub fn detect_item_cycles(items : Array[MoveItem]) -> Map[String, Array[MoveNeed]] {
+  let by : Map[String, MoveItem] = Map::new()
+  let movable : Array[MoveItem] = []
+  for i in 0..<items.length() {
+    let it = items[i]
+    match it.cannot {
+      None => {
+        by.set(it.module_id + " " + it.id, it)
+        movable.push(it)
+      }
+      Some(_) => ()
+    }
+  }
+  let st = TarjanState::{
+    by: by,
+    index: Map::new(),
+    low: Map::new(),
+    on_stack: Map::new(),
+    stack: [],
+    out: Map::new(),
+    next_idx: 0,
+  }
+  for i in 0..<movable.length() {
+    let x = movable[i]
+    let k = x.module_id + " " + x.id
+    match st.index.get(k) {
+      None => tarjan_visit(st, x)
+      Some(_) => ()
+    }
+  }
+  st.out
+}
+
+pub struct MoveScheduler {
+  modules : Map[String, MoveModule]
+  module_order : Array[String]
+  stopped : Map[String, StoppedRecord]
+  pub mut stopping : Bool
+  pub mut move_on : Bool
+}
+
+pub fn MoveScheduler::new(mods : Array[MoveModule]) -> Result[MoveScheduler, String] {
+  let map : Map[String, MoveModule] = Map::new()
+  let order : Array[String] = []
+  for i in 0..<mods.length() {
+    let m = mods[i]
+    match map.get(m.id) {
+      Some(_) => return Err("two modules " + m.id)
+      None => {
+        map.set(m.id, m)
+        order.push(m.id)
+      }
+    }
+  }
+  for i in 0..<mods.length() {
+    let m = mods[i]
+    for j in 0..<m.needs.length() {
+      let n = m.needs[j]
+      match map.get(n) {
+        Some(_) => ()
+        None => return Err("module " + m.id + " needs " + n + ", which is not one")
+      }
+    }
+  }
+  Ok(
+    MoveScheduler::{
+      modules: map,
+      module_order: order,
+      stopped: Map::new(),
+      stopping: false,
+      move_on: true,
+    },
+  )
+}
+
+pub fn MoveScheduler::stop_turn(self : MoveScheduler) -> Unit {
+  self.stopping = true
+  for i in 0..<self.module_order.length() {
+    match self.modules.get(self.module_order[i]) {
+      Some(m) => (m.abandon)()
+      None => ()
+    }
+  }
+}
+
+pub fn MoveScheduler::state_of(self : MoveScheduler, item : MoveItem) -> MoveItemStateKind {
+  let base = match self.modules.get(item.module_id) {
+    Some(m) => (m.state)(item)
+    None => MoveItemStateKind::Here
+  }
+  let name = item.module_id + " " + item.id
+  match (base, self.stopped.get(name)) {
+    (MoveItemStateKind::Here, Some(rec)) => MoveItemStateKind::Stopped(rec.waits_for)
+    _ => base
+  }
+}
+
+pub fn MoveScheduler::plan(self : MoveScheduler, ws : String, to : String) -> Result[MovePlan, String] {
+  let raw_items : Array[MoveItem] = []
+  for i in 0..<self.module_order.length() {
+    let m = match self.modules.get(self.module_order[i]) {
+      Some(x) => x
+      None => continue
+    }
+    let items = match (m.plan)(ws, to) {
+      Ok(xs) => xs
+      Err(e) => return Err(e)
+    }
+    for j in 0..<items.length() {
+      let it = items[j]
+      for k in 0..<it.needs.length() {
+        let dep_mod = it.needs[k].module_id
+        let mut declared = false
+        for d in 0..<m.needs.length() {
+          if m.needs[d] == dep_mod {
+            declared = true
+            break
+          }
+        }
+        if !declared {
+          return Err("module " + m.id + "'s item " + it.id + " needs " + need_name(it.needs[k]) + ", of a module it does not declare")
+        }
+      }
+      raw_items.push(it)
+    }
+  }
+  let cycles = detect_item_cycles(raw_items)
+  let checked_items : Array[MoveItem] = []
+  for i in 0..<raw_items.length() {
+    let it = raw_items[i]
+    let k = it.module_id + " " + it.id
+    match (it.cannot, cycles.get(k)) {
+      (None, Some(chain)) => {
+        let sb = StringBuilder::new()
+        sb.write_string("dependency cycle: ")
+        for c in 0..<chain.length() {
+          if c > 0 {
+            sb.write_string(" -> ")
+          }
+          sb.write_string(need_name(chain[c]))
+        }
+        checked_items.push(
+          MoveItem::{
+            module_id: it.module_id,
+            id: it.id,
+            label: it.label,
+            needs: it.needs,
+            cannot: Some(sb.to_string()),
+            again: false,
+            size: it.size,
+            leaves: it.leaves,
+          },
+        )
+      }
+      _ => checked_items.push(it)
+    }
+  }
+  // Compute `would_stop` for each item.
+  let states : Array[MoveItemStateKind] = []
+  for i in 0..<checked_items.length() {
+    states.push(self.state_of(checked_items[i]))
+  }
+  let planned : Array[PlannedItem] = []
+  for i in 0..<checked_items.length() {
+    let p = checked_items[i]
+    let p_state = states[i]
+    let p_name = p.module_id + " " + p.id
+    let p_mod = self.modules.get(p.module_id)
+    let is_there = match p_state {
+      MoveItemStateKind::There => true
+      _ => false
+    }
+    let usable_h = match p_mod {
+      Some(m) => (m.usable_here)(p)
+      None => false
+    }
+    let ws_list : Array[MoveNeed] = []
+    if !is_there && !usable_h {
+      for j in 0..<checked_items.length() {
+        let other = checked_items[j]
+        let other_there = match states[j] {
+          MoveItemStateKind::There => true
+          _ => false
+        }
+        if other_there {
+          continue
+        }
+        let stoppable = match self.modules.get(other.module_id) {
+          Some(om) => om.has_stop
+          None => false
+        }
+        if !stoppable {
+          continue
+        }
+        for k in 0..<other.needs.length() {
+          if need_name(other.needs[k]) == p_name {
+            ws_list.push(MoveNeed::{ module_id: other.module_id, id: other.id })
+            break
+          }
+        }
+      }
+    }
+    planned.push(PlannedItem::{ item: p, state: p_state, would_stop: ws_list, lent_to: None })
+  }
+  Ok(MovePlan::{ ws: ws, to: to, items: planned })
+}
+
+fn would_stop_others(
+  sched : MoveScheduler,
+  x : PlannedItem,
+  all_items : Array[PlannedItem],
+  chosen_names : Map[String, Bool],
+) -> Array[PlannedItem] {
+  match sched.modules.get(x.item.module_id) {
+    Some(m) => if (m.usable_here)(x.item) { return [] }
+    None => ()
+  }
+  let xk = x.item.module_id + " " + x.item.id
+  let out : Array[PlannedItem] = []
+  for i in 0..<all_items.length() {
+    let y = all_items[i]
+    let y_there = match y.state {
+      MoveItemStateKind::There => true
+      _ => false
+    }
+    if y_there {
+      continue
+    }
+    let yk = y.item.module_id + " " + y.item.id
+    match chosen_names.get(yk) {
+      Some(true) => continue
+      _ => ()
+    }
+    let stoppable = match sched.modules.get(y.item.module_id) {
+      Some(ym) => ym.has_stop
+      None => false
+    }
+    if !stoppable {
+      continue
+    }
+    for j in 0..<y.item.needs.length() {
+      if need_name(y.item.needs[j]) == xk {
+        out.push(y)
+        break
+      }
+    }
+  }
+  out
+}
+
+fn enqueue_move_item(
+  sched : MoveScheduler,
+  p : PlannedItem,
+  to : String,
+  sel : MoveSelection,
+  all_items : Array[PlannedItem],
+  by_name : Map[String, PlannedItem],
+  chosen_names : Map[String, Bool],
+  taking : Map[String, Bool],
+  in_order : Map[String, Bool],
+  order : Array[PlannedItem],
+  refused_why : Map[String, String],
+  lending : Map[String, Array[MoveNeed]],
+) -> Unit {
+  let k = p.item.module_id + " " + p.item.id
+  match in_order.get(k) {
+    Some(true) => return
+    _ => ()
+  }
+  match taking.get(k) {
+    Some(true) => return
+    _ => ()
+  }
+  taking.set(k, true)
+  match p.item.cannot {
+    Some(_) => {
+      in_order.set(k, true)
+      order.push(p)
+      return
+    }
+    None => ()
+  }
+  if sel.with_needs || sel.all {
+    for i in 0..<p.item.needs.length() {
+      let dep_k = need_name(p.item.needs[i])
+      match by_name.get(dep_k) {
+        Some(dep_p) => {
+          let dep_mod = sched.modules.get(dep_p.item.module_id)
+          let already_there = match dep_p.state {
+            MoveItemStateKind::There => true
+            _ => false
+          }
+          let usable_t = match dep_mod {
+            Some(m) => (m.usable_there)(dep_p.item)
+            None => false
+          }
+          let can_l = match dep_mod {
+            Some(m) => (m.can_lend)(dep_p.item)
+            None => false
+          }
+          if !already_there && !usable_t {
+            if can_l {
+              // Lend first (even in `sel.all`, host moves AFTER dependents in `host_after`).
+              match lending.get(dep_k) {
+                Some(xs) => xs.push(MoveNeed::{ module_id: p.item.module_id, id: p.item.id })
+                None => lending.set(dep_k, [MoveNeed::{ module_id: p.item.module_id, id: p.item.id }])
+              }
+              continue
+            }
+            let dep_cannot = match dep_p.item.cannot {
+              Some(_) => true
+              None => false
+            }
+            if !sel.all && !dep_cannot {
+              let others = would_stop_others(sched, dep_p, all_items, chosen_names)
+              if others.length() > 0 {
+                refused_why.set(k, "moving " + dep_k + " would stop other local items")
+                refused_why.set(dep_k, "would stop other local items")
+                continue
+              }
+            }
+            enqueue_move_item(sched, dep_p, to, sel, all_items, by_name, chosen_names, taking, in_order, order, refused_why, lending)
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  in_order.set(k, true)
+  order.push(p)
+}
+
+/// Executes a forward move turn honoring dependency order, `with_needs`, lending (`can_lend`),
+/// stopping dependents on this station, and `arrive_stopped`.
+pub fn MoveScheduler::move_forward(
+  self : MoveScheduler,
+  ws : String,
+  to : String,
+  sel : MoveSelection,
+) -> Result[MoveOutcome, String] {
+  if !self.move_on {
+    return Err("station move is disabled on this station")
+  }
+  self.stopping = false
+  let plan = match self.plan(ws, to) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let by_name : Map[String, PlannedItem] = Map::new()
+  for i in 0..<plan.items.length() {
+    let p = plan.items[i]
+    by_name.set(p.item.module_id + " " + p.item.id, p)
+  }
+  let chosen : Array[PlannedItem] = []
+  for i in 0..<plan.items.length() {
+    let p = plan.items[i]
+    let matched = if sel.all {
+      true
+    } else {
+      match (sel.module_id, sel.item) {
+        (Some(mid), Some(iid)) => p.item.module_id == mid && p.item.id == iid
+        (Some(mid), None) => p.item.module_id == mid
+        _ => false
+      }
+    }
+    if matched {
+      chosen.push(p)
+    }
+  }
+  if chosen.length() == 0 {
+    return Err("nothing selected to move")
+  }
+  let done : Array[MoveNeed] = []
+  let refused : Array[MoveRefused] = []
+  let stopped : Array[MoveStoppedEntry] = []
+  let resumed : Array[MoveNeed] = []
+  let failures : Array[MoveFailure] = []
+  let returned : Array[MoveNeed] = []
+  let lent : Array[MoveNeed] = []
+
+  let moved_set : Map[String, Bool] = Map::new()
+  let failed_set : Map[String, Bool] = Map::new()
+  let lent_set : Map[String, Bool] = Map::new()
+
+  // Ordered execution list (`taking` prevents cycle stack overflow; `refused_why` enforces `would_stop_others`).
+  let order : Array[PlannedItem] = []
+  let taking : Map[String, Bool] = Map::new()
+  let in_order : Map[String, Bool] = Map::new()
+  let refused_why : Map[String, String] = Map::new()
+  let lending : Map[String, Array[MoveNeed]] = Map::new()
+  let chosen_names : Map[String, Bool] = Map::new()
+  for i in 0..<chosen.length() {
+    chosen_names.set(chosen[i].item.module_id + " " + chosen[i].item.id, true)
+  }
+
+  for i in 0..<chosen.length() {
+    enqueue_move_item(self, chosen[i], to, sel, plan.items, by_name, chosen_names, taking, in_order, order, refused_why, lending)
+  }
+
+  let rkeys = sort_strings(refused_why.keys())
+  for i in 0..<rkeys.length() {
+    let rk = rkeys[i]
+    match (by_name.get(rk), refused_why.get(rk)) {
+      (Some(rp), Some(why)) => refused.push(MoveRefused::{ item: MoveNeed::{ module_id: rp.item.module_id, id: rp.item.id }, why: why })
+      _ => ()
+    }
+  }
+
+  // Items asked for themselves (e.g. `sel.all`) that are lent first move AFTER their dependents (`host_after`).
+  let host_after : Array[PlannedItem] = []
+  let exec_list : Array[PlannedItem] = []
+  for i in 0..<order.length() {
+    let p = order[i]
+    let k = p.item.module_id + " " + p.item.id
+    match lending.get(k) {
+      Some(_) => host_after.push(p)
+      None => exec_list.push(p)
+    }
+  }
+  for i in 0..<host_after.length() {
+    exec_list.push(host_after[i])
+  }
+
+  for i in 0..<exec_list.length() {
+    if self.stopping {
+      break
+    }
+    let p = exec_list[i]
+    let k = p.item.module_id + " " + p.item.id
+    let need_ref = MoveNeed::{ module_id: p.item.module_id, id: p.item.id }
+    match refused_why.get(k) {
+      Some(_) => continue
+      None => ()
+    }
+    match p.state {
+      MoveItemStateKind::There => continue
+      _ => ()
+    }
+    match p.item.cannot {
+      Some(why) => {
+        refused.push(MoveRefused::{ item: need_ref, why: why })
+        continue
+      }
+      None => ()
+    }
+    // Perform deferred lending just before the first dependent that needs it moves.
+    for j in 0..<p.item.needs.length() {
+      let dk = need_name(p.item.needs[j])
+      match lending.get(dk) {
+        Some(for_whom) => {
+          let already_lent = match lent_set.get(dk) {
+            Some(true) => true
+            _ => false
+          }
+          let already_failed = match failed_set.get(dk) {
+            Some(true) => true
+            _ => false
+          }
+          if !already_lent && !already_failed {
+            match by_name.get(dk) {
+              Some(dp) => {
+                match self.modules.get(dp.item.module_id) {
+                  Some(dm) => {
+                    match (dm.lend)(dp.item, to, for_whom) {
+                      Ok(()) => {
+                        lent_set.set(dk, true)
+                        lent.push(MoveNeed::{ module_id: dp.item.module_id, id: dp.item.id })
+                      }
+                      Err(e) => {
+                        failed_set.set(dk, true)
+                        failures.push(MoveFailure::{ item: MoveNeed::{ module_id: dp.item.module_id, id: dp.item.id }, error: e })
+                      }
+                    }
+                  }
+                  None => ()
+                }
+              }
+              None => ()
+            }
+          }
+        }
+        None => ()
+      }
+    }
+    // Check needs satisfied or `arrive_stopped`.
+    let mut missing_need : Option[MoveWaits] = None
+    let mut blocked_reason : Option[String] = None
+    for j in 0..<p.item.needs.length() {
+      let dep = p.item.needs[j]
+      let dk = need_name(dep)
+      let satisfied = match moved_set.get(dk) {
+        Some(true) => true
+        _ =>
+        match lent_set.get(dk) {
+          Some(true) => true
+          _ =>
+          match by_name.get(dk) {
+            Some(dp) =>
+            match dp.state {
+              MoveItemStateKind::There => true
+              _ =>
+              match self.modules.get(dp.item.module_id) {
+                Some(dm) => (dm.usable_there)(dp.item)
+                None => false
+              }
+            }
+            None => false
+          }
+        }
+      }
+      if !satisfied {
+        match failed_set.get(dk) {
+          Some(true) => {
+            blocked_reason = Some("dependency failed: " + dk)
+            break
+          }
+          _ => ()
+        }
+        if sel.arrive_stopped {
+          missing_need = Some(MoveWaits::{ module_id: dep.module_id, id: dep.id, label: Some(dep.id), at: Some(to) })
+        } else {
+          blocked_reason = Some("needs " + dk + " moved first")
+          break
+        }
+      }
+    }
+    match blocked_reason {
+      Some(why) => {
+        refused.push(MoveRefused::{ item: need_ref, why: why })
+        continue
+      }
+      None => ()
+    }
+    // Stop items here that depend on `p` before moving it away.
+    for j in 0..<p.would_stop.length() {
+      let dep_need = p.would_stop[j]
+      let dk = need_name(dep_need)
+      match moved_set.get(dk) {
+        Some(true) => continue
+        _ => ()
+      }
+      match by_name.get(dk) {
+        Some(dp) => {
+          match self.modules.get(dp.item.module_id) {
+            Some(dm) => {
+              let waits = MoveWaits::{
+                module_id: p.item.module_id,
+                id: p.item.id,
+                label: Some(p.item.label),
+                at: Some(to),
+              }
+              let _ = (dm.stop_item)(dp.item, waits)
+              self.stopped.set(dk, StoppedRecord::{ item: dep_need, waits_for: waits, ws: ws })
+              stopped.push(MoveStoppedEntry::{ item: dep_need, waits_for: need_ref })
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    }
+    // Move the item.
+    match self.modules.get(p.item.module_id) {
+      Some(m) => {
+        match (m.move_item)(p.item, to, missing_need) {
+          Ok(()) => {
+            moved_set.set(k, true)
+            self.stopped.remove(k)
+            done.push(need_ref)
+          }
+          Err(e) => {
+            failed_set.set(k, true)
+            failures.push(MoveFailure::{ item: need_ref, error: e })
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  Ok(
+    MoveOutcome::{
+      done: done,
+      refused: refused,
+      stopped: stopped,
+      resumed: resumed,
+      failures: failures,
+      returned: returned,
+      lent: lent,
+    },
+  )
+}
+
+/// Executes a move-back (rollback) in reverse dependency order, resuming any stopped items here
+/// whose dependency returned and notifying modules via `left()` to reclaim lent logins.
+pub fn MoveScheduler::move_back(
+  self : MoveScheduler,
+  ws : String,
+  from : String,
+  sel : MoveSelection,
+) -> Result[MoveOutcome, String] {
+  if !self.move_on {
+    return Err("station move is disabled on this station")
+  }
+  self.stopping = false
+  let plan = match self.plan(ws, from) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let done : Array[MoveNeed] = []
+  let refused : Array[MoveRefused] = []
+  let stopped : Array[MoveStoppedEntry] = []
+  let resumed : Array[MoveNeed] = []
+  let failures : Array[MoveFailure] = []
+  let returned : Array[MoveNeed] = []
+  let lent : Array[MoveNeed] = []
+
+  // Collect items currently on `from` matching selection, in reverse order (dependents before needs).
+  let targets : Array[PlannedItem] = []
+  let mut idx = plan.items.length() - 1
+  while idx >= 0 {
+    let p = plan.items[idx]
+    let is_there = match p.state {
+      MoveItemStateKind::There => true
+      _ => false
+    }
+    if is_there {
+      let matched = if sel.all {
+        true
+      } else {
+        match (sel.module_id, sel.item) {
+          (Some(mid), Some(iid)) => p.item.module_id == mid && p.item.id == iid
+          (Some(mid), None) => p.item.module_id == mid
+          _ => false
+        }
+      }
+      if matched {
+        targets.push(p)
+      }
+    }
+    idx = idx - 1
+  }
+  if targets.length() == 0 {
+    return Err("nothing selected to move back")
+  }
+  let back_set : Map[String, Bool] = Map::new()
+  for i in 0..<targets.length() {
+    if self.stopping {
+      break
+    }
+    let p = targets[i]
+    let k = p.item.module_id + " " + p.item.id
+    let need_ref = MoveNeed::{ module_id: p.item.module_id, id: p.item.id }
+    // Refuse if another item still on `from` needs `p` and hasn't moved back yet.
+    let mut still_needed_by : Option[String] = None
+    for j in 0..<plan.items.length() {
+      let other = plan.items[j]
+      let ok = other.item.module_id + " " + other.item.id
+      let other_there = match other.state {
+        MoveItemStateKind::There => true
+        _ => false
+      }
+      let other_back = match back_set.get(ok) {
+        Some(true) => true
+        _ => false
+      }
+      if other_there && !other_back {
+        for d in 0..<other.item.needs.length() {
+          if need_name(other.item.needs[d]) == k {
+            still_needed_by = Some(ok)
+            break
+          }
+        }
+      }
+      match still_needed_by {
+        Some(_) => break
+        None => ()
+      }
+    }
+    match still_needed_by {
+      Some(dep_name) => {
+        if !sel.arrive_stopped {
+          refused.push(MoveRefused::{ item: need_ref, why: "still needed on remote station by " + dep_name })
+          continue
+        }
+      }
+      None => ()
+    }
+    match self.modules.get(p.item.module_id) {
+      Some(m) => {
+        match (m.back_item)(p.item, from, None) {
+          Ok(()) => {
+            back_set.set(k, true)
+            done.push(need_ref)
+            // Resume any local items that were stopped waiting for `p`.
+            let skeys = self.stopped.keys()
+            for s in 0..<skeys.length() {
+              let sk = skeys[s]
+              match self.stopped.get(sk) {
+                Some(rec) => {
+                  if rec.waits_for.module_id == p.item.module_id && rec.waits_for.id == p.item.id {
+                    match self.modules.get(rec.item.module_id) {
+                      Some(rm) => {
+                        let _ = (rm.resume_item)(
+                          MoveItem::{
+                            module_id: rec.item.module_id,
+                            id: rec.item.id,
+                            label: rec.item.id,
+                            needs: [],
+                            cannot: None,
+                            again: false,
+                            size: None,
+                            leaves: None,
+                          },
+                        )
+                      }
+                      None => ()
+                    }
+                    self.stopped.remove(sk)
+                    resumed.push(rec.item)
+                  }
+                }
+                None => ()
+              }
+            }
+          }
+          Err(e) => failures.push(MoveFailure::{ item: need_ref, error: e })
+        }
+      }
+      None => ()
+    }
+  }
+  // Notify all modules of returned items so lent logins can be reclaimed.
+  for i in 0..<self.module_order.length() {
+    match self.modules.get(self.module_order[i]) {
+      Some(m) => {
+        let _ = (m.left)(done)
+      }
+      None => ()
+    }
+  }
+  Ok(
+    MoveOutcome::{
+      done: done,
+      refused: refused,
+      stopped: stopped,
+      resumed: resumed,
+      failures: failures,
+      returned: returned,
+      lent: lent,
+    },
+  )
+}

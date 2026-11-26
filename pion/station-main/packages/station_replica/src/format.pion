@@ -1,0 +1,457 @@
+// Replica format types, validators, and canonical JSON codecs.
+// 1:1 aligned with `station/src/replica/format.ts`.
+
+import "base_codec"
+
+pub let replica_version : Int = 1
+
+pub struct RunEntry {
+  pub run : String
+  pub from : Int64
+}
+
+pub struct Head {
+  pub v : Int
+  pub origin : String
+  pub workspace : String
+  pub gen : String
+  pub name : String
+  pub data_dir : String
+  pub made : Int64
+  pub to : Int64
+  pub batches : Array[String]
+  pub files : Map[String, Int64]
+  pub transcript_files : Option[Map[String, Int64]]
+  pub transcript_manifest : Option[String]
+  pub partial : Bool
+  pub chats : Int
+  pub messages : Int
+  pub bytes : Int64
+  pub runs : Array[RunEntry]
+}
+
+fn is_digit(c : Int) -> Bool {
+  c >= 48 && c <= 57
+}
+
+fn is_lower_hex(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 97 && c <= 102)
+}
+
+fn is_lower_alnum(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 97 && c <= 122)
+}
+
+fn is_ascii_alnum(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+
+pub fn is_hex2(s : String) -> Bool {
+  if s.length() != 2 {
+    return false
+  }
+  is_lower_hex(s.code_unit_at(0)) && is_lower_hex(s.code_unit_at(1))
+}
+
+pub fn is_hex64(s : String) -> Bool {
+  if s.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    if !is_lower_hex(s.code_unit_at(i)) {
+      return false
+    }
+  }
+  true
+}
+
+/// Matches `/^[0-9A-Za-z_-]{1,64}$/`.
+pub fn is_workspace(s : String) -> Bool {
+  let n = s.length()
+  if n < 1 || n > 64 {
+    return false
+  }
+  for i in 0..<n {
+    let c = s.code_unit_at(i)
+    if !is_ascii_alnum(c) && c != 95 && c != 45 {
+      return false
+    }
+  }
+  true
+}
+
+/// Matches `/^[0-9a-f]{64}$/`.
+pub fn is_station(s : String) -> Bool {
+  is_hex64(s)
+}
+
+/// Matches `/^[0-9a-f]{64}$/`.
+pub fn is_hash(s : String) -> Bool {
+  is_hex64(s)
+}
+
+/// Matches `/^[0-9a-z]{1,16}-[0-9a-f]{8}$/`.
+pub fn is_gen(s : String) -> Bool {
+  let n = s.length()
+  if n < 10 || n > 25 {
+    return false
+  }
+  let dash = n - 9
+  if s.code_unit_at(dash) != 45 {
+    return false
+  }
+  if dash < 1 || dash > 16 {
+    return false
+  }
+  for i in 0..<dash {
+    if !is_lower_alnum(s.code_unit_at(i)) {
+      return false
+    }
+  }
+  for i in (dash + 1)..<n {
+    if !is_lower_hex(s.code_unit_at(i)) {
+      return false
+    }
+  }
+  true
+}
+
+/// Matches `/^(\d{10})-(\d{10})-[0-9a-f]{8}\.ndjson\.zst$/`.
+pub fn is_batch(s : String) -> Bool {
+  if s.length() != 41 {
+    return false
+  }
+  for i in 0..<10 {
+    if !is_digit(s.code_unit_at(i)) {
+      return false
+    }
+  }
+  if s.code_unit_at(10) != 45 {
+    return false
+  }
+  for i in 11..<21 {
+    if !is_digit(s.code_unit_at(i)) {
+      return false
+    }
+  }
+  if s.code_unit_at(21) != 45 {
+    return false
+  }
+  for i in 22..<30 {
+    if !is_lower_hex(s.code_unit_at(i)) {
+      return false
+    }
+  }
+  s.slice(30, 41) == ".ndjson.zst"
+}
+
+/// Parses the base-36 timestamp prefix of a generation name.
+pub fn gen_made(gen : String) -> Int64 {
+  let mut acc : Int64 = 0.to_int64()
+  for i in 0..<gen.length() {
+    let c = gen.code_unit_at(i)
+    if c == 45 {
+      break
+    }
+    let d = if c >= 48 && c <= 57 {
+      c - 48
+    } else if c >= 97 && c <= 122 {
+      c - 97 + 10
+    } else if c >= 65 && c <= 90 {
+      c - 65 + 10
+    } else {
+      return 0.to_int64()
+    }
+    acc = acc * 36.to_int64() + d.to_int64()
+  }
+  acc
+}
+
+pub fn str_cmp(a : String, b : String) -> Int {
+  let na = a.length()
+  let nb = b.length()
+  let n = if na < nb { na } else { nb }
+  for i in 0..<n {
+    let ca = a.code_unit_at(i)
+    let cb = b.code_unit_at(i)
+    if ca != cb {
+      return if ca < cb { -1 } else { 1 }
+    }
+  }
+  if na < nb { -1 } else if na > nb { 1 } else { 0 }
+}
+
+pub fn sort_strings(xs : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<xs.length() {
+    out.push(xs[i])
+  }
+  // Insertion / shell sort for deterministic zero-closure sorting.
+  let n = out.length()
+  let mut gap = n / 2
+  while gap > 0 {
+    for i in gap..<n {
+      let key = out[i]
+      let mut j = i
+      while j >= gap && str_cmp(out[j - gap], key) > 0 {
+        out[j] = out[j - gap]
+        j = j - gap
+      }
+      out[j] = key
+    }
+    gap = gap / 2
+  }
+  out
+}
+
+pub fn dedup_strings(xs : Array[String]) -> Array[String] {
+  let seen : Map[String, Bool] = Map::new()
+  let out : Array[String] = []
+  for i in 0..<xs.length() {
+    let s = xs[i]
+    match seen.get(s) {
+      Some(_) => ()
+      None => {
+        seen.set(s, true)
+        out.push(s)
+      }
+    }
+  }
+  out
+}
+
+fn json_int64_field(j : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(n, _)) => {
+      let i = n.to_int64()
+      if i.to_double() == n { Some(i) } else { None }
+    }
+    _ => None
+  }
+}
+
+fn json_str_field(j : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn parse_file_map(v : base_codec::Json) -> Option[Map[String, Int64]] {
+  match v {
+    base_codec::Json::Obj(fields) => {
+      let out : Map[String, Int64] = Map::new()
+      for i in 0..<fields.length() {
+        let (k, fv) = fields[i]
+        if !is_hex64(k) {
+          return None
+        }
+        match fv {
+          base_codec::Json::Num(n, _) => {
+            let sz = n.to_int64()
+            if sz < 0.to_int64() || sz.to_double() != n {
+              return None
+            }
+            out.set(k, sz)
+          }
+          _ => return None
+        }
+      }
+      Some(out)
+    }
+    _ => None
+  }
+}
+
+/// Validates and decodes a `Head` from JSON; returns `None` if malformed or newer than `replica_version`.
+pub fn as_head(v : base_codec::Json) -> Option[Head] {
+  let ver64 = match json_int64_field(v, "v") {
+    Some(n) => n
+    None => return None
+  }
+  if ver64 > replica_version.to_int64() || ver64 < 1L {
+    return None
+  }
+  let ver = ver64.to_int()
+  let origin = match json_str_field(v, "origin") {
+    Some(s) => s
+    None => return None
+  }
+  let workspace = match json_str_field(v, "workspace") {
+    Some(s) => s
+    None => return None
+  }
+  let gen = match json_str_field(v, "gen") {
+    Some(s) => if is_gen(s) { s } else { return None }
+    None => return None
+  }
+  let to = match json_int64_field(v, "to") {
+    Some(n) => n
+    None => return None
+  }
+  let batches : Array[String] = []
+  match base_codec::json_get(v, "batches") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(b) => {
+            if !is_batch(b) {
+              return None
+            }
+            batches.push(b)
+          }
+          _ => return None
+        }
+      }
+    }
+    _ => return None
+  }
+  let files = match base_codec::json_get(v, "files") {
+    Some(f) =>
+    match parse_file_map(f) {
+      Some(m) => m
+      None => return None
+    }
+    None => return None
+  }
+  let transcript_files = match base_codec::json_get(v, "transcriptFiles") {
+    None => None
+    Some(tf) =>
+    match parse_file_map(tf) {
+      Some(m) => Some(m)
+      None => return None
+    }
+  }
+  let transcript_manifest = match base_codec::json_get(v, "transcriptManifest") {
+    None => None
+    Some(base_codec::Json::Str(s)) => if is_hex64(s) { Some(s) } else { return None }
+    _ => return None
+  }
+  let runs : Array[RunEntry] = []
+  match base_codec::json_get(v, "runs") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        let r = match json_str_field(xs[i], "run") {
+          Some(s) => s
+          None => return None
+        }
+        let f = match json_int64_field(xs[i], "from") {
+          Some(n) => n
+          None => return None
+        }
+        runs.push(RunEntry::{ run: r, from: f })
+      }
+    }
+    _ => return None
+  }
+  let partial = match base_codec::json_get(v, "partial") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  let name = match json_str_field(v, "name") {
+    Some(s) => s
+    None => ""
+  }
+  let data_dir = match json_str_field(v, "dataDir") {
+    Some(s) => s
+    None => ""
+  }
+  let made = match json_int64_field(v, "made") {
+    Some(n) => n
+    None => 0.to_int64()
+  }
+  let chats = match json_int64_field(v, "chats") {
+    Some(n) => n.to_int()
+    None => 0
+  }
+  let messages = match json_int64_field(v, "messages") {
+    Some(n) => n.to_int()
+    None => 0
+  }
+  let bytes = match json_int64_field(v, "bytes") {
+    Some(n) => n
+    None => 0.to_int64()
+  }
+  Some(
+    Head::{
+      v: ver,
+      origin: origin,
+      workspace: workspace,
+      gen: gen,
+      name: name,
+      data_dir: data_dir,
+      made: made,
+      to: to,
+      batches: batches,
+      files: files,
+      transcript_files: transcript_files,
+      transcript_manifest: transcript_manifest,
+      partial: partial,
+      chats: chats,
+      messages: messages,
+      bytes: bytes,
+      runs: runs,
+    },
+  )
+}
+
+fn file_map_to_json(m : Map[String, Int64]) -> base_codec::Json {
+  let sorted = sort_strings(m.keys())
+  let fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<sorted.length() {
+    let k = sorted[i]
+    match m.get(k) {
+      Some(v) => fields.push((k, base_codec::json_num(v.to_double())))
+      None => ()
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+pub fn head_to_json(h : Head) -> base_codec::Json {
+  let batches_j : Array[base_codec::Json] = []
+  for i in 0..<h.batches.length() {
+    batches_j.push(base_codec::json_str(h.batches[i]))
+  }
+  let runs_j : Array[base_codec::Json] = []
+  for i in 0..<h.runs.length() {
+    runs_j.push(
+      base_codec::json_obj([
+        ("run", base_codec::json_str(h.runs[i].run)),
+        ("from", base_codec::json_num(h.runs[i].from.to_double())),
+      ]),
+    )
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("v", base_codec::json_int(h.v)),
+    ("origin", base_codec::json_str(h.origin)),
+    ("workspace", base_codec::json_str(h.workspace)),
+    ("gen", base_codec::json_str(h.gen)),
+    ("name", base_codec::json_str(h.name)),
+    ("dataDir", base_codec::json_str(h.data_dir)),
+    ("made", base_codec::json_num(h.made.to_double())),
+    ("to", base_codec::json_num(h.to.to_double())),
+    ("batches", base_codec::json_arr(batches_j)),
+    ("files", file_map_to_json(h.files)),
+  ]
+  match h.transcript_files {
+    Some(tf) => fields.push(("transcriptFiles", file_map_to_json(tf)))
+    None => ()
+  }
+  match h.transcript_manifest {
+    Some(tm) => fields.push(("transcriptManifest", base_codec::json_str(tm)))
+    None => ()
+  }
+  if h.partial {
+    fields.push(("partial", base_codec::json_bool(true)))
+  }
+  fields.push(("chats", base_codec::json_int(h.chats)))
+  fields.push(("messages", base_codec::json_int(h.messages)))
+  fields.push(("bytes", base_codec::json_num(h.bytes.to_double())))
+  fields.push(("runs", base_codec::json_arr(runs_j)))
+  base_codec::json_obj(fields)
+}
+
+pub fn head_to_bytes(h : Head) -> Bytes {
+  base_codec::json_stringify(head_to_json(h)).to_bytes()
+}

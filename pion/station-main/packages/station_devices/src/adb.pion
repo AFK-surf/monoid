@@ -1,0 +1,1254 @@
+// Complete `adb` subdomain (`station/src/adb/{activity,displays,door,servers,grants,title,send,link,tool}.ts`):
+// - `AdbActivity`: 24-byte ADB transport wire parser filtering station maintenance commands.
+// - `displays`: `display_of`, `density_of`, `surface_of`, `root_tasks_on`, `PhoneDisplays` lifecycle + idle eviction.
+// - `door`: `adb_failure_frame` (`FAIL<4-hex-len><msg>`), `gate_admit` process/job/workspace admission check.
+// - `servers`: per-grant isolated ADB server lifecycle + PID/port/start-time record & `reap` logic.
+// - `grants`: `PhoneGrants` authorization state machine (`hour`/`idle`/`eight`/`chat`, `ask`/`decide`/`sign`/`revoke`/
+//   `release`/`used`/`linked`, signed revokes, expiration & idle timeout).
+// - `send` / `link` / `title` / `tool`: `stage_upload_name`, `parse_fetch_line`, `AdbShares`, `phone_reached`,
+//   `phone_displayed`, `adb_devices_listed`.
+
+import "base_codec"
+
+// ── AdbActivity (`station/src/adb/activity.ts`) ──
+
+pub let ADB_CMD_OPEN : Int64 = 0x4E45504F.to_int64()
+pub let ADB_CMD_WRTE : Int64 = 0x45545257.to_int64()
+pub let ADB_CMD_OKAY : Int64 = 0x59414B4F.to_int64()
+pub let ADB_CMD_CLSE : Int64 = 0x45534C43.to_int64()
+pub let ADB_CMD_STLS : Int64 = 0x534C5453.to_int64()
+pub let ADB_HEADER_LEN : Int = 24
+pub let ADB_MAX_PAYLOAD : Int = 16777216 // 16 MiB
+pub let ADB_MAX_SERVICE : Int = 8192
+
+pub let ADB_KEEP_LENDING : String = "STILLFAIL_ADB_KEEP=1"
+pub let ADB_TCP_PORT : Int = 5555
+pub let ADB_KEEP_TCP : String = "STILLFAIL_ADB_KEEP=1 sh -c 'cat /proc/sys/kernel/random/boot_id; getprop service.adb.tcp.port'"
+pub let ADB_DISPLAY_MARK : String = "STILLFAIL_ADB_KEEP=1 STILLFAIL_ADB_DISPLAY=1"
+
+pub struct AdbActivityEvent {
+  pub force : Bool
+}
+
+pub struct AdbActivity {
+  package_name : String
+  mut header : Array[Byte]
+  mut active : Array[Int64]
+  mut remaining : Int
+  mut service_buf : Option[Array[Byte]]
+  mut service_id : Int64
+  mut opaque : Bool
+  mut events : Array[AdbActivityEvent]
+}
+
+pub fn AdbActivity::new(package_name : String) -> AdbActivity {
+  AdbActivity::{
+    package_name,
+    header: [],
+    active: [],
+    remaining: 0,
+    service_buf: None,
+    service_id: 0.to_int64(),
+    opaque: false,
+    events: [],
+  }
+}
+
+pub fn AdbActivity::is_opaque(self : AdbActivity) -> Bool {
+  self.opaque
+}
+
+pub fn AdbActivity::take_events(self : AdbActivity) -> Array[AdbActivityEvent] {
+  let out = self.events
+  self.events = []
+  out
+}
+
+fn read_u32_le(buf : Array[Byte], off : Int) -> Int64 {
+  let b0 = (buf[off].to_int() & 0xFF).to_int64()
+  let b1 = (buf[off + 1].to_int() & 0xFF).to_int64()
+  let b2 = (buf[off + 2].to_int() & 0xFF).to_int64()
+  let b3 = (buf[off + 3].to_int() & 0xFF).to_int64()
+  b0 | (b1 << 8) | (b2 << 16) | (b3 << 24)
+}
+
+fn array_has_i64(arr : Array[Int64], val_ : Int64) -> Bool {
+  let mut i = 0
+  while i < arr.length() {
+    if arr[i] == val_ {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn array_remove_i64(arr : Array[Int64], val_ : Int64) -> Array[Int64] {
+  let out : Array[Int64] = []
+  let mut i = 0
+  while i < arr.length() {
+    if arr[i] != val_ {
+      out.push(arr[i])
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Feed bytes sent by a grant's adb server.
+pub fn AdbActivity::take(self : AdbActivity, bytes : Bytes) -> Unit {
+  let len = bytes.length()
+  let mut at = 0
+  while at < len && !self.opaque {
+    if self.remaining > 0 {
+      let avail = len - at
+      let n = if self.remaining < avail { self.remaining } else { avail }
+      match self.service_buf {
+        Some(sb) => {
+          let mut i = 0
+          while i < n {
+            sb.push(bytes[at + i])
+            i = i + 1
+          }
+        }
+        None => ()
+      }
+      self.remaining = self.remaining - n
+      at = at + n
+      if self.remaining == 0 {
+        self.on_opened()
+      }
+      continue
+    }
+    let need = ADB_HEADER_LEN - self.header.length()
+    let avail = len - at
+    let n = if need < avail { need } else { avail }
+    let mut i = 0
+    while i < n {
+      self.header.push(bytes[at + i])
+      i = i + 1
+    }
+    at = at + n
+    if self.header.length() < ADB_HEADER_LEN {
+      continue
+    }
+    let command = read_u32_le(self.header, 0)
+    let id = read_u32_le(self.header, 4)
+    let size = read_u32_le(self.header, 12).to_int()
+    let magic = read_u32_le(self.header, 20)
+    self.header = []
+    let mask32 = (0xFFFF.to_int64() << 16) | 0xFFFF.to_int64()
+    let expected_magic = command ^ mask32
+    if magic != expected_magic || size < 0 || size > ADB_MAX_PAYLOAD || command == ADB_CMD_STLS {
+      self.opaque = true
+      continue
+    }
+    self.remaining = size
+    if command == ADB_CMD_OPEN {
+      self.service_id = id
+      if size <= ADB_MAX_SERVICE {
+        self.service_buf = Some([])
+      } else {
+        self.service_buf = None
+        if !array_has_i64(self.active, id) {
+          self.active.push(id)
+        }
+        self.events.push(AdbActivityEvent::{ force: true })
+      }
+      if size == 0 {
+        self.on_opened()
+      }
+    } else if array_has_i64(self.active, id) {
+      if command == ADB_CMD_CLSE {
+        self.active = array_remove_i64(self.active, id)
+        self.events.push(AdbActivityEvent::{ force: true })
+      } else if command == ADB_CMD_WRTE || command == ADB_CMD_OKAY {
+        self.events.push(AdbActivityEvent::{ force: false })
+      }
+    }
+  }
+}
+
+fn is_scrcpy_localabstract(service : String) -> Bool {
+  let prefix = "localabstract:scrcpy_"
+  let pb = prefix.to_bytes()
+  let sb = service.to_bytes()
+  if sb.length() != pb.length() + 8 {
+    return false
+  }
+  let mut i = 0
+  while i < pb.length() {
+    if sb[i] != pb[i] {
+      return false
+    }
+    i = i + 1
+  }
+  let mut j = pb.length()
+  while j < sb.length() {
+    let b = sb[j].to_int() & 0xFF
+    if !(is_ascii_digit(b) || (b >= 0x61 && b <= 0x66)) {
+      return false
+    }
+    j = j + 1
+  }
+  true
+}
+
+fn AdbActivity::on_opened(self : AdbActivity) -> Unit {
+  let sb = match self.service_buf {
+    Some(b) => b
+    None => return
+  }
+  self.service_buf = None
+  let mut end = sb.length()
+  while end > 0 && (sb[end - 1].to_int() & 0xFF) == 0 {
+    end = end - 1
+  }
+  let out = Bytes::new(end)
+  let mut i = 0
+  while i < end {
+    out[i] = sb[i]
+    i = i + 1
+  }
+  let service = bytes_to_str(out)
+  let cmd_opt = extract_adb_shell_cmd(service)
+  let mut ours = false
+  if service == "tcpip:" + ADB_TCP_PORT.to_string() || is_scrcpy_localabstract(service) {
+    ours = true
+  } else {
+    match cmd_opt {
+      Some(cmd) => {
+        if cmd == ADB_KEEP_TCP || str_starts_with_ci(cmd, to_ascii_lower(ADB_DISPLAY_MARK + " ")) {
+          ours = true
+        } else if self.package_name != "" &&
+        (cmd == ADB_KEEP_LENDING + " pm grant " + self.package_name + " android.permission.WRITE_SECURE_SETTINGS" ||
+          cmd == ADB_KEEP_LENDING + " cmd deviceidle whitelist +" + self.package_name) {
+          ours = true
+        }
+      }
+      None => ()
+    }
+  }
+  if ours {
+    return
+  }
+  if !array_has_i64(self.active, self.service_id) {
+    self.active.push(self.service_id)
+  }
+  self.events.push(AdbActivityEvent::{ force: true })
+}
+
+fn extract_adb_shell_cmd(service : String) -> Option[String] {
+  if !str_starts_with_ci(service, "shell") {
+    return None
+  }
+  let sb = service.to_bytes()
+  if sb.length() < 6 {
+    return None
+  }
+  let b5 = sb[5].to_int() & 0xFF
+  if b5 == 0x3A {
+    return Some(slice_bytes_str(sb, 6, sb.length()))
+  }
+  if b5 == 0x2C {
+    let colon = find_substr(service, ":", 6)
+    if colon >= 0 {
+      return Some(slice_bytes_str(sb, colon + 1, sb.length()))
+    }
+  }
+  None
+}
+
+// ── Displays (`station/src/adb/displays.ts`) ──
+
+pub let DISPLAY_IDLE_MS : Int64 = 600000.to_int64() // 10 * 60_000
+
+pub struct PhoneDisplay {
+  pub id : Int
+  pub surface : String
+  pub width : Int
+  pub height : Int
+  pub density : Int
+}
+
+/// Parse `New display: 1080x2400/420 (id=2)` from scrcpy output.
+pub fn display_of(said : String) -> Option[PhoneDisplay] {
+  let idx = find_substr(said, "New display: ", 0)
+  if idx < 0 {
+    return None
+  }
+  let raw = said.to_bytes()
+  let mut p = idx + 13
+  let (w, p1) = read_decimal_at(raw, p)
+  if w <= 0 || p1 >= raw.length() || (raw[p1].to_int() & 0xFF) != 0x78 {
+    return None
+  }
+  let (h, p2) = read_decimal_at(raw, p1 + 1)
+  if h <= 0 || p2 >= raw.length() || (raw[p2].to_int() & 0xFF) != 0x2F {
+    return None
+  }
+  let (d, p3) = read_decimal_at(raw, p2 + 1)
+  if d <= 0 {
+    return None
+  }
+  let id_marker = " (id="
+  if p3 + id_marker.length() > raw.length() || slice_bytes_str(raw, p3, p3 + id_marker.length()) != id_marker {
+    return None
+  }
+  let (id, p4) = read_decimal_at(raw, p3 + id_marker.length())
+  if id < 0 || p4 >= raw.length() || (raw[p4].to_int() & 0xFF) != 0x29 {
+    return None
+  }
+  Some(PhoneDisplay::{ id, surface: id.to_string(), width: w, height: h, density: d })
+}
+
+fn read_decimal_at(raw : Bytes, start : Int) -> (Int, Int) {
+  let mut i = start
+  let mut acc = 0
+  let mut count = 0
+  while i < raw.length() && is_ascii_digit(raw[i].to_int() & 0xFF) {
+    acc = acc * 10 + ((raw[i].to_int() & 0xFF) - 0x30)
+    i = i + 1
+    count = count + 1
+  }
+  if count == 0 { (-1, start) } else { (acc, i) }
+}
+
+/// Parse `wm density`: prefers `Override density:` over `Physical density:`.
+pub fn density_of(wm : String) -> Int {
+  let ov = find_substr(wm, "Override density: ", 0)
+  if ov >= 0 {
+    let (v, _) = read_decimal_at(wm.to_bytes(), ov + 18)
+    if v > 0 {
+      return v
+    }
+  }
+  let ph = find_substr(wm, "Physical density: ", 0)
+  if ph >= 0 {
+    let (v, _) = read_decimal_at(wm.to_bytes(), ph + 18)
+    if v > 0 {
+      return v
+    }
+  }
+  0
+}
+
+/// Resolve SurfaceFlinger display id from `dumpsys display`, `dumpsys SurfaceFlinger --display-id`,
+/// and optional fallback `dumpsys SurfaceFlinger` (for ColorOS / OEMs omitting `uniqueId=`).
+pub fn surface_of(displays : String, ids : String, id : Int, flinger_dump : String) -> Option[String] {
+  let d_lines = split_lines(displays)
+  let needle = "displayId " + id.to_string() + ","
+  let mut info_line : Option[String] = None
+  let mut i = 0
+  while i < d_lines.length() {
+    let l = d_lines[i]
+    if contains_substr(l, "mBaseDisplayInfo=") && contains_substr(l, needle) {
+      info_line = Some(l)
+      break
+    }
+    i = i + 1
+  }
+  let info = match info_line {
+    Some(v) => v
+    None => return None
+  }
+  let uq_idx = find_substr(info, "uniqueId \"", 0)
+  if uq_idx >= 0 {
+    let ib = info.to_bytes()
+    let uq_start = uq_idx + 10
+    let uq_end = find_substr(info, "\"", uq_start)
+    if uq_end > uq_start {
+      let unique = slice_bytes_str(ib, uq_start, uq_end)
+      let id_lines = split_lines(ids)
+      let mut j = 0
+      while j < id_lines.length() {
+        let il = id_lines[j]
+        if contains_substr(il, "uniqueId=\"" + unique + "\"") {
+          let trimmed = trim_start_ascii(il)
+          if str_starts_with_ci(trimmed, "display ") {
+            let tb = trimmed.to_bytes()
+            let mut end = 8
+            while end < tb.length() && is_ascii_digit(tb[end].to_int() & 0xFF) {
+              end = end + 1
+            }
+            if end > 8 {
+              return Some(slice_bytes_str(tb, 8, end))
+            }
+          }
+        }
+        j = j + 1
+      }
+    }
+  }
+  // Fallback via layerStack in `dumpsys SurfaceFlinger`.
+  let ls_idx = find_substr(info, "layerStack ", 0)
+  if ls_idx < 0 || !contains_substr(ids, "(Virtual display)") || contains_substr(ids, "uniqueId=") {
+    return None
+  }
+  let (stack, _) = read_decimal_at(info.to_bytes(), ls_idx + 11)
+  if stack < 0 {
+    return None
+  }
+  let stack_needle = "layerFilter={layerStack=" + stack.to_string()
+  let fl_lines = split_lines(flinger_dump)
+  let mut cur_disp : Option[String] = None
+  let mut k = 0
+  while k < fl_lines.length() {
+    let l = fl_lines[k]
+    let trimmed = trim_start_ascii(l)
+    if str_starts_with_ci(trimmed, "display ") && contains_substr(trimmed, " (virtual") {
+      let tb = trimmed.to_bytes()
+      let mut end = 8
+      while end < tb.length() && is_ascii_digit(tb[end].to_int() & 0xFF) {
+        end = end + 1
+      }
+      cur_disp = if end > 8 { Some(slice_bytes_str(tb, 8, end)) } else { None }
+    } else if l.length() > 0 && !is_ascii_space(l.to_bytes()[0].to_int() & 0xFF) {
+      cur_disp = None
+    } else if cur_disp is Some(_) && contains_substr(l, stack_needle) {
+      return cur_disp
+    }
+    k = k + 1
+  }
+  None
+}
+
+/// Extract root task IDs on `display_id` from `am stack list`.
+pub fn root_tasks_on(list : String, display_id : Int) -> Array[Int] {
+  let out : Array[Int] = []
+  let lines = split_lines(list)
+  let disp_needle = "displayId=" + display_id.to_string()
+  let mut i = 0
+  while i < lines.length() {
+    let l = lines[i]
+    let prefix_len = if str_starts_with_ci(l, "roottask id=") {
+      12
+    } else if str_starts_with_ci(l, "stack id=") {
+      9
+    } else {
+      0
+    }
+    if prefix_len > 0 && contains_substr(l, disp_needle) {
+      let (tid, _) = read_decimal_at(l.to_bytes(), prefix_len)
+      if tid >= 0 {
+        out.push(tid)
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub struct HeldDisplay {
+  pub grant : String
+  pub owner : String
+  pub mut title : String
+  pub display : PhoneDisplay
+  pub opened_ms : Int64
+}
+
+pub struct PhoneDisplays {
+  mut held : Array[HeldDisplay]
+  idle_ms : Int64
+}
+
+pub fn PhoneDisplays::new(idle_ms : Int64) -> PhoneDisplays {
+  PhoneDisplays::{ held: [], idle_ms: if idle_ms > 0.to_int64() { idle_ms } else { DISPLAY_IDLE_MS } }
+}
+
+pub fn PhoneDisplays::register(self : PhoneDisplays, h : HeldDisplay) -> Unit {
+  self.close(h.grant)
+  self.held.push(h)
+}
+
+pub fn PhoneDisplays::has(self : PhoneDisplays, grant : String) -> Bool {
+  let mut i = 0
+  while i < self.held.length() {
+    if self.held[i].grant == grant {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+pub fn PhoneDisplays::titles(self : PhoneDisplays, owner : String) -> Array[String] {
+  let out : Array[String] = []
+  let mut i = 0
+  while i < self.held.length() {
+    if self.held[i].owner == owner {
+      out.push(self.held[i].title)
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn PhoneDisplays::close(self : PhoneDisplays, grant : String) -> Bool {
+  let kept : Array[HeldDisplay] = []
+  let mut removed = false
+  let mut i = 0
+  while i < self.held.length() {
+    if self.held[i].grant == grant {
+      removed = true
+    } else {
+      kept.push(self.held[i])
+    }
+    i = i + 1
+  }
+  self.held = kept
+  removed
+}
+
+/// Evict displays whose grants are no longer live or idle past `idle_ms`.
+pub fn PhoneDisplays::sweep_idle(
+  self : PhoneDisplays,
+  now_ms : Int64,
+  used_at : Array[(String, Option[Int64])],
+) -> Array[String] {
+  let evicted : Array[String] = []
+  let kept : Array[HeldDisplay] = []
+  let mut i = 0
+  while i < self.held.length() {
+    let h = self.held[i]
+    let mut last_opt : Option[Int64] = None
+    let mut j = 0
+    while j < used_at.length() {
+      if used_at[j].0 == h.grant {
+        last_opt = used_at[j].1
+        break
+      }
+      j = j + 1
+    }
+    let should_drop = match last_opt {
+      None => true
+      Some(u) => {
+        let recent = if u > h.opened_ms { u } else { h.opened_ms }
+        now_ms - recent >= self.idle_ms
+      }
+    }
+    if should_drop {
+      evicted.push(h.grant)
+    } else {
+      kept.push(h)
+    }
+    i = i + 1
+  }
+  self.held = kept
+  evicted
+}
+
+// ── Door (`station/src/adb/door.ts`) ──
+
+/// Format ADB server refusal frame: `FAIL<4-hex-len><message>`.
+pub fn adb_failure_frame(message : String) -> String {
+  let raw = message.to_bytes()
+  let len = if raw.length() > 0xFFFF { 0xFFFF } else { raw.length() }
+  let body = slice_bytes_str(raw, 0, len)
+  "FAIL" + hex4(len) + body
+}
+
+fn hex4(n : Int) -> String {
+  let digits = "0123456789abcdef".to_bytes()
+  let out = Bytes::new(4)
+  out[0] = digits[(n >> 12) & 0xF]
+  out[1] = digits[(n >> 8) & 0xF]
+  out[2] = digits[(n >> 4) & 0xF]
+  out[3] = digits[n & 0xF]
+  bytes_to_str(out)
+}
+
+pub struct GateProcRow {
+  pub pid : Int
+  pub ppid : Int
+  pub pgid : Int
+}
+
+pub struct GateJob {
+  pub pgid : Int
+  pub grant_id : String
+}
+
+/// Pure admission decision for a grant's ADB server door (`station/src/adb/door.ts` `gate`).
+/// Callers must pass `realpath`-resolved `session_workspace` and `holder_cwds` paths.
+/// Returns `None` if admitted, or `Some(refusal_reason)`.
+pub fn gate_admit(
+  grant_id : String,
+  session_workspace : Option[String],
+  has_session : Bool,
+  table : Option[Array[GateProcRow]],
+  runner_pids : Array[Int],
+  jobs : Array[GateJob],
+  holder_cwds : Array[(Int, String)],
+  self_pid : Int,
+  holders : Array[Int],
+  elsewhere_msg : Option[String],
+) -> Option[String] {
+  let elsewhere = match elsewhere_msg {
+    Some(m) => m
+    None => "this phone is granted to another chat: ask for it with phone_use in this chat"
+  }
+  if !has_session {
+    return Some(elsewhere)
+  }
+  let rows = match table {
+    Some(t) => t
+    None => return Some("could not tell who asks: the machine's processes were not read")
+  }
+  let mut hi = 0
+  while hi < holders.length() {
+    let pid = holders[hi]
+    match find_proc_row(rows, pid) {
+      Some(row) => {
+        let in_any_job = has_job_pgid(jobs, row.pgid)
+        if row.ppid == self_pid && !in_any_job {
+          return None
+        }
+        let mut cur_opt : Option[GateProcRow] = Some(row)
+        let mut depth = 0
+        while depth < 256 {
+          match cur_opt {
+            Some(p) => {
+              if array_has_int(runner_pids, p.pid) || has_my_job_pgid(jobs, p.pgid, grant_id) {
+                return None
+              }
+              cur_opt = find_proc_row(rows, p.ppid)
+              depth = depth + 1
+            }
+            None => break
+          }
+        }
+      }
+      None => ()
+    }
+    hi = hi + 1
+  }
+  let ws = match session_workspace {
+    Some(w) => if w == "" || w == "/" { return Some(elsewhere) } else { w }
+    None => return Some(elsewhere)
+  }
+  let ws_prefix = if str_ends_with_byte(ws, 0x2F) { ws } else { ws + "/" }
+  let mut ci = 0
+  while ci < holders.length() {
+    let pid = holders[ci]
+    let mut j = 0
+    while j < holder_cwds.length() {
+      if holder_cwds[j].0 == pid {
+        let cwd = holder_cwds[j].1
+        if cwd == ws || str_starts_with_exact(cwd, ws_prefix) {
+          return None
+        }
+      }
+      j = j + 1
+    }
+    ci = ci + 1
+  }
+  Some(elsewhere + " (the chat holding it runs adb under its agent or from its own directory, " + ws + ")")
+}
+
+fn str_starts_with_exact(s : String, prefix : String) -> Bool {
+  let sb = s.to_bytes()
+  let pb = prefix.to_bytes()
+  if sb.length() < pb.length() {
+    return false
+  }
+  let mut i = 0
+  while i < pb.length() {
+    if sb[i] != pb[i] {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn str_ends_with_byte(s : String, b : Int) -> Bool {
+  let raw = s.to_bytes()
+  raw.length() > 0 && (raw[raw.length() - 1].to_int() & 0xFF) == b
+}
+
+fn find_proc_row(rows : Array[GateProcRow], pid : Int) -> Option[GateProcRow] {
+  let mut i = 0
+  while i < rows.length() {
+    if rows[i].pid == pid {
+      return Some(rows[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+fn array_has_int(arr : Array[Int], v : Int) -> Bool {
+  let mut i = 0
+  while i < arr.length() {
+    if arr[i] == v {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn has_job_pgid(jobs : Array[GateJob], pgid : Int) -> Bool {
+  let mut i = 0
+  while i < jobs.length() {
+    if jobs[i].pgid == pgid {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn has_my_job_pgid(jobs : Array[GateJob], pgid : Int, grant_id : String) -> Bool {
+  let mut i = 0
+  while i < jobs.length() {
+    if jobs[i].pgid == pgid && jobs[i].grant_id == grant_id {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+// ── GrantServers (`station/src/adb/servers.ts`) ──
+
+pub struct KeptAdbServer {
+  pub grant_id : String
+  pub pid : Int
+  pub port : Int
+  pub started_ms : Option[Int64]
+  pub dir : Option[String]
+}
+
+pub struct GrantServers {
+  mut servers : Array[KeptAdbServer]
+}
+
+pub fn GrantServers::new() -> GrantServers {
+  GrantServers::{ servers: [] }
+}
+
+pub fn GrantServers::register(self : GrantServers, s : KeptAdbServer) -> Unit {
+  let _ = self.stop(s.grant_id)
+  self.servers.push(s)
+}
+
+pub fn GrantServers::get(self : GrantServers, grant_id : String) -> Option[KeptAdbServer] {
+  let mut i = 0
+  while i < self.servers.length() {
+    if self.servers[i].grant_id == grant_id {
+      return Some(self.servers[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn GrantServers::stop(self : GrantServers, grant_id : String) -> Option[KeptAdbServer] {
+  let kept : Array[KeptAdbServer] = []
+  let mut stopped : Option[KeptAdbServer] = None
+  let mut i = 0
+  while i < self.servers.length() {
+    if self.servers[i].grant_id == grant_id {
+      stopped = Some(self.servers[i])
+    } else {
+      kept.push(self.servers[i])
+    }
+    i = i + 1
+  }
+  self.servers = kept
+  stopped
+}
+
+/// Find which grant owns a loopback connection whose remote port is held by `holder_pids`.
+pub fn GrantServers::owner_of(self : GrantServers, grant_ids : Array[String], holder_pids : Array[Int]) -> Option[String] {
+  let mut i = 0
+  while i < self.servers.length() {
+    let s = self.servers[i]
+    if array_contains_str(grant_ids, s.grant_id) && array_has_int(holder_pids, s.pid) {
+      return Some(s.grant_id)
+    }
+    i = i + 1
+  }
+  None
+}
+
+/// Decide which previously recorded PIDs should be reaped (excluding currently kept PIDs and
+/// PIDs whose OS start time differs by more than 2000ms from the recorded start time).
+pub fn select_reap_pids(
+  recorded : Array[KeptAdbServer],
+  current_kept_pids : Array[Int],
+  os_start_times : Array[(Int, Int64)],
+) -> Array[Int] {
+  let to_kill : Array[Int] = []
+  let mut i = 0
+  while i < recorded.length() {
+    let k = recorded[i]
+    if !array_has_int(current_kept_pids, k.pid) {
+      let mut os_st : Option[Int64] = None
+      let mut j = 0
+      while j < os_start_times.length() {
+        if os_start_times[j].0 == k.pid {
+          os_st = Some(os_start_times[j].1)
+          break
+        }
+        j = j + 1
+      }
+      match os_st {
+        Some(actual) => {
+          let matches = match k.started_ms {
+            Some(rec) => {
+              let diff = if actual >= rec { actual - rec } else { rec - actual }
+              diff <= 2000.to_int64()
+            }
+            None => true
+          }
+          if matches {
+            to_kill.push(k.pid)
+          }
+        }
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  to_kill
+}
+
+// ── PhoneGrants (`station/src/adb/grants.ts`) ──
+
+pub enum PhoneScope {
+  Hour
+  Idle
+  Eight
+  Chat
+}
+
+pub fn PhoneScope::as_str(self : PhoneScope) -> String {
+  match self {
+    PhoneScope::Hour => "hour"
+    PhoneScope::Idle => "idle"
+    PhoneScope::Eight => "eight"
+    PhoneScope::Chat => "chat"
+  }
+}
+
+pub fn parse_phone_scope(s : String) -> Option[PhoneScope] {
+  if s == "hour" {
+    Some(PhoneScope::Hour)
+  } else if s == "idle" {
+    Some(PhoneScope::Idle)
+  } else if s == "eight" {
+    Some(PhoneScope::Eight)
+  } else if s == "chat" {
+    Some(PhoneScope::Chat)
+  } else {
+    None
+  }
+}
+
+pub fn phone_scope_lasts_secs(grant_scope : PhoneScope) -> Int64 {
+  match grant_scope {
+    PhoneScope::Hour => 3600.to_int64()
+    PhoneScope::Idle => 2592000.to_int64() // 30 * 86400
+    PhoneScope::Eight => 28800.to_int64() // 8 * 3600
+    PhoneScope::Chat => 2592000.to_int64()
+  }
+}
+
+pub let PHONE_IDLE_FOR_MS : Int64 = 3600000.to_int64()
+
+pub enum PhoneGrantStatus {
+  Pending
+  Granted
+  Denied
+  Ended
+}
+
+pub struct PhoneRequest {
+  pub id : String
+  pub session : String
+  pub chat : String
+  pub workspace : String
+  pub owner : String
+  pub reason : String
+  pub at_secs : Int64
+  pub mut status : PhoneGrantStatus
+  pub mut grant_scope : Option[PhoneScope]
+  pub mut exp_secs : Option[Int64]
+  pub mut why : Option[String]
+  pub mut last_used_ms : Option[Int64]
+  pub mut link : Option[String]
+  pub mut told_link : Option[String]
+}
+
+pub struct PhoneGrants {
+  mut requests : Array[PhoneRequest]
+  mut next_id : Int
+}
+
+pub fn PhoneGrants::new() -> PhoneGrants {
+  PhoneGrants::{ requests: [], next_id: 1 }
+}
+
+fn PhoneGrants::is_live(self : PhoneGrants, r : PhoneRequest, now_ms : Int64, session_archived : Bool) -> Bool {
+  if r.status != PhoneGrantStatus::Granted {
+    return r.status == PhoneGrantStatus::Pending
+  }
+  let now_secs = now_ms / 1000.to_int64()
+  let exp = match r.exp_secs {
+    Some(e) => e
+    None => 0.to_int64()
+  }
+  if exp <= now_secs || session_archived {
+    r.why = Some(if exp <= now_secs { "授权已到期" } else { "对话已归档" })
+    r.status = PhoneGrantStatus::Ended
+    r.last_used_ms = None
+    return false
+  }
+  match r.grant_scope {
+    Some(PhoneScope::Idle) => {
+      let base_ms = match r.last_used_ms {
+        Some(lu) => lu
+        None => (exp - phone_scope_lasts_secs(PhoneScope::Idle)) * 1000.to_int64()
+      }
+      if base_ms + PHONE_IDLE_FOR_MS <= now_ms {
+        r.why = Some("闲置超时")
+        r.status = PhoneGrantStatus::Ended
+        r.last_used_ms = None
+        return false
+      }
+    }
+    _ => ()
+  }
+  true
+}
+
+pub fn PhoneGrants::ask(
+  self : PhoneGrants,
+  session : String,
+  chat : String,
+  workspace : String,
+  owner : String,
+  reason : String,
+  now_ms : Int64,
+) -> Result[PhoneRequest, String] {
+  let owner_lo = to_ascii_lower(owner)
+  // Return existing live grant if held.
+  let mut i = 0
+  while i < self.requests.length() {
+    let r = self.requests[i]
+    if r.session == session && r.owner == owner_lo && r.status == PhoneGrantStatus::Granted && self.is_live(r, now_ms, false) {
+      return Ok(r)
+    }
+    i = i + 1
+  }
+  let trimmed = trim_ascii(reason)
+  if trimmed == "" {
+    return Err("say why you need the phone (reason)")
+  }
+  // Return existing pending request for this session + owner.
+  let mut j = 0
+  while j < self.requests.length() {
+    let r = self.requests[j]
+    if r.session == session && r.owner == owner_lo && r.status == PhoneGrantStatus::Pending {
+      return Ok(r)
+    }
+    j = j + 1
+  }
+  let id = "p_" + self.next_id.to_string()
+  self.next_id = self.next_id + 1
+  let req = PhoneRequest::{
+    id,
+    session,
+    chat,
+    workspace,
+    owner: owner_lo,
+    reason: trimmed,
+    at_secs: now_ms / 1000.to_int64(),
+    status: PhoneGrantStatus::Pending,
+    grant_scope: None,
+    exp_secs: None,
+    why: None,
+    last_used_ms: None,
+    link: None,
+    told_link: None,
+  }
+  self.requests.push(req)
+  Ok(req)
+}
+
+pub fn PhoneGrants::get(self : PhoneGrants, id : String) -> Option[PhoneRequest] {
+  let mut i = 0
+  while i < self.requests.length() {
+    if self.requests[i].id == id {
+      return Some(self.requests[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn PhoneGrants::decide(
+  self : PhoneGrants,
+  email : String,
+  id : String,
+  grant_scope : Option[PhoneScope],
+  workspace : String,
+  now_ms : Int64,
+) -> Option[String] {
+  let r = match self.get(id) {
+    Some(v) => v
+    None => return Some("no such request")
+  }
+  if r.workspace != workspace {
+    return Some("no such request")
+  }
+  if r.owner != to_ascii_lower(email) {
+    return Some("only the person the chat's agent works for decides its requests")
+  }
+  if r.status != PhoneGrantStatus::Pending {
+    return Some("the request is already decided")
+  }
+  match grant_scope {
+    None => {
+      r.status = PhoneGrantStatus::Denied
+      None
+    }
+    Some(sc) => {
+      r.grant_scope = Some(sc)
+      r.exp_secs = Some((now_ms / 1000.to_int64()) + phone_scope_lasts_secs(sc))
+      if sc == PhoneScope::Idle {
+        r.last_used_ms = Some(now_ms)
+      }
+      r.status = PhoneGrantStatus::Granted
+      None
+    }
+  }
+}
+
+pub fn PhoneGrants::used(self : PhoneGrants, id : String, force : Bool, now_ms : Int64) -> Bool {
+  let r = match self.get(id) {
+    Some(v) => v
+    None => return false
+  }
+  if r.status != PhoneGrantStatus::Granted || !self.is_live(r, now_ms, false) {
+    return false
+  }
+  match r.last_used_ms {
+    Some(prev) => {
+      if !force && now_ms >= prev && now_ms - prev < 1000.to_int64() {
+        return false
+      }
+    }
+    None => ()
+  }
+  r.last_used_ms = Some(now_ms)
+  true
+}
+
+pub fn PhoneGrants::revoke(self : PhoneGrants, email : String, id : String, workspace : String) -> Option[String] {
+  let r = match self.get(id) {
+    Some(v) => v
+    None => return Some("no such request")
+  }
+  if r.workspace != workspace {
+    return Some("no such request")
+  }
+  if r.owner != to_ascii_lower(email) {
+    return Some("only its owner takes a grant back")
+  }
+  if r.status != PhoneGrantStatus::Granted && r.status != PhoneGrantStatus::Pending {
+    return Some("the request is already ended")
+  }
+  r.why = Some("已收回")
+  r.status = if r.status == PhoneGrantStatus::Pending { PhoneGrantStatus::Denied } else { PhoneGrantStatus::Ended }
+  r.last_used_ms = None
+  None
+}
+
+pub fn PhoneGrants::release(self : PhoneGrants, session : String, now_ms : Int64) -> Array[PhoneRequest] {
+  let ended : Array[PhoneRequest] = []
+  let mut i = 0
+  while i < self.requests.length() {
+    let r = self.requests[i]
+    if r.session == session && (r.status == PhoneGrantStatus::Pending || r.status == PhoneGrantStatus::Granted) && self.is_live(r, now_ms, false) {
+      r.why = Some("agent 已交还")
+      r.status = if r.status == PhoneGrantStatus::Pending { PhoneGrantStatus::Denied } else { PhoneGrantStatus::Ended }
+      r.last_used_ms = None
+      ended.push(r)
+    }
+    i = i + 1
+  }
+  ended
+}
+
+pub fn PhoneGrants::held(self : PhoneGrants, session : String, now_ms : Int64) -> Array[PhoneRequest] {
+  let out : Array[PhoneRequest] = []
+  let mut i = 0
+  while i < self.requests.length() {
+    let r = self.requests[i]
+    if r.session == session && r.status == PhoneGrantStatus::Granted && self.is_live(r, now_ms, false) {
+      out.push(r)
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn scope_said(grant_scope : Option[PhoneScope]) -> String {
+  match grant_scope {
+    Some(PhoneScope::Hour) => "for an hour"
+    Some(PhoneScope::Idle) => "until this chat has used it for nothing for an hour"
+    Some(PhoneScope::Eight) => "for eight hours"
+    _ => "until this chat is archived"
+  }
+}
+
+pub fn grant_said(r : PhoneRequest) -> String {
+  match r.status {
+    PhoneGrantStatus::Granted =>
+    "Your request " + r.id + " to debug " + r.owner + "'s phone was granted (" + scope_said(r.grant_scope) + "). Call phone_use again for how to reach it."
+    PhoneGrantStatus::Denied => {
+      let why = match r.why {
+        Some(w) => " (" + w + ")"
+        None => ""
+      }
+      "Your request " + r.id + " to debug " + r.owner + "'s phone was refused" + why + "."
+    }
+    PhoneGrantStatus::Ended => {
+      let why = match r.why {
+        Some(w) => w
+        None => "ended"
+      }
+      "Your grant " + r.id + " of " + r.owner + "'s phone ended (" + why + "): adb no longer reaches it."
+    }
+    PhoneGrantStatus::Pending =>
+    "Your request " + r.id + " to debug " + r.owner + "'s phone waits for them to approve it on the card in your chat."
+  }
+}
+
+// ── phone_send staging & fetch framing (`station/src/adb/send.ts`) ──
+
+/// Format content-addressed upload filename `<sha256_prefix_16>-<sanitized_basename>`.
+pub fn stage_upload_name(sha256_hex : String, filename : String) -> String {
+  let hb = sha256_hex.to_bytes()
+  let prefix_len = if hb.length() > 16 { 16 } else { hb.length() }
+  let prefix = slice_bytes_str(hb, 0, prefix_len)
+  let base = path_basename_any(filename)
+  let bb = base.to_bytes()
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < bb.length() {
+    let b = bb[i].to_int() & 0xFF
+    if b == 0x2F || b == 0x5C || b < 0x20 {
+      out.write_char('_')
+    } else {
+      out.write_byte((b).to_byte())
+    }
+    i = i + 1
+  }
+  prefix + "-" + out.to_string()
+}
+
+pub enum PhoneFetchLine {
+  Done(String)
+  Progress(Int64)
+  Failed(String, Int64, Bool)
+}
+
+pub fn parse_phone_fetch_line(line : String, prev_at : Int64) -> Option[PhoneFetchLine] {
+  match base_codec::json_parse(line) {
+    base_codec::JsonParseResult::Ok(j) => {
+      match json_str_opt(j, "path") {
+        Some(p) => return Some(PhoneFetchLine::Done(p))
+        None => ()
+      }
+      match json_str_opt(j, "error") {
+        Some(err) => {
+          let at_opt = json_int64_opt(j, "at")
+          let at_val = match at_opt {
+            Some(v) => v
+            None => prev_at
+          }
+          let is_old = at_opt is None && err == "无法识别的通道"
+          return Some(PhoneFetchLine::Failed(err, at_val, is_old))
+        }
+        None => ()
+      }
+      match json_int64_opt(j, "at") {
+        Some(v) => Some(PhoneFetchLine::Progress(v))
+        None => None
+      }
+    }
+    base_codec::JsonParseResult::Err(_) => None
+  }
+}
+
+fn json_int64_opt(obj : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Num(d, repr)) => {
+      if repr != "" {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => return Some(v)
+          None => ()
+        }
+      }
+      Some(d.to_int64())
+    }
+    _ => None
+  }
+}
+
+// ── ADB tool formatting (`station/src/adb/tool.ts`) ──
+
+pub struct AdbPhoneSerial {
+  pub serial : String
+  pub adb : String
+  pub device : String
+}
+
+pub fn phone_reached(
+  serials : Array[AdbPhoneSerial],
+  port : Option[Int],
+  display : Option[PhoneDisplay],
+) -> String {
+  let p = match port {
+    Some(v) => v
+    None => return "Granted, but the phone is not lent to this station right now."
+  }
+  if serials.length() == 0 {
+    return "Granted, but the phone is not lent to this station right now."
+  }
+  let lines : Array[String] = [
+    "Granted. Use this chat's adb server, with -P on every adb command (the station's own adb, 5037, does not have the phone):",
+  ]
+  let mut i = 0
+  while i < serials.length() {
+    let s = serials[i]
+    let name = if s.device != "" { s.device } else { "phone" }
+    lines.push("- " + name + ": adb -P " + p.to_string() + " -s " + s.serial + " … (adb " + s.adb + ")")
+    i = i + 1
+  }
+  match display {
+    Some(d) => {
+      lines.push("")
+      lines.push(
+        "This chat has a screen of its own on the phone: display " +
+        d.id.to_string() +
+        " (" +
+        d.width.to_string() +
+        "x" +
+        d.height.to_string() +
+        ", density " +
+        d.density.to_string() +
+        "), screencap -d " +
+        d.surface +
+        ".",
+      )
+    }
+    None => ()
+  }
+  join_strings(lines, "\n")
+}

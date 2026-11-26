@@ -56,6 +56,8 @@ test "spawn_flags encodes all bitmask combinations" {
   expect(spawn_flags(explicit_empty) == (8 | 32), "explicit empty env sets PROC_EXPLICIT_ENV")
   expect(ERR_NETUNREACH == -101, "portable ERR_NETUNREACH constant")
   expect(ERR_HOSTUNREACH == -113, "portable ERR_HOSTUNREACH constant")
+  expect(SIG_STOP == 103 && SIG_CONT == 104, "cross-platform logical SIG_STOP/SIG_CONT constants")
+  expect(hex_encode("AB".to_bytes()) == "4142", "hex_encode")
 }
 
 test "decode_sys_event parses fs, proc, ctrl, signal, pty, and udp frames" {

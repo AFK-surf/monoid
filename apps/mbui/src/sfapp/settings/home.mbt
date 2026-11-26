@@ -18,6 +18,10 @@ pub fn frame(core : Core, here : Here, root? : Bool = false, top? : Double = 0.0
 let chosen : @sf.LiveMap[String, String] = @sf.LiveMap::new()
 
 ///|
+/// Monotonic request sequence per pref name so a late failure from an earlier write never clears a newer choice.
+let chosen_seq : Map[String, Int] = Map([])
+
+///|
 /// A pref as the core keeps it (the `prefs` topic), or as it was chosen here a moment ago.
 pub fn pref(core : Core, name : String) -> String {
   pref_from((core.topic)("prefs", Map([])).get().value, name)
@@ -69,7 +73,11 @@ fn set_prefs_with(
   say : (String) -> Unit,
   values : Array[(String, String)],
 ) -> Unit {
+  let req_seqs : Array[(String, Int)] = []
   for nv in values {
+    let seq = chosen_seq.get(nv.0).unwrap_or(0) + 1
+    chosen_seq[nv.0] = seq
+    req_seqs.push((nv.0, seq))
     chosen[nv.0] = nv.1
   }
   call(
@@ -79,8 +87,10 @@ fn set_prefs_with(
       match r {
         Ok(_) => ()
         Err(e) => {
-          for nv in values {
-            chosen.remove(nv.0)
+          for ns in req_seqs {
+            if chosen_seq.get(ns.0) == Some(ns.1) {
+              chosen.remove(ns.0)
+            }
           }
           say(fill("android-misc.act.failed", [("what", tr("android-settings.appearance.title")), ("error", error_text(e))]))
         }

@@ -1,0 +1,11 @@
+[package]
+name = "station_jobs"
+version = "0.1.0"
+
+[dependencies]
+station_sys = { workspace = true }
+host_shim = { workspace = true }
+base_codec = { workspace = true }
+admit = { workspace = true }
+nodepath = { workspace = true }
+crypto = { workspace = true }

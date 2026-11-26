@@ -1,0 +1,557 @@
+// Rig signed forms validation and signing bytes, 1:1 with `client/core-ts/src/rig-form.ts`.
+
+import "base64"
+import "crypto"
+import "form"
+
+pub let RIG_TIMEOUT_DEFAULT_SECS : Int64 = 3600.to_int64()
+pub let RIG_TIMEOUT_MIN : Int64 = 60.to_int64()
+pub let RIG_TIMEOUT_MAX : Int64 = 2592000.to_int64() // 30 * 86400
+pub let RIG_FULL_FOR : Int64 = 3600.to_int64()
+
+pub enum RigKind {
+  Grant
+  Revoke
+  Settings
+  Add
+  Full
+  Device
+  Join
+}
+
+pub fn rig_kind_tag(kind : RigKind) -> String {
+  match kind {
+    RigKind::Grant => "stillfail-rig-grant/1"
+    RigKind::Revoke => "stillfail-rig-revoke/1"
+    RigKind::Settings => "stillfail-rig-settings/1"
+    RigKind::Add => "stillfail-rig-add/1"
+    RigKind::Full => "stillfail-rig-full/1"
+    RigKind::Device => "stillfail-rig-device/1"
+    RigKind::Join => "stillfail-rig-join/1"
+  }
+}
+
+/// What is signed for a rig statement of `kind`: `"<tag>\0"` || `sha256(canonical(body))`.
+pub fn rig_signed_bytes(kind : RigKind, body : form::Json) -> Result[Bytes, String] {
+  let canon = match form::canonical(body) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let tag = (rig_kind_tag(kind) + "\x00").to_bytes()
+  let digest = crypto::sha256(canon.to_bytes())
+  Ok(concat_bytes(tag, digest))
+}
+
+/// JavaScript RegExp `\s` whitespace code point check (covers ASCII + U+00A0, U+1680, U+2000..U+200A,
+/// U+2028, U+2029, U+202F, U+205F, U+3000, U+FEFF).
+fn is_js_ws_cp(cp : Int) -> Bool {
+  cp == 9 ||
+  cp == 10 ||
+  cp == 11 ||
+  cp == 12 ||
+  cp == 13 ||
+  cp == 32 ||
+  cp == 0x00A0 ||
+  cp == 0x1680 ||
+  (cp >= 0x2000 && cp <= 0x200A) ||
+  cp == 0x2028 ||
+  cp == 0x2029 ||
+  cp == 0x202F ||
+  cp == 0x205F ||
+  cp == 0x3000 ||
+  cp == 0xFEFF
+}
+
+fn has_ws_or_nul(s : String) -> Bool {
+  let units = form::utf16_units(s)
+  let mut i = 0
+  while i < units.length() {
+    let u = units[i]
+    if u == 0 || is_js_ws_cp(u) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn has_ctrl(s : String) -> Bool {
+  let mut i = 0
+  while i < s.length() {
+    let c = s.code_unit_at(i)
+    if c <= 0x1F || c == 0x7F {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn is_blank(s : String) -> Bool {
+  let units = form::utf16_units(s)
+  let mut i = 0
+  while i < units.length() {
+    if !is_js_ws_cp(units[i]) {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn text_ok(v : Option[form::Json], max_len : Int) -> Option[String] {
+  match v {
+    Some(form::Json::Str(s)) => {
+      if form::utf16_len(s) <= max_len {
+        Some(s)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+fn time_ok(v : Option[form::Json]) -> Option[Int64] {
+  match v {
+    Some(form::Json::Num(n)) => {
+      if is_safe_int_double(n) && n >= 0.0 {
+        Some(n.to_int64())
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+/// Why `t` is no timeout a grant may have, or `None`: idle or fixed, whole minutes, 1 minute to 30 days.
+pub fn timeout_refusal(t : Option[form::Json]) -> Option[String] {
+  let entries = match t {
+    Some(form::Json::Obj(m)) => m
+    _ => return Some("timeout must be idle or fixed, in whole minutes from 1 minute to 30 days")
+  }
+  let kind_ok = match form::json_obj_get(entries, "kind") {
+    Some(form::Json::Str(k)) => k == "idle" || k == "fixed"
+    _ => false
+  }
+  if !kind_ok {
+    return Some("timeout must be idle or fixed, in whole minutes from 1 minute to 30 days")
+  }
+  match form::json_obj_get(entries, "seconds") {
+    Some(form::Json::Num(n)) => {
+      if !is_safe_int_double(n) {
+        return Some("timeout must be idle or fixed, in whole minutes from 1 minute to 30 days")
+      }
+      let secs = n.to_int64()
+      if secs < RIG_TIMEOUT_MIN || secs > RIG_TIMEOUT_MAX || (secs % 60.to_int64()) != 0.to_int64() {
+        return Some("timeout must be idle or fixed, in whole minutes from 1 minute to 30 days")
+      }
+      None
+    }
+    _ => Some("timeout must be idle or fixed, in whole minutes from 1 minute to 30 days")
+  }
+}
+
+fn is_tcp_target(s : String) -> Bool {
+  // ^(\[[0-9a-fA-F:.]+\]|[A-Za-z0-9.-]+):([1-9][0-9]{0,4})$ and port <= 65535
+  let n = s.length()
+  let mut colon = -1
+  let mut i = n - 1
+  while i >= 0 {
+    if s.code_unit_at(i) == 58 {
+      colon = i
+      break
+    }
+    i = i - 1
+  }
+  if colon <= 0 || colon >= n - 1 {
+    return false
+  }
+  let host = s.slice(0, colon)
+  let port_str = s.slice(colon + 1, n)
+  // Validate port: [1-9][0-9]{0,4}
+  let plen = port_str.length()
+  if plen < 1 || plen > 5 {
+    return false
+  }
+  let p0 = port_str.code_unit_at(0)
+  if p0 < 49 || p0 > 57 {
+    return false
+  }
+  let mut port = 0
+  let mut pi = 0
+  while pi < plen {
+    let c = port_str.code_unit_at(pi)
+    if c < 48 || c > 57 {
+      return false
+    }
+    port = port * 10 + (c - 48)
+    pi = pi + 1
+  }
+  if port < 1 || port > 65535 {
+    return false
+  }
+  // Validate host
+  let hlen = host.length()
+  if hlen >= 3 && host.code_unit_at(0) == 91 && host.code_unit_at(hlen - 1) == 93 {
+    // [ipv6]
+    let mut hi = 1
+    while hi < hlen - 1 {
+      let c = host.code_unit_at(hi)
+      let ok = (c >= 48 && c <= 57) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70) || c == 58 || c == 46
+      if !ok {
+        return false
+      }
+      hi = hi + 1
+    }
+    true
+  } else {
+    let mut hi = 0
+    while hi < hlen {
+      let c = host.code_unit_at(hi)
+      let ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 46 || c == 45
+      if !ok {
+        return false
+      }
+      hi = hi + 1
+    }
+    true
+  }
+}
+
+fn is_com_port(s : String) -> Bool {
+  if s.length() < 4 || !s.starts_with("COM") {
+    return false
+  }
+  let mut i = 3
+  while i < s.length() {
+    let c = s.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn is_airplay_target(s : String) -> Bool {
+  if s.length() == 0 || has_ctrl(s) {
+    return false
+  }
+  let mut i = 0
+  while i < s.length() {
+    let c = s.code_unit_at(i)
+    let ok = (c >= 65 && c <= 90) ||
+    (c >= 97 && c <= 122) ||
+    (c >= 48 && c <= 57) ||
+    c == 46 ||
+    c == 95 ||
+    c == 58 ||
+    c == 45 ||
+    c == 91 ||
+    c == 93
+    if !ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// Why `d` is no device, or `None` (1:1 with `rig-form.ts` `deviceRefusal`).
+pub fn device_refusal(d : Option[form::Json]) -> Option[String] {
+  let entries = match d {
+    Some(form::Json::Obj(m)) => m
+    _ => return Some("a device has an id of 16 hex digits")
+  }
+  match form::json_obj_get(entries, "id") {
+    Some(form::Json::Str(id)) => if !is_hex16(id) { return Some("a device has an id of 16 hex digits") }
+    _ => return Some("a device has an id of 16 hex digits")
+  }
+  match text_ok(form::json_obj_get(entries, "name"), 80) {
+    Some(name) => if is_blank(name) { return Some("a device has a name, up to 80 characters") }
+    None => return Some("a device has a name, up to 80 characters")
+  }
+  let kind = match form::json_obj_get(entries, "kind") {
+    Some(form::Json::Str(k)) => {
+      if k != "adb" && k != "tcp" && k != "serial" && k != "airplay" {
+        return Some("kind: adb, tcp, serial or airplay")
+      }
+      k
+    }
+    _ => return Some("kind: adb, tcp, serial or airplay")
+  }
+  let target = match text_ok(form::json_obj_get(entries, "target"), 256) {
+    Some(t) => {
+      if is_blank(t) || has_ws_or_nul(t) {
+        return Some("target: what it is reached at, with no spaces")
+      }
+      t
+    }
+    None => return Some("target: what it is reached at, with no spaces")
+  }
+  if kind == "tcp" {
+    if !is_tcp_target(target) {
+      // Distinguish bad port > 65535 vs bad format when possible
+      let mut colon = -1
+      let mut i = target.length() - 1
+      while i >= 0 {
+        if target.code_unit_at(i) == 58 {
+          colon = i
+          break
+        }
+        i = i - 1
+      }
+      if colon > 0 && colon < target.length() - 1 {
+        let ps = target.slice(colon + 1, target.length())
+        if ps.length() == 5 && ps.code_unit_at(0) >= 54 {
+          return Some("a tcp device's port is 1 to 65535")
+        }
+      }
+      return Some("a tcp device's target is host:port")
+    }
+  }
+  if kind == "serial" && !target.starts_with("/") && !is_com_port(target) {
+    return Some("a serial device's target is its path (/dev/…) or COMn")
+  }
+  if kind == "airplay" && !is_airplay_target(target) {
+    return Some("an airplay device's target is a device identifier, hostname or IP")
+  }
+  match form::json_obj_get(entries, "baud") {
+    None => ()
+    Some(form::Json::Num(n)) => {
+      if !is_safe_int_double(n) || n < 50.0 || n > 4000000.0 {
+        return Some("baud: 50 to 4000000")
+      }
+    }
+    Some(_) => return Some("baud: 50 to 4000000")
+  }
+  match form::json_obj_get(entries, "model") {
+    None => ()
+    Some(m) => {
+      match text_ok(Some(m), 120) {
+        Some(ms) => if has_ctrl(ms) { return Some("model: up to 120 characters") }
+        None => return Some("model: up to 120 characters")
+      }
+    }
+  }
+  match form::json_obj_get(entries, "protocols") {
+    None => ()
+    Some(form::Json::Arr(xs)) => {
+      if xs.length() > 3 {
+        return Some("protocols: up to 3 distinct values from airplay, companion or raop")
+      }
+      let seen : Array[String] = []
+      let mut i = 0
+      while i < xs.length() {
+        match xs[i] {
+          form::Json::Str(p) => {
+            if (p != "airplay" && p != "companion" && p != "raop") || str_in(seen, p) {
+              return Some("protocols: up to 3 distinct values from airplay, companion or raop")
+            }
+            seen.push(p)
+          }
+          _ => return Some("protocols: up to 3 distinct values from airplay, companion or raop")
+        }
+        i = i + 1
+      }
+    }
+    Some(_) => return Some("protocols: up to 3 distinct values from airplay, companion or raop")
+  }
+  match form::json_obj_get(entries, "paired") {
+    None => ()
+    Some(form::Json::Bool(_)) => ()
+    Some(_) => return Some("paired: boolean")
+  }
+  None
+}
+
+/// Whether `signed` has the shape of a rig statement of `kind` (1:1 with `rig-form.ts` `wellFormed`).
+pub fn rig_well_formed(kind : RigKind, signed : form::Json) -> Bool {
+  let root = match signed {
+    form::Json::Obj(m) => m
+    _ => return false
+  }
+  let sig = match form::json_obj_get(root, "sig") {
+    Some(form::Json::Obj(m)) => m
+    _ => return false
+  }
+  match (text_ok(form::json_obj_get(sig, "key"), 200), text_ok(form::json_obj_get(sig, "sig"), 200)) {
+    (Some(_), Some(_)) => ()
+    _ => return false
+  }
+  let body = match form::json_obj_get(root, "body") {
+    Some(form::Json::Obj(m)) => m
+    _ => return false
+  }
+  // Common body checks
+  match form::json_obj_get(body, "v") {
+    Some(form::Json::Num(n)) => if n != 1.0 { return false }
+    _ => return false
+  }
+  match text_ok(form::json_obj_get(body, "sub"), 512) {
+    Some(s) => if s == "" { return false }
+    None => return false
+  }
+  match text_ok(form::json_obj_get(body, "ws"), 64) {
+    Some(s) => if s == "" { return false }
+    None => return false
+  }
+  match form::json_obj_get(body, "rig") {
+    Some(form::Json::Str(r)) => if !is_hex32(r) { return false }
+    _ => return false
+  }
+  let at = match time_ok(form::json_obj_get(body, "at")) {
+    Some(t) => t
+    None => return false
+  }
+  match kind {
+    RigKind::Grant => {
+      match form::json_obj_get(body, "station") {
+        Some(form::Json::Str(s)) => if !is_hex32(s) { return false }
+        _ => return false
+      }
+      match text_ok(form::json_obj_get(body, "session"), 256) {
+        Some(s) => if s == "" { return false }
+        None => return false
+      }
+      match text_ok(form::json_obj_get(body, "chat"), 256) {
+        Some(_) => ()
+        None => return false
+      }
+      match text_ok(form::json_obj_get(body, "request"), 128) {
+        Some(s) => if s == "" { return false }
+        None => return false
+      }
+      match (text_ok(form::json_obj_get(body, "title"), 512), text_ok(form::json_obj_get(body, "by"), 512)) {
+        (Some(_), Some(_)) => ()
+        _ => return false
+      }
+      match timeout_refusal(form::json_obj_get(body, "timeout")) {
+        None => ()
+        Some(_) => return false
+      }
+      let exp = match time_ok(form::json_obj_get(body, "exp")) {
+        Some(e) => e
+        None => return false
+      }
+      if exp <= at || exp - at > RIG_TIMEOUT_MAX {
+        return false
+      }
+      match form::json_obj_get(body, "device") {
+        None => true
+        Some(form::Json::Str(d)) => is_hex16(d)
+        Some(_) => false
+      }
+    }
+    RigKind::Revoke => {
+      match text_ok(form::json_obj_get(body, "request"), 128) {
+        Some(s) => s != ""
+        None => false
+      }
+    }
+    RigKind::Settings => {
+      match time_ok(form::json_obj_get(body, "seq")) {
+        Some(_) => ()
+        None => return false
+      }
+      match form::json_obj_get(body, "open") {
+        Some(form::Json::Bool(_)) => ()
+        _ => return false
+      }
+      match form::json_obj_get(body, "device") {
+        None => true
+        Some(form::Json::Str(d)) => is_hex16(d)
+        Some(_) => false
+      }
+    }
+    RigKind::Device => {
+      match device_refusal(form::json_obj_get(body, "device")) {
+        None => ()
+        Some(_) => return false
+      }
+      match form::json_obj_get(body, "removed") {
+        Some(form::Json::Bool(_)) => true
+        _ => false
+      }
+    }
+    RigKind::Add => {
+      match form::json_obj_get(body, "lock") {
+        None => true
+        Some(form::Json::Str(l)) => is_hex32(l)
+        Some(_) => false
+      }
+    }
+    RigKind::Full => true
+    RigKind::Join => {
+      match text_ok(form::json_obj_get(body, "token"), 256) {
+        Some(t) => if t == "" { return false }
+        None => return false
+      }
+      match form::json_obj_get(body, "lock") {
+        None => true
+        Some(form::Json::Str(l)) => is_hex32(l)
+        Some(_) => false
+      }
+    }
+  }
+}
+
+/// Verify both shape (`rig_well_formed`) and cryptographic signature of a rig statement.
+pub fn rig_verify_signed(kind : RigKind, signed : form::Json) -> Bool {
+  if !rig_well_formed(kind, signed) {
+    return false
+  }
+  let root = match signed {
+    form::Json::Obj(m) => m
+    _ => return false
+  }
+  let body = match form::json_obj_get(root, "body") {
+    Some(b) => b
+    None => return false
+  }
+  let sig = match form::json_obj_get(root, "sig") {
+    Some(form::Json::Obj(m)) => m
+    _ => return false
+  }
+  let key_id = match form::json_obj_get(sig, "key") {
+    Some(form::Json::Str(s)) => s
+    _ => return false
+  }
+  let sig_str = match form::json_obj_get(sig, "sig") {
+    Some(form::Json::Str(s)) => s
+    _ => return false
+  }
+  let msg = match rig_signed_bytes(kind, body) {
+    Ok(b) => b
+    Err(_) => return false
+  }
+  let sig_bytes = if key_id.starts_with("ed25519:") {
+    // Align with `rig/grants.ts:27`: lowercase hex only (128 hex chars = 64 bytes).
+    if !is_lower_hex_of(sig_str, 128) {
+      return false
+    }
+    match crypto::hex_to_bytes(sig_str) {
+      Some(b) => b
+      None => return false
+    }
+  } else if key_id.starts_with("p256:") {
+    match decode_base64url_flex(sig_str) {
+      Ok(b) => b
+      Err(_) => return false
+    }
+  } else {
+    return false
+  }
+  signature_ok(key_id, sig_bytes, msg, der=false)
+}
+
+/// Until when a rig grant signed at `at` holds at the latest: fixed its length, idle 30 days.
+pub fn rig_latest(at : Int64, timeout_kind : String, seconds : Int64) -> Int64 {
+  if timeout_kind == "fixed" {
+    at + seconds
+  } else {
+    at + RIG_TIMEOUT_MAX
+  }
+}

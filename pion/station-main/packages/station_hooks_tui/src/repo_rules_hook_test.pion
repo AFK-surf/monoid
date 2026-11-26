@@ -1,0 +1,584 @@
+// Unit tests for `repo_rules_hook.pion` aligned with `station/test/repo-rules-hook.test.ts`.
+
+import "base_codec"
+import "js_json"
+import "nodepath"
+
+struct MemEntry {
+  mut is_dir : Bool
+  mut mtime : Double
+  mut content : String
+}
+
+struct MemFs {
+  entries : Map[String, MemEntry]
+  symlinks : Map[String, String]
+}
+
+fn MemFs::new() -> MemFs {
+  MemFs::{ entries: Map::new(), symlinks: Map::new() }
+}
+
+fn MemFs::mkdir(self : MemFs, path : String) -> Unit {
+  let norm = nodepath::join("/", [path])
+  self.entries.set(norm, MemEntry::{ is_dir: true, mtime: 1000.0, content: "" })
+  let parent = nodepath::dirname("/", norm)
+  if parent != norm {
+    match self.entries.get(parent) {
+      Some(_) => ()
+      None => self.mkdir(parent)
+    }
+  }
+}
+
+fn MemFs::write(self : MemFs, path : String, content : String, mtime : Double) -> Unit {
+  let norm = nodepath::join("/", [path])
+  let parent = nodepath::dirname("/", norm)
+  if parent != norm {
+    self.mkdir(parent)
+  }
+  self.entries.set(norm, MemEntry::{ is_dir: false, mtime: mtime, content: content })
+}
+
+fn MemFs::env(
+  self : MemFs,
+  cwd : String,
+  tmpdir : String,
+  home : Option[String],
+  switch_val : Option[String],
+) -> RepoRulesEnv {
+  let entries = self.entries
+  let symlinks = self.symlinks
+  RepoRulesEnv::{
+    sep: "/",
+    windows: false,
+    cwd: cwd,
+    home: home,
+    tmpdir: tmpdir,
+    stillfail_repo_rules: switch_val,
+    exists: fn(p : String) -> Bool {
+      let norm = nodepath::join("/", [p])
+      match entries.get(norm) {
+        Some(_) => true
+        None =>
+        match symlinks.get(norm) {
+          Some(target) =>
+          match entries.get(target) {
+            Some(_) => true
+            None => false
+          }
+          None => false
+        }
+      }
+    },
+    stat: fn(p : String) -> Option[(Double, Bool)] {
+      let norm = nodepath::join("/", [p])
+      match entries.get(norm) {
+        Some(e) => Some((e.mtime, e.is_dir))
+        None => None
+      }
+    },
+    realpath: fn(p : String) -> Option[String] {
+      let norm = nodepath::join("/", [p])
+      match symlinks.get(norm) {
+        Some(target) =>
+        match entries.get(target) {
+          Some(_) => Some(target)
+          None => None
+        }
+        None =>
+        match entries.get(norm) {
+          Some(_) => Some(norm)
+          None => None
+        }
+      }
+    },
+    read_file: fn(p : String) -> Option[String] {
+      let norm = nodepath::join("/", [p])
+      match entries.get(norm) {
+        Some(e) => if !e.is_dir { Some(e.content) } else { None }
+        None => None
+      }
+    },
+    write_file: fn(p : String, text : String) -> Bool {
+      let norm = nodepath::join("/", [p])
+      entries.set(norm, MemEntry::{ is_dir: false, mtime: 1000.0, content: text })
+      true
+    },
+    remove_file: fn(p : String) -> Unit {
+      let norm = nodepath::join("/", [p])
+      let _ = entries.remove(norm)
+    },
+  }
+}
+
+fn additional_context(out : String) -> String {
+  if out.length() == 0 {
+    return ""
+  }
+  match base_codec::json_parse(out) {
+    base_codec::JsonParseResult::Ok(v) =>
+    match base_codec::json_get(v, "hookSpecificOutput") {
+      Some(h) =>
+      match base_codec::json_get(h, "additionalContext") {
+        Some(base_codec::Json::Str(s)) => s
+        _ => ""
+      }
+      None => ""
+    }
+    _ => ""
+  }
+}
+
+fn agy_injected(out : String) -> String {
+  match base_codec::json_parse(out) {
+    base_codec::JsonParseResult::Ok(v) =>
+    match base_codec::json_get(v, "injectSteps") {
+      Some(base_codec::Json::Arr(xs)) =>
+      if xs.length() > 0 {
+        match base_codec::json_get(xs[0], "systemMessage") {
+          Some(sm) =>
+          match base_codec::json_get(sm, "systemMessage") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => ""
+          }
+          None => ""
+        }
+      } else {
+        ""
+      }
+      _ => ""
+    }
+    _ => ""
+  }
+}
+
+fn setup_repo_fs() -> MemFs {
+  let fs = MemFs::new()
+  fs.mkdir("/root/workspace/wt/.git")
+  fs.mkdir("/root/workspace/wt/apps/x/src")
+  fs.mkdir("/root/workspace/wt/other")
+  fs.write("/root/workspace/wt/AGENTS.md", "root rule HERON", 1000.0)
+  fs.write("/root/workspace/wt/CLAUDE.md", "@AGENTS.md", 1000.0)
+  fs.write("/root/workspace/wt/apps/x/CLAUDE.md", "x rule OSPREY", 1000.0)
+  fs.write("/root/workspace/wt/apps/x/src/a.txt", "a", 1000.0)
+  fs.mkdir("/root/workspace/notes")
+  fs.write("/root/workspace/AGENTS.md", "not a repository's", 1000.0)
+  fs
+}
+
+test "shell command collects repo rules root-down once and ignores outside-repo or URLs" {
+  let fs = setup_repo_fs()
+  let env = fs.env("/root/workspace", "/tmp", Some("/home/u"), None)
+
+  let first = additional_context(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s1\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat wt/apps/x/src/a.txt | head -3\"}}",
+    ),
+  )
+  assert(str_contains(first, "root rule HERON"), "contains root rule")
+  assert(str_contains(first, "x rule OSPREY"), "contains subdir rule")
+  assert(!str_contains(first, "not a repository's"), "excludes non-repo rules")
+  // Root must come before subdir.
+  let idx_root = match js_json::utf16_find_from(first, "root rule HERON", 0) {
+    Some(i) => i
+    None => -1
+  }
+  let idx_sub = match js_json::utf16_find_from(first, "x rule OSPREY", 0) {
+    Some(i) => i
+    None => -1
+  }
+  assert(idx_root >= 0 && idx_sub > idx_root, "root before subdir")
+
+  // Second touch in same dir produces nothing.
+  let second = eval_repo_rules_hook(
+    env,
+    "{\"session_id\":\"s1\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"grep -rn foo wt/apps/x\"}}",
+  )
+  assert(second == "", "deduplicated on repeat")
+
+  // Another dir under same repo whose root was already told produces nothing.
+  let third = eval_repo_rules_hook(
+    env,
+    "{\"session_id\":\"s1\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls wt/other\"}}",
+  )
+  assert(third == "", "root already told")
+
+  // Outside repo and URLs produce nothing.
+  assert(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s3\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls notes/ && echo done\"}}",
+    ) == "",
+    "outside repo ignored",
+  )
+  assert(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s3\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"curl -s https://example.com/a/b\"}}",
+    ) == "",
+    "url ignored",
+  )
+}
+
+test "subagent isolation, mtime change, self-edit skip, and compaction reset" {
+  let fs = setup_repo_fs()
+  let env = fs.env("/root/workspace", "/tmp", Some("/home/u"), None)
+
+  // Main session reads file -> gets HERON + OSPREY.
+  let s2_main = additional_context(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s2\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Read\",\"tool_input\":{\"file_path\":\"/root/workspace/wt/apps/x/src/a.txt\"}}",
+    ),
+  )
+  assert(str_contains(s2_main, "OSPREY"), "s2 main told OSPREY")
+
+  // Subagent gets its own state -> told HERON + OSPREY too.
+  let s2_sub = additional_context(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s2\",\"agent_id\":\"agent-1\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Grep\",\"tool_input\":{\"path\":\"/root/workspace/wt/apps/x\"}}",
+    ),
+  )
+  assert(str_contains(s2_sub, "HERON") && str_contains(s2_sub, "OSPREY"), "subagent gets rules")
+
+  // Rule file updated -> told again to main session (only changed file).
+  fs.write("/root/workspace/wt/apps/x/CLAUDE.md", "x rule KESTREL", 2000.0)
+  let s2_again = additional_context(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s2\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"cat /root/workspace/wt/apps/x/src/a.txt\"}}",
+    ),
+  )
+  assert(str_contains(s2_again, "KESTREL"), "changed rule told")
+  assert(!str_contains(s2_again, "HERON"), "unchanged root not re-told")
+
+  // Self-edit of already-seen rule file is not echoed back.
+  fs.write("/root/workspace/wt/apps/x/CLAUDE.md", "x rule MERLIN", 3000.0)
+  let self_edit = eval_repo_rules_hook(
+    env,
+    "{\"session_id\":\"s2\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/root/workspace/wt/apps/x/CLAUDE.md\"}}",
+  )
+  assert(self_edit == "", "self-edit suppressed")
+  let after_edit = eval_repo_rules_hook(
+    env,
+    "{\"session_id\":\"s2\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls wt/apps/x/src\"}}",
+  )
+  assert(after_edit == "", "mtime recorded by self-edit")
+
+  // Never-seen rule file IS told even to the tool that wrote it.
+  let s5_write = additional_context(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s5\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"/root/workspace/wt/apps/x/CLAUDE.md\"}}",
+    ),
+  )
+  assert(str_contains(s5_write, "HERON") && str_contains(s5_write, "MERLIN"), "unseen rule told on write")
+
+  // SessionStart with source=compact clears main session state, leaving subagent state intact.
+  assert(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s2\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"SessionStart\",\"source\":\"compact\"}",
+    ) == "",
+    "compact SessionStart silent",
+  )
+  let after_compact = additional_context(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s2\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls wt/apps/x\"}}",
+    ),
+  )
+  assert(str_contains(after_compact, "HERON") && str_contains(after_compact, "MERLIN"), "re-told after compact")
+
+  // Codex PostCompact also resets main session.
+  assert(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s2\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostCompact\",\"trigger\":\"manual\"}",
+    ) == "",
+    "PostCompact silent",
+  )
+  let after_post_compact = additional_context(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s2\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls wt/apps/x\"}}",
+    ),
+  )
+  assert(str_contains(after_post_compact, "HERON") && str_contains(after_post_compact, "MERLIN"), "re-told after PostCompact")
+}
+
+fn make_paragraphs(name : String, count : Int) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<count {
+    sb.write_string("- " + name + " rule " + i.to_string() + ": ")
+    for _ in 0..<20 {
+      sb.write_string("words of it ")
+    }
+    sb.write_string("\n")
+  }
+  sb.to_string()
+}
+
+test "large rules paginate under 10,000 UTF-16 chars in order across subsequent calls" {
+  let fs = MemFs::new()
+  fs.mkdir("/ws/big/.git")
+  fs.mkdir("/ws/big/app/lib")
+  fs.mkdir("/ws/notes")
+  let root_rules = "# Root\n\n" + make_paragraphs("ROOT", 32)
+  let app_rules = "# App\n\n" + make_paragraphs("APP", 52)
+  let lib_rules = "# Lib\n\n- LIB rule, the only one.\n"
+  fs.write("/ws/big/AGENTS.md", root_rules, 1000.0)
+  fs.write("/ws/big/app/AGENTS.md", app_rules, 1000.0)
+  fs.write("/ws/big/app/lib/AGENTS.md", lib_rules, 1000.0)
+
+  let env = fs.env("/ws", "/tmp", None, None)
+  let calls : Array[String] = []
+  calls.push(
+    additional_context(
+      eval_repo_rules_hook(
+        env,
+        "{\"session_id\":\"s6\",\"cwd\":\"/ws\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls big/app/lib\"}}",
+      ),
+    ),
+  )
+  for _ in 0..<6 {
+    calls.push(
+      additional_context(
+        eval_repo_rules_hook(
+          env,
+          "{\"session_id\":\"s6\",\"cwd\":\"/ws\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls notes/\"}}",
+        ),
+      ),
+    )
+  }
+  let spoke : Array[String] = []
+  for i in 0..<calls.length() {
+    if calls[i].length() > 0 {
+      spoke.push(calls[i])
+    }
+  }
+  assert(spoke.length() == 3, "exactly 3 paginated chunks")
+  for i in 0..<spoke.length() {
+    assert(js_json::utf16_len(spoke[i]) <= 10000, "each call under 10,000 chars")
+  }
+  assert(str_contains(spoke[0], "# Root") && !str_contains(spoke[0], "APP rule"), "call 0 has root only")
+  assert(
+    str_contains(spoke[1], "lines 1 to ") &&
+    str_contains(spoke[1], " of 54:") &&
+    str_contains(spoke[1], "[more of this file follows after your next tool call]"),
+    "call 1 has first chunk of app",
+  )
+  assert(
+    str_contains(spoke[2], "to 54, the last of it:") &&
+    str_contains(spoke[2], "\n\n---\n\n") &&
+    str_contains(spoke[2], "# Lib"),
+    "call 2 finishes app and appends lib",
+  )
+}
+
+test "Antigravity CLI PostToolUse queues rules and PostInvocation injects them; STILLFAIL_REPO_RULES=0 disables" {
+  let fs = setup_repo_fs()
+  fs.mkdir("/root/workspace/cc-only/.git")
+  fs.mkdir("/root/workspace/cc-only/.claude")
+  fs.mkdir("/root/workspace/cc-only/web/src")
+  fs.write("/root/workspace/cc-only/.claude/CLAUDE.md", "root rule DOTCLAUDE_FALCON", 1000.0)
+  fs.write("/root/workspace/cc-only/web/CLAUDE.md", "web rule SWIFT", 1000.0)
+  fs.write("/root/workspace/cc-only/web/src/page.tsx", "export {};\n", 1000.0)
+
+  // Disabled via STILLFAIL_REPO_RULES=0 -> always `{}` without queuing.
+  let env_off = fs.env("/root/workspace", "/tmp", None, Some("0"))
+  assert(
+    eval_repo_rules_hook(
+      env_off,
+      "{\"conversationId\":\"c-off\",\"cwd\":\"/root/workspace\",\"hookEventName\":\"PostToolUse\",\"toolCall\":{\"args\":{\"CommandLine\":\"cat cc-only/web/src/page.tsx\"}}}",
+    ) == "{}",
+    "agy PostToolUse disabled returns {}",
+  )
+  assert(
+    eval_repo_rules_hook(
+      env_off,
+      "{\"conversationId\":\"c-off\",\"cwd\":\"/root/workspace\",\"hookEventName\":\"PostInvocation\"}",
+    ) == "{}",
+    "agy PostInvocation disabled returns {}",
+  )
+
+  // Enabled: PostToolUse queues and returns `{}`, PostInvocation injects with .claude stripped from scope.
+  let env = fs.env("/root/workspace", "/tmp", None, None)
+  let q_out = eval_repo_rules_hook(
+    env,
+    "{\"conversationId\":\"c-1\",\"cwd\":\"/root/workspace\",\"hookEventName\":\"PostToolUse\",\"toolCall\":{\"args\":{\"CommandLine\":\"cat cc-only/web/src/page.tsx\"}}}",
+  )
+  assert(q_out == "{}", "agy PostToolUse returns {}")
+
+  let inv_out = eval_repo_rules_hook(
+    env,
+    "{\"conversationId\":\"c-1\",\"cwd\":\"/root/workspace\",\"hookEventName\":\"PostInvocation\"}",
+  )
+  let msg = agy_injected(inv_out)
+  assert(
+    str_contains(
+      msg,
+      "cc-only/.claude/CLAUDE.md (the repository's rules for agents working in /root/workspace/cc-only/; follow them):\n\nroot rule DOTCLAUDE_FALCON",
+    ),
+    "dot-claude scope strips .claude",
+  )
+  assert(str_contains(msg, "web rule SWIFT"), "web CLAUDE.md injected")
+
+  // Next PostInvocation has nothing left.
+  assert(
+    eval_repo_rules_hook(
+      env,
+      "{\"conversationId\":\"c-1\",\"cwd\":\"/root/workspace\",\"hookEventName\":\"PostInvocation\"}",
+    ) == "{}",
+    "empty after injection",
+  )
+}
+
+test "path traversal session_id is sanitized inside state_dir and run_repo_rules_hook exits 0" {
+  let fs = setup_repo_fs()
+  let env = fs.env("/root/workspace", "/tmp", Some("/home/u"), None)
+  let out_buf : Array[String] = []
+  let io = RepoRulesHookIo::{
+    env: env,
+    read_stdin: fn() -> String {
+      "{\"session_id\":\"../../evil/escape\",\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_input\":{\"file_path\":\"/root/workspace/wt/apps/x/src/a.txt\"}}"
+    },
+    write_stdout: fn(s : String) -> Unit { out_buf.push(s) },
+  }
+  let rc = run_repo_rules_hook(io)
+  assert(rc == 0, "run_repo_rules_hook returns 0")
+  assert(out_buf.length() == 1, "wrote context")
+  // Verify state file stays strictly inside /tmp/stillfail-repo-rules/
+  match fs.entries.get("/tmp/stillfail-repo-rules/.._.._evil_escape-main.json") {
+    Some(_) => ()
+    None => assert(false, "state file must be sanitized inside state_dir")
+  }
+  // Malformed stdin exits 0 silently.
+  let out_bad : Array[String] = []
+  let io_bad = RepoRulesHookIo::{
+    env: env,
+    read_stdin: fn() -> String { "{bad json" },
+    write_stdout: fn(s : String) -> Unit { out_bad.push(s) },
+  }
+  assert(run_repo_rules_hook(io_bad) == 0, "bad stdin exits 0")
+  assert(out_bad.length() == 0, "bad stdin writes nothing")
+}
+
+test "waiting file modified mid-pagination restarts from line 1, and self-edit cancels waiting" {
+  let fs = MemFs::new()
+  fs.mkdir("/ws/big/.git")
+  fs.mkdir("/ws/big/app")
+  fs.mkdir("/ws/notes")
+  let root_rules = "# Root\n\n" + make_paragraphs("ROOT", 32)
+  let app_rules = "# App\n\n" + make_paragraphs("APP", 52)
+  fs.write("/ws/big/AGENTS.md", root_rules, 1000.0)
+  fs.write("/ws/big/app/AGENTS.md", app_rules, 1000.0)
+  let env = fs.env("/ws", "/tmp", Some("/home/u"), None)
+
+  // Call 1 tells Root; App waits.
+  let c1 = additional_context(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s7\",\"cwd\":\"/ws\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls big/app\"}}",
+    ),
+  )
+  assert(str_contains(c1, "# Root"), "call 1 tells root")
+
+  // Call 2 tells first chunk of App.
+  let c2 = additional_context(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s7\",\"cwd\":\"/ws\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls notes/\"}}",
+    ),
+  )
+  assert(str_contains(c2, "lines 1 to ") && str_contains(c2, " of 54:"), "call 2 tells chunk 1")
+
+  // External modification resets waiting offset to 0 -> restarts from line 1.
+  fs.write("/ws/big/app/AGENTS.md", "# App again\n\n" + make_paragraphs("APP", 52), 2000.0)
+  let c3 = additional_context(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s7\",\"cwd\":\"/ws\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls notes/\"}}",
+    ),
+  )
+  assert(str_contains(c3, "# App again") && str_contains(c3, "lines 1 to "), "modified waiting file restarts from line 1")
+
+  // Tool edits the waiting file itself -> cancelled from waiting queue.
+  fs.write("/ws/big/app/AGENTS.md", "# App rewritten\n\n" + make_paragraphs("APP", 52), 3000.0)
+  assert(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s7\",\"cwd\":\"/ws\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/ws/big/app/AGENTS.md\"}}",
+    ) == "",
+    "self-edit cancels waiting file",
+  )
+  assert(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s7\",\"cwd\":\"/ws\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls notes/\"}}",
+    ) == "",
+    "queue empty after self-edit cancellation",
+  )
+
+  // Tilde expansion uses HOME.
+  fs.mkdir("/home/u/proj/.git")
+  fs.write("/home/u/proj/AGENTS.md", "home rule FALCON", 1000.0)
+  let tilde_out = additional_context(
+    eval_repo_rules_hook(
+      env,
+      "{\"session_id\":\"s8\",\"cwd\":\"/ws\",\"hook_event_name\":\"PostToolUse\",\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls ~/proj\"}}",
+    ),
+  )
+  assert(str_contains(tilde_out, "home rule FALCON"), "tilde expanded with HOME")
+}
+
+test "js_string_of_json formats arrays and canonical JS numbers in state filenames" {
+  // Unit assertions for js_string_of_json matching JS String().
+  match base_codec::json_parse("[1,2]") {
+    base_codec::JsonParseResult::Ok(v) => assert(js_string_of_json(v) == "1,2", "[1,2] -> 1,2")
+    _ => assert(false, "parse")
+  }
+  match base_codec::json_parse("[]") {
+    base_codec::JsonParseResult::Ok(v) => assert(js_string_of_json(v) == "", "[] -> empty")
+    _ => assert(false, "parse")
+  }
+  match base_codec::json_parse("[1,null,[3,4]]") {
+    base_codec::JsonParseResult::Ok(v) => assert(js_string_of_json(v) == "1,,3,4", "nested array with null")
+    _ => assert(false, "parse")
+  }
+  match base_codec::json_parse("1.50") {
+    base_codec::JsonParseResult::Ok(v) => assert(js_string_of_json(v) == "1.5", "1.50 -> 1.5")
+    _ => assert(false, "parse")
+  }
+
+  // State filenames reflect canonical JS String() of array and float session_ids.
+  let fs = setup_repo_fs()
+  let env = fs.env("/root/workspace", "/tmp", None, None)
+  let _ = eval_repo_rules_hook(
+    env,
+    "{\"session_id\":[1,2],\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_input\":{\"file_path\":\"/root/workspace/wt/apps/x/src/a.txt\"}}",
+  )
+  match fs.entries.get("/tmp/stillfail-repo-rules/1_2-main.json") {
+    Some(_) => ()
+    None => assert(false, "array session_id [1,2] produces 1_2-main.json")
+  }
+  let _ = eval_repo_rules_hook(
+    env,
+    "{\"session_id\":1.50,\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_input\":{\"file_path\":\"/root/workspace/wt/apps/x/src/a.txt\"}}",
+  )
+  match fs.entries.get("/tmp/stillfail-repo-rules/1.5-main.json") {
+    Some(_) => ()
+    None => assert(false, "numeric session_id 1.50 produces 1.5-main.json")
+  }
+  let _ = eval_repo_rules_hook(
+    env,
+    "{\"session_id\":[],\"cwd\":\"/root/workspace\",\"hook_event_name\":\"PostToolUse\",\"tool_input\":{\"file_path\":\"/root/workspace/wt/apps/x/src/a.txt\"}}",
+  )
+  match fs.entries.get("/tmp/stillfail-repo-rules/-main.json") {
+    Some(_) => ()
+    None => assert(false, "empty array session_id [] produces -main.json")
+  }
+}

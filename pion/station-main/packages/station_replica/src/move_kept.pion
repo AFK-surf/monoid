@@ -1,0 +1,441 @@
+// Move durable ledgers (`KeptLog`, `LentLog`), told steps (`Told`), and size measurement (`Sizes`).
+// 1:1 aligned with `station/src/move/{kept,told,sizes}.ts`.
+
+import "base_codec"
+
+pub let told_every_ms : Int64 = 5000.to_int64()
+pub let told_silent_ms : Int64 = 15000.to_int64()
+pub let heard_again_ms : Int64 = 10000.to_int64()
+pub let told_ended_most : Int = 256
+pub let sizes_batch : Int = 50
+pub let size_most : Int = 500000
+
+// ── 1. KeptLog (append-only JSONL ledger with compaction) ──
+
+pub struct KeptLog {
+  entries : Map[String, String]
+  mut lines_read : Int
+  mut needs_compact : Bool
+}
+
+pub fn KeptLog::new() -> KeptLog {
+  KeptLog::{ entries: Map::new(), lines_read: 0, needs_compact: false }
+}
+
+/// Replays an append-only JSONL log (`{"k": key, "v": json}` or `{"k": key}` for delete).
+/// Tolerates truncated trailing lines and flags compaction when `lines > 2 * size + 64`.
+pub fn KeptLog::from_jsonl(text : String) -> KeptLog {
+  let log = KeptLog::new()
+  let n = text.length()
+  let mut start = 0
+  for i in 0..<(n + 1) {
+    if i == n || text.code_unit_at(i) == 10 {
+      if i > start {
+        let line = text.slice(start, i)
+        match base_codec::json_parse(line) {
+          base_codec::JsonParseResult::Ok(j) => {
+            match base_codec::json_get(j, "k") {
+              Some(base_codec::Json::Str(k)) => {
+                log.lines_read = log.lines_read + 1
+                match base_codec::json_get(j, "v") {
+                  Some(v) => log.entries.set(k, base_codec::json_stringify(v))
+                  None => log.entries.remove(k)
+                }
+              }
+              _ => ()
+            }
+          }
+          _ => ()
+        }
+      }
+      start = i + 1
+    }
+  }
+  let sz = log.entries.keys().length()
+  if log.lines_read > 2 * sz + 64 || (n > 0 && text.code_unit_at(n - 1) != 10) {
+    log.needs_compact = true
+  }
+  log
+}
+
+pub fn KeptLog::set(self : KeptLog, key : String, value_json : String) -> String {
+  self.entries.set(key, value_json)
+  self.lines_read = self.lines_read + 1
+  "{\"k\":" + base_codec::json_stringify(base_codec::json_str(key)) + ",\"v\":" + value_json + "}\n"
+}
+
+pub fn KeptLog::delete(self : KeptLog, key : String) -> Option[String] {
+  match self.entries.get(key) {
+    None => None
+    Some(_) => {
+      self.entries.remove(key)
+      self.lines_read = self.lines_read + 1
+      Some("{\"k\":" + base_codec::json_stringify(base_codec::json_str(key)) + "}\n")
+    }
+  }
+}
+
+pub fn KeptLog::get(self : KeptLog, key : String) -> Option[String] {
+  self.entries.get(key)
+}
+
+pub fn KeptLog::has(self : KeptLog, key : String) -> Bool {
+  match self.entries.get(key) {
+    Some(_) => true
+    None => false
+  }
+}
+
+pub fn KeptLog::keys(self : KeptLog) -> Array[String] {
+  self.entries.keys()
+}
+
+pub fn KeptLog::size(self : KeptLog) -> Int {
+  self.entries.keys().length()
+}
+
+pub fn KeptLog::should_compact(self : KeptLog) -> Bool {
+  self.needs_compact || self.lines_read > 2 * self.size() + 64
+}
+
+pub fn KeptLog::compact_jsonl(self : KeptLog) -> String {
+  let sb = StringBuilder::new()
+  let ks = sort_strings(self.entries.keys())
+  for i in 0..<ks.length() {
+    let k = ks[i]
+    match self.entries.get(k) {
+      Some(v) => {
+        sb.write_string("{\"k\":")
+        sb.write_string(base_codec::json_stringify(base_codec::json_str(k)))
+        sb.write_string(",\"v\":")
+        sb.write_string(v)
+        sb.write_string("}\n")
+      }
+      None => ()
+    }
+  }
+  self.lines_read = ks.length()
+  self.needs_compact = false
+  sb.to_string()
+}
+
+// ── 2. LentLog (tracks lent account shares and the items each share was lent for) ──
+
+pub struct LentLog {
+  log : KeptLog
+  for_items : Map[String, Map[String, Bool]] // share -> set of item names
+  shares_of : Map[String, Map[String, Bool]] // item name -> set of shares
+  shares : Map[String, Bool]
+}
+
+pub fn LentLog::new() -> LentLog {
+  LentLog::{
+    log: KeptLog::new(),
+    for_items: Map::new(),
+    shares_of: Map::new(),
+    shares: Map::new(),
+  }
+}
+
+pub fn LentLog::record_lent(self : LentLog, share : String, meta_json : String, items : Array[String]) -> Unit {
+  self.shares.set(share, true)
+  let _ = self.log.set("s:" + share, meta_json)
+  for i in 0..<items.length() {
+    self.add_for(share, items[i])
+  }
+}
+
+pub fn LentLog::add_for(self : LentLog, share : String, item_name : String) -> Unit {
+  let _ = self.log.set("f:" + share + "\n" + item_name, base_codec::json_stringify(base_codec::json_str(share)))
+  match self.for_items.get(share) {
+    Some(m) => m.set(item_name, true)
+    None => {
+      let m : Map[String, Bool] = Map::new()
+      m.set(item_name, true)
+      self.for_items.set(share, m)
+    }
+  }
+  match self.shares_of.get(item_name) {
+    Some(m) => m.set(share, true)
+    None => {
+      let m : Map[String, Bool] = Map::new()
+      m.set(share, true)
+      self.shares_of.set(item_name, m)
+    }
+  }
+}
+
+pub fn LentLog::remove_for(self : LentLog, share : String, item_name : String) -> Unit {
+  let _ = self.log.delete("f:" + share + "\n" + item_name)
+  match self.for_items.get(share) {
+    Some(m) => {
+      m.remove(item_name)
+      if m.keys().length() == 0 {
+        self.for_items.remove(share)
+      }
+    }
+    None => ()
+  }
+  match self.shares_of.get(item_name) {
+    Some(m) => {
+      m.remove(share)
+      if m.keys().length() == 0 {
+        self.shares_of.remove(item_name)
+      }
+    }
+    None => ()
+  }
+}
+
+pub fn LentLog::remove_share(self : LentLog, share : String) -> Unit {
+  self.shares.remove(share)
+  let _ = self.log.delete("s:" + share)
+  match self.for_items.get(share) {
+    Some(m) => {
+      let items = m.keys()
+      for i in 0..<items.length() {
+        self.remove_for(share, items[i])
+      }
+    }
+    None => ()
+  }
+}
+
+pub fn LentLog::shares_for(self : LentLog, item_name : String) -> Array[String] {
+  match self.shares_of.get(item_name) {
+    Some(m) => sort_strings(m.keys())
+    None => []
+  }
+}
+
+pub fn LentLog::for_count(self : LentLog, share : String) -> Int {
+  match self.for_items.get(share) {
+    Some(m) => m.keys().length()
+    None => 0
+  }
+}
+
+// ── 3. Told steps state machine (`move/told.ts`) ──
+
+pub enum ToldStepStatus {
+  Running
+  EndedOk(String)
+  EndedErr(String)
+}
+
+pub struct ToldStep {
+  pub key : String
+  pub origin : String
+  pub mut status : ToldStepStatus
+  pub mut last_progress : String
+}
+
+pub struct ToldCoordinator {
+  steps : Map[String, ToldStep]
+  order : Array[String]
+  mut closed : Bool
+}
+
+pub fn ToldCoordinator::new() -> ToldCoordinator {
+  ToldCoordinator::{ steps: Map::new(), order: [], closed: false }
+}
+
+pub fn ToldCoordinator::close(self : ToldCoordinator) -> Unit {
+  self.closed = true
+}
+
+/// Registers or queries a long-running told step (`move.told`).
+/// Returns `Ok(None)` if running (`{under: true, told: key}`), `Ok(Some(res))` if already ended ok,
+/// or `Err(msg)` if ended with error or closing.
+pub fn ToldCoordinator::begin_or_query(self : ToldCoordinator, origin : String, key : String) -> Result[Option[String], String] {
+  let at = origin + "\n" + key
+  match self.steps.get(at) {
+    Some(step) =>
+    match step.status {
+      ToldStepStatus::Running => return Ok(None)
+      ToldStepStatus::EndedOk(r) => return Ok(Some(r))
+      ToldStepStatus::EndedErr(e) => return Err(e)
+    }
+    None => ()
+  }
+  if self.closed {
+    return Err("this station is stopping: ask again in a moment")
+  }
+  self.steps.set(at, ToldStep::{ key: key, origin: origin, status: ToldStepStatus::Running, last_progress: "{}" })
+  self.order.push(at)
+  Ok(None)
+}
+
+pub fn ToldCoordinator::finish(self : ToldCoordinator, origin : String, key : String, res : Result[String, String]) -> Unit {
+  let at = origin + "\n" + key
+  match self.steps.get(at) {
+    Some(step) => {
+      step.status = match res {
+        Ok(r) => ToldStepStatus::EndedOk(r)
+        Err(e) => ToldStepStatus::EndedErr(e)
+      }
+    }
+    None => ()
+  }
+  // Evict oldest ended steps past `told_ended_most` (256).
+  while self.steps.keys().length() > told_ended_most && self.order.length() > 0 {
+    let mut removed = false
+    for i in 0..<self.order.length() {
+      let k = self.order[i]
+      let is_ended = match self.steps.get(k) {
+        Some(s) =>
+        match s.status {
+          ToldStepStatus::Running => false
+          _ => true
+        }
+        None => true
+      }
+      if is_ended {
+        self.steps.remove(k)
+        let next_order : Array[String] = []
+        for j in 0..<self.order.length() {
+          if j != i {
+            next_order.push(self.order[j])
+          }
+        }
+        self.order.clear()
+        for j in 0..<next_order.length() {
+          self.order.push(next_order[j])
+        }
+        removed = true
+        break
+      }
+    }
+    if !removed {
+      break
+    }
+  }
+}
+
+// ── 4. Sizes ledger (`move/sizes.ts`) ──
+
+pub struct SizeLine {
+  pub bytes : Int64
+  pub complete : Bool
+  pub stamp : String
+  pub room : Option[String]
+  pub transcripts : Array[String]
+}
+
+pub struct SizeSum {
+  pub bytes : Int64
+  pub known : Int
+  pub total : Int
+  pub measuring : Int
+  pub at_least : Bool
+}
+
+pub struct SizesLedger {
+  lines : Map[String, SizeLine]
+  stale : Map[String, String] // session_key -> stamp
+  keys_of : Map[String, Array[String]] // chat_id -> session_keys
+  pub mut measured : Int
+}
+
+pub fn SizesLedger::new() -> SizesLedger {
+  SizesLedger::{
+    lines: Map::new(),
+    stale: Map::new(),
+    keys_of: Map::new(),
+    measured: 0,
+  }
+}
+
+pub fn SizesLedger::seen(self : SizesLedger, chat_id : String, sessions : Array[(String, String)]) -> Unit {
+  let keys : Array[String] = []
+  for i in 0..<sessions.length() {
+    let (skey, stamp) = sessions[i]
+    keys.push(skey)
+    let up_to_date = match self.lines.get(skey) {
+      Some(l) => l.stamp == stamp
+      None => false
+    }
+    if up_to_date {
+      self.stale.remove(skey)
+    } else {
+      self.stale.set(skey, stamp)
+    }
+  }
+  self.keys_of.set(chat_id, keys)
+}
+
+pub fn SizesLedger::next_stale_batch(self : SizesLedger) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  let skeys = sort_strings(self.stale.keys())
+  let lim = if skeys.length() < sizes_batch { skeys.length() } else { sizes_batch }
+  for i in 0..<lim {
+    let k = skeys[i]
+    match self.stale.get(k) {
+      Some(st) => out.push((k, st))
+      None => ()
+    }
+  }
+  out
+}
+
+pub fn SizesLedger::record_measured(self : SizesLedger, session_key : String, line : SizeLine) -> Unit {
+  match self.stale.get(session_key) {
+    Some(st) => if st == line.stamp { self.stale.remove(session_key) }
+    None => ()
+  }
+  self.lines.set(session_key, line)
+  self.measured = self.measured + 1
+}
+
+pub fn SizesLedger::sum(self : SizesLedger, chat_ids : Array[String]) -> SizeSum {
+  let mut total_bytes : Int64 = 0.to_int64()
+  let mut known = 0
+  let mut measuring = 0
+  let mut at_least = false
+  for i in 0..<chat_ids.length() {
+    let cid = chat_ids[i]
+    let keys = match self.keys_of.get(cid) {
+      Some(ks) => ks
+      None => [cid]
+    }
+    let mut ready = true
+    for j in 0..<keys.length() {
+      let k = keys[j]
+      let is_stale = match self.stale.get(k) {
+        Some(_) => true
+        None => false
+      }
+      let has_line = match self.lines.get(k) {
+        Some(_) => true
+        None => false
+      }
+      if is_stale || !has_line {
+        ready = false
+        break
+      }
+    }
+    if !ready {
+      measuring = measuring + 1
+      continue
+    }
+    known = known + 1
+    for j in 0..<keys.length() {
+      match self.lines.get(keys[j]) {
+        Some(l) => {
+          total_bytes = total_bytes + l.bytes
+          if !l.complete {
+            at_least = true
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  SizeSum::{
+    bytes: total_bytes,
+    known: known,
+    total: chat_ids.length(),
+    measuring: measuring,
+    at_least: at_least,
+  }
+}

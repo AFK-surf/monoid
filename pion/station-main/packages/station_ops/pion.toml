@@ -1,0 +1,12 @@
+[package]
+name = "station_ops"
+version = "0.1.0"
+
+[dependencies]
+base64 = { workspace = true }
+base_codec = { workspace = true }
+crypto = { workspace = true }
+host_shim = { workspace = true }
+js_json = { workspace = true }
+nodepath = { workspace = true }
+station_sys = { workspace = true }

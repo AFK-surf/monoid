@@ -1,0 +1,928 @@
+// Pure-Pion VT100/ANSI headless terminal screen buffer replacing `@xterm/headless`.
+// Supports configurable cols x rows (default 1000 x 40) + scrollback, incremental UTF-8
+// decoding with East Asian / emoji wide-character handling, CSI cursor/erase/scroll/edit
+// sequences, SGR & private mode handling, OSC 10/11 color query replies, DSR cursor
+// position reports, and safe swallowing of OSC titles and OSC 8 hyperlinks.
+
+pub let VT_DEFAULT_COLS : Int = 1000
+pub let VT_DEFAULT_ROWS : Int = 40
+pub let VT_DEFAULT_SCROLLBACK : Int = 200
+
+pub struct VtScreen {
+  pub rows : Array[String]
+  pub wrapped : Array[Bool]
+  pub cursor_x : Int
+  pub cursor_y : Int
+}
+
+struct VtLine {
+  // Each cell holds a Unicode code point: 0x20 for space, 0 for wide-char continuation cell.
+  mut cells : Array[Int]
+  mut wrapped : Bool
+}
+
+fn VtLine::blank(cols : Int) -> VtLine {
+  let cells : Array[Int] = []
+  let mut i = 0
+  while i < cols {
+    cells.push(0x20)
+    i = i + 1
+  }
+  VtLine::{ cells, wrapped: false }
+}
+
+fn VtLine::clear_range(self : VtLine, start : Int, end_excl : Int) -> Unit {
+  let lo = if start < 0 { 0 } else { start }
+  let hi = if end_excl > self.cells.length() { self.cells.length() } else { end_excl }
+  let mut i = lo
+  while i < hi {
+    self.cells[i] = 0x20
+    i = i + 1
+  }
+}
+
+fn VtLine::to_trimmed_string(self : VtLine) -> String {
+  let mut end = self.cells.length()
+  while end > 0 && (self.cells[end - 1] == 0x20 || self.cells[end - 1] == 0) {
+    end = end - 1
+  }
+  if end == 0 {
+    return ""
+  }
+  let buf = StringBuilder::new()
+  let mut i = 0
+  while i < end {
+    let cp = self.cells[i]
+    if cp != 0 {
+      append_codepoint(buf, cp)
+    }
+    i = i + 1
+  }
+  buf.to_string()
+}
+
+fn byte_to_str(b : Int) -> String {
+  let sb = StringBuilder::new()
+  sb.write_byte((b & 0xFF).to_byte())
+  sb.to_string()
+}
+
+fn bytes_to_str(b : Bytes) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < b.length() {
+    sb.write_byte(b[i])
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn append_codepoint(buf : StringBuilder, cp_in : Int) -> Unit {
+  let cp = if cp_in >= 0 && cp_in <= 0x10FFFF && !(cp_in >= 0xD800 && cp_in <= 0xDFFF) {
+    cp_in
+  } else {
+    0xFFFD
+  }
+  if cp < 0x80 {
+    buf.write_byte(cp.to_byte())
+  } else if cp < 0x800 {
+    buf.write_byte((0xC0 | (cp >> 6)).to_byte())
+    buf.write_byte((0x80 | (cp & 0x3F)).to_byte())
+  } else if cp < 0x10000 {
+    buf.write_byte((0xE0 | (cp >> 12)).to_byte())
+    buf.write_byte((0x80 | ((cp >> 6) & 0x3F)).to_byte())
+    buf.write_byte((0x80 | (cp & 0x3F)).to_byte())
+  } else {
+    buf.write_byte((0xF0 | (cp >> 18)).to_byte())
+    buf.write_byte((0x80 | ((cp >> 12) & 0x3F)).to_byte())
+    buf.write_byte((0x80 | ((cp >> 6) & 0x3F)).to_byte())
+    buf.write_byte((0x80 | (cp & 0x3F)).to_byte())
+  }
+}
+
+/// Display width of a Unicode code point in terminal cells (0, 1, or 2).
+pub fn char_display_width(cp : Int) -> Int {
+  if cp < 0x20 || (cp >= 0x7F && cp < 0xA0) {
+    return 0
+  }
+  // Common zero-width combining marks and format characters.
+  if (cp >= 0x0300 && cp <= 0x036F) ||
+  (cp >= 0x1AB0 && cp <= 0x1AFF) ||
+  (cp >= 0x1DC0 && cp <= 0x1DFF) ||
+  (cp >= 0x20D0 && cp <= 0x20FF) ||
+  (cp >= 0xFE00 && cp <= 0xFE0F) ||
+  (cp >= 0xFE20 && cp <= 0xFE2F) ||
+  cp == 0x200B ||
+  cp == 0x200C ||
+  cp == 0x200D ||
+  cp == 0xFEFF {
+    return 0
+  }
+  // East Asian Wide / Fullwidth and common emoji blocks.
+  if (cp >= 0x1100 && cp <= 0x115F) ||
+  cp == 0x2329 ||
+  cp == 0x232A ||
+  (cp >= 0x2E80 && cp <= 0x303E) ||
+  (cp >= 0x3040 && cp <= 0x33FF) ||
+  (cp >= 0x3400 && cp <= 0x4DBF) ||
+  (cp >= 0x4E00 && cp <= 0xA4CF) ||
+  (cp >= 0xAC00 && cp <= 0xD7A3) ||
+  (cp >= 0xF900 && cp <= 0xFAFF) ||
+  (cp >= 0xFE10 && cp <= 0xFE19) ||
+  (cp >= 0xFE30 && cp <= 0xFE6F) ||
+  (cp >= 0xFF01 && cp <= 0xFF60) ||
+  (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+  (cp >= 0x1F300 && cp <= 0x1FAFF) ||
+  (cp >= 0x20000 && cp <= 0x2FFFD) ||
+  (cp >= 0x30000 && cp <= 0x3FFFD) {
+    return 2
+  }
+  1
+}
+
+enum ParserState {
+  Ground
+  Escape
+  EscapeCharset
+  Csi
+  Osc
+  OscEsc
+  Dcs
+  DcsEsc
+}
+
+pub struct VtTerminal {
+  mut cols : Int
+  mut rows : Int
+  scrollback : Int
+  mut lines : Array[VtLine]
+  mut base_y : Int
+  mut cursor_x : Int
+  mut cursor_y : Int
+  mut pending_wrap : Bool
+  mut saved_x : Int
+  mut saved_y : Int
+  mut cursor_visible : Bool
+  mut bracketed_paste : Bool
+  mut state : ParserState
+  mut csi_buf : String
+  mut osc_buf : String
+  mut utf8_buf : Array[Int]
+  mut utf8_need : Int
+  mut responses : Array[String]
+}
+
+pub fn VtTerminal::new(cols : Int, rows : Int, scrollback : Int) -> VtTerminal {
+  let c = if cols < 1 { 1 } else { cols }
+  let r = if rows < 1 { 1 } else { rows }
+  let sb = if scrollback < 0 { 0 } else { scrollback }
+  let lines : Array[VtLine] = []
+  let mut i = 0
+  while i < r {
+    lines.push(VtLine::blank(c))
+    i = i + 1
+  }
+  VtTerminal::{
+    cols: c,
+    rows: r,
+    scrollback: sb,
+    lines,
+    base_y: 0,
+    cursor_x: 0,
+    cursor_y: 0,
+    pending_wrap: false,
+    saved_x: 0,
+    saved_y: 0,
+    cursor_visible: true,
+    bracketed_paste: false,
+    state: ParserState::Ground,
+    csi_buf: "",
+    osc_buf: "",
+    utf8_buf: [],
+    utf8_need: 0,
+    responses: [],
+  }
+}
+
+pub fn VtTerminal::new_default() -> VtTerminal {
+  VtTerminal::new(VT_DEFAULT_COLS, VT_DEFAULT_ROWS, VT_DEFAULT_SCROLLBACK)
+}
+
+pub fn VtTerminal::cols(self : VtTerminal) -> Int {
+  self.cols
+}
+
+pub fn VtTerminal::rows(self : VtTerminal) -> Int {
+  self.rows
+}
+
+pub fn VtTerminal::cursor_visible(self : VtTerminal) -> Bool {
+  self.cursor_visible
+}
+
+/// Drain terminal responses generated during writes (e.g. OSC 10/11 color replies, DSR 6n).
+pub fn VtTerminal::take_responses(self : VtTerminal) -> Array[String] {
+  let out = self.responses
+  self.responses = []
+  out
+}
+
+/// Snapshot of the active viewport (`rows` lines, `wrapped` flags, cursor position).
+pub fn VtTerminal::screen(self : VtTerminal) -> VtScreen {
+  let rows : Array[String] = []
+  let wrapped : Array[Bool] = []
+  let mut i = 0
+  while i < self.rows {
+    let idx = self.base_y + i
+    if idx < self.lines.length() {
+      rows.push(self.lines[idx].to_trimmed_string())
+      wrapped.push(self.lines[idx].wrapped)
+    } else {
+      rows.push("")
+      wrapped.push(false)
+    }
+    i = i + 1
+  }
+  VtScreen::{ rows, wrapped, cursor_x: self.cursor_x, cursor_y: self.cursor_y }
+}
+
+/// Resize the terminal viewport, preserving existing lines where possible.
+pub fn VtTerminal::resize(self : VtTerminal, new_cols : Int, new_rows : Int) -> Unit {
+  let c = if new_cols < 1 { 1 } else { new_cols }
+  let r = if new_rows < 1 { 1 } else { new_rows }
+  let mut i = 0
+  while i < self.lines.length() {
+    let line = self.lines[i]
+    if c > line.cells.length() {
+      while line.cells.length() < c {
+        line.cells.push(0x20)
+      }
+    } else if c < line.cells.length() {
+      let trimmed : Array[Int] = []
+      let mut j = 0
+      while j < c {
+        trimmed.push(line.cells[j])
+        j = j + 1
+      }
+      line.cells = trimmed
+    }
+    i = i + 1
+  }
+  self.cols = c
+  self.rows = r
+  while self.lines.length() < self.base_y + r {
+    self.lines.push(VtLine::blank(c))
+  }
+  if self.cursor_x >= c {
+    self.cursor_x = c - 1
+  }
+  if self.cursor_y >= r {
+    self.cursor_y = r - 1
+  }
+  self.pending_wrap = false
+}
+
+fn VtTerminal::active_line(self : VtTerminal, row : Int) -> VtLine {
+  let r = if row < 0 { 0 } else if row >= self.rows { self.rows - 1 } else { row }
+  self.lines[self.base_y + r]
+}
+
+fn VtTerminal::scroll_up_one(self : VtTerminal) -> Unit {
+  self.lines.push(VtLine::blank(self.cols))
+  let max_lines = self.rows + self.scrollback
+  if self.lines.length() > max_lines {
+    let drop = self.lines.length() - max_lines
+    let kept : Array[VtLine] = []
+    let mut i = drop
+    while i < self.lines.length() {
+      kept.push(self.lines[i])
+      i = i + 1
+    }
+    self.lines = kept
+  }
+  self.base_y = self.lines.length() - self.rows
+  if self.base_y < 0 {
+    self.base_y = 0
+  }
+}
+
+fn VtTerminal::line_feed(self : VtTerminal) -> Unit {
+  self.pending_wrap = false
+  if self.cursor_y + 1 < self.rows {
+    self.cursor_y = self.cursor_y + 1
+  } else {
+    self.scroll_up_one()
+  }
+}
+
+fn VtTerminal::reverse_index(self : VtTerminal) -> Unit {
+  self.pending_wrap = false
+  if self.cursor_y > 0 {
+    self.cursor_y = self.cursor_y - 1
+  } else {
+    // Shift viewport down by 1 line.
+    let mut y = self.rows - 1
+    while y > 0 {
+      self.lines[self.base_y + y] = self.lines[self.base_y + y - 1]
+      y = y - 1
+    }
+    self.lines[self.base_y] = VtLine::blank(self.cols)
+  }
+}
+
+fn VtTerminal::put_codepoint(self : VtTerminal, cp : Int) -> Unit {
+  let w = char_display_width(cp)
+  if w == 0 {
+    return
+  }
+  if self.pending_wrap {
+    self.pending_wrap = false
+    self.cursor_x = 0
+    if self.cursor_y + 1 < self.rows {
+      self.cursor_y = self.cursor_y + 1
+    } else {
+      self.scroll_up_one()
+    }
+    self.active_line(self.cursor_y).wrapped = true
+  }
+  if w == 2 && self.cursor_x == self.cols - 1 {
+    // Wide character does not fit in last column: blank it and wrap.
+    let cur = self.active_line(self.cursor_y)
+    cur.cells[self.cursor_x] = 0x20
+    self.cursor_x = 0
+    if self.cursor_y + 1 < self.rows {
+      self.cursor_y = self.cursor_y + 1
+    } else {
+      self.scroll_up_one()
+    }
+    self.active_line(self.cursor_y).wrapped = true
+  }
+  let line = self.active_line(self.cursor_y)
+  // If overwriting the second half of an existing wide char, clear its first half.
+  if line.cells[self.cursor_x] == 0 && self.cursor_x > 0 {
+    line.cells[self.cursor_x - 1] = 0x20
+  }
+  line.cells[self.cursor_x] = cp
+  if w == 2 && self.cursor_x + 1 < self.cols {
+    // If overwriting the first half of a wide char at cursor_x + 1, clear its continuation.
+    if self.cursor_x + 2 < self.cols && line.cells[self.cursor_x + 2] == 0 {
+      line.cells[self.cursor_x + 2] = 0x20
+    }
+    line.cells[self.cursor_x + 1] = 0
+  } else if w == 1 && self.cursor_x + 1 < self.cols && line.cells[self.cursor_x + 1] == 0 {
+    line.cells[self.cursor_x + 1] = 0x20
+  }
+  let next_x = self.cursor_x + w
+  if next_x >= self.cols {
+    self.cursor_x = self.cols - 1
+    self.pending_wrap = true
+  } else {
+    self.cursor_x = next_x
+  }
+}
+
+/// Write a UTF-8 string into the terminal emulator.
+pub fn VtTerminal::write(self : VtTerminal, text : String) -> Unit {
+  self.write_bytes(text.to_bytes())
+}
+
+/// Write raw bytes (UTF-8 stream, may split multi-byte characters across chunks).
+pub fn VtTerminal::write_bytes(self : VtTerminal, data : Bytes) -> Unit {
+  let len = data.length()
+  let mut i = 0
+  while i < len {
+    let b = data[i].to_int() & 0xFF
+    self.feed_byte(b)
+    i = i + 1
+  }
+}
+
+fn VtTerminal::feed_byte(self : VtTerminal, b : Int) -> Unit {
+  // Handle pending UTF-8 continuation bytes in Ground state.
+  if self.utf8_need > 0 {
+    if (b & 0xC0) == 0x80 {
+      self.utf8_buf.push(b)
+      if self.utf8_buf.length() == self.utf8_need {
+        let cp = decode_utf8_buf(self.utf8_buf)
+        self.utf8_buf = []
+        self.utf8_need = 0
+        self.put_codepoint(cp)
+      }
+      return
+    } else {
+      // Invalid continuation: emit replacement and reprocess current byte.
+      self.utf8_buf = []
+      self.utf8_need = 0
+      self.put_codepoint(0xFFFD)
+    }
+  }
+
+  match self.state {
+    ParserState::Ground => self.feed_ground(b)
+    ParserState::Escape => self.feed_escape(b)
+    ParserState::EscapeCharset => {
+      // Consume one charset designator byte and return to Ground.
+      self.state = ParserState::Ground
+    }
+    ParserState::Csi => self.feed_csi(b)
+    ParserState::Osc => self.feed_osc(b)
+    ParserState::OscEsc => {
+      if b == 0x5C {
+        // ESC \ (ST) terminates OSC.
+        self.handle_osc(self.osc_buf)
+        self.osc_buf = ""
+        self.state = ParserState::Ground
+      } else {
+        // Not ST: terminate OSC and treat as new Escape sequence.
+        self.handle_osc(self.osc_buf)
+        self.osc_buf = ""
+        self.state = ParserState::Escape
+        self.feed_escape(b)
+      }
+    }
+    ParserState::Dcs => {
+      if b == 0x1B {
+        self.state = ParserState::DcsEsc
+      } else if b == 0x07 {
+        self.state = ParserState::Ground
+      }
+    }
+    ParserState::DcsEsc => {
+      if b == 0x5C {
+        self.state = ParserState::Ground
+      } else {
+        self.state = ParserState::Dcs
+      }
+    }
+  }
+}
+
+fn decode_utf8_buf(buf : Array[Int]) -> Int {
+  let n = buf.length()
+  if n == 2 {
+    ((buf[0] & 0x1F) << 6) | (buf[1] & 0x3F)
+  } else if n == 3 {
+    ((buf[0] & 0x0F) << 12) | ((buf[1] & 0x3F) << 6) | (buf[2] & 0x3F)
+  } else if n == 4 {
+    ((buf[0] & 0x07) << 18) | ((buf[1] & 0x3F) << 12) | ((buf[2] & 0x3F) << 6) | (buf[3] & 0x3F)
+  } else {
+    0xFFFD
+  }
+}
+
+fn VtTerminal::feed_ground(self : VtTerminal, b : Int) -> Unit {
+  if b == 0x1B {
+    self.state = ParserState::Escape
+    return
+  }
+  if b == 0x0D {
+    // CR
+    self.cursor_x = 0
+    self.pending_wrap = false
+    return
+  }
+  if b == 0x0A || b == 0x0B || b == 0x0C {
+    // LF, VT, FF
+    self.line_feed()
+    return
+  }
+  if b == 0x08 {
+    // BS
+    self.pending_wrap = false
+    if self.cursor_x > 0 {
+      self.cursor_x = self.cursor_x - 1
+    }
+    return
+  }
+  if b == 0x09 {
+    // HT (8-column tab stops)
+    self.pending_wrap = false
+    let next_tab = ((self.cursor_x / 8) + 1) * 8
+    self.cursor_x = if next_tab < self.cols { next_tab } else { self.cols - 1 }
+    return
+  }
+  if b < 0x20 || b == 0x7F {
+    // Ignore BEL, NUL, SO, SI, DEL, etc.
+    return
+  }
+  if b < 0x80 {
+    self.put_codepoint(b)
+    return
+  }
+  // Start of UTF-8 multi-byte sequence.
+  if b >= 0xC2 && b <= 0xDF {
+    self.utf8_buf = [b]
+    self.utf8_need = 2
+  } else if b >= 0xE0 && b <= 0xEF {
+    self.utf8_buf = [b]
+    self.utf8_need = 3
+  } else if b >= 0xF0 && b <= 0xF4 {
+    self.utf8_buf = [b]
+    self.utf8_need = 4
+  } else {
+    self.put_codepoint(0xFFFD)
+  }
+}
+
+fn VtTerminal::feed_escape(self : VtTerminal, b : Int) -> Unit {
+  if b == 0x5B {
+    // '[' -> CSI
+    self.csi_buf = ""
+    self.state = ParserState::Csi
+  } else if b == 0x5D {
+    // ']' -> OSC
+    self.osc_buf = ""
+    self.state = ParserState::Osc
+  } else if b == 0x50 || b == 0x58 || b == 0x5E || b == 0x5F {
+    // DCS / SOS / PM / APC
+    self.state = ParserState::Dcs
+  } else if b == 0x28 || b == 0x29 || b == 0x2A || b == 0x2B {
+    // Charset designator G0..G3
+    self.state = ParserState::EscapeCharset
+  } else if b == 0x37 {
+    // ESC 7 (DECSC save cursor, storing absolute line index across scrollback)
+    self.saved_x = self.cursor_x
+    self.saved_y = self.base_y + self.cursor_y
+    self.state = ParserState::Ground
+  } else if b == 0x38 {
+    // ESC 8 (DECRC restore cursor)
+    self.cursor_x = clamp_int(self.saved_x, 0, self.cols - 1)
+    self.cursor_y = clamp_int(self.saved_y - self.base_y, 0, self.rows - 1)
+    self.pending_wrap = false
+    self.state = ParserState::Ground
+  } else if b == 0x44 {
+    // ESC D (IND)
+    self.line_feed()
+    self.state = ParserState::Ground
+  } else if b == 0x45 {
+    // ESC E (NEL)
+    self.cursor_x = 0
+    self.line_feed()
+    self.state = ParserState::Ground
+  } else if b == 0x4D {
+    // ESC M (RI)
+    self.reverse_index()
+    self.state = ParserState::Ground
+  } else if b == 0x63 {
+    // ESC c (RIS full reset)
+    let mut y = 0
+    while y < self.rows {
+      self.lines[self.base_y + y] = VtLine::blank(self.cols)
+      y = y + 1
+    }
+    self.cursor_x = 0
+    self.cursor_y = 0
+    self.pending_wrap = false
+    self.state = ParserState::Ground
+  } else {
+    self.state = ParserState::Ground
+  }
+}
+
+fn VtTerminal::feed_csi(self : VtTerminal, b : Int) -> Unit {
+  // Final byte in 0x40..0x7E
+  if b >= 0x40 && b <= 0x7E {
+    let params = self.csi_buf
+    self.csi_buf = ""
+    self.state = ParserState::Ground
+    self.handle_csi(params, b)
+    return
+  }
+  // Parameter or intermediate byte in 0x20..0x3F
+  if b >= 0x20 && b <= 0x3F {
+    if self.csi_buf.length() < 256 {
+      self.csi_buf = self.csi_buf + byte_to_str(b)
+    }
+    return
+  }
+  // C0 control inside CSI: execute C0 (e.g. CR/LF/BS) or abort on ESC.
+  if b == 0x1B {
+    self.csi_buf = ""
+    self.state = ParserState::Escape
+  } else if b == 0x0D || b == 0x0A || b == 0x08 {
+    self.feed_ground(b)
+  }
+}
+
+fn parse_csi_params(raw : String) -> (Bool, Array[Int]) {
+  let bytes = raw.to_bytes()
+  let len = bytes.length()
+  let mut i = 0
+  let mut is_private = false
+  if i < len && (bytes[i].to_int() == 0x3F || bytes[i].to_int() == 0x3E || bytes[i].to_int() == 0x3C) {
+    is_private = bytes[i].to_int() == 0x3F
+    i = i + 1
+  }
+  let params : Array[Int] = []
+  let mut cur = 0
+  let mut has_digit = false
+  while i < len {
+    let c = bytes[i].to_int() & 0xFF
+    if c >= 0x30 && c <= 0x39 {
+      cur = cur * 10 + (c - 0x30)
+      has_digit = true
+    } else if c == 0x3B || c == 0x3A {
+      params.push(if has_digit { cur } else { 0 })
+      cur = 0
+      has_digit = false
+    }
+    i = i + 1
+  }
+  if has_digit || params.length() > 0 {
+    params.push(if has_digit { cur } else { 0 })
+  }
+  (is_private, params)
+}
+
+fn param_or(params : Array[Int], idx : Int, default_val : Int) -> Int {
+  if idx >= params.length() {
+    default_val
+  } else {
+    let v = params[idx]
+    if v <= 0 { default_val } else { v }
+  }
+}
+
+fn param_zero(params : Array[Int], idx : Int) -> Int {
+  if idx >= params.length() { 0 } else { params[idx] }
+}
+
+fn clamp_int(v : Int, lo : Int, hi : Int) -> Int {
+  if v < lo { lo } else if v > hi { hi } else { v }
+}
+
+fn VtTerminal::handle_csi(self : VtTerminal, raw : String, final_byte : Int) -> Unit {
+  let (is_private, params) = parse_csi_params(raw)
+  if is_private {
+    // Private modes: ?25h/l (cursor visible), ?2004h/l (bracketed paste), ?1049h/l, etc.
+    if final_byte == 0x68 || final_byte == 0x6C {
+      let on = final_byte == 0x68
+      let mut i = 0
+      while i < params.length() {
+        let mode = params[i]
+        if mode == 25 {
+          self.cursor_visible = on
+        } else if mode == 2004 {
+          self.bracketed_paste = on
+        }
+        i = i + 1
+      }
+    }
+    return
+  }
+
+  // 'A' CUU: cursor up
+  if final_byte == 0x41 {
+    let n = param_or(params, 0, 1)
+    self.cursor_y = clamp_int(self.cursor_y - n, 0, self.rows - 1)
+    self.pending_wrap = false
+    return
+  }
+  // 'B' CUD: cursor down
+  if final_byte == 0x42 {
+    let n = param_or(params, 0, 1)
+    self.cursor_y = clamp_int(self.cursor_y + n, 0, self.rows - 1)
+    self.pending_wrap = false
+    return
+  }
+  // 'C' CUF: cursor forward
+  if final_byte == 0x43 {
+    let n = param_or(params, 0, 1)
+    self.cursor_x = clamp_int(self.cursor_x + n, 0, self.cols - 1)
+    self.pending_wrap = false
+    return
+  }
+  // 'D' CUB: cursor backward
+  if final_byte == 0x44 {
+    let n = param_or(params, 0, 1)
+    self.cursor_x = clamp_int(self.cursor_x - n, 0, self.cols - 1)
+    self.pending_wrap = false
+    return
+  }
+  // 'E' CNL: cursor next line
+  if final_byte == 0x45 {
+    let n = param_or(params, 0, 1)
+    self.cursor_y = clamp_int(self.cursor_y + n, 0, self.rows - 1)
+    self.cursor_x = 0
+    self.pending_wrap = false
+    return
+  }
+  // 'F' CPL: cursor preceding line
+  if final_byte == 0x46 {
+    let n = param_or(params, 0, 1)
+    self.cursor_y = clamp_int(self.cursor_y - n, 0, self.rows - 1)
+    self.cursor_x = 0
+    self.pending_wrap = false
+    return
+  }
+  // 'G' CHA: cursor horizontal absolute (1-based)
+  if final_byte == 0x47 {
+    let col = param_or(params, 0, 1) - 1
+    self.cursor_x = clamp_int(col, 0, self.cols - 1)
+    self.pending_wrap = false
+    return
+  }
+  // 'd' VPA: line position absolute (1-based)
+  if final_byte == 0x64 {
+    let row = param_or(params, 0, 1) - 1
+    self.cursor_y = clamp_int(row, 0, self.rows - 1)
+    self.pending_wrap = false
+    return
+  }
+  // 'H' or 'f' CUP/HVP: cursor position (1-based row;col)
+  if final_byte == 0x48 || final_byte == 0x66 {
+    let row = param_or(params, 0, 1) - 1
+    let col = param_or(params, 1, 1) - 1
+    self.cursor_y = clamp_int(row, 0, self.rows - 1)
+    self.cursor_x = clamp_int(col, 0, self.cols - 1)
+    self.pending_wrap = false
+    return
+  }
+  // 'J' ED: erase in display
+  if final_byte == 0x4A {
+    let mode = param_zero(params, 0)
+    self.pending_wrap = false
+    if mode == 0 {
+      self.active_line(self.cursor_y).clear_range(self.cursor_x, self.cols)
+      let mut y = self.cursor_y + 1
+      while y < self.rows {
+        self.lines[self.base_y + y] = VtLine::blank(self.cols)
+        y = y + 1
+      }
+    } else if mode == 1 {
+      let mut y = 0
+      while y < self.cursor_y {
+        self.lines[self.base_y + y] = VtLine::blank(self.cols)
+        y = y + 1
+      }
+      self.active_line(self.cursor_y).clear_range(0, self.cursor_x + 1)
+    } else if mode == 2 || mode == 3 {
+      let mut y = 0
+      while y < self.rows {
+        self.lines[self.base_y + y] = VtLine::blank(self.cols)
+        y = y + 1
+      }
+    }
+    return
+  }
+  // 'K' EL: erase in line
+  if final_byte == 0x4B {
+    let mode = param_zero(params, 0)
+    let line = self.active_line(self.cursor_y)
+    if mode == 0 {
+      line.clear_range(self.cursor_x, self.cols)
+    } else if mode == 1 {
+      line.clear_range(0, self.cursor_x + 1)
+    } else if mode == 2 {
+      line.clear_range(0, self.cols)
+      line.wrapped = false
+    }
+    return
+  }
+  // 'L' IL: insert lines
+  if final_byte == 0x4C {
+    let n = clamp_int(param_or(params, 0, 1), 1, self.rows - self.cursor_y)
+    let mut y = self.rows - 1
+    while y >= self.cursor_y + n {
+      self.lines[self.base_y + y] = self.lines[self.base_y + y - n]
+      y = y - 1
+    }
+    let mut k = 0
+    while k < n {
+      self.lines[self.base_y + self.cursor_y + k] = VtLine::blank(self.cols)
+      k = k + 1
+    }
+    self.cursor_x = 0
+    self.pending_wrap = false
+    return
+  }
+  // 'M' DL: delete lines
+  if final_byte == 0x4D {
+    let n = clamp_int(param_or(params, 0, 1), 1, self.rows - self.cursor_y)
+    let mut y = self.cursor_y
+    while y + n < self.rows {
+      self.lines[self.base_y + y] = self.lines[self.base_y + y + n]
+      y = y + 1
+    }
+    let mut k = self.rows - n
+    while k < self.rows {
+      self.lines[self.base_y + k] = VtLine::blank(self.cols)
+      k = k + 1
+    }
+    self.cursor_x = 0
+    self.pending_wrap = false
+    return
+  }
+  // 'P' DCH: delete characters
+  if final_byte == 0x50 {
+    let n = clamp_int(param_or(params, 0, 1), 1, self.cols - self.cursor_x)
+    let line = self.active_line(self.cursor_y)
+    let mut x = self.cursor_x
+    while x + n < self.cols {
+      line.cells[x] = line.cells[x + n]
+      x = x + 1
+    }
+    line.clear_range(self.cols - n, self.cols)
+    return
+  }
+  // '@' ICH: insert blank characters
+  if final_byte == 0x40 {
+    let n = clamp_int(param_or(params, 0, 1), 1, self.cols - self.cursor_x)
+    let line = self.active_line(self.cursor_y)
+    let mut x = self.cols - 1
+    while x >= self.cursor_x + n {
+      line.cells[x] = line.cells[x - n]
+      x = x - 1
+    }
+    line.clear_range(self.cursor_x, self.cursor_x + n)
+    return
+  }
+  // 'X' ECH: erase characters
+  if final_byte == 0x58 {
+    let n = param_or(params, 0, 1)
+    self.active_line(self.cursor_y).clear_range(self.cursor_x, self.cursor_x + n)
+    return
+  }
+  // 'S' SU: scroll up (capped at rows + scrollback to prevent DoS from e.g. ESC[999999999S)
+  if final_byte == 0x53 {
+    let n = clamp_int(param_or(params, 0, 1), 1, self.rows + self.scrollback)
+    let mut k = 0
+    while k < n {
+      self.scroll_up_one()
+      k = k + 1
+    }
+    return
+  }
+  // 'T' SD: scroll down
+  if final_byte == 0x54 {
+    let n = clamp_int(param_or(params, 0, 1), 1, self.rows)
+    let mut y = self.rows - 1
+    while y >= n {
+      self.lines[self.base_y + y] = self.lines[self.base_y + y - n]
+      y = y - 1
+    }
+    let mut k = 0
+    while k < n {
+      self.lines[self.base_y + k] = VtLine::blank(self.cols)
+      k = k + 1
+    }
+    return
+  }
+  // 'n' DSR: device status report (6n -> cursor position, 5n -> ok)
+  if final_byte == 0x6E {
+    let mode = param_zero(params, 0)
+    if mode == 6 {
+      let row = self.cursor_y + 1
+      let col = self.cursor_x + 1
+      self.responses.push("\u{1b}[" + row.to_string() + ";" + col.to_string() + "R")
+    } else if mode == 5 {
+      self.responses.push("\u{1b}[0n")
+    }
+    return
+  }
+  // 'c' DA1: primary device attributes
+  if final_byte == 0x63 {
+    let mode = param_zero(params, 0)
+    if mode == 0 {
+      self.responses.push("\u{1b}[?1;2c")
+    }
+    return
+  }
+  // 's' SCOSC: save cursor (absolute line index across scrollback)
+  if final_byte == 0x73 {
+    self.saved_x = self.cursor_x
+    self.saved_y = self.base_y + self.cursor_y
+    return
+  }
+  // 'u' SCORC: restore cursor
+  if final_byte == 0x75 {
+    self.cursor_x = clamp_int(self.saved_x, 0, self.cols - 1)
+    self.cursor_y = clamp_int(self.saved_y - self.base_y, 0, self.rows - 1)
+    self.pending_wrap = false
+    return
+  }
+  // 'm' SGR and other unrecognized CSI sequences are safely ignored.
+}
+
+fn VtTerminal::feed_osc(self : VtTerminal, b : Int) -> Unit {
+  if b == 0x07 {
+    // BEL terminates OSC.
+    self.handle_osc(self.osc_buf)
+    self.osc_buf = ""
+    self.state = ParserState::Ground
+  } else if b == 0x1B {
+    self.state = ParserState::OscEsc
+  } else if self.osc_buf.length() < 4096 {
+    self.osc_buf = self.osc_buf + byte_to_str(b)
+  }
+}
+
+fn VtTerminal::handle_osc(self : VtTerminal, payload : String) -> Unit {
+  // OSC 10;? (foreground color query) and OSC 11;? (background color query) — gh waits for both!
+  if payload == "10;?" {
+    self.responses.push("\u{1b}]10;rgb:0000/0000/0000\u{1b}\\")
+  } else if payload == "11;?" {
+    self.responses.push("\u{1b}]11;rgb:ffff/ffff/ffff\u{1b}\\")
+  }
+  // OSC 0/1/2 (titles), OSC 7 (cwd), OSC 8 (hyperlinks), etc. are safely swallowed.
+}

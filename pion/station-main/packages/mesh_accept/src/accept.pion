@@ -1,0 +1,289 @@
+// Program-agnostic connection acceptor, ALPN router, connection lifecycle manager,
+// plus zero-payload storm detection and superseded-connection tracking.
+// Zero station business imports, zero product names, zero RC cycles.
+
+import "mesh_wire"
+import "mesh_door"
+
+pub struct AcceptConfig {
+  pub closing_reason : String
+  pub max_connections : Option[Int]
+}
+
+pub fn AcceptConfig::new(
+  closing_reason : String,
+  max_connections : Option[Int] = None,
+) -> AcceptConfig {
+  AcceptConfig::{ closing_reason: closing_reason, max_connections: max_connections }
+}
+
+pub struct ConnMeta {
+  pub conn_id : Int64
+  pub remote_id : String
+  pub alpn : String
+  pub via : String
+  pub accepted_ms : Int64
+}
+
+pub struct CloseDirective {
+  pub conn_id : Int64
+  pub code : Int
+  pub reason : String
+}
+
+pub enum AcceptAction {
+  Serve(String, ConnMeta)
+  Reject(CloseDirective)
+}
+
+struct ActiveConn {
+  meta : ConnMeta
+  mut handler_closed : Bool
+}
+
+/// Pure connection accept & ALPN dispatch manager (mirrors `station/src/mesh/accept.ts`).
+/// Tracks active connections by ID, records relay reach timestamps, closes finished connections
+/// with code 0 + `closing_reason` unless the handler already closed them with its own refusal.
+pub struct AcceptLoop {
+  pub config : AcceptConfig
+  mut routes : Map[String, String]
+  mut active : Map[Int64, ActiveConn]
+  mut last_relay_reach_ms : Option[Int64]
+  mut shutting_down : Bool
+}
+
+pub fn AcceptLoop::new(config : AcceptConfig) -> AcceptLoop {
+  AcceptLoop::{
+    config: config,
+    routes: Map::new(),
+    active: Map::new(),
+    last_relay_reach_ms: None,
+    shutting_down: false,
+  }
+}
+
+pub fn AcceptLoop::register_alpn(self : AcceptLoop, alpn : String, handler_tag : String) -> Unit {
+  self.routes.set(alpn, handler_tag)
+}
+
+pub fn AcceptLoop::active_count(self : AcceptLoop) -> Int {
+  self.active.length()
+}
+
+pub fn AcceptLoop::last_relay_reach_ms(self : AcceptLoop) -> Option[Int64] {
+  self.last_relay_reach_ms
+}
+
+pub fn AcceptLoop::on_accepted(self : AcceptLoop, meta : ConnMeta) -> AcceptAction {
+  if self.shutting_down {
+    return AcceptAction::Reject(
+      CloseDirective::{
+        conn_id: meta.conn_id,
+        code: 0,
+        reason: self.config.closing_reason,
+      },
+    )
+  }
+  if meta.via == "relay" {
+    self.last_relay_reach_ms = Some(meta.accepted_ms)
+  }
+  let tag = match self.routes.get(meta.alpn) {
+    Some(t) => t
+    None => {
+      return AcceptAction::Reject(
+        CloseDirective::{
+          conn_id: meta.conn_id,
+          code: 0,
+          reason: "unsupported alpn",
+        },
+      )
+    }
+  }
+  match self.config.max_connections {
+    Some(limit) => {
+      if self.active.length() >= limit {
+        return AcceptAction::Reject(
+          CloseDirective::{
+            conn_id: meta.conn_id,
+            code: 0,
+            reason: "too many connections",
+          },
+        )
+      }
+    }
+    None => ()
+  }
+  self.active.set(meta.conn_id, ActiveConn::{ meta: meta, handler_closed: false })
+  AcceptAction::Serve(tag, meta)
+}
+
+/// Record that the connection's handler already closed it with an explicit refusal code/reason,
+/// so `on_served` does not overwrite that close with code 0.
+pub fn AcceptLoop::mark_handler_closed(self : AcceptLoop, conn_id : Int64) -> Unit {
+  match self.active.get(conn_id) {
+    Some(ac) => ac.handler_closed = true
+    None => ()
+  }
+}
+
+/// Complete serving `conn_id`: removes it from `active` and returns a `CloseDirective` with
+/// code 0 + `closing_reason` unless the handler already closed it.
+pub fn AcceptLoop::on_served(self : AcceptLoop, conn_id : Int64) -> Option[CloseDirective] {
+  match self.active.get(conn_id) {
+    None => None
+    Some(ac) => {
+      let already = ac.handler_closed
+      self.active.remove(conn_id)
+      if already {
+        None
+      } else {
+        Some(
+          CloseDirective::{
+            conn_id: conn_id,
+            code: 0,
+            reason: self.config.closing_reason,
+          },
+        )
+      }
+    }
+  }
+}
+
+/// Begin shutdown and return close directives for all remaining active connections.
+pub fn AcceptLoop::shutdown(self : AcceptLoop) -> Array[CloseDirective] {
+  self.shutting_down = true
+  let out : Array[CloseDirective] = []
+  let keys = self.active.keys()
+  for i in 0..<keys.length() {
+    let cid = keys[i]
+    match self.active.get(cid) {
+      Some(ac) => {
+        if !ac.handler_closed {
+          out.push(
+            CloseDirective::{
+              conn_id: cid,
+              code: 0,
+              reason: self.config.closing_reason,
+            },
+          )
+        }
+      }
+      None => ()
+    }
+  }
+  self.active = Map::new()
+  out
+}
+
+// ── Zero-payload packet storm detector (mirrors `station/src/mesh/storms.ts`) ──
+
+pub struct TrafficSample {
+  pub rx_packets : Int64
+  pub tx_packets : Int64
+  pub rx_bytes : Int64
+  pub tx_bytes : Int64
+}
+
+struct StormEntry {
+  mut last : TrafficSample
+  mut strikes : Int
+}
+
+pub struct StormTracker {
+  pub packet_threshold : Int64
+  pub strikes_limit : Int
+  mut entries : Map[Int64, StormEntry]
+}
+
+pub fn StormTracker::new(
+  packet_threshold : Int64 = 2000.to_int64(),
+  strikes_limit : Int = 2,
+) -> StormTracker {
+  StormTracker::{
+    packet_threshold: packet_threshold,
+    strikes_limit: strikes_limit,
+    entries: Map::new(),
+  }
+}
+
+pub fn StormTracker::watch(self : StormTracker, conn_id : Int64, initial : TrafficSample) -> Unit {
+  self.entries.set(conn_id, StormEntry::{ last: initial, strikes: 0 })
+}
+
+pub fn StormTracker::forget(self : StormTracker, conn_id : Int64) -> Unit {
+  self.entries.remove(conn_id)
+}
+
+/// Record a new sample for `conn_id`. Returns `true` if the connection should be closed as a storm.
+pub fn StormTracker::sample(self : StormTracker, conn_id : Int64, now : TrafficSample) -> Bool {
+  match self.entries.get(conn_id) {
+    None => false
+    Some(e) => {
+      let dp = (now.rx_packets - e.last.rx_packets) + (now.tx_packets - e.last.tx_packets)
+      let db = (now.rx_bytes - e.last.rx_bytes) + (now.tx_bytes - e.last.tx_bytes)
+      e.last = now
+      if dp >= self.packet_threshold && db == 0.to_int64() {
+        e.strikes = e.strikes + 1
+        e.strikes >= self.strikes_limit
+      } else {
+        e.strikes = 0
+        false
+      }
+    }
+  }
+}
+
+// ── Superseded connection tracker (mirrors `station/src/mesh/superseded.ts`) ──
+
+pub struct SupersededTracker {
+  mut by_remote : Map[String, Array[Int64]]
+}
+
+pub fn SupersededTracker::new() -> SupersededTracker {
+  SupersededTracker::{ by_remote: Map::new() }
+}
+
+pub fn SupersededTracker::arrived(
+  self : SupersededTracker,
+  remote_id : String,
+  conn_id : Int64,
+) -> Array[Int64] {
+  let older : Array[Int64] = []
+  match self.by_remote.get(remote_id) {
+    Some(list) => {
+      for i in 0..<list.length() {
+        if list[i] != conn_id {
+          older.push(list[i])
+        }
+      }
+      list.push(conn_id)
+    }
+    None => {
+      self.by_remote.set(remote_id, [conn_id])
+    }
+  }
+  older
+}
+
+pub fn SupersededTracker::forget(
+  self : SupersededTracker,
+  remote_id : String,
+  conn_id : Int64,
+) -> Unit {
+  match self.by_remote.get(remote_id) {
+    None => ()
+    Some(list) => {
+      let kept : Array[Int64] = []
+      for i in 0..<list.length() {
+        if list[i] != conn_id {
+          kept.push(list[i])
+        }
+      }
+      if kept.length() == 0 {
+        self.by_remote.remove(remote_id)
+      } else {
+        self.by_remote.set(remote_id, kept)
+      }
+    }
+  }
+}

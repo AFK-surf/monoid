@@ -1,0 +1,116 @@
+// Control plane facade: provider resolution, signed notify/telemetry request builders,
+// release base URL, accepted member credentials, and `CloudSaid` frame parsing.
+// 1:1 with `station/src/cloud/plane.ts`.
+
+import "base_codec"
+import "builders_core"
+
+pub enum CloudSaid {
+  Release
+  Models(Option[String])
+}
+
+/// Parse a `release` or `models` event pushed on the presence socket.
+pub fn parse_cloud_said(frame : base_codec::Json) -> Option[CloudSaid] {
+  match base_codec::json_get(frame, "type") {
+    Some(base_codec::Json::Str(t)) => {
+      if t == "release" {
+        Some(CloudSaid::Release)
+      } else if t == "models" {
+        let etag = match base_codec::json_get(frame, "etag") {
+          Some(base_codec::Json::Str(e)) => Some(e)
+          _ => None
+        }
+        Some(CloudSaid::Models(etag))
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+pub struct PreparedPost {
+  pub url : String
+  pub headers : Array[(String, String)]
+  pub body : String
+  pub provider : Provider
+}
+
+/// Prepare a signed notify POST request for `body` (`NotifyPost.body`).
+pub fn prepare_notify_post(
+  origin : String,
+  station : String,
+  provider : Provider,
+  body : String,
+  ts : Int64,
+  key : StationKey,
+) -> Result[PreparedPost, String] {
+  let spec = spec_of(provider)
+  let headers = match signed_post_headers(origin, station, spec.notify_tag, body, ts, key) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  Ok(PreparedPost::{
+    url: origin + spec.notify_path,
+    headers: headers,
+    body: body,
+    provider: provider,
+  })
+}
+
+/// Prepare a signed telemetry POST (`traces` when `logs == false`, `logs` when `logs == true`).
+/// Returns `Ok(None)` if the provider accepts no telemetry for that target.
+pub fn prepare_telemetry_post(
+  origin : String,
+  station : String,
+  provider : Provider,
+  body : String,
+  logs : Bool,
+  ts : Int64,
+  key : StationKey,
+) -> Result[Option[PreparedPost], String] {
+  let spec = spec_of(provider)
+  let tel = match spec.telemetry {
+    Some(t) => t
+    None => return Ok(None)
+  }
+  let path = if logs {
+    match tel.logs {
+      Some(p) => p
+      None => return Ok(None)
+    }
+  } else {
+    tel.path
+  }
+  let headers = match telemetry_post_headers(tel.prefixes, origin, station, body, ts, key) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  Ok(Some(PreparedPost::{
+    url: origin + path,
+    headers: headers,
+    body: body,
+    provider: provider,
+  }))
+}
+
+/// Start a prepared signed POST over `CloudTransport` + `ShellMux`.
+pub fn send_prepared_post(
+  transport : CloudTransport,
+  mux : builders_core::ShellMux,
+  token : builders_core::MuxToken,
+  post : PreparedPost,
+  timeout_ms : Int = HTTP_TIMEOUT_MS,
+) -> Result[Int64, String] {
+  transport.start_fetch(
+    mux,
+    token,
+    post.url,
+    "POST",
+    post.headers,
+    Some(post.body.to_bytes()),
+    timeout_ms=timeout_ms,
+    provider=post.provider,
+  )
+}

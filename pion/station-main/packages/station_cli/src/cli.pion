@@ -1,0 +1,597 @@
+// Station CLI entrypoint, argument parsing, common options, formatting helpers, and ports.
+// Implements the 8 non-`run` subcommands: id, status, lock, channel, enroll, update, heap, admin.
+
+import "base_codec"
+import "crypto"
+import "host_shim"
+import "jscase"
+import "nodepath"
+import "station_cloud"
+import "station_ops"
+import "station_sys"
+
+// ── Public result & port types ──
+
+pub struct CliResult {
+  pub exit_code : Int
+  pub stdout : String
+  pub stderr : String
+}
+
+pub fn CliResult::ok(stdout : String) -> CliResult {
+  CliResult::{ exit_code: 0, stdout: stdout, stderr: "" }
+}
+
+pub fn CliResult::err(exit_code : Int, stderr : String) -> CliResult {
+  CliResult::{ exit_code: exit_code, stdout: "", stderr: stderr }
+}
+
+pub struct CliHttpRequest {
+  pub method : String
+  pub url : String
+  pub headers : Array[(String, String)]
+  pub body : Option[Bytes]
+  pub timeout_ms : Option[Int64]
+  pub proxy : Option[String]
+  pub ca_pem : Option[String]
+}
+
+pub struct CliHttpResponse {
+  pub status : Int
+  pub headers : Array[(String, String)]
+  pub body : Bytes
+}
+
+pub fn CliHttpResponse::header(self : CliHttpResponse, name : String) -> Option[String] {
+  let target = cli_ascii_lower(name)
+  let mut i = 0
+  while i < self.headers.length() {
+    let (k, v) = self.headers[i]
+    if cli_ascii_lower(k) == target {
+      return Some(v)
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn CliHttpResponse::body_text(self : CliHttpResponse) -> String {
+  station_ops::ops_bytes_to_str(self.body)
+}
+
+pub struct HeapDiagSnapshot {
+  pub pid : Int
+  pub rss_bytes : Int64
+  pub open_fds : Int
+  pub cpu_ns : Int64
+  pub uptime_ms : Int64
+  pub objects : Int64
+}
+
+pub struct CliPorts {
+  pub fs : station_ops::OpsFs
+  pub cloud_fs : station_cloud::CloudFs
+  pub key_fs : station_cloud::KeyFs
+  pub http : (CliHttpRequest) -> Result[CliHttpResponse, String]
+  pub now_ms : () -> Int64
+  pub pid_alive : (Int) -> Bool
+  pub is_launcher : (Int) -> Bool
+  pub ask_launcher_hup : (Int) -> Result[Unit, String]
+  pub wait_for_file : (String, Int64) -> Option[String]
+  pub touch_file : (String, Int64) -> Unit
+  pub sleep_ms : (Int64) -> Unit
+  pub self_pid : Int
+  pub platform_os : station_ops::PlatformOs
+  pub arch : String
+  pub sep : String
+  pub default_app : String
+  pub verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool]
+  pub random_hex : (Int) -> String
+  pub tmpdir : String
+  pub copy_dir : Option[(String, String) -> Result[Unit, String]]
+  pub extract_archive : Option[(String, String) -> Result[Unit, String]]
+  pub remove_tree : Option[(String) -> Result[Unit, String]]
+  pub mkdir_exclusive : Option[(String, Int) -> Result[Unit, String]]
+  pub symlink_dir : Option[(String, String) -> Result[Unit, String]]
+  pub heap_stats : Option[() -> HeapDiagSnapshot]
+}
+
+/// Build a `CloudFs` backed by an `OpsFs` (useful for tests and unified CLI FS injection).
+pub fn cloud_fs_from_ops(fs : station_ops::OpsFs, sep : String = "/") -> station_cloud::CloudFs {
+  station_cloud::CloudFs::{
+    read_text: fn(p : String) -> Result[Option[String], String] {
+      match fs.read_text(p) {
+        Ok(t) => Ok(Some(t))
+        Err(station_ops::FsErr::NotFound) => Ok(None)
+        Err(e) => Err(station_ops::fs_err_msg(e))
+      }
+    },
+    write_private_text: fn(p : String, text : String) -> Result[Unit, String] {
+      let dir = nodepath::dirname(sep, p)
+      if dir != "" && dir != "." && dir != p {
+        let _ = (fs.mkdir_p)(dir)
+      }
+      match fs.write_text(p, text, 384) {
+        Ok(_) => Ok(())
+        Err(e) => Err(station_ops::fs_err_msg(e))
+      }
+    },
+    remove_file: fn(p : String) -> Result[Unit, String] {
+      match (fs.remove)(p) {
+        Ok(_) => Ok(())
+        Err(station_ops::FsErr::NotFound) => Ok(())
+        Err(e) => Err(station_ops::fs_err_msg(e))
+      }
+    },
+    rename_file: fn(from : String, to : String) -> Result[Unit, String] {
+      match (fs.rename)(from, to) {
+        Ok(_) => Ok(())
+        Err(e) => Err(station_ops::fs_err_msg(e))
+      }
+    },
+    mkdir_p: fn(p : String) -> Result[Unit, String] {
+      match (fs.mkdir_p)(p) {
+        Ok(_) => Ok(())
+        Err(e) => Err(station_ops::fs_err_msg(e))
+      }
+    },
+    exists: fn(p : String) -> Bool { fs.exists(p) },
+  }
+}
+
+/// Build a `KeyFs` backed by an `OpsFs` + deterministic or host random bytes generator.
+pub fn key_fs_from_ops(
+  fs : station_ops::OpsFs,
+  random_bytes : (Int) -> Result[Bytes, String],
+  sep : String = "/",
+) -> station_cloud::KeyFs {
+  station_cloud::KeyFs::{
+    read_bytes: fn(p : String) -> Result[Option[Bytes], String] {
+      match (fs.read_bytes)(p) {
+        Ok(b) => Ok(Some(b))
+        Err(station_ops::FsErr::NotFound) => Ok(None)
+        Err(e) => Err(station_ops::fs_err_msg(e))
+      }
+    },
+    write_private: fn(p : String, data : Bytes) -> Result[Unit, String] {
+      let dir = nodepath::dirname(sep, p)
+      if dir != "" && dir != "." && dir != p {
+        let _ = (fs.mkdir_p)(dir)
+      }
+      match (fs.write_bytes)(p, data, 384) {
+        Ok(_) => Ok(())
+        Err(e) => Err(station_ops::fs_err_msg(e))
+      }
+    },
+    random_bytes: random_bytes,
+  }
+}
+
+// ── Shared CLI usage & formatting helpers ──
+
+pub let CLI_VALUED_FLAGS : Array[String] = ["--data", "--provider", "--lock", "--rig", "--workspace"]
+
+pub fn cli_usage() -> String {
+  "usage: stillfail-station run --app DIR [--port N] [--data DIR] | enroll <cloud> <token> [--provider stillfail|comma] [--lock HASH] [--rig HASH] [--join | --stay] | status | id | channel [stable|beta] | update [--beta|--stable] --app DIR | lock status | lock reset [--workspace ID] | heap | admin ..."
+}
+
+pub fn cli_ascii_lower(s : String) -> String {
+  jscase::lower(s)
+}
+
+pub fn cli_trim(s : String) -> String {
+  let n = s.length()
+  let mut start = 0
+  while start < n {
+    let c = s.code_unit_at(start) & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      start = start + 1
+    } else {
+      break
+    }
+  }
+  let mut end = n
+  while end > start {
+    let c = s.code_unit_at(end - 1) & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      end = end - 1
+    } else {
+      break
+    }
+  }
+  station_ops::ops_slice_str(s, start, end)
+}
+
+pub fn cli_strip_trailing_slashes(s : String) -> String {
+  let mut end = s.length()
+  while end > 0 && (s.code_unit_at(end - 1) & 0xFF) == 47 {
+    end = end - 1
+  }
+  station_ops::ops_slice_str(s, 0, end)
+}
+
+pub fn cli_replace_all(haystack : String, needle : String, replacement : String) -> String {
+  if needle.length() == 0 || !haystack.contains(needle) {
+    return haystack
+  }
+  let sb = StringBuilder::new()
+  let n = haystack.length()
+  let m = needle.length()
+  let mut i = 0
+  while i < n {
+    let mut matched = false
+    if i + m <= n {
+      matched = true
+      let mut j = 0
+      while j < m {
+        if (haystack.code_unit_at(i + j) & 0xFF) != (needle.code_unit_at(j) & 0xFF) {
+          matched = false
+          break
+        }
+        j = j + 1
+      }
+    }
+    if matched {
+      sb.write_string(replacement)
+      i = i + m
+    } else {
+      sb.write_byte((haystack.code_unit_at(i) & 0xFF) as Byte)
+      i = i + 1
+    }
+  }
+  sb.to_string()
+}
+
+pub fn cli_split_lines(s : String) -> Array[String] {
+  let out : Array[String] = []
+  let mut start = 0
+  let mut i = 0
+  while i < s.length() {
+    if (s.code_unit_at(i) & 0xFF) == 10 {
+      out.push(station_ops::ops_slice_str(s, start, i))
+      start = i + 1
+    }
+    i = i + 1
+  }
+  out.push(station_ops::ops_slice_str(s, start, s.length()))
+  out
+}
+
+pub fn cli_join(items : Array[String], sep : String) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < items.length() {
+    if i > 0 {
+      sb.write_string(sep)
+    }
+    sb.write_string(items[i])
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn pad2(n : Int) -> String {
+  if n < 10 { "0" + n.to_string() } else { n.to_string() }
+}
+
+fn pad4(n : Int) -> String {
+  if n < 10 {
+    "000" + n.to_string()
+  } else if n < 100 {
+    "00" + n.to_string()
+  } else if n < 1000 {
+    "0" + n.to_string()
+  } else {
+    n.to_string()
+  }
+}
+
+/// Howard Hinnant's civil-from-days algorithm: days since 1970-01-01 -> (year, month 1..12, day 1..31).
+fn civil_from_days(z_in : Int64) -> (Int, Int, Int) {
+  let z = z_in + 719468.to_int64()
+  let era = (if z >= 0.to_int64() { z } else { z - 146096.to_int64() }) / 146097.to_int64()
+  let doe = z - era * 146097.to_int64()
+  let yoe = (doe - doe / 1460.to_int64() + doe / 36524.to_int64() - doe / 146096.to_int64()) / 365.to_int64()
+  let y = yoe + era * 400.to_int64()
+  let doy = doe - (365.to_int64() * yoe + yoe / 4.to_int64() - yoe / 100.to_int64())
+  let mp = (5.to_int64() * doy + 2.to_int64()) / 153.to_int64()
+  let d = doy - (153.to_int64() * mp + 2.to_int64()) / 5.to_int64() + 1.to_int64()
+  let m = mp + (if mp < 10.to_int64() { 3.to_int64() } else { -9.to_int64() })
+  let year = y + (if m <= 2.to_int64() { 1.to_int64() } else { 0.to_int64() })
+  (year.to_int(), m.to_int(), d.to_int())
+}
+
+/// Format Unix seconds as ISO-8601 UTC (`YYYY-MM-DDTHH:MM:SS.000Z`, matching `new Date(secs * 1000).toISOString()`).
+pub fn format_iso_utc(secs : Int64) -> String {
+  let day_sec = 86400.to_int64()
+  let mut days = secs / day_sec
+  let mut rem = secs % day_sec
+  if rem < 0.to_int64() {
+    rem = rem + day_sec
+    days = days - 1.to_int64()
+  }
+  let (year, month, day) = civil_from_days(days)
+  let hour = (rem / 3600.to_int64()).to_int()
+  let minute = ((rem % 3600.to_int64()) / 60.to_int64()).to_int()
+  let second = (rem % 60.to_int64()).to_int()
+  pad4(year) +
+  "-" +
+  pad2(month) +
+  "-" +
+  pad2(day) +
+  "T" +
+  pad2(hour) +
+  ":" +
+  pad2(minute) +
+  ":" +
+  pad2(second) +
+  ".000Z"
+}
+
+fn pad3(n : Int) -> String {
+  if n < 10 {
+    "00" + n.to_string()
+  } else if n < 100 {
+    "0" + n.to_string()
+  } else {
+    n.to_string()
+  }
+}
+
+/// Format Unix milliseconds as ISO-8601 UTC (`YYYY-MM-DDTHH:MM:SS.mmmZ`, matching `new Date(ms).toISOString()`).
+pub fn format_iso_utc_ms(ms : Int64) -> String {
+  let mut secs = ms / 1000L
+  let mut frac = ms % 1000L
+  if frac < 0L {
+    frac = frac + 1000L
+    secs = secs - 1L
+  }
+  let base = format_iso_utc(secs)
+  station_ops::ops_slice_str(base, 0, 20) + pad3(frac.to_int()) + "Z"
+}
+
+/// Format Unix seconds as `YYYY-MM-DD HH:MMZ` (matching `admin-cli.ts` `fmtTime`).
+pub fn format_admin_time(secs : Int64) -> String {
+  if secs <= 0.to_int64() {
+    return "-"
+  }
+  let iso = format_iso_utc(secs)
+  station_ops::ops_slice_str(iso, 0, 10) + " " + station_ops::ops_slice_str(iso, 11, 16) + "Z"
+}
+
+pub fn config_path_of(data : String, env : Map[String, String], sep : String = "/") -> String {
+  match env.get("STILLFAIL_CONFIG") {
+    Some(p) => if p != "" { p } else { nodepath::join(sep, [data, "config.json"]) }
+    None => nodepath::join(sep, [data, "config.json"])
+  }
+}
+
+pub fn home_of(env : Map[String, String]) -> String {
+  match env.get("HOME") {
+    Some(h) => if h != "" { return h }
+    None => ()
+  }
+  match env.get("USERPROFILE") {
+    Some(h) => if h != "" { return h }
+    None => ()
+  }
+  "/root"
+}
+
+pub fn resolve_i18n(data : String, env : Map[String, String], ports : CliPorts) -> station_ops::I18nState {
+  let i18n = station_ops::I18nState::new()
+  let cfg_path = config_path_of(data, env, sep=ports.sep)
+  match ports.fs.read_text(cfg_path) {
+    Ok(text) => match base_codec::json_parse(text) {
+      base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "language") {
+        Some(base_codec::Json::Str(lang)) => {
+          let _ = i18n.set_station_lang(Some(lang))
+        }
+        _ => ()
+      }
+      _ => ()
+    }
+    Err(_) => ()
+  }
+  match station_cloud::read_state(data, ports.cloud_fs, sep=ports.sep) {
+    Ok(Some(st)) => if st.origin != "" {
+      let _ = i18n.set_station_cloud(Some(st.origin))
+    }
+    _ => ()
+  }
+  i18n
+}
+
+pub fn cli_platform_id(os : station_ops::PlatformOs, arch : String) -> Option[String] {
+  let build_os = match station_ops::platform_build_os(os) {
+    Some(o) => o
+    None => return None
+  }
+  let norm_arch = if arch == "arm64" || arch == "aarch64" {
+    "arm64"
+  } else if arch == "x64" || arch == "x86_64" || arch == "amd64" {
+    "x64"
+  } else {
+    return None
+  }
+  Some(build_os + "-" + norm_arch)
+}
+
+pub fn cli_installer_ext(os : station_ops::PlatformOs) -> String {
+  match os {
+    station_ops::PlatformOs::Windows => "ps1"
+    _ => "sh"
+  }
+}
+
+pub fn cli_json_str(j : Option[base_codec::Json], fallback : String) -> String {
+  match j {
+    Some(base_codec::Json::Str(s)) => s
+    _ => fallback
+  }
+}
+
+pub fn cli_json_opt_str(j : Option[base_codec::Json]) -> Option[String] {
+  match j {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+pub fn cli_json_bool(j : Option[base_codec::Json], fallback : Bool) -> Bool {
+  match j {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => fallback
+  }
+}
+
+pub fn cli_json_i64(j : Option[base_codec::Json]) -> Option[Int64] {
+  match j {
+    Some(base_codec::Json::Num(d, _)) => {
+      let n = d.to_int64()
+      if n.to_double() == d { Some(n) } else { None }
+    }
+    _ => None
+  }
+}
+
+pub fn cli_json_int(j : Option[base_codec::Json]) -> Option[Int] {
+  match j {
+    Some(base_codec::Json::Num(d, _)) => {
+      let n = d.to_int()
+      if n.to_double() == d { Some(n) } else { None }
+    }
+    _ => None
+  }
+}
+
+pub fn cli_set_json_field(
+  obj : base_codec::Json,
+  key : String,
+  value : base_codec::Json,
+) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = []
+  let mut replaced = false
+  match obj {
+    base_codec::Json::Obj(fields) => {
+      let mut i = 0
+      while i < fields.length() {
+        let (k, v) = fields[i]
+        if k == key {
+          out.push((key, value))
+          replaced = true
+        } else {
+          out.push((k, v))
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  if !replaced {
+    out.push((key, value))
+  }
+  base_codec::json_obj(out)
+}
+
+pub fn cli_remove_json_field(obj : base_codec::Json, key : String) -> base_codec::Json {
+  let out : Array[(String, base_codec::Json)] = []
+  match obj {
+    base_codec::Json::Obj(fields) => {
+      let mut i = 0
+      while i < fields.length() {
+        let (k, v) = fields[i]
+        if k != key {
+          out.push((k, v))
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  base_codec::json_obj(out)
+}
+
+/// Find the subcommand in `argv` (exact 1:1 with `station/src/main.ts` line 98):
+/// first arg not starting with `--` and not immediately following a `--*` flag other than `--with-parent`.
+fn find_command(argv : Array[String]) -> Option[(String, Int)] {
+  let mut i = 0
+  while i < argv.length() {
+    let a = argv[i]
+    if !a.starts_with("--") {
+      let prev_is_flag = i > 0 && argv[i - 1].starts_with("--") && argv[i - 1] != "--with-parent"
+      if !prev_is_flag {
+        return Some((a, i))
+      }
+    }
+    i = i + 1
+  }
+  None
+}
+
+/// Strip a standalone boolean flag like `--json` from `argv` (preserving everything after `--`).
+fn strip_bool_flag(argv : Array[String], flag_name : String) -> (Array[String], Bool) {
+  let out : Array[String] = []
+  let mut found = false
+  let mut after_sep = false
+  let mut i = 0
+  while i < argv.length() {
+    let a = argv[i]
+    if a == "--" {
+      after_sep = true
+      out.push(a)
+    } else if !after_sep && a == flag_name {
+      found = true
+    } else {
+      out.push(a)
+    }
+    i = i + 1
+  }
+  (out, found)
+}
+
+/// Unified Station CLI dispatcher for all 8 subcommands:
+/// `id`, `status`, `lock`, `channel`, `enroll`, `update`, `heap`, `admin`.
+pub fn dispatch_cli(
+  argv : Array[String],
+  env : Map[String, String],
+  ports : CliPorts,
+) -> CliResult {
+  let cmd_opt = find_command(argv)
+  match cmd_opt {
+    None => CliResult::err(2, cli_usage() + "\n")
+    Some((cmd, cmd_idx)) => {
+      if cmd == "admin" {
+        let admin_args : Array[String] = []
+        let mut i = 0
+        while i < argv.length() {
+          if i != cmd_idx {
+            admin_args.push(argv[i])
+          }
+          i = i + 1
+        }
+        return run_admin_cli(admin_args, env, ports)
+      }
+      let (clean_argv, as_json) = strip_bool_flag(argv, "--json")
+      let data = station_ops::data_dir(clean_argv, env.get("STILLFAIL_DATA"), home_of(env), sep=ports.sep)
+      let i18n = resolve_i18n(data, env, ports)
+      if cmd == "id" {
+        run_id_command(data, as_json, ports)
+      } else if cmd == "channel" {
+        run_channel_command(clean_argv, data, env, i18n, as_json, ports)
+      } else if cmd == "status" {
+        run_status_command(data, env, i18n, as_json, ports)
+      } else if cmd == "lock" {
+        run_lock_command(clean_argv, data, i18n, as_json, ports)
+      } else if cmd == "enroll" {
+        run_enroll_command(clean_argv, data, env, i18n, as_json, ports)
+      } else if cmd == "update" {
+        run_update_command(clean_argv, data, env, i18n, as_json, ports)
+      } else if cmd == "heap" {
+        run_heap_command(data, as_json, ports)
+      } else {
+        CliResult::err(2, cli_usage() + "\n")
+      }
+    }
+  }
+}

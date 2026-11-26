@@ -3328,6 +3328,22 @@ async fn Actors::continue_undeclared_end(
       return self.cool(a, warm)
     }
     a.tools_restarts = 0
+    // (three processes in a row that never reached the station's tools, the last after the backoff: its profile is passed
+    // over for its runtime, and one left to the station goes on on another profile, or another runtime's, rather than
+    // being given up on each message on the same, FB-66; kept to its profile or none other able, its chat is told why)
+    if unheard {
+      let moved = self.deps(a, "toolsUnreachable", [jstr(a.key), a.profile, jstr(a.runtime)]) catch {
+        e => {
+          self.log(a, "warn", "could not move off a profile out of reach of the station's tools", fields={ "error": jstr(e.to_string()) })
+          Json::null()
+        }
+      }
+      if moved is Array(m) && m.length() == 2 {
+        self.log(a, "info", "the station's tools stayed out of reach; going on on another profile", fields={ "from": m[0], "to": m[1] })
+        self.start_turn(a, "resume", self.words(a, "TOOLS_LOST"))
+        return self.cool(a, warm)
+      }
+    }
     self.cool(a, warm)
     if a.stale {
       self.catch_up(a, a.waiting is None)

@@ -152,10 +152,9 @@ const APP_FILES: [RegExp, string][] = [
   [/^relay\/iroh-relay-[0-9a-f]{40}-linux-x64$/, "application/octet-stream"],
   // The DHT node beside it (same workflow), named by its source's tree; cloud/dht-node-update.sh puts it on a relay.
   [/^relay\/dht-node-[0-9a-f]{40}-linux-x64$/, "application/octet-stream"],
-  // The native parts prebuilt on a development machine (scripts/native.ts prebuild: the mbui app's Windows shell and
-  // engine), each named by the hash of what it is made of, for CI and the builds to fetch (native.ts never builds them
-  // there).
-  [/^natives\/[a-z][a-z0-9-]{0,31}-(darwin-arm64|linux-x64|linux-arm64|win32-x64|wasm32|android-arm64)-[0-9a-f]{24}\.tar\.gz$/, "application/gzip"],
+  // The native parts published to the releases bucket's natives/ store (scripts/native.ts prebuild and main's
+  // --publish-store: Windows/Linux/Android/Apple/iOS parts), each named by the hash of what it is made of.
+  [/^natives\/[a-z][a-z0-9-]{0,31}-(darwin-arm64|linux-x64|linux-arm64|win32-x64|wasm32|android-arm64|ios-arm64|ios-sim-arm64)-[0-9a-f]{24}\.tar\.gz$/, "application/gzip"],
 ];
 
 /**
