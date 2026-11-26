@@ -426,7 +426,7 @@ fn HttpServer::close_conn_with_callbacks(
   if was_sse {
     (callbacks.on_sse_close)(conn_id)
   }
-  if was_ws && notify_ws_close {
+  if was_ws {
     match prev_mode {
       ConnMode::WebSocket(ws) | ConnMode::WsClosing(ws, _) => {
         ws.close_notified = true
@@ -1929,6 +1929,7 @@ pub fn HttpServer::tick(self : HttpServer, callbacks : ServerCallbacks) -> Bool 
 /// Run one event-loop tick on the underlying `ShellMux`, dispatching HTTP/SSE/WS events,
 /// draining pipelined RX continuations, firing transient `tcp.accept` backoff retries,
 /// and sweeping idle keep-alive / WS closing-handshake timeouts.
+/// Note: `step` is intended for dedicated-mux callers; shared-mux event loops should use `next_wake_ms` + `tick`.
 /// Caller contract: `wait_ms` MUST be `<= self.limits.idle_timeout_ms` so idle sweeps run on time.
 pub fn HttpServer::step(
   self : HttpServer,

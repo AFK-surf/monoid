@@ -1858,6 +1858,10 @@ test "SSE respects request Connection: close and WS backpressure fires on_ws_clo
   let out_sse = mock.collect_writes(1701)
   assert_true(str_contains(out_sse, "Connection: close\r\n"))
   assert_true(!str_contains(out_sse, "Connection: keep-alive"))
+  assert_eq_bool(srv.sse_close(1701), true)
+  complete_all_writes(mock, srv, cb)
+  drain_steps(srv, cb)
+  assert_eq_int(srv.active_connections(), 0)
 
   // 2. WebSocket backpressure close fires on_ws_close exactly once
   let acc2 = match mock.find_last_op("tcp.accept") {
@@ -1882,4 +1886,29 @@ test "SSE respects request Connection: close and WS backpressure fires on_ws_clo
   // Second tick/close must not double-fire on_ws_close
   drain_steps(srv, cb)
   assert_eq_int(ws_close_count, 1)
+
+  // 3. WebSocket backpressure while a previous tcp.write is still in-flight still fires on_ws_close exactly once
+  let acc3 = match mock.find_last_op("tcp.accept") {
+    Some(c) => c
+    None => panic("expected accept 3")
+  }
+  mock.push_done(acc3.id, "", "{\"id\":1703,\"peer\":\"127.0.0.1:50172\"}", None)
+  drain_steps(srv, cb)
+  let r3 = match mock.find_last_op("tcp.read") {
+    Some(c) => c
+    None => panic("expected read 3")
+  }
+  mock.push_done(r3.id, "", "{}", Some(hs.to_bytes()))
+  drain_steps(srv, cb)
+  complete_all_writes(mock, srv, cb)
+  // First valid WS write stays in-flight (outbox busy)
+  assert_eq_bool(srv.ws_send_binary(1703, Bytes::new(100)), true)
+  // Second WS write overflows max_write_queue_bytes (256) while first write is still in-flight
+  assert_eq_bool(srv.ws_send_binary(1703, Bytes::new(200)), false)
+  drain_steps(srv, cb)
+  // Complete the in-flight first write -> triggers terminal close and fires on_ws_close exactly once
+  complete_all_writes(mock, srv, cb)
+  drain_steps(srv, cb)
+  assert_eq_int(srv.active_connections(), 0)
+  assert_eq_int(ws_close_count, 2)
 }

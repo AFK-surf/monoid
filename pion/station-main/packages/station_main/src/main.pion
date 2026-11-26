@@ -163,6 +163,9 @@ fn run_smoke_http() -> Int {
           let _ = srv.ws_send_binary(cid, b)
         }
         station_http::WsEvent::Close(_cid, _) => {
+          // Note: client/shell's ws.open task (client/shell/src/net.rs:549-551) exits on server Close
+          // without echoing a CloseFrame payload, so the server observes TCP EOF (None) here while
+          // the client side strictly asserts WsClientEvent::Closed(Some(1000), "bye").
           srv_ws_closed = true
         }
         _ => ()
