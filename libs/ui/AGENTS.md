@@ -117,6 +117,7 @@ the parts still.fail itself ships and tests (左子健, 2026-11-17: 「感觉最
 - Every line that only parts things (a menu's or panel's groups, a sheet's rows, a tab bar's foot, a table's rows, the
   segments of a capsule) is one faint hairline: `rule_line` across or `rule_down` in a row (`rule_w`, `rule_ink`,
   `rule_color` in `src/controls/tokens.mbt`), never a thickness or colour of its own.
+- What scrolls at the end of a panel's body (`capped_node`, `panel_list_node`) goes on into the empty room under it and fades out there (`panel_fades_past`, `View::fades_past`), never a fade's height short of the buttons over a blank band: a presenter passes `panel_in_lend` the room it leaves over its foot's buttons (`foot_room`).
 - Floating overlay spacing follows three tokens in `src/controls/transient_overlay.mbt`: `floating_trigger_gap` (6 pt,
   trigger control to overlay), `floating_surface_gap` (8 pt, outer-edge-to-outer-edge gap between a floating surface or
   side panel and a side-mounted secondary overlay), and `floating_viewport_pad` (8 pt, viewport safety margin). Every

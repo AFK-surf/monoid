@@ -1893,6 +1893,18 @@ let sheet_rule_over : Double = 12.0
 let panel_foot_at : @ui.Style = @ui.css("row w=Full pt=S2 gap=S2 align=ACenter justify=JEnd")
 
 ///|
+/// The room a panel leaves over its foot's buttons (panel_foot_at's pt) for what scrolls at its body's end to go on
+/// into (panel_fades_past): none over a ruled foot (its line stays clear of it; the body's padding over the line the
+/// room then) or without a foot.
+fn panel_foot_room(footed : Bool, ruled : Bool) -> Double {
+  if footed && !ruled {
+    @ui.Space::S2.px()
+  } else {
+    0.0
+  }
+}
+
+///|
 // kept across runs: a value (no field of it changes)
 let panel_grows : @ui.Style = @ui.style(w=Full, h=grow)
 
