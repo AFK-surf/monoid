@@ -213,6 +213,20 @@ fn chats_pane_node(
   let read = fn() { @sfbase.chats_of_query(src, id, query()) }
   let scroll = list_scroll(key)
   let collapse_until : Ref[Double] = Ref(-1.0)
+  // (the open chat's row kept in its collapsed group, and each row so kept or let go of until when it makes its way:
+  // opening another chat lets it go as a row gone does, not at once)
+  let collapsed_kept : Ref[String] = Ref("")
+  let kept_moves : Map[String, Double] = Map([])
+  let kept_moving = fn(k : String) {
+    match kept_moves.get(k) {
+      Some(until) => v.cause_at() < until
+      None => false
+    }
+  }
+  // (the open chat as the collapsed groups keep it: told in a transition as another opens, so the row kept for it
+  // makes its way out, or in, as rows do, not at once)
+  let kept_open : @signals.Signal[ChatRef?] = @signals.signal(@signals.untracked(open_chat))
+  v.reacts(fn() { open_chat() }, fn(r) { @view.transition(within=v, fn() { kept_open.set(r) }) }, at_start=false)
   let on_toggle_collapse = fn(gk : String) {
     collapse_until.val = v.cause_at() + @ui.move_most_ms
     @view.transition(within=v, fn() {
@@ -379,7 +393,7 @@ fn chats_pane_node(
         let cur_days = days()
         let day_by_key : Map[String, ChatDay] = Map([])
         let mut active_row_key = ""
-        let cur_open = open_chat()
+        let cur_open = kept_open.get()
         for d in cur_days {
           day_by_key[d.key] = d
           if active_row_key == "" {
@@ -400,6 +414,9 @@ fn chats_pane_node(
         let mut cur_collapsed = false
         let mut any_collapsed = false
         let mut vis_rows = 0
+        let mut kept_now = ""
+        let mut prev_listed = false
+        let prev_kept = collapsed_kept.val
         let flush_gmore = fn(gk : String, col : Bool) {
           if gk != "" && !col {
             match day_by_key.get(gk) {
@@ -419,6 +436,12 @@ fn chats_pane_node(
             }
             out.push(lk)
           } else if lk.has_prefix("r/") {
+            if cur_collapsed && lk == active_row_key {
+              kept_now = lk
+            }
+            if lk == prev_kept {
+              prev_listed = true
+            }
             if !cur_collapsed || lk == active_row_key || motion.gone_item(lk) is Some(_) {
               out.push(lk)
               vis_rows += 1
@@ -428,6 +451,18 @@ fn chats_pane_node(
           }
         }
         flush_gmore(cur_gkey, cur_collapsed)
+        if kept_now != prev_kept {
+          let until = v.cause_at() + @ui.move_most_ms
+          kept_moves.clear()
+          // (the one kept before goes as its group hides it again; one gone from the list is RowsMotion's)
+          if prev_kept != "" && prev_listed {
+            kept_moves[prev_kept] = until
+          }
+          if kept_now != "" {
+            kept_moves[kept_now] = until
+          }
+          collapsed_kept.val = kept_now
+        }
         // Reachability when all/most groups are collapsed and more rows remain beyond the current window.
         if more.get() > 0 && any_collapsed && vis_rows < 8 {
           out.push("load_more")
@@ -734,10 +769,10 @@ fn chats_pane_node(
     bar_clear=fn() { ((frame.top)(), (frame.foot)()) },
     // (what comes, goes or goes ahead of others as the list changes while it is watched makes its way, the list's own:
     // RowsMotion says which)
-    comes=fn(k) { motion.comes(k) || (collapse_until.val > 0.0 && v.cause_at() < collapse_until.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
+    comes=fn(k) { motion.comes(k) || kept_moving(k) || (collapse_until.val > 0.0 && v.cause_at() < collapse_until.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
     // (and a part at its top a person's act took away (a restart's card let go of, in a transition): closing its room
     // as it goes, the rows under it not jumping up into it; one the data took away goes at once, outside a transition)
-    goes=fn(k) { motion.goes(k) || k.has_prefix("part/") || (collapse_until.val > 0.0 && v.cause_at() < collapse_until.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
+    goes=fn(k) { motion.goes(k) || kept_moving(k) || k.has_prefix("part/") || (collapse_until.val > 0.0 && v.cause_at() < collapse_until.val && (k.has_prefix("r/") || k.has_prefix("gmore/"))) },
     reorders=fn(k) { motion.moves(k) },
     // scrolled to within a screen of its foot while the core has more of its rows: its window a step more, the rows
     // added coming into the list it holds. A screen, not a screen and a half: its first window is what its room shows

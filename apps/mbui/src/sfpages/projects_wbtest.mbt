@@ -1115,6 +1115,13 @@ test "collapsed project keeps active chat visible and detail rename uses native 
   t_side.run_for(@ui.move_most_ms)
   assert_false(listed.val.iter().any(fn(it) { it.title == "和 Ana 一起看新版的引导页" }), msg="re-collapsing group must immediately drop hidden siblings from listed.val")
   assert_eq(t_side.audit(), [])
+  // 3. Another chat opened in its place (as a row pressed on 中屏/大屏 replaces it, no page sliding) lets the kept row
+  // go as a row gone does (its line closing over a motion), not at once
+  app.nav.replace(Chat({ station: "ws1/st1", session: "s-other", title: "别的对话", station_name: "Willow" }))
+  t_side.run_for(16.0)
+  assert_true(t_side.find("整理发布清单") is Some(_), msg="the kept row must still be making its way out a frame after another chat opens")
+  t_side.run_for(@ui.move_most_ms)
+  assert_true(t_side.find("整理发布清单") is None, msg="the kept row is gone once its motion is over")
 }
 
 ///|
