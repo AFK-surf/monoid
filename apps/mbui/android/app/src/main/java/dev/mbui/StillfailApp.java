@@ -18,6 +18,7 @@ public final class StillfailApp extends Application {
     public void onCreate() {
         super.onCreate();
         app = this;
+        Reports.restoreLastWorkspace(this);
         Crashes.install(this);
         coreAhead();
         MemoryWatch.start(this);

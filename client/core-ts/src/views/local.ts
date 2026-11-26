@@ -121,6 +121,9 @@ export class Local {
   /// what is let go of in it by `station thread`; a chat asked for by its key; an agent's first messages by `station key`;
   /// a vault request by its id; the changes of a station by the station.
   readonly #seen = { outbox: new Marks(), pending: new Marks(), first: new Marks(), letGo: new Marks(), vault: new Marks(), changing: new Marks() };
+  /// Single-pass per-DB snapshot captured during `opened(db)` so `resumeFor(db)` avoids re-reading and re-parsing
+  /// `outbox`/`first`/`changing` tables a second time on startup and never collides across DBs.
+  readonly #openedRows = new WeakMap<AccountDb, { changing: [string, number][]; firsts: [string, string][]; outboxes: [string, number, J[]][] }>();
   onMade: (station: string, key: string) => void = () => {};
 
   constructor(data: Data, now: () => number) {
@@ -135,8 +138,12 @@ export class Local {
 
   /// What an account's database keeps of what was done here (it was opened: at start, or signed in).
   opened(db: AccountDb): void {
+    const outboxes: [string, number, J[]][] = [];
     for (const [station, thread, list] of db.locals(OUTBOX)) {
-      if (Array.isArray(list) && list.length > 0) this.#outbox.set(join([station, thread]), list);
+      if (Array.isArray(list) && list.length > 0) {
+        this.#outbox.set(join([station, thread]), list);
+        outboxes.push([station, Number(thread), list]);
+      }
     }
     for (const [, key, chat] of db.locals(PENDING)) if (isObject(chat)) {
       const pending = chat as unknown as Pending;
@@ -144,9 +151,25 @@ export class Local {
       this.#pendingDb.set(key, db);
       if (pending.made) this.#made.set(join([pending.station, pending.made[0]]), key);
     }
-    for (const [station, key, first] of db.locals(FIRST)) if (isObject(first)) this.#firsts.set(join([station, key]), first as unknown as First);
-    for (const [, , change] of db.locals(CHANGING)) if (isObject(change) && !this.#changing.some((c) => c.station === change.station && c.id === change.id)) this.#changing.push(change as unknown as Change);
+    const firsts: [string, string][] = [];
+    for (const [station, key, first] of db.locals(FIRST)) if (isObject(first)) {
+      const f = first as unknown as First;
+      this.#firsts.set(join([station, key]), f);
+      if (f.making) firsts.push([station, key]);
+    }
+    const changing: [string, number][] = [];
+    for (const [, , change] of db.locals(CHANGING)) if (isObject(change)) {
+      const c = change as unknown as Change;
+      changing.push([c.station, c.id]);
+      if (!this.#changing.some((x) => x.station === c.station && x.id === c.id)) this.#changing.push(c);
+    }
     for (const c of this.#changing) this.#changes = Math.max(this.#changes, c.id);
+    this.#openedRows.set(db, { changing, firsts, outboxes });
+  }
+
+  /// Releases the single-pass `opened(db)` snapshot once `resumeFor(db)` finishes.
+  clearOpenedFor(db: AccountDb): void {
+    this.#openedRows.delete(db);
   }
 
   #changed(change: LocalChange): void {
@@ -420,9 +443,11 @@ export class Local {
     });
   }
 
-  /// Agents whose chats are still being made in `db` alone.
+  /// Agents whose chats are still being made in `db` alone (reuses `opened(db)` snapshot to avoid re-scanning SQLite).
   firstsMakingFor(db: AccountDb): [string, string][] {
     this.#seen.first.read();
+    const snap = this.#openedRows.get(db);
+    if (snap) return snap.firsts.filter(([station, key]) => this.#firsts.get(join([station, key]))?.making === true);
     const out: [string, string][] = [];
     for (const [station, key] of db.locals(FIRST)) {
       const f = this.#firsts.get(join([station, key]));
@@ -514,13 +539,14 @@ export class Local {
     });
   }
 
-  /// Chats with pending outboxes stored in `db` alone.
+  /// Chats with pending outboxes stored in `db` alone (reuses `opened(db)` snapshot to avoid re-scanning SQLite).
   outboxesFor(db: AccountDb): [string, number, J[]][] {
     this.#seen.outbox.read();
+    const snap = this.#openedRows.get(db);
+    if (snap) return snap.outboxes;
     const out: [string, number, J[]][] = [];
-    for (const [station, thread] of db.locals(OUTBOX)) {
-      const list = this.#outbox.get(join([station, thread]));
-      if (list && list.length > 0) out.push([station, Number(thread), list]);
+    for (const [station, thread, list] of db.locals(OUTBOX)) {
+      if (Array.isArray(list) && list.length > 0) out.push([station, Number(thread), list]);
     }
     return out;
   }
@@ -961,10 +987,15 @@ export class Local {
     }
   }
 
-  /// Unanswered changing overlays stored in `db` alone.
+  /// Unanswered changing overlays stored in `db` alone (reuses `opened(db)` snapshot to avoid re-scanning SQLite).
   forgetUnansweredFor(db: AccountDb): void {
     const keys = new Set<string>();
-    for (const [station, id] of db.locals(CHANGING)) keys.add(`${station}${SEP}${id}`);
+    const snap = this.#openedRows.get(db);
+    if (snap) {
+      for (const [station, id] of snap.changing) keys.add(`${station}${SEP}${id}`);
+    } else {
+      for (const [station, id] of db.locals(CHANGING)) keys.add(`${station}${SEP}${id}`);
+    }
     if (keys.size === 0) return;
     for (let i = this.#changing.length - 1; i >= 0; i--) {
       const c = this.#changing[i];

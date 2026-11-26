@@ -357,7 +357,12 @@ export class Composers {
 
   #save(key: string, s: State, immediate = false): void {
     const at = this.#at(key);
-    if (!at || s.db !== this.#db(key)) return;
+    if (!at) return;
+    const curDb = this.#db(key);
+    // If a draft was edited while its owning account was still deferred (`s.db === undefined`), bind to the owning DB
+    // as soon as it becomes available so subsequent edits persist normally.
+    if (s.db === undefined && curDb !== undefined) s.db = curDb;
+    if (s.db !== curDb) return;
     const topic = { topic: "draft", station: at[0], chat: at[1] };
     const draft = this.#draft(s);
     if (!draft.text.trim() && draft.quotes.length === 0 && draft.files.length === 0 && !draft.waiting && !draft.links && !draft.paths) this.#inner.data.forgetTopic(topic);

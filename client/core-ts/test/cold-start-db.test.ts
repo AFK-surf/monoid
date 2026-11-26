@@ -135,7 +135,7 @@ test("B0: multi-account active-first open answers primary account immediately an
   first.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-both", name: "Both" }] });
   first.inner.cloudSync.recomputeOwners();
   first.inner.data.set({ topic: "workspace", workspace: "ws2" }, { id: "ws2", name: "WS 2", members: [], stations: [{ id: "st2", name: "Station 2", online: true }] });
-  first.inner.data.db("s2")!.setChats("ws2/st2", false, [{ id: "c1", title: "Primary Chat", lastActiveAt: 1000, thread: 1 }], 1000);
+  first.inner.data.db("s2")!.setChats("ws2/st2", false, [{ id: "c1", session: "c1", title: "Primary Chat", agents: [], unread: false, lastActiveAt: 1000, thread: 1 }], 1000);
   await run(first.inner.data.written);
   assert.deepEqual(first.inner.data.device.get("choice", "workspaceOwners"), { ws1: "s1", "ws-both": "s1", ws2: "s2" });
   await first.close();
@@ -175,7 +175,7 @@ test("B0: multi-account active-first open answers primary account immediately an
 
   // Subscribing to primary chats emits first chats value and triggers deferred open deterministically.
   const ui = second.connect();
-  second.receive(ui, { kind: "subscribe", id: 1, subscribe: { topic: "chats", scope: "ws2", filter: "all" } });
+  second.receive(ui, { kind: "subscribe", id: 1, subscribe: { topic: "chats", scope: "ws2", mine: false, watching: false, hidden: false } });
   await Effect.runPromise(Deferred.await(s1OpenStarted));
   Deferred.doneUnsafe(gateS1, Effect.void);
   await Effect.runPromise(Deferred.await(s1OpenFinished));
@@ -487,4 +487,180 @@ test("B1: steady-state AccountDb cold open performs zero write transactions whil
   fourth.close();
   runner.shutdown();
   raw.close();
+});
+
+test("R2 regressions: caller cancel safety, serialized delete/re-sign-in, verified shared-ws writes/drafts, busy credential cleanup, onFirstChats filter, runner-owned signer cleanup", async () => {
+  // 1) P0-1: Cancelling caller 1 of openAccount while blocked in IO must NOT abort the open or clear isDeferred prematurely.
+  {
+    const { host } = setupTwoAccountHost();
+    host.store("device/choice", { workspaceOwners: { ws1: "s1", ws2: "s2" } });
+    const gateS1 = Deferred.makeUnsafe<void>();
+    const s1Started = Deferred.makeUnsafe<void>();
+    const origOpenDb = host.openDb.bind(host);
+    host.openDb = (name: string): Effect.Effect<Sql, HostError> =>
+      Effect.gen(function* () {
+        if (name === dbName("s1")) {
+          Deferred.doneUnsafe(s1Started, Effect.void);
+          yield* Deferred.await(gateS1);
+        }
+        return yield* origOpenDb(name);
+      });
+    const core = await Core.create(host, { clock: host.time.clock });
+    const f1 = core.inner.runner.fork(core.inner.data.openAccount("s1"));
+    await Effect.runPromise(Deferred.await(s1Started));
+    const f2 = core.inner.runner.fork(core.inner.data.openAccount("s1"));
+    core.inner.runner.interrupt(f1);
+    await host.settle();
+    assert.equal(core.inner.data.isDeferred("s1"), true, "cancelling caller 1 must not clear isDeferred while IO is in flight");
+    Deferred.doneUnsafe(gateS1, Effect.void);
+    const db2 = await Effect.runPromise(Fiber.join(f2));
+    assert.ok(db2 !== undefined, "caller 2 must receive the live AccountDb once IO completes");
+    assert.ok(core.inner.data.db("s1") !== undefined, "s1 must be published in Data");
+    assert.equal(core.inner.data.isDeferred("s1"), false);
+    await core.close();
+  }
+
+  // 2) P0-2: Slow deleteDb on sign-out must complete strictly BEFORE re-sign-in opens the same DB filename.
+  {
+    const { host } = setupTwoAccountHost();
+    const core = await Core.create(host, { clock: host.time.clock });
+    const events: string[] = [];
+    const delGate = Deferred.makeUnsafe<void>();
+    const delStarted = Deferred.makeUnsafe<void>();
+    const origDelete = host.deleteDb.bind(host);
+    const origOpen = host.openDb.bind(host);
+    host.deleteDb = (name: string) =>
+      Effect.gen(function* () {
+        if (name === dbName("s2")) {
+          events.push("delete:start");
+          Deferred.doneUnsafe(delStarted, Effect.void);
+          yield* Deferred.await(delGate);
+        }
+        const r = yield* origDelete(name);
+        if (name === dbName("s2")) events.push("delete:end");
+        return r;
+      });
+    host.openDb = (name: string) =>
+      Effect.gen(function* () {
+        if (name === dbName("s2")) events.push("open:start");
+        return yield* origOpen(name);
+      });
+    // Sign out s2 -> blocks in deleteDb.
+    const signOutFiber = core.inner.runner.fork(core.inner.data.accounts(["s1"]));
+    await Effect.runPromise(Deferred.await(delStarted));
+    // Re-sign-in s2 while deleteDb is still running.
+    const reSignInFiber = core.inner.runner.fork(core.inner.data.accounts(["s1", "s2"]));
+    await host.settle();
+    assert.deepEqual(events, ["delete:start"], "re-sign-in openDb must wait until old deleteDb completes");
+    Deferred.doneUnsafe(delGate, Effect.void);
+    await Effect.runPromise(Fiber.join(signOutFiber));
+    await Effect.runPromise(Fiber.join(reSignInFiber));
+    assert.deepEqual(events, ["delete:start", "delete:end", "open:start"], "strict delete -> open serialization");
+    assert.ok(core.inner.data.db("s2") !== undefined, "re-signed-in s2 DB must be open and intact");
+    await core.close();
+  }
+
+  // 3) P0-3 & P0-4: Stale workspaceOwners cache pointing shared ws-both to s2 must NOT route owner/draft writes to s2,
+  //    and drafts saved while s1 is deferred survive flush and Core restart.
+  {
+    const { host } = setupTwoAccountHost();
+    // Seed s1 & s2 DBs so both list ws-both; then corrupt device/choice cache to claim ws-both -> s2.
+    const first = await Core.create(host, { clock: host.time.clock });
+    first.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-both", name: "Both" }] });
+    first.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-both", name: "Both" }] });
+    await run(first.inner.data.written);
+    first.inner.data.device.put("choice", "workspaceOwners", { ws1: "s1", ws2: "s2", "ws-both": "s2" });
+    await first.close();
+
+    const second = await Core.create(host, { clock: host.time.clock });
+    assert.equal(second.inner.data.isDeferred("s1"), true, "s1 starts deferred");
+    // owner("ws-both") must verify against earlier deferred s1 and return "s1", NOT stale "s2".
+    const verifiedOwner = await run(second.inner.cloudSync.owner("ws-both"));
+    assert.equal(verifiedOwner, "s1", "stale cache must never authorize writes to later account s2");
+
+    // Save draft on ws-both/st-shared via draftPut while s1 is deferred (fresh core #3 with accurate cache too).
+    await second.close();
+    const third = await Core.create(host, { clock: host.time.clock });
+    assert.equal(third.inner.data.isDeferred("s1"), true, "s1 starts deferred on restart");
+    const ui = third.connect();
+    let putRes: J = null;
+    const origEmit = third.inner.host.emit.bind(third.inner.host);
+    const putDone = Deferred.makeUnsafe<void>();
+    third.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 10 && ("ok" in m || "error" in m)) {
+        putRes = "ok" in m ? m.ok : m;
+        Deferred.doneUnsafe(putDone, Effect.void);
+      }
+    };
+    third.receive(ui, { kind: "call", id: 10, call: "draft.put", params: { station: "ws-both/st1", chat: "new", text: "precious draft", quotes: [], files: [] } });
+    await Effect.runPromise(Deferred.await(putDone));
+    assert.ok(typeof putRes?.id === "string" && putRes.id.length > 0, `draftPut returns valid id, got: ${JSON.stringify(putRes)}`);
+    await host.time.pass(350);
+    await run(third.inner.data.written);
+    await third.close();
+
+    // Reopen fresh Core #4 and assert draft persisted in s1's SQLite DB!
+    const fourth = await Core.create(host, { clock: host.time.clock });
+    await run(fourth.inner.cloudSync.ensureVerifiedOwner("ws-both"));
+    assert.equal(fourth.inner.composers.readDraft("ws-both/st1", "new").text, "precious draft", "draft must survive restart");
+    await fourth.close();
+  }
+
+  // 4) P1-1: Sign-out removes stored credentials even when openDb returns busy for deferred account.
+  {
+    const { host } = setupTwoAccountHost();
+    host.store("device/choice", { workspaceOwners: { ws1: "s1", ws2: "s2" }, "credWorkspaces/s1": ["ws-extra"] });
+    host.store("credential/s1/ws1", { device: "d1", token: "secret1", issued_at: 1, expires_at: 9999999999 });
+    host.store("credential/s1/ws-extra", { device: "d1", token: "secret2", issued_at: 1, expires_at: 9999999999 });
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      name === dbName("s1") ? Effect.fail(new HostError("SQLITE_BUSY")) : origOpen(name);
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.accounts(["s2"]));
+    await host.settle();
+    assert.equal(host.stored("credential/s1/ws1"), undefined, "workspaceOwners-indexed credential deleted despite busy DB");
+    assert.equal(host.stored("credential/s1/ws-extra"), undefined, "credWorkspaces-indexed credential deleted despite busy DB");
+    await core.close();
+  }
+
+  // 5) P1-3: Subscribing to a non-active workspace's chats must NOT prematurely trigger deferred DB opening.
+  {
+    const { host } = setupTwoAccountHost();
+    host.store("device/choice", { workspaceOwners: { ws1: "s1", ws2: "s2" } });
+    const core = await Core.create(host, { clock: host.time.clock });
+    assert.equal(core.inner.data.isDeferred("s1"), true);
+    const ui = core.connect();
+    // Subscribe to another workspace "ws-other" (not active "ws2").
+    core.receive(ui, { kind: "subscribe", id: 1, subscribe: { topic: "chats", scope: "ws-other", filter: "all" } });
+    await host.settle();
+    assert.equal(core.inner.data.isDeferred("s1"), true, "non-active workspace chats must not prematurely open deferred s1");
+    await core.close();
+  }
+
+  // 6) P1-5: Signer.load background cleanup bound to Runner is interrupted cleanly when runner shuts down.
+  {
+    const host = new FakeHost();
+    host.appKeys = true;
+    const seed = new Uint8Array(32).fill(7);
+    const sealedStore = new Map<string, Uint8Array>([["lock-signer", seed]]);
+    host.secureGet = (k) => Effect.succeed(sealedStore.get(k) ?? null);
+    host.secureSet = (k, v) => Effect.sync(() => void sealedStore.set(k, v));
+    host.store("lock-signer", seed);
+    const gate = Deferred.makeUnsafe<void>();
+    let completed = false;
+    host.storageDelete = () =>
+      Effect.gen(function* () {
+        yield* Deferred.await(gate);
+        completed = true;
+      });
+    const runner = new Runner();
+    Signer.bindRunner(host, runner);
+    const loaded = await Effect.runPromise(Signer.load(host));
+    assert.ok(loaded !== null);
+    runner.shutdown();
+    Deferred.doneUnsafe(gate, Effect.void);
+    await host.settle();
+    assert.equal(completed, false, "runner.shutdown() must interrupt pending Signer.load cleanup fiber");
+  }
 });

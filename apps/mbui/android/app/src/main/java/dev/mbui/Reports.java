@@ -6,7 +6,40 @@ package dev.mbui;
  * thread's hangs.
  */
 final class Reports {
+    private static final String PREFS = "stillfail_ui", WORKSPACE_KEY = "last_workspace";
+    private static boolean workspaceEnvPinned;
+
     private Reports() {}
+
+    /**
+     * Restores the last active workspace into {@code MBUI_LAST_WORKSPACE} before MoonBit starts (app-side so
+     * {@code libs/ui} knows nothing about workspaces). Preserves an explicit process env override if already present.
+     */
+    static void restoreLastWorkspace(android.content.Context c) {
+        if (System.getenv("MBUI_LAST_WORKSPACE") != null) {
+            workspaceEnvPinned = true;
+            return;
+        }
+        try {
+            String ws = c.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).getString(WORKSPACE_KEY, "");
+            if (ws != null && !ws.isEmpty()) android.system.Os.setenv("MBUI_LAST_WORKSPACE", ws, false);
+        } catch (Throwable ignored) {}
+    }
+
+    static void saveLastWorkspace(android.content.Context c, String ws) {
+        if (ws == null) ws = "";
+        android.content.SharedPreferences prefs = c.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE);
+        if (!ws.equals(prefs.getString(WORKSPACE_KEY, ""))) {
+            prefs.edit().putString(WORKSPACE_KEY, ws).apply();
+        }
+        // Keep the process env in sync for same-process Activity recreation unless pinned by an external test env.
+        if (!workspaceEnvPinned) {
+            try {
+                if (ws.isEmpty()) android.system.Os.unsetenv("MBUI_LAST_WORKSPACE");
+                else android.system.Os.setenv("MBUI_LAST_WORKSPACE", ws, true);
+            } catch (Throwable ignored) {}
+        }
+    }
 
     /** {@code what} with its words ({@code a}, {@code b}) and numbers ({@code n}, {@code m}); what it answers. */
     static int tell(String what, String a, String b, int n, int m) {
@@ -74,9 +107,9 @@ final class Reports {
                 String p = Host.cachedThemePref(app);
                 return "light".equals(p) ? 1 : "dark".equals(p) ? 2 : 0;
             }
-            // the workspace last in view, kept for frame-0 cold-start pre-subscription (Host.saveLastWorkspace)
+            // the workspace last in view, kept for frame-0 cold-start pre-subscription (Reports.saveLastWorkspace)
             case "set_last_workspace":
-                Host.saveLastWorkspace(app, a);
+                saveLastWorkspace(app, a);
                 return 1;
             default:
                 return 0;

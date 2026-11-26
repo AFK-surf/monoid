@@ -5,6 +5,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { Effect } from "effect";
 import { CoreError, asCoreError } from "./error.ts";
 import type { Host } from "./host.ts";
+import type { Runner } from "./runtime.ts";
 // (still.fail's words over the base's own, which error.ts says: scripts/base.ts; the vault's files, which load this
 // one, have them by it)
 import "./i18n.ts";
@@ -79,6 +80,12 @@ export class Signer {
   static readonly KEY = "lock-signer";
   static readonly #cleaned = new WeakSet<Host>();
   static readonly #cleaning = new WeakSet<Host>();
+  static readonly #runners = new WeakMap<Host, Runner>();
+
+  /// Binds a host instance to its `Runner` so background legacy-key cleanups are owned by and interrupted with the core lifecycle.
+  static bindRunner(host: Host, runner: Runner): void {
+    Signer.#runners.set(host, runner);
+  }
   readonly #seed: Uint8Array;
   /// `ed25519:<hex>`, as lock entries name it.
   readonly id: string;
@@ -111,7 +118,9 @@ export class Signer {
             ),
             Effect.sync(() => void Signer.#cleaning.delete(host)),
           );
-          Effect.runFork(cleanup);
+          const runner = Signer.#runners.get(host);
+          if (runner) runner.fork(cleanup);
+          else Effect.runFork(cleanup);
         }
         return new Signer(kept);
       }

@@ -5,7 +5,7 @@
 //
 // Topics of this data have no value of their own: their value is read from here (`shared`), by query, when it goes
 // out; each database's writer says which topics a burst changed, and the store pushes what changed (keyed deltas).
-import { Deferred, Effect, Fiber, Queue } from "effect";
+import { Deferred, Effect, Fiber, Queue, Semaphore } from "effect";
 import { OVERVIEW_CHAT, OVERVIEW_PROFILED, OVERVIEW_SETTINGS, ROOM_BACK_PAGES } from "./db/schema.ts";
 import { AccountDb, LIST_OF, MD_SHOWN_EVERY, foundOf, type ChatFound, type Changes, type Derive, type HeadRow, type ListKind, type LogTable, type MdPut, type MovedTo, type RowChange, frozen } from "./db/account.ts";
 import type { SharedMarkKind, SharedMarksSnapshot, SharedMeta } from "./db/chats.ts";
@@ -326,10 +326,15 @@ export class Data {
   #ordered = false;
   /// Accounts whose database open is deferred until after the first screen's topics answer.
   readonly #deferred = new Set<string>();
-  /// In-flight database opens by account sub, so concurrent `openAccounts` and `accounts` never open the same DB twice.
-  readonly #inFlight = new Map<string, Deferred.Deferred<void>>();
-  /// Monotonic per-sub generation bumped on sign-out so an in-flight open for a signed-out session never publishes.
+  /// Account-owned in-flight database opens by sub and generation: individual caller interruption never cancels the
+  /// account's open task, and waiters observe the real published DB (re-checking generation on sign-out/re-sign-in).
+  readonly #opening = new Map<string, { gen: number; done: Deferred.Deferred<AccountDb | undefined> }>();
+  /// Per-account FIFO mutex serializing open, sign-out cleanup (`deleteDb`), and re-sign-in on the same DB file.
+  readonly #subLocks = new Map<string, Semaphore.Semaphore>();
+  /// Monotonic per-sub generation bumped on sign-out and sign-in so stale opens never publish into a newer session.
   readonly #subGen = new Map<string, number>();
+  /// Drafts written or flushed while their owning account DB was still deferred: flushed once ownership resolves.
+  readonly #pendingDrafts = new Map<string, [Topic, unknown]>();
   #closed = false;
   readonly device: Device;
   readonly #changed: ((topic: Topic) => void)[] = [];
@@ -449,18 +454,61 @@ export class Data {
     return !this.#ordered || this.#order.includes(sub);
   }
 
-  /// Opens one account's database (skipping if already open or no longer signed in), clearing its deferred flag and
-  /// returning the live `AccountDb` if published.
+  #lockOf(sub: string): Semaphore.Semaphore {
+    let lock = this.#subLocks.get(sub);
+    if (!lock) {
+      lock = Semaphore.makeUnsafe(1);
+      this.#subLocks.set(sub, lock);
+    }
+    return lock;
+  }
+
+  /// Opens one account's database (skipping if already open or no longer signed in), returning the live `AccountDb`
+  /// if published. Runs the open in an account-owned fiber serialized per sub so cancelling a single waiter never
+  /// aborts the open or clears `isDeferred` prematurely.
   openAccount(sub: string, timing?: OpenTiming): Effect.Effect<AccountDb | undefined> {
     return Effect.gen({ self: this }, function* () {
-      if (this.#closed) return undefined;
-      if (!this.#allowed(sub)) {
-        this.#deferred.delete(sub);
-        return undefined;
+      while (!this.#closed) {
+        if (!this.#allowed(sub)) {
+          this.#deferred.delete(sub);
+          return undefined;
+        }
+        const live = this.#dbs.get(sub);
+        if (live) {
+          this.#deferred.delete(sub);
+          return live;
+        }
+        const gen = this.#subGen.get(sub) ?? 0;
+        let entry = this.#opening.get(sub);
+        if (!entry || entry.gen !== gen) {
+          const done = Deferred.makeUnsafe<AccountDb | undefined>();
+          entry = { gen, done };
+          this.#opening.set(sub, entry);
+          const cur = entry;
+          this.#runner.fork(
+            Effect.gen({ self: this }, function* () {
+              let result: AccountDb | undefined = undefined;
+              yield* Effect.ensuring(
+                this.#lockOf(sub).withPermits(1)(
+                  Effect.map(this.#openLocked(sub, gen, timing), (db) => {
+                    result = db;
+                  }),
+                ),
+                Effect.sync(() => {
+                  if (this.#opening.get(sub) === cur) this.#opening.delete(sub);
+                  Deferred.doneUnsafe(done, Effect.succeed(result));
+                }),
+              );
+            }),
+          );
+        }
+        const db = yield* Deferred.await(entry.done);
+        if (this.#closed) return undefined;
+        // Generation changed while awaiting (sign-out + re-sign-in): loop to acquire the current generation's open.
+        if ((this.#subGen.get(sub) ?? 0) !== gen) continue;
+        return db ?? this.#dbs.get(sub);
       }
-      yield* this.#open(sub, timing);
-      this.#deferred.delete(sub);
-      return this.#dbs.get(sub);
+      return undefined;
     });
   }
 
@@ -511,56 +559,63 @@ export class Data {
   accounts(subs: string[]): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       if (this.#closed) return;
+      const prevOrder = new Set(this.#order);
       const removed = new Set<string>();
       for (const sub of this.#order) if (!subs.includes(sub)) removed.add(sub);
       for (const sub of this.#dbs.keys()) if (!subs.includes(sub)) removed.add(sub);
       for (const sub of this.#deferred) if (!subs.includes(sub)) removed.add(sub);
-      for (const sub of this.#inFlight.keys()) if (!subs.includes(sub)) removed.add(sub);
+      for (const sub of this.#opening.keys()) if (!subs.includes(sub)) removed.add(sub);
       this.#order = [...subs];
       this.#ordered = true;
       for (const sub of removed) {
         this.#deferred.delete(sub);
         this.#subGen.set(sub, (this.#subGen.get(sub) ?? 0) + 1);
       }
-      for (const sub of removed) {
-        const inFlight = this.#inFlight.get(sub);
-        if (inFlight) yield* Deferred.await(inFlight);
-        // If re-signed-in while awaiting cleanup, skip deleting its freshly signed-in state.
-        if (this.#order.includes(sub)) continue;
-        const db = this.#dbs.get(sub);
-        let me: unknown;
-        if (db) {
-          me = db.accountDoc("me");
-          this.#dbs.delete(sub);
-          this.#setNote(sub, null);
-          db.close();
-        } else {
-          me = yield* this.#readUnopenedMe(sub);
-          this.#setNote(sub, null);
-        }
-        this.onSignedOut(sub, me);
-        if (this.#host.deleteDb) yield* Effect.ignore(this.#host.deleteDb(dbName(sub)), { log: "Unhandled", message: "database deleted" });
-        this.#tellAll();
+      for (const sub of subs) {
+        if (!prevOrder.has(sub)) this.#subGen.set(sub, (this.#subGen.get(sub) ?? 0) + 1);
+      }
+      // Serialize each removed account's close + `deleteDb` through its per-sub mutex concurrently so every removed
+      // account enters its FIFO lock before any subsequent re-sign-in can open the same DB filename.
+      if (removed.size > 0) {
+        yield* Effect.forEach(
+          [...removed],
+          (sub) =>
+            this.#lockOf(sub).withPermits(1)(
+              Effect.gen({ self: this }, function* () {
+                if (this.#closed) return;
+                const db = this.#dbs.get(sub);
+                let me: unknown;
+                if (db) {
+                  me = db.accountDoc("me");
+                  this.#dbs.delete(sub);
+                  this.#setNote(sub, null);
+                  db.close();
+                } else {
+                  me = yield* this.#readUnopenedMe(sub);
+                  this.#setNote(sub, null);
+                }
+                this.onSignedOut(sub, me);
+                if (this.#host.deleteDb) yield* Effect.ignore(this.#host.deleteDb(dbName(sub)), { log: "Unhandled", message: "database deleted" });
+                this.#tellAll();
+              }),
+            ),
+          { concurrency: "unbounded", discard: true },
+        );
       }
       for (const sub of subs) {
         if (!this.#dbs.has(sub) && !this.#deferred.has(sub)) {
-          yield* this.#open(sub);
+          yield* this.openAccount(sub);
         }
       }
     });
   }
 
-  #open(sub: string, timing?: OpenTiming): Effect.Effect<void> {
+  /// Opens one account DB while holding `#lockOf(sub)` for generation `gen`. Returns the published `AccountDb` or
+  /// `undefined`, and clears `#deferred` only when `gen` still matches at publish or unrecoverable failure.
+  #openLocked(sub: string, gen: number, timing?: OpenTiming): Effect.Effect<AccountDb | undefined> {
     return Effect.gen({ self: this }, function* () {
-      if (this.#closed || this.#dbs.has(sub)) return;
-      const existing = this.#inFlight.get(sub);
-      if (existing) {
-        yield* Deferred.await(existing);
-        return;
-      }
-      const gen = this.#subGen.get(sub) ?? 0;
-      const done = Deferred.makeUnsafe<void>();
-      this.#inFlight.set(sub, done);
+      const stillValid = () => !this.#closed && !this.#dbs.has(sub) && (this.#subGen.get(sub) ?? 0) === gen && this.#allowed(sub);
+      if (!stillValid()) return this.#dbs.get(sub);
       let unstored: AccountDb | Sql | null = null;
       const closeUnstored = () => {
         if (unstored === null) return;
@@ -572,15 +627,9 @@ export class Data {
           // Let go however it can be.
         }
       };
-      const finish = () => {
-        closeUnstored();
-        if (this.#inFlight.get(sub) === done) this.#inFlight.delete(sub);
-        Deferred.doneUnsafe(done, Effect.void);
-      };
-      const stillValid = () => !this.#closed && !this.#dbs.has(sub) && (this.#subGen.get(sub) ?? 0) === gen && this.#allowed(sub);
-      yield* Effect.ensuring(
+      return yield* Effect.ensuring(
         Effect.gen({ self: this }, function* () {
-          if (!stillValid()) return;
+          if (!stillValid()) return undefined;
           const name = dbName(sub);
           let sql: Sql | null = null;
           let db: AccountDb | null = null;
@@ -616,8 +665,11 @@ export class Data {
             }
             if (timing) timing.openMs += this.#host.monotonicMs() - tMem;
             if (sql === null) {
-              if (note) this.#setNote(sub, note);
-              return;
+              if (stillValid()) {
+                this.#deferred.delete(sub);
+                if (note) this.#setNote(sub, note);
+              }
+              return undefined;
             }
             unstored = sql;
             const tEnsure = timing ? this.#host.monotonicMs() : 0;
@@ -626,14 +678,17 @@ export class Data {
               unstored = db;
             } catch (e) {
               closeUnstored();
-              this.#setNote(sub, { kind: "failed", detail: e instanceof Error ? e.message : String(e) });
-              return;
+              if (stillValid()) {
+                this.#deferred.delete(sub);
+                this.#setNote(sub, { kind: "failed", detail: e instanceof Error ? e.message : String(e) });
+              }
+              return undefined;
             }
             if (timing) timing.ensureMs += this.#host.monotonicMs() - tEnsure;
           }
           if (!stillValid()) {
             closeUnstored();
-            return;
+            return undefined;
           }
           if (db.readOnly) note = { kind: "newer", detail: null };
           db.onCommit = (changes) => this.#committed(db, changes);
@@ -645,17 +700,19 @@ export class Data {
           if (timing) timing.importMs += this.#host.monotonicMs() - tImp;
           if (!stillValid()) {
             closeUnstored();
-            return;
+            return undefined;
           }
           this.#dbs.set(sub, db);
+          this.#deferred.delete(sub);
           unstored = null;
           if (note) this.#setNote(sub, note);
           this.onPublished(db);
           this.#keepWithin(db);
           this.#giveBackRoom(db);
           this.#tellAll();
+          return db;
         }),
-        Effect.sync(finish),
+        Effect.sync(closeUnstored),
       );
     });
   }
@@ -1023,8 +1080,11 @@ export class Data {
     if (topic.topic === "prefs") return this.device.get("prefs", "device");
     if (topic.topic === "drivePlace") return this.device.get("drive_place", placeOf(topic));
     if (topic.topic === "draft") {
-      const soon = this.#soon.get(`${s("station")}${SEP}${s("chat")}`);
+      const key = `${s("station")}${SEP}${s("chat")}`;
+      const soon = this.#soon.get(key);
       if (soon) return soon[1];
+      const pending = this.#pendingDrafts.get(key);
+      if (pending) return pending[1];
       return this.of(s("station"))?.draft(s("station"), s("chat"));
     }
     if (topic.topic === "loginSessions") return this.#dbs.get(s("account"))?.accountDoc("login_sessions");
@@ -1190,7 +1250,18 @@ export class Data {
       }
       return;
     }
-    if (topic.topic === "draft") return this.of(s("station"))?.putDraft(s("station"), s("chat"), value);
+    if (topic.topic === "draft") {
+      const station = s("station");
+      const chat = s("chat");
+      const key = `${station}${SEP}${chat}`;
+      const db = this.of(station);
+      if (db) {
+        this.#pendingDrafts.delete(key);
+        return db.putDraft(station, chat, value);
+      }
+      if (this.hasDeferred()) this.#pendingDrafts.set(key, [topic, frozen(structuredClone(value))]);
+      return;
+    }
     if (topic.topic === "loginSessions") return this.#dbs.get(s("account"))?.putAccountDoc("login_sessions", value, at, topic);
     if (topic.topic === "admin") return this.#dbs.get(s("account"))?.putAccountDoc(`admin/${s("list")}`, value, at, topic);
     if (topic.topic === "workspace") return this.#ofWorkspace(s("workspace"))?.putWorkspace(s("workspace"), value, at);
@@ -1266,6 +1337,21 @@ export class Data {
     this.set(topic, next === undefined ? value : next);
   }
 
+  /// Flushes any drafts buffered while their owning account DB was deferred once ownership becomes available.
+  flushPendingDrafts(): void {
+    if (this.#pendingDrafts.size === 0) return;
+    for (const [key, [topic, value]] of [...this.#pendingDrafts]) {
+      const station = String(topic.station);
+      const db = this.of(station);
+      if (db) {
+        this.#pendingDrafts.delete(key);
+        db.putDraft(station, String(topic.chat), value);
+      } else if (!this.hasDeferred()) {
+        this.#pendingDrafts.delete(key);
+      }
+    }
+  }
+
   /// A held topic known no more (a draft sent or emptied).
   forgetTopic(topic: Topic): void {
     if (topic.topic === "stationUsage") {
@@ -1284,10 +1370,11 @@ export class Data {
     if (topic.topic !== "draft") return;
     const key = `${String(topic.station)}${SEP}${String(topic.chat)}`;
     const soon = this.#soon.delete(key);
+    const pending = this.#pendingDrafts.delete(key);
     const station = String(topic.station);
     const db = this.of(station);
     if (db && db.draft(station, String(topic.chat)) !== undefined) db.putDraft(station, String(topic.chat), undefined);
-    else if (soon) this.#tell(topic);
+    else if (soon || pending) this.#tell(topic);
   }
 
   // ── what a station said beyond the tables (station/memory.ts), among its documents ──

@@ -73,8 +73,9 @@ export class CloudSync {
   onRelayLoad: (sub: string) => void = () => {};
   /// Told when an operator's list read only while shown changed (`audit`; `feedback/`, a report's own): sync/admin-relays.ts.
   onAdminSubList: (sub: string, prefix: string) => void = () => {};
-  /// Asked to open deferred account database(s) on demand when a workspace's owner is not yet resolved.
-  onNeedDeferred: ((workspace: string) => Effect.Effect<void>) | null = null;
+  /// Asked to open deferred account database(s) on demand when a workspace's owner is not yet resolved or verified
+  /// against earlier deferred accounts in sign-in order.
+  onNeedDeferred: ((workspace: string, beforeSub?: string | null) => Effect.Effect<void>) | null = null;
   /// The lock entries a hello to a station of the workspace brings (views/lock.ts `carried`): none, null.
   carry: ((workspace: string) => import("../lock.ts").Entry[] | null) | null = null;
   /// The chain of the person's own lock a hello brings to a station (views/lock.ts `carriedPerson`).
@@ -107,8 +108,51 @@ export class CloudSync {
   /// Starts keeping still.fail cloud's data current: whom each account reaches, from what is held first.
   start(): void {
     this.recomputeOwners();
+    this.#drainPendingCredentialDeletes();
     // Each account's socket reads the account as it opens (or, failing its first try, at once).
     this.syncSockets();
+  }
+
+  /// Retries any credential storage deletes that failed on an earlier sign-out.
+  #drainPendingCredentialDeletes(): void {
+    const core = this.#core;
+    const raw = core.data.device.get("choice", "pendingCredentialDeletes");
+    const keys = Array.isArray(raw) ? raw.filter((k): k is string => typeof k === "string" && k.length > 0) : [];
+    if (keys.length === 0) return;
+    core.runner.fork(
+      Effect.gen({ self: this }, function* () {
+        const remaining: string[] = [];
+        for (const k of keys) {
+          const r = yield* Effect.result(core.host.storageDelete(k));
+          if (r._tag === "Failure") remaining.push(k);
+        }
+        core.data.device.put("choice", "pendingCredentialDeletes", remaining.length > 0 ? remaining : undefined);
+      }),
+    );
+  }
+
+  /// Whether any non-console account strictly earlier than `sub` in sign-in order still has a deferred DB.
+  hasEarlierDeferred(sub: string): boolean {
+    const core = this.#core;
+    if (!core.data.hasDeferred()) return false;
+    for (const account of core.accounts.list()) {
+      if (this.#isConsole(account.sub)) continue;
+      if (account.sub === sub) return false;
+      if (core.data.isDeferred(account.sub)) return true;
+    }
+    return false;
+  }
+
+  /// Ensures `workspace`'s owner is verified against sign-in order (opening earlier deferred accounts if needed)
+  /// before any local write, draft persistence, credential lookup, or mutation touches an account DB.
+  ensureVerifiedOwner(workspace: string): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const core = this.#core;
+      if (!core.data.hasDeferred() || !this.onNeedDeferred) return;
+      const sub = core.workspaces.owner(workspace);
+      if (sub !== null && !this.hasEarlierDeferred(sub)) return;
+      yield* this.onNeedDeferred(workspace, sub);
+    });
   }
 
   // ── what the topics read ──
@@ -344,9 +388,10 @@ export class CloudSync {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       const sub = core.workspaces.owner(id);
-      if (sub === null) return;
+      if (sub === null || this.hasEarlierDeferred(sub)) return;
       const topic: Topic = { topic: "workspace", workspace: id };
       const answer = yield* Effect.result(core.provider.request(sub, "GET", `/v1/workspaces/${encode(id)}`, null));
+      if (core.workspaces.owner(id) !== sub) return;
       if (answer._tag === "Success") this.#took(id, answer.success);
       else {
         const error = answer.failure;
@@ -376,8 +421,9 @@ export class CloudSync {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
       const sub = core.workspaces.owner(id);
-      if (sub === null) return;
+      if (sub === null || this.hasEarlierDeferred(sub)) return;
       const answer = yield* Effect.result(core.provider.request(sub, "GET", `/v1/workspaces/${encode(id)}/feedback`, null));
+      if (core.workspaces.owner(id) !== sub) return;
       if (answer._tag === "Success") core.data.put("feedback", id, isObject(answer.success) ? answer.success : { feedback: [] });
       else if (answer.failure.status === 404 || answer.failure.status === 403) {
         core.data.forgetRecord("feedback", id);
@@ -507,8 +553,29 @@ export class CloudSync {
     if (!hasDeferred) {
       core.data.device.put("choice", "workspaceOwners", Object.fromEntries(owners));
     }
+    core.data.flushPendingDrafts();
     core.views?.vaultChanged(null);
     this.onReach?.();
+  }
+
+  /// Records that `sub` stored a credential for `workspace` so sign-out can remove every credential key even when the
+  /// account DB is unopened or busy at sign-out time.
+  #rememberCredentialWorkspace(sub: string, workspace: string): void {
+    const device = this.#core.data.device;
+    const indexKey = `credWorkspaces/${sub}`;
+    const raw = device.get("choice", indexKey);
+    const list = Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
+    if (!list.includes(workspace)) device.put("choice", indexKey, [...list, workspace]);
+  }
+
+  /// Persists credential storage keys whose delete failed so they are retried on the next start.
+  #recordFailedCredentialDeletes(failed: string[]): void {
+    if (failed.length === 0) return;
+    const device = this.#core.data.device;
+    const raw = device.get("choice", "pendingCredentialDeletes");
+    const prev = Array.isArray(raw) ? raw.filter((v): v is string => typeof v === "string") : [];
+    const next = [...new Set([...prev, ...failed])];
+    device.put("choice", "pendingCredentialDeletes", next);
   }
 
   /// An account signed out (its database goes with all it held): the credentials it had for its workspaces go too.
@@ -516,11 +583,33 @@ export class CloudSync {
     const core = this.#core;
     this.#askTurn.delete(sub);
     this.#credentialBackoff.delete(sub);
+    const wsIds = new Set<string>();
     for (const w of isObject(me) && Array.isArray(me.workspaces) ? me.workspaces : []) {
-      if (!isObject(w) || typeof w.id !== "string") continue;
-      const key = `${CREDENTIAL_KEY}/${sub}/${w.id}`;
+      if (isObject(w) && typeof w.id === "string") wsIds.add(w.id);
+    }
+    const indexed = core.data.device.get("choice", `credWorkspaces/${sub}`);
+    if (Array.isArray(indexed)) {
+      for (const w of indexed) if (typeof w === "string" && w.length > 0) wsIds.add(w);
+    }
+    const cachedOwners = core.data.device.get("choice", "workspaceOwners");
+    if (isObject(cachedOwners)) {
+      for (const [ws, owner] of Object.entries(cachedOwners)) {
+        if (owner === sub) wsIds.add(ws);
+      }
+    }
+    core.data.device.put("choice", `credWorkspaces/${sub}`, undefined);
+    for (const ws of wsIds) {
+      const key = `${CREDENTIAL_KEY}/${sub}/${ws}`;
+      const othersKey = `${key}/${CREDENTIAL_OTHERS}`;
       this.#removed.set(key, (this.#removed.get(key) ?? 0) + 1);
-      const removing = Effect.all([Effect.ignore(core.host.storageDelete(`${key}/${CREDENTIAL_OTHERS}`), { log: "Unhandled", message: "credentials removed" }), Effect.ignore(core.host.storageDelete(key), { log: "Unhandled", message: "credentials removed" })]);
+      const removing = Effect.gen({ self: this }, function* () {
+        const failed: string[] = [];
+        const r1 = yield* Effect.result(core.host.storageDelete(othersKey));
+        if (r1._tag === "Failure") failed.push(othersKey);
+        const r2 = yield* Effect.result(core.host.storageDelete(key));
+        if (r2._tag === "Failure") failed.push(key);
+        this.#recordFailedCredentialDeletes(failed);
+      });
       core.runner.fork(this.#keepingOf(key).withPermits(1)(removing));
     }
   }
@@ -548,7 +637,8 @@ export class CloudSync {
     }, null);
   }
 
-  /// The signed-in account that reaches `workspace`, reading every account's `/v1/me` if it is not known yet.
+  /// The signed-in account that reaches `workspace`, verifying against earlier deferred accounts in sign-in order
+  /// and reading every account's `/v1/me` if it is not known yet.
   owner(workspace: string): Effect.Effect<string, CoreError> {
     return Effect.gen({ self: this }, function* () {
       const core = this.#core;
@@ -557,11 +647,11 @@ export class CloudSync {
         return sub !== null && core.accounts.list().some((a) => a.sub === sub) ? sub : null;
       };
       const first = known();
-      if (first !== null) return first;
+      if (first !== null && !this.hasEarlierDeferred(first)) return first;
       if (core.data.hasDeferred() && this.onNeedDeferred) {
-        yield* this.onNeedDeferred(workspace);
+        yield* this.onNeedDeferred(workspace, first);
         const afterDeferred = known();
-        if (afterDeferred !== null) return afterDeferred;
+        if (afterDeferred !== null && !this.hasEarlierDeferred(afterDeferred)) return afterDeferred;
       }
       yield* Effect.all(
         core.accounts.list().map((a) => Effect.ignore(core.scheduler.ask("cloud", `me/${a.sub}`, Priority.asked, this.#me(a.sub)), { log: "Unhandled", message: "me read" })),
@@ -706,7 +796,8 @@ export class CloudSync {
         const k: KeptCredential = { device, ...c };
         // (the keeping takes turns of its own, apart from the asks': a write waits on no ask)
         yield* keeping.withPermits(1)(Effect.gen(function* () {
-          if ((self.#removed.get(key) ?? 0) !== removed) return;
+          if ((self.#removed.get(key) ?? 0) !== removed || !core.accounts.list().some((a) => a.sub === sub)) return;
+          self.#rememberCredentialWorkspace(sub, workspace);
           if (other) {
             // (read again, in turn: another endpoint's may have been kept while this one's was asked)
             const others = [k, ...(yield* readOthers).filter((o) => o.device !== device)].slice(0, CREDENTIAL_OTHERS_KEPT);

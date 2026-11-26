@@ -295,6 +295,7 @@ export class Core {
       inner.wakes = new Wakes();
       // Everything the core asks of the host is given up or opened again when a UI comes back (wake.ts).
       inner.host = new WakingHost(host, inner.wakes, HEDGE);
+      Signer.bindRunner(inner.host, inner.runner);
       inner.driveKept = new DriveKept(inner.host);
       // (the files kept for messages left behind a week)
       inner.runner.fork(inner.driveKept.dropOldUploads());
@@ -685,7 +686,11 @@ export class Core {
       inner.stations.reconcile();
       if (restSubs.length > 0) {
         const firstChats = Deferred.makeUnsafe<void>();
-        inner.store.onFirstChats = () => Deferred.doneUnsafe(firstChats, Effect.void);
+        inner.store.onFirstChats = (scope) => {
+          if (activeWs !== null && scope !== activeWs) return false;
+          Deferred.doneUnsafe(firstChats, Effect.void);
+          return true;
+        };
         const activateDeferred = (sub: string) =>
           Effect.gen(function* () {
             const db = yield* inner.data.openAccount(sub);
@@ -694,24 +699,38 @@ export class Core {
             inner.cloudSync.syncSockets();
             inner.stations.reconcile();
           });
-        inner.cloudSync.onNeedDeferred = (workspace: string) =>
+        inner.cloudSync.onNeedDeferred = (workspace: string, beforeSub?: string | null) =>
           Effect.gen(function* () {
+            const ordered = inner.accounts.list().map((a) => a.sub);
+            if (beforeSub) {
+              // Verify against every deferred account strictly earlier in sign-in order than the provisional owner.
+              for (const sub of ordered) {
+                if (sub === beforeSub) break;
+                if (inner.data.isDeferred(sub)) yield* activateDeferred(sub);
+              }
+              return;
+            }
             const cached = inner.data.device.get("choice", "workspaceOwners");
             const hinted = isObject(cached) && typeof cached[workspace] === "string" ? cached[workspace] : null;
-            if (hinted !== null && inner.data.isDeferred(hinted)) {
-              yield* activateDeferred(hinted);
-              if (inner.workspaces.owner(workspace) !== null) return;
+            if (hinted !== null && ordered.includes(hinted)) {
+              for (const sub of ordered) {
+                if (inner.data.isDeferred(sub)) yield* activateDeferred(sub);
+                if (sub === hinted) break;
+              }
+              const owner = inner.workspaces.owner(workspace);
+              if (owner !== null && !inner.cloudSync.hasEarlierDeferred(owner)) return;
             }
-            for (const sub of restSubs) {
+            for (const sub of ordered) {
               if (!inner.data.isDeferred(sub)) continue;
               yield* activateDeferred(sub);
-              if (inner.workspaces.owner(workspace) !== null) return;
+              const owner = inner.workspaces.owner(workspace);
+              if (owner !== null && !inner.cloudSync.hasEarlierDeferred(owner)) return;
             }
           });
         inner.runner.fork(
           Effect.gen(function* () {
-            // Wait until the first `chats` topic is sent to the UI (or a short fallback deadline when no UI subscribes,
-            // such as push notifications, sign-in, or headless tests), then yield to any pending first-screen work.
+            // Wait until the selected startup workspace's first `chats` topic is sent to the UI (or a short fallback
+            // deadline when no UI subscribes, such as push notifications, sign-in, or headless tests), then yield.
             yield* Effect.raceFirst(
               Deferred.await(firstChats),
               laterSleep(1200), // timer: fallback deadline so deferred accounts still open when no UI subscribes to chats

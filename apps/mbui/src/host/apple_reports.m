@@ -509,13 +509,28 @@ static int32_t sf_theme_pref(NSUserDefaults *d) {
 static int32_t sf_set_last_workspace(NSUserDefaults *d, NSString *ws) {
   if (!ws || ws.length == 0) {
     if ([d objectForKey:SF_LAST_WORKSPACE_KEY] != nil) [d removeObjectForKey:SF_LAST_WORKSPACE_KEY];
+#ifndef SF_REPORTS_PURE
+    unsetenv("MBUI_LAST_WORKSPACE");
+#endif
     return 1;
   }
   if (![[d stringForKey:SF_LAST_WORKSPACE_KEY] isEqualToString:ws]) [d setObject:ws forKey:SF_LAST_WORKSPACE_KEY];
+#ifndef SF_REPORTS_PURE
+  setenv("MBUI_LAST_WORKSPACE", ws.UTF8String, 1);
+#endif
   return 1;
 }
 
 #ifndef SF_REPORTS_PURE
+/// Restores the persisted last workspace into `MBUI_LAST_WORKSPACE` before MoonBit starts (app-side so `libs/ui`
+/// stays app-agnostic; does not overwrite an explicit env override).
+__attribute__((constructor)) static void sf_restore_last_workspace(void) {
+  @autoreleasepool {
+    if (getenv("MBUI_LAST_WORKSPACE") != NULL) return;
+    NSString *lastWs = [NSUserDefaults.standardUserDefaults stringForKey:SF_LAST_WORKSPACE_KEY];
+    if (lastWs.length > 0) setenv("MBUI_LAST_WORKSPACE", lastWs.UTF8String, 0);
+  }
+}
 #import <MetricKit/MetricKit.h>
 #if TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>

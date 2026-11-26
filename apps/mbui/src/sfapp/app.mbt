@@ -755,23 +755,39 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
         app_state_tree(o, src)
       }
     })
-    // Frame-0 pre-subscription for the host-cached last workspace: subscribes Home's critical topics in parallel with
-    // `accounts`/`workspaces`/`prefs` so cold start collapses from 2 serial round-trips to 1 on repeat launches.
-    // Stays mounted until `first_shown` when `start_ws` matches so Home takes over the exact same subscriptions with
-    // zero unsub/resub; unmounts immediately if signed out, failed, or a different workspace resolves.
-    let start_ws = @sfbase.cached_workspace.val
-    root.show(
+    // One-shot frame-0 pre-subscription for the host-cached last workspace: subscribes Home's critical topics in
+    // parallel with `accounts`/`workspaces`/`prefs` so cold start collapses from 2 serial round-trips to 1 on repeat
+    // launches. Consumed permanently once `first_shown` becomes true, on `SignedOut`/`Failed`, on `landing_now`
+    // (signed in with 0 workspaces), or when a different workspace resolves, so stale topics are always unsubscribed
+    // and never remount on a later `SignedOut -> Starting` transition.
+    let pre_sub_ws : @signals.Signal[String] = @signals.signal(@sfbase.cached_workspace.val)
+    root.reacts(
       fn() {
-        start_ws != "" &&
-        root.window().1 > 0.0 &&
-        !first_shown.get() &&
-        !(app_is(src) is (SignedOut | Failed)) &&
-        (match workspace_in_view(src).0 {
-          Some(w) => w.id == start_ws
-          None => true
-        })
+        let ws = pre_sub_ws.get()
+        if ws == "" {
+          return false
+        }
+        if first_shown.get() || app_is(src) is (SignedOut | Failed) || landing_now(src) {
+          return true
+        }
+        match workspace_in_view(src).0 {
+          Some(w) => w.id != ws
+          None => false
+        }
       },
+      fn(consume) {
+        if consume {
+          pre_sub_ws.set("")
+          if landing_now(src) {
+            @sfbase.note_workspace_pref("")
+          }
+        }
+      },
+    )
+    root.show(
+      fn() { pre_sub_ws.get() != "" && root.window().1 > 0.0 },
       fn(p) {
+        let start_ws = @signals.untracked(fn() { pre_sub_ws.get() })
         let own = src.owned_by(p)
         let narrow = @sf.layout(p.window_w()) is Small && !@sf.native_able()
         p.reacts(
@@ -1552,7 +1568,7 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
   let expiry : Ref[() -> Unit] = Ref(fn() {  })
   v.reacts(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(ws) {
     if ws is Some(_) && !first_shown.get() {
-      if first_from.val < 0.0 {
+      let schedule_due : Double? = if first_from.val < 0.0 {
         first_from.val = v.cause_at()
         first_top.val = Some(app.nav.top())
         let at = first_from.val + first_page_ms
@@ -1567,16 +1583,22 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
         first_splash_suppressed.set(
           splash_from.val >= 0.0 && due <= splash_from.val + splash_label_ms + first_splash_grace_ms,
         )
-        expiry.val = v.at_moment(due, fn() { first_expired.set(true) })
+        Some(due)
       } else if !first_expired.get() && first_due.val >= 0.0 {
         // Remounted while still waiting (e.g. SignedIn -> Failed/Starting/over_tree -> SignedIn): the old view's
         // at_moment timer was cancelled on unmount, so restore the expiry timer or expire immediately if overdue.
-        (expiry.val)()
         if v.cause_at() >= first_due.val {
           first_expired.set(true)
+          None
         } else {
-          expiry.val = v.at_moment(first_due.val, fn() { first_expired.set(true) })
+          Some(first_due.val)
         }
+      } else {
+        None
+      }
+      if schedule_due is Some(due) {
+        (expiry.val)()
+        expiry.val = v.at_moment(due, fn() { first_expired.set(true) })
       }
     }
   })

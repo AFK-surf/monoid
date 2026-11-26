@@ -452,11 +452,12 @@ test "P0-6: remounting first_page_node after transient Failed/Starting re-arms e
   let due = first_due.val
   assert_true(due > t.time(), msg="first_due scheduled in the future")
   // Briefly leave SignedIn (unmounts first_page_node and cancels its original at_moment timer), then return before due.
-  t.run_for(50.0)
+  let brief_pause_ms = @sf.local_ms
+  t.run_for(brief_pause_ms)
   fatal_msg.set(Some("core restarted"))
   t.frame()
   assert_true(app_is(src) == Failed, msg="entered Failed state")
-  t.run_for(50.0)
+  t.run_for(brief_pause_ms)
   fatal_msg.set(None)
   t.frame()
   assert_true(app_is(src) == SignedIn, msg="returned to SignedIn before due")
@@ -470,15 +471,18 @@ test "P0-6: remounting first_page_node after transient Failed/Starting re-arms e
 
 ///|
 test "frame-0 cached_workspace collapses 2-round-trip cold start to 1 round-trip with zero unsub/resub and handles stale cache" {
-  // 1) Baseline without cached_workspace: takes 2 serial round-trips (2 * 200ms).
+  let rt_ms = 200.0
+  let after_one_rt_ms = rt_ms + @sf.local_ms
+  let after_two_rts_ms = rt_ms * 2.0 + @sf.local_ms
+  // 1) Baseline without cached_workspace: takes 2 serial round-trips (2 * rt_ms).
   new_run()
   let base_heard : Array[String] = []
-  let base_src = round_trip_again(fixture("home"), 200.0, heard=fn(h) { base_heard.push(h) })
+  let base_src = round_trip_again(fixture("home"), rt_ms, heard=fn(h) { base_heard.push(h) })
   let t_base = @ui.Tester::new(fn(c) { view(c, base_src) }, tree=app_tree(base_src), w=390.0, h=844.0, platform=2)
   let base_t0 = t_base.time()
-  t_base.run_for(250.0)
+  t_base.run_for(after_one_rt_ms)
   assert_false(first_shown.get(), msg="without cached_workspace, 1 round-trip is not enough")
-  t_base.run_for(250.0)
+  t_base.run_for(after_one_rt_ms)
   assert_true(first_shown.get(), msg="without cached_workspace, shown after 2 round-trips (from \{base_t0})")
 
   // 2) Hit with cached_workspace="ws1": completes in 1 round-trip (~200ms) with zero unsub/resub!
@@ -487,9 +491,9 @@ test "frame-0 cached_workspace collapses 2-round-trip cold start to 1 round-trip
   @sfbase.cached_workspace.val = "ws1"
   @sfbase.on_workspace_pref.val = Some(fn(ws) { hit_saved.push(ws) })
   let hit_heard : Array[String] = []
-  let hit_src = round_trip_again(fixture("home"), 200.0, heard=fn(h) { hit_heard.push(h) })
+  let hit_src = round_trip_again(fixture("home"), rt_ms, heard=fn(h) { hit_heard.push(h) })
   let t_hit = @ui.Tester::new(fn(c) { view(c, hit_src) }, tree=app_tree(hit_src), w=390.0, h=844.0, platform=2)
-  t_hit.run_for(250.0)
+  t_hit.run_for(after_one_rt_ms)
   assert_true(first_shown.get(), msg="with cached_workspace hit, Home shows in 1 round-trip (~200ms)")
   assert_eq(hit_saved, [], msg="matching cached_workspace does not redundantly persist")
   assert_eq(asked_again(hit_heard), [], msg="frame-0 pre-subscribe hands off with zero unsub/resub")
@@ -500,15 +504,88 @@ test "frame-0 cached_workspace collapses 2-round-trip cold start to 1 round-trip
   @sfbase.cached_workspace.val = "ws-stale"
   @sfbase.on_workspace_pref.val = Some(fn(ws) { stale_saved.push(ws) })
   let stale_heard : Array[String] = []
-  let stale_src = round_trip_again(fixture("home"), 200.0, heard=fn(h) { stale_heard.push(h) })
+  let stale_src = round_trip_again(fixture("home"), rt_ms, heard=fn(h) { stale_heard.push(h) })
   let t_stale = @ui.Tester::new(fn(c) { view(c, stale_src) }, tree=app_tree(stale_src), w=390.0, h=844.0, platform=2)
-  t_stale.run_for(500.0)
+  t_stale.run_for(after_two_rts_ms)
   assert_true(first_shown.get(), msg="stale cached_workspace still settles cleanly on real ws1")
   assert_eq(stale_saved, ["ws1"], msg="stale cached_workspace updates host cache to ws1")
   assert_true(
     stale_heard.iter().any(fn(h) { h.contains("\"unsubscribe\":true") }),
     msg="stale cached_workspace subscriptions must be unsubscribed",
   )
+
+  // 4) Signed in with 0 workspaces (Landing): permanently consumes cached_workspace, unsubscribes stale topics, clears host cache.
+  new_run()
+  let landing_saved : Array[String] = []
+  @sfbase.cached_workspace.val = "ws-gone"
+  @sfbase.on_workspace_pref.val = Some(fn(ws) { landing_saved.push(ws) })
+  let landing_heard : Array[String] = []
+  let empty_ws_base = fixture("home")
+  let empty_ws_src : Source = {
+    ..empty_ws_base,
+    topic_read: fn(name, params) {
+      if name == "workspaces" {
+        return {
+          value: Some(Json::array([{ "account": { "sub": "u1" }, "workspaces": [], "loaded": true }])),
+          error: None,
+          version: 1,
+        }
+      }
+      empty_ws_base.topic(name, params).get().snapshot()
+    },
+  }
+  let landing_src = round_trip_again(empty_ws_src, rt_ms, heard=fn(h) { landing_heard.push(h) })
+  let t_landing = @ui.Tester::new(fn(c) { view(c, landing_src) }, tree=app_tree(landing_src), w=390.0, h=844.0, platform=2)
+  t_landing.run_for(after_one_rt_ms)
+  assert_true(landing_now(landing_src), msg="entered Landing with 0 workspaces")
+  assert_eq(landing_saved, [""], msg="Landing clears stale cached_workspace in host")
+  assert_true(
+    landing_heard.iter().any(fn(h) { h.contains("ws-gone") }) &&
+    landing_heard.iter().any(fn(h) { h.contains("\"unsubscribe\":true") }),
+    msg="Landing must unsubscribe stale pre-subscribed workspace topics",
+  )
+
+  // 5) Starting -> SignedOut -> Starting does NOT remount already-consumed cached_workspace.
+  new_run()
+  @sfbase.cached_workspace.val = "ws-old"
+  let signed_out = @signals.signal(false)
+  let accounts_pending = @signals.signal(true)
+  let so_reads : Array[String] = []
+  let so_base = fixture("home")
+  let so_src : Source = {
+    ..so_base,
+    topic_read: fn(name, params) {
+      so_reads.push(name + ":" + Json::object(params).stringify())
+      if name == "accounts" {
+        if accounts_pending.get() {
+          return { value: None, error: None, version: 0 }
+        } else if signed_out.get() {
+          return { value: Some(Json::array([])), error: None, version: 2 }
+        }
+      }
+      if name == "workspaces" && (accounts_pending.get() || signed_out.get()) {
+        return { value: None, error: None, version: 0 }
+      }
+      so_base.topic(name, params).get().snapshot()
+    },
+  }
+  let t_so = @ui.Tester::new(fn(c) { view(c, so_src) }, tree=app_tree(so_src), w=390.0, h=844.0, platform=2)
+  assert_true(app_is(so_src) == Starting, msg="started in Starting")
+  assert_true(
+    so_reads.iter().any(fn(h) { h.contains("ws-old") }),
+    msg="frame-0 pre-sub reads ws-old during initial Starting",
+  )
+  accounts_pending.set(false)
+  signed_out.set(true)
+  t_so.frame()
+  assert_true(app_is(so_src) == SignedOut, msg="transitioned to SignedOut")
+  let count_after_out = so_reads.length()
+  accounts_pending.set(true)
+  signed_out.set(false)
+  t_so.frame()
+  assert_true(app_is(so_src) == Starting, msg="re-entered Starting after SignedOut")
+  let remounted_old = so_reads[count_after_out:].iter().any(fn(h) { h.contains("ws-old") })
+  assert_false(remounted_old, msg="consumed cached_workspace must never remount on SignedOut -> Starting")
 }
 
 ///|

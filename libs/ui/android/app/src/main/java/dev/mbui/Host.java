@@ -121,7 +121,7 @@ final class Host {
      * the system's for a moment. Only the choice is kept, never what the app last drew (setDark: a film's or a reader's
      * page dark for a while). The app tells it as it changes (saveThemePref); "system" until it has.
      */
-    private static final String THEME_PREFS = "mbui", THEME_KEY = "theme_pref", WORKSPACE_KEY = "last_workspace";
+    private static final String THEME_PREFS = "mbui", THEME_KEY = "theme_pref";
     private static boolean nightModeSynced;
 
     static String cachedThemePref(Context c) {
@@ -131,23 +131,6 @@ final class Host {
         } catch (RuntimeException e) {
             return "system";
         }
-    }
-
-    /** The workspace last in view on this device ("" if none kept): set into MBUI_LAST_WORKSPACE before MoonBit starts. */
-    static String cachedLastWorkspace(Context c) {
-        try {
-            String v = c.getSharedPreferences(THEME_PREFS, Context.MODE_PRIVATE).getString(WORKSPACE_KEY, "");
-            return v != null ? v : "";
-        } catch (RuntimeException e) {
-            return "";
-        }
-    }
-
-    static void saveLastWorkspace(Context c, String ws) {
-        if (ws == null) ws = "";
-        android.content.SharedPreferences prefs = c.getSharedPreferences(THEME_PREFS, Context.MODE_PRIVATE);
-        if (ws.equals(prefs.getString(WORKSPACE_KEY, ""))) return;
-        prefs.edit().putString(WORKSPACE_KEY, ws).apply();
     }
 
     /** Whether the app starts dark: as the person chose, else as the system is (`systemNight`: the configuration's). */
