@@ -1,4 +1,5 @@
-// Liquid glass frost level on this device (the prefs' `glassFrost`): "0".."100", or none for default clear; refused where wrong.
+// What glass surfaces are made of on this device (the prefs' `glass`: frosted, solid, none liquid glass), and the frost
+// an older app sets (`glassFrost`: "0".."100", or none); refused where wrong.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Core } from "../src/core.ts";
@@ -50,4 +51,36 @@ test("glass_frost_pref_accepts_0_to_100_and_resets_to_none_on_null", async () =>
   await ask(host, core, ui, 11, "prefs.set", { glassFrost: null });
   apply(host, values);
   assert.equal(v(values, 1).glassFrost, undefined);
+});
+
+test("glass_pref_accepts_frosted_and_solid_and_resets_to_liquid_on_null", async () => {
+  const { host, core } = await started();
+  const ui = core.connect();
+  subscribe(core, ui, 1, { topic: "prefs" });
+  await host.settle();
+  const values = new Map();
+  apply(host, values);
+  assert.equal(v(values, 1).glass, undefined);
+
+  for (const [id, ok] of [[2, "frosted"], [3, "solid"]] as [number, string][]) {
+    const res = await ask(host, core, ui, id, "prefs.set", { glass: ok });
+    assert.ok("ok" in res, `expected ok for ${ok}`);
+    apply(host, values);
+    assert.equal(v(values, 1).glass, ok);
+  }
+
+  for (const [id, bad] of [
+    [4, { glass: "liquid" }],
+    [5, { glass: "" }],
+    [6, { glass: "Frosted" }],
+    [7, { glass: 1 }],
+  ] as [number, J][]) {
+    assert.equal((await ask(host, core, ui, id, "prefs.set", bad)).error.code, "invalid_params");
+  }
+  apply(host, values);
+  assert.equal(v(values, 1).glass, "solid");
+
+  await ask(host, core, ui, 8, "prefs.set", { glass: null });
+  apply(host, values);
+  assert.equal(v(values, 1).glass, undefined);
 });

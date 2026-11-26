@@ -561,17 +561,52 @@ fn liquid_glass_ground(bg : Rgb, tint : Rgb, col_a : Double, vis_a : Double, sat
 }
 
 ///|
+/// How much of instance `j` (a fill) is seen at a point of it under glass blurring by `blur` (CSS blur()'s deviation): all
+/// of it where it is wider and taller than the blur's reach (2.5 deviations), else as much as the blur leaves of it
+/// spread across that reach (a split's 5 pt grip under a panel's 14 pt blur: a seventh). Something that narrow under
+/// frosted or liquid glass shows as a faint smear, not as the ground of words drawn over the glass.
+fn blurred_under(a : FixedArray[Double], j : Int, blur : Double) -> Double {
+  let b = j * inst_size
+  let side = contrast_min(a[b + 2], a[b + 3])
+  let reach = blur * 2.5
+  if side >= reach { 1.0 } else { contrast_max(side, 0.0) / reach }
+}
+
+///|
 /// What the frame drew at (`px`, `py`) before instance `k`: the colour there, and each colour it was on the way up
 /// (the last whole one first: a sidebar's, a row's on it); None where that is a picture's, a video's or another app's
 /// (or on one, with nothing whole over it).
 fn Ctx::ground_under(self : Ctx, k : Int, px : Double, py : Double) -> (Rgb, Array[Rgb])? {
   let a = self.inst
   let own = inst_owner(k)
+  // the topmost glass under it there that blurs what it lies over, and how far (blurred_under): what is drawn under that
+  // glass narrower than its blur is spread out under it, not seen whole at this one point
+  let mut blur_at = -1
+  let mut blur = 0.0
+  let mut g = k - 1
+  while g >= 0 {
+    let gb = g * inst_size
+    let gk = a[gb + 5]
+    if (gk == 5.0 || gk == 6.0) && in_inst(a, gb, px, py) {
+      // (kind 5's blur said negative when contained, kind 6's negative a droplet's or a lens's, which blur nothing)
+      let v = if gk == 5.0 { a[gb + 7].abs() } else { a[gb + 7] }
+      if v > 0.0 {
+        blur_at = g
+        blur = v
+      }
+      break
+    }
+    g = g - 1
+  }
+  let seen = fn(j : Int) -> (Int, Double) {
+    let (kind, o) = ground_kind(a, j, px, py, own~)
+    if kind == 1 && j < blur_at { (kind, o * blurred_under(a, j, blur)) } else { (kind, o) }
+  }
   // the last whole colour under it there, then what is laid over that
   let mut from = -1
   let mut j = k - 1
   while j >= 0 {
-    let (kind, o) = ground_kind(a, j, px, py, own~)
+    let (kind, o) = seen(j)
     if kind == 2 {
       return None
     }
@@ -594,7 +629,7 @@ fn Ctx::ground_under(self : Ctx, k : Int, px : Double, py : Double) -> (Rgb, Arr
   }
   let beneath = [out]
   for q in (from + 1)..<k {
-    let (kind, o) = ground_kind(a, q, px, py, own~)
+    let (kind, o) = seen(q)
     if kind == 1 {
       let qb = q * inst_size
       out = if a[qb + 5] == 6.0 && a[qb + 14] >= -0.5 {

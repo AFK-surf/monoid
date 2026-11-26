@@ -237,6 +237,8 @@ pub fn motion_to_compose(Double, Double, Double) -> (Double, Double)
 
 pub let move_damped : Spec
 
+pub fn motion_ms(Double) -> Double
+
 pub fn move_duration_ms(Double) -> Double
 
 pub fn moved(points? : Double, over? : Double, delay? : Double) -> Spec

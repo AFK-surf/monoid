@@ -471,7 +471,7 @@ test "built-in droplet recipes assign exact unscaled droplet_role IDs (1..4) and
 }
 
 ///|
-test "real liquid_toggle_node held: frost=0 keeps slot 7 (-32), frost>0 frosts monotonically, contrast=true, and glass_solid=true" {
+test "real liquid_toggle_node held: liquid keeps slot 7 (-32), frosted frosts it, contrast=true, and glass_solid=true" {
   let on = @signals.signal(true)
   let t = glass_case(false, false, fn(page) {
     liquid_toggle_node(page, fn() { on.get() }, fn(v) { on.set(v) }, fn() { "Wi-Fi" }) |> ignore
@@ -490,58 +490,36 @@ test "real liquid_toggle_node held: frost=0 keeps slot 7 (-32), frost>0 frosts m
     None
   }
 
-  // frost == 0.0 keeps crystal droplet (slot7=-32, alpha=0, refr~9)
-  @ui.set_glass_frost(0.0)
+  // liquid keeps the crystal droplet (slot7=-32, alpha=0, refr~9)
+  @ui.set_glass_material(Liquid)
   t.draw()
   guard find_glass() is Some((slot7_0, alpha_0, refr_0)) else {
-    fail("real liquid_toggle_node missing droplet at frost=0.0")
+    fail("real liquid_toggle_node missing droplet in liquid glass")
   }
-  assert_true((slot7_0 - -32.0).abs() < 0.01, msg="frost=0.0 slot7=\{slot7_0}")
-  assert_true(alpha_0 < 0.001, msg="frost=0.0 alpha=\{alpha_0}")
-  assert_true(refr_0 > 7.5 && refr_0 <= 9.01, msg="frost=0.0 slot21=\{refr_0}")
+  assert_true((slot7_0 - -32.0).abs() < 0.01, msg="liquid slot7=\{slot7_0}")
+  assert_true(alpha_0 < 0.001, msg="liquid alpha=\{alpha_0}")
+  assert_true(refr_0 > 7.5 && refr_0 <= 9.01, msg="liquid slot21=\{refr_0}")
 
-  // C0 continuity across 0 -> 0.0001 -> 0.00011 -> 0.05 -> 0.10: slot7 stays -32.0 while alpha rises monotonically
-  let low_frosts = [0.0001, 0.00011, 0.05, 0.10]
-  let mut prev_low_a = alpha_0
-  for f in low_frosts {
-    @ui.set_glass_frost(f)
-    t.draw()
-    guard find_glass() is Some((s7, al, _)) else {
-      fail("real liquid_toggle_node missing glass at frost=\{f}")
-    }
-    assert_true((s7 - -32.0).abs() < 0.01, msg="frost=\{f} must preserve slot7=-32.0 while a_frac<=0.12, got \{s7}")
-    assert_true(al >= prev_low_a - 0.0001, msg="frost=\{f} alpha non-monotonic: \{al} < \{prev_low_a}")
-    prev_low_a = al
-  }
-  assert_true(prev_low_a > 0.08 && prev_low_a < 0.12, msg="frost=0.10 alpha should be ~0.094, got \{prev_low_a}")
-
-  // frost = 0.3 -> 0.5 monotonically frosts (blur > 0, alpha > 0)
-  @ui.set_glass_frost(0.3)
+  // frosted: the held droplet flat frosted glass (kind 5) as every surface is, no liquid glass left
+  @ui.set_glass_material(Frosted)
   t.draw()
-  guard find_glass() is Some((slot7_30, alpha_30, _)) else {
-    fail("real liquid_toggle_node missing glass at frost=0.3")
-  }
-  assert_true(slot7_30 > 0.5 && alpha_30 > prev_low_a, msg="frost=0.3 should frost: slot7=\{slot7_30} alpha=\{alpha_30}")
+  assert_true(find_glass() is None, msg="frosted must draw no liquid glass")
+  assert_true(
+    t.drawn_instances().iter().any(fn(inst) { inst[5] == 5.0 && (inst[7] - 24.0).abs() < 0.01 && inst[11] > 0.4 }),
+    msg="frosted must draw the droplet as frosted glass",
+  )
 
-  @ui.set_glass_frost(0.5)
-  t.draw()
-  guard find_glass() is Some((slot7_50, alpha_50, _)) else {
-    fail("real liquid_toggle_node missing glass at frost=0.5")
-  }
-  assert_true(slot7_50 > slot7_30 && alpha_50 > alpha_30, msg="frost=0.5 must exceed 0.3: (\{slot7_50},\{alpha_50}) vs (\{slot7_30},\{alpha_30})")
-
-  // Returning to frost == 0.0 restores crystal droplet (slot7=-32, alpha=0)
-  @ui.set_glass_frost(0.0)
+  // back to liquid: the crystal droplet again
+  @ui.set_glass_material(Liquid)
   t.draw()
   guard find_glass() is Some((slot7_back, alpha_back, refr_back)) else {
-    fail("real liquid_toggle_node missing droplet restored at frost=0.0")
+    fail("real liquid_toggle_node missing droplet restored")
   }
-  assert_true((slot7_back - -32.0).abs() < 0.01, msg="restored frost=0.0 slot7=\{slot7_back}")
-  assert_true(alpha_back < 0.001, msg="restored frost=0.0 alpha=\{alpha_back}")
-  assert_true(refr_back > 7.5 && refr_back <= 9.01, msg="restored frost=0.0 slot21=\{refr_back}")
+  assert_true((slot7_back - -32.0).abs() < 0.01, msg="restored slot7=\{slot7_back}")
+  assert_true(alpha_back < 0.001, msg="restored alpha=\{alpha_back}")
+  assert_true(refr_back > 7.5 && refr_back <= 9.01, msg="restored slot21=\{refr_back}")
 
   // contrast=true: droplet must NOT be exempted (receives contrast modulation -> blur > 0 so slot 7 > 0)
-  @ui.set_glass_frost(0.0)
   t.set_increase_contrast(true)
   t.draw()
   let mut saw_contrast_glass = false
@@ -559,7 +537,6 @@ test "real liquid_toggle_node held: frost=0 keeps slot 7 (-32), frost>0 frosts m
   t.draw()
   assert_eq(t.drawn_glass().length(), 0, msg="glass_solid=true must emit 0 glass instances")
   @ui.set_glass_solid(None)
-  @ui.set_glass_frost(0.0)
   t.release(sw.0 + sw.2 / 2.0, sw.1 + sw.3 / 2.0)
   t.run_for(glass_springs_out)
   set_dark(None)

@@ -1654,7 +1654,17 @@ fn Ctx::paint_node(self : Ctx, i : Int, alpha_in : Double) -> Unit {
     None => ()
   }
   match n.glass {
-    Some(gl) => self.paint_glass(n, gl, alpha)
+    Some(gl) => {
+      let made = material_glass(gl, glass_paint.material)
+      self.paint_glass(n, made, alpha)
+      // (frosted made of liquid: its hairline round it)
+      // (none where it has an edge of its own: one edge round it, not two)
+      if frosted_made(gl, made) && n.border_w <= 0.0 {
+        self.emit_rect(n.x, n.y, n.fw, n.fh, n.radius, 0L, frosted_ring_w, frosted_ring(made), alpha * made.strength)
+        self.notch_last(n)
+        self.corners_last(n)
+      }
+    }
     None => ()
   }
   if n.shadow > 0.0 && n.glass is None {
@@ -1866,7 +1876,7 @@ fn Ctx::paint_node(self : Ctx, i : Int, alpha_in : Double) -> Unit {
     glass_paint.in_group = glass_paint.in_group + 1
   }
   let ink = (glass_paint.ink_x, glass_paint.ink_y, glass_paint.ink_r, glass_paint.ink_bare)
-  match n.glass {
+  match n.glass.map(fn(gl) { material_glass(gl, glass_paint.material) }) {
     Some(gl) if gl.liquid && gl.adaptive && !glass_paint.solid => {
       glass_paint.ink_x = n.x + n.fw / 2.0
       glass_paint.ink_y = n.y + n.fh / 2.0
