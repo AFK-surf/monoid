@@ -62,7 +62,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          missing="$(node scripts/native.ts missing shell-station:linux-x64 shell-station:linux-arm64 shell-station:win32-x64)"
+          if ! missing="$(node scripts/native.ts missing shell-station:linux-x64 shell-station:linux-arm64 shell-station:win32-x64)"; then
+            echo "warning: native.ts missing check failed; falling back to wait-shell"
+            missing="unknown"
+          fi
           echo "missing=$([ -n "$missing" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "shell-station missing=${missing:-none}"
 
@@ -194,69 +197,88 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
-          missing="$(node scripts/native.ts missing shell-station:linux-x64 shell-station:linux-arm64 shell-station:win32-x64)"
-          if [ -z "$missing" ]; then
-            echo "all shell-station targets already published"
+          set +e
+          bash scripts/with-timeout.sh @$((JOB_END - 10)) bash -euo pipefail -c '
+            api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
+            if ! missing="$(node scripts/native.ts missing shell-station:linux-x64 shell-station:linux-arm64 shell-station:win32-x64)"; then
+              echo "warning: initial native.ts missing failed; watching all 3 targets"
+              missing="shell-station:linux-x64 shell-station:linux-arm64 shell-station:win32-x64"
+            fi
+            if [ -z "$missing" ]; then
+              echo "all shell-station targets already published"
+              exit 0
+            fi
+            targets=()
+            for part in $missing; do
+              targets+=("${part#shell-station:}")
+            done
+            echo "waiting for same-SHA pipeline shell-station targets: ${targets[*]}"
+            t0=$SECONDS
+            run=""
+            while :; do
+              if [ "$GITHUB_REF" = refs/heads/main ]; then
+                if missing_now="$(node scripts/native.ts missing shell-station:linux-x64 shell-station:linux-arm64 shell-station:win32-x64)" && [ -z "$missing_now" ]; then
+                  echo "(all shell-station targets published after $((SECONDS - t0)) s)"
+                  exit 0
+                fi
+              fi
+              [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" ".workflow_runs[0].id // empty" || true)"
+              if [ -n "$run" ]; then
+                jobs_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" || true)"
+                natives_state="$(printf "%s" "$jobs_json" | jq -r "[.jobs[]? | select(.name == \"natives\") | \"\(.status) \(.conclusion // \"\")\"] | .[0] // empty" 2>/dev/null || true)"
+                arts_json=""
+                if [ "$GITHUB_REF" != refs/heads/main ]; then
+                  arts_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" || true)"
+                fi
+                remaining=()
+                for target in "${targets[@]}"; do
+                  st="$(printf "%s" "$jobs_json" | jq -r "[.jobs[]? | select(.name == \"natives-build ($target · shell)\" or .name == \"natives-build ($target)\") | \"\(.status) \(.conclusion // \"\")\"] | (map(select(. == \"completed success\"))[0] // map(select(startswith(\"completed \") and . != \"completed skipped\"))[0] // .[0] // empty)" 2>/dev/null || true)"
+                  if [ "$GITHUB_REF" != refs/heads/main ]; then
+                    art="$(printf "%s" "$arts_json" | jq -r "[.artifacts[]? | select((.expired | not) and .name == \"natives-$target-shell-$GITHUB_SHA\") | .name][0] // empty" 2>/dev/null || true)"
+                    if [ -n "$art" ] || [ "$st" = "completed success" ]; then
+                      continue
+                    fi
+                  else
+                    if missing_t="$(node scripts/native.ts missing "shell-station:$target")" && [ -z "$missing_t" ]; then
+                      continue
+                    fi
+                  fi
+                  case "$st" in
+                    "completed success")
+                      # main only: release listing may lag briefly after job completion; keep polling
+                      remaining+=("$target") ;;
+                    completed*)
+                      # Drop failed/cancelled/skipped target so healthy targets still finish and each build job reports its own status.
+                      echo "::warning::same-SHA pipeline shell-station:$target ended '\''$st'\'' (run $run); dropping from pre-wait" ;;
+                    *)
+                      # If the aggregate natives job already completed (e.g. skipped or target was not planned), stop waiting on it.
+                      case "$natives_state" in
+                        completed*)
+                          echo "pipeline natives ended '\''$natives_state'\'' with shell-station:$target unplanned (run $run); dropping from pre-wait" ;;
+                        *)
+                          remaining+=("$target") ;;
+                      esac ;;
+                  esac
+                done
+                if [ "${#remaining[@]}" -eq 0 ]; then
+                  echo "(all watched shell-station targets settled after $((SECONDS - t0)) s: run $run)"
+                  exit 0
+                fi
+                targets=("${remaining[@]}")
+              elif [ $((SECONDS - t0)) -ge 25 ]; then
+                echo "no same-SHA pipeline run found after $((SECONDS - t0)) s (e.g. workflow_dispatch); continuing to build jobs"
+                exit 0
+              fi
+              sleep 5
+            done
+          '
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ]; then
+            echo "wait-shell reached job budget; handing off cleanly to build jobs"
             exit 0
           fi
-          targets=()
-          for part in $missing; do
-            targets+=("${part#shell-station:}")
-          done
-          echo "waiting for same-SHA pipeline shell-station targets: ${targets[*]}"
-          t0=$SECONDS
-          deadline=$(( JOB_END - 15 ))
-          run=""
-          while :; do
-            if [ "$GITHUB_REF" = refs/heads/main ]; then
-              if [ -z "$(node scripts/native.ts missing shell-station:linux-x64 shell-station:linux-arm64 shell-station:win32-x64)" ]; then
-                echo "(all shell-station targets published after $((SECONDS - t0)) s)"
-                exit 0
-              fi
-            fi
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "shell-station targets still building after $((SECONDS - t0)) s (run=${run:-none}); handing off to build jobs"
-              exit 0
-            fi
-            [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)"
-            if [ -n "$run" ]; then
-              jobs_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" || true)"
-              arts_json=""
-              if [ "$GITHUB_REF" != refs/heads/main ]; then
-                arts_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" || true)"
-              fi
-              all_ready=1
-              for target in "${targets[@]}"; do
-                st="$(printf '%s' "$jobs_json" | jq -r '[.jobs[]? | select(.name == "natives-build ('"$target"' · shell)" or .name == "natives-build ('"$target"')" or .name == "natives") | "\(.status) \(.conclusion // "")"] | (map(select(. == "completed success"))[0] // map(select(startswith("completed ") and . != "completed skipped"))[0] // .[0] // empty)' 2>/dev/null || true)"
-                if [ "$GITHUB_REF" != refs/heads/main ]; then
-                  art="$(printf '%s' "$arts_json" | jq -r '[.artifacts[]? | select((.expired | not) and .name == "natives-'"$target"'-shell-'"$GITHUB_SHA"'") | .name][0] // empty' 2>/dev/null || true)"
-                  if [ -n "$art" ] || [ "$st" = "completed success" ]; then
-                    continue
-                  fi
-                else
-                  if [ -z "$(node scripts/native.ts missing "shell-station:$target")" ]; then
-                    continue
-                  fi
-                fi
-                case "$st" in
-                  "completed success"|"completed skipped"|"") all_ready=0 ;;
-                  completed*)
-                    echo "::error::same-SHA pipeline shell-station:$target ended '$st' (run $run)"
-                    exit 1 ;;
-                  *) all_ready=0 ;;
-                esac
-              done
-              if [ "$all_ready" = 1 ]; then
-                echo "(all shell-station targets ready after $((SECONDS - t0)) s: run $run)"
-                exit 0
-              fi
-            elif [ $((SECONDS - t0)) -ge 25 ]; then
-              echo "no same-SHA pipeline run found after $((SECONDS - t0)) s (e.g. workflow_dispatch); continuing to build jobs"
-              exit 0
-            fi
-            sleep 5
-          done
+          exit "$rc"
 
   build-linux-x64:
     needs: [pion-main-unit, wait-shell]

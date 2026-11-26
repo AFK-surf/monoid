@@ -475,7 +475,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          missing="$(node scripts/native.ts missing shell-station:linux-x64)"
+          if ! missing="$(node scripts/native.ts missing shell-station:linux-x64)"; then
+            echo "warning: native.ts missing check failed; falling back to wait-shell"
+            missing="unknown"
+          fi
           echo "missing=$([ -n "$missing" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "shell-station:linux-x64 missing=${missing:-none}"
 
@@ -526,8 +529,8 @@ jobs:
           "$PIONC" test --json pion/base
 
   wait-shell:
-    needs: [c-shims, pion-unit]
-    if: ${{ !cancelled() && needs.c-shims.result == 'success' && needs.pion-unit.result == 'success' && needs.pion-unit.outputs.shell_missing == 'true' }}
+    needs: [pion-unit]
+    if: ${{ !cancelled() && needs.pion-unit.result == 'success' && needs.pion-unit.outputs.shell_missing == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -539,60 +542,71 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
-          t0=$SECONDS
-          deadline=$(( JOB_END - 15 ))
-          run="" shell_state="" natives_state=""
-          while :; do
-            if [ "$GITHUB_REF" = refs/heads/main ]; then
-              if [ -z "$(node scripts/native.ts missing shell-station:linux-x64)" ]; then
-                echo "(shell-station:linux-x64 published after $((SECONDS - t0)) s)"
-                exit 0
-              fi
-            fi
-            if [ "$(date +%s)" -ge "$deadline" ]; then
-              echo "shell-station:linux-x64 still building after $((SECONDS - t0)) s (run=${run:-none}, shell=${shell_state:-none}); handing off to build-linux"
-              exit 0
-            fi
-            [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" '.workflow_runs[0].id // empty' || true)"
-            if [ -n "$run" ]; then
-              jobs_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" || true)"
-              shell_state="$(printf '%s' "$jobs_json" | jq -r '[.jobs[]? | select(.name == "natives-build (linux-x64 · shell)" or .name == "natives-build (linux-x64)" or .name == "natives") | "\(.status) \(.conclusion // "")"] | (map(select(. == "completed success"))[0] // map(select(startswith("completed ") and . != "completed skipped"))[0] // .[0] // empty)' 2>/dev/null || true)"
-              natives_state="$(printf '%s' "$jobs_json" | jq -r '[.jobs[]? | select(.name == "natives") | "\(.status) \(.conclusion // "")"] | .[0] // empty' 2>/dev/null || true)"
-              if [ "$GITHUB_REF" != refs/heads/main ]; then
-                arts_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" || true)"
-                shell_art="$(printf '%s' "$arts_json" | jq -r '[.artifacts[]? | select((.expired | not) and .name == "natives-linux-x64-shell-'"$GITHUB_SHA"'") | .name][0] // empty' 2>/dev/null || true)"
-                if [ -n "$shell_art" ]; then
-                  echo "($shell_art ready after $((SECONDS - t0)) s: run $run)"
+          set +e
+          bash scripts/with-timeout.sh @$((JOB_END - 10)) bash -euo pipefail -c '
+            api() { gh api "repos/$GITHUB_REPOSITORY/$1" --jq "$2"; }
+            t0=$SECONDS
+            run="" shell_state="" natives_state=""
+            while :; do
+              if [ "$GITHUB_REF" = refs/heads/main ]; then
+                if missing_now="$(node scripts/native.ts missing shell-station:linux-x64)" && [ -z "$missing_now" ]; then
+                  echo "(shell-station:linux-x64 published after $((SECONDS - t0)) s)"
                   exit 0
                 fi
               fi
-              case "$shell_state" in
-                "completed success")
-                  if [ "$GITHUB_REF" != refs/heads/main ] || [ -z "$(node scripts/native.ts missing shell-station:linux-x64)" ]; then
-                    echo "(pipeline shell-station succeeded after $((SECONDS - t0)) s: run $run)"
+              [ -n "$run" ] || run="$(api "actions/workflows/pipeline.yml/runs?head_sha=$GITHUB_SHA&per_page=1" ".workflow_runs[0].id // empty" || true)"
+              if [ -n "$run" ]; then
+                jobs_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" || true)"
+                shell_state="$(printf "%s" "$jobs_json" | jq -r "[.jobs[]? | select(.name == \"natives-build (linux-x64 · shell)\" or .name == \"natives-build (linux-x64)\") | \"\(.status) \(.conclusion // \"\")\"] | (map(select(. == \"completed success\"))[0] // map(select(startswith(\"completed \") and . != \"completed skipped\"))[0] // .[0] // empty)" 2>/dev/null || true)"
+                natives_state="$(printf "%s" "$jobs_json" | jq -r "[.jobs[]? | select(.name == \"natives\") | \"\(.status) \(.conclusion // \"\")\"] | .[0] // empty" 2>/dev/null || true)"
+                if [ "$GITHUB_REF" != refs/heads/main ]; then
+                  arts_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/artifacts?per_page=100" || true)"
+                  shell_art="$(printf "%s" "$arts_json" | jq -r "[.artifacts[]? | select((.expired | not) and .name == \"natives-linux-x64-shell-$GITHUB_SHA\") | .name][0] // empty" 2>/dev/null || true)"
+                  if [ -n "$shell_art" ]; then
+                    echo "($shell_art ready after $((SECONDS - t0)) s: run $run)"
                     exit 0
-                  fi ;;
-                "completed skipped") ;;
-                completed*)
-                  echo "::error::same-SHA pipeline shell-station:linux-x64 ended '$shell_state' (run $run)"
-                  exit 1 ;;
-              esac
-              case "$natives_state" in
-                "completed success")
-                  echo "(pipeline natives succeeded after $((SECONDS - t0)) s: run $run)"
-                  exit 0 ;;
-                "completed skipped") ;;
-                completed*)
-                  echo "::error::same-SHA pipeline natives ended '$natives_state' (run $run)"
-                  exit 1 ;;
-              esac
-            elif [ $((SECONDS - t0)) -ge 25 ]; then
-              echo "no same-SHA pipeline run found after $((SECONDS - t0)) s (e.g. workflow_dispatch); continuing to build-linux"
-              exit 0
-            fi
-            sleep 5
-          done
+                  fi
+                fi
+                case "$shell_state" in
+                  "completed success")
+                    if [ "$GITHUB_REF" != refs/heads/main ]; then
+                      echo "(pipeline shell-station succeeded after $((SECONDS - t0)) s: run $run)"
+                      exit 0
+                    elif missing_now="$(node scripts/native.ts missing shell-station:linux-x64)" && [ -z "$missing_now" ]; then
+                      echo "(shell-station:linux-x64 published after $((SECONDS - t0)) s: run $run)"
+                      exit 0
+                    fi ;;
+                  completed*)
+                    echo "::warning::same-SHA pipeline shell-station:linux-x64 ended '\''$shell_state'\'' (run $run); handing off to build-linux"
+                    exit 0 ;;
+                esac
+                case "$natives_state" in
+                  "completed success")
+                    if [ "$GITHUB_REF" != refs/heads/main ]; then
+                      echo "(pipeline natives succeeded after $((SECONDS - t0)) s: run $run)"
+                      exit 0
+                    elif missing_now="$(node scripts/native.ts missing shell-station:linux-x64)" && [ -z "$missing_now" ]; then
+                      echo "(shell-station:linux-x64 published after $((SECONDS - t0)) s: run $run)"
+                      exit 0
+                    fi ;;
+                  completed*)
+                    echo "pipeline natives ended '\''$natives_state'\'' (run $run); handing off to build-linux"
+                    exit 0 ;;
+                esac
+              elif [ $((SECONDS - t0)) -ge 25 ]; then
+                echo "no same-SHA pipeline run found after $((SECONDS - t0)) s (e.g. workflow_dispatch); continuing to build-linux"
+                exit 0
+              fi
+              sleep 5
+            done
+          '
+          rc=$?
+          set -e
+          if [ "$rc" -eq 124 ]; then
+            echo "wait-shell reached job budget; handing off cleanly to build-linux"
+            exit 0
+          fi
+          exit "$rc"
 
   build-linux:
     needs: [c-shims, pion-unit, wait-shell]
