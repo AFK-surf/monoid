@@ -136,6 +136,81 @@ impl Config {
     }
 }
 
+fn json_type_name(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+/// Reads the optional `"engine"` string (`"node"`, `"pion"`, `"moonbit"`, ...) from `$STILLFAIL_CONFIG` or
+/// `<data>/config.json`, trimmed and lowercased.
+/// Returns `Ok(None)` ONLY when the file does not exist or the top-level JSON object omits the `"engine"` key.
+/// Returns `Err(...)` (naming only path, field, and JSON type — never echoing config contents) on I/O errors,
+/// malformed JSON, non-object top-level JSON (e.g. `[]`, `123`), or explicit `"engine": null`/empty/non-string values.
+pub fn read_engine(data: &Path) -> std::result::Result<Option<String>, String> {
+    let path = var("CONFIG").map(PathBuf::from).unwrap_or_else(|| data.join("config.json"));
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    let raw: Value = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    let Some(obj) = raw.as_object() else {
+        return Err(format!("{}: config must be a JSON object, got {}", path.display(), json_type_name(&raw)));
+    };
+    match obj.get("engine") {
+        None => Ok(None),
+        Some(Value::String(s)) => {
+            let trimmed = s.trim().to_ascii_lowercase();
+            if trimmed.is_empty() {
+                Err(format!("{}: engine must be a non-empty string", path.display()))
+            } else {
+                Ok(Some(trimmed))
+            }
+        }
+        Some(other) => Err(format!("{}: engine must be a string, got {}", path.display(), json_type_name(other))),
+    }
+}
+
+fn is_hex32(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// Validates a `RigSelf` object 1:1 with `station/src/cloud/state.ts` `rigSelfOf`:
+/// non-empty string `owner` and 64-char lowercase hex `person`.
+fn rig_self_valid(raw: Option<&Value>) -> bool {
+    let Some(Value::Object(obj)) = raw else { return false };
+    let owner_ok = obj.get("owner").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+    let person_ok = obj.get("person").and_then(Value::as_str).is_some_and(is_hex32);
+    owner_ok && person_ok
+}
+
+/// Whether this machine is rig-only now (enrolled in at least one workspace, `removed_at` key absent,
+/// home workspace has a valid `RigSelf`, and every valid entry in `joined` has a valid `RigSelf`).
+/// Matches `station/src/cloud/state.ts` (`readState`/`rigSelfOf`/`joinedOf`) + `station/src/cli.ts` `isRig` 1:1.
+pub fn is_rig(data: &Path) -> bool {
+    let path = data.join("mesh").join("cloud.json");
+    let Ok(bytes) = std::fs::read(&path) else { return false };
+    let Ok(Value::Object(obj)) = serde_json::from_slice::<Value>(&bytes) else { return false };
+    let enrolled = obj.get("workspace").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+    // In JS, `state.removed_at === undefined` is false when `"removed_at": null` is present.
+    let not_removed = !obj.contains_key("removed_at");
+    let home_rig = rig_self_valid(obj.get("rig"));
+    let joined_rig = match obj.get("joined") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter(|j| j.as_object().and_then(|o| o.get("workspace")).and_then(Value::as_str).is_some_and(|s| !s.is_empty()))
+            .all(|j| rig_self_valid(j.get("rig"))),
+        _ => true,
+    };
+    enrolled && not_removed && home_rig && joined_rig
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -167,13 +242,84 @@ mod tests {
     fn the_config_names_the_mcp_port_or_leaves_the_usual_one() {
         let of = |s: &str| Config::of(&serde_json::from_str(s).unwrap());
         assert_eq!(of("null").unwrap(), Config { port: 4750, named: false, english: false, moonbit: false });
-        assert_eq!(of(r#"{"http":{"host":"0.0.0.0","port":5000},"language":"en-US"}"#).unwrap(), Config { port: 5000, named: true, english: true, moonbit: false });
+        assert_eq!(
+            of(r#"{"http":{"host":"0.0.0.0","port":5000},"language":"en-US"}"#).unwrap(),
+            Config { port: 5000, named: true, english: true, moonbit: false }
+        );
         // (the MoonBit station alone, this station's switch: only its own word turns it on)
         assert!(of(r#"{"engine":"moonbit"}"#).unwrap().moonbit);
         assert!(!of(r#"{"engine":"node"}"#).unwrap().moonbit);
         assert!(!of(r#"{"engine":true}"#).unwrap().moonbit);
         assert!(!of(r#"{"language":"zh-CN"}"#).unwrap().english);
         assert!(of(r#"{"http":{"port":70000}}"#).is_err());
+
+        let dir = temp("read-engine");
+        assert_eq!(read_engine(&dir), Ok(None));
+        std::fs::write(dir.join("config.json"), r#"{}"#).unwrap();
+        assert_eq!(read_engine(&dir), Ok(None));
+        std::fs::write(dir.join("config.json"), r#"{"engine":" PION "}"#).unwrap();
+        assert_eq!(read_engine(&dir), Ok(Some("pion".to_string())));
+        std::fs::write(dir.join("config.json"), r#"{"engine":""}"#).unwrap();
+        assert!(read_engine(&dir).is_err());
+        std::fs::write(dir.join("config.json"), r#"{"engine":"   "}"#).unwrap();
+        assert!(read_engine(&dir).is_err());
+        std::fs::write(dir.join("config.json"), r#"{"engine":null}"#).unwrap();
+        assert!(read_engine(&dir).is_err());
+        std::fs::write(dir.join("config.json"), r#"{"engine":["sentinel-engine-val"]}"#).unwrap();
+        let err = read_engine(&dir).unwrap_err();
+        assert!(err.contains("got array"), "unexpected err: {err}");
+        assert!(!err.contains("sentinel-engine-val"), "error must not echo config contents: {err}");
+        std::fs::write(dir.join("config.json"), r#"["sentinel-root-val"]"#).unwrap();
+        let err = read_engine(&dir).unwrap_err();
+        assert!(err.contains("got array"), "unexpected err: {err}");
+        assert!(!err.contains("sentinel-root-val"), "error must not echo config contents: {err}");
+        std::fs::write(dir.join("config.json"), "{broken json").unwrap();
+        assert!(read_engine(&dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn is_rig_matches_station_cli_semantics() {
+        let dir = temp("is-rig");
+        assert!(!is_rig(&dir));
+        let mesh = dir.join("mesh");
+        std::fs::create_dir_all(&mesh).unwrap();
+        let write = |s: &str| std::fs::write(mesh.join("cloud.json"), s).unwrap();
+        let hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        // Whole station (no rig)
+        write(r#"{"workspace":"ws-1"}"#);
+        assert!(!is_rig(&dir));
+        // Invalid rig missing person (HEX32) is NOT a valid rig
+        write(r#"{"workspace":"ws-1","rig":{"owner":"u1"}}"#);
+        assert!(!is_rig(&dir));
+        // Invalid rig with uppercase hex person is NOT a valid rig
+        write(&format!(r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{}"}}}}"#, hex.to_uppercase()));
+        assert!(!is_rig(&dir));
+        // Pure rig (home workspace has valid RigSelf, no joined)
+        write(&format!(r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{hex}"}}}}"#));
+        assert!(is_rig(&dir));
+        // Rig with all joined workspaces also valid rig
+        write(&format!(
+            r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{hex}"}},"joined":[{{"workspace":"ws-2","rig":{{"owner":"u2","person":"{hex}"}}}}]}}"#
+        ));
+        assert!(is_rig(&dir));
+        // Rig with malformed joined entry `{}` (filtered out by joinedOf) is still rig
+        write(&format!(r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{hex}"}},"joined":[{{}}]}}"#));
+        assert!(is_rig(&dir));
+        // Mixed: home is rig, joined workspace is full (no rig)
+        write(&format!(
+            r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{hex}"}},"joined":[{{"workspace":"ws-2"}}]}}"#
+        ));
+        assert!(!is_rig(&dir));
+        // Removed rig (numeric or null) is not active rig
+        write(&format!(r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{hex}"}},"removed_at":123}}"#));
+        assert!(!is_rig(&dir));
+        write(&format!(r#"{{"workspace":"ws-1","rig":{{"owner":"u1","person":"{hex}"}},"removed_at":null}}"#));
+        assert!(!is_rig(&dir));
+        // Empty workspace is not enrolled
+        write(&format!(r#"{{"workspace":"","rig":{{"owner":"u1","person":"{hex}"}}}}"#));
+        assert!(!is_rig(&dir));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

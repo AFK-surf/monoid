@@ -13,9 +13,30 @@
 // frame on a phone): neither bar, the app's view the whole window as before. Chosen, a tab or an item said to the app on
 // the system channel (`{"nav": id}`).
 
+#import "ios_nav_state.h"
+
+static NSCache<NSString *, UIImage *> *nav_img_cache(void) {
+  static NSCache<NSString *, UIImage *> *cache;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    cache = [NSCache new];
+    cache.countLimit = 256;
+  });
+  return cache;
+}
+
+static CGFloat nav_display_scale(void) {
+  CGFloat s = the_view ? the_view.traitCollection.displayScale : 0;
+  if (s <= 0) s = the_controller ? the_controller.traitCollection.displayScale : 0;
+  return s > 0 ? s : 2.0;
+}
+
 // An icon of the app's (sfapp icon_data: groups of a kind (0 a line, 1 closed, 2 filled), a stroke's width, how many
 // points and the points, on a 24 grid) as a template image `size` across, for the bars to tint.
 static UIImage *nav_icon(NSString *data, CGFloat size) {
+  NSString *cacheKey = mb_ios_nav_icon_cache_key('i', size, nav_display_scale(), data);
+  UIImage *cached = [nav_img_cache() objectForKey:cacheKey];
+  if (cached) return cached;
   NSArray<NSString *> *parts = [data componentsSeparatedByString:@" "];
   NSMutableArray<NSNumber *> *n = [NSMutableArray arrayWithCapacity:parts.count];
   for (NSString *p in parts)
@@ -76,7 +97,9 @@ static UIImage *nav_icon(NSString *data, CGFloat size) {
     }
     if (compound) [compound fill];
   }];
-  return [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+  UIImage *out = [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+  if (out) [nav_img_cache() setObject:out forKey:cacheKey];
+  return out;
 }
 
 // People as an icon (`avatars:` then each `rrggbbaa,letter` (an alpha of 0: no disc, the letter alone) apart by `\x1d`, at most three; `\x1f` and a picture's
@@ -132,6 +155,9 @@ static UIImage *nav_avatars(NSString *spec, CGFloat size, void (^then)(void)) {
 // A workspace's mark as an icon (`badge:rrggbbaa,letter`): its letter (or emoji) in white on a rounded square of its
 // colour, in its own colours, a little smaller than the tabs' icons so the system's lit ground shows round it.
 static UIImage *nav_badge(NSString *spec, CGFloat size) {
+  NSString *cacheKey = mb_ios_nav_icon_cache_key('b', size, nav_display_scale(), spec);
+  UIImage *cached = [nav_img_cache() objectForKey:cacheKey];
+  if (cached) return cached;
   NSArray<NSString *> *p = [[spec substringFromIndex:6] componentsSeparatedByString:@","];
   if (p.count < 2) return nil;
   unsigned long long c = strtoull(p[0].UTF8String, NULL, 16);
@@ -148,7 +174,9 @@ static UIImage *nav_badge(NSString *spec, CGFloat size) {
     CGSize s = [letter sizeWithAttributes:attrs];
     [letter drawAtPoint:CGPointMake(CGRectGetMidX(box) - s.width / 2, CGRectGetMidY(box) - s.height / 2) withAttributes:attrs];
   }];
-  return [img imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+  UIImage *out = [img imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+  if (out) [nav_img_cache() setObject:out forKey:cacheKey];
+  return out;
 }
 
 // The side of a workspace's mark on the bar's button (nav_avatars): the glass a thin ring round it.
@@ -229,6 +257,9 @@ static UIImage *nav_any(NSString *icon, CGFloat size) { return nav_any_then(icon
 static UIImage *nav_letter(NSString *title, CGFloat size) {
   if (!title.length) return nil;
   NSString *letter = [title substringWithRange:[title rangeOfComposedCharacterSequenceAtIndex:0]];
+  NSString *cacheKey = mb_ios_nav_icon_cache_key('l', size, nav_display_scale(), letter);
+  UIImage *cached = [nav_img_cache() objectForKey:cacheKey];
+  if (cached) return cached;
   UIFont *font = [UIFont systemFontOfSize:size * 0.72 weight:UIFontWeightSemibold];
   NSDictionary *attrs = @{NSFontAttributeName : font, NSForegroundColorAttributeName : UIColor.blackColor};
   CGSize s = [letter sizeWithAttributes:attrs];
@@ -236,7 +267,9 @@ static UIImage *nav_letter(NSString *title, CGFloat size) {
   UIImage *img = [r imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
     [letter drawAtPoint:CGPointMake((size - s.width) / 2, (size - s.height) / 2) withAttributes:attrs];
   }];
-  return [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+  UIImage *out = [img imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+  if (out) [nav_img_cache() setObject:out forKey:cacheKey];
+  return out;
 }
 
 // The system's tab bar for the app's places (iOS 18's UITabBarController with UITabs: on an iPhone Duo's inner screen on
@@ -254,6 +287,7 @@ static UIImage *nav_letter(NSString *title, CGFloat size) {
 @property(nonatomic, strong) NSDictionary<NSString *, NSDictionary *> *barSpecs;
 @property(nonatomic, strong) UIColor *barInk;
 @property(nonatomic, strong) UIColor *barAccent;
+@property(nonatomic, copy) NSString *appliedActsKey;
 @end
 
 @implementation MBSlot
@@ -421,6 +455,8 @@ API_AVAILABLE(ios(18.0))
 // what is pressed, not gone to (the action most wanted, what opens over the page: `act/`): the navigation bar's items,
 // not tabs; their key (made again only as it changes)
 @property(nonatomic, copy) NSString *actsKey;
+@property(nonatomic, strong) UIColor *actsInk;
+@property(nonatomic, strong) UIColor *actsAccent;
 // the icon each tab was drawn with, by its id (drawn again only as it changes)
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *icons;
 // Full list of regular place tabs handed by the app, and any overflow folded into our own `nav_more_id` tab.
@@ -440,8 +476,11 @@ API_AVAILABLE(ios(18.0))
 @property(nonatomic, copy) NSString *overflowLayoutKey;
 @property(nonatomic) BOOL reconcilingOverflow;
 @property(nonatomic) BOOL overflowCheckPending;
+@property(nonatomic) CGRect lastLayoutBounds;
 @property(nonatomic, weak) MBMorePopoverController *morePopover;
 @end
+
+static void nav_invalidate_corners(void);
 
 
 static UIViewController *the_root;
@@ -560,6 +599,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
                     withHandler:^(id<UITraitEnvironment> env, UITraitCollection *prev) {
     MBTabs *s = weakSelf;
     if (!s) return;
+    nav_invalidate_corners();
     [s washAction];
     [s scheduleOverflowReconcile];
     dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf washAction]; });
@@ -568,11 +608,13 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
 }
 - (void)viewWillTransitionToSize:(CGSize)size withTransitionCoordinator:(id<UIViewControllerTransitionCoordinator>)coordinator {
   [super viewWillTransitionToSize:size withTransitionCoordinator:coordinator];
+  nav_invalidate_corners();
   [self dismissMorePopover];
   __weak MBTabs *weakSelf = self;
   [coordinator animateAlongsideTransition:^(id<UIViewControllerTransitionCoordinatorContext> ctx) {
     [weakSelf washAction];
   } completion:^(id<UIViewControllerTransitionCoordinatorContext> ctx) {
+    nav_invalidate_corners();
     [weakSelf reconcileOverflow];
     [weakSelf washAction];
     dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf washAction]; });
@@ -583,6 +625,10 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
 // composer at the foot of the card beside it).
 - (void)viewDidLayoutSubviews {
   [super viewDidLayoutSubviews];
+  if (!CGRectEqualToRect(self.view.bounds, self.lastLayoutBounds)) {
+    self.lastLayoutBounds = self.view.bounds;
+    nav_invalidate_corners();
+  }
   [self checkOverflowAfterLayout];
   [self washAction];
   UIView *v = the_view;
@@ -678,9 +724,198 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
 #endif
   [p insertSubview:w atIndex:0];
 }
-// What is pressed, not gone to, as the navigation bar's own items on every tab's page (the system lays them out:
-// down the side with the tabs where its vertical bar is, across the top upright), its title none: the action most
-// wanted prominent, on the accent; a dot a badge.
+// Apply the latest navigation bar items to a single tab slot (called eagerly for the active tab, and lazily before
+// switching into any inactive tab).
+- (void)applyBarItemsToSlot:(MBSlot *)slot nav:(UINavigationController *)nav animate:(BOOL)allowAnimate {
+  NSArray<NSDictionary *> *items = self.lastBarItems;
+  if (!slot || !nav || !items) return;
+  UIColor *ink = self.actsInk ?: self.barInk ?: UIColor.labelColor;
+  UIColor *accent = self.actsAccent ?: self.barAccent ?: UIColor.tintColor;
+  BOOL bare = self.lastBare;
+  NSString *title = self.lastBarTitle ?: @"";
+  NSMutableDictionary *keptItems = [NSMutableDictionary dictionary];
+  NSMutableDictionary *keptSpecs = [NSMutableDictionary dictionary];
+  NSMutableArray<UIBarButtonItem *> *made = [NSMutableArray array];
+  // (`lead/` the bar's leading items: the workspace's, where the system puts back and close, the column's top)
+  NSMutableArray<UIBarButtonItem *> *lead = [NSMutableArray array];
+  // (`act/` the toolbar's: down the side, at the column's foot over the tabs, 待处理's bell by them)
+  NSMutableArray<UIBarButtonItem *> *foot = [NSMutableArray array];
+  NSString *lastIdent = @"";
+  // UIKit keeps an existing item's shared glass when its prominence changes; rebuild the bare viewer's group.
+  BOOL regroup = NO;
+  if (bare) {
+    for (NSDictionary *d in items) {
+      NSDictionary *before = slot.barSpecs[d[@"id"]];
+      if (before && [before[@"prominent"] boolValue] != [d[@"prominent"] boolValue]) {
+        regroup = YES;
+        break;
+      }
+    }
+  }
+  for (NSDictionary *d in items) {
+    NSString *ident = d[@"id"];
+    UIBarButtonItem *b = regroup ? nil : slot.barItems[ident];
+    BOOL reuse = b && [slot.barSpecs[ident] isEqual:d] && [slot.barInk isEqual:ink] && [slot.barAccent isEqual:accent];
+    if (!reuse) {
+      // (the same action said otherwise, its icon, words, menu or dot, in the same colours: the item there changed in
+      // place, not made anew, so the system swaps what it shows on the button there and fades none of the column's
+      // buttons, as Outlook's do: the user, 2026-10-31; a new item, even with its identifier, is faded in for the old)
+      UIBarButtonItem *was = b && [slot.barInk isEqual:ink] && [slot.barAccent isEqual:accent] ? b : nil;
+      // (a picture the host loads: drawn in once it is here, on the item, while it is shown and still said so)
+      __block __weak UIBarButtonItem *drawn = nil;
+      __weak MBSlot *slotWeak = slot;
+      BOOL (^still)(void) = ^BOOL { return [slotWeak.barSpecs[ident] isEqual:d]; };
+      NSString *spec = d[@"icon"];
+      // (a workspace's mark a disc nearly the glass's own size, on the glass as it is: its picture once here, else its
+      // letter on its colour, an emoji alone with no colour round it: the user, 2026-10-28)
+      if ([spec hasPrefix:@"badge:"]) {
+        NSRange pic = [spec rangeOfString:@"\x1e"];
+        NSString *mark = pic.location == NSNotFound ? [spec substringFromIndex:6] : [spec substringWithRange:NSMakeRange(6, pic.location - 6)];
+        NSRange comma = [mark rangeOfString:@","];
+        if (comma.location != NSNotFound && comma.location + 1 < mark.length &&
+            ![NSCharacterSet.alphanumericCharacterSet characterIsMember:[mark characterAtIndex:comma.location + 1]])
+          mark = [@"00000000" stringByAppendingString:[mark substringFromIndex:comma.location]];
+        spec = pic.location == NSNotFound ? [@"avatars:" stringByAppendingString:mark]
+                                          : [NSString stringWithFormat:@"avatars:%@\x1f%@", mark, [spec substringFromIndex:pic.location + 1]];
+      }
+      UIImage *icon = [spec hasPrefix:@"avatars:"] ? nav_avatars(spec, nav_face, ^{
+                        if (still()) drawn.image = nav_avatars(spec, nav_face, nil);
+                      })
+                      : [spec length] ? nav_any_then(spec, 24, ^{
+                          if (still()) drawn.image = nav_any(spec, 24);
+                        })
+                                      : nav_letter(d[@"title"], 24);
+      // (a chat's "…" the system's own glyph, as the "…" it folds into: the user, 2026-11-04)
+      if ([ident hasSuffix:@"chat/more"]) icon = [UIImage systemImageNamed:@"ellipsis"] ?: icon;
+      BOOL prominent = [d[@"prominent"] boolValue];
+      // (said with where the item is in the app's view, for what opens from it: a popover at it)
+      __block __weak UIBarButtonItem *weak = nil;
+      UIAction *action = [UIAction actionWithTitle:d[@"title"]
+                                             image:icon
+                                        identifier:nil
+                                           handler:^(UIAction *a) {
+                                             UIBarButtonItem *it = weak;
+                                             UIView *v = the_view;
+                                             if (it && v) {
+                                               CGRect r = [it frameInView:v];
+                                               say_system(@{@"nav" : ident, @"at" : @[ @(r.origin.x), @(r.origin.y), @(r.size.width), @(r.size.height) ]});
+                                             } else {
+                                               say_system(@{@"nav" : ident});
+                                             }
+                                           }];
+      // (with a menu: its rows, the one checked so, each said as chosen)
+      NSArray *rows = d[@"menu"];
+      if (rows.count) {
+        UIMenu *menu = nav_menu(rows, ^(NSString *row) {
+          UIBarButtonItem *it = drawn;
+          UIView *v = the_view;
+          CGRect r = it && v ? [it frameInView:v] : CGRectZero;
+          say_system(@{@"nav" : row, @"at" : @[ @(r.origin.x), @(r.origin.y), @(r.size.width), @(r.size.height) ]});
+        });
+        if (was.menu) {
+          b = was;
+          b.menu = menu;
+          b.image = icon;
+        } else {
+          b = [[UIBarButtonItem alloc] initWithImage:icon menu:menu];
+        }
+        b.title = d[@"title"];
+        // (folded into the system's "…", its rows there as they are, not a submenu of them: a submenu opened there
+        // heads its rows with its own "… 更多", the system's "…" opening a "…" (the user, 2026-11-13))
+        if (@available(iOS 16.0, *))
+          b.menuRepresentation = [UIMenu menuWithTitle:@"" image:nil identifier:nil
+                                               options:UIMenuOptionsDisplayInline children:menu.children];
+      } else if (was && !was.menu) {
+        b = was;
+        b.primaryAction = action;
+      } else {
+        b = [[UIBarButtonItem alloc] initWithPrimaryAction:action];
+      }
+      weak = b;
+      drawn = b;
+#ifdef __IPHONE_26_0
+      if (@available(iOS 26.0, *)) {
+        // Match the same action across configurations so UIKit carries its glass through the transition.
+        b.identifier = ident;
+        if (prominent) {
+          b.style = UIBarButtonItemStyleProminent;
+          b.tintColor = accent;
+        } else {
+          b.style = UIBarButtonItemStylePlain;
+          b.tintColor = ink;
+        }
+        // (the app's own, 待处理's, on a glass of its own, apart from the card's: the user, 2026-10-27)
+        if ((bare && prominent) || [ident hasPrefix:@"act/"] || [ident hasPrefix:@"lead/"]) b.sharesBackground = NO;
+#ifdef __IPHONE_27_0
+        // (short of room in the column, what goes first: never 待处理's bell, the user 2026-10-27, more wanted than the
+        // workspace's and than any page's action; a page's first, and of a page's one that is itself a menu (a
+        // chat's "…") before the rest: folded, its rows are in the system's "…" (its menuRepresentation), nothing
+        // lost, where its button left beside the system's would be two "…" in the column: the user 2026-11-03)
+        if (@available(iOS 27.0, *)) {
+          // (the bell above all: on the outer screen's short column there is room for one of the app's own)
+          if ([ident hasSuffix:@"/attention"] || [ident hasSuffix:@"side/close"]) b.visibilityPriority = UIBarButtonItemVisibilityPriorityHigh;
+          else if (![ident hasPrefix:@"act/"] && ![ident hasPrefix:@"lead/"])
+            b.visibilityPriority = rows.count ? UIBarButtonItemVisibilityPriorityLow - 1 : UIBarButtonItemVisibilityPriorityLow;
+          // (on a glass of its own: on one with the others, short of room, the system folded those and left this "…"
+          // beside its own: the user 2026-11-04)
+          if (rows.count) b.sharesBackground = NO;
+        }
+#endif
+        b.badge = [d[@"dot"] boolValue] ? [UIBarButtonItemBadge indicatorBadge] : nil;
+      }
+#endif
+    }
+    keptItems[ident] = b;
+    keptSpecs[ident] = d;
+    if ([ident hasPrefix:@"lead/"]) [lead addObject:b];
+    else if ([ident hasPrefix:@"act/"]) [foot addObject:b];
+    else {
+      // (who's in a page apart from what it does: a glass each, a space between)
+      BOOL who = [ident hasPrefix:@"page/who/"];
+#ifdef __IPHONE_26_0
+      if (@available(iOS 26.0, *))
+        if (!who && made.count && [lastIdent hasPrefix:@"page/who/"]) b.sharesBackground = NO;
+#endif
+      [made addObject:b];
+      lastIdent = ident;
+    }
+  }
+  slot.barItems = keptItems;
+  slot.barSpecs = keptSpecs;
+  slot.barInk = ink;
+  slot.barAccent = accent;
+  slot.appliedActsKey = self.actsKey;
+  // Only the visible tab transitions; initial setup and the other tabs take their items at once.
+  BOOL animate = allowAnimate && nav == self.selectedViewController && nav.isViewLoaded && nav.view.window != nil &&
+                 !UIAccessibilityIsReduceMotionEnabled();
+  // (from the bar's end in: the action most wanted outermost)
+  NSArray *right = made.reverseObjectEnumerator.allObjects;
+  if (![slot.navigationItem.rightBarButtonItems isEqualToArray:right])
+    [slot.navigationItem setRightBarButtonItems:right animated:animate];
+  if (![slot.navigationItem.leftBarButtonItems isEqualToArray:lead])
+    [slot.navigationItem setLeftBarButtonItems:lead animated:animate];
+  if (![slot.toolbarItems isEqualToArray:foot]) [slot setToolbarItems:foot animated:animate];
+  // (the chosen tab's alone: shown on two, the column shows its items twice; didSelectTab)
+  BOOL hidden = foot.count == 0 || nav != self.selectedViewController;
+  if (nav.toolbarHidden != hidden) [nav setToolbarHidden:hidden animated:animate];
+  nav_title(slot.navigationItem, bare ? title : @"", ink);
+  // (put away only when something is up over the whole window, its title alone: hidden with its items gone, the system's
+  // column keeps showing the views of those it had, a page's actions on the next tab, the outer screen's workspace
+  // button on the inner one; the user, 2026-10-27. Shown with none it takes no room: there, its items are the column's.
+  // Nor with no title either (a remote screen's 全屏): put away, the column showed the chat's actions under it; shown,
+  // it is told they are gone, the user 2026-10-29)
+  [nav setNavigationBarHidden:(bare && made.count + lead.count == 0 && title.length > 0) animated:(bare && allowAnimate)];
+}
+- (void)ensureSlotBarItemsForIdent:(NSString *)ident animate:(BOOL)allowAnimate {
+  if (!ident.length) return;
+  UINavigationController *nav = self.navs[ident];
+  MBSlot *slot = self.slotsById[ident] ?: (MBSlot *)nav.viewControllers.firstObject;
+  if (!slot || !nav) return;
+  if (!mb_ios_nav_slot_needs_bar_items(slot.appliedActsKey, self.actsKey, self.lastBarItems != nil)) return;
+  [self applyBarItemsToSlot:slot nav:nav animate:allowAnimate];
+}
+// What is pressed, not gone to, as the navigation bar's own items on the active tab's page (and synced lazily on
+// inactive tabs before switching): the action most wanted prominent, on the accent; a dot a badge.
 // Bare (something up over the whole window, the tabs put away): `title` over them, the bar put away with none.
 - (void)barItems:(NSArray<NSDictionary *> *)items ink:(UIColor *)ink accent:(UIColor *)accent bare:(BOOL)bare title:(NSString *)title {
   NSMutableString *key = [NSMutableString stringWithFormat:@"%d\x1f%@\x1e", bare, bare ? title : @""];
@@ -690,8 +925,22 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     [key appendString:@"\x1e"];
   }
   [key appendFormat:@"%lu", (unsigned long)self.navs.count];
-  if ([key isEqualToString:self.actsKey]) return;
+  BOOL colorsChanged = !((self.actsInk == ink) || [self.actsInk isEqual:ink]) ||
+                       !((self.actsAccent == accent) || [self.actsAccent isEqual:accent]);
+  if ([key isEqualToString:self.actsKey] && !colorsChanged) {
+    NSString *activeIdent = self.selectedTab.identifier;
+    if (activeIdent.length) [self ensureSlotBarItemsForIdent:activeIdent animate:YES];
+    return;
+  }
+  if (colorsChanged) {
+    for (MBSlot *s in self.slotsById.allValues) s.appliedActsKey = nil;
+  }
   self.actsKey = key;
+  self.actsInk = ink;
+  self.actsAccent = accent;
+  self.lastBarItems = items;
+  self.lastBare = bare;
+  self.lastBarTitle = title ?: @"";
   if (getenv("MBUI_NAV_LOG")) {
     NSMutableArray *ids = [NSMutableArray array];
     for (NSDictionary *d in items) {
@@ -701,181 +950,19 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     }
     say([NSString stringWithFormat:@"NAVLOG bar items: %@", [ids componentsJoinedByString:@" "]]);
   }
-  for (NSString *k in self.navs) {
-    UINavigationController *nav = self.navs[k];
-    MBSlot *slot = self.slotsById[k] ?: (MBSlot *)nav.viewControllers.firstObject;
-    if (!slot) continue;
-    NSMutableDictionary *keptItems = [NSMutableDictionary dictionary];
-    NSMutableDictionary *keptSpecs = [NSMutableDictionary dictionary];
-    NSMutableArray<UIBarButtonItem *> *made = [NSMutableArray array];
-    // (`lead/` the bar's leading items: the workspace's, where the system puts back and close, the column's top)
-    NSMutableArray<UIBarButtonItem *> *lead = [NSMutableArray array];
-    // (`act/` the toolbar's: down the side, at the column's foot over the tabs, 待处理's bell by them)
-    NSMutableArray<UIBarButtonItem *> *foot = [NSMutableArray array];
-    NSString *lastIdent = @"";
-    // UIKit keeps an existing item's shared glass when its prominence changes; rebuild the bare viewer's group.
-    BOOL regroup = NO;
-    if (bare) {
-      for (NSDictionary *d in items) {
-        NSDictionary *before = slot.barSpecs[d[@"id"]];
-        if (before && [before[@"prominent"] boolValue] != [d[@"prominent"] boolValue]) {
-          regroup = YES;
-          break;
-        }
+  UINavigationController *activeNav = [self.selectedViewController isKindOfClass:UINavigationController.class]
+                                          ? (UINavigationController *)self.selectedViewController
+                                          : self.navs[self.selectedTab.identifier ?: @""];
+  if (activeNav) {
+    MBSlot *activeSlot = nil;
+    for (NSString *k in self.navs) {
+      if (self.navs[k] == activeNav) {
+        activeSlot = self.slotsById[k];
+        break;
       }
     }
-    for (NSDictionary *d in items) {
-      NSString *ident = d[@"id"];
-      UIBarButtonItem *b = regroup ? nil : slot.barItems[ident];
-      BOOL reuse = b && [slot.barSpecs[ident] isEqual:d] && [slot.barInk isEqual:ink] && [slot.barAccent isEqual:accent];
-      if (!reuse) {
-        // (the same action said otherwise, its icon, words, menu or dot, in the same colours: the item there changed in
-        // place, not made anew, so the system swaps what it shows on the button there and fades none of the column's
-        // buttons, as Outlook's do: the user, 2026-10-31; a new item, even with its identifier, is faded in for the old)
-        UIBarButtonItem *was = b && [slot.barInk isEqual:ink] && [slot.barAccent isEqual:accent] ? b : nil;
-        // (a picture the host loads: drawn in once it is here, on the item, while it is shown and still said so)
-        __block __weak UIBarButtonItem *drawn = nil;
-        __weak MBSlot *slotWeak = slot;
-        BOOL (^still)(void) = ^BOOL { return [slotWeak.barSpecs[ident] isEqual:d]; };
-        NSString *spec = d[@"icon"];
-        // (a workspace's mark a disc nearly the glass's own size, on the glass as it is: its picture once here, else its
-        // letter on its colour, an emoji alone with no colour round it: the user, 2026-10-28)
-        if ([spec hasPrefix:@"badge:"]) {
-          NSRange pic = [spec rangeOfString:@"\x1e"];
-          NSString *mark = pic.location == NSNotFound ? [spec substringFromIndex:6] : [spec substringWithRange:NSMakeRange(6, pic.location - 6)];
-          NSRange comma = [mark rangeOfString:@","];
-          if (comma.location != NSNotFound && comma.location + 1 < mark.length &&
-              ![NSCharacterSet.alphanumericCharacterSet characterIsMember:[mark characterAtIndex:comma.location + 1]])
-            mark = [@"00000000" stringByAppendingString:[mark substringFromIndex:comma.location]];
-          spec = pic.location == NSNotFound ? [@"avatars:" stringByAppendingString:mark]
-                                            : [NSString stringWithFormat:@"avatars:%@\x1f%@", mark, [spec substringFromIndex:pic.location + 1]];
-        }
-        UIImage *icon = [spec hasPrefix:@"avatars:"] ? nav_avatars(spec, nav_face, ^{
-                          if (still()) drawn.image = nav_avatars(spec, nav_face, nil);
-                        })
-                        : [spec length] ? nav_any_then(spec, 24, ^{
-                            if (still()) drawn.image = nav_any(spec, 24);
-                          })
-                                        : nav_letter(d[@"title"], 24);
-        // (a chat's "…" the system's own glyph, as the "…" it folds into: the user, 2026-11-04)
-        if ([ident hasSuffix:@"chat/more"]) icon = [UIImage systemImageNamed:@"ellipsis"] ?: icon;
-        BOOL prominent = [d[@"prominent"] boolValue];
-        // (said with where the item is in the app's view, for what opens from it: a popover at it)
-        __block __weak UIBarButtonItem *weak = nil;
-        UIAction *action = [UIAction actionWithTitle:d[@"title"]
-                                               image:icon
-                                          identifier:nil
-                                             handler:^(UIAction *a) {
-                                               UIBarButtonItem *it = weak;
-                                               UIView *v = the_view;
-                                               if (it && v) {
-                                                 CGRect r = [it frameInView:v];
-                                                 say_system(@{@"nav" : ident, @"at" : @[ @(r.origin.x), @(r.origin.y), @(r.size.width), @(r.size.height) ]});
-                                               } else {
-                                                 say_system(@{@"nav" : ident});
-                                               }
-                                             }];
-        // (with a menu: its rows, the one checked so, each said as chosen)
-        NSArray *rows = d[@"menu"];
-        if (rows.count) {
-          UIMenu *menu = nav_menu(rows, ^(NSString *row) {
-            UIBarButtonItem *it = drawn;
-            UIView *v = the_view;
-            CGRect r = it && v ? [it frameInView:v] : CGRectZero;
-            say_system(@{@"nav" : row, @"at" : @[ @(r.origin.x), @(r.origin.y), @(r.size.width), @(r.size.height) ]});
-          });
-          if (was.menu) {
-            b = was;
-            b.menu = menu;
-            b.image = icon;
-          } else {
-            b = [[UIBarButtonItem alloc] initWithImage:icon menu:menu];
-          }
-          b.title = d[@"title"];
-          // (folded into the system's "…", its rows there as they are, not a submenu of them: a submenu opened there
-          // heads its rows with its own "… 更多", the system's "…" opening a "…" (the user, 2026-11-13))
-          if (@available(iOS 16.0, *))
-            b.menuRepresentation = [UIMenu menuWithTitle:@"" image:nil identifier:nil
-                                                 options:UIMenuOptionsDisplayInline children:menu.children];
-        } else if (was && !was.menu) {
-          b = was;
-          b.primaryAction = action;
-        } else {
-          b = [[UIBarButtonItem alloc] initWithPrimaryAction:action];
-        }
-        weak = b;
-        drawn = b;
-#ifdef __IPHONE_26_0
-        if (@available(iOS 26.0, *)) {
-          // Match the same action across configurations so UIKit carries its glass through the transition.
-          b.identifier = ident;
-          if (prominent) {
-            b.style = UIBarButtonItemStyleProminent;
-            b.tintColor = accent;
-          } else {
-            b.style = UIBarButtonItemStylePlain;
-            b.tintColor = ink;
-          }
-          // (the app's own, 待处理's, on a glass of its own, apart from the card's: the user, 2026-10-27)
-          if ((bare && prominent) || [ident hasPrefix:@"act/"] || [ident hasPrefix:@"lead/"]) b.sharesBackground = NO;
-#ifdef __IPHONE_27_0
-          // (short of room in the column, what goes first: never 待处理's bell, the user 2026-10-27, more wanted than the
-          // workspace's and than any page's action; a page's first, and of a page's one that is itself a menu (a
-          // chat's "…") before the rest: folded, its rows are in the system's "…" (its menuRepresentation), nothing
-          // lost, where its button left beside the system's would be two "…" in the column: the user 2026-11-03)
-          if (@available(iOS 27.0, *)) {
-            // (the bell above all: on the outer screen's short column there is room for one of the app's own)
-            if ([ident hasSuffix:@"/attention"] || [ident hasSuffix:@"side/close"]) b.visibilityPriority = UIBarButtonItemVisibilityPriorityHigh;
-            else if (![ident hasPrefix:@"act/"] && ![ident hasPrefix:@"lead/"])
-              b.visibilityPriority = rows.count ? UIBarButtonItemVisibilityPriorityLow - 1 : UIBarButtonItemVisibilityPriorityLow;
-            // (on a glass of its own: on one with the others, short of room, the system folded those and left this "…"
-            // beside its own: the user 2026-11-04)
-            if (rows.count) b.sharesBackground = NO;
-          }
-#endif
-          b.badge = [d[@"dot"] boolValue] ? [UIBarButtonItemBadge indicatorBadge] : nil;
-        }
-#endif
-      }
-      keptItems[ident] = b;
-      keptSpecs[ident] = d;
-      if ([ident hasPrefix:@"lead/"]) [lead addObject:b];
-      else if ([ident hasPrefix:@"act/"]) [foot addObject:b];
-      else {
-        // (who's in a page apart from what it does: a glass each, a space between)
-        BOOL who = [ident hasPrefix:@"page/who/"];
-#ifdef __IPHONE_26_0
-        if (@available(iOS 26.0, *))
-          if (!who && made.count && [lastIdent hasPrefix:@"page/who/"]) b.sharesBackground = NO;
-#endif
-        [made addObject:b];
-        lastIdent = ident;
-      }
-    }
-    slot.barItems = keptItems;
-    slot.barSpecs = keptSpecs;
-    slot.barInk = ink;
-    slot.barAccent = accent;
-    // Only the visible tab transitions; initial setup and the other tabs take their items at once.
-    BOOL animate = nav == self.selectedViewController && nav.isViewLoaded && nav.view.window != nil &&
-                   !UIAccessibilityIsReduceMotionEnabled();
-    // (from the bar's end in: the action most wanted outermost)
-    NSArray *right = made.reverseObjectEnumerator.allObjects;
-    if (![slot.navigationItem.rightBarButtonItems isEqualToArray:right])
-      [slot.navigationItem setRightBarButtonItems:right animated:animate];
-    if (![slot.navigationItem.leftBarButtonItems isEqualToArray:lead])
-      [slot.navigationItem setLeftBarButtonItems:lead animated:animate];
-    if (![slot.toolbarItems isEqualToArray:foot]) [slot setToolbarItems:foot animated:animate];
-    // (the chosen tab's alone: shown on two, the column shows its items twice; didSelectTab)
-    BOOL hidden = foot.count == 0 || nav != self.selectedViewController;
-    if (nav.toolbarHidden != hidden) [nav setToolbarHidden:hidden animated:animate];
-    nav_title(slot.navigationItem, bare ? title : @"", ink);
-    // (put away only when something is up over the whole window, its title alone: hidden with its items gone, the system's
-    // column keeps showing the views of those it had, a page's actions on the next tab, the outer screen's workspace
-    // button on the inner one; the user, 2026-10-27. Shown with none it takes no room: there, its items are the column's.
-    // Nor with no title either (a remote screen's 全屏): put away, the column showed the chat's actions under it; shown,
-    // it is told they are gone, the user 2026-10-29)
-    [nav setNavigationBarHidden:(bare && made.count + lead.count == 0 && title.length > 0) animated:bare];
+    if (!activeSlot) activeSlot = (MBSlot *)activeNav.viewControllers.firstObject;
+    if (activeSlot) [self applyBarItemsToSlot:activeSlot nav:activeNav animate:YES];
   }
 }
 - (UINavigationController *)navFor:(NSString *)ident {
@@ -1085,11 +1172,13 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     want = self.selectedTab;
   if (!want || (self.action.length && [want.identifier isEqualToString:self.action]))
     want = self.tabs.firstObject;
+  if (want) [self ensureSlotBarItemsForIdent:want.identifier animate:NO];
   if (want && self.selectedTab != want) {
     self.choosing = YES;
     self.selectedTab = want;
     self.choosing = NO;
   }
+  [self ensureSlotBarItemsForIdent:self.selectedTab.identifier animate:NO];
   MBSlot *slot = [self slotFor:self.selectedTab.identifier];
   if (slot) nav_put(slot);
   [self syncNavToolbars];
@@ -1218,6 +1307,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   self.visibleRegularCap = vis;
   self.overflowLayoutKey = lkey;
   [self rebuildDisplayedTabs];
+  for (MBSlot *s in self.slotsById.allValues) s.appliedActsKey = nil;
   if (self.lastBarItems) {
     self.actsKey = nil;
     [self barItems:self.lastBarItems ink:self.barInk ?: UIColor.labelColor accent:self.barAccent ?: UIColor.tintColor
@@ -1255,6 +1345,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     self.visibleRegularCap = 0;
     [self rebuildDisplayedTabs];
     // Keep selection on the first tab during the probe so UIKit never pushes a trailing tab onto moreNavigationController.
+    if (self.tabs.firstObject) [self ensureSlotBarItemsForIdent:self.tabs.firstObject.identifier animate:NO];
     if (self.tabs.firstObject && self.selectedTab != self.tabs.firstObject) {
       self.choosing = YES;
       self.selectedTab = self.tabs.firstObject;
@@ -1292,6 +1383,11 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   self.tabBarHidden = YES;
   self.shown = NO;
   self.actsKey = nil;
+  self.actsInk = nil;
+  self.actsAccent = nil;
+  self.lastBarItems = nil;
+  self.lastBarTitle = nil;
+  for (MBSlot *s in self.slotsById.allValues) s.appliedActsKey = nil;
   // (nor the navigation bar's items: the app's own frame has them)
   MBSlot *slot = [self slotFor:@""];
   slot.navigationItem.rightBarButtonItems = nil;
@@ -1370,9 +1466,11 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   self.lastBare = bare;
   self.lastBarTitle = title;
   [self barItems:buttons ink:ink accent:accent bare:bare title:title];
-  if (!bare && self.view.window && self.visibleRegularCap == 0 && places.count > 1 &&
-      (tabsChanged || hiddenChanged || ![lkey isEqualToString:self.overflowLayoutKey])) {
+  self.overflowLayoutKey = mb_ios_nav_next_overflow_layout_key(bare, tabsChanged, self.overflowLayoutKey);
+  if (mb_ios_nav_needs_overflow_probe(bare, self.view.window != nil, self.visibleRegularCap, places.count,
+                                      tabsChanged, lkey, self.overflowLayoutKey)) {
     self.reconcilingOverflow = YES;
+    if (self.tabs.firstObject) [self ensureSlotBarItemsForIdent:self.tabs.firstObject.identifier animate:NO];
     if (self.tabs.firstObject && self.selectedTab != self.tabs.firstObject) {
       self.choosing = YES;
       self.selectedTab = self.tabs.firstObject;
@@ -1382,7 +1480,8 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     [self collapseIfUIKitOverflowed:lkey];
     self.reconcilingOverflow = NO;
   }
-  if (tabsChanged || hiddenChanged || (self.actionInk && !bare && !self.actionWash.window)) {
+  BOOL skipSyncWash = hiddenChanged && !bare && !tabsChanged;
+  if (!skipSyncWash && (tabsChanged || hiddenChanged || (self.actionInk && !bare && !self.actionWash.window))) {
     [self washAction];
     if (self.actionInk && !bare) {
       __weak MBTabs *weakSelf = self;
@@ -1415,6 +1514,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     }
     return NO;
   }
+  [self ensureSlotBarItemsForIdent:tab.identifier animate:NO];
   return YES;
 }
 - (BOOL)tabBarController:(UITabBarController *)c shouldSelectViewController:(UIViewController *)vc {
@@ -1431,6 +1531,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     if (!self.choosing) [self toggleMorePopover:tab];
     return;
   }
+  [self ensureSlotBarItemsForIdent:tab.identifier animate:NO];
   MBSlot *slot = [self slotFor:tab.identifier];
   if (slot) nav_put(slot);
   [self syncNavToolbars];
@@ -1485,12 +1586,25 @@ int32_t mb_host_nav_bar(moonbit_string_t spec) {
 // on the other side; a uniform configuration says the roundest of them for all four).
 static UIView *corner_probe;
 static double corner_said[4] = {-1, -1, -1, -1};
+static MBCornerCache corner_cache;
+static __weak UIWindow *corner_win;
+static void nav_invalidate_corners(void) {
+  mb_corner_cache_invalidate(&corner_cache);
+  corner_win = nil;
+}
 double mb_host_window_corner_at(int k) {
   if (!mb_host_nav_able()) return 0;
 #ifdef __IPHONE_26_0
   if (@available(iOS 26.0, *)) {
     UIWindow *win = the_controller.view.window;
     if (!win) return 0;
+    uintptr_t winTag = (uintptr_t)(__bridge void *)win;
+    if (corner_win != win) {
+      mb_corner_cache_invalidate(&corner_cache);
+      corner_win = win;
+    }
+    double cached = 0;
+    if (mb_corner_cache_hit(&corner_cache, winTag, win.bounds, k, &cached)) return cached;
     if (!corner_probe) {
       corner_probe = [[UIView alloc] initWithFrame:win.bounds];
       corner_probe.hidden = YES;
@@ -1506,12 +1620,17 @@ double mb_host_window_corner_at(int k) {
     // (the corner rule's order: top left, then round it)
     static const UIRectCorner which[4] = {UIRectCornerTopLeft, UIRectCornerTopRight, UIRectCornerBottomRight,
                                           UIRectCornerBottomLeft};
-    double r = [corner_probe effectiveRadiusForCorner:which[k & 3]];
-    if (r != corner_said[k & 3]) {
-      corner_said[k & 3] = r;
-      say([NSString stringWithFormat:@"ios: the screen's corner %d %.1f", k & 3, r]);
+    double vals[4];
+    for (int i = 0; i < 4; i++) {
+      vals[i] = [corner_probe effectiveRadiusForCorner:which[i]];
+      if (vals[i] != corner_said[i]) {
+        corner_said[i] = vals[i];
+        say([NSString stringWithFormat:@"ios: the screen's corner %d %.1f", i, vals[i]]);
+      }
     }
-    return r;
+    mb_corner_cache_store(&corner_cache, winTag, win.bounds, vals);
+    corner_win = win;
+    return vals[k & 3];
   }
 #endif
   return 0;

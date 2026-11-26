@@ -10,6 +10,7 @@
 // (lq); the loading requests are only touched there, the reads the app
 // answers only on the main thread.
 #import "apple.h"
+#import "apple_grab.h"
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
@@ -483,6 +484,7 @@ void mb_views_forget(int wid) {
 @property(nonatomic) BOOL framesAsked;
 @property(nonatomic, strong) NSData *still;
 @property(nonatomic) int stillState;
+@property(nonatomic) int grabGen;
 // a page's
 @property(nonatomic, strong) WKWebView *web;
 @property(nonatomic) BOOL loaded;
@@ -522,6 +524,7 @@ void mb_views_forget(int wid) {
 - (void)seekTo:(double)ms near:(BOOL)near;
 - (BOOL)hasAt:(double)ms;
 - (void)playWhatCame;
+- (CGImageRef)copyShownImage:(CVPixelBufferRef *)outPixelBuffer;
 - (CGImageRef)copyFrame;
 - (void)stood;
 - (void)tell:(int)state;
@@ -779,6 +782,7 @@ static int32_t player_failure(NSError *error) {
 
 // The frame showing at `ms` at its own size, the closest (no tolerance), as a PNG.
 - (void)grabAt:(double)ms {
+  int gen = ++self.grabGen;
   if (@available(macOS 13.0, iOS 16.0, *)) {
     self.stillState = 1;
     self.still = nil;
@@ -804,13 +808,13 @@ static int32_t player_failure(NSError *error) {
                               }
                             }
                             dispatch_async(dispatch_get_main_queue(), ^{
+                              MBNative *v = wv;
+                              if (!v || v.closed || v.grabGen != gen) return;
                               vlog(@"view %d: frame at %.0f ms %@", vid, ms,
                                    png ? [NSString stringWithFormat:@"grabbed (%lu bytes)", (unsigned long)png.length]
                                        : [@"not grabbed: " stringByAppendingString:error.localizedDescription ?: @"?"]);
-                              if (wv) {
-                                wv.still = png;
-                                wv.stillState = png ? 2 : -1;
-                              }
+                              v.still = png;
+                              v.stillState = png ? 2 : -1;
                               mb_host_outside(MB_OUTSIDE_GRAB, vid, png ? 1 : -1);
                               mb_host_request_frame();
                             });
@@ -821,48 +825,41 @@ static int32_t player_failure(NSError *error) {
 }
 
 
-// The frame showing now (the player's picture, copyFrame's), at most `side` pixels on its longer side, as a JPEG:
+// The frame showing now (the player's picture), at most `side` pixels on its longer side, as a JPEG:
 // what a viewer closing into its thumbnail goes with (native.mbt grab_shown).
+// Captures the active CGImage/CVPixelBuffer on the main thread and runs downscaling + JPEG encoding off-thread.
 - (void)grabShown:(double)side {
+  int gen = ++self.grabGen;
   self.stillState = 1;
   self.still = nil;
-  CGImageRef img = [self copyFrame];
-  NSMutableData *jpeg = nil;
-  if (img) {
-    size_t w = CGImageGetWidth(img), h = CGImageGetHeight(img);
-    double k = fmin(1.0, side / (double)MAX(w, h));
-    size_t tw = MAX((size_t)1, (size_t)llround(w * k)), th = MAX((size_t)1, (size_t)llround(h * k));
-    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
-    CGContextRef c = CGBitmapContextCreate(NULL, tw, th, 8, 0, cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
-    CGColorSpaceRelease(cs);
-    CGImageRef small = NULL;
-    if (c) {
-      CGContextSetInterpolationQuality(c, kCGInterpolationHigh);
-      CGContextDrawImage(c, CGRectMake(0, 0, tw, th), img);
-      small = CGBitmapContextCreateImage(c);
-      CGContextRelease(c);
-    }
-    CGImageRelease(img);
-    if (small) {
-      jpeg = [NSMutableData new];
-      CGImageDestinationRef dst =
-          CGImageDestinationCreateWithData((__bridge CFMutableDataRef)jpeg, CFSTR("public.jpeg"), 1, NULL);
-      if (dst) {
-        CGImageDestinationAddImage(dst, small, (__bridge CFDictionaryRef) @{(__bridge NSString *)kCGImageDestinationLossyCompressionQuality : @0.9});
-        if (!CGImageDestinationFinalize(dst)) jpeg = nil;
-        CFRelease(dst);
-      } else {
-        jpeg = nil;
-      }
-      CGImageRelease(small);
-    }
+  CGImageRef img = NULL;
+  CVPixelBufferRef pb = NULL;
+  img = [self copyShownImage:&pb];
+  if (!img && !pb) {
+    vlog(@"view %d: the frame shown not grabbed", self.vid);
+    self.still = nil;
+    self.stillState = -1;
+    mb_host_outside(MB_OUTSIDE_GRAB, self.vid, -1);
+    mb_host_request_frame();
+    return;
   }
-  vlog(@"view %d: the frame shown %@", self.vid,
-       jpeg ? [NSString stringWithFormat:@"grabbed (%lu bytes)", (unsigned long)jpeg.length] : @"not grabbed");
-  self.still = jpeg;
-  self.stillState = jpeg ? 2 : -1;
-  mb_host_outside(MB_OUTSIDE_GRAB, self.vid, jpeg ? 1 : -1);
-  mb_host_request_frame();
+  __weak MBNative *wv = self;
+  int32_t vid = self.vid;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    NSData *jpeg = mb_apple_encode_frame_jpeg(img, pb, side);
+    if (img) CGImageRelease(img);
+    if (pb) CVPixelBufferRelease(pb);
+    dispatch_async(dispatch_get_main_queue(), ^{
+      MBNative *v = wv;
+      if (!v || v.closed || v.grabGen != gen) return;
+      vlog(@"view %d: the frame shown %@", vid,
+           jpeg ? [NSString stringWithFormat:@"grabbed (%lu bytes)", (unsigned long)jpeg.length] : @"not grabbed");
+      v.still = jpeg;
+      v.stillState = jpeg ? 2 : -1;
+      mb_host_outside(MB_OUTSIDE_GRAB, vid, jpeg ? 1 : -1);
+      mb_host_request_frame();
+    });
+  });
 }
 
 - (void)dealloc {
@@ -1137,27 +1134,38 @@ static int32_t player_failure(NSError *error) {
   self.ticks = nil;
 }
 
-// The frame showing now, for snapshots (the last one copied when no new one came); retained, or NULL.
-- (CGImageRef)copyFrame {
+// Captures the currently displayed frame: returns a retained CGImageRef when a scrub frame is showing,
+// otherwise populates `*outPixelBuffer` with a retained CVPixelBufferRef (updating `self.lastFrame`).
+- (CGImageRef)copyShownImage:(CVPixelBufferRef *)outPixelBuffer {
+  if (outPixelBuffer) *outPixelBuffer = NULL;
   // (a frame kept for a finger on its timeline over the player's: that one)
   if ((self.scrubServed || self.scrubLanding) && self.scrubPicture) return CGImageRetain(self.scrubPicture);
   CMTime t = self.item.currentTime;
-  CVPixelBufferRef pb = [self.output copyPixelBufferForItemTime:t itemTimeForDisplay:NULL];
-  if (pb) {
+  CVPixelBufferRef fresh = [self.output copyPixelBufferForItemTime:t itemTimeForDisplay:NULL];
+  if (fresh) {
     if (self.lastFrame) CVPixelBufferRelease(self.lastFrame);
-    self.lastFrame = pb;
+    self.lastFrame = fresh;
   }
-  pb = self.lastFrame;
+  if (self.lastFrame && outPixelBuffer) *outPixelBuffer = CVPixelBufferRetain(self.lastFrame);
+  return NULL;
+}
+
+// The frame showing now, for snapshots (the last one copied when no new one came); retained, or NULL.
+- (CGImageRef)copyFrame {
+  CVPixelBufferRef pb = NULL;
+  CGImageRef img = [self copyShownImage:&pb];
+  if (img) return img;
   if (!pb) return NULL;
   CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
   size_t w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb);
   CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
   CGContextRef c = CGBitmapContextCreate(CVPixelBufferGetBaseAddress(pb), w, h, 8, CVPixelBufferGetBytesPerRow(pb),
                                          cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
-  CGImageRef img = c ? CGBitmapContextCreateImage(c) : NULL;
+  img = c ? CGBitmapContextCreateImage(c) : NULL;
   if (c) CGContextRelease(c);
   CGColorSpaceRelease(cs);
   CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+  CVPixelBufferRelease(pb);
   return img;
 }
 
@@ -1383,6 +1391,7 @@ static void mp4_decided(MBNative *v, BOOL vp9, BOOL unplayable) {
   }
   if (v.failed) {
     if (v.stillState == 1) {
+      v.grabGen++;
       v.stillState = -1;
       mb_host_outside(MB_OUTSIDE_GRAB, v.vid, -1);
     }
@@ -1946,6 +1955,7 @@ void mb_host_view_close(int32_t vid) {
   if (!v) return;
   [views removeObjectForKey:@(vid)];
   v.closed = YES;
+  v.grabGen++;
   if (v.kind == 1) {
     if (v.webVideo) {
       [v.webVideo close];

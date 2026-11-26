@@ -374,9 +374,9 @@ export function clipKeepingLinks(text: string, most: number): string {
 }
 
 /// `direct`: whether what `agy -p /usage` leaves out (Gemini's week; an account it refuses for its free tier's location) is
-/// asked of Google's Cloud Code API with the profile's token as the CLI would (the profile's `directQuota`, on unless
-/// false). Off, only the CLI is asked: nothing goes to Google but what `agy` itself sends.
-export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: Lang = stationLang(), command = "agy", direct = true): Promise<ProfileQuota> {
+/// asked of Google's Cloud Code API with the profile's token as the CLI would (the profile's `directQuota`, off unless
+/// true). Off, only the CLI is asked: nothing goes to Google but what `agy` itself sends.
+export async function agyQuota(home: string, sourceEnv: Env, urls: Urls, lang: Lang = stationLang(), command = "agy", direct = false): Promise<ProfileQuota> {
   // Before sign-in (no token file in the profile's, none to take back from the keychain: agents/agy.ts `agyTakeBack`),
   // return signed out immediately without spawning `agy`.
   if (!(await agyTakeBack(home))) {

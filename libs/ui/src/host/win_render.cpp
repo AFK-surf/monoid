@@ -90,8 +90,8 @@ static int flip_chain;
 // capture yet, the glass and the blur's margin round it, not of the target: a composer's strip, not the window; [4] a
 // Gaussian's first half), the glass's own constants, the blurred copy in view
 static ID3D11VertexShader *pvs;
-static ID3D11PixelShader *pps, *edge_ps, *prog_ps, *ad_ps;
-static ID3D11Buffer *pbuf, *gbuf, *ad_cb;
+static ID3D11PixelShader *pps, *edge_ps, *prog_ps, *ad_ps, *veil_ps;
+static ID3D11Buffer *pbuf, *gbuf, *ad_cb, *veil_cb;
 struct level { ID3D11Texture2D *t; ID3D11RenderTargetView *rt; ID3D11ShaderResourceView *srv; int w, h; DXGI_FORMAT fmt; };
 static level lv[5];
 static MBContained post_edge;
@@ -108,6 +108,17 @@ struct MBAdSlot {
   double settle_left;
   uint64_t updated_serial;
   uint64_t seen_serial;
+};
+// A bare word's state over time (src/ui/glass.mbt bare_text_who; fveil): its slot's texel in veil_tex.
+#define MB_VEIL_MAX 32
+#define MB_VEIL_TAU 0.09
+#define MB_VEIL_SETTLE_SEC 0.5
+struct MBVeilSlot {
+  float who;
+  int is_new;
+  uint64_t seen_serial, updated_serial;
+  double settle_left;
+  float cx, cy, hx, hy;
 };
 struct GU { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[8][4]; float misc[4]; float ad_box[MB_ADAPTIVE_MAX][4]; float ad_meta[4]; };
 static GU gu;
@@ -166,6 +177,9 @@ struct RenderWin {
   int ad_cur;
   uint32_t ad_cur_mask;
   MBAdSlot ad_slots[MB_ADAPTIVE_MAX];
+  level veil_tex[2];
+  int veil_cur;
+  MBVeilSlot veil_slots[MB_VEIL_MAX];
   double ad_last_time;
   uint64_t ad_frame_serial;
   int ad_settling;
@@ -255,6 +269,10 @@ static const char *shader_src =
     "// the pieces of the frame's shapes (src/ui/shape.mbt: the instances of kind 12 after every one drawn), 15 fours each\n"
     "Buffer<float4> segs : register(t3);\n"
     "Texture2D ad_tex : register(t5);\n"
+    "// the bare words' state (veil_run_updates), and its pass's own: what it was, and what it is told\n"
+    "Texture2D veil_tex : register(t6);\n"
+    "Texture2D prev_veil : register(t7);\n"
+    "cbuffer VeilU : register(b2) { float4 vbox; float4 vink; float4 vparam; };\n"
     "SamplerState samp : register(s0);\n"
     "struct VIn { float4 rect : INST0; float4 p : INST1; float4 color : INST2; float4 c2 : INST3;\n"
     "  float4 clip : INST4; float4 pd : INST5; float4 rc : INST6; float4 rs : INST7; float4 rot : INST8;\n"
@@ -359,7 +377,8 @@ static const char *shader_src =
     "float mb_wcag_luma(float3 c) {\n"
     "  return 0.2126 * mb_srgb_to_lin(c.r) + 0.7152 * mb_srgb_to_lin(c.g) + 0.0722 * mb_srgb_to_lin(c.b);\n"
     "}\n"
-    "float mb_backdrop_wcag_luma_rect(float2 c, float2 h) {\n"
+    "// (the trimmed mean of what is behind box c ± h, and the least and most of it, each but the one most apart)\n"
+    "float3 mb_backdrop_wcag_range(float2 c, float2 h) {\n"
     "  float sum = 0.0;\n"
     "  float mx1 = -1.0, mx2 = -1.0;\n"
     "  float mn1 = 2.0, mn2 = 2.0;\n"
@@ -373,18 +392,24 @@ static const char *shader_src =
     "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
     "    }\n"
     "  }\n"
-    "  return (sum - mx1 - mx2 - mn1 - mn2) / 11.0;\n"
+    "  return float3((sum - mx1 - mx2 - mn1 - mn2) / 11.0, mn2, mx2);\n"
+    "}\n"
+    "float mb_backdrop_wcag_luma_rect(float2 c, float2 h) {\n"
+    "  return mb_backdrop_wcag_range(c, h).x;\n"
     "}\n"
     "float mb_lin_to_srgb(float y) {\n"
     "  y = clamp(y, 0.0, 1.0);\n"
     "  return y <= 0.0031308 ? (12.92 * y) : (1.055 * pow(max(y, 0.0), 1.0 / 2.4) - 0.055);\n"
     "}\n"
-    "float3 mb_bare_adaptive_ink_at(float3 rgb, float2 ac, float2 h) {\n"
+    "float2 mb_bare_half(float v) {\n"
+    "  float w = floor(v / 4096.0);\n"
+    "  return float2(w, v - w * 4096.0);\n"
+    "}\n"
+    "float3 mb_bare_ink_for(float3 rgb, float Lbg) {\n"
     "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
     "  if (ch > 0.08) return rgb;\n"
     "  float origL = luma(rgb);\n"
     "  float origY = mb_wcag_luma(rgb);\n"
-    "  float Lbg = mb_backdrop_wcag_luma_rect(ac, max(h, float2(1.0, 1.0)));\n"
     "  float target = 4.65;\n"
     "  float out_c;\n"
     "  if (Lbg >= 0.1792) {\n"
@@ -401,6 +426,67 @@ static const char *shader_src =
     "    out_c = mb_lin_to_srgb(max(y_pref, y_min));\n"
     "  }\n"
     "  return float3(out_c, out_c, out_c);\n"
+    "}\n"
+    "// (the ink bare words of ink rgb take over r, what is behind them: (mean, least, most): turned to the other side of\n"
+    "// grey only where that holds 4.5:1 over all of it; over a busy backdrop they keep their own side, their ground\n"
+    "// (bare_veil_at) giving them the contrast, so they are not turned back and forth as it moves under them)\n"
+    "float3 mb_bare_ink_pick(float3 rgb, float3 r) {\n"
+    "  float3 ink = mb_bare_ink_for(rgb, r.x);\n"
+    "  if ((luma(ink) < 0.5) == (luma(rgb) < 0.5)) return ink;\n"
+    "  float yi = mb_wcag_luma(ink);\n"
+    "  float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);\n"
+    "  return cr >= 4.5 ? ink : rgb;\n"
+    "}\n"
+    "float3 mb_bare_adaptive_ink_at(float3 rgb, float2 ac, float2 h) {\n"
+    "  return mb_bare_ink_pick(rgb, mb_backdrop_wcag_range(ac, max(h, float2(1.0, 1.0))));\n"
+    "}\n"
+    "// (the frost across the middle of box ac ± hh behind bare words: their capsule's own colour before it is pulled)\n"
+    "float3 mb_bare_tone(float2 ac, float2 hh) {\n"
+    "  float3 tone = float3(0.0, 0.0, 0.0);\n"
+    "  for (int ix = -2; ix <= 2; ix++) {\n"
+    "    tone += backdrop(float2(ac.x + float(ix) * (hh.x * 0.38), ac.y));\n"
+    "  }\n"
+    "  return tone * 0.2;\n"
+    "}\n"
+    "// (what bare words of ink rgb in box ac ± hh want of their state: how far their capsule shows, the worst of what is\n"
+    "// behind them leaving them short of 4.5:1, from none there to all of it at 2:1; which side of grey they are, 1 dark)\n"
+    "float2 mb_bare_want(float3 rgb, float2 ac, float2 hh) {\n"
+    "  float3 r = mb_backdrop_wcag_range(ac, hh);\n"
+    "  float3 ink = mb_bare_ink_pick(rgb, r);\n"
+    "  float yi = mb_wcag_luma(ink);\n"
+    "  float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);\n"
+    "  return float2(1.0 - smoothstep(2.0, 4.5, cr), luma(ink) < 0.5 ? 1.0 : 0.0);\n"
+    "}\n"
+    "// (the capsule under bare words of ink col, their box ac ± h, as its state st has it (fveil), or worked out now where\n"
+    "// it has none (st.a 0): the blurred backdrop's own colour pulled to the side opposite the words' ink)\n"
+    "float4 mb_bare_veil_at(float4 col, float2 ac, float2 h, float4 st) {\n"
+    "  float2 hh = max(h, float2(1.0, 1.0));\n"
+    "  if (st.a < 0.5) st = float4(mb_bare_want(col.rgb, ac, hh), 0.0, 1.0);\n"
+    "  return float4(lerp(mb_bare_tone(ac, hh), float3(st.g, st.g, st.g), lerp(0.62, 0.72, st.g)), col.a * st.r * lerp(0.72, 0.86, st.g));\n"
+    "}\n"
+    "// (bare words' ink, their box ac ± h: between their ink on the light side of grey and on the dark side as their state\n"
+    "// says (st.g, eased over time: fveil), or picked now where they have none)\n"
+    "float3 mb_bare_ink_held(float3 rgb, float2 ac, float2 h, float4 st) {\n"
+    "  if (st.a < 0.5) return mb_bare_adaptive_ink_at(rgb, ac, h);\n"
+    "  float bg = mb_backdrop_wcag_luma_rect(ac, max(h, float2(1.0, 1.0)));\n"
+    "  return lerp(mb_bare_ink_for(rgb, min(bg, 0.1791)), mb_bare_ink_for(rgb, max(bg, 0.1792)), st.g);\n"
+    "}\n"
+    "// (the state of bare words whose slot the host put in p.z, as -(slot + 1); none: a = 0)\n"
+    "float4 mb_bare_state(float pz) {\n"
+    "  return pz < 0.0 ? veil_tex.Load(int3((int)(-pz + 0.5) - 1, 0, 0)) : float4(0.0, 0.0, 0.0, 0.0);\n"
+    "}\n"
+    "// The state of bare words over time (veil_run_updates): each its slot's texel, how far its capsule shows (r) and\n"
+    "// which side of grey its words are (g: 1 dark), eased towards what is behind them now (mb_bare_want) over vparam.w\n"
+    "// seconds; a slot new takes it at once (a = 1: kept).\n"
+    "float4 fveil(float4 pos : SV_Position) : SV_Target {\n"
+    "  float2 want = mb_bare_want(vink.rgb, vbox.xy, max(vbox.zw, float2(1.0, 1.0)));\n"
+    "  float4 prev = prev_veil.Load(int3((int)(vparam.z + 0.5), 0, 0));\n"
+    "  float k = (vparam.x > 0.5 || prev.a < 0.5) ? 1.0 : (vparam.y <= 0.0 ? 0.0 : 1.0 - exp(-vparam.y / vparam.w));\n"
+    "  float2 now = lerp(prev.rg, want, k);\n"
+    "  // (kept in 8 bits: a step under half of one is lost, so within three of where it goes it is there)\n"
+    "  if (abs(now.x - want.x) < 0.013) now.x = want.x;\n"
+    "  if (abs(now.y - want.y) < 0.013) now.y = want.y;\n"
+    "  return float4(now, 0.0, 1.0);\n"
     "}\n"
     "float3 mb_adaptive_ink_at(float3 rgb, float2 ac, float fallback_r, float4 rect, float2 sample_off, bool is_icon) {\n"
     "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
@@ -506,7 +592,7 @@ static const char *shader_src =
     "  if (vid == 0u || vid == 3u) {\n"
     "    if (kind == 7) {\n"
     "      col.rgb = I.pd.w < 0.0\n"
-    "        ? mb_bare_adaptive_ink_at(col.rgb, I.rect.xy + I.rect.zw * 0.5, float2(max(-I.pd.w, I.rect.z), max(max(-I.pd.w * 0.5, I.rect.w), 1.0)))\n"
+    "        ? mb_bare_ink_held(col.rgb, I.pd.yz, mb_bare_half(-I.pd.w), mb_bare_state(I.p.z))\n"
     "        : mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, I.p.zw, false);\n"
     "    } else if (kind == 10 && I.pd.w != 0.0) {\n"
     "      col.rgb = I.pd.w < 0.0\n"
@@ -516,6 +602,8 @@ static const char *shader_src =
     "      col.rgb = I.pd.w < 0.0\n"
     "        ? mb_bare_adaptive_ink_at(col.rgb, I.rect.xy + I.rect.zw * 0.5 + I.p.zw, float2(max(-I.pd.w * 0.5, 1.0), max(-I.pd.w * 0.5, 1.0)))\n"
     "        : mb_adaptive_ink_at(col.rgb, I.pd.yz, I.pd.w * 0.5, I.rect, I.p.zw, true);\n"
+    "    } else if (kind == 2 && I.pd.w < 0.0) {\n"
+    "      col = mb_bare_veil_at(col, I.pd.yz, mb_bare_half(-I.pd.w), mb_bare_state(I.p.z));\n"
     "    } else if (kind == 0 && I.pd.w < 0.0) {\n"
     "      float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
     "      float2 capCenter, capHalf;\n"
@@ -1669,7 +1757,8 @@ static const char *shader_src =
     "  }\n"
     "  if (kind == 2) {\n"
     "    // as Core Animation's: the shape blurred, sigma its radius (corner.sl mb_shadow)\n"
-    "    float a = mb_shadow(p - c, hs, rad, max(I.prm.w, 0.25));\n"
+    "    // (a bare words' capsule, slot 23 below 0: the box's own edge, its ends as a capsule's are drawn, not blurred)\n"
+    "    float a = I.pd.w < 0.0 ? saturate(0.5 - d * scale) : mb_shadow(p - c, hs, rad, max(I.prm.w, 0.25));\n"
     "    // glass's: only outside its box (c2.y above it)\n"
     "    if (I.c2.x > 0.5) {\n"
     "      float2 q = p - c + float2(0.0, I.c2.y);\n"
@@ -2338,6 +2427,9 @@ void mb_render_forget(int wid) {
     if (rw->ad_tex[i].srv) rw->ad_tex[i].srv->Release();
     if (rw->ad_tex[i].rt) rw->ad_tex[i].rt->Release();
     if (rw->ad_tex[i].t) rw->ad_tex[i].t->Release();
+    if (rw->veil_tex[i].srv) rw->veil_tex[i].srv->Release();
+    if (rw->veil_tex[i].rt) rw->veil_tex[i].rt->Release();
+    if (rw->veil_tex[i].t) rw->veil_tex[i].t->Release();
   }
   if (rtv) rtv->Release();
   if (dtarget) dtarget->SetRoot(NULL);
@@ -2449,11 +2541,16 @@ static void make_pipeline(void) {
   ID3DBlob *ep = compile("fedge", "ps_4_0", edge_src);
   ID3DBlob *gp = compile("fprog", "ps_4_0", prog_src);
   ID3DBlob *ap = compile("fad", "ps_4_0", ad_src);
+  ID3DBlob *vp = compile("fveil", "ps_4_0");
   dev->CreateVertexShader(pv->GetBufferPointer(), pv->GetBufferSize(), NULL, &pvs);
   dev->CreatePixelShader(pp->GetBufferPointer(), pp->GetBufferSize(), NULL, &pps);
   dev->CreatePixelShader(ep->GetBufferPointer(), ep->GetBufferSize(), NULL, &edge_ps);
   dev->CreatePixelShader(gp->GetBufferPointer(), gp->GetBufferSize(), NULL, &prog_ps);
   dev->CreatePixelShader(ap->GetBufferPointer(), ap->GetBufferSize(), NULL, &ad_ps);
+  if (vp) {
+    dev->CreatePixelShader(vp->GetBufferPointer(), vp->GetBufferSize(), NULL, &veil_ps);
+    vp->Release();
+  }
   pv->Release();
   pp->Release();
   ep->Release();
@@ -2468,6 +2565,8 @@ static void make_pipeline(void) {
   dev->CreateBuffer(&gd, NULL, &gbuf);
   D3D11_BUFFER_DESC adbd = {64, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
   dev->CreateBuffer(&adbd, NULL, &ad_cb);
+  D3D11_BUFFER_DESC vlbd = {48, D3D11_USAGE_DEFAULT, D3D11_BIND_CONSTANT_BUFFER, 0, 0, 0};
+  dev->CreateBuffer(&vlbd, NULL, &veil_cb);
 
   D3D11_TEXTURE2D_DESC td = {};
   td.Width = td.Height = (UINT)mb_atlas_size;
@@ -2854,6 +2953,7 @@ static double ad_cur_dt = 0.0;
 static void ad_forget(RenderWin *w) {
   if (!w) return;
   memset(w->ad_slots, 0, sizeof w->ad_slots);
+  memset(w->veil_slots, 0, sizeof w->veil_slots);
   w->ad_last_time = 0.0;
   w->ad_cur_mask = 0;
   w->ad_settling = 0;
@@ -3105,6 +3205,131 @@ static double ad_next_dt(RenderWin *w) {
   return dt;
 }
 
+static int ensure_veil_tex(RenderWin *w) {
+  if (!w || !dev) return 0;
+  if (w->veil_tex[0].t) return 1;
+  for (int i = 0; i < 2; i++) {
+    w->veil_tex[i] = level_tex(DXGI_FORMAT_R8G8B8A8_UNORM, MB_VEIL_MAX, 1);
+    if (!w->veil_tex[i].t) return 0;
+    // (no state till a slot's pass: a = 0)
+    const float none[4] = {0, 0, 0, 0};
+    ctx->ClearRenderTargetView(w->veil_tex[i].rt, none);
+  }
+  w->veil_cur = 0;
+  return 1;
+}
+
+// (each bare word's and capsule's whose (slot 6, above 0) given its slot in its place, -(slot + 1), a slot new taking
+// its state at once in its first pass; one given before marked seen)
+static void veil_assign(RenderWin *w, float *f, int32_t count, uint64_t serial) {
+  if (!w || ad_mode <= 0 || !veil_ps || !veil_cb) return;
+  int any = 0;
+  for (int32_t i = 0; i < count; i++) {
+    float *a = f + (size_t)i * MB_INST;
+    int kind = (int)(a[5] + 0.5f);
+    if ((kind != 2 && kind != 7) || a[23] >= 0.0f || a[6] == 0.0f) continue;
+    if (a[6] < 0.0f) {
+      int sl = (int)(-a[6] + 0.5f) - 1;
+      if (sl >= 0 && sl < MB_VEIL_MAX) w->veil_slots[sl].seen_serial = serial;
+      continue;
+    }
+    any = 1;
+    float who = a[6];
+    int sl = -1;
+    for (int k = 0; k < MB_VEIL_MAX; k++)
+      if (w->veil_slots[k].who == who) { sl = k; break; }
+    if (sl < 0) {
+      uint64_t oldest = UINT64_MAX;
+      for (int k = 0; k < MB_VEIL_MAX; k++) {
+        if (w->veil_slots[k].who == 0.0f) { sl = k; break; }
+        if (w->veil_slots[k].seen_serial != serial && w->veil_slots[k].seen_serial < oldest) {
+          oldest = w->veil_slots[k].seen_serial;
+          sl = k;
+        }
+      }
+      if (sl < 0) continue;
+      memset(&w->veil_slots[sl], 0, sizeof w->veil_slots[sl]);
+      w->veil_slots[sl].who = who;
+      w->veil_slots[sl].is_new = 1;
+    }
+    w->veil_slots[sl].seen_serial = serial;
+    a[6] = -(float)(sl + 1);
+  }
+  if (any) ensure_veil_tex(w);
+}
+
+// The state of the bare words whose capsules come after the glass run [start, end) (till the next glass), seen through
+// its capture (gsrv, as gu places it), eased by dt, each once a frame; their frames asked for while what is behind them
+// moved lately (backdrop_changed) or they are new. 1 where it drew (the main state then set again).
+static int veil_run_updates(RenderWin *w, const float *f, int32_t start, int32_t end, int32_t count,
+                            int backdrop_changed, double dt, uint64_t serial) {
+  if (!w || ad_mode <= 0 || !gsrv || !veil_ps || !veil_cb || !w->veil_tex[0].t) return 0;
+  float tid = f[(size_t)start * MB_INST + 20];
+  int ran = 0;
+  int cur = w->veil_cur, nxt = 1 - cur;
+  for (int32_t i = end; i < count; i++) {
+    const float *b = f + (size_t)i * MB_INST;
+    int bk = (int)(b[5] + 0.5f);
+    if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != tid) break;
+    if (bk != 2 || b[23] >= 0.0f || b[6] >= 0.0f) continue;
+    int sl = (int)(-b[6] + 0.5f) - 1;
+    if (sl < 0 || sl >= MB_VEIL_MAX) continue;
+    MBVeilSlot *v = &w->veil_slots[sl];
+    if (v->updated_serial == serial) continue;
+    if (!ran) {
+      ID3D11ShaderResourceView *none8[8] = {NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+      ctx->PSSetShaderResources(0, 8, none8);
+      ctx->VSSetShaderResources(0, 8, none8);
+      ctx->CopyResource(w->veil_tex[nxt].t, w->veil_tex[cur].t);
+      ctx->OMSetRenderTargets(1, &w->veil_tex[nxt].rt, NULL);
+      D3D11_VIEWPORT vp = {0, 0, (float)MB_VEIL_MAX, 1.0f, 0, 1};
+      ctx->RSSetViewports(1, &vp);
+      ctx->RSSetState(raster_cut);
+      ctx->VSSetShader(pvs, NULL, 0);
+      ctx->PSSetShader(veil_ps, NULL, 0);
+      ctx->IASetInputLayout(NULL);
+      ctx->OMSetBlendState(NULL, NULL, 0xffffffff);
+      ctx->UpdateSubresource(gbuf, 0, NULL, &gu, 0, 0);
+      ID3D11Buffer *cbs[3] = {ubuf, gbuf, veil_cb};
+      ctx->PSSetConstantBuffers(0, 3, cbs);
+      ctx->PSSetShaderResources(2, 1, &gsrv);
+      ctx->PSSetShaderResources(7, 1, &w->veil_tex[cur].srv);
+      ctx->PSSetSamplers(0, 1, &sampler);
+      ran = 1;
+    }
+    float cx, cy, hx, hy;
+    mb_bare_text_boxf(b, &cx, &cy, &hx, &hy);
+    struct { float box[4]; float ink[4]; float param[4]; } u = {
+      {cx, cy, hx, hy}, {b[8], b[9], b[10], 1.0f}, {v->is_new ? 1.0f : 0.0f, (float)dt, (float)sl, (float)MB_VEIL_TAU}};
+    D3D11_RECT sc = {sl, 0, sl + 1, 1};
+    ctx->RSSetScissorRects(1, &sc);
+    ctx->UpdateSubresource(veil_cb, 0, NULL, &u, 0, 0);
+    ctx->Draw(3, 0);
+    if (v->is_new) v->settle_left = 0.0;
+    else if (backdrop_changed) v->settle_left = MB_VEIL_SETTLE_SEC;
+    else v->settle_left = v->settle_left > dt ? v->settle_left - dt : 0.0;
+    v->is_new = 0;
+    v->updated_serial = serial;
+    v->cx = cx; v->cy = cy; v->hx = hx; v->hy = hy;
+  }
+  if (ran) {
+    ID3D11ShaderResourceView *none8[8] = {NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+    ctx->PSSetShaderResources(0, 8, none8);
+    w->veil_cur = nxt;
+  }
+  return ran;
+}
+
+extern "C" void mb_host_render_dirty(double x, double y, double w, double h);
+// (the dirty rect of a bare word's capsule easing: its box and its capsule's reach past it, glass.mbt bare_veil_pad)
+static void veil_settle_dirty(RenderWin *w) {
+  for (int k = 0; k < MB_VEIL_MAX; k++) {
+    MBVeilSlot *v = &w->veil_slots[k];
+    if (v->who != 0.0f && v->settle_left > 0.0)
+      mb_host_render_dirty(v->cx - v->hx - 16.0, v->cy - v->hy - 10.0, v->hx * 2.0 + 32.0, v->hy * 2.0 + 20.0);
+  }
+}
+
 static void ad_finalize_frame(RenderWin *w, int whole_frame, uint64_t serial) {
   if (!w) return;
   int settling = 0;
@@ -3117,6 +3342,15 @@ static void ad_finalize_frame(RenderWin *w, int whole_frame, uint64_t serial) {
       continue;
     }
     if (s->settle_left > 0.0) settling = 1;
+  }
+  for (int k = 0; k < MB_VEIL_MAX; k++) {
+    MBVeilSlot *v = &w->veil_slots[k];
+    if (v->who == 0.0f) continue;
+    if (whole_frame && v->seen_serial != serial) {
+      memset(v, 0, sizeof *v);
+      continue;
+    }
+    if (v->settle_left > 0.0) settling = 1;
   }
   w->ad_settling = settling;
 }
@@ -3182,6 +3416,7 @@ static void glass_free(void) {
   }
   for (int k = 0; k < MB_WINS; k++) {
     for (int i = 0; i < 2; i++) level_release(&render_wins[k].ad_tex[i]);
+    for (int i = 0; i < 2; i++) level_release(&render_wins[k].veil_tex[i]);
     ad_forget(&render_wins[k]);
   }
   lv_w = lv_h = 0;
@@ -3459,11 +3694,10 @@ static int grab_of_with_donors(Grab *m, const float *f, int32_t start, int32_t e
       continue;
     }
     if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != a[20]) break;
-    if ((bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f && (!donor_of || donor_of[i] >= 0)) {
+    if ((bk == 2 || bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f && (!donor_of || donor_of[i] >= 0)) {
       float cx, cy, hx, hy;
-      if (bk == 7) {
-        cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
-        hx = fmaxf(-b[23], b[2]); hy = fmaxf(fmaxf(-b[23] * 0.5f, b[3]), 1.0f);
+      if (bk == 2 || bk == 7) {
+        mb_bare_text_boxf(b, &cx, &cy, &hx, &hy);
       } else if (bk == 10) {
         cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
         hx = hy = fmaxf(-b[23] * 0.5f, 1.0f);
@@ -3619,7 +3853,7 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
       float tid = bi[20];
       int k = (int)(bi[5] + 0.5f);
       int is_glass = tid < 0.0f;
-      int is_ad = k == 7 || ((k == 10 || k == 11) && bi[23] != 0.0f);
+      int is_ad = k == 7 || ((k == 2 || k == 10 || k == 11) && bi[23] != 0.0f);
       if (!is_glass && !is_ad) continue;
       int32_t run = i;
       if (is_glass) {
@@ -3680,9 +3914,9 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
         float ex0, ey0, ex1, ey1;
         if (bi[23] < 0.0f) {
           float cx, cy, hx, hy;
-          if (k == 7) {
-            cx = bi[0] + bi[2] * 0.5f; cy = bi[1] + bi[3] * 0.5f;
-            hx = fmaxf(-bi[23], bi[2]) + 4.0f; hy = fmaxf(fmaxf(-bi[23] * 0.5f, bi[3]), 1.0f) + 4.0f;
+          if (k == 2 || k == 7) {
+            mb_bare_text_boxf(bi, &cx, &cy, &hx, &hy);
+            hx += 4.0f; hy += 4.0f;
           } else if (k == 10) {
             cx = bi[0] + bi[2] * 0.5f; cy = bi[1] + bi[3] * 0.5f;
             hx = hy = fmaxf(-bi[23] * 0.5f, 1.0f) + 4.0f;
@@ -3902,15 +4136,14 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
       } else if (kind == 6 && g_margin > cur_glass_margin) {
         cur_glass_margin = g_margin;
       }
-    } else if ((kind == 7 || kind == 10 || kind == 11) && p[23] < 0.0f && p[32] == 0.0f &&
+    } else if ((kind == 2 || kind == 7 || kind == 10 || kind == 11) && p[23] < 0.0f && p[32] == 0.0f &&
                cur_glass_kind == 6 && n_elig > 0) {
       float dr[4] = {fmaxf(p[0], 0.0f), fmaxf(p[1], 0.0f),
                      fminf(p[0] + p[2], vp_w), fminf(p[1] + p[3], vp_h)};
       if (dr[2] > dr[0] && dr[3] > dr[1]) {
         float cx, cy, hx, hy;
-        if (kind == 7) {
-          cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
-          hx = fmaxf(-p[23], p[2]); hy = fmaxf(fmaxf(-p[23] * 0.5f, p[3]), 1.0f);
+        if (kind == 2 || kind == 7) {
+          mb_bare_text_boxf(p, &cx, &cy, &hx, &hy);
         } else if (kind == 10) {
           cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
           hx = hy = fmaxf(-p[23] * 0.5f, 1.0f);
@@ -4226,6 +4459,7 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
     *switched = 1;
     ad_run_updates(rw, ad_pend, ad_n_upd, ad_cur_dt);
   }
+  if (veil_run_updates(rw, f, start, end, count, reblurred, ad_cur_dt, rw ? rw->ad_frame_serial : 0)) *switched = 1;
   ad_fill_gu(rw);
   return 1;
 }
@@ -4310,6 +4544,8 @@ static void main_state(ID3D11RenderTargetView *target, int pw, int ph) {
   ctx->PSSetSamplers(0, 1, &sampler);
   ctx->VSSetShaderResources(2, 1, gsrv ? &gsrv : &atlas_srv);
   ctx->VSSetShaderResources(5, 1, &ad_srv);
+  ID3D11ShaderResourceView *veil_srv = (rw && rw->veil_tex[rw->veil_cur].srv) ? rw->veil_tex[rw->veil_cur].srv : atlas_srv;
+  ctx->VSSetShaderResources(6, 1, &veil_srv);
   ctx->VSSetSamplers(0, 1, &sampler);
   ctx->OMSetBlendState(blend, NULL, 0xffffffff);
 }
@@ -4933,6 +5169,7 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
   } else {
     mb_groups_floats(last_inst, inst, count);
   }
+  veil_assign(rw, last_inst, count, rw->ad_frame_serial);
   if (n > 0) memcpy(f, last_inst, n * sizeof(float));
   float *gr = f + n;
   memset(gr, 0, MB_INST * sizeof(float));
@@ -5153,6 +5390,7 @@ int mb_render_present_opts(const double *inst, int32_t count, double r, double g
                              rw->ad_slots[i].cy - rw->ad_slots[i].hy - 4.0,
                              rw->ad_slots[i].hx * 2.0 + 8.0, rw->ad_slots[i].hy * 2.0 + 8.0);
     }
+    veil_settle_dirty(rw);
   }
   int drawn = submit(inst, count, r, g, b, &n, parts, adaptive_damage, preconverted);
   if (drawn) {
@@ -5246,6 +5484,7 @@ int mb_render_adaptive_step(int wid) {
                            rw->ad_slots[i].cy - rw->ad_slots[i].hy - 4.0,
                            rw->ad_slots[i].hx * 2.0 + 8.0, rw->ad_slots[i].hy * 2.0 + 8.0);
   }
+  veil_settle_dirty(rw);
   compute_donor_plan(last_inst, last_count, (float)(vw > 0 ? vw : (double)fb_w / (vscale > 0.0 ? vscale : 1.0)),
                      (float)(vh > 0 ? vh : (double)fb_h / (vscale > 0.0 ? vscale : 1.0)), (float)vscale);
   donor_plan_ready = 1;
@@ -5255,6 +5494,8 @@ int mb_render_adaptive_step(int wid) {
   ad_mode = 1;
   ad_cur_dt = ad_next_dt(rw);
   rw->ad_frame_serial++;
+  // (its slots seen in this frame too, as last_inst holds them: none let go)
+  veil_assign(rw, last_inst, last_count, rw->ad_frame_serial);
   ensure_canvas(fb_w, fb_h);
   ID3D11RenderTargetView *target = canvas_rtv ? canvas_rtv : rtv;
   D3D11_RECT parts[MB_PARTS];

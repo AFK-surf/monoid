@@ -48,6 +48,10 @@ fn instances_sorted(t : @ui.Tester) -> Array[String] {
         if x >= 16384.0 { "colour" } else { "mono" }
       } else if a[5] == 1.0 && j == 13 {
         "-"
+      } else if j == 6 && (a[5] == 7.0 || a[5] == 2.0) && a.length() > 23 && a[23] < 0.0 {
+        // (bare adaptive words' and their capsule's whose, their node's index: who they are, not what is drawn, a page
+        // made again giving its nodes new ones, ui's bare_text_who)
+        "who"
       } else {
         ((x * 100.0).round() / 100.0).to_string()
       }

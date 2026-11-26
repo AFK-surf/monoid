@@ -471,8 +471,8 @@ fn TipFade::shown(self : TipFade, t : @view.View) -> Double {
 /// then the keys of action `shortcut` where there are any as it is shown, each a cap of its own at its end (key_caps,
 /// tip_cap_node): its look and its words set as the window's theme says, as that changes; in and out as `fade` says.
 /// With keys it stands `tip_key_in` over, under and after them, as tall as one without (its words' line, tip_cap_over
-/// over and under it), its last cap concentric with its corners at its end (tip_cap_round), its words as far from its
-/// start as a tip of words alone has them.
+/// over and under it), as a single-line capsule (`tip_r`) with each cap `side / 2` round and concentric at `tip_key_in`
+/// inset, its words as far from its start as a tip of words alone has them.
 #callsite(autofill(loc))
 fn tip_look_node(
   t : @view.View,
@@ -488,8 +488,9 @@ fn tip_look_node(
   loc~ : SourceLoc,
 ) -> Unit {
   let theme = fn() { @ui.tree_theme() }
-  let px = @ui.Space::px(S2_5)
-  let py = @ui.Space::px(S1_25)
+  let px = @ui.Space::px(S3)
+  let py = tip_py
+  let tip_r = fn() { (node_sp(t, theme().text_size(Meta).1) + 2.0 * py) / 2.0 }
   // (whether it says keys, as it is shown: a keyboard come or gone while it shows, so the next time it is)
   let keys = @signals.untracked(fn() { key_caps(shortcut_keys(shortcut)) })
   t
@@ -511,13 +512,13 @@ fn tip_look_node(
   |> ignore
   @glass.liquid_tooltip_surface_decorate(
     t,
-    radius=tip_round,
     active=fn() { @headless.tip_owns(owner) },
     solid=panel_ground,
     shadow=glass_overlay_shadow,
     solid_edge=@glass.liquid_overlay_solid_edge,
     panel=true,
   )
+  .radius(By(tip_r))
   // (its ground in first, its words after, as kit's tip_in and pop_out have them (ground_first): the ground the first
   // half of the way in, the words the second; going, the other way round)
   .alpha(By(fn() {
@@ -541,7 +542,7 @@ fn tip_look_node(
       style_node(w, fn() { tip_key_line })
       w.box(fn(l) {
         l
-        .padding(Is((0.0, tip_cap_over, 0.0, tip_cap_over)))
+        .margin(Is((0.0, tip_cap_over, 0.0, tip_cap_over)))
         .shrink(Is(1.0))
         .words(By(fn() { label() }))
         .words_look(By(fn() { words_look(true) }))
@@ -582,8 +583,9 @@ fn tip_look_node(
 ///|
 /// A key's cap in a tip's row of them (`parent`): `cap` (⌘, ⇧, K, Ctrl, Esc) in the tip's words' ink at the caption's
 /// size, 500, in the middle of a box as high as the tip's words' line and tip_cap_over over and under it, as wide at
-/// least, tip_cap_round round, its ground and line the tip's words mixed into its ground (opaque: no line seen through a
-/// ground under it), as the theme says as that changes.
+/// least, `side / 2` round (a circle/capsule concentric with the outer tip at `tip_key_in` inset), its ground and line
+/// the tip's words mixed into its ground (opaque: no line seen through a ground under it), as the theme says as that
+/// changes.
 #callsite(autofill(loc))
 fn tip_cap_node(parent : @view.View, cap : String, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(k) {
@@ -592,7 +594,7 @@ fn tip_cap_node(parent : @view.View, cap : String, loc~ : SourceLoc) -> Unit {
     k
     .height(By(fn() { Some(side()) }))
     .min_width(By(fn() { Some(side()) }))
-    .radius(Is(tip_cap_round))
+    .radius(By(fn() { side() / 2.0 }))
     .ground(By(fn() { mix(library_theme().p.text, tip_cap_ground, panel_ground()) }))
     |> ignore
     k.box(fn(w) {
@@ -698,19 +700,15 @@ let tip_edge_seen : Double = 0.09
 
 ///|
 /// A tip's caps: how far over and under its words' line they reach (so the tip, tip_key_in round them, is as tall as one
-/// of words alone, 5 round them), how round the tip is (the library's small corner), how far in from them the tip
-/// stands over, under and after them (concentric: tip_round less it), and how much of the tip's words their ground and
-/// words are (opaque, no line round them).
+/// of words alone, `tip_py` round them); each single-line tip is a full capsule (`(meta_line + 2 * tip_py) / 2`), and
+/// each cap stands `tip_key_in` in as a concentric full circle/capsule (`side / 2`).
+let tip_py : Double = @ui.Space::px(S1_25)
+
+///|
 let tip_cap_over : Double = 1.0
 
 ///|
-let tip_round : Double = small_corner
-
-///|
 let tip_key_in : Double = 4.0
-
-///|
-let tip_cap_round : Double = @ui.concentric(tip_round, tip_key_in)
 
 ///|
 let tip_cap_ground : Double = 0.12
@@ -724,7 +722,7 @@ let tip_caps_node : @ui.Style = @ui.css("row gap=S0_5 align=AStart")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tip_cap_node_look : @ui.Style = @ui.css("row px=S1_25 align=ACenter justify=JCenter")
+let tip_cap_node_look : @ui.Style = @ui.css("row px=S1_5 align=ACenter justify=JCenter")
 
 ///|
 /// How far a tip is from its control (kit's tooltip `offset`), and how wide it may grow (tip_max).

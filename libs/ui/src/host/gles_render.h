@@ -38,6 +38,76 @@
 #define MB_ATLAS_COLOR 1024
 #define MB_ATLAS_COLOR_U 16384
 
+// What the vertex shader and the bare words' state pass (VEIL_FS) both work out of what is behind bare words: needs
+// vs_backdrop and vs_luma defined before it.
+#define MB_BARE_INK_GLSL \
+    "float vs_srgb_to_lin(float c) {\n" \
+    "  return c <= 0.04045 ? (c / 12.92) : pow(max((c + 0.055) / 1.055, 0.0), 2.4);\n" \
+    "}\n" \
+    "float vs_wcag_luma(vec3 c) {\n" \
+    "  return 0.2126 * vs_srgb_to_lin(c.r) + 0.7152 * vs_srgb_to_lin(c.g) + 0.0722 * vs_srgb_to_lin(c.b);\n" \
+    "}\n" \
+    "// (the trimmed mean of what is behind box c ± h, and the least and most of it, each but the one most apart)\n" \
+    "vec3 vs_backdrop_wcag_range(vec2 c, vec2 h) {\n" \
+    "  float sum = 0.0;\n" \
+    "  float mx1 = -1.0, mx2 = -1.0;\n" \
+    "  float mn1 = 2.0, mn2 = 2.0;\n" \
+    "  for (int iy = -1; iy <= 1; iy++) {\n" \
+    "    float py = c.y + float(iy) * (h.y * 0.60);\n" \
+    "    for (int ix = -2; ix <= 2; ix++) {\n" \
+    "      float px = c.x + float(ix) * (h.x * 0.38);\n" \
+    "      float y = vs_wcag_luma(vs_backdrop(vec2(px, py)));\n" \
+    "      sum += y;\n" \
+    "      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n" \
+    "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n" \
+    "    }\n" \
+    "  }\n" \
+    "  return vec3((sum - mx1 - mx2 - mn1 - mn2) / 11.0, mn2, mx2);\n" \
+    "}\n" \
+    "float vs_backdrop_wcag_luma_rect(vec2 c, vec2 h) {\n" \
+    "  return vs_backdrop_wcag_range(c, h).x;\n" \
+    "}\n" \
+    "float vs_lin_to_srgb(float y) {\n" \
+    "  y = clamp(y, 0.0, 1.0);\n" \
+    "  return y <= 0.0031308 ? (12.92 * y) : (1.055 * pow(max(y, 0.0), 1.0 / 2.4) - 0.055);\n" \
+    "}\n" \
+    "vec2 vs_bare_half(float v) {\n" \
+    "  float w = floor(v / 4096.0);\n" \
+    "  return vec2(w, v - w * 4096.0);\n" \
+    "}\n" \
+    "vec3 vs_bare_ink_for(vec3 rgb, float Lbg) {\n" \
+    "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n" \
+    "  if (ch > 0.08) return rgb;\n" \
+    "  float origL = vs_luma(rgb);\n" \
+    "  float origY = vs_wcag_luma(rgb);\n" \
+    "  float target = 4.65;\n" \
+    "  float out_c;\n" \
+    "  if (Lbg >= 0.1792) {\n" \
+    "    float pref = origL < 0.5 ? origL : clamp(1.0 - origL, 0.02, 0.45);\n" \
+    "    float y_pref = origL < 0.5 ? origY : vs_srgb_to_lin(pref);\n" \
+    "    float y_max = max(0.0, (Lbg + 0.05) / target - 0.05);\n" \
+    "    if (origL < 0.5 && origY <= y_max) return rgb;\n" \
+    "    out_c = vs_lin_to_srgb(min(y_pref, y_max));\n" \
+    "  } else {\n" \
+    "    float pref = origL >= 0.5 ? origL : clamp(1.06 - origL, 0.55, 0.98);\n" \
+    "    float y_pref = origL >= 0.5 ? origY : vs_srgb_to_lin(pref);\n" \
+    "    float y_min = min(1.0, target * (Lbg + 0.05) - 0.05);\n" \
+    "    if (origL >= 0.5 && origY >= y_min) return rgb;\n" \
+    "    out_c = vs_lin_to_srgb(max(y_pref, y_min));\n" \
+    "  }\n" \
+    "  return vec3(out_c);\n" \
+    "}\n" \
+    "// (the ink bare words of ink rgb take over r, what is behind them: (mean, least, most): turned to the other side of\n" \
+    "// grey only where that holds 4.5:1 over all of it; over a busy backdrop they keep their own side, their ground\n" \
+    "// (bare_veil_at) giving them the contrast, so they are not turned back and forth as it moves under them)\n" \
+    "vec3 vs_bare_ink_pick(vec3 rgb, vec3 r) {\n" \
+    "  vec3 ink = vs_bare_ink_for(rgb, r.x);\n" \
+    "  if ((vs_luma(ink) < 0.5) == (vs_luma(rgb) < 0.5)) return ink;\n" \
+    "  float yi = vs_wcag_luma(ink);\n" \
+    "  float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);\n" \
+    "  return cr >= 4.5 ? ink : rgb;\n" \
+    "}\n"
+
 static const char *VS =
     "#version 300 es\n"
     "layout(location=0) in vec4 a_rect;\n"
@@ -66,6 +136,7 @@ static const char *VS =
     "uniform vec4 u_ad_box[16];\n"
     "uniform int u_ad_n;\n"
     "uniform int u_ad_cur;\n"
+    "uniform highp sampler2D u_veil;\n"
     "vec3 vs_backdrop(vec2 p) {\n"
     "  return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0).rgb;\n"
     "}\n"
@@ -147,54 +218,43 @@ static const char *VS =
     "  float bgL = vs_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));\n"
     "  return vec3(1.0 - smoothstep(0.12, 0.21, bgL), bgL, 0.0);\n"
     "}\n"
-    "float vs_srgb_to_lin(float c) {\n"
-    "  return c <= 0.04045 ? (c / 12.92) : pow(max((c + 0.055) / 1.055, 0.0), 2.4);\n"
-    "}\n"
-    "float vs_wcag_luma(vec3 c) {\n"
-    "  return 0.2126 * vs_srgb_to_lin(c.r) + 0.7152 * vs_srgb_to_lin(c.g) + 0.0722 * vs_srgb_to_lin(c.b);\n"
-    "}\n"
-    "float vs_backdrop_wcag_luma_rect(vec2 c, vec2 h) {\n"
-    "  float sum = 0.0;\n"
-    "  float mx1 = -1.0, mx2 = -1.0;\n"
-    "  float mn1 = 2.0, mn2 = 2.0;\n"
-    "  for (int iy = -1; iy <= 1; iy++) {\n"
-    "    float py = c.y + float(iy) * (h.y * 0.60);\n"
-    "    for (int ix = -2; ix <= 2; ix++) {\n"
-    "      float px = c.x + float(ix) * (h.x * 0.38);\n"
-    "      float y = vs_wcag_luma(vs_backdrop(vec2(px, py)));\n"
-    "      sum += y;\n"
-    "      if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }\n"
-    "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
-    "    }\n"
-    "  }\n"
-    "  return (sum - mx1 - mx2 - mn1 - mn2) / 11.0;\n"
-    "}\n"
-    "float vs_lin_to_srgb(float y) {\n"
-    "  y = clamp(y, 0.0, 1.0);\n"
-    "  return y <= 0.0031308 ? (12.92 * y) : (1.055 * pow(max(y, 0.0), 1.0 / 2.4) - 0.055);\n"
-    "}\n"
+    MB_BARE_INK_GLSL
     "vec3 vs_bare_adaptive_ink_at(vec3 rgb, vec2 ac, vec2 h) {\n"
-    "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
-    "  if (ch > 0.08) return rgb;\n"
-    "  float origL = vs_luma(rgb);\n"
-    "  float origY = vs_wcag_luma(rgb);\n"
-    "  float Lbg = vs_backdrop_wcag_luma_rect(ac, max(h, vec2(1.0)));\n"
-    "  float target = 4.65;\n"
-    "  float out_c;\n"
-    "  if (Lbg >= 0.1792) {\n"
-    "    float pref = origL < 0.5 ? origL : clamp(1.0 - origL, 0.02, 0.45);\n"
-    "    float y_pref = origL < 0.5 ? origY : vs_srgb_to_lin(pref);\n"
-    "    float y_max = max(0.0, (Lbg + 0.05) / target - 0.05);\n"
-    "    if (origL < 0.5 && origY <= y_max) return rgb;\n"
-    "    out_c = vs_lin_to_srgb(min(y_pref, y_max));\n"
-    "  } else {\n"
-    "    float pref = origL >= 0.5 ? origL : clamp(1.06 - origL, 0.55, 0.98);\n"
-    "    float y_pref = origL >= 0.5 ? origY : vs_srgb_to_lin(pref);\n"
-    "    float y_min = min(1.0, target * (Lbg + 0.05) - 0.05);\n"
-    "    if (origL >= 0.5 && origY >= y_min) return rgb;\n"
-    "    out_c = vs_lin_to_srgb(max(y_pref, y_min));\n"
+    "  return vs_bare_ink_pick(rgb, vs_backdrop_wcag_range(ac, max(h, vec2(1.0))));\n"
+    "}\n"
+    "// (the frost across the middle of box ac ± hh behind bare words: their capsule's own colour before it is pulled)\n"
+    "vec3 vs_bare_tone(vec2 ac, vec2 hh) {\n"
+    "  vec3 tone = vec3(0.0, 0.0, 0.0);\n"
+    "  for (int ix = -2; ix <= 2; ix++) {\n"
+    "    tone += vs_backdrop(vec2(ac.x + float(ix) * (hh.x * 0.38), ac.y));\n"
     "  }\n"
-    "  return vec3(out_c);\n"
+    "  return tone * 0.2;\n"
+    "}\n"
+    "// (the capsule under bare words of ink col, their box ac ± h, as its state st has it (VEIL_FS: how far it shows, r;\n"
+    "// which side of grey the words are, g: 1 dark), or worked out now where it has none: the blurred backdrop's own\n"
+    "// colour pulled to the side opposite the words' ink, as opaque as the worst of what is behind them leaves them\n"
+    "// short of 4.5:1, from none there to all of it at 2:1)\n"
+    "vec4 vs_bare_veil_at(vec4 col, vec2 ac, vec2 h, vec4 st) {\n"
+    "  vec2 hh = max(h, vec2(1.0));\n"
+    "  if (st.a < 0.5) {\n"
+    "    vec3 r = vs_backdrop_wcag_range(ac, hh);\n"
+    "    vec3 ink = vs_bare_ink_pick(col.rgb, r);\n"
+    "    float yi = vs_wcag_luma(ink);\n"
+    "    float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);\n"
+    "    st = vec4(1.0 - smoothstep(2.0, 4.5, cr), vs_luma(ink) < 0.5 ? 1.0 : 0.0, 0.0, 1.0);\n"
+    "  }\n"
+    "  return vec4(mix(vs_bare_tone(ac, hh), vec3(st.g), mix(0.62, 0.72, st.g)), col.a * st.r * mix(0.72, 0.86, st.g));\n"
+    "}\n"
+    "// (bare words' ink, their box ac ± h: between their ink on the light side of grey and on the dark side as their state\n"
+    "// says (st.g, eased over time: VEIL_FS), or picked now where they have none)\n"
+    "vec3 vs_bare_ink_held(vec3 rgb, vec2 ac, vec2 h, vec4 st) {\n"
+    "  if (st.a < 0.5) return vs_bare_adaptive_ink_at(rgb, ac, h);\n"
+    "  float bg = vs_backdrop_wcag_luma_rect(ac, max(h, vec2(1.0)));\n"
+    "  return mix(vs_bare_ink_for(rgb, min(bg, 0.1791)), vs_bare_ink_for(rgb, max(bg, 0.1792)), st.g);\n"
+    "}\n"
+    "// (the state of bare words whose slot the host put in p.z, as -(slot + 1); none: a = 0)\n"
+    "vec4 vs_bare_state(float pz) {\n"
+    "  return pz < 0.0 ? texelFetch(u_veil, ivec2(int(-pz + 0.5) - 1, 0), 0) : vec4(0.0);\n"
     "}\n"
     "vec3 vs_adaptive_ink_at(vec3 rgb, vec2 ac, float fallback_r, vec4 rect, vec2 sample_off, bool is_icon) {\n"
     "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
@@ -308,12 +368,14 @@ static const char *VS =
     "  if (vid == 2 || vid == 5) {\n"
     "    if (kind == 7) {\n"
     "      v_color.rgb = a_pad.w < 0.0\n"
-    "        ? vs_bare_adaptive_ink_at(a_color.rgb, a_rect.xy + a_rect.zw * 0.5, vec2(max(-a_pad.w, a_rect.z), max(max(-a_pad.w * 0.5, a_rect.w), 1.0)))\n"
+    "        ? vs_bare_ink_held(a_color.rgb, a_pad.yz, vs_bare_half(-a_pad.w), vs_bare_state(a_p.z))\n"
     "        : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, a_p.zw, false);\n"
     "    } else if ((kind == 10 || kind == 11) && a_pad.w != 0.0) {\n"
     "      v_color.rgb = a_pad.w < 0.0\n"
     "        ? vs_bare_adaptive_ink_at(a_color.rgb, kind == 10 ? (a_rect.xy + a_rect.zw * 0.5) : (a_rect.xy + a_rect.zw * 0.5 + a_p.zw), vec2(max(-a_pad.w * 0.5, 1.0)))\n"
     "        : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, kind == 10 ? vec2(0.0) : a_p.zw, true);\n"
+    "    } else if (kind == 2 && a_pad.w < 0.0) {\n"
+    "      v_color = vs_bare_veil_at(a_color, a_pad.yz, vs_bare_half(-a_pad.w), vs_bare_state(a_p.z));\n"
     "    } else if (kind == 0 && a_pad.w < 0.0) {\n"
     "      float ch = max(max(a_color.r, a_color.g), a_color.b) - min(min(a_color.r, a_color.g), a_color.b);\n"
     "      vec2 capCenter, capHalf;\n"
@@ -1522,7 +1584,8 @@ static const char *FS =
     "#if MB_HAS(2)\n"
     "  if (kind == 2) {\n"
     "    // as Core Animation's: the shape blurred, sigma its radius (corner.sl mb_shadow)\n"
-    "    float a = mb_shadow(p - c, hs, rad, max(v_p.w, 0.25));\n"
+    "    // (a bare words' capsule, slot 23 below 0: the box's own edge, its ends as a capsule's are drawn, not blurred)\n"
+    "    float a = v_pad.w < 0.0 ? clamp(0.5 - d * u_scale, 0.0, 1.0) : mb_shadow(p - c, hs, rad, max(v_p.w, 0.25));\n"
     "    // glass's: only outside its box (c2.y above it)\n"
     "    if (v_c2.x > 0.5) {\n"
     "      vec2 q = p - c + vec2(0.0, v_c2.y);\n"
@@ -1910,7 +1973,45 @@ static const char *AD_FS =
     "  o = vec4(mb_pack16(nextT), latch, clamp(bgL, 0.0, 1.0));\n"
     "}\n";
 
-static GLuint vao, vbo, atlas, catlas, post, ad_prog;
+// The state of bare words over time (gl_veil_*): each its slot's texel, how far its capsule shows (r) and which side
+// of grey its words are (g: 1 dark), eased towards what is behind them now (the same as the vertex shader works out
+// where they have no state: vs_bare_veil_at) over u_param.w seconds; a slot new takes it at once (a = 1: kept).
+static const char *VEIL_FS =
+    "#version 300 es\n"
+    "precision highp float;\n"
+    "precision highp int;\n"
+    "uniform highp sampler2D u_bd;\n"
+    "uniform highp sampler2D u_prev;\n"
+    "uniform vec4 u_map;\n"
+    "uniform vec4 u_uvc;\n"
+    "uniform vec4 u_box;\n"
+    "uniform vec4 u_ink;\n"
+    "uniform vec4 u_param;\n"
+    "out vec4 o;\n"
+    "vec3 vs_backdrop(vec2 p) {\n"
+    "  return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0).rgb;\n"
+    "}\n"
+    "float vs_luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n"
+    MB_BARE_INK_GLSL
+    "void main() {\n"
+    "  vec3 r = vs_backdrop_wcag_range(u_box.xy, max(u_box.zw, vec2(1.0)));\n"
+    "  vec3 ink = vs_bare_ink_pick(u_ink.rgb, r);\n"
+    "  float yi = vs_wcag_luma(ink);\n"
+    "  float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);\n"
+    "  vec2 want = vec2(1.0 - smoothstep(2.0, 4.5, cr), vs_luma(ink) < 0.5 ? 1.0 : 0.0);\n"
+    "  vec4 prev = texelFetch(u_prev, ivec2(int(u_param.z + 0.5), 0), 0);\n"
+    "  float k = (u_param.x > 0.5 || prev.a < 0.5) ? 1.0 : (u_param.y <= 0.0 ? 0.0 : 1.0 - exp(-u_param.y / u_param.w));\n"
+    "  vec2 now = mix(prev.rg, want, k);\n"
+    "  // (kept in 8 bits: a step under half of one is lost, so within three of where it goes it is there)\n"
+    "  if (abs(now.x - want.x) < 0.013) now.x = want.x;\n"
+    "  if (abs(now.y - want.y) < 0.013) now.y = want.y;\n"
+    "  o = vec4(now, 0.0, 1.0);\n"
+    "}\n";
+
+static GLuint vao, vbo, atlas, catlas, post, ad_prog, veil_prog;
+// (the bare words' state, ping-pong: veil_cur the one now)
+static GLuint veil_tex[2], veil_fb[2];
+static int veil_cur;
 static GLuint vs_main, vs_main_ad, vs_post;
 // a ground's flat middle (bands.h mb_pieces), and where its window's size goes
 static GLuint prog_flat;
@@ -1940,7 +2041,7 @@ static int prog_group_of(int kind, float pad_w) {
   if (kind == 6) return pad_w > 0.0f ? MB_PROG_LIQUID_MERGED : MB_PROG_LIQUID_SINGLE;
   if (kind == 13) return MB_PROG_LIQUID_SINGLE;
   if (kind == 8) return MB_PROG_LENS;
-  if (kind == 7 || (kind == 10 && pad_w != 0.0f) || (kind == 0 && pad_w < 0.0f)) return MB_PROG_UI_AD;
+  if (kind == 7 || (kind == 10 && pad_w != 0.0f) || ((kind == 0 || kind == 2) && pad_w < 0.0f)) return MB_PROG_UI_AD;
   return MB_PROG_UI;
 }
 
@@ -2207,7 +2308,8 @@ static GLuint compile2(GLenum type, const char *head, const char *body, const ch
 #define MB_SLOT_FLAT MB_PROGS
 #define MB_SLOT_POST (MB_PROGS + 1)
 #define MB_SLOT_ADAPTIVE (MB_PROGS + 2)
-#define MB_SLOTS (MB_PROGS + 3)
+#define MB_SLOT_VEIL (MB_PROGS + 3)
+#define MB_SLOTS (MB_PROGS + 4)
 
 // What the program of a slot is made of: its vertex shader (vs: 0 vs_main, 1 vs_main_ad, 2 vs_post, the one shared by
 // the programs that have the same) and its fragment shader, each a head (NULL: none, the body's own #version) and body.
@@ -2231,6 +2333,10 @@ static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
     }
     case MB_SLOT_ADAPTIVE: {
       prog_src f = {"adaptive", NULL, PVS, NULL, AD_FS, 2};
+      return f;
+    }
+    case MB_SLOT_VEIL: {
+      prog_src f = {"veil", NULL, PVS, NULL, VEIL_FS, 2};
       return f;
     }
     case MB_PROG_FROSTED:
@@ -2322,7 +2428,7 @@ static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
       snprintf(fs_head, fs_head_n,
                "#version 300 es\n"
                "#define ONE_KIND -2\n"
-               "#define MB_HAS(K) ((K) == 0 || (K) == 7 || (K) == 10)\n"
+               "#define MB_HAS(K) ((K) == 0 || (K) == 2 || (K) == 7 || (K) == 10)\n"
                "#define MB_HAS_LIQUID 0\n"
                "#define MB_HAS_ADAPTIVE 0\n"
                "#define MB_HAS_BACKDROP 0\n"
@@ -2479,6 +2585,7 @@ static kprog make_prog_impl(int group, int cache_only) {
   if ((loc = glGetUniformLocation(k.p, "u_segs")) >= 0) glUniform1i(loc, 3);
   if ((loc = glGetUniformLocation(k.p, "u_catlas")) >= 0) glUniform1i(loc, 4);
   if ((loc = glGetUniformLocation(k.p, "u_ad")) >= 0) glUniform1i(loc, 5);
+  if ((loc = glGetUniformLocation(k.p, "u_veil")) >= 0) glUniform1i(loc, 6);
   return k;
 }
 
@@ -2525,6 +2632,23 @@ static void ensure_ad_prog_impl(int cache_only) {
 
 static void ensure_ad_prog(void) { ensure_ad_prog_impl(0); }
 
+static GLint vlu_bd, vlu_prev, vlu_map, vlu_uvc, vlu_box, vlu_ink, vlu_param;
+static void ensure_veil_prog_impl(int cache_only) {
+  if (veil_prog) return;
+  GLuint p = slot_prog(MB_SLOT_VEIL, cache_only);
+  if (!p) return;
+  veil_prog = p;
+  vlu_bd = glGetUniformLocation(veil_prog, "u_bd");
+  vlu_prev = glGetUniformLocation(veil_prog, "u_prev");
+  vlu_map = glGetUniformLocation(veil_prog, "u_map");
+  vlu_uvc = glGetUniformLocation(veil_prog, "u_uvc");
+  vlu_box = glGetUniformLocation(veil_prog, "u_box");
+  vlu_ink = glGetUniformLocation(veil_prog, "u_ink");
+  vlu_param = glGetUniformLocation(veil_prog, "u_param");
+}
+
+static void ensure_veil_prog(void) { ensure_veil_prog_impl(0); }
+
 #ifdef MB_PROGS_AHEAD
 // (the host's thread that makes programs ahead, its own context current, sharing the objects of the GL thread's of
 // `gen`) the programs of the slots the GL thread has none of linked, the heavy glass first, each kept in the binary
@@ -2534,7 +2658,7 @@ static int gl_progs_ahead(unsigned gen) {
   static const int order[MB_SLOTS] = {MB_PROG_LIQUID_MERGED, MB_PROG_LIQUID_SINGLE, MB_PROG_UI_AD,
                                       MB_SLOT_ADAPTIVE,      MB_PROG_FROSTED,       MB_PROG_PATH_AD,
                                       MB_PROG_LENS,          MB_SLOT_POST,          MB_PROG_PATH,
-                                      MB_SLOT_FLAT,          MB_PROG_UI};
+                                      MB_SLOT_FLAT,          MB_PROG_UI,            MB_SLOT_VEIL};
   GLint nfmt = 0;
   glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &nfmt);
   int use_cache = prog_cache_dir[0] != '\0' && nfmt > 0;
@@ -2591,6 +2715,7 @@ static void gl_preload_cached_progs(void) {
   ensure_prog_flat_impl(1);
   ensure_post_impl(1);
   ensure_ad_prog_impl(1);
+  ensure_veil_prog_impl(1);
   prog_now = 0;
   glUseProgram(0);
 }
@@ -2606,6 +2731,7 @@ static void gl_setup(void) {
   uf_vp = -1;
   post = 0;
   ad_prog = 0;
+  veil_prog = 0;
   prog_now = 0;
   prog_bin_checked = 0;
   prog_bin_ok = 0;
@@ -2988,11 +3114,10 @@ static int grab_of_with_donors(Grab *m, const float *f, int32_t start, int32_t e
       continue;
     }
     if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != a[20]) break;
-    if ((bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f && (!donor_of || donor_of[i] >= 0)) {
+    if ((bk == 2 || bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f && (!donor_of || donor_of[i] >= 0)) {
       float cx, cy, hx, hy;
-      if (bk == 7) {
-        cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
-        hx = fmaxf(-b[23], b[2]); hy = fmaxf(fmaxf(-b[23] * 0.5f, b[3]), 1.0f);
+      if (bk == 2 || bk == 7) {
+        mb_bare_text_boxf(b, &cx, &cy, &hx, &hy);
       } else if (bk == 10) {
         cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
         hx = hy = fmaxf(-b[23] * 0.5f, 1.0f);
@@ -3746,16 +3871,173 @@ static void ad_finalize_frame(int whole_frame, uint64_t serial) {
 
 static void gl_set_fixed_dt(double dt) { ad_fixed_dt = dt > 0.0 ? dt : 0.0; }
 static void gl_adaptive_reset(void) { ad_forget(); }
-static int gl_adaptive_settling(void) { return __atomic_load_n(&ad_settling, __ATOMIC_ACQUIRE); }
+static int veil_settling_now(void);
+static int gl_adaptive_settling(void) {
+  return __atomic_load_n(&ad_settling, __ATOMIC_ACQUIRE) || veil_settling_now();
+}
+
+// ---- bare words' state over time (src/ui/glass.mbt bare_text_who): a slot each, its texel in veil_tex (VEIL_FS)
+#define MB_VEIL_MAX 32
+#define MB_VEIL_TAU 0.09
+#define MB_VEIL_SETTLE_SEC 0.5
+
+typedef struct {
+  float who;
+  int is_new;
+  uint64_t seen_serial, updated_serial;
+  double settle_left;
+  float cx, cy, hx, hy;
+} mb_veil_slot;
+
+static mb_veil_slot veil_slots[MB_VEIL_MAX];
+static int veil_settling;
+
+static void veil_forget(void) {
+  memset(veil_slots, 0, sizeof veil_slots);
+  __atomic_store_n(&veil_settling, 0, __ATOMIC_RELEASE);
+}
+
+static void ensure_veil_tex(void) {
+  if (veil_tex[0]) return;
+  for (int i = 0; i < 2; i++) {
+    glGenTextures(1, &veil_tex[i]);
+    glBindTexture(GL_TEXTURE_2D, veil_tex[i]);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, MB_VEIL_MAX, 1);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glGenFramebuffers(1, &veil_fb[i]);
+    glBindFramebuffer(GL_FRAMEBUFFER, veil_fb[i]);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, veil_tex[i], 0);
+    glDisable(GL_SCISSOR_TEST);
+    glClearColor(0, 0, 0, 0);
+    glClear(GL_COLOR_BUFFER_BIT);
+  }
+  veil_cur = 0;
+}
+
+// (each bare word's and capsule's whose (slot 6, above 0) given its slot in its place, -(slot + 1), the slots they no
+// longer take let go; a slot new cleared, no state till its pass, VEIL_FS)
+static void veil_assign(float *f, int32_t count, uint64_t serial) {
+  if (ad_mode <= 0) return;
+  int any = 0;
+  for (int32_t i = 0; i < count; i++) {
+    float *a = f + (size_t)i * MB_INST;
+    int kind = (int)(a[5] + 0.5f);
+    if ((kind != 2 && kind != 7) || a[23] >= 0.0f || a[6] == 0.0f) continue;
+    if (a[6] < 0.0f) {
+      int sl = (int)(-a[6] + 0.5f) - 1;
+      if (sl >= 0 && sl < MB_VEIL_MAX) veil_slots[sl].seen_serial = serial;
+      continue;
+    }
+    any = 1;
+    float who = a[6];
+    int sl = -1;
+    for (int k = 0; k < MB_VEIL_MAX; k++)
+      if (veil_slots[k].who == who) { sl = k; break; }
+    if (sl < 0) {
+      uint64_t oldest = UINT64_MAX;
+      for (int k = 0; k < MB_VEIL_MAX; k++) {
+        if (veil_slots[k].who == 0.0f) { sl = k; break; }
+        if (veil_slots[k].seen_serial != serial && veil_slots[k].seen_serial < oldest) {
+          oldest = veil_slots[k].seen_serial;
+          sl = k;
+        }
+      }
+      if (sl < 0) continue;
+      memset(&veil_slots[sl], 0, sizeof veil_slots[sl]);
+      veil_slots[sl].who = who;
+      veil_slots[sl].is_new = 1;
+    }
+    veil_slots[sl].seen_serial = serial;
+    a[6] = -(float)(sl + 1);
+  }
+  if (any) ensure_veil_tex();
+}
+
+// The state of the bare words whose capsules come after the glass run [start, end) (till the next glass), seen
+// through its capture (bt, as map and uvc place it), eased by dt: once a frame each, and their texel's frames asked
+// for while what is behind them moved lately (backdrop_changed) or they are new.
+static int veil_run_updates(const float *f, int32_t start, int32_t end, int32_t count, GLuint bt, const float map[4],
+                            const float uvc[4], int backdrop_changed, double dt, uint64_t serial) {
+  if (ad_mode <= 0 || !bt || !veil_tex[0]) return 0;
+  float tid = f[(size_t)start * MB_INST + 20];
+  int ran = 0;
+  for (int32_t i = end; i < count; i++) {
+    const float *b = f + (size_t)i * MB_INST;
+    int bk = (int)(b[5] + 0.5f);
+    if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != tid) break;
+    if (bk != 2 || b[23] >= 0.0f || b[6] >= 0.0f) continue;
+    int sl = (int)(-b[6] + 0.5f) - 1;
+    if (sl < 0 || sl >= MB_VEIL_MAX) continue;
+    mb_veil_slot *v = &veil_slots[sl];
+    if (v->updated_serial == serial) continue;
+    if (!ran) {
+      ensure_veil_prog();
+      if (!veil_prog) return 0;
+      glDisable(GL_BLEND);
+      glDisable(GL_SCISSOR_TEST);
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, veil_fb[veil_cur]);
+      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, veil_fb[1 - veil_cur]);
+      glBlitFramebuffer(0, 0, MB_VEIL_MAX, 1, 0, 0, MB_VEIL_MAX, 1, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+      glBindFramebuffer(GL_FRAMEBUFFER, veil_fb[1 - veil_cur]);
+      glViewport(0, 0, MB_VEIL_MAX, 1);
+      glEnable(GL_SCISSOR_TEST);
+      glUseProgram(veil_prog);
+      glActiveTexture(GL_TEXTURE1);
+      glBindTexture(GL_TEXTURE_2D, veil_tex[veil_cur]);
+      glUniform1i(vlu_prev, 1);
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, bt);
+      glUniform1i(vlu_bd, 0);
+      glUniform4fv(vlu_map, 1, map);
+      glUniform4fv(vlu_uvc, 1, uvc);
+      ran = 1;
+    }
+    float cx, cy, hx, hy;
+    mb_bare_text_boxf(b, &cx, &cy, &hx, &hy);
+    glScissor(sl, 0, 1, 1);
+    glUniform4f(vlu_box, cx, cy, hx, hy);
+    glUniform4f(vlu_ink, b[8], b[9], b[10], 1.0f);
+    glUniform4f(vlu_param, v->is_new ? 1.0f : 0.0f, (float)dt, (float)sl, (float)MB_VEIL_TAU);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    if (v->is_new) v->settle_left = 0.0;
+    else if (backdrop_changed) v->settle_left = MB_VEIL_SETTLE_SEC;
+    else v->settle_left = v->settle_left > dt ? v->settle_left - dt : 0.0;
+    v->is_new = 0;
+    v->updated_serial = serial;
+    v->cx = cx; v->cy = cy; v->hx = hx; v->hy = hy;
+  }
+  if (ran) veil_cur = 1 - veil_cur;
+  return ran;
+}
+
+static int veil_settling_now(void) { return __atomic_load_n(&veil_settling, __ATOMIC_ACQUIRE); }
+
+// (the slots of a whole frame no bare words took let go; whether any eases on, its frames asked for: gl_adaptive_step)
+static void veil_finalize_frame(int whole_frame, uint64_t serial) {
+  int settling = 0;
+  for (int k = 0; k < MB_VEIL_MAX; k++) {
+    mb_veil_slot *v = &veil_slots[k];
+    if (v->who == 0.0f) continue;
+    if (whole_frame && v->seen_serial != serial) {
+      memset(v, 0, sizeof *v);
+      continue;
+    }
+    if (v->settle_left > 0.0) settling = 1;
+  }
+  __atomic_store_n(&veil_settling, settling, __ATOMIC_RELEASE);
+}
 
 static void slots_invalidate(void) {
   for (int i = 0; i < MB_GLASS_SLOTS; i++) slots[i].valid = 0;
   kept_ok = 0;
 }
 
+static void veil_forget(void);
 static void glass_forget(void) {
   slots_invalidate();
   ad_forget();
+  veil_forget();
 }
 
 // a new context has none of the old textures
@@ -3775,6 +4057,9 @@ static void glass_lost(void) {
   ad_tex[0] = ad_tex[1] = 0;
   ad_fb[0] = ad_fb[1] = 0;
   ad_cur = 0;
+  veil_tex[0] = veil_tex[1] = 0;
+  veil_fb[0] = veil_fb[1] = 0;
+  veil_cur = 0;
   memset(ad_rb, 0, sizeof ad_rb);
   ad_rb_i = 0;
   ad_rb_cur = -1;
@@ -3919,7 +4204,7 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
       float tid = bi[20];
       int k = (int)(bi[5] + 0.5f);
       int is_glass = tid < 0.0f;
-      int is_ad = k == 7 || ((k == 10 || k == 11) && bi[23] != 0.0f);
+      int is_ad = k == 7 || ((k == 2 || k == 10 || k == 11) && bi[23] != 0.0f);
       if (!is_glass && !is_ad) continue;
       int32_t run = i;
       if (is_glass) {
@@ -3980,9 +4265,9 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
         float ex0, ey0, ex1, ey1;
         if (bi[23] < 0.0f) {
           float cx, cy, hx, hy;
-          if (k == 7) {
-            cx = bi[0] + bi[2] * 0.5f; cy = bi[1] + bi[3] * 0.5f;
-            hx = fmaxf(-bi[23], bi[2]) + 4.0f; hy = fmaxf(fmaxf(-bi[23] * 0.5f, bi[3]), 1.0f) + 4.0f;
+          if (k == 2 || k == 7) {
+            mb_bare_text_boxf(bi, &cx, &cy, &hx, &hy);
+            hx += 4.0f; hy += 4.0f;
           } else if (k == 10) {
             cx = bi[0] + bi[2] * 0.5f; cy = bi[1] + bi[3] * 0.5f;
             hx = hy = fmaxf(-bi[23] * 0.5f, 1.0f) + 4.0f;
@@ -4193,15 +4478,14 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
       } else if (kind == 6 && g_margin > cur_glass_margin) {
         cur_glass_margin = g_margin;
       }
-    } else if ((kind == 7 || kind == 10 || kind == 11) && p[23] < 0.0f && p[32] == 0.0f &&
+    } else if ((kind == 2 || kind == 7 || kind == 10 || kind == 11) && p[23] < 0.0f && p[32] == 0.0f &&
                cur_glass_kind == 6 && n_elig > 0) {
       float dr[4] = {fmaxf(p[0], 0.0f), fmaxf(p[1], 0.0f),
                      fminf(p[0] + p[2], vp_w), fminf(p[1] + p[3], vp_h)};
       if (dr[2] > dr[0] && dr[3] > dr[1]) {
         float cx, cy, hx, hy;
-        if (kind == 7) {
-          cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
-          hx = fmaxf(-p[23], p[2]); hy = fmaxf(fmaxf(-p[23] * 0.5f, p[3]), 1.0f);
+        if (kind == 2 || kind == 7) {
+          mb_bare_text_boxf(p, &cx, &cy, &hx, &hy);
         } else if (kind == 10) {
           cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
           hx = hy = fmaxf(-p[23] * 0.5f, 1.0f);
@@ -4479,6 +4763,7 @@ static int capture(const float *f, int32_t start, int32_t end, int32_t count, in
       switched = 1;
       ad_run_updates(ad_pend, ad_n_upd, ad_cur_dt);
     }
+    if (veil_run_updates(f, start, end, count, bd_tex, gmap, guvc, reblurred, ad_cur_dt, ad_frame_serial)) switched = 1;
     ad_fill_uniforms();
   }
   if (switched) {
@@ -4540,6 +4825,8 @@ static void main_state(void) {
   glBindBuffer(GL_ARRAY_BUFFER, vbo);
   glActiveTexture(GL_TEXTURE5);
   glBindTexture(GL_TEXTURE_2D, ad_tex[ad_cur] ? ad_tex[ad_cur] : atlas);
+  glActiveTexture(GL_TEXTURE6);
+  glBindTexture(GL_TEXTURE_2D, veil_tex[veil_cur] ? veil_tex[veil_cur] : atlas);
   glActiveTexture(GL_TEXTURE4);
   glBindTexture(GL_TEXTURE_2D, catlas);
   glActiveTexture(GL_TEXTURE0);
@@ -4643,6 +4930,7 @@ static void gl_present_kept(int32_t count, double r, double g, double b) {
   ad_mode = 1;
   ad_cur_dt = ad_next_dt();
   ad_frame_serial++;
+  veil_assign(fbuf, count, ad_frame_serial);
   compute_donor_plan(fbuf, count, (float)(cur_w > 0.0 ? cur_w : fb_w / (cur_scale > 0.0 ? cur_scale : 1.0)),
                      (float)(cur_h > 0.0 ? cur_h : fb_h / (cur_scale > 0.0 ? cur_scale : 1.0)), (float)cur_scale);
   donor_plan_ready = 1;
@@ -4653,6 +4941,12 @@ static void gl_present_kept(int32_t count, double r, double g, double b) {
         gl_dirty_add(ad_slots[i].cx - ad_slots[i].hx - 4.0, ad_slots[i].cy - ad_slots[i].hy - 4.0,
                      ad_slots[i].hx * 2.0 + 8.0, ad_slots[i].hy * 2.0 + 8.0);
     }
+    // (a bare word's capsule easing: its box and its capsule's reach past it, glass.mbt bare_veil_pad)
+    for (int k = 0; k < MB_VEIL_MAX; k++) {
+      mb_veil_slot *v = &veil_slots[k];
+      if (v->who != 0.0f && v->settle_left > 0.0)
+        gl_dirty_add(v->cx - v->hx - 16.0, v->cy - v->hy - 10.0, v->hx * 2.0 + 32.0, v->hy * 2.0 + 20.0);
+    }
     if (!dirty_whole && !mb_glass_damage_expand(fbuf, count, dirty, &dirty_n, fb_w / cur_scale, fb_h / cur_scale,
                                                  cur_scale, active_donor_of())) dirty_whole = 1;
   }
@@ -4660,6 +4954,7 @@ static void gl_present_kept(int32_t count, double r, double g, double b) {
   donor_plan_ready = 0;
   ad_rb_finish(ad_frame_serial);
   ad_finalize_frame(whole, ad_frame_serial);
+  veil_finalize_frame(whole, ad_frame_serial);
   glass_idle_tick();
   // (the surface's context's first frame drawn: what it has no program of yet made ahead, not in a frame that first
   // needs it; never offscreen, which has no binary cache set: mbui-render's draws stay all on its thread)
@@ -4687,6 +4982,7 @@ static int gl_adaptive_step(void) {
       need = 1;
     }
   }
+  if (veil_settling_now()) need = 1;
   if (!need) {
     __atomic_store_n(&ad_settling, 0, __ATOMIC_RELEASE);
     if (!offscreen) {

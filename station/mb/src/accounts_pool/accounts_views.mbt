@@ -1107,7 +1107,7 @@ pub async fn Accounts::profiles_view(self : Accounts, viewer : JV?) -> JV {
         ])
     // Whether its quota is asked of Google's API beside the CLI: an Antigravity CLI subscription's alone.
     if kind == "subscription" && p.runtime == Some("agy") {
-      view = jset(view, "directQuota", jbool(p.get("directQuota") != Some(Bool(false))))
+      view = jset(view, "directQuota", jbool(p.get("directQuota") == Some(Bool(true))))
     }
     if p.max_concurrent_sessions is Some(n) {
       view = jset(view, "maxConcurrentSessions", jint(n))

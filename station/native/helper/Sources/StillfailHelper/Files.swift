@@ -88,6 +88,47 @@ enum Files {
     return word(preflight(grant.service))
   }
 
+  /// Whether `grant` is granted in a `Files.grants()` dictionary (directly or via Full Disk Access).
+  static func isGranted(_ grant: FileGrant, in files: [String: String]) -> Bool {
+    files["all"] == "granted" || files[grant.rawValue] == "granted"
+  }
+
+  /// Effective state of `grant`, preferring a fresh child process's lookup (`Status.fresh()`) so `files.access` matches
+  /// `status` even before this running process restarts.
+  static func accessState(
+    for grant: FileGrant,
+    liveState: (FileGrant) -> String,
+    freshFiles: [String: String]?
+  ) -> String {
+    if let fresh = freshFiles {
+      if fresh["all"] == "granted" { return "granted" }
+      if let s = fresh[grant.rawValue] { return s }
+    }
+    return liveState(grant)
+  }
+
+  /// Whether a refusal in a protected folder means a grant became available since this process started, so restarting
+  /// the helper lets it take effect (matching `screen.view`'s restart check).
+  static func shouldRestart(
+    refusalCode: String,
+    refusalGrant: FileGrant?,
+    pathGrants: [FileGrant],
+    startedFiles: [String: String],
+    liveState: (FileGrant) -> String,
+    freshFiles: () -> [String: String]?
+  ) -> Bool {
+    if refusalCode == "grant" {
+      guard let grant = refusalGrant, let fresh = freshFiles() else { return false }
+      return isGranted(grant, in: fresh)
+    }
+    guard refusalCode == "EPERM" || refusalCode == "EACCES" else { return false }
+    let candidates = pathGrants.filter { !isGranted($0, in: startedFiles) }
+    guard !candidates.isEmpty else { return false }
+    if candidates.contains(where: { liveState($0) == "granted" }) { return true }
+    guard let fresh = freshFiles() else { return false }
+    return candidates.contains(where: { isGranted($0, in: fresh) })
+  }
+
   // MARK: where macOS protects
 
   static let home = NSHomeDirectory()
@@ -284,20 +325,30 @@ enum Files {
     do {
       if op == "files.access" {
         let paths = (request["paths"] as? [Any] ?? []).compactMap { try? clean($0) }
-        channel.line(["access": paths.map { path -> [String: Any] in
-          guard let at = location(path) else { return ["path": path, "grant": NSNull(), "state": "granted"] }
-          return ["path": path, "top": at.top, "grant": at.grant.rawValue, "state": state(at.grant)]
+        let located = paths.map { ($0, location($0)) }
+        let fresh = located.contains(where: { $0.1 != nil }) ? (Status.fresh()?["files"] as? [String: String]) : nil
+        channel.line(["access": located.map { path, at -> [String: Any] in
+          guard let at else { return ["path": path, "grant": NSNull(), "state": "granted"] }
+          return ["path": path, "top": at.top, "grant": at.grant.rawValue, "state": accessState(for: at.grant, liveState: state, freshFiles: fresh)]
         }])
         return true
       }
       let scope = try Scope(request)
       do {
         try run(op, request, scope, channel)
-      } catch let refusal as FileRefusal where refusal.code == "EPERM" || refusal.code == "EACCES" {
+      } catch let refusal as FileRefusal where refusal.code == "grant" || refusal.code == "EPERM" || refusal.code == "EACCES" {
         // Granted since this process started, as macOS says, and still refused: it starts again to have it. One granted
         // from the start refuses for a reason of its own (the file's mode), said as it is.
-        let paths = ["path", "from", "to"].compactMap { request[$0] as? String }
-        let since = paths.contains { path in location(path).map { state($0.grant) == "granted" && daemon.startedFiles[$0.grant.rawValue] != "granted" } ?? false }
+        let refusalGrant = (refusal.fields["grant"] as? String).flatMap(FileGrant.init(rawValue:))
+        let pathGrants = ["path", "from", "to"].compactMap { (request[$0] as? String).flatMap { location($0)?.grant } }
+        let since = shouldRestart(
+          refusalCode: refusal.code,
+          refusalGrant: refusalGrant,
+          pathGrants: pathGrants,
+          startedFiles: daemon.startedFiles,
+          liveState: state,
+          freshFiles: { Status.fresh()?["files"] as? [String: String] }
+        )
         if since { throw FileRefusal(code: "restart", message: "starting again to have the grant", fields: ["pid": Int(getpid())]) }
         throw refusal
       }
@@ -533,19 +584,22 @@ enum Files {
   /// only way a folder is granted; Full Disk Access is the other); refused before, System Settings' Files and Folders,
   /// where this app is listed with a switch for it.
   static func ask(_ grant: FileGrant, path: String?) {
-    if state(grant) == "denied" {
-      if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders") { NSWorkspace.shared.open(url) }
-      return
-    }
-    let top: String
-    switch grant {
-    case .documents: top = (home as NSString).appendingPathComponent("Documents")
-    case .desktop: top = (home as NSString).appendingPathComponent("Desktop")
-    case .downloads: top = (home as NSString).appendingPathComponent("Downloads")
-    case .removable, .network: top = path.flatMap { location($0)?.top } ?? "/Volumes"
-    }
-    // Held until a person answers macOS: off the main thread.
+    // Checked and opened off the main thread: `Status.fresh()` spawns a child and `opendir` holds until answered.
     DispatchQueue.global().async {
+      let current = accessState(for: grant, liveState: state, freshFiles: Status.fresh()?["files"] as? [String: String])
+      if current == "denied" {
+        DispatchQueue.main.async {
+          if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders") { NSWorkspace.shared.open(url) }
+        }
+        return
+      }
+      let top: String
+      switch grant {
+      case .documents: top = (home as NSString).appendingPathComponent("Documents")
+      case .desktop: top = (home as NSString).appendingPathComponent("Desktop")
+      case .downloads: top = (home as NSString).appendingPathComponent("Downloads")
+      case .removable, .network: top = path.flatMap { location($0)?.top } ?? "/Volumes"
+      }
       if let dir = opendir(top) { closedir(dir) }
     }
   }

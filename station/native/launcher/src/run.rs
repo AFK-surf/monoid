@@ -19,7 +19,7 @@
 //!
 //! One thread: signals come in through a pipe (written by their handlers), and everything waits in one poll().
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::{CString, OsString, c_int};
 use std::fs::File;
 use std::hash::{DefaultHasher, Hasher};
@@ -146,6 +146,8 @@ struct System {
     front: Option<crate::front::Front>,
     /// What the front answered each ask (`probe_front`'s threads), read as they wake serve().
     probed: (Sender<(u64, bool)>, Receiver<(u64, bool)>),
+    /// Engine label recorded when `spawn()` last resolved `station_of` (avoids re-invoking `station_of` in logs).
+    last_engine: Cell<&'static str>,
 }
 
 impl System {
@@ -224,7 +226,10 @@ impl Os for System {
         self.end_front_not_in_release();
         let app = &self.options.app;
         let (ours, theirs) = socketpair()?;
-        let mut command = crate::station_of(app, &self.options.data).command();
+        let resolved = crate::station_of(app, &self.options.data, crate::Invocation::Run)
+            .map_err(Error::other)?;
+        self.last_engine.set(resolved.engine_label());
+        let mut command = resolved.command();
         command
             .arg("run")
             .arg("--app")
@@ -282,7 +287,13 @@ impl Os for System {
     }
 
     fn program(&self) -> String {
-        crate::station_of(&self.options.app, &self.options.data).program.display().to_string()
+        crate::station_of(&self.options.app, &self.options.data, crate::Invocation::Run)
+            .map(|s| s.program.display().to_string())
+            .unwrap_or_else(|e| format!("station ({e})"))
+    }
+
+    fn engine_label(&self) -> &'static str {
+        self.last_engine.get()
     }
 
     fn has_front(&self) -> bool {
@@ -658,6 +669,7 @@ pub fn run(mut options: Options) -> i32 {
         }
     };
     // One station per data directory: a second would take the first one's ports and runtimes away.
+    // Acquire the lock before engine strict pre-checks so HELD (exit 3) is always preserved.
     let lock = match data::lock(&run.join("station.lock")) {
         Ok(Some(lock)) => lock,
         Ok(None) => {
@@ -674,6 +686,11 @@ pub fn run(mut options: Options) -> i32 {
             return 1;
         }
     };
+    if let Err(error) = crate::station_of(&options.app, &options.data, crate::Invocation::Run) {
+        log::error(&error);
+        eprintln!("stillfail-station: {error}");
+        return 1;
+    }
     let _ = std::fs::remove_file(run.join("drained"));
     // Both at descriptors of 10 and up (keep_low_fds).
     let bound = {
@@ -702,7 +719,7 @@ pub fn run(mut options: Options) -> i32 {
     let own = std::env::current_exe().ok().and_then(|exe| hash_of(&exe));
     let front = crate::front::Front::start(&options.app, &options.data);
     let wanted = front.is_none() && crate::front::Front::requested_program_available(&options.app, &options.data);
-    let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
+    let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel(), last_engine: Cell::new("Node") }, Times::of_env(), run, with_parent);
     // One the release has that did not start: tried again later (no Node is linked to it, so none hands over for it).
     if wanted {
         station.schedule_front_retry();
@@ -748,7 +765,7 @@ fn resume(options: Options, run: PathBuf, state: &str) -> i32 {
         crate::front::clean_orphans(&options.data, Some(kept.pid));
     }
     let wanted = front.is_none() && crate::front::Front::requested_program_available(&options.app, &options.data);
-    let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel() }, Times::of_env(), run, with_parent);
+    let mut station = Lifecycle::new(System { options, lock, mcp, admin, parent, own, front, probed: channel(), last_engine: Cell::new("Node") }, Times::of_env(), run, with_parent);
     station.adopt(node, version, served, heartbeats);
     if linked_front && !station.os.has_front() {
         station.mark_front_gone_from_resume();

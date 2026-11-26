@@ -197,6 +197,45 @@ const PION_READER_INPUTS = [
   ":(exclude,glob)pion/station/**/AGENTS.md",
   ":(exclude,glob)pion/station/**/README.md",
 ];
+/// Full Pion station (`stillfail-station-pion`): isolated sibling workspace (`pion/station-main`),
+/// shared reader/rule/base packages, and station i18n/brand inputs so edits to `pion/station-main`
+/// or station i18n never invalidate `pion-reader`'s cache key.
+const STATION_PION_INPUTS = [
+  "pion/station/TOOLCHAIN",
+  "pion/station/scripts/ensure-pionc.sh",
+  "pion/station-main",
+  "pion/station/packages/host_shim",
+  "pion/station/packages/sqlite_ffi",
+  "pion/station/packages/sql_db",
+  "pion/station/packages/js_json",
+  "pion/station/packages/jscase",
+  "pion/station/packages/nodepath",
+  "pion/station/packages/station_conv",
+  "pion/station/packages/builders_core",
+  "pion/station/packages/admit",
+  "pion/station/packages/live_wire",
+  "pion/station/packages/pieces",
+  "pion/rules/packages",
+  "pion/base/packages/base_codec",
+  "client/i18n/catalog/zh/station.json",
+  "client/i18n/catalog/en/station.json",
+  "client/i18n/brand.ts",
+  ":(exclude,glob)pion/station-main/**/*_test.pion",
+  ":(exclude,glob)pion/station-main/**/*_test.c",
+  ":(exclude,glob)pion/station-main/**/AGENTS.md",
+  ":(exclude,glob)pion/station-main/**/CLAUDE.md",
+  ":(exclude,glob)pion/station-main/**/README.md",
+  ":(exclude,glob)pion/station/**/*_test.pion",
+  ":(exclude,glob)pion/station/**/*_test.c",
+  ":(exclude,glob)pion/station/**/AGENTS.md",
+  ":(exclude,glob)pion/station/**/README.md",
+  ":(exclude,glob)pion/rules/packages/**/*_test.pion",
+  ":(exclude,glob)pion/rules/packages/**/AGENTS.md",
+  ":(exclude,glob)pion/rules/packages/**/README.md",
+  ":(exclude,glob)pion/base/packages/base_codec/**/*_test.pion",
+  ":(exclude,glob)pion/base/packages/base_codec/**/AGENTS.md",
+  ":(exclude,glob)pion/base/packages/base_codec/**/README.md",
+];
 const readerRecipe = (t: Target) => ({ moon: "native release", shell: t === "darwin-arm64" ? key("shell-apple", t) : key("shell-station", t) });
 type Target = "darwin-arm64" | "linux-x64" | "linux-arm64" | "win32-x64" | "wasm32" | "android-arm64" | "ios-arm64" | "ios-sim-arm64";
 type Part = {
@@ -568,6 +607,29 @@ const PARTS: Record<string, Part> = {
       const env: NodeJS.ProcessEnv = { ...process.env, SHELL_LIB: join(shell, "libstillfail_shell.a"), PION_REQUIRE_PINNED: "1" };
       for (const k of ["PIONC", "PION_QBE", "PION_RT_DIR", "PION_REPO_URL", "ZIG_BIN"]) delete env[k];
       run("bash", [join(ROOT, "pion/station/scripts/build.sh"), t, join(out, exe("stillfail-pion")(t))], { env });
+    },
+  },
+  // The full station in Pion (pion/station-main/packages/station_main): built with the same pinned pionc toolchain
+  // (pion/station-main/scripts/build.sh) and linked against libstillfail_shell.a. Built/tested in its own workflow
+  // until Wave 12 signed opt-in bundling ships.
+  "station-pion": {
+    files: (t) => [exe("stillfail-station-pion")(t)],
+    targets: STATION_BINS,
+    publish: [],
+    env: "STILLFAIL_STATION_PION",
+    rust: false,
+    inputs: STATION_PION_INPUTS,
+    recipe: (t) => ({ pionStationMain: "native release", shell: t === "darwin-arm64" ? key("shell-apple", t) : key("shell-station", t) }),
+    build(t, out) {
+      const mac = osPlatform() === "darwin" && osArch() === "arm64";
+      const linux = osPlatform() === "linux" && osArch() === "x64";
+      if (!mac && !(linux && t !== "darwin-arm64")) {
+        throw new Error(`the pion station for ${t} is built on an Apple Silicon Mac${t !== "darwin-arm64" ? " or a Linux x86-64 machine" : ""}`);
+      }
+      const shell = ensure(t === "darwin-arm64" ? "shell-apple" : "shell-station", t);
+      const env: NodeJS.ProcessEnv = { ...process.env, SHELL_LIB: join(shell, "libstillfail_shell.a"), PION_REQUIRE_PINNED: "1" };
+      for (const k of ["PIONC", "PION_QBE", "PION_RT_DIR", "PION_REPO_URL", "ZIG_BIN"]) delete env[k];
+      run("bash", [join(ROOT, "pion/station-main/scripts/build.sh"), t, join(out, exe("stillfail-station-pion")(t))], { env });
     },
   },
   // The tests' program beside it (station/mb/src/reader_harness: every package's harness, `--builder harness-*`, which

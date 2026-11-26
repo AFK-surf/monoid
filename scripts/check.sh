@@ -485,8 +485,183 @@ if part ts; then
   # The mesh's base (station/AGENTS.md, Its shape): its wire and door, and what they stand on, serve another program
   # without the station's business, so none of them imports a file outside their own set, a type's either, nor says
   # still.fail's name in its code (scripts/mesh-base.ts lists the set and the leaves it may import).
-  if touches '^station/src/|^scripts/mesh-base\.ts$'; then
+  if touches '^station/src/|^pion/station-main/packages/mesh_(wire|door|accept)/|^scripts/mesh-base\.ts$'; then
     step "the mesh's base imports nothing of the station's business" node scripts/mesh-base.ts
+  fi
+  # Symmetric static invariants for the Pion station workspace (pion/station-main/packages/):
+  # Comment-stripping scanner (BSD/GNU identical) enforcing:
+  # - no polling timers without a `timer:` comment on the line or previous line;
+  # - no direct `"proc.run"` / `proc_run(` (use station_sys::proc_spawn), and blocking `shell_sync*`/`shell_call_wait` require `sync:`;
+  # - no raw SQLite transaction SQL at statement start in string literals (case-sensitive; allows CREATE TRIGGER and prose/labels);
+  # - listeners stay local ("127.0.0.1"/"::1"/"localhost", unix_listen, tcp_listen_fd, or { fd: ... }) and no tunnel names appear.
+  if touches '^pion/station-main/packages/|^scripts/check\.sh$'; then
+    step "pion station-main: static invariants (timers, proc.run/sync, sqlite tx, local listeners, tunnels)" node --input-type=module -e '
+      import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+      import { join } from "node:path";
+
+      const root = "pion/station-main/packages";
+      if (!existsSync(root)) process.exit(0);
+
+      function walk(dir, out = []) {
+        for (const e of readdirSync(dir)) {
+          const p = join(dir, e);
+          const st = statSync(p);
+          if (st.isDirectory()) walk(p, out);
+          else if (e.endsWith(".pion") && !e.endsWith("_test.pion")) out.push(p);
+        }
+        return out;
+      }
+
+      function stripComments(src) {
+        let out = "";
+        for (let i = 0; i < src.length; ) {
+          const c = src[i];
+          if (c === "/" && src[i + 1] === "/") {
+            let j = src.indexOf("\n", i);
+            if (j < 0) j = src.length;
+            out += " ".repeat(j - i);
+            i = j;
+          } else if (c === "/" && src[i + 1] === "*") {
+            let j = src.indexOf("*/", i + 2);
+            j = j < 0 ? src.length : j + 2;
+            out += src.slice(i, j).replace(/[^\n]/g, " ");
+            i = j;
+          } else if (c === "\"") {
+            let j = i + 1;
+            while (j < src.length) {
+              if (src[j] === "\\") { j += 2; continue; }
+              if (src[j] === "\"") { j++; break; }
+              j++;
+            }
+            out += src.slice(i, j);
+            i = j;
+          } else {
+            out += c;
+            i++;
+          }
+        }
+        return out;
+      }
+
+      const timerRe = /\b(?:effect::sleep_k|sleep_k|sleep_later_k|timer_before|arm_[A-Za-z0-9_]*timer|register_timer|sleep_ms|set_interval|timer_every)\s*\(|\bSchedule::|\bEffect::(?:repeat|forever|sleep)\s*\(/;
+      const procRunRe = /"proc\.run"|\bproc_run\s*\(/;
+      const syncRe = /\b(?:shell_sync|shell_sync_json|shell_call_wait|sth_shell_sync)\s*\(/;
+      const sqlTxRe = /^\s*(?:BEGIN(?:\s+(?:DEFERRED|IMMEDIATE|EXCLUSIVE))?(?:\s+TRANSACTION)?|COMMIT(?:\s+TRANSACTION)?|END(?:\s+TRANSACTION)?|ROLLBACK(?:\s+TRANSACTION)?(?:\s+TO(?:\s+SAVEPOINT)?\s+\S+)?|SAVEPOINT\s+\S+|RELEASE(?:\s+SAVEPOINT)?\s+\S+)\s*$/i;
+      const triggerRe = /\bCREATE\s+(?:TEMP\s+|TEMPORARY\s+)?TRIGGER\b/i;
+      const listenCallRe = /(?:\b(?:tcp_listen|udp_bind)\s*\(|(?:"tcp\.listen"|"udp\.bind"))/g;
+      const listenAllowedRe = /(?:\\?")(?:127\.0\.0\.1(?::\d+)?|::1|localhost(?::\d+)?)(?:\\?")|\{\s*(?:\\?")?fd(?:\\?")?\s*:/;
+      const nonLocalBindRe = /(?:\\?")(?:0\.0\.0\.0(?::\d+)?|::(?::\d+)?)(?:\\?")/;
+      const explicitHostKeyRe = /(?:\\?")host(?:\\?")\s*:/;
+      const tunnelRe = /tailcat|ngrok|cloudflared|localtunnel|trycloudflare|tailscale\s+(?:funnel|serve)/i;
+      const hasAnnotation = (rawLines, idx, tag) => {
+        const re = new RegExp(`(?://[^\\n]*|/\\*[\\s\\S]*?)${tag}:`);
+        return re.test(rawLines[idx] ?? "") || (idx > 0 && re.test(rawLines[idx - 1] ?? ""));
+      };
+
+      // Extract balanced call text across multiple lines starting from `(` (for `tcp_listen(` / `udp_bind(`)
+      // or walking back across newlines to the enclosing `(` (for `"tcp.listen"` / `"udp.bind"` arguments).
+      function callTextFrom(code, idx, token) {
+        let open = -1;
+        if (token.startsWith("\"")) {
+          let depth = 0;
+          for (let i = idx - 1; i >= 0; i--) {
+            const c = code[i];
+            if (c === "\"") {
+              // Skip backwards over string literal.
+              i--;
+              while (i >= 0) {
+                if (code[i] === "\"") {
+                  let bs = 0;
+                  for (let k = i - 1; k >= 0 && code[k] === "\\"; k--) bs++;
+                  if (bs % 2 === 0) break;
+                }
+                i--;
+              }
+              continue;
+            }
+            if (c === ")") depth++;
+            else if (c === "(") {
+              if (depth === 0) { open = i; break; }
+              depth--;
+            }
+          }
+        } else {
+          open = code.indexOf("(", idx);
+        }
+        if (open < 0 || code[open] !== "(") {
+          const end = code.indexOf("\n", idx);
+          return code.slice(idx, end < 0 ? code.length : end);
+        }
+        let depth = 0;
+        for (let i = open; i < code.length; i++) {
+          const c = code[i];
+          if (c === "\"") {
+            i++;
+            while (i < code.length) {
+              if (code[i] === "\\") { i += 2; continue; }
+              if (code[i] === "\"") break;
+              i++;
+            }
+            continue;
+          }
+          if (c === "(") depth++;
+          else if (c === ")") {
+            depth--;
+            if (depth === 0) return code.slice(open, i + 1);
+          }
+        }
+        return code.slice(open);
+      }
+
+      const violations = [];
+      for (const file of walk(root)) {
+        const raw = readFileSync(file, "utf8");
+        const rawLines = raw.split("\n");
+        const code = stripComments(raw);
+        const codeLines = code.split("\n");
+        for (let i = 0; i < codeLines.length; i++) {
+          const line = codeLines[i];
+          const ln = i + 1;
+          if (timerRe.test(line) && !hasAnnotation(rawLines, i, "timer")) {
+            violations.push(`${file}:${ln}: no polling timers without timer: (${rawLines[i].trim()})`);
+          }
+          if (procRunRe.test(line)) {
+            violations.push(`${file}:${ln}: no proc.run on main loop`);
+          }
+          if (syncRe.test(line) && !hasAnnotation(rawLines, i, "sync")) {
+            violations.push(`${file}:${ln}: no unmarked blocking shell sync calls (${rawLines[i].trim()})`);
+          }
+          for (const m of line.matchAll(/"((?:[^"\\]|\\.)*)"/g)) {
+            const lit = m[1];
+            if (triggerRe.test(lit)) continue;
+            for (const stmt of lit.split(";")) {
+              if (sqlTxRe.test(stmt)) {
+                violations.push(`${file}:${ln}: no raw SQLite transaction SQL (use sql_db): "${lit}"`);
+                break;
+              }
+            }
+          }
+          if (tunnelRe.test(line)) {
+            violations.push(`${file}:${ln}: no tunnel into a station (${rawLines[i].trim()})`);
+          }
+        }
+        for (const m of code.matchAll(listenCallRe)) {
+          const token = m[0];
+          const call = callTextFrom(code, m.index, token);
+          const ln = code.slice(0, m.index).split("\n").length;
+          // `client/shell` `"tcp.listen"` is hardcoded to 127.0.0.1 or inherited fd in Rust (`client/shell/src/net.rs:684-698`);
+          // allow it unless an explicit non-local address or `"host":` key appears in the call.
+          const isShellTcpListen = token === "\"tcp.listen\"" && !explicitHostKeyRe.test(call);
+          if (nonLocalBindRe.test(call) || (!isShellTcpListen && !listenAllowedRe.test(call))) {
+            violations.push(`${file}:${ln}: listeners on this machine only (${rawLines[ln - 1].trim()})`);
+          }
+        }
+      }
+      if (violations.length > 0) {
+        console.error(violations.join("\n"));
+        process.exit(1);
+      }
+    '
   fi
   # The base in MoonBit (libs/base/AGENTS.md) knows no program: its packages import their own, mbui's effect and
   # MoonBit's core, and say neither still.fail's name nor a program's but where the script's NAMED lets one be. And its

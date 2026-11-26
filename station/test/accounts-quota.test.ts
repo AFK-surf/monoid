@@ -159,6 +159,8 @@ describe("allowances and renewing", { concurrency: true }, () => {
       }),
     );
     const profile = hubConfig({ profiles: [{ id: "ag", home, runtime: "agy", access: { kind: "subscription" } }] }, "/x").profiles[0]!;
+    // Google's API asked beside the CLI only when turned on (`directQuota: true`).
+    const direct = { ...profile, directQuota: true };
     const env = { PATH: fakePath, FAKE_DUMP: dump, GEMINI_API_KEY: "machine-key" };
     const urls = { ...URLS, agyQuota: "https://aicode.example.test" };
     const q = await checkQuota(profile, env, undefined, urls, "zh");
@@ -215,12 +217,12 @@ describe("allowances and renewing", { concurrency: true }, () => {
     });
     try {
       const apiUrls = { ...URLS, agyQuota: quotaApi.base };
-      const complete = await checkQuota(profile, { PATH: fakePath }, undefined, apiUrls, "zh");
+      const complete = await checkQuota(direct, { PATH: fakePath }, undefined, apiUrls, "zh");
       assert.deepEqual(complete.windows, q.windows);
       assert.deepEqual(quotaApi.asked, []);
 
       const partialEnv = { PATH: fakePath, FAKE_AGY_USAGE_NO_GEMINI_WEEKLY: "1" };
-      const supplemented = await checkQuota(profile, partialEnv, undefined, apiUrls, "zh");
+      const supplemented = await checkQuota(direct, partialEnv, undefined, apiUrls, "zh");
       assert.deepEqual(supplemented.windows, [
         { label: "每周 · Gemini", usedPercent: 32, resetsAt: Date.parse(weeklyReset), minutes: 10080, scope: "gemini" },
         ...q.windows.slice(1),
@@ -233,15 +235,17 @@ describe("allowances and renewing", { concurrency: true }, () => {
         ],
       );
 
-      // Turned off on the profile (`directQuota: false`), only the CLI is asked: Gemini's week stays missing.
-      const cliOnly = { ...profile, directQuota: false };
+      // By default (`directQuota` unset) and turned off, only the CLI is asked: Gemini's week stays missing.
       quotaApi.asked.length = 0;
-      const notSupplemented = await checkQuota(cliOnly, partialEnv, undefined, apiUrls, "zh");
+      const notSupplemented = await checkQuota(profile, partialEnv, undefined, apiUrls, "zh");
       assert.deepEqual(notSupplemented.windows, q.windows.slice(1));
+      assert.deepEqual(quotaApi.asked, []);
+      const turnedOff = await checkQuota({ ...profile, directQuota: false }, partialEnv, undefined, apiUrls, "zh");
+      assert.deepEqual(turnedOff.windows, q.windows.slice(1));
       assert.deepEqual(quotaApi.asked, []);
 
       hasGeminiWeekly = false;
-      const unavailable = await checkQuota(profile, partialEnv, undefined, apiUrls, "zh");
+      const unavailable = await checkQuota(direct, partialEnv, undefined, apiUrls, "zh");
       assert.deepEqual(unavailable.windows, q.windows.slice(1));
     } finally {
       await quotaApi.close();
@@ -307,19 +311,19 @@ describe("allowances and renewing", { concurrency: true }, () => {
       const splitUrls = { ...URLS, agyQuota: dailyApi.base, agyQuotaProduction: prodApi.base };
       const partialEnv = { PATH: fakePath, FAKE_AGY_USAGE_NO_GEMINI_WEEKLY: "1" };
 
-      const fromDaily = await checkQuota(profile, partialEnv, undefined, splitUrls, "zh");
+      const fromDaily = await checkQuota(direct, partialEnv, undefined, splitUrls, "zh");
       assert.deepEqual(fromDaily.windows[0], { label: "每周 · Gemini", usedPercent: 32, resetsAt: Date.parse(weeklyReset), minutes: 10080, scope: "gemini" });
       assert.equal(prodApi.asked.length, 0, "production is not queried when daily returns Gemini weekly");
 
       // Daily summary fails (500): do not query production or fabricate a 0% Gemini weekly window.
       dailySummaryStatus = 500;
-      const dailyFailed = await checkQuota(profile, partialEnv, undefined, splitUrls, "zh");
+      const dailyFailed = await checkQuota(direct, partialEnv, undefined, splitUrls, "zh");
       assert.deepEqual(dailyFailed.windows, q.windows.slice(1));
       assert.equal(prodApi.asked.length, 0, "production is not queried when daily summary fails");
 
       // Direct location-ineligible fallback with daily summary returning 500: do not query production either.
       const splitLocationErr = "Eligibility check failed: Your current account is not eligible for Antigravity, because it is not currently available in your location.";
-      const directDailyFailed = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: splitLocationErr }, undefined, splitUrls, "zh");
+      const directDailyFailed = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: splitLocationErr }, undefined, splitUrls, "zh");
       assert.equal(directDailyFailed.state, "ok");
       assert.equal(directDailyFailed.windows.some((w) => w.scope === "gemini" && w.minutes === 10080), false);
       assert.deepEqual(directDailyFailed.windows, [
@@ -331,14 +335,14 @@ describe("allowances and renewing", { concurrency: true }, () => {
       // Daily answers 200 cleanly but omits Gemini weekly: fall back to production on both paths.
       dailySummaryStatus = 200;
       dailyWeekly = false;
-      const fromProd = await checkQuota(profile, partialEnv, undefined, splitUrls, "zh");
+      const fromProd = await checkQuota(direct, partialEnv, undefined, splitUrls, "zh");
       assert.deepEqual(fromProd.windows[0], { label: "每周 · Gemini", usedPercent: 0, resetsAt: Date.parse(prodReset), minutes: 10080, scope: "gemini" });
       assert.deepEqual(
         prodApi.asked.map(({ url, body, headers }) => [url, body, headers["user-agent"]]),
         [["/v1internal:retrieveUserQuotaSummary", { project: "aicode-consumers" }, "antigravity/cli/1.5.15"]],
       );
 
-      const directFromProd = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: splitLocationErr }, undefined, splitUrls, "zh");
+      const directFromProd = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: splitLocationErr }, undefined, splitUrls, "zh");
       assert.deepEqual(directFromProd.windows.find((w) => w.scope === "gemini" && w.minutes === 10080), {
         label: "每周 · Gemini",
         usedPercent: 0,
@@ -487,13 +491,13 @@ describe("allowances and renewing", { concurrency: true }, () => {
       return { status: 404, body: {} };
     });
     try {
-      // Turned off on the profile, the CLI's refusal is said as it is and nothing is asked of Google's API.
-      const refused = await checkQuota({ ...profile, directQuota: false }, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      // Not turned on (the default), the CLI's refusal is said as it is and nothing is asked of Google's API.
+      const refused = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.equal(refused.state, "unavailable");
       assert.ok(refused.detail?.includes("not currently available in your location"));
       assert.equal(agyApi.asked.length, 0);
 
-      const fallbackQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      const fallbackQ = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.equal(fallbackQ.state, "ok");
       assert.equal(fallbackQ.plan, "Ultra 5x");
       assert.deepEqual(fallbackQ.windows, [
@@ -504,7 +508,7 @@ describe("allowances and renewing", { concurrency: true }, () => {
 
       // Google omits remainingFraction when the model pool is exhausted, but still gives its reset time.
       geminiSpent = true;
-      const spentQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      const spentQ = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.equal(spentQ.state, "ok");
       assert.deepEqual(spentQ.windows, [
         { ...fallbackQ.windows[0]!, usedPercent: 100 },
@@ -513,7 +517,7 @@ describe("allowances and renewing", { concurrency: true }, () => {
 
       dailyHasGeminiWeekly = true;
       const beforeWeekly = agyApi.asked.length;
-      const weeklyQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      const weeklyQ = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.deepEqual(weeklyQ.windows, [
         spentQ.windows[0],
         { label: "每周 · Gemini", usedPercent: 32, resetsAt: Date.parse(weeklyReset), minutes: 10080, scope: "gemini" },
@@ -525,7 +529,7 @@ describe("allowances and renewing", { concurrency: true }, () => {
       // When daily retrieveUserQuotaSummary returns both Gemini buckets (weekly + 5h), the direct fallback keeps
       // all four windows without duplicating the 5-hour Gemini pool from fetchAvailableModels.
       dailyHasGeminiFiveHour = true;
-      const fullDirectQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      const fullDirectQ = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.deepEqual(fullDirectQ.windows, [
         { label: "每周 · Gemini", usedPercent: 32, resetsAt: Date.parse(weeklyReset), minutes: 10080, scope: "gemini" },
         { label: "5 小时 · Gemini", usedPercent: 4, resetsAt: Date.parse(geminiReset), minutes: 300, scope: "gemini" },
@@ -536,7 +540,7 @@ describe("allowances and renewing", { concurrency: true }, () => {
       // Account with no active tier at all in this location: falls through to report the location error, never a
       // verification hold.
       paidTier = false;
-      const trulyBlockedQ = await checkQuota(profile, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
+      const trulyBlockedQ = await checkQuota(direct, { PATH: fakePath, FAKE_AGY_USAGE_ERROR: locationErr }, undefined, { ...URLS, agyQuota: agyApi.base }, "zh");
       assert.equal(trulyBlockedQ.state, "unavailable");
       assert.ok(trulyBlockedQ.detail?.includes("not currently available in your location"));
     } finally {

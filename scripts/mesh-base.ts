@@ -8,7 +8,7 @@
 // pieces, `createRequire` under another name) passes. It is held against a slip, not against someone set on it.
 // Prints each line that is not so, and fails then.
 //   node scripts/mesh-base.ts
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -115,6 +115,79 @@ for (const file of allowed) {
   });
   for (const [line, what] of found.sort((a, b) => a[0] - b[0])) wrong.push(`${file}:${line}: ${what}`);
 }
+
+/// Pion mesh base packages in `pion/station-main/packages/`: checked whenever their directories exist,
+/// enforcing zero station-domain dependencies and no `still.fail` mentions in non-comment code.
+const PION_MESH_BASE = [
+  "pion/station-main/packages/mesh_wire",
+  "pion/station-main/packages/mesh_door",
+  "pion/station-main/packages/mesh_accept",
+];
+const PION_MESH_ALLOWED = new Set([
+  "mesh_wire",
+  "mesh_door",
+  "mesh_accept",
+  "base_codec",
+  "js_json",
+  "pieces",
+  "host_shim",
+  "effect",
+  "flate",
+  "base64",
+  "crypto",
+  "station_sys",
+]);
+
+function walkPionFiles(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const entry of readdirSync(dir)) {
+    const full = join(dir, entry);
+    const st = statSync(full);
+    if (st.isDirectory()) out.push(...walkPionFiles(full));
+    else if (entry.endsWith(".pion") && !entry.endsWith("_test.pion")) out.push(full);
+  }
+  return out;
+}
+
+for (const pkgDir of PION_MESH_BASE) {
+  const absDir = join(root, pkgDir);
+  if (!existsSync(absDir)) continue;
+  const manifest = join(absDir, "pion.toml");
+  if (existsSync(manifest)) {
+    let inDeps = false;
+    readFileSync(manifest, "utf8").split("\n").forEach((rawLine, idx) => {
+      const line = rawLine.replace(/#.*$/, "").trim();
+      if (!line) return;
+      if (line.startsWith("[")) {
+        inDeps = line === "[dependencies]";
+        return;
+      }
+      if (!inDeps) return;
+      const m = /^([A-Za-z0-9_-]+)\s*=/.exec(line);
+      if (m && !PION_MESH_ALLOWED.has(m[1]!)) {
+        wrong.push(`${pkgDir}/pion.toml:${idx + 1}: depends on station-domain package ${m[1]}`);
+      }
+    });
+  }
+  for (const absFile of walkPionFiles(join(absDir, "src"))) {
+    const rel = absFile.slice(root.length + 1);
+    const code = codeOf(readFileSync(absFile, "utf8"));
+    const found: [number, string][] = [];
+    const lineAt = (at: number) => code.slice(0, at).split("\n").length;
+    for (const match of code.matchAll(/\bimport\s+"([^"\n]+)"/g)) {
+      const target = match[1]!;
+      if (!PION_MESH_ALLOWED.has(target)) {
+        found.push([lineAt(match.index + match[0].length), `imports ${target}`]);
+      }
+    }
+    code.split("\n").forEach((line, i) => {
+      if (/stillfail|still\.fail/i.test(line)) found.push([i + 1, "says still.fail's name"]);
+    });
+    for (const [line, what] of found.sort((a, b) => a[0] - b[0])) wrong.push(`${rel}:${line}: ${what}`);
+  }
+}
+
 if (wrong.length > 0) {
   console.log(wrong.join("\n"));
   console.log("(the mesh's base stands without the station's business: give it what it needs as a parameter, or keep what needs the import, or the name, outside it)");

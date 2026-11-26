@@ -24,6 +24,8 @@ runs:
       run: |
         echo "CARGO_TARGET_DIR=$RUNNER_TEMP/native-target" >> "$GITHUB_ENV"
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+        toolchain=$(sed -n 's/^const TOOLCHAIN = "\([^"]*\)".*/\1/p' scripts/native.ts)
+        echo "RUST_TOOLCHAIN=${toolchain:-unknown}" >> "$GITHUB_ENV"
         tools="$RUNNER_TEMP/native-tools"
         mkdir -p "$tools"
         echo "$tools" >> "$GITHUB_PATH"

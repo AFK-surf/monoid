@@ -1578,3 +1578,37 @@ fn pion_only_install_rolls_back_to_direct_bind_on_sigusr2() {
     station.signal(libc::SIGTERM);
     assert!(station.wait().success());
 }
+
+#[test]
+fn renew_with_strict_unusable_pion_keeps_old_node_serving_and_writes_handoff_failed() {
+    let mut station = Station::new("renew-strict-pion-fail");
+    station.start("");
+    station.up();
+    let pid = station.pid();
+    let old = answered_by(station.mcp());
+
+    // Prepare a new release launcher (triggers `renew` -> `execv` -> `resume()`) whose environment
+    // demands strict Pion while config.json selects "pion" and no usable Pion binary exists.
+    let renewed = station.dir.join("renewed");
+    release_launcher(
+        &station,
+        &format!(
+            "[ \"$1\" = run ] && echo $$ >> '{}'\nexport STILLFAIL_STATION_ENGINE_STRICT=1\nexec \"$BUILT\" \"$@\"\n",
+            renewed.display()
+        ),
+    );
+    write_config(&station, r#"{"http":{"port":0},"engine":"pion"}"#);
+    station.signal(libc::SIGUSR2);
+
+    // Wait for `renew` to exec and the handover attempt to record `handoff-failed`.
+    let failed = until("handoff-failed written on strict unusable pion during renew", || station.file("handoff-failed"));
+    assert_eq!(std::fs::read_to_string(&renewed).unwrap(), format!("{pid}\n"));
+    assert!(failed.contains("stillfail-station-pion"), "unexpected handoff-failed: {failed}");
+    // Old Node must keep serving both ports, and NO second Node may be started.
+    assert_eq!(answered_by(station.mcp()), old);
+    assert_eq!(answered_by(station.admin()), old);
+    assert_eq!(station.started(), vec![old], "strict renew failure must not spawn a fallback Node");
+
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+}

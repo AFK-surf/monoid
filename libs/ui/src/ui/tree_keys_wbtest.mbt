@@ -61,3 +61,99 @@ test "a key catcher of the tree's: under a modal layer it is told nothing; let g
   assert_false(t.key_catching(), msg="no catcher has the focus")
   assert_eq(t.edit_can(), 0)
 }
+
+///|
+test "key_reaches_node follows focus, key catchers, on_key nodes, modals, and app foreground state reactively" {
+  let modal = @signals.signal(false)
+  let target_ref : Ref[@view.View?] = Ref(None)
+  let btn_ref : Ref[@view.View?] = Ref(None)
+  let on_key_ref : Ref[@view.View?] = Ref(None)
+  let catcher_ref : Ref[@view.View?] = Ref(None)
+  let field_state = Field::new()
+  let reached_log : Array[Bool] = []
+  let t = Tester::new(fn(_c) {  }, platform=0, keyboard=true)
+  set_view_app(fn(root) {
+    root.box(fn(box) {
+      target_ref.val = Some(box)
+      box.width(Is(Some(400.0))).height(Is(Some(400.0))) |> ignore
+      box.box(fn(b) {
+        btn_ref.val = Some(b)
+        b.width(Is(Some(80.0))).height(Is(Some(40.0))).focusable(Is(true)).on_press(fn() {  }) |> ignore
+      })
+      |> ignore
+      box.box(fn(k) {
+        on_key_ref.val = Some(k)
+        k
+        .width(Is(Some(80.0)))
+        .height(Is(Some(40.0)))
+        .focusable(Is(true), keys=0)
+        .on_key(fn(ev) { ev.code == key_space })
+        |> ignore
+      })
+      |> ignore
+      key_catcher_node(box, "term", fn(_) {  }, fn(k) {
+        catcher_ref.val = Some(k)
+        k.width(Is(Some(80.0))).height(Is(Some(40.0))) |> ignore
+      })
+      |> ignore
+      field(box, field_state, placeholder="msg") |> ignore
+      box.reacts(fn() { key_reaches_node(box, key_space, 0) }, fn(v) { reached_log.push(v) })
+    })
+    |> ignore
+    root.box(fn(l) { l.over(Is(true)).modal(By(fn() { modal.get() })) |> ignore }) |> ignore
+  })
+  t.draw()
+  let target = target_ref.val.unwrap()
+  assert_true(key_reaches_node(target, key_space, 0), msg="unfocused foreground")
+  // Button with focus_space blocks Space, but not Cmd+K.
+  assert_true(btn_ref.val.unwrap().ask_focus(visible=true))
+  t.draw()
+  assert_false(key_reaches_node(target, key_space, 0), msg="space-taking button focused")
+  assert_true(key_reaches_node(target, key_of_char('k'), mod_cmd), msg="modified shortcut still reaches with button focused")
+  t.ctx().blur()
+  t.draw()
+  assert_true(key_reaches_node(target, key_space, 0), msg="after button blur")
+  // Node with keys=0 + on_key blocks Space.
+  assert_true(on_key_ref.val.unwrap().ask_focus(visible=true))
+  t.draw()
+  assert_false(key_reaches_node(target, key_space, 0), msg="on_key focusable node blocks Space")
+  t.ctx().blur()
+  t.draw()
+  assert_true(key_reaches_node(target, key_space, 0), msg="after on_key blur")
+  // Key catcher blocks all shortcuts.
+  key_catcher_focus_set(catcher_ref.val.unwrap(), true)
+  t.draw()
+  assert_false(key_reaches_node(target, key_space, 0), msg="key catcher blocks Space")
+  assert_false(key_reaches_node(target, key_of_char('k'), mod_cmd), msg="key catcher blocks Cmd+K")
+  t.ctx().blur()
+  t.draw()
+  assert_true(key_reaches_node(target, key_space, 0), msg="after catcher blur")
+  // Text field blocks unless in_field=true.
+  field_state.focus()
+  t.draw()
+  assert_false(key_reaches_node(target, key_space, 0), msg="text field blocks Space")
+  assert_true(key_reaches_node(target, key_of_char('k'), mod_cmd, in_field=true), msg="in_field allows Cmd+K")
+  // Clear focus -> reaches again.
+  t.ctx().blur()
+  t.draw()
+  assert_true(key_reaches_node(target, key_space, 0), msg="after field blur")
+  // Modal layer blocks target.
+  modal.set(true)
+  t.draw()
+  assert_false(key_reaches_node(target, key_space, 0), msg="modal over target blocks Space")
+  modal.set(false)
+  t.draw()
+  assert_true(key_reaches_node(target, key_space, 0), msg="modal closed restores Space")
+  // App unfocused blocks Space.
+  t.app_state(true, false)
+  t.draw()
+  assert_false(key_reaches_node(target, key_space, 0), msg="background window blocks Space")
+  t.app_state(true, true)
+  t.draw()
+  assert_true(key_reaches_node(target, key_space, 0), msg="foreground window restores Space")
+  assert_eq(
+    reached_log,
+    [true, false, true, false, true, false, true, false, true, false, true, false, true],
+    msg="each blocker and recovery must reactively flip key_reaches_node",
+  )
+}

@@ -252,6 +252,7 @@ export class AirPlayControlServer {
       const ext = extname(rawName).toLowerCase();
       const safeExt = SAFE_EXT.test(ext) ? ext : ".audio";
       const tmpPath = join(tmpdir(), `stillfail-airplay-${randomBytes(8).toString("hex")}${safeExt}`);
+      let result: unknown;
       try {
         await new Promise<void>((resolve, reject) => {
           const out = createWriteStream(tmpPath, { mode: 0o600 });
@@ -285,16 +286,16 @@ export class AirPlayControlServer {
           });
         });
         const credentials = (await this.#credentials.get(d.ws, d.id)) ?? undefined;
-        const result = await this.#adapter.control({
+        result = await this.#adapter.control({
           identifier: d.target,
           ...(credentials ? { credentials } : {}),
           action: "stream_audio",
           args: { path: tmpPath },
         });
-        sendJson(res, 200, { ok: true, result });
       } finally {
         await unlink(tmpPath).catch(() => {});
       }
+      sendJson(res, 200, { ok: true, result });
       return;
     }
 

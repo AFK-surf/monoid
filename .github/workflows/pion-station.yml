@@ -625,11 +625,15 @@ jobs:
                   case "$natives_state" in
                     "completed success")
                       echo "(pipeline natives done after $((SECONDS - t0)) s: run $run)"
-                      if ! ( (gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-linux-x64-$GITHUB_SHA" -D "$inbox" ||
-                             gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$inbox") && \
-                            node scripts/native-handoff.mjs get "$inbox" "$GITHUB_SHA" --targets linux-x64); then
+                      dl="$RUNNER_TEMP/natives-dl"
+                      rm -rf "$dl" && mkdir -p "$dl"
+                      if ! ( (gh run download "$run" -R "$GITHUB_REPOSITORY" -p "natives-linux-x64*-$GITHUB_SHA" -D "$dl" ||
+                             gh run download "$run" -R "$GITHUB_REPOSITORY" -n "natives-$GITHUB_SHA" -D "$dl") && \
+                            find "$dl" -type f -name '*.r2.json' -exec mv {} "$inbox"/ \; && \
+                            rm -rf "$dl" && \
+                            node scripts/native-handoff.mjs get "$inbox" "$GITHUB_SHA" --targets linux-x64 --exclude-parts mesh); then
                         echo "warning: failed to restore the Linux natives from run $run; clearing partial inbox"
-                        rm -rf "$inbox"
+                        rm -rf "$dl" "$inbox"
                         mkdir -p "$inbox"
                       fi
                       break ;;

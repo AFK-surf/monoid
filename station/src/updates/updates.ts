@@ -66,7 +66,7 @@ import { sdkPrefix as cursorPrefix, sdkVersionSoon as cursorVersionSoon } from "
 import { sdkPrefix as copilotPrefix, sdkVersionSoon as copilotVersionSoon } from "../agents/copilot.ts";
 import { canSwitchCodexSoon, captureCodexSoon, codexBinarySoon, hasCodexHostSoon, missingCodexHost, restoreCodex, switchCodex, type CodexEntry } from "./codex-repair.ts";
 import {
-  DEVIN_MANIFEST, type Env, type How, type Kind, KINDS, NotFinished, type OwnNode, RUNTIMES, Unable, findCommandSoon, howToInstallSoon, howToUpdateSoon,
+  DEVIN_MANIFEST, type Env, type How, type Kind, KINDS, NotFinished, type OwnNode, RUNTIMES, Unable, findCommandSoon, howToInstallSoon, howToUninstallSoon, howToUpdateSoon,
   isNpmInstall, kindCommand, kindName, kindPackage, linkBesideNpm, npmInstallSoon, ownNode, ownNodeHome, pinNpmVersion, putOwnNodes, putOwnNodesSoon,
   removeOwnNodeLinks, run, runLines,
 } from "./runtimes.ts";
@@ -98,6 +98,8 @@ export type SoftwareVersion = {
   autoWhen?: string[];
   autoHeld?: true;
   updatable: boolean;
+  /// A runtime installed here that the pages can remove (`uninstall`), the way it was installed.
+  uninstallable: boolean;
   repairable?: boolean;
   note?: string;
   state: "idle" | "updating" | "failed";
@@ -160,7 +162,10 @@ export type UpdatesOptions = {
   running?: () => number;
   /// The station's own release only (a rig runs no runtime: rig/main.ts): the runtimes' versions are not read.
   stationOnly?: boolean;
-  /// Told when a runtime was installed or updated here (the machine's logins read again), and whether it is there now.
+  /// How many turns run now on a runtime (the hub's): one is not removed under them.
+  runningOn?: (kind: RuntimeKind) => number;
+  /// Told when a runtime was installed, updated or removed here (the machine's logins read again), and whether it is
+  /// there now.
   runtimeChanged?: (kind: RuntimeKind, installed: boolean, replaced: boolean) => void;
   /// The Codex installation's code-mode host (tests can supply a probe).
   codexHostProbe?: typeof missingCodexHost;
@@ -181,6 +186,11 @@ type Item = {
   version: string | null;
   latest: string | null;
   how: How | null;
+  /// How it is removed from the machine (a runtime installed here), else why it cannot be from here.
+  uninstall: How | null;
+  unremovable: Words | null;
+  /// Where the station's PATH finds it (a runtime's command), or where its package is (an SDK's prefix).
+  at: string | null;
   repairable: boolean;
   /// Why it cannot be updated from here.
   note: Words | null;
@@ -201,7 +211,7 @@ type Item = {
   earlier: Release[];
 };
 
-const empty = (): Item => ({ installed: false, version: null, latest: null, how: null, repairable: false, note: null, updating: null, progress: null, step: null, percent: null, done: null, failed: null, channel: null, earlier: [] });
+const empty = (): Item => ({ installed: false, version: null, latest: null, how: null, uninstall: null, unremovable: null, at: null, repairable: false, note: null, updating: null, progress: null, step: null, percent: null, done: null, failed: null, channel: null, earlier: [] });
 
 /// What the station's update started from the pages leaves in <data>/run/update.started, for whichever process runs
 /// the station when it ends.
@@ -330,6 +340,7 @@ export class Updates {
   private retrySerial = 0;
   private lastCheck: number | null = null;
   private running: () => number;
+  private runningOn: (kind: RuntimeKind) => number;
   private runtimeChanged: (kind: RuntimeKind, installed: boolean, replaced: boolean) => void;
   private codexHostProbe: typeof missingCodexHost;
   private startInstaller: typeof startInstaller;
@@ -379,6 +390,7 @@ export class Updates {
     this.timing = { ...TIMING, ...o.timing };
     this.trusted = o.trusted;
     this.running = o.running ?? (() => 0);
+    this.runningOn = o.runningOn ?? (() => 0);
     this.kinds = o.stationOnly === true ? [] : RUNTIMES;
     this.runtimeChanged = o.runtimeChanged ?? (() => {});
     this.codexHostProbe = o.codexHostProbe ?? missingCodexHost;
@@ -404,6 +416,11 @@ export class Updates {
   /// How many turns run now, for what an update waits on when it has to restart the station.
   countRunning(running: () => number) {
     this.running = running;
+  }
+
+  /// How many turns run on a runtime, for what its removal waits for.
+  countRunningOn(runningOn: (kind: RuntimeKind) => number) {
+    this.runningOn = runningOn;
   }
 
   /// What to do when a runtime was installed or updated from here.
@@ -626,6 +643,7 @@ export class Updates {
         autoWhen,
         autoHeld,
         updatable: item.how !== null || here,
+        uninstallable: !station && item.installed && item.uninstall !== null,
         repairable: item.repairable || undefined,
         note: item.note ? say(item.note, lang) : undefined,
         state: item.updating !== null ? "updating" : item.failed !== null ? "failed" : "idle",
@@ -770,9 +788,15 @@ export class Updates {
       } catch {}
     }
     let latest: string | null = null;
-    if (kind === "hermes") return { ...empty(), installed: found !== null, version, latest: null, how: null, note: { key: "station.updates.hermesExternal" } };
+    const removal = found ? await howToUninstallSoon(kind, found, env) : null;
+    const removed = {
+      uninstall: removal instanceof Unable ? null : removal,
+      unremovable: removal instanceof Unable ? { key: removal.key, args: removal.args } : null,
+      at: found?.onPath ?? null,
+    };
+    if (kind === "hermes") return { ...empty(), ...removed, installed: found !== null, version, latest: null, how: null, note: { key: "station.updates.hermesExternal" } };
     // The Antigravity CLI says no latest version but to itself (`agy update`, which gets it).
-    if (kind === "agy") return { ...empty(), installed: found !== null, version, latest: null, how: found ? ((await howToUpdateSoon(kind, found, env)) as How) : ((await howToInstallSoon(kind, this.env)) as How) };
+    if (kind === "agy") return { ...empty(), ...removed, installed: found !== null, version, latest: null, how: found ? ((await howToUpdateSoon(kind, found, env)) as How) : ((await howToInstallSoon(kind, this.env)) as How) };
     try {
       // Devin's builds are its installer's, said in its manifest; the others' npm packages.
       const said = await fetchJson(kind === "devin" ? this.devinManifest : `${this.registry}/${kindPackage(kind)}/latest`);
@@ -787,6 +811,7 @@ export class Updates {
     const how = missing ? null : found ? await howToUpdateSoon(kind, found, env) : await howToInstallSoon(kind, this.env, await this.ownNodeSoon());
     return {
       ...empty(),
+      ...removed,
       installed: found !== null,
       version,
       latest,
@@ -814,7 +839,19 @@ export class Updates {
       log.warn("updates", "the runtime's latest version not read", { runtime: kind, error: (e as Error).message });
     }
     const how = await npmInstallSoon(this.env, await this.ownNodeSoon(), ["install", "-g", "--prefix", prefix, `${kindPackage(kind)}@latest`], kindName(kind));
-    return { ...empty(), installed: version !== null, version, latest, how: how instanceof Unable ? null : how, note: how instanceof Unable ? { key: how.key, args: how.args } : null };
+    // Removed by the same npm from the same prefix.
+    const removal = version === null ? null : await npmInstallSoon(this.env, await this.ownNodeSoon(), ["uninstall", "-g", "--prefix", prefix, kindPackage(kind)], kindName(kind));
+    return {
+      ...empty(),
+      installed: version !== null,
+      version,
+      latest,
+      how: how instanceof Unable ? null : how,
+      note: how instanceof Unable ? { key: how.key, args: how.args } : null,
+      uninstall: removal instanceof Unable ? null : removal,
+      unremovable: removal instanceof Unable ? { key: removal.key, args: removal.args } : null,
+      at: version === null ? null : prefix,
+    };
   }
 
   /// Turns updating by itself on or off (as someone asked, from a page): kept in its config; turned on, what is out is
@@ -1082,6 +1119,63 @@ export class Updates {
       i.done = null;
     });
     this.spawn(() => this.updateRuntime(kind, how));
+  }
+
+  /// Removes a runtime from the machine the way it was installed (runtimes.ts `howToUninstallSoon`): answers once it
+  /// has started; how it goes shows in `get` (正在卸载, then not installed, or why it is still there). Its accounts and
+  /// chats are left, so it can be installed again. Refused while it or the station updates, where it cannot be removed
+  /// from here (saying how to remove it on the machine), and while a turn runs on it. Refusals are said in `lang`.
+  async uninstall(id: string, lang: Lang = stationLang()): Promise<void> {
+    if (this.closed) throw new Error("updates are closed");
+    const kind = this.kinds.find((k) => k === id);
+    if (kind === undefined) throw refused(lang, "station.updates.noSuchItem", { id });
+    const item = this.items[kind];
+    const name = kindName(kind);
+    if (item.updating !== null) throw refused(lang, "station.updates.uninstallBusy", { name });
+    if (this.items.station.updating !== null) throw refused(lang, "station.updates.stationBusyUninstall", { name });
+    if (!item.installed) throw refused(lang, "station.updates.uninstallNotInstalled", { name });
+    const how = item.uninstall;
+    if (how === null) throw new Error(item.unremovable ? say(item.unremovable, lang) : tr(lang, "station.updates.uninstallElsewhere", { name, path: item.at ?? "" }));
+    const turns = this.runningOn(kind);
+    if (turns > 0) throw refused(lang, "station.updates.uninstallTurns", { name, count: turns });
+    this.set(kind, (i) => {
+      i.updating = this.fibers.now();
+      i.progress = { key: "station.updates.uninstalling" };
+      i.percent = null;
+      i.failed = null;
+      i.done = null;
+    });
+    this.spawn(() => this.uninstallRuntime(kind, how));
+  }
+
+  private async uninstallRuntime(kind: RuntimeKind, how: How) {
+    log.info("updates", "uninstalling a runtime", { runtime: kind, program: how.program, args: how.args });
+    let failed: Words | null = null;
+    try {
+      const env = await withShellCommand(kindCommand(kind), this.env);
+      const [ok, said] = await runLines(how.program, how.args, how.node ? machine.prependPath(env, how.node.bin) : env, this.timing.runtimeLimit);
+      if (!ok) failed = { text: tail(said, stationLang()) };
+    } catch (e) {
+      failed = e instanceof NotFinished ? { key: "station.updates.timedOut" } : { text: (e as Error).message };
+    }
+    let read: Item;
+    try {
+      read = await this.readRuntime(kind);
+    } catch (error) {
+      this.set(kind, (item) => { item.updating = null; item.progress = null; item.percent = null; item.failed = failed ?? { text: (error as Error).message }; });
+      try { this.runtimeChanged(kind, this.items[kind].installed, false); } catch {}
+      this.autoUpdate("a runtime removal ended without a version reading");
+      return;
+    }
+    // Ended well but still found: another installation is where the station looks (or the command did nothing).
+    if (failed === null && read.installed) failed = { key: "station.updates.stillInstalled", args: { name: kindName(kind), program: parse(how.program).name, path: read.at ?? "" } };
+    if (failed) log.warn("updates", "the runtime not uninstalled", { runtime: kind, failed: say(failed, "en") });
+    this.set(kind, (i) => Object.assign(i, read, { failed }));
+    try {
+      this.runtimeChanged(kind, read.installed, false);
+    } catch {}
+    // The station's own update waited for this one.
+    this.autoUpdate("a newer release out, waited for a runtime");
   }
 
   /// Updates the same installation and through the same path as the software page, or joins its update. A stale

@@ -848,6 +848,11 @@ export class Hub {
     return [...this.actors.values()].filter((a) => a.processState() === "running").length;
   }
 
+  /// How many turns are running on `runtime` (one is not removed from the machine under them: updates.ts `uninstall`).
+  runningOn(runtime: RuntimeKind): number {
+    return [...this.actors.values()].filter((a) => a.runtime === runtime && a.processState() === "running").length;
+  }
+
   anyRunning(): boolean {
     return this.running() > 0;
   }

@@ -449,7 +449,7 @@ test "大屏, words a mouse picked in a message, the list then scrolled on till 
 }
 
 ///|
-test "大屏, selectionIntent enabled: mouse selection shows 40pt dual-button 引用 | 戳一下 glass bar, hides on scroll out and returns on scroll back, and 戳一下 opens Poke popover at real anchor" {
+test "大屏, selectionIntent enabled: mouse selection shows 30pt dual-button 引用 | 戳一下 glass bar, hides on scroll out and returns on scroll back, and 戳一下 opens Poke popover at real anchor" {
   let calls : Array[Made] = []
   let lang = @signals.signal("")
   let t = pick_list_tester(calls, lang~)
@@ -466,13 +466,13 @@ test "大屏, selectionIntent enabled: mouse selection shows 40pt dual-button �
     fail("no 戳一下 in dual-button bar")
   }
   assert_true(px > qx + qw, msg="戳一下 sits to the right of 引用")
-  // Single 40pt liquid glass pill + hairline rule_down divider between the two actions
+  // Single 30pt liquid glass pill + hairline rule_down divider between the two actions
   let glass = t.drawn_glass().filter(fn(g) { holds_middle(g.0, g.1, g.2, g.3, (qx, qy, qw, qh)) })
   assert_eq(glass.length(), 1, msg="single liquid glass capsule")
   assert_eq(glass[0].4, 6)
-  assert_true((glass[0].3 - 40.0).abs() < 0.5, msg="height 40pt: \{glass[0].3}")
+  assert_true((glass[0].3 - 30.0).abs() < 0.5, msg="height 30pt: \{glass[0].3}")
   let seps = t.drawn_rects().filter(fn(r) {
-    (r.2 - @sf.rule_w).abs() < 0.1 && (r.3 - 16.0).abs() < 0.5 && r.0 >= qx + qw && r.0 <= px
+    (r.2 - @sf.rule_w).abs() < 0.1 && (r.3 - 12.0).abs() < 0.5 && r.0 >= qx + qw && r.0 <= px
   })
   assert_eq(seps.length(), 1, msg="hairline rule_down separator between 引用 and 戳一下")
 
@@ -525,4 +525,19 @@ test "大屏, selectionIntent enabled: mouse selection shows 40pt dual-button �
   assert_eq(named(calls, "chat.selectionIntent").length(), 1, msg="chat.selectionIntent called")
   assert_true(t.find("轻量模型结合当前对话上下文") is Some(_), msg="Poke popover opened with reply")
   @sfbase.selection_intent_feature.set(false)
+}
+
+///|
+test "大屏, words a mouse picked in a message: a wheel turned over 引用 scrolls the list under it, as over the words" {
+  let calls : Array[Made] = []
+  let t = pick_list_tester(calls)
+  t.check_looks(false)
+  let (bx, by, bw, bh) = words_rect(t, "表 18")
+  mouse_dragged(t, bx + 1.0, by + bh / 2.0, bx + bw - 1.0, by + bh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard pill_over(t, by) is Some((qx, qy)) else { fail("no 引用 over the words picked") }
+  t.wheel(qx + 4.0, qy + 4.0, -150.0)
+  t.run_for(@ui.move_most_ms)
+  let (_, by2, _, _) = words_rect(t, "表 18")
+  assert_true(by2 > by + 50.0, msg="the list did not scroll under 引用: \{by} -> \{by2}")
 }

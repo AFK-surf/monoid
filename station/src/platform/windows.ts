@@ -732,6 +732,22 @@ export const windows: Platform = {
     }
     return null;
   },
+  async shimUninstall(found, pkg, env) {
+    const winget = wingetPackage(found.real);
+    if (winget !== null) {
+      const args = ["uninstall", "--id", winget, "--exact", "--silent", "--disable-interactivity", "--accept-source-agreements"];
+      return { program: await wingetCommandSoon(env), args };
+    }
+    const dir = dirname(found.onPath);
+    const there = (p: string) => stat(p).then(() => true, () => false);
+    if (await there(join(dir, "vp.exe"))) return { program: join(dir, "vp.exe"), args: ["uninstall", "-g", pkg] };
+    if (/\.cmd$/i.test(found.onPath) && (await there(join(dir, "node_modules", ...pkg.split("/"))))) {
+      const own = join(dir, "npm.cmd");
+      const npm = (await there(own)) ? own : (await findCommandSoon("npm", env))?.onPath;
+      return npm === undefined ? "no-npm" : { program: npm, args: ["uninstall", "-g", pkg, "--prefix", dir] };
+    }
+    return null;
+  },
   linkCommand: async () => false,
   // Its installer is a shell script (install.sh).
   codexStandalone: false,

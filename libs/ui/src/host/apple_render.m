@@ -83,6 +83,18 @@ typedef struct {
   uint64_t seen_serial;
 } MBAdSlot;
 
+// A bare word's state over time (src/ui/glass.mbt bare_text_who; fveil): its slot's texel in veil_tex.
+#define MB_VEIL_MAX 32
+#define MB_VEIL_TAU 0.09
+#define MB_VEIL_SETTLE_SEC 0.5
+typedef struct {
+  float who;
+  int is_new;
+  uint64_t seen_serial, updated_serial;
+  double settle_left;
+  float cx, cy, hx, hy;
+} MBVeilSlot;
+
 typedef struct {
   CAMetalLayer *layer;
   double w, h, scale;
@@ -116,6 +128,9 @@ typedef struct {
   MBDirty ad_settle_dirty;
   int last_through_n;
   float last_through_tid[MB_THROUGH];
+  id<MTLTexture> veil_tex[2];
+  int veil_cur;
+  MBVeilSlot veil_slots[MB_VEIL_MAX];
 } MBRenderWin;
 static MBRenderWin render_wins[MB_WINS] = {[0 ... MB_WINS - 1] = {.w = 800, .h = 600, .scale = 2}};
 static MBRenderWin *rw = &render_wins[0];
@@ -277,7 +292,7 @@ static uint64_t atlas_seq;
 // half floats), the copies they work in (level j is 1/2^j of the largest capture yet, the glass and the blur's margin
 // round it, not of the target: a composer's strip, not the window; tmp for a Gaussian's first half), the GPU's time of
 // the last frame done
-static id<MTLRenderPipelineState> ppipe, ppipe_deep, cpipe, adpipe;
+static id<MTLRenderPipelineState> ppipe, ppipe_deep, cpipe, adpipe, veilpipe;
 static id<MTLTexture> lv[4], ltmp;
 static int lv_w, lv_h;
 static int lv_shrink_frames, lv_win_max_w, lv_win_max_h, lv_frame_max_w, lv_frame_max_h;
@@ -400,7 +415,8 @@ static NSString *shader_src = @
 "static float mb_wcag_luma(float3 c) {\n"
 "  return 0.2126 * mb_srgb_to_lin(c.r) + 0.7152 * mb_srgb_to_lin(c.g) + 0.0722 * mb_srgb_to_lin(c.b);\n"
 "}\n"
-"static float mb_backdrop_wcag_luma_rect(texture2d<float> bd, constant G& g, float2 c, float2 h) {\n"
+"// (the trimmed mean of what is behind box c ± h, and the least and most of it, each but the one most apart)\n"
+"static float3 mb_backdrop_wcag_range(texture2d<float> bd, constant G& g, float2 c, float2 h) {\n"
 "  float sum = 0.0;\n"
 "  float mx1 = -1.0, mx2 = -1.0;\n"
 "  float mn1 = 2.0, mn2 = 2.0;\n"
@@ -414,18 +430,24 @@ static NSString *shader_src = @
 "      if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }\n"
 "    }\n"
 "  }\n"
-"  return (sum - mx1 - mx2 - mn1 - mn2) / 11.0;\n"
+"  return float3((sum - mx1 - mx2 - mn1 - mn2) / 11.0, mn2, mx2);\n"
+"}\n"
+"static float mb_backdrop_wcag_luma_rect(texture2d<float> bd, constant G& g, float2 c, float2 h) {\n"
+"  return mb_backdrop_wcag_range(bd, g, c, h).x;\n"
 "}\n"
 "static float mb_lin_to_srgb(float y) {\n"
 "  y = clamp(y, 0.0, 1.0);\n"
 "  return y <= 0.0031308 ? (12.92 * y) : (1.055 * pow(max(y, 0.0), 1.0 / 2.4) - 0.055);\n"
 "}\n"
-"static float3 mb_bare_adaptive_ink_at(texture2d<float> bd, constant G& g, float3 rgb, float2 ac, float2 h) {\n"
+"static float2 mb_bare_half(float v) {\n"
+"  float w = floor(v / 4096.0);\n"
+"  return float2(w, v - w * 4096.0);\n"
+"}\n"
+"static float3 mb_bare_ink_for(float3 rgb, float Lbg) {\n"
 "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
 "  if (ch > 0.08) return rgb;\n"
 "  float origL = luma(rgb);\n"
 "  float origY = mb_wcag_luma(rgb);\n"
-"  float Lbg = mb_backdrop_wcag_luma_rect(bd, g, ac, max(h, float2(1.0)));\n"
 "  float target = 4.65;\n"
 "  float out_c;\n"
 "  if (Lbg >= 0.1792) {\n"
@@ -442,6 +464,54 @@ static NSString *shader_src = @
 "    out_c = mb_lin_to_srgb(max(y_pref, y_min));\n"
 "  }\n"
 "  return float3(out_c);\n"
+"}\n"
+"// (the ink bare words of ink rgb take over r, what is behind them: (mean, least, most): turned to the other side of\n"
+"// grey only where that holds 4.5:1 over all of it; over a busy backdrop they keep their own side, their ground\n"
+"// (bare_veil_at) giving them the contrast, so they are not turned back and forth as it moves under them)\n"
+"static float3 mb_bare_ink_pick(float3 rgb, float3 r) {\n"
+"  float3 ink = mb_bare_ink_for(rgb, r.x);\n"
+"  if ((luma(ink) < 0.5) == (luma(rgb) < 0.5)) return ink;\n"
+"  float yi = mb_wcag_luma(ink);\n"
+"  float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);\n"
+"  return cr >= 4.5 ? ink : rgb;\n"
+"}\n"
+"static float3 mb_bare_adaptive_ink_at(texture2d<float> bd, constant G& g, float3 rgb, float2 ac, float2 h) {\n"
+"  return mb_bare_ink_pick(rgb, mb_backdrop_wcag_range(bd, g, ac, max(h, float2(1.0))));\n"
+"}\n"
+"// (the frost across the middle of box ac ± hh behind bare words: their capsule's own colour before it is pulled)\n"
+"static float3 mb_bare_tone(texture2d<float> bd, constant G& g, float2 ac, float2 hh) {\n"
+"  float3 tone = float3(0.0, 0.0, 0.0);\n"
+"  for (int ix = -2; ix <= 2; ix++) {\n"
+"    tone += backdrop(bd, g, float2(ac.x + float(ix) * (hh.x * 0.38), ac.y));\n"
+"  }\n"
+"  return tone * 0.2;\n"
+"}\n"
+"// (what bare words of ink rgb in box ac ± hh want of their state: how far their capsule shows, the worst of what is\n"
+"// behind them leaving them short of 4.5:1, from none there to all of it at 2:1; which side of grey they are, 1 dark)\n"
+"static float2 mb_bare_want(texture2d<float> bd, constant G& g, float3 rgb, float2 ac, float2 hh) {\n"
+"  float3 r = mb_backdrop_wcag_range(bd, g, ac, hh);\n"
+"  float3 ink = mb_bare_ink_pick(rgb, r);\n"
+"  float yi = mb_wcag_luma(ink);\n"
+"  float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);\n"
+"  return float2(1.0 - smoothstep(2.0, 4.5, cr), luma(ink) < 0.5 ? 1.0 : 0.0);\n"
+"}\n"
+"// (the capsule under bare words of ink col, their box ac ± h, as its state st has it (fveil), or worked out now where\n"
+"// it has none (st.a 0): the blurred backdrop's own colour pulled to the side opposite the words' ink)\n"
+"static float4 mb_bare_veil_at(texture2d<float> bd, constant G& g, float4 col, float2 ac, float2 h, float4 st) {\n"
+"  float2 hh = max(h, float2(1.0));\n"
+"  if (st.a < 0.5) st = float4(mb_bare_want(bd, g, col.rgb, ac, hh), 0.0, 1.0);\n"
+"  return float4(mix(mb_bare_tone(bd, g, ac, hh), float3(st.g), mix(0.62, 0.72, st.g)), col.a * st.r * mix(0.72, 0.86, st.g));\n"
+"}\n"
+"// (bare words' ink, their box ac ± h: between their ink on the light side of grey and on the dark side as their state\n"
+"// says (st.g, eased over time: fveil), or picked now where they have none)\n"
+"static float3 mb_bare_ink_held(texture2d<float> bd, constant G& g, float3 rgb, float2 ac, float2 h, float4 st) {\n"
+"  if (st.a < 0.5) return mb_bare_adaptive_ink_at(bd, g, rgb, ac, h);\n"
+"  float bg = mb_backdrop_wcag_luma_rect(bd, g, ac, max(h, float2(1.0)));\n"
+"  return mix(mb_bare_ink_for(rgb, min(bg, 0.1791)), mb_bare_ink_for(rgb, max(bg, 0.1792)), st.g);\n"
+"}\n"
+"// (the state of bare words whose slot the host put in p.z, as -(slot + 1); none: a = 0)\n"
+"static float4 mb_bare_state(texture2d<float> veil_tex, float pz) {\n"
+"  return pz < 0.0 ? veil_tex.read(uint2(uint(-pz + 0.5) - 1u, 0u)) : float4(0.0);\n"
 "}\n"
 "static float3 mb_adaptive_ink_at(texture2d<float> bd, texture2d<float> ad_tex, constant G& g, float3 rgb, float2 ac, float fallback_r, float4 rect, float2 sample_off, bool is_icon) {\n"
 "  float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);\n"
@@ -529,7 +599,7 @@ static NSString *shader_src = @
 "}\n"
 "vertex VOut vmain(uint vid [[vertex_id]], uint iid [[instance_id]],\n"
 "    const device Inst* inst [[buffer(0)]], constant U& u [[buffer(1)]], constant G& g [[buffer(2)]],\n"
-"    texture2d<float> bd [[texture(2)]], texture2d<float> ad_tex [[texture(4)]]) {\n"
+"    texture2d<float> bd [[texture(2)]], texture2d<float> ad_tex [[texture(4)]], texture2d<float> veil_tex [[texture(5)]]) {\n"
 "  Inst I = inst[iid];\n"
 "  float2 corner = float2((vid == 1 || vid == 4 || vid == 5) ? 1.0 : 0.0,\n"
 "                         (vid == 2 || vid == 3 || vid == 5) ? 1.0 : 0.0);\n"
@@ -548,7 +618,7 @@ static NSString *shader_src = @
 "  if (vid == 0u || vid == 3u) {\n"
 "    if (kind == 7) {\n"
 "      col.rgb = I.pad.w < 0.0\n"
-"        ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.rect.xy + I.rect.zw * 0.5, float2(max(-I.pad.w, I.rect.z), max(max(-I.pad.w * 0.5, I.rect.w), 1.0)))\n"
+"        ? mb_bare_ink_held(bd, g, col.rgb, I.pad.yz, mb_bare_half(-I.pad.w), mb_bare_state(veil_tex, I.p.z))\n"
 "        : mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, I.p.zw, false);\n"
 "    } else if (kind == 10 && I.pad.w != 0.0) {\n"
 "      col.rgb = I.pad.w < 0.0\n"
@@ -558,6 +628,8 @@ static NSString *shader_src = @
 "      col.rgb = I.pad.w < 0.0\n"
 "        ? mb_bare_adaptive_ink_at(bd, g, col.rgb, I.rect.xy + I.rect.zw * 0.5 + I.p.zw, float2(max(-I.pad.w * 0.5, 1.0)))\n"
 "        : mb_adaptive_ink_at(bd, ad_tex, g, col.rgb, I.pad.yz, I.pad.w * 0.5, I.rect, I.p.zw, true);\n"
+"    } else if (kind == 2 && I.pad.w < 0.0) {\n"
+"      col = mb_bare_veil_at(bd, g, col, I.pad.yz, mb_bare_half(-I.pad.w), mb_bare_state(veil_tex, I.p.z));\n"
 "    } else if (kind == 0 && I.pad.w < 0.0) {\n"
 "      float ch = max(max(col.r, col.g), col.b) - min(min(col.r, col.g), col.b);\n"
 "      float2 capCenter, capHalf;\n"
@@ -1658,7 +1730,8 @@ MB_CORNER_SL
 "  }\n"
 "  if (kind == 2) {\n"
 "    // as Core Animation's: the shape blurred, sigma its radius (corner.sl mb_shadow)\n"
-"    float a = mb_shadow(p - c, hs, rad, max(I.p.w, 0.25));\n"
+"    // (a bare words' capsule, slot 23 below 0: the box's own edge, its ends as a capsule's are drawn, not blurred)\n"
+"    float a = I.pad.w < 0.0 ? clamp(0.5 - d * u.scale, 0.0, 1.0) : mb_shadow(p - c, hs, rad, max(I.p.w, 0.25));\n"
 "    // glass's: only outside its box (c2.y above it)\n"
 "    if (I.c2.x > 0.5) {\n"
 "      float2 q = p - c + float2(0.0, I.c2.y);\n"
@@ -1960,6 +2033,21 @@ MB_CORNER_SL
 "    if (abs(nextT - target) < 0.003) nextT = target;\n"
 "  }\n"
 "  return float4(mb_pack16(nextT), latch, clamp(bgL, 0.0, 1.0));\n"
+"}\n"
+"// The state of bare words over time (veil_run_updates): each its slot's texel, how far its capsule shows (r) and\n"
+"// which side of grey its words are (g: 1 dark), eased towards what is behind them now (mb_bare_want) over u.param.w\n"
+"// seconds; a slot new takes it at once (a = 1: kept).\n"
+"struct VeilU { float4 box; float4 ink; float4 param; };\n"
+"fragment float4 fveil(float4 pos [[position]], texture2d<float> bd [[texture(0)]],\n"
+"    texture2d<float> prev_veil [[texture(1)]], constant VeilU& u [[buffer(0)]], constant G& g [[buffer(1)]]) {\n"
+"  float2 want = mb_bare_want(bd, g, u.ink.rgb, u.box.xy, max(u.box.zw, float2(1.0)));\n"
+"  float4 prev = prev_veil.read(uint2(uint(u.param.z + 0.5), 0));\n"
+"  float k = (u.param.x > 0.5 || prev.a < 0.5) ? 1.0 : (u.param.y <= 0.0 ? 0.0 : 1.0 - exp(-u.param.y / u.param.w));\n"
+"  float2 now = mix(prev.rg, want, k);\n"
+"  // (kept in 8 bits: a step under half of one is lost, so within three of where it goes it is there)\n"
+"  if (abs(now.x - want.x) < 0.013) now.x = want.x;\n"
+"  if (abs(now.y - want.y) < 0.013) now.y = want.y;\n"
+"  return float4(now, 0.0, 1.0);\n"
 "}\n";
 
 // What draws by `frag` only instances of one kind (`kind`; -1 any).
@@ -2057,6 +2145,12 @@ static void prepare_gpu(void) {
   ad.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
   adpipe = [dev newRenderPipelineStateWithDescriptor:ad error:&err];
   if (!adpipe) NSLog(@"adaptive pipeline: %@", err);
+  MTLRenderPipelineDescriptor *vd = [MTLRenderPipelineDescriptor new];
+  vd.vertexFunction = [lib newFunctionWithName:@"vpost"];
+  vd.fragmentFunction = [lib newFunctionWithName:@"fveil"];
+  vd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
+  veilpipe = [dev newRenderPipelineStateWithDescriptor:vd error:&err];
+  if (!veilpipe) NSLog(@"veil pipeline: %@", err);
   atlas = atlas_texture(0, MB_ATLAS_SIDE);
   catlas = atlas_texture(1, MB_ATLAS_COLOR_SIDE);
   inflight = dispatch_semaphore_create(3);
@@ -2448,11 +2542,10 @@ static int grab_of_with_donors(Grab *m, const float *f, int32_t start, int32_t e
       continue;
     }
     if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != a[20]) break;
-    if ((bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f && (!donor_of || donor_of[i] >= 0)) {
+    if ((bk == 2 || bk == 7 || bk == 10 || bk == 11) && b[23] < 0.0f && (!donor_of || donor_of[i] >= 0)) {
       float cx, cy, hx, hy;
-      if (bk == 7) {
-        cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
-        hx = fmaxf(-b[23], b[2]); hy = fmaxf(fmaxf(-b[23] * 0.5f, b[3]), 1.0f);
+      if (bk == 2 || bk == 7) {
+        mb_bare_text_boxf(b, &cx, &cy, &hx, &hy);
       } else if (bk == 10) {
         cx = b[0] + b[2] * 0.5f; cy = b[1] + b[3] * 0.5f;
         hx = hy = fmaxf(-b[23] * 0.5f, 1.0f);
@@ -2724,6 +2817,7 @@ static void ad_forget(MBRenderWin *w) {
   os_unfair_lock_lock(&present_mu);
   w->ad_settle_dirty = (MBDirty){0};
   os_unfair_lock_unlock(&present_mu);
+  memset(w->veil_slots, 0, sizeof w->veil_slots);
 }
 
 static void ensure_ad_tex(MBRenderWin *w) {
@@ -3056,6 +3150,133 @@ static double ad_next_dt(MBRenderWin *w) {
   return dt;
 }
 
+static void ensure_veil_tex(MBRenderWin *w) {
+  if (!w || w->veil_tex[0]) return;
+  for (int i = 0; i < 2; i++) {
+    MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+                                                                                  width:MB_VEIL_MAX
+                                                                                 height:1
+                                                                              mipmapped:NO];
+    td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    td.storageMode = MTLStorageModeShared;
+    w->veil_tex[i] = [dev newTextureWithDescriptor:td];
+    // (no state till a slot's pass: a = 0)
+    uint8_t zero[MB_VEIL_MAX * 4] = {0};
+    [w->veil_tex[i] replaceRegion:MTLRegionMake2D(0, 0, MB_VEIL_MAX, 1) mipmapLevel:0 withBytes:zero
+                      bytesPerRow:MB_VEIL_MAX * 4];
+  }
+  w->veil_cur = 0;
+}
+
+// (each bare word's and capsule's whose (slot 6, above 0) given its slot in its place, -(slot + 1), a slot new taking
+// its state at once in its first pass; what is in it of a window's frame at another moment the same)
+static void veil_assign(MBRenderWin *w, float *f, int32_t count, uint64_t serial) {
+  if (!w || !veilpipe) return;
+  int any = 0;
+  for (int32_t i = 0; i < count; i++) {
+    float *a = f + (size_t)i * MB_INST;
+    int kind = (int)(a[5] + 0.5f);
+    if ((kind != 2 && kind != 7) || a[23] >= 0.0f || a[6] == 0.0f) continue;
+    if (a[6] < 0.0f) {
+      int sl = (int)(-a[6] + 0.5f) - 1;
+      if (sl >= 0 && sl < MB_VEIL_MAX) w->veil_slots[sl].seen_serial = serial;
+      continue;
+    }
+    any = 1;
+    float who = a[6];
+    int sl = -1;
+    for (int k = 0; k < MB_VEIL_MAX; k++)
+      if (w->veil_slots[k].who == who) { sl = k; break; }
+    if (sl < 0) {
+      uint64_t oldest = UINT64_MAX;
+      for (int k = 0; k < MB_VEIL_MAX; k++) {
+        if (w->veil_slots[k].who == 0.0f) { sl = k; break; }
+        if (w->veil_slots[k].seen_serial != serial && w->veil_slots[k].seen_serial < oldest) {
+          oldest = w->veil_slots[k].seen_serial;
+          sl = k;
+        }
+      }
+      if (sl < 0) continue;
+      memset(&w->veil_slots[sl], 0, sizeof w->veil_slots[sl]);
+      w->veil_slots[sl].who = who;
+      w->veil_slots[sl].is_new = 1;
+    }
+    w->veil_slots[sl].seen_serial = serial;
+    a[6] = -(float)(sl + 1);
+  }
+  if (any) ensure_veil_tex(w);
+}
+
+// (how many capsules after the glass run [.., end) of capture `tid` (till the next glass) want their state eased now)
+static int veil_wanted(MBRenderWin *w, const float *f, int32_t end, int32_t count, float tid, uint64_t serial) {
+  if (!w || !w->veil_tex[0] || !veilpipe) return 0;
+  int n = 0;
+  for (int32_t i = end; i < count; i++) {
+    const float *b = f + (size_t)i * MB_INST;
+    int bk = (int)(b[5] + 0.5f);
+    if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != tid) break;
+    if (bk != 2 || b[23] >= 0.0f || b[6] >= 0.0f) continue;
+    int sl = (int)(-b[6] + 0.5f) - 1;
+    if (sl >= 0 && sl < MB_VEIL_MAX && w->veil_slots[sl].updated_serial != serial) n++;
+  }
+  return n;
+}
+
+// The state of the bare words whose capsules come after the glass run [.., end) of capture `tid`, seen through it
+// (gtex, as gu places it), eased by dt, each once a frame, in a pass of its own (no render pass open on cb); their frames
+// asked for while what is behind them moved lately (backdrop_changed) or they are new.
+static void veil_run_updates(id<MTLCommandBuffer> cb, MBRenderWin *w, const float *f, int32_t end, int32_t count,
+                             float tid, int backdrop_changed, double dt, uint64_t serial) {
+  if (!veil_wanted(w, f, end, count, tid, serial) || !gtex) return;
+  int cur = w->veil_cur, nxt = 1 - cur;
+  id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
+  [bl copyFromTexture:w->veil_tex[cur] sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+           sourceSize:MTLSizeMake(MB_VEIL_MAX, 1, 1) toTexture:w->veil_tex[nxt] destinationSlice:0 destinationLevel:0
+    destinationOrigin:MTLOriginMake(0, 0, 0)];
+  [bl endEncoding];
+  MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+  rp.colorAttachments[0].texture = w->veil_tex[nxt];
+  rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+  rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+  id<MTLRenderCommandEncoder> e = [cb renderCommandEncoderWithDescriptor:rp];
+  [e setRenderPipelineState:veilpipe];
+  [e setViewport:(MTLViewport){0, 0, (double)MB_VEIL_MAX, 1.0, 0, 1}];
+  [e setFragmentTexture:gtex atIndex:0];
+  [e setFragmentTexture:w->veil_tex[cur] atIndex:1];
+  [e setFragmentBytes:&gu length:sizeof gu atIndex:1];
+  for (int32_t i = end; i < count; i++) {
+    const float *b = f + (size_t)i * MB_INST;
+    int bk = (int)(b[5] + 0.5f);
+    if ((bk == 5 || bk == 6) && b[20] < 0.0f && b[20] != tid) break;
+    if (bk != 2 || b[23] >= 0.0f || b[6] >= 0.0f) continue;
+    int sl = (int)(-b[6] + 0.5f) - 1;
+    if (sl < 0 || sl >= MB_VEIL_MAX) continue;
+    MBVeilSlot *v = &w->veil_slots[sl];
+    if (v->updated_serial == serial) continue;
+    float cx, cy, hx, hy;
+    mb_bare_text_boxf(b, &cx, &cy, &hx, &hy);
+    struct { float box[4]; float ink[4]; float param[4]; } u = {
+      {cx, cy, hx, hy}, {b[8], b[9], b[10], 1.0f}, {v->is_new ? 1.0f : 0.0f, (float)dt, (float)sl, (float)MB_VEIL_TAU}};
+    [e setScissorRect:(MTLScissorRect){(NSUInteger)sl, 0, 1, 1}];
+    [e setFragmentBytes:&u length:sizeof u atIndex:0];
+    [e drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+    if (v->is_new) v->settle_left = 0.0;
+    else if (backdrop_changed) v->settle_left = MB_VEIL_SETTLE_SEC;
+    else v->settle_left = v->settle_left > dt ? v->settle_left - dt : 0.0;
+    v->is_new = 0;
+    v->updated_serial = serial;
+    v->cx = cx; v->cy = cy; v->hx = hx; v->hy = hy;
+  }
+  [e endEncoding];
+  w->veil_cur = nxt;
+}
+
+// (a pass's encoder given the bare words' state, its vertex texture 5: the atlas where there is none)
+static void bind_veil(id<MTLRenderCommandEncoder> enc) {
+  id<MTLTexture> vt = (at_win && at_win->veil_tex[at_win->veil_cur]) ? at_win->veil_tex[at_win->veil_cur] : atlas;
+  [enc setVertexTexture:vt atIndex:5];
+}
+
 static void ad_finalize_frame(MBRenderWin *w, int whole_frame, uint64_t serial) {
   if (!w) return;
   int settling = 0, has_ad = 0;
@@ -3072,6 +3293,19 @@ static void ad_finalize_frame(MBRenderWin *w, int whole_frame, uint64_t serial) 
     if (s->settle_left > 0.0) {
       settling = 1;
       dirty_add(&sd, s->cx - s->hx - 4.0, s->cy - s->hy - 4.0, s->hx * 2.0 + 8.0, s->hy * 2.0 + 8.0);
+    }
+  }
+  for (int k = 0; k < MB_VEIL_MAX; k++) {
+    MBVeilSlot *v = &w->veil_slots[k];
+    if (v->who == 0.0f) continue;
+    if (whole_frame && v->seen_serial != serial) {
+      memset(v, 0, sizeof *v);
+      continue;
+    }
+    // (a bare word's capsule easing: its box and its capsule's reach past it, glass.mbt bare_veil_pad)
+    if (v->settle_left > 0.0) {
+      settling = 1;
+      dirty_add(&sd, v->cx - v->hx - 16.0, v->cy - v->hy - 10.0, v->hx * 2.0 + 32.0, v->hy * 2.0 + 20.0);
     }
   }
   sd.glass_closure = settling;
@@ -3212,7 +3446,7 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
       float tid = bi[20];
       int k = (int)(bi[5] + 0.5f);
       int is_glass = tid < 0.0f;
-      int is_ad = k == 7 || ((k == 10 || k == 11) && bi[23] != 0.0f);
+      int is_ad = k == 7 || ((k == 2 || k == 10 || k == 11) && bi[23] != 0.0f);
       if (!is_glass && !is_ad) continue;
       int32_t run = i;
       if (is_glass) {
@@ -3271,9 +3505,9 @@ static int under_take(const float *f, int32_t start, int32_t count, int32_t piec
         float ex0, ey0, ex1, ey1;
         if (bi[23] < 0.0f) {
           float cx, cy, hx, hy;
-          if (k == 7) {
-            cx = bi[0] + bi[2] * 0.5f; cy = bi[1] + bi[3] * 0.5f;
-            hx = fmaxf(-bi[23], bi[2]) + 4.0f; hy = fmaxf(fmaxf(-bi[23] * 0.5f, bi[3]), 1.0f) + 4.0f;
+          if (k == 2 || k == 7) {
+            mb_bare_text_boxf(bi, &cx, &cy, &hx, &hy);
+            hx += 4.0f; hy += 4.0f;
           } else if (k == 10) {
             cx = bi[0] + bi[2] * 0.5f; cy = bi[1] + bi[3] * 0.5f;
             hx = hy = fmaxf(-bi[23] * 0.5f, 1.0f) + 4.0f;
@@ -3483,15 +3717,14 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
       } else if (kind == 6 && g_margin > cur_glass_margin) {
         cur_glass_margin = g_margin;
       }
-    } else if ((kind == 7 || kind == 10 || kind == 11) && p[23] < 0.0f && p[32] == 0.0f &&
+    } else if ((kind == 2 || kind == 7 || kind == 10 || kind == 11) && p[23] < 0.0f && p[32] == 0.0f &&
                cur_glass_kind == 6 && n_elig > 0) {
       float dr[4] = {fmaxf(p[0], 0.0f), fmaxf(p[1], 0.0f),
                      fminf(p[0] + p[2], vp_w), fminf(p[1] + p[3], vp_h)};
       if (dr[2] > dr[0] && dr[3] > dr[1]) {
         float cx, cy, hx, hy;
-        if (kind == 7) {
-          cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
-          hx = fmaxf(-p[23], p[2]); hy = fmaxf(fmaxf(-p[23] * 0.5f, p[3]), 1.0f);
+        if (kind == 2 || kind == 7) {
+          mb_bare_text_boxf(p, &cx, &cy, &hx, &hy);
         } else if (kind == 10) {
           cx = p[0] + p[2] * 0.5f; cy = p[1] + p[3] * 0.5f;
           hx = hy = fmaxf(-p[23] * 0.5f, 1.0f);
@@ -3815,6 +4048,7 @@ static id<MTLRenderCommandEncoder> begin_pass_ex(id<MTLCommandBuffer> cb, id<MTL
   id<MTLTexture> adt = (at_win && at_win->ad_tex[at_win->ad_cur]) ? at_win->ad_tex[at_win->ad_cur] : atlas;
   [enc setFragmentTexture:adt atIndex:4];
   [enc setVertexTexture:adt atIndex:4];
+  bind_veil(enc);
   if (use_sc && sc_on) [enc setScissorRect:sc];
   return enc;
 }
@@ -3888,6 +4122,8 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
   memset(&gu, 0, sizeof gu);
   encode_missing = 0;
   const float *f = (const float *)buf.contents;
+  // (the bare words' slots in their place, in the frame's own buffer: shared, read once this is committed)
+  if (at_win && ad_dt >= 0.0) veil_assign(at_win, (float *)buf.contents, count, ad_serial);
   seg_base = count;
   while (seg_base > 0 && (int)(f[(seg_base - 1) * MB_INST + 5] + 0.5f) == 12) seg_base--;
   sc_on = is_partial;
@@ -4032,6 +4268,7 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
         id<MTLTexture> adt = (at_win && at_win->ad_tex[at_win->ad_cur]) ? at_win->ad_tex[at_win->ad_cur] : atlas;
         [enc setFragmentTexture:adt atIndex:4];
         [enc setVertexTexture:adt atIndex:4];
+        bind_veil(enc);
       }
       [enc setRenderPipelineState:hpipe];
       [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6 instanceCount:1 baseInstance:count];
@@ -4250,9 +4487,11 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
             slot_show(&m, slot);
             ad_n_upd = ad_collect_and_match(at_win, f, start, end, count, &m, 0,
                                             (uintptr_t)(__bridge const void *)gtex, ad_dt, ad_serial, ad_pend);
-            if (ad_n_upd > 0) {
+            int veil_n = ad_dt >= 0.0 ? veil_wanted(at_win, f, end, count, (float)tid, ad_serial) : 0;
+            if (ad_n_upd > 0 || veil_n > 0) {
               [enc endEncoding];
-              ad_run_updates(cb, at_win, ad_pend, ad_n_upd, ad_dt);
+              if (ad_n_upd > 0) ad_run_updates(cb, at_win, ad_pend, ad_n_upd, ad_dt);
+              if (veil_n > 0) veil_run_updates(cb, at_win, f, end, count, (float)tid, 0, ad_dt, ad_serial);
               ad_fill_gu(at_win);
               enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
             } else {
@@ -4264,6 +4503,7 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
               id<MTLTexture> adt = (at_win && at_win->ad_tex[at_win->ad_cur]) ? at_win->ad_tex[at_win->ad_cur] : atlas;
               [enc setFragmentTexture:adt atIndex:4];
               [enc setVertexTexture:adt atIndex:4];
+              bind_veil(enc);
             }
           } else if (shows) {
             [enc endEncoding];
@@ -4277,6 +4517,7 @@ static void encode_rects(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLR
             ad_n_upd = ad_collect_and_match(at_win, f, start, end, count, &m, 1,
                                             (uintptr_t)(__bridge const void *)gtex, ad_dt, ad_serial, ad_pend);
             if (ad_n_upd > 0) ad_run_updates(cb, at_win, ad_pend, ad_n_upd, ad_dt);
+            if (ad_dt >= 0.0) veil_run_updates(cb, at_win, f, end, count, (float)tid, 1, ad_dt, ad_serial);
             ad_fill_gu(at_win);
             enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
           }

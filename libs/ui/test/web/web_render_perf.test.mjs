@@ -14,6 +14,8 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../../web/host.js', import.meta.url), 'utf8');
 const INST = 60;
+// slot 23 of bare adaptive text: the whole text's half width and height (ui's bare_text_ink), its centre in 21-22
+const bareInk = (hw, hh) => -(Math.floor(hw) * 4096 + Math.floor(hh));
 
 function makeHost({ w = 400, h = 800, dpr = 3, search = '', nav = { platform: 'Linux armv8l', userAgent: 'Android' } } = {}) {
   const calls = [];
@@ -502,7 +504,7 @@ test('MB_PROG_UI batching, VS adaptive ink, progFlat for large solid rects, and 
   buf5[adg] = 30; buf5[adg + 1] = 10; buf5[adg + 2] = 10; buf5[adg + 3] = 14;
   buf5[adg + 5] = 7; buf5[adg + 8] = 0.9; buf5[adg + 9] = 0.9; buf5[adg + 10] = 0.9; buf5[adg + 11] = 1;
   buf5[adg + 16] = -1e9; buf5[adg + 17] = -1e9; buf5[adg + 18] = 1e9; buf5[adg + 19] = 1e9;
-  buf5[adg + 23] = -14;
+  buf5[adg + 21] = 35; buf5[adg + 22] = 17; buf5[adg + 23] = bareInk(14, 14);
   b.H.present(buf5, 2, 1, 1, 1);
   const adLinks = b.calls.filter((c) => c.fn === 'linkProgram');
   assert.equal(adLinks.length, 1, 'kind 7 lazily compiles MB_PROG_UI_AD once');
@@ -610,7 +612,7 @@ test('Perf-51: dark adaptive zero settle, top-bar donor delegation keeps back pi
   buf[t] = 120; buf[t + 1] = 34; buf[t + 2] = 100; buf[t + 3] = 24;
   buf[t + 5] = 7; buf[t + 8] = 0.9; buf[t + 9] = 0.9; buf[t + 10] = 0.9; buf[t + 11] = 1;
   buf[t + 16] = -1e9; buf[t + 17] = -1e9; buf[t + 18] = 1e9; buf[t + 19] = 1e9;
-  buf[t + 23] = -16;
+  buf[t + 21] = 170; buf[t + 22] = 46; buf[t + 23] = bareInk(100, 24);
 
   b.resetCalls();
   b.H.present(buf, 4, 0.06, 0.06, 0.06);
@@ -659,7 +661,7 @@ test('Perf-51 R2: lens subtree counterexample, 33rd cold capture donor pin, and 
     buf[t] = 120; buf[t + 1] = 34; buf[t + 2] = 100; buf[t + 3] = 24;
     buf[t + 5] = 7; buf[t + 8] = 0.9; buf[t + 9] = 0.9; buf[t + 10] = 0.9; buf[t + 11] = 1;
     buf[t + 16] = -1e9; buf[t + 17] = -1e9; buf[t + 18] = 1e9; buf[t + 19] = 1e9;
-    buf[t + 23] = -16;
+    buf[t + 21] = 170; buf[t + 22] = 46; buf[t + 23] = bareInk(100, 24);
 
     b.resetCalls();
     b.H.present(buf, 5, 0.06, 0.06, 0.06);
@@ -704,7 +706,7 @@ test('Perf-51 R2: lens subtree counterexample, 33rd cold capture donor pin, and 
     buf[t] = 120; buf[t + 1] = 34; buf[t + 2] = 100; buf[t + 3] = 24;
     buf[t + 5] = 7; buf[t + 8] = 0.9; buf[t + 9] = 0.9; buf[t + 10] = 0.9; buf[t + 11] = 1;
     buf[t + 16] = -1e9; buf[t + 17] = -1e9; buf[t + 18] = 1e9; buf[t + 19] = 1e9;
-    buf[t + 23] = -16;
+    buf[t + 21] = 170; buf[t + 22] = 46; buf[t + 23] = bareInk(100, 24);
 
     b.resetCalls();
     b.H.present(buf, count, 0.06, 0.06, 0.06);

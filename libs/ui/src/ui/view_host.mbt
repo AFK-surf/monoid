@@ -3975,6 +3975,11 @@ fn Ctx::view_blit(
     self.segs_put(made.segs, made.pack)
     base
   }
+  // (bare adaptive words: a capsule under them first, seen only where what is behind them leaves their ink too
+  // little contrast, bare_text_veil)
+  if glass_paint.ink_bare && glass_paint.ink_r > 0.0 {
+    self.bare_text_veil(id, block, x, y, made.w, made.h, a)
+  }
   while (self.ninst + n) * inst_size > self.inst.length() {
     self.grow()
   }
@@ -4017,11 +4022,19 @@ fn Ctx::view_blit(
       s.unsafe_set(b + 12, s.unsafe_get(b + 12) + seg_base)
     }
     if glass_paint.ink_r > 0.0 {
-      if kind == 1.0 {
+      if kind == 1.0 && glass_paint.ink_bare {
+        // (bare: one ink for the whole text, from the box it is drawn in, bare_text_ink)
+        s.unsafe_set(b + 5, 7.0)
+        s.unsafe_set(b + 21, x + made.w / 2.0)
+        s.unsafe_set(b + 22, y + made.h / 2.0)
+        s.unsafe_set(b + 23, bare_text_ink(made.w / 2.0, made.h / 2.0))
+        // (whose they are, as their capsule says it: the host's state of them over time, bare_text_veil)
+        s.unsafe_set(b + 6, bare_text_who(id))
+      } else if kind == 1.0 {
         s.unsafe_set(b + 5, 7.0)
         s.unsafe_set(b + 21, glass_paint.ink_x)
         s.unsafe_set(b + 22, glass_paint.ink_y)
-        s.unsafe_set(b + 23, if glass_paint.ink_bare { -glass_paint.ink_r } else { glass_paint.ink_r })
+        s.unsafe_set(b + 23, glass_paint.ink_r)
       } else if kind == 10.0 || kind == 11.0 {
         s.unsafe_set(b + 21, glass_paint.ink_x)
         s.unsafe_set(b + 22, glass_paint.ink_y)
@@ -6566,11 +6579,7 @@ fn view_key(code : Int, mods : Int) -> Bool {
   // (the old frame's layers that take the keys: where the one taking them is in the window's stack of layers; the focus
   // on what of the tree is over it there, it first, and of the tree what is over it alone: what none of that takes, the
   // old frame's)
-  let old_keys = c.last_layers
-    .iter()
-    .filter(fn(l) { c.layer_takes(l) && (l.modal || c.focus_in_layer(l.id) || (code == key_escape && l.escape)) })
-    .map(fn(l) { c.layer_stack(l) })
-    .fold(init=-3, fn(a, b) { if b > a { b } else { a } })
+  let old_keys = old_layer_key_stack(c, code)
   // (where the focus is in the tree: its node, or the one an old view's stop or field with it is hosted in)
   let held = focus_node_of(c.focus)
   // (a modal layer of the tree's over where the focus is (one that leaves it in a field under it: a panel that does
@@ -6597,22 +6606,81 @@ fn view_key(code : Int, mods : Int) -> Bool {
     return actions()
   }
   // (Enter or Space on a node of its own with the focus, of the keys that press it: its press, at the key's moment)
-  if mods == 0 && (code == key_enter || code == key_space) {
-    match tree_said_ids.get(c.focus) {
-      Some(nid) if (tree.focus_keys_of(nid) & (if code == key_enter { @view.focus_enter } else { @view.focus_space })) != 0 => {
-        if tree.press_focused_at(nid, view_moment()) {
-          h_frame_owed()
-        }
-        return true
+  match focus_press_node(tree, c.focus, code, mods) {
+    Some(nid) => {
+      if tree.press_focused_at(nid, view_moment()) {
+        h_frame_owed()
       }
-      _ => ()
+      return true
     }
+    None => ()
   }
   // (a node's own keys first (View::on_key: a panel's Escape), then the keymap's actions; Enter none of them took, the
   // default of the layer the focus is in: View::default_press)
   tree.key_at(code, mods, view_moment(), above=old_keys, within=if field { held } else { None }) ||
   actions() ||
   (mods == 0 && code == key_enter && !field && view_default_pressed(tree, held))
+}
+
+///|
+/// The topmost old-frame layer stack that takes `code` right now (-3 when none).
+fn old_layer_key_stack(c : Ctx, code : Int) -> Int {
+  c.last_layers
+  .iter()
+  .filter(fn(l) { c.layer_takes(l) && (l.modal || c.focus_in_layer(l.id) || (code == key_escape && l.escape)) })
+  .map(fn(l) { c.layer_stack(l) })
+  .fold(init=-3, fn(a, b) { if b > a { b } else { a } })
+}
+
+///|
+/// The focused tree node that handles unmodified Enter or Space via its own focus press keys, if any.
+fn focus_press_node(tree : @view.Tree, focus : Int, code : Int, mods : Int) -> @view.NodeId? {
+  if mods == 0 && (code == key_enter || code == key_space) {
+    match tree_said_ids.get(focus) {
+      Some(nid) if (tree.focus_keys_of(nid) & (if code == key_enter { @view.focus_enter } else { @view.focus_space })) != 0 =>
+        Some(nid)
+      _ => None
+    }
+  } else {
+    None
+  }
+}
+
+///|
+/// Whether a key press `(code, mods)` (a keymap shortcut targeting `v`, such as Space focusing a composer) is not
+/// blocked from reaching `v` right now: the app is in front (`app_focused`), `v` takes input (`View::takes_input`,
+/// covering tree modals, old-frame modals via `held_under_by`, `presses(false)`, and `leaving`), no old-frame layer
+/// at or above `v`'s stack takes keys, and the current focus (followed via `hand.focus_id`) is not in a text field
+/// (unless `in_field`), a key catcher (terminal, remote screen), a legacy `focus_keeps` control, or a tree control
+/// that consumes `(code, mods)` via `focus_enter`/`focus_space`. For unmodified Space, a focused node with its own
+/// `on_key` handler is also treated conservatively as blocking since `on_key` cannot be probed without side effects.
+/// Does not evaluate keymap action precedence among competing bindings on other nodes.
+pub fn key_reaches_node(v : @view.View, code : Int, mods : Int, in_field? : Bool = false) -> Bool {
+  if !app_focused() || !v.takes_input() {
+    return false
+  }
+  hand.focus_id.get() |> ignore
+  let c = g()
+  let focus = c.focus_allowed()
+  if c.dev.catchers.contains(focus) || c.focus_keeps(code, mods) {
+    return false
+  }
+  if !in_field && c.editors.contains(c.focus) {
+    return false
+  }
+  let old_keys = old_layer_key_stack(c, code)
+  if old_keys > -3 && @signals.untracked(fn() { v.tree.stack_of(v.id()) }) <= old_keys {
+    return false
+  }
+  if focus_press_node(v.tree, focus, code, mods) is Some(_) {
+    return false
+  }
+  if mods == 0 && code == key_space {
+    if tree_said_ids.get(focus) is Some(nid) && v.tree.has_on_key(nid) {
+      return false
+    }
+  }
+  true
 }
 
 ///|

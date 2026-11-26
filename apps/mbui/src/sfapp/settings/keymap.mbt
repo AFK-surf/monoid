@@ -42,6 +42,31 @@ pub fn key_label(prefs : Json?, action : String) -> String {
 }
 
 ///|
+/// The first reachable key label of `action` as a key cap shows it ("" when shortcut recording is active, no key is
+/// bound/mappable, or no bound key can currently reach `target`). Uses the core's `labels` at the matching index when
+/// present, falling back to `binding_label`.
+pub fn reachable_key_label(prefs : Json?, action : String, target : @view.View) -> String {
+  if keys_recording.get() != "" {
+    return ""
+  }
+  let a = key_action(prefs, action)
+  let in_field = text(a, "typing") == "always"
+  let keys = strings(a, "keys")
+  let labels = strings(a, "labels")
+  for i, binding in keys {
+    match binding_key(binding) {
+      Some((code, mods)) if @ui.key_reaches_node(target, code, mods, in_field~) =>
+        return match labels.get(i) {
+          Some(l) if l != "" => l
+          _ => binding_label(binding)
+        }
+      _ => ()
+    }
+  }
+  ""
+}
+
+///|
 /// An action's keys in words, as the list of shortcuts says them ("未设置" none).
 pub fn keys_text(prefs : Json?, action : String) -> String {
   text(key_action(prefs, action), "text")

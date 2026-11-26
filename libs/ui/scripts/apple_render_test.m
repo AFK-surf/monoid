@@ -37,6 +37,9 @@ static int failed;
     }                                                                 \
   } while (0)
 
+// slot 23 of bare adaptive text: the whole text's half width and height (ui's bare_text_ink), its centre in 21-22
+static double bare_ink(double hw, double hh) { return -(floor(hw) * 4096.0 + floor(hh)); }
+
 // An instance: a rect at x, y, w × h of colour (r, g, b), kind `kind`, image `tid`, its clip the window's.
 static double wcag_luma_u8(int r, int g, int b) {
   double c[3] = {r / 255.0, g / 255.0, b / 255.0};
@@ -2069,7 +2072,7 @@ int main(void) {
           rect_at(bi + 4 * MB_INST, 252, 12, 16, 16, 7, bi_cases[ci].txt, bi_cases[ci].txt, bi_cases[ci].txt, 0);
           bi[4 * MB_INST + 12] = 16.0; bi[4 * MB_INST + 13] = 16.0;
           bi[4 * MB_INST + 14] = 16.0; bi[4 * MB_INST + 15] = 16.0;
-          bi[4 * MB_INST + 21] = 260.0; bi[4 * MB_INST + 22] = 20.0; bi[4 * MB_INST + 23] = -16.0;
+          bi[4 * MB_INST + 21] = 260.0; bi[4 * MB_INST + 22] = 20.0; bi[4 * MB_INST + 23] = bare_ink(16.0, 16.0);
           glass_forget();
           mb_host_render_dirty(0, 0, 400, 300);
           mb_render_present(bi, 5, bi_cases[ci].r_bg, bi_cases[ci].r_bg, bi_cases[ci].r_bg);
@@ -2102,7 +2105,7 @@ int main(void) {
             rect_at(mc + 2 * MB_INST, 192, 12, 16, 16, 7, mid_txts[ti], mid_txts[ti], mid_txts[ti], 0);
             mc[2 * MB_INST + 12] = 16.0; mc[2 * MB_INST + 13] = 16.0;
             mc[2 * MB_INST + 14] = 16.0; mc[2 * MB_INST + 15] = 16.0;
-            mc[2 * MB_INST + 21] = 200.0; mc[2 * MB_INST + 22] = 20.0; mc[2 * MB_INST + 23] = -16.0;
+            mc[2 * MB_INST + 21] = 200.0; mc[2 * MB_INST + 22] = 20.0; mc[2 * MB_INST + 23] = bare_ink(16.0, 16.0);
             glass_forget();
             mb_host_render_dirty(0, 0, 400, 300);
             mb_render_present(mc, 3, bg, bg, bg);
@@ -2170,7 +2173,7 @@ int main(void) {
               rect_at(sc + 2 * MB_INST, 72, 12, 16, 16, 7, ink, ink, ink, 0);
               sc[2 * MB_INST + 12] = 16.0; sc[2 * MB_INST + 13] = 16.0;
               sc[2 * MB_INST + 14] = 16.0; sc[2 * MB_INST + 15] = 16.0;
-              sc[2 * MB_INST + 21] = 80.0; sc[2 * MB_INST + 22] = 20.0; sc[2 * MB_INST + 23] = -16.0;
+              sc[2 * MB_INST + 21] = 80.0; sc[2 * MB_INST + 22] = 20.0; sc[2 * MB_INST + 23] = bare_ink(16.0, 16.0);
               rect_at(sc + 3 * MB_INST, 192, 14, 16, 12, 10, ink, ink, ink, 0);
               sc[3 * MB_INST + 4] = 4.0;
               sc[3 * MB_INST + 12] = 0.1; sc[3 * MB_INST + 13] = 0.5;
@@ -2210,7 +2213,8 @@ int main(void) {
             }
           }
         }
-        // 300pt-wide bare title straddling bright (left) / dark (right) boundary: per-glyph local sampling
+        // Bare text over a bright (left) / dark (right) boundary: two texts each take their own ink, and one 300pt text
+        // across it takes one ink for all its glyphs (no single letter flipped against its neighbours)
         {
           double wt[5 * MB_INST];
           rect_at(wt, 0, 0, 200, 300, 0, 0.96, 0.96, 0.96, 0);
@@ -2220,10 +2224,10 @@ int main(void) {
           wt[2 * MB_INST + 22] = -1.0; wt[2 * MB_INST + 54] = 68.0; wt[2 * MB_INST + 55] = 40.0;
           rect_at(wt + 3 * MB_INST, 62, 12, 16, 16, 7, 0.11, 0.11, 0.11, 0);
           wt[3 * MB_INST + 12] = 16.0; wt[3 * MB_INST + 13] = 16.0; wt[3 * MB_INST + 14] = 16.0; wt[3 * MB_INST + 15] = 16.0;
-          wt[3 * MB_INST + 21] = 200.0; wt[3 * MB_INST + 22] = 20.0; wt[3 * MB_INST + 23] = -16.0;
+          wt[3 * MB_INST + 21] = 70.0; wt[3 * MB_INST + 22] = 20.0; wt[3 * MB_INST + 23] = bare_ink(16.0, 16.0);
           rect_at(wt + 4 * MB_INST, 322, 12, 16, 16, 7, 0.11, 0.11, 0.11, 0);
           wt[4 * MB_INST + 12] = 16.0; wt[4 * MB_INST + 13] = 16.0; wt[4 * MB_INST + 14] = 16.0; wt[4 * MB_INST + 15] = 16.0;
-          wt[4 * MB_INST + 21] = 200.0; wt[4 * MB_INST + 22] = 20.0; wt[4 * MB_INST + 23] = -16.0;
+          wt[4 * MB_INST + 21] = 330.0; wt[4 * MB_INST + 22] = 20.0; wt[4 * MB_INST + 23] = bare_ink(16.0, 16.0);
           glass_forget();
           mb_host_render_dirty(0, 0, 400, 300);
           mb_render_present(wt, 5, 0.10, 0.10, 0.10);
@@ -2237,9 +2241,76 @@ int main(void) {
           CHECK(ll <= 0.30);
           CHECK(lr >= 0.70);
           free(wpx);
+          for (int g = 3; g <= 4; g++) {
+            wt[g * MB_INST + 21] = 200.0; wt[g * MB_INST + 22] = 20.0; wt[g * MB_INST + 23] = bare_ink(150.0, 10.0);
+          }
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(wt, 5, 0.10, 0.10, 0.10);
+          present_drain();
+          uint8_t *upx = read_texture(canvas, &wcw, &wch);
+          printf("apple_render: bare one 300pt text across the split: left=(%d,%d,%d) right=(%d,%d,%d)\n",
+                 upx[il + 2], upx[il + 1], upx[il + 0], upx[ir + 2], upx[ir + 1], upx[ir + 0]);
+          CHECK(upx[il] == upx[ir] && upx[il + 1] == upx[ir + 1] && upx[il + 2] == upx[ir + 2]);
+          free(upx);
+
+          // Over time (the words' and their capsule's whose in slot 6, as the tree's bare_text_who puts it): quiet
+          // first, then the split comes under them at once: their capsule eases in over frames, the frames asked for
+          // while it does, and lands where it is drawn with no state; then none asked for
+          double vl[6 * MB_INST];
+          memcpy(vl, wt, 3 * MB_INST * sizeof(double));
+          rect_at(vl + 3 * MB_INST, 42, 6, 316, 28, 2, 0.11, 0.11, 0.11, 0);
+          vl[3 * MB_INST + 4] = 14.0; vl[3 * MB_INST + 7] = 0.5;
+          vl[3 * MB_INST + 21] = 200.0; vl[3 * MB_INST + 22] = 20.0; vl[3 * MB_INST + 23] = bare_ink(150.0, 10.0);
+          memcpy(vl + 4 * MB_INST, wt + 3 * MB_INST, 2 * MB_INST * sizeof(double));
+          for (int g = 3; g <= 5; g++) vl[g * MB_INST + 6] = 7.0;
+          rect_at(vl, 0, 0, 200, 300, 0, 0.10, 0.10, 0.10, 0);
+          int ig = (40 * wcw + 600) * 4;
+          mb_render_set_fixed_dt(1.0 / 60.0);
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(vl, 6, 0.10, 0.10, 0.10);
+          present_drain();
+          uint8_t *q0 = read_texture(canvas, &wcw, &wch);
+          int quiet = q0[ig + 2];
+          free(q0);
+          rect_at(vl, 0, 0, 200, 300, 0, 0.96, 0.96, 0.96, 0);
+          int seen[40], monotone = 1, settling_mid = 0;
+          for (int fr = 0; fr < 40; fr++) {
+            mb_host_render_dirty(0, 0, 400, 300);
+            mb_render_present(vl, 6, 0.10, 0.10, 0.10);
+            present_drain();
+            uint8_t *tp = read_texture(canvas, &wcw, &wch);
+            seen[fr] = tp[ig + 2];
+            free(tp);
+            if (fr > 0 && seen[fr] < seen[fr - 1]) monotone = 0;
+            if (fr == 10) settling_mid = mb_render_adaptive_settling();
+          }
+          for (int fr = 0; fr < 30; fr++) {
+            mb_host_render_dirty(0, 0, 400, 300);
+            mb_render_present(vl, 6, 0.10, 0.10, 0.10);
+            present_drain();
+          }
+          int settling_after = mb_render_adaptive_settling();
+          for (int g = 3; g <= 5; g++) vl[g * MB_INST + 6] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 400, 300);
+          mb_render_present(vl, 6, 0.10, 0.10, 0.10);
+          present_drain();
+          uint8_t *tz = read_texture(canvas, &wcw, &wch);
+          int landed = tz[ig + 2];
+          free(tz);
+          mb_render_set_fixed_dt(0.0);
+          printf("apple_render: bare capsule over time: quiet=%d first=%d f3=%d f10=%d f39=%d landed=%d monotone=%d settling=%d/%d\n",
+                 quiet, seen[0], seen[3], seen[10], seen[39], landed, monotone, settling_mid, settling_after);
+          CHECK(seen[0] > quiet && seen[0] < landed - 40);
+          CHECK(seen[3] > seen[0] && seen[10] > seen[3]);
+          CHECK(monotone);
+          CHECK(abs(seen[39] - landed) <= 2);
+          CHECK(settling_mid == 1 && settling_after == 0);
         }
         // Vertical split multiline bare kind==7: top row y=14..26 over light 0.96, bottom row y=84..96 over dark 0.10,
-        // shared ancestor pad.yz=(100, 55) -> both rows must sample their own rect.y + rect.h*0.5 and reach CR >= 4.5
+        // two texts (one a row) each sampling its own box -> both reach CR >= 4.5
         {
           double ml[5 * MB_INST];
           rect_at(ml, 0, 0, 400, 60, 0, 0.96, 0.96, 0.96, 0);
@@ -2249,10 +2320,10 @@ int main(void) {
           ml[2 * MB_INST + 22] = -1.0; ml[2 * MB_INST + 54] = 120.0; ml[2 * MB_INST + 55] = 20.0;
           rect_at(ml + 3 * MB_INST, 92, 12, 16, 16, 7, 0.11, 0.11, 0.11, 0);
           ml[3 * MB_INST + 12] = 16.0; ml[3 * MB_INST + 13] = 16.0; ml[3 * MB_INST + 14] = 16.0; ml[3 * MB_INST + 15] = 16.0;
-          ml[3 * MB_INST + 21] = 100.0; ml[3 * MB_INST + 22] = 55.0; ml[3 * MB_INST + 23] = -16.0;
+          ml[3 * MB_INST + 21] = 100.0; ml[3 * MB_INST + 22] = 20.0; ml[3 * MB_INST + 23] = bare_ink(16.0, 16.0);
           rect_at(ml + 4 * MB_INST, 92, 82, 16, 16, 7, 0.11, 0.11, 0.11, 0);
           ml[4 * MB_INST + 12] = 16.0; ml[4 * MB_INST + 13] = 16.0; ml[4 * MB_INST + 14] = 16.0; ml[4 * MB_INST + 15] = 16.0;
-          ml[4 * MB_INST + 21] = 100.0; ml[4 * MB_INST + 22] = 55.0; ml[4 * MB_INST + 23] = -16.0;
+          ml[4 * MB_INST + 21] = 100.0; ml[4 * MB_INST + 22] = 90.0; ml[4 * MB_INST + 23] = bare_ink(16.0, 16.0);
           glass_forget();
           mb_host_render_dirty(0, 0, 400, 300);
           mb_render_present(ml, 5, 0.10, 0.10, 0.10);
@@ -5132,7 +5203,7 @@ int main(void) {
           tb[2 * MB_INST + 21] = 8.0; tb[2 * MB_INST + 23] = 4.0;
           rect_at(tb + 3 * MB_INST, 120, 34, 24, 24, 7, 0.9, 0.9, 0.9, 0);
           tb[3 * MB_INST + 14] = 4.0 / at_sz; tb[3 * MB_INST + 15] = 4.0 / at_sz;
-          tb[3 * MB_INST + 23] = -16.0;
+          tb[3 * MB_INST + 21] = 132.0; tb[3 * MB_INST + 22] = 46.0; tb[3 * MB_INST + 23] = bare_ink(24.0, 24.0);
           mb_render_present(tb, 4, bgv, bgv, bgv);
           present_drain();
           CHECK(donor_delegated_count == 1);
@@ -5165,7 +5236,7 @@ int main(void) {
           ref[3 * MB_INST + 21] = 8.0; ref[3 * MB_INST + 23] = 4.0;
           rect_at(ref + 4 * MB_INST, 120, 34, 24, 24, 7, 0.2, 0.2, 0.2, 0);
           ref[4 * MB_INST + 14] = 4.0 / at_sz; ref[4 * MB_INST + 15] = 4.0 / at_sz;
-          ref[4 * MB_INST + 23] = -16.0;
+          ref[4 * MB_INST + 21] = 132.0; ref[4 * MB_INST + 22] = 46.0; ref[4 * MB_INST + 23] = bare_ink(24.0, 24.0);
           mb_render_present(ref, 5, 1.0, 1.0, 1.0); present_drain();
           int pw = 0, ph = 0;
           uint8_t *ref_px = read_texture(canvas, &pw, &ph);
@@ -5214,7 +5285,7 @@ int main(void) {
           // Bare title over dark stripe x=100..150
           rect_at(tx + 10 * MB_INST, 112, 34, 24, 24, 7, 0.9, 0.9, 0.9, 0);
           tx[10 * MB_INST + 14] = 4.0 / at_sz; tx[10 * MB_INST + 15] = 4.0 / at_sz;
-          tx[10 * MB_INST + 23] = -16.0;
+          tx[10 * MB_INST + 21] = 124.0; tx[10 * MB_INST + 22] = 46.0; tx[10 * MB_INST + 23] = bare_ink(24.0, 24.0);
 
           int pw = 0, ph = 0;
           donor_force_off = 0;
@@ -5278,7 +5349,7 @@ int main(void) {
           ln[3 * MB_INST + 21] = 8.0; ln[3 * MB_INST + 23] = 4.0;
           rect_at(ln + 4 * MB_INST, 120, 34, 24, 24, 7, 0.2, 0.2, 0.2, 0);
           ln[4 * MB_INST + 14] = 4.0 / at_sz; ln[4 * MB_INST + 15] = 4.0 / at_sz;
-          ln[4 * MB_INST + 23] = -16.0;
+          ln[4 * MB_INST + 21] = 132.0; ln[4 * MB_INST + 22] = 46.0; ln[4 * MB_INST + 23] = bare_ink(24.0, 24.0);
           mb_render_present(ln, 5, 0.05, 0.05, 0.05); present_drain();
           CHECK(donor_delegated_count == 0);
         }

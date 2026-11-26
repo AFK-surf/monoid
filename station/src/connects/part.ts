@@ -127,7 +127,7 @@ export const connectsPart = <P extends Connects>(make: (options: ConnectsOptions
     );
     // The sidebar names connects and their workspaces.
     yield* Effect.acquireRelease(
-      Effect.sync(() => connects.onChange(() => (events.overviewChanged(), events.rowsChanged(null)))),
+      Effect.sync(() => connects.onChange(() => (events.overviewSoon("connects"), events.rowsChanged(null)))),
       (off) => Effect.sync(off),
     );
     return connects;

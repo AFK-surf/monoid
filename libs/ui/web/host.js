@@ -32,6 +32,13 @@
   const MB_PROG_LENS = 7;
   const MB_PROGS = 8;
   const GLASS_SLOTS = 32;
+  // bare adaptive text (kind 7, slot 23 below 0): one box for the whole text, its centre in 21-22 and half its
+  // width and height packed in 23 as -(hw * 4096 + hh) (ui's bare_text_ink)
+  const bareTextBox = (f32, o) => {
+    const v = -f32[o + 23];
+    const w = Math.floor(v / 4096);
+    return [f32[o + 21], f32[o + 22], Math.max(w, 1), Math.max(v - w * 4096, 1)];
+  };
   function makeGlassSlots() {
     return Array.from({ length: GLASS_SLOTS }, () => ({
       bt: null, bfb: null, bw: 0, bh: 0, bf: 0,
@@ -458,6 +465,76 @@
   }
 
   // ---- WebGL2 renderer ----
+  // What the vertex shader and the bare words' state pass (VEIL_FS) both work out of what is behind bare words: needs
+  // vs_backdrop and vs_luma defined before it.
+  const BARE_INK_GLSL = `
+  float vs_srgb_to_lin(float c) {
+    return c <= 0.04045 ? (c / 12.92) : pow(max((c + 0.055) / 1.055, 0.0), 2.4);
+  }
+  float vs_wcag_luma(vec3 c) {
+    return 0.2126 * vs_srgb_to_lin(c.r) + 0.7152 * vs_srgb_to_lin(c.g) + 0.0722 * vs_srgb_to_lin(c.b);
+  }
+  // (the trimmed mean of what is behind box c ± h, and the least and most of it, each but the one most apart)
+  vec3 vs_backdrop_wcag_range(vec2 c, vec2 h) {
+    float sum = 0.0;
+    float mx1 = -1.0, mx2 = -1.0;
+    float mn1 = 2.0, mn2 = 2.0;
+    for (int iy = -1; iy <= 1; iy++) {
+      float py = c.y + float(iy) * (h.y * 0.60);
+      for (int ix = -2; ix <= 2; ix++) {
+        float px = c.x + float(ix) * (h.x * 0.38);
+        float y = vs_wcag_luma(vs_backdrop(vec2(px, py)));
+        sum += y;
+        if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
+        if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
+      }
+    }
+    return vec3((sum - mx1 - mx2 - mn1 - mn2) / 11.0, mn2, mx2);
+  }
+  float vs_backdrop_wcag_luma_rect(vec2 c, vec2 h) {
+    return vs_backdrop_wcag_range(c, h).x;
+  }
+  float vs_lin_to_srgb(float y) {
+    y = clamp(y, 0.0, 1.0);
+    return y <= 0.0031308 ? (12.92 * y) : (1.055 * pow(max(y, 0.0), 1.0 / 2.4) - 0.055);
+  }
+  vec2 vs_bare_half(float v) {
+    float w = floor(v / 4096.0);
+    return vec2(w, v - w * 4096.0);
+  }
+  vec3 vs_bare_ink_for(vec3 rgb, float Lbg) {
+    float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);
+    if (ch > 0.08) return rgb;
+    float origL = vs_luma(rgb);
+    float origY = vs_wcag_luma(rgb);
+    float target = 4.65;
+    float out_c;
+    if (Lbg >= 0.1792) {
+      float pref = origL < 0.5 ? origL : clamp(1.0 - origL, 0.02, 0.45);
+      float y_pref = origL < 0.5 ? origY : vs_srgb_to_lin(pref);
+      float y_max = max(0.0, (Lbg + 0.05) / target - 0.05);
+      if (origL < 0.5 && origY <= y_max) return rgb;
+      out_c = vs_lin_to_srgb(min(y_pref, y_max));
+    } else {
+      float pref = origL >= 0.5 ? origL : clamp(1.06 - origL, 0.55, 0.98);
+      float y_pref = origL >= 0.5 ? origY : vs_srgb_to_lin(pref);
+      float y_min = min(1.0, target * (Lbg + 0.05) - 0.05);
+      if (origL >= 0.5 && origY >= y_min) return rgb;
+      out_c = vs_lin_to_srgb(max(y_pref, y_min));
+    }
+    return vec3(out_c);
+  }
+  // (the ink bare words of ink rgb take over r, what is behind them: (mean, least, most): turned to the other side of
+  // grey only where that holds 4.5:1 over all of it; over a busy backdrop they keep their own side, their ground
+  // (bare_veil_at) giving them the contrast, so they are not turned back and forth as it moves under them)
+  vec3 vs_bare_ink_pick(vec3 rgb, vec3 r) {
+    vec3 ink = vs_bare_ink_for(rgb, r.x);
+    if ((vs_luma(ink) < 0.5) == (vs_luma(rgb) < 0.5)) return ink;
+    float yi = vs_wcag_luma(ink);
+    float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);
+    return cr >= 4.5 ? ink : rgb;
+  }
+`;
   const VS = `#version 300 es
   layout(location=0) in vec4 a_rect;
   layout(location=1) in vec4 a_p;
@@ -485,6 +562,7 @@
   uniform vec4 u_ad_box[16];
   uniform int u_ad_n;
   uniform int u_ad_cur;
+  uniform highp sampler2D u_veil;
   vec3 vs_backdrop(vec2 p) {
     return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0).rgb;
   }
@@ -566,54 +644,43 @@
     float bgL = vs_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));
     return vec3(1.0 - smoothstep(0.12, 0.21, bgL), bgL, 0.0);
   }
-  float vs_srgb_to_lin(float c) {
-    return c <= 0.04045 ? (c / 12.92) : pow(max((c + 0.055) / 1.055, 0.0), 2.4);
-  }
-  float vs_wcag_luma(vec3 c) {
-    return 0.2126 * vs_srgb_to_lin(c.r) + 0.7152 * vs_srgb_to_lin(c.g) + 0.0722 * vs_srgb_to_lin(c.b);
-  }
-  float vs_backdrop_wcag_luma_rect(vec2 c, vec2 h) {
-    float sum = 0.0;
-    float mx1 = -1.0, mx2 = -1.0;
-    float mn1 = 2.0, mn2 = 2.0;
-    for (int iy = -1; iy <= 1; iy++) {
-      float py = c.y + float(iy) * (h.y * 0.60);
-      for (int ix = -2; ix <= 2; ix++) {
-        float px = c.x + float(ix) * (h.x * 0.38);
-        float y = vs_wcag_luma(vs_backdrop(vec2(px, py)));
-        sum += y;
-        if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
-        if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
-      }
-    }
-    return (sum - mx1 - mx2 - mn1 - mn2) / 11.0;
-  }
-  float vs_lin_to_srgb(float y) {
-    y = clamp(y, 0.0, 1.0);
-    return y <= 0.0031308 ? (12.92 * y) : (1.055 * pow(max(y, 0.0), 1.0 / 2.4) - 0.055);
-  }
+  ${BARE_INK_GLSL}
   vec3 vs_bare_adaptive_ink_at(vec3 rgb, vec2 ac, vec2 h) {
-    float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);
-    if (ch > 0.08) return rgb;
-    float origL = vs_luma(rgb);
-    float origY = vs_wcag_luma(rgb);
-    float Lbg = vs_backdrop_wcag_luma_rect(ac, max(h, vec2(1.0)));
-    float target = 4.65;
-    float out_c;
-    if (Lbg >= 0.1792) {
-      float pref = origL < 0.5 ? origL : clamp(1.0 - origL, 0.02, 0.45);
-      float y_pref = origL < 0.5 ? origY : vs_srgb_to_lin(pref);
-      float y_max = max(0.0, (Lbg + 0.05) / target - 0.05);
-      if (origL < 0.5 && origY <= y_max) return rgb;
-      out_c = vs_lin_to_srgb(min(y_pref, y_max));
-    } else {
-      float pref = origL >= 0.5 ? origL : clamp(1.06 - origL, 0.55, 0.98);
-      float y_pref = origL >= 0.5 ? origY : vs_srgb_to_lin(pref);
-      float y_min = min(1.0, target * (Lbg + 0.05) - 0.05);
-      if (origL >= 0.5 && origY >= y_min) return rgb;
-      out_c = vs_lin_to_srgb(max(y_pref, y_min));
+    return vs_bare_ink_pick(rgb, vs_backdrop_wcag_range(ac, max(h, vec2(1.0))));
+  }
+  // (the frost across the middle of box ac ± hh behind bare words: their capsule's own colour before it is pulled)
+  vec3 vs_bare_tone(vec2 ac, vec2 hh) {
+    vec3 tone = vec3(0.0, 0.0, 0.0);
+    for (int ix = -2; ix <= 2; ix++) {
+      tone += vs_backdrop(vec2(ac.x + float(ix) * (hh.x * 0.38), ac.y));
     }
-    return vec3(out_c);
+    return tone * 0.2;
+  }
+  // (the capsule under bare words of ink col, their box ac ± h, as its state st has it (VEIL_FS: how far it shows, r;
+  // which side of grey the words are, g: 1 dark), or worked out now where it has none: the blurred backdrop's own
+  // colour pulled to the side opposite the words' ink, as opaque as the worst of what is behind them leaves them
+  // short of 4.5:1, from none there to all of it at 2:1)
+  vec4 vs_bare_veil_at(vec4 col, vec2 ac, vec2 h, vec4 st) {
+    vec2 hh = max(h, vec2(1.0));
+    if (st.a < 0.5) {
+      vec3 r = vs_backdrop_wcag_range(ac, hh);
+      vec3 ink = vs_bare_ink_pick(col.rgb, r);
+      float yi = vs_wcag_luma(ink);
+      float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);
+      st = vec4(1.0 - smoothstep(2.0, 4.5, cr), vs_luma(ink) < 0.5 ? 1.0 : 0.0, 0.0, 1.0);
+    }
+    return vec4(mix(vs_bare_tone(ac, hh), vec3(st.g), mix(0.62, 0.72, st.g)), col.a * st.r * mix(0.72, 0.86, st.g));
+  }
+  // (bare words' ink, their box ac ± h: between their ink on the light side of grey and on the dark side as their state
+  // says (st.g, eased over time: VEIL_FS), or picked now where they have none)
+  vec3 vs_bare_ink_held(vec3 rgb, vec2 ac, vec2 h, vec4 st) {
+    if (st.a < 0.5) return vs_bare_adaptive_ink_at(rgb, ac, h);
+    float bg = vs_backdrop_wcag_luma_rect(ac, max(h, vec2(1.0)));
+    return mix(vs_bare_ink_for(rgb, min(bg, 0.1791)), vs_bare_ink_for(rgb, max(bg, 0.1792)), st.g);
+  }
+  // (the state of bare words whose slot the host put in p.z, as -(slot + 1); none: a = 0)
+  vec4 vs_bare_state(float pz) {
+    return pz < 0.0 ? texelFetch(u_veil, ivec2(int(-pz + 0.5) - 1, 0), 0) : vec4(0.0);
   }
   vec3 vs_adaptive_ink_at(vec3 rgb, vec2 ac, float fallback_r, vec4 rect, vec2 sample_off, bool is_icon) {
     float ch = max(max(rgb.r, rgb.g), rgb.b) - min(min(rgb.r, rgb.g), rgb.b);
@@ -727,12 +794,14 @@
     if (vid == 2 || vid == 5) {
       if (kind == 7) {
         v_color.rgb = a_pad.w < 0.0
-          ? vs_bare_adaptive_ink_at(a_color.rgb, a_rect.xy + a_rect.zw * 0.5, vec2(max(-a_pad.w, a_rect.z), max(max(-a_pad.w * 0.5, a_rect.w), 1.0)))
+          ? vs_bare_ink_held(a_color.rgb, a_pad.yz, vs_bare_half(-a_pad.w), vs_bare_state(a_p.z))
           : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, a_p.zw, false);
       } else if ((kind == 10 || kind == 11) && a_pad.w != 0.0) {
         v_color.rgb = a_pad.w < 0.0
           ? vs_bare_adaptive_ink_at(a_color.rgb, kind == 10 ? (a_rect.xy + a_rect.zw * 0.5) : (a_rect.xy + a_rect.zw * 0.5 + a_p.zw), vec2(max(-a_pad.w * 0.5, 1.0)))
           : vs_adaptive_ink_at(a_color.rgb, a_pad.yz, a_pad.w * 0.5, a_rect, kind == 10 ? vec2(0.0) : a_p.zw, true);
+      } else if (kind == 2 && a_pad.w < 0.0) {
+        v_color = vs_bare_veil_at(a_color, a_pad.yz, vs_bare_half(-a_pad.w), vs_bare_state(a_p.z));
       } else if (kind == 0 && a_pad.w < 0.0) {
         float ch = max(max(a_color.r, a_color.g), a_color.b) - min(min(a_color.r, a_color.g), a_color.b);
         vec2 capCenter, capHalf;
@@ -2218,7 +2287,8 @@
     #if MB_HAS(2)
     if (kind == 2) {
       // as Core Animation's: the shape blurred, sigma its radius (corner.sl mb_shadow)
-      float a = mb_shadow(p - c, hs, rad, max(v_p.w, 0.25));
+      // (a bare words' capsule, slot 23 below 0: the box's own edge, its ends as a capsule's are drawn, not blurred)
+      float a = v_pad.w < 0.0 ? clamp(0.5 - d * u_scale, 0.0, 1.0) : mb_shadow(p - c, hs, rad, max(v_p.w, 0.25));
       // glass's: only outside its box (c2.y above it)
       if (v_c2.x > 0.5) {
         vec2 q = p - c + vec2(0.0, v_c2.y);
@@ -2526,6 +2596,40 @@
     o = s / wsum;
   }`;
 
+  // The state of bare words over time (veil*): each its slot's texel, how far its capsule shows (r) and which side of
+  // grey its words are (g: 1 dark), eased towards what is behind them now (as the vertex shader works it out where
+  // they have no state: vs_bare_veil_at) over u_param.w seconds; a slot new takes it at once (a = 1: kept).
+  const VEIL_FS = `#version 300 es
+  precision highp float;
+  precision highp int;
+  uniform highp sampler2D u_bd;
+  uniform highp sampler2D u_prev;
+  uniform vec4 u_map;
+  uniform vec4 u_uvc;
+  uniform vec4 u_box;
+  uniform vec4 u_ink;
+  uniform vec4 u_param;
+  out vec4 o;
+  vec3 vs_backdrop(vec2 p) {
+    return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0).rgb;
+  }
+  float vs_luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+  ${BARE_INK_GLSL}
+  void main() {
+    vec3 r = vs_backdrop_wcag_range(u_box.xy, max(u_box.zw, vec2(1.0)));
+    vec3 ink = vs_bare_ink_pick(u_ink.rgb, r);
+    float yi = vs_wcag_luma(ink);
+    float cr = yi < r.x ? (r.y + 0.05) / (yi + 0.05) : (yi + 0.05) / (r.z + 0.05);
+    vec2 want = vec2(1.0 - smoothstep(2.0, 4.5, cr), vs_luma(ink) < 0.5 ? 1.0 : 0.0);
+    vec4 prev = texelFetch(u_prev, ivec2(int(u_param.z + 0.5), 0), 0);
+    float k = (u_param.x > 0.5 || prev.a < 0.5) ? 1.0 : (u_param.y <= 0.0 ? 0.0 : 1.0 - exp(-u_param.y / u_param.w));
+    vec2 now = mix(prev.rg, want, k);
+    // (kept in 8 bits: a step under half of one is lost, so within three of where it goes it is there)
+    if (abs(now.x - want.x) < 0.013) now.x = want.x;
+    if (abs(now.y - want.y) < 0.013) now.y = want.y;
+    o = vec4(now, 0.0, 1.0);
+  }
+  `;
   const AD_FS = `#version 300 es
   precision highp float;
   precision highp int;
@@ -2609,7 +2713,7 @@
     if (kind === 6) return padW > 0 ? MB_PROG_LIQUID_MERGED : MB_PROG_LIQUID_SINGLE;
     if (kind === 13) return MB_PROG_LIQUID_SINGLE;
     if (kind === 8) return MB_PROG_LENS;
-    if (kind === 7 || (kind === 10 && padW !== 0) || (kind === 0 && padW < 0)) return MB_PROG_UI_AD;
+    if (kind === 7 || (kind === 10 && padW !== 0) || ((kind === 0 || kind === 2) && padW < 0)) return MB_PROG_UI_AD;
     return MB_PROG_UI;
   }
 
@@ -2639,7 +2743,7 @@
         break;
       case MB_PROG_UI_AD:
         vsShader = vsAd;
-        fsHead = '#version 300 es\n#define ONE_KIND -2\n#define MB_HAS(K) ((K) == 0 || (K) == 7 || (K) == 10)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        fsHead = '#version 300 es\n#define ONE_KIND -2\n#define MB_HAS(K) ((K) == 0 || (K) == 2 || (K) == 7 || (K) == 10)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
         break;
       case MB_PROG_UI:
       default:
@@ -2656,7 +2760,7 @@
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
     gl.deleteShader(fs);
     const u = {};
-    for (const n of ['u_vp', 'u_origin', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_glight', 'u_through', 'u_segs', 'u_ad', 'u_ad_box', 'u_ad_n', 'u_ad_cur']) {
+    for (const n of ['u_vp', 'u_origin', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_glight', 'u_through', 'u_segs', 'u_ad', 'u_ad_box', 'u_ad_n', 'u_ad_cur', 'u_veil']) {
       u[n] = gl.getUniformLocation(p, n);
     }
     progNow = p;
@@ -2666,6 +2770,7 @@
     if (u.u_bd) gl.uniform1i(u.u_bd, 2);
     if (u.u_segs) gl.uniform1i(u.u_segs, 3);
     if (u.u_ad) gl.uniform1i(u.u_ad, 4);
+    if (u.u_veil) gl.uniform1i(u.u_veil, 5);
     return { p, u, gen: progGen - 1 };
   }
 
@@ -2740,6 +2845,7 @@
     if (!gl.getProgramParameter(adProg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(adProg));
     ADU = {};
     for (const n of ['u_bd', 'u_prev', 'u_map', 'u_uvc', 'u_box', 'u_param']) ADU[n] = gl.getUniformLocation(adProg, n);
+    veil = makeVeil();
     glassLost();
     vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
@@ -2804,6 +2910,139 @@
   let adTex = [null, null], adFb = [null, null], adCur = 0;
   let adSlots = makeAdSlots(), adLastTime = 0, adFrameSerial = 0, adSettling = false, adRaf = 0;
   let adCurDt = 0, adMode = 1;
+  // ---- bare words' state over time (src/ui/glass.mbt bare_text_who): a slot each, its texel in veil.tex (VEIL_FS)
+  const VEIL_MAX = 32, VEIL_TAU = 0.09, VEIL_SETTLE_SEC = 0.5;
+  function makeVeil() {
+    const slots = [];
+    for (let i = 0; i < VEIL_MAX; i++) slots.push({ who: 0, isNew: false, seen: 0, updated: 0, settleLeft: 0, cx: 0, cy: 0, hx: 0, hy: 0 });
+    return { prog: null, U: {}, tex: [null, null], fb: [null, null], cur: 0, slots };
+  }
+  let veil = makeVeil();
+  function veilForget() {
+    for (const v of veil.slots) Object.assign(v, { who: 0, isNew: false, seen: 0, updated: 0, settleLeft: 0 });
+  }
+  function ensureVeilTex() {
+    if (veil.tex[0]) return;
+    for (let i = 0; i < 2; i++) {
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA8, VEIL_MAX, 1);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      const fb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t, 0);
+      gl.disable(gl.SCISSOR_TEST);
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      veil.tex[i] = t; veil.fb[i] = fb;
+    }
+    veil.cur = 0;
+  }
+  // (made as bare words first come: no start pays for it)
+  function ensureVeilProg() {
+    if (veil.prog) return;
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, PVS));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, VEIL_FS));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    veil.prog = p;
+    for (const n of ['u_bd', 'u_prev', 'u_map', 'u_uvc', 'u_box', 'u_ink', 'u_param']) veil.U[n] = gl.getUniformLocation(p, n);
+  }
+  // (each bare word's and capsule's whose (slot 6, above 0) given its slot in its place, -(slot + 1), a slot new
+  // cleared: no state till its pass, VEIL_FS)
+  function veilAssign(n, serial) {
+    if (adMode <= 0) return;
+    let any = false;
+    for (let i = 0; i < n; i++) {
+      const a = i * INST;
+      const kind = Math.round(f32[a + 5]);
+      if ((kind !== 2 && kind !== 7) || f32[a + 23] >= 0 || f32[a + 6] === 0) continue;
+      if (f32[a + 6] < 0) {
+        const sl = Math.round(-f32[a + 6]) - 1;
+        if (sl >= 0 && sl < VEIL_MAX) veil.slots[sl].seen = serial;
+        continue;
+      }
+      any = true;
+      const who = f32[a + 6];
+      let sl = veil.slots.findIndex((v) => v.who === who);
+      if (sl < 0) {
+        let oldest = Infinity;
+        for (let k = 0; k < VEIL_MAX; k++) {
+          const v = veil.slots[k];
+          if (v.who === 0) { sl = k; break; }
+          if (v.seen !== serial && v.seen < oldest) { oldest = v.seen; sl = k; }
+        }
+        if (sl < 0) continue;
+        Object.assign(veil.slots[sl], { who, isNew: true, seen: 0, updated: 0, settleLeft: 0 });
+      }
+      veil.slots[sl].seen = serial;
+      f32[a + 6] = -(sl + 1);
+    }
+    if (any) { ensureVeilProg(); ensureVeilTex(); }
+  }
+  // The state of the bare words whose capsules come after the glass run starting at `start` (till the next glass),
+  // seen through its capture (bdTex, as gmap and guvc place it), eased by dt: once a frame each, their frames asked for
+  // while what is behind them moved lately or they are new.
+  function veilRunUpdates(start, end, count, backdropChanged, dt, serial) {
+    if (adMode <= 0 || !bdTex || !veil.tex[0] || !veil.prog) return;
+    const tid = f32[start * INST + 20];
+    let ran = false;
+    for (let i = end; i < count; i++) {
+      const b = i * INST;
+      const bk = Math.round(f32[b + 5]);
+      if ((bk === 5 || bk === 6) && f32[b + 20] < 0 && f32[b + 20] !== tid) break;
+      if (bk !== 2 || f32[b + 23] >= 0 || f32[b + 6] >= 0) continue;
+      const sl = Math.round(-f32[b + 6]) - 1;
+      if (sl < 0 || sl >= VEIL_MAX) continue;
+      const v = veil.slots[sl];
+      if (v.updated === serial) continue;
+      if (!ran) {
+        gl.disable(gl.BLEND);
+        gl.disable(gl.SCISSOR_TEST);
+        gl.bindFramebuffer(gl.READ_FRAMEBUFFER, veil.fb[veil.cur]);
+        gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, veil.fb[1 - veil.cur]);
+        gl.blitFramebuffer(0, 0, VEIL_MAX, 1, 0, 0, VEIL_MAX, 1, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, veil.fb[1 - veil.cur]);
+        gl.viewport(0, 0, VEIL_MAX, 1);
+        gl.enable(gl.SCISSOR_TEST);
+        gl.useProgram(veil.prog);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, bdTex);
+        gl.uniform1i(veil.U.u_bd, 0);
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, veil.tex[veil.cur]);
+        gl.uniform1i(veil.U.u_prev, 1);
+        gl.uniform4fv(veil.U.u_map, gmap);
+        gl.uniform4fv(veil.U.u_uvc, guvc);
+        ran = true;
+      }
+      const [cx, cy, hx, hy] = bareTextBox(f32, b);
+      gl.scissor(sl, 0, 1, 1);
+      gl.uniform4f(veil.U.u_box, cx, cy, hx, hy);
+      gl.uniform4f(veil.U.u_ink, f32[b + 8], f32[b + 9], f32[b + 10], 1);
+      gl.uniform4f(veil.U.u_param, v.isNew ? 1 : 0, dt, sl, VEIL_TAU);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      if (v.isNew) v.settleLeft = 0;
+      else if (backdropChanged) v.settleLeft = VEIL_SETTLE_SEC;
+      else v.settleLeft = Math.max(v.settleLeft - dt, 0);
+      v.isNew = false;
+      v.updated = serial;
+      v.cx = cx; v.cy = cy; v.hx = hx; v.hy = hy;
+    }
+    if (ran) veil.cur = 1 - veil.cur;
+  }
+  // (the slots of a whole frame no bare words took let go; whether any eases on)
+  function veilFinalize(wholeFrame, serial) {
+    let settling = false;
+    for (const v of veil.slots) {
+      if (v.who === 0) continue;
+      if (wholeFrame && v.seen !== serial) { Object.assign(v, { who: 0, isNew: false, seen: 0, updated: 0, settleLeft: 0 }); continue; }
+      if (v.settleLeft > 0) settling = true;
+    }
+    return settling;
+  }
   let lastN = 0, lastR = 0, lastG = 0, lastB = 0, lastF32 = null;
   const gadBox = new Float32Array(AD_MAX * 4);
   let gadN = 0, adCurMask = 0;
@@ -3041,6 +3280,7 @@
       }
       if (s.settleLeft > 0) settling = true;
     }
+    if (veilFinalize(wholeFrame, serial)) settling = true;
     adSettling = settling;
     if (settling) scheduleAdRaf(winActive);
     else if (lastF32) lastF32 = null;
@@ -3051,6 +3291,7 @@
   function glassForget() {
     slotsInvalidate();
     adForget();
+    veilForget();
   }
   function glassLost() {
     lv = null; lvW = 0; lvH = 0; bdTex = null;
@@ -3060,6 +3301,7 @@
       s.bt = null; s.bfb = null; s.bw = 0; s.bh = 0; s.bf = 0; s.valid = false; s.h1 = 0; s.h2 = 0; s.lastFrame = 0;
     }
     adTex = [null, null]; adFb = [null, null]; adCur = 0;
+    veil.tex = [null, null]; veil.fb = [null, null]; veil.cur = 0;
     lastF32 = null;
     glassForget();
   }
@@ -3075,6 +3317,8 @@
       for (let i = 0; i < 2; i++) {
         if (adFb[i]) gl.deleteFramebuffer(adFb[i]);
         if (adTex[i]) gl.deleteTexture(adTex[i]);
+        if (veil.fb[i]) gl.deleteFramebuffer(veil.fb[i]);
+        if (veil.tex[i]) gl.deleteTexture(veil.tex[i]);
       }
     }
     glassLost();
@@ -3295,11 +3539,10 @@
         continue;
       }
       if ((bk === 5 || bk === 6) && f32[b + 20] < 0 && f32[b + 20] !== f32[a + 20]) break;
-      if ((bk === 7 || bk === 10 || bk === 11) && f32[b + 23] < 0 && (!donorOf || donorOf[i] >= 0)) {
+      if ((bk === 2 || bk === 7 || bk === 10 || bk === 11) && f32[b + 23] < 0 && (!donorOf || donorOf[i] >= 0)) {
         let cx, cy, hx, hy;
-        if (bk === 7) {
-          cx = f32[b] + f32[b + 2] * 0.5; cy = f32[b + 1] + f32[b + 3] * 0.5;
-          hx = Math.max(-f32[b + 23], f32[b + 2]); hy = Math.max(Math.max(-f32[b + 23] * 0.5, f32[b + 3]), 1.0);
+        if (bk === 2 || bk === 7) {
+          [cx, cy, hx, hy] = bareTextBox(f32, b);
         } else if (bk === 10) {
           cx = f32[b] + f32[b + 2] * 0.5; cy = f32[b + 1] + f32[b + 3] * 0.5;
           hx = hy = Math.max(-f32[b + 23] * 0.5, 1.0);
@@ -3587,7 +3830,7 @@
       const tid = f32[i * INST + 20];
       if (i > 0 && tid !== f32[(i - 1) * INST + 20]) run = i;
       const k = Math.round(f32[i * INST + 5]);
-      const sees = tid < 0 || k === 7 || ((k === 10 || k === 11) && f32[i * INST + 23] !== 0);
+      const sees = tid < 0 || k === 7 || ((k === 2 || k === 10 || k === 11) && f32[i * INST + 23] !== 0);
       if (sees && reaches(i, run, g)) whole = i + 1;
     }
     const maxNeed = (start + (count - pieces)) * INST;
@@ -3728,15 +3971,14 @@
         } else if (kind === 6 && gMargin > curGlassMargin) {
           curGlassMargin = gMargin;
         }
-      } else if ((kind === 7 || kind === 10 || kind === 11) && f32[o + 23] < 0 && f32[o + 32] === 0 &&
+      } else if ((kind === 2 || kind === 7 || kind === 10 || kind === 11) && f32[o + 23] < 0 && f32[o + 32] === 0 &&
                  curGlassKind === 6 && elig.length > 0) {
         const dr0 = Math.max(f32[o], 0), dr1 = Math.max(f32[o + 1], 0);
         const dr2 = Math.min(f32[o] + f32[o + 2], vpW), dr3 = Math.min(f32[o + 1] + f32[o + 3], vpH);
         if (dr2 > dr0 && dr3 > dr1) {
           let cx, cy, hx, hy;
-          if (kind === 7) {
-            cx = f32[o] + f32[o + 2] * 0.5; cy = f32[o + 1] + f32[o + 3] * 0.5;
-            hx = Math.max(-f32[o + 23], f32[o + 2]); hy = Math.max(Math.max(-f32[o + 23] * 0.5, f32[o + 3]), 1.0);
+          if (kind === 2 || kind === 7) {
+            [cx, cy, hx, hy] = bareTextBox(f32, o);
           } else if (kind === 10) {
             cx = f32[o] + f32[o + 2] * 0.5; cy = f32[o + 1] + f32[o + 3] * 0.5;
             hx = hy = Math.max(-f32[o + 23] * 0.5, 1.0);
@@ -3908,6 +4150,7 @@
     slotShow(m, s);
     const adPend = adCollectAndMatch(start, count, m, reblurred, bdTex, adCurDt, adFrameSerial);
     if (adPend.length) adRunUpdates(adPend, adCurDt);
+    veilRunUpdates(start, end, count, reblurred, adCurDt, adFrameSerial);
     adFillUniforms();
     mainState();
     return true;
@@ -3933,6 +4176,8 @@
     gl.bindTexture(gl.TEXTURE_2D, segsTex || atlasTex);
     gl.activeTexture(gl.TEXTURE4);
     gl.bindTexture(gl.TEXTURE_2D, adTex[adCur] || atlasTex);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, veil.tex[veil.cur] || atlasTex);
     progGen++;
     progNow = null;
     useProg(MB_PROG_UI);
@@ -4136,7 +4381,7 @@
     if (H.env('MBUI_STRIPS') === '0') return -1;
     const a = i * INST;
     const kind = Math.round(f32[a + 5]);
-    if (f32[a + 32] !== 0 || f32[a + 20] !== 0) return -1;
+    if (f32[a + 32] !== 0 || f32[a + 20] !== 0 || f32[a + 23] < 0) return -1;
     if (kind === 2) {
       if (f32[a + 12] > 0.5) {
         if (!mbInside(a, f32[a + 13], 0, scale, bandHole)) return -1;
@@ -4283,6 +4528,7 @@
     adMode = 1;
     adCurDt = adNextDt();
     adFrameSerial++;
+    veilAssign(n, adFrameSerial);
     computeDonorPlan(n, canvas.width / dpr, canvas.height / dpr, dpr);
     donorPlanReady = true;
     const whole = !dirtyTold || dirtyWhole || missing;
@@ -4291,6 +4537,10 @@
       for (let i = 0; i < AD_MAX; i++) {
         const s = adSlots[i];
         if (s.active && s.settleLeft > 0) dirty.push([s.cx - s.hx - 4, s.cy - s.hy - 4, s.hx * 2 + 8, s.hy * 2 + 8]);
+      }
+      // (a bare word's capsule easing: its box and its capsule's reach past it, glass.mbt bare_veil_pad)
+      for (const v of veil.slots) {
+        if (v.who !== 0 && v.settleLeft > 0) dirty.push([v.cx - v.hx - 16, v.cy - v.hy - 10, v.hx * 2 + 32, v.hy * 2 + 20]);
       }
     }
     if (whole) {
@@ -7344,7 +7594,7 @@
     Object.assign(s, {
       canvas, gl, vs, vsAd, prog, progs, progFlat, ufVp, progGen, progNow, post, adProg, vao, instBuf, atlasTex, ta, U, PU, ADU,
       cssW, cssH, dpr, rectLeft, rectTop, rectValid, sizeDirty, sizeObserver,
-      lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, adTex, adFb, adCur, adSlots, adLastTime, adFrameSerial, adSettling, adRaf, lastN, lastR, lastG, lastB, lastF32,
+      lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, adTex, adFb, adCur, adSlots, veil, adLastTime, adFrameSerial, adSettling, adRaf, lastN, lastR, lastG, lastB, lastF32,
       cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
       segsTex, segsRows, segsHad, segsHadRows, uploadedFor, imeActive, composing, taHad, imeKind, viewLayer,
       under, coverBoxes, takePresses, doc, hostWin, glassIdle,
@@ -7354,7 +7604,7 @@
     ({
       canvas, gl, vs, vsAd, prog, progs, progFlat, ufVp, progGen, progNow, post, adProg, vao, instBuf, atlasTex, ta, U, PU, ADU,
       cssW, cssH, dpr, rectLeft, rectTop, rectValid, sizeDirty, sizeObserver,
-      lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, adTex, adFb, adCur, adSlots, adLastTime, adFrameSerial, adSettling, adRaf, lastN, lastR, lastG, lastB, lastF32,
+      lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, adTex, adFb, adCur, adSlots, veil, adLastTime, adFrameSerial, adSettling, adRaf, lastN, lastR, lastG, lastB, lastF32,
       cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
       segsTex, segsRows, segsHad, segsHadRows, uploadedFor, imeActive, composing, taHad, imeKind, viewLayer,
       under, coverBoxes, takePresses, doc, hostWin, glassIdle,
@@ -7498,7 +7748,7 @@
       gl: null, vs: null, vsAd: null, prog: null, progs: new Array(MB_PROGS).fill(null), progFlat: null, ufVp: null,
       progGen: 0, progNow: null, post: null, vao: null, instBuf: null, atlasTex: null, segsTex: null, segsHad: null,
       lv: null, lvW: 0, lvH: 0, bdTex: null, glassSlots: makeGlassSlots(), glassSlotsClock: 0,
-      adProg: null, ADU: {}, adTex: [null, null], adFb: [null, null], adCur: 0, adSlots: makeAdSlots(),
+      adProg: null, ADU: {}, adTex: [null, null], adFb: [null, null], adCur: 0, adSlots: makeAdSlots(), veil: makeVeil(),
       adLastTime: 0, adFrameSerial: 0, adSettling: false, adRaf: 0, lastN: 0, lastR: 0, lastG: 0, lastB: 0, lastF32: null,
       cv: null, cvOk: false, target: null,
     });
@@ -7617,7 +7867,7 @@
       U: {}, PU: {}, cssW: 0, cssH: 0, dpr: child.devicePixelRatio || 1, rectLeft: 0, rectTop: 0, rectValid: false,
       sizeDirty: true, sizeObserver: null,
       lv: null, lvW: 0, lvH: 0, bdTex: null, glassSlots: makeGlassSlots(), glassSlotsClock: 0,
-      adProg: null, ADU: {}, adTex: [null, null], adFb: [null, null], adCur: 0, adSlots: makeAdSlots(),
+      adProg: null, ADU: {}, adTex: [null, null], adFb: [null, null], adCur: 0, adSlots: makeAdSlots(), veil: makeVeil(),
       adLastTime: 0, adFrameSerial: 0, adSettling: false, adRaf: 0, lastN: 0, lastR: 0, lastG: 0, lastB: 0, lastF32: null,
       cv: null, cvOk: false, target: null, dirty: [],
       dirtyWhole: false, dirtyTold: false, missing: false, drewMissing: false, cutOn: false, segsTex: null,

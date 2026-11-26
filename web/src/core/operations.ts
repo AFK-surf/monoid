@@ -151,6 +151,7 @@ export interface OperationParams {
   "memory.get": {  };
   "process.end": { pid: number; session: string };
   "software.update": { id?: string | null | undefined; repair?: boolean | null | undefined; to?: string | null | undefined };
+  "software.uninstall": { id: string };
   "software.updateAll": {  };
   "software.check": {  };
   "software.channel": { channel?: string | null | undefined };
@@ -372,6 +373,7 @@ export function bindStationOperations(call: Call) {
     memoryGet: <T = unknown>(params: OperationParams["memory.get"] = {}) => call("memory.get", params) as Promise<T>,
     processEnd: <T = unknown>(params: OperationParams["process.end"]) => call("process.end", params) as Promise<T>,
     softwareUpdate: <T = unknown>(params: OperationParams["software.update"] = {}) => call("software.update", params) as Promise<T>,
+    softwareUninstall: <T = unknown>(params: OperationParams["software.uninstall"]) => call("software.uninstall", params) as Promise<T>,
     softwareUpdateAll: <T = unknown>(params: OperationParams["software.updateAll"] = {}) => call("software.updateAll", params) as Promise<T>,
     softwareCheck: <T = unknown>(params: OperationParams["software.check"] = {}) => call("software.check", params) as Promise<T>,
     softwareChannel: <T = unknown>(params: OperationParams["software.channel"] = {}) => call("software.channel", params) as Promise<T>,

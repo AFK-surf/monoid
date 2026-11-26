@@ -137,6 +137,9 @@ static int failed;
 #define S 2
 
 // An instance: a rect at x, y, w × h of colour (r, g, b), kind `kind`, image `tid`, its clip the window's.
+// slot 23 of bare adaptive text: the whole text's half width and height (ui's bare_text_ink), its centre in 21-22
+static double bare_ink(double hw, double hh) { return -(floor(hw) * 4096.0 + floor(hh)); }
+
 static double wcag_luma_u8(int r, int g, int b) {
   double c[3] = {r / 255.0, g / 255.0, b / 255.0};
   for (int i = 0; i < 3; i++) c[i] = c[i] <= 0.04045 ? (c[i] / 12.92) : pow((c[i] + 0.055) / 1.055, 2.4);
@@ -2335,7 +2338,7 @@ int main(void) {
         rect_at(bi + 4 * MB_INST, 64, 12, 12, 12, 7, bi_cases[ci].txt, bi_cases[ci].txt, bi_cases[ci].txt, 0);
         bi[4 * MB_INST + 12] = 16.0; bi[4 * MB_INST + 13] = 16.0;
         bi[4 * MB_INST + 14] = 16.0; bi[4 * MB_INST + 15] = 16.0;
-        bi[4 * MB_INST + 21] = 70.0; bi[4 * MB_INST + 22] = 18.0; bi[4 * MB_INST + 23] = -12.0;
+        bi[4 * MB_INST + 21] = 70.0; bi[4 * MB_INST + 22] = 18.0; bi[4 * MB_INST + 23] = bare_ink(12, 12);
         glass_forget();
         gl_present(bi, 5, bi_cases[ci].r_bg, bi_cases[ci].r_bg, bi_cases[ci].r_bg);
         unsigned char *bpx = pixels_of_fb(pb_fb);
@@ -2368,7 +2371,7 @@ int main(void) {
           rect_at(mc + 2 * MB_INST, 44, 12, 12, 12, 7, mid_txts[ti], mid_txts[ti], mid_txts[ti], 0);
           mc[2 * MB_INST + 12] = 16.0; mc[2 * MB_INST + 13] = 16.0;
           mc[2 * MB_INST + 14] = 16.0; mc[2 * MB_INST + 15] = 16.0;
-          mc[2 * MB_INST + 21] = 50.0; mc[2 * MB_INST + 22] = 18.0; mc[2 * MB_INST + 23] = -12.0;
+          mc[2 * MB_INST + 21] = 50.0; mc[2 * MB_INST + 22] = 18.0; mc[2 * MB_INST + 23] = bare_ink(12, 12);
           glass_forget();
           gl_present(mc, 3, bg, bg, bg);
           unsigned char *mpx = pixels_of_fb(pb_fb);
@@ -2437,7 +2440,7 @@ int main(void) {
             rect_at(sc + 2 * MB_INST, 14, 12, 12, 12, 7, ink, ink, ink, 0);
             sc[2 * MB_INST + 12] = 16.0; sc[2 * MB_INST + 13] = 16.0;
             sc[2 * MB_INST + 14] = 16.0; sc[2 * MB_INST + 15] = 16.0;
-            sc[2 * MB_INST + 21] = 20.0; sc[2 * MB_INST + 22] = 18.0; sc[2 * MB_INST + 23] = -12.0;
+            sc[2 * MB_INST + 21] = 20.0; sc[2 * MB_INST + 22] = 18.0; sc[2 * MB_INST + 23] = bare_ink(12, 12);
             // kind 10 bare line at (50, 18)
             rect_at(sc + 3 * MB_INST, 42, 12, 16, 12, 10, ink, ink, ink, 0);
             sc[3 * MB_INST + 4] = 4.0;
@@ -2479,7 +2482,8 @@ int main(void) {
           }
         }
       }
-      // 300pt-wide bare title straddling bright (left) / dark (right) boundary: per-glyph local sampling
+      // Bare text over a bright (left) / dark (right) boundary: two texts each take their own ink, and one 300pt text
+      // across it takes one ink for all its glyphs (no single letter flipped against its neighbours)
       {
         int w_save = cur_w, h_save = cur_h, fbw_save = fb_w, fbh_save = fb_h;
         double sc_save = cur_scale;
@@ -2500,13 +2504,13 @@ int main(void) {
         rect_at(wt + 2 * MB_INST, 0, 0, 400, 68.0, 5, 1.0, 1.0, 1.0, -48);
         wt[2 * MB_INST + 6] = 1.0; wt[2 * MB_INST + 7] = 8.5; wt[2 * MB_INST + 11] = 0.0; wt[2 * MB_INST + 15] = 1.0;
         wt[2 * MB_INST + 22] = -1.0; wt[2 * MB_INST + 54] = 68.0; wt[2 * MB_INST + 55] = 40.0;
-        // Same pad.yz=(200,20) for both glyphs spanning 300pt: left glyph at x=70, right glyph at x=330
+        // Two texts: one glyph at x=70 (its text's box 40..100), one at x=330 (300..360)
         rect_at(wt + 3 * MB_INST, 64, 14, 12, 12, 7, 0.11, 0.11, 0.11, 0);
         wt[3 * MB_INST + 12] = 16.0; wt[3 * MB_INST + 13] = 16.0; wt[3 * MB_INST + 14] = 16.0; wt[3 * MB_INST + 15] = 16.0;
-        wt[3 * MB_INST + 21] = 200.0; wt[3 * MB_INST + 22] = 20.0; wt[3 * MB_INST + 23] = -16.0;
+        wt[3 * MB_INST + 21] = 70.0; wt[3 * MB_INST + 22] = 20.0; wt[3 * MB_INST + 23] = bare_ink(30, 10);
         rect_at(wt + 4 * MB_INST, 324, 14, 12, 12, 7, 0.11, 0.11, 0.11, 0);
         wt[4 * MB_INST + 12] = 16.0; wt[4 * MB_INST + 13] = 16.0; wt[4 * MB_INST + 14] = 16.0; wt[4 * MB_INST + 15] = 16.0;
-        wt[4 * MB_INST + 21] = 200.0; wt[4 * MB_INST + 22] = 20.0; wt[4 * MB_INST + 23] = -16.0;
+        wt[4 * MB_INST + 21] = 330.0; wt[4 * MB_INST + 22] = 20.0; wt[4 * MB_INST + 23] = bare_ink(30, 10);
         for (int i = 0; i < 5; i++) { wt[i * MB_INST + 18] = 400.0; wt[i * MB_INST + 19] = 120.0; }
         glass_forget();
         gl_present(wt, 5, 0.10, 0.10, 0.10);
@@ -2521,8 +2525,123 @@ int main(void) {
         CHECK(lr >= 0.70);
         free(wpx);
 
+        // One text 50..350 (centre 200, 150 each way) whose glyphs sit over both sides: one ink for both
+        {
+          for (int g = 3; g <= 4; g++) {
+            wt[g * MB_INST + 21] = 200.0; wt[g * MB_INST + 22] = 20.0; wt[g * MB_INST + 23] = bare_ink(150, 10);
+          }
+          glass_forget();
+          gl_present(wt, 5, 0.10, 0.10, 0.10);
+          unsigned char *upx = pixels_of_fb(wt_fb);
+          unsigned char *ul = upx + (row * fb_w + 70) * 4;
+          unsigned char *ur = upx + (row * fb_w + 330) * 4;
+          printf("gles_render: bare one 300pt text across the split: left=(%d,%d,%d) right=(%d,%d,%d)\n",
+                 ul[0], ul[1], ul[2], ur[0], ur[1], ur[2]);
+          CHECK(ul[0] == ur[0] && ul[1] == ur[1] && ul[2] == ur[2]);
+          free(upx);
+        }
+
+        // The capsule under bare words (kind 2, slot 23 their box, as the tree's bare_text_veil puts it): over the
+        // split the worst of what is behind them leaves their ink far short of 4.5:1, so it shows, opposite their ink,
+        // where no glyph is (x=300 over the dark side); over one quiet colour it is not there at all
+        {
+          double vl[6 * MB_INST];
+          memcpy(vl, wt, 3 * MB_INST * sizeof(double));
+          rect_at(vl + 3 * MB_INST, 42, 6, 316, 28, 2, 0.11, 0.11, 0.11, 0);
+          vl[3 * MB_INST + 4] = 14.0; vl[3 * MB_INST + 7] = 0.5;
+          vl[3 * MB_INST + 21] = 200.0; vl[3 * MB_INST + 22] = 20.0; vl[3 * MB_INST + 23] = bare_ink(150, 10);
+          memcpy(vl + 4 * MB_INST, wt + 3 * MB_INST, 2 * MB_INST * sizeof(double));
+          for (int i = 0; i < 6; i++) { vl[i * MB_INST + 18] = 400.0; vl[i * MB_INST + 19] = 120.0; }
+          glass_forget();
+          gl_present(vl, 6, 0.10, 0.10, 0.10);
+          unsigned char *vpx = pixels_of_fb(wt_fb);
+          unsigned char *gap = vpx + (row * fb_w + 300) * 4;
+          unsigned char *ink_l = vpx + (row * fb_w + 70) * 4, *ink_r = vpx + (row * fb_w + 330) * 4;
+          printf("gles_render: bare veil over the split: gap=(%d,%d,%d) ink=(%d,%d,%d)/(%d,%d,%d)\n", gap[0], gap[1], gap[2],
+                 ink_l[0], ink_l[1], ink_l[2], ink_r[0], ink_r[1], ink_r[2]);
+          CHECK(gap[0] >= 150);
+          CHECK(ink_l[0] == ink_r[0] && ink_l[0] <= 40);
+          free(vpx);
+          // mostly dark behind with a bright part (the mean on the dark side): the words keep their own dark ink, not
+          // turned to light (which the bright part would leave short), their light ground under them instead
+          rect_at(vl, 0, 0, 110, 120, 0, 0.96, 0.96, 0.96, 0);
+          rect_at(vl + MB_INST, 110, 0, 290, 120, 0, 0.10, 0.10, 0.10, 0);
+          for (int i = 0; i < 6; i++) { vl[i * MB_INST + 18] = 400.0; vl[i * MB_INST + 19] = 120.0; }
+          glass_forget();
+          gl_present(vl, 6, 0.10, 0.10, 0.10);
+          unsigned char *kpx = pixels_of_fb(wt_fb);
+          unsigned char *kg = kpx + (row * fb_w + 300) * 4;
+          unsigned char *kl = kpx + (row * fb_w + 70) * 4, *kr = kpx + (row * fb_w + 330) * 4;
+          printf("gles_render: bare veil mostly dark: gap=(%d,%d,%d) ink=(%d,%d,%d)/(%d,%d,%d)\n", kg[0], kg[1], kg[2], kl[0],
+                 kl[1], kl[2], kr[0], kr[1], kr[2]);
+          CHECK(kl[0] == kr[0] && kl[0] <= 40);
+          CHECK(kg[0] >= 150);
+          free(kpx);
+          memcpy(vl, wt, 2 * MB_INST * sizeof(double));
+          // one quiet colour behind: not there (the gaps exactly as drawn with no ground at all)
+          rect_at(vl, 0, 0, 200, 120, 0, 0.10, 0.10, 0.10, 0);
+          for (int i = 0; i < 6; i++) { vl[i * MB_INST + 18] = 400.0; vl[i * MB_INST + 19] = 120.0; }
+          unsigned char *qpx[2];
+          for (int pass = 0; pass < 2; pass++) {
+            vl[3 * MB_INST + 11] = pass == 0 ? 1.0 : 0.0;
+            glass_forget();
+            gl_present(vl, 6, 0.10, 0.10, 0.10);
+            qpx[pass] = pixels_of_fb(wt_fb);
+          }
+          unsigned char *qg = qpx[0] + (row * fb_w + 300) * 4, *qn = qpx[1] + (row * fb_w + 300) * 4;
+          unsigned char *qg2 = qpx[0] + (row * fb_w + 120) * 4, *qn2 = qpx[1] + (row * fb_w + 120) * 4;
+          printf("gles_render: bare veil over one colour: gap=(%d,%d,%d)/(%d,%d,%d) none=(%d,%d,%d)/(%d,%d,%d)\n", qg[0], qg[1],
+                 qg[2], qg2[0], qg2[1], qg2[2], qn[0], qn[1], qn[2], qn2[0], qn2[1], qn2[2]);
+          CHECK(qg[0] == qn[0] && qg2[0] == qn2[0]);
+          free(qpx[0]);
+          free(qpx[1]);
+
+          // Over time (whose in slot 6, as the tree's bare_text_who puts it): quiet first, then the split comes under
+          // them at once: their capsule eases in over frames (none jumping all the way), the frames asked for while it
+          // does, and lands where it is drawn with no state at all; then none asked for
+          {
+            gl_set_fixed_dt(1.0 / 60.0);
+            glass_forget();
+            vl[3 * MB_INST + 11] = 1.0;
+            for (int g = 3; g <= 5; g++) vl[g * MB_INST + 6] = 7.0;
+            gl_present(vl, 6, 0.10, 0.10, 0.10);
+            unsigned char *t0 = pixels_of_fb(wt_fb);
+            int quiet = t0[(row * fb_w + 300) * 4];
+            free(t0);
+            rect_at(vl, 0, 0, 200, 120, 0, 0.96, 0.96, 0.96, 0);
+            for (int i = 0; i < 6; i++) { vl[i * MB_INST + 18] = 400.0; vl[i * MB_INST + 19] = 120.0; }
+            int seen[40], monotone = 1, settling_mid = 0;
+            for (int fr = 0; fr < 40; fr++) {
+              gl_present(vl, 6, 0.10, 0.10, 0.10);
+              unsigned char *tp = pixels_of_fb(wt_fb);
+              seen[fr] = tp[(row * fb_w + 300) * 4];
+              free(tp);
+              if (fr > 0 && seen[fr] < seen[fr - 1]) monotone = 0;
+              if (fr == 10) settling_mid = gl_adaptive_settling();
+            }
+
+            for (int fr = 0; fr < 30; fr++) gl_present(vl, 6, 0.10, 0.10, 0.10);
+            int settling_after = gl_adaptive_settling();
+            // what it lands at: drawn with no state (whose 0)
+            for (int g = 3; g <= 5; g++) vl[g * MB_INST + 6] = 0.0;
+            glass_forget();
+            gl_present(vl, 6, 0.10, 0.10, 0.10);
+            unsigned char *tz = pixels_of_fb(wt_fb);
+            int landed = tz[(row * fb_w + 300) * 4];
+            free(tz);
+            gl_set_fixed_dt(0.0);
+            printf("gles_render: bare capsule over time: quiet=%d first=%d f3=%d f10=%d f39=%d landed=%d monotone=%d settling=%d/%d\n",
+                   quiet, seen[0], seen[3], seen[10], seen[39], landed, monotone, settling_mid, settling_after);
+            CHECK(seen[0] > quiet && seen[0] < landed - 40);
+            CHECK(seen[3] > seen[0] && seen[10] > seen[3]);
+            CHECK(monotone);
+            CHECK(abs(seen[39] - landed) <= 2);
+            CHECK(settling_mid == 1 && settling_after == 0);
+          }
+        }
+
         // Vertical split multiline bare kind==7: same column, top row y=14..26 over light 0.96, bottom row y=84..96 over dark 0.10,
-        // shared ancestor pad.yz=(100, 55) -> both rows must sample their own rect.y + rect.h*0.5 and reach CR >= 4.5
+        // two texts (one a row) each sampling its own box -> both reach CR >= 4.5
         {
           double ml[5 * MB_INST];
           rect_at(ml, 0, 0, 400, 60, 0, 0.96, 0.96, 0.96, 0);
@@ -2532,10 +2651,10 @@ int main(void) {
           ml[2 * MB_INST + 22] = -1.0; ml[2 * MB_INST + 54] = 120.0; ml[2 * MB_INST + 55] = 20.0;
           rect_at(ml + 3 * MB_INST, 94, 14, 12, 12, 7, 0.11, 0.11, 0.11, 0);
           ml[3 * MB_INST + 12] = 16.0; ml[3 * MB_INST + 13] = 16.0; ml[3 * MB_INST + 14] = 16.0; ml[3 * MB_INST + 15] = 16.0;
-          ml[3 * MB_INST + 21] = 100.0; ml[3 * MB_INST + 22] = 55.0; ml[3 * MB_INST + 23] = -16.0;
+          ml[3 * MB_INST + 21] = 100.0; ml[3 * MB_INST + 22] = 20.0; ml[3 * MB_INST + 23] = bare_ink(30, 8);
           rect_at(ml + 4 * MB_INST, 94, 84, 12, 12, 7, 0.11, 0.11, 0.11, 0);
           ml[4 * MB_INST + 12] = 16.0; ml[4 * MB_INST + 13] = 16.0; ml[4 * MB_INST + 14] = 16.0; ml[4 * MB_INST + 15] = 16.0;
-          ml[4 * MB_INST + 21] = 100.0; ml[4 * MB_INST + 22] = 55.0; ml[4 * MB_INST + 23] = -16.0;
+          ml[4 * MB_INST + 21] = 100.0; ml[4 * MB_INST + 22] = 90.0; ml[4 * MB_INST + 23] = bare_ink(30, 8);
           for (int i = 0; i < 5; i++) { ml[i * MB_INST + 18] = 400.0; ml[i * MB_INST + 19] = 120.0; }
           glass_forget();
           gl_present(ml, 5, 0.10, 0.10, 0.10);
@@ -5814,7 +5933,7 @@ int main(void) {
       rect_at(pv + 2 * MB_INST, 20, 10, 90, 60, 7, 0.15, 0.15, 0.15, 0);
       pv[2 * MB_INST + 12] = 0.0; pv[2 * MB_INST + 13] = 0.0;
       pv[2 * MB_INST + 14] = 4.0 / MB_ATLAS; pv[2 * MB_INST + 15] = 4.0 / MB_ATLAS;
-      pv[2 * MB_INST + 23] = -16.0;
+      pv[2 * MB_INST + 21] = 65.0; pv[2 * MB_INST + 22] = 40.0; pv[2 * MB_INST + 23] = bare_ink(45, 30);
       gl_present(pv, 3, 0.05, 0.05, 0.05);
       unsigned char *px = pixels_of_fb(surface);
       // Sample upper-left triangle (vid 0,1,2 -> driven by vid 2) and lower-right triangle (vid 3,4,5 -> driven by vid 5)
@@ -6112,7 +6231,7 @@ int main(void) {
         // Bare-adaptive title glyph on right (x=54..66, y=16..28, pad_w=-12)
         rect_at(tb + 3 * MB_INST, 54, 16, 12, 12, 7, 0.9, 0.9, 0.9, 0);
         tb[3 * MB_INST + 14] = 4.0 / MB_ATLAS; tb[3 * MB_INST + 15] = 4.0 / MB_ATLAS;
-        tb[3 * MB_INST + 23] = -12.0;
+        tb[3 * MB_INST + 21] = 60.0; tb[3 * MB_INST + 22] = 22.0; tb[3 * MB_INST + 23] = bare_ink(12.0, 12.0);
 
         gl_present(tb, 4, bgv, bgv, bgv);
         CHECK(donor_delegated_count == 1);
@@ -6150,7 +6269,7 @@ int main(void) {
       ref[3 * MB_INST + 21] = 4.0; ref[3 * MB_INST + 23] = 2.0;
       rect_at(ref + 4 * MB_INST, 54, 16, 12, 12, 7, 0.2, 0.2, 0.2, 0);
       ref[4 * MB_INST + 14] = 4.0 / MB_ATLAS; ref[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
-      ref[4 * MB_INST + 23] = -12.0;
+      ref[4 * MB_INST + 21] = 60.0; ref[4 * MB_INST + 22] = 22.0; ref[4 * MB_INST + 23] = bare_ink(12.0, 12.0);
       gl_present(ref, 5, 1.0, 1.0, 1.0);
       unsigned char *ref_px = pixels_of_fb(surface);
 
@@ -6201,7 +6320,7 @@ int main(void) {
       lt2[4 * MB_INST + 21] = 4.0; lt2[4 * MB_INST + 23] = 2.0;
       rect_at(lt2 + 5 * MB_INST, 54, 16, 12, 12, 7, 0.2, 0.2, 0.2, 0);
       lt2[5 * MB_INST + 14] = 4.0 / MB_ATLAS; lt2[5 * MB_INST + 15] = 4.0 / MB_ATLAS;
-      lt2[5 * MB_INST + 23] = -12.0;
+      lt2[5 * MB_INST + 21] = 60.0; lt2[5 * MB_INST + 22] = 22.0; lt2[5 * MB_INST + 23] = bare_ink(12.0, 12.0);
       gl_present(lt2, 6, 0.05, 0.05, 0.05);
       CHECK(donor_delegated_count > 0);
       CHECK(donor_of_buf[5] == -140);
@@ -6228,7 +6347,7 @@ int main(void) {
       // Bare title glyph over dark stripe (x=42..54 inside x=40..60 dark stripe)
       rect_at(tx + 8 * MB_INST, 42, 16, 12, 12, 7, 0.9, 0.9, 0.9, 0);
       tx[8 * MB_INST + 14] = 4.0 / MB_ATLAS; tx[8 * MB_INST + 15] = 4.0 / MB_ATLAS;
-      tx[8 * MB_INST + 23] = -12.0;
+      tx[8 * MB_INST + 21] = 48.0; tx[8 * MB_INST + 22] = 22.0; tx[8 * MB_INST + 23] = bare_ink(12.0, 12.0);
 
       donor_force_off = 0;
       gl_present(tx, 8, 0.05, 0.05, 0.05);
@@ -6299,7 +6418,7 @@ int main(void) {
           // Bare adaptive light title glyph (x=64..80, y=18..32 -> center 72,25)
           rect_at(bc + 4 * MB_INST, 64, 18, 16, 14, 7, 0.93, 0.93, 0.93, 0);
           bc[4 * MB_INST + 14] = 4.0 / MB_ATLAS; bc[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
-          bc[4 * MB_INST + 23] = -12.0;
+          bc[4 * MB_INST + 21] = 72.0; bc[4 * MB_INST + 22] = 25.0; bc[4 * MB_INST + 23] = bare_ink(16.0, 14.0);
 
           glass_forget();
           donor_force_off = 0;
@@ -6371,7 +6490,7 @@ int main(void) {
       oc[3 * MB_INST + 21] = 4.0; oc[3 * MB_INST + 23] = 2.0;
       rect_at(oc + 4 * MB_INST, 54, 16, 12, 12, 7, 0.9, 0.9, 0.9, 0);
       oc[4 * MB_INST + 14] = 4.0 / MB_ATLAS; oc[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
-      oc[4 * MB_INST + 23] = -12.0;
+      oc[4 * MB_INST + 21] = 60.0; oc[4 * MB_INST + 22] = 22.0; oc[4 * MB_INST + 23] = bare_ink(12.0, 12.0);
       gl_present(oc, 5, 0.05, 0.05, 0.05);
       CHECK(donor_delegated_count == 0);
     }
@@ -6396,7 +6515,7 @@ int main(void) {
       // bare adaptive glyph
       rect_at(ln + 4 * MB_INST, 54, 16, 12, 12, 7, 0.2, 0.2, 0.2, 0);
       ln[4 * MB_INST + 14] = 4.0 / MB_ATLAS; ln[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
-      ln[4 * MB_INST + 23] = -12.0;
+      ln[4 * MB_INST + 21] = 60.0; ln[4 * MB_INST + 22] = 22.0; ln[4 * MB_INST + 23] = bare_ink(12.0, 12.0);
       gl_present(ln, 5, 0.05, 0.05, 0.05);
       CHECK(donor_delegated_count == 0);
       unsigned char *px = pixels_of_fb(surface);
@@ -6421,7 +6540,7 @@ int main(void) {
       md[3 * MB_INST + 21] = 4.0; md[3 * MB_INST + 23] = 2.0;
       rect_at(md + 4 * MB_INST, 50, 10, 12, 12, 7, 0.2, 0.2, 0.2, 0);
       md[4 * MB_INST + 14] = 4.0 / MB_ATLAS; md[4 * MB_INST + 15] = 4.0 / MB_ATLAS;
-      md[4 * MB_INST + 23] = -12.0;
+      md[4 * MB_INST + 21] = 56.0; md[4 * MB_INST + 22] = 16.0; md[4 * MB_INST + 23] = bare_ink(12.0, 12.0);
       // Bottom donor (-132) + pill (-133) + bare glyph
       rect_at(md + 5 * MB_INST, 0, 42, W, 38, 5, 0, 0, 0, -132);
       md[5 * MB_INST + 6] = 1.0; md[5 * MB_INST + 7] = 5.0; md[5 * MB_INST + 11] = 0.0; md[5 * MB_INST + 15] = 1.0;
@@ -6432,7 +6551,7 @@ int main(void) {
       md[6 * MB_INST + 21] = 4.0; md[6 * MB_INST + 23] = 2.0;
       rect_at(md + 7 * MB_INST, 50, 54, 12, 12, 7, 0.9, 0.9, 0.9, 0);
       md[7 * MB_INST + 14] = 4.0 / MB_ATLAS; md[7 * MB_INST + 15] = 4.0 / MB_ATLAS;
-      md[7 * MB_INST + 23] = -12.0;
+      md[7 * MB_INST + 21] = 56.0; md[7 * MB_INST + 22] = 60.0; md[7 * MB_INST + 23] = bare_ink(12.0, 12.0);
 
       // Full baseline frame, then partial redraw with 2 separate dirty rects covering top & bottom titles
       gl_present(md, 8, 0.5, 0.5, 0.5);

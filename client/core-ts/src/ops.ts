@@ -220,6 +220,7 @@ export const PARAMS: Record<string, string> = {
   "memory.get": "",
   "process.end": "pid:number session:string",
   "software.update": "id?:string repair?:boolean to?:string",
+  "software.uninstall": "id:string",
   "software.updateAll": "",
   "software.check": "",
   "software.channel": "channel?:string",
@@ -822,6 +823,9 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("POST", () => `/resources/processes/${p.u64("pid")}/end`, p.pick(["session"]), NONE);
     case "software.update":
       return op("POST", () => "/updates", p.pick(["id", "repair", "to"]), OVERVIEW);
+    // A runtime removed from the station's machine, the way it was installed (its accounts and chats stay).
+    case "software.uninstall":
+      return op("POST", () => "/updates/uninstall", p.pick(["id"]), OVERVIEW);
     case "software.updateAll":
       return op("POST", () => "/updates/all", null, OVERVIEW);
     case "software.check":
