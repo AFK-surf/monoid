@@ -196,6 +196,7 @@ export const NOTES: [number, string][] = [
   [189, "chat_list now supports offset (pagination) and compact: true (one-line `- <address> \"<title>\" [...]` summary with limit up to 500) for scanning large chat lists."],
   [190, "Memory now routes into four layers: MEMORY.md (<= 8 KB target, hard-capped at 16 KB on injection) for cross-project/person/machine rules only, skills/<project>/SKILL.md for projects, skills/machines/<station-tag>.md for machine/environment notes (current station auto-injected as <station-memory>, 4 KB cap), and skills/people/<name>.md for team roles and preferences (read via skill_read). Update existing same-topic entries in place instead of appending duplicates."],
   [191, "skills/people/<person-tag>.md (the tag is the person's email in lower case) of the person a session is for is now auto-injected at session start as <person-memory> (4 KB cap): keep personal preferences, approval habits and personal machine details there, not in MEMORY.md."],
+  [192, "device_list now includes AirPlay devices (kind: \"airplay\", Apple TV / HomePod / AirPlay speakers) and new tool device_control runs standard AirPlay actions (status, power, remote, apps, launch, playing, seek, volume, keyboard, play_url, stream_audio) over the device tunnel (see skill stillfail-jobs)."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

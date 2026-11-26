@@ -444,6 +444,29 @@ test("devices: a whole station's added there; a rig's signed by its person and t
     assert.deepEqual(await rig.devices(), []);
     await w.run(devices.run(dcall("device.remove", { workspace: WS, station: ST1, device: "0123456789abcdef" })));
     assert.deepEqual([w.asked.at(-1)!.method, w.asked.at(-1)!.path], ["DELETE", "/devices/0123456789abcdef"]);
+
+    // AirPlay device calls: scan, install, multi-step pair, add with pairId, rebindPair, and view metadata passthrough.
+    await w.run(devices.run(dcall("device.scan", { workspace: WS, station: ST1, kind: "airplay", timeoutMs: 3000, host: "192.168.1.50" })));
+    assert.deepEqual(w.asked.at(-1), { station: ST1, method: "POST", path: "/devices/scan", body: { kind: "airplay", timeoutMs: 3000, host: "192.168.1.50" } });
+    await w.run(devices.run(dcall("device.installAirplay", { workspace: WS, station: ST1 })));
+    assert.deepEqual(w.asked.at(-1), { station: ST1, method: "POST", path: "/devices/airplay/install", body: {} });
+    await w.run(devices.run(dcall("device.pairStart", { workspace: WS, station: ST1, identifier: "AA:BB:CC:DD:EE:FF", address: "192.168.1.50", name: "Living Room", model: "Apple TV 4K", protocols: ["airplay", "companion"] })));
+    assert.deepEqual(w.asked.at(-1), { station: ST1, method: "POST", path: "/devices/pair/start", body: { identifier: "AA:BB:CC:DD:EE:FF", address: "192.168.1.50", name: "Living Room", model: "Apple TV 4K", protocols: ["airplay", "companion"] } });
+    await w.run(devices.run(dcall("device.pairFinish", { workspace: WS, station: ST1, pairId: "pair-1", pin: "1234" })));
+    assert.deepEqual(w.asked.at(-1), { station: ST1, method: "POST", path: "/devices/pair/finish", body: { pairId: "pair-1", pin: "1234" } });
+    await w.run(devices.run(dcall("device.pairCancel", { workspace: WS, station: ST1, pairId: "pair-1" })));
+    assert.deepEqual(w.asked.at(-1), { station: ST1, method: "POST", path: "/devices/pair/cancel", body: { pairId: "pair-1" } });
+    await w.run(devices.run(dcall("device.add", { workspace: WS, station: ST1, name: "Living Room TV", kind: "airplay", target: "AA:BB:CC:DD:EE:FF", model: "Apple TV 4K", protocols: ["airplay", "companion"], paired: true, pairId: "pair-1" })));
+    assert.deepEqual(w.asked.at(-1), { station: ST1, method: "POST", path: "/devices", body: { name: "Living Room TV", kind: "airplay", target: "AA:BB:CC:DD:EE:FF", model: "Apple TV 4K", protocols: ["airplay", "companion"], paired: true, pairId: "pair-1" } });
+    await w.run(devices.run(dcall("device.rebindPair", { workspace: WS, station: ST1, device: "0123456789abcdef", pairId: "pair-2" })));
+    assert.deepEqual(w.asked.at(-1), { station: ST1, method: "POST", path: "/devices/0123456789abcdef/pair", body: { pairId: "pair-2" } });
+    devices.heard(`${WS}/${ST1}`, "devices", {
+      workspace: WS,
+      devices: [{ id: "fedcba9876543210", name: "Living Room TV", kind: "airplay", target: "AA:BB:CC:DD:EE:FF", model: "Apple TV 4K", protocols: ["airplay", "companion"], paired: true, owner: SUB, owner_email: "pat@example.com", owner_name: "Pat" }],
+      phones: [],
+    });
+    const ap = devices.value(WS).devices.find((x: any) => x.id === "fedcba9876543210");
+    assert.deepEqual([ap?.kind, ap?.model, ap?.protocols, ap?.paired], ["airplay", "Apple TV 4K", ["airplay", "companion"], true]);
   } finally {
     await rig?.close();
     w.runner.shutdown();

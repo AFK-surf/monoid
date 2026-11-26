@@ -212,7 +212,19 @@ about the card), and only a grant counts. Once granted, call `device_use` again 
 
 - adb: `adb -P <port> -s <serial> …` (the port is the adb server of the machine it is on; `-P` on every command);
 - tcp: connect to 127.0.0.1:<port> as you would to its address (http, `ssh -p`, mqtt, rtsp…);
-- serial: the port's bytes both ways over 127.0.0.1:<port> (it is set raw at its baud there).
+- serial: the port's bytes both ways over 127.0.0.1:<port> (it is set raw at its baud there);
+- airplay: use `device_control {device, action, args?, audio_path?}` (opens the tunnel automatically for whole-station devices; rig devices need `device_use` approval first). Standard actions:
+  - `status`: device online state, model, power state, foreground app, available features;
+  - `power`: `{state: "on" | "off" | "toggle" | "get"}`;
+  - `remote`: `{key, press?: "single" | "double" | "hold", repeat?: 1..20}` (`up`, `down`, `left`, `right`, `select`, `menu`, `home`, `top_menu`, `play_pause`, `play`, `pause`, `stop`, `next`, `previous`, `volume_up`, `volume_down`, `skip_forward`, `skip_backward`);
+  - `apps`: list installed apps (`[{name, id}]`);
+  - `launch`: `{app}` (bundle id, URL scheme, or app name);
+  - `playing`: current playback metadata (`title`, `artist`, `album`, `app`, `mediaType`, `deviceState`, `position`, `totalTime`, `volume`);
+  - `seek`: `{position}` (seconds);
+  - `volume`: `{level}` (0–100);
+  - `keyboard`: `{text, action?: "set" | "append" | "clear"}`;
+  - `play_url`: `{url, position?}`;
+  - `stream_audio`: pass `audio_path` (local audio file on this station, streamed over RAOP).
 
 `device_use {reason}` with no device named (or with a person's email) asks for the phone of the person you work for
 (or of that person): they approve it for this chat for an hour, until it has gone unused for an hour, for eight hours,

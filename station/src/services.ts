@@ -522,6 +522,7 @@ export class MeshSide extends Context.Service<MeshSide, MeshSideShape>()("stillf
 /// this chat may use it now and who may.
 export type DeviceEntry = {
   id: string; name: string; kind: string; target: string; baud?: number;
+  model?: string; protocols?: string[]; paired?: boolean; capabilities?: string[];
   /// Where it is attached: a station's id and name (`via: station`), a tasks-only station's (`rig`), or its person's
   /// phone itself (`phone`, its app lending it).
   via: "station" | "rig" | "phone"; station: string; stationName: string;

@@ -12,7 +12,7 @@ import { CoreError } from "./error.ts";
 import type { Host } from "./host.ts";
 import { t } from "./i18n.ts";
 import type { PersonalLock } from "./personal-lock.ts";
-import { type Device, type DeviceKind, DEVICE_KINDS, deviceRefusal } from "./rig-form.ts";
+import { AIRPLAY_PROTOCOLS, type AirPlayProtocol, type Device, type DeviceKind, DEVICE_KINDS, deviceRefusal } from "./rig-form.ts";
 import type { Rigs } from "./rigs.ts";
 import { StationAddr } from "./station/addr.ts";
 import type { Store } from "./store.ts";
@@ -23,11 +23,55 @@ type J = any;
 
 export type DeviceCall =
   /// A device attached to `station` (a whole one's, or a rig of this person's), named `name`, reached at `target`.
-  | { kind: "add"; workspace: string; station: string; name: string; deviceKind: DeviceKind; target: string; baud?: number }
+  | {
+      kind: "add";
+      workspace: string;
+      station: string;
+      name: string;
+      deviceKind: DeviceKind;
+      target: string;
+      baud?: number;
+      model?: string;
+      protocols?: AirPlayProtocol[];
+      paired?: boolean;
+      pairId?: string;
+    }
   /// One taken off its station.
   | { kind: "remove"; workspace: string; station: string; device: string }
   /// 免批准 on one of a rig's devices.
-  | { kind: "setOpen"; workspace: string; station: string; device: string; open: boolean };
+  | { kind: "setOpen"; workspace: string; station: string; device: string; open: boolean }
+  /// Scan a station's LAN for AirPlay receivers.
+  | { kind: "scan"; workspace: string; station: string; deviceKind: "airplay"; timeoutMs?: number; host?: string }
+  /// Install the on-demand pyatv environment on a station.
+  | { kind: "installAirplay"; workspace: string; station: string }
+  /// Start multi-protocol AirPlay PIN pairing on a station.
+  | {
+      kind: "pairStart";
+      workspace: string;
+      station: string;
+      identifier: string;
+      address?: string;
+      name?: string;
+      model?: string;
+      protocols: AirPlayProtocol[];
+    }
+  /// Submit PIN or skip the current protocol step of an AirPlay pairing session.
+  | { kind: "pairFinish"; workspace: string; station: string; pairId: string; pin?: string; skip?: boolean }
+  /// Cancel an active AirPlay pairing session.
+  | { kind: "pairCancel"; workspace: string; station: string; pairId: string }
+  /// Re-pair an existing AirPlay device with a completed pairing session.
+  | { kind: "rebindPair"; workspace: string; station: string; device: string; pairId: string };
+
+function parseProtocols(raw: unknown): AirPlayProtocol[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: AirPlayProtocol[] = [];
+  for (const item of raw) {
+    if (typeof item === "string" && AIRPLAY_PROTOCOLS.includes(item as AirPlayProtocol) && !out.includes(item as AirPlayProtocol)) {
+      out.push(item as AirPlayProtocol);
+    }
+  }
+  return out;
+}
 
 export function parseDevice(name: string, params: unknown): DeviceCall | null {
   const text = (field: string) => {
@@ -44,9 +88,17 @@ export function parseDevice(name: string, params: unknown): DeviceCall | null {
       const kind = text("kind");
       if (!DEVICE_KINDS.includes(kind as DeviceKind)) throw CoreError.invalid(t("core-misc.params.missing", { field: "kind" }));
       const baud = get(params, "baud");
+      const model = text("model");
+      const protocols = parseProtocols(get(params, "protocols"));
+      const paired = get(params, "paired");
+      const pairId = text("pairId");
       return {
         kind: "add", workspace: need("workspace"), station: need("station"), name: need("name"), deviceKind: kind as DeviceKind, target: need("target"),
         ...(typeof baud === "number" ? { baud } : typeof baud === "string" && baud.trim() !== "" ? { baud: Number(baud) } : {}),
+        ...(model !== "" ? { model } : {}),
+        ...(protocols !== undefined ? { protocols } : {}),
+        ...(typeof paired === "boolean" ? { paired } : {}),
+        ...(pairId !== "" ? { pairId } : {}),
       };
     }
     case "device.remove":
@@ -56,6 +108,54 @@ export function parseDevice(name: string, params: unknown): DeviceCall | null {
       if (typeof open !== "boolean") throw CoreError.invalid(t("core-misc.params.missing", { field: "open" }));
       return { kind: "setOpen", workspace: need("workspace"), station: need("station"), device: need("device"), open };
     }
+    case "device.scan": {
+      const rawKind = text("kind") || "airplay";
+      if (rawKind !== "airplay") throw CoreError.invalid(t("core-misc.params.missing", { field: "kind" }));
+      const timeoutMs = get(params, "timeoutMs");
+      const host = text("host");
+      return {
+        kind: "scan",
+        workspace: need("workspace"),
+        station: need("station"),
+        deviceKind: "airplay",
+        ...(typeof timeoutMs === "number" ? { timeoutMs } : {}),
+        ...(host !== "" ? { host } : {}),
+      };
+    }
+    case "device.installAirplay":
+      return { kind: "installAirplay", workspace: need("workspace"), station: need("station") };
+    case "device.pairStart": {
+      const address = text("address");
+      const deviceName = text("name");
+      const model = text("model");
+      const protocols = parseProtocols(get(params, "protocols")) ?? [];
+      return {
+        kind: "pairStart",
+        workspace: need("workspace"),
+        station: need("station"),
+        identifier: need("identifier"),
+        ...(address !== "" ? { address } : {}),
+        ...(deviceName !== "" ? { name: deviceName } : {}),
+        ...(model !== "" ? { model } : {}),
+        protocols,
+      };
+    }
+    case "device.pairFinish": {
+      const pin = text("pin");
+      const skip = get(params, "skip");
+      return {
+        kind: "pairFinish",
+        workspace: need("workspace"),
+        station: need("station"),
+        pairId: need("pairId"),
+        ...(pin !== "" ? { pin } : {}),
+        ...(typeof skip === "boolean" ? { skip } : {}),
+      };
+    }
+    case "device.pairCancel":
+      return { kind: "pairCancel", workspace: need("workspace"), station: need("station"), pairId: need("pairId") };
+    case "device.rebindPair":
+      return { kind: "rebindPair", workspace: need("workspace"), station: need("station"), device: need("device"), pairId: need("pairId") };
     default:
       return null;
   }
@@ -123,7 +223,11 @@ export class Devices {
     const whole = said.flatMap(([station, s]) => {
       const id = StationAddr.parse(station).station;
       return s.devices.map((d) => ({
-        id: str(d?.id), name: str(d?.name), kind: str(d?.kind), target: str(d?.target), ...(typeof d?.baud === "number" ? { baud: d.baud } : {}),
+        id: str(d?.id), name: str(d?.name), kind: str(d?.kind), target: str(d?.target),
+        ...(typeof d?.baud === "number" ? { baud: d.baud } : {}),
+        ...(typeof d?.model === "string" && d.model !== "" ? { model: d.model } : {}),
+        ...(Array.isArray(d?.protocols) ? { protocols: d.protocols.filter((p: unknown) => typeof p === "string") } : {}),
+        ...(typeof d?.paired === "boolean" ? { paired: d.paired } : {}),
         via: "station", station: id, stationName: stations.get(id) ?? str(d?.stationName), owner: str(d?.owner), ownerEmail: str(d?.owner_email), ownerName: str(d?.owner_name),
         mine: sub !== null && d?.owner === sub, online: true, open: true, ownOpen: false, settings: 0, grants: [], requests: [],
       }));
@@ -161,6 +265,39 @@ export class Devices {
         return this.#remove(call);
       case "setOpen":
         return this.#env.rigs().setDeviceOpen(call.workspace, call.station, call.device, call.open);
+      case "scan":
+        return this.#env.call(new StationAddr(call.workspace, call.station), "POST", "/devices/scan", {
+          kind: call.deviceKind,
+          ...(call.timeoutMs !== undefined ? { timeoutMs: call.timeoutMs } : {}),
+          ...(call.host !== undefined ? { host: call.host } : {}),
+        });
+      case "installAirplay":
+        return this.#env.call(new StationAddr(call.workspace, call.station), "POST", "/devices/airplay/install", {});
+      case "pairStart":
+        return this.#env.call(new StationAddr(call.workspace, call.station), "POST", "/devices/pair/start", {
+          identifier: call.identifier,
+          ...(call.address !== undefined ? { address: call.address } : {}),
+          ...(call.name !== undefined ? { name: call.name } : {}),
+          ...(call.model !== undefined ? { model: call.model } : {}),
+          protocols: call.protocols,
+        });
+      case "pairFinish":
+        return this.#env.call(new StationAddr(call.workspace, call.station), "POST", "/devices/pair/finish", {
+          pairId: call.pairId,
+          ...(call.pin !== undefined ? { pin: call.pin } : {}),
+          ...(call.skip !== undefined ? { skip: call.skip } : {}),
+        });
+      case "pairCancel":
+        return this.#env.call(new StationAddr(call.workspace, call.station), "POST", "/devices/pair/cancel", {
+          pairId: call.pairId,
+        });
+      case "rebindPair":
+        return this.#env.call(
+          new StationAddr(call.workspace, call.station),
+          "POST",
+          `/devices/${encodeURIComponent(call.device)}/pair`,
+          { pairId: call.pairId },
+        );
     }
   }
 
@@ -173,12 +310,22 @@ export class Devices {
       const env = this.#env;
       const id = new Uint8Array(8);
       env.host.randomBytes(id);
-      const device: Device = { id: hex(id), name: call.name, kind: call.deviceKind, target: call.target, ...(call.baud !== undefined ? { baud: call.baud } : {}) };
+      const device: Device = {
+        id: hex(id),
+        name: call.name,
+        kind: call.deviceKind,
+        target: call.target,
+        ...(call.baud !== undefined ? { baud: call.baud } : {}),
+        ...(call.model !== undefined ? { model: call.model } : {}),
+        ...(call.protocols !== undefined ? { protocols: call.protocols } : {}),
+        ...(call.paired !== undefined ? { paired: call.paired } : {}),
+      };
       const why = deviceRefusal(device);
       if (why !== null) return yield* Effect.fail(CoreError.invalid(why));
       if (this.#isRig(call.workspace, call.station)) return yield* env.rigs().device(call.workspace, call.station, device, false);
       const { id: _, ...given } = device;
-      return yield* env.call(new StationAddr(call.workspace, call.station), "POST", "/devices", given);
+      const payload = call.pairId !== undefined ? { ...given, pairId: call.pairId } : given;
+      return yield* env.call(new StationAddr(call.workspace, call.station), "POST", "/devices", payload);
     });
   }
 

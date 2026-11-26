@@ -3,16 +3,8 @@
 // that only runs tasks has 免批准 for its person, and is taken off by them.
 
 ///|
-/// The corner rule's faults known in a device's panel beside its place (Tester::corners_known), kept till the panels'
-/// layout is decided (the coordinator of the migration, 2026-11-12): its last row's ground under the hand or with the
-/// focus (移除设备, choice_row_node's, 18 round) stands 16 in from the panel's sides and 24 over its foot, in its 42
-/// corners, as far from neither edge as from the other, so no corner of it is concentric there (42 − 24 = 18 by its
-/// foot, 42 − 16 = 26 by its side). What would mend it: the row 16 over the foot too, its corner 26.
-// kept across runs: a value (no field of it changes)
-let device_corners_known : Array[String] = [
-  "「移除设备」 (at 396,577 488×36, node 539) (corner 18) in the bottom right of 「开发板 类型 串口设备 地址 /dev/ttyU…」 (at 380,164 520×473, node 470) (corner 42): 16 and 24 from its edges",
-  "「移除设备」 (at 396,577 488×36, node 539) (corner 18) in the bottom left of 「开发板 类型 串口设备 地址 /dev/ttyU…」 (at 380,164 520×473, node 470) (corner 42): 16 and 24 from its edges",
-]
+/// The corner rule's faults known in a device's panel beside its place: none since 移除设备 moved into the panel foot.
+let device_corners_known : Array[String] = []
 
 ///|
 test "大屏: the stations' place lists the devices under the stations; pressed, a device's panel says where it is and whose" {
@@ -123,4 +115,178 @@ test "a device of the viewer's station that only runs tasks: 免批准 theirs to
   t.run_for(@ui.move_most_ms)
   assert_eq(calls.iter().filter(fn(m) { m.name == "device.remove" }).count(), 1)
   assert_true(t.find("开发板") is None)
+}
+
+///|
+test "大屏: AirPlay device shows model, pairing status, capabilities, and re-pair entry in its panel" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="place-stations-devices")
+  app.nav.replace(Place("stations"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("客厅 Apple TV") is Some(_))
+  let (wx, wy) = t.find("Willow").unwrap()
+  t.tap(wx, wy)
+  t.run_for(@ui.move_most_ms)
+  t.wheel(900.0, 500.0, 3000.0)
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find_last("客厅 Apple TV").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("Apple TV 4K (3rd gen)") is Some(_))
+  assert_true(t.find("AA:BB:CC:DD:EE:FF") is Some(_))
+  assert_true(t.find("支持能力") is Some(_))
+  assert_true(t.find("遥控器、应用管理、电源控制、文本输入、视频推送、播放状态、音频推流、音量调节") is Some(_))
+  assert_true(t.find("重新配对") is Some(_))
+  assert_true(t.find("已配对") is Some(_))
+  assert_eq(t.audit(), [])
+}
+
+///|
+test "AirPlay scan: mandatory-pairing candidate steps through two PIN protocols and passes pairId to device.add" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="place-stations-devices")
+  app.nav.replace(Place("stations"))
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find("Willow").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  t.wheel(900.0, 500.0, 3000.0)
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find("添加设备").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  t.click(MenuItem, label="AirPlay 设备")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(calls.iter().filter(fn(m) { m.name == "device.scan" }).count(), 1)
+  assert_true(t.find("卧室 Apple TV") is Some(_))
+  assert_true(t.find("书房 HomePod") is Some(_))
+  assert_true(t.find("需要配对") is Some(_))
+  assert_true(t.find("免配对") is Some(_))
+  assert_eq(t.audit(), [])
+  let (x, y) = t.find("卧室 Apple TV").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(calls.iter().filter(fn(m) { m.name == "device.pairStart" }).count(), 1)
+  assert_true(t.find("输入设备屏幕上的配对码") is Some(_))
+  assert_true(t.find("配对进度：1/2（airplay）") is Some(_))
+  assert_eq(t.audit(), [])
+  // Wrong PIN keeps the user on step 1 with an error message
+  t.type_text("0000")
+  t.frame()
+  let (x, y) = t.find_last("下一步").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("配对码不正确") is Some(_))
+  assert_true(t.find("配对进度：1/2（airplay）") is Some(_))
+  // Correct PIN advances to step 2 (companion)
+  t.click(TextField, label="4 位数字 PIN")
+  t.frame()
+  t.key(@ui.key_code_select_all)
+  t.type_text("1234")
+  t.frame()
+  let (x, y) = t.find_last("下一步").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("配对进度：2/2（companion）") is Some(_))
+  t.click(TextField, label="4 位数字 PIN")
+  t.frame()
+  t.type_text("5678")
+  t.frame()
+  let (x, y) = t.find_last("下一步").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  // Naming step opens prefilled with "卧室 Apple TV" and is immediately submittable
+  assert_true(t.find("给它起个名字") is Some(_))
+  let (x, y) = t.find_last("添加设备").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  let made = calls.iter().filter(fn(m) { m.name == "device.add" }).collect()
+  assert_eq(made.length(), 1)
+  assert_eq(text(Some(made[0].params), "kind"), "airplay")
+  assert_eq(text(Some(made[0].params), "name"), "卧室 Apple TV")
+  assert_eq(text(Some(made[0].params), "target"), "11:22:33:44:55:66")
+  assert_eq(text(Some(made[0].params), "pairId"), "pair-1")
+  assert_eq(flag(Some(made[0].params), "paired"), true)
+  assert_true(t.find("卧室 Apple TV") is Some(_))
+}
+
+///|
+test "AirPlay scan: pairing-free candidate skips PIN and adds directly" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="place-stations-devices")
+  app.nav.replace(Place("stations"))
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find("Willow").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  t.wheel(900.0, 500.0, 3000.0)
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find("添加设备").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  t.click(MenuItem, label="AirPlay 设备")
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find("书房 HomePod").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(calls.iter().filter(fn(m) { m.name == "device.pairStart" }).count(), 0)
+  assert_true(t.find("给它起个名字") is Some(_))
+  let (x, y) = t.find_last("添加设备").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  let made = calls.iter().filter(fn(m) { m.name == "device.add" }).collect()
+  assert_eq(made.length(), 1)
+  assert_eq(text(Some(made[0].params), "kind"), "airplay")
+  assert_eq(text(Some(made[0].params), "name"), "书房 HomePod")
+  assert_eq(text(Some(made[0].params), "target"), "22:33:44:55:66:77")
+  assert_eq(flag(Some(made[0].params), "paired"), false)
+}
+
+///|
+test "AirPlay detail: re-pair steps through PIN and calls device.rebindPair" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="place-stations-devices")
+  app.nav.replace(Place("stations"))
+  t.run_for(@ui.move_most_ms)
+  let (wx, wy) = t.find("Willow").unwrap()
+  t.tap(wx, wy)
+  t.run_for(@ui.move_most_ms)
+  t.wheel(900.0, 500.0, 3000.0)
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find_last("客厅 Apple TV").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find("重新配对").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(calls.iter().filter(fn(m) { m.name == "device.pairStart" }).count(), 1)
+  t.type_text("1234")
+  t.frame()
+  let (x, y) = t.find_last("下一步").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find_last("跳过此协议").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  let rebound = calls.iter().filter(fn(m) { m.name == "device.rebindPair" }).collect()
+  assert_eq(rebound.length(), 1)
+  assert_eq(text(Some(rebound[0].params), "device"), "3d4e5f60718293a4")
+  assert_eq(text(Some(rebound[0].params), "pairId"), "pair-1")
+}
+
+///|
+test "小屏 1.3x: AirPlay detail and scan panels pass audit without overflow or truncation" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, mode="settings-stations-devices", w=390.0, h=844.0, platform=2)
+  t.set_font_scale(1.3)
+  app.nav.replace(Place("stations"))
+  t.run_for(@ui.move_most_ms)
+  t.wheel(195.0, 500.0, 2000.0)
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = t.find("客厅 Apple TV").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("Apple TV 4K (3rd gen)") is Some(_))
+  assert_true(t.find("重新配对") is Some(_))
+  assert_eq(t.audit(), [])
 }

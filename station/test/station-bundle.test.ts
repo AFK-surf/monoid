@@ -40,7 +40,7 @@ esac
     file("mock-bin/pnpm", `#!/bin/sh
 set -eu
 for name in main.js future/another-worker.js \\
-  skills/example.md dsh-bridge.mjs cursor-bridge.mjs copilot-bridge.mjs sandbox-bridge.mjs colab-sandbox.mjs scrcpy-server linux-portal.py linux-x11.py linux-gamepad.py; do
+  skills/example.md dsh-bridge.mjs cursor-bridge.mjs copilot-bridge.mjs sandbox-bridge.mjs colab-sandbox.mjs scrcpy-server linux-portal.py linux-x11.py linux-gamepad.py airplay-worker.py; do
   mkdir -p "dist/$(dirname "$name")"
   printf '%s' "$name" > "dist/$name"
 done
@@ -52,7 +52,7 @@ done
     for (const platform of ["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"]) {
       execFileSync("/bin/sh", [join(root, "scripts/station-bundle.sh"), join(root, "out"), platform], { env });
       const station = join(root, "out/stillfail/station");
-      for (const worker of ["future/another-worker.js", "colab-sandbox.mjs"]) {
+      for (const worker of ["future/another-worker.js", "colab-sandbox.mjs", "airplay-worker.py"]) {
         assert.equal(readFileSync(join(station, worker), "utf8"), worker, `${platform}: ${worker}`);
       }
       assert.equal(existsSync(join(station, "stale/old-worker.js")), false, `${platform}: nothing left from an earlier build`);

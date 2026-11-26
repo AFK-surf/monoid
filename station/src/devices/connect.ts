@@ -9,6 +9,7 @@ import { Duplex } from "node:stream";
 import type { Device } from "../../../client/core-ts/src/rig-form.ts";
 import { wall } from "../ops/fibers.ts";
 import { platform } from "../platform/index.ts";
+import type { AirPlayControlServer } from "./airplay/server.ts";
 
 /// How long a device's address has to take a connection.
 const REACH_MS = 10_000;
@@ -82,7 +83,7 @@ async function reachSerial(path: string, baud: number): Promise<Duplex> {
 }
 
 /// A connection to device `d` from this machine.
-export async function reachDevice(d: Device): Promise<Duplex> {
+export async function reachDevice(d: Device & { ws?: string }, airplay?: AirPlayControlServer): Promise<Duplex> {
   switch (d.kind) {
     case "tcp": {
       const { host, port } = hostPort(d.target);
@@ -92,5 +93,8 @@ export async function reachDevice(d: Device): Promise<Duplex> {
       return reachTcp("127.0.0.1", ADB_PORT);
     case "serial":
       return reachSerial(d.target, d.baud ?? BAUD_DEFAULT);
+    case "airplay":
+      if (airplay === undefined) throw new Error("airplay control server is not available on this station");
+      return airplay.open({ id: d.id, ws: d.ws ?? "", target: d.target, name: d.name });
   }
 }

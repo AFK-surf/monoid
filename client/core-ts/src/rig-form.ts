@@ -49,12 +49,23 @@ export const FULL_FOR = 3600;
 export type JoinBody = { v: 1; sub: string; ws: string; rig: string; token: string; lock?: string; at: number };
 
 /// A device the rig's person attached to it (设备, 2026-11-10: a phone or a board on its USB, a camera or a router on
-/// its network, anything an agent reaches that runs no station), or, `removed`, taken off it again. What a chat reaches
-/// of it is `target`: an adb serial on the rig's own adb (`adb`), an address and port its network reaches (`tcp`), or a
-/// serial port's path (`serial`, at `baud`).
-export type Device = { id: string; name: string; kind: DeviceKind; target: string; baud?: number };
-export type DeviceKind = "adb" | "tcp" | "serial";
-export const DEVICE_KINDS: DeviceKind[] = ["adb", "tcp", "serial"];
+/// its network, an AirPlay receiver, anything an agent reaches that runs no station), or, `removed`, taken off it again.
+/// What a chat reaches of it is `target`: an adb serial on the rig's own adb (`adb`), an address and port its network
+/// reaches (`tcp`), a serial port's path (`serial`, at `baud`), or a stable identifier / host / IP (`airplay`).
+export type AirPlayProtocol = "airplay" | "companion" | "raop";
+export const AIRPLAY_PROTOCOLS: AirPlayProtocol[] = ["airplay", "companion", "raop"];
+export type Device = {
+  id: string;
+  name: string;
+  kind: DeviceKind;
+  target: string;
+  baud?: number;
+  model?: string;
+  protocols?: AirPlayProtocol[];
+  paired?: boolean;
+};
+export type DeviceKind = "adb" | "tcp" | "serial" | "airplay";
+export const DEVICE_KINDS: DeviceKind[] = ["adb", "tcp", "serial", "airplay"];
 export type DeviceBody = { v: 1; sub: string; ws: string; rig: string; device: Device; removed: boolean; at: number };
 
 export type Kind = "grant" | "revoke" | "settings" | "add" | "full" | "device" | "join";
@@ -80,17 +91,25 @@ const text = (v: unknown, max = 512): v is string => typeof v === "string" && v.
 const time = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
 const common = (b: any): boolean => b !== null && typeof b === "object" && b.v === 1 && text(b.sub) && b.sub !== "" && text(b.ws, 64) && b.ws !== "" && typeof b.rig === "string" && HEX32.test(b.rig) && time(b.at);
 
-/// Why `d` is no device, or null: a name, a kind, and a target of that kind (an adb serial, `host:port`, a path).
+/// Why `d` is no device, or null: a name, a kind, and a target of that kind (an adb serial, `host:port`, a path, or an AirPlay identifier/host).
 export function deviceRefusal(d: unknown): string | null {
   const o = d as Device | null;
   if (o === null || typeof o !== "object" || typeof o.id !== "string" || !DEVICE_ID.test(o.id)) return "a device has an id of 16 hex digits";
   if (!text(o.name, 80) || o.name.trim() === "") return "a device has a name, up to 80 characters";
-  if (!DEVICE_KINDS.includes(o.kind)) return "kind: adb, tcp or serial";
+  if (!DEVICE_KINDS.includes(o.kind)) return "kind: adb, tcp, serial or airplay";
   if (!text(o.target, 256) || o.target.trim() === "" || /[\s\0]/.test(o.target)) return "target: what it is reached at, with no spaces";
   if (o.kind === "tcp" && !/^(\[[0-9a-fA-F:.]+\]|[A-Za-z0-9.-]+):([1-9][0-9]{0,4})$/.test(o.target)) return "a tcp device's target is host:port";
   if (o.kind === "tcp" && Number(o.target.slice(o.target.lastIndexOf(":") + 1)) > 65535) return "a tcp device's port is 1 to 65535";
   if (o.kind === "serial" && !o.target.startsWith("/") && !/^COM[0-9]+$/.test(o.target)) return "a serial device's target is its path (/dev/…) or COMn";
+  if (o.kind === "airplay" && (/[\x00-\x1f\x7f]/.test(o.target) || !/^[A-Za-z0-9._:\-[\]]+$/.test(o.target))) return "an airplay device's target is a device identifier, hostname or IP";
   if (o.baud !== undefined && (!Number.isSafeInteger(o.baud) || o.baud < 50 || o.baud > 4_000_000)) return "baud: 50 to 4000000";
+  if (o.model !== undefined && (!text(o.model, 120) || /[\x00-\x1f\x7f]/.test(o.model))) return "model: up to 120 characters";
+  if (o.protocols !== undefined) {
+    if (!Array.isArray(o.protocols) || o.protocols.length > 3 || o.protocols.some((p) => !AIRPLAY_PROTOCOLS.includes(p)) || new Set(o.protocols).size !== o.protocols.length) {
+      return "protocols: up to 3 distinct values from airplay, companion or raop";
+    }
+  }
+  if (o.paired !== undefined && typeof o.paired !== "boolean") return "paired: boolean";
   return null;
 }
 

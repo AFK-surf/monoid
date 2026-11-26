@@ -156,6 +156,8 @@ export const STORAGE_MANIFEST: readonly StorageEntry[] = [
   { name: "ca", class: "authoritative", what: "certificates the station trusts" },
   { name: "runtimes", class: "authoritative", what: "agent runtimes installed by the station" },
   { name: "screen-tools", class: "authoritative", what: "tools a screen needs (Linux)" },
+  { name: "tools", class: "bounded-ephemeral", what: "on-demand helper virtual environments (devices/airplay/install.ts)", maxBytes: 512 * MiB, reclaim: "rebuilt on demand when removed" },
+  { name: "devices", class: "authoritative", what: "encrypted credentials of attached devices (devices/airplay/credentials.ts)" },
   { name: "helper", class: "authoritative", what: "still.fail Helper" },
   { name: "browser", class: "authoritative", what: "the station's own Chrome profiles (sign-ins)" },
   { name: "shells", class: "authoritative", what: "the agents' shells' settings" },
