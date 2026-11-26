@@ -1500,7 +1500,16 @@ test "大屏, a mouse's quote pill goes when its message scrolls out of the list
   }
   assert_false(find_nodes_in_sight(t, words, 800.0), msg="the picked message is still visible")
   assert_true(quote_nodes_pill(t) is None, msg="quote pill kept after its message left the list")
-  assert_eq(@ui.picked_now(), None, msg="selection kept after its message left the list")
+  assert_eq(@ui.picked_now(), None, msg="picked_now kept after its message left the list")
+  assert_true(t.ctx().selected_text().contains(words), msg="selection cleared when message scrolled out: \{t.ctx().selected_text()}")
+  // Scroll back to the picked message: selection, picked_now, and quote pill all return.
+  for _ in 0..<8 {
+    t.wheel(900.0, 400.0, 600.0)
+    long_run(t, l, long_rest_ms)
+  }
+  assert_true(find_nodes_in_sight(t, words, 800.0), msg="the picked message did not scroll back into view")
+  assert_true(t.ctx().selected_text().contains(words), msg="selection lost after scrolling back")
+  assert_true(@ui.picked_now() is Some(_) && quote_nodes_pill(t) is Some(_), msg="quote pill did not return after scrolling back")
 }
 
 ///|
@@ -1942,6 +1951,14 @@ test "小屏, a chat's page made with its inside nodes: a finger's pick whose wo
   assert_true(t.run_rects("第 399 段").is_empty(), msg="still drawn")
   assert_eq(@ui.picked_now(), None)
   assert_true(pick_bar_button(t, "复制") is None, msg="the bar still up")
+  assert_true(t.ctx().selected_text() != "", msg="selection cleared while scrolled away")
+  for dy in Array::make(4, 800.0) {
+    t.wheel(195.0, 400.0, dy)
+    t.run_for(@ui.move_most_ms)
+  }
+  assert_true(!t.run_rects("第 399 段").is_empty(), msg="did not scroll back into view")
+  assert_true(@ui.picked_now() is Some(_), msg="picked_now did not restore after scrolling back")
+  assert_true(pick_bar_button(t, "复制") is Some(_), msg="pick bar did not restore after scrolling back")
 }
 
 ///|

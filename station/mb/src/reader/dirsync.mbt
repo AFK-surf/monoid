@@ -13,6 +13,17 @@ let exec_mode : String = "100755"
 let link_mode : String = "120000"
 
 ///|
+/// Reuse key separating regular files from symlinks that happen to share the same Git blob id.
+fn reuse_key(hash : String, mode : String) -> String {
+  (if mode == link_mode { "link:" } else { "file:" }) + hash
+}
+
+///|
+fn is_enoent_error(msg : String) -> Bool {
+  msg.contains("ENOENT") || msg.contains("No such file or directory") || msg.contains("cannot find the file")
+}
+
+///|
 /// A page of a manifest or a plan, as JSON, at most about this much.
 let page_bytes : Int = 512 * 1024
 
@@ -205,18 +216,22 @@ fn listed_entries(files : Map[String, Json]) -> Array[Json] {
 }
 
 ///|
-/// A page of `all` from `after`: as many as about page_bytes of JSON, and where the next starts (null at the end).
-fn page_of(all : Array[Json], after : Int) -> Json {
+/// A page of `all` from `after`: as many as page_bytes of UTF-8 JSON (including frame overhead), and where the next
+/// starts (null at the end).
+fn page_of(all : Array[Json], after : Int, budget? : Int = page_bytes) -> Json {
   let entries : Array[Json] = []
-  let mut size = 0
+  let frame_base = bytes_len("{\"entries\":[],\"next\":}")
+  let mut entries_bytes = 0
   let mut i = after
   while i < all.length() {
-    let n = bytes_len(js_text(all[i])) + 1
-    if size + n > page_bytes && entries.length() > 0 {
+    let item_bytes = bytes_len(js_text(all[i]))
+    let comma = if entries.length() > 0 { 1 } else { 0 }
+    let next_bytes = bytes_len(if i + 1 < all.length() { (i + 1).to_string() } else { "null" })
+    if frame_base + entries_bytes + comma + item_bytes + next_bytes > budget && entries.length() > 0 {
       break
     }
     entries.push(all[i])
-    size += n
+    entries_bytes += comma + item_bytes
     i += 1
   }
   { "entries": Json::array(entries), "next": if i < all.length() { jnum(i.to_double()) } else { Json::null() } }
@@ -274,14 +289,15 @@ async fn Actors::apply_plan(
   files : Map[String, Json],
   set : Array[(String, String, String)],
   remove : Array[String],
+  removed_ok : Map[String, Bool],
 ) -> (Int, Int) raise {
   let mirror = self.file_path(work, name, true)
   self.mkdirs(mirror)
   self.mkdirs(scratch)
   let by_hash : Map[String, String] = {}
   for path, e in files {
-    if entry_at(e, 0) is String(h) {
-      by_hash[h] = path
+    if entry_at(e, 0) is String(h) && entry_at(e, 1) is String(m) {
+      by_hash[reuse_key(h, m)] = path
     }
   }
   let uses : Map[String, Int] = {}
@@ -300,7 +316,7 @@ async fn Actors::apply_plan(
     self.remove(temp)
     let blob = self.rjoin([blobs, hash])
     let has_blob = self.there(blob)
-    let from = if has_blob { None } else { by_hash.get(hash) }
+    let from = if has_blob { None } else { by_hash.get(reuse_key(hash, mode)) }
     if !has_blob && from is None {
       raise refusal("the content of \{path} was not sent")
     }
@@ -331,24 +347,38 @@ async fn Actors::apply_plan(
   }
   let mut removed = 0
   for path in remove {
-    if !files.contains(path) {
-      continue
+    // (the link itself let go, never what it names; reject traversal / symlink parent escapes before checking `files`)
+    let abs = try self.file_path(mirror, path, false, allow_leaf_link=true) catch {
+      e => raise refusal("cannot remove \{path} on the target: \{FsError::of(e)}; clean the mirror or replace the symbolic link on the target")
     }
-    // (the link itself let go, never what it names)
-    let abs = try {
-      self.file_path(mirror, path, false, allow_leaf_link=true)
-    } catch {
-      _ => {
-        files.remove(path)
-        continue
+    let had_file = files.contains(path)
+    let st = try self.lstat(abs) catch {
+      e => {
+        let msg = FsError::of(e)
+        if is_enoent_error(msg) {
+          None
+        } else {
+          raise refusal("cannot remove \{path} on the target: \{msg}; check permissions or clean the mirror")
+        }
       }
     }
-    match (try self.lstat(abs) catch { _ => None }) {
-      Some(st) if kind_of_stat(st) == "file" || kind_of_stat(st) == "link" => try self.remove(abs) catch { _ => () }
-      _ => ()
+    match st {
+      Some(s) if kind_of_stat(s) != "file" && kind_of_stat(s) != "link" => ()
+      _ =>
+        try self.remove(abs) catch {
+          e => {
+            let msg = FsError::of(e)
+            if !is_enoent_error(msg) {
+              raise refusal("cannot remove \{path} on the target: \{msg}; check permissions or clean the mirror")
+            }
+          }
+        }
     }
-    files.remove(path)
-    removed += 1
+    removed_ok[path] = true
+    if had_file {
+      files.remove(path)
+      removed += 1
+    }
     self.prune_empty(mirror, abs)
   }
   let mut written = 0
@@ -502,12 +532,16 @@ async fn Actors::sync_commit(
     safe_set.push(s)
   }
   for path in remove {
+    if !base.contains(path) {
+      continue
+    }
     if files.contains(path) && !same_content(base.get(path), files.get(path)) {
       raise refusal("sync conflict at \{path}: the remote file changed before removal")
     }
     safe_remove.push(path)
   }
   let next_base = base.copy()
+  let removed_ok : Map[String, Bool] = {}
   let finish = async fn() raise {
     for s in safe_set {
       if same_content(files.get(s.0), Some(Json::array([jstr(s.1), jstr(s.2)]))) {
@@ -515,7 +549,7 @@ async fn Actors::sync_commit(
       }
     }
     for path in safe_remove {
-      if !files.contains(path) {
+      if removed_ok.contains(path) {
         next_base.remove(path)
       }
     }
@@ -526,7 +560,7 @@ async fn Actors::sync_commit(
     self.write_whole(manifest_path, js_text(Json::object(m)))
   }
   let (written, removed) = try {
-    self.apply_plan(work, mirror, self.rjoin([syncing, "scratch"]), self.rjoin([syncing, "blobs"]), files, safe_set, safe_remove)
+    self.apply_plan(work, mirror, self.rjoin([syncing, "scratch"]), self.rjoin([syncing, "blobs"]), files, safe_set, safe_remove, removed_ok)
   } catch {
     e => {
       finish()
@@ -636,8 +670,41 @@ async fn Actors::put_blobs(self : Actors, blobs : String, index : Json, packed :
       continue
     }
     let part = "\{done}.part"
-    let has = match self.lstat(part) {
-      Some(st) => num_of(st.value("size")).unwrap_or(0.0)
+    let verify_and_commit = async fn() -> Unit raise {
+      match self.lstat(part) {
+        Some(st) if kind_of_stat(st) == "file" && num_of(st.value("size")).unwrap_or(-1.0) == size => {
+          let got_id = self.file_id(part, size)
+          if got_id != hash {
+            self.remove(part)
+            raise refusal("a content sent does not match its id")
+          }
+          self.rename(part, done)
+        }
+        Some(_) => {
+          self.remove(part)
+          raise refusal("a content sent does not match its id")
+        }
+        None => raise refusal("cannot verify staged blob on the target; check permissions or retry")
+      }
+    }
+    let part_st = self.lstat(part)
+    let has = match part_st {
+      Some(st) => {
+        if kind_of_stat(st) != "file" {
+          self.remove(part)
+          raise refusal("a content sent does not match its id")
+        }
+        let sz = num_of(st.value("size")).unwrap_or(0.0)
+        if sz > size {
+          self.remove(part)
+          raise refusal("a content sent does not match its id")
+        }
+        if sz == size {
+          verify_and_commit()
+          continue
+        }
+        sz
+      }
       None => 0.0
     }
     let end = offset + length.to_double()
@@ -650,11 +717,7 @@ async fn Actors::put_blobs(self : Actors, blobs : String, index : Json, packed :
     // (from its start a new file, else after what it has: openSync's "w" and "a")
     ignore(self.fs("fs.put", { "path": jstr(part), "offset": jnum(offset), "truncate": jbool(true), "nofollow": jbool(true) }, bytes=piece))
     if end == size {
-      if self.file_id(part, size) != hash {
-        self.remove(part)
-        raise refusal("a content sent does not match its id")
-      }
-      self.rename(part, done)
+      verify_and_commit()
     }
   }
   pieces.length()

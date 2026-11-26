@@ -3,14 +3,18 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  type DefaultPolicyTable,
+  PION_DEFAULT_TARGETS_BY_CHANNEL,
   isReaderMode,
   READER_MODES,
   type ReaderMode,
+  defaultEngineFor,
   readerModeEnvKey,
   resolveReaderEngine,
 } from "../src/read/reader-select.ts";
 
 const MAIN_MBT_PATH = fileURLToPath(new URL("../mb/src/reader/main.mbt", import.meta.url));
+const FRONT_RS_PATH = fileURLToPath(new URL("../native/launcher/src/front.rs", import.meta.url));
 
 /** Extract every `--builder <name>` plus top-level `--data`/`--serve`/`--sessions` mode from `main.mbt`. */
 function modesInMainMbt(): string[] {
@@ -444,4 +448,166 @@ test("every mode with pionImplemented: true is explicitly wired to resolveReader
     );
   }
   assert.deepEqual(enabled, [...WIRED_PION_MODES].sort());
+});
+
+/** Parse `PION_DEFAULT_TARGETS_BY_CHANNEL` directly from `station/native/launcher/src/front.rs`. */
+function parseRustDefaultPolicyTable(): Record<string, string[]> {
+  const src = readFileSync(FRONT_RS_PATH, "utf8");
+  const match = /const PION_DEFAULT_TARGETS_BY_CHANNEL:\s*&\[\(&str,\s*&\[&str\]\)\]\s*=\s*&\[([\s\S]*?)\];/.exec(src);
+  assert.ok(match, "PION_DEFAULT_TARGETS_BY_CHANNEL must exist in station/native/launcher/src/front.rs");
+  const body = match[1]!;
+  const result: Record<string, string[]> = {};
+  for (const entry of body.matchAll(/\(\s*"([a-z]+)"\s*,\s*&\[([^\]]*)\]\s*\)/g)) {
+    const ch = entry[1]!;
+    const rawTargets = entry[2]!.trim();
+    const targets = rawTargets === ""
+      ? []
+      : [...rawTargets.matchAll(/"([^"]+)"/g)].map((m) => m[1]!);
+    result[ch] = targets;
+  }
+  return result;
+}
+
+test("cross-language contract: TS and Rust front.rs PION_DEFAULT_TARGETS_BY_CHANNEL match 1:1 and Stage 9A keeps Zero Default Flip", () => {
+  const rustTable = parseRustDefaultPolicyTable();
+  assert.deepEqual(
+    rustTable,
+    {
+      beta: [...PION_DEFAULT_TARGETS_BY_CHANNEL.beta],
+      stable: [...PION_DEFAULT_TARGETS_BY_CHANNEL.stable],
+    },
+    "TS and Rust front.rs PION_DEFAULT_TARGETS_BY_CHANNEL must stay identical",
+  );
+  // Stage 9A Zero Default Flip invariant: both channels remain empty.
+  assert.deepEqual(PION_DEFAULT_TARGETS_BY_CHANNEL, { beta: [], stable: [] });
+});
+
+test("default policy matrix across all 4 targets x (stable, beta, missing, unknown CHANNEL) with injected 9B table", () => {
+  const targets = ["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"] as const;
+  const stage9bTable: DefaultPolicyTable = {
+    beta: ["darwin-arm64", "linux-x64", "linux-arm64", "win32-x64"],
+    stable: ["linux-x64", "darwin-arm64"],
+  };
+
+  for (const target of targets) {
+    // Production Stage 9A table always resolves to mb.
+    for (const ch of ["beta", "stable", "nightly", null, undefined] as const) {
+      assert.equal(defaultEngineFor(ch, target), "mb");
+    }
+
+    // Injected 9B table: beta enables all 4 targets; missing/unknown channel stays mb.
+    assert.equal(defaultEngineFor("beta", target, stage9bTable), "pion");
+    assert.equal(defaultEngineFor(null, target, stage9bTable), "mb");
+    assert.equal(defaultEngineFor(undefined, target, stage9bTable), "mb");
+    assert.equal(defaultEngineFor("dev", target, stage9bTable), "mb");
+
+    const betaSel = resolveReaderEngine("data", {
+      config: { channel: "beta" },
+      env: {},
+      hasPionBinary: true,
+      target,
+      defaultTargetsByChannel: stage9bTable,
+    });
+    assert.deepEqual(betaSel, {
+      mode: "data",
+      engine: "pion",
+      requested: "pion",
+      rawRequested: null,
+      source: "default",
+      fallback: false,
+    });
+
+    // Unimplemented mode (`forward`) under default=pion stays silent (`fallback: false`).
+    const forwardSel = resolveReaderEngine("forward", {
+      config: { channel: "beta" },
+      env: {},
+      hasPionBinary: true,
+      target,
+      defaultTargetsByChannel: stage9bTable,
+    });
+    assert.deepEqual(forwardSel, {
+      mode: "forward",
+      engine: "mb",
+      requested: null,
+      rawRequested: null,
+      source: "default",
+      fallback: false,
+    });
+
+    // Missing Pion binary under default=pion records requested="pion" and fallback=true.
+    const missingSel = resolveReaderEngine("data", {
+      config: { channel: "beta" },
+      env: {},
+      hasPionBinary: false,
+      target,
+      defaultTargetsByChannel: stage9bTable,
+    });
+    assert.equal(missingSel.engine, "mb");
+    assert.equal(missingSel.requested, "pion");
+    assert.equal(missingSel.source, "default");
+    assert.equal(missingSel.fallback, true);
+    assert.equal(missingSel.reason, "pion-binary-missing");
+  }
+
+  // Stable channel only enables listed targets.
+  assert.equal(defaultEngineFor("stable", "linux-x64", stage9bTable), "pion");
+  assert.equal(defaultEngineFor("stable", "darwin-arm64", stage9bTable), "pion");
+  assert.equal(defaultEngineFor("stable", "linux-arm64", stage9bTable), "mb");
+  assert.equal(defaultEngineFor("stable", "win32-x64", stage9bTable), "mb");
+});
+
+test("config.readers['*'] wildcard sits below config.readers[mode] and above STILLFAIL_READER_ENGINE and default", () => {
+  const stage9bTable: DefaultPolicyTable = { beta: ["linux-x64"], stable: [] };
+
+  // Emergency rollback config.readers["*"] = "mb" overrides STILLFAIL_READER_ENGINE=pion and default=pion.
+  const rollback = resolveReaderEngine("data", {
+    config: { readers: { "*": "mb" }, channel: "beta" },
+    env: { STILLFAIL_READER_ENGINE: "pion" },
+    hasPionBinary: true,
+    target: "linux-x64",
+    defaultTargetsByChannel: stage9bTable,
+  });
+  assert.equal(rollback.engine, "mb");
+  assert.equal(rollback.source, "config");
+  assert.equal(rollback.fallback, false);
+
+  // Per-mode config overrides wildcard.
+  const perModeWins = resolveReaderEngine("data", {
+    config: { readers: { "*": "mb", data: "pion" } },
+    env: {},
+    hasPionBinary: true,
+  });
+  assert.equal(perModeWins.engine, "pion");
+  assert.equal(perModeWins.source, "config");
+
+  // Blank per-mode config falls through to wildcard.
+  const blankFallsToWildcard = resolveReaderEngine("data", {
+    config: { readers: { "*": "pion", data: "   " } },
+    env: { STILLFAIL_READER_ENGINE: "mb" },
+    hasPionBinary: true,
+  });
+  assert.equal(blankFallsToWildcard.engine, "pion");
+  assert.equal(blankFallsToWildcard.source, "config");
+
+  // Per-mode env STILLFAIL_READER_<MODE> overrides wildcard.
+  const envWins = resolveReaderEngine("data", {
+    config: { readers: { "*": "mb" } },
+    env: { STILLFAIL_READER_DATA: "pion" },
+    hasPionBinary: true,
+  });
+  assert.equal(envWins.engine, "pion");
+  assert.equal(envWins.source, "env");
+
+  // Invalid / forbidden shadow wildcard fails closed to mb as invalid-value without falling through to global env.
+  const badWildcard = resolveReaderEngine("data", {
+    config: { readers: { "*": "shadow" }, channel: "beta" },
+    env: { STILLFAIL_READER_ENGINE: "pion" },
+    hasPionBinary: true,
+    target: "linux-x64",
+    defaultTargetsByChannel: stage9bTable,
+  });
+  assert.equal(badWildcard.engine, "mb");
+  assert.equal(badWildcard.source, "config");
+  assert.equal(badWildcard.fallback, true);
+  assert.equal(badWildcard.reason, "invalid-value");
 });

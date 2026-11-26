@@ -221,6 +221,116 @@ test("replica-chat: MoonBit and Pion read every chat of a copy to the same JSON 
   sameRefusal(await readBoth(bins, { data: c.data, dir: join(c.data, "nowhere"), thread: c.big }), "no head there", /^ENOENT: no such file or directory, open '.*head\.json'$/);
 });
 
+test("replica-chat: 20 large sessions exceeding --bytes (65536) stay within budget and 0-diff across MB and Pion", async (t) => {
+  const bins = binaries(t);
+  if (bins === null) return;
+  const data = dataDir("chatsw-big-sessions");
+  cleanup.push(data);
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
+  const tid = chat(store, data, "chat:s0", null, 5);
+  const longPath = "/" + "路径".repeat(320);
+  const longTitle = "标".repeat(320);
+  for (let s = 0; s < CHAT_SESSIONS; s++) {
+    const key = `chat:huge-${String(s).padStart(2, "0")}`;
+    store.insertSession({
+      key,
+      connect: "chat",
+      runtime: "codex",
+      profile: "cx",
+      model: "m".repeat(180),
+      title: `${key}-${longTitle}`,
+      cwd: longPath,
+      workspace: longPath,
+      token: `t-${key}`,
+      createdAt: 1,
+      lastActiveAt: 1,
+      ws: null,
+    });
+    store.joinThread(tid, key, "chat");
+  }
+  const runner = new InlineRunner({ db: join(data, "stillfail.db"), replica: join(data, "replica"), dataDir: data, origin: ORIGIN, now: () => 1_700_000_000_000 });
+  await runner.places({ home: HOME, workspaces: [{ workspace: HOME, name: "big" }] });
+  for (let i = 0; i < 20; i++) {
+    const passed = await runner.pass(nothingTold());
+    if (!passed.more) break;
+  }
+  await runner.close();
+  store.close();
+  const own = join(data, "replica", "own", HOME);
+  const gens = readdirSync(own).filter((g) => existsSync(join(own, g, "head.json")));
+  assert.equal(gens.length, 1);
+  const dir = join(own, gens[0]!);
+  const budget = 65536;
+  const lines = raw(bins, { data, dir }, String(tid), { entries: CHAT_ENTRIES, text: CHAT_TEXT, bytes: budget });
+  sameLines(lines, "20 large sessions at --bytes 65536");
+  assert.ok(Buffer.byteLength(lines.pion, "utf8") <= budget, `stdout ${Buffer.byteLength(lines.pion, "utf8")} > ${budget}`);
+  const parsed = JSON.parse(lines.pion).chat;
+  assert.ok(parsed.sessions.length > 0 && parsed.sessions.length < CHAT_SESSIONS, `expected trimmed sessions, got ${parsed.sessions.length}`);
+});
+
+test("replica-chat: oversized head.name (65536 ASCII) and U+2028/U+2029 escaped sessions stay <= 65536 raw stdout bytes and 0-diff across MB and Pion", async (t) => {
+  const bins = binaries(t);
+  if (bins === null) return;
+  const data = dataDir("chatsw-head-u2028");
+  cleanup.push(data);
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
+  const tid = chat(store, data, "chat:u0", null, 3);
+  const sepChunk = "\u2028\u2029".repeat(160);
+  for (let s = 0; s < CHAT_SESSIONS; s++) {
+    const key = `chat:sep-${String(s).padStart(2, "0")}`;
+    store.insertSession({
+      key,
+      connect: "chat",
+      runtime: "codex",
+      profile: "cx",
+      model: "m".repeat(180),
+      title: `${key}-${sepChunk}`,
+      cwd: "/" + sepChunk + "x".repeat(400),
+      workspace: "/" + sepChunk + "y".repeat(400),
+      token: `t-${key}`,
+      createdAt: 1,
+      lastActiveAt: 1,
+      ws: null,
+    });
+    store.joinThread(tid, key, "chat");
+  }
+  const runner = new InlineRunner({ db: join(data, "stillfail.db"), replica: join(data, "replica"), dataDir: data, origin: ORIGIN, now: () => 1_700_000_000_000 });
+  await runner.places({ home: HOME, workspaces: [{ workspace: HOME, name: "big" }] });
+  for (let i = 0; i < 20; i++) {
+    const passed = await runner.pass(nothingTold());
+    if (!passed.more) break;
+  }
+  await runner.close();
+  store.close();
+  const own = join(data, "replica", "own", HOME);
+  const gens = readdirSync(own).filter((g) => existsSync(join(own, g, "head.json")));
+  assert.equal(gens.length, 1);
+  const dir = join(own, gens[0]!);
+  const headPath = join(dir, "head.json");
+  const head = JSON.parse(readFileSync(headPath, "utf8"));
+  head.name = "N".repeat(65536);
+  head.made = "M".repeat(65536);
+  writeFileSync(headPath, JSON.stringify(head));
+
+  const budget = 65536;
+  const present = raw(bins, { data, dir }, String(tid), { entries: CHAT_ENTRIES, text: CHAT_TEXT, bytes: budget });
+  sameLines(present, "oversized head.name + non-numeric head.made + U+2028/U+2029 sessions (present thread)");
+  assert.ok(Buffer.byteLength(present.pion, "utf8") <= budget, `present stdout ${Buffer.byteLength(present.pion, "utf8")} > ${budget}`);
+  assert.ok(present.pion.includes("\\u2028") && present.pion.includes("\\u2029"));
+  const parsedPresent = JSON.parse(present.pion).chat;
+  assert.equal(parsedPresent.name.length, 400);
+  assert.equal(parsedPresent.made, 0);
+  assert.ok(parsedPresent.sessions.length > 0 && parsedPresent.sessions.length < CHAT_SESSIONS);
+
+  const missing = raw(bins, { data, dir }, "987654", { entries: CHAT_ENTRIES, text: CHAT_TEXT, bytes: budget });
+  sameLines(missing, "oversized head.name + non-numeric head.made (missing thread)");
+  assert.ok(Buffer.byteLength(missing.pion, "utf8") <= budget, `missing stdout ${Buffer.byteLength(missing.pion, "utf8")} > ${budget}`);
+  const parsedMissing = JSON.parse(missing.pion).chat;
+  assert.equal(parsedMissing.thread, null);
+  assert.equal(parsedMissing.name.length, 400);
+  assert.equal(parsedMissing.made, 0);
+});
+
 test("replica-chat: STILLFAIL_READER_REPLICA_CHAT=pion spawns stillfail-pion through the reader selection", async (t) => {
   const bins = binaries(t);
   if (bins === null) return;

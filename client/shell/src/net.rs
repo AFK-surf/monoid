@@ -1,6 +1,7 @@
 //! HTTP/TLS/EntryResolver, WebSocket, local TCP/Unix/named-pipe sockets, listeners, and ADB socket operations.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -14,6 +15,44 @@ use crate::{Answer, Done, Handle, Inner, err, id_of, str_of};
 /// A socket's halves as the shell keeps them (`Handle::Tcp`).
 pub(crate) type SocketRead = Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncRead + Send + Unpin>>>;
 pub(crate) type SocketWrite = Arc<tokio::sync::Mutex<Box<dyn tokio::io::AsyncWrite + Send + Unpin>>>;
+
+/// Cancellation signal for a `Handle::Tcp` socket, triggered only by explicit `tcp.close` (never by `drop_handle`
+/// ownership transfer such as `tcp.pipe` or `istream.pipe`).
+#[derive(Default)]
+pub(crate) struct SocketClose {
+    closed: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl SocketClose {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub(crate) fn close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    /// Resolves immediately if already closed, or as soon as `close()` is called.
+    pub(crate) async fn cancelled(&self) {
+        loop {
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            // Register in `Notify`'s waiter list before reading `closed` so a concurrent `close()` cannot slip
+            // between the check and `.await` and lose the wakeup.
+            notified.as_mut().enable();
+            if self.is_closed() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
 
 /// A WebSocket frame as `ws.next` gives it and `ws.send`/`ws.ping` take it.
 pub(crate) enum WsFrame {
@@ -45,25 +84,18 @@ pub(crate) enum Listener {
 impl Listener {
     /// The next connection, as a socket read and written as `tcp.open`'s are, and who it came from.
     pub(crate) async fn accept(&self) -> Result<(Handle, String), String> {
-        fn halves<R, W>(read: R, write: W) -> Handle
-        where
-            R: tokio::io::AsyncRead + Send + Unpin + 'static,
-            W: tokio::io::AsyncWrite + Send + Unpin + 'static,
-        {
-            Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) }
-        }
         match self {
             Listener::Tcp(l) => {
                 let (stream, peer) = l.accept().await.map_err(err)?;
                 let _ = stream.set_nodelay(true);
                 let (read, write) = stream.into_split();
-                Ok((halves(read, write), peer.to_string()))
+                Ok((Handle::tcp(read, write), peer.to_string()))
             }
             #[cfg(unix)]
             Listener::Unix(l) => {
                 let (stream, _) = l.accept().await.map_err(err)?;
                 let (read, write) = stream.into_split();
-                Ok((halves(read, write), String::new()))
+                Ok((Handle::tcp(read, write), String::new()))
             }
         }
     }
@@ -626,7 +658,7 @@ impl Inner {
                 let port = a.get("port").and_then(Value::as_u64).ok_or("missing port")? as u16;
                 let stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.map_err(err)?;
                 let (read, write) = stream.into_split();
-                let id = self.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
+                let id = self.keep(Handle::tcp(read, write));
                 Ok(Answer::json(json!({ "id": id })))
             }
             // The phone's own adb (adb.rs): paired once, its session held, a station's session on it read and written as a
@@ -644,7 +676,7 @@ impl Inner {
             "adb.state" => Ok(Answer::json(json!({ "port": self.adb.state().await }))),
             "adb.open" => {
                 let (read, write) = tokio::io::split(self.adb.open().await?);
-                let id = self.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
+                let id = self.keep(Handle::tcp(read, write));
                 Ok(Answer::json(json!({ "id": id })))
             }
             // A socket to serve (station/mb's programs): a launcher's, handed down by its descriptor (`fd`, Unix), or one
@@ -686,7 +718,7 @@ impl Inner {
                 let ids = a.get("ids").and_then(Value::as_array).ok_or("missing ids")?;
                 let id = |i: usize| ids.get(i).and_then(Value::as_u64).ok_or_else(|| "missing ids".to_string());
                 let (one, two) = (self.drop_handle(id(0)?), self.drop_handle(id(1)?));
-                let (Some(Handle::Tcp { read: r1, write: w1 }), Some(Handle::Tcp { read: r2, write: w2 })) = (one, two) else {
+                let (Some(Handle::Tcp { read: r1, write: w1, .. }), Some(Handle::Tcp { read: r2, write: w2, .. })) = (one, two) else {
                     return Err("not two tcp connections".into());
                 };
                 async fn carry(from: SocketRead, to: SocketWrite) -> u64 {
@@ -706,11 +738,27 @@ impl Inner {
                 Ok(Answer::json(json!({ "id": self.keep(conn), "peer": peer })))
             }
             "tcp.read" => {
-                let Handle::Tcp { read, .. } = self.handle(id_of(a)?)? else { return Err("not a tcp connection".into()) };
+                let Handle::Tcp { read, close, .. } = self.handle(id_of(a)?)? else { return Err("not a tcp connection".into()) };
+                if close.is_closed() {
+                    return Err("tcp socket closed".into());
+                }
+                let mut guard = tokio::select! {
+                    biased;
+                    _ = close.cancelled() => return Err("tcp socket closed".into()),
+                    guard = read.lock() => guard,
+                };
+                if close.is_closed() {
+                    return Err("tcp socket closed".into());
+                }
                 let mut buf = vec![0u8; 64 * 1024];
                 // (a pipe whose other side closed says so as broken, or as not connected where it was disconnected
                 // (ERROR_PIPE_NOT_CONNECTED), not as an end: the same to a reader)
-                let n = match read.lock().await.read(&mut buf).await {
+                let result = tokio::select! {
+                    biased;
+                    _ = close.cancelled() => return Err("tcp socket closed".into()),
+                    r = guard.read(&mut buf) => r,
+                };
+                let n = match result {
                     Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe || (cfg!(windows) && e.raw_os_error() == Some(233)) => 0,
                     n => n.map_err(err)?,
                 };
@@ -721,13 +769,44 @@ impl Inner {
                 Ok(Answer::bytes(json!({}), buf))
             }
             "tcp.write" => {
-                let Handle::Tcp { write, .. } = self.handle(id_of(a)?)? else { return Err("not a tcp connection".into()) };
-                write.lock().await.write_all(&bytes.unwrap_or_default()).await.map_err(err)?;
+                let Handle::Tcp { write, close, .. } = self.handle(id_of(a)?)? else { return Err("not a tcp connection".into()) };
+                if close.is_closed() {
+                    return Err("tcp socket closed".into());
+                }
+                let mut guard = tokio::select! {
+                    biased;
+                    _ = close.cancelled() => return Err("tcp socket closed".into()),
+                    guard = write.lock() => guard,
+                };
+                if close.is_closed() {
+                    return Err("tcp socket closed".into());
+                }
+                let payload = bytes.unwrap_or_default();
+                tokio::select! {
+                    biased;
+                    _ = close.cancelled() => return Err("tcp socket closed".into()),
+                    r = guard.write_all(&payload) => r.map_err(err)?,
+                }
                 Ok(Answer::json(json!({})))
             }
             "tcp.end" => {
-                let Handle::Tcp { write, .. } = self.handle(id_of(a)?)? else { return Err("not a tcp connection".into()) };
-                let _ = write.lock().await.shutdown().await;
+                let Handle::Tcp { write, close, .. } = self.handle(id_of(a)?)? else { return Err("not a tcp connection".into()) };
+                if close.is_closed() {
+                    return Ok(Answer::json(json!({})));
+                }
+                let mut guard = tokio::select! {
+                    biased;
+                    _ = close.cancelled() => return Ok(Answer::json(json!({}))),
+                    guard = write.lock() => guard,
+                };
+                if close.is_closed() {
+                    return Ok(Answer::json(json!({})));
+                }
+                tokio::select! {
+                    biased;
+                    _ = close.cancelled() => {}
+                    _ = guard.shutdown() => {}
+                }
                 Ok(Answer::json(json!({})))
             }
             // A Unix socket on this machine, read and written as `tcp.open`'s is.
@@ -735,7 +814,7 @@ impl Inner {
                 #[cfg(unix)]
                 {
                     let (read, write) = tokio::net::UnixStream::connect(str_of(a, "path")?).await.map_err(err)?.into_split();
-                    let id = self.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
+                    let id = self.keep(Handle::tcp(read, write));
                     Ok(Answer::json(json!({ "id": id })))
                 }
                 // Windows: a named pipe (`\\.\pipe\…`, a runner's: station/native/runner), its instances one connection
@@ -757,7 +836,7 @@ impl Inner {
                         }
                     };
                     let (read, write) = tokio::io::split(pipe);
-                    let id = self.keep(Handle::Tcp { read: Arc::new(tokio::sync::Mutex::new(Box::new(read))), write: Arc::new(tokio::sync::Mutex::new(Box::new(write))) });
+                    let id = self.keep(Handle::tcp(read, write));
                     Ok(Answer::json(json!({ "id": id })))
                 }
                 #[cfg(not(any(unix, windows)))]

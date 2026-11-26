@@ -2,18 +2,35 @@ import { setMaxListeners } from "node:events";
 import { Fibers, wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { REQUEST_BACKFILL_PAUSE_MS, giveBackfill, releaseStoppedBackfill, takeBackfill } from "../store/backfill.ts";
-import { type BackfillOptions, MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf } from "./mb-reader.ts";
+import {
+  type BackfillOptions,
+  MbProcess,
+  type ResolveReaderSelectionOptions,
+  type ResolvedReaderSelection,
+  breakerOfSelection,
+  engineOfSelection,
+  fallbackModeOf,
+  resolveReaderSelectionAsync,
+  resolveReaderSelectionOrPending,
+} from "./mb-reader.ts";
+import type { ReaderMode } from "./reader-select.ts";
 import { classifyProgram, readerTelemetry } from "./reader-telemetry.ts";
 
-/// A builder in MoonBit or Pion (read/mb-reader.ts): its program (resolved on each spawn when given as a getter)
-/// and arguments. It knows nothing of the backfill permit, which
+/// A builder in MoonBit or Pion (read/mb-reader.ts): its program (resolved on each spawn when given as a getter
+/// or async-probe-capable `select` descriptor) and arguments. It knows nothing of the backfill permit, which
 /// the builder here takes for it around each batch it asks, and gives back when the batch is answered; or (`lazy`) it
 /// asks for the permit itself when it is about to write: a line `{"take": true}` answered `{"permit": …}`,
 /// `{"give": true}` when it is done with it before its answer. Each is told of what is let go (`cancel`). One that
 /// answers `{"fallback": true}` (a store whose schema the station's writer must repair first: the merged view, as an
 /// older station dropped an index under it) has `repair` called, and the batch asked again (after a pause where the
 /// repair found the database busy: `repair` waits for no lock).
-export type MbBuilder = { binary: string | (() => string | ResolvedReaderSelection); args: string[]; lazy?: boolean; repair?: () => void };
+export type MbBuilder = {
+  binary?: string | (() => string | ResolvedReaderSelection);
+  select?: { readonly mode: ReaderMode; readonly options: ResolveReaderSelectionOptions };
+  args: string[];
+  lazy?: boolean;
+  repair?: () => void;
+};
 /// What stands for a MoonBit builder in the permit: never a thread's.
 let nextOwner = 0x40000000;
 
@@ -28,6 +45,7 @@ export class RequestedBuilder<K extends number | string> {
   readonly #message: ((item: K, cancel: boolean) => Record<string, unknown>) | undefined;
   readonly #waiting = new Map<K, Set<Waiter>>();
   #worker: MbProcess | null = null;
+  #starting: AbortController | null = null;
   readonly #mb: MbBuilder;
   /// The MoonBit builder's own in the permit, and whether it holds it for the batch it was asked.
   #owner = 0;
@@ -158,7 +176,7 @@ export class RequestedBuilder<K extends number | string> {
   }
 
   #pump(): void {
-    if (this.#closed || this.#current !== null || this.#retry !== null) return;
+    if (this.#closed || this.#current !== null || this.#retry !== null || this.#starting !== null) return;
     if (this.#waiting.size === 0) {
       if (this.#worker !== null && this.#idle === null) {
         const worker = this.#worker;
@@ -184,39 +202,102 @@ export class RequestedBuilder<K extends number | string> {
       return;
     }
     if (this.#worker === null) {
-      let mb: MbProcess;
-      try {
-        const resolved = typeof this.#mb.binary === "function" ? this.#mb.binary() : this.#mb.binary;
-        if (typeof resolved === "string") {
-          mb = new MbProcess(resolved, this.#mb.args);
-        } else {
-          mb = new MbProcess(resolved.primaryBinary, this.#mb.args, { engine: engineOfSelection(resolved), fallbackMode: fallbackModeOf(resolved.selection) });
-        }
-      } catch (error) {
-        const err = error instanceof Error ? error : new Error(String(error));
-        const mode = classifyProgram("", this.#mb.args).mode;
-        log.warn("readers", "an old-state builder could not start", { mode, error: err.message });
-        for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
-        return;
-      }
-      const owner = this.#owner = nextOwner++;
-      this.#worker = mb;
-      mb.on("message", (result: { done: boolean; error?: string }) => { if (this.#worker === mb) this.#answeredMb(mb, result); });
-      mb.once("error", (error: Error) => log.warn("readers", "an old-state builder failed", { engine: mb.engine, mode: mb.mode, error: error.message }));
-      mb.once("exit", () => {
-        releaseStoppedBackfill(this.#options.priority, owner);
-        // (only the builder's own: one let go idle can end after the next one took the permit for its batch, which
-        // would then never be given back, and no batch of any builder sharing the permit asked again)
-        if (this.#worker === mb) {
-          this.#holding = false;
-          if (this.#askedAt > 0) {
-            readerTelemetry.recordCall(mb.engine, mb.mode, wall.now() - this.#askedAt, false);
-            this.#askedAt = 0;
+      if (this.#mb.select !== undefined) {
+        const { mode, options } = this.#mb.select;
+        try {
+          const sync = resolveReaderSelectionOrPending(mode, options);
+          if (sync.pending) {
+            const abort = new AbortController();
+            this.#starting = abort;
+            resolveReaderSelectionAsync(mode, options, abort.signal).then((resolved) => {
+              if (this.#starting === abort) this.#starting = null;
+              if (this.#closed || this.#waiting.size === 0 || this.#worker !== null) return;
+              this.#attachWorker(resolved);
+              try {
+                this.#dispatchNext();
+              } catch (error) {
+                const err = error instanceof Error ? error : new Error(String(error));
+                this.#current = null;
+                this.#askedAt = 0;
+                if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
+                const mode = this.#mb.select?.mode ?? classifyProgram("", this.#mb.args).mode;
+                log.warn("readers", "an old-state builder could not dispatch", { mode, error: err.message });
+                for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
+                this.#pump();
+              }
+            }).catch((error: unknown) => {
+              if (this.#starting === abort) this.#starting = null;
+              if (this.#closed) return;
+              const err = error instanceof Error ? error : new Error(String(error));
+              log.warn("readers", "an old-state builder could not start", { mode, error: err.message });
+              for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
+            });
+            return;
           }
+          this.#attachWorker(sync);
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          log.warn("readers", "an old-state builder could not start", { mode, error: err.message });
+          for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
+          return;
         }
-        this.#gone(mb);
-      });
+      } else {
+        try {
+          const bin = this.#mb.binary!;
+          const resolved = typeof bin === "function" ? bin() : bin;
+          this.#attachWorker(resolved);
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          const mode = classifyProgram("", this.#mb.args).mode;
+          log.warn("readers", "an old-state builder could not start", { mode, error: err.message });
+          for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
+          return;
+        }
+      }
     }
+    try {
+      this.#dispatchNext();
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.#current = null;
+      this.#askedAt = 0;
+      if (this.#holding) { this.#holding = false; giveBackfill(this.#priority(), this.#owner); }
+      const mode = this.#mb.select?.mode ?? classifyProgram("", this.#mb.args).mode;
+      log.warn("readers", "an old-state builder could not dispatch", { mode, error: err.message });
+      for (const item of [...this.#waiting.keys()]) this.#fail(item, err);
+      this.#pump();
+    }
+  }
+
+  #attachWorker(resolved: string | ResolvedReaderSelection): void {
+    const mb = typeof resolved === "string"
+      ? new MbProcess(resolved, this.#mb.args)
+      : new MbProcess(resolved.primaryBinary, this.#mb.args, {
+        engine: engineOfSelection(resolved),
+        fallbackMode: fallbackModeOf(resolved.selection),
+        breaker: breakerOfSelection(resolved),
+      });
+    const owner = this.#owner = nextOwner++;
+    this.#worker = mb;
+    mb.on("message", (result: { done: boolean; error?: string }) => { if (this.#worker === mb) this.#answeredMb(mb, result); });
+    mb.once("error", (error: Error) => log.warn("readers", "an old-state builder failed", { engine: mb.engine, mode: mb.mode, error: error.message }));
+    mb.once("exit", () => {
+      releaseStoppedBackfill(this.#options.priority, owner);
+      // (only the builder's own: one let go idle can end after the next one took the permit for its batch, which
+      // would then never be given back, and no batch of any builder sharing the permit asked again)
+      if (this.#worker === mb) {
+        this.#holding = false;
+        if (this.#askedAt > 0) {
+          readerTelemetry.recordCall(mb.engine, mb.mode, wall.now() - this.#askedAt, false);
+          this.#askedAt = 0;
+        }
+      }
+      this.#gone(mb);
+    });
+  }
+
+  #dispatchNext(): void {
+    if (this.#closed || this.#current !== null || this.#worker === null) return;
     const item = this.#waiting.keys().next().value as K | undefined;
     if (item === undefined) return;
     this.#current = item;
@@ -248,6 +329,7 @@ export class RequestedBuilder<K extends number | string> {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#starting?.abort(); this.#starting = null;
     this.#retry?.(); this.#retry = null;
     this.#idle?.(); this.#idle = null;
     for (const item of [...this.#waiting.keys()]) this.#fail(item, new Error("station stopping"));

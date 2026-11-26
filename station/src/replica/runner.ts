@@ -3,7 +3,7 @@
 // to line by line in the test's thread in tests (test/reference/replica-work.ts `InlineRunner`).
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
-import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, breakerOfSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection, resolveReaderSelectionAsync, resolveReaderSelectionOrPending } from "../read/mb-reader.ts";
 import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import type { Passed, Places, Told } from "./export.ts";
@@ -62,7 +62,7 @@ export function exportThread(o: RunnerOptions, binary?: string | ResolvedReaderS
     return new MbProcess(binary, args);
   }
   const sel = binary ?? resolveReaderSelection("replica-export", { config: o.readers, logAt: "replica" });
-  return new MbProcess(sel.primaryBinary, args, { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
+  return new MbProcess(sel.primaryBinary, args, { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection), breaker: breakerOfSelection(sel) });
 }
 
 /// The work in a process of its own, started again (told the workspaces again) at the next thing asked once

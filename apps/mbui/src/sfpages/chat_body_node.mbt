@@ -1900,7 +1900,7 @@ fn chat_body_node(
     Some(r) => {
       chat_goes_to(v, src, r, jump, place, scroll, list, here.view, cover, top, width, shows)
       // (over the list: a passage a mouse picked in a message quoted by its pill)
-      chat_quote_node(v, src, r, here, list, place)
+      chat_quote_node(v, src, r, here, list)
       // (experimental: pinned selection-intent replies floating at the top-right of the chat)
       pinned_intents_node(v, src, r.station + ":" + r.session)
       // (a picture's 复制图片 chosen in its menu: read whole and put on the clipboard)

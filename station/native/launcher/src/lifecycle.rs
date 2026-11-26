@@ -294,6 +294,10 @@ pub struct Lifecycle<O: Os> {
 }
 
 impl<O: Os> Lifecycle<O> {
+    pub fn is_stopping(&self) -> bool {
+        self.stopping.is_some()
+    }
+
     pub fn new(os: O, times: Times, run: PathBuf, with_parent: bool) -> Lifecycle<O> {
         let parent_at = with_parent.then(|| os.now() + times.parent);
         let front_probe_at = os.has_front().then(|| os.now() + times.front_probe);

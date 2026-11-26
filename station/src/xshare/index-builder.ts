@@ -1,4 +1,4 @@
-import { MbBackfill, resolveReaderSelection } from "../read/mb-reader.ts";
+import { MbBackfill } from "../read/mb-reader.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
@@ -58,8 +58,7 @@ export class ChatShareIndexBuilder {
       // (by the MoonBit builder, station/mb's src/activity, share.mbt: `MbBackfill`)
       let worker: MbBackfill;
       try {
-        const bin = resolveReaderSelection("session-backfill", { binary: this.binary, config: this.readers, logAt: "readers" });
-        worker = new MbBackfill(bin, ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20);
+        worker = new MbBackfill({ mode: "session-backfill", options: { binary: this.binary, config: this.readers, logAt: "readers" } }, ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20);
       }
       catch (error) { log.warn("xshare", "the share worker could not start", { error: (error as Error).message }); resolve(false); return; }
       const owner = worker.threadId;

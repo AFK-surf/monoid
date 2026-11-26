@@ -4,8 +4,9 @@
 // nothing, and what it wrote last grows old (HEALTH_FRESH_MS), which is how a hung station is told from one that serves.
 // What presence.json says (the cloud's socket) is not enough: a station whose link to its front is gone, or whose main
 // thread is held, stays "online" there.
-import { rename, writeFile } from "node:fs/promises";
+import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { renameRetrying, type RenameRetry } from "./files.ts";
 
 /// The endpoint as this process has it: bound by itself (`direct`), the front's and linked to it (`ok`), or the front's
 /// and linking to it again (`reconnecting`: the front ended, or the link went; devices cannot reach the station).
@@ -37,12 +38,18 @@ export const HEALTH_FRESH_MS = 60_000;
 
 export const healthPath = (data: string) => join(data, "run", "health.json");
 
-/// Written whole: to a file of this process's own beside it, then renamed into place (a reader never sees half of it).
-export async function writeHealth(data: string, health: Health): Promise<void> {
+/// Written whole: to a file of this process's own beside it, then renamed into place (a reader never sees half of it),
+/// waiting out a Windows lock on it (`stillfail status` reading it, a scanner); its own file gone when that fails.
+export async function writeHealth(data: string, health: Health, opts?: RenameRetry): Promise<void> {
   const path = healthPath(data);
   const own = `${path}.${health.pid}`;
-  await writeFile(own, JSON.stringify(health) + "\n", { mode: 0o600 });
-  await rename(own, path);
+  try {
+    await writeFile(own, JSON.stringify(health) + "\n", { mode: 0o600 });
+    await renameRetrying(own, path, opts);
+  } catch (error) {
+    await rm(own, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 /// What it says, where it reads as such.

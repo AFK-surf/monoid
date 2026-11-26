@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { after, test } from "node:test";
 import { Effect } from "effect";
 import { checkConfig } from "../src/accounts/check.ts";
@@ -16,16 +16,23 @@ import { hearLines, type Line } from "../src/ops/log.ts";
 import { platform } from "../src/platform/index.ts";
 import { ArchiveMarkBuilder } from "../src/read/archive-mark-builder.ts";
 import {
+  MbProcess,
+  fallbackModeOf,
+  invalidateMbReaderBinaryCache,
+  mbReaderBinary,
   parsePionVersionModes,
   pionBinary,
   pionSupportedModes,
   probePionSupportedModes,
   resetReaderSelectionStateForTest,
   resolveReaderSelection,
+  setPionProbeRunnerForTest,
+  setPionProbeSpawnerForTest,
 } from "../src/read/mb-reader.ts";
+import { BREAKER_THRESHOLD, PionCircuitBreaker, pionBinaryStamp } from "../src/read/pion-breaker.ts";
 import { resolveReaderEngine } from "../src/read/reader-select.ts";
 import { RequestedBuilder } from "../src/read/requested-builder.ts";
-import { makeReaderConfigSnapshot } from "../src/services.ts";
+import { makeReaderConfigSnapshot, restoreReaderConfig } from "../src/services.ts";
 import { workspaceFile } from "../src/sessions/archive.ts";
 import { measureRoom } from "../src/sessions/footprint.ts";
 import { PackedProgram, runPackedOnce } from "../src/sessions/packed-mb.ts";
@@ -901,4 +908,277 @@ rl.on("line", (line) => {
       db.close();
     }
   });
+});
+
+test("W9-A5a: restoreReaderConfig reads installed <app>/CHANNEL (ignoring config.updateChannel) and fallbackModeOf excludes pion-probe-pending", () => {
+  const betaApp = freshDir("beta-app-");
+  writeFileSync(join(betaApp, "CHANNEL"), "beta\n", "utf8");
+  const stableApp = freshDir("stable-app-");
+  writeFileSync(join(stableApp, "CHANNEL"), "stable\n", "utf8");
+  const devApp = freshDir("dev-app-");
+
+  // Installed CHANNEL comes strictly from <app>/CHANNEL, never config.updateChannel.
+  const betaCfg = restoreReaderConfig({ readers: { "*": "mb" }, updateChannel: "stable" } as Record<string, unknown>, betaApp);
+  assert.deepEqual(betaCfg, { readers: { "*": "mb" }, channel: "beta" });
+
+  const stableCfg = restoreReaderConfig({ updateChannel: "beta" } as Record<string, unknown>, stableApp);
+  assert.deepEqual(stableCfg, { channel: "stable" });
+
+  const devCfg = restoreReaderConfig({ updateChannel: "beta" } as Record<string, unknown>, devApp);
+  assert.equal(devCfg, undefined);
+
+  // fallbackModeOf excludes transient pion-probe-pending while counting real fallbacks (including default->pion fallbacks).
+  assert.equal(
+    fallbackModeOf({
+      mode: "data",
+      engine: "mb",
+      requested: "pion",
+      rawRequested: null,
+      source: "default",
+      fallback: true,
+      reason: "pion-probe-pending",
+    }),
+    undefined,
+  );
+  assert.equal(
+    fallbackModeOf({
+      mode: "data",
+      engine: "mb",
+      requested: "pion",
+      rawRequested: null,
+      source: "default",
+      fallback: true,
+      reason: "pion-binary-missing",
+    }),
+    "data",
+  );
+});
+
+test("W9-A5a R2: pionSupportedModesStatus EMFILE (stdout===null + next-tick error) causes 0 uncaughtException and settles cleanly to null", async () => {
+  const dir = freshDir("emfile-probe-");
+  const fakePion = makeStubBinary(dir, "fake-pion", "process.exit(0);\n");
+  resetReaderSelectionStateForTest();
+  let uncaught = 0;
+  const onUncaught = () => { uncaught++; };
+  process.on("uncaughtException", onUncaught);
+  try {
+    setPionProbeSpawnerForTest(() => {
+      const child = Object.assign(new EventEmitter(), {
+        stdout: null,
+        kill: () => true,
+      });
+      process.nextTick(() => {
+        child.emit("error", Object.assign(new Error("spawn EMFILE"), { code: "EMFILE" }));
+      });
+      return child as any;
+    });
+    const modes = await probePionSupportedModes(fakePion);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(modes, null);
+    assert.equal(uncaught, 0, "EMFILE with stdout===null must not leak uncaughtException");
+  } finally {
+    process.off("uncaughtException", onUncaught);
+    resetReaderSelectionStateForTest();
+  }
+});
+
+test("W9-A5a R2: probe cache keyed by (path, stamp) re-probes on replacement and late old-stamp probe never overwrites new stamp", async () => {
+  const dir = freshDir("probe-stamp-");
+  const pionPath = join(dir, "stillfail-pion");
+  writeFileSync(pionPath, "#!/bin/sh\necho v1\n", "utf8");
+  chmodSync(pionPath, 0o755);
+  resetReaderSelectionStateForTest();
+
+  let call = 0;
+  let releaseOld!: (modes: ReadonlySet<string> | null) => void;
+  setPionProbeRunnerForTest(async () => {
+    call++;
+    if (call === 1) {
+      return new Promise<ReadonlySet<string> | null>((res) => { releaseOld = res; });
+    }
+    return new Set(["footprint", "packed", "memory", "live-locator"]);
+  });
+
+  try {
+    // 1. Start probe for stamp A (held pending).
+    const pOld = probePionSupportedModes(pionPath);
+    assert.equal(call, 1);
+
+    // 2. Replace binary at the SAME path on disk -> stamp B.
+    writeFileSync(pionPath, "#!/bin/sh\necho upgraded-v2-different-size\n", "utf8");
+    chmodSync(pionPath, 0o755);
+
+    // 3. Probe stamp B -> immediately triggers a fresh probe (call === 2) and caches stamp B's modes.
+    const modesB = await probePionSupportedModes(pionPath);
+    assert.equal(call, 2);
+    assert.ok(modesB?.has("live-locator"));
+
+    // 4. Now let the stale stamp A probe finish with a smaller mode set -> must NOT overwrite stamp B!
+    releaseOld(new Set(["footprint"]));
+    await pOld;
+    const cachedAfterLateOld = pionSupportedModes(pionPath);
+    assert.ok(cachedAfterLateOld?.has("live-locator"), "late old-stamp probe must never overwrite new stamp's cached modes");
+  } finally {
+    resetReaderSelectionStateForTest();
+  }
+});
+
+test("W9-A5a R2+R3: mbReaderBinary validates executable files, supports bare PATH lookup, caches hits, and self-heals on invalidation; deleted cached Pion falls back to MB", { skip: skipPosixStubs }, async () => {
+  const dir = freshDir("mb-exec-check-");
+  const nonExec = join(dir, "nonexec-mb");
+  writeFileSync(nonExec, "#!/bin/sh\nexit 0\n", "utf8");
+  chmodSync(nonExec, 0o644);
+  const deletable = join(dir, "deletable-mb");
+  writeFileSync(deletable, "#!/bin/sh\nexit 0\n", "utf8");
+  chmodSync(deletable, 0o755);
+  const bareBin = join(dir, "custom-bare-mb");
+  writeFileSync(bareBin, "#!/bin/sh\nexit 0\n", "utf8");
+  chmodSync(bareBin, 0o755);
+
+  await withEnv({ STILLFAIL_MB_READER: dir }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(mbReaderBinary(), null, "directory must not pass as MB executable");
+  });
+  await withEnv({ STILLFAIL_MB_READER: nonExec }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(mbReaderBinary(), null, "non-executable file must not pass as MB executable");
+  });
+  await withEnv({ STILLFAIL_MB_READER: "custom-bare-mb", PATH: `${dir}${delimiter}${process.env.PATH ?? ""}` }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(mbReaderBinary(), bareBin, "bare single-segment STILLFAIL_MB_READER resolves via PATH");
+  });
+  await withEnv({ STILLFAIL_MB_READER: "definitely-missing-bare-mb-xyz" }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(mbReaderBinary(), null, "missing bare command fails closed to null");
+  });
+  await withEnv({ STILLFAIL_MB_READER: deletable }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(mbReaderBinary(), deletable);
+    rmSync(deletable);
+    // Hot-path cache hit returns cached path until spawn ENOENT / invalidateMbReaderBinaryCache().
+    assert.equal(mbReaderBinary(), deletable);
+    invalidateMbReaderBinaryCache();
+    assert.equal(mbReaderBinary(), null, "deleted cached MB binary fails closed after cache invalidation");
+  });
+
+  // Deleted cached Pion binary must invalidate cache and fall back to healthy MB, AND recover when restored at the same path (pion -> mb -> pion)!
+  const healthyMb = makeStubBinary(dir, "healthy-mb", "process.exit(0);\n");
+  const disappearingPion = makeStubBinary(dir, "disappearing-pion", "process.exit(0);\n");
+  await withEnv({ STILLFAIL_MB_READER: healthyMb, STILLFAIL_PION_READER: disappearingPion }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(resolveReaderSelection("footprint", { config: { readers: { footprint: "pion" } }, env: {} }).engine, "pion");
+    rmSync(disappearingPion);
+    const selMissing = resolveReaderSelection("footprint", { config: { readers: { footprint: "pion" } }, env: {} });
+    assert.equal(selMissing.engine, "mb", "deleted cached Pion must fall back to MB");
+    assert.equal(selMissing.primaryBinary, healthyMb);
+    assert.equal(selMissing.selection.reason, "pion-binary-missing");
+    // Restore executable at the same explicit path -> must immediately recover to "pion" (null not permanently cached)!
+    makeStubBinary(dir, "disappearing-pion", "process.exit(0);\n");
+    const selRestored = resolveReaderSelection("footprint", { config: { readers: { footprint: "pion" } }, env: {} });
+    assert.equal(selRestored.engine, "pion", "restored explicit STILLFAIL_PION_READER must recover to pion");
+    assert.equal(selRestored.primaryBinary, disappearingPion);
+  });
+
+  // Wrapped (`background: true`) MbProcess failing with exit 127 invalidates mbReaderBinary cache so PATH fallback takes over.
+  const dir1 = freshDir("wrap-path-1-");
+  const dir2 = freshDir("wrap-path-2-");
+  const firstOnPath = join(dir1, "wrapped-mb-cmd");
+  const secondOnPath = join(dir2, "wrapped-mb-cmd");
+  writeFileSync(firstOnPath, "#!/bin/sh\nexit 0\n", "utf8");
+  chmodSync(firstOnPath, 0o755);
+  writeFileSync(secondOnPath, "#!/bin/sh\nexit 0\n", "utf8");
+  chmodSync(secondOnPath, 0o755);
+  await withEnv({ STILLFAIL_MB_READER: "wrapped-mb-cmd", PATH: `${dir1}${delimiter}${dir2}${delimiter}${process.env.PATH ?? ""}` }, async () => {
+    resetReaderSelectionStateForTest();
+    assert.equal(mbReaderBinary(), firstOnPath);
+    rmSync(firstOnPath);
+    // Spawn wrapped background process targeting deleted firstOnPath -> nice/ionice exits 127 and invalidates cache.
+    const proc = new MbProcess(firstOnPath, ["--builder", "footprint"], { background: true, engine: "mb", mode: "footprint" });
+    proc.on("error", () => {});
+    await new Promise<void>((res) => proc.once("exit", () => res()));
+    assert.equal(mbReaderBinary(), secondOnPath, "wrapper exit 127 must invalidate cached MB binary so second PATH entry takes over");
+  });
+});
+
+test("W9-A5a R3+R4: restoreReaderConfig(raw, app, data) binds <data>/run/pion-demoted.jsonl so cold replica-restore demotes to mb on first call", { skip: skipPosixStubs }, async () => {
+  const dir = freshDir("restore-breaker-");
+  const appDir = join(dir, "app");
+  const dataDir = join(dir, "data");
+  writeFileSync(join(dir, "CHANNEL-unused"), "", "utf8");
+  const mbBin = makeStubBinary(dir, "mb", "process.exit(0);\n");
+  const pionBin = makeStubBinary(dir, "pion", "process.exit(0);\n");
+  const stamp = pionBinaryStamp(pionBin)!;
+
+  // Pre-populate <data>/run/pion-demoted.jsonl with a demoted `replica-restore` entry.
+  const preBreaker = new PionCircuitBreaker({ stateFile: join(dataDir, "run", "pion-demoted.jsonl"), watch: false });
+  for (let i = 0; i < BREAKER_THRESHOLD; i++) {
+    preBreaker.recordUnexpectedExit("replica-restore", stamp, "default", 10_000_000 + i * 10);
+  }
+  assert.equal(preBreaker.isDemoted("replica-restore", stamp), true);
+
+  await withEnv({
+    STILLFAIL_MB_READER: mbBin,
+    STILLFAIL_PION_READER: pionBin,
+    STILLFAIL_READER_ENGINE: undefined,
+    STILLFAIL_READER_REPLICA_RESTORE: undefined,
+  }, async () => {
+    resetReaderSelectionStateForTest();
+    writeFileSync(join(dir, "CHANNEL"), "beta\n", "utf8");
+    const cfg = restoreReaderConfig({}, dir, dataDir);
+    assert.ok(cfg?.breaker, "restoreReaderConfig with data must attach station PionCircuitBreaker");
+    const sel = resolveReaderSelection("replica-restore", {
+      config: cfg,
+      env: {},
+      target: "linux-x64",
+      defaultTargetsByChannel: { beta: ["linux-x64"], stable: [] },
+    });
+    assert.equal(sel.engine, "mb", "cold replica-restore must honor persisted demotion on first selection");
+    assert.equal(sel.primaryBinary, mbBin);
+    assert.equal(sel.selection.reason, "pion-circuit-breaker");
+  });
+  void appDir;
+});
+
+test("W9-A5a R2: config.readers['*']: 'shadow' fails closed as invalid-value even for footprint with 1 deduped warn", () => {
+  resetReaderSelectionStateForTest();
+  const logs: Line[] = [];
+  hearLines((l) => logs.push(l));
+  try {
+    const dir = freshDir("wild-shadow-");
+    const mbBin = makeStubBinary(dir, "mb", "process.exit(0);\n");
+    const pionBin = makeStubBinary(dir, "pion", "process.exit(0);\n");
+    withEnvSync({
+      STILLFAIL_MB_READER: mbBin,
+      STILLFAIL_PION_READER: pionBin,
+      STILLFAIL_READER_ENGINE: undefined,
+      STILLFAIL_READER_FOOTPRINT: undefined,
+      STILLFAIL_READER_PACKED: undefined,
+    }, () => {
+      const fp1 = resolveReaderSelection("footprint", {
+        config: { readers: { "*": "shadow" } },
+        env: {},
+        logAt: "wild-shadow-test",
+      });
+      const fp2 = resolveReaderSelection("footprint", {
+        config: { readers: { "*": "shadow" } },
+        env: {},
+        logAt: "wild-shadow-test",
+      });
+      const pk1 = resolveReaderSelection("packed", {
+        config: { readers: { "*": "shadow" } },
+        env: {},
+        logAt: "wild-shadow-test",
+      });
+      for (const sel of [fp1, fp2, pk1]) {
+        assert.equal(sel.engine, "mb");
+        assert.equal(sel.selection.fallback, true);
+        assert.equal(sel.selection.reason, "invalid-value");
+      }
+      const warns = logs.filter((l) => l.level === "WARN" && l.at === "wild-shadow-test");
+      assert.equal(warns.length, 1, "wildcard shadow invalid-value must emit strictly 1 deduped warn");
+    });
+  } finally {
+    hearLines(null);
+    resetReaderSelectionStateForTest();
+  }
 });

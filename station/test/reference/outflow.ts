@@ -343,6 +343,30 @@ export function outflowChats(s: Store, since: number, of: Of = HOME, page: Chats
   return { since, chats, more, next: more && last ? `${last.lastActiveAt}.${last.thread}` : null };
 }
 
+function outflowText(text: string | null, quotes: { text: string; comment: string }[]): string | null {
+  if (quotes.length === 0) return text;
+  const blocks: string[] = [];
+  for (const q of quotes) {
+    const parts: string[] = [];
+    if (q.text.trim() !== "") {
+      parts.push(
+        q.text
+          .replace(/\r\n?/g, "\n")
+          .split("\n")
+          .map((line) => (line === "" ? ">" : `> ${line}`))
+          .join("\n"),
+      );
+    }
+    if (q.comment.trim() !== "") {
+      parts.push(q.comment.trim());
+    }
+    if (parts.length > 0) blocks.push(parts.join("\n\n"));
+  }
+  if (blocks.length === 0) return text;
+  if (typeof text === "string" && text.trim() !== "") blocks.push(text);
+  return blocks.join("\n\n");
+}
+
 /// A chat's messages after its message `after` (its `n`), at most `limit`, oldest first, as the Router reads a Task
 /// through a Comma connect (`task.read`): each one's `n`, what it is (`message`, `edit`: a later wording of message
 /// `target`), who wrote it (`person`, `agent`, and their reference, a person's name and email as far as known), its words
@@ -367,7 +391,7 @@ export function outflowMessages(s: Store, thread: number, after: number, limit: 
         if (closed) card = { ...card, closed: true, ...(choice !== null ? { choice } : {}) };
       }
       return {
-        n: e.n, kind: e.kind, target: e.target, authorKind: e.authorKind, author: e.author, text: e.text, at: e.at,
+        n: e.n, kind: e.kind, target: e.target, authorKind: e.authorKind, author: e.author, text: outflowText(e.text, e.quotes), at: e.at,
         ...(e.authorKind === "person" && typeof e.author === "string" ? { person: named(e.author) } : {}),
         ...(card !== null ? { card } : {}),
       };

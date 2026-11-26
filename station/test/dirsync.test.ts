@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { zstdCompressSync } from "node:zlib";
 import { describe, test } from "node:test";
@@ -593,5 +593,224 @@ describe("dirsync", { concurrency: true }, () => {
     await p.b.remote.relieve(now);
     assert.deepEqual(left(), ["recent", "busy"]);
     await p.use("station_task", { key: "busy-2", action: "stop" });
+  });
+
+  test("regular files and symlinks with identical hash never cross-reuse; exec bit changes reuse regular files", async () => {
+    const p = await pair();
+    const dir = join(tempdir(), "reuse-kind");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "target.txt"), "payload\n");
+    // Regular file whose content equals the symlink target string "target.txt" (same Git blob id!)
+    writeFileSync(join(dir, "as-file"), "target.txt");
+    const r1 = await p.run("rk1", dir, "true");
+    assert.equal(r1.sync.sent.files, 2);
+    const m = p.mirror("reuse-kind");
+    assert.ok(!lstatSync(join(m, "as-file")).isSymbolicLink());
+    assert.equal(readFileSync(join(m, "as-file"), "utf8"), "target.txt");
+
+    // Standalone zero-upload batch: regular -> exec with identical hash (no symlink in batch)
+    writeFileSync(join(dir, "as-exec-only"), "target.txt");
+    chmodSync(join(dir, "as-exec-only"), 0o755);
+    const rExecOnly = await p.run("rk1-exec", dir, "true");
+    assert.equal(rExecOnly.sync.sent.files, 0, "regular -> exec same-hash reuse uploads 0 blobs");
+    assert.ok(!lstatSync(join(m, "as-exec-only")).isSymbolicLink());
+    assert.ok((statSync(join(m, "as-exec-only")).mode & 0o100) !== 0, "exec bit applied on zero-upload reuse");
+
+    // Add a symlink pointing to "target.txt" (same hash as as-file) + an exec copy of as-file
+    symlinkSync("target.txt", join(dir, "as-link"));
+    writeFileSync(join(dir, "as-exec"), "target.txt");
+    chmodSync(join(dir, "as-exec"), 0o755);
+    const r2 = await p.run("rk2", dir, "true");
+    // as-link must NOT reuse regular file as-file (1 blob sent); as-exec reuses regular file as-file
+    assert.equal(r2.sync.sent.files, 1);
+    assert.ok(lstatSync(join(m, "as-link")).isSymbolicLink());
+    assert.equal(readlinkSync(join(m, "as-link")), "target.txt");
+    assert.ok(!lstatSync(join(m, "as-exec")).isSymbolicLink());
+    assert.ok((statSync(join(m, "as-exec")).mode & 0o100) !== 0, "exec bit restored on reused regular file");
+
+    // Add another symlink with the same target -> reused from as-link without resending
+    symlinkSync("target.txt", join(dir, "as-link-2"));
+    const r3 = await p.run("rk3", dir, "true");
+    assert.equal(r3.sync.sent.files, 0);
+    assert.ok(lstatSync(join(m, "as-link-2")).isSymbolicLink());
+    assert.equal(readlinkSync(join(m, "as-link-2")), "target.txt");
+
+    // Flip regular -> symlink and symlink -> regular with same hash
+    rmSync(join(dir, "as-file"));
+    rmSync(join(dir, "as-exec"));
+    symlinkSync("target.txt", join(dir, "as-file"));
+    rmSync(join(dir, "as-link"));
+    rmSync(join(dir, "as-link-2"));
+    writeFileSync(join(dir, "as-link"), "target.txt");
+    chmodSync(join(dir, "as-link"), 0o755);
+    const r4 = await p.run("rk4", dir, "true");
+    assert.ok(lstatSync(join(m, "as-file")).isSymbolicLink());
+    assert.equal(readlinkSync(join(m, "as-file")), "target.txt");
+    assert.ok(!lstatSync(join(m, "as-link")).isSymbolicLink());
+    assert.equal(readFileSync(join(m, "as-link"), "utf8"), "target.txt");
+    assert.ok((statSync(join(m, "as-link")).mode & 0o100) !== 0);
+    assert.equal(r4.sync.written, 2);
+  });
+
+  test("put_blobs verifies complete .part length and hash before rename: valid retry, bad hash, oversize, empty file", async () => {
+    const p = await pair();
+    const dir = join(p.home, "part-verify");
+    mkdirSync(dir);
+    writeFileSync(join(dir, "f"), "f\n");
+    const prepared = await p.use("station_task", { key: "pv", action: "prepare", command: "true", dir });
+    const ask = (method: string, more: Json) => p.a.remote.ask(p.B, { workspace: "ws", session: "s1", key: "pv", method, ...more });
+    const { id } = await ask("sync.begin", { safe: 1 });
+    const blobs = join(p.b.remote.room("ws", p.A, "s1"), "sync", prepared.dir, "blobs");
+    mkdirSync(blobs, { recursive: true });
+    type Piece = [string, number, number, number];
+    const put = (index: Piece[], data: Buffer) => ask("sync.put", withBytes({ id, blobs: index }, oneBytes(zstdCompressSync(data))));
+
+    // 1. Complete valid .part left on disk before rename -> last-piece retry verifies and renames to done
+    const valid = randomBytes(1000);
+    const validHash = blobId(valid);
+    writeFileSync(join(blobs, `${validHash}.part`), valid);
+    assert.deepEqual(await put([[validHash, 1000, 600, 400]], valid.subarray(600)), { pieces: 1 });
+    assert.ok(!existsSync(join(blobs, `${validHash}.part`)));
+    assert.ok(readFileSync(join(blobs, validHash)).equals(valid));
+
+    // 2. Complete .part with bad hash -> refused, .part deleted, done not created, clean retry recovers
+    const badContent = randomBytes(1000);
+    const badHash = blobId(badContent);
+    writeFileSync(join(blobs, `${badHash}.part`), Buffer.alloc(1000, 0xaa));
+    await assert.rejects(put([[badHash, 1000, 600, 400]], badContent.subarray(600)), /a content sent does not match its id/);
+    assert.ok(!existsSync(join(blobs, `${badHash}.part`)));
+    assert.ok(!existsSync(join(blobs, badHash)));
+    assert.deepEqual(await put([[badHash, 1000, 0, 1000]], badContent), { pieces: 1 });
+    assert.ok(readFileSync(join(blobs, badHash)).equals(badContent));
+
+    // 3. Oversize .part -> refused, .part deleted, clean retry recovers
+    const overContent = randomBytes(500);
+    const overHash = blobId(overContent);
+    writeFileSync(join(blobs, `${overHash}.part`), Buffer.concat([overContent, Buffer.from("extra")]));
+    await assert.rejects(put([[overHash, 500, 0, 500]], overContent), /a content sent does not match its id/);
+    assert.ok(!existsSync(join(blobs, `${overHash}.part`)));
+    assert.ok(!existsSync(join(blobs, overHash)));
+    assert.deepEqual(await put([[overHash, 500, 0, 500]], overContent), { pieces: 1 });
+    assert.ok(readFileSync(join(blobs, overHash)).equals(overContent));
+
+    // 4. Empty file: oversize .part refused & cleaned; existing valid 0-byte .part verifies & commits
+    const emptyHash = blobId(Buffer.alloc(0));
+    writeFileSync(join(blobs, `${emptyHash}.part`), Buffer.from("not-empty"));
+    await assert.rejects(put([[emptyHash, 0, 0, 0]], Buffer.alloc(0)), /a content sent does not match its id/);
+    assert.ok(!existsSync(join(blobs, `${emptyHash}.part`)));
+    writeFileSync(join(blobs, `${emptyHash}.part`), Buffer.alloc(0));
+    assert.deepEqual(await put([[emptyHash, 0, 0, 0]], Buffer.alloc(0)), { pieces: 1 });
+    assert.ok(!existsSync(join(blobs, `${emptyHash}.part`)));
+    assert.equal(readFileSync(join(blobs, emptyHash)).length, 0);
+  });
+
+  test("remove distinguishes ENOENT, EACCES (preserving manifest for retry), and parent-directory escape", async () => {
+    const p = await pair();
+    const dir = join(tempdir(), "remove-edges");
+    mkdirSync(join(dir, "sub"), { recursive: true });
+    mkdirSync(join(dir, "esc"), { recursive: true });
+    writeFileSync(join(dir, "gone.txt"), "gone\n");
+    writeFileSync(join(dir, "sub", "locked.txt"), "locked\n");
+    writeFileSync(join(dir, "esc", "same.txt"), "identical\n");
+    await p.run("rm1", dir, "true");
+    const m = p.mirror("remove-edges");
+    const manifestPath = join(p.b.remote.room("ws", p.A, "s1"), "mirrors", "remove-edges.json");
+
+    // 1. ENOENT: already deleted on mirror -> treated as removed
+    rmSync(join(m, "gone.txt"));
+    rmSync(join(dir, "gone.txt"));
+    await p.run("rm2", dir, "true");
+    assert.equal(readJson(manifestPath).files["gone.txt"], undefined);
+
+    // 2. Parent symlink escape with identical content (passes conflict check, must be rejected by remove's file_path)
+    const outside = tempdir();
+    writeFileSync(join(outside, "same.txt"), "identical\n");
+    rmSync(join(m, "esc"), { recursive: true });
+    symlinkSync(outside, join(m, "esc"));
+    rmSync(join(dir, "esc", "same.txt"));
+    await p.use("station_task", { key: "rm3", action: "prepare", command: "true", dir });
+    await assert.rejects(p.use("station_task", { key: "rm3", action: "start" }), /cannot remove esc\/same\.txt on the target:.*symbolic link/);
+    assert.equal(readFileSync(join(outside, "same.txt"), "utf8"), "identical\n", "outside file never deleted");
+    assert.ok(readJson(manifestPath).files["esc/same.txt"] !== undefined, "manifest entry preserved");
+    // Restore esc and verify removal succeeds cleanly
+    rmSync(join(m, "esc"));
+    mkdirSync(join(m, "esc"));
+    writeFileSync(join(m, "esc", "same.txt"), "identical\n");
+    const recoveredEsc = await p.run("rm3-ok", dir, "true");
+    assert.equal(recoveredEsc.sync.removed, 1);
+    assert.equal(readJson(manifestPath).files["esc/same.txt"], undefined);
+
+    // 3. EACCES (0555 & 0000, non-root only): read-only or unsearchable parent dir refuses remove, preserves manifest, and succeeds on retry
+    if (process.platform !== "win32" && typeof process.getuid === "function" && process.getuid() !== 0) {
+      rmSync(join(dir, "sub", "locked.txt"));
+      chmodSync(join(m, "sub"), 0o555);
+      try {
+        await p.use("station_task", { key: "rm4", action: "prepare", command: "true", dir });
+        await assert.rejects(p.use("station_task", { key: "rm4", action: "start" }), /cannot remove sub\/locked\.txt on the target:.*check permissions or clean the mirror/);
+        assert.ok(existsSync(join(m, "sub", "locked.txt")), "file still on disk");
+        assert.ok(readJson(manifestPath).files["sub/locked.txt"] !== undefined, "manifest preserved on 0555 EACCES");
+      } finally {
+        chmodSync(join(m, "sub"), 0o755);
+      }
+      const retried = await p.run("rm5", dir, "true");
+      assert.equal(retried.sync.removed, 1);
+      assert.ok(!existsSync(join(m, "sub", "locked.txt")));
+      assert.equal(readJson(manifestPath).files["sub/locked.txt"], undefined);
+
+      // Unsearchable parent dir (chmod 0000): actual() misses file, fs.remove returns PermissionDenied, manifest stays intact
+      mkdirSync(join(dir, "sub0"), { recursive: true });
+      writeFileSync(join(dir, "sub0", "hidden.txt"), "hidden\n");
+      await p.run("rm6-setup", dir, "true");
+      rmSync(join(dir, "sub0", "hidden.txt"));
+      chmodSync(join(m, "sub0"), 0o000);
+      try {
+        await p.use("station_task", { key: "rm6", action: "prepare", command: "true", dir });
+        await assert.rejects(p.use("station_task", { key: "rm6", action: "start" }), /cannot remove sub0\/hidden\.txt on the target:.*check permissions or clean the mirror/);
+        assert.ok(readJson(manifestPath).files["sub0/hidden.txt"] !== undefined, "manifest preserved on 0000 EACCES");
+      } finally {
+        chmodSync(join(m, "sub0"), 0o755);
+      }
+      assert.ok(existsSync(join(m, "sub0", "hidden.txt")), "file still on disk after 0000 EACCES");
+      const retried0 = await p.run("rm7", dir, "true");
+      assert.equal(retried0.sync.removed, 1);
+      assert.ok(!existsSync(join(m, "sub0", "hidden.txt")));
+      assert.equal(readJson(manifestPath).files["sub0/hidden.txt"], undefined);
+    }
+
+    // 4. ENOTDIR: parent directory replaced by regular file refuses remove, preserves manifest, and recovers once restored
+    mkdirSync(join(dir, "notdir"), { recursive: true });
+    writeFileSync(join(dir, "notdir", "leaf.txt"), "leaf\n");
+    await p.run("rm8-setup", dir, "true");
+    rmSync(join(dir, "notdir", "leaf.txt"));
+    rmSync(join(m, "notdir"), { recursive: true });
+    writeFileSync(join(m, "notdir"), "i am a regular file\n");
+    await p.use("station_task", { key: "rm8", action: "prepare", command: "true", dir });
+    await assert.rejects(p.use("station_task", { key: "rm8", action: "start" }), /cannot remove notdir\/leaf\.txt on the target:.*check permissions or clean the mirror/);
+    assert.ok(readJson(manifestPath).files["notdir/leaf.txt"] !== undefined, "manifest preserved on ENOTDIR");
+    rmSync(join(m, "notdir"));
+    mkdirSync(join(m, "notdir"));
+    writeFileSync(join(m, "notdir", "leaf.txt"), "leaf\n");
+    const retriedNotDir = await p.run("rm9", dir, "true");
+    assert.equal(retriedNotDir.sync.removed, 1);
+    assert.ok(!existsSync(join(m, "notdir", "leaf.txt")));
+    assert.equal(readJson(manifestPath).files["notdir/leaf.txt"], undefined);
+
+    // 5. Untracked remote-only file (not in base manifest) named in sync.commit remove is never deleted or pruned
+    mkdirSync(join(m, "remote-only"), { recursive: true });
+    writeFileSync(join(m, "remote-only", "artifact.txt"), "remote-output\n");
+    await p.use("station_task", { key: "rm10", action: "prepare", command: "true", dir });
+    const begin = await p.b.remote.handle("ws", p.A, { method: "sync.begin", session: "s1", key: "rm10", mirror: "remove-edges", dir });
+    const commitUntracked = await p.b.remote.handle("ws", p.A, {
+      method: "sync.commit",
+      session: "s1",
+      key: "rm10",
+      id: begin.id,
+      set: [],
+      remove: ["remote-only/artifact.txt"],
+      final: true,
+    });
+    assert.equal(commitUntracked.removed, 0);
+    assert.equal(readFileSync(join(m, "remote-only", "artifact.txt"), "utf8"), "remote-output\n", "remote-only file preserved");
+    assert.ok(existsSync(join(m, "remote-only")), "remote-only parent dir preserved");
   });
 });

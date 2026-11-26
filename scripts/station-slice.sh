@@ -39,7 +39,10 @@ i=${s%/*} n=${s#*/}
 # projects-jsonl-and-sync and others of 20-45 s came at 2, so check-station (5) and (6) took 238-290 s where (0) and
 # (2) took 164-192. Dealt by these, the seven slices of those runs come to 154-168 s, (0) with mb-fault-replica-retire
 # alone at its 168.
-long="test/mb-fault-replica-retire.test.ts:168 test/memory-sync-random.test.ts:95"
+# mb-fault-replica-retire's three tests are three files since (2026-11-26), its 168 shared by what each took alone on
+# afk-ap-pool-eqk7e8 (Linux x64, two runs each, means 8.3, 38.5 and 106.2 s): the copies 9, the move 42, the faults 117.
+long="test/mb-fault-replica-retire-faults.test.ts:117 test/memory-sync-random.test.ts:95"
+long="$long test/mb-fault-replica-retire-move.test.ts:42 test/mb-fault-replica-retire.test.ts:9"
 long="$long test/mb-fault-adb-device-connects.test.ts:84 test/mb-fault-move-and-connects.test.ts:74"
 long="$long test/replica-heap-bounded.test.ts:72 test/replica-retire.test.ts:71 test/chat-handover-back.test.ts:65"
 long="$long test/mb-fault-agents-and-pack.test.ts:64 test/hub-tools.test.ts:62 test/hub.test.ts:62"

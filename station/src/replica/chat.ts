@@ -5,7 +5,7 @@
 // each part bounded. No TypeScript fallback.
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
-import { MbProcess, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
+import { MbProcess, breakerOfSelection, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync } from "../read/mb-reader.ts";
 import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import type { Head } from "./format.ts";
@@ -112,7 +112,7 @@ export async function readChatSoon(o: {
       "--builder", "replica-chat", "--dir", o.dir, "--work", o.work, "--thread", String(o.thread),
       "--entries", String(CHAT_ENTRIES), "--text", String(CHAT_TEXT), "--bytes", String(CHAT_BYTES),
       "--sep", sep, "--shell-dir", o.shellDir,
-    ], { engine: engineOfSelection(selected), fallbackMode: fallbackModeOf(selected.selection) });
+    ], { engine: engineOfSelection(selected), fallbackMode: fallbackModeOf(selected.selection), breaker: breakerOfSelection(selected) });
     // (what it comes to, the first thing told, given and counted once the program has ended: a reading that came to
     // something is counted, as restore.ts and carry.ts count theirs, and one that took too long as a failure, even when
     // the program had answered and not ended by then (its caller is told it took too long); one called off otherwise is

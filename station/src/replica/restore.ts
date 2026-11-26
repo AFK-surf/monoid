@@ -73,7 +73,7 @@ export async function takeBackSoon(
   options?: { readers?: ReaderSelectConfig | (() => ReaderSelectConfig) },
 ): Promise<Ready | null> {
   if (!existsSync(readyFile(data))) return null; // sync: before the station serves (its store not open yet)
-  const [{ MbProcess, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync }, { wall }, { readerTelemetry }] = await Promise.all([
+  const [{ MbProcess, breakerOfSelection, engineOfSelection, fallbackModeOf, resolveReaderSelectionAsync }, { wall }, { readerTelemetry }] = await Promise.all([
     import("../read/mb-reader.ts"),
     import("../ops/fibers.ts"),
     import("../read/reader-telemetry.ts"),
@@ -81,7 +81,7 @@ export async function takeBackSoon(
   const sel = await resolveReaderSelectionAsync("replica-restore", { binary: given, config: options?.readers, logAt: "replica" });
   return new Promise((resolve, reject) => {
     const startedAt = wall.now();
-    const p = new MbProcess(sel.primaryBinary, ["--builder", "replica-restore", "--db", db, "--data", data, "--now", String(now), "--sep", sep], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
+    const p = new MbProcess(sel.primaryBinary, ["--builder", "replica-restore", "--db", db, "--data", data, "--now", String(now), "--sep", sep], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection), breaker: breakerOfSelection(sel) });
     let said = false;
     const finish = (ok: boolean, f: () => void) => {
       if (said) return;

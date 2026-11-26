@@ -168,6 +168,7 @@ on:
       - "station/test/claude.test.ts"
       - "station/test/codex.test.ts"
       - "station/test/cursor.test.ts"
+      - "station/test/dirsync-cross-engine.test.ts"
       - "station/test/dirsync.test.ts"
       - "station/test/dsh.test.ts"
       - "station/test/fb39-warm-auth-concurrency.test.ts"
@@ -1746,6 +1747,16 @@ jobs:
             exit 1
           fi
           check_tap_strict "gate-w8-sessions-3 suites" "$OUT"
+
+          if ! CROSS_OUT="$(node scripts/native.ts run mesh runner archive-rs -- env \
+            STILLFAIL_MB_READER="$BIN_MB" STILLFAIL_PION_READER="$BIN_PION" \
+            STILLFAIL_REQUIRE_DUAL_READER=1 \
+            node --import ./station/test/setup-env.mjs --test --test-reporter=tap \
+            station/test/dirsync-cross-engine.test.ts 2>&1)"; then
+            printf '%s\n' "$CROSS_OUT"
+            exit 1
+          fi
+          check_tap_strict "gate-w8-sessions-3 dirsync cross-engine" "$CROSS_OUT"
 
   verify-linux:
     runs-on: ubuntu-24.04

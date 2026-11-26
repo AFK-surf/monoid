@@ -292,20 +292,59 @@ export type Synced = {
   ms: number;
 };
 
-/// Pages of `items`, each about PAGE as JSON at most.
-function pages<T>(items: T[]): T[][] {
-  const out: T[][] = [[]];
-  let size = 0;
-  for (const item of items) {
-    const n = JSON.stringify(item).length + 1;
-    if (size + n > PAGE && out.at(-1)!.length > 0) {
-      out.push([]);
-      size = 0;
+const reuseKey = (hash: string, mode: string) => `${mode === LINK ? "link" : "file"}:${hash}`;
+
+/// Builds `sync.commit` request payloads whose final serialized UTF-8 JSON bytes stay within `budget` (covering `id`,
+/// `set`, `remove`, `final`, and `submodules` plus JSON frame overhead).
+export function commitPages(
+  id: string,
+  set: [string, string, string][],
+  remove: string[],
+  submodules: Submodule[],
+  budget = PAGE,
+): { id: string; set: [string, string, string][]; remove: string[]; final: boolean; submodules?: [string, string, string][] }[] {
+  const frameBase = Buffer.byteLength(JSON.stringify({ id, set: [], remove: [], final: false }));
+  const pages: { set: [string, string, string][]; remove: string[]; bytes: number }[] = [{ set: [], remove: [], bytes: frameBase }];
+  for (const item of set) {
+    const n = Buffer.byteLength(JSON.stringify(item));
+    const cur = pages.at(-1)!;
+    const comma = cur.set.length > 0 ? 1 : 0;
+    if (cur.bytes + comma + n > budget && (cur.set.length > 0 || cur.remove.length > 0)) {
+      pages.push({ set: [item], remove: [], bytes: frameBase + n });
+    } else {
+      cur.set.push(item);
+      cur.bytes += comma + n;
     }
-    out.at(-1)!.push(item);
-    size += n;
   }
-  return out;
+  for (const path of remove) {
+    const n = Buffer.byteLength(JSON.stringify(path));
+    const cur = pages.at(-1)!;
+    const comma = cur.remove.length > 0 ? 1 : 0;
+    if (cur.bytes + comma + n > budget && (cur.set.length > 0 || cur.remove.length > 0)) {
+      pages.push({ set: [], remove: [path], bytes: frameBase + n });
+    } else {
+      cur.remove.push(path);
+      cur.bytes += comma + n;
+    }
+  }
+  const subsJson: [string, string, string][] = submodules.map((s) => [s.path, s.id, s.url]);
+  if (subsJson.length > 0) {
+    const last = pages.at(-1)!;
+    const withSubs = last.bytes - 1 + Buffer.byteLength(',"submodules":') + Buffer.byteLength(JSON.stringify(subsJson));
+    if (withSubs > budget && (last.set.length > 0 || last.remove.length > 0)) {
+      pages.push({ set: [], remove: [], bytes: frameBase });
+    }
+  }
+  return pages.map((page, i) => {
+    const isLast = i === pages.length - 1;
+    return {
+      id,
+      set: page.set,
+      remove: page.remove,
+      final: isLast,
+      ...(isLast && subsJson.length > 0 ? { submodules: subsJson } : {}),
+    };
+  });
 }
 
 /// Brings the target's mirror up to date with `dir`; null when the task started already (nothing synced: a start
@@ -348,30 +387,21 @@ export async function syncDir(ask: Ask, dir: string, now: () => number = Date.no
     Object.assign(f, got, { indexed: false });
   });
   if (gone.size > 0) listing.files = listing.files.filter((f) => !gone.has(f.path));
-  const have = new Set([...there.values()].map(([hash]) => hash));
+  const have = new Set([...there.values()].map(([hash, mode]) => reuseKey(hash, mode)));
   const set: [string, string, string][] = [];
   const need = new Map<string, Local>();
   for (const f of listing.files) {
     if (same(f)) continue;
     set.push([f.path, f.hash, f.mode]);
-    if (!have.has(f.hash) && !need.has(f.hash)) need.set(f.hash, f);
+    if (!have.has(reuseKey(f.hash, f.mode)) && !need.has(f.hash)) need.set(f.hash, f);
   }
   const local = new Set(listing.files.map((f) => f.path));
   const remove = [...base.keys()].filter((p) => !local.has(p));
   const sent = await sendBlobs(ask, id, dir, [...need.values()], bulk);
-  const plan = [...set.map((s) => ({ s })), ...remove.map((r) => ({ r }))];
-  const parts = pages(plan);
+  const commits = commitPages(id, set, remove, listing.submodules);
   let answer: Json = null;
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i]!;
-    answer = await ask("sync.commit", {
-      id,
-      set: part.flatMap((p) => ("s" in p ? [p.s] : [])),
-      remove: part.flatMap((p) => ("r" in p ? [p.r] : [])),
-      final: i === parts.length - 1,
-      // (with the last part, what the mirror is to check out: a target from before leaves it)
-      ...(i === parts.length - 1 && listing.submodules.length > 0 ? { submodules: listing.submodules.map((s) => [s.path, s.id, s.url]) } : {}),
-    });
+  for (const commit of commits) {
+    answer = await ask("sync.commit", commit);
   }
   return {
     files: listing.files.length,

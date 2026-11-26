@@ -341,7 +341,7 @@ pub fn outflow_messages(db : @sql.Db, host : @host.Host, data : String, sep : St
       "target": field(e, "target"),
       "authorKind": Json::string(author_kind),
       "author": field(e, "author"),
-      "text": field(e, "text"),
+      "text": outflow_text(field(e, "text"), field(e, "quotes")),
       "at": field(e, "at"),
     }
     if author_kind == "person" && field(e, "author") is String(a) {
@@ -405,6 +405,53 @@ pub fn outflow_messages(db : @sql.Db, host : @host.Host, data : String, sep : St
     out["messagesOnly"] = true
   }
   Json::object(out)
+}
+
+///|
+fn outflow_text(text : Json, quotes_json : Json) -> Json {
+  let quotes = match json_list(quotes_json, quote) {
+    Array(items) if items.length() > 0 => items
+    _ => return text
+  }
+  let blocks : Array[String] = []
+  for q in quotes {
+    let obj = match q {
+      Object(m) => m
+      _ => continue
+    }
+    let parts : Array[String] = []
+    let qtext = match obj.get("text") {
+      Some(String(s)) => s
+      _ => ""
+    }
+    if !js_blank(qtext) {
+      let normalized = qtext.replace_all(old="\r\n", new="\n").replace_all(old="\r", new="\n")
+      let lines : Array[String] = []
+      for raw in normalized.split("\n") {
+        let line = raw.to_owned()
+        lines.push(if line == "" { ">" } else { "> " + line })
+      }
+      parts.push(lines.join("\n"))
+    }
+    let comment = match obj.get("comment") {
+      Some(String(s)) => @jscase.trim_white(s)
+      _ => ""
+    }
+    if comment != "" {
+      parts.push(comment)
+    }
+    if parts.length() > 0 {
+      blocks.push(parts.join("\n\n"))
+    }
+  }
+  if blocks.length() == 0 {
+    return text
+  }
+  match text {
+    String(s) if !js_blank(s) => blocks.push(s)
+    _ => ()
+  }
+  Json::string(blocks.join("\n\n"))
 }
 
 ///|

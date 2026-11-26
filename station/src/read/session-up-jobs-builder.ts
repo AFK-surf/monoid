@@ -1,4 +1,4 @@
-import { type BackfillOptions, resolveReaderSelection } from "./mb-reader.ts";
+import type { BackfillOptions } from "./mb-reader.ts";
 import { RequestedBuilder } from "./requested-builder.ts";
 
 /// Prepare only the sessions an archive check needs; several checks share each session's work. By the MoonBit builder
@@ -7,7 +7,7 @@ export class SessionUpJobsBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("session-up-jobs", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "session-up-jobs", "--db", path] },
+      { select: { mode: "session-up-jobs", options: { binary, config: options.readers, logAt: "readers" } }, args: ["--builder", "session-up-jobs", "--db", path] },
       "session",
       "session up jobs preparation",
     );
@@ -20,7 +20,7 @@ export class JobNameFirstBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("session-up-jobs", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "session-up-jobs", "--db", path] },
+      { select: { mode: "session-up-jobs", options: { binary, config: options.readers, logAt: "readers" } }, args: ["--builder", "session-up-jobs", "--db", path] },
       "scope",
       "job name first member",
       (key, cancel) => { const [session, first] = JSON.parse(key) as [string, number]; return { session, first, ...(cancel ? { cancel: true } : {}) }; },

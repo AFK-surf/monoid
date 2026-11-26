@@ -1031,7 +1031,11 @@ export class Hub {
         const driver = this.sessionDriver(snap.runtime);
         const memory = await this.deps.linkSkills(row);
         const options = await openOptions(row, this.accounts.profile(ranOn) ?? this.accounts.runOn(row.key), this.deps, memory);
-        agent = await driver.adopt({ ...options, router, taking: this.options.taking }, snap.agent, actor.listener(generation));
+        // (a Codex thread by its id, for the driver taking it up with no snapshot: a station that crashed left none, and
+        // only the store knows which thread of the app-server's it is. Not for the others: their own output says whether
+        // their session was open, and an id given here would take one stuck before it opened as open, own-process.ts)
+        const resume = snap.agent === null && snap.runtime === "codex" && row.runtimeSessionId ? { resume: row.runtimeSessionId } : {};
+        agent = await driver.adopt({ ...options, ...resume, router, taking: this.options.taking }, snap.agent, actor.listener(generation));
       } catch (error) {
         actor.cancelAdopt(generation);
         log.warn("hub", "a session's runtime could not be taken up; it resumes the usual way", { session: row.key, error: (error as Error).message });

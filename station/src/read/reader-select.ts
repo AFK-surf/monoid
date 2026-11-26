@@ -2,15 +2,62 @@
 // from MoonBit (`mb`) to Pion (`pion`) one slice at a time.
 //
 // Invariants:
-// - Default engine is always `"mb"`.
-// - Environment variable `STILLFAIL_READER_<UPPER_SNAKE_MODE>` overrides `config.json`'s `readers[mode]`.
+// - Precedence: `STILLFAIL_READER_<UPPER_SNAKE_MODE>` > `config.readers[mode]` > `config.readers["*"]`
+//   > `STILLFAIL_READER_ENGINE` > default from `PION_DEFAULT_TARGETS_BY_CHANNEL` (installed `<app>/CHANNEL` x target).
 // - Only strictly read-only, side-effect-free modes (currently only `footprint`) may run in `"shadow"` mode.
 //   Stateful, database-writing, cache-writing, filesystem-mutating, or socket-binding modes MUST reject
 //   `"shadow"` and fall back safely to `"mb"` so two engines never mutate the same store or state concurrently.
 // - Requesting `"pion"` (or an allowed `"shadow"`) when no Pion binary is available falls back safely
 //   to `"mb"` with a structured reason for logging.
+import { platform } from "../platform/index.ts";
+import type { PionCircuitBreaker } from "./pion-breaker.ts";
 
 export type ReaderEngine = "mb" | "pion" | "shadow";
+
+export type InstalledChannel = "stable" | "beta";
+
+export type DefaultPolicyTable = Readonly<Record<InstalledChannel, readonly string[]>>;
+
+/**
+ * Unified default Pion rollout table by installed `<app>/CHANNEL` and canonical target.
+ * Must stay 1:1 with `PION_DEFAULT_TARGETS_BY_CHANNEL` in `station/native/launcher/src/front.rs`.
+ * Stage 9A keeps both channels empty (Zero Default Flip: all 4 targets default to `"mb"`).
+ */
+export const PION_DEFAULT_TARGETS_BY_CHANNEL: DefaultPolicyTable = {
+  beta: [],
+  stable: [],
+};
+
+/**
+ * Derive this machine's canonical target name (`darwin-arm64`, `linux-x64`, `linux-arm64`, or
+ * Windows x64) via `platform.os` / `platform.buildOs` + `process.arch`. Returns `null` on unsupported
+ * OS/arch pairs so unknown platforms conservatively default to `"mb"`.
+ */
+export function currentReaderTarget(
+  os: string = platform.os,
+  buildOs: string | null = platform.buildOs,
+  arch: string = process.arch,
+): string | null {
+  if (buildOs === null) return null;
+  if (os === "macos") return arch === "arm64" ? `${buildOs}-arm64` : null;
+  if (os === "linux") return arch === "x64" || arch === "arm64" ? `${buildOs}-${arch}` : null;
+  if (os === "windows") return arch === "x64" ? `${buildOs}-x64` : null;
+  return null;
+}
+
+/**
+ * Resolve the default engine for `(installedChannel, target)` from `table`.
+ * Missing or unknown `installedChannel` (e.g. dev checkout) or unknown target conservatively returns `"mb"`.
+ */
+export function defaultEngineFor(
+  installedChannel: string | null | undefined,
+  target: string | null | undefined,
+  table: DefaultPolicyTable = PION_DEFAULT_TARGETS_BY_CHANNEL,
+): "mb" | "pion" {
+  if (installedChannel !== "stable" && installedChannel !== "beta") return "mb";
+  if (typeof target !== "string" || target === "") return "mb";
+  return table[installedChannel].includes(target) ? "pion" : "mb";
+}
 
 export type ReaderSideEffect = "read-only" | "read-with-side-effects" | "write-db" | "write-fs" | "network";
 
@@ -287,6 +334,10 @@ export type ReaderMode = keyof typeof READER_MODES;
 
 export type ReaderSelectConfig = {
   readonly readers?: Readonly<Record<string, unknown>> | null;
+  /** Installed release channel from `<app>/CHANNEL` (never `config.updateChannel`). */
+  readonly channel?: InstalledChannel | null;
+  /** Per-station default-only Pion circuit breaker instance. */
+  readonly breaker?: PionCircuitBreaker | null;
 } | null | undefined;
 
 export type ReaderSelectOptions = {
@@ -297,6 +348,12 @@ export type ReaderSelectOptions = {
   readonly pionImplemented?: boolean;
   /** Whether the discovered Pion binary supports `mode` (defaults to `true`). */
   readonly pionModeSupported?: boolean;
+  /** Installed release channel from `<app>/CHANNEL` (overrides `config.channel`, never `config.updateChannel`). */
+  readonly installedChannel?: InstalledChannel | string | null;
+  /** Canonical target override (defaults to `currentReaderTarget()`). */
+  readonly target?: string | null;
+  /** Policy table override (defaults to `PION_DEFAULT_TARGETS_BY_CHANNEL`; injectable in tests). */
+  readonly defaultTargetsByChannel?: DefaultPolicyTable;
 };
 
 export type ReaderSelectSource = "default" | "config" | "env" | "explicit";
@@ -308,7 +365,8 @@ export type ReaderFallbackReason =
   | "pion-binary-missing"
   | "pion-binary-unsupported-mode"
   | "pion-probe-pending"
-  | "pion-probe-failed";
+  | "pion-probe-failed"
+  | "pion-circuit-breaker";
 
 export type ReaderSelection = {
   readonly mode: ReaderMode;
@@ -374,8 +432,9 @@ function parseEngineValue(raw: unknown): { engine: ReaderEngine | null; rawText:
  * Precedence:
  * 1. Per-mode environment variable `STILLFAIL_READER_<UPPER_SNAKE_MODE>` (non-empty trimmed string)
  * 2. `config.readers[mode]`
- * 3. Global environment variable `STILLFAIL_READER_ENGINE` (non-empty trimmed string)
- * 4. Default `"mb"`
+ * 3. `config.readers["*"]` (wildcard config override)
+ * 4. Global environment variable `STILLFAIL_READER_ENGINE` (non-empty trimmed string)
+ * 5. Default from `PION_DEFAULT_TARGETS_BY_CHANNEL` for `(installedChannel, target)`
  *
  * Safety gates:
  * - Invalid values fall back to `"mb"` (`reason: "invalid-value"`).
@@ -383,6 +442,9 @@ function parseEngineValue(raw: unknown): { engine: ReaderEngine | null; rawText:
  *   (`reason: "shadow-forbidden"`).
  * - `"pion"` or `"shadow"` when `hasPionBinary === false` falls back to `"mb"`
  *   (`reason: "pion-binary-missing"`).
+ * - When `source === "default"` resolves to `"pion"`, modes with `pionImplemented === false` stay
+ *   silently on `"mb"` (`fallback: false`), while real availability/capability fallbacks record
+ *   `requested: "pion"` and `fallback: true`.
  */
 export function resolveReaderEngine(
   mode: ReaderMode,
@@ -396,17 +458,28 @@ export function resolveReaderEngine(
 
   let source: ReaderSelectSource = "default";
   let rawInput: unknown = undefined;
+  let fromWildcard = false;
 
   if (typeof rawEnv === "string" && rawEnv.trim() !== "") {
     source = "env";
     rawInput = rawEnv;
   } else {
     const readers = opts.config?.readers;
-    if (readers !== null && readers !== undefined && typeof readers === "object" && !Array.isArray(readers) && Object.hasOwn(readers, mode)) {
-      const configured = readers[mode];
-      if (configured !== undefined && configured !== null && !(typeof configured === "string" && configured.trim() === "")) {
-        source = "config";
-        rawInput = configured;
+    if (readers !== null && readers !== undefined && typeof readers === "object" && !Array.isArray(readers)) {
+      if (Object.hasOwn(readers, mode)) {
+        const configured = readers[mode];
+        if (configured !== undefined && configured !== null && !(typeof configured === "string" && configured.trim() === "")) {
+          source = "config";
+          rawInput = configured;
+        }
+      }
+      if (source === "default" && Object.hasOwn(readers, "*")) {
+        const wildcard = readers["*"];
+        if (wildcard !== undefined && wildcard !== null && !(typeof wildcard === "string" && wildcard.trim() === "")) {
+          source = "config";
+          rawInput = wildcard;
+          fromWildcard = true;
+        }
       }
     }
     if (source === "default" && typeof rawGlobalEnv === "string" && rawGlobalEnv.trim() !== "") {
@@ -416,10 +489,58 @@ export function resolveReaderEngine(
   }
 
   if (source === "default") {
+    const installedChannel = opts.installedChannel !== undefined ? opts.installedChannel : (opts.config?.channel ?? null);
+    const target = opts.target !== undefined ? opts.target : currentReaderTarget();
+    const defaultEngine = defaultEngineFor(installedChannel, target, opts.defaultTargetsByChannel);
+    if (defaultEngine === "mb") {
+      return {
+        mode,
+        engine: "mb",
+        requested: null,
+        rawRequested: null,
+        source: "default",
+        fallback: false,
+      };
+    }
+    const implemented = opts.pionImplemented ?? meta.pionImplemented;
+    if (!implemented) {
+      return {
+        mode,
+        engine: "mb",
+        requested: null,
+        rawRequested: null,
+        source: "default",
+        fallback: false,
+      };
+    }
+    if (!opts.hasPionBinary) {
+      return {
+        mode,
+        engine: "mb",
+        requested: "pion",
+        rawRequested: null,
+        source: "default",
+        fallback: true,
+        reason: "pion-binary-missing",
+        detail: `mode "${mode}" defaulted to "pion" but Pion binary is unavailable; falling back to "mb"`,
+      };
+    }
+    if (opts.pionModeSupported === false) {
+      return {
+        mode,
+        engine: "mb",
+        requested: "pion",
+        rawRequested: null,
+        source: "default",
+        fallback: true,
+        reason: "pion-binary-unsupported-mode",
+        detail: `mode "${mode}" defaulted to "pion" but the Pion binary on disk does not support "${mode}"; falling back to "mb"`,
+      };
+    }
     return {
       mode,
-      engine: "mb",
-      requested: null,
+      engine: "pion",
+      requested: "pion",
       rawRequested: null,
       source: "default",
       fallback: false,
@@ -427,7 +548,7 @@ export function resolveReaderEngine(
   }
 
   const parsed = parseEngineValue(rawInput);
-  if (parsed.engine === null) {
+  if (parsed.engine === null || (fromWildcard && parsed.engine === "shadow")) {
     return {
       mode,
       engine: "mb",
@@ -436,7 +557,9 @@ export function resolveReaderEngine(
       source,
       fallback: true,
       reason: "invalid-value",
-      detail: `invalid reader engine ${JSON.stringify(parsed.rawText)} from ${source} for mode "${mode}"; expected "mb" | "pion" | "shadow", falling back to "mb"`,
+      detail: fromWildcard
+        ? `invalid wildcard reader engine ${JSON.stringify(parsed.rawText)} from config.readers["*"]; expected "mb" | "pion", falling back to "mb"`
+        : `invalid reader engine ${JSON.stringify(parsed.rawText)} from ${source} for mode "${mode}"; expected "mb" | "pion" | "shadow", falling back to "mb"`,
     };
   }
 

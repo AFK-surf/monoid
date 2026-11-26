@@ -10,7 +10,7 @@
 import { sep } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { MbProcess, type ResolvedReaderSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "../read/mb-reader.ts";
+import { MbProcess, type ResolvedReaderSelection, breakerOfSelection, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "../read/mb-reader.ts";
 import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 
@@ -126,7 +126,7 @@ export class MemoryProgram {
   #start(): MbProcess {
     if (this.#process !== null) return this.#process;
     const sel = this.#resolveSelection();
-    const child = new MbProcess(sel.primaryBinary, ["--builder", "memory", "--sep", sep, "--shell-dir", this.#shellDir], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
+    const child = new MbProcess(sel.primaryBinary, ["--builder", "memory", "--sep", sep, "--shell-dir", this.#shellDir], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection), breaker: breakerOfSelection(sel) });
     this.started++;
     this.#process = child;
     child.on("message", (answer: Json) => {

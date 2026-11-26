@@ -5,7 +5,7 @@
 // (search/search.ts `start`): none of node:fs's synchronous calls (station/AGENTS.md, the main thread waits on nothing).
 // Every message said looked at config.json and a names book on the disk; every program started, at its binary.
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -167,6 +167,8 @@ test("the MoonBit program, once found, is not looked for again; another STILLFAI
   const [one, two] = [join(dir, "one"), join(dir, "two")];
   writeFileSync(one, "");
   writeFileSync(two, "");
+  chmodSync(one, 0o755);
+  chmodSync(two, 0o755);
   try {
     process.env.STILLFAIL_MB_READER = one;
     assert.equal(mbReaderBinary(), one);

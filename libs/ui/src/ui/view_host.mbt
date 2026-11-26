@@ -1192,7 +1192,9 @@ fn view_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // scrolled on under a pointer that stays where it is, words come), whether or not an old view is built in it; the
   // column toward the pointer, shown nowhere now let go: tree_edge_to)
   let c = g()
-  sync_picked_scope_live()
+  if sync_picked_scope_live() && view_owes(tree) {
+    view_brought(tree)
+  }
   if tree_picking() && picked.dragging && c.down {
     c.select_to(c.px, c.py)
   }

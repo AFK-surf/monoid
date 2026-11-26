@@ -1,4 +1,4 @@
-import { MbBackfill, resolveReaderSelection } from "../read/mb-reader.ts";
+import { MbBackfill } from "../read/mb-reader.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
@@ -152,8 +152,7 @@ export class SandboxNameBuilder {
       // (by the MoonBit builder, station/mb's src/activity sandbox.mbt: `MbBackfill`)
       let current: MbBackfill;
       try {
-        const bin = resolveReaderSelection("session-backfill", { binary: this.binary, config: this.readers, logAt: "readers" });
-        current = new MbBackfill(bin, ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20);
+        current = new MbBackfill({ mode: "session-backfill", options: { binary: this.binary, config: this.readers, logAt: "readers" } }, ["--builder", "session-backfill", "--db", path], this.store.backfillPriority, 20);
       }
       catch (error) {
         log.warn("hub", "the sandbox name worker could not start", { error: (error as Error).message });

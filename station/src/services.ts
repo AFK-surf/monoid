@@ -23,8 +23,9 @@ import { withFront } from "./mesh/front.ts";
 import { verifyWith } from "../../shared/lock.ts";
 import { Readers as ReaderPool } from "./read/pool.ts";
 import { warmPionProbeForConfig } from "./read/mb-reader.ts";
+import { PionCircuitBreaker } from "./read/pion-breaker.ts";
 import { registerSessionsReaderConfig } from "./agents/mb-program.ts";
-import type { ReaderSelectConfig } from "./read/reader-select.ts";
+import type { InstalledChannel, ReaderSelectConfig } from "./read/reader-select.ts";
 import { repairMergedEditLookup } from "./store/schema.ts";
 import { makeStore } from "./read/store.ts";
 import { apiOf, entryViews, spokenIn } from "./read/views.ts";
@@ -41,8 +42,8 @@ import { LinuxDesktop } from "./screens/linux-desktop.ts";
 import { linuxScreenBinary } from "./screens/linux-native.ts";
 import { uiBinary } from "./screens/ui.ts";
 import { type Drive, droppedInto, stationDrive } from "./drive/drive.ts";
-import { stationVersion } from "./ops/version.ts";
-import { channelOf } from "./updates/versions.ts";
+import { appDir, stationVersion } from "./ops/version.ts";
+import { channelOf, releaseChannel, releaseChannelSoon } from "./updates/versions.ts";
 import { HelperApp, helperApp } from "./helper/app.ts";
 import { HelperGrants } from "./helper/grants.ts";
 import { HelperFiles } from "./helper/files.ts";
@@ -353,15 +354,30 @@ export class StationConfig extends Context.Service<StationConfig, ConfigFile>()(
   );
 }
 
-/// Live in-memory snapshot of `config.json`'s `readers` map, initialized once from the watched `ConfigFile`
+function installedChannelForRestore(app?: string): InstalledChannel | null {
+  if (app !== undefined) return releaseChannel(app);
+  const at = process.argv.indexOf("--app");
+  const argApp = at >= 0 ? process.argv[at + 1] : undefined;
+  return (argApp ? releaseChannel(argApp) : null) ?? releaseChannel(appDir());
+}
+
+/// Live in-memory snapshot of `config.json`'s `readers` map plus installed `<app>/CHANNEL`
+/// (strictly never `config.updateChannel`), initialized once from the watched `ConfigFile`
 /// and updated via `config.listen(...)` (zero per-request `readFileSync`/`config.raw()`, zero module globals).
-export function makeReaderConfigSnapshot(config: ConfigFile): { get: () => ReaderSelectConfig; stop: () => void } {
+export function makeReaderConfigSnapshot(
+  config: ConfigFile,
+  installedChannel: InstalledChannel | null = null,
+  breaker: PionCircuitBreaker | null = null,
+): { get: () => ReaderSelectConfig; stop: () => void } {
   const extract = (raw: any): ReaderSelectConfig => {
     const readers = raw?.readers;
-    if (readers !== null && readers !== undefined && typeof readers === "object" && !Array.isArray(readers)) {
-      return { readers: { ...readers } };
-    }
-    return undefined;
+    const hasReaders = readers !== null && readers !== undefined && typeof readers === "object" && !Array.isArray(readers);
+    if (!hasReaders && installedChannel === null && breaker === null) return undefined;
+    return {
+      ...(hasReaders ? { readers: { ...readers } } : {}),
+      ...(installedChannel !== null ? { channel: installedChannel } : {}),
+      ...(breaker !== null ? { breaker } : {}),
+    };
   };
   let snapshot: ReaderSelectConfig = extract(config.raw());
   const stop = config.listen((raw) => {
@@ -370,9 +386,44 @@ export function makeReaderConfigSnapshot(config: ConfigFile): { get: () => Reade
   return { get: () => snapshot, stop };
 }
 
-/// Extract the `ReaderSelectConfig` shape passed to cold `takeBackSoon` from `settings.raw()` (`main.ts:236`).
-export function restoreReaderConfig(raw: { readonly readers?: Readonly<Record<string, unknown>> | null } | null | undefined): ReaderSelectConfig {
-  return raw?.readers ? { readers: raw.readers } : undefined;
+/// Extract the `ReaderSelectConfig` shape passed to cold `takeBackSoon` from `settings.raw()` (`main.ts:238`),
+/// attaching the installed release channel from `<app>/CHANNEL` (strictly never `config.updateChannel`) and
+/// the station's persisted default-only Pion circuit breaker (`<data>/run/pion-demoted.jsonl`) when `data` is given.
+export function restoreReaderConfig(
+  raw: { readonly readers?: Readonly<Record<string, unknown>> | null } | null | undefined,
+  app?: string,
+  data?: string,
+): ReaderSelectConfig {
+  const installedChannel = installedChannelForRestore(app);
+  const readers = raw?.readers !== null && raw?.readers !== undefined && typeof raw?.readers === "object" && !Array.isArray(raw.readers)
+    ? raw.readers
+    : undefined;
+  const breaker = data !== undefined ? new PionCircuitBreaker({ stateFile: join(data, "run", "pion-demoted.jsonl"), watch: false }) : undefined;
+  if (readers === undefined && installedChannel === null && breaker === undefined) return undefined;
+  return {
+    ...(readers !== undefined ? { readers } : {}),
+    ...(installedChannel !== null ? { channel: installedChannel } : {}),
+    ...(breaker !== undefined ? { breaker } : {}),
+  };
+}
+
+/// Releases a `PionCircuitBreaker` on scope teardown with bounded retries so a transient I/O error
+/// (e.g. `EMFILE`/`ENOSPC`) during the final flush/sync/marker-publish pass does not lose demotion state.
+export function releasePionCircuitBreaker(
+  breaker: PionCircuitBreaker,
+  options?: { maxAttempts?: number; retryDelayMs?: number },
+): Effect.Effect<boolean> {
+  const maxAttempts = options?.maxAttempts ?? 4;
+  const retryDelayMs = options?.retryDelayMs ?? 25;
+  return Effect.gen(function* () {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (breaker.close()) return true;
+      if (attempt + 1 < maxAttempts) {
+        yield* Effect.sleep(retryDelayMs);
+      }
+    }
+    return false;
+  });
 }
 
 /// Live in-memory getter of `config.json`'s `readers` engine overrides for every reader/builder spawn.
@@ -380,10 +431,15 @@ export class ReaderConfig extends Context.Service<ReaderConfig, () => ReaderSele
   static readonly layer = Layer.effect(
     ReaderConfig,
     Effect.gen(function* () {
-      const { data } = yield* Paths;
+      const { data, app } = yield* Paths;
       const config = yield* StationConfig;
+      const installedChannel = yield* Effect.promise(() => releaseChannelSoon(app));
+      const breaker = yield* Effect.acquireRelease(
+        Effect.sync(() => new PionCircuitBreaker({ stateFile: join(data, "run", "pion-demoted.jsonl") })),
+        (b) => releasePionCircuitBreaker(b),
+      );
       const snap = yield* Effect.acquireRelease(
-        Effect.sync(() => makeReaderConfigSnapshot(config)),
+        Effect.sync(() => makeReaderConfigSnapshot(config, installedChannel, breaker)),
         (s) => Effect.sync(() => s.stop()),
       );
       yield* Effect.acquireRelease(

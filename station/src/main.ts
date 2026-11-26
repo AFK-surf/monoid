@@ -235,7 +235,7 @@ function run() {
   });
   hearLines((line) => stationLog.add(line));
   // A lost station's chats brought here to take back (replica/restore.ts): put in before the store opens.
-  const beforeStore = () => takeBackSoon(data, join(data, "stillfail.db"), wall.now(), undefined, { readers: restoreReaderConfig(settings.raw()) }).then(
+  const beforeStore = () => takeBackSoon(data, join(data, "stillfail.db"), wall.now(), undefined, { readers: restoreReaderConfig(settings.raw(), app, data) }).then(
     (restored) => { if (restored !== null) log.info("copies", "a lost station's chats taken back", { station: restored.origin, from: restored.from }); },
     (e: Error) => log.error("copies", "a lost station's chats not taken back", { error: e.message }),
   );

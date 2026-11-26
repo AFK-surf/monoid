@@ -1,6 +1,15 @@
 import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { type BackfillOptions, MbProcess, engineOfSelection, fallbackModeOf, resolveReaderSelection } from "../read/mb-reader.ts";
+import {
+  type BackfillOptions,
+  MbProcess,
+  type ResolvedReaderSelection,
+  breakerOfSelection,
+  engineOfSelection,
+  fallbackModeOf,
+  resolveReaderSelectionAsync,
+  resolveReaderSelectionOrPending,
+} from "../read/mb-reader.ts";
 import { readerTelemetry } from "../read/reader-telemetry.ts";
 import type { InWorkspace } from "../store/rows.ts";
 
@@ -20,6 +29,7 @@ export class MinuteReader {
   readonly #mb: string | undefined;
   readonly #readers: BackfillOptions["readers"];
   #worker: MbProcess | null = null;
+  #starting: AbortController | null = null;
   #next = 0;
   #closed = false;
   #complete = false;
@@ -66,9 +76,49 @@ export class MinuteReader {
   }
 
   start(): void {
-    if (this.#closed || this.#complete || this.#worker !== null) return;
-    const sel = resolveReaderSelection("usage-check", { binary: this.#mb, config: this.#readers, logAt: "readers" });
-    const worker = new MbProcess(sel.primaryBinary, ["--builder", "usage-check", "--db", this.#path], { engine: engineOfSelection(sel), fallbackMode: fallbackModeOf(sel.selection) });
+    if (this.#closed || this.#complete || this.#worker !== null || this.#starting !== null) return;
+    let sync: ReturnType<typeof resolveReaderSelectionOrPending>;
+    try {
+      sync = resolveReaderSelectionOrPending("usage-check", { binary: this.#mb, config: this.#readers, logAt: "readers" });
+    } catch (error) {
+      const err = error instanceof Error ? error : new Error(String(error));
+      for (const waiting of this.#waiting.values()) waiting.reject(err);
+      this.#waiting.clear();
+      return;
+    }
+    if (!sync.pending) {
+      try {
+        this.#spawnWorker(sync);
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        for (const waiting of this.#waiting.values()) waiting.reject(err);
+        this.#waiting.clear();
+        this.#idleLater();
+      }
+      return;
+    }
+    const abort = new AbortController();
+    this.#starting = abort;
+    resolveReaderSelectionAsync("usage-check", { binary: this.#mb, config: this.#readers, logAt: "readers" }, abort.signal).then((resolved) => {
+      if (this.#starting === abort) this.#starting = null;
+      if (this.#closed || this.#complete || this.#worker !== null) return;
+      this.#spawnWorker(resolved);
+    }).catch((error: unknown) => {
+      if (this.#starting === abort) this.#starting = null;
+      if (this.#closed) return;
+      const err = error instanceof Error ? error : new Error(String(error));
+      for (const waiting of this.#waiting.values()) waiting.reject(err);
+      this.#waiting.clear();
+      this.#idleLater();
+    });
+  }
+
+  #spawnWorker(sel: ResolvedReaderSelection): void {
+    const worker = new MbProcess(sel.primaryBinary, ["--builder", "usage-check", "--db", this.#path], {
+      engine: engineOfSelection(sel),
+      fallbackMode: fallbackModeOf(sel.selection),
+      breaker: breakerOfSelection(sel),
+    });
     this.#worker = worker;
     worker.on("message", (answer: MinuteResponse) => {
       if (answer.complete) {
@@ -135,6 +185,7 @@ export class MinuteReader {
         this.#sendWaiting();
       } catch (error) {
         this.#waiting.delete(id);
+        this.#idleLater();
         reject(error);
       }
     });
@@ -153,6 +204,7 @@ export class MinuteReader {
         this.#sendWaiting();
       } catch (error) {
         this.#waiting.delete(id);
+        this.#idleLater();
         reject(error);
       }
     });
@@ -160,6 +212,8 @@ export class MinuteReader {
 
   async close(): Promise<void> {
     this.#closed = true;
+    this.#starting?.abort();
+    this.#starting = null;
     this.#idle?.();
     this.#idle = null;
     for (const waiting of this.#waiting.values()) waiting.reject(new Error("station stopping"));

@@ -1,4 +1,4 @@
-import { type BackfillOptions, resolveReaderSelection } from "./mb-reader.ts";
+import type { BackfillOptions } from "./mb-reader.ts";
 import { RequestedBuilder } from "./requested-builder.ts";
 
 /// Prepare exact counts only for old sessions whose summaries were requested. By the MoonBit builder (station/mb,
@@ -8,7 +8,7 @@ export class TurnBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("turn-counts", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "turn-counts", "--db", path], lazy: true },
+      { select: { mode: "turn-counts", options: { binary, config: options.readers, logAt: "readers" } }, args: ["--builder", "turn-counts", "--db", path], lazy: true },
       "session",
       "old turn counts",
     );

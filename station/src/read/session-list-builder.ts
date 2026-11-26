@@ -1,4 +1,4 @@
-import { type BackfillOptions, resolveReaderSelection } from "./mb-reader.ts";
+import type { BackfillOptions } from "./mb-reader.ts";
 import { RequestedBuilder } from "./requested-builder.ts";
 
 /// A requested old index is shared by the readers waiting for it; abandoned requests stop scheduling more batches. By
@@ -7,7 +7,7 @@ export class SessionListBuilder extends RequestedBuilder<string> {
   constructor(path: string, options: BackfillOptions = {}, binary?: string) {
     super(
       options,
-      { binary: () => resolveReaderSelection("session-list", { binary, config: options.readers, logAt: "readers" }), args: ["--builder", "session-list", "--db", path] },
+      { select: { mode: "session-list", options: { binary, config: options.readers, logAt: "readers" } }, args: ["--builder", "session-list", "--db", path] },
       "scope",
       "session list preparation",
     );

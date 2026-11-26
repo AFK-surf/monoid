@@ -22,6 +22,8 @@ pub struct Scopes {
     configure_lock:Mutex<()>,
     bootstrap_opening:Arc<tokio::sync::Semaphore>,
     bootstrap_changes:Arc<tokio::sync::Notify>,
+    #[cfg(test)]
+    scopes_lock_wait: Arc<tokio::sync::Notify>,
 }
 struct Task(tokio::task::JoinHandle<()>);
 impl Drop for Task { fn drop(&mut self) { self.0.abort(); } }
@@ -30,7 +32,9 @@ impl Default for Scopes {
         Self { hub: Arc::new(Hub::default()), scopes: Arc::new(Mutex::new(BTreeMap::new())),
             changed: tokio::sync::watch::channel(0).0, subscriptions: std::sync::Mutex::new(BTreeMap::new()),
             configure_lock:Mutex::new(()),bootstrap_opening:Arc::new(tokio::sync::Semaphore::new(4)),
-            bootstrap_changes:Arc::new(tokio::sync::Notify::new()) }
+            bootstrap_changes:Arc::new(tokio::sync::Notify::new()),
+            #[cfg(test)]
+            scopes_lock_wait: Arc::new(tokio::sync::Notify::new()) }
     }
 }
 struct Kept {
@@ -86,6 +90,7 @@ fn restrict_peer(peer: &mut Peer, allowed: &[RelayUrl]) -> Result<(), String> {
 impl Scopes {
     /// Push one bounded snapshot per change over the front's existing control
     /// socket. No timer, repeated status request, or separate public listener.
+    #[allow(dead_code)]
     pub fn subscribe<W: tokio::io::AsyncWrite + Unpin + Send + 'static>(&self, id: u64, write: Arc<Mutex<W>>) -> Result<(), String> {
         self.subscribe_updates(id, move |snapshot| {
             let write = write.clone();
@@ -98,26 +103,62 @@ impl Scopes {
     }
     /// Every consumer has at most one snapshot being delivered. Changes during
     /// delivery coalesce in the watch channel, preserving the newest state.
+    /// Kept for `station/native/mesh`, which compiles this file directly.
+    #[allow(dead_code)]
     pub fn subscribe_updates<F, U>(&self, id: u64, send: F) -> Result<(), String>
     where F: Fn(Vec<Value>) -> U + Send + 'static,
           U: std::future::Future<Output=Result<(),String>> + Send + 'static {
+        self.subscribe_updates_until(id, std::future::pending(), send)
+    }
+    /// Same as `subscribe_updates`, cancelling the entire delivery loop (including `scopes.lock()`,
+    /// `send`, and idle `changed` waits) as soon as `cancel` resolves.
+    pub fn subscribe_updates_until<C, F, U>(&self, id: u64, cancel: C, send: F) -> Result<(), String>
+    where C: std::future::Future<Output = ()> + Send + 'static,
+          F: Fn(Vec<Value>) -> U + Send + 'static,
+          U: std::future::Future<Output=Result<(),String>> + Send + 'static {
         let mut subscriptions = self.subscriptions.lock().unwrap();
+        subscriptions.retain(|_, task| !task.0.is_finished());
         if subscriptions.len() >= 32 && !subscriptions.contains_key(&id) { return Err("too many mesh subscribers".into()); }
         let scopes = self.scopes.clone();
         let mut changed = self.changed.subscribe();
+        #[cfg(test)]
+        let scopes_lock_wait = self.scopes_lock_wait.clone();
         let task = tokio::spawn(async move {
-            loop {
-                changed.borrow_and_update();
-                let snapshot: Vec<Value> = scopes.lock().await.iter().map(|(scope, kept)|
-                    json!({"scope":hex::encode(scope), "descriptor":{"binding":kept.binding,"address":bounded_address(kept.endpoint.addr())}})).collect();
-                if send(snapshot).await.is_err() { break; }
-                if changed.changed().await.is_err() { break; }
+            tokio::select! {
+                biased;
+                _ = cancel => {}
+                _ = async move {
+                    loop {
+                        changed.borrow_and_update();
+                        #[cfg(test)]
+                        scopes_lock_wait.notify_waiters();
+                        let snapshot: Vec<Value> = scopes.lock().await.iter().map(|(scope, kept)|
+                            json!({"scope":hex::encode(scope), "descriptor":{"binding":kept.binding,"address":bounded_address(kept.endpoint.addr())}})).collect();
+                        if send(snapshot).await.is_err() { break; }
+                        if changed.changed().await.is_err() { break; }
+                    }
+                } => {}
             }
         });
         subscriptions.insert(id, Task(task));
         Ok(())
     }
     pub fn unsubscribe(&self, id: u64) { self.subscriptions.lock().unwrap().remove(&id); }
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn notify_changed(&self) {
+        self.changed.send_modify(|version| *version = version.wrapping_add(1));
+    }
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) async fn lock_scopes_for_test(&self) -> impl Drop + '_ {
+        self.scopes.lock().await
+    }
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn scopes_lock_wait(&self) -> Arc<tokio::sync::Notify> {
+        self.scopes_lock_wait.clone()
+    }
     /// Called only with the station's admitted directory. A self-signed binding
     /// confirms identities; it does not grant workspace membership.
     pub async fn configure(&self, key: &SecretKey, value: &Value) -> Result<Value, String> {

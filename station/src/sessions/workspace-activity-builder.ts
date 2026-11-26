@@ -1,4 +1,4 @@
-import { MbBackfill, resolveReaderSelection } from "../read/mb-reader.ts";
+import { MbBackfill } from "../read/mb-reader.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
@@ -57,8 +57,7 @@ export function buildWorkspaceActivity(store: Store, previous: Promise<void>, bi
     }
     let current: MbBackfill;
     try {
-      const bin = resolveReaderSelection("session-backfill", { binary, config: readers, logAt: "readers" });
-      current = new MbBackfill(bin, ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20);
+      current = new MbBackfill({ mode: "session-backfill", options: { binary, config: readers, logAt: "readers" } }, ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20);
     }
     catch (error) {
       log.warn("hub", "the session recovery worker could not start", { error: (error as Error).message });

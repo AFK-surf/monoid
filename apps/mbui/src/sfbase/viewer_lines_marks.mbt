@@ -395,9 +395,9 @@ fn lines_pick_bar_node(stage : @view.View, vw : Viewer) -> Unit {
     Some(l) => l.box(fn(h) { h.over(Is(true)) |> ignore }).lives_with(stage)
     None => stage
   }
-  host.pick(fn() { vw.lines_picked().map(fn(q) { q.0.made }) }, fn(holds, made) {
+  host.pick(fn() { vw.lines_picked().map(fn(q) { (q.0.made, q.0.ends_in) }) }, fn(holds, made) {
     guard made is Some(_) && @signals.untracked(fn() { vw.lines_picked() }) is Some((p, from_row, to_row)) else { return }
-    guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) else { return }
+    guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) && !end.shown_nowhere() else { return }
     let items : Array[@sf.PickBarItem] = []
     if vw.draft_key() != "" {
       items.push({
@@ -425,14 +425,9 @@ fn lines_pick_bar_node(stage : @view.View, vw : Viewer) -> Unit {
       },
     })
     holds.box(fn(b) {
-      let gone = fn() {
-        if @signals.untracked(@ui.picked_now) is Some(q) && q.made == p.made {
-          @ui.picked_let_go()
-        }
-      }
-      b.owns(end.owns_while(gone)) |> ignore
-      end.on_reused(gone)
-      @ui.keeps_picked(b).beside(p.ends_in, side=Top, offset=md_pick_bar_over, piece=@ui.picked_end_piece(p)) |> ignore
+      @ui.keeps_picked(b)
+      .beside(p.ends_in, side=Top, offset=md_pick_bar_over, piece=@ui.picked_end_piece(p), while_seen=true)
+      |> ignore
       @sf.pick_bar_node(b, items) |> ignore
     })
     |> ignore

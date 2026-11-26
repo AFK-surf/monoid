@@ -171,9 +171,11 @@ const meshError = (message: string) => new CoreError("mesh", message);
 /// credential or stream stalled after it connected must not rebuild all of that endpoint's relay connections.
 class OpeningTimeout extends CoreError {
   readonly connected: boolean;
-  constructor(connected: boolean) {
+  readonly frozen: boolean;
+  constructor(connected: boolean, frozen = false) {
     super("mesh", noAnswer());
     this.connected = connected;
+    this.frozen = frozen;
   }
 }
 /// A connection that failed under the transport (refused, reset, lost on the way): said to people as where it failed
@@ -1003,6 +1005,10 @@ export class Mesh {
   readonly #checking = new Set<string>();
   #serials = 0;
   readonly #pinned = new Map<string, Deferred.Deferred<IrohEndpoint | null>>();
+  /// Monotonic wake generation bumped on UI-back / network wakes (immune to same-ms wakes and wall-clock jumps).
+  #wakeGen = 0;
+  /// Monotonic network-reset generation bumped whenever `#deadRelays` is cleared (`wake.network || wake.retry`).
+  #netGen = 0;
   /// The relays of each fence a station was dialled in (`#fence`), by the fence.
   readonly #fences = new Map<string, string[]>();
   /// By address: the ways open to it (the link requests go on among them), each pinged every TICK_MS while it has any.
@@ -2380,6 +2386,7 @@ export class Mesh {
       if (this.#hot.has(endpointId(addr))) this.#relaxStation(endpointId(addr));
       if (before?.result && "ok" in before.result) this.#count(addr, before.result.ok);
       this.#notify();
+      const openingWakeGen = this.#wakeGen;
       const first = this.#dialAll(addr, endpoint, credentials, fresh, span.context);
       const self = this;
       const run = Effect.gen(function* () {
@@ -2435,7 +2442,8 @@ export class Mesh {
           }
           span.own("paths", link.success.paths());
         } else {
-          if (timeout !== null && !timeout.connected) self.#stuck = true;
+          const frozenOrWoken = (timeout !== null && timeout.frozen) || self.#wakeGen !== openingWakeGen;
+          if (timeout !== null && !timeout.connected && !frozenOrWoken) self.#stuck = true;
           failedIn(span, link.failure);
           span.own("relay", relayStatus(endpoint));
           // What a dial that failed was given and had beside it: the addresses it was told the station is reached straight
@@ -2444,7 +2452,9 @@ export class Mesh {
           // spans saying nothing of either.
           const straight = self.#straightAt(addr);
           if (straight.length > 0) span.own("ips", straight.join(", "));
-          if (unanswered && straight.length > 0 && self.#mainOn(addr)) self.#unansweredAt.set(addr, straight.join(" "));
+          if (unanswered && !frozenOrWoken && straight.length > 0 && self.#mainOn(addr)) {
+            self.#unansweredAt.set(addr, straight.join(" "));
+          }
           const beside = self.#besideOf(addr);
           if (beside !== "") span.own("beside", beside);
         }
@@ -2623,9 +2633,31 @@ export class Mesh {
       // all of them), to the addresses it said it is reached straight at, and those iroh punches through; iroh moves
       // its packets between them, and nothing on it ends as they change. The other endpoints only while its workspace
       // turned the main endpoint's ways off (`#mainOn`).
-      const main: Effect.Effect<Link, CoreError>[] = [];
-      let pinned: Effect.Effect<Link, CoreError>[];
-      let at: Effect.Effect<Link, CoreError>[] = [];
+      type AttemptEntry = {
+        effect: Effect.Effect<Link, CoreError>;
+        kind: "main" | "pinned" | "at";
+        relay?: string;
+        onRelay: boolean;
+        done: boolean;
+      };
+      const entries: AttemptEntry[] = [];
+      const liveOrder: string[] = [];
+      let mainCount = 0;
+      let isUnanswered = false;
+      const pushPinned = (r: string) => {
+        const entry: AttemptEntry = {
+          effect: undefined as unknown as Effect.Effect<Link, CoreError>,
+          kind: "pinned",
+          relay: r,
+          onRelay: false,
+          done: false,
+        };
+        entry.effect = this.#dialPinned(addr, r, credentials, fresh, ctx, onDone, () => {
+          entry.onRelay = true;
+          if (!liveOrder.includes(r)) liveOrder.push(r);
+        });
+        entries.push(entry);
+      };
       if (this.#mainOn(addr)) {
         const straight = this.#straightAt(addr);
         const dial = this.#dialMain(addr, endpoint, relays, credentials, fresh, ctx, straight, onDone);
@@ -2635,6 +2667,7 @@ export class Mesh {
         // addresses, its answers to the Windows app there going back into WSL; that app's dials waited out
         // CONNECT_TIMEOUT_MS on them for hours while the phone came through a relay (2026-11-03).
         const unanswered = straight.length > 0 && this.#unansweredAt.get(addr) === straight.join(" ");
+        isUnanswered = unanswered;
         // Its one connection let go for its pings going unanswered: dialled again on each other relay's own endpoint
         // as well, the requests going on whichever answers. Its path went through a relay that lost half of what went
         // and took 2–6 s a round trip from where the device is, and iroh dialled it there again: devices in China let
@@ -2644,34 +2677,145 @@ export class Mesh {
         if (!unanswered && !lost) return dial;
         this.#rescued.add(addr);
         this.#mainDialledAt.set(addr, this.now());
-        main.push(dial);
+        entries.push({ effect: dial, kind: "main", onRelay: true, done: false });
+        mainCount = 1;
         const candidates = unanswered ? this.#waysFor(addr) : this.#pinnable(addr);
-        pinned = this.#filterDeadRelays(candidates, main.length > 0).map((r) => this.#dialPinned(addr, r, credentials, fresh, ctx, onDone));
+        for (const r of this.#filterDeadRelays(candidates, true)) pushPinned(r);
       } else {
         // Where the station said (in a run before, perhaps) it is reached straight: dialled beside the relays, not
         // after one of them brought its answer again.
-        at = AT_ADDRESSES.flatMap((kind) => this.#dialAt(addr, kind, credentials, fresh, onDone) ?? []);
-        pinned = this.#filterDeadRelays(this.#pinnable(addr), at.length > 0).map((r) => this.#dialPinned(addr, r, credentials, fresh, ctx, onDone));
+        const at = AT_ADDRESSES.flatMap((kind) => this.#dialAt(addr, kind, credentials, fresh, onDone) ?? []);
+        for (const r of this.#filterDeadRelays(this.#pinnable(addr), at.length > 0)) pushPinned(r);
+        for (const eff of at) entries.push({ effect: eff, kind: "at", onRelay: true, done: false });
       }
-      const all = [...main, ...pinned, ...at];
-      if (all.length === 0) return Effect.fail(meshError(t("core-logic.mesh.all_off")));
+      if (entries.length === 0) return Effect.fail(meshError(t("core-logic.mesh.all_off")));
       const self = this;
       const won = Deferred.makeUnsafe<Link, CoreError>();
-      let left = all.length;
+      const extraAbort = Deferred.makeUnsafe<void>();
+      const dialStarted = this.now();
+      const dialNetGen = this.#netGen;
+      const roundDeadline = dialStarted + ONTO_MAX_MS + CONNECT_TIMEOUT_MS;
+      let wonSettled = false;
+      let wonFailed = false;
+      let initialLeft = entries.length;
       let mainFailure: CoreError | null = null;
-      all.forEach((attempt, i) =>
-        this.#env.runner.fork(
+      let extraRetries = 0;
+      const maxExtraRetries = 2;
+      const onlyUnconnectedSingleRelaysLeft = () =>
+        entries.every(
+          (e) =>
+            e.done ||
+            (e.kind === "pinned" &&
+              e.relay !== undefined &&
+              e.relay !== LAN &&
+              e.relay !== TAILNET &&
+              !isFenced(e.relay) &&
+              !e.onRelay),
+        );
+      const capExtra = (effect: Effect.Effect<Link, CoreError>): Effect.Effect<Link, CoreError> => {
+        const capMs = Math.max(0, roundDeadline - self.now());
+        const limit = Effect.andThen(
+          Effect.raceFirst(Deferred.await(extraAbort), Effect.sleep(capMs)),
+          Effect.fail(new OpeningTimeout(false)),
+        );
+        return Effect.raceFirst(effect, limit);
+      };
+      const launch = (entry: AttemptEntry, isInitial: boolean, isPrimaryMain: boolean) => {
+        self.#env.runner.fork(
           Effect.gen(function* () {
-            const r = yield* Effect.result(attempt);
+            const r = yield* Effect.result(isInitial ? entry.effect : capExtra(entry.effect));
+            entry.done = true;
             if (r._tag === "Success") {
-              if (!Deferred.doneUnsafe(won, Effect.succeed(r.success))) self.#adopt(addr, r.success);
+              if (Deferred.doneUnsafe(won, Effect.succeed(r.success))) {
+                wonSettled = true;
+              } else if (!wonFailed) {
+                self.#adopt(addr, r.success);
+              } else {
+                r.success.close();
+              }
               return;
             }
-            if (i === 0 && main.length > 0) mainFailure = r.failure;
-            if (--left === 0) Deferred.doneUnsafe(won, Effect.fail(mainFailure ?? r.failure));
+            if (isPrimaryMain) mainFailure = r.failure;
+            if (isInitial) initialLeft--;
+            if (initialLeft === 0) {
+              if (Deferred.doneUnsafe(won, Effect.fail(mainFailure ?? r.failure))) {
+                wonSettled = true;
+                wonFailed = true;
+              }
+              Deferred.doneUnsafe(extraAbort, Effect.void);
+              return;
+            }
+            const liveTimeout =
+              r.failure instanceof OpeningTimeout &&
+              !r.failure.frozen &&
+              (entry.kind === "main" || (entry.kind === "pinned" && entry.onRelay));
+            // When live paths time out while slow/unreachable pinned relays are still waiting in `onARelay`, keep
+            // `won` open for slow relays that may still connect AND race a bounded live retry beside them so dead
+            // relays never stall recovery for 40 s and extra retries never extend the round's failure deadline.
+            if (
+              !wonSettled &&
+              !self.#closed &&
+              self.#netGen === dialNetGen &&
+              liveTimeout &&
+              extraRetries < maxExtraRetries &&
+              self.now() - dialStarted < ONTO_MAX_MS &&
+              onlyUnconnectedSingleRelaysLeft()
+            ) {
+              extraRetries++;
+              if (self.#mainOn(addr)) {
+                const retry: AttemptEntry = {
+                  effect: self.#dialMain(addr, self.#endpoint, self.relaysFor(addr), credentials, fresh, ctx, self.#straightAt(addr), onDone),
+                  kind: "main",
+                  onRelay: true,
+                  done: false,
+                };
+                entries.push(retry);
+                launch(retry, false, false);
+                if (isUnanswered) {
+                  const allowedWays = new Set(self.#waysFor(addr));
+                  const fastest = liveOrder.find((r) => allowedWays.has(r));
+                  if (fastest !== undefined) {
+                    const pinnedRetry: AttemptEntry = {
+                      effect: undefined as unknown as Effect.Effect<Link, CoreError>,
+                      kind: "pinned",
+                      relay: fastest,
+                      onRelay: false,
+                      done: false,
+                    };
+                    pinnedRetry.effect = self.#dialPinned(addr, fastest, credentials, fresh, ctx, onDone, () => {
+                      pinnedRetry.onRelay = true;
+                    }, false);
+                    entries.push(pinnedRetry);
+                    launch(pinnedRetry, false, false);
+                  }
+                }
+              } else {
+                const allowed = new Set(self.#pinnable(addr));
+                const liveRelays = new Set(
+                  entries
+                    .filter((e) => e.done && e.kind === "pinned" && e.onRelay && e.relay !== undefined && allowed.has(e.relay))
+                    .map((e) => e.relay!),
+                );
+                for (const relay of liveRelays) {
+                  const retry: AttemptEntry = {
+                    effect: undefined as unknown as Effect.Effect<Link, CoreError>,
+                    kind: "pinned",
+                    relay,
+                    onRelay: false,
+                    done: false,
+                  };
+                  retry.effect = self.#dialPinned(addr, relay, credentials, fresh, ctx, onDone, () => {
+                    retry.onRelay = true;
+                  }, false);
+                  entries.push(retry);
+                  launch(retry, false, false);
+                }
+              }
+            }
           }),
-        ),
-      );
+        );
+      };
+      entries.forEach((entry, i) => launch(entry, true, i === 0 && mainCount > 0));
       return Deferred.await(won);
     });
   }
@@ -2723,13 +2867,14 @@ export class Mesh {
 
   /// A link through `relay` alone, on that relay's own endpoint (`#pinnedEndpoint`); through a fence's relays, or a path
   /// punched through them, on the fence's.
-  #dialPinned(addr: string, relay: string, credentials: CredentialSource, fresh: boolean, ctx: SpanContext | undefined, onDone?: (attempt: DialAttempt) => void): Effect.Effect<Link, CoreError> {
+  #dialPinned(addr: string, relay: string, credentials: CredentialSource, fresh: boolean, ctx: SpanContext | undefined, onDone?: (attempt: DialAttempt) => void, onRelayReady?: () => void, countOnlineFail = true): Effect.Effect<Link, CoreError> {
     return Effect.suspend(() => {
       const singleRelay = relay !== LAN && relay !== TAILNET && !isFenced(relay);
+      const startNetGen = this.#netGen;
       this.#dialing++;
       return Effect.flatMap(this.#pinnedEndpoint(relay), (endpoint) => {
         if (endpoint === null) return Effect.fail(unreached({ message: `no endpoint for ${relayHost(relay)}` }));
-        return open(this.#env, endpoint, this.#fences.get(relay) ?? [relay], endpointId(addr), credentials, fresh, relay, ctx, [], addr, onDone).pipe(
+        return open(this.#env, endpoint, this.#fences.get(relay) ?? [relay], endpointId(addr), credentials, fresh, relay, ctx, [], addr, onDone, onRelayReady).pipe(
           Effect.tap(() =>
             Effect.sync(() => {
               if (!singleRelay) return;
@@ -2740,13 +2885,14 @@ export class Mesh {
           ),
           Effect.tapError((e) =>
             Effect.sync(() => {
-              if (!singleRelay || !(e instanceof OpeningTimeout) || e.connected) return;
+              if (!singleRelay || !(e instanceof OpeningTimeout) || e.connected || e.frozen || this.#netGen !== startNetGen) return;
               const k = relayKey(relay);
               if (!endpointOnARelay(endpoint)) {
                 this.#deadRelays.set(k, this.now() + DEAD_RELAY_MS);
                 this.#deadRelayFails.delete(k);
                 return;
               }
+              if (!countOnlineFail) return;
               const fails = (this.#deadRelayFails.get(k) ?? 0) + 1;
               if (fails >= 2) {
                 this.#deadRelays.set(k, this.now() + DEAD_RELAY_MS);
@@ -3625,6 +3771,7 @@ export class Mesh {
     return Effect.gen({ self: this }, function* () {
       for (;;) {
         const wake = yield* this.#env.wakes.next;
+        if (wake.checksConnections() || wake.suspectsConnections()) this.#wakeGen++;
         if (wake.checksConnections()) for (const [addr, link] of this.#openLinks()) this.#env.runner.fork(this.#checkWoken(addr, link));
         if (!wake.suspectsConnections()) continue;
         this.#relaxAll();
@@ -3636,8 +3783,9 @@ export class Mesh {
         // from home would keep the relay it was fast through there, however slowly it brings replies now): found anew.
         if (wake.network) this.#forgetSpeeds();
         if (wake.network || wake.retry) {
+          this.#netGen++;
           this.#deadRelays.clear();
-    this.#deadRelayFails.clear();
+          this.#deadRelayFails.clear();
           this.#unansweredAt.clear();
         }
         // On another network now, perhaps the station's: its LAN addresses are worth a try again.
@@ -3971,6 +4119,7 @@ function open(
   ips: string[] = [],
   address: string = stationId,
   onDone?: (attempt: DialAttempt) => void,
+  onRelayReady?: () => void,
 ): Effect.Effect<Link, CoreError> {
   // (the record's: each dial a line as it ends, where lines are kept: record.ts)
   const n = ++dials;
@@ -4052,10 +4201,17 @@ function open(
     // when the handshake succeeds but the old credential request or the first stream/write never answers.
     const deadline = Effect.gen(function* () {
       yield* onARelay(endpoint, relays.length === 0);
+      if (endpointOnARelay(endpoint)) onRelayReady?.();
       opened.onto = since();
       stages.onto = opened.onto;
+      const sleepStarted = env.host.nowMs();
+      const monoSleepStarted = env.host.monotonicMs();
       yield* Effect.sleep(CONNECT_TIMEOUT_MS);
-      return yield* Effect.fail(new OpeningTimeout(connection !== null));
+      const frozen =
+        opened.onto > ONTO_MAX_MS + 3_000 ||
+        env.host.nowMs() - sleepStarted > CONNECT_TIMEOUT_MS + 3_000 ||
+        env.host.monotonicMs() - monoSleepStarted > CONNECT_TIMEOUT_MS + 3_000;
+      return yield* Effect.fail(new OpeningTimeout(connection !== null, frozen));
     });
     return Effect.raceFirst(establish, deadline).pipe(Effect.onExit((exit) => Effect.sync(() => {
       if (exit._tag === "Failure") {

@@ -832,7 +832,7 @@ fn reap(station: &mut Lifecycle<System>) {
         if station.os.front.as_ref().is_some_and(|f| f.pid == pid) {
             let front = station.os.front.take().unwrap();
             let (app, data) = (station.os.options.app.clone(), station.os.options.data.clone());
-            station.os.front = front.ended(&app, &data, &describe(status), Times::of_env().front);
+            station.os.front = front.ended(&app, &data, status, &describe(status), station.is_stopping(), Times::of_env().front);
             if station.os.front.is_none() {
                 station.front_gone();
             }

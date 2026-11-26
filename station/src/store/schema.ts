@@ -1466,8 +1466,9 @@ export function addPendingSystemCards(db: DatabaseSync): void {
 ///   it had was read.
 /// - turns_by_end: a session's turns by when they ended (`TOLD_BLOCKED`, whether a blocked ask was told already): by
 ///   when they started, every turn the session had was read.
-/// - turns_waiting: the turns that ended asking for a person, by when (store.ts WAITING_FOR_PEOPLE): by turns_ended,
-///   every turn of the week was looked at, 0.4-1.1 s at a time on a busy station (mm2, 2026-11-23).
+/// - turns_waiting: the turns that ended asking for a person, by when: by turns_ended, every turn of the week was looked
+///   at, 0.4-1.1 s at a time on a busy station (mm2, 2026-11-23). store.ts WAITING_FOR_PEOPLE reads by sessions_live
+///   now; the index stays, as an older station handed this database reads by it.
 /// - sessions_models: the chats someone started by when, with their runtime and model (store.ts MODELS_USED_BY).
 /// - sessions_efforts: the efforts someone's chats on a runtime and model ran at, by when (store.ts EFFORTS_USED_BY).
 export function addTellIndexes(db: DatabaseSync): void {

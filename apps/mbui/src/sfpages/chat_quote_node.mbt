@@ -163,14 +163,6 @@ fn chat_picked_words(p : @ui.WordsPicked, m : Message, whole : Bool) -> String {
 }
 
 ///|
-/// Let go of this pick if it has not been replaced by a later one.
-fn chat_pick_gone(p : @ui.WordsPicked) -> Unit {
-  if @signals.untracked(@ui.picked_now) is Some(q) && q.made == p.made {
-    @ui.picked_let_go()
-  }
-}
-
-///|
 /// Over chat `r`'s list in `v` (its rows `rows`, each message's words, from where they are read, said of its key:
 /// picked_of, so 全选 over a finger's pick takes all of that message's, @ui's finger_select_all):
 /// the pill 引用 over a mouse's pick within one message, quoting it into the chat's draft (writing_quote, its text
@@ -183,7 +175,6 @@ fn chat_quote_node(
   r : ChatRef,
   here : MessageNodeHere,
   rows : ChatBodyList,
-  place : @view.ListPlace[String],
 ) -> Unit {
   let draft = r.station + ":" + r.session
   // (实验性功能 › 按住 ⌘ 点击引用文本: holding ⌘ highlights and underlines the hovered sentence; clicking quotes it)
@@ -210,17 +201,6 @@ fn chat_quote_node(
       }
     },
   )
-  // (a pick whose words' block was put by as the list moved on: let go of it and its bar or pill)
-  place.on_sight(fn(_) {
-    match chat_picked_message(v, rows) {
-      Some((p, _)) =>
-        match @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) {
-          Some(end) if !end.shown_nowhere() => ()
-          _ => @ui.picked_let_go()
-        }
-      None => ()
-    }
-  })
   // (a finger's pick: the bar over it, the page's own, not the system's text menu: 引用, 复制, 全选, and what the message
   // offers of itself, its turn shared and its link copied; one bar for each pick as it is let go of, made anew as what
   // is picked changes, 全选's too)
@@ -308,11 +288,6 @@ fn chat_quote_node(
         None => ()
       }
       holds.box(fn(b) {
-        let gone = fn() { chat_pick_gone(p) }
-        let unkept = end.owns_while(gone)
-        b.owns(unkept) |> ignore
-        // (taken for another message's words: View::scrolls_window's `reused`)
-        end.on_reused(gone)
         @ui.keeps_picked(b)
         .beside(p.ends_in, side=Top, offset=chat_pick_bar_over, piece=@ui.picked_end_piece(p), while_seen=true)
         |> ignore
@@ -335,11 +310,11 @@ fn chat_quote_node(
     host.pick(
       fn() {
         chat_quotable(v, rows).map(fn(q) {
-          (q.0.made, @sfbase.selection_intent_feature.get() && (here.view)().thread is Some(_))
+          (q.0.made, q.0.ends_in, @sfbase.selection_intent_feature.get() && (here.view)().thread is Some(_))
         })
       },
       fn(holds, made) {
-        guard made is Some((_, with_intent)) && @signals.untracked(fn() { chat_quotable(v, rows) }) is Some((p, _)) else {
+        guard made is Some((_, _, with_intent)) && @signals.untracked(fn() { chat_quotable(v, rows) }) is Some((p, _)) else {
           return
         }
         guard @ui.view_tree().bind(fn(tree) { tree.view_of(p.ends_in) }) is Some(end) && !end.shown_nowhere() else {
@@ -366,10 +341,6 @@ fn chat_quote_node(
           )
         }
         let pill = @sf.pick_bar_desk_node(holds, actions)
-        let gone = fn() { chat_pick_gone(p) }
-        let unkept = end.owns_while(gone)
-        pill.owns(unkept) |> ignore
-        end.on_reused(gone)
         @ui.keeps_picked(pill)
         .beside(p.ends_in, side=Top, offset=chat_pick_bar_over, piece=@ui.picked_end_piece(p), while_seen=true)
         |> ignore

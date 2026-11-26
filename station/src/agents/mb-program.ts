@@ -11,6 +11,7 @@ import { log } from "../ops/log.ts";
 import {
   MbProcess,
   type ResolvedReaderSelection,
+  breakerOfSelection,
   engineOfSelection,
   fallbackModeOf,
   mbReaderBinary,
@@ -115,7 +116,6 @@ export function sessionsBinaryAvailable(
   options?: SessionsProgramOptions,
 ): boolean {
   if (options?.binary != null) return true;
-  if (mbReaderBinary() !== null) return true;
   const config = materializeConfig(readConfigOption(data, options));
   const intent = resolveReaderEngine("sessions", {
     config,
@@ -123,7 +123,8 @@ export function sessionsBinaryAvailable(
     hasPionBinary: true,
     pionImplemented: options?.pionImplemented,
   });
-  return intent.engine === "pion" && pionBinary() !== null;
+  if (intent.engine === "pion" && pionBinary() !== null) return true;
+  return mbReaderBinary() !== null;
 }
 
 export class SessionsProgram {
@@ -175,31 +176,33 @@ export class SessionsProgram {
           pionImplemented: pendingOptions?.pionImplemented,
         },
         abort.signal,
-      ).then(
-        (resolved) => {
-          this.#pendingAbort = null;
-          if (this.#ended) return;
-          if (this.#requirePion && (resolved.engine !== "pion" || resolved.selection.fallback)) {
-            const reason = resolved.selection.reason ?? `resolved=${resolved.engine}`;
-            log.error("sessions", "STILLFAIL_REQUIRE_PION_SESSIONS=1 refused non-pion --sessions selection", {
-              engine: resolved.engine,
-              reason,
-            });
-            this.#end();
-            for (const user of [...this.#users]) user.exited(1);
-            return;
-          }
-          this.#spawnResolved(resolved);
-        },
-        (error: unknown) => {
-          this.#pendingAbort = null;
-          if (this.#ended) return;
-          const message = error instanceof Error ? error.message : String(error);
-          log.warn("agents", "the sessions program failed before starting", { error: message });
+      ).then((resolved) => {
+        this.#pendingAbort = null;
+        if (this.#ended) return;
+        if (this.#requirePion && (resolved.engine !== "pion" || resolved.selection.fallback)) {
+          const reason = resolved.selection.reason ?? `resolved=${resolved.engine}`;
+          log.error("sessions", "STILLFAIL_REQUIRE_PION_SESSIONS=1 refused non-pion --sessions selection", {
+            engine: resolved.engine,
+            reason,
+          });
           this.#end();
           for (const user of [...this.#users]) user.exited(1);
-        },
-      );
+          return;
+        }
+        this.#spawnResolved(resolved);
+      }).catch((error: unknown) => {
+        this.#pendingAbort = null;
+        if (this.#ended) return;
+        const message = error instanceof Error ? error.message : String(error);
+        log.warn("agents", "the sessions program failed before starting", { error: message });
+        this.#end();
+        if (this.#proc !== null) {
+          const proc = this.#proc;
+          this.#proc = null;
+          proc.kill();
+        }
+        for (const user of [...this.#users]) user.exited(1);
+      });
     }
   }
 
@@ -210,6 +213,7 @@ export class SessionsProgram {
       engine: engineOfSelection(resolved),
       mode: "sessions",
       fallbackMode,
+      breaker: breakerOfSelection(resolved),
     });
     this.#proc = proc;
     // (held on to by the station's process only while a part of it has something going: `hold`)
