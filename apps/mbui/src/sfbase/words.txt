@@ -1947,6 +1947,9 @@ web-main.versions.runtimeDisable
 web-main.versions.runtimeDisableAsk
 web-main.versions.runtimeDisableNote
 web-main.versions.runtimeEnable
+web-main.versions.runtimeUninstall
+web-main.versions.runtimeUninstallAsk
+web-main.versions.runtimeUninstallNote
 web-main.versions.update
 web-main.video.pauseKey
 web-main.video.playKey

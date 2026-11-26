@@ -448,7 +448,7 @@ function decisionsOf(now: number, station: number, profiles: J[]): J {
 }
 
 const VERSION = (id: string, name: string, version: string | null, latest: string | null, extra: J = {}): J => ({
-  id, name, installed: version !== null, version, latest, newer: version !== null && latest !== null && version !== latest, updatable: true, state: "idle", checkedAt: 0, ...extra,
+  id, name, installed: version !== null, version, latest, newer: version !== null && latest !== null && version !== latest, updatable: true, uninstallable: version !== null && id !== "station", state: "idle", checkedAt: 0, ...extra,
 });
 
 export function overviewOf(now: number, station: number): J {

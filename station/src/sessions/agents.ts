@@ -639,6 +639,7 @@ export const AgentsLive = (control: Control) =>
         // Where its releases are: still.fail cloud's origin, Comma's `/stations` (ControlPlane.releaseBase).
         origin: () => plane.releaseBase(),
         running: () => hub.running(),
+        runningOn: (runtime) => hub.runningOn(runtime),
         ...(control.runInstaller ? { launcherInstaller: control.runInstaller } : {}),
       });
       codexIncomplete = () => { void updates.check().catch((error) => log.warn("updates", "Codex installation not checked", { error: String(error) })); };
@@ -889,7 +890,7 @@ export const AgentsLive = (control: Control) =>
         processState: (key) => hub.processState(key),
         followed: () => accounts.followed(),
       });
-      // A runtime installed or updated from the pages: the machine's logins read again.
+      // A runtime installed, updated or removed from the pages: the machine's logins read again.
       updates.onRuntimeChanged((kind, installed, replaced) => {
         void accounts.machine?.refresh().catch(() => {});
         // Installed: the sessions whose start found it missing take what waits.

@@ -79,3 +79,8 @@ test("runtime.setEnabled sends PUT /runtimes with runtime and enabled", () => {
   const op = request("runtime.setEnabled", { station: "w/s", runtime: "dsh", enabled: false });
   assert.deepEqual([op?.method, op?.path, op?.body], ["PUT", "/runtimes", { runtime: "dsh", enabled: false }]);
 });
+
+test("software.uninstall sends POST /updates/uninstall with the runtime's id", () => {
+  const op = request("software.uninstall", { station: "w/s", id: "claude" });
+  assert.deepEqual([op?.method, op?.path, op?.body], ["POST", "/updates/uninstall", { id: "claude" }]);
+});

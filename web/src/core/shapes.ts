@@ -1203,6 +1203,11 @@ export interface SoftwareVersion {
 	idleOnly?: boolean;
 	/** The pages can update it (or install it, when it is not installed). */
 	updatable: boolean;
+	/**
+	 * A runtime installed here that the pages can remove (`software.uninstall`), the way it was installed.
+	 * False from a station older than it, which offers no 卸载.
+	 */
+	uninstallable?: boolean;
 	/** An incomplete Codex can be repaired with npm after a person chooses it; the existing command is backed up. */
 	repairable?: boolean;
 	/** Why it cannot be updated from here (the desktop app's station, a runtime installed another way…). */
