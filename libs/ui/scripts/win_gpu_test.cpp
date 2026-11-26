@@ -2248,14 +2248,29 @@ int main(void) {
     CHECK(submit(inst, 32, 1.0, 1.0, 1.0) == 1);
     ctx->Flush();
   }
-  // Poll until WARP finishes queued work (bounded spin with Sleep(1) only in test harness after Flush).
-  for (int tries = 0; tries < 50; tries++) {
-    gpu_q_poll();
-    int any_in_flight = 0;
-    for (int i = 0; i < MB_GPU_Q_SLOTS; i++) any_in_flight |= gpu_q[i].in_flight;
-    if (!any_in_flight) break;
-    Sleep(1);
+  // Synchronize with WARP's execution queue via a D3D11 event query (first-draw shader JIT on
+  // loaded CI VMs can exceed a short Sleep(1) loop), then verify production's non-blocking
+  // gpu_q_poll() (D3D11_ASYNC_GETDATA_DONOTFLUSH) drains every in-flight timestamp slot.
+  {
+    D3D11_QUERY_DESC eq = {};
+    eq.Query = D3D11_QUERY_EVENT;
+    ID3D11Query *fence = NULL;
+    CHECK(SUCCEEDED(dev->CreateQuery(&eq, &fence)) && fence != NULL);
+    if (fence) {
+      ctx->End(fence);
+      ctx->Flush();
+      BOOL done = FALSE;
+      HRESULT hr = S_FALSE;
+      ULONGLONG deadline = GetTickCount64() + 10000;
+      while (((hr = ctx->GetData(fence, &done, sizeof done, 0)) == S_FALSE || (hr == S_OK && !done)) &&
+             GetTickCount64() < deadline) {
+        Sleep(1);
+      }
+      CHECK(hr == S_OK && done != FALSE);
+      fence->Release();
+    }
   }
+  gpu_q_poll();
   if (gpu_q_ok) {
     int any_in_flight = 0;
     for (int i = 0; i < MB_GPU_Q_SLOTS; i++) any_in_flight |= gpu_q[i].in_flight;
