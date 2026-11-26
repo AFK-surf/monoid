@@ -1,35 +1,65 @@
 //! Image thumbnail, preview, and ThumbHash generation (`image.thumb`), extracted from
-//! `station/native/mesh/src/thumbs.rs` (zero N-API) for `stillfail-shell` station builds.
+//! `station/native/mesh/src/thumbs.rs` (zero N-API) for `stillfail-shell` station builds
+//! (`--features station`, enabled on `shell-station` and macOS `shell-apple-station`; client apps
+//! build without this feature).
 //!
-//! Supports PNG, JPEG, and WebP inputs (from file `path` or raw `bytes`), EXIF orientation,
-//! CatmullRom resampling, alpha-aware PNG / JPEG / lossless-WebP encoding, and base64 ThumbHash,
-//! with strict parameter validation and decompression-bomb limits.
+//! ## Contract mapping vs `station/native/mesh/src/thumbs.rs`
+//! - **Inputs**: either file `path` or raw `bytes` (mutually exclusive, capped at 64 MiB).
+//!   - Path inputs in `thumb` / `box` / `preview` apply case-insensitive extension filtering
+//!     (`.png`, `.jpg`, `.jpeg`, `.webp`), matching `thumbs.rs::wanted`; non-matching extensions
+//!     return `{ skipped: true, reason: "unsupported_extension" }`.
+//!   - `hash`, `custom`, and raw `bytes` inputs detect format by magic bytes (PNG / JPEG / WebP).
+//! - **Decoding & limits**: EXIF orientation, CatmullRom resampling, alpha-aware PNG / JPEG /
+//!   lossless-WebP encoding, and 100px base64 ThumbHash match `thumbs.rs` byte-for-byte.
+//!   Decoder limits align with `image::Limits::default()` (512 MiB) and `mesh.node` photo sizes
+//!   (up to 65535 per side, 128 MP), with explicit pre-decode `decoder.total_bytes()` checks
+//!   (doubled when EXIF orientation transforms require a copy) and WebP RIFF metadata bounds.
+//! - **Fault tolerance**:
+//!   - In `preview` mode, optional lossless WebP encoding failure falls back to the JPEG/PNG
+//!     candidate (matching `thumbs.rs`).
+//!   - When `dir` and `thumbhash: true` are both set, a disk cache write failure preserves and
+//!     returns the already-computed `thumbhash`, `originalWidth`, and `originalHeight` alongside
+//!     `skipped: true, reason: "write_failed", writeError` instead of discarding the hash.
+//!   - All CPU/IO work runs inside `tokio::task::spawn_blocking` under a bounded concurrency
+//!     semaphore (`MAX_CONCURRENT_JOBS`).
 
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 use base64::Engine;
 use image::codecs::jpeg::JpegEncoder;
 use image::imageops::FilterType;
+use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
 
 use crate::{Answer, Done, err};
 
 /// Maximum accepted input size in bytes (64 MiB).
 pub(crate) const MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
-/// Maximum accepted decoded image width or height (32768 px; covers tall screenshots while bounding allocations).
-pub(crate) const MAX_DECODE_DIM: u32 = 32_768;
-/// Maximum accepted decoded pixel count (32 MP -> at most 128 MiB RGBA8).
-pub(crate) const MAX_DECODE_PIXELS: u64 = 32 * 1024 * 1024;
-/// Maximum memory allocation allowed inside `image` decoders (128 MiB).
-pub(crate) const MAX_DECODE_ALLOC: u64 = 128 * 1024 * 1024;
+/// Maximum accepted decoded image width or height (`u16::MAX` = 65535, matching `mesh.node`).
+pub(crate) const MAX_DECODE_DIM: u32 = u16::MAX as u32;
+/// Maximum accepted decoded pixel count (128 MP; covers 33–50 MP phone/panorama photos while rejecting bombs).
+pub(crate) const MAX_DECODE_PIXELS: u64 = 128 * 1024 * 1024;
+/// Maximum decoded buffer allocation (512 MiB, aligned with `image::Limits::default()`).
+pub(crate) const MAX_DECODE_ALLOC: u64 = 512 * 1024 * 1024;
+/// Maximum size of a single WebP metadata chunk (`EXIF` / `ICCP` / `XMP `) before decoding (8 MiB).
+const MAX_WEBP_METADATA_CHUNK: usize = 8 * 1024 * 1024;
+/// Maximum combined size of all WebP metadata chunks before decoding (16 MiB).
+const MAX_WEBP_METADATA_TOTAL: usize = 16 * 1024 * 1024;
 /// Maximum requested output width, height, minShort, or maxLong (matches `thumbs.rs` `max_long`).
 pub(crate) const MAX_TARGET_DIM: u32 = 8192;
 /// Maximum size-savings ratio multiplier (`out.len() * ratio < input_len`).
 pub(crate) const MAX_RATIO: u64 = 16;
+/// Maximum concurrent image decode/encode jobs to bound peak station memory under burst load.
+const MAX_CONCURRENT_JOBS: usize = 4;
+/// Age after which stale `.part` files in `dir` are opportunistically cleaned up (1 hour).
+const STALE_PART_AGE: Duration = Duration::from_secs(3600);
 
 /// Default JPEG quality (matches `thumbs.rs` `jpeg`: high enough that small text keeps its edges).
 const DEFAULT_QUALITY: u8 = 88;
@@ -41,6 +71,7 @@ const PREVIEW_MAX: u32 = 2048;
 const PREVIEW_SMALL: u64 = 300 * 1024;
 
 static PART_SEQ: AtomicU64 = AtomicU64::new(1);
+static DECODE_PERMITS: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(MAX_CONCURRENT_JOBS));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -304,34 +335,51 @@ fn parse_request(a: &Value, bytes: Option<Vec<u8>>) -> Result<Request, String> {
     })
 }
 
+/// Case-insensitive image extension filter matching `station/native/mesh/src/thumbs.rs::wanted`.
+fn wanted_extension(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".webp"].iter().any(|e| lower.ends_with(e))
+}
+
 fn id_of_path(path: &Path) -> String {
     hex::encode(&Sha256::digest(path.to_string_lossy().as_bytes())[..16])
 }
 
+/// Looks up an existing cached thumbnail in `dir`, rejecting symlinks via `symlink_metadata`.
 fn kept(dir: &Path, id: &str, suffix: &str) -> Option<(PathBuf, &'static str)> {
     [("jpg", "image/jpeg"), ("png", "image/png"), ("webp", "image/webp")]
         .into_iter()
         .map(|(ext, kind)| (dir.join(format!("{id}{suffix}.{ext}")), kind))
-        .find(|(path, _)| path.is_file())
+        .find(|(path, _)| std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file()))
 }
 
-fn read_input_file(path: &Path) -> Result<(Vec<u8>, u64), String> {
-    let pre = std::fs::metadata(path).map_err(|e| format!("cannot stat input: {e}"))?;
-    if !pre.is_file() {
-        return Err("input path is not a regular file".into());
-    }
-    if pre.len() == 0 {
-        return Err("input file is empty".into());
-    }
-    if pre.len() > MAX_INPUT_BYTES {
-        return Err(format!("input file exceeds maximum size of {MAX_INPUT_BYTES} bytes"));
-    }
-    let file = std::fs::File::open(path).map_err(|e| format!("cannot open input: {e}"))?;
+/// Opens `path` without blocking on FIFOs (`O_NONBLOCK` on Unix) and validates it is a regular,
+/// non-empty file within `MAX_INPUT_BYTES` via the open file descriptor (eliminating stat-open TOCTOU).
+fn open_regular_file(path: &Path) -> Result<(std::fs::File, u64), String> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut opts, libc::O_NONBLOCK);
+    let file = opts.open(path).map_err(|e| format!("cannot open input: {e}"))?;
     let meta = file.metadata().map_err(|e| format!("cannot stat open input: {e}"))?;
     if !meta.is_file() {
         return Err("input path is not a regular file".into());
     }
-    let mut buf = Vec::with_capacity(meta.len().min(MAX_INPUT_BYTES) as usize);
+    let len = meta.len();
+    if len == 0 {
+        return Err("input file is empty".into());
+    }
+    if len > MAX_INPUT_BYTES {
+        return Err(format!("input file exceeds maximum size of {MAX_INPUT_BYTES} bytes"));
+    }
+    Ok((file, len))
+}
+
+fn read_open_file(file: std::fs::File, hint_len: u64) -> Result<(Vec<u8>, u64), String> {
+    let mut buf = Vec::with_capacity(hint_len.min(MAX_INPUT_BYTES) as usize);
     file.take(MAX_INPUT_BYTES + 1)
         .read_to_end(&mut buf)
         .map_err(|e| format!("cannot read input: {e}"))?;
@@ -343,6 +391,40 @@ fn read_input_file(path: &Path) -> Result<(Vec<u8>, u64), String> {
     }
     let len = buf.len() as u64;
     Ok((buf, len))
+}
+
+/// Pre-validates WebP RIFF container chunks so malformed or oversized metadata chunks (`EXIF`,
+/// `ICCP`, `XMP `) cannot trigger unbounded allocations inside `image-webp`.
+fn validate_webp_container(raw: &[u8]) -> Result<(), String> {
+    if raw.len() < 12 || &raw[0..4] != b"RIFF" || &raw[8..12] != b"WEBP" {
+        return Err("invalid webp RIFF header".into());
+    }
+    let riff_size = u32::from_le_bytes([raw[4], raw[5], raw[6], raw[7]]) as usize;
+    let riff_end = riff_size.checked_add(8).ok_or_else(|| "webp RIFF size overflow".to_string())?;
+    let limit = riff_end.min(raw.len());
+    let mut pos = 12usize;
+    let mut meta_total = 0usize;
+    while pos + 8 <= limit {
+        let fourcc = &raw[pos..pos + 4];
+        let chunk_size = u32::from_le_bytes([raw[pos + 4], raw[pos + 5], raw[pos + 6], raw[pos + 7]]) as usize;
+        let data_start = pos + 8;
+        let padded = chunk_size.checked_add(chunk_size & 1).ok_or_else(|| "webp chunk size overflow".to_string())?;
+        let next = data_start.checked_add(padded).ok_or_else(|| "webp chunk offset overflow".to_string())?;
+        if data_start.checked_add(chunk_size).is_none_or(|end| end > raw.len()) {
+            return Err("webp chunk exceeds input length".into());
+        }
+        if matches!(fourcc, b"EXIF" | b"ICCP" | b"XMP ") {
+            if chunk_size > MAX_WEBP_METADATA_CHUNK {
+                return Err(format!("webp metadata chunk exceeds limit {MAX_WEBP_METADATA_CHUNK}"));
+            }
+            meta_total = meta_total.saturating_add(chunk_size);
+            if meta_total > MAX_WEBP_METADATA_TOTAL {
+                return Err(format!("webp metadata total exceeds limit {MAX_WEBP_METADATA_TOTAL}"));
+            }
+        }
+        pos = next;
+    }
+    Ok(())
 }
 
 fn decode_image(raw: &[u8]) -> Result<DynamicImage, String> {
@@ -360,6 +442,9 @@ fn decode_image(raw: &[u8]) -> Result<DynamicImage, String> {
     if !matches!(format, ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP) {
         return Err(format!("unsupported image format: {format:?}"));
     }
+    if format == ImageFormat::WebP {
+        validate_webp_container(raw)?;
+    }
 
     let mut decoder = reader.into_decoder().map_err(|e| format!("image decode init failed: {e}"))?;
     let (dw, dh) = decoder.dimensions();
@@ -374,7 +459,23 @@ fn decode_image(raw: &[u8]) -> Result<DynamicImage, String> {
         return Err(format!("image pixel count {pixels} exceeds limit {MAX_DECODE_PIXELS}"));
     }
 
+    // Explicit pre-decode memory check by actual color depth: `into_decoder -> from_decoder` does
+    // not automatically reserve `decoder.total_bytes()` against `Limits::max_alloc`.
+    let total_bytes = decoder.total_bytes();
+    if total_bytes == 0 {
+        return Err("image has zero decoded byte size".into());
+    }
+    if total_bytes > MAX_DECODE_ALLOC {
+        return Err(format!("decoded image buffer {total_bytes} bytes exceeds limit {MAX_DECODE_ALLOC}"));
+    }
     let orientation = decoder.orientation().ok();
+    if orientation.is_some_and(|o| o != Orientation::NoTransforms) && total_bytes.saturating_mul(2) > MAX_DECODE_ALLOC {
+        return Err(format!(
+            "decoded image buffer with orientation transform ({} bytes) exceeds limit {MAX_DECODE_ALLOC}",
+            total_bytes.saturating_mul(2)
+        ));
+    }
+
     let mut decoded = DynamicImage::from_decoder(decoder).map_err(|e| format!("image decode failed: {e}"))?;
     if let Some(orientation) = orientation {
         decoded.apply_orientation(orientation);
@@ -438,15 +539,51 @@ fn resize_for(decoded: DynamicImage, spec: &SizeSpec) -> DynamicImage {
     }
 }
 
+/// Opportunistically removes regular `*.part` files in `dir` older than `max_age` (best-effort).
+fn cleanup_stale_parts(dir: &Path, max_age: Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.ends_with(".part")) {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        if now.duration_since(modified).is_ok_and(|age| age >= max_age) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
+/// Atomically writes `bytes` to `{dir}/{id}{suffix}.{ext}` via an exclusively created (`O_EXCL`)
+/// `.part` file so symlinks are never followed and existing files are never clobbered.
 fn write_atomic(dir: &Path, id: &str, suffix: &str, ext: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot create thumb dir: {e}"))?;
+    cleanup_stale_parts(dir, STALE_PART_AGE);
     let path = dir.join(format!("{id}{suffix}.{ext}"));
     let seq = PART_SEQ.fetch_add(1, Ordering::Relaxed);
     let partial = dir.join(format!("{id}{suffix}.{ext}.{}.{seq}.part", std::process::id()));
-    if let Err(e) = std::fs::write(&partial, bytes) {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&partial)
+        .map_err(|e| format!("cannot create thumb temp file: {e}"))?;
+    if let Err(e) = file.write_all(bytes) {
+        drop(file);
         let _ = std::fs::remove_file(&partial);
         return Err(format!("cannot write thumb: {e}"));
     }
+    drop(file);
     if let Err(e) = std::fs::rename(&partial, &path) {
         let _ = std::fs::remove_file(&partial);
         return Err(format!("cannot rename thumb: {e}"));
@@ -455,21 +592,21 @@ fn write_atomic(dir: &Path, id: &str, suffix: &str, ext: &str, bytes: &[u8]) -> 
 }
 
 fn execute(req: Request) -> Done {
+    // Path-based preset modes filter by case-insensitive image extension first (matching `thumbs.rs::wanted`).
+    if let Input::Path(path) = &req.input
+        && matches!(req.mode, Mode::Thumb | Mode::Box | Mode::Preview)
+        && !wanted_extension(path)
+    {
+        return Ok(Answer::json(json!({ "skipped": true, "reason": "unsupported_extension" })));
+    }
+
+    let mut opened_file: Option<(std::fs::File, u64)> = None;
+
     // Fast path for path-backed small-file skip and cache hit when thumbhash is not requested.
     if let (Input::Path(path), Some(spec)) = (&req.input, &req.spec)
         && !req.thumbhash
     {
-        let meta = std::fs::metadata(path).map_err(|e| format!("cannot stat input: {e}"))?;
-        if !meta.is_file() {
-            return Err("input path is not a regular file".into());
-        }
-        let len = meta.len();
-        if len == 0 {
-            return Err("input file is empty".into());
-        }
-        if len > MAX_INPUT_BYTES {
-            return Err(format!("input file exceeds maximum size of {MAX_INPUT_BYTES} bytes"));
-        }
+        let (file, len) = open_regular_file(path)?;
         if spec.small_bytes > 0 && len <= spec.small_bytes {
             return Ok(Answer::json(json!({ "skipped": true, "reason": "small" })));
         }
@@ -484,12 +621,17 @@ fn execute(req: Request) -> Done {
                 })));
             }
         }
+        opened_file = Some((file, len));
     }
 
     let owned_raw;
     let (raw, input_len): (&[u8], u64) = match &req.input {
         Input::Path(path) => {
-            let (buf, len) = read_input_file(path)?;
+            let (file, hint_len) = match opened_file {
+                Some(pair) => pair,
+                None => open_regular_file(path)?,
+            };
+            let (buf, len) = read_open_file(file, hint_len)?;
             owned_raw = buf;
             (&owned_raw, len)
         }
@@ -558,11 +700,12 @@ fn execute(req: Request) -> Done {
     } else {
         ("jpg", "image/jpeg", encode_jpeg(&small, spec.quality)?)
     };
-    if spec.lossless {
-        let exact = encode_webp(&small, clear)?;
-        if exact.len() < encoded.len() {
-            (ext, kind, encoded) = ("webp", "image/webp", exact);
-        }
+    // Optional lossless WebP candidate: fall back to JPEG/PNG if WebP encoding fails (matching `thumbs.rs`).
+    if spec.lossless
+        && let Ok(exact) = encode_webp(&small, clear)
+        && exact.len() < encoded.len()
+    {
+        (ext, kind, encoded) = ("webp", "image/webp", exact);
     }
 
     if spec.ratio > 0 && (encoded.len() as u64).saturating_mul(spec.ratio) >= input_len {
@@ -587,16 +730,34 @@ fn execute(req: Request) -> Done {
         "originalHeight": oh,
         "size": encoded.len(),
     });
-    if let Some(h) = hash {
-        out["thumbhash"] = Value::String(h);
+    if let Some(ref h) = hash {
+        out["thumbhash"] = Value::String(h.clone());
     }
 
     if let (Input::Path(path), Some(dir)) = (&req.input, &req.dir) {
         let id = id_of_path(path);
-        let written = write_atomic(dir, &id, spec.suffix, ext, &encoded)?;
-        out["cached"] = Value::Bool(false);
-        out["path"] = Value::String(written.to_string_lossy().into_owned());
-        Ok(Answer::json(out))
+        match write_atomic(dir, &id, spec.suffix, ext, &encoded) {
+            Ok(written) => {
+                out["cached"] = Value::Bool(false);
+                out["path"] = Value::String(written.to_string_lossy().into_owned());
+                Ok(Answer::json(out))
+            }
+            Err(write_err) => {
+                // When thumbhash was computed in the same call, preserve it and surface the write error.
+                if let Some(h) = hash {
+                    Ok(Answer::json(json!({
+                        "skipped": true,
+                        "reason": "write_failed",
+                        "writeError": write_err,
+                        "originalWidth": ow,
+                        "originalHeight": oh,
+                        "thumbhash": h,
+                    })))
+                } else {
+                    Err(write_err)
+                }
+            }
+        }
     } else {
         Ok(Answer::bytes(out, encoded))
     }
@@ -604,6 +765,10 @@ fn execute(req: Request) -> Done {
 
 pub(crate) async fn run(a: Value, bytes: Option<Vec<u8>>) -> Done {
     let req = parse_request(&a, bytes)?;
+    let _permit = DECODE_PERMITS
+        .acquire()
+        .await
+        .map_err(|_| "image.thumb concurrency limiter closed".to_string())?;
     tokio::task::spawn_blocking(move || execute(req)).await.map_err(err)?
 }
 
@@ -679,15 +844,14 @@ mod tests {
     fn make_jpeg_with_exif_orientation(w: u32, h: u32, orientation: u16) -> Vec<u8> {
         let mut img = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(w, h);
         for (x, y, p) in img.enumerate_pixels_mut() {
-            // Distinct quadrant colors so orientation transform is verifiable.
             *p = if x < w / 2 && y < h / 2 {
-                Rgb([240, 30, 30]) // top-left: red
+                Rgb([240, 30, 30])
             } else if x >= w / 2 && y < h / 2 {
-                Rgb([30, 240, 30]) // top-right: green
+                Rgb([30, 240, 30])
             } else if x < w / 2 {
-                Rgb([30, 30, 240]) // bottom-left: blue
+                Rgb([30, 30, 240])
             } else {
-                Rgb([240, 240, 30]) // bottom-right: yellow
+                Rgb([240, 240, 30])
             };
         }
         let mut raw_jpg = Vec::new();
@@ -697,32 +861,31 @@ mod tests {
             .unwrap();
         assert_eq!(&raw_jpg[0..2], &[0xFF, 0xD8]);
 
-        // Minimal little-endian TIFF EXIF with 1 IFD0 entry: tag 0x0112 (Orientation), SHORT, count 1.
         let mut exif = Vec::new();
         exif.extend_from_slice(b"Exif\0\0");
-        exif.extend_from_slice(b"II"); // little-endian
+        exif.extend_from_slice(b"II");
         exif.extend_from_slice(&42u16.to_le_bytes());
-        exif.extend_from_slice(&8u32.to_le_bytes()); // IFD0 offset
-        exif.extend_from_slice(&1u16.to_le_bytes()); // 1 entry
-        exif.extend_from_slice(&0x0112u16.to_le_bytes()); // Orientation tag
-        exif.extend_from_slice(&3u16.to_le_bytes()); // SHORT
-        exif.extend_from_slice(&1u32.to_le_bytes()); // count = 1
+        exif.extend_from_slice(&8u32.to_le_bytes());
+        exif.extend_from_slice(&1u16.to_le_bytes());
+        exif.extend_from_slice(&0x0112u16.to_le_bytes());
+        exif.extend_from_slice(&3u16.to_le_bytes());
+        exif.extend_from_slice(&1u32.to_le_bytes());
         exif.extend_from_slice(&orientation.to_le_bytes());
-        exif.extend_from_slice(&0u16.to_le_bytes()); // padding
-        exif.extend_from_slice(&0u32.to_le_bytes()); // next IFD = 0
+        exif.extend_from_slice(&0u16.to_le_bytes());
+        exif.extend_from_slice(&0u32.to_le_bytes());
 
         let seg_len = (exif.len() + 2) as u16;
         let mut out = Vec::with_capacity(raw_jpg.len() + exif.len() + 4);
-        out.extend_from_slice(&raw_jpg[0..2]); // SOI
-        out.extend_from_slice(&[0xFF, 0xE1]); // APP1
+        out.extend_from_slice(&raw_jpg[0..2]);
+        out.extend_from_slice(&[0xFF, 0xE1]);
         out.extend_from_slice(&seg_len.to_be_bytes());
         out.extend_from_slice(&exif);
         out.extend_from_slice(&raw_jpg[2..]);
         out
     }
 
-    /// Builds a minimal synthetic PNG header claiming arbitrary dimensions `w x h` (for decompression-bomb testing).
-    fn make_fake_png_header(w: u32, h: u32) -> Vec<u8> {
+    /// Builds a minimal synthetic PNG header claiming dimensions `w x h` with given bit depth & color type.
+    fn make_fake_png_header_with_color(w: u32, h: u32, bit_depth: u8, color_type: u8) -> Vec<u8> {
         fn crc32(data: &[u8]) -> u32 {
             let mut crc: u32 = 0xFFFF_FFFF;
             for &b in data {
@@ -735,50 +898,47 @@ mod tests {
             !crc
         }
         let mut out = Vec::new();
-        out.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]); // PNG signature
+        out.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]);
         let mut ihdr = Vec::new();
         ihdr.extend_from_slice(b"IHDR");
         ihdr.extend_from_slice(&w.to_be_bytes());
         ihdr.extend_from_slice(&h.to_be_bytes());
-        ihdr.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA, deflate, filter 0, non-interlaced
+        ihdr.extend_from_slice(&[bit_depth, color_type, 0, 0, 0]);
         out.extend_from_slice(&13u32.to_be_bytes());
         out.extend_from_slice(&ihdr);
         out.extend_from_slice(&crc32(&ihdr).to_be_bytes());
-        // Empty IEND
+        // Include a 1-byte IDAT chunk so `png` decoder header parsing succeeds and our dimension/total_bytes guards run.
+        let idat = b"IDAT\x00";
+        out.extend_from_slice(&1u32.to_be_bytes());
+        out.extend_from_slice(idat);
+        out.extend_from_slice(&crc32(idat).to_be_bytes());
         out.extend_from_slice(&0u32.to_be_bytes());
         out.extend_from_slice(b"IEND");
         out.extend_from_slice(&crc32(b"IEND").to_be_bytes());
         out
     }
 
+    fn make_fake_png_header(w: u32, h: u32) -> Vec<u8> {
+        make_fake_png_header_with_color(w, h, 8, 6)
+    }
+
     #[test]
     fn rejects_invalid_parameters() {
         let png = make_noisy_rgb_png(64, 64);
 
-        // Non-object JSON
         assert!(parse_request(&json!(null), Some(png.clone())).is_err());
         assert!(parse_request(&json!([]), Some(png.clone())).is_err());
-
-        // Unknown key
         assert!(parse_request(&json!({ "mode": "hash", "max_width": 100 }), Some(png.clone())).is_err());
-
-        // Missing or conflicting input
         assert!(parse_request(&json!({ "mode": "hash" }), None).is_err());
         assert!(parse_request(&json!({ "mode": "hash", "path": "/tmp/a.png" }), Some(png.clone())).is_err());
         assert!(parse_request(&json!({ "mode": "hash", "path": "" }), None).is_err());
         assert!(parse_request(&json!({ "mode": "hash", "path": "/tmp/a\0b.png" }), None).is_err());
         assert!(parse_request(&json!({ "mode": "hash" }), Some(Vec::new())).is_err());
-
-        // Missing or invalid mode
         assert!(parse_request(&json!({}), Some(png.clone())).is_err());
         assert!(parse_request(&json!({ "mode": "bogus" }), Some(png.clone())).is_err());
-
-        // Custom mode requires explicit maxWidth and maxHeight
         assert!(parse_request(&json!({ "mode": "custom" }), Some(png.clone())).is_err());
         assert!(parse_request(&json!({ "mode": "custom", "maxWidth": 100 }), Some(png.clone())).is_err());
         assert!(parse_request(&json!({ "mode": "custom", "maxHeight": 100 }), Some(png.clone())).is_err());
-
-        // Out-of-range or wrong-type dimensions / quality / ratio
         assert!(parse_request(&json!({ "mode": "custom", "maxWidth": 0, "maxHeight": 100 }), Some(png.clone())).is_err());
         assert!(parse_request(&json!({ "mode": "custom", "maxWidth": 8193, "maxHeight": 100 }), Some(png.clone())).is_err());
         assert!(parse_request(&json!({ "mode": "custom", "maxWidth": -5, "maxHeight": 100 }), Some(png.clone())).is_err());
@@ -789,12 +949,8 @@ mod tests {
         assert!(parse_request(&json!({ "mode": "custom", "maxWidth": 100, "maxHeight": 100, "ratio": 17 }), Some(png.clone())).is_err());
         assert!(parse_request(&json!({ "mode": "custom", "maxWidth": 100, "maxHeight": 100, "minShort": 500, "maxLong": 0 }), Some(png.clone())).is_err());
         assert!(parse_request(&json!({ "mode": "custom", "maxWidth": 100, "maxHeight": 100, "minShort": 500, "maxLong": 400 }), Some(png.clone())).is_err());
-
-        // Hash mode rejects sizing/encoding params and thumbhash=false
         assert!(parse_request(&json!({ "mode": "hash", "maxWidth": 100 }), Some(png.clone())).is_err());
         assert!(parse_request(&json!({ "mode": "hash", "thumbhash": false }), Some(png.clone())).is_err());
-
-        // Dir cache constraints
         assert!(parse_request(&json!({ "mode": "thumb", "dir": "/tmp/t" }), Some(png.clone())).is_err());
         assert!(parse_request(&json!({ "mode": "hash", "path": "/tmp/a.png", "dir": "/tmp/t" }), None).is_err());
         assert!(parse_request(&json!({ "mode": "custom", "path": "/tmp/a.png", "dir": "/tmp/t", "maxWidth": 100, "maxHeight": 100 }), None).is_err());
@@ -802,20 +958,39 @@ mod tests {
     }
 
     #[test]
-    fn rejects_decompression_bombs_and_corrupt_inputs() {
-        // 25000 x 25000 = 625 MP > MAX_DECODE_PIXELS (32 MP)
+    fn rejects_decompression_bombs_depth_overflow_webp_metadata_and_corrupt_inputs() {
+        // 25000 x 25000 = 625 MP > MAX_DECODE_PIXELS (128 MP)
         let bomb_pixels = make_fake_png_header(25_000, 25_000);
         let err = execute(parse_request(&json!({ "mode": "hash" }), Some(bomb_pixels)).unwrap())
             .err()
             .expect("pixel bomb must be rejected");
         assert!(err.contains("limit") || err.contains("exceed") || err.contains("decode"), "unexpected err: {err}");
 
-        // 40000 x 10 exceeds MAX_DECODE_DIM (32768)
-        let bomb_dim = make_fake_png_header(40_000, 10);
+        // 70000 x 10 exceeds MAX_DECODE_DIM (65535)
+        let bomb_dim = make_fake_png_header(70_000, 10);
         let err = execute(parse_request(&json!({ "mode": "hash" }), Some(bomb_dim)).unwrap())
             .err()
             .expect("dim bomb must be rejected");
         assert!(err.contains("limit") || err.contains("exceed") || err.contains("decode"), "unexpected err: {err}");
+
+        // 16384 x 8192 = 128 MP RGBA16 -> 1 GiB > MAX_DECODE_ALLOC (512 MiB), caught by decoder.total_bytes()
+        let bomb_rgba16 = make_fake_png_header_with_color(16_384, 8_192, 16, 6);
+        let err = execute(parse_request(&json!({ "mode": "hash" }), Some(bomb_rgba16)).unwrap())
+            .err()
+            .expect("1 GiB RGBA16 image must be rejected by total_bytes pre-check");
+        assert!(err.contains("decoded image buffer") && err.contains("exceeds limit"), "unexpected err: {err}");
+
+        // Oversized WebP EXIF metadata chunk (> 8 MiB) rejected before image-webp decodes
+        let exif_len = (MAX_WEBP_METADATA_CHUNK + 16) as u32;
+        let mut big_webp = Vec::with_capacity(12 + 8 + exif_len as usize);
+        big_webp.extend_from_slice(b"RIFF");
+        big_webp.extend_from_slice(&(4u32 + 8 + exif_len).to_le_bytes());
+        big_webp.extend_from_slice(b"WEBP");
+        big_webp.extend_from_slice(b"EXIF");
+        big_webp.extend_from_slice(&exif_len.to_le_bytes());
+        big_webp.resize(12 + 8 + exif_len as usize, 0);
+        let err = validate_webp_container(&big_webp).expect_err("oversized WebP EXIF must be rejected");
+        assert!(err.contains("metadata chunk exceeds limit"), "unexpected err: {err}");
 
         // Unsupported format (GIF89a)
         let gif = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;".to_vec();
@@ -828,6 +1003,121 @@ mod tests {
         let tmp = TempDir::new("nonfile");
         assert!(execute(parse_request(&json!({ "mode": "hash", "path": tmp.path().to_string_lossy() }), None).unwrap()).is_err());
         assert!(execute(parse_request(&json!({ "mode": "hash", "path": tmp.path().join("missing.png").to_string_lossy() }), None).unwrap()).is_err());
+    }
+
+    #[test]
+    fn accepts_48mp_photo_and_filters_path_extensions() {
+        let tmp = TempDir::new("ext-and-48mp");
+
+        // Path extension filtering (case-insensitive) for thumb / box / preview; hash & bytes inspect content.
+        let png = make_noisy_rgb_png(800, 600);
+        for bad_name in ["anim.gif", "blob.data", "noext", "doc.pdf"] {
+            let p = tmp.path().join(bad_name);
+            std::fs::write(&p, &png).unwrap();
+            for mode in ["thumb", "box", "preview"] {
+                let ans = execute(parse_request(&json!({ "mode": mode, "path": p.to_string_lossy() }), None).unwrap()).unwrap();
+                assert_eq!(ans.json["skipped"], true, "{bad_name} in {mode}");
+                assert_eq!(ans.json["reason"], "unsupported_extension", "{bad_name} in {mode}");
+                assert!(ans.bytes.is_none());
+            }
+            // `hash` mode still decodes by content regardless of extension.
+            let h = execute(parse_request(&json!({ "mode": "hash", "path": p.to_string_lossy() }), None).unwrap()).unwrap();
+            assert_eq!(h.json["width"], 800);
+            assert_eq!(h.json["height"], 600);
+        }
+        // Uppercase `.PNG` is accepted.
+        let upper = tmp.path().join("UPPER.PNG");
+        std::fs::write(&upper, &png).unwrap();
+        let ans = execute(parse_request(&json!({ "mode": "thumb", "path": upper.to_string_lossy() }), None).unwrap()).unwrap();
+        assert_eq!(ans.json["skipped"], false);
+        assert_eq!(ans.json["mime"], "image/jpeg");
+
+        // 8064x6048 (48.8 MP) solid-color PNG matches `mesh.node` ThumbHash & JPEG bytes with 0 drift.
+        let big = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_pixel(8064, 6048, Rgb([42, 128, 200]));
+        let mut big_png = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(big).write_to(&mut big_png, ImageFormat::Png).unwrap();
+        let big_bytes = big_png.into_inner();
+        let ans = execute(parse_request(&json!({ "mode": "thumb", "thumbhash": true }), Some(big_bytes)).unwrap()).unwrap();
+        assert_eq!(ans.json["skipped"], false);
+        assert_eq!(ans.json["mime"], "image/jpeg");
+        assert_eq!(ans.json["originalWidth"], 8064);
+        assert_eq!(ans.json["originalHeight"], 6048);
+        assert_eq!(ans.json["thumbhash"], "XlQBBYCHh4d4eIeAh3iHdXh4gIf4");
+        let thumb_bytes = ans.bytes.expect("48.8 MP thumb bytes");
+        assert_eq!(thumb_bytes.len(), 11_339);
+        assert_eq!(hex::encode(Sha256::digest(&thumb_bytes)), "062e82f354f2d264c0d51f555027ca119edc2118bec7abcfd25f6d478a133ee4");
+    }
+
+    #[test]
+    fn thumb_write_failure_preserves_thumbhash_and_anti_symlink_and_stale_part_cleanup() {
+        let tmp = TempDir::new("cache-safety");
+        let noisy = make_noisy_rgb_png(1200, 900);
+        let img_path = tmp.path().join("sample.png");
+        std::fs::write(&img_path, &noisy).unwrap();
+
+        // 1. Unwritable dir (regular file blocking create_dir_all): with thumbhash=true, hash/dims are preserved.
+        let blocker = tmp.path().join("not-a-dir");
+        std::fs::write(&blocker, b"file").unwrap();
+        let ans = execute(
+            parse_request(
+                &json!({ "mode": "thumb", "path": img_path.to_string_lossy(), "dir": blocker.to_string_lossy(), "thumbhash": true }),
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ans.json["skipped"], true);
+        assert_eq!(ans.json["reason"], "write_failed");
+        assert!(ans.json["writeError"].as_str().is_some_and(|s| !s.is_empty()));
+        assert_eq!(ans.json["originalWidth"], 1200);
+        assert_eq!(ans.json["originalHeight"], 900);
+        assert!(ans.json["thumbhash"].as_str().is_some_and(|s| !s.is_empty()));
+
+        // Without thumbhash=true, the same unwritable dir returns an explicit Err.
+        let err = execute(
+            parse_request(
+                &json!({ "mode": "thumb", "path": img_path.to_string_lossy(), "dir": blocker.to_string_lossy() }),
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(err.is_err());
+
+        // 2. Anti-symlink cache lookup: a symlink at `{id}.jpg` is NOT treated as a valid cache hit.
+        #[cfg(unix)]
+        {
+            let cache_dir = tmp.path().join("sym-cache");
+            std::fs::create_dir_all(&cache_dir).unwrap();
+            let id = id_of_path(&img_path);
+            let decoy = tmp.path().join("decoy.jpg");
+            std::fs::write(&decoy, b"not-a-cached-thumb").unwrap();
+            let link_path = cache_dir.join(format!("{id}.jpg"));
+            std::os::unix::fs::symlink(&decoy, &link_path).unwrap();
+            assert!(kept(&cache_dir, &id, "").is_none(), "symlink must not match kept()");
+        }
+
+        // 3. Stale `.part` cleanup removes old `.part` files and keeps regular non-part files.
+        let stale_dir = tmp.path().join("stale");
+        std::fs::create_dir_all(&stale_dir).unwrap();
+        let part_file = stale_dir.join("abandoned.jpg.1.1.part");
+        let real_file = stale_dir.join("keep.jpg");
+        std::fs::write(&part_file, b"partial").unwrap();
+        std::fs::write(&real_file, b"real").unwrap();
+        cleanup_stale_parts(&stale_dir, Duration::ZERO);
+        assert!(!part_file.exists(), "stale .part file must be removed");
+        assert!(real_file.exists(), "non-.part file must be kept");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_path_is_rejected_without_blocking() {
+        let tmp = TempDir::new("fifo");
+        let fifo = tmp.path().join("pipe.png");
+        let c_path = std::ffi::CString::new(fifo.to_string_lossy().as_bytes()).unwrap();
+        let rc = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(rc, 0, "mkfifo failed");
+        let err = open_regular_file(&fifo).expect_err("FIFO must be rejected immediately");
+        assert!(err.contains("regular file"), "unexpected err: {err}");
     }
 
     #[test]
@@ -890,7 +1180,6 @@ mod tests {
         let prev = execute(parse_request(&json!({ "mode": "preview", "smallBytes": 0, "ratio": 0 }), Some(flat)).unwrap()).unwrap();
         assert_eq!(prev.json["mime"], "image/webp");
         let webp_bytes = prev.bytes.unwrap();
-        // Also verify WebP input decodes cleanly
         let from_webp = execute(parse_request(&json!({ "mode": "hash" }), Some(webp_bytes)).unwrap()).unwrap();
         assert_eq!(from_webp.json["width"], 1600);
         assert_eq!(from_webp.json["height"], 1200);
@@ -922,7 +1211,6 @@ mod tests {
         let cached_path = PathBuf::from(first.json["path"].as_str().unwrap());
         assert!(cached_path.is_file());
         assert_eq!(std::fs::read(&cached_path).unwrap(), jpg_bytes);
-        // No leftover .part files
         let entries: Vec<_> = std::fs::read_dir(&cache_dir).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(entries.len(), 1);
 
@@ -972,4 +1260,3 @@ mod tests {
         assert_eq!(prev.json["reason"], "small");
     }
 }
-

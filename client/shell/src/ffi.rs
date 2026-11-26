@@ -60,6 +60,9 @@ pub unsafe extern "C" fn sf_shell_start(data_dir: *const c_char, complete: Compl
     }
 }
 
+/// Maximum input byte length accepted by `image.thumb` before copying across the FFI boundary (64 MiB).
+const IMAGE_THUMB_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Starts operation `id`.
 ///
 /// # Safety
@@ -69,6 +72,12 @@ pub unsafe extern "C" fn sf_shell_start(data_dir: *const c_char, complete: Compl
 pub unsafe extern "C" fn sf_shell_call(shell: *const Shell, id: u64, op: *const c_char, json: *const u8, json_len: usize, bytes: *const u8, bytes_len: usize, has_bytes: u8) {
     // SAFETY: as documented.
     let (shell, op, json) = unsafe { (&*shell, CStr::from_ptr(op).to_string_lossy().into_owned(), std::slice::from_raw_parts(json, json_len)) };
+    if op == "image.thumb" && has_bytes != 0 && (bytes_len as u64) > IMAGE_THUMB_MAX_INPUT_BYTES {
+        let err = format!("input bytes exceed maximum size of {IMAGE_THUMB_MAX_INPUT_BYTES} bytes");
+        let eb = err.as_bytes();
+        (shell.inner.complete)(shell.inner.ctx.0, id, std::ptr::null(), 0, eb.as_ptr(), eb.len(), std::ptr::null(), 0, 0);
+        return;
+    }
     let bytes = (has_bytes != 0).then(|| if bytes_len == 0 { Vec::new() } else { unsafe { std::slice::from_raw_parts(bytes, bytes_len) }.to_vec() });
     shell.call(id, op, json, bytes);
 }

@@ -10,10 +10,10 @@ crate-type = ["cdylib", "lib"]
 name = "stillfail_shell"
 
 [features]
-default = ["station"]
-# Image decoding, EXIF orientation, resizing, encoding and ThumbHash (`image.thumb`), used by station binaries
-# (`shell-station`, `shell-apple`) to replace `station/native/mesh/src/thumbs.rs`. Client-only builds that do not need
-# server-side image codecs can opt out with `--no-default-features`.
+default = []
+# Image decoding, EXIF orientation, resizing, encoding and ThumbHash (`image.thumb`), enabled only for station
+# static libraries (`shell-station` and macOS `shell-apple-station`) to replace `station/native/mesh/src/thumbs.rs`.
+# Client apps (`shell`, `shell-apple`) build with default features and incur 0 KB of image codec overhead.
 station = ["dep:base64", "dep:image", "dep:thumbhash"]
 
 [dependencies]

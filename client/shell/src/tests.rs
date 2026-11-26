@@ -4193,3 +4193,27 @@ fn image_thumb_disabled_without_station_feature() {
     let (_, err_out, _) = answer(98_325);
     assert_eq!(err_out, "no operation image.thumb");
 }
+
+#[test]
+fn image_thumb_ffi_rejects_oversized_bytes_before_copy() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let op = std::ffi::CString::new("image.thumb").unwrap();
+    let payload = br#"{"mode":"hash"}"#;
+    // Pass a null bytes pointer with length > 64 MiB: FFI pre-check must reject synchronously without dereferencing.
+    unsafe {
+        crate::sf_shell_call(
+            &shell as *const Shell,
+            98_326,
+            op.as_ptr(),
+            payload.as_ptr(),
+            payload.len(),
+            std::ptr::null(),
+            (64 * 1024 * 1024) + 1,
+            1,
+        );
+    }
+    let (_, err_out, bytes_out) = answer(98_326);
+    assert!(err_out.contains("exceed maximum size"), "unexpected err: {err_out}");
+    assert!(bytes_out.is_none());
+}
