@@ -270,7 +270,7 @@ fn picker_body(v : @view.View, src : Source, p : @sfbase.FolderPick) -> Unit {
       b.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
       match shows {
         PickerReading => @sf.wait_line_node(b, fn() { @sf.t("common.reading") }) |> ignore
-        PickerShut => picker_shut_node(b)
+        PickerShut => picker_shut_node(b, src)
         PickerNone =>
           @sf.panel_note_node(b, fn() {
             @sf.t(if picker_wanted() != "" { "web-pages.drive.pickNoMatch" } else { "web-pages.drive.noSubfolders" })
@@ -444,17 +444,14 @@ fn picker_mark_node(v : @view.View, e : PickerEntry) -> Unit {
 }
 
 ///|
-/// One the station may not read (or failed to): its folder over what to do (or why), in the middle.
-fn picker_shut_node(v : @view.View) -> Unit {
-  v.box(fn(b) {
-    @sf.style_node(b, fn() { picker_shut })
-    @sf.icon_node(b, "folder", shut_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-    @sf.words_node(b, fn() { if dialogs.denied.get() { @sf.t("web-pages.drive.pickNeedsAccess") } else { dialogs.error.get() } }, fn() {
-      shut_words
-    })
-    |> ignore
-  })
-  |> ignore
+/// One the station may not read (or failed to): title, wrapping reason and Retry button directly on the panel surface.
+fn picker_shut_node(v : @view.View, src : Source) -> Unit {
+  drive_panel_error_node(
+    v,
+    fn() { if dialogs.denied.get() { @sf.t("web-pages.drive.pickNeedsAccess") } else { dialogs.error.get() } },
+    fn() { picker_go(src, dialogs.station.untracked(), dialogs.at.untracked()) },
+    busy=fn() { dialogs.asking.get() },
+  )
 }
 
 ///|
@@ -624,9 +621,6 @@ let pick_row_h : Double = 40.0
 let crumb_icon : Double = 12.0
 
 ///|
-let shut_icon : Double = 32.0
-
-///|
 let picker_mark : Double = 20.0
 
 ///|
@@ -708,12 +702,3 @@ let crumb_last : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold, colo
 /// The filter over the rows: across the panel (where panel_field_in_node stands it), a row's room under it.
 // kept across runs: a value (no field of it changes)
 let picker_filter_at : @ui.Style = @ui.css("w=Full pb=S2")
-
-///|
-/// A folder the station cannot read (pickerShut): its mark over what to do, in the middle.
-// kept across runs: a value (no field of it changes)
-let picker_shut : @ui.Style = @ui.css("w=Full h=Full px=S6 gap=S3 align=ACenter justify=JCenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let shut_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, center=true, w=Full)

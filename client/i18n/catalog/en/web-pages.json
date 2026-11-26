@@ -1446,6 +1446,7 @@
   "web-pages.drive.mkdirPlaceholder": "Folder name",
   "web-pages.drive.make": "Create",
   "web-pages.drive.mkdirWhat": "create the folder",
+  "web-pages.drive.cantOpen": "Couldn't open this folder",
   "web-pages.drive.retry": "Try again",
   "web-pages.drive.truncated": "only the first 50,000 are listed",
   "web-pages.drive.emptyFolder": "This folder is empty",

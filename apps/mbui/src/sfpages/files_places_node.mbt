@@ -146,16 +146,15 @@ pub fn files_places_node(
           @sf.style_node(line, fn() { @sf.list_line(at) })
           match first {
             PTrouble(_) =>
-              @sf.words_node(
-                line,
-                fn() {
+              line.box(fn(n) {
+                @sf.style_node(n, fn() { nav_note })
+                drive_err_lines_node(n, fn() { "" }, fn() {
                   match now() {
                     PTrouble(e) => e
                     _ => ""
                   }
-                },
-                fn() { nav_trouble },
-              )
+                })
+              })
               |> ignore
             PReading => @sf.waiting_node(line, fn(w) { places_sample_node(w, at) })
             PNone =>
@@ -569,11 +568,7 @@ let nav_flat : @ui.Style = @ui.css("w=Full")
 let station_item : @ui.Style = @ui.css("w=Full")
 
 ///|
-// kept across runs: a value (no field of it changes)
-let nav_trouble : @ui.TextStyle = @ui.text_style(size=Meta, color=Danger, wrap=false)
-
-///|
-/// The list's words in place of rows (empty, reading), 8 by 10 in.
+/// The list's words in place of rows (empty, reading, trouble), 8 by 10 in.
 // kept across runs: a value (no field of it changes)
 let nav_note : @ui.Style = @ui.css("w=Full px=S2_5 py=S2")
 
