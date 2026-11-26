@@ -1767,8 +1767,25 @@ test "PR-B0: lock during normal-close pop_out_ms hard-drops private title on fra
   presented_in(t)
   assert_true(@sf.presenting(), msg="editor dialog should be open")
   assert_true(t.find(private_name) is Some(_), msg="editor title should display private name before close")
-  // Start a manual file pick before normal close
+  // 1. Active cancel button path: start manual file pick -> click Cancel -> late file pick must NOT write
   t.picks_by_hand()
+  t.picks([("late-cancel.pem", b"LATE_CANCEL_BYTES")])
+  t.click(Button, label=@sf.t("web-pages.vault.editor.pickFile"))
+  t.draw()
+  t.click(Button, label=@sf.t("common.cancel"))
+  t.draw()
+  assert_true(@sf.presented_drawn(), msg="dialog should still be drawing during cancel pop_out_ms exit animation")
+  t.pick_answer(1)
+  t.draw()
+  assert_true(t.find("late-cancel.pem") is None, msg="late file pick must not write after clicking footer Cancel")
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sf.presented_drawn(), msg="cancel exit animation should finish")
+  // 2. Reopen editor -> Escape exit path + late file pick + mid-exit vault lock
+  t.click(Button, label="编辑")
+  t.draw()
+  presented_in(t)
+  assert_true(@sf.presenting(), msg="editor dialog should reopen")
+  assert_true(t.find(private_name) is Some(_), msg="editor title should display private name before Escape")
   t.picks([("late-cert.pem", b"LATE_SECRET_BYTES")])
   t.click(Button, label=@sf.t("web-pages.vault.editor.pickFile"))
   t.draw()
@@ -1777,7 +1794,7 @@ test "PR-B0: lock during normal-close pop_out_ms hard-drops private title on fra
   t.draw()
   assert_true(@sf.presented_drawn(), msg="dialog should still be drawing during pop_out_ms exit animation")
   // Late file pick arrives during exit animation: on_gone already revoked & cleared it, so it must NOT be written
-  t.pick_answer(1)
+  t.pick_answer(2)
   t.draw()
   assert_true(t.find("late-cert.pem") is None, msg="late file pick must not write into closing editor")
   // Lock vault mid-exit-animation: must hard-drop the closing overlay on the very next frame!

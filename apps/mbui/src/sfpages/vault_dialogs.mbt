@@ -169,10 +169,19 @@ pub fn vault_editor_dialog(
     vd_input_node(b, of(part), part, label, placeholder)
   }
   let said = fn(key : String) { fn() { @sf.t(key) } }
+  let closed : @signals.Signal[Bool] = @signals.signal(false)
   let is_revoked = fn() {
-    match revoked {
+    closed.get() ||
+    (match revoked {
       Some(r) => r.get()
       None => false
+    })
+  }
+  let mark_revoked = fn() {
+    closed.set(true)
+    match revoked {
+      Some(r) => r.set(true)
+      None => ()
     }
   }
   let clear_fields = fn() {
@@ -325,6 +334,11 @@ pub fn vault_editor_dialog(
       v.show(fn() { error.get() != "" }, fn(e) { @sf.words_node(e, fn() { error.get() }, fn() { @sf.list_note_bad }) |> ignore })
     },
     fn(v, shut) {
+      let dismiss_editor = fn() {
+        mark_revoked()
+        clear_fields()
+        shut()
+      }
       match row {
         Some(r) => {
           let on = [("workspace", ws), ("vault", vault)]
@@ -340,8 +354,7 @@ pub fn vault_editor_dialog(
                 danger=true,
                 fn() {
                   guard !@signals.untracked(is_revoked) else { return }
-                  clear_fields()
-                  shut()
+                  dismiss_editor()
                   vault_act(core, ws, "deleteItem", [("vault", str(vault)), ("item", str(text(Some(r), "id")))], @sf.t("web-pages.vault.deleteWhat"), done=@sf.t(
                       "web-pages.vault.deleted",
                     ), then=fn(_) {
@@ -366,8 +379,7 @@ pub fn vault_editor_dialog(
         said("common.cancel"),
         fn() {
           v.focus_let_go()
-          clear_fields()
-          shut()
+          dismiss_editor()
         },
         tone=Ghost,
       )
@@ -389,15 +401,13 @@ pub fn vault_editor_dialog(
             done=@sf.t("web-pages.vault.saved"),
             then=fn(_) {
               saving.set(false)
-              clear_fields()
-              shut()
+              dismiss_editor()
             },
             failed=fn(err) {
               saving.set(false)
               // written elsewhere first: the vault was read again; what is here was written over that, so it goes
               if text(Some(err), "code") == "vault_conflict" {
-                clear_fields()
-                shut()
+                dismiss_editor()
               } else {
                 error.set(vault_said(err).unwrap_or(""))
               }
@@ -411,6 +421,7 @@ pub fn vault_editor_dialog(
       |> ignore
     },
     on_gone=fn() {
+      mark_revoked()
       clear_fields()
       on_gone()
     },
@@ -461,10 +472,19 @@ pub fn vault_about_dialog(
   on_clear_handle(fn() { typed.set("") })
   let saving : @signals.Signal[Bool] = @signals.signal(false)
   let error : @signals.Signal[String] = @signals.signal("")
+  let closed : @signals.Signal[Bool] = @signals.signal(false)
   let is_revoked = fn() {
-    match revoked {
+    closed.get() ||
+    (match revoked {
       Some(r) => r.get()
       None => false
+    })
+  }
+  let mark_revoked = fn() {
+    closed.set(true)
+    match revoked {
+      Some(r) => r.set(true)
+      None => ()
     }
   }
   let save = fn(shut : () -> Unit) {
@@ -521,14 +541,18 @@ pub fn vault_about_dialog(
       )
     },
     fn(v, shut) {
+      let dismiss_about = fn() {
+        mark_revoked()
+        typed.set("")
+        shut()
+      }
       @sf.foot_spacer_node(v)
       @sf.button_node(
         v,
         fn() { @sf.t("common.cancel") },
         fn() {
           v.focus_let_go()
-          typed.set("")
-          shut()
+          dismiss_about()
         },
         tone=Ghost,
       )
@@ -539,7 +563,7 @@ pub fn vault_about_dialog(
         fn() {
           guard !@signals.untracked(is_revoked) else { return }
           v.focus_let_go()
-          save(shut)
+          save(dismiss_about)
         },
         tone=Primary,
         busy=fn() { saving.get() },
@@ -548,6 +572,7 @@ pub fn vault_about_dialog(
       |> ignore
     },
     on_gone=fn() {
+      mark_revoked()
       typed.set("")
       on_gone()
     },
