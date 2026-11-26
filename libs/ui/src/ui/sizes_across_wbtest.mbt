@@ -160,7 +160,7 @@ test "sizes across: a tip stopping dead as it starts to shrink about its middle,
   out.append(again)
   let found : Set[String] = Set([])
   for f in out {
-    found.add(
+    found.insert(
       match f.find(": ") {
         Some(i) => f.unsafe_substring(start=0, end=i)
         None => f

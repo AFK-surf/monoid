@@ -436,7 +436,7 @@ pub fn share_entry(src : Source, at : DriveAt, e : DvEntry) -> Unit {
     root,
     dv_join(at.path, e.name),
     fn(b) {
-      all.write_bytes(b)
+      all.write_bytesview(b)
       true
     },
     fn(err) {

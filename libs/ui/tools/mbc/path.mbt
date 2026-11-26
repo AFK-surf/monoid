@@ -119,15 +119,15 @@ fn normpath(p : Bytes) -> Bytes {
     }
   }
   let buf = Buffer()
-  buf.write_bytes(prefix)
+  buf.write_bytesview(prefix)
   if absolute {
-    buf.write_bytes(sep())
+    buf.write_bytesview(sep())
   }
   for k, part in parts {
     if k > 0 {
-      buf.write_bytes(sep())
+      buf.write_bytesview(sep())
     }
-    buf.write_bytes(part)
+    buf.write_bytesview(part)
   }
   let out = buf.to_bytes()
   if out.length() == 0 {

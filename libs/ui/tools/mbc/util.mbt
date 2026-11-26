@@ -89,7 +89,7 @@ fn cat(parts : Array[Bytes]) -> Bytes {
   }
   let buf = Buffer(capacity=n)
   for p in parts {
-    buf.write_bytes(p)
+    buf.write_bytesview(p)
   }
   buf.to_bytes()
 }
@@ -271,7 +271,7 @@ fn replace_all(t : Bytes, from : Bytes, to : Bytes) -> Bytes {
       break
     }
     buf.write_bytesview(t[i:k])
-    buf.write_bytes(to)
+    buf.write_bytesview(to)
     i = k + from.length()
   }
   buf.write_bytesview(t[i:])

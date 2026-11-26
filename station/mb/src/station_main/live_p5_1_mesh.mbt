@@ -668,7 +668,7 @@ async fn KeeperParts::ask(self : KeeperParts, name : String, a : Json) -> Json {
           _ => None
         }
         self.plane.marks
-        .change(name?=field_of("name").map(Some(_)), emoji?=field_of("emoji").map(Some(_)), icon?=field_of("icon").map(Some(_)), (t("name"), t("emoji"), t("icon")))
+        .change(name?=field_of("name").map(x => Some(x)), emoji?=field_of("emoji").map(x => Some(x)), icon?=field_of("icon").map(x => Some(x)), (t("name"), t("emoji"), t("icon")))
         .to_json() catch {
           @cloud_net.MarkRefusal(m) => raise @gate.MarkRefusal(m)
         }

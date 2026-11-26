@@ -761,7 +761,7 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
               q = p
             }
             if root >= 0 {
-              roots.add(root)
+              roots.insert(root)
             }
           }
           for i in order {
@@ -874,7 +874,7 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         ]
       }
       let key = (ident, n.kind, n.bg)
-      here.add(key)
+      here.insert(key)
       let ns = match sizes_steady.seen.get(key) {
         Some(s) => s
         None => {
@@ -1041,7 +1041,7 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
             let ratio = if across { scale_ratio[p].0 } else { scale_ratio[p].1 }
             let expected = w + (cpos - ppos) * (1.0 - ratio)
             if (expected - f.3).abs() < 0.01 {
-              carried.add(k)
+              carried.insert(k)
               break
             }
           }
@@ -1058,7 +1058,7 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       }
       let mut p = self.nodes[f.0].parent
       while p >= 0 {
-        holds.add((p, measure_across(f.2)))
+        holds.insert((p, measure_across(f.2)))
         p = self.nodes[p].parent
       }
     }
@@ -1113,7 +1113,7 @@ fn Tester::hold_sizes_steady(self : Tester) -> Unit {
     if found.contains(who) {
       continue
     }
-    found.add(who)
+    found.insert(who)
     let bar = bars.get(sizes_steady.file).unwrap_or(0)
     motion_known_said(check, sizes_steady.file, found.length(), bar, f)
     if self.motion == Count {

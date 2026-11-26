@@ -150,7 +150,7 @@ fn Tester::gaps_steady_faults(self : Tester, now : Double, period : Double) -> A
     // it cut short otherwise, are two ways, not one seen to jump between them)
     let key = a.0 + "\u{1}" + b.0
     let said = gaps_said(a.0) + " | " + gaps_said(b.0)
-    here.add(key)
+    here.insert(key)
     let room = b.2 - (a.2 + a.4)
     let w = match gaps_steady.ways.get(key) {
       Some(w) if now - w.at <= 2.5 * period => w
@@ -231,7 +231,7 @@ fn Tester::hold_gaps_steady(self : Tester) -> Unit {
     if gaps_steady.found.contains(who) {
       continue
     }
-    gaps_steady.found.add(who)
+    gaps_steady.found.insert(who)
     let bar = gaps_steady_bars.get(gaps_steady.file).unwrap_or(0)
     motion_known_said("gaps_steady", gaps_steady.file, gaps_steady.found.length(), bar, f)
     if self.motion == Count {

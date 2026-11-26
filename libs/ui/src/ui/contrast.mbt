@@ -70,7 +70,7 @@ fn inst_owners_clear() -> Unit {
 pub fn Ctx::own_colours(self : Ctx, node : Int) -> Unit {
   ignore(self)
   if inst_owners.on {
-    inst_owners.own_colours.add(node)
+    inst_owners.own_colours.insert(node)
   }
 }
 
@@ -797,12 +797,12 @@ fn Ctx::contrast_faults_drawn(self : Ctx, marks : Double) -> Array[String] {
   let a = self.inst
   let pictures = self.pictures()
   for n in inst_owners.own_colours {
-    pictures.add(n)
+    pictures.insert(n)
   }
   let disabled : Set[Int] = Set([])
   for s in self.sems {
     if s.disabled {
-      disabled.add(s.node)
+      disabled.insert(s.node)
     }
   }
   let holding = self.holding()
@@ -814,7 +814,7 @@ fn Ctx::contrast_faults_drawn(self : Ctx, marks : Double) -> Array[String] {
   let seen : Set[String] = Set([])
   let say = fn(s : String) {
     if !seen.contains(s) {
-      seen.add(s)
+      seen.insert(s)
       out.push(s)
     }
   }

@@ -13,7 +13,7 @@ fn json_str(buf : @buffer.Buffer, s : BytesView) -> Unit {
       buf.write_byte(c)
     } else if c < b' ' {
       let hex = b"0123456789abcdef"
-      buf.write_bytes(b"\\u00")
+      buf.write_bytesview(b"\\u00")
       buf.write_byte(hex[c.to_int() >> 4])
       buf.write_byte(hex[c.to_int() & 15])
     } else {
@@ -27,47 +27,47 @@ fn json_str(buf : @buffer.Buffer, s : BytesView) -> Unit {
 /// The split's numbers as JSON (--json)
 fn manifest_json(s : Split) -> Bytes {
   let buf = Buffer()
-  buf.write_bytes(b"{\"units\": {")
+  buf.write_bytesview(b"{\"units\": {")
   for i, f in s.files {
     if i > 0 {
-      buf.write_bytes(b", ")
+      buf.write_bytesview(b", ")
     }
     json_str(buf, f.0)
-    buf.write_bytes(b": ")
-    buf.write_bytes(bint(f.1))
+    buf.write_bytesview(b": ")
+    buf.write_bytesview(bint(f.1))
   }
-  buf.write_bytes(b"}, \"functions\": ")
-  buf.write_bytes(bint(s.functions))
-  buf.write_bytes(b", \"globals\": ")
-  buf.write_bytes(bint(s.globals))
-  buf.write_bytes(b", \"stats\": {")
+  buf.write_bytesview(b"}, \"functions\": ")
+  buf.write_bytesview(bint(s.functions))
+  buf.write_bytesview(b", \"globals\": ")
+  buf.write_bytesview(bint(s.globals))
+  buf.write_bytesview(b", \"stats\": {")
   for i, x in s.stats {
     if i > 0 {
-      buf.write_bytes(b", ")
+      buf.write_bytesview(b", ")
     }
     json_str(buf, utf8(x.0))
-    buf.write_bytes(b": ")
-    buf.write_bytes(bint(x.1))
+    buf.write_bytesview(b": ")
+    buf.write_bytesview(bint(x.1))
   }
-  buf.write_bytes(b"}, \"init_bytes\": ")
-  buf.write_bytes(bint(s.init_bytes))
-  buf.write_bytes(b", \"unit_loads\": [")
+  buf.write_bytesview(b"}, \"init_bytes\": ")
+  buf.write_bytesview(bint(s.init_bytes))
+  buf.write_bytesview(b", \"unit_loads\": [")
   for i, l in s.unit_loads {
     if i > 0 {
-      buf.write_bytes(b", ")
+      buf.write_bytesview(b", ")
     }
-    buf.write_bytes(bint(l))
+    buf.write_bytesview(bint(l))
   }
-  buf.write_bytes(b"], \"largest_function\": ")
+  buf.write_bytesview(b"], \"largest_function\": ")
   json_str(buf, s.largest_function)
-  buf.write_bytes(b", \"made_global\": [")
+  buf.write_bytesview(b", \"made_global\": [")
   for i, n in s.made_global {
     if i > 0 {
-      buf.write_bytes(b", ")
+      buf.write_bytesview(b", ")
     }
     json_str(buf, n)
   }
-  buf.write_bytes(b"]}")
+  buf.write_bytesview(b"]}")
   buf.to_bytes()
 }
 
@@ -266,7 +266,7 @@ fn run_jobs(
       let buf = Buffer()
       for i in mine[k] {
         let r = work(i)
-        buf.write_bytes(
+        buf.write_bytesview(
           utf8("\{i} \{r.0} \{r.1} \{r.2}\n"),
         )
       }

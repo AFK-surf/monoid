@@ -127,7 +127,7 @@ pub fn Ctx::overlay(
   // (leaving, its exit drawn: the opening it was over, its back given up with it; open again, another; as the last
   // frame has it, taking nothing from here: Ctx::layer_takes)
   if inert {
-    self.layers_gone.add(id)
+    self.layers_gone.insert(id)
     match self.layer_gen.get(id) {
       Some(g) => {
         self.layer_gen.remove(id)
@@ -1063,12 +1063,12 @@ fn Ctx::layers_dismissed(self : Ctx, gone : Array[(Int, Dismiss)], tell? : Bool 
     // (this opening takes no input from here: what it drew pressed or scrolled, its keys, a press held in it; the last
     // frame's facts of it kept as they are, its view drawing it going from the next)
     self.layer_retired[id] = gen
-    self.layers_gone.add(id)
+    self.layers_gone.insert(id)
     layer_back_spent[gen] = id
     for i in 0..<self.count {
       let n = self.nodes[i]
       if n.id != 0 && self.layer_of(i) == id {
-        layer_retired_ids.add(n.id)
+        layer_retired_ids.insert(n.id)
       }
     }
     if self.down && layer_retired_ids.contains(self.active) {

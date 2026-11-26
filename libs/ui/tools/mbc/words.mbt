@@ -89,7 +89,7 @@ fn quote_all(ws : Array[Bytes]) -> Bytes {
     if i > 0 {
       buf.write_byte(b' ')
     }
-    buf.write_bytes(quote(w))
+    buf.write_bytesview(quote(w))
   }
   buf.to_bytes()
 }
@@ -144,7 +144,7 @@ fn json_dumps(s : Bytes) -> Bytes {
   let buf = Buffer()
   let hex = b"0123456789abcdef"
   let u = fn(cp : Int) {
-    buf.write_bytes(b"\\u")
+    buf.write_bytesview(b"\\u")
     for k in 0..<4 {
       buf.write_byte(hex[(cp >> (12 - 4 * k)) & 15])
     }
@@ -154,19 +154,19 @@ fn json_dumps(s : Bytes) -> Bytes {
   for ch in st {
     let c = ch.to_int()
     if c == 0x22 {
-      buf.write_bytes(b"\\\"")
+      buf.write_bytesview(b"\\\"")
     } else if c == 0x5C {
-      buf.write_bytes(b"\\\\")
+      buf.write_bytesview(b"\\\\")
     } else if c == 0x0A {
-      buf.write_bytes(b"\\n")
+      buf.write_bytesview(b"\\n")
     } else if c == 0x0D {
-      buf.write_bytes(b"\\r")
+      buf.write_bytesview(b"\\r")
     } else if c == 0x09 {
-      buf.write_bytes(b"\\t")
+      buf.write_bytesview(b"\\t")
     } else if c == 0x08 {
-      buf.write_bytes(b"\\b")
+      buf.write_bytesview(b"\\b")
     } else if c == 0x0C {
-      buf.write_bytes(b"\\f")
+      buf.write_bytesview(b"\\f")
     } else if c < 0x20 {
       u(c)
     } else if c < 0x80 {

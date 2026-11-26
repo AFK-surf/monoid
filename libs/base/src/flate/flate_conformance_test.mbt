@@ -51,18 +51,18 @@ test "conformance: exact 32 KiB sliding window boundary backreferences (32767, 3
   let marker = Bytes::makei(64, i => (0x41 + i % 26).to_byte())
   for dist in [32767, 32768, 32769] {
     let buf = Buffer()
-    buf.write_bytes(marker)
-    buf.write_bytes(prng_bytes(dist - 64, 0x13579BDFU + dist.reinterpret_as_uint()))
-    buf.write_bytes(marker)
+    buf.write_bytesview(marker)
+    buf.write_bytesview(prng_bytes(dist - 64, 0x13579BDFU + dist.reinterpret_as_uint()))
+    buf.write_bytesview(marker)
     let data = buf.to_bytes()
     assert_eq(@flate.inflate(@flate.deflate(data)), Some(data))
     // Also via streaming Deflater split across the window boundary
     let d = @flate.Deflater::new()
     let out = Buffer()
-    out.write_bytes(d.push(data[0:16384]))
-    out.write_bytes(d.push(data[16384:dist]))
-    out.write_bytes(d.push(data[dist:]))
-    out.write_bytes(d.finish())
+    out.write_bytesview(d.push(data[0:16384]))
+    out.write_bytesview(d.push(data[16384:dist]))
+    out.write_bytesview(d.push(data[dist:]))
+    out.write_bytesview(d.finish())
     assert_eq(@flate.inflate(out.to_bytes()), Some(data))
   }
 }
@@ -72,20 +72,20 @@ test "conformance: gzip header flags combinations (FTEXT, FEXTRA, FNAME, FCOMMEN
   // Build a custom gzip header with chosen flags around a valid deflate payload
   let make_gzip = (payload : Bytes, flg : Int, extra : Bytes, name : Bytes, comment : Bytes, hcrc : Bool) => {
     let hdr = Buffer()
-    hdr.write_bytes(b"\x1f\x8b\x08")
+    hdr.write_bytesview(b"\x1f\x8b\x08")
     hdr.write_byte(flg.to_byte())
-    hdr.write_bytes(b"\x00\x00\x00\x00\x00\x03")
+    hdr.write_bytesview(b"\x00\x00\x00\x00\x00\x03")
     if (flg & 0x04) != 0 {
       hdr.write_byte((extra.length() & 0xFF).to_byte())
       hdr.write_byte(((extra.length() >> 8) & 0xFF).to_byte())
-      hdr.write_bytes(extra)
+      hdr.write_bytesview(extra)
     }
     if (flg & 0x08) != 0 {
-      hdr.write_bytes(name)
+      hdr.write_bytesview(name)
       hdr.write_byte(b'\x00')
     }
     if (flg & 0x10) != 0 {
-      hdr.write_bytes(comment)
+      hdr.write_bytesview(comment)
       hdr.write_byte(b'\x00')
     }
     if hcrc {
@@ -93,7 +93,7 @@ test "conformance: gzip header flags combinations (FTEXT, FEXTRA, FNAME, FCOMMEN
       hdr.write_byte((c16 & 0xFFU).to_byte())
       hdr.write_byte(((c16 >> 8) & 0xFFU).to_byte())
     }
-    hdr.write_bytes(@flate.deflate(payload))
+    hdr.write_bytesview(@flate.deflate(payload))
     hdr.write_uint_le(@codec.crc32(payload))
     hdr.write_uint_le(payload.length().reinterpret_as_uint())
     hdr.to_bytes()
@@ -116,9 +116,9 @@ test "conformance: gzip header flags combinations (FTEXT, FEXTRA, FNAME, FCOMMEN
   let g2 = @flate.gzip(b"")
   let g3 = make_gzip(b"third", 0x1E, b"ex", b"n", b"c", true)
   let cat = Buffer()
-  cat.write_bytes(g1)
-  cat.write_bytes(g2)
-  cat.write_bytes(g3)
+  cat.write_bytesview(g1)
+  cat.write_bytesview(g2)
+  cat.write_bytesview(g3)
   assert_eq(@flate.gunzip(cat.to_bytes()), Some(b"first-third"))
 }
 

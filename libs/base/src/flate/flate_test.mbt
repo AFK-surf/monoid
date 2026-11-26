@@ -47,10 +47,10 @@ fn streamed(data : Bytes, size : Int) -> Bytes {
   let mut at = 0
   while at < data.length() {
     let end = if at + size < data.length() { at + size } else { data.length() }
-    out.write_bytes(d.push(data[at:end]))
+    out.write_bytesview(d.push(data[at:end]))
     at = end
   }
-  out.write_bytes(d.finish())
+  out.write_bytesview(d.finish())
   out.to_bytes()
 }
 
@@ -228,10 +228,10 @@ test "deflate's bytes inflate back whole, whatever they are" {
 ///|
 test "a Deflater given pieces makes a stream that inflates whole, past 64 KiB and the window's slides" {
   let data = Buffer()
-  data.write_bytes(drawn(40000))
-  data.write_bytes(Bytes::make(30000, b'q'))
-  data.write_bytes(noise(20000))
-  data.write_bytes(drawn(40000))
+  data.write_bytesview(drawn(40000))
+  data.write_bytesview(Bytes::make(30000, b'q'))
+  data.write_bytesview(noise(20000))
+  data.write_bytesview(drawn(40000))
   let data = data.to_bytes()
   for size in [1000, 4096, 32768, 65535, 65536, 100000, 200000] {
     let s = streamed(data, size)
@@ -244,12 +244,12 @@ test "a Deflater given pieces makes a stream that inflates whole, past 64 KiB an
   let end = d.finish()
   assert_true(more.length() < 40)
   let whole = Buffer()
-  whole.write_bytes(first)
-  whole.write_bytes(more)
-  whole.write_bytes(end)
+  whole.write_bytesview(first)
+  whole.write_bytesview(more)
+  whole.write_bytesview(end)
   let twice = Buffer()
-  twice.write_bytes(fox())
-  twice.write_bytes(fox())
+  twice.write_bytesview(fox())
+  twice.write_bytesview(fox())
   assert_eq(@flate.inflate(whole.to_bytes()), Some(twice.to_bytes()))
   // nothing is made of nothing, nor after the end
   assert_eq(d.push(fox()), b"")

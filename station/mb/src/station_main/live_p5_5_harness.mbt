@@ -94,7 +94,7 @@ async fn p5_5_step(host : @host.Host, ask : Json) -> Json {
         "coord" => (bus.coord_ask.val)(jtext_or_empty(ask, "name"), jfield(ask, "arg"))
         "peers" =>
           {
-            "methods": Json::array(bus.peer_handlers.keys().map(Json::string(_)).collect()),
+            "methods": Json::array(bus.peer_handlers.keys().map(x => Json::string(x)).collect()),
             "prefixes": Json::array(bus.peer_prefixes.map(p => Json::string(p.0))),
           }
         "peer" => {

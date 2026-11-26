@@ -337,7 +337,7 @@ fn split_stable(
                 if i > off {
                   buf.write_byte(b'\x00')
                 }
-                buf.write_bytes(collapse_space(tb[i]))
+                buf.write_bytesview(collapse_space(tb[i]))
               }
               return Some(buf.to_bytes())
             }
@@ -394,7 +394,7 @@ fn split_stable(
       let n = layout_named[key_of[parse_int(text[m.0:m.1])]]
       used.add(n)
       buf.write_bytesview(text[last:m.0])
-      buf.write_bytes(n)
+      buf.write_bytesview(n)
       last = m.1
     }
     buf.write_bytesview(text[last:])
@@ -1103,11 +1103,11 @@ fn split_stable(
     let buf = Buffer()
     let lns = layout_names.sorted()
     for n in lns {
-      buf.write_bytes(b"CSPLIT_INTERNAL const uint32_t ")
-      buf.write_bytes(n)
-      buf.write_bytes(b" = ")
-      buf.write_bytes(bint(layouts[n]))
-      buf.write_bytes(b";\n")
+      buf.write_bytesview(b"CSPLIT_INTERNAL const uint32_t ")
+      buf.write_bytesview(n)
+      buf.write_bytesview(b" = ")
+      buf.write_bytesview(bint(layouts[n]))
+      buf.write_bytesview(b";\n")
     }
     buf.to_bytes()
   }
@@ -1115,7 +1115,7 @@ fn split_stable(
   let lines_of = fn(ts : Array[Bytes]) {
     let buf = Buffer()
     for t in ts {
-      buf.write_bytes(t)
+      buf.write_bytesview(t)
       if !ends(t, b"\n") {
         buf.write_byte(b'\n')
       }
@@ -1263,23 +1263,23 @@ fn split_stable(
       bcmp(fixes[a].0, fixes[b].0)
     })
     let buf = Buffer()
-    buf.write_bytes(
+    buf.write_bytesview(
       b"static const struct { uint32_t *meta; const uint32_t *layout; } csplit_layout_fixes[",
     )
-    buf.write_bytes(bint(fixes.length()))
-    buf.write_bytes(b"] = {\n")
+    buf.write_bytesview(bint(fixes.length()))
+    buf.write_bytesview(b"] = {\n")
     for i in sorted {
       let (g, l) = fixes[i]
       fix_names.add(g)
-      buf.write_bytes(b"  { &")
-      buf.write_bytes(g)
-      buf.write_bytes(b".meta, &")
-      buf.write_bytes(l)
-      buf.write_bytes(b" },\n")
+      buf.write_bytesview(b"  { &")
+      buf.write_bytesview(g)
+      buf.write_bytesview(b".meta, &")
+      buf.write_bytesview(l)
+      buf.write_bytesview(b" },\n")
     }
-    buf.write_bytes(b"};\nCSPLIT_INTERNAL void csplit_fix_layouts(void) {\n  for (int i = 0; i < ")
-    buf.write_bytes(bint(fixes.length()))
-    buf.write_bytes(
+    buf.write_bytesview(b"};\nCSPLIT_INTERNAL void csplit_fix_layouts(void) {\n  for (int i = 0; i < ")
+    buf.write_bytesview(bint(fixes.length()))
+    buf.write_bytesview(
       b"; i++) {\n    *csplit_layout_fixes[i].meta |= (*csplit_layout_fixes[i].layout & MOONBIT_REGULAR_LAYOUT_INDEX_MASK)\n      << MOONBIT_REGULAR_LAYOUT_INDEX_SHIFT;\n  }\n}\n",
     )
     buf.to_bytes()
@@ -1292,22 +1292,22 @@ fn split_stable(
   } else {
     let buf = Buffer()
     for f in init_calls {
-      buf.write_bytes(b"CSPLIT_INTERNAL void ")
-      buf.write_bytes(f)
-      buf.write_bytes(b"(void);\n")
+      buf.write_bytesview(b"CSPLIT_INTERNAL void ")
+      buf.write_bytesview(f)
+      buf.write_bytesview(b"(void);\n")
     }
     if fixes.length() > 0 {
-      buf.write_bytes(b"CSPLIT_INTERNAL void csplit_fix_layouts(void);\n")
+      buf.write_bytesview(b"CSPLIT_INTERNAL void csplit_fix_layouts(void);\n")
     }
-    buf.write_bytes(b"void moonbit_init() {\n")
+    buf.write_bytesview(b"void moonbit_init() {\n")
     if fixes.length() > 0 {
-      buf.write_bytes(b"csplit_fix_layouts();\n")
+      buf.write_bytesview(b"csplit_fix_layouts();\n")
     }
     for f in init_calls {
-      buf.write_bytes(f)
-      buf.write_bytes(b"();\n")
+      buf.write_bytesview(f)
+      buf.write_bytesview(b"();\n")
     }
-    buf.write_bytes(b"}\n")
+    buf.write_bytesview(b"}\n")
     put(
       b"init.c",
       unit_text(BSet::new(), [buf.to_bytes()[:]], Some([]), BSet::new()),

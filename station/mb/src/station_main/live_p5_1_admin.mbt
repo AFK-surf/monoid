@@ -985,7 +985,7 @@ async fn P51::platform_overview(self : P51, viewer : Json, lang : String) -> Jso
     // (hub.ts `prepareSessionChatNames`: the cc index's chat names of these sessions, built before they are shown)
     prepare_session_chat_names: Some((keys, k) => ignore(
       host.rt.fork_quiet(name="session chat names", async fn() {
-        ignore((bus.reader_ask.val)("$sessionChatNames", Json::array(keys.map(Json::string(_))), lang)) catch {
+        ignore((bus.reader_ask.val)("$sessionChatNames", Json::array(keys.map(x => Json::string(x))), lang)) catch {
           _ => ()
         }
         k()

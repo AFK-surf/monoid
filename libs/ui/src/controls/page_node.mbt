@@ -2828,7 +2828,7 @@ pub fn[K : Hash + Eq] pg_blocks_read(was : Ref[Set[K]], other : Ref[Bool], now :
   let seen : Set[K] = Set([])
   let mut came = false
   for k in now {
-    seen.add(k)
+    seen.insert(k)
     if !was.val.contains(k) {
       came = true
     }

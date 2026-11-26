@@ -129,7 +129,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
         presented_open_of(serial)
       }
       // (drawn from its layer made till its way out is over: one closed before it ever showed, never)
-      let shown = fn() { tree_presented.add(serial) }
+      let shown = fn() { tree_presented.insert(serial) }
       let gone = fn() {
         // (its way out over: the host lets it go, as its own once drawn no more)
         tree_presented.remove(serial)
