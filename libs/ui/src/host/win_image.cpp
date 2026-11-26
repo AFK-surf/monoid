@@ -23,6 +23,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "raw_premul.h"
 #include "win.h"
 
 #pragma comment(lib, "windowscodecs.lib")
@@ -238,6 +239,91 @@ done:
   return srv;
 }
 
+// MBRAWPRE premultiplied RGBA8888: uploaded straight to a D3D11 R8G8B8A8_UNORM texture without COM/WIC.
+// Sets *is_raw_premul = 1 whenever the 8-byte magic matches so malformed payloads never fall through to WIC.
+static ID3D11ShaderResourceView *raw_premul(const uint8_t *d, size_t n, int max_px, int *w, int *h, int *ow, int *oh,
+                                            int *is_raw_premul) {
+  *is_raw_premul = mb_raw_premul_is(d, n);
+  if (!*is_raw_premul) return NULL;
+  int rw = 0, rh = 0;
+  if (!mb_raw_premul_parse(d, n, &rw, &rh)) return NULL;
+  ID3D11Device *dev = (ID3D11Device *)mb_render_device();
+  if (!dev) return NULL;
+  int device_max = dev->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 ? 16384 : 8192;
+  int tw = 0, th = 0;
+  mb_raw_premul_target_size(rw, rh, max_px, device_max, &tw, &th);
+  uint8_t *scaled = NULL;
+  const uint8_t *base = d + MB_RAW_PREMUL_HEADER_BYTES;
+  if (tw != rw || th != rh) {
+    scaled = (uint8_t *)malloc((size_t)tw * (size_t)th * 4u);
+    if (!scaled) return NULL;
+    mb_raw_premul_downscale(base, rw, rh, scaled, tw, th);
+    base = scaled;
+  }
+  UINT mips = 1;
+  for (UINT m = (UINT)(tw > th ? tw : th); m > 1; m >>= 1) mips++;
+  if (mips > 16) mips = 16;
+  D3D11_SUBRESOURCE_DATA inits[16] = {};
+  uint8_t *mip_bufs[16] = {};
+  inits[0] = {base, (UINT)tw * 4u, 0};
+  UINT mw = (UINT)tw, mh = (UINT)th;
+  const uint8_t *prev = base;
+  for (UINT level = 1; level < mips; level++) {
+    UINT nw = mw > 1 ? (mw >> 1) : 1;
+    UINT nh = mh > 1 ? (mh >> 1) : 1;
+    uint8_t *dst = (uint8_t *)malloc((size_t)nw * (size_t)nh * 4u);
+    if (!dst) {
+      // Match decode(): truncate the mip chain on OOM rather than failing the whole image upload.
+      mips = level;
+      break;
+    }
+    mip_bufs[level] = dst;
+    for (UINT y = 0; y < nh; y++) {
+      UINT y0 = y * 2, y1 = y0 + 1 < mh ? y0 + 1 : y0;
+      const uint8_t *r0 = prev + (size_t)y0 * mw * 4;
+      const uint8_t *r1 = prev + (size_t)y1 * mw * 4;
+      uint8_t *out = dst + (size_t)y * nw * 4;
+      for (UINT x = 0; x < nw; x++) {
+        UINT x0 = x * 2, x1 = x0 + 1 < mw ? x0 + 1 : x0;
+        const uint8_t *p00 = r0 + x0 * 4, *p10 = r0 + x1 * 4;
+        const uint8_t *p01 = r1 + x0 * 4, *p11 = r1 + x1 * 4;
+        out[x * 4 + 0] = (uint8_t)((p00[0] + p10[0] + p01[0] + p11[0] + 2) >> 2);
+        out[x * 4 + 1] = (uint8_t)((p00[1] + p10[1] + p01[1] + p11[1] + 2) >> 2);
+        out[x * 4 + 2] = (uint8_t)((p00[2] + p10[2] + p01[2] + p11[2] + 2) >> 2);
+        out[x * 4 + 3] = (uint8_t)((p00[3] + p10[3] + p01[3] + p11[3] + 2) >> 2);
+      }
+    }
+    inits[level] = {dst, nw * 4, 0};
+    prev = dst;
+    mw = nw;
+    mh = nh;
+  }
+  D3D11_TEXTURE2D_DESC td = {};
+  td.Width = (UINT)tw;
+  td.Height = (UINT)th;
+  td.MipLevels = mips;
+  td.ArraySize = 1;
+  td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  td.SampleDesc.Count = 1;
+  td.Usage = D3D11_USAGE_IMMUTABLE;
+  td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  ID3D11Texture2D *tex = NULL;
+  ID3D11ShaderResourceView *srv = NULL;
+  if (SUCCEEDED(dev->CreateTexture2D(&td, inits, &tex))) {
+    if (FAILED(dev->CreateShaderResourceView(tex, NULL, &srv))) srv = NULL;
+    tex->Release();
+  }
+  for (UINT level = 1; level < mips; level++) free(mip_bufs[level]);
+  free(scaled);
+  if (srv) {
+    *w = tw;
+    *h = th;
+    *ow = rw;
+    *oh = rh;
+  }
+  return srv;
+}
+
 // Uncompressed top-down 32-bit BI_RGB BMP: uploaded straight to a D3D11 texture without COM/WIC.
 static ID3D11ShaderResourceView *raw_bmp(const uint8_t *d, size_t n, int max_px, int *w, int *h) {
   if (n < 54 || d[0] != 'B' || d[1] != 'M') return NULL;
@@ -324,15 +410,19 @@ static void CALLBACK work(PTP_CALLBACK_INSTANCE inst, void *arg) {
   int w = 0, h = 0, ow = 0, oh = 0;
   wchar_t cached[MAX_PATH];
   const wchar_t *path = j->src;
-  if (!j->pdf && j->data && (srv = raw_bmp(j->data, j->len, j->max_px, &w, &h)) != NULL) ow = w, oh = h;
-  HRESULT co = srv ? E_ABORT : CoInitializeEx(NULL, COINIT_MULTITHREADED);
-  if (!srv && path && (!wcsncmp(path, L"http://", 7) || !wcsncmp(path, L"https://", 8))) {
+  int is_raw_premul = 0;
+  if (!j->pdf && j->data) {
+    srv = raw_premul(j->data, j->len, j->max_px, &w, &h, &ow, &oh, &is_raw_premul);
+    if (!is_raw_premul && (srv = raw_bmp(j->data, j->len, j->max_px, &w, &h)) != NULL) ow = w, oh = h;
+  }
+  HRESULT co = (srv || is_raw_premul) ? E_ABORT : CoInitializeEx(NULL, COINIT_MULTITHREADED);
+  if (!srv && !is_raw_premul && path && (!wcsncmp(path, L"http://", 7) || !wcsncmp(path, L"https://", 8))) {
     path = SUCCEEDED(URLDownloadToCacheFileW(NULL, path, cached, MAX_PATH, 0, NULL)) ? cached : NULL;
   } else if (path && !wcsncmp(path, L"file://", 7)) {
     path += 7;
   }
-  if (!srv && SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
-                                         __uuidof(IWICImagingFactory), (void **)&wic))) {
+  if (!srv && !is_raw_premul && SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, NULL, CLSCTX_INPROC_SERVER,
+                                                           __uuidof(IWICImagingFactory), (void **)&wic))) {
     HRESULT hr = E_FAIL;
     if (j->pdf) {
       srv = pdf_draw(wic, j->pdf, j->page, j->max_px, &w, &h, &ow, &oh);
@@ -456,11 +546,19 @@ int32_t mb_host_image_pixels(int32_t id, moonbit_bytes_t out) {
   ID3D11Device *dev = (ID3D11Device *)mb_render_device();
   im.srv->GetResource(&res);
   if ((size_t)Moonbit_array_length(out) >= (size_t)im.w * im.h * 4 && res && dc && dev) {
+    ID3D11Texture2D *src_tex = NULL;
+    DXGI_FORMAT fmt = DXGI_FORMAT_B8G8R8A8_UNORM;
+    if (SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), (void **)&src_tex))) {
+      D3D11_TEXTURE2D_DESC sd = {};
+      src_tex->GetDesc(&sd);
+      fmt = sd.Format;
+      src_tex->Release();
+    }
     D3D11_TEXTURE2D_DESC td = {};
     td.Width = im.w;
     td.Height = im.h;
     td.MipLevels = td.ArraySize = 1;
-    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.Format = fmt;
     td.SampleDesc.Count = 1;
     td.Usage = D3D11_USAGE_STAGING;
     td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
@@ -471,11 +569,22 @@ int32_t mb_host_image_pixels(int32_t id, moonbit_bytes_t out) {
         for (int y = 0; y < im.h; y++) {
           const uint8_t *row = (const uint8_t *)m.pData + (size_t)y * m.RowPitch;
           uint8_t *o = out + (size_t)y * im.w * 4;
-          for (int x = 0; x < im.w; x++) {
-            o[x * 4] = row[x * 4 + 2];
-            o[x * 4 + 1] = row[x * 4 + 1];
-            o[x * 4 + 2] = row[x * 4];
-            o[x * 4 + 3] = row[x * 4 + 3];
+          if (fmt == DXGI_FORMAT_R8G8B8A8_UNORM) {
+            memcpy(o, row, (size_t)im.w * 4);
+          } else if (fmt == DXGI_FORMAT_B8G8R8X8_UNORM) {
+            for (int x = 0; x < im.w; x++) {
+              o[x * 4] = row[x * 4 + 2];
+              o[x * 4 + 1] = row[x * 4 + 1];
+              o[x * 4 + 2] = row[x * 4];
+              o[x * 4 + 3] = 255;
+            }
+          } else {
+            for (int x = 0; x < im.w; x++) {
+              o[x * 4] = row[x * 4 + 2];
+              o[x * 4 + 1] = row[x * 4 + 1];
+              o[x * 4 + 2] = row[x * 4];
+              o[x * 4 + 3] = row[x * 4 + 3];
+            }
           }
         }
         dc->Unmap(staging, 0);

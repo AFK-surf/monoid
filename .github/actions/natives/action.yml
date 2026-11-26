@@ -14,6 +14,10 @@ inputs:
     description: Include reader-harness archives ('true' for check-station, check-core, and side workflows; 'false' skips them)
     required: false
     default: 'false'
+  exclude-parts:
+    description: Comma-separated native part names to skip restoring from R2 manifests (in addition to reader-harness when harness != 'true')
+    required: false
+    default: ''
   from-pipeline:
     description: Download native receipt artifacts from the same-SHA pipeline.yml run instead of the current workflow run
     required: false
@@ -97,7 +101,12 @@ runs:
       env:
         TARGETS: ${{ inputs.targets }}
         HARNESS: ${{ inputs.harness }}
+        EXCLUDE_PARTS: ${{ inputs.exclude-parts }}
       run: |
+        excluded="${EXCLUDE_PARTS:-}"
+        if [ "$HARNESS" != true ]; then
+          excluded="${excluded:+${excluded},}reader-harness"
+        fi
         extra=()
-        if [ "$HARNESS" != true ]; then extra=(--exclude-parts reader-harness); fi
+        if [ -n "$excluded" ]; then extra=(--exclude-parts "$excluded"); fi
         node scripts/native-handoff.mjs get "$RUNNER_TEMP/natives" "$GITHUB_SHA" --targets "$TARGETS" ${extra[@]+"${extra[@]}"}

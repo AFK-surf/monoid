@@ -1,0 +1,415 @@
+// Personal-lock-based vault `LockState` for workspaces not in security mode.
+// 1:1 with `station/src/cloud/vault-lock.ts`.
+
+import "form"
+import "lock"
+import "station_rules_bridge"
+
+pub struct VaultRecordSummary {
+  pub owner : String
+  pub deleted : Bool
+  pub sig_key : String
+  pub members : Array[String]
+}
+
+pub struct BoxCertSummary {
+  pub device : String
+  pub at : Int64
+  pub raw : form::Json
+}
+
+pub struct PersonalLockSources {
+  /// Kept person chains: `(genesis_hash, active_chain_entries)`.
+  pub chains : Array[(String, Array[form::Json])]
+  /// Known member `sub -> email`.
+  pub member_emails : Map[String, String]
+  /// Known member `sub -> role`.
+  pub member_roles : Map[String, String]
+  /// Workspace vault records (optional; empty if none).
+  pub vaults : Array[VaultRecordSummary]
+  /// Workspace box certificates (optional; empty if none).
+  pub boxes : Array[BoxCertSummary]
+  /// Verify a box certificate against a single-person `LockState`.
+  pub cert_ok : (lock::LockState, BoxCertSummary) -> Bool
+}
+
+struct FoldedPerson {
+  genesis : String
+  head : String
+  at : Int64
+  chain : Array[form::Json]
+  devices : Array[lock::PersonDevice]
+}
+
+fn sub_of_chain(chain : Array[form::Json]) -> Option[String] {
+  if chain.length() == 0 {
+    return None
+  }
+  match form::json_field(Some(chain[0]), "ws") {
+    Some(form::Json::Str(ws)) => {
+      if ws.starts_with("person:") {
+        Some(ws.slice(7, ws.length()))
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+fn fold_one_person(
+  genesis : String,
+  chain : Array[form::Json],
+  sub : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Option[FoldedPerson] {
+  let p = match station_rules_bridge::person_fold(chain, sub, verify_fn=verify_fn) {
+    Ok(v) => v
+    Err(_) => return None
+  }
+  let last_at : Int64 = if chain.length() > 0 {
+    match form::json_field(Some(chain[chain.length() - 1]), "at") {
+      Some(form::Json::Num(n)) => n.to_int64()
+      _ => 0.to_int64()
+    }
+  } else {
+    0.to_int64()
+  }
+  Some(FoldedPerson::{
+    genesis: genesis,
+    head: p.head,
+    at: last_at,
+    chain: chain,
+    devices: p.devices.values(),
+  })
+}
+
+fn bare_lock_state(
+  ws : String,
+  members : form::OrderedMap[lock::Member],
+  devices : form::OrderedMap[lock::Device],
+  sign_keys : form::OrderedMap[Array[String]],
+  persons : form::OrderedMap[String],
+) -> lock::LockState {
+  let signed : form::OrderedMap[Bool] = form::OrderedMap::new()
+  let ds = devices.values()
+  let mut i = 0
+  while i < ds.length() {
+    signed.set(ds[i].sub, true)
+    i = i + 1
+  }
+  lock::LockState::{
+    ws: ws,
+    seq: 0.0,
+    head: "",
+    genesis: "",
+    origins: [],
+    rp_id: "",
+    cloud_keys: form::Json::Null,
+    members: members,
+    devices: devices,
+    sign_keys: sign_keys,
+    passkeys: form::OrderedMap::new(),
+    signed: signed,
+    stations: form::OrderedMap::new(),
+    gateways: form::OrderedMap::new(),
+    persons: persons,
+    disabled: false,
+    moved: None,
+  }
+}
+
+fn lock_of_one(ws : String, sub : String, f : FoldedPerson) -> lock::LockState {
+  let members : form::OrderedMap[lock::Member] = form::OrderedMap::new()
+  members.set(sub, lock::Member::{ sub: sub, email: "", role: "member" })
+  let devices : form::OrderedMap[lock::Device] = form::OrderedMap::new()
+  let sign_keys : form::OrderedMap[Array[String]] = form::OrderedMap::new()
+  let mut i = 0
+  while i < f.devices.length() {
+    let d = f.devices[i]
+    devices.set(d.id, lock::Device::{
+      id: d.id,
+      sub: sub,
+      kind: "app",
+      label: d.label,
+      sign_key: d.sign_key,
+      endpoints: None,
+      exp: None,
+      by: None,
+      own: true,
+    })
+    sign_keys.set(d.id, d.sign_keys)
+    i = i + 1
+  }
+  let persons : form::OrderedMap[String] = form::OrderedMap::new()
+  persons.set(sub, f.genesis)
+  bare_lock_state(ws, members, devices, sign_keys, persons)
+}
+
+fn device_has_key(d : lock::PersonDevice, key : String) -> Bool {
+  match d.sign_key {
+    Some(sk) => if sk == key { return true }
+    None => ()
+  }
+  let mut i = 0
+  while i < d.sign_keys.length() {
+    if d.sign_keys[i] == key {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn log_has_key(f : FoldedPerson, key : String) -> Bool {
+  let mut i = 0
+  while i < f.devices.length() {
+    if device_has_key(f.devices[i], key) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn log_has_device(f : FoldedPerson, dev_id : String) -> Bool {
+  let mut i = 0
+  while i < f.devices.length() {
+    if f.devices[i].id == dev_id {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn choose_person_log(
+  ws : String,
+  sub : String,
+  logs : Array[FoldedPerson],
+  vaults : Array[VaultRecordSummary],
+  boxes : Array[BoxCertSummary],
+  cert_ok : (lock::LockState, BoxCertSummary) -> Bool,
+) -> FoldedPerson {
+  if logs.length() == 1 {
+    return logs[0]
+  }
+  // 1. Prefer a log that signed an active own vault of `sub`.
+  let mut vi = 0
+  while vi < vaults.length() {
+    let v = vaults[vi]
+    if v.owner == sub && !v.deleted && v.sig_key != "" {
+      let mut li = 0
+      while li < logs.length() {
+        if log_has_key(logs[li], v.sig_key) {
+          return logs[li]
+        }
+        li = li + 1
+      }
+    }
+    vi = vi + 1
+  }
+  // 2. Else prefer the log verified by the newest box certificate (`at` descending).
+  let sorted_boxes : Array[BoxCertSummary] = []
+  let mut bi = 0
+  while bi < boxes.length() {
+    sorted_boxes.push(boxes[bi])
+    bi = bi + 1
+  }
+  // Insertion sort by `at` descending
+  let mut si = 1
+  while si < sorted_boxes.length() {
+    let cur = sorted_boxes[si]
+    let mut sj = si - 1
+    while sj >= 0 && sorted_boxes[sj].at < cur.at {
+      sorted_boxes[sj + 1] = sorted_boxes[sj]
+      sj = sj - 1
+    }
+    sorted_boxes[sj + 1] = cur
+    si = si + 1
+  }
+  let mut ci = 0
+  while ci < sorted_boxes.length() {
+    let cert = sorted_boxes[ci]
+    let mut li = 0
+    while li < logs.length() {
+      if log_has_device(logs[li], cert.device) && cert_ok(lock_of_one(ws, sub, logs[li]), cert) {
+        return logs[li]
+      }
+      li = li + 1
+    }
+    ci = ci + 1
+  }
+  // 3. Else pick the newest log (`at` ascending, take last).
+  let mut best = logs[0]
+  let mut k = 1
+  while k < logs.length() {
+    if logs[k].at >= best.at {
+      best = logs[k]
+    }
+    k = k + 1
+  }
+  best
+}
+
+fn select_person_logs(
+  ws : String,
+  sources : PersonalLockSources,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> form::OrderedMap[FoldedPerson] {
+  let by_sub : form::OrderedMap[Array[FoldedPerson]] = form::OrderedMap::new()
+  let mut i = 0
+  while i < sources.chains.length() {
+    let (gen, chain) = sources.chains[i]
+    match sub_of_chain(chain) {
+      Some(sub) => {
+        match fold_one_person(gen, chain, sub, verify_fn) {
+          Some(f) => {
+            match by_sub.get(sub) {
+              Some(arr) => arr.push(f)
+              None => by_sub.set(sub, [f])
+            }
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  let picked : form::OrderedMap[FoldedPerson] = form::OrderedMap::new()
+  let entries = by_sub.entries()
+  let mut ei = 0
+  while ei < entries.length() {
+    let (sub, logs) = entries[ei]
+    let chosen = choose_person_log(ws, sub, logs, sources.vaults, sources.boxes, sources.cert_ok)
+    picked.set(sub, chosen)
+    ei = ei + 1
+  }
+  picked
+}
+
+fn normalize_role(r : Option[String]) -> String {
+  match r {
+    Some(v) => {
+      if v == "owner" || v == "admin" || v == "member" || v == "viewer" {
+        v
+      } else {
+        "member"
+      }
+    }
+    None => "member"
+  }
+}
+
+fn merge_unique_strings(prev : Array[String], next : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  let mut i = 0
+  while i < prev.length() {
+    if !seen.contains(prev[i]) {
+      seen.set(prev[i], true)
+      out.push(prev[i])
+    }
+    i = i + 1
+  }
+  let mut j = 0
+  while j < next.length() {
+    if !seen.contains(next[j]) {
+      seen.set(next[j], true)
+      out.push(next[j])
+    }
+    j = j + 1
+  }
+  out
+}
+
+/// Build the workspace's personal-lock vault `LockState` (`genesis: ""`), 1:1 with `vault-lock.ts`.
+pub fn personal_vault_lock(
+  ws : String,
+  sources : PersonalLockSources,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> lock::LockState {
+  let picked = select_person_logs(ws, sources, verify_fn)
+  let members : form::OrderedMap[lock::Member] = form::OrderedMap::new()
+  let ensure_member = fn(sub : String) -> Unit {
+    if !members.contains(sub) {
+      let email = match sources.member_emails.get(sub) {
+        Some(e) => e
+        None => ""
+      }
+      let role = normalize_role(sources.member_roles.get(sub))
+      members.set(sub, lock::Member::{ sub: sub, email: email, role: role })
+    }
+  }
+  let email_keys = sources.member_emails.keys()
+  let mut ei = 0
+  while ei < email_keys.length() {
+    ensure_member(email_keys[ei])
+    ei = ei + 1
+  }
+  let mut vi = 0
+  while vi < sources.vaults.length() {
+    let v = sources.vaults[vi]
+    if !v.deleted {
+      ensure_member(v.owner)
+      let mut mi = 0
+      while mi < v.members.length() {
+        ensure_member(v.members[mi])
+        mi = mi + 1
+      }
+    }
+    vi = vi + 1
+  }
+  let devices : form::OrderedMap[lock::Device] = form::OrderedMap::new()
+  let sign_keys : form::OrderedMap[Array[String]] = form::OrderedMap::new()
+  let persons : form::OrderedMap[String] = form::OrderedMap::new()
+  let p_entries = picked.entries()
+  let mut pi = 0
+  while pi < p_entries.length() {
+    let (sub, f) = p_entries[pi]
+    ensure_member(sub)
+    persons.set(sub, f.genesis)
+    let mut di = 0
+    while di < f.devices.length() {
+      let d = f.devices[di]
+      devices.set(d.id, lock::Device::{
+        id: d.id,
+        sub: sub,
+        kind: "app",
+        label: d.label,
+        sign_key: d.sign_key,
+        endpoints: None,
+        exp: None,
+        by: None,
+        own: true,
+      })
+      let merged = match sign_keys.get(d.id) {
+        Some(prev) => merge_unique_strings(prev, d.sign_keys)
+        None => d.sign_keys
+      }
+      sign_keys.set(d.id, merged)
+      di = di + 1
+    }
+    pi = pi + 1
+  }
+  bare_lock_state(ws, members, devices, sign_keys, persons)
+}
+
+/// Selected personal chain per member `sub` outside security mode.
+pub fn personal_vault_chains(
+  ws : String,
+  sources : PersonalLockSources,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Map[String, Array[form::Json]] {
+  let picked = select_person_logs(ws, sources, verify_fn)
+  let out : Map[String, Array[form::Json]] = Map::new()
+  let entries = picked.entries()
+  let mut i = 0
+  while i < entries.length() {
+    let (sub, f) = entries[i]
+    out.set(sub, f.chain)
+    i = i + 1
+  }
+  out
+}

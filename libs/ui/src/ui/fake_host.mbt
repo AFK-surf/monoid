@@ -968,17 +968,144 @@ fn FakeHost::image_load(self : FakeHost, src : String, max_px : Int) -> Int {
 }
 
 ///|
-/// Bytes decoded: a live host's decode; else as the host decoded these bytes, when kept with the text; else a made-up
-/// 400 × 300.
+/// Whether `data` starts with the 8-byte `MBRAWPRE` magic.
+fn is_raw_premul(data : Bytes) -> Bool {
+  data.length() >= 8 &&
+  data[0] == b'M' &&
+  data[1] == b'B' &&
+  data[2] == b'R' &&
+  data[3] == b'A' &&
+  data[4] == b'W' &&
+  data[5] == b'P' &&
+  data[6] == b'R' &&
+  data[7] == b'E'
+}
+
+///|
+/// Validates a `MBRAWPRE` payload: `len >= 16`, LE `1 <= w, h <= 16384`, exact `w * h * 4 == len - 16`.
+fn parse_raw_premul(data : Bytes) -> (Int, Int)? {
+  if !is_raw_premul(data) || data.length() < 16 {
+    return None
+  }
+  let w = data[8].to_int().to_int64() |
+    (data[9].to_int().to_int64() << 8) |
+    (data[10].to_int().to_int64() << 16) |
+    (data[11].to_int().to_int64() << 24)
+  let h = data[12].to_int().to_int64() |
+    (data[13].to_int().to_int64() << 8) |
+    (data[14].to_int().to_int64() << 16) |
+    (data[15].to_int().to_int64() << 24)
+  if w <= 0L || h <= 0L || w > 16384L || h > 16384L {
+    return None
+  }
+  if w * h * 4L != (data.length() - 16).to_int64() {
+    return None
+  }
+  Some((w.to_int(), h.to_int()))
+}
+
+///|
+/// Premultiplied RGBA8888 bilinear downscaler for FakeHost `MBRAWPRE` payloads exceeding `max_px`.
+fn downscale_raw_premul(data : Bytes, sw : Int, sh : Int, dw : Int, dh : Int) -> FixedArray[Byte] {
+  let out = FixedArray::make(dw * dh * 4, b'\x00')
+  let sx_scale = sw.to_double() / dw.to_double()
+  let sy_scale = sh.to_double() / dh.to_double()
+  for y in 0..<dh {
+    let fy = (y.to_double() + 0.5) * sy_scale - 0.5
+    let y0 = if fy < 0.0 { 0 } else if fy.to_int() >= sh { sh - 1 } else { fy.to_int() }
+    let y1 = if y0 + 1 < sh { y0 + 1 } else { sh - 1 }
+    let wy = if fy < 0.0 { 0.0 } else if fy >= (sh - 1).to_double() { 0.0 } else { fy - y0.to_double() }
+    let wy0 = 1.0 - wy
+    for x in 0..<dw {
+      let fx = (x.to_double() + 0.5) * sx_scale - 0.5
+      let x0 = if fx < 0.0 { 0 } else if fx.to_int() >= sw { sw - 1 } else { fx.to_int() }
+      let x1 = if x0 + 1 < sw { x0 + 1 } else { sw - 1 }
+      let wx = if fx < 0.0 { 0.0 } else if fx >= (sw - 1).to_double() { 0.0 } else { fx - x0.to_double() }
+      let wx0 = 1.0 - wx
+      let i00 = 16 + (y0 * sw + x0) * 4
+      let i10 = 16 + (y0 * sw + x1) * 4
+      let i01 = 16 + (y1 * sw + x0) * 4
+      let i11 = 16 + (y1 * sw + x1) * 4
+      let w00 = wx0 * wy0
+      let w10 = wx * wy0
+      let w01 = wx0 * wy
+      let w11 = wx * wy
+      let a_f = data[i00 + 3].to_int().to_double() * w00 +
+        data[i10 + 3].to_int().to_double() * w10 +
+        data[i01 + 3].to_int().to_double() * w01 +
+        data[i11 + 3].to_int().to_double() * w11
+      let a_i = a_f.round().to_int()
+      let a = if a_i < 0 { 0 } else if a_i > 255 { 255 } else { a_i }
+      let dst = (y * dw + x) * 4
+      for c in 0..<3 {
+        let v_f = data[i00 + c].to_int().to_double() * w00 +
+          data[i10 + c].to_int().to_double() * w10 +
+          data[i01 + c].to_int().to_double() * w01 +
+          data[i11 + c].to_int().to_double() * w11
+        let v_i = v_f.round().to_int()
+        let v = if v_i < 0 { 0 } else if v_i > a { a } else { v_i }
+        out[dst + c] = v.to_byte()
+      }
+      out[dst + 3] = a.to_byte()
+    }
+  }
+  out
+}
+
+///|
+/// Bytes decoded: a live host's decode; else `MBRAWPRE` premultiplied RGBA decoded directly; else as the host decoded
+/// these bytes, when kept with the text; else a made-up 400 × 300.
 fn FakeHost::image_load_bytes(self : FakeHost, data : Bytes, max_px : Int) -> Int {
   self.image_loads.push(("bytes:\{data.length()}", max_px))
-  let head = image_bytes_head(data, max_px)
   let id = match self.live {
-    Some(l) => live_image(self, l, (l.host.image_load_bytes)(data, max_px), { "ib": head })
+    Some(l) => {
+      let head = image_bytes_head(data, max_px)
+      live_image(self, l, (l.host.image_load_bytes)(data, max_px), { "ib": head })
+    }
     None =>
-      match (text_table.val, kept_sizes(kept_answer("ib", head))) {
-        (Some(_), Some((w, h, ow, oh))) => fake_image_sized(self, w, h, ow, oh)
-        _ => fake_image(self, 400, 300, max_px)
+      if is_raw_premul(data) {
+        match parse_raw_premul(data) {
+          None => {
+            self.image_ids += 1
+            let iid = self.image_ids
+            self.wants = true
+            self.images[iid] = { state: 0, w: 0.0, h: 0.0, ow: 0.0, oh: 0.0 }
+            self.fail_images[iid] = true
+            iid
+          }
+          Some((w, h)) => {
+            let (dw, dh) = if max_px > 0 && (w > max_px || h > max_px) {
+              let k = max_px.to_double() / (if w > h { w } else { h }).to_double()
+              let rw = (w.to_double() * k).round().to_int()
+              let rh = (h.to_double() * k).round().to_int()
+              (
+                if rw < 1 { 1 } else if rw > max_px { max_px } else { rw },
+                if rh < 1 { 1 } else if rh > max_px { max_px } else { rh },
+              )
+            } else {
+              (w, h)
+            }
+            let iid = fake_image_sized(self, dw.to_double(), dh.to_double(), w.to_double(), h.to_double())
+            let px = if dw == w && dh == h {
+              let n = w * h * 4
+              let out = FixedArray::make(n, b'\x00')
+              for i in 0..<n {
+                out[i] = data[16 + i]
+              }
+              out
+            } else {
+              downscale_raw_premul(data, w, h, dw, dh)
+            }
+            self.pixels_of[iid] = px
+            iid
+          }
+        }
+      } else {
+        let head = image_bytes_head(data, max_px)
+        match (text_table.val, kept_sizes(kept_answer("ib", head))) {
+          (Some(_), Some((w, h, ow, oh))) => fake_image_sized(self, w, h, ow, oh)
+          _ => fake_image(self, 400, 300, max_px)
+        }
       }
   }
   // (said to take a while: done that long after it is asked for, Tester::decode_bytes_after)
@@ -1142,6 +1269,8 @@ fn FakeHost::drawn_pixels_of(self : FakeHost, inst : FixedArray[Double], count :
 ///|
 fn FakeHost::image_free(self : FakeHost, id : Int) -> Unit {
   self.images.remove(id)
+  self.fail_images.remove(id)
+  self.pixels_of.remove(id)
   match self.image_bytes.get(id) {
     Some(n) => {
       self.image_bytes.remove(id)

@@ -519,7 +519,7 @@ test "大屏: a short Markdown beside a chat does not show 滚动到底部, keep
 }
 
 ///|
-test "大屏: a reader tab in the chat's panel widens its column to 48em (768) when the panel is wide, stays panel_w - 44 when narrower than 812, and returns to 34em (544) over the whole window" {
+test "大屏: a reader tab in the chat's panel widens its column to 48em (768) when the panel is wide, stays panel_w - 44 when narrower than 812, and keeps a Markdown document's 48em (768) over the whole window" {
   // wide window so the side panel is >= 1000 wide
   let t = beside_tester(mode="chat-view-side", w=3000.0, h=900.0)
   let (_, _, panel_w, _) = t.get(Toolbar, label="说明.md").rect
@@ -534,12 +534,12 @@ test "大屏: a reader tab in the chat's panel widens its column to 48em (768) w
   assert_true((wide_w - 768.0).abs() <= 1.0, msg="panel tab column text width \{wide_w}, want 768 ±1")
   let faults = t.audit().filter(fn(f) { !f.contains("edge_node.mbt:37") })
   assert_eq(faults, [], msg="audit faults in wide panel: \{Repr(faults)}")
-  // fullscreen over the whole window: returns to 34em (544)
+  // fullscreen over the whole window: a Markdown document keeps its 48em (768), never narrower than in the panel
   t.click(Button, label=@sf.t("web-main.preview.fullWindow"))
   t.run_for(@ui.move_most_ms)
   assert_true(full_now("说明.md"), msg="tab over the whole window")
   let full_w = col_w("发布前要做的")
-  assert_true((full_w - 544.0).abs() <= 1.0, msg="fullscreen tab column text width \{full_w}, want 544 ±1")
+  assert_true((full_w - 768.0).abs() <= 1.0, msg="fullscreen tab column text width \{full_w}, want 768 ±1")
   // back in a panel narrower than 812: text width = panel_w - 44
   t.click(Button, label=@sf.t("web-main.preview.moveBeside"))
   t.run_for(@ui.move_most_ms)

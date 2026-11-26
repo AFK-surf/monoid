@@ -1,0 +1,982 @@
+// ScreenHub (`station/src/screens/hub.ts`):
+// Screen source registry, exclusive driving control (`drive` / `taken` / `watchOnly` / `endView`),
+// cross-workspace visibility isolation, `accessShown`, `openAs` agent guard, and JSON projection.
+
+import "base_codec"
+import "station_ops"
+
+pub let WATCH_HELD_MS : Int64 = 90_000.to_int64()
+pub let ADDRESS_MOST : Int = 2048
+pub let HUB_EVENTS_MAX : Int = 1024
+
+pub fn address_shown(address : Option[String]) -> Option[String] {
+  match address {
+    Some(s) => if s != "" && s.length() <= ADDRESS_MOST { Some(s) } else { None }
+    None => None
+  }
+}
+
+pub struct ScreenRefused {
+  pub status : Int
+  pub key : String
+  pub message : String
+}
+
+pub fn ScreenRefused::new(status : Int, key : String, args : Array[(String, String)] = []) -> ScreenRefused {
+  ScreenRefused::{
+    status: status,
+    key: key,
+    message: station_ops::tr(station_ops::Lang::En, key, args),
+  }
+}
+
+pub struct AccessShown {
+  pub capture : Bool
+  pub control : Bool
+  pub message : String
+  pub app : Option[String]
+  pub path : Option[String]
+  pub asking : Bool
+  pub help : Option[String]
+}
+
+fn is_linux_help_reason(r : String) -> Bool {
+  r == "linuxNoDisplay" || r == "linuxTools" || r == "linuxToolsFailed" ||
+  r == "linuxUnavailable" || r == "linuxPortalUnavailable" || r == "linuxX11FallbackUnavailable"
+}
+
+pub fn access_shown(access : Option[ScreenAccess], lang : station_ops::Lang) -> Option[AccessShown] {
+  let a = match access {
+    Some(x) => x
+    None => return None
+  }
+  if a.capture && a.control && a.unsupported is None && a.reason is None {
+    return None
+  }
+  let app_name = match a.app {
+    Some(s) => if s != "" { s } else { "still.fail Helper" }
+    None => "still.fail Helper"
+  }
+  let named : Array[(String, String)] = [("app", app_name)]
+  let message = match a.reason {
+    Some(r) => station_ops::tr(lang, "station.screen." + r, [])
+    None => match a.unsupported {
+      Some(u) => {
+        if u == "platform" {
+          station_ops::tr(lang, "station.screen.unsupported", [])
+        } else {
+          station_ops::tr(lang, "station.screen.noHelper", [])
+        }
+      }
+      None => {
+        let part1 = if !a.capture && !a.control {
+          station_ops::tr(lang, "station.screen.bothOff", named)
+        } else if !a.capture {
+          station_ops::tr(lang, "station.screen.captureOff", named)
+        } else {
+          station_ops::tr(lang, "station.screen.controlOff", named)
+        }
+        let part2 = station_ops::tr(
+          lang,
+          if a.asking { "station.screen.asking" } else { "station.screen.toAsk" },
+          named,
+        )
+        part1 + " " + part2
+      }
+    }
+  }
+  let help = match a.reason {
+    Some(r) => if is_linux_help_reason(r) { Some("linux-desktop") } else { None }
+    None => None
+  }
+  Some(AccessShown::{
+    capture: a.capture,
+    control: a.control,
+    message: message,
+    app: a.app,
+    path: a.path,
+    asking: a.asking,
+    help: help,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Registered source descriptor & workspace isolation
+// ---------------------------------------------------------------------------
+
+pub struct RegisteredSource {
+  pub id : String
+  pub kind : ScreenKind
+  pub mut title : String
+  pub mut width : Int
+  pub mut height : Int
+  pub mut access : Option[ScreenAccess]
+  pub clipboard : Array[ClipType]
+  pub reveal : Bool
+  pub peek : Bool
+  pub farview : Bool
+  pub closable : Bool
+  pub user_tab : Bool
+  pub mut sleeping : Bool
+  pub mut site : Option[String]
+  pub mut address : Option[String]
+  pub open_url : Bool
+  pub debug_install_folder : Option[String]
+  pub poses : Bool
+  pub model : Option[String]
+  pub opened_by : Option[String]
+  pub since : Option[Int64]
+  /// Workspace ownership for isolation:
+  /// - `None`: shared host source (desktop, simulators, user tabs) visible to all workspaces.
+  /// - `Some("")`: home workspace only.
+  /// - `Some(ws_id)`: only that joined workspace.
+  pub workspace : Option[String]
+}
+
+pub fn RegisteredSource::desktop(id : String, title : String, width : Int, height : Int) -> RegisteredSource {
+  RegisteredSource::{
+    id: id,
+    kind: ScreenKind::Desktop,
+    title: title,
+    width: width,
+    height: height,
+    access: None,
+    clipboard: [ClipType::Text, ClipType::Png],
+    reveal: true,
+    peek: false,
+    farview: false,
+    closable: false,
+    user_tab: false,
+    sleeping: false,
+    site: None,
+    address: None,
+    open_url: false,
+    debug_install_folder: None,
+    poses: false,
+    model: None,
+    opened_by: None,
+    since: None,
+    workspace: None,
+  }
+}
+
+pub fn source_visible_to_workspace(source : RegisteredSource, viewer_workspace : Option[String]) -> Bool {
+  match source.workspace {
+    None => true
+    Some(owner_ws) => match viewer_workspace {
+      Some(vw) => owner_ws == vw
+      None => owner_ws == ""
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Watchers, Views, and Exclusive Driving Control
+// ---------------------------------------------------------------------------
+
+pub struct WatcherEntry {
+  pub view_id : String
+  pub name : String
+  pub mut control : Bool
+  pub at : Int64
+  pub device : Option[String]
+  pub self_id : Option[String]
+  pub client : Option[String]
+  pub app : Option[String]
+  pub agent : Bool
+  pub mut taken : Bool
+  pub mut ended : Bool
+  pub mut ended_by : Option[String]
+  pub mut watch_only_by : Option[String]
+  pub can_end : Bool
+  pub can_watch_only : Bool
+  /// Gamepad slots driven by this view; released automatically when demoted to watch-only or ended.
+  pub driven_gamepads : Array[Int]
+  /// Whether this view currently holds the virtual microphone watch.
+  pub mut watching_mic : Bool
+}
+
+pub struct ViewShown {
+  pub id : String
+  pub name : String
+  pub control : Bool
+  pub at : Int64
+  pub device : Option[String]
+  pub self_id : Option[String]
+  pub client : Option[String]
+  pub app : Option[String]
+  pub agent : Bool
+}
+
+pub struct PeopleState {
+  pub viewers : Array[String]
+  pub controlled_by : Array[String]
+  pub views : Array[ViewShown]
+}
+
+pub struct DriveGrantResult {
+  pub control : Bool
+  pub took : Array[String]
+  pub taken_token : Option[Int]
+}
+
+pub struct JoinParams {
+  pub name : String
+  pub control : Bool
+  pub device : Option[String]
+  pub self_id : Option[String]
+  pub client : Option[String]
+  pub app : Option[String]
+  pub agent : Bool
+  pub taken : Bool
+  pub taken_token : Option[Int]
+  pub can_end : Bool
+  pub can_watch_only : Bool
+}
+
+pub fn JoinParams::human(name : String, control : Bool, device : String, taken : Bool) -> JoinParams {
+  JoinParams::{
+    name: name,
+    control: control,
+    device: Some(device),
+    self_id: None,
+    client: None,
+    app: None,
+    agent: false,
+    taken: taken,
+    taken_token: None,
+    can_end: true,
+    can_watch_only: true,
+  }
+}
+
+pub struct HubEvent {
+  pub kind : String
+  pub screen_id : String
+  pub view_id : String
+  pub by : Option[String]
+  pub released_gamepads : Array[Int]
+  pub stopped_mic : Bool
+}
+
+pub struct ScreenHub {
+  pub sources : Array[RegisteredSource]
+  pub views : Map[String, Array[WatcherEntry]]
+  pub mut view_seq : Int
+  pub mut token_seq : Int
+  /// `(device + "\n" + screen_id) -> hold_until_ms`
+  pub held : Map[String, Int64]
+  pub held_keys : Array[String]
+  /// `token -> (device + "\n" + screen_id)`
+  pub taking : Map[Int, String]
+  pub mut browser_available : Bool
+  pub mut drop_folder : Option[String]
+  pub events : Array[HubEvent]
+}
+
+pub fn ScreenHub::new() -> ScreenHub {
+  ScreenHub::{
+    sources: [],
+    views: Map::new(),
+    view_seq: 0,
+    token_seq: 0,
+    held: Map::new(),
+    held_keys: [],
+    taking: Map::new(),
+    browser_available: false,
+    drop_folder: None,
+    events: [],
+  }
+}
+
+fn is_critical_hub_event(ev : HubEvent) -> Bool {
+  ev.released_gamepads.length() > 0 || ev.stopped_mic
+}
+
+fn ScreenHub::push_event(self : ScreenHub, ev : HubEvent) -> Unit {
+  if self.events.length() >= HUB_EVENTS_MAX {
+    // Prefer evicting the oldest non-critical event so gamepad/mic release events are never dropped.
+    let mut evict_idx = -1
+    for i in 0..<self.events.length() {
+      if !is_critical_hub_event(self.events[i]) {
+        evict_idx = i
+        break
+      }
+    }
+    if evict_idx >= 0 {
+      let kept : Array[HubEvent] = []
+      for i in 0..<self.events.length() {
+        if i != evict_idx { kept.push(self.events[i]) }
+      }
+      while self.events.length() > 0 { let _ = self.events.pop() }
+      for i in 0..<kept.length() { self.events.push(kept[i]) }
+    } else if !is_critical_hub_event(ev) {
+      return
+    }
+  }
+  self.events.push(ev)
+}
+
+pub fn ScreenHub::drain_events(self : ScreenHub) -> Array[HubEvent] {
+  let out : Array[HubEvent] = []
+  for i in 0..<self.events.length() {
+    out.push(self.events[i])
+  }
+  while self.events.length() > 0 { let _ = self.events.pop() }
+  out
+}
+
+pub fn ScreenHub::prune_held(self : ScreenHub, now : Int64) -> Int {
+  let kept : Array[String] = []
+  let mut removed = 0
+  for i in 0..<self.held_keys.length() {
+    let k = self.held_keys[i]
+    match self.held.get(k) {
+      Some(until) => {
+        if until <= now {
+          self.held.remove(k)
+          removed = removed + 1
+        } else {
+          kept.push(k)
+        }
+      }
+      None => ()
+    }
+  }
+  while self.held_keys.length() > 0 { let _ = self.held_keys.pop() }
+  for i in 0..<kept.length() { self.held_keys.push(kept[i]) }
+  removed
+}
+
+pub fn ScreenHub::add(self : ScreenHub, source : RegisteredSource) -> Unit {
+  let mut replaced = false
+  for i in 0..<self.sources.length() {
+    if self.sources[i].id == source.id {
+      self.sources[i] = source
+      replaced = true
+      break
+    }
+  }
+  if !replaced {
+    self.sources.push(source)
+  }
+}
+
+pub fn ScreenHub::remove(self : ScreenHub, id : String) -> Bool {
+  let kept : Array[RegisteredSource] = []
+  let mut removed = false
+  for i in 0..<self.sources.length() {
+    if self.sources[i].id == id {
+      removed = true
+    } else {
+      kept.push(self.sources[i])
+    }
+  }
+  if removed {
+    while self.sources.length() > 0 { let _ = self.sources.pop() }
+    for i in 0..<kept.length() { self.sources.push(kept[i]) }
+  }
+  removed
+}
+
+pub fn ScreenHub::get(self : ScreenHub, id : String) -> Option[RegisteredSource] {
+  for i in 0..<self.sources.length() {
+    if self.sources[i].id == id {
+      return Some(self.sources[i])
+    }
+  }
+  None
+}
+
+pub fn ScreenHub::get_for_workspace(
+  self : ScreenHub,
+  id : String,
+  viewer_workspace : Option[String],
+) -> Option[RegisteredSource] {
+  match self.get(id) {
+    Some(s) => if source_visible_to_workspace(s, viewer_workspace) { Some(s) } else { None }
+    None => None
+  }
+}
+
+pub fn ScreenHub::list_for_workspace(self : ScreenHub, viewer_workspace : Option[String]) -> Array[RegisteredSource] {
+  let out : Array[RegisteredSource] = []
+  for i in 0..<self.sources.length() {
+    if source_visible_to_workspace(self.sources[i], viewer_workspace) {
+      out.push(self.sources[i])
+    }
+  }
+  out
+}
+
+pub fn ScreenHub::people(self : ScreenHub, id : String) -> PeopleState {
+  let viewers : Array[String] = []
+  let controlled_by : Array[String] = []
+  let views_out : Array[ViewShown] = []
+  match self.views.get(id) {
+    Some(list) => {
+      for i in 0..<list.length() {
+        let w = list[i]
+        if w.ended { continue }
+        viewers.push(w.name)
+        if w.control { controlled_by.push(w.name) }
+        views_out.push(ViewShown::{
+          id: w.view_id,
+          name: w.name,
+          control: w.control,
+          at: w.at,
+          device: w.device,
+          self_id: w.self_id,
+          client: w.client,
+          app: w.app,
+          agent: w.agent,
+        })
+      }
+    }
+    None => ()
+  }
+  PeopleState::{ viewers: viewers, controlled_by: controlled_by, views: views_out }
+}
+
+pub fn ScreenHub::join(self : ScreenHub, id : String, params : JoinParams, now : Int64) -> String {
+  self.view_seq = self.view_seq + 1
+  let view_id = "v" + self.view_seq.to_string()
+  let from_drive = if params.control && !params.agent {
+    match params.taken_token {
+      Some(tok) => {
+        match self.taking.get(tok) {
+          Some(_) => {
+            self.taking.remove(tok)
+            true
+          }
+          None => false
+        }
+      }
+      None => false
+    }
+  } else {
+    false
+  }
+  let entry = WatcherEntry::{
+    view_id: view_id,
+    name: params.name,
+    control: params.control,
+    at: now,
+    device: params.device,
+    self_id: params.self_id,
+    client: params.client,
+    app: params.app,
+    agent: params.agent,
+    taken: params.taken || from_drive,
+    ended: false,
+    ended_by: None,
+    watch_only_by: None,
+    can_end: params.can_end,
+    can_watch_only: params.can_watch_only,
+    driven_gamepads: [],
+    watching_mic: false,
+  }
+  let list = match self.views.get(id) {
+    Some(existing) => existing
+    None => []
+  }
+  list.push(entry)
+  self.views.set(id, list)
+  view_id
+}
+
+pub fn ScreenHub::leave(self : ScreenHub, id : String, view_id : String) -> Bool {
+  let list = match self.views.get(id) {
+    Some(existing) => existing
+    None => return false
+  }
+  let kept : Array[WatcherEntry] = []
+  let mut removed = false
+  for i in 0..<list.length() {
+    let w = list[i]
+    if w.view_id == view_id {
+      removed = true
+      let released_pads : Array[Int] = []
+      for j in 0..<w.driven_gamepads.length() { released_pads.push(w.driven_gamepads[j]) }
+      let stopped_mic = w.watching_mic
+      if released_pads.length() > 0 || stopped_mic {
+        self.push_event(HubEvent::{
+          kind: "leave",
+          screen_id: id,
+          view_id: view_id,
+          by: None,
+          released_gamepads: released_pads,
+          stopped_mic: stopped_mic,
+        })
+      }
+    } else {
+      kept.push(w)
+    }
+  }
+  if kept.length() == 0 {
+    self.views.remove(id)
+  } else {
+    self.views.set(id, kept)
+  }
+  removed
+}
+
+pub fn ScreenHub::record_view_gamepad(self : ScreenHub, id : String, view_id : String, slot : Int) -> Bool {
+  match self.views.get(id) {
+    Some(list) => {
+      for i in 0..<list.length() {
+        let w = list[i]
+        if w.view_id == view_id && w.control && !w.ended {
+          array_add_int(w.driven_gamepads, slot)
+          return true
+        }
+      }
+      false
+    }
+    None => false
+  }
+}
+
+pub fn ScreenHub::set_view_watching_mic(self : ScreenHub, id : String, view_id : String, watching : Bool) -> Bool {
+  match self.views.get(id) {
+    Some(list) => {
+      for i in 0..<list.length() {
+        let w = list[i]
+        if w.view_id == view_id && !w.ended {
+          if watching && !w.control {
+            return false
+          }
+          w.watching_mic = watching
+          return true
+        }
+      }
+      false
+    }
+    None => false
+  }
+}
+
+fn hold_key(device : String, id : String) -> String {
+  device + "\n" + id
+}
+
+fn ScreenHub::look_only_entry(
+  self : ScreenHub,
+  id : String,
+  w : WatcherEntry,
+  by : Option[String],
+  hold : Bool,
+  now : Int64,
+) -> Unit {
+  if !w.control { return }
+  w.control = false
+  w.taken = false
+  w.watch_only_by = by
+  let released_pads : Array[Int] = []
+  for j in 0..<w.driven_gamepads.length() { released_pads.push(w.driven_gamepads[j]) }
+  while w.driven_gamepads.length() > 0 { let _ = w.driven_gamepads.pop() }
+  let stopped_mic = w.watching_mic
+  w.watching_mic = false
+  if hold {
+    match w.device {
+      Some(dev) => {
+        if dev != "" {
+          let _ = self.prune_held(now)
+          let hk = hold_key(dev, id)
+          if self.held.get(hk) is None {
+            self.held_keys.push(hk)
+          }
+          self.held.set(hk, now + WATCH_HELD_MS)
+        }
+      }
+      None => ()
+    }
+  }
+  self.push_event(HubEvent::{
+    kind: "watchOnly",
+    screen_id: id,
+    view_id: w.view_id,
+    by: by,
+    released_gamepads: released_pads,
+    stopped_mic: stopped_mic,
+  })
+}
+
+pub fn ScreenHub::may_drive(self : ScreenHub, id : String, device : String, taken : Bool, now : Int64) -> Bool {
+  let _ = self.prune_held(now)
+  let key = hold_key(device, id)
+  match self.held.get(key) {
+    None => true
+    Some(until) => {
+      if taken || until <= now {
+        self.held.remove(key)
+        true
+      } else {
+        false
+      }
+    }
+  }
+}
+
+/// Exclusive driving negotiation (`hub.ts` `drive`):
+/// One human view drives a screen at a time; `taken = true` demotes all other human drivers to watch-only.
+pub fn ScreenHub::drive(
+  self : ScreenHub,
+  id : String,
+  device : String,
+  taken : Bool,
+  by : String,
+  now : Int64,
+) -> DriveGrantResult {
+  if !self.may_drive(id, device, taken, now) {
+    return DriveGrantResult::{ control: false, took: [], taken_token: None }
+  }
+  let others : Array[WatcherEntry] = []
+  match self.views.get(id) {
+    Some(list) => {
+      for i in 0..<list.length() {
+        let w = list[i]
+        let same_dev = match w.device {
+          Some(d) => d == device
+          None => false
+        }
+        if !w.ended && w.control && !w.agent && !same_dev {
+          others.push(w)
+        }
+      }
+    }
+    None => ()
+  }
+  if others.length() == 0 {
+    let tok = if device != "" && taken {
+      self.token_seq = self.token_seq + 1
+      self.taking.set(self.token_seq, hold_key(device, id))
+      Some(self.token_seq)
+    } else {
+      None
+    }
+    return DriveGrantResult::{ control: true, took: [], taken_token: tok }
+  }
+  if !taken {
+    return DriveGrantResult::{ control: false, took: [], taken_token: None }
+  }
+  let took : Array[String] = []
+  for i in 0..<others.length() {
+    let w = others[i]
+    self.look_only_entry(id, w, Some(by), true, now)
+    if !array_has_str(took, w.name) {
+      took.push(w.name)
+    }
+  }
+  let tok = if device != "" {
+    self.token_seq = self.token_seq + 1
+    self.taking.set(self.token_seq, hold_key(device, id))
+    Some(self.token_seq)
+  } else {
+    None
+  }
+  DriveGrantResult::{ control: true, took: took, taken_token: tok }
+}
+
+pub fn ScreenHub::release_taken_token(self : ScreenHub, token : Int) -> Unit {
+  self.taking.remove(token)
+}
+
+pub fn ScreenHub::has_taken_view(self : ScreenHub, id : String) -> Bool {
+  match self.views.get(id) {
+    Some(list) => {
+      for i in 0..<list.length() {
+        let w = list[i]
+        if !w.ended && w.control && !w.agent && w.taken {
+          return true
+        }
+      }
+      false
+    }
+    None => false
+  }
+}
+
+pub fn ScreenHub::yield_to_agent(self : ScreenHub, id : String, by : String, now : Int64) -> Int {
+  let mut count = 0
+  match self.views.get(id) {
+    Some(list) => {
+      for i in 0..<list.length() {
+        let w = list[i]
+        if !w.ended && w.control && !w.agent && !w.taken && w.can_watch_only {
+          self.look_only_entry(id, w, Some(by), false, now)
+          count = count + 1
+        }
+      }
+    }
+    None => ()
+  }
+  count
+}
+
+pub fn ScreenHub::take_control(self : ScreenHub, id : String, by : Option[String], now : Int64) -> Result[Int, ScreenRefused] {
+  if self.get(id) is None {
+    return Err(ScreenRefused::new(404, "station.screen.notFound"))
+  }
+  let mut count = 0
+  match self.views.get(id) {
+    Some(list) => {
+      for i in 0..<list.length() {
+        let w = list[i]
+        if !w.ended && w.control && !w.agent && w.can_watch_only {
+          self.look_only_entry(id, w, by, true, now)
+          count = count + 1
+        }
+      }
+    }
+    None => ()
+  }
+  Ok(count)
+}
+
+pub fn ScreenHub::watch_only(self : ScreenHub, id : String, view_id : String, now : Int64) -> Result[Unit, ScreenRefused] {
+  if self.get(id) is None {
+    return Err(ScreenRefused::new(404, "station.screen.notFound"))
+  }
+  match self.views.get(id) {
+    Some(list) => {
+      for i in 0..<list.length() {
+        let w = list[i]
+        if w.view_id == view_id && !w.ended {
+          if w.agent || !w.can_end {
+            return Err(ScreenRefused::new(405, "station.screen.viewNotEnded"))
+          }
+          self.look_only_entry(id, w, None, true, now)
+          return Ok(())
+        }
+      }
+      Err(ScreenRefused::new(404, "station.screen.viewGone"))
+    }
+    None => Err(ScreenRefused::new(404, "station.screen.viewGone"))
+  }
+}
+
+pub fn ScreenHub::end_view(self : ScreenHub, id : String, view_id : String, by : String) -> Result[Unit, ScreenRefused] {
+  if self.get(id) is None {
+    return Err(ScreenRefused::new(404, "station.screen.notFound"))
+  }
+  match self.views.get(id) {
+    Some(list) => {
+      for i in 0..<list.length() {
+        let w = list[i]
+        if w.view_id == view_id && !w.ended {
+          if w.agent || !w.can_end {
+            return Err(ScreenRefused::new(405, "station.screen.viewNotEnded"))
+          }
+          w.ended = true
+          w.ended_by = Some(by)
+          w.control = false
+          w.taken = false
+          let released_pads : Array[Int] = []
+          for j in 0..<w.driven_gamepads.length() { released_pads.push(w.driven_gamepads[j]) }
+          while w.driven_gamepads.length() > 0 { let _ = w.driven_gamepads.pop() }
+          let stopped_mic = w.watching_mic
+          w.watching_mic = false
+          self.push_event(HubEvent::{
+            kind: "view_ended",
+            screen_id: id,
+            view_id: w.view_id,
+            by: Some(by),
+            released_gamepads: released_pads,
+            stopped_mic: stopped_mic,
+          })
+          return Ok(())
+        }
+      }
+      Err(ScreenRefused::new(404, "station.screen.viewGone"))
+    }
+    None => Err(ScreenRefused::new(404, "station.screen.viewGone"))
+  }
+}
+
+pub fn ScreenHub::end_views(self : ScreenHub, id : String, by : String) -> Result[Int, ScreenRefused] {
+  if self.get(id) is None {
+    return Err(ScreenRefused::new(404, "station.screen.notFound"))
+  }
+  let mut count = 0
+  match self.views.get(id) {
+    Some(list) => {
+      for i in 0..<list.length() {
+        let w = list[i]
+        if !w.ended && !w.agent && w.can_end {
+          w.ended = true
+          w.ended_by = Some(by)
+          w.control = false
+          w.taken = false
+          let released_pads : Array[Int] = []
+          for j in 0..<w.driven_gamepads.length() { released_pads.push(w.driven_gamepads[j]) }
+          while w.driven_gamepads.length() > 0 { let _ = w.driven_gamepads.pop() }
+          let stopped_mic = w.watching_mic
+          w.watching_mic = false
+          self.push_event(HubEvent::{
+            kind: "view_ended",
+            screen_id: id,
+            view_id: w.view_id,
+            by: Some(by),
+            released_gamepads: released_pads,
+            stopped_mic: stopped_mic,
+          })
+          count = count + 1
+        }
+      }
+    }
+    None => ()
+  }
+  Ok(count)
+}
+
+/// Validates and registers an agent computer-use view (`openAs`):
+/// - Refuses `user_tab` with 403 `station.screen.userOnly`.
+/// - Enforces workspace isolation when `agent_workspace` is provided.
+/// - Forces `options.agent = true` (never uses privileged Windows screen service).
+pub fn ScreenHub::open_as_agent(
+  self : ScreenHub,
+  id : String,
+  options : ViewOptions,
+  who_name : String,
+  control : Bool,
+  agent_workspace : Option[String],
+  now : Int64,
+) -> Result[(String, ViewOptions), ScreenRefused] {
+  let source = match self.get_for_workspace(id, agent_workspace) {
+    Some(s) => s
+    None => return Err(ScreenRefused::new(404, "station.screen.notFound"))
+  }
+  if source.user_tab {
+    return Err(ScreenRefused::new(403, "station.screen.userOnly"))
+  }
+  let safe_opts = ViewOptions::{
+    max_width: options.max_width,
+    max_height: options.max_height,
+    codecs: options.codecs,
+    peek: options.peek,
+    agent: true,
+    bitrate: options.bitrate,
+    fps: options.fps,
+    fit: options.fit,
+    audio: options.audio,
+    opus: options.opus,
+    gamut_p3: options.gamut_p3,
+    passkeys: options.passkeys,
+    chroma_444: options.chroma_444,
+    quality: options.quality,
+    gamepad_mouse: options.gamepad_mouse,
+  }
+  let view_id = self.join(
+    id,
+    JoinParams::{
+      name: who_name,
+      control: control,
+      device: None,
+      self_id: None,
+      client: None,
+      app: None,
+      agent: true,
+      taken: false,
+      taken_token: None,
+      can_end: false,
+      can_watch_only: false,
+    },
+    now,
+  )
+  Ok((view_id, safe_opts))
+}
+
+/// JSON projection for `GET /admin/api/screens` scoped to `viewer_workspace`.
+pub fn ScreenHub::listed_json(
+  self : ScreenHub,
+  lang : station_ops::Lang,
+  viewer_workspace : Option[String],
+) -> base_codec::Json {
+  let visible = self.list_for_workspace(viewer_workspace)
+  let screens_arr : Array[base_codec::Json] = []
+  for i in 0..<visible.length() {
+    let s = visible[i]
+    let p = self.people(s.id)
+    let viewers_j : Array[base_codec::Json] = []
+    for j in 0..<p.viewers.length() { viewers_j.push(base_codec::json_str(p.viewers[j])) }
+    let ctrl_j : Array[base_codec::Json] = []
+    for j in 0..<p.controlled_by.length() { ctrl_j.push(base_codec::json_str(p.controlled_by[j])) }
+    let fields : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(s.id)),
+      ("kind", base_codec::json_str(screen_kind_name(s.kind))),
+      ("title", base_codec::json_str(s.title)),
+      ("width", base_codec::json_int(s.width)),
+      ("height", base_codec::json_int(s.height)),
+      ("viewers", base_codec::json_arr(viewers_j)),
+      ("controlledBy", base_codec::json_arr(ctrl_j)),
+    ]
+    match access_shown(s.access, lang) {
+      Some(a) => {
+        let af : Array[(String, base_codec::Json)] = [
+          ("capture", base_codec::json_bool(a.capture)),
+          ("control", base_codec::json_bool(a.control)),
+          ("message", base_codec::json_str(a.message)),
+        ]
+        if a.asking { af.push(("asking", base_codec::json_bool(true))) }
+        match a.help {
+          Some(h) => af.push(("help", base_codec::json_str(h)))
+          None => ()
+        }
+        fields.push(("access", base_codec::json_obj(af)))
+      }
+      None => ()
+    }
+    if s.clipboard.length() > 0 {
+      let cb : Array[base_codec::Json] = []
+      for j in 0..<s.clipboard.length() { cb.push(base_codec::json_str(clip_type_name(s.clipboard[j]))) }
+      fields.push(("clipboard", base_codec::json_arr(cb)))
+    }
+    if s.peek { fields.push(("peek", base_codec::json_bool(true))) }
+    if s.farview { fields.push(("farview", base_codec::json_bool(true))) }
+    if s.closable { fields.push(("closable", base_codec::json_bool(true))) }
+    if s.user_tab { fields.push(("userTab", base_codec::json_bool(true))) }
+    if s.sleeping { fields.push(("sleeping", base_codec::json_bool(true))) }
+    match s.site {
+      Some(st) => fields.push(("site", base_codec::json_str(st)))
+      None => ()
+    }
+    if s.open_url { fields.push(("openUrl", base_codec::json_bool(true))) }
+    match s.debug_install_folder {
+      Some(dir) => {
+        fields.push(("debug", base_codec::json_bool(true)))
+        fields.push(("install", base_codec::json_str(dir)))
+      }
+      None => ()
+    }
+    if s.poses { fields.push(("poses", base_codec::json_bool(true))) }
+    match s.model {
+      Some(m) => fields.push(("model", base_codec::json_str(m)))
+      None => ()
+    }
+    match s.opened_by {
+      Some(by) => fields.push(("openedBy", base_codec::json_str(by)))
+      None => ()
+    }
+    match s.since {
+      Some(ts) => fields.push(("since", base_codec::json_int64(ts)))
+      None => ()
+    }
+    match self.drop_folder {
+      Some(folder) => {
+        fields.push(("drop", base_codec::json_obj([
+          ("folder", base_codec::json_str(folder)),
+          ("reveal", base_codec::json_bool(s.reveal)),
+        ])))
+      }
+      None => ()
+    }
+    screens_arr.push(base_codec::json_obj(fields))
+  }
+  let top : Array[(String, base_codec::Json)] = []
+  if self.browser_available {
+    top.push(("browser", base_codec::json_bool(true)))
+  }
+  top.push(("screens", base_codec::json_arr(screens_arr)))
+  base_codec::json_obj(top)
+}

@@ -326,6 +326,10 @@ if part ts; then
   if touches '^client/core-ts/(src/ui-faults\.ts|scripts/ui-faults\.ts)$|^apps/mbui/src/stillfail/ui_faults\.mbt$'; then
     step "UI fault categories" node client/core-ts/scripts/ui-faults.ts --check
   fi
+  # The app's topic policy is the core's (client/core-ts/src/topic-policy.ts).
+  if touches '^client/core-ts/src/(protocol|topic-policy)\.ts$|^apps/mbui/(scripts/gen-topic-policy\.mjs|src/sfbase/topic_policy_gen\.mbt)$'; then
+    step "topic policy" node apps/mbui/scripts/gen-topic-policy.mjs --check
+  fi
 
   # The agents' rules name only what is there (AGENTS.md: These files are kept true): any change may move what one names.
   step "AGENTS.md paths" node scripts/agents-paths.ts
@@ -649,7 +653,7 @@ if part ts; then
           const token = m[0];
           const call = callTextFrom(code, m.index, token);
           const ln = code.slice(0, m.index).split("\n").length;
-          // `client/shell` `"tcp.listen"` is hardcoded to 127.0.0.1 or inherited fd in Rust (`client/shell/src/net.rs:684-698`);
+          // `client/shell` `"tcp.listen"` is hardcoded to 127.0.0.1 or inherited fd in Rust (`client/shell/src/net.rs` `"tcp.listen"`);
           // allow it unless an explicit non-local address or `"host":` key appears in the call.
           const isShellTcpListen = token === "\"tcp.listen\"" && !explicitHostKeyRe.test(call);
           if (nonLocalBindRe.test(call) || (!isShellTcpListen && !listenAllowedRe.test(call))) {
@@ -857,7 +861,7 @@ if [ $full = 1 ]; then
   fi
   # The core's native shells (client/shell for Android, client/iroh-wasm for the web).
   if rust_part core && rust_tests && rust_crate client && touches '^client/(shell|iroh-wasm)/|^libs/mesh-transport/|^client/Cargo\.(toml|lock)$|^vendor/'; then
-    if has cargo; then remembered "Rust: client" "client libs/mesh-transport vendor" heavy cargo_test client --workspace -q; else later "Rust: client"; fi
+    if has cargo; then remembered "Rust: client" "client libs/mesh-transport vendor" heavy cargo_test client --workspace --features stillfail-shell/station -q; else later "Rust: client"; fi
   fi
 fi
 

@@ -1,0 +1,598 @@
+// Replica coordinators: Exporter throttling (`tr_del` 2000/pass), Handover quiet gate (15s),
+// Handoff (fork from copy), Chat Handover (live move), Restore (`carriedTo` / `NotEmpty`), and Retire (off).
+// 1:1 aligned with `station/src/replica/{copies,handoff,handover,restore,retire,chat,export}.ts`.
+
+import "base_codec"
+import "js_json"
+
+pub let tr_del_pass_limit : Int = 2000
+pub let handover_quiet_ms : Int64 = 15000.to_int64()
+pub let handoffs_kept : Int = 64
+pub let retire_starts : Bool = false
+pub let chat_entries_max : Int = 60
+pub let chat_text_max : Int = 4000
+pub let chat_bytes_max : Int = 128 * 1024
+pub let chat_sessions_max : Int = 20
+pub let chat_files_max : Int = 10
+pub let handover_floor_min_bytes : Int64 = 20.to_int64() * 1024.to_int64() * 1024.to_int64() * 1024.to_int64()
+
+// ── 1. Exporter tr_del throttling & sweep cursor ──
+
+pub struct TranscriptDelBatch {
+  pub drained : Array[String]
+  pub remaining : Int
+}
+
+/// Throttles `tr_del` batch emission at `tr_del_pass_limit` (2000/pass) while preserving sweep order.
+pub fn throttle_tr_del(pending : Array[String], limit~ : Int = tr_del_pass_limit) -> TranscriptDelBatch {
+  let cap = if limit > 0 { limit } else { tr_del_pass_limit }
+  let take = if pending.length() < cap { pending.length() } else { cap }
+  let drained : Array[String] = []
+  for i in 0..<take {
+    drained.push(pending[i])
+  }
+  TranscriptDelBatch::{ drained: drained, remaining: pending.length() - take }
+}
+
+// ── 2. Handover quiet window gate (HANDOVER_QUIET_MS = 15s) ──
+
+pub struct WriteGate {
+  active : Map[String, Int]
+  last_write_at : Map[String, Int64]
+  write_seq : Map[String, Int64]
+}
+
+pub fn WriteGate::new() -> WriteGate {
+  WriteGate::{ active: Map::new(), last_write_at: Map::new(), write_seq: Map::new() }
+}
+
+pub fn WriteGate::begin_write(self : WriteGate, ws : String, origin : String, now_ms : Int64) -> Int64 {
+  let key = ws + "\u{0000}" + origin
+  let cur = match self.active.get(key) {
+    Some(n) => n
+    None => 0
+  }
+  self.active.set(key, cur + 1)
+  self.last_write_at.set(key, now_ms)
+  let seq = match self.write_seq.get(key) {
+    Some(s) => s + 1.to_int64()
+    None => 1.to_int64()
+  }
+  self.write_seq.set(key, seq)
+  seq
+}
+
+pub fn WriteGate::end_write(self : WriteGate, ws : String, origin : String, now_ms : Int64) -> Unit {
+  let key = ws + "\u{0000}" + origin
+  let cur = match self.active.get(key) {
+    Some(n) => n
+    None => 0
+  }
+  if cur > 1 {
+    self.active.set(key, cur - 1)
+  } else {
+    self.active.remove(key)
+  }
+  self.last_write_at.set(key, now_ms)
+}
+
+pub fn WriteGate::seq_of(self : WriteGate, ws : String, origin : String) -> Int64 {
+  let key = ws + "\u{0000}" + origin
+  match self.write_seq.get(key) {
+    Some(s) => s
+    None => 0.to_int64()
+  }
+}
+
+/// Checks whether a copy handover may proceed: defers while writes are active or within `handover_quiet_ms`
+/// (15 s), unless `accept_others` is `false` (in which case quiet delay is skipped).
+pub fn WriteGate::can_handover(
+  self : WriteGate,
+  ws : String,
+  origin : String,
+  now_ms : Int64,
+  accept_others : Bool,
+) -> Bool {
+  let key = ws + "\u{0000}" + origin
+  match self.active.get(key) {
+    Some(n) => if n > 0 { return false }
+    None => ()
+  }
+  if !accept_others {
+    return true
+  }
+  match self.last_write_at.get(key) {
+    Some(last) => now_ms - last >= handover_quiet_ms
+    None => true
+  }
+}
+
+// ── 3. One chat from a copy (handoff.ts & chat.ts) ──
+
+pub struct ChatEntry {
+  pub n : Int
+  pub kind : String // "message" | "edit"
+  pub target : Option[Int]
+  pub author_kind : String // "person" | "agent"
+  pub author : String
+  pub text : String
+  pub cut : Bool
+  pub at : Int64
+  pub files : Array[String]
+}
+
+pub struct ChatSession {
+  pub key : String
+  pub runtime : Option[String]
+  pub model : Option[String]
+  pub effort : Option[String]
+  pub title : Option[String]
+  pub cwd : Option[String]
+  pub workspace : Option[String]
+  pub archived_at : Option[Int64]
+  pub left_at : Option[Int64]
+}
+
+pub struct ChatThread {
+  pub id : Int
+  pub title : Option[String]
+  pub auto_title : Option[String]
+  pub created_by : Option[String]
+  pub created_at : Int64
+  pub archived_at : Option[Int64]
+}
+
+pub struct ChatCopy {
+  pub origin : String
+  pub workspace : String
+  pub gen : String
+  pub name : String
+  pub made : Int64
+  pub to : Int64
+  pub thread : Option[ChatThread]
+  pub entries : Array[ChatEntry]
+  pub earlier : Int
+  pub sessions : Array[ChatSession]
+}
+
+pub enum ChatReading {
+  Found(ChatCopy)
+  NoneKept
+  NewerFormat
+}
+
+/// Returns the newest generation whose head matches `(ws, origin)` and whose batches are all held.
+pub fn newest_whole(held : Held, ws : String, origin : String) -> Option[Holding] {
+  let mut best : Option[Holding] = None
+  for i in 0..<held.gens.length() {
+    let g = held.gens[i]
+    match g.head {
+      Some(h) => {
+        if h.gen == g.gen && h.origin == origin && h.workspace == ws && has_all_batches(g.batches, h.batches) {
+          best = Some(g)
+        }
+      }
+      None => ()
+    }
+  }
+  best
+}
+
+pub struct FoldedMessage {
+  pub n : Int
+  pub author_kind : String
+  pub author : String
+  pub text : String
+  pub cut : Bool
+  pub at : Int64
+  pub files : Array[String]
+  pub edited : Bool
+}
+
+/// Folds `edit` entries into their target `message` entries, oldest first (handoff.ts `messagesOf`).
+pub fn messages_of(entries : Array[ChatEntry]) -> Array[FoldedMessage] {
+  let out : Array[FoldedMessage] = []
+  let idx_by_n : Map[Int, Int] = Map::new()
+  for i in 0..<entries.length() {
+    let e = entries[i]
+    if e.kind == "message" {
+      idx_by_n.set(e.n, out.length())
+      out.push(
+        FoldedMessage::{
+          n: e.n,
+          author_kind: e.author_kind,
+          author: e.author,
+          text: e.text,
+          cut: e.cut,
+          at: e.at,
+          files: e.files,
+          edited: false,
+        },
+      )
+    }
+  }
+  for i in 0..<entries.length() {
+    let e = entries[i]
+    if e.kind != "edit" {
+      continue
+    }
+    let target = match e.target {
+      Some(t) => t
+      None => continue
+    }
+    match idx_by_n.get(target) {
+      Some(pos) => {
+        let prev = out[pos]
+        let next_files = if e.files.length() > 0 { e.files } else { prev.files }
+        out[pos] = FoldedMessage::{
+          n: prev.n,
+          author_kind: prev.author_kind,
+          author: prev.author,
+          text: e.text,
+          cut: e.cut,
+          at: prev.at,
+          files: next_files,
+          edited: true,
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+pub fn handoff_prompt(chat : ChatCopy, origin_name : String, here_name : String, kept_by : String) -> String {
+  let t = match chat.thread {
+    Some(th) => th
+    None => return ""
+  }
+  let title = match t.title {
+    Some(s) => s
+    None =>
+    match t.auto_title {
+      Some(s) => s
+      None => "chat " + t.id.to_string()
+    }
+  }
+  let sb = StringBuilder::new()
+  sb.write_string("This chat continues the chat \"")
+  sb.write_string(title)
+  sb.write_string("\" of station ")
+  sb.write_string(origin_name)
+  sb.write_string(" (chat ")
+  sb.write_string(t.id.to_string())
+  sb.write_string(" there). Station ")
+  sb.write_string(origin_name)
+  sb.write_string(" does not answer now, so the chat goes on here, on station ")
+  sb.write_string(here_name)
+  sb.write_string(", from the backup of it that station ")
+  sb.write_string(kept_by)
+  sb.write_string(" keeps.\n\n")
+  sb.write_string("- The messages below come from that backup, which goes up to ")
+  sb.write_string(js_json::format_iso_ms(chat.made))
+  sb.write_string(". What was said in that chat after that time is not here.\n")
+  sb.write_string("- Station ")
+  sb.write_string(origin_name)
+  sb.write_string(" may still be running. This chat and that one go on apart from here: nothing done here reaches that chat, and nothing said there comes here.\n")
+  sb.write_string("- The working directory stayed on station ")
+  sb.write_string(origin_name)
+  sb.write_string(": its files, its branches and the commits it did not push are not on this station. Get the code again (clone it, or fetch it from its remote) before you change it, and say what is missing.")
+  if chat.sessions.length() > 0 {
+    sb.write_string("\n\nThe chat's agents on station ")
+    sb.write_string(origin_name)
+    sb.write_string(":")
+    for i in 0..<chat.sessions.length() {
+      let s = chat.sessions[i]
+      let rt = match s.runtime {
+        Some(r) => r
+        None => "an agent"
+      }
+      let on = match s.model {
+        Some(m) => rt + " (" + m + ")"
+        None => rt
+      }
+      sb.write_string("\n- ")
+      sb.write_string(on)
+      match s.cwd {
+        Some(w) => sb.write_string(", working in " + w)
+        None =>
+        match s.workspace {
+          Some(w) => sb.write_string(", working in " + w)
+          None => ()
+        }
+      }
+      match s.title {
+        Some(st) => if st != title { sb.write_string(", named \"" + st + "\"") }
+        None => ()
+      }
+      match s.left_at {
+        Some(_) => sb.write_string(", which left the chat")
+        None => ()
+      }
+    }
+  }
+  let msgs = messages_of(chat.entries)
+  if msgs.length() == 0 {
+    sb.write_string("\n\nThe backup holds no message of the chat.")
+  } else if chat.earlier > 0 {
+    sb.write_string("\n\nThe last ")
+    sb.write_string(msgs.length().to_string())
+    sb.write_string(" messages of the chat (")
+    sb.write_string(chat.earlier.to_string())
+    sb.write_string(" earlier entries are left out):")
+  } else {
+    sb.write_string("\n\nThe messages of the chat:")
+  }
+  for i in 0..<msgs.length() {
+    let m = msgs[i]
+    let who = if m.author_kind == "agent" { "agent " + m.author } else { m.author }
+    sb.write_string("\n\n[")
+    sb.write_string(js_json::format_iso_ms(m.at))
+    sb.write_string("] ")
+    sb.write_string(who)
+    if m.edited {
+      sb.write_string(" (edited)")
+    }
+    sb.write_string(":\n")
+    sb.write_string(m.text)
+    if m.cut {
+      sb.write_string(" [cut short]")
+    }
+    if m.files.length() > 0 {
+      sb.write_string("\n(files attached there, not on this station: ")
+      for f in 0..<m.files.length() {
+        if f > 0 {
+          sb.write_string(", ")
+        }
+        sb.write_string(m.files[f])
+      }
+      sb.write_string(")")
+    }
+  }
+  sb.write_string("\n\nRead these messages. Then say in this chat where the work stands and what you will do next.")
+  sb.to_string()
+}
+
+pub struct HandedOff {
+  pub session : String
+  pub thread : Int
+  pub title : String
+  pub kept_by : String
+  pub until : Int64
+}
+
+/// Idempotent client-key cache for handoffs (`HANDOFFS_KEPT = 64`).
+pub struct HandoffCache {
+  order : Array[String]
+  entries : Map[String, HandedOff]
+}
+
+pub fn HandoffCache::new() -> HandoffCache {
+  HandoffCache::{ order: [], entries: Map::new() }
+}
+
+pub fn HandoffCache::get(self : HandoffCache, ws : String, by : String, key : String) -> Option[HandedOff] {
+  self.entries.get(ws + "\u{0000}" + by + "\u{0000}" + key)
+}
+
+pub fn HandoffCache::put(self : HandoffCache, ws : String, by : String, key : String, entry : HandedOff) -> Unit {
+  let k = ws + "\u{0000}" + by + "\u{0000}" + key
+  match self.entries.get(k) {
+    Some(_) => {
+      self.entries.set(k, entry)
+      return
+    }
+    None => ()
+  }
+  self.order.push(k)
+  self.entries.set(k, entry)
+  while self.entries.keys().length() > handoffs_kept && self.order.length() > 0 {
+    let oldest = self.order[0]
+    let next_order : Array[String] = []
+    for i in 1..<self.order.length() {
+      next_order.push(self.order[i])
+    }
+    self.order.clear()
+    for i in 0..<next_order.length() {
+      self.order.push(next_order[i])
+    }
+    self.entries.remove(oldest)
+  }
+}
+
+// ── 4. Live chat handover & restore path helpers ──
+
+/// Minimum free disk space floor required on target before a chat handover: max(20 GiB, 10% of disk).
+pub fn handover_floor_of(disk_total_bytes : Int64) -> Int64 {
+  let tenth = disk_total_bytes / 10.to_int64()
+  if tenth > handover_floor_min_bytes { tenth } else { handover_floor_min_bytes }
+}
+
+/// Checks whether a target disk with `(total, free)` can accept `adds` bytes while preserving `handover_floor_of`.
+pub fn handover_fits_disk(disk_total : Int64, disk_free : Int64, adds : Int64) -> Bool {
+  disk_free - adds >= handover_floor_of(disk_total)
+}
+
+/// Live chat handover state machine (out-side & in-side).
+pub enum HandoverPhase {
+  Idle
+  FirstPass
+  Held
+  RowsSent
+  Shown
+  Gone
+  Dropped
+  Failed(String)
+}
+
+pub struct HandoverRecord {
+  pub chat_key : String
+  pub to_station : String
+  pub mut phase : HandoverPhase
+  pub mut decided : Bool
+  pub mut shown_there : Bool
+}
+
+pub fn HandoverRecord::new(chat_key : String, to_station : String) -> HandoverRecord {
+  HandoverRecord::{
+    chat_key: chat_key,
+    to_station: to_station,
+    phase: HandoverPhase::FirstPass,
+    decided: false,
+    shown_there: false,
+  }
+}
+
+/// Decides a handover outcome exactly once (`gone` or `failed`), enforcing handover.ts `decided` invariant.
+pub fn HandoverRecord::decide_once(self : HandoverRecord, next_phase : HandoverPhase) -> Bool {
+  if self.decided {
+    return false
+  }
+  self.decided = true
+  self.phase = next_phase
+  match next_phase {
+    HandoverPhase::Gone => self.shown_there = true
+    _ => ()
+  }
+  true
+}
+
+/// Remaps a path under `from_dir` to `to_dir` (`restore.ts` `moved`).
+pub fn moved_path(path : String, from_dir : String, to_dir : String, sep : String) -> String {
+  if from_dir == "" || from_dir == to_dir {
+    return path
+  }
+  let f = if from_dir.length() >= sep.length() && from_dir.slice(from_dir.length() - sep.length(), from_dir.length()) == sep {
+    from_dir.slice(0, from_dir.length() - sep.length())
+  } else {
+    from_dir
+  }
+  if path == f {
+    return to_dir
+  }
+  let prefix_sep = f + sep
+  let prefix_slash = f + "/"
+  let matched = (path.length() >= prefix_sep.length() && path.slice(0, prefix_sep.length()) == prefix_sep) ||
+  (path.length() >= prefix_slash.length() && path.slice(0, prefix_slash.length()) == prefix_slash)
+  if !matched {
+    return path
+  }
+  let rel = path.slice(f.length() + 1, path.length())
+  let t = if to_dir.length() >= sep.length() && to_dir.slice(to_dir.length() - sep.length(), to_dir.length()) == sep {
+    to_dir.slice(0, to_dir.length() - sep.length())
+  } else {
+    to_dir
+  }
+  t + sep + rel
+}
+
+/// Claude project directory slug (`transcript.ts` `claudeProject`):
+/// replaces each non-ASCII-alphanumeric UTF-16 code unit with `-` (matching JS `cwd.replace(/[^a-zA-Z0-9]/g, "-")`);
+/// returns `None` when the resulting slug exceeds 200 UTF-16 code units.
+pub fn claude_project_slug(room : String) -> Option[String] {
+  let b = room.to_bytes()
+  let n = b.length()
+  let sb = StringBuilder::new()
+  let mut utf16_len = 0
+  let mut i = 0
+  while i < n {
+    let c0 = b[i].to_int() & 0xFF
+    if c0 < 0x80 {
+      if (c0 >= 48 && c0 <= 57) || (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122) {
+        sb.write_byte(c0.to_byte())
+      } else {
+        sb.write_byte(45.to_byte())
+      }
+      utf16_len = utf16_len + 1
+      i = i + 1
+    } else if (c0 & 0xE0) == 0xC0 {
+      sb.write_byte(45.to_byte())
+      utf16_len = utf16_len + 1
+      i = i + (if i + 2 <= n { 2 } else { n - i })
+    } else if (c0 & 0xF0) == 0xE0 {
+      sb.write_byte(45.to_byte())
+      utf16_len = utf16_len + 1
+      i = i + (if i + 3 <= n { 3 } else { n - i })
+    } else if (c0 & 0xF8) == 0xF0 {
+      // Supplementary plane code point = 2 UTF-16 code units in JS.
+      sb.write_byte(45.to_byte())
+      sb.write_byte(45.to_byte())
+      utf16_len = utf16_len + 2
+      i = i + (if i + 4 <= n { 4 } else { n - i })
+    } else {
+      sb.write_byte(45.to_byte())
+      utf16_len = utf16_len + 1
+      i = i + 1
+    }
+    if utf16_len > 200 {
+      return None
+    }
+  }
+  Some(sb.to_string())
+}
+
+/// Remaps a carried file path, rewriting `transcripts*/claude/<project>/...` to `room`'s project slug (`restore.ts` `carriedTo`).
+pub fn carried_to(path : String, from_dir : String, to_dir : String, room : Option[String], sep : String) -> String {
+  let at = moved_path(path, from_dir, to_dir, sep)
+  let project = match room {
+    Some(s) =>
+    match claude_project_slug(s) {
+      Some(slug) => slug
+      None => return at
+    }
+    None => return at
+  }
+  if from_dir == "" || at == path {
+    return at
+  }
+  let t = if to_dir.length() >= sep.length() && to_dir.slice(to_dir.length() - sep.length(), to_dir.length()) == sep {
+    to_dir.slice(0, to_dir.length() - sep.length())
+  } else {
+    to_dir
+  }
+  if at.length() <= t.length() + 1 {
+    return at
+  }
+  let rel = at.slice(t.length() + 1, at.length())
+  let parts : Array[String] = []
+  let mut start = 0
+  for i in 0..<(rel.length() + 1) {
+    if i == rel.length() || rel.code_unit_at(i) == 47 || rel.code_unit_at(i) == 92 {
+      parts.push(rel.slice(start, i))
+      start = i + 1
+    }
+  }
+  if parts.length() < 4 {
+    return at
+  }
+  let p0 = parts[0]
+  if p0.length() < 11 || p0.slice(0, 11) != "transcripts" || parts[1] != "claude" {
+    return at
+  }
+  parts[2] = project
+  let sb = StringBuilder::new()
+  sb.write_string(t)
+  for i in 0..<parts.length() {
+    sb.write_string(sep)
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
+/// Guard for `POST /retire` and `station_retire` (disabled since `station_move` replaced it).
+pub fn check_retire_allowed() -> Result[Unit, String] {
+  if !retire_starts {
+    Err("retiring a station is disabled; use station_move instead")
+  } else {
+    Ok(())
+  }
+}
+
+/// Guard for restore into a station (refused if the station already has chats of its own, unless `merge == true`).
+pub fn check_restore_empty(existing_chat_count : Int, is_merge : Bool) -> Result[Unit, String] {
+  if !is_merge && existing_chat_count > 0 {
+    Err("this station has chats of its own: a copy is taken back only into a new one")
+  } else {
+    Ok(())
+  }
+}

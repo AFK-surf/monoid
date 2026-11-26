@@ -2,7 +2,9 @@
 // new chats, uploads, messages, archiving, deleting, stopping, a session's settings, jobs. A real store in a temporary
 // data directory, the real readers over it, a hub with runtimes scripted in-process (test/hub-fakes.ts).
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import fsModule from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, basename } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -214,6 +216,46 @@ test("another chat with a session, and a session brought into a chat", async () 
     // The archive review's messages, as the readers read them: what the store has.
     assert.deepEqual(JSON.parse(await r.readers.read("latestMessages", { thread: extra.id, limit: 2 }, "en")), JSON.parse(JSON.stringify(r.store.messagesBefore(extra.id, null, 2))));
   } finally {
+    await r.close();
+  }
+});
+
+test("a message takes its upload into a chat whose uploads are on another disk (EXDEV), and a retry finds it there", async () => {
+  const r = rig();
+  // A chat's `workspace/uploads` linked to another disk: no rename from the station's uploads reaches it (FB-67).
+  const real = fsModule.promises.rename;
+  const staged = join(r.data, "uploads");
+  const across: string[] = [];
+  fsModule.promises.rename = (async (from: any, to: any) => {
+    if (dirname(String(from)) === staged && dirname(String(to)) !== staged) {
+      across.push(String(to));
+      throw Object.assign(new Error(`EXDEV: cross-device link not permitted, rename '${from}' -> '${to}'`), { code: "EXDEV" });
+    }
+    return real(from, to);
+  }) as typeof real;
+  syncBuiltinESMExports();
+  try {
+    const [, up] = await r.ask("POST", "/uploads", Buffer.from("png bytes"), [["name", "shot.png"]]);
+    const [, made] = await r.ask("POST", "/sessions", { runtime: "claude" });
+    const id = made.thread.id;
+    const workspace = r.store.getSession(made.key)!.workspace;
+    const send = { text: "look", attachments: [{ path: up.path, name: "shot.png", size: 9 }] };
+    const [sent, said] = await r.ask("POST", `/threads/${id}/messages`, send);
+    assert.equal(sent, 200, JSON.stringify(said));
+    assert.equal(across.length, 1, "the move was asked across disks");
+    const moved = join(workspace, "uploads", basename(up.path));
+    assert.equal(readFileSync(moved, "utf8"), "png bytes");
+    assert.ok(!existsSync(up.path), "nothing left in the station's uploads");
+    assert.deepEqual(readdirSync(join(workspace, "uploads")), [basename(up.path)], "no copy left beside it");
+    const message = r.store.messagesBefore(id, null, 10).find((m) => m.n === said.n)!;
+    assert.equal(message.text, "look");
+    assert.deepEqual(message.attachments, [{ name: "shot.png", path: moved, size: 9 }]);
+    // Sent again (its answer lost): the file is where the first one put it.
+    const [again] = await r.ask("POST", `/threads/${id}/messages`, send);
+    assert.equal(again, 200);
+  } finally {
+    fsModule.promises.rename = real;
+    syncBuiltinESMExports();
     await r.close();
   }
 });

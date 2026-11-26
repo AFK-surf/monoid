@@ -341,7 +341,7 @@ fn read_topic_state(src : Source, name : String, params : Map[String, Json]) -> 
     }
   }
   // (a view's own source reads through the one it is of, which keeps them: topic_scope none)
-  if src.topic_scope is None && lasting.contains(name) && !params.contains("q") && (src.reads_ahead)() {
+  if src.topic_scope is None && topic_policy_lasting(name, Json::object(params)) && (src.reads_ahead)() {
     let key = topic_key(name, params)
     match (topic.value, topic.error) {
       (Some(value), _) => last_put(src, key, value)
@@ -360,45 +360,20 @@ fn read_topic_state(src : Source, name : String, params : Map[String, Json]) -> 
 }
 
 ///|
-/// The lists a place of the bar or the rail opens on: what the core last said of each is kept (last_said) and shown at
-/// once when it is asked again, until its answer comes. A place left lets go of what it read, and come back to drew
-/// its bones until the core answered across its thread (the user, 2026-11-10). Lists read only: nothing typed for
-/// (`q`), nothing written in (a form, a draft), no chat. The stations' rows are one ask for every list, a chat's name of
-/// its station too, which takes no kept value (station_marks: what changed while nothing read it is never shown as it
-/// was, core_signal_wbtest.mbt). Home's own lists too (home_lasting): on 小屏 Home switched away from rests on the
-/// stack's shelf and lets go of what it read, and taken back read it anew; shown only as the core answered, its long
-/// jobs and its rows were gone meanwhile and then every row made again and coming in as new (the owner's phone,
-/// 2026-11-12: 50–68 ms, the rows under 今天 drawn as slivers through that frame; bar_places_kept_wbtest.mbt). So is
-// what Home's bar shows of the stations' newer releases (`stationUpdates`: its key made again as Home was taken back).
 // kept across runs: a value (nothing of it changes)
-let lasting : Array[String] = [
-  "workspace", "stations", "stationNet", "screens", "terminals", "profiles", "connects", "vaults", "usage", "archive", "chats", "longJobs", "changelog",
-  "stationUpdates",
-]
+let empty_topic_params : Json = Json::object({})
 
 ///|
-/// Of `lasting`, Home's own lists (its chats, its long jobs, the news over them): kept as they are let go of since
-/// MBUI_HOME_SAME, what a replay of a run from before asks as that run did (sfreplay's replay_kept).
-// kept across runs: a value (nothing of it changes)
-let home_lasting : Array[String] = ["chats", "longJobs", "changelog"]
-
-///|
-/// Whether topic `name` is one of Home's own lists `lasting` keeps (home_lasting).
+/// Whether topic `name` is one of Home's own `lasting` lists (`MBUI_HOME_SAME`), delegated to
+/// `topic_policy_gen.mbt` (generated from `client/core-ts/src/topic-policy.ts`).
 pub fn home_lasting_of(name : String) -> Bool {
-  home_lasting.contains(name)
+  topic_policy_home_lasting(name, empty_topic_params)
 }
 
 ///|
 /// How many values of topic `name` asked with `params` (its JSON as the core is asked it, its name in it too) the
 /// core's client keeps as they are let go of, to ask them again with their version (@core.Client::keep: the core
-/// answers `same` where one has not changed, what changed from it where it has); 0, none. The lists the places open
-/// on (`lasting`, as many as last_said keeps), and a chat however it is asked (its session, a thread, `compact`):
-/// `chats_kept` of those, a decoded chat being the largest tree the app holds. Unlike the lists (last_said), a chat's
-/// value kept is never shown before the core's answer: a chat's page and a row's read ahead have it only as that comes.
-///
-/// A page's, a panel's or a card's own read-only topic too (`views_kept`, as many as it says), shown again at once as it
-/// is asked again (topic_shown_kept), till the core answers: a pop, a card or a page opened again draws what it drew,
-/// not its bones nor an empty list while the core answers.
+/// answers `same` where one has not changed, what changed from it where it has); 0, none.
 pub fn topic_kept(name : String, params : Json) -> Int {
   topic_kept_by(name, params, true)
 }
@@ -407,16 +382,7 @@ pub fn topic_kept(name : String, params : Json) -> Int {
 /// topic_kept, with the views' own (`views_kept`, a chat's last 8) where `views` (MBUI_SWR_VIEWS): a replay of a run
 /// from before it keeps what that run's app did.
 pub fn topic_kept_by(name : String, params : Json, views : Bool) -> Int {
-  let typed = params is Object(p) && p.contains("q")
-  if name == "chat" {
-    if views { chats_kept } else { chats_kept_before }
-  } else if lasting.contains(name) && !typed {
-    last_most
-  } else if views && !typed {
-    views_kept_of(name)
-  } else {
-    0
-  }
+  topic_policy_keep(name, params, views)
 }
 
 ///|
@@ -425,60 +391,14 @@ pub fn topic_kept_by(name : String, params : Json, views : Bool) -> Int {
 /// nor the lists the places open on (`lasting`: shown again by the source that read them, last_said, never to what names
 /// a station by them, station_marks).
 pub fn topic_shown_kept(name : String) -> Bool {
-  views_kept_of(name) > 0
+  topic_policy_show_kept(name, empty_topic_params, true)
 }
 
 ///|
 /// How many values the core's client keeps of every name together (@core.Client::keep's `most`): as many as the core
-/// remembers for it (client/core-ts store.ts KEPT_PER_CLIENT) where `views` (MBUI_SWR_VIEWS), its 64 of before else.
+/// remembers for it (client/core-ts topic-policy.ts KEPT_PER_CLIENT) where `views` (MBUI_SWR_VIEWS), its 64 of before else.
 pub fn kept_most_by(views : Bool) -> Int {
-  if views { 96 } else { 64 }
-}
-
-///|
-/// How many chats' values are kept at a time (topic_kept), the oldest forgotten: a chat opened again, or read ahead
-/// again from its row, among the last few is answered with what changed in it, not the whole of it (a phone's ~180 KB,
-/// 17-21 ms to decode).
-let chats_kept : Int = 8
-
-///|
-/// chats_kept before MBUI_SWR_VIEWS (topic_kept_by)
-let chats_kept_before : Int = 4
-
-///|
-/// The read-only topics of a page, a panel, a pop or a card (none typed for, nothing written in) kept as they are let go
-/// of and shown again at once (topic_kept, topic_shown_kept), with how many of each name: a chat's row (its menu, its
-/// swipe), its services and jobs (its bar's summary and its pop), an agent's card, the rail's cards, a station whole
-/// and a part of its overview, an account, a connect and what its choice of a session lists, what a model's menu lists
-/// (`pick`), a drive's place, a chat's outline.
-// kept across runs: a value (nothing of it changes)
-let views_kept : Array[(String, Int)] = [
-  ("agentRates", 4),
-  ("chatRow", 32),
-  ("chatJobs", 16),
-  ("agentCard", 16),
-  ("railCard", 16),
-  ("station", 16),
-  ("stationPart", 24),
-  ("profile", 16),
-  ("connect", 16),
-  ("connectCandidates", 8),
-  ("pick", 12),
-  ("drivePlace", 24),
-  ("chatOutline", 8),
-  ("projects", 8),
-  ("project", 16),
-  ("tags", 8),
-]
-
-///|
-fn views_kept_of(name : String) -> Int {
-  for kv in views_kept {
-    if kv.0 == name {
-      return kv.1
-    }
-  }
-  0
+  if views { topic_policy_kept_per_client } else { topic_policy_kept_most_before }
 }
 
 ///|
@@ -497,7 +417,10 @@ priv struct LastSaid {
 let last_said : Ref[Array[LastSaid]] = Ref([])
 
 ///|
-let last_most : Int = 64
+let chats_kept : Int = topic_policy_keep("chat", empty_topic_params, true)
+
+///|
+let last_most : Int = topic_policy_last_most
 
 ///|
 // kept across runs: only counted on

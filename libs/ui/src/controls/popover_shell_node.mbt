@@ -37,7 +37,8 @@ priv struct PillMorphState {
   t_way : @motion.NodeWay
   shell_ref : Ref[@view.View?]
   last_shell_bounds : Ref[(Double, Double, Double, Double)?]
-  close_start : Ref[Double]
+  /// The opening frame at dismissal, as fractions of the local menu bounds.
+  close_from : Ref[(Double, Double, Double, Double)]
 }
 
 ///|
@@ -62,16 +63,22 @@ fn pill_morph_eval(
   }
   let align_x = if horizontal_side { 0.0 } else { along_val }
   let align_y = if horizontal_side { along_val } else { 0.0 }
-  @glass.lm_eval_pill_morph(
+  let (x, y, w, h) = if closing {
+    let (x, y, w, h) = pm.close_from.val
+    (x * menu_w, y * menu_h, w * menu_w, h * menu_h)
+  } else {
+    (0.0, 0.0, menu_w, menu_h)
+  }
+  let frame = @glass.lm_eval_pill_morph(
     pm.pill_x,
     pm.pill_y,
     pm.pill_w,
     pm.pill_h,
     pm.tx_win,
-    px_win,
-    py_win,
-    menu_w,
-    menu_h,
+    px_win + x,
+    py_win + y,
+    w,
+    h,
     r_menu,
     align_x,
     closing,
@@ -80,8 +87,12 @@ fn pill_morph_eval(
     ty_win=pm.ty_win,
     align_y~,
     horizontal_side~,
-    close_start=pm.close_start.val,
   )
+  if x == 0.0 && y == 0.0 {
+    frame
+  } else {
+    { ..frame, mx: x + frame.mx, my: y + frame.my }
+  }
 }
 
 ///|
@@ -269,7 +280,7 @@ pub fn anchored_popover_bridge(
         t_way,
         shell_ref,
         last_shell_bounds,
-        close_start: Ref(1.0),
+        close_from: Ref((0.0, 0.0, 1.0, 1.0)),
       }
       let eval_trig = fn() -> (Double, Bool, @glass.LiquidMorphFrame) {
         let t = t_way.shown(trig.pill)
@@ -528,15 +539,12 @@ pub fn anchored_popover_bridge(
           return
         }
         let t_open_now = t_way.value_at(at_ms)
-        let (_, _, mw, _) = pill_morph_shell_bounds(pm)
-        pm.close_start.val = if t_open_now >= @glass.lm_open_duration_ms / 1000.0 - 0.001 {
-          1.0
+        pm.close_from.val = if t_open_now < @glass.lm_open_duration_ms / 1000.0 - 0.001 {
+          let (px, py, w, h) = pill_morph_shell_bounds(pm)
+          let from = pill_morph_eval(pm, px, py, w, h, false, t_open_now)
+          (from.mx / w, from.my / h, from.cur_w / w, from.cur_h / h)
         } else {
-          let u_open = @glass.lm_open_progress(t_open_now)
-          let open_w = @glass.lm_lerp(core, mw, @dmath.pow(dclamp(u_open, 0.0, 1.0), 0.72))
-          let target_w_ratio = if mw > 0.0 { dclamp(open_w / mw, 0.20, 1.0) } else { u_open }
-          let target_s = @dmath.pow(target_w_ratio, 1.0 / 0.92)
-          dclamp((target_s - 0.20) / 0.80, 0.05, 1.0)
+          (0.0, 0.0, 1.0, 1.0)
         }
         is_closing.set(true)
         if trig.pill.alive() {

@@ -1,0 +1,679 @@
+// Workspace ways & custom relays store + LWW sync (mirrors `station/src/mesh/ways.ts`).
+
+import "base_codec"
+import "mesh_wire"
+
+pub let MAX_OWN_RELAYS : Int = 4
+
+pub struct OwnRelay {
+  pub url : String
+  pub by : Option[String]
+}
+
+pub struct WaysRecord {
+  pub relays : Array[OwnRelay]
+  pub off : Array[String]
+  pub at : Int64
+  pub station : String
+}
+
+fn is_hex_byte(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+}
+
+fn is_valid_ipv4_tail(s : String) -> Bool {
+  let b = s.to_bytes()
+  let mut parts = 0
+  let mut octet = 0
+  let mut digits = 0
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 46 {
+      if digits == 0 || octet > 255 {
+        return false
+      }
+      parts = parts + 1
+      octet = 0
+      digits = 0
+    } else if c >= 48 && c <= 57 {
+      if digits > 0 && octet == 0 {
+        return false
+      }
+      octet = octet * 10 + (c - 48)
+      digits = digits + 1
+      if digits > 3 || octet > 255 {
+        return false
+      }
+    } else {
+      return false
+    }
+  }
+  digits > 0 && octet <= 255 && parts == 3
+}
+
+/// Strictly validate an IPv6 literal (contents inside `[...]`), rejecting non-hex tokens like `[zz]`.
+fn is_valid_ipv6_literal(inner : String) -> Bool {
+  let b = inner.to_bytes()
+  if b.length() < 2 || !str_contains(inner, ":") {
+    return false
+  }
+  if str_contains(inner, ":::") {
+    return false
+  }
+  // Reject single leading or trailing colon (not `::`)
+  if (b[0].to_int() & 0xFF) == 58 && (b[1].to_int() & 0xFF) != 58 {
+    return false
+  }
+  if (b[b.length() - 1].to_int() & 0xFF) == 58 && (b[b.length() - 2].to_int() & 0xFF) != 58 {
+    return false
+  }
+  let mut has_double = false
+  let mut groups = 0
+  let mut i = 0
+  while i < b.length() {
+    if (b[i].to_int() & 0xFF) == 58 {
+      if i + 1 < b.length() && (b[i + 1].to_int() & 0xFF) == 58 {
+        if has_double {
+          return false
+        }
+        has_double = true
+        i = i + 2
+        continue
+      }
+      i = i + 1
+      continue
+    }
+    let start = i
+    while i < b.length() && (b[i].to_int() & 0xFF) != 58 {
+      i = i + 1
+    }
+    let seg = str_slice_bytes(inner, start, i)
+    if str_contains(seg, ".") {
+      if i != b.length() || !is_valid_ipv4_tail(seg) {
+        return false
+      }
+      groups = groups + 2
+    } else {
+      if seg.length() == 0 || seg.length() > 4 {
+        return false
+      }
+      let sb = seg.to_bytes()
+      for j in 0..<sb.length() {
+        if !is_hex_byte(sb[j].to_int() & 0xFF) {
+          return false
+        }
+      }
+      groups = groups + 1
+    }
+  }
+  if has_double {
+    groups < 8
+  } else {
+    groups == 8
+  }
+}
+
+/// Parse a strict `http(s)://host[:port][/path]` URL into `(scheme_lower, host_lower, port_opt, path_exact)`.
+/// Rejects whitespace, control characters, userinfo (`@`), query (`?`), fragment (`#`),
+/// empty host, invalid IPv6 literals, and out-of-range ports (`1..=65535`).
+fn parse_strict_url(raw : String, allow_http : Bool) -> Option[(String, String, Option[Int], String)] {
+  let trimmed = trim_ascii(raw)
+  let tb = trimmed.to_bytes()
+  for i in 0..<tb.length() {
+    let c = tb[i].to_int() & 0xFF
+    if c <= 0x20 || c >= 0x7F {
+      return None
+    }
+  }
+  let lower_prefix = mesh_wire::ascii_lower(str_slice_bytes(trimmed, 0, 8))
+  let (scheme, rest_start) = if str_starts_with(lower_prefix, "https://") {
+    ("https", 8)
+  } else if allow_http && str_starts_with(lower_prefix, "http://") {
+    ("http", 7)
+  } else {
+    return None
+  }
+  if rest_start >= trimmed.length() {
+    return None
+  }
+  // Find end of authority (`/` or end of string)
+  let mut slash = trimmed.length()
+  for i in rest_start..<trimmed.length() {
+    let c = tb[i].to_int() & 0xFF
+    if c == 63 || c == 35 || c == 92 {
+      // `?`, `#`, `\` forbidden
+      return None
+    }
+    if c == 47 && slash == trimmed.length() {
+      slash = i
+    }
+  }
+  let authority = str_slice_bytes(trimmed, rest_start, slash)
+  if authority.length() == 0 || str_contains(authority, "@") {
+    return None
+  }
+  // Split host and optional `:port` (supporting IPv6 `[::1]:port`)
+  let ab = authority.to_bytes()
+  let mut host = authority
+  let mut port_opt : Option[Int] = None
+  if (ab[0].to_int() & 0xFF) == 91 {
+    // IPv6 literal `[...]`
+    let rb = str_index_of_byte(authority, 93)
+    if rb <= 1 {
+      return None
+    }
+    let ipv6_inner = str_slice_bytes(authority, 1, rb)
+    if !is_valid_ipv6_literal(ipv6_inner) {
+      return None
+    }
+    host = str_slice_bytes(authority, 0, rb + 1)
+    if rb + 1 < authority.length() {
+      if (ab[rb + 1].to_int() & 0xFF) != 58 {
+        return None
+      }
+      let pstr = str_slice_bytes(authority, rb + 2, authority.length())
+      if pstr.length() == 0 || pstr.length() > 5 {
+        return None
+      }
+      let pb = pstr.to_bytes()
+      let mut p = 0
+      for i in 0..<pb.length() {
+        let c = pb[i].to_int() & 0xFF
+        if c < 48 || c > 57 {
+          return None
+        }
+        p = p * 10 + (c - 48)
+      }
+      if p < 1 || p > 65535 {
+        return None
+      }
+      port_opt = Some(p)
+    }
+  } else {
+    let colon = str_index_of_byte(authority, 58)
+    if colon >= 0 {
+      host = str_slice_bytes(authority, 0, colon)
+      let pstr = str_slice_bytes(authority, colon + 1, authority.length())
+      if pstr.length() == 0 || pstr.length() > 5 {
+        return None
+      }
+      let pb = pstr.to_bytes()
+      let mut p = 0
+      for i in 0..<pb.length() {
+        let c = pb[i].to_int() & 0xFF
+        if c < 48 || c > 57 {
+          return None
+        }
+        p = p * 10 + (c - 48)
+      }
+      if p < 1 || p > 65535 {
+        return None
+      }
+      port_opt = Some(p)
+    }
+    if host.length() == 0 {
+      return None
+    }
+    let hb = host.to_bytes()
+    for i in 0..<hb.length() {
+      let c = hb[i].to_int() & 0xFF
+      let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
+      c == 45 || c == 46
+      if !ok {
+        return None
+      }
+    }
+  }
+  let path_raw = if slash < trimmed.length() { str_slice_bytes(trimmed, slash, trimmed.length()) } else { "" }
+  // Strip trailing slashes from path
+  let pb = path_raw.to_bytes()
+  let mut pend = pb.length()
+  while pend > 0 && (pb[pend - 1].to_int() & 0xFF) == 47 {
+    pend = pend - 1
+  }
+  let path = str_slice_bytes(path_raw, 0, pend)
+  Some((scheme, mesh_wire::ascii_lower(host), port_opt, path))
+}
+
+fn format_norm_url(scheme : String, host : String, port : Option[Int], path : String) -> String {
+  let default_port = if scheme == "https" { 443 } else { 80 }
+  let port_part = match port {
+    Some(p) => if p == default_port { "" } else { ":" + p.to_string() }
+    None => ""
+  }
+  scheme + "://" + host + port_part + path
+}
+
+/// Normalize a relay URL for comparison: lowercases ONLY scheme and host (NEVER path),
+/// drops default port and trailing slashes (matches WHATWG `new URL(u).href.replace(/\/+$/, "")`).
+pub fn same_url(url : String) -> String {
+  match parse_strict_url(url, true) {
+    Some((scheme, host, port, path)) => format_norm_url(scheme, host, port, path)
+    None => {
+      let b = url.to_bytes()
+      let mut end = b.length()
+      while end > 0 && (b[end - 1].to_int() & 0xFF) == 47 {
+        end = end - 1
+      }
+      str_slice_bytes(url, 0, end)
+    }
+  }
+}
+
+pub fn validate_relay_url(raw : String, insecure : Bool = false) -> Option[String] {
+  match parse_strict_url(raw, insecure) {
+    Some((scheme, host, port, path)) => Some(format_norm_url(scheme, host, port, path))
+    None => None
+  }
+}
+
+pub fn is_way_kind(w : String) -> Bool {
+  w == "lan" || w == "tailnet" || w == "direct" || w == "ours"
+}
+
+pub fn ways_newer(a : WaysRecord, b : WaysRecord) -> Bool {
+  a.at > b.at || (a.at == b.at && a.station > b.station)
+}
+
+fn contains_url(urls : Array[String], url : String) -> Bool {
+  let want = same_url(url)
+  for i in 0..<urls.length() {
+    if same_url(urls[i]) == want {
+      return true
+    }
+  }
+  false
+}
+
+fn contains_str(items : Array[String], s : String) -> Bool {
+  for i in 0..<items.length() {
+    if items[i] == s {
+      return true
+    }
+  }
+  false
+}
+
+pub fn ways_record_to_json(r : WaysRecord) -> base_codec::Json {
+  let rarr : Array[base_codec::Json] = []
+  for i in 0..<r.relays.length() {
+    let fields : Array[(String, base_codec::Json)] = [("url", base_codec::json_str(r.relays[i].url))]
+    match r.relays[i].by {
+      Some(b) => if b.length() > 0 { fields.push(("by", base_codec::json_str(b))) }
+      None => ()
+    }
+    rarr.push(base_codec::json_obj(fields))
+  }
+  let oarr : Array[base_codec::Json] = []
+  for i in 0..<r.off.length() {
+    oarr.push(base_codec::json_str(r.off[i]))
+  }
+  base_codec::json_obj([
+    ("relays", base_codec::json_arr(rarr)),
+    ("off", base_codec::json_arr(oarr)),
+    ("at", base_codec::json_int64(r.at)),
+    ("station", base_codec::json_str(r.station)),
+  ])
+}
+
+pub fn ways_record_from_json(raw : base_codec::Json) -> Option[WaysRecord] {
+  let relays_arr = match base_codec::json_get(raw, "relays") {
+    Some(base_codec::Json::Arr(a)) => a
+    _ => return None
+  }
+  let at = match base_codec::json_get(raw, "at") {
+    Some(base_codec::Json::Num(n, _)) => n.to_int64()
+    _ => return None
+  }
+  if at < 0.to_int64() {
+    return None
+  }
+  let station = match base_codec::json_get(raw, "station") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return None
+  }
+  let relays : Array[OwnRelay] = []
+  let seen_urls : Array[String] = []
+  for i in 0..<relays_arr.length() {
+    if relays.length() >= MAX_OWN_RELAYS {
+      break
+    }
+    let item = relays_arr[i]
+    let (raw_url, by_opt) = match item {
+      base_codec::Json::Str(u) => (u, None)
+      base_codec::Json::Obj(_) => {
+        let u = match base_codec::json_get(item, "url") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        let b : Option[String] = match base_codec::json_get(item, "by") {
+          Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(str_slice_bytes(s, 0, 200)) } else { None }
+          _ => None
+        }
+        (u, b)
+      }
+      _ => ("", None)
+    }
+    match validate_relay_url(raw_url, insecure=true) {
+      Some(url) => {
+        if !contains_url(seen_urls, url) {
+          seen_urls.push(url)
+          relays.push(OwnRelay::{ url: url, by: by_opt })
+        }
+      }
+      None => ()
+    }
+  }
+  let off : Array[String] = []
+  match base_codec::json_get(raw, "off") {
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] {
+          base_codec::Json::Str(w) => {
+            if !contains_str(off, w) {
+              off.push(w)
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  Some(WaysRecord::{ relays: relays, off: off, at: at, station: station })
+}
+
+pub struct WaysStore {
+  pub station_id : String
+  pub insecure : Bool
+  pub stillfail_relays : Array[String]
+  mut kept : Map[String, WaysRecord]
+}
+
+pub fn WaysStore::new(
+  station_id : String,
+  stillfail_relays : Array[String],
+  insecure : Bool = false,
+) -> WaysStore {
+  WaysStore::{
+    station_id: station_id,
+    insecure: insecure,
+    stillfail_relays: stillfail_relays,
+    kept: Map::new(),
+  }
+}
+
+pub fn WaysStore::record(self : WaysStore, ws : String) -> Option[WaysRecord] {
+  self.kept.get(ws)
+}
+
+pub fn WaysStore::view(self : WaysStore, ws : String) -> WaysRecord {
+  match self.kept.get(ws) {
+    Some(r) => r
+    None => WaysRecord::{ relays: [], off: [], at: 0.to_int64(), station: "" }
+  }
+}
+
+pub fn WaysStore::take(self : WaysStore, ws : String, rec : WaysRecord) -> Bool {
+  match self.kept.get(ws) {
+    Some(mine) => {
+      if !ways_newer(rec, mine) {
+        return false
+      }
+    }
+    None => ()
+  }
+  self.kept.set(ws, rec)
+  true
+}
+
+fn is_relay_off_in(ours : Array[String], off : Array[String], url : String) -> Bool {
+  if contains_url(off, url) {
+    return true
+  }
+  contains_str(off, "ours") && contains_url(ours, url)
+}
+
+fn keep_relay_on(ours : Array[String], relays : Array[OwnRelay], off : Array[String]) -> Array[String] {
+  if ours.length() == 0 {
+    return off
+  }
+  let mut all_off = true
+  for i in 0..<ours.length() {
+    if !is_relay_off_in(ours, off, ours[i]) {
+      all_off = false
+      break
+    }
+  }
+  if all_off {
+    for i in 0..<relays.length() {
+      if !is_relay_off_in(ours, off, relays[i].url) {
+        all_off = false
+        break
+      }
+    }
+  }
+  if !all_off {
+    return off
+  }
+  let out : Array[String] = []
+  for i in 0..<off.length() {
+    if off[i] != "ours" && !contains_url(ours, off[i]) {
+      out.push(off[i])
+    }
+  }
+  out
+}
+
+pub fn WaysStore::workspace_relays(self : WaysStore, ws : String) -> Array[String] {
+  let v = self.view(ws)
+  let all : Array[String] = []
+  for i in 0..<self.stillfail_relays.length() {
+    all.push(self.stillfail_relays[i])
+  }
+  for i in 0..<v.relays.length() {
+    if !contains_url(all, v.relays[i].url) {
+      all.push(v.relays[i].url)
+    }
+  }
+  let on : Array[String] = []
+  for i in 0..<all.length() {
+    if !is_relay_off_in(self.stillfail_relays, v.off, all[i]) {
+      on.push(all[i])
+    }
+  }
+  if on.length() > 0 { on } else { all }
+}
+
+pub fn WaysStore::off_relays(self : WaysStore, ws : String) -> Array[String] {
+  let v = self.view(ws)
+  let all : Array[String] = []
+  for i in 0..<self.stillfail_relays.length() {
+    all.push(self.stillfail_relays[i])
+  }
+  for i in 0..<v.relays.length() {
+    if !contains_url(all, v.relays[i].url) {
+      all.push(v.relays[i].url)
+    }
+  }
+  let on = self.workspace_relays(ws)
+  if on.length() == all.length() {
+    return []
+  }
+  let out : Array[String] = []
+  for i in 0..<all.length() {
+    if !contains_url(on, all[i]) {
+      out.push(all[i])
+    }
+  }
+  out
+}
+
+pub fn WaysStore::add_relay(
+  self : WaysStore,
+  ws : String,
+  raw : String,
+  by : Option[String],
+  now_ms : Int64,
+) -> Result[WaysRecord, String] {
+  let url = match validate_relay_url(raw, insecure=self.insecure) {
+    Some(u) => u
+    None => return Err("not a relay's URL: https://host[:port][/path], with no account, query or fragment")
+  }
+  if contains_url(self.stillfail_relays, url) {
+    return Err("that is one of still.fail's own relays, which every workspace has already")
+  }
+  let was = self.view(ws)
+  for i in 0..<was.relays.length() {
+    if same_url(was.relays[i].url) == same_url(url) {
+      return Ok(was)
+    }
+  }
+  if was.relays.length() >= MAX_OWN_RELAYS {
+    return Err("a workspace has at most 4 relays of its own: remove one first")
+  }
+  let next_relays : Array[OwnRelay] = []
+  for i in 0..<was.relays.length() {
+    next_relays.push(was.relays[i])
+  }
+  next_relays.push(OwnRelay::{ url: url, by: by })
+  let at = if now_ms > was.at { now_ms } else { was.at + 1.to_int64() }
+  let rec = WaysRecord::{ relays: next_relays, off: was.off, at: at, station: self.station_id }
+  self.kept.set(ws, rec)
+  Ok(rec)
+}
+
+pub fn WaysStore::remove_relay(
+  self : WaysStore,
+  ws : String,
+  raw : String,
+  now_ms : Int64,
+) -> Result[WaysRecord, String] {
+  let url = match validate_relay_url(raw, insecure=true) {
+    Some(u) => u
+    None => raw
+  }
+  let was = self.view(ws)
+  let next_relays : Array[OwnRelay] = []
+  let mut found = false
+  for i in 0..<was.relays.length() {
+    if same_url(was.relays[i].url) == same_url(url) {
+      found = true
+    } else {
+      next_relays.push(was.relays[i])
+    }
+  }
+  if !found {
+    return Err("not one of this workspace's own relays")
+  }
+  let filtered_off : Array[String] = []
+  for i in 0..<was.off.length() {
+    if same_url(was.off[i]) != same_url(url) {
+      filtered_off.push(was.off[i])
+    }
+  }
+  let next_off = keep_relay_on(self.stillfail_relays, next_relays, filtered_off)
+  let at = if now_ms > was.at { now_ms } else { was.at + 1.to_int64() }
+  let rec = WaysRecord::{ relays: next_relays, off: next_off, at: at, station: self.station_id }
+  self.kept.set(ws, rec)
+  Ok(rec)
+}
+
+pub fn WaysStore::set_way(
+  self : WaysStore,
+  ws : String,
+  way : String,
+  enabled : Bool,
+  now_ms : Int64,
+) -> Result[WaysRecord, String] {
+  let was = self.view(ws)
+  let all : Array[String] = []
+  for i in 0..<self.stillfail_relays.length() {
+    all.push(self.stillfail_relays[i])
+  }
+  for i in 0..<was.relays.length() {
+    all.push(was.relays[i].url)
+  }
+  let is_kind = is_way_kind(way)
+  let mut matched_relay : Option[String] = None
+  if !is_kind {
+    for i in 0..<all.length() {
+      if same_url(all[i]) == same_url(way) {
+        matched_relay = Some(all[i])
+        break
+      }
+    }
+  }
+  if !is_kind && (matched_relay is None) {
+    return Err("no such way: a registered relay, or ours, lan, tailnet, direct")
+  }
+  let id = match matched_relay {
+    Some(r) => r
+    None => way
+  }
+  let next_off : Array[String] = []
+  for i in 0..<was.off.length() {
+    let w = was.off[i]
+    let drop = if id == "ours" {
+      w == "ours" || contains_url(self.stillfail_relays, w) ||
+      (enabled && (w == "lan" || w == "tailnet" || w == "direct"))
+    } else if is_kind {
+      w == id
+    } else {
+      same_url(w) == same_url(id)
+    }
+    if !drop {
+      next_off.push(w)
+    }
+  }
+  if !enabled {
+    next_off.push(id)
+  }
+  let mut all_off = all.length() > 0
+  for i in 0..<all.length() {
+    if !is_relay_off_in(self.stillfail_relays, next_off, all[i]) {
+      all_off = false
+      break
+    }
+  }
+  if all_off {
+    return Err("the last relay stays on: the web app and a device new to the workspace reach its stations by relays alone")
+  }
+  let at = if now_ms > was.at { now_ms } else { was.at + 1.to_int64() }
+  let rec = WaysRecord::{ relays: was.relays, off: next_off, at: at, station: self.station_id }
+  self.kept.set(ws, rec)
+  Ok(rec)
+}
+
+/// Answer peer RPC `ways.get` and `ways.put`.
+pub fn answer_ways(
+  store : WaysStore,
+  request : base_codec::Json,
+  workspace : String,
+) -> Result[base_codec::Json, String] {
+  let method = match base_codec::json_get(request, "method") {
+    Some(base_codec::Json::Str(m)) => m
+    _ => ""
+  }
+  if method == "ways.get" {
+    let rec_json = match store.record(workspace) {
+      Some(r) => ways_record_to_json(r)
+      None => base_codec::json_null()
+    }
+    return Ok(base_codec::json_obj([("record", rec_json)]))
+  }
+  if method == "ways.put" {
+    let raw = match base_codec::json_get(request, "record") {
+      Some(r) => r
+      None => return Err("a malformed ways record")
+    }
+    match ways_record_from_json(raw) {
+      None => return Err("a malformed ways record")
+      Some(rec) => {
+        let taken = store.take(workspace, rec)
+        return Ok(base_codec::json_obj([("taken", base_codec::json_bool(taken))]))
+      }
+    }
+  }
+  Err("unknown ways method")
+}

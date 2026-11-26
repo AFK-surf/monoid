@@ -593,3 +593,347 @@ test "font_v2: preview slot switch updates affected tracks table widths without 
   assert_true(w_after > w_before + 1.0, msg="preview width before=\{w_before} after=\{w_after}")
   assert_true(col_after > col_before + 1.0, msg="tracks col width before=\{col_before} after=\{col_after}")
 }
+
+///|
+/// Reference unoptimized composite shaper mirroring pre-Perf-57 `shape` (always runs width_runs + graphemes,
+/// never uses scan_shape_flags fast paths or seg_shapes) for bit-exact parity testing.
+fn ref_composite_shape_raw(
+  text : String,
+  size : Double,
+  weight : Int,
+  style : Int,
+  cjk_slot : Int,
+  cjk_scale : Double,
+  cjk_weight_off : Int,
+) -> (Array[Int], Array[Int], Array[Double], Array[Int], Array[Int], Bool) {
+  let cjk_size = size * cjk_scale
+  let cjk_weight = imin(imax(weight + cjk_weight_off, 100), 900)
+  let cjk_style = if cjk_slot > 0 {
+    (style & @hostapi.style_face_bits.lnot()) | @hostapi.style_face(cjk_slot)
+  } else {
+    style
+  }
+  let out = FixedArray::make(4 * 256, 0.0)
+  let seg_buf = FixedArray::make(4 * 256, 0.0)
+  let out_cjk : Array[Bool] = []
+  let mut seg_count = 1
+  let seg_ends : Array[Int] = []
+  let m = if text.length() == 0 {
+    0
+  } else if cjk_slot == 0 {
+    shape_widths(text, size, weight, style, out, has_ambig=true)
+  } else {
+    let wruns = @text.width_runs(text)
+    let gbs = @text.graphemes(text)
+    let segs : Array[(Int, Int, Bool)] = []
+    let mut r = 0
+    for gi in 0..<(gbs.length() - 1) {
+      let cs = gbs[gi]
+      let ce = gbs[gi + 1]
+      while r < wruns.length() - 1 && cs >= wruns[r].1 {
+        r = r + 1
+      }
+      let is_narrow = if r < wruns.length() { wruns[r].2 } else { false }
+      let is_c = is_cjk_cluster(text, cs, is_narrow)
+      let slen = segs.length()
+      if slen > 0 && segs[slen - 1].2 == is_c {
+        segs[slen - 1] = (segs[slen - 1].0, ce, is_c)
+      } else {
+        segs.push((cs, ce, is_c))
+      }
+    }
+    seg_count = segs.length()
+    if seg_count == 1 && !segs[0].2 {
+      shape_widths(text, size, weight, style, out, has_ambig=true)
+    } else {
+      let mut k = 0
+      for seg in segs {
+        let (sa, sb, is_c) = seg
+        let sub = text.unsafe_substring(start=sa, end=sb)
+        let sm = if is_c {
+          shape_widths(sub, cjk_size, cjk_weight, cjk_style, seg_buf, has_ambig=true)
+        } else {
+          shape_widths(sub, size, weight, style, seg_buf, has_ambig=true)
+        }
+        for j in 0..<sm {
+          out[k * 4] = seg_buf[j * 4] + sa.to_double()
+          out[k * 4 + 1] = seg_buf[j * 4 + 1]
+          out[k * 4 + 2] = seg_buf[j * 4 + 2]
+          out[k * 4 + 3] = seg_buf[j * 4 + 3]
+          out_cjk.push(is_c)
+          k = k + 1
+        }
+        seg_ends.push(k)
+      }
+      k
+    }
+  }
+  if m > 1 &&
+    (style & @hostapi.style_mono) == 0 &&
+    @hostapi.face_of_style(style) != @hostapi.face_code &&
+    spaced_now() != @hostapi.words_spaced_none {
+    let mode = spaced_now()
+    words_spaced_in(
+      text,
+      size,
+      out,
+      m,
+      mode == @hostapi.words_spaced_here && cjk_autospace_on.val,
+      cjk_em=if out_cjk.length() > 0 { cjk_size } else { size },
+      stop_style=if out_cjk.length() > 0 { cjk_style } else { 0 },
+      stop_weight=if out_cjk.length() > 0 { cjk_weight } else { 400 },
+    )
+    if mode == @hostapi.words_spaced_by_host && seg_count >= 2 && cjk_autospace_on.val {
+      let gap = size * 0.125
+      for si in 0..<(seg_ends.length() - 1) {
+        let idx = seg_ends[si]
+        if idx > 0 && idx < m {
+          let a = out[(idx - 1) * 4].to_int()
+          let b = out[idx * 4].to_int()
+          if a < text.length() && b < text.length() {
+            if spaced_pair(text.at(a).to_int(), text.at(b).to_int()) {
+              out[(idx - 1) * 4 + 2] = out[(idx - 1) * 4 + 2] + gap
+            }
+          }
+        }
+      }
+    }
+  }
+  let has_cjk_flags = out_cjk.length() == m && m > 0
+  let key_for = fn(sub : String, is_c : Bool) -> Int {
+    if is_c {
+      h_text_key(sub, cjk_size, cjk_weight, cjk_style)
+    } else {
+      h_text_key(sub, size, weight, style)
+    }
+  }
+  let starts : Array[Int] = []
+  let lens : Array[Int] = []
+  let adv : Array[Double] = []
+  let keys : Array[Int] = []
+  let cu : Array[Int] = []
+  let cjk_flags : Array[Bool] = []
+  let gb = if m > 1 { Some(@text.graphemes(text)) } else { None }
+  let boundary = FixedArray::make(text.length() + 1, m <= 1)
+  match gb {
+    Some(g) =>
+      for b in g {
+        boundary[b] = true
+      }
+    None => ()
+  }
+  let mut lb : FixedArray[Int]? = None
+  let mut i = 0
+  while i < m {
+    let st = out[i * 4].to_int()
+    let is_c = has_cjk_flags && out_cjk[i]
+    let word = joining(text, st) && out[i * 4 + 3] != -1.0
+    let mut j = i + 1
+    while j < m {
+      let sj = out[j * 4].to_int()
+      if !boundary[sj] {
+        j = j + 1
+        continue
+      }
+      if !word {
+        break
+      }
+      let b = match lb {
+        Some(b) => b
+        None => {
+          let b = @text.line_breaks(text)
+          lb = Some(b)
+          b
+        }
+      }
+      if b[sj] != 0 || out[j * 4 + 3] == -1.0 || !joining(text, sj) {
+        break
+      }
+      j = j + 1
+    }
+    let k0 = out[i * 4 + 3].to_int()
+    if j - i >= 2 {
+      let end = out[(j - 1) * 4].to_int() + out[(j - 1) * 4 + 1].to_int()
+      let mut a = 0.0
+      let mut drawn = false
+      for k in i..<j {
+        a = a + out[k * 4 + 2]
+        drawn = drawn || out[k * 4 + 3] != -1.0
+      }
+      starts.push(st)
+      lens.push(end - st)
+      adv.push(a)
+      keys.push(
+        if k0 == -2 {
+          -2
+        } else if drawn && !is_nl(text.at(st).to_int()) {
+          key_for(text.unsafe_substring(start=st, end~), is_c)
+        } else {
+          k0
+        },
+      )
+    } else {
+      starts.push(st)
+      lens.push(out[i * 4 + 1].to_int())
+      adv.push(out[i * 4 + 2])
+      keys.push(k0)
+    }
+    cu.push(if st < text.length() { text.at(st).to_int() } else { 0 })
+    if has_cjk_flags {
+      cjk_flags.push(is_c)
+    }
+    i = j
+  }
+  let bd = @text.bidi_mixed(text)
+  match bd {
+    Some(bd) =>
+      for k in 0..<starts.length() {
+        if lens[k] == 1 && bd.levels[starts[k]] % 2 == 1 && keys[k] >= 0 {
+          let c = text.at(starts[k]).to_int()
+          let m_ch = @text.mirror(c)
+          if m_ch != c {
+            let is_c = has_cjk_flags && cjk_flags[k]
+            keys[k] = key_for(Int::unsafe_to_char(m_ch).to_string(), is_c)
+          }
+        }
+      }
+    None => ()
+  }
+  (starts, lens, adv, keys, cu, bd is Some(_))
+}
+
+///|
+test "perf57: scan_shape_flags, 4-tier composite fast paths, seg_shapes reuse, and face invalidation" {
+  let t = Tester::new(fn(c) { c.text("x") |> ignore })
+  t.face_wider(@hostapi.face_ui_cjk, 0.2)
+  t.words_spaced_here()
+  assert_true(face_add(@hostapi.face_ui_cjk, "/fonts/cjk.ttf"))
+  let samples = [
+    "Hello world 12345 !@#",
+    "纯中文标题与标点，句号。",
+    "混合 English 和中文 2026 版本",
+    "it\u{2019}s fine",
+    "说：\u{201C}好\u{201D}",
+    "A\u{20000}\u{56FD}\u{E0100}\u{FF0C}\u{1F469}\u{200D}\u{1F4BB}e\u{0301}",
+    "\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}\u{FF08}\u{FF09}",
+    "Claude Code · Opus 5.5 · 3 分钟前",
+  ]
+  // 1. Parity with cjk_slot == 0
+  clear_shapes()
+  for sample in samples {
+    let (rs, rl, ra, rk, rcu, rbd) = ref_composite_shape_raw(sample, 16.0, 400, 0, 0, 1.0, 0)
+    let s = shape(sample, 16.0, 400)
+    assert_eq(s.starts, rs, msg="cjk_slot=0 starts mismatch: \{sample}")
+    assert_eq(s.lens, rl, msg="cjk_slot=0 lens mismatch: \{sample}")
+    assert_eq(s.adv, ra, msg="cjk_slot=0 adv mismatch: \{sample}")
+    assert_eq(s.keys, rk, msg="cjk_slot=0 keys mismatch: \{sample}")
+    assert_eq(s.cu, rcu, msg="cjk_slot=0 cu mismatch: \{sample}")
+    assert_eq(s.bidi is Some(_), rbd, msg="cjk_slot=0 bidi mismatch: \{sample}")
+  }
+  // 2. Parity with cjk_slot != 0 (cold seg_shapes)
+  face_set_cjk(@hostapi.face_ui, @hostapi.face_ui_cjk, scale=1.15, weight_off=100)
+  clear_shapes()
+  for sample in samples {
+    let (rs, rl, ra, rk, rcu, rbd) = ref_composite_shape_raw(
+      sample,
+      16.0,
+      400,
+      0,
+      @hostapi.face_ui_cjk,
+      1.15,
+      100,
+    )
+    let s = shape(sample, 16.0, 400)
+    assert_eq(s.starts, rs, msg="cjk_slot!=0 cold starts mismatch: \{sample}")
+    assert_eq(s.lens, rl, msg="cjk_slot!=0 cold lens mismatch: \{sample}")
+    assert_eq(s.adv, ra, msg="cjk_slot!=0 cold adv mismatch: \{sample}")
+    assert_eq(s.keys, rk, msg="cjk_slot!=0 cold keys mismatch: \{sample}")
+    assert_eq(s.cu, rcu, msg="cjk_slot!=0 cold cu mismatch: \{sample}")
+    assert_eq(s.bidi is Some(_), rbd, msg="cjk_slot!=0 cold bidi mismatch: \{sample}")
+  }
+  // 2b. Warm seg_shapes hit-path parity: drop only top-level `shapes` while keeping `seg_shapes` hot,
+  // then re-shape every sample and assert bit-exact parity with ref_composite_shape_raw.
+  for f in text_cache.fonts {
+    for _, s in f.map {
+      s.lay = None
+    }
+    f.map.clear()
+  }
+  text_cache.shaped = 0
+  text_cache.last_font = None
+  assert_true(text_cache.seg_shaped > 0, msg="expected populated seg_shapes before warm parity pass")
+  for sample in samples {
+    let (rs, rl, ra, rk, rcu, rbd) = ref_composite_shape_raw(
+      sample,
+      16.0,
+      400,
+      0,
+      @hostapi.face_ui_cjk,
+      1.15,
+      100,
+    )
+    let s = shape(sample, 16.0, 400)
+    assert_eq(s.starts, rs, msg="cjk_slot!=0 warm starts mismatch: \{sample}")
+    assert_eq(s.lens, rl, msg="cjk_slot!=0 warm lens mismatch: \{sample}")
+    assert_eq(s.adv, ra, msg="cjk_slot!=0 warm adv mismatch: \{sample}")
+    assert_eq(s.keys, rk, msg="cjk_slot!=0 warm keys mismatch: \{sample}")
+    assert_eq(s.cu, rcu, msg="cjk_slot!=0 warm cu mismatch: \{sample}")
+    assert_eq(s.bidi is Some(_), rbd, msg="cjk_slot!=0 warm bidi mismatch: \{sample}")
+  }
+  // 3. Warm seg_shapes reuse drastically reduces h_shape calls across distinct mixed strings sharing segments
+  clear_shapes()
+  let mixed_a = "今天完成了 build 和 test 验证"
+  let mixed_b = "昨天完成了 build 和 test 验证"
+  let mixed_c = "明天完成了 build 和 test 验证"
+  fake_shape_calls.val = Some(0)
+  let _ = shape(mixed_a, 16.0, 400)
+  let cold_calls = fake_shape_calls.val.unwrap_or(0)
+  fake_shape_calls.val = Some(0)
+  let sb = shape(mixed_b, 16.0, 400)
+  let sc = shape(mixed_c, 16.0, 400)
+  let warm_calls = fake_shape_calls.val.unwrap_or(0)
+  fake_shape_calls.val = None
+  assert_true(cold_calls >= 5, msg="expected >= 5 cold h_shape calls, got \{cold_calls}")
+  assert_true(warm_calls <= 2, msg="expected <= 2 warm h_shape calls across 2 strings, got \{warm_calls}")
+  assert_true(text_cache.seg_shaped > 0)
+  for pair in [(mixed_b, sb), (mixed_c, sc)] {
+    let (txt, got) = pair
+    let (rs, rl, ra, rk, rcu, rbd) = ref_composite_shape_raw(
+      txt,
+      16.0,
+      400,
+      0,
+      @hostapi.face_ui_cjk,
+      1.15,
+      100,
+    )
+    assert_eq(got.starts, rs, msg="warm mixed starts mismatch: \{txt}")
+    assert_eq(got.lens, rl, msg="warm mixed lens mismatch: \{txt}")
+    assert_eq(got.adv, ra, msg="warm mixed adv mismatch: \{txt}")
+    assert_eq(got.keys, rk, msg="warm mixed keys mismatch: \{txt}")
+    assert_eq(got.cu, rcu, msg="warm mixed cu mismatch: \{txt}")
+    assert_eq(got.bidi is Some(_), rbd, msg="warm mixed bidi mismatch: \{txt}")
+  }
+  // 4. Surgical invalidation via forget_words_for_face(7) evicts slot 7 while preserving unrelated slot-4 seg_shapes
+  let seg_unrelated_before = text_cache.seg_shaped
+  assert_true(face_add_family(7, "PreviewA"))
+  let ov7 : @view.CjkOverride = { face: 7, scale: 1.0, weight_off: 0 }
+  let s7_before = shape("abc中文def", 16.0, 400, cjk_override=Some(ov7))
+  let seg_before_evict = text_cache.seg_shaped
+  t.face_wider(7, 0.3)
+  face_clear(7)
+  assert_true(face_add_family(7, "PreviewB"))
+  assert_true(text_cache.seg_shaped < seg_before_evict, msg="slot-7 seg_shapes bucket must be evicted")
+  assert_true(
+    text_cache.seg_shaped >= seg_unrelated_before,
+    msg="unrelated slot-4 seg_shapes must remain intact after slot-7 eviction",
+  )
+  let s7_after = shape("abc中文def", 16.0, 400, cjk_override=Some(ov7))
+  assert_true(s7_after.adv[3] > s7_before.adv[3] + 1.0)
+  clear_shapes()
+  assert_eq(text_cache.seg_shaped, 0)
+  assert_true(text_cache.seg_fonts.is_empty())
+  assert_true(text_cache.last_font is None)
+  assert_true(text_cache.seg_last_font_0 is None)
+  assert_true(text_cache.seg_last_font_1 is None)
+}

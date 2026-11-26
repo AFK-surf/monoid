@@ -3,7 +3,7 @@
 // bounded idle-unarchived store query, and daily Upkeep orphan session room pruning.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
@@ -485,9 +485,13 @@ describe("Item 2: clean rebuildable directories of idle unarchived sessions", ()
       },
     });
     coldRooms = new ColdRooms(() => r.hub, {
-      measureRoom: async (dir) => roomReply.get(dir) ?? { bytes: 0, rebuild: [], complete: true },
+      measureRoom: async (dir) => {
+        const reply = roomReply.get(dir);
+        assert.ok(reply, `no measurement for ${dir}`);
+        return reply;
+      },
     });
-    const data = r.hub.config().dataDir;
+    const data = realpathSync(r.hub.config().dataDir);
     const now = r.hub.now();
     const HOUR = 3_600_000;
     const at = now - 30 * HOUR;

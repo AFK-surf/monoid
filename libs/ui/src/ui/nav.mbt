@@ -229,6 +229,52 @@ struct Nav[P] {
 let nav_kept_left_most : Int = 3
 
 ///|
+/// Per-Nav `kept_left` quota configuration stored beside `Nav[P]` (keyed by `nav.said` identity) so `Nav[P]`'s C
+/// struct layout in `decls.h` stays unchanged across `MBC_STORE` cached units.
+priv struct NavKeptLeftLimits {
+  mut most_of : ((String) -> Int)?
+  mut total : Int
+}
+
+///|
+// kept across runs: per-Nav side table (only populated for Navs with custom limits; 0-2 entries)
+let nav_kept_left_limits : Array[(@signals.Signal[Int], NavKeptLeftLimits)] = []
+
+///|
+fn nav_limits_get(said : @signals.Signal[Int]) -> NavKeptLeftLimits? {
+  for entry in nav_kept_left_limits {
+    if physical_equal(entry.0, said) {
+      return Some(entry.1)
+    }
+  }
+  None
+}
+
+///|
+fn nav_limits_set(said : @signals.Signal[Int], most_of : ((String) -> Int)?, total : Int) -> Unit {
+  if most_of is None && total == nav_kept_left_most {
+    match nav_kept_left_limits.search_by(fn(e) { physical_equal(e.0, said) }) {
+      Some(i) => {
+        nav_kept_left_limits.remove(i) |> ignore
+        if nav_kept_left_limits.is_empty() {
+          nav_kept_left_limits.shrink_to_fit()
+        }
+      }
+      None => ()
+    }
+    return
+  }
+  for entry in nav_kept_left_limits {
+    if physical_equal(entry.0, said) {
+      entry.1.most_of = most_of
+      entry.1.total = total
+      return
+    }
+  }
+  nav_kept_left_limits.push((said, { most_of, total }))
+}
+
+///|
 /// A stack of pages, `root` at the bottom. `on_leave` is told of each page
 /// that leaves it for good (popped, once it has slid away); a page
 /// `from_left` says yes to slides in from the left and back out that way, swiped back too. It is given the page and
@@ -325,6 +371,18 @@ fn[P] Nav::entry_left(self : Nav[P], entry : NavPage[P]) -> Unit {
 }
 
 ///|
+/// Configure per-kind and total `kept_left` caps on `self`.
+/// When `most_of` is `Some(f)`, each `kind` may keep at most `f(kind)` entries (`<= 0` refuses parking that kind);
+/// `total` caps total entries across all kinds (defaults to `nav_kept_left_most`).
+pub fn[P] Nav::set_kept_left_limits(
+  self : Nav[P],
+  most_of? : (String) -> Int,
+  total? : Int = nav_kept_left_most,
+) -> Unit {
+  nav_limits_set(self.said, most_of, total)
+}
+
+///|
 /// Whether entry `serial` is put by on the stack's kept left (Nav's `kept_left`), read as that changes.
 pub fn[P] Nav::is_kept_left(self : Nav[P], serial : Int) -> Bool {
   self.said.get() |> ignore
@@ -361,7 +419,35 @@ fn[P] Nav::try_park_left(self : Nav[P], e : NavPage[P]) -> Bool {
     Some(i) => self.gone.push(self.kept_left.remove(i).2)
     None => ()
   }
-  if self.kept_left.length() >= nav_kept_left_most {
+  let (most_of, total_cap) = match nav_limits_get(self.said) {
+    Some(lim) => (lim.most_of, lim.total)
+    None => (None, nav_kept_left_most)
+  }
+  let kind_cap = match most_of {
+    Some(f) => f(kind)
+    None => total_cap
+  }
+  if kind_cap <= 0 || total_cap <= 0 {
+    return false
+  }
+  if most_of is Some(_) {
+    let mut kind_count = 0
+    for x in self.kept_left {
+      if x.1 == kind {
+        kind_count = kind_count + 1
+      }
+    }
+    while kind_count >= kind_cap {
+      match self.kept_left.search_by(fn(x) { x.1 == kind }) {
+        Some(i) => {
+          self.gone.push(self.kept_left.remove(i).2)
+          kind_count = kind_count - 1
+        }
+        None => break
+      }
+    }
+  }
+  while self.kept_left.length() >= total_cap {
     self.gone.push(self.kept_left.remove(0).2)
   }
   e.focus_kept = 0

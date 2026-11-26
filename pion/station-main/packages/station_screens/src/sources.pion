@@ -1,0 +1,2526 @@
+// Unified screen source contracts, clipboard/cursor/region/resolution/window codecs,
+// platform input state machines (macOS, Windows, Linux/X11, iOS Simulator, Android scrcpy),
+// Linux virtual gamepad & virtual microphone state machines, and Windows ScreenService state machine.
+
+import "base_codec"
+import "station_ops"
+
+// ---------------------------------------------------------------------------
+// Core codecs, regions, clipboard, cursor, windows, resolution, access
+// ---------------------------------------------------------------------------
+
+pub enum Codec {
+  H265
+  H264
+  Jpeg
+}
+
+pub fn codec_name(c : Codec) -> String {
+  match c {
+    Codec::H265 => "h265"
+    Codec::H264 => "h264"
+    Codec::Jpeg => "jpeg"
+  }
+}
+
+pub fn codec_eq(a : Codec, b : Codec) -> Bool {
+  codec_name(a) == codec_name(b)
+}
+
+pub enum AudioCodec {
+  PcmS16le
+  Opus
+}
+
+pub let OPUS_MAX : Int = 1275
+pub let MIC_PCM_MAX : Int = 3840
+pub let GAMEPADS_MOST : Int = 4
+pub let GAMEPAD_BUTTONS : Int = 0x1ffff
+pub let LOOK_LEAST : Double = 0.02
+pub let LOOK_WHOLE : Double = 0.98
+pub let CLIP_TEXT_MAX : Int = 1024 * 1024
+pub let CLIP_PNG_MAX : Int = 8 * 1024 * 1024
+pub let CURSOR_PNG_MAX : Int = 65536
+pub let CURSOR_IMAGES_MOST : Int = 64
+pub let WINDOWS_MOST : Int = 60
+pub let WINDOW_WORDS_MOST : Int = 200
+
+pub struct Region {
+  pub x : Double
+  pub y : Double
+  pub w : Double
+  pub h : Double
+}
+
+pub struct FrameConfig {
+  pub codec : Codec
+  pub width : Int
+  pub height : Int
+  pub description : Option[Bytes]
+  pub region : Option[Region]
+}
+
+pub struct Frame {
+  pub config : Option[FrameConfig]
+  pub key : Bool
+  pub ts : Int64
+  pub data : Bytes
+}
+
+pub struct AudioFrame {
+  pub ts : Int64
+  pub data : Bytes
+  pub codec : AudioCodec
+}
+
+pub struct ViewFit {
+  pub width : Int
+  pub height : Int
+  pub scale : Double
+}
+
+pub struct ViewOptions {
+  pub max_width : Int
+  pub max_height : Int
+  pub codecs : Array[Codec]
+  pub peek : Bool
+  pub agent : Bool
+  pub bitrate : Option[Int]
+  pub fps : Option[Int]
+  pub fit : Option[ViewFit]
+  pub audio : Bool
+  pub opus : Bool
+  pub gamut_p3 : Bool
+  pub passkeys : Bool
+  pub chroma_444 : Bool
+  pub quality : Option[String]
+  pub gamepad_mouse : Bool
+}
+
+pub fn ViewOptions::default(codecs : Array[Codec]) -> ViewOptions {
+  ViewOptions::{
+    max_width: 1920,
+    max_height: 1080,
+    codecs: codecs,
+    peek: false,
+    agent: false,
+    bitrate: None,
+    fps: None,
+    fit: None,
+    audio: false,
+    opus: false,
+    gamut_p3: false,
+    passkeys: false,
+    chroma_444: false,
+    quality: None,
+    gamepad_mouse: false,
+  }
+}
+
+fn codecs_has(list : Array[Codec], target : Codec) -> Bool {
+  for i in 0..<list.length() {
+    if codec_eq(list[i], target) {
+      return true
+    }
+  }
+  false
+}
+
+/// First codec in `own` accepted by `options`; for `peek`, prefers JPEG if both support it.
+pub fn codec_for(options : ViewOptions, own : Array[Codec]) -> Option[Codec] {
+  if options.peek && codecs_has(own, Codec::Jpeg) && codecs_has(options.codecs, Codec::Jpeg) {
+    return Some(Codec::Jpeg)
+  }
+  for i in 0..<own.length() {
+    if codecs_has(options.codecs, own[i]) {
+      return Some(own[i])
+    }
+  }
+  None
+}
+
+fn clamp_d(v : Double, lo : Double, hi : Double) -> Double {
+  if v < lo {
+    lo
+  } else if v > hi {
+    hi
+  } else {
+    v
+  }
+}
+
+fn round4(n : Double) -> Double {
+  let scaled = n * 10000.0
+  let r = if scaled >= 0.0 { (scaled + 0.5).to_int64() } else { (scaled - 0.5).to_int64() }
+  r.to_double() / 10000.0
+}
+
+fn is_finite_d(v : Double) -> Bool {
+  v == v && v > -1.0e308 && v < 1.0e308
+}
+
+/// Validates and clamps a screen sub-region; returns None for invalid inputs or whole-screen regions.
+pub fn region_of(x_in : Double, y_in : Double, w_in : Double, h_in : Double) -> Option[Region] {
+  if !is_finite_d(x_in) || !is_finite_d(y_in) || !is_finite_d(w_in) || !is_finite_d(h_in) {
+    return None
+  }
+  let w = clamp_d(w_in, LOOK_LEAST, 1.0)
+  let h = clamp_d(h_in, LOOK_LEAST, 1.0)
+  if w >= LOOK_WHOLE && h >= LOOK_WHOLE {
+    return None
+  }
+  let x = clamp_d(x_in, 0.0, 1.0 - w)
+  let y = clamp_d(y_in, 0.0, 1.0 - h)
+  Some(Region::{ x: round4(x), y: round4(y), w: round4(w), h: round4(h) })
+}
+
+pub enum ClipType {
+  Text
+  Png
+}
+
+pub fn clip_type_name(t : ClipType) -> String {
+  match t {
+    ClipType::Text => "text"
+    ClipType::Png => "png"
+  }
+}
+
+pub enum ClipPrivacy {
+  Concealed
+  Transient
+  Auto
+}
+
+pub fn privacy_code(p : Option[ClipPrivacy]) -> Int {
+  match p {
+    None => 0
+    Some(ClipPrivacy::Concealed) => 1
+    Some(ClipPrivacy::Transient) => 2
+    Some(ClipPrivacy::Auto) => 3
+  }
+}
+
+pub fn privacy_of(code : Int) -> Option[ClipPrivacy] {
+  if code == 1 {
+    Some(ClipPrivacy::Concealed)
+  } else if code == 2 {
+    Some(ClipPrivacy::Transient)
+  } else if code == 3 {
+    Some(ClipPrivacy::Auto)
+  } else {
+    None
+  }
+}
+
+pub enum ClipPayload {
+  Text(String)
+  Png(Bytes)
+}
+
+pub struct Clip {
+  pub payload : ClipPayload
+  pub privacy : Option[ClipPrivacy]
+}
+
+pub fn clip_fits(clip : Clip) -> Bool {
+  match clip.payload {
+    ClipPayload::Text(s) => s.length() > 0 && s.length() <= CLIP_TEXT_MAX
+    ClipPayload::Png(b) => b.length() > 0 && b.length() <= CLIP_PNG_MAX
+  }
+}
+
+/// Wire frame kind for clipboard forwarding (`station/src/screens/AGENTS.md`):
+/// - Public clip -> kind 4 (`clipboard`), never changes first byte.
+/// - Private clip -> kind 9 (`privateClipboard`) ONLY when client asked `private_clip`.
+/// - Private clip when client does NOT support `private_clip` -> None (dropped, never downgraded).
+pub struct ClipWireDecision {
+  pub kind : Int
+  pub privacy_bits : Int
+}
+
+pub fn clip_wire_decision(clip : Clip, client_supports_private : Bool) -> Option[ClipWireDecision] {
+  let code = privacy_code(clip.privacy)
+  if code == 0 {
+    return Some(ClipWireDecision::{ kind: 4, privacy_bits: 0 })
+  }
+  if !client_supports_private {
+    return None
+  }
+  Some(ClipWireDecision::{ kind: 9, privacy_bits: code << 1 })
+}
+
+pub struct ScreenCursor {
+  pub x : Double
+  pub y : Double
+  pub shape : String
+}
+
+/// Validates CSS cursor name (`[a-z-]{1,24}`) or `custom:<16 lowercase hex>`.
+pub fn is_valid_cursor_shape(shape : String) -> Bool {
+  let n = shape.length()
+  if shape.starts_with("custom:") {
+    if n != 23 {
+      return false
+    }
+    for i in 7..<23 {
+      let c = shape.code_unit_at(i) & 0xFF
+      let hex = (c >= 48 && c <= 57) || (c >= 97 && c <= 102)
+      if !hex {
+        return false
+      }
+    }
+    return true
+  }
+  if n < 1 || n > 24 {
+    return false
+  }
+  for i in 0..<n {
+    let c = shape.code_unit_at(i) & 0xFF
+    let ok = (c >= 97 && c <= 122) || c == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+/// Extracts `custom:<id>` from a helper cursor image payload (`w,h,hx,hy` + 16 hex + PNG signature).
+pub fn cursor_image_shape(payload : Bytes) -> Option[String] {
+  let n = payload.length()
+  if n < 28 || n > 20 + CURSOR_PNG_MAX {
+    return None
+  }
+  let w = payload[0].to_int() & 0xFF
+  let h = payload[1].to_int() & 0xFF
+  let hx = payload[2].to_int() & 0xFF
+  let hy = payload[3].to_int() & 0xFF
+  if w < 1 || w > 128 || h < 1 || h > 128 || hx > w || hy > h {
+    return None
+  }
+  let sb = StringBuilder::new()
+  sb.write_string("custom:")
+  for i in 4..<20 {
+    let c = payload[i].to_int() & 0xFF
+    let hex = (c >= 48 && c <= 57) || (c >= 97 && c <= 102)
+    if !hex {
+      return None
+    }
+    sb.write_byte(c as Byte)
+  }
+  let sig : Array[Int] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  for i in 0..<8 {
+    if (payload[20 + i].to_int() & 0xFF) != sig[i] {
+      return None
+    }
+  }
+  Some(sb.to_string())
+}
+
+/// Validates `^u_[0-9a-f]{12}$`.
+pub fn is_user_tab_id(id : String) -> Bool {
+  if id.length() != 14 || !id.starts_with("u_") {
+    return false
+  }
+  for i in 2..<14 {
+    let c = id.code_unit_at(i) & 0xFF
+    let hex = (c >= 48 && c <= 57) || (c >= 97 && c <= 102)
+    if !hex {
+      return false
+    }
+  }
+  true
+}
+
+pub struct ScreenWindow {
+  pub id : Int
+  pub app : String
+  pub title : String
+}
+
+pub struct ScreenWindows {
+  pub windows : Array[ScreenWindow]
+  pub window : Option[Int]
+}
+
+fn str_cut(s : String, max_len : Int) -> String {
+  station_ops::utf8_truncate(s, max_len)
+}
+
+pub fn windows_of_json(v : base_codec::Json) -> Array[ScreenWindow] {
+  let out : Array[ScreenWindow] = []
+  match v {
+    base_codec::Json::Arr(items) => {
+      for i in 0..<items.length() {
+        if out.length() >= WINDOWS_MOST {
+          break
+        }
+        let item = items[i]
+        let id = match base_codec::json_get(item, "id") {
+          Some(base_codec::Json::Num(d, _)) => {
+            let iv = d.to_int()
+            if iv > 0 && iv.to_double() == d { iv } else { -1 }
+          }
+          _ => -1
+        }
+        if id <= 0 {
+          continue
+        }
+        let app = match base_codec::json_get(item, "app") {
+          Some(base_codec::Json::Str(s)) => str_cut(s, WINDOW_WORDS_MOST)
+          _ => ""
+        }
+        let title = match base_codec::json_get(item, "title") {
+          Some(base_codec::Json::Str(s)) => str_cut(s, WINDOW_WORDS_MOST)
+          _ => ""
+        }
+        out.push(ScreenWindow::{ id: id, app: app, title: title })
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+pub struct ScreenSize {
+  pub width : Int
+  pub height : Int
+}
+
+pub struct ScreenResolution {
+  pub width : Int
+  pub height : Int
+  pub modes : Array[ScreenSize]
+}
+
+fn valid_dim(v : Option[base_codec::Json]) -> Option[Int] {
+  match v {
+    Some(base_codec::Json::Num(d, _)) => {
+      let iv = d.to_int()
+      if iv > 0 && iv <= 16384 && iv.to_double() == d { Some(iv) } else { None }
+    }
+    _ => None
+  }
+}
+
+pub fn resolution_of_json(v : base_codec::Json) -> Option[ScreenResolution] {
+  let w = match valid_dim(base_codec::json_get(v, "width")) {
+    Some(x) => x
+    None => return None
+  }
+  let h = match valid_dim(base_codec::json_get(v, "height")) {
+    Some(x) => x
+    None => return None
+  }
+  let modes : Array[ScreenSize] = []
+  match base_codec::json_get(v, "modes") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        let mw = match valid_dim(base_codec::json_get(arr[i], "width")) {
+          Some(x) => x
+          None => return None
+        }
+        let mh = match valid_dim(base_codec::json_get(arr[i], "height")) {
+          Some(x) => x
+          None => return None
+        }
+        modes.push(ScreenSize::{ width: mw, height: mh })
+      }
+    }
+    _ => return None
+  }
+  Some(ScreenResolution::{ width: w, height: h, modes: modes })
+}
+
+pub struct ScreenScale {
+  pub percent : Int
+  pub recommended : Int
+  pub steps : Array[Int]
+}
+
+pub struct ScreenVolume {
+  pub level : Int
+  pub max : Int
+}
+
+pub struct ScreenVideo {
+  pub capture : String
+  pub encoder : Option[String]
+  pub hardware : Option[Bool]
+}
+
+pub struct ScreenMic {
+  pub available : Bool
+  pub active : Bool
+  pub epoch : Int
+}
+
+pub enum GamepadDriver {
+  Vigembus
+  Uinput
+  Missing
+  Unsupported
+}
+
+pub fn gamepad_driver_name(d : GamepadDriver) -> String {
+  match d {
+    GamepadDriver::Vigembus => "vigembus"
+    GamepadDriver::Uinput => "uinput"
+    GamepadDriver::Missing => "missing"
+    GamepadDriver::Unsupported => "unsupported"
+  }
+}
+
+pub struct ScreenGamepad {
+  pub native : Bool
+  pub driver : GamepadDriver
+  pub mouse : Bool
+}
+
+pub struct ScreenAccess {
+  pub capture : Bool
+  pub control : Bool
+  pub unsupported : Option[String]
+  pub reason : Option[String]
+  pub app : Option[String]
+  pub path : Option[String]
+  pub asking : Bool
+}
+
+pub fn ScreenAccess::ok() -> ScreenAccess {
+  ScreenAccess::{
+    capture: true,
+    control: true,
+    unsupported: None,
+    reason: None,
+    app: None,
+    path: None,
+    asking: false,
+  }
+}
+
+pub enum ScreenKind {
+  Desktop
+  Browser
+  Simulator
+}
+
+pub fn screen_kind_name(k : ScreenKind) -> String {
+  match k {
+    ScreenKind::Desktop => "desktop"
+    ScreenKind::Browser => "browser"
+    ScreenKind::Simulator => "simulator"
+  }
+}
+
+pub struct Panel {
+  pub width : Double
+  pub height : Double
+  pub corners : Array[Double]
+}
+
+pub struct ChromeButton {
+  pub name : String
+  pub x : Double
+  pub y : Double
+  pub width : Double
+  pub height : Double
+  pub dx : Double
+  pub dy : Double
+  pub front : Bool
+  pub page : Option[Int]
+  pub usage : Option[Int]
+}
+
+pub struct ChromePanel {
+  pub key : String
+  pub width : Int
+  pub height : Int
+  pub frame_width : Double
+  pub frame_height : Double
+  pub screen_x : Double
+  pub screen_y : Double
+  pub screen_width : Double
+  pub screen_height : Double
+  pub corners : Array[Double]
+  pub buttons : Array[ChromeButton]
+}
+
+// ---------------------------------------------------------------------------
+// ScreenInput & Gamepad
+// ---------------------------------------------------------------------------
+
+pub enum PointerKind {
+  Down
+  Up
+  Move
+}
+
+pub enum KeyKind {
+  Down
+  Up
+}
+
+pub struct GamepadState {
+  pub index : Int
+  pub connected : Bool
+  pub buttons : Int
+  pub lx : Double
+  pub ly : Double
+  pub rx : Double
+  pub ry : Double
+  pub lt : Double
+  pub rt : Double
+}
+
+pub fn gamepad_released(index : Int) -> GamepadState {
+  GamepadState::{
+    index: index,
+    connected: false,
+    buttons: 0,
+    lx: 0.0,
+    ly: 0.0,
+    rx: 0.0,
+    ry: 0.0,
+    lt: 0.0,
+    rt: 0.0,
+  }
+}
+
+pub enum ScreenInput {
+  Pointer(PointerKind, Double, Double, Int, Option[Double], Option[Double], Bool)
+  Wheel(Double, Double, Double, Double)
+  Key(KeyKind, String, String, Int)
+  Text(String)
+  Pose(String)
+  Device(String)
+  Button(Int, Int, Bool)
+  Gamepad(GamepadState)
+  GamepadMode(Bool)
+}
+
+fn lowest_bit(bits : Int) -> Int {
+  bits & (0 - bits)
+}
+
+fn button_of_bit(bit : Int) -> Int {
+  if bit == 1 {
+    0
+  } else if bit == 2 {
+    2
+  } else if bit == 4 {
+    1
+  } else {
+    0
+  }
+}
+
+fn is_single_codepoint(s : String) -> Bool {
+  let n = s.length()
+  if n == 0 {
+    return false
+  }
+  let b0 = s.code_unit_at(0) & 0xFF
+  let expected = if b0 < 0x80 {
+    1
+  } else if (b0 & 0xE0) == 0xC0 {
+    2
+  } else if (b0 & 0xF0) == 0xE0 {
+    3
+  } else if (b0 & 0xF8) == 0xF0 {
+    4
+  } else {
+    1
+  }
+  n == expected
+}
+
+// ---------------------------------------------------------------------------
+// macOS Input (`station/src/screens/mac-input.ts`)
+// ---------------------------------------------------------------------------
+
+pub let MAC_FLAG_ALT : Int = 0x80000
+pub let MAC_FLAG_CTRL : Int = 0x40000
+pub let MAC_FLAG_COMMAND : Int = 0x100000
+pub let MAC_FLAG_SHIFT : Int = 0x20000
+pub let MAC_FLAG_NUMERIC_PAD : Int = 0x200000
+pub let MAC_FLAG_FN : Int = 0x800000
+pub let MAC_CLICK_MS : Int64 = 500.to_int64()
+pub let MAC_CLICK_NEAR : Double = 0.01
+
+fn is_key_end(code : String) -> Bool {
+  code.length() == 3 && (code.code_unit_at(0) & 0xFF) == 69 && (code.code_unit_at(1) & 0xFF) == 110 && (code.code_unit_at(2) & 0xFF) == 100
+}
+
+pub fn mac_flags_of(mods : Int) -> Int {
+  let mut f = 0
+  if (mods & 1) != 0 { f = f | MAC_FLAG_ALT }
+  if (mods & 2) != 0 { f = f | MAC_FLAG_CTRL }
+  if (mods & 4) != 0 { f = f | MAC_FLAG_COMMAND }
+  if (mods & 8) != 0 { f = f | MAC_FLAG_SHIFT }
+  f
+}
+
+pub fn mac_keycode_of(code : String) -> Option[Int] {
+  match code {
+    "KeyA" => Some(0x00)
+    "KeyS" => Some(0x01)
+    "KeyD" => Some(0x02)
+    "KeyF" => Some(0x03)
+    "KeyH" => Some(0x04)
+    "KeyG" => Some(0x05)
+    "KeyZ" => Some(0x06)
+    "KeyX" => Some(0x07)
+    "KeyC" => Some(0x08)
+    "KeyV" => Some(0x09)
+    "IntlBackslash" => Some(0x0a)
+    "KeyB" => Some(0x0b)
+    "KeyQ" => Some(0x0c)
+    "KeyW" => Some(0x0d)
+    "KeyE" => Some(0x0e)
+    "KeyR" => Some(0x0f)
+    "KeyY" => Some(0x10)
+    "KeyT" => Some(0x11)
+    "Digit1" => Some(0x12)
+    "Digit2" => Some(0x13)
+    "Digit3" => Some(0x14)
+    "Digit4" => Some(0x15)
+    "Digit6" => Some(0x16)
+    "Digit5" => Some(0x17)
+    "Equal" => Some(0x18)
+    "Digit9" => Some(0x19)
+    "Digit7" => Some(0x1a)
+    "Minus" => Some(0x1b)
+    "Digit8" => Some(0x1c)
+    "Digit0" => Some(0x1d)
+    "BracketRight" => Some(0x1e)
+    "KeyO" => Some(0x1f)
+    "KeyU" => Some(0x20)
+    "BracketLeft" => Some(0x21)
+    "KeyI" => Some(0x22)
+    "KeyP" => Some(0x23)
+    "Enter" => Some(0x24)
+    "KeyL" => Some(0x25)
+    "KeyJ" => Some(0x26)
+    "Quote" => Some(0x27)
+    "KeyK" => Some(0x28)
+    "Semicolon" => Some(0x29)
+    "Backslash" => Some(0x2a)
+    "Comma" => Some(0x2b)
+    "Slash" => Some(0x2c)
+    "KeyN" => Some(0x2d)
+    "KeyM" => Some(0x2e)
+    "Period" => Some(0x2f)
+    "Tab" => Some(0x30)
+    "Space" => Some(0x31)
+    "Backquote" => Some(0x32)
+    "Backspace" => Some(0x33)
+    "Escape" => Some(0x35)
+    "MetaRight" => Some(0x36)
+    "MetaLeft" => Some(0x37)
+    "ShiftLeft" => Some(0x38)
+    "CapsLock" => Some(0x39)
+    "AltLeft" => Some(0x3a)
+    "ControlLeft" => Some(0x3b)
+    "ShiftRight" => Some(0x3c)
+    "AltRight" => Some(0x3d)
+    "ControlRight" => Some(0x3e)
+    "Fn" => Some(0x3f)
+    "F17" => Some(0x40)
+    "NumpadDecimal" => Some(0x41)
+    "NumpadMultiply" => Some(0x43)
+    "NumpadAdd" => Some(0x45)
+    "NumLock" => Some(0x47)
+    "AudioVolumeUp" => Some(0x48)
+    "AudioVolumeDown" => Some(0x49)
+    "AudioVolumeMute" => Some(0x4a)
+    "NumpadDivide" => Some(0x4b)
+    "NumpadEnter" => Some(0x4c)
+    "NumpadSubtract" => Some(0x4e)
+    "F18" => Some(0x4f)
+    "F19" => Some(0x50)
+    "NumpadEqual" => Some(0x51)
+    "Numpad0" => Some(0x52)
+    "Numpad1" => Some(0x53)
+    "Numpad2" => Some(0x54)
+    "Numpad3" => Some(0x55)
+    "Numpad4" => Some(0x56)
+    "Numpad5" => Some(0x57)
+    "Numpad6" => Some(0x58)
+    "Numpad7" => Some(0x59)
+    "F20" => Some(0x5a)
+    "Numpad8" => Some(0x5b)
+    "Numpad9" => Some(0x5c)
+    "IntlYen" => Some(0x5d)
+    "IntlRo" => Some(0x5e)
+    "NumpadComma" => Some(0x5f)
+    "F5" => Some(0x60)
+    "F6" => Some(0x61)
+    "F7" => Some(0x62)
+    "F3" => Some(0x63)
+    "F8" => Some(0x64)
+    "F9" => Some(0x65)
+    "Lang2" => Some(0x66)
+    "F11" => Some(0x67)
+    "Lang1" => Some(0x68)
+    "F13" => Some(0x69)
+    "F16" => Some(0x6a)
+    "F14" => Some(0x6b)
+    "F10" => Some(0x6d)
+    "ContextMenu" => Some(0x6e)
+    "F12" => Some(0x6f)
+    "F15" => Some(0x71)
+    "Insert" => Some(0x72)
+    "Help" => Some(0x72)
+    "Home" => Some(0x73)
+    "PageUp" => Some(0x74)
+    "Delete" => Some(0x75)
+    "F4" => Some(0x76)
+    "F2" => Some(0x78)
+    "PageDown" => Some(0x79)
+    "F1" => Some(0x7a)
+    "ArrowLeft" => Some(0x7b)
+    "ArrowRight" => Some(0x7c)
+    "ArrowDown" => Some(0x7d)
+    "ArrowUp" => Some(0x7e)
+    _ => if is_key_end(code) { Some(0x77) } else { None }
+  }
+}
+
+fn mac_mod_flag_of(code : String) -> Option[Int] {
+  match code {
+    "MetaLeft" => Some(MAC_FLAG_COMMAND)
+    "MetaRight" => Some(MAC_FLAG_COMMAND)
+    "ShiftLeft" => Some(MAC_FLAG_SHIFT)
+    "ShiftRight" => Some(MAC_FLAG_SHIFT)
+    "AltLeft" => Some(MAC_FLAG_ALT)
+    "AltRight" => Some(MAC_FLAG_ALT)
+    "ControlLeft" => Some(MAC_FLAG_CTRL)
+    "ControlRight" => Some(MAC_FLAG_CTRL)
+    _ => None
+  }
+}
+
+fn mac_is_arrow(kc : Int) -> Bool {
+  kc == 0x7b || kc == 0x7c || kc == 0x7d || kc == 0x7e
+}
+
+fn mac_is_fn_key(kc : Int) -> Bool {
+  kc == 0x72 || kc == 0x73 || kc == 0x74 || kc == 0x75 || kc == 0x77 || kc == 0x79 ||
+  kc == 0x7a || kc == 0x78 || kc == 0x63 || kc == 0x76 || kc == 0x60 || kc == 0x61 ||
+  kc == 0x62 || kc == 0x64 || kc == 0x65 || kc == 0x6d || kc == 0x67 || kc == 0x6f
+}
+
+pub enum MacOp {
+  Mouse(String, Double, Double, Int, Int, Int, Int, Option[Double], Option[Double], Bool)
+  Gamepad(GamepadState)
+  GamepadMode(Bool)
+  Scroll(Double, Double, Double, Double, Int)
+  Key(Int, Bool, Int)
+  Text(String)
+}
+
+struct MacPress {
+  pub at : Int64
+  pub x : Double
+  pub y : Double
+  pub button : Int
+  pub clicks : Int
+}
+
+pub struct MacInput {
+  pub mut buttons : Int
+  pub held : Array[String]
+  pub mut at_x : Double
+  pub mut at_y : Double
+  pub mut press : Option[MacPress]
+  pub pads : Array[Int]
+}
+
+pub fn MacInput::new() -> MacInput {
+  MacInput::{
+    buttons: 0,
+    held: [],
+    at_x: 0.0,
+    at_y: 0.0,
+    press: None,
+    pads: [],
+  }
+}
+
+fn array_has_str(arr : Array[String], s : String) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == s {
+      return true
+    }
+  }
+  false
+}
+
+fn array_add_str(arr : Array[String], s : String) -> Unit {
+  if !array_has_str(arr, s) {
+    arr.push(s)
+  }
+}
+
+fn array_remove_str(arr : Array[String], s : String) -> Unit {
+  let kept : Array[String] = []
+  for i in 0..<arr.length() {
+    if arr[i] != s {
+      kept.push(arr[i])
+    }
+  }
+  while arr.length() > 0 { let _ = arr.pop() }
+  for i in 0..<kept.length() { arr.push(kept[i]) }
+}
+
+fn array_has_int(arr : Array[Int], v : Int) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == v {
+      return true
+    }
+  }
+  false
+}
+
+fn array_add_int(arr : Array[Int], v : Int) -> Unit {
+  if !array_has_int(arr, v) {
+    arr.push(v)
+  }
+}
+
+fn array_remove_int(arr : Array[Int], v : Int) -> Unit {
+  let kept : Array[Int] = []
+  for i in 0..<arr.length() {
+    if arr[i] != v {
+      kept.push(arr[i])
+    }
+  }
+  while arr.length() > 0 { let _ = arr.pop() }
+  for i in 0..<kept.length() { arr.push(kept[i]) }
+}
+
+fn abs_d(v : Double) -> Double {
+  if v < 0.0 { 0.0 - v } else { v }
+}
+
+fn MacInput::held_flags(self : MacInput) -> Int {
+  let mut flags = 0
+  for i in 0..<self.held.length() {
+    match mac_mod_flag_of(self.held[i]) {
+      Some(f) => flags = flags | f
+      None => ()
+    }
+  }
+  flags
+}
+
+pub fn MacInput::release(self : MacInput) -> Array[MacOp] {
+  let ops : Array[MacOp] = []
+  let bits : Array[Int] = [1, 2, 4]
+  for i in 0..<bits.length() {
+    let bit = bits[i]
+    if (self.buttons & bit) != 0 {
+      self.buttons = self.buttons & (7 ^ bit)
+      ops.push(MacOp::Mouse("up", self.at_x, self.at_y, button_of_bit(bit), self.buttons, 1, self.held_flags(), None, None, false))
+    }
+  }
+  let snapshot : Array[String] = []
+  for i in 0..<self.held.length() { snapshot.push(self.held[i]) }
+  for i in 0..<snapshot.length() {
+    let code = snapshot[i]
+    array_remove_str(self.held, code)
+    match mac_keycode_of(code) {
+      Some(kc) => ops.push(MacOp::Key(kc, false, self.held_flags()))
+      None => ()
+    }
+  }
+  for i in 0..<self.pads.length() {
+    ops.push(MacOp::Gamepad(gamepad_released(self.pads[i])))
+  }
+  while self.pads.length() > 0 { let _ = self.pads.pop() }
+  ops
+}
+
+pub fn MacInput::ops(self : MacInput, e : ScreenInput, now : Int64) -> Array[MacOp] {
+  match e {
+    ScreenInput::Pointer(kind, x, y, buttons_in, dx, dy, relative) => {
+      let before = self.buttons
+      self.buttons = buttons_in & 7
+      self.at_x = x
+      self.at_y = y
+      let flags = self.held_flags()
+      match kind {
+        PointerKind::Move => {
+          let has_delta = match (dx, dy) {
+            (Some(_), Some(_)) => true
+            _ => false
+          }
+          let rel = has_delta && relative
+          [MacOp::Mouse("move", x, y, 0, self.buttons, 0, flags, if has_delta { dx } else { None }, if has_delta { dy } else { None }, rel)]
+        }
+        PointerKind::Down => {
+          let added = lowest_bit(self.buttons & (7 ^ before))
+          let bit = if added != 0 { added } else { 1 }
+          let button = button_of_bit(bit)
+          let clicks = match self.press {
+            Some(last) => {
+              if last.button == button &&
+              (now - last.at) <= MAC_CLICK_MS &&
+              abs_d(last.x - x) <= MAC_CLICK_NEAR &&
+              abs_d(last.y - y) <= MAC_CLICK_NEAR {
+                last.clicks + 1
+              } else {
+                1
+              }
+            }
+            None => 1
+          }
+          self.press = Some(MacPress::{ at: now, x: x, y: y, button: button, clicks: clicks })
+          self.buttons = self.buttons | bit
+          [MacOp::Mouse("down", x, y, button, self.buttons, clicks, flags, None, None, relative)]
+        }
+        PointerKind::Up => {
+          let gone = lowest_bit(before & (7 ^ self.buttons))
+          let bit = if gone != 0 {
+            gone
+          } else {
+            let lb = lowest_bit(before)
+            if lb != 0 { lb } else { 1 }
+          }
+          let button = button_of_bit(bit)
+          self.buttons = self.buttons & (7 ^ bit)
+          let clicks = match self.press {
+            Some(last) => if last.button == button { last.clicks } else { 1 }
+            None => 1
+          }
+          [MacOp::Mouse("up", x, y, button, self.buttons, clicks, flags, None, None, relative)]
+        }
+      }
+    }
+    ScreenInput::Wheel(x, y, dx, dy) => [MacOp::Scroll(x, y, dx, dy, self.held_flags())]
+    ScreenInput::Key(kind, key, code, mods) => {
+      let down = match kind {
+        KeyKind::Down => true
+        KeyKind::Up => false
+      }
+      match mac_keycode_of(code) {
+        None => {
+          if down && is_single_codepoint(key) && (mods & 6) == 0 {
+            [MacOp::Text(key)]
+          } else {
+            []
+          }
+        }
+        Some(kc) => {
+          match mac_mod_flag_of(code) {
+            Some(_) => {
+              if down {
+                array_add_str(self.held, code)
+              } else {
+                array_remove_str(self.held, code)
+              }
+              [MacOp::Key(kc, down, self.held_flags())]
+            }
+            None => {
+              let mut flags = mac_flags_of(mods) | self.held_flags()
+              if mac_is_arrow(kc) {
+                flags = flags | MAC_FLAG_NUMERIC_PAD | MAC_FLAG_FN
+              }
+              if mac_is_fn_key(kc) {
+                flags = flags | MAC_FLAG_FN
+              }
+              [MacOp::Key(kc, down, flags)]
+            }
+          }
+        }
+      }
+    }
+    ScreenInput::Text(text) => if text == "" { [] } else { [MacOp::Text(text)] }
+    ScreenInput::Gamepad(pad) => {
+      if pad.connected {
+        array_add_int(self.pads, pad.index)
+      } else {
+        array_remove_int(self.pads, pad.index)
+      }
+      [MacOp::Gamepad(pad)]
+    }
+    ScreenInput::GamepadMode(mouse) => [MacOp::GamepadMode(mouse)]
+    _ => []
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Windows Input (`station/src/screens/win-input.ts`)
+// ---------------------------------------------------------------------------
+
+pub let WIN_WHEEL_PER_PIXEL : Double = 1.2
+
+pub struct WinKeySpec {
+  pub scan : Int
+  pub ext : Bool
+  pub vk : Int
+}
+
+pub fn win_key_of(code : String) -> Option[WinKeySpec] {
+  match code {
+    "Escape" => Some(WinKeySpec::{ scan: 0x01, ext: false, vk: 0 })
+    "Digit1" => Some(WinKeySpec::{ scan: 0x02, ext: false, vk: 0 })
+    "Digit2" => Some(WinKeySpec::{ scan: 0x03, ext: false, vk: 0 })
+    "Digit3" => Some(WinKeySpec::{ scan: 0x04, ext: false, vk: 0 })
+    "Digit4" => Some(WinKeySpec::{ scan: 0x05, ext: false, vk: 0 })
+    "Digit5" => Some(WinKeySpec::{ scan: 0x06, ext: false, vk: 0 })
+    "Digit6" => Some(WinKeySpec::{ scan: 0x07, ext: false, vk: 0 })
+    "Digit7" => Some(WinKeySpec::{ scan: 0x08, ext: false, vk: 0 })
+    "Digit8" => Some(WinKeySpec::{ scan: 0x09, ext: false, vk: 0 })
+    "Digit9" => Some(WinKeySpec::{ scan: 0x0a, ext: false, vk: 0 })
+    "Digit0" => Some(WinKeySpec::{ scan: 0x0b, ext: false, vk: 0 })
+    "Minus" => Some(WinKeySpec::{ scan: 0x0c, ext: false, vk: 0 })
+    "Equal" => Some(WinKeySpec::{ scan: 0x0d, ext: false, vk: 0 })
+    "Backspace" => Some(WinKeySpec::{ scan: 0x0e, ext: false, vk: 0 })
+    "Tab" => Some(WinKeySpec::{ scan: 0x0f, ext: false, vk: 0 })
+    "KeyQ" => Some(WinKeySpec::{ scan: 0x10, ext: false, vk: 0 })
+    "KeyW" => Some(WinKeySpec::{ scan: 0x11, ext: false, vk: 0 })
+    "KeyE" => Some(WinKeySpec::{ scan: 0x12, ext: false, vk: 0 })
+    "KeyR" => Some(WinKeySpec::{ scan: 0x13, ext: false, vk: 0 })
+    "KeyT" => Some(WinKeySpec::{ scan: 0x14, ext: false, vk: 0 })
+    "KeyY" => Some(WinKeySpec::{ scan: 0x15, ext: false, vk: 0 })
+    "KeyU" => Some(WinKeySpec::{ scan: 0x16, ext: false, vk: 0 })
+    "KeyI" => Some(WinKeySpec::{ scan: 0x17, ext: false, vk: 0 })
+    "KeyO" => Some(WinKeySpec::{ scan: 0x18, ext: false, vk: 0 })
+    "KeyP" => Some(WinKeySpec::{ scan: 0x19, ext: false, vk: 0 })
+    "BracketLeft" => Some(WinKeySpec::{ scan: 0x1a, ext: false, vk: 0 })
+    "BracketRight" => Some(WinKeySpec::{ scan: 0x1b, ext: false, vk: 0 })
+    "Enter" => Some(WinKeySpec::{ scan: 0x1c, ext: false, vk: 0 })
+    "ControlLeft" => Some(WinKeySpec::{ scan: 0x1d, ext: false, vk: 0 })
+    "KeyA" => Some(WinKeySpec::{ scan: 0x1e, ext: false, vk: 0 })
+    "KeyS" => Some(WinKeySpec::{ scan: 0x1f, ext: false, vk: 0 })
+    "KeyD" => Some(WinKeySpec::{ scan: 0x20, ext: false, vk: 0 })
+    "KeyF" => Some(WinKeySpec::{ scan: 0x21, ext: false, vk: 0 })
+    "KeyG" => Some(WinKeySpec::{ scan: 0x22, ext: false, vk: 0 })
+    "KeyH" => Some(WinKeySpec::{ scan: 0x23, ext: false, vk: 0 })
+    "KeyJ" => Some(WinKeySpec::{ scan: 0x24, ext: false, vk: 0 })
+    "KeyK" => Some(WinKeySpec::{ scan: 0x25, ext: false, vk: 0 })
+    "KeyL" => Some(WinKeySpec::{ scan: 0x26, ext: false, vk: 0 })
+    "Semicolon" => Some(WinKeySpec::{ scan: 0x27, ext: false, vk: 0 })
+    "Quote" => Some(WinKeySpec::{ scan: 0x28, ext: false, vk: 0 })
+    "Backquote" => Some(WinKeySpec::{ scan: 0x29, ext: false, vk: 0 })
+    "ShiftLeft" => Some(WinKeySpec::{ scan: 0x2a, ext: false, vk: 0 })
+    "Backslash" => Some(WinKeySpec::{ scan: 0x2b, ext: false, vk: 0 })
+    "KeyZ" => Some(WinKeySpec::{ scan: 0x2c, ext: false, vk: 0 })
+    "KeyX" => Some(WinKeySpec::{ scan: 0x2d, ext: false, vk: 0 })
+    "KeyC" => Some(WinKeySpec::{ scan: 0x2e, ext: false, vk: 0 })
+    "KeyV" => Some(WinKeySpec::{ scan: 0x2f, ext: false, vk: 0 })
+    "KeyB" => Some(WinKeySpec::{ scan: 0x30, ext: false, vk: 0 })
+    "KeyN" => Some(WinKeySpec::{ scan: 0x31, ext: false, vk: 0 })
+    "KeyM" => Some(WinKeySpec::{ scan: 0x32, ext: false, vk: 0 })
+    "Comma" => Some(WinKeySpec::{ scan: 0x33, ext: false, vk: 0 })
+    "Period" => Some(WinKeySpec::{ scan: 0x34, ext: false, vk: 0 })
+    "Slash" => Some(WinKeySpec::{ scan: 0x35, ext: false, vk: 0 })
+    "ShiftRight" => Some(WinKeySpec::{ scan: 0x36, ext: false, vk: 0 })
+    "AltLeft" => Some(WinKeySpec::{ scan: 0x38, ext: false, vk: 0 })
+    "Space" => Some(WinKeySpec::{ scan: 0x39, ext: false, vk: 0 })
+    "CapsLock" => Some(WinKeySpec::{ scan: 0x3a, ext: false, vk: 0 })
+    "F1" => Some(WinKeySpec::{ scan: 0x3b, ext: false, vk: 0 })
+    "F2" => Some(WinKeySpec::{ scan: 0x3c, ext: false, vk: 0 })
+    "F3" => Some(WinKeySpec::{ scan: 0x3d, ext: false, vk: 0 })
+    "F4" => Some(WinKeySpec::{ scan: 0x3e, ext: false, vk: 0 })
+    "F5" => Some(WinKeySpec::{ scan: 0x3f, ext: false, vk: 0 })
+    "F6" => Some(WinKeySpec::{ scan: 0x40, ext: false, vk: 0 })
+    "F7" => Some(WinKeySpec::{ scan: 0x41, ext: false, vk: 0 })
+    "F8" => Some(WinKeySpec::{ scan: 0x42, ext: false, vk: 0 })
+    "F9" => Some(WinKeySpec::{ scan: 0x43, ext: false, vk: 0 })
+    "F10" => Some(WinKeySpec::{ scan: 0x44, ext: false, vk: 0 })
+    "F11" => Some(WinKeySpec::{ scan: 0x57, ext: false, vk: 0 })
+    "F12" => Some(WinKeySpec::{ scan: 0x58, ext: false, vk: 0 })
+    "NumpadEnter" => Some(WinKeySpec::{ scan: 0x1c, ext: true, vk: 0 })
+    "ControlRight" => Some(WinKeySpec::{ scan: 0x1d, ext: true, vk: 0 })
+    "AltRight" => Some(WinKeySpec::{ scan: 0x38, ext: true, vk: 0 })
+    "Home" => Some(WinKeySpec::{ scan: 0x47, ext: true, vk: 0 })
+    "ArrowUp" => Some(WinKeySpec::{ scan: 0x48, ext: true, vk: 0 })
+    "PageUp" => Some(WinKeySpec::{ scan: 0x49, ext: true, vk: 0 })
+    "ArrowLeft" => Some(WinKeySpec::{ scan: 0x4b, ext: true, vk: 0 })
+    "ArrowRight" => Some(WinKeySpec::{ scan: 0x4d, ext: true, vk: 0 })
+    "ArrowDown" => Some(WinKeySpec::{ scan: 0x50, ext: true, vk: 0 })
+    "PageDown" => Some(WinKeySpec::{ scan: 0x51, ext: true, vk: 0 })
+    "Insert" => Some(WinKeySpec::{ scan: 0x52, ext: true, vk: 0 })
+    "Delete" => Some(WinKeySpec::{ scan: 0x53, ext: true, vk: 0 })
+    "MetaLeft" => Some(WinKeySpec::{ scan: 0x5b, ext: true, vk: 0 })
+    "OSLeft" => Some(WinKeySpec::{ scan: 0x5b, ext: true, vk: 0 })
+    "MetaRight" => Some(WinKeySpec::{ scan: 0x5c, ext: true, vk: 0 })
+    "OSRight" => Some(WinKeySpec::{ scan: 0x5c, ext: true, vk: 0 })
+    "ContextMenu" => Some(WinKeySpec::{ scan: 0x5d, ext: true, vk: 0 })
+    "Pause" => Some(WinKeySpec::{ scan: 0, ext: false, vk: 0x13 })
+    "AudioVolumeMute" => Some(WinKeySpec::{ scan: 0, ext: false, vk: 0xad })
+    "AudioVolumeDown" => Some(WinKeySpec::{ scan: 0, ext: false, vk: 0xae })
+    "AudioVolumeUp" => Some(WinKeySpec::{ scan: 0, ext: false, vk: 0xaf })
+    "MediaTrackNext" => Some(WinKeySpec::{ scan: 0, ext: false, vk: 0xb0 })
+    "MediaTrackPrevious" => Some(WinKeySpec::{ scan: 0, ext: false, vk: 0xb1 })
+    "MediaStop" => Some(WinKeySpec::{ scan: 0, ext: false, vk: 0xb2 })
+    "MediaPlayPause" => Some(WinKeySpec::{ scan: 0, ext: false, vk: 0xb3 })
+    _ => if is_key_end(code) { Some(WinKeySpec::{ scan: 0x4f, ext: true, vk: 0 }) } else { None }
+  }
+}
+
+pub enum WinOp {
+  Mouse(String, Double, Double, Int, Option[Double], Option[Double], Bool)
+  Gamepad(GamepadState)
+  GamepadMode(Bool)
+  Wheel(Double, Double, Int, Int)
+  Key(Int, Bool, Int, Bool)
+  Text(String)
+}
+
+pub struct WinInput {
+  pub mut buttons : Int
+  pub held : Array[String]
+  pub mut at_x : Double
+  pub mut at_y : Double
+  pub mut wheel_x : Double
+  pub mut wheel_y : Double
+  pub pads : Array[Int]
+}
+
+pub fn WinInput::new() -> WinInput {
+  WinInput::{
+    buttons: 0,
+    held: [],
+    at_x: 0.0,
+    at_y: 0.0,
+    wheel_x: 0.0,
+    wheel_y: 0.0,
+    pads: [],
+  }
+}
+
+fn is_win_or_linux_modifier(code : String) -> Bool {
+  code == "ControlLeft" || code == "ControlRight" ||
+  code == "ShiftLeft" || code == "ShiftRight" ||
+  code == "AltLeft" || code == "AltRight" ||
+  code == "MetaLeft" || code == "MetaRight" ||
+  code == "OSLeft" || code == "OSRight"
+}
+
+fn held_has_mod_bit(held : Array[String], bit : Int) -> Bool {
+  if bit == 2 {
+    array_has_str(held, "ControlLeft") || array_has_str(held, "ControlRight")
+  } else if bit == 8 {
+    array_has_str(held, "ShiftLeft") || array_has_str(held, "ShiftRight")
+  } else if bit == 1 {
+    array_has_str(held, "AltLeft") || array_has_str(held, "AltRight")
+  } else if bit == 4 {
+    array_has_str(held, "MetaLeft") || array_has_str(held, "MetaRight") ||
+    array_has_str(held, "OSLeft") || array_has_str(held, "OSRight")
+  } else {
+    false
+  }
+}
+
+pub fn WinInput::release(self : WinInput) -> Array[WinOp] {
+  let ops : Array[WinOp] = []
+  let bits : Array[Int] = [1, 2, 4]
+  for i in 0..<bits.length() {
+    let bit = bits[i]
+    if (self.buttons & bit) != 0 {
+      ops.push(WinOp::Mouse("up", self.at_x, self.at_y, button_of_bit(bit), None, None, false))
+    }
+  }
+  for i in 0..<self.held.length() {
+    match win_key_of(self.held[i]) {
+      Some(k) => ops.push(WinOp::Key(k.scan, k.ext, k.vk, false))
+      None => ()
+    }
+  }
+  for i in 0..<self.pads.length() {
+    ops.push(WinOp::Gamepad(gamepad_released(self.pads[i])))
+  }
+  while self.pads.length() > 0 { let _ = self.pads.pop() }
+  while self.held.length() > 0 { let _ = self.held.pop() }
+  self.buttons = 0
+  ops
+}
+
+pub fn WinInput::ops(self : WinInput, e : ScreenInput) -> Array[WinOp] {
+  match e {
+    ScreenInput::Pointer(kind, x, y, buttons_in, dx, dy, relative) => {
+      let before = self.buttons
+      self.buttons = buttons_in & 7
+      self.at_x = x
+      self.at_y = y
+      match kind {
+        PointerKind::Move => {
+          let has_delta = match (dx, dy) {
+            (Some(_), Some(_)) => true
+            _ => false
+          }
+          [WinOp::Mouse("move", x, y, 0, if has_delta { dx } else { None }, if has_delta { dy } else { None }, has_delta && relative)]
+        }
+        PointerKind::Down => {
+          let added = lowest_bit(self.buttons & (7 ^ before))
+          let bit = if added != 0 { added } else { 1 }
+          self.buttons = self.buttons | bit
+          [WinOp::Mouse("down", x, y, button_of_bit(bit), None, None, relative)]
+        }
+        PointerKind::Up => {
+          let gone = lowest_bit(before & (7 ^ self.buttons))
+          let bit = if gone != 0 {
+            gone
+          } else {
+            let lb = lowest_bit(before)
+            if lb != 0 { lb } else { 1 }
+          }
+          self.buttons = self.buttons & (7 ^ bit)
+          [WinOp::Mouse("up", x, y, button_of_bit(bit), None, None, relative)]
+        }
+      }
+    }
+    ScreenInput::Wheel(x, y, dx_in, dy_in) => {
+      self.wheel_x = self.wheel_x + dx_in * WIN_WHEEL_PER_PIXEL
+      self.wheel_y = self.wheel_y - dy_in * WIN_WHEEL_PER_PIXEL
+      let dx = self.wheel_x.to_int()
+      let dy = self.wheel_y.to_int()
+      self.wheel_x = self.wheel_x - dx.to_double()
+      self.wheel_y = self.wheel_y - dy.to_double()
+      if dx == 0 && dy == 0 { [] } else { [WinOp::Wheel(x, y, dx, dy)] }
+    }
+    ScreenInput::Key(kind, key_text, code, mods) => {
+      let down = match kind {
+        KeyKind::Down => true
+        KeyKind::Up => false
+      }
+      match win_key_of(code) {
+        None => {
+          if down && is_single_codepoint(key_text) && (mods & 6) == 0 {
+            [WinOp::Text(key_text)]
+          } else {
+            []
+          }
+        }
+        Some(k) => {
+          if is_win_or_linux_modifier(code) {
+            if down { array_add_str(self.held, code) } else { array_remove_str(self.held, code) }
+            return [WinOp::Key(k.scan, k.ext, k.vk, down)]
+          }
+          if !down {
+            return [WinOp::Key(k.scan, k.ext, k.vk, false)]
+          }
+          let mod_defs : Array[(Int, String)] = [(2, "ControlLeft"), (8, "ShiftLeft"), (1, "AltLeft"), (4, "MetaLeft")]
+          let round : Array[WinKeySpec] = []
+          for i in 0..<mod_defs.length() {
+            let (bit, cname) = mod_defs[i]
+            if (mods & bit) != 0 && !held_has_mod_bit(self.held, bit) {
+              match win_key_of(cname) {
+                Some(mk) => round.push(mk)
+                None => ()
+              }
+            }
+          }
+          let out : Array[WinOp] = []
+          for i in 0..<round.length() {
+            out.push(WinOp::Key(round[i].scan, round[i].ext, round[i].vk, true))
+          }
+          out.push(WinOp::Key(k.scan, k.ext, k.vk, true))
+          let mut j = round.length() - 1
+          while j >= 0 {
+            out.push(WinOp::Key(round[j].scan, round[j].ext, round[j].vk, false))
+            j = j - 1
+          }
+          out
+        }
+      }
+    }
+    ScreenInput::Text(text) => if text == "" { [] } else { [WinOp::Text(text)] }
+    ScreenInput::Gamepad(pad) => {
+      if pad.connected { array_add_int(self.pads, pad.index) } else { array_remove_int(self.pads, pad.index) }
+      [WinOp::Gamepad(pad)]
+    }
+    ScreenInput::GamepadMode(mouse) => [WinOp::GamepadMode(mouse)]
+    _ => []
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Linux / X11 Input (`station/src/screens/linux-input.ts` & `x11-desktop.ts`)
+// ---------------------------------------------------------------------------
+
+pub fn evdev_of(code : String) -> Option[Int] {
+  match code {
+    "Escape" => Some(1)
+    "Digit1" => Some(2)
+    "Digit2" => Some(3)
+    "Digit3" => Some(4)
+    "Digit4" => Some(5)
+    "Digit5" => Some(6)
+    "Digit6" => Some(7)
+    "Digit7" => Some(8)
+    "Digit8" => Some(9)
+    "Digit9" => Some(10)
+    "Digit0" => Some(11)
+    "Minus" => Some(12)
+    "Equal" => Some(13)
+    "Backspace" => Some(14)
+    "Tab" => Some(15)
+    "KeyQ" => Some(16)
+    "KeyW" => Some(17)
+    "KeyE" => Some(18)
+    "KeyR" => Some(19)
+    "KeyT" => Some(20)
+    "KeyY" => Some(21)
+    "KeyU" => Some(22)
+    "KeyI" => Some(23)
+    "KeyO" => Some(24)
+    "KeyP" => Some(25)
+    "BracketLeft" => Some(26)
+    "BracketRight" => Some(27)
+    "Enter" => Some(28)
+    "ControlLeft" => Some(29)
+    "KeyA" => Some(30)
+    "KeyS" => Some(31)
+    "KeyD" => Some(32)
+    "KeyF" => Some(33)
+    "KeyG" => Some(34)
+    "KeyH" => Some(35)
+    "KeyJ" => Some(36)
+    "KeyK" => Some(37)
+    "KeyL" => Some(38)
+    "Semicolon" => Some(39)
+    "Quote" => Some(40)
+    "Backquote" => Some(41)
+    "ShiftLeft" => Some(42)
+    "Backslash" => Some(43)
+    "KeyZ" => Some(44)
+    "KeyX" => Some(45)
+    "KeyC" => Some(46)
+    "KeyV" => Some(47)
+    "KeyB" => Some(48)
+    "KeyN" => Some(49)
+    "KeyM" => Some(50)
+    "Comma" => Some(51)
+    "Period" => Some(52)
+    "Slash" => Some(53)
+    "ShiftRight" => Some(54)
+    "AltLeft" => Some(56)
+    "Space" => Some(57)
+    "CapsLock" => Some(58)
+    "F1" => Some(59)
+    "F2" => Some(60)
+    "F3" => Some(61)
+    "F4" => Some(62)
+    "F5" => Some(63)
+    "F6" => Some(64)
+    "F7" => Some(65)
+    "F8" => Some(66)
+    "F9" => Some(67)
+    "F10" => Some(68)
+    "F11" => Some(87)
+    "F12" => Some(88)
+    "NumpadEnter" => Some(96)
+    "ControlRight" => Some(97)
+    "AltRight" => Some(100)
+    "Home" => Some(102)
+    "ArrowUp" => Some(103)
+    "PageUp" => Some(104)
+    "ArrowLeft" => Some(105)
+    "ArrowRight" => Some(106)
+    "ArrowDown" => Some(108)
+    "PageDown" => Some(109)
+    "Insert" => Some(110)
+    "Delete" => Some(111)
+    "MetaLeft" => Some(125)
+    "OSLeft" => Some(125)
+    "MetaRight" => Some(126)
+    "OSRight" => Some(126)
+    "ContextMenu" => Some(127)
+    _ => if is_key_end(code) { Some(107) } else { None }
+  }
+}
+
+pub fn x11_keycode_of(code : String) -> Option[Int] {
+  match evdev_of(code) {
+    Some(e) => Some(e + 8)
+    None => None
+  }
+}
+
+pub enum LinuxOp {
+  Mouse(String, Double, Double, Int, Option[Double], Option[Double], Bool)
+  Wheel(Double, Double, Int, Int)
+  Key(Int, Bool)
+  Text(String)
+}
+
+pub struct LinuxInput {
+  pub mut buttons : Int
+  pub held : Array[String]
+  pub mut at_x : Double
+  pub mut at_y : Double
+  pub mut wheel_x : Double
+  pub mut wheel_y : Double
+}
+
+pub fn LinuxInput::new() -> LinuxInput {
+  LinuxInput::{ buttons: 0, held: [], at_x: 0.0, at_y: 0.0, wheel_x: 0.0, wheel_y: 0.0 }
+}
+
+pub fn LinuxInput::release(self : LinuxInput) -> Array[LinuxOp] {
+  let ops : Array[LinuxOp] = []
+  let bits : Array[Int] = [1, 2, 4]
+  for i in 0..<bits.length() {
+    let bit = bits[i]
+    if (self.buttons & bit) != 0 {
+      ops.push(LinuxOp::Mouse("up", self.at_x, self.at_y, button_of_bit(bit), None, None, false))
+    }
+  }
+  for i in 0..<self.held.length() {
+    match evdev_of(self.held[i]) {
+      Some(ev) => ops.push(LinuxOp::Key(ev, false))
+      None => ()
+    }
+  }
+  self.buttons = 0
+  while self.held.length() > 0 { let _ = self.held.pop() }
+  ops
+}
+
+pub fn LinuxInput::ops(self : LinuxInput, e : ScreenInput) -> Array[LinuxOp] {
+  match e {
+    ScreenInput::Pointer(kind, x, y, buttons_in, dx, dy, relative) => {
+      let before = self.buttons
+      self.buttons = buttons_in & 7
+      self.at_x = x
+      self.at_y = y
+      match kind {
+        PointerKind::Move => {
+          let has_delta = match (dx, dy) {
+            (Some(_), Some(_)) => true
+            _ => false
+          }
+          [LinuxOp::Mouse("move", x, y, 0, if has_delta { dx } else { None }, if has_delta { dy } else { None }, has_delta && relative)]
+        }
+        PointerKind::Down => {
+          let added = lowest_bit(self.buttons & (7 ^ before))
+          let bit = if added != 0 { added } else { 1 }
+          self.buttons = self.buttons | bit
+          [LinuxOp::Mouse("down", x, y, button_of_bit(bit), None, None, relative)]
+        }
+        PointerKind::Up => {
+          let gone = lowest_bit(before & (7 ^ self.buttons))
+          let bit = if gone != 0 {
+            gone
+          } else {
+            let lb = lowest_bit(before)
+            if lb != 0 { lb } else { 1 }
+          }
+          self.buttons = self.buttons & (7 ^ bit)
+          [LinuxOp::Mouse("up", x, y, button_of_bit(bit), None, None, relative)]
+        }
+      }
+    }
+    ScreenInput::Wheel(x, y, dx_in, dy_in) => {
+      self.wheel_x = self.wheel_x + dx_in / 100.0
+      self.wheel_y = self.wheel_y + dy_in / 100.0
+      let dx = self.wheel_x.to_int()
+      let dy = self.wheel_y.to_int()
+      self.wheel_x = self.wheel_x - dx.to_double()
+      self.wheel_y = self.wheel_y - dy.to_double()
+      if dx == 0 && dy == 0 { [] } else { [LinuxOp::Wheel(x, y, dx, dy)] }
+    }
+    ScreenInput::Key(kind, key_text, code, mods) => {
+      let down = match kind {
+        KeyKind::Down => true
+        KeyKind::Up => false
+      }
+      match evdev_of(code) {
+        None => {
+          if down && is_single_codepoint(key_text) && (mods & 6) == 0 {
+            [LinuxOp::Text(key_text)]
+          } else {
+            []
+          }
+        }
+        Some(ev) => {
+          if is_win_or_linux_modifier(code) {
+            if down { array_add_str(self.held, code) } else { array_remove_str(self.held, code) }
+            return [LinuxOp::Key(ev, down)]
+          }
+          if !down {
+            return [LinuxOp::Key(ev, false)]
+          }
+          let mod_defs : Array[(Int, String)] = [(2, "ControlLeft"), (8, "ShiftLeft"), (1, "AltLeft"), (4, "MetaLeft")]
+          let round : Array[Int] = []
+          for i in 0..<mod_defs.length() {
+            let (bit, cname) = mod_defs[i]
+            if (mods & bit) != 0 && !held_has_mod_bit(self.held, bit) {
+              match evdev_of(cname) {
+                Some(mev) => round.push(mev)
+                None => ()
+              }
+            }
+          }
+          let out : Array[LinuxOp] = []
+          for i in 0..<round.length() { out.push(LinuxOp::Key(round[i], true)) }
+          out.push(LinuxOp::Key(ev, true))
+          let mut j = round.length() - 1
+          while j >= 0 {
+            out.push(LinuxOp::Key(round[j], false))
+            j = j - 1
+          }
+          out
+        }
+      }
+    }
+    ScreenInput::Text(text) => if text == "" { [] } else { [LinuxOp::Text(text)] }
+    _ => []
+  }
+}
+
+// ---------------------------------------------------------------------------
+// iOS Simulator Input (`station/src/screens/sim-input.ts`)
+// ---------------------------------------------------------------------------
+
+pub let SIM_BOTTOM_EDGE : Double = 0.97
+pub let SIM_TOP_EDGE : Double = 0.02
+
+pub fn hid_usage_of(code : String) -> Option[Int] {
+  if code.length() == 4 && code.starts_with("Key") {
+    let c = code.code_unit_at(3) & 0xFF
+    if c >= 65 && c <= 90 {
+      return Some(0x04 + (c - 65))
+    }
+  }
+  if code.length() == 6 && code.starts_with("Digit") {
+    let c = code.code_unit_at(5) & 0xFF
+    if c >= 49 && c <= 57 {
+      return Some(0x1e + (c - 49))
+    }
+    if c == 48 {
+      return Some(0x27)
+    }
+  }
+  match code {
+    "Enter" => Some(0x28)
+    "NumpadEnter" => Some(0x28)
+    "Escape" => Some(0x29)
+    "Backspace" => Some(0x2a)
+    "Tab" => Some(0x2b)
+    "Space" => Some(0x2c)
+    "Minus" => Some(0x2d)
+    "Equal" => Some(0x2e)
+    "BracketLeft" => Some(0x2f)
+    "BracketRight" => Some(0x30)
+    "Backslash" => Some(0x31)
+    "Semicolon" => Some(0x33)
+    "Quote" => Some(0x34)
+    "Backquote" => Some(0x35)
+    "Comma" => Some(0x36)
+    "Period" => Some(0x37)
+    "Slash" => Some(0x38)
+    "CapsLock" => Some(0x39)
+    "F1" => Some(0x3a)
+    "F2" => Some(0x3b)
+    "F3" => Some(0x3c)
+    "F4" => Some(0x3d)
+    "F5" => Some(0x3e)
+    "F6" => Some(0x3f)
+    "F7" => Some(0x40)
+    "F8" => Some(0x41)
+    "F9" => Some(0x42)
+    "F10" => Some(0x43)
+    "F11" => Some(0x44)
+    "F12" => Some(0x45)
+    "Insert" => Some(0x49)
+    "Home" => Some(0x4a)
+    "PageUp" => Some(0x4b)
+    "Delete" => Some(0x4c)
+    "PageDown" => Some(0x4e)
+    "ArrowRight" => Some(0x4f)
+    "ArrowLeft" => Some(0x50)
+    "ArrowDown" => Some(0x51)
+    "ArrowUp" => Some(0x52)
+    "ControlLeft" => Some(0xe0)
+    "ShiftLeft" => Some(0xe1)
+    "AltLeft" => Some(0xe2)
+    "MetaLeft" => Some(0xe3)
+    "ControlRight" => Some(0xe4)
+    "ShiftRight" => Some(0xe5)
+    "AltRight" => Some(0xe6)
+    "MetaRight" => Some(0xe7)
+    _ => if is_key_end(code) { Some(0x4d) } else { None }
+  }
+}
+
+fn sim_mod_of_usage(u : Int) -> Option[Int] {
+  if u == 0xe0 || u == 0xe4 {
+    Some(2)
+  } else if u == 0xe1 || u == 0xe5 {
+    Some(8)
+  } else if u == 0xe2 || u == 0xe6 {
+    Some(1)
+  } else if u == 0xe3 || u == 0xe7 {
+    Some(4)
+  } else {
+    None
+  }
+}
+
+fn sim_typed_ascii(c : Int) -> Option[(Int, Bool)] {
+  if c == 32 { return Some((0x2c, false)) }
+  if c == 10 { return Some((0x28, false)) }
+  if c == 9 { return Some((0x2b, false)) }
+  if c >= 97 && c <= 122 { return Some((0x04 + (c - 97), false)) }
+  if c >= 65 && c <= 90 { return Some((0x04 + (c - 65), true)) }
+  if c >= 49 && c <= 57 { return Some((0x1e + (c - 49), false)) }
+  if c == 48 { return Some((0x27, false)) }
+  match c {
+    33 => Some((0x1e, true)) // '!'
+    64 => Some((0x1f, true)) // '@'
+    35 => Some((0x20, true)) // '#'
+    36 => Some((0x21, true)) // '$'
+    37 => Some((0x22, true)) // '%'
+    94 => Some((0x23, true)) // '^'
+    38 => Some((0x24, true)) // '&'
+    42 => Some((0x25, true)) // '*'
+    40 => Some((0x26, true)) // '('
+    41 => Some((0x27, true)) // ')'
+    45 => Some((0x2d, false)) // '-'
+    95 => Some((0x2d, true)) // '_'
+    61 => Some((0x2e, false)) // '='
+    43 => Some((0x2e, true)) // '+'
+    91 => Some((0x2f, false)) // '['
+    123 => Some((0x2f, true)) // '{'
+    93 => Some((0x30, false)) // ']'
+    125 => Some((0x30, true)) // '}'
+    92 => Some((0x31, false)) // '\'
+    124 => Some((0x31, true)) // '|'
+    59 => Some((0x33, false)) // ';'
+    58 => Some((0x33, true)) // ':'
+    39 => Some((0x34, false)) // '\''
+    34 => Some((0x34, true)) // '"'
+    96 => Some((0x35, false)) // '`'
+    126 => Some((0x35, true)) // '~'
+    44 => Some((0x36, false)) // ','
+    60 => Some((0x36, true)) // '<'
+    46 => Some((0x37, false)) // '.'
+    62 => Some((0x37, true)) // '>'
+    47 => Some((0x38, false)) // '/'
+    63 => Some((0x38, true)) // '?'
+    _ => None
+  }
+}
+
+pub enum SimTouchKind {
+  Begin
+  Move
+  End
+}
+
+pub enum SimOp {
+  Touch(SimTouchKind, Double, Double, Int)
+  Scroll(Double, Double, Double, Double)
+  Key(String, Int)
+  Button(String)
+  Paste(String)
+  Pose(String)
+  Rotate
+  MemoryWarning
+  Hid(Int, Int, Bool)
+}
+
+pub struct SimInput {
+  pub mut finger_down : Bool
+  pub mut finger_edge : Int
+  pub mut held : Int
+}
+
+pub fn SimInput::new() -> SimInput {
+  SimInput::{ finger_down: false, finger_edge: 0, held: 0 }
+}
+
+fn clamp01(v : Double) -> Double {
+  if !is_finite_d(v) { 0.0 } else { clamp_d(v, 0.0, 1.0) }
+}
+
+pub fn SimInput::ops(self : SimInput, e : ScreenInput) -> Array[SimOp] {
+  match e {
+    ScreenInput::Pointer(kind, x_in, y_in, buttons, _, _, _) => {
+      let x = clamp01(x_in)
+      let y = clamp01(y_in)
+      let left = (buttons & 1) == 1
+      if !self.finger_down {
+        match kind {
+          PointerKind::Down => {
+            if !left { return [] }
+            let edge = if y >= SIM_BOTTOM_EDGE { 3 } else if y <= SIM_TOP_EDGE { 2 } else { 0 }
+            self.finger_down = true
+            self.finger_edge = edge
+            return [SimOp::Touch(SimTouchKind::Begin, x, y, edge)]
+          }
+          _ => return []
+        }
+      }
+      let edge = self.finger_edge
+      let is_up = match kind {
+        PointerKind::Up => true
+        _ => false
+      }
+      if left && !is_up {
+        [SimOp::Touch(SimTouchKind::Move, x, y, edge)]
+      } else {
+        self.finger_down = false
+        self.finger_edge = 0
+        [SimOp::Touch(SimTouchKind::End, x, y, edge)]
+      }
+    }
+    ScreenInput::Wheel(x, y, dx, dy) => {
+      if dx == 0.0 && dy == 0.0 { [] } else { [SimOp::Scroll(clamp01(x), clamp01(y), dx, dy)] }
+    }
+    ScreenInput::Key(kind, _, code, mods) => {
+      let down = match kind {
+        KeyKind::Down => true
+        KeyKind::Up => false
+      }
+      let usage = match hid_usage_of(code) {
+        Some(u) => u
+        None => return []
+      }
+      match sim_mod_of_usage(usage) {
+        Some(bit) => {
+          if down { self.held = self.held | bit } else { self.held = self.held & (15 ^ bit) }
+          return [SimOp::Key(if down { "down" } else { "up" }, usage)]
+        }
+        None => ()
+      }
+      let meta = (mods & 4) != 0
+      let shift = (mods & 8) != 0
+      let ctrl = (mods & 2) != 0
+      let alt = (mods & 1) != 0
+      if meta && !alt {
+        let btn = if ctrl {
+          if shift && code == "KeyH" { Some("app_switcher") } else { None }
+        } else if shift && code == "KeyH" {
+          Some("home")
+        } else if !shift && code == "KeyL" {
+          Some("lock")
+        } else if !shift && code == "KeyK" {
+          Some("keyboard")
+        } else {
+          None
+        }
+        match btn {
+          Some(b) => return if down { [SimOp::Button(b)] } else { [] }
+          None => ()
+        }
+      }
+      let mod_pairs : Array[(Int, Int)] = [(1, 0xe2), (2, 0xe0), (4, 0xe3), (8, 0xe1)]
+      let round : Array[Int] = []
+      for i in 0..<mod_pairs.length() {
+        let (bit, u) = mod_pairs[i]
+        if (mods & bit) != 0 && (self.held & bit) == 0 {
+          round.push(u)
+        }
+      }
+      let key_op = SimOp::Key(if down { "down" } else { "up" }, usage)
+      if round.length() == 0 {
+        return [key_op]
+      }
+      let out : Array[SimOp] = []
+      if down {
+        for i in 0..<round.length() { out.push(SimOp::Key("down", round[i])) }
+        out.push(key_op)
+      } else {
+        out.push(key_op)
+        let mut j = round.length() - 1
+        while j >= 0 {
+          out.push(SimOp::Key("up", round[j]))
+          j = j - 1
+        }
+      }
+      out
+    }
+    ScreenInput::Text(text) => {
+      if text == "" { return [] }
+      let pairs : Array[(Int, Bool)] = []
+      for i in 0..<text.length() {
+        let c = text.code_unit_at(i) & 0xFF
+        match sim_typed_ascii(c) {
+          Some(p) => pairs.push(p)
+          None => return [SimOp::Paste(text)]
+        }
+      }
+      let out : Array[SimOp] = []
+      for i in 0..<pairs.length() {
+        let (u, shift) = pairs[i]
+        let press_shift = shift && (self.held & 8) == 0
+        if press_shift { out.push(SimOp::Key("down", 0xe1)) }
+        out.push(SimOp::Key("down", u))
+        out.push(SimOp::Key("up", u))
+        if press_shift { out.push(SimOp::Key("up", 0xe1)) }
+      }
+      out
+    }
+    ScreenInput::Pose(name) => [SimOp::Pose(name)]
+    ScreenInput::Button(page, usage, down) => [SimOp::Hid(page, usage, down)]
+    ScreenInput::Device(name) => {
+      if name == "memory_warning" {
+        [SimOp::MemoryWarning]
+      } else if name == "rotate" {
+        [SimOp::Rotate]
+      } else {
+        [SimOp::Button(name)]
+      }
+    }
+    _ => []
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Android scrcpy Input & H.264 Annex-B -> avcC / AVCC (`station/src/screens/android.ts`)
+// ---------------------------------------------------------------------------
+
+pub let ANDROID_SERVER_VERSION : String = "5.0.1"
+pub let ANDROID_PEEK_FPS : Int = 2
+pub let ANDROID_PEEK_BITRATE : Int = 300_000
+pub let ANDROID_PEEKS_MOST : Int = 2
+
+pub fn android_bitrate_of(side : Int) -> Int {
+  if side <= 480 {
+    2_000_000
+  } else if side <= 720 {
+    3_000_000
+  } else if side <= 1080 {
+    5_000_000
+  } else if side <= 1440 {
+    7_000_000
+  } else {
+    8_000_000
+  }
+}
+
+pub fn android_keycode_of(code : String) -> Option[Int] {
+  if code.length() == 4 && code.starts_with("Key") {
+    let c = code.code_unit_at(3) & 0xFF
+    if c >= 65 && c <= 90 { return Some(29 + (c - 65)) }
+  }
+  if code.length() == 6 && code.starts_with("Digit") {
+    let c = code.code_unit_at(5) & 0xFF
+    if c >= 48 && c <= 57 { return Some(7 + (c - 48)) }
+  }
+  match code {
+    "Enter" => Some(66)
+    "NumpadEnter" => Some(66)
+    "Escape" => Some(4) // KEY_BACK
+    "Backspace" => Some(67)
+    "Tab" => Some(61)
+    "Space" => Some(62)
+    "Minus" => Some(69)
+    "Equal" => Some(70)
+    "BracketLeft" => Some(71)
+    "BracketRight" => Some(72)
+    "Backslash" => Some(73)
+    "Semicolon" => Some(74)
+    "Quote" => Some(75)
+    "Backquote" => Some(68)
+    "Comma" => Some(55)
+    "Period" => Some(56)
+    "Slash" => Some(76)
+    "CapsLock" => Some(115)
+    "Insert" => Some(124)
+    "Home" => Some(122)
+    "PageUp" => Some(92)
+    "Delete" => Some(112)
+    "PageDown" => Some(93)
+    "ArrowRight" => Some(22)
+    "ArrowLeft" => Some(21)
+    "ArrowDown" => Some(20)
+    "ArrowUp" => Some(19)
+    "ShiftLeft" => Some(59)
+    "ShiftRight" => Some(60)
+    "ControlLeft" => Some(113)
+    "ControlRight" => Some(114)
+    "AltLeft" => Some(57)
+    "AltRight" => Some(58)
+    "MetaLeft" => Some(117)
+    "MetaRight" => Some(118)
+    _ => if is_key_end(code) { Some(123) } else { None }
+  }
+}
+
+pub fn android_meta_of(mods : Int) -> Int {
+  let mut m = 0
+  if (mods & 1) != 0 { m = m | 0x12 }
+  if (mods & 2) != 0 { m = m | 0x3000 }
+  if (mods & 4) != 0 { m = m | 0x30000 }
+  if (mods & 8) != 0 { m = m | 0x41 }
+  m
+}
+
+fn write_be16(b : Bytes, at : Int, v : Int) -> Unit {
+  b[at] = ((v >> 8) & 0xFF) as Byte
+  b[at + 1] = (v & 0xFF) as Byte
+}
+
+fn write_be32(b : Bytes, at : Int, v : Int) -> Unit {
+  b[at] = ((v >> 24) & 0xFF) as Byte
+  b[at + 1] = ((v >> 16) & 0xFF) as Byte
+  b[at + 2] = ((v >> 8) & 0xFF) as Byte
+  b[at + 3] = (v & 0xFF) as Byte
+}
+
+fn write_be64(b : Bytes, at : Int, v : Int64) -> Unit {
+  let hi = (v >> 32).to_int()
+  let lo = (v & 0xFFFFFFFF.to_int64()).to_int()
+  write_be32(b, at, hi)
+  write_be32(b, at + 4, lo)
+}
+
+fn scrcpy_key_msg(down : Bool, keycode : Int, meta : Int) -> Bytes {
+  let b = Bytes::new(14)
+  b[0] = 0 as Byte // CONTROL_KEY
+  b[1] = (if down { 0 } else { 1 }) as Byte
+  write_be32(b, 2, keycode)
+  write_be32(b, 6, 0)
+  write_be32(b, 10, meta)
+  b
+}
+
+fn scrcpy_position(b : Bytes, at : Int, x : Double, y : Double, width : Int, height : Int) -> Unit {
+  let px_raw = (clamp01(x) * width.to_double() + 0.5).to_int()
+  let py_raw = (clamp01(y) * height.to_double() + 0.5).to_int()
+  let px = if px_raw >= width { if width > 0 { width - 1 } else { 0 } } else { px_raw }
+  let py = if py_raw >= height { if height > 0 { height - 1 } else { 0 } } else { py_raw }
+  write_be32(b, at, px)
+  write_be32(b, at + 4, py)
+  write_be16(b, at + 8, width)
+  write_be16(b, at + 10, height)
+}
+
+fn scrcpy_touch_msg(action : Int, x : Double, y : Double, width : Int, height : Int) -> Bytes {
+  let b = Bytes::new(32)
+  b[0] = 2 as Byte // CONTROL_TOUCH
+  b[1] = action as Byte
+  write_be64(b, 2, (-2).to_int64()) // POINTER_ID_GENERIC_FINGER
+  scrcpy_position(b, 10, x, y, width, height)
+  write_be16(b, 22, if action == 1 { 0 } else { 0xffff })
+  b
+}
+
+fn scrcpy_scroll_axis(pixels : Double) -> Int {
+  let notches = clamp_d(pixels / 100.0, -16.0, 16.0)
+  let scaled = (notches / 16.0) * 32768.0
+  let r = if scaled >= 0.0 { (scaled + 0.5).to_int() } else { (scaled - 0.5).to_int() }
+  if r < -32768 { -32768 } else if r > 32767 { 32767 } else { r }
+}
+
+fn scrcpy_scroll_msg(x : Double, y : Double, dx : Double, dy : Double, width : Int, height : Int) -> Bytes {
+  let b = Bytes::new(21)
+  b[0] = 3 as Byte // CONTROL_SCROLL
+  scrcpy_position(b, 1, x, y, width, height)
+  write_be16(b, 13, scrcpy_scroll_axis(dx) & 0xFFFF)
+  write_be16(b, 15, scrcpy_scroll_axis(0.0 - dy) & 0xFFFF)
+  b
+}
+
+fn is_ascii_printable(s : String) -> Bool {
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i) & 0xFF
+    if c < 0x20 || c > 0x7e {
+      return false
+    }
+  }
+  true
+}
+
+fn scrcpy_text_msgs(text : String) -> Array[Bytes] {
+  if text == "" { return [] }
+  let utf8 = text.to_bytes()
+  if utf8.length() <= 300 && is_ascii_printable(text) {
+    let out = Bytes::new(5 + utf8.length())
+    out[0] = 1 as Byte // CONTROL_TEXT
+    write_be32(out, 1, utf8.length())
+    for i in 0..<utf8.length() { out[5 + i] = utf8[i] }
+    return [out]
+  }
+  let out = Bytes::new(14 + utf8.length())
+  out[0] = 9 as Byte // CONTROL_CLIPBOARD
+  out[9] = 1 as Byte // paste
+  write_be32(out, 10, utf8.length())
+  for i in 0..<utf8.length() { out[14 + i] = utf8[i] }
+  [out]
+}
+
+pub struct AndroidInput {
+  pub mut finger : Bool
+}
+
+pub fn AndroidInput::new() -> AndroidInput {
+  AndroidInput::{ finger: false }
+}
+
+pub fn AndroidInput::messages(self : AndroidInput, e : ScreenInput, width : Int, height : Int) -> Array[Bytes] {
+  match e {
+    ScreenInput::Pointer(kind, x, y, buttons, _, _, _) => {
+      let left = (buttons & 1) == 1
+      if !self.finger {
+        match kind {
+          PointerKind::Down => {
+            if !left { return [] }
+            self.finger = true
+            return [scrcpy_touch_msg(0, x, y, width, height)]
+          }
+          _ => return []
+        }
+      }
+      let is_up = match kind {
+        PointerKind::Up => true
+        _ => false
+      }
+      if left && !is_up {
+        [scrcpy_touch_msg(2, x, y, width, height)]
+      } else {
+        self.finger = false
+        [scrcpy_touch_msg(1, x, y, width, height)]
+      }
+    }
+    ScreenInput::Wheel(x, y, dx, dy) => {
+      if dx == 0.0 && dy == 0.0 { [] } else { [scrcpy_scroll_msg(x, y, dx, dy, width, height)] }
+    }
+    ScreenInput::Key(kind, _, code, mods) => {
+      let down = match kind {
+        KeyKind::Down => true
+        KeyKind::Up => false
+      }
+      let meta = (mods & 4) != 0
+      let shift = (mods & 8) != 0
+      let ctrl = (mods & 2) != 0
+      let alt = (mods & 1) != 0
+      if meta && !alt {
+        let btn = if ctrl {
+          if shift && code == "KeyH" { Some(187) } else { None }
+        } else if shift && code == "KeyH" {
+          Some(3)
+        } else if !shift && code == "KeyL" {
+          Some(26)
+        } else {
+          None
+        }
+        match btn {
+          Some(kc) => return if down { [scrcpy_key_msg(true, kc, 0), scrcpy_key_msg(false, kc, 0)] } else { [] }
+          None => if !ctrl && !shift && code == "KeyK" { return [] }
+        }
+      }
+      match android_keycode_of(code) {
+        Some(kc) => [scrcpy_key_msg(down, kc, android_meta_of(mods))]
+        None => []
+      }
+    }
+    ScreenInput::Text(text) => scrcpy_text_msgs(text)
+    ScreenInput::Device(name) => {
+      if name == "volume_up" {
+        [scrcpy_key_msg(true, 24, 0), scrcpy_key_msg(false, 24, 0)]
+      } else if name == "volume_down" {
+        [scrcpy_key_msg(true, 25, 0), scrcpy_key_msg(false, 25, 0)]
+      } else {
+        []
+      }
+    }
+    _ => []
+  }
+}
+
+/// Extract Annex B NAL units without start codes.
+pub fn nals_of(data : Bytes) -> Array[Bytes] {
+  let out : Array[Bytes] = []
+  let mut start = -1
+  let mut i = 0
+  let n = data.length()
+  while i + 2 < n {
+    if (data[i].to_int() & 0xFF) == 0 && (data[i + 1].to_int() & 0xFF) == 0 && (data[i + 2].to_int() & 0xFF) == 1 {
+      if start >= 0 {
+        let end = if i > 0 && (data[i - 1].to_int() & 0xFF) == 0 { i - 1 } else { i }
+        out.push(station_ops::ops_slice_bytes(data, start, end - start))
+      }
+      start = i + 3
+      i = i + 3
+    } else {
+      i = i + 1
+    }
+  }
+  if start >= 0 {
+    out.push(station_ops::ops_slice_bytes(data, start, n - start))
+  }
+  out
+}
+
+/// Build H.264 avcC decoder config from SPS (type 7) and PPS (type 8) NALs.
+pub fn avcc_config_of(nals : Array[Bytes]) -> Option[Bytes] {
+  let mut sps : Option[Bytes] = None
+  let mut pps : Option[Bytes] = None
+  for i in 0..<nals.length() {
+    let nal = nals[i]
+    if nal.length() == 0 { continue }
+    let ntype = nal[0].to_int() & 0x1f
+    if ntype == 7 && sps is None { sps = Some(nal) }
+    if ntype == 8 && pps is None { pps = Some(nal) }
+  }
+  match (sps, pps) {
+    (Some(s), Some(p)) => {
+      if s.length() < 4 { return None }
+      let out = Bytes::new(11 + s.length() + p.length())
+      out[0] = 1 as Byte
+      out[1] = s[1]
+      out[2] = s[2]
+      out[3] = s[3]
+      out[4] = 0xff as Byte
+      out[5] = 0xe1 as Byte
+      write_be16(out, 6, s.length())
+      for i in 0..<s.length() { out[8 + i] = s[i] }
+      out[8 + s.length()] = 1 as Byte
+      write_be16(out, 9 + s.length(), p.length())
+      for i in 0..<p.length() { out[11 + s.length() + i] = p[i] }
+      Some(out)
+    }
+    _ => None
+  }
+}
+
+/// Convert non-SPS/PPS NAL units to 4-byte length-prefixed AVCC frame payload.
+pub fn avcc_of(nals : Array[Bytes]) -> Bytes {
+  let kept : Array[Bytes] = []
+  let mut total = 0
+  for i in 0..<nals.length() {
+    let nal = nals[i]
+    if nal.length() == 0 { continue }
+    let ntype = nal[0].to_int() & 0x1f
+    if ntype != 7 && ntype != 8 {
+      kept.push(nal)
+      total = total + 4 + nal.length()
+    }
+  }
+  let out = Bytes::new(total)
+  let mut at = 0
+  for i in 0..<kept.length() {
+    let nal = kept[i]
+    write_be32(out, at, nal.length())
+    for j in 0..<nal.length() { out[at + 4 + j] = nal[j] }
+    at = at + 4 + nal.length()
+  }
+  out
+}
+
+// ---------------------------------------------------------------------------
+// Linux Virtual Gamepad & Virtual Mic State Machines
+// ---------------------------------------------------------------------------
+
+pub struct LinuxGamepadState {
+  pub mut native_uinput : Bool
+  pub mut allow_mouse : Bool
+  pub active_slots : Array[Int]
+  pub mut ended : Bool
+}
+
+pub fn LinuxGamepadState::new(native_uinput : Bool, allow_mouse : Bool) -> LinuxGamepadState {
+  LinuxGamepadState::{
+    native_uinput: native_uinput,
+    allow_mouse: allow_mouse,
+    active_slots: [],
+    ended: false,
+  }
+}
+
+pub fn LinuxGamepadState::status(self : LinuxGamepadState) -> ScreenGamepad {
+  ScreenGamepad::{
+    native: self.native_uinput,
+    driver: if self.native_uinput { GamepadDriver::Uinput } else { GamepadDriver::Missing },
+    mouse: self.allow_mouse,
+  }
+}
+
+/// Route gamepad input: returns Some("uinput") / Some("mouse") / None (dropped when neither available).
+pub fn LinuxGamepadState::route_input(self : LinuxGamepadState, pad : GamepadState) -> Option[String] {
+  if self.ended { return None }
+  if pad.connected {
+    array_add_int(self.active_slots, pad.index)
+  } else {
+    array_remove_int(self.active_slots, pad.index)
+  }
+  if self.allow_mouse {
+    Some("mouse")
+  } else if self.native_uinput {
+    Some("uinput")
+  } else {
+    None
+  }
+}
+
+pub fn LinuxGamepadState::release_all(self : LinuxGamepadState) -> Array[GamepadState] {
+  let out : Array[GamepadState] = []
+  for i in 0..<self.active_slots.length() {
+    out.push(gamepad_released(self.active_slots[i]))
+  }
+  while self.active_slots.length() > 0 { let _ = self.active_slots.pop() }
+  out
+}
+
+pub let LINUX_MIC_FEED_MOST_BYTES : Int = 9600
+
+pub struct LinuxMicState {
+  pub mut available : Bool
+  pub mut active : Bool
+  pub mut epoch : Int
+  pub mut watching : Bool
+  pub mut queued_bytes : Int
+}
+
+pub fn LinuxMicState::new(available : Bool) -> LinuxMicState {
+  LinuxMicState::{
+    available: available,
+    active: false,
+    epoch: 0,
+    watching: false,
+    queued_bytes: 0,
+  }
+}
+
+pub fn LinuxMicState::status(self : LinuxMicState) -> ScreenMic {
+  ScreenMic::{ available: self.available, active: self.active, epoch: self.epoch }
+}
+
+pub fn LinuxMicState::start_watch(self : LinuxMicState) -> ScreenMic {
+  self.watching = true
+  self.status()
+}
+
+pub fn LinuxMicState::stop_watch(self : LinuxMicState) -> Unit {
+  self.watching = false
+  self.active = false
+  self.queued_bytes = 0
+}
+
+/// Update demand state from recording stream set; bumps epoch whenever active set changes.
+pub fn LinuxMicState::set_demand(self : LinuxMicState, active : Bool, consumer_changed : Bool) -> ScreenMic {
+  if active != self.active || (active && consumer_changed) {
+    self.active = active
+    self.epoch = self.epoch + 1
+    if !active {
+      self.queued_bytes = 0
+    }
+  }
+  self.status()
+}
+
+/// Accept a 48 kHz mono PCM16 packet only when watching, active, matching epoch, even length <= MIC_PCM_MAX.
+pub fn LinuxMicState::feed(self : LinuxMicState, pcm_len : Int, epoch : Int) -> Bool {
+  if !self.watching || !self.available || !self.active || epoch != self.epoch {
+    return false
+  }
+  if pcm_len <= 0 || pcm_len > MIC_PCM_MAX || (pcm_len % 2) != 0 {
+    return false
+  }
+  self.queued_bytes = self.queued_bytes + pcm_len
+  if self.queued_bytes > LINUX_MIC_FEED_MOST_BYTES {
+    self.queued_bytes = LINUX_MIC_FEED_MOST_BYTES
+  }
+  true
+}
+
+// ---------------------------------------------------------------------------
+// Windows ScreenService state machine (`station/src/screens/service.ts`)
+// ---------------------------------------------------------------------------
+
+pub let SCREEN_SERVICE_BINARY : String = "stillfail-screen-svc.exe"
+pub let SCREEN_SERVICE_ASK_MS : Int64 = 120_000.to_int64()
+
+pub enum ServiceFailure {
+  Declined
+  Unanswered
+  Error
+}
+
+pub fn service_failure_name(f : ServiceFailure) -> String {
+  match f {
+    ServiceFailure::Declined => "declined"
+    ServiceFailure::Unanswered => "unanswered"
+    ServiceFailure::Error => "error"
+  }
+}
+
+pub struct ScreenServiceProbe {
+  pub installed : Bool
+  pub running : Bool
+  pub connected : Bool
+  pub elevated : Bool
+  pub admin : Bool
+  pub user_sid : Option[String]
+  pub binary : Option[String]
+}
+
+pub struct ScreenServiceView {
+  pub on : Bool
+  pub running : Bool
+  pub can_change : Bool
+  pub available : Bool
+  pub step : Option[String]
+  pub want : Option[Bool]
+  pub failed : Option[ServiceFailure]
+  pub message : Option[String]
+  pub manage : Bool
+}
+
+pub enum ServiceChangeError {
+  Busy
+  NotAdmin
+  NotAvailable
+}
+
+pub struct ScreenServiceState {
+  pub mut probed : Option[ScreenServiceProbe]
+  pub mut step : Option[(Bool, String)]
+  pub mut failed : Option[(Bool, ServiceFailure, Option[String])]
+}
+
+pub fn ScreenServiceState::new() -> ScreenServiceState {
+  ScreenServiceState::{ probed: None, step: None, failed: None }
+}
+
+/// Security invariant (`station/src/screens/AGENTS.md`):
+/// Agent computer-use views MUST NEVER connect to the privileged Windows screen service.
+pub fn may_use_privileged_screen_service(options : ViewOptions) -> Bool {
+  !options.agent
+}
+
+pub fn ScreenServiceState::set_probe(self : ScreenServiceState, p : ScreenServiceProbe) -> Unit {
+  self.probed = Some(p)
+}
+
+pub fn ScreenServiceState::view(self : ScreenServiceState, manage : Bool) -> ScreenServiceView {
+  let p = match self.probed {
+    Some(x) => x
+    None => ScreenServiceProbe::{
+      installed: false, running: false, connected: false,
+      elevated: false, admin: false, user_sid: None, binary: None,
+    }
+  }
+  let available = match p.binary {
+    Some(_) => true
+    None => false
+  }
+  let can_change = available && (p.elevated || p.admin)
+  let (step, want, failed, message) = match self.step {
+    Some((w, s)) => (Some(s), Some(w), None, None)
+    None => match self.failed {
+      Some((w, f, m)) => (None, Some(w), Some(f), m)
+      None => (None, None, None, None)
+    }
+  }
+  ScreenServiceView::{
+    on: p.installed,
+    running: p.running || p.connected,
+    can_change: can_change,
+    available: available,
+    step: step,
+    want: want,
+    failed: failed,
+    message: message,
+    manage: manage,
+  }
+}
+
+pub fn ScreenServiceState::begin_change(self : ScreenServiceState, on : Bool) -> Result[String, ServiceChangeError] {
+  match self.step {
+    Some(_) => return Err(ServiceChangeError::Busy)
+    None => ()
+  }
+  let p = match self.probed {
+    Some(x) => x
+    None => return Err(ServiceChangeError::NotAvailable)
+  }
+  let bin = match p.binary {
+    Some(b) => b
+    None => return Err(ServiceChangeError::NotAvailable)
+  }
+  if !p.elevated && !p.admin {
+    return Err(ServiceChangeError::NotAdmin)
+  }
+  let elevate = !p.elevated
+  self.step = Some((on, if elevate { "asking" } else { "applying" }))
+  self.failed = None
+  Ok(ask_screen_service_script(bin, on, p.user_sid, elevate))
+}
+
+pub fn ScreenServiceState::finish_change(
+  self : ScreenServiceState,
+  exit_code : Option[Int],
+  timed_out : Bool,
+  new_probe : ScreenServiceProbe,
+) -> Unit {
+  let want = match self.step {
+    Some((w, _)) => w
+    None => return
+  }
+  self.probed = Some(new_probe)
+  self.step = None
+  if timed_out {
+    self.failed = Some((want, ServiceFailure::Unanswered, None))
+    return
+  }
+  match exit_code {
+    Some(0) => {
+      if new_probe.installed != want {
+        self.failed = Some((want, ServiceFailure::Error, None))
+      } else {
+        self.failed = None
+      }
+    }
+    Some(4) => self.failed = Some((want, ServiceFailure::Declined, None))
+    _ => self.failed = Some((want, ServiceFailure::Error, None))
+  }
+}
+
+fn ps_quote(s : String) -> String {
+  let sb = StringBuilder::new()
+  sb.write_string("'")
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    let c = s.code_unit_at(i) & 0xFF
+    if c == 39 {
+      sb.write_string("''")
+      i = i + 1
+    } else if c == 0xE2 && i + 2 < n && (s.code_unit_at(i + 1) & 0xFF) == 0x80 {
+      let b2 = s.code_unit_at(i + 2) & 0xFF
+      if b2 == 0x98 || b2 == 0x99 || b2 == 0x9A || b2 == 0x9B {
+        // PowerShell treats U+2018..U+201B as single-quote delimiters; double them.
+        sb.write_byte(0xE2 as Byte)
+        sb.write_byte(0x80 as Byte)
+        sb.write_byte(b2 as Byte)
+        sb.write_byte(0xE2 as Byte)
+        sb.write_byte(0x80 as Byte)
+        sb.write_byte(b2 as Byte)
+        i = i + 3
+      } else {
+        sb.write_byte(c as Byte)
+        i = i + 1
+      }
+    } else {
+      sb.write_byte(c as Byte)
+      i = i + 1
+    }
+  }
+  sb.write_string("'")
+  sb.to_string()
+}
+
+pub fn ask_screen_service_script(binary : String, on : Bool, user_sid : Option[String], elevate : Bool) -> String {
+  let args = if on {
+    match user_sid {
+      Some(sid) => "@('install', '--user-sid', " + ps_quote(sid) + ")"
+      None => "@('install')"
+    }
+  } else {
+    "@('uninstall')"
+  }
+  let verb = if elevate { " -Verb RunAs" } else { "" }
+  "try {\r\n  $p = Start-Process -FilePath " + ps_quote(binary) +
+  " -ArgumentList " + args + " -WindowStyle Hidden -PassThru -Wait" + verb +
+  " -ErrorAction Stop\r\n  exit $p.ExitCode\r\n} catch {\r\n  $e = $_.Exception; while ($e -and -not ($e -is [ComponentModel.Win32Exception])) { $e = $e.InnerException }\r\n  if ($e -and $e.NativeErrorCode -eq 1223) { exit 4 }\r\n  exit 5\r\n}"
+}

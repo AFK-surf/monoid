@@ -1,0 +1,529 @@
+// Hub orchestration: `Hub.profilesChanged`, `Hub.adopt` (sequential, zero platform network queries),
+// `Hub.evictIdle`, `Hub.acceptInTurn` (manual vs auto archive routing), and `StarterEmailCache` integration.
+
+import "base_codec"
+
+/// Profile availability scope used by `Hub.profilesChanged`.
+pub struct ProfileScope {
+  pub id : String
+  pub runtimes : Array[String]
+  pub enabled : Bool
+  pub withheld : Array[String]
+  pub borrowed : Bool
+  pub workspaces : Array[String]
+}
+
+/// Returns true iff `profile` is allowed to serve workspace `ws` (given station `home_ws`).
+/// 1:1 with `station/src/sessions/config.ts:243` `allowedIn`:
+/// - `workspaces` restriction applies ONLY when `profile.borrowed == true` (and `at = ws ?? home_ws` is Some).
+/// - `withheld` applies ONLY when `ws` is Some, `home_ws` is Some, AND `ws != home_ws`.
+/// - `ws = Some("")` is NOT coalesced to `home_ws`.
+pub fn profile_allowed_in(profile : ProfileScope, ws : Option[String], home_ws : Option[String]) -> Bool {
+  if !profile.enabled {
+    return false
+  }
+  let at = match ws {
+    Some(w) => Some(w)
+    None => home_ws
+  }
+  if profile.borrowed {
+    match at {
+      Some(w) => {
+        let mut found = false
+        for i in 0..<profile.workspaces.length() {
+          if profile.workspaces[i] == w {
+            found = true
+            break
+          }
+        }
+        if !found {
+          return false
+        }
+      }
+      None => ()
+    }
+  }
+  match (ws, home_ws) {
+    (Some(w), Some(h)) => {
+      if w == h {
+        return true
+      }
+      for i in 0..<profile.withheld.length() {
+        if profile.withheld[i] == w {
+          return false
+        }
+      }
+      true
+    }
+    _ => true
+  }
+}
+
+fn has_runtime(runtimes : Array[String], runtime : String) -> Bool {
+  for i in 0..<runtimes.length() {
+    if runtimes[i] == runtime {
+      return true
+    }
+  }
+  false
+}
+
+fn scope_fingerprint(p : ProfileScope) -> String {
+  let r_arr : Array[base_codec::Json] = []
+  for i in 0..<p.runtimes.length() {
+    r_arr.push(base_codec::json_str(p.runtimes[i]))
+  }
+  let wh_arr : Array[base_codec::Json] = []
+  for i in 0..<p.withheld.length() {
+    wh_arr.push(base_codec::json_str(p.withheld[i]))
+  }
+  let ws_arr : Array[base_codec::Json] = []
+  for i in 0..<p.workspaces.length() {
+    ws_arr.push(base_codec::json_str(p.workspaces[i]))
+  }
+  base_codec::json_stringify(
+    base_codec::json_arr([
+      base_codec::json_arr(r_arr),
+      base_codec::json_bool(p.enabled),
+      base_codec::json_arr(wh_arr),
+      base_codec::json_bool(p.borrowed),
+      base_codec::json_arr(ws_arr),
+    ]),
+  )
+}
+
+/// Session row metadata needed by the Hub for routing, adoption, and profile wakeups.
+pub struct HubSessionRow {
+  pub key : String
+  pub runtime : String
+  pub profile : String
+  pub runtime_session_id : Option[String]
+  pub ran_on : Option[String]
+  pub ws : Option[String]
+  pub created_by : String
+  pub archived_at : Option[Int64]
+  pub archived_by : String
+  pub handed_over : Bool
+  pub online : Bool
+  pub has_pending : Bool
+}
+
+/// Snapshot of a session handed over by a predecessor station during restart/handover.
+pub struct HandoverSnapshot {
+  pub key : String
+  pub runtime : String
+  pub has_agent : Bool
+  pub has_turn : Bool
+  pub notices : Array[String]
+}
+
+/// Result of adopting a single handed-over session.
+pub struct AdoptOutcome {
+  pub key : String
+  pub adopted : Bool
+  pub ran_on : String
+  pub person : String
+  pub set_idle_now : Bool
+  pub release_notices : Bool
+  pub platform_queries : Int
+}
+
+/// Outcome of `Hub.accept_in_turn` for an inbound platform thread message.
+pub enum ThreadAcceptAction {
+  /// Record message only; do not wake agent and do not download files.
+  RecordOnlyNoFiles
+  /// Restore archived conversation and deliver the message (with files).
+  RestoreAndDeliver
+  /// Deliver message to active session (with files).
+  DeliverActive
+}
+
+/// Evaluates how a platform thread message is handled for a session (`hub.ts:1261-1278` `acceptInTurn` 1:1):
+/// - `out = left || archived_by == "manual" || thread_hidden_by == "manual"`.
+/// - When `out`:
+///   - `addressed == true` (direct mention of this bot): restore whole conversation & deliver.
+///   - `addressed == false` (unaddressed or mention of another bot): record only, no wake, no file fetch.
+/// - Otherwise: if archived (`archived_at != None`, e.g. auto-archived), restore & deliver; else deliver active.
+pub fn accept_in_turn_full(
+  archived_at : Option[Int64],
+  archived_by : String,
+  left : Bool,
+  thread_hidden_by : String,
+  addressed : Bool,
+) -> ThreadAcceptAction {
+  let out = left || archived_by == "manual" || thread_hidden_by == "manual"
+  if out {
+    if addressed {
+      ThreadAcceptAction::RestoreAndDeliver
+    } else {
+      ThreadAcceptAction::RecordOnlyNoFiles
+    }
+  } else {
+    match archived_at {
+      Some(_) => ThreadAcceptAction::RestoreAndDeliver
+      None => ThreadAcceptAction::DeliverActive
+    }
+  }
+}
+
+pub fn accept_in_turn(
+  archived_at : Option[Int64],
+  archived_by : String,
+  addressed : Bool,
+) -> ThreadAcceptAction {
+  accept_in_turn_full(archived_at, archived_by, false, "", addressed)
+}
+
+/// Hub coordinator holding session actors, starter email cache, profile scopes, and adoption state.
+pub struct SessionHub {
+  pub actors : Map[String, SessionActor]
+  pub email_cache : StarterEmailCache
+  pub mut profile_scopes : Option[Array[ProfileScope]]
+  pub pending_profile_wakes : Map[String, Array[String]]
+  pub adopted_keys : Array[String]
+  pub mut holds : Array[String]
+}
+
+pub fn SessionHub::new() -> SessionHub {
+  SessionHub::{
+    actors: Map::new(),
+    email_cache: StarterEmailCache::new(),
+    profile_scopes: None,
+    pending_profile_wakes: Map::new(),
+    adopted_keys: [],
+    holds: [],
+  }
+}
+
+/// Ensures an actor exists for `key` and returns it.
+pub fn SessionHub::ensure_actor(self : SessionHub, key : String, runtime : String) -> SessionActor {
+  match self.actors.get(key) {
+    Some(a) => a
+    None => {
+      let a = SessionActor::new(key, runtime)
+      self.actors.set(key, a)
+      a
+    }
+  }
+}
+
+/// Adds a hold reason (no new turns start while any hold is active).
+pub fn SessionHub::hold(self : SessionHub, reason : String) -> Unit {
+  for i in 0..<self.holds.length() {
+    if self.holds[i] == reason {
+      return
+    }
+  }
+  self.holds.push(reason)
+}
+
+/// Releases a hold reason; returns true when no holds remain.
+pub fn SessionHub::unhold(self : SessionHub, reason : String) -> Bool {
+  let next : Array[String] = []
+  for i in 0..<self.holds.length() {
+    if self.holds[i] != reason {
+      next.push(self.holds[i])
+    }
+  }
+  self.holds = next
+  self.holds.length() == 0
+}
+
+pub fn SessionHub::is_held(self : SessionHub) -> Bool {
+  self.holds.length() > 0
+}
+
+/// `Hub.profilesChanged`: computes which sessions should be woken when profiles change.
+/// Rules (`hub.ts:1635-1665` 1:1):
+/// - First call initializes `profile_scopes` and wakes nothing.
+/// - Only profiles whose scope changed AND became newly allowed in `session.ws` qualify.
+/// - Skips archived, handed-over, offline, or no-pending sessions.
+/// - Skips sessions whose start is still in flight (`in_flight_start == true`): caller must
+///   re-check after `flushed()` barrier completes.
+/// - Only wakes sessions where `actor.start_failed == true`.
+pub fn SessionHub::profiles_changed(
+  self : SessionHub,
+  after : Array[ProfileScope],
+  rows : Array[HubSessionRow],
+  home_ws : Option[String],
+) -> Array[String] {
+  let prev_opt = self.profile_scopes
+  self.profile_scopes = Some(after)
+  let before = match prev_opt {
+    Some(b) => b
+    None => return []
+  }
+  let prev_map : Map[String, ProfileScope] = Map::new()
+  for i in 0..<before.length() {
+    prev_map.set(before[i].id, before[i])
+  }
+  let changed : Array[ProfileScope] = []
+  for i in 0..<after.length() {
+    let p = after[i]
+    let is_changed = match prev_map.get(p.id) {
+      None => true
+      Some(old_p) => scope_fingerprint(old_p) != scope_fingerprint(p)
+    }
+    if is_changed {
+      changed.push(p)
+    }
+  }
+  if changed.length() == 0 {
+    return []
+  }
+  let to_wake : Array[String] = []
+  for i in 0..<rows.length() {
+    let row = rows[i]
+    match row.archived_at {
+      Some(_) => continue
+      None => ()
+    }
+    if row.handed_over || !row.has_pending || !row.online {
+      continue
+    }
+    let actor = match self.actors.get(row.key) {
+      Some(a) => a
+      None => continue
+    }
+    let added_ids : Array[String] = []
+    for j in 0..<changed.length() {
+      let p = changed[j]
+      let now_ok = has_runtime(p.runtimes, actor.runtime) && profile_allowed_in(p, row.ws, home_ws)
+      if !now_ok {
+        continue
+      }
+      let was_ok = match prev_map.get(p.id) {
+        None => false
+        Some(old_p) => has_runtime(old_p.runtimes, actor.runtime) && profile_allowed_in(old_p, row.ws, home_ws)
+      }
+      if !was_ok {
+        added_ids.push(p.id)
+      }
+    }
+    if added_ids.length() == 0 {
+      continue
+    }
+    // If a start is still in flight, do NOT drop the wake: record the newly allowed profile ids
+    // and enqueue a barrier so `on_actor_flushed` wakes the session if that in-flight start fails!
+    if actor.in_flight_start {
+      let merged : Array[String] = match self.pending_profile_wakes.get(row.key) {
+        Some(prev) => prev
+        None => []
+      }
+      for k in 0..<added_ids.length() {
+        let pid = added_ids[k]
+        let mut seen = false
+        for m in 0..<merged.length() {
+          if merged[m] == pid {
+            seen = true
+            break
+          }
+        }
+        if !seen {
+          merged.push(pid)
+        }
+      }
+      self.pending_profile_wakes.set(row.key, merged)
+      let _ = actor.enqueue_barrier()
+      continue
+    }
+    if actor.start_failed {
+      actor.wake_pending = true
+      to_wake.push(row.key)
+    }
+  }
+  to_wake
+}
+
+/// Called once an actor with an in-flight start reaches its flush barrier (`hub.ts:1656-1663` 1:1).
+/// Re-checks `start_failed` and whether at least one recorded newly-added profile is still allowed
+/// in `row.ws`; if so, marks `actor.wake_pending = true` and returns `true` to kick the actor.
+pub fn SessionHub::on_actor_flushed(
+  self : SessionHub,
+  row : HubSessionRow,
+  current_profiles : Array[ProfileScope],
+  home_ws : Option[String],
+) -> Bool {
+  let added_ids = match self.pending_profile_wakes.get(row.key) {
+    Some(ids) => ids
+    None => return false
+  }
+  let _ = self.pending_profile_wakes.remove(row.key)
+  match row.archived_at {
+    Some(_) => return false
+    None => ()
+  }
+  if row.handed_over || !row.has_pending || !row.online {
+    return false
+  }
+  let actor = match self.actors.get(row.key) {
+    Some(a) => a
+    None => return false
+  }
+  if actor.in_flight_start || !actor.start_failed {
+    return false
+  }
+  for i in 0..<current_profiles.length() {
+    let p = current_profiles[i]
+    let mut in_added = false
+    for j in 0..<added_ids.length() {
+      if added_ids[j] == p.id {
+        in_added = true
+        break
+      }
+    }
+    if in_added && has_runtime(p.runtimes, actor.runtime) && profile_allowed_in(p, row.ws, home_ws) {
+      actor.wake_pending = true
+      return true
+    }
+  }
+  false
+}
+
+/// `Hub.adopt`: sequentially adopts handed-over session snapshots on startup.
+/// Rules (`hub.ts:1023-1080` 1:1):
+/// - Iterates snapshots one by one; skips sessions missing from store (`rows`).
+/// - Uses `row.ran_on` (where runtime session last ran) falling back to `row.profile`.
+/// - Resolves `person` using ONLY `email_cache.known_email` — NEVER triggers platform network queries!
+/// - When `snap.has_agent`: increments generation, marks `has_process = true` if `adopt_ok(key)` succeeds;
+///   if process adoption fails, cancels adopt and skips marking adopted.
+/// - Sets `idle_since_ms = Some(now_ms)` if `has_agent && !snap.has_turn`.
+/// - Marks `release_notices = snap.notices.length() > 0`.
+pub fn SessionHub::adopt(
+  self : SessionHub,
+  snapshots : Array[HandoverSnapshot],
+  rows : Map[String, HubSessionRow],
+  adopt_ok : Map[String, Bool],
+  now_ms : Int64,
+) -> Array[AdoptOutcome] {
+  let outcomes : Array[AdoptOutcome] = []
+  for i in 0..<snapshots.length() {
+    let snap = snapshots[i]
+    let row = match rows.get(snap.key) {
+      Some(r) => r
+      None => continue
+    }
+    let actor = self.ensure_actor(row.key, snap.runtime)
+    let ran_on = match row.ran_on {
+      Some(p) => if p.length() > 0 { p } else { row.profile }
+      None => row.profile
+    }
+    // Strictly cached email only: zero platform network queries during startup adopt!
+    let cached_email = self.email_cache.known_email(row.created_by)
+    let person = person_of(row.created_by, cached_email)
+    let mut adopted_agent = false
+    if snap.has_agent {
+      let _ = actor.next_generation()
+      let ok = match adopt_ok.get(row.key) {
+        Some(v) => v
+        None => true
+      }
+      if !ok {
+        outcomes.push(
+          AdoptOutcome::{
+            key: row.key,
+            adopted: false,
+            ran_on: ran_on,
+            person: person,
+            set_idle_now: false,
+            release_notices: false,
+            platform_queries: 0,
+          },
+        )
+        continue
+      }
+      adopted_agent = true
+      actor.has_process = true
+    }
+    let set_idle = adopted_agent && !snap.has_turn
+    if set_idle {
+      actor.phase = ActorPhase::Idle
+      actor.idle_since_ms = Some(now_ms)
+    } else if snap.has_turn {
+      actor.phase = ActorPhase::Running
+      actor.idle_since_ms = None
+    }
+    if adopted_agent {
+      self.adopted_keys.push(row.key)
+    }
+    outcomes.push(
+      AdoptOutcome::{
+        key: row.key,
+        adopted: true,
+        ran_on: ran_on,
+        person: person,
+        set_idle_now: set_idle,
+        release_notices: snap.notices.length() > 0,
+        platform_queries: 0,
+      },
+    )
+  }
+  outcomes
+}
+
+/// Evicts idle non-codex processes beyond `max_warm_claude` (oldest first), and any
+/// remaining idle processes past `warm_ms` (when `warm_ms > 0`). Codex shares a process and stays.
+pub fn SessionHub::evict_idle(
+  self : SessionHub,
+  actor_keys : Array[String],
+  now_ms : Int64,
+  max_warm_claude : Int,
+  warm_ms : Int64,
+) -> Array[String] {
+  let idle : Array[(String, Int64)] = []
+  for i in 0..<actor_keys.length() {
+    let k = actor_keys[i]
+    match self.actors.get(k) {
+      Some(a) => if a.runtime != "codex" {
+        match a.idle_ms(now_ms) {
+          Some(ms) => idle.push((k, ms))
+          None => ()
+        }
+      }
+      None => ()
+    }
+  }
+  // Sort descending by idle_ms (oldest idle first)
+  for i in 0..<idle.length() {
+    let mut best = i
+    for j in (i + 1)..<idle.length() {
+      let (_, best_ms) = idle[best]
+      let (_, cur_ms) = idle[j]
+      if cur_ms > best_ms {
+        best = j
+      }
+    }
+    if best != i {
+      let tmp = idle[i]
+      idle[i] = idle[best]
+      idle[best] = tmp
+    }
+  }
+  let cap = if max_warm_claude < 0 { 0 } else { max_warm_claude }
+  let mut excess = idle.length() - cap
+  let evicted : Array[String] = []
+  for i in 0..<idle.length() {
+    let (k, ms) = idle[i]
+    if excess > 0 {
+      match self.actors.get(k) {
+        Some(a) => {
+          let _ = a.evict()
+          evicted.push(k)
+        }
+        None => ()
+      }
+      excess = excess - 1
+    } else if warm_ms > 0L && ms >= warm_ms {
+      match self.actors.get(k) {
+        Some(a) => {
+          let _ = a.evict()
+          evicted.push(k)
+        }
+        None => ()
+      }
+    } else {
+      break
+    }
+  }
+  evicted
+}

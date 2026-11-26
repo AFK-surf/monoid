@@ -1,0 +1,747 @@
+// Public Suffix List (PSL) and secure-origin checks for browser sign-ins,
+// autofill, and WebAuthn relying parties (aligns `station/src/browser/psl.ts`
+// backed by full `tldts@7.5.4` Mozilla PSL + implicit `*` rule, O(1) HashMap
+// lookup, and `hostOf`/`rpFor` in `view.ts`).
+
+import "base_codec"
+import "flate"
+import "url"
+
+pub enum PslSection {
+  Icann
+  Private
+}
+
+pub struct PslParsed {
+  pub host : String
+  pub is_ip : Bool
+  pub is_icann : Bool
+  pub is_private : Bool
+  pub public_suffix : Option[String]
+  pub domain : Option[String]
+}
+
+// Bit flags for PSL rule entries: 1 = ICANN, 2 = Private.
+let PSL_FLAG_ICANN : Int = 1
+let PSL_FLAG_PRIVATE : Int = 2
+
+pub struct PslEngine {
+  rules : Map[String, Int]
+  exceptions : Map[String, Int]
+}
+
+struct PslCacheCell {
+  mut engine : Option[PslEngine]
+}
+
+let STD_PSL_CACHE : PslCacheCell = PslCacheCell::{ engine: None }
+
+fn ascii_lower(s : String) -> String {
+  let b = s.to_bytes()
+  let sb = StringBuilder::with_capacity(b.length())
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32).to_byte())
+    } else {
+      sb.write_byte(b[i])
+    }
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn is_ascii_space(c : Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13 || c == 11 || c == 12
+}
+
+fn trim_ascii(s : String) -> String {
+  let b = s.to_bytes()
+  let mut start = 0
+  let mut end = b.length()
+  while start < end && is_ascii_space(b[start].to_int() & 0xFF) {
+    start = start + 1
+  }
+  while end > start && is_ascii_space(b[end - 1].to_int() & 0xFF) {
+    end = end - 1
+  }
+  if start == 0 && end == b.length() {
+    return s
+  }
+  b.slice(start, end).to_string()
+}
+
+fn strip_leading_dots(s : String) -> String {
+  let b = s.to_bytes()
+  let mut i = 0
+  while i < b.length() && (b[i].to_int() & 0xFF) == 46 {
+    i = i + 1
+  }
+  if i == 0 {
+    return s
+  }
+  b.slice(i, b.length()).to_string()
+}
+
+fn strip_trailing_dots(s : String) -> String {
+  let b = s.to_bytes()
+  let mut end = b.length()
+  while end > 0 && (b[end - 1].to_int() & 0xFF) == 46 {
+    end = end - 1
+  }
+  if end == b.length() {
+    return s
+  }
+  b.slice(0, end).to_string()
+}
+
+fn has_forbidden_host_char(s : String) -> Bool {
+  let b = s.to_bytes()
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 47 || c == 63 || c == 35 || c == 64 || c == 92 || is_ascii_space(c) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn is_pure_ascii_host_chars(s : String) -> Bool {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    let ok = (c >= 97 && c <= 122) ||
+    (c >= 48 && c <= 57) ||
+    c == 45 || // -
+    c == 46 || // .
+    c == 95 // _
+    if !ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn is_ipv6_literal_chars(s : String) -> Bool {
+  let b = s.to_bytes()
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    let ok = (c >= 48 && c <= 57) ||
+    (c >= 97 && c <= 102) ||
+    c == 58 ||
+    (i == 0 && c == 91) ||
+    (i == b.length() - 1 && c == 93)
+    if !ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn split_dots(s : String) -> Array[String] {
+  let b = s.to_bytes()
+  let out : Array[String] = []
+  let mut start = 0
+  let mut i = 0
+  while i < b.length() {
+    if (b[i].to_int() & 0xFF) == 46 {
+      out.push(b.slice(start, i).to_string())
+      start = i + 1
+    }
+    i = i + 1
+  }
+  out.push(b.slice(start, b.length()).to_string())
+  out
+}
+
+fn join_labels_from(labels : Array[String], start : Int) -> String {
+  let sb = StringBuilder::new()
+  let mut i = start
+  while i < labels.length() {
+    if i > start {
+      sb.write_string(".")
+    }
+    sb.write_string(labels[i])
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn is_ipv4_host(h : String) -> Bool {
+  let parts = split_dots(h)
+  if parts.length() != 4 {
+    return false
+  }
+  let mut i = 0
+  while i < 4 {
+    let p = parts[i]
+    let pb = p.to_bytes()
+    if pb.length() == 0 || pb.length() > 3 {
+      return false
+    }
+    let mut octet = 0
+    let mut j = 0
+    while j < pb.length() {
+      let c = pb[j].to_int() & 0xFF
+      if c < 48 || c > 57 {
+        return false
+      }
+      octet = octet * 10 + (c - 48)
+      j = j + 1
+    }
+    if octet > 255 {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn is_ip_host(h : String) -> Bool {
+  if h.starts_with("[") && h.ends_with("]") {
+    return true
+  }
+  is_ipv4_host(h)
+}
+
+/// Validate hostname labels (aligns `tldts-core::isValidHostname`):
+/// rejects empty labels (`a..b.com`), labels starting or ending with `-` (`-a-.com`, `xn--.com`),
+/// labels > 63 bytes, hostnames > 255 bytes, and invalid characters.
+pub fn is_valid_hostname(h : String) -> Bool {
+  let b = h.to_bytes()
+  if b.length() == 0 || b.length() > 255 {
+    return false
+  }
+  let mut label_len = 0
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 46 {
+      if label_len == 0 || label_len > 63 {
+        return false
+      }
+      if (b[i - 1].to_int() & 0xFF) == 45 {
+        return false
+      }
+      label_len = 0
+    } else {
+      if label_len == 0 && c == 45 {
+        return false
+      }
+      let ok = (c >= 97 && c <= 122) ||
+      (c >= 48 && c <= 57) ||
+      c == 45 || // -
+      c == 95 || // _
+      c >= 128
+      if !ok {
+        return false
+      }
+      label_len = label_len + 1
+      if label_len > 63 {
+        return false
+      }
+    }
+    i = i + 1
+  }
+  if label_len == 0 || (b[b.length() - 1].to_int() & 0xFF) == 45 {
+    return false
+  }
+  true
+}
+
+fn has_xn_label(h : String) -> Bool {
+  let labels = split_dots(h)
+  let mut i = 0
+  while i < labels.length() {
+    if labels[i].starts_with("xn--") {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn is_whatwg_number_label(label : String) -> Bool {
+  let b = label.to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  // All ASCII digits (decimal or octal)
+  let mut all_digits = true
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      all_digits = false
+      break
+    }
+    i = i + 1
+  }
+  if all_digits {
+    return true
+  }
+  // `0x` followed by 0+ ASCII hex digits (note `h` is already lowercased)
+  if b.length() >= 2 && (b[0].to_int() & 0xFF) == 48 && (b[1].to_int() & 0xFF) == 120 {
+    let mut j = 2
+    while j < b.length() {
+      let c = b[j].to_int() & 0xFF
+      let is_hex = (c >= 48 && c <= 57) || (c >= 97 && c <= 102)
+      if !is_hex {
+        return false
+      }
+      j = j + 1
+    }
+    return true
+  }
+  false
+}
+
+/// WHATWG URL "ends in a number" check: true if the last non-empty `.`-separated label
+/// is all decimal digits or `0x` + 0+ hex digits.
+fn ends_in_number(h : String) -> Bool {
+  let labels = split_dots(h)
+  let mut i = labels.length() - 1
+  while i >= 0 {
+    if labels[i].length() > 0 {
+      return is_whatwg_number_label(labels[i])
+    }
+    i = i - 1
+  }
+  false
+}
+
+/// Normalizes a hostname (or cookie domain with leading dot, trailing dot, or IDN labels)
+/// into lowercase ASCII form. Rejects strings containing URL delimiters, credentials,
+/// whitespace, or non-IPv6 colons. Returns `""` when invalid.
+pub fn normalize_host(host : String) -> String {
+  let stripped = strip_trailing_dots(strip_leading_dots(ascii_lower(trim_ascii(host))))
+  if stripped.length() == 0 || has_forbidden_host_char(stripped) {
+    return ""
+  }
+  if stripped.index_of(":") >= 0 {
+    if !is_ipv6_literal_chars(stripped) {
+      return ""
+    }
+    let bare = if stripped.starts_with("[") && stripped.ends_with("]") {
+      let b = stripped.to_bytes()
+      b.slice(1, b.length() - 1).to_string()
+    } else {
+      stripped
+    }
+    match url::Url::parse("http://[" + bare + "]") {
+      Ok(u) => return u.hostname()
+      Err(_) => return ""
+    }
+  }
+  match url::Url::parse("http://" + stripped) {
+    Ok(u) => strip_trailing_dots(u.hostname())
+    Err(_) => {
+      // Align with V8/Node `new URL("http://" + stripped).hostname` (UTS #46 non-strict):
+      // only pass through ASCII hostnames that contain an `xn--` label (which strict IDNA rejects)
+      // and do NOT end in a WHATWG number (which WHATWG IPv4 parsing rejects).
+      if is_pure_ascii_host_chars(stripped) &&
+      has_xn_label(stripped) &&
+      !ends_in_number(stripped) {
+        stripped
+      } else {
+        ""
+      }
+    }
+  }
+}
+
+/// The host of a URL (lowercase ASCII, no trailing dot); `""` for URLs without a host (e.g. `about:blank`).
+pub fn host_of(raw_url : String) -> String {
+  match url::Url::parse(raw_url) {
+    Ok(u) => strip_trailing_dots(ascii_lower(u.hostname()))
+    Err(_) => ""
+  }
+}
+
+/// The canonical ASCII origin (`scheme://host[:port]`) of an `http:` or `https:` URL.
+pub fn origin_of_url(raw_url : String) -> Option[String] {
+  match url::Url::parse(raw_url) {
+    Ok(u) => {
+      let scheme = u.scheme()
+      if (scheme != "http" && scheme != "https") || u.hostname().length() == 0 {
+        return None
+      }
+      Some(scheme + "://" + ascii_lower(u.host_and_port()))
+    }
+    Err(_) => None
+  }
+}
+
+fn add_rule_entry(map : Map[String, Int], key : String, flag : Int) -> Unit {
+  let prev = match map.get(key) {
+    Some(f) => f
+    None => 0
+  }
+  map.set(key, prev | flag)
+}
+
+fn add_raw_rule(
+  rules : Map[String, Int],
+  exceptions : Map[String, Int],
+  line : String,
+  flag : Int,
+) -> Unit {
+  let trimmed = trim_ascii(line)
+  if trimmed.length() == 0 || trimmed.starts_with("//") {
+    return
+  }
+  let mut is_exc = false
+  let mut body = trimmed
+  if body.starts_with("!") {
+    is_exc = true
+    let b = body.to_bytes()
+    body = b.slice(1, b.length()).to_string()
+  }
+  let raw_labels = split_dots(ascii_lower(body))
+  let sb = StringBuilder::with_capacity(body.length())
+  let mut i = 0
+  while i < raw_labels.length() {
+    let lbl = raw_labels[i]
+    if lbl.length() == 0 {
+      return
+    }
+    if i > 0 {
+      sb.write_string(".")
+    }
+    if lbl == "*" {
+      sb.write_string("*")
+    } else {
+      match url::domain_to_ascii(lbl) {
+        Ok(asc) => sb.write_string(ascii_lower(asc))
+        Err(_) => sb.write_string(lbl)
+      }
+    }
+    i = i + 1
+  }
+  let norm = sb.to_string()
+  if norm.length() == 0 {
+    return
+  }
+  if is_exc {
+    add_rule_entry(exceptions, norm, flag)
+  } else {
+    add_rule_entry(rules, norm, flag)
+  }
+}
+
+pub fn PslEngine::from_rules(icann : Array[String], private_rules : Array[String]) -> PslEngine {
+  let rules : Map[String, Int] = Map::new()
+  let exceptions : Map[String, Int] = Map::new()
+  let mut i = 0
+  while i < icann.length() {
+    add_raw_rule(rules, exceptions, icann[i], PSL_FLAG_ICANN)
+    i = i + 1
+  }
+  let mut j = 0
+  while j < private_rules.length() {
+    add_raw_rule(rules, exceptions, private_rules[j], PSL_FLAG_PRIVATE)
+    j = j + 1
+  }
+  PslEngine::{ rules: rules, exceptions: exceptions }
+}
+
+fn load_standard_psl() -> PslEngine {
+  let rules : Map[String, Int] = Map::new()
+  let exceptions : Map[String, Int] = Map::new()
+  let comp = match base_codec::base64_decode(psl_compressed_b64()) {
+    Some(b) => b
+    None => panic("corrupt embedded PSL base64 payload")
+  }
+  let raw = match flate::deflate_decompress(comp) {
+    Ok(b) => b
+    Err(_) => panic("corrupt embedded PSL deflate payload")
+  }
+  let mut start = 0
+  let mut i = 0
+  while i <= raw.length() {
+    if i == raw.length() || (raw[i].to_int() & 0xFF) == 10 {
+      if i > start + 1 {
+        let tag = raw[start].to_int() & 0xFF
+        let rule = raw.slice(start + 1, i).to_string()
+        if tag == 73 {
+          // 'I' ICANN rule
+          add_rule_entry(rules, rule, PSL_FLAG_ICANN)
+        } else if tag == 80 {
+          // 'P' Private rule
+          add_rule_entry(rules, rule, PSL_FLAG_PRIVATE)
+        } else if tag == 69 {
+          // 'E' ICANN exception
+          add_rule_entry(exceptions, rule, PSL_FLAG_ICANN)
+        } else if tag == 70 {
+          // 'F' Private exception
+          add_rule_entry(exceptions, rule, PSL_FLAG_PRIVATE)
+        }
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  PslEngine::{ rules: rules, exceptions: exceptions }
+}
+
+/// Global cached Mozilla Public Suffix List engine (`tldts@7.5.4` full ICANN + Private table).
+/// Decompressed and indexed into O(1) HashMaps once on first call.
+pub fn PslEngine::standard() -> PslEngine {
+  match STD_PSL_CACHE.engine {
+    Some(e) => e
+    None => {
+      let e = load_standard_psl()
+      STD_PSL_CACHE.engine = Some(e)
+      e
+    }
+  }
+}
+
+pub fn PslEngine::parse(self : PslEngine, raw_host : String) -> PslParsed {
+  let h = normalize_host(raw_host)
+  if h.length() == 0 {
+    return PslParsed::{
+      host: "",
+      is_ip: false,
+      is_icann: false,
+      is_private: false,
+      public_suffix: None,
+      domain: None,
+    }
+  }
+  if is_ip_host(h) {
+    return PslParsed::{
+      host: h,
+      is_ip: true,
+      is_icann: false,
+      is_private: false,
+      public_suffix: None,
+      domain: None,
+    }
+  }
+  if !is_valid_hostname(h) {
+    return PslParsed::{
+      host: "",
+      is_ip: false,
+      is_icann: false,
+      is_private: false,
+      public_suffix: None,
+      domain: None,
+    }
+  }
+  let labels = split_dots(h)
+  let n = labels.length()
+  let mut exc_start = -1
+  let mut exc_flags = 0
+  let mut rule_start = -1
+  let mut rule_flags = 0
+
+  // Scan suffixes from longest (start = 0) to shortest (start = n - 1): O(n) HashMap lookups.
+  let mut start = 0
+  while start < n {
+    let suffix = join_labels_from(labels, start)
+    if exc_start < 0 {
+      match self.exceptions.get(suffix) {
+        Some(f) => {
+          exc_start = start
+          exc_flags = f
+        }
+        None => ()
+      }
+    }
+    if rule_start < 0 {
+      let mut matched_flags = 0
+      match self.rules.get(suffix) {
+        Some(f) => matched_flags = matched_flags | f
+        None => ()
+      }
+      if start + 1 < n {
+        let wild = "*." + join_labels_from(labels, start + 1)
+        match self.rules.get(wild) {
+          Some(f) => matched_flags = matched_flags | f
+          None => ()
+        }
+      }
+      if matched_flags != 0 {
+        rule_start = start
+        rule_flags = matched_flags
+      }
+    }
+    start = start + 1
+  }
+
+  // 1. Exception rule always takes highest priority.
+  if exc_start >= 0 {
+    let suffix_start = exc_start + 1
+    let is_icann = (exc_flags & PSL_FLAG_ICANN) != 0
+    let is_private = (exc_flags & PSL_FLAG_PRIVATE) != 0
+    if suffix_start >= n {
+      return PslParsed::{
+        host: h,
+        is_ip: false,
+        is_icann: is_icann,
+        is_private: is_private,
+        public_suffix: None,
+        domain: None,
+      }
+    }
+    return PslParsed::{
+      host: h,
+      is_ip: false,
+      is_icann: is_icann,
+      is_private: is_private,
+      public_suffix: Some(join_labels_from(labels, suffix_start)),
+      domain: Some(join_labels_from(labels, exc_start)),
+    }
+  }
+
+  // 2. Longest matching ICANN or Private rule.
+  if rule_start >= 0 {
+    let is_icann = (rule_flags & PSL_FLAG_ICANN) != 0
+    let is_private = (rule_flags & PSL_FLAG_PRIVATE) != 0
+    let suffix = join_labels_from(labels, rule_start)
+    let domain = if rule_start > 0 {
+      Some(join_labels_from(labels, rule_start - 1))
+    } else {
+      None
+    }
+    return PslParsed::{
+      host: h,
+      is_ip: false,
+      is_icann: is_icann,
+      is_private: is_private,
+      public_suffix: Some(suffix),
+      domain: domain,
+    }
+  }
+
+  // 3. Implicit `*` default PSL rule: rightmost label is public suffix (not ICANN/Private).
+  let fallback_suffix = labels[n - 1]
+  let fallback_domain = if n >= 2 {
+    Some(labels[n - 2] + "." + labels[n - 1])
+  } else {
+    None
+  }
+  PslParsed::{
+    host: h,
+    is_ip: false,
+    is_icann: false,
+    is_private: false,
+    public_suffix: Some(fallback_suffix),
+    domain: fallback_domain,
+  }
+}
+
+pub fn PslEngine::is_public_suffix(self : PslEngine, host : String) -> Bool {
+  let parsed = self.parse(host)
+  if parsed.host.length() == 0 {
+    return false
+  }
+  (parsed.is_icann || parsed.is_private) &&
+  match (parsed.domain, parsed.public_suffix) {
+    (None, Some(_)) => true
+    _ => false
+  }
+}
+
+pub fn PslEngine::registrable_domain(self : PslEngine, host : String) -> Option[String] {
+  let parsed = self.parse(host)
+  if parsed.host.length() == 0 || parsed.is_ip {
+    return None
+  }
+  parsed.domain
+}
+
+pub fn PslEngine::same_site_host(self : PslEngine, host : String, site : String) -> Bool {
+  let h = normalize_host(host)
+  let s = normalize_host(site)
+  if h.length() == 0 || s.length() == 0 || self.is_public_suffix(s) {
+    return false
+  }
+  if h != s && !h.ends_with("." + s) {
+    return false
+  }
+  match self.registrable_domain(s) {
+    Some(site_reg) => {
+      match self.registrable_domain(h) {
+        Some(host_reg) => host_reg == site_reg
+        None => false
+      }
+    }
+    None => true
+  }
+}
+
+/// Whether a page on `host` may ask for a passkey of relying party `rp_id`:
+/// the host itself, or a registrable parent domain under the PSL (including private suffixes).
+pub fn PslEngine::rp_for(self : PslEngine, rp_id : String, host : String) -> Bool {
+  let rp = normalize_host(rp_id)
+  let h = normalize_host(host)
+  if rp.length() == 0 || h.length() == 0 || self.is_public_suffix(rp) {
+    return false
+  }
+  if rp == h {
+    return true
+  }
+  if !h.ends_with("." + rp) {
+    return false
+  }
+  match self.registrable_domain(h) {
+    Some(reg) => rp == reg || rp.ends_with("." + reg)
+    None => rp.index_of(".") >= 0
+  }
+}
+
+/// Whether `host` is a public suffix (ICANN or private PSL entry such as `co.uk` or `github.io`).
+pub fn is_public_suffix(host : String) -> Bool {
+  PslEngine::standard().is_public_suffix(host)
+}
+
+/// The registrable domain (eTLD+1) of `host` under the PSL (private domains included), or `None`.
+pub fn registrable_domain(host : String) -> Option[String] {
+  PslEngine::standard().registrable_domain(host)
+}
+
+/// Whether `host` belongs to `site` (exact host or subdomain) without crossing a nested private PSL boundary.
+pub fn same_site_host(host : String, site : String) -> Bool {
+  PslEngine::standard().same_site_host(host, site)
+}
+
+/// Whether a page on `host` may ask for a passkey of relying party `rp_id`.
+pub fn rp_for(rp_id : String, host : String) -> Bool {
+  PslEngine::standard().rp_for(rp_id, host)
+}
+
+/// Whether `host` is a local loopback host (`localhost`, `127.0.0.1`, or `[::1]` / `::1`).
+pub fn is_loopback_host(host : String) -> Bool {
+  let h = normalize_host(host)
+  h == "localhost" || h == "127.0.0.1" || h == "[::1]"
+}
+
+/// Whether `raw_url` is a secure origin eligible for autofill, login prompts, and WebAuthn:
+/// `https:` or loopback `http:`.
+pub fn is_secure_autofill_url(raw_url : String) -> Bool {
+  match url::Url::parse(raw_url) {
+    Ok(u) => {
+      let scheme = u.scheme()
+      if scheme == "https" {
+        u.hostname().length() > 0
+      } else if scheme == "http" {
+        is_loopback_host(u.hostname())
+      } else {
+        false
+      }
+    }
+    Err(_) => false
+  }
+}

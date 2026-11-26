@@ -308,6 +308,7 @@ export const PROFILE_SHAPES: Record<string, Shape> = {
     ["usesLine", "String", { doc: "What the profile will be usable for, in words (the line under the page)." }],
     ["signIn", opt("FlowSignIn"), { default: true, doc: "At a plan's connect step: the sign-in to start. Absent while its runtime is to be installed (`install`)." }],
     ["install", opt("RuntimeInstall"), { doc: "At a plan's connect step on a station without the runtime it signs in with: installing it there; the sign-in\nstarts once it is installed. Absent otherwise." }],
+    ["rev", "u32", { default: true, doc: "Monotonic edit revision of this profile flow draft." }],
   ], { doc: "The add-profile pages, as the core keeps them for one device: the picker, how to connect what was picked (a plan or\na key), and the form with what it will be usable for. The views draw it and name what changed (`profile.flow.edit`)." }),
   FlowSignIn: struct([
     ["runtime", opt("RuntimeKind"), { doc: "The runtime whose subscription is signed in to (`login.new` runtime)." }],

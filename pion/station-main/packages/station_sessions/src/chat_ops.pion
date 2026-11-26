@@ -1,0 +1,341 @@
+// Chat operations & contracts: station notices (`chat.ts`), `chat_archive` (`chat-archive.ts`),
+// `chat_configure` & leadership cycle checks (`chat-configure.ts`), `run-change.ts`,
+// `afresh.ts`, `relay.ts`, `review.ts`, `opened.ts` / `others.ts` / `neighbours.ts` / `conversations.ts`.
+
+import "js_json"
+
+// ── RPC method constants (`opened.ts`, `others.ts`, `chat-archive.ts`, `chat-configure.ts`) ──
+
+pub let RPC_SESSION_CREATE : String = "session.create"
+pub let RPC_SESSION_NOTICE : String = "session.notice"
+pub let RPC_SESSION_LIST : String = "session.list"
+pub let RPC_SESSION_READ : String = "session.read"
+pub let RPC_SESSION_ARCHIVE : String = "session.archive"
+pub let RPC_SESSION_CONFIGURE : String = "session.configure"
+
+// ── Station notices & proposal markers (`station/src/sessions/chat.ts` 1:1) ──
+
+/// Invisible separator U+2063 appended to station notices so cross-bot echoes never wake agents.
+pub let NOTICE_MARK : String = "\u{2063}"
+
+pub fn mark_notice(text : String) -> String {
+  if text.ends_with(NOTICE_MARK) { text } else { text + NOTICE_MARK }
+}
+
+pub fn is_notice(text : String) -> Bool {
+  js_json::trim_js(text).ends_with(NOTICE_MARK)
+}
+
+pub fn has_proposal_marker(text : String, proposal_id : String) -> Bool {
+  if proposal_id.length() == 0 {
+    return false
+  }
+  text.contains("#proposal=" + proposal_id) || text.contains("[#" + proposal_id + "]")
+}
+
+// ── `chat_archive` validation (`station/src/sessions/chat-archive.ts` 1:1) ──
+
+pub enum ChatArchiveValidation {
+  AlreadyArchived
+  ArchiveNow
+}
+
+pub fn validate_chat_archive(
+  same_workspace : Bool,
+  surface : String,
+  is_self_thread : Bool,
+  already_manually_archived : Bool,
+) -> Result[ChatArchiveValidation, String] {
+  if !same_workspace {
+    return Err("that chat is in another workspace: only this workspace's chats can be archived")
+  }
+  if surface != STILLFAIL_SURFACE {
+    return Err("only still.fail chats can be archived with chat_archive")
+  }
+  if is_self_thread {
+    return Err("chat_archive is for another chat, not your own")
+  }
+  if already_manually_archived {
+    Ok(ChatArchiveValidation::AlreadyArchived)
+  } else {
+    Ok(ChatArchiveValidation::ArchiveNow)
+  }
+}
+
+// ── `chat_configure` & leadership cycle guard (`station/src/sessions/chat-configure.ts` 1:1) ──
+
+pub let MAX_ANCESTOR_HOPS : Int = 16
+
+pub struct OpenerLink {
+  pub parent_station : String
+  pub parent : String
+  pub led : Bool
+}
+
+/// Walks up the local `opened_chats` leadership chain from `start` (at most `MAX_ANCESTOR_HOPS`).
+pub fn local_ancestors(
+  openers : Map[String, OpenerLink],
+  start : String,
+) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  let seen : Map[String, Bool] = Map::new()
+  seen.set(start, true)
+  let mut cur = start
+  for _ in 0..<MAX_ANCESTOR_HOPS {
+    match openers.get(cur) {
+      None => break
+      Some(op) => {
+        if !op.led {
+          break
+        }
+        out.push((op.parent_station, op.parent))
+        if op.parent_station.length() > 0 {
+          break
+        }
+        if seen.contains(op.parent) {
+          break
+        }
+        seen.set(op.parent, true)
+        cur = op.parent
+      }
+    }
+  }
+  out
+}
+
+/// Validates `chat_configure(for: "me")` ownership transfer (`chat-configure.ts:106-135, 440-443` 1:1):
+/// - Cannot lead your own chat.
+/// - Only still.fail chats can be led as sub-chats.
+/// - Local target with local parent: checks `local_ancestors(openers, parent_key)` for `("", target_key)`.
+/// - Local target with remote parent (`parent_station != ""`): checks `parent_ancestors` for
+///   `(here_station, target_key)` AND whether any `a` on `here_station` has `target_key` in its local ancestors.
+/// - Remote target (`target_station != ""`): checks `local_ancestors(openers, parent_key)` for
+///   `(target_station, target_key)`.
+pub fn validate_lead_transfer_full(
+  target_station : String,
+  target_key : String,
+  target_surface : String,
+  here_station : String,
+  parent_station : String,
+  parent_key : String,
+  parent_ancestors : Array[(String, String)],
+  openers : Map[String, OpenerLink],
+) -> Result[Unit, String] {
+  if target_station.length() == 0 && parent_station.length() == 0 && target_key == parent_key {
+    return Err("cannot lead your own chat")
+  }
+  if target_surface != STILLFAIL_SURFACE {
+    return Err("only still.fail chats can be led as sub-chats")
+  }
+  // Outgoing remote lead: check caller's local ancestor chain for `(target_station, target_key)`
+  if target_station.length() > 0 {
+    let ancestors = local_ancestors(openers, parent_key)
+    for i in 0..<ancestors.length() {
+      let (st, s) = ancestors[i]
+      if st == target_station && s == target_key {
+        return Err("cannot lead a chat that already leads this one")
+      }
+    }
+    return Ok(())
+  }
+  // Local target with local parent
+  if parent_station.length() == 0 {
+    let ancestors = local_ancestors(openers, parent_key)
+    for i in 0..<ancestors.length() {
+      let (st, s) = ancestors[i]
+      if st.length() == 0 && s == target_key {
+        return Err("cannot lead a chat that already leads this one")
+      }
+    }
+    return Ok(())
+  }
+  // Local target with remote parent (`chat-configure.ts:126-135`): check `parent_ancestors`
+  for i in 0..<parent_ancestors.length() {
+    let (a_st, a_sess) = parent_ancestors[i]
+    if here_station.length() > 0 && a_st == here_station {
+      if a_sess == target_key {
+        return Err("cannot lead a chat that already leads this one")
+      }
+      let local_chain = local_ancestors(openers, a_sess)
+      for j in 0..<local_chain.length() {
+        let (b_st, b_sess) = local_chain[j]
+        if b_st.length() == 0 && b_sess == target_key {
+          return Err("cannot lead a chat that already leads this one")
+        }
+      }
+    }
+  }
+  Ok(())
+}
+
+pub fn validate_lead_transfer(
+  target_key : String,
+  target_surface : String,
+  parent_station : String,
+  parent_key : String,
+  openers : Map[String, OpenerLink],
+) -> Result[Unit, String] {
+  validate_lead_transfer_full("", target_key, target_surface, "", parent_station, parent_key, [], openers)
+}
+
+// ── `run-change.ts` 1:1 ──
+
+pub struct RunShown {
+  pub runtime : String
+  pub model : Option[String]
+  pub effort : Option[String]
+  pub speed : String
+  pub tui : Bool
+  pub profile : String
+  pub account : Option[String]
+}
+
+fn opt_str_eq(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+/// Returns true iff a manual run change warrants posting a notice in chat:
+/// runtime, model, effort, speed, or tui changed (profile change alone stays silent).
+pub fn run_changed(was : RunShown, now : RunShown) -> Bool {
+  was.runtime != now.runtime ||
+  !opt_str_eq(was.model, now.model) ||
+  !opt_str_eq(was.effort, now.effort) ||
+  was.speed != now.speed ||
+  was.tui != now.tui
+}
+
+// ── `afresh.ts` 1:1 ──
+
+pub let OLDER_THREADS_LABEL : String = "and older ones (chat_list finds them)"
+
+/// Formats the thread list told to a session starting afresh, appending `OLDER_THREADS_LABEL` if `more`.
+pub fn threads_told_of(recent_addresses : Array[String], has_more : Bool) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<recent_addresses.length() {
+    out.push(recent_addresses[i])
+  }
+  if has_more {
+    out.push(OLDER_THREADS_LABEL)
+  }
+  out
+}
+
+/// Returns true iff a session must start afresh instead of resuming `runtime_session_id`:
+/// - Its runtime changed from the runtime that created `runtime_session_id`, OR
+/// - It is moving to a different account/profile (`from != to_profile`).
+pub fn should_start_afresh(
+  session_runtime : String,
+  source_runtime : Option[String],
+  ran_on_profile : Option[String],
+  to_profile : String,
+) -> Bool {
+  match source_runtime {
+    Some(sr) => if sr != session_runtime {
+      return true
+    }
+    None => ()
+  }
+  match ran_on_profile {
+    Some(from) => from.length() > 0 && from != to_profile
+    None => false
+  }
+}
+
+// ── `relay.ts` 1:1 ──
+
+pub struct RelayConnectOption {
+  pub id : String
+  pub bind_runtime : String
+  pub bind_profile : Option[String]
+  pub bind_model : Option[String]
+}
+
+/// Selects the preferred connect for relaying a chat (`relay.ts` `preferredOf` 1:1):
+/// 1. Session's own connect
+/// 2. First connect matching runtime + profile
+/// 3. First connect matching runtime + model
+/// 4. First connect matching runtime
+pub fn preferred_relay_connect(
+  session_connect : String,
+  session_runtime : String,
+  session_profile : String,
+  session_model : Option[String],
+  connects : Array[RelayConnectOption],
+) -> Option[String] {
+  for i in 0..<connects.length() {
+    if connects[i].id == session_connect {
+      return Some(connects[i].id)
+    }
+  }
+  for i in 0..<connects.length() {
+    let c = connects[i]
+    if c.bind_runtime == session_runtime {
+      match c.bind_profile {
+        Some(p) => if p == session_profile {
+          return Some(c.id)
+        }
+        None => ()
+      }
+    }
+  }
+  match session_model {
+    Some(m) => {
+      for i in 0..<connects.length() {
+        let c = connects[i]
+        if c.bind_runtime == session_runtime {
+          match c.bind_model {
+            Some(bm) => if bm == m {
+              return Some(c.id)
+            }
+            None => ()
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  for i in 0..<connects.length() {
+    if connects[i].bind_runtime == session_runtime {
+      return Some(connects[i].id)
+    }
+  }
+  None
+}
+
+// ── `review.ts` bounded evidence selection ──
+
+pub let ARCHIVE_REVIEW_MESSAGES : Int = 400
+pub let ARCHIVE_REVIEW_BYTES : Int = 80000
+
+/// Selects the newest messages that fit within `ARCHIVE_REVIEW_BYTES` (always keeping at least
+/// the newest message), returning `(kept_oldest_first, older_left_out)`.
+pub fn select_review_messages(
+  messages_oldest_first : Array[String],
+  max_bytes : Int,
+) -> (Array[String], Bool) {
+  let kept_rev : Array[String] = []
+  let mut size = 0
+  let mut idx = messages_oldest_first.length() - 1
+  while idx >= 0 {
+    let m = messages_oldest_first[idx]
+    let m_len = js_json::utf8_bytes(m).length()
+    if size + m_len > max_bytes && kept_rev.length() > 0 {
+      break
+    }
+    size = size + m_len
+    kept_rev.push(m)
+    idx = idx - 1
+  }
+  let older_left_out = kept_rev.length() < messages_oldest_first.length()
+  let kept : Array[String] = []
+  let mut k = kept_rev.length() - 1
+  while k >= 0 {
+    kept.push(kept_rev[k])
+    k = k - 1
+  }
+  (kept, older_left_out)
+}

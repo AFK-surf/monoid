@@ -1,0 +1,1016 @@
+// Slack Socket Mode & Web API connector (`apps.connections.open`, explicit
+// post-handle `envelope_id` ACK, `hello`/`disconnect`/`events_api`/
+// `interactive`/`slash_commands`, `rich_text` & `table` extraction, markdown
+// blocks, 3-step external upload + `sharedTs`, and resumable 429 retries).
+
+import "base_codec"
+
+pub let SLACK_API_BASE : String = "https://slack.com/api"
+pub let SLACK_PING_MS : Int64 = 5000.to_int64()
+pub let SLACK_STALE_MS : Int64 = 20000.to_int64()
+pub let SLACK_POST_SPLIT_LIMIT : Int = 3500
+
+// ---------------------------------------------------------------------------
+// Token Validation & Web API Request Builders
+// ---------------------------------------------------------------------------
+
+pub fn validate_slack_tokens(app_token : String, bot_token : String) -> Result[Unit, String] {
+  if !str_starts_with(app_token, "xapp-") {
+    return Err("slack.appToken must be an app-level token (xapp-...)")
+  }
+  if !str_starts_with(bot_token, "xoxb-") {
+    return Err("slack.botToken must be a bot token (xoxb-...)")
+  }
+  Ok(())
+}
+
+fn trim_trailing_slash(base : String) -> String {
+  let raw = base.to_bytes()
+  let mut end = raw.length()
+  while end > 0 && (raw[end - 1].to_int() & 0xFF) == 47 {
+    end = end - 1
+  }
+  str_slice(base, 0, end)
+}
+
+pub fn slack_api_request(
+  base_url : String,
+  token : String,
+  method : String,
+  params : Array[(String, String)],
+) -> HttpRequest {
+  let url = trim_trailing_slash(base_url) + "/" + method
+  let body = encode_form_params(params).to_bytes()
+  let headers : Array[(String, String)] = [
+    ("authorization", "Bearer " + token),
+    ("content-type", "application/x-www-form-urlencoded; charset=utf-8"),
+  ]
+  HttpRequest::new("POST", url, headers, Some(body), 30000.to_int64())
+}
+
+pub fn slack_connections_open_request(base_url : String, app_token : String) -> HttpRequest {
+  slack_api_request(base_url, app_token, "apps.connections.open", [])
+}
+
+pub fn slack_auth_test_request(base_url : String, bot_token : String) -> HttpRequest {
+  slack_api_request(base_url, bot_token, "auth.test", [])
+}
+
+pub fn slack_markdown_block(text : String) -> base_codec::Json {
+  base_codec::json_obj([
+    ("type", base_codec::json_str("markdown")),
+    ("text", base_codec::json_str(text)),
+  ])
+}
+
+pub fn slack_post_message_request(
+  base_url : String,
+  bot_token : String,
+  thread : ThreadRef,
+  text : String,
+  blocks_json : Option[String] = None,
+) -> HttpRequest {
+  let blocks_str = match blocks_json {
+    Some(b) => b
+    None => base_codec::json_stringify(base_codec::json_arr([slack_markdown_block(text)]))
+  }
+  let params : Array[(String, String)] = [
+    ("channel", thread.channel),
+    ("thread_ts", thread.thread_ts),
+    ("text", text),
+    ("blocks", blocks_str),
+    ("unfurl_links", "false"),
+  ]
+  slack_api_request(base_url, bot_token, "chat.postMessage", params)
+}
+
+pub fn slack_get_upload_url_request(
+  base_url : String,
+  bot_token : String,
+  filename : String,
+  length : Int,
+) -> HttpRequest {
+  slack_api_request(
+    base_url,
+    bot_token,
+    "files.getUploadURLExternal",
+    [("filename", filename), ("length", length.to_string())],
+  )
+}
+
+pub fn slack_upload_bytes_request(upload_url : String, bytes : Bytes) -> HttpRequest {
+  HttpRequest::new("POST", upload_url, [], Some(bytes), 300000.to_int64())
+}
+
+pub fn slack_complete_upload_request(
+  base_url : String,
+  bot_token : String,
+  uploaded : Array[(String, String)],
+  thread : ThreadRef,
+) -> HttpRequest {
+  let items : Array[base_codec::Json] = []
+  for i in 0..<uploaded.length() {
+    let (id, title) = uploaded[i]
+    items.push(
+      base_codec::json_obj([("id", base_codec::json_str(id)), ("title", base_codec::json_str(title))]),
+    )
+  }
+  let list_json = base_codec::json_stringify(base_codec::json_arr(items))
+  slack_api_request(
+    base_url,
+    bot_token,
+    "files.completeUploadExternal",
+    [("files", list_json), ("channel_id", thread.channel), ("thread_ts", thread.thread_ts)],
+  )
+}
+
+pub enum SlackApiOutcome {
+  Ok(base_codec::Json)
+  RateLimited(Int64)
+  ApiError(String)
+}
+
+pub fn parse_slack_api_response(method : String, resp : HttpResponse) -> SlackApiOutcome {
+  match resp.error {
+    Some(e) => return SlackApiOutcome::ApiError("slack " + method + ": " + e)
+    None => {}
+  }
+  if resp.status == 429 {
+    let retry_sec = match header_get(resp.headers, "retry-after") {
+      Some(v) => {
+        match base_codec::parse_int64_str(str_trim(v)) {
+          Some(s) => if s > 0.to_int64() { s } else { 1.to_int64() }
+          None => 1.to_int64()
+        }
+      }
+      None => 1.to_int64()
+    }
+    return SlackApiOutcome::RateLimited(retry_sec)
+  }
+  let body_str = bytes_to_string(resp.body)
+  match base_codec::json_parse(body_str) {
+    base_codec::JsonParseResult::Err(err) => {
+      SlackApiOutcome::ApiError("slack " + method + ": invalid json (" + err + ")")
+    }
+    base_codec::JsonParseResult::Ok(j) => {
+      if json_bool_field(j, "ok") {
+        SlackApiOutcome::Ok(j)
+      } else {
+        let code = json_str_field(j, "error")
+        let label = if code != "" { code } else { "HTTP " + resp.status.to_string() }
+        SlackApiOutcome::ApiError("slack " + method + ": " + label)
+      }
+    }
+  }
+}
+
+/// Extracts `shares.{public,private}[channel][0].ts` from a Slack file object,
+/// matching `station/src/slack/surface.ts` `sharedTs`.
+pub fn slack_file_shared_ts(file_obj : base_codec::Json, channel : String) -> Option[String] {
+  let shares = match base_codec::json_get(file_obj, "shares") {
+    Some(s) => s
+    None => return None
+  }
+  let scopes = ["public", "private"]
+  for i in 0..<scopes.length() {
+    match base_codec::json_get(shares, scopes[i]) {
+      Some(scope_obj) => {
+        match base_codec::json_get(scope_obj, channel) {
+          Some(base_codec::Json::Arr(entries)) => {
+            if entries.length() > 0 {
+              let ts = json_str_field(entries[0], "ts")
+              if ts != "" {
+                return Some(ts)
+              }
+            }
+          }
+          _ => {}
+        }
+      }
+      None => {}
+    }
+  }
+  None
+}
+
+// ---------------------------------------------------------------------------
+// Socket Mode Envelope Codec (`hello`, `disconnect`, `events_api`, `interactive`)
+// ---------------------------------------------------------------------------
+
+pub enum SlackEnvelopeKind {
+  Hello
+  Disconnect(String)
+  EventsApi(base_codec::Json)
+  Interactive(base_codec::Json)
+  SlashCommands(base_codec::Json)
+  Unknown(String)
+}
+
+pub struct SlackEnvelope {
+  pub envelope_id : String
+  pub kind : SlackEnvelopeKind
+}
+
+pub fn decode_slack_envelope(raw : String) -> Option[SlackEnvelope] {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Err(_) => None
+    base_codec::JsonParseResult::Ok(j) => {
+      let kind_str = json_str_field(j, "type")
+      let env_id = json_str_field(j, "envelope_id")
+      let payload = match base_codec::json_get(j, "payload") {
+        Some(p) => p
+        None => base_codec::json_null()
+      }
+      let kind = if kind_str == "hello" {
+        SlackEnvelopeKind::Hello
+      } else if kind_str == "disconnect" {
+        SlackEnvelopeKind::Disconnect(json_str_field(j, "reason"))
+      } else if kind_str == "events_api" {
+        SlackEnvelopeKind::EventsApi(payload)
+      } else if kind_str == "interactive" {
+        SlackEnvelopeKind::Interactive(payload)
+      } else if kind_str == "slash_commands" {
+        SlackEnvelopeKind::SlashCommands(payload)
+      } else {
+        SlackEnvelopeKind::Unknown(kind_str)
+      }
+      Some(SlackEnvelope::{ envelope_id: env_id, kind: kind })
+    }
+  }
+}
+
+pub fn encode_slack_ack(envelope_id : String, payload : Option[base_codec::Json] = None) -> String {
+  let fields : Array[(String, base_codec::Json)] = [("envelope_id", base_codec::json_str(envelope_id))]
+  match payload {
+    Some(p) => fields.push(("payload", p))
+    None => {}
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields))
+}
+
+// ---------------------------------------------------------------------------
+// Slack Rich Text & Table Block Extraction (`messageText` 1:1 with TS)
+// ---------------------------------------------------------------------------
+
+fn slack_rich_text(el : base_codec::Json) -> String {
+  let kind = json_str_field(el, "type")
+  match base_codec::json_get(el, "elements") {
+    Some(base_codec::Json::Arr(elems)) => {
+      let sb = StringBuilder::new()
+      for i in 0..<elems.length() {
+        let piece = slack_rich_text(elems[i])
+        if kind == "rich_text_list" {
+          if i > 0 {
+            sb.write_string("\n")
+          }
+          sb.write_string("• " + piece)
+        } else {
+          if i > 0 && kind == "rich_text" {
+            sb.write_string("\n")
+          }
+          sb.write_string(piece)
+        }
+      }
+      return sb.to_string()
+    }
+    _ => {}
+  }
+  if kind == "text" {
+    json_str_field(el, "text")
+  } else if kind == "link" {
+    let url = json_str_field(el, "url")
+    let t = json_str_field(el, "text")
+    if t != "" { "<" + url + "|" + t + ">" } else { "<" + url + ">" }
+  } else if kind == "user" {
+    "<@" + json_str_field(el, "user_id") + ">"
+  } else if kind == "usergroup" {
+    "<!subteam^" + json_str_field(el, "usergroup_id") + ">"
+  } else if kind == "channel" {
+    "<#" + json_str_field(el, "channel_id") + ">"
+  } else if kind == "broadcast" {
+    "<!" + json_str_field(el, "range") + ">"
+  } else if kind == "emoji" {
+    ":" + json_str_field(el, "name") + ":"
+  } else if kind == "date" {
+    json_str_field(el, "fallback")
+  } else {
+    json_str_field(el, "text")
+  }
+}
+
+fn escape_table_pipes_outside_angle(s : String) -> String {
+  let raw = s.to_bytes()
+  let sb = StringBuilder::new()
+  let mut in_angle = false
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 60 {
+      in_angle = true
+      sb.write_byte(raw[i])
+    } else if b == 62 {
+      in_angle = false
+      sb.write_byte(raw[i])
+    } else if b == 124 && !in_angle {
+      sb.write_string("\\|")
+    } else {
+      sb.write_byte(raw[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn slack_cell_text(cell : base_codec::Json) -> String {
+  let kind = json_str_field(cell, "type")
+  let raw = if kind == "rich_text" {
+    slack_rich_text(cell)
+  } else if kind == "raw_number" {
+    match base_codec::json_get(cell, "number") {
+      Some(base_codec::Json::Num(n, repr)) => if repr != "" { repr } else { n.to_string() }
+      _ => json_str_field(cell, "text")
+    }
+  } else {
+    json_str_field(cell, "text")
+  }
+  // Collapse newlines into spaces and escape bare pipes.
+  let no_nl = str_replace_all(str_replace_all(raw, "\r\n", " "), "\n", " ")
+  str_trim(escape_table_pipes_outside_angle(no_nl))
+}
+
+fn slack_table_text(block : base_codec::Json) -> String {
+  let rows : Array[Array[String]] = []
+  let mut width = 0
+  match base_codec::json_get(block, "rows") {
+    Some(base_codec::Json::Arr(raw_rows)) => {
+      for i in 0..<raw_rows.length() {
+        let cells : Array[String] = []
+        match raw_rows[i] {
+          base_codec::Json::Arr(raw_cells) => {
+            for j in 0..<raw_cells.length() {
+              cells.push(slack_cell_text(raw_cells[j]))
+            }
+          }
+          _ => {}
+        }
+        if cells.length() > width {
+          width = cells.length()
+        }
+        rows.push(cells)
+      }
+    }
+    _ => {}
+  }
+  if rows.length() == 0 || width == 0 {
+    return ""
+  }
+  let fmt_row = fn(r : Array[String]) -> String {
+    let sb = StringBuilder::new()
+    sb.write_string("| ")
+    for i in 0..<width {
+      if i > 0 {
+        sb.write_string(" | ")
+      }
+      if i < r.length() {
+        sb.write_string(r[i])
+      }
+    }
+    sb.write_string(" |")
+    sb.to_string()
+  }
+  let sep : Array[String] = []
+  for _ in 0..<width {
+    sep.push("---")
+  }
+  let sb = StringBuilder::new()
+  sb.write_string(fmt_row(rows[0]))
+  sb.write_string("\n")
+  sb.write_string(fmt_row(sep))
+  for i in 1..<rows.length() {
+    sb.write_string("\n")
+    sb.write_string(fmt_row(rows[i]))
+  }
+  sb.to_string()
+}
+
+/// Extracts message text plus any `table` blocks in `blocks` or
+/// `attachments[].blocks`, matching `station/src/slack/surface.ts` `messageText`.
+pub fn slack_message_text(m : base_codec::Json) -> String {
+  let parts : Array[String] = []
+  let base_txt = json_str_field(m, "text")
+  if base_txt != "" {
+    parts.push(base_txt)
+  }
+  let blocks : Array[base_codec::Json] = []
+  match base_codec::json_get(m, "blocks") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        blocks.push(arr[i])
+      }
+    }
+    _ => {}
+  }
+  match base_codec::json_get(m, "attachments") {
+    Some(base_codec::Json::Arr(atts)) => {
+      for i in 0..<atts.length() {
+        match base_codec::json_get(atts[i], "blocks") {
+          Some(base_codec::Json::Arr(arr)) => {
+            for j in 0..<arr.length() {
+              blocks.push(arr[j])
+            }
+          }
+          _ => {}
+        }
+      }
+    }
+    _ => {}
+  }
+  for i in 0..<blocks.length() {
+    if json_str_field(blocks[i], "type") == "table" {
+      let t = slack_table_text(blocks[i])
+      if t != "" {
+        parts.push(t)
+      }
+    }
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<parts.length() {
+    if i > 0 {
+      sb.write_string("\n\n")
+    }
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Slack Event Parsing (`toEvent`, `files`, mention & `thread_ts`)
+// ---------------------------------------------------------------------------
+
+fn slack_files_of(m : base_codec::Json) -> Array[InboundFile] {
+  let out : Array[InboundFile] = []
+  match base_codec::json_get(m, "files") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        let f = arr[i]
+        let id = json_str_field(f, "id")
+        if id == "" {
+          continue
+        }
+        let mode = json_str_field(f, "mode")
+        let held = mode != "tombstone" && mode != "hidden_by_limit" && mode != "external"
+        let u1 = json_str_field(f, "url_private_download")
+        let u2 = json_str_field(f, "url_private")
+        let chosen = if u1 != "" { u1 } else { u2 }
+        let n1 = json_str_field(f, "name")
+        let n2 = json_str_field(f, "title")
+        let name = if n1 != "" { n1 } else if n2 != "" { n2 } else { id }
+        let size = match json_int64_field(f, "size") {
+          Some(s) => s
+          None => 0.to_int64()
+        }
+        out.push(
+          InboundFile::{
+            id: id,
+            name: name,
+            size: size,
+            url: if held && chosen != "" { Some(chosen) } else { None },
+          },
+        )
+      }
+    }
+    _ => {}
+  }
+  out
+}
+
+fn is_allowed_slack_subtype(subtype : String) -> Bool {
+  subtype == "" || subtype == "file_share" || subtype == "thread_broadcast" || subtype == "bot_message"
+}
+
+fn is_own_slack_event(e : base_codec::Json, bot_user_id : String, bot_id : String) -> Bool {
+  let u = json_str_field(e, "user")
+  let b = json_str_field(e, "bot_id")
+  (bot_user_id != "" && u == bot_user_id) || (bot_id != "" && b == bot_id)
+}
+
+/// Converts a Slack Events API `event` object into a `ChatEvent`, matching
+/// `station/src/slack/surface.ts` `toEvent`.
+pub fn slack_to_event(
+  event : base_codec::Json,
+  bot_user_id : String,
+  bot_id : String,
+) -> Option[ChatEvent] {
+  let kind = json_str_field(event, "type")
+  let subtype = json_str_field(event, "subtype")
+
+  if kind == "agent_session_stopped" {
+    let channel = json_str_field(event, "channel")
+    let thread_ts = json_str_field(event, "thread_ts")
+    let ts = json_str_field(event, "event_ts")
+    if channel == "" || thread_ts == "" || ts == "" {
+      return None
+    }
+    return Some(ChatEvent::Stop(channel, thread_ts, ts, None))
+  }
+
+  if kind == "message" && subtype == "message_changed" {
+    let changed = match base_codec::json_get(event, "message") {
+      Some(m) => m
+      None => return None
+    }
+    let ts = json_str_field(changed, "ts")
+    if ts == "" || is_own_slack_event(changed, bot_user_id, bot_id) {
+      return None
+    }
+    let tts_raw = json_str_field(changed, "thread_ts")
+    let thread_ts = if tts_raw != "" { tts_raw } else { ts }
+    return Some(
+      ChatEvent::Changed(
+        json_str_field(event, "channel"),
+        thread_ts,
+        ts,
+        slack_message_text(changed),
+      ),
+    )
+  }
+
+  if kind == "message" && subtype == "message_deleted" {
+    return None
+  }
+  if kind != "app_mention" && kind != "message" {
+    return None
+  }
+  if !is_allowed_slack_subtype(subtype) {
+    return None
+  }
+
+  let body = slack_message_text(event)
+  let ts = json_str_field(event, "ts")
+  let channel = json_str_field(event, "channel")
+  let tts_raw = json_str_field(event, "thread_ts")
+  let thread_ts = if tts_raw != "" { tts_raw } else { ts }
+  let u_raw = json_str_field(event, "user")
+  let b_raw = json_str_field(event, "bot_id")
+  let by = if u_raw != "" { u_raw } else { b_raw }
+
+  if is_own_slack_event(event, bot_user_id, bot_id) {
+    if kind != "message" || !is_notice(body) || ts == "" {
+      return None
+    }
+    let user = if bot_user_id != "" { bot_user_id } else { by }
+    if user == "" {
+      return None
+    }
+    return Some(
+      ChatEvent::OwnNotice(
+        InboundMessage::{
+          channel: channel,
+          thread_ts: thread_ts,
+          ts: ts,
+          user: user,
+          text: body,
+          addressed: false,
+          files: [],
+          quoted: None,
+        },
+      ),
+    )
+  }
+
+  if by == "" {
+    return None
+  }
+  let mention_tag = if bot_user_id != "" { "<@" + bot_user_id + ">" } else { "" }
+  let addressed = kind == "app_mention"
+  || json_str_field(event, "channel_type") == "im"
+  || (mention_tag != "" && str_contains(body, mention_tag))
+  let files = slack_files_of(event)
+  Some(
+    ChatEvent::Message(
+      InboundMessage::{
+        channel: channel,
+        thread_ts: thread_ts,
+        ts: ts,
+        user: by,
+        text: body,
+        addressed: addressed,
+        files: files,
+        quoted: None,
+      },
+    ),
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Slack Socket Mode Connector (at-least-once explicit ACK + resumable post)
+// ---------------------------------------------------------------------------
+
+pub struct SlackConnector {
+  pub base_url : String
+  pub app_token : String
+  pub bot_token : String
+  pub mut bot_user_id : String
+  pub mut bot_id : String
+  pub mut ws_handle : Option[Int64]
+  pub mut machine : SocketMachine
+  pub mut dedupe : InboundDedupe
+  pub mut throttle : OutboundThrottle
+  mut pending_dedupe : Map[String, String]
+}
+
+pub fn SlackConnector::new(
+  app_token : String,
+  bot_token : String,
+  base_url : String = SLACK_API_BASE,
+  ping_ms : Int64 = SLACK_PING_MS,
+  stale_ms : Int64 = SLACK_STALE_MS,
+) -> Result[SlackConnector, String] {
+  match validate_slack_tokens(app_token, bot_token) {
+    Err(e) => return Err(e)
+    Ok(_) => {}
+  }
+  Ok(
+    SlackConnector::{
+      base_url: base_url,
+      app_token: app_token,
+      bot_token: bot_token,
+      bot_user_id: "",
+      bot_id: "",
+      ws_handle: None,
+      machine: SocketMachine::new("slack", ReconnectPolicy::new(ping_ms, stale_ms)),
+      dedupe: InboundDedupe::new(),
+      throttle: OutboundThrottle::new(5, 30000.to_int64()),
+      pending_dedupe: Map::new(),
+    },
+  )
+}
+
+/// Explicitly sends a Socket Mode ACK for `envelope_id` (optionally with
+/// `payload`, e.g. `{"options": [...]}` for `block_suggestion` or validation
+/// errors for `view_submission`) AFTER the caller finishes handling the event,
+/// and records its dedupe key only upon confirmation.
+pub fn SlackConnector::ack(
+  self : SlackConnector,
+  transport : ConnectTransport,
+  envelope_id : String,
+  payload : Option[base_codec::Json] = None,
+) -> Result[Unit, String] {
+  if envelope_id == "" {
+    return Ok(())
+  }
+  let res = match self.ws_handle {
+    Some(h) => (transport.ws_send)(h, WsFrame::Text(encode_slack_ack(envelope_id, payload)))
+    None => Err("slack socket is not open")
+  }
+  match self.pending_dedupe.get(envelope_id) {
+    Some(key) => {
+      self.pending_dedupe.remove(envelope_id)
+      self.dedupe.remember(key, (transport.now_ms)())
+    }
+    None => {}
+  }
+  res
+}
+
+/// Calls `auth.test` to populate `bot_user_id` and `bot_id`.
+pub fn SlackConnector::identify(
+  self : SlackConnector,
+  transport : ConnectTransport,
+) -> Result[BotIdentity, String] {
+  let resp = (transport.fetch)(slack_auth_test_request(self.base_url, self.bot_token))
+  match parse_slack_api_response("auth.test", resp) {
+    SlackApiOutcome::Ok(j) => {
+      self.bot_user_id = json_str_field(j, "user_id")
+      self.bot_id = json_str_field(j, "bot_id")
+      Ok(
+        BotIdentity::{
+          team: json_str_field(j, "team"),
+          team_id: json_str_field(j, "team_id"),
+          url: json_str_field(j, "url"),
+          bot_user_id: self.bot_user_id,
+          bot_name: json_str_field(j, "user"),
+          bot_image: None,
+          bot_id: self.bot_id,
+        },
+      )
+    }
+    SlackApiOutcome::RateLimited(sec) => Err("slack auth.test: rate_limited (" + sec.to_string() + "s)")
+    SlackApiOutcome::ApiError(e) => Err(e)
+  }
+}
+
+/// Calls `apps.connections.open` and opens the Socket Mode WebSocket.
+pub fn SlackConnector::connect(
+  self : SlackConnector,
+  transport : ConnectTransport,
+) -> Result[Int64, String] {
+  let now = (transport.now_ms)()
+  self.machine.begin_connect(now)
+  let resp = (transport.fetch)(slack_connections_open_request(self.base_url, self.app_token))
+  let ws_url = match parse_slack_api_response("apps.connections.open", resp) {
+    SlackApiOutcome::Ok(j) => {
+      let u = json_str_field(j, "url")
+      if u == "" {
+        self.machine.on_close(now, Some("slack gave no socket url"))
+        return Err("slack gave no socket url")
+      }
+      u
+    }
+    SlackApiOutcome::RateLimited(sec) => {
+      let msg = "slack apps.connections.open: rate_limited (" + sec.to_string() + "s)"
+      self.machine.on_close(now, Some(msg))
+      return Err(msg)
+    }
+    SlackApiOutcome::ApiError(e) => {
+      self.machine.on_close(now, Some(e))
+      return Err(e)
+    }
+  }
+  match (transport.ws_open)(WsOpenRequest::{ url: ws_url, headers: [], timeout_ms: self.machine.policy.stale_ms }) {
+    Ok(h) => {
+      self.ws_handle = Some(h)
+      self.machine.on_open((transport.now_ms)())
+      Ok(h)
+    }
+    Err(e) => {
+      self.machine.on_close((transport.now_ms)(), Some(e))
+      Err(e)
+    }
+  }
+}
+
+pub enum SlackStep {
+  NoOp
+  HelloReceived
+  ReconnectRequested(String)
+  /// `(envelope_id, event)` — caller MUST call `ack(transport, envelope_id)` after handling.
+  Event(String, ChatEvent)
+  /// `(envelope_id, payload)` — `block_actions`, `view_submission`, `block_suggestion`.
+  Interactive(String, base_codec::Json)
+  /// `(envelope_id, payload)` — `/sf` etc.
+  SlashCommand(String, base_codec::Json)
+  /// `(envelope_id, dedupe_key)` — duplicate event; caller may ACK to stop Slack retries.
+  DuplicateIgnored(String, String)
+  /// `(envelope_id)` — ignored event subtype; caller may ACK immediately.
+  IgnoredEnvelope(String)
+  Closed(Option[String])
+}
+
+/// Decodes a single incoming WebSocket frame WITHOUT prematurely ACKing it
+/// (strict at-least-once semantics: caller ACKs via `ack()` after handling).
+pub fn SlackConnector::handle_frame(
+  self : SlackConnector,
+  transport : ConnectTransport,
+  frame : WsFrame,
+) -> SlackStep {
+  let now = (transport.now_ms)()
+  self.machine.on_heard(now)
+  match frame {
+    WsFrame::Ping => SlackStep::NoOp
+    WsFrame::Pong => SlackStep::NoOp
+    WsFrame::Binary(_) => SlackStep::NoOp
+    WsFrame::Close(_, reason) => {
+      match self.ws_handle {
+        Some(h) => {
+          (transport.ws_close)(h)
+          self.ws_handle = None
+        }
+        None => {}
+      }
+      self.pending_dedupe = Map::new()
+      let err = if reason != "" { Some(reason) } else { None }
+      self.machine.on_close(now, err)
+      SlackStep::Closed(err)
+    }
+    WsFrame::Text(raw) => {
+      let env = match decode_slack_envelope(raw) {
+        Some(e) => e
+        None => return SlackStep::NoOp
+      }
+      match env.kind {
+        SlackEnvelopeKind::Hello => SlackStep::HelloReceived
+        SlackEnvelopeKind::Disconnect(reason) => {
+          match self.ws_handle {
+            Some(h) => {
+              (transport.ws_close)(h)
+              self.ws_handle = None
+            }
+            None => {}
+          }
+          self.pending_dedupe = Map::new()
+          self.machine.on_close(now, None)
+          SlackStep::ReconnectRequested(reason)
+        }
+        SlackEnvelopeKind::EventsApi(payload) => {
+          let inner = match base_codec::json_get(payload, "event") {
+            Some(ev) => ev
+            None => base_codec::json_null()
+          }
+          match slack_to_event(inner, self.bot_user_id, self.bot_id) {
+            None => SlackStep::IgnoredEnvelope(env.envelope_id)
+            Some(ev) => {
+              let dedupe_key = match ev {
+                ChatEvent::Message(m) => "slack:" + m.channel + "/" + m.thread_ts + "#" + m.ts
+                ChatEvent::OwnNotice(m) => "slack:own:" + m.channel + "/" + m.thread_ts + "#" + m.ts
+                ChatEvent::Changed(ch, tts, ts, _) => "slack:chg:" + ch + "/" + tts + "#" + ts
+                ChatEvent::Stop(ch, tts, ts, _) => "slack:stop:" + ch + "/" + tts + "#" + ts
+                ChatEvent::LoginCode(ch, tts, ts, _, _) => "slack:login:" + ch + "/" + tts + "#" + ts
+              }
+              if self.dedupe.is_duplicate(dedupe_key, now) {
+                return SlackStep::DuplicateIgnored(env.envelope_id, dedupe_key)
+              }
+              if env.envelope_id != "" {
+                self.pending_dedupe.set(env.envelope_id, dedupe_key)
+              }
+              SlackStep::Event(env.envelope_id, ev)
+            }
+          }
+        }
+        SlackEnvelopeKind::Interactive(payload) => SlackStep::Interactive(env.envelope_id, payload)
+        SlackEnvelopeKind::SlashCommands(payload) => SlackStep::SlashCommand(env.envelope_id, payload)
+        SlackEnvelopeKind::Unknown(_) => SlackStep::NoOp
+      }
+    }
+  }
+}
+
+/// Tracks resumable multi-part post progress so a 429 retry never re-sends
+/// already-posted message parts or re-uploads already-uploaded files.
+pub struct SlackPostProgress {
+  pub mut uploaded : Array[(String, String)]
+  pub mut uploaded_count : Int
+  pub mut sent_parts : Int
+  pub mut first_ts : String
+}
+
+pub fn SlackPostProgress::new() -> SlackPostProgress {
+  SlackPostProgress::{
+    uploaded: [],
+    uploaded_count: 0,
+    sent_parts: 0,
+    first_ts: "",
+  }
+}
+
+pub enum SlackPostOutcome {
+  Posted(String)
+  RateLimited(Int64)
+  Failed(String)
+}
+
+/// Resumable post step: uploads remaining files, sends remaining markdown-block
+/// parts (`blocks: [{"type":"markdown","text":...}]`), completes upload and
+/// resolves `sharedTs` from `files[0].shares` / `files.info`. On 429, records
+/// throttle backoff and returns `RateLimited(wait_ms)` with `progress` intact.
+pub fn SlackConnector::post_step(
+  self : SlackConnector,
+  transport : ConnectTransport,
+  thread : ThreadRef,
+  markdown : String,
+  files : Array[OutboundFile],
+  progress : SlackPostProgress,
+) -> SlackPostOutcome {
+  let now = (transport.now_ms)()
+  if !self.throttle.can_send(now) {
+    return SlackPostOutcome::RateLimited(self.throttle.wait_ms(now))
+  }
+
+  while progress.uploaded_count < files.length() {
+    let f = files[progress.uploaded_count]
+    let r1 = (transport.fetch)(
+      slack_get_upload_url_request(self.base_url, self.bot_token, f.name, f.bytes.length()),
+    )
+    let (up_url, file_id) = match parse_slack_api_response("files.getUploadURLExternal", r1) {
+      SlackApiOutcome::Ok(j) => {
+        self.throttle.on_success()
+        (json_str_field(j, "upload_url"), json_str_field(j, "file_id"))
+      }
+      SlackApiOutcome::RateLimited(sec) => {
+        match self.throttle.on_rate_limited(now, sec) {
+          Some(w) => return SlackPostOutcome::RateLimited(w)
+          None => return SlackPostOutcome::Failed("slack files.getUploadURLExternal: rate_limited (retries exhausted)")
+        }
+      }
+      SlackApiOutcome::ApiError(e) => return SlackPostOutcome::Failed(e)
+    }
+    if up_url == "" || file_id == "" {
+      return SlackPostOutcome::Failed("slack files.getUploadURLExternal: missing upload_url or file_id")
+    }
+    let r2 = (transport.fetch)(slack_upload_bytes_request(up_url, f.bytes))
+    match r2.error {
+      Some(e) => return SlackPostOutcome::Failed("slack upload of " + f.name + ": " + e)
+      None => {}
+    }
+    if r2.status < 200 || r2.status >= 300 {
+      return SlackPostOutcome::Failed("slack upload of " + f.name + ": HTTP " + r2.status.to_string())
+    }
+    progress.uploaded.push((file_id, f.name))
+    progress.uploaded_count = progress.uploaded_count + 1
+  }
+
+  let raw_parts = split_for_slack(markdown, SLACK_POST_SPLIT_LIMIT)
+  let parts : Array[String] = []
+  for i in 0..<raw_parts.length() {
+    if raw_parts[i] != "" {
+      parts.push(raw_parts[i])
+    }
+  }
+
+  while progress.sent_parts < parts.length() {
+    let part = parts[progress.sent_parts]
+    let resp = (transport.fetch)(
+      slack_post_message_request(self.base_url, self.bot_token, thread, part),
+    )
+    match parse_slack_api_response("chat.postMessage", resp) {
+      SlackApiOutcome::Ok(j) => {
+        self.throttle.on_success()
+        let ts = json_str_field(j, "ts")
+        if progress.first_ts == "" && ts != "" {
+          progress.first_ts = ts
+        }
+        progress.sent_parts = progress.sent_parts + 1
+      }
+      SlackApiOutcome::RateLimited(sec) => {
+        match self.throttle.on_rate_limited(now, sec) {
+          Some(w) => return SlackPostOutcome::RateLimited(w)
+          None => return SlackPostOutcome::Failed("slack chat.postMessage: rate_limited (retries exhausted)")
+        }
+      }
+      SlackApiOutcome::ApiError(e) => return SlackPostOutcome::Failed(e)
+    }
+  }
+
+  if progress.uploaded.length() > 0 {
+    let resp = (transport.fetch)(
+      slack_complete_upload_request(self.base_url, self.bot_token, progress.uploaded, thread),
+    )
+    let completed = match parse_slack_api_response("files.completeUploadExternal", resp) {
+      SlackApiOutcome::Ok(j) => {
+        self.throttle.on_success()
+        j
+      }
+      SlackApiOutcome::RateLimited(sec) => {
+        match self.throttle.on_rate_limited(now, sec) {
+          Some(w) => return SlackPostOutcome::RateLimited(w)
+          None => return SlackPostOutcome::Failed("slack files.completeUploadExternal: rate_limited (retries exhausted)")
+        }
+      }
+      SlackApiOutcome::ApiError(e) => return SlackPostOutcome::Failed(e)
+    }
+    if progress.first_ts == "" {
+      // Try `completed.files[0].shares.{public,private}[channel][0].ts`, else `files.info`.
+      match base_codec::json_get(completed, "files") {
+        Some(base_codec::Json::Arr(flist)) => {
+          if flist.length() > 0 {
+            match slack_file_shared_ts(flist[0], thread.channel) {
+              Some(ts) => progress.first_ts = ts
+              None => {}
+            }
+          }
+        }
+        _ => {}
+      }
+      if progress.first_ts == "" {
+        let info_resp = (transport.fetch)(
+          slack_api_request(self.base_url, self.bot_token, "files.info", [("file", progress.uploaded[0].0)]),
+        )
+        match parse_slack_api_response("files.info", info_resp) {
+          SlackApiOutcome::Ok(info_j) => {
+            match base_codec::json_get(info_j, "file") {
+              Some(fobj) => {
+                match slack_file_shared_ts(fobj, thread.channel) {
+                  Some(ts) => progress.first_ts = ts
+                  None => {}
+                }
+              }
+              None => {}
+            }
+          }
+          _ => {}
+        }
+      }
+      if progress.first_ts == "" {
+        progress.first_ts = (now / 1000.to_int64()).to_string() + ".000000"
+      }
+    }
+  }
+
+  if progress.first_ts == "" {
+    return SlackPostOutcome::Failed("nothing to post")
+  }
+  SlackPostOutcome::Posted(progress.first_ts)
+}
+
+pub fn SlackConnector::post_message(
+  self : SlackConnector,
+  transport : ConnectTransport,
+  thread : ThreadRef,
+  markdown : String,
+  files : Array[OutboundFile] = [],
+) -> Result[String, String] {
+  let progress = SlackPostProgress::new()
+  match self.post_step(transport, thread, markdown, files, progress) {
+    SlackPostOutcome::Posted(ts) => Ok(ts)
+    SlackPostOutcome::RateLimited(w) => Err("slack rate_limited; retry in " + w.to_string() + "ms")
+    SlackPostOutcome::Failed(e) => Err(e)
+  }
+}

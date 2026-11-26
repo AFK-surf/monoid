@@ -1,0 +1,912 @@
+// Deterministic unit tests & adversarial regression suite for `station_screens` (zero real sleeps).
+// Covers ScreenHub, platform input encoders, helper/grants/files, elevation,
+// drive path security & 64-bit positioned read/upload, signed grants, transfers, trash,
+// non-recursive FolderWatches, ThumbPort/PosterCache, streaming bounded ZIP, and prepareLocalLinks.
+
+import "base_codec"
+import "flate"
+import "station_ops"
+
+fn assert_true(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn assert_eq[T](a : T, b : T) -> Unit {
+  if a != b {
+    panic("assert_eq failed")
+  }
+}
+
+fn assert_eq_opt_int(a : Option[Int], b : Option[Int]) -> Unit {
+  match (a, b) {
+    (Some(x), Some(y)) => assert_eq(x, y)
+    (None, None) => ()
+    _ => panic("assert_eq_opt_int failed")
+  }
+}
+
+fn assert_eq_opt_str(a : Option[String], b : Option[String]) -> Unit {
+  match (a, b) {
+    (Some(x), Some(y)) => assert_eq(x, y)
+    (None, None) => ()
+    _ => panic("assert_eq_opt_str failed")
+  }
+}
+
+fn assert_eq_opt_i64(a : Option[Int64], b : Option[Int64]) -> Unit {
+  match (a, b) {
+    (Some(x), Some(y)) => assert_eq(x, y)
+    (None, None) => ()
+    _ => panic("assert_eq_opt_i64 failed")
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. ScreenHub: exclusive driving, takeover, hold, workspace isolation, memory bounds
+// ---------------------------------------------------------------------------
+
+test "screen_hub: exclusive driving, taken takeover, hold expiry, and gamepad/mic release" {
+  let hub = ScreenHub::new()
+  hub.add(RegisteredSource::desktop("desktop", "Mac Studio", 2560, 1440))
+
+  let d1 = hub.drive("desktop", "dev-a", false, "Alice", 1000.to_int64())
+  assert_true(d1.control)
+  assert_eq(d1.took.length(), 0)
+  let v1 = hub.join("desktop", JoinParams::human("Alice", true, "dev-a", false), 1000.to_int64())
+  assert_true(hub.record_view_gamepad("desktop", v1, 0))
+  assert_true(hub.set_view_watching_mic("desktop", v1, true))
+
+  let d2 = hub.drive("desktop", "dev-b", false, "Bob", 2000.to_int64())
+  assert_true(!d2.control)
+  assert_eq(d2.took.length(), 0)
+
+  let d3 = hub.drive("desktop", "dev-b", true, "Bob", 3000.to_int64())
+  assert_true(d3.control)
+  assert_eq(d3.took.length(), 1)
+  assert_eq(d3.took[0], "Alice")
+  let drained = hub.drain_events()
+  assert_eq(drained.length(), 1)
+  assert_eq(hub.events.length(), 0)
+  assert_eq(drained[0].kind, "watchOnly")
+  assert_eq(drained[0].released_gamepads.length(), 1)
+  assert_eq(drained[0].released_gamepads[0], 0)
+  assert_true(drained[0].stopped_mic)
+
+  let v2 = hub.join(
+    "desktop",
+    JoinParams::{
+      name: "Bob",
+      control: true,
+      device: Some("dev-b"),
+      self_id: None,
+      client: None,
+      app: None,
+      agent: false,
+      taken: false,
+      taken_token: d3.taken_token,
+      can_end: true,
+      can_watch_only: true,
+    },
+    3000.to_int64(),
+  )
+  assert_true(hub.has_taken_view("desktop"))
+  assert_eq(hub.yield_to_agent("desktop", "agent: chat", 4000.to_int64()), 0)
+
+  assert_true(hub.leave("desktop", v2))
+  assert_true(!hub.may_drive("desktop", "dev-a", false, 3000.to_int64() + 10_000.to_int64()))
+  assert_true(hub.may_drive("desktop", "dev-a", true, 3000.to_int64() + 10_000.to_int64()))
+  let _ = hub.drive("desktop", "dev-b", true, "Bob", 50_000.to_int64())
+  assert_true(hub.may_drive("desktop", "dev-a", false, 50_000.to_int64() + WATCH_HELD_MS + 1.to_int64()))
+  // P2-10: expired held entries are pruned automatically
+  assert_eq(hub.held_keys.length(), 0)
+}
+
+test "screen_hub: cross-workspace isolation, open_as_agent guards, and bounded events" {
+  let hub = ScreenHub::new()
+  hub.add(RegisteredSource::desktop("desktop", "Shared Host", 1920, 1080))
+  let tab_a = RegisteredSource::{
+    id: "browser:t1",
+    kind: ScreenKind::Browser,
+    title: "WS-A Login",
+    width: 1280,
+    height: 800,
+    access: None,
+    clipboard: [],
+    reveal: false,
+    peek: true,
+    farview: false,
+    closable: true,
+    user_tab: false,
+    sleeping: false,
+    site: Some("example.com"),
+    address: Some("https://example.com/login"),
+    open_url: true,
+    debug_install_folder: None,
+    poses: false,
+    model: None,
+    opened_by: Some("s1"),
+    since: None,
+    workspace: Some("ws-a"),
+  }
+  let user_tab = RegisteredSource::{
+    id: "browser:u_0123456789ab",
+    kind: ScreenKind::Browser,
+    title: "User Personal Tab",
+    width: 1280,
+    height: 800,
+    access: None,
+    clipboard: [],
+    reveal: false,
+    peek: true,
+    farview: false,
+    closable: true,
+    user_tab: true,
+    sleeping: false,
+    site: Some("mail.example.com"),
+    address: None,
+    open_url: true,
+    debug_install_folder: None,
+    poses: false,
+    model: None,
+    opened_by: None,
+    since: None,
+    workspace: None,
+  }
+  hub.add(tab_a)
+  hub.add(user_tab)
+
+  assert_eq(hub.list_for_workspace(Some("ws-a")).length(), 3)
+  assert_eq(hub.list_for_workspace(Some("ws-b")).length(), 2)
+  assert_true(hub.get_for_workspace("browser:t1", Some("ws-b")) is None)
+  assert_true(!(hub.get_for_workspace("browser:t1", Some("ws-a")) is None))
+
+  match hub.open_as_agent("browser:u_0123456789ab", ViewOptions::default([Codec::H264]), "agent: test", true, Some("ws-a"), 100.to_int64()) {
+    Err(r) => {
+      assert_eq(r.status, 403)
+      assert_eq(r.key, "station.screen.userOnly")
+    }
+    Ok(_) => assert_true(false)
+  }
+
+  match hub.open_as_agent("desktop", ViewOptions::default([Codec::H264]), "agent: test", true, Some("ws-a"), 100.to_int64()) {
+    Ok((_, safe_opts)) => {
+      assert_true(safe_opts.agent)
+      assert_true(!may_use_privileged_screen_service(safe_opts))
+    }
+    Err(_) => assert_true(false)
+  }
+
+  // P2-10 & P2-4: events queue stays bounded at HUB_EVENTS_MAX AND never drops critical gamepad/mic release events
+  let crit_vid = hub.join("desktop", JoinParams::human("Gamer", true, "dev-crit", false), 0.to_int64())
+  assert_true(hub.record_view_gamepad("desktop", crit_vid, 2))
+  assert_true(hub.set_view_watching_mic("desktop", crit_vid, true))
+  let _ = hub.end_view("desktop", crit_vid, "admin")
+  for i in 0..<(HUB_EVENTS_MAX + 10) {
+    let vid = hub.join("desktop", JoinParams::human("U", true, "d-" + i.to_string(), false), (i + 1).to_int64())
+    let _ = hub.end_view("desktop", vid, "admin")
+  }
+  assert_eq(hub.events.length(), HUB_EVENTS_MAX)
+  let drained_all = hub.drain_events()
+  assert_eq(drained_all.length(), HUB_EVENTS_MAX)
+  // First event must still be the critical gamepad/mic release event!
+  assert_eq(drained_all[0].view_id, crit_vid)
+  assert_eq(drained_all[0].released_gamepads.length(), 1)
+  assert_true(drained_all[0].stopped_mic)
+  assert_eq(hub.events.length(), 0)
+}
+
+// ---------------------------------------------------------------------------
+// 2. Sources: clipboard privacy, cursor shape, region, input encoders, ps_quote
+// ---------------------------------------------------------------------------
+
+test "sources: clipboard privacy never downgrades, cursor shape & region validation" {
+  let pub_clip = Clip::{ payload: ClipPayload::Text("hello"), privacy: None }
+  let sec_clip = Clip::{ payload: ClipPayload::Text("s3cr3t"), privacy: Some(ClipPrivacy::Concealed) }
+  assert_true(clip_fits(pub_clip))
+  assert_true(clip_fits(sec_clip))
+  match clip_wire_decision(pub_clip, false) {
+    Some(d) => assert_eq(d.kind, 4)
+    None => assert_true(false)
+  }
+  assert_true(clip_wire_decision(sec_clip, false) is None)
+  match clip_wire_decision(sec_clip, true) {
+    Some(d) => {
+      assert_eq(d.kind, 9)
+      assert_eq(d.privacy_bits, 2)
+    }
+    None => assert_true(false)
+  }
+
+  assert_true(region_of(0.0, 0.0, 0.99, 0.99) is None)
+  match region_of(0.25, 0.25, 0.5, 0.5) {
+    Some(r) => {
+      assert_eq(r.w, 0.5)
+      assert_eq(r.h, 0.5)
+    }
+    None => assert_true(false)
+  }
+
+  let payload = Bytes::new(28)
+  payload[0] = 32 as Byte
+  payload[1] = 32 as Byte
+  payload[2] = 4 as Byte
+  payload[3] = 4 as Byte
+  let hex_id = "0123456789abcdef".to_bytes()
+  for i in 0..<16 { payload[4 + i] = hex_id[i] }
+  let sig : Array[Int] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+  for i in 0..<8 { payload[20 + i] = sig[i] as Byte }
+  match cursor_image_shape(payload) {
+    Some(s) => assert_eq(s, "custom:0123456789abcdef")
+    None => assert_true(false)
+  }
+  assert_true(is_valid_cursor_shape("custom:0123456789abcdef"))
+  assert_true(is_valid_cursor_shape("pointer"))
+  assert_true(!is_valid_cursor_shape("INVALID"))
+  assert_true(is_user_tab_id("u_0123456789ab"))
+  assert_true(!is_user_tab_id("u_short"))
+
+  // Nit-3: ps_quote doubles Unicode single-quote delimiters U+2018..U+201B
+  let quoted = ask_screen_service_script("C:\\a\u{2019}b\\svc.exe", true, None, true)
+  assert_true(quoted.contains("a\u{2019}\u{2019}b"))
+}
+
+test "sources: MacInput, WinInput, LinuxInput, SimInput, AndroidInput encoding" {
+  let mac = MacInput::new()
+  let m1 = mac.ops(ScreenInput::Pointer(PointerKind::Down, 0.5, 0.5, 1, None, None, false), 100.to_int64())
+  assert_eq(m1.length(), 1)
+  let _ = mac.ops(ScreenInput::Pointer(PointerKind::Up, 0.5, 0.5, 0, None, None, false), 150.to_int64())
+  let m2 = mac.ops(ScreenInput::Pointer(PointerKind::Down, 0.5, 0.5, 1, None, None, false), 250.to_int64())
+  match m2[0] {
+    MacOp::Mouse(kind, _, _, _, _, clicks, _, _, _, _) => {
+      assert_eq(kind, "down")
+      assert_eq(clicks, 2)
+    }
+    _ => assert_true(false)
+  }
+  let _ = mac.ops(ScreenInput::Gamepad(GamepadState::{ index: 1, connected: true, buttons: 1, lx: 0.0, ly: 0.0, rx: 0.0, ry: 0.0, lt: 0.0, rt: 0.0 }), 300.to_int64())
+  let rel_ops = mac.release()
+  assert_eq(rel_ops.length(), 2)
+
+  let win = WinInput::new()
+  let w_ops = win.ops(ScreenInput::Key(KeyKind::Down, "c", "KeyC", 2))
+  assert_eq(w_ops.length(), 3)
+  let w_wh = win.ops(ScreenInput::Wheel(0.5, 0.5, 10.0, -10.0))
+  assert_eq(w_wh.length(), 1)
+
+  assert_eq_opt_int(evdev_of("KeyQ"), Some(16))
+  assert_eq_opt_int(x11_keycode_of("KeyQ"), Some(24))
+  let lin = LinuxInput::new()
+  let l_ops = lin.ops(ScreenInput::Key(KeyKind::Down, "q", "KeyQ", 0))
+  assert_eq(l_ops.length(), 1)
+
+  let sim = SimInput::new()
+  let s1 = sim.ops(ScreenInput::Pointer(PointerKind::Down, 0.5, 0.98, 1, None, None, false))
+  match s1[0] {
+    SimOp::Touch(SimTouchKind::Begin, _, _, edge) => assert_eq(edge, 3)
+    _ => assert_true(false)
+  }
+  let s2 = sim.ops(ScreenInput::Key(KeyKind::Down, "h", "KeyH", 12))
+  match s2[0] {
+    SimOp::Button(name) => assert_eq(name, "home")
+    _ => assert_true(false)
+  }
+  let s3 = sim.ops(ScreenInput::Text("你好"))
+  match s3[0] {
+    SimOp::Paste(txt) => assert_eq(txt, "你好")
+    _ => assert_true(false)
+  }
+
+  let andr = AndroidInput::new()
+  let msgs = andr.messages(ScreenInput::Pointer(PointerKind::Down, 0.5, 0.5, 1, None, None, false), 1080, 2400)
+  assert_eq(msgs.length(), 1)
+  assert_eq(msgs[0].length(), 32)
+  assert_eq(msgs[0][0].to_int() & 0xFF, 2)
+  assert_eq(android_bitrate_of(1080), 5_000_000)
+
+  let annexb = Bytes::new(22)
+  annexb[3] = 1 as Byte; annexb[4] = 0x67 as Byte; annexb[5] = 0x42 as Byte; annexb[6] = 0x00 as Byte; annexb[7] = 0x1e as Byte
+  annexb[11] = 1 as Byte; annexb[12] = 0x68 as Byte; annexb[13] = 0xce as Byte; annexb[14] = 0x38 as Byte
+  annexb[18] = 1 as Byte; annexb[19] = 0x65 as Byte; annexb[20] = 0x88 as Byte; annexb[21] = 0x84 as Byte
+  let nals = nals_of(annexb)
+  assert_eq(nals.length(), 3)
+  match avcc_config_of(nals) {
+    Some(cfg) => {
+      assert_eq(cfg[0].to_int() & 0xFF, 1)
+      assert_eq(cfg[1].to_int() & 0xFF, 0x42)
+    }
+    None => assert_true(false)
+  }
+  let avcc = avcc_of(nals)
+  assert_eq(avcc.length(), 7)
+}
+
+test "sources: LinuxGamepad, LinuxMic epoch gating, and ScreenService UAC flow" {
+  let gp = LinuxGamepadState::new(false, false)
+  let pad = GamepadState::{ index: 0, connected: true, buttons: 1, lx: 0.0, ly: 0.0, rx: 0.0, ry: 0.0, lt: 0.0, rt: 0.0 }
+  assert_true(gp.route_input(pad) is None)
+  gp.allow_mouse = true
+  assert_eq_opt_str(gp.route_input(pad), Some("mouse"))
+  assert_eq(gp.release_all().length(), 1)
+
+  let mic = LinuxMicState::new(true)
+  assert_true(!mic.feed(1920, 0))
+  let _ = mic.start_watch()
+  assert_true(!mic.feed(1920, 0))
+  let st1 = mic.set_demand(true, true)
+  assert_eq(st1.epoch, 1)
+  assert_true(mic.feed(1920, 1))
+  assert_true(!mic.feed(1920, 0))
+  assert_true(!mic.feed(1921, 1))
+
+  let svc = ScreenServiceState::new()
+  svc.set_probe(ScreenServiceProbe::{
+    installed: false, running: false, connected: false,
+    elevated: false, admin: true, user_sid: Some("S-1-5-21-123"), binary: Some("C:\\stillfail-screen-svc.exe"),
+  })
+  match svc.begin_change(true) {
+    Ok(script) => assert_true(script.contains("-Verb RunAs"))
+    Err(_) => assert_true(false)
+  }
+  assert_true(svc.begin_change(false) is Err(_))
+  svc.finish_change(Some(4), false, ScreenServiceProbe::{
+    installed: false, running: false, connected: false,
+    elevated: false, admin: true, user_sid: Some("S-1-5-21-123"), binary: Some("C:\\stillfail-screen-svc.exe"),
+  })
+  match svc.view(true).failed {
+    Some(ServiceFailure::Declined) => assert_true(true)
+    _ => assert_true(false)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3. Helper & Elevation
+// ---------------------------------------------------------------------------
+
+test "helper_elevation: localNetworkName, revival throttle, grants cooldown, and elevation lifecycle" {
+  assert_eq(local_network_name("/Applications/Monoid.app/Contents/MacOS/node"), "Monoid")
+  assert_eq(local_network_name("/usr/local/bin/node"), "stillfail-station")
+  // Nit-2: empty name before first `.app/Contents/` continues searching like TS regex
+  assert_eq(local_network_name("/.app/Contents/Nested/Real.app/Contents/MacOS/node"), "Real")
+  assert_eq(without_addresses("NSError 0x7a68c38ff0 failed at 0x12ab"), "NSError 0x… failed at 0x…")
+
+  let app = HelperAppState::new("/app/Helper.app", "/data/helper", Some("tok"))
+  for i in 0..<5 {
+    assert_true(app.should_revive((1000 + i * 1000).to_int64()))
+  }
+  assert_true(!app.should_revive(6000.to_int64()))
+
+  let grants = HelperGrantsState::new(true, "/Applications/still.fail.app/Contents/Resources/node")
+  let st = HelperStatus::{
+    capture: true, control: false, responsible_pid: None, responsible_path: None,
+    responsible_name: None, display_width: 1920, display_height: 1080,
+    asking: false, asked: [], files: Map::new(),
+  }
+  grants.learn_status(st, 10_000.to_int64())
+  grants.learn_lan(Some(GrantState::Denied))
+  match grants.view() {
+    Some(v) => {
+      assert_eq_opt_str(v.local_network_name, Some("still.fail"))
+      assert_true(!v.screen)
+    }
+    None => assert_true(false)
+  }
+  match grants.request_grant(GrantId::Control, false, None, 11_000.to_int64()) {
+    Ok((WindowState::Up, _)) => assert_true(true)
+    _ => assert_true(false)
+  }
+  match grants.request_grant(GrantId::Control, false, None, 12_000.to_int64()) {
+    Ok((WindowState::Closed, _)) => assert_true(true)
+    _ => assert_true(false)
+  }
+  match grants.request_grant(GrantId::Control, true, None, 12_000.to_int64()) {
+    Ok((WindowState::Up, _)) => assert_true(true)
+    _ => assert_true(false)
+  }
+  match grants.request_grant(GrantId::Removable, false, None, 13_000.to_int64()) {
+    Err(r) => assert_eq(r.key, "station.permissions.noDisk")
+    Ok(_) => assert_true(false)
+  }
+
+  let bom_json = "\u{FEFF}{\"want\":true,\"at\":1000,\"step\":\"restarting\"}"
+  let parsed = parse_elevation_kept_json(bom_json)
+  assert_true(!(parsed is None))
+  let elev = ElevationState::new(false, true, true, false)
+  elev.kept = parsed
+  elev.reconcile_on_start(2000.to_int64())
+  match elev.view(true).failed {
+    Some(ElevationFailure::NotStarted) => assert_true(true)
+    _ => assert_true(false)
+  }
+  match elev.begin_change(true, "C:\\data\\run\\elevation-apply.ps1", 5000.to_int64()) {
+    Ok((_, script)) => assert_true(script.contains("-Verb RunAs"))
+    Err(_) => assert_true(false)
+  }
+  elev.on_prompt_exit(0, 6000.to_int64())
+  assert_true(!elev.check_apply_expiry(60_000.to_int64()))
+  assert_true(elev.check_apply_expiry(66_000.to_int64()))
+  match elev.view(true).failed {
+    Some(ElevationFailure::Error) => assert_true(true)
+    _ => assert_true(false)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 4. Drive: path security, P1-1 range read, P1-2 pwrite+sync, P2-6 64-bit offsets
+// ---------------------------------------------------------------------------
+
+test "drive: path traversal, Windows separators, symlink escape, and protected data refused" {
+  let mem = MemDriveFs::new()
+  mem.put_dir("/root")
+  mem.put_dir("/root/sub")
+  mem.put_dir("/secret")
+  mem.put_dir("/station-data")
+  mem.put_text("/root/hello.txt", "hi")
+  mem.put_text("/secret/key.txt", "topsecret")
+  mem.put_text("/station-data/config.json", "{}")
+  mem.put_symlink("/root/escape", "/secret/key.txt")
+  mem.put_symlink("/root/to-station", "/station-data/config.json")
+
+  let drv = Drive::new(mem.fs(), ["/root"], ["/station-data"], false, "/home/u", TrashKind::Freedesktop)
+
+  match drv.place("/root", "../secret/key.txt", false) {
+    Err(e) => assert_eq(drive_code_name(e.code), "path_escape")
+    Ok(_) => assert_true(false)
+  }
+  match drv.place("/root", "a\u{0000}b", false) {
+    Err(e) => assert_eq(drive_code_name(e.code), "path_escape")
+    Ok(_) => assert_true(false)
+  }
+  match drv.place("/root", "escape", false) {
+    Err(e) => assert_eq(drive_code_name(e.code), "path_escape")
+    Ok(_) => assert_true(false)
+  }
+  match drv.place("/root", "to-station", true) {
+    Err(e) => assert_eq(drive_code_name(e.code), "protected")
+    Ok(_) => assert_true(false)
+  }
+  let win_drv = Drive::new(mem.fs(), ["C:\\Users\\u\\docs"], [], true, "C:\\Users\\u", TrashKind::None)
+  match win_drv.place("C:\\Users\\u\\docs", "a\\b", false) {
+    Err(e) => assert_eq(drive_code_name(e.code), "path_escape")
+    Ok(_) => assert_true(false)
+  }
+  match win_drv.place("C:\\Users\\u\\docs", "foo:bar", false) {
+    Err(e) => assert_eq(drive_code_name(e.code), "path_escape")
+    Ok(_) => assert_true(false)
+  }
+
+  assert_eq_opt_str(protected_top("/Users/me/Documents/a.txt", "/Users/me", []), Some("/Users/me/Documents"))
+  assert_eq_opt_str(protected_top("/Users/me/Library/CloudStorage/iCloud", "/Users/me", []), None)
+  assert_eq_opt_str(protected_top("/Volumes/USB1/file", "/Users/me", []), Some("/Volumes/USB1"))
+}
+
+test "adversarial P1-1 & P1-2 & P2-6: range-only read (3 MiB -> <=16B), zero-read pwrite+sync upload, >2GiB 64-bit offsets" {
+  let mem = MemDriveFs::new()
+  mem.put_dir("/root")
+  // P1-1: 3 MiB file, read 16 bytes at offset 1_000_000 -> underlying bytes read MUST be <= 16B
+  let three_mib = (3 * 1024 * 1024).to_int64()
+  mem.put_sparse_file("/root/big.bin", three_mib, [(1_000_000.to_int64(), "0123456789abcdef".to_bytes())])
+  let drv = Drive::new(mem.fs(), ["/root"], [], false, "/home/u", TrashKind::Freedesktop)
+  match drv.read("/root", "big.bin", 1_000_000.to_int64(), 16, false) {
+    Ok((bytes, total, _, _)) => {
+      assert_eq(bytes.length(), 16)
+      assert_eq(station_ops::ops_bytes_to_str(bytes), "0123456789abcdef")
+      assert_eq(total, three_mib)
+      assert_true(mem.total_bytes_read <= 16.to_int64())
+    }
+    Err(_) => assert_true(false)
+  }
+
+  // P1-2: 4 x 1 KiB chunked upload -> ZERO reads of `.part` AND sync_file called before rename
+  let chunk = Bytes::new(1024)
+  for i in 0..<1024 { chunk[i] = 65 as Byte }
+  mem.part_bytes_read = 0.to_int64()
+  mem.sync_calls = 0
+  let total_4k = 4096.to_int64()
+  for k in 0..<4 {
+    let off = (k * 1024).to_int64()
+    match drv.upload("/root", "fourk.bin", "u4k", off, total_4k, chunk, false, false, (1000 + k).to_int64()) {
+      Ok(r) => {
+        assert_eq(r.have, off + 1024.to_int64())
+        if k < 3 { assert_true(r.entry is None) } else { assert_true(!(r.entry is None)) }
+      }
+      Err(_) => assert_true(false)
+    }
+  }
+  assert_eq(mem.part_bytes_read, 0.to_int64())
+  assert_true(mem.sync_calls >= 1)
+
+  // P2-6: 4.5 GiB (> 2 GiB / 4 GiB) Int64 offsets never truncate to 32-bit Int
+  let four_half_gib = 4608.to_int64() * 1024.to_int64() * 1024.to_int64()
+  let high_off = four_half_gib - 16.to_int64()
+  mem.put_sparse_file("/root/huge.bin", four_half_gib, [(high_off, "HIGH64BITOFFSET!".to_bytes())])
+  match drv.read("/root", "huge.bin", high_off, 16, false) {
+    Ok((bytes, total, _, _)) => {
+      assert_eq(total, four_half_gib)
+      assert_eq(station_ops::ops_bytes_to_str(bytes), "HIGH64BITOFFSET!")
+    }
+    Err(_) => assert_true(false)
+  }
+  // Upload at 4.5 GiB offset: pre-seed `.part` logical size to `high_off` and upload final 16 bytes
+  mem.put_sparse_file("/root/.stillfail-up-uhuge.part", high_off, [])
+  match drv.upload("/root", "huge_out.bin", "uhuge", high_off, four_half_gib, "FINAL16BYTES64!!".to_bytes(), false, false, 2000.to_int64()) {
+    Ok(r) => {
+      assert_eq(r.have, four_half_gib)
+      assert_true(!(r.entry is None))
+    }
+    Err(_) => assert_true(false)
+  }
+}
+
+test "adversarial P1-3 & P1-4 & P2-12: streaming ZIP quota abort, Windows Zip-Slip prevention, deterministic sort & DOS tz" {
+  // P1-3: 2 MiB file with max_bytes=1024 -> aborts mid-stream without reading full 2 MiB (even if stat lies!)
+  let mem = MemDriveFs::new()
+  mem.put_dir("/root")
+  mem.put_dir("/root/pkg")
+  let two_mib = (2 * 1024 * 1024).to_int64()
+  mem.put_sparse_file("/root/pkg/huge.bin", two_mib, [])
+  let idx = mem.find_idx("/root/pkg/huge.bin")
+  // Forge stat size to 512 so pre-check passes and streaming chunk reader MUST enforce quota!
+  mem.entries[idx].reported_size = Some(512.to_int64())
+  mem.total_bytes_read = 0.to_int64()
+  match zip_folder_to(mem.fs(), "/root/pkg", "/root/out.zip", 1024.to_int64(), false, 0, fn(_p, _n) { false }) {
+    Err(e) => {
+      assert_eq(drive_code_name(e.code), "too_large")
+      assert_true(mem.total_bytes_read <= 1025.to_int64())
+      assert_true(!mem.fs().exists("/root/out.zip"))
+    }
+    Ok(_) => assert_true(false)
+  }
+
+  // P1-4: Windows path `C:\Users\u\pkg` -> first entry MUST be `pkg/`, no `\` or `C:`
+  let wmem = MemDriveFs::new()
+  wmem.put_dir("C:\\Users\\u\\pkg")
+  wmem.put_text("C:\\Users\\u\\pkg\\b.txt", "beta")
+  wmem.put_text("C:\\Users\\u\\pkg\\a.txt", "alpha")
+  match zip_folder_to(wmem.fs(), "C:\\Users\\u\\pkg", "C:\\Users\\u\\out.zip", (1024 * 1024).to_int64(), true, 0, fn(_p, _n) { false }) {
+    Ok(sz) => {
+      assert_true(sz > 30.to_int64())
+      let raw = match (wmem.fs().read_bytes)("C:\\Users\\u\\out.zip") {
+        Ok(b) => b
+        Err(_) => { assert_true(false); Bytes::new(0) }
+      }
+      // Local header 0 filename starts at offset 30, length at offset 26
+      let name_len = (raw[26].to_int() & 0xFF) | ((raw[27].to_int() & 0xFF) << 8)
+      let first_name = station_ops::ops_bytes_to_str(station_ops::ops_slice_bytes(raw, 30, name_len))
+      if first_name != "pkg/" { panic("first_name=" + first_name) }
+      // P2-12: deterministic sort puts `pkg/a.txt` before `pkg/b.txt`
+      let second_off = 30 + name_len
+      let n2_len = (raw[second_off + 26].to_int() & 0xFF) | ((raw[second_off + 27].to_int() & 0xFF) << 8)
+      let second_name = station_ops::ops_bytes_to_str(station_ops::ops_slice_bytes(raw, second_off + 30, n2_len))
+      if second_name != "pkg/a.txt" { panic("second_name=" + second_name) }
+    }
+    Err(_) => assert_true(false)
+  }
+
+  // P2-3: Unix filename with colon (`10:30 notes.txt`) is preserved intact (never silently dropped)
+  let umem = MemDriveFs::new()
+  umem.put_dir("/root")
+  umem.put_dir("/root/notes")
+  umem.put_text("/root/notes/10:30 notes.txt", "meeting")
+  match zip_folder_to(umem.fs(), "/root/notes", "/root/notes.zip", (1024 * 1024).to_int64(), false, 0, fn(_p, _n) { false }) {
+    Ok(sz) => {
+      assert_true(sz > 30.to_int64())
+      let raw = match (umem.fs().read_bytes)("/root/notes.zip") {
+        Ok(b) => b
+        Err(_) => { assert_true(false); Bytes::new(0) }
+      }
+      let n1_len = (raw[26].to_int() & 0xFF) | ((raw[27].to_int() & 0xFF) << 8)
+      let off2 = 30 + n1_len
+      let n2_len = (raw[off2 + 26].to_int() & 0xFF) | ((raw[off2 + 27].to_int() & 0xFF) << 8)
+      let name2 = station_ops::ops_bytes_to_str(station_ops::ops_slice_bytes(raw, off2 + 30, n2_len))
+      assert_eq(name2, "notes/10:30 notes.txt")
+    }
+    Err(_) => assert_true(false)
+  }
+
+  // P2-4: max_bytes exceeding ZIP32 4 GiB limit rejected cleanly
+  match zip_folder_to(umem.fs(), "/root/notes", "/root/too_big.zip", ZIP32_MAX_BYTES + 1.to_int64(), false, 0, fn(_p, _n) { false }) {
+    Err(e) => assert_eq(drive_code_name(e.code), "too_large")
+    Ok(_) => assert_true(false)
+  }
+
+  // P2-12: DOS timezone offset (+480 min = +8h) shifts DOS hour field
+  let ts_utc_ms = 1700006400.to_int64() * 1000.to_int64() // 2023-11-15T00:00:00Z
+  let (t_utc, _) = dos_datetime(ts_utc_ms, 0)
+  let (t_cst, _) = dos_datetime(ts_utc_ms, 480) // +8h -> 08:00:00
+  assert_eq((t_utc >> 11) & 0x1f, 0)
+  assert_eq((t_cst >> 11) & 0x1f, 8)
+}
+
+test "drive: signed grants + grant_key, trash, FolderWatches (P2-9 changed + LRU + error keys), thumbs" {
+  let mem = MemDriveFs::new()
+  mem.put_dir("/root")
+  mem.put_dir("/data")
+  mem.put_dir("/home/u")
+  mem.put_text("/root/out.txt", "helloworld")
+  let drv = Drive::new(mem.fs(), ["/root"], [], false, "/home/u", TrashKind::Freedesktop)
+
+  // Nit-1: load_or_create_grant_key creates 32-byte mode 0600 key and reloads same key
+  let fixed_rng = fn(n : Int) -> Bytes {
+    let b = Bytes::new(n)
+    for i in 0..<n { b[i] = ((i + 1) & 0xFF) as Byte }
+    b
+  }
+  let key = match load_or_create_grant_key(mem.fs(), "/data", fixed_rng) {
+    Ok(k) => { assert_eq(k.length(), 32); k }
+    Err(_) => { assert_true(false); Bytes::new(0) }
+  }
+  match load_or_create_grant_key(mem.fs(), "/data", fixed_rng) {
+    Ok(k2) => assert_eq(k2.length(), 32)
+    Err(_) => assert_true(false)
+  }
+
+  let grant = DriveGrant::{
+    v: 1, workspace: "ws-1", home: true, by: "alice", anywhere: false,
+    root: "/root", path: "", names: ["out.txt"], move_op: false, expires: 5000.to_int64(),
+  }
+  let tok = sign_drive_grant(key, grant)
+  assert_true(verify_drive_grant(key, tok, Some("ws-1"), 2000.to_int64()) is Ok(_))
+  assert_true(verify_drive_grant(key, tok, Some("ws-2"), 2000.to_int64()) is Err(_))
+  assert_true(verify_drive_grant(key, tok, Some("ws-1"), 6000.to_int64()) is Err(_))
+  assert_true(grant_covers(grant, "out.txt"))
+  assert_true(!grant_covers(grant, "../secret"))
+
+  assert_true(drv.remove("/root", "out.txt", false, false, 1700000000.to_int64() * 1000.to_int64()) is Ok(_))
+  assert_true(mem.fs().exists("/home/u/.local/share/Trash/files/out.txt"))
+  assert_true(mem.fs().exists("/home/u/.local/share/Trash/info/out.txt.trashinfo"))
+
+  // P2-9: FolderWatches changed(), asked_at LRU eviction, and on_fs_event error returns keys
+  let opened : Array[String] = []
+  let closed : Array[Int] = []
+  let port = WatchPort::{
+    open_dir: fn(dir : String) -> Option[Int] {
+      opened.push(dir)
+      Some(opened.length())
+    },
+    close_handle: fn(hid : Int) -> Unit { closed.push(hid) },
+  }
+  let watches = FolderWatches::new(port, DRIVE_WATCH_HELD_MS, DRIVE_WATCH_KEPT_MS, 2)
+  let k1 = match watches.changed("/d1", "c1", 100.to_int64()) {
+    ChangedAskResult::Waiting(k) => k
+    _ => { assert_true(false); "" }
+  }
+  watches.finish_changed(k1, false, 110.to_int64())
+  let k2 = match watches.changed("/d2", "c2", 200.to_int64()) {
+    ChangedAskResult::Waiting(k) => k
+    _ => { assert_true(false); "" }
+  }
+  watches.finish_changed(k2, false, 210.to_int64())
+  // Touch /d1 at t=300 so /d2 becomes least-recently-asked!
+  let _ = watches.changed("/d1", "c1", 300.to_int64())
+  watches.finish_changed(k1, false, 310.to_int64())
+  // Opening /d3 evicts /d2 (handle 2), NOT /d1 (handle 1)
+  let k3 = match watches.follow("/d3", 400.to_int64()) {
+    Some(k) => k
+    None => { assert_true(false); "" }
+  }
+  assert_eq(closed.length(), 1)
+  assert_eq(closed[0], 2)
+  // Error on handle 3 returns `[k3]` and closes it
+  let err_keys = watches.on_fs_event(3, true, 500.to_int64())
+  assert_eq(err_keys.length(), 1)
+  assert_eq(err_keys[0], k3)
+  assert_eq(closed.length(), 2)
+  assert_eq(closed[1], 3)
+
+  match folder_to_watch(drv, "/root", "", false, true) {
+    Err(e) => assert_eq(drive_code_name(e.code), "permission")
+    Ok(_) => assert_true(false)
+  }
+
+  assert_eq(thumb_id_of("/a/b.png").length(), 32)
+  assert_true(thumb_wanted("photo.PNG"))
+  assert_true(!thumb_wanted("anim.gif"))
+  assert_true(poster_wanted("clip.MP4"))
+  let port_thumb = ThumbPort::{
+    thumbnail: fn(_img : String, dir : String, _boxed : Bool) -> Option[Thumbnail] {
+      Some(Thumbnail::{ path: dir + "/t.jpg", mime: "image/jpeg" })
+    },
+    preview: fn(_img : String, _dir : String) -> Option[Thumbnail] { None },
+    thumbhash: fn(_img : String, _dir : Option[String]) -> Option[ThumbHashInfo] { None },
+  }
+  assert_true(!(make_thumbnail(mem.fs(), Some(port_thumb), "/root/x.png", "/thumbs", None, false) is None))
+}
+
+// ---------------------------------------------------------------------------
+// 5. Transfers: P1-5 remote+move refusal, P2-7 NoTrash error, P2-8 UUID+cancel+JSON
+// ---------------------------------------------------------------------------
+
+test "adversarial P1-5 & P2-7 & P2-8: remote+move refused, NoTrash error propagated, UUID v4 & mid-transfer cancel" {
+  let mem = MemDriveFs::new()
+  mem.put_dir("/root")
+  mem.put_dir("/root/src")
+  mem.put_dir("/root/dst")
+  mem.put_text("/root/src/secret.txt", "do not delete me")
+  mem.put_text("/root/src/note.txt", "0123456789abcdef")
+  mem.put_text("/root/dst/note.txt", "existing")
+  let drv = Drive::new(mem.fs(), ["/root"], [], false, "/home/u", TrashKind::Freedesktop)
+  // P2-1: Deterministic RNG stub lives ONLY in tests; TransfersManager requires caller-injected rng.
+  let rng_ctr : Array[Int] = [1]
+  let test_rng = fn(n : Int) -> Bytes {
+    let b = Bytes::new(n)
+    let seed = rng_ctr[0]
+    rng_ctr[0] = seed + 1
+    for i in 0..<n { b[i] = ((seed * 31 + i * 17) & 0xFF) as Byte }
+    b
+  }
+  let mgr = TransfersManager::new(test_rng, 4)
+
+  // P1-5: remote + move on run_local MUST fail immediately & leave same-named local file intact!
+  let tr_remote = match mgr.start(
+    "alice", "ws-1", true, false, true,
+    TransferFrom::{ station: Some("other-station"), station_name: Some("Other"), grant: Some("g"), root: "/root", path: "src", names: ["secret.txt"] },
+    TransferTo::{ root: "/root", path: "dst" },
+    Map::new(), 1000.to_int64(),
+  ) {
+    Ok(t) => t
+    Err(_) => { assert_true(false); return }
+  }
+  // P2-8: ID is a 32-char UUID v4 hex string (version nibble '4' at index 12)
+  assert_eq(tr_remote.id.length(), 32)
+  assert_eq(tr_remote.id.code_unit_at(12) & 0xFF, 52) // '4'
+  match mgr.run_local(tr_remote.id, drv, 1050.to_int64()) {
+    Err(e) => {
+      assert_eq(drive_code_name(e.code), "invalid_request")
+      assert_eq(transfer_state_name(tr_remote.state), "failed")
+      assert_true(mem.fs().exists("/root/src/secret.txt"))
+    }
+    Ok(_) => assert_true(false)
+  }
+
+  // P2-8: mid-transfer cancellation stops after first chunk & preserves source
+  let conflicts_c : Map[String, ConflictPolicy] = Map::new()
+  conflicts_c.set("note.txt", ConflictPolicy::Keep)
+  let tr_cancel = match mgr.start(
+    "alice", "ws-1", true, false, true,
+    TransferFrom::{ station: None, station_name: None, grant: None, root: "/root", path: "src", names: ["note.txt"] },
+    TransferTo::{ root: "/root", path: "dst" },
+    conflicts_c, 1100.to_int64(),
+  ) {
+    Ok(t) => t
+    Err(_) => { assert_true(false); return }
+  }
+  let mut chunks_seen = 0
+  match mgr.run_local(
+    tr_cancel.id,
+    drv,
+    1150.to_int64(),
+    Some(fn(cur : Transfer) -> Unit {
+      chunks_seen = chunks_seen + 1
+      let _ = mgr.cancel("alice", cur.id, 1155.to_int64())
+    }),
+  ) {
+    Ok(stopped_tr) => {
+      assert_eq(chunks_seen, 1)
+      assert_eq(transfer_state_name(stopped_tr.state), "cancelled")
+      assert_true(mem.fs().exists("/root/src/note.txt"))
+    }
+    Err(_) => assert_true(false)
+  }
+
+  // P2-2: JSON persistence preserves `placed` and `conflicts` across restart -> retry -> done (move deletes source & keeps renamed dest)
+  tr_cancel.state = TransferState::Failed
+  let dumped = transfer_to_json(tr_cancel)
+  let restored = match transfer_from_json(dumped) {
+    Some(r) => {
+      assert_eq(r.id, tr_cancel.id)
+      assert_eq(r.at, 4.to_int64())
+      assert_eq_opt_str(r.placed.get("note.txt"), Some("note 2.txt"))
+      r
+    }
+    None => { assert_true(false); return }
+  }
+  let mgr2 = TransfersManager::new(test_rng, 4)
+  mgr2.restore(restored)
+  assert_true(mgr2.retry("alice", restored.id) is Ok(_))
+  match mgr2.run_local(restored.id, drv, 1180.to_int64()) {
+    Ok(done_tr) => {
+      assert_eq(transfer_state_name(done_tr.state), "done")
+      assert_true(mem.fs().exists("/root/dst/note 2.txt"))
+      assert_true(mem.fs().exists("/root/dst/note.txt"))
+      // Source was deleted by move after JSON restore + retry!
+      assert_true(!mem.fs().exists("/root/src/note.txt"))
+    }
+    Err(_) => assert_true(false)
+  }
+
+  // P2-7: NoTrash fallback delete error MUST mark transfer Failed (never Done)
+  mem.put_text("/root/src/locked.txt", "abcd")
+  mem.remove_fail_paths.push("/root/src/locked.txt")
+  let no_trash_drv = Drive::new(mem.fs(), ["/root"], [], false, "/home/u", TrashKind::None)
+  let tr_fail_del = match mgr.start(
+    "alice", "ws-1", true, false, true,
+    TransferFrom::{ station: None, station_name: None, grant: None, root: "/root", path: "src", names: ["locked.txt"] },
+    TransferTo::{ root: "/root", path: "dst" },
+    Map::new(), 1200.to_int64(),
+  ) {
+    Ok(t) => t
+    Err(_) => { assert_true(false); return }
+  }
+  match mgr.run_local(tr_fail_del.id, no_trash_drv, 1250.to_int64()) {
+    Err(e) => {
+      assert_eq(drive_code_name(e.code), "permission")
+      assert_eq(transfer_state_name(tr_fail_del.state), "failed")
+    }
+    Ok(_) => assert_true(false)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 6. prepareLocalLinks (P2-11: file://localhost, file:/abs, ?query#frag, <file:///...>)
+// ---------------------------------------------------------------------------
+
+test "prepare_local_links: workspace paths, file: URLs, <file:///...> autolink, code ranges & duplicate basename" {
+  let mem = MemDriveFs::new()
+  mem.put_dir("/workspace")
+  mem.put_dir("/workspace/sub")
+  mem.put_dir("/other")
+  mem.put_text("/workspace/report.pdf", "pdf")
+  mem.put_text("/workspace/sub/a.txt", "hello")
+  mem.put_text("/other/a.txt", "dup")
+
+  let md = "See [doc](report.pdf) and `[ignored](missing.pdf)`\n```\n[also](missing.pdf)\n```"
+  match prepare_local_links(md, [], "/workspace", false, mem.fs()) {
+    Ok(p) => {
+      assert_eq(p.paths.length(), 1)
+      assert_eq(p.paths[0], "/workspace/report.pdf")
+      assert_true(p.text.contains("[doc](report%2Epdf)"))
+      assert_true(p.text.contains("`[ignored](missing.pdf)`"))
+    }
+    Err(_) => assert_true(false)
+  }
+
+  // P2-11: file://localhost/...?q=1#frag and file:/abs both resolve cleanly
+  match prepare_local_links("[f1](file://localhost/workspace/report.pdf?v=1#top)", [], "/workspace", false, mem.fs()) {
+    Ok(p) => {
+      assert_eq(p.paths.length(), 1)
+      assert_eq(p.paths[0], "/workspace/report.pdf")
+    }
+    Err(_) => assert_true(false)
+  }
+  match prepare_local_links("[f2](file:/workspace/sub/a.txt#L1)", [], "/workspace", false, mem.fs()) {
+    Ok(p) => {
+      assert_eq(p.paths.length(), 1)
+      assert_eq(p.paths[0], "/workspace/sub/a.txt")
+    }
+    Err(_) => assert_true(false)
+  }
+  // Non-localhost file:// host refused
+  match prepare_local_links("[bad](file://remote-host/workspace/report.pdf)", [], "/workspace", false, mem.fs()) {
+    Err(msg) => assert_true(msg.contains("invalid local file link"))
+    Ok(_) => assert_true(false)
+  }
+  // P2-11: `<file:///...>` autolink refused as non-inline Markdown
+  match prepare_local_links("Open <file:///workspace/report.pdf>", [], "/workspace", false, mem.fs()) {
+    Err(msg) => assert_true(msg.contains("must use inline Markdown"))
+    Ok(_) => assert_true(false)
+  }
+
+  let md_ref = "See [r]\n\n[r]: report.pdf"
+  match prepare_local_links(md_ref, [], "/workspace", false, mem.fs()) {
+    Err(msg) => assert_true(msg.contains("must use inline Markdown"))
+    Ok(_) => assert_true(false)
+  }
+
+  let md_dup = "[a](/workspace/sub/a.txt) and [b](/other/a.txt)"
+  match prepare_local_links(md_dup, [], "/workspace", false, mem.fs()) {
+    Err(msg) => assert_true(msg.contains("attachments have the same name"))
+    Ok(_) => assert_true(false)
+  }
+
+  let md_line = "Check [file](/workspace/sub/a.txt:10:2) and [route](/api/v1/items)"
+  match prepare_local_links(md_line, [], "/workspace", false, mem.fs()) {
+    Ok(p) => {
+      assert_eq(p.paths.length(), 1)
+      assert_eq(p.paths[0], "/workspace/sub/a.txt")
+      assert_true(p.text.contains("[route](/api/v1/items)"))
+    }
+    Err(_) => assert_true(false)
+  }
+}

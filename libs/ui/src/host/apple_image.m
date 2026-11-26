@@ -3,6 +3,7 @@
 // resolution, and applies the EXIF orientation), into a premultiplied RGBA
 // Metal texture the renderer draws.
 #import "apple.h"
+#include "raw_premul.h"
 #import <ImageIO/ImageIO.h>
 #import <CoreGraphics/CoreGraphics.h>
 #include <TargetConditionals.h>
@@ -67,6 +68,11 @@ static void finish_rgba(int iid, void *px, int w, int h, int ow, int oh) {
       texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:w height:h mipmapped:NO];
   td.usage = MTLTextureUsageShaderRead;
   id<MTLTexture> tex = [mb_render_device() newTextureWithDescriptor:td];
+  if (!tex) {
+    free(px);
+    finish(iid, -1, 0, 0, 0, 0, nil);
+    return;
+  }
   [tex replaceRegion:MTLRegionMake2D(0, 0, w, h) mipmapLevel:0 withBytes:px bytesPerRow:bpr];
   free(px);
   finish(iid, 1, w, h, ow, oh, tex);
@@ -191,6 +197,57 @@ int32_t mb_host_image_load(moonbit_string_t s, int32_t max_px) {
   });
 }
 
+// Fast-path upload for MBRAWPRE premultiplied RGBA8888: zero PNG encode/decode and zero channel swizzle.
+// Once the 8-byte magic matches, malformed payloads fail directly without falling through to ImageIO.
+static BOOL decode_raw_premul(int iid, const uint8_t *d, size_t n, int max_px) {
+  if (!mb_raw_premul_is(d, n)) return NO;
+  int w = 0, h = 0;
+  if (!mb_raw_premul_parse(d, n, &w, &h)) {
+    finish(iid, -1, 0, 0, 0, 0, nil);
+    return YES;
+  }
+  id<MTLDevice> dev = mb_render_device();
+  if (!dev) {
+    finish(iid, -1, 0, 0, 0, 0, nil);
+    return YES;
+  }
+  int device_max = 8192;
+  if (@available(macOS 10.15, iOS 13.0, *)) {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    if ([dev supportsFamily:MTLGPUFamilyApple3] || [dev supportsFamily:MTLGPUFamilyMac2]) {
+      device_max = 16384;
+    }
+#pragma clang diagnostic pop
+  }
+  int tw = 0, th = 0;
+  mb_raw_premul_target_size(w, h, max_px, device_max, &tw, &th);
+  if (tw == w && th == h) {
+    MTLTextureDescriptor *td = [MTLTextureDescriptor
+        texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm width:(NSUInteger)w height:(NSUInteger)h mipmapped:NO];
+    td.usage = MTLTextureUsageShaderRead;
+    id<MTLTexture> tex = [dev newTextureWithDescriptor:td];
+    if (!tex) {
+      finish(iid, -1, 0, 0, 0, 0, nil);
+      return YES;
+    }
+    [tex replaceRegion:MTLRegionMake2D(0, 0, (NSUInteger)w, (NSUInteger)h)
+           mipmapLevel:0
+             withBytes:d + MB_RAW_PREMUL_HEADER_BYTES
+           bytesPerRow:(NSUInteger)w * 4];
+    finish(iid, 1, w, h, w, h, tex);
+    return YES;
+  }
+  uint8_t *px = (uint8_t *)malloc((size_t)tw * (size_t)th * 4);
+  if (!px) {
+    finish(iid, -1, 0, 0, 0, 0, nil);
+    return YES;
+  }
+  mb_raw_premul_downscale(d + MB_RAW_PREMUL_HEADER_BYTES, w, h, px, tw, th);
+  finish_rgba(iid, px, tw, th, w, h);
+  return YES;
+}
+
 // Fast-path upload for top-down 32-bit BI_RGB BGRA BMP (matching win_image.cpp):
 // skips ImageIO encode/decode and uploads straight into a BGRA8 Metal texture.
 static BOOL decode_raw_bgra(int iid, const uint8_t *d, size_t n, int max_px) {
@@ -230,7 +287,10 @@ int32_t mb_host_image_load_bytes(moonbit_bytes_t data, int32_t max_px) {
   NSData *d = [NSData dataWithBytes:data length:len];
   return start(^(int iid) {
     const uint8_t *bytes = (const uint8_t *)d.bytes;
-    BOOL handled = decode_raw_bgra(iid, bytes, len, max_px);
+    BOOL handled = decode_raw_premul(iid, bytes, len, max_px);
+    if (!handled) {
+      handled = decode_raw_bgra(iid, bytes, len, max_px);
+    }
     if (!handled) {
       decode(iid, CGImageSourceCreateWithData((__bridge CFDataRef)d, NULL), max_px);
     }

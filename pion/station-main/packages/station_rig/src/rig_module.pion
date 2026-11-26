@@ -1,0 +1,867 @@
+///| Pure Pion port of `station/src/rig/module.ts` (+ `RigSnapshotOrder` from `station/src/rigs/module.ts`):
+///| Rig request allowlist, `UNGATED` routing, workspace/peer/session/device freeze & immediate revoke,
+///| `rig.*` RPC dispatcher, device connection lifecycle, and monotonic `(boot, rev)` snapshot ordering.
+
+import "form"
+
+///| Maximum lines of command log returned to a station at once.
+pub let rig_log_max : Int = 200
+
+///| Explicit method allowlist for rig workspaces (prevents mixed-mode stations from exposing full-station RPCs).
+pub fn is_rig_allowed(method : String) -> Bool {
+  if method == "describe"
+  || method == "session.close"
+  || method == "session.size"
+  || method == "vault.run"
+  || method == "vault.capture"
+  || method == "vault.capabilities"
+  || method == "vault.revoke" {
+    return true
+  }
+  method.starts_with("rig.")
+  || method.starts_with("task.")
+  || method.starts_with("file.")
+  || method.starts_with("sync.")
+}
+
+///| Methods a station may call on a rig without a grant (strictly reading back, stopping, or cleaning up
+///| work a chat already started; never add new methods for convenience).
+pub fn is_ungated(method : String) -> Bool {
+  method == "describe"
+  || method == "task.get"
+  || method == "task.gets"
+  || method == "task.log"
+  || method == "task.list"
+  || method == "task.stop"
+  || method == "task.files"
+  || method == "task.collected"
+  || method == "task.mirrors"
+  || method == "task.clean"
+  || method == "file.get"
+  || method == "sync.changes"
+  || method == "session.close"
+  || method == "session.size"
+  || method == "vault.capabilities"
+  || method == "vault.revoke"
+}
+
+pub struct RigOwnerMeta {
+  pub owner_email : String
+  pub owner_name : String
+}
+
+pub struct JoinResult {
+  pub workspace : String
+  pub workspace_name : String
+  pub name : String
+}
+
+pub struct WiredConnection {
+  pub id : Int64
+  pub workspace : String
+  pub device : String
+  pub station : String
+  pub session : String
+  pub close : () -> Unit
+}
+
+pub struct DeviceRefused {
+  pub status : Int
+  pub code : RefusalCode
+  pub message : String
+}
+
+///| Wiring contracts for Wave 12 assembly:
+///| - `is_rig_workspace`: MUST return `false` when `cloud.removed()` is true (`station/src/rig/module.ts:171`).
+///| - `on_pending_lock`: MUST NOT overwrite an already pinned workspace lock or an already named pending lock
+///|   (FB-45 invariant: only write when `cloud.chain(ws) == null && pendingLock(ws) == null`).
+pub struct RigModuleDeps {
+  pub boot : String
+  pub now_ms : () -> Int64
+  pub is_rig_workspace : (String) -> Bool
+  pub owner_meta : (String) -> Option[RigOwnerMeta]
+  pub on_pending_lock : (String, String) -> Unit
+  pub on_full_pending : (String, Int64) -> Unit
+  pub on_join : (String, String, Option[String], String) -> Result[JoinResult, String]
+  pub reach_device : (Device) -> Result[() -> Unit, String]
+  pub stop_session : (String, String, String) -> Unit
+  pub running : () -> Array[RunningChat]
+}
+
+///| Workspace / peer / session / device freeze table for immediate access suspension.
+///| Lifecycle: in-memory process-local operational state (cleared on restart unless the host persists
+///| and replays active freeze scopes). While a scope is frozen, permission-tightening and read-only
+///| `rig.*` RPCs (`rig.revoke`, `rig.release`, `rig.describe`, `rig.proof`, `rig.settings` with
+///| `open: false`, `rig.device` with `removed: true`) remain exempt so revocations are never lost.
+pub struct FreezeTable {
+  workspaces : Map[String, Bool]
+  peers : Map[String, Bool]
+  sessions : Map[String, Bool]
+  devices : Map[String, Bool]
+}
+
+pub fn FreezeTable::new() -> FreezeTable {
+  FreezeTable::{
+    workspaces: Map::new(),
+    peers: Map::new(),
+    sessions: Map::new(),
+    devices: Map::new(),
+  }
+}
+
+fn peer_key(ws : String, peer : String) -> String {
+  ws + "\u{0000}" + peer
+}
+
+fn session_key(ws : String, peer : String, session : String) -> String {
+  ws + "\u{0000}" + peer + "\u{0000}" + session
+}
+
+fn device_key(ws : String, device : String) -> String {
+  ws + "\u{0000}" + device
+}
+
+pub struct Rig {
+  pub grants : RigGrants
+  pub commands : CommandLog
+  deps : RigModuleDeps
+  freeze : FreezeTable
+  wired : Array[WiredConnection]
+  mut next_wire_id : Int64
+  mut closed : Bool
+}
+
+pub fn Rig::new(grants : RigGrants, commands : CommandLog, deps : RigModuleDeps) -> Rig {
+  Rig::{
+    grants: grants,
+    commands: commands,
+    deps: deps,
+    freeze: FreezeTable::new(),
+    wired: [],
+    next_wire_id: 1.to_int64(),
+    closed: false,
+  }
+}
+
+pub fn Rig::boot(self : Rig) -> String {
+  self.deps.boot
+}
+
+pub fn Rig::wired_count(self : Rig) -> Int {
+  self.wired.length()
+}
+
+///| Freeze a workspace, stopping running tasks and cutting active device connections in it.
+pub fn Rig::freeze_workspace(self : Rig, ws : String) -> Unit {
+  self.freeze.workspaces.set(ws, true)
+  let running = (self.deps.running)()
+  let mut i = 0
+  while i < running.length() {
+    let r = running[i]
+    if r.workspace == ws {
+      (self.deps.stop_session)(ws, r.station, r.session)
+    }
+    i = i + 1
+  }
+  self.cut_matching(ws, None, None, None, true)
+}
+
+pub fn Rig::unfreeze_workspace(self : Rig, ws : String) -> Unit {
+  self.freeze.workspaces.remove(ws)
+}
+
+pub fn Rig::freeze_peer(self : Rig, ws : String, peer : String) -> Unit {
+  self.freeze.peers.set(peer_key(ws, peer), true)
+  let running = (self.deps.running)()
+  let mut i = 0
+  while i < running.length() {
+    let r = running[i]
+    if r.workspace == ws && r.station == peer {
+      (self.deps.stop_session)(ws, r.station, r.session)
+    }
+    i = i + 1
+  }
+  self.cut_matching(ws, None, Some(peer), None, true)
+}
+
+pub fn Rig::unfreeze_peer(self : Rig, ws : String, peer : String) -> Unit {
+  self.freeze.peers.remove(peer_key(ws, peer))
+}
+
+pub fn Rig::freeze_session(self : Rig, ws : String, peer : String, session : String) -> Unit {
+  self.freeze.sessions.set(session_key(ws, peer, session), true)
+  (self.deps.stop_session)(ws, peer, session)
+  self.cut_matching(ws, None, Some(peer), Some(session), true)
+}
+
+pub fn Rig::unfreeze_session(self : Rig, ws : String, peer : String, session : String) -> Unit {
+  self.freeze.sessions.remove(session_key(ws, peer, session))
+}
+
+pub fn Rig::freeze_device(self : Rig, ws : String, device : String) -> Unit {
+  self.freeze.devices.set(device_key(ws, device), true)
+  self.cut_matching(ws, Some(device), None, None, true)
+}
+
+pub fn Rig::unfreeze_device(self : Rig, ws : String, device : String) -> Unit {
+  self.freeze.devices.remove(device_key(ws, device))
+}
+
+pub fn Rig::is_frozen(
+  self : Rig,
+  ws : String,
+  peer : Option[String],
+  session : Option[String],
+  device : Option[String],
+) -> Bool {
+  if self.freeze.workspaces.contains(ws) {
+    return true
+  }
+  match peer {
+    Some(p) => {
+      if self.freeze.peers.contains(peer_key(ws, p)) {
+        return true
+      }
+      match session {
+        Some(s) => {
+          if self.freeze.sessions.contains(session_key(ws, p, s)) {
+            return true
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  match device {
+    Some(d) => {
+      if self.freeze.devices.contains(device_key(ws, d)) {
+        return true
+      }
+    }
+    None => ()
+  }
+  false
+}
+
+///| Re-check and cut active device connections matching the filter.
+pub fn Rig::cut_device(
+  self : Rig,
+  workspace : String,
+  device : String,
+  station : Option[String],
+  session : Option[String],
+) -> Unit {
+  self.cut_matching(workspace, Some(device), station, session, false)
+}
+
+fn Rig::cut_matching(
+  self : Rig,
+  workspace : String,
+  device : Option[String],
+  station : Option[String],
+  session : Option[String],
+  force : Bool,
+) -> Unit {
+  let kept : Array[WiredConnection] = []
+  let to_close : Array[() -> Unit] = []
+  let mut i = 0
+  while i < self.wired.length() {
+    let w = self.wired[i]
+    let ws_match = w.workspace == workspace
+    let dev_match = match device {
+      Some(d) => w.device == d
+      None => true
+    }
+    let st_match = match station {
+      Some(s) => w.station == s
+      None => true
+    }
+    let sess_match = match session {
+      Some(s) => w.session == s
+      None => true
+    }
+    if ws_match && dev_match && st_match && sess_match {
+      let still_allowed = if force {
+        false
+      } else {
+        !self.is_frozen(workspace, Some(w.station), Some(w.session), Some(w.device))
+        && match self.grants.device_refusal_detail(workspace, w.station, w.session, w.device, false) {
+          None => true
+          Some(_) => false
+        }
+      }
+      if still_allowed {
+        kept.push(w)
+      } else {
+        to_close.push(w.close)
+      }
+    } else {
+      kept.push(w)
+    }
+    i = i + 1
+  }
+  while self.wired.length() > 0 {
+    let _ = self.wired.pop()
+  }
+  let mut j = 0
+  while j < kept.length() {
+    self.wired.push(kept[j])
+    j = j + 1
+  }
+  let mut k = 0
+  while k < to_close.length() {
+    (to_close[k])()
+    k = k + 1
+  }
+}
+
+///| Connect a chat to an attached device on this rig (or probe authorization when `probe == true`).
+pub fn Rig::connect_device(
+  self : Rig,
+  peer : String,
+  workspace : String,
+  session : String,
+  device_id : String,
+  probe : Bool,
+) -> Result[Option[Int64], DeviceRefused] {
+  if self.grants.held() || self.closed {
+    return Err(DeviceRefused::{ status: 503, code: RefusalCode::Held, message: "the rig is stopping" })
+  }
+  if self.is_frozen(workspace, Some(peer), Some(session), Some(device_id)) {
+    return Err(DeviceRefused::{ status: 403, code: RefusalCode::Frozen, message: "access is frozen on this rig" })
+  }
+  match self.grants.device_refusal_detail(workspace, peer, session, device_id, !probe) {
+    Some(r) => {
+      let status = match r.code {
+        RefusalCode::NoDevice => 404
+        _ => 403
+      }
+      return Err(DeviceRefused::{ status: status, code: r.code, message: r.message })
+    }
+    None => ()
+  }
+  if probe {
+    return Ok(None)
+  }
+  let devs = self.grants.devices(workspace)
+  let mut found : Option[Device] = None
+  let mut i = 0
+  while i < devs.length() {
+    if devs[i].id == device_id {
+      found = Some(devs[i])
+      break
+    }
+    i = i + 1
+  }
+  let dev = match found {
+    Some(d) => d
+    None => return Err(DeviceRefused::{ status: 404, code: RefusalCode::NoDevice, message: "no such device on this rig" })
+  }
+  let close_fn = match (self.deps.reach_device)(dev) {
+    Ok(f) => f
+    Err(msg) => return Err(DeviceRefused::{ status: 502, code: RefusalCode::NoDevice, message: msg })
+  }
+  let wire_id = self.next_wire_id
+  self.next_wire_id = self.next_wire_id + 1.to_int64()
+  self.wired.push(WiredConnection::{
+    id: wire_id,
+    workspace: workspace,
+    device: device_id,
+    station: peer,
+    session: session,
+    close: close_fn,
+  })
+  self.commands.add(Command::{
+    at: (self.deps.now_ms)(),
+    workspace: Some(workspace),
+    station: peer,
+    session: session,
+    key: device_id,
+    name: dev.name,
+    command: device_kind_str(dev.kind) + " " + dev.target,
+    kind: CommandKind::Device,
+  })
+  Ok(Some(wire_id))
+}
+
+pub fn Rig::disconnect_wire(self : Rig, wire_id : Int64) -> Unit {
+  let kept : Array[WiredConnection] = []
+  let mut i = 0
+  while i < self.wired.length() {
+    if self.wired[i].id != wire_id {
+      kept.push(self.wired[i])
+    }
+    i = i + 1
+  }
+  while self.wired.length() > 0 {
+    let _ = self.wired.pop()
+  }
+  let mut j = 0
+  while j < kept.length() {
+    self.wired.push(kept[j])
+    j = j + 1
+  }
+}
+
+///| Why a station in `workspace` may not reach this rig's services now, or `None`.
+pub fn Rig::station_refusal(self : Rig, peer : String, workspace : String) -> Option[String] {
+  if self.grants.held() {
+    return Some("the rig is starting")
+  }
+  if self.is_frozen(workspace, Some(peer), None, None) {
+    return Some("access is frozen on this rig")
+  }
+  self.grants.station_refusal(workspace, peer)
+}
+
+///| Whether a `rig.*` RPC is permission-tightening or harmless read-only and therefore MUST remain
+///| allowed even when the workspace/peer/session is frozen (so revocations and lock-downs never drop).
+fn is_freeze_exempt_rig_rpc(method : String, entries : Array[(String, form::Json)]) -> Bool {
+  if method == "rig.revoke"
+  || method == "rig.release"
+  || method == "rig.describe"
+  || method == "rig.proof" {
+    return true
+  }
+  if method == "rig.settings" {
+    match form::json_obj_get(entries, "signed") {
+      Some(sv) => {
+        match parse_signed_settings(sv) {
+          Some(s) => return !s.body.open
+          None => return false
+        }
+      }
+      None => return false
+    }
+  }
+  if method == "rig.device" {
+    match form::json_obj_get(entries, "signed") {
+      Some(sv) => {
+        match parse_signed_device(sv) {
+          Some(s) => return s.body.removed
+          None => return false
+        }
+      }
+      None => return false
+    }
+  }
+  false
+}
+
+///| Enforce allowlist, handover hold, freeze state, `UNGATED` exemption, grant check, and command logging.
+pub fn Rig::guard_request(
+  self : Rig,
+  workspace : String,
+  peer : String,
+  request : form::Json,
+) -> Result[Unit, Refusal] {
+  // Full workspace: bypass rig guard untouched.
+  if !(self.deps.is_rig_workspace)(workspace) {
+    return Ok(())
+  }
+  if self.grants.held() || self.closed {
+    return Err(refusal_err(RefusalCode::Held, "this rig is stopping: ask again once it is back"))
+  }
+  let entries = match request {
+    form::Json::Obj(m) => m
+    _ => []
+  }
+  let method = match form::json_obj_get(entries, "method") {
+    Some(form::Json::Str(s)) => s
+    _ => ""
+  }
+  if !is_rig_allowed(method) {
+    return Err(refusal_err(RefusalCode::MethodNotAllowed, "a rig does not answer " + method))
+  }
+  let session = match form::json_obj_get(entries, "session") {
+    Some(form::Json::Str(s)) => s
+    _ => ""
+  }
+  let sess_opt = if session == "" { None } else { Some(session) }
+  if self.is_frozen(workspace, Some(peer), sess_opt, None) && !is_freeze_exempt_rig_rpc(method, entries) {
+    return Err(refusal_err(RefusalCode::Frozen, "access is frozen on this rig"))
+  }
+  if is_ungated(method) || method.starts_with("rig.") {
+    return Ok(())
+  }
+  if session == "" {
+    return Err(refusal_err(RefusalCode::NoGrant, "a rig runs only what a chat asks of it (no session named)"))
+  }
+  match self.grants.refusal_detail(workspace, peer, session) {
+    Some(r) => return Err(r)
+    None => ()
+  }
+  if method == "task.prepare" {
+    match form::json_obj_get(entries, "spec") {
+      Some(form::Json::Obj(spec)) => {
+        match form::json_obj_get(spec, "command") {
+          Some(form::Json::Str(cmd)) => {
+            let key = match form::json_obj_get(entries, "key") {
+              Some(form::Json::Str(k)) => k
+              _ => ""
+            }
+            let name = match form::json_obj_get(spec, "name") {
+              Some(form::Json::Str(n)) => n
+              _ => ""
+            }
+            self.commands.add(Command::{
+              at: (self.deps.now_ms)(),
+              workspace: Some(workspace),
+              station: peer,
+              session: session,
+              key: key,
+              name: name,
+              command: cmd,
+              kind: CommandKind::Task,
+            })
+          }
+          _ => ()
+        }
+      }
+      _ => ()
+    }
+  } else if method == "vault.run" || method == "vault.capture" {
+    match form::json_obj_get(entries, "command") {
+      Some(form::Json::Str(cmd)) => {
+        let key = match form::json_obj_get(entries, "id") {
+          Some(form::Json::Str(k)) => k
+          _ => ""
+        }
+        self.commands.add(Command::{
+          at: (self.deps.now_ms)(),
+          workspace: Some(workspace),
+          station: peer,
+          session: session,
+          key: key,
+          name: "",
+          command: cmd,
+          kind: CommandKind::Secret,
+        })
+      }
+      _ => ()
+    }
+  }
+  Ok(())
+}
+
+fn view_to_json(v : RigView, meta : Option[RigOwnerMeta], has_proof : Bool) -> form::Json {
+  let grants_arr : Array[form::Json] = []
+  let mut i = 0
+  while i < v.grants.length() {
+    let g = v.grants[i]
+    let fields : Array[(String, form::Json)] = [
+      ("request", form::Json::Str(g.request)),
+      ("station", form::Json::Str(g.station)),
+      ("session", form::Json::Str(g.session)),
+      ("chat", form::Json::Str(g.chat)),
+      ("title", form::Json::Str(g.title)),
+      ("by", form::Json::Str(g.by)),
+      ("timeout", timeout_to_json(g.timeout)),
+      ("exp", form::Json::Num(g.exp.to_double())),
+      ("until", form::Json::Num(g.until.to_double())),
+    ]
+    match g.device {
+      Some(d) => fields.push(("device", form::Json::Str(d)))
+      None => ()
+    }
+    grants_arr.push(form::Json::Obj(fields))
+    i = i + 1
+  }
+  let devs_arr : Array[form::Json] = []
+  let mut j = 0
+  while j < v.devices.length() {
+    let vd = v.devices[j]
+    let dj = match device_to_json(vd.device) {
+      form::Json::Obj(fs) => {
+        fs.push(("open", form::Json::Bool(vd.open)))
+        fs.push(("settings", form::Json::Num(vd.settings.to_double())))
+        form::Json::Obj(fs)
+      }
+      other => other
+    }
+    devs_arr.push(dj)
+    j = j + 1
+  }
+  let fields : Array[(String, form::Json)] = [
+    ("owner", form::Json::Str(v.owner)),
+    ("person", form::Json::Str(v.person)),
+    ("open", form::Json::Bool(v.open)),
+    ("settings", form::Json::Num(v.settings.to_double())),
+    ("grants", form::Json::Arr(grants_arr)),
+    ("devices", form::Json::Arr(devs_arr)),
+  ]
+  match meta {
+    Some(m) => {
+      fields.push(("owner_email", form::Json::Str(m.owner_email)))
+      fields.push(("owner_name", form::Json::Str(m.owner_name)))
+    }
+    None => ()
+  }
+  if has_proof {
+    fields.push(("proof", form::Json::Bool(true)))
+  }
+  form::Json::Obj(fields)
+}
+
+///| Rig metadata for `describe` / `rig.describe` in `workspace`.
+pub fn Rig::described(self : Rig, workspace : String) -> form::Json {
+  if !(self.deps.is_rig_workspace)(workspace) {
+    return form::Json::Obj([])
+  }
+  let rig_json = match self.grants.view(workspace) {
+    Some(v) => {
+      let has_proof = match self.grants.proof(workspace) {
+        Some(_) => true
+        None => false
+      }
+      view_to_json(v, (self.deps.owner_meta)(workspace), has_proof)
+    }
+    None => form::Json::Null
+  }
+  form::Json::Obj([
+    ("sessions", form::Json::Bool(false)),
+    ("messages", form::Json::Bool(false)),
+    ("reads", form::Json::Bool(false)),
+    ("chats", form::Json::Bool(false)),
+    ("boot", form::Json::Str(self.deps.boot)),
+    ("rev", form::Json::Num(self.grants.rev().to_double())),
+    ("rig", rig_json),
+  ])
+}
+
+fn json_chain_opt(entries : Array[(String, form::Json)], key : String) -> Option[Array[form::Json]] {
+  match form::json_obj_get(entries, key) {
+    Some(form::Json::Arr(xs)) => Some(xs)
+    _ => None
+  }
+}
+
+///| Handle incoming `rig.*` RPCs from `peer` in `workspace`.
+pub fn Rig::heard(
+  self : Rig,
+  peer : String,
+  request : form::Json,
+  workspace : String,
+) -> Result[form::Json, Refusal] {
+  if self.grants.held() || self.closed {
+    return Err(refusal_err(RefusalCode::Held, "this rig is stopping: ask again once it is back"))
+  }
+  if !(self.deps.is_rig_workspace)(workspace) {
+    return Err(refusal_err(RefusalCode::WrongWorkspace, "this rig is of another workspace"))
+  }
+  let entries = match request {
+    form::Json::Obj(m) => m
+    _ => return Err(refusal_err(RefusalCode::Malformed, "invalid request"))
+  }
+  let method = match form::json_obj_get(entries, "method") {
+    Some(form::Json::Str(s)) => s
+    _ => ""
+  }
+  if self.is_frozen(workspace, Some(peer), None, None) && !is_freeze_exempt_rig_rpc(method, entries) {
+    return Err(refusal_err(RefusalCode::Frozen, "access is frozen on this rig"))
+  }
+  let signed = match form::json_obj_get(entries, "signed") {
+    Some(v) => v
+    None => form::Json::Null
+  }
+  let chain = json_chain_opt(entries, "chain")
+  if method == "rig.describe" {
+    return Ok(self.described(workspace))
+  } else if method == "rig.grant" {
+    match self.grants.grant(workspace, peer, signed, chain) {
+      Ok(until) => {
+        return Ok(form::Json::Obj([
+          ("until", form::Json::Num(until.to_double())),
+          ("boot", form::Json::Str(self.deps.boot)),
+          ("rev", form::Json::Num(self.grants.rev().to_double())),
+        ]))
+      }
+      Err(e) => return Err(e)
+    }
+  } else if method == "rig.revoke" {
+    match self.grants.revoke(workspace, signed, chain) {
+      Ok(_) => return Ok(form::Json::Obj([("ok", form::Json::Bool(true))]))
+      Err(e) => return Err(e)
+    }
+  } else if method == "rig.release" {
+    let req_id = match form::json_obj_get(entries, "request") {
+      Some(form::Json::Str(s)) => s
+      _ => ""
+    }
+    let released = self.grants.release(workspace, peer, req_id)
+    return Ok(form::Json::Obj([("released", form::Json::Bool(released))]))
+  } else if method == "rig.settings" {
+    match self.grants.settings(workspace, signed, chain) {
+      Ok(_) => return Ok(form::Json::Obj([("ok", form::Json::Bool(true))]))
+      Err(e) => return Err(e)
+    }
+  } else if method == "rig.device" {
+    match self.grants.device(workspace, signed, chain) {
+      Ok(_) => return Ok(form::Json::Obj([("ok", form::Json::Bool(true))]))
+      Err(e) => return Err(e)
+    }
+  } else if method == "rig.added" {
+    let pin = form::json_obj_get(entries, "pin")
+    match self.grants.added(workspace, signed, pin, chain) {
+      Ok(lock_opt) => {
+        match lock_opt {
+          Some(h) => (self.deps.on_pending_lock)(workspace, h)
+          None => ()
+        }
+        return Ok(form::Json::Obj([("ok", form::Json::Bool(true))]))
+      }
+      Err(e) => return Err(e)
+    }
+  } else if method == "rig.full" {
+    match self.grants.full(workspace, signed, chain) {
+      Ok(s) => {
+        (self.deps.on_full_pending)(workspace, s.body.at)
+        return Ok(form::Json::Obj([("ok", form::Json::Bool(true))]))
+      }
+      Err(e) => return Err(e)
+    }
+  } else if method == "rig.join" {
+    match self.grants.join(workspace, signed, chain) {
+      Ok(s) => {
+        let person = match self.grants.view(workspace) {
+          Some(v) => v.person
+          None => ""
+        }
+        match (self.deps.on_join)(s.body.token, person, s.body.lock, s.body.ws) {
+          Ok(joined) => {
+            if joined.workspace != s.body.ws {
+              return Err(refusal_err(
+                RefusalCode::WrongWorkspace,
+                "enrollment token is for workspace " + joined.workspace + ", not " + s.body.ws,
+              ))
+            }
+            return Ok(form::Json::Obj([
+              ("ok", form::Json::Bool(true)),
+              ("workspace", form::Json::Str(joined.workspace)),
+              ("workspace_name", form::Json::Str(joined.workspace_name)),
+              ("name", form::Json::Str(joined.name)),
+            ]))
+          }
+          Err(msg) => return Err(refusal_err(RefusalCode::Malformed, msg))
+        }
+      }
+      Err(e) => return Err(e)
+    }
+  } else if method == "rig.proof" {
+    let proof_v = match self.grants.proof_json(workspace) {
+      Some(j) => j
+      None => form::Json::Null
+    }
+    return Ok(form::Json::Obj([("add", proof_v)]))
+  } else if method == "rig.log" {
+    let raw_limit = match form::json_obj_get(entries, "limit") {
+      Some(form::Json::Num(n)) => {
+        if n >= -max_safe_double && n <= max_safe_double && n.to_int64().to_double() == n {
+          let v = n.to_int()
+          if v < 1 { 1 } else if v > rig_log_max { rig_log_max } else { v }
+        } else {
+          50
+        }
+      }
+      _ => 50
+    }
+    let single_rig = self.grants.workspace_count() == 1
+    let cmds = self.commands.last(raw_limit, Some(workspace), single_rig)
+    let out : Array[form::Json] = []
+    let mut i = 0
+    while i < cmds.length() {
+      out.push(command_to_json(cmds[i]))
+      i = i + 1
+    }
+    return Ok(form::Json::Obj([("commands", form::Json::Arr(out))]))
+  }
+  Err(refusal_err(RefusalCode::MethodNotAllowed, "unknown method " + method))
+}
+
+pub fn Rig::close(self : Rig) -> Unit {
+  self.closed = true
+  let mut i = 0
+  while i < self.wired.length() {
+    (self.wired[i].close)()
+    i = i + 1
+  }
+  while self.wired.length() > 0 {
+    let _ = self.wired.pop()
+  }
+  self.grants.close()
+}
+
+struct SnapshotCursor {
+  mut boot : String
+  mut rev : Int64
+  retired : Array[String]
+}
+
+///| Drops stale out-of-order rig snapshots (`rig.hello`, `rig.describe`, `rig.changed`) that arrive
+///| over concurrent streams after a newer `rig.grant` or `rig.changed` from the same rig process,
+///| or from a superseded previous process (`station/src/rigs/module.ts` `RigSnapshotOrder`).
+pub struct RigSnapshotOrder {
+  seen : Map[String, SnapshotCursor]
+}
+
+pub fn RigSnapshotOrder::new() -> RigSnapshotOrder {
+  RigSnapshotOrder::{ seen: Map::new() }
+}
+
+fn arr_contains_str(xs : Array[String], s : String) -> Bool {
+  let mut i = 0
+  while i < xs.length() {
+    if xs[i] == s {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+pub fn RigSnapshotOrder::accept(
+  self : RigSnapshotOrder,
+  key : String,
+  boot : Option[String],
+  rev : Option[Int64],
+) -> Bool {
+  let (b, n) = match (boot, rev) {
+    (Some(bs), Some(rv)) => if bs == "" { return true } else { (bs, rv) }
+    _ => return true
+  }
+  match self.seen.get(key) {
+    None => {
+      self.seen.set(key, SnapshotCursor::{ boot: b, rev: n, retired: [] })
+      true
+    }
+    Some(cur) => {
+      if cur.boot == b {
+        if n < cur.rev {
+          return false
+        }
+        cur.rev = n
+        return true
+      }
+      if arr_contains_str(cur.retired, b) {
+        return false
+      }
+      cur.retired.push(cur.boot)
+      if cur.retired.length() > 16 {
+        let mut i = 1
+        while i < cur.retired.length() {
+          cur.retired[i - 1] = cur.retired[i]
+          i = i + 1
+        }
+        let _ = cur.retired.pop()
+      }
+      cur.boot = b
+      cur.rev = n
+      true
+    }
+  }
+}
+
+pub fn RigSnapshotOrder::forget(self : RigSnapshotOrder, key : String) -> Unit {
+  self.seen.remove(key)
+}

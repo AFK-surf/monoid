@@ -1,0 +1,1456 @@
+// Remote task preparation, queuing, execution, log/stop/release, restart adoption,
+// disk budget eviction, and dirsync mirror state machine
+// (`station/src/jobs/remote.ts` & `station/src/jobs/dirsync.ts`).
+// Abstracts mesh & store callbacks so `station_jobs` does not couple to unmerged packages.
+
+import "admit"
+import "crypto"
+import "nodepath"
+
+pub let REMOTE_CHUNK : Int = 256 * 1024
+pub let REMOTE_MAX_FILE : Int64 = (1024 * 1024 * 1024).to_int64()
+pub let REMOTE_IDLE_MS : Int64 = 1209600000.to_int64() // 14 days
+pub let REMOTE_GIVE_UP_MS : Int64 = 600000.to_int64() // 10 min
+pub let MIRROR_IDLE_MS : Int64 = 86400000.to_int64() // 24 hours
+pub let MIRROR_RECENT_MS : Int64 = 3600000.to_int64() // 1 hour
+pub let ROOM_RECENT_MS : Int64 = 3600000.to_int64() // 1 hour
+pub let TASKS_KEPT_MS : Int64 = 604800000.to_int64() // 7 days
+pub let REMOTE_BUDGET_UNKNOWN : Int64 = 32.to_int64() * (1024 * 1024 * 1024).to_int64()
+
+pub let DIRSYNC_FILE_MODE : String = "100644"
+pub let DIRSYNC_EXEC_MODE : String = "100755"
+pub let DIRSYNC_LINK_MODE : String = "120000"
+pub let DIRSYNC_RAW_MAX : Int = 16 * 1024 * 1024
+pub let DIRSYNC_PACKED_MAX : Int = DIRSYNC_RAW_MAX + (1024 * 1024)
+
+/// Computes the remote rooms byte budget (15% of disk total, or `REMOTE_BUDGET_UNKNOWN`).
+pub fn remote_budget(total_bytes : Option[Int64]) -> Int64 {
+  match total_bytes {
+    Some(t) => if t > 0.to_int64() { (t * 15.to_int64()) / 100.to_int64() } else { REMOTE_BUDGET_UNKNOWN }
+    None => REMOTE_BUDGET_UNKNOWN
+  }
+}
+
+/// Computes a Git-compatible SHA-1 blob id (`"blob <len>\0" + content`).
+pub fn dirsync_blob_id(content : Bytes) -> String {
+  let header = ("blob " + content.length().to_string()).to_bytes()
+  let buf = Bytes::new(header.length() + 1 + content.length())
+  for i in 0..<header.length() {
+    buf[i] = header[i]
+  }
+  buf[header.length()] = 0 as Byte
+  for i in 0..<content.length() {
+    buf[header.length() + 1 + i] = content[i]
+  }
+  crypto::sha1_hex(buf)
+}
+
+/// Validates and resolves a relative transfer path under `root`, rejecting absolute paths,
+/// `.`/`..` traversal, and any symlink component along the path (`remote.ts` `filePath`).
+pub fn safe_transfer_path(
+  fs : FsPort,
+  root : String,
+  relative : String,
+  create_parent : Bool = false,
+) -> Result[String, String] {
+  match (fs.lstat)(root) {
+    Some(st) => {
+      if st.is_symlink() {
+        return Err("transfer root is a symbolic link")
+      }
+    }
+    None => return Err("transfer root does not exist")
+  }
+  let parts = match nodepath::relative_parts(fs.sep, relative) {
+    Some(ps) => ps
+    None => return Err("file path must be relative, without . or ..")
+  }
+  let clean_parts : Array[String] = []
+  for i in 0..<parts.length() {
+    let p = parts[i]
+    if p.length() == 0 {
+      continue
+    }
+    if p == "." {
+      if i == 0 {
+        return Err("file path must be relative, without . or ..")
+      }
+      continue
+    }
+    if p == ".." {
+      return Err("file path must be relative, without . or ..")
+    }
+    clean_parts.push(p)
+  }
+  if clean_parts.length() == 0 {
+    return Err("file path must be relative, without . or ..")
+  }
+  let mut cur = root
+  for i in 0..<clean_parts.length() {
+    cur = nodepath::join(fs.sep, [cur, clean_parts[i]])
+    match (fs.lstat)(cur) {
+      Some(st) => {
+        if st.is_symlink() {
+          return Err("file path contains a symbolic link")
+        }
+      }
+      None => ()
+    }
+  }
+  if create_parent {
+    let _ = (fs.mkdir_p)(nodepath::dirname(fs.sep, cur))
+  }
+  Ok(cur)
+}
+
+pub enum RemoteTaskState {
+  Prepared
+  Syncing
+  Queued
+  Running
+  Stopping
+  Exited
+  Stopped
+  Failed
+  Released
+}
+
+pub fn remote_task_state_str(s : RemoteTaskState) -> String {
+  match s {
+    RemoteTaskState::Prepared => "prepared"
+    RemoteTaskState::Syncing => "syncing"
+    RemoteTaskState::Queued => "queued"
+    RemoteTaskState::Running => "running"
+    RemoteTaskState::Stopping => "stopping"
+    RemoteTaskState::Exited => "exited"
+    RemoteTaskState::Stopped => "stopped"
+    RemoteTaskState::Failed => "failed"
+    RemoteTaskState::Released => "released"
+  }
+}
+
+pub fn remote_task_is_done(s : RemoteTaskState) -> Bool {
+  match s {
+    RemoteTaskState::Exited => true
+    RemoteTaskState::Stopped => true
+    RemoteTaskState::Failed => true
+    RemoteTaskState::Released => true
+    _ => false
+  }
+}
+
+pub enum MirrorState {
+  Idle
+  Syncing
+  InUse
+  PendingRelease
+  Cleaned
+}
+
+pub fn mirror_state_str(s : MirrorState) -> String {
+  match s {
+    MirrorState::Idle => "idle"
+    MirrorState::Syncing => "syncing"
+    MirrorState::InUse => "in_use"
+    MirrorState::PendingRelease => "pending_release"
+    MirrorState::Cleaned => "cleaned"
+  }
+}
+
+pub struct RemoteTaskRecord {
+  pub key : String
+  pub room_id : String
+  pub workspace : String
+  pub source_station : String
+  pub source_session : String
+  pub name : String
+  pub command : String
+  pub mirror_name : Option[String]
+  pub back_paths : Array[String]
+  pub screen : Bool
+  pub small : Bool
+  pub mut state : RemoteTaskState
+  pub mut job_id : Option[String]
+  pub mut exit_code : Option[Int]
+  pub created_at : Int64
+  pub mut queued_at : Option[Int64]
+  pub mut started_at : Option[Int64]
+  pub mut ended_at : Option[Int64]
+  pub mut pending_results : Bool
+}
+
+pub struct MirrorRecord {
+  pub name : String
+  pub room_id : String
+  pub path : String
+  pub mut state : MirrorState
+  pub mut active_task : Option[String]
+  pub mut last_used_at : Int64
+  pub mut bytes : Int64
+  pub mut manifest_hash : String
+}
+
+pub struct RemoteRoomRecord {
+  pub room_id : String
+  pub workspace : String
+  pub source_station : String
+  pub source_session : String
+  pub work_dir : String
+  pub mut last_used_at : Int64
+  pub mut closed : Bool
+}
+
+pub struct RemotePrepareRequest {
+  pub key : String
+  pub workspace : String
+  pub source_station : String
+  pub source_session : String
+  pub name : String
+  pub command : String
+  pub mirror_name : Option[String]
+  pub back_paths : Array[String]
+  pub screen : Bool
+  pub small : Bool
+}
+
+pub struct RemoteCallbacks {
+  pub on_task_changed : (RemoteTaskRecord) -> Unit
+}
+
+pub fn noop_remote_callbacks() -> RemoteCallbacks {
+  RemoteCallbacks::{ on_task_changed: fn(_t : RemoteTaskRecord) -> Unit {} }
+}
+
+pub struct RemoteSweepReport {
+  pub rooms_removed : Array[String]
+  pub mirrors_removed : Array[String]
+  pub tasks_expired : Array[String]
+  pub budget_evicted_rooms : Array[String]
+}
+
+pub struct RemoteManager {
+  pub root : String
+  pub fs : FsPort
+  pub jobs : JobManager
+  pub callbacks : RemoteCallbacks
+  pub rooms : Map[String, RemoteRoomRecord]
+  pub room_ids : Array[String]
+  pub tasks : Map[String, RemoteTaskRecord]
+  pub mut task_keys : Array[String]
+  pub mirrors_map : Map[String, MirrorRecord]
+  pub mirror_keys : Array[String]
+  pub job_to_task : Map[String, String]
+  mut tombstone_seq : Int64
+}
+
+pub fn RemoteManager::new(
+  data_dir : String,
+  fs : FsPort,
+  jobs : JobManager,
+  callbacks : RemoteCallbacks,
+) -> RemoteManager {
+  let root = nodepath::join(fs.sep, [data_dir, "remote"])
+  let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [root, "incoming"]))
+  let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [root, "outgoing"]))
+  let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [root, "sessions"]))
+  let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [root, "used"]))
+  let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [root, "prepared"]))
+  RemoteManager::{
+    root: root,
+    fs: fs,
+    jobs: jobs,
+    callbacks: callbacks,
+    rooms: Map::new(),
+    room_ids: [],
+    tasks: Map::new(),
+    task_keys: [],
+    mirrors_map: Map::new(),
+    mirror_keys: [],
+    job_to_task: Map::new(),
+    tombstone_seq: 0.to_int64(),
+  }
+}
+
+/// Atomically renames `dir_path` to a dot-prefixed sibling tombstone (`<parent>/.gone-<name>-<ts>-<seq>`)
+/// before cooperative multi-tick deletion (`station/src/jobs/remote.ts` `closeRoom`), so any concurrent
+/// `ensure_room`/`prepare`/`start` arriving between ticks creates a clean directory and never collides
+/// with the tree being deleted.
+fn RemoteManager::tombstone_dir(self : RemoteManager, dir_path : String, now_ms : Int64) -> Option[String] {
+  match (self.fs.lstat)(dir_path) {
+    None => return None
+    Some(_) => ()
+  }
+  self.tombstone_seq = self.tombstone_seq + 1.to_int64()
+  let parent = nodepath::dirname(self.fs.sep, dir_path)
+  let base = nodepath::basename(self.fs.sep, dir_path)
+  let tomb = nodepath::join(
+    self.fs.sep,
+    [parent, ".gone-" + base + "-" + now_ms.to_string() + "-" + self.tombstone_seq.to_string()],
+  )
+  if (self.fs.rename)(dir_path, tomb) {
+    Some(tomb)
+  } else {
+    None
+  }
+}
+
+pub fn remote_room_id(workspace : String, source_station : String, source_session : String) -> String {
+  let raw = (workspace + ":" + source_station + ":" + source_session).to_bytes()
+  sj_slice_str(crypto::sha256_hex(raw), 0, 16)
+}
+
+fn mirror_compound_key(room_id : String, mirror_name : String) -> String {
+  room_id + "/" + mirror_name
+}
+
+fn RemoteManager::path_has_live_remote_job(self : RemoteManager, dir : String) -> Bool {
+  for i in 0..<self.jobs.job_ids.length() {
+    match self.jobs.jobs.get(self.jobs.job_ids[i]) {
+      Some(j) => {
+        if job_state_is_up(j.state)
+        && (sj_starts_with(j.id, "remote_") || sj_starts_with(j.session, "remote:"))
+        && j.cwd.length() > 0
+        && path_is_within(self.fs.sep, j.cwd, dir)
+        {
+          return true
+        }
+      }
+      None => ()
+    }
+  }
+  false
+}
+
+fn RemoteManager::room_has_live_job(self : RemoteManager, rid : String) -> Bool {
+  let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
+  self.path_has_live_remote_job(room_dir)
+}
+
+/// Scans `<data>/remote/sessions/*` and `<room>/mirrors/*` on startup to adopt rooms & mirrors
+/// created before a station restart so `sweep` and `remote_budget` govern them.
+/// - When `latest_in_checked` truncates past `latest_limit`, preserves the room/mirror (`last_used_at = now_ms`,
+///   aligned with TS `Infinity`) rather than falling back to a stale directory mtime.
+/// - Cross-checks `self.jobs` for any active `remote_*` job whose `cwd` lies inside a room or mirror
+///   so live remote work is never evicted.
+pub fn RemoteManager::adopt_existing(
+  self : RemoteManager,
+  now_ms : Int64,
+  latest_limit : Int = 4096,
+) -> Int {
+  let sessions_root = nodepath::join(self.fs.sep, [self.root, "sessions"])
+  let dirs = match (self.fs.read_dir)(sessions_root) {
+    Some(ds) => ds
+    None => return 0
+  }
+  let mut count = 0
+  for i in 0..<dirs.length() {
+    let rid = dirs[i]
+    if sj_starts_with(rid, ".") {
+      continue
+    }
+    let room_dir = nodepath::join(self.fs.sep, [sessions_root, rid])
+    let st = match (self.fs.lstat)(room_dir) {
+      Some(s) => s
+      None => continue
+    }
+    if !st.is_dir() || st.is_symlink() {
+      continue
+    }
+    let live_in_room = self.path_has_live_remote_job(room_dir)
+    let last_used = if live_in_room {
+      now_ms
+    } else {
+      match latest_in_checked(self.fs, room_dir, latest_limit) {
+        LatestInStatus::Found(ts) => ts
+        LatestInStatus::Truncated => now_ms
+        LatestInStatus::Empty => if st.mtime_ms > 0.to_int64() { st.mtime_ms } else { now_ms }
+      }
+    }
+    if !self.rooms.contains(rid) {
+      let work_dir = nodepath::join(self.fs.sep, [room_dir, "work"])
+      self.rooms.set(
+        rid,
+        RemoteRoomRecord::{
+          room_id: rid,
+          workspace: "",
+          source_station: "",
+          source_session: "",
+          work_dir: work_dir,
+          last_used_at: last_used,
+          closed: false,
+        },
+      )
+      self.room_ids.push(rid)
+      count = count + 1
+    } else if live_in_room {
+      match self.rooms.get(rid) {
+        Some(r) => r.last_used_at = now_ms
+        None => ()
+      }
+    }
+    let mirrors_dir = nodepath::join(self.fs.sep, [room_dir, "mirrors"])
+    match (self.fs.read_dir)(mirrors_dir) {
+      Some(mnames) => {
+        for mi in 0..<mnames.length() {
+          let mname = mnames[mi]
+          if sj_starts_with(mname, ".") {
+            continue
+          }
+          let mpath = nodepath::join(self.fs.sep, [mirrors_dir, mname])
+          let mst = match (self.fs.lstat)(mpath) {
+            Some(s) => s
+            None => continue
+          }
+          if !mst.is_dir() || mst.is_symlink() {
+            continue
+          }
+          let mk = mirror_compound_key(rid, mname)
+          let live_in_mirror = self.path_has_live_remote_job(mpath)
+          if !self.mirrors_map.contains(mk) {
+            let m_used = if live_in_mirror {
+              now_ms
+            } else {
+              match latest_in_checked(self.fs, mpath, latest_limit) {
+                LatestInStatus::Found(ts) => ts
+                LatestInStatus::Truncated => now_ms
+                LatestInStatus::Empty => if mst.mtime_ms > 0.to_int64() { mst.mtime_ms } else { now_ms }
+              }
+            }
+            self.mirrors_map.set(
+              mk,
+              MirrorRecord::{
+                name: mname,
+                room_id: rid,
+                path: mpath,
+                state: if live_in_mirror { MirrorState::InUse } else { MirrorState::Idle },
+                active_task: None,
+                last_used_at: m_used,
+                bytes: 0.to_int64(),
+                manifest_hash: "",
+              },
+            )
+            self.mirror_keys.push(mk)
+          } else if live_in_mirror {
+            match self.mirrors_map.get(mk) {
+              Some(m) => {
+                m.state = MirrorState::InUse
+                m.last_used_at = now_ms
+              }
+              None => ()
+            }
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  count
+}
+
+fn RemoteManager::ensure_room(
+  self : RemoteManager,
+  workspace : String,
+  source_station : String,
+  source_session : String,
+  now_ms : Int64,
+) -> RemoteRoomRecord {
+  let rid = remote_room_id(workspace, source_station, source_session)
+  match self.rooms.get(rid) {
+    Some(r) => {
+      if r.closed {
+        let _ = (self.fs.mkdir_p)(r.work_dir)
+      }
+      r.last_used_at = now_ms
+      r.closed = false
+      r
+    }
+    None => {
+      let work_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid, "work"])
+      let _ = (self.fs.mkdir_p)(work_dir)
+      let room = RemoteRoomRecord::{
+        room_id: rid,
+        workspace: workspace,
+        source_station: source_station,
+        source_session: source_session,
+        work_dir: work_dir,
+        last_used_at: now_ms,
+        closed: false,
+      }
+      self.rooms.set(rid, room)
+      self.room_ids.push(rid)
+      room
+    }
+  }
+}
+
+fn is_valid_mirror_name(mname : String) -> Bool {
+  if mname.length() == 0 || mname == "." || mname == ".." {
+    return false
+  }
+  // Reject both POSIX '/' and Windows '\\' separators.
+  if sj_index_of(mname, "/", 0) >= 0 || sj_index_of(mname, "\\", 0) >= 0 {
+    return false
+  }
+  true
+}
+
+/// Prepares a remote task under `req.key`. Idempotent when `req.key` already exists.
+pub fn RemoteManager::prepare(
+  self : RemoteManager,
+  req : RemotePrepareRequest,
+  now_ms : Int64,
+) -> Result[RemoteTaskRecord, String] {
+  if req.key.length() == 0 {
+    return Err("task key is required")
+  }
+  if req.command.length() == 0 {
+    return Err("task command is required")
+  }
+  match self.tasks.get(req.key) {
+    Some(existing) => return Ok(existing)
+    None => ()
+  }
+  let room = self.ensure_room(req.workspace, req.source_station, req.source_session, now_ms)
+  match req.mirror_name {
+    Some(mname) => {
+      if !is_valid_mirror_name(mname) {
+        return Err("invalid mirror name: " + mname)
+      }
+      let mk = mirror_compound_key(room.room_id, mname)
+      if !self.mirrors_map.contains(mk) {
+        let mpath = nodepath::join(self.fs.sep, [self.root, "sessions", room.room_id, "mirrors", mname])
+        let _ = (self.fs.mkdir_p)(mpath)
+        self.mirrors_map.set(
+          mk,
+          MirrorRecord::{
+            name: mname,
+            room_id: room.room_id,
+            path: mpath,
+            state: MirrorState::Idle,
+            active_task: None,
+            last_used_at: now_ms,
+            bytes: 0.to_int64(),
+            manifest_hash: "",
+          },
+        )
+        self.mirror_keys.push(mk)
+      }
+    }
+    None => ()
+  }
+  let task = RemoteTaskRecord::{
+    key: req.key,
+    room_id: room.room_id,
+    workspace: req.workspace,
+    source_station: req.source_station,
+    source_session: req.source_session,
+    name: if req.name.length() > 0 { req.name } else { req.key },
+    command: req.command,
+    mirror_name: req.mirror_name,
+    back_paths: req.back_paths,
+    screen: req.screen,
+    small: req.small,
+    state: RemoteTaskState::Prepared,
+    job_id: None,
+    exit_code: None,
+    created_at: now_ms,
+    queued_at: None,
+    started_at: None,
+    ended_at: None,
+    pending_results: false,
+  }
+  self.tasks.set(req.key, task)
+  self.task_keys.push(req.key)
+  Ok(task)
+}
+
+fn RemoteManager::spawn_task_job(
+  self : RemoteManager,
+  task : RemoteTaskRecord,
+  now_ms : Int64,
+) -> Result[RemoteTaskRecord, String] {
+  let cwd = match task.mirror_name {
+    Some(mname) => {
+      let mk = mirror_compound_key(task.room_id, mname)
+      match self.mirrors_map.get(mk) {
+        Some(m) => {
+          m.state = MirrorState::InUse
+          m.active_task = Some(task.key)
+          m.last_used_at = now_ms
+          m.path
+        }
+        None => return Err("mirror missing: " + mname)
+      }
+    }
+    None => {
+      match self.rooms.get(task.room_id) {
+        Some(r) => {
+          r.last_used_at = now_ms
+          r.work_dir
+        }
+        None => return Err("room missing: " + task.room_id)
+      }
+    }
+  }
+  let session_owner = "remote:" + task.workspace + ":" + task.source_station + ":" + task.source_session
+  let jid = "remote_" + task.key
+  let req = JobStartRequest::{
+    session: session_owner,
+    name: task.name,
+    command: task.command,
+    cwd: cwd,
+    port: None,
+    watch: false,
+    id: Some(jid),
+    queued: true,
+    screen: task.screen,
+    small: task.small,
+    pipe_stdio: false,
+  }
+  match self.jobs.start(req, now_ms) {
+    Ok(job) => {
+      task.job_id = Some(job.id)
+      task.state = RemoteTaskState::Running
+      task.started_at = Some(now_ms)
+      self.job_to_task.set(job.id, task.key)
+      (self.callbacks.on_task_changed)(task)
+      Ok(task)
+    }
+    Err(e) => {
+      task.state = RemoteTaskState::Failed
+      task.ended_at = Some(now_ms)
+      (self.callbacks.on_task_changed)(task)
+      Err(e)
+    }
+  }
+}
+
+/// Starts a prepared remote task.
+pub fn RemoteManager::start(
+  self : RemoteManager,
+  key : String,
+  now_ms : Int64,
+  needs_sync : Bool = false,
+  pressure : Option[Pressure] = None,
+  person_present : Bool = false,
+) -> Result[RemoteTaskRecord, String] {
+  let task = match self.tasks.get(key) {
+    Some(t) => t
+    None => return Err("unknown remote task: " + key)
+  }
+  match task.state {
+    RemoteTaskState::Prepared => ()
+    _ => return Ok(task)
+  }
+  match task.mirror_name {
+    Some(mname) => {
+      let mk = mirror_compound_key(task.room_id, mname)
+      match self.mirrors_map.get(mk) {
+        Some(m) => {
+          match m.state {
+            MirrorState::Idle => ()
+            MirrorState::Cleaned => {
+              let _ = (self.fs.mkdir_p)(m.path)
+              m.state = MirrorState::Idle
+            }
+            _ => return Err("mirror busy (" + mirror_state_str(m.state) + "): " + mname)
+          }
+          if needs_sync {
+            m.state = MirrorState::Syncing
+            m.active_task = Some(task.key)
+            m.last_used_at = now_ms
+            task.state = RemoteTaskState::Syncing
+            (self.callbacks.on_task_changed)(task)
+            return Ok(task)
+          }
+        }
+        None => return Err("mirror missing: " + mname)
+      }
+    }
+    None => ()
+  }
+  task.state = RemoteTaskState::Queued
+  task.queued_at = Some(now_ms)
+  let _ = self.drain_queue(now_ms, pressure, person_present)
+  Ok(task)
+}
+
+/// Marks a mirror dirsync as complete and advances the task into the admission queue.
+pub fn RemoteManager::sync_complete(
+  self : RemoteManager,
+  key : String,
+  manifest_hash : String,
+  now_ms : Int64,
+  pressure : Option[Pressure] = None,
+  person_present : Bool = false,
+) -> Result[RemoteTaskRecord, String] {
+  let task = match self.tasks.get(key) {
+    Some(t) => t
+    None => return Err("unknown remote task: " + key)
+  }
+  match task.state {
+    RemoteTaskState::Syncing => ()
+    _ => return Err("task is not syncing: " + key)
+  }
+  match task.mirror_name {
+    Some(mname) => {
+      let mk = mirror_compound_key(task.room_id, mname)
+      match self.mirrors_map.get(mk) {
+        Some(m) => {
+          m.manifest_hash = manifest_hash
+          m.last_used_at = now_ms
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  task.state = RemoteTaskState::Queued
+  task.queued_at = Some(now_ms)
+  let _ = self.drain_queue(now_ms, pressure, person_present)
+  Ok(task)
+}
+
+/// Admits queued remote tasks using `admit::pick`. Returns task keys started in this drain.
+pub fn RemoteManager::drain_queue(
+  self : RemoteManager,
+  now_ms : Int64,
+  pressure : Option[Pressure] = None,
+  person_present : Bool = false,
+) -> Array[String] {
+  let started_keys : Array[String] = []
+  let pressure_str = match pressure {
+    Some(p) => Some(pressure_to_str(p))
+    None => None
+  }
+  let mut rounds = 0
+  while rounds < 64 {
+    rounds = rounds + 1
+    let waiting : Array[admit::Waiting] = []
+    let running : Array[admit::Started] = []
+    for i in 0..<self.task_keys.length() {
+      match self.tasks.get(self.task_keys[i]) {
+        Some(t) => {
+          match t.state {
+            RemoteTaskState::Queued => {
+              let qat = match t.queued_at {
+                Some(q) => q.to_double()
+                None => t.created_at.to_double()
+              }
+              waiting.push(admit::Waiting::{
+                id: t.key,
+                session: t.room_id,
+                screen: t.screen,
+                queued_at: qat,
+                small: t.small,
+              })
+            }
+            RemoteTaskState::Running => {
+              running.push(admit::Started::{
+                id: t.key,
+                screen: t.screen,
+                small: t.small,
+              })
+            }
+            RemoteTaskState::Stopping => {
+              running.push(admit::Started::{
+                id: t.key,
+                screen: t.screen,
+                small: t.small,
+              })
+            }
+            _ => ()
+          }
+        }
+        None => ()
+      }
+    }
+    let claims = admit::claims_held(self.jobs.screen_claims)
+    match admit::pick(
+      waiting,
+      running,
+      pressure_str,
+      person_present,
+      fn(_sess : String) -> Option[Double] { None },
+      claims,
+    ) {
+      Some(admit::Picked::Start(w)) => {
+        match self.tasks.get(w.id) {
+          Some(task) => {
+            match self.spawn_task_job(task, now_ms) {
+              Ok(_) => started_keys.push(task.key)
+              Err(_) => ()
+            }
+          }
+          None => break
+        }
+      }
+      _ => break
+    }
+  }
+  started_keys
+}
+
+/// Synchronizes a `JobRecord` terminal state back into its `RemoteTaskRecord` and mirror.
+/// Mirror is released to `Idle` only once the underlying child process has actually exited.
+pub fn RemoteManager::on_job_event(
+  self : RemoteManager,
+  job : JobRecord,
+  now_ms : Int64,
+  results_saved : Bool = true,
+) -> Bool {
+  let key = match self.job_to_task.get(job.id) {
+    Some(k) => k
+    None => return false
+  }
+  let task = match self.tasks.get(key) {
+    Some(t) => t
+    None => return false
+  }
+  match job.state {
+    JobState::Exited => {
+      task.state = RemoteTaskState::Exited
+      task.exit_code = job.exit_code
+      task.ended_at = Some(now_ms)
+    }
+    JobState::Failed => {
+      task.state = RemoteTaskState::Failed
+      task.exit_code = job.exit_code
+      task.ended_at = Some(now_ms)
+    }
+    JobState::Stopped => {
+      task.state = RemoteTaskState::Stopped
+      task.exit_code = job.exit_code
+      task.ended_at = Some(now_ms)
+    }
+    _ => return true
+  }
+  match task.mirror_name {
+    Some(mname) => {
+      let mk = mirror_compound_key(task.room_id, mname)
+      match self.mirrors_map.get(mk) {
+        Some(m) => {
+          m.last_used_at = now_ms
+          let was_stopped = match job.state {
+            JobState::Stopped => true
+            _ => false
+          }
+          if was_stopped || results_saved || task.back_paths.length() == 0 {
+            m.state = MirrorState::Idle
+            m.active_task = None
+            task.pending_results = false
+          } else {
+            m.state = MirrorState::PendingRelease
+            task.pending_results = true
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  (self.callbacks.on_task_changed)(task)
+  true
+}
+
+pub fn RemoteManager::get(self : RemoteManager, key : String) -> Option[RemoteTaskRecord] {
+  self.tasks.get(key)
+}
+
+pub fn RemoteManager::log(
+  self : RemoteManager,
+  key : String,
+  lines : Int = JOB_LOG_LINES_DEFAULT,
+) -> Result[String, String] {
+  let task = match self.tasks.get(key) {
+    Some(t) => t
+    None => return Err("unknown remote task: " + key)
+  }
+  match task.job_id {
+    Some(jid) => self.jobs.log(jid, lines)
+    None => Ok("")
+  }
+}
+
+/// Stops a remote task. If an underlying job process is still alive (`JobState::Stopping`),
+/// transitions task to `Stopping` and keeps its mirror locked (`InUse`) until `on_job_event`
+/// confirms actual process exit so no concurrent task can corrupt the mirror.
+pub fn RemoteManager::stop(
+  self : RemoteManager,
+  key : String,
+  now_ms : Int64,
+) -> Result[RemoteTaskRecord, String] {
+  let task = match self.tasks.get(key) {
+    Some(t) => t
+    None => return Err("unknown remote task: " + key)
+  }
+  let mut still_stopping = false
+  match task.job_id {
+    Some(jid) => {
+      match self.jobs.stop(jid, now_ms) {
+        Ok(j) => {
+          match j.state {
+            JobState::Stopping => still_stopping = true
+            _ => ()
+          }
+        }
+        Err(_) => ()
+      }
+    }
+    None => ()
+  }
+  if still_stopping {
+    task.state = RemoteTaskState::Stopping
+    (self.callbacks.on_task_changed)(task)
+    return Ok(task)
+  }
+  task.state = RemoteTaskState::Stopped
+  task.ended_at = Some(now_ms)
+  match task.mirror_name {
+    Some(mname) => {
+      let mk = mirror_compound_key(task.room_id, mname)
+      match self.mirrors_map.get(mk) {
+        Some(m) => {
+          if match m.active_task {
+            Some(ak) => ak == task.key
+            None => false
+          } {
+            m.state = MirrorState::Idle
+            m.active_task = None
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  (self.callbacks.on_task_changed)(task)
+  Ok(task)
+}
+
+/// Releases a mirror held in `PendingRelease` after partial result download.
+pub fn RemoteManager::release(self : RemoteManager, key : String) -> Result[RemoteTaskRecord, String] {
+  let task = match self.tasks.get(key) {
+    Some(t) => t
+    None => return Err("unknown remote task: " + key)
+  }
+  task.pending_results = false
+  if remote_task_is_done(task.state) {
+    task.state = RemoteTaskState::Released
+  }
+  match task.mirror_name {
+    Some(mname) => {
+      let mk = mirror_compound_key(task.room_id, mname)
+      match self.mirrors_map.get(mk) {
+        Some(m) => {
+          match m.state {
+            MirrorState::PendingRelease => {
+              m.state = MirrorState::Idle
+              m.active_task = None
+            }
+            _ => ()
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  (self.callbacks.on_task_changed)(task)
+  Ok(task)
+}
+
+pub fn RemoteManager::list(
+  self : RemoteManager,
+  room_id_opt : Option[String] = None,
+) -> Array[RemoteTaskRecord] {
+  let out : Array[RemoteTaskRecord] = []
+  for i in 0..<self.task_keys.length() {
+    match self.tasks.get(self.task_keys[i]) {
+      Some(t) => {
+        let keep = match room_id_opt {
+          Some(rid) => t.room_id == rid
+          None => true
+        }
+        if keep {
+          out.push(t)
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+pub fn RemoteManager::mirrors(
+  self : RemoteManager,
+  room_id_opt : Option[String] = None,
+) -> Array[MirrorRecord] {
+  let out : Array[MirrorRecord] = []
+  for i in 0..<self.mirror_keys.length() {
+    match self.mirrors_map.get(self.mirror_keys[i]) {
+      Some(m) => {
+        let keep = match room_id_opt {
+          Some(rid) => m.room_id == rid
+          None => true
+        }
+        if keep {
+          match m.state {
+            MirrorState::Cleaned => ()
+            _ => out.push(m)
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+/// Removes an idle mirror directory and marks it cleaned. Refuses if busy or pending release.
+pub fn RemoteManager::clean_mirror(
+  self : RemoteManager,
+  room_id : String,
+  mirror_name : String,
+) -> Result[Bool, String] {
+  let mk = mirror_compound_key(room_id, mirror_name)
+  let m = match self.mirrors_map.get(mk) {
+    Some(rec) => rec
+    None => return Err("unknown mirror: " + mirror_name)
+  }
+  match m.state {
+    MirrorState::Idle => ()
+    MirrorState::Cleaned => return Ok(false)
+    _ => return Err("cannot clean mirror while " + mirror_state_str(m.state))
+  }
+  let _ = (self.fs.remove_dir_all)(m.path)
+  m.state = MirrorState::Cleaned
+  m.bytes = 0.to_int64()
+  Ok(true)
+}
+
+fn RemoteManager::room_has_active_tasks(self : RemoteManager, rid : String) -> Bool {
+  if self.room_has_live_job(rid) {
+    return true
+  }
+  for ti in 0..<self.task_keys.length() {
+    match self.tasks.get(self.task_keys[ti]) {
+      Some(t) => {
+        if t.room_id == rid && (!remote_task_is_done(t.state) || t.pending_results) {
+          return true
+        }
+      }
+      None => ()
+    }
+  }
+  false
+}
+
+struct RoomUsage {
+  room_id : String
+  last_used_at : Int64
+  bytes : Int64
+}
+
+pub enum SweepStep {
+  Yielded(Int)
+  Done(RemoteSweepReport)
+}
+
+/// Resumable cooperative cursor for `RemoteManager::step_sweep` so directory traversal and
+/// recursive deletion yield back to the single-threaded event loop every `budget` entries (default 256).
+pub struct RemoteSweepCursor {
+  now_ms : Int64
+  low_disk : Bool
+  disk_total : Option[Int64]
+  mut phase : Int // 0=mirrors, 1=idle_rooms, 2=measure_rooms, 3=budget_evict, 4=expire_tasks, 5=done
+  mut idx : Int
+  mut rm_cursor : Option[RemoveTreeCursor]
+  mut walk_cursor : Option[WalkCursor]
+  mut cur_room_bytes : Int64
+  usages : Array[RoomUsage]
+  mut total_bytes : Int64
+  budget : Int64
+  rooms_removed : Array[String]
+  mirrors_removed : Array[String]
+  tasks_expired : Array[String]
+  budget_evicted_rooms : Array[String]
+  pub mut processed : Int
+  mut finished : Option[RemoteSweepReport]
+}
+
+pub fn RemoteManager::begin_sweep(
+  self : RemoteManager,
+  now_ms : Int64,
+  low_disk : Bool = false,
+  disk_total : Option[Int64] = None,
+) -> RemoteSweepCursor {
+  let _ = self.root.length()
+  RemoteSweepCursor::{
+    now_ms: now_ms,
+    low_disk: low_disk,
+    disk_total: disk_total,
+    phase: 0,
+    idx: 0,
+    rm_cursor: None,
+    walk_cursor: None,
+    cur_room_bytes: 0.to_int64(),
+    usages: [],
+    total_bytes: 0.to_int64(),
+    budget: remote_budget(disk_total),
+    rooms_removed: [],
+    mirrors_removed: [],
+    tasks_expired: [],
+    budget_evicted_rooms: [],
+    processed: 0,
+    finished: None,
+  }
+}
+
+/// Advances a remote sweep by at most `budget` filesystem entries (default `WALK_YIELD_EVERY = 256`)
+/// before returning `SweepStep::Yielded` so the main event loop is never blocked.
+pub fn RemoteManager::step_sweep(
+  self : RemoteManager,
+  cur : RemoteSweepCursor,
+  budget : Int = WALK_YIELD_EVERY,
+) -> SweepStep {
+  match cur.finished {
+    Some(rep) => return SweepStep::Done(rep)
+    None => ()
+  }
+  let limit = if budget > 0 { budget } else { WALK_YIELD_EVERY }
+  let mut used = 0
+
+  while true {
+    if used >= limit {
+      return SweepStep::Yielded(cur.processed)
+    }
+    if cur.phase == 0 {
+      // Phase 0: atomically tombstone idle mirrors past mirror_age, mark Cleaned immediately,
+      // then cooperatively delete the tombstone via RemoveTreeCursor.
+      match cur.rm_cursor {
+        Some(rmc) => {
+          let before = rmc.visited
+          let rem = limit - used
+          match rmc.step(rem) {
+            RemoveTreeStep::Yielded(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              return SweepStep::Yielded(cur.processed)
+            }
+            RemoveTreeStep::Done(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              cur.rm_cursor = None
+            }
+          }
+          continue
+        }
+        None => ()
+      }
+      if cur.idx >= self.mirror_keys.length() {
+        cur.phase = 1
+        cur.idx = 0
+        continue
+      }
+      let mirror_age = if cur.low_disk { MIRROR_RECENT_MS } else { MIRROR_IDLE_MS }
+      let mk = self.mirror_keys[cur.idx]
+      cur.idx = cur.idx + 1
+      match self.mirrors_map.get(mk) {
+        Some(m) => {
+          let can_clean = match m.state {
+            MirrorState::Idle => {
+              cur.now_ms - m.last_used_at >= mirror_age && !self.path_has_live_remote_job(m.path)
+            }
+            _ => false
+          }
+          if can_clean {
+            let tomb_opt = self.tombstone_dir(m.path, cur.now_ms)
+            m.state = MirrorState::Cleaned
+            m.bytes = 0.to_int64()
+            cur.mirrors_removed.push(mk)
+            match tomb_opt {
+              Some(tomb) => cur.rm_cursor = Some(RemoveTreeCursor::new(self.fs, tomb))
+              None => ()
+            }
+          }
+          used = used + 1
+          cur.processed = cur.processed + 1
+        }
+        None => {
+          used = used + 1
+          cur.processed = cur.processed + 1
+        }
+      }
+    } else if cur.phase == 1 {
+      // Phase 1: atomically tombstone expired idle rooms past REMOTE_IDLE_MS, mark closed immediately,
+      // then cooperatively delete the tombstone via RemoveTreeCursor.
+      match cur.rm_cursor {
+        Some(rmc) => {
+          let before = rmc.visited
+          let rem = limit - used
+          match rmc.step(rem) {
+            RemoveTreeStep::Yielded(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              return SweepStep::Yielded(cur.processed)
+            }
+            RemoveTreeStep::Done(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              cur.rm_cursor = None
+            }
+          }
+          continue
+        }
+        None => ()
+      }
+      if cur.idx >= self.room_ids.length() {
+        cur.phase = 2
+        cur.idx = 0
+        continue
+      }
+      let rid = self.room_ids[cur.idx]
+      cur.idx = cur.idx + 1
+      match self.rooms.get(rid) {
+        Some(r) => {
+          if !r.closed && cur.now_ms - r.last_used_at >= REMOTE_IDLE_MS && !self.room_has_active_tasks(rid) {
+            let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
+            let tomb_opt = self.tombstone_dir(room_dir, cur.now_ms)
+            r.closed = true
+            cur.rooms_removed.push(rid)
+            match tomb_opt {
+              Some(tomb) => cur.rm_cursor = Some(RemoveTreeCursor::new(self.fs, tomb))
+              None => ()
+            }
+          }
+          used = used + 1
+          cur.processed = cur.processed + 1
+        }
+        None => {
+          used = used + 1
+          cur.processed = cur.processed + 1
+        }
+      }
+    } else if cur.phase == 2 {
+      // Phase 2: measure remaining open rooms cooperatively via WalkCursor
+      match cur.walk_cursor {
+        Some(wc) => {
+          let before = wc.visited
+          let rem = limit - used
+          match wc.step(fn(e : WalkEntry) -> VisitAction {
+            match e.stats {
+              Some(st) => {
+                if st.size > 0.to_int64() {
+                  cur.cur_room_bytes = cur.cur_room_bytes + st.size
+                }
+              }
+              None => ()
+            }
+            VisitAction::Continue
+          }, rem, false) {
+            WalkStep::Yielded(_) => {
+              let delta = wc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              return SweepStep::Yielded(cur.processed)
+            }
+            WalkStep::Done(_) => {
+              let delta = wc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              cur.walk_cursor = None
+              let rid = self.room_ids[cur.idx]
+              match self.rooms.get(rid) {
+                Some(r) => {
+                  cur.total_bytes = cur.total_bytes + cur.cur_room_bytes
+                  cur.usages.push(RoomUsage::{
+                    room_id: rid,
+                    last_used_at: r.last_used_at,
+                    bytes: cur.cur_room_bytes,
+                  })
+                }
+                None => ()
+              }
+              cur.cur_room_bytes = 0.to_int64()
+              cur.idx = cur.idx + 1
+            }
+          }
+          continue
+        }
+        None => ()
+      }
+      if cur.idx >= self.room_ids.length() {
+        // Sort oldest last_used_at first for phase 3 budget eviction.
+        for i in 1..<cur.usages.length() {
+          let item = cur.usages[i]
+          let mut j = i - 1
+          while j >= 0 && cur.usages[j].last_used_at > item.last_used_at {
+            cur.usages[j + 1] = cur.usages[j]
+            j = j - 1
+          }
+          cur.usages[j + 1] = item
+        }
+        cur.phase = 3
+        cur.idx = 0
+        continue
+      }
+      let rid = self.room_ids[cur.idx]
+      match self.rooms.get(rid) {
+        Some(r) => {
+          if r.closed {
+            cur.idx = cur.idx + 1
+            used = used + 1
+            cur.processed = cur.processed + 1
+          } else {
+            let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
+            let opts = WalkOptions::{
+              same_device: true,
+              max_entries: 200000,
+              max_depth: 256,
+              max_duration_ms: 60000.to_int64(),
+              yield_every: limit,
+              need_stat: true,
+              follow_root: false,
+              follow_links: false,
+            }
+            cur.cur_room_bytes = 0.to_int64()
+            cur.walk_cursor = Some(WalkCursor::new(self.fs, [room_dir], opts))
+          }
+        }
+        None => {
+          cur.idx = cur.idx + 1
+          used = used + 1
+          cur.processed = cur.processed + 1
+        }
+      }
+    } else if cur.phase == 3 {
+      // Phase 3: atomically tombstone oldest idle rooms exceeding remote_budget(disk_total),
+      // mark closed immediately, then cooperatively delete the tombstone via RemoveTreeCursor.
+      match cur.rm_cursor {
+        Some(rmc) => {
+          let before = rmc.visited
+          let rem = limit - used
+          match rmc.step(rem) {
+            RemoveTreeStep::Yielded(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              return SweepStep::Yielded(cur.processed)
+            }
+            RemoveTreeStep::Done(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              cur.rm_cursor = None
+            }
+          }
+          continue
+        }
+        None => ()
+      }
+      if cur.total_bytes <= cur.budget || cur.idx >= cur.usages.length() {
+        cur.phase = 4
+        cur.idx = 0
+        continue
+      }
+      let u = cur.usages[cur.idx]
+      cur.idx = cur.idx + 1
+      if cur.now_ms - u.last_used_at >= ROOM_RECENT_MS && !self.room_has_active_tasks(u.room_id) {
+        match self.rooms.get(u.room_id) {
+          Some(r) => {
+            if !r.closed {
+              let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", u.room_id])
+              let tomb_opt = self.tombstone_dir(room_dir, cur.now_ms)
+              r.closed = true
+              cur.total_bytes = cur.total_bytes - u.bytes
+              cur.budget_evicted_rooms.push(u.room_id)
+              match tomb_opt {
+                Some(tomb) => cur.rm_cursor = Some(RemoveTreeCursor::new(self.fs, tomb))
+                None => ()
+              }
+            }
+          }
+          None => ()
+        }
+      }
+      used = used + 1
+      cur.processed = cur.processed + 1
+    } else {
+      // Phase 4: expire old finished tasks and compact `task_keys` + `job_to_task`
+      let kept_keys : Array[String] = []
+      for i in 0..<self.task_keys.length() {
+        let k = self.task_keys[i]
+        match self.tasks.get(k) {
+          Some(t) => {
+            let expired = if remote_task_is_done(t.state) && !t.pending_results {
+              match t.ended_at {
+                Some(ended) => cur.now_ms - ended >= TASKS_KEPT_MS
+                None => false
+              }
+            } else {
+              false
+            }
+            if expired {
+              match t.job_id {
+                Some(jid) => self.job_to_task.remove(jid)
+                None => ()
+              }
+              self.tasks.remove(k)
+              cur.tasks_expired.push(k)
+            } else {
+              kept_keys.push(k)
+            }
+          }
+          None => ()
+        }
+      }
+      self.task_keys = kept_keys
+      let rep = RemoteSweepReport::{
+        rooms_removed: cur.rooms_removed,
+        mirrors_removed: cur.mirrors_removed,
+        tasks_expired: cur.tasks_expired,
+        budget_evicted_rooms: cur.budget_evicted_rooms,
+      }
+      cur.phase = 5
+      cur.finished = Some(rep)
+      return SweepStep::Done(rep)
+    }
+  }
+  SweepStep::Yielded(cur.processed)
+}
+
+/// Convenience wrapper driving `begin_sweep` + `step_sweep` to completion.
+/// Main event-loop callers should drive `step_sweep(cursor, WALK_YIELD_EVERY)` per tick.
+pub fn RemoteManager::sweep(
+  self : RemoteManager,
+  now_ms : Int64,
+  low_disk : Bool = false,
+  disk_total : Option[Int64] = None,
+) -> RemoteSweepReport {
+  let cur = self.begin_sweep(now_ms, low_disk, disk_total)
+  while true {
+    match self.step_sweep(cur, WALK_YIELD_EVERY) {
+      SweepStep::Yielded(_) => ()
+      SweepStep::Done(rep) => return rep
+    }
+  }
+  RemoteSweepReport::{
+    rooms_removed: [],
+    mirrors_removed: [],
+    tasks_expired: [],
+    budget_evicted_rooms: [],
+  }
+}

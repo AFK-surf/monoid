@@ -1158,6 +1158,63 @@ test "小屏: the board's filter narrows it to 我参与的 and back to 全部�
 }
 
 ///|
+test "the board keeps its cards until an empty mine list is answered and drops a cancelled choice" {
+  for action in ["wait", "escape", "pick all"] {
+    new_run()
+    let base = fixture("board")
+    let answered = @signals.signal(false)
+    let src : Source = {
+      ..base,
+      switches_ahead: fn() { true },
+      topic_read: fn(name, params) {
+        if name == "chats" && params.get("mine") == Some(Json::boolean(true)) {
+          if answered.get() {
+            { value: Some({ "days": [], "stations": 2 }), error: None, version: 1 }
+          } else {
+            { value: None, error: None, version: 0 }
+          }
+        } else {
+          let got = base.topic(name, params).get().snapshot()
+          match (action, name, got.value) {
+            ("pick all", "chats", Some(Object(fields))) => {
+              let fields = fields.copy()
+              fields["projects"] = Json::boolean(true)
+              { ..got, value: Some(Json::object(fields)) }
+            }
+            _ => got
+          }
+        }
+      },
+    }
+    open_fixture_over("board", src)
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+    t.run_for(@ui.move_most_ms)
+    let before = @sfbase.board_items(src, "ws1").length()
+    assert_true(before > 0)
+    t.click(Button, label="筛选会话：全部")
+    t.run_for(@ui.move_most_ms)
+    board_tap_words(t, "我参与的")
+    assert_eq(filter_of(src, "ws1"), "all")
+    assert_eq(@sfbase.board_items(src, "ws1").length(), before)
+    if action == "escape" {
+      t.key(@ui.key_escape)
+    } else if action == "pick all" {
+      board_tap_words(t, "全部会话")
+    }
+    @ui.view_tree().unwrap().event(t.time(), fn() { answered.set(true) })
+    t.run_for(@ui.move_most_ms)
+    if action != "wait" {
+      assert_eq(filter_of(src, "ws1"), "all")
+      assert_eq(@sfbase.board_items(src, "ws1").length(), before)
+    } else {
+      assert_eq(filter_of(src, "ws1"), "mine")
+      assert_true(t.query(Tab, label="等你处理 0") is Some(_))
+      assert_true(t.query(Button, label="整理发布清单") is None)
+    }
+  }
+}
+
+///|
 test "小屏: the list's 监控中 taken onto the board as its 监控中 column, the board narrowed to all of them" {
   let (t, src) = board_bar_at("board-list", 390.0, 844.0)
   t.click(Button, label="筛选会话：全部")

@@ -1606,6 +1606,7 @@ pub fn Tree::opens_first_takes(Self, NodeId) -> ((Said) -> Bool)?
 pub fn Tree::over_all(Self, NodeId) -> Bool
 pub fn Tree::over_all_takes(Self, Double, Double) -> Bool
 pub fn Tree::over_scrim_of(Self, NodeId) -> Bool
+pub fn Tree::parked_retired_count(Self) -> Int32
 pub fn Tree::passes_run(Self) -> Int32
 pub fn Tree::passes_said(Self, at? : Double, events? : Bool) -> Array[String]
 pub fn Tree::placed_against_laid(Self, NodeId) -> (Bool, Double, Double, Double, Double)?
@@ -1686,6 +1687,8 @@ pub fn Tree::sticks_drawn(Self) -> Bool
 pub fn Tree::stretch_of(Self, NodeId) -> Double
 pub fn Tree::stroke(Self, Int32, Int32, Double, from? : NodeId?, facts? : Array[String]) -> Bool
 pub fn Tree::styled(Self) -> Array[Styled]
+pub fn Tree::subtree_timeline_bys(Self, View) -> Array[String]
+pub fn Tree::subtree_timeline_count(Self, View) -> Int32
 pub fn Tree::take_changed(Self) -> Array[NodeId]
 pub fn Tree::take_removed(Self) -> Array[NodeId]
 pub fn Tree::take_scrolled(Self) -> Bool
@@ -1769,6 +1772,8 @@ pub fn View::ask_focus(Self, visible? : Bool) -> Bool
 pub fn View::aspect(Self, Live[Double], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::at_moment(Self, Double, () -> Unit, later? : Bool, loc~ : SourceLoc) -> () -> Unit
+#callsite(autofill(loc))
+pub fn View::at_moment_active(Self, Double, () -> Unit, later? : Bool, while_covered? : Bool, loc~ : SourceLoc) -> () -> Unit
 pub fn View::bar_near(Self, Double, across? : Bool) -> Bool
 #callsite(autofill(loc))
 pub fn View::basis(Self, Live[Double?], loc~ : SourceLoc) -> Self
@@ -2035,7 +2040,7 @@ pub fn View::on_menu(Self, (Menu) -> Unit) -> Self
 pub fn View::on_middle(Self, (Buttons) -> Unit) -> Self
 pub fn View::on_pointer_moved(Self, () -> Unit) -> Self
 pub fn View::on_press(Self, () -> Unit) -> Self
-pub fn View::on_rest(Self, () -> Unit, wake? : () -> Unit) -> Self
+pub fn View::on_rest(Self, () -> Unit, wake? : () -> Unit, while_covered? : Bool) -> Self
 pub fn View::on_reused(Self, () -> Unit) -> Unit
 pub fn View::on_step(Self, (Int32) -> Unit) -> Self
 pub fn View::on_wheel(Self, (Wheel) -> Unit) -> Self
@@ -2063,6 +2068,8 @@ pub fn View::padding(Self, Live[(Double, Double, Double, Double)], loc~ : Source
 pub fn View::parent(Self) -> Self?
 #callsite(autofill(loc))
 pub fn[K : Eq] View::pick(Self, () -> K, (Self, K) -> Unit, at_once? : Bool, along_row? : Bool, leave? : Double, leave_of? : (K, K) -> Double, keeps? : Bool, keeps_max? : Int32, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn[K : Eq] View::pick_kept(Self, () -> K, (Self, K) -> Unit, at_once? : Bool, along_row? : Bool, leave? : Double, leave_of? : (K, K) -> Double, keeps? : Bool, keeps_max? : Int32, keep_if? : (K) -> Bool, pin? : (K) -> Bool, on_take? : (Self, K) -> Unit, loc~ : SourceLoc) -> Unit
 #callsite(autofill(loc))
 pub fn View::picture(Self, Live[@pixels.Vector?], loc~ : SourceLoc) -> Self
 pub fn View::pixel_scale(Self) -> Double
@@ -2160,6 +2167,8 @@ pub fn View::sticky(Self, Live[Double?], loc~ : SourceLoc) -> Self
 pub fn View::stretches(Self, Live[Double], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn[K : Eq] View::switch_by(Self, () -> K, (Self, K) -> Unit, leave? : Double, keeps? : Bool, keeps_max? : Int32, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn[K : Eq] View::switch_kept(Self, () -> K, (Self, K) -> Unit, leave? : Double, keeps? : Bool, keeps_max? : Int32, keep_if? : (K) -> Bool, pin? : (K) -> Bool, on_take? : (Self, K) -> Unit, loc~ : SourceLoc) -> Unit
 pub fn View::tab_stop(Self, Live[Bool]) -> Self
 pub fn View::takes(Self, (Double, Double, Double) -> Array[(Double, Double, Double, Double)]) -> Self
 pub fn View::takes_back(Self, () -> Unit) -> Self
@@ -2179,6 +2188,9 @@ pub fn View::twice_forgot(Self) -> Unit
 pub fn View::twice_ms(Self) -> Double
 pub fn View::was_placed(Self) -> Bool
 pub fn View::wheel_passes(Self) -> Self
+pub fn View::when_active(Self, () -> () -> Unit, while_covered? : Bool) -> Self
+#callsite(autofill(loc))
+pub fn View::while_active_every(Self, Double, () -> Unit, later? : Bool, run_on_wake? : Bool, loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::width(Self, Live[Double?], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))

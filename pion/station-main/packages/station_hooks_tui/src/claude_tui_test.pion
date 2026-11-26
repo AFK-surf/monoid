@@ -1,0 +1,661 @@
+// Unit tests for `claude_tui.pion` covering CLI dispatch, SHA-256 & literal parity vectors,
+// arg rewriting, deterministic `TuiBridgeMachine` transitions, and `run_claude_tui` I/O ports.
+
+import "base_codec"
+
+test "claude_tui_mode parses hook, mcp, run, and rejects malformed argv" {
+  match claude_tui_mode(["bin", "/a/b/claude-tui.mjs", "hook"]) {
+    Some(ClaudeTuiMode::Hook) => ()
+    _ => assert(false, "hook mode")
+  }
+  match claude_tui_mode(["bin", "C:\\a\\claude-tui.mjs", "mcp", "http://127.0.0.1:9999/mcp"]) {
+    Some(ClaudeTuiMode::Mcp(u)) => assert(u == "http://127.0.0.1:9999/mcp", "mcp url")
+    _ => assert(false, "mcp mode")
+  }
+  match claude_tui_mode(["bin", "claude-tui", "node", "runner", "claude", "--settings", "{}"]) {
+    Some(ClaudeTuiMode::Run(s, n, r, c, rest)) => {
+      assert(s == "claude-tui" && n == "node" && r == "runner" && c == "claude", "run args")
+      assert(rest.length() == 2 && rest[0] == "--settings", "rest args")
+    }
+    _ => assert(false, "run mode")
+  }
+  match claude_tui_mode(["bin", "other.mjs", "hook"]) {
+    None => ()
+    _ => assert(false, "non-tui script rejected")
+  }
+  match claude_tui_mode(["bin", "claude-tui.mjs", "node", "runner"]) {
+    None => ()
+    _ => assert(false, "too few args for run rejected")
+  }
+}
+
+test "tui_literal, tui_digest, tui_unpasted, and tui_failure_reason match exact .mjs vectors" {
+  // Exact vector verified against Node.js claude-tui.mjs:
+  // "中文\r\n/exit\n\x1b[201~\x00\x08\t\x0b\x7f\u0080\u009f"
+  let sb = StringBuilder::new()
+  sb.write_string("中文\r\n/exit\n")
+  sb.write_byte(0x1B as Byte)
+  sb.write_string("[201~")
+  sb.write_byte(0x00 as Byte)
+  sb.write_byte(0x08 as Byte)
+  sb.write_byte(0x09 as Byte)
+  sb.write_byte(0x0B as Byte)
+  sb.write_byte(0x7F as Byte)
+  // U+0080 = C2 80, U+009F = C2 9F
+  sb.write_byte(0xC2 as Byte)
+  sb.write_byte(0x80 as Byte)
+  sb.write_byte(0xC2 as Byte)
+  sb.write_byte(0x9F as Byte)
+  let lit = tui_literal(sb.to_string())
+  assert(
+    lit == "中文\n/exit\n\\u001b[201~\\u0000\\u0008\t\\u000b\\u007f\\u0080\\u009f",
+    "tui_literal exact match",
+  )
+  let wrapped = "<station_message>\n" + lit + "\n</station_message>"
+  assert(
+    tui_digest(wrapped) == "03491b70202d8d79bbc3ab6da6a5d4dcfe35a772eae553783ec76d3c52b28ff1",
+    "tui_digest wrapped exact SHA-256",
+  )
+  assert(
+    tui_digest("/compact") == "52e657bd1470bb75a808df9dbe93b8f82606f0b614db4d82e9a09dd291bf3f74",
+    "tui_digest /compact exact SHA-256",
+  )
+
+  // Unpasted strips valid <pasted_content id="...">\n...\n</pasted_content> only.
+  assert(
+    tui_unpasted("<pasted_content id=\"p1\">\nhello\nworld\n</pasted_content>") == "hello\nworld",
+    "strips pasted_content",
+  )
+  assert(
+    tui_unpasted("<pasted_content id=\"\">\nhello\n</pasted_content>") == "<pasted_content id=\"\">\nhello\n</pasted_content>",
+    "empty id not stripped",
+  )
+  assert(tui_unpasted("plain text") == "plain text", "plain text unchanged")
+
+  // StopFailure error precedence & 1500 char truncation.
+  let h_default = base_codec::json_obj([("error", base_codec::json_str(""))])
+  assert(tui_failure_reason(h_default) == "Claude API error", "fallback error")
+  let h_prio = base_codec::json_obj([
+    ("error", base_codec::json_str("e3")),
+    ("last_assistant_message", base_codec::json_str("e2")),
+    ("error_details", base_codec::json_str("e1")),
+  ])
+  assert(tui_failure_reason(h_prio) == "e1", "error_details highest priority")
+  let mut big = ""
+  for _ in 0..<1600 {
+    big = big + "a"
+  }
+  let h_long = base_codec::json_obj([("error", base_codec::json_str(big))])
+  assert(tui_failure_reason(h_long).length() == 1500, "truncated to 1500")
+}
+
+test "eval_claude_tui_hook filters subagents/other sessions and encodes UserPromptSubmit & StopFailure" {
+  // Subagent ignored.
+  match eval_claude_tui_hook(
+    "{\"agent_id\":\"sub-1\",\"session_id\":\"rt-1\",\"hook_event_name\":\"Stop\"}",
+    Some("rt-1"),
+    Some("k1"),
+  ) {
+    Ok(None) => ()
+    _ => assert(false, "subagent should be ignored")
+  }
+  // Mismatched session ignored.
+  match eval_claude_tui_hook(
+    "{\"session_id\":\"rt-other\",\"hook_event_name\":\"Stop\"}",
+    Some("rt-1"),
+    Some("k1"),
+  ) {
+    Ok(None) => ()
+    _ => assert(false, "other session ignored")
+  }
+  // UserPromptSubmit hashes unpasted prompt.
+  match eval_claude_tui_hook(
+    "{\"session_id\":\"rt-1\",\"hook_event_name\":\"UserPromptSubmit\",\"prompt\":\"<pasted_content id=\\\"1\\\">\\n/compact\\n</pasted_content>\"}",
+    Some("rt-1"),
+    Some("k1"),
+  ) {
+    Ok(Some(json_str)) =>
+    assert(
+      json_str == "{\"key\":\"k1\",\"event\":\"UserPromptSubmit\",\"prompt\":\"52e657bd1470bb75a808df9dbe93b8f82606f0b614db4d82e9a09dd291bf3f74\"}",
+      "UserPromptSubmit exact json",
+    )
+    _ => assert(false, "expected UserPromptSubmit event")
+  }
+  // StopFailure carries truncated error.
+  match eval_claude_tui_hook(
+    "{\"session_id\":\"rt-1\",\"hook_event_name\":\"StopFailure\",\"error\":\"rate limited\"}",
+    Some("rt-1"),
+    Some("k1"),
+  ) {
+    Ok(Some(json_str)) =>
+    assert(
+      json_str == "{\"key\":\"k1\",\"event\":\"StopFailure\",\"error\":\"rate limited\"}",
+      "StopFailure exact json",
+    )
+    _ => assert(false, "expected StopFailure event")
+  }
+  // Malformed JSON returns Err.
+  match eval_claude_tui_hook("{bad", Some("rt-1"), Some("k1")) {
+    Err(_) => ()
+    _ => assert(false, "malformed JSON must error")
+  }
+}
+
+test "rewrite_claude_tui_args injects 6 hooks, permission skip, and stdio mcp server" {
+  let args = [
+    "--settings",
+    "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"x\"}]}}",
+    "--mcp-config",
+    "{\"mcpServers\":{\"stillfail\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:4242/mcp\"}}}",
+  ]
+  let rewritten = match rewrite_claude_tui_args("/s/claude-tui.mjs", "/bin/node", args) {
+    Ok(a) => a
+    Err(e) => {
+      assert(false, e)
+      []
+    }
+  }
+  assert(rewritten.length() == 4, "same arg count")
+  match base_codec::json_parse(rewritten[1]) {
+    base_codec::JsonParseResult::Ok(s) => {
+      match base_codec::json_get(s, "skipDangerousModePermissionPrompt") {
+        Some(base_codec::Json::Bool(b)) => assert(b, "skipDangerousModePermissionPrompt set")
+        _ => assert(false, "missing skipDangerousModePermissionPrompt")
+      }
+      match base_codec::json_get(s, "hooks") {
+        Some(h) => {
+          match base_codec::json_get(h, "PreToolUse") {
+            Some(_) => ()
+            None => assert(false, "existing hook preserved")
+          }
+          let evs = ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure", "PreCompact", "PostCompact"]
+          for i in 0..<evs.length() {
+            let ev = evs[i]
+            match base_codec::json_get(h, ev) {
+              Some(base_codec::Json::Arr(xs)) => assert(xs.length() == 1, "hook added for " + ev)
+              _ => assert(false, "missing hook for " + ev)
+            }
+          }
+        }
+        None => assert(false, "missing hooks")
+      }
+    }
+    _ => assert(false, "invalid rewritten settings")
+  }
+  match base_codec::json_parse(rewritten[3]) {
+    base_codec::JsonParseResult::Ok(cfg) =>
+    match base_codec::json_get(cfg, "mcpServers") {
+      Some(ms) =>
+      match base_codec::json_get(ms, "stillfail") {
+        Some(sf) => {
+          match base_codec::json_get(sf, "type") {
+            Some(base_codec::Json::Str(t)) => assert(t == "stdio", "stdio type")
+            _ => assert(false, "missing stdio type")
+          }
+          match base_codec::json_get(sf, "command") {
+            Some(base_codec::Json::Str(c)) => assert(c == "/bin/node", "node command")
+            _ => assert(false, "missing node command")
+          }
+        }
+        None => assert(false, "missing stillfail server")
+      }
+      None => assert(false, "missing mcpServers")
+    }
+    _ => assert(false, "invalid rewritten mcp-config")
+  }
+  // Missing --settings or --mcp-config fails cleanly.
+  match rewrite_claude_tui_args("/s/claude-tui.mjs", "/bin/node", ["--mcp-config", "{}"]) {
+    Err(_) => ()
+    Ok(_) => assert(false, "missing --settings must fail")
+  }
+}
+
+test "TuiBridgeMachine handles normal turn, compact, StopFailure, background_tasks, and interrupt" {
+  let m = TuiBridgeMachine::new("secret-key")
+  let start_fx = m.start()
+  assert(start_fx.length() == 1, "startup deadline armed")
+
+  // Wrong key and oversized hook lines are rejected.
+  let (bad_key_ok, _) = m.on_hook_line("{\"key\":\"wrong\",\"event\":\"SessionStart\"}")
+  assert(!bad_key_ok, "wrong key rejected")
+  let mut huge = ""
+  for _ in 0..<17000 {
+    huge = huge + "a"
+  }
+  let (huge_ok, _) = m.on_hook_line(huge)
+  assert(!huge_ok, "oversized hook line rejected")
+
+  // User turn arrives before ready + toolsListed -> emits init, waits to deliver.
+  let u1_fx = m.on_stdin_line("{\"type\":\"user\",\"message\":{\"content\":[{\"text\":\"hello\"}]}}")
+  assert(u1_fx.length() == 1, "only init frame emitted before ready")
+  assert(!m.submitted, "not delivered until ready and tools_listed")
+
+  // SessionStart arrives -> still waiting for ToolsListed.
+  let (ok1, fx1) = m.on_hook_line("{\"key\":\"secret-key\",\"event\":\"SessionStart\"}")
+  assert(ok1 && fx1.length() == 0 && !m.submitted, "waiting for ToolsListed")
+
+  // ToolsListed arrives -> clears startup deadline, pastes bracketed text, arms submit deadline.
+  let (ok2, fx2) = m.on_hook_line("{\"key\":\"secret-key\",\"event\":\"ToolsListed\"}")
+  assert(ok2 && m.submitted, "delivered after both ready and tools_listed")
+  let mut saw_paste = false
+  for i in 0..<fx2.length() {
+    match fx2[i] {
+      TuiEffect::PtyWrite(b) => {
+        let sb = StringBuilder::new()
+        for j in 0..<b.length() {
+          sb.write_byte(b[j])
+        }
+        assert(sb.to_string() == "\x1b[200~<station_message>\nhello\n</station_message>\x1b[201~\r", "exact bracketed paste")
+        saw_paste = true
+      }
+      _ => ()
+    }
+  }
+  assert(saw_paste, "PtyWrite emitted")
+
+  // background_tasks while submitted sends Ctrl-B (0x02).
+  let bg_fx = m.on_stdin_line("{\"request\":{\"subtype\":\"background_tasks\"}}")
+  assert(bg_fx.length() == 1, "ctrl-b emitted")
+  match bg_fx[0] {
+    TuiEffect::PtyWrite(b) => assert(b.length() == 1 && b[0].to_int() == 2, "0x02 byte")
+    _ => assert(false, "expected PtyWrite")
+  }
+
+  // UserPromptSubmit with matching digest clears expected_prompt & deadline.
+  let want_hash = tui_digest("<station_message>\nhello\n</station_message>")
+  let (ok3, _) = m.on_hook_line("{\"key\":\"secret-key\",\"event\":\"UserPromptSubmit\",\"prompt\":\"" + want_hash + "\"}")
+  assert(ok3 && !opt_str_is_some(m.expected_prompt), "prompt acknowledged")
+
+  // Stop completes turn with is_error=false.
+  let (ok4, fx4) = m.on_hook_line("{\"key\":\"secret-key\",\"event\":\"Stop\"}")
+  assert(ok4 && !m.submitted && !m.has_pending(), "turn completed")
+  let mut saw_result = false
+  for i in 0..<fx4.length() {
+    match fx4[i] {
+      TuiEffect::StdoutFrame(s) => {
+        assert(s == "{\"type\":\"result\",\"is_error\":false,\"result\":\"\"}\n", "exact ok result frame")
+        saw_result = true
+      }
+      _ => ()
+    }
+  }
+  assert(saw_result, "result frame emitted")
+
+  // Manual compact turn: PreCompact clears deadline, PostCompact emits compact_boundary + result.
+  let _ = m.on_stdin_line("{\"type\":\"compact\"}")
+  assert(m.compact && m.submitted, "compact delivered immediately")
+  let (ok5, _) = m.on_hook_line("{\"key\":\"secret-key\",\"event\":\"PreCompact\"}")
+  assert(ok5, "PreCompact accepted")
+  let (ok6, fx6) = m.on_hook_line("{\"key\":\"secret-key\",\"event\":\"PostCompact\"}")
+  assert(ok6 && !m.submitted && !m.compact, "compact finished on PostCompact")
+  let frames : Array[String] = []
+  for i in 0..<fx6.length() {
+    match fx6[i] {
+      TuiEffect::StdoutFrame(s) => frames.push(s)
+      _ => ()
+    }
+  }
+  assert(frames.length() == 2, "compact_boundary and result frames")
+  assert(frames[0] == "{\"type\":\"system\",\"subtype\":\"compact_boundary\"}\n", "compact_boundary")
+  assert(frames[1] == "{\"type\":\"result\",\"is_error\":false,\"result\":\"\"}\n", "compact result")
+
+  // StopFailure turn emits is_error=true with error string.
+  let _ = m.on_stdin_line("{\"type\":\"user\",\"message\":{\"content\":[{\"text\":\"fail me\"}]}}")
+  let (ok7, fx7) = m.on_hook_line("{\"key\":\"secret-key\",\"event\":\"StopFailure\",\"error\":\"rate limited\"}")
+  assert(ok7 && !m.submitted, "StopFailure ends turn")
+  let mut saw_fail = false
+  for i in 0..<fx7.length() {
+    match fx7[i] {
+      TuiEffect::StdoutFrame(s) => {
+        assert(s == "{\"type\":\"result\",\"is_error\":true,\"result\":\"rate limited\"}\n", "StopFailure frame")
+        saw_fail = true
+      }
+      _ => ()
+    }
+  }
+  assert(saw_fail, "StopFailure result emitted")
+
+  // Interrupt during pending turn closes cleanly with is_error=false and closes PTY stdin.
+  let _ = m.on_stdin_line("{\"type\":\"user\",\"message\":{\"content\":[{\"text\":\"hold\"}]}}")
+  let int_fx = m.on_stdin_line("{\"request\":{\"subtype\":\"interrupt\"}}")
+  assert(m.closing, "closing after interrupt")
+  let mut saw_close_stdin = false
+  for i in 0..<int_fx.length() {
+    match int_fx[i] {
+      TuiEffect::PtyCloseStdin => saw_close_stdin = true
+      _ => ()
+    }
+  }
+  assert(saw_close_stdin, "PtyCloseStdin on interrupt")
+}
+
+test "TuiBridgeMachine handles premature Stop, overlapping turn, deadline timeout, and PTY crash" {
+  // 1. Premature Stop before UserPromptSubmit ack closes with error.
+  let m1 = TuiBridgeMachine::new("k")
+  let _ = m1.on_hook_line("{\"key\":\"k\",\"event\":\"SessionStart\"}")
+  let _ = m1.on_hook_line("{\"key\":\"k\",\"event\":\"ToolsListed\"}")
+  let _ = m1.on_stdin_line("{\"type\":\"user\",\"message\":{\"content\":[{\"text\":\"hi\"}]}}")
+  let (_, fx1) = m1.on_hook_line("{\"key\":\"k\",\"event\":\"Stop\"}")
+  assert(m1.closing, "premature Stop closes bridge")
+  let mut saw_err = false
+  for i in 0..<fx1.length() {
+    match fx1[i] {
+      TuiEffect::StdoutFrame(s) =>
+      if str_contains(s, "ended before acknowledging") {
+        saw_err = true
+      }
+      _ => ()
+    }
+  }
+  assert(saw_err, "premature Stop error frame")
+
+  // 2. Overlapping turn closes with error.
+  let m2 = TuiBridgeMachine::new("k")
+  let _ = m2.on_stdin_line("{\"type\":\"user\",\"message\":{\"content\":[{\"text\":\"first\"}]}}")
+  let fx2 = m2.on_stdin_line("{\"type\":\"user\",\"message\":{\"content\":[{\"text\":\"second\"}]}}")
+  assert(m2.closing, "overlapping turn closes bridge")
+  let mut saw_overlap = false
+  for i in 0..<fx2.length() {
+    match fx2[i] {
+      TuiEffect::StderrLine(s) =>
+      if str_contains(s, "overlapping turns") {
+        saw_overlap = true
+      }
+      _ => ()
+    }
+  }
+  assert(saw_overlap, "overlap error reported")
+
+  // 3. Stale deadline ignored; current deadline closes bridge.
+  let m3 = TuiBridgeMachine::new("k")
+  let _ = m3.start()
+  let gen = m3.deadline_gen
+  assert(m3.on_deadline(gen - 1).length() == 0 && !m3.closing, "stale deadline ignored")
+  let fx3 = m3.on_deadline(gen)
+  assert(m3.closing && fx3.length() > 0, "active deadline closes bridge")
+
+  // 4. PTY unexpected exit emits error + Shutdown.
+  let m4 = TuiBridgeMachine::new("k")
+  let fx4 = m4.on_pty_exit(Some(137), Some("SIGKILL"))
+  assert(m4.closing, "closing on PTY exit")
+  let mut saw_shutdown = false
+  for i in 0..<fx4.length() {
+    match fx4[i] {
+      TuiEffect::Shutdown => saw_shutdown = true
+      _ => ()
+    }
+  }
+  assert(saw_shutdown, "Shutdown emitted on PTY exit")
+}
+
+fn mock_tui_io(
+  env_map : Map[String, String],
+  stdin_all : String,
+  mcp_events : Array[McpEvent],
+  run_events : Array[TuiRunEvent],
+  stdout_out : Array[String],
+  stderr_out : Array[String],
+  notified : Array[(Int, String)],
+  started : Array[String],
+  aborted : Array[String],
+) -> ClaudeTuiIo {
+  let mcp_idx : Array[Int] = [0]
+  let ev_idx : Array[Int] = [0]
+  ClaudeTuiIo::{
+    env_get: fn(k : String) -> Option[String] { env_map.get(k) },
+    random_uuid: fn() -> String { "uuid-fixed-1" },
+    read_stdin_all: fn() -> String { stdin_all },
+    write_stdout: fn(s : String) -> Unit { stdout_out.push(s) },
+    write_stderr: fn(s : String) -> Unit { stderr_out.push(s) },
+    notify_local_hook: fn(port : Int, payload : String) -> HookNotifyResult {
+      notified.push((port, payload))
+      HookNotifyResult::Ok("ok\n")
+    },
+    mcp_http_start: fn(req_key : String, _url : String, _tok : String, _body : String) -> Unit {
+      started.push(req_key)
+    },
+    mcp_http_abort: fn(rid : String) -> Unit { aborted.push(rid) },
+    next_mcp_event: fn() -> Option[McpEvent] {
+      let i = mcp_idx[0]
+      if i < mcp_events.length() {
+        mcp_idx[0] = i + 1
+        Some(mcp_events[i])
+      } else {
+        None
+      }
+    },
+    listen_local_hook: fn() -> Result[Int, String] { Ok(55123) },
+    close_local_hook: fn() -> Unit {},
+    reply_hook_conn: fn(_cid : Int, _ok : Bool) -> Unit {},
+    spawn_pty_relay: fn(_runner : String, _args : Array[String], _env : Array[(String, String)]) -> Result[Unit, String] {
+      Ok(())
+    },
+    pty_write: fn(_b : Bytes) -> Unit {},
+    pty_close_stdin: fn() -> Unit {},
+    arm_deadline: fn(_gen : Int, _ms : Int) -> Unit {},
+    clear_deadline: fn() -> Unit {},
+    next_run_event: fn() -> Option[TuiRunEvent] {
+      let i = ev_idx[0]
+      if i < run_events.length() {
+        ev_idx[0] = i + 1
+        Some(run_events[i])
+      } else {
+        None
+      }
+    },
+  }
+}
+
+test "run_claude_tui executes hook, mcp, and run modes end-to-end via injectable ports" {
+  // 1. MCP mode: tools/list without nextCursor notifies ToolsListed; HTTP 500 returns -32603.
+  let env_m : Map[String, String] = Map::new()
+  env_m.set("STILLFAIL_MCP_TOKEN", "tok-1")
+  env_m.set("STILLFAIL_TUI_KEY", "k-mcp")
+  env_m.set("STILLFAIL_TUI_PORT", "4455")
+  let stdout_m : Array[String] = []
+  let stderr_m : Array[String] = []
+  let notified_m : Array[(Int, String)] = []
+  let started_m : Array[String] = []
+  let aborted_m : Array[String] = []
+  let mcp_evs = [
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/list\",\"params\":{}}"),
+    McpEvent::HttpDone("10", McpHttpResult::Response(200, "{\"jsonrpc\":\"2.0\",\"id\":10,\"result\":{\"tools\":[],\"nextCursor\":\"p2\"}}")),
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{\"cursor\":\"p2\"}}"),
+    McpEvent::HttpDone("1", McpHttpResult::Response(200, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"tools\":[]}}")),
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{}}"),
+    McpEvent::HttpDone("2", McpHttpResult::Response(500, "internal error")),
+    McpEvent::StdinEof,
+  ]
+  let io_mcp = mock_tui_io(
+    env_m,
+    "",
+    mcp_evs,
+    [],
+    stdout_m,
+    stderr_m,
+    notified_m,
+    started_m,
+    aborted_m,
+  )
+  let rc_mcp = run_claude_tui(io_mcp, ["bin", "claude-tui.mjs", "mcp", "http://127.0.0.1:8080/mcp"])
+  assert(rc_mcp == 0, "mcp exits 0")
+  assert(stdout_m.length() == 3, "three replies written")
+  assert(str_contains(stdout_m[0], "\"nextCursor\":\"p2\""), "paged tools/list forwarded")
+  assert(str_contains(stdout_m[1], "\"tools\":[]"), "final tools/list forwarded")
+  assert(str_contains(stdout_m[2], "\"code\":-32603") && str_contains(stdout_m[2], "HTTP 500"), "HTTP 500 -> -32603")
+  assert(notified_m.length() == 1, "ToolsListed notified only after final page without nextCursor")
+  let (nport, npayload) = notified_m[0]
+  assert(nport == 4455 && npayload == "{\"key\":\"k-mcp\",\"event\":\"ToolsListed\"}\n", "exact ToolsListed payload")
+
+  // 2. Hook mode: sends SessionStart to local bridge and exits 0.
+  let env_h : Map[String, String] = Map::new()
+  env_h.set("STILLFAIL_RUNTIME_SESSION_ID", "sid-1")
+  env_h.set("STILLFAIL_TUI_KEY", "k-hook")
+  env_h.set("STILLFAIL_TUI_PORT", "4456")
+  let notified_h : Array[(Int, String)] = []
+  let io_hook = mock_tui_io(
+    env_h,
+    "{\"session_id\":\"sid-1\",\"hook_event_name\":\"SessionStart\"}",
+    [],
+    [],
+    [],
+    [],
+    notified_h,
+    [],
+    [],
+  )
+  assert(run_claude_tui(io_hook, ["bin", "claude-tui.mjs", "hook"]) == 0, "hook exits 0")
+  assert(notified_h.length() == 1, "hook notified bridge")
+
+  // 3. Run mode end-to-end turn + clean exit.
+  let stdout_r : Array[String] = []
+  let prompt_hash = tui_digest("<station_message>\nping\n</station_message>")
+  let run_evs = [
+    TuiRunEvent::HookLine(1, "{\"key\":\"uuid-fixed-1\",\"event\":\"SessionStart\"}"),
+    TuiRunEvent::HookLine(2, "{\"key\":\"uuid-fixed-1\",\"event\":\"ToolsListed\"}"),
+    TuiRunEvent::StdinLine("{\"type\":\"user\",\"message\":{\"content\":[{\"text\":\"ping\"}]}}"),
+    TuiRunEvent::HookLine(3, "{\"key\":\"uuid-fixed-1\",\"event\":\"UserPromptSubmit\",\"prompt\":\"" + prompt_hash + "\"}"),
+    TuiRunEvent::HookLine(4, "{\"key\":\"uuid-fixed-1\",\"event\":\"Stop\"}"),
+    TuiRunEvent::StdinEof,
+    TuiRunEvent::PtyExit(Some(0), None),
+  ]
+  let io_run = mock_tui_io(
+    Map::new(),
+    "",
+    [],
+    run_evs,
+    stdout_r,
+    [],
+    [],
+    [],
+    [],
+  )
+  let rc_run = run_claude_tui(
+    io_run,
+    [
+      "bin",
+      "/s/claude-tui.mjs",
+      "/bin/node",
+      "/bin/runner",
+      "/bin/claude",
+      "--settings",
+      "{\"hooks\":{}}",
+      "--mcp-config",
+      "{\"mcpServers\":{\"stillfail\":{\"type\":\"http\",\"url\":\"http://127.0.0.1:4242/mcp\"}}}",
+    ],
+  )
+  assert(rc_run == 0, "run mode exits 0")
+  assert(stdout_r.length() == 2, "init + result frames")
+  assert(stdout_r[0] == "{\"type\":\"system\",\"subtype\":\"init\"}\n", "init frame")
+  assert(stdout_r[1] == "{\"type\":\"result\",\"is_error\":false,\"result\":\"\"}\n", "result frame")
+}
+
+test "mcp mode supports overlapping concurrent calls, mid-flight cancellation, non-blocking ping, and EOF abort-all" {
+  // Part A: req 1 (slow) and req 2 (fast) + ping (req 3) overlap in-flight;
+  // notifications/cancelled aborts req 1 without blocking req 2 or ping, and aborted req 1 emits no -32603 error.
+  let env_c : Map[String, String] = Map::new()
+  env_c.set("STILLFAIL_MCP_TOKEN", "tok-c")
+  let stdout_c : Array[String] = []
+  let stderr_c : Array[String] = []
+  let started_c : Array[String] = []
+  let aborted_c : Array[String] = []
+  let evs_c = [
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"slow\"}}"),
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"fast\"}}"),
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\"}"),
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":1}}"),
+    McpEvent::HttpDone("3", McpHttpResult::Response(200, "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{}}")),
+    McpEvent::HttpDone("2", McpHttpResult::Response(200, "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"ok\":true}}")),
+    McpEvent::HttpDone("1", McpHttpResult::Failed("aborted by signal")),
+    McpEvent::HttpDone("__notif_1", McpHttpResult::Response(202, "")),
+    McpEvent::StdinEof,
+  ]
+  let io_c = mock_tui_io(env_c, "", evs_c, [], stdout_c, stderr_c, [], started_c, aborted_c)
+  assert(run_claude_tui(io_c, ["bin", "claude-tui.mjs", "mcp", "http://127.0.0.1:8080/mcp"]) == 0, "concurrent mcp exits 0")
+  assert(started_c.length() == 4, "all 4 HTTP requests started concurrently")
+  assert(aborted_c.length() == 1 && aborted_c[0] == "1", "req 1 aborted immediately on notifications/cancelled")
+  assert(stdout_c.length() == 2, "only ping and req 2 wrote replies; aborted req 1 suppressed error frame")
+  assert(str_contains(stdout_c[0], "\"id\":3"), "ping completed first without blocking on slow req 1")
+  assert(str_contains(stdout_c[1], "\"id\":2"), "req 2 completed without blocking on slow req 1")
+
+  // Part B: StdinEof aborts all still-in-flight requests cleanly.
+  let stdout_eof : Array[String] = []
+  let started_eof : Array[String] = []
+  let aborted_eof : Array[String] = []
+  let evs_eof = [
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{}}"),
+    McpEvent::StdinLine("{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{}}"),
+    McpEvent::StdinEof,
+    McpEvent::HttpDone("11", McpHttpResult::Aborted),
+    McpEvent::HttpDone("12", McpHttpResult::Aborted),
+  ]
+  let io_eof = mock_tui_io(env_c, "", evs_eof, [], stdout_eof, [], [], started_eof, aborted_eof)
+  assert(run_claude_tui(io_eof, ["bin", "claude-tui.mjs", "mcp", "http://127.0.0.1:8080/mcp"]) == 0, "eof mcp exits 0")
+  assert(aborted_eof.length() == 2 && aborted_eof[0] == "11" && aborted_eof[1] == "12", "EOF aborts all in-flight requests")
+  assert(stdout_eof.length() == 0, "aborted-on-EOF requests emit no frames")
+}
+
+test "TuiBridgeMachine matches JS semantics for null line, missing text, and non-string text" {
+  // 1. JSON "null" line closes with TypeError instead of being ignored.
+  let m_null = TuiBridgeMachine::new("k")
+  let fx_null = m_null.on_stdin_line("null")
+  assert(m_null.closing, "null line closes bridge")
+  let mut saw_null_err = false
+  for i in 0..<fx_null.length() {
+    match fx_null[i] {
+      TuiEffect::StderrLine(s) =>
+      if str_contains(s, "TypeError") {
+        saw_null_err = true
+      }
+      _ => ()
+    }
+  }
+  assert(saw_null_err, "null line emits TypeError")
+
+  // 2. content[0] missing `text` (`[{}]`) emits init frame and does NOT close or submit.
+  let m_undef = TuiBridgeMachine::new("k")
+  let _ = m_undef.on_hook_line("{\"key\":\"k\",\"event\":\"SessionStart\"}")
+  let _ = m_undef.on_hook_line("{\"key\":\"k\",\"event\":\"ToolsListed\"}")
+  let fx_undef = m_undef.on_stdin_line("{\"type\":\"user\",\"message\":{\"content\":[{}]}}")
+  assert(!m_undef.closing && !m_undef.submitted && !m_undef.has_pending(), "missing text leaves pending undefined and open")
+  assert(fx_undef.length() == 1, "only init frame emitted")
+  match fx_undef[0] {
+    TuiEffect::StdoutFrame(s) => assert(s == "{\"type\":\"system\",\"subtype\":\"init\"}\n", "init frame emitted for missing text")
+    _ => assert(false, "expected init StdoutFrame")
+  }
+
+  // 3. content[0] non-string `{text: 5}` emits init first, holds pending while not ready, and errors only on deliver().
+  let m_num = TuiBridgeMachine::new("k")
+  let fx_num_before = m_num.on_stdin_line("{\"type\":\"user\",\"message\":{\"content\":[{\"text\":5}]}}")
+  assert(!m_num.closing && m_num.has_pending(), "non-string text accepted before deliver")
+  assert(fx_num_before.length() == 1, "init frame emitted before ready")
+  let _ = m_num.on_hook_line("{\"key\":\"k\",\"event\":\"SessionStart\"}")
+  assert(!m_num.closing, "still not closing before ToolsListed")
+  let (_, fx_num_deliver) = m_num.on_hook_line("{\"key\":\"k\",\"event\":\"ToolsListed\"}")
+  assert(m_num.closing, "closes on deliver when pending is non-string")
+  let mut saw_replace_err = false
+  for i in 0..<fx_num_deliver.length() {
+    match fx_num_deliver[i] {
+      TuiEffect::StdoutFrame(s) =>
+      if str_contains(s, "pending.replace is not a function") {
+        saw_replace_err = true
+      }
+      _ => ()
+    }
+  }
+  assert(saw_replace_err, "deliver TypeError emitted as result frame")
+
+  // 4. StopFailure formats arrays and numbers using canonical JS String() semantics.
+  match base_codec::json_parse("{\"error\":[1,null,[3,4]]}") {
+    base_codec::JsonParseResult::Ok(h_arr) => assert(tui_failure_reason(h_arr) == "1,,3,4", "array StopFailure matches JS String()")
+    _ => assert(false, "parse")
+  }
+  match base_codec::json_parse("{\"error\":1.50}") {
+    base_codec::JsonParseResult::Ok(h_num) => assert(tui_failure_reason(h_num) == "1.5", "1.50 StopFailure matches JS String()")
+    _ => assert(false, "parse")
+  }
+  match base_codec::json_parse("{\"error\":[]}") {
+    base_codec::JsonParseResult::Ok(h_empty_arr) => assert(tui_failure_reason(h_empty_arr) == "", "empty array is truthy in JS and String([]) === \"\"")
+    _ => assert(false, "parse")
+  }
+}

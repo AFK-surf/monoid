@@ -1,0 +1,203 @@
+// `heap` subcommand: Pion-native diagnostic snapshot request/answer protocol.
+// Aligns with `station/src/ops/heap.ts` external CLI contract (`heap.request` / `heap.answer`),
+// writing a Pion runtime diagnostic JSON report (`.pion-heap.json`, mode 0600 — not a V8 DevTools
+// `.heapsnapshot`) containing RSS, open FDs, CPU time, uptime, and object counts.
+
+import "base_codec"
+import "nodepath"
+import "station_ops"
+
+pub let HEAP_REQUEST : String = "heap.request"
+pub let HEAP_ANSWER : String = "heap.answer"
+pub let HEAP_WAIT_MS : Int64 = 120000L
+pub let HEAP_LOOK_MS : Int64 = 250L
+
+pub enum HeapAnswer {
+  Ok(String, Int64, Int64)
+  Err(String)
+}
+
+pub fn parse_heap_answer(text : String) -> Option[HeapAnswer] {
+  let j = match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => return None
+  }
+  match base_codec::json_get(j, "error") {
+    Some(base_codec::Json::Str(err)) => return Some(HeapAnswer::Err(err))
+    _ => ()
+  }
+  let path = match base_codec::json_get(j, "path") {
+    Some(base_codec::Json::Str(p)) => p
+    _ => return None
+  }
+  let bytes = match cli_json_i64(base_codec::json_get(j, "bytes")) {
+    Some(b) => b
+    None => 0L
+  }
+  let ms = match cli_json_i64(base_codec::json_get(j, "ms")) {
+    Some(m) => m
+    None => 0L
+  }
+  Some(HeapAnswer::Ok(path, bytes, ms))
+}
+
+fn is_heap_snapshot_name(name : String) -> Bool {
+  name.starts_with("heap-") &&
+  (name.ends_with(".pion-heap.json") || name.ends_with(".heapsnapshot"))
+}
+
+/// Station-side handler: claim `<data>/run/heap.request`, remove previous snapshots,
+/// write a Pion-native diagnostic JSON snapshot (`heap-<iso-ms>.pion-heap.json`, mode 0600),
+/// and write `<data>/run/heap.answer`.
+pub fn answer_heap_request(data : String, ports : CliPorts) -> Bool {
+  let run_dir = nodepath::join(ports.sep, [data, "run"])
+  let req_path = nodepath::join(ports.sep, [run_dir, HEAP_REQUEST])
+  let claimed = nodepath::join(ports.sep, [run_dir, HEAP_REQUEST + "." + ports.self_pid.to_string()])
+  match (ports.fs.rename)(req_path, claimed) {
+    Ok(_) => ()
+    Err(_) => return false
+  }
+  let _ = (ports.fs.remove)(claimed)
+
+  let started = (ports.now_ms)()
+  let iso = format_iso_utc_ms(started)
+  let safe_ts = cli_replace_all(cli_replace_all(iso, ":", "-"), ".", "-")
+  let snap_path = nodepath::join(ports.sep, [run_dir, "heap-" + safe_ts + ".pion-heap.json"])
+
+  // Remove older snapshots so only the latest is kept
+  match (ports.fs.readdir)(run_dir) {
+    Ok(names) => {
+      let mut i = 0
+      while i < names.length() {
+        if is_heap_snapshot_name(names[i]) {
+          let _ = (ports.fs.remove)(nodepath::join(ports.sep, [run_dir, names[i]]))
+        }
+        i = i + 1
+      }
+    }
+    Err(_) => ()
+  }
+
+  let stats = match ports.heap_stats {
+    Some(f) => f()
+    None => HeapDiagSnapshot::{
+      pid: ports.self_pid,
+      rss_bytes: 0L,
+      open_fds: 0,
+      cpu_ns: 0L,
+      uptime_ms: 0L,
+      objects: 0L,
+    }
+  }
+  // Structured Pion diagnostic report (explicitly tagged `format: "pion-diag-v1"`, not a V8 heapsnapshot).
+  let payload = base_codec::json_stringify(base_codec::json_obj([
+    ("format", base_codec::json_str("pion-diag-v1")),
+    ("runtime", base_codec::json_str("pion")),
+    ("timestamp", base_codec::json_str(iso)),
+    ("pid", base_codec::json_int(stats.pid)),
+    ("rssBytes", base_codec::json_int64(stats.rss_bytes)),
+    ("openFds", base_codec::json_int(stats.open_fds)),
+    ("cpuNs", base_codec::json_int64(stats.cpu_ns)),
+    ("uptimeMs", base_codec::json_int64(stats.uptime_ms)),
+    ("objects", base_codec::json_int64(stats.objects)),
+  ])) + "\n"
+  let payload_bytes = payload.to_bytes()
+
+  let ans_path = nodepath::join(ports.sep, [run_dir, HEAP_ANSWER])
+  let ans_json = match (ports.fs.write_bytes)(snap_path, payload_bytes, 384) {
+    Ok(_) => {
+      let elapsed = (ports.now_ms)() - started
+      base_codec::json_obj([
+        ("path", base_codec::json_str(snap_path)),
+        ("bytes", base_codec::json_int64(payload_bytes.length().to_int64())),
+        ("ms", base_codec::json_int64(if elapsed < 0L { 0L } else { elapsed })),
+      ])
+    }
+    Err(e) => {
+      let _ = (ports.fs.remove)(snap_path)
+      base_codec::json_obj([("error", base_codec::json_str(station_ops::fs_err_msg(e)))])
+    }
+  }
+  let _ = station_ops::write_private(
+    ports.fs,
+    ans_path,
+    base_codec::json_stringify(ans_json).to_bytes(),
+    ports.self_pid,
+    1,
+    sep=ports.sep,
+  )
+  true
+}
+
+/// `stillfail-station heap [--data DIR] [--json]`
+pub fn run_heap_command(
+  data : String,
+  as_json : Bool,
+  ports : CliPorts,
+  wait_ms : Int64 = HEAP_WAIT_MS,
+) -> CliResult {
+  let run_dir = nodepath::join(ports.sep, [data, "run"])
+  let req_path = nodepath::join(ports.sep, [run_dir, HEAP_REQUEST])
+  let ans_path = nodepath::join(ports.sep, [run_dir, HEAP_ANSWER])
+  let _ = (ports.fs.mkdir_p)(run_dir)
+  let _ = (ports.fs.remove)(ans_path)
+  match station_ops::write_private(
+    ports.fs,
+    req_path,
+    ports.self_pid.to_string().to_bytes(),
+    ports.self_pid,
+    1,
+    sep=ports.sep,
+  ) {
+    Ok(_) => ()
+    Err(e) => return CliResult::err(1, "Error: " + station_ops::fs_err_msg(e) + "\n")
+  }
+  let start_ms = (ports.now_ms)()
+  let deadline = start_ms + wait_ms
+  let mut raw_ans : Option[String] = None
+  let mut waited = 0L
+  while true {
+    let now = (ports.now_ms)()
+    let remaining = if deadline - now < wait_ms - waited { deadline - now } else { wait_ms - waited }
+    let step = if remaining < HEAP_LOOK_MS { remaining } else { HEAP_LOOK_MS }
+    match (ports.wait_for_file)(ans_path, if step > 0L { step } else { 0L }) {
+      Some(t) => {
+        raw_ans = Some(t)
+        break
+      }
+      None => ()
+    }
+    if waited >= wait_ms || (ports.now_ms)() >= deadline {
+      break
+    }
+    // timer: re-touch heap request every 250ms for macOS FSEvents coalescing
+    (ports.touch_file)(req_path, (ports.now_ms)())
+    (ports.sleep_ms)(HEAP_LOOK_MS)
+    waited = waited + HEAP_LOOK_MS
+  }
+  let _ = (ports.fs.remove)(ans_path)
+  let ans_text = match raw_ans {
+    Some(t) => t
+    None => {
+      let _ = (ports.fs.remove)(req_path)
+      return CliResult::err(1, "the station did not answer: is it running on this data directory?\n")
+    }
+  }
+  match parse_heap_answer(ans_text) {
+    Some(HeapAnswer::Err(msg)) => CliResult::err(1, "the station could not write a heap snapshot: " + msg + "\n")
+    Some(HeapAnswer::Ok(path, bytes, ms)) => {
+      if as_json {
+        let obj = base_codec::json_obj([
+          ("path", base_codec::json_str(path)),
+          ("bytes", base_codec::json_int64(bytes)),
+          ("ms", base_codec::json_int64(ms)),
+        ])
+        CliResult::ok(base_codec::json_stringify(obj) + "\n")
+      } else {
+        let mb = (bytes + 524288L) / 1048576L
+        CliResult::ok(path + " (" + mb.to_string() + " MB, " + ms.to_string() + " ms)\n")
+      }
+    }
+    None => CliResult::err(1, "the station returned an invalid heap snapshot answer\n")
+  }
+}

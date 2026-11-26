@@ -1,0 +1,262 @@
+// `id` and `channel` subcommands.
+// 1:1 with `station/src/cli.ts` (`id`) and `station/src/updates/channel.ts` + `versions.ts`.
+
+import "base_codec"
+import "nodepath"
+import "station_cloud"
+import "station_ops"
+
+pub let CHANNEL_ASK : String = "channel-ask"
+pub let CHANNEL_ANSWER : String = "channel-answer"
+
+/// Parse `"stable"` or `"beta"` (trimmed); `None` otherwise.
+pub fn channel_of_id(id : String) -> Option[String] {
+  let t = cli_trim(id)
+  if t == "stable" || t == "beta" {
+    Some(t)
+  } else {
+    None
+  }
+}
+
+/// Read `<app>/CHANNEL` (`"stable"` or `"beta"`), or `None`.
+pub fn release_channel(fs : station_ops::OpsFs, app : String, sep : String = "/") -> Option[String] {
+  if app == "" {
+    return None
+  }
+  match fs.read_text(nodepath::join(sep, [app, "CHANNEL"])) {
+    Ok(raw) => channel_of_id(raw)
+    Err(_) => None
+  }
+}
+
+/// Effective update channel: `config.updateChannel`, else `<app>/CHANNEL`, else `"stable"`.
+pub fn channel_of(
+  raw : base_codec::Json,
+  fs : station_ops::OpsFs,
+  app : String,
+  sep : String = "/",
+) -> String {
+  match base_codec::json_get(raw, "updateChannel") {
+    Some(base_codec::Json::Str(s)) => match channel_of_id(s) {
+      Some(ch) => return ch
+      None => ()
+    }
+    _ => ()
+  }
+  match release_channel(fs, app, sep=sep) {
+    Some(ch) => ch
+    None => "stable"
+  }
+}
+
+/// `stillfail-station id [--data DIR] [--json]`
+pub fn run_id_command(data : String, as_json : Bool, ports : CliPorts) -> CliResult {
+  match station_cloud::load_key(data, ports.key_fs, sep=ports.sep) {
+    Ok(key) => {
+      if as_json {
+        let out = base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_str(key.id))]))
+        CliResult::ok(out + "\n")
+      } else {
+        CliResult::ok(key.id + "\n")
+      }
+    }
+    Err(e) => CliResult::err(1, "Error: " + e + "\n")
+  }
+}
+
+/// Write `updateChannel` directly to `config.json` (refusing malformed JSON).
+pub fn set_channel_in(
+  data : String,
+  channel : String,
+  env : Map[String, String],
+  i18n : station_ops::I18nState,
+  ports : CliPorts,
+) -> Result[Unit, String] {
+  let cfg = match station_ops::ConfigFile::open(
+    ports.fs,
+    data,
+    env_config=env.get("STILLFAIL_CONFIG"),
+    i18n=i18n,
+    pid=ports.self_pid,
+    sep=ports.sep,
+  ) {
+    Ok(c) => c
+    Err(e) => return Err(station_ops::config_err_msg(e))
+  }
+  match cfg.update(fn(raw : base_codec::Json) -> base_codec::Json {
+    cli_set_json_field(raw, "updateChannel", base_codec::json_str(channel))
+  }) {
+    Ok(_) => Ok(())
+    Err(e) => Err(station_ops::config_err_msg(e))
+  }
+}
+
+fn read_json_or_none(fs : station_ops::OpsFs, path : String) -> Option[base_codec::Json] {
+  match fs.read_text(path) {
+    Ok(t) => match base_codec::json_parse(t) {
+      base_codec::JsonParseResult::Ok(j) => Some(j)
+      _ => None
+    }
+    Err(_) => None
+  }
+}
+
+/// Put the station of `data` on `channel`: ask running station via `channel-ask` + HUP when running
+/// and accepting channel asks (`channel: 1`), otherwise write `config.json` directly.
+pub fn set_channel(
+  data : String,
+  channel : String,
+  wait_ms : Int64,
+  env : Map[String, String],
+  i18n : station_ops::I18nState,
+  ports : CliPorts,
+) -> Result[Unit, String] {
+  let run_dir = nodepath::join(ports.sep, [data, "run"])
+  let _ = (ports.fs.mkdir_p)(run_dir)
+  let said = read_json_or_none(ports.fs, nodepath::join(ports.sep, [run_dir, "station.json"]))
+  let pid_opt : Option[Int] = match said {
+    Some(j) => match cli_json_int(base_codec::json_get(j, "pid")) {
+      Some(p) => if p > 0 { Some(p) } else { None }
+      None => None
+    }
+    None => None
+  }
+  let takes_ask = match said {
+    Some(j) => match cli_json_int(base_codec::json_get(j, "channel")) {
+      Some(c) => c == 1
+      None => false
+    }
+    None => false
+  }
+  let pid = match pid_opt {
+    Some(p) => if takes_ask && (ports.pid_alive)(p) && (ports.is_launcher)(p) { p } else {
+      return set_channel_in(data, channel, env, i18n, ports)
+    }
+    None => return set_channel_in(data, channel, env, i18n, ports)
+  }
+  // If config already says this channel, nothing to ask.
+  let cfg_path = config_path_of(data, env, sep=ports.sep)
+  match read_json_or_none(ports.fs, cfg_path) {
+    Some(cfg_j) => match base_codec::json_get(cfg_j, "updateChannel") {
+      Some(base_codec::Json::Str(cur)) => if cur == channel { return Ok(()) }
+      _ => ()
+    }
+    None => ()
+  }
+  let ask_path = nodepath::join(ports.sep, [run_dir, CHANNEL_ASK])
+  let answer_path = nodepath::join(ports.sep, [run_dir, CHANNEL_ANSWER])
+  let _ = (ports.fs.remove)(answer_path)
+  match station_ops::write_private(ports.fs, ask_path, channel.to_bytes(), ports.self_pid, 1, sep=ports.sep) {
+    Ok(_) => ()
+    Err(e) => return Err(station_ops::fs_err_msg(e))
+  }
+  match (ports.ask_launcher_hup)(pid) {
+    Ok(_) => ()
+    Err(e) => {
+      let _ = (ports.fs.remove)(ask_path)
+      return Err(i18n.tr(i18n.lang, "station.cli.signalFailed", [("pid", pid.to_string()), ("error", e)]))
+    }
+  }
+  match (ports.wait_for_file)(answer_path, wait_ms) {
+    Some(text) => {
+      let _ = (ports.fs.remove)(answer_path)
+      let t = cli_trim(text)
+      if t.starts_with("ok") {
+        Ok(())
+      } else if t.starts_with("error ") {
+        Err(station_ops::ops_slice_str(t, 6, t.length()))
+      } else {
+        Err(t)
+      }
+    }
+    None => {
+      let _ = (ports.fs.remove)(ask_path)
+      Err(i18n.tr(i18n.lang, "station.cli.noAnswer"))
+    }
+  }
+}
+
+fn channel_positionals(args : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  let mut i = 0
+  while i < args.length() {
+    let a = args[i]
+    let skip_val = if i > 0 {
+      let p = args[i - 1]
+      p == "--app" || p == "--data" || p == "--port" || p == "--handoff" || p == "--node"
+    } else {
+      false
+    }
+    if !a.starts_with("--") && !skip_val {
+      out.push(a)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// `stillfail-station channel [stable|beta] [--app DIR] [--data DIR] [--json]`
+pub fn run_channel_command(
+  args : Array[String],
+  data : String,
+  env : Map[String, String],
+  i18n : station_ops::I18nState,
+  as_json : Bool,
+  ports : CliPorts,
+) -> CliResult {
+  let app = match station_ops::flag(args, "--app") {
+    Some(a) => a
+    None => ""
+  }
+  let pos = channel_positionals(args)
+  let mut cmd_idx = -1
+  let mut i = 0
+  while i < pos.length() {
+    if pos[i] == "channel" {
+      cmd_idx = i
+      break
+    }
+    i = i + 1
+  }
+  let named : Array[String] = []
+  if cmd_idx >= 0 {
+    let mut j = cmd_idx + 1
+    while j < pos.length() {
+      named.push(pos[j])
+      j = j + 1
+    }
+  }
+  if named.length() > 1 {
+    return CliResult::err(2, cli_usage() + "\n")
+  }
+  if named.length() == 1 {
+    let ch = match channel_of_id(named[0]) {
+      Some(c) => c
+      None => {
+        let msg = i18n.tr(i18n.lang, "station.cli.badChannel", [("channel", named[0])])
+        return CliResult::err(1, "Error: " + msg + "\n")
+      }
+    }
+    match set_channel(data, ch, 10000L, env, i18n, ports) {
+      Ok(_) => ()
+      Err(e) => return CliResult::err(1, "Error: " + e + "\n")
+    }
+  }
+  let cfg_path = config_path_of(data, env, sep=ports.sep)
+  let raw : base_codec::Json = match ports.fs.read_text(cfg_path) {
+    Ok(text) => match station_ops::parse_json_text(cfg_path, text, i18n.lang, i18n.product, i18n.product.id) {
+      Ok(v) => v
+      Err(inv) => return CliResult::err(1, "Error: " + inv.message + "\n")
+    }
+    Err(station_ops::FsErr::NotFound) => base_codec::json_obj([])
+    Err(e) => return CliResult::err(1, "Error: " + station_ops::fs_err_msg(e) + "\n")
+  }
+  let ch = channel_of(raw, ports.fs, app, sep=ports.sep)
+  if as_json {
+    let out = base_codec::json_stringify(base_codec::json_obj([("channel", base_codec::json_str(ch))]))
+    CliResult::ok(out + "\n")
+  } else {
+    CliResult::ok(ch + "\n")
+  }
+}

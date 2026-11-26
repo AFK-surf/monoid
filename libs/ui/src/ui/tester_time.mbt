@@ -857,6 +857,29 @@ fn Ctx::waited_by(self : Ctx) -> String {
 }
 
 ///|
+/// How many live timeline entries (including `later=true`) are owned by `root` or any descendant of `root`.
+/// Works both while `root` is mounted and while `root` is parked (`parent == -1`).
+pub fn Tester::subtree_timeline_count(self : Tester, root : @view.View) -> Int {
+  self.reads_own()
+  ignore(self)
+  match view_app.val {
+    Some(tree) => tree.subtree_timeline_count(root)
+    None => 0
+  }
+}
+
+///|
+/// Callsite strings (`by`) of live timeline entries (including `later=true`) owned by `root` or its descendants.
+pub fn Tester::subtree_timeline_bys(self : Tester, root : @view.View) -> Array[String] {
+  self.reads_own()
+  ignore(self)
+  match view_app.val {
+    Some(tree) => tree.subtree_timeline_bys(root)
+    None => []
+  }
+}
+
+///|
 /// Run on to the moment the last of the tree's columns gliding on by themselves (a fling, what shows past an end going
 /// back) comes to rest, as each says it now: a press there after is a press again, not one that catches the glide
 /// (view_caught). Nothing run where none glides.

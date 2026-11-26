@@ -107,6 +107,8 @@ pub fn clipboard_set(String, label? : String) -> Unit
 
 pub fn clipboard_set_png(Bytes, label? : String) -> Unit
 
+pub fn clock_now() -> Double
+
 pub fn code(String) -> @text.Run
 
 #callsite(autofill(loc))
@@ -501,6 +503,8 @@ pub fn key_modifiers() -> Int32
 
 pub fn key_of_char(Char) -> Int32
 
+pub fn key_reaches_node(@view.View, Int32, Int32, in_field? : Bool) -> Bool
+
 pub let key_space : Int32
 
 pub let key_tab : Int32
@@ -735,6 +739,8 @@ pub let press_slop : Double
 
 pub let press_space : Int32
 
+pub fn raw_premul_of(Int32, Int32, FixedArray[Byte]) -> Bytes?
+
 pub fn rect(Double, Double, Double, Double, color~ : Int64, corners? : (Double, Double, Double, Double)) -> @paint.Rect
 
 pub fn rect_of(Double, Double, Double, Double, color~ : Int64, corners? : (Double, Double, Double, Double)) -> @paint.Rect
@@ -834,6 +840,10 @@ pub fn set_press_rules(PressRules) -> Unit
 pub fn set_tree_theme(() -> Theme) -> Unit
 
 pub fn set_vector_pictures((Bytes, Int32) -> (Int32, Int32, FixedArray[Byte])?) -> Unit
+
+pub fn set_vector_pictures_parsed((Bytes) -> ((Int32) -> (Int32, Int32, FixedArray[Byte])?)?) -> Unit
+
+pub fn set_vector_pictures_premul((Bytes, Int32) -> (Int32, Int32, FixedArray[Byte])?) -> Unit
 
 pub fn set_view_app((@view.View) -> Unit, around? : (Ctx) -> Unit, theme? : () -> Theme) -> Unit
 
@@ -2602,6 +2612,7 @@ pub fn[P] Nav::rise(Self[P], P) -> Unit
 pub fn[P] Nav::risen(Self[P]) -> Bool
 pub fn[P] Nav::root_progress(Self[P], () -> Double) -> Double
 pub fn[P] Nav::root_shows(Self[P]) -> Bool
+pub fn[P] Nav::set_kept_left_limits(Self[P], most_of? : (String) -> Int32, total? : Int32) -> Unit
 pub fn[P] Nav::shelf_empty(Self[P]) -> Unit
 pub fn[P : Eq] Nav::shelved(Self[P], P) -> Int32?
 pub fn[P] Nav::shows(Self[P], Int32) -> Bool
@@ -3557,6 +3568,8 @@ pub fn Tester::stream_drops(Self, Int32, Double) -> Unit
 pub fn Tester::stream_fed(Self, Int32) -> Array[String]
 pub fn Tester::stream_ids(Self) -> Array[Int32]
 pub fn Tester::stream_shows(Self, Int32, Double, Int32, Int32) -> Unit
+pub fn Tester::subtree_timeline_bys(Self, @view.View) -> Array[String]
+pub fn Tester::subtree_timeline_count(Self, @view.View) -> Int32
 pub fn Tester::tab(Self, back? : Bool) -> Unit
 pub fn Tester::tabular_wider(Self, Double) -> Unit
 pub fn Tester::taken_at(Self) -> Double

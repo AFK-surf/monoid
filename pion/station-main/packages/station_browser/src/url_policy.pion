@@ -1,0 +1,1349 @@
+// Browser URL normalization/policy (`station/src/browser/url.ts`) and per-chat
+// CDP DevTools Gate (`station/src/browser/gate.ts`).
+
+import "base_codec"
+import "url"
+
+pub let MAX_URL_LENGTH : Int = 8192
+pub let BLANK_PAGE : String = "about:blank"
+
+/// Ids of what the gate itself asks of Chrome (letting go of a foreign target).
+pub let GATE_OWN_IDS : Int64 = 2000000000L
+
+fn valid_http_url(raw : String) -> Option[url::Url] {
+  match url::Url::parse(raw) {
+    Ok(u) => {
+      let scheme = u.scheme()
+      if (scheme != "http" && scheme != "https") || u.hostname().length() == 0 {
+        return None
+      }
+      if u.username().length() > 0 || u.password_str().length() > 0 {
+        return None
+      }
+      Some(u)
+    }
+    Err(_) => None
+  }
+}
+
+fn plausible_bare_host(hostname : String) -> Bool {
+  let h = ascii_lower(hostname)
+  if h == "localhost" || h.ends_with(".localhost") || h.starts_with("[") {
+    return true
+  }
+  if is_ipv4_host(h) {
+    return true
+  }
+  if h.starts_with(".") || h.ends_with(".") || h.index_of("..") >= 0 {
+    return false
+  }
+  let b = h.to_bytes()
+  let mut dot = -1
+  let mut i = b.length() - 1
+  while i >= 0 {
+    if (b[i].to_int() & 0xFF) == 46 {
+      dot = i
+      break
+    }
+    i = i - 1
+  }
+  dot > 0 && b.length() - dot - 1 >= 2
+}
+
+fn is_url_stop_byte(c : Int) -> Bool {
+  is_ascii_space(c) ||
+  c == 60 || // <
+  c == 62 || // >
+  c == 34 || // "
+  c == 39 || // '
+  c == 96 || // `
+  c == 41 || // )
+  c == 93 || // ]
+  c == 125 // }
+}
+
+fn strip_trailing_punct(s : String) -> String {
+  let b = s.to_bytes()
+  let mut end = b.length()
+  while end > 0 {
+    let c = b[end - 1].to_int() & 0xFF
+    if c == 46 || c == 44 || c == 59 || c == 58 || c == 33 || c == 63 {
+      end = end - 1
+    } else {
+      break
+    }
+  }
+  if end == b.length() {
+    return s
+  }
+  b.slice(0, end).to_string()
+}
+
+fn starts_with_http_scheme_at(b : Bytes, pos : Int) -> Int {
+  let len = b.length()
+  if pos + 7 > len {
+    return 0
+  }
+  let c0 = b[pos].to_int() & 0xFF
+  let c1 = b[pos + 1].to_int() & 0xFF
+  let c2 = b[pos + 2].to_int() & 0xFF
+  let c3 = b[pos + 3].to_int() & 0xFF
+  if (c0 != 104 && c0 != 72) ||
+  (c1 != 116 && c1 != 84) ||
+  (c2 != 116 && c2 != 84) ||
+  (c3 != 112 && c3 != 80) {
+    return 0
+  }
+  let c4 = b[pos + 4].to_int() & 0xFF
+  if c4 == 58 &&
+  pos + 7 <= len &&
+  (b[pos + 5].to_int() & 0xFF) == 47 &&
+  (b[pos + 6].to_int() & 0xFF) == 47 {
+    return 7
+  }
+  if (c4 == 115 || c4 == 83) &&
+  pos + 8 <= len &&
+  (b[pos + 5].to_int() & 0xFF) == 58 &&
+  (b[pos + 6].to_int() & 0xFF) == 47 &&
+  (b[pos + 7].to_int() & 0xFF) == 47 {
+    return 8
+  }
+  0
+}
+
+fn has_space_or_ctrl(s : String) -> Bool {
+  let b = s.to_bytes()
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if is_ascii_space(c) || c < 32 || c == 127 {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn is_all_ascii_digits(s : String) -> Bool {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return false
+  }
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+/// The first valid `http(s)://` URL inside `raw` (a copied link or a block of email text), or `None`.
+pub fn extract_first_http_url(raw : String) -> Option[String] {
+  let raw_bytes = raw.to_bytes()
+  if raw_bytes.length() == 0 {
+    return None
+  }
+  let limit = if raw_bytes.length() > MAX_URL_LENGTH * 2 {
+    MAX_URL_LENGTH * 2
+  } else {
+    raw_bytes.length()
+  }
+  let mut i = 0
+  while i < limit {
+    let scheme_len = starts_with_http_scheme_at(raw_bytes, i)
+    if scheme_len > 0 {
+      let mut end = i + scheme_len
+      while end < limit && !is_url_stop_byte(raw_bytes[end].to_int() & 0xFF) {
+        end = end + 1
+      }
+      if end > i + scheme_len {
+        let candidate = strip_trailing_punct(raw_bytes.slice(i, end).to_string())
+        if candidate.length() <= MAX_URL_LENGTH {
+          match valid_http_url(candidate) {
+            Some(u) => return Some(u.href())
+            None => ()
+          }
+        }
+      }
+      i = end
+    } else {
+      i = i + 1
+    }
+  }
+  None
+}
+
+/// A web address normalized to `http(s)://...`: accepts a full URL, text containing an `http(s)://` link,
+/// or a bare host (`mail.proton.me`, `localhost:3000/app`); `None` for empty strings, non-HTTP schemes,
+/// or email addresses.
+pub fn normalize_browser_url(raw : String) -> Option[String] {
+  let trimmed = trim_ascii(raw)
+  if trimmed.length() == 0 || trimmed.length() > MAX_URL_LENGTH {
+    return None
+  }
+  let tb = trimmed.to_bytes()
+  if starts_with_http_scheme_at(tb, 0) > 0 && !has_space_or_ctrl(trimmed) {
+    return match valid_http_url(trimmed) {
+      Some(u) => Some(u.href())
+      None => None
+    }
+  }
+  match extract_first_http_url(trimmed) {
+    Some(embedded) => return Some(embedded)
+    None => ()
+  }
+  if has_space_or_ctrl(trimmed) {
+    return None
+  }
+  if trimmed.index_of("://") >= 0 {
+    return None
+  }
+  // Find first delimiter `/`, `?`, or `#`
+  let mut slash = -1
+  let mut i = 0
+  while i < tb.length() {
+    let c = tb[i].to_int() & 0xFF
+    if c == 47 || c == 63 || c == 35 {
+      slash = i
+      break
+    }
+    i = i + 1
+  }
+  let authority = if slash < 0 { trimmed } else { tb.slice(0, slash).to_string() }
+  if authority.length() == 0 || authority.index_of("@") >= 0 {
+    return None
+  }
+  let host_only = if authority.starts_with("[") {
+    let close_br = authority.index_of("]")
+    if close_br < 0 {
+      return None
+    }
+    authority.to_bytes().slice(0, close_br + 1).to_string()
+  } else {
+    let colon = authority.index_of(":")
+    if colon >= 0 {
+      let ab = authority.to_bytes()
+      let port_part = ab.slice(colon + 1, ab.length()).to_string()
+      if !is_all_ascii_digits(port_part) {
+        return None
+      }
+      ab.slice(0, colon).to_string()
+    } else {
+      authority
+    }
+  }
+  let host_lc = ascii_lower(host_only)
+  let is_local = host_lc == "localhost" ||
+  host_lc.ends_with(".localhost") ||
+  host_lc == "127.0.0.1" ||
+  host_lc == "[::1]"
+  let prefix = if is_local { "http://" } else { "https://" }
+  match valid_http_url(prefix + trimmed) {
+    Some(u) => {
+      if !plausible_bare_host(u.hostname()) {
+        return None
+      }
+      Some(u.href())
+    }
+    None => None
+  }
+}
+
+fn encode_uri_component(s : String) -> String {
+  let b = s.to_bytes()
+  let hex = "0123456789ABCDEF".to_bytes()
+  let sb = StringBuilder::with_capacity(b.length())
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    let unescaped = (c >= 65 && c <= 90) ||
+    (c >= 97 && c <= 122) ||
+    (c >= 48 && c <= 57) ||
+    c == 45 || // -
+    c == 95 || // _
+    c == 46 || // .
+    c == 33 || // !
+    c == 126 || // ~
+    c == 42 || // *
+    c == 39 || // '
+    c == 40 || // (
+    c == 41 // )
+    if unescaped {
+      sb.write_byte(b[i])
+    } else {
+      sb.write_byte((37).to_byte())
+      sb.write_byte(hex[(c >> 4) & 0xF])
+      sb.write_byte(hex[c & 0xF])
+    }
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+/// Where an address bar's words go: a web address as `normalize_browser_url` reads one,
+/// else a Google search URL; `None` for empty/overlong input.
+pub fn address_or_search(raw : String) -> Option[String] {
+  let trimmed = trim_ascii(raw)
+  if trimmed.length() == 0 || trimmed.length() > MAX_URL_LENGTH {
+    return None
+  }
+  match normalize_browser_url(trimmed) {
+    Some(u) => Some(u)
+    None => Some("https://www.google.com/search?q=" + encode_uri_component(trimmed))
+  }
+}
+
+/// The site (`hostname[:port]`) of a browser tab's URL, without path, query, or hash; `None` for `about:blank`.
+pub fn site_of_browser_url(raw : String) -> Option[String] {
+  match valid_http_url(raw) {
+    Some(u) => Some(ascii_lower(u.host_and_port()))
+    None => None
+  }
+}
+
+/// A URL worth persisting for a sleeping user tab (`http:` or `https:`, never `about:blank` or `chrome-error://`).
+pub fn persistable_browser_url(raw : String) -> Option[String] {
+  match valid_http_url(raw) {
+    Some(u) => Some(u.href())
+    None => None
+  }
+}
+
+// ============================================================================
+// Per-chat CDP Gate (`station/src/browser/gate.ts`)
+// ============================================================================
+
+pub enum BrowserMethodPolicy {
+  Pass
+  Target
+  Context
+  Window
+  Answer
+  Own
+}
+
+fn browser_method_policy(method : String) -> Option[BrowserMethodPolicy] {
+  if method == "Browser.getVersion" ||
+  method == "Schema.getDomains" ||
+  method == "Target.setDiscoverTargets" ||
+  method == "Target.setAutoAttach" ||
+  method == "Target.getTargets" ||
+  method == "Target.createBrowserContext" {
+    return Some(BrowserMethodPolicy::Pass)
+  }
+  if method == "Browser.getWindowForTarget" ||
+  method == "Target.getTargetInfo" ||
+  method == "Target.attachToTarget" ||
+  method == "Target.closeTarget" ||
+  method == "Target.autoAttachRelated" {
+    return Some(BrowserMethodPolicy::Target)
+  }
+  if method == "Browser.getWindowBounds" || method == "Browser.setWindowBounds" {
+    return Some(BrowserMethodPolicy::Window)
+  }
+  if method == "Browser.setDownloadBehavior" ||
+  method == "Browser.grantPermissions" ||
+  method == "Browser.resetPermissions" ||
+  method == "Browser.setPermission" ||
+  method == "Storage.getCookies" ||
+  method == "Storage.setCookies" ||
+  method == "Storage.clearCookies" ||
+  method == "Target.createTarget" ||
+  method == "Target.disposeBrowserContext" {
+    return Some(BrowserMethodPolicy::Context)
+  }
+  if method == "Target.activateTarget" || method == "Target.getBrowserContexts" {
+    return Some(BrowserMethodPolicy::Answer)
+  }
+  if method == "Target.detachFromTarget" {
+    return Some(BrowserMethodPolicy::Own)
+  }
+  None
+}
+
+pub fn is_front_method(method : String) -> Bool {
+  method == "Page.bringToFront"
+}
+
+pub fn is_acting_method(method : String) -> Bool {
+  method == "Page.navigate" ||
+  method == "Page.reload" ||
+  method == "Page.navigateToHistoryEntry" ||
+  method == "Page.setDocumentContent" ||
+  method == "Input.dispatchMouseEvent" ||
+  method == "Input.dispatchKeyEvent" ||
+  method == "Input.dispatchTouchEvent" ||
+  method == "Input.insertText" ||
+  method == "Input.imeSetComposition" ||
+  method == "Runtime.callFunctionOn" ||
+  method == "Runtime.evaluate" ||
+  method == "DOM.focus" ||
+  method == "DOM.setFileInputFiles"
+}
+
+fn is_cookies_method(method : String) -> Bool {
+  method == "Storage.getCookies" ||
+  method == "Storage.setCookies" ||
+  method == "Storage.clearCookies"
+}
+
+fn is_target_news_method(method : String) -> Bool {
+  method == "Target.targetCreated" ||
+  method == "Target.targetInfoChanged" ||
+  method == "Target.targetDestroyed" ||
+  method == "Target.targetCrashed" ||
+  method == "Target.attachedToTarget" ||
+  method == "Target.detachedFromTarget" ||
+  method == "Target.receivedMessageFromTarget"
+}
+
+/// What to do with a CDP message: send `up` to Chrome, send `down` back to the agent.
+pub struct GatePassed {
+  pub up : Array[String]
+  pub down : Array[String]
+}
+
+pub fn GatePassed::empty() -> GatePassed {
+  GatePassed::{ up: [], down: [] }
+}
+
+/// Hooks supplied to `Gate` per call or at construction (kept acyclic: no Gate reference inside).
+pub struct GateHooks {
+  pub context_of : (String) -> Option[String]
+  pub on_opened : (String) -> Unit
+  pub on_used : (String, Option[String]) -> Unit
+  pub on_act : (String, String) -> Option[String]
+}
+
+pub fn GateHooks::default() -> GateHooks {
+  GateHooks::{
+    context_of: fn(_id : String) -> Option[String] { None },
+    on_opened: fn(_id : String) -> Unit {},
+    on_used: fn(_id : String, _url : Option[String]) -> Unit {},
+    on_act: fn(_id : String, _method : String) -> Option[String] { None },
+  }
+}
+
+enum AskedKind {
+  Used(String, Option[String])
+  WindowForTarget
+  AttachToTarget(String)
+  CreateTarget
+  CreateBrowserContext
+  GetTargets
+}
+
+pub struct Gate {
+  context : String
+  hooks : GateHooks
+  contexts : Map[String, Bool]
+  mine : Map[String, Bool]
+  sessions : Map[String, Bool]
+  targets : Map[String, String]
+  foreign : Map[String, Bool]
+  windows : Map[Int64, Bool]
+  asked : Map[String, AskedKind]
+  own : Map[Int64, Bool]
+  mut own_id : Int64
+}
+
+pub fn Gate::new(context : String, hooks : GateHooks) -> Gate {
+  Gate::{
+    context: context,
+    hooks: hooks,
+    contexts: Map::new(),
+    mine: Map::new(),
+    sessions: Map::new(),
+    targets: Map::new(),
+    foreign: Map::new(),
+    windows: Map::new(),
+    asked: Map::new(),
+    own: Map::new(),
+    own_id: GATE_OWN_IDS,
+  }
+}
+
+fn gate_error(id : base_codec::Json, session_id : Option[String], message : String) -> String {
+  let fields : Array[(String, base_codec::Json)] = [("id", id)]
+  match session_id {
+    Some(sid) => fields.push(("sessionId", base_codec::json_str(sid)))
+    None => ()
+  }
+  fields.push(
+    (
+      "error",
+      base_codec::json_obj(
+        [("code", base_codec::json_int(-32601)), ("message", base_codec::json_str(message))],
+      ),
+    ),
+  )
+  base_codec::json_stringify(base_codec::json_obj(fields))
+}
+
+fn parse_valid_id(v : base_codec::Json) -> Option[(String, Option[Int64])] {
+  match v {
+    base_codec::Json::Num(d, repr) => {
+      // Safe integer check
+      let n = d.to_int64()
+      if n.to_double() != d {
+        return None
+      }
+      if n < -9007199254740991L || n > 9007199254740991L {
+        return None
+      }
+      let key = if repr.length() > 0 { repr } else { n.to_string() }
+      Some((key, Some(n)))
+    }
+    base_codec::Json::Str(s) => {
+      if s.length() == 0 {
+        None
+      } else {
+        Some((s, None))
+      }
+    }
+    _ => None
+  }
+}
+
+fn json_str_field(obj : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn json_int64_field(obj : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Num(d, _)) => {
+      let n = d.to_int64()
+      if n.to_double() == d {
+        Some(n)
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+fn json_bool_field(obj : base_codec::Json, key : String) -> Option[Bool] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+fn opt_str_is(opt : Option[String], expected : String) -> Bool {
+  match opt {
+    Some(s) => s == expected
+    None => false
+  }
+}
+
+fn opt_bool_is(opt : Option[Bool], expected : Bool) -> Bool {
+  match opt {
+    Some(b) => b == expected
+    None => false
+  }
+}
+
+fn opt_json_is_none(opt : Option[base_codec::Json]) -> Bool {
+  match opt {
+    None => true
+    Some(_) => false
+  }
+}
+
+fn Gate::is_ours(self : Gate, ctx : Option[String]) -> Bool {
+  match ctx {
+    None => false
+    Some(c) => c == self.context || self.contexts.contains(c)
+  }
+}
+
+fn Gate::is_our_target(self : Gate, id : Option[String], info_ctx : Option[String]) -> Bool {
+  match id {
+    None => false
+    Some(tid) => {
+      if self.mine.contains(tid) {
+        return true
+      }
+      let ctx = match info_ctx {
+        Some(c) => Some(c)
+        None => (self.hooks.context_of)(tid)
+      }
+      if !self.is_ours(ctx) {
+        return false
+      }
+      self.mine.set(tid, true)
+      true
+    }
+  }
+}
+
+fn asked_key(sid : Option[String], id_str : String) -> String {
+  match sid {
+    Some(s) => s + "\u{0}" + id_str
+    None => "\u{0}" + id_str
+  }
+}
+
+/// Process a text message from the agent toward Chrome.
+pub fn Gate::from_client(self : Gate, text : String) -> GatePassed {
+  let m = match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return GatePassed::empty()
+  }
+  let raw_id = match base_codec::json_get(m, "id") {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+  let sid = json_str_field(m, "sessionId")
+  let method = match json_str_field(m, "method") {
+    Some(s) => s
+    None => {
+      return GatePassed::{
+        up: [],
+        down: [gate_error(raw_id, sid, "a message is {id, method, params}")],
+      }
+    }
+  }
+  let (id_str, id_num) = match parse_valid_id(raw_id) {
+    Some(pair) => pair
+    None => {
+      return GatePassed::{
+        up: [],
+        down: [gate_error(raw_id, sid, "a message is {id, method, params}")],
+      }
+    }
+  }
+  let key = asked_key(sid, id_str)
+  let reserved = match (sid, id_num) {
+    (None, Some(n)) => self.own.contains(n)
+    _ => false
+  }
+  if self.asked.contains(key) || reserved {
+    return GatePassed::{
+      up: [],
+      down: [gate_error(raw_id, sid, "Duplicate or reserved request id.")],
+    }
+  }
+  let params = match base_codec::json_get(m, "params") {
+    Some(base_codec::Json::Obj(fs)) => base_codec::Json::Obj(fs)
+    _ => base_codec::json_obj([])
+  }
+  match sid {
+    Some(s) => {
+      if !self.sessions.contains(s) {
+        return GatePassed::{
+          up: [],
+          down: [gate_error(raw_id, Some(s), "No such session of this chat's.")],
+        }
+      }
+      if method.starts_with("WebAuthn.") {
+        return GatePassed::{
+          up: [],
+          down: [gate_error(raw_id, Some(s), method + " is not for one chat's browser.")],
+        }
+      }
+      match self.targets.get(s) {
+        Some(target) => {
+          if is_acting_method(method) {
+            match (self.hooks.on_act)(target, method) {
+              Some(refused) => {
+                return GatePassed::{ up: [], down: [gate_error(raw_id, Some(s), refused)] }
+              }
+              None => ()
+            }
+          }
+          match id_num {
+            Some(_) => {
+              let p_type = json_str_field(params, "type")
+              let track_used = method == "Page.navigate" ||
+              method == "Runtime.callFunctionOn" ||
+              (method == "Input.dispatchMouseEvent" && opt_str_is(p_type, "mousePressed")) ||
+              (method == "Input.dispatchKeyEvent" && opt_str_is(p_type, "keyDown"))
+              if track_used {
+                self.asked.set(key, AskedKind::Used(target, json_str_field(params, "url")))
+              }
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+      if is_front_method(method) {
+        let resp = base_codec::json_obj(
+          [
+            ("id", raw_id),
+            ("sessionId", base_codec::json_str(s)),
+            ("result", base_codec::json_obj([])),
+          ],
+        )
+        return GatePassed::{ up: [], down: [base_codec::json_stringify(resp)] }
+      }
+      if method == "Target.setAutoAttach" || method == "Target.autoAttachRelated" {
+        return GatePassed::{ up: [text], down: [] }
+      }
+      if method.starts_with("Target.") || method.starts_with("Browser.") || is_cookies_method(method) {
+        return self.handle_browser_method(m, raw_id, method, params, Some(s), key)
+      }
+      GatePassed::{ up: [text], down: [] }
+    }
+    None => self.handle_browser_method(m, raw_id, method, params, None, key)
+  }
+}
+
+fn clone_obj_fields(j : base_codec::Json) -> Array[(String, base_codec::Json)] {
+  let out : Array[(String, base_codec::Json)] = []
+  match j {
+    base_codec::Json::Obj(fs) => {
+      let mut i = 0
+      while i < fs.length() {
+        out.push(fs[i])
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn Gate::handle_browser_method(
+  self : Gate,
+  m : base_codec::Json,
+  raw_id : base_codec::Json,
+  method : String,
+  params : base_codec::Json,
+  session_id : Option[String],
+  key : String,
+) -> GatePassed {
+  let policy = match browser_method_policy(method) {
+    Some(p) => p
+    None => {
+      return GatePassed::{
+        up: [],
+        down: [gate_error(raw_id, session_id, method + " is not for one chat's browser.")],
+      }
+    }
+  }
+  match policy {
+    BrowserMethodPolicy::Answer => {
+      let result = if method == "Target.getBrowserContexts" {
+        let ctx_arr : Array[base_codec::Json] = []
+        let ckeys = self.contexts.keys()
+        let mut ci = 0
+        while ci < ckeys.length() {
+          ctx_arr.push(base_codec::json_str(ckeys[ci]))
+          ci = ci + 1
+        }
+        base_codec::json_obj(
+          [
+            ("browserContextIds", base_codec::json_arr(ctx_arr)),
+            ("defaultBrowserContextId", base_codec::json_str(self.context)),
+          ],
+        )
+      } else {
+        base_codec::json_obj([])
+      }
+      let fields : Array[(String, base_codec::Json)] = [("id", raw_id)]
+      match session_id {
+        Some(sid) => fields.push(("sessionId", base_codec::json_str(sid)))
+        None => ()
+      }
+      fields.push(("result", result))
+      GatePassed::{ up: [], down: [base_codec::json_stringify(base_codec::json_obj(fields))] }
+    }
+    BrowserMethodPolicy::Window => {
+      match json_int64_field(params, "windowId") {
+        Some(wid) => {
+          if !self.windows.contains(wid) {
+            return GatePassed::{
+              up: [],
+              down: [gate_error(raw_id, session_id, "No such window of this chat's.")],
+            }
+          }
+          GatePassed::{ up: [base_codec::json_stringify(m)], down: [] }
+        }
+        None => {
+          GatePassed::{
+            up: [],
+            down: [gate_error(raw_id, session_id, "No such window of this chat's.")],
+          }
+        }
+      }
+    }
+    BrowserMethodPolicy::Target => {
+      if method == "Target.attachToTarget" && !opt_bool_is(json_bool_field(params, "flatten"), true) {
+        return GatePassed::{
+          up: [],
+          down: [gate_error(raw_id, session_id, "Target.attachToTarget requires flatten: true.")],
+        }
+      }
+      let target_id_val = base_codec::json_get(params, "targetId")
+      let target_id_str = json_str_field(params, "targetId")
+      if method == "Browser.getWindowForTarget" {
+        match target_id_val {
+          None => {
+            match session_id {
+              None => {
+                return GatePassed::{
+                  up: [],
+                  down: [gate_error(raw_id, session_id, "No such target of this chat's.")],
+                }
+              }
+              Some(_) => ()
+            }
+          }
+          Some(_) => {
+            if !self.is_our_target(target_id_str, None) {
+              return GatePassed::{
+                up: [],
+                down: [gate_error(raw_id, session_id, "No such target of this chat's.")],
+              }
+            }
+          }
+        }
+        self.asked.set(key, AskedKind::WindowForTarget)
+        return GatePassed::{ up: [base_codec::json_stringify(m)], down: [] }
+      }
+      if opt_json_is_none(target_id_val) &&
+      method != "Target.attachToTarget" &&
+      method != "Target.closeTarget" {
+        return GatePassed::{ up: [base_codec::json_stringify(m)], down: [] }
+      }
+      if !self.is_our_target(target_id_str, None) {
+        return GatePassed::{
+          up: [],
+          down: [gate_error(raw_id, session_id, "No such target of this chat's.")],
+        }
+      }
+      let tid = match target_id_str {
+        Some(t) => t
+        None => ""
+      }
+      if method == "Target.closeTarget" {
+        match (self.hooks.on_act)(tid, method) {
+          Some(refused) => {
+            return GatePassed::{ up: [], down: [gate_error(raw_id, session_id, refused)] }
+          }
+          None => ()
+        }
+      }
+      if method == "Target.attachToTarget" {
+        self.asked.set(key, AskedKind::AttachToTarget(tid))
+      }
+      GatePassed::{ up: [base_codec::json_stringify(m)], down: [] }
+    }
+    BrowserMethodPolicy::Own => {
+      match json_str_field(params, "sessionId") {
+        Some(psid) => {
+          if !self.sessions.contains(psid) {
+            return GatePassed::{
+              up: [],
+              down: [gate_error(raw_id, session_id, "No such session of this chat's.")],
+            }
+          }
+          GatePassed::{ up: [base_codec::json_stringify(m)], down: [] }
+        }
+        None => {
+          GatePassed::{
+            up: [],
+            down: [gate_error(raw_id, session_id, "No such session of this chat's.")],
+          }
+        }
+      }
+    }
+    BrowserMethodPolicy::Context => {
+      let given_val = base_codec::json_get(params, "browserContextId")
+      let given_str = json_str_field(params, "browserContextId")
+      if !opt_json_is_none(given_val) && !self.is_ours(given_str) {
+        return GatePassed::{
+          up: [],
+          down: [gate_error(raw_id, session_id, "No such browser context of this chat's.")],
+        }
+      }
+      if method == "Target.disposeBrowserContext" {
+        match given_str {
+          None => {
+            return GatePassed::{
+              up: [],
+              down: [
+                gate_error(
+                  raw_id,
+                  session_id,
+                  "This chat's own context is not disposed of from here.",
+                ),
+              ],
+            }
+          }
+          Some(g) => {
+            if g == self.context {
+              return GatePassed::{
+                up: [],
+                down: [
+                  gate_error(
+                    raw_id,
+                    session_id,
+                    "This chat's own context is not disposed of from here.",
+                  ),
+                ],
+              }
+            }
+            self.contexts.remove(g)
+            return GatePassed::{ up: [base_codec::json_stringify(m)], down: [] }
+          }
+        }
+      }
+      let eff_ctx = match given_str {
+        Some(g) => g
+        None => self.context
+      }
+      let out_params = clone_obj_fields(params)
+      base_codec::json_obj_set(out_params, "browserContextId", base_codec::json_str(eff_ctx))
+      if method == "Target.createTarget" {
+        base_codec::json_obj_set(out_params, "newWindow", base_codec::json_bool(true))
+        base_codec::json_obj_set(out_params, "background", base_codec::json_bool(true))
+        self.asked.set(key, AskedKind::CreateTarget)
+      }
+      let out_fields = clone_obj_fields(m)
+      base_codec::json_obj_set(out_fields, "params", base_codec::json_obj(out_params))
+      GatePassed::{ up: [base_codec::json_stringify(base_codec::json_obj(out_fields))], down: [] }
+    }
+    BrowserMethodPolicy::Pass => {
+      if method == "Target.createBrowserContext" {
+        self.asked.set(key, AskedKind::CreateBrowserContext)
+      } else if method == "Target.getTargets" {
+        self.asked.set(key, AskedKind::GetTargets)
+      }
+      GatePassed::{ up: [base_codec::json_stringify(m)], down: [] }
+    }
+  }
+}
+
+fn extract_tail_session_id(tail : String) -> Option[String] {
+  let tb = tail.to_bytes()
+  let needle = "\"sessionId\":\"".to_bytes()
+  let nlen = needle.length()
+  if tb.length() < nlen + 2 {
+    return None
+  }
+  // Scan from the end to find the LAST `"sessionId":"` so nested `result.sessionId`
+  // never shadows the trailing top-level `sessionId` (aligns /"sessionId":"([^"]+)"\s*\}$/).
+  let mut idx = tb.length() - nlen
+  while idx >= 0 {
+    let mut matched = true
+    let mut j = 0
+    while j < nlen {
+      if tb[idx + j] != needle[j] {
+        matched = false
+        break
+      }
+      j = j + 1
+    }
+    if matched {
+      let start = idx + nlen
+      let mut end = start
+      while end < tb.length() && (tb[end].to_int() & 0xFF) != 34 {
+        end = end + 1
+      }
+      if end < tb.length() && end > start {
+        let mut k = end + 1
+        while k < tb.length() && is_ascii_space(tb[k].to_int() & 0xFF) {
+          k = k + 1
+        }
+        if k + 1 == tb.length() && (tb[k].to_int() & 0xFF) == 125 {
+          return Some(tb.slice(start, end).to_string())
+        }
+      }
+    }
+    idx = idx - 1
+  }
+  None
+}
+
+fn extract_head_id(head : String) -> Option[(String, Bool, Int)] {
+  let hb = head.to_bytes()
+  // Expect `{"id":`
+  if hb.length() < 7 {
+    return None
+  }
+  let pos = 6
+  let c = hb[pos].to_int() & 0xFF
+  if c == 34 {
+    // quoted string id
+    let mut end = pos + 1
+    while end < hb.length() && (hb[end].to_int() & 0xFF) != 34 {
+      end = end + 1
+    }
+    if end >= hb.length() || end == pos + 1 || end - (pos + 1) > 64 {
+      return None
+    }
+    return Some((hb.slice(pos + 1, end).to_string(), true, end + 1))
+  }
+  let mut end = pos
+  if c == 45 {
+    end = end + 1
+  }
+  let digits_start = end
+  while end < hb.length() {
+    let ch = hb[end].to_int() & 0xFF
+    if ch >= 48 && ch <= 57 {
+      end = end + 1
+    } else {
+      break
+    }
+  }
+  if end == digits_start {
+    return None
+  }
+  Some((hb.slice(pos, end).to_string(), false, end))
+}
+
+/// O(1) pre-filter for messages from Chrome: large unrelated payloads (e.g. screenshots)
+/// bypass JSON parsing when no pending `#asked`/`#own`/`#foreign` matches.
+pub fn Gate::wants(self : Gate, text : String) -> Bool {
+  if text.starts_with("{\"method\":\"Target.") {
+    return true
+  }
+  if self.asked.length() == 0 && self.foreign.length() == 0 && self.own.length() == 0 {
+    return false
+  }
+  let tb = text.to_bytes()
+  let tail = if tb.length() > 128 {
+    tb.slice(tb.length() - 128, tb.length()).to_string()
+  } else {
+    text
+  }
+  if text.starts_with("{\"id\":") {
+    let head = if tb.length() > 128 { tb.slice(0, 128).to_string() } else { text }
+    let (id_str, is_str, after_id) = match extract_head_id(head) {
+      Some(v) => v
+      None => return true
+    }
+    if !is_str {
+      match base_codec::parse_int64_str(id_str) {
+        Some(n) => {
+          if self.own.contains(n) {
+            return true
+          }
+        }
+        None => ()
+      }
+    }
+    if self.asked.contains(asked_key(None, id_str)) {
+      return true
+    }
+    let sid = match extract_tail_session_id(tail) {
+      Some(s) => Some(s)
+      None => {
+        let prefix = ",\"sessionId\":\""
+        let hb = head.to_bytes()
+        let rem = hb.slice(after_id, hb.length()).to_string()
+        if rem.starts_with(prefix) {
+          let rb = rem.to_bytes()
+          let s_start = prefix.to_bytes().length()
+          let mut s_end = s_start
+          while s_end < rb.length() && (rb[s_end].to_int() & 0xFF) != 34 {
+            s_end = s_end + 1
+          }
+          if s_end > s_start && s_end < rb.length() {
+            Some(rb.slice(s_start, s_end).to_string())
+          } else {
+            None
+          }
+        } else {
+          None
+        }
+      }
+    }
+    match sid {
+      Some(s) => {
+        if self.asked.contains(asked_key(Some(s), id_str)) || self.foreign.contains(s) {
+          return true
+        }
+      }
+      None => ()
+    }
+    return false
+  }
+  if self.foreign.length() > 0 && text.starts_with("{\"method\":") {
+    match extract_tail_session_id(tail) {
+      Some(s) => {
+        if self.foreign.contains(s) {
+          return true
+        }
+      }
+      None => ()
+    }
+  }
+  false
+}
+
+/// Process a message from Chrome toward the agent.
+pub fn Gate::from_chrome(self : Gate, text : String) -> GatePassed {
+  let m = match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return GatePassed::{ up: [], down: [text] }
+  }
+  let sid = json_str_field(m, "sessionId")
+  match base_codec::json_get(m, "id") {
+    Some(id_val) => {
+      match parse_valid_id(id_val) {
+        Some((id_str, id_num)) => {
+          match id_num {
+            Some(n) => {
+              if self.own.contains(n) {
+                self.own.remove(n)
+                return GatePassed::empty()
+              }
+            }
+            None => ()
+          }
+          let key = asked_key(sid, id_str)
+          match self.asked.get(key) {
+            None => {
+              match sid {
+                Some(s) => {
+                  if self.foreign.contains(s) {
+                    return GatePassed::empty()
+                  }
+                }
+                None => ()
+              }
+              return GatePassed::{ up: [], down: [text] }
+            }
+            Some(kind) => {
+              self.asked.remove(key)
+              let rewritten = self.handle_asked_answer(kind, m)
+              match rewritten {
+                Some(r) => return GatePassed::{ up: [], down: [r] }
+                None => return GatePassed::{ up: [], down: [text] }
+              }
+            }
+          }
+        }
+        None => return GatePassed::{ up: [], down: [text] }
+      }
+    }
+    None => ()
+  }
+  match sid {
+    Some(s) => {
+      if self.foreign.contains(s) {
+        return GatePassed::empty()
+      }
+    }
+    None => ()
+  }
+  let method = match json_str_field(m, "method") {
+    Some(s) => s
+    None => return GatePassed::{ up: [], down: [text] }
+  }
+  if !is_target_news_method(method) {
+    return GatePassed::{ up: [], down: [text] }
+  }
+  let p = match base_codec::json_get(m, "params") {
+    Some(v) => v
+    None => base_codec::json_obj([])
+  }
+  if method == "Target.attachedToTarget" {
+    let tinfo = match base_codec::json_get(p, "targetInfo") {
+      Some(v) => v
+      None => base_codec::json_obj([])
+    }
+    let tid = json_str_field(tinfo, "targetId")
+    let tctx = json_str_field(tinfo, "browserContextId")
+    let psid = json_str_field(p, "sessionId")
+    if self.is_our_target(tid, tctx) {
+      match (psid, tid) {
+        (Some(s), Some(t)) => {
+          self.sessions.set(s, true)
+          self.targets.set(s, t)
+        }
+        _ => ()
+      }
+      return GatePassed::{ up: [], down: [text] }
+    }
+    match psid {
+      Some(s) => self.foreign.set(s, true)
+      None => ()
+    }
+    let detach_id = self.own_id
+    self.own_id = self.own_id + 1L
+    self.own.set(detach_id, true)
+    let d_params : Array[(String, base_codec::Json)] = match psid {
+      Some(s) => [("sessionId", base_codec::json_str(s))]
+      None => []
+    }
+    let d_fields : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_int64(detach_id)),
+      ("method", base_codec::json_str("Target.detachFromTarget")),
+      ("params", base_codec::json_obj(d_params)),
+    ]
+    match sid {
+      Some(s) => d_fields.push(("sessionId", base_codec::json_str(s)))
+      None => ()
+    }
+    return GatePassed::{
+      up: [base_codec::json_stringify(base_codec::json_obj(d_fields))],
+      down: [],
+    }
+  }
+  if method == "Target.detachedFromTarget" || method == "Target.receivedMessageFromTarget" {
+    let psid = json_str_field(p, "sessionId")
+    match psid {
+      Some(s) => {
+        if self.foreign.contains(s) {
+          if method == "Target.detachedFromTarget" {
+            self.foreign.remove(s)
+          }
+          return GatePassed::empty()
+        }
+        if method == "Target.detachedFromTarget" {
+          self.sessions.remove(s)
+          self.targets.remove(s)
+          let prefix = s + "\u{0}"
+          let to_remove : Array[String] = []
+          let akeys = self.asked.keys()
+          let mut ai = 0
+          while ai < akeys.length() {
+            if akeys[ai].starts_with(prefix) {
+              to_remove.push(akeys[ai])
+            }
+            ai = ai + 1
+          }
+          let mut i = 0
+          while i < to_remove.length() {
+            self.asked.remove(to_remove[i])
+            i = i + 1
+          }
+        }
+      }
+      None => ()
+    }
+    return GatePassed::{ up: [], down: [text] }
+  }
+  if method == "Target.targetDestroyed" || method == "Target.targetCrashed" {
+    let tid = match json_str_field(p, "targetId") {
+      Some(t) => t
+      None => return GatePassed::empty()
+    }
+    if !self.mine.contains(tid) {
+      return GatePassed::empty()
+    }
+    if method == "Target.targetDestroyed" {
+      self.mine.remove(tid)
+    }
+    return GatePassed::{ up: [], down: [text] }
+  }
+  // Target.targetCreated / Target.targetInfoChanged
+  let tinfo = match base_codec::json_get(p, "targetInfo") {
+    Some(v) => v
+    None => base_codec::json_obj([])
+  }
+  let tid = json_str_field(tinfo, "targetId")
+  let tctx = json_str_field(tinfo, "browserContextId")
+  if self.is_our_target(tid, tctx) {
+    GatePassed::{ up: [], down: [text] }
+  } else {
+    GatePassed::empty()
+  }
+}
+
+fn Gate::handle_asked_answer(self : Gate, kind : AskedKind, m : base_codec::Json) -> Option[String] {
+  let result = base_codec::json_get(m, "result")
+  match kind {
+    AskedKind::Used(target, opt_url) => {
+      if opt_json_is_none(base_codec::json_get(m, "error")) {
+        (self.hooks.on_used)(target, opt_url)
+      }
+      None
+    }
+    AskedKind::WindowForTarget => {
+      match result {
+        Some(res) => {
+          match json_int64_field(res, "windowId") {
+            Some(wid) => self.windows.set(wid, true)
+            None => ()
+          }
+        }
+        None => ()
+      }
+      None
+    }
+    AskedKind::AttachToTarget(tid) => {
+      match result {
+        Some(res) => {
+          match json_str_field(res, "sessionId") {
+            Some(sid) => {
+              self.sessions.set(sid, true)
+              self.targets.set(sid, tid)
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+      None
+    }
+    AskedKind::CreateTarget => {
+      match result {
+        Some(res) => {
+          match json_str_field(res, "targetId") {
+            Some(tid) => {
+              self.mine.set(tid, true)
+              (self.hooks.on_opened)(tid)
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+      None
+    }
+    AskedKind::CreateBrowserContext => {
+      match result {
+        Some(res) => {
+          match json_str_field(res, "browserContextId") {
+            Some(cid) => self.contexts.set(cid, true)
+            None => ()
+          }
+        }
+        None => ()
+      }
+      None
+    }
+    AskedKind::GetTargets => {
+      match result {
+        Some(res) => {
+          match base_codec::json_get(res, "targetInfos") {
+            Some(base_codec::Json::Arr(items)) => {
+              let filtered : Array[base_codec::Json] = []
+              let mut i = 0
+              while i < items.length() {
+                let item = items[i]
+                let tid = json_str_field(item, "targetId")
+                let tctx = json_str_field(item, "browserContextId")
+                if self.is_our_target(tid, tctx) {
+                  filtered.push(item)
+                }
+                i = i + 1
+              }
+              let res_fields = clone_obj_fields(res)
+              base_codec::json_obj_set(res_fields, "targetInfos", base_codec::json_arr(filtered))
+              let out_fields = clone_obj_fields(m)
+              base_codec::json_obj_set(out_fields, "result", base_codec::json_obj(res_fields))
+              Some(base_codec::json_stringify(base_codec::json_obj(out_fields)))
+            }
+            _ => None
+          }
+        }
+        None => None
+      }
+    }
+  }
+}

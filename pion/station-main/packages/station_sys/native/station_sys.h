@@ -90,6 +90,8 @@ extern "C" {
 #define STS_SIG_TERM  15
 #define STS_SIG_USR1  101
 #define STS_SIG_USR2  102
+#define STS_SIG_STOP  103
+#define STS_SIG_CONT  104
 
 // Portable cross-platform error codes returned by `sts_udp_send_to` / `sts_udp_send_once`.
 #define STS_ERR_NETUNREACH  (-101)
@@ -135,6 +137,23 @@ int32_t sts_signal_unwatch(void);
 int64_t sts_flock_try(const char *path);
 int32_t sts_flock_unlock(int64_t handle);
 int32_t sts_unlink(const char *path);
+int32_t sts_rmdir(const char *path);
+void *sts_readlink(const char *path, int64_t *out_len);
+void *sts_realpath(const char *path, int64_t *out_len);
+void *sts_lstat(const char *path, int64_t *out_len);
+int32_t sts_chmod(const char *path, int32_t mode);
+int32_t sts_truncate_in_place(const char *path, int64_t size);
+void *sts_read_range(const char *path, int64_t offset, int64_t len, int64_t *out_len);
+int32_t sts_write_file_mode(
+    const char *path,
+    const uint8_t *data,
+    int64_t len,
+    int32_t mode,
+    int32_t append);
+void *sts_read_dir(const char *path, int64_t *out_len);
+int32_t sts_mkdir_p(const char *path);
+int32_t sts_rename(const char *old_path, const char *new_path);
+int32_t sts_random_bytes(uint8_t *buf, int64_t len);
 
 // 6. Unix domain socket peer identity (JSON `{"pid":N,"auditToken":...|null}` or NULL).
 void *sts_peer_process(int32_t fd, int64_t *out_len);

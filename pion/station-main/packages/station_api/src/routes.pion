@@ -1,0 +1,585 @@
+// Core API host port and primary route registration (`chats`, `changed`, `sessions`, `threads`,
+// `jobs`, `events`, `overview`, `marks`, `hub`, `usage`, `resources`, `search`, `projects`,
+// `screens`, `feedback`).
+
+import "base_codec"
+import "http1"
+import "station_http"
+
+/// Result of a domain route handler.
+pub struct RouteResult {
+  pub response : station_http::HttpResponse
+  pub no_cache : Bool
+}
+
+pub fn RouteResult::ok(jval : base_codec::Json) -> RouteResult {
+  RouteResult::{ response: json_ok(jval), no_cache: false }
+}
+
+pub fn RouteResult::status(code : Int, jval : base_codec::Json) -> RouteResult {
+  RouteResult::{ response: json_status(code, jval), no_cache: false }
+}
+
+pub fn RouteResult::err(e : ApiError) -> RouteResult {
+  RouteResult::{ response: api_error_response(e), no_cache: e.no_cache }
+}
+
+/// Injectable backend host port decoupling `station_api` from not-yet-landed station packages.
+pub struct ApiHost {
+  /// Read-side operation dispatcher (`chats`, `sharedChats`, `sessions`, `threads`, `openJobs`, `usage`, etc.).
+  pub read_op : (String, ApiRequest, base_codec::Json) -> Result[base_codec::Json, ApiError]
+  /// General domain command/query dispatcher `(op_name, req, path_args, body_json)`.
+  pub call : (String, ApiRequest, Array[String], base_codec::Json) -> Result[base_codec::Json, ApiError]
+  /// `GET /overview` provider.
+  pub overview : (Viewer, Lang) -> Result[base_codec::Json, ApiError]
+  /// `GET /host` provider.
+  pub host_sample : (Lang) -> Result[base_codec::Json, ApiError]
+  /// `GET /search` provider (query, asker, kinds, limit, offset, archived).
+  pub search : (String, SearchAsker, Array[String], Int, Int, Bool) -> Result[SearchResult, ApiError]
+  /// Optional live `EventsHub` for `GET /events` SSE streams.
+  pub events : Option[EventsHub]
+  /// Whether the usage counter is still performing its initial sweep.
+  pub usage_reading_all : () -> Bool
+  /// Whether a session exists (for `GET /events` `live=` / `open=` filtering).
+  pub session_exists : (String) -> Bool
+  /// Held running sessions (for `GET /events?running=1`).
+  pub held_sessions : () -> Array[String]
+  /// Whether dev-only routes (`/dev/inject`, matching `STILLFAIL_DEV=1`) are enabled.
+  pub dev_enabled : Bool
+}
+
+pub fn ApiHost::stub() -> ApiHost {
+  ApiHost::{
+    read_op: fn(op : String, _r : ApiRequest, args : base_codec::Json) -> Result[base_codec::Json, ApiError] {
+      Ok(base_codec::json_obj([("op", base_codec::json_str(op)), ("args", args)]))
+    },
+    call: fn(op : String, _r : ApiRequest, params : Array[String], body : base_codec::Json) -> Result[base_codec::Json, ApiError] {
+      let p_arr : Array[base_codec::Json] = []
+      let mut i = 0
+      while i < params.length() {
+        p_arr.push(base_codec::json_str(params[i]))
+        i = i + 1
+      }
+      Ok(base_codec::json_obj([
+        ("op", base_codec::json_str(op)),
+        ("params", base_codec::json_arr(p_arr)),
+        ("body", body),
+      ]))
+    },
+    overview: fn(viewer : Viewer, lang : Lang) -> Result[base_codec::Json, ApiError] {
+      Ok(build_overview(OverviewInput::minimal(), viewer, lang))
+    },
+    host_sample: fn(_lang : Lang) -> Result[base_codec::Json, ApiError] {
+      Ok(base_codec::json_obj([("hostname", base_codec::json_str("station"))]))
+    },
+    search: fn(_q : String, _asker : SearchAsker, _kinds : Array[String], _limit : Int, _offset : Int, _archived : Bool) -> Result[SearchResult, ApiError] {
+      Ok(SearchResult::{ groups: [], building: false })
+    },
+    events: None,
+    usage_reading_all: fn() -> Bool { false },
+    session_exists: fn(_k : String) -> Bool { true },
+    held_sessions: fn() -> Array[String] { [] },
+    dev_enabled: false,
+  }
+}
+
+/// Split a normalized API path into non-empty raw segments (preserving percent-encoding until decoded).
+pub fn split_segments(path : String) -> Array[String] {
+  let parts = path.split("/")
+  let out : Array[String] = []
+  let mut i = 0
+  while i < parts.length() {
+    if parts[i].length() > 0 {
+      out.push(parts[i])
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn require_manager(r : ApiRequest, msg : String) -> Option[ApiError] {
+  if !r.viewer.manages_station() {
+    Some(ApiError::new(403, msg))
+  } else {
+    None
+  }
+}
+
+fn require_workspace_manager(r : ApiRequest, msg : String) -> Option[ApiError] {
+  if !r.viewer.is_manager() {
+    Some(ApiError::new(403, msg))
+  } else {
+    None
+  }
+}
+
+fn parse_count_param(raw : Option[String], fallback : Int) -> Int {
+  match raw {
+    None => fallback
+    Some(s) => {
+      if s.length() == 0 || s.length() > 4 {
+        return fallback
+      }
+      match parse_uint_str(s) {
+        Some(v) => v
+        None => fallback
+      }
+    }
+  }
+}
+
+fn call_with_json(
+  host : ApiHost,
+  op : String,
+  r : ApiRequest,
+  params : Array[String],
+) -> RouteResult {
+  let body = match r.json_input() {
+    Ok(v) => v
+    Err(e) => return RouteResult::err(e)
+  }
+  match (host.call)(op, r, params, body) {
+    Ok(v) => RouteResult::ok(v)
+    Err(e) => RouteResult::err(e)
+  }
+}
+
+fn call_read(
+  host : ApiHost,
+  op : String,
+  r : ApiRequest,
+  args : base_codec::Json,
+) -> RouteResult {
+  match (host.read_op)(op, r, args) {
+    Ok(v) => RouteResult::ok(v)
+    Err(e) => RouteResult::err(e)
+  }
+}
+
+/// Handle `GET /events` SSE stream upgrade (`station/src/api/routes/events.ts`).
+pub fn handle_events_route(
+  r : ApiRequest,
+  host : ApiHost,
+  seen_store : SeenStore,
+) -> station_http::HandlerAction {
+  match host.events {
+    None => station_http::HandlerAction::Respond(json_error(503, "events not ready"))
+    Some(hub) => {
+      let running = opt_str_eq(r.param("running"), "1")
+      let spare : Option[Array[String]] = if running && opt_str_eq(r.param("spare"), "1") {
+        let opens = r.params_all("open")
+        let filtered : Array[String] = []
+        let mut i = 0
+        while i < opens.length() && filtered.length() < 16 {
+          let k = opens[i]
+          if !contains_str(filtered, k) && (host.session_exists)(k) && session_seen(seen_store, r.viewer, k) {
+            filtered.push(k)
+          }
+          i = i + 1
+        }
+        Some(filtered)
+      } else {
+        None
+      }
+      let opts = EventsOpenOptions::{
+        host: opt_str_eq(r.param("host"), "1"),
+        since: r.param("since"),
+        brief: opt_str_eq(r.param("brief"), "1"),
+        running: running,
+        spare: spare,
+        held_keys: if running { (host.held_sessions)() } else { [] },
+        supports_live_rates: true,
+      }
+      let opened = hub.open_stream(r.viewer, r.lang, opts)
+      station_http::HandlerAction::UpgradeSse(opened.headers)
+    }
+  }
+}
+
+/// Dispatch core routes (`chats`, `changed`, `sessions`, `threads`, `jobs`, `overview`, `host`,
+/// `memory`, `usage`, `resources`, `search`, `projects`, `marks`, `hub`, `screens`, `feedback`).
+pub fn dispatch_core_route(
+  r : ApiRequest,
+  segs : Array[String],
+  host : ApiHost,
+) -> Option[RouteResult] {
+  let m = r.method
+  let n = segs.length()
+
+  // GET /overview
+  if m == "GET" && n == 1 && segs[0] == "overview" {
+    return Some(match (host.overview)(r.viewer, r.lang) {
+      Ok(v) => RouteResult::ok(v)
+      Err(e) => RouteResult::err(e)
+    })
+  }
+
+  // GET /host, GET /memory, GET /moved
+  if m == "GET" && n == 1 && segs[0] == "host" {
+    return Some(match (host.host_sample)(r.lang) {
+      Ok(v) => RouteResult::ok(v)
+      Err(e) => RouteResult::err(e)
+    })
+  }
+  if m == "GET" && n == 1 && segs[0] == "memory" {
+    return Some(call_read(host, "memory", r, base_codec::json_obj([])))
+  }
+  if m == "GET" && n == 1 && segs[0] == "moved" {
+    return Some(call_with_json(host, "hub.moved", r, []))
+  }
+
+  // GET /chats
+  if m == "GET" && n == 1 && segs[0] == "chats" {
+    return Some(call_read(host, "chats", r, base_codec::json_obj([])))
+  }
+
+  // POST /changed/{chats|shared|sessions|threads}
+  if m == "POST" && n == 2 && segs[0] == "changed" {
+    let sub = segs[1]
+    if sub == "chats" || sub == "shared" || sub == "sessions" || sub == "threads" {
+      let body = match r.json_input() {
+        Ok(v) => v
+        Err(e) => return Some(RouteResult::err(e))
+      }
+      let op = if sub == "shared" { "sharedChats" } else { sub }
+      return Some(call_read(host, "changed." + op, r, body))
+    }
+  }
+
+  // GET /search & PUT /search/settings
+  if m == "GET" && n == 1 && segs[0] == "search" {
+    let q = match r.param("q") {
+      Some(v) => v
+      None => ""
+    }
+    if utf16_len(q) > SEARCH_MAX_QUERY_UTF16 {
+      return Some(RouteResult::err(ApiError::new(400, "a search is at most 200 characters")))
+    }
+    let people = people_search_kinds()
+    let kinds : Array[String] = match r.param("kinds") {
+      None => people
+      Some(ks) => {
+        if ks.length() == 0 {
+          people
+        } else {
+          let out : Array[String] = []
+          let parts = ks.split(",")
+          let mut i = 0
+          while i < parts.length() {
+            if contains_str(people, parts[i]) && !contains_str(out, parts[i]) {
+              out.push(parts[i])
+            }
+            i = i + 1
+          }
+          out
+        }
+      }
+    }
+    if kinds.length() == 0 {
+      return Some(RouteResult::ok(SearchResult::{ groups: [], building: false }.to_json()))
+    }
+    let limit = parse_count_param(r.param("limit"), SEARCH_DEFAULT_LIMIT)
+    let offset = parse_count_param(r.param("offset"), 0)
+    let archived = opt_str_eq(r.param("archived"), "1")
+    return Some(match (host.search)(q, SearchAsker::from_viewer(r.viewer), kinds, limit, offset, archived) {
+      Ok(found) => RouteResult::ok(found.to_json())
+      Err(e) => RouteResult::err(e)
+    })
+  }
+  if m == "PUT" && n == 2 && segs[0] == "search" && segs[1] == "settings" {
+    match require_manager(r, "only the workspace's owners and admins set what the station's search finds") {
+      Some(e) => return Some(RouteResult::err(e))
+      None => ()
+    }
+    let body = match r.json_input() {
+      Ok(v) => v
+      Err(e) => return Some(RouteResult::err(e))
+    }
+    match json_bool_field(body, "personal") {
+      None => return Some(RouteResult::err(ApiError::new(400, "personal is true or false")))
+      Some(p) => {
+        return Some(match (host.call)("search.settings", r, [], body) {
+          Ok(_) => RouteResult::ok(base_codec::json_obj([("personal", base_codec::json_bool(p))]))
+          Err(e) => RouteResult::err(e)
+        })
+      }
+    }
+  }
+
+  // Projects: GET/PUT /projects/info, POST /projects/(rename|merge)
+  if n == 2 && segs[0] == "projects" {
+    if m == "GET" && segs[1] == "info" {
+      return Some(call_with_json(host, "projects.info.get", r, []))
+    }
+    if m == "PUT" && segs[1] == "info" {
+      return Some(call_with_json(host, "projects.info.put", r, []))
+    }
+    if m == "POST" && (segs[1] == "rename" || segs[1] == "merge") {
+      return Some(call_with_json(host, "projects." + segs[1], r, []))
+    }
+  }
+
+  // Usage & Resources & Machine Sessions
+  if m == "GET" && n == 1 && segs[0] == "usage" {
+    let reading = (host.usage_reading_all)()
+    return Some(call_read(host, "usage", r, base_codec::json_obj([("reading", base_codec::json_bool(reading))])))
+  }
+  if m == "GET" && n == 3 && segs[0] == "usage" && segs[1] == "calls" {
+    return Some(call_read(host, "usage.calls", r, base_codec::json_obj([("key", base_codec::json_str(segment_decode(segs[2])))])))
+  }
+  if m == "GET" && n == 1 && segs[0] == "resources" {
+    return Some(call_read(host, "resources", r, base_codec::json_obj([])))
+  }
+  if m == "POST" && n == 4 && segs[0] == "resources" && segs[1] == "processes" && segs[3] == "e" + "nd" {
+    match parse_uint_str(segs[2]) {
+      None => return Some(RouteResult::err(ApiError::new(400, "invalid pid")))
+      Some(_) => return Some(call_with_json(host, "resources.process.end", r, [segs[2]]))
+    }
+  }
+  if m == "GET" && n == 1 && segs[0] == "machine-sessions" {
+    return Some(call_read(host, "machineSessions", r, base_codec::json_obj([])))
+  }
+  if m == "POST" && n == 1 && segs[0] == "machine-sessions" {
+    return Some(call_with_json(host, "hub.machineSession.create", r, []))
+  }
+  if m == "GET" && n >= 3 && segs[0] == "machine-sessions" {
+    return Some(call_read(host, "machineSession", r, base_codec::json_obj([
+      ("runtime", base_codec::json_str(segment_decode(segs[1]))),
+      ("id", base_codec::json_str(segment_decode(segs[2]))),
+    ])))
+  }
+
+  // Uploads & Dev inject
+  if m == "POST" && n == 1 && segs[0] == "uploads" {
+    return Some(call_with_json(host, "hub.upload", r, []))
+  }
+  if m == "POST" && n == 2 && segs[0] == "uploads" && segs[1] == "parts" {
+    return Some(call_with_json(host, "hub.upload.parts", r, []))
+  }
+  if m == "POST" && n == 2 && segs[0] == "dev" && segs[1] == "inject" {
+    if !host.dev_enabled || !r.viewer.manages_station() {
+      return None
+    }
+    return Some(call_with_json(host, "hub.dev.inject", r, []))
+  }
+
+  // Sessions routes
+  if n >= 1 && segs[0] == "sessions" {
+    if m == "GET" && n == 1 {
+      return Some(call_read(host, "sessions", r, base_codec::json_obj([])))
+    }
+    if m == "POST" && n == 1 {
+      return Some(call_with_json(host, "hub.session.create", r, []))
+    }
+    if m == "POST" && n == 2 && (segs[1] == "resume-interrupted" || segs[1] == "dismiss-interrupted") {
+      return Some(call_with_json(host, "hub.sessions." + segs[1], r, []))
+    }
+    if n >= 2 {
+      let key = segment_decode(segs[1])
+      if m == "GET" && n == 2 {
+        return Some(call_read(host, "session", r, base_codec::json_obj([("key", base_codec::json_str(key))])))
+      }
+      if m == "GET" && n >= 3 {
+        let act = segment_decode(segs[2])
+        if act == "timeline" ||
+        act == "files" ||
+        act == "parts" ||
+        act == "poster" ||
+        act == "transcript" ||
+        act == "widget-state" ||
+        act == "peek" ||
+        act == "open" {
+          return Some(call_read(host, "session." + act, r, base_codec::json_obj([("key", base_codec::json_str(key))])))
+        }
+        return None
+      }
+      if m == "DELETE" && n == 2 {
+        return Some(call_with_json(host, "hub.session.delete", r, [key]))
+      }
+      if m == "DELETE" && n >= 3 && segs[2] == "jobs" {
+        return Some(call_with_json(host, "hub.session.jobs.delete", r, [key]))
+      }
+      if m == "POST" && n >= 3 && segs[2] == "title" {
+        return Some(call_with_json(host, "marks.session.title", r, [key]))
+      }
+      if m == "PUT" && n >= 3 && segs[2] == "widget-state" {
+        return Some(call_with_json(host, "marks.session.widgetState", r, [key]))
+      }
+      if (m == "PUT" || m == "DELETE") && n >= 3 && segs[2] == "pin" {
+        return Some(call_with_json(host, "marks.session.pin." + m, r, [key]))
+      }
+      if (m == "POST" || m == "DELETE") && n >= 3 && segs[2] == "archive" {
+        return Some(call_with_json(host, "hub.session.archive." + m, r, [key]))
+      }
+      if m == "PUT" && n >= 3 && segs[2] == "xshare" {
+        return Some(call_with_json(host, "xshare.session", r, [key]))
+      }
+      if m == "POST" && n >= 3 {
+        let act = segs[2]
+        if act == "stop" ||
+        act == "cancel-retry" ||
+        act == "retry" ||
+        act == "reassign" ||
+        act == "evict" ||
+        act == "warm" ||
+        act == "compact" ||
+        act == "clear" ||
+        act == "settings" {
+          return Some(call_with_json(host, "hub.session." + act, r, [key]))
+        }
+      }
+    }
+  }
+
+  // Threads routes (including marks, hub, projects classification/proposals, feedback report)
+  if n >= 1 && segs[0] == "threads" {
+    if m == "GET" && n == 1 {
+      return Some(call_read(host, "threads", r, base_codec::json_obj([])))
+    }
+    if m == "POST" && n == 1 {
+      return Some(call_with_json(host, "hub.thread.create", r, []))
+    }
+    if n >= 2 {
+      let tid = segment_decode(segs[1])
+      if m == "GET" && n == 2 {
+        return Some(call_read(host, "thread", r, base_codec::json_obj([("id", base_codec::json_str(tid))])))
+      }
+      if m == "GET" && n == 3 && (segs[2] == "entries" || segs[2] == "letters") {
+        return Some(call_read(host, "thread." + segs[2], r, base_codec::json_obj([("id", base_codec::json_str(tid))])))
+      }
+      if m == "GET" && n == 4 && segs[2] == "relay" && segs[3] == "people" {
+        return Some(call_with_json(host, "hub.thread.relay.people", r, [tid]))
+      }
+      if m == "GET" && n >= 3 && segs[2] == "relay" {
+        return Some(call_with_json(host, "hub.thread.relay.get", r, [tid]))
+      }
+      if m == "POST" && n >= 3 && segs[2] == "relay" {
+        return Some(call_with_json(host, "hub.thread.relay.post", r, [tid]))
+      }
+      if m == "POST" && n >= 3 && segs[2] == "messages" {
+        return Some(call_with_json(host, "hub.thread.messages", r, [tid]))
+      }
+      if m == "POST" && n >= 3 && segs[2] == "sessions" {
+        return Some(call_with_json(host, "hub.thread.sessions", r, [tid]))
+      }
+      if (m == "POST" || m == "DELETE") && n >= 3 && segs[2] == "archive" {
+        return Some(call_with_json(host, "hub.thread.archive." + m, r, [tid]))
+      }
+      if m == "POST" && n == 3 && (segs[2] == "regenerate-title" || segs[2] == "selection-intent") {
+        return Some(call_with_json(host, "hub.thread." + segs[2], r, [tid]))
+      }
+      if m == "POST" && n == 3 && segs[2] == "report" {
+        match parse_uint_str(tid) {
+          None => return Some(RouteResult::err(ApiError::new(404, "unknown thread " + tid)))
+          Some(_) => {
+            let body = match r.json_input() {
+              Ok(v) => v
+              Err(e) => return Some(RouteResult::err(e))
+            }
+            match json_int_field(body, "n") {
+              Some(entry_n) => {
+                if entry_n < 1 {
+                  return Some(RouteResult::err(ApiError::new(400, "n must be a positive integer")))
+                }
+                return Some(match (host.call)("feedback.report", r, [tid], body) {
+                  Ok(v) => RouteResult::ok(v)
+                  Err(e) => RouteResult::err(e)
+                })
+              }
+              None => return Some(RouteResult::err(ApiError::new(400, "n must be a positive integer")))
+            }
+          }
+        }
+      }
+      if m == "PUT" && n == 3 && segs[2] == "classification" {
+        return Some(call_with_json(host, "projects.thread.classification", r, [tid]))
+      }
+      if m == "POST" && n == 5 && segs[2] == "proposals" && segs[4] == "resolve" {
+        return Some(call_with_json(host, "projects.proposal.resolve", r, [tid, segment_decode(segs[3])]))
+      }
+      if m == "DELETE" && n >= 3 && segs[2] == "keep" {
+        return Some(call_with_json(host, "marks.thread.keep.delete", r, [tid]))
+      }
+      if m == "PUT" && n >= 3 {
+        let mk = segs[2]
+        if mk == "read" ||
+        mk == "hidden" ||
+        mk == "muted" ||
+        mk == "title" ||
+        mk == "keep" ||
+        mk == "dismissed" ||
+        mk == "closed-card" {
+          return Some(call_with_json(host, "marks.thread." + mk, r, [tid]))
+        }
+      }
+    }
+  }
+
+  // Jobs routes
+  if n >= 1 && segs[0] == "jobs" {
+    if m == "GET" && n == 1 {
+      return Some(call_read(host, "openJobs", r, base_codec::json_obj([])))
+    }
+    if m == "GET" && n == 2 {
+      return Some(call_read(host, "job", r, base_codec::json_obj([("id", base_codec::json_str(segment_decode(segs[1])))])))
+    }
+    if m == "GET" && n >= 3 && segment_decode(segs[2]) == "log" {
+      return Some(call_read(host, "job.log", r, base_codec::json_obj([("id", base_codec::json_str(segment_decode(segs[1])))])))
+    }
+    if m == "POST" && n >= 3 && segs[2] == "stop" {
+      return Some(call_with_json(host, "hub.job.stop", r, [segment_decode(segs[1])]))
+    }
+  }
+
+  // Screens routes (strict whitelist matching `station/src/api/admin.ts`)
+  if n >= 1 && segs[0] == "screens" {
+    if m == "GET" && n == 1 {
+      return Some(call_with_json(host, "screens.list", r, []))
+    }
+    if m == "POST" && n == 2 && segs[1] == "browser" {
+      return Some(call_with_json(host, "screens.browser.open", r, []))
+    }
+    if n >= 3 {
+      let sid = segment_decode(segs[1])
+      let sub = segs[2]
+      if m == "POST" && n == 3 {
+        if sub == "close" ||
+        sub == "open-url" ||
+        sub == "reload" ||
+        sub == "back" ||
+        sub == "forward" ||
+        sub == "sleep" ||
+        sub == "settings" ||
+        sub == "screenshot" ||
+        sub == "location" ||
+        sub == "status-bar" ||
+        sub == "biometrics" ||
+        sub == "uninstall" ||
+        sub == "record" ||
+        sub == "push" ||
+        sub == "install" ||
+        sub == "relaunch" {
+          return Some(call_with_json(host, "screens." + sub, r, [sid]))
+        }
+        return None
+      }
+      if m == "GET" && n == 3 && (sub == "logs" || sub == "apps" || sub == "settings") {
+        return Some(call_with_json(host, "screens." + sub + ".get", r, [sid]))
+      }
+      if m == "POST" && n == 4 && sub == "views" && segs[3] == "e" + "nd" {
+        return Some(call_with_json(host, "screens.views.end", r, [sid]))
+      }
+      if m == "POST" && n == 5 && sub == "views" && (segs[4] == "e" + "nd" || segs[4] == "watch") {
+        return Some(call_with_json(host, "screens.view." + segs[4], r, [sid, segment_decode(segs[3])]))
+      }
+      if m == "POST" && n == 4 && sub == "record" && segs[3] == "stop" {
+        return Some(call_with_json(host, "screens.record.stop", r, [sid]))
+      }
+      if m == "GET" && n == 5 && sub == "chrome" {
+        return Some(call_with_json(host, "screens.chrome", r, [sid, segs[3], segs[4]]))
+      }
+    }
+  }
+
+  None
+}

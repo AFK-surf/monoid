@@ -1,0 +1,266 @@
+// Station-level `serve` & `Admit` callback abstraction over `mesh_door` and `mesh_accept`.
+// Enforces per-stream & deadline checks in exact TS `station/src/mesh/serve.ts:819-905` order:
+// `station_removed` -> `credential_revoked` -> `credential_expired` -> `lock_unconfirmed`.
+// Renewals that fail softly reply `{error}` without closing the connection (`door.ts:108`).
+
+import "base_codec"
+import "mesh_wire"
+import "mesh_door"
+import "mesh_accept"
+
+pub struct MemberSession {
+  pub workspace : String
+  pub user_sub : String
+  pub email : String
+  pub role : String
+  pub device_id : String
+  pub expires_unix : Int64
+}
+
+pub enum MemberRenewResult {
+  Updated(MemberSession, base_codec::Json)
+  SoftError(String)
+  End(mesh_door::Ending)
+}
+
+/// Hooks injected by the station's cloud/lock layer for per-stream and state-change checks.
+pub struct MemberCheckHooks {
+  pub is_station_removed : (String) -> Bool
+  pub is_credential_revoked : (MemberSession) -> Bool
+  pub is_lock_confirmed : (MemberSession, String) -> Bool
+}
+
+pub fn MemberCheckHooks::default() -> MemberCheckHooks {
+  MemberCheckHooks::{
+    is_station_removed: fn(_ws : String) -> Bool { false },
+    is_credential_revoked: fn(_s : MemberSession) -> Bool { false },
+    is_lock_confirmed: fn(_s : MemberSession, _remote : String) -> Bool { true },
+  }
+}
+
+/// Evaluate whether a member connection is gone (mirrors `station/src/mesh/serve.ts:822-837`):
+/// 1. `station_removed` (code 2): station removed, membership gone, or rig in workspace
+/// 2. `credential_revoked` (code 3): revocation list matches
+/// 3. `credential_expired` (code 3): `expires_unix * 1000 <= now_ms`
+/// 4. `lock_unconfirmed` (code 3): lock no longer confirms device/member
+pub fn check_member_gone(
+  cloud : CloudRoster,
+  sess : MemberSession,
+  remote_id : String,
+  now_ms : Int64,
+  hooks : MemberCheckHooks,
+) -> mesh_door::StreamGuardVerdict {
+  if (hooks.is_station_removed)(sess.workspace) || (cloud.membership(sess.workspace) is None) ||
+  cloud.rig_in(sess.workspace) {
+    return mesh_door::StreamGuardVerdict::Close(2, "station_removed")
+  }
+  if (hooks.is_credential_revoked)(sess) {
+    return mesh_door::StreamGuardVerdict::Close(3, "credential_revoked")
+  }
+  if sess.expires_unix * 1000.to_int64() <= now_ms {
+    return mesh_door::StreamGuardVerdict::Close(3, "credential_expired")
+  }
+  if !(hooks.is_lock_confirmed)(sess, remote_id) {
+    return mesh_door::StreamGuardVerdict::Close(3, "lock_unconfirmed")
+  }
+  mesh_door::StreamGuardVerdict::Allow
+}
+
+/// Station mesh endpoint router wiring `mesh_accept::AcceptLoop` across all 6 station ALPNs
+/// and managing member `mesh_door::DoorConn` sessions.
+pub struct ServeEndpoint {
+  pub accept : mesh_accept::AcceptLoop
+  pub storms : mesh_accept::StormTracker
+  pub superseded : mesh_accept::SupersededTracker
+  mut doors : Map[Int64, mesh_door::DoorConn]
+  mut members : Map[Int64, MemberSession]
+  mut remotes : Map[Int64, String]
+}
+
+pub fn ServeEndpoint::new(max_connections : Option[Int] = None) -> ServeEndpoint {
+  let loop = mesh_accept::AcceptLoop::new(
+    mesh_accept::AcceptConfig::new(STOPPING, max_connections=max_connections),
+  )
+  loop.register_alpn(ALPN, "member")
+  loop.register_alpn(PEER_HTTP_ALPN, "peer_http")
+  loop.register_alpn(PEER_BYTES_ALPN, "peer_bytes")
+  loop.register_alpn(PEER_ALPN, "peer")
+  loop.register_alpn(TOOLS_ALPN, "tools")
+  loop.register_alpn(ENROLLMENT_ALPN, "enrollment")
+  ServeEndpoint::{
+    accept: loop,
+    storms: mesh_accept::StormTracker::new(),
+    superseded: mesh_accept::SupersededTracker::new(),
+    doors: Map::new(),
+    members: Map::new(),
+    remotes: Map::new(),
+  }
+}
+
+pub fn ServeEndpoint::on_connection(
+  self : ServeEndpoint,
+  meta : mesh_accept::ConnMeta,
+) -> mesh_accept::AcceptAction {
+  let act = self.accept.on_accepted(meta)
+  match act {
+    mesh_accept::AcceptAction::Serve(tag, m) => {
+      self.storms.watch(
+        m.conn_id,
+        mesh_accept::TrafficSample::{
+          rx_packets: 0.to_int64(),
+          tx_packets: 0.to_int64(),
+          rx_bytes: 0.to_int64(),
+          tx_bytes: 0.to_int64(),
+        },
+      )
+      self.remotes.set(m.conn_id, m.remote_id)
+      if tag == "member" {
+        let _ = self.superseded.arrived(m.remote_id, m.conn_id)
+        self.doors.set(m.conn_id, mesh_door::DoorConn::new(m.conn_id))
+      }
+      mesh_accept::AcceptAction::Serve(tag, m)
+    }
+    mesh_accept::AcceptAction::Reject(dir) => mesh_accept::AcceptAction::Reject(dir)
+  }
+}
+
+pub fn ServeEndpoint::door_of(self : ServeEndpoint, conn_id : Int64) -> Option[mesh_door::DoorConn] {
+  self.doors.get(conn_id)
+}
+
+pub fn ServeEndpoint::member_of(self : ServeEndpoint, conn_id : Int64) -> Option[MemberSession] {
+  self.members.get(conn_id)
+}
+
+/// Process control-stream bytes for a member connection using caller-provided admit/renew callbacks.
+/// Renew failures returning `MemberRenewResult::SoftError` reply `{error}` without closing the connection.
+pub fn ServeEndpoint::feed_member_control(
+  self : ServeEndpoint,
+  conn_id : Int64,
+  remote_id : String,
+  chunk : Bytes,
+  now_ms : Int64,
+  admit_fn : (base_codec::Json, String) -> Result[(MemberSession, base_codec::Json), mesh_door::Refusal],
+  renew_fn : (MemberSession, base_codec::Json) -> MemberRenewResult,
+) -> Array[mesh_door::DoorAction] {
+  let door = match self.doors.get(conn_id) {
+    Some(d) => d
+    None => return []
+  }
+  let mut admitted_session : Option[MemberSession] = self.members.get(conn_id)
+  let acts = door.feed_control(
+    chunk,
+    now_ms,
+    fn(hello : base_codec::Json) -> mesh_door::AdmitResult {
+      match admit_fn(hello, remote_id) {
+        Ok((sess, reply)) => {
+          admitted_session = Some(sess)
+          mesh_door::AdmitResult::Admitted(reply, Some(sess.expires_unix * 1000.to_int64()))
+        }
+        Err(refusal) => mesh_door::AdmitResult::Refused(refusal)
+      }
+    },
+    fn(line : base_codec::Json) -> mesh_door::RenewOutcome {
+      match admitted_session {
+        None => mesh_door::RenewOutcome::SoftError("not admitted")
+        Some(cur) => {
+          match renew_fn(cur, line) {
+            MemberRenewResult::Updated(next_sess, reply) => {
+              admitted_session = Some(next_sess)
+              mesh_door::RenewOutcome::Reply(
+                reply,
+                Some(next_sess.expires_unix * 1000.to_int64()),
+              )
+            }
+            MemberRenewResult::SoftError(msg) => mesh_door::RenewOutcome::SoftError(msg)
+            MemberRenewResult::End(ending) => mesh_door::RenewOutcome::End(ending)
+          }
+        }
+      }
+    },
+  )
+  match admitted_session {
+    Some(s) => self.members.set(conn_id, s)
+    None => ()
+  }
+  acts
+}
+
+/// Accept a request stream on a member connection, enforcing `station_removed`,
+/// `credential_revoked`, `credential_expired`, and `lock_unconfirmed` before allowing it.
+pub fn ServeEndpoint::accept_member_stream(
+  self : ServeEndpoint,
+  conn_id : Int64,
+  stream_id : Int64,
+  cloud : CloudRoster,
+  now_ms : Int64,
+  hooks : MemberCheckHooks,
+) -> Array[mesh_door::DoorAction] {
+  let door = match self.doors.get(conn_id) {
+    Some(d) => d
+    None => return [mesh_door::DoorAction::ResetStream(stream_id, 0)]
+  }
+  let remote_id = match self.remotes.get(conn_id) {
+    Some(r) => r
+    None => ""
+  }
+  let sess_opt = self.members.get(conn_id)
+  let acts = door.accept_request_stream(
+    stream_id,
+    fn() -> mesh_door::StreamGuardVerdict {
+      match sess_opt {
+        None => mesh_door::StreamGuardVerdict::Close(3, "credential_expired")
+        Some(sess) => check_member_gone(cloud, sess, remote_id, now_ms, hooks)
+      }
+    },
+  )
+  if door.is_closed() {
+    self.accept.mark_handler_closed(conn_id)
+  }
+  acts
+}
+
+/// Poll deadlines & expiry for a member connection at `now_ms`.
+pub fn ServeEndpoint::poll_member_deadlines(
+  self : ServeEndpoint,
+  conn_id : Int64,
+  cloud : CloudRoster,
+  now_ms : Int64,
+  hooks : MemberCheckHooks,
+) -> Array[mesh_door::DoorAction] {
+  let door = match self.doors.get(conn_id) {
+    Some(d) => d
+    None => return []
+  }
+  let remote_id = match self.remotes.get(conn_id) {
+    Some(r) => r
+    None => ""
+  }
+  let sess_opt = self.members.get(conn_id)
+  let acts = door.poll_deadlines(
+    now_ms,
+    fn() -> mesh_door::StreamGuardVerdict {
+      match sess_opt {
+        None => mesh_door::StreamGuardVerdict::Close(3, "credential_expired")
+        Some(sess) => check_member_gone(cloud, sess, remote_id, now_ms, hooks)
+      }
+    },
+  )
+  if door.is_closed() {
+    self.accept.mark_handler_closed(conn_id)
+  }
+  acts
+}
+
+pub fn ServeEndpoint::close_connection(
+  self : ServeEndpoint,
+  conn_id : Int64,
+  remote_id : String,
+) -> Option[mesh_accept::CloseDirective] {
+  self.storms.forget(conn_id)
+  self.superseded.forget(remote_id, conn_id)
+  self.doors.remove(conn_id)
+  self.members.remove(conn_id)
+  self.remotes.remove(conn_id)
+  self.accept.on_served(conn_id)
+}

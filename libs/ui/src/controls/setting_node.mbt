@@ -70,7 +70,7 @@ pub fn setting_choice_node(
 }
 
 ///|
-/// A setting turned on or off (setting_switch's): wide, its row with a small switch at its end; narrow, a section of
+/// A setting turned on or off (setting_switch's): wide, its row with its switch at its end; narrow, a section of
 /// its own, the switch on its heading's line at its end, what it is for under it. `on`, `turn`: switch_node's.
 #callsite(autofill(loc))
 pub fn setting_switch_node(
@@ -81,7 +81,7 @@ pub fn setting_switch_node(
   note? : () -> String = fn() { "" },
   loc~ : SourceLoc,
 ) -> Unit {
-  let control = fn(r : @view.View) { switch_node(r, on, turn, title, small=true) }
+  let control = fn(r : @view.View) { switch_node(r, on, turn, title) }
   match look_node(parent) {
     // (on its title's line, the note under it: never across the middle of the two)
     Wide =>

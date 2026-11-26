@@ -1,0 +1,274 @@
+// Model catalog management, ETag revalidation, filtering, and capability annotations
+// (`station/src/models/module.ts`).
+
+import "base_codec"
+import "station_http"
+
+/// Capability and pricing metadata for a model entry in the station catalog.
+pub struct ModelInfo {
+  pub id : String
+  pub maker : Option[String]
+  pub maker_name : Option[String]
+  pub family : Option[String]
+  pub context_window : Int
+  pub max_output : Int
+  pub supports_vision : Bool
+  pub supports_reasoning : Bool
+  pub supports_speed : Bool
+  pub input_price_per_m : Double
+  pub output_price_per_m : Double
+  pub deprecated : Bool
+}
+
+pub fn ModelInfo::from_json(id : String, j : base_codec::Json) -> ModelInfo {
+  ModelInfo::{
+    id: id,
+    maker: json_str_field(j, "maker"),
+    maker_name: json_str_field(j, "makerName"),
+    family: json_str_field(j, "family"),
+    context_window: match json_int_field(j, "context") {
+      Some(v) => v
+      None => 0
+    },
+    max_output: match json_int_field(j, "maxOutput") {
+      Some(v) => v
+      None => 0
+    },
+    supports_vision: opt_bool_true(json_bool_field(j, "vision")),
+    supports_reasoning: opt_bool_true(json_bool_field(j, "reasoning")),
+    supports_speed: opt_bool_true(json_bool_field(j, "speed")),
+    input_price_per_m: match json_double_field(j, "input") {
+      Some(v) => v
+      None => 0.0
+    },
+    output_price_per_m: match json_double_field(j, "output") {
+      Some(v) => v
+      None => 0.0
+    },
+    deprecated: opt_bool_true(json_bool_field(j, "deprecated")),
+  }
+}
+
+pub fn ModelInfo::to_json(self : ModelInfo) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = []
+  match self.maker {
+    Some(m) => fields.push(("maker", base_codec::json_str(m)))
+    None => ()
+  }
+  match self.maker_name {
+    Some(mn) => fields.push(("makerName", base_codec::json_str(mn)))
+    None => ()
+  }
+  match self.family {
+    Some(f) => fields.push(("family", base_codec::json_str(f)))
+    None => ()
+  }
+  if self.context_window > 0 {
+    fields.push(("context", base_codec::json_int(self.context_window)))
+  }
+  if self.max_output > 0 {
+    fields.push(("maxOutput", base_codec::json_int(self.max_output)))
+  }
+  fields.push(("vision", base_codec::json_bool(self.supports_vision)))
+  fields.push(("reasoning", base_codec::json_bool(self.supports_reasoning)))
+  fields.push(("speed", base_codec::json_bool(self.supports_speed)))
+  fields.push(("input", base_codec::json_num(self.input_price_per_m)))
+  fields.push(("output", base_codec::json_num(self.output_price_per_m)))
+  if self.deprecated {
+    fields.push(("deprecated", base_codec::json_bool(true)))
+  }
+  base_codec::json_obj(fields)
+}
+
+/// In-memory model catalog state with ETag tracking and diff reporting for newly added models.
+pub struct ModelCatalogState {
+  pub mut etag : Option[String]
+  models : Array[ModelInfo]
+}
+
+pub fn ModelCatalogState::new() -> ModelCatalogState {
+  ModelCatalogState::{ etag: None, models: [] }
+}
+
+pub fn ModelCatalogState::count(self : ModelCatalogState) -> Int {
+  self.models.length()
+}
+
+pub fn ModelCatalogState::get(self : ModelCatalogState, id : String) -> Option[ModelInfo] {
+  let mut i = 0
+  while i < self.models.length() {
+    if self.models[i].id == id {
+      return Some(self.models[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+/// Whether a refresh for `incoming_etag` can be skipped as already current.
+pub fn ModelCatalogState::matches_etag(self : ModelCatalogState, incoming_etag : String) -> Bool {
+  match self.etag {
+    Some(cur) => cur == incoming_etag
+    None => false
+  }
+}
+
+/// Apply a `/v1/models` response `{ models: { ... } }` and optional ETag.
+/// Returns the newly added model IDs (empty on initial load, matching `ModelCatalog.#ask`).
+pub fn ModelCatalogState::apply_catalog(
+  self : ModelCatalogState,
+  catalog_json : base_codec::Json,
+  new_etag : Option[String],
+) -> Array[String] {
+  let had_before = self.models.length() > 0
+  let prev_ids : Array[String] = []
+  let mut pi = 0
+  while pi < self.models.length() {
+    prev_ids.push(self.models[pi].id)
+    pi = pi + 1
+  }
+  let models_obj = match base_codec::json_get(catalog_json, "models") {
+    Some(m) => m
+    None => catalog_json
+  }
+  let added : Array[String] = []
+  match models_obj {
+    base_codec::Json::Obj(entries) => {
+      let mut i = 0
+      while i < entries.length() {
+        let (id, jval) = entries[i]
+        let info = ModelInfo::from_json(id, jval)
+        let mut found = -1
+        let mut mi = 0
+        while mi < self.models.length() {
+          if self.models[mi].id == id {
+            found = mi
+            break
+          }
+          mi = mi + 1
+        }
+        if found >= 0 {
+          self.models[found] = info
+        } else {
+          self.models.push(info)
+          if had_before && !contains_str(prev_ids, id) {
+            added.push(id)
+          }
+        }
+        i = i + 1
+      }
+    }
+    _ => ()
+  }
+  match new_etag {
+    Some(e) => self.etag = Some(e)
+    None => ()
+  }
+  added
+}
+
+/// Filter models by optional maker, vision requirement, and deprecation flag.
+pub fn ModelCatalogState::filter(
+  self : ModelCatalogState,
+  maker : Option[String],
+  vision_only : Bool,
+  include_deprecated : Bool,
+) -> Array[ModelInfo] {
+  let out : Array[ModelInfo] = []
+  let mut i = 0
+  while i < self.models.length() {
+    let m = self.models[i]
+    if !include_deprecated && m.deprecated {
+      i = i + 1
+      continue
+    }
+    if vision_only && !m.supports_vision {
+      i = i + 1
+      continue
+    }
+    let maker_ok = match maker {
+      None => true
+      Some(want) => {
+        match m.maker {
+          Some(actual) => station_http::ascii_eq_ci(actual, want)
+          None => false
+        }
+      }
+    }
+    if maker_ok {
+      out.push(m)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Build `modelMakers` map for `/overview` (`station/src/api/overview.ts` `modelMakers`).
+pub fn ModelCatalogState::model_makers_json(
+  self : ModelCatalogState,
+  model_ids : Array[String],
+) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = []
+  let mut i = 0
+  while i < model_ids.length() {
+    let id = model_ids[i]
+    match self.get(id) {
+      Some(info) => {
+        match info.maker {
+          Some(mk) => {
+            let mf : Array[(String, base_codec::Json)] = [("maker", base_codec::json_str(mk))]
+            match info.maker_name {
+              Some(mn) => mf.push(("makerName", base_codec::json_str(mn)))
+              None => ()
+            }
+            match info.family {
+              Some(fam) => mf.push(("family", base_codec::json_str(fam)))
+              None => ()
+            }
+            base_codec::json_obj_set(fields, id, base_codec::json_obj(mf))
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Build `modelWindows` map for `/overview` (`station/src/api/overview.ts` `modelWindows`).
+pub fn ModelCatalogState::model_windows_json(
+  self : ModelCatalogState,
+  model_ids : Array[String],
+) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = []
+  let mut i = 0
+  while i < model_ids.length() {
+    let id = model_ids[i]
+    match self.get(id) {
+      Some(info) => {
+        if info.context_window > 0 {
+          base_codec::json_obj_set(fields, id, base_codec::json_int(info.context_window))
+        }
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Serialize cached catalog (`model-catalog.json`).
+pub fn ModelCatalogState::to_cache_json(self : ModelCatalogState) -> base_codec::Json {
+  let model_fields : Array[(String, base_codec::Json)] = []
+  let mut i = 0
+  while i < self.models.length() {
+    model_fields.push((self.models[i].id, self.models[i].to_json()))
+    i = i + 1
+  }
+  base_codec::json_obj([
+    ("etag", opt_str_json(self.etag)),
+    ("models", base_codec::json_obj(model_fields)),
+  ])
+}

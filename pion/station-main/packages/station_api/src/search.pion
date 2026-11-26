@@ -1,0 +1,398 @@
+// Search matching, excerpting, ranking, visibility, and pagination (`station/src/search/*`).
+
+import "base_codec"
+import "jscase"
+
+pub let SEARCH_MAX_QUERY_UTF16 : Int = 200
+pub let SEARCH_MAX_TERMS : Int = 8
+pub let SEARCH_DEFAULT_LIMIT : Int = 8
+pub let SEARCH_MAX_LIMIT : Int = 200
+pub let SEARCH_EXCERPT_BEFORE : Int = 80
+pub let SEARCH_EXCERPT_AFTER : Int = 240
+
+pub fn people_search_kinds() -> Array[String] {
+  ["chat", "message", "job", "file"]
+}
+
+pub fn all_search_kinds() -> Array[String] {
+  ["chat", "message", "history", "job", "skill", "memory", "profile", "file"]
+}
+
+/// Split query on Unicode whitespace, lowercase via `jscase::lower`, deduplicate, cap at 8 terms.
+pub fn search_terms(query : String) -> Array[String] {
+  let trimmed = jscase::trim_white(query)
+  if trimmed.length() == 0 {
+    return []
+  }
+  let parts = jscase::split_by(trimmed, jscase::is_white_space)
+  let out : Array[String] = []
+  let mut i = 0
+  while i < parts.length() && out.length() < SEARCH_MAX_TERMS {
+    let w = jscase::lower(parts[i])
+    if w.length() > 0 && !contains_str(out, w) {
+      out.push(w)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Whether `text` contains every term in `words` (case-insensitive via `jscase::lower`).
+pub fn has_all_terms(text : String, words : Array[String]) -> Bool {
+  let lower = jscase::lower(text)
+  let mut i = 0
+  while i < words.length() {
+    if lower.index_of(words[i]) < 0 {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn collapse_whitespace(text : String) -> String {
+  let parts = jscase::split_by(jscase::trim_white(text), jscase::is_white_space)
+  let sb = StringBuilder::new()
+  let mut i = 0
+  let mut first = true
+  while i < parts.length() {
+    if parts[i].length() > 0 {
+      if !first {
+        sb.write_string(" ")
+      }
+      sb.write_string(parts[i])
+      first = false
+    }
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+/// Extract a single-line excerpt around the first matched term (by codepoint offsets, never mid-UTF-8).
+pub fn make_excerpt(body : String, words : Array[String]) -> String {
+  let flat = collapse_whitespace(body)
+  let lower = jscase::lower(flat)
+  let mut at_byte = -1
+  let mut i = 0
+  while i < words.length() {
+    let idx = lower.index_of(words[i])
+    if idx >= 0 && (at_byte < 0 || idx < at_byte) {
+      at_byte = idx
+    }
+    i = i + 1
+  }
+  let total_cp = codepoint_count(flat)
+  let at_cp = if at_byte <= 0 {
+    0
+  } else {
+    codepoint_count(lower.slice(0, clamp_utf8_boundary_down(lower, at_byte)))
+  }
+  let from_cp = if at_cp > SEARCH_EXCERPT_BEFORE { at_cp - SEARCH_EXCERPT_BEFORE } else { 0 }
+  let to_cp = if at_cp + SEARCH_EXCERPT_AFTER < total_cp {
+    at_cp + SEARCH_EXCERPT_AFTER
+  } else {
+    total_cp
+  }
+  let prefix = if from_cp > 0 { "…" } else { "" }
+  let suffix = if to_cp < total_cp { "…" } else { "" }
+  prefix + codepoint_slice(flat, from_cp, to_cp) + suffix
+}
+
+fn clamp_utf8_boundary_down(s : String, idx : Int) -> Int {
+  let b = s.to_bytes()
+  let mut i = idx
+  if i > b.length() {
+    i = b.length()
+  }
+  while i > 0 && ((b[i].to_int() & 0xC0) == 0x80) {
+    i = i - 1
+  }
+  i
+}
+
+fn clamp_utf8_boundary_up(s : String, idx : Int) -> Int {
+  let b = s.to_bytes()
+  let n = b.length()
+  let mut i = idx
+  if i < 0 {
+    i = 0
+  }
+  while i < n && ((b[i].to_int() & 0xC0) == 0x80) {
+    i = i + 1
+  }
+  i
+}
+
+pub struct SearchDoc {
+  pub key : String
+  pub kind : String
+  /// `None` = home workspace, `Some("*")` = every workspace, `Some(ws)` = that workspace.
+  pub ws : Option[String]
+  pub req_scope : Option[String]
+  pub title : String
+  pub body : String
+  pub at : Option[Int64]
+  pub ref_fields : Array[(String, base_codec::Json)]
+}
+
+pub struct SearchAsker {
+  pub workspace : String
+  pub home : Bool
+  pub scopes : Array[String]
+}
+
+pub fn SearchAsker::from_viewer(viewer : Viewer) -> SearchAsker {
+  SearchAsker::{
+    workspace: viewer.workspace,
+    home: viewer.home,
+    scopes: if viewer.is_read_only() { [] } else { ["write"] },
+  }
+}
+
+pub fn doc_visible(doc : SearchDoc, asker : SearchAsker) -> Bool {
+  let ws_ok = match doc.ws {
+    None => asker.home
+    Some(w) => w == "*" || w == asker.workspace
+  }
+  if !ws_ok {
+    return false
+  }
+  match doc.req_scope {
+    None => true
+    Some(sc) => contains_str(asker.scopes, sc)
+  }
+}
+
+pub struct SearchHit {
+  pub kind : String
+  pub key : String
+  pub title : String
+  pub text : String
+  pub at : Option[Int64]
+  pub ref_fields : Array[(String, base_codec::Json)]
+}
+
+pub fn SearchHit::to_json(self : SearchHit) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = []
+  let mut i = 0
+  while i < self.ref_fields.length() {
+    fields.push(self.ref_fields[i])
+    i = i + 1
+  }
+  base_codec::json_obj_set(fields, "kind", base_codec::json_str(self.kind))
+  base_codec::json_obj_set(fields, "key", base_codec::json_str(self.key))
+  base_codec::json_obj_set(fields, "title", base_codec::json_str(self.title))
+  base_codec::json_obj_set(fields, "text", base_codec::json_str(self.text))
+  base_codec::json_obj_set(
+    fields,
+    "at",
+    match self.at {
+      Some(t) => base_codec::json_int64(t)
+      None => base_codec::json_null()
+    },
+  )
+  base_codec::json_obj(fields)
+}
+
+pub struct SearchGroup {
+  pub kind : String
+  pub hits : Array[SearchHit]
+  pub more : Bool
+  pub left : Option[Int]
+}
+
+pub fn SearchGroup::to_json(self : SearchGroup) -> base_codec::Json {
+  let hits_json : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < self.hits.length() {
+    hits_json.push(self.hits[i].to_json())
+    i = i + 1
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("kind", base_codec::json_str(self.kind)),
+    ("hits", base_codec::json_arr(hits_json)),
+    ("more", base_codec::json_bool(self.more)),
+  ]
+  match self.left {
+    Some(l) => fields.push(("left", base_codec::json_int(l)))
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+pub struct SearchResult {
+  pub groups : Array[SearchGroup]
+  pub building : Bool
+}
+
+pub fn SearchResult::to_json(self : SearchResult) -> base_codec::Json {
+  let arr : Array[base_codec::Json] = []
+  let mut i = 0
+  while i < self.groups.length() {
+    arr.push(self.groups[i].to_json())
+    i = i + 1
+  }
+  base_codec::json_obj([
+    ("groups", base_codec::json_arr(arr)),
+    ("building", base_codec::json_bool(self.building)),
+  ])
+}
+
+struct RankedHit {
+  titled : Bool
+  at : Option[Int64]
+  order : Int
+  hit : SearchHit
+}
+
+fn ranked_before(a : RankedHit, b : RankedHit) -> Bool {
+  if a.titled != b.titled {
+    return a.titled
+  }
+  match a.at {
+    Some(ta) => {
+      match b.at {
+        None => true
+        Some(tb) => if ta != tb { ta > tb } else { a.order < b.order }
+      }
+    }
+    None => {
+      match b.at {
+        Some(_) => false
+        None => a.order < b.order
+      }
+    }
+  }
+}
+
+/// Search `docs` for `query`, returning grouped, ranked, paginated results (`station/src/search/match.ts` `pick`).
+pub fn search_pick(
+  docs : Array[SearchDoc],
+  query : String,
+  asker : SearchAsker,
+  kinds : Option[Array[String]],
+  limit : Int,
+  offset : Int,
+) -> Result[SearchResult, ApiError] {
+  if utf16_len(query) > SEARCH_MAX_QUERY_UTF16 {
+    return Err(ApiError::new(400, "a search is at most 200 characters"))
+  }
+  let words = search_terms(query)
+  if words.length() == 0 {
+    return Ok(SearchResult::{ groups: [], building: false })
+  }
+  let clamped_limit = if limit < 1 {
+    1
+  } else if limit > SEARCH_MAX_LIMIT {
+    SEARCH_MAX_LIMIT
+  } else {
+    limit
+  }
+  let clamped_offset = if offset < 0 { 0 } else { offset }
+  let want = clamped_offset + clamped_limit
+
+  let group_kinds : Array[String] = []
+  let group_items : Array[Array[RankedHit]] = []
+  let mut order = 0
+  let mut di = 0
+  while di < docs.length() {
+    let d = docs[di]
+    let kind_ok = match kinds {
+      None => true
+      Some(ks) => ks.length() == 0 || contains_str(ks, d.kind)
+    }
+    if kind_ok && doc_visible(d, asker) {
+      let combined = d.title + "\n" + d.body
+      if has_all_terms(combined, words) {
+        let titled = jscase::lower(d.title).index_of(words[0]) >= 0
+        let excerpt_src = if d.kind == "chat" && has_all_terms(d.title, words) {
+          d.title
+        } else {
+          d.body
+        }
+        let hit = SearchHit::{
+          kind: d.kind,
+          key: d.key,
+          title: d.title,
+          text: make_excerpt(excerpt_src, words),
+          at: d.at,
+          ref_fields: d.ref_fields,
+        }
+        let ranked = RankedHit::{ titled: titled, at: d.at, order: order, hit: hit }
+        order = order + 1
+        let mut gidx = -1
+        let mut gi = 0
+        while gi < group_kinds.length() {
+          if group_kinds[gi] == d.kind {
+            gidx = gi
+            break
+          }
+          gi = gi + 1
+        }
+        if gidx < 0 {
+          group_kinds.push(d.kind)
+          group_items.push([ranked])
+        } else {
+          group_items[gidx].push(ranked)
+        }
+      }
+    }
+    di = di + 1
+  }
+
+  // Sort kinds lexicographically.
+  let kind_order : Array[Int] = []
+  let mut ki = 0
+  while ki < group_kinds.length() {
+    kind_order.push(ki)
+    ki = ki + 1
+  }
+  let mut si = 1
+  while si < kind_order.length() {
+    let cur = kind_order[si]
+    let mut pos = si
+    while pos > 0 && group_kinds[kind_order[pos - 1]] > group_kinds[cur] {
+      kind_order[pos] = kind_order[pos - 1]
+      pos = pos - 1
+    }
+    kind_order[pos] = cur
+    si = si + 1
+  }
+
+  let groups : Array[SearchGroup] = []
+  let mut oi = 0
+  while oi < kind_order.length() {
+    let idx = kind_order[oi]
+    let items = group_items[idx]
+    let total = items.length()
+    // Sort items by `ranked_before`.
+    let mut a = 1
+    while a < items.length() {
+      let cur = items[a]
+      let mut pos = a
+      while pos > 0 && ranked_before(cur, items[pos - 1]) {
+        items[pos] = items[pos - 1]
+        pos = pos - 1
+      }
+      items[pos] = cur
+      a = a + 1
+    }
+    let hits : Array[SearchHit] = []
+    let mut hi = clamped_offset
+    while hi < items.length() && hi < want {
+      hits.push(items[hi].hit)
+      hi = hi + 1
+    }
+    if hits.length() > 0 {
+      groups.push(SearchGroup::{
+        kind: group_kinds[idx],
+        hits: hits,
+        more: total > want,
+        left: None,
+      })
+    }
+    oi = oi + 1
+  }
+
+  Ok(SearchResult::{ groups: groups, building: false })
+}

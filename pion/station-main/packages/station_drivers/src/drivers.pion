@@ -1,0 +1,1587 @@
+// Pure Pion CLI argv / environment / config / bridge builders for all 11 runtimes:
+//   claude, codex, agy, cursor, copilot, pi, acp, dsh, devin, grok, hermes.
+//
+// Security invariant:
+// - Never writes third-party managed MCP configs or secrets into any runtime driver's
+//   session config or environment.
+// - Always injects only the station's local loopback `127.0.0.1` `/mcp` endpoint +
+//   per-session bearer token, and strips `MallocSpaceEfficient` and `STILLFAIL_MESH_FRONT`.
+// - Owner Decision A: JS-SDK bridges (`cursor-bridge.mjs`, `copilot-bridge.mjs`,
+//   `pi-bridge.mjs`, `dsh-bridge.mjs`, `claude-tui.mjs`) are launched via controlled
+//   process specs while all configuration, env isolation, and guards stay pure Pion.
+
+import "crypto"
+import "base_codec"
+import "nodepath"
+
+pub let MCP_TOKEN_VAR : String = "STILLFAIL_MCP_TOKEN"
+
+// ---------------------------------------------------------------------------
+// 1. Claude Code (`claude`)
+// ---------------------------------------------------------------------------
+
+pub fn claude_scrubbed() -> Array[String] {
+  [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
+  ]
+}
+
+pub fn claude_disallowed_tools() -> Array[String] {
+  ["ScheduleWakeup", "CronCreate", "CronDelete", "CronList", "RemoteTrigger"]
+}
+
+pub fn claude_silent_subagents_matcher() -> String {
+  let servers = tool_servers()
+  let tools = speaks_tools()
+  tools.push(SPEAKS_WRITING)
+  let out : Array[String] = []
+  for i in 0..<servers.length() {
+    for j in 0..<tools.length() {
+      out.push("mcp__" + servers[i] + "__" + tools[j])
+    }
+  }
+  join_strings(out, "|")
+}
+
+pub fn build_claude_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
+  if !is_local_mcp_url(opts.mcp_url) {
+    return Err("claude: mcp_url must be a local loopback address")
+  }
+  let session_id = match opts.resume {
+    Some(r) => r
+    None => {
+      let id = (opts.next_uuid)()
+      if !is_valid_uuid_v4(id) {
+        return Err("claude: next_uuid must return a valid RFC 4122 UUID v4")
+      }
+      id
+    }
+  }
+  let mcp_config = if opts.text_only {
+    json_obj([("mcpServers", json_obj([]))])
+  } else {
+    json_obj([
+      (
+        "mcpServers",
+        json_obj([
+          (
+            "stillfail",
+            json_obj([
+              ("type", json_str("http")),
+              ("url", json_str(opts.mcp_url)),
+              ("headers", json_obj([("Authorization", json_str("Bearer ${" + MCP_TOKEN_VAR + "}"))])),
+            ]),
+          ),
+        ]),
+      ),
+    ])
+  }
+  let mcp_config_str = json_stringify(mcp_config)
+  let model = match opts.model {
+    Some(m) => Some(m)
+    None => opts.profile.model
+  }
+  let tui = !opts.text_only && opts.tui
+  let args : Array[String] = if tui {
+    []
+  } else {
+    ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
+  }
+  if !opts.text_only {
+    args.push("--dangerously-skip-permissions")
+  }
+  if opt_str_is_some(opts.resume) {
+    args.push("--resume")
+    args.push(session_id)
+  } else {
+    args.push("--session-id")
+    args.push(session_id)
+  }
+  match model {
+    Some(m) => {
+      args.push("--model")
+      args.push(m)
+    }
+    None => ()
+  }
+  match opts.effort {
+    Some(e) => {
+      args.push("--effort")
+      args.push(e)
+    }
+    None => ()
+  }
+  let ours = opts.instructions != ""
+  if ours {
+    args.push("--append-system-prompt")
+    args.push(opts.instructions)
+  }
+  args.push("--mcp-config")
+  args.push(mcp_config_str)
+  if opts.text_only {
+    args.push("--strict-mcp-config")
+    args.push("--tools")
+    args.push("")
+    args.push("--setting-sources")
+    args.push("")
+    args.push("--no-session-persistence")
+    args.push("--disable-slash-commands")
+    args.push("--no-chrome")
+  }
+  if ours {
+    args.push("--disallowedTools")
+    args.push(join_strings(claude_disallowed_tools(), ","))
+  }
+
+  let repo_hook_file = nodepath::join(opts.sep, [opts.assets_dir, "repo-rules-hook.mjs"])
+  let subagent_hook_file = nodepath::join(opts.sep, [opts.assets_dir, "subagent-hook.mjs"])
+  let repo_node = hook_node(repo_hook_file, opts.has_path, opts.node_exec, opts.sep)
+  let subagent_node = hook_node(subagent_hook_file, opts.has_path, opts.node_exec, opts.sep)
+  let repo_cmd = hook_command(repo_node, repo_hook_file, [])
+  let subagent_cmd = hook_command(subagent_node, subagent_hook_file, [join_strings(slack_spoken(), ",")])
+  let fast = if takes_fast(opts.profile) {
+    match opts.fast {
+      Some(f) => Some(f)
+      None => Some(opts.profile.fast)
+    }
+  } else {
+    None
+  }
+  let kf = key_file(opts.profile, opts.sep)
+  let settings_entries : Array[(String, base_codec::Json)] = []
+  if ours {
+    settings_entries.push(("disableClaudeAiConnectors", json_bool(true)))
+    let skill_overrides : Array[(String, base_codec::Json)] = [
+      ("loop", json_str("off")),
+      ("schedule", json_str("off")),
+      ("keybindings-help", json_str("off")),
+      ("fewer-permission-prompts", json_str("off")),
+      ("plugin-authoring", json_str("off")),
+      ("update-config", json_str("off")),
+      ("dataviz", json_str("name-only")),
+      ("claude-api", json_str("name-only")),
+      ("code-review", json_str("name-only")),
+      ("run", json_str("name-only")),
+      ("anthropic-skills:computer-use", json_str("off")),
+      ("anthropic-skills:chrome-browser", json_str("off")),
+      ("anthropic-skills:built-in-browser", json_str("off")),
+      ("anthropic-skills:docs", json_str("off")),
+      ("anthropic-skills:google-workspace", json_str("off")),
+      ("anthropic-skills:morning", json_str("off")),
+      ("anthropic-skills:import-memory", json_str("off")),
+      ("anthropic-skills:docx", json_str("name-only")),
+      ("anthropic-skills:pptx", json_str("name-only")),
+      ("anthropic-skills:xlsx", json_str("name-only")),
+      ("anthropic-skills:pdf", json_str("name-only")),
+      ("anthropic-skills:deep-research", json_str("name-only")),
+      ("anthropic-skills:skill-creator", json_str("name-only")),
+    ]
+    settings_entries.push(("skillOverrides", json_obj(skill_overrides)))
+  }
+  if !opts.text_only {
+    settings_entries.push(("disableAllHooks", json_bool(false)))
+    let hook_entries : Array[(String, base_codec::Json)] = []
+    if ours {
+      hook_entries.push((
+        "PostToolUse",
+        json_arr([
+          json_obj([
+            ("matcher", json_str("Bash|Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob")),
+            ("hooks", json_arr([json_obj([("type", json_str("command")), ("command", json_str(repo_cmd))])])),
+          ]),
+        ]),
+      ))
+      hook_entries.push((
+        "SessionStart",
+        json_arr([
+          json_obj([
+            ("matcher", json_str("compact")),
+            ("hooks", json_arr([json_obj([("type", json_str("command")), ("command", json_str(repo_cmd))])])),
+          ]),
+        ]),
+      ))
+    }
+    hook_entries.push((
+      "PreToolUse",
+      json_arr([
+        json_obj([
+          ("matcher", json_str(claude_silent_subagents_matcher())),
+          (
+            "hooks",
+            json_arr([
+              json_obj([
+                ("type", json_str("command")),
+                ("command", json_str(subagent_cmd)),
+                ("timeout", json_int(10)),
+              ]),
+            ]),
+          ),
+        ]),
+      ]),
+    ))
+    settings_entries.push(("hooks", json_obj(hook_entries)))
+  }
+  match kf {
+    Some(f) => settings_entries.push(("apiKeyHelper", json_str("cat " + posix_quote(f))))
+    None => ()
+  }
+  match opts.context {
+    Some(c) => settings_entries.push(("autoCompactWindow", json_int(c)))
+    None => ()
+  }
+  match fast {
+    Some(f) => settings_entries.push(("fastMode", json_bool(f)))
+    None => ()
+  }
+  let settings_str = if settings_entries.length() > 0 {
+    let s = json_stringify(json_obj(settings_entries))
+    args.push("--settings")
+    args.push(s)
+    Some(s)
+  } else {
+    None
+  }
+
+  let mut env = keep_local(
+    env_merge(
+      clean_env(opts.station_env, opts.agent_env, claude_scrubbed()),
+      expand_route(profile_env(opts.profile, RuntimeKind::Claude, opts.sep), opts.route),
+    ),
+  )
+  if opt_str_is_some(kf) {
+    env = env_set(env, "CLAUDE_CODE_API_KEY_HELPER_TTL_MS", "60000")
+  }
+  env = env_set(env, "CLAUDE_CONFIG_DIR", opts.profile.home)
+  if !opts.text_only && opts.is_root {
+    env = env_set(env, "IS_SANDBOX", "1")
+  }
+  env = env_set(env, MCP_TOKEN_VAR, opts.mcp_token)
+  env = env_set(env, "STILLFAIL_PEER_HTTP", peer_http_base(opts.mcp_url))
+  env = env_set(env, "STILLFAIL_RUNTIME_SESSION_ID", session_id)
+  if !opts.profile.machine && opts.has_keychain {
+    env = apply_file_credentials(env, true, opts.stub_dir)
+  }
+  match opts.external_token {
+    Some(tok) => {
+      env = env_set(env, "CLAUDE_CODE_OAUTH_TOKEN", tok)
+      if !tui {
+        env = env_set(env, "CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH", "1")
+        env = env_set(env, "CLAUDE_CODE_ENTRYPOINT", "claude-desktop")
+      }
+    }
+    None => ()
+  }
+  env = env_set_default(env, "CLAUDE_CODE_CERT_STORE", "bundled")
+  env = env_set_default(env, "CLAUDE_CODE_SILENT_TURN_REMINDER", "0")
+
+  if tui {
+    env = env_set(env, "IS_DEMO", "1")
+    let tui_bridge = nodepath::join(opts.sep, [opts.assets_dir, "claude-tui.mjs"])
+    let tui_node = hook_node(tui_bridge, opts.has_path, opts.node_exec, opts.sep)
+    let tui_args : Array[String] = [tui_bridge, tui_node, opts.runner_bin, "claude"]
+    for i in 0..<args.length() {
+      tui_args.push(args[i])
+    }
+    return Ok(DriverLaunchSpec::{
+      runtime: RuntimeKind::Claude,
+      program: opts.node_exec,
+      args: tui_args,
+      env: env,
+      cwd: opts.cwd,
+      bridge_script: Some(tui_bridge),
+      mcp_config_json: Some(mcp_config_str),
+      settings_json: settings_str,
+      setup_json: None,
+      patch_yaml: None,
+      opening_meta_json: None,
+      rules_dir: None,
+      silent_subagents_enabled: !opts.text_only,
+      pty_mode: true,
+    })
+  }
+  Ok(DriverLaunchSpec::{
+    runtime: RuntimeKind::Claude,
+    program: "claude",
+    args: args,
+    env: env,
+    cwd: opts.cwd,
+    bridge_script: None,
+    mcp_config_json: Some(mcp_config_str),
+    settings_json: settings_str,
+    setup_json: None,
+    patch_yaml: None,
+    opening_meta_json: None,
+    rules_dir: None,
+    silent_subagents_enabled: !opts.text_only,
+    pty_mode: false,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 2. Codex (`codex`)
+// ---------------------------------------------------------------------------
+
+pub fn codex_scrubbed() -> Array[String] {
+  ["OPENAI_API_KEY", "CODEX_HOME"]
+}
+
+pub fn codex_host_args(profile : Profile) -> Array[String] {
+  let args : Array[String] = ["app-server"]
+  let overrides = codex_overrides(profile.access_kind, profile.model, profile_via(profile))
+  for i in 0..<overrides.length() {
+    let (k, v) = overrides[i]
+    args.push("-c")
+    args.push(k + "=" + v)
+  }
+  args.push("--listen")
+  args.push("stdio://")
+  args
+}
+
+/// Per-session `thread/start` (or `thread/resume`) JSON params aligned 1:1 with `codex.ts:1205-1264`:
+/// - `approvalPolicy`, `sandbox`, `developerInstructions`, `model` at top level (not inside `config`).
+/// - `config` carries `mcp_servers.stillfail.*`, `hooks` (`PostToolUse` + `PostCompact` using `hook_node()`),
+///   `bypass_hook_trust: true`, `skills.config`, `model_reasoning_effort`, `model_auto_compact_token_limit`.
+/// - `textOnly` disables all tool/feature flags, sets `sandbox: "read-only"`, `ephemeral: true`,
+///   `environments: []`, and disables every configured MCP server (`{ enabled: false }`).
+pub fn codex_thread_start_params_json(
+  opts : OpenOptions,
+  host_skills_off : Array[String],
+  existing_mcp_servers : Array[String],
+) -> String {
+  let config_entries : Array[(String, base_codec::Json)] = []
+  if opts.text_only {
+    config_entries.push(("features.shell_tool", json_bool(false)))
+    config_entries.push(("features.unified_exec", json_bool(false)))
+    config_entries.push(("features.multi_agent", json_bool(false)))
+    config_entries.push(("features.apps", json_bool(false)))
+    config_entries.push(("features.plugins", json_bool(false)))
+    config_entries.push(("features.browser_use", json_bool(false)))
+    config_entries.push(("features.computer_use", json_bool(false)))
+    config_entries.push(("features.image_generation", json_bool(false)))
+    config_entries.push(("features.view_image", json_bool(false)))
+    config_entries.push(("features.goals", json_bool(false)))
+    config_entries.push(("web_search", json_str("disabled")))
+    let disabled_mcps : Array[(String, base_codec::Json)] = []
+    for i in 0..<existing_mcp_servers.length() {
+      disabled_mcps.push((existing_mcp_servers[i], json_obj([("enabled", json_bool(false))])))
+    }
+    config_entries.push(("mcp_servers", json_obj(disabled_mcps)))
+  } else {
+    if opts.mcp_url != "" {
+      config_entries.push(("mcp_servers.stillfail.url", json_str(opts.mcp_url)))
+      config_entries.push((
+        "mcp_servers.stillfail.http_headers",
+        json_obj([("Authorization", json_str("Bearer " + opts.mcp_token))]),
+      ))
+    }
+    let repo_hook_file = nodepath::join(opts.sep, [opts.assets_dir, "repo-rules-hook.mjs"])
+    let repo_node = hook_node(repo_hook_file, opts.has_path, opts.node_exec, opts.sep)
+    let repo_cmd = hook_command(repo_node, repo_hook_file, [])
+    config_entries.push((
+      "hooks",
+      json_obj([
+        (
+          "PostToolUse",
+          json_arr([
+            json_obj([
+              ("matcher", json_str("*")),
+              ("hooks", json_arr([json_obj([("type", json_str("command")), ("command", json_str(repo_cmd))])])),
+            ]),
+          ]),
+        ),
+        (
+          "PostCompact",
+          json_arr([
+            json_obj([
+              ("hooks", json_arr([json_obj([("type", json_str("command")), ("command", json_str(repo_cmd))])])),
+            ]),
+          ]),
+        ),
+      ]),
+    ))
+    config_entries.push(("bypass_hook_trust", json_bool(true)))
+  }
+  match opts.effort {
+    Some(e) => config_entries.push(("model_reasoning_effort", json_str(e)))
+    None => ()
+  }
+  match opts.context {
+    Some(c) => config_entries.push(("model_auto_compact_token_limit", json_int(c)))
+    None => ()
+  }
+  if host_skills_off.length() > 0 {
+    let sk_arr : Array[base_codec::Json] = []
+    for i in 0..<host_skills_off.length() {
+      sk_arr.push(json_obj([("path", json_str(host_skills_off[i])), ("enabled", json_bool(false))]))
+    }
+    config_entries.push(("skills.config", json_arr(sk_arr)))
+  }
+
+  let common : Array[(String, base_codec::Json)] = [
+    ("cwd", json_str(opts.cwd)),
+    ("approvalPolicy", json_str("never")),
+    ("sandbox", json_str(if opts.text_only { "read-only" } else { "danger-full-access" })),
+    ("config", json_obj(config_entries)),
+  ]
+  if opts.instructions != "" {
+    common.push(("developerInstructions", json_str(opts.instructions)))
+  }
+  if opts.text_only {
+    common.push(("ephemeral", json_bool(true)))
+    common.push(("environments", json_arr([])))
+  }
+  let model = match opts.model {
+    Some(m) => Some(m)
+    None => opts.profile.model
+  }
+  match model {
+    Some(m) => common.push(("model", json_str(m)))
+    None => ()
+  }
+  match opts.resume {
+    Some(r) => {
+      common.push(("threadId", json_str(r)))
+      common.push(("excludeTurns", json_bool(true)))
+    }
+    None => ()
+  }
+  json_stringify(json_obj(common))
+}
+
+/// Per-turn `turn/start` JSON params aligned 1:1 with `codex.ts:1635, 1660-1663`:
+/// `ultrafast` requires a subscription profile; `serviceTier` is set on `turn/start`
+/// (with explicit `null` clearing a previously selected tier).
+pub fn codex_turn_start_params_json(
+  thread_id : String,
+  text : String,
+  profile : Profile,
+  speed : Option[String],
+  fast : Option[Bool],
+) -> Result[String, String] {
+  if opt_str_eq(speed, Some("ultrafast")) && !access_kind_eq(profile.access_kind, AccessKind::Subscription) {
+    return Err("codex: ultrafast requires a subscription profile")
+  }
+  let params : Array[(String, base_codec::Json)] = [
+    ("threadId", json_str(thread_id)),
+    ("input", json_arr([json_obj([("type", json_str("text")), ("text", json_str(text))])])),
+  ]
+  if access_kind_eq(profile.access_kind, AccessKind::Subscription) {
+    let tier = if opt_str_eq(speed, Some("ultrafast")) {
+      json_str("ultrafast")
+    } else if opt_str_eq(speed, Some("fast")) {
+      json_str("fast")
+    } else if opt_str_eq(speed, Some("standard")) {
+      base_codec::json_null()
+    } else {
+      let eff_fast = match fast {
+        Some(f) => f
+        None => profile.fast
+      }
+      if eff_fast { json_str("fast") } else { base_codec::json_null() }
+    }
+    params.push(("serviceTier", tier))
+  }
+  Ok(json_stringify(json_obj(params)))
+}
+
+pub fn codex_thread_config_json(opts : OpenOptions) -> String {
+  codex_thread_start_params_json(opts, [], [])
+}
+
+pub fn build_codex_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
+  if !is_local_mcp_url(opts.mcp_url) {
+    return Err("codex: mcp_url must be a local loopback address")
+  }
+  let mut env = keep_local(
+    env_merge(
+      clean_env(opts.station_env, opts.agent_env, codex_scrubbed()),
+      expand_route(profile_env(opts.profile, RuntimeKind::Codex, opts.sep), opts.route),
+    ),
+  )
+  env = env_set(env, "CODEX_HOME", opts.profile.home)
+  let thread_cfg = codex_thread_config_json(opts)
+  Ok(DriverLaunchSpec::{
+    runtime: RuntimeKind::Codex,
+    program: "codex",
+    args: codex_host_args(opts.profile),
+    env: env,
+    cwd: opts.cwd,
+    bridge_script: None,
+    mcp_config_json: Some(thread_cfg),
+    settings_json: None,
+    setup_json: None,
+    patch_yaml: None,
+    opening_meta_json: None,
+    rules_dir: None,
+    silent_subagents_enabled: false,
+    pty_mode: false,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 3. Antigravity CLI (`agy`)
+// ---------------------------------------------------------------------------
+
+pub let AGY_SKILL_BUDGET : Int = 20000
+pub let AGY_TOOL_BUDGET : Int = 22000
+pub let AGY_TOOL_CEILING : Int = 31000
+
+pub fn agy_scrubbed() -> Array[String] {
+  [
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GOOGLE_GENAI_USE_VERTEXAI",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
+    "GOOGLE_CLOUD_LOCATION",
+    "AGY_ADC_AUTH",
+    "AGY_ACCOUNT",
+    "STILLFAIL_REPO_RULES",
+  ]
+}
+
+pub fn agy_home(home : String, sep : String) -> String {
+  nodepath::join(sep, [home, "agy"])
+}
+
+pub fn agy_gemini_dir(home : String, sep : String) -> String {
+  nodepath::join(sep, [agy_home(home, sep), ".gemini"])
+}
+
+pub fn agy_levels() -> Array[String] {
+  ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+}
+
+pub fn agy_base_model(id : String) -> (String, Option[String]) {
+  let trimmed = str_trim(id)
+  let levels = agy_levels()
+  for i in 0..<levels.length() {
+    let l = levels[i]
+    let suffix = "-" + l
+    if str_ends_with(trimmed, suffix) && trimmed.to_bytes().length() > suffix.to_bytes().length() {
+      return (str_slice_bytes(trimmed, 0, trimmed.to_bytes().length() - suffix.to_bytes().length()), Some(l))
+    }
+  }
+  (trimmed, None)
+}
+
+pub fn agy_variant(model : String, effort : Option[String], available : Array[String]) -> Option[String] {
+  let (base, inline_eff) = agy_base_model(model)
+  let levels = agy_levels()
+  let wanted = match effort {
+    Some(e) => if arr_contains_str(levels, e) { Some(e) } else { inline_eff }
+    None => inline_eff
+  }
+  if available.length() == 0 {
+    return match wanted {
+      Some(w) => if !opt_str_is_some(inline_eff) { Some(base + "-" + w) } else { Some(model) }
+      None => Some(model)
+    }
+  }
+  match wanted {
+    Some(w) => if arr_contains_str(available, base + "-" + w) { return Some(base + "-" + w) }
+    None => ()
+  }
+  if !opt_str_is_some(effort) && arr_contains_str(available, model) {
+    return Some(model)
+  }
+  if arr_contains_str(available, base) {
+    return Some(base)
+  }
+  let variants : Array[String] = []
+  for i in 0..<available.length() {
+    let (mb, _) = agy_base_model(available[i])
+    if mb == base {
+      variants.push(available[i])
+    }
+  }
+  if variants.length() == 0 {
+    return None
+  }
+  if arr_contains_str(variants, base + "-medium") {
+    return Some(base + "-medium")
+  }
+  if arr_contains_str(variants, base + "-high") {
+    return Some(base + "-high")
+  }
+  Some(variants[0])
+}
+
+pub fn agy_with_omitted_skills(instructions : String, left : Int) -> String {
+  if left <= 0 || instructions == "" {
+    return instructions
+  }
+  let noun = if left == 1 { "workspace skill was" } else { "workspace skills were" }
+  instructions +
+  "\n\nNote: " +
+  left.to_string() +
+  " additional " +
+  noun +
+  " omitted from .agent/skills to stay within Antigravity CLI's declaration budget. Use search with kinds=[\"skill\"] to find relevant skills and skill_read to read them in full."
+}
+
+pub fn build_agy_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
+  if !is_local_mcp_url(opts.mcp_url) {
+    return Err("agy: mcp_url must be a local loopback address")
+  }
+  let gdir = agy_gemini_dir(opts.profile.home, opts.sep)
+  let args : Array[String] = ["acp", "--gemini-dir", gdir, "--dangerously-skip-permissions", "--disable-telemetry"]
+  let mut env = keep_local(
+    env_merge(
+      clean_env(opts.station_env, opts.agent_env, agy_scrubbed()),
+      expand_route(profile_env(opts.profile, RuntimeKind::Agy, opts.sep), opts.route),
+    ),
+  )
+  env = env_set(env, "ANTIGRAVITY_GEMINI_DIR", gdir)
+  env = env_set(env, "AGY_CLI_FORCE_FILE_TOKEN_STORAGE", "1")
+  env = env_set(env, "SSH_CLIENT", "127.0.0.1 0 0")
+  env = env_set(env, "AGY_CLI_DISABLE_AUTO_UPDATE", "1")
+  env = env_set(env, "STILLFAIL_PEER_HTTP", peer_http_base(opts.mcp_url))
+  if opts.instructions == "" || opts.text_only {
+    env = env_set(env, "STILLFAIL_REPO_RULES", "0")
+  }
+  let opening_meta = if opts.instructions == "" {
+    "{}"
+  } else {
+    json_stringify(
+      json_obj([
+        (
+          "_meta",
+          json_obj([
+            (
+              "antigravity",
+              json_obj([("systemPrompt", json_obj([("append", json_str(opts.instructions))]))]),
+            ),
+          ]),
+        ),
+      ]),
+    )
+  }
+  Ok(DriverLaunchSpec::{
+    runtime: RuntimeKind::Agy,
+    program: "agy",
+    args: args,
+    env: env,
+    cwd: opts.cwd,
+    bridge_script: None,
+    mcp_config_json: Some(acp_mcp_servers_json(opts.mcp_url, opts.mcp_token)),
+    settings_json: None,
+    setup_json: None,
+    patch_yaml: None,
+    opening_meta_json: Some(opening_meta),
+    rules_dir: None,
+    silent_subagents_enabled: false,
+    pty_mode: false,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 4. Cursor (`cursor`) — JS-SDK bridge (`cursor-bridge.mjs`)
+// ---------------------------------------------------------------------------
+
+pub fn cursor_scrubbed() -> Array[String] {
+  [
+    "CURSOR_API_KEY",
+    "CURSOR_AUTH_TOKEN",
+    "CURSOR_BACKEND_URL",
+    "CURSOR_WEBSITE_URL",
+    "STILLFAIL_CURSOR_SDK",
+    "STILLFAIL_CURSOR_HOME",
+  ]
+}
+
+pub fn build_cursor_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
+  if !is_local_mcp_url(opts.mcp_url) {
+    return Err("cursor: mcp_url must be a local loopback address")
+  }
+  let sdk = match opts.sdk_dir {
+    Some(s) => s
+    None => return Err("cursor: @cursor/sdk is not installed")
+  }
+  let bridge = nodepath::join(opts.sep, [opts.assets_dir, "cursor-bridge.mjs"])
+  let chome = nodepath::join(opts.sep, [opts.profile.home, "cursor"])
+  let sessions = nodepath::join(opts.sep, [chome, "sessions"])
+  let rules_plan = plan_cursor_rules_folder(opts.profile.home, opts.key, opts.instructions, opts.skills, opts.sep)
+  let mut env = keep_local(
+    env_merge(
+      clean_env(opts.station_env, opts.agent_env, cursor_scrubbed()),
+      expand_route(profile_env(opts.profile, RuntimeKind::Cursor, opts.sep), opts.route),
+    ),
+  )
+  match opts.cursor_key {
+    Some(k) => env = env_set_default(env, "CURSOR_API_KEY", k)
+    None => ()
+  }
+  env = env_set(env, "STILLFAIL_CURSOR_SDK", sdk)
+  env = env_set(env, "STILLFAIL_CURSOR_HOME", nodepath::join(opts.sep, [sessions, "home"]))
+  env = env_set(env, MCP_TOKEN_VAR, opts.mcp_token)
+  env = env_set(env, "STILLFAIL_PEER_HTTP", peer_http_base(opts.mcp_url))
+  let open_entries : Array[(String, base_codec::Json)] = [
+    ("cwd", json_str(opts.cwd)),
+    ("mcpUrl", json_str(opts.mcp_url)),
+    ("rules", json_str(rules_plan.dir)),
+    ("sessions", json_str(sessions)),
+  ]
+  match opts.resume {
+    Some(r) => open_entries.push(("resume", json_str(r)))
+    None => ()
+  }
+  let model = match opts.model {
+    Some(m) => Some(m)
+    None => opts.profile.model
+  }
+  match model {
+    Some(m) => open_entries.push(("model", json_str(m)))
+    None => ()
+  }
+  Ok(DriverLaunchSpec::{
+    runtime: RuntimeKind::Cursor,
+    program: opts.node_exec,
+    args: [bridge],
+    env: env,
+    cwd: opts.cwd,
+    bridge_script: Some(bridge),
+    mcp_config_json: None,
+    settings_json: None,
+    setup_json: Some(json_stringify(json_obj(open_entries))),
+    patch_yaml: None,
+    opening_meta_json: None,
+    rules_dir: Some(rules_plan.dir),
+    silent_subagents_enabled: false,
+    pty_mode: false,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 5. GitHub Copilot (`copilot`) — JS-SDK bridge (`copilot-bridge.mjs`) + subagent refusal
+// ---------------------------------------------------------------------------
+
+pub fn copilot_scrubbed() -> Array[String] {
+  [
+    "COPILOT_HOME",
+    "COPILOT_GITHUB_TOKEN",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "COPILOT_PROVIDERS_CONFIG",
+    "COPILOT_PROVIDER_BASE_URL",
+    "COPILOT_PROVIDER_API_KEY",
+    "COPILOT_PROVIDER_TYPE",
+    "COPILOT_SDK_DEFAULT_CONNECTION",
+    "STILLFAIL_COPILOT_SDK",
+    "STILLFAIL_COPILOT_TOKEN",
+  ]
+}
+
+pub fn copilot_rules(instructions : String) -> String {
+  let suffix = "The station's tools (chat_post, chat_state and the others named in these instructions) are MCP tools named stillfail-<tool>: stillfail-chat_post and so on. Call one by that name without listing the server's tools first."
+  if instructions == "" {
+    suffix
+  } else {
+    instructions + "\n\n" + suffix
+  }
+}
+
+pub fn build_copilot_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
+  if !is_local_mcp_url(opts.mcp_url) {
+    return Err("copilot: mcp_url must be a local loopback address")
+  }
+  let sdk = match opts.sdk_dir {
+    Some(s) => s
+    None => return Err("copilot: @microsoft/copilot-sdk is not installed")
+  }
+  let token = match opts.copilot_token {
+    Some(t) => if str_trim(t) != "" { str_trim(t) } else { return Err("GitHub Copilot is not signed in on this profile") }
+    None => return Err("GitHub Copilot is not signed in on this profile")
+  }
+  let bridge = nodepath::join(opts.sep, [opts.assets_dir, "copilot-bridge.mjs"])
+  let chome = nodepath::join(opts.sep, [opts.profile.home, "copilot"])
+  let sessions = nodepath::join(opts.sep, [chome, "sessions"])
+  let mut env = keep_local(
+    env_merge(
+      clean_env(opts.station_env, opts.agent_env, copilot_scrubbed()),
+      expand_route(profile_env(opts.profile, RuntimeKind::Copilot, opts.sep), opts.route),
+    ),
+  )
+  env = env_delete(env, "COPILOT_GITHUB_TOKEN")
+  env = env_set(env, "STILLFAIL_COPILOT_SDK", sdk)
+  env = env_set(env, "STILLFAIL_COPILOT_TOKEN", token)
+  env = env_set(env, MCP_TOKEN_VAR, opts.mcp_token)
+  env = env_set(env, "STILLFAIL_PEER_HTTP", peer_http_base(opts.mcp_url))
+
+  let silent_obj = json_obj([
+    ("tools", json_str_arr(speaks_tools())),
+    ("slackWrites", json_str_arr(slack_spoken())),
+  ])
+  let open_entries : Array[(String, base_codec::Json)] = [
+    ("cwd", json_str(opts.cwd)),
+    ("mcpUrl", json_str(opts.mcp_url)),
+    ("instructions", json_str(copilot_rules(opts.instructions))),
+    ("own", json_str(chome)),
+    ("sessions", json_str(sessions)),
+    ("silent", silent_obj),
+  ]
+  match opts.resume {
+    Some(r) => open_entries.push(("resume", json_str(r)))
+    None => ()
+  }
+  let model = match opts.model {
+    Some(m) => Some(m)
+    None => opts.profile.model
+  }
+  match model {
+    Some(m) => if m != "" { open_entries.push(("model", json_str(m))) }
+    None => ()
+  }
+  match opts.effort {
+    Some(e) => if e != "" { open_entries.push(("effort", json_str(e))) }
+    None => ()
+  }
+  match opts.skills {
+    Some(sk) => open_entries.push(("skills", json_str(sk)))
+    None => ()
+  }
+  Ok(DriverLaunchSpec::{
+    runtime: RuntimeKind::Copilot,
+    program: opts.node_exec,
+    args: [bridge],
+    env: env,
+    cwd: opts.cwd,
+    bridge_script: Some(bridge),
+    mcp_config_json: None,
+    settings_json: None,
+    setup_json: Some(json_stringify(json_obj(open_entries))),
+    patch_yaml: None,
+    opening_meta_json: None,
+    rules_dir: None,
+    silent_subagents_enabled: true,
+    pty_mode: false,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 6. Pi (`pi`) — RPC + extension bridge (`pi-bridge.mjs`)
+// ---------------------------------------------------------------------------
+
+pub fn pi_scrubbed() -> Array[String] {
+  [
+    "PI_CODING_AGENT_DIR",
+    "PI_CODING_AGENT_SESSION_DIR",
+    "PI_SESSION_ID",
+    "PI_SESSION_FILE",
+    PI_KEY,
+    "STILLFAIL_PI_SETUP",
+  ]
+}
+
+fn is_openai_own(base_url : String) -> Bool {
+  str_starts_with(base_url, "https://api.openai.com/") || base_url == "https://api.openai.com"
+}
+
+pub fn build_pi_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
+  if !is_local_mcp_url(opts.mcp_url) {
+    return Err("pi: mcp_url must be a local loopback address")
+  }
+  let bridge = nodepath::join(opts.sep, [opts.assets_dir, "pi-bridge.mjs"])
+  let dir = nodepath::join(opts.sep, [opts.profile.home, "pi"])
+  let id = match opts.resume {
+    Some(r) => r
+    None => {
+      let u = (opts.next_uuid)()
+      if !is_valid_uuid_v4(u) {
+        return Err("pi: next_uuid must return a valid RFC 4122 UUID v4")
+      }
+      u
+    }
+  }
+  let session_file = nodepath::join(opts.sep, [dir, "sessions", id + ".jsonl"])
+  let args : Array[String] = [
+    "--mode",
+    "rpc",
+    "--offline",
+    "--no-extensions",
+    "-e",
+    "builtin:mcp",
+    "-e",
+    bridge,
+    "--no-approve",
+    "--no-skills",
+    "--session",
+    session_file,
+  ]
+  match opts.skills {
+    Some(sk) => {
+      args.push("--skill")
+      args.push(sk)
+    }
+    None => ()
+  }
+  if opts.instructions != "" {
+    let inst_file = nodepath::join(
+      opts.sep,
+      [dir, "stillfail", str_slice_bytes(crypto::sha256_hex(opts.key.to_bytes()), 0, 16) + ".md"],
+    )
+    args.push("--append-system-prompt")
+    args.push(inst_file)
+  }
+  let model = match opts.model {
+    Some(m) => Some(m)
+    None => opts.profile.model
+  }
+  let setup_entries : Array[(String, base_codec::Json)] = [
+    ("tools", json_obj([("url", json_str(opts.mcp_url))])),
+  ]
+  match pi_route(opts.profile) {
+    Some(route) => {
+      let m = match model {
+        Some(mv) => mv
+        None => return Err("the profile names no model for Pi")
+      }
+      let prov_entries : Array[(String, base_codec::Json)] = [
+        ("name", json_str(route.name)),
+        ("baseUrl", json_str(route.base_url)),
+        ("api", json_str(route.api)),
+        ("apiKey", json_str("$" + PI_KEY)),
+        (
+          "models",
+          json_arr([
+            json_obj([
+              ("id", json_str(m)),
+              ("name", json_str(m)),
+              ("reasoning", json_bool(opt_str_is_some(opts.effort))),
+            ]),
+          ]),
+        ),
+      ]
+      if route.headers.length() > 0 {
+        let exp = expand_route(route.headers, opts.route)
+        let hdr_entries : Array[(String, base_codec::Json)] = []
+        for i in 0..<exp.length() {
+          hdr_entries.push((exp[i].0, json_str(exp[i].1)))
+        }
+        prov_entries.push(("headers", json_obj(hdr_entries)))
+      }
+      if route.api != "anthropic-messages" && !is_openai_own(route.base_url) {
+        prov_entries.push(("compat", json_obj([("supportsDeveloperRole", json_bool(false))])))
+      }
+      setup_entries.push(("provider", json_obj(prov_entries)))
+      args.push("--model")
+      args.push("stillfail/" + m)
+    }
+    None => match model {
+      Some(m) => {
+        args.push("--model")
+        args.push(m)
+      }
+      None => ()
+    }
+  }
+  let pi_efforts = ["minimal", "low", "medium", "high", "xhigh", "max"]
+  match opts.effort {
+    Some(e) => if arr_contains_str(pi_efforts, e) {
+      args.push("--thinking")
+      args.push(e)
+    }
+    None => ()
+  }
+  let setup_str = json_stringify(json_obj(setup_entries))
+  let mut env = keep_local(
+    env_merge(
+      clean_env(opts.station_env, opts.agent_env, pi_scrubbed()),
+      expand_route(profile_env(opts.profile, RuntimeKind::Pi, opts.sep), opts.route),
+    ),
+  )
+  env = env_set(env, "PI_CODING_AGENT_DIR", dir)
+  env = env_set(env, "PI_TELEMETRY", "0")
+  env = env_set(env, "PI_SKIP_VERSION_CHECK", "1")
+  env = env_set(env, "STILLFAIL_PI_SETUP", setup_str)
+  env = env_set(env, "STILLFAIL_PEER_HTTP", peer_http_base(opts.mcp_url))
+  env = env_set(env, MCP_TOKEN_VAR, opts.mcp_token)
+  Ok(DriverLaunchSpec::{
+    runtime: RuntimeKind::Pi,
+    program: "pi",
+    args: args,
+    env: env,
+    cwd: opts.cwd,
+    bridge_script: Some(bridge),
+    mcp_config_json: None,
+    settings_json: None,
+    setup_json: Some(setup_str),
+    patch_yaml: None,
+    opening_meta_json: None,
+    rules_dir: None,
+    silent_subagents_enabled: false,
+    pty_mode: false,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 7. Generic ACP protocol (`acp`) — shared by `agy`, `grok`, `devin`, `hermes`
+// ---------------------------------------------------------------------------
+
+pub fn acp_rpc_frame(id : String, method : String, params : base_codec::Json) -> String {
+  json_stringify(
+    json_obj([
+      ("jsonrpc", json_str("2.0")),
+      ("id", json_str(id)),
+      ("method", json_str(method)),
+      ("params", params),
+    ]),
+  )
+}
+
+pub fn acp_mcp_servers_json(url : String, token : String) -> String {
+  json_stringify(
+    json_arr([
+      json_obj([
+        ("type", json_str("http")),
+        ("name", json_str("stillfail")),
+        ("url", json_str(url)),
+        (
+          "headers",
+          json_arr([
+            json_obj([("name", json_str("Authorization")), ("value", json_str("Bearer " + token))]),
+          ]),
+        ),
+      ]),
+    ]),
+  )
+}
+
+pub fn acp_outcome(answer : base_codec::Json) -> TurnOutcome {
+  match json_get_field(answer, "error") {
+    Some(err_v) => {
+      let msg = match json_get_str(err_v, "message") {
+        Some(m) => m
+        None => json_stringify(err_v)
+      }
+      TurnOutcome::Failed(failure_of(msg, FailureWords::empty()), msg)
+    }
+    None => {
+      let stop = match json_get_field(answer, "result") {
+        Some(res) => match json_get_str(res, "stopReason") {
+          Some(s) => s
+          None => ""
+        }
+        None => ""
+      }
+      if stop == "cancelled" {
+        TurnOutcome::Aborted
+      } else if stop == "refusal" {
+        TurnOutcome::Failed(FailureReason::Model, "the model refused")
+      } else {
+        TurnOutcome::Completed
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 8. DeepSeek Harness (`dsh`) — plugin bridge (`dsh-bridge.mjs`)
+// ---------------------------------------------------------------------------
+
+pub fn dsh_scrubbed() -> Array[String] {
+  [
+    "DEEPSEEK_API_KEY",
+    "DEEPSEEK_BASE_URL",
+    DSH_KEY,
+    "DSH_HOME",
+    "DSH_AGENTS_HOME",
+    "DSH_PERMISSION_MODE",
+  ]
+}
+
+pub fn build_dsh_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
+  if !is_local_mcp_url(opts.mcp_url) {
+    return Err("dsh: mcp_url must be a local loopback address")
+  }
+  let bridge = nodepath::join(opts.sep, [opts.assets_dir, "dsh-bridge.mjs"])
+  let patch_file = nodepath::join(
+    opts.sep,
+    [opts.profile.home, "stillfail", str_slice_bytes(crypto::sha256_hex(opts.key.to_bytes()), 0, 16) + ".patch.yml"],
+  )
+  let token_placeholder = "__stillfail_mcp_authorization__"
+  let tools_cfg = json_obj([
+    ("transport", json_str("streamable-http")),
+    ("serverName", json_str("stillfail")),
+    ("url", json_str(opts.mcp_url)),
+    ("headers", json_obj([("Authorization", json_str(token_placeholder))])),
+    ("failOnStartupError", json_bool(true)),
+  ])
+  let patch_arr : Array[base_codec::Json] = [
+    json_obj([("id", json_str("acp")), ("disabled", json_bool(true))]),
+    json_obj([
+      (
+        "insert",
+        json_arr([
+          json_obj([
+            ("id", json_str("stillfail-bridge")),
+            ("name", json_str(bridge)),
+            ("config", json_obj([("tools", json_str("stillfail-tools"))])),
+          ]),
+          json_obj([
+            ("id", json_str("stillfail-tools")),
+            ("name", json_str("@deepseek-ai/dsh-mcp-client")),
+            ("config", tools_cfg),
+          ]),
+        ]),
+      ),
+    ]),
+  ]
+  let model = match opts.model {
+    Some(m) => Some(m)
+    None => opts.profile.model
+  }
+  match dsh_route(opts.profile) {
+    Some(DshRoute::Pi(name, api, base_url, headers)) => {
+      let m = match model {
+        Some(mv) => mv
+        None => return Err("the profile names no model for DeepSeek Harness")
+      }
+      let prov : Array[(String, base_codec::Json)] = [
+        ("displayName", json_str(name)),
+        ("api", json_str(api)),
+        ("baseURL", json_str(base_url)),
+        ("apiKeyEnv", json_str(DSH_KEY)),
+        ("models", json_arr([json_obj([("id", json_str(m))])])),
+      ]
+      if headers.length() > 0 {
+        let exp = expand_route(headers, opts.route)
+        let hdrs : Array[(String, base_codec::Json)] = []
+        for i in 0..<exp.length() {
+          hdrs.push((exp[i].0, json_str(exp[i].1)))
+        }
+        prov.push(("headers", json_obj(hdrs)))
+      }
+      if api != "anthropic-messages" && !is_openai_own(base_url) {
+        prov.push(("compat", json_obj([("supportsDeveloperRole", json_bool(false))])))
+      }
+      patch_arr.push(json_obj([("id", json_str("llm-pi-ai")), ("config", json_obj([("providers", json_obj([("stillfail", json_obj(prov))]))]))]))
+      patch_arr.push(json_obj([("id", json_str("agent-default-model")), ("config", json_obj([("provider", json_str("stillfail")), ("model", json_str(m))]))]))
+    }
+    Some(DshRoute::Deepseek) => {
+      let m = match model {
+        Some(mv) => mv
+        None => "deepseek-v4-flash"
+      }
+      patch_arr.push(json_obj([("id", json_str("llm-deepseek")), ("config", json_obj([("apiKeyEnv", json_str("DEEPSEEK_API_KEY"))]))]))
+      patch_arr.push(json_obj([("id", json_str("agent-default-model")), ("config", json_obj([("provider", json_str("deepseek-official")), ("model", json_str(m))]))]))
+    }
+    None => ()
+  }
+  let safe_inst = str_replace_all(opts.instructions, "{{", "{\u{200b}{")
+  patch_arr.push(json_obj([("id", json_str("system-prompt")), ("config", json_obj([("personaPrefix", json_str("")), ("personaSuffix", json_str(safe_inst))]))]))
+  patch_arr.push(json_obj([("id", json_str("session-persistence-jsonl")), ("config", json_obj([("root", json_str(nodepath::join(opts.sep, [opts.profile.home, "dsh-sessions"]))), ("compression", json_str("none"))]))]))
+  let raw_patch = json_stringify(json_arr(patch_arr))
+  let patch_yaml = str_replace_all(raw_patch, "\"" + token_placeholder + "\"", "!!js \"'Bearer ' + process.env." + MCP_TOKEN_VAR + "\"") + "\n"
+
+  let mut env = keep_local(
+    env_merge(
+      clean_env(opts.station_env, opts.agent_env, dsh_scrubbed()),
+      expand_route(profile_env(opts.profile, RuntimeKind::Dsh, opts.sep), opts.route),
+    ),
+  )
+  env = env_set(env, "DSH_HOME", opts.profile.home)
+  env = env_set(env, "DSH_AGENTS_HOME", nodepath::join(opts.sep, [opts.profile.home, "agents"]))
+  env = env_set(env, "DSH_PERMISSION_MODE", "danger-full-access")
+  env = env_set_default(env, "DSH_TELEMETRY_MODE", "DISABLED")
+  env = env_set(env, "STILLFAIL_PEER_HTTP", peer_http_base(opts.mcp_url))
+  env = env_set(env, MCP_TOKEN_VAR, opts.mcp_token)
+
+  Ok(DriverLaunchSpec::{
+    runtime: RuntimeKind::Dsh,
+    program: "dsh",
+    args: ["--profile", "acp", "--patch", patch_file],
+    env: env,
+    cwd: opts.cwd,
+    bridge_script: Some(bridge),
+    mcp_config_json: None,
+    settings_json: None,
+    setup_json: None,
+    patch_yaml: Some(patch_yaml),
+    opening_meta_json: None,
+    rules_dir: None,
+    silent_subagents_enabled: false,
+    pty_mode: false,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 9. Devin (`devin`) — ACP
+// ---------------------------------------------------------------------------
+
+pub fn devin_scrubbed() -> Array[String] {
+  [
+    "WINDSURF_API_KEY",
+    "WINDSURF_API_SERVER_URL",
+    "DEVIN_API_URL",
+    "DEVIN_WEBAPP_URL",
+    "DEVIN_MODEL",
+    "DEVIN_SESSIONS_DIR",
+    "DEVIN_PERMISSION_MODE",
+    "DEVIN_SANDBOX",
+    "ACP_BACKEND",
+  ]
+}
+
+pub fn devin_variant(model : String, effort : Option[String]) -> String {
+  let levels = agy_levels()
+  let lower = ascii_lower(str_trim(model))
+  if str_starts_with(lower, "fusion-") {
+    let at = str_index_of(lower, "-sidekick-", 7)
+    if at > 7 {
+      let raw_lead = str_slice_bytes(lower, 7, at)
+      let side = str_slice_bytes(lower, at + 10, lower.to_bytes().length())
+      let (lead, inline_eff) = agy_base_model(raw_lead)
+      let lvl = match effort {
+        Some(e) => if arr_contains_str(levels, e) { e } else {
+          match inline_eff {
+            Some(ie) => ie
+            None => "high"
+          }
+        }
+        None => match inline_eff {
+          Some(ie) => ie
+          None => "high"
+        }
+      }
+      return "fusion-" + lead + "-" + lvl + "-sidekick-" + side
+    }
+  }
+  match effort {
+    Some(e) => if arr_contains_str(levels, e) { model + "-" + e } else { model }
+    None => model
+  }
+}
+
+pub fn build_devin_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
+  if !is_local_mcp_url(opts.mcp_url) {
+    return Err("devin: mcp_url must be a local loopback address")
+  }
+  let dhome = nodepath::join(opts.sep, [opts.profile.home, "devin"])
+  let config_file = nodepath::join(opts.sep, [dhome, "config.json"])
+  let rules_plan = plan_devin_rules_folder(opts.profile.home, opts.key, opts.instructions, opts.skills, opts.sep)
+  let args : Array[String] = ["--config", config_file, "acp"]
+  let model = match opts.model {
+    Some(m) => Some(m)
+    None => opts.profile.model
+  }
+  match model {
+    Some(m) => {
+      args.push("--model")
+      args.push(devin_variant(m, opts.effort))
+    }
+    None => ()
+  }
+  let mut env = keep_local(
+    env_merge(
+      clean_env(opts.station_env, opts.agent_env, devin_scrubbed()),
+      expand_route(profile_env(opts.profile, RuntimeKind::Devin, opts.sep), opts.route),
+    ),
+  )
+  env = env_set(env, "DEVIN_SESSIONS_DIR", nodepath::join(opts.sep, [dhome, "sessions", "store"]))
+  env = env_set(env, "STILLFAIL_PEER_HTTP", peer_http_base(opts.mcp_url))
+  Ok(DriverLaunchSpec::{
+    runtime: RuntimeKind::Devin,
+    program: "devin",
+    args: args,
+    env: env,
+    cwd: opts.cwd,
+    bridge_script: None,
+    mcp_config_json: Some(acp_mcp_servers_json(opts.mcp_url, opts.mcp_token)),
+    settings_json: None,
+    setup_json: None,
+    patch_yaml: None,
+    opening_meta_json: None,
+    rules_dir: Some(rules_plan.dir),
+    silent_subagents_enabled: false,
+    pty_mode: false,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 10. Grok Build (`grok`) — ACP
+// ---------------------------------------------------------------------------
+
+pub fn grok_scrubbed() -> Array[String] {
+  [
+    "XAI_API_KEY",
+    "GROK_CODE_XAI_API_KEY",
+    "GROK_HOME",
+    "GROK_AUTH",
+    "GROK_AUTH_PATH",
+    "GROK_AUTH_PROVIDER_COMMAND",
+    "GROK_CONFIG",
+    "GROK_CONFIG_PATH",
+    "GROK_DEFAULT_MODEL",
+    "GROK_AGENT_SECRET",
+    "GROK_SANDBOX",
+  ]
+}
+
+pub fn grok_effort(effort : Option[String]) -> Option[String] {
+  match effort {
+    Some(e) => if arr_contains_str(["low", "medium", "high", "xhigh", "max"], e) { Some(e) } else { None }
+    None => None
+  }
+}
+
+pub fn grok_rules(instructions : String) -> String {
+  let suffix = "The station's tools (chat_post, chat_state and the others named in these instructions) are the stillfail MCP server's: call one with use_tool and its full name, stillfail__<tool> (for example stillfail__chat_post), without searching for it first."
+  if instructions == "" {
+    suffix
+  } else {
+    instructions + "\n\n" + suffix
+  }
+}
+
+pub fn build_grok_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
+  if !is_local_mcp_url(opts.mcp_url) {
+    return Err("grok: mcp_url must be a local loopback address")
+  }
+  let args : Array[String] = ["agent", "--always-approve", "--no-leader"]
+  let model = match opts.model {
+    Some(m) => Some(m)
+    None => opts.profile.model
+  }
+  match model {
+    Some(m) => {
+      args.push("--model")
+      args.push(m)
+    }
+    None => ()
+  }
+  match grok_effort(opts.effort) {
+    Some(e) => {
+      args.push("--reasoning-effort")
+      args.push(e)
+    }
+    None => ()
+  }
+  args.push("stdio")
+  let mut env = keep_local(
+    env_merge(
+      clean_env(opts.station_env, opts.agent_env, grok_scrubbed()),
+      expand_route(profile_env(opts.profile, RuntimeKind::Grok, opts.sep), opts.route),
+    ),
+  )
+  env = env_set(env, "GROK_HOME", nodepath::join(opts.sep, [opts.profile.home, "grok"]))
+  env = env_set(env, "GROK_DISABLE_AUTOUPDATER", "1")
+  env = env_set_default(env, "GROK_TELEMETRY_ENABLED", "0")
+  env = env_set_default(env, "GROK_TELEMETRY_TRACE_UPLOAD", "0")
+  let vendors = ["CLAUDE", "CURSOR"]
+  let cells = ["SKILLS", "RULES", "AGENTS", "MCPS", "HOOKS", "SESSIONS"]
+  for i in 0..<vendors.length() {
+    for j in 0..<cells.length() {
+      env = env_set(env, "GROK_" + vendors[i] + "_" + cells[j] + "_ENABLED", "false")
+    }
+  }
+  env = env_set(env, "STILLFAIL_PEER_HTTP", peer_http_base(opts.mcp_url))
+  let meta = json_stringify(json_obj([("rules", json_str(grok_rules(opts.instructions)))]))
+  Ok(DriverLaunchSpec::{
+    runtime: RuntimeKind::Grok,
+    program: "grok",
+    args: args,
+    env: env,
+    cwd: opts.cwd,
+    bridge_script: None,
+    mcp_config_json: Some(acp_mcp_servers_json(opts.mcp_url, opts.mcp_token)),
+    settings_json: None,
+    setup_json: None,
+    patch_yaml: None,
+    opening_meta_json: Some(meta),
+    rules_dir: None,
+    silent_subagents_enabled: false,
+    pty_mode: false,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 11. Hermes Agent (`hermes`) — ACP with strict allowlist env inheritance
+// ---------------------------------------------------------------------------
+
+pub fn hermes_inherited_allowlist() -> Array[String] {
+  [
+    "PATH",
+    "PATHEXT",
+    "HOME",
+    "USERPROFILE",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "LANG",
+    "LANGUAGE",
+    "TZ",
+    "TERM",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "SSH_AUTH_SOCK",
+  ]
+}
+
+pub fn hermes_prompt_text(instructions : String, text : String) -> String {
+  if instructions == "" {
+    text
+  } else {
+    "<stillfail-context>\n" +
+    instructions +
+    "\n\nYour Hermes persona and communication preferences from SOUL.md and memories apply to the text you send with chat_post, including progress updates. Use the configured form of address and tone in those tool arguments: they are the messages people read; ordinary assistant output stays internal.\n</stillfail-context>\n\n" +
+    text
+  }
+}
+
+pub fn is_valid_hermes_session_id(id : String) -> Bool {
+  let raw = id.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    let ok = (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 95 || b == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+/// 1:1 aligned with `station/src/agents/hermes.ts` `configuredHome`.
+pub fn configured_hermes_home(value : Option[String], fallback : String, home_dir : String, sep : String) -> Result[String, String] {
+  let picked = match value {
+    Some(v) => str_trim(v)
+    None => ""
+  }
+  if picked == "" {
+    return Ok(fallback)
+  }
+  let expanded = if picked == "~" {
+    home_dir
+  } else if str_starts_with(picked, "~/") || str_starts_with(picked, "~\\") {
+    nodepath::join(sep, [home_dir, str_slice_bytes(picked, 2, picked.to_bytes().length())])
+  } else {
+    picked
+  }
+  if !nodepath::is_absolute(sep, expanded) {
+    return Err("HERMES_HOME must be an absolute path or start with ~/.")
+  }
+  Ok(nodepath::join(sep, [expanded]))
+}
+
+/// 1:1 aligned with `station/src/agents/hermes.ts` `sessionHome`.
+pub fn session_hermes_home(
+  resume : Option[String],
+  configured : String,
+  private_home : String,
+  header_line : Option[String],
+  home_dir : String,
+  sep : String,
+) -> Result[String, String] {
+  let rid = match resume {
+    Some(r) => r
+    None => return Ok(configured)
+  }
+  if !is_valid_hermes_session_id(rid) {
+    return Err("invalid Hermes session id")
+  }
+  let line = match header_line {
+    Some(l) => l
+    None => return Err("Hermes transcript has no session header")
+  }
+  let header = match json_parse_opt(line) {
+    Some(v) => v
+    None => return Err("Hermes transcript has no session header")
+  }
+  if !opt_str_eq(json_get_str(header, "type"), Some("session")) {
+    return Err("Hermes transcript has no session header")
+  }
+  configured_hermes_home(json_get_str(header, "hermesHome"), private_home, home_dir, sep)
+}
+
+pub fn build_hermes_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
+  if !is_local_mcp_url(opts.mcp_url) {
+    return Err("hermes: mcp_url must be a local loopback address")
+  }
+  let base_clean = clean_env(opts.station_env, opts.agent_env, [])
+  let allow = hermes_inherited_allowlist()
+  let mut inherited : Array[(String, String)] = []
+  for i in 0..<base_clean.length() {
+    let (k, v) = base_clean[i]
+    let ku = ascii_upper(k)
+    if arr_contains_str(allow, ku) || str_starts_with(ku, "LC_") {
+      inherited = env_set(inherited, k, v)
+    }
+  }
+  let mut env = keep_local(env_merge(inherited, expand_route(profile_env(opts.profile, RuntimeKind::Hermes, opts.sep), opts.route)))
+  let fallback_home = nodepath::join(opts.sep, [opts.profile.home, "hermes"])
+  let configured = match configured_hermes_home(env_get(env, "HERMES_HOME"), fallback_home, opts.home_dir, opts.sep) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  let hhome = match session_hermes_home(opts.resume, configured, fallback_home, opts.hermes_header_line, opts.home_dir, opts.sep) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  env = env_set(env, "HERMES_HOME", hhome)
+  env = env_set_default(env, "CLAUDE_CONFIG_DIR", nodepath::join(opts.sep, [hhome, "claude"]))
+  env = env_set_default(env, "CODEX_HOME", nodepath::join(opts.sep, [hhome, "codex"]))
+  if opts.has_keychain {
+    env = apply_file_credentials(env, true, opts.stub_dir)
+  }
+  env = env_set(env, "STILLFAIL_PEER_HTTP", peer_http_base(opts.mcp_url))
+  Ok(DriverLaunchSpec::{
+    runtime: RuntimeKind::Hermes,
+    program: "hermes",
+    args: ["acp"],
+    env: env,
+    cwd: opts.cwd,
+    bridge_script: None,
+    mcp_config_json: Some(acp_mcp_servers_json(opts.mcp_url, opts.mcp_token)),
+    settings_json: None,
+    setup_json: None,
+    patch_yaml: None,
+    opening_meta_json: None,
+    rules_dir: None,
+    silent_subagents_enabled: false,
+    pty_mode: false,
+  })
+}
+
+/// Unified dispatcher across all 10 concrete runtime kinds (+ shared ACP layer).
+pub fn build_driver_launch(runtime : RuntimeKind, opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
+  match runtime {
+    RuntimeKind::Claude => build_claude_launch(opts)
+    RuntimeKind::Codex => build_codex_launch(opts)
+    RuntimeKind::Agy => build_agy_launch(opts)
+    RuntimeKind::Cursor => build_cursor_launch(opts)
+    RuntimeKind::Copilot => build_copilot_launch(opts)
+    RuntimeKind::Pi => build_pi_launch(opts)
+    RuntimeKind::Dsh => build_dsh_launch(opts)
+    RuntimeKind::Devin => build_devin_launch(opts)
+    RuntimeKind::Grok => build_grok_launch(opts)
+    RuntimeKind::Hermes => build_hermes_launch(opts)
+  }
+}

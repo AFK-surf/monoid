@@ -1,0 +1,957 @@
+// Complete `terminals` subdomain (`station/src/terminals/{terminals,link}.ts`):
+// - Bounded terminal session registry (max 16 active, workspace-isolated).
+// - Exclusive typing view with `control` / `taken` takeover and read-only watcher enforcement.
+// - Binary client frame protocol (`kind(1B) + len(4B BE) + payload`, max 64 KiB inbound).
+// - Runner wire NDJSON codec (`attach`/`ack`/`write`/`resize`/`screen`/`signal`/`done`/`leave`)
+//   with contiguous `out` chunk coalescing and `past_screen` offset slicing.
+// - Shell live cwd detection (`OSC 7` file://host/path + ConPTY `OSC 9;9;path`) with split-chunk tail.
+// - Injectable PTY/runner output & idle-cleanup state machine decoupled from `station_sys`.
+
+import "base_codec"
+import "crypto"
+
+pub let TERMINAL_CONTENT_TYPE : String = "application/x-stillfail-terminal"
+pub let TERM_KIND_SCREEN : Int = 1
+pub let TERM_KIND_OUT : Int = 2
+pub let TERM_KIND_STATE : Int = 3
+pub let TERM_KIND_INPUT : Int = 16
+pub let TERM_KIND_RESIZE : Int = 17
+pub let TERM_KIND_CONTROL : Int = 18
+
+pub let TERM_MAX_IN : Int = 65536
+pub let TERM_COLS_MIN : Int = 2
+pub let TERM_COLS_MAX : Int = 1000
+pub let TERM_ROWS_MIN : Int = 1
+pub let TERM_ROWS_MAX : Int = 500
+pub let TERM_MOST : Int = 16
+pub let OSC_MAX_TAIL : Int = 2048
+
+pub struct TerminalSize {
+  pub cols : Int
+  pub rows : Int
+}
+
+pub fn is_valid_terminal_size(cols : Int, rows : Int) -> Bool {
+  cols >= TERM_COLS_MIN && cols <= TERM_COLS_MAX && rows >= TERM_ROWS_MIN && rows <= TERM_ROWS_MAX
+}
+
+pub struct TerminalEnded {
+  pub code : Option[Int]
+  pub signal : Option[String]
+}
+
+pub struct TerminalOut {
+  pub at : Int64
+  pub bytes : Bytes
+}
+
+pub struct TerminalShown {
+  pub id : String
+  pub by : String
+  pub by_email : Option[String]
+  pub at : Int64
+  pub cwd : String
+  pub chat : Option[String]
+  pub typing : Option[String]
+  pub looking : Array[String]
+  pub ended : Option[TerminalEnded]
+  pub over : Bool
+}
+
+pub struct TerminalAsked {
+  pub cols : Int
+  pub rows : Int
+  pub control : Bool
+  pub taken : Bool
+  pub cwd : Option[String]
+  pub chat : Option[String]
+}
+
+pub struct TerminalControlMsg {
+  pub control : Bool
+  pub taken : Bool
+  pub cols : Option[Int]
+  pub rows : Option[Int]
+}
+
+pub struct TerminalRefused {
+  pub status : Int
+  pub message : String
+}
+
+/// Slice `out.bytes` to only the suffix past `screen_at` (returns `None` if fully covered).
+pub fn past_screen(out : TerminalOut, screen_at : Int64) -> Option[Bytes] {
+  let end = out.at + out.bytes.length().to_int64()
+  if end <= screen_at {
+    return None
+  }
+  if out.at >= screen_at {
+    return Some(out.bytes)
+  }
+  let skip = (screen_at - out.at).to_int()
+  let keep = out.bytes.length() - skip
+  let sub = Bytes::new(keep)
+  let mut i = 0
+  while i < keep {
+    sub[i] = out.bytes[skip + i]
+    i = i + 1
+  }
+  Some(sub)
+}
+
+// ── Binary frame codec (1B kind + 4B big-endian length + payload) ──
+
+pub struct TerminalFrame {
+  pub kind : Int
+  pub payload : Bytes
+}
+
+pub fn terminal_frame_encode(kind : Int, payload : Bytes) -> Bytes {
+  let len = payload.length()
+  let out = Bytes::new(5 + len)
+  out[0] = (kind & 0xFF).to_byte()
+  out[1] = ((len >> 24) & 0xFF).to_byte()
+  out[2] = ((len >> 16) & 0xFF).to_byte()
+  out[3] = ((len >> 8) & 0xFF).to_byte()
+  out[4] = (len & 0xFF).to_byte()
+  let mut i = 0
+  while i < len {
+    out[5 + i] = payload[i]
+    i = i + 1
+  }
+  out
+}
+
+pub struct TerminalFrameReader {
+  mut carry : Array[Byte]
+}
+
+pub fn TerminalFrameReader::new() -> TerminalFrameReader {
+  TerminalFrameReader::{ carry: [] }
+}
+
+pub fn TerminalFrameReader::push(self : TerminalFrameReader, chunk : Bytes) -> Result[Array[TerminalFrame], String] {
+  let mut i = 0
+  while i < chunk.length() {
+    self.carry.push(chunk[i])
+    i = i + 1
+  }
+  let frames : Array[TerminalFrame] = []
+  let mut offset = 0
+  while self.carry.length() - offset >= 5 {
+    let kind = self.carry[offset].to_int() & 0xFF
+    let b1 = self.carry[offset + 1].to_int() & 0xFF
+    let b2 = self.carry[offset + 2].to_int() & 0xFF
+    let b3 = self.carry[offset + 3].to_int() & 0xFF
+    let b4 = self.carry[offset + 4].to_int() & 0xFF
+    let length = (b1 << 24) | (b2 << 16) | (b3 << 8) | b4
+    if length < 0 || length > TERM_MAX_IN {
+      return Err("terminal frame too large")
+    }
+    if self.carry.length() - offset < 5 + length {
+      break
+    }
+    let payload = Bytes::new(length)
+    let mut j = 0
+    while j < length {
+      payload[j] = self.carry[offset + 5 + j]
+      j = j + 1
+    }
+    frames.push(TerminalFrame::{ kind, payload })
+    offset = offset + 5 + length
+  }
+  if offset > 0 {
+    let rem : Array[Byte] = []
+    let mut k = offset
+    while k < self.carry.length() {
+      rem.push(self.carry[k])
+      k = k + 1
+    }
+    self.carry = rem
+  }
+  Ok(frames)
+}
+
+pub fn TerminalFrameReader::has_partial(self : TerminalFrameReader) -> Bool {
+  self.carry.length() > 0
+}
+
+// ── Head & control payload parsers ──
+
+fn json_int_opt(obj : base_codec::Json, key : String) -> Option[Int] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Num(d, _)) => {
+      let i = d.to_int()
+      if i.to_double() == d { Some(i) } else { None }
+    }
+    _ => None
+  }
+}
+
+fn json_bool_opt(obj : base_codec::Json, key : String) -> Option[Bool] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+fn json_str_opt(obj : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+pub fn parse_terminal_asked(j : base_codec::Json) -> Option[TerminalAsked] {
+  let cols = match json_int_opt(j, "cols") {
+    Some(c) => c
+    None => return None
+  }
+  let rows = match json_int_opt(j, "rows") {
+    Some(r) => r
+    None => return None
+  }
+  if !is_valid_terminal_size(cols, rows) {
+    return None
+  }
+  let control = match json_bool_opt(j, "control") {
+    Some(b) => b
+    None => true
+  }
+  let taken = match json_bool_opt(j, "taken") {
+    Some(b) => b
+    None => false
+  }
+  let cwd = match json_str_opt(j, "cwd") {
+    Some(s) => if s != "" && s.length() <= 4096 { Some(s) } else { None }
+    None => None
+  }
+  let chat = match json_str_opt(j, "chat") {
+    Some(s) => if s != "" && s.length() <= 4096 { Some(s) } else { None }
+    None => None
+  }
+  Some(TerminalAsked::{ cols, rows, control, taken, cwd, chat })
+}
+
+pub fn parse_resize_payload(payload : Bytes) -> Option[TerminalSize] {
+  match base_codec::json_parse(bytes_to_str(payload)) {
+    base_codec::JsonParseResult::Ok(j) => {
+      let cols = match json_int_opt(j, "cols") {
+        Some(c) => c
+        None => return None
+      }
+      let rows = match json_int_opt(j, "rows") {
+        Some(r) => r
+        None => return None
+      }
+      if is_valid_terminal_size(cols, rows) {
+        Some(TerminalSize::{ cols, rows })
+      } else {
+        None
+      }
+    }
+    base_codec::JsonParseResult::Err(_) => None
+  }
+}
+
+pub fn parse_control_payload(payload : Bytes) -> Option[TerminalControlMsg] {
+  match base_codec::json_parse(bytes_to_str(payload)) {
+    base_codec::JsonParseResult::Ok(j) => {
+      let control = match json_bool_opt(j, "control") {
+        Some(b) => b
+        None => return None
+      }
+      let taken = match json_bool_opt(j, "taken") {
+        Some(b) => b
+        None => false
+      }
+      let cols_opt = json_int_opt(j, "cols")
+      let rows_opt = json_int_opt(j, "rows")
+      let (cols, rows) = match (cols_opt, rows_opt) {
+        (Some(c), Some(r)) => if is_valid_terminal_size(c, r) { (Some(c), Some(r)) } else { (None, None) }
+        _ => (None, None)
+      }
+      Some(TerminalControlMsg::{ control, taken, cols, rows })
+    }
+    base_codec::JsonParseResult::Err(_) => None
+  }
+}
+
+// ── Live shell CWD parsing (`OSC 7` and ConPTY `OSC 9;9;`) ──
+
+pub struct OscCwdResult {
+  pub cwd : Option[String]
+  pub tail : String
+}
+
+pub fn osc_cwd(text : String) -> OscCwdResult {
+  let raw = text.to_bytes()
+  let len = raw.length()
+  let mut cwd : Option[String] = None
+  let mut consumed = 0
+  let mut i = 0
+  while i + 1 < len {
+    if (raw[i].to_int() & 0xFF) == 0x1B && (raw[i + 1].to_int() & 0xFF) == 0x5D {
+      // Find terminator BEL (0x07) or ST (ESC \)
+      let start = i + 2
+      let mut end = start
+      let mut term_len = 0
+      while end < len {
+        let b = raw[end].to_int() & 0xFF
+        if b == 0x07 {
+          term_len = 1
+          break
+        }
+        if b == 0x1B && end + 1 < len && (raw[end + 1].to_int() & 0xFF) == 0x5C {
+          term_len = 2
+          break
+        }
+        if b == 0x1B {
+          // Another ESC before terminator -> abort this OSC
+          break
+        }
+        end = end + 1
+      }
+      if term_len > 0 {
+        let body = slice_bytes_str(raw, start, end)
+        if str_starts_with_ci(body, "7;file://") {
+          let bb = body.to_bytes()
+          // Skip `7;file://` (9 bytes) and host until `/`
+          let mut slash = 9
+          while slash < bb.length() && (bb[slash].to_int() & 0xFF) != 0x2F {
+            slash = slash + 1
+          }
+          if slash < bb.length() {
+            let encoded_path = slice_bytes_str(bb, slash, bb.length())
+            let mut decoded = percent_decode(encoded_path, false)
+            // Normalize Windows `/C:/...` -> `C:/...`
+            let db = decoded.to_bytes()
+            if db.length() >= 4 &&
+            (db[0].to_int() & 0xFF) == 0x2F &&
+            is_ascii_alpha(db[1].to_int() & 0xFF) &&
+            (db[2].to_int() & 0xFF) == 0x3A &&
+            ((db[3].to_int() & 0xFF) == 0x2F || (db[3].to_int() & 0xFF) == 0x5C) {
+              decoded = slice_bytes_str(db, 1, db.length())
+            }
+            if decoded != "" && decoded.length() <= 4096 {
+              cwd = Some(decoded)
+            }
+          }
+          consumed = end + term_len
+        } else if str_starts_with_ci(body, "9;9;") {
+          let bb = body.to_bytes()
+          let mut val_ = slice_bytes_str(bb, 4, bb.length())
+          let vb = val_.to_bytes()
+          if vb.length() >= 2 && (vb[0].to_int() & 0xFF) == 0x22 && (vb[vb.length() - 1].to_int() & 0xFF) == 0x22 {
+            val_ = slice_bytes_str(vb, 1, vb.length() - 1)
+          }
+          if val_ != "" && val_.length() <= 4096 {
+            cwd = Some(val_)
+          }
+          consumed = end + term_len
+        }
+        i = end + term_len
+        continue
+      }
+    }
+    i = i + 1
+  }
+  let rest = slice_bytes_str(raw, consumed, len)
+  let rb = rest.to_bytes()
+  let mut esc = -1
+  let mut j = rb.length() - 1
+  while j >= 0 {
+    if (rb[j].to_int() & 0xFF) == 0x1B {
+      esc = j
+      break
+    }
+    j = j - 1
+  }
+  if esc < 0 || rb.length() - esc > OSC_MAX_TAIL {
+    return OscCwdResult::{ cwd, tail: "" }
+  }
+  let cand = slice_bytes_str(rb, esc, rb.length())
+  if cand == "\u{1b}" ||
+  cand == "\u{1b}]" ||
+  cand == "\u{1b}]7" ||
+  str_starts_with_ci(cand, "\u{1b}]7;") ||
+  cand == "\u{1b}]9" ||
+  cand == "\u{1b}]9;" ||
+  cand == "\u{1b}]9;9" ||
+  str_starts_with_ci(cand, "\u{1b}]9;9;") {
+    return OscCwdResult::{ cwd, tail: cand }
+  }
+  OscCwdResult::{ cwd, tail: "" }
+}
+
+// ── Runner wire NDJSON codec (`station/src/terminals/link.ts`) ──
+
+pub fn encode_runner_attach() -> String {
+  base_codec::json_stringify(base_codec::json_obj([("op", base_codec::json_str("attach"))])) + "\n"
+}
+
+pub fn encode_runner_ack(out_offset : Int64) -> String {
+  base_codec::json_stringify(
+    base_codec::json_obj([
+      ("op", base_codec::json_str("ack")),
+      ("out", base_codec::json_int64(out_offset)),
+      ("err", base_codec::json_int(0)),
+    ]),
+  ) + "\n"
+}
+
+pub fn encode_runner_write(data : Bytes) -> String {
+  base_codec::json_stringify(
+    base_codec::json_obj([
+      ("op", base_codec::json_str("write")),
+      ("data", base_codec::json_str(base_codec::base64_encode(data))),
+    ]),
+  ) + "\n"
+}
+
+pub fn encode_runner_resize(cols : Int, rows : Int) -> String {
+  base_codec::json_stringify(
+    base_codec::json_obj([
+      ("op", base_codec::json_str("resize")),
+      ("cols", base_codec::json_int(cols)),
+      ("rows", base_codec::json_int(rows)),
+    ]),
+  ) + "\n"
+}
+
+pub fn encode_runner_screen() -> String {
+  base_codec::json_stringify(base_codec::json_obj([("op", base_codec::json_str("screen"))])) + "\n"
+}
+
+pub fn encode_runner_kill_and_done() -> String {
+  let sig = base_codec::json_stringify(
+    base_codec::json_obj([
+      ("op", base_codec::json_str("signal")),
+      ("signal", base_codec::json_str("KILL")),
+      ("group", base_codec::json_bool(true)),
+    ]),
+  )
+  let done = base_codec::json_stringify(base_codec::json_obj([("op", base_codec::json_str("done"))]))
+  sig + "\n" + done + "\n"
+}
+
+pub fn encode_runner_leave() -> String {
+  base_codec::json_stringify(base_codec::json_obj([("op", base_codec::json_str("leave"))])) + "\n"
+}
+
+// ── Bounded Terminal Session & Registry (`station/src/terminals/terminals.ts`) ──
+
+pub struct TerminalView {
+  pub id : Int
+  pub name : String
+  pub device : String
+  pub read_only : Bool
+  pub mut types : Bool
+}
+
+pub struct TerminalSession {
+  pub id : String
+  pub by : String
+  pub by_email : Option[String]
+  pub at : Int64
+  pub mut cwd : String
+  pub chat : Option[String]
+  pub workspace : String
+  pub mut size : TerminalSize
+  pub mut views : Array[TerminalView]
+  pub mut typing : Option[Int]
+  pub mut over : Bool
+  pub mut ended : Option[TerminalEnded]
+  pub mut osc_tail : String
+  pub mut out_offset : Int64
+  pub mut last_active_ms : Int64
+  scroll_max_bytes : Int
+  mut scroll_buf : Array[TerminalOut]
+  mut scroll_head : Int
+  mut scroll_bytes : Int
+  mut runner_writes : Array[String]
+}
+
+pub fn TerminalSession::new(
+  id : String,
+  by : String,
+  by_email : Option[String],
+  at : Int64,
+  cwd : String,
+  chat : Option[String],
+  workspace : String,
+  cols : Int,
+  rows : Int,
+  scroll_max_bytes : Int,
+) -> TerminalSession {
+  TerminalSession::{
+    id,
+    by,
+    by_email,
+    at,
+    cwd,
+    chat,
+    workspace,
+    size: TerminalSize::{ cols, rows },
+    views: [],
+    typing: None,
+    over: false,
+    ended: None,
+    osc_tail: "",
+    out_offset: 0.to_int64(),
+    last_active_ms: at,
+    scroll_max_bytes: if scroll_max_bytes < 1024 { 1024 } else { scroll_max_bytes },
+    scroll_buf: [],
+    scroll_head: 0,
+    scroll_bytes: 0,
+    runner_writes: [encode_runner_attach()],
+  }
+}
+
+pub fn TerminalSession::take_runner_writes(self : TerminalSession) -> Array[String] {
+  let out = self.runner_writes
+  self.runner_writes = []
+  out
+}
+
+/// Feed PTY output bytes; updates O(1)-amortized bounded scrollback, live CWD via OSC 7/9;9, and queues ack.
+pub fn TerminalSession::on_output(self : TerminalSession, bytes : Bytes, now_ms : Int64) -> Bool {
+  if bytes.length() == 0 {
+    return false
+  }
+  let at = self.out_offset
+  self.out_offset = self.out_offset + bytes.length().to_int64()
+  self.last_active_ms = now_ms
+  self.runner_writes.push(encode_runner_ack(self.out_offset))
+
+  self.scroll_buf.push(TerminalOut::{ at, bytes })
+  self.scroll_bytes = self.scroll_bytes + bytes.length()
+  while self.scroll_bytes > self.scroll_max_bytes && self.scroll_buf.length() - self.scroll_head > 1 {
+    let dropped = self.scroll_buf[self.scroll_head]
+    self.scroll_head = self.scroll_head + 1
+    self.scroll_bytes = self.scroll_bytes - dropped.bytes.length()
+  }
+  if self.scroll_head >= 64 && self.scroll_head * 2 >= self.scroll_buf.length() {
+    let compacted : Array[TerminalOut] = []
+    let mut i = self.scroll_head
+    while i < self.scroll_buf.length() {
+      compacted.push(self.scroll_buf[i])
+      i = i + 1
+    }
+    self.scroll_buf = compacted
+    self.scroll_head = 0
+  }
+
+  let parsed = osc_cwd(self.osc_tail + bytes_to_str(bytes))
+  self.osc_tail = parsed.tail
+  match parsed.cwd {
+    Some(new_cwd) => {
+      if new_cwd != self.cwd {
+        self.cwd = new_cwd
+        return true
+      }
+      false
+    }
+    None => false
+  }
+}
+
+pub fn TerminalSession::scrollback_bytes(self : TerminalSession) -> Int {
+  self.scroll_bytes
+}
+
+pub fn TerminalSession::shown(self : TerminalSession) -> TerminalShown {
+  let mut typing_name : Option[String] = None
+  let looking : Array[String] = []
+  let mut i = 0
+  while i < self.views.length() {
+    let v = self.views[i]
+    match self.typing {
+      Some(tid) => {
+        if v.id == tid {
+          typing_name = Some(v.name)
+        } else {
+          looking.push(v.name)
+        }
+      }
+      None => looking.push(v.name)
+    }
+    i = i + 1
+  }
+  TerminalShown::{
+    id: self.id,
+    by: self.by,
+    by_email: self.by_email,
+    at: self.at,
+    cwd: self.cwd,
+    chat: self.chat,
+    typing: typing_name,
+    looking,
+    ended: self.ended,
+    over: self.over,
+  }
+}
+
+pub struct TerminalsRegistry {
+  mut sessions : Array[TerminalSession]
+  mut id_seq : Int64
+  id_seed : String
+  mut next_view_id : Int
+  home : String
+  scroll_max_bytes : Int
+  mut offered : Bool
+}
+
+pub fn TerminalsRegistry::new(home : String, scroll_max_bytes : Int) -> TerminalsRegistry {
+  TerminalsRegistry::new_with_seed(home, scroll_max_bytes, "default-station-seed")
+}
+
+/// Create a registry with an explicit CSPRNG / boot-unique seed for `term-<16 hex>` ID generation.
+pub fn TerminalsRegistry::new_with_seed(
+  home : String,
+  scroll_max_bytes : Int,
+  id_seed : String,
+) -> TerminalsRegistry {
+  TerminalsRegistry::{
+    sessions: [],
+    id_seq: 1.to_int64(),
+    id_seed,
+    next_view_id: 1,
+    home,
+    scroll_max_bytes,
+    offered: true,
+  }
+}
+
+pub fn TerminalsRegistry::set_offered(self : TerminalsRegistry, on : Bool) -> Unit {
+  self.offered = on
+}
+
+fn TerminalsRegistry::has_any_id(self : TerminalsRegistry, id : String) -> Bool {
+  let mut i = 0
+  while i < self.sessions.length() {
+    if self.sessions[i].id == id {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn TerminalsRegistry::generate_id(self : TerminalsRegistry, now_ms : Int64, workspace : String, by : String) -> String {
+  let mut attempt = 0
+  while attempt < 64 {
+    let seq = self.id_seq
+    self.id_seq = self.id_seq + 1.to_int64()
+    let material = self.id_seed + ":" + now_ms.to_string() + ":" + seq.to_string() + ":" + workspace + ":" + by + ":" + attempt.to_string()
+    let digest = crypto::sha256_hex(material.to_bytes())
+    let id = "term-" + slice_bytes_str(digest.to_bytes(), 0, 16)
+    if !self.has_any_id(id) {
+      return id
+    }
+    attempt = attempt + 1
+  }
+  "term-0000000000000000"
+}
+
+/// Adopt a surviving runner from before a station restart (`station/src/terminals/terminals.ts` `keep`).
+pub fn TerminalsRegistry::keep(
+  self : TerminalsRegistry,
+  id : String,
+  by : String,
+  by_email : Option[String],
+  at : Int64,
+  cwd : String,
+  chat : Option[String],
+  workspace : String,
+  cols_opt : Option[Int],
+  rows_opt : Option[Int],
+) -> Result[TerminalSession, TerminalRefused] {
+  if self.has_any_id(id) {
+    return Err(TerminalRefused::{ status: 409, message: "terminal id already adopted: " + id })
+  }
+  let (cols, rows) = match (cols_opt, rows_opt) {
+    (Some(c), Some(r)) => if is_valid_terminal_size(c, r) { (c, r) } else { (80, 24) }
+    _ => (80, 24)
+  }
+  let s = TerminalSession::new(
+    id,
+    by,
+    by_email,
+    at,
+    cwd,
+    chat,
+    workspace,
+    cols,
+    rows,
+    self.scroll_max_bytes,
+  )
+  self.sessions.push(s)
+  Ok(s)
+}
+
+pub fn TerminalsRegistry::list(self : TerminalsRegistry, workspace : String) -> Array[TerminalShown] {
+  let out : Array[TerminalShown] = []
+  let mut i = 0
+  while i < self.sessions.length() {
+    if self.sessions[i].workspace == workspace {
+      out.push(self.sessions[i].shown())
+    }
+    i = i + 1
+  }
+  out
+}
+
+pub fn TerminalsRegistry::get(self : TerminalsRegistry, id : String, workspace : String) -> Option[TerminalSession] {
+  let mut i = 0
+  while i < self.sessions.length() {
+    if self.sessions[i].id == id && self.sessions[i].workspace == workspace {
+      return Some(self.sessions[i])
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn TerminalsRegistry::open(
+  self : TerminalsRegistry,
+  asked : TerminalAsked,
+  by : String,
+  by_email : Option[String],
+  workspace : String,
+  read_only : Bool,
+  chat_dir : Option[String],
+  now_ms : Int64,
+) -> Result[TerminalSession, TerminalRefused] {
+  if !self.offered {
+    return Err(TerminalRefused::{
+      status: 404,
+      message: "no route: terminals are opened on stations updated on the test channel alone",
+    })
+  }
+  if read_only {
+    return Err(TerminalRefused::{ status: 403, message: "a read-only member does not open a terminal" })
+  }
+  let mut active_count = 0
+  let mut i = 0
+  while i < self.sessions.length() {
+    if !self.sessions[i].over {
+      active_count = active_count + 1
+    }
+    i = i + 1
+  }
+  if active_count >= TERM_MOST {
+    return Err(TerminalRefused::{
+      status: 429,
+      message: "a station keeps " + TERM_MOST.to_string() + " terminals at most: end one first",
+    })
+  }
+  let cwd = match asked.cwd {
+    Some(c) => c
+    None => match chat_dir {
+      Some(cd) => cd
+      None => self.home
+    }
+  }
+  let id = self.generate_id(now_ms, workspace, by)
+  let s = TerminalSession::new(
+    id,
+    by,
+    by_email,
+    now_ms,
+    cwd,
+    asked.chat,
+    workspace,
+    asked.cols,
+    asked.rows,
+    self.scroll_max_bytes,
+  )
+  self.sessions.push(s)
+  Ok(s)
+}
+
+/// Attach a viewer to a terminal; grants typing control when requested, not read-only, and
+/// either `taken == true` or no one currently types. Returns `(view_id, types, need_refresh_others)`.
+pub fn TerminalsRegistry::attach_view(
+  self : TerminalsRegistry,
+  id : String,
+  workspace : String,
+  name : String,
+  device : String,
+  read_only : Bool,
+  asked : TerminalAsked,
+) -> Result[(Int, Bool, Bool), TerminalRefused] {
+  let s = match self.get(id, workspace) {
+    Some(v) => v
+    None => return Err(TerminalRefused::{ status: 404, message: "no such terminal" })
+  }
+  let types = asked.control && !read_only && (asked.taken || s.typing is None)
+  let vid = self.next_view_id
+  self.next_view_id = self.next_view_id + 1
+  let had_others = s.views.length() > 0
+  if types {
+    let mut i = 0
+    while i < s.views.length() {
+      s.views[i].types = false
+      i = i + 1
+    }
+    s.typing = Some(vid)
+    s.size = TerminalSize::{ cols: asked.cols, rows: asked.rows }
+    s.runner_writes.push(encode_runner_resize(asked.cols, asked.rows))
+  }
+  s.views.push(TerminalView::{ id: vid, name, device, read_only, types })
+  Ok((vid, types, types && had_others))
+}
+
+/// Handle an inbound client binary frame (`input`, `resize`, `control`) for `view_id`.
+/// Returns `true` if other watchers need a screen refresh (due to resize).
+pub fn TerminalsRegistry::handle_client_frame(
+  self : TerminalsRegistry,
+  id : String,
+  workspace : String,
+  view_id : Int,
+  frame : TerminalFrame,
+  now_ms : Int64,
+) -> Bool {
+  let s = match self.get(id, workspace) {
+    Some(v) => v
+    None => return false
+  }
+  let mut view_opt : Option[TerminalView] = None
+  let mut i = 0
+  while i < s.views.length() {
+    if s.views[i].id == view_id {
+      view_opt = Some(s.views[i])
+      break
+    }
+    i = i + 1
+  }
+  let view = match view_opt {
+    Some(v) => v
+    None => return false
+  }
+  let is_typing = match s.typing {
+    Some(tid) => tid == view_id
+    None => false
+  }
+  if frame.kind == TERM_KIND_INPUT {
+    if is_typing && frame.payload.length() > 0 {
+      s.last_active_ms = now_ms
+      s.runner_writes.push(encode_runner_write(frame.payload))
+    }
+    return false
+  }
+  if frame.kind == TERM_KIND_RESIZE {
+    if !is_typing {
+      return false
+    }
+    match parse_resize_payload(frame.payload) {
+      Some(sz) => {
+        let changed = s.size.cols != sz.cols || s.size.rows != sz.rows
+        s.size = sz
+        s.runner_writes.push(encode_runner_resize(sz.cols, sz.rows))
+        return changed
+      }
+      None => return false
+    }
+  }
+  if frame.kind == TERM_KIND_CONTROL {
+    let ctrl = match parse_control_payload(frame.payload) {
+      Some(c) => c
+      None => return false
+    }
+    if !ctrl.control {
+      if is_typing {
+        s.typing = None
+        view.types = false
+      }
+      return false
+    }
+    if !view.read_only && (ctrl.taken || s.typing is None || is_typing) {
+      let mut j = 0
+      while j < s.views.length() {
+        s.views[j].types = s.views[j].id == view_id
+        j = j + 1
+      }
+      s.typing = Some(view_id)
+      match (ctrl.cols, ctrl.rows) {
+        (Some(c), Some(r)) => {
+          if s.size.cols != c || s.size.rows != r {
+            s.size = TerminalSize::{ cols: c, rows: r }
+            s.runner_writes.push(encode_runner_resize(c, r))
+            return true
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  false
+}
+
+pub fn TerminalsRegistry::detach_view(self : TerminalsRegistry, id : String, workspace : String, view_id : Int) -> Unit {
+  let s = match self.get(id, workspace) {
+    Some(v) => v
+    None => return
+  }
+  let kept : Array[TerminalView] = []
+  let mut i = 0
+  while i < s.views.length() {
+    if s.views[i].id != view_id {
+      kept.push(s.views[i])
+    }
+    i = i + 1
+  }
+  s.views = kept
+  match s.typing {
+    Some(tid) => {
+      if tid == view_id {
+        s.typing = None
+      }
+    }
+    None => ()
+  }
+  if s.over && s.views.length() == 0 {
+    self.drop_session(id)
+  }
+}
+
+pub fn TerminalsRegistry::mark_ended(self : TerminalsRegistry, id : String, ended : Option[TerminalEnded]) -> Unit {
+  let mut i = 0
+  while i < self.sessions.length() {
+    if self.sessions[i].id == id {
+      self.sessions[i].over = true
+      self.sessions[i].ended = ended
+      if self.sessions[i].views.length() == 0 {
+        self.drop_session(id)
+      }
+      return
+    }
+    i = i + 1
+  }
+}
+
+pub fn TerminalsRegistry::end_terminal(self : TerminalsRegistry, id : String, workspace : String) -> Bool {
+  let s = match self.get(id, workspace) {
+    Some(v) => v
+    None => return false
+  }
+  if s.over {
+    self.drop_session(id)
+  } else {
+    s.runner_writes.push(encode_runner_kill_and_done())
+  }
+  true
+}
+
+fn TerminalsRegistry::drop_session(self : TerminalsRegistry, id : String) -> Unit {
+  let kept : Array[TerminalSession] = []
+  let mut i = 0
+  while i < self.sessions.length() {
+    if self.sessions[i].id != id {
+      kept.push(self.sessions[i])
+    }
+    i = i + 1
+  }
+  self.sessions = kept
+}

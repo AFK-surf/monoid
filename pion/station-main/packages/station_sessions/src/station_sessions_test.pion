@@ -1,0 +1,767 @@
+// Deterministic unit tests for `station_sessions` (zero real sleeps).
+
+import "base_codec"
+
+fn expect(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+fn bytes_of(arr : Array[Int]) -> Bytes {
+  let b = Bytes::new(arr.length())
+  for i in 0..<arr.length() {
+    b[i] = arr[i].to_byte()
+  }
+  b
+}
+
+fn opt_eq_str(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+fn opt_eq_dims(a : Option[(Int, Int)], b : Option[(Int, Int)]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some((w1, h1)), Some((w2, h2))) => w1 == w2 && h1 == h2
+    _ => false
+  }
+}
+
+test "actor serial queue, idle->prompt, running->steer, starting->queue" {
+  let a = SessionActor::new("s-1", "claude")
+  expect(!a.is_busy(), "starts idle")
+
+  // Idle -> StartPrompt
+  let r1 = a.submit_input("hello")
+  match r1 {
+    InputRoute::StartPrompt => ()
+    _ => panic("expected StartPrompt when idle")
+  }
+  expect(a.is_busy(), "running is busy")
+
+  // Running -> Steer
+  let r2 = a.submit_input("wait, change plan")
+  match r2 {
+    InputRoute::Steer => ()
+    _ => panic("expected Steer when running")
+  }
+
+  // Starting -> Queue
+  let a2 = SessionActor::new("s-2", "codex")
+  a2.begin_start()
+  let r3 = a2.submit_input("queued msg")
+  match r3 {
+    InputRoute::Queue => ()
+    _ => panic("expected Queue when starting")
+  }
+  let b1 = a2.enqueue_barrier()
+  let done = a2.drain_barriers()
+  expect(done.length() == 1 && done[0] == b1, "barrier drained")
+  match a2.pop_next() {
+    Some(ActorWork::Prompt(t)) => expect(t == "queued msg", "FIFO prompt preserved")
+    _ => panic("expected queued Prompt")
+  }
+}
+
+test "goesOn single reprompt without flashing stopped, then all_done or need_human" {
+  // Case 1: turn posted without state -> reprompt once (stays Running!), then ForceAllDone
+  let a = SessionActor::new("s-goes-1", "claude")
+  a.has_process = true
+  let _ = a.submit_input("do work")
+  a.record_post(TurnDeclared::None)
+  let act1 = a.on_turn_ended(false, 1000L)
+  match act1 {
+    TurnEndAction::Reprompt(reason) => expect(reason == "missing_state", "missing_state reason")
+    _ => panic("expected Reprompt on first undeclared end")
+  }
+  // Must stay Running (never flashed stopped!)
+  match a.phase {
+    ActorPhase::Running => ()
+    _ => panic("must remain Running during goesOn reprompt")
+  }
+  expect(a.running_history.length() == 2 && a.running_history[0] && a.running_history[1], "no stopped flash")
+  // Second end without state -> ForceAllDone because it posted and no pending card
+  let act2 = a.on_turn_ended(false, 2000L)
+  match act2 {
+    TurnEndAction::ForceAllDone => ()
+    _ => panic("expected ForceAllDone after one reprompt with post")
+  }
+  match a.phase {
+    ActorPhase::Idle => ()
+    _ => panic("expected Idle after final end")
+  }
+
+  // Case 2: posted without state + pending card (`cardAsks`) -> IMMEDIATELY ForceNeedHuman without reprompting!
+  let b = SessionActor::new("s-goes-2", "claude")
+  let _ = b.submit_input("ask user")
+  b.record_post(TurnDeclared::None)
+  let b1 = b.on_turn_ended(true, 3000L)
+  match b1 {
+    TurnEndAction::ForceNeedHuman => ()
+    _ => panic("expected immediate ForceNeedHuman when posted with pending card (cardAsks)")
+  }
+  expect(b.reprompt_count == 0, "cardAsks ends need_human without reprompting")
+
+  // Case 3: posted after all_done without pending card -> reprompt once, then ForceAllDone
+  let c = SessionActor::new("s-goes-3", "claude")
+  let _ = c.submit_input("work")
+  c.record_post(TurnDeclared::AllDone("done"))
+  c.record_post(TurnDeclared::None)
+  let c1 = c.on_turn_ended(false, 3500L)
+  match c1 {
+    TurnEndAction::Reprompt(reason) => expect(reason == "posted_after_state", "posted_after_state reason")
+    _ => panic("expected Reprompt when posted after terminal state without pending card")
+  }
+  let c2 = c.on_turn_ended(false, 4000L)
+  match c2 {
+    TurnEndAction::ForceAllDone => ()
+    _ => panic("expected ForceAllDone after one reprompt")
+  }
+}
+
+test "exit(70) abnormal sessions exit skips hub_shutdown and preserves runners" {
+  let crash = evaluate_sessions_exit(false)
+  expect(crash.exit_code == 70, "crash exit code must be 70")
+  expect(crash.skip_hub_shutdown, "crash must skip hub_shutdown")
+  expect(crash.keep_runners_for_adopt, "crash must preserve stillfail-runner children")
+
+  let planned = evaluate_sessions_exit(true)
+  expect(planned.exit_code == 0, "planned exit code must be 0")
+  expect(!planned.skip_hub_shutdown, "planned must run hub_shutdown")
+  expect(!planned.keep_runners_for_adopt, "planned does not preserve runners")
+}
+
+test "Hub.profilesChanged wakes only workspace-allowed failed starts after in-flight start" {
+  let hub = SessionHub::new()
+  let a_ws1 = hub.ensure_actor("s-ws1", "claude")
+  a_ws1.finish_start(false, 100L) // start_failed = true
+  let a_ws2 = hub.ensure_actor("s-ws2", "claude")
+  a_ws2.finish_start(false, 100L) // start_failed = true
+  let a_inflight = hub.ensure_actor("s-inflight", "claude")
+  a_inflight.begin_start() // in_flight_start = true
+
+  let rows = [
+    HubSessionRow::{
+      key: "s-ws1", runtime: "claude", profile: "p1", runtime_session_id: None, ran_on: None,
+      ws: Some("ws1"), created_by: "a@b.com", archived_at: None, archived_by: "",
+      handed_over: false, online: true, has_pending: true,
+    },
+    HubSessionRow::{
+      key: "s-ws2", runtime: "claude", profile: "p1", runtime_session_id: None, ran_on: None,
+      ws: Some("ws2"), created_by: "a@b.com", archived_at: None, archived_by: "",
+      handed_over: false, online: true, has_pending: true,
+    },
+    HubSessionRow::{
+      key: "s-inflight", runtime: "claude", profile: "p1", runtime_session_id: None, ran_on: None,
+      ws: Some("ws1"), created_by: "a@b.com", archived_at: None, archived_by: "",
+      handed_over: false, online: true, has_pending: true,
+    },
+  ]
+
+  // First call records initial scopes without waking
+  let initial = hub.profiles_changed([], rows, Some("ws1"))
+  expect(initial.length() == 0, "initial profilesChanged wakes nothing")
+
+  // Add a profile allowed ONLY in ws1
+  let p_ws1 = ProfileScope::{
+    id: "prof-ws1", runtimes: ["claude"], enabled: true, withheld: [], borrowed: true, workspaces: ["ws1"],
+  }
+  let woken = hub.profiles_changed([p_ws1], rows, Some("ws1"))
+  expect(woken.length() == 1 && woken[0] == "s-ws1", "only ws1 failed non-inflight session wakes")
+}
+
+test "Hub.adopt adopts sequentially without platform network queries" {
+  let hub = SessionHub::new()
+  let _ = hub.email_cache.finish_lookup("slack:c1:U1", Some("Alice@Example.com"), 1000L)
+
+  let rows : Map[String, HubSessionRow] = Map::new()
+  rows.set("s-1", HubSessionRow::{
+    key: "s-1", runtime: "claude", profile: "p-new", runtime_session_id: Some("rs1"), ran_on: Some("p-old"),
+    ws: Some("ws1"), created_by: "slack:c1:U1", archived_at: None, archived_by: "",
+    handed_over: false, online: true, has_pending: false,
+  })
+  rows.set("s-2", HubSessionRow::{
+    key: "s-2", runtime: "codex", profile: "p2", runtime_session_id: None, ran_on: None,
+    ws: Some("ws1"), created_by: "slack:c1:U_UNKNOWN", archived_at: None, archived_by: "",
+    handed_over: false, online: true, has_pending: false,
+  })
+
+  let snaps = [
+    HandoverSnapshot::{ key: "s-1", runtime: "claude", has_agent: true, has_turn: false, notices: ["n1"] },
+    HandoverSnapshot::{ key: "s-2", runtime: "codex", has_agent: true, has_turn: true, notices: [] },
+  ]
+  let adopt_ok : Map[String, Bool] = Map::new()
+  let outcomes = hub.adopt(snaps, rows, adopt_ok, 5000L)
+  expect(outcomes.length() == 2, "two adopted")
+  expect(outcomes[0].ran_on == "p-old", "uses ran_on profile")
+  expect(outcomes[0].person == "alice@example.com", "uses cached email")
+  expect(outcomes[0].set_idle_now && outcomes[0].release_notices, "idle + notices released")
+  expect(outcomes[0].platform_queries == 0 && outcomes[1].platform_queries == 0, "zero platform queries")
+  expect(outcomes[1].person == "", "uncached platform user returns empty without querying")
+  expect(!outcomes[1].set_idle_now, "running turn not marked idle")
+}
+
+test "system cards vs conversational cards closing & replacement rules" {
+  let login_card = base_codec::json_obj([("type", base_codec::json_str("login")), ("login", base_codec::json_str("L1"))])
+  let vault_card = base_codec::json_obj([("type", base_codec::json_str("text")), ("vault", base_codec::json_obj([("request", base_codec::json_str("V1"))]))])
+  let adb_card = base_codec::json_obj([("adb", base_codec::json_obj([("request", base_codec::json_str("P1"))]))])
+  let rig_card = base_codec::json_obj([("rig", base_codec::json_obj([("request", base_codec::json_str("R1"))]))])
+  let signin_card = base_codec::json_obj([("signin", base_codec::json_obj([("id", base_codec::json_str("S1"))]))])
+  let opts_card = base_codec::json_obj([("type", base_codec::json_str("options"))])
+  let text_card = base_codec::json_obj([("type", base_codec::json_str("text"))])
+
+  expect(is_system_card(login_card), "login is system")
+  expect(is_system_card(vault_card), "vault is system")
+  expect(is_system_card(adb_card), "adb is system")
+  expect(is_system_card(rig_card), "rig is system")
+  expect(is_system_card(signin_card), "signin is system")
+  expect(!is_system_card(opts_card), "options is conversational")
+  expect(!is_system_card(text_card), "text is conversational")
+
+  // System cards NEVER closed by person messages
+  expect(!card_closed_by_message(login_card, "stillfail", true), "login never closed by message")
+  expect(!card_closed_by_message(vault_card, "slack:T1", true), "vault never closed by message")
+
+  // Conversational cards: closed on stillfail always, on platform only if delivered_to_session
+  expect(card_closed_by_message(opts_card, "stillfail", false), "options closed on stillfail")
+  expect(!card_closed_by_message(opts_card, "slack:T1", false), "options stays open on undelivered slack msg")
+  expect(card_closed_by_message(text_card, "slack:T1", true), "text closed on delivered slack msg")
+
+  // Replacement rules
+  expect(card_replaces(opts_card, text_card), "conversational replaces conversational")
+  expect(!card_replaces(login_card, opts_card), "conversational does not replace system")
+  expect(!card_replaces(opts_card, vault_card), "system does not replace conversational")
+  expect(!card_replaces(login_card, vault_card), "system does not replace system")
+}
+
+test "decider priority and ask/failure notice routing" {
+  // 1. card assignee wins
+  expect(opt_eq_str(resolve_decider(Some("a@x.com"), Some("b@x.com"), Some("c@x.com")), Some("a@x.com")), "assignee wins")
+  // 2. answered person next
+  expect(opt_eq_str(resolve_decider(Some("  "), Some("b@x.com"), Some("c@x.com")), Some("b@x.com")), "answered wins")
+  // 3. chat starter fallback
+  expect(opt_eq_str(resolve_decider(None, None, Some("c@x.com")), Some("c@x.com")), "starter fallback")
+
+  // Ask notice goes to decider alone; failure notice goes to chat starter
+  expect(opt_eq_str(ask_notice_recipient(false, Some("a@x.com"), Some("b@x.com"), Some("c@x.com")), Some("a@x.com")), "ask -> decider")
+  expect(opt_eq_str(failure_notice_recipient(false, Some("c@x.com")), Some("c@x.com")), "failure -> starter")
+  // Agent-led chat suppresses person notices
+  expect(opt_eq_str(ask_notice_recipient(true, Some("a@x.com"), None, Some("c@x.com")), None), "led chat no person ask")
+  expect(opt_eq_str(failure_notice_recipient(true, Some("c@x.com")), None), "led chat no person failure")
+}
+
+test "starterEmail 5-minute miss cache, single-flight dedup, and personOf" {
+  let cache = StarterEmailCache::new()
+  let key = "slack:c1:U42"
+  // First lookup -> Fetch
+  let ticket = match cache.begin_lookup(key, 1000L) {
+    EmailLookupAction::Fetch(c, u, t) => {
+      expect(c == "c1" && u == "U42", "parsed connect and user")
+      t
+    }
+    _ => panic("expected Fetch")
+  }
+  // Concurrent lookup -> JoinInFlight with same ticket
+  match cache.begin_lookup(key, 1050L) {
+    EmailLookupAction::JoinInFlight(t2) => expect(t2 == ticket, "single-flight joins same ticket")
+    _ => panic("expected JoinInFlight")
+  }
+  // Complete as miss -> cached for 5 minutes (300000 ms)
+  let _ = cache.finish_lookup(key, None, 1100L)
+  match cache.begin_lookup(key, 1100L + STARTER_EMAIL_MISS_TTL_MS - 1L) {
+    EmailLookupAction::CachedMiss => ()
+    _ => panic("expected CachedMiss within 5-minute TTL")
+  }
+  // After TTL expires -> Fetch again
+  match cache.begin_lookup(key, 1100L + STARTER_EMAIL_MISS_TTL_MS) {
+    EmailLookupAction::Fetch(_, _, _) => ()
+    _ => panic("expected Fetch after 5-minute miss TTL")
+  }
+  // Cross-station external platform user returns ""
+  expect(person_of("slack:remote:U99", None) == "", "unknown platform user -> empty string")
+  expect(person_of("Alice@Cue.Surf", None) == "alice@cue.surf", "direct email lowercased")
+}
+
+test "archive-policy validation, mass, recommendation, and watching exemption" {
+  let def = default_archive_policy()
+  expect(def.options.length() == 8, "default has 8 options")
+  let checked = match checked_policy(
+    "判断标准",
+    [
+      ArchiveOption::{ id: "", name: "完成", rubric: "已搞定", archive: true },
+      ArchiveOption::{ id: "", name: "未完成", rubric: "还有事", archive: false },
+    ],
+  ) {
+    Ok(p) => p
+    Err(e) => panic("expected valid policy: " + e)
+  }
+  expect(checked.options[0].id == "option_1" && checked.options[1].id == "option_2", "auto ids assigned")
+
+  let probs : Map[String, Double] = Map::new()
+  probs.set("option_1", 0.90)
+  probs.set("option_2", 0.10)
+  let res = ChoiceResult::{ probabilities: probs, selected: "option_1", model: "m", source: "native", retained_mass: 1.0 }
+  expect(recommends_archive(res, checked, 0.85), "recommends archive >= 0.85")
+  expect(!recommends_archive(res, checked, 0.95), "does not recommend >= 0.95")
+
+  // Watching session is strictly exempt from auto-archive!
+  expect(!should_auto_archive(false, false, true, 0L, 999999999L, 1000L), "watching exempt")
+  expect(should_auto_archive(false, false, false, 0L, 2000L, 1000L), "idle non-watching archives")
+}
+
+test "LISTINGS per runtime and context-cap rules" {
+  let claude_print = listing_for("claude", false)
+  expect(claude_print.always_load_meta && claude_print.end_turn_meta, "claude print has alwaysLoad + endTurn")
+  expect(is_eager_tool(claude_print, "chat_post"), "chat_post eager")
+  expect(is_eager_tool(claude_print, "chat_state"), "chat_state eager")
+  expect(!is_eager_tool(claude_print, "chat_list"), "chat_list not eager")
+
+  let claude_tui = listing_for("claude", true)
+  expect(!claude_tui.end_turn_meta, "claude TUI omits endTurn")
+
+  let agy = listing_for("agy", false)
+  match agy.tool_budget {
+    Some(b) => expect(b == 22000, "agy budget 22000")
+    None => panic("expected agy budget")
+  }
+
+  // Context cap
+  match check_context("claude", Some(100000)) {
+    Ok(()) => ()
+    Err(e) => panic("claude 100k ok: " + e)
+  }
+  match check_context("codex", Some(200000)) {
+    Ok(()) => ()
+    Err(e) => panic("codex 200k ok: " + e)
+  }
+  match check_context("agy", Some(200000)) {
+    Err(_) => ()
+    Ok(()) => panic("agy does not support context cap")
+  }
+  match check_context("claude", Some(50000)) {
+    Err(_) => ()
+    Ok(()) => panic("below 100k must fail")
+  }
+}
+
+test "image-size parses PNG, GIF, WebP (VP8/VP8L/VP8X), and JPEG (+EXIF rotation)" {
+  // 1. PNG 640x480
+  let png = bytes_of([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x02, 0x80, // 640
+    0x00, 0x00, 0x01, 0xe0, // 480
+  ])
+  expect(opt_eq_dims(parse_image_size(png), Some((640, 480))), "PNG 640x480")
+
+  // 2. GIF89a 320x240
+  let gif = bytes_of([
+    0x47, 0x49, 0x46, 0x38, 0x39, 0x61,
+    0x40, 0x01, // 320 LE
+    0xf0, 0x00, // 240 LE
+  ])
+  expect(opt_eq_dims(parse_image_size(gif), Some((320, 240))), "GIF89a 320x240")
+
+  // 3. WebP VP8X 800x600 (stored as w-1=799=0x031f, h-1=599=0x0257)
+  let webp = bytes_of([
+    0x52, 0x49, 0x46, 0x46, // RIFF
+    0x20, 0x00, 0x00, 0x00,
+    0x57, 0x45, 0x42, 0x50, // WEBP
+    0x56, 0x50, 0x38, 0x58, // VP8X
+    0x0a, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x1f, 0x03, 0x00, // 799 + 1 = 800
+    0x57, 0x02, 0x00, // 599 + 1 = 600
+  ])
+  expect(opt_eq_dims(parse_image_size(webp), Some((800, 600))), "WebP VP8X 800x600")
+
+  // 4. JPEG with EXIF orientation 6 (90-degree turn: 1000x500 stored -> 500x1000 shown)
+  let jpeg = bytes_of([
+    0xff, 0xd8, // SOI
+    0xff, 0xe1, 0x00, 0x22, // APP1 len=34 (payload=32)
+    0x45, 0x78, 0x69, 0x66, 0x00, 0x00, // Exif\0\0
+    0x49, 0x49, 0x2a, 0x00, // II 42
+    0x08, 0x00, 0x00, 0x00, // IFD offset 8
+    0x01, 0x00, // 1 entry
+    0x12, 0x01, 0x03, 0x00, // tag 0x0112 SHORT
+    0x01, 0x00, 0x00, 0x00, // count 1
+    0x06, 0x00, 0x00, 0x00, // orientation = 6
+    0x00, 0x00, 0x00, 0x00, // padding to 32 bytes
+    0xff, 0xc0, 0x00, 0x0b, // SOF0
+    0x08, // precision
+    0x01, 0xf4, // height = 500
+    0x03, 0xe8, // width = 1000
+    0x01, 0x00, 0x00, 0x00,
+  ])
+  expect(opt_eq_dims(parse_image_size(jpeg), Some((500, 1000))), "JPEG EXIF orientation 6 swaps 1000x500 -> 500x1000")
+}
+
+test "local-links extracts local paths while ignoring code spans and fenced blocks" {
+  let md = "See [shot](/tmp/a%20b.png) and `not [code](/tmp/ignored.png)`.\n```\n[fence](/tmp/fenced.png)\n```\nAlso <file:///var/log/x.txt> and [ref][r1].\n[r1]: /etc/hosts"
+  let paths = named_local_paths(md)
+  expect(paths.length() == 3, "expected 3 local paths, got " + paths.length().to_string())
+  expect(paths[0].path == "/tmp/a b.png", "percent decoded path")
+  expect(paths[1].path == "/var/log/x.txt", "file:// autolink")
+  expect(paths[2].path == "/etc/hosts", "reference link")
+}
+
+test "board-drafts owner check, preserves existing B when merging [A'], newerDraft order, and 24h gone expiry" {
+  let existing : Map[String, BoardDraft] = Map::new()
+  existing.set("d1", BoardDraft::{ id: "d1", owner: "u1", rev: 1, at: 100L, updated_at: 100L, gone: false, file_ids: ["f1", "f2"] })
+  existing.set("dB", BoardDraft::{ id: "dB", owner: "u1", rev: 1, at: 90L, updated_at: 90L, gone: false, file_ids: ["fb"] })
+
+  // Wrong owner refused
+  match merge_board_drafts(
+    "u1",
+    existing,
+    [BoardDraft::{ id: "d2", owner: "u2", rev: 1, at: 200L, updated_at: 200L, gone: false, file_ids: [] }],
+  ) {
+    Err(_) => ()
+    Ok(_) => panic("wrong owner must be refused")
+  }
+
+  // Merge [d1'] into {d1, dB}: MUST preserve dB and detect removed f2!
+  let m1 = match merge_board_drafts(
+    "u1",
+    existing,
+    [BoardDraft::{ id: "d1", owner: "u1", rev: 2, at: 100L, updated_at: 200L, gone: false, file_ids: ["f1"] }],
+  ) {
+    Ok(r) => r
+    Err(e) => panic(e)
+  }
+  expect(m1.changed && m1.removed_files.length() == 1, "removed f2 detected")
+  expect(m1.drafts.contains("dB"), "existing draft dB MUST be preserved when not in incoming")
+
+  // Same rev: gone wins over live even with earlier updated_at (`newerDraft` order: rev -> gone -> updatedAt -> canonical)
+  let m2 = match merge_board_drafts(
+    "u1",
+    m1.drafts,
+    [BoardDraft::{ id: "d1", owner: "u1", rev: 2, at: 100L, updated_at: 150L, gone: true, file_ids: [] }],
+  ) {
+    Ok(r) => r
+    Err(e) => panic(e)
+  }
+  expect(m2.put_aside_drafts.length() == 1 && m2.put_aside_drafts[0] == "d1", "gone wins on same rev and puts aside d1")
+  expect(m2.drafts.contains("dB"), "dB still preserved")
+  expect(!is_gone_draft_file_expired(1000L, 1000L + BOARD_DRAFT_GONE_FILES_MS), "not expired at exact 24h")
+  expect(is_gone_draft_file_expired(1000L, 1000L + BOARD_DRAFT_GONE_FILES_MS + 1L), "expired past 24h")
+}
+
+test "titles, model-choice, card-place, and live-location-protocol" {
+  // Titles
+  expect(clean_title("  Hello   world..  ") == "Hello world", "clean_title collapses & strips dots")
+  match may_name_chat(true, Some("User Title"), None, 0, 10, false, "New") {
+    TitleDecision::Refused(_) => ()
+    _ => panic("never overwrite human title")
+  }
+  match may_name_chat(true, None, Some("Old"), 0, 2, false, "New") {
+    TitleDecision::Refused(_) => ()
+    _ => panic("too few messages without watch")
+  }
+  match may_name_chat(true, None, Some("Old"), 0, 2, true, "Watching CI") {
+    TitleDecision::Apply(t) => expect(t == "Watching CI", "watch overrides message count")
+    _ => panic("watch should allow immediate rename")
+  }
+
+  // Model choice: 2x lead picks automatically, close asks
+  let c1 = ModelCandidate::{ runtime: "claude", model: Some("opus") }
+  let c2 = ModelCandidate::{ runtime: "codex", model: Some("gpt") }
+  match choose_model([c1, c2], [ModelUsed::{ runtime: "claude", model: Some("opus"), count: 10 }, ModelUsed::{ runtime: "codex", model: Some("gpt"), count: 4 }], [c1, c2]) {
+    ModelChoiceResult::Pick(p) => expect(p.runtime == "claude", "10 vs 4 picks claude")
+    _ => panic("expected Pick")
+  }
+  match choose_model([c1, c2], [ModelUsed::{ runtime: "claude", model: Some("opus"), count: 10 }, ModelUsed::{ runtime: "codex", model: Some("gpt"), count: 6 }], [c1, c2]) {
+    ModelChoiceResult::Ask(items) => expect(items.length() == 2, "10 vs 6 asks")
+    _ => panic("expected Ask")
+  }
+
+  // Card place
+  match check_record_card(true, true, CardHeaderState::Pending("1700.1"), true) {
+    RecordCardCheck::Refused(msg) => expect(msg == CARD_OCCUPIED, "card occupied")
+    _ => panic("expected CARD_OCCUPIED")
+  }
+
+  // Live location identity hashes token
+  let id = location_identity("claude", Some("rs1"), None, "/ws", Some("p1"), Some("ws1"), "secret-token")
+  expect(id.token_hash.length() == 64 && id.token_hash != "secret-token", "token hashed as sha256 hex")
+}
+
+test "manual vs auto archive accept_in_turn, evict_idle, chat_ops, and selection intent" {
+  // Manual archive ignores unaddressed messages, restores on mention
+  match accept_in_turn(Some(100L), "manual", false) {
+    ThreadAcceptAction::RecordOnlyNoFiles => ()
+    _ => panic("manual archive unaddressed must record only without files")
+  }
+  match accept_in_turn(Some(100L), "manual", true) {
+    ThreadAcceptAction::RestoreAndDeliver => ()
+    _ => panic("manual archive addressed must restore and deliver")
+  }
+  // Auto archive restores on any thread message
+  match accept_in_turn(Some(100L), "auto", false) {
+    ThreadAcceptAction::RestoreAndDeliver => ()
+    _ => panic("auto archive restores on any message")
+  }
+
+  // chat_configure ancestor cycle check
+  let openers : Map[String, OpenerLink] = Map::new()
+  openers.set("child", OpenerLink::{ parent_station: "", parent: "root", led: true })
+  match validate_lead_transfer("root", "stillfail", "", "child", openers) {
+    Err(_) => ()
+    Ok(()) => panic("leading ancestor must be rejected")
+  }
+  match validate_lead_transfer("child", "stillfail", "", "child", openers) {
+    Err(_) => ()
+    Ok(()) => panic("leading self must be rejected")
+  }
+  match validate_lead_transfer("peer", "stillfail", "", "child", openers) {
+    Ok(()) => ()
+    Err(e) => panic("valid lead transfer should succeed: " + e)
+  }
+
+  // evict_idle keeps codex and evicts oldest non-codex beyond cap
+  let hub = SessionHub::new()
+  let c1 = hub.ensure_actor("c1", "claude")
+  c1.finish_start(true, 1000L)
+  let c2 = hub.ensure_actor("c2", "claude")
+  c2.finish_start(true, 2000L)
+  let cx = hub.ensure_actor("cx", "codex")
+  cx.finish_start(true, 500L)
+  let evicted = hub.evict_idle(["c1", "c2", "cx"], 5000L, 1, 0L)
+  expect(evicted.length() == 1 && evicted[0] == "c1", "oldest claude evicted, codex stays")
+
+  // selection intent fenced JSON & plain fallback
+  match parse_intent_answer("```json\n{\"intent\":\"explain\",\"reply\":\"42\"}\n```") {
+    Some(ans) => expect(ans.intent == "explain" && ans.reply == "42", "fenced JSON parsed")
+    None => panic("expected parsed intent")
+  }
+  match parse_intent_answer("Just plain text") {
+    Some(ans) => expect(ans.intent == "" && ans.reply == "Just plain text", "plain fallback")
+    None => panic("expected plain fallback")
+  }
+
+  // policy_change_summary
+  let p1 = default_archive_policy()
+  let p2 = ArchivePolicy::{ policy: "新策略", options: p1.options }
+  expect(policy_change_summary(p1, p2) == "改了策略", "policy summary diff")
+
+  // review bounded selection
+  let (kept, omitted) = select_review_messages(["aaaa", "bbbb", "cccc"], 9)
+  expect(kept.length() == 2 && kept[0] == "bbbb" && kept[1] == "cccc" && omitted, "newest-first bounded window")
+}
+
+test "P1-2 profile_allowed_in 4-case matrix aligned with config.ts allowedIn" {
+  // (a) ws == home & home in withheld -> true
+  let p_withheld_home = ProfileScope::{
+    id: "p1", runtimes: ["claude"], enabled: true, withheld: ["home"], borrowed: false, workspaces: [],
+  }
+  expect(profile_allowed_in(p_withheld_home, Some("home"), Some("home")), "(a) ws==home ignores withheld")
+  // (b) ws == None & home in withheld -> true
+  expect(profile_allowed_in(p_withheld_home, None, Some("home")), "(b) ws==None ignores withheld")
+  // (c) !borrowed & workspaces=["x"] & ws="y" -> true (workspaces only applies when borrowed)
+  let p_not_borrowed = ProfileScope::{
+    id: "p2", runtimes: ["claude"], enabled: true, withheld: [], borrowed: false, workspaces: ["x"],
+  }
+  expect(profile_allowed_in(p_not_borrowed, Some("y"), Some("home")), "(c) !borrowed ignores workspaces list")
+  // (d) borrowed & ws == None & home == None -> true
+  let p_borrowed = ProfileScope::{
+    id: "p3", runtimes: ["claude"], enabled: true, withheld: [], borrowed: true, workspaces: ["x"],
+  }
+  expect(profile_allowed_in(p_borrowed, None, None), "(d) borrowed with ws=None, home=None -> true")
+  // Extra: ws == "" is NOT coalesced to home
+  let p_withheld_empty = ProfileScope::{
+    id: "p4", runtimes: ["claude"], enabled: true, withheld: [""], borrowed: false, workspaces: [],
+  }
+  expect(!profile_allowed_in(p_withheld_empty, Some(""), Some("home")), "ws=='' does not coalesce to home")
+}
+
+test "P1-3 profiles_changed wakes in-flight start once it finishes failed" {
+  let hub = SessionHub::new()
+  let a = hub.ensure_actor("s-inflight", "claude")
+  a.begin_start()
+  let row = HubSessionRow::{
+    key: "s-inflight", runtime: "claude", profile: "p1", runtime_session_id: None, ran_on: None,
+    ws: Some("ws1"), created_by: "a@b.com", archived_at: None, archived_by: "",
+    handed_over: false, online: true, has_pending: true,
+  }
+  let _ = hub.profiles_changed([], [row], Some("ws1"))
+  let p_new = ProfileScope::{
+    id: "p-new", runtimes: ["claude"], enabled: true, withheld: [], borrowed: false, workspaces: [],
+  }
+  // Arrives while in_flight_start == true: queued as deferred barrier wake, not dropped!
+  let immediate = hub.profiles_changed([p_new], [row], Some("ws1"))
+  expect(immediate.length() == 0, "does not wake while start in flight")
+  // Now in-flight start fails and reaches flush barrier -> automatically woken!
+  a.finish_start(false, 500L)
+  let kicked = hub.on_actor_flushed(row, [p_new], Some("ws1"))
+  expect(kicked && a.wake_pending, "failed in-flight start automatically woken on flush")
+}
+
+test "P1-4 validate_lead_transfer_full rejects cross-station ancestor cycles" {
+  let openers : Map[String, OpenerLink] = Map::new()
+  openers.set("local-mid", OpenerLink::{ parent_station: "", parent: "local-root", led: true })
+  // Remote parent on stB has parent_ancestors containing (stA, local-mid), which is led by local-root on stA
+  match validate_lead_transfer_full(
+    "",
+    "local-root",
+    "stillfail",
+    "stA",
+    "stB",
+    "remote-child",
+    [("stA", "local-mid")],
+    openers,
+  ) {
+    Err(_) => ()
+    Ok(()) => panic("cross-station cycle via local ancestor chain must be rejected")
+  }
+  // Outgoing remote lead: local caller is led by (stB, remote-root), tries to lead (stB, remote-root)
+  let openers2 : Map[String, OpenerLink] = Map::new()
+  openers2.set("local-child", OpenerLink::{ parent_station: "stB", parent: "remote-root", led: true })
+  match validate_lead_transfer_full("stB", "remote-root", "stillfail", "stA", "", "local-child", [], openers2) {
+    Err(_) => ()
+    Ok(()) => panic("outgoing remote lead of own ancestor must be rejected")
+  }
+}
+
+test "P1-6 actor FIFO queue: Starting queued first runs before second after finish_start" {
+  let a = SessionActor::new("s-fifo", "claude")
+  a.begin_start()
+  let r1 = a.submit_input("first")
+  match r1 {
+    InputRoute::Queue => ()
+    _ => panic("first must queue during Starting")
+  }
+  a.finish_start(true, 1000L)
+  // finish_start must immediately start "first", so actor is Running
+  expect(a.started_prompts.length() == 1 && a.started_prompts[0] == "first", "first started immediately after finish_start")
+  let r2 = a.submit_input("second")
+  match r2 {
+    InputRoute::Steer => ()
+    _ => panic("second must steer behind running first, not jump ahead")
+  }
+}
+
+test "P1-7 named_local_paths TS parity: file: forms, .., %2e%2e, %2F/%FF reject, #frag/?q, Unicode WS & case" {
+  let p1 = named_local_paths("[a](file:/tmp/x) [b](file:tmp/y) \\<file:///tmp/e>")
+  expect(p1.length() == 3, "expected 3 file: links, got " + p1.length().to_string())
+  expect(p1[0].path == "/tmp/x", "file:/tmp/x")
+  expect(p1[1].path == "/tmp/y", "file:tmp/y")
+  expect(p1[2].path == "/tmp/e", "\\<file:///tmp/e>")
+
+  // .. and %2e%2e normalization, #frag and ?q stripping
+  let p2 = named_local_paths("[a](file:///tmp/../etc/passwd?v=1#top) [b](file:///a/%2e%2e/b)")
+  expect(p2.length() == 2, "expected 2 normalized file: links")
+  expect(p2[0].path == "/etc/passwd", "normalized .. and stripped ?q#frag")
+  expect(p2[1].path == "/b", "normalized %2e%2e")
+
+  // Reject %2F and invalid UTF-8 %FF in file: URLs
+  let p3 = named_local_paths("[bad1](file:///tmp/a%2Fb) [bad2](file:///tmp/%FF)")
+  expect(p3.length() == 0, "must reject %2F and %FF in file: URLs")
+
+  // Unicode case-folding in reference labels ([Файл] matches [файл]:)
+  let p4 = named_local_paths("[Файл]\n[файл]: /tmp/cyrillic.txt")
+  expect(p4.length() == 1 && p4[0].path == "/tmp/cyrillic.txt", "Unicode ref label match")
+
+  // Reference link [see][doc] end offset matches TS (close + 1, not double-matching [doc])
+  let l5 = find_markdown_links("[see][doc]\n[doc]: /tmp/doc.md")
+  expect(l5.length() == 1 && l5[0].start == 0 && l5[0].end == 5, "ref link end == close + 1")
+}
+
+test "P1-8 plan_delete_session blocks Windows traversal and symlinks" {
+  let empty_other : Map[String, Bool] = Map::new()
+  // Traversal to C:\Windows must be blocked!
+  let bad = plan_delete_session("C:\\data", "C:\\data/sessions/..\\..\\Windows", [], empty_other)
+  expect(!bad.remove_workspace, "C:\\data/sessions/..\\..\\Windows MUST NOT be deleted")
+  // Normal Windows session workspace is allowed
+  let good = plan_delete_session("C:\\data", "C:\\data\\sessions\\s-1\\work", [], empty_other)
+  expect(good.remove_workspace, "C:\\data\\sessions\\s-1\\work is allowed")
+  // Symlink workspace must be blocked
+  let sym = plan_delete_session_checked("/data", "/data/sessions/s-1/work", true, [], empty_other)
+  expect(!sym.remove_workspace, "symlink workspace must not be deleted")
+}
+
+fn opt_eq_i64(a : Option[Int64], b : Option[Int64]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+test "P1-9 model_key & same_model, P1-10 workspace_busy_backoff_ms, P2 fixes" {
+  // P1-9: anthropic/claude-opus-5.5 == claude-opus-5-5
+  expect(same_model("anthropic/claude-opus-5.5", "claude-opus-5-5"), "anthropic/claude-opus-5.5 == claude-opus-5-5")
+  expect(same_model("us.anthropic.claude-sonnet-4.5@20250929", "claude-sonnet-4-5"), "region + @ stripped")
+
+  // P1-10: [10m, 30m, 2h, 6h], 5th returns None
+  expect(opt_eq_i64(workspace_busy_backoff_ms(0), Some(600000L)), "10m")
+  expect(opt_eq_i64(workspace_busy_backoff_ms(1), Some(1800000L)), "30m")
+  expect(opt_eq_i64(workspace_busy_backoff_ms(2), Some(7200000L)), "2h")
+  expect(opt_eq_i64(workspace_busy_backoff_ms(3), Some(21600000L)), "6h")
+  expect(opt_eq_i64(workspace_busy_backoff_ms(4), None), "5th refusal -> None")
+
+  // P2-11: unknown/missing type object card is conversational (closable by person message)
+  let custom_card = base_codec::json_obj([("type", base_codec::json_str("future_card"))])
+  expect(!is_system_card(custom_card), "future_card is not system")
+  expect(card_closed_by_message(custom_card, "stillfail", false), "future_card closed on stillfail")
+
+  // P2-12: accept_in_turn_full with left / thread_hidden_by
+  match accept_in_turn_full(None, "", true, "", false) {
+    ThreadAcceptAction::RecordOnlyNoFiles => ()
+    _ => panic("left session unaddressed must record only")
+  }
+  match accept_in_turn_full(None, "", false, "manual", false) {
+    ThreadAcceptAction::RecordOnlyNoFiles => ()
+    _ => panic("manually hidden thread unaddressed must record only")
+  }
+
+  // P2-13: validate_decision_config rejects NaN threshold
+  let nan_val = 0.0 / 0.0
+  let nan_cfg = DecisionConfig::{
+    provider: DecisionProvider::Jev, endpoint: "https://api.example.com/v1", model: "m", api_key: "k",
+    session_header: false, threshold: nan_val,
+  }
+  match validate_decision_config(nan_cfg) {
+    Err(_) => ()
+    Ok(()) => panic("NaN threshold must be rejected")
+  }
+}
+
+test "R2 N1/N2/P2 regressions: UTF-8 CJK & U+3000 in links, residual Steer drain, POSIX backslash" {
+  // N1: UTF-8 CJK bytes (你 = E4 BD A0) must NOT collide with U+00A0 NBSP; U+3000 ideographic space MUST break link
+  let cjk = named_local_paths("[a](/tmp/你.png) [b](file:///tmp/你.png) [bad](/tmp/a\u{3000}b)")
+  expect(cjk.length() == 2, "expected 2 CJK local paths and U+3000 rejected, got " + cjk.length().to_string())
+  expect(cjk[0].path == "/tmp/你.png", "inline CJK path preserved")
+  expect(cjk[1].path == "/tmp/你.png", "file:// CJK path preserved")
+
+  // N2: Running -> Steer -> AllDone -> on_turn_ended -> submit_input("next") must NOT deadlock
+  let a = SessionActor::new("s-steer-drain", "claude")
+  let _ = a.submit_input("go")
+  let r_steer = a.submit_input("steer me")
+  match r_steer {
+    InputRoute::Steer => ()
+    _ => panic("expected Steer while running")
+  }
+  a.record_state(TurnDeclared::AllDone("done"))
+  let _ = a.on_turn_ended(false, 1000L)
+  // Residual Steer must be promoted to next turn immediately (Running with "steer me")
+  expect(a.started_prompts.length() == 2 && a.started_prompts[1] == "steer me", "residual Steer promoted to next turn")
+  match a.phase {
+    ActorPhase::Running => ()
+    _ => panic("actor must be Running on promoted steer, not stuck Idle")
+  }
+  // Subsequent "next" steers/queues cleanly and runs in order after "steer me" finishes
+  let _ = a.submit_input("next")
+  a.record_state(TurnDeclared::AllDone("done2"))
+  let _ = a.on_turn_ended(false, 2000L)
+  expect(a.started_prompts.length() == 3 && a.started_prompts[2] == "next", "next runs in order after steer me")
+
+  // P2: POSIX path with literal backslash is NOT treated as separator
+  let empty_other : Map[String, Bool] = Map::new()
+  let posix_bs = plan_delete_session("/data", "/data/x\\..\\sessions\\y", [], empty_other)
+  expect(!posix_bs.remove_workspace, "POSIX backslash must NOT be treated as path separator")
+}

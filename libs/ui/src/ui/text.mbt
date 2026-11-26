@@ -36,6 +36,8 @@ struct Shaped {
   len : Int
   // the text's bidirectional levels, when any is not 0 (None: all left to right)
   bidi : @text.Bidi?
+  // whether every code unit in the text is a standalone non-joining LTR cluster (scan_shape_flags)
+  simple : Bool
   // with letter spacing: how far each cluster's piece is drawn in from where it starts (half the spacing, the
   // other half after it; every advance has the whole of it)
   pad : Double
@@ -97,10 +99,35 @@ priv struct FontShapes {
 }
 
 ///|
+/// Raw shaped clusters of one short segment (<= 64 UTF-16 code units) in composite font shaping, cached per
+/// `(size, weight, style)` so repeated Latin/CJK/space/punctuation segments across mixed strings skip `h_shape`.
+priv struct SegShaped {
+  starts : Array[Int]
+  lens : Array[Int]
+  adv : Array[Double]
+  keys : Array[Int]
+  mut used : Int
+}
+
+///|
+priv struct SegFontShapes {
+  size : Double
+  weight : Int
+  style : Int
+  map : Map[String, SegShaped]
+}
+
+///|
 priv struct TextCache {
   fonts : Array[FontShapes]
+  mut last_font : FontShapes?
   // strings shaped, in all fonts
   mut shaped : Int
+  seg_fonts : Array[SegFontShapes]
+  mut seg_last_font_0 : SegFontShapes?
+  mut seg_last_font_1 : SegFontShapes?
+  mut seg_shaped : Int
+  mut seg_thinned : Int
   // ascent, descent, line height; the ascent and descent of the font Han falls back to; whether the host sets lines
   // on whole pixels
   metrics : Map[Int64, (Double, Double, Double, Double, Double, Bool)]
@@ -129,7 +156,13 @@ priv struct TextCache {
 ///|
 let text_cache : TextCache = {
   fonts: [],
+  last_font: None,
   shaped: 0,
+  seg_fonts: [],
+  seg_last_font_0: None,
+  seg_last_font_1: None,
+  seg_shaped: 0,
+  seg_thinned: -1,
   metrics: Map([]),
   glyphs: Map([]),
   atlas: None,
@@ -602,6 +635,16 @@ fn font_shapes(
   cjk_scale_pct : Int,
   cjk_weight_off : Int,
 ) -> Map[String, Shaped] {
+  match text_cache.last_font {
+    Some(f) if f.size == size &&
+      f.weight == weight &&
+      f.style == style &&
+      f.spacing == spacing &&
+      f.cjk_slot == cjk_slot &&
+      f.cjk_scale_pct == cjk_scale_pct &&
+      f.cjk_weight_off == cjk_weight_off => return f.map
+    _ => ()
+  }
   for f in text_cache.fonts {
     if f.size == size &&
       f.weight == weight &&
@@ -610,12 +653,87 @@ fn font_shapes(
       f.cjk_slot == cjk_slot &&
       f.cjk_scale_pct == cjk_scale_pct &&
       f.cjk_weight_off == cjk_weight_off {
+      text_cache.last_font = Some(f)
       return f.map
     }
   }
   let map = Map([])
-  text_cache.fonts.push({ size, weight, style, spacing, cjk_slot, cjk_scale_pct, cjk_weight_off, map })
+  let f : FontShapes = { size, weight, style, spacing, cjk_slot, cjk_scale_pct, cjk_weight_off, map }
+  text_cache.fonts.push(f)
+  text_cache.last_font = Some(f)
   map
+}
+
+///|
+/// The most raw composite segments kept cached: past it, the oldest half is evicted (seg_shapes_thin).
+let seg_shapes_most : Int = 2048
+
+///|
+// kept across runs: empty placeholder for Array::release_unused on text_cache.seg_fonts
+let seg_font_shapes_gone : SegFontShapes = { size: 0.0, weight: 0, style: 0, map: Map([]) }
+
+///|
+fn seg_font_shapes(size : Double, weight : Int, style : Int) -> Map[String, SegShaped] {
+  // 2-slot MRU cache so alternating Latin/CJK segments in mixed text both hit O(1) without linear scan.
+  match text_cache.seg_last_font_0 {
+    Some(f) if f.size == size && f.weight == weight && f.style == style => return f.map
+    _ => ()
+  }
+  match text_cache.seg_last_font_1 {
+    Some(f) if f.size == size && f.weight == weight && f.style == style => {
+      text_cache.seg_last_font_1 = text_cache.seg_last_font_0
+      text_cache.seg_last_font_0 = Some(f)
+      return f.map
+    }
+    _ => ()
+  }
+  for f in text_cache.seg_fonts {
+    if f.size == size && f.weight == weight && f.style == style {
+      text_cache.seg_last_font_1 = text_cache.seg_last_font_0
+      text_cache.seg_last_font_0 = Some(f)
+      return f.map
+    }
+  }
+  let map = Map([])
+  let f : SegFontShapes = { size, weight, style, map }
+  text_cache.seg_fonts.push(f)
+  text_cache.seg_last_font_1 = text_cache.seg_last_font_0
+  text_cache.seg_last_font_0 = Some(f)
+  map
+}
+
+///|
+fn seg_shapes_thin() -> Unit {
+  if text_cache.seg_thinned == text_cache.frame {
+    return
+  }
+  text_cache.seg_thinned = text_cache.frame
+  let used = []
+  for f in text_cache.seg_fonts {
+    for _, s in f.map {
+      used.push(s.used)
+    }
+  }
+  if used.is_empty() {
+    return
+  }
+  used.sort()
+  let cut = used[used.length() / 2]
+  let mut kept = 0
+  for f in text_cache.seg_fonts {
+    let gone = []
+    for t, s in f.map {
+      if s.used < cut || (s.used == cut && cut < text_cache.frame) {
+        gone.push(t)
+      } else {
+        kept = kept + 1
+      }
+    }
+    for t in gone {
+      f.map.remove(t)
+    }
+  }
+  text_cache.seg_shaped = kept
 }
 
 ///|
@@ -667,6 +785,9 @@ fn clear_shapes() -> Unit {
   spaced_said.val = None
   spaced_stops_left.clear()
   marks_narrow.clear()
+  text_cache.last_font = None
+  text_cache.seg_last_font_0 = None
+  text_cache.seg_last_font_1 = None
   for f in text_cache.fonts {
     // a shape and its last layout refer to each other (reference counts
     // never free a cycle): let go of the layout first
@@ -676,6 +797,12 @@ fn clear_shapes() -> Unit {
     f.map.clear()
   }
   text_cache.shaped = 0
+  for f in text_cache.seg_fonts {
+    f.map.clear()
+  }
+  text_cache.seg_fonts.clear()
+  text_cache.seg_fonts.release_unused(placeholder=seg_font_shapes_gone)
+  text_cache.seg_shaped = 0
 }
 
 ///|
@@ -695,6 +822,9 @@ let font_shapes_gone : FontShapes = {
 /// Surgically evict shape, metric, and mark caches referencing preview/try `face` without incrementing
 /// `words_shaped_in` or evicting unrelated global window text caches.
 fn forget_words_for_face(face : Int) -> Unit {
+  text_cache.last_font = None
+  text_cache.seg_last_font_0 = None
+  text_cache.seg_last_font_1 = None
   let kept : Array[FontShapes] = []
   let mut shaped = 0
   for f in text_cache.fonts {
@@ -714,6 +844,31 @@ fn forget_words_for_face(face : Int) -> Unit {
   }
   text_cache.fonts.release_unused(placeholder=font_shapes_gone)
   text_cache.shaped = shaped
+  if face <= 6 {
+    for f in text_cache.seg_fonts {
+      f.map.clear()
+    }
+    text_cache.seg_fonts.clear()
+    text_cache.seg_fonts.release_unused(placeholder=seg_font_shapes_gone)
+    text_cache.seg_shaped = 0
+  } else {
+    let kept_seg : Array[SegFontShapes] = []
+    let mut seg_shaped = 0
+    for f in text_cache.seg_fonts {
+      if @hostapi.face_of_style(f.style) == face {
+        f.map.clear()
+      } else {
+        seg_shaped = seg_shaped + f.map.length()
+        kept_seg.push(f)
+      }
+    }
+    text_cache.seg_fonts.clear()
+    for f in kept_seg {
+      text_cache.seg_fonts.push(f)
+    }
+    text_cache.seg_fonts.release_unused(placeholder=seg_font_shapes_gone)
+    text_cache.seg_shaped = seg_shaped
+  }
   rich_forget_face(face)
   let gone_metrics : Array[Int64] = []
   for k, _ in text_cache.metrics {
@@ -771,8 +926,18 @@ fn has_digit(text : String) -> Bool {
 /// (@text.width_runs), the narrow pieces with @hostapi.style_proportional, their clusters put together. A face whose
 /// such marks are narrow already (Inter, Segoe UI, San Francisco, the system's) is asked nothing more, and words
 /// with none of those marks, or only marks the face was seen to draw narrow so (marks_narrow), are not cut at all.
-fn shape_widths(text : String, size : Double, weight : Int, style : Int, out : FixedArray[Double]) -> Int {
+fn shape_widths(
+  text : String,
+  size : Double,
+  weight : Int,
+  style : Int,
+  out : FixedArray[Double],
+  has_ambig? : Bool = true,
+) -> Int {
   let k = h_shape(text, size, weight, style, out)
+  if !has_ambig {
+    return k
+  }
   // (only a mark can be found drawn a whole em below: words with none, or with none this face is not known to draw
   // narrow, come out as shaped, not cut into pieces and looked through)
   let face = marks_face(weight, style)
@@ -1067,32 +1232,56 @@ fn spaced_pair(a : Int, b : Int) -> Bool {
 }
 
 ///|
-/// Whether every UTF-16 unit in `text` is a standalone UAX #29 extended grapheme cluster, non-joining, and left-to-right
-/// (matching Android MBText.unitClusters): tab, line feed, printable ASCII, common standalone Latin-1 / general
-/// punctuation & currency symbols, and CJK / kana / Hangul syllables / fullwidth punctuation without combining marks,
-/// surrogates, CR, variation selectors, bidi controls, emoji-candidate symbols, or ZWJ.
-fn unit_clusters(text : String) -> Bool {
+let shape_flag_simple : Int = 1
+
+///|
+let shape_flag_cjk : Int = 2
+
+///|
+let shape_flag_ambig : Int = 4
+
+///|
+/// Single-pass UTF-16 scan fusing `unit_clusters`, `is_cjk` (including supplementary high surrogates 0xD840..0xD8BF),
+/// and `is_ambiguous_cjk_punct` (superset of `@text.width_mark`).
+fn scan_shape_flags(text : String) -> Int {
   let n = text.length()
+  let mut simple = true
+  let mut has_cjk = false
+  let mut has_ambig = false
   for k in 0..<n {
-    let c = text.at(k).to_int()
+    let c = text.unsafe_get(k).to_int()
     if c >= 0x20 && c <= 0x7E {
       continue
     }
     if c < 0x3000 {
-      if c == 10 ||
-        c == 9 ||
-        c == 0x00A5 ||
+      if c == 10 || c == 9 {
+        continue
+      }
+      if c == 0x00B7 ||
+        c == 0x2014 ||
+        c == 0x2018 ||
+        c == 0x2019 ||
+        c == 0x201C ||
+        c == 0x201D ||
+        c == 0x2022 ||
+        c == 0x2026 {
+        has_ambig = true
+        continue
+      }
+      if c == 0x2027 {
+        has_ambig = true
+        simple = false
+        continue
+      }
+      if c == 0x00A5 ||
         c == 0x00A7 ||
         c == 0x00B0 ||
         c == 0x00B1 ||
-        c == 0x00B7 ||
         c == 0x00D7 ||
         c == 0x00F7 ||
         c == 0x2013 ||
-        c == 0x2014 ||
-        (c >= 0x2018 && c <= 0x201D) ||
-        c == 0x2022 ||
-        c == 0x2026 ||
+        c == 0x201A ||
+        c == 0x201B ||
         c == 0x2030 ||
         c == 0x2032 ||
         c == 0x2033 ||
@@ -1100,7 +1289,11 @@ fn unit_clusters(text : String) -> Bool {
         c == 0x2103 {
         continue
       }
-      return false
+      simple = false
+      if (c >= 0x1100 && c <= 0x11FF) || (c >= 0x2E80 && c <= 0x2FFF) {
+        has_cjk = true
+      }
+      continue
     }
     if c <= 0x3029 ||
       (c >= 0x3041 && c <= 0x3096) ||
@@ -1108,11 +1301,28 @@ fn unit_clusters(text : String) -> Bool {
       (c >= 0x3400 && c <= 0x9FFF) ||
       (c >= 0xAC00 && c <= 0xD7A3) ||
       (c >= 0xFF01 && c <= 0xFF60) {
+      has_cjk = true
       continue
     }
-    return false
+    simple = false
+    if is_cjk(c) {
+      has_cjk = true
+    }
   }
-  true
+  (if simple { shape_flag_simple } else { 0 }) |
+  (if has_cjk { shape_flag_cjk } else { 0 }) |
+  (if has_ambig { shape_flag_ambig } else { 0 })
+}
+
+///|
+/// Whether every UTF-16 unit in `text` is a standalone UAX #29 extended grapheme cluster, non-joining, and left-to-right
+/// (matching Android MBText.unitClusters): tab, line feed, printable ASCII, common standalone Latin-1 / general
+/// punctuation & currency symbols, and CJK / kana / Hangul syllables / fullwidth punctuation without combining marks,
+/// surrogates, CR, variation selectors, bidi controls, emoji-candidate symbols, or ZWJ.
+// kept for whitebox tests (text_unit_clusters_wbtest.mbt)
+#warnings("-unused_value")
+fn unit_clusters(text : String) -> Bool {
+  (scan_shape_flags(text) & shape_flag_simple) != 0
 }
 
 ///|
@@ -1180,37 +1390,92 @@ fn shape(
       } else {
         style
       }
+      let flags = if text.length() == 0 { shape_flag_simple } else { scan_shape_flags(text) }
+      let simple = (flags & shape_flag_simple) != 0
+      let has_cjk = (flags & shape_flag_cjk) != 0
+      let has_ambig = (flags & shape_flag_ambig) != 0
       let out_cjk : Array[Bool] = []
+      let mut all_cjk = false
       let mut seg_count = 1
       let seg_ends : Array[Int] = []
       let m = if text.length() == 0 {
         0
       } else if cjk_slot == 0 {
-        shape_widths(text, size, weight, style, out)
+        shape_widths(text, size, weight, style, out, has_ambig~)
+      } else if !has_cjk && !has_ambig {
+        // Fast path 1: pure non-CJK with no ambiguous punctuation
+        shape_widths(text, size, weight, style, out, has_ambig=false)
       } else {
-        // Composite font stack segmentation: full-context width_runs + extended grapheme clusters
-        let wruns = @text.width_runs(text)
-        let gbs = @text.graphemes(text)
+        // Composite font stack segmentation: 4-tier fast paths avoiding unnecessary width_runs/graphemes
         let segs : Array[(Int, Int, Bool)] = []
-        let mut r = 0
-        for gi in 0..<(gbs.length() - 1) {
-          let cs = gbs[gi]
-          let ce = gbs[gi + 1]
-          while r < wruns.length() - 1 && cs >= wruns[r].1 {
-            r = r + 1
+        if simple && !has_ambig {
+          let n_u = text.length()
+          let mut seg_start = 0
+          let mut cur_cjk = is_cjk(text.unsafe_get(0).to_int())
+          for i in 1..<n_u {
+            let is_c = is_cjk(text.unsafe_get(i).to_int())
+            if is_c != cur_cjk {
+              segs.push((seg_start, i, cur_cjk))
+              seg_start = i
+              cur_cjk = is_c
+            }
           }
-          let is_narrow = if r < wruns.length() { wruns[r].2 } else { false }
-          let is_c = is_cjk_cluster(text, cs, is_narrow)
-          let slen = segs.length()
-          if slen > 0 && segs[slen - 1].2 == is_c {
-            segs[slen - 1] = (segs[slen - 1].0, ce, is_c)
-          } else {
-            segs.push((cs, ce, is_c))
+          segs.push((seg_start, n_u, cur_cjk))
+        } else if simple {
+          let wruns = @text.width_runs(text)
+          let mut r = 0
+          for i in 0..<text.length() {
+            while r < wruns.length() - 1 && i >= wruns[r].1 {
+              r = r + 1
+            }
+            let is_narrow = if r < wruns.length() { wruns[r].2 } else { false }
+            let is_c = is_cjk_cluster(text, i, is_narrow)
+            let slen = segs.length()
+            if slen > 0 && segs[slen - 1].2 == is_c {
+              segs[slen - 1] = (segs[slen - 1].0, i + 1, is_c)
+            } else {
+              segs.push((i, i + 1, is_c))
+            }
+          }
+        } else if !has_ambig {
+          let gbs = @text.graphemes(text)
+          for gi in 0..<(gbs.length() - 1) {
+            let cs = gbs[gi]
+            let ce = gbs[gi + 1]
+            let is_c = is_cjk_cp(cp_at(text, cs))
+            let slen = segs.length()
+            if slen > 0 && segs[slen - 1].2 == is_c {
+              segs[slen - 1] = (segs[slen - 1].0, ce, is_c)
+            } else {
+              segs.push((cs, ce, is_c))
+            }
+          }
+        } else {
+          let wruns = @text.width_runs(text)
+          let gbs = @text.graphemes(text)
+          let mut r = 0
+          for gi in 0..<(gbs.length() - 1) {
+            let cs = gbs[gi]
+            let ce = gbs[gi + 1]
+            while r < wruns.length() - 1 && cs >= wruns[r].1 {
+              r = r + 1
+            }
+            let is_narrow = if r < wruns.length() { wruns[r].2 } else { false }
+            let is_c = is_cjk_cluster(text, cs, is_narrow)
+            let slen = segs.length()
+            if slen > 0 && segs[slen - 1].2 == is_c {
+              segs[slen - 1] = (segs[slen - 1].0, ce, is_c)
+            } else {
+              segs.push((cs, ce, is_c))
+            }
           }
         }
         seg_count = segs.length()
         if seg_count == 1 && !segs[0].2 {
-          shape_widths(text, size, weight, style, out)
+          shape_widths(text, size, weight, style, out, has_ambig~)
+        } else if seg_count == 1 && segs[0].2 {
+          all_cjk = true
+          shape_widths(text, cjk_size, cjk_weight, cjk_style, out, has_ambig~)
         } else {
           let cap = out.length() / 4
           let seg_buf = match text_cache.seg_buf {
@@ -1225,21 +1490,91 @@ fn shape(
           for seg in segs {
             let (sa, sb, is_c) = seg
             let sub = text.unsafe_substring(start=sa, end=sb)
-            let sm = if is_c {
-              shape_widths(sub, cjk_size, cjk_weight, cjk_style, seg_buf)
-            } else {
-              shape_widths(sub, size, weight, style, seg_buf)
-            }
-            for j in 0..<sm {
-              if k >= cap {
-                break
+            let seg_size = if is_c { cjk_size } else { size }
+            let seg_weight = if is_c { cjk_weight } else { weight }
+            let seg_style = if is_c { cjk_style } else { style }
+            if sub.length() <= 64 {
+              let smap = seg_font_shapes(seg_size, seg_weight, seg_style)
+              match smap.get(sub) {
+                Some(cached) => {
+                  cached.used = text_cache.frame
+                  let sm = cached.starts.length()
+                  for j in 0..<sm {
+                    if k >= cap {
+                      break
+                    }
+                    out[k * 4] = (cached.starts[j] + sa).to_double()
+                    out[k * 4 + 1] = cached.lens[j].to_double()
+                    out[k * 4 + 2] = cached.adv[j]
+                    out[k * 4 + 3] = cached.keys[j].to_double()
+                    out_cjk.push(is_c)
+                    k = k + 1
+                  }
+                }
+                None => {
+                  let sm = shape_widths(sub, seg_size, seg_weight, seg_style, seg_buf, has_ambig~)
+                  if sm < cap {
+                    if text_cache.seg_shaped > seg_shapes_most {
+                      seg_shapes_thin()
+                    }
+                    let c_starts = Array(capacity=sm)
+                    let c_lens = Array(capacity=sm)
+                    let c_adv = Array(capacity=sm)
+                    let c_keys = Array(capacity=sm)
+                    for j in 0..<sm {
+                      let st = seg_buf[j * 4].to_int()
+                      let ln = seg_buf[j * 4 + 1].to_int()
+                      let ad = seg_buf[j * 4 + 2]
+                      let ky = seg_buf[j * 4 + 3].to_int()
+                      c_starts.push(st)
+                      c_lens.push(ln)
+                      c_adv.push(ad)
+                      c_keys.push(ky)
+                      if k < cap {
+                        out[k * 4] = (st + sa).to_double()
+                        out[k * 4 + 1] = ln.to_double()
+                        out[k * 4 + 2] = ad
+                        out[k * 4 + 3] = ky.to_double()
+                        out_cjk.push(is_c)
+                        k = k + 1
+                      }
+                    }
+                    smap[sub] = {
+                      starts: c_starts,
+                      lens: c_lens,
+                      adv: c_adv,
+                      keys: c_keys,
+                      used: text_cache.frame,
+                    }
+                    text_cache.seg_shaped = text_cache.seg_shaped + 1
+                  } else {
+                    for j in 0..<sm {
+                      if k >= cap {
+                        break
+                      }
+                      out[k * 4] = seg_buf[j * 4] + sa.to_double()
+                      out[k * 4 + 1] = seg_buf[j * 4 + 1]
+                      out[k * 4 + 2] = seg_buf[j * 4 + 2]
+                      out[k * 4 + 3] = seg_buf[j * 4 + 3]
+                      out_cjk.push(is_c)
+                      k = k + 1
+                    }
+                  }
+                }
               }
-              out[k * 4] = seg_buf[j * 4] + sa.to_double()
-              out[k * 4 + 1] = seg_buf[j * 4 + 1]
-              out[k * 4 + 2] = seg_buf[j * 4 + 2]
-              out[k * 4 + 3] = seg_buf[j * 4 + 3]
-              out_cjk.push(is_c)
-              k = k + 1
+            } else {
+              let sm = shape_widths(sub, seg_size, seg_weight, seg_style, seg_buf, has_ambig~)
+              for j in 0..<sm {
+                if k >= cap {
+                  break
+                }
+                out[k * 4] = seg_buf[j * 4] + sa.to_double()
+                out[k * 4 + 1] = seg_buf[j * 4 + 1]
+                out[k * 4 + 2] = seg_buf[j * 4 + 2]
+                out[k * 4 + 3] = seg_buf[j * 4 + 3]
+                out_cjk.push(is_c)
+                k = k + 1
+              }
             }
             seg_ends.push(k)
           }
@@ -1251,15 +1586,16 @@ fn shape(
         @hostapi.face_of_style(style) != @hostapi.face_code &&
         spaced_now() != @hostapi.words_spaced_none {
         let mode = spaced_now()
+        let use_cjk_metrics = all_cjk || out_cjk.length() > 0
         words_spaced_in(
           text,
           size,
           out,
           m,
           mode == @hostapi.words_spaced_here && cjk_autospace_on.val,
-          cjk_em=if out_cjk.length() > 0 { cjk_size } else { size },
-          stop_style=if out_cjk.length() > 0 { cjk_style } else { 0 },
-          stop_weight=if out_cjk.length() > 0 { cjk_weight } else { 400 },
+          cjk_em=if use_cjk_metrics { cjk_size } else { size },
+          stop_style=if use_cjk_metrics { cjk_style } else { 0 },
+          stop_weight=if use_cjk_metrics { cjk_weight } else { 400 },
         )
         if mode == @hostapi.words_spaced_by_host && seg_count >= 2 && cjk_autospace_on.val {
           // Cross-segment boundary spacing when host shaper only saw each segment individually
@@ -1281,7 +1617,7 @@ fn shape(
       // UAX #29's clusters: a host that cut one in two (a Thai vowel sign some segmenters leave on its own) is
       // made whole again. Where every unit is a standalone non-joining LTR cluster (ASCII and nearly all CJK:
       // unit_clusters), skip graphemes, joining, line_breaks and bidi_mixed.
-      let has_cjk_flags = out_cjk.length() == m && m > 0
+      let has_cjk_flags = !all_cjk && out_cjk.length() == m && m > 0
       let key_for = fn(sub : String, is_c : Bool) -> Int {
         if is_c {
           h_text_key(sub, cjk_size, cjk_weight, cjk_style)
@@ -1289,7 +1625,6 @@ fn shape(
           h_text_key(sub, size, weight, style)
         }
       }
-      let simple = unit_clusters(text)
       let mut lb : FixedArray[Int]? = None
       let starts = Array(capacity=m)
       let lens = Array(capacity=m)
@@ -1322,7 +1657,7 @@ fn shape(
         let mut i = 0
         while i < m {
           let st = out[i * 4].to_int()
-          let is_c = has_cjk_flags && out_cjk[i]
+          let is_c = all_cjk || (has_cjk_flags && out_cjk[i])
           // what joins it: the rest of its grapheme cluster, and the rest of a word in a joining script (which ends
           // where a line may break)
           let word = joining(text, st) && out[i * 4 + 3] != -1.0
@@ -1398,12 +1733,12 @@ fn shape(
         }
         if u < 0 || keys[u] < 0 {
           for k in c..<e {
-            let is_c = has_cjk_flags && cjk_flags[k]
+            let is_c = all_cjk || (has_cjk_flags && cjk_flags[k])
             keys[k] = key_for(text.unsafe_substring(start=starts[k], end=starts[k] + lens[k]), is_c)
           }
         } else {
           let end = starts[e - 1] + lens[e - 1]
-          let is_c = has_cjk_flags && cjk_flags[u]
+          let is_c = all_cjk || (has_cjk_flags && cjk_flags[u])
           keys[u] = key_for(text.unsafe_substring(start=starts[u], end~), is_c)
           let mut a = 0.0
           for k in u..<e {
@@ -1447,7 +1782,7 @@ fn shape(
               let c = text.at(starts[k]).to_int()
               let m = @text.mirror(c)
               if m != c {
-                let is_c = has_cjk_flags && cjk_flags[k]
+                let is_c = all_cjk || (has_cjk_flags && cjk_flags[k])
                 keys[k] = key_for(Int::unsafe_to_char(m).to_string(), is_c)
               }
             }
@@ -1464,6 +1799,7 @@ fn shape(
         brk,
         len: text.length(),
         bidi: bd,
+        simple,
         pad: spacing / 2.0,
         lay: None,
         lay_max: 0.0,

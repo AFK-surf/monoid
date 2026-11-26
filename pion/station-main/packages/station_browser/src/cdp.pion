@@ -1,0 +1,423 @@
+// Chrome DevTools Protocol (CDP) JSON-RPC session state machine over an
+// injectable WebSocket port (`station/src/browser/cdp.ts`).
+// Deterministic virtual-clock timeouts (zero real sleeps, zero RC cycles).
+
+import "base_codec"
+
+pub let CDP_OPEN_MS : Int64 = 10000L
+pub let CDP_ANSWER_MS : Int64 = 30000L
+pub let CDP_MAX_PAYLOAD : Int = 268435456
+
+pub struct CdpEvent {
+  pub method : String
+  pub params : base_codec::Json
+  pub session_id : Option[String]
+}
+
+pub enum CdpMessage {
+  Response(Int64, base_codec::Json)
+  ErrorResponse(Int64, String)
+  Event(CdpEvent)
+  Invalid
+}
+
+pub enum CdpOutcome {
+  Ok(base_codec::Json)
+  Err(String)
+}
+
+pub struct CdpPending {
+  pub id : Int64
+  pub method : String
+  pub session_id : Option[String]
+  pub deadline_ms : Int64
+}
+
+pub struct CdpSettled {
+  pub id : Int64
+  pub method : String
+  pub outcome : CdpOutcome
+}
+
+/// Injectable WebSocket transport port for `CdpSession`.
+pub struct CdpWsPort {
+  pub send_text : (String) -> Bool
+  pub close_ws : () -> Unit
+}
+
+pub fn CdpWsPort::noop() -> CdpWsPort {
+  CdpWsPort::{
+    send_text: fn(_text : String) -> Bool { true },
+    close_ws: fn() -> Unit {},
+  }
+}
+
+/// Encode a CDP JSON-RPC command frame.
+pub fn encode_cdp_request(
+  id : Int64,
+  method : String,
+  params : base_codec::Json,
+  session_id : Option[String],
+) -> String {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_int64(id)),
+    ("method", base_codec::json_str(method)),
+    ("params", params),
+  ]
+  match session_id {
+    Some(sid) => fields.push(("sessionId", base_codec::json_str(sid)))
+    None => ()
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields))
+}
+
+/// Decode a CDP JSON-RPC text frame from Chrome into a response, error, or event.
+pub fn decode_cdp_message(raw : String) -> CdpMessage {
+  let m = match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return CdpMessage::Invalid
+  }
+  match json_int64_field(m, "id") {
+    Some(id) => {
+      match base_codec::json_get(m, "error") {
+        Some(err_obj) => {
+          let msg = match json_str_field(err_obj, "message") {
+            Some(s) => s
+            None => "CDP error"
+          }
+          let full = match json_str_field(err_obj, "data") {
+            Some(d) => {
+              if d.length() > 0 {
+                msg + ": " + d
+              } else {
+                msg
+              }
+            }
+            None => msg
+          }
+          return CdpMessage::ErrorResponse(id, full)
+        }
+        None => {
+          let res = match base_codec::json_get(m, "result") {
+            Some(r) => r
+            None => base_codec::json_obj([])
+          }
+          return CdpMessage::Response(id, res)
+        }
+      }
+    }
+    None => ()
+  }
+  match json_str_field(m, "method") {
+    Some(method) => {
+      let params = match base_codec::json_get(m, "params") {
+        Some(p) => p
+        None => base_codec::json_obj([])
+      }
+      let sid = json_str_field(m, "sessionId")
+      CdpMessage::Event(CdpEvent::{ method: method, params: params, session_id: sid })
+    }
+    None => CdpMessage::Invalid
+  }
+}
+
+pub struct CdpSession {
+  ws : CdpWsPort
+  mut next_id : Int64
+  mut next_sub : Int
+  mut closed : Bool
+  mut open_deadline_ms : Option[Int64]
+  pending : Map[Int64, CdpPending]
+  attached_sessions : Map[String, String]
+  listeners : Map[Int, (CdpEvent) -> Unit]
+  settled : Array[CdpSettled]
+  answer_timeout_ms : Int64
+  max_payload : Int
+}
+
+pub fn CdpSession::new(ws : CdpWsPort) -> CdpSession {
+  CdpSession::{
+    ws: ws,
+    next_id: 0L,
+    next_sub: 0,
+    closed: false,
+    open_deadline_ms: None,
+    pending: Map::new(),
+    attached_sessions: Map::new(),
+    listeners: Map::new(),
+    settled: [],
+    answer_timeout_ms: CDP_ANSWER_MS,
+    max_payload: CDP_MAX_PAYLOAD,
+  }
+}
+
+pub fn CdpSession::with_timeout(ws : CdpWsPort, answer_timeout_ms : Int64) -> CdpSession {
+  CdpSession::{
+    ws: ws,
+    next_id: 0L,
+    next_sub: 0,
+    closed: false,
+    open_deadline_ms: None,
+    pending: Map::new(),
+    attached_sessions: Map::new(),
+    listeners: Map::new(),
+    settled: [],
+    answer_timeout_ms: answer_timeout_ms,
+    max_payload: CDP_MAX_PAYLOAD,
+  }
+}
+
+/// Create a `CdpSession` in connecting state with `CDP_OPEN_MS` open deadline.
+pub fn CdpSession::connecting(ws : CdpWsPort, now_ms : Int64) -> CdpSession {
+  CdpSession::{
+    ws: ws,
+    next_id: 0L,
+    next_sub: 0,
+    closed: false,
+    open_deadline_ms: Some(now_ms + CDP_OPEN_MS),
+    pending: Map::new(),
+    attached_sessions: Map::new(),
+    listeners: Map::new(),
+    settled: [],
+    answer_timeout_ms: CDP_ANSWER_MS,
+    max_payload: CDP_MAX_PAYLOAD,
+  }
+}
+
+pub fn CdpSession::mark_open(self : CdpSession) -> Unit {
+  self.open_deadline_ms = None
+}
+
+pub fn CdpSession::is_closed(self : CdpSession) -> Bool {
+  self.closed
+}
+
+pub fn CdpSession::pending_count(self : CdpSession) -> Int {
+  self.pending.length()
+}
+
+pub fn CdpSession::attached_target_of(self : CdpSession, session_id : String) -> Option[String] {
+  self.attached_sessions.get(session_id)
+}
+
+/// Register an event listener; returns a subscription token for `off`.
+pub fn CdpSession::on(self : CdpSession, listener : (CdpEvent) -> Unit) -> Int {
+  self.next_sub = self.next_sub + 1
+  let tok = self.next_sub
+  self.listeners.set(tok, listener)
+  tok
+}
+
+/// Remove an event listener by token.
+pub fn CdpSession::off(self : CdpSession, token : Int) -> Bool {
+  if self.listeners.contains(token) {
+    self.listeners.remove(token)
+    true
+  } else {
+    false
+  }
+}
+
+/// Send a CDP command; returns the assigned request id or an error if closed/send failed.
+pub fn CdpSession::send(
+  self : CdpSession,
+  method : String,
+  params : base_codec::Json,
+  session_id : Option[String],
+  now_ms : Int64,
+) -> Result[Int64, String] {
+  if self.closed {
+    return Err("the browser's DevTools connection closed")
+  }
+  self.next_id = self.next_id + 1L
+  let id = self.next_id
+  let frame = encode_cdp_request(id, method, params, session_id)
+  if !(self.ws.send_text)(frame) {
+    return Err("the browser's DevTools connection closed")
+  }
+  self.pending.set(
+    id,
+    CdpPending::{
+      id: id,
+      method: method,
+      session_id: session_id,
+      deadline_ms: now_ms + self.answer_timeout_ms,
+    },
+  )
+  Ok(id)
+}
+
+/// Feed an incoming WebSocket text frame from Chrome.
+pub fn CdpSession::on_message(self : CdpSession, raw : String) -> Unit {
+  if self.closed {
+    return
+  }
+  if raw.to_bytes().length() > self.max_payload {
+    let _ = self.close()
+    return
+  }
+  match decode_cdp_message(raw) {
+    CdpMessage::Invalid => ()
+    CdpMessage::Response(id, result) => {
+      match self.pending.get(id) {
+        None => ()
+        Some(p) => {
+          self.pending.remove(id)
+          if p.method == "Target.attachToTarget" {
+            match json_str_field(result, "sessionId") {
+              Some(sid) => {
+                self.attached_sessions.set(sid, "")
+              }
+              None => ()
+            }
+          }
+          self.settled.push(
+            CdpSettled::{ id: id, method: p.method, outcome: CdpOutcome::Ok(result) },
+          )
+        }
+      }
+    }
+    CdpMessage::ErrorResponse(id, err_msg) => {
+      match self.pending.get(id) {
+        None => ()
+        Some(p) => {
+          self.pending.remove(id)
+          self.settled.push(
+            CdpSettled::{ id: id, method: p.method, outcome: CdpOutcome::Err(err_msg) },
+          )
+        }
+      }
+    }
+    CdpMessage::Event(ev) => {
+      if ev.method == "Target.attachedToTarget" {
+        let sid = json_str_field(ev.params, "sessionId")
+        let tid = match base_codec::json_get(ev.params, "targetInfo") {
+          Some(ti) => json_str_field(ti, "targetId")
+          None => None
+        }
+        match (sid, tid) {
+          (Some(s), Some(t)) => self.attached_sessions.set(s, t)
+          _ => ()
+        }
+      } else if ev.method == "Target.detachedFromTarget" {
+        match json_str_field(ev.params, "sessionId") {
+          Some(s) => self.attached_sessions.remove(s)
+          None => ()
+        }
+      }
+      // Snapshot listeners so callbacks can safely call `off`.
+      let snap : Array[(CdpEvent) -> Unit] = []
+      let lkeys = self.listeners.keys()
+      let mut li = 0
+      while li < lkeys.length() {
+        match self.listeners.get(lkeys[li]) {
+          Some(cb) => snap.push(cb)
+          None => ()
+        }
+        li = li + 1
+      }
+      let mut i = 0
+      while i < snap.length() {
+        (snap[i])(ev)
+        i = i + 1
+      }
+    }
+  }
+}
+
+/// Expire any pending requests (or connecting handshake) whose deadline <= `now_ms`.
+/// Outcomes are delivered solely via the returned array (never duplicated in `self.settled`).
+pub fn CdpSession::tick(self : CdpSession, now_ms : Int64) -> Array[CdpSettled] {
+  if self.closed {
+    return []
+  }
+  match self.open_deadline_ms {
+    Some(dl) => {
+      if now_ms >= dl {
+        self.open_deadline_ms = None
+        return self.close()
+      }
+    }
+    None => ()
+  }
+  let expired_ids : Array[Int64] = []
+  let pkeys = self.pending.keys()
+  let mut pi = 0
+  while pi < pkeys.length() {
+    let id = pkeys[pi]
+    match self.pending.get(id) {
+      Some(p) => {
+        if now_ms >= p.deadline_ms {
+          expired_ids.push(id)
+        }
+      }
+      None => ()
+    }
+    pi = pi + 1
+  }
+  let out : Array[CdpSettled] = []
+  let mut i = 0
+  while i < expired_ids.length() {
+    let id = expired_ids[i]
+    match self.pending.get(id) {
+      Some(p) => {
+        self.pending.remove(id)
+        out.push(
+          CdpSettled::{
+            id: id,
+            method: p.method,
+            outcome: CdpOutcome::Err("the browser did not answer " + p.method),
+          },
+        )
+      }
+      None => ()
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Drain response outcomes settled by `on_message`.
+pub fn CdpSession::take_settled(self : CdpSession) -> Array[CdpSettled] {
+  let out : Array[CdpSettled] = []
+  let mut i = 0
+  while i < self.settled.length() {
+    out.push(self.settled[i])
+    i = i + 1
+  }
+  self.settled.clear()
+  out
+}
+
+/// Handle transport disconnect or explicit close: fail all pending requests and clean up.
+/// Failed pending outcomes are delivered solely via the returned array.
+pub fn CdpSession::close(self : CdpSession) -> Array[CdpSettled] {
+  if self.closed {
+    return []
+  }
+  self.closed = true
+  self.open_deadline_ms = None
+  (self.ws.close_ws)()
+  let out : Array[CdpSettled] = []
+  let pkeys = self.pending.keys()
+  let mut pi = 0
+  while pi < pkeys.length() {
+    let id = pkeys[pi]
+    match self.pending.get(id) {
+      Some(p) => {
+        out.push(
+          CdpSettled::{
+            id: id,
+            method: p.method,
+            outcome: CdpOutcome::Err("the browser's DevTools connection closed"),
+          },
+        )
+      }
+      None => ()
+    }
+    pi = pi + 1
+  }
+  self.pending.clear()
+  self.attached_sessions.clear()
+  out
+}

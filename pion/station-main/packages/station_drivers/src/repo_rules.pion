@@ -1,0 +1,59 @@
+// Repository rules hook commands (`repo-rules-hook.mjs`), Node resolution beside
+// a release, and Claude TUI runner argv recognition — 1:1 aligned with
+// `station/src/agents/repo-rules.ts` and `station/src/agents/claude.ts`.
+
+import "nodepath"
+
+pub fn posix_quote(s : String) -> String {
+  "'" + str_replace_all(s, "'", "'\\''") + "'"
+}
+
+pub fn cmd_quote(s : String) -> String {
+  "\"" + str_replace_all(s, "\"", "") + "\""
+}
+
+/// Resolve the release's own Node binary beside a hook file (`<app>/node/bin/node`
+/// or `<app>/node/node.exe`), falling back to `fallback_exec`.
+pub fn hook_node(file : String, has_path : (String) -> Bool, fallback_exec : String, sep : String) -> String {
+  let node_dir = nodepath::join(sep, [nodepath::dirname(sep, nodepath::dirname(sep, file)), "node"])
+  let unix_node = nodepath::join(sep, [node_dir, "bin", "node"])
+  if has_path(unix_node) {
+    return unix_node
+  }
+  let win_node = nodepath::join(sep, [node_dir, "node.exe"])
+  if has_path(win_node) {
+    return win_node
+  }
+  fallback_exec
+}
+
+/// POSIX shell hook command for Claude Code and Codex.
+pub fn hook_command(node : String, file : String, args : Array[String]) -> String {
+  let words : Array[String] = [posix_quote(node), posix_quote(file)]
+  for i in 0..<args.length() {
+    words.push(posix_quote(args[i]))
+  }
+  join_strings(words, " ") + " 2>/dev/null || true"
+}
+
+/// Hook command as Antigravity CLI runs it (`sh -c` on Unix, `cmd /c` on Windows),
+/// emitting `{}` on stdout when the station's files are missing.
+pub fn agy_hook_command(node : String, file : String, os_name : String) -> String {
+  if os_name == "windows" {
+    "call " + cmd_quote(node) + " " + cmd_quote(file) + " 2>nul || echo {}"
+  } else {
+    posix_quote(node) + " " + posix_quote(file) + " 2>/dev/null || printf '{}'"
+  }
+}
+
+/// Transition-period compatibility: recognize `claude-tui.mjs` in a runner's `args[0]`.
+pub fn is_claude_tui_runner_args(args : Array[String]) -> Bool {
+  if args.length() == 0 {
+    return false
+  }
+  let a0 = args[0]
+  if a0 == "claude-tui.mjs" {
+    return true
+  }
+  str_ends_with(a0, "/claude-tui.mjs") || str_ends_with(a0, "\\claude-tui.mjs")
+}

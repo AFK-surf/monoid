@@ -1,0 +1,1 @@
+check "the core wrote this run's draft before the app stopped" 'core_has "还没发出去的草稿 $TAG"'

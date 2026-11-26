@@ -1,8 +1,9 @@
 // Files the station keeps: where its data directory is, and writing them whole (a reader never sees half a file).
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeSync } from "node:fs";
-import { mkdir, open, opendir, rename, rm } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { copyFile, mkdir, open, opendir, rename, rm, stat, utimes } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { tr, type Lang } from "./i18n.ts";
 import { wall } from "./fibers.ts";
 import { platform } from "../platform/index.ts";
@@ -114,6 +115,31 @@ export async function renameRetrying(from: string, to: string, opts?: RenameRetr
       await wait(delay);
     }
   }
+}
+
+/// `from` moved to `to`, across disks too. On one disk it is renamed. Where the two are on different disks (`EXDEV`: a
+/// chat's `workspace/uploads` linked to another disk), it is copied beside `to` under a name of its own, renamed into
+/// place there, and only then is `from` removed. A move cut part way leaves `from` whole, to be moved again, and never
+/// half a file at `to`. The copy keeps `from`'s times, as a rename does, where the disk lets it.
+export async function moveFile(from: string, to: string): Promise<void> {
+  try {
+    await rename(from, to);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== "EXDEV") throw error;
+  }
+  const was = await stat(from);
+  const part = join(dirname(to), `.moving-${randomBytes(4).toString("hex")}-${basename(to)}`);
+  try {
+    await copyFile(from, part);
+    // (a disk that will not set them, a network or FUSE mount: moved all the same)
+    await utimes(part, was.atime, was.mtime).catch(() => {});
+    await rename(part, to);
+  } catch (error) {
+    await rm(part, { force: true });
+    throw error;
+  }
+  await rm(from, { force: true });
 }
 
 /// `writePrivate` off the station's thread: its sync waits on the disk, a fraction of a second on one kept busy. Two

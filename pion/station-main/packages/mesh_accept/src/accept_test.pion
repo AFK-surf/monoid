@@ -1,0 +1,115 @@
+fn assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+test "accept loop routes ALPN, defaults unbounded, preserves handler close, and drains on shutdown" {
+  let loop = AcceptLoop::new(AcceptConfig::new("node stopping"))
+  loop.register_alpn("proto/rpc/2", "rpc")
+  loop.register_alpn("proto/http/1", "http")
+
+  let r0 = loop.on_accepted(
+    ConnMeta::{
+      conn_id: 1.to_int64(),
+      remote_id: "peer-a",
+      alpn: "proto/unknown",
+      via: "direct",
+      accepted_ms: 100.to_int64(),
+    },
+  )
+  match r0 {
+    AcceptAction::Reject(dir) => assert(dir.reason == "unsupported alpn")
+    _ => panic("expected reject for unknown alpn")
+  }
+
+  let r1 = loop.on_accepted(
+    ConnMeta::{
+      conn_id: 2.to_int64(),
+      remote_id: "peer-a",
+      alpn: "proto/rpc/2",
+      via: "relay",
+      accepted_ms: 250.to_int64(),
+    },
+  )
+  match r1 {
+    AcceptAction::Serve(tag, _) => assert(tag == "rpc")
+    _ => panic("expected Serve rpc")
+  }
+  match loop.last_relay_reach_ms() {
+    Some(ms) => assert(ms == 250.to_int64())
+    None => panic("expected Some(250)")
+  }
+
+  let r2 = loop.on_accepted(
+    ConnMeta::{
+      conn_id: 3.to_int64(),
+      remote_id: "peer-b",
+      alpn: "proto/http/1",
+      via: "direct",
+      accepted_ms: 300.to_int64(),
+    },
+  )
+  match r2 {
+    AcceptAction::Serve(tag, _) => assert(tag == "http")
+    _ => panic("expected Serve http")
+  }
+
+  loop.mark_handler_closed(2.to_int64())
+  assert(loop.on_served(2.to_int64()) is None)
+  assert(loop.active_count() == 1)
+
+  let closes = loop.shutdown()
+  assert(closes.length() == 1)
+  assert(closes[0].conn_id == 3.to_int64())
+  assert(closes[0].code == 0)
+  assert(closes[0].reason == "node stopping")
+  assert(loop.active_count() == 0)
+}
+
+test "storm tracker flags sustained zero-payload packet floods" {
+  let st = StormTracker::new(packet_threshold=100.to_int64(), strikes_limit=2)
+  st.watch(
+    1.to_int64(),
+    TrafficSample::{
+      rx_packets: 0.to_int64(),
+      tx_packets: 0.to_int64(),
+      rx_bytes: 0.to_int64(),
+      tx_bytes: 0.to_int64(),
+    },
+  )
+  assert(
+    !st.sample(
+      1.to_int64(),
+      TrafficSample::{
+        rx_packets: 120.to_int64(),
+        tx_packets: 0.to_int64(),
+        rx_bytes: 0.to_int64(),
+        tx_bytes: 0.to_int64(),
+      },
+    ),
+  )
+  assert(
+    st.sample(
+      1.to_int64(),
+      TrafficSample::{
+        rx_packets: 250.to_int64(),
+        tx_packets: 0.to_int64(),
+        rx_bytes: 0.to_int64(),
+        tx_bytes: 0.to_int64(),
+      },
+    ),
+  )
+}
+
+test "superseded tracker returns older connections for same remote" {
+  let sup = SupersededTracker::new()
+  assert(sup.arrived("dev1", 10.to_int64()).length() == 0)
+  let older = sup.arrived("dev1", 11.to_int64())
+  assert(older.length() == 1)
+  assert(older[0] == 10.to_int64())
+  sup.forget("dev1", 10.to_int64())
+  let older2 = sup.arrived("dev1", 12.to_int64())
+  assert(older2.length() == 1)
+  assert(older2[0] == 11.to_int64())
+}

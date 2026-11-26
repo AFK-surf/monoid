@@ -169,3 +169,51 @@ test "mixed runs batch only compatible contiguous mono segments and fall back on
   let p_lig_single = rich_prep(r_lig, batch=false)
   batch_prep_eq(p_lig_batched, p_lig_single)
 }
+
+///|
+test "perf57: rich_prep skips bidi on pure LTR multi-run, preserves RTL bidi, and matches unbatched CJK/Latin metrics" {
+  let _ = Tester::new(fn(_) {  }, w=400.0, h=400.0)
+  assert_true(face_add(@hostapi.face_code_cjk, "/fonts/code-cjk.ttf"))
+  let ov_cjk : @view.CjkOverride = { face: @hostapi.face_code_cjk, scale: 1.15, weight_off: 0 }
+  // 1. Pure LTR multi-run (ASCII + CJK + inline drawing) -> bidi is None
+  let icon : InlineDrawing = { width: 1.0, height: 1.0, baseline: 0.8, paths: [], words: [] }
+  let ltr_runs : Array[Run] = [
+    @text.span("let x = 1; ", mono=true, color=0xFFCF222EL),
+    @text.span("// 中文注释\n", mono=true, color=0xFF6E7781L),
+    @text.span("let y = 2; ", mono=true, color=0xFF0550AEL),
+    @text.span("plain text ", color=0xFF1D1D1FL),
+    @text.span("更多中文", color=0xFF1D1D1FL),
+    { ..plain("\u{FFFC}"), drawing: Some(icon) },
+  ]
+  let r_ltr : Rich = { ..batch_test_rich(ltr_runs, wrap=true), cjk_override: Some(ov_cjk), code_cjk_override: Some(ov_cjk) }
+  clear_shapes()
+  let p_ltr_batched = rich_prep(r_ltr)
+  clear_shapes()
+  let p_ltr_single = rich_prep(r_ltr, batch=false)
+  assert_true(p_ltr_batched.bidi is None)
+  assert_true(p_ltr_single.bidi is None)
+  batch_prep_eq(p_ltr_batched, p_ltr_single)
+  assert_eq(p_ltr_batched.run_extra, p_ltr_single.run_extra)
+  // 2. Paragraph with RTL run -> bidi is Some(_)
+  let rtl_runs : Array[Run] = [
+    @text.span("Prefix ", color=0xFF1D1D1FL),
+    @text.span("\u{0645}\u{0631}\u{062D}\u{0628}\u{0627}", color=0xFF0550AEL),
+    @text.span(" suffix", color=0xFF1D1D1FL),
+  ]
+  let r_rtl = batch_test_rich(rtl_runs, wrap=true)
+  let p_rtl = rich_prep(r_rtl)
+  assert_true(p_rtl.bidi is Some(_))
+  // 3. Pure Latin paragraph (cjk == false) with many identical runs hits 1-slot metrics cache and matches batch=false
+  let latin_runs : Array[Run] = []
+  for i in 0..<40 {
+    latin_runs.push(@text.span("tok_\{i} ", mono=true, color=if i % 2 == 0 { 0xFFCF222EL } else { 0xFF0550AEL }))
+  }
+  let r_latin = batch_test_rich(latin_runs, wrap=false)
+  clear_shapes()
+  let p_lat_batched = rich_prep(r_latin)
+  clear_shapes()
+  let p_lat_single = rich_prep(r_latin, batch=false)
+  assert_true(p_lat_batched.bidi is None)
+  batch_prep_eq(p_lat_batched, p_lat_single)
+  assert_eq(p_lat_batched.run_extra, p_lat_single.run_extra)
+}
