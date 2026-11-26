@@ -22,7 +22,7 @@ import { Data, holds } from "./data.ts";
 import { chatDerive } from "./views/views.ts";
 import { Doing, FAILED_SHOWN_MS, heavy } from "./doing.ts";
 import { DriveKept } from "./drive-kept.ts";
-import { CoreError, asCoreError, failedIn } from "./error.ts";
+import { CoreError, HostError, asCoreError, failedIn } from "./error.ts";
 import { HEDGE, type Host } from "./host.ts";
 import { t } from "./i18n.ts";
 import { markdown } from "./markdown.ts";
@@ -958,11 +958,17 @@ export class Core {
   close(): Promise<void> {
     if (this.#closing) return this.#closing;
     const { runner, data } = this.inner;
-    // (the trees read and not yet written, and what is written and not yet committed: kept for the core that follows)
-    this.inner.sendTrace.close();
-    data.closing();
-    const liveMeError = this.inner.cloudSync.flushLiveMe();
-    runner.shutdown();
+    let liveMeError: HostError | null = null;
+    try {
+      // (the trees read and not yet written, and what is written and not yet committed: kept for the core that follows)
+      this.inner.sendTrace.close();
+      data.closing();
+      liveMeError = this.inner.cloudSync.flushLiveMe();
+    } catch (e) {
+      liveMeError = e instanceof HostError ? e : new HostError(e instanceof Error ? e.message : String(e));
+    } finally {
+      runner.shutdown();
+    }
     this.#closing = runner.run(data.device.close()).then(() => {
       if (liveMeError) throw liveMeError;
     });

@@ -12,7 +12,7 @@ import { Data, dbName } from "../src/data.ts";
 import { AccountDb } from "../src/db/account.ts";
 import { KEPT } from "../src/db/kept.ts";
 import { CHAT_MADE } from "../src/db/schema.ts";
-import { HostError, type Sql, type SqlRow, type SqlValue } from "../src/host.ts";
+import { HostError, SqlError, type Sql, type SqlRow, type SqlValue } from "../src/host.ts";
 import { NodeSql } from "../src/hosts/node-sql.ts";
 import { Signer } from "../src/lock.ts";
 import { Runner } from "../src/runtime.ts";
@@ -1996,14 +1996,14 @@ test("R10 regressions: SQLITE_FULL on adoptDb statement/COMMIT keeps owner A, re
           exec(sql: string) {
             if (failOn === "commit" && injectOnce && /^\s*COMMIT\b/i.test(sql)) {
               injectOnce = false;
-              throw new Error("SQLITE_FULL: database or disk is full");
+              throw new SqlError("SQLITE_FULL: database or disk is full", "full");
             }
             raw.exec(sql);
           },
           run(sql: string, params?: readonly SqlValue[]) {
             if (failOn === "run" && injectOnce && /account_doc/i.test(sql)) {
               injectOnce = false;
-              throw new Error("SQLITE_FULL: database or disk is full");
+              throw new SqlError("SQLITE_FULL: database or disk is full", "full");
             }
             return raw.run(sql, params);
           },
@@ -2180,7 +2180,7 @@ test("R11 regressions: SQLITE_FULL recovery persists live /v1/me before offline 
           run(sql: string, params?: readonly SqlValue[]) {
             if (injectOnce && /account_doc/i.test(sql)) {
               injectOnce = false;
-              throw new Error("SQLITE_FULL: database or disk is full");
+              throw new SqlError("SQLITE_FULL: database or disk is full", "full");
             }
             return raw.run(sql, params);
           },
@@ -2370,7 +2370,7 @@ test("R12 regressions: close-time COMMIT failure retries/verifies live /v1/me (a
           exec(sql: string) {
             if (armCloseCommitFail && !failedCloseCommitOnce && /^\s*COMMIT\b/i.test(sql)) {
               failedCloseCommitOnce = true;
-              throw new Error("SQLITE_FULL: database or disk is full");
+              throw new SqlError("SQLITE_FULL: database or disk is full", "full");
             }
             raw.exec(sql);
           },
@@ -2446,7 +2446,7 @@ test("R12 regressions: close-time COMMIT failure retries/verifies live /v1/me (a
         return {
           exec(sql: string) {
             if (alwaysFailCommit && /^\s*COMMIT\b/i.test(sql)) {
-              throw new Error("SQLITE_FULL: database or disk is full");
+              throw new SqlError("SQLITE_FULL: database or disk is full", "full");
             }
             raw.exec(sql);
           },
@@ -2510,5 +2510,208 @@ test("R12 regressions: close-time COMMIT failure retries/verifies live /v1/me (a
     await host.settle();
     assert.equal(host.stored(legacyKey), undefined, "A's legacy credential for removed shared ws-w MUST be deleted on sign-out");
     await core.close();
+  }
+});
+
+test("R13 regressions: DB-less close persists pendingMe across post-close disk recovery, per-account IO error never aborts close/other accounts, and SQLITE_FULL triggers zero unhandled fiber failures", async () => {
+  // 1) P0-1: A before B; A's disk DB has stale me without ws-w, B holds ws-w. A fails open (no memoryDb), learns
+  //    ws-w via authoritative /v1/me, stays DB-less until Core.close() succeeds. Disk recovers ONLY AFTER close();
+  //    offline restart opens both DBs -> owner MUST stay A and draft lands ONLY in A (never B)!
+  {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = undefined;
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+
+    let failA = true;
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      name === dbName("s1") && failA
+        ? Effect.fail(new HostError("disk unavailable"))
+        : origOpen(name);
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccount("s1"));
+    assert.equal(core.inner.data.db("s1"), undefined);
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.workspaces.owner("ws-w"), "s1");
+    // Close while A STILL has no DB!
+    await core.close();
+
+    // Disk recovers AFTER close(); restart completely offline!
+    failA = false;
+    host.onFetch(() => jsonResponse(503, {}));
+    const core2 = await Core.create(host, { clock: host.time.clock });
+    await run(core2.inner.data.openAccounts(["s1", "s2"]));
+    await run(core2.inner.data.written);
+    assert.equal(core2.inner.workspaces.owner("ws-w"), "s1", "owner MUST stay A on offline restart after post-close disk recovery");
+
+    const ui2 = core2.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core2.inner.host.emit.bind(core2.inner.host);
+    core2.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 1101 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core2.receive(ui2, { kind: "call", id: 1101, call: "composer.text", params: { key: "new:ws-w", text: "post-close-recovery-only-a" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.ok("ok" in res);
+    await host.time.pass(350);
+    await run(core2.inner.data.written);
+    assert.equal(core2.inner.data.db("s1")!.draft("ws-w", "new")?.text, "post-close-recovery-only-a", "draft landed ONLY in A");
+    assert.equal(core2.inner.data.db("s2")!.draft("ws-w", "new"), undefined, "B SQLite stayed empty");
+    await core2.close();
+  }
+
+  // 2) P1-2: Two accounts (s1, s2) both have pending #liveMe on close; s1's close COMMIT rolls back AND verification
+  //    SELECT throws SQLITE_IOERR while s2 is writable. Core.close() MUST NOT throw synchronously, MUST shut down
+  //    runner + device storage, MUST still persist s2's pending me to SQLite, and MUST return a rejecting Promise!
+  {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = undefined;
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-a-new", name: "A New" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-b-new", name: "B New" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+
+    let failOpen = true;
+    let failS1OnClose = false;
+    let failS2Once = true;
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) => {
+      if (failOpen) return Effect.fail(new HostError("disk unavailable"));
+      return Effect.map(origOpen(name), (raw) => ({
+        exec(sql: string) {
+          if (name === dbName("s1") && failS1OnClose && /^\s*COMMIT\b/i.test(sql)) {
+            throw new SqlError("SQLITE_FULL: database or disk is full", "full");
+          }
+          if (name === dbName("s2") && failS2Once && /^\s*COMMIT\b/i.test(sql)) {
+            failS2Once = false;
+            throw new SqlError("SQLITE_FULL: database or disk is full", "full");
+          }
+          raw.exec(sql);
+        },
+        run(sql: string, params?: readonly SqlValue[]) { return raw.run(sql, params); },
+        all(sql: string, params?: readonly SqlValue[]) {
+          if (name === dbName("s1") && failS1OnClose && /account_doc/i.test(sql)) {
+            throw new SqlError("SQLITE_IOERR: disk I/O error", "other");
+          }
+          return raw.all(sql, params);
+        },
+        close() { raw.close(); },
+      }));
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await run(core.inner.cloudSync.refreshAccount("s2"));
+
+    failOpen = false;
+    failS1OnClose = true;
+    await run(core.inner.data.openAccounts(["s1", "s2"]));
+
+    // Must return a Promise (not throw synchronously!), shut down runner, flush s2, and reject with s1's error!
+    const closePromise = core.close();
+    assert.ok(closePromise instanceof Promise, "Core.close() must return a Promise even on SQLITE_IOERR");
+    await assert.rejects(() => closePromise, /failed to persist authoritative \/v1\/me on close: me\/s1/);
+    assert.equal(core.inner.runner.closed, true, "runner must be shut down even when flushLiveMe fails");
+
+    // Verify s2's updated me (containing ws-b-new) WAS persisted on disk despite s1's SQLITE_IOERR!
+    failS1OnClose = false;
+    host.onFetch(() => jsonResponse(503, {}));
+    const core2 = await Core.create(host, { clock: host.time.clock });
+    await run(core2.inner.data.openAccounts(["s1", "s2"]));
+    assert.equal(core2.inner.workspaces.owner("ws-b-new"), "s2", "s2's pending /v1/me was persisted despite s1 IO error");
+    assert.equal(core2.inner.workspaces.owner("ws-a-new"), "s1", "s1's pending /v1/me also survived via device pendingMe");
+    await core2.close();
+  }
+
+  // 3) P2-3: SQLITE_FULL thrown as proper SqlError("full") during adoptDb produces zero unhandled fiber failures!
+  {
+    const origError = console.error;
+    const errors: string[] = [];
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+      origError(...args);
+    };
+    try {
+      const { host } = setupTwoAccountHost();
+      host.memoryDb = undefined;
+      const seed = await Core.create(host, { clock: host.time.clock });
+      await run(seed.inner.data.openAccounts(["s1", "s2"]));
+      seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+      seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+      await run(seed.inner.data.written);
+      await seed.close();
+
+      host.onFetch((req) => {
+        const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+        if (req.url.endsWith("/v1/me")) {
+          if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+          if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        }
+        return jsonResponse(200, {});
+      });
+
+      let failA = true;
+      let injectOnce = true;
+      const origOpen = host.openDb.bind(host);
+      host.openDb = (name: string) => {
+        if (name === dbName("s1") && failA) return Effect.fail(new HostError("disk unavailable"));
+        return Effect.map(origOpen(name), (raw) => {
+          if (name !== dbName("s1")) return raw;
+          return {
+            exec(sql: string) { raw.exec(sql); },
+            run(sql: string, params?: readonly SqlValue[]) {
+              if (injectOnce && /account_doc/i.test(sql)) {
+                injectOnce = false;
+                throw new SqlError("SQLITE_FULL: database or disk is full", "full");
+              }
+              return raw.run(sql, params);
+            },
+            all(sql: string, params?: readonly SqlValue[]) { return raw.all(sql, params); },
+            close() { raw.close(); },
+          };
+        });
+      };
+
+      const core = await Core.create(host, { clock: host.time.clock });
+      await run(core.inner.data.openAccount("s1"));
+      await run(core.inner.cloudSync.refreshAccount("s1"));
+      failA = false;
+      await run(core.inner.data.openAccount("s1"));
+      await host.settle();
+      await run(core.inner.data.written);
+      await core.close();
+      assert.equal(errors.some((e) => e.includes("core fiber failed")), false, `expected zero unhandled fiber failures, got: ${errors.join("; ")}`);
+    } finally {
+      console.error = origError;
+    }
   }
 });

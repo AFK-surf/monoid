@@ -124,6 +124,7 @@ export class CloudSync {
 
   /// Starts keeping still.fail cloud's data current: whom each account reaches, from what is held first.
   start(): void {
+    this.#hydratePendingMe();
     this.recomputeOwners();
     this.#drainPendingCredentialDeletes();
     // Each account's socket reads the account as it opens (or, failing its first try, at once).
@@ -208,6 +209,53 @@ export class CloudSync {
     }
   }
 
+  #readPendingMe(): Record<string, unknown | null> {
+    const raw = this.#core.data.device.get("choice", "pendingMe");
+    if (!isObject(raw)) return {};
+    return { ...(raw as Record<string, unknown | null>) };
+  }
+
+  #savePendingMe(sub: string, me: unknown | null): void {
+    const next = this.#readPendingMe();
+    if (Object.prototype.hasOwnProperty.call(next, sub) && equal(next[sub], me)) return;
+    next[sub] = me;
+    this.#core.data.device.put("choice", "pendingMe", next);
+  }
+
+  #clearPendingMe(sub: string): void {
+    const next = this.#readPendingMe();
+    if (!Object.prototype.hasOwnProperty.call(next, sub)) return;
+    delete next[sub];
+    this.#core.data.device.put("choice", "pendingMe", Object.keys(next).length > 0 ? next : undefined);
+  }
+
+  /// Hydrates any authoritative `/v1/me` (or `NOT_BETA` tombstone) persisted in device storage when an earlier run
+  /// closed while an account had no writable DB, ensuring offline restarts never revert to stale disk rows.
+  #hydratePendingMe(): void {
+    const core = this.#core;
+    const raw = this.#readPendingMe();
+    const entries = Object.entries(raw);
+    if (entries.length === 0) return;
+    const subs = new Set(core.accounts.list().map((a) => a.sub));
+    let pruned = false;
+    for (const [sub, me] of entries) {
+      if (!subs.has(sub)) {
+        delete raw[sub];
+        pruned = true;
+        continue;
+      }
+      const gen = core.data.accountGen(sub);
+      const entry = { gen, me };
+      this.#liveMe.set(sub, entry);
+      if (me === null) this.#notBetaGen.set(sub, gen);
+      const db = core.data.db(sub);
+      if (db && !db.readOnly) this.#persistLiveMe(sub, db, entry);
+    }
+    if (pruned) {
+      core.data.device.put("choice", "pendingMe", Object.keys(raw).length > 0 ? raw : undefined);
+    }
+  }
+
   #setLiveMe(sub: string, me: unknown | null): { gen: number; me: unknown | null } {
     const gen = this.#core.data.accountGen(sub);
     const prevMe = this.#meOf(sub);
@@ -229,16 +277,19 @@ export class CloudSync {
     }
     const entry = { gen, me };
     this.#liveMe.set(sub, entry);
+    const db = this.#core.data.db(sub);
+    if (!db || db.readOnly) this.#savePendingMe(sub, me);
     this.#core.data.notifyAccountRecord(sub, "me");
     return entry;
   }
 
   #clearLiveMe(sub: string): void {
+    this.#clearPendingMe(sub);
     if (this.#liveMe.delete(sub)) this.#core.data.notifyAccountRecord(sub, "me");
   }
 
-  /// Writes or drops `live.me` in `db` and removes the in-memory copy ONLY once `db.written` finishes and the
-  /// committed on-disk row actually matches `live.me` (keeping `#liveMe` intact if `SQLITE_FULL` rolls back).
+  /// Writes or drops `live.me` in `db` and removes the in-memory + device-pending copy ONLY once `db.written`
+  /// finishes and the committed on-disk row actually matches `live.me` (keeping `#liveMe` intact if `SQLITE_FULL` rolls back).
   #persistLiveMe(sub: string, db: AccountDb, live: { gen: number; me: unknown | null }): void {
     const core = this.#core;
     if (db.readOnly || live.gen !== core.data.accountGen(sub)) return;
@@ -253,9 +304,16 @@ export class CloudSync {
           this.#persistingLiveMe.delete(sub);
           if (this.#liveMe.get(sub) !== live) return;
           if (core.data.db(sub) !== db || db.readOnly || live.gen !== core.data.accountGen(sub)) return;
-          const persisted = db.accountDoc("me");
-          const matches = live.me === null ? persisted === undefined : equal(persisted, live.me);
-          if (matches) this.#liveMe.delete(sub);
+          try {
+            const persisted = db.accountDoc("me");
+            const matches = live.me === null ? persisted === undefined : equal(persisted, live.me);
+            if (matches) {
+              this.#liveMe.delete(sub);
+              this.#clearPendingMe(sub);
+            }
+          } catch {
+            // Read failed; keep `#liveMe` intact for retry / close verification.
+          }
         }),
       ),
     );
@@ -285,34 +343,51 @@ export class CloudSync {
   }
 
   /// Verifies every pending `#liveMe` record against on-disk SQLite after `Data.closing()` has settled in-flight
-  /// transactions; retries and commits any rolled-back/unpersisted entry, returning a `HostError` if a writable DB
-  /// still fails to persist authoritative `/v1/me` on close.
+  /// transactions; retries and commits any rolled-back/unpersisted entry per account (never letting one account's
+  /// SQLite read/write error abort others), persists DB-less/read-only entries into `device/choice["pendingMe"]`
+  /// before `device.close()` flushes, and returns a `HostError` if any writable DB still fails to persist.
   flushLiveMe(): HostError | null {
     const core = this.#core;
     const failed: string[] = [];
     for (const [sub, live] of [...this.#liveMe]) {
       if (live.gen !== core.data.accountGen(sub)) continue;
       const db = core.data.db(sub);
-      if (!db || db.readOnly) continue;
+      if (!db || db.readOnly) {
+        try {
+          this.#savePendingMe(sub, live.me);
+        } catch {
+          failed.push(`me/${sub}`);
+        }
+        continue;
+      }
       const matches = () => {
         const persisted = db.accountDoc("me");
         return live.me === null ? persisted === undefined : equal(persisted, live.me);
       };
-      if (matches()) {
-        this.#liveMe.delete(sub);
-        continue;
-      }
       this.#persistingLiveMe.add(sub);
       try {
+        if (matches()) {
+          this.#liveMe.delete(sub);
+          this.#clearPendingMe(sub);
+          continue;
+        }
         const topic: Topic = { topic: "$account-record", account: sub, name: "me" };
         if (live.me === null) db.dropAccountDoc("me", topic);
         else db.putAccountDoc("me", live.me, core.host.nowMs(), topic);
         db.commitNow();
+        if (matches()) {
+          this.#liveMe.delete(sub);
+          this.#clearPendingMe(sub);
+        } else {
+          try { this.#savePendingMe(sub, live.me); } catch { /* reported below */ }
+          failed.push(`me/${sub}`);
+        }
+      } catch {
+        try { this.#savePendingMe(sub, live.me); } catch { /* reported below */ }
+        failed.push(`me/${sub}`);
       } finally {
         this.#persistingLiveMe.delete(sub);
       }
-      if (matches()) this.#liveMe.delete(sub);
-      else failed.push(`me/${sub}`);
     }
     return failed.length > 0 ? new HostError(`failed to persist authoritative /v1/me on close: ${failed.join(", ")}`) : null;
   }
@@ -951,6 +1026,7 @@ export class CloudSync {
     const core = this.#core;
     this.#notBetaGen.delete(sub);
     this.#persistingLiveMe.delete(sub);
+    this.#clearPendingMe(sub);
     const live = this.#liveMe.get(sub);
     const useLive = live !== undefined && (live.gen < core.data.accountGen(sub) || !core.accounts.list().some((a) => a.sub === sub));
     if (useLive) this.#clearLiveMe(sub);
