@@ -614,6 +614,7 @@ pub struct SlackConnector {
   pub mut machine : SocketMachine
   pub mut dedupe : InboundDedupe
   pub mut throttle : OutboundThrottle
+  mut pending_dedupe : Map[String, String]
 }
 
 pub fn SlackConnector::new(
@@ -638,13 +639,15 @@ pub fn SlackConnector::new(
       machine: SocketMachine::new("slack", ReconnectPolicy::new(ping_ms, stale_ms)),
       dedupe: InboundDedupe::new(),
       throttle: OutboundThrottle::new(5, 30000.to_int64()),
+      pending_dedupe: Map::new(),
     },
   )
 }
 
 /// Explicitly sends a Socket Mode ACK for `envelope_id` (optionally with
 /// `payload`, e.g. `{"options": [...]}` for `block_suggestion` or validation
-/// errors for `view_submission`) AFTER the caller finishes handling the event.
+/// errors for `view_submission`) AFTER the caller finishes handling the event,
+/// and records its dedupe key only upon confirmation.
 pub fn SlackConnector::ack(
   self : SlackConnector,
   transport : ConnectTransport,
@@ -654,10 +657,18 @@ pub fn SlackConnector::ack(
   if envelope_id == "" {
     return Ok(())
   }
-  match self.ws_handle {
+  let res = match self.ws_handle {
     Some(h) => (transport.ws_send)(h, WsFrame::Text(encode_slack_ack(envelope_id, payload)))
     None => Err("slack socket is not open")
   }
+  match self.pending_dedupe.get(envelope_id) {
+    Some(key) => {
+      self.pending_dedupe.remove(envelope_id)
+      self.dedupe.remember(key, (transport.now_ms)())
+    }
+    None => {}
+  }
+  res
 }
 
 /// Calls `auth.test` to populate `bot_user_id` and `bot_id`.
@@ -765,6 +776,7 @@ pub fn SlackConnector::handle_frame(
         }
         None => {}
       }
+      self.pending_dedupe = Map::new()
       let err = if reason != "" { Some(reason) } else { None }
       self.machine.on_close(now, err)
       SlackStep::Closed(err)
@@ -784,6 +796,7 @@ pub fn SlackConnector::handle_frame(
             }
             None => {}
           }
+          self.pending_dedupe = Map::new()
           self.machine.on_close(now, None)
           SlackStep::ReconnectRequested(reason)
         }
@@ -802,8 +815,11 @@ pub fn SlackConnector::handle_frame(
                 ChatEvent::Stop(ch, tts, ts, _) => "slack:stop:" + ch + "/" + tts + "#" + ts
                 ChatEvent::LoginCode(ch, tts, ts, _, _) => "slack:login:" + ch + "/" + tts + "#" + ts
               }
-              if !self.dedupe.accept(dedupe_key, now) {
+              if self.dedupe.is_duplicate(dedupe_key, now) {
                 return SlackStep::DuplicateIgnored(env.envelope_id, dedupe_key)
+              }
+              if env.envelope_id != "" {
+                self.pending_dedupe.set(env.envelope_id, dedupe_key)
               }
               SlackStep::Event(env.envelope_id, ev)
             }

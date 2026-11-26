@@ -1218,6 +1218,7 @@ pub struct FeishuConnector {
   mut chat_topics : Map[String, Bool]
   mut current_threads : Map[String, String]
   mut topic_roots : Map[String, String]
+  mut pending_dedupe : Map[Int64, String]
 }
 
 pub fn FeishuConnector::new(
@@ -1249,6 +1250,7 @@ pub fn FeishuConnector::new(
       chat_topics: Map::new(),
       current_threads: Map::new(),
       topic_roots: Map::new(),
+      pending_dedupe: Map::new(),
     },
   )
 }
@@ -1267,7 +1269,7 @@ pub fn FeishuConnector::topic_root(self : FeishuConnector, thread_ts : String) -
 
 /// Explicitly sends the protobuf ACK frame (`code`, optional base64 `data` for
 /// `card.action.trigger` toast + updated card) AFTER the caller finishes
-/// handling the event.
+/// handling the event, and records its dedupe key only upon confirmation.
 pub fn FeishuConnector::ack_frame(
   self : FeishuConnector,
   transport : ConnectTransport,
@@ -1275,10 +1277,18 @@ pub fn FeishuConnector::ack_frame(
   code : Int = 200,
   answer_json : Option[String] = None,
 ) -> Result[Unit, String] {
-  match self.ws_handle {
+  let res = match self.ws_handle {
     Some(h) => (transport.ws_send)(h, WsFrame::Binary(build_feishu_ack_frame(req, code, answer_json)))
     None => Err("feishu socket is not open")
   }
+  match self.pending_dedupe.get(req.seq_id) {
+    Some(key) => {
+      self.pending_dedupe.remove(req.seq_id)
+      self.dedupe.remember(key, (transport.now_ms)())
+    }
+    None => {}
+  }
+  res
 }
 
 fn parse_service_id_from_url(url : String) -> Int {
@@ -1439,6 +1449,7 @@ pub fn FeishuConnector::handle_frame(
         }
         None => {}
       }
+      self.pending_dedupe = Map::new()
       let err = if reason != "" { Some(reason) } else { None }
       self.machine.on_close(now, err)
       FeishuStep::Closed(err)
@@ -1483,9 +1494,10 @@ pub fn FeishuConnector::handle_frame(
           None => FeishuStep::IgnoredFrame(pb)
           Some(m) => {
             let dedupe_key = "feishu:" + m.chat_id + "#" + m.message_id
-            if !self.dedupe.accept(dedupe_key, now) {
+            if self.dedupe.is_duplicate(dedupe_key, now) {
               return FeishuStep::DuplicateIgnored(pb, dedupe_key)
             }
+            self.pending_dedupe.set(pb.seq_id, dedupe_key)
             let thread_ts = resolve_feishu_thread(self, m)
             FeishuStep::Event(
               pb,
@@ -1509,8 +1521,11 @@ pub fn FeishuConnector::handle_frame(
           None => FeishuStep::IgnoredFrame(pb)
           Some(ans) => {
             let dedupe_key = "feishu:card:" + ans.event_id
-            if ans.event_id != "" && !self.dedupe.accept(dedupe_key, now) {
+            if ans.event_id != "" && self.dedupe.is_duplicate(dedupe_key, now) {
               return FeishuStep::DuplicateIgnored(pb, dedupe_key)
+            }
+            if ans.event_id != "" {
+              self.pending_dedupe.set(pb.seq_id, dedupe_key)
             }
             FeishuStep::CardAction(pb, ans)
           }

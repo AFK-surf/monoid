@@ -219,6 +219,7 @@ pub struct CommaPutBatch {
   pub through : Option[Int64]
   pub answered : Option[Int64]
   pub events : Array[ChatEvent]
+  pub dedupe_keys : Array[String]
 }
 
 // ---------------------------------------------------------------------------
@@ -371,6 +372,10 @@ pub fn CommaConnector::commit_put(
   transport : ConnectTransport,
   batch : CommaPutBatch,
 ) -> Unit {
+  let now = (transport.now_ms)()
+  for i in 0..<batch.dedupe_keys.length() {
+    self.dedupe.remember(batch.dedupe_keys[i], now)
+  }
   match self.tasks.get(batch.task) {
     Some(t) => {
       match batch.through {
@@ -687,6 +692,8 @@ pub fn CommaConnector::handle_frame(
         }
 
         let events : Array[ChatEvent] = []
+        let dedupe_keys : Array[String] = []
+        let batch_seen : Map[String, Bool] = Map::new()
         for i in 0..<sorted_msgs.length() {
           let (seq, m) = sorted_msgs[i]
           let said = json_str_field(m, "text")
@@ -718,8 +725,12 @@ pub fn CommaConnector::handle_frame(
             continue
           }
           let dedupe_key = "comma:" + task + "#" + seq.to_string()
-          if !self.dedupe.accept(dedupe_key, now) {
+          if self.dedupe.is_duplicate(dedupe_key, now) {
             continue
+          }
+          match batch_seen.get(dedupe_key) {
+            Some(true) => continue
+            _ => {}
           }
           let files : Array[InboundFile] = []
           match base_codec::json_get(m, "files") {
@@ -752,6 +763,8 @@ pub fn CommaConnector::handle_frame(
           if said == "" && files.length() == 0 {
             continue
           }
+          batch_seen.set(dedupe_key, true)
+          dedupe_keys.push(dedupe_key)
           let kind = json_str_field(author, "kind")
           let aid = json_str_field(author, "id")
           let raw_id = if aid != "" { aid } else { "comma" }
@@ -772,7 +785,7 @@ pub fn CommaConnector::handle_frame(
           )
         }
 
-        // Do NOT advance `fetched`/`answered` or send `{through}` yet; caller calls `commit_put`.
+        // Do NOT advance `fetched`/`answered`, record dedupe, or send `{through}` yet; caller calls `commit_put`.
         return CommaStep::TaskPut(
           CommaPutBatch::{
             req_id: id,
@@ -781,6 +794,7 @@ pub fn CommaConnector::handle_frame(
             through: through_opt,
             answered: answered_opt,
             events: events,
+            dedupe_keys: dedupe_keys,
           },
         )
       }

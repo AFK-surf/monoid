@@ -18,6 +18,8 @@ pub let GROUP_STALE_MS : Int64 = 45000.to_int64()
 pub let GROUP_TITLE_MAX_CHARS : Int = 60
 pub let GROUP_FILES_MAX : Int = 10
 pub let GROUP_PIECE_BYTES : Int = 1048576
+pub let GROUP_TAIL_MOST : Int = 200
+pub let GROUP_CLOSED_KEPT : Int = 256
 
 // ---------------------------------------------------------------------------
 // Thread / Stream Addressing & Mention / Title Helpers
@@ -591,10 +593,13 @@ struct SpaceDeviceState {
   mut prev : String
 }
 
+/// Group IM (`im/2`) connector.
+/// Transport contract: `ConnectTransport::fetch` adapts `{method, url, headers, body}`
+/// onto the `im/2` iroh link stream `{method, path, headers}` authenticated by
+/// this device's Ed25519 endpoint identity (no HTTP Bearer token is used on the wire).
 pub struct GroupConnector {
   pub connect_id : String
   pub anchor_url : String
-  pub bearer_token : String
   pub seed_hex : String
   pub device_id : String
   pub mut bot_user_id : String
@@ -607,15 +612,17 @@ pub struct GroupConnector {
   mut cursors : Map[String, Int64]
   mut device_state : Map[String, SpaceDeviceState]
   mut by_id : Map[String, GroupSaid]
+  mut by_id_order : Array[String]
   mut own_asks : Map[String, Bool]
+  mut own_asks_order : Array[String]
   mut closed_asks : Map[String, Bool]
+  mut closed_asks_order : Array[String]
   mut left_streams : Map[String, Bool]
 }
 
 pub fn GroupConnector::new(
   connect_id : String,
   anchor_url : String,
-  bearer_token : String,
   seed_hex : String,
   bot_user_id : String,
   bot_name : String,
@@ -639,7 +646,6 @@ pub fn GroupConnector::new(
     GroupConnector::{
       connect_id: connect_id,
       anchor_url: anchor_url,
-      bearer_token: bearer_token,
       seed_hex: seed_hex,
       device_id: base_codec::hex_encode(kp.public_key()),
       bot_user_id: bot_user_id,
@@ -652,8 +658,11 @@ pub fn GroupConnector::new(
       cursors: Map::new(),
       device_state: Map::new(),
       by_id: Map::new(),
+      by_id_order: [],
       own_asks: Map::new(),
+      own_asks_order: [],
       closed_asks: Map::new(),
+      closed_asks_order: [],
       left_streams: Map::new(),
     },
   )
@@ -690,11 +699,39 @@ pub fn GroupConnector::is_thread_left(self : GroupConnector, thread : ThreadRef)
 
 pub fn GroupConnector::track_own_decision(self : GroupConnector, event_id : String) -> Unit {
   self.own_asks.set(event_id, true)
+  self.own_asks_order.push(event_id)
+  while self.own_asks_order.length() > GROUP_TAIL_MOST {
+    let oldest = self.own_asks_order[0]
+    let next : Array[String] = []
+    for i in 1..<self.own_asks_order.length() {
+      next.push(self.own_asks_order[i])
+    }
+    self.own_asks_order = next
+    self.own_asks.remove(oldest)
+  }
 }
 
 pub fn GroupConnector::close_decision(self : GroupConnector, event_id : String) -> Unit {
   self.own_asks.remove(event_id)
   self.closed_asks.set(event_id, true)
+  self.closed_asks_order.push(event_id)
+  while self.closed_asks_order.length() > GROUP_CLOSED_KEPT {
+    let oldest = self.closed_asks_order[0]
+    let next : Array[String] = []
+    for i in 1..<self.closed_asks_order.length() {
+      next.push(self.closed_asks_order[i])
+    }
+    self.closed_asks_order = next
+    self.closed_asks.remove(oldest)
+  }
+}
+
+pub fn GroupConnector::by_id_count(self : GroupConnector) -> Int {
+  self.by_id_order.length()
+}
+
+pub fn GroupConnector::closed_asks_count(self : GroupConnector) -> Int {
+  self.closed_asks_order.length()
 }
 
 pub enum GroupStep {
@@ -824,7 +861,7 @@ pub fn GroupConnector::take_sse(
     None => base_codec::json_obj([])
   }
 
-  // Fold into local `by_id` index BEFORE skipping own messages so edits/resolves see own posts too.
+  // Fold into bounded local `by_id` index (max `GROUP_TAIL_MOST` = 200) BEFORE skipping own messages.
   if kind == "msg.post" || kind == "decision.ask" {
     self.by_id.set(
       verified.id,
@@ -838,6 +875,16 @@ pub fn GroupConnector::take_sse(
         deleted: false,
       },
     )
+    self.by_id_order.push(verified.id)
+    while self.by_id_order.length() > GROUP_TAIL_MOST {
+      let oldest = self.by_id_order[0]
+      let next : Array[String] = []
+      for i in 1..<self.by_id_order.length() {
+        next.push(self.by_id_order[i])
+      }
+      self.by_id_order = next
+      self.by_id.remove(oldest)
+    }
   } else if kind == "msg.unsend" {
     let target = json_str_field(body, "target")
     match self.by_id.get(target) {
@@ -949,17 +996,22 @@ pub fn GroupConnector::take_sse(
     }
     let known_bot_ask = match self.by_id.get(target) {
       Some(m) => {
+        // Someone else's decision: ignore.
         if !is_own_ask && m.author != self.bot_user_id {
           return GroupStep::NoOp
         }
-        m.author == self.bot_user_id
+        true
       }
       None => false
     }
-    if !is_own_ask && !known_bot_ask {
-      return GroupStep::NoOp
-    }
     self.own_asks.remove(target)
+    // Pre-restart decision (neither in `own_asks` nor `by_id`): still deliver,
+    // addressed in direct spaces (1:1 with `station/src/group/surface.ts:666-671`).
+    let is_direct = match self.spaces.get(space) {
+      Some(sp) => sp.direct
+      None => str_starts_with(space, "d_")
+    }
+    let addressed = is_own_ask || known_bot_ask || is_direct
     let choice = json_str_field(body, "choice")
     return GroupStep::Event(
       ChatEvent::Message(
@@ -969,7 +1021,7 @@ pub fn GroupConnector::take_sse(
           ts: verified.aseq.to_string(),
           user: author,
           text: choice,
-          addressed: true,
+          addressed: addressed,
           files: [],
           quoted: None,
         },
@@ -997,7 +1049,6 @@ fn group_upload_file(
   + "&mime="
   + url_encode_component(file.mime)
   let headers : Array[(String, String)] = [
-    ("authorization", "Bearer " + self.bearer_token),
     ("content-type", "application/octet-stream"),
   ]
   let parse_file_ref = fn(resp : HttpResponse) -> Result[base_codec::Json, String] {
@@ -1030,7 +1081,7 @@ fn group_upload_file(
     HttpRequest::new(
       "GET",
       self.anchor_url + "/spaces/" + url_encode_component(space) + "/uploads/" + sha,
-      [("authorization", "Bearer " + self.bearer_token)],
+      [],
       None,
       30000.to_int64(),
     ),
@@ -1093,6 +1144,9 @@ fn group_upload_file(
 }
 
 /// Syncs `dseq` from the anchor via `POST /sync` (used on `why == "dseq"` retry).
+/// Matches TS `threads.said(connect, space, n, "")`: ignores smaller `dseq`, and
+/// when `dseq` advances clears `prev` to `""` so stale `prev` hashes never cause
+/// the anchor to reject subsequent events.
 fn group_sync_dseq(
   self : GroupConnector,
   transport : ConnectTransport,
@@ -1107,10 +1161,7 @@ fn group_sync_dseq(
     HttpRequest::new(
       "POST",
       self.anchor_url + "/sync",
-      [
-        ("authorization", "Bearer " + self.bearer_token),
-        ("content-type", "application/json; charset=utf-8"),
-      ],
+      [("content-type", "application/json; charset=utf-8")],
       Some(req_body.to_bytes()),
       30000.to_int64(),
     ),
@@ -1124,11 +1175,13 @@ fn group_sync_dseq(
         Some(dseq_obj) => {
           match json_safe_count_field(dseq_obj, space) {
             Some(n) => {
-              let prev = match self.device_state.get(space) {
-                Some(st) => st.prev
-                None => ""
+              let cur_dseq = match self.device_state.get(space) {
+                Some(st) => st.dseq
+                None => 0.to_int64()
               }
-              self.device_state.set(space, SpaceDeviceState::{ dseq: n, prev: prev })
+              if n > cur_dseq {
+                self.device_state.set(space, SpaceDeviceState::{ dseq: n, prev: "" })
+              }
             }
             None => {}
           }
@@ -1200,10 +1253,7 @@ pub fn GroupConnector::post_message(
       HttpRequest::new(
         "POST",
         self.anchor_url + "/events",
-        [
-          ("authorization", "Bearer " + self.bearer_token),
-          ("content-type", "application/json; charset=utf-8"),
-        ],
+        [("content-type", "application/json; charset=utf-8")],
         Some(req_body.to_bytes()),
         30000.to_int64(),
       ),

@@ -542,7 +542,7 @@ test "GroupConnector: UTF-16 canonical json, Ed25519 verify, msg.edit aseq, and 
   let user_seed = "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
   let sp = "s_0123456789abcdef01234567"
 
-  let conn = match GroupConnector::new("g1", "https://anchor.test", "grp-tok", bot_seed, "m_bot", "Helper") {
+  let conn = match GroupConnector::new("g1", "https://anchor.test", bot_seed, "m_bot", "Helper") {
     Ok(c) => c
     Err(e) => {
       debug_assert(false, e)
@@ -672,10 +672,162 @@ test "GroupConnector: UTF-16 canonical json, Ed25519 verify, msg.edit aseq, and 
             Some(d) => debug_assert(d == i64(6), "dseq incremented to 6 after sync")
             None => debug_assert(false, "expected dseq")
           }
+          debug_assert(json_str_field(arr[0], "prev") == "", "dseq sync clears stale prev to empty string")
         }
         _ => debug_assert(false, "expected events array")
       }
     }
     base_codec::JsonParseResult::Err(e) => debug_assert(false, e)
+  }
+
+  // P2 #2 & #4: bounded closed_asks eviction & pre-restart decision.resolve delivery
+  for i in 0..<270 {
+    conn.close_decision("closed-" + i.to_string())
+  }
+  debug_assert(conn.closed_asks_count() == GROUP_CLOSED_KEPT, "closed_asks bounded to 256")
+
+  let (res_id, signed_res) = match group_sign_event(
+    user_seed,
+    sp,
+    "m_u1",
+    i64(3),
+    i64(1300),
+    i64(0),
+    edit_id,
+    GROUP_LOBBY,
+    "decision.resolve",
+    base_codec::json_obj([
+      ("target", base_codec::json_str("pre-restart-ask-id")),
+      ("choice", base_codec::json_str("Proceed")),
+    ]),
+  ) {
+    Ok(pair) => pair
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  let stamped_res = base_codec::json_obj([
+    (
+      "stamped",
+      base_codec::json_obj([
+        ("id", base_codec::json_str(res_id)),
+        ("aseq", base_codec::json_int(4)),
+        ("event", signed_res),
+      ]),
+    ),
+  ])
+  match conn.take_sse(SseEvent::{ event: "event", data: base_codec::json_stringify(stamped_res), id: None }, i64(1300)) {
+    GroupStep::Event(ChatEvent::Message(m)) => {
+      debug_assert(m.text == "Proceed" && !m.addressed, "pre-restart decision.resolve delivered (non-direct addressed=false)")
+    }
+    _ => debug_assert(false, "expected pre-restart decision.resolve to be delivered")
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 8. P1 Regression: Un-ACKed / Uncommitted Redelivery Must NOT Be Deduplicated
+// ---------------------------------------------------------------------------
+
+test "at-least-once dedupe: un-ACKed redelivery delivers again on Slack, Feishu, and Comma" {
+  // 1. Slack: deliver env-1 WITHOUT ack -> redeliver env-2 MUST deliver -> ack env-2 -> env-3 deduplicated
+  let slack = match SlackConnector::new("xapp-1-abc", "xoxb-123", "https://slack.test/api") {
+    Ok(c) => c
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  slack.bot_user_id = "UBOT"
+  let smock = MockNet::new(i64(1000))
+  let str = smock.transport()
+  smock.push_http(HttpResponse::ok_text(200, "{\"ok\":true,\"url\":\"wss://slack.test/link\"}"))
+  let _ = slack.connect(str)
+  let slack_ev1 = "{\"type\":\"events_api\",\"envelope_id\":\"env-1\",\"payload\":{\"event\":{\"type\":\"message\",\"channel\":\"C1\",\"ts\":\"1700.5\",\"user\":\"U1\",\"text\":\"retry me\"}}}"
+  let slack_ev2 = "{\"type\":\"events_api\",\"envelope_id\":\"env-2\",\"payload\":{\"event\":{\"type\":\"message\",\"channel\":\"C1\",\"ts\":\"1700.5\",\"user\":\"U1\",\"text\":\"retry me\"}}}"
+  let slack_ev3 = "{\"type\":\"events_api\",\"envelope_id\":\"env-3\",\"payload\":{\"event\":{\"type\":\"message\",\"channel\":\"C1\",\"ts\":\"1700.5\",\"user\":\"U1\",\"text\":\"retry me\"}}}"
+  match slack.handle_frame(str, WsFrame::Text(slack_ev1)) {
+    SlackStep::Event(eid, _) => debug_assert(eid == "env-1", "first slack delivery (not ACKed)")
+    _ => debug_assert(false, "expected first slack event")
+  }
+  match slack.handle_frame(str, WsFrame::Text(slack_ev2)) {
+    SlackStep::Event(eid, _) => {
+      debug_assert(eid == "env-2", "un-ACKed slack redelivery MUST deliver again")
+      let _ = slack.ack(str, eid)
+    }
+    _ => debug_assert(false, "un-ACKed slack redelivery was falsely dropped!")
+  }
+  match slack.handle_frame(str, WsFrame::Text(slack_ev3)) {
+    SlackStep::DuplicateIgnored(_, _) => {}
+    _ => debug_assert(false, "post-ACK slack redelivery must be deduplicated")
+  }
+
+  // 2. Feishu: deliver seq=1 WITHOUT ack_frame -> redeliver seq=2 MUST deliver -> ack_frame -> seq=3 deduplicated
+  let feishu = match FeishuConnector::new("cli_abc", "sec_123", FeishuDomain::Feishu, Some("https://feishu.test")) {
+    Ok(c) => c
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  feishu.bot_open_id = "ou_bot"
+  let fmock = MockNet::new(i64(2000))
+  let ftr = fmock.transport()
+  fmock.push_http(HttpResponse::ok_text(200, "{\"code\":0,\"data\":{\"URL\":\"wss://ws.feishu.test/?service_id=1\"}}"))
+  let _ = feishu.connect(ftr)
+  let feishu_ev = "{\"header\":{\"event_type\":\"im.message.receive_v1\",\"event_id\":\"ev1\"},\"event\":{\"sender\":{\"sender_type\":\"user\",\"sender_id\":{\"open_id\":\"ou_u1\"}},\"message\":{\"message_id\":\"om_99\",\"chat_id\":\"oc_1\",\"chat_type\":\"p2p\",\"message_type\":\"text\",\"content\":\"{\\\"text\\\":\\\"hello\\\"}\"}}}"
+  let make_ff = fn(seq : Int) -> Bytes {
+    encode_feishu_frame(
+      FeishuFrame::{
+        seq_id: i64(seq),
+        log_id: i64(seq),
+        service: 1,
+        method: FEISHU_DATA,
+        headers: [("type", "event")],
+        payload_encoding: None,
+        payload_type: None,
+        payload: Some(feishu_ev.to_bytes()),
+        log_id_new: None,
+      },
+    )
+  }
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff(1))) {
+    FeishuStep::Event(_, _) => {}
+    _ => debug_assert(false, "expected first feishu event (not ACKed)")
+  }
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff(2))) {
+    FeishuStep::Event(pb, _) => {
+      let _ = feishu.ack_frame(ftr, pb, 200)
+    }
+    _ => debug_assert(false, "un-ACKed feishu redelivery was falsely dropped!")
+  }
+  match feishu.handle_frame(ftr, WsFrame::Binary(make_ff(3))) {
+    FeishuStep::DuplicateIgnored(_, _) => {}
+    _ => debug_assert(false, "post-ACK feishu redelivery must be deduplicated")
+  }
+
+  // 3. Comma: task.put WITHOUT commit_put -> redelivered task.put MUST still yield msg -> commit_put -> redelivery yields 0
+  let comma = CommaConnector::new("cm1", "https://comma.example.com", "tok", "mac", "inst-1")
+  let cmock = MockNet::new(i64(3000))
+  let ctr = cmock.transport()
+  let _ = comma.connect(ctr)
+  let _ = comma.handle_frame(ctr, WsFrame::Text("{\"id\":\"i1\",\"type\":\"request\",\"method\":\"task.invite\",\"params\":{\"task\":\"t/9\",\"start\":{\"requester\":\"u1\"}}}"))
+  let put1 = "{\"id\":\"p1\",\"type\":\"request\",\"method\":\"task.put\",\"params\":{\"task\":\"t/9\",\"through\":1,\"answered\":0,\"messages\":[{\"seq\":1,\"author\":{\"kind\":\"person\",\"id\":\"u1\"},\"text\":\"ping\"}]}}"
+  let put2 = "{\"id\":\"p2\",\"type\":\"request\",\"method\":\"task.put\",\"params\":{\"task\":\"t/9\",\"through\":1,\"answered\":0,\"messages\":[{\"seq\":1,\"author\":{\"kind\":\"person\",\"id\":\"u1\"},\"text\":\"ping\"}]}}"
+  let put3 = "{\"id\":\"p3\",\"type\":\"request\",\"method\":\"task.put\",\"params\":{\"task\":\"t/9\",\"through\":1,\"answered\":0,\"messages\":[{\"seq\":1,\"author\":{\"kind\":\"person\",\"id\":\"u1\"},\"text\":\"ping\"}]}}"
+  match comma.handle_frame(ctr, WsFrame::Text(put1)) {
+    CommaStep::TaskPut(b) => debug_assert(b.events.length() == 1, "first comma put (uncommitted)")
+    _ => debug_assert(false, "expected first comma put")
+  }
+  match comma.handle_frame(ctr, WsFrame::Text(put2)) {
+    CommaStep::TaskPut(b) => {
+      debug_assert(b.events.length() == 1, "uncommitted comma redelivery MUST deliver again")
+      comma.commit_put(ctr, b)
+    }
+    _ => debug_assert(false, "expected second comma put")
+  }
+  match comma.handle_frame(ctr, WsFrame::Text(put3)) {
+    CommaStep::TaskPut(b) => debug_assert(b.events.length() == 0, "post-commit comma redelivery deduplicated")
+    _ => debug_assert(false, "expected third comma put")
   }
 }

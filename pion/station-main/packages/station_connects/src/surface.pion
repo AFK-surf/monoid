@@ -696,19 +696,24 @@ pub fn InboundDedupe::prune(self : InboundDedupe, now_ms : Int64) -> Unit {
   self.order = keep
 }
 
-/// Returns `true` if `key` was NOT seen within `ttl_ms` (and records it under a
-/// fresh generation); returns `false` if it is a duplicate.
-pub fn InboundDedupe::accept(self : InboundDedupe, key : String, now_ms : Int64) -> Bool {
+/// Read-only check: returns `true` if `key` is already confirmed within `ttl_ms`.
+/// Use this BEFORE handling an inbound event so an un-ACKed failure never
+/// suppresses a platform redelivery.
+pub fn InboundDedupe::is_duplicate(self : InboundDedupe, key : String, now_ms : Int64) -> Bool {
   if key == "" {
-    return true
+    return false
   }
   match self.seen.get(key) {
-    Some((at, _)) => {
-      if self.ttl_ms == 0.to_int64() || now_ms - at < self.ttl_ms {
-        return false
-      }
-    }
-    None => {}
+    Some((at, _)) => self.ttl_ms == 0.to_int64() || now_ms - at < self.ttl_ms
+    None => false
+  }
+}
+
+/// Records `key` under a fresh generation (call ONLY after durable handling /
+/// ACK / commit).
+pub fn InboundDedupe::remember(self : InboundDedupe, key : String, now_ms : Int64) -> Unit {
+  if key == "" {
+    return
   }
   let gen = self.next_gen
   self.next_gen = self.next_gen + 1.to_int64()
@@ -733,6 +738,15 @@ pub fn InboundDedupe::accept(self : InboundDedupe, key : String, now_ms : Int64)
       }
     }
   }
+}
+
+/// Returns `true` if `key` was NOT seen within `ttl_ms` (and records it under a
+/// fresh generation); returns `false` if it is a duplicate.
+pub fn InboundDedupe::accept(self : InboundDedupe, key : String, now_ms : Int64) -> Bool {
+  if self.is_duplicate(key, now_ms) {
+    return false
+  }
+  self.remember(key, now_ms)
   true
 }
 
