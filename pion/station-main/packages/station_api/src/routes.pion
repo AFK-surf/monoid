@@ -44,6 +44,8 @@ pub struct ApiHost {
   pub session_exists : (String) -> Bool
   /// Held running sessions (for `GET /events?running=1`).
   pub held_sessions : () -> Array[String]
+  /// Whether dev-only routes (`/dev/inject`, matching `STILLFAIL_DEV=1`) are enabled.
+  pub dev_enabled : Bool
 }
 
 pub fn ApiHost::stub() -> ApiHost {
@@ -77,6 +79,7 @@ pub fn ApiHost::stub() -> ApiHost {
     usage_reading_all: fn() -> Bool { false },
     session_exists: fn(_k : String) -> Bool { true },
     held_sessions: fn() -> Array[String] { [] },
+    dev_enabled: false,
   }
 }
 
@@ -354,6 +357,9 @@ pub fn dispatch_core_route(
     return Some(call_with_json(host, "hub.upload.parts", r, []))
   }
   if m == "POST" && n == 2 && segs[0] == "dev" && segs[1] == "inject" {
+    if !host.dev_enabled || !r.viewer.manages_station() {
+      return None
+    }
     return Some(call_with_json(host, "hub.dev.inject", r, []))
   }
 
@@ -374,7 +380,18 @@ pub fn dispatch_core_route(
         return Some(call_read(host, "session", r, base_codec::json_obj([("key", base_codec::json_str(key))])))
       }
       if m == "GET" && n >= 3 {
-        return Some(call_read(host, "session." + segs[2], r, base_codec::json_obj([("key", base_codec::json_str(key))])))
+        let act = segment_decode(segs[2])
+        if act == "timeline" ||
+        act == "files" ||
+        act == "parts" ||
+        act == "poster" ||
+        act == "transcript" ||
+        act == "widget-state" ||
+        act == "peek" ||
+        act == "open" {
+          return Some(call_read(host, "session." + act, r, base_codec::json_obj([("key", base_codec::json_str(key))])))
+        }
+        return None
       }
       if m == "DELETE" && n == 2 {
         return Some(call_with_json(host, "hub.session.delete", r, [key]))
@@ -438,9 +455,6 @@ pub fn dispatch_core_route(
       }
       if m == "POST" && n >= 3 && segs[2] == "relay" {
         return Some(call_with_json(host, "hub.thread.relay.post", r, [tid]))
-      }
-      if m == "GET" && n >= 3 && segs[2] != "entries" && segs[2] != "relay" {
-        return Some(call_read(host, "thread." + segs[2], r, base_codec::json_obj([("id", base_codec::json_str(tid))])))
       }
       if m == "POST" && n >= 3 && segs[2] == "messages" {
         return Some(call_with_json(host, "hub.thread.messages", r, [tid]))
@@ -509,15 +523,15 @@ pub fn dispatch_core_route(
     if m == "GET" && n == 2 {
       return Some(call_read(host, "job", r, base_codec::json_obj([("id", base_codec::json_str(segment_decode(segs[1])))])))
     }
-    if m == "GET" && n >= 3 {
-      return Some(call_read(host, "job." + segs[2], r, base_codec::json_obj([("id", base_codec::json_str(segment_decode(segs[1])))])))
+    if m == "GET" && n >= 3 && segment_decode(segs[2]) == "log" {
+      return Some(call_read(host, "job.log", r, base_codec::json_obj([("id", base_codec::json_str(segment_decode(segs[1])))])))
     }
     if m == "POST" && n >= 3 && segs[2] == "stop" {
       return Some(call_with_json(host, "hub.job.stop", r, [segment_decode(segs[1])]))
     }
   }
 
-  // Screens routes
+  // Screens routes (strict whitelist matching `station/src/api/admin.ts`)
   if n >= 1 && segs[0] == "screens" {
     if m == "GET" && n == 1 {
       return Some(call_with_json(host, "screens.list", r, []))
@@ -529,7 +543,25 @@ pub fn dispatch_core_route(
       let sid = segment_decode(segs[1])
       let sub = segs[2]
       if m == "POST" && n == 3 {
-        return Some(call_with_json(host, "screens." + sub, r, [sid]))
+        if sub == "close" ||
+        sub == "open-url" ||
+        sub == "reload" ||
+        sub == "back" ||
+        sub == "forward" ||
+        sub == "sleep" ||
+        sub == "settings" ||
+        sub == "screenshot" ||
+        sub == "location" ||
+        sub == "status-bar" ||
+        sub == "biometrics" ||
+        sub == "uninstall" ||
+        sub == "record" ||
+        sub == "push" ||
+        sub == "install" ||
+        sub == "relaunch" {
+          return Some(call_with_json(host, "screens." + sub, r, [sid]))
+        }
+        return None
       }
       if m == "GET" && n == 3 && (sub == "logs" || sub == "apps" || sub == "settings") {
         return Some(call_with_json(host, "screens." + sub + ".get", r, [sid]))

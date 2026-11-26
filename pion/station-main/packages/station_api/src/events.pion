@@ -125,7 +125,7 @@ pub fn is_event_for(
             return false
           }
         }
-        None => ()
+        None => return false
       }
     }
     None => ()
@@ -138,7 +138,7 @@ pub fn is_event_for(
             return false
           }
         }
-        None => ()
+        None => return false
       }
     }
     None => ()
@@ -151,7 +151,7 @@ pub fn is_event_for(
             return false
           }
         }
-        None => ()
+        None => return false
       }
     }
     None => ()
@@ -560,6 +560,8 @@ pub fn EventsHub::open_stream(
     }
   }
   let head = if resumes { Some(self.log.at()) } else { None }
+  // Self-heal `shared_initialized` on open (equivalent to `prepareShared`) so subsequent streams can resume.
+  self.shared_initialized = true
   self.clients.push(client)
 
   let headers : Array[http1::Header] = [

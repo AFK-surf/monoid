@@ -44,14 +44,26 @@ pub struct ParsedProjectsJsonl {
   pub preserved_raw_lines : Array[String]
 }
 
-/// Normalize a project name (trim whitespace, collapse control chars).
-pub fn normalize_project_name(raw : String) -> String {
+pub let MAX_PROJECT_NAME : Int = 80
+pub let MAX_APPLIED_OP_IDS : Int = 64
+
+/// Normalize a project name (`station/src/store/rows.ts` `normalizeProject`):
+/// trims whitespace, rejects >80 UTF-16 chars, ASCII control chars (`0x00..0x1f`, `0x7f`), and commas.
+pub fn normalize_project_name(raw : String) -> Result[String, String] {
   let s = raw.trim()
-  if s.length() > 120 {
-    s.slice(0, 120).trim()
-  } else {
-    s
+  if utf16_len(s) > MAX_PROJECT_NAME {
+    return Err("project name must be at most 80 characters")
   }
+  let b = s.to_bytes()
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c <= 0x1F || c == 0x7F || c == 0x2C {
+      return Err("project name must not contain control characters or commas")
+    }
+    i = i + 1
+  }
+  Ok(s)
 }
 
 pub fn normalize_project_note(raw : Option[String], strict : Bool) -> Result[Option[String], String] {
@@ -62,11 +74,11 @@ pub fn normalize_project_note(raw : Option[String], strict : Bool) -> Result[Opt
       if trimmed.length() == 0 {
         return Ok(None)
       }
-      if trimmed.length() > MAX_PROJECT_NOTE {
+      if utf16_len(trimmed) > MAX_PROJECT_NOTE {
         if strict {
           return Err("note must be at most 2000 characters")
         }
-        return Ok(Some(trimmed.slice(0, MAX_PROJECT_NOTE)))
+        return Ok(Some(utf16_truncate(trimmed, MAX_PROJECT_NOTE)))
       }
       Ok(Some(trimmed))
     }
@@ -82,7 +94,7 @@ pub fn normalize_project_refs(raw : Array[String], strict : Bool) -> Result[Arra
       i = i + 1
       continue
     }
-    if r.length() > MAX_PROJECT_REF_LEN {
+    if utf16_len(r) > MAX_PROJECT_REF_LEN {
       if strict {
         return Err("ref must be at most 512 characters")
       }
@@ -381,16 +393,27 @@ pub fn parse_projects_jsonl(text : String, strict : Bool) -> Result[ParsedProjec
     }
     let name = match json_str_field(parsed, "name") {
       Some(raw_name) => {
-        let n = normalize_project_name(raw_name)
-        if n.length() == 0 {
-          if strict {
-            return Err("PROJECTS.jsonl line " + (i + 1).to_string() + " has empty name")
+        match normalize_project_name(raw_name) {
+          Err(msg) => {
+            if strict {
+              return Err("PROJECTS.jsonl line " + (i + 1).to_string() + " invalid name: " + msg)
+            }
+            preserved_raw_lines.push(raw_line)
+            i = i + 1
+            continue
           }
-          preserved_raw_lines.push(raw_line)
-          i = i + 1
-          continue
+          Ok(n) => {
+            if n.length() == 0 {
+              if strict {
+                return Err("PROJECTS.jsonl line " + (i + 1).to_string() + " has empty name")
+              }
+              preserved_raw_lines.push(raw_line)
+              i = i + 1
+              continue
+            }
+            n
+          }
         }
-        n
       }
       None => {
         if strict {
@@ -416,7 +439,7 @@ pub fn parse_projects_jsonl(text : String, strict : Bool) -> Result[ParsedProjec
       }
       update_max_watermark(tombstones, name, del_at)
       if applied_op_ids.length() > 0 {
-        tombstone_op_ids.push((name, applied_op_ids))
+        merge_named_op_ids(tombstone_op_ids, name, applied_op_ids)
       }
       i = i + 1
       continue
@@ -663,8 +686,87 @@ pub fn projects_info_public_json(parsed : ParsedProjectsJsonl) -> base_codec::Js
   ])
 }
 
+fn merge_named_op_ids(
+  map : Array[(String, Array[String])],
+  name : String,
+  more : Array[String],
+) -> Unit {
+  let mut i = 0
+  while i < map.length() {
+    if map[i].0 == name {
+      let combined : Array[String] = []
+      let prev = map[i].1
+      let mut j = 0
+      while j < prev.length() {
+        combined.push(prev[j])
+        j = j + 1
+      }
+      let mut k = 0
+      while k < more.length() {
+        combined.push(more[k])
+        k = k + 1
+      }
+      map[i] = (name, dedup_op_ids(combined))
+      return ()
+    }
+    i = i + 1
+  }
+  map.push((name, dedup_op_ids(more)))
+}
+
+fn find_named_op_ids(map : Array[(String, Array[String])], name : String) -> Array[String] {
+  let mut i = 0
+  while i < map.length() {
+    if map[i].0 == name {
+      return map[i].1
+    }
+    i = i + 1
+  }
+  []
+}
+
+fn cap_op_ids(ops : Array[String], keep_op_ids : Option[Array[String]]) -> Array[String] {
+  let dedup = dedup_op_ids(ops)
+  match keep_op_ids {
+    None => dedup
+    Some(keep) => {
+      let pinned : Array[String] = []
+      let rest : Array[String] = []
+      let mut i = 0
+      while i < dedup.length() {
+        let id = dedup[i]
+        if contains_str(keep, id) || id.starts_with("proposal:") {
+          pinned.push(id)
+        } else {
+          rest.push(id)
+        }
+        i = i + 1
+      }
+      let start = if rest.length() > MAX_APPLIED_OP_IDS {
+        rest.length() - MAX_APPLIED_OP_IDS
+      } else {
+        0
+      }
+      let mut j = start
+      while j < rest.length() {
+        pinned.push(rest[j])
+        j = j + 1
+      }
+      pinned
+    }
+  }
+}
+
 /// Serialize `ParsedProjectsJsonl` into canonical JSONL sorted by UTF-8 bytes of `name`, enforcing 512 KiB limit.
 pub fn serialize_projects_jsonl(parsed : ParsedProjectsJsonl) -> Result[String, String] {
+  serialize_projects_jsonl_with_keep(parsed, None)
+}
+
+/// Serialize `ParsedProjectsJsonl` with optional `keep_op_ids` pinning (`station/src/projects/info.ts`).
+pub fn serialize_projects_jsonl_with_keep(
+  parsed : ParsedProjectsJsonl,
+  keep_op_ids : Option[Array[String]],
+) -> Result[String, String] {
   let names : Array[String] = []
   let mut i = 0
   while i < parsed.entries.length() {
@@ -707,13 +809,19 @@ pub fn serialize_projects_jsonl(parsed : ParsedProjectsJsonl) -> Result[String, 
       ei = ei + 1
     }
     let del_at = find_watermark(parsed.tombstones, name)
+    let tomb_ops = find_named_op_ids(parsed.tombstone_op_ids, name)
     match entry_opt {
       Some(e) => {
         let fields : Array[(String, base_codec::Json)] = [("name", base_codec::json_str(name))]
         match e.note {
           Some(n) => {
             fields.push(("note", base_codec::json_str(n)))
-            match max_opt_i64(e.note_at, e.updated_at) {
+            // TS: `const na = e.noteAt ?? e.updatedAt` (never bump noteAt to updatedAt!).
+            let na_opt = match e.note_at {
+              Some(v) => Some(v)
+              None => e.updated_at
+            }
+            match na_opt {
               Some(na) => fields.push(("noteAt", base_codec::json_int64(na)))
               None => ()
             }
@@ -721,16 +829,66 @@ pub fn serialize_projects_jsonl(parsed : ParsedProjectsJsonl) -> Result[String, 
           None => ()
         }
         if e.refs.length() > 0 {
-          let r_arr : Array[base_codec::Json] = []
+          // Sort refs by (refAt DESC, name ASC) and preserve per-ref `refAts`.
+          let ref_pairs : Array[(String, Int64)] = []
+          let mut has_any_ra = false
           let mut ri = 0
           while ri < e.refs.length() {
-            r_arr.push(base_codec::json_str(e.refs[ri]))
+            let r = e.refs[ri]
+            let r_at_opt = match lookup_ref_at(e.ref_ats, r) {
+              Some(v) => Some(v)
+              None => match e.refs_at {
+                Some(v) => Some(v)
+                None => e.updated_at
+              }
+            }
+            match r_at_opt {
+              Some(v) => {
+                has_any_ra = true
+                ref_pairs.push((r, v))
+              }
+              None => ref_pairs.push((r, -1L))
+            }
             ri = ri + 1
           }
+          let mut rs = 1
+          while rs < ref_pairs.length() {
+            let cur = ref_pairs[rs]
+            let mut pos = rs
+            while pos > 0 {
+              let prev = ref_pairs[pos - 1]
+              let before = if cur.1 != prev.1 { cur.1 > prev.1 } else { cur.0 < prev.0 }
+              if before {
+                ref_pairs[pos] = prev
+                pos = pos - 1
+              } else {
+                break
+              }
+            }
+            ref_pairs[pos] = cur
+            rs = rs + 1
+          }
+          let r_arr : Array[base_codec::Json] = []
+          let ra_fields : Array[(String, base_codec::Json)] = []
+          let mut max_ra : Int64 = -1L
+          let mut rj = 0
+          while rj < ref_pairs.length() {
+            let (r_name, r_v) = ref_pairs[rj]
+            r_arr.push(base_codec::json_str(r_name))
+            if has_any_ra {
+              ra_fields.push((r_name, base_codec::json_int64(r_v)))
+              if r_v > max_ra {
+                max_ra = r_v
+              }
+            }
+            rj = rj + 1
+          }
           fields.push(("refs", base_codec::json_arr(r_arr)))
-          match e.refs_at {
-            Some(ra) => fields.push(("refsAt", base_codec::json_int64(ra)))
-            None => ()
+          if has_any_ra {
+            if max_ra >= 0L {
+              fields.push(("refsAt", base_codec::json_int64(max_ra)))
+            }
+            fields.push(("refAts", base_codec::json_obj(ra_fields)))
           }
         }
         match e.updated_at {
@@ -749,12 +907,24 @@ pub fn serialize_projects_jsonl(parsed : ParsedProjectsJsonl) -> Result[String, 
           Some(rc) => fields.push(("refsClearedAt", base_codec::json_int64(rc)))
           None => ()
         }
-        if e.applied_op_ids.length() > 0 {
+        let all_ops : Array[String] = []
+        let mut oi = 0
+        while oi < e.applied_op_ids.length() {
+          all_ops.push(e.applied_op_ids[oi])
+          oi = oi + 1
+        }
+        let mut toi = 0
+        while toi < tomb_ops.length() {
+          all_ops.push(tomb_ops[toi])
+          toi = toi + 1
+        }
+        let live_ops = cap_op_ids(all_ops, keep_op_ids)
+        if live_ops.length() > 0 {
           let ops : Array[base_codec::Json] = []
-          let mut oi = 0
-          while oi < e.applied_op_ids.length() {
-            ops.push(base_codec::json_str(e.applied_op_ids[oi]))
-            oi = oi + 1
+          let mut li = 0
+          while li < live_ops.length() {
+            ops.push(base_codec::json_str(live_ops[li]))
+            li = li + 1
           }
           fields.push(("appliedOpIds", base_codec::json_arr(ops)))
         }
@@ -768,6 +938,16 @@ pub fn serialize_projects_jsonl(parsed : ParsedProjectsJsonl) -> Result[String, 
               ("deleted", base_codec::json_bool(true)),
               ("updatedAt", base_codec::json_int64(da)),
             ]
+            let capped_tomb = cap_op_ids(tomb_ops, keep_op_ids)
+            if capped_tomb.length() > 0 {
+              let ops : Array[base_codec::Json] = []
+              let mut li = 0
+              while li < capped_tomb.length() {
+                ops.push(base_codec::json_str(capped_tomb[li]))
+                li = li + 1
+              }
+              fields.push(("appliedOpIds", base_codec::json_arr(ops)))
+            }
             lines.push(base_codec::json_stringify(base_codec::json_obj(fields)))
           }
           None => ()

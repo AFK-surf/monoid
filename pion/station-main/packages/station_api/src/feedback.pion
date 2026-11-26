@@ -142,7 +142,9 @@ pub struct NoticeReportInput {
 /// Build the deterministic bug report JSON payload for `POST /threads/:id/report`.
 pub fn build_notice_report(input : NoticeReportInput) -> base_codec::Json {
   let clean_text = if input.entry_text.starts_with("⚠️") {
-    input.entry_text.slice(6, input.entry_text.length()).trim()
+    input.entry_text.slice("⚠️".length(), input.entry_text.length()).trim()
+  } else if input.entry_text.starts_with("⚠") {
+    input.entry_text.slice("⚠".length(), input.entry_text.length()).trim()
   } else {
     input.entry_text.trim()
   }
@@ -152,8 +154,8 @@ pub fn build_notice_report(input : NoticeReportInput) -> base_codec::Json {
   }
   let title = if said.length() == 0 {
     "failure notice"
-  } else if said.length() > 200 {
-    said.slice(0, 200)
+  } else if codepoint_count(said) > 200 {
+    codepoint_slice(said, 0, 200)
   } else {
     said
   }

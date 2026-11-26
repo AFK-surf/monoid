@@ -37,17 +37,43 @@ pub fn SeenStore::empty() -> SeenStore {
   }
 }
 
-/// Visibility of a session key not present in the local store.
-pub fn sees_missing(viewer : Viewer, key : String) -> Bool {
-  if key.starts_with("task:") {
-    let rest = key.slice(5, key.length())
-    let sep = rest.index_of(":")
-    if sep > 0 {
-      let ws = rest.slice(0, sep)
-      return ws == viewer.workspace
-    }
+/// Extract `<workspace>` from `remote:<workspace>:<station>:<session>` (`station/src/store/rows.ts` `remoteWs`).
+pub fn remote_ws(key : String) -> Option[String] {
+  if !key.starts_with("remote:") {
+    return None
   }
-  viewer.home
+  let rest = key.slice(7, key.length())
+  let c1 = rest.index_of(":")
+  if c1 <= 0 {
+    return None
+  }
+  let ws = rest.slice(0, c1)
+  if ws.index_of("/") >= 0 {
+    return None
+  }
+  let after_ws = rest.slice(c1 + 1, rest.length())
+  let c2 = after_ws.index_of(":")
+  if c2 <= 0 {
+    return None
+  }
+  let station = after_ws.slice(0, c2)
+  if station.index_of("/") >= 0 {
+    return None
+  }
+  let sess = after_ws.slice(c2 + 1, after_ws.length())
+  if sess.length() == 0 {
+    return None
+  }
+  Some(ws)
+}
+
+/// Visibility of a session key not present in the local store (`station/src/store/rows.ts` `seesMissing`):
+/// another station's task belongs strictly to its `<ws>`, whichever this station's home is.
+pub fn sees_missing(viewer : Viewer, key : String) -> Bool {
+  match remote_ws(key) {
+    Some(ws) => ws == viewer.workspace
+    None => sees_workspace(viewer, None)
+  }
 }
 
 pub fn session_seen(store : SeenStore, viewer : Viewer, key : String) -> Bool {

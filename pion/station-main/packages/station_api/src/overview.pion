@@ -5,16 +5,55 @@
 import "base_codec"
 import "station_http"
 
-/// Mask a secret value so its plaintext never leaves the station in `/overview`.
+/// Mask a secret value matching TS `maskValue` (`station/src/ops/agent-env.ts`):
+/// empty -> `""`, `<= 8` codepoints -> `"••••"`, else first 5 codepoints + `"…"` + last 4 codepoints.
 pub fn mask_secret(value : String) -> String {
-  let n = value.length()
-  if n == 0 {
+  if value.length() == 0 {
     return ""
   }
+  let n = codepoint_count(value)
   if n <= 8 {
-    return "••••••••"
+    return "••••"
   }
-  value.slice(0, 3) + "••••" + value.slice(n - 3, n)
+  codepoint_slice(value, 0, 5) + "…" + codepoint_slice(value, n - 4, n)
+}
+
+/// Detect `scheme://user:pass@` URL credentials (`station/src/ops/agent-env.ts` `secretValue`).
+fn has_url_userinfo(value : String) -> Bool {
+  let sep = value.index_of("://")
+  if sep <= 0 {
+    return false
+  }
+  let scheme = value.slice(0, sep).to_bytes()
+  let first = scheme[0].to_int() & 0xFF
+  let first_alpha = (first >= 65 && first <= 90) || (first >= 97 && first <= 122)
+  if !first_alpha {
+    return false
+  }
+  let mut i = 1
+  while i < scheme.length() {
+    let c = scheme[i].to_int() & 0xFF
+    let ok = (c >= 65 && c <= 90) ||
+    (c >= 97 && c <= 122) ||
+    (c >= 48 && c <= 57) ||
+    c == 43 ||
+    c == 45 ||
+    c == 46
+    if !ok {
+      return false
+    }
+    i = i + 1
+  }
+  let after = value.slice(sep + 3, value.length())
+  let at = after.index_of("@")
+  if at < 0 {
+    return false
+  }
+  let auth = after.slice(0, at)
+  if auth.index_of("/") >= 0 {
+    return false
+  }
+  auth.index_of(":") >= 0
 }
 
 /// Whether an env variable or header name/value is sensitive and must be masked.
@@ -39,6 +78,9 @@ pub fn is_secret_key_or_value(key : String, value : String) -> Bool {
       return true
     }
     i = i + 1
+  }
+  if has_url_userinfo(value) {
+    return true
   }
   if value.starts_with("sk-") ||
   value.starts_with("xox") ||
@@ -136,26 +178,60 @@ pub struct McpServerOverviewInput {
   pub tool_count : Int
 }
 
-/// Sanitize managed MCP servers: mask all secret env vars and headers.
+/// Sanitize managed MCP servers (`station/src/tools/managed-mcp-config.ts` `maskMap`):
+/// masks EVERY env value and EVERY header value (sorted by key) so no credential ever leaks.
 pub fn sanitize_mcp_servers(servers : Array[McpServerOverviewInput]) -> base_codec::Json {
   let out : Array[base_codec::Json] = []
   let mut i = 0
   while i < servers.length() {
     let s = servers[i]
-    let env_fields : Array[(String, base_codec::Json)] = []
+    let sorted_env : Array[(String, String)] = []
     let mut ei = 0
     while ei < s.env.length() {
-      let (ek, ev) = s.env[ei]
-      let masked = if is_secret_key_or_value(ek, ev) { mask_secret(ev) } else { ev }
-      env_fields.push((ek, base_codec::json_str(masked)))
+      sorted_env.push(s.env[ei])
       ei = ei + 1
     }
-    let hdr_fields : Array[(String, base_codec::Json)] = []
+    let mut es = 1
+    while es < sorted_env.length() {
+      let cur = sorted_env[es]
+      let mut pos = es
+      while pos > 0 && sorted_env[pos - 1].0 > cur.0 {
+        sorted_env[pos] = sorted_env[pos - 1]
+        pos = pos - 1
+      }
+      sorted_env[pos] = cur
+      es = es + 1
+    }
+    let env_fields : Array[(String, base_codec::Json)] = []
+    let mut ek_i = 0
+    while ek_i < sorted_env.length() {
+      let (ek, ev) = sorted_env[ek_i]
+      env_fields.push((ek, base_codec::json_str(mask_secret(ev))))
+      ek_i = ek_i + 1
+    }
+    let sorted_hdrs : Array[(String, String)] = []
     let mut hi = 0
     while hi < s.headers.length() {
-      let (hk, hv) = s.headers[hi]
-      hdr_fields.push((hk, base_codec::json_str(mask_secret(hv))))
+      sorted_hdrs.push(s.headers[hi])
       hi = hi + 1
+    }
+    let mut hs = 1
+    while hs < sorted_hdrs.length() {
+      let cur = sorted_hdrs[hs]
+      let mut pos = hs
+      while pos > 0 && sorted_hdrs[pos - 1].0 > cur.0 {
+        sorted_hdrs[pos] = sorted_hdrs[pos - 1]
+        pos = pos - 1
+      }
+      sorted_hdrs[pos] = cur
+      hs = hs + 1
+    }
+    let hdr_fields : Array[(String, base_codec::Json)] = []
+    let mut hk_i = 0
+    while hk_i < sorted_hdrs.length() {
+      let (hk, hv) = sorted_hdrs[hk_i]
+      hdr_fields.push((hk, base_codec::json_str(mask_secret(hv))))
+      hk_i = hk_i + 1
     }
     let fields : Array[(String, base_codec::Json)] = [
       ("name", base_codec::json_str(s.name)),

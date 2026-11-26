@@ -95,22 +95,136 @@ pub fn Viewer::is_manager(self : Viewer) -> Bool {
   self.role == "owner" || self.role == "admin"
 }
 
-/// Whether the viewer manages this station (home workspace owner/admin).
+/// Whether the viewer manages this station (owner/admin of any workspace it belongs to,
+/// matching `station/src/mesh/credential.ts` `managesStation`).
 pub fn Viewer::manages_station(self : Viewer) -> Bool {
-  self.home && self.is_manager()
+  self.is_manager()
 }
 
 /// Whether `viewer` sees a resource scoped to workspace `ws` (`None` = home workspace).
+/// Note: `Some("")` compares `"" == viewer.workspace` and is NOT treated as home.
 pub fn sees_workspace(viewer : Viewer, ws : Option[String]) -> Bool {
   match ws {
     None => viewer.home
-    Some(w) => {
-      if w.length() == 0 {
-        viewer.home
-      } else {
-        w == viewer.workspace
-      }
+    Some(w) => w == viewer.workspace
+  }
+}
+
+/// Count UTF-16 code units of a UTF-8 string (matching JS `string.length`).
+pub fn utf16_len(s : String) -> Int {
+  let b = s.to_bytes()
+  let n = b.length()
+  let mut i = 0
+  let mut units = 0
+  while i < n {
+    let lead = b[i].to_int() & 0xFF
+    if lead < 0x80 {
+      units = units + 1
+      i = i + 1
+    } else if lead < 0xE0 {
+      units = units + 1
+      i = i + 2
+    } else if lead < 0xF0 {
+      units = units + 1
+      i = i + 3
+    } else {
+      units = units + 2
+      i = i + 4
     }
+  }
+  units
+}
+
+/// Truncate `s` to at most `max_units` UTF-16 code units without splitting a UTF-8 codepoint.
+pub fn utf16_truncate(s : String, max_units : Int) -> String {
+  if max_units <= 0 {
+    return ""
+  }
+  let b = s.to_bytes()
+  let n = b.length()
+  let mut i = 0
+  let mut units = 0
+  while i < n {
+    let lead = b[i].to_int() & 0xFF
+    let (step, u) = if lead < 0x80 {
+      (1, 1)
+    } else if lead < 0xE0 {
+      (2, 1)
+    } else if lead < 0xF0 {
+      (3, 1)
+    } else {
+      (4, 2)
+    }
+    if units + u > max_units || i + step > n {
+      break
+    }
+    units = units + u
+    i = i + step
+  }
+  s.slice(0, i)
+}
+
+/// Count Unicode scalar codepoints in a UTF-8 string.
+pub fn codepoint_count(s : String) -> Int {
+  let b = s.to_bytes()
+  let n = b.length()
+  let mut i = 0
+  let mut count = 0
+  while i < n {
+    let lead = b[i].to_int() & 0xFF
+    let step = if lead < 0x80 {
+      1
+    } else if lead < 0xE0 {
+      2
+    } else if lead < 0xF0 {
+      3
+    } else {
+      4
+    }
+    count = count + 1
+    i = i + step
+  }
+  count
+}
+
+/// Slice a UTF-8 string by Unicode codepoint indices `[start_cp, end_cp)` safely.
+pub fn codepoint_slice(s : String, start_cp : Int, end_cp : Int) -> String {
+  let b = s.to_bytes()
+  let n = b.length()
+  let mut i = 0
+  let mut cp = 0
+  let mut byte_start = n
+  let mut byte_end = n
+  let s_cp = if start_cp < 0 { 0 } else { start_cp }
+  let e_cp = if end_cp < s_cp { s_cp } else { end_cp }
+  while i < n {
+    if cp == s_cp {
+      byte_start = i
+    }
+    if cp == e_cp {
+      byte_end = i
+      break
+    }
+    let lead = b[i].to_int() & 0xFF
+    let step = if lead < 0x80 {
+      1
+    } else if lead < 0xE0 {
+      2
+    } else if lead < 0xF0 {
+      3
+    } else {
+      4
+    }
+    cp = cp + 1
+    i = i + step
+  }
+  if cp == s_cp {
+    byte_start = n
+  }
+  if byte_start >= byte_end {
+    ""
+  } else {
+    s.slice(byte_start, byte_end)
   }
 }
 

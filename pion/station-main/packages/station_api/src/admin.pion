@@ -298,7 +298,17 @@ pub fn AdminApi::handle_http(
       None => ""
     }
     active_idem_key = k
-    active_slot_key = r.viewer.email + "\u{0}" + r.viewer.workspace + "\u{0}" + r.method + "\u{0}" + r.path + "\u{0}" + k
+    let scoped_key = r.viewer.email + "\u{0}" + r.viewer.workspace + "\u{0}" + r.method + "\u{0}" + r.path + "\u{0}" + k
+    let is_send_path = r.method == "POST" && segs.length() >= 3 && segs[0] == "threads" && segs[2] == "messages"
+    let legacy_key = r.viewer.email + "\u{0}\u{0}POST\u{0}" + r.path + "\u{0}" + k
+    active_slot_key = if is_send_path {
+      match self.find_slot(legacy_key) {
+        Some(_) => legacy_key
+        None => scoped_key
+      }
+    } else {
+      scoped_key
+    }
     match self.find_slot(active_slot_key) {
       Some(slot) => {
         match (body_hash, slot.body_hash) {
@@ -467,6 +477,7 @@ pub fn AdminApi::kept_sends(self : AdminApi, thread_map : Array[(Int, Int)]) -> 
 }
 
 /// Import handed-over `KeptSend` records into this station's idempotency cache (`keepSends`).
+/// Overwrites any prior non-2xx refusal slot in place; never overwrites an existing 2xx slot.
 pub fn AdminApi::keep_sends(self : AdminApi, sends : Array[KeptSend], ws_override : Option[String]) -> Unit {
   let mut i = 0
   while i < sends.length() {
@@ -477,16 +488,24 @@ pub fn AdminApi::keep_sends(self : AdminApi, sends : Array[KeptSend], ws_overrid
     }
     let path = "/threads/" + s.thread.to_string() + "/messages"
     let slot_key = s.viewer + "\u{0}" + ws + "\u{0}POST\u{0}" + path + "\u{0}" + s.key
-    let already_ok = match self.find_slot(slot_key) {
-      Some(had) => had.status >= 200 && had.status < 300
-      None => false
+    let mut existing_idx = -1
+    let mut si = 0
+    while si < self.slots.length() {
+      if self.slots[si].slot_key == slot_key {
+        existing_idx = si
+        break
+      }
+      si = si + 1
     }
+    let already_ok = existing_idx >= 0 &&
+    self.slots[existing_idx].status >= 200 &&
+    self.slots[existing_idx].status < 300
     if !already_ok {
       let body = match base_codec::base64_decode(s.body_b64) {
         Some(b) => b
         None => Bytes::new(0)
       }
-      self.slots.push(IdempotencySlot::{
+      let next_slot = IdempotencySlot::{
         slot_key: slot_key,
         viewer_email: s.viewer,
         workspace: ws,
@@ -498,7 +517,12 @@ pub fn AdminApi::keep_sends(self : AdminApi, sends : Array[KeptSend], ws_overrid
         status: s.status,
         headers: s.headers,
         body: body,
-      })
+      }
+      if existing_idx >= 0 {
+        self.slots[existing_idx] = next_slot
+      } else {
+        self.slots.push(next_slot)
+      }
     }
     i = i + 1
   }

@@ -163,12 +163,24 @@ pub fn dispatch_domain_route(
   // Copies & Retire
   if head == "retire" {
     if n == 1 && (m == "POST" || m == "DELETE") {
+      match require_manager(r, "only workspace owners and admins can retire a station") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
       return Some(call_with_json(host, "copies.retire." + m, r, []))
     }
     if n == 2 && m == "GET" && segs[1] == "preview" {
+      match require_manager(r, "only workspace owners and admins can preview station retirement") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
       return Some(call_with_json(host, "copies.retire.preview", r, []))
     }
     if n == 2 && m == "POST" && segs[1] == "again" {
+      match require_manager(r, "only workspace owners and admins can retry station retirement") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
       return Some(call_with_json(host, "copies.retire.again", r, []))
     }
   }
@@ -183,8 +195,15 @@ pub fn dispatch_domain_route(
       }
       return Some(call_with_json(host, "copies.settings.put", r, []))
     }
-    if n == 2 && m == "POST" && (segs[1] == "handoff" || segs[1] == "restore") {
-      return Some(call_with_json(host, "copies." + segs[1], r, []))
+    if n == 2 && m == "POST" && segs[1] == "handoff" {
+      return Some(call_with_json(host, "copies.handoff", r, []))
+    }
+    if n == 2 && m == "POST" && segs[1] == "restore" {
+      match require_manager(r, "only workspace owners and admins can restore backups") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      return Some(call_with_json(host, "copies.restore", r, []))
     }
     if n == 3 && m == "POST" && segs[1] == "s3" && segs[2] == "test" {
       match require_manager(r, "only workspace owners and admins can test backup settings") {
@@ -365,6 +384,10 @@ pub fn dispatch_domain_route(
       return Some(call_with_json(host, "workspaces.list", r, []))
     }
     if m == "POST" && n == 2 && segs[1] == "join" {
+      match require_manager(r, "only workspace owners and admins can join workspaces") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
       return Some(call_with_json(host, "workspaces.join", r, []))
     }
   }

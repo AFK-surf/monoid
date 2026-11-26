@@ -511,8 +511,13 @@ pub fn EventLog::from_json(
       None => return Err("not a log")
     }
     let to = match base_codec::json_get(ev, "to") {
-      Some(t_obj) => EventTarget::from_json(t_obj)
-      None => EventTarget::everyone()
+      Some(t_obj) => {
+        match t_obj {
+          base_codec::Json::Obj(_) => EventTarget::from_json(t_obj)
+          _ => return Err("not a log")
+        }
+      }
+      None => return Err("not a log")
     }
     let of_key = json_str_field(ev, "of")
     last = n

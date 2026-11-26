@@ -143,6 +143,7 @@ test "idempotency_replay_conflict_and_handover" {
     usage_reading_all: stub.usage_reading_all,
     session_exists: stub.session_exists,
     held_sessions: stub.held_sessions,
+    dev_enabled: false,
   }
   let api = AdminApi::new(host, SeenStore::empty(), "0.1.9000")
   let v1 = Viewer::member("u1@example.com", "ws-1")
@@ -428,6 +429,7 @@ test "all_key_routes_dispatch_and_status_codes" {
     usage_reading_all: stub.usage_reading_all,
     session_exists: stub.session_exists,
     held_sessions: stub.held_sessions,
+    dev_enabled: false,
   }
   let api = AdminApi::new(host, SeenStore::empty(), "0.1.9000")
   let owner = Viewer::owner("owner@example.com", "ws-1")
@@ -815,4 +817,255 @@ test "feedback_redline_and_models_catalog" {
   assert(cat.filter(None, true, false).length() == 1)
   assert(cat.filter(Some("openai"), false, true).length() == 1)
   assert(base_codec::json_stringify(cat.model_windows_json(["m1", "m2"])).index_of("200000") >= 0)
+}
+
+// ── Adversarial regression tests inverted from Opus review (`r1`–`r8` + P2 fixes) ──
+
+fn is_none_opt_str(o : Option[String]) -> Bool {
+  match o {
+    None => true
+    Some(_) => false
+  }
+}
+
+test "r1_remote_task_job_cross_workspace_blocked" {
+  let seen = SeenStore::{
+    session_exists: fn(_k : String) -> Bool { false },
+    session_ws: fn(_k : String) -> Option[Option[String]] { None },
+    thread_exists: fn(_id : Int) -> Bool { false },
+    thread_sessions: fn(_id : Int) -> Array[String] { [] },
+    job_session: fn(id : String) -> Option[String] {
+      if id == "j-remote" { Some("remote:ws-b:st-2:s-9") } else { None }
+    },
+    handed_to: fn(_k : String) -> Option[HandedRecord] { None },
+  }
+  let home_member = Viewer::member("a@example.com", "ws-home")
+  let ws_b_member = Viewer::{ ..Viewer::member("b@example.com", "ws-b"), home: false }
+  // Home member MUST NOT see ws-b's remote task job (404).
+  assert(!is_none_opt_str(elsewhere(seen, "/jobs/j-remote", home_member)))
+  // ws-b member MUST see its own remote task job.
+  assert(is_none_opt_str(elsewhere(seen, "/jobs/j-remote", ws_b_member)))
+  // SSE event scoped by `sees_job` must NOT leak to home workspace, and MUST reach ws-b.
+  let to = EventTarget::{ ..EventTarget::everyone(), sees_job: Some("j-remote") }
+  assert(!is_event_for(to, home_member, Lang::Zh, Some(seen), None))
+  assert(is_event_for(to, ws_b_member, Lang::Zh, Some(seen), None))
+  // Fail-closed when `seen_store` is None.
+  assert(!is_event_for(to, ws_b_member, Lang::Zh, None, None))
+  // `sees_workspace` with `Some("")` must NOT be treated as home.
+  assert(!sees_workspace(home_member, Some("")))
+}
+
+test "r2_agent_env_proxy_password_masked" {
+  let view = agent_env_view([("HTTPS_PROXY", "http://alice:hunter2pass@proxy.local:3128")])
+  let s = base_codec::json_stringify(view)
+  assert(s.index_of("hunter2pass") < 0)
+  assert(s.index_of("\"secret\":true") >= 0)
+  // Mask format: first 5 codepoints + "…" + last 4 codepoints.
+  assert(mask_secret("abcdefgh") == "••••")
+  assert(mask_secret("123456789") == "12345…6789")
+  // Multi-byte UTF-8 codepoint-safe masking (never splits a character).
+  assert(mask_secret("一二三四五六七八九十") == "一二三四五…七八九十")
+}
+
+test "r3_mcp_env_all_values_masked" {
+  let s = sanitize_mcp_servers([McpServerOverviewInput::{
+    name: "db",
+    transport: "stdio",
+    enabled: true,
+    status: "ready",
+    command: Some("mcp-db"),
+    url: None,
+    env: [("DATABASE_URL", "postgres://u:p4ssw0rdXYZ@db/x"), ("GITHUB_PAT", "github_pat_ABCDEFGHIJKLMNOP")],
+    headers: [],
+    tool_count: 0,
+  }])
+  let t = base_codec::json_stringify(s)
+  assert(t.index_of("p4ssw0rdXYZ") < 0)
+  assert(t.index_of("github_pat_ABCDEFGHIJKLMNOP") < 0)
+  assert(t.index_of("postg…db/x") >= 0)
+  assert(t.index_of("githu…MNOP") >= 0)
+}
+
+test "r4_keep_sends_replaces_prior_refusal_and_legacy_key" {
+  let stub = ApiHost::stub()
+  let host = ApiHost::{
+    ..stub,
+    call: fn(_op : String, _r : ApiRequest, _p : Array[String], _b : base_codec::Json) -> Result[base_codec::Json, ApiError] {
+      Err(ApiError::new(404, "unknown thread 42"))
+    },
+  }
+  let api = AdminApi::new(host, SeenStore::empty(), "0.1.9000")
+  let v = Viewer::member("u@example.com", "ws-1")
+  let req = make_req("POST", "/threads/42/messages", [http1::Header::new("Idempotency-Key", "k-9")], "{}")
+  // First attempt before handover lands: cached 404.
+  assert(unwrap_resp(api.handle_http(req, v, 1000L)).status == 404)
+  // Handover delivers original 200 -> MUST overwrite the cached 404 in place.
+  api.keep_sends([KeptSend::{
+    viewer: "u@example.com",
+    workspace: "ws-1",
+    thread: 42,
+    key: "k-9",
+    at_ms: 900L,
+    status: 200,
+    headers: [http1::Header::new("content-type", "application/json")],
+    body_b64: base_codec::base64_encode("{\"ok\":true}".to_bytes()),
+  }], None)
+  let replayed = unwrap_resp(api.handle_http(req, v, 1100L))
+  assert(replayed.status == 200)
+  assert(replayed.body.to_string().index_of("\"ok\":true") >= 0)
+
+  // Legacy empty-workspace send key is also replayed for POST /threads/:id/messages.
+  api.keep_sends([KeptSend::{
+    viewer: "u@example.com",
+    workspace: "",
+    thread: 43,
+    key: "k-legacy",
+    at_ms: 900L,
+    status: 200,
+    headers: [http1::Header::new("content-type", "application/json")],
+    body_b64: base_codec::base64_encode("{\"legacy\":true}".to_bytes()),
+  }], None)
+  let leg_req = make_req("POST", "/threads/43/messages", [http1::Header::new("Idempotency-Key", "k-legacy")], "{}")
+  let leg_resp = unwrap_resp(api.handle_http(leg_req, v, 1200L))
+  assert(leg_resp.status == 200)
+  assert(leg_resp.body.to_string().index_of("\"legacy\":true") >= 0)
+}
+
+test "r5_manager_gates_dev_inject_and_strict_whitelists" {
+  let api = AdminApi::new(ApiHost::stub(), SeenStore::empty(), "0.1.9000")
+  let m = Viewer::member("m@example.com", "ws-1")
+  let joined_admin = Viewer::{ ..Viewer::owner("ja@example.com", "ws-joined"), home: false, role: "admin" }
+
+  // Member denied (403) on manager-only routes.
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/retire", [], "{}"), m, 1L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("DELETE", "/retire", [], ""), m, 1L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/retire/preview", [], ""), m, 1L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/retire/again", [], "{}"), m, 1L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/copies/restore", [], "{}"), m, 1L)).status == 403)
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/workspaces/join", [], "{}"), m, 1L)).status == 403)
+
+  // Joined-workspace admin IS a station manager (`credential.ts:70`).
+  assert(joined_admin.manages_station())
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/workspaces/join", [], "{}"), joined_admin, 1L)).status == 200)
+
+  // `/dev/inject` returns 404 when `dev_enabled == false`, and 404 to non-managers even when enabled.
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/dev/inject", [], "{}"), m, 1L)).status == 404)
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/dev/inject", [], "{}"), joined_admin, 1L)).status == 404)
+  let dev_api = AdminApi::new(ApiHost::{ ..ApiHost::stub(), dev_enabled: true }, SeenStore::empty(), "0.1.9000")
+  assert(unwrap_resp(dev_api.handle_http(make_req("POST", "/dev/inject", [], "{}"), m, 1L)).status == 404)
+  assert(unwrap_resp(dev_api.handle_http(make_req("POST", "/dev/inject", [], "{}"), joined_admin, 1L)).status == 200)
+
+  // Unknown sub-paths return 404 (no dynamic op injection!).
+  assert(unwrap_resp(api.handle_http(make_req("POST", "/screens/x/anything-here", [], "{}"), m, 1L)).status == 404)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/sessions/k/whatever", [], ""), m, 1L)).status == 404)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/threads/1/whatever", [], ""), m, 1L)).status == 404)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/jobs/j1/whatever", [], ""), m, 1L)).status == 404)
+  // Whitelisted sub-paths succeed.
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/sessions/k/timeline", [], ""), m, 1L)).status == 200)
+  assert(unwrap_resp(api.handle_http(make_req("GET", "/jobs/j1/log", [], ""), m, 1L)).status == 200)
+}
+
+test "r6_project_note_utf16_no_byte_truncation" {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < 1000 {
+    sb.write_string("中")
+    i = i + 1
+  }
+  let note = sb.to_string()
+  assert(note.length() == 3000)
+  assert(utf16_len(note) == 1000)
+  let line = "{\"name\":\"p\",\"note\":\"" + note + "\",\"updatedAt\":1}\n"
+  let parsed = match parse_projects_jsonl(line, false) {
+    Ok(p) => p
+    Err(e) => panic(e)
+  }
+  let kept = match parsed.entries[0].note {
+    Some(n) => n
+    None => ""
+  }
+  // 1000 CJK chars (1000 UTF-16 units <= 2000) MUST be preserved intact!
+  assert(kept == note)
+  assert(kept.to_bytes().length() == 3000)
+
+  // Project name validation rejects >80 chars, commas, and control chars.
+  assert(match normalize_project_name("bad,name") {
+    Err(_) => true
+    Ok(_) => false
+  })
+  assert(match normalize_project_name("bad\nname") {
+    Err(_) => true
+    Ok(_) => false
+  })
+}
+
+test "r7_projects_serialize_preserves_refAts_noteAt_and_tombstone_ops" {
+  let line = "{\"name\":\"p\",\"note\":\"n\",\"noteAt\":5,\"refs\":[\"b\",\"a\"],\"refAts\":{\"a\":7,\"b\":3},\"refsAt\":7,\"updatedAt\":9}\n" +
+  "{\"name\":\"gone\",\"deleted\":true,\"updatedAt\":10,\"appliedOpIds\":[\"op-1\"]}\n" +
+  "{\"name\":\"gone\",\"deleted\":true,\"updatedAt\":12,\"appliedOpIds\":[\"op-2\",\"proposal:p1\"]}\n"
+  let parsed = match parse_projects_jsonl(line, false) {
+    Ok(p) => p
+    Err(e) => panic(e)
+  }
+  let out = match serialize_projects_jsonl(parsed) {
+    Ok(t) => t
+    Err(e) => panic(e)
+  }
+  // `refAts` preserved, `noteAt` stays 5 (NOT bumped to 9), tombstone `appliedOpIds` merged & emitted.
+  assert(out.index_of("\"refAts\":{\"a\":7,\"b\":3}") >= 0)
+  assert(out.index_of("\"noteAt\":5") >= 0)
+  assert(out.index_of("\"noteAt\":9") < 0)
+  assert(out.index_of("\"appliedOpIds\":[\"op-1\",\"op-2\",\"proposal:p1\"]") >= 0)
+}
+
+test "r8_runtime_compat_threads_chats_and_p2_checks" {
+  // TS RUNTIME_KINDS includes `copilot` and excludes `opencode`/`acp`.
+  assert(contains_str(all_runtime_kinds(), "copilot"))
+  assert(!contains_str(all_runtime_kinds(), "opencode"))
+
+  // Legacy client querying `/threads` filters out unsupported `copilot` thread.
+  let body = "[{\"id\":1,\"runtime\":\"copilot\"},{\"id\":2,\"runtime\":\"claude\"}]"
+  let resp = json_response(200, body)
+  let req = ApiRequest::from_http(make_req("GET", "/threads", [], ""), Viewer::member("a@example.com", "ws"))
+  let out = runtime_compatible(req, resp)
+  assert(out.body.to_string().index_of("copilot") < 0)
+  assert(out.body.to_string().index_of("\"id\":2") >= 0)
+
+  // Single thread with unsupported runtime returns 426.
+  let single_req = ApiRequest::from_http(make_req("GET", "/threads/1", [], ""), Viewer::member("a@example.com", "ws"))
+  let single_out = runtime_compatible(single_req, json_response(200, "{\"id\":1,\"runtime\":\"copilot\"}"))
+  assert(single_out.status == 426)
+
+  // Overview without `stillfail-profile-services: 1` omits service profiles and backfills null runtime -> "claude".
+  let ov_req = ApiRequest::from_http(make_req("GET", "/overview", [], ""), Viewer::member("a@example.com", "ws"))
+  let ov_body = "{\"profiles\":[{\"id\":\"svc\",\"service\":\"colab\",\"runtime\":null},{\"id\":\"jev\",\"runtime\":null}],\"profileServices\":[\"colab\"]}"
+  let ov_out = runtime_compatible(ov_req, json_response(200, ov_body))
+  let ov_s = ov_out.body.to_string()
+  assert(ov_s.index_of("profileServices") < 0)
+  assert(ov_s.index_of("\"id\":\"svc\"") < 0)
+  assert(ov_s.index_of("\"runtime\":\"claude\"") >= 0)
+
+  // P2: 426 response includes `update: true`, `build_of` rejects overflowing digits.
+  let old_req = make_req("GET", "/overview", [http1::Header::new("stillfail-build", "0.1.7000")], "")
+  match check_core_version(old_req, OLDEST_CORE, "0.1.9000", Lang::En) {
+    Some(r426) => {
+      assert(r426.status == 426)
+      assert(r426.body.to_string().index_of("\"update\":true") >= 0)
+    }
+    None => panic("expected 426")
+  }
+  assert(match build_of(Some("999999999999999")) {
+    None => true
+    Some(_) => false
+  })
+
+  // P2: EventLog::from_json fails closed when `to` is missing.
+  let bad_log_json = match base_codec::json_parse("{\"run\":\"abcd\",\"seq\":1,\"forgotten\":0,\"events\":[{\"n\":1,\"text\":\"x\",\"at\":1}]}") {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(_) => panic("json")
+  }
+  assert(match EventLog::from_json(bad_log_json, 10L, EventKeeps::default()) {
+    Err(_) => true
+    Ok(_) => false
+  })
 }
