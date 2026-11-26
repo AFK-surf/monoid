@@ -2292,26 +2292,21 @@ fn software_row_node(
   let runtime_switch = fn() { online() && !own && manager && supports_disable() && (flag(v(), "installed") || disabled()) }
   let call = fn(name : String, params : Array[(String, Json)]) { software_call(core, station, name, params) }
   @sf.item_row_node(row, fn(r) {
-    // (its mark on its first line, never centred on the lines under it (its version, what an update says, its switches):
-    // the row's parts from its top, and its first line at least as tall as the mark, across whose middle the name and
-    // what stands at its end are)
+    // (its mark small and bare in its name's line, the lines under it (its version, what an update says, its switches)
+    // starting where the mark does)
     r.lines_up(Is(Some(Start))) |> ignore
-    r.box(fn(m) {
-      @sf.style_node(m, fn() { sw_mark }, in_row=true)
-      if own {
-        m.pick(fn() { @sf.theme().dark }, fn(k, dark) {
-          @sf.drawable_node(k, if dark { "stillfail_mark_dark" } else { "stillfail_mark" }, sw_glyph) |> ignore
-        })
-      } else {
-        @sf.maker_mark_node(m, "", id, sw_glyph) |> ignore
-      }
-    })
-    |> ignore
     @sf.row_lines_node(r, spaced=true, fn(h) {
-      h.min_height(Is(Some(sw_mark_d))).wraps(Is(Some(6.0))).lies_along(Is(Between)) |> ignore
+      h.wraps(Is(Some(6.0))).lies_along(Is(Between)) |> ignore
       h.box(fn(n) {
         @sf.style_node(n, fn() { sw_name_line }, in_row=true)
         n.shrink(Is(0.0)) |> ignore
+        if own {
+          n.pick(fn() { @sf.theme().dark }, fn(k, dark) {
+            @sf.drawable_node(k, if dark { "stillfail_mark_dark" } else { "stillfail_mark" }, sw_glyph) |> ignore
+          })
+        } else {
+          @sf.maker_mark_node(n, "", id, sw_glyph) |> ignore
+        }
         @sf.words_node(n, fn() { text(v(), "name") }, fn() { sw_name }) |> ignore
         n.show(fn() { text(v(), "channel") == "beta" && !switches() }, fn(tag) {
           @sf.style_node(tag, fn() { sw_beta })
