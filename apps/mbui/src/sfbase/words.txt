@@ -508,6 +508,7 @@ android-misc.jobs.title
 android-misc.limit.members
 android-misc.limit.workspaces
 android-misc.link.cantOpen
+android-misc.link.notJoined
 android-misc.notify.allowInSettings
 android-misc.notify.channel
 android-misc.openJobs.more

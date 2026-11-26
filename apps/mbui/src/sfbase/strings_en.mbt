@@ -522,6 +522,7 @@ let en : Map[String, String] = {
   "android-misc.limit.members": "Member limit reached: only you on the free plan, up to 6 people on Standard",
   "android-misc.limit.workspaces": "Up to 5 workspaces per account",
   "android-misc.link.cantOpen": "Couldn't open this link",
+  "android-misc.link.notJoined": "This chat is in a workspace you haven't joined",
   "android-misc.notify.allowInSettings": "Allow {app} notifications in system settings",
   "android-misc.notify.channel": "Messages",
   "android-misc.openJobs.more": "{n} more",

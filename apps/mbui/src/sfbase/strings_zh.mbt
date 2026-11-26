@@ -516,6 +516,7 @@ let zh : Map[String, String] = {
   "android-misc.limit.members": "成员已达上限：免费版仅限本人 1 人，标准版最多 6 人",
   "android-misc.limit.workspaces": "每个账号最多新建 5 个 workspace",
   "android-misc.link.cantOpen": "无法打开此链接",
+  "android-misc.link.notJoined": "这个会话所在的 workspace 你还没有加入",
   "android-misc.notify.allowInSettings": "在系统设置里允许 {app} 发通知",
   "android-misc.notify.channel": "消息",
   "android-misc.openJobs.more": "还有 {n} 个",

@@ -202,6 +202,10 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, n
       if t.chat == "" {
         return false
       }
+      if !link_joined(src, ws, current) {
+        toast_later(@sf.t("android-misc.link.notJoined"))
+        return true
+      }
       let r = chat_ref(address, t.chat)
       if notice && ws == current && t.history == "" && notice_on_board(r) {
         (shell.val.close_overlays)()
@@ -215,8 +219,10 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, n
             (shell.val.close_overlays)()
             match at { Some(seq) => go_to(top, seq, keep_place=false); None => () }
           }
+        // (another workspace's chat tapped here: over this one as this workspace's are, the workspace in view kept, back
+        // to this chat; switching took the whole stack down to that workspace's Home and slid the chat in over it)
         _ =>
-          if ws != current {
+          if ws != current && outside {
             open_item(src, ws, address, t.chat, None, None)
           } else {
             (shell.val.close_overlays)()
@@ -238,6 +244,10 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, n
     "item" => {
       if t.session == "" {
         return false
+      }
+      if !link_joined(src, ws, current) {
+        toast_later(@sf.t("android-misc.link.notJoined"))
+        return true
       }
       let r = chat_ref(address, t.session)
       if notice && ws == current && t.service == "" && t.history == "" && notice_on_board(r) {
@@ -272,9 +282,8 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, n
           Some(job) => open_page(Service(address, job))
           None => ()
         }
-      } else if ws != current {
-        open_item(src, ws, address, t.session, service, None)
       } else {
+        // (another workspace's too: over this chat, the workspace in view kept, as a chat's link of it is)
         (shell.val.close_overlays)()
         open_page_over(Chat(chat_ref(address, t.session)))
         match service {
@@ -390,6 +399,18 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, n
     bring_chosen()
   }
   true
+}
+
+///|
+/// Whether workspace `ws` a link leads into is one the viewer is in (`current`, the one in view, is): any of every
+/// account's, or any while they are not all known yet. One they are not in opens nothing: picked, it is no workspace
+/// to show and the first is shown in its place, its chat not to be had.
+fn link_joined(src : Source, ws : String, current : String) -> Bool {
+  if ws == "" || ws == current {
+    return true
+  }
+  let (all, answered, _) = workspaces_of(src.topic("workspaces", {}).get().snapshot().value)
+  !answered || all.iter().any(fn(w) { w.id == ws })
 }
 
 ///|
