@@ -749,21 +749,41 @@ pub(crate) async fn connect_unix(path: &str) -> Result<tokio::net::UnixStream, S
 #[cfg(unix)]
 fn listen_unix(path: &str, backlog: libc::c_int, mode: Option<u32>) -> Result<tokio::net::UnixListener, String> {
     use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
-    let path_bytes = path.as_bytes();
-    if path_bytes.contains(&0) {
+    if path.as_bytes().contains(&0) {
         return Err("unix socket path contains NUL".into());
     }
-    // SAFETY: `sockaddr_un` is a plain C struct; zero-initializing leaves `sun_path` NUL-terminated.
-    let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
-    addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
-    if path_bytes.len() >= addr.sun_path.len() {
-        return Err(format!("unix socket path too long ({} >= {})", path_bytes.len(), addr.sun_path.len()));
-    }
-    // SAFETY: `path_bytes.len() < addr.sun_path.len()` was checked above and both pointers are valid and non-overlapping.
-    unsafe {
-        std::ptr::copy_nonoverlapping(path_bytes.as_ptr(), addr.sun_path.as_mut_ptr().cast::<u8>(), path_bytes.len());
-    }
-    let addr_len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + path_bytes.len() + 1) as libc::socklen_t;
+    let make_addr = |bind_path: &str| -> Result<(libc::sockaddr_un, libc::socklen_t), String> {
+        let bytes = bind_path.as_bytes();
+        // SAFETY: `sockaddr_un` is a plain C struct; zero-initializing leaves `sun_path` NUL-terminated.
+        let mut addr: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        addr.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        if bytes.len() >= addr.sun_path.len() {
+            return Err(format!("unix socket path too long ({} >= {})", bytes.len(), addr.sun_path.len()));
+        }
+        // SAFETY: `bytes.len() < addr.sun_path.len()` was checked above and both pointers are valid and non-overlapping.
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), addr.sun_path.as_mut_ptr().cast::<u8>(), bytes.len());
+        }
+        let len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + bytes.len() + 1) as libc::socklen_t;
+        Ok((addr, len))
+    };
+
+    let (target_addr, target_len) = make_addr(path)?;
+
+    // When an explicit `mode` is requested, bind exclusively on a unique sibling path, apply `mode` and `listen`
+    // while that inode is private to this call, and atomically `rename` it into `path`. That prevents a concurrent
+    // `unix.listen` on the same `path` from having its mode overwritten or its inode unlinked by a racing call.
+    let staged: Option<(String, libc::sockaddr_un, libc::socklen_t)> = if mode.is_some() {
+        let mut random = [0u8; 4];
+        getrandom::fill(&mut random).map_err(err)?;
+        let parent = std::path::Path::new(path).parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| std::path::Path::new("."));
+        let tmp = parent.join(format!(".u{}", hex::encode(random)));
+        let tmp_str = tmp.to_str().ok_or_else(|| "unix socket path is not valid UTF-8".to_string())?.to_string();
+        let (addr, len) = make_addr(&tmp_str)?;
+        Some((tmp_str, addr, len))
+    } else {
+        None
+    };
 
     // SAFETY: standard POSIX socket creation; wrapped in `OwnedFd` immediately so no error path can leak it.
     let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
@@ -776,21 +796,36 @@ fn listen_unix(path: &str, backlog: libc::c_int, mode: Option<u32>) -> Result<to
     if unsafe { libc::fcntl(owned.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
         return Err(err(std::io::Error::last_os_error()));
     }
-    let _ = std::fs::remove_file(path);
-    // SAFETY: `addr` is a properly initialized `sockaddr_un` of length `addr_len`.
-    if unsafe { libc::bind(owned.as_raw_fd(), (&addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(), addr_len) } < 0 {
-        return Err(err(std::io::Error::last_os_error()));
-    }
-    if let Some(m) = mode {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(m)) {
-            let _ = std::fs::remove_file(path);
-            return Err(err(e));
+    if let Some((tmp_path, addr, addr_len)) = staged {
+        // SAFETY: `addr` is a properly initialized `sockaddr_un` of length `addr_len`.
+        if unsafe { libc::bind(owned.as_raw_fd(), (&addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(), addr_len) } < 0 {
+            return Err(err(std::io::Error::last_os_error()));
         }
-    }
-    // SAFETY: `owned` is a bound AF_UNIX/SOCK_STREAM socket.
-    if unsafe { libc::listen(owned.as_raw_fd(), backlog) } < 0 {
-        return Err(err(std::io::Error::last_os_error()));
+        let publish = (|| -> Result<(), String> {
+            if let Some(m) = mode {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(m)).map_err(err)?;
+            }
+            // SAFETY: `owned` is a bound AF_UNIX/SOCK_STREAM socket.
+            if unsafe { libc::listen(owned.as_raw_fd(), backlog) } < 0 {
+                return Err(err(std::io::Error::last_os_error()));
+            }
+            std::fs::rename(&tmp_path, path).map_err(err)
+        })();
+        if let Err(e) = publish {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e);
+        }
+    } else {
+        let _ = std::fs::remove_file(path);
+        // SAFETY: `target_addr` is a properly initialized `sockaddr_un` of length `target_len`.
+        if unsafe { libc::bind(owned.as_raw_fd(), (&target_addr as *const libc::sockaddr_un).cast::<libc::sockaddr>(), target_len) } < 0 {
+            return Err(err(std::io::Error::last_os_error()));
+        }
+        // SAFETY: `owned` is a bound AF_UNIX/SOCK_STREAM socket.
+        if unsafe { libc::listen(owned.as_raw_fd(), backlog) } < 0 {
+            return Err(err(std::io::Error::last_os_error()));
+        }
     }
     // SAFETY: transfers ownership of the listening AF_UNIX socket descriptor to `std::os::unix::net::UnixListener`.
     let std_listener = unsafe { std::os::unix::net::UnixListener::from_raw_fd(owned.into_raw_fd()) };

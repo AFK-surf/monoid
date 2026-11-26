@@ -4012,7 +4012,49 @@ fn fs_write_respects_mode_and_lstat_follow_follows_symlink() {
             let lid = listened.json["id"].as_u64().unwrap();
             let sock_meta = std::fs::symlink_metadata(&sock_path).unwrap();
             assert_eq!(sock_meta.mode() & 0o777, 0o600, "unix.listen with mode 0o600 must create 0600 socket");
+            // Verify the atomically published Unix socket accepts real connections.
+            let accept_inner = inner.clone();
+            let accept_task = tokio::spawn(async move { accept_inner.run("tcp.accept", json!({ "id": lid }), None).await });
+            let mut client = tokio::net::UnixStream::connect(&sock_path).await.expect("connect to published 0600 unix socket");
+            client.write_all(b"hi").await.unwrap();
+            let accepted = accept_task.await.unwrap().expect("accept on published unix socket");
+            let cid = accepted.json["id"].as_u64().unwrap();
+            let got = inner.run("tcp.read", json!({ "id": cid }), None).await.expect("read from unix socket");
+            assert_eq!(got.bytes.as_deref(), Some(b"hi".as_slice()));
+            assert!(inner.run("tcp.close", json!({ "id": cid }), None).await.is_ok());
             assert!(inner.run("listen.close", json!({ "id": lid }), None).await.is_ok());
+
+            // Concurrent `unix.listen` replacements on the same path: whichever listener owns the final socket
+            // must also own the final socket's exact permission mode (no cross-call chmod overwrite).
+            let race_path = dir.path().join("race.sock");
+            let (i1, i2) = (inner.clone(), inner.clone());
+            let (p1, p2) = (race_path.to_string_lossy().into_owned(), race_path.to_string_lossy().into_owned());
+            let (r1, r2) = tokio::join!(
+                i1.run("unix.listen", json!({ "path": p1, "mode": 0o600 }), None),
+                i2.run("unix.listen", json!({ "path": p2, "mode": 0o640 }), None),
+            );
+            let lid1 = r1.expect("concurrent unix.listen 0600").json["id"].as_u64().unwrap();
+            let lid2 = r2.expect("concurrent unix.listen 0640").json["id"].as_u64().unwrap();
+            let final_mode = std::fs::symlink_metadata(&race_path).unwrap().mode() & 0o777;
+            let (a1_inner, a2_inner) = (inner.clone(), inner.clone());
+            let a1 = tokio::spawn(async move { a1_inner.run("tcp.accept", json!({ "id": lid1 }), None).await });
+            let a2 = tokio::spawn(async move { a2_inner.run("tcp.accept", json!({ "id": lid2 }), None).await });
+            let _probe = tokio::net::UnixStream::connect(&race_path).await.expect("connect to winning concurrent socket");
+            let winner_mode = tokio::select! {
+                res = a1 => {
+                    let cid = res.unwrap().expect("winner 1 accept").json["id"].as_u64().unwrap();
+                    let _ = inner.run("tcp.close", json!({ "id": cid }), None).await;
+                    0o600
+                }
+                res = a2 => {
+                    let cid = res.unwrap().expect("winner 2 accept").json["id"].as_u64().unwrap();
+                    let _ = inner.run("tcp.close", json!({ "id": cid }), None).await;
+                    0o640
+                }
+            };
+            assert_eq!(final_mode, winner_mode, "published socket mode must match its owning listener's requested mode");
+            assert!(inner.run("listen.close", json!({ "id": lid1 }), None).await.is_ok());
+            assert!(inner.run("listen.close", json!({ "id": lid2 }), None).await.is_ok());
         });
     }
 
