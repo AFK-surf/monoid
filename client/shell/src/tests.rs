@@ -1029,7 +1029,8 @@ fn conn_hand_keeps_and_hands_nothing_once_its_connection_is_gone() {
 }
 
 /// A stream reset (`istream.reset`) while `conn.hand` still waits for its head line (one that may go to a program,
-/// `front`): given up at once, never handed, its reader let go (the reset waited on it for good before).
+/// `front`): given up at once with the reset's code, its reader let go (the reset waited on it for good before), Node
+/// told to pass over its index, and the connection's next stream handed as ever.
 #[cfg(unix)]
 #[test]
 fn a_stream_reset_before_it_is_carried_is_given_up_at_once() {
@@ -1075,10 +1076,20 @@ fn a_stream_reset_before_it_is_carried_is_given_up_at_once() {
             }
             tokio::task::yield_now().await;
         };
-        let reset = inner.run("istream.reset", json!({ "id": stream }), None);
+        let reset = inner.run("istream.reset", json!({ "id": stream, "code": 42 }), None);
         tokio::time::timeout(std::time::Duration::from_secs(10), reset).await.expect("the reset waited on the stream's reader").unwrap();
-        assert!(recv1.read_to_end(1 << 16).await.is_err(), "the stream not reset");
+        let said_reset = format!("{:?}", recv1.read_to_end(1 << 16).await.err().expect("the stream not reset"));
+        assert!(said_reset.contains("Reset(42)"), "{said_reset}");
+        // Node told to pass over it (a kind 3), not given it
+        assert_eq!(said.recv().await.unwrap(), ("node", 3, 1, vec![]));
         assert!(streams_of().is_empty());
+        // the next on the same connection handed as ever
+        let (mut send2, mut recv2) = theirs.open_bi().await.unwrap();
+        send2.write_all(b"{\"method\":\"GET\",\"path\":\"/elsewhere\"}\n").await.unwrap();
+        send2.finish().unwrap();
+        assert_eq!(String::from_utf8(recv2.read_to_end(1 << 16).await.unwrap()).unwrap(), "node");
+        let (who, kind, index, _) = said.recv().await.unwrap();
+        assert_eq!((who, kind, index), ("node", 2, 2));
         node_task.abort();
         front_task.abort();
         let _ = (node_task.await, front_task.await);
@@ -1210,7 +1221,8 @@ fn taking_streams(listener: tokio::net::UnixListener, who: &'static str, said: t
                 let mut out = (who.len() as u32).to_be_bytes().to_vec();
                 out.extend(who.as_bytes());
                 out.extend(PIPE_END.to_be_bytes());
-                write.write_all(&out).await.unwrap();
+                // (the stream may be gone by now: a test that ends its connection)
+                let _ = write.write_all(&out).await;
                 let mut rest = vec![];
                 let _ = read.read_to_end(&mut rest).await;
             });

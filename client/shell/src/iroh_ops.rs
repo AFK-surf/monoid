@@ -620,7 +620,7 @@ impl Inner {
         let streams: Vec<u64> = handles.iter().filter_map(|(k, h)| matches!(h, Handle::IStream(halves) if halves.conn == id).then_some(*k)).collect();
         for k in streams {
             if let Some(Handle::IStream(halves)) = handles.remove(&k) {
-                halves.reset.send_replace(true);
+                halves.reset.send_replace(Some(0));
             }
         }
     }
@@ -935,7 +935,7 @@ impl Inner {
                     finished: false.into(),
                     send: tokio::sync::Mutex::new(send),
                     recv: tokio::sync::Mutex::new(recv),
-                    reset: tokio::sync::watch::channel(false).0,
+                    reset: tokio::sync::watch::channel(None).0,
                     tap: Mutex::default(),
                     media_out: Default::default(),
                     media_in: Default::default(),
