@@ -6169,6 +6169,13 @@
         if (touch(e)) { ptr(12, e, e.pointerId); if (isIOS()) frameInGesture(); }
         else if (e.button === 0 || e.button === 1 || e.button === 2) ptr(2, e, btnOf(e));
       });
+      // On iOS WebKit, preventing pointerdown suppresses mouse compatibility events from down,
+      // but an un-prevented touchend on the canvas still triggers synthetic tap activation/click
+      // that blurs the textarea focused during pointerup's frameInGesture(), retracting the soft
+      // keyboard. Suppress default touchend while an editor is active.
+      on(el, 'touchend', (e) => {
+        if (imeActive && e.cancelable) e.preventDefault();
+      }, { passive: false });
       on(el, 'pointercancel', (e) => (touch(e) ? ptr(13, e, e.pointerId) : ptr(3, e, 0)));
       // A move or a capture transfer between the app's own input layers is not leaving the window. Leaving them for
       // a site or the outside is: nothing of the app is hovered there.
