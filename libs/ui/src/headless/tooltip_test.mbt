@@ -459,3 +459,53 @@ test "TooltipGroup::trigger: within, repeats, takes_input guard, and touch_hold"
     (Some("容器"), None, None, Some("长按"), Some("长按"), None),
   )
 }
+
+///|
+test "TooltipGroup::trigger: a tip saying just the words its control shows whole opens none, one saying more or over them cut short opens" {
+  let shown : @signals.Signal[String?] = @signals.signal(None)
+  let group = @headless.TooltipGroup::new(
+    fn() { shown.get() },
+    fn(k) { shown.set(k) },
+    open_delay_ms=100.0,
+    warmup_ms=-1.0,
+  )
+  let t = window(fn(root) {
+    // a chip whose name, in a box it holds, is its tip's words
+    root.box(fn(chip) {
+      chip.width(Is(Some(200.0))).height(Is(Some(30.0))).points(Is(true)).ground(Is(c_rest)) |> ignore
+      chip.box(fn(w) { w.words(Is("monoid")) |> ignore }) |> ignore
+      group.trigger(chip, "名字", says=fn() { "monoid" })
+    })
+    |> ignore
+    // the same words with a tip saying more
+    root.box(fn(more) {
+      more.width(Is(Some(200.0))).height(Is(Some(30.0))).points(Is(true)).words(Is("monoid")).ground(Is(c_rest))
+      |> ignore
+      group.trigger(more, "更多", says=fn() { "选一个项目" })
+    })
+    |> ignore
+    // its words cut short: its tip says them whole
+    root.box(fn(cut) {
+      cut
+      .width(Is(Some(20.0)))
+      .height(Is(Some(30.0)))
+      .points(Is(true))
+      .words(Is("a-very-long-project-name"))
+      .ground(Is(c_rest))
+      |> ignore
+      group.trigger(cut, "截断", says=fn() { "a-very-long-project-name" })
+    })
+    |> ignore
+  })
+  let tip_past_ms = 300.0
+  t.move_to(40.0, 15.0)
+  t.run_for(tip_past_ms)
+  let on_chip = shown.get()
+  t.move_to(40.0, 45.0)
+  t.run_for(tip_past_ms)
+  let on_more = shown.get()
+  t.move_to(10.0, 75.0)
+  t.run_for(tip_past_ms)
+  let on_cut = shown.get()
+  assert_eq((on_chip, on_more, on_cut), (None, Some("更多"), Some("截断")))
+}

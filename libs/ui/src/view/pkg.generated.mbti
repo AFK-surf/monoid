@@ -2140,6 +2140,7 @@ pub fn View::shown_across(Self, but? : Self) -> (Double, Double)?
 pub fn View::shown_by(Self, Self, (Double) -> GroundShape) -> Self
 pub fn View::shown_nowhere(Self) -> Bool
 pub fn View::shows(Self, (Double, Double) -> Double, across? : Bool, room? : () -> (Double, Double, Double)) -> Self
+pub fn View::shows_words_now(Self, String) -> Bool
 #callsite(autofill(loc))
 pub fn View::shrink(Self, Live[Double], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))

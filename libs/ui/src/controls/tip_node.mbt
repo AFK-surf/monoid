@@ -69,7 +69,8 @@ let tip_in_ms : Double = 120.0
 /// of the hand, a control or none (a mark, a status). `repeats`: it says words the control shows itself (a file's
 /// name on its card), whole: shown only where they show cut short there as it would show (View::words_cut_now: any words
 /// in `anchor`, as the old tip's Ctx::shows_cut), none where they show whole; once shown, it goes as any does, not as
-/// they come to show whole. `shortcut`: the action that does what the control does, its keys said after the words
+/// they come to show whole; so is any tip with no keys to say whose words its control shows itself
+/// (View::shows_words_now). `shortcut`: the action that does what the control does, its keys said after the words
 /// (tip's: shortcut_keys, as the app says them; none while no keyboard is at hand). `pressed`: whether what a press on
 /// it lands on is held (none: `anchor` itself), where that is a control `within` it (an update's key in what holds its
 /// tip): its press shuts it as one on `anchor` does.
@@ -155,7 +156,8 @@ pub fn tip_node(
   let group_disabled = fn() {
     label() == "" || hand.get() != Free || shut.get() || pressed_now()
   }
-  group.trigger(anchor, owner, disabled=group_disabled, within~, repeats~)
+  let says = if shortcut == "" { label } else { fn() { "" } }
+  group.trigger(anchor, owner, disabled=group_disabled, within~, repeats~, says~)
   // (made in its layer as it is first shown where there is one then (none yet: shown the next time it is, as there is
   // one), held there for its control, let go with it)
   let made = Ref(false)
@@ -190,8 +192,12 @@ pub fn tip_node(
     if on == open.untracked() {
       return
     }
-    // (saying what its control shows whole: not shown where that shows whole as it would show, at this moment)
-    if on && repeats && !anchor.words_cut_now() {
+    // (saying what its control shows whole: not shown where that shows whole as it would show, at this moment; so for
+    // any tip saying just the words its control shows, `repeats` or not: a chip's name over the chip says nothing
+    // more, one saying its keys too does)
+    if on &&
+      (repeats || (shortcut == "" && anchor.shows_words_now(@signals.untracked(label)))) &&
+      !anchor.words_cut_now() {
       return
     }
     let at = anchor.cause_at()
