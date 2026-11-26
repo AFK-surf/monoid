@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [13922d044](https://github.com/AFK-surf/monoid/commit/13922d04412896a190d731348154548ddc05d71f) perf(ui): fix dark-mode adaptive settle storm, 3x  | 2.59 | 3.5 | 14.48 | 37.1 | 56.61 | 32.41 | 65.81 | 100.84 | 131.52 |
 | [377326ff8](https://github.com/AFK-surf/monoid/commit/377326ff88a3b6c822f3c085fb0dc56002cb1887) fix(station): preserve progress across stale-head  | 2.59 | 3.5 | 14.48 | 37.1 | 56.6 | 32.41 | 65.8 | 101.06 | 124.05 |
 | [169ca1f50](https://github.com/AFK-surf/monoid/commit/169ca1f50f653cc34c326270faf227038242e574) feat(pion-station): port --builder replica-chat to | 2.59 | 3.5 | 14.48 | 37.1 | 56.6 | 32.41 | 65.8 | 101.06 | 124.05 |
 | [d8051674f](https://github.com/AFK-surf/monoid/commit/d8051674f4057ed1411a045676ad85c18a2fe5e0) feat(pion-station): W8-F zero-stub reader_sessions | 2.59 | 3.5 | 14.48 | 37.1 | 56.6 | 32.41 | 65.8 | 101.06 | 124.05 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [225e4d51a](https://github.com/AFK-surf/monoid/commit/225e4d51add15266b761e500d468ec9b74fa09fe) feat(screen): redo cross-OS remote keyboard and sh | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [c757b11f8](https://github.com/AFK-surf/monoid/commit/c757b11f876dbc22c748fea9fdd559605f3a9a4c) fix(ui): keep dragged thumbs and pictures under th | 2.55 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 | [6df8ba486](https://github.com/AFK-surf/monoid/commit/6df8ba4862d216fe89c8eb929ee413c7d6df6e23) fix(mbui): put a station's state dot after its wor | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
-| [b9c8a4280](https://github.com/AFK-surf/monoid/commit/b9c8a42804079619d16d10671845e4ff67eb8d5f) fix(station): let backups give way by the delay th | 2.54 | 3.44 | 14.21 | 36.81 | 55.62 | 32.16 | 65.02 | 101.12 | 126.18 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [13922d044](https://github.com/AFK-surf/monoid/commit/13922d04412896a190d731348154548ddc05d71f) perf(ui): fix dark-mode adaptive settle storm, 3x  | 0.56 | 0.74 | 2.87 | 3.92 | 7.18 | 2.13 | 6.01 | 57.28 |
 | [377326ff8](https://github.com/AFK-surf/monoid/commit/377326ff88a3b6c822f3c085fb0dc56002cb1887) fix(station): preserve progress across stale-head  | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.35 |
 | [169ca1f50](https://github.com/AFK-surf/monoid/commit/169ca1f50f653cc34c326270faf227038242e574) feat(pion-station): port --builder replica-chat to | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.28 |
 | [d8051674f](https://github.com/AFK-surf/monoid/commit/d8051674f4057ed1411a045676ad85c18a2fe5e0) feat(pion-station): W8-F zero-stub reader_sessions | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.41 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [225e4d51a](https://github.com/AFK-surf/monoid/commit/225e4d51add15266b761e500d468ec9b74fa09fe) feat(screen): redo cross-OS remote keyboard and sh | 0.56 | 0.74 | 2.86 | 3.91 | 7.16 | 2.13 | 5.98 | 57.3 |
 | [c757b11f8](https://github.com/AFK-surf/monoid/commit/c757b11f876dbc22c748fea9fdd559605f3a9a4c) fix(ui): keep dragged thumbs and pictures under th | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.31 |
 | [6df8ba486](https://github.com/AFK-surf/monoid/commit/6df8ba4862d216fe89c8eb929ee413c7d6df6e23) fix(mbui): put a station's state dot after its wor | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.44 |
-| [b9c8a4280](https://github.com/AFK-surf/monoid/commit/b9c8a42804079619d16d10671845e4ff67eb8d5f) fix(station): let backups give way by the delay th | 0.56 | 0.74 | 2.86 | 3.91 | 7.15 | 2.12 | 5.98 | 57.51 |
