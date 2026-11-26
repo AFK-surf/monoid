@@ -23,6 +23,7 @@ pub struct FsStat {
   pub kind : String // "file" | "dir" | "link" | "other"
   pub size : Int64
   pub executable : Bool
+  pub mode : Int
   pub mtime_ms : Int64
   pub dev : Int64
   pub ino : Int64
@@ -221,10 +222,19 @@ pub fn parse_lstat_str(raw : String) -> Option[FsStat] {
   } else {
     0.to_int64()
   }
+  let mode = if parts.length() >= 7 {
+    match sj_parse_int64(parts[6]) {
+      Some(v) => v.to_int() & 4095
+      None => if exec { 493 } else { 420 }
+    }
+  } else {
+    if exec { 493 } else { 420 }
+  }
   Some(FsStat::{
     kind: kind,
     size: size,
     executable: exec,
+    mode: mode,
     mtime_ms: mtime_ms,
     dev: dev,
     ino: ino,

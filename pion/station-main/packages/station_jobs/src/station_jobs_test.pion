@@ -181,6 +181,7 @@ fn MemFs::to_port(self : MemFs) -> FsPort {
       kind: n.kind,
       size: n.data.length().to_int64(),
       executable: (n.mode & 73) != 0,
+      mode: n.mode & 4095,
       mtime_ms: n.mtime_ms,
       dev: n.dev,
       ino: n.ino,

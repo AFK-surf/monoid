@@ -5704,13 +5704,14 @@ void *sts_lstat(const char *path, int64_t *out_len) {
 #endif
     char buf[192];
     int n = snprintf(
-        buf, sizeof(buf), "%s|%lld|%d|%lld|%llu|%llu",
+        buf, sizeof(buf), "%s|%lld|%d|%lld|%llu|%llu|%u",
         kind,
         (long long)st.st_size,
         (st.st_mode & 0111) != 0 ? 1 : 0,
         (long long)mtime_ms,
         (unsigned long long)st.st_dev,
-        (unsigned long long)st.st_ino);
+        (unsigned long long)st.st_ino,
+        (unsigned int)(st.st_mode & 07777));
     return n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
 }
 

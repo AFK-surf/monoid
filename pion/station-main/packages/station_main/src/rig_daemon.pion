@@ -154,6 +154,16 @@ struct PendingZstdPut {
   is_front : Bool
 }
 
+struct PendingHandoverRpc {
+  sid : Int64
+  line : String
+  bin_opt : Option[Bytes]
+  remote_id : String
+  v2_bytes : Bool
+  is_front : Bool
+  queued_at_ms : Int64
+}
+
 struct PendingFileStream {
   plan : StreamFilePlan
   mut cur_offset : Int64
@@ -1270,6 +1280,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
   let stream_ids_list : Array[Int64] = []
   let pending_zstd_puts : Map[Int64, PendingZstdPut] = Map::new()
   let pending_file_streams : Map[Int64, PendingFileStream] = Map::new()
+  let pending_handover_rpcs : Array[PendingHandoverRpc] = []
 
   // Optional shared mesh front (`STILLFAIL_MESH_FRONT`) state.
   let front_sock_opt : Option[String] = match station_sys::env_get("STILLFAIL_MESH_FRONT") {
@@ -1615,7 +1626,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     }
   }
 
-  let dispatch_peer_rpc_stream = fn(
+  let dispatch_peer_rpc_now = fn(
     sid : Int64,
     line : String,
     bin_opt : Option[Bytes],
@@ -1671,7 +1682,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         let _ = mux_mesh.call_async_raw(
           builders_core::MuxToken::Tagged(0, MESH_TOK_ZSTD_UNPACK, sid),
           "zstd.unpack",
-          base_codec::json_stringify(base_codec::json_obj([("most", base_codec::json_int(station_jobs::DIRSYNC_PACKED_MAX))])),
+          base_codec::json_stringify(base_codec::json_obj([("most", base_codec::json_int(station_jobs::DIRSYNC_RAW_MAX))])),
           Some(zbytes),
         )
       }
@@ -1695,7 +1706,55 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     }
   }
 
+  let dispatch_peer_rpc_stream = fn(
+    sid : Int64,
+    line : String,
+    bin_opt : Option[Bytes],
+    remote_id : String,
+    v2_bytes : Bool,
+    is_front : Bool,
+  ) -> Unit {
+    // 1:1 alignment with `station/src/rig/module.ts:111-118`: during startup handover barrier (`!jobs_adopted`),
+    // queue incoming requests until previous exits & `grants.reload()` finishes instead of refusing with `this rig is stopping`.
+    if !jobs_adopted && !stopping {
+      if pending_handover_rpcs.length() >= MAX_ACTIVE_STREAMS {
+        let err_b = station_mesh::encode_peer_answer_err("too many queued handover requests", v2_bytes)
+        write_peer_reply_to_stream(sid, err_b, None, v2_bytes, is_front)
+        return
+      }
+      pending_handover_rpcs.push(PendingHandoverRpc::{
+        sid: sid,
+        line: line,
+        bin_opt: bin_opt,
+        remote_id: remote_id,
+        v2_bytes: v2_bytes,
+        is_front: is_front,
+        queued_at_ms: host_shim::now_ms(),
+      })
+      return
+    }
+    dispatch_peer_rpc_now(sid, line, bin_opt, remote_id, v2_bytes, is_front)
+  }
+
+  let flush_pending_handover_rpcs = fn() -> Unit {
+    if pending_handover_rpcs.length() == 0 {
+      return
+    }
+    let queued : Array[PendingHandoverRpc] = []
+    for i in 0..<pending_handover_rpcs.length() {
+      queued.push(pending_handover_rpcs[i])
+    }
+    pending_handover_rpcs.clear()
+    for i in 0..<queued.length() {
+      let item = queued[i]
+      dispatch_peer_rpc_now(item.sid, item.line, item.bin_opt, item.remote_id, item.v2_bytes, item.is_front)
+    }
+  }
+
   let try_start_streaming_put = fn(line : String, remote_id : String) -> Option[Result[StreamPutCtx, String]] {
+    if !jobs_adopted {
+      return None
+    }
     let parsed = match base_codec::json_parse(line) {
       base_codec::JsonParseResult::Ok(j) => j
       base_codec::JsonParseResult::Err(_) => return None
@@ -1836,6 +1895,18 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     for i in 0..<fsk.length() {
       front_out_by_sock.remove(fsk[i])
     }
+    if pending_handover_rpcs.length() > 0 {
+      let kept_ho : Array[PendingHandoverRpc] = []
+      for i in 0..<pending_handover_rpcs.length() {
+        if !pending_handover_rpcs[i].is_front {
+          kept_ho.push(pending_handover_rpcs[i])
+        }
+      }
+      pending_handover_rpcs.clear()
+      for i in 0..<kept_ho.length() {
+        pending_handover_rpcs.push(kept_ho[i])
+      }
+    }
     match front_stream_srv_id {
       Some(srv_id) => {
         front_stream_srv_id = None
@@ -1934,7 +2005,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       rig_log("loopback listening on 127.0.0.1:" + port.to_string())
     }
 
-    // Announce AgentsDoor port once listening, wire `jobs.notify_url`, THEN adopt jobs & open grants.
+    // Announce AgentsDoor port once listening, wire `jobs.notify_url`, THEN adopt jobs, open grants & flush queued handover RPCs.
     if !door_announced && door_srv.is_listening() {
       door_announced = true
       let dport = door_srv.port()
@@ -1943,6 +2014,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       let _ = control.serving("mcp", dport)
       rig_log("agents door listening on 127.0.0.1:" + dport.to_string())
       complete_job_adoption()
+      flush_pending_handover_rpcs()
     }
 
     // Dispatch due outbound peer tells (`rig.changed`, `task.changed`, `vault.used`, `vault.done`).
@@ -2130,6 +2202,24 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
             }
           }
           None => ()
+        }
+      }
+
+      // Enforce 40s wait cap on queued startup-handover RPCs so slow/stuck predecessors never leak streams forever.
+      if pending_handover_rpcs.length() > 0 {
+        let kept_ho : Array[PendingHandoverRpc] = []
+        for hi in 0..<pending_handover_rpcs.length() {
+          let item = pending_handover_rpcs[hi]
+          if now - item.queued_at_ms >= station_ops::PREVIOUS_LIMIT_MS {
+            let err_b = station_mesh::encode_peer_answer_err("rig handover timed out", item.v2_bytes)
+            write_peer_reply_to_stream(item.sid, err_b, None, item.v2_bytes, item.is_front)
+          } else {
+            kept_ho.push(item)
+          }
+        }
+        pending_handover_rpcs.clear()
+        for hi in 0..<kept_ho.length() {
+          pending_handover_rpcs.push(kept_ho[hi])
         }
       }
 

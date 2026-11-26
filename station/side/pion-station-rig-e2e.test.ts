@@ -718,18 +718,57 @@ test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion h
   await until("Node /healthz 200", async () => (await httpGet(adminPort, "/healthz")).status === 200, 10_000);
   await verifyMeshStage("node", "req-front-node", "k-front-node");
 
-  // 2. Live `Node -> Pion` hot upgrade via `SIGUSR2` (launcher-coordinated, zero manual kill!).
-  writeFileSync(join(data, "config.json"), JSON.stringify({ engine: "pion" }) + "\n");
-  lc.kill("SIGUSR2");
-  const pionPid1 = await until(
-    "Node -> Pion handover switched hub.json pid",
+  // Helper: continuous `describe` + `task.list` loop running from BEFORE `SIGUSR2` across handover -> 0 `this rig is stopping` / 0 refused!
+  const runAcrossHandover = async (label: string, trigger: () => void, waitSwitched: () => Promise<void>) => {
+    let keepGoing = true;
+    let okCount = 0;
+    const errors: string[] = [];
+    const loop = (async () => {
+      let idx = 0;
+      while (keepGoing) {
+        const method = idx % 2 === 0 ? "describe" : "task.list";
+        idx++;
+        try {
+          const r = (await peerRpc(peerL, rigId, frontAddr, wsL, method === "describe" ? { method } : { method, session: "chat:front" })).result;
+          if (method === "describe") assert.ok(typeof r?.rev === "number");
+          else assert.ok(Array.isArray(r?.tasks));
+          okCount++;
+        } catch (e) {
+          errors.push(`${method}#${idx}: ${(e as Error).message}`);
+        }
+      }
+    })();
+    await new Promise((r) => setTimeout(r, 80));
+    trigger();
+    await waitSwitched();
+    await new Promise((r) => setTimeout(r, 150));
+    keepGoing = false;
+    await loop;
+    assert.ok(okCount >= 10, `${label}: expected >=10 successful calls across handover, got ${okCount}`);
+    const heldErrors = errors.filter((e) => /this rig is stopping|refused to accept a new connection/i.test(e));
+    assert.deepEqual(heldErrors, [], `${label}: zero held/refused errors across handover (all errors: ${JSON.stringify(errors)})`);
+  };
+
+  // 2. Live `Node -> Pion` hot upgrade via `SIGUSR2` with continuous RPC traffic across the cutover!
+  let pionPid1 = 0;
+  await runAcrossHandover(
+    "Node -> Pion",
     () => {
-      const p = readHubPidNow();
-      return p && p !== nodePid ? p : null;
+      writeFileSync(join(data, "config.json"), JSON.stringify({ engine: "pion" }) + "\n");
+      lc.kill("SIGUSR2");
     },
-    15_000,
+    async () => {
+      pionPid1 = await until(
+        "Node -> Pion handover switched hub.json pid",
+        () => {
+          const p = readHubPidNow();
+          return p && p !== nodePid ? p : null;
+        },
+        15_000,
+      );
+      await until("old Node process exited after handover", () => !isAlive(nodePid), 10_000);
+    },
   );
-  await until("old Node process exited after handover", () => !isAlive(nodePid), 10_000);
   assert.equal((await httpGet(adminPort, "/healthz")).status, 200);
   // Opus P1 (R7): 0ms zero-disruption handover on `Node -> Pion` via front: 30 serial `task.list` calls immediately succeed (0 refused)!
   for (let i = 0; i < 30; i++) {
@@ -738,17 +777,25 @@ test("Gate 12.2b: REAL Rust launcher coordinates Node -> Pion and Pion -> Pion h
   }
   await verifyMeshStage("pion1", "req-front-pion1", "k-front-pion1");
 
-  // 3. Live `Pion -> Pion` hot upgrade via `SIGUSR2` (launcher-coordinated, zero manual kill!).
-  lc.kill("SIGUSR2");
-  const pionPid2 = await until(
-    "Pion -> Pion handover switched hub.json pid",
+  // 3. Live `Pion -> Pion` hot upgrade via `SIGUSR2` with continuous RPC traffic across the cutover!
+  let pionPid2 = 0;
+  await runAcrossHandover(
+    "Pion -> Pion",
     () => {
-      const p = readHubPidNow();
-      return p && p !== pionPid1 ? p : null;
+      lc.kill("SIGUSR2");
     },
-    15_000,
+    async () => {
+      pionPid2 = await until(
+        "Pion -> Pion handover switched hub.json pid",
+        () => {
+          const p = readHubPidNow();
+          return p && p !== pionPid1 ? p : null;
+        },
+        15_000,
+      );
+      await until("old Pion process exited after handover", () => !isAlive(pionPid1), 10_000);
+    },
   );
-  await until("old Pion process exited after handover", () => !isAlive(pionPid1), 10_000);
   assert.equal((await httpGet(adminPort, "/healthz")).status, 200);
   await verifyMeshStage("pion2", "req-front-pion2", "k-front-pion2");
 
@@ -1366,9 +1413,11 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     chmodSync(join(mirrorRootA, "synced"), 0o700);
   }
 
-  // Astra P1-2 + P2 (R7): Mixed plan (rename + overwrite existing `synced/keep.txt` original->replacement) with unwritable `task.json`
-  // MUST roll back new file, deleted old file, manifest, AND overwritten `synced/keep.txt === "original\n"`;
+  // Astra P1-2 + P2 (R7/R8): Mixed plan (rename into new subdir + overwrite existing `synced/keep.txt` original->replacement with mode 0o664)
+  // with unwritable `task.json` MUST roll back new file + empty subdir, deleted old file, manifest, AND overwritten `synced/keep.txt === "original\n"` with exact mode `0o664`;
   // then retrying the exact same `sync.commit` after chmod 0o700 MUST succeed with exact `written: 2, removed: 1` (no duplicate plan count)!
+  chmodSync(join(mirrorRootA, "synced/keep.txt"), 0o664);
+  assert.equal(statSync(join(mirrorRootA, "synced/keep.txt")).mode & 0o777, 0o664);
   const keepRepl = Buffer.from("replacement\n", "utf8");
   const keepReplHash = createHash("sha1").update(Buffer.concat([Buffer.from(`blob ${keepRepl.length}\0`), keepRepl])).digest("hex");
   await peerRpc(peerA, rigId, rigAddr, wsA, {
@@ -1396,7 +1445,7 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
         session: "chat:c1",
         key: "k-dir-ro",
         id: sbRo.id,
-        set: [["synced/moved_fail.txt", blobHash, "100644"], ["synced/keep.txt", keepReplHash, "100644"]],
+        set: [["synced/newsub/moved_fail.txt", blobHash, "100644"], ["synced/keep.txt", keepReplHash, "100644"]],
         remove: ["synced/renamed.txt"],
         final: true,
       }),
@@ -1404,8 +1453,10 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     );
     assert.equal(existsSync(join(mirrorRootA, "synced/renamed.txt")), true, "old file MUST be restored when task.json fails");
     assert.equal(readFileSync(join(mirrorRootA, "synced/renamed.txt"), "utf8"), syncedBytes.toString("utf8"));
-    assert.equal(existsSync(join(mirrorRootA, "synced/moved_fail.txt")), false, "uncommitted new file MUST be rolled back");
+    assert.equal(existsSync(join(mirrorRootA, "synced/newsub/moved_fail.txt")), false, "uncommitted new file MUST be rolled back");
+    assert.equal(existsSync(join(mirrorRootA, "synced/newsub")), false, "empty parent dir created for failed new file MUST be cleaned up");
     assert.equal(readFileSync(join(mirrorRootA, "synced/keep.txt"), "utf8"), "original\n", "overwritten file MUST be restored byte-for-byte");
+    assert.equal(statSync(join(mirrorRootA, "synced/keep.txt")).mode & 0o777, 0o664, "rolled back file MUST preserve exact original mode 0o664");
     assert.equal(readFileSync(manifestPathA, "utf8"), manifestBeforeRo, "manifest MUST be restored");
   } finally {
     chmodSync(incDirRo, 0o700);
@@ -1415,7 +1466,7 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
     session: "chat:c1",
     key: "k-dir-ro",
     id: sbRo.id,
-    set: [["synced/moved_fail.txt", blobHash, "100644"], ["synced/keep.txt", keepReplHash, "100644"]],
+    set: [["synced/newsub/moved_fail.txt", blobHash, "100644"], ["synced/keep.txt", keepReplHash, "100644"]],
     remove: ["synced/renamed.txt"],
     final: true,
   })).result;
@@ -1423,6 +1474,74 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   assert.equal(scRetry.written, 2, "retried sync.commit must not double-count written");
   assert.equal(scRetry.removed, 1, "retried sync.commit must not double-count removed");
   assert.equal(readFileSync(join(mirrorRootA, "synced/keep.txt"), "utf8"), "replacement\n");
+
+  // Astra P1-2 (R8): File-to-directory-child rename (`item` -> `item/nested` and back `item/nested` -> `item`) reusing blob!
+  const itemBytes = Buffer.from("file-to-nested-r8\n", "utf8");
+  const itemHash = createHash("sha1").update(Buffer.concat([Buffer.from(`blob ${itemBytes.length}\0`), itemBytes])).digest("hex");
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "task.prepare",
+    session: "chat:c1",
+    key: "k-dir-item1",
+    spec: { name: "dir-item1", command: "true", dir: "/Users/dev/my:project" },
+  });
+  const sbItem1 = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-item1" })).result;
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.put",
+    session: "chat:c1",
+    key: "k-dir-item1",
+    id: sbItem1.id,
+    pieces: [[itemHash, itemBytes.length, 0, itemBytes.length]],
+  }, itemBytes);
+  const scItem1 = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.commit",
+    session: "chat:c1",
+    key: "k-dir-item1",
+    id: sbItem1.id,
+    set: [["item", itemHash, "100644"]],
+    remove: [],
+    final: true,
+  })).result;
+  assert.equal(scItem1.synced, true);
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "task.prepare",
+    session: "chat:c1",
+    key: "k-dir-item2",
+    spec: { name: "dir-item2", command: "true", dir: "/Users/dev/my:project" },
+  });
+  const sbItem2 = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-item2" })).result;
+  const scItem2 = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.commit",
+    session: "chat:c1",
+    key: "k-dir-item2",
+    id: sbItem2.id,
+    set: [["item/nested", itemHash, "100644"]],
+    remove: ["item"],
+    final: true,
+  })).result;
+  assert.equal(scItem2.synced, true);
+  assert.equal(scItem2.written, 1);
+  assert.equal(scItem2.removed, 1);
+  assert.equal(readFileSync(join(mirrorRootA, "item/nested"), "utf8"), "file-to-nested-r8\n");
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "task.prepare",
+    session: "chat:c1",
+    key: "k-dir-item3",
+    spec: { name: "dir-item3", command: "true", dir: "/Users/dev/my:project" },
+  });
+  const sbItem3 = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-item3" })).result;
+  const scItem3 = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.commit",
+    session: "chat:c1",
+    key: "k-dir-item3",
+    id: sbItem3.id,
+    set: [["item", itemHash, "100644"]],
+    remove: ["item/nested"],
+    final: true,
+  })).result;
+  assert.equal(scItem3.synced, true);
+  assert.equal(scItem3.written, 1);
+  assert.equal(scItem3.removed, 1);
+  assert.equal(readFileSync(join(mirrorRootA, "item"), "utf8"), "file-to-nested-r8\n");
 
   // Conflicting re-prepare on same key MUST be rejected!
   await assert.rejects(

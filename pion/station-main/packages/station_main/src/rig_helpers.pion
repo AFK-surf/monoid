@@ -1627,10 +1627,16 @@ pub fn dispatch_rig_peer_rpc_ext(
             if plen < 0 {
               return Err("invalid negative piece length")
             }
+            if plen > station_jobs::DIRSYNC_RAW_MAX - total_expected {
+              return Err("sync.put payload exceeds 16 MiB limit")
+            }
             total_expected = total_expected + plen
           }
           _ => return Err("invalid piece entry")
         }
+      }
+      if raw_data.length() > station_jobs::DIRSYNC_RAW_MAX {
+        return Err("sync.put payload exceeds 16 MiB limit")
       }
       if raw_data.length() != total_expected {
         return Err("pieces do not match their data")
@@ -1904,7 +1910,7 @@ pub fn dispatch_rig_peer_rpc_ext(
         set_paths.set(rel, true)
       }
       // Phase 2b: back up all existing files that will be overwritten or removed into `<sync>/stage/bak_<i>`
-      // BEFORE touching `mirror_dir`, so any later failure rolls back bytes + POSIX modes completely!
+      // BEFORE touching `mirror_dir`, capturing exact POSIX mode bits (`st.mode & 0o7777`) so any rollback restores them bit-for-bit!
       let backup_items : Array[(String, String, Int64, Int)] = []
       let backed_up : Map[String, Bool] = Map::new()
       let backup_one = fn(rel : String) -> Result[Unit, String] {
@@ -1913,13 +1919,20 @@ pub fn dispatch_rig_peer_rpc_ext(
         }
         match current_map.get(rel) {
           Some(base_codec::Json::Arr(ev)) => {
-            let orig_mode = if ev.length() >= 2 {
+            let fallback_mode = if ev.length() >= 2 {
               match ev[1] {
                 base_codec::Json::Str(ms) => if ms == station_jobs::DIRSYNC_EXEC_MODE { 493 } else { 420 }
                 _ => 420
               }
             } else {
               420
+            }
+            let orig_mode = match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+              Ok(abs) => match (remote.fs.lstat)(abs) {
+                Some(st) => if st.mode > 0 { st.mode } else { fallback_mode }
+                None => fallback_mode
+              }
+              Err(_) => fallback_mode
             }
             let orig_sz = if ev.length() >= 3 {
               match ev[2] {
@@ -1960,8 +1973,24 @@ pub fn dispatch_rig_peer_rpc_ext(
           }
         }
       }
-      // Phase 3: apply writes -> apply removals -> persist MB manifest -> persist `task.json`.
-      // Any error in any step triggers full rollback (delete new files, restore overwritten & deleted backups + modes, restore manifest).
+      // Best-effort cleanup of empty parent directories strictly under `mirror_dir` (supports `item/nested` <-> `item` and clean rollback).
+      let prune_empty_parents = fn(rel : String) -> Unit {
+        let mut cur_rel = nodepath::dirname("/", rel)
+        while cur_rel.length() > 0 && cur_rel != "." && cur_rel != "/" {
+          match station_jobs::safe_transfer_path(remote.fs, mirror_dir, cur_rel, false) {
+            Ok(dir_abs) => {
+              if !(remote.fs.rmdir)(dir_abs) {
+                break
+              }
+            }
+            Err(_) => break
+          }
+          cur_rel = nodepath::dirname("/", cur_rel)
+        }
+      }
+      // Phase 3: apply removals FIRST (matching `dirsync.mbt:349,382`, enabling `item` <-> `item/nested` renames),
+      // then apply writes, then persist MB manifest, then persist `task.json`.
+      // Any error in any step triggers full rollback (delete new files + empty dirs, restore overwritten & deleted backups + exact modes, restore manifest).
       let is_posix = remote.fs.sep != "\\"
       let old_manifest_raw = (remote.fs.read_file)(manifest_path)
       let created_new : Array[String] = []
@@ -1972,6 +2001,7 @@ pub fn dispatch_rig_peer_rpc_ext(
             Ok(p) => { let _ = (remote.fs.remove_file)(p) }
             Err(_) => ()
           }
+          prune_empty_parents(created_new[ci])
         }
         for bi in 0..<backup_items.length() {
           let (rel, bak_name, orig_sz, orig_mode) = backup_items[bi]
@@ -1988,6 +2018,30 @@ pub fn dispatch_rig_peer_rpc_ext(
         match old_manifest_raw {
           Some(old_raw) => { let _ = (remote.fs.write_file_mode)(manifest_path, old_raw.to_bytes(), 384, false) }
           None => { let _ = (remote.fs.remove_file)(manifest_path) }
+        }
+      }
+      let mut removed = 0
+      for ri in 0..<safe_removes.length() {
+        let rel = safe_removes[ri]
+        if set_paths.contains(rel) {
+          continue
+        }
+        let abs = match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
+          Ok(p) => p
+          Err(e) => {
+            rollback_commit()
+            return Err(e)
+          }
+        }
+        if (remote.fs.lstat)(abs) is Some(_) {
+          if (remote.fs.remove_file)(abs) {
+            touched_existing.set(rel, true)
+            removed = removed + 1
+            prune_empty_parents(rel)
+          } else {
+            rollback_commit()
+            return Err("failed to remove " + rel)
+          }
         }
       }
       let mut written = 0
@@ -2011,29 +2065,6 @@ pub fn dispatch_rig_peer_rpc_ext(
           Err(e) => {
             rollback_commit()
             return Err(e)
-          }
-        }
-      }
-      let mut removed = 0
-      for ri in 0..<safe_removes.length() {
-        let rel = safe_removes[ri]
-        if set_paths.contains(rel) {
-          continue
-        }
-        let abs = match station_jobs::safe_transfer_path(remote.fs, mirror_dir, rel, false) {
-          Ok(p) => p
-          Err(e) => {
-            rollback_commit()
-            return Err(e)
-          }
-        }
-        if (remote.fs.lstat)(abs) is Some(_) {
-          if (remote.fs.remove_file)(abs) {
-            touched_existing.set(rel, true)
-            removed = removed + 1
-          } else {
-            rollback_commit()
-            return Err("failed to remove " + rel)
           }
         }
       }
