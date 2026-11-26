@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8386ac591](https://github.com/AFK-surf/monoid/commit/8386ac59156a2412f3d12774d18ead3bb0fdd99e) perf(core-ts,station): trace leaf prepare stages a | 2.6 | 3.52 | 14.56 | 37.39 | 56.93 | 32.72 | 66.56 | 101.21 | 125.13 |
 | [670c0b9f4](https://github.com/AFK-surf/monoid/commit/670c0b9f4670c66ab116813d612d181b152fae84) fix(ci): add native Cargo cache warmer and fast-pa | 2.6 | 3.52 | 14.56 | 37.38 | 56.93 | 32.71 | 66.56 | 101.21 | 125.13 |
 | [117c8eadf](https://github.com/AFK-surf/monoid/commit/117c8eadf37263bcb77f5dd7bcbd26b77954d218) feat(ui): unified geometry curtain motion and filt | 2.6 | 3.52 | 14.56 | 37.38 | 56.93 | 32.71 | 66.56 | 101.21 | 125.13 |
 | [9d24cac8f](https://github.com/AFK-surf/monoid/commit/9d24cac8f775e4a9fd880a4d2662f40be23f3ddf) fix(station): sync Helper folder grants across res | 2.6 | 3.52 | 14.56 | 37.38 | 56.93 | 32.71 | 66.56 | 101.21 | 125.13 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ee875d7d4](https://github.com/AFK-surf/monoid/commit/ee875d7d4e262674de34d9c7801c42bef2da5681) feat(ui): add iOS 27.0 external environmental edge | 2.59 | 3.5 | 14.5 | 37.26 | 56.66 | 32.63 | 66.28 | 101.17 | 120.2 |
 | [bd2012fe8](https://github.com/AFK-surf/monoid/commit/bd2012fe8fd018a6de405bf3b43e513b047bb505) fix(projects): unify unclassified, keep active/pin | 2.59 | 3.5 | 14.5 | 37.26 | 56.66 | 32.63 | 66.28 | 101.17 | 120.2 |
 | [a64c7ab50](https://github.com/AFK-surf/monoid/commit/a64c7ab5091689f31b0d004b5adbc80ac85d2e36) perf(ui,core,shell): verify kept fonts off UI thre | 2.59 | 3.5 | 14.5 | 37.26 | 56.66 | 32.62 | 66.28 | 101.27 | 120.2 |
-| [b54ef725e](https://github.com/AFK-surf/monoid/commit/b54ef725e5da47b4d2ce6a4dabf9d4cdb5186b92) feat(screen): separate stream resolution, bitrate, | 2.59 | 3.5 | 14.5 | 37.26 | 56.66 | 32.61 | 66.26 | 100.93 | 120.2 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8386ac591](https://github.com/AFK-surf/monoid/commit/8386ac59156a2412f3d12774d18ead3bb0fdd99e) perf(core-ts,station): trace leaf prepare stages a | 0.57 | 0.74 | 2.89 | 3.95 | 7.24 | 2.15 | 6.09 | 57.69 |
 | [670c0b9f4](https://github.com/AFK-surf/monoid/commit/670c0b9f4670c66ab116813d612d181b152fae84) fix(ci): add native Cargo cache warmer and fast-pa | 0.57 | 0.75 | 2.91 | 3.97 | 7.3 | 2.17 | 6.14 | 57.69 |
 | [117c8eadf](https://github.com/AFK-surf/monoid/commit/117c8eadf37263bcb77f5dd7bcbd26b77954d218) feat(ui): unified geometry curtain motion and filt | 0.57 | 0.75 | 2.91 | 3.97 | 7.3 | 2.17 | 6.14 | 57.43 |
 | [9d24cac8f](https://github.com/AFK-surf/monoid/commit/9d24cac8f775e4a9fd880a4d2662f40be23f3ddf) fix(station): sync Helper folder grants across res | 0.57 | 0.74 | 2.89 | 3.95 | 7.24 | 2.15 | 6.09 | 57.41 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ee875d7d4](https://github.com/AFK-surf/monoid/commit/ee875d7d4e262674de34d9c7801c42bef2da5681) feat(ui): add iOS 27.0 external environmental edge | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.61 |
 | [bd2012fe8](https://github.com/AFK-surf/monoid/commit/bd2012fe8fd018a6de405bf3b43e513b047bb505) fix(projects): unify unclassified, keep active/pin | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.33 |
 | [a64c7ab50](https://github.com/AFK-surf/monoid/commit/a64c7ab5091689f31b0d004b5adbc80ac85d2e36) perf(ui,core,shell): verify kept fonts off UI thre | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.54 |
-| [b54ef725e](https://github.com/AFK-surf/monoid/commit/b54ef725e5da47b4d2ce6a4dabf9d4cdb5186b92) feat(screen): separate stream resolution, bitrate, | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.25 |
