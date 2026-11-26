@@ -863,14 +863,33 @@ export class Hub {
   /// <data>/run/handover.json, and the drivers let go of their processes (the runners keep them). Until the snapshot
   /// is taken it can fail (the queues did not settle within `limitMs`) and turns are released again; after, this hub
   /// does nothing more.
-  async handOver(limitMs = 30_000): Promise<Handover> {
+  async handOver(limitMs = 30_000, beforeFreeze?: () => Promise<void>): Promise<Handover> {
+    const wasHoldsRunners = this.holdsRunners;
     this.hold("drain");
     // (what its drivers let go is the next station's)
     this.holdsRunners = false;
+    const abortedTurnOpens = new Set<string>();
+    for (const actor of this.actors.values()) actor.beginHandover(() => abortedTurnOpens.add(actor.key));
+    const cancelDrain = () => {
+      for (const actor of this.actors.values()) actor.cancelHandover();
+      this.holdsRunners = wasHoldsRunners;
+      this.release("drain");
+      for (const key of abortedTurnOpens) {
+        const row = this.store.getSession(key);
+        if (!row || row.archivedAt !== null || row.running || this.store.hasPending(key)) continue;
+        const actor = this.actors.get(key);
+        if (actor && (actor.processState() !== "cold" || actor.holdsState())) continue;
+        if (this.online(row)) void this.actor(row).recover();
+      }
+    };
     try {
       await this.settled(limitMs);
+      if (beforeFreeze) {
+        await beforeFreeze();
+        await this.settled(limitMs);
+      }
     } catch (error) {
-      this.release("drain");
+      cancelDrain();
       throw error;
     }
     // What the MoonBit program reads of the processes (agents/mb-agents.ts) held from here: what it said before is
@@ -882,7 +901,7 @@ export class Hub {
         await this.settled(limitMs);
       } catch (error) {
         for (const d of frozen) d.thaw?.();
-        this.release("drain");
+        cancelDrain();
         throw error;
       }
     }
@@ -895,6 +914,14 @@ export class Hub {
       else actor.close();
     }
     const sessions: Snapshot[] = await Promise.all(taking);
+    const snapped = new Map(sessions.map((s) => [s.key, s]));
+    for (const key of abortedTurnOpens) {
+      const row = this.store.getSession(key);
+      if (!row || row.archivedAt !== null || row.running || this.store.hasPending(key)) continue;
+      const snap = snapped.get(key);
+      if (snap && (snap.agent !== null || snap.turn !== null || snap.notices.length > 0 || snap.deferredEnd != null || snap.waitingMs !== null || snap.refillMs !== null || snap.toolsRetryMs !== null)) continue;
+      this.store.setRunning(key, true);
+    }
     await this.actorsProgram?.close();
     for (const driver of this.drivers.values()) driver.detach();
     // The next station attaches to their runners once this file is there: every ack is in by then.

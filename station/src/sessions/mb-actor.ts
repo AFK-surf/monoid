@@ -626,8 +626,12 @@ export class MbActor {
   #formatAbort: AbortController | null = null;
   /// Its runtime sessions being opened (`open`), by the program's number for the ask: each given up as the program gives
   /// it up (`node.cancelOpen`: a stop, a suspension, a close, its deadline), never here before it has (a stop's failure
-  /// read there before its stop, as a start that failed), but for its close (`#closing`).
-  readonly #openAborts = new Map<number, AbortController>();
+  /// read there before its stop, as a start that failed), but for its close (`#closing`) and handover (`beginHandover`).
+  readonly #openAborts = new Map<number, { abort: AbortController; forTurn: boolean }>();
+  #warming = 0;
+  #compacting = 0;
+  #draining = false;
+  #onHandoverOpenAborted: (() => void) | null = null;
   /// What marks what people chose told, once what it was handed with is (`withChoices`); a state's write, by its turn's
   /// tool (`stateForTurn`); what its live view reads as a turn ends (`turnEnded`); a Codex update's, as it began.
   readonly #told = new Map<number, () => void>();
@@ -776,12 +780,24 @@ export class MbActor {
   takeWait() { return this.#call("takeWait").then(() => undefined); }
   takeRefill() { return this.#call("takeRefill").then(() => undefined); }
   release() { return this.#call("release").then(() => undefined); }
-  warm() { return this.#call("warm").then(() => undefined); }
+  async warm() {
+    this.#warming++;
+    try { await this.#call("warm"); }
+    finally { this.#warming--; }
+  }
   changed(restart = false) { return this.#call("changed", [restart]).then(() => undefined); }
   /// Ends its process if idle; `force` (its session archived) even with work left in its background (`holding`).
   evict(force = false) { return this.#call("evict", [force]).then(() => undefined); }
-  compact(say = false): Promise<string | null> { return this.#call("compact", [say]); }
-  compactToCap() { return this.#call("compactToCap").then(() => undefined); }
+  async compact(say = false): Promise<string | null> {
+    this.#compacting++;
+    try { return await this.#call("compact", [say]); }
+    finally { this.#compacting--; }
+  }
+  async compactToCap() {
+    this.#compacting++;
+    try { await this.#call("compactToCap"); }
+    finally { this.#compacting--; }
+  }
   clear(say = false, readBack = false): Promise<string | null> { return this.#call("clear", [say, readBack]); }
   /// `why`: what is said of it (actor.ts `suspend`).
   suspend(why = "the station is in no workspace") {
@@ -878,11 +894,30 @@ export class MbActor {
     this.#onStateChange?.();
   }
 
+  /// Handover is draining: abort any in-flight or newly requested `node.open` so handover does not block waiting for a
+  /// runtime process that may be connecting back to `/mcp` while the station is stopping.
+  beginHandover(onTurnOpenAborted?: () => void) {
+    this.#draining = true;
+    this.#onHandoverOpenAborted = onTurnOpenAborted ?? null;
+    const opening = [...this.#openAborts.values()];
+    this.#openAborts.clear();
+    for (const entry of opening) {
+      if (entry.forTurn) this.#onHandoverOpenAborted?.();
+      entry.abort.abort("handover");
+    }
+  }
+
+  /// Handover failed before snapshotting and is rolling back: allow `node.open` again.
+  cancelHandover() {
+    this.#draining = false;
+    this.#onHandoverOpenAborted = null;
+  }
+
   /// Gives up every runtime session being opened for it (`open`), as `why` (the program's `openAbort`).
   #abortOpens(why = "closed") {
     const opening = [...this.#openAborts.values()];
     this.#openAborts.clear();
-    for (const abort of opening) abort.abort(why);
+    for (const entry of opening) entry.abort.abort(why);
   }
 
   async dispose() {
@@ -991,7 +1026,7 @@ export class MbActor {
         // (given up by the program: its stop, suspension, close or deadline; `open` ends what comes of it)
         const id = args[0];
         if (typeof id !== "number") return this.#abortOpens("cancelled");
-        this.#openAborts.get(id)?.abort("cancelled");
+        this.#openAborts.get(id)?.abort.abort("cancelled");
         this.#openAborts.delete(id);
         return;
       }
@@ -1115,13 +1150,18 @@ export class MbActor {
       case "pendingAndFormat": return this.#pendingAndFormat(args[0] === true);
       case "open": {
         const [stopped, readBack, profile, forceCap, asked] = args;
+        const forTurn = this.#warming === 0 && this.#compacting === 0;
+        if (this.#closed) throw new OpenAborted("closed");
+        if (this.#draining) {
+          if (forTurn) this.#onHandoverOpenAborted?.();
+          throw new OpenAborted("handover");
+        }
         let generation = 0;
         const heard = deps.toolsHeard?.(this.key);
         // (the program's number for this ask: what it gives it up by, `node.cancelOpen`)
         const id = typeof asked === "number" ? asked : -(++this.#next);
         const abort = new AbortController();
-        if (this.#closed) abort.abort("closed");
-        this.#openAborts.set(id, abort);
+        this.#openAborts.set(id, { abort, forTurn });
         let opened: Awaited<ReturnType<typeof openAgent>>;
         try {
           opened = await openAgent(deps, this.key, {
@@ -1135,7 +1175,7 @@ export class MbActor {
             listener: (g) => this.listener(g),
           });
         } finally {
-          if (this.#openAborts.get(id) === abort) this.#openAborts.delete(id);
+          if (this.#openAborts.get(id)?.abort === abort) this.#openAborts.delete(id);
         }
         // (given up as it came: never its actor's, ended at once)
         if (abort.signal.aborted || this.#closed) {
