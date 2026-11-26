@@ -118,7 +118,8 @@ pub fn PreviousProcess::is_gone(
 }
 
 /// True ONLY when the previous process has actually exited (even past `PREVIOUS_LIMIT_MS`).
-/// Backfills wait for `is_exited` rather than `is_gone`.
+/// Backfills and rig handover barriers wait for `is_exited` rather than `is_gone` so two
+/// processes never concurrently mutate `hub.json` or `grants.json`.
 pub fn PreviousProcess::is_exited(
   self : PreviousProcess,
   now_ms : Int64,
@@ -128,4 +129,15 @@ pub fn PreviousProcess::is_exited(
     PreviousStatus::Exited => true
     _ => false
   }
+}
+
+/// Evaluate rig handover barrier: returns `PreviousStatus::Exited` when safe to take over,
+/// `PreviousStatus::Waiting` while within `limit_ms`, or `PreviousStatus::GoneTimedOut` when
+/// the previous process failed to exit in time (callers MUST fail loudly instead of overwriting `hub.json`).
+pub fn PreviousProcess::rig_barrier(
+  self : PreviousProcess,
+  now_ms : Int64,
+  is_alive : (Int) -> Bool = is_pid_alive,
+) -> PreviousStatus {
+  self.poll(now_ms, is_alive)
 }

@@ -129,6 +129,10 @@ pub struct Rig {
   wired : Array[WiredConnection]
   mut next_wire_id : Int64
   mut closed : Bool
+  /// When true (pure-rig process), non-rig workspaces fail closed instead of bypassing `guard_request`.
+  pub mut pure_rig : Bool
+  /// When false, `rig.device` is rejected honestly because device tunneling is not enabled.
+  pub mut devices_enabled : Bool
 }
 
 pub fn Rig::new(grants : RigGrants, commands : CommandLog, deps : RigModuleDeps) -> Rig {
@@ -140,6 +144,8 @@ pub fn Rig::new(grants : RigGrants, commands : CommandLog, deps : RigModuleDeps)
     wired: [],
     next_wire_id: 1.to_int64(),
     closed: false,
+    pure_rig: false,
+    devices_enabled: true,
   }
 }
 
@@ -456,8 +462,11 @@ pub fn Rig::guard_request(
   peer : String,
   request : form::Json,
 ) -> Result[Unit, Refusal] {
-  // Full workspace: bypass rig guard untouched.
+  // Full workspace: bypass rig guard in mixed-mode; fail closed in pure-rig mode.
   if !(self.deps.is_rig_workspace)(workspace) {
+    if self.pure_rig {
+      return Err(refusal_err(RefusalCode::WrongWorkspace, "this rig is of another workspace"))
+    }
     return Ok(())
   }
   if self.grants.held() || self.closed {
@@ -697,6 +706,9 @@ pub fn Rig::heard(
       Err(e) => return Err(e)
     }
   } else if method == "rig.device" {
+    if !self.devices_enabled {
+      return Err(refusal_err(RefusalCode::MethodNotAllowed, "device tunneling is not available on this rig"))
+    }
     match self.grants.device(workspace, signed, chain) {
       Ok(_) => return Ok(form::Json::Obj([("ok", form::Json::Bool(true))]))
       Err(e) => return Err(e)

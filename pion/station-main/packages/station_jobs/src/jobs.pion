@@ -357,7 +357,17 @@ pub fn real_proc_backend() -> ProcBackend {
       station_sys::proc_start_time_ms(pid)
     },
     base_env: fn() -> Array[String] {
-      station_sys::env_all()
+      let raw = station_sys::env_all()
+      let out : Array[String] = []
+      for i in 0..<raw.length() {
+        let entry = raw[i]
+        // Strip internal launcher front socket var so child jobs never steal the station's mesh endpoint
+        // (`station/src/ops/agent-env.ts:98`).
+        if !sj_starts_with(entry, "STILLFAIL_MESH_FRONT=") {
+          out.push(entry)
+        }
+      }
+      out
     },
     random_token: fn() -> Result[String, String] {
       station_sys::random_hex(24)
@@ -985,6 +995,58 @@ pub fn JobManager::relaunch(self : JobManager, now_ms : Int64) -> JobRelaunchRep
     finished: finished,
     relaunched: relaunched,
   }
+}
+
+/// Adopts a `JobRecord` hydrated from `stillfail.db` (e.g. a live job started by Node `RigLive`
+/// prior to handover that does not have a Pion `<data>/jobs/state/<id>.json` file).
+/// Follows live process groups via `followed_jobs` or reconciles `.exit` files / dead processes.
+pub fn JobManager::adopt_from_store(
+  self : JobManager,
+  rec : JobRecord,
+  now_ms : Int64,
+) -> Bool {
+  if self.jobs.contains(rec.id) {
+    return false
+  }
+  self.jobs.set(rec.id, rec)
+  self.job_ids.push(rec.id)
+  if rec.token.length() > 0 {
+    self.token_to_job.set(rec.token, rec.id)
+  }
+  if job_state_is_up(rec.state) {
+    match rec.pgid {
+      Some(pg) => {
+        if pg > 0 && (self.backend.kill_pid)(pg, 0, false) == 0 {
+          self.followed_jobs.set(rec.id, pg)
+          return true
+        }
+      }
+      None => ()
+    }
+    match self.read_exit_file(rec.id) {
+      Some(code) => {
+        rec.state = if code == 0 { JobState::Exited } else { JobState::Failed }
+        rec.exit_code = Some(code)
+        rec.ended_at = Some(now_ms)
+        rec.pgid = None
+        self.persist_job(rec)
+        (self.on_remote_changed)(rec)
+      }
+      None => {
+        match rec.state {
+          JobState::Queued => ()
+          _ => {
+            rec.state = JobState::Failed
+            rec.ended_at = Some(now_ms)
+            rec.pgid = None
+            self.persist_job(rec)
+            (self.on_remote_changed)(rec)
+          }
+        }
+      }
+    }
+  }
+  true
 }
 
 /// Checks adopted (followed) jobs for `.exit` file appearance or leader exit (`leaderGone`).

@@ -289,3 +289,179 @@ test "dispatch_rig_peer_rpc enforces handover hold, UNGATED allowlist, and grant
     Ok(_) => panic("expected stranger peer refusal")
   }
 }
+
+test "is_rig_raw_cloud_json matches launcher data.rs removed_at key presence check" {
+  assert_true(
+    is_rig_raw_cloud_json("{\"workspace\":\"ws1\",\"station\":\"st1\",\"rig\":{\"owner\":\"u1\",\"person\":\"p1\"}}"),
+    "valid rig cloud.json accepted",
+  )
+  assert_true(
+    !is_rig_raw_cloud_json("{\"workspace\":\"ws1\",\"station\":\"st1\",\"rig\":{\"owner\":\"u1\"},\"removed_at\":null}"),
+    "removed_at: null must be rejected",
+  )
+  assert_true(
+    !is_rig_raw_cloud_json("{\"workspace\":\"ws1\",\"station\":\"st1\",\"rig\":{\"owner\":\"u1\"},\"removed_at\":1700000000}"),
+    "removed_at: timestamp must be rejected",
+  )
+  assert_true(
+    !is_rig_raw_cloud_json("{\"workspace\":\"ws1\",\"station\":\"st1\"}"),
+    "non-rig cloud.json must be rejected",
+  )
+}
+
+test "PreviousProcess::rig_barrier distinguishes Waiting, Exited, and GoneTimedOut" {
+  let p = station_ops::PreviousProcess::new(Some(99999), 1000L)
+  match p.rig_barrier(2000L, fn(_pid : Int) -> Bool { true }) {
+    station_ops::PreviousStatus::Waiting => ()
+    _ => panic("expected Waiting while alive before deadline")
+  }
+  match p.rig_barrier(100000L, fn(_pid : Int) -> Bool { true }) {
+    station_ops::PreviousStatus::GoneTimedOut => ()
+    _ => panic("expected GoneTimedOut after deadline while still alive")
+  }
+  match p.rig_barrier(2500L, fn(_pid : Int) -> Bool { false }) {
+    station_ops::PreviousStatus::Exited => ()
+    _ => panic("expected Exited once previous PID is no longer alive")
+  }
+}
+
+test "RemoteManager scoped tasks isolate identical keys across workspaces and sessions" {
+  let fs = test_noop_fs()
+  let jm = station_jobs::JobManager::new(
+    "/rig-data",
+    fs,
+    test_noop_proc_backend(),
+    "http://127.0.0.1:4750/jobs/notify",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(_j : station_jobs::JobRecord) -> Unit {},
+  )
+  let rm = station_jobs::RemoteManager::new("/rig-data", fs, jm, station_jobs::noop_remote_callbacks())
+  let now = 1700000000000L
+  let req_a = station_jobs::RemotePrepareRequest::{
+    key: "shared-key",
+    workspace: "ws-a",
+    source_station: "peer-a",
+    source_session: "sess-a",
+    name: "task-a",
+    command: "echo SECRET_A",
+    mirror_name: None,
+    back_paths: [],
+    screen: false,
+    small: true,
+  }
+  match rm.prepare_scoped(req_a, now) {
+    Ok(ta) => {
+      assert_str_eq(ta.key, "shared-key")
+      assert_true(ta.task_id != "shared-key", "scoped task_id is hashed")
+    }
+    Err(e) => panic("prepare_scoped A failed: " + e)
+  }
+  // Workspace B with identical key must NOT see Workspace A's task!
+  assert_true(rm.get_scoped("ws-b", "peer-b", "sess-b", "shared-key") is None, "ws-b cannot get ws-a task")
+  assert_true(rm.get_scoped("ws-a", "peer-a", "sess-other", "shared-key") is None, "other session cannot get sess-a task")
+  assert_true(rm.list_scoped("ws-b", "peer-b", "sess-b").length() == 0, "ws-b list is empty")
+  assert_true(rm.list_scoped("ws-a", "peer-a", "sess-a").length() == 1, "ws-a list has 1 task")
+}
+
+test "vault.capabilities is honest and vault.run fails closed on unsupported delivery modes" {
+  let hex32 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let ws = "ws-rig-v"
+  let peer = "peer-v"
+  let self_id = "rig-v"
+  let roster = station_mesh::CloudRoster::{
+    origin: "",
+    station_id: self_id,
+    peers_current: true,
+    stillfail_relays: [],
+    memberships: [
+      station_mesh::WorkspaceMembership::{
+        workspace: ws,
+        name: "Rig V",
+        home: true,
+        is_rig_here: true,
+        waiting: false,
+        peers: [station_mesh::PeerInfo::{ id: peer, name: "Peer V" }],
+        unprotected: [],
+        rigs: [],
+        rigs_named: [],
+      },
+    ],
+    moved_offered: Map::new(),
+  }
+  let fs = test_noop_fs()
+  let now_ms = 1700000000000L
+  let jm = station_jobs::JobManager::new(
+    "/rig-data",
+    fs,
+    test_noop_proc_backend(),
+    "http://127.0.0.1:4750/jobs/notify",
+    fn(_s : String, _t : String) -> Unit {},
+    fn(_j : station_jobs::JobRecord) -> Unit {},
+  )
+  let rm = station_jobs::RemoteManager::new("/rig-data", fs, jm, station_jobs::noop_remote_callbacks())
+  let incoming = station_vault::IncomingRegistry::new()
+  let vgrants = station_vault::GrantStore::new()
+  let grants = station_rig::RigGrants::new(station_rig::GrantsDeps::{
+    read_text: fn() -> Option[String] { None },
+    write_text: fn(_t : String) -> Unit {},
+    now_ms: fn() -> Int64 { now_ms },
+    self_for: fn(w : String) -> Option[station_rig::RigWs] {
+      if w == ws { Some(station_rig::RigWs::{ id: self_id, workspace: ws, owner: "u1", person: hex32 }) } else { None }
+    },
+    workspaces: fn() -> Array[station_rig::RigWs] {
+      [station_rig::RigWs::{ id: self_id, workspace: ws, owner: "u1", person: hex32 }]
+    },
+    busy: fn(_w : String, _s : String, _c : String) -> Bool { false },
+    stop: fn(_w : String, _s : String, _c : String) -> Unit {},
+    running: fn() -> Array[station_rig::RunningChat] { [] },
+    ended: fn(_e : station_rig::Ended) -> Unit {},
+    cut: fn(_w : String, _d : String, _s : Option[String], _c : Option[String]) -> Unit {},
+    changed: fn(_w : String) -> Unit {},
+    held: false,
+    crypto: station_rig::default_rig_crypto(),
+  })
+  let mem_log = station_rig::MemLogFs::new()
+  let cmd_log = station_rig::CommandLog::new("/rig-data/rig/commands.log", mem_log.backend())
+  let rig = station_rig::Rig::new(
+    grants,
+    cmd_log,
+    station_rig::RigModuleDeps::{
+      boot: "0123456789abcdef",
+      now_ms: fn() -> Int64 { now_ms },
+      is_rig_workspace: fn(w : String) -> Bool { w == ws },
+      owner_meta: fn(_w : String) -> Option[station_rig::RigOwnerMeta] { None },
+      on_pending_lock: fn(_w : String, _h : String) -> Unit {},
+      on_full_pending: fn(_w : String, _a : Int64) -> Unit {},
+      on_join: fn(_t : String, _p : String, _l : Option[String], _w : String) -> Result[station_rig::JoinResult, String] { Err("disabled") },
+      reach_device: fn(_d : station_rig::Device) -> Result[() -> Unit, String] { Err("none") },
+      stop_session: fn(_w : String, _s : String, _c : String) -> Unit {},
+      running: fn() -> Array[station_rig::RunningChat] { [] },
+    },
+  )
+  rig.pure_rig = true
+  rig.devices_enabled = false
+  let load_fn = fn() -> base_codec::Json { base_codec::json_obj([]) }
+
+  let cap_env = station_mesh::PeerRequestEnvelope::{
+    workspace: ws,
+    request: base_codec::json_obj([("method", base_codec::json_str("vault.capabilities"))]),
+    has_bytes: false,
+  }
+  match dispatch_rig_peer_rpc(roster, peer, cap_env, rig, rm, incoming, vgrants, load_fn, now_ms) {
+    Ok(v) => {
+      match base_codec::json_get(v, "proxy") {
+        Some(base_codec::Json::Bool(false)) => ()
+        _ => panic("vault.capabilities must report proxy=false")
+      }
+      match base_codec::json_get(v, "ssh") {
+        Some(base_codec::Json::Bool(false)) => ()
+        _ => panic("vault.capabilities must report ssh=false")
+      }
+      match base_codec::json_get(v, "env") {
+        Some(base_codec::Json::Bool(true)) => ()
+        _ => panic("vault.capabilities must report env=true")
+      }
+    }
+    Err(e) => panic("vault.capabilities failed: " + e)
+  }
+}

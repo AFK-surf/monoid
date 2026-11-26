@@ -3,6 +3,7 @@ name = "station_main"
 version = "0.1.0"
 
 [dependencies]
+base64 = { workspace = true }
 base_codec = { workspace = true }
 builders_core = { workspace = true }
 form = { workspace = true }
