@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cdb475fd0](https://github.com/AFK-surf/monoid/commit/cdb475fd079438c71e216af948cafe3b6cdcb739) test(station): fix three assumptions in the macOS  | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
 | [093dfc1e8](https://github.com/AFK-surf/monoid/commit/093dfc1e857bc1356a33a0fc0ed2531e693e9c37) feat(ui,app,core): overhaul liquid glass motion fo | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
 | [537157a1e](https://github.com/AFK-surf/monoid/commit/537157a1ebf9f01912ae75640c9fb21eb66e2bd5) perf(station): crop a Mac video frame when the enc | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
 | [b806cdd29](https://github.com/AFK-surf/monoid/commit/b806cdd29944a7531d8da121289e9d56951bd341) perf(mbui): zero-reflow Large/Medium pane fold tra | 2.63 | 3.55 | 14.69 | 37.66 | 57.41 | 32.99 | 67.34 | 101.76 | 125.17 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [670c0b9f4](https://github.com/AFK-surf/monoid/commit/670c0b9f4670c66ab116813d612d181b152fae84) fix(ci): add native Cargo cache warmer and fast-pa | 2.6 | 3.52 | 14.56 | 37.38 | 56.93 | 32.71 | 66.56 | 101.21 | 125.13 |
 | [117c8eadf](https://github.com/AFK-surf/monoid/commit/117c8eadf37263bcb77f5dd7bcbd26b77954d218) feat(ui): unified geometry curtain motion and filt | 2.6 | 3.52 | 14.56 | 37.38 | 56.93 | 32.71 | 66.56 | 101.21 | 125.13 |
 | [9d24cac8f](https://github.com/AFK-surf/monoid/commit/9d24cac8f775e4a9fd880a4d2662f40be23f3ddf) fix(station): sync Helper folder grants across res | 2.6 | 3.52 | 14.56 | 37.38 | 56.93 | 32.71 | 66.56 | 101.21 | 125.13 |
-| [09aa2b9d5](https://github.com/AFK-surf/monoid/commit/09aa2b9d5e43c47f12944316c4983bae30bda051) feat(station): uninstall a runtime from a station' | 2.6 | 3.52 | 14.56 | 37.38 | 56.93 | 32.71 | 66.56 | 101.21 | 125.13 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cdb475fd0](https://github.com/AFK-surf/monoid/commit/cdb475fd079438c71e216af948cafe3b6cdcb739) test(station): fix three assumptions in the macOS  | 0.58 | 0.75 | 2.92 | 3.99 | 7.32 | 2.18 | 6.16 | 57.66 |
 | [093dfc1e8](https://github.com/AFK-surf/monoid/commit/093dfc1e857bc1356a33a0fc0ed2531e693e9c37) feat(ui,app,core): overhaul liquid glass motion fo | 0.58 | 0.75 | 2.92 | 3.99 | 7.32 | 2.18 | 6.16 | 57.57 |
 | [537157a1e](https://github.com/AFK-surf/monoid/commit/537157a1ebf9f01912ae75640c9fb21eb66e2bd5) perf(station): crop a Mac video frame when the enc | 0.58 | 0.75 | 2.92 | 3.99 | 7.32 | 2.18 | 6.16 | 57.69 |
 | [b806cdd29](https://github.com/AFK-surf/monoid/commit/b806cdd29944a7531d8da121289e9d56951bd341) perf(mbui): zero-reflow Large/Medium pane fold tra | 0.58 | 0.75 | 2.92 | 3.99 | 7.32 | 2.18 | 6.16 | 57.56 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [670c0b9f4](https://github.com/AFK-surf/monoid/commit/670c0b9f4670c66ab116813d612d181b152fae84) fix(ci): add native Cargo cache warmer and fast-pa | 0.57 | 0.75 | 2.91 | 3.97 | 7.3 | 2.17 | 6.14 | 57.69 |
 | [117c8eadf](https://github.com/AFK-surf/monoid/commit/117c8eadf37263bcb77f5dd7bcbd26b77954d218) feat(ui): unified geometry curtain motion and filt | 0.57 | 0.75 | 2.91 | 3.97 | 7.3 | 2.17 | 6.14 | 57.43 |
 | [9d24cac8f](https://github.com/AFK-surf/monoid/commit/9d24cac8f775e4a9fd880a4d2662f40be23f3ddf) fix(station): sync Helper folder grants across res | 0.57 | 0.74 | 2.89 | 3.95 | 7.24 | 2.15 | 6.09 | 57.41 |
-| [09aa2b9d5](https://github.com/AFK-surf/monoid/commit/09aa2b9d5e43c47f12944316c4983bae30bda051) feat(station): uninstall a runtime from a station' | 0.57 | 0.74 | 2.89 | 3.95 | 7.24 | 2.15 | 6.09 | 57.51 |
