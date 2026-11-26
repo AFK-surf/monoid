@@ -3106,18 +3106,19 @@ test("a moved workspace: the same with the station not read as the phone is take
   r.core.close();
 });
 
-test("a moved workspace: a device started anew after a device was taken off (nothing kept of the state that took the vault) shows no waiting vault and asks nobody", async () => {
+test("a moved workspace: without vaultTook after a device was taken off, the surviving keyed device still sees its personal vault waiting via its own log and asks nobody until used", async () => {
   const r = await movedRig(true, { phone: true });
   const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  const id = vaults().vaults[0].id;
   await r.own("device.remove", { key: PHONE_LOG.id });
   assert.ok(vaults().vaults[0]?.waits, "it waits here");
   const asked = r.host.secureAsked.length;
-  // (what a device begun anew lacks: what of the state took the vault's version)
+  // Clearing vaultTook must not orphan a personal vault whose owner's device still holds its key and signed log.
   r.core.inner.data.forgetRecord("vaultTook", "ws");
   await r.core.inner.runner.run(readLock(r.core.inner, "ws"));
   await r.settle();
-  assert.deepEqual(vaults().vaults, [], "no vault shown");
-  assert.deepEqual(r.host.secureAsked.slice(asked), [], "nobody asked");
+  assert.deepEqual(vaults().vaults.map((v: any) => [v.id, Boolean(v.waits)]), [[id, true]], "still shown as waiting");
+  assert.deepEqual(r.host.secureAsked.slice(asked), [], "nobody asked in the background");
   r.core.close();
 });
 
@@ -4247,3 +4248,112 @@ for (const what of ["pinned", "key"]) {
     r.core.close();
   });
 }
+
+test("FB-72: personal vault signed by a currently-trusted device with a stale peer device absent from local prefixes and vaultTook approves secret_use and auto-rekeys instead of failing vault_unknown", async () => {
+  const r = await ownRig({ begun: true });
+  const { made: id } = await r.ask("vault.setup", {});
+  const put = await r.ask("vault.putItem", {
+    vault: id,
+    plain: { kind: "token", name: "OldToken", fields: { value: "tok_old" } },
+    listing: { name: "OldToken", kind: "token", modes: ["proxy"], hosts: ["api.example.com"], lasts: "hour" },
+  });
+  await r.ask("vault.lock", {});
+  // Simulate an older personal vault version signed by this device (same sig.key) that also carried a 3rd device cert
+  // no longer present in the current personal lock or any prefix / vaultTook.
+  const ghostSigner = key(fill(0x93));
+  const ghostCert = sign({ v: 1 as const, ws: "ws", device: ghostSigner.hex, box: boxPublic(fill(0x94)), at: 1500 }, TAG.box, ghostSigner);
+  const cur = r.st.vaults.get(id)!;
+  const { sig: _, ...rest } = cur;
+  const stale = sign(
+    { ...rest, seq: cur.seq + 1, keys: [...cur.keys, { cert: ghostCert, wrapped: cur.keys[0]!.wrapped }], at: cur.at + 1 },
+    TAG.vault,
+    r.me.signer!,
+  );
+  r.st.vaults.set(id, stale);
+  r.core.inner.data.forgetRecord("vaultTook", "ws");
+  const req: Request = {
+    id: "r_fb72_use", ws: "ws", vault: id, item: put.id, session: "k1", chat: "7",
+    mode: "proxy", hosts: ["api.example.com"], reason: "use old secret", box: boxPublic(fill(9)), at: 2000, status: "pending", owner: "a@x.com",
+  };
+  r.st.requests.push(req);
+  await r.restart();
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  await r.host.time.pass(500, 10);
+  r.take();
+  // Shown as waiting (not vanished) and asks nobody in the background.
+  assert.deepEqual(vaults().vaults.map((v: any) => [v.id, Boolean(v.waits)]), [[id, true]]);
+  // Approving secret_use succeeds (no vault_unknown) and triggers auto-rekey removing ghostCert.
+  const granted = await r.ask("vault.approve", { request: "r_fb72_use", scope: "once" });
+  assert.equal(granted.request, "r_fb72_use");
+  await r.host.time.pass(500, 10);
+  r.take();
+  const rekeyed = r.st.vaults.get(id)!;
+  assert.equal(rekeyed.epoch, stale.epoch + 1, "rekeyed to next epoch");
+  assert.deepEqual(rekeyed.keys.map((k) => k.cert.device), ["ab".repeat(32)], "stale peer device removed");
+  assert.equal(r.st.items.get(put.id)!.epoch, rekeyed.epoch, "old item re-encrypted under new epoch");
+  assert.equal(vaults().vaults.find((v: any) => v.id === id)?.waits, undefined, "no longer waiting after rekey");
+  // Security check: a vault signed by the unknown/removed ghost device is still rejected.
+  const forgedId = "v_01M8BN3WQSS0D32BGTC4DNVP26";
+  const forged = sign({ ...stale, id: forgedId, seq: 0 }, TAG.vault, ghostSigner);
+  r.st.vaults.set(forgedId, forged);
+  r.push("vault", forged);
+  await r.host.time.pass(500, 10);
+  r.take();
+  assert.equal(vaults().vaults.some((v: any) => v.id === forgedId), false, "vault signed by removed/unknown device stays rejected");
+  r.core.close();
+});
+
+test("FB-72: secret_save rekeys a stale-device personal vault inline and syncs on cold cache instead of creating a duplicate personal vault", async () => {
+  const r = await ownRig({ begun: true });
+  const { made: id } = await r.ask("vault.setup", {});
+  const put = await r.ask("vault.putItem", {
+    vault: id,
+    plain: { kind: "token", name: "Existing", fields: { value: "tok_1" } },
+    listing: { name: "Existing", kind: "token", modes: ["proxy"], hosts: ["api.example.com"] },
+  });
+  await r.ask("vault.lock", {});
+  // Make the existing personal vault carry a removed peer device cert absent from local prefixes and vaultTook.
+  const ghostSigner = key(fill(0x95));
+  const ghostCert = sign({ v: 1 as const, ws: "ws", device: ghostSigner.hex, box: boxPublic(fill(0x96)), at: 1500 }, TAG.box, ghostSigner);
+  const cur = r.st.vaults.get(id)!;
+  const { sig: _, ...rest } = cur;
+  const stale = sign(
+    { ...rest, seq: cur.seq + 1, keys: [...cur.keys, { cert: ghostCert, wrapped: cur.keys[0]!.wrapped }], at: cur.at + 1 },
+    TAG.vault,
+    r.me.signer!,
+  );
+  r.st.vaults.set(id, stale);
+  r.core.inner.data.forgetRecord("vaultTook", "ws");
+  // Simulate cold local vault cache right after reconnect while station sends save-request pointing at `id`.
+  const myCert = r.st.boxes.get("ab".repeat(32))!;
+  const saveReq: Request = {
+    id: "r_fb72_save", ws: "ws", vault: id, item: "i_01M8BN3WQSS0D32BGTC4DNVP99", session: "k1", chat: "7",
+    mode: "proxy", hosts: ["api.example.com"], reason: "save new secret", box: boxPublic(fill(9)), at: 2000, status: "pending", owner: "a@x.com",
+    save: { kind: "token", name: "NewToken", modes: ["proxy"], hosts: ["api.example.com"] },
+    sealed: [{ device: myCert.device, box: myCert.box, secret: sealWith(myCert.box, utf8(JSON.stringify({ value: "tok_2" })), saveContext("ws", "r_fb72_save"), fill(41)) }],
+  };
+  r.st.requests.push(saveReq);
+  const h = structuredClone(r.core.inner.data.record("vault", "ws") as any);
+  h.vaults = {};
+  h.on = {};
+  h.at = {};
+  h.requests = { r_fb72_save: saveReq };
+  // First, if the station cannot be read on a cold cache while r.vault names an existing personal vault,
+  // refuse instead of silently splitting a duplicate personal vault.
+  h.asked = { r_fb72_save: "offline-station" };
+  r.core.inner.data.put("vault", "ws", h);
+  await fails(r.ask("vault.approve", { request: "r_fb72_save", scope: "once" }), "vault_no_key");
+  assert.equal(r.st.vaults.size, 1, "still only one personal vault after cold-cache refusal");
+  // Now with the real reachable station S, approving syncs from S, rekeys the stale personal vault inline, and saves into it.
+  h.asked = { r_fb72_save: S };
+  r.core.inner.data.put("vault", "ws", h);
+  const saved = await r.ask("vault.approve", { request: "r_fb72_save", scope: "once" });
+  assert.equal(saved.vault, id, "saved into the existing personal vault, not a newly split one");
+  assert.equal(r.st.vaults.size, 1, "still exactly one personal vault on station");
+  const updated = r.st.vaults.get(id)!;
+  assert.equal(updated.epoch, stale.epoch + 1, "existing personal vault rekeyed inline");
+  assert.deepEqual(updated.keys.map((k) => k.cert.device), ["ab".repeat(32)], "stale peer device dropped");
+  assert.equal(r.st.items.get("i_01M8BN3WQSS0D32BGTC4DNVP99")!.vault, id);
+  assert.equal(r.st.items.get(put.id)!.epoch, updated.epoch, "previous item carried onto new epoch");
+  r.core.close();
+});

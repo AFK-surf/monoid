@@ -396,8 +396,10 @@ function personalChecked(
     head = String(out.head);
     const ds = out.devices as { id: string; sign_key?: string; sign_keys?: string[] }[];
     for (const d of ds) {
+      const prev = signKeys.get(d.id) ?? [];
+      const next = Array.isArray(d.sign_keys) ? d.sign_keys : [];
       devices.set(d.id, { id: d.id, sub, kind: "app" as const, ...(typeof d.sign_key === "string" ? { sign_key: d.sign_key } : {}), own: true });
-      signKeys.set(d.id, Array.isArray(d.sign_keys) ? d.sign_keys : []);
+      signKeys.set(d.id, prev.length === 0 ? next : [...new Set([...prev, ...next])]);
     }
   }
   if (memberChains) {
@@ -454,35 +456,27 @@ function trusted(lock: Checked, v: Vault): boolean {
 }
 
 /// The lock as it stood when it last took vault version `v`: the lock as it is where it takes it, else the longest
-/// prefix of the chain held that does (a version keyed for a device or member taken out since), else none. Found once
-/// for each chain and version: a lock held is replaced whole as it moves on, never changed in place (a version by its
-/// vault, number and signature, as what is held of the vaults is made anew at every change to any of them): the pages
-/// ask it on every view of the vaults (`waitingAs`).
+/// prefix of the chain held that does (a version keyed for a device or member taken out since), else what was kept
+/// (`vaultTook`), else a historical prefix of the person's own lock or pre-move workspace chain, else a view of `lock`
+/// when `v` itself is validly signed by a currently-trusted app device of its owner in `lock` and only stale peer key
+/// entries fail `cert_ok`. Found once for each chain/lock and version.
 const took = new WeakMap<readonly Entry[], Map<string, Checked | null>>();
+const currentSigned = new WeakMap<Checked, Map<string, Checked | null>>();
 /// How many prefixes of a lock `tookAs` has checked: a count only, that the tests read (what it finds is kept).
 export const waitingChecks = { count: 0 };
-function tookAs(inner: Inner, ws: string, v: Vault): Checked | null {
-  const lock = lockOf(inner, ws);
-  if (!(lock instanceof CoreError) && trusted(lock, v)) return lock;
-  // (no safe mode: the prefixes of the person's own lock, as a chain's are; else, moved, what this device kept of the
-  // state that took it: a moved workspace has no line of prefixes)
-  const sub = inner.workspaces.owner(ws);
-  const own = !safeMode(inner, ws) && sub !== null;
-  if (!own && movedHere(inner, ws)) return keptFor(inner, ws, v);
-  const entries: readonly Entry[] = own ? inner.adb.personal().pinnedOf(sub) : (lockHeld(inner, ws)?.entries ?? []);
+
+function prefixTook(inner: Inner, ws: string, v: Vault, entries: readonly Entry[], own: boolean, sub: string | null): Checked | null {
+  if (entries.length <= 1) return null;
   let of = took.get(entries);
   if (!of) took.set(entries, (of = new Map()));
   const at = `${v.id}/${v.seq}/${v.sig?.sig}`;
-  if (of.has(at)) {
-    const cached = of.get(at)!;
-    return cached ?? (own ? keptFor(inner, ws, v) : null);
-  }
-  const extras = own ? personalExtras(inner, ws, sub) : null;
+  if (of.has(at)) return of.get(at)!;
+  const extras = own && sub !== null ? personalExtras(inner, ws, sub) : null;
   let was: Checked | null = null;
   for (let n = entries.length - 1; n > 0 && was === null; n--) {
     waitingChecks.count++;
     try {
-      const prefix = own
+      const prefix = own && sub !== null
         ? personalChecked(ws, sub, entries.slice(0, n), extras!.memberChains, extras!.memberRoles)
         : checkLock(entries.slice(0, n) as Entry[], nowS(inner));
       if (!(prefix instanceof CoreError) && !prefix.disabled && trusted(prefix, v)) was = prefix;
@@ -491,7 +485,97 @@ function tookAs(inner: Inner, ws: string, v: Vault): Checked | null {
     }
   }
   of.set(at, was);
-  return was ?? (own ? keptFor(inner, ws, v) : null);
+  return was;
+}
+
+/// A vault validly signed by an own app device currently trusted in `lock` whose only invalid parts are stale/removed
+/// peer device certs in `v.keys` (for example after a device removal across a moved workspace, safe-mode toggle, or
+/// restarted personal lock where `vaultTook` and local prefixes lack the removed device). Re-checked through
+/// `rules.vault_ok_js` (verifying every `TAG.box` cert signature and `TAG.vault` signature).
+function signedByCurrent(lock: Checked, v: Vault): Checked | null {
+  if (v.deleted || v.ws !== lock.ws) return null;
+  let of = currentSigned.get(lock);
+  if (of === undefined) currentSigned.set(lock, (of = new Map()));
+  const at = `${v.id}/${v.seq}/${v.sig?.sig}`;
+  if (of.has(at)) return of.get(at)!;
+  let was: Checked | null = null;
+  const signer = ownSigner(lock, v.sig?.key);
+  const isWs = v.scope === "workspace";
+  const signerOk = signer !== undefined && (
+    isWs
+      ? v.members.includes(signer.sub) && isWorkspaceAdmin(lock, signer.sub)
+      : signer.sub === v.owner && lock.members.has(v.owner)
+  );
+  if (signerOk) {
+    const members = new Map(lock.members);
+    const devices = new Map(lock.devices);
+    const signKeys = new Map(lock.signKeys);
+    let ok = true;
+    for (const m of v.members) {
+      if (!members.has(m)) {
+        if (!isWs) { ok = false; break; }
+        members.set(m, "member");
+      }
+    }
+    if (ok) {
+      for (const k of v.keys) {
+        if (rules.cert_ok_js(lock, k.cert, true, rulesCrypto) === null) continue;
+        const dev = k?.cert?.device;
+        const certKey = k?.cert?.sig?.key;
+        if (typeof dev !== "string" || typeof certKey !== "string" || k.cert.ws !== lock.ws) { ok = false; break; }
+        const existing = devices.get(dev);
+        if (existing !== undefined) {
+          if (existing.kind !== "app" || !existing.own || !v.members.includes(existing.sub)) { ok = false; break; }
+          const had = signKeys.get(dev) ?? [];
+          if (!had.includes(certKey)) signKeys.set(dev, [...had, certKey]);
+        } else if (!isWs) {
+          devices.set(dev, { id: dev, sub: v.owner, kind: "app", sign_key: certKey, own: true });
+          signKeys.set(dev, [certKey]);
+        } else {
+          ok = false;
+          break;
+        }
+      }
+    }
+    if (ok) {
+      const aug: Checked = { ...lock, members, devices, signKeys };
+      if (trusted(aug, v)) was = aug;
+    }
+  }
+  of.set(at, was);
+  return was;
+}
+
+function tookAs(inner: Inner, ws: string, v: Vault): Checked | null {
+  const lock = lockOf(inner, ws);
+  if (!(lock instanceof CoreError) && trusted(lock, v)) return lock;
+  const sub = inner.workspaces.owner(ws);
+  const own = !safeMode(inner, ws) && sub !== null;
+  const moved = !own && movedHere(inner, ws);
+  if (moved) {
+    const kept = keptFor(inner, ws, v);
+    if (kept !== null) return kept;
+    if (sub !== null && v.scope !== "workspace" && v.owner === sub) {
+      const fromOwn = prefixTook(inner, ws, v, inner.adb.personal().pinnedOf(sub), true, sub);
+      if (fromOwn !== null) return fromOwn;
+    }
+    const fromChain = prefixTook(inner, ws, v, lockHeld(inner, ws)?.entries ?? [], false, null);
+    if (fromChain !== null) return fromChain;
+    return lock instanceof CoreError ? null : signedByCurrent(lock, v);
+  }
+  const primary = own ? inner.adb.personal().pinnedOf(sub) : (lockHeld(inner, ws)?.entries ?? []);
+  const was = prefixTook(inner, ws, v, primary, own, sub);
+  if (was !== null) return was;
+  const kept = keptFor(inner, ws, v);
+  if (kept !== null) return kept;
+  if (own) {
+    const fromChain = prefixTook(inner, ws, v, lockHeld(inner, ws)?.entries ?? [], false, null);
+    if (fromChain !== null) return fromChain;
+  } else if (sub !== null && v.scope !== "workspace" && v.owner === sub) {
+    const fromOwn = prefixTook(inner, ws, v, inner.adb.personal().pinnedOf(sub), true, sub);
+    if (fromOwn !== null) return fromOwn;
+  }
+  return lock instanceof CoreError ? null : signedByCurrent(lock, v);
 }
 
 /// Where a workspace's chain moved, what of the state in force took each vault's version this device found trusted
@@ -549,7 +633,6 @@ function keptFor(inner: Inner, ws: string, v: Vault): Checked | null {
 /// which runs as it is made anew, whatever made it so); never as a topic is answered. A version the state takes no
 /// more keeps what was kept of it; a state that waits (naming nobody) or is off changes nothing kept.
 function keepTook(inner: Inner, ws: string): void {
-  if (!movedHere(inner, ws) && safeMode(inner, ws)) return;
   const lock = lockOf(inner, ws);
   const h = held(inner, ws);
   const was = tookHeld(inner, ws);
@@ -580,7 +663,7 @@ function keepTook(inner: Inner, ws: string): void {
 /// as the vault is keyed anew is checked against this same lock (`#carryNow`).
 export function waitingAs(inner: Inner, ws: string, lock: Checked, v: Vault): Checked | null {
   if (v.deleted || trusted(lock, v)) return null;
-  const gone = v.keys.some((k) => !lock.devices.has(k.cert.device)) || v.members.some((m) => !lock.members.has(m));
+  const gone = v.keys.some((k) => rules.cert_ok_js(lock, k.cert, true, rulesCrypto) !== null) || v.members.some((m) => !lock.members.has(m));
   const hasManager = v.scope === "workspace"
     ? v.members.some((m) => lock.members.has(m) && isWorkspaceAdmin(lock, m))
     : lock.members.has(v.owner);
@@ -2917,6 +3000,7 @@ class Vaults {
         const old = kept.key;
         const members = v.members.filter((m) => lock.members.has(m));
         const to = certs(inner, self.ws, lock).filter((c) => members.includes(c.sub));
+        if (!to.some((c) => c.device === who.device)) return;
         const key = new Uint8Array(32);
         inner.host.randomBytes(key);
         const isWs = v.scope === "workspace";
@@ -3958,32 +4042,64 @@ class Vaults {
         self.#settled(r.id, { status: "granted" });
         return { request: r.id, item: r.item };
       }
-      const { lock, signer, self: who } = yield* self.#ready();
+      const { lock: lock0, signer, self: who } = yield* self.#ready();
+      if (targetVault === undefined || targetVault === "") {
+        const h0 = held(inner, self.ws);
+        const hasReq = r.vault !== "" && r.vault !== PLAIN && h0.vaults[r.vault] !== undefined;
+        const hasOwnPersonal = Object.values(h0.vaults).some((v) => !v.deleted && v.scope !== "workspace" && v.owner === who.sub);
+        if (station !== "" && ((r.vault !== "" && r.vault !== PLAIN && !hasReq) || !hasOwnPersonal)) {
+          yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" });
+        }
+      }
+      const lockNow = lockOf(inner, self.ws);
+      const lock = lockNow instanceof CoreError ? lock0 : lockNow;
       // The box key it is kept with: the one the station sealed it to here, or (typed in) this device's the lock vouches.
       const sealed = (r.sealed ?? []).find((x) => x.device === who.device);
       const box = given ? certs(inner, self.ws, lock).find((c) => c.device === who.device)?.box : sealed?.box;
       if (box === undefined) return yield* (given ? fail("vault_not_set_up", t("core-misc.vault.notSetUp")) : fail("vault_no_key", t("core-misc.vault.notSealedHere")));
-      const keyedHere = (v: Vault) => trusted(lock, v) && v.members.includes(who.sub) && v.keys.some((k) => k.cert.device === who.device && k.cert.box === box);
+      const keyedHere = (v: Vault) => !v.deleted && trusted(lock, v) && v.members.includes(who.sub) && v.keys.some((k) => k.cert.device === who.device && k.cert.box === box);
+      // (a secret is written into no vault waiting to be keyed anew: one this device owns and holds a key to is keyed
+      // anew first with the box key read below; any other is refused saying the station it waits for, never making a
+      // second personal vault)
+      const waitsHere = (v: Vault) => !v.deleted && v.members.includes(who.sub) && waitingAs(inner, self.ws, lock, v) !== null;
+      const waitingKeyedHere = (v: Vault) => v.scope !== "workspace" && v.owner === who.sub && waitsHere(v) && v.keys.some((k) => k.cert.device === who.device && k.cert.box === box);
       const h = held(inner, self.ws);
-      // (a secret is written into no vault waiting to be keyed anew: the one asked for, or their own when it is the one
-      // it would go to, refused saying the station it waits for, not put elsewhere nor a second one made)
-      const waitsHere = (v: Vault) => v.members.includes(who.sub) && waitingAs(inner, self.ws, lock, v) !== null;
       let chosen: Vault | undefined;
+      let rekeyCandidate: Vault | undefined;
       if (targetVault !== undefined && targetVault !== "") {
         const explicit = h.vaults[targetVault];
         if (explicit === undefined || explicit.deleted) return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
-        if (waitsHere(explicit)) return yield* Effect.fail(waitingError(inner, self.ws, explicit));
-        if (!keyedHere(explicit)) return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
-        chosen = explicit;
+        if (waitsHere(explicit)) {
+          if (canManage(lock, explicit, who.sub) && explicit.keys.some((k) => k.cert.device === who.device && k.cert.box === box)) {
+            rekeyCandidate = explicit;
+          } else {
+            return yield* Effect.fail(waitingError(inner, self.ws, explicit));
+          }
+        } else if (!keyedHere(explicit)) {
+          return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
+        } else {
+          chosen = explicit;
+        }
       } else {
-        const reqPersonal = h.vaults[r.vault] !== undefined && h.vaults[r.vault]!.scope !== "workspace" ? h.vaults[r.vault] : undefined;
-        if (reqPersonal !== undefined && waitsHere(reqPersonal)) return yield* Effect.fail(waitingError(inner, self.ws, reqPersonal));
+        const reqPersonal = r.vault !== "" && r.vault !== PLAIN && h.vaults[r.vault] !== undefined && !h.vaults[r.vault]!.deleted && h.vaults[r.vault]!.scope !== "workspace" ? h.vaults[r.vault] : undefined;
         const theirs = Object.values(h.vaults).filter(keyedHere).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : 1));
         chosen = (reqPersonal && keyedHere(reqPersonal) ? reqPersonal : undefined) ?? theirs.find((x) => x.scope !== "workspace" && x.owner === who.sub);
-        const ownWaiting = chosen ? undefined : Object.values(h.vaults).find((v) => v.scope !== "workspace" && v.owner === who.sub && waitsHere(v));
-        if (ownWaiting !== undefined) return yield* Effect.fail(waitingError(inner, self.ws, ownWaiting));
-        // Their own personal vault this device has no key to yet: given it by a device that has (not a second one made here).
-        if (!chosen && Object.values(h.vaults).some((v) => !v.deleted && v.scope !== "workspace" && trusted(lock, v) && v.owner === who.sub)) return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
+        if (!chosen) {
+          rekeyCandidate = (reqPersonal && waitingKeyedHere(reqPersonal) ? reqPersonal : undefined) ?? Object.values(h.vaults).find(waitingKeyedHere);
+        }
+        if (!chosen && !rekeyCandidate) {
+          if (reqPersonal !== undefined && waitsHere(reqPersonal)) return yield* Effect.fail(waitingError(inner, self.ws, reqPersonal));
+          const ownWaiting = Object.values(h.vaults).find((v) => v.scope !== "workspace" && v.owner === who.sub && waitsHere(v));
+          if (ownWaiting !== undefined) return yield* Effect.fail(waitingError(inner, self.ws, ownWaiting));
+          // Their own personal vault this device has no key to yet: given it by a device that has (not a second one made here).
+          if (Object.values(h.vaults).some((v) => !v.deleted && v.scope !== "workspace" && (trusted(lock, v) || waitingAs(inner, self.ws, lock, v) !== null) && v.owner === who.sub)) {
+            return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
+          }
+          // Station named a non-deleted personal vault that could not be verified or keyed here: never split a second one.
+          if (r.vault !== "" && r.vault !== PLAIN && !h.vaults[r.vault]?.deleted) {
+            return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
+          }
+        }
       }
       const priv = yield* self.#boxKey(t("core-misc.vault.reason.save", { name: s.name }));
       if (boxPublic(priv) !== box) return yield* fail("vault_no_key", t(given ? "core-misc.vault.noKey" : "core-misc.vault.notSealedHere"));
@@ -3998,6 +4114,13 @@ class Vaults {
         catch: asCoreError,
       });
       let v = chosen;
+      if (!v && rekeyCandidate !== undefined) {
+        const mine = rekeyCandidate.keys.find((k) => k.cert.device === who.device && k.cert.box === box)!;
+        const oldKey = yield* Effect.try({ try: () => openSeal(priv, mine.wrapped, keyContext(self.ws, rekeyCandidate.id, rekeyCandidate.epoch)), catch: asCoreError });
+        self.#keep(rekeyCandidate, oldKey);
+        yield* Effect.timeoutOption(Effect.ignore(self.#rekey(rekeyCandidate.id, rekeyCandidate.seq), { log: "Unhandled", message: "vault keyed anew before save" }), REKEY_WAIT_MS); // timer: a deadline
+        v = yield* self.#vault(lock, rekeyCandidate.id);
+      }
       if (!v) {
         const made = (yield* self.create(t("core-misc.vault.personal"), null)) as { id: string };
         v = held(inner, self.ws).vaults[made.id];

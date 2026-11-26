@@ -889,7 +889,7 @@ export class Secrets {
     if (sub === undefined) return [];
     return this.#d.vaults
       .vaults(lock.ws)
-      .filter((v) => v.members.includes(sub))
+      .filter((v) => !v.deleted && v.members.includes(sub))
       .flatMap((vault) => this.#vaultListings(lock, vault, this.#d.vaults.items(lock.ws, vault.id)));
   }
 
@@ -1823,16 +1823,26 @@ export class Secrets {
     const devices = new Set(this.#certsOf(lock, sub).map((c) => c.device));
     // Without a certificate there cannot be a vault keyed to one of this person's devices.
     if (devices.size === 0) return "";
-    // A personal vault wins over an earlier shared one. Keep both portions in one snapshot and use the stored key as
-    // the boundary: older data can have a different id in the body.
+    const healthy = (vault: Vault) =>
+      vault.members.every((m) => lock.members.has(m)) &&
+      vault.keys.every((k) => lock.devices.has(k.cert.device) && certOk(lock, k.cert, true) === null);
+    // A healthy personal vault wins over an unrekeyed personal vault or an earlier shared one. Keep both portions in
+    // one snapshot and use the stored key as the boundary: older data can have a different id in the body.
     this.#d.db.exec("SAVEPOINT vault_choose_owner");
     try {
-      let first: Vault | undefined;
+      let firstHealthy: Vault | undefined;
+      let firstFallback: Vault | undefined;
+      let ownedFallback: Vault | undefined;
       const personal = (vaults: Vault[]) => {
         for (const vault of vaults) {
           if (vault.deleted || vault.scope === "workspace" || !vault.members.includes(sub) || !vault.keys.some((k) => devices.has(k.cert.device))) continue;
-          first ??= vault;
-          if (vault.owner === sub) return vault;
+          const ok = healthy(vault);
+          if (ok) firstHealthy ??= vault;
+          else firstFallback ??= vault;
+          if (vault.owner === sub) {
+            if (ok) return vault;
+            ownedFallback ??= vault;
+          }
         }
         return undefined;
       };
@@ -1840,7 +1850,7 @@ export class Secrets {
       let owned = personal(prefix.map((entry) => entry.value));
       if (owned !== undefined) return owned.id ?? "";
       if (prefix.length === LISTING_PREFIX) owned = personal(this.#d.vaults.vaultsAfter(lock.ws, prefix.at(-1)!.id));
-      return (owned ?? first)?.id ?? "";
+      return (owned ?? ownedFallback ?? firstHealthy ?? firstFallback)?.id ?? "";
     } finally { this.#d.db.exec("RELEASE vault_choose_owner"); }
   }
 
