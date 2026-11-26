@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e651c3974](https://github.com/AFK-surf/monoid/commit/e651c39749e1e7b1670323816d628d1e2a02194f) fix(screen): scale with pixel shaders when the GPU | 2.59 | 3.5 | 14.5 | 37.28 | 56.66 | 32.63 | 66.28 | 101.16 | 133.58 |
 | [bd2012fe8](https://github.com/AFK-surf/monoid/commit/bd2012fe8fd018a6de405bf3b43e513b047bb505) fix(projects): unify unclassified, keep active/pin | 2.59 | 3.5 | 14.5 | 37.28 | 56.66 | 32.63 | 66.28 | 101.16 | 133.58 |
 | [78711bdf0](https://github.com/AFK-surf/monoid/commit/78711bdf03fb0a562359873e556f8250c164f72d) fix(ui): turn Shift+wheel sideways on Windows (#87 | 2.59 | 3.5 | 14.5 | 37.26 | 56.66 | 32.63 | 66.28 | 101.17 | 120.2 |
 | [ee875d7d4](https://github.com/AFK-surf/monoid/commit/ee875d7d4e262674de34d9c7801c42bef2da5681) feat(ui): add iOS 27.0 external environmental edge | 2.59 | 3.5 | 14.5 | 37.26 | 56.66 | 32.63 | 66.28 | 101.17 | 120.2 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [771a84655](https://github.com/AFK-surf/monoid/commit/771a846551385d1cde773b0790c1c013fe538280) fix(station): wait for own connects before refusin | 2.56 | 3.46 | 14.31 | 36.92 | 55.88 | 32.25 | 65.22 | 101.04 | 125.82 |
 | [224d3f7a0](https://github.com/AFK-surf/monoid/commit/224d3f7a0df6dfa1c3b0f175962148b19b9e4443) fix(ci): publish main's Mac natives to the native  | 2.56 | 3.46 | 14.29 | 36.9 | 55.82 | 32.24 | 65.18 | 101.21 | 130.49 |
 | [fdc6ccbb1](https://github.com/AFK-surf/monoid/commit/fdc6ccbb10984b875d6b04264ed5e770fe11c947) perf(ci): rebalance station test slices by CI runn | 2.55 | 3.45 | 14.24 | 36.87 | 55.72 | 32.18 | 65.05 | 100.7 | 122.76 |
-| [17f337ddd](https://github.com/AFK-surf/monoid/commit/17f337ddd8e9f8e0fd0c0e3e25003c5815ce0d86) perf(mbui): copy-on-write apply_delta, single-pass | 2.55 | 3.45 | 14.24 | 36.87 | 55.72 | 32.18 | 65.05 | 100.7 | 122.76 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e651c3974](https://github.com/AFK-surf/monoid/commit/e651c39749e1e7b1670323816d628d1e2a02194f) fix(screen): scale with pixel shaders when the GPU | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.48 |
 | [bd2012fe8](https://github.com/AFK-surf/monoid/commit/bd2012fe8fd018a6de405bf3b43e513b047bb505) fix(projects): unify unclassified, keep active/pin | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.35 |
 | [78711bdf0](https://github.com/AFK-surf/monoid/commit/78711bdf03fb0a562359873e556f8250c164f72d) fix(ui): turn Shift+wheel sideways on Windows (#87 | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.35 |
 | [ee875d7d4](https://github.com/AFK-surf/monoid/commit/ee875d7d4e262674de34d9c7801c42bef2da5681) feat(ui): add iOS 27.0 external environmental edge | 0.57 | 0.74 | 2.87 | 3.93 | 7.2 | 2.14 | 6.04 | 57.61 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [771a84655](https://github.com/AFK-surf/monoid/commit/771a846551385d1cde773b0790c1c013fe538280) fix(station): wait for own connects before refusin | 0.56 | 0.74 | 2.87 | 3.92 | 7.17 | 2.13 | 5.99 | 57.53 |
 | [224d3f7a0](https://github.com/AFK-surf/monoid/commit/224d3f7a0df6dfa1c3b0f175962148b19b9e4443) fix(ci): publish main's Mac natives to the native  | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.9 |
 | [fdc6ccbb1](https://github.com/AFK-surf/monoid/commit/fdc6ccbb10984b875d6b04264ed5e770fe11c947) perf(ci): rebalance station test slices by CI runn | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.85 |
-| [17f337ddd](https://github.com/AFK-surf/monoid/commit/17f337ddd8e9f8e0fd0c0e3e25003c5815ce0d86) perf(mbui): copy-on-write apply_delta, single-pass | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.72 |
