@@ -16,7 +16,7 @@ static inline int mb_win_must_present(int held, int is_win0, int win0_reveal, in
 }
 
 static inline void mb_win_on_present_result(int must_present, int presented, int visible, int is_win0,
-                                            int pictures_missing, double frame_w, double frame_h, double now_ms,
+                                            int pics_missing, double frame_w, double frame_h, double now_ms,
                                             int *held, int *win0_reveal, int *submitted_this, int *presented_this,
                                             int *present_retries, int *want_frame, double *paced_at,
                                             double *paced_margin) {
@@ -26,7 +26,7 @@ static inline void mb_win_on_present_result(int must_present, int presented, int
   }
   if (visible) *presented_this = 1;
   if (presented && *held) *held = 2;
-  if (presented && is_win0 && *win0_reveal == 1 && !pictures_missing && frame_w > 32.0 && frame_h > 32.0) {
+  if (presented && is_win0 && *win0_reveal == 1 && !pics_missing && frame_w > 32.0 && frame_h > 32.0) {
     *win0_reveal = 2;
   }
   if (must_present && !presented) {

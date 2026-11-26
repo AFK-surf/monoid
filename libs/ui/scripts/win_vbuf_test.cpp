@@ -75,8 +75,8 @@ void mb_views_draw_under(uint8_t *, int, int, double) {}
 double mb_app_scale(void) { return 1.0; }
 }
 
-#include "win_render.cpp"
 #include "win_reveal.h"
+#include "win_render.cpp"
 
 static int failed = 0;
 #define CHECK(c)                                                         \
