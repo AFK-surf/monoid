@@ -5,11 +5,13 @@
 // 1. Foreign threads NEVER invoke Pion callbacks; they only enqueue native events
 //    onto `host_shim`'s queue (`sth_push_sys` for control events, `sth_push_sys_bounded`
 //    for bulk data events).
-// 2. Every handle's `close` explicitly wakes any blocked reader/writer/waiter thread
-//    and joins it before returning (zero orphan threads, zero leaked fds/handles,
-//    zero deadlocks).
+// 2. Streaming handles (`proc`, `pty`, `udp`) use refcounted detached teardown so
+//    `close` returns immediately even when the bounded data queue is full, while
+//    POSIX wait threads always reap children (zero zombies) and every detached
+//    worker is tracked for deterministic test synchronization.
 // 3. Control channel (`sts_ctrl_*`) only operates on the explicitly supplied control
-//    fd (e.g. fd 5) or Windows named pipe — never touches Unix listening fds 3/4.
+//    fd (> 4, e.g. fd 5) or Windows named pipe — never touches stdio 0..2 or
+//    launcher listening fds 3..4.
 
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
@@ -32,6 +34,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +70,8 @@
 #include <time.h>
 #include <unistd.h>
 #ifdef __APPLE__
+#include <CoreServices/CoreServices.h>
+#include <dispatch/dispatch.h>
 #include <libproc.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
@@ -316,6 +321,149 @@ static void push_exit_event(uint64_t event_id, uint8_t tag, int32_t exit_code, i
 void sts_free(void *ptr) {
     free(ptr);
 }
+
+// ===========================================================================
+// Global detached worker tracker (for deterministic test synchronization)
+// ===========================================================================
+
+#ifdef _WIN32
+static SRWLOCK g_det_lock = SRWLOCK_INIT;
+static CONDITION_VARIABLE g_det_cond = CONDITION_VARIABLE_INIT;
+static int64_t g_det_active = 0;
+
+static void sts_detached_begin(void) {
+    AcquireSRWLockExclusive(&g_det_lock);
+    g_det_active += 1;
+    ReleaseSRWLockExclusive(&g_det_lock);
+}
+
+static void sts_detached_end(void) {
+    AcquireSRWLockExclusive(&g_det_lock);
+    g_det_active -= 1;
+    if (g_det_active == 0) {
+        WakeAllConditionVariable(&g_det_cond);
+    }
+    ReleaseSRWLockExclusive(&g_det_lock);
+}
+
+int32_t sts_wait_detached_for_test(int64_t timeout_ms) {
+    ULONGLONG start = GetTickCount64();
+    AcquireSRWLockExclusive(&g_det_lock);
+    while (g_det_active > 0) {
+        if (timeout_ms <= 0) {
+            break;
+        }
+        ULONGLONG elapsed = GetTickCount64() - start;
+        if ((int64_t)elapsed >= timeout_ms) {
+            break;
+        }
+        DWORD rem = (DWORD)(timeout_ms - (int64_t)elapsed);
+        SleepConditionVariableSRW(&g_det_cond, &g_det_lock, rem, 0);
+    }
+    int ok = (g_det_active == 0) ? 1 : 0;
+    ReleaseSRWLockExclusive(&g_det_lock);
+    return ok;
+}
+
+static int win_spawn_detached_thread(LPTHREAD_START_ROUTINE fn, LPVOID arg) {
+    sts_detached_begin();
+    HANDLE h = CreateThread(NULL, 0, fn, arg, 0, NULL);
+    if (h == NULL) {
+        sts_detached_end();
+        return 0;
+    }
+    CloseHandle(h);
+    return 1;
+}
+#else
+static pthread_mutex_t g_det_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_det_cond;
+static pthread_once_t g_det_once = PTHREAD_ONCE_INIT;
+static int64_t g_det_active = 0;
+
+static void sts_det_init_once(void) {
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+#ifndef __APPLE__
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+#endif
+    pthread_cond_init(&g_det_cond, &attr);
+    pthread_condattr_destroy(&attr);
+}
+
+static void sts_detached_begin(void) {
+    pthread_once(&g_det_once, sts_det_init_once);
+    pthread_mutex_lock(&g_det_lock);
+    g_det_active += 1;
+    pthread_mutex_unlock(&g_det_lock);
+}
+
+static void sts_detached_end(void) {
+    pthread_once(&g_det_once, sts_det_init_once);
+    pthread_mutex_lock(&g_det_lock);
+    g_det_active -= 1;
+    if (g_det_active == 0) {
+        pthread_cond_broadcast(&g_det_cond);
+    }
+    pthread_mutex_unlock(&g_det_lock);
+}
+
+int32_t sts_wait_detached_for_test(int64_t timeout_ms) {
+    pthread_once(&g_det_once, sts_det_init_once);
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    pthread_mutex_lock(&g_det_lock);
+    while (g_det_active > 0) {
+        if (timeout_ms <= 0) {
+            break;
+        }
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        int64_t elapsed_ms = (int64_t)(now.tv_sec - start.tv_sec) * 1000LL +
+                             (int64_t)(now.tv_nsec - start.tv_nsec) / 1000000LL;
+        if (elapsed_ms >= timeout_ms) {
+            break;
+        }
+        int64_t rem_ms = timeout_ms - elapsed_ms;
+#ifdef __APPLE__
+        struct timespec rel;
+        rel.tv_sec = (time_t)(rem_ms / 1000LL);
+        rel.tv_nsec = (long)((rem_ms % 1000LL) * 1000000LL);
+        int rc = pthread_cond_timedwait_relative_np(&g_det_cond, &g_det_lock, &rel);
+#else
+        struct timespec dl = now;
+        dl.tv_sec += (time_t)(rem_ms / 1000LL);
+        dl.tv_nsec += (long)((rem_ms % 1000LL) * 1000000LL);
+        if (dl.tv_nsec >= 1000000000L) {
+            dl.tv_sec += 1;
+            dl.tv_nsec -= 1000000000L;
+        }
+        int rc = pthread_cond_timedwait(&g_det_cond, &g_det_lock, &dl);
+#endif
+        if (rc == ETIMEDOUT) {
+            break;
+        }
+    }
+    int ok = (g_det_active == 0) ? 1 : 0;
+    pthread_mutex_unlock(&g_det_lock);
+    return ok;
+}
+
+static int spawn_detached_thread(void *(*fn)(void *), void *arg) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+    sts_detached_begin();
+    pthread_t th;
+    int rc = pthread_create(&th, &attr, fn, arg);
+    pthread_attr_destroy(&attr);
+    if (rc != 0) {
+        sts_detached_end();
+        return 0;
+    }
+    return 1;
+}
+#endif
 
 // ===========================================================================
 // OS / Arch info
@@ -585,6 +733,8 @@ static DWORD WINAPI win_fsw_thread(LPVOID arg) {
             break;
         }
         if (bytes == 0) {
+            uint8_t ovf[2] = { STS_EV_FS_CHANGE, STS_FS_OVERFLOW };
+            sth_push_sys(w->event_id, ovf, sizeof(ovf));
             continue;
         }
         size_t off = 0;
@@ -614,7 +764,10 @@ static DWORD WINAPI win_fsw_thread(LPVOID arg) {
                 }
             }
             free(name);
-            if (fni->NextEntryOffset == 0 || (size_t)fni->NextEntryOffset > (size_t)bytes - off) {
+            if (fni->NextEntryOffset == 0 ||
+                (fni->NextEntryOffset & 3u) != 0 ||
+                (size_t)fni->NextEntryOffset < hdr ||
+                (size_t)fni->NextEntryOffset > (size_t)bytes - off) {
                 break;
             }
             off += fni->NextEntryOffset;
@@ -739,6 +892,8 @@ typedef struct {
     DWORD pid;
     HANDLE h_stop;
     _Atomic int closing;
+    SRWLOCK kill_lock;
+    int exited;
 
     HANDLE h_stdin;
     SRWLOCK stdin_lock;
@@ -748,52 +903,62 @@ typedef struct {
     size_t stdin_queued;
     int stdin_eof;
     int stdin_aborted;
-    HANDLE th_stdin;
 
     HANDLE h_stdout;
-    HANDLE th_stdout;
     HANDLE h_stderr;
-    HANDLE th_stderr;
-    HANDLE th_wait;
     SRWLOCK ref_lock;
     int refs;
 } win_proc_t;
 
 static _Atomic uint64_t g_win_pipe_seq = 1;
 
-static int win_create_overlapped_read_pipe(HANDLE *out_read, HANDLE *out_write_inheritable) {
+static int win_create_overlapped_pipe(int child_is_reader, int child_inheritable, HANDLE *out_parent, HANDLE *out_child) {
     uint64_t seq = atomic_fetch_add_explicit(&g_win_pipe_seq, 1, memory_order_relaxed);
-    wchar_t name[128];
-    swprintf(name, 128, L"\\\\.\\pipe\\stillfail-sts-pipe-%lu-%llu",
-             (unsigned long)GetCurrentProcessId(), (unsigned long long)seq);
-    HANDLE r = CreateNamedPipeW(
+    LARGE_INTEGER qpc;
+    qpc.QuadPart = 0;
+    QueryPerformanceCounter(&qpc);
+    wchar_t name[160];
+    swprintf(name, 160, L"\\\\.\\pipe\\stillfail-sts-%lu-%llx-%llx-%llu",
+             (unsigned long)GetCurrentProcessId(),
+             (unsigned long long)GetTickCount64(),
+             (unsigned long long)qpc.QuadPart,
+             (unsigned long long)seq);
+    DWORD open_mode = (child_is_reader ? PIPE_ACCESS_OUTBOUND : PIPE_ACCESS_INBOUND) |
+                      FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE;
+    HANDLE parent = CreateNamedPipeW(
         name,
-        PIPE_ACCESS_INBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
-        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
+        open_mode,
+        PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
         1,
         65536,
         65536,
         0,
         NULL);
-    if (r == INVALID_HANDLE_VALUE) {
+    if (parent == INVALID_HANDLE_VALUE) {
         return 0;
     }
-    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
-    HANDLE w = CreateFileW(
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, child_inheritable ? TRUE : FALSE };
+    HANDLE child = CreateFileW(
         name,
-        GENERIC_WRITE,
+        child_is_reader ? GENERIC_READ : GENERIC_WRITE,
         0,
         &sa,
         OPEN_EXISTING,
         FILE_ATTRIBUTE_NORMAL,
         NULL);
-    if (w == INVALID_HANDLE_VALUE) {
-        CloseHandle(r);
+    if (child == INVALID_HANDLE_VALUE) {
+        CloseHandle(parent);
         return 0;
     }
-    *out_read = r;
-    *out_write_inheritable = w;
+    *out_parent = parent;
+    *out_child = child;
     return 1;
+}
+
+static void win_proc_ref(win_proc_t *p) {
+    AcquireSRWLockExclusive(&p->ref_lock);
+    p->refs += 1;
+    ReleaseSRWLockExclusive(&p->ref_lock);
 }
 
 static void win_proc_unref(win_proc_t *p) {
@@ -821,13 +986,14 @@ typedef struct {
 
 static DWORD WINAPI win_pipe_reader_thread(LPVOID arg) {
     win_pipe_arg_t *pa = (win_pipe_arg_t *)arg;
+    win_proc_t *p = pa->proc;
     HANDLE h_io = CreateEventW(NULL, TRUE, FALSE, NULL);
     uint8_t *buf = (uint8_t *)malloc(1 + 65536);
     int eof = 0;
     if (h_io != NULL && buf != NULL) {
         buf[0] = pa->data_tag;
         for (;;) {
-            if (atomic_load_explicit(&pa->proc->closing, memory_order_acquire)) {
+            if (atomic_load_explicit(&p->closing, memory_order_acquire)) {
                 break;
             }
             ResetEvent(h_io);
@@ -839,7 +1005,7 @@ static DWORD WINAPI win_pipe_reader_thread(LPVOID arg) {
             if (!ok) {
                 DWORD err = GetLastError();
                 if (err == ERROR_IO_PENDING) {
-                    HANDLE waits[2] = { h_io, pa->proc->h_stop };
+                    HANDLE waits[2] = { h_io, p->h_stop };
                     DWORD wr = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
                     if (wr == WAIT_OBJECT_0 + 1) {
                         CancelIoEx(pa->h_pipe, &ov);
@@ -860,29 +1026,71 @@ static DWORD WINAPI win_pipe_reader_thread(LPVOID arg) {
                 eof = 1;
                 break;
             }
-            if (atomic_load_explicit(&pa->proc->closing, memory_order_acquire)) {
+            if (atomic_load_explicit(&p->closing, memory_order_acquire)) {
                 break;
             }
-            sth_push_sys_bounded(pa->proc->event_id, buf, (size_t)n + 1);
+            sth_push_sys_bounded(p->event_id, buf, (size_t)n + 1);
+            if (atomic_load_explicit(&p->closing, memory_order_acquire)) {
+                break;
+            }
         }
     }
     free(buf);
     if (h_io != NULL) CloseHandle(h_io);
-    if (eof && !atomic_load_explicit(&pa->proc->closing, memory_order_acquire)) {
-        push_tag_ctrl(pa->proc->event_id, pa->eof_tag, NULL, 0);
+    if (eof && !atomic_load_explicit(&p->closing, memory_order_acquire)) {
+        push_tag_ctrl(p->event_id, pa->eof_tag, NULL, 0);
     }
     free(pa);
+    win_proc_unref(p);
+    sts_detached_end();
     return 0;
+}
+
+static int win_write_overlapped(HANDLE h, HANDLE h_stop, HANDLE h_io, const uint8_t *data, size_t len) {
+    size_t done = 0;
+    while (done < len) {
+        ResetEvent(h_io);
+        OVERLAPPED ov;
+        memset(&ov, 0, sizeof(ov));
+        ov.hEvent = h_io;
+        DWORD want = (len - done) > 0x7fffffffu ? 0x7fffffffu : (DWORD)(len - done);
+        DWORD n = 0;
+        BOOL wr = WriteFile(h, data + done, want, &n, &ov);
+        if (!wr) {
+            DWORD err = GetLastError();
+            if (err == ERROR_IO_PENDING) {
+                HANDLE waits[2] = { h_io, h_stop };
+                DWORD wrc = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+                if (wrc == WAIT_OBJECT_0 + 1) {
+                    CancelIoEx(h, &ov);
+                    DWORD dummy = 0;
+                    GetOverlappedResult(h, &ov, &dummy, TRUE);
+                    return 0;
+                }
+                if (wrc != WAIT_OBJECT_0 || !GetOverlappedResult(h, &ov, &n, FALSE)) {
+                    return 0;
+                }
+            } else {
+                return 0;
+            }
+        }
+        if (n == 0) {
+            return 0;
+        }
+        done += (size_t)n;
+    }
+    return 1;
 }
 
 static DWORD WINAPI win_stdin_thread(LPVOID arg) {
     win_proc_t *p = (win_proc_t *)arg;
+    HANDLE h_io = CreateEventW(NULL, TRUE, FALSE, NULL);
     for (;;) {
         AcquireSRWLockExclusive(&p->stdin_lock);
         while (!p->stdin_aborted && p->stdin_head == NULL && !p->stdin_eof) {
             SleepConditionVariableSRW(&p->stdin_cond, &p->stdin_lock, INFINITE, 0);
         }
-        if (p->stdin_aborted) {
+        if (p->stdin_aborted || h_io == NULL) {
             sts_chunk_t *drop = p->stdin_head;
             p->stdin_head = p->stdin_tail = NULL;
             p->stdin_queued = 0;
@@ -898,17 +1106,7 @@ static DWORD WINAPI win_stdin_thread(LPVOID arg) {
             HANDLE h = p->h_stdin;
             ReleaseSRWLockExclusive(&p->stdin_lock);
 
-            size_t done = 0;
-            int ok = 1;
-            while (done < ch->len) {
-                DWORD want = (ch->len - done) > 0x7fffffffu ? 0x7fffffffu : (DWORD)(ch->len - done);
-                DWORD n = 0;
-                if (!WriteFile(h, ch->data + done, want, &n, NULL) || n == 0) {
-                    ok = 0;
-                    break;
-                }
-                done += (size_t)n;
-            }
+            int ok = win_write_overlapped(h, p->h_stop, h_io, ch->data, ch->len);
             free(ch);
             if (!ok) {
                 AcquireSRWLockExclusive(&p->stdin_lock);
@@ -928,12 +1126,15 @@ static DWORD WINAPI win_stdin_thread(LPVOID arg) {
         }
         ReleaseSRWLockExclusive(&p->stdin_lock);
     }
+    if (h_io != NULL) CloseHandle(h_io);
     AcquireSRWLockExclusive(&p->stdin_lock);
     if (p->h_stdin != NULL) {
         CloseHandle(p->h_stdin);
         p->h_stdin = NULL;
     }
     ReleaseSRWLockExclusive(&p->stdin_lock);
+    win_proc_unref(p);
+    sts_detached_end();
     return 0;
 }
 
@@ -944,12 +1145,19 @@ static DWORD WINAPI win_wait_thread(LPVOID arg) {
     if (wr == WAIT_OBJECT_0) {
         DWORD code = 1;
         GetExitCodeProcess(p->h_proc, &code);
+        AcquireSRWLockExclusive(&p->kill_lock);
+        p->exited = 1;
+        ReleaseSRWLockExclusive(&p->kill_lock);
         AcquireSRWLockExclusive(&p->stdin_lock);
         p->stdin_aborted = 1;
         WakeConditionVariable(&p->stdin_cond);
         ReleaseSRWLockExclusive(&p->stdin_lock);
-        push_exit_event(p->event_id, STS_EV_PROC_EXIT, (int32_t)code, 0, "");
+        if (!atomic_load_explicit(&p->closing, memory_order_acquire)) {
+            push_exit_event(p->event_id, STS_EV_PROC_EXIT, (int32_t)code, 0, "");
+        }
     }
+    win_proc_unref(p);
+    sts_detached_end();
     return 0;
 }
 
@@ -979,9 +1187,15 @@ static void win_quote_arg(sbuf_t *b, const char *a) {
     sb_str(b, "\"");
 }
 
-static wchar_t *win_build_env_block(const uint8_t *env_nul, int64_t env_len, int strip_mse) {
-    if (env_len <= 0 && !strip_mse) {
+static wchar_t *win_build_env_block(const uint8_t *env_nul, int64_t env_len, int strip_mse, int explicit_env, int *out_ok) {
+    *out_ok = 1;
+    if (!explicit_env && env_len <= 0 && !strip_mse) {
         return NULL;
+    }
+    if (explicit_env && env_len <= 0) {
+        wchar_t *empty = (wchar_t *)calloc(2, sizeof(wchar_t));
+        if (empty == NULL) *out_ok = 0;
+        return empty;
     }
     sbuf_t utf8 = { 0, 0, 0 };
     if (env_len > 0 && env_nul != NULL) {
@@ -990,19 +1204,32 @@ static wchar_t *win_build_env_block(const uint8_t *env_nul, int64_t env_len, int
             const char *entry = (const char *)(env_nul + i);
             size_t n = strnlen(entry, (size_t)(env_len - i));
             if (n > 0 && !(strip_mse && is_malloc_se_entry(entry))) {
+                if (!sb_reserve(&utf8, n + 1)) {
+                    free(utf8.data);
+                    *out_ok = 0;
+                    return NULL;
+                }
                 sb_add(&utf8, entry, n);
                 sb_add(&utf8, "", 1);
             }
             i += (int64_t)n + 1;
         }
-    } else {
+    } else if (!explicit_env) {
         wchar_t *block = GetEnvironmentStringsW();
         if (block != NULL) {
             for (wchar_t *p = block; *p != 0; p += wcslen(p) + 1) {
                 char *s = wide_to_utf8(p);
                 if (s != NULL) {
                     if (!(strip_mse && is_malloc_se_entry(s))) {
-                        sb_add(&utf8, s, strlen(s) + 1);
+                        size_t sl = strlen(s);
+                        if (!sb_reserve(&utf8, sl + 1)) {
+                            free(s);
+                            FreeEnvironmentStringsW(block);
+                            free(utf8.data);
+                            *out_ok = 0;
+                            return NULL;
+                        }
+                        sb_add(&utf8, s, sl + 1);
                     }
                     free(s);
                 }
@@ -1010,12 +1237,31 @@ static wchar_t *win_build_env_block(const uint8_t *env_nul, int64_t env_len, int
             FreeEnvironmentStringsW(block);
         }
     }
-    sb_add(&utf8, "", 1);
-    int wn = MultiByteToWideChar(CP_UTF8, 0, utf8.data ? utf8.data : "\0", (int)(utf8.len > 0 ? utf8.len : 1), NULL, 0);
-    wchar_t *wenv = (wchar_t *)calloc((size_t)wn + 2, sizeof(wchar_t));
-    if (wenv != NULL && utf8.data != NULL && utf8.len > 0) {
-        MultiByteToWideChar(CP_UTF8, 0, utf8.data, (int)utf8.len, wenv, wn);
+    if (utf8.len == 0) {
+        free(utf8.data);
+        wchar_t *empty = (wchar_t *)calloc(2, sizeof(wchar_t));
+        if (empty == NULL) *out_ok = 0;
+        return empty;
     }
+    if (!sb_reserve(&utf8, 1)) {
+        free(utf8.data);
+        *out_ok = 0;
+        return NULL;
+    }
+    sb_add(&utf8, "", 1);
+    int wn = MultiByteToWideChar(CP_UTF8, 0, utf8.data, (int)utf8.len, NULL, 0);
+    if (wn <= 0) {
+        free(utf8.data);
+        *out_ok = 0;
+        return NULL;
+    }
+    wchar_t *wenv = (wchar_t *)calloc((size_t)wn + 2, sizeof(wchar_t));
+    if (wenv == NULL) {
+        free(utf8.data);
+        *out_ok = 0;
+        return NULL;
+    }
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data, (int)utf8.len, wenv, wn);
     free(utf8.data);
     return wenv;
 }
@@ -1055,10 +1301,22 @@ int64_t sts_proc_spawn(
     }
     wchar_t *wline = utf8_to_wide(cmd.data ? cmd.data : "");
     free(cmd.data);
-    wchar_t *wenv = win_build_env_block(env_nul, env_len, (flags & STS_PROC_STRIP_MALLOC_SE) != 0);
+    int env_ok = 1;
+    wchar_t *wenv = win_build_env_block(
+        env_nul,
+        env_len,
+        (flags & STS_PROC_STRIP_MALLOC_SE) != 0,
+        (flags & STS_PROC_EXPLICIT_ENV) != 0,
+        &env_ok);
     wchar_t *wcwd = (cwd != NULL && cwd[0] != '\0') ? utf8_to_wide(cwd) : NULL;
+    if (wline == NULL || !env_ok || (cwd != NULL && cwd[0] != '\0' && wcwd == NULL)) {
+        free(wline);
+        free(wenv);
+        free(wcwd);
+        copy_err(err_buf, err_cap, "oom");
+        return -1;
+    }
 
-    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
     HANDLE child_h[3] = { INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE };
     HANDLE mine_h[3] = { NULL, NULL, NULL };
     int pipe_flags[3] = {
@@ -1066,45 +1324,59 @@ int64_t sts_proc_spawn(
         (flags & STS_PROC_PIPE_STDOUT) != 0,
         (flags & STS_PROC_PIPE_STDERR) != 0
     };
+    int pipes_ok = 1;
     for (int i = 0; i < 3; i++) {
         if (pipe_flags[i]) {
-            HANDLE r = NULL, w = NULL;
-            if (i == 0) {
-                if (!CreatePipe(&r, &w, &sa, 0)) {
-                    child_h[i] = INVALID_HANDLE_VALUE;
-                } else {
-                    child_h[i] = r;
-                    mine_h[i] = w;
-                    SetHandleInformation(w, HANDLE_FLAG_INHERIT, 0);
-                }
-            } else {
-                if (!win_create_overlapped_read_pipe(&r, &w)) {
-                    child_h[i] = INVALID_HANDLE_VALUE;
-                } else {
-                    child_h[i] = w;
-                    mine_h[i] = r;
-                }
+            HANDLE parent = NULL, child = NULL;
+            if (!win_create_overlapped_pipe(i == 0, 1, &parent, &child)) {
+                pipes_ok = 0;
+                break;
             }
+            mine_h[i] = parent;
+            child_h[i] = child;
         } else {
             child_h[i] = win_open_nul();
+            if (child_h[i] == INVALID_HANDLE_VALUE) {
+                pipes_ok = 0;
+                break;
+            }
         }
     }
 
-    STARTUPINFOW si;
-    PROCESS_INFORMATION pi;
-    memset(&si, 0, sizeof(si));
-    memset(&pi, 0, sizeof(pi));
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = child_h[0];
-    si.hStdOutput = child_h[1];
-    si.hStdError = child_h[2];
+    SIZE_T attr_size = 0;
+    LPPROC_THREAD_ATTRIBUTE_LIST attr_list = NULL;
+    if (pipes_ok) {
+        InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
+        attr_list = (LPPROC_THREAD_ATTRIBUTE_LIST)malloc(attr_size);
+        if (attr_list == NULL ||
+            !InitializeProcThreadAttributeList(attr_list, 1, 0, &attr_size) ||
+            !UpdateProcThreadAttribute(attr_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, child_h, sizeof(child_h), NULL, NULL)) {
+            free(attr_list);
+            attr_list = NULL;
+            pipes_ok = 0;
+        }
+    }
 
-    DWORD cflags = CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW |
+    STARTUPINFOEXW siex;
+    PROCESS_INFORMATION pi;
+    memset(&siex, 0, sizeof(siex));
+    memset(&pi, 0, sizeof(pi));
+    siex.StartupInfo.cb = sizeof(siex);
+    siex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    siex.StartupInfo.hStdInput = child_h[0];
+    siex.StartupInfo.hStdOutput = child_h[1];
+    siex.StartupInfo.hStdError = child_h[2];
+    siex.lpAttributeList = attr_list;
+
+    DWORD cflags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW |
                    ((flags & STS_PROC_NEW_PGID) ? CREATE_NEW_PROCESS_GROUP : 0);
-    BOOL ok = (wline != NULL) && CreateProcessW(NULL, wline, NULL, NULL, TRUE, cflags, wenv, wcwd, &si, &pi);
+    BOOL ok = pipes_ok && CreateProcessW(NULL, wline, NULL, NULL, TRUE, cflags, wenv, wcwd, &siex.StartupInfo, &pi);
     DWORD err = ok ? 0 : GetLastError();
 
+    if (attr_list != NULL) {
+        DeleteProcThreadAttributeList(attr_list);
+        free(attr_list);
+    }
     for (int i = 0; i < 3; i++) {
         if (child_h[i] != INVALID_HANDLE_VALUE) {
             CloseHandle(child_h[i]);
@@ -1119,7 +1391,7 @@ int64_t sts_proc_spawn(
             if (mine_h[i] != NULL) CloseHandle(mine_h[i]);
         }
         char msg[256];
-        win_err_str(err, msg, sizeof(msg));
+        win_err_str(err ? err : ERROR_NOT_ENOUGH_MEMORY, msg, sizeof(msg));
         copy_err(err_buf, err_cap, msg);
         return -1;
     }
@@ -1127,6 +1399,7 @@ int64_t sts_proc_spawn(
 
     win_proc_t *p = (win_proc_t *)calloc(1, sizeof(*p));
     if (p == NULL) {
+        TerminateProcess(pi.hProcess, 1);
         for (int i = 0; i < 3; i++) {
             if (mine_h[i] != NULL) CloseHandle(mine_h[i]);
         }
@@ -1141,62 +1414,73 @@ int64_t sts_proc_spawn(
     p->h_stdin = mine_h[0];
     p->h_stdout = mine_h[1];
     p->h_stderr = mine_h[2];
+    InitializeSRWLock(&p->kill_lock);
     InitializeSRWLock(&p->stdin_lock);
     InitializeConditionVariable(&p->stdin_cond);
     InitializeSRWLock(&p->ref_lock);
     p->refs = 1;
 
-    if (p->h_stdin != NULL) {
-        p->th_stdin = CreateThread(NULL, 0, win_stdin_thread, p, 0, NULL);
+    int workers_ok = (p->h_stop != NULL);
+    if (workers_ok && p->h_stdin != NULL) {
+        win_proc_ref(p);
+        if (!win_spawn_detached_thread(win_stdin_thread, p)) {
+            win_proc_unref(p);
+            workers_ok = 0;
+        }
     }
-    if (p->h_stdout != NULL) {
+    if (workers_ok && p->h_stdout != NULL) {
         win_pipe_arg_t *pa = (win_pipe_arg_t *)malloc(sizeof(*pa));
-        if (pa != NULL) {
+        if (pa == NULL) {
+            workers_ok = 0;
+        } else {
             pa->proc = p;
             pa->h_pipe = p->h_stdout;
             pa->data_tag = STS_EV_PROC_STDOUT;
             pa->eof_tag = STS_EV_PROC_STDOUT_EOF;
-            p->th_stdout = CreateThread(NULL, 0, win_pipe_reader_thread, pa, 0, NULL);
+            win_proc_ref(p);
+            if (!win_spawn_detached_thread(win_pipe_reader_thread, pa)) {
+                free(pa);
+                win_proc_unref(p);
+                workers_ok = 0;
+            }
         }
     }
-    if (p->h_stderr != NULL) {
+    if (workers_ok && p->h_stderr != NULL) {
         win_pipe_arg_t *pa = (win_pipe_arg_t *)malloc(sizeof(*pa));
-        if (pa != NULL) {
+        if (pa == NULL) {
+            workers_ok = 0;
+        } else {
             pa->proc = p;
             pa->h_pipe = p->h_stderr;
             pa->data_tag = STS_EV_PROC_STDERR;
             pa->eof_tag = STS_EV_PROC_STDERR_EOF;
-            p->th_stderr = CreateThread(NULL, 0, win_pipe_reader_thread, pa, 0, NULL);
+            win_proc_ref(p);
+            if (!win_spawn_detached_thread(win_pipe_reader_thread, pa)) {
+                free(pa);
+                win_proc_unref(p);
+                workers_ok = 0;
+            }
         }
     }
-    p->th_wait = CreateThread(NULL, 0, win_wait_thread, p, 0, NULL);
+    if (workers_ok) {
+        win_proc_ref(p);
+        if (!win_spawn_detached_thread(win_wait_thread, p)) {
+            win_proc_unref(p);
+            workers_ok = 0;
+        }
+    }
 
-    int64_t id = ht_insert(STS_HK_PROC, p);
+    int64_t id = workers_ok ? ht_insert(STS_HK_PROC, p) : -1;
     if (id < 0) {
+        TerminateProcess(p->h_proc, 1);
         atomic_store_explicit(&p->closing, 1, memory_order_release);
-        SetEvent(p->h_stop);
+        if (p->h_stop != NULL) SetEvent(p->h_stop);
         AcquireSRWLockExclusive(&p->stdin_lock);
         p->stdin_aborted = 1;
         WakeConditionVariable(&p->stdin_cond);
         ReleaseSRWLockExclusive(&p->stdin_lock);
-        if (p->th_stdin != NULL) {
-            WaitForSingleObject(p->th_stdin, INFINITE);
-            CloseHandle(p->th_stdin);
-        }
-        if (p->th_stdout != NULL) {
-            WaitForSingleObject(p->th_stdout, INFINITE);
-            CloseHandle(p->th_stdout);
-        }
-        if (p->th_stderr != NULL) {
-            WaitForSingleObject(p->th_stderr, INFINITE);
-            CloseHandle(p->th_stderr);
-        }
-        if (p->th_wait != NULL) {
-            WaitForSingleObject(p->th_wait, INFINITE);
-            CloseHandle(p->th_wait);
-        }
         win_proc_unref(p);
-        copy_err(err_buf, err_cap, "oom");
+        copy_err(err_buf, err_cap, "worker spawn failed");
         return -1;
     }
     if (out_pid != NULL) {
@@ -1277,6 +1561,33 @@ int32_t sts_proc_close_stdin(int64_t handle) {
     return 1;
 }
 
+int32_t sts_proc_kill_handle(int64_t handle, int32_t sig, int32_t group) {
+    win_proc_t *p = win_proc_get(handle);
+    if (p == NULL) return -1;
+    AcquireSRWLockExclusive(&p->kill_lock);
+    if (p->exited) {
+        ReleaseSRWLockExclusive(&p->kill_lock);
+        win_proc_unref(p);
+        return -1;
+    }
+    int32_t rc = -1;
+    if (sig == STS_SIG_PROBE) {
+        DWORD code = 0;
+        rc = (GetExitCodeProcess(p->h_proc, &code) && code == STILL_ACTIVE) ? 0 : -1;
+    } else if (group) {
+        DWORD pid = p->pid;
+        ReleaseSRWLockExclusive(&p->kill_lock);
+        rc = sts_proc_kill((int32_t)pid, sig, 1);
+        win_proc_unref(p);
+        return rc;
+    } else {
+        rc = TerminateProcess(p->h_proc, 1) ? 0 : -1;
+    }
+    ReleaseSRWLockExclusive(&p->kill_lock);
+    win_proc_unref(p);
+    return rc;
+}
+
 int32_t sts_proc_close(int64_t handle) {
     win_proc_t *p = (win_proc_t *)ht_take(STS_HK_PROC, handle);
     if (p == NULL) return 0;
@@ -1286,22 +1597,6 @@ int32_t sts_proc_close(int64_t handle) {
     p->stdin_aborted = 1;
     WakeConditionVariable(&p->stdin_cond);
     ReleaseSRWLockExclusive(&p->stdin_lock);
-    if (p->th_stdin != NULL) {
-        WaitForSingleObject(p->th_stdin, INFINITE);
-        CloseHandle(p->th_stdin);
-    }
-    if (p->th_stdout != NULL) {
-        WaitForSingleObject(p->th_stdout, INFINITE);
-        CloseHandle(p->th_stdout);
-    }
-    if (p->th_stderr != NULL) {
-        WaitForSingleObject(p->th_stderr, INFINITE);
-        CloseHandle(p->th_stderr);
-    }
-    if (p->th_wait != NULL) {
-        WaitForSingleObject(p->th_wait, INFINITE);
-        CloseHandle(p->th_wait);
-    }
     win_proc_unref(p);
     return 1;
 }
@@ -1593,28 +1888,25 @@ static BOOL WINAPI win_ctrl_handler(DWORD kind) {
 int32_t sts_signal_watch(uint64_t event_id) {
     AcquireSRWLockExclusive(&g_win_sig_lock);
     g_win_sig_event_id = event_id;
-    int already = g_win_sig_active;
-    g_win_sig_active = 1;
-    ReleaseSRWLockExclusive(&g_win_sig_lock);
-    if (!already) {
-        if (!SetConsoleCtrlHandler(win_ctrl_handler, TRUE)) {
-            AcquireSRWLockExclusive(&g_win_sig_lock);
-            g_win_sig_active = 0;
-            ReleaseSRWLockExclusive(&g_win_sig_lock);
-            return 0;
+    int ok = 1;
+    if (!g_win_sig_active) {
+        if (SetConsoleCtrlHandler(win_ctrl_handler, TRUE)) {
+            g_win_sig_active = 1;
+        } else {
+            ok = 0;
         }
     }
-    return 1;
+    ReleaseSRWLockExclusive(&g_win_sig_lock);
+    return ok;
 }
 
 int32_t sts_signal_unwatch(void) {
     AcquireSRWLockExclusive(&g_win_sig_lock);
-    int was = g_win_sig_active;
-    g_win_sig_active = 0;
-    ReleaseSRWLockExclusive(&g_win_sig_lock);
-    if (was) {
+    if (g_win_sig_active) {
         SetConsoleCtrlHandler(win_ctrl_handler, FALSE);
+        g_win_sig_active = 0;
     }
+    ReleaseSRWLockExclusive(&g_win_sig_lock);
     return 1;
 }
 
@@ -1658,6 +1950,15 @@ int32_t sts_flock_unlock(int64_t handle) {
     memset(&ov, 0, sizeof(ov));
     UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &ov);
     return CloseHandle(h) ? 1 : 0;
+}
+
+int32_t sts_unlink(const char *path) {
+    if (path == NULL || path[0] == '\0') return 0;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return 0;
+    BOOL ok = DeleteFileW(w);
+    free(w);
+    return ok ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1751,43 +2052,139 @@ typedef struct {
     HANDLE h_proc;
     HANDLE h_stop;
     _Atomic int closing;
-    HANDLE th_read;
-    HANDLE th_wait;
+    SRWLOCK resize_lock;
     SRWLOCK write_lock;
+    CONDITION_VARIABLE write_cond;
+    sts_chunk_t *write_head;
+    sts_chunk_t *write_tail;
+    size_t write_queued;
+    int write_aborted;
     SRWLOCK ref_lock;
     int refs;
 } win_pty_t;
+
+static void win_pty_ref(win_pty_t *pt) {
+    AcquireSRWLockExclusive(&pt->ref_lock);
+    pt->refs += 1;
+    ReleaseSRWLockExclusive(&pt->ref_lock);
+}
 
 static void win_pty_unref(win_pty_t *pt) {
     AcquireSRWLockExclusive(&pt->ref_lock);
     int last = (--pt->refs == 0);
     ReleaseSRWLockExclusive(&pt->ref_lock);
     if (!last) return;
+    free_chunks(pt->write_head);
     if (pt->h_in_w != NULL) CloseHandle(pt->h_in_w);
     if (pt->h_out_r != NULL) CloseHandle(pt->h_out_r);
+    if (pt->hpc != NULL) {
+        pt->p_close(pt->hpc);
+        pt->hpc = NULL;
+    }
     if (pt->h_proc != NULL) CloseHandle(pt->h_proc);
     if (pt->h_stop != NULL) CloseHandle(pt->h_stop);
     free(pt);
 }
 
+static DWORD WINAPI win_pty_write_thread(LPVOID arg) {
+    win_pty_t *pt = (win_pty_t *)arg;
+    HANDLE h_io = CreateEventW(NULL, TRUE, FALSE, NULL);
+    for (;;) {
+        AcquireSRWLockExclusive(&pt->write_lock);
+        while (!pt->write_aborted && pt->write_head == NULL) {
+            SleepConditionVariableSRW(&pt->write_cond, &pt->write_lock, INFINITE, 0);
+        }
+        if (pt->write_aborted || h_io == NULL) {
+            sts_chunk_t *drop = pt->write_head;
+            pt->write_head = pt->write_tail = NULL;
+            pt->write_queued = 0;
+            ReleaseSRWLockExclusive(&pt->write_lock);
+            free_chunks(drop);
+            break;
+        }
+        sts_chunk_t *ch = pt->write_head;
+        pt->write_head = ch->next;
+        if (pt->write_head == NULL) pt->write_tail = NULL;
+        pt->write_queued -= ch->len;
+        HANDLE h = pt->h_in_w;
+        ReleaseSRWLockExclusive(&pt->write_lock);
+
+        int ok = win_write_overlapped(h, pt->h_stop, h_io, ch->data, ch->len);
+        free(ch);
+        if (!ok) {
+            AcquireSRWLockExclusive(&pt->write_lock);
+            pt->write_aborted = 1;
+            sts_chunk_t *drop = pt->write_head;
+            pt->write_head = pt->write_tail = NULL;
+            pt->write_queued = 0;
+            ReleaseSRWLockExclusive(&pt->write_lock);
+            free_chunks(drop);
+            break;
+        }
+    }
+    if (h_io != NULL) CloseHandle(h_io);
+    win_pty_unref(pt);
+    sts_detached_end();
+    return 0;
+}
+
 static DWORD WINAPI win_pty_read_thread(LPVOID arg) {
     win_pty_t *pt = (win_pty_t *)arg;
+    HANDLE h_io = CreateEventW(NULL, TRUE, FALSE, NULL);
     uint8_t *buf = (uint8_t *)malloc(1 + 65536);
-    if (buf != NULL) {
+    int eof = 0;
+    if (h_io != NULL && buf != NULL) {
         buf[0] = STS_EV_PTY_DATA;
-        DWORD n = 0;
-        while (ReadFile(pt->h_out_r, buf + 1, 65536, &n, NULL) && n > 0) {
-            if (!atomic_load_explicit(&pt->closing, memory_order_acquire)) {
-                sth_push_sys_bounded(pt->event_id, buf, (size_t)n + 1);
+        for (;;) {
+            if (atomic_load_explicit(&pt->closing, memory_order_acquire)) {
+                break;
             }
-            // When closing == 1, keep draining ReadFile and discarding bytes so
-            // ClosePseudoConsole can flush and close the pipe without deadlocking.
+            ResetEvent(h_io);
+            OVERLAPPED ov;
+            memset(&ov, 0, sizeof(ov));
+            ov.hEvent = h_io;
+            DWORD n = 0;
+            BOOL ok = ReadFile(pt->h_out_r, buf + 1, 65536, &n, &ov);
+            if (!ok) {
+                DWORD err = GetLastError();
+                if (err == ERROR_IO_PENDING) {
+                    HANDLE waits[2] = { h_io, pt->h_stop };
+                    DWORD wr = WaitForMultipleObjects(2, waits, FALSE, INFINITE);
+                    if (wr == WAIT_OBJECT_0 + 1) {
+                        CancelIoEx(pt->h_out_r, &ov);
+                        DWORD dummy = 0;
+                        GetOverlappedResult(pt->h_out_r, &ov, &dummy, TRUE);
+                        break;
+                    }
+                    if (wr != WAIT_OBJECT_0 || !GetOverlappedResult(pt->h_out_r, &ov, &n, FALSE)) {
+                        eof = 1;
+                        break;
+                    }
+                } else {
+                    eof = 1;
+                    break;
+                }
+            }
+            if (n == 0) {
+                eof = 1;
+                break;
+            }
+            if (atomic_load_explicit(&pt->closing, memory_order_acquire)) {
+                break;
+            }
+            sth_push_sys_bounded(pt->event_id, buf, (size_t)n + 1);
+            if (atomic_load_explicit(&pt->closing, memory_order_acquire)) {
+                break;
+            }
         }
-        free(buf);
     }
-    if (!atomic_load_explicit(&pt->closing, memory_order_acquire)) {
+    free(buf);
+    if (h_io != NULL) CloseHandle(h_io);
+    if (eof && !atomic_load_explicit(&pt->closing, memory_order_acquire)) {
         push_tag_ctrl(pt->event_id, STS_EV_PTY_EOF, NULL, 0);
     }
+    win_pty_unref(pt);
+    sts_detached_end();
     return 0;
 }
 
@@ -1798,8 +2195,16 @@ static DWORD WINAPI win_pty_wait_thread(LPVOID arg) {
     if (wr == WAIT_OBJECT_0) {
         DWORD code = 1;
         GetExitCodeProcess(pt->h_proc, &code);
-        push_exit_event(pt->event_id, STS_EV_PTY_EXIT, (int32_t)code, 0, "");
+        AcquireSRWLockExclusive(&pt->write_lock);
+        pt->write_aborted = 1;
+        WakeConditionVariable(&pt->write_cond);
+        ReleaseSRWLockExclusive(&pt->write_lock);
+        if (!atomic_load_explicit(&pt->closing, memory_order_acquire)) {
+            push_exit_event(pt->event_id, STS_EV_PTY_EXIT, (int32_t)code, 0, "");
+        }
     }
+    win_pty_unref(pt);
+    sts_detached_end();
     return 0;
 }
 
@@ -1834,12 +2239,13 @@ int64_t sts_pty_spawn(
         return -1;
     }
     HANDLE in_r = NULL, in_w = NULL, out_r = NULL, out_w = NULL;
-    if (!CreatePipe(&in_r, &in_w, NULL, 0) || !CreatePipe(&out_r, &out_w, NULL, 0)) {
+    if (!win_create_overlapped_pipe(1, 0, &in_w, &in_r) ||
+        !win_create_overlapped_pipe(0, 0, &out_r, &out_w)) {
         if (in_r) CloseHandle(in_r);
         if (in_w) CloseHandle(in_w);
         if (out_r) CloseHandle(out_r);
         if (out_w) CloseHandle(out_w);
-        copy_err(err_buf, err_cap, "CreatePipe failed");
+        copy_err(err_buf, err_cap, "CreateNamedPipe failed");
         return -1;
     }
     COORD sz;
@@ -1883,7 +2289,13 @@ int64_t sts_pty_spawn(
     }
     wchar_t *wline = utf8_to_wide(cmd.data ? cmd.data : "");
     free(cmd.data);
-    wchar_t *wenv = win_build_env_block(env_nul, env_len, (flags & STS_PROC_STRIP_MALLOC_SE) != 0);
+    int env_ok = 1;
+    wchar_t *wenv = win_build_env_block(
+        env_nul,
+        env_len,
+        (flags & STS_PROC_STRIP_MALLOC_SE) != 0,
+        (flags & STS_PROC_EXPLICIT_ENV) != 0,
+        &env_ok);
     wchar_t *wcwd = (cwd != NULL && cwd[0] != '\0') ? utf8_to_wide(cwd) : NULL;
 
     STARTUPINFOEXW siex;
@@ -1891,9 +2303,13 @@ int64_t sts_pty_spawn(
     memset(&siex, 0, sizeof(siex));
     memset(&pi, 0, sizeof(pi));
     siex.StartupInfo.cb = sizeof(siex);
+    siex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    siex.StartupInfo.hStdInput = NULL;
+    siex.StartupInfo.hStdOutput = NULL;
+    siex.StartupInfo.hStdError = NULL;
     siex.lpAttributeList = attr_list;
 
-    BOOL ok = (wline != NULL) && CreateProcessW(
+    BOOL ok = (wline != NULL) && env_ok && (cwd == NULL || cwd[0] == '\0' || wcwd != NULL) && CreateProcessW(
         NULL,
         wline,
         NULL,
@@ -1916,7 +2332,7 @@ int64_t sts_pty_spawn(
         CloseHandle(in_w);
         CloseHandle(out_r);
         char msg[256];
-        win_err_str(err, msg, sizeof(msg));
+        win_err_str(err ? err : ERROR_NOT_ENOUGH_MEMORY, msg, sizeof(msg));
         copy_err(err_buf, err_cap, msg);
         return -1;
     }
@@ -1924,6 +2340,7 @@ int64_t sts_pty_spawn(
 
     win_pty_t *pt = (win_pty_t *)calloc(1, sizeof(*pt));
     if (pt == NULL) {
+        TerminateProcess(pi.hProcess, 1);
         p_close(hpc);
         CloseHandle(in_w);
         CloseHandle(out_r);
@@ -1939,31 +2356,45 @@ int64_t sts_pty_spawn(
     pt->h_out_r = out_r;
     pt->h_proc = pi.hProcess;
     pt->h_stop = CreateEventW(NULL, TRUE, FALSE, NULL);
+    InitializeSRWLock(&pt->resize_lock);
     InitializeSRWLock(&pt->write_lock);
+    InitializeConditionVariable(&pt->write_cond);
     InitializeSRWLock(&pt->ref_lock);
     pt->refs = 1;
-    pt->th_read = CreateThread(NULL, 0, win_pty_read_thread, pt, 0, NULL);
-    pt->th_wait = CreateThread(NULL, 0, win_pty_wait_thread, pt, 0, NULL);
-    int64_t id = ht_insert(STS_HK_PTY, pt);
+
+    int workers_ok = (pt->h_stop != NULL);
+    if (workers_ok) {
+        win_pty_ref(pt);
+        if (!win_spawn_detached_thread(win_pty_write_thread, pt)) {
+            win_pty_unref(pt);
+            workers_ok = 0;
+        }
+    }
+    if (workers_ok) {
+        win_pty_ref(pt);
+        if (!win_spawn_detached_thread(win_pty_read_thread, pt)) {
+            win_pty_unref(pt);
+            workers_ok = 0;
+        }
+    }
+    if (workers_ok) {
+        win_pty_ref(pt);
+        if (!win_spawn_detached_thread(win_pty_wait_thread, pt)) {
+            win_pty_unref(pt);
+            workers_ok = 0;
+        }
+    }
+    int64_t id = workers_ok ? ht_insert(STS_HK_PTY, pt) : -1;
     if (id < 0) {
+        TerminateProcess(pt->h_proc, 1);
         atomic_store_explicit(&pt->closing, 1, memory_order_release);
-        SetEvent(pt->h_stop);
+        if (pt->h_stop != NULL) SetEvent(pt->h_stop);
         AcquireSRWLockExclusive(&pt->write_lock);
-        if (pt->hpc != NULL) {
-            pt->p_close(pt->hpc);
-            pt->hpc = NULL;
-        }
+        pt->write_aborted = 1;
+        WakeConditionVariable(&pt->write_cond);
         ReleaseSRWLockExclusive(&pt->write_lock);
-        if (pt->th_read != NULL) {
-            WaitForSingleObject(pt->th_read, INFINITE);
-            CloseHandle(pt->th_read);
-        }
-        if (pt->th_wait != NULL) {
-            WaitForSingleObject(pt->th_wait, INFINITE);
-            CloseHandle(pt->th_wait);
-        }
         win_pty_unref(pt);
-        copy_err(err_buf, err_cap, "oom");
+        copy_err(err_buf, err_cap, "worker spawn failed");
         return -1;
     }
     if (out_pid != NULL) {
@@ -1995,23 +2426,39 @@ static win_pty_t *win_pty_get(int64_t handle) {
 int32_t sts_pty_write(int64_t handle, const uint8_t *data, int64_t len) {
     if (len < 0) return 0;
     if (len == 0) return 1;
+    if (data == NULL) return 0;
     win_pty_t *pt = win_pty_get(handle);
     if (pt == NULL) return 0;
     AcquireSRWLockExclusive(&pt->write_lock);
-    size_t done = 0;
-    int ok = 1;
-    while (done < (size_t)len) {
-        DWORD want = ((size_t)len - done) > 0x7fffffffu ? 0x7fffffffu : (DWORD)((size_t)len - done);
-        DWORD n = 0;
-        if (!WriteFile(pt->h_in_w, data + done, want, &n, NULL) || n == 0) {
-            ok = 0;
-            break;
-        }
-        done += (size_t)n;
+    if (pt->write_aborted) {
+        ReleaseSRWLockExclusive(&pt->write_lock);
+        win_pty_unref(pt);
+        return 0;
     }
+    size_t ulen = (size_t)len;
+    if (ulen > STS_STDIN_QUEUE_MAX || pt->write_queued > STS_STDIN_QUEUE_MAX - ulen) {
+        ReleaseSRWLockExclusive(&pt->write_lock);
+        win_pty_unref(pt);
+        return 0;
+    }
+    sts_chunk_t *ch = (sts_chunk_t *)malloc(sizeof(*ch) + ulen);
+    if (ch == NULL) {
+        ReleaseSRWLockExclusive(&pt->write_lock);
+        win_pty_unref(pt);
+        return 0;
+    }
+    ch->next = NULL;
+    ch->len = ulen;
+    ch->off = 0;
+    memcpy(ch->data, data, ulen);
+    if (pt->write_tail != NULL) pt->write_tail->next = ch;
+    else pt->write_head = ch;
+    pt->write_tail = ch;
+    pt->write_queued += ulen;
+    WakeConditionVariable(&pt->write_cond);
     ReleaseSRWLockExclusive(&pt->write_lock);
     win_pty_unref(pt);
-    return ok;
+    return 1;
 }
 
 int32_t sts_pty_resize(int64_t handle, int32_t cols, int32_t rows) {
@@ -2020,17 +2467,24 @@ int32_t sts_pty_resize(int64_t handle, int32_t cols, int32_t rows) {
     COORD sz;
     sz.X = (SHORT)(cols > 0 ? cols : 80);
     sz.Y = (SHORT)(rows > 0 ? rows : 24);
-    AcquireSRWLockExclusive(&pt->write_lock);
-    HRESULT hr = pt->hpc != NULL ? pt->p_resize(pt->hpc, sz) : E_FAIL;
-    ReleaseSRWLockExclusive(&pt->write_lock);
+    AcquireSRWLockExclusive(&pt->resize_lock);
+    HRESULT hr = (!atomic_load_explicit(&pt->closing, memory_order_acquire) && pt->hpc != NULL)
+                     ? pt->p_resize(pt->hpc, sz)
+                     : E_FAIL;
+    ReleaseSRWLockExclusive(&pt->resize_lock);
     win_pty_unref(pt);
     return SUCCEEDED(hr) ? 1 : 0;
 }
 
 int32_t sts_pty_kill(int64_t handle, int32_t sig) {
-    (void)sig;
     win_pty_t *pt = win_pty_get(handle);
     if (pt == NULL) return 0;
+    if (sig == STS_SIG_PROBE) {
+        DWORD code = 0;
+        int alive = (GetExitCodeProcess(pt->h_proc, &code) && code == STILL_ACTIVE) ? 1 : 0;
+        win_pty_unref(pt);
+        return alive;
+    }
     BOOL ok = TerminateProcess(pt->h_proc, 1);
     win_pty_unref(pt);
     return ok ? 1 : 0;
@@ -2042,19 +2496,9 @@ int32_t sts_pty_close(int64_t handle) {
     atomic_store_explicit(&pt->closing, 1, memory_order_release);
     SetEvent(pt->h_stop);
     AcquireSRWLockExclusive(&pt->write_lock);
-    if (pt->hpc != NULL) {
-        pt->p_close(pt->hpc);
-        pt->hpc = NULL;
-    }
+    pt->write_aborted = 1;
+    WakeConditionVariable(&pt->write_cond);
     ReleaseSRWLockExclusive(&pt->write_lock);
-    if (pt->th_read != NULL) {
-        WaitForSingleObject(pt->th_read, INFINITE);
-        CloseHandle(pt->th_read);
-    }
-    if (pt->th_wait != NULL) {
-        WaitForSingleObject(pt->th_wait, INFINITE);
-        CloseHandle(pt->th_wait);
-    }
     win_pty_unref(pt);
     return 1;
 }
@@ -2069,10 +2513,16 @@ typedef struct {
     int family;
     WSAEVENT ev_io;
     WSAEVENT ev_stop;
-    HANDLE h_thread;
+    _Atomic int closing;
     SRWLOCK ref_lock;
     int refs;
 } win_udp_t;
+
+static void win_udp_ref(win_udp_t *u) {
+    AcquireSRWLockExclusive(&u->ref_lock);
+    u->refs += 1;
+    ReleaseSRWLockExclusive(&u->ref_lock);
+}
 
 static void win_udp_unref(win_udp_t *u) {
     AcquireSRWLockExclusive(&u->ref_lock);
@@ -2088,58 +2538,66 @@ static void win_udp_unref(win_udp_t *u) {
 static DWORD WINAPI win_udp_recv_thread(LPVOID arg) {
     win_udp_t *u = (win_udp_t *)arg;
     uint8_t *buf = (uint8_t *)malloc(65536);
-    if (buf == NULL) {
-        push_tag_ctrl(u->event_id, STS_EV_UDP_CLOSED, NULL, 0);
-        return 0;
-    }
-    WSAEVENT waits[2] = { u->ev_io, u->ev_stop };
-    for (;;) {
-        DWORD wr = WSAWaitForMultipleEvents(2, waits, FALSE, INFINITE, FALSE);
-        if (wr == WSA_WAIT_EVENT_0 + 1 || wr == WSA_WAIT_FAILED) {
-            break;
-        }
-        WSAResetEvent(u->ev_io);
+    if (buf != NULL) {
+        WSAEVENT waits[2] = { u->ev_io, u->ev_stop };
         for (;;) {
-            struct sockaddr_storage ss;
-            int slen = (int)sizeof(ss);
-            int n = recvfrom(u->sock, (char *)buf, 65536, 0, (struct sockaddr *)&ss, &slen);
-            if (n < 0) {
+            if (atomic_load_explicit(&u->closing, memory_order_acquire)) {
                 break;
             }
-            char addr_str[INET6_ADDRSTRLEN] = "";
-            uint16_t src_port = 0;
-            if (ss.ss_family == AF_INET) {
-                struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
-                inet_ntop(AF_INET, &s4->sin_addr, addr_str, sizeof(addr_str));
-                src_port = ntohs(s4->sin_port);
-            } else if (ss.ss_family == AF_INET6) {
-                struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
-                inet_ntop(AF_INET6, &s6->sin6_addr, addr_str, sizeof(addr_str));
-                src_port = ntohs(s6->sin6_port);
+            DWORD wr = WSAWaitForMultipleEvents(2, waits, FALSE, INFINITE, FALSE);
+            if (wr == WSA_WAIT_EVENT_0 + 1 || wr == WSA_WAIT_FAILED) {
+                break;
             }
-            size_t alen = strlen(addr_str);
-            size_t total = 5 + alen + (size_t)n;
-            uint8_t *msg = (uint8_t *)malloc(total);
-            if (msg != NULL) {
-                msg[0] = STS_EV_UDP_RECV;
-                put_u16_le(msg + 1, src_port);
-                put_u16_le(msg + 3, (uint16_t)alen);
-                memcpy(msg + 5, addr_str, alen);
-                if (n > 0) memcpy(msg + 5 + alen, buf, (size_t)n);
-                sth_push_sys_bounded(u->event_id, msg, total);
-                free(msg);
+            WSAResetEvent(u->ev_io);
+            for (;;) {
+                if (atomic_load_explicit(&u->closing, memory_order_acquire)) {
+                    break;
+                }
+                struct sockaddr_storage ss;
+                int slen = (int)sizeof(ss);
+                int n = recvfrom(u->sock, (char *)buf, 65536, 0, (struct sockaddr *)&ss, &slen);
+                if (n < 0) {
+                    break;
+                }
+                char addr_str[INET6_ADDRSTRLEN] = "";
+                uint16_t src_port = 0;
+                if (ss.ss_family == AF_INET) {
+                    struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+                    inet_ntop(AF_INET, &s4->sin_addr, addr_str, sizeof(addr_str));
+                    src_port = ntohs(s4->sin_port);
+                } else if (ss.ss_family == AF_INET6) {
+                    struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
+                    inet_ntop(AF_INET6, &s6->sin6_addr, addr_str, sizeof(addr_str));
+                    src_port = ntohs(s6->sin6_port);
+                }
+                size_t alen = strlen(addr_str);
+                size_t total = 5 + alen + (size_t)n;
+                uint8_t *msg = (uint8_t *)malloc(total);
+                if (msg != NULL) {
+                    msg[0] = STS_EV_UDP_RECV;
+                    put_u16_le(msg + 1, src_port);
+                    put_u16_le(msg + 3, (uint16_t)alen);
+                    memcpy(msg + 5, addr_str, alen);
+                    if (n > 0) memcpy(msg + 5 + alen, buf, (size_t)n);
+                    sth_push_sys_bounded(u->event_id, msg, total);
+                    free(msg);
+                }
             }
         }
+        free(buf);
     }
-    free(buf);
-    push_tag_ctrl(u->event_id, STS_EV_UDP_CLOSED, NULL, 0);
+    if (!atomic_load_explicit(&u->closing, memory_order_acquire)) {
+        push_tag_ctrl(u->event_id, STS_EV_UDP_CLOSED, NULL, 0);
+    }
+    win_udp_unref(u);
+    sts_detached_end();
     return 0;
 }
 
 int64_t sts_udp_bind(uint64_t event_id, const char *addr, int32_t port, int64_t *out_port) {
+    if (addr == NULL || addr[0] == '\0') return -1;
     ensure_wsa();
-    const char *bind_addr = (addr != NULL && addr[0] != '\0') ? addr : "0.0.0.0";
-    int is_v6 = strchr(bind_addr, ':') != NULL;
+    int is_v6 = strchr(addr, ':') != NULL;
     int family = is_v6 ? AF_INET6 : AF_INET;
     SOCKET s = socket(family, SOCK_DGRAM, IPPROTO_UDP);
     if (s == INVALID_SOCKET) return -1;
@@ -2151,7 +2609,7 @@ int64_t sts_udp_bind(uint64_t event_id, const char *addr, int32_t port, int64_t 
         struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
         s6->sin6_family = AF_INET6;
         s6->sin6_port = htons((uint16_t)port);
-        if (inet_pton(AF_INET6, bind_addr, &s6->sin6_addr) != 1) {
+        if (inet_pton(AF_INET6, addr, &s6->sin6_addr) != 1) {
             closesocket(s);
             return -1;
         }
@@ -2160,7 +2618,7 @@ int64_t sts_udp_bind(uint64_t event_id, const char *addr, int32_t port, int64_t 
         struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
         s4->sin_family = AF_INET;
         s4->sin_port = htons((uint16_t)port);
-        if (inet_pton(AF_INET, bind_addr, &s4->sin_addr) != 1) {
+        if (inet_pton(AF_INET, addr, &s4->sin_addr) != 1) {
             closesocket(s);
             return -1;
         }
@@ -2195,16 +2653,16 @@ int64_t sts_udp_bind(uint64_t event_id, const char *addr, int32_t port, int64_t 
         win_udp_unref(u);
         return -1;
     }
-    u->h_thread = CreateThread(NULL, 0, win_udp_recv_thread, u, 0, NULL);
-    if (u->h_thread == NULL) {
+    win_udp_ref(u);
+    if (!win_spawn_detached_thread(win_udp_recv_thread, u)) {
+        win_udp_unref(u);
         win_udp_unref(u);
         return -1;
     }
     int64_t id = ht_insert(STS_HK_UDP, u);
     if (id < 0) {
+        atomic_store_explicit(&u->closing, 1, memory_order_release);
         WSASetEvent(u->ev_stop);
-        WaitForSingleObject(u->h_thread, INFINITE);
-        CloseHandle(u->h_thread);
         win_udp_unref(u);
     }
     return id;
@@ -2255,18 +2713,54 @@ int32_t sts_udp_send_to(int64_t handle, const char *addr, int32_t port, const ui
     int werr = rc < 0 ? WSAGetLastError() : 0;
     win_udp_unref(u);
     if (rc >= 0) return 0;
-    if (werr == WSAEHOSTUNREACH) return STS_ERR_HOSTUNREACH;
+    if (werr == WSAEHOSTUNREACH || werr == WSAENETUNREACH) return STS_ERR_HOSTUNREACH;
     return -(werr > 0 ? werr : 1);
 }
 
 int32_t sts_udp_close(int64_t handle) {
     win_udp_t *u = (win_udp_t *)ht_take(STS_HK_UDP, handle);
     if (u == NULL) return 0;
+    atomic_store_explicit(&u->closing, 1, memory_order_release);
     WSASetEvent(u->ev_stop);
-    WaitForSingleObject(u->h_thread, INFINITE);
-    CloseHandle(u->h_thread);
     win_udp_unref(u);
     return 1;
+}
+
+int32_t sts_udp_send_once(const char *addr, int32_t port, const uint8_t *data, int64_t len) {
+    if (addr == NULL || addr[0] == '\0' || port <= 0 || port > 65535 || len < 0) return -1;
+    ensure_wsa();
+    int is_v6 = strchr(addr, ':') != NULL;
+    int family = is_v6 ? AF_INET6 : AF_INET;
+    SOCKET s = socket(family, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) return -1;
+    struct sockaddr_storage ss;
+    memset(&ss, 0, sizeof(ss));
+    int slen = 0;
+    if (is_v6) {
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
+        s6->sin6_family = AF_INET6;
+        s6->sin6_port = htons((uint16_t)port);
+        if (inet_pton(AF_INET6, addr, &s6->sin6_addr) != 1) {
+            closesocket(s);
+            return -1;
+        }
+        slen = (int)sizeof(*s6);
+    } else {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons((uint16_t)port);
+        if (inet_pton(AF_INET, addr, &s4->sin_addr) != 1) {
+            closesocket(s);
+            return -1;
+        }
+        slen = (int)sizeof(*s4);
+    }
+    int rc = sendto(s, (const char *)(data ? data : (const uint8_t *)""), (int)len, 0, (struct sockaddr *)&ss, slen);
+    int werr = rc < 0 ? WSAGetLastError() : 0;
+    closesocket(s);
+    if (rc >= 0) return 0;
+    if (werr == WSAEHOSTUNREACH || werr == WSAENETUNREACH) return STS_ERR_HOSTUNREACH;
+    return -(werr > 0 ? werr : 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -2328,37 +2822,49 @@ void *sts_env_all(int64_t *out_len) {
 }
 
 void *sts_env_get(const char *name, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
     if (name == NULL || name[0] == '\0') {
-        if (out_len != NULL) *out_len = 0;
         return NULL;
     }
     wchar_t *wn = utf8_to_wide(name);
     if (wn == NULL) {
-        if (out_len != NULL) *out_len = 0;
         return NULL;
     }
-    DWORD need = GetEnvironmentVariableW(wn, NULL, 0);
-    if (need == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND) {
-        free(wn);
-        if (out_len != NULL) *out_len = 0;
-        return NULL;
+    DWORD cap = 256;
+    wchar_t *wv = NULL;
+    for (int tries = 0; tries < 4; tries++) {
+        free(wv);
+        wv = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)cap);
+        if (wv == NULL) {
+            free(wn);
+            return NULL;
+        }
+        SetLastError(0);
+        DWORD got = GetEnvironmentVariableW(wn, wv, cap);
+        if (got == 0) {
+            DWORD err = GetLastError();
+            free(wv);
+            free(wn);
+            if (err == ERROR_ENVVAR_NOT_FOUND) {
+                return NULL;
+            }
+            return dup_bytes("", 0, out_len);
+        }
+        if (got < cap) {
+            free(wn);
+            char *s = wide_to_utf8_len(wv, (int)got);
+            free(wv);
+            if (s == NULL) {
+                return NULL;
+            }
+            if (out_len != NULL) *out_len = (int64_t)strlen(s);
+            return s;
+        }
+        cap = got + 1;
     }
-    wchar_t *wv = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)(need + 1));
-    if (wv == NULL) {
-        free(wn);
-        if (out_len != NULL) *out_len = 0;
-        return NULL;
-    }
-    GetEnvironmentVariableW(wn, wv, need + 1);
-    free(wn);
-    char *s = wide_to_utf8(wv);
     free(wv);
-    if (s == NULL) {
-        if (out_len != NULL) *out_len = 0;
-        return NULL;
-    }
-    if (out_len != NULL) *out_len = (int64_t)strlen(s);
-    return s;
+    free(wn);
+    return NULL;
 }
 
 int32_t sts_env_set(const char *name, const char *value) {
@@ -2541,7 +3047,39 @@ static void child_dup2_stdio(int src, int dst) {
     }
 }
 
+static int relocate_fd_above_2(int *fd) {
+    if (fd == NULL || *fd < 0 || *fd > 2) return 0;
+    int nfd = fcntl(*fd, F_DUPFD_CLOEXEC, 3);
+    if (nfd < 0) return -1;
+    close(*fd);
+    *fd = nfd;
+    return 0;
+}
+
+static void set_cloexec_from(int min_fd) {
+#if defined(__linux__) && defined(SYS_close_range)
+    // CLOSE_RANGE_CLOEXEC = (1U << 2) since Linux 5.11; leaves rep_p[1] open until execve.
+    if (syscall(SYS_close_range, (unsigned int)min_fd, ~0U, (unsigned int)(1U << 2)) == 0) {
+        return;
+    }
+#endif
+    long max_fd = sysconf(_SC_OPEN_MAX);
+    if (max_fd < 0 || max_fd > 65536) {
+        max_fd = 65536;
+    }
+    for (int fd = min_fd; fd < (int)max_fd; fd++) {
+        (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+    }
+}
+
 static int make_wakeup_pipe(int fds[2]) {
+#if defined(__linux__)
+    if (pipe2(fds, O_CLOEXEC | O_NONBLOCK) != 0) {
+        fds[0] = fds[1] = -1;
+        return -1;
+    }
+    return 0;
+#else
     if (pipe(fds) != 0) {
         fds[0] = fds[1] = -1;
         return -1;
@@ -2554,6 +3092,7 @@ static int make_wakeup_pipe(int fds[2]) {
         }
     }
     return 0;
+#endif
 }
 
 static void wake_pipe_signal(int write_fd) {
@@ -2584,6 +3123,13 @@ static void close_fd_pair(int fds[2]) {
 }
 
 static int cloexec_pipe(int fds[2]) {
+#if defined(__linux__)
+    if (pipe2(fds, O_CLOEXEC) != 0) {
+        fds[0] = fds[1] = -1;
+        return -1;
+    }
+    return 0;
+#else
     if (pipe(fds) != 0) {
         fds[0] = fds[1] = -1;
         return -1;
@@ -2591,6 +3137,7 @@ static int cloexec_pipe(int fds[2]) {
     fcntl(fds[0], F_SETFD, FD_CLOEXEC);
     fcntl(fds[1], F_SETFD, FD_CLOEXEC);
     return 0;
+#endif
 }
 
 static void posix_err_str(int err, char *buf, size_t cap) {
@@ -2639,178 +3186,11 @@ static const char *posix_signal_name(int sig) {
     }
 }
 
-// Wait for child `pid` to exit OR `wake_fd` to become readable (zero polling).
-// Returns 1 if child exited (status written to `*out_status`), 0 if woken early.
-static int wait_pid_or_wake(pid_t pid, int wake_fd, int *out_status) {
-#if defined(__linux__) && defined(__NR_pidfd_open)
-    int pidfd = (int)syscall(__NR_pidfd_open, pid, 0);
-    if (pidfd >= 0) {
-        fcntl(pidfd, F_SETFD, FD_CLOEXEC);
-        struct pollfd pfds[2];
-        pfds[0].fd = pidfd;
-        pfds[0].events = POLLIN;
-        pfds[1].fd = wake_fd;
-        pfds[1].events = POLLIN;
-        for (;;) {
-            pfds[0].revents = 0;
-            pfds[1].revents = 0;
-            int rc = poll(pfds, 2, -1);
-            if (rc < 0 && errno == EINTR) continue;
-            if (rc < 0) {
-                close(pidfd);
-                return 0;
-            }
-            if (pfds[0].revents != 0) {
-                close(pidfd);
-                int st = 0;
-                pid_t wr;
-                do {
-                    wr = waitpid(pid, &st, 0);
-                } while (wr < 0 && errno == EINTR);
-                if (out_status != NULL) *out_status = st;
-                return wr == pid ? 1 : 0;
-            }
-            if (pfds[1].revents != 0) {
-                close(pidfd);
-                return 0;
-            }
-        }
-    }
-    // ESRCH means child already exited before pidfd_open; reap it immediately.
-    int st = 0;
-    pid_t wr;
-    do {
-        wr = waitpid(pid, &st, 0);
-    } while (wr < 0 && errno == EINTR);
-    if (out_status != NULL) *out_status = st;
-    return wr == pid ? 1 : 0;
-#elif defined(__APPLE__)
-    int kq = kqueue();
-    if (kq >= 0) {
-        fcntl(kq, F_SETFD, FD_CLOEXEC);
-        struct kevent evs[2];
-        EV_SET(&evs[0], (uintptr_t)pid, EVFILT_PROC, EV_ADD | EV_ONESHOT, NOTE_EXIT, 0, NULL);
-        EV_SET(&evs[1], (uintptr_t)wake_fd, EVFILT_READ, EV_ADD, 0, 0, NULL);
-        if (kevent(kq, evs, 2, NULL, 0, NULL) == 0) {
-            for (;;) {
-                struct kevent out;
-                int n = kevent(kq, NULL, 0, &out, 1, NULL);
-                if (n < 0 && errno == EINTR) continue;
-                if (n <= 0) {
-                    close(kq);
-                    return 0;
-                }
-                if (out.filter == EVFILT_PROC) {
-                    close(kq);
-                    int st = 0;
-                    pid_t wr;
-                    do {
-                        wr = waitpid(pid, &st, 0);
-                    } while (wr < 0 && errno == EINTR);
-                    if (out_status != NULL) *out_status = st;
-                    return wr == pid ? 1 : 0;
-                }
-                if (out.filter == EVFILT_READ) {
-                    close(kq);
-                    return 0;
-                }
-            }
-        }
-        close(kq);
-    }
-    int st = 0;
-    pid_t wr;
-    do {
-        wr = waitpid(pid, &st, 0);
-    } while (wr < 0 && errno == EINTR);
-    if (out_status != NULL) *out_status = st;
-    return wr == pid ? 1 : 0;
-#else
-    (void)wake_fd;
-    int st = 0;
-    pid_t wr;
-    do {
-        wr = waitpid(pid, &st, 0);
-    } while (wr < 0 && errno == EINTR);
-    if (out_status != NULL) *out_status = st;
-    return wr == pid ? 1 : 0;
-#endif
-}
-
 // ---------------------------------------------------------------------------
 // 1. POSIX Non-Recursive Directory fs.watch
 // ---------------------------------------------------------------------------
 
 #ifdef __APPLE__
-typedef struct {
-    char *name;
-    ino_t ino;
-    off_t size;
-    time_t mtime_sec;
-    long mtime_nsec;
-} dir_entry_t;
-
-typedef struct {
-    dir_entry_t *items;
-    size_t len;
-    size_t cap;
-} dir_snap_t;
-
-static void dir_snap_free(dir_snap_t *s) {
-    for (size_t i = 0; i < s->len; i++) {
-        free(s->items[i].name);
-    }
-    free(s->items);
-    s->items = NULL;
-    s->len = s->cap = 0;
-}
-
-static void dir_snap_take(const char *dir_path, dir_snap_t *out) {
-    out->items = NULL;
-    out->len = 0;
-    out->cap = 0;
-    DIR *d = opendir(dir_path);
-    if (d == NULL) return;
-    struct dirent *ent = NULL;
-    size_t dlen = strlen(dir_path);
-    while ((ent = readdir(d)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-        size_t nlen = strlen(ent->d_name);
-        char *full = (char *)malloc(dlen + 1 + nlen + 1);
-        if (full == NULL) continue;
-        memcpy(full, dir_path, dlen);
-        full[dlen] = '/';
-        memcpy(full + dlen + 1, ent->d_name, nlen + 1);
-        struct stat st;
-        int ok = (lstat(full, &st) == 0);
-        free(full);
-        if (!ok) continue;
-        if (out->len == out->cap) {
-            size_t ncap = out->cap == 0 ? 16 : out->cap * 2;
-            dir_entry_t *ni = (dir_entry_t *)realloc(out->items, ncap * sizeof(*ni));
-            if (ni == NULL) break;
-            out->items = ni;
-            out->cap = ncap;
-        }
-        out->items[out->len].name = sts_strdup(ent->d_name);
-        out->items[out->len].ino = st.st_ino;
-        out->items[out->len].size = st.st_size;
-        out->items[out->len].mtime_sec = st.st_mtimespec.tv_sec;
-        out->items[out->len].mtime_nsec = st.st_mtimespec.tv_nsec;
-        out->len += 1;
-    }
-    closedir(d);
-}
-
-static const dir_entry_t *dir_snap_find(const dir_snap_t *s, const char *name) {
-    for (size_t i = 0; i < s->len; i++) {
-        if (s->items[i].name != NULL && strcmp(s->items[i].name, name) == 0) {
-            return &s->items[i];
-        }
-    }
-    return NULL;
-}
-
 static void emit_fs_event(uint64_t event_id, uint8_t kind, const char *name) {
     size_t nlen = name != NULL ? strlen(name) : 0;
     uint8_t stack_buf[256];
@@ -2825,67 +3205,86 @@ static void emit_fs_event(uint64_t event_id, uint8_t kind, const char *name) {
 
 typedef struct {
     uint64_t event_id;
-    char *dir_path;
+    char *watch_dir;
+    size_t watch_dir_len;
     char *file_basename; // non-NULL when watching a single file
     int is_file;
-    int kq;
-    int dir_fd;
-    int wake[2];
-    dir_snap_t snap;
-    pthread_t thread;
+    _Atomic int closing;
+    FSEventStreamRef stream;
+    dispatch_queue_t queue;
 } posix_fsw_t;
 
-static void *posix_fsw_thread(void *arg) {
-    posix_fsw_t *w = (posix_fsw_t *)arg;
+static void mac_fsw_noop(void *ctx) {
+    (void)ctx;
+}
 
-    for (;;) {
-        struct kevent ev;
-        int n = kevent(w->kq, NULL, 0, &ev, 1, NULL);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) break;
-        if (ev.filter == EVFILT_READ && (int)ev.ident == w->wake[0]) {
-            break;
+static void mac_fsw_callback(
+    ConstFSEventStreamRef stream_ref,
+    void *client_info,
+    size_t num_events,
+    void *event_paths,
+    const FSEventStreamEventFlags event_flags[],
+    const FSEventStreamEventId event_ids[]) {
+    (void)stream_ref;
+    (void)event_ids;
+    posix_fsw_t *w = (posix_fsw_t *)client_info;
+    if (w == NULL || atomic_load_explicit(&w->closing, memory_order_acquire)) {
+        return;
+    }
+    const char **paths = (const char **)event_paths;
+    for (size_t i = 0; i < num_events; i++) {
+        FSEventStreamEventFlags fl = event_flags[i];
+        if (fl & (kFSEventStreamEventFlagMustScanSubDirs |
+                  kFSEventStreamEventFlagUserDropped |
+                  kFSEventStreamEventFlagKernelDropped)) {
+            emit_fs_event(w->event_id, STS_FS_OVERFLOW, "");
+            continue;
         }
-        if (ev.filter == EVFILT_VNODE) {
-            if (w->is_file) {
-                uint8_t kind = (ev.fflags & (NOTE_DELETE | NOTE_RENAME | NOTE_REVOKE)) ? STS_FS_RENAME : STS_FS_CHANGE;
-                emit_fs_event(w->event_id, kind, w->file_basename != NULL ? w->file_basename : "");
+        const char *p = paths[i];
+        if (p == NULL) continue;
+        const char *rel = NULL;
+        if (w->watch_dir_len == 1 && w->watch_dir[0] == '/') {
+            if (p[0] == '/') rel = p + 1;
+        } else if (strncmp(p, w->watch_dir, w->watch_dir_len) == 0) {
+            if (p[w->watch_dir_len] == '/') {
+                rel = p + w->watch_dir_len + 1;
+            } else if (p[w->watch_dir_len] == '\0') {
+                // Event on the watched directory itself; ignore when watching a single file.
+                if (!w->is_file) {
+                    uint8_t kind = (fl & (kFSEventStreamEventFlagItemCreated |
+                                          kFSEventStreamEventFlagItemRemoved |
+                                          kFSEventStreamEventFlagItemRenamed))
+                                       ? STS_FS_RENAME
+                                       : STS_FS_CHANGE;
+                    emit_fs_event(w->event_id, kind, "");
+                }
                 continue;
             }
-            dir_snap_t next;
-            dir_snap_take(w->dir_path, &next);
-            int emitted = 0;
-            for (size_t i = 0; i < next.len; i++) {
-                const dir_entry_t *prev = dir_snap_find(&w->snap, next.items[i].name);
-                if (prev == NULL) {
-                    emit_fs_event(w->event_id, STS_FS_RENAME, next.items[i].name);
-                    emitted = 1;
-                } else if (prev->ino != next.items[i].ino) {
-                    emit_fs_event(w->event_id, STS_FS_RENAME, next.items[i].name);
-                    emitted = 1;
-                } else if (prev->size != next.items[i].size ||
-                           prev->mtime_sec != next.items[i].mtime_sec ||
-                           prev->mtime_nsec != next.items[i].mtime_nsec) {
-                    emit_fs_event(w->event_id, STS_FS_CHANGE, next.items[i].name);
-                    emitted = 1;
-                }
-            }
-            for (size_t i = 0; i < w->snap.len; i++) {
-                if (dir_snap_find(&next, w->snap.items[i].name) == NULL) {
-                    emit_fs_event(w->event_id, STS_FS_RENAME, w->snap.items[i].name);
-                    emitted = 1;
-                }
-            }
-            if (!emitted) {
-                emit_fs_event(w->event_id, (ev.fflags & (NOTE_DELETE | NOTE_RENAME)) ? STS_FS_RENAME : STS_FS_CHANGE, "");
-            }
-            dir_snap_free(&w->snap);
-            w->snap = next;
         }
+        if (rel == NULL || rel[0] == '\0') continue;
+        // Strip trailing slash on directory notifications.
+        size_t rlen = strlen(rel);
+        while (rlen > 0 && rel[rlen - 1] == '/') {
+            rlen -= 1;
+        }
+        if (rlen == 0) continue;
+        // Non-recursive: skip events in subdirectories.
+        if (memchr(rel, '/', rlen) != NULL) continue;
+        char name_stack[256];
+        char *name_buf = (rlen + 1 <= sizeof(name_stack)) ? name_stack : (char *)malloc(rlen + 1);
+        if (name_buf == NULL) continue;
+        memcpy(name_buf, rel, rlen);
+        name_buf[rlen] = '\0';
+        if (!w->is_file || (w->file_basename != NULL && strcmp(name_buf, w->file_basename) == 0)) {
+            uint8_t kind = (fl & (kFSEventStreamEventFlagItemCreated |
+                                  kFSEventStreamEventFlagItemRemoved |
+                                  kFSEventStreamEventFlagItemRenamed))
+                               ? STS_FS_RENAME
+                               : STS_FS_CHANGE;
+            emit_fs_event(w->event_id, kind, name_buf);
+        }
+        if (name_buf != name_stack) free(name_buf);
     }
-    dir_snap_free(&w->snap);
-    push_tag_ctrl(w->event_id, STS_EV_FS_CLOSED, NULL, 0);
-    return NULL;
 }
 
 int64_t sts_fs_watch_open(uint64_t event_id, const char *path) {
@@ -2893,61 +3292,120 @@ int64_t sts_fs_watch_open(uint64_t event_id, const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) return -1;
     int is_file = !S_ISDIR(st.st_mode);
-    int target_fd = open(path, O_EVTONLY | O_CLOEXEC);
-    if (target_fd < 0) return -1;
-    int kq = kqueue();
-    if (kq < 0) {
-        close(target_fd);
+    char resolved[PATH_MAX];
+    if (realpath(path, resolved) == NULL) return -1;
+
+    char *watch_dir = NULL;
+    char *file_basename = NULL;
+    if (is_file) {
+        const char *base = path_basename(resolved);
+        file_basename = sts_strdup(base);
+        size_t dir_len = (size_t)(base - resolved);
+        if (dir_len == 0) {
+            watch_dir = sts_strdup(".");
+        } else {
+            while (dir_len > 1 && resolved[dir_len - 1] == '/') {
+                dir_len -= 1;
+            }
+            watch_dir = (char *)malloc(dir_len + 1);
+            if (watch_dir != NULL) {
+                memcpy(watch_dir, resolved, dir_len);
+                watch_dir[dir_len] = '\0';
+            }
+        }
+    } else {
+        size_t len = strlen(resolved);
+        while (len > 1 && resolved[len - 1] == '/') {
+            len -= 1;
+        }
+        watch_dir = (char *)malloc(len + 1);
+        if (watch_dir != NULL) {
+            memcpy(watch_dir, resolved, len);
+            watch_dir[len] = '\0';
+        }
+    }
+    if (watch_dir == NULL || (is_file && file_basename == NULL)) {
+        free(watch_dir);
+        free(file_basename);
         return -1;
     }
-    fcntl(kq, F_SETFD, FD_CLOEXEC);
+
     posix_fsw_t *w = (posix_fsw_t *)calloc(1, sizeof(*w));
     if (w == NULL) {
-        close(kq);
-        close(target_fd);
+        free(watch_dir);
+        free(file_basename);
         return -1;
     }
     w->event_id = event_id;
-    w->dir_path = sts_strdup(path);
+    w->watch_dir = watch_dir;
+    w->watch_dir_len = strlen(watch_dir);
+    w->file_basename = file_basename;
     w->is_file = is_file;
-    w->file_basename = is_file ? sts_strdup(path_basename(path)) : NULL;
-    w->kq = kq;
-    w->dir_fd = target_fd;
-    w->wake[0] = w->wake[1] = -1;
-    if (w->dir_path == NULL || (is_file && w->file_basename == NULL) || make_wakeup_pipe(w->wake) != 0) {
-        free(w->dir_path);
-        free(w->file_basename);
-        close(kq);
-        close(target_fd);
-        free(w);
-        return -1;
-    }
-    if (!is_file) {
-        dir_snap_take(w->dir_path, &w->snap);
-    }
-    struct kevent evs[2];
-    EV_SET(&evs[0], (uintptr_t)target_fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
-           NOTE_WRITE | NOTE_DELETE | NOTE_RENAME | NOTE_ATTRIB | NOTE_EXTEND | NOTE_REVOKE, 0, NULL);
-    EV_SET(&evs[1], (uintptr_t)w->wake[0], EVFILT_READ, EV_ADD, 0, 0, NULL);
-    if (kevent(kq, evs, 2, NULL, 0, NULL) != 0 ||
-        pthread_create(&w->thread, NULL, posix_fsw_thread, w) != 0) {
-        dir_snap_free(&w->snap);
-        close_fd_pair(w->wake);
-        close(kq);
-        close(target_fd);
-        free(w->dir_path);
+    atomic_store_explicit(&w->closing, 0, memory_order_relaxed);
+
+    CFStringRef cf_path = CFStringCreateWithCString(NULL, w->watch_dir, kCFStringEncodingUTF8);
+    if (cf_path == NULL) {
+        free(w->watch_dir);
         free(w->file_basename);
         free(w);
         return -1;
     }
+    CFArrayRef paths = CFArrayCreate(NULL, (const void **)&cf_path, 1, &kCFTypeArrayCallBacks);
+    CFRelease(cf_path);
+    if (paths == NULL) {
+        free(w->watch_dir);
+        free(w->file_basename);
+        free(w);
+        return -1;
+    }
+
+    FSEventStreamContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.info = w;
+    w->stream = FSEventStreamCreate(
+        NULL,
+        mac_fsw_callback,
+        &ctx,
+        paths,
+        kFSEventStreamEventIdSinceNow,
+        0.02,
+        kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer);
+    CFRelease(paths);
+    if (w->stream == NULL) {
+        free(w->watch_dir);
+        free(w->file_basename);
+        free(w);
+        return -1;
+    }
+    w->queue = dispatch_queue_create("fail.still.station_sys.fswatch", DISPATCH_QUEUE_SERIAL);
+    if (w->queue == NULL) {
+        FSEventStreamRelease(w->stream);
+        free(w->watch_dir);
+        free(w->file_basename);
+        free(w);
+        return -1;
+    }
+    FSEventStreamSetDispatchQueue(w->stream, w->queue);
+    if (!FSEventStreamStart(w->stream)) {
+        FSEventStreamInvalidate(w->stream);
+        FSEventStreamRelease(w->stream);
+        dispatch_sync_f(w->queue, NULL, mac_fsw_noop);
+        dispatch_release(w->queue);
+        free(w->watch_dir);
+        free(w->file_basename);
+        free(w);
+        return -1;
+    }
+
     int64_t id = ht_insert(STS_HK_FS_WATCH, w);
     if (id < 0) {
-        wake_pipe_signal(w->wake[1]);
-        pthread_join(w->thread, NULL);
-        close_fd_pair(w->wake);
-        close(kq);
-        close(target_fd);
-        free(w->dir_path);
+        atomic_store_explicit(&w->closing, 1, memory_order_release);
+        FSEventStreamStop(w->stream);
+        FSEventStreamInvalidate(w->stream);
+        FSEventStreamRelease(w->stream);
+        dispatch_sync_f(w->queue, NULL, mac_fsw_noop);
+        dispatch_release(w->queue);
+        free(w->watch_dir);
         free(w->file_basename);
         free(w);
     }
@@ -2957,12 +3415,14 @@ int64_t sts_fs_watch_open(uint64_t event_id, const char *path) {
 int32_t sts_fs_watch_close(int64_t handle) {
     posix_fsw_t *w = (posix_fsw_t *)ht_take(STS_HK_FS_WATCH, handle);
     if (w == NULL) return 0;
-    wake_pipe_signal(w->wake[1]);
-    pthread_join(w->thread, NULL);
-    close_fd_pair(w->wake);
-    close(w->kq);
-    close(w->dir_fd);
-    free(w->dir_path);
+    atomic_store_explicit(&w->closing, 1, memory_order_release);
+    FSEventStreamStop(w->stream);
+    FSEventStreamInvalidate(w->stream);
+    FSEventStreamRelease(w->stream);
+    dispatch_sync_f(w->queue, NULL, mac_fsw_noop);
+    dispatch_release(w->queue);
+    push_tag_ctrl(w->event_id, STS_EV_FS_CLOSED, NULL, 0);
+    free(w->watch_dir);
     free(w->file_basename);
     free(w);
     return 1;
@@ -2976,6 +3436,7 @@ typedef struct {
     int ifd;
     int wd;
     int wake[2];
+    _Atomic int closing;
     pthread_t thread;
 } posix_fsw_t;
 
@@ -3004,7 +3465,15 @@ static void *posix_fsw_thread(void *arg) {
                     const struct inotify_event *ev = (const struct inotify_event *)(buf + off);
                     size_t step = sizeof(struct inotify_event) + (size_t)ev->len;
                     if (off + (ssize_t)step > len) break;
-                    if (!(ev->mask & IN_IGNORED)) {
+                    if (ev->mask & IN_Q_OVERFLOW) {
+                        uint8_t ovf[2] = { STS_EV_FS_CHANGE, STS_FS_OVERFLOW };
+                        sth_push_sys(w->event_id, ovf, sizeof(ovf));
+                    } else if (ev->mask & IN_IGNORED) {
+                        if (!atomic_load_explicit(&w->closing, memory_order_acquire)) {
+                            uint8_t err_msg[2] = { STS_EV_FS_CHANGE, STS_FS_ERROR };
+                            sth_push_sys(w->event_id, err_msg, sizeof(err_msg));
+                        }
+                    } else {
                         const char *name = (ev->len > 0) ? ev->name : (w->file_basename != NULL ? w->file_basename : "");
                         size_t nlen = (ev->len > 0) ? strnlen(name, ev->len) : strlen(name);
                         uint8_t kind = (ev->mask & (IN_CREATE | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF))
@@ -3054,6 +3523,7 @@ int64_t sts_fs_watch_open(uint64_t event_id, const char *path) {
     w->ifd = ifd;
     w->wd = wd;
     w->wake[0] = w->wake[1] = -1;
+    atomic_store_explicit(&w->closing, 0, memory_order_relaxed);
     if ((is_file && w->file_basename == NULL) ||
         make_wakeup_pipe(w->wake) != 0 ||
         pthread_create(&w->thread, NULL, posix_fsw_thread, w) != 0) {
@@ -3065,6 +3535,7 @@ int64_t sts_fs_watch_open(uint64_t event_id, const char *path) {
     }
     int64_t id = ht_insert(STS_HK_FS_WATCH, w);
     if (id < 0) {
+        atomic_store_explicit(&w->closing, 1, memory_order_release);
         wake_pipe_signal(w->wake[1]);
         pthread_join(w->thread, NULL);
         close_fd_pair(w->wake);
@@ -3078,6 +3549,7 @@ int64_t sts_fs_watch_open(uint64_t event_id, const char *path) {
 int32_t sts_fs_watch_close(int64_t handle) {
     posix_fsw_t *w = (posix_fsw_t *)ht_take(STS_HK_FS_WATCH, handle);
     if (w == NULL) return 0;
+    atomic_store_explicit(&w->closing, 1, memory_order_release);
     wake_pipe_signal(w->wake[1]);
     pthread_join(w->thread, NULL);
     close_fd_pair(w->wake);
@@ -3095,6 +3567,9 @@ int32_t sts_fs_watch_close(int64_t handle) {
 typedef struct {
     uint64_t event_id;
     pid_t pid;
+    _Atomic int closing;
+    pthread_mutex_t kill_lock;
+    int exited;
 
     int stdin_fd;
     int stdin_wake[2];
@@ -3104,22 +3579,20 @@ typedef struct {
     size_t stdin_queued;
     int stdin_eof;
     int stdin_aborted;
-    int has_stdin_th;
-    pthread_t th_stdin;
 
     int stdout_fd;
     int stderr_fd;
     int pipes_wake[2];
-    int has_pipes_th;
-    pthread_t th_pipes;
-
-    int wait_wake[2];
-    int has_wait_th;
-    pthread_t th_wait;
 
     pthread_mutex_t ref_lock;
     int refs;
 } posix_proc_t;
+
+static void posix_proc_ref(posix_proc_t *p) {
+    pthread_mutex_lock(&p->ref_lock);
+    p->refs += 1;
+    pthread_mutex_unlock(&p->ref_lock);
+}
 
 static void posix_proc_unref(posix_proc_t *p) {
     pthread_mutex_lock(&p->ref_lock);
@@ -3132,7 +3605,7 @@ static void posix_proc_unref(posix_proc_t *p) {
     if (p->stderr_fd >= 0) close(p->stderr_fd);
     close_fd_pair(p->stdin_wake);
     close_fd_pair(p->pipes_wake);
-    close_fd_pair(p->wait_wake);
+    pthread_mutex_destroy(&p->kill_lock);
     pthread_mutex_destroy(&p->stdin_lock);
     pthread_mutex_destroy(&p->ref_lock);
     free(p);
@@ -3161,48 +3634,55 @@ static posix_proc_t *posix_proc_get(int64_t handle) {
 static void *posix_pipes_thread(void *arg) {
     posix_proc_t *p = (posix_proc_t *)arg;
     uint8_t *buf = (uint8_t *)malloc(1 + 65536);
-    if (buf == NULL) return NULL;
-    int fds[2] = { p->stdout_fd, p->stderr_fd };
-    int open_cnt = (fds[0] >= 0) + (fds[1] >= 0);
+    if (buf != NULL) {
+        int fds[2] = { p->stdout_fd, p->stderr_fd };
+        int open_cnt = (fds[0] >= 0) + (fds[1] >= 0);
 
-    while (open_cnt > 0) {
-        struct pollfd pfds[3];
-        int which[3];
-        int nfds = 0;
-        pfds[nfds].fd = p->pipes_wake[0];
-        pfds[nfds].events = POLLIN;
-        pfds[nfds].revents = 0;
-        which[nfds++] = -1;
-        for (int i = 0; i < 2; i++) {
-            if (fds[i] >= 0) {
-                pfds[nfds].fd = fds[i];
-                pfds[nfds].events = POLLIN;
-                pfds[nfds].revents = 0;
-                which[nfds++] = i;
+        while (open_cnt > 0 && !atomic_load_explicit(&p->closing, memory_order_acquire)) {
+            struct pollfd pfds[3];
+            int which[3];
+            int nfds = 0;
+            pfds[nfds].fd = p->pipes_wake[0];
+            pfds[nfds].events = POLLIN;
+            pfds[nfds].revents = 0;
+            which[nfds++] = -1;
+            for (int i = 0; i < 2; i++) {
+                if (fds[i] >= 0) {
+                    pfds[nfds].fd = fds[i];
+                    pfds[nfds].events = POLLIN;
+                    pfds[nfds].revents = 0;
+                    which[nfds++] = i;
+                }
+            }
+            int rc = poll(pfds, (nfds_t)nfds, -1);
+            if (rc < 0 && errno == EINTR) continue;
+            if (rc < 0 || pfds[0].revents != 0) break;
+            for (int k = 1; k < nfds; k++) {
+                if (atomic_load_explicit(&p->closing, memory_order_acquire)) break;
+                if (pfds[k].revents == 0) continue;
+                int idx = which[k];
+                ssize_t got = read(fds[idx], buf + 1, 65536);
+                if (got < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+                if (got <= 0) {
+                    close(fds[idx]);
+                    fds[idx] = -1;
+                    if (idx == 0) p->stdout_fd = -1;
+                    else p->stderr_fd = -1;
+                    open_cnt -= 1;
+                    if (!atomic_load_explicit(&p->closing, memory_order_acquire)) {
+                        push_tag_ctrl(p->event_id, idx == 0 ? STS_EV_PROC_STDOUT_EOF : STS_EV_PROC_STDERR_EOF, NULL, 0);
+                    }
+                } else {
+                    buf[0] = (uint8_t)(idx == 0 ? STS_EV_PROC_STDOUT : STS_EV_PROC_STDERR);
+                    sth_push_sys_bounded(p->event_id, buf, (size_t)got + 1);
+                    if (atomic_load_explicit(&p->closing, memory_order_acquire)) break;
+                }
             }
         }
-        int rc = poll(pfds, (nfds_t)nfds, -1);
-        if (rc < 0 && errno == EINTR) continue;
-        if (rc < 0 || pfds[0].revents != 0) break;
-        for (int k = 1; k < nfds; k++) {
-            if (pfds[k].revents == 0) continue;
-            int idx = which[k];
-            ssize_t got = read(fds[idx], buf + 1, 65536);
-            if (got < 0 && (errno == EINTR || errno == EAGAIN)) continue;
-            if (got <= 0) {
-                close(fds[idx]);
-                fds[idx] = -1;
-                if (idx == 0) p->stdout_fd = -1;
-                else p->stderr_fd = -1;
-                open_cnt -= 1;
-                push_tag_ctrl(p->event_id, idx == 0 ? STS_EV_PROC_STDOUT_EOF : STS_EV_PROC_STDERR_EOF, NULL, 0);
-            } else {
-                buf[0] = (uint8_t)(idx == 0 ? STS_EV_PROC_STDOUT : STS_EV_PROC_STDERR);
-                sth_push_sys_bounded(p->event_id, buf, (size_t)got + 1);
-            }
-        }
+        free(buf);
     }
-    free(buf);
+    posix_proc_unref(p);
+    sts_detached_end();
     return NULL;
 }
 
@@ -3307,18 +3787,29 @@ static void *posix_stdin_thread(void *arg) {
         p->stdin_fd = -1;
     }
     pthread_mutex_unlock(&p->stdin_lock);
+    posix_proc_unref(p);
+    sts_detached_end();
     return NULL;
 }
 
 static void *posix_wait_thread(void *arg) {
     posix_proc_t *p = (posix_proc_t *)arg;
     int status = 0;
-    if (wait_pid_or_wake(p->pid, p->wait_wake[0], &status)) {
-        pthread_mutex_lock(&p->stdin_lock);
-        p->stdin_aborted = 1;
-        pthread_mutex_unlock(&p->stdin_lock);
-        wake_pipe_signal(p->stdin_wake[1]);
+    pid_t wr;
+    do {
+        wr = waitpid(p->pid, &status, 0);
+    } while (wr < 0 && errno == EINTR);
 
+    pthread_mutex_lock(&p->kill_lock);
+    p->exited = 1;
+    pthread_mutex_unlock(&p->kill_lock);
+
+    pthread_mutex_lock(&p->stdin_lock);
+    p->stdin_aborted = 1;
+    pthread_mutex_unlock(&p->stdin_lock);
+    wake_pipe_signal(p->stdin_wake[1]);
+
+    if (wr == p->pid && !atomic_load_explicit(&p->closing, memory_order_acquire)) {
         if (WIFSIGNALED(status)) {
             int sig = WTERMSIG(status);
             push_exit_event(p->event_id, STS_EV_PROC_EXIT, -1, (int32_t)sig, posix_signal_name(sig));
@@ -3326,7 +3817,17 @@ static void *posix_wait_thread(void *arg) {
             push_exit_event(p->event_id, STS_EV_PROC_EXIT, (int32_t)WEXITSTATUS(status), 0, "");
         }
     }
+    posix_proc_unref(p);
+    sts_detached_end();
     return NULL;
+}
+
+static void free_str_vec(char **v) {
+    if (v == NULL) return;
+    for (size_t i = 0; v[i] != NULL; i++) {
+        free(v[i]);
+    }
+    free(v);
 }
 
 static char **build_argv(const char *program, const uint8_t *args_nul, int64_t args_len) {
@@ -3342,17 +3843,24 @@ static char **build_argv(const char *program, const uint8_t *args_nul, int64_t a
     char **argv = (char **)calloc(count + 1, sizeof(char *));
     if (argv == NULL) return NULL;
     size_t k = 0;
-    argv[k++] = sts_strdup(program);
+    argv[k] = sts_strdup(program);
+    if (argv[k] == NULL) {
+        free_str_vec(argv);
+        return NULL;
+    }
+    k += 1;
     if (args_nul != NULL && args_len > 0) {
         int64_t i = 0;
         while (i < args_len) {
             const char *a = (const char *)(args_nul + i);
             size_t n = strnlen(a, (size_t)(args_len - i));
             char *copy = (char *)malloc(n + 1);
-            if (copy != NULL) {
-                memcpy(copy, a, n);
-                copy[n] = '\0';
+            if (copy == NULL) {
+                free_str_vec(argv);
+                return NULL;
             }
+            memcpy(copy, a, n);
+            copy[n] = '\0';
             argv[k++] = copy;
             i += (int64_t)n + 1;
         }
@@ -3361,14 +3869,23 @@ static char **build_argv(const char *program, const uint8_t *args_nul, int64_t a
     return argv;
 }
 
-static char **build_envp(const uint8_t *env_nul, int64_t env_len, int strip_mse) {
-    if ((env_nul == NULL || env_len <= 0) && !strip_mse) {
+static char **build_envp(const uint8_t *env_nul, int64_t env_len, int strip_mse, int explicit_env, int *out_ok) {
+    *out_ok = 1;
+    if (!explicit_env && (env_nul == NULL || env_len <= 0) && !strip_mse) {
         return NULL;
     }
     size_t cap = 32;
     size_t len = 0;
     char **envp = (char **)calloc(cap, sizeof(char *));
-    if (envp == NULL) return NULL;
+    if (envp == NULL) {
+        *out_ok = 0;
+        return NULL;
+    }
+
+    if (explicit_env && (env_nul == NULL || env_len <= 0)) {
+        envp[0] = NULL;
+        return envp;
+    }
 
     if (env_nul != NULL && env_len > 0) {
         int64_t i = 0;
@@ -3377,54 +3894,66 @@ static char **build_envp(const uint8_t *env_nul, int64_t env_len, int strip_mse)
             size_t n = strnlen(e, (size_t)(env_len - i));
             if (n > 0) {
                 char *copy = (char *)malloc(n + 1);
-                if (copy != NULL) {
-                    memcpy(copy, e, n);
-                    copy[n] = '\0';
-                    if (strip_mse && is_malloc_se_entry(copy)) {
-                        free(copy);
-                    } else {
-                        if (len + 2 > cap) {
-                            cap *= 2;
-                            char **grown = (char **)realloc(envp, cap * sizeof(char *));
-                            if (grown == NULL) {
-                                free(copy);
-                                break;
-                            }
-                            envp = grown;
+                if (copy == NULL) {
+                    free_str_vec(envp);
+                    *out_ok = 0;
+                    return NULL;
+                }
+                memcpy(copy, e, n);
+                copy[n] = '\0';
+                if (strip_mse && is_malloc_se_entry(copy)) {
+                    free(copy);
+                } else {
+                    if (len + 2 > cap) {
+                        cap *= 2;
+                        char **grown = (char **)realloc(envp, cap * sizeof(char *));
+                        if (grown == NULL) {
+                            free(copy);
+                            free_str_vec(envp);
+                            *out_ok = 0;
+                            return NULL;
                         }
-                        envp[len++] = copy;
+                        envp = grown;
                     }
+                    envp[len++] = copy;
+                    envp[len] = NULL;
                 }
             }
             i += (int64_t)n + 1;
         }
-    } else if (environ != NULL) {
+    } else if (!explicit_env && environ != NULL) {
         for (char **e = environ; *e != NULL; e++) {
             if (strip_mse && is_malloc_se_entry(*e)) continue;
             if (len + 2 > cap) {
                 cap *= 2;
                 char **grown = (char **)realloc(envp, cap * sizeof(char *));
-                if (grown == NULL) break;
+                if (grown == NULL) {
+                    free_str_vec(envp);
+                    *out_ok = 0;
+                    return NULL;
+                }
                 envp = grown;
             }
-            envp[len++] = sts_strdup(*e);
+            char *dup = sts_strdup(*e);
+            if (dup == NULL) {
+                free_str_vec(envp);
+                *out_ok = 0;
+                return NULL;
+            }
+            envp[len++] = dup;
+            envp[len] = NULL;
         }
     }
     envp[len] = NULL;
     return envp;
 }
 
-static void free_str_vec(char **v) {
-    if (v == NULL) return;
-    for (size_t i = 0; v[i] != NULL; i++) {
-        free(v[i]);
-    }
-    free(v);
-}
-
-static char *resolve_program(const char *program, char **envp) {
+static char *resolve_program_for_cwd(const char *program, char **envp, const char *cwd, int *out_err) {
+    if (out_err != NULL) *out_err = 0;
     if (strchr(program, '/') != NULL) {
-        return sts_strdup(program);
+        char *dup = sts_strdup(program);
+        if (dup == NULL && out_err != NULL) *out_err = ENOMEM;
+        return dup;
     }
     const char *path = NULL;
     if (envp != NULL) {
@@ -3434,32 +3963,70 @@ static char *resolve_program(const char *program, char **envp) {
                 break;
             }
         }
+        if (path == NULL) {
+            if (out_err != NULL) *out_err = ENOENT;
+            return NULL;
+        }
     } else {
         path = getenv("PATH");
+        if (path == NULL) path = "/usr/bin:/bin";
     }
-    if (path == NULL) path = "/usr/bin:/bin";
     size_t pl = strlen(program);
-    while (*path != '\0') {
-        const char *end = strchr(path, ':');
-        size_t dl = end != NULL ? (size_t)(end - path) : strlen(path);
-        char *full = (char *)malloc((dl > 0 ? dl : 1) + 1 + pl + 1);
-        if (full == NULL) break;
-        if (dl == 0) {
-            full[0] = '.';
-            dl = 1;
+    int saved_err = 0;
+    const char *p = path;
+    for (;;) {
+        const char *end = strchr(p, ':');
+        size_t dl = end != NULL ? (size_t)(end - p) : strlen(p);
+        char *full = NULL;
+        if (dl > 0 && p[0] == '/') {
+            full = (char *)malloc(dl + 1 + pl + 1);
+            if (full != NULL) {
+                memcpy(full, p, dl);
+                full[dl] = '/';
+                memcpy(full + dl + 1, program, pl + 1);
+            }
         } else {
-            memcpy(full, path, dl);
+            const char *base = (cwd != NULL && cwd[0] != '\0') ? cwd : ".";
+            size_t bl = strlen(base);
+            if (dl == 0) {
+                full = (char *)malloc(bl + 1 + pl + 1);
+                if (full != NULL) {
+                    memcpy(full, base, bl);
+                    full[bl] = '/';
+                    memcpy(full + bl + 1, program, pl + 1);
+                }
+            } else {
+                full = (char *)malloc(bl + 1 + dl + 1 + pl + 1);
+                if (full != NULL) {
+                    memcpy(full, base, bl);
+                    full[bl] = '/';
+                    memcpy(full + bl + 1, p, dl);
+                    full[bl + 1 + dl] = '/';
+                    memcpy(full + bl + 1 + dl + 1, program, pl + 1);
+                }
+            }
         }
-        full[dl] = '/';
-        memcpy(full + dl + 1, program, pl + 1);
-        if (access(full, X_OK) == 0) {
-            return full;
+        if (full == NULL) {
+            if (out_err != NULL) *out_err = ENOMEM;
+            return NULL;
+        }
+        struct stat st;
+        if (stat(full, &st) == 0) {
+            if (S_ISREG(st.st_mode)) {
+                if (access(full, X_OK) == 0) {
+                    return full;
+                }
+                saved_err = EACCES;
+            } else {
+                saved_err = EACCES;
+            }
         }
         free(full);
         if (end == NULL) break;
-        path = end + 1;
+        p = end + 1;
     }
-    return sts_strdup(program);
+    if (out_err != NULL) *out_err = saved_err ? saved_err : ENOENT;
+    return NULL;
 }
 
 static void reset_child_signals(void) {
@@ -3491,10 +4058,31 @@ int64_t sts_proc_spawn(
         return -1;
     }
     ensure_sigpipe_ignored();
-    char **argv = build_argv(program, args_nul, args_len);
-    char **envp = build_envp(env_nul, env_len, (flags & STS_PROC_STRIP_MALLOC_SE) != 0);
-    char *exec_path = resolve_program(program, envp);
     const char *dir = (cwd != NULL && cwd[0] != '\0') ? cwd : NULL;
+    char **argv = build_argv(program, args_nul, args_len);
+    int env_ok = 1;
+    char **envp = build_envp(
+        env_nul,
+        env_len,
+        (flags & STS_PROC_STRIP_MALLOC_SE) != 0,
+        (flags & STS_PROC_EXPLICIT_ENV) != 0,
+        &env_ok);
+    if (argv == NULL || !env_ok) {
+        free_str_vec(argv);
+        free_str_vec(envp);
+        copy_err(err_buf, err_cap, "oom");
+        return -1;
+    }
+    int resolve_err = 0;
+    char *exec_path = resolve_program_for_cwd(program, envp, dir, &resolve_err);
+    if (exec_path == NULL) {
+        free_str_vec(argv);
+        free_str_vec(envp);
+        char msg[256];
+        posix_err_str(resolve_err ? resolve_err : ENOENT, msg, sizeof(msg));
+        copy_err(err_buf, err_cap, msg);
+        return -1;
+    }
 
     int in_p[2] = { -1, -1 }, out_p[2] = { -1, -1 }, err_p[2] = { -1, -1 }, rep_p[2] = { -1, -1 };
     int fail = 0;
@@ -3506,13 +4094,29 @@ int64_t sts_proc_spawn(
     pid_t pid = -1;
     if (!fail) pid = fork();
     if (pid == 0) {
-        if (flags & STS_PROC_NEW_PGID) {
-            setpgid(0, 0);
+        if (relocate_fd_above_2(&rep_p[1]) != 0 ||
+            relocate_fd_above_2(&in_p[0]) != 0 ||
+            relocate_fd_above_2(&out_p[1]) != 0 ||
+            relocate_fd_above_2(&err_p[1]) != 0) {
+            int e = errno;
+            if (write(rep_p[1], &e, sizeof(e)) < 0) {}
+            _exit(127);
         }
         int null_fd = open("/dev/null", O_RDWR | O_CLOEXEC);
+        if (null_fd >= 0 && relocate_fd_above_2(&null_fd) != 0) {
+            int e = errno;
+            if (write(rep_p[1], &e, sizeof(e)) < 0) {}
+            _exit(127);
+        }
+        if ((flags & STS_PROC_NEW_PGID) && setpgid(0, 0) != 0) {
+            int e = errno;
+            if (write(rep_p[1], &e, sizeof(e)) < 0) {}
+            _exit(127);
+        }
         child_dup2_stdio(in_p[0] >= 0 ? in_p[0] : null_fd, 0);
         child_dup2_stdio(out_p[1] >= 0 ? out_p[1] : null_fd, 1);
         child_dup2_stdio(err_p[1] >= 0 ? err_p[1] : null_fd, 2);
+        set_cloexec_from(3);
         reset_child_signals();
         if (dir != NULL && chdir(dir) != 0) {
             int e = errno;
@@ -3540,7 +4144,7 @@ int64_t sts_proc_spawn(
         if (n == (ssize_t)sizeof(e)) {
             fail = e;
             int st = 0;
-            waitpid(pid, &st, 0);
+            while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
         }
     }
     if (rep_p[0] >= 0) close(rep_p[0]);
@@ -3563,6 +4167,9 @@ int64_t sts_proc_spawn(
 
     posix_proc_t *p = (posix_proc_t *)calloc(1, sizeof(*p));
     if (p == NULL) {
+        kill((flags & STS_PROC_NEW_PGID) ? -pid : pid, SIGKILL);
+        int st = 0;
+        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
         if (in_p[1] >= 0) close(in_p[1]);
         if (out_p[0] >= 0) close(out_p[0]);
         if (err_p[0] >= 0) close(err_p[0]);
@@ -3571,48 +4178,68 @@ int64_t sts_proc_spawn(
     }
     p->event_id = event_id;
     p->pid = pid;
+    atomic_store_explicit(&p->closing, 0, memory_order_relaxed);
     p->stdin_fd = in_p[1];
     p->stdout_fd = out_p[0];
     p->stderr_fd = err_p[0];
     p->stdin_wake[0] = p->stdin_wake[1] = -1;
     p->pipes_wake[0] = p->pipes_wake[1] = -1;
-    p->wait_wake[0] = p->wait_wake[1] = -1;
+    pthread_mutex_init(&p->kill_lock, NULL);
     pthread_mutex_init(&p->stdin_lock, NULL);
     pthread_mutex_init(&p->ref_lock, NULL);
     p->refs = 1;
 
+    int workers_ok = 1;
+    int wait_started = 0;
     if (p->stdin_fd >= 0) {
         int fl = fcntl(p->stdin_fd, F_GETFL, 0);
         if (fl >= 0) fcntl(p->stdin_fd, F_SETFL, fl | O_NONBLOCK);
-        if (make_wakeup_pipe(p->stdin_wake) == 0 &&
-            pthread_create(&p->th_stdin, NULL, posix_stdin_thread, p) == 0) {
-            p->has_stdin_th = 1;
+        if (make_wakeup_pipe(p->stdin_wake) != 0) {
+            workers_ok = 0;
+        } else {
+            posix_proc_ref(p);
+            if (!spawn_detached_thread(posix_stdin_thread, p)) {
+                posix_proc_unref(p);
+                workers_ok = 0;
+            }
         }
     }
-    if (p->stdout_fd >= 0 || p->stderr_fd >= 0) {
-        if (make_wakeup_pipe(p->pipes_wake) == 0 &&
-            pthread_create(&p->th_pipes, NULL, posix_pipes_thread, p) == 0) {
-            p->has_pipes_th = 1;
+    if (workers_ok && (p->stdout_fd >= 0 || p->stderr_fd >= 0)) {
+        if (make_wakeup_pipe(p->pipes_wake) != 0) {
+            workers_ok = 0;
+        } else {
+            posix_proc_ref(p);
+            if (!spawn_detached_thread(posix_pipes_thread, p)) {
+                posix_proc_unref(p);
+                workers_ok = 0;
+            }
         }
     }
-    if (make_wakeup_pipe(p->wait_wake) == 0 &&
-        pthread_create(&p->th_wait, NULL, posix_wait_thread, p) == 0) {
-        p->has_wait_th = 1;
+    if (workers_ok) {
+        posix_proc_ref(p);
+        if (spawn_detached_thread(posix_wait_thread, p)) {
+            wait_started = 1;
+        } else {
+            posix_proc_unref(p);
+            workers_ok = 0;
+        }
     }
 
-    int64_t id = ht_insert(STS_HK_PROC, p);
+    int64_t id = workers_ok ? ht_insert(STS_HK_PROC, p) : -1;
     if (id < 0) {
+        atomic_store_explicit(&p->closing, 1, memory_order_release);
+        kill((flags & STS_PROC_NEW_PGID) ? -pid : pid, SIGKILL);
+        if (!wait_started) {
+            int st = 0;
+            while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+        }
         pthread_mutex_lock(&p->stdin_lock);
         p->stdin_aborted = 1;
         pthread_mutex_unlock(&p->stdin_lock);
         wake_pipe_signal(p->stdin_wake[1]);
         wake_pipe_signal(p->pipes_wake[1]);
-        wake_pipe_signal(p->wait_wake[1]);
-        if (p->has_stdin_th) pthread_join(p->th_stdin, NULL);
-        if (p->has_pipes_th) pthread_join(p->th_pipes, NULL);
-        if (p->has_wait_th) pthread_join(p->th_wait, NULL);
         posix_proc_unref(p);
-        copy_err(err_buf, err_cap, "oom");
+        copy_err(err_buf, err_cap, "worker spawn failed");
         return -1;
     }
     if (out_pid != NULL) {
@@ -3673,18 +4300,29 @@ int32_t sts_proc_close_stdin(int64_t handle) {
     return 1;
 }
 
+int32_t sts_proc_kill_handle(int64_t handle, int32_t sig, int32_t group) {
+    posix_proc_t *p = posix_proc_get(handle);
+    if (p == NULL) return -ESRCH;
+    pthread_mutex_lock(&p->kill_lock);
+    int32_t res = -ESRCH;
+    if (!p->exited) {
+        int rc = kill(group ? -p->pid : p->pid, posix_signal_of(sig));
+        res = (rc == 0) ? 0 : -errno;
+    }
+    pthread_mutex_unlock(&p->kill_lock);
+    posix_proc_unref(p);
+    return res;
+}
+
 int32_t sts_proc_close(int64_t handle) {
     posix_proc_t *p = (posix_proc_t *)ht_take(STS_HK_PROC, handle);
     if (p == NULL) return 0;
+    atomic_store_explicit(&p->closing, 1, memory_order_release);
     pthread_mutex_lock(&p->stdin_lock);
     p->stdin_aborted = 1;
     pthread_mutex_unlock(&p->stdin_lock);
     wake_pipe_signal(p->stdin_wake[1]);
     wake_pipe_signal(p->pipes_wake[1]);
-    wake_pipe_signal(p->wait_wake[1]);
-    if (p->has_stdin_th) pthread_join(p->th_stdin, NULL);
-    if (p->has_pipes_th) pthread_join(p->th_pipes, NULL);
-    if (p->has_wait_th) pthread_join(p->th_wait, NULL);
     posix_proc_unref(p);
     return 1;
 }
@@ -3825,7 +4463,7 @@ static void *posix_ctrl_thread(void *arg) {
 }
 
 int64_t sts_ctrl_open_fd(uint64_t event_id, int32_t fd) {
-    if (fd < 0) return -1;
+    if (fd <= 4) return -1;
     ensure_sigpipe_ignored();
     int fl = fcntl(fd, F_GETFL, 0);
     if (fl < 0) return -1;
@@ -3926,36 +4564,38 @@ int32_t sts_ctrl_close(int64_t handle) {
 // 4. POSIX Process Signals (self-pipe + dedicated reader thread)
 // ---------------------------------------------------------------------------
 
+typedef struct {
+    uint64_t event_id;
+    int sig_pipe[2];
+    int wake[2];
+    pthread_t thread;
+} posix_sig_gen_t;
+
 static const int k_watched_sigs[5] = { SIGTERM, SIGINT, SIGUSR1, SIGUSR2, SIGHUP };
 static pthread_mutex_t g_sig_mu = PTHREAD_MUTEX_INITIALIZER;
-static int g_sig_active = 0;
-static uint64_t g_sig_event_id = 0;
-static int g_sig_pipe[2] = { -1, -1 };
-static int g_sig_wake[2] = { -1, -1 };
+static posix_sig_gen_t *g_sig_gen = NULL;
 static _Atomic int g_sig_wr_fd = -1;
 static _Atomic int g_sig_inflight = 0;
 static struct sigaction g_prev_sa[5];
-static pthread_t g_sig_thread;
 
 static void posix_on_signal(int sig) {
     int saved = errno;
-    atomic_fetch_add_explicit(&g_sig_inflight, 1, memory_order_acq_rel);
-    int fd = atomic_load_explicit(&g_sig_wr_fd, memory_order_acquire);
+    atomic_fetch_add_explicit(&g_sig_inflight, 1, memory_order_seq_cst);
+    int fd = atomic_load_explicit(&g_sig_wr_fd, memory_order_seq_cst);
     if (fd >= 0) {
         uint8_t s = (uint8_t)sig;
         if (write(fd, &s, 1) < 0) {}
     }
-    atomic_fetch_sub_explicit(&g_sig_inflight, 1, memory_order_release);
+    atomic_fetch_sub_explicit(&g_sig_inflight, 1, memory_order_seq_cst);
     errno = saved;
 }
 
 static void *posix_sig_thread(void *arg) {
-    uint64_t eid = *(uint64_t *)arg;
-    free(arg);
+    posix_sig_gen_t *gen = (posix_sig_gen_t *)arg;
     struct pollfd pfds[2];
-    pfds[0].fd = g_sig_pipe[0];
+    pfds[0].fd = gen->sig_pipe[0];
     pfds[0].events = POLLIN;
-    pfds[1].fd = g_sig_wake[0];
+    pfds[1].fd = gen->wake[0];
     pfds[1].events = POLLIN;
 
     for (;;) {
@@ -3966,53 +4606,64 @@ static void *posix_sig_thread(void *arg) {
         if (rc < 0 || pfds[1].revents != 0) break;
         if (pfds[0].revents & POLLIN) {
             uint8_t s = 0;
-            while (read(g_sig_pipe[0], &s, 1) == 1) {
+            while (read(gen->sig_pipe[0], &s, 1) == 1) {
                 const char *name = posix_signal_name((int)s);
                 size_t nlen = strlen(name);
                 uint8_t msg[64];
                 msg[0] = STS_EV_SIGNAL;
                 put_i32_le(msg + 1, (int32_t)s);
                 memcpy(msg + 5, name, nlen);
-                sth_push_sys(eid, msg, 5 + nlen);
+                sth_push_sys(gen->event_id, msg, 5 + nlen);
             }
         }
     }
     return NULL;
 }
 
+static void posix_signal_unwatch_locked(void) {
+    posix_sig_gen_t *gen = g_sig_gen;
+    if (gen == NULL) return;
+    for (int i = 0; i < 5; i++) {
+        sigaction(k_watched_sigs[i], &g_prev_sa[i], NULL);
+    }
+    atomic_store_explicit(&g_sig_wr_fd, -1, memory_order_seq_cst);
+    while (atomic_load_explicit(&g_sig_inflight, memory_order_seq_cst) > 0) {
+        sched_yield();
+    }
+    wake_pipe_signal(gen->wake[1]);
+    pthread_join(gen->thread, NULL);
+    close_fd_pair(gen->sig_pipe);
+    close_fd_pair(gen->wake);
+    free(gen);
+    g_sig_gen = NULL;
+}
+
 int32_t sts_signal_watch(uint64_t event_id) {
     pthread_mutex_lock(&g_sig_mu);
-    if (g_sig_active) {
-        pthread_mutex_unlock(&g_sig_mu);
-        sts_signal_unwatch();
-        pthread_mutex_lock(&g_sig_mu);
-    }
-    if (make_wakeup_pipe(g_sig_pipe) != 0) {
+    posix_signal_unwatch_locked();
+    posix_sig_gen_t *gen = (posix_sig_gen_t *)calloc(1, sizeof(*gen));
+    if (gen == NULL) {
         pthread_mutex_unlock(&g_sig_mu);
         return 0;
     }
-    if (make_wakeup_pipe(g_sig_wake) != 0) {
-        close_fd_pair(g_sig_pipe);
+    gen->event_id = event_id;
+    gen->sig_pipe[0] = gen->sig_pipe[1] = -1;
+    gen->wake[0] = gen->wake[1] = -1;
+    if (make_wakeup_pipe(gen->sig_pipe) != 0 || make_wakeup_pipe(gen->wake) != 0) {
+        close_fd_pair(gen->sig_pipe);
+        close_fd_pair(gen->wake);
+        free(gen);
         pthread_mutex_unlock(&g_sig_mu);
         return 0;
     }
-    uint64_t *arg = (uint64_t *)malloc(sizeof(*arg));
-    if (arg == NULL) {
-        close_fd_pair(g_sig_pipe);
-        close_fd_pair(g_sig_wake);
+    if (pthread_create(&gen->thread, NULL, posix_sig_thread, gen) != 0) {
+        close_fd_pair(gen->sig_pipe);
+        close_fd_pair(gen->wake);
+        free(gen);
         pthread_mutex_unlock(&g_sig_mu);
         return 0;
     }
-    *arg = event_id;
-    atomic_store_explicit(&g_sig_wr_fd, g_sig_pipe[1], memory_order_release);
-    if (pthread_create(&g_sig_thread, NULL, posix_sig_thread, arg) != 0) {
-        free(arg);
-        atomic_store_explicit(&g_sig_wr_fd, -1, memory_order_release);
-        close_fd_pair(g_sig_pipe);
-        close_fd_pair(g_sig_wake);
-        pthread_mutex_unlock(&g_sig_mu);
-        return 0;
-    }
+    atomic_store_explicit(&g_sig_wr_fd, gen->sig_pipe[1], memory_order_seq_cst);
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = posix_on_signal;
@@ -4021,35 +4672,14 @@ int32_t sts_signal_watch(uint64_t event_id) {
     for (int i = 0; i < 5; i++) {
         sigaction(k_watched_sigs[i], &sa, &g_prev_sa[i]);
     }
-    g_sig_event_id = event_id;
-    g_sig_active = 1;
+    g_sig_gen = gen;
     pthread_mutex_unlock(&g_sig_mu);
     return 1;
 }
 
 int32_t sts_signal_unwatch(void) {
     pthread_mutex_lock(&g_sig_mu);
-    if (!g_sig_active) {
-        pthread_mutex_unlock(&g_sig_mu);
-        return 1;
-    }
-    for (int i = 0; i < 5; i++) {
-        sigaction(k_watched_sigs[i], &g_prev_sa[i], NULL);
-    }
-    atomic_store_explicit(&g_sig_wr_fd, -1, memory_order_release);
-    while (atomic_load_explicit(&g_sig_inflight, memory_order_acquire) > 0) {
-        sched_yield();
-    }
-    wake_pipe_signal(g_sig_wake[1]);
-    pthread_t th = g_sig_thread;
-    g_sig_active = 0;
-    pthread_mutex_unlock(&g_sig_mu);
-
-    pthread_join(th, NULL);
-
-    pthread_mutex_lock(&g_sig_mu);
-    close_fd_pair(g_sig_pipe);
-    close_fd_pair(g_sig_wake);
+    posix_signal_unwatch_locked();
     pthread_mutex_unlock(&g_sig_mu);
     return 1;
 }
@@ -4094,6 +4724,11 @@ int32_t sts_flock_unlock(int64_t handle) {
     free(pfd);
     flock(fd, LOCK_UN);
     return close(fd) == 0 ? 1 : 0;
+}
+
+int32_t sts_unlink(const char *path) {
+    if (path == NULL || path[0] == '\0') return 0;
+    return unlink(path) == 0 ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -4279,17 +4914,21 @@ void *sts_process_usage(const int32_t *pids, int32_t count, int64_t *out_len) {
 typedef struct {
     uint64_t event_id;
     pid_t pid;
+    _Atomic int closing;
+    pthread_mutex_t kill_lock;
+    int exited;
     int master_fd;
     int read_wake[2];
-    int wait_wake[2];
-    int has_read_th;
-    int has_wait_th;
-    pthread_t th_read;
-    pthread_t th_wait;
     pthread_mutex_t write_lock;
     pthread_mutex_t ref_lock;
     int refs;
 } posix_pty_t;
+
+static void posix_pty_ref(posix_pty_t *pt) {
+    pthread_mutex_lock(&pt->ref_lock);
+    pt->refs += 1;
+    pthread_mutex_unlock(&pt->ref_lock);
+}
 
 static void posix_pty_unref(posix_pty_t *pt) {
     pthread_mutex_lock(&pt->ref_lock);
@@ -4298,7 +4937,7 @@ static void posix_pty_unref(posix_pty_t *pt) {
     if (!last) return;
     if (pt->master_fd >= 0) close(pt->master_fd);
     close_fd_pair(pt->read_wake);
-    close_fd_pair(pt->wait_wake);
+    pthread_mutex_destroy(&pt->kill_lock);
     pthread_mutex_destroy(&pt->write_lock);
     pthread_mutex_destroy(&pt->ref_lock);
     free(pt);
@@ -4327,38 +4966,54 @@ static posix_pty_t *posix_pty_get(int64_t handle) {
 static void *posix_pty_read_thread(void *arg) {
     posix_pty_t *pt = (posix_pty_t *)arg;
     uint8_t *buf = (uint8_t *)malloc(1 + 65536);
-    if (buf == NULL) return NULL;
-    buf[0] = STS_EV_PTY_DATA;
-    struct pollfd pfds[2];
-    pfds[0].fd = pt->master_fd;
-    pfds[0].events = POLLIN;
-    pfds[1].fd = pt->read_wake[0];
-    pfds[1].events = POLLIN;
+    if (buf != NULL) {
+        buf[0] = STS_EV_PTY_DATA;
+        struct pollfd pfds[2];
+        pfds[0].fd = pt->master_fd;
+        pfds[0].events = POLLIN;
+        pfds[1].fd = pt->read_wake[0];
+        pfds[1].events = POLLIN;
 
-    for (;;) {
-        pfds[0].revents = 0;
-        pfds[1].revents = 0;
-        int rc = poll(pfds, 2, -1);
-        if (rc < 0 && errno == EINTR) continue;
-        if (rc < 0 || pfds[1].revents != 0) break;
-        if (pfds[0].revents != 0) {
-            ssize_t got = read(pt->master_fd, buf + 1, 65536);
-            if (got < 0 && (errno == EINTR || errno == EAGAIN)) continue;
-            if (got <= 0) {
-                push_tag_ctrl(pt->event_id, STS_EV_PTY_EOF, NULL, 0);
-                break;
+        for (;;) {
+            if (atomic_load_explicit(&pt->closing, memory_order_acquire)) break;
+            pfds[0].revents = 0;
+            pfds[1].revents = 0;
+            int rc = poll(pfds, 2, -1);
+            if (rc < 0 && errno == EINTR) continue;
+            if (rc < 0 || pfds[1].revents != 0) break;
+            if (pfds[0].revents != 0) {
+                ssize_t got = read(pt->master_fd, buf + 1, 65536);
+                if (got < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+                if (got <= 0) {
+                    if (!atomic_load_explicit(&pt->closing, memory_order_acquire)) {
+                        push_tag_ctrl(pt->event_id, STS_EV_PTY_EOF, NULL, 0);
+                    }
+                    break;
+                }
+                sth_push_sys_bounded(pt->event_id, buf, (size_t)got + 1);
+                if (atomic_load_explicit(&pt->closing, memory_order_acquire)) break;
             }
-            sth_push_sys_bounded(pt->event_id, buf, (size_t)got + 1);
         }
+        free(buf);
     }
-    free(buf);
+    posix_pty_unref(pt);
+    sts_detached_end();
     return NULL;
 }
 
 static void *posix_pty_wait_thread(void *arg) {
     posix_pty_t *pt = (posix_pty_t *)arg;
     int status = 0;
-    if (wait_pid_or_wake(pt->pid, pt->wait_wake[0], &status)) {
+    pid_t wr;
+    do {
+        wr = waitpid(pt->pid, &status, 0);
+    } while (wr < 0 && errno == EINTR);
+
+    pthread_mutex_lock(&pt->kill_lock);
+    pt->exited = 1;
+    pthread_mutex_unlock(&pt->kill_lock);
+
+    if (wr == pt->pid && !atomic_load_explicit(&pt->closing, memory_order_acquire)) {
         if (WIFSIGNALED(status)) {
             int sig = WTERMSIG(status);
             push_exit_event(pt->event_id, STS_EV_PTY_EXIT, -1, (int32_t)sig, posix_signal_name(sig));
@@ -4366,6 +5021,8 @@ static void *posix_pty_wait_thread(void *arg) {
             push_exit_event(pt->event_id, STS_EV_PTY_EXIT, (int32_t)WEXITSTATUS(status), 0, "");
         }
     }
+    posix_pty_unref(pt);
+    sts_detached_end();
     return NULL;
 }
 
@@ -4388,6 +5045,32 @@ int64_t sts_pty_spawn(
         return -1;
     }
     ensure_sigpipe_ignored();
+    const char *dir = (cwd != NULL && cwd[0] != '\0') ? cwd : NULL;
+    char **argv = build_argv(program, args_nul, args_len);
+    int env_ok = 1;
+    char **envp = build_envp(
+        env_nul,
+        env_len,
+        (flags & STS_PROC_STRIP_MALLOC_SE) != 0,
+        (flags & STS_PROC_EXPLICIT_ENV) != 0,
+        &env_ok);
+    if (argv == NULL || !env_ok) {
+        free_str_vec(argv);
+        free_str_vec(envp);
+        copy_err(err_buf, err_cap, "oom");
+        return -1;
+    }
+    int resolve_err = 0;
+    char *exec_path = resolve_program_for_cwd(program, envp, dir, &resolve_err);
+    if (exec_path == NULL) {
+        free_str_vec(argv);
+        free_str_vec(envp);
+        char msg[256];
+        posix_err_str(resolve_err ? resolve_err : ENOENT, msg, sizeof(msg));
+        copy_err(err_buf, err_cap, msg);
+        return -1;
+    }
+
     struct winsize ws;
     memset(&ws, 0, sizeof(ws));
     ws.ws_col = (unsigned short)(cols > 0 ? cols : 80);
@@ -4395,18 +5078,17 @@ int64_t sts_pty_spawn(
 
     int master_fd = -1, slave_fd = -1;
     if (openpty(&master_fd, &slave_fd, NULL, NULL, &ws) != 0) {
+        int e = errno;
+        free(exec_path);
+        free_str_vec(argv);
+        free_str_vec(envp);
         char msg[256];
-        posix_err_str(errno, msg, sizeof(msg));
+        posix_err_str(e, msg, sizeof(msg));
         copy_err(err_buf, err_cap, msg);
         return -1;
     }
     fcntl(master_fd, F_SETFD, FD_CLOEXEC);
     fcntl(slave_fd, F_SETFD, FD_CLOEXEC);
-
-    char **argv = build_argv(program, args_nul, args_len);
-    char **envp = build_envp(env_nul, env_len, (flags & STS_PROC_STRIP_MALLOC_SE) != 0);
-    char *exec_path = resolve_program(program, envp);
-    const char *dir = (cwd != NULL && cwd[0] != '\0') ? cwd : NULL;
 
     int rep_p[2] = { -1, -1 };
     int fail = 0;
@@ -4415,13 +5097,24 @@ int64_t sts_pty_spawn(
     pid_t pid = -1;
     if (!fail) pid = fork();
     if (pid == 0) {
-        setsid();
-        ioctl(slave_fd, TIOCSCTTY, 0);
+        if (relocate_fd_above_2(&rep_p[1]) != 0 ||
+            relocate_fd_above_2(&slave_fd) != 0 ||
+            relocate_fd_above_2(&master_fd) != 0) {
+            int e = errno;
+            if (write(rep_p[1], &e, sizeof(e)) < 0) {}
+            _exit(127);
+        }
+        if (setsid() < 0 || ioctl(slave_fd, TIOCSCTTY, 0) < 0) {
+            int e = errno;
+            if (write(rep_p[1], &e, sizeof(e)) < 0) {}
+            _exit(127);
+        }
         child_dup2_stdio(slave_fd, 0);
         child_dup2_stdio(slave_fd, 1);
         child_dup2_stdio(slave_fd, 2);
         close(master_fd);
-        if (slave_fd > 2) close(slave_fd);
+        close(slave_fd);
+        set_cloexec_from(3);
         reset_child_signals();
         if (dir != NULL && chdir(dir) != 0) {
             int e = errno;
@@ -4447,7 +5140,7 @@ int64_t sts_pty_spawn(
         if (n == (ssize_t)sizeof(e)) {
             fail = e;
             int st = 0;
-            waitpid(pid, &st, 0);
+            while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
         }
     }
     if (rep_p[0] >= 0) close(rep_p[0]);
@@ -4468,35 +5161,52 @@ int64_t sts_pty_spawn(
 
     posix_pty_t *pt = (posix_pty_t *)calloc(1, sizeof(*pt));
     if (pt == NULL) {
+        kill(-pid, SIGKILL);
+        int st = 0;
+        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
         close(master_fd);
         copy_err(err_buf, err_cap, "oom");
         return -1;
     }
     pt->event_id = event_id;
     pt->pid = pid;
+    atomic_store_explicit(&pt->closing, 0, memory_order_relaxed);
     pt->master_fd = master_fd;
     pt->read_wake[0] = pt->read_wake[1] = -1;
-    pt->wait_wake[0] = pt->wait_wake[1] = -1;
+    pthread_mutex_init(&pt->kill_lock, NULL);
     pthread_mutex_init(&pt->write_lock, NULL);
     pthread_mutex_init(&pt->ref_lock, NULL);
     pt->refs = 1;
 
-    if (make_wakeup_pipe(pt->read_wake) == 0 &&
-        pthread_create(&pt->th_read, NULL, posix_pty_read_thread, pt) == 0) {
-        pt->has_read_th = 1;
+    int workers_ok = (make_wakeup_pipe(pt->read_wake) == 0);
+    int wait_started = 0;
+    if (workers_ok) {
+        posix_pty_ref(pt);
+        if (!spawn_detached_thread(posix_pty_read_thread, pt)) {
+            posix_pty_unref(pt);
+            workers_ok = 0;
+        }
     }
-    if (make_wakeup_pipe(pt->wait_wake) == 0 &&
-        pthread_create(&pt->th_wait, NULL, posix_pty_wait_thread, pt) == 0) {
-        pt->has_wait_th = 1;
+    if (workers_ok) {
+        posix_pty_ref(pt);
+        if (spawn_detached_thread(posix_pty_wait_thread, pt)) {
+            wait_started = 1;
+        } else {
+            posix_pty_unref(pt);
+            workers_ok = 0;
+        }
     }
-    int64_t id = ht_insert(STS_HK_PTY, pt);
+    int64_t id = workers_ok ? ht_insert(STS_HK_PTY, pt) : -1;
     if (id < 0) {
+        atomic_store_explicit(&pt->closing, 1, memory_order_release);
+        kill(-pid, SIGKILL);
+        if (!wait_started) {
+            int st = 0;
+            while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+        }
         wake_pipe_signal(pt->read_wake[1]);
-        wake_pipe_signal(pt->wait_wake[1]);
-        if (pt->has_read_th) pthread_join(pt->th_read, NULL);
-        if (pt->has_wait_th) pthread_join(pt->th_wait, NULL);
         posix_pty_unref(pt);
-        copy_err(err_buf, err_cap, "oom");
+        copy_err(err_buf, err_cap, "worker spawn failed");
         return -1;
     }
     if (out_pid != NULL) {
@@ -4556,18 +5266,21 @@ int32_t sts_pty_resize(int64_t handle, int32_t cols, int32_t rows) {
 int32_t sts_pty_kill(int64_t handle, int32_t sig) {
     posix_pty_t *pt = posix_pty_get(handle);
     if (pt == NULL) return 0;
-    int rc = kill(-pt->pid, posix_signal_of(sig));
+    pthread_mutex_lock(&pt->kill_lock);
+    int ok = 0;
+    if (!pt->exited) {
+        ok = (kill(-pt->pid, posix_signal_of(sig)) == 0) ? 1 : 0;
+    }
+    pthread_mutex_unlock(&pt->kill_lock);
     posix_pty_unref(pt);
-    return rc == 0 ? 1 : 0;
+    return ok;
 }
 
 int32_t sts_pty_close(int64_t handle) {
     posix_pty_t *pt = (posix_pty_t *)ht_take(STS_HK_PTY, handle);
     if (pt == NULL) return 0;
+    atomic_store_explicit(&pt->closing, 1, memory_order_release);
     wake_pipe_signal(pt->read_wake[1]);
-    wake_pipe_signal(pt->wait_wake[1]);
-    if (pt->has_read_th) pthread_join(pt->th_read, NULL);
-    if (pt->has_wait_th) pthread_join(pt->th_wait, NULL);
     posix_pty_unref(pt);
     return 1;
 }
@@ -4581,10 +5294,16 @@ typedef struct {
     int sock;
     int family;
     int wake[2];
-    pthread_t thread;
+    _Atomic int closing;
     pthread_mutex_t ref_lock;
     int refs;
 } posix_udp_t;
+
+static void posix_udp_ref(posix_udp_t *u) {
+    pthread_mutex_lock(&u->ref_lock);
+    u->refs += 1;
+    pthread_mutex_unlock(&u->ref_lock);
+}
 
 static void posix_udp_unref(posix_udp_t *u) {
     pthread_mutex_lock(&u->ref_lock);
@@ -4600,60 +5319,63 @@ static void posix_udp_unref(posix_udp_t *u) {
 static void *posix_udp_recv_thread(void *arg) {
     posix_udp_t *u = (posix_udp_t *)arg;
     uint8_t *buf = (uint8_t *)malloc(65536);
-    if (buf == NULL) {
-        push_tag_ctrl(u->event_id, STS_EV_UDP_CLOSED, NULL, 0);
-        return NULL;
-    }
-    struct pollfd pfds[2];
-    pfds[0].fd = u->sock;
-    pfds[0].events = POLLIN;
-    pfds[1].fd = u->wake[0];
-    pfds[1].events = POLLIN;
+    if (buf != NULL) {
+        struct pollfd pfds[2];
+        pfds[0].fd = u->sock;
+        pfds[0].events = POLLIN;
+        pfds[1].fd = u->wake[0];
+        pfds[1].events = POLLIN;
 
-    for (;;) {
-        pfds[0].revents = 0;
-        pfds[1].revents = 0;
-        int rc = poll(pfds, 2, -1);
-        if (rc < 0 && errno == EINTR) continue;
-        if (rc < 0 || pfds[1].revents != 0) break;
-        if (pfds[0].revents & POLLIN) {
-            struct sockaddr_storage ss;
-            socklen_t slen = sizeof(ss);
-            ssize_t n = recvfrom(u->sock, buf, 65536, 0, (struct sockaddr *)&ss, &slen);
-            if (n < 0) continue;
-            char addr_str[INET6_ADDRSTRLEN] = "";
-            uint16_t src_port = 0;
-            if (ss.ss_family == AF_INET) {
-                struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
-                inet_ntop(AF_INET, &s4->sin_addr, addr_str, sizeof(addr_str));
-                src_port = ntohs(s4->sin_port);
-            } else if (ss.ss_family == AF_INET6) {
-                struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
-                inet_ntop(AF_INET6, &s6->sin6_addr, addr_str, sizeof(addr_str));
-                src_port = ntohs(s6->sin6_port);
-            }
-            size_t alen = strlen(addr_str);
-            size_t total = 5 + alen + (size_t)n;
-            uint8_t *msg = (uint8_t *)malloc(total);
-            if (msg != NULL) {
-                msg[0] = STS_EV_UDP_RECV;
-                put_u16_le(msg + 1, src_port);
-                put_u16_le(msg + 3, (uint16_t)alen);
-                memcpy(msg + 5, addr_str, alen);
-                if (n > 0) memcpy(msg + 5 + alen, buf, (size_t)n);
-                sth_push_sys_bounded(u->event_id, msg, total);
-                free(msg);
+        for (;;) {
+            if (atomic_load_explicit(&u->closing, memory_order_acquire)) break;
+            pfds[0].revents = 0;
+            pfds[1].revents = 0;
+            int rc = poll(pfds, 2, -1);
+            if (rc < 0 && errno == EINTR) continue;
+            if (rc < 0 || pfds[1].revents != 0) break;
+            if (pfds[0].revents & POLLIN) {
+                struct sockaddr_storage ss;
+                socklen_t slen = sizeof(ss);
+                ssize_t n = recvfrom(u->sock, buf, 65536, 0, (struct sockaddr *)&ss, &slen);
+                if (n < 0) continue;
+                char addr_str[INET6_ADDRSTRLEN] = "";
+                uint16_t src_port = 0;
+                if (ss.ss_family == AF_INET) {
+                    struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+                    inet_ntop(AF_INET, &s4->sin_addr, addr_str, sizeof(addr_str));
+                    src_port = ntohs(s4->sin_port);
+                } else if (ss.ss_family == AF_INET6) {
+                    struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
+                    inet_ntop(AF_INET6, &s6->sin6_addr, addr_str, sizeof(addr_str));
+                    src_port = ntohs(s6->sin6_port);
+                }
+                size_t alen = strlen(addr_str);
+                size_t total = 5 + alen + (size_t)n;
+                uint8_t *msg = (uint8_t *)malloc(total);
+                if (msg != NULL) {
+                    msg[0] = STS_EV_UDP_RECV;
+                    put_u16_le(msg + 1, src_port);
+                    put_u16_le(msg + 3, (uint16_t)alen);
+                    memcpy(msg + 5, addr_str, alen);
+                    if (n > 0) memcpy(msg + 5 + alen, buf, (size_t)n);
+                    sth_push_sys_bounded(u->event_id, msg, total);
+                    free(msg);
+                }
             }
         }
+        free(buf);
     }
-    free(buf);
-    push_tag_ctrl(u->event_id, STS_EV_UDP_CLOSED, NULL, 0);
+    if (!atomic_load_explicit(&u->closing, memory_order_acquire)) {
+        push_tag_ctrl(u->event_id, STS_EV_UDP_CLOSED, NULL, 0);
+    }
+    posix_udp_unref(u);
+    sts_detached_end();
     return NULL;
 }
 
 int64_t sts_udp_bind(uint64_t event_id, const char *addr, int32_t port, int64_t *out_port) {
-    const char *bind_addr = (addr != NULL && addr[0] != '\0') ? addr : "0.0.0.0";
-    int is_v6 = strchr(bind_addr, ':') != NULL;
+    if (addr == NULL || addr[0] == '\0') return -1;
+    int is_v6 = strchr(addr, ':') != NULL;
     int family = is_v6 ? AF_INET6 : AF_INET;
     int s = socket(family, SOCK_DGRAM, 0);
     if (s < 0) return -1;
@@ -4668,7 +5390,7 @@ int64_t sts_udp_bind(uint64_t event_id, const char *addr, int32_t port, int64_t 
         struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
         s6->sin6_family = AF_INET6;
         s6->sin6_port = htons((uint16_t)port);
-        if (inet_pton(AF_INET6, bind_addr, &s6->sin6_addr) != 1) {
+        if (inet_pton(AF_INET6, addr, &s6->sin6_addr) != 1) {
             close(s);
             return -1;
         }
@@ -4677,7 +5399,7 @@ int64_t sts_udp_bind(uint64_t event_id, const char *addr, int32_t port, int64_t 
         struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
         s4->sin_family = AF_INET;
         s4->sin_port = htons((uint16_t)port);
-        if (inet_pton(AF_INET, bind_addr, &s4->sin_addr) != 1) {
+        if (inet_pton(AF_INET, addr, &s4->sin_addr) != 1) {
             close(s);
             return -1;
         }
@@ -4705,17 +5427,23 @@ int64_t sts_udp_bind(uint64_t event_id, const char *addr, int32_t port, int64_t 
     u->sock = s;
     u->family = family;
     u->wake[0] = u->wake[1] = -1;
+    atomic_store_explicit(&u->closing, 0, memory_order_relaxed);
     pthread_mutex_init(&u->ref_lock, NULL);
     u->refs = 1;
-    if (make_wakeup_pipe(u->wake) != 0 ||
-        pthread_create(&u->thread, NULL, posix_udp_recv_thread, u) != 0) {
+    if (make_wakeup_pipe(u->wake) != 0) {
+        posix_udp_unref(u);
+        return -1;
+    }
+    posix_udp_ref(u);
+    if (!spawn_detached_thread(posix_udp_recv_thread, u)) {
+        posix_udp_unref(u);
         posix_udp_unref(u);
         return -1;
     }
     int64_t id = ht_insert(STS_HK_UDP, u);
     if (id < 0) {
+        atomic_store_explicit(&u->closing, 1, memory_order_release);
         wake_pipe_signal(u->wake[1]);
-        pthread_join(u->thread, NULL);
         posix_udp_unref(u);
     }
     return id;
@@ -4769,17 +5497,58 @@ int32_t sts_udp_send_to(int64_t handle, const char *addr, int32_t port, const ui
     int err = rc < 0 ? errno : 0;
     posix_udp_unref(u);
     if (rc >= 0) return 0;
-    if (err == EHOSTUNREACH) return STS_ERR_HOSTUNREACH;
+    if (err == EHOSTUNREACH || err == ENETUNREACH) return STS_ERR_HOSTUNREACH;
     return -(err > 0 ? err : 1);
 }
 
 int32_t sts_udp_close(int64_t handle) {
     posix_udp_t *u = (posix_udp_t *)ht_take(STS_HK_UDP, handle);
     if (u == NULL) return 0;
+    atomic_store_explicit(&u->closing, 1, memory_order_release);
     wake_pipe_signal(u->wake[1]);
-    pthread_join(u->thread, NULL);
     posix_udp_unref(u);
     return 1;
+}
+
+int32_t sts_udp_send_once(const char *addr, int32_t port, const uint8_t *data, int64_t len) {
+    if (addr == NULL || addr[0] == '\0' || port <= 0 || port > 65535 || len < 0) return -1;
+    int is_v6 = strchr(addr, ':') != NULL;
+    int family = is_v6 ? AF_INET6 : AF_INET;
+    int s = socket(family, SOCK_DGRAM, 0);
+    if (s < 0) return -1;
+    fcntl(s, F_SETFD, FD_CLOEXEC);
+
+    struct sockaddr_storage ss;
+    memset(&ss, 0, sizeof(ss));
+    socklen_t slen = 0;
+    if (is_v6) {
+        struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)&ss;
+        s6->sin6_family = AF_INET6;
+        s6->sin6_port = htons((uint16_t)port);
+        if (inet_pton(AF_INET6, addr, &s6->sin6_addr) != 1) {
+            close(s);
+            return -1;
+        }
+        slen = sizeof(*s6);
+    } else {
+        struct sockaddr_in *s4 = (struct sockaddr_in *)&ss;
+        s4->sin_family = AF_INET;
+        s4->sin_port = htons((uint16_t)port);
+        if (inet_pton(AF_INET, addr, &s4->sin_addr) != 1) {
+            close(s);
+            return -1;
+        }
+        slen = sizeof(*s4);
+    }
+    ssize_t rc;
+    do {
+        rc = sendto(s, data != NULL ? data : (const uint8_t *)"", (size_t)len, 0, (struct sockaddr *)&ss, slen);
+    } while (rc < 0 && errno == EINTR);
+    int err = rc < 0 ? errno : 0;
+    close(s);
+    if (rc >= 0) return 0;
+    if (err == EHOSTUNREACH || err == ENETUNREACH) return STS_ERR_HOSTUNREACH;
+    return -(err > 0 ? err : 1);
 }
 
 // ---------------------------------------------------------------------------

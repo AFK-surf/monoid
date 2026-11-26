@@ -25,6 +25,7 @@ extern "C" fn sts_proc_spawn(
 ) -> Int64
 extern "C" fn sts_proc_write_stdin(handle : Int64, data : Ptr, len : Int64) -> Int
 extern "C" fn sts_proc_close_stdin(handle : Int64) -> Int
+extern "C" fn sts_proc_kill_handle(handle : Int64, sig : Int, group : Int) -> Int
 extern "C" fn sts_proc_close(handle : Int64) -> Int
 extern "C" fn sts_proc_kill(pid : Int, sig : Int, group : Int) -> Int
 extern "C" fn sts_proc_start_time_ms(pid : Int) -> Int64
@@ -39,6 +40,7 @@ extern "C" fn sts_signal_unwatch() -> Int
 
 extern "C" fn sts_flock_try(path : Ptr) -> Int64
 extern "C" fn sts_flock_unlock(handle : Int64) -> Int
+extern "C" fn sts_unlink(path : Ptr) -> Int
 
 extern "C" fn sts_peer_process(fd : Int, out_len : Ptr) -> Ptr
 extern "C" fn sts_process_usage(pids : Ptr, count : Int, out_len : Ptr) -> Ptr
@@ -72,6 +74,7 @@ extern "C" fn sts_udp_send_to(
   len : Int64,
 ) -> Int
 extern "C" fn sts_udp_close(handle : Int64) -> Int
+extern "C" fn sts_udp_send_once(addr : Ptr, port : Int, data : Ptr, len : Int64) -> Int
 
 extern "C" fn sts_os_kind() -> Int
 extern "C" fn sts_arch_kind() -> Int
@@ -108,6 +111,7 @@ pub let PROC_STRIP_MALLOC_SE : Int = 2
 pub let PROC_PIPE_STDIN : Int = 4
 pub let PROC_PIPE_STDOUT : Int = 8
 pub let PROC_PIPE_STDERR : Int = 16
+pub let PROC_EXPLICIT_ENV : Int = 32
 
 // ---------------------------------------------------------------------------
 // Decoded system events (from `HostEvent::Sys(id, payload)`)
@@ -116,6 +120,7 @@ pub let PROC_PIPE_STDERR : Int = 16
 pub enum FsChangeKind {
   Rename
   Change
+  Overflow
   Error
 }
 
@@ -238,24 +243,37 @@ pub fn decode_sys_event(payload : Bytes) -> Option[SysEvent] {
       return None
     }
     let k = payload[1].to_int() & 0xFF
-    let kind = if k == 1 {
+    let kind = if k == 0 {
+      FsChangeKind::Error
+    } else if k == 1 {
       FsChangeKind::Rename
     } else if k == 2 {
       FsChangeKind::Change
+    } else if k == 3 {
+      FsChangeKind::Overflow
     } else {
-      FsChangeKind::Error
+      return None
     }
     let name = bytes_to_str(slice_bytes(payload, 2, n - 2))
     Some(SysEvent::FsChange(kind, name))
   } else if tag == 2 {
+    if n != 1 {
+      return None
+    }
     Some(SysEvent::FsClosed)
   } else if tag == 10 {
     Some(SysEvent::ProcStdout(slice_bytes(payload, 1, n - 1)))
   } else if tag == 11 {
     Some(SysEvent::ProcStderr(slice_bytes(payload, 1, n - 1)))
   } else if tag == 12 {
+    if n != 1 {
+      return None
+    }
     Some(SysEvent::ProcStdoutEof)
   } else if tag == 13 {
+    if n != 1 {
+      return None
+    }
     Some(SysEvent::ProcStderrEof)
   } else if tag == 14 {
     if n < 9 {
@@ -268,6 +286,9 @@ pub fn decode_sys_event(payload : Bytes) -> Option[SysEvent] {
   } else if tag == 20 {
     Some(SysEvent::CtrlLine(bytes_to_str(slice_bytes(payload, 1, n - 1))))
   } else if tag == 21 {
+    if n != 1 {
+      return None
+    }
     Some(SysEvent::CtrlEof)
   } else if tag == 30 {
     if n < 5 {
@@ -279,6 +300,9 @@ pub fn decode_sys_event(payload : Bytes) -> Option[SysEvent] {
   } else if tag == 40 {
     Some(SysEvent::PtyData(slice_bytes(payload, 1, n - 1)))
   } else if tag == 41 {
+    if n != 1 {
+      return None
+    }
     Some(SysEvent::PtyEof)
   } else if tag == 42 {
     if n < 9 {
@@ -301,6 +325,9 @@ pub fn decode_sys_event(payload : Bytes) -> Option[SysEvent] {
     let data = slice_bytes(payload, 5 + alen, n - (5 + alen))
     Some(SysEvent::UdpRecv(UdpPacket::{ addr: addr, port: port, data: data }))
   } else if tag == 51 {
+    if n != 1 {
+      return None
+    }
     Some(SysEvent::UdpClosed)
   } else {
     None
@@ -396,6 +423,12 @@ pub fn spawn_flags(opts : SpawnOptions) -> Int {
   if opts.pipe_stderr {
     f = f | PROC_PIPE_STDERR
   }
+  match opts.env {
+    Some(_) => {
+      f = f | PROC_EXPLICIT_ENV
+    }
+    None => ()
+  }
   f
 }
 
@@ -451,6 +484,10 @@ pub fn ChildProcess::write_stdin(self : ChildProcess, data : Bytes) -> Bool {
 
 pub fn ChildProcess::close_stdin(self : ChildProcess) -> Bool {
   sts_proc_close_stdin(self.handle) != 0
+}
+
+pub fn ChildProcess::kill(self : ChildProcess, sig : Int, group : Bool) -> Int {
+  sts_proc_kill_handle(self.handle, sig, if group { 1 } else { 0 })
 }
 
 pub fn ChildProcess::close(self : ChildProcess) -> Bool {
@@ -544,6 +581,12 @@ pub fn FlockHandle::unlock(self : FlockHandle) -> Bool {
   sts_flock_unlock(self.handle) != 0
 }
 
+pub fn unlink(path : String) -> Bool {
+  let ok = sts_unlink(path.as_cstr())
+  let _ = path.length()
+  ok != 0
+}
+
 // ---------------------------------------------------------------------------
 // 6. Unix peer identity & 7. Process resource usage
 // ---------------------------------------------------------------------------
@@ -599,7 +642,11 @@ pub fn pty_spawn(
   ptr_write_i64(out_pid, 0.to_int64(), 0.to_int64())
   let err_cap = 256
   let err_buf = ptr_alloc(err_cap.to_int64())
-  let flags = if strip_malloc_space_efficient { PROC_STRIP_MALLOC_SE } else { 0 }
+  let base_flags = if strip_malloc_space_efficient { PROC_STRIP_MALLOC_SE } else { 0 }
+  let flags = match env {
+    Some(_) => base_flags | PROC_EXPLICIT_ENV
+    None => base_flags
+  }
 
   let h = sts_pty_spawn(
     event_id,
@@ -695,6 +742,18 @@ pub fn UdpSocket::send_to(self : UdpSocket, addr : String, port : Int, data : By
 
 pub fn UdpSocket::close(self : UdpSocket) -> Bool {
   sts_udp_close(self.handle) != 0
+}
+
+pub fn udp_send_once(addr : String, port : Int, data : Bytes) -> Int {
+  let rc = sts_udp_send_once(
+    addr.as_cstr(),
+    port,
+    bytes_data_ptr(data),
+    data.length().to_int64(),
+  )
+  let _ = addr.length()
+  let _ = data.length()
+  rc
 }
 
 // ---------------------------------------------------------------------------

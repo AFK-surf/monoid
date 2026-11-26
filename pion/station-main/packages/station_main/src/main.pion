@@ -1,6 +1,7 @@
 // Minimal entrypoint for `stillfail-station-pion` (W10-0 scaffold + W10-A station_sys smoke).
 // Roles and commands are intentionally empty until their wave gates land.
 
+import "base_codec"
 import "host_shim"
 import "station_sys"
 
@@ -25,11 +26,41 @@ fn run_smoke_sys() -> Int {
     let _ = host_shim::write_stderr_line("smoke-sys: empty os/arch/host/tmp")
     return 1
   }
-  if machine.length() < 2 || ifaces.length() < 2 || usage.length() < 2 {
-    let _ = host_shim::write_stderr_line("smoke-sys: empty machine/ifaces/usage json")
+  let machine_ok = match base_codec::json_parse(machine) {
+    base_codec::JsonParseResult::Ok(v) => match base_codec::json_get(v, "cpus") {
+      Some(base_codec::Json::Arr(cpus)) => cpus.length() > 0
+      _ => false
+    }
+    _ => false
+  }
+  if !machine_ok {
+    let _ = host_shim::write_stderr_line("smoke-sys: invalid machine_stats_json")
     return 1
   }
-  let lock_path = tmp + "/stillfail-smoke-sys-" + pid.to_string() + ".lock"
+  let ifaces_ok = match base_codec::json_parse(ifaces) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(arr)) => arr.length() > 0
+    _ => false
+  }
+  if !ifaces_ok {
+    let _ = host_shim::write_stderr_line("smoke-sys: invalid network_interfaces_json")
+    return 1
+  }
+  let usage_ok = match base_codec::json_parse(usage) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(arr)) => if arr.length() == 1 {
+      match arr[0] {
+        base_codec::Json::Obj(_) => true
+        _ => false
+      }
+    } else {
+      false
+    }
+    _ => false
+  }
+  if !usage_ok {
+    let _ = host_shim::write_stderr_line("smoke-sys: invalid process_usage_json")
+    return 1
+  }
+  let lock_path = tmp + "/stillfail-smoke-sys-" + pid.to_string() + "-" + host_shim::wall_ms().to_string() + ".lock"
   match station_sys::flock_try(lock_path) {
     station_sys::FlockResult::Acquired(h) => {
       let busy_ok = match station_sys::flock_try(lock_path) {
@@ -41,12 +72,14 @@ fn run_smoke_sys() -> Int {
         station_sys::FlockResult::Error => false
       }
       let unlocked = h.unlock()
+      let _ = station_sys::unlink(lock_path)
       if !busy_ok || !unlocked {
         let _ = host_shim::write_stderr_line("smoke-sys: flock contention/unlock check failed")
         return 1
       }
     }
     _ => {
+      let _ = station_sys::unlink(lock_path)
       let _ = host_shim::write_stderr_line("smoke-sys: flock_try failed")
       return 1
     }

@@ -123,6 +123,50 @@ jobs:
           cc -std=c11 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -fsanitize=thread "$HOST_C" "$SYS_C" "$TEST_C" -lpthread -lutil -o "$WORK/test_tsan"
           TSAN_OPTIONS=halt_on_error=1 "$WORK/test_tsan"
 
+  c-sys-shims-macos:
+    runs-on: macos-26
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run station_sys C11 tests on macOS (Plain, ASan+UBSan, TSan)
+        run: |
+          set -euo pipefail
+          WORK="$(mktemp -d)"
+          trap 'rm -rf "$WORK"' EXIT
+          HOST_C="pion/station/packages/host_shim/native/station_host.c"
+          SYS_C="pion/station-main/packages/station_sys/native/station_sys.c"
+          TEST_C="pion/station-main/packages/station_sys/native/station_sys_test.c"
+          MAC_LIBS="-lpthread -framework CoreServices -framework CoreFoundation -framework Foundation"
+
+          cc -std=c11 -O2 -Wall -Wextra -Werror "$HOST_C" "$SYS_C" "$TEST_C" $MAC_LIBS -o "$WORK/test_plain"
+          "$WORK/test_plain"
+
+          cc -std=c11 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -fsanitize=address,undefined "$HOST_C" "$SYS_C" "$TEST_C" $MAC_LIBS -o "$WORK/test_asan"
+          ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 "$WORK/test_asan"
+
+          cc -std=c11 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -Werror -fsanitize=thread "$HOST_C" "$SYS_C" "$TEST_C" $MAC_LIBS -o "$WORK/test_tsan"
+          TSAN_OPTIONS=halt_on_error=1 "$WORK/test_tsan"
+
+  c-sys-shims-windows:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run station_sys C11 tests on Windows (MinGW gcc -Wall -Wextra -Werror)
+        shell: bash
+        run: |
+          set -euo pipefail
+          WORK="$(mktemp -d)"
+          trap 'rm -rf "$WORK"' EXIT
+          HOST_C="pion/station/packages/host_shim/native/station_host.c"
+          SYS_C="pion/station-main/packages/station_sys/native/station_sys.c"
+          TEST_C="pion/station-main/packages/station_sys/native/station_sys_test.c"
+
+          gcc -std=c11 -O2 -Wall -Wextra -Werror "$HOST_C" "$SYS_C" "$TEST_C" -lws2_32 -liphlpapi -lpsapi -lkernel32 -o "$WORK/test_win.exe"
+          "$WORK/test_win.exe"
+
   build-linux-x64:
     runs-on: ubuntu-24.04
     timeout-minutes: 5

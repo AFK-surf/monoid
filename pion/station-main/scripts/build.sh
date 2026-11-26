@@ -121,7 +121,7 @@ case "$target" in
     cc=(cc -arch arm64 -mmacosx-version-min=11.0)
     cc_extra=(-ffunction-sections -fdata-sections)
     part="shell-apple"
-    libs=(-framework SystemConfiguration -framework Security -framework CoreFoundation -framework Foundation -liconv -lobjc -Wl,-dead_strip)
+    libs=(-framework CoreServices -framework SystemConfiguration -framework Security -framework CoreFoundation -framework Foundation -liconv -lobjc -Wl,-dead_strip)
     ;;
   linux-x64)
     zig_exe="$(ensure_zig)"

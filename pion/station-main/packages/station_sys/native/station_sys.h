@@ -15,13 +15,14 @@ extern "C" {
 // ---------------------------------------------------------------------------
 
 // fs.watch events (pushed via sth_push_sys):
-//   STS_EV_FS_CHANGE: [1][change_kind:1 (1=rename, 2=change, 3=error)][name_utf8...]
+//   STS_EV_FS_CHANGE: [1][change_kind:1 (0=error, 1=rename, 2=change, 3=overflow)][name_utf8...]
 //   STS_EV_FS_CLOSED: [2]
 #define STS_EV_FS_CHANGE 1u
 #define STS_EV_FS_CLOSED 2u
+#define STS_FS_ERROR     0u
 #define STS_FS_RENAME    1u
 #define STS_FS_CHANGE    2u
-#define STS_FS_ERROR     3u
+#define STS_FS_OVERFLOW  3u
 
 // Child process events:
 //   STS_EV_PROC_STDOUT:     [10][bytes...]                          (bounded)
@@ -65,8 +66,9 @@ extern "C" {
 #define STS_PROC_PIPE_STDIN      (1u << 2)
 #define STS_PROC_PIPE_STDOUT     (1u << 3)
 #define STS_PROC_PIPE_STDERR     (1u << 4)
+#define STS_PROC_EXPLICIT_ENV    (1u << 5)
 
-// Portable signal numbers for `sts_proc_kill` / `sts_pty_kill`.
+// Portable signal numbers for `sts_proc_kill` / `sts_proc_kill_handle` / `sts_pty_kill`.
 #define STS_SIG_PROBE 0
 #define STS_SIG_HUP   1
 #define STS_SIG_INT   2
@@ -75,10 +77,10 @@ extern "C" {
 #define STS_SIG_USR1  101
 #define STS_SIG_USR2  102
 
-// Portable cross-platform error codes returned by `sts_udp_send_to`.
+// Portable cross-platform error codes returned by `sts_udp_send_to` / `sts_udp_send_once`.
 #define STS_ERR_HOSTUNREACH (-113)
 
-// 1. Non-recursive directory or single-file fs.watch (Linux inotify, macOS kqueue, Windows ReadDirectoryChangesW).
+// 1. Non-recursive directory or single-file fs.watch (Linux inotify, macOS FSEvents, Windows RDCW).
 int64_t sts_fs_watch_open(uint64_t event_id, const char *path);
 int32_t sts_fs_watch_close(int64_t handle);
 
@@ -97,12 +99,13 @@ int64_t sts_proc_spawn(
     int64_t err_cap);
 int32_t sts_proc_write_stdin(int64_t handle, const uint8_t *data, int64_t len);
 int32_t sts_proc_close_stdin(int64_t handle);
+int32_t sts_proc_kill_handle(int64_t handle, int32_t sig, int32_t group);
 int32_t sts_proc_close(int64_t handle);
 int32_t sts_proc_kill(int32_t pid, int32_t sig, int32_t group);
 int64_t sts_proc_start_time_ms(int32_t pid);
 
-// 3. Launcher control channel (Unix control fd e.g. fd 5, Windows named pipe).
-// Never touches or closes Unix listening fds 3/4.
+// 3. Launcher control channel (Unix control fd > 4 e.g. fd 5, Windows named pipe).
+// Rejects reserved fds 0..4 (stdio 0..2 and launcher listening fds 3..4).
 int64_t sts_ctrl_open_fd(uint64_t event_id, int32_t fd);
 int64_t sts_ctrl_open_pipe(uint64_t event_id, const char *pipe_name);
 int32_t sts_ctrl_write(int64_t handle, const uint8_t *data, int64_t len);
@@ -112,10 +115,11 @@ int32_t sts_ctrl_close(int64_t handle);
 int32_t sts_signal_watch(uint64_t event_id);
 int32_t sts_signal_unwatch(void);
 
-// 5. Advisory exclusive non-blocking file lock (flock / LockFileEx).
-// Returns handle > 0 if acquired, 0 if contended, -1 on error.
+// 5. Advisory exclusive non-blocking file lock (flock / LockFileEx) + unlink helper.
+// `sts_flock_try` returns handle > 0 if acquired, 0 if contended, -1 on error.
 int64_t sts_flock_try(const char *path);
 int32_t sts_flock_unlock(int64_t handle);
+int32_t sts_unlink(const char *path);
 
 // 6. Unix domain socket peer identity (JSON `{"pid":N,"auditToken":...|null}` or NULL).
 void *sts_peer_process(int32_t fd, int64_t *out_len);
@@ -147,6 +151,7 @@ int32_t sts_pty_close(int64_t handle);
 int64_t sts_udp_bind(uint64_t event_id, const char *addr, int32_t port, int64_t *out_port);
 int32_t sts_udp_send_to(int64_t handle, const char *addr, int32_t port, const uint8_t *data, int64_t len);
 int32_t sts_udp_close(int64_t handle);
+int32_t sts_udp_send_once(const char *addr, int32_t port, const uint8_t *data, int64_t len);
 
 // 10. Machine / OS info (RSS, open_fds, open_threads, now_ms, wall_ms, pid live in host_shim).
 int32_t sts_os_kind(void);   // 0=darwin, 1=linux, 2=win32, 3=other
@@ -163,6 +168,10 @@ void *sts_disk_of(const char *path, int64_t *out_len);
 void *sts_machine_stats(int64_t *out_len);
 void *sts_psi_pressure(int64_t *out_len);
 void *sts_network_interfaces(int64_t *out_len);
+
+// Deterministic test helper: wait until all detached background workers have exited (0 sleeps).
+// Returns 1 when active detached worker count reaches 0, 0 on timeout.
+int32_t sts_wait_detached_for_test(int64_t timeout_ms);
 
 // Free any buffer returned by `sts_*`.
 void sts_free(void *ptr);

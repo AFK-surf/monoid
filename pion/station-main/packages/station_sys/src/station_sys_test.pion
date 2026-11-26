@@ -42,6 +42,18 @@ test "spawn_flags encodes all bitmask combinations" {
     pipe_stderr: true,
   }
   expect(spawn_flags(opts) == (1 | 2 | 4 | 16), "bitmask mismatch")
+  let explicit_empty = SpawnOptions::{
+    program: "/bin/sh",
+    args: [],
+    env: Some([]),
+    cwd: "",
+    new_pgid: false,
+    strip_malloc_space_efficient: false,
+    pipe_stdin: false,
+    pipe_stdout: true,
+    pipe_stderr: false,
+  }
+  expect(spawn_flags(explicit_empty) == (8 | 32), "explicit empty env sets PROC_EXPLICIT_ENV")
   expect(ERR_HOSTUNREACH == -113, "portable ERR_HOSTUNREACH constant")
 }
 
@@ -139,6 +151,40 @@ test "decode_sys_event parses fs, proc, ctrl, signal, pty, and udp frames" {
       Some(_) => false
     },
     "empty payload",
+  )
+  let fs_ovf = Bytes::new(2)
+  fs_ovf[0] = 1 as Byte
+  fs_ovf[1] = 3 as Byte
+  match decode_sys_event(fs_ovf) {
+    Some(SysEvent::FsChange(FsChangeKind::Overflow, name)) => expect(name == "", "fs overflow")
+    _ => panic("expected FsChange Overflow")
+  }
+  let fs_err = Bytes::new(2)
+  fs_err[0] = 1 as Byte
+  fs_err[1] = 0 as Byte
+  match decode_sys_event(fs_err) {
+    Some(SysEvent::FsChange(FsChangeKind::Error, name)) => expect(name == "", "fs error")
+    _ => panic("expected FsChange Error")
+  }
+  let fs_bad = Bytes::new(2)
+  fs_bad[0] = 1 as Byte
+  fs_bad[1] = 4 as Byte
+  expect(
+    match decode_sys_event(fs_bad) {
+      None => true
+      Some(_) => false
+    },
+    "unknown FsChangeKind must return None",
+  )
+  let trailing_eof = Bytes::new(2)
+  trailing_eof[0] = 12 as Byte
+  trailing_eof[1] = 0 as Byte
+  expect(
+    match decode_sys_event(trailing_eof) {
+      None => true
+      Some(_) => false
+    },
+    "fixed-size tag with trailing bytes must return None",
   )
   let bad_udp = Bytes::new(6)
   bad_udp[0] = 50 as Byte
