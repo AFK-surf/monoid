@@ -672,6 +672,27 @@ test "proxy: swap_header_value, CRLF rejection, rewrite_mitm_request, and redire
     Err(_) => ()
     Ok(_) => assert(false)
   }
+
+  // `Connection: content-length` MUST be rejected (never strip Content-Length while forwarding body)
+  assert(!is_hop_by_hop_header("content-length", ["content-length"]))
+  let conn_cl = (
+    "POST /body HTTP/1.1\r\n" +
+    "Host: api.github.com\r\n" +
+    "Connection: content-length\r\n" +
+    "Content-Length: 5\r\n\r\n" +
+    "hello"
+  ).to_bytes()
+  let parsed_conn_cl = match parse_http_head(conn_cl) {
+    Ok(Some(r)) => r
+    _ => {
+      assert(false)
+      return
+    }
+  }
+  match rewrite_mitm_request(parsed_conn_cl, "api.github.com", 443, run) {
+    Err(_) => ()
+    Ok(_) => assert(false)
+  }
 }
 
 test "proxy: VaultProxy ShellMux strict contract (200 serialization, certPem/keyPem/tail, sni, TOCTOU, listen.close)" {
@@ -825,19 +846,25 @@ test "proxy: VaultProxy ShellMux strict contract (200 serialization, certPem/key
     None => assert(false)
   }
 
-  // TLS upgrade completes -> reads inner HTTP request (conn.buf must be clean, no leftover TLS tail!)
+  // TLS upgrade completes with a NEW handle ID (`203` != old plaintext `103`):
+  // ALL subsequent `tcp.read` / `tcp.write` / `tcp.pipe` / `tcp.close` MUST use `203`!
+  let before_c_read = calls.length()
   let _ = proxy.on_shell_done(
     mux,
     builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_UPGRADE, 103, 0.to_int64()),
-    host_shim::ShellDone::{ id: 8.to_int64(), error: "", json: "{}", bytes: None },
+    host_shim::ShellDone::{ id: 8.to_int64(), error: "", json: "{\"id\":203}", bytes: None },
     now_ms,
     now_sec,
   )
+  assert_eq(calls[before_c_read].op, "tcp.read")
+  assert(calls[before_c_read].json.contains("203"))
+  assert(!calls[before_c_read].json.contains("103"))
+
   let before_c2 = calls.length()
   let inner_req = ("GET /user HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Bearer " + placeholder("r_9") + "\r\n\r\n").to_bytes()
   let _ = proxy.on_shell_done(
     mux,
-    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, 103, 0.to_int64()),
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, 203, 0.to_int64()),
     host_shim::ShellDone::{ id: 9.to_int64(), error: "", json: "{}", bytes: Some(inner_req) },
     now_ms,
     now_sec,
@@ -846,18 +873,32 @@ test "proxy: VaultProxy ShellMux strict contract (200 serialization, certPem/key
   assert(calls[before_c2].json.contains("\"sni\":\"api.github.com\""))
   assert(!calls[before_c2].json.contains("\"servername\""))
 
-  // Upstream TLS connect completes -> writes rewritten request containing real secret
+  // Upstream TLS connect completes (`303`) -> writes rewritten request containing real secret,
+  // then `tcp.pipe` pairs upgraded client handle `203` with upstream `303`!
   let before_c3 = calls.length()
   let _ = proxy.on_shell_done(
     mux,
-    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_CONNECT, 103, 0.to_int64()),
-    host_shim::ShellDone::{ id: 10.to_int64(), error: "", json: "{\"id\":203}", bytes: None },
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_CONNECT, 203, 0.to_int64()),
+    host_shim::ShellDone::{ id: 10.to_int64(), error: "", json: "{\"id\":303}", bytes: None },
     now_ms,
     now_sec,
   )
   assert_eq(calls[before_c3].op, "tcp.write")
+  assert(calls[before_c3].json.contains("303"))
   let sent_upstream = match calls[before_c3].bytes { Some(b) => bytes_to_str_test(b); None => "" }
   assert(sent_upstream.contains("Authorization: Bearer " + secret + "\r\n"))
+  let before_c4 = calls.length()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_WRITE_UPSTREAM, 203, 0.to_int64()),
+    host_shim::ShellDone::{ id: 101.to_int64(), error: "", json: "{}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_c4].op, "tcp.pipe")
+  assert(calls[before_c4].json.contains("203"))
+  assert(calls[before_c4].json.contains("303"))
+  assert(!calls[before_c4].json.contains("103"))
 
   // Case D: Non-allowlisted host in TunnelPassthrough -> strict serialization:
   // `tcp.dial` -> `tcp.write(200)` ONLY -> after 200 write completes, `tcp.pipe`!
@@ -941,14 +982,14 @@ test "proxy: VaultProxy ShellMux strict contract (200 serialization, certPem/key
   let _ = proxy.on_shell_done(
     mux,
     builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_UPGRADE, 105, 0.to_int64()),
-    host_shim::ShellDone::{ id: 16.to_int64(), error: "", json: "{}", bytes: None },
+    host_shim::ShellDone::{ id: 16.to_int64(), error: "", json: "{\"id\":205}", bytes: None },
     now_ms,
     now_sec,
   )
   let toctou_req = ("GET /user HTTP/1.1\r\nHost: api.github.com\r\nAuthorization: Bearer " + placeholder("r_toctou") + "\r\n\r\n").to_bytes()
   let _ = proxy.on_shell_done(
     mux,
-    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, 105, 0.to_int64()),
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_READ_CLIENT, 205, 0.to_int64()),
     host_shim::ShellDone::{ id: 17.to_int64(), error: "", json: "{}", bytes: Some(toctou_req) },
     now_ms,
     now_sec,
@@ -958,15 +999,16 @@ test "proxy: VaultProxy ShellMux strict contract (200 serialization, certPem/key
   let before_toctou_done = calls.length()
   let _ = proxy.on_shell_done(
     mux,
-    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_CONNECT, 105, 0.to_int64()),
-    host_shim::ShellDone::{ id: 171.to_int64(), error: "", json: "{\"id\":205}", bytes: None },
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_CONNECT, 205, 0.to_int64()),
+    host_shim::ShellDone::{ id: 171.to_int64(), error: "", json: "{\"id\":305}", bytes: None },
     now_ms,
     now_sec,
   )
-  // Must close upstream socket 205 AND reply 403 to client 105 without ever sending secret!
+  // Must close upstream socket 305 AND reply 403 to upgraded client 205 without ever sending secret!
   assert_eq(calls[before_toctou_done].op, "tcp.close")
-  assert(calls[before_toctou_done].json.contains("205"))
+  assert(calls[before_toctou_done].json.contains("305"))
   assert_eq(calls[before_toctou_done + 1].op, "tcp.write")
+  assert(calls[before_toctou_done + 1].json.contains("205"))
   let resp_toctou = match calls[before_toctou_done + 1].bytes { Some(b) => bytes_to_str_test(b); None => "" }
   assert(resp_toctou.starts_with("HTTP/1.1 403 "))
   assert(!resp_toctou.contains(secret))
@@ -1049,6 +1091,54 @@ test "proxy: VaultProxy ShellMux strict contract (200 serialization, certPem/key
   assert(!proxy.is_listening())
   assert_eq(proxy.active_runs(), 0)
   assert_eq(proxy.active_conns(), 0)
+
+  // Late completion handle reclamation after proxy close (P2 #2):
+  let before_late = calls.length()
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_LISTEN, 0, 0.to_int64()),
+    host_shim::ShellDone::{ id: 901.to_int64(), error: "", json: "{\"id\":901,\"port\":50000}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_late].op, "listen.close")
+  assert(calls[before_late].json.contains("901"))
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_ACCEPT, 10, 0.to_int64()),
+    host_shim::ShellDone::{ id: 902.to_int64(), error: "", json: "{\"id\":902}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_late + 1].op, "tcp.close")
+  assert(calls[before_late + 1].json.contains("902"))
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_UPGRADE, 103, 0.to_int64()),
+    host_shim::ShellDone::{ id: 903.to_int64(), error: "", json: "{\"id\":903}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_late + 2].op, "tcp.close")
+  assert(calls[before_late + 2].json.contains("903"))
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_CONNECT, 203, 0.to_int64()),
+    host_shim::ShellDone::{ id: 904.to_int64(), error: "", json: "{\"id\":904}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_late + 3].op, "tcp.close")
+  assert(calls[before_late + 3].json.contains("904"))
+  let _ = proxy.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_DIAL_TUNNEL, 104, 0.to_int64()),
+    host_shim::ShellDone::{ id: 905.to_int64(), error: "", json: "{\"id\":905}", bytes: None },
+    now_ms,
+    now_sec,
+  )
+  assert_eq(calls[before_late + 4].op, "tcp.close")
+  assert(calls[before_late + 4].json.contains("905"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1161,14 +1251,24 @@ test "ssh_agent: OpenSSH Ed25519 key roundtrip, wire framing, identities, sign &
     Ok(_) => assert(false)
   }
 
-  // SshAgentServer over mock ShellMux:
-  // 1) `fs.mkdir` (parent dir) -> 2) `fs.chmod` (0700 = 448) -> 3) `unix.listen` (0600 = 384)
-  // 4) serves SIGN_REQUEST -> 5) `close` calls `listen.close` + `fs.remove` (P1 #8)
+  // SshAgentServer::new_in_private_dir over mock ShellMux:
+  // 1) `fs.mkdir` (recursive: false on owned random subdir, NEVER chmods `/tmp`!)
+  // 2) `fs.chmod` (0700 = 448) -> 3) `unix.listen` (0600 = 384)
+  // 4) serves SIGN_REQUEST -> 5) `close` calls `listen.close`, `fs.remove(sock)`, `fs.remove(owned_dir)`
   let (mux, calls) = new_mock_mux()
-  let server = SshAgentServer::new("/tmp/sf-vault-priv-dir/agent.sock", parsed)
+  let server = match SshAgentServer::new_in_private_dir(mux, "/tmp", parsed) {
+    Ok(s) => s
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  assert(server.socket_path.starts_with("/tmp/sf-ssh-"))
+  assert(server.socket_path.ends_with("/agent.sock"))
   let mkdir_id = server.start(mux)
   assert_eq(calls[0].op, "fs.mkdir")
-  assert(calls[0].json.contains("/tmp/sf-vault-priv-dir"))
+  assert(calls[0].json.contains("/tmp/sf-ssh-"))
+  assert(calls[0].json.contains("\"recursive\":false"))
   let _ = server.on_shell_done(
     mux,
     builders_core::MuxToken::Tagged(SSH_MUX_TAG_MKDIR, 0, 0.to_int64()),
@@ -1176,6 +1276,7 @@ test "ssh_agent: OpenSSH Ed25519 key roundtrip, wire framing, identities, sign &
     true,
   )
   assert_eq(calls[1].op, "fs.chmod")
+  assert(calls[1].json.contains("/tmp/sf-ssh-"))
   assert(calls[1].json.contains("448"))
   let _ = server.on_shell_done(
     mux,
@@ -1208,7 +1309,58 @@ test "ssh_agent: OpenSSH Ed25519 key roundtrip, wire framing, identities, sign &
   let before_ssh_close = calls.length()
   server.close(mux)
   assert_eq(calls[before_ssh_close].op, "listen.close")
+  assert_eq(calls[calls.length() - 2].op, "fs.remove")
+  assert(calls[calls.length() - 2].json.contains("/agent.sock"))
+  assert_eq(calls[calls.length() - 1].op, "fs.remove")
+  assert(calls[calls.length() - 1].json.contains("\"recursive\":true"))
   assert(!server.is_listening())
+
+  // Late completion handle reclamation for SshAgentServer (P2 #2)
+  let before_ssh_late = calls.length()
+  let _ = server.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_LISTEN, 0, 0.to_int64()),
+    host_shim::ShellDone::{ id: 601.to_int64(), error: "", json: "{\"id\":601}", bytes: None },
+    true,
+  )
+  assert_eq(calls[before_ssh_late].op, "listen.close")
+  assert(calls[before_ssh_late].json.contains("601"))
+  let _ = server.on_shell_done(
+    mux,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_ACCEPT, 50, 0.to_int64()),
+    host_shim::ShellDone::{ id: 602.to_int64(), error: "", json: "{\"id\":602}", bytes: None },
+    true,
+  )
+  assert_eq(calls[before_ssh_late + 1].op, "tcp.close")
+  assert(calls[before_ssh_late + 1].json.contains("602"))
+
+  // Caller-supplied path (`SshAgentServer::new`) MUST NOT chmod shared `/tmp`,
+  // and `fs.mkdir` failure surfaces via `start_error()` (P2 #4)
+  let (mux_shared, calls_shared) = new_mock_mux()
+  let shared_srv = SshAgentServer::new("/tmp/my-agent.sock", parsed)
+  let _ = shared_srv.start(mux_shared)
+  assert_eq(calls_shared.length(), 1)
+  assert_eq(calls_shared[0].op, "unix.listen")
+
+  let (mux_err, _) = new_mock_mux()
+  let err_srv = match SshAgentServer::new_in_private_dir(mux_err, "/tmp", parsed) {
+    Ok(s) => s
+    Err(_) => {
+      assert(false)
+      return
+    }
+  }
+  let em_id = err_srv.start(mux_err)
+  let _ = err_srv.on_shell_done(
+    mux_err,
+    builders_core::MuxToken::Tagged(SSH_MUX_TAG_MKDIR, 0, 0.to_int64()),
+    host_shim::ShellDone::{ id: em_id, error: "EEXIST", json: "", bytes: None },
+    true,
+  )
+  match err_srv.start_error() {
+    Some(msg) => assert(msg.contains("EEXIST"))
+    None => assert(false)
+  }
 }
 
 // ---------------------------------------------------------------------------

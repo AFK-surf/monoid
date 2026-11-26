@@ -412,26 +412,70 @@ struct AgentConn {
 /// Zero RC cycles: all mux tokens are primitive `MuxToken::Tagged` integers.
 pub struct SshAgentServer {
   pub socket_path : String
+  pub owned_dir : Option[String]
   pub key : SshEd25519Key
   mut listener_id : Int
   mut closed : Bool
+  mut start_error : Option[String]
   mut sign_count : Int
   mut conns : Map[Int, AgentConn]
 }
 
+/// Create an `SshAgentServer` bound at a caller-supplied `socket_path`.
+/// Does NOT `chmod` the caller's parent directory (avoids modifying shared `/tmp` or `$HOME`).
+/// Prefer `SshAgentServer::new_in_private_dir` for per-command `mkdtemp`-style `0700` isolation.
 pub fn SshAgentServer::new(socket_path : String, key : SshEd25519Key) -> SshAgentServer {
   SshAgentServer::{
     socket_path: socket_path,
+    owned_dir: None,
     key: key,
     listener_id: -1,
     closed: false,
+    start_error: None,
     sign_count: 0,
     conns: Map::new(),
   }
 }
 
+/// Create an `SshAgentServer` inside a fresh random `mkdtemp`-style private subdirectory
+/// (`<base_dir>/sf-ssh-<32-hex>/agent.sock`) created with `recursive: false` + `chmod 0700`
+/// and removed on `close()` (aligned with `station/src/vault/run.ts`).
+pub fn SshAgentServer::new_in_private_dir(
+  mux : builders_core::ShellMux,
+  base_dir : String,
+  key : SshEd25519Key,
+) -> Result[SshAgentServer, String] {
+  if base_dir.length() == 0 {
+    return Err("base_dir is required")
+  }
+  let rand = match os_random_bytes(mux, 16) {
+    Ok(b) => b
+    Err(e) => return Err(e)
+  }
+  let base = if base_dir.ends_with("/") && base_dir.length() > 1 {
+    base_dir.slice(0, base_dir.length() - 1)
+  } else {
+    base_dir
+  }
+  let dir = base + "/sf-ssh-" + crypto::bytes_to_hex(rand)
+  Ok(SshAgentServer::{
+    socket_path: dir + "/agent.sock",
+    owned_dir: Some(dir),
+    key: key,
+    listener_id: -1,
+    closed: false,
+    start_error: None,
+    sign_count: 0,
+    conns: Map::new(),
+  })
+}
+
 pub fn SshAgentServer::is_listening(self : SshAgentServer) -> Bool {
   self.listener_id >= 0 && !self.closed
+}
+
+pub fn SshAgentServer::start_error(self : SshAgentServer) -> Option[String] {
+  self.start_error
 }
 
 pub fn SshAgentServer::sign_count(self : SshAgentServer) -> Int {
@@ -468,29 +512,31 @@ fn SshAgentServer::issue_unix_listen(self : SshAgentServer, mux : builders_core:
 }
 
 /// Start the per-command Unix socket ssh-agent server:
-/// ensures the private parent directory exists with mode `0700` (`fs.mkdir` -> `fs.chmod`),
-/// then binds `unix.listen` with mode `0600` (384) via `ShellMux`.
+/// - When created via `new_in_private_dir`, creates the owned directory (`fs.mkdir` with
+///   `recursive: false`) -> sets mode `0700` (`fs.chmod`) -> binds `unix.listen` with mode `0600`.
+/// - When created via `new(socket_path, key)`, binds `unix.listen` directly with mode `0600`
+///   without modifying permissions of any caller-owned shared parent directory.
 pub fn SshAgentServer::start(self : SshAgentServer, mux : builders_core::ShellMux) -> Int64 {
-  let dir = socket_parent_dir(self.socket_path)
-  if dir.length() > 0 {
-    let args = base_codec::json_obj([
-      ("path", base_codec::json_str(dir)),
-      ("recursive", base_codec::json_bool(true)),
-    ])
-    mux_call(
-      mux,
-      builders_core::MuxToken::Tagged(SSH_MUX_TAG_MKDIR, 0, 0.to_int64()),
-      "fs.mkdir",
-      args,
-      None,
-    )
-  } else {
-    self.issue_unix_listen(mux)
+  match self.owned_dir {
+    Some(dir) => {
+      let args = base_codec::json_obj([
+        ("path", base_codec::json_str(dir)),
+        ("recursive", base_codec::json_bool(false)),
+      ])
+      mux_call(
+        mux,
+        builders_core::MuxToken::Tagged(SSH_MUX_TAG_MKDIR, 0, 0.to_int64()),
+        "fs.mkdir",
+        args,
+        None,
+      )
+    }
+    None => self.issue_unix_listen(mux)
   }
 }
 
 /// Tear down the listener (`listen.close`), close all active client sockets (`tcp.close`),
-/// and remove the socket file (`fs.remove`).
+/// remove the socket file (`fs.remove`), and remove the owned private directory if any.
 pub fn SshAgentServer::close(self : SshAgentServer, mux : builders_core::ShellMux) -> Unit {
   if self.closed {
     return
@@ -534,6 +580,21 @@ pub fn SshAgentServer::close(self : SshAgentServer, mux : builders_core::ShellMu
     base_codec::json_obj([("path", base_codec::json_str(self.socket_path))]),
     None,
   )
+  match self.owned_dir {
+    Some(dir) => {
+      let _ = mux_call(
+        mux,
+        builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, 0.to_int64()),
+        "fs.remove",
+        base_codec::json_obj([
+          ("path", base_codec::json_str(dir)),
+          ("recursive", base_codec::json_bool(true)),
+        ]),
+        None,
+      )
+    }
+    None => ()
+  }
 }
 
 /// Unlink a socket path directly via `station_sys::unlink` (for native binary teardown).
@@ -610,46 +671,107 @@ pub fn SshAgentServer::on_shell_done(
   match token {
     builders_core::MuxToken::Tagged(tag, arg, _) => {
       if tag == SSH_MUX_TAG_MKDIR {
-        if done.error.length() == 0 && !self.closed {
-          let dir = socket_parent_dir(self.socket_path)
-          let _ = mux_call(
-            mux,
-            builders_core::MuxToken::Tagged(SSH_MUX_TAG_CHMOD, 0, 0.to_int64()),
-            "fs.chmod",
-            base_codec::json_obj([
-              ("path", base_codec::json_str(dir)),
-              ("mode", base_codec::json_int(SSH_AGENT_DIR_MODE)),
-            ]),
-            None,
-          )
+        if done.error.length() > 0 {
+          self.start_error = Some("ssh-agent mkdir failed: " + done.error)
+          return true
+        }
+        if !self.closed {
+          match self.owned_dir {
+            Some(dir) => {
+              let _ = mux_call(
+                mux,
+                builders_core::MuxToken::Tagged(SSH_MUX_TAG_CHMOD, 0, 0.to_int64()),
+                "fs.chmod",
+                base_codec::json_obj([
+                  ("path", base_codec::json_str(dir)),
+                  ("mode", base_codec::json_int(SSH_AGENT_DIR_MODE)),
+                ]),
+                None,
+              )
+            }
+            None => ()
+          }
         }
         true
       } else if tag == SSH_MUX_TAG_CHMOD {
-        if done.error.length() == 0 && !self.closed {
+        if done.error.length() > 0 {
+          self.start_error = Some("ssh-agent chmod failed: " + done.error)
+          match self.owned_dir {
+            Some(dir) => {
+              let _ = mux_call(
+                mux,
+                builders_core::MuxToken::Tagged(SSH_MUX_TAG_UNLINK, 0, 0.to_int64()),
+                "fs.remove",
+                base_codec::json_obj([
+                  ("path", base_codec::json_str(dir)),
+                  ("recursive", base_codec::json_bool(true)),
+                ]),
+                None,
+              )
+            }
+            None => ()
+          }
+          return true
+        }
+        if !self.closed {
           let _ = self.issue_unix_listen(mux)
         }
         true
       } else if tag == SSH_MUX_TAG_LISTEN {
-        if done.error.length() == 0 && !self.closed {
+        if done.error.length() > 0 {
+          self.start_error = Some("ssh-agent listen failed: " + done.error)
+          return true
+        }
+        if self.closed {
+          // Reclaim late-arriving listener handle after agent close.
+          match json_int_field(done.json, "id") {
+            Some(lid) => {
+              let _ = mux_call(
+                mux,
+                builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, lid, 0.to_int64()),
+                "listen.close",
+                base_codec::json_obj([("id", base_codec::json_int(lid))]),
+                None,
+              )
+            }
+            None => ()
+          }
+        } else {
           match json_int_field(done.json, "id") {
             Some(lid) => {
               self.listener_id = lid
               self.arm_accept(mux)
             }
-            None => ()
+            None => self.start_error = Some("ssh-agent listen returned no id")
           }
         }
         true
       } else if tag == SSH_MUX_TAG_ACCEPT {
-        if done.error.length() == 0 && !self.closed {
-          match json_int_field(done.json, "id") {
-            Some(cid) => {
-              self.conns.set(cid, AgentConn::{ id: cid, held: Bytes::new(0), closed: false })
-              self.arm_read(mux, cid)
+        if done.error.length() == 0 {
+          if self.closed {
+            // Reclaim late-arriving accepted socket handle after agent close.
+            match json_int_field(done.json, "id") {
+              Some(cid) => {
+                let _ = mux_call(
+                  mux,
+                  builders_core::MuxToken::Tagged(SSH_MUX_TAG_CLOSE, cid, 0.to_int64()),
+                  "tcp.close",
+                  base_codec::json_obj([("id", base_codec::json_int(cid))]),
+                  None,
+                )
+              }
+              None => ()
             }
-            None => ()
+          } else {
+            match json_int_field(done.json, "id") {
+              Some(cid) => {
+                self.conns.set(cid, AgentConn::{ id: cid, held: Bytes::new(0), closed: false })
+                self.arm_read(mux, cid)
+              }
+              None => ()
+            }
+            self.arm_accept(mux)
           }
-          self.arm_accept(mux)
         }
         true
       } else if tag == SSH_MUX_TAG_READ {

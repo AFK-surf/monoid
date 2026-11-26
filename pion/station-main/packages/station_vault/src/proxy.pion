@@ -164,8 +164,8 @@ pub fn swap_header_value(
 }
 
 /// Whether `name_lower` is a hop-by-hop header stripped by the proxy.
-/// Note: `transfer-encoding` is validated and preserved explicitly for `chunked` body framing
-/// (never stripped blindly while passing raw chunked bytes through).
+/// Note: `transfer-encoding` and `content-length` are validated and preserved explicitly
+/// (never stripped blindly via `Connection:` while passing raw request body bytes through).
 pub fn is_hop_by_hop_header(name_lower : String, connection_tokens : Array[String]) -> Bool {
   if name_lower == "proxy-authorization" ||
   name_lower == "proxy-connection" ||
@@ -177,7 +177,9 @@ pub fn is_hop_by_hop_header(name_lower : String, connection_tokens : Array[Strin
     return true
   }
   for i in 0..<connection_tokens.length() {
-    if connection_tokens[i] == name_lower && name_lower != "transfer-encoding" {
+    if connection_tokens[i] == name_lower &&
+    name_lower != "transfer-encoding" &&
+    name_lower != "content-length" {
       return true
     }
   }
@@ -423,13 +425,22 @@ fn is_decimal_digits(s : String) -> Bool {
 /// - Rejects simultaneous `Transfer-Encoding` and `Content-Length` (CL.TE / TE.CL smuggling).
 /// - Accepts only single `Transfer-Encoding: chunked`; rejects any other TE value or duplicate TE.
 /// - Rejects malformed or conflicting duplicate `Content-Length` headers.
+/// - Rejects `Connection:` headers attempting to nominate `content-length` or `transfer-encoding`.
 fn validate_body_framing(headers : Array[(String, String)]) -> Result[Unit, String] {
   let mut te_count = 0
   let mut cl_first : Option[String] = None
   for i in 0..<headers.length() {
     let (name, value) = headers[i]
     let lower = ascii_lower(name)
-    if lower == "transfer-encoding" {
+    if lower == "connection" {
+      let parts = value.split(",")
+      for j in 0..<parts.length() {
+        let tok = ascii_lower(parts[j].trim())
+        if tok == "content-length" || tok == "transfer-encoding" {
+          return Err("Connection header cannot nominate framing headers")
+        }
+      }
+    } else if lower == "transfer-encoding" {
       te_count = te_count + 1
       if te_count > 1 || ascii_lower(value.trim()) != "chunked" {
         return Err("unsupported or duplicate Transfer-Encoding")
@@ -974,22 +985,39 @@ pub fn VaultProxy::on_shell_done(
   match token {
     builders_core::MuxToken::Tagged(tag, arg, extra) => {
       if tag == PROXY_MUX_TAG_LISTEN {
-        if done.error.length() == 0 && !self.closed {
-          match (json_int_field(done.json, "id"), json_int_field(done.json, "port")) {
-            (Some(lid), Some(p)) => {
-              self.listener_id = lid
-              self.port = p
-              self.arm_accept(mux)
+        if done.error.length() == 0 {
+          if self.closed {
+            // Reclaim late-arriving listener handle after proxy close.
+            match json_int_field(done.json, "id") {
+              Some(lid) => {
+                let _ = mux_call(
+                  mux,
+                  builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, lid, 0.to_int64()),
+                  "listen.close",
+                  base_codec::json_obj([("id", base_codec::json_int(lid))]),
+                  None,
+                )
+              }
+              None => ()
             }
-            _ => ()
+          } else {
+            match (json_int_field(done.json, "id"), json_int_field(done.json, "port")) {
+              (Some(lid), Some(p)) => {
+                self.listener_id = lid
+                self.port = p
+                self.arm_accept(mux)
+              }
+              _ => ()
+            }
           }
         }
         true
       } else if tag == PROXY_MUX_TAG_ACCEPT {
-        if done.error.length() == 0 && !self.closed {
-          match json_int_field(done.json, "id") {
-            Some(cid) => {
-              if self.conns.length() >= MAX_PROXY_CONNS {
+        if done.error.length() == 0 {
+          if self.closed {
+            // Reclaim late-arriving accepted socket handle after proxy close.
+            match json_int_field(done.json, "id") {
+              Some(cid) => {
                 let _ = mux_call(
                   mux,
                   builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, cid, 0.to_int64()),
@@ -997,22 +1025,37 @@ pub fn VaultProxy::on_shell_done(
                   base_codec::json_obj([("id", base_codec::json_int(cid))]),
                   None,
                 )
-              } else {
-                self.conns.set(
-                  cid,
-                  ProxyConn::{
-                    client_id: cid,
-                    phase: ProxyConnPhase::AwaitConnect,
-                    buf: Bytes::new(0),
-                    upstream_id: -1,
-                  },
-                )
-                self.arm_read(mux, cid)
               }
+              None => ()
             }
-            None => ()
+          } else {
+            match json_int_field(done.json, "id") {
+              Some(cid) => {
+                if self.conns.length() >= MAX_PROXY_CONNS {
+                  let _ = mux_call(
+                    mux,
+                    builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, cid, 0.to_int64()),
+                    "tcp.close",
+                    base_codec::json_obj([("id", base_codec::json_int(cid))]),
+                    None,
+                  )
+                } else {
+                  self.conns.set(
+                    cid,
+                    ProxyConn::{
+                      client_id: cid,
+                      phase: ProxyConnPhase::AwaitConnect,
+                      buf: Bytes::new(0),
+                      upstream_id: -1,
+                    },
+                  )
+                  self.arm_read(mux, cid)
+                }
+              }
+              None => ()
+            }
+            self.arm_accept(mux)
           }
-          self.arm_accept(mux)
         }
         true
       } else if tag == PROXY_MUX_TAG_READ_CLIENT {
@@ -1364,7 +1407,24 @@ fn VaultProxy::handle_tunnel_dial_done(
 ) -> Unit {
   let conn = match self.conns.get(cid) {
     Some(c) => c
-    None => return
+    None => {
+      // Reclaim late-arriving upstream socket if connection was already dropped/closed.
+      if done.error.length() == 0 {
+        match json_int_field(done.json, "id") {
+          Some(uid) => {
+            let _ = mux_call(
+              mux,
+              builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, uid, 0.to_int64()),
+              "tcp.close",
+              base_codec::json_obj([("id", base_codec::json_int(uid))]),
+              None,
+            )
+          }
+          None => ()
+        }
+      }
+      return
+    }
   }
   if done.error.length() > 0 {
     self.reply_and_close(mux, cid, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
@@ -1401,18 +1461,77 @@ fn VaultProxy::handle_tls_upgrade_done(
 ) -> Unit {
   let conn = match self.conns.get(cid) {
     Some(c) => c
-    None => return
+    None => {
+      // Reclaim late-arriving upgraded TLS handle if connection was already dropped/closed.
+      if done.error.length() == 0 {
+        match json_int_field(done.json, "id") {
+          Some(new_cid) => {
+            let _ = mux_call(
+              mux,
+              builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, new_cid, 0.to_int64()),
+              "tcp.close",
+              base_codec::json_obj([("id", base_codec::json_int(new_cid))]),
+              None,
+            )
+          }
+          None => ()
+        }
+      }
+      return
+    }
   }
   if done.error.length() > 0 {
     self.drop_conn(mux, cid)
     return
   }
+  // `client/shell` removes the old plaintext handle and allocates a fresh handle ID for the
+  // upgraded TLS stream (`done.json["id"]`). Switch all subsequent I/O to `new_cid`.
+  let new_cid = match json_int_field(done.json, "id") {
+    Some(id) => {
+      if id < 0 {
+        self.drop_conn(mux, cid)
+        return
+      }
+      id
+    }
+    None => {
+      self.drop_conn(mux, cid)
+      return
+    }
+  }
+  if self.closed {
+    self.conns.remove(cid)
+    let _ = mux_call(
+      mux,
+      builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, new_cid, 0.to_int64()),
+      "tcp.close",
+      base_codec::json_obj([("id", base_codec::json_int(new_cid))]),
+      None,
+    )
+    return
+  }
   match conn.phase {
     ProxyConnPhase::UpgradingTls(host, port, run_token) => {
-      conn.phase = ProxyConnPhase::MitmReadReq(host, port, run_token)
-      self.arm_read(mux, cid)
+      self.conns.remove(cid)
+      let upgraded = ProxyConn::{
+        client_id: new_cid,
+        phase: ProxyConnPhase::MitmReadReq(host, port, run_token),
+        buf: Bytes::new(0),
+        upstream_id: conn.upstream_id,
+      }
+      self.conns.set(new_cid, upgraded)
+      self.arm_read(mux, new_cid)
     }
-    _ => self.drop_conn(mux, cid)
+    _ => {
+      self.conns.remove(cid)
+      let _ = mux_call(
+        mux,
+        builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, new_cid, 0.to_int64()),
+        "tcp.close",
+        base_codec::json_obj([("id", base_codec::json_int(new_cid))]),
+        None,
+      )
+    }
   }
 }
 
@@ -1425,7 +1544,24 @@ fn VaultProxy::handle_tls_connect_done(
 ) -> Unit {
   let conn = match self.conns.get(cid) {
     Some(c) => c
-    None => return
+    None => {
+      // Reclaim late-arriving upstream TLS handle if connection was already dropped/closed.
+      if done.error.length() == 0 {
+        match json_int_field(done.json, "id") {
+          Some(uid) => {
+            let _ = mux_call(
+              mux,
+              builders_core::MuxToken::Tagged(PROXY_MUX_TAG_CLOSE, uid, 0.to_int64()),
+              "tcp.close",
+              base_codec::json_obj([("id", base_codec::json_int(uid))]),
+              None,
+            )
+          }
+          None => ()
+        }
+      }
+      return
+    }
   }
   if done.error.length() > 0 {
     self.reply_and_close(mux, cid, "HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
