@@ -48,6 +48,12 @@ let corners_everywhere_known : Map[String, Int] = {
   // sides and 26 round, its page shorter than its panel so it does not scroll and ends 23 over the panel's foot, where
   // the panel's 42 would want them 19. Where a page that does not fill its panel ends is its words' and the window's,
   // as 安全's and the account's above: gone as the page's height is any other (a gateway more or less, another window).
+  // A station's profiles in a 中屏 window (desk): the card of the logins already on Willow (Codex), 16 in from the
+  // panel's sides and 26 round, its page shorter than its panel so it does not scroll and ends 37 over the panel's
+  // foot. Where a page that does not fill its panel ends is its words' and the window's, as the account's above: gone as
+  // the page's height is any other (a profile more or less, another window).
+  known["desk-zh settings-profiles-station"] = 1
+  known["desk-en settings-profiles-station"] = 1
   known["touch-zh settings-new-profile-stations"] = 3
   known["touch-en settings-new-profile-stations"] = 3
   known
