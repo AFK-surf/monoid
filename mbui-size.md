@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [91d27fc9d](https://github.com/AFK-surf/monoid/commit/91d27fc9d1edcd9b2c763afc06d12960c5eb8bfc) fix(ui,web): prevent iOS WebKit touchend from blur | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.71 | 124.98 |
 | [f94f0883c](https://github.com/AFK-surf/monoid/commit/f94f0883c061d0856743341a618260609e54c233) feat(station): W9-A5a default policy table, wildca | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.71 | 124.98 |
 | [b97430dc8](https://github.com/AFK-surf/monoid/commit/b97430dc8bb9bdc9c4fe762c1dd504316aec5ee3) fix(station): wait out Windows rename locks in hea | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.71 | 124.98 |
 | [95364a80f](https://github.com/AFK-surf/monoid/commit/95364a80f84eb43ad00fc4dbb161ca8329cfa532) feat(install,mbui): remind Windows users to instal | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 101.01 | 127.36 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [436044f40](https://github.com/AFK-surf/monoid/commit/436044f4002efe8787fdf72f2b3734abdbdaf07f) feat(station): manage third-party MCP servers in s | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [9fb941213](https://github.com/AFK-surf/monoid/commit/9fb94121389408c2413c934767841767cb4d1c2e) fix(ci): split stable Mac signing and notarization | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 | [271a0f350](https://github.com/AFK-surf/monoid/commit/271a0f3506fa7b4e8cff18f0e6299a9e964abd41) feat(ui,mbui): unify Liquid Glass v9 overlays & sc | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
-| [184906dae](https://github.com/AFK-surf/monoid/commit/184906dae0dd6431cd03f9f581f71855d89b1004) perf(pion-station): land P0/P1 hot-path optimizati | 2.55 | 3.44 | 14.23 | 36.83 | 55.68 | 32.18 | 65.05 | 100.7 | 123.19 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [91d27fc9d](https://github.com/AFK-surf/monoid/commit/91d27fc9d1edcd9b2c763afc06d12960c5eb8bfc) fix(ui,web): prevent iOS WebKit touchend from blur | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.49 |
 | [f94f0883c](https://github.com/AFK-surf/monoid/commit/f94f0883c061d0856743341a618260609e54c233) feat(station): W9-A5a default policy table, wildca | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.35 |
 | [b97430dc8](https://github.com/AFK-surf/monoid/commit/b97430dc8bb9bdc9c4fe762c1dd504316aec5ee3) fix(station): wait out Windows rename locks in hea | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.54 |
 | [95364a80f](https://github.com/AFK-surf/monoid/commit/95364a80f84eb43ad00fc4dbb161ca8329cfa532) feat(install,mbui): remind Windows users to instal | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.57 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [436044f40](https://github.com/AFK-surf/monoid/commit/436044f4002efe8787fdf72f2b3734abdbdaf07f) feat(station): manage third-party MCP servers in s | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.64 |
 | [9fb941213](https://github.com/AFK-surf/monoid/commit/9fb94121389408c2413c934767841767cb4d1c2e) fix(ci): split stable Mac signing and notarization | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.35 |
 | [271a0f350](https://github.com/AFK-surf/monoid/commit/271a0f3506fa7b4e8cff18f0e6299a9e964abd41) feat(ui,mbui): unify Liquid Glass v9 overlays & sc | 0.56 | 0.74 | 2.87 | 3.91 | 7.17 | 2.13 | 5.98 | 57.69 |
-| [184906dae](https://github.com/AFK-surf/monoid/commit/184906dae0dd6431cd03f9f581f71855d89b1004) perf(pion-station): land P0/P1 hot-path optimizati | 0.56 | 0.74 | 2.87 | 3.91 | 7.16 | 2.13 | 5.98 | 57.28 |
