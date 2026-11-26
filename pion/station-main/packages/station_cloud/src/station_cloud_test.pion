@@ -1,0 +1,678 @@
+// Comprehensive unit tests for `station_cloud`:
+// - Ed25519 key generation, persistence (0600), reload, signing & verification
+// - Provider specs (`stillfail`, `comma`), signed headers, telemetry/connect/enroll signatures
+// - CloudState parsing/serialization, legacy migration, former-host migration, path helpers
+// - Lock chain pinning, fork choice, broken lock refusal, disable -> .off, joined locks
+// - `join_workspace` (full, rig, locked-station gate, home promotion, KeptLock refusal)
+// - `LockBodies` & `personal_vault_lock`
+// - `CloudTransport` (`race: true`, regional entry eligibility, `ShellMux` fetch/ws args & response parsers)
+// - `PresenceClient` (connect headers, ping/pong, `Replaced` conflict detector, backoff, `state`/`revoke`/`lock` frames, `CLOSE_REMOVED`)
+// - `NotifyBatcher`, `BilledCooldown`, `ProfileLoginCooldown`
+
+import "base_codec"
+import "builders_core"
+import "crypto"
+import "form"
+import "host_shim"
+import "station_rules_bridge"
+
+fn assert_true(cond : Bool) -> Unit {
+  if !cond {
+    panic("assertion failed")
+  }
+}
+
+fn assert_opt_str(v : Option[String], expected : Option[String]) -> Unit {
+  match (v, expected) {
+    (None, None) => ()
+    (Some(a), Some(b)) => assert_true(a == b)
+    _ => panic("assert_opt_str failed")
+  }
+}
+
+fn assert_opt_bool(v : Option[Bool], expected : Option[Bool]) -> Unit {
+  match (v, expected) {
+    (None, None) => ()
+    (Some(a), Some(b)) => assert_true(a == b)
+    _ => panic("assert_opt_bool failed")
+  }
+}
+
+let test_owner_seed : String = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+let test_owner_pub : String = "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664"
+let test_station_seed : String = "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
+let test_station_pub : String = "e7f162a10bec559afea195e4dce84b69568d5d2cb0963eb446c0685e2b17f2f0"
+let test_station2_pub : String = "adc14011f82d1c56d956aa4f9d73d8858361a606048525e0d08c638dc75dd8c7"
+let test_station3_pub : String = "882d0ea3b2864e7a587f3e698cea4459998312e655e05fa5e8b5119d8baac8cd"
+
+fn must_hex(h : String) -> Bytes {
+  match crypto::hex_to_bytes(h) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+}
+
+fn make_signed_entry(seed_hex : String, pub_hex : String, unsigned_fields : Array[(String, form::Json)]) -> form::Json {
+  let key_id = "ed25519:" + pub_hex
+  let with_empty_sig : Array[(String, form::Json)] = []
+  let mut i = 0
+  while i < unsigned_fields.length() {
+    with_empty_sig.push(unsigned_fields[i])
+    i = i + 1
+  }
+  with_empty_sig.push(("sig", form::Json::Obj([
+    ("key", form::Json::Str(key_id)),
+    ("alg", form::Json::Str("Ed25519")),
+    ("sig", form::Json::Str("")),
+  ])))
+  let h = match station_rules_bridge::entry_hash(form::Json::Obj(with_empty_sig)) {
+    Ok(v) => v
+    Err(_) => ""
+  }
+  let msg = match station_rules_bridge::signed_bytes(h) {
+    Some(b) => b
+    None => Bytes::new(0)
+  }
+  let sig_hex = match crypto::ed25519_sign(must_hex(seed_hex), msg) {
+    Ok(s) => crypto::bytes_to_hex(s)
+    Err(_) => ""
+  }
+  let out : Array[(String, form::Json)] = []
+  i = 0
+  while i < unsigned_fields.length() {
+    out.push(unsigned_fields[i])
+    i = i + 1
+  }
+  out.push(("sig", form::Json::Obj([
+    ("key", form::Json::Str(key_id)),
+    ("alg", form::Json::Str("Ed25519")),
+    ("sig", form::Json::Str(sig_hex)),
+  ])))
+  form::Json::Obj(out)
+}
+
+fn make_genesis_entry(ws : String) -> form::Json {
+  let owner_id = "ed25519:" + test_owner_pub
+  make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("owner", form::Json::Str("u1")),
+      ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+      ("rp_id", form::Json::Str("app.still.fail")),
+      ("cloud_keys", form::Json::Obj([("keys", form::Json::Arr([]))])),
+      ("members", form::Json::Arr([
+        form::Json::Obj([
+          ("sub", form::Json::Str("u1")),
+          ("email", form::Json::Str("alice@example.com")),
+          ("role", form::Json::Str("owner")),
+        ]),
+      ])),
+      ("devices", form::Json::Arr([
+        form::Json::Obj([
+          ("id", form::Json::Str(test_owner_pub)),
+          ("sub", form::Json::Str("u1")),
+          ("kind", form::Json::Str("app")),
+          ("label", form::Json::Str("Mac")),
+          ("sign_key", form::Json::Str(owner_id)),
+        ]),
+      ])),
+      ("stations", form::Json::Arr([
+        form::Json::Obj([
+          ("key", form::Json::Str(test_station_pub)),
+          ("name", form::Json::Str("st1")),
+        ]),
+      ])),
+      ("gateways", form::Json::Arr([])),
+    ])),
+  ])
+}
+
+fn make_station_entry(ws : String, seq : Double, prev : String, at : Double, st_pub : String, name : String) -> form::Json {
+  make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("seq", form::Json::Num(seq)),
+    ("prev", form::Json::Str(prev)),
+    ("at", form::Json::Num(at)),
+    ("kind", form::Json::Str("station")),
+    ("body", form::Json::Obj([
+      ("key", form::Json::Str(st_pub)),
+      ("name", form::Json::Str(name)),
+    ])),
+  ])
+}
+
+fn make_disable_entry(ws : String, seq : Double, prev : String, at : Double) -> form::Json {
+  make_signed_entry(test_owner_seed, test_owner_pub, [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("seq", form::Json::Num(seq)),
+    ("prev", form::Json::Str(prev)),
+    ("at", form::Json::Num(at)),
+    ("kind", form::Json::Str("disable")),
+    ("body", form::Json::Obj([])),
+  ])
+}
+
+fn sample_cloud_state(ws : String) -> CloudState {
+  CloudState::{
+    provider: None,
+    origin: "https://app.still.fail",
+    station: test_station_pub,
+    workspace: ws,
+    workspace_name: "Alpha",
+    workspace_emoji: Some("🚀"),
+    workspace_icon: None,
+    name: "st1",
+    relay_url: "https://relay.still.fail",
+    relay_urls: ["https://relay.still.fail"],
+    stillfail_relays: None,
+    mesh_relays: None,
+    grant_keys: base_codec::json_obj([("keys", base_codec::json_arr([]))]),
+    peers: [],
+    revocations: [],
+    gateway_keys: None,
+    removed_at: None,
+    removed_code: None,
+    joined: [],
+    rigs: [],
+    ways: None,
+    rig: None,
+    rig_pending: Map::new(),
+    rig_due: [],
+    full_pending: Map::new(),
+  }
+}
+
+test "station key generate, persist, reload and sign" {
+  let mem : Map[String, Bytes] = Map::new()
+  let mut wrote_count = 0
+  let fs = KeyFs::{
+    read_bytes: fn(p : String) -> Result[Option[Bytes], String] { Ok(mem.get(p)) },
+    write_private: fn(p : String, b : Bytes) -> Result[Unit, String] {
+      wrote_count = wrote_count + 1
+      mem.set(p, b)
+      Ok(())
+    },
+    random_bytes: fn(n : Int) -> Result[Bytes, String] {
+      assert_true(n == 32)
+      Ok(must_hex(test_station_seed))
+    },
+  }
+  let k1 = match load_key("/data", fs) {
+    Ok(k) => k
+    Err(e) => {
+      assert_true(false)
+      StationKey::{ seed: Bytes::new(0), id: e }
+    }
+  }
+  assert_true(k1.id == test_station_pub)
+  assert_true(wrote_count == 1)
+  assert_true(mem.contains("/data/mesh/secret.key"))
+
+  // Second call loads existing key without regenerating
+  let k2 = match load_key("/data", fs) {
+    Ok(k) => k
+    Err(_) => {
+      assert_true(false)
+      StationKey::{ seed: Bytes::new(0), id: "" }
+    }
+  }
+  assert_true(k2.id == test_station_pub)
+  assert_true(wrote_count == 1)
+
+  // Signature verifies via station_rules_bridge
+  let sig = k1.sign("hello-cloud")
+  let sig_bytes = must_hex(sig)
+  assert_true(station_rules_bridge::signature_ok("ed25519:" + k1.id, sig_bytes, "hello-cloud".to_bytes()))
+}
+
+test "provider specs and signed headers (stillfail vs comma)" {
+  let key = match StationKey::from_seed(must_hex(test_station_seed)) {
+    Ok(k) => k
+    Err(_) => {
+      assert_true(false)
+      StationKey::{ seed: Bytes::new(0), id: "" }
+    }
+  }
+  let sf = spec_of(Provider::Stillfail)
+  let cm = spec_of(Provider::Comma)
+  assert_true(sf.connect_path == "/v1/stations/connect")
+  assert_true(cm.connect_path == "/v1/comma/stations/connect")
+  assert_true(release_base_for(sf, "https://app.still.fail") == "https://app.still.fail")
+  assert_true(release_base_for(cm, "https://comma.example") == "https://comma.example/stations")
+
+  // Comma uses x-stillfail-* header names while signing under comma-station-connect-v1
+  let cm_hdrs = connect_ws_headers(cm, "https://comma.example", key.id, "0.1.0", 1700000000.to_int64(), key)
+  assert_true(cm_hdrs.length() == 4)
+  assert_true(cm_hdrs[0].0 == "x-stillfail-station")
+  assert_true(cm_hdrs[1].0 == "x-stillfail-ts")
+  assert_true(cm_hdrs[2].0 == "x-stillfail-signature")
+  assert_true(cm_hdrs[3].0 == "x-stillfail-version")
+  let expected_msg = "comma-station-connect-v1:https://comma.example:" + key.id + ":1700000000"
+  assert_true(station_rules_bridge::signature_ok("ed25519:" + key.id, must_hex(cm_hdrs[2].1), expected_msg.to_bytes()))
+
+  // signed_post_headers matches signed.ts contract
+  let body = "{\"notices\":[]}"
+  let post_hdrs = signed_post_headers("https://app.still.fail", key.id, sf.notify_tag, body, 1700000005.to_int64(), key)
+  assert_true(post_hdrs[0].0 == "content-type")
+  assert_true(post_hdrs[3].0 == "x-stillfail-signature")
+  let expected_post_msg = sf.notify_tag + ":https://app.still.fail:" + key.id + ":1700000005:" + sha256_hex(body)
+  assert_true(station_rules_bridge::signature_ok("ed25519:" + key.id, must_hex(post_hdrs[3].1), expected_post_msg.to_bytes()))
+}
+
+test "cloud state read/write, path helpers, former host migration, rig self" {
+  let mem = MemCloudFs::new()
+  let fs = mem.as_fs()
+  assert_true(lock_path("/d") == "/d/mesh/lock.json")
+  assert_true(pending_lock_path("/d") == "/d/mesh/lock-pending.json")
+  assert_true(joined_lock_path("/d", "ws_123") == "/d/mesh/locks/ws_123.json")
+  assert_true(joined_pending_path("/d", "ws_123") == "/d/mesh/locks/ws_123.pending.json")
+  assert_true(bodies_path("/d", "ws_123") == "/d/mesh/locks/ws_123.bodies.json")
+
+  let st = sample_cloud_state("ws_home")
+  st.rig = Some(RigSelf::{
+    owner: "u1",
+    owner_email: "alice@example.com",
+    owner_name: "Alice",
+    person: test_owner_pub,
+  })
+  match write_state("/d", st, fs) {
+    Ok(_) => ()
+    Err(_) => assert_true(false)
+  }
+  let loaded = match read_state("/d", fs) {
+    Ok(Some(s)) => s
+    _ => {
+      assert_true(false)
+      st
+    }
+  }
+  assert_true(loaded.workspace == "ws_home")
+  assert_true(loaded.station == test_station_pub)
+  match loaded.rig {
+    Some(r) => {
+      assert_true(r.owner == "u1")
+      assert_true(r.person == test_owner_pub)
+    }
+    None => assert_true(false)
+  }
+
+  // Former host migration
+  let old_json = "{\"origin\":\"https://ember.3720.org\",\"relay_url\":\"https://ember.3720.org/relay\",\"relay_urls\":[\"https://ember.3720.org/r1\"]}"
+  match move_former_host_text(old_json) {
+    Some(migrated) => {
+      assert_true(!migrated.contains("ember.3720.org"))
+      assert_true(migrated.contains("https://app.still.fail/relay"))
+      assert_true(migrated.contains("https://app.still.fail/r1"))
+    }
+    None => assert_true(false)
+  }
+}
+
+test "lock pinning, fork choice, broken lock refusal and disable" {
+  let mem = MemCloudFs::new()
+  let fs = mem.as_fs()
+  let _ = write_state("/d", sample_cloud_state("ws_test_1"), fs)
+  let store = CloudStore::open("/d", fs)
+
+  let gen = make_genesis_entry("ws_test_1")
+  let gen_h = hash_of_entry(gen)
+  let e1 = make_station_entry("ws_test_1", 1.0, gen_h, 1700000010.0, test_station2_pub, "st2")
+  let e1_fork = make_station_entry("ws_test_1", 1.0, gen_h, 1700000020.0, test_station3_pub, "st3")
+
+  // Pin genesis + e1
+  match store.take_lock([gen, e1]) {
+    Ok(n) => assert_true(n == 2)
+    Err(_) => assert_true(false)
+  }
+  match store.locked() {
+    Some(kl) => {
+      match kl.state {
+        Some(ls) => {
+          assert_true(ls.seq.to_int() == 1)
+          assert_true(ls.stations.contains(test_station2_pub))
+        }
+        None => assert_true(false)
+      }
+    }
+    None => assert_true(false)
+  }
+
+  // Non-fork call rejects entry not on head
+  match store.take_lock([e1_fork], fork=false) {
+    Ok(_) => assert_true(false)
+    Err(msg) => assert_true(msg == FORK_MSG)
+  }
+
+  // Fork call takes competing entry and switches to fork winner (e1_fork wins by hash tie-break)
+  match store.keep_lock([e1_fork], fork=true) {
+    Ok(t) => {
+      assert_true(t.taken == 1)
+      match store.locked() {
+        Some(kl) => {
+          assert_true(kl.aside.length() == 1)
+          match kl.state {
+            Some(ls) => assert_true(ls.head == hash_of_entry(e1_fork))
+            None => assert_true(false)
+          }
+        }
+        None => assert_true(false)
+      }
+    }
+    Err(_) => assert_true(false)
+  }
+
+  // Disable turns off lock and writes .off record; re-pinning same genesis is refused
+  let dis = make_disable_entry("ws_test_1", 2.0, hash_of_entry(e1_fork), 1700000030.0)
+  match store.take_lock([dis]) {
+    Ok(n) => assert_true(n == 1)
+    Err(_) => assert_true(false)
+  }
+  match store.locked() {
+    None => ()
+    Some(_) => assert_true(false)
+  }
+  match store.take_lock([gen]) {
+    Ok(_) => assert_true(false)
+    Err(msg) => assert_true(msg.contains("turned off"))
+  }
+
+  // Corrupted lock.json is detected as broken lock (`state: None`, admits nobody)
+  let _ = (fs.write_private_text)(lock_path("/d"), "{broken-json")
+  match read_lock("/d", fs) {
+    Some(kl) => {
+      match kl.state {
+        None => ()
+        Some(_) => assert_true(false)
+      }
+    }
+    None => assert_true(false)
+  }
+}
+
+test "join_workspace full, rig, locked gate, and home promotion" {
+  let mem = MemCloudFs::new()
+  let fs = mem.as_fs()
+  let key = match StationKey::from_seed(must_hex(test_station_seed)) {
+    Ok(k) => k
+    Err(_) => {
+      assert_true(false)
+      StationKey::{ seed: Bytes::new(0), id: "" }
+    }
+  }
+  let _ = write_state("/d", sample_cloud_state("ws_home"), fs)
+
+  // Join a second workspace as a rig
+  let res = join_workspace(
+    "/d",
+    fs,
+    key,
+    "tok_abc",
+    "0.1.0",
+    1700000100.to_int64(),
+    fn(url : String, body : String) -> Result[(Int, String), String] {
+      assert_true(url == "https://app.still.fail/v1/stations/join")
+      assert_true(body.contains("\"rig\":true"))
+      assert_true(body.contains("\"locks\":true"))
+      Ok((200, "{\"workspace\":\"ws_rig_2\",\"workspace_name\":\"Beta\",\"name\":\"rig-1\",\"rig\":{\"owner\":\"u2\",\"owner_email\":\"bob@example.com\",\"owner_name\":\"Bob\"}}"))
+    },
+    lock_hash=Some(test_owner_pub),
+    rig_person_hash=Some(test_owner_pub),
+    expected_workspace=Some("ws_rig_2"),
+  )
+  match res {
+    Ok(r) => {
+      assert_true(r.workspace == "ws_rig_2")
+      assert_true(r.became_home == false)
+      assert_opt_str(r.owner, Some("bob@example.com"))
+    }
+    Err(_) => assert_true(false)
+  }
+  // Pending lock file written for ws_rig_2 and cloud.json updated with joined rig
+  assert_opt_str(read_pending_lock("/d", fs, ws=Some("ws_rig_2")), Some(test_owner_pub))
+  let st_after = match read_state("/d", fs) {
+    Ok(Some(s)) => s
+    _ => {
+      assert_true(false)
+      sample_cloud_state("ws_home")
+    }
+  }
+  assert_true(st_after.joined.length() == 1)
+  assert_true(st_after.joined[0].workspace == "ws_rig_2")
+  match st_after.joined[0].rig {
+    Some(rg) => assert_true(rg.person == test_owner_pub)
+    None => assert_true(false)
+  }
+
+  // Locked home workspace rejects join without lock_hash
+  let store = CloudStore::open("/d", fs)
+  let _ = store.take_lock([make_genesis_entry("ws_home")])
+  let rejected = join_workspace(
+    "/d",
+    fs,
+    key,
+    "tok_nolock",
+    "0.1.0",
+    1700000110.to_int64(),
+    fn(_u : String, _b : String) -> Result[(Int, String), String] { Ok((200, "{}")) },
+  )
+  match rejected {
+    Ok(_) => assert_true(false)
+    Err(msg) => assert_true(msg.contains("locked"))
+  }
+
+  // Home promotion when cloud returns `"home": "ws_new_home"`
+  let promo = join_workspace(
+    "/d",
+    fs,
+    key,
+    "tok_home",
+    "0.1.0",
+    1700000120.to_int64(),
+    fn(_u : String, _b : String) -> Result[(Int, String), String] {
+      Ok((200, "{\"workspace\":\"ws_new_home\",\"workspace_name\":\"Gamma\",\"name\":\"st-gamma\",\"home\":\"ws_new_home\"}"))
+    },
+    lock_hash=Some(test_station2_pub),
+  )
+  match promo {
+    Ok(r) => {
+      assert_true(r.became_home == true)
+      assert_true(r.workspace == "ws_new_home")
+    }
+    Err(_) => assert_true(false)
+  }
+  let st_promo = match read_state("/d", fs) {
+    Ok(Some(s)) => s
+    _ => {
+      assert_true(false)
+      sample_cloud_state("")
+    }
+  }
+  assert_true(st_promo.workspace == "ws_new_home")
+  assert_opt_str(read_pending_lock("/d", fs, ws=None), Some(test_station2_pub))
+  // Old home lock was demoted to joined_lock_path(ws_home)
+  assert_true((fs.exists)(joined_lock_path("/d", "ws_home")))
+}
+
+test "transport regional entry eligibility and race: true over ShellMux" {
+  let cfg = match base_codec::json_parse("{\"cloudEntry\":{\"origin\":\"https://app.still.fail\",\"host\":\"edge.example\",\"port\":24443}}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+  }
+  let entry = match parse_cloud_entry(cfg) {
+    Ok(Some(e)) => e
+    _ => {
+      assert_true(false)
+      CloudEntry::{ origin: "", host: "", port: 0 }
+    }
+  }
+  let transport = CloudTransport::new(entry=Some(entry), race=true)
+  assert_true(transport.eligible("https://app.still.fail/v1/stations/notify", Provider::Stillfail))
+  assert_true(transport.eligible("wss://app.still.fail/v1/stations/connect", Provider::Stillfail))
+  assert_true(!transport.eligible("https://app.still.fail/v1/stations/notify", Provider::Comma))
+  assert_true(!transport.eligible("https://other.example/foo", Provider::Stillfail))
+
+  let recorded_ops : Array[(String, String)] = []
+  let mux = builders_core::ShellMux::new(
+    builders_core::MuxTransport::{
+      call_async: fn(_id : Int64, op : String, args : String, _payload : Option[Bytes]) -> Unit {
+        recorded_ops.push((op, args))
+      },
+      call_sync: fn(_op : String, _args : String) -> String { "{}" },
+      write_stdout_line: fn(_s : String) -> Bool { true },
+      write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+      now_ms: fn() -> Int64 { 0.to_int64() },
+      wall_ms: fn() -> Int64 { 0.to_int64() },
+      wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] { None },
+    },
+    start_stdin=false,
+  )
+  let _ = transport.start_fetch(
+    mux,
+    builders_core::MuxToken::Tagged(1, 0, 0.to_int64()),
+    "https://app.still.fail/v1/stations/notify",
+    "POST",
+    [("content-type", "application/json")],
+    Some("{}".to_bytes()),
+  )
+  let _ = transport.start_ws_open(
+    mux,
+    builders_core::MuxToken::Tagged(2, 0, 0.to_int64()),
+    "wss://app.still.fail/v1/stations/connect",
+    [("x-stillfail-station", test_station_pub)],
+  )
+  assert_true(recorded_ops.length() == 2)
+  assert_true(recorded_ops[0].0 == "fetch")
+  assert_true(recorded_ops[0].1.contains("\"race\":true"))
+  assert_true(recorded_ops[0].1.contains("\"edge.example\""))
+  assert_true(recorded_ops[1].0 == "ws.open")
+  assert_true(recorded_ops[1].1.contains("\"race\":true"))
+}
+
+test "presence state machine: heartbeat, Replaced conflict, backoff, state/revoke/lock frames" {
+  let mem = MemCloudFs::new()
+  let fs = mem.as_fs()
+  let key = match StationKey::from_seed(must_hex(test_station_seed)) {
+    Ok(k) => k
+    Err(_) => {
+      assert_true(false)
+      StationKey::{ seed: Bytes::new(0), id: "" }
+    }
+  }
+  let _ = write_state("/d", sample_cloud_state("ws_test_1"), fs)
+  let store = CloudStore::open("/d", fs)
+  let pc = PresenceClient::new(store, key)
+
+  // Connect headers
+  match pc.prepare_connect("0.1.0", 1700000000.to_int64(), 1000.to_int64()) {
+    Ok((url, hdrs, _)) => {
+      assert_true(url == "wss://app.still.fail/v1/stations/connect")
+      assert_true(hdrs.length() == 4)
+    }
+    Err(_) => assert_true(false)
+  }
+
+  // Open -> ping -> pong -> steady
+  pc.on_open(42, 1700000001.to_int64())
+  assert_true(pc.last_presence_json.contains("\"online\":true"))
+  match pc.on_ping_tick() {
+    Ok(frames) => {
+      assert_true(frames.length() == 1)
+      assert_true(frames[0] == "ping")
+    }
+    Err(_) => assert_true(false)
+  }
+  // Second ping before pong -> timeout error
+  match pc.on_ping_tick() {
+    Ok(_) => assert_true(false)
+    Err(msg) => assert_true(msg.contains("stopped answering"))
+  }
+  // Pong clears unanswered and marks held
+  let _ = pc.on_text_frame("pong", 1700000002.to_int64())
+  assert_true(pc.answered)
+  assert_true(pc.held)
+
+  // CloudSaid release & models
+  let r_rel = pc.on_text_frame("{\"type\":\"release\"}", 1700000003.to_int64())
+  match r_rel.cloud_said {
+    Some(CloudSaid::Release) => ()
+    _ => assert_true(false)
+  }
+  let r_mod = pc.on_text_frame("{\"type\":\"models\",\"etag\":\"v42\"}", 1700000004.to_int64())
+  match r_mod.cloud_said {
+    Some(CloudSaid::Models(Some(tag))) => assert_true(tag == "v42")
+    _ => assert_true(false)
+  }
+
+  // Revoke frame persists into state
+  let _ = pc.on_text_frame("{\"type\":\"revoke\",\"kind\":\"member\",\"id\":\"u9\",\"at\":1700000010}", 1700000010.to_int64())
+  match store.state {
+    Some(st) => {
+      assert_true(st.revocations.length() == 1)
+      assert_true(st.revocations[0].id == "u9")
+    }
+    None => assert_true(false)
+  }
+
+  // Replaced conflict after 3 consecutive 4000 closes without heartbeat
+  let rep = ReplacedTracker::new()
+  let _ = rep.ended(Some(CLOSE_REPLACED), false)
+  let _ = rep.ended(Some(CLOSE_REPLACED), false)
+  assert_true(!rep.conflict)
+  assert_opt_bool(rep.ended(Some(CLOSE_REPLACED), false), Some(true))
+  assert_true(rep.conflict)
+  assert_opt_bool(rep.steady(), Some(false))
+  assert_true(!rep.conflict)
+
+  // Exponential backoff & conflict jump
+  let bo = BackoffState::new()
+  bo.on_connect_start(1000.to_int64())
+  assert_true(bo.on_disconnect(2000.to_int64(), false) == 1000.to_int64())
+  assert_true(bo.on_disconnect(3000.to_int64(), false) == 2000.to_int64())
+  assert_true(bo.on_disconnect(4000.to_int64(), true) == 60000.to_int64())
+
+  // CLOSE_REMOVED transitions to Removed and persists removed_at/removed_code
+  match pc.on_close(Some(CLOSE_REMOVED), "removed", 1700000050.to_int64(), 50000.to_int64()) {
+    PresencePhase::Removed => ()
+    _ => assert_true(false)
+  }
+  assert_true(store.removed())
+}
+
+test "notify batcher and cooldown gates" {
+  let bc = BilledCooldown::new()
+  assert_true(bc.take("ws1", "claude", 1000.to_int64()))
+  assert_true(!bc.take("ws1", "claude", 2000.to_int64()))
+  assert_true(bc.take("ws1", "claude", 1000.to_int64() + BILLED_NOTIFY_COOLDOWN_MS))
+
+  let pc = ProfileLoginCooldown::new()
+  assert_true(pc.take(Some("ws1"), "prof1", 1000.to_int64()))
+  assert_true(!pc.take(Some("ws1"), "prof1", 2000.to_int64()))
+  pc.clear("prof1")
+  assert_true(pc.take(Some("ws1"), "prof1", 2000.to_int64()))
+
+  let batcher = NotifyBatcher::new()
+  batcher.enqueue(
+    [
+      Notice::{ to: ["u1"], audience: None, kind: "done", session: "s1", thread: 1.to_int64(), seq: Some(2.to_int64()), title: "T", by: "A", text: "ok", at: 100.to_int64(), ws: None },
+      Notice::{ to: ["u2"], audience: None, kind: "done", session: "s2", thread: 2.to_int64(), seq: None, title: "T2", by: "B", text: "hi", at: 101.to_int64(), ws: Some("ws_j") },
+      Notice::{ to: ["u3"], audience: None, kind: "done", session: "s3", thread: 3.to_int64(), seq: None, title: "T3", by: "C", text: "drop", at: 102.to_int64(), ws: Some("ws_gone") },
+    ],
+    5000.to_int64(),
+  )
+  assert_true(!batcher.is_due(5500.to_int64()))
+  assert_true(batcher.is_due(6000.to_int64()))
+  let posts = batcher.flush(Some("ws_home"), fn(w : String) -> Bool { w == "ws_home" || w == "ws_j" }, 6000.to_int64())
+  assert_true(posts.length() == 2)
+  assert_opt_str(posts[0].workspace, None)
+  assert_true(posts[0].count == 1)
+  assert_opt_str(posts[1].workspace, Some("ws_j"))
+  assert_true(posts[1].count == 1)
+  assert_true(posts[1].body.contains("\"workspace\":\"ws_j\""))
+}

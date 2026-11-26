@@ -1,0 +1,112 @@
+// The station's Ed25519 key: `<data>/mesh/secret.key`, 32 raw bytes (Ed25519 seed, mode 0600),
+// created on first use. Its public half (64 lowercase hex) is the station's id.
+// 1:1 with `station/src/cloud/key.ts`.
+
+import "base_codec"
+import "builders_core"
+import "crypto"
+import "nodepath"
+
+pub let PRIVATE_FILE_MODE : Int = 384 // 0o600
+
+pub struct StationKey {
+  pub seed : Bytes
+  /// The station's id: its Ed25519 public key in lowercase hex (64 chars).
+  pub id : String
+}
+
+pub fn StationKey::from_seed(seed : Bytes) -> Result[StationKey, String] {
+  if seed.length() != 32 {
+    return Err("the station's key is not 32 bytes")
+  }
+  match crypto::Ed25519KeyPair::from_seed(seed) {
+    Ok(kp) => Ok(StationKey::{ seed: seed, id: crypto::bytes_to_hex(kp.public_key()) })
+    Err(e) => Err("invalid station key seed: " + crypto::crypto_error_message(e))
+  }
+}
+
+/// Sign `message` bytes with the station's Ed25519 key, returning lowercase hex (128 chars).
+pub fn StationKey::sign_bytes(self : StationKey, message : Bytes) -> String {
+  match crypto::ed25519_sign(self.seed, message) {
+    Ok(sig) => crypto::bytes_to_hex(sig)
+    Err(_) => ""
+  }
+}
+
+/// Sign UTF-8 `message` string with the station's Ed25519 key, returning lowercase hex (128 chars).
+pub fn StationKey::sign(self : StationKey, message : String) -> String {
+  self.sign_bytes(message.to_bytes())
+}
+
+pub fn sha256_hex(text : String) -> String {
+  crypto::sha256_hex(text.to_bytes())
+}
+
+pub fn sha256_hex_bytes(data : Bytes) -> String {
+  crypto::sha256_hex(data)
+}
+
+pub fn key_path(data : String, sep : String = "/") -> String {
+  nodepath::join(sep, [nodepath::join(sep, [data, "mesh"]), "secret.key"])
+}
+
+/// IO capability for loading/creating `secret.key` (production uses `ShellClient`, tests use in-memory).
+pub struct KeyFs {
+  pub read_bytes : (String) -> Result[Option[Bytes], String]
+  pub write_private : (String, Bytes) -> Result[Unit, String]
+  pub random_bytes : (Int) -> Result[Bytes, String]
+}
+
+pub fn KeyFs::from_shell(client : builders_core::ShellClient, sep : String = "/") -> KeyFs {
+  KeyFs::{
+    read_bytes: fn(path : String) -> Result[Option[Bytes], String] {
+      match client.read_bytes(path) {
+        Ok(b) => Ok(b)
+        Err(e) => Err(e.message)
+      }
+    },
+    write_private: fn(path : String, data : Bytes) -> Result[Unit, String] {
+      match client.write_atomic(path, data, mode=PRIVATE_FILE_MODE, sync=true, mkdir=true, sep=sep) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e.message)
+      }
+    },
+    random_bytes: fn(n : Int) -> Result[Bytes, String] {
+      let args = base_codec::json_obj([("bytes", base_codec::json_int(n))])
+      // sync: one-time cryptographic seed generation on first station startup
+      match client.shell_sync_json("crypto.random", args) {
+        Ok(base_codec::Json::Str(hex)) => {
+          match crypto::hex_to_bytes(hex) {
+            Some(b) => if b.length() == n { Ok(b) } else { Err("crypto.random returned wrong length") }
+            None => Err("crypto.random returned non-hex")
+          }
+        }
+        Ok(_) => Err("crypto.random returned non-string")
+        Err(e) => Err(e.message)
+      }
+    },
+  }
+}
+
+/// Load `<data>/mesh/secret.key`, or generate a fresh 32-byte Ed25519 seed and write it with mode 0600.
+pub fn load_key(data : String, fs : KeyFs, sep : String = "/") -> Result[StationKey, String] {
+  let path = key_path(data, sep=sep)
+  match (fs.read_bytes)(path) {
+    Ok(Some(existing)) => StationKey::from_seed(existing)
+    Ok(None) => {
+      let seed = match (fs.random_bytes)(32) {
+        Ok(b) => b
+        Err(e) => return Err(e)
+      }
+      let key = match StationKey::from_seed(seed) {
+        Ok(k) => k
+        Err(e) => return Err(e)
+      }
+      match (fs.write_private)(path, seed) {
+        Ok(_) => Ok(key)
+        Err(e) => Err(e)
+      }
+    }
+    Err(e) => Err(e)
+  }
+}
