@@ -3294,18 +3294,46 @@ class Vaults {
         return sealWith(pub, key, context, eph);
       };
       const recovery = isWs ? undefined : (here.recovery ?? to.find((c) => c.recovery)?.recovery);
-      const next = sign(
+      const buildVault = (subs: string[], sealedTo: Vouched[]) => sign(
         {
-          v: 1 as const, ws: self.ws, id, seq: 0, owner: who.sub, name: name.trim(), members: memberSubs, epoch: 0,
+          v: 1 as const, ws: self.ws, id, seq: 0, owner: who.sub, name: name.trim(), members: subs, epoch: 0,
           ...(isWs ? { scope: "workspace" as const } : {}),
-          keys: to.map((c) => ({ cert: bare(c), wrapped: seal(c.box) })),
+          keys: sealedTo.map((c) => ({ cert: bare(c), wrapped: seal(c.box) })),
           ...(recovery ? { recovery: seal(recovery) } : {}),
           at: nowS(inner),
         },
         TAG.vault,
         signer,
       );
-      const v = yield* self.#putVault(next, on);
+      const next = buildVault(memberSubs, to);
+      const put = yield* Effect.result(self.#putVault(next, on));
+      let v: Vault;
+      if (put._tag === "Success") {
+        v = put.success;
+      } else if (isWs && !safeMode(inner, self.ws) && put.failure.code === "vault_invalid" && put.failure.message.includes("is not in the lock")) {
+        if (opts?.members !== undefined) {
+          return yield* fail("vault_invalid", t("core-misc.vault.memberNotOnStation"));
+        }
+        const cur = held(inner, self.ws);
+        const known = new Set<string>([who.sub]);
+        for (const m of Object.keys(cur.memberRoles ?? {})) if (m !== "" && lock.members.has(m)) known.add(m);
+        for (const m of Object.keys(cur.memberChains ?? {})) if (m !== "" && lock.members.has(m)) known.add(m);
+        const fallbackSubs = memberSubs.filter((m) => known.has(m));
+        if (!fallbackSubs.includes(who.sub)) fallbackSubs.unshift(who.sub);
+        if (fallbackSubs.length === memberSubs.length) {
+          return yield* fail("vault_invalid", t("core-misc.vault.memberNotOnStation"));
+        }
+        const retry = yield* Effect.result(self.#putVault(buildVault(fallbackSubs, allCerts.filter((c) => fallbackSubs.includes(c.sub))), on));
+        if (retry._tag === "Failure") {
+          if (retry.failure.code === "vault_invalid" && retry.failure.message.includes("is not in the lock")) {
+            return yield* fail("vault_invalid", t("core-misc.vault.memberNotOnStation"));
+          }
+          return yield* Effect.fail(retry.failure);
+        }
+        v = retry.success;
+      } else {
+        return yield* Effect.fail(put.failure);
+      }
       self.#keep(v, key);
       return { id, station: on };
     });
@@ -3366,7 +3394,13 @@ class Vaults {
             ];
             const { sig: _, ...rest } = v;
             const next = sign({ ...rest, seq: v.seq + 1, members: nextMembers, keys, at: nowS(inner) }, TAG.vault, signer);
-            yield* self.#putVault(next, hostOf(inner, self.ws, v.id));
+            const put = yield* Effect.result(self.#putVault(next, hostOf(inner, self.ws, v.id)));
+            if (put._tag === "Failure") {
+              if (!safeMode(inner, self.ws) && put.failure.code === "vault_invalid" && put.failure.message.includes("is not in the lock")) {
+                return yield* fail("vault_invalid", t("core-misc.vault.memberNotOnStation"));
+              }
+              return yield* Effect.fail(put.failure);
+            }
             return { id: v.id, members: nextMembers, rekeyed: false };
           }
           const newKey = new Uint8Array(32);
@@ -3390,7 +3424,14 @@ class Vaults {
             TAG.vault,
             signer,
           );
-          const nv = yield* self.#putVault(next, hostOf(inner, self.ws, v.id));
+          const put = yield* Effect.result(self.#putVault(next, hostOf(inner, self.ws, v.id)));
+          if (put._tag === "Failure") {
+            if (!safeMode(inner, self.ws) && put.failure.code === "vault_invalid" && put.failure.message.includes("is not in the lock")) {
+              return yield* fail("vault_invalid", t("core-misc.vault.memberNotOnStation"));
+            }
+            return yield* Effect.fail(put.failure);
+          }
+          const nv = put.success;
           self.#keep(v, oldKey);
           self.#keep(nv, newKey);
           yield* Effect.ignore(self.#carryNow(v.id, null, new Map([[keyOf(v), oldKey], [keyOf(nv), newKey]])), { log: "Unhandled", message: "vault items keyed anew" });
