@@ -1,7 +1,7 @@
 // The state and end time of each job by its id, apart from the wide jobs rows (their command text): Jobs.collect asks
 // for up to 500 jobs at once, and reading those rows from cold pages held the station's thread for seconds. Without
 // building an index over an old store in one long write: a store of more jobs than BATCH installs the table and its
-// writers empty and copies the jobs it had in bounded steps (station/src/jobs/job-ends-backfill.ts).
+// writers empty and copies the jobs it had in bounded steps (station/src/jobs/job-ends-backfill.ts `jobEndsStep`).
 import type { DatabaseSync } from "node:sqlite";
 
 export const VERSION = 1;
@@ -48,8 +48,8 @@ const SCHEMA = `
   CREATE TRIGGER job_ends_drop AFTER DELETE ON jobs WHEN OLD.id IS NOT NULL BEGIN
     DELETE FROM job_ends WHERE id = OLD.id;
   END;`;
-const UPSERT = `INSERT INTO job_ends(id, state, ended_at) SELECT id, state, ended_at FROM jobs WHERE id IS NOT NULL`;
-const CONFLICT = "ON CONFLICT(id) DO UPDATE SET state = excluded.state, ended_at = excluded.ended_at";
+export const UPSERT = `INSERT INTO job_ends(id, state, ended_at) SELECT id, state, ended_at FROM jobs WHERE id IS NOT NULL`;
+export const CONFLICT = "ON CONFLICT(id) DO UPDATE SET state = excluded.state, ended_at = excluded.ended_at";
 
 function installed(db: DatabaseSync): boolean {
   if (!exists(db, "table", "job_ends_meta")) return false;
@@ -76,40 +76,14 @@ export function installJobEnds(db: DatabaseSync): void {
 }
 
 type Meta = { complete: number; cursor: number | null; end_rowid: number | null };
-const meta = (db: DatabaseSync) =>
+export const jobEndsMeta = (db: DatabaseSync) =>
   db.prepare("SELECT complete, cursor, end_rowid FROM job_ends_meta WHERE id=1").get() as Meta | undefined;
 
 /// Whether job_ends holds every job (false where it is not installed).
 export function jobEndsReady(db: DatabaseSync): boolean {
-  return exists(db, "table", "job_ends_meta") && meta(db)?.complete === 1;
+  return exists(db, "table", "job_ends_meta") && jobEndsMeta(db)?.complete === 1;
 }
 
 export function jobEndsNeedsWork(db: DatabaseSync): boolean {
-  return installed(db) && meta(db)!.complete === 0;
-}
-
-/// Copies the next `batch` jobs of those the store had when the lookup was installed, in one write; true once all are.
-/// Jobs written since are kept by the triggers; one changed after it was copied here is copied again by them.
-export function jobEndsStep(db: DatabaseSync, batch = BATCH): boolean {
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const m = meta(db);
-    let done = true;
-    if (m !== undefined && m.complete === 0) {
-      const end = m.end_rowid ?? 0;
-      const rows = (m.cursor === null
-        ? db.prepare("SELECT rowid AS r FROM jobs WHERE rowid <= ?1 ORDER BY rowid LIMIT ?2").all(end, batch)
-        : db.prepare("SELECT rowid AS r FROM jobs WHERE rowid > ?1 AND rowid <= ?2 ORDER BY rowid LIMIT ?3").all(m.cursor, end, batch)
-      ) as { r: number }[];
-      if (rows.length > 0) {
-        const first = rows[0]!.r, last = rows[rows.length - 1]!.r;
-        db.prepare(`${UPSERT} AND rowid BETWEEN ?1 AND ?2 ${CONFLICT}`).run(first, last);
-      }
-      done = rows.length < batch || rows[rows.length - 1]!.r >= end;
-      db.prepare("UPDATE job_ends_meta SET cursor = ?1, complete = ?2 WHERE id = 1")
-        .run(rows.length > 0 ? rows[rows.length - 1]!.r : m.cursor, done ? 1 : 0);
-    }
-    db.exec("COMMIT");
-    return done;
-  } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
+  return installed(db) && jobEndsMeta(db)!.complete === 0;
 }

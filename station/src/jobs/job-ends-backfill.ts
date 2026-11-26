@@ -3,10 +3,37 @@
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { BACKFILL_PAUSE_MS, giveBackfill, takeBackfill } from "../store/backfill.ts";
-import { jobEndsNeedsWork, jobEndsStep } from "../store/job-ends.ts";
+import type { DatabaseSync } from "node:sqlite";
+import { BATCH, CONFLICT, jobEndsMeta, jobEndsNeedsWork, UPSERT } from "../store/job-ends.ts";
 import type { Store } from "../store/store.ts";
 
 let nextOwner = 0x59000000;
+
+/// Copies the next `batch` jobs of those the store had when the lookup was installed, in one write; true once all are.
+/// Jobs written since are kept by the triggers; one changed after it was copied here is copied again by them.
+export function jobEndsStep(db: DatabaseSync, batch = BATCH): boolean {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const m = jobEndsMeta(db);
+    let done = true;
+    if (m !== undefined && m.complete === 0) {
+      const end = m.end_rowid ?? 0;
+      const rows = (m.cursor === null
+        ? db.prepare("SELECT rowid AS r FROM jobs WHERE rowid <= ?1 ORDER BY rowid LIMIT ?2").all(end, batch)
+        : db.prepare("SELECT rowid AS r FROM jobs WHERE rowid > ?1 AND rowid <= ?2 ORDER BY rowid LIMIT ?3").all(m.cursor, end, batch)
+      ) as { r: number }[];
+      if (rows.length > 0) {
+        const first = rows[0]!.r, last = rows[rows.length - 1]!.r;
+        db.prepare(`${UPSERT} AND rowid BETWEEN ?1 AND ?2 ${CONFLICT}`).run(first, last);
+      }
+      done = rows.length < batch || rows[rows.length - 1]!.r >= end;
+      db.prepare("UPDATE job_ends_meta SET cursor = ?1, complete = ?2 WHERE id = 1")
+        .run(rows.length > 0 ? rows[rows.length - 1]!.r : m.cursor, done ? 1 : 0);
+    }
+    db.exec("COMMIT");
+    return done;
+  } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
+}
 
 const busy = (error: unknown) => /SQLITE_BUSY|database is locked/i.test(
   `${(error as { code?: string; errstr?: string })?.code ?? ""} ${(error as Error)?.message ?? ""} ${(error as { errstr?: string })?.errstr ?? ""}`);
