@@ -663,9 +663,13 @@ mod tests {
         let entry_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let entry_port = entry_listener.local_addr().unwrap().port();
 
-        let wait_eof = |listener: TcpListener| {
+        let (d_acc_tx, d_acc_rx) = tokio::sync::oneshot::channel();
+        let (e_acc_tx, e_acc_rx) = tokio::sync::oneshot::channel();
+
+        let wait_eof = |listener: TcpListener, accepted_tx: tokio::sync::oneshot::Sender<()>| {
             tokio::spawn(async move {
                 let (mut tcp, _) = listener.accept().await.unwrap();
+                let _ = accepted_tx.send(());
                 let mut buf = [0u8; 512];
                 loop {
                     match tcp.read(&mut buf).await {
@@ -675,21 +679,31 @@ mod tests {
                 }
             })
         };
-        let d_eof = wait_eof(direct_listener);
-        let e_eof = wait_eof(entry_listener);
+        let d_eof = wait_eof(direct_listener, d_acc_tx);
+        let e_eof = wait_eof(entry_listener, e_acc_tx);
 
         let client_cfg = Arc::new(tls_config_with_strict_ca(CA_PEM, None).unwrap());
-        let res = race_tls_stream(
+        let race_task = tokio::spawn(race_tls_stream(
             ("127.0.0.1".into(), direct_port),
             ("127.0.0.1".into(), entry_port),
             "cloud.test",
             client_cfg,
             Duration::from_millis(20),
-            Duration::from_millis(100),
-        )
-        .await;
-        let err_msg = res.expect_err("race must time out when both stall");
+            Duration::from_secs(60),
+        ));
+
+        // Confirm both direct and entry listeners accepted before pausing time and triggering timeout.
+        // timer: test assertion deadline waiting for both listeners to accept TCP connections
+        tokio::time::timeout(Duration::from_secs(5), d_acc_rx).await.unwrap().unwrap();
+        // timer: test assertion deadline waiting for both listeners to accept TCP connections
+        tokio::time::timeout(Duration::from_secs(5), e_acc_rx).await.unwrap().unwrap();
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(61)).await;
+
+        let err_msg = race_task.await.unwrap().expect_err("race must time out when both stall");
         assert!(err_msg.contains("timed out"), "unexpected error: {err_msg}");
+        tokio::time::resume();
         // timer: test assertion deadline verifying both pending sockets closed on timeout
         assert!(tokio::time::timeout(Duration::from_secs(2), d_eof).await.unwrap().unwrap());
         // timer: test assertion deadline verifying both pending sockets closed on timeout

@@ -306,8 +306,10 @@ impl Inner {
                 Ok(Answer::json(json!({})))
             }
             "ws.close" => {
-                // Signal cancellation before removing the handle so the WS background task and any in-flight
-                // `ws.next` wake immediately even when the bounded incoming channel is full.
+                // Signal cancellation before removing the handle so any in-flight `ws.next` wakes
+                // immediately and returns `{end: true}` (discarding unread incoming frames), while the
+                // background task closes `outgoing_rx` and drains already-accepted outgoing frames
+                // within its bounded 2 s close deadline.
                 let id = id_of(&a)?;
                 let removed = {
                     let mut handles = self.handles.lock().unwrap();

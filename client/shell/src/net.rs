@@ -500,11 +500,13 @@ async fn flush_pending_incoming(
 }
 
 /// Deliver a terminal WebSocket item (`Close(code, reason)` or terminal `Err`) into `incoming_tx`
-/// without silently dropping it when the bounded queue is full, while still exiting immediately if
-/// `ws.close` cancels the socket or the receiver is dropped.
+/// without silently dropping it when the bounded queue is full, strictly respecting `max_bytes`
+/// (allowing delivery once `queued_bytes == 0 || queued_bytes + len <= max_bytes`), while still
+/// exiting immediately if `ws.close` cancels the socket or the receiver is dropped.
 async fn deliver_terminal(
     tx: &tokio::sync::mpsc::Sender<Result<WsFrame, String>>,
     queued_bytes: &AtomicUsize,
+    max_bytes: usize,
     space: &tokio::sync::Notify,
     close: &SocketClose,
     item: Result<WsFrame, String>,
@@ -515,9 +517,12 @@ async fn deliver_terminal(
         Err(_) => 0,
     };
     let mut pending = Some(item);
-    loop {
-        if close.is_closed() {
-            return;
+    let try_send_once = |pending: &mut Option<Result<WsFrame, String>>| -> Result<bool, ()> {
+        if len > 0 {
+            let cur = queued_bytes.load(Ordering::Acquire);
+            if cur > 0 && cur.saturating_add(len) > max_bytes {
+                return Ok(false);
+            }
         }
         match tx.try_reserve() {
             Ok(permit) => {
@@ -525,25 +530,27 @@ async fn deliver_terminal(
                     queued_bytes.fetch_add(len, Ordering::AcqRel);
                 }
                 permit.send(pending.take().unwrap());
-                return;
+                Ok(true)
             }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => Err(()),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => Ok(false),
+        }
+    };
+    loop {
+        if close.is_closed() {
+            return;
+        }
+        match try_send_once(&mut pending) {
+            Ok(true) | Err(()) => return,
+            Ok(false) => {}
         }
         let space_notified = space.notified();
         tokio::pin!(space_notified);
         space_notified.as_mut().enable();
         // Re-check after registering waiter so a concurrent `ws.next` cannot lose a wakeup.
-        match tx.try_reserve() {
-            Ok(permit) => {
-                if len > 0 {
-                    queued_bytes.fetch_add(len, Ordering::AcqRel);
-                }
-                permit.send(pending.take().unwrap());
-                return;
-            }
-            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {}
+        match try_send_once(&mut pending) {
+            Ok(true) | Err(()) => return,
+            Ok(false) => {}
         }
         #[cfg(test)]
         if let Some(p) = parked {
@@ -588,9 +595,10 @@ where
     }
 }
 
-/// Gracefully flush all already-accepted outgoing frames from `outgoing_rx` and send a WebSocket Close
-/// frame within a single bounded 2 s deadline so normal `ws.send` + `ws.close` never drops accepted
-/// messages while still guaranteeing bounded exit on stalled/half-open connections.
+/// Close `outgoing_rx` immediately to reject any concurrent `ws.send`, then gracefully flush all
+/// already-accepted outgoing frames and send a WebSocket Close frame within a single bounded 2 s
+/// deadline so normal `ws.send` + `ws.close` never drops accepted messages while still guaranteeing
+/// bounded exit on stalled/half-open connections.
 async fn drain_outgoing_and_close<S>(
     socket: &mut tokio_tungstenite::WebSocketStream<S>,
     outgoing_rx: &mut tokio::sync::mpsc::Receiver<WsFrame>,
@@ -598,8 +606,9 @@ async fn drain_outgoing_and_close<S>(
 ) where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+    outgoing_rx.close();
     let work = async {
-        while let Ok(frame) = outgoing_rx.try_recv() {
+        while let Some(frame) = outgoing_rx.recv().await {
             let len = frame.byte_len();
             if len > 0 {
                 out_bytes.fetch_sub(len, Ordering::AcqRel);
@@ -1081,7 +1090,8 @@ impl Inner {
                         frame = outgoing_rx.recv() => match frame {
                             Some(frame) => {
                                 if let Err(write_err) = send_ws_frame(&mut socket, &out_bytes_task, frame).await {
-                                    // Release the dead TCP socket before waiting for the consumer to drain.
+                                    // Close outgoing_rx and release the dead TCP socket before waiting for the consumer to drain.
+                                    outgoing_rx.close();
                                     drop(socket);
                                     flush_pending_incoming(
                                         &incoming_tx,
@@ -1097,6 +1107,7 @@ impl Inner {
                                     deliver_terminal(
                                         &incoming_tx,
                                         &in_bytes_task,
+                                        bounds.max_bytes,
                                         &in_space_task,
                                         &close_task,
                                         Err(write_err),
@@ -1123,10 +1134,12 @@ impl Inner {
                         frame = outgoing_rx.recv() => match frame {
                             Some(frame) => {
                                 if let Err(write_err) = send_ws_frame(&mut socket, &out_bytes_task, frame).await {
+                                    outgoing_rx.close();
                                     drop(socket);
                                     deliver_terminal(
                                         &incoming_tx,
                                         &in_bytes_task,
+                                        bounds.max_bytes,
                                         &in_space_task,
                                         &close_task,
                                         Err(write_err),
@@ -1146,10 +1159,12 @@ impl Inner {
                             Some(Ok(Message::Text(text))) => {
                                 let s = text.as_str().to_owned();
                                 if s.len() > bounds.max_bytes {
+                                    outgoing_rx.close();
                                     drop(socket);
                                     deliver_terminal(
                                         &incoming_tx,
                                         &in_bytes_task,
+                                        bounds.max_bytes,
                                         &in_space_task,
                                         &close_task,
                                         Err(format!("websocket: incoming frame exceeds buffer limit ({} bytes)", bounds.max_bytes)),
@@ -1164,10 +1179,12 @@ impl Inner {
                             Some(Ok(Message::Binary(b))) if binary => {
                                 let v = b.to_vec();
                                 if v.len() > bounds.max_bytes {
+                                    outgoing_rx.close();
                                     drop(socket);
                                     deliver_terminal(
                                         &incoming_tx,
                                         &in_bytes_task,
+                                        bounds.max_bytes,
                                         &in_space_task,
                                         &close_task,
                                         Err(format!("websocket: incoming frame exceeds buffer limit ({} bytes)", bounds.max_bytes)),
@@ -1187,8 +1204,10 @@ impl Inner {
                             }
                             Some(Ok(Message::Close(frame))) => {
                                 let close_frame = WsFrame::Close(frame.map(|f| (u16::from(f.code), f.reason.to_string())));
-                                // Flush tungstenite's auto-queued Close reply to the peer within a short bound,
-                                // then drop the TCP socket immediately before waiting for a slow consumer to drain.
+                                // Close outgoing_rx immediately so subsequent ws.send fails with closed,
+                                // flush tungstenite's auto-queued Close reply within a short bound, and
+                                // drop the TCP socket before waiting for a slow consumer to drain.
+                                outgoing_rx.close();
                                 // timer: bounded close reply flush after peer Close frame
                                 let _ = tokio::time::timeout(std::time::Duration::from_millis(500), async {
                                     let _ = socket.flush().await;
@@ -1199,6 +1218,7 @@ impl Inner {
                                 deliver_terminal(
                                     &incoming_tx,
                                     &in_bytes_task,
+                                    bounds.max_bytes,
                                     &in_space_task,
                                     &close_task,
                                     Ok(close_frame),
@@ -1208,13 +1228,18 @@ impl Inner {
                                 .await;
                                 return;
                             }
-                            Some(Err(WsError::ConnectionClosed | WsError::AlreadyClosed)) | None => return,
+                            Some(Err(WsError::ConnectionClosed | WsError::AlreadyClosed)) | None => {
+                                outgoing_rx.close();
+                                return;
+                            }
                             Some(Ok(_)) => {}
                             Some(Err(e)) => {
+                                outgoing_rx.close();
                                 drop(socket);
                                 deliver_terminal(
                                     &incoming_tx,
                                     &in_bytes_task,
+                                    bounds.max_bytes,
                                     &in_space_task,
                                     &close_task,
                                     Err(ws_error(e)),

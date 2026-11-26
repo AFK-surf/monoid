@@ -3669,6 +3669,139 @@ fn fetch_race_url_normalization_default_accept_and_strict_validation() {
 }
 
 #[test]
+fn ws_peer_close_with_full_incoming_rejects_ws_send_and_preserves_frames() {
+    use futures::StreamExt;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+    use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    shell.runtime.block_on(async move {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
+            // Fill the 1-frame incoming queue (8 bytes = max_bytes), then send Close(4000, "r") (1-byte reason).
+            ws.send(Message::text("12345678")).await.unwrap();
+            ws.send(Message::Close(Some(CloseFrame {
+                code: CloseCode::Library(4000),
+                reason: "r".into(),
+            })))
+            .await
+            .unwrap();
+            loop {
+                match ws.next().await {
+                    Some(Ok(Message::Close(_))) | None => return true,
+                    Some(Err(e)) => panic!("expected clean close handshake, got: {e}"),
+                    Some(Ok(_)) => continue,
+                }
+            }
+        });
+
+        let parked = Arc::new(tokio::sync::Notify::new());
+        let parked_wait = parked.notified();
+        tokio::pin!(parked_wait);
+        parked_wait.as_mut().enable();
+        let bounds = crate::net::WsBounds { max_frames: 1, max_bytes: 8 };
+        let opened = inner
+            .ws_open_with_bounds(&json!({ "url": format!("ws://127.0.0.1:{port}/ws") }), bounds, Some(parked.clone()))
+            .await
+            .unwrap();
+        let wid = opened.json["id"].as_u64().unwrap();
+
+        // Wait until deliver_terminal parks AND server has completed the Close handshake.
+        // timer: test assertion deadline waiting for deliver_terminal to park
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut parked_wait)
+            .await
+            .expect("deliver_terminal must park on full 1-frame / 8-byte queue");
+        // timer: test assertion deadline verifying server observed clean Close handshake
+        assert!(tokio::time::timeout(std::time::Duration::from_secs(2), server).await.unwrap().unwrap());
+
+        // Socket is already closed & dropped: ws.send MUST return Err("the socket is closed")!
+        let send_err = inner
+            .run("ws.send", json!({ "id": wid, "text": "a" }), None)
+            .await
+            .err()
+            .expect("ws.send after peer Close must fail");
+        assert!(send_err.contains("closed"), "unexpected error: {send_err}");
+
+        // Queued incoming frame and terminal Close(4000, "r") are still preserved in exact order.
+        let f1 = inner.run("ws.next", json!({ "id": wid }), None).await.unwrap();
+        assert_eq!(f1.json, json!({ "text": "12345678" }));
+        // timer: test assertion deadline verifying terminal Close(4000, "r") delivered after drain
+        let f2 = tokio::time::timeout(std::time::Duration::from_secs(2), inner.run("ws.next", json!({ "id": wid }), None))
+            .await
+            .expect("ws.next must deliver terminal Close")
+            .unwrap();
+        assert_eq!(f2.json, json!({ "end": true, "code": 4000, "reason": "r" }));
+
+        inner.run("ws.close", json!({ "id": wid }), None).await.unwrap();
+    });
+}
+
+#[test]
+fn tls_tcp_write_flushes_8k_over_4k_duplex_without_tcp_end() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+
+    shell.runtime.block_on(async move {
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let server_cfg = Arc::new(
+            crate::tls::server_tls_config(
+                crate::tls::test_certs::LEAF_PEM,
+                crate::tls::test_certs::LEAF_PKCS8_KEY,
+                None,
+            )
+            .unwrap(),
+        );
+        let client_cfg = Arc::new(crate::tls::tls_config_with_strict_ca(crate::tls::test_certs::CA_PEM, None).unwrap());
+        let sni = crate::tls::server_name_of("cloud.test").unwrap();
+
+        let (client_tls, mut server_tls) = tokio::try_join!(
+            tokio_rustls::TlsConnector::from(client_cfg).connect(sni, client_io),
+            tokio_rustls::TlsAcceptor::from(server_cfg).accept(server_io),
+        )
+        .unwrap();
+
+        let (cr, cw) = tokio::io::split(client_tls);
+        let cid = inner.keep(Handle::tcp(cr, cw));
+
+        let payload = vec![0xA5u8; 8192];
+        let expected = payload.clone();
+        let reader = tokio::spawn(async move {
+            let mut got = vec![0u8; expected.len()];
+            server_tls.read_exact(&mut got).await.unwrap();
+            got
+        });
+
+        // Write 8 KiB over 4 KiB duplex WITHOUT calling tcp.end; flush inside tcp.write must push all ciphertext.
+        // timer: test assertion deadline verifying tcp.write flushes 8 KiB over 4 KiB duplex
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            inner.run("tcp.write", json!({ "id": cid }), Some(payload.clone())),
+        )
+        .await
+        .expect("tcp.write must complete without deadlocking")
+        .unwrap();
+
+        // timer: test assertion deadline verifying peer reads all 8 KiB without tcp.end
+        let got = tokio::time::timeout(std::time::Duration::from_secs(2), reader)
+            .await
+            .expect("peer must read all 8 KiB without tcp.end")
+            .unwrap();
+        assert_eq!(got, payload);
+
+        inner.run("tcp.close", json!({ "id": cid }), None).await.unwrap();
+    });
+}
+
+#[test]
 fn fetch_race_rejects_proxy_and_redirect_follow() {
     let dir = TempDir::new();
     let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
