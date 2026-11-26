@@ -31,15 +31,22 @@ setSessionsSpawnObserverForTest((event) => {
 });
 registerSessionsReaderConfig(data, () => ({ readers: { sessions: engine } }));
 
-/// Real processes: looked at every 25 ms, giving up past `limitMs` (the test then fails on this process's end).
-async function until(done: () => boolean | Promise<boolean>, what: string, limitMs = 30_000) {
+/// Real processes: looked at every 25 ms, giving up past `limitMs` (shorter than the parent's 30 s wait so a single
+/// stuck step fails inside this worker and names `what`).
+async function until(done: () => boolean | Promise<boolean>, what: string, limitMs = 20_000) {
   const start = performance.now();
   while (!(await done())) {
     if (performance.now() - start > limitMs) throw new Error(`not within ${limitMs} ms: ${what}`);
     await new Promise((r) => setTimeout(r, 25));
   }
 }
-const written = () => (existsSync(`${dump}.stdin`) ? readFileSync(`${dump}.stdin`, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+const written = () => {
+  if (!existsSync(`${dump}.stdin`)) return [];
+  const raw = readFileSync(`${dump}.stdin`, "utf8");
+  const nl = raw.lastIndexOf("\n");
+  if (nl < 0) return [];
+  return raw.slice(0, nl).split("\n").filter(Boolean).map((l) => JSON.parse(l));
+};
 
 const profile = { id: "p", runtime: "grok", home: "homes/grok", access: { kind: "subscription" }, env: { FAKE_DUMP: dump } };
 const config = hubConfig({ profiles: [profile], maxNudges: 1 }, data);
@@ -67,10 +74,13 @@ await until(() => written().some((l) => l.method === "session/load" && l.params.
 const runner = runnerId("grok", key);
 const info = await findRunner(data, runner);
 if (!info) throw new Error("no runner of it");
-// (initialize answered and taken by the station: its output acknowledged past it)
+// (initialize answered and taken by the station: its output acknowledged before session/load was written. Checked once
+// rather than polled in `until`, because `ackedOffset` sends `attach` and disconnects the station's active reader from
+// the runner.)
 const out = outFile(data, runner);
 await until(() => existsSync(out) && readFileSync(out, "utf8").includes('"protocolVersion"'), "initialize answered");
-await until(async () => (await ackedOffset(info, out)).at > 0, "initialize's answer acknowledged");
+const acked = await ackedOffset(info, out);
+if (acked.at <= 0) throw new Error(`initialize's answer was not acknowledged before session/load (at=${acked.at})`);
 process.stdout.write(`${JSON.stringify({ key, runner, programs: [...programs.values()] })}\n`);
 // (until it is killed)
 await new Promise(() => {});
