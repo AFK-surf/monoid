@@ -837,13 +837,13 @@ jobs:
               ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --publish $MISSING_MAC
             fi
           else
-            ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $MISSING_MAC
+            ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/native-out" $MISSING_MAC
           fi
       - name: Stage native archives in R2
         if: github.ref != 'refs/heads/main'
         env:
           STILLFAIL_NATIVE_DIRECT_R2: ${{ runner.environment == 'self-hosted' && '1' || '0' }}
-        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives-mac-station-pion.r2.json"
+        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/native-out" "$RUNNER_TEMP/natives-mac-station-pion.r2.json"
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with: { name: "natives-mac-station-pion-${{ github.sha }}", path: "${{ runner.temp }}/natives-mac-station-pion.r2.json", if-no-files-found: ignore, retention-days: 7 }
