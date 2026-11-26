@@ -458,7 +458,8 @@ pub fn liquid_segmented_node(
           }
           let i = p.floor().to_int()
           let a = if i < 0 { 0 } else if i > n - 2 { n - 2 } else { i }
-          let f = p - a.to_double()
+          // The spring can cross an end segment. Keep the thumb centered on that segment while it settles.
+          let f = clamp(p - a.to_double(), 0.0, 1.0)
           let x0 = x_of(a)
           let x1 = x_of(a + 1)
           let w0 = w_of(a)
