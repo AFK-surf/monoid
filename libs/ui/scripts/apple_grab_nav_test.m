@@ -107,8 +107,16 @@ static void test_apple_grab(void) {
     CVPixelBufferRelease(pbSmall);
   }
 
-  // 5. NULL inputs return nil.
+  // 5. NULL inputs and non-32BGRA / planar pixel buffers return nil safely.
   CHECK(mb_apple_encode_frame_jpeg(NULL, NULL, 640.0) == nil);
+  CVPixelBufferRef pbYuv = NULL;
+  CVReturn yuvRes = CVPixelBufferCreate(kCFAllocatorDefault, 64, 64, kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+                                        NULL, &pbYuv);
+  CHECK(yuvRes == kCVReturnSuccess && pbYuv != NULL);
+  if (pbYuv) {
+    CHECK(mb_apple_encode_frame_jpeg(NULL, pbYuv, 640.0) == nil);
+    CVPixelBufferRelease(pbYuv);
+  }
 
   // 6. Async dispatch off caller thread + grabGen/closed stale delivery suppression.
   CVPixelBufferRef pbAsync = make_bgra_pixel_buffer(640, 360);

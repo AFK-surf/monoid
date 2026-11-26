@@ -17,10 +17,11 @@
 
 static NSCache<NSString *, UIImage *> *nav_img_cache(void) {
   static NSCache<NSString *, UIImage *> *cache;
-  if (!cache) {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
     cache = [NSCache new];
     cache.countLimit = 256;
-  }
+  });
   return cache;
 }
 
@@ -1344,6 +1345,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     self.visibleRegularCap = 0;
     [self rebuildDisplayedTabs];
     // Keep selection on the first tab during the probe so UIKit never pushes a trailing tab onto moreNavigationController.
+    if (self.tabs.firstObject) [self ensureSlotBarItemsForIdent:self.tabs.firstObject.identifier animate:NO];
     if (self.tabs.firstObject && self.selectedTab != self.tabs.firstObject) {
       self.choosing = YES;
       self.selectedTab = self.tabs.firstObject;
@@ -1468,6 +1470,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   if (mb_ios_nav_needs_overflow_probe(bare, self.view.window != nil, self.visibleRegularCap, places.count,
                                       tabsChanged, lkey, self.overflowLayoutKey)) {
     self.reconcilingOverflow = YES;
+    if (self.tabs.firstObject) [self ensureSlotBarItemsForIdent:self.tabs.firstObject.identifier animate:NO];
     if (self.tabs.firstObject && self.selectedTab != self.tabs.firstObject) {
       self.choosing = YES;
       self.selectedTab = self.tabs.firstObject;

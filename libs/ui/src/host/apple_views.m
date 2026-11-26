@@ -524,6 +524,7 @@ void mb_views_forget(int wid) {
 - (void)seekTo:(double)ms near:(BOOL)near;
 - (BOOL)hasAt:(double)ms;
 - (void)playWhatCame;
+- (CGImageRef)copyShownImage:(CVPixelBufferRef *)outPixelBuffer;
 - (CGImageRef)copyFrame;
 - (void)stood;
 - (void)tell:(int)state;
@@ -807,12 +808,13 @@ static int32_t player_failure(NSError *error) {
                               }
                             }
                             dispatch_async(dispatch_get_main_queue(), ^{
-                              if (!wv || wv.closed || wv.grabGen != gen) return;
+                              MBNative *v = wv;
+                              if (!v || v.closed || v.grabGen != gen) return;
                               vlog(@"view %d: frame at %.0f ms %@", vid, ms,
                                    png ? [NSString stringWithFormat:@"grabbed (%lu bytes)", (unsigned long)png.length]
                                        : [@"not grabbed: " stringByAppendingString:error.localizedDescription ?: @"?"]);
-                              wv.still = png;
-                              wv.stillState = png ? 2 : -1;
+                              v.still = png;
+                              v.stillState = png ? 2 : -1;
                               mb_host_outside(MB_OUTSIDE_GRAB, vid, png ? 1 : -1);
                               mb_host_request_frame();
                             });
@@ -832,17 +834,7 @@ static int32_t player_failure(NSError *error) {
   self.still = nil;
   CGImageRef img = NULL;
   CVPixelBufferRef pb = NULL;
-  if ((self.scrubServed || self.scrubLanding) && self.scrubPicture) {
-    img = CGImageRetain(self.scrubPicture);
-  } else {
-    CMTime t = self.item.currentTime;
-    CVPixelBufferRef fresh = [self.output copyPixelBufferForItemTime:t itemTimeForDisplay:NULL];
-    if (fresh) {
-      if (self.lastFrame) CVPixelBufferRelease(self.lastFrame);
-      self.lastFrame = fresh;
-    }
-    if (self.lastFrame) pb = CVPixelBufferRetain(self.lastFrame);
-  }
+  img = [self copyShownImage:&pb];
   if (!img && !pb) {
     vlog(@"view %d: the frame shown not grabbed", self.vid);
     self.still = nil;
@@ -1142,27 +1134,38 @@ static int32_t player_failure(NSError *error) {
   self.ticks = nil;
 }
 
-// The frame showing now, for snapshots (the last one copied when no new one came); retained, or NULL.
-- (CGImageRef)copyFrame {
+// Captures the currently displayed frame: returns a retained CGImageRef when a scrub frame is showing,
+// otherwise populates `*outPixelBuffer` with a retained CVPixelBufferRef (updating `self.lastFrame`).
+- (CGImageRef)copyShownImage:(CVPixelBufferRef *)outPixelBuffer {
+  if (outPixelBuffer) *outPixelBuffer = NULL;
   // (a frame kept for a finger on its timeline over the player's: that one)
   if ((self.scrubServed || self.scrubLanding) && self.scrubPicture) return CGImageRetain(self.scrubPicture);
   CMTime t = self.item.currentTime;
-  CVPixelBufferRef pb = [self.output copyPixelBufferForItemTime:t itemTimeForDisplay:NULL];
-  if (pb) {
+  CVPixelBufferRef fresh = [self.output copyPixelBufferForItemTime:t itemTimeForDisplay:NULL];
+  if (fresh) {
     if (self.lastFrame) CVPixelBufferRelease(self.lastFrame);
-    self.lastFrame = pb;
+    self.lastFrame = fresh;
   }
-  pb = self.lastFrame;
+  if (self.lastFrame && outPixelBuffer) *outPixelBuffer = CVPixelBufferRetain(self.lastFrame);
+  return NULL;
+}
+
+// The frame showing now, for snapshots (the last one copied when no new one came); retained, or NULL.
+- (CGImageRef)copyFrame {
+  CVPixelBufferRef pb = NULL;
+  CGImageRef img = [self copyShownImage:&pb];
+  if (img) return img;
   if (!pb) return NULL;
   CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
   size_t w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb);
   CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
   CGContextRef c = CGBitmapContextCreate(CVPixelBufferGetBaseAddress(pb), w, h, 8, CVPixelBufferGetBytesPerRow(pb),
                                          cs, kCGImageAlphaNoneSkipFirst | kCGBitmapByteOrder32Little);
-  CGImageRef img = c ? CGBitmapContextCreateImage(c) : NULL;
+  img = c ? CGBitmapContextCreateImage(c) : NULL;
   if (c) CGContextRelease(c);
   CGColorSpaceRelease(cs);
   CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+  CVPixelBufferRelease(pb);
   return img;
 }
 

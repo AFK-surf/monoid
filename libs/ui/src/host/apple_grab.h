@@ -16,6 +16,10 @@ static inline NSData *mb_apple_encode_frame_jpeg(CGImageRef img, CVPixelBufferRe
   if (!cs) return nil;
 
   if (!src) {
+    if (CVPixelBufferGetPixelFormatType(pb) != kCVPixelFormatType_32BGRA || CVPixelBufferIsPlanar(pb)) {
+      CGColorSpaceRelease(cs);
+      return nil;
+    }
     if (CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
       CGColorSpaceRelease(cs);
       return nil;
