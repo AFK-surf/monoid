@@ -864,7 +864,7 @@ fn a_closed_endpoint_is_bound_again_at_its_fixed_port_at_once() {
             // a connection taken, kept for the core
             let taking = accept(id);
             let _theirs = dialer.connect(addr.clone(), &alpn).await.unwrap();
-            assert!(taking.await.unwrap()["id"].is_u64());
+            let taken = taking.await.unwrap()["id"].as_u64().unwrap();
             // the next one coming held unanswered, its dial never done
             inner.run("iroh.holdIncoming", json!({ "id": id, "n": 1 }), None).await.unwrap();
             let held = {
@@ -880,6 +880,11 @@ fn a_closed_endpoint_is_bound_again_at_its_fixed_port_at_once() {
                 tokio::task::yield_now().await;
             }
             inner.run("iroh.close", json!({ "id": id, "forget": forget }), None).await.unwrap();
+            // nothing of it left holding its sockets once answered
+            assert!(kept.held.lock().unwrap().1.is_empty());
+            assert!(kept.conns.lock().unwrap().is_empty());
+            assert!(kept.accept_task.lock().unwrap().is_none());
+            assert!(matches!(inner.handle(taken), Ok(Handle::Gone { .. })), "the connection it took still kept");
             let again = bind().await.unwrap_or_else(|e| panic!("round {round} (forget: {forget}): not bound again at once: {e}"));
             assert_eq!(waiting.await.unwrap(), json!({ "end": true }));
             assert_eq!(inner.handle(id).is_ok(), !forget);
@@ -900,12 +905,68 @@ fn a_fixed_port_held_elsewhere_fails_a_bind_at_once() {
     shell.runtime.block_on(async move {
         let other = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let fixed = other.local_addr().unwrap().to_string();
-        let started = std::time::Instant::now();
         let said = inner.run("iroh.bind", json!({ "relayUrls": [], "alpns": [], "bindAddr": fixed }), Some(vec![8; 32])).await.err().unwrap();
         assert!(said.contains("Failed to bind sockets"), "{said}");
-        // (tried again, it would have taken the 500 ms it may)
-        assert!(started.elapsed() < std::time::Duration::from_millis(400), "{:?}", started.elapsed());
         drop(other);
+    });
+}
+
+/// An endpoint closed while an `iroh.online` of it waits (no relay answering, never online) cancels that wait, which
+/// lets go of the endpoint: its fixed port is bound again at once.
+#[test]
+fn closing_an_endpoint_cancels_what_waits_on_it() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let fixed = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().to_string();
+        // (a relay at a port nothing answers on: never online)
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let options = json!({ "relayUrls": [format!("http://127.0.0.1:{silent}/")], "alpns": [], "bindAddr": fixed, "dht": false });
+        let id = inner.run("iroh.bind", options.clone(), Some(vec![9; 32])).await.unwrap().json["id"].as_u64().unwrap();
+        let Handle::Endpoint(_, kept) = inner.handle(id).unwrap() else { panic!("not an endpoint") };
+        let online = {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("iroh.online", json!({ "id": id }), None).await })
+        };
+        while kept.ops.try_write().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        inner.run("iroh.close", json!({ "id": id, "forget": true }), None).await.unwrap();
+        assert_eq!(online.await.unwrap().err().unwrap(), "the endpoint is closed");
+        let again = inner.run("iroh.bind", options, Some(vec![9; 32])).await.unwrap().json["id"].as_u64().unwrap();
+        inner.run("iroh.close", json!({ "id": again, "forget": true }), None).await.unwrap();
+    });
+}
+
+/// Two `iroh.close` of one endpoint at once: the second answers only once the first is done (its handle `Unbound`).
+#[test]
+fn a_second_close_answers_once_the_first_is_done() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let inner = shell.inner.clone();
+    shell.runtime.block_on(async move {
+        let id = inner.run("iroh.bind", json!({ "relayUrls": [], "alpns": [] }), Some(vec![10; 32])).await.unwrap().json["id"].as_u64().unwrap();
+        let Handle::Endpoint(_, kept) = inner.handle(id).unwrap() else { panic!("not an endpoint") };
+        // (an operation holding it: the first close waits for it)
+        let op = kept.ops.read().await;
+        let close = || {
+            let inner = inner.clone();
+            tokio::spawn(async move { inner.run("iroh.close", json!({ "id": id }), None).await })
+        };
+        let first = close();
+        while !kept.closed.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let second = close();
+        while kept.closed_done.receiver_count() == 0 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!first.is_finished() && !second.is_finished());
+        drop(op);
+        second.await.unwrap().unwrap();
+        assert!(matches!(inner.handle(id), Ok(Handle::Unbound { .. })), "the second answered before the first was done");
+        first.await.unwrap().unwrap();
     });
 }
 

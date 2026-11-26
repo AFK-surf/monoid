@@ -49,8 +49,20 @@ pub(crate) struct Kept {
     pub(crate) held: Mutex<(u32, Vec<iroh::endpoint::Incoming>)>,
     /// Relay URLs permitted in DHT/mDNS address lookup responses for `lookup: true` client endpoints.
     pub(crate) lookup_relays: Option<Arc<RwLock<BTreeSet<RelayUrl>>>>,
-    /// Closed (`iroh.close`): no accepting, keeper or connection is started on it any more.
+    /// Closed (`iroh.close`, set as its close starts): no accepting, keeper, connection or other operation is started
+    /// on it any more.
     pub(crate) closed: AtomicBool,
+    /// Told as its close starts: each operation still going on it (`Kept::guarded`) is cancelled.
+    pub(crate) closing: tokio::sync::watch::Sender<bool>,
+    /// Held (read) by each operation that holds the endpoint while it waits (`Kept::guarded`); its close takes it
+    /// (write) once all have let go.
+    pub(crate) ops: tokio::sync::RwLock<()>,
+    /// Its close done (its handle let go or made `Unbound`): a second `iroh.close` of it answers once this is.
+    pub(crate) closed_done: tokio::sync::watch::Sender<bool>,
+    /// Keepers `iroh.keep` stopped (aborted), each holding the endpoint till its task has ended: its close awaits them.
+    pub(crate) retired_keepers: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// The fixed address it was bound at (`bindAddr` with a port): what its close notes in `RECENTLY_CLOSED`.
+    pub(crate) fixed_bind: Option<std::net::SocketAddr>,
     /// The task accepting its connections (`iroh.accept`), apart from `accepted`, whose lock an `iroh.accept` holds while
     /// it waits for one.
     pub(crate) accept_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -66,7 +78,11 @@ impl Kept {
     async fn close(&self, endpoint: Endpoint) {
         // Set before the locks below are taken, each of them checked under its lock: what starts after is refused.
         self.closed.store(true, Ordering::SeqCst);
-        let keepers: Vec<_> = self.keepers.lock().unwrap().drain().map(|(_, task)| task).collect();
+        // Each operation still holding the endpoint is cancelled, and let go of it before this goes on.
+        self.closing.send_replace(true);
+        drop(self.ops.write().await);
+        let mut keepers: Vec<_> = self.keepers.lock().unwrap().drain().map(|(_, task)| task).collect();
+        keepers.append(&mut self.retired_keepers.lock().unwrap());
         for task in &keepers {
             task.abort();
         }
@@ -89,6 +105,55 @@ impl Kept {
         // Handshakes done but not yet taken by an `iroh.accept`; one waiting found the channel ended and let go of it.
         self.accepted.lock().await.take();
     }
+
+    /// `work` (an operation that holds the endpoint, given it), refused once the endpoint is closing and cancelled as
+    /// its close starts: its close goes on only once each has let go of the endpoint (`ops`), however long the work
+    /// would have waited (`iroh.online` with no relay answering, a dial never done).
+    async fn guarded<T>(&self, work: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+        let _op = self.ops.read().await;
+        if self.closed.load(Ordering::SeqCst) {
+            return Err(ENDPOINT_CLOSED.into());
+        }
+        let mut closing = self.closing.subscribe();
+        // (`work`, and the endpoint in it, dropped before `_op`)
+        tokio::select! {
+            biased;
+            _ = closing.wait_for(|closing| *closing) => Err(ENDPOINT_CLOSED.into()),
+            done = work => done,
+        }
+    }
+}
+
+/// What an operation on an endpoint closed, or closing, answers.
+const ENDPOINT_CLOSED: &str = "the endpoint is closed";
+
+/// Whether a bind at `asked` would take the address an endpoint closed here was bound at (`at`): the same family and
+/// port, the same address or either unspecified, and on IPv6 the same scope (one network interface's).
+fn same_bind_addr(at: std::net::SocketAddr, asked: std::net::SocketAddr) -> bool {
+    use std::net::SocketAddr::{V4, V6};
+    let ips = |a: std::net::IpAddr, b: std::net::IpAddr| a == b || a.is_unspecified() || b.is_unspecified();
+    match (at, asked) {
+        (V4(at), V4(asked)) => at.port() == asked.port() && ips((*at.ip()).into(), (*asked.ip()).into()),
+        (V6(at), V6(asked)) => at.port() == asked.port() && at.scope_id() == asked.scope_id() && ips((*at.ip()).into(), (*asked.ip()).into()),
+        _ => false,
+    }
+}
+
+/// The most addresses `RECENTLY_CLOSED` keeps (the oldest let go first).
+const CLOSED_MOST: usize = 64;
+
+/// Notes the addresses an endpoint closed here was bound at, now (`RECENTLY_CLOSED`): each once, those past
+/// `CLOSED_LATELY` forgotten, `CLOSED_MOST` at most.
+fn note_closed(bound: impl IntoIterator<Item = std::net::SocketAddr>) {
+    let now = std::time::Instant::now();
+    let mut closed = RECENTLY_CLOSED.lock().unwrap();
+    closed.retain(|(_, at)| at.elapsed() < CLOSED_LATELY);
+    for addr in bound {
+        closed.retain(|(was, _)| *was != addr);
+        closed.push((addr, now));
+    }
+    let over = closed.len().saturating_sub(CLOSED_MOST);
+    closed.drain(..over);
 }
 
 /// The addresses of endpoints closed here (`iroh.close`) lately, each with when its close answered: what is bound again
@@ -113,7 +178,7 @@ const BIND_AGAIN_FOR: std::time::Duration = std::time::Duration::from_millis(500
 fn closed_lately(asked: std::net::SocketAddr) -> bool {
     let mut closed = RECENTLY_CLOSED.lock().unwrap();
     closed.retain(|(_, at)| at.elapsed() < CLOSED_LATELY);
-    closed.iter().any(|(addr, _)| addr.port() == asked.port() && addr.is_ipv4() == asked.is_ipv4() && (addr.ip() == asked.ip() || addr.ip().is_unspecified() || asked.ip().is_unspecified()))
+    closed.iter().any(|(at, _)| same_bind_addr(*at, asked))
 }
 
 /// Whether a bind failed for its address being in use (`EADDRINUSE`), as the error's sources say.
@@ -141,7 +206,7 @@ async fn bind_again_closed<T, F: std::future::Future<Output = Result<T, (bool, S
                     crate::log::info(&format!("mesh: {} held a moment after an endpoint here closed, bound at the {} try, after {} ms", asked.map(|a| a.to_string()).unwrap_or_default(), again + 1, started.elapsed().as_millis()));
                 }
                 if let Some(asked) = asked {
-                    RECENTLY_CLOSED.lock().unwrap().retain(|(addr, _)| addr.port() != asked.port() || addr.is_ipv4() != asked.is_ipv4());
+                    RECENTLY_CLOSED.lock().unwrap().retain(|(at, _)| !same_bind_addr(*at, asked));
                 }
                 return Ok(bound);
             }
@@ -443,6 +508,18 @@ impl Inner {
     /// them, and a phone whose links were replaced often held hundreds and grew gigabytes a minute (2026-10-19). One of
     /// an endpoint here (`kept`) is waited on by its close till let go (it holds the endpoint's sockets); where that
     /// endpoint is closed already, it is closed and None.
+    /// A stream opened or taken on connection `conn`, kept for the core while that connection is: checked under the
+    /// same lock its close takes (`release_conn`), so that none is kept after its connection's streams were let go.
+    fn keep_stream_of(&self, conn: u64, halves: Arc<Halves>) -> Option<u64> {
+        let mut handles = self.handles.lock().unwrap();
+        if !matches!(handles.get(&conn), Some(Handle::Conn(_))) {
+            return None;
+        }
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        handles.insert(id, Handle::IStream(halves));
+        Some(id)
+    }
+
     fn keep_conn_of(self: &Arc<Self>, conn: Connection, kept: Option<&Arc<Kept>>) -> Option<u64> {
         let mut conns = kept.map(|kept| kept.conns.lock().unwrap());
         if kept.is_some_and(|kept| kept.closed.load(Ordering::SeqCst)) {
@@ -521,8 +598,9 @@ impl Inner {
         }));
         let alpns: Vec<Vec<u8>> = a.get("alpns").and_then(Value::as_array).into_iter().flatten().map(|x| hex::decode(x.as_str().unwrap_or_default()).map_err(err)).collect::<Result<_, _>>()?;
         mark_with_dscp(a.get("dscp"))?;
-        let kept = Arc::new(Kept { homes: Mutex::new(relays.clone()), bound: relays.clone(), entries: tokio::sync::Mutex::new(entries.clone()), lookup_relays: lookup_relays.clone(), ..Kept::default() });
         let bind_addr = a.get("bindAddr").and_then(Value::as_str).map(|addr| addr.parse::<std::net::SocketAddr>().map_err(err)).transpose()?;
+        let fixed_bind = bind_addr.filter(|addr| addr.port() != 0);
+        let kept = Arc::new(Kept { homes: Mutex::new(relays.clone()), bound: relays.clone(), entries: tokio::sync::Mutex::new(entries.clone()), lookup_relays: lookup_relays.clone(), fixed_bind, ..Kept::default() });
         let congestion = a.get("congestion").and_then(Value::as_str).unwrap_or("cubic");
         // (made again for each try: a bind consumes it)
         let builder = || -> Result<iroh::endpoint::Builder, String> {
@@ -614,26 +692,34 @@ impl Inner {
             }
             "iroh.meshAttachLeaf" | "iroh.meshUseLeaf" | "iroh.meshDetachLeaf" => {
                 let Handle::Endpoint(endpoint, kept) = self.handle(id_of(a)?)? else { return Err("not an endpoint".into()) };
-                if op == "iroh.meshAttachLeaf" {
-                    let connection = a.get("connection").and_then(Value::as_u64).ok_or("missing leaf connection")?;
-                    let Handle::Conn(connection) = self.handle(connection)? else { return Err("not a connection".into()) };
-                    Ok(Answer::json(kept.mesh.attach_leaf(&endpoint, connection, a).await?))
-                } else {
-                    if op == "iroh.meshUseLeaf" { kept.mesh.use_leaf(&endpoint, a).await?; } else { kept.mesh.detach_leaf(a).await?; }
-                    Ok(Answer::json(json!({})))
-                }
+                let mesh = kept.clone();
+                kept.guarded(async move {
+                    if op == "iroh.meshAttachLeaf" {
+                        let connection = a.get("connection").and_then(Value::as_u64).ok_or("missing leaf connection")?;
+                        let Handle::Conn(connection) = self.handle(connection)? else { return Err("not a connection".into()) };
+                        Ok(Answer::json(mesh.mesh.attach_leaf(&endpoint, connection, a).await?))
+                    } else {
+                        if op == "iroh.meshUseLeaf" { mesh.mesh.use_leaf(&endpoint, a).await?; } else { mesh.mesh.detach_leaf(a).await?; }
+                        Ok(Answer::json(json!({})))
+                    }
+                })
+                .await
             }
             "iroh.meshConfigure" | "iroh.meshRemove" => {
                 let (endpoint, kept) = match self.handle(id_of(a)?)? {
                     Handle::Endpoint(endpoint, kept) => (endpoint, kept),
                     _ => return Err("not an endpoint".into()),
                 };
-                if op == "iroh.meshRemove" {
-                    kept.mesh.remove(a).await?;
-                    Ok(Answer::json(json!({})))
-                } else {
-                    Ok(Answer::json(kept.mesh.configure_root(&endpoint, a).await?))
-                }
+                let mesh = kept.clone();
+                kept.guarded(async move {
+                    if op == "iroh.meshRemove" {
+                        mesh.mesh.remove(a).await?;
+                        Ok(Answer::json(json!({})))
+                    } else {
+                        Ok(Answer::json(mesh.mesh.configure_root(&endpoint, a).await?))
+                    }
+                })
+                .await
             }
             "iroh.connect" => {
                 let (endpoint, kept) = match self.handle(id_of(a)?)? {
@@ -651,13 +737,20 @@ impl Inner {
                     options = options.with_disabled_relays(disabled);
                 }
                 let mut addr = endpoint_addr(said)?;
-                if let Some(scope) = said.get("meshScope").and_then(Value::as_str) {
-                    addr.addrs.insert(kept.mesh.address(scope, addr.id).await?);
-                }
-                let connecting = endpoint.connect_with_opts(addr, &bytes.unwrap_or_default(), options).await.map_err(err)?;
-                drop(endpoint);
-                let conn = connecting.await.map_err(err)?;
-                let id = self.keep_conn_of(conn, Some(&kept)).ok_or("the endpoint is closed")?;
+                let scope = said.get("meshScope").and_then(Value::as_str);
+                let mesh = kept.clone();
+                // (a dial still under way as the endpoint closes is given up, its `Connecting` dropped)
+                let conn = kept
+                    .guarded(async move {
+                        if let Some(scope) = scope {
+                            addr.addrs.insert(mesh.mesh.address(scope, addr.id).await?);
+                        }
+                        let connecting = endpoint.connect_with_opts(addr, &bytes.unwrap_or_default(), options).await.map_err(err)?;
+                        drop(endpoint);
+                        connecting.await.map_err(err)
+                    })
+                    .await?;
+                let id = self.keep_conn_of(conn, Some(&kept)).ok_or(ENDPOINT_CLOSED)?;
                 Ok(Answer::json(json!({ "id": id })))
             }
             // As the station's addon takes them: handshakes side by side, each on its own, so one never finished (a
@@ -717,50 +810,84 @@ impl Inner {
                         guard.extend(list.iter().cloned());
                     }
                 }
-                let mut kept_entries = kept.entries.lock().await;
-                endpoint.set_relay_entries(entries.into_iter().collect()).await;
-                *kept_entries = pairs;
-                Ok(Answer::json(json!({})))
+                let entered = kept.clone();
+                let set = kept
+                    .guarded(async move {
+                        let mut kept_entries = entered.entries.lock().await;
+                        endpoint.set_relay_entries(entries.into_iter().collect()).await;
+                        *kept_entries = pairs;
+                        Ok(())
+                    })
+                    .await;
+                // (one closing answers as one closed does)
+                match set {
+                    Err(error) if error != ENDPOINT_CLOSED => Err(error),
+                    _ => Ok(Answer::json(json!({}))),
+                }
             }
             "iroh.networkChange" => {
-                let endpoint = match self.handle(id_of(a)?)? {
-                    Handle::Endpoint(endpoint, _) => endpoint,
+                let (endpoint, kept) = match self.handle(id_of(a)?)? {
+                    Handle::Endpoint(endpoint, kept) => (endpoint, kept),
                     Handle::Unbound { .. } => return Ok(Answer::json(json!({}))),
                     _ => return Err("not an endpoint".into()),
                 };
-                endpoint.network_change().await;
+                let _ = kept.guarded(async move { Ok(endpoint.network_change().await) }).await;
                 Ok(Answer::json(json!({})))
             }
             "iroh.close" => {
                 let id = id_of(a)?;
                 if let Ok(Handle::Endpoint(_, kept)) = self.handle(id) { kept.mesh.clear().await; }
                 let forget = a.get("forget").and_then(Value::as_bool).unwrap_or(false);
-                let closing = {
-                    let mut handles = self.handles.lock().unwrap();
-                    match handles.get(&id) {
-                        // Let go entirely: nothing of it is asked after (the core's own endpoints, not a dial's).
-                        Some(Handle::Endpoint(..)) if forget => {
-                            let Some(Handle::Endpoint(endpoint, kept)) = handles.remove(&id) else { unreachable!() };
-                            Some((endpoint, kept))
-                        }
-                        Some(Handle::Unbound { .. }) if forget => {
-                            handles.remove(&id);
-                            None
-                        }
-                        Some(Handle::Endpoint(endpoint, kept)) => {
-                            let closing = (endpoint.clone(), kept.clone());
-                            handles.insert(id, Handle::Unbound { id: hex::encode(closing.0.id().as_bytes()) });
-                            Some(closing)
-                        }
-                        _ => None,
+                loop {
+                    enum Step {
+                        Close(Endpoint, Arc<Kept>),
+                        Wait(tokio::sync::watch::Receiver<bool>),
+                        Done,
                     }
-                };
-                // Answered once its sockets are closed: what binds next may take its fixed port at once.
-                if let Some((endpoint, kept)) = closing {
-                    let bound = endpoint.bound_sockets();
-                    kept.close(endpoint).await;
-                    let now = std::time::Instant::now();
-                    RECENTLY_CLOSED.lock().unwrap().extend(bound.into_iter().map(|addr| (addr, now)));
+                    let step = {
+                        let mut handles = self.handles.lock().unwrap();
+                        match handles.get(&id) {
+                            // Kept as it is while it closes (what is asked of it meanwhile finds it closing), then let
+                            // go or made `Unbound` below.
+                            Some(Handle::Endpoint(endpoint, kept)) => {
+                                if kept.closed.swap(true, Ordering::SeqCst) {
+                                    Step::Wait(kept.closed_done.subscribe())
+                                } else {
+                                    Step::Close(endpoint.clone(), kept.clone())
+                                }
+                            }
+                            // Let go entirely: nothing of it is asked after (the core's own endpoints, not a dial's).
+                            Some(Handle::Unbound { .. }) if forget => {
+                                handles.remove(&id);
+                                Step::Done
+                            }
+                            _ => Step::Done,
+                        }
+                    };
+                    match step {
+                        Step::Done => break,
+                        // Closing already (another `iroh.close` of it): answered once that one is done, then as it left it.
+                        Step::Wait(mut done) => {
+                            let _ = done.wait_for(|done| *done).await;
+                        }
+                        // Answered once its sockets are closed: what binds next may take its fixed port at once.
+                        Step::Close(endpoint, kept) => {
+                            let bound: Vec<_> = kept.fixed_bind.map(|fixed| endpoint.bound_sockets().into_iter().filter(|addr| addr.port() == fixed.port()).collect()).unwrap_or_default();
+                            let unbound = hex::encode(endpoint.id().as_bytes());
+                            kept.close(endpoint).await;
+                            note_closed(bound);
+                            {
+                                let mut handles = self.handles.lock().unwrap();
+                                if forget {
+                                    handles.remove(&id);
+                                } else {
+                                    handles.insert(id, Handle::Unbound { id: unbound });
+                                }
+                            }
+                            kept.closed_done.send_replace(true);
+                            break;
+                        }
+                    }
                 }
                 Ok(Answer::json(json!({})))
             }
@@ -797,7 +924,12 @@ impl Inner {
                     ack_in: Default::default(),
                     ack_ready: tokio::sync::watch::channel(false).0,
                 };
-                Ok(Answer::json(json!({ "id": self.keep(Handle::IStream(Arc::new(halves))) })))
+                // (kept only while its connection is: one closed meanwhile let its streams go, `release_conn`)
+                match self.keep_stream_of(on, Arc::new(halves)) {
+                    Some(id) => Ok(Answer::json(json!({ "id": id }))),
+                    None if op == "conn.acceptBi" => Ok(Answer::json(json!({ "end": true }))),
+                    None => Err("the connection is closed".into()),
+                }
             }
             "conn.closed" => match self.handle(id_of(a)?)? {
                 Handle::Conn(conn) => Ok(Answer::json(close_info(&conn.closed().await))),
@@ -839,9 +971,9 @@ impl Inner {
             // A station's peer's relays it is not to be reached through (`peer`, hex; `relays`; `public`: iroh's own
             // public relays too), in force once answered (iroh's `set_disabled_relays`): the addon's `disabled_relays`.
             "iroh.disabledRelays" => {
-                let endpoint = match self.handle(id_of(a)?)? {
-                    Handle::Endpoint(endpoint, _) => endpoint,
-                    Handle::Unbound { .. } => return Err("the endpoint is closed".into()),
+                let (endpoint, kept) = match self.handle(id_of(a)?)? {
+                    Handle::Endpoint(endpoint, kept) => (endpoint, kept),
+                    Handle::Unbound { .. } => return Err(ENDPOINT_CLOSED.into()),
                     _ => return Err("not an endpoint".into()),
                 };
                 let bytes: [u8; 32] = hex::decode(str_of(a, "peer")?).map_err(err)?.try_into().map_err(|_| "the id is not 32 bytes".to_string())?;
@@ -850,31 +982,34 @@ impl Inner {
                 if a.get("public").and_then(Value::as_bool).unwrap_or(false) {
                     disabled.extend(iroh::defaults::prod::default_relay_map().relays::<Vec<_>>().iter().map(|c| c.url.clone()));
                 }
-                endpoint.set_disabled_relays(peer, disabled).await;
+                kept.guarded(async move { Ok(endpoint.set_disabled_relays(peer, disabled).await) }).await?;
                 Ok(Answer::json(json!({})))
             }
             // Whether the endpoint is reached through relay `url` now, end to end (keep.rs `probe`): `{ok: true}`, or
             // `{ok: false, stage}`, `probe_offline` where the relay is out of this machine's reach and `endpoint_failed`
             // where it is not but the endpoint is. The station's relays' watch asks it (station/src/mesh/relays.ts).
             "iroh.probeRelay" => {
-                let endpoint = match self.handle(id_of(a)?)? {
-                    Handle::Endpoint(endpoint, _) => endpoint,
-                    Handle::Unbound { .. } => return Err("the endpoint is closed".into()),
+                let (endpoint, kept) = match self.handle(id_of(a)?)? {
+                    Handle::Endpoint(endpoint, kept) => (endpoint, kept),
+                    Handle::Unbound { .. } => return Err(ENDPOINT_CLOSED.into()),
                     _ => return Err("not an endpoint".into()),
                 };
                 let relay = relay_url(str_of(a, "url")?)?;
-                let said = match keep::probe(&endpoint, &relay).await.stage() {
+                let found = kept.guarded(async move { Ok(keep::probe(&endpoint, &relay).await) }).await?;
+                let said = match found.stage() {
                     None => json!({ "ok": true }),
                     Some(stage) => json!({ "ok": false, "stage": stage }),
                 };
                 Ok(Answer::json(said))
             }
             "iroh.online" | "iroh.insertRelay" | "iroh.removeRelay" | "iroh.publicRelays" | "iroh.keep" | "iroh.setCongestion" | "iroh.setAlpns" | "iroh.holdIncoming" => {
-                let (endpoint, kept) = match self.handle(id_of(a)?)? {
+                let (endpoint, guard) = match self.handle(id_of(a)?)? {
                     Handle::Endpoint(endpoint, kept) => (endpoint, kept),
-                    Handle::Unbound { .. } => return Err("the endpoint is closed".into()),
+                    Handle::Unbound { .. } => return Err(ENDPOINT_CLOSED.into()),
                     _ => return Err("not an endpoint".into()),
                 };
+                let kept = guard.clone();
+                guard.guarded(async move {
                 match op {
                     // Once it is on its home relay (at once with relays off).
                     "iroh.online" => endpoint.online().await,
@@ -930,13 +1065,17 @@ impl Inner {
                         if kept.closed.load(Ordering::SeqCst) {
                             return Err("the endpoint is closed".into());
                         }
-                        keepers.retain(|url, task| {
-                            let named = urls.contains(url);
-                            if !named {
+                        // (each stopped kept till its task has ended, for the endpoint's close to await)
+                        let stopped: Vec<String> = keepers.keys().filter(|url| !urls.contains(url)).cloned().collect();
+                        let mut retired = kept.retired_keepers.lock().unwrap();
+                        retired.retain(|task| !task.is_finished());
+                        for url in stopped {
+                            if let Some(task) = keepers.remove(&url) {
                                 task.abort();
+                                retired.push(task);
                             }
-                            named
-                        });
+                        }
+                        drop(retired);
                         for relay in relays {
                             let endpoint = endpoint.clone();
                             keepers.entry(relay.to_string()).or_insert_with(|| tokio::spawn(keep::keep(endpoint, relay)));
@@ -949,6 +1088,8 @@ impl Inner {
                     _ => kept.held.lock().unwrap().0 = a.get("n").and_then(Value::as_u64).unwrap_or(0) as u32,
                 }
                 Ok(Answer::json(json!({})))
+                })
+                .await
             }
             // Whether the other end is still there: asked with a datagram (which a live end acknowledges at once) a few
             // times within `within` ms, true as soon as anything is heard from it (the addon's `answers`, which says why).
@@ -1108,6 +1249,58 @@ mod tests {
         assert!(dropped.load(O::SeqCst), "the handshake given up was kept");
         assert_eq!(handshake::<u8, String>("here", async { Ok(1) }, HANDSHAKE_TIMEOUT).await, Some(1));
         assert!(handshake::<u8, String>("here", async { Err("refused".into()) }, HANDSHAKE_TIMEOUT).await.is_none());
+    }
+
+    /// A bind found in use is tried again only at an address an endpoint closed here was bound at lately: once at any
+    /// other, again (till it binds) at one of those, and that address forgotten once bound.
+    #[tokio::test(start_paused = true)]
+    async fn only_an_address_closed_here_is_bound_again() {
+        use std::sync::atomic::AtomicU32;
+        // (held all along: no other test binds it, or notes it closed)
+        let held = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = held.local_addr().unwrap();
+        let tries = AtomicU32::new(0);
+        let in_use = || async {
+            tries.fetch_add(1, Ordering::SeqCst);
+            Err::<(), _>((true, "in use".to_string()))
+        };
+        assert!(bind_again_closed(Some(addr), in_use).await.is_err());
+        assert_eq!(tries.load(Ordering::SeqCst), 1);
+
+        note_closed([addr]);
+        tries.store(0, Ordering::SeqCst);
+        let free_at_third = || async {
+            if tries.fetch_add(1, Ordering::SeqCst) < 2 { Err((true, "in use".to_string())) } else { Ok(()) }
+        };
+        assert!(bind_again_closed(Some(addr), free_at_third).await.is_ok());
+        assert_eq!(tries.load(Ordering::SeqCst), 3);
+        assert!(!closed_lately(addr), "kept as closed once bound again");
+
+        // not in use: never tried again
+        note_closed([addr]);
+        tries.store(0, Ordering::SeqCst);
+        let refused = || async {
+            tries.fetch_add(1, Ordering::SeqCst);
+            Err::<(), _>((false, "refused".to_string()))
+        };
+        assert!(bind_again_closed(Some(addr), refused).await.is_err());
+        assert_eq!(tries.load(Ordering::SeqCst), 1);
+        RECENTLY_CLOSED.lock().unwrap().retain(|(at, _)| *at != addr);
+        drop(held);
+    }
+
+    /// The addresses taken as one another's: the same port and family, an unspecified address as any, an IPv6 scope
+    /// its own.
+    #[test]
+    fn addresses_of_one_bind() {
+        let at = |s: &str| s.parse::<std::net::SocketAddr>().unwrap();
+        assert!(same_bind_addr(at("127.0.0.1:5000"), at("127.0.0.1:5000")));
+        assert!(same_bind_addr(at("0.0.0.0:5000"), at("127.0.0.1:5000")));
+        assert!(!same_bind_addr(at("127.0.0.1:5000"), at("127.0.0.1:5001")));
+        assert!(!same_bind_addr(at("10.0.0.1:5000"), at("127.0.0.1:5000")));
+        assert!(!same_bind_addr(at("127.0.0.1:5000"), at("[::1]:5000")));
+        assert!(same_bind_addr(at("[fe80::1%2]:5000"), at("[fe80::1%2]:5000")));
+        assert!(!same_bind_addr(at("[fe80::1%2]:5000"), at("[fe80::1%3]:5000")));
     }
 
     #[test]
