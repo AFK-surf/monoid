@@ -27,10 +27,12 @@
   by its `ImageVersion`: two compilers in turn kept only the last run's units in one, and four `ubuntu-24.04` images
   of one clang and libc, each its own store, left a push's image's units hours behind main's.
 - Use GitHub's standard `ubuntu-24.04` runners for Linux CI; do not use paid runners. The pipeline plans only
-  missing native parts. `natives-build` builds each non-Apple target on its own VM, with its own checkout and Cargo
-  target. Main publishes the archives by source key. A branch stages them in company R2 and uploads one receipt
-  artifact per target for the rest of that run. `natives` combines the status for the pipeline and Windows preview.
-  `natives-win-reader` and `natives-harness` take their static shell from that run when it changed.
+  missing native parts. `natives-build` splits heavy independent Rust builds (`shell-station` and `mesh`) onto separate
+  VMs with per-target Cargo target and Zig caches, and defers Linux readers to `natives-linux-readers` when
+  `shell-station` is rebuilt so cold builds stay under 5 minutes. Main publishes the archives by source key. A branch
+  stages them in company R2 and uploads per-slot receipt artifacts for the rest of that run. `natives` combines the
+  status for the pipeline and Windows preview. `natives-linux-readers`, `natives-win-reader`, and `natives-harness`
+  take their static shell from that run when it changed.
   The Linux reader jobs use 8 MB C units with one `moonbit_init` unit, and keep compiled units in the Actions cache.
   Branch readers and the tests' harness use -O0, and main's shipped readers retain optimization. Each Rust check
   shard uses its own GitHub runner and Cargo target. `plan.sh` selects Rust checks when their inputs changed.
