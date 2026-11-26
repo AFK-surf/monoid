@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f5bbb1cbf](https://github.com/AFK-surf/monoid/commit/f5bbb1cbf3a631e065cc3351ce0e0e4b6e0117d3) fix(station): read Antigravity quota through its C | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.64 | 66.38 | 101.01 | 127.38 |
 | [d1ae551bf](https://github.com/AFK-surf/monoid/commit/d1ae551bf9b3ab6856ec3dd5e447070aeb16ab62) fix(vault): clear pending requests on archive and  | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.64 | 66.38 | 101.01 | 127.38 |
 | [b69602eb8](https://github.com/AFK-surf/monoid/commit/b69602eb8f5ca6d948645eb0ccc661304326164a) fix(ui): fade every scroll box's cut ends and let  | 2.6 | 3.52 | 14.56 | 37.37 | 56.91 | 32.64 | 66.38 | 101.01 | 126.83 |
 | [c07feb817](https://github.com/AFK-surf/monoid/commit/c07feb817fe57b4411b30634308ab987132005ab) fix(vault): stop personal vault splits and recover | 2.6 | 3.51 | 14.52 | 37.3 | 56.77 | 32.64 | 66.38 | 101.01 | 129.86 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6117ad142](https://github.com/AFK-surf/monoid/commit/6117ad1421cdbbf5cdd6934da456edf4d5303cc2) fix(station): read a rig's grants again once the p | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.71 | 124.98 |
 | [91cfd340e](https://github.com/AFK-surf/monoid/commit/91cfd340e3034afd42e4da201257c1e93e8c114e) fix(station): omit commentless auto-quotes when ou | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.71 | 124.98 |
 | [91d27fc9d](https://github.com/AFK-surf/monoid/commit/91d27fc9d1edcd9b2c763afc06d12960c5eb8bfc) fix(ui,web): prevent iOS WebKit touchend from blur | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.71 | 124.98 |
-| [f94f0883c](https://github.com/AFK-surf/monoid/commit/f94f0883c061d0856743341a618260609e54c233) feat(station): W9-A5a default policy table, wildca | 2.59 | 3.5 | 14.48 | 37.12 | 56.62 | 32.43 | 65.85 | 100.71 | 124.98 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f5bbb1cbf](https://github.com/AFK-surf/monoid/commit/f5bbb1cbf3a631e065cc3351ce0e0e4b6e0117d3) fix(station): read Antigravity quota through its C | 0.57 | 0.74 | 2.89 | 3.95 | 7.23 | 2.15 | 6.06 | 57.36 |
 | [d1ae551bf](https://github.com/AFK-surf/monoid/commit/d1ae551bf9b3ab6856ec3dd5e447070aeb16ab62) fix(vault): clear pending requests on archive and  | 0.57 | 0.74 | 2.89 | 3.95 | 7.23 | 2.15 | 6.06 | 57.77 |
 | [b69602eb8](https://github.com/AFK-surf/monoid/commit/b69602eb8f5ca6d948645eb0ccc661304326164a) fix(ui): fade every scroll box's cut ends and let  | 0.57 | 0.74 | 2.89 | 3.95 | 7.23 | 2.15 | 6.06 | 57.43 |
 | [c07feb817](https://github.com/AFK-surf/monoid/commit/c07feb817fe57b4411b30634308ab987132005ab) fix(vault): stop personal vault splits and recover | 0.57 | 0.74 | 2.88 | 3.93 | 7.21 | 2.14 | 6.04 | 57.51 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6117ad142](https://github.com/AFK-surf/monoid/commit/6117ad1421cdbbf5cdd6934da456edf4d5303cc2) fix(station): read a rig's grants again once the p | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.38 |
 | [91cfd340e](https://github.com/AFK-surf/monoid/commit/91cfd340e3034afd42e4da201257c1e93e8c114e) fix(station): omit commentless auto-quotes when ou | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.44 |
 | [91d27fc9d](https://github.com/AFK-surf/monoid/commit/91d27fc9d1edcd9b2c763afc06d12960c5eb8bfc) fix(ui,web): prevent iOS WebKit touchend from blur | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.49 |
-| [f94f0883c](https://github.com/AFK-surf/monoid/commit/f94f0883c061d0856743341a618260609e54c233) feat(station): W9-A5a default policy table, wildca | 0.57 | 0.74 | 2.87 | 3.93 | 7.19 | 2.14 | 6.03 | 57.35 |
