@@ -104,10 +104,10 @@ export class CloudSync {
   /// unopened or unreadable; re-dispatched in `recomputeOwners` once verified ownership is established.
   readonly #deferredWorkspaceSync = new Set<string>();
   readonly #deferredFeedbackSync = new Set<string>();
-  /// Authoritative `/v1/me` payloads held in memory by `(sub, loginGen)` when an account has no live DB (e.g.
-  /// disk open failed and the host has no `memoryDb()` fallback). Proves which workspaces `sub` does/does not own
-  /// without permitting writes to a nonexistent DB.
-  readonly #liveMe = new Map<string, { gen: number; me: unknown }>();
+  /// Authoritative `/v1/me` payloads (or `null` for `NOT_BETA` rejection) held in memory by `(sub, loginGen)` when
+  /// an account has no writable DB or its DB write has not yet been confirmed committed on disk. Always takes
+  /// precedence over stale disk rows in `#meOf(sub)` and is cleared only after `db.written` confirms persistence.
+  readonly #liveMe = new Map<string, { gen: number; me: unknown | null }>();
   /// An account's credential asks out at once, by account (`CREDENTIAL_ASK_CONCURRENCY`).
   readonly #askTurn = new Map<string, ReturnType<typeof Semaphore.makeUnsafe>>();
   /// Until when (ms) an account asks no credential, the cloud having refused one for too many (`CREDENTIAL_429_COOLDOWN_MS`).
@@ -181,28 +181,54 @@ export class CloudSync {
     }
   }
 
-  /// Latest known `/v1/me` payload for `sub`: prefers same-generation in-memory authoritative `/v1/me` (when an
-  /// account has no writable DB) over the account DB, while always registering the reactive `$account-record/me`
+  /// Latest known `/v1/me` payload for `sub`: prefers same-generation in-memory authoritative `/v1/me` (including
+  /// `null` tombstone for `NOT_BETA`) over the account DB, while always registering the reactive `$account-record/me`
   /// read dependency so live `workspaces` subscriptions stay current.
   #meOf(sub: string): unknown {
     const core = this.#core;
     const fromDb = core.data.record("me", sub);
     const live = this.#liveMe.get(sub);
-    if (live !== undefined && live.gen === core.data.accountGen(sub)) return live.me;
+    if (live !== undefined && live.gen === core.data.accountGen(sub)) {
+      return live.me === null ? undefined : live.me;
+    }
     return fromDb;
   }
 
-  #setLiveMe(sub: string, me: unknown): void {
-    this.#liveMe.set(sub, { gen: this.#core.data.accountGen(sub), me });
+  #setLiveMe(sub: string, me: unknown | null): { gen: number; me: unknown | null } {
+    const entry = { gen: this.#core.data.accountGen(sub), me };
+    this.#liveMe.set(sub, entry);
     this.#core.data.notifyAccountRecord(sub, "me");
+    return entry;
   }
 
   #clearLiveMe(sub: string): void {
     if (this.#liveMe.delete(sub)) this.#core.data.notifyAccountRecord(sub, "me");
   }
 
-  /// Writes any same-generation in-memory authoritative `/v1/me` into a newly published account DB BEFORE
-  /// `recomputeOwners()` / `resumeFor()` so stale disk rows never overwrite a fresher cloud `/v1/me`.
+  /// Writes or drops `live.me` in `db` and removes the in-memory copy ONLY once `db.written` finishes and the
+  /// committed on-disk row actually matches `live.me` (keeping `#liveMe` intact if `SQLITE_FULL` rolls back).
+  #persistLiveMe(sub: string, db: AccountDb, live: { gen: number; me: unknown | null }): void {
+    const core = this.#core;
+    if (db.readOnly || live.gen !== core.data.accountGen(sub)) return;
+    const topic: Topic = { topic: "$account-record", account: sub, name: "me" };
+    if (live.me === null) db.dropAccountDoc("me", topic);
+    else db.putAccountDoc("me", live.me, core.host.nowMs(), topic);
+    core.runner.fork(
+      Effect.andThen(
+        Effect.ignore(db.written),
+        Effect.sync(() => {
+          if (this.#liveMe.get(sub) !== live) return;
+          if (core.data.db(sub) !== db || db.readOnly || live.gen !== core.data.accountGen(sub)) return;
+          const persisted = db.accountDoc("me");
+          const matches = live.me === null ? persisted === undefined : equal(persisted, live.me);
+          if (matches) this.#liveMe.delete(sub);
+        }),
+      ),
+    );
+  }
+
+  /// Persists any same-generation in-memory authoritative `/v1/me` (or `NOT_BETA` tombstone) into a newly published
+  /// account DB BEFORE `recomputeOwners()` / `resumeFor()` so stale disk rows never overwrite fresher cloud state.
   adoptDb(db: AccountDb): void {
     const sub = db.sub;
     const live = this.#liveMe.get(sub);
@@ -211,10 +237,7 @@ export class CloudSync {
       this.#clearLiveMe(sub);
       return;
     }
-    if (!db.readOnly) {
-      db.putAccountDoc("me", live.me, this.#core.host.nowMs(), { topic: "$account-record", account: sub, name: "me" });
-      if (db.accountDoc("me") !== undefined) this.#clearLiveMe(sub);
-    }
+    if (!db.readOnly) this.#persistLiveMe(sub, db, live);
   }
 
   /// Whether `sub`'s workspace memberships are currently unknown because its disk DB was busy/failed (fell back
@@ -234,10 +257,11 @@ export class CloudSync {
     return this.#core.data.isDeferred(sub) || this.#meUnreadable(sub);
   }
 
-  /// Whether `sub`'s DB failed/busy-failed to open and has no live DB handle (cannot accept local writes).
+  /// Whether `sub`'s DB cannot accept local writes (opened read-only for a newer schema, or busy/failed without a DB).
   #dbUnavailable(sub: string): boolean {
     const core = this.#core;
-    if (core.data.db(sub) !== undefined) return false;
+    const db = core.data.db(sub);
+    if (db !== undefined) return db.readOnly;
     const note = core.data.notes.get(sub);
     return note?.kind === "busy" || note?.kind === "failed";
   }
@@ -250,12 +274,10 @@ export class CloudSync {
     return core.accounts.list().some((a) => !this.#isConsole(a.sub) && this.#meUnreadable(a.sub));
   }
 
-  /// Whether local account-DB writes need ownership or DB-availability verification before running.
+  /// Whether local account-DB writes need ownership or DB-writability verification before running.
   needsWriteVerification(): boolean {
     if (this.hasUnverifiedAccounts()) return true;
-    const core = this.#core;
-    if (core.data.notes.size === 0) return false;
-    return core.accounts.list().some((a) => this.#dbUnavailable(a.sub));
+    return this.#core.accounts.list().some((a) => this.#dbUnavailable(a.sub));
   }
 
   #meListsWorkspace(sub: string, workspace: string): boolean {
@@ -580,17 +602,17 @@ export class CloudSync {
         const first = relays !== null && this.relays === null;
         if (first) this.#relaySource = sub;
         if (relays !== null && this.#relaySource === sub) this.relays = relays;
-        core.data.put("me", sub, answer.success);
         const db = core.data.db(sub);
-        if (db !== undefined && !db.readOnly) this.#clearLiveMe(sub);
-        else this.#setLiveMe(sub, answer.success);
+        const live = this.#setLiveMe(sub, answer.success);
+        if (db !== undefined && !db.readOnly) this.#persistLiveMe(sub, db, live);
         if (relays !== null && this.#relaySource === sub) this.onRelays?.(relays, entriesOf(answer.success), entryTargetsOf(answer.success));
         this.mes.set(sub, null);
       } else {
         // A beta app the account may not use: what it reached is not reached through this app.
         if (answer.failure.code === NOT_BETA) {
-          core.data.forgetRecord("me", sub);
-          this.#clearLiveMe(sub);
+          const db = core.data.db(sub);
+          const live = this.#setLiveMe(sub, null);
+          if (db !== undefined && !db.readOnly) this.#persistLiveMe(sub, db, live);
         }
         this.mes.set(sub, answer.failure);
       }
@@ -1309,9 +1331,9 @@ export class CloudSync {
     const workspaces = [...me.workspaces];
     workspaces[at] = { ...(workspaces[at] as Record<string, unknown>), ...entry } as (typeof workspaces)[number];
     const updated = { ...me, workspaces };
-    core.data.put("me", sub, updated);
     const db = core.data.db(sub);
-    if (db === undefined || db.readOnly) this.#setLiveMe(sub, updated);
+    const live = this.#setLiveMe(sub, updated);
+    if (db !== undefined && !db.readOnly) this.#persistLiveMe(sub, db, live);
     return true;
   }
 

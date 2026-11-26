@@ -1961,3 +1961,185 @@ test("R9 regressions: recovered DB adopts newer live /v1/me, no-DB workspaces su
     await core.close();
   }
 });
+
+test("R10 regressions: SQLITE_FULL on adoptDb statement/COMMIT keeps owner A, read-only carry preserves B draft, and NOT_BETA tombstone blocks stale disk revival", async () => {
+  // 1) P0-1a & P0-1b: A's disk DB has stale me without ws-w, B holds ws-w. No-DB authoritative /v1/me assigns ws-w -> A.
+  //    Reopen A via accounts.migrate while injecting SQLITE_FULL once on account_doc write AND once on COMMIT:
+  //    in both cases owner MUST stay A (even after refreshAccount(B) + recomputeOwners) and B's SQLite stays empty!
+  for (const failOn of ["run", "commit"] as const) {
+    const { host } = setupTwoAccountHost();
+    host.memoryDb = undefined;
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }, { id: "ws-w", name: "Shared W" }] });
+    seed.inner.cloudSync.recomputeOwners();
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    let failA = true;
+    let injectOnce = true;
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) => {
+      if (name === dbName("s1") && failA) return Effect.fail(new HostError("disk unavailable"));
+      return Effect.map(origOpen(name), (raw) => {
+        if (name !== dbName("s1")) return raw;
+        return {
+          exec(sql: string) {
+            if (failOn === "commit" && injectOnce && /^\s*COMMIT\b/i.test(sql)) {
+              injectOnce = false;
+              throw new Error("SQLITE_FULL: database or disk is full");
+            }
+            raw.exec(sql);
+          },
+          run(sql: string, params?: readonly SqlValue[]) {
+            if (failOn === "run" && injectOnce && /account_doc/i.test(sql)) {
+              injectOnce = false;
+              throw new Error("SQLITE_FULL: database or disk is full");
+            }
+            return raw.run(sql, params);
+          },
+          all(sql: string, params?: readonly SqlValue[]) {
+            return raw.all(sql, params);
+          },
+          close() {
+            raw.close();
+          },
+        };
+      });
+    };
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccount("s1"));
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.workspaces.owner("ws-w"), "s1");
+
+    failA = false;
+    const nowSec = Math.floor(host.nowMs() / 1000);
+    await run(core.inner.accounts.migrate([
+      { sub: "s1", email: "s1@example.com", name: "s1", picture: "", access: "access-s1", refresh: "refresh-s1", accessExpires: nowSec + 7200 },
+    ]));
+    await host.settle();
+    await run(core.inner.data.written);
+    // Refresh B and recompute owners after rollback -> owner MUST still be A, never B!
+    await run(core.inner.cloudSync.refreshAccount("s2"));
+    core.inner.cloudSync.recomputeOwners();
+    assert.equal(core.inner.workspaces.owner("ws-w"), "s1", `owner must stay A after SQLITE_FULL on ${failOn}`);
+
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 801 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 801, call: "composer.text", params: { key: "new:ws-w", text: `after-full-${failOn}` } });
+    await Effect.runPromise(Deferred.await(ack));
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s2")!.draft("ws-w", "new"), undefined, `B SQLite must NEVER receive A draft after SQLITE_FULL on ${failOn}`);
+    await core.close();
+  }
+
+  // 2) P0-2: A opens read-only (schema_version newer), live /v1/me confirms A owns ws-w; B has writable DB with
+  //    source draft on ws2. Core.receive composer.carry(ws2 -> ws-w) MUST fail with cancelled and preserve B's draft!
+  {
+    const { host } = setupTwoAccountHost();
+    host.onFetch((req) => {
+      const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+      if (req.url.endsWith("/v1/me")) {
+        if (auth === "Bearer access-s1") return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }, { id: "ws-w", name: "Shared W" }], invitations: [], relay_url: "https://relay.test" });
+        if (auth === "Bearer access-s2") return jsonResponse(200, { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+    const seed = await Core.create(host, { clock: host.time.clock });
+    await run(seed.inner.data.openAccounts(["s1", "s2"]));
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    seed.inner.data.put("me", "s2", { user: { sub: "s2" }, workspaces: [{ id: "ws2", name: "WS 2" }] });
+    seed.inner.data.db("s2")!.putDraft("ws2", "new", { text: "keep-b-source-draft", files: [], quotes: [] });
+    await run(seed.inner.data.written);
+    // Mark A's DB as created by a newer schema version so it opens read-only!
+    host.sqls.get(dbName("s1"))!.exec("PRAGMA user_version = 9999");
+    await seed.close();
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.data.openAccount("s1"));
+    assert.equal(core.inner.data.db("s1")?.readOnly, true, "A opened read-only for newer schema");
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.workspaces.owner("ws-w"), "s1", "live /v1/me assigns ws-w to read-only A");
+
+    const ui = core.connect();
+    const ack = Deferred.makeUnsafe<J>();
+    const origEmit = core.inner.host.emit.bind(core.inner.host);
+    core.inner.host.emit = (c, m) => {
+      origEmit(c, m);
+      if (m.id === 802 && ("ok" in m || "error" in m)) Deferred.doneUnsafe(ack, Effect.succeed(m));
+    };
+    core.receive(ui, { kind: "call", id: 802, call: "composer.carry", params: { key: "new:ws2", to: "new:ws-w" } });
+    const res = await Effect.runPromise(Deferred.await(ack));
+    assert.equal(res.error?.code, "cancelled", `composer.carry into read-only A must cancel, got: ${JSON.stringify(res)}`);
+    await host.time.pass(350);
+    await run(core.inner.data.written);
+    assert.equal(core.inner.data.db("s2")!.draft("ws2", "new")?.text, "keep-b-source-draft", "B source draft must remain intact after cancelled carry to read-only target");
+    await core.close();
+  }
+
+  // 3) P1-3: NOT_BETA tombstone persists across same-gen disk recovery (and read-only DB), never reviving stale
+  //    disk workspaces, and clears cleanly once a subsequent same-gen 200 /v1/me succeeds!
+  {
+    let mode: "not_beta" | "ok" = "not_beta";
+    const host = new FakeHost();
+    host.memoryDb = undefined;
+    const now = Math.floor(host.nowMs() / 1000);
+    host.store(STORAGE_KEY, [storedAccount("s1", now + 3600)]);
+    host.onFetch((req) => {
+      if (req.url.endsWith("/v1/me")) {
+        if (mode === "not_beta") return jsonResponse(403, { error: "not_beta" });
+        return jsonResponse(200, { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }], invitations: [], relay_url: "https://relay.test" });
+      }
+      return jsonResponse(200, {});
+    });
+    const seed = await Core.create(host, { clock: host.time.clock });
+    seed.inner.data.put("me", "s1", { user: { sub: "s1" }, workspaces: [{ id: "ws1", name: "WS 1" }] });
+    await run(seed.inner.data.written);
+    await seed.close();
+
+    let failA = true;
+    const origOpen = host.openDb.bind(host);
+    host.openDb = (name: string) =>
+      name === dbName("s1") && failA
+        ? Effect.fail(new HostError("disk unavailable"))
+        : origOpen(name);
+
+    const core = await Core.create(host, { clock: host.time.clock });
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    assert.equal(core.inner.workspaces.owner("ws1"), null, "NOT_BETA clears ws1 owner");
+
+    // Reopen disk DB containing stale me in the SAME generation -> owner MUST stay null and stale disk me dropped!
+    failA = false;
+    await run(core.inner.accounts.migrate([
+      { sub: "s1", email: "s1@example.com", name: "s1", picture: "", access: "access-s1", refresh: "refresh-s1", accessExpires: now + 7200 },
+    ]));
+    await host.settle();
+    await run(core.inner.data.written);
+    assert.ok(core.inner.data.db("s1") !== undefined, "disk DB reopened");
+    assert.equal(core.inner.workspaces.owner("ws1"), null, "stale disk me must NOT revive ws1 while NOT_BETA holds");
+    assert.equal(core.inner.data.db("s1")!.accountDoc("me"), undefined, "stale disk me dropped upon writable recovery");
+
+    // Subsequent 200 /v1/me in the same generation lifts NOT_BETA cleanly!
+    mode = "ok";
+    await run(core.inner.cloudSync.refreshAccount("s1"));
+    await run(core.inner.data.written);
+    assert.equal(core.inner.workspaces.owner("ws1"), "s1", "later 200 /v1/me lifts NOT_BETA and restores owner");
+    await core.close();
+  }
+});
