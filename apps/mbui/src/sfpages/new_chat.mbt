@@ -192,7 +192,7 @@ fn new_send_go(
               }
               @sfbase.flight_carry_gone(draft)
               @sfbase.writing_starting(src, d, false)
-              @sfbase.sent_local_gone(rk, row)
+              @sfbase.sent_local_kept_gone(rk, row)
               // (never put back: what it took of the draft, its files' bytes, let go of as one taken)
               @sfbase.writing_committed(d)
               toast_later(@sf.t("web-main.draft.notSent", args=[("error", why)]))
