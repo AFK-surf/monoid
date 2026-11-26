@@ -623,6 +623,49 @@ public final class UpdatesQueueTest {
                     snap(q).equals("ready/0/A") || snap(q).equals("ready/-1/A"), snap(q));
         }
 
+        // 3b. A still holds an installer session while B finishes downloading, then B's APPLY throws in
+        //     canInstall or readyFile: B must transition to FAILED while A's session ownership stays intact,
+        //     late A ABORTED must release A without clobbering B, and retrying B must succeed.
+        for (boolean inReadyFile : new boolean[] { false, true }) {
+            FakeOps ops = new FakeOps();
+            ops.restored = new UpdatesQueue.Restored("A", null, 0);
+            ops.ready = "A";
+            ops.session = 77;
+            UpdatesQueue q = new UpdatesQueue(ops, false);
+            q.warmUp(CTX);
+            q.drainInline();
+            q.started(CTX);
+            q.apply(CTX, "msg-A");
+            q.drainInline();
+            // B downloads to READY while A still owns installingFile="A"
+            ops.ready = "B";
+            q.fetch(CTX, fetchOf("B", true));
+            q.drainInline();
+            ops.spawned.remove(0).run();
+            ops.told.clear();
+            if (inReadyFile) ops.readyFileThrows = new RuntimeException("disk-boom-B");
+            else ops.canInstallThrows = new RuntimeException("binder-dead-B");
+            q.apply(CTX, "msg-B");
+            q.drainInline();
+            String expected = inReadyFile ? "failed/0/B/disk-boom-B" : "failed/0/B/binder-dead-B";
+            check("A owns session + B APPLY throw in " + (inReadyFile ? "readyFile" : "canInstall") + " fails B & keeps A owner",
+                    snap(q).equals(expected) && "A".equals(q.installingFile()) && ops.told.contains(-1),
+                    "snap=" + snap(q) + " owner=" + q.installingFile() + " told=" + ops.told);
+            // Late A ABORTED clears A's ownership without touching B's FAILED state
+            q.installStatus(77, UpdatesQueue.INSTALL_ABORTED, "aborted-A");
+            check("late A ABORTED releases A owner while preserving B FAILED (" + inReadyFile + ")",
+                    snap(q).equals(expected) && q.installingFile() == null,
+                    "snap=" + snap(q) + " owner=" + q.installingFile());
+            // B can now be retried cleanly
+            ops.canInstallThrows = null;
+            ops.readyFileThrows = null;
+            q.fetch(CTX, fetchOf("B", true));
+            q.drainInline();
+            if (!ops.spawned.isEmpty()) ops.spawned.remove(0).run();
+            check("B retry after A ABORTED recovers (" + inReadyFile + ")",
+                    snap(q).startsWith("ready/"), snap(q));
+        }
+
         // 4. meteredGen changes mid-ops.metered(c) (switched to Wi-Fi): runFetch uses fresher cachedMetered=false.
         FakeOps opsM = new FakeOps();
         opsM.metered = true;

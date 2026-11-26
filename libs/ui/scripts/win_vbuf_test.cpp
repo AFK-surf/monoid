@@ -403,17 +403,18 @@ int main(void) {
     a[8] = 1.0; a[9] = 1.0; a[10] = 1.0; a[11] = 1.0;
     a[12] = 0.0; a[13] = 0.0; a[14] = 16.0; a[15] = 16.0;
     a[16] = -1e9; a[17] = -1e9; a[18] = 1e9; a[19] = 1e9;
-    // [1]: right-side cursor rect
+    // [1]: right-side cursor rect (x in [112..120], strictly outside glass blur dependency x <= 84 + 14 = 98)
     double *c = glass_scene + 1 * MB_INST;
-    c[0] = 96.0; c[1] = 16.0; c[2] = 8.0; c[3] = 16.0;
+    c[0] = 112.0; c[1] = 16.0; c[2] = 8.0; c[3] = 16.0;
     c[5] = 0.0;
     c[8] = 1.0; c[9] = 1.0; c[10] = 0.0; c[11] = 1.0;
     c[16] = -1e9; c[17] = -1e9; c[18] = 1e9; c[19] = 1e9;
-    // [2]: frosted glass covering both the left atlas quad [12..56] and bare background [56..84]
+    // [2]: opaque frosted glass (g[6]=sat 1.0, g[15]=opacity 1.0) covering left atlas quad [12..56] and bare bg [56..84]
     double *g = glass_scene + 2 * MB_INST;
     g[0] = 12.0; g[1] = 12.0; g[2] = 72.0; g[3] = 40.0;
-    g[4] = 4.0; g[5] = 5.0; g[7] = 4.0;
+    g[4] = 4.0; g[5] = 5.0; g[6] = 1.0; g[7] = 4.0;
     g[8] = 1.0; g[9] = 1.0; g[10] = 1.0; g[11] = 0.15;
+    g[15] = 1.0;
     g[16] = -1e9; g[17] = -1e9; g[18] = 1e9; g[19] = 1e9;
     g[20] = -1.0;
   }
@@ -443,7 +444,7 @@ int main(void) {
   CHECK(fake_sc0.present_full_calls == 1 && fake_sc0.present1_calls == 0);
   int map_before = map_vbuf_calls;
   uint64_t serial_before = rw->ad_frame_serial;
-  mb_host_render_dirty(96.0, 16.0, 8.0, 16.0);
+  mb_host_render_dirty(112.0, 16.0, 8.0, 16.0);
   CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 0) == 0);
   CHECK(mb_render_last_presented(0) == 0);
   CHECK(map_vbuf_calls == map_before);
@@ -457,7 +458,7 @@ int main(void) {
   CHECK(read_tex_bgra(off_target, 32, 32, px_before) == 1);
   mb_atlas_upload(0, 0, 16, 16, atlas_blue);  // overwrite existing UV (0,0,16,16)
   glass_scene[1 * MB_INST + 8] = 0.0;         // change right cursor slightly
-  mb_host_render_dirty(96.0, 16.0, 8.0, 16.0);  // report ONLY right-side cursor damage!
+  mb_host_render_dirty(112.0, 16.0, 8.0, 16.0);  // report ONLY right-side cursor damage!
   int full_before = fake_sc0.present_full_calls;
   CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 0) == 1);
   CHECK(fake_sc0.present_full_calls == full_before + 1);  // whole-canvas redraw forced
@@ -510,7 +511,7 @@ int main(void) {
   mb_render_use(1);
   int w1_pfull = fake_sc1.present_full_calls, w1_p1 = fake_sc1.present1_calls;
   glass_scene[1 * MB_INST + 9] = 0.25;
-  mb_host_render_dirty(96.0, 16.0, 8.0, 16.0);
+  mb_host_render_dirty(112.0, 16.0, 8.0, 16.0);
   CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 0) == 1);
   CHECK(fake_sc1.present1_calls == w1_p1 + 1 && fake_sc1.present_full_calls == w1_pfull);
   CHECK(fake_sc1.last_dirty_count == 1);
@@ -527,17 +528,21 @@ int main(void) {
   CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 0) == 0);
   CHECK(fake_sc0.present_full_calls == w0_pfull && fake_sc0.present1_calls == w0_p1);
 
-  // 14. clear change + empty damage forces whole-window redraw and refreshes glass cache over transparent backdrop.
+  // 14. clear change + empty damage forces whole-window redraw and refreshes opaque frosted glass blur over bare bg.
+  //     Use bright bg (0.8, 0.4, 0.2) so opaque glass (g[15]=1.0, tint 0.15) blurs bg RGB (~211 R) under clear=0 vs
+  //     transparent (0,0,0,0 -> ~38 R) under clear=1; reusing stale blur would leave R near ~211 and fail!
+  CHECK(mb_render_present_opts(glass_scene, 3, 0.8, 0.4, 0.2, 0) == 1);
   uint8_t cl0_px[4] = {}, cl1_px[4] = {}, cl1_ref[4] = {};
-  CHECK(read_tex_bgra(off_target, 76, 32, cl0_px) == 1);  // inside glass, >3*blur_r past atlas quad (bare bg)
+  CHECK(read_tex_bgra(off_target, 76, 32, cl0_px) == 1);  // inside opaque glass, >3*blur_r past atlas quad
+  CHECK(cl0_px[2] > 180 && cl0_px[3] > 250);
   mb_render_set_clear(0, 1);
   mb_host_render_dirty(0.0, 0.0, 0.0, 0.0);
   w0_pfull = fake_sc0.present_full_calls;
-  CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 0) == 1);
+  CHECK(mb_render_present_opts(glass_scene, 3, 0.8, 0.4, 0.2, 0) == 1);
   CHECK(fake_sc0.present_full_calls == w0_pfull + 1);
   CHECK(read_tex_bgra(off_target, 76, 32, cl1_px) == 1);
   CHECK(read_uncached_ref_bgra(76, 32, cl1_ref) == 1);
-  CHECK(cl1_px[3] + 100 < cl0_px[3]);  // alpha dropped sharply under transparent clear=1 vs opaque clear=0
+  CHECK(cl1_px[2] + 100 < cl0_px[2]);  // glass blurred RGB dropped sharply (clear=1 transparent vs clear=0 bright bg)
   CHECK(abs((int)cl1_px[0] - (int)cl1_ref[0]) <= 2 && abs((int)cl1_px[1] - (int)cl1_ref[1]) <= 2 &&
         abs((int)cl1_px[2] - (int)cl1_ref[2]) <= 2 && abs((int)cl1_px[3] - (int)cl1_ref[3]) <= 2);
   mb_render_set_clear(0, 0);
@@ -546,23 +551,34 @@ int main(void) {
   // 15. DXGI_STATUS_OCCLUDED sets swap_needs_full = 1 and shown_ok = 0; next visible present uses full Present(1, 0).
   fake_sc0.next_hr = DXGI_STATUS_OCCLUDED;
   glass_scene[1 * MB_INST + 8] = 0.5;
-  mb_host_render_dirty(96.0, 16.0, 8.0, 16.0);
+  mb_host_render_dirty(112.0, 16.0, 8.0, 16.0);
   CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 0) == 1);  // SUCCEEDED(DXGI_STATUS_OCCLUDED)
   CHECK(mb_render_last_presented(0) == 0);
   CHECK(rw->shown_ok == 0 && rw->swap_needs_full == 1);
   w0_pfull = fake_sc0.present_full_calls;
   w0_p1 = fake_sc0.present1_calls;
-  mb_host_render_dirty(96.0, 16.0, 8.0, 16.0);
+  mb_host_render_dirty(112.0, 16.0, 8.0, 16.0);
   CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 0) == 1);
   CHECK(mb_render_last_presented(0) == 1);
   CHECK(fake_sc0.present_full_calls == w0_pfull + 1 && fake_sc0.present1_calls == w0_p1);
   CHECK(rw->shown_ok == 1 && rw->swap_needs_full == 0);
 
-  // 16. must_present == 1 bypasses same_as_shown skip even on identical frame.
+  // 16. must_present == 1 bypasses same_as_shown skip even on identical frame;
+  //     Map(vbuf) OOM returns 0 (keeps window cloaked for retry), whereas DXGI_STATUS_OCCLUDED returns 1.
   w0_p1 = fake_sc0.present1_calls;
   mb_host_render_dirty(0.0, 0.0, 0.0, 0.0);
   CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 1) == 1);
   CHECK(mb_render_last_presented(0) == 1 && fake_sc0.present1_calls == w0_p1 + 1);
+  fail_map_vbuf_count = 1;
+  CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 1) == 0);
+  CHECK(mb_render_last_presented(0) == 0);
+  CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 1) == 1);
+  CHECK(mb_render_last_presented(0) == 1);
+  fake_sc0.next_hr = DXGI_STATUS_OCCLUDED;
+  CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 1) == 1);
+  CHECK(mb_render_last_presented(0) == 0 && rw->swap_needs_full == 1);
+  CHECK(mb_render_present_opts(glass_scene, 3, 0.1, 0.1, 0.1, 1) == 1);
+  CHECK(mb_render_last_presented(0) == 1 && rw->swap_needs_full == 0);
 
   // 17. mb_render_pace_skipped() sets pace_owed = 1 from 0, and preserves 2 (occluded).
   pace_owed = 0;

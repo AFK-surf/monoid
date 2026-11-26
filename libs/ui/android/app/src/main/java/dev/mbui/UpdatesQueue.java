@@ -394,6 +394,7 @@ final class UpdatesQueue {
             boolean sameFile = owned != null && s.file.equals(owned);
             switch (status) {
                 case INSTALL_PENDING_USER:
+                    // (if owned == null after a process restart, restore leaves READY so the person can tap install again)
                     if (inSight && sameFile) return true;
                     // (the system's page could not open from behind: ready again, for the person's word)
                     if (sameFile && s.phase.equals(INSTALLING)) {
@@ -561,7 +562,7 @@ final class UpdatesQueue {
                 synchronized (stateLock) {
                     applyQueued = false;
                     Snapshot s = snap;
-                    if (installingFile == null && s.phase.equals(INSTALLING) && s.file.equals(t.file)) {
+                    if (t.file != null && !t.file.equals(installingFile) && s.phase.equals(INSTALLING) && s.file.equals(t.file)) {
                         snap = new Snapshot(FAILED, s.percent, why(e), s.file);
                         failedApply = true;
                     }

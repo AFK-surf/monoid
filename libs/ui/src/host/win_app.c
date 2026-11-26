@@ -127,8 +127,10 @@ typedef struct WinSlot {
   // mb_now_ms() of this window's next paced frame (-1: none) and its idle timer sleep margin (ms)
   double paced_at;
   double paced_margin;
-  // whether this window visibly presented a frame in the current frames_round()
+  // whether this window visibly presented (S_OK) or succeeded in submitting (incl. OCCLUDED) in this frames_round()
   int presented_this;
+  int submitted_this;
+  int present_retries;
 } WinSlot;
 // (each beside the first made fresh as it opens: win_slot_fresh)
 static WinSlot win_slots[MB_WINS] = {{.scale = 1, .window_content_zoom = 1.0, .last_begin = -1.0, .paced_at = -1.0, .paced_margin = 0.0}};
@@ -405,7 +407,10 @@ void mb_app_window_keep_cloaked(int wid, int on) {
 void mb_host_window_hold(void) { window_held = 1; }
 
 void mb_host_window_show(void) {
-  if (window_held && !window_shown) window_to_show = 1;
+  if (window_held && !window_shown) {
+    window_to_show = 1;
+    win_slots[0].want_frame = 1;
+  }
 }
 
 // After a round of frames, the compositor's beat waited for (mb_render_pace: what they presented taken by it): a window
@@ -421,7 +426,7 @@ static void held_shown_now(void) {
     win0_reveal = 0;
     if (!win_slots[0].keep_cloaked) cloak(hwnd, FALSE);
   }
-  if (window_to_show && !window_shown && hwnd) {
+  if (window_to_show && !window_shown && hwnd && win_slots[0].submitted_this) {
     window_to_show = 0;
     window_shown = 1;
     if (!win_slots[0].keep_cloaked) cloak(hwnd, FALSE);
@@ -445,7 +450,10 @@ static int any_want_frame(void) {
 // (mb_render_pace): 1 when any was drawn.
 static int frames_round(void) {
   int any = 0;
-  for (int k = 0; k < MB_WINS; k++) win_slots[k].presented_this = 0;
+  for (int k = 0; k < MB_WINS; k++) {
+    win_slots[k].presented_this = 0;
+    win_slots[k].submitted_this = 0;
+  }
   for (int k = 0; k < MB_WINS; k++) {
     if (!win_slots[k].h) continue;
     if (win_slots[k].want_frame) {
@@ -459,6 +467,7 @@ static int frames_round(void) {
       if (mb_render_adaptive_settling(k)) {
         if (mb_render_adaptive_step(k)) {
           any = 1;
+          win_slots[k].submitted_this = 1;
           if (mb_render_last_presented(k)) win_slots[k].presented_this = 1;
         }
       }
@@ -1892,11 +1901,19 @@ void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
   // (a window held whose frame this is: shown once the compositor has it, held_shown_now)
   int must_present = ws->held == 1 || (win_active == 0 && (win0_reveal == 1 || (window_to_show && !window_shown)));
   int presented = mb_render_present_opts(buf, count, r, g, b, must_present);
+  if (presented) {
+    ws->submitted_this = 1;
+    ws->present_retries = 0;
+  }
   if (mb_render_last_presented(win_active)) ws->presented_this = 1;
   if (presented && ws->held) ws->held = 2;
   if (presented && win_active == 0 && win0_reveal == 1 && !mb_render_pictures_missing() &&
       ws->frame_w > 32.0 && ws->frame_h > 32.0) {
     win0_reveal = 2;
+  }
+  if (must_present && !presented && ws->present_retries < 8) {
+    ws->present_retries++;
+    ws->want_frame = 1;
   }
 }
 

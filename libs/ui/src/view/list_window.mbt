@@ -1259,13 +1259,17 @@ fn View::scrolls_window_ids(
       for _, those in spare {
         for sp in those.copy() {
           match sp {
-            (v, key, wake, Some(was_in), stale, needs_back) => {
+            (v, key, _, Some(was_in), stale, needs_back) => {
               let k = key.untracked()
-              if !showing.contains(k) && !heights.contains(k) && v.alive() {
+              if !showing.contains(k) &&
+                !heights.contains(k) &&
+                v.alive() &&
+                v.tree.nodes[v.at].parent == was_in.at &&
+                those.search_by(fn(b) { b.0.same(v) && b.3 is Some(w) && physical_equal(w, was_in) }) is Some(_) {
                 was_in.park(v, rest=false) |> ignore
-                if those.search_by(fn(b) { b.0.same(v) }) is Some(idx) {
+                if those.search_by(fn(b) { b.0.same(v) && b.3 is Some(w) && physical_equal(w, was_in) }) is Some(idx) {
                   let cur = those[idx]
-                  those[idx] = (v, key, wake, None, cur.4 || stale, cur.5 || needs_back)
+                  those[idx] = (cur.0, cur.1, cur.2, None, cur.4 || stale, cur.5 || needs_back)
                 }
               }
             }
@@ -3088,15 +3092,19 @@ fn View::scrolls_window_ids(
     for _, those in spare {
       for sp in those.copy() {
         match sp {
-          (v, key, wake, Some(was_in), stale, needs_back) => {
+          (v, key, _, Some(was_in), stale, needs_back) => {
             // (its key still among the keys and out of those kept: parked; gone from the list, let go with its slot,
             // as were every slot kept)
             let at = laid_at.get(key.untracked())
-            if at is Some(j) && (j < a || j > b) && v.alive() {
+            if at is Some(j) &&
+              (j < a || j > b) &&
+              v.alive() &&
+              v.tree.nodes[v.at].parent == was_in.at &&
+              those.search_by(fn(b) { b.0.same(v) && b.3 is Some(w) && physical_equal(w, was_in) }) is Some(_) {
               was_in.park(v, rest=false) |> ignore
-              if those.search_by(fn(b) { b.0.same(v) }) is Some(idx) {
+              if those.search_by(fn(b) { b.0.same(v) && b.3 is Some(w) && physical_equal(w, was_in) }) is Some(idx) {
                 let cur = those[idx]
-                those[idx] = (v, key, wake, None, cur.4 || stale, cur.5 || needs_back)
+                those[idx] = (cur.0, cur.1, cur.2, None, cur.4 || stale, cur.5 || needs_back)
               }
             }
           }

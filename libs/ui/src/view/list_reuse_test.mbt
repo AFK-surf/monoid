@@ -517,6 +517,8 @@ test "scrolls_window reused: lives_with overlay stays hidden while parked in spa
   keys.set([0, 2, 1, 3, 4, 5, 6, 7])
   tree.frame(390.0, 844.0, now=100.0) |> ignore
   tree.frame(390.0, 844.0, now=116.0) |> ignore
+  let tip2_mid = tree.drawn().filter(fn(d) { d.words == "tip-2" }).length()
+  assert_true(tip2_mid <= 1, msg="S_old overlay must hide mid-leave, got \{tip2_mid}")
   // Finish leaving animation: S_old's block for key 2 is parked into spare with needs_back = true.
   // Its parked overlay MUST stay hidden (only S_new's single tip-2 is drawn) while parked in spare!
   tree.frame(390.0, 844.0, now=700.0) |> ignore
@@ -539,6 +541,8 @@ test "scrolls_window reused: lives_with overlay stays hidden while parked in spa
   keys.set([0, 2, 1, 99, 3, 4, 5, 6, 7])
   tree.frame(390.0, 844.0, now=1500.0) |> ignore
   tree.frame(390.0, 844.0, now=1516.0) |> ignore
+  let tip99_mid = tree.drawn().filter(fn(d) { d.words == "tip-99" }).length()
+  assert_true(tip99_mid <= 1, msg="second leave S_old overlay must hide mid-leave, got \{tip99_mid}")
   tree.frame(390.0, 844.0, now=2100.0) |> ignore
   let tip99_count = tree.drawn().filter(fn(d) { d.words == "tip-99" }).length()
   assert_eq(tip99_count, 1, msg="second leave parked overlay must stay hidden, got \{tip99_count}")
