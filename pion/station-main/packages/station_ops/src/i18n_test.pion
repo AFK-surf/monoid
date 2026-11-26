@@ -1,0 +1,82 @@
+fn assert_eq_str(got : String, want : String, label : String) -> Unit {
+  if got != want {
+    panic(label + ": got=\"" + got + "\" want=\"" + want + "\"")
+  }
+}
+
+fn assert_true(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+test "i18n catalog counts match and lang_of resolves zh/en" {
+  assert_true(CATALOG_ZH_COUNT > 100, "zh catalog populated")
+  assert_true(CATALOG_ZH_COUNT == CATALOG_EN_COUNT, "zh and en catalog key counts match")
+  assert_true(lang_eq(lang_of(None), Lang::Zh), "None -> Zh")
+  assert_true(lang_eq(lang_of(Some("")), Lang::Zh), "empty -> Zh")
+  assert_true(lang_eq(lang_of(Some("zh-CN")), Lang::Zh), "zh-CN -> Zh")
+  assert_true(lang_eq(lang_of(Some("  ZH_TW ")), Lang::Zh), "ZH_TW -> Zh")
+  assert_true(lang_eq(lang_of(Some("en-US")), Lang::En), "en-US -> En")
+  assert_true(lang_eq(lang_of(Some("ja")), Lang::En), "ja -> En")
+}
+
+test "i18n tr renders templates, plurals, missing keys, and branding" {
+  // Plain template interpolation
+  let en_msg = tr(Lang::En, "station.cli.badChannel", [("channel", "nightly")])
+  assert_eq_str(en_msg, "channel must be stable or beta, not nightly", "en template")
+  let zh_msg = tr(Lang::Zh, "station.cli.badChannel", [("channel", "nightly")])
+  assert_eq_str(zh_msg, "channel 必须是 stable 或 beta，不是 nightly", "zh template")
+
+  // Missing placeholder left untouched
+  let kept = tr(Lang::En, "station.cli.badChannel", [])
+  assert_eq_str(kept, "channel must be stable or beta, not {channel}", "missing arg preserved")
+
+  // Unknown key returns key itself
+  assert_eq_str(tr(Lang::En, "station.no.such.key", []), "station.no.such.key", "unknown key")
+
+  // Plural one vs other
+  assert_eq_str(
+    tr(Lang::En, "station.profile.works", [("n", "1")]),
+    "Works, 1 model",
+    "en plural one",
+  )
+  assert_eq_str(
+    tr(Lang::En, "station.profile.works", [("n", "5")]),
+    "Works, 5 models",
+    "en plural other",
+  )
+  assert_eq_str(
+    tr(Lang::Zh, "station.profile.works", [("n", "1")]),
+    "可用，1 个模型",
+    "zh plural",
+  )
+
+  // Branding: monoid.build vs still.fail
+  let monoid = product_of("https://app.monoid.build")
+  assert_eq_str(monoid.name, "monoid", "monoid product name")
+  assert_eq_str(monoid.id, "monoid", "monoid product id")
+  let sf = product_of("https://app.still.fail")
+  assert_eq_str(sf.name, "still.fail", "stillfail product name")
+
+  assert_eq_str(
+    branded("Open still.fail and run `stillfail start` on ~/.stillfail/run or stillfail-station.service", monoid),
+    "Open monoid and run `monoid start` on ~/.monoid/run or monoid-station.service",
+    "branded replaces standalone name, command, home, service",
+  )
+  // Hosts, env vars, and other binaries stay untouched
+  assert_eq_str(
+    branded("https://app.still.fail STILLFAIL_DATA stillfail-screen stillfail.db", monoid),
+    "https://app.still.fail STILLFAIL_DATA stillfail-screen stillfail.db",
+    "branded preserves hosts, env vars, and non-station binaries",
+  )
+
+  // I18nState tracks station language and cloud product
+  let st = I18nState::new()
+  assert_true(lang_eq(st.station_lang(), Lang::Zh), "default zh")
+  let _ = st.set_station_lang(Some("en"))
+  assert_true(lang_eq(st.station_lang(), Lang::En), "set en")
+  let _ = st.set_station_cloud(Some("https://monoid.zone"))
+  let branded_tr = st.tr(Lang::En, "station.cli.status.stopped", [])
+  assert_true(branded_tr.contains("monoid start"), "branded tr uses monoid start: " + branded_tr)
+}

@@ -1,0 +1,499 @@
+// 1:1 port of `station/src/ops/launcher.ts`:
+// Full launcher control plane state machine over `station_sys::CtrlChannel` NDJSON framing,
+// preserving residual partial frames across `renew`, handling `carried` buffering, and clean EOF.
+
+import "base_codec"
+import "station_sys"
+
+pub struct LauncherPorts {
+  pub mcp : Int
+  pub admin : Int
+}
+
+pub struct LauncherFds {
+  pub mcp : Int
+  pub loopback : Int
+  pub control : Int
+}
+
+pub struct LauncherArgs {
+  pub fds : Option[LauncherFds]
+  pub pipe : Option[String]
+  pub ports : Option[LauncherPorts]
+  pub carries : Bool
+  pub heartbeats : Bool
+  pub installer : Bool
+}
+
+fn parse_int_strict(s : String) -> Option[Int] {
+  let t = ascii_trim(s)
+  if t.length() == 0 {
+    return None
+  }
+  let mut neg = false
+  let mut start = 0
+  if (t.code_unit_at(0) & 0xFF) == 45 {
+    neg = true
+    start = 1
+  }
+  if start >= t.length() {
+    return None
+  }
+  let mut acc = 0
+  for i in start..<t.length() {
+    let c = t.code_unit_at(i) & 0xFF
+    if c < 48 || c > 57 {
+      return None
+    }
+    acc = acc * 10 + (c - 48)
+  }
+  Some(if neg { -acc } else { acc })
+}
+
+pub fn parse_launcher_args(args : Array[String]) -> LauncherArgs {
+  let fds = match flag(args, "--launcher-fds") {
+    Some(raw) => {
+      let parts = split_by_byte(raw, 44) // ','
+      if parts.length() >= 3 {
+        match (parse_int_strict(parts[0]), parse_int_strict(parts[1]), parse_int_strict(parts[2])) {
+          (Some(a), Some(b), Some(c)) => Some(LauncherFds::{ mcp: a, loopback: b, control: c })
+          _ => None
+        }
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+  let pipe = flag(args, "--launcher-pipe")
+  let ports = match flag(args, "--launcher-ports") {
+    Some(raw) => {
+      let parts = split_by_byte(raw, 44)
+      if parts.length() == 2 {
+        match (parse_int_strict(parts[0]), parse_int_strict(parts[1])) {
+          (Some(m), Some(a)) => if m > 0 && a > 0 { Some(LauncherPorts::{ mcp: m, admin: a }) } else { None }
+          _ => None
+        }
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+  LauncherArgs::{
+    fds: fds,
+    pipe: pipe,
+    ports: ports,
+    carries: has_flag(args, "--launcher-carries"),
+    heartbeats: has_flag(args, "--launcher-heartbeat"),
+    installer: has_flag(args, "--launcher-installer"),
+  }
+}
+
+pub fn LauncherArgs::linked(self : LauncherArgs) -> Bool {
+  match (self.fds, self.pipe) {
+    (Some(_), _) => true
+    (_, Some(_)) => true
+    _ => false
+  }
+}
+
+pub fn LauncherArgs::can_restart_front(self : LauncherArgs) -> Bool {
+  match self.fds {
+    Some(_) => self.heartbeats
+    None => false
+  }
+}
+
+pub enum LauncherOut {
+  Ready(String)
+  Serving(String, Int)
+  Taking
+  Failed(String)
+  Drained(String)
+  Carry(base_codec::Json)
+  Heartbeat
+  RestartFront
+  Installer(String, Array[(String, String)])
+}
+
+pub enum LauncherIn {
+  Handover
+  Stop
+  Drain
+  Hup
+  Carried(base_codec::Json)
+  Invalid(Int)
+}
+
+/// Serialize an outbound launcher control message as an NDJSON line (with trailing `\n`),
+/// returning `None` if this launcher does not support the message or is unlinked.
+pub fn format_launcher_out(args : LauncherArgs, msg : LauncherOut) -> Option[String] {
+  if !args.linked() {
+    return None
+  }
+  let j = match msg {
+    LauncherOut::Ready(ver) => base_codec::json_obj([
+      ("ready", base_codec::json_bool(true)),
+      ("version", base_codec::json_str(ver)),
+    ])
+    LauncherOut::Serving(name, port) => base_codec::json_obj([
+      ("serving", base_codec::json_str(name)),
+      ("port", base_codec::json_int(port)),
+    ])
+    LauncherOut::Taking => base_codec::json_obj([
+      ("taking", base_codec::json_bool(true)),
+    ])
+    LauncherOut::Failed(why) => base_codec::json_obj([
+      ("failed", base_codec::json_str(why)),
+    ])
+    LauncherOut::Drained(how) => base_codec::json_obj([
+      ("drained", base_codec::json_str(how)),
+    ])
+    LauncherOut::Carry(what) => {
+      if !args.carries {
+        return None
+      }
+      base_codec::json_obj([("carry", what)])
+    }
+    LauncherOut::Heartbeat => {
+      if !args.heartbeats {
+        return None
+      }
+      base_codec::json_obj([("heartbeat", base_codec::json_bool(true))])
+    }
+    LauncherOut::RestartFront => {
+      if !args.can_restart_front() {
+        return None
+      }
+      base_codec::json_obj([("restartFront", base_codec::json_bool(true))])
+    }
+    LauncherOut::Installer(script, env_pairs) => {
+      if !args.installer {
+        return None
+      }
+      let env_fields : Array[(String, base_codec::Json)] = []
+      for i in 0..<env_pairs.length() {
+        let (k, v) = env_pairs[i]
+        env_fields.push((k, base_codec::json_str(v)))
+      }
+      base_codec::json_obj([
+        ("installer", base_codec::json_obj([
+          ("script", base_codec::json_str(script)),
+          ("env", base_codec::json_obj(env_fields)),
+        ])),
+      ])
+    }
+  }
+  Some(base_codec::json_stringify(j) + "\n")
+}
+
+/// Parse a single non-empty NDJSON line from the launcher.
+pub fn parse_launcher_line(line : String) -> Option[LauncherIn] {
+  if line == "" {
+    return None
+  }
+  match base_codec::json_parse(line) {
+    base_codec::JsonParseResult::Ok(v) => match base_codec::json_get(v, "op") {
+      Some(base_codec::Json::Str(op)) => {
+        if op == "handover" {
+          Some(LauncherIn::Handover)
+        } else if op == "stop" {
+          Some(LauncherIn::Stop)
+        } else if op == "drain" {
+          Some(LauncherIn::Drain)
+        } else if op == "hup" {
+          Some(LauncherIn::Hup)
+        } else if op == "carried" {
+          let carried = match base_codec::json_get(v, "carried") {
+            Some(c) => c
+            None => base_codec::json_obj([])
+          }
+          Some(LauncherIn::Carried(carried))
+        } else {
+          None
+        }
+      }
+      _ => None
+    }
+    base_codec::JsonParseResult::Err(_) => Some(LauncherIn::Invalid(line.length()))
+  }
+}
+
+pub struct LauncherChannel {
+  pub args : LauncherArgs
+  pub mut write_fn : Option[(String) -> Bool]
+  pub mut close_fn : Option[() -> Unit]
+  pub mut carry_buf : String
+  pub mut closed : Bool
+  pub mut came : Option[base_codec::Json]
+  pub mut taker : Option[(base_codec::Json) -> Unit]
+  pub on_handover : Array[() -> Unit]
+  pub on_stop : Array[() -> Unit]
+  pub on_drain : Array[() -> Unit]
+  pub on_hup : Array[() -> Unit]
+  pub on_invalid : Array[(Int) -> Unit]
+}
+
+pub fn LauncherChannel::new(args : LauncherArgs) -> LauncherChannel {
+  LauncherChannel::{
+    args: args,
+    write_fn: None,
+    close_fn: None,
+    carry_buf: "",
+    closed: false,
+    came: None,
+    taker: None,
+    on_handover: [],
+    on_stop: [],
+    on_drain: [],
+    on_hup: [],
+    on_invalid: [],
+  }
+}
+
+fn LauncherChannel::bind_ctrl(self : LauncherChannel, ch : station_sys::CtrlChannel) -> Unit {
+  self.write_fn = Some(fn(line : String) -> Bool { ch.write(line.to_bytes()) })
+  self.close_fn = Some(fn() -> Unit {
+    let _ = ch.close()
+  })
+  self.closed = false
+}
+
+/// Open the live `station_sys::CtrlChannel` from `--launcher-fds` or `--launcher-pipe`.
+pub fn LauncherChannel::connect(self : LauncherChannel, event_id : Int64) -> Bool {
+  match self.args.fds {
+    Some(fds) => match station_sys::ctrl_open_fd(event_id, fds.control) {
+      Some(ch) => {
+        self.bind_ctrl(ch)
+        return true
+      }
+      None => return false
+    }
+    None => ()
+  }
+  match self.args.pipe {
+    Some(pipe_name) => match station_sys::ctrl_open_pipe(event_id, pipe_name) {
+      Some(ch) => {
+        self.bind_ctrl(ch)
+        true
+      }
+      None => false
+    }
+    None => false
+  }
+}
+
+/// Attach a custom writer (for deterministic unit tests without live fds).
+pub fn LauncherChannel::attach_writer(
+  self : LauncherChannel,
+  w : (String) -> Bool,
+  c : Option[() -> Unit] = None,
+) -> Unit {
+  self.write_fn = Some(w)
+  self.close_fn = c
+  self.closed = false
+}
+
+/// Reattach the control channel across a launcher `renew`, deliberately preserving
+/// `carry_buf` (any residual partial frame) and all registered handlers.
+pub fn LauncherChannel::renew(
+  self : LauncherChannel,
+  next_write : Option[(String) -> Bool] = None,
+  next_close : Option[() -> Unit] = None,
+) -> Unit {
+  match self.close_fn {
+    Some(cf) => cf()
+    None => ()
+  }
+  match next_write {
+    Some(w) => {
+      self.write_fn = Some(w)
+    }
+    None => ()
+  }
+  self.close_fn = next_close
+  self.closed = false
+}
+
+/// Reattach a live `station_sys::CtrlChannel` across `renew`, preserving `carry_buf`.
+pub fn LauncherChannel::renew_ctrl(self : LauncherChannel, next_ch : station_sys::CtrlChannel) -> Unit {
+  match self.close_fn {
+    Some(cf) => cf()
+    None => ()
+  }
+  self.bind_ctrl(next_ch)
+}
+
+pub fn LauncherChannel::on(self : LauncherChannel, op : String, f : () -> Unit) -> Unit {
+  if op == "handover" {
+    self.on_handover.push(f)
+  } else if op == "stop" {
+    self.on_stop.push(f)
+  } else if op == "drain" {
+    self.on_drain.push(f)
+  } else if op == "hup" {
+    self.on_hup.push(f)
+  }
+}
+
+pub fn LauncherChannel::on_carried(self : LauncherChannel, f : (base_codec::Json) -> Unit) -> Unit {
+  self.taker = Some(f)
+  match self.came {
+    Some(v) => {
+      self.came = None
+      f(v)
+    }
+    None => ()
+  }
+}
+
+pub fn LauncherChannel::send(self : LauncherChannel, msg : LauncherOut) -> Bool {
+  if self.closed {
+    return false
+  }
+  let line = match format_launcher_out(self.args, msg) {
+    Some(s) => s
+    None => return false
+  }
+  match self.write_fn {
+    Some(w) => w(line)
+    None => false
+  }
+}
+
+pub fn LauncherChannel::ready(self : LauncherChannel, version : String) -> Bool {
+  self.send(LauncherOut::Ready(version))
+}
+
+pub fn LauncherChannel::serving(self : LauncherChannel, name : String, port : Int) -> Bool {
+  self.send(LauncherOut::Serving(name, port))
+}
+
+pub fn LauncherChannel::taking(self : LauncherChannel) -> Bool {
+  self.send(LauncherOut::Taking)
+}
+
+pub fn LauncherChannel::failed(self : LauncherChannel, why : String) -> Bool {
+  self.send(LauncherOut::Failed(why))
+}
+
+pub fn LauncherChannel::drained(self : LauncherChannel, how : String) -> Bool {
+  self.send(LauncherOut::Drained(how))
+}
+
+pub fn LauncherChannel::carry(self : LauncherChannel, what : base_codec::Json) -> Bool {
+  self.send(LauncherOut::Carry(what))
+}
+
+pub fn LauncherChannel::heartbeat(self : LauncherChannel) -> Bool {
+  self.send(LauncherOut::Heartbeat)
+}
+
+pub fn LauncherChannel::restart_front(self : LauncherChannel) -> Bool {
+  self.send(LauncherOut::RestartFront)
+}
+
+pub fn LauncherChannel::run_installer(
+  self : LauncherChannel,
+  script : String,
+  env : Array[(String, String)],
+) -> Bool {
+  self.send(LauncherOut::Installer(script, env))
+}
+
+fn LauncherChannel::dispatch(self : LauncherChannel, ev : LauncherIn) -> Unit {
+  match ev {
+    LauncherIn::Handover => {
+      for i in 0..<self.on_handover.length() {
+        (self.on_handover[i])()
+      }
+    }
+    LauncherIn::Stop => {
+      for i in 0..<self.on_stop.length() {
+        (self.on_stop[i])()
+      }
+    }
+    LauncherIn::Drain => {
+      for i in 0..<self.on_drain.length() {
+        (self.on_drain[i])()
+      }
+    }
+    LauncherIn::Hup => {
+      for i in 0..<self.on_hup.length() {
+        (self.on_hup[i])()
+      }
+    }
+    LauncherIn::Carried(v) => match self.taker {
+      Some(f) => f(v)
+      None => {
+        self.came = Some(v)
+      }
+    }
+    LauncherIn::Invalid(len) => {
+      for i in 0..<self.on_invalid.length() {
+        (self.on_invalid[i])(len)
+      }
+    }
+  }
+}
+
+/// Feed raw byte chunk(s) into the NDJSON frame accumulator (handling arbitrary chunk splits
+/// and empty lines cleanly). Residual partial bytes remain in `carry_buf` across `renew`.
+pub fn LauncherChannel::feed_chunk(self : LauncherChannel, chunk : String) -> Array[LauncherIn] {
+  self.carry_buf = self.carry_buf + chunk
+  let events : Array[LauncherIn] = []
+  while true {
+    let mut nl = -1
+    for i in 0..<self.carry_buf.length() {
+      if (self.carry_buf.code_unit_at(i) & 0xFF) == 10 {
+        nl = i
+        break
+      }
+    }
+    if nl < 0 {
+      break
+    }
+    let end = if nl > 0 && (self.carry_buf.code_unit_at(nl - 1) & 0xFF) == 13 { nl - 1 } else { nl }
+    let line = ops_slice_str(self.carry_buf, 0, end)
+    self.carry_buf = ops_slice_str(self.carry_buf, nl + 1, self.carry_buf.length())
+    match parse_launcher_line(line) {
+      Some(ev) => {
+        events.push(ev)
+        self.dispatch(ev)
+      }
+      None => ()
+    }
+  }
+  events
+}
+
+/// Feed a decoded `station_sys::SysEvent` (`CtrlLine` or `CtrlEof`).
+pub fn LauncherChannel::feed_sys_event(self : LauncherChannel, ev : station_sys::SysEvent) -> Unit {
+  match ev {
+    station_sys::SysEvent::CtrlLine(line) => {
+      let _ = self.feed_chunk(line + "\n")
+    }
+    station_sys::SysEvent::CtrlEof => self.handle_eof()
+    _ => ()
+  }
+}
+
+/// Clean EOF / close: fires `stop` once and suppresses subsequent outbound writes.
+pub fn LauncherChannel::handle_eof(self : LauncherChannel) -> Unit {
+  if self.closed {
+    return
+  }
+  self.closed = true
+  self.dispatch(LauncherIn::Stop)
+}
+
+pub fn LauncherChannel::close(self : LauncherChannel) -> Unit {
+  match self.close_fn {
+    Some(cf) => cf()
+    None => ()
+  }
+  self.close_fn = None
+  self.write_fn = None
+  self.closed = true
+}
