@@ -358,12 +358,33 @@ impl Inner {
             }
             "storage.get" => {
                 let path = storage_path(&self.dir, str_of(a, "key")?);
-                self.disk(move || match std::fs::read(&path) {
-                    Ok(bytes) => Ok(Answer::bytes(json!({}), bytes)),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Answer::json(json!({ "none": true }))),
-                    Err(e) => Err(err(e)),
-                })
-                .await
+                let want_sha256 = a
+                    .get("sha256")
+                    .and_then(Value::as_str)
+                    .filter(|s| s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+                    .map(str::to_owned);
+                let read = self
+                    .disk(move || match std::fs::read(&path) {
+                        Ok(bytes) => Ok(Some(bytes)),
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                        Err(e) => Err(err(e)),
+                    })
+                    .await?;
+                match (read, want_sha256) {
+                    (None, _) => Ok(Answer::json(json!({ "none": true }))),
+                    (Some(bytes), None) => Ok(Answer::bytes(json!({}), bytes)),
+                    (Some(bytes), Some(want)) => tokio::task::spawn_blocking(move || {
+                        let digest = ring::digest::digest(&ring::digest::SHA256, &bytes);
+                        if hex::encode(digest.as_ref()) == want {
+                            Ok(Answer::bytes(json!({ "verified": true }), bytes))
+                        } else {
+                            drop(bytes);
+                            Ok(Answer::json(json!({ "damaged": true })))
+                        }
+                    })
+                    .await
+                    .map_err(err)?,
+                }
             }
             "storage.set" => {
                 let path = storage_path(&self.dir, str_of(a, "key")?);

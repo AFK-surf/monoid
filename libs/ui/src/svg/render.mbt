@@ -390,6 +390,35 @@ fn apply_mask(mask : Mask, ctx : RContext, transform : @skia.Transform, pixmap :
 }
 
 ///|
+fn unpremul_pixmap(pixmap : @skia.Pixmap) -> FixedArray[Byte] {
+  let pixels = pixmap.width * pixmap.height
+  let src = pixmap.data
+  let out = FixedArray::make(pixels * 4, b'\x00')
+  for i in 0..<pixels {
+    let o = i * 4
+    let a = src[o + 3].to_int()
+    if a == 0 {
+      continue
+    }
+    if a == 255 {
+      out[o] = src[o]
+      out[o + 1] = src[o + 1]
+      out[o + 2] = src[o + 2]
+      out[o + 3] = b'\xFF'
+      continue
+    }
+    let half = a / 2
+    for k in 0..<3 {
+      let c = src[o + k].to_int()
+      let v = (c * 255 + half) / a
+      out[o + k] = (if v > 255 { 255 } else { v }).to_byte()
+    }
+    out[o + 3] = a.to_byte()
+  }
+  out
+}
+
+///|
 /// An SVG document's bytes drawn with its longer side `long_side` pixels: (width, height, straight RGBA). None where
 /// they are not one, or it says no size.
 pub fn rasterize(data : Bytes, long_side : Int, opt? : Options = Options::default()) -> (Int, Int, FixedArray[Byte])? {
@@ -414,18 +443,5 @@ pub fn rasterize(data : Bytes, long_side : Int, opt? : Options = Options::defaul
   let ts = @skia.Transform::from_scale(fi(size.width) / w, fi(size.height) / h)
   render_tree(tree, ts, pixmap)
   // premultiplied to straight
-  let out = FixedArray::make(size.width * size.height * 4, b'\x00')
-  for i in 0..<(size.width * size.height) {
-    let a = pixmap.data[i * 4 + 3].to_int()
-    if a == 0 {
-      continue
-    }
-    for k in 0..<3 {
-      let c = pixmap.data[i * 4 + k].to_int()
-      let v = (c * 255 + a / 2) / a
-      out[i * 4 + k] = (if v > 255 { 255 } else { v }).to_byte()
-    }
-    out[i * 4 + 3] = a.to_byte()
-  }
-  Some((size.width, size.height, out))
+  Some((size.width, size.height, unpremul_pixmap(pixmap)))
 }

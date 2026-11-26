@@ -2,7 +2,10 @@
 // does itself in files/fonts, done here in the host's storage. A face chosen is fetched (`fonts.fetch {id}`), each of its
 // files as it is put (gzipped), how far it got said on the `fonts` topic; the app unzips each and checks it by its
 // hash, and that is kept instead (`fonts.keep {sha256}` + the file); `fonts.file {sha256}` gives back either, saying
-// which. Where the host keeps each value as a file of its own (the native apps' shell), the prefs' `faces` say where
+// which. For an unzipped file (`ttf`), when the host offers `storageGetVerified` it checks the SHA-256 off the UI
+// thread and returns `{zipped: false, verified: true}` on match, `{zipped: false}` when unverified (e.g. an older
+// shell), or clears a damaged entry + file and fails `not_found` so the app re-fetches it automatically. Where the
+// host keeps each value as a file of its own (the native apps' shell), the prefs' `faces` say where
 // a chosen face's files are (`path`, fonts.ts `setKeptAt`): the app's host reads them there as the app starts, none of
 // them carried through here nor checked again (the app falls back on `fonts.file` where one cannot be read: one kept
 // as fetched). A face's files stay once fetched, chosen or not (the `fonts` topic's `kept`: the faces whole here), so
@@ -177,12 +180,27 @@ export class FontFiles implements Owner {
     return this.#host.storagePath?.(fileKey(sha256)) ?? null;
   }
 
-  /// A file kept, by its hash: its bytes, and whether they are as fetched (gzipped) or as the app kept them.
+  /// A file kept, by its hash: its bytes, and whether they are as fetched (gzipped) or as the app kept them
+  /// (and whether the host already verified their SHA-256 off the UI thread).
   file(sha256: string): Effect.Effect<Beside, CoreError> {
     return Effect.gen({ self: this }, function* () {
-      const how = (yield* this.#index())[sha256];
-      const bytes = how === undefined ? null : yield* Effect.orElseSucceed(this.#host.storageGet(fileKey(sha256)), () => null);
-      if (how === undefined || bytes === null) return yield* Effect.fail(new CoreError("not_found", t("core-misc.params.invalid", { error: `sha256 ${sha256}` })));
+      const kept = yield* this.#index();
+      const how = kept[sha256];
+      if (how === undefined) return yield* Effect.fail(new CoreError("not_found", t("core-misc.params.invalid", { error: `sha256 ${sha256}` })));
+      if (how === "ttf" && this.#host.storageGetVerified !== undefined) {
+        const got = yield* Effect.orElseSucceed(this.#host.storageGetVerified(fileKey(sha256), sha256), () => null);
+        if (got === "damaged") {
+          delete kept[sha256];
+          yield* Effect.ignore(this.#save());
+          yield* Effect.ignore(this.#host.storageDelete(fileKey(sha256)));
+          this.#changed();
+          return yield* Effect.fail(new CoreError("not_found", t("core-misc.params.invalid", { error: `sha256 ${sha256}` })));
+        }
+        if (got === null) return yield* Effect.fail(new CoreError("not_found", t("core-misc.params.invalid", { error: `sha256 ${sha256}` })));
+        return new Beside(got.verified ? { zipped: false, verified: true } : { zipped: false }, got.bytes);
+      }
+      const bytes = yield* Effect.orElseSucceed(this.#host.storageGet(fileKey(sha256)), () => null);
+      if (bytes === null) return yield* Effect.fail(new CoreError("not_found", t("core-misc.params.invalid", { error: `sha256 ${sha256}` })));
       return new Beside({ zipped: how === "gz" }, bytes);
     });
   }

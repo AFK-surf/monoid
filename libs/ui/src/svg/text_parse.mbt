@@ -162,7 +162,7 @@ fn convert_text(doc : SDoc, node : Int, state : State, cache : Cache, parent : G
     chunks,
     abs_transform: parent.abs_transform,
   }
-  match layout_and_flatten(text, state.opt) {
+  match layout_and_flatten(text, state.opt, cache) {
     Some(t) => parent.children.push(NText(t))
     None => ()
   }

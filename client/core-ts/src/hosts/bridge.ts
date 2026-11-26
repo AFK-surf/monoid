@@ -11,7 +11,7 @@
 //   stream.open {url, method, headers} + body → {status, headers, id}; stream.read {id} → bytes, or {end}; stream.close {id}
 //   ws.open {url, protocols, binary?, control?} → {id}; ws.next {id} → {text}, {binary} and its bytes (only where `binary` was
 //   asked: else such a frame is let go), {ping} or {pong} (only where `control` was asked), or {end}; ws.send {id, text} or {id} and its bytes; ws.ping {id}; ws.close {id}
-//   storage.get {key} → bytes or {none}; storage.set {key} + value; storage.delete {key}
+//   storage.get {key, sha256?} → bytes (with {verified} when sha256 matched), {damaged} or {none}; storage.set {key} + value; storage.delete {key}
 //   kept.read {at, start, end} → bytes or {none} — a file the app saved where the person keeps files, read back
 //     (`at` as the system named it: a path; on Android a content address), answered by the app (Apple: apple_core.mm;
 //     Android: CoreHost; Windows: win_core.c)
@@ -352,6 +352,21 @@ export class BridgeHost implements Host {
 
   storageGet(key: string): Effect.Effect<Uint8Array | null, HostError> {
     return Effect.map(this.#bridge.call("storage.get", { key }), (a) => ((a.json as J)?.none === true ? null : (a.bytes ?? new Uint8Array(0))));
+  }
+  storageGetVerified(key: string, sha256: string): Effect.Effect<{ bytes: Uint8Array; verified: boolean } | "damaged" | null, HostError> {
+    return Effect.flatMap(
+      this.#bridge.call("storage.get", { key, sha256 }),
+      (a): Effect.Effect<{ bytes: Uint8Array; verified: boolean } | "damaged" | null, HostError> => {
+        const j = a.json as J;
+        if (j?.none === true) return Effect.succeed(null);
+        if (j?.damaged === true) return Effect.succeed("damaged");
+        if (j?.verified === true) {
+          if (a.bytes === null) return Effect.fail(new HostError("storage.get verified without bytes"));
+          return Effect.succeed({ bytes: a.bytes, verified: true });
+        }
+        return Effect.succeed({ bytes: a.bytes ?? new Uint8Array(0), verified: false });
+      },
+    );
   }
   storageSet(key: string, value: Uint8Array): Effect.Effect<void, HostError> {
     return Effect.asVoid(this.#bridge.call("storage.set", { key }, value));

@@ -259,3 +259,95 @@ test "a 4-bit indexed PNG with PLTE and tRNS decodes back to its size and RGBA p
     }
   }
 }
+
+///|
+/// Reference stored-PNG encoder (byte-by-byte into arrays, per-byte Adler-32 mod, bit-by-bit CRC-32) for exact parity.
+fn png_ref_before(w : Int, h : Int, rgba : FixedArray[Byte]) -> Bytes {
+  let out : Array[Byte] = []
+  let u32 = fn(a : Array[Byte], v : Int) {
+    a.push(((v >> 24) & 0xFF).to_byte())
+    a.push(((v >> 16) & 0xFF).to_byte())
+    a.push(((v >> 8) & 0xFF).to_byte())
+    a.push((v & 0xFF).to_byte())
+  }
+  let chunk = fn(kind : String, body : Array[Byte]) {
+    u32(out, body.length())
+    let start = out.length()
+    for ch in kind {
+      out.push(ch.to_int().to_byte())
+    }
+    out.append(body)
+    let mut crc = 0xFFFFFFFFU
+    for i in start..<out.length() {
+      crc = crc ^ out[i].to_uint()
+      for _ in 0..<8 {
+        crc = if (crc & 1U) != 0U { 0xEDB88320U ^ (crc >> 1) } else { crc >> 1 }
+      }
+    }
+    u32(out, (crc ^ 0xFFFFFFFFU).reinterpret_as_int())
+  }
+  for b in [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
+    out.push(b.to_byte())
+  }
+  let head : Array[Byte] = []
+  u32(head, w)
+  u32(head, h)
+  for b in [8, 6, 0, 0, 0] {
+    head.push(b.to_byte())
+  }
+  chunk("IHDR", head)
+  let raw : Array[Byte] = []
+  for y in 0..<h {
+    raw.push(b'\x00')
+    for x in 0..<(w * 4) {
+      raw.push(rgba[y * w * 4 + x])
+    }
+  }
+  let z : Array[Byte] = [b'\x78', b'\x01']
+  let mut at = 0
+  while at < raw.length() || at == 0 {
+    let n = if raw.length() - at > 65535 { 65535 } else { raw.length() - at }
+    z.push((if at + n >= raw.length() { 1 } else { 0 }).to_byte())
+    z.push((n & 0xFF).to_byte())
+    z.push((n >> 8).to_byte())
+    z.push((n.lnot() & 0xFF).to_byte())
+    z.push(((n.lnot() >> 8) & 0xFF).to_byte())
+    for i in at..<(at + n) {
+      z.push(raw[i])
+    }
+    at = at + n
+    if n == 0 {
+      break
+    }
+  }
+  let mut a = 1U
+  let mut b = 0U
+  for v in raw {
+    a = (a + v.to_uint()) % 65521U
+    b = (b + a) % 65521U
+  }
+  u32(z, ((b << 16) | a).reinterpret_as_int())
+  chunk("IDAT", z)
+  chunk("IEND", [])
+  Bytes::from_array(out)
+}
+
+///|
+test "pixels.png matches reference byte-for-byte on 0x0, 1x1, 5552-byte Adler boundary, and >65535-byte multi-block" {
+  let mut seed = 42
+  for size in [(0, 0), (1, 1), (5, 0), (0, 3), (1387, 1), (1388, 1), (1388, 2), (200, 100), (300, 300)] {
+    let (w, h) = size
+    let rgba = FixedArray::make(w * h * 4, b'\x00')
+    for i in 0..<rgba.length() {
+      seed = (seed * 1103515245 + 12345) & 0x7FFFFFFF
+      rgba[i] = ((seed >> 16) & 0xFF).to_byte()
+    }
+    assert_true(@pixels.png(w, h, rgba) == png_ref_before(w, h, rgba), msg="random \{w}x\{h}")
+  }
+  // All-0xFF at Adler-32 5552-byte boundary and multi-deflate-block boundary
+  for size in [(1388, 2), (300, 300)] {
+    let (w, h) = size
+    let full = FixedArray::make(w * h * 4, b'\xFF')
+    assert_true(@pixels.png(w, h, full) == png_ref_before(w, h, full), msg="0xFF \{w}x\{h}")
+  }
+}

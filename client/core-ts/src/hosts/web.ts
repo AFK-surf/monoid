@@ -338,6 +338,34 @@ export class WebHost implements Host {
     );
   }
 
+  storageGetVerified(key: string, sha256: string): Effect.Effect<{ bytes: Uint8Array; verified: boolean } | "damaged" | null, HostError> {
+    return Effect.flatMap(
+      this.storageGet(key),
+      (bytes): Effect.Effect<{ bytes: Uint8Array; verified: boolean } | "damaged" | null, HostError> => {
+        if (bytes === null) return Effect.succeed(null);
+        const subtle = globalThis.crypto?.subtle;
+        if (!subtle || typeof subtle.digest !== "function") return Effect.succeed({ bytes, verified: false });
+        return Effect.tryPromise({
+          try: async (): Promise<{ bytes: Uint8Array; verified: boolean } | "damaged"> => {
+            try {
+              const input =
+                bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer
+                  ? bytes
+                  : bytes.slice();
+              const digest = new Uint8Array(await subtle.digest("SHA-256", input as Uint8Array<ArrayBuffer>));
+              let actual = "";
+              for (let i = 0; i < digest.length; i++) actual += digest[i]!.toString(16).padStart(2, "0");
+              return actual === sha256 ? { bytes, verified: true } : "damaged";
+            } catch {
+              return { bytes, verified: false };
+            }
+          },
+          catch: failed,
+        });
+      },
+    );
+  }
+
   storageSet(key: string, value: Uint8Array): Effect.Effect<void, HostError> {
     return Effect.flatMap(this.#tx(STORE, "readwrite"), (tx) =>
       Effect.tryPromise({ try: () => {

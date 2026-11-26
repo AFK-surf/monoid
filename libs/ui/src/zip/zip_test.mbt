@@ -108,3 +108,26 @@ test "sha256: the standard's examples" {
     "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1",
   )
 }
+
+///|
+test "sha256: block-boundary lengths and multi-block payloads match independent reference" {
+  // Independent SHA-256 digests from Python hashlib for Bytes::makei(n, i => (i * 131 + 17) & 0xFF).
+  let cases : Array[(Int, String)] = [
+    (0, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+    (1, "4a64a107f0cb32536e5bce6c98c393db21cca7f4ea187ba8c4dca8b51d4ea80a"),
+    (55, "59aaae80b8e7958f5757b4ac9274f1fd57ec0dc7aa8349319102316781b92006"),
+    (56, "dca902d31487ffab357ce36cc5abc6947fbb69127ec04c468ba5687268c4bf7c"),
+    (63, "b8e655e9e7ad413b96f0a371eb1d6db71dcca27f4eee35892517cbe4bfaa6f9a"),
+    (64, "e5146be62accc56709594cb45c651b361df94f622cbb09b91ea3ca7a2060bd53"),
+    (65, "4b6c6774f0cbcd776a90e187b9494e04ca880c0afe3ea1c5cad51c8bbcb41f74"),
+    (119, "3244509f8746f6fb511ca8a72a292a4d7d12e456cce283c03f169dbbcb0d512e"),
+    (120, "c5236e50172da3b69c903dcd3b3bb8ce855182f79364d1b59ed36367aa25e468"),
+    (128, "ed045c7c319e0c9286e1dea21c80bfd4a08eca43e02e13ee8a7a2c8b4b2baec9"),
+    (1024, "575383deff0775797e1ff4c82da069141937c843a81cbe50959a96bcfa88140e"),
+    (4097, "6b828a41dabc57049f86a8a1b0ceac3e4112258b236a527395c8116c99424ffd"),
+  ]
+  for c in cases {
+    let data = Bytes::makei(c.0, fn(i) { ((i * 131 + 17) & 0xFF).to_byte() })
+    assert_eq(@zip.sha256(data), c.1)
+  }
+}

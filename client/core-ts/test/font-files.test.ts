@@ -224,3 +224,55 @@ test("the calls: fonts.fetch, fonts.preview {id}; fonts.file {sha256}; fonts.kee
   assert.throws(() => parseCall("fonts.keep", { sha256: "ab" }));
   assert.throws(() => parseCall("fonts.fetch", {}));
 });
+
+test("FontFiles.file verifies kept ttf off UI thread via storageGetVerified and self-heals damaged files", async () => {
+  const r = rig();
+  const face = fonts.faceOf("lxgw-wenkai")!;
+  const sha = face.files[0].sha256;
+  await run(r.files.fetch("lxgw-wenkai"));
+  let verifiedCalls = 0;
+  let mode: "verified" | "unverified" | "damaged" = "verified";
+  r.host.storageGetVerified = (key, expected) => {
+    verifiedCalls++;
+    assert.equal(key, `fonts/file/${sha}`);
+    assert.equal(expected, sha);
+    const stored = r.host.storage.get(key);
+    if (!stored) return Effect.succeed(null);
+    if (mode === "damaged") return Effect.succeed("damaged");
+    return Effect.succeed({ bytes: stored.slice(), verified: mode === "verified" });
+  };
+
+  // Gzipped file does not use storageGetVerified.
+  const gz = (await run(r.files.file(sha))) as Beside;
+  assert.deepEqual(gz.value, { zipped: true });
+  assert.equal(verifiedCalls, 0);
+
+  // Kept unzipped file uses storageGetVerified: verified: true.
+  const ttf = new Uint8Array([10, 20, 30, 40]);
+  await run(r.files.keep(sha, ttf));
+  const ok = (await run(r.files.file(sha))) as Beside;
+  assert.equal(verifiedCalls, 1);
+  assert.deepEqual(ok.value, { zipped: false, verified: true });
+  assert.deepEqual([...ok.bytes], [10, 20, 30, 40]);
+
+  // Legacy shell fallback (verified: false) omits `verified` so UI checks it.
+  mode = "unverified";
+  const legacy = (await run(r.files.file(sha))) as Beside;
+  assert.deepEqual(legacy.value, { zipped: false });
+  assert.equal("verified" in (legacy.value as object), false);
+  assert.deepEqual([...legacy.bytes], [10, 20, 30, 40]);
+
+  // Damaged file: deletes index entry and storage file, invalidates topic, fails with not_found.
+  mode = "damaged";
+  const changesBefore = r.changed();
+  await assert.rejects(
+    run(r.files.file(sha)),
+    (e: unknown) => typeof e === "object" && e !== null && (e as { code?: unknown }).code === "not_found",
+  );
+  assert.equal(r.host.storage.has(`fonts/file/${sha}`), false);
+  assert.ok(r.changed() > changesBefore);
+  assert.deepEqual((r.said() as { kept: string[] }).kept, []);
+  // Index persisted without the damaged sha.
+  const persisted = JSON.parse(new TextDecoder().decode(r.host.storage.get("fonts/kept")!)) as Record<string, string>;
+  assert.equal(persisted[sha], undefined);
+});

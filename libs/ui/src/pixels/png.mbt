@@ -83,31 +83,143 @@ fn png_stored_idat(raw : Array[Byte]) -> Array[Byte] {
 }
 
 ///|
+fn png_imin(a : Int, b : Int) -> Int {
+  if a < b {
+    a
+  } else {
+    b
+  }
+}
+
+///|
+/// `v` written big-endian into `out` at `at`.
+fn png_u32(out : FixedArray[Byte], at : Int, v : Int) -> Unit {
+  out[at] = ((v >> 24) & 0xFF).to_byte()
+  out[at + 1] = ((v >> 16) & 0xFF).to_byte()
+  out[at + 2] = ((v >> 8) & 0xFF).to_byte()
+  out[at + 3] = (v & 0xFF).to_byte()
+}
+
+///|
+/// A chunk's CRC written after its kind and body (`out` from `from` to `until`).
+fn png_crc(out : FixedArray[Byte], from : Int, until : Int) -> Unit {
+  let mut c = 0xFFFFFFFFU
+  for i in from..<until {
+    c = png_crc_table[((c ^ out[i].to_uint()) & 0xFFU).reinterpret_as_int()] ^ (c >> 8)
+  }
+  png_u32(out, until, (c ^ 0xFFFFFFFFU).reinterpret_as_int())
+}
+
+///|
+/// A chunk's length and kind (its four letters as one number, big-endian) written into `out` at `at`.
+fn png_chunk_head(out : FixedArray[Byte], at : Int, length : Int, kind : Int) -> Unit {
+  png_u32(out, at, length)
+  png_u32(out, at + 4, kind)
+}
+
+///|
 /// RGBA pixels (`w` × `h`, straight alpha, rows from the top) as a PNG (stored, not compressed: small pictures made
-/// here, decoded anywhere), to hand to @ui.add_image.
+/// here, decoded anywhere), to hand to @ui.add_image. Written into one buffer of the size it comes to, each row copied
+/// whole; its checks (CRC-32 by a table, Adler-32 with the remainder taken every 5552 bytes, as zlib does, the most
+/// before its sums can pass 32 bits) worked out over it.
 pub fn png(w : Int, h : Int, rgba : FixedArray[Byte]) -> Bytes {
-  let o : PngOut = { buf: [] }
-  for b in [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
-    o.byte(b)
+  let stride = w * 4
+  // the rows, each after its filter byte (none), in stored deflate blocks of 65535 bytes at most (one, empty, for none)
+  let raw = h * (stride + 1)
+  let blocks = if raw == 0 { 1 } else { (raw + 65534) / 65535 }
+  let zlen = 2 + 5 * blocks + raw + 4
+  let out = FixedArray::make(8 + 25 + (12 + zlen) + 12, b'\x00')
+  for i, b in [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] {
+    out[i] = b.to_byte()
   }
-  let ihdr : PngOut = { buf: [] }
-  ihdr.u32(w.reinterpret_as_uint())
-  ihdr.u32(h.reinterpret_as_uint())
-  for b in [8, 6, 0, 0, 0] {
-    ihdr.byte(b)
+  // (IHDR)
+  png_chunk_head(out, 8, 13, 0x49484452)
+  png_u32(out, 16, w)
+  png_u32(out, 20, h)
+  out[24] = b'\x08'
+  out[25] = b'\x06'
+  png_crc(out, 12, 29)
+  // (IDAT)
+  png_chunk_head(out, 33, zlen, 0x49444154)
+  out[41] = b'\x78'
+  out[42] = b'\x01'
+  let mut o = 43
+  // raw bytes written, and left in the block being written
+  let mut done = 0
+  let mut left = 0
+  let block = fn() {
+    let n = png_imin(raw - done, 65535)
+    out[o] = (if done + n >= raw { 1 } else { 0 }).to_byte()
+    out[o + 1] = (n & 0xFF).to_byte()
+    out[o + 2] = (n >> 8).to_byte()
+    out[o + 3] = (n.lnot() & 0xFF).to_byte()
+    out[o + 4] = ((n.lnot() >> 8) & 0xFF).to_byte()
+    o = o + 5
+    left = n
   }
-  o.chunk("IHDR", ihdr.buf)
-  // the rows, each after its filter byte (none), in stored deflate blocks
-  let raw : Array[Byte] = []
+  if raw == 0 {
+    block()
+  }
+  // Adler-32's sums, and how many bytes were added since their remainder was last taken
+  let mut a = 1U
+  let mut b = 0U
+  let mut summed = 0
   for y in 0..<h {
-    raw.push(b'\x00')
-    for x in 0..<(w * 4) {
-      raw.push(rgba[y * w * 4 + x])
+    if left == 0 {
+      block()
+    }
+    // (its filter byte, 0, as the buffer was made)
+    o = o + 1
+    left = left - 1
+    done = done + 1
+    b = b + a
+    summed = summed + 1
+    if summed == 5552 {
+      a = a % 65521U
+      b = b % 65521U
+      summed = 0
+    }
+    let mut s = y * stride
+    let mut rest = stride
+    while rest > 0 {
+      if left == 0 {
+        block()
+      }
+      let c = png_imin(rest, left)
+      rgba.blit_to(out, len=c, src_offset=s, dst_offset=o)
+      // (summed in runs up to the next remainder)
+      let mut i = s
+      while i < s + c {
+        let run = png_imin(s + c - i, 5552 - summed)
+        for j in i..<(i + run) {
+          a = a + rgba[j].to_uint()
+          b = b + a
+        }
+        i = i + run
+        summed = summed + run
+        if summed == 5552 {
+          a = a % 65521U
+          b = b % 65521U
+          summed = 0
+        }
+      }
+      o = o + c
+      s = s + c
+      rest = rest - c
+      left = left - c
+      done = done + c
     }
   }
-  o.chunk("IDAT", png_stored_idat(raw))
-  o.chunk("IEND", [])
-  Bytes::from_array(o.buf)
+  a = a % 65521U
+  b = b % 65521U
+  png_u32(out, o, ((b << 16) | a).reinterpret_as_int())
+  o = o + 4
+  png_crc(out, 37, o)
+  o = o + 4
+  // (IEND)
+  png_chunk_head(out, o, 0, 0x49454E44)
+  png_crc(out, o + 4, o + 8)
+  Bytes::from_array(out[:])
 }
 
 ///|

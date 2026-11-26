@@ -187,6 +187,52 @@ test("storage_and_the_database_go_through_the_bridge", async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test("bridgeHost_storageGetVerified_protocol_matrix_and_nodeHost_verification", async () => {
+  const { dir, native, bridge, host } = shell();
+  const payload = bytes("font-ttf-data");
+  const sha = "a".repeat(64);
+  const seen: { op: string; json: J }[] = [];
+  let reply: () => [string, Uint8Array | null] = () => [JSON.stringify({ verified: true }), payload];
+  native.call = (id, op, json) => {
+    seen.push({ op, json: JSON.parse(json) });
+    const [out, b] = reply();
+    bridge.complete(id, out, null, b);
+  };
+  try {
+    // Verified match with bytes.
+    const matched = await run(host.storageGetVerified("fonts/file/x", sha));
+    assert.deepEqual(matched, { bytes: payload, verified: true });
+    assert.deepEqual(seen[0], { op: "storage.get", json: { key: "fonts/file/x", sha256: sha } });
+
+    // Mismatched digest -> "damaged".
+    reply = () => [JSON.stringify({ damaged: true }), null];
+    assert.equal(await run(host.storageGetVerified("fonts/file/x", sha)), "damaged");
+
+    // Missing key -> null.
+    reply = () => [JSON.stringify({ none: true }), null];
+    assert.equal(await run(host.storageGetVerified("fonts/file/x", sha)), null);
+
+    // Legacy shell ignoring sha256 -> { bytes, verified: false }.
+    reply = () => ["{}", payload];
+    assert.deepEqual(await run(host.storageGetVerified("fonts/file/x", sha)), { bytes: payload, verified: false });
+
+    // Protocol error: verified: true without bytes must fail, never synthesize empty Uint8Array.
+    reply = () => [JSON.stringify({ verified: true }), null];
+    await assert.rejects(run(host.storageGetVerified("fonts/file/x", sha)), /verified without bytes/);
+
+    // NodeHost.storageGetVerified end-to-end.
+    const { createHash } = await import("node:crypto");
+    const actualSha = createHash("sha256").update(payload).digest("hex");
+    await run(native.host.storageSet("fonts/file/node-test", payload));
+    assert.deepEqual(await run(native.host.storageGetVerified("fonts/file/node-test", actualSha)), { bytes: payload, verified: true });
+    assert.equal(await run(native.host.storageGetVerified("fonts/file/node-test", "0".repeat(64))), "damaged");
+    assert.equal(await run(native.host.storageGetVerified("fonts/file/missing", actualSha)), null);
+  } finally {
+    native.host.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("a_core_on_the_bridge_signs_in_and_hears_the_cloud", async () => {
   const cloud = new FakeCloud();
   // A port of its own: another run of these tests at once on this machine has its cloud too.

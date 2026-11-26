@@ -8,7 +8,7 @@ import { appendFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { webcrypto } from "node:crypto";
+import { createHash, webcrypto } from "node:crypto";
 import { Effect, Queue, Scope } from "effect";
 import WebSocket from "ws";
 import { connect as tcpConnect } from "node:net";
@@ -236,6 +236,14 @@ export class NodeHost implements Host {
       },
       (e) => t("core-misc.host.storage.read", { error: e.message }),
     );
+  }
+
+  storageGetVerified(key: string, sha256: string): Effect.Effect<{ bytes: Uint8Array; verified: boolean } | "damaged" | null, HostError> {
+    return Effect.map(this.storageGet(key), (bytes) => {
+      if (bytes === null) return null;
+      const actual = createHash("sha256").update(bytes).digest("hex");
+      return actual === sha256 ? { bytes, verified: true } : "damaged";
+    });
   }
 
   storageSet(key: string, value: Uint8Array): Effect.Effect<void, HostError> {

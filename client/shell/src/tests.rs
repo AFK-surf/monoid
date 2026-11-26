@@ -418,6 +418,63 @@ fn keeps_files_and_records_as_client_ffi_does() {
 }
 
 #[test]
+fn storage_get_verifies_sha256_off_disk_thread() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let payload = b"hello verified font bytes".to_vec();
+    let expected = hex::encode(ring::digest::digest(&ring::digest::SHA256, &payload).as_ref());
+
+    shell.call(101, "storage.set".into(), br#"{"key":"font-test"}"#, Some(payload.clone()));
+    assert_eq!(answer(101).1, "");
+
+    // Matching sha256: verified: true with original bytes.
+    let match_args = json!({ "key": "font-test", "sha256": expected }).to_string();
+    shell.call(102, "storage.get".into(), match_args.as_bytes(), None);
+    let (j, e, b) = answer(102);
+    assert_eq!(e, "");
+    assert_eq!(serde_json::from_str::<Value>(&j).unwrap(), json!({ "verified": true }));
+    assert_eq!(b, Some(payload.clone()));
+
+    // Mismatched sha256: damaged: true and no bytes.
+    let wrong_args = json!({ "key": "font-test", "sha256": "0".repeat(64) }).to_string();
+    shell.call(103, "storage.get".into(), wrong_args.as_bytes(), None);
+    let (j, e, b) = answer(103);
+    assert_eq!(e, "");
+    assert_eq!(serde_json::from_str::<Value>(&j).unwrap(), json!({ "damaged": true }));
+    assert_eq!(b, None);
+
+    // Missing key: none: true and no bytes.
+    let missing_args = json!({ "key": "no-such-font", "sha256": expected }).to_string();
+    shell.call(104, "storage.get".into(), missing_args.as_bytes(), None);
+    let (j, e, b) = answer(104);
+    assert_eq!(e, "");
+    assert_eq!(serde_json::from_str::<Value>(&j).unwrap(), json!({ "none": true }));
+    assert_eq!(b, None);
+
+    // Invalid sha256 parameter: falls back to plain read without `verified`.
+    for (id, bad) in [
+        (105, json!(expected.to_uppercase())),
+        (106, json!("abcd")),
+        (107, json!("g".repeat(64))),
+        (108, json!(12345)),
+    ] {
+        let args = json!({ "key": "font-test", "sha256": bad }).to_string();
+        shell.call(id, "storage.get".into(), args.as_bytes(), None);
+        let (j, e, b) = answer(id);
+        assert_eq!(e, "", "bad sha256 {bad}");
+        assert_eq!(serde_json::from_str::<Value>(&j).unwrap(), json!({}));
+        assert_eq!(b, Some(payload.clone()));
+    }
+
+    // Plain read without sha256: unchanged behavior.
+    shell.call(109, "storage.get".into(), br#"{"key":"font-test"}"#, None);
+    let (j, e, b) = answer(109);
+    assert_eq!(e, "");
+    assert_eq!(serde_json::from_str::<Value>(&j).unwrap(), json!({}));
+    assert_eq!(b, Some(payload));
+}
+
+#[test]
 fn takes_zstd_apart_a_piece_at_a_time() {
     let dir = TempDir::new();
     let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();

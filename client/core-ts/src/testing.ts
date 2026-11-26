@@ -370,6 +370,8 @@ export class FakeHost implements Host {
   }
   /// Where a value is kept as a file: none unless a test sets it (as a web page has none).
   storagePath?: (key: string) => string | null;
+  /// Verified storage read: none unless a test sets it.
+  storageGetVerified?: Host["storageGetVerified"];
 
   /// The system's secure storage, in memory (an app's host has one; a test of a web page's sets these undefined):
   /// what was kept (and whether reading it asks the person), what was asked of the person, and whether they say no.

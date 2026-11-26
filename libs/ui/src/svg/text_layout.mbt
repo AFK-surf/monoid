@@ -147,6 +147,53 @@ fn load_resolved_font(db : @font.FontDb, id : Int, variations : Array[(String, F
 }
 
 ///|
+fn resolved_font_cache_key(id : Int, variations : Array[(String, Float)]) -> String {
+  let sb = StringBuilder()
+  sb.write_string(id.to_string())
+  for v in variations {
+    sb.write_char('|')
+    sb.write_string(v.0.length().to_string())
+    sb.write_char(':')
+    sb.write_string(v.0)
+    sb.write_char('=')
+    sb.write_string(v.1.reinterpret_as_uint().to_string())
+  }
+  sb.to_string()
+}
+
+///|
+fn cached_resolved_font(
+  cache : Cache,
+  db : @font.FontDb,
+  id : Int,
+  variations : Array[(String, Float)],
+) -> ResolvedFont? {
+  let key = resolved_font_cache_key(id, variations)
+  match cache.resolved_fonts.get(key) {
+    Some(f) => Some(f)
+    None =>
+      match load_resolved_font(db, id, variations) {
+        Some(f) => {
+          cache.resolved_fonts[key] = f
+          Some(f)
+        }
+        None => None
+      }
+  }
+}
+
+///|
+fn varied_shaper_cache_key(id : Int, coords : Array[Int]) -> String {
+  let sb = StringBuilder()
+  sb.write_string(id.to_string())
+  for c in coords {
+    sb.write_char(',')
+    sb.write_string(c.to_string())
+  }
+  sb.to_string()
+}
+
+///|
 fn select_font(db : @font.FontDb, font : SFont) -> Int? {
   let names : Array[@font.Family] = font.families.map(fn(f) {
     match f {
@@ -200,6 +247,7 @@ priv struct PosGlyph {
   units_per_em : Int
   font_size : Float
   id : Int
+  face_id : Int
   face : @font.Face
 }
 
@@ -261,7 +309,7 @@ priv struct LSpan {
 }
 
 ///|
-fn layout_and_flatten(text : ParsedText, opt : Options) -> SText? {
+fn layout_and_flatten(text : ParsedText, opt : Options, cache : Cache) -> SText? {
   let db = opt.fonts
   let fonts : Map[String, ResolvedFont] = Map([])
   for chunk in text.chunks {
@@ -270,7 +318,7 @@ fn layout_and_flatten(text : ParsedText, opt : Options) -> SText? {
       if !fonts.contains(key) {
         match select_font(db, span.font) {
           Some(id) =>
-            match load_resolved_font(db, id, span.font.variations) {
+            match cached_resolved_font(cache, db, id, span.font.variations) {
               Some(f) => fonts[key] = f
               None => ()
             }
@@ -289,7 +337,7 @@ fn layout_and_flatten(text : ParsedText, opt : Options) -> SText? {
       Linear => (chunk.x.unwrap_or(last_x), chunk.y.unwrap_or(last_y))
       OnPath(_, _) => (0.0, 0.0)
     }
-    let clusters = process_chunk(chunk, fonts, db)
+    let clusters = process_chunk(chunk, fonts, db, cache)
     if clusters.is_empty() {
       char_offset += chunk.chars.length()
       continue
@@ -436,6 +484,7 @@ fn layout_and_flatten(text : ParsedText, opt : Options) -> SText? {
       }
       builder = @skia.PathBuilder::new()
     }
+    let span_coords : Map[Int, Array[Int]] = Map([])
     for g in span.glyphs {
       match colr_glyph(g.face, g.id) {
         Some(tree) => {
@@ -469,7 +518,15 @@ fn layout_and_flatten(text : ParsedText, opt : Options) -> SText? {
         }
         None => ()
       }
-      match g.face.outline(g.id, coords=g.face.coords(effective_variations(g.face, span.variations, span.font_size, span.optical_auto))) {
+      let coords = match span_coords.get(g.face_id) {
+        Some(c) => c
+        None => {
+          let c = g.face.coords(effective_variations(g.face, span.variations, span.font_size, span.optical_auto))
+          span_coords[g.face_id] = c
+          c
+        }
+      }
+      match g.face.outline(g.id, coords~) {
         Some(cmds) => {
           let gb = @skia.PathBuilder::new()
           for c in cmds {
@@ -830,7 +887,7 @@ fn collect_normals(
 }
 
 ///|
-fn process_chunk(chunk : TextChunk, fonts : Map[String, ResolvedFont], db : @font.FontDb) -> Array[Cluster] {
+fn process_chunk(chunk : TextChunk, fonts : Map[String, ResolvedFont], db : @font.FontDb, cache : Cache) -> Array[Cluster] {
   let positions : Set[Int] = Set([])
   let mut glyphs : Array[TGlyph] = []
   for span in chunk.spans {
@@ -838,7 +895,7 @@ fn process_chunk(chunk : TextChunk, fonts : Map[String, ResolvedFont], db : @fon
       Some(f) => f
       None => continue
     }
-    let tmp = shape_text(chunk, font, span.small_caps, span.apply_kerning, db, span.font.variations, span.font_size, span.optical_auto)
+    let tmp = shape_text(chunk, font, span.small_caps, span.apply_kerning, db, cache, span.font.variations, span.font_size, span.optical_auto)
     if glyphs.is_empty() {
       glyphs = tmp
       continue
@@ -912,6 +969,7 @@ fn form_cluster(glyphs : Array[TGlyph], from : Int, to : Int, chunk : TextChunk,
       units_per_em: g.font.units_per_em,
       font_size: size,
       id: g.id,
+      face_id: g.font.id,
       face: g.font.face,
     })
     x = x + fi(g.width)
@@ -1074,11 +1132,12 @@ fn shape_text(
   small_caps : Bool,
   kerning : Bool,
   db : @font.FontDb,
+  cache : Cache,
   variations : Array[(String, Float)],
   font_size : Float,
   optical_auto : Bool,
 ) -> Array[TGlyph] {
-  let shape = fn(f : ResolvedFont) { shape_with_font(chunk, f, small_caps, kerning, variations, font_size, optical_auto) }
+  let shape = fn(f : ResolvedFont) { shape_with_font(chunk, f, small_caps, kerning, cache, variations, font_size, optical_auto) }
   let mut glyphs = shape(font)
   let used = [font.id]
   while true {
@@ -1094,7 +1153,7 @@ fn shape_text(
     }
     let fallback = match select_fallback(db, missing, used) {
       Some(id) =>
-        match load_resolved_font(db, id, variations) {
+        match cached_resolved_font(cache, db, id, variations) {
           Some(f) => f
           None => break
         }
@@ -1160,6 +1219,7 @@ fn shape_with_font(
   font : ResolvedFont,
   small_caps : Bool,
   kerning : Bool,
+  cache : Cache,
   variations : Array[(String, Float)],
   font_size : Float,
   optical_auto : Bool,
@@ -1169,7 +1229,16 @@ fn shape_with_font(
   let shaper = if variations.length() == 0 && !(optical_auto && font.face.has_axis("opsz")) {
     font.shaper
   } else {
-    @shape.ShapeFont::new(font.face, coords=font.face.coords(effective_variations(font.face, variations, font_size, optical_auto)))
+    let coords = font.face.coords(effective_variations(font.face, variations, font_size, optical_auto))
+    let key = varied_shaper_cache_key(font.id, coords)
+    match cache.varied_shapers.get(key) {
+      Some(s) => s
+      None => {
+        let s = @shape.ShapeFont::new(font.face, coords~)
+        cache.varied_shapers[key] = s
+        s
+      }
+    }
   }
   for run in visual_runs(chunk) {
     let (a, b, rtl) = run
