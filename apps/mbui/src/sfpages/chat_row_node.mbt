@@ -458,7 +458,7 @@ pub fn chat_row_node(
               2 => {
                 // Across the whole screen the aside is in the second line, but its last part still uses the same
                 // column as the first line and the archive action (set with its own style, no binding of its own)
-                let reach = fn() { @ui.Space::S4.px() + row_aside_end_w_node(row, item(), lead) / 2.0 - @sf.list_end_column(Whole) }
+                let reach = fn() { @sf.phone_row_in.px() + row_aside_end_w_node(row, item(), lead) / 2.0 - @sf.list_end_column(Whole) }
                 row_aside_node(e, src, tips, item, lead, face_ground, stint, reach~)
               }
               _ => ()
