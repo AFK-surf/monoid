@@ -326,6 +326,10 @@ if part ts; then
   if touches '^client/core-ts/(src/ui-faults\.ts|scripts/ui-faults\.ts)$|^apps/mbui/src/stillfail/ui_faults\.mbt$'; then
     step "UI fault categories" node client/core-ts/scripts/ui-faults.ts --check
   fi
+  # The app's topic policy is the core's (client/core-ts/src/topic-policy.ts).
+  if touches '^client/core-ts/src/(protocol|topic-policy)\.ts$|^apps/mbui/(scripts/gen-topic-policy\.mjs|src/sfbase/topic_policy_gen\.mbt)$'; then
+    step "topic policy" node apps/mbui/scripts/gen-topic-policy.mjs --check
+  fi
 
   # The agents' rules name only what is there (AGENTS.md: These files are kept true): any change may move what one names.
   step "AGENTS.md paths" node scripts/agents-paths.ts

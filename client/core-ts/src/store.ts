@@ -23,6 +23,7 @@ import type { Host } from "./host.ts";
 import { t } from "./i18n.ts";
 import * as present from "./present.ts";
 import { topicDebug, topicKey, type ClientId, type CoreMessage, type RequestId, type Topic } from "./protocol.ts";
+import { KEPT_PER_CLIENT, topicsWhere } from "./topic-policy.ts";
 import { laterSleep, type Runner } from "./runtime.ts";
 import { Kind, type Span, type Tracer } from "./trace.ts";
 import { readAfresh } from "./markdown.ts";
@@ -35,10 +36,11 @@ import { walked, walkingAs, work } from "./work.ts";
 export const COALESCE_MS = 50;
 export const EVICT_AFTER_MS = 60_000;
 /// Topics of words typed (the `@` menu's, a search's): one let go of before the last of its kind is not made again till
-/// it is asked again (#flushOf).
-export const ASKED_BY_WORDS: ReadonlySet<string> = new Set(["chatSearch", "search", "chatSubchats"]);
+/// it is asked again (#flushOf). Derived from `topic-policy.ts`.
+export const ASKED_BY_WORDS: ReadonlySet<string> = topicsWhere((p) => p.askedByWords === true);
 /// Expensive derived topics that should not recompute while idle during their eviction grace window (#flushOf).
-const LAZY_WHEN_IDLE: ReadonlySet<string> = new Set(["profilesOverview"]);
+/// Derived from `topic-policy.ts`.
+const LAZY_WHEN_IDLE: ReadonlySet<string> = topicsWhere((p) => p.lazyWhenIdle === true);
 /// A topic of words typed by its kind: its name and where it looks.
 function wordsKind(topic: Topic): string {
   if (topic.topic === "chatSubchats") return `${topic.topic}\u0001${String(topic.station ?? "")}\u0001${String(topic.thread ?? "")}\u0001${String(topic.session ?? "")}`;
@@ -47,9 +49,9 @@ function wordsKind(topic: Topic): string {
 /// How many values let go of keeping them (`keep`) are remembered for a client (#kept), the least recently let go of
 /// forgotten first: the app keeps the lists its places open on, a workspace's eight or so, its last 8 chats, and the
 /// read-only topics of the pages, panels and cards it opened lately (apps/mbui/src/sfbase/source.mbt `topic_kept`,
-/// `views_kept`; 96 of every name together, `kept_most_by`). One it keeps past these, asked again, is still answered
-/// `same` where its value is the same object still (a token needs nothing remembered), and whole where it is not.
-export const KEPT_PER_CLIENT = 96;
+/// `topic_policy_gen.mbt`; 96 of every name together, `kept_most_by`). One it keeps past these, asked again, is still
+/// answered `same` where its value is the same object still (a token needs nothing remembered), and whole where it is not.
+export { KEPT_PER_CLIENT };
 /// The topics a page opens with, each first subscriber's wait for its first value a trace of its own (`<topic>.open`,
 ///): how long a chat took to show, and how much of that the core spent making it.
 const OPENED = new Set(["chat"]);
@@ -59,8 +61,8 @@ const OPENED = new Set(["chat"]);
 const FLUSH_HELD_MS = 50;
 const FLUSH_TOLD_EVERY_MS = 60_000;
 /// What an app acts on while none of its pages is in view (its notices, its icon's badge, a download ready saved, a
-/// copy between stations: the topics it watches whatever page shows): these go out then too.
-const UNSEEN = new Set(["notify", "workspaceMarks", "downloads", "driveTransfers"]);
+/// copy between stations: the topics it watches whatever page shows): these go out then too. Derived from `topic-policy.ts`.
+const UNSEEN: ReadonlySet<string> = topicsWhere((p) => p.unseen === true);
 
 /// A topic's value's token (digest.ts `token`): of the value object, nothing of it read; one that is no object, of its
 /// content, hashed (counted: work.ts `versions`).

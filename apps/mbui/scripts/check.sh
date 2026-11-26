@@ -26,6 +26,8 @@ python3 "$D/webassets.py" --check || exit 1
 python3 "$D/fontassets.py" --check || exit 1
 # every catalog key the sources say listed in its package's words.txt (scripts/words.py)
 python3 "$D/words.py" --check || exit 1
+# the app's topic policy matches client/core-ts/src/topic-policy.ts (scripts/gen-topic-policy.mjs)
+node "$D/gen-topic-policy.mjs" --check || exit 1
 # each package's strings_{zh,en}.mbt as scripts/strings writes them from the catalog: words change in the catalog,
 # never in those files (a word changed only there showed in the app but not on the web or in a station's words)
 said=$(mktemp -d)
