@@ -1,0 +1,1161 @@
+// Station storage manifest, in-place log rotation, upkeep-state persistence, and bounded
+// Upkeep governance (`station/src/ops/storage.ts` & `station/src/ops/upkeep-state.ts`).
+//
+// Invariants (`station/src/ops/AGENTS.md`):
+// - Never rename or unlink a log held open with O_APPEND; truncate in place (`rotate_in_place`).
+// - Worktree pruning strictly respects `<data>/sessions` boundaries and `ARCHIVE_WORKTREE_LOCK_PREFIX`.
+
+import "base_codec"
+import "nodepath"
+
+pub let MIB : Int64 = (1024 * 1024).to_int64()
+pub let HOUR_MS : Int64 = 3600000.to_int64()
+pub let DAY_MS : Int64 = (24 * 3600000).to_int64()
+
+pub let STATION_LOG_CAP : Int64 = 64.to_int64() * MIB
+pub let UPDATE_LOG_CAP : Int64 = 16.to_int64() * MIB
+pub let JOB_LOG_CAP : Int64 = 64.to_int64() * MIB
+pub let WAL_CAP : Int64 = 128.to_int64() * MIB
+pub let THUMBS_CAP : Int64 = 512.to_int64() * MIB
+pub let CONFIG_BACKUPS_KEPT : Int = 3
+pub let NODE_PART_MS : Int64 = DAY_MS
+pub let BOARD_FILES_GONE_MS : Int64 = DAY_MS
+pub let ORPHAN_ROOM_MS : Int64 = DAY_MS
+pub let ORPHAN_ROOM_EVERY_MS : Int64 = DAY_MS
+pub let REPO_BRANCHES_EVERY_MS : Int64 = DAY_MS
+pub let REPO_BUNDLE_MS : Int64 = 30.to_int64() * DAY_MS
+pub let UPKEEP_EVERY_MS : Int64 = (10 * 60000).to_int64()
+pub let UPKEEP_FIRST_MS : Int64 = (2 * 60000).to_int64()
+
+pub let UPKEEP_STATE_FILE : String = "upkeep-state.json"
+pub let IDLE_MEASURED_MAX : Int = 4096
+pub let IDLE_MEASURED_VERSION : Int = 2
+pub let ARCHIVE_WORKTREE_LOCK_PREFIX : String = "archived workspace: "
+
+// ---------------------------------------------------------------------------
+// STORAGE_MANIFEST
+// ---------------------------------------------------------------------------
+
+pub enum StorageClass {
+  Authoritative
+  SessionBound
+  BoundedEphemeral
+}
+
+pub fn storage_class_name(c : StorageClass) -> String {
+  match c {
+    StorageClass::Authoritative => "authoritative"
+    StorageClass::SessionBound => "session-bound"
+    StorageClass::BoundedEphemeral => "bounded-ephemeral"
+  }
+}
+
+pub struct StorageEntry {
+  pub name : String
+  pub class : StorageClass
+  pub what : String
+  pub max_bytes : Option[Int64]
+  pub max_age_ms : Option[Int64]
+  pub reclaim : String
+}
+
+fn se_auth(name : String, what : String, reclaim : String = "") -> StorageEntry {
+  StorageEntry::{
+    name: name,
+    class: StorageClass::Authoritative,
+    what: what,
+    max_bytes: None,
+    max_age_ms: None,
+    reclaim: reclaim,
+  }
+}
+
+fn se_sess(name : String, what : String, reclaim : String) -> StorageEntry {
+  StorageEntry::{
+    name: name,
+    class: StorageClass::SessionBound,
+    what: what,
+    max_bytes: None,
+    max_age_ms: None,
+    reclaim: reclaim,
+  }
+}
+
+fn se_eph(
+  name : String,
+  what : String,
+  max_bytes : Option[Int64],
+  max_age_ms : Option[Int64],
+  reclaim : String,
+) -> StorageEntry {
+  StorageEntry::{
+    name: name,
+    class: StorageClass::BoundedEphemeral,
+    what: what,
+    max_bytes: max_bytes,
+    max_age_ms: max_age_ms,
+    reclaim: reclaim,
+  }
+}
+
+/// Complete registry of top-level entries under `<data>` (`station/src/ops/storage.ts`).
+pub fn storage_manifest() -> Array[StorageEntry] {
+  [
+    se_auth("stillfail.db", "everything lasting (store)"),
+    se_eph("stillfail.db-wal", "the database's log", Some(WAL_CAP), None, "Upkeep walCheckpoint"),
+    se_eph(
+      "stillfail.db-shm",
+      "the database's shared memory index",
+      Some(64.to_int64() * MIB),
+      None,
+      "SQLite",
+    ),
+    se_eph(
+      "stillfail.log",
+      "the station's log (launchd, systemd)",
+      Some(STATION_LOG_CAP),
+      None,
+      "Upkeep rotateInPlace",
+    ),
+    se_eph(
+      "stillfail.log.1",
+      "the station's log before its last cut",
+      Some(STATION_LOG_CAP),
+      None,
+      "Upkeep rotateInPlace",
+    ),
+    se_eph(
+      "stillfail.log.1.tmp",
+      "a cut of the log being written",
+      Some(STATION_LOG_CAP),
+      None,
+      "Upkeep rotateInPlace",
+    ),
+    se_auth("config.json", "the station's settings"),
+    se_eph(
+      "config.json.bak-*",
+      "settings as they were before a change",
+      None,
+      None,
+      "Upkeep: the newest 3 kept",
+    ),
+    se_eph("presence.json", "whether the station is online", Some(MIB), None, ""),
+    se_eph("model-catalog.json", "the models' catalog as last read", Some(16.to_int64() * MIB), None, ""),
+    se_eph("repo-index.json", "the repositories found on the machine", Some(64.to_int64() * MIB), None, ""),
+    se_eph(
+      UPKEEP_STATE_FILE,
+      "persistent timestamps and idle-rebuildable memo for periodic upkeep",
+      Some(MIB),
+      None,
+      "Upkeep / Hub: rewritten in place, idleMeasured capped at 4096",
+    ),
+    se_auth("remote-connects.json", "connects of other stations"),
+    se_auth("comma-tasks.json", "Comma's tasks"),
+    se_auth("comma-stats.db", "Comma's statistics"),
+    se_auth("comma-stats.db-*", "Comma's statistics' log and shared memory"),
+    se_auth("comma-indexes", "Comma's indexes"),
+    se_auth("feishu-threads.json", "Feishu's threads"),
+    se_auth("feishu-registrations.json", "Feishu's registrations"),
+    se_auth("group-threads.json", "what the group connects heard of their IM servers"),
+    se_auth("windows.json", "Windows' install settings"),
+    se_auth("uninstalled", "taken away here, its data kept"),
+    se_auth("drive-grant.key", "the drive's grant key"),
+    se_auth("app", "the station's release"),
+    se_eph("app.before-replace", "official release backup kept before local replacement", None, None, "removed on official update"),
+    StorageEntry::{
+      name: "node",
+      class: StorageClass::Authoritative,
+      what: "the station's Node (.part-* held by Upkeep)",
+      max_bytes: None,
+      max_age_ms: Some(NODE_PART_MS),
+      reclaim: "Upkeep staleNodeParts",
+    },
+    se_auth("bin", "commands installed for the station"),
+    se_auth("ca", "certificates the station trusts"),
+    se_auth("runtimes", "agent runtimes installed by the station"),
+    se_auth("screen-tools", "tools a screen needs (Linux)"),
+    se_eph("tools", "on-demand helper virtual environments", Some(512.to_int64() * MIB), None, "rebuilt on demand"),
+    se_auth("devices", "encrypted credentials of attached devices"),
+    se_auth("helper", "still.fail Helper"),
+    se_auth("browser", "the station's own Chrome profiles"),
+    se_auth("shells", "the agents' shells' settings"),
+    se_auth("shell", "the agents' shell's settings"),
+    se_auth("transcripts", "the agents' transcripts", "deleteSession / relieveOrphanTranscripts"),
+    se_auth("transcripts-segmented", "transcripts put away in segments"),
+    se_sess("sessions", "each chat's workspace", "lifecycle / Upkeep pruneOrphanRooms"),
+    se_auth("archive", "chats put away"),
+    se_auth("uploads", "files sent in chats"),
+    StorageEntry::{
+      name: "board-files",
+      class: StorageClass::Authoritative,
+      what: "files of board drafts (.gone held by Upkeep)",
+      max_bytes: None,
+      max_age_ms: Some(BOARD_FILES_GONE_MS),
+      reclaim: "Upkeep goneBoardFiles",
+    },
+    se_auth("homes", "the runtimes' homes"),
+    se_eph("colab", "Colab sandboxes CLI venv and VM records", None, None, "reapColab"),
+    se_sess("repos", "the repositories' shared clones", "Upkeep pruneAllRepoBranches / relieveRepos"),
+    se_eph("repo-bundles", "git bundles of stale unpushed branches", None, Some(REPO_BUNDLE_MS), "Upkeep pruneExpiredRepoBundles"),
+    se_auth("agent", "the agents' memory and skills"),
+    se_auth("share", "the memory's versions shared between stations"),
+    se_auth("xshare", "chats shared with other workspaces"),
+    se_auth("mesh", "the station's key and what the cloud said"),
+    se_auth("vault", "the vault's state"),
+    se_auth("logins", "logins in progress and kept"),
+    se_auth("replica", "this station's copies off the machine"),
+    se_auth("replicas", "other stations' copies kept here"),
+    se_auth("restore", "a lost station's copy being taken back"),
+    se_auth("rig", "a station that only runs tasks: its grants"),
+    se_sess("move", "items moving to or from another station", "move/"),
+    se_sess("drive-transfers", "the drive's transfers", "drive/"),
+    se_auth("workspace-limits", "sizes of the workspaces measured"),
+    se_eph("resources", "resource samples", Some(64.to_int64() * MIB), None, ""),
+    se_auth("Trash", "files the drive put in the trash"),
+    se_eph("run", "what runs (runners, pids, sockets, update.log)", None, None, "Upkeep: runner sweep, update.log cut"),
+    se_eph("jobs", "jobs' logs and exit files", None, Some(14.to_int64() * DAY_MS), "jobs capLogs, collect"),
+    se_sess("remote", "other stations' tasks here and tasks started from here", "remote sweep, relieve, budget, expire"),
+    se_eph("thumbs", "thumbnails of images", Some(THUMBS_CAP), None, "Upkeep capByAge"),
+    se_eph("transcript-marks", "where transcripts' entries are", None, None, "Upkeep orphanMarks"),
+  ]
+}
+
+/// Glob matching supporting `*` wildcards (for `config.json.bak-*`, `comma-stats.db-*`, etc.).
+pub fn glob_match(pattern : String, text : String) -> Bool {
+  let pr = pattern.to_bytes()
+  let tr = text.to_bytes()
+  let pn = pr.length()
+  let tn = tr.length()
+  let mut pi = 0
+  let mut ti = 0
+  let mut star_pi = -1
+  let mut star_ti = 0
+  while ti < tn {
+    if pi < pn && (pr[pi].to_int() & 0xFF) == 42 { // '*'
+      star_pi = pi
+      star_ti = ti
+      pi = pi + 1
+    } else if pi < pn && pr[pi] == tr[ti] {
+      pi = pi + 1
+      ti = ti + 1
+    } else if star_pi >= 0 {
+      pi = star_pi + 1
+      star_ti = star_ti + 1
+      ti = star_ti
+    } else {
+      return false
+    }
+  }
+  while pi < pn && (pr[pi].to_int() & 0xFF) == 42 {
+    pi = pi + 1
+  }
+  pi == pn
+}
+
+/// Looks up the manifest entry for a top-level `<data>` name.
+pub fn storage_entry(name : String) -> Option[StorageEntry] {
+  let entries = storage_manifest()
+  for i in 0..<entries.length() {
+    let e = entries[i]
+    if glob_match(e.name, name) {
+      return Some(e)
+    }
+  }
+  None
+}
+
+// ---------------------------------------------------------------------------
+// In-place log rotation (`rotateInPlace`)
+// ---------------------------------------------------------------------------
+
+/// Copies the tail `keep` bytes of `path` to `<path>.1.tmp`, atomically renames to `<path>.1`,
+/// and truncates `path` in place (same inode) when `size > cap`.
+pub fn rotate_in_place(
+  fs : FsPort,
+  path : String,
+  cap : Int64,
+  keep : Int64 = -1.to_int64(),
+) -> Result[Bool, String] {
+  let keep_bytes = if keep < 0.to_int64() { cap } else { keep }
+  let st = match (fs.stat)(path) {
+    Some(s) => s
+    None => return Ok(false)
+  }
+  if st.size <= cap {
+    return Ok(false)
+  }
+  let raw = match (fs.read_bytes)(path) {
+    Some(b) => b
+    None => return Err("failed to read log for rotation: " + path)
+  }
+  let total = raw.length()
+  let keep_i = keep_bytes.to_int()
+  let start = if keep_i <= 0 {
+    total
+  } else if total > keep_i {
+    total - keep_i
+  } else {
+    0
+  }
+  let tail_len = total - start
+  let tail_buf = Bytes::new(tail_len)
+  for i in 0..<tail_len {
+    tail_buf[i] = raw[start + i]
+  }
+  let tmp = path + ".1.tmp"
+  let dst = path + ".1"
+  if !(fs.write_bytes)(tmp, tail_buf) {
+    let _ = (fs.remove_file)(tmp)
+    return Err("failed to write rotation temp file: " + tmp)
+  }
+  if !(fs.rename)(tmp, dst) {
+    let _ = (fs.remove_file)(tmp)
+    return Err("failed to rename rotation temp file: " + tmp)
+  }
+  if !(fs.truncate_in_place)(path) {
+    return Err("failed to truncate log in place: " + path)
+  }
+  Ok(true)
+}
+
+// ---------------------------------------------------------------------------
+// Bounded cleanup primitives (`keepNewest`, `removeStale`, `capByAge`, etc.)
+// ---------------------------------------------------------------------------
+
+struct DatedName {
+  name : String
+  mtime_ms : Int64
+}
+
+pub fn keep_newest(fs : FsPort, dir : String, prefix : String, kept : Int) -> Array[String] {
+  let names = match (fs.read_dir)(dir) {
+    Some(ns) => ns
+    None => return []
+  }
+  let dated : Array[DatedName] = []
+  for i in 0..<names.length() {
+    let n = names[i]
+    if !sj_starts_with(n, prefix) {
+      continue
+    }
+    let p = nodepath::join(fs.sep, [dir, n])
+    let mtime = match (fs.stat)(p) {
+      Some(st) => st.mtime_ms
+      None => 0.to_int64()
+    }
+    dated.push(DatedName::{ name: n, mtime_ms: mtime })
+  }
+  // Sort newest first (descending mtime_ms).
+  for i in 1..<dated.length() {
+    let cur = dated[i]
+    let mut j = i - 1
+    while j >= 0 && dated[j].mtime_ms < cur.mtime_ms {
+      dated[j + 1] = dated[j]
+      j = j - 1
+    }
+    dated[j + 1] = cur
+  }
+  let gone : Array[String] = []
+  let start = if kept < 0 { 0 } else { kept }
+  for i in start..<dated.length() {
+    let n = dated[i].name
+    let p = nodepath::join(fs.sep, [dir, n])
+    let _ = (fs.remove_dir_all)(p)
+    gone.push(n)
+  }
+  gone
+}
+
+pub fn remove_stale(
+  fs : FsPort,
+  dir : String,
+  prefix : String,
+  max_age_ms : Int64,
+  now_ms : Int64,
+) -> Array[String] {
+  let names = match (fs.read_dir)(dir) {
+    Some(ns) => ns
+    None => return []
+  }
+  let gone : Array[String] = []
+  for i in 0..<names.length() {
+    let n = names[i]
+    if !sj_starts_with(n, prefix) {
+      continue
+    }
+    let p = nodepath::join(fs.sep, [dir, n])
+    let st = match (fs.lstat)(p) {
+      Some(s) => s
+      None => continue
+    }
+    if now_ms - st.mtime_ms < max_age_ms {
+      continue
+    }
+    let _ = (fs.remove_dir_all)(p)
+    gone.push(n)
+  }
+  gone
+}
+
+struct AgedFile {
+  path : String
+  bytes : Int64
+  mtime_ms : Int64
+}
+
+pub fn cap_by_age(fs : FsPort, dir : String, max_bytes : Int64) -> Int64 {
+  let names = match (fs.read_dir)(dir) {
+    Some(ns) => ns
+    None => return 0.to_int64()
+  }
+  let files : Array[AgedFile] = []
+  let mut total : Int64 = 0.to_int64()
+  for i in 0..<names.length() {
+    let p = nodepath::join(fs.sep, [dir, names[i]])
+    let st = match (fs.lstat)(p) {
+      Some(s) => s
+      None => continue
+    }
+    if !st.is_file() || st.is_symlink() {
+      continue
+    }
+    total = total + st.size
+    files.push(AgedFile::{ path: p, bytes: st.size, mtime_ms: st.mtime_ms })
+  }
+  if total <= max_bytes {
+    return 0.to_int64()
+  }
+  // Sort oldest first (ascending mtime_ms).
+  for i in 1..<files.length() {
+    let cur = files[i]
+    let mut j = i - 1
+    while j >= 0 && files[j].mtime_ms > cur.mtime_ms {
+      files[j + 1] = files[j]
+      j = j - 1
+    }
+    files[j + 1] = cur
+  }
+  let mut freed : Int64 = 0.to_int64()
+  for i in 0..<files.length() {
+    if total <= max_bytes {
+      break
+    }
+    let f = files[i]
+    let _ = (fs.remove_file)(f.path)
+    total = total - f.bytes
+    freed = freed + f.bytes
+  }
+  freed
+}
+
+pub fn gone_board_files(
+  fs : FsPort,
+  dir : String,
+  max_age_ms : Int64,
+  now_ms : Int64,
+) -> Array[String] {
+  let people = match (fs.read_dir)(dir) {
+    Some(ns) => ns
+    None => return []
+  }
+  let gone : Array[String] = []
+  for pi in 0..<people.length() {
+    let person = people[pi]
+    let aside = nodepath::join(fs.sep, [dir, person, ".gone"])
+    let drafts = match (fs.read_dir)(aside) {
+      Some(ds) => ds
+      None => continue
+    }
+    for di in 0..<drafts.length() {
+      let draft = drafts[di]
+      let draft_dir = nodepath::join(fs.sep, [aside, draft])
+      let files = match (fs.read_dir)(draft_dir) {
+        Some(fs_list) => fs_list
+        None => continue
+      }
+      let mut left = files.length()
+      for fi in 0..<files.length() {
+        let f = files[fi]
+        let fp = nodepath::join(fs.sep, [draft_dir, f])
+        let st = match (fs.lstat)(fp) {
+          Some(s) => s
+          None => continue
+        }
+        if now_ms - st.mtime_ms < max_age_ms {
+          continue
+        }
+        let _ = (fs.remove_dir_all)(fp)
+        gone.push(person + "/" + draft + "/" + f)
+        left = left - 1
+      }
+      if left == 0 {
+        let _ = (fs.remove_dir_all)(draft_dir)
+      }
+    }
+  }
+  gone
+}
+
+pub fn orphan_marks(fs : FsPort, dir : String) -> Array[String] {
+  let names = match (fs.read_dir)(dir) {
+    Some(ns) => ns
+    None => return []
+  }
+  let gone : Array[String] = []
+  for i in 0..<names.length() {
+    let n = names[i]
+    if !sj_ends_with(n, ".json") {
+      continue
+    }
+    let file = nodepath::join(fs.sep, [dir, n])
+    let target_opt : Option[String] = match (fs.read_file)(file) {
+      Some(text) => {
+        match base_codec::json_parse(text) {
+          base_codec::JsonParseResult::Ok(j) => {
+            match base_codec::json_get(j, "state") {
+              Some(st) => {
+                match base_codec::json_get(st, "path") {
+                  Some(base_codec::Json::Str(p)) => Some(p)
+                  _ => None
+                }
+              }
+              None => None
+            }
+          }
+          _ => None
+        }
+      }
+      None => None
+    }
+    let still_there = match target_opt {
+      Some(tp) => (fs.exists)(tp)
+      None => false
+    }
+    if !still_there {
+      let _ = (fs.remove_file)(file)
+      gone.push(n)
+    }
+  }
+  gone
+}
+
+// ---------------------------------------------------------------------------
+// Safe worktree registration pruning (`pruneRepoWorktrees`)
+// ---------------------------------------------------------------------------
+
+fn path_is_inside(sep : String, child : String, parent : String) -> Bool {
+  let c = nodepath::join(sep, [child])
+  let p = nodepath::join(sep, [parent])
+  if c == p {
+    return false
+  }
+  let prefix = if sj_ends_with(p, sep) { p } else { p + sep }
+  sj_starts_with(c, prefix)
+}
+
+fn path_is_within(sep : String, child : String, parent : String) -> Bool {
+  let c = nodepath::join(sep, [child])
+  let p = nodepath::join(sep, [parent])
+  c == p || path_is_inside(sep, c, p)
+}
+
+/// Removes stale `<data>/repos/*/.git/worktrees/*` registrations pointing to gone paths:
+/// - unlocked registrations whose `gitdir` target lies strictly inside local `<data>/sessions`;
+/// - locked registrations whose `locked` file starts with `ARCHIVE_WORKTREE_LOCK_PREFIX`,
+///   where BOTH the archived room path and the `gitdir` target lie outside local `<data>/sessions`.
+/// Never touches symlinks or user worktrees outside `<data>/sessions`.
+pub fn prune_repo_worktrees(fs : FsPort, data_dir : String) -> Array[String] {
+  let repos_dir = nodepath::join(fs.sep, [data_dir, "repos"])
+  let sessions_dir = nodepath::join(fs.sep, [data_dir, "sessions"])
+  let repos = match (fs.read_dir)(repos_dir) {
+    Some(rs) => rs
+    None => return []
+  }
+  let gone : Array[String] = []
+  for ri in 0..<repos.length() {
+    let repo_name = repos[ri]
+    if sj_starts_with(repo_name, ".") {
+      continue
+    }
+    let repo_path = nodepath::join(fs.sep, [repos_dir, repo_name])
+    let repo_st = match (fs.lstat)(repo_path) {
+      Some(s) => s
+      None => continue
+    }
+    if !repo_st.is_dir() || repo_st.is_symlink() {
+      continue
+    }
+    let wt_root = nodepath::join(fs.sep, [repo_path, ".git", "worktrees"])
+    let wt_root_st = match (fs.lstat)(wt_root) {
+      Some(s) => s
+      None => continue
+    }
+    if !wt_root_st.is_dir() || wt_root_st.is_symlink() {
+      continue
+    }
+    let wts = match (fs.read_dir)(wt_root) {
+      Some(ws) => ws
+      None => continue
+    }
+    for wi in 0..<wts.length() {
+      let wt_name = wts[wi]
+      let admin_dir = nodepath::join(fs.sep, [wt_root, wt_name])
+      let admin_st = match (fs.lstat)(admin_dir) {
+        Some(s) => s
+        None => continue
+      }
+      if !admin_st.is_dir() || admin_st.is_symlink() {
+        continue
+      }
+      let raw_target = match (fs.read_file)(nodepath::join(fs.sep, [admin_dir, "gitdir"])) {
+        Some(t) => sj_trim(t)
+        None => continue
+      }
+      if raw_target.length() == 0 || !nodepath::is_absolute(fs.sep, raw_target) {
+        continue
+      }
+      let target = nodepath::join(fs.sep, [raw_target])
+      let locked_path = nodepath::join(fs.sep, [admin_dir, "locked"])
+      match (fs.lstat)(locked_path) {
+        None => {
+          // Unlocked: must lie strictly inside local `<data>/sessions`.
+          if !path_is_inside(fs.sep, target, sessions_dir) {
+            continue
+          }
+        }
+        Some(lst) => {
+          // Locked: only foreign archived-workspace locks whose room & target are outside local sessions.
+          if !lst.is_file() || lst.is_symlink() {
+            continue
+          }
+          let locked_text = match (fs.read_file)(locked_path) {
+            Some(t) => t
+            None => continue
+          }
+          if !sj_starts_with(locked_text, ARCHIVE_WORKTREE_LOCK_PREFIX) {
+            continue
+          }
+          let locked_room = sj_trim(
+            sj_slice_str(locked_text, ARCHIVE_WORKTREE_LOCK_PREFIX.length(), locked_text.length()),
+          )
+          if locked_room.length() == 0 || !nodepath::is_absolute(fs.sep, locked_room) {
+            continue
+          }
+          if path_is_within(fs.sep, locked_room, sessions_dir) {
+            continue
+          }
+          if path_is_within(fs.sep, target, sessions_dir) {
+            continue
+          }
+        }
+      }
+      // Only remove if target no longer exists.
+      match (fs.lstat)(target) {
+        Some(_) => continue
+        None => ()
+      }
+      if (fs.remove_dir_all)(admin_dir) {
+        gone.push(repo_name + "/" + wt_name)
+      }
+    }
+  }
+  gone
+}
+
+// ---------------------------------------------------------------------------
+// `upkeep-state.json` persistence (`station/src/ops/upkeep-state.ts`)
+// ---------------------------------------------------------------------------
+
+pub struct UpkeepState {
+  pub idle_measured_version : Int
+  pub idle_measured_keys : Array[String]
+  pub idle_measured_vals : Array[Int64]
+  pub last_repo_branches_at : Option[Int64]
+  pub last_orphan_rooms_at : Option[Int64]
+  pub last_full_relieve_at : Option[Int64]
+  pub last_archive_upkeep_at : Option[Int64]
+}
+
+pub struct UpkeepStatePatch {
+  pub idle_measured : Option[(Array[String], Array[Int64])]
+  pub last_repo_branches_at : Option[Option[Int64]]
+  pub last_orphan_rooms_at : Option[Option[Int64]]
+  pub last_full_relieve_at : Option[Option[Int64]]
+  pub last_archive_upkeep_at : Option[Option[Int64]]
+}
+
+pub fn empty_upkeep_state() -> UpkeepState {
+  UpkeepState::{
+    idle_measured_version: IDLE_MEASURED_VERSION,
+    idle_measured_keys: [],
+    idle_measured_vals: [],
+    last_repo_branches_at: None,
+    last_orphan_rooms_at: None,
+    last_full_relieve_at: None,
+    last_archive_upkeep_at: None,
+  }
+}
+
+pub fn empty_upkeep_patch() -> UpkeepStatePatch {
+  UpkeepStatePatch::{
+    idle_measured: None,
+    last_repo_branches_at: None,
+    last_orphan_rooms_at: None,
+    last_full_relieve_at: None,
+    last_archive_upkeep_at: None,
+  }
+}
+
+fn json_opt_i64(j : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => Some(v)
+          None => Some(n.to_int64())
+        }
+      } else {
+        Some(n.to_int64())
+      }
+    }
+    _ => None
+  }
+}
+
+fn trim_idle_measured(
+  keys : Array[String],
+  vals : Array[Int64],
+) -> (Array[String], Array[Int64]) {
+  let n = if keys.length() < vals.length() { keys.length() } else { vals.length() }
+  let start = if n > IDLE_MEASURED_MAX { n - IDLE_MEASURED_MAX } else { 0 }
+  let ok : Array[String] = []
+  let ov : Array[Int64] = []
+  for i in start..<n {
+    ok.push(keys[i])
+    ov.push(vals[i])
+  }
+  (ok, ov)
+}
+
+pub fn parse_upkeep_state(text : String) -> UpkeepState {
+  match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(j) => {
+      match j {
+        base_codec::Json::Obj(_) => {
+          let ver = match json_opt_i64(j, "idleMeasuredVersion") {
+            Some(v) => v.to_int()
+            None => 1
+          }
+          let current_ver = ver == IDLE_MEASURED_VERSION
+          let keys : Array[String] = []
+          let vals : Array[Int64] = []
+          if current_ver {
+            match base_codec::json_get(j, "idleMeasured") {
+              Some(base_codec::Json::Obj(fields)) => {
+                for i in 0..<fields.length() {
+                  let (k, v) = fields[i]
+                  match v {
+                    base_codec::Json::Num(num, repr) => {
+                      let iv = if repr.length() > 0 {
+                        match base_codec::parse_int64_str(repr) {
+                          Some(x) => x
+                          None => num.to_int64()
+                        }
+                      } else {
+                        num.to_int64()
+                      }
+                      keys.push(k)
+                      vals.push(iv)
+                    }
+                    _ => ()
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
+          let (tk, tv) = trim_idle_measured(keys, vals)
+          UpkeepState::{
+            idle_measured_version: if current_ver { IDLE_MEASURED_VERSION } else { 1 },
+            idle_measured_keys: tk,
+            idle_measured_vals: tv,
+            last_repo_branches_at: json_opt_i64(j, "lastRepoBranchesAt"),
+            last_orphan_rooms_at: json_opt_i64(j, "lastOrphanRoomsAt"),
+            last_full_relieve_at: json_opt_i64(j, "lastFullRelieveAt"),
+            last_archive_upkeep_at: json_opt_i64(j, "lastArchiveUpkeepAt"),
+          }
+        }
+        _ => empty_upkeep_state()
+      }
+    }
+    _ => empty_upkeep_state()
+  }
+}
+
+fn opt_i64_json(v : Option[Int64]) -> base_codec::Json {
+  match v {
+    Some(n) => base_codec::json_int64(n)
+    None => base_codec::json_null()
+  }
+}
+
+pub fn serialize_upkeep_state(s : UpkeepState) -> String {
+  let idle_fields : Array[(String, base_codec::Json)] = []
+  let n = if s.idle_measured_keys.length() < s.idle_measured_vals.length() {
+    s.idle_measured_keys.length()
+  } else {
+    s.idle_measured_vals.length()
+  }
+  for i in 0..<n {
+    idle_fields.push((s.idle_measured_keys[i], base_codec::json_int64(s.idle_measured_vals[i])))
+  }
+  let obj = base_codec::json_obj([
+    ("idleMeasuredVersion", base_codec::json_int(s.idle_measured_version)),
+    ("idleMeasured", base_codec::json_obj(idle_fields)),
+    ("lastRepoBranchesAt", opt_i64_json(s.last_repo_branches_at)),
+    ("lastOrphanRoomsAt", opt_i64_json(s.last_orphan_rooms_at)),
+    ("lastFullRelieveAt", opt_i64_json(s.last_full_relieve_at)),
+    ("lastArchiveUpkeepAt", opt_i64_json(s.last_archive_upkeep_at)),
+  ])
+  base_codec::json_stringify(obj)
+}
+
+fn opt_i64_eq(a : Option[Int64], b : Option[Int64]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+pub fn same_upkeep_state(a : UpkeepState, b : UpkeepState) -> Bool {
+  if a.idle_measured_version != b.idle_measured_version {
+    return false
+  }
+  if !opt_i64_eq(a.last_repo_branches_at, b.last_repo_branches_at) {
+    return false
+  }
+  if !opt_i64_eq(a.last_orphan_rooms_at, b.last_orphan_rooms_at) {
+    return false
+  }
+  if !opt_i64_eq(a.last_full_relieve_at, b.last_full_relieve_at) {
+    return false
+  }
+  if !opt_i64_eq(a.last_archive_upkeep_at, b.last_archive_upkeep_at) {
+    return false
+  }
+  if a.idle_measured_keys.length() != b.idle_measured_keys.length() {
+    return false
+  }
+  for i in 0..<a.idle_measured_keys.length() {
+    if a.idle_measured_keys[i] != b.idle_measured_keys[i] {
+      return false
+    }
+    if a.idle_measured_vals[i] != b.idle_measured_vals[i] {
+      return false
+    }
+  }
+  true
+}
+
+pub fn read_upkeep_state(fs : FsPort, data_dir : String) -> UpkeepState {
+  let path = nodepath::join(fs.sep, [data_dir, UPKEEP_STATE_FILE])
+  match (fs.read_file)(path) {
+    Some(text) => parse_upkeep_state(text)
+    None => empty_upkeep_state()
+  }
+}
+
+pub fn patch_upkeep_state(
+  fs : FsPort,
+  data_dir : String,
+  patch : UpkeepStatePatch,
+  pid : Int,
+) -> Bool {
+  let path = nodepath::join(fs.sep, [data_dir, UPKEEP_STATE_FILE])
+  let current = read_upkeep_state(fs, data_dir)
+  let (next_keys, next_vals) = match patch.idle_measured {
+    Some((ks, vs)) => trim_idle_measured(ks, vs)
+    None => (current.idle_measured_keys, current.idle_measured_vals)
+  }
+  let next = UpkeepState::{
+    idle_measured_version: IDLE_MEASURED_VERSION,
+    idle_measured_keys: next_keys,
+    idle_measured_vals: next_vals,
+    last_repo_branches_at: match patch.last_repo_branches_at {
+      Some(v) => v
+      None => current.last_repo_branches_at
+    },
+    last_orphan_rooms_at: match patch.last_orphan_rooms_at {
+      Some(v) => v
+      None => current.last_orphan_rooms_at
+    },
+    last_full_relieve_at: match patch.last_full_relieve_at {
+      Some(v) => v
+      None => current.last_full_relieve_at
+    },
+    last_archive_upkeep_at: match patch.last_archive_upkeep_at {
+      Some(v) => v
+      None => current.last_archive_upkeep_at
+    },
+  }
+  if same_upkeep_state(current, next) {
+    return false
+  }
+  let tmp = path + "." + pid.to_string() + ".tmp"
+  if !(fs.write_file)(tmp, serialize_upkeep_state(next)) {
+    let _ = (fs.remove_file)(tmp)
+    return false
+  }
+  if !(fs.rename)(tmp, path) {
+    let _ = (fs.remove_file)(tmp)
+    return false
+  }
+  true
+}
+
+// ---------------------------------------------------------------------------
+// `Upkeep` coordinator
+// ---------------------------------------------------------------------------
+
+pub struct UpkeepHooks {
+  pub on_jobs : Option[(Int64) -> Unit]
+  pub on_remote : Option[(Int64) -> Unit]
+  pub on_checkpoint : Option[() -> Unit]
+  pub on_repo_branches : Option[(Int64) -> Unit]
+  pub on_orphan_rooms : Option[(Int64) -> Unit]
+}
+
+pub fn empty_upkeep_hooks() -> UpkeepHooks {
+  UpkeepHooks::{
+    on_jobs: None,
+    on_remote: None,
+    on_checkpoint: None,
+    on_repo_branches: None,
+    on_orphan_rooms: None,
+  }
+}
+
+pub struct UpkeepReport {
+  pub station_log_rotated : Bool
+  pub update_log_rotated : Bool
+  pub wal_checkpointed : Bool
+  pub thumbs_freed : Int64
+  pub node_parts_removed : Int
+  pub config_backups_removed : Int
+  pub orphan_marks_removed : Int
+  pub board_files_removed : Int
+  pub repo_worktrees_pruned : Int
+  pub repo_bundles_pruned : Int
+  pub state_persisted : Bool
+}
+
+pub struct Upkeep {
+  pub data_dir : String
+  pub pid : Int
+  pub fs : FsPort
+  pub mut state_loaded : Bool
+  pub mut last_repo_branches_at : Option[Int64]
+  pub mut last_orphan_rooms_at : Option[Int64]
+}
+
+pub fn Upkeep::new(data_dir : String, pid : Int, fs : FsPort) -> Upkeep {
+  Upkeep::{
+    data_dir: data_dir,
+    pid: pid,
+    fs: fs,
+    state_loaded: false,
+    last_repo_branches_at: None,
+    last_orphan_rooms_at: None,
+  }
+}
+
+/// Reclaims rebuildable caches more aggressively when disk is getting full.
+pub fn Upkeep::renewables(self : Upkeep, now_ms : Int64) -> UpkeepReport {
+  let thumbs_freed = cap_by_age(
+    self.fs,
+    nodepath::join(self.fs.sep, [self.data_dir, "thumbs"]),
+    THUMBS_CAP / 4.to_int64(),
+  )
+  let node_parts = remove_stale(
+    self.fs,
+    nodepath::join(self.fs.sep, [self.data_dir, "node"]),
+    ".part-",
+    HOUR_MS,
+    now_ms,
+  )
+  let cfg_baks = keep_newest(self.fs, self.data_dir, "config.json.bak-", CONFIG_BACKUPS_KEPT)
+  let marks = orphan_marks(
+    self.fs,
+    nodepath::join(self.fs.sep, [self.data_dir, "transcript-marks"]),
+  )
+  UpkeepReport::{
+    station_log_rotated: false,
+    update_log_rotated: false,
+    wal_checkpointed: false,
+    thumbs_freed: thumbs_freed,
+    node_parts_removed: node_parts.length(),
+    config_backups_removed: cfg_baks.length(),
+    orphan_marks_removed: marks.length(),
+    board_files_removed: 0,
+    repo_worktrees_pruned: 0,
+    repo_bundles_pruned: 0,
+    state_persisted: false,
+  }
+}
+
+/// Runs one full upkeep round, enforcing every bounded-ephemeral cap and daily cadence.
+pub fn Upkeep::run_round(self : Upkeep, now_ms : Int64, hooks : UpkeepHooks) -> UpkeepReport {
+  if !self.state_loaded {
+    let saved = read_upkeep_state(self.fs, self.data_dir)
+    match self.last_repo_branches_at {
+      None => self.last_repo_branches_at = saved.last_repo_branches_at
+      Some(_) => ()
+    }
+    match self.last_orphan_rooms_at {
+      None => self.last_orphan_rooms_at = saved.last_orphan_rooms_at
+      Some(_) => ()
+    }
+    self.state_loaded = true
+  }
+
+  let st_rot = match rotate_in_place(
+    self.fs,
+    nodepath::join(self.fs.sep, [self.data_dir, "stillfail.log"]),
+    STATION_LOG_CAP,
+  ) {
+    Ok(v) => v
+    Err(_) => false
+  }
+  let upd_rot = match rotate_in_place(
+    self.fs,
+    nodepath::join(self.fs.sep, [self.data_dir, "run", "update.log"]),
+    UPDATE_LOG_CAP,
+  ) {
+    Ok(v) => v
+    Err(_) => false
+  }
+
+  match hooks.on_jobs {
+    Some(f) => f(now_ms)
+    None => ()
+  }
+  match hooks.on_remote {
+    Some(f) => f(now_ms)
+    None => ()
+  }
+
+  let mut wal_did = false
+  match hooks.on_checkpoint {
+    Some(f) => {
+      let wal_path = nodepath::join(self.fs.sep, [self.data_dir, "stillfail.db-wal"])
+      match (self.fs.stat)(wal_path) {
+        Some(st) => {
+          if st.size > WAL_CAP {
+            f()
+            wal_did = true
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+
+  let thumbs_freed = cap_by_age(
+    self.fs,
+    nodepath::join(self.fs.sep, [self.data_dir, "thumbs"]),
+    THUMBS_CAP,
+  )
+  let node_parts = remove_stale(
+    self.fs,
+    nodepath::join(self.fs.sep, [self.data_dir, "node"]),
+    ".part-",
+    NODE_PART_MS,
+    now_ms,
+  )
+  let cfg_baks = keep_newest(self.fs, self.data_dir, "config.json.bak-", CONFIG_BACKUPS_KEPT)
+  let marks = orphan_marks(
+    self.fs,
+    nodepath::join(self.fs.sep, [self.data_dir, "transcript-marks"]),
+  )
+  let board_gone = gone_board_files(
+    self.fs,
+    nodepath::join(self.fs.sep, [self.data_dir, "board-files"]),
+    BOARD_FILES_GONE_MS,
+    now_ms,
+  )
+  let wt_pruned = prune_repo_worktrees(self.fs, self.data_dir)
+  let bundles_pruned = remove_stale(
+    self.fs,
+    nodepath::join(self.fs.sep, [self.data_dir, "repo-bundles"]),
+    "",
+    REPO_BUNDLE_MS,
+    now_ms,
+  )
+
+  let mut state_changed = false
+  let mut patch_branches : Option[Option[Int64]] = None
+  let mut patch_orphans : Option[Option[Int64]] = None
+
+  let due_branches = match self.last_repo_branches_at {
+    None => true
+    Some(last) => now_ms - last >= REPO_BRANCHES_EVERY_MS
+  }
+  if due_branches {
+    self.last_repo_branches_at = Some(now_ms)
+    patch_branches = Some(Some(now_ms))
+    state_changed = true
+    match hooks.on_repo_branches {
+      Some(f) => f(now_ms)
+      None => ()
+    }
+  }
+
+  let due_orphans = match self.last_orphan_rooms_at {
+    None => true
+    Some(last) => now_ms - last >= ORPHAN_ROOM_EVERY_MS
+  }
+  if due_orphans {
+    match hooks.on_orphan_rooms {
+      Some(f) => {
+        self.last_orphan_rooms_at = Some(now_ms)
+        patch_orphans = Some(Some(now_ms))
+        state_changed = true
+        f(now_ms)
+      }
+      None => ()
+    }
+  }
+
+  let persisted = if state_changed {
+    patch_upkeep_state(
+      self.fs,
+      self.data_dir,
+      UpkeepStatePatch::{
+        idle_measured: None,
+        last_repo_branches_at: patch_branches,
+        last_orphan_rooms_at: patch_orphans,
+        last_full_relieve_at: None,
+        last_archive_upkeep_at: None,
+      },
+      self.pid,
+    )
+  } else {
+    false
+  }
+
+  UpkeepReport::{
+    station_log_rotated: st_rot,
+    update_log_rotated: upd_rot,
+    wal_checkpointed: wal_did,
+    thumbs_freed: thumbs_freed,
+    node_parts_removed: node_parts.length(),
+    config_backups_removed: cfg_baks.length(),
+    orphan_marks_removed: marks.length(),
+    board_files_removed: board_gone.length(),
+    repo_worktrees_pruned: wt_pruned.length(),
+    repo_bundles_pruned: bundles_pruned.length(),
+    state_persisted: persisted,
+  }
+}
